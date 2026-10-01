@@ -142,6 +142,7 @@ pub enum GitAction {
     OpenFile,
     FocusMessage,
     NextSection,
+    Escape,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -307,7 +308,8 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "git.right" => "Git: right", Git(GitAction::Right);
         "git.open_file" => "Git: open selected file", Git(GitAction::OpenFile);
         "git.focus_message" => "Git: focus commit message", Git(GitAction::FocusMessage);
-        "git.next_section" => "Git: next section", Git(GitAction::NextSection);
+        "git.next_section" => "Git: next pane", Git(GitAction::NextSection);
+        "git.escape" => "Git: back (close diff, leave message, return to editor)", Git(GitAction::Escape);
 
         "worktree.refresh" => "Worktrees: refresh", Worktree(WorktreeAction::Refresh);
         "worktree.new" => "Worktrees: new", Worktree(WorktreeAction::New);

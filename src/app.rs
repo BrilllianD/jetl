@@ -18,7 +18,7 @@ use crate::dispatch::{Dispatch, Dispatcher, Mode, is_text_input};
 use crate::editor::Editor;
 use crate::event::{AppMsg, Effect, Level, Mouse};
 use crate::files::ProjectPanel;
-use crate::git::GitPanel;
+use crate::git::{BlobWhich, GitMsg, GitOp, GitPanel, GitRequest, GitService};
 use crate::tui::Term;
 use crate::ui::dialog::{Dialog, DialogId, DialogResult};
 use crate::ui::focus::{Focus, PanelId, ToolWindowId};
@@ -103,7 +103,9 @@ pub struct App {
     pub project: ProjectPanel,
     pub worktrees: WorktreePanel,
     pub git_panel: GitPanel,
+    pub git: GitService,
     pub editor: Editor,
+    started: Instant,
 }
 
 impl App {
@@ -121,6 +123,10 @@ impl App {
         let mode = if modal { Mode::Normal } else { Mode::Insert };
         let layout = LayoutState::new(config.ui.left_width, config.ui.bottom_height);
         let root_for_panels = root.clone();
+        let mut git = GitService::new(root.clone(), bus_tx.clone());
+        git.tab_width = config.editor.tab_width;
+        let mut git_panel = GitPanel::new();
+        git_panel.set_log_page(config.git.log_page);
         let mut app = Self {
             workspace: Workspace::new(root),
             theme: Theme::default(),
@@ -142,17 +148,20 @@ impl App {
             keyboard_enhanced: crate::tui::keyboard_enhanced(),
             project: ProjectPanel::new(root_for_panels.clone(), config.files.show_hidden, config.files.show_ignored),
             worktrees: WorktreePanel::new(),
-            git_panel: GitPanel::new(),
+            git_panel,
+            git,
             editor: Editor::new(&config),
+            started: Instant::now(),
             config,
             paths,
         };
         if !app.keyboard_enhanced {
             app.notify(Level::Warn, "Terminal lacks the kitty keyboard protocol: Ctrl+Shift shortcuts, Ctrl+Tab and Shift Shift are unavailable");
         }
+        app.git.refresh_status();
+        app.git.load_branches();
         app
     }
-
 
     pub fn notify(&mut self, level: Level, text: impl Into<String>) {
         let text = text.into();
@@ -178,8 +187,18 @@ impl App {
         (n.at.elapsed() < Duration::from_secs(ttl)).then_some(n)
     }
 
+    /// Current branch, or the short sha when HEAD is detached.
     pub fn branch_label(&self) -> Option<String> {
-        None
+        self.git_panel.branch_label()
+    }
+
+    /// Spinner frame and label of the oldest running git operation.
+    pub fn busy_label(&self) -> Option<String> {
+        const FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+        let (_, label) = self.git.busy.first()?;
+        let frame = FRAMES[(self.started.elapsed().as_millis() / 100) as usize % FRAMES.len()];
+        let more = if self.git.busy.len() > 1 { format!(" (+{})", self.git.busy.len() - 1) } else { String::new() };
+        Some(format!("{frame} {label}{more}"))
     }
 
     /// Keymap context stack, innermost first.
@@ -238,6 +257,13 @@ impl App {
                 self.dirty_frame = true;
             }
         }
+        // Gutter marks follow edits at tick rate, which debounces typing.
+        if self.editor.update_gutters() {
+            self.dirty_frame = true;
+        }
+        if self.git.is_busy() {
+            self.dirty_frame = true;
+        }
     }
 
     fn handle_msg(&mut self, msg: AppMsg) {
@@ -247,7 +273,8 @@ impl App {
             AppMsg::SwitchRoot(p) => self.apply_effects(vec![Effect::SwitchRoot(p)]),
             AppMsg::FileLoaded { path, result, focus } => self.file_loaded(path, result, focus),
             AppMsg::FileSaved { .. } => {}
-            AppMsg::Git(_) | AppMsg::Worktrees(_) => {}
+            AppMsg::Git(m) => self.on_git_msg(m),
+            AppMsg::Worktrees(_) => {}
             AppMsg::Lsp(_) => {}
         }
     }
@@ -286,6 +313,10 @@ impl App {
             self.editor.paste_into_find(&text);
             return;
         }
+        if self.focus.is(PanelId::Git) && self.git_panel.message_focused() {
+            self.git_panel.paste_into_message(&text);
+            return;
+        }
         if self.focus.is(PanelId::Editor) {
             let mut cx = ctx!(self);
             self.editor.handle_action(&EditorAction::InsertText(text), &mut cx);
@@ -313,6 +344,17 @@ impl App {
         if self.focus.is(PanelId::Editor) && self.editor.find_focused() && key.kind != crossterm::event::KeyEventKind::Release {
             let mut cx = ctx!(self);
             let used = self.editor.handle_find_key(key, &mut cx);
+            let fx = cx.effects;
+            self.apply_effects(fx);
+            if used {
+                self.dispatcher.reset();
+                return;
+            }
+        }
+        // Same for the commit message box.
+        if self.focus.is(PanelId::Git) && self.git_panel.message_focused() && key.kind != crossterm::event::KeyEventKind::Release {
+            let mut cx = ctx!(self);
+            let used = self.git_panel.handle_message_key(key, &mut cx);
             let fx = cx.effects;
             self.apply_effects(fx);
             if used {
@@ -368,10 +410,12 @@ impl App {
         if !handled {
             tracing::debug!("unhandled action {action:?}");
         }
-        // Git and worktree actions make their tool window visible when invoked
-        // from elsewhere (e.g. Ctrl+K from the editor).
+        // Git actions that work inside the tool window make it visible when
+        // invoked from elsewhere (e.g. Ctrl+K from the editor); popups and
+        // network operations do not.
+        use crate::actions::GitAction as G;
         match &action {
-            Action::Git(_) if !self.layout.is_visible(ToolWindowId::Git) => {
+            Action::Git(g) if !matches!(g, G::Branches | G::NewBranch | G::Push | G::Pull | G::Fetch | G::Refresh) && !self.layout.is_visible(ToolWindowId::Git) => {
                 self.layout.show(ToolWindowId::Git);
                 self.focus.set(PanelId::Git);
             }
@@ -478,6 +522,28 @@ impl App {
                     None => self.notify(Level::Warn, "Go to line: expected [line][:column]"),
                 }
             }
+            (DialogId::Branches(names), DialogResult::Choice(i)) => {
+                if i == 0 {
+                    self.git_request(GitRequest::NewBranch);
+                } else if let Some(name) = names.get(i - 1) {
+                    if self.branch_label().as_deref() == Some(name.as_str()) {
+                        self.notify(Level::Info, format!("Already on {name}"));
+                    } else {
+                        self.git.run_cli(GitOp::Switch(name.clone()), vec!["switch".into(), name.clone()]);
+                    }
+                }
+            }
+            (DialogId::NewBranchName, DialogResult::Text(t)) => {
+                let name = t.trim().to_string();
+                if name.is_empty() || name.starts_with('-') || name.contains(char::is_whitespace) {
+                    self.notify(Level::Warn, format!("Invalid branch name {name:?}"));
+                } else {
+                    self.git.run_cli(GitOp::NewBranch(name.clone()), vec!["switch".into(), "-c".into(), name]);
+                }
+            }
+            (DialogId::PushSetUpstream(branch), DialogResult::Button(0)) => {
+                self.git.run_cli(GitOp::PushUpstream(branch.clone()), vec!["push".into(), "-u".into(), "origin".into(), branch]);
+            }
             (DialogId::Info, _) => {}
             (_, DialogResult::Cancel) => {}
             (id, res) => tracing::debug!("dialog {id:?} -> {res:?} (no handler yet)"),
@@ -499,13 +565,218 @@ impl App {
                 Effect::FileSaved(p) => {
                     self.notify(Level::Info, format!("Saved {}", p.file_name().map(|n| n.to_string_lossy()).unwrap_or_default()));
                     self.project.refresh();
+                    self.git.refresh_status();
                 }
                 Effect::Clipboard(text) => self.copy_to_clipboard(&text),
                 Effect::SwitchRoot(p) => self.notify(Level::Info, format!("switch root to {} (phase 4)", p.display())),
-                Effect::GitRefresh => {}
+                Effect::GitRefresh => {
+                    self.project.refresh();
+                    self.git.refresh_status();
+                    self.git.load_branches();
+                }
+                Effect::Git(req) => self.git_request(req),
                 Effect::Quit => self.request_quit(),
             }
         }
+    }
+
+    /// Run a request a panel made through `Effect::Git`.
+    fn git_request(&mut self, req: GitRequest) {
+        use crate::git::repo;
+        match req {
+            GitRequest::Refresh => self.apply_effects(vec![Effect::GitRefresh]),
+            GitRequest::Stage(rels) => {
+                let label = format!("stage {}", rels.join(" "));
+                self.git.run_repo(GitOp::Stage, label, move |root| repo::stage(root, &rels).map(|_| String::new()));
+            }
+            GitRequest::Unstage(rels) => {
+                let label = format!("unstage {}", rels.join(" "));
+                self.git.run_repo(GitOp::Unstage, label, move |root| repo::unstage(root, &rels).map(|_| String::new()));
+            }
+            GitRequest::StageAll => {
+                self.git.run_repo(GitOp::Stage, "stage all".into(), |root| repo::stage_all(root).map(|_| String::new()));
+            }
+            GitRequest::UnstageAll => {
+                self.git.run_repo(GitOp::Unstage, "unstage all".into(), |root| repo::unstage_all(root).map(|_| String::new()));
+            }
+            GitRequest::Commit { message, push } => {
+                let subject = message.lines().next().unwrap_or("").to_string();
+                self.git.run_repo(GitOp::Commit { push }, format!("commit: {subject}"), move |root| repo::commit(root, &message));
+            }
+            GitRequest::Push => {
+                self.git.run_cli(GitOp::Push, vec!["push".into()]);
+            }
+            GitRequest::Pull => {
+                let mode = match self.config.git.pull_mode.as_str() {
+                    "rebase" => "--rebase",
+                    "merge" => "--no-rebase",
+                    _ => "--ff-only",
+                };
+                self.git.run_cli(GitOp::Pull, vec!["pull".into(), mode.into()]);
+            }
+            GitRequest::Fetch => {
+                self.git.fetch();
+            }
+            GitRequest::BranchesPopup => {
+                self.git_panel.pending_branch_popup = true;
+                self.git.load_branches();
+            }
+            GitRequest::NewBranch => {
+                self.dialog = Some(Dialog::input(DialogId::NewBranchName, "New Branch", "Create and switch to a new branch from HEAD:", "", "Create"));
+            }
+            GitRequest::LoadDiff(key) => self.git.load_diff(key),
+            GitRequest::LoadLog { skip } => self.git.load_log(skip, self.config.git.log_page, self.config.git.log_all),
+            GitRequest::LoadCommit(sha) => self.git.load_commit(sha),
+        }
+    }
+
+    fn on_git_msg(&mut self, msg: GitMsg) {
+        if let GitMsg::OpDone { id, .. } = &msg {
+            self.git.finish(*id);
+        }
+        if msg.generation() != self.git.generation {
+            tracing::debug!("dropping stale git result");
+            return;
+        }
+        match msg {
+            GitMsg::Status { seq, result, .. } => {
+                let prev_head = self.git_panel.snapshot().map(|s| s.head.clone());
+                let mut cx = ctx!(self);
+                let applied = self.git_panel.set_status(seq, result, &mut cx);
+                let fx = cx.effects;
+                self.apply_effects(fx);
+                if !applied {
+                    return;
+                }
+                let snap = self.git_panel.snapshot();
+                self.project.set_git_status(snap.map(|s| s.tree.clone()).unwrap_or_default());
+                // A new HEAD changes every gutter base.
+                if snap.map(|s| s.head.clone()) != prev_head {
+                    for p in self.editor.open_paths() {
+                        self.git.load_blob(p, BlobWhich::Head);
+                    }
+                }
+            }
+            GitMsg::Blob { path, which: BlobWhich::Head, text, .. } => {
+                self.editor.set_diff_base(&path, text);
+                self.editor.update_gutters();
+            }
+            GitMsg::Blob { .. } => {}
+            GitMsg::Diff { key, result, .. } => self.git_panel.set_diff(&key, result),
+            GitMsg::Branches { result, .. } => {
+                let popup = std::mem::take(&mut self.git_panel.pending_branch_popup);
+                match result {
+                    Ok(list) => {
+                        self.git_panel.branches = list;
+                        if popup {
+                            self.open_branch_popup();
+                        }
+                    }
+                    Err(e) if popup => self.notify(Level::Error, format!("Branches: {e:#}")),
+                    Err(_) => {}
+                }
+            }
+            GitMsg::Log { skip, result, .. } => {
+                let mut cx = ctx!(self);
+                self.git_panel.set_log(skip, result, &mut cx);
+                let fx = cx.effects;
+                self.apply_effects(fx);
+            }
+            GitMsg::CommitDetails { sha, result, .. } => self.git_panel.set_details(&sha, result),
+            GitMsg::OpDone { op, label, ok, output, .. } => self.git_op_done(op, label, ok, output),
+        }
+    }
+
+    fn git_op_done(&mut self, op: GitOp, label: String, ok: bool, output: String) {
+        // Staging is too chatty for the console unless it failed.
+        if !ok || !matches!(op, GitOp::Stage | GitOp::Unstage) {
+            self.git_panel.log_op(&label, ok, &output);
+        }
+        if ok {
+            match &op {
+                GitOp::Commit { push } => {
+                    self.git_panel.message.clear();
+                    self.notify(Level::Info, format!("Committed {output}"));
+                    if *push {
+                        self.git_request(GitRequest::Push);
+                    }
+                }
+                GitOp::Push | GitOp::PushUpstream(_) => self.notify(Level::Info, "Pushed"),
+                GitOp::Pull => self.notify(Level::Info, "Pulled"),
+                GitOp::Fetch => self.notify(Level::Info, "Fetched"),
+                GitOp::Switch(b) => self.notify(Level::Info, format!("Switched to {b}")),
+                GitOp::NewBranch(b) => self.notify(Level::Info, format!("Created and switched to {b}")),
+                GitOp::Stage | GitOp::Unstage => {}
+            }
+            if op.touches_worktree() {
+                let n = self.editor.reload_clean_from_disk();
+                if n > 0 {
+                    tracing::info!("reloaded {n} buffer(s) after {label}");
+                }
+            }
+        } else if op == GitOp::Push && output.contains("has no upstream branch") {
+            let branch = self.branch_label().unwrap_or_default();
+            let msg = format!("Branch '{branch}' has no upstream.\nPush it and set the upstream to origin/{branch}?");
+            self.dialog = Some(Dialog::confirm(DialogId::PushSetUpstream(branch), "Push", &msg, &["Push", "Cancel"]));
+        } else if matches!(op, GitOp::Commit { .. } | GitOp::Stage | GitOp::Unstage) {
+            self.notify(Level::Error, error_line(&output));
+        } else {
+            self.notify(Level::Error, format!("{label}: {}", error_line(&output)));
+        }
+        self.project.refresh();
+        self.git.refresh_status();
+        self.git.load_branches();
+        if self.git_panel.log_loaded() && !matches!(op, GitOp::Stage | GitOp::Unstage) {
+            let mut cx = ctx!(self);
+            self.git_panel.request_log(&mut cx);
+            let fx = cx.effects;
+            self.apply_effects(fx);
+        }
+    }
+
+    /// Point git at a new project root (phase 4 worktree switch): bump the
+    /// generation so in-flight results are dropped, forget the old state,
+    /// and load the new one.
+    pub fn git_root_changed(&mut self, root: PathBuf) {
+        self.git.set_root(root);
+        self.git_panel.reset();
+        self.project.set_git_status(Default::default());
+        for b in &mut self.editor.buffers {
+            b.diff_base = None;
+            b.gutter.clear();
+        }
+        self.git.refresh_status();
+        self.git.load_branches();
+        for p in self.editor.open_paths() {
+            self.git.load_blob(p, BlobWhich::Head);
+        }
+        if self.git_panel.tab == crate::git::panel::GitTab::Log {
+            let mut cx = ctx!(self);
+            self.git_panel.request_log(&mut cx);
+            let fx = cx.effects;
+            self.apply_effects(fx);
+        }
+    }
+
+    fn open_branch_popup(&mut self) {
+        let list = &self.git_panel.branches;
+        let mut items = vec!["+ New Branch…".to_string()];
+        let mut names = Vec::with_capacity(list.len());
+        for b in list {
+            let mut s = format!("{} {}", if b.current { "*" } else { " " }, b.name);
+            if let Some(up) = &b.upstream {
+                s.push_str(&format!("  → {up}"));
+                if b.ahead > 0 {
+                    s.push_str(&format!(" ↑{}", b.ahead));
+                }
+                if b.behind > 0 {
+                    s.push_str(&format!(" ↓{}", b.behind));
+                }
+            }
+            items.push(s);
+            names.push(b.name.clone());
+        }
+        self.dialog = Some(Dialog::choice(DialogId::Branches(names), "Git Branches", "Enter switches; type to filter.", items));
     }
 
     fn select_in_project(&mut self) {
@@ -558,7 +829,8 @@ impl App {
         if lossy {
             self.notify(Level::Warn, format!("{} is not valid UTF-8; shown with replacement characters", path.display()));
         }
-        self.editor.open_text(path, &text, lossy, &self.theme);
+        self.editor.open_text(path.clone(), &text, lossy, &self.theme);
+        self.git.load_blob(path, BlobWhich::Head);
         if focus {
             self.focus.set(PanelId::Editor);
         }
@@ -597,6 +869,11 @@ impl App {
         let mouse = Mouse { kind: m.kind, x: m.column, y: m.row, clicks, mods: m.modifiers };
 
         if let Some(d) = &mut self.dialog {
+            // A dialog that opened mid-drag (e.g. from a background result)
+            // receives the release; end the drag too.
+            if matches!(m.kind, MouseEventKind::Up(_)) {
+                self.drag = None;
+            }
             if let Some(res) = d.handle_mouse(&mouse) {
                 let d = self.dialog.take().unwrap();
                 self.finish_dialog(d.id, res);
@@ -604,6 +881,10 @@ impl App {
             return;
         }
 
+        // A press while a drag is active means its release was lost.
+        if matches!(m.kind, MouseEventKind::Down(_)) {
+            self.drag = None;
+        }
         // An active drag owns every event until the button is released.
         if let Some(drag) = self.drag {
             match m.kind {
@@ -710,4 +991,15 @@ impl App {
         let fx = cx.effects;
         self.apply_effects(fx);
     }
+}
+
+/// The most telling line of a failed command's output: the first `fatal:`
+/// or `error:` line, else the first non-empty one.
+fn error_line(output: &str) -> String {
+    let lines = || output.lines().map(str::trim).filter(|l| !l.is_empty());
+    lines()
+        .find(|l| l.starts_with("fatal:") || l.starts_with("error:"))
+        .or_else(|| lines().next())
+        .unwrap_or("failed")
+        .to_string()
 }

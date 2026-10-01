@@ -273,6 +273,64 @@ impl Editor {
         self.active_buffer().map(|b| b.line_ending.label().to_string())
     }
 
+    /// Set the HEAD text the gutter compares against; marks are recomputed
+    /// on the next [`Editor::update_gutters`].
+    pub fn set_diff_base(&mut self, path: &Path, text: Option<String>) {
+        let Some(i) = self.index_of(path) else { return };
+        let b = &mut self.buffers[i];
+        if text.is_none() {
+            b.gutter.clear();
+        }
+        b.diff_base = text;
+        b.gutter_version = u64::MAX;
+    }
+
+    /// Recompute gutter marks of buffers edited since the last call (run from
+    /// the app tick, which debounces typing). Returns true when any changed.
+    pub fn update_gutters(&mut self) -> bool {
+        let limit = self.max_highlight_bytes;
+        let mut changed = false;
+        for b in &mut self.buffers {
+            if b.gutter_version == b.version {
+                continue;
+            }
+            b.gutter_version = b.version;
+            let marks = match &b.diff_base {
+                Some(base) if b.rope.len_bytes() <= limit && base.len() <= limit => gutter::compute(base, &b.text()),
+                _ => Vec::new(),
+            };
+            if marks != b.gutter {
+                b.gutter = marks;
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    /// Re-read unmodified buffers whose file changed on disk (after a branch
+    /// switch or pull). The reload is one undoable transaction. Returns the
+    /// number of reloaded buffers.
+    pub fn reload_clean_from_disk(&mut self) -> usize {
+        let mut n = 0;
+        for b in &mut self.buffers {
+            let Some(path) = b.path.clone() else { continue };
+            if b.dirty() {
+                continue;
+            }
+            let Ok(bytes) = std::fs::read(&path) else { continue };
+            let Ok(text) = String::from_utf8(bytes) else { continue };
+            let old = b.text();
+            if old == text {
+                continue;
+            }
+            let caret = b.sel.head.min(text.chars().count());
+            b.apply(vec![Change::replace(0, old, text)], Selection::point(caret), TxKind::Other);
+            b.mark_saved();
+            n += 1;
+        }
+        n
+    }
+
     pub fn handle_action(&mut self, a: &EditorAction, cx: &mut Ctx) -> bool {
         use EditorAction as E;
         match a {

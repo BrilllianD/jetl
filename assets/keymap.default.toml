@@ -25,6 +25,8 @@
 "ctrl-shift-f12" = "tool_window.hide_all"
 "shift-esc" = "tool_window.hide_focused"
 "ctrl-`" = "git.branches_popup"
+# Legacy terminals send Ctrl+` as NUL, which crossterm reports as Ctrl+Space.
+"ctrl-space" = "git.branches_popup"
 "alt-f1" = "tree.select_in_project"
 "ctrl-q" = "app.quit"
 "f5" = "app.refresh"
@@ -106,6 +108,7 @@
 "pagedown" = "git.page_down"
 "space" = "git.toggle_stage"
 "ctrl-enter" = "git.commit"
+# Ctrl+Enter needs the kitty protocol; Alt+Enter is the legacy fallback.
 "alt-enter" = "git.commit"
 "enter" = "git.open_file"
 "tab" = "git.next_section"
@@ -114,7 +117,8 @@
 "alt-c" = "git.tab_commit"
 "alt-l" = "git.tab_log"
 "alt-o" = "git.tab_console"
-"esc" = "app.focus_editor"
+"ctrl-alt-n" = "git.new_branch"
+"esc" = "git.escape"
 
 [worktrees]
 "up" = "worktree.up"

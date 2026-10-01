@@ -34,6 +34,8 @@ pub enum Effect {
     Notify(Level, String),
     SwitchRoot(PathBuf),
     GitRefresh,
+    /// A git operation or query for the app to run through `GitService`.
+    Git(crate::git::GitRequest),
     Dialog(crate::ui::dialog::Dialog),
     FileSaved(PathBuf),
     Clipboard(String),

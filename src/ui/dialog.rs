@@ -25,6 +25,8 @@ pub enum DialogId {
     WorktreePath { branch: String, new_branch: bool, start: Option<String> },
     WorktreeSwitchAfterCreate(std::path::PathBuf),
     NewBranchName,
+    /// Branch popup; item 0 is "New branch", item `i` is `names[i - 1]`.
+    Branches(Vec<String>),
     PushSetUpstream(String),
     Info,
     GotoLine,

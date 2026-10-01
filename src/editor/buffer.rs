@@ -51,7 +51,11 @@ pub struct Buffer {
     pub changed_since_render: bool,
     pub syntax: Option<super::syntax::Syntax>,
     pub gutter: Vec<super::gutter::GutterMark>,
+    /// Buffer version the gutter marks were computed for.
     pub gutter_version: u64,
+    /// HEAD version of the file for gutter marks; `None` for untracked
+    /// files, files outside a repository, or before the blob arrives.
+    pub diff_base: Option<String>,
     pub search: Option<super::search::SearchState>,
     /// Caret, version and text area size when the view last followed the
     /// caret. The view only scrolls to the caret when one of them changes,
@@ -84,6 +88,7 @@ impl Buffer {
             syntax: None,
             gutter: Vec::new(),
             gutter_version: u64::MAX,
+            diff_base: None,
             search: None,
             follow_key: None,
         }

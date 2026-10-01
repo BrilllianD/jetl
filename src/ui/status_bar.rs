@@ -38,6 +38,13 @@ pub fn render(app: &mut App, frame: &mut Frame, area: Rect) {
         x += w + 2;
     }
 
+    // Running git operations.
+    if let Some(busy) = app.busy_label() {
+        let w = (busy.width() as u16).min(area.width / 3);
+        buf.set_stringn(x, area.y, &busy, w as usize, theme.status_accent.bg(theme.status_bg));
+        x += w + 2;
+    }
+
     // Right side: mode (modal only), position, line ending, keyboard mode.
     let mut right_parts: Vec<(String, Style)> = Vec::new();
     if let Some(pos) = app.editor.status_position() {
