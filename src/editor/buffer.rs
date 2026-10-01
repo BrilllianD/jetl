@@ -53,6 +53,10 @@ pub struct Buffer {
     pub gutter: Vec<super::gutter::GutterMark>,
     pub gutter_version: u64,
     pub search: Option<super::search::SearchState>,
+    /// Caret, version and text area size when the view last followed the
+    /// caret. The view only scrolls to the caret when one of them changes,
+    /// so wheel scrolling is not undone on the next frame.
+    pub follow_key: Option<(usize, u64, u16, u16)>,
 }
 
 impl Buffer {
@@ -81,6 +85,7 @@ impl Buffer {
             gutter: Vec::new(),
             gutter_version: u64::MAX,
             search: None,
+            follow_key: None,
         }
     }
 
@@ -306,6 +311,74 @@ impl Buffer {
         self.undo.break_group = true;
     }
 
+    /// Comment or uncomment the selected lines (or the caret line) with a
+    /// line comment `token`, as one transaction. Uncomments only when every
+    /// non-blank line is already commented.
+    pub fn toggle_line_comment(&mut self, token: &str) {
+        let r = self.sel.range();
+        let (l0, _) = selection::pos_to_line_col(&self.rope, r.start);
+        let (mut l1, c1) = selection::pos_to_line_col(&self.rope, r.end);
+        // A selection ending at column 0 does not include that line.
+        if l1 > l0 && c1 == 0 {
+            l1 -= 1;
+        }
+        // (line, indent, blank) for each covered line.
+        let lines: Vec<(usize, usize, bool)> = (l0..=l1)
+            .map(|l| {
+                let indent = selection::indent_of(&self.rope, l);
+                (l, indent, indent >= line_len_no_eol(&self.rope, l))
+            })
+            .collect();
+        // Comment blank lines too when there is nothing else to comment.
+        let skip_blank = lines.iter().any(|(_, _, blank)| !blank);
+        let targets: Vec<(usize, usize)> = lines.iter().filter(|(_, _, blank)| !(skip_blank && *blank)).map(|(l, i, _)| (*l, *i)).collect();
+        let commented = |l: usize, indent: usize| {
+            let s = self.rope.line_to_char(l) + indent;
+            let n = token.chars().count();
+            s + n <= self.rope.len_chars() && self.rope.slice(s..s + n) == token
+        };
+        let uncomment = skip_blank && targets.iter().all(|&(l, i)| commented(l, i));
+        let min_indent = targets.iter().map(|(_, i)| *i).min().unwrap_or(0);
+        let mut changes = Vec::with_capacity(targets.len());
+        for &(l, indent) in targets.iter().rev() {
+            let ls = self.rope.line_to_char(l);
+            if uncomment {
+                let at = ls + indent;
+                let mut old = token.to_string();
+                let after = at + token.chars().count();
+                if after < self.rope.len_chars() && self.rope.char(after) == ' ' {
+                    old.push(' ');
+                }
+                changes.push(Change::delete(at, old));
+            } else {
+                changes.push(Change::insert(ls + min_indent, format!("{token} ")));
+            }
+        }
+        // Map the selection through the changes (applied last line first).
+        let map = |mut p: usize, stay_at_insert: bool| {
+            for c in &changes {
+                let old_n = c.old.chars().count();
+                if p < c.at || (p == c.at && stay_at_insert && old_n == 0) {
+                    continue;
+                }
+                p = if p >= c.at + old_n { p - old_n + c.new.chars().count() } else { c.at };
+            }
+            p
+        };
+        let forward = self.sel.anchor <= self.sel.head;
+        let (start, end) = (map(r.start, !r.is_empty()), map(r.end, false));
+        let sel_after = if forward { Selection::new(start, end) } else { Selection::new(end, start) };
+        let was_empty = r.is_empty();
+        self.apply(changes, sel_after, TxKind::Other);
+        if was_empty {
+            // JetBrains moves the caret to the next line after commenting.
+            let (line, col) = self.cursor_line_col();
+            if line + 1 < self.rope.len_lines() {
+                self.sel = Selection::point(selection::line_col_to_pos(&self.rope, line + 1, col));
+            }
+        }
+    }
+
     pub fn line_text(&self, line: usize) -> String {
         let n = line_len_no_eol(&self.rope, line);
         let s = self.rope.line_to_char(line);
@@ -405,5 +478,35 @@ mod tests {
         buf.goto_line(1, 0);
         buf.backspace();
         assert_eq!(buf.text(), "ab");
+    }
+
+    #[test]
+    fn toggle_comment_block_at_min_indent() {
+        let original = "    a\n\n  b\n      c\nd\n";
+        let mut buf = b(original);
+        // Lines 0-3; the selection ends at column 0 of line 4, which is left out.
+        buf.sel = Selection::new(0, buf.rope.line_to_char(4));
+        buf.toggle_line_comment("//");
+        assert_eq!(buf.text(), "  //   a\n\n  // b\n  //     c\nd\n");
+        assert_eq!(buf.undo.len(), 1);
+        assert_eq!(buf.sel.range(), 0..buf.rope.line_to_char(4));
+        buf.toggle_line_comment("//");
+        assert_eq!(buf.text(), original);
+        assert!(buf.undo());
+        assert!(buf.undo());
+        assert_eq!(buf.text(), original);
+    }
+
+    #[test]
+    fn toggle_comment_caret_line_moves_down() {
+        let mut buf = b("let a;\nlet b;\n");
+        buf.goto_line(0, 3);
+        buf.toggle_line_comment("#");
+        assert_eq!(buf.text(), "# let a;\nlet b;\n");
+        assert_eq!(buf.cursor_line_col(), (1, 5));
+        // Partially commented selection: comment everything again.
+        buf.sel = Selection::new(0, buf.len_chars());
+        buf.toggle_line_comment("#");
+        assert_eq!(buf.text(), "# # let a;\n# let b;\n");
     }
 }

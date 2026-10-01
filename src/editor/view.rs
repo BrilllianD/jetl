@@ -133,14 +133,18 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
     if text_area.width == 0 || area.height == 0 {
         return RenderOut { cursor: None, text_area };
     }
-    ensure_visible(buf, text_area, o);
+    let follow_key = (buf.sel.head, buf.version, text_area.width, text_area.height);
+    if buf.follow_key != Some(follow_key) {
+        ensure_visible(buf, text_area, o);
+        buf.follow_key = Some(follow_key);
+    }
 
     let theme = o.theme;
     let rope = &buf.rope;
     let sel = buf.sel.range();
     let (cur_line, _) = pos_to_line_col(rope, buf.sel.head);
     let cur_vcol = visual_col(rope, buf.sel.head, o.tab_width);
-    let hl = buf.syntax.as_mut().map(|s| s.highlights(rope, buf.scroll_line, area.height as usize, theme)).unwrap_or_default();
+    let hl = buf.syntax.as_mut().map(|s| s.highlights(rope, buf.scroll_line, area.height as usize)).unwrap_or_default();
     let search = buf.search.as_ref();
     let digits = (gutter_w - 3) as usize;
     let mut cursor = None;

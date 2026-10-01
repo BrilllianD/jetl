@@ -74,6 +74,12 @@ pub enum EditorAction {
     Replace,
     FindNext,
     FindPrev,
+    ReplaceOne,
+    ReplaceAll,
+    FindToggleCase,
+    FindToggleWord,
+    FindToggleRegex,
+    FindToggleField,
     GotoLine,
     DuplicateLine,
     DeleteLine,
@@ -240,6 +246,12 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "editor.replace" => "Replace", Editor(E::Replace);
         "editor.find_next" => "Find next", Editor(E::FindNext);
         "editor.find_prev" => "Find previous", Editor(E::FindPrev);
+        "editor.replace_one" => "Replace current match", Editor(E::ReplaceOne);
+        "editor.replace_all" => "Replace all matches", Editor(E::ReplaceAll);
+        "editor.find_case" => "Find: toggle match case", Editor(E::FindToggleCase);
+        "editor.find_word" => "Find: toggle whole words", Editor(E::FindToggleWord);
+        "editor.find_regex" => "Find: toggle regex", Editor(E::FindToggleRegex);
+        "editor.find_field" => "Find: switch between find and replace fields", Editor(E::FindToggleField);
         "editor.goto_line" => "Go to line", Editor(E::GotoLine);
         "editor.duplicate_line" => "Duplicate line", Editor(E::DuplicateLine);
         "editor.delete_line" => "Delete line", Editor(E::DeleteLine);

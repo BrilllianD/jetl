@@ -1,5 +1,7 @@
 //! Colors. Darcula-like defaults; TOML override comes in a later phase.
 
+use std::collections::HashMap;
+
 use ratatui::style::{Color, Modifier, Style};
 
 #[derive(Debug, Clone)]
@@ -47,6 +49,8 @@ pub struct Theme {
     pub warn: Style,
     pub info: Style,
     pub splitter: Style,
+    /// Tree-sitter capture name -> style, looked up by longest dotted prefix.
+    pub syntax: HashMap<String, Style>,
 }
 
 impl Theme {
@@ -99,8 +103,73 @@ impl Theme {
             warn: Style::default().fg(Color::Rgb(255, 198, 109)),
             info: Style::default().fg(Color::Rgb(104, 151, 187)),
             splitter: Style::default().fg(Color::Rgb(85, 85, 85)).bg(bg),
+            syntax: darcula_syntax(fg),
         }
     }
+
+    /// Style for a capture such as `function.method`: tries the full name,
+    /// then `function`.
+    pub fn capture_style(&self, name: &str) -> Option<Style> {
+        let mut n = name;
+        loop {
+            if let Some(s) = self.syntax.get(n) {
+                return Some(*s);
+            }
+            match n.rfind('.') {
+                Some(i) => n = &n[..i],
+                None => return None,
+            }
+        }
+    }
+}
+
+fn darcula_syntax(fg: Color) -> HashMap<String, Style> {
+    let c = |r, g, b| Style::default().fg(Color::Rgb(r, g, b));
+    let keyword = c(204, 120, 50);
+    let string = c(106, 135, 89);
+    let comment = c(128, 128, 128);
+    let number = c(104, 151, 187);
+    let function = c(255, 198, 109);
+    let constant = c(152, 118, 170);
+    let meta = c(187, 181, 41);
+    let plain = Style::default().fg(fg);
+    // Identifier-level captures drawn in the default color (variables,
+    // types) are left out so they never shadow a more specific capture of
+    // the same node (e.g. `@variable` listed before `@function`).
+    let pairs: Vec<(&str, Style)> = vec![
+        ("keyword", keyword),
+        ("keyword.directive", meta),
+        ("string", string),
+        ("string.special", c(106, 135, 89)),
+        ("string.special.key", c(152, 118, 170)),
+        ("string.escape", keyword),
+        ("escape", keyword),
+        ("comment", comment.add_modifier(Modifier::ITALIC)),
+        ("comment.documentation", c(98, 151, 85).add_modifier(Modifier::ITALIC)),
+        ("number", number),
+        ("boolean", keyword),
+        ("constant", constant),
+        ("constant.builtin", keyword),
+        ("function", function),
+        ("function.builtin", c(136, 136, 198)),
+        ("function.macro", meta),
+        ("type.builtin", keyword),
+        ("property", constant),
+        ("attribute", meta),
+        ("label", c(32, 153, 157)),
+        ("operator", plain),
+        ("punctuation", plain),
+        ("punctuation.special", keyword),
+        ("variable.builtin", c(148, 85, 141)),
+        ("tag", c(232, 191, 106)),
+        ("embedded", plain),
+        ("text.title", c(255, 198, 109).add_modifier(Modifier::BOLD)),
+        ("text.literal", c(106, 135, 89)),
+        ("text.reference", c(104, 151, 187)),
+        ("text.uri", c(104, 151, 187).add_modifier(Modifier::UNDERLINED)),
+        ("none", plain),
+    ];
+    pairs.into_iter().map(|(k, v)| (k.to_string(), v)).collect()
 }
 
 impl Default for Theme {

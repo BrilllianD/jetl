@@ -10,7 +10,7 @@ pub mod view;
 
 use std::path::{Path, PathBuf};
 
-use crossterm::event::{KeyModifiers, MouseButton, MouseEventKind};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
@@ -24,8 +24,9 @@ use crate::event::{Effect, Level, Mouse};
 use crate::ui::dialog::{Dialog, DialogId};
 use crate::ui::tabs::TabHits;
 use buffer::{Buffer, BufferId};
+use search::{Field, SearchState};
 use selection::{Selection, apply_motion, line_range, word_at};
-use undo::TxKind;
+use undo::{Change, TxKind};
 use view::{RenderOpts, col_to_char};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,6 +34,41 @@ enum DragMode {
     Char,
     Word(usize, usize),
     Line(usize, usize),
+}
+
+/// Clickable parts of the find bar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FindHit {
+    QueryField,
+    ReplaceField,
+    Case,
+    Word,
+    Regex,
+    Prev,
+    Next,
+    Close,
+    ReplaceOne,
+    ReplaceAll,
+}
+
+/// Query and options of the last search, reused by F3 with the bar closed
+/// and when the bar reopens without a selection.
+#[derive(Debug, Clone)]
+struct LastSearch {
+    query: String,
+    case_sensitive: bool,
+    whole_word: bool,
+    regex: bool,
+}
+
+impl LastSearch {
+    fn to_state(&self) -> SearchState {
+        let mut s = SearchState::new(&self.query, false);
+        s.case_sensitive = self.case_sensitive;
+        s.whole_word = self.whole_word;
+        s.regex = self.regex;
+        s
+    }
 }
 
 pub struct Editor {
@@ -50,6 +86,11 @@ pub struct Editor {
     hscrolloff: usize,
     clipboard: String,
     drag: Option<DragMode>,
+    /// Files larger than this open without syntax highlighting.
+    max_highlight_bytes: usize,
+    last_search: Option<LastSearch>,
+    find_area: Rect,
+    find_hits: Vec<(FindHit, Rect)>,
 }
 
 impl Editor {
@@ -68,6 +109,10 @@ impl Editor {
             hscrolloff: config.editor.hscrolloff,
             clipboard: String::new(),
             drag: None,
+            max_highlight_bytes: config.editor.max_highlight_bytes,
+            last_search: None,
+            find_area: Rect::default(),
+            find_hits: Vec::new(),
         }
     }
 
@@ -93,15 +138,18 @@ impl Editor {
         self.mru.iter().filter_map(|id| self.buffers.iter().find(|b| b.id == *id)).filter_map(|b| b.path.clone()).collect()
     }
 
-    /// Add a loaded file as a new tab and make it active.
-    pub fn open_text(&mut self, path: PathBuf, text: &str, lossy: bool) -> usize {
+    /// Add a loaded file as a new tab and make it active. Syntax
+    /// highlighting is attached only below `max_highlight_bytes`.
+    pub fn open_text(&mut self, path: PathBuf, text: &str, lossy: bool, theme: &Theme) -> usize {
         if let Some(i) = self.index_of(&path) {
             self.activate_index(i);
             return i;
         }
         let id = self.next_id;
         self.next_id += 1;
-        let buf = Buffer::from_text(id, Some(path), text, lossy);
+        let syntax = if text.len() <= self.max_highlight_bytes { syntax::Syntax::for_path(&path, theme) } else { None };
+        let mut buf = Buffer::from_text(id, Some(path), text, lossy);
+        buf.syntax = syntax;
         // JetBrains inserts the new tab right after the active one.
         let at = self.active.map(|a| a + 1).unwrap_or(self.buffers.len()).min(self.buffers.len());
         self.buffers.insert(at, buf);
@@ -342,22 +390,289 @@ impl Editor {
             }
             E::Escape => {
                 if b.search.is_some() {
-                    b.search = None;
+                    self.close_find();
                 } else {
                     b.sel.collapse();
                 }
             }
             E::ScrollUp(n) => b.scroll_line = b.scroll_line.saturating_sub(*n),
             E::ScrollDown(n) => b.scroll_line = (b.scroll_line + n).min(b.rope.len_lines().saturating_sub(1)),
-            E::Find | E::Replace | E::FindNext | E::FindPrev | E::ToggleComment => {
-                cx.notify(Level::Info, "Find/replace arrives in phase 2");
+            E::Find => self.open_find(false),
+            E::Replace => self.open_find(true),
+            E::FindNext => self.find_step(true, cx),
+            E::FindPrev => self.find_step(false, cx),
+            E::ReplaceOne => self.replace_one(cx),
+            E::ReplaceAll => self.replace_all(cx),
+            E::FindToggleCase | E::FindToggleWord | E::FindToggleRegex => {
+                if let Some(s) = &mut b.search {
+                    match a {
+                        E::FindToggleCase => s.case_sensitive ^= true,
+                        E::FindToggleWord => s.whole_word ^= true,
+                        _ => s.regex ^= true,
+                    }
+                    refresh_search(b);
+                    self.remember_search();
+                }
+            }
+            E::FindToggleField => {
+                if let Some(s) = &mut b.search {
+                    if s.show_replace {
+                        s.field = if s.field == Field::Query { Field::Replace } else { Field::Query };
+                    }
+                    s.focused = true;
+                }
+            }
+            E::ToggleComment => {
+                let token = b.path.as_deref().and_then(syntax::detect).and_then(|d| d.line_comment);
+                match token {
+                    Some(t) => b.toggle_line_comment(t),
+                    None => cx.notify(Level::Info, "No line comment for this file type"),
+                }
             }
             E::NextTab | E::PrevTab | E::CloseTab | E::CloseAllTabs | E::Switcher | E::Save | E::SaveAll | E::GotoLine => {}
         }
         true
     }
 
-    pub fn handle_mouse(&mut self, m: &Mouse, _area: Rect, _cx: &mut Ctx) -> bool {
+    /// The active buffer's find bar has keyboard focus.
+    pub fn find_focused(&self) -> bool {
+        self.active_buffer().and_then(|b| b.search.as_ref()).is_some_and(|s| s.focused)
+    }
+
+    /// Open the find bar (or refocus it). A single-line selection becomes
+    /// the query; otherwise the last query is reused.
+    fn open_find(&mut self, replace: bool) {
+        let last = self.last_search.clone();
+        let Some(b) = self.active_buffer_mut() else { return };
+        let sel_text = Some(b.selected_text()).filter(|t| !t.is_empty() && !t.contains('\n'));
+        let origin = b.sel.range().start;
+        let s = b.search.get_or_insert_with(|| last.map(|l| l.to_state()).unwrap_or_default());
+        if let Some(t) = sel_text {
+            s.query.set_text(&t);
+        }
+        s.show_replace = replace;
+        s.field = Field::Query;
+        s.focused = true;
+        s.origin = origin;
+        refresh_search(b);
+        self.remember_search();
+    }
+
+    fn close_find(&mut self) {
+        self.remember_search();
+        if let Some(b) = self.active_buffer_mut() {
+            b.search = None;
+        }
+    }
+
+    fn remember_search(&mut self) {
+        let Some(s) = self.active_buffer().and_then(|b| b.search.as_ref()) else { return };
+        if !s.query.text.is_empty() {
+            self.last_search = Some(LastSearch { query: s.query.text.clone(), case_sensitive: s.case_sensitive, whole_word: s.whole_word, regex: s.regex });
+        }
+    }
+
+    /// Select the next/previous match from the selection. With the bar
+    /// closed this searches for the last query without opening it.
+    fn find_step(&mut self, forward: bool, cx: &mut Ctx) {
+        let last = self.last_search.clone();
+        let Some(b) = self.active_buffer_mut() else { return };
+        let mut temp = None;
+        let s = match b.search.as_mut() {
+            Some(s) => s,
+            None => match last {
+                Some(l) => temp.insert(l.to_state()),
+                None => {
+                    cx.notify(Level::Info, "Nothing to search for; press Ctrl+F");
+                    return;
+                }
+            },
+        };
+        s.update(&b.rope, b.version);
+        if let Some(e) = &s.error {
+            cx.notify(Level::Warn, e.clone());
+            return;
+        }
+        let r = b.sel.range();
+        let found = if forward { s.first_from(r.end) } else { s.last_before(r.start) };
+        let Some(i) = found else {
+            if !s.query.text.is_empty() {
+                cx.notify(Level::Info, format!("'{}' not found", s.query.text));
+            }
+            return;
+        };
+        let m = s.select(i);
+        let wrapped = if forward { m.start < r.end } else { m.start >= r.start };
+        s.origin = m.start;
+        b.sel = Selection::new(m.start, m.end);
+        b.desired_col = None;
+        b.undo.break_group = true;
+        if wrapped {
+            cx.notify(Level::Info, "Search wrapped");
+        }
+    }
+
+    /// Replace the selected match, then select the next one. When the
+    /// selection is not a match, only move to the next match.
+    fn replace_one(&mut self, cx: &mut Ctx) {
+        let Some(b) = self.active_buffer_mut() else { return };
+        let Some(s) = b.search.as_mut() else { return };
+        s.update(&b.rope, b.version);
+        let r = b.sel.range();
+        let i = s.matches.partition_point(|m| m.start < r.start);
+        if s.matches.get(i) != Some(&r) {
+            self.find_step(true, cx);
+            return;
+        }
+        let rep = if s.regex {
+            let bytes = b.rope.char_to_byte(r.start)..b.rope.char_to_byte(r.end);
+            s.replacement_at(&b.rope.to_string(), bytes)
+        } else {
+            s.replace.text.clone()
+        };
+        let old = b.rope.slice(r.clone()).to_string();
+        let after = r.start + rep.chars().count();
+        b.apply(vec![Change::replace(r.start, old, rep)], Selection::point(after), TxKind::Other);
+        let Some(s) = b.search.as_mut() else { return };
+        s.update(&b.rope, b.version);
+        if let Some(i) = s.first_from(after) {
+            let m = s.select(i);
+            s.origin = m.start;
+            b.sel = Selection::new(m.start, m.end);
+        }
+    }
+
+    /// Replace every match in one transaction, so one undo reverts it.
+    fn replace_all(&mut self, cx: &mut Ctx) {
+        let Some(b) = self.active_buffer_mut() else { return };
+        let Some(s) = b.search.as_mut() else { return };
+        s.update(&b.rope, b.version);
+        if s.matches.is_empty() {
+            cx.notify(Level::Info, "No matches to replace");
+            return;
+        }
+        let text = s.regex.then(|| b.rope.to_string());
+        // Last to first so earlier positions stay valid.
+        let changes: Vec<Change> = s
+            .matches
+            .iter()
+            .rev()
+            .map(|r| {
+                let rep = match &text {
+                    Some(t) => s.replacement_at(t, b.rope.char_to_byte(r.start)..b.rope.char_to_byte(r.end)),
+                    None => s.replace.text.clone(),
+                };
+                Change::replace(r.start, b.rope.slice(r.clone()).to_string(), rep)
+            })
+            .collect();
+        let n = changes.len();
+        let caret = s.matches[0].start;
+        b.apply(changes, Selection::point(caret), TxKind::Other);
+        if let Some(s) = b.search.as_mut() {
+            s.origin = caret;
+            s.update(&b.rope, b.version);
+        }
+        cx.notify(Level::Info, format!("Replaced {n} occurrence{}", if n == 1 { "" } else { "s" }));
+    }
+
+    /// Keys while the find bar has focus. Returns false for keys the bar
+    /// does not use, so global shortcuts (Ctrl+S, F3, Alt+1) still dispatch.
+    pub fn handle_find_key(&mut self, key: KeyEvent, cx: &mut Ctx) -> bool {
+        use EditorAction as E;
+        let Some(ai) = self.active else { return false };
+        let b = &mut self.buffers[ai];
+        let Some(s) = b.search.as_mut().filter(|s| s.focused) else { return false };
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let alt = key.modifiers.contains(KeyModifiers::ALT);
+        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+        let action = match key.code {
+            KeyCode::Esc => Some(E::Escape),
+            KeyCode::Enter if shift => Some(E::FindPrev),
+            KeyCode::Enter if s.field == Field::Replace => Some(E::ReplaceOne),
+            KeyCode::Enter => Some(E::FindNext),
+            KeyCode::Up => Some(E::FindPrev),
+            KeyCode::Down => Some(E::FindNext),
+            KeyCode::Tab | KeyCode::BackTab => Some(E::FindToggleField),
+            KeyCode::Char(c) if alt && !ctrl => match c.to_ascii_lowercase() {
+                'c' => Some(E::FindToggleCase),
+                'w' => Some(E::FindToggleWord),
+                'x' => Some(E::FindToggleRegex),
+                _ => return false,
+            },
+            _ => None,
+        };
+        if let Some(a) = action {
+            self.handle_action(&a, cx);
+            return true;
+        }
+        let input = s.active_input();
+        match key.code {
+            KeyCode::Backspace if ctrl || alt => input.delete_word_back(),
+            KeyCode::Char('h') if ctrl => input.backspace(),
+            KeyCode::Backspace => input.backspace(),
+            KeyCode::Delete => input.delete(),
+            KeyCode::Left => input.left(),
+            KeyCode::Right => input.right(),
+            KeyCode::Home => input.home(),
+            KeyCode::End => input.end(),
+            KeyCode::Char(c) if !ctrl && !alt => input.insert(c),
+            _ => return false,
+        }
+        if s.field == Field::Query {
+            refresh_search(b);
+            self.remember_search();
+        }
+        true
+    }
+
+    /// Paste into the focused find bar field (newlines dropped).
+    pub fn paste_into_find(&mut self, text: &str) {
+        let Some(b) = self.active_buffer_mut() else { return };
+        let Some(s) = b.search.as_mut() else { return };
+        s.active_input().insert_str(&text.replace(['\r', '\n'], ""));
+        if s.field == Field::Query {
+            refresh_search(b);
+            self.remember_search();
+        }
+    }
+
+    /// Mouse down inside the find bar.
+    fn click_find_bar(&mut self, m: &Mouse, cx: &mut Ctx) {
+        use EditorAction as E;
+        let p = ratatui::layout::Position::new(m.x, m.y);
+        let Some((hit, rect)) = self.find_hits.iter().find(|(_, r)| r.contains(p)).copied() else { return };
+        let action = match hit {
+            FindHit::QueryField | FindHit::ReplaceField => {
+                if let Some(s) = self.active_buffer_mut().and_then(|b| b.search.as_mut()) {
+                    s.focused = true;
+                    s.field = if hit == FindHit::QueryField { Field::Query } else { Field::Replace };
+                    s.active_input().click(rect, m.x, m.y);
+                }
+                return;
+            }
+            FindHit::Case => E::FindToggleCase,
+            FindHit::Word => E::FindToggleWord,
+            FindHit::Regex => E::FindToggleRegex,
+            FindHit::Prev => E::FindPrev,
+            FindHit::Next => E::FindNext,
+            FindHit::Close => E::Escape,
+            FindHit::ReplaceOne => E::ReplaceOne,
+            FindHit::ReplaceAll => E::ReplaceAll,
+        };
+        self.handle_action(&action, cx);
+    }
+
+    pub fn handle_mouse(&mut self, m: &Mouse, _area: Rect, cx: &mut Ctx) -> bool {
+        if m.kind == MouseEventKind::Down(MouseButton::Left) {
+            if self.find_area.contains(ratatui::layout::Position::new(m.x, m.y)) {
+                self.click_find_bar(m, cx);
+                return true;
+            }
+            // A click in the text hands keyboard focus back to the text.
+            if let Some(s) = self.active_buffer_mut().and_then(|b| b.search.as_mut()) {
+                s.focused = false;
+            }
+        }
         let text_area = self.text_area;
         let tab_width = self.tab_width;
         let Some(ai) = self.active else { return false };
@@ -394,6 +709,11 @@ impl Editor {
                 true
             }
             MouseEventKind::Drag(MouseButton::Left) => {
+                // Only a drag that started in the text selects (not one
+                // that started on a find bar button).
+                if self.drag.is_none() {
+                    return true;
+                }
                 let p = pos_at(b, m.x, m.y);
                 match self.drag {
                     Some(DragMode::Word(s, e)) => {
@@ -467,10 +787,26 @@ impl Editor {
             }
             return;
         };
+        // The find bar takes the top rows; the text view gets the rest so
+        // `text_area` (and with it mouse mapping) stays exact.
+        self.find_hits.clear();
+        self.find_area = Rect::default();
+        let b = &mut self.buffers[i];
+        let mut text_rect = area;
+        let mut bar_focused = false;
+        if let Some(s) = b.search.as_mut() {
+            // Matches follow buffer edits; recomputed only on change.
+            s.update(&b.rope, b.version);
+            let h = if s.show_replace { 2 } else { 1 }.min(area.height);
+            self.find_area = Rect::new(area.x, area.y, area.width, h);
+            text_rect = Rect::new(area.x, area.y + h, area.width, area.height - h);
+            bar_focused = focused && s.focused;
+            self.find_hits = render_find_bar(frame, self.find_area, s, bar_focused, theme);
+        }
         let opts = RenderOpts { focused, tab_width: self.tab_width, scrolloff: self.scrolloff, hscrolloff: self.hscrolloff, theme };
-        let out = view::render(&mut self.buffers[i], screen, area, &opts);
+        let out = view::render(&mut self.buffers[i], frame.buffer_mut(), text_rect, &opts);
         self.text_area = out.text_area;
-        if focused {
+        if focused && !bar_focused {
             if let Some((x, y)) = out.cursor {
                 frame.set_cursor_position((x, y));
             }
@@ -533,6 +869,89 @@ impl Editor {
     }
 }
 
+/// Recompute matches and select the first one at or after the bar's origin.
+fn refresh_search(b: &mut Buffer) {
+    let Some(s) = b.search.as_mut() else { return };
+    s.update(&b.rope, b.version);
+    match s.first_from(s.origin) {
+        Some(i) => {
+            let m = s.select(i);
+            b.sel = Selection::new(m.start, m.end);
+            b.desired_col = None;
+        }
+        None => s.current = None,
+    }
+}
+
+/// Draw the find bar into `area` (1 row, 2 with replace) and return the
+/// clickable regions:
+/// `Find:    [query] Cc W .*  n/m  ↑ ↓ ×`
+/// `Replace: [text]  [Replace] [Replace all]`
+fn render_find_bar(frame: &mut Frame, area: Rect, s: &mut SearchState, focused: bool, theme: &Theme) -> Vec<(FindHit, Rect)> {
+    let mut hits = Vec::new();
+    let bar = Style::default().bg(theme.panel_bg).fg(theme.fg);
+    let input_style = Style::default().bg(theme.bg).fg(theme.fg);
+    frame.buffer_mut().set_style(area, bar);
+    let right = area.right();
+    // Writes `text` at `*x` clipped to the bar and advances `*x`.
+    let put = |frame: &mut Frame, x: &mut u16, y: u16, text: &str, style: Style| -> Rect {
+        let w = (text.width() as u16).min(right.saturating_sub(*x));
+        if w > 0 {
+            frame.buffer_mut().set_stringn(*x, y, text, w as usize, style);
+        }
+        let r = Rect::new(*x, y, w, 1);
+        *x += w;
+        r
+    };
+    let status = s.status();
+    // Reserve room for typical statuses so the input does not jump.
+    let status_w = (status.width() as u16).max(12);
+    let label_w = 9u16;
+    // Fixed parts after the input: toggles, status, arrows and close.
+    let tail = 1 + 4 + 1 + 3 + 1 + 4 + 2 + status_w + 2 + 9;
+    let input_w = area.width.saturating_sub(1 + label_w + tail).clamp(10, 40).min(area.width.saturating_sub(1 + label_w));
+
+    let y = area.y;
+    let mut x = area.x + 1;
+    put(frame, &mut x, y, "Find:    ", bar);
+    let field = Rect::new(x, y, input_w.min(right.saturating_sub(x)), 1);
+    s.query.render(frame, field, input_style, "search", theme.dim.bg(theme.bg), focused && s.field == Field::Query);
+    hits.push((FindHit::QueryField, field));
+    x += field.width;
+    let on = theme.strip_item_active;
+    let off = theme.dim.bg(theme.panel_bg);
+    for (hit, label, enabled) in [(FindHit::Case, " Cc ", s.case_sensitive), (FindHit::Word, " W ", s.whole_word), (FindHit::Regex, " .* ", s.regex)] {
+        put(frame, &mut x, y, " ", bar);
+        let r = put(frame, &mut x, y, label, if enabled { on } else { off });
+        hits.push((hit, r));
+    }
+    put(frame, &mut x, y, "  ", bar);
+    let status_style = if s.error.is_some() { theme.error.bg(theme.panel_bg) } else if s.matches.is_empty() && !s.query.text.is_empty() { theme.warn.bg(theme.panel_bg) } else { bar };
+    put(frame, &mut x, y, &format!("{status:<w$}", w = status_w as usize), status_style);
+    put(frame, &mut x, y, "  ", bar);
+    for (hit, label) in [(FindHit::Prev, " ↑ "), (FindHit::Next, " ↓ "), (FindHit::Close, " × ")] {
+        let r = put(frame, &mut x, y, label, theme.title.bg(theme.panel_bg));
+        hits.push((hit, r));
+    }
+
+    if s.show_replace && area.height > 1 {
+        let y = area.y + 1;
+        let mut x = area.x + 1;
+        put(frame, &mut x, y, "Replace: ", bar);
+        let field = Rect::new(x, y, input_w.min(right.saturating_sub(x)), 1);
+        s.replace.render(frame, field, input_style, "replace with", theme.dim.bg(theme.bg), focused && s.field == Field::Replace);
+        hits.push((FindHit::ReplaceField, field));
+        x += field.width;
+        for (hit, label) in [(FindHit::ReplaceOne, " Replace "), (FindHit::ReplaceAll, " Replace all ")] {
+            put(frame, &mut x, y, " ", bar);
+            let r = put(frame, &mut x, y, label, theme.tab_active);
+            hits.push((hit, r));
+        }
+    }
+    hits.retain(|(_, r)| r.width > 0);
+    hits
+}
+
 /// Write via a temp file in the same directory, then rename over the target.
 fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
     use std::io::Write;
@@ -548,4 +967,124 @@ fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
         let _ = std::fs::set_permissions(&tmp, meta.permissions());
     }
     std::fs::rename(&tmp, path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::workspace::Workspace;
+    use crossterm::event::KeyEvent;
+
+    /// Run `f` with a throwaway `Ctx`; returns the notifications it produced.
+    fn with_cx(f: impl FnOnce(&mut Ctx)) -> Vec<String> {
+        let config = Config::default();
+        let theme = Theme::default();
+        let workspace = Workspace::new(PathBuf::from("/tmp"));
+        let (bus, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut cx = Ctx { effects: Vec::new(), config: &config, theme: &theme, workspace: &workspace, bus };
+        f(&mut cx);
+        cx.effects.into_iter().filter_map(|e| if let Effect::Notify(_, t) = e { Some(t) } else { None }).collect()
+    }
+
+    fn editor_with(name: &str, text: &str) -> Editor {
+        let mut ed = Editor::new(&Config::default());
+        ed.open_text(PathBuf::from(format!("/tmp/{name}")), text, false, &Theme::default());
+        ed
+    }
+
+    fn key(code: KeyCode, mods: KeyModifiers) -> KeyEvent {
+        KeyEvent::new(code, mods)
+    }
+
+    #[test]
+    fn find_bar_typing_selects_and_steps_with_wrap() {
+        let mut ed = editor_with("a.txt", "foo bar foo baz foo");
+        let notes = with_cx(|cx| {
+            ed.handle_action(&EditorAction::Find, cx);
+            assert!(ed.find_focused());
+            for c in "foo".chars() {
+                assert!(ed.handle_find_key(key(KeyCode::Char(c), KeyModifiers::NONE), cx));
+            }
+            assert_eq!(ed.active_buffer().unwrap().sel.range(), 0..3);
+            assert!(ed.handle_find_key(key(KeyCode::Enter, KeyModifiers::NONE), cx));
+            assert_eq!(ed.active_buffer().unwrap().sel.range(), 8..11);
+            assert!(ed.handle_find_key(key(KeyCode::Enter, KeyModifiers::SHIFT), cx));
+            assert_eq!(ed.active_buffer().unwrap().sel.range(), 0..3);
+            // Shift+Enter from the first match wraps to the last.
+            assert!(ed.handle_find_key(key(KeyCode::Enter, KeyModifiers::SHIFT), cx));
+            assert_eq!(ed.active_buffer().unwrap().sel.range(), 16..19);
+            // Ctrl+S is not consumed by the bar.
+            assert!(!ed.handle_find_key(key(KeyCode::Char('s'), KeyModifiers::CONTROL), cx));
+            // Alt+C toggles case sensitivity.
+            assert!(ed.handle_find_key(key(KeyCode::Char('c'), KeyModifiers::ALT), cx));
+            assert!(ed.active_buffer().unwrap().search.as_ref().unwrap().case_sensitive);
+            // Esc closes the bar and leaves the match selected.
+            assert!(ed.handle_find_key(key(KeyCode::Esc, KeyModifiers::NONE), cx));
+            assert!(ed.active_buffer().unwrap().search.is_none());
+            assert!(!ed.find_focused());
+            // F3 with the bar closed reuses the last query.
+            ed.handle_action(&EditorAction::FindNext, cx);
+            assert_eq!(ed.active_buffer().unwrap().sel.range(), 0..3);
+            assert!(ed.active_buffer().unwrap().search.is_none());
+        });
+        assert_eq!(notes.iter().filter(|n| *n == "Search wrapped").count(), 2);
+    }
+
+    #[test]
+    fn replace_all_is_one_undo_step() {
+        let mut ed = editor_with("a.txt", "foo foo foo");
+        let notes = with_cx(|cx| {
+            ed.handle_action(&EditorAction::Replace, cx);
+            let b = ed.active_buffer_mut().unwrap();
+            let s = b.search.as_mut().unwrap();
+            s.query.set_text("foo");
+            s.replace.set_text("quux");
+            let before = b.undo.len();
+            ed.handle_action(&EditorAction::ReplaceAll, cx);
+            let b = ed.active_buffer_mut().unwrap();
+            assert_eq!(b.text(), "quux quux quux");
+            assert_eq!(b.undo.len(), before + 1);
+            assert!(b.undo());
+            assert_eq!(b.text(), "foo foo foo");
+        });
+        assert!(notes.contains(&"Replaced 3 occurrences".to_string()));
+    }
+
+    #[test]
+    fn replace_one_with_regex_groups_moves_to_next() {
+        let mut ed = editor_with("a.txt", "a1 a2 b3");
+        with_cx(|cx| {
+            ed.handle_action(&EditorAction::Replace, cx);
+            let b = ed.active_buffer_mut().unwrap();
+            let s = b.search.as_mut().unwrap();
+            s.regex = true;
+            s.query.set_text(r"\ba(\d)");
+            s.replace.set_text("<$1>");
+            s.field = Field::Replace;
+            refresh_search(b);
+            assert_eq!(b.sel.range(), 0..2);
+            assert!(ed.handle_find_key(key(KeyCode::Enter, KeyModifiers::NONE), cx));
+            let b = ed.active_buffer().unwrap();
+            assert_eq!(b.text(), "<1> a2 b3");
+            assert_eq!(b.sel.range(), 4..6);
+        });
+    }
+
+    #[test]
+    fn large_file_opens_without_syntax() {
+        let big = "let x = 1;\n".repeat(5_000_000 / 11 + 1);
+        let ed = editor_with("big.rs", &big);
+        assert!(ed.active_buffer().unwrap().syntax.is_none());
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[test]
+    fn small_rust_file_gets_syntax_and_comment_toggle() {
+        let mut ed = editor_with("small.rs", "fn main() {}\n");
+        assert!(ed.active_buffer().unwrap().syntax.is_some());
+        with_cx(|cx| {
+            ed.handle_action(&EditorAction::ToggleComment, cx);
+        });
+        assert_eq!(ed.active_buffer().unwrap().text(), "// fn main() {}\n");
+    }
 }

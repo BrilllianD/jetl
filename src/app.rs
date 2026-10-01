@@ -188,6 +188,9 @@ impl App {
         if self.dialog.is_some() {
             v.push("dialog");
         } else {
+            if self.focus.is(PanelId::Editor) && self.editor.find_focused() {
+                v.push("editor.find");
+            }
             v.push(self.focus.current.context());
         }
         v.push("global");
@@ -279,6 +282,10 @@ impl App {
             }
             return;
         }
+        if self.focus.is(PanelId::Editor) && self.editor.find_focused() {
+            self.editor.paste_into_find(&text);
+            return;
+        }
         if self.focus.is(PanelId::Editor) {
             let mut cx = ctx!(self);
             self.editor.handle_action(&EditorAction::InsertText(text), &mut cx);
@@ -300,6 +307,18 @@ impl App {
                 self.finish_dialog(d.id, res);
             }
             return;
+        }
+        // The find bar consumes its editing keys before the keymap; anything
+        // it does not use (Ctrl+S, F3, Alt+1) falls through.
+        if self.focus.is(PanelId::Editor) && self.editor.find_focused() && key.kind != crossterm::event::KeyEventKind::Release {
+            let mut cx = ctx!(self);
+            let used = self.editor.handle_find_key(key, &mut cx);
+            let fx = cx.effects;
+            self.apply_effects(fx);
+            if used {
+                self.dispatcher.reset();
+                return;
+            }
         }
         let contexts = self.contexts();
         let r = self.dispatcher.dispatch(key, &contexts, self.mode, &self.keymap);
@@ -539,7 +558,7 @@ impl App {
         if lossy {
             self.notify(Level::Warn, format!("{} is not valid UTF-8; shown with replacement characters", path.display()));
         }
-        self.editor.open_text(path, &text, lossy);
+        self.editor.open_text(path, &text, lossy, &self.theme);
         if focus {
             self.focus.set(PanelId::Editor);
         }
