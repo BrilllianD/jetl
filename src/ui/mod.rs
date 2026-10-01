@@ -1,0 +1,79 @@
+pub mod dialog;
+pub mod focus;
+pub mod layout;
+pub mod status_bar;
+pub mod tabs;
+pub mod tool_strip;
+pub mod widgets;
+
+use ratatui::Frame;
+use ratatui::style::Style;
+use ratatui::widgets::{Block, BorderType, Borders};
+
+use crate::app::App;
+use crate::config::theme::Theme;
+use crate::ui::focus::PanelId;
+
+/// A bordered tool window frame. Returns the inner area.
+pub fn tool_window_block<'a>(title: &'a str, focused: bool, theme: &Theme) -> Block<'a> {
+    let (border, title_style) = if focused {
+        (theme.border_focused, theme.title_focused)
+    } else {
+        (theme.border, theme.title)
+    };
+    Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Plain)
+        .border_style(border)
+        .title(title)
+        .title_style(title_style)
+}
+
+pub fn render(app: &mut App, frame: &mut Frame) {
+    let area = frame.area();
+    let theme = app.theme.clone();
+    frame.buffer_mut().set_style(area, Style::default().bg(theme.bg).fg(theme.fg));
+    app.layout.compute(area);
+    let rects = app.layout.rects.clone();
+
+    tool_strip::render(app, frame, rects.strip);
+
+    if let (Some(tw), r) = (app.layout.left, rects.left) {
+        if r.width > 0 {
+            let focused = app.focus.is(tw.panel());
+            match tw.panel() {
+                PanelId::Project => app.project.render(frame, r, focused, &theme),
+                PanelId::Worktrees => app.worktrees.render(frame, r, focused, &theme),
+                _ => {}
+            }
+        }
+    }
+    if let (Some(tw), r) = (app.layout.bottom, rects.bottom) {
+        if r.height > 0 && tw.panel() == PanelId::Git {
+            let focused = app.focus.is(PanelId::Git);
+            app.git_panel.render(frame, r, focused, &theme);
+        }
+    }
+
+    for (_, r) in &rects.splitters {
+        frame.buffer_mut().set_style(*r, theme.splitter);
+        if r.width == 1 {
+            for y in r.y..r.bottom() {
+                frame.buffer_mut()[(r.x, y)].set_symbol("│");
+            }
+        } else {
+            for x in r.x..r.right() {
+                frame.buffer_mut()[(x, r.y)].set_symbol("─");
+            }
+        }
+    }
+
+    let editor_focused = app.focus.is(PanelId::Editor);
+    app.editor.render(frame, rects.tabs, rects.editor, editor_focused, &theme);
+
+    status_bar::render(app, frame, rects.status);
+
+    if let Some(d) = &mut app.dialog {
+        d.render(frame, area, &theme);
+    }
+}
