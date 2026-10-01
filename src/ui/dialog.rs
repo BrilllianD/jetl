@@ -31,8 +31,6 @@ pub enum DialogId {
     WorktreePath { branch: String, new_branch: bool },
     WorktreeSwitchAfterCreate(std::path::PathBuf),
     NewBranchName,
-    /// Branch popup; item 0 is "New branch", item `i` is `names[i - 1]`.
-    Branches(Vec<String>),
     PushSetUpstream(String),
     Info,
     GotoLine,
@@ -255,6 +253,11 @@ impl Dialog {
 
     fn outer_rect(&self) -> Rect {
         self.body_rect
+    }
+
+    /// Whether a screen cell is inside the dialog as last drawn.
+    pub fn contains(&self, x: u16, y: u16) -> bool {
+        self.outer_rect().contains(ratatui::layout::Position::new(x, y))
     }
 
     pub fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {

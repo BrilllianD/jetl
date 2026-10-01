@@ -150,6 +150,9 @@ impl App {
         self.worktrees.reset();
         self.git.load_worktrees();
         self.project.reroot(root.clone());
+        // The palette lists the old root; close it and re-index.
+        self.palette = None;
+        self.refresh_file_index();
         crate::tui::set_title(&root);
         self.restore_session();
         self.notify(Level::Info, format!("Switched to {}", root.display()));

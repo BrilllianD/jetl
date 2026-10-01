@@ -344,4 +344,18 @@ impl Action {
     pub fn id(&self) -> Option<&'static str> {
         REGISTRY.iter().find(|a| &a.action == self).map(|a| a.id)
     }
+
+    /// Keymap contexts where this action is normally bound, most specific
+    /// first; used to look up the shortcut shown next to it.
+    pub fn contexts(&self) -> &'static [&'static str] {
+        match self {
+            Action::App(_) => &["global"],
+            Action::Editor(_) => &["editor", "global"],
+            Action::Tree(_) => &["tree", "global"],
+            Action::Git(_) => &["git", "global"],
+            Action::Worktree(_) => &["worktrees", "global"],
+            Action::Palette(_) => &["palette"],
+            Action::Mode(_) => &["mode.normal", "mode.insert", "mode.visual"],
+        }
+    }
 }

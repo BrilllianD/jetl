@@ -38,8 +38,12 @@ pub struct Buffer {
     pub path: Option<PathBuf>,
     pub name: String,
     pub rope: Rope,
+    /// Bumped on every text change (edits, undo, redo); caches such as
+    /// syntax, search and gutter marks compare against it.
     pub version: u64,
-    pub saved_version: u64,
+    /// `undo.state_id()` when the buffer was last saved or loaded; dirty
+    /// means the undo stack is somewhere else.
+    pub saved_state: u64,
     pub sel: Selection,
     pub desired_col: Option<usize>,
     pub undo: UndoStack,
@@ -76,7 +80,7 @@ impl Buffer {
             name,
             rope: Rope::from_str(text),
             version: 0,
-            saved_version: 0,
+            saved_state: 0,
             sel: Selection::default(),
             desired_col: None,
             undo: UndoStack::new(),
@@ -95,7 +99,7 @@ impl Buffer {
     }
 
     pub fn dirty(&self) -> bool {
-        self.version != self.saved_version
+        self.undo.state_id() != self.saved_state
     }
 
     pub fn len_chars(&self) -> usize {
@@ -132,7 +136,7 @@ impl Buffer {
         self.desired_col = None;
         self.version += 1;
         self.changed_since_render = true;
-        self.undo.push(Transaction { changes, sel_before, sel_after, at: Instant::now(), kind });
+        self.undo.push(Transaction { id: 0, changes, sel_before, sel_after, at: Instant::now(), kind });
     }
 
     fn apply_change(&mut self, c: &Change) {
@@ -395,7 +399,7 @@ impl Buffer {
     }
 
     pub fn mark_saved(&mut self) {
-        self.saved_version = self.version;
+        self.saved_state = self.undo.state_id();
         self.undo.break_group = true;
     }
 }
@@ -461,6 +465,40 @@ mod tests {
             assert_eq!(buf.text(), snapshots[i], "redo step {i}");
         }
         assert!(!buf.redo());
+    }
+
+    #[test]
+    fn undo_back_to_saved_text_is_clean() {
+        let mut buf = b("abc");
+        assert!(!buf.dirty());
+        buf.sel = Selection::point(3);
+        buf.insert("d", TxKind::Typing);
+        assert!(buf.dirty());
+        assert!(buf.undo());
+        assert!(!buf.dirty(), "undo to the loaded text");
+        assert!(buf.redo());
+        assert!(buf.dirty());
+        buf.mark_saved();
+        assert!(!buf.dirty());
+        let v = buf.version;
+        // Typing right after a save starts a new transaction.
+        buf.insert("e", TxKind::Typing);
+        buf.insert("f", TxKind::Typing);
+        assert!(buf.dirty());
+        assert!(buf.undo());
+        assert_eq!(buf.text(), "abcd");
+        assert!(!buf.dirty(), "undo to the saved text");
+        assert!(buf.version > v, "version still moves for caches");
+        assert!(buf.undo());
+        assert!(buf.dirty(), "undo past the save");
+        assert!(buf.redo());
+        assert!(!buf.dirty());
+        // A new edit after undoing past the save makes it unreachable.
+        assert!(buf.undo());
+        buf.insert("x", TxKind::Other);
+        assert!(buf.dirty());
+        assert!(buf.undo());
+        assert!(buf.dirty());
     }
 
     #[test]

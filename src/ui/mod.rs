@@ -1,8 +1,10 @@
 pub mod dialog;
 pub mod focus;
 pub mod layout;
+pub mod palette;
 pub mod status_bar;
 pub mod tabs;
+pub mod toasts;
 pub mod tool_strip;
 pub mod widgets;
 
@@ -73,6 +75,11 @@ pub fn render(app: &mut App, frame: &mut Frame) {
 
     status_bar::render(app, frame, rects.status);
 
+    // Toasts sit below the palette and dialogs, which own the input.
+    app.toasts.render(frame, area, &theme);
+    if let Some(p) = &mut app.palette {
+        p.render(frame, area, &theme);
+    }
     if let Some(d) = &mut app.dialog {
         d.render(frame, area, &theme);
     }

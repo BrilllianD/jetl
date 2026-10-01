@@ -42,6 +42,10 @@ pub enum TxKind {
 
 #[derive(Debug, Clone)]
 pub struct Transaction {
+    /// Unique per stack; assigned by [`UndoStack::push`] and renewed when
+    /// a later edit merges into it, so a saved state id never matches text
+    /// it did not describe.
+    pub id: u64,
     pub changes: Vec<Change>,
     pub sel_before: Selection,
     pub sel_after: Selection,
@@ -56,15 +60,32 @@ pub struct UndoStack {
     pub group_window: Option<Duration>,
     /// Set by movement/save to stop the next edit from merging.
     pub break_group: bool,
+    next_id: u64,
 }
 
 impl UndoStack {
     pub fn new() -> Self {
-        Self { undo: Vec::new(), redo: Vec::new(), group_window: Some(Duration::from_millis(500)), break_group: false }
+        Self { undo: Vec::new(), redo: Vec::new(), group_window: Some(Duration::from_millis(500)), break_group: false, next_id: 1 }
     }
 
-    pub fn push(&mut self, tx: Transaction) {
+    /// Identifies the text state the stack is at: the id of the last applied
+    /// transaction, or 0 at the bottom. Undoing back to a saved state yields
+    /// the same id again.
+    pub fn state_id(&self) -> u64 {
+        self.undo.last().map(|t| t.id).unwrap_or(0)
+    }
+
+    fn fresh_id(&mut self) -> u64 {
+        // Ids start at 1 so they never collide with the empty stack.
+        self.next_id = self.next_id.max(1);
+        let id = self.next_id;
+        self.next_id += 1;
+        id
+    }
+
+    pub fn push(&mut self, mut tx: Transaction) {
         self.redo.clear();
+        let id = self.fresh_id();
         if !self.break_group && tx.kind != TxKind::Other {
             if let Some(last) = self.undo.last_mut() {
                 let within = self.group_window.map(|w| tx.at.duration_since(last.at) <= w).unwrap_or(true);
@@ -81,6 +102,7 @@ impl UndoStack {
                     TxKind::Other => false,
                 };
                 if last.kind == tx.kind && within && contiguous {
+                    last.id = id;
                     last.changes.extend(tx.changes);
                     last.sel_after = tx.sel_after;
                     last.at = tx.at;
@@ -89,6 +111,7 @@ impl UndoStack {
             }
         }
         self.break_group = false;
+        tx.id = id;
         self.undo.push(tx);
     }
 

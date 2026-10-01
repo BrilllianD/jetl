@@ -169,18 +169,57 @@ impl Default for Config {
 }
 
 impl Config {
-    /// Load `config.toml`; on any error log it and return defaults.
-    pub fn load(paths: &Paths) -> Self {
+    /// Load `config.toml`. A missing file gives the defaults silently; an
+    /// unreadable or invalid one is logged and also gives the defaults, with
+    /// a message for a startup notification.
+    pub fn load(paths: &Paths) -> (Self, Option<String>) {
         let file = paths.config_file();
-        match std::fs::read_to_string(&file) {
-            Ok(text) => match toml::from_str::<Config>(&text) {
-                Ok(cfg) => cfg,
-                Err(e) => {
-                    tracing::error!("invalid {}: {e}; using defaults", file.display());
-                    Config::default()
-                }
-            },
-            Err(_) => Config::default(),
+        let text = match std::fs::read_to_string(&file) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return (Config::default(), None),
+            Err(e) => {
+                tracing::error!("cannot read {}: {e}; using defaults", file.display());
+                return (Config::default(), Some(format!("{}: {e}; using defaults", file.display())));
+            }
+        };
+        match Self::parse(&text) {
+            Ok(cfg) => (cfg, None),
+            Err(e) => {
+                tracing::error!("invalid {}: {e}; using defaults", file.display());
+                (Config::default(), Some(format!("{}: {}; using defaults", file.display(), theme::error_summary(&e.to_string()))))
+            }
         }
+    }
+
+    pub fn parse(text: &str) -> Result<Self, toml::de::Error> {
+        toml::from_str::<Config>(text)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn partial_config_keeps_other_defaults() {
+        let cfg = Config::parse("[editor]\ntab_width = 2\n[worktree]\nswitch_closes_tabs = false\n").unwrap();
+        assert_eq!(cfg.editor.tab_width, 2);
+        assert_eq!(cfg.editor.scrolloff, EditorConfig::default().scrolloff);
+        assert!(!cfg.worktree.switch_closes_tabs);
+        assert_eq!(cfg.git.pull_mode, "ff-only");
+    }
+
+    #[test]
+    fn invalid_config_falls_back() {
+        assert!(Config::parse("[editor]\ntab_width = \"wide\"\n").is_err());
+        let dir = std::env::temp_dir().join(format!("jetl-test-config-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let paths = Paths { config_dir: dir.clone(), state_dir: dir.clone(), cache_dir: dir.clone() };
+        assert!(Config::load(&paths).1.is_none());
+        std::fs::write(paths.config_file(), "[editor\ntab_width = 2").unwrap();
+        let (cfg, msg) = Config::load(&paths);
+        assert!(msg.unwrap().contains("using defaults"));
+        assert_eq!(cfg.editor.tab_width, 4);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

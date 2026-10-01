@@ -161,8 +161,6 @@ pub struct GitPanel {
     /// Lines scrolled up from the bottom of the console.
     console_scroll: usize,
     pub branches: Vec<BranchInfo>,
-    /// The branch popup opens when the next branch list arrives.
-    pub pending_branch_popup: bool,
     hits: Vec<(Btn, Rect)>,
     changes_rect: Rect,
     message_rect: Rect,
@@ -203,7 +201,6 @@ impl GitPanel {
             console: Vec::new(),
             console_scroll: 0,
             branches: Vec::new(),
-            pending_branch_popup: false,
             hits: Vec::new(),
             changes_rect: Rect::default(),
             message_rect: Rect::default(),

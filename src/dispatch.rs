@@ -80,8 +80,9 @@ impl Dispatcher {
     }
 
     /// `contexts` is the focus context stack, innermost first, and must end
-    /// with `"global"`.
-    pub fn dispatch(&mut self, key: KeyEvent, contexts: &[&str], mode: Mode, keymap: &Keymap) -> Dispatch {
+    /// with `"global"`. `mode` selects the vim mode table (consulted first
+    /// when modal); overlays such as the palette pass `None` to skip it.
+    pub fn dispatch(&mut self, key: KeyEvent, contexts: &[&str], mode: Option<Mode>, keymap: &Keymap) -> Dispatch {
         // Double-shift detection uses modifier press events (kitty protocol).
         if let KeyCode::Modifier(m) = key.code {
             if matches!(m, ModifierKeyCode::LeftShift | ModifierKeyCode::RightShift) && key.kind == KeyEventKind::Press {
@@ -111,12 +112,12 @@ impl Dispatcher {
         self.lookup(combo, contexts, mode, keymap, key)
     }
 
-    fn lookup(&mut self, combo: KeyCombo, contexts: &[&str], mode: Mode, keymap: &Keymap, key: KeyEvent) -> Dispatch {
+    fn lookup(&mut self, combo: KeyCombo, contexts: &[&str], mode: Option<Mode>, keymap: &Keymap, key: KeyEvent) -> Dispatch {
         let mut chord = self.pending.clone();
         chord.push(combo);
 
         let mut tables: Vec<&str> = Vec::with_capacity(contexts.len() + 1);
-        if self.modal {
+        if let Some(mode) = mode.filter(|_| self.modal) {
             tables.push(mode.table());
         }
         tables.extend_from_slice(contexts);
@@ -170,11 +171,11 @@ mod tests {
     fn global_and_context_lookup() {
         let km = default_keymap();
         let mut d = Dispatcher::new(false);
-        let r = d.dispatch(key(KeyCode::Char('q'), KeyModifiers::CONTROL), &["editor", "global"], Mode::Insert, &km);
+        let r = d.dispatch(key(KeyCode::Char('q'), KeyModifiers::CONTROL), &["editor", "global"], Some(Mode::Insert), &km);
         assert!(matches!(r, Dispatch::Action(Action::App(AppAction::Quit))));
-        let r = d.dispatch(key(KeyCode::Char('z'), KeyModifiers::CONTROL), &["editor", "global"], Mode::Insert, &km);
+        let r = d.dispatch(key(KeyCode::Char('z'), KeyModifiers::CONTROL), &["editor", "global"], Some(Mode::Insert), &km);
         assert!(matches!(r, Dispatch::Action(Action::Editor(EditorAction::Undo))));
-        let r = d.dispatch(key(KeyCode::Char('x'), KeyModifiers::NONE), &["tree", "global"], Mode::Insert, &km);
+        let r = d.dispatch(key(KeyCode::Char('x'), KeyModifiers::NONE), &["tree", "global"], Some(Mode::Insert), &km);
         assert!(matches!(r, Dispatch::Unmapped(_)));
     }
 
@@ -183,7 +184,7 @@ mod tests {
         let mut km = default_keymap();
         km.merge_toml("[editor]\n\"ctrl-k ctrl-x\" = \"app.quit\"\n").unwrap();
         let mut d = Dispatcher::new(false);
-        let r = d.dispatch(key(KeyCode::Char('k'), KeyModifiers::CONTROL), &["editor", "global"], Mode::Insert, &km);
+        let r = d.dispatch(key(KeyCode::Char('k'), KeyModifiers::CONTROL), &["editor", "global"], Some(Mode::Insert), &km);
         // ctrl-k is also bound globally to git.commit_box, but the editor
         // table is searched first and reports a prefix only if no full match
         // exists there. Full matches in outer tables still win over prefixes.
@@ -191,9 +192,9 @@ mod tests {
         let mut km = Keymap::default();
         km.merge_toml("[editor]\n\"ctrl-k ctrl-x\" = \"app.quit\"\n").unwrap();
         let mut d = Dispatcher::new(false);
-        let r = d.dispatch(key(KeyCode::Char('k'), KeyModifiers::CONTROL), &["editor", "global"], Mode::Insert, &km);
+        let r = d.dispatch(key(KeyCode::Char('k'), KeyModifiers::CONTROL), &["editor", "global"], Some(Mode::Insert), &km);
         assert!(matches!(r, Dispatch::Pending));
-        let r = d.dispatch(key(KeyCode::Char('x'), KeyModifiers::CONTROL), &["editor", "global"], Mode::Insert, &km);
+        let r = d.dispatch(key(KeyCode::Char('x'), KeyModifiers::CONTROL), &["editor", "global"], Some(Mode::Insert), &km);
         assert!(matches!(r, Dispatch::Action(Action::App(AppAction::Quit))));
     }
 
@@ -201,10 +202,10 @@ mod tests {
     fn modal_tables_only_when_enabled() {
         let km = default_keymap();
         let mut d = Dispatcher::new(false);
-        let r = d.dispatch(key(KeyCode::Char('j'), KeyModifiers::NONE), &["editor", "global"], Mode::Normal, &km);
+        let r = d.dispatch(key(KeyCode::Char('j'), KeyModifiers::NONE), &["editor", "global"], Some(Mode::Normal), &km);
         assert!(matches!(r, Dispatch::Unmapped(_)));
         let mut d = Dispatcher::new(true);
-        let r = d.dispatch(key(KeyCode::Char('j'), KeyModifiers::NONE), &["editor", "global"], Mode::Normal, &km);
+        let r = d.dispatch(key(KeyCode::Char('j'), KeyModifiers::NONE), &["editor", "global"], Some(Mode::Normal), &km);
         assert!(matches!(r, Dispatch::Action(Action::Editor(EditorAction::Move(_, false)))));
     }
 }

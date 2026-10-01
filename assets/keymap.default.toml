@@ -14,8 +14,12 @@
 "ctrl-shift-n" = "palette.files"
 "ctrl-n" = "palette.files"
 "shift shift" = "palette.search_everywhere"
+# Shift Shift needs the kitty protocol; Alt+S is the legacy fallback.
+"alt-s" = "palette.search_everywhere"
 "ctrl-shift-a" = "palette.actions"
 "ctrl-shift-p" = "palette.actions"
+# Ctrl+Shift+A/P need the kitty protocol; F1 is the legacy fallback.
+"f1" = "palette.actions"
 "ctrl-e" = "palette.recent_files"
 "ctrl-tab" = "editor.switcher"
 "alt-right" = "editor.next_tab"

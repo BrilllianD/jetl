@@ -1,0 +1,211 @@
+# Key bindings
+
+Generated from the action registry (`src/actions.rs`) and the default keymap
+(`assets/keymap.default.toml`) by `cargo run -q -- --dump-keymap > docs/KEYMAP.md`.
+Do not edit by hand; `cargo test` fails when it is out of date.
+
+Contexts are searched innermost first (for example `editor.find`, then `editor`,
+then `global`). Bindings marked * need the kitty keyboard protocol (foot, kitty,
+WezTerm, Ghostty); legacy terminals and tmux have the listed fallbacks instead.
+Override any of them in `~/.config/jetl/keymap.toml` (see [CONFIG.md](CONFIG.md)).
+
+## global
+
+| Keys | Action | Description |
+|---|---|---|
+| `Ctrl+Q` | `app.quit` | Exit jetl |
+| `F5` | `app.refresh` | Refresh project and git state |
+| `F12` | `app.debug_panic` | Debug: trigger a panic |
+| `Alt+1` | `tool_window.project` | Project tool window |
+| `Alt+2` | `tool_window.worktrees` | Worktrees tool window |
+| `Alt+9` | `tool_window.git` | Git tool window |
+| `Ctrl+Shift+F12` | `tool_window.hide_all` | Hide all tool windows |
+| `Shift+Esc` * | `tool_window.hide_focused` | Hide active tool window |
+| `Ctrl+N` | `palette.files` | Go to file |
+| `Ctrl+Shift+N` * | `palette.files` | Go to file |
+| `Ctrl+Shift+A` * | `palette.actions` | Find action |
+| `Ctrl+Shift+P` * | `palette.actions` | Find action |
+| `F1` | `palette.actions` | Find action |
+| `Alt+S` | `palette.search_everywhere` | Search everywhere |
+| `Shift Shift` * | `palette.search_everywhere` | Search everywhere |
+| `Ctrl+E` | `palette.recent_files` | Recent files |
+| `Ctrl+S` | `editor.save` | Save |
+| `Ctrl+Shift+S` * | `editor.save_all` | Save all |
+| `Alt+Right` | `editor.next_tab` | Next tab |
+| `Alt+Left` | `editor.prev_tab` | Previous tab |
+| `Ctrl+F4` | `editor.close_tab` | Close tab |
+| `Ctrl+W` | `editor.close_tab` | Close tab |
+| `Ctrl+Tab` * | `editor.switcher` | Switcher (recent tabs) |
+| `Alt+F1` | `tree.select_in_project` | Select in Project |
+| `Alt+0` | `git.commit_box` | Git: open commit window |
+| `Ctrl+K` | `git.commit_box` | Git: open commit window |
+| `Ctrl+Shift+K` * | `git.push` | Git: push |
+| `Ctrl+T` | `git.pull` | Git: pull (update project) |
+| `Ctrl+Space` | `git.branches_popup` | Git: branches |
+| `` Ctrl+` `` | `git.branches_popup` | Git: branches |
+
+## editor
+
+| Keys | Action | Description |
+|---|---|---|
+| `Enter` | `editor.newline` | Insert newline |
+| `Tab` | `editor.tab` | Insert tab |
+| `Backspace` | `editor.backspace` | Delete left |
+| `Delete` | `editor.delete` | Delete right |
+| `Ctrl+Backspace` | `editor.delete_word_back` | Delete word left |
+| `Left` | `editor.left` | Move left |
+| `Right` | `editor.right` | Move right |
+| `Up` | `editor.up` | Move up |
+| `Down` | `editor.down` | Move down |
+| `Ctrl+Left` | `editor.word_left` | Move word left |
+| `Ctrl+Right` | `editor.word_right` | Move word right |
+| `Home` | `editor.line_start` | Line start |
+| `End` | `editor.line_end` | Line end |
+| `PageUp` | `editor.page_up` | Page up |
+| `PageDown` | `editor.page_down` | Page down |
+| `Ctrl+Home` | `editor.doc_start` | Document start |
+| `Ctrl+End` | `editor.doc_end` | Document end |
+| `Shift+Left` | `editor.left_extend` | Select left |
+| `Shift+Right` | `editor.right_extend` | Select right |
+| `Shift+Up` | `editor.up_extend` | Select up |
+| `Shift+Down` | `editor.down_extend` | Select down |
+| `Ctrl+Shift+Left` | `editor.word_left_extend` | Select word left |
+| `Ctrl+Shift+Right` | `editor.word_right_extend` | Select word right |
+| `Shift+Home` | `editor.line_start_extend` | Select to line start |
+| `Shift+End` | `editor.line_end_extend` | Select to line end |
+| `Shift+PageUp` | `editor.page_up_extend` | Select page up |
+| `Shift+PageDown` | `editor.page_down_extend` | Select page down |
+| `Ctrl+Shift+Home` | `editor.doc_start_extend` | Select to document start |
+| `Ctrl+Shift+End` | `editor.doc_end_extend` | Select to document end |
+| `Ctrl+Z` | `editor.undo` | Undo |
+| `Ctrl+Shift+Z` * | `editor.redo` | Redo |
+| `Ctrl+F` | `editor.find` | Find |
+| `Ctrl+R` | `editor.replace` | Replace |
+| `F3` | `editor.find_next` | Find next |
+| `Shift+F3` * | `editor.find_prev` | Find previous |
+| `Ctrl+G` | `editor.goto_line` | Go to line |
+| `Ctrl+D` | `editor.duplicate_line` | Duplicate line |
+| `Ctrl+Y` | `editor.delete_line` | Delete line |
+| `Ctrl+A` | `editor.select_all` | Select all |
+| `Ctrl+C` | `editor.copy` | Copy |
+| `Ctrl+X` | `editor.cut` | Cut |
+| `Ctrl+V` | `editor.paste` | Paste |
+| `Esc` | `editor.escape` | Escape (close find, clear selection) |
+| `Ctrl+/` | `editor.toggle_comment` | Comment with line comment |
+| `Ctrl+7` | `editor.toggle_comment` | Comment with line comment |
+| `Ctrl+Up` | `editor.scroll_up` | Scroll up |
+| `Ctrl+Down` | `editor.scroll_down` | Scroll down |
+
+## tree
+
+| Keys | Action | Description |
+|---|---|---|
+| `Esc` | `app.focus_editor` | Focus editor |
+| `Up` | `tree.up` | Tree: up |
+| `Down` | `tree.down` | Tree: down |
+| `Right` | `tree.expand` | Tree: expand |
+| `Left` | `tree.collapse` | Tree: collapse |
+| `Space` | `tree.toggle` | Tree: toggle |
+| `Enter` | `tree.open` | Tree: open |
+| `Backspace` | `tree.parent` | Tree: go to parent |
+| `F5` | `tree.refresh` | Tree: refresh |
+| `PageUp` | `tree.page_up` | Tree: page up |
+| `PageDown` | `tree.page_down` | Tree: page down |
+| `Home` | `tree.home` | Tree: first |
+| `End` | `tree.end` | Tree: last |
+
+## git
+
+| Keys | Action | Description |
+|---|---|---|
+| `F5` | `git.refresh` | Git: refresh |
+| `Space` | `git.toggle_stage` | Git: stage/unstage selected |
+| `Ctrl+Alt+A` | `git.stage_all` | Git: stage all |
+| `Alt+Enter` | `git.commit` | Git: commit |
+| `Ctrl+Enter` * | `git.commit` | Git: commit |
+| `Ctrl+Alt+N` | `git.new_branch` | Git: new branch |
+| `Alt+C` | `git.tab_commit` | Git: Commit tab |
+| `Alt+L` | `git.tab_log` | Git: Log tab |
+| `Alt+O` | `git.tab_console` | Git: Console tab |
+| `Up` | `git.up` | Git: up |
+| `Down` | `git.down` | Git: down |
+| `PageUp` | `git.page_up` | Git: page up |
+| `PageDown` | `git.page_down` | Git: page down |
+| `Left` | `git.left` | Git: left |
+| `Right` | `git.right` | Git: right |
+| `Enter` | `git.open_file` | Git: open selected file |
+| `Tab` | `git.next_section` | Git: next pane |
+| `Esc` | `git.escape` | Git: back (close diff, leave message, return to editor) |
+
+## worktrees
+
+| Keys | Action | Description |
+|---|---|---|
+| `Esc` | `app.focus_editor` | Focus editor |
+| `F5` | `worktree.refresh` | Worktrees: refresh |
+| `N` | `worktree.new` | Worktrees: new |
+| `Delete` | `worktree.remove` | Worktrees: remove |
+| `Enter` | `worktree.switch` | Worktrees: switch |
+| `P` | `worktree.prune` | Worktrees: prune |
+| `Up` | `worktree.up` | Worktrees: up |
+| `Down` | `worktree.down` | Worktrees: down |
+
+## palette
+
+| Keys | Action | Description |
+|---|---|---|
+| `Ctrl+P` | `palette.up` | Palette: up |
+| `Up` | `palette.up` | Palette: up |
+| `Ctrl+N` | `palette.down` | Palette: down |
+| `Down` | `palette.down` | Palette: down |
+| `PageUp` | `palette.page_up` | Palette: page up |
+| `PageDown` | `palette.page_down` | Palette: page down |
+| `Enter` | `palette.accept` | Palette: accept |
+| `Esc` | `palette.cancel` | Palette: cancel |
+| `Backspace` | `palette.backspace` | Palette: backspace |
+| `Ctrl+Backspace` | `palette.delete_word` | Palette: delete word |
+| `Ctrl+W` | `palette.delete_word` | Palette: delete word |
+| `Tab` | `palette.next_tab` | Palette: next tab |
+| `Shift+Tab` | `palette.prev_tab` | Palette: previous tab |
+
+## mode.normal
+
+| Keys | Action | Description |
+|---|---|---|
+| `H` | `editor.left` | Move left |
+| `L` | `editor.right` | Move right |
+| `K` | `editor.up` | Move up |
+| `J` | `editor.down` | Move down |
+| `G G` | `editor.doc_start` | Document start |
+| `U` | `editor.undo` | Undo |
+| `Ctrl+R` | `editor.redo` | Redo |
+| `D D` | `editor.delete_line` | Delete line |
+| `I` | `mode.insert` | Vim: insert mode |
+| `V` | `mode.visual` | Vim: visual mode |
+
+## mode.insert
+
+| Keys | Action | Description |
+|---|---|---|
+| `Esc` | `mode.normal` | Vim: normal mode |
+
+## Without a default binding
+
+Reachable from Find Action (F1) or by binding them in `keymap.toml`.
+
+| Action | Description |
+|---|---|
+| `app.escape` | Escape |
+| `palette.goto_line` | Go to line |
+| `editor.replace_one` | Replace current match |
+| `editor.replace_all` | Replace all matches |
+| `editor.find_case` | Find: toggle match case |
+| `editor.find_word` | Find: toggle whole words |
+| `editor.find_regex` | Find: toggle regex |
+| `editor.find_field` | Find: switch between find and replace fields |
+| `editor.select_line` | Select line |
+| `editor.close_all_tabs` | Close all tabs |
+| `git.unstage_all` | Git: unstage all |
+| `git.commit_and_push` | Git: commit and push |
+| `git.fetch` | Git: fetch |
+| `git.focus_message` | Git: focus commit message |

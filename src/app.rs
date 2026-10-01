@@ -11,7 +11,7 @@ use ratatui::layout::Rect;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
 use crate::actions::{Action, AppAction, EditorAction, ModeAction, PaletteKind};
-use crate::config::keymap::{Keymap, default_keymap};
+use crate::config::keymap::Keymap;
 use crate::config::theme::Theme;
 use crate::config::{Config, Paths};
 use crate::dispatch::{Dispatch, Dispatcher, Mode, is_text_input};
@@ -23,6 +23,7 @@ use crate::tui::Term;
 use crate::ui::dialog::{Dialog, DialogId, DialogResult};
 use crate::ui::focus::{Focus, PanelId, ToolWindowId};
 use crate::ui::layout::{Hit, LayoutState, SplitterId};
+use crate::ui::palette::{Accept, ActionEntry, Palette, PaletteResult, Source};
 use crate::ui::status_bar::StatusHit;
 use crate::ui::tabs::TabHit;
 use crate::workspace::Workspace;
@@ -64,6 +65,15 @@ pub struct Notification {
     pub at: Instant,
 }
 
+/// The palette's cached file list of the current root.
+#[derive(Debug, Default)]
+pub struct FileIndex {
+    /// Git generation (bumped on every root switch) the files belong to.
+    pub generation: u64,
+    pub files: std::sync::Arc<Vec<String>>,
+    pub loading: bool,
+}
+
 #[derive(Debug, Clone, Copy)]
 enum Drag {
     Splitter(SplitterId),
@@ -97,7 +107,11 @@ pub struct App {
     drag: Option<Drag>,
     last_click: Option<LastClick>,
     pub notifications: Vec<Notification>,
+    pub toasts: crate::ui::toasts::Toasts,
     pub dialog: Option<Dialog>,
+    /// Command palette overlay; captures input like a dialog.
+    pub palette: Option<Palette>,
+    pub file_index: FileIndex,
     pub status_hits: Vec<(StatusHit, Rect)>,
     pub keyboard_enhanced: bool,
     pub project: ProjectPanel,
@@ -111,12 +125,8 @@ pub struct App {
 impl App {
     pub fn new(root: PathBuf, config: Config, paths: Paths) -> Self {
         let (bus_tx, bus_rx) = mpsc::unbounded_channel();
-        let mut keymap = default_keymap();
-        if let Ok(text) = std::fs::read_to_string(paths.keymap_file()) {
-            if let Err(e) = keymap.merge_toml(&text) {
-                tracing::error!("user keymap invalid: {e}");
-            }
-        }
+        let (keymap, keymap_errors) = Keymap::load(&paths.keymap_file());
+        let (theme, theme_errors) = Theme::load(&paths.theme_file());
         let modal = config.keymap.mode == "vim";
         let mut dispatcher = Dispatcher::new(modal);
         dispatcher.double_tap = Duration::from_millis(config.ui.double_click_ms);
@@ -129,7 +139,7 @@ impl App {
         git_panel.set_log_page(config.git.log_page);
         let mut app = Self {
             workspace: Workspace::new(root),
-            theme: Theme::default(),
+            theme,
             layout,
             focus: Focus::new(),
             keymap,
@@ -143,7 +153,10 @@ impl App {
             drag: None,
             last_click: None,
             notifications: Vec::new(),
+            toasts: Default::default(),
             dialog: None,
+            palette: None,
+            file_index: FileIndex::default(),
             status_hits: Vec::new(),
             keyboard_enhanced: crate::tui::keyboard_enhanced(),
             project: ProjectPanel::new(root_for_panels.clone(), config.files.show_hidden, config.files.show_ignored),
@@ -157,6 +170,9 @@ impl App {
         };
         if !app.keyboard_enhanced {
             app.notify(Level::Warn, "Terminal lacks the kitty keyboard protocol: Ctrl+Shift shortcuts, Ctrl+Tab and Shift Shift are unavailable");
+        }
+        for e in keymap_errors.into_iter().chain(theme_errors) {
+            app.notify(Level::Error, e);
         }
         app.git.refresh_status();
         app.git.load_branches();
@@ -172,7 +188,9 @@ impl App {
             Level::Warn => tracing::warn!("{text}"),
             Level::Info => tracing::info!("{text}"),
         }
-        self.notifications.push(Notification { level, text, at: Instant::now() });
+        let now = Instant::now();
+        self.toasts.push(level, &text, now);
+        self.notifications.push(Notification { level, text, at: now });
         if self.notifications.len() > 200 {
             self.notifications.drain(..100);
         }
@@ -208,6 +226,8 @@ impl App {
         let mut v = Vec::with_capacity(3);
         if self.dialog.is_some() {
             v.push("dialog");
+        } else if self.palette.is_some() {
+            v.push("palette");
         } else {
             if self.focus.is(PanelId::Editor) && self.editor.find_focused() {
                 v.push("editor.find");
@@ -260,6 +280,9 @@ impl App {
                 self.dirty_frame = true;
             }
         }
+        if self.toasts.expire(Instant::now()) {
+            self.dirty_frame = true;
+        }
         // Gutter marks follow edits at tick rate, which debounces typing.
         if self.editor.update_gutters() {
             self.dirty_frame = true;
@@ -274,7 +297,13 @@ impl App {
         match msg {
             AppMsg::Notify { level, text } => self.notify(level, text),
             AppMsg::SwitchRoot(p) => self.apply_effects(vec![Effect::SwitchRoot(p)]),
-            AppMsg::FileLoaded { path, result, focus } => self.file_loaded(path, result, focus),
+            AppMsg::FileLoaded { generation, path, result, focus } => {
+                if generation == self.git.generation {
+                    self.file_loaded(path, result, focus);
+                } else {
+                    tracing::debug!("dropping stale load of {}", path.display());
+                }
+            }
             AppMsg::FileSaved { .. } => {}
             AppMsg::Git(m) => self.on_git_msg(m),
             AppMsg::Worktrees { generation, result } => {
@@ -285,6 +314,7 @@ impl App {
                 }
             }
             AppMsg::SessionLoaded { generation, session, files } => self.session_loaded(generation, session, files),
+            AppMsg::FileIndex { generation, files } => self.file_index_loaded(generation, files),
             AppMsg::Lsp(_) => {}
         }
     }
@@ -319,6 +349,10 @@ impl App {
             }
             return;
         }
+        if let Some(p) = &mut self.palette {
+            p.paste(&text);
+            return;
+        }
         if self.focus.is(PanelId::Editor) && self.editor.find_focused() {
             self.editor.paste_into_find(&text);
             return;
@@ -349,6 +383,10 @@ impl App {
             }
             return;
         }
+        if self.palette.is_some() {
+            self.palette_key(key);
+            return;
+        }
         // The find bar consumes its editing keys before the keymap; anything
         // it does not use (Ctrl+S, F3, Alt+1) falls through.
         if self.focus.is(PanelId::Editor) && self.editor.find_focused() && key.kind != crossterm::event::KeyEventKind::Release {
@@ -373,7 +411,7 @@ impl App {
             }
         }
         let contexts = self.contexts();
-        let r = self.dispatcher.dispatch(key, &contexts, self.mode, &self.keymap);
+        let r = self.dispatcher.dispatch(key, &contexts, Some(self.mode), &self.keymap);
         match r {
             Dispatch::Action(a) => self.perform(a),
             Dispatch::Pending | Dispatch::Ignore => {}
@@ -470,8 +508,119 @@ impl App {
         }
     }
 
-    fn open_palette(&mut self, kind: PaletteKind) {
-        self.notify(Level::Info, format!("{kind:?} palette arrives in phase 5"));
+    /// Open (or switch) the palette. Candidates come from the caches (file
+    /// index, branch list); fresh ones are requested and fed in as they load.
+    pub fn open_palette(&mut self, kind: PaletteKind) {
+        if kind == PaletteKind::GotoLine {
+            self.palette = None;
+            self.perform(Action::Editor(EditorAction::GotoLine));
+            return;
+        }
+        if self.palette.as_ref().is_some_and(|p| p.kind == kind) {
+            return;
+        }
+        // Switching kinds keeps the typed query.
+        let query = self.palette.take().map(|p| p.input.text).unwrap_or_default();
+        let mut p = Palette::new(kind, self.workspace.root.clone());
+        p.set_recent(self.editor.recent_paths());
+        if p.wants(Source::Files) {
+            p.set_files(self.file_index.files.clone(), true);
+            self.refresh_file_index();
+        }
+        if p.wants(Source::Actions) {
+            p.set_actions(self.palette_actions());
+        }
+        if p.wants(Source::Branches) {
+            p.set_branches(self.git_panel.branches.clone());
+            self.git.load_branches();
+        }
+        if !query.is_empty() {
+            p.set_query(&query);
+        }
+        self.palette = Some(p);
+        self.dispatcher.reset();
+    }
+
+    /// Find Action rows: every registry entry except the palette's own
+    /// navigation (and vim modes unless modal), with its shortcut.
+    fn palette_actions(&self) -> Vec<ActionEntry> {
+        crate::actions::REGISTRY
+            .iter()
+            .filter(|a| !matches!(a.action, Action::Palette(_)))
+            .filter(|a| self.dispatcher.modal || !matches!(a.action, Action::Mode(_)))
+            .filter(|a| cfg!(debug_assertions) || a.action != Action::App(AppAction::DebugPanic))
+            .map(|a| ActionEntry { id: a.id, desc: a.desc, action: a.action.clone(), shortcut: self.keymap.shortcut_for(&a.action, a.action.contexts()) })
+            .collect()
+    }
+
+    /// Walk the root for the palette in `spawn_blocking`; the result is
+    /// tagged with the git generation and dropped after a root switch.
+    pub fn refresh_file_index(&mut self) {
+        self.file_index.loading = true;
+        let (root, generation, tx) = (self.workspace.root.clone(), self.git.generation, self.bus_tx.clone());
+        let (hidden, ignored) = (self.config.files.show_hidden, self.config.files.show_ignored);
+        tokio::task::spawn_blocking(move || {
+            let files = crate::ui::palette::walk_files(&root, hidden, ignored);
+            let _ = tx.send(AppMsg::FileIndex { generation, files });
+        });
+    }
+
+    fn file_index_loaded(&mut self, generation: u64, files: Vec<String>) {
+        if generation != self.git.generation {
+            tracing::debug!("dropping stale file index");
+            return;
+        }
+        self.file_index = FileIndex { generation, files: std::sync::Arc::new(files), loading: false };
+        if let Some(p) = self.palette.as_mut().filter(|p| p.wants(Source::Files)) {
+            p.set_files(self.file_index.files.clone(), false);
+        }
+    }
+
+    /// Keys while the palette is open: its own keymap context first, then
+    /// global bindings (which close it, except those opening a palette).
+    fn palette_key(&mut self, key: KeyEvent) {
+        let r = self.dispatcher.dispatch(key, &["palette", "global"], None, &self.keymap);
+        let Some(p) = &mut self.palette else { return };
+        let res = match r {
+            Dispatch::Action(Action::Palette(a)) => p.handle_action(&a),
+            Dispatch::Action(Action::App(AppAction::OpenPalette(kind))) => {
+                self.open_palette(kind);
+                None
+            }
+            Dispatch::Action(a) => {
+                self.palette = None;
+                self.perform(a);
+                None
+            }
+            Dispatch::Unmapped(k) => {
+                p.handle_text_key(k);
+                None
+            }
+            Dispatch::Pending | Dispatch::Ignore => None,
+        };
+        if let Some(res) = res {
+            self.finish_palette(res);
+        }
+    }
+
+    fn finish_palette(&mut self, res: PaletteResult) {
+        self.palette = None;
+        self.dirty_frame = true;
+        match res {
+            PaletteResult::Cancel => {}
+            PaletteResult::Accept(Accept::OpenFile(p)) => self.open_file(p, true),
+            PaletteResult::Accept(Accept::Action(a)) => self.perform(a),
+            PaletteResult::Accept(Accept::SwitchBranch(name)) => self.switch_branch(name),
+            PaletteResult::Accept(Accept::NewBranch) => self.git_request(GitRequest::NewBranch),
+        }
+    }
+
+    fn switch_branch(&mut self, name: String) {
+        if self.branch_label().as_deref() == Some(name.as_str()) {
+            self.notify(Level::Info, format!("Already on {name}"));
+        } else {
+            self.git.run_cli(GitOp::Switch(name.clone()), vec!["switch".into(), name]);
+        }
     }
 
     /// JetBrains semantics: hidden -> show and focus; visible but unfocused ->
@@ -530,17 +679,6 @@ impl App {
                 match line {
                     Some(l) => self.editor.goto_line(l, col),
                     None => self.notify(Level::Warn, "Go to line: expected [line][:column]"),
-                }
-            }
-            (DialogId::Branches(names), DialogResult::Choice(i)) => {
-                if i == 0 {
-                    self.git_request(GitRequest::NewBranch);
-                } else if let Some(name) = names.get(i - 1) {
-                    if self.branch_label().as_deref() == Some(name.as_str()) {
-                        self.notify(Level::Info, format!("Already on {name}"));
-                    } else {
-                        self.git.run_cli(GitOp::Switch(name.clone()), vec!["switch".into(), name.clone()]);
-                    }
                 }
             }
             (DialogId::NewBranchName, DialogResult::Text(t)) => {
@@ -652,10 +790,7 @@ impl App {
             GitRequest::Fetch => {
                 self.git.fetch();
             }
-            GitRequest::BranchesPopup => {
-                self.git_panel.pending_branch_popup = true;
-                self.git.load_branches();
-            }
+            GitRequest::BranchesPopup => self.open_palette(PaletteKind::Branches),
             GitRequest::NewBranch => {
                 self.dialog = Some(Dialog::input(DialogId::NewBranchName, "New Branch", "Create and switch to a new branch from HEAD:", "", "Create"));
             }
@@ -701,18 +836,19 @@ impl App {
             GitMsg::Blob { .. } => {}
             GitMsg::Diff { key, result, .. } => self.git_panel.set_diff(&key, result),
             GitMsg::Branches { result, .. } => {
-                let popup = std::mem::take(&mut self.git_panel.pending_branch_popup);
                 let worktree = std::mem::take(&mut self.worktrees.pending_existing);
+                let palette = self.palette.as_mut().filter(|p| p.wants(Source::Branches));
                 match result {
                     Ok(list) => {
+                        if let Some(p) = palette {
+                            p.set_branches(list.clone());
+                        }
                         self.git_panel.branches = list;
-                        if popup {
-                            self.open_branch_popup();
-                        } else if worktree {
+                        if worktree {
                             self.open_existing_branch_dialog();
                         }
                     }
-                    Err(e) if popup || worktree => self.notify(Level::Error, format!("Branches: {e:#}")),
+                    Err(e) if palette.is_some() || worktree => self.notify(Level::Error, format!("Branches: {e:#}")),
                     Err(_) => {}
                 }
             }
@@ -803,27 +939,6 @@ impl App {
         }
     }
 
-    fn open_branch_popup(&mut self) {
-        let list = &self.git_panel.branches;
-        let mut items = vec!["+ New Branch…".to_string()];
-        let mut names = Vec::with_capacity(list.len());
-        for b in list {
-            let mut s = format!("{} {}", if b.current { "*" } else { " " }, b.name);
-            if let Some(up) = &b.upstream {
-                s.push_str(&format!("  → {up}"));
-                if b.ahead > 0 {
-                    s.push_str(&format!(" ↑{}", b.ahead));
-                }
-                if b.behind > 0 {
-                    s.push_str(&format!(" ↓{}", b.behind));
-                }
-            }
-            items.push(s);
-            names.push(b.name.clone());
-        }
-        self.dialog = Some(Dialog::choice(DialogId::Branches(names), "Git Branches", "Enter switches; type to filter.", items));
-    }
-
     fn select_in_project(&mut self) {
         let Some(p) = self.editor.active_path().map(|p| p.to_path_buf()) else {
             self.notify(Level::Info, "No file is open");
@@ -847,10 +962,10 @@ impl App {
             }
             return;
         }
-        let tx = self.bus_tx.clone();
+        let (tx, generation) = (self.bus_tx.clone(), self.git.generation);
         tokio::task::spawn_blocking(move || {
             let result = std::fs::read(&path);
-            let _ = tx.send(AppMsg::FileLoaded { path, result, focus });
+            let _ = tx.send(AppMsg::FileLoaded { generation, path, result, focus });
         });
     }
 
@@ -919,7 +1034,23 @@ impl App {
         self.dirty_frame = true;
         let clicks = self.resolve_clicks(&m);
         let mouse = Mouse { kind: m.kind, x: m.column, y: m.row, clicks, mods: m.modifiers };
+        // A click on a visible part of a toast closes it (the palette and
+        // dialogs are drawn over toasts).
+        let over_overlay = self.palette.as_ref().is_some_and(|p| p.contains(m.column, m.row)) || self.dialog.as_ref().is_some_and(|d| d.contains(m.column, m.row));
+        if matches!(m.kind, MouseEventKind::Down(_)) && !over_overlay && self.toasts.dismiss_at(m.column, m.row) {
+            self.drag = None;
+            return;
+        }
 
+        if self.palette.is_some() && self.dialog.is_none() {
+            if matches!(m.kind, MouseEventKind::Up(_)) {
+                self.drag = None;
+            }
+            if let Some(res) = self.palette.as_mut().and_then(|p| p.handle_mouse(&mouse)) {
+                self.finish_palette(res);
+            }
+            return;
+        }
         if let Some(d) = &mut self.dialog {
             // A dialog that opened mid-drag (e.g. from a background result)
             // receives the release; end the drag too.
@@ -1054,4 +1185,37 @@ fn error_line(output: &str) -> String {
         .or_else(|| lines().next())
         .unwrap_or("failed")
         .to_string()
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+
+    /// An app rooted at a fresh temp directory with config and state under
+    /// it, so tests never touch the user's files.
+    pub(crate) fn test_app(name: &str) -> (App, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("jetl-test-app-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let root = dir.join("root");
+        std::fs::create_dir_all(&root).unwrap();
+        let root = std::fs::canonicalize(&root).unwrap();
+        let paths = Paths { config_dir: dir.join("config"), state_dir: dir.join("state"), cache_dir: dir.join("cache") };
+        (App::new(root.clone(), Config::default(), paths), dir)
+    }
+
+    #[tokio::test]
+    async fn stale_file_load_is_dropped() {
+        let (mut app, dir) = test_app("stale-load");
+        let path = app.workspace.root.join("a.txt");
+        let old = app.git.generation;
+        // The root switches while the read is in flight.
+        app.git.set_root(app.workspace.root.clone());
+        app.handle_msg(AppMsg::FileLoaded { generation: old, path: path.clone(), result: Ok(b"old".to_vec()), focus: true });
+        assert!(app.editor.buffers.is_empty());
+        let current = app.git.generation;
+        app.handle_msg(AppMsg::FileLoaded { generation: current, path: path.clone(), result: Ok(b"new".to_vec()), focus: true });
+        assert_eq!(app.editor.buffers.len(), 1);
+        assert_eq!(app.editor.buffers[0].text(), "new");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
