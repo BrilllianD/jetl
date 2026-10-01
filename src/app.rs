@@ -120,6 +120,7 @@ impl App {
         dispatcher.double_tap = Duration::from_millis(config.ui.double_click_ms);
         let mode = if modal { Mode::Normal } else { Mode::Insert };
         let layout = LayoutState::new(config.ui.left_width, config.ui.bottom_height);
+        let root_for_panels = root.clone();
         let mut app = Self {
             workspace: Workspace::new(root),
             theme: Theme::default(),
@@ -139,10 +140,10 @@ impl App {
             dialog: None,
             status_hits: Vec::new(),
             keyboard_enhanced: crate::tui::keyboard_enhanced(),
-            project: ProjectPanel::new(),
+            project: ProjectPanel::new(root_for_panels.clone(), config.files.show_hidden, config.files.show_ignored),
             worktrees: WorktreePanel::new(),
             git_panel: GitPanel::new(),
-            editor: Editor::new(),
+            editor: Editor::new(&config),
             config,
             paths,
         };
@@ -241,7 +242,8 @@ impl App {
         match msg {
             AppMsg::Notify { level, text } => self.notify(level, text),
             AppMsg::SwitchRoot(p) => self.apply_effects(vec![Effect::SwitchRoot(p)]),
-            AppMsg::FileLoaded { .. } | AppMsg::FileSaved { .. } => {}
+            AppMsg::FileLoaded { path, result, focus } => self.file_loaded(path, result, focus),
+            AppMsg::FileSaved { .. } => {}
             AppMsg::Git(_) | AppMsg::Worktrees(_) => {}
             AppMsg::Lsp(_) => {}
         }
@@ -333,6 +335,11 @@ impl App {
                 return;
             }
             Action::Editor(a) => self.editor.handle_action(a, &mut cx),
+            Action::Tree(crate::actions::TreeAction::SelectInProject) => {
+                drop(cx);
+                self.select_in_project();
+                return;
+            }
             Action::Tree(a) => self.project.handle_action(a, &mut cx),
             Action::Git(a) => self.git_panel.handle_action(a, &mut cx),
             Action::Worktree(a) => self.worktrees.handle_action(a, &mut cx),
@@ -425,7 +432,35 @@ impl App {
                 self.should_quit = true;
             }
             (DialogId::QuitDirty, DialogResult::Button(1)) => self.should_quit = true,
+            (DialogId::CloseTabDirty(i), DialogResult::Button(0)) => {
+                let mut cx = ctx!(self);
+                if self.editor.save(i, &mut cx) {
+                    self.editor.force_close(i);
+                }
+                let fx = cx.effects;
+                self.apply_effects(fx);
+            }
+            (DialogId::CloseTabDirty(i), DialogResult::Button(1)) => self.editor.force_close(i),
+            (DialogId::CloseAllDirty, DialogResult::Button(0)) => {
+                let mut cx = ctx!(self);
+                if self.editor.save_all(&mut cx) {
+                    self.editor.force_close_all();
+                }
+                let fx = cx.effects;
+                self.apply_effects(fx);
+            }
+            (DialogId::CloseAllDirty, DialogResult::Button(1)) => self.editor.force_close_all(),
+            (DialogId::GotoLine, DialogResult::Text(t)) => {
+                let mut it = t.trim().split(':');
+                let line = it.next().and_then(|s| s.trim().parse::<usize>().ok());
+                let col = it.next().and_then(|s| s.trim().parse::<usize>().ok()).unwrap_or(1);
+                match line {
+                    Some(l) => self.editor.goto_line(l, col),
+                    None => self.notify(Level::Warn, "Go to line: expected [line][:column]"),
+                }
+            }
             (DialogId::Info, _) => {}
+            (_, DialogResult::Cancel) => {}
             (id, res) => tracing::debug!("dialog {id:?} -> {res:?} (no handler yet)"),
         }
     }
@@ -440,12 +475,86 @@ impl App {
                     }
                     self.focus.set(p);
                 }
-                Effect::OpenFile(p) => self.notify(Level::Info, format!("open {} (phase 1)", p.display())),
+                Effect::OpenFile(p) => self.open_file(p, true),
+                Effect::Dialog(d) => self.dialog = Some(d),
+                Effect::FileSaved(p) => {
+                    self.notify(Level::Info, format!("Saved {}", p.file_name().map(|n| n.to_string_lossy()).unwrap_or_default()));
+                    self.project.refresh();
+                }
+                Effect::Clipboard(text) => self.copy_to_clipboard(&text),
                 Effect::SwitchRoot(p) => self.notify(Level::Info, format!("switch root to {} (phase 4)", p.display())),
                 Effect::GitRefresh => {}
                 Effect::Quit => self.request_quit(),
             }
         }
+    }
+
+    fn select_in_project(&mut self) {
+        let Some(p) = self.editor.active_path().map(|p| p.to_path_buf()) else {
+            self.notify(Level::Info, "No file is open");
+            return;
+        };
+        self.layout.show(ToolWindowId::Project);
+        self.focus.set(PanelId::Project);
+        if !self.project.select_path(&p) {
+            self.notify(Level::Warn, format!("{} is outside the project", p.display()));
+        }
+    }
+
+    /// Open a file: reuse the tab when already open, otherwise read it off
+    /// the main loop and finish in `file_loaded`.
+    pub fn open_file(&mut self, path: PathBuf, focus: bool) {
+        if let Some(i) = self.editor.index_of(&path) {
+            let mut cx = ctx!(self);
+            self.editor.activate(i, &mut cx);
+            if focus {
+                self.focus.set(PanelId::Editor);
+            }
+            return;
+        }
+        let tx = self.bus_tx.clone();
+        tokio::task::spawn_blocking(move || {
+            let result = std::fs::read(&path);
+            let _ = tx.send(AppMsg::FileLoaded { path, result, focus });
+        });
+    }
+
+    fn file_loaded(&mut self, path: PathBuf, result: std::io::Result<Vec<u8>>, focus: bool) {
+        let bytes = match result {
+            Ok(b) => b,
+            Err(e) => {
+                self.notify(Level::Error, format!("open {}: {e}", path.display()));
+                return;
+            }
+        };
+        let head = &bytes[..bytes.len().min(8192)];
+        if head.contains(&0) {
+            self.notify(Level::Warn, format!("{} looks binary; not opening", path.display()));
+            return;
+        }
+        let (text, lossy) = match String::from_utf8(bytes) {
+            Ok(s) => (s, false),
+            Err(e) => (String::from_utf8_lossy(e.as_bytes()).into_owned(), true),
+        };
+        if lossy {
+            self.notify(Level::Warn, format!("{} is not valid UTF-8; shown with replacement characters", path.display()));
+        }
+        self.editor.open_text(path, &text, lossy);
+        if focus {
+            self.focus.set(PanelId::Editor);
+        }
+    }
+
+    /// OSC 52 copy so the selection reaches the system clipboard through the
+    /// terminal; the editor keeps its own register for paste.
+    fn copy_to_clipboard(&mut self, text: &str) {
+        use crossterm::clipboard::CopyToClipboard;
+        use std::io::Write;
+        let mut out = std::io::stdout();
+        if crossterm::execute!(out, CopyToClipboard::to_clipboard_from(text)).is_err() {
+            tracing::debug!("OSC 52 copy failed");
+        }
+        let _ = out.flush();
     }
 
     fn resolve_clicks(&mut self, m: &MouseEvent) -> u8 {

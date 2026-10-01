@@ -152,7 +152,7 @@ impl Default for KeymapConfig {
 }
 impl Default for FilesConfig {
     fn default() -> Self {
-        Self { show_hidden: false, show_ignored: false }
+        Self { show_hidden: true, show_ignored: false }
     }
 }
 impl Default for Config {

@@ -34,6 +34,9 @@ pub enum Effect {
     Notify(Level, String),
     SwitchRoot(PathBuf),
     GitRefresh,
+    Dialog(crate::ui::dialog::Dialog),
+    FileSaved(PathBuf),
+    Clipboard(String),
     Quit,
 }
 
