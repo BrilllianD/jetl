@@ -168,6 +168,30 @@ impl Editor {
         self.buffers[i].undo.break_group = true;
     }
 
+    /// Put back a session's caret and scroll for tab `i` (clamped to the
+    /// file as it is now). The first render still keeps the caret visible.
+    pub fn restore_view(&mut self, i: usize, line: usize, col: usize, scroll_line: usize, scroll_col: usize) {
+        let Some(b) = self.buffers.get_mut(i) else { return };
+        b.goto_line(line, col);
+        b.scroll_line = scroll_line.min(b.rope.len_lines().saturating_sub(1));
+        b.scroll_col = scroll_col;
+    }
+
+    /// Restore tab recency from a session (`recent` most recent first; tabs
+    /// not listed keep their order after them), then activate `active`.
+    pub fn restore_recent(&mut self, recent: &[PathBuf], active: Option<&Path>) {
+        let mut ids: Vec<BufferId> = recent.iter().filter_map(|p| self.index_of(p)).map(|i| self.buffers[i].id).collect();
+        for id in &self.mru {
+            if !ids.contains(id) {
+                ids.push(*id);
+            }
+        }
+        self.mru = ids;
+        if let Some(i) = active.and_then(|p| self.index_of(p)) {
+            self.activate_index(i);
+        }
+    }
+
     pub fn activate(&mut self, i: usize, _cx: &mut Ctx) {
         self.activate_index(i);
     }

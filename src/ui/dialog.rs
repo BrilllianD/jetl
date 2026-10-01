@@ -18,11 +18,17 @@ pub enum DialogId {
     QuitDirty,
     CloseTabDirty(usize),
     CloseAllDirty,
+    /// Unsaved buffers before switching the project root to the path.
     SwitchRootDirty(std::path::PathBuf),
     WorktreeRemove { path: std::path::PathBuf, force: bool },
-    WorktreeNewBranchName { start: Option<String> },
-    WorktreeExistingBranch,
-    WorktreePath { branch: String, new_branch: bool, start: Option<String> },
+    /// Create flow, step 1: item `i` is `worktree::panel::CREATE_KINDS[i]`.
+    WorktreeCreateKind,
+    /// Create flow, new branch: its name (starts at HEAD).
+    WorktreeNewBranchName,
+    /// Create flow, existing branch: item `i` is `names[i]`.
+    WorktreeExistingBranch(Vec<String>),
+    /// Create flow, last step: the directory.
+    WorktreePath { branch: String, new_branch: bool },
     WorktreeSwitchAfterCreate(std::path::PathBuf),
     NewBranchName,
     /// Branch popup; item 0 is "New branch", item `i` is `names[i - 1]`.

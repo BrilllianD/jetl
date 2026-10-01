@@ -37,6 +37,11 @@ pub enum GitOp {
     Fetch,
     Switch(String),
     NewBranch(String),
+    /// `git worktree add`; `path` is the new worktree.
+    WorktreeAdd { path: PathBuf },
+    /// `git -C <main> worktree remove [--force] <path>`.
+    WorktreeRemove { path: PathBuf, force: bool },
+    WorktreePrune,
 }
 
 impl GitOp {
@@ -90,6 +95,8 @@ pub enum GitRequest {
     LoadDiff(DiffKey),
     LoadLog { skip: usize },
     LoadCommit(String),
+    LoadWorktrees,
+    WorktreePrune,
 }
 
 pub struct GitService {
@@ -191,6 +198,27 @@ impl GitService {
         });
     }
 
+    /// `git worktree list --porcelain`, answered with `AppMsg::Worktrees`
+    /// (same generation rule as `GitMsg`). Paths are canonicalized so they
+    /// compare with the project root.
+    pub fn load_worktrees(&self) {
+        let (root, generation, tx) = (self.root.clone(), self.generation, self.tx.clone());
+        tokio::spawn(async move {
+            let result = async {
+                let out = cli::git_ok(&root, &cli::args(&["worktree", "list", "--porcelain"])).await?;
+                let mut list = crate::worktree::parse_porcelain(&out.stdout_text());
+                for w in &mut list {
+                    if let Ok(p) = tokio::fs::canonicalize(&w.path).await {
+                        w.path = p;
+                    }
+                }
+                Ok(list)
+            }
+            .await;
+            let _ = tx.send(AppMsg::Worktrees { generation, result });
+        });
+    }
+
     fn start(&mut self, label: &str) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
@@ -214,7 +242,7 @@ impl GitService {
     }
 
     /// Run `git <args>` as an operation; output goes to the console.
-    /// Worktree commands (phase 4) use this with their own `GitOp`s.
+    /// Worktree commands use this with their own `GitOp`s.
     pub fn run_cli(&mut self, op: GitOp, args: Vec<String>) -> u64 {
         let label = format!("git {}", args.join(" "));
         let id = self.start(&label);

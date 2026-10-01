@@ -17,7 +17,11 @@ pub enum AppMsg {
     FileLoaded { path: PathBuf, result: std::io::Result<Vec<u8>>, focus: bool },
     FileSaved { path: PathBuf, result: std::io::Result<()> },
     Git(crate::git::GitMsg),
-    Worktrees(anyhow::Result<Vec<crate::worktree::Worktree>>),
+    /// `git worktree list`, tagged with the git generation like `GitMsg`.
+    Worktrees { generation: u64, result: anyhow::Result<Vec<crate::worktree::Worktree>> },
+    /// A saved session and its files (`files[i]` belongs to
+    /// `session.files[i]`), tagged with the git generation.
+    SessionLoaded { generation: u64, session: crate::workspace::Session, files: Vec<std::io::Result<Vec<u8>>> },
     SwitchRoot(PathBuf),
     /// Reserved for the language server integration.
     Lsp(LspMsg),

@@ -160,6 +160,8 @@ impl App {
         }
         app.git.refresh_status();
         app.git.load_branches();
+        app.git.load_worktrees();
+        app.restore_session();
         app
     }
 
@@ -246,6 +248,7 @@ impl App {
                 self.dirty_frame = false;
             }
         }
+        self.save_session();
         Ok(())
     }
 
@@ -274,7 +277,14 @@ impl App {
             AppMsg::FileLoaded { path, result, focus } => self.file_loaded(path, result, focus),
             AppMsg::FileSaved { .. } => {}
             AppMsg::Git(m) => self.on_git_msg(m),
-            AppMsg::Worktrees(_) => {}
+            AppMsg::Worktrees { generation, result } => {
+                if generation == self.git.generation {
+                    self.worktrees.set_list(result, &self.workspace.root);
+                } else {
+                    tracing::debug!("dropping stale worktree list");
+                }
+            }
+            AppMsg::SessionLoaded { generation, session, files } => self.session_loaded(generation, session, files),
             AppMsg::Lsp(_) => {}
         }
     }
@@ -544,8 +554,32 @@ impl App {
             (DialogId::PushSetUpstream(branch), DialogResult::Button(0)) => {
                 self.git.run_cli(GitOp::PushUpstream(branch.clone()), vec!["push".into(), "-u".into(), "origin".into(), branch]);
             }
+            (DialogId::SwitchRootDirty(root), DialogResult::Button(0)) => {
+                let mut cx = ctx!(self);
+                let saved = self.editor.save_all(&mut cx);
+                let fx = cx.effects;
+                self.apply_effects(fx);
+                if saved {
+                    self.do_switch_root(root);
+                }
+            }
+            (DialogId::SwitchRootDirty(root), DialogResult::Button(1)) => {
+                if !self.config.worktree.switch_closes_tabs {
+                    self.close_dirty_tabs();
+                }
+                self.do_switch_root(root);
+            }
             (DialogId::Info, _) => {}
             (_, DialogResult::Cancel) => {}
+            (
+                id @ (DialogId::WorktreeCreateKind
+                | DialogId::WorktreeNewBranchName
+                | DialogId::WorktreeExistingBranch(_)
+                | DialogId::WorktreePath { .. }
+                | DialogId::WorktreeSwitchAfterCreate(_)
+                | DialogId::WorktreeRemove { .. }),
+                res,
+            ) => self.finish_worktree_dialog(id, res),
             (id, res) => tracing::debug!("dialog {id:?} -> {res:?} (no handler yet)"),
         }
     }
@@ -568,11 +602,12 @@ impl App {
                     self.git.refresh_status();
                 }
                 Effect::Clipboard(text) => self.copy_to_clipboard(&text),
-                Effect::SwitchRoot(p) => self.notify(Level::Info, format!("switch root to {} (phase 4)", p.display())),
+                Effect::SwitchRoot(p) => self.switch_root(p),
                 Effect::GitRefresh => {
                     self.project.refresh();
                     self.git.refresh_status();
                     self.git.load_branches();
+                    self.git.load_worktrees();
                 }
                 Effect::Git(req) => self.git_request(req),
                 Effect::Quit => self.request_quit(),
@@ -627,6 +662,8 @@ impl App {
             GitRequest::LoadDiff(key) => self.git.load_diff(key),
             GitRequest::LoadLog { skip } => self.git.load_log(skip, self.config.git.log_page, self.config.git.log_all),
             GitRequest::LoadCommit(sha) => self.git.load_commit(sha),
+            GitRequest::LoadWorktrees => self.git.load_worktrees(),
+            GitRequest::WorktreePrune => self.prune_worktrees(),
         }
     }
 
@@ -665,14 +702,17 @@ impl App {
             GitMsg::Diff { key, result, .. } => self.git_panel.set_diff(&key, result),
             GitMsg::Branches { result, .. } => {
                 let popup = std::mem::take(&mut self.git_panel.pending_branch_popup);
+                let worktree = std::mem::take(&mut self.worktrees.pending_existing);
                 match result {
                     Ok(list) => {
                         self.git_panel.branches = list;
                         if popup {
                             self.open_branch_popup();
+                        } else if worktree {
+                            self.open_existing_branch_dialog();
                         }
                     }
-                    Err(e) if popup => self.notify(Level::Error, format!("Branches: {e:#}")),
+                    Err(e) if popup || worktree => self.notify(Level::Error, format!("Branches: {e:#}")),
                     Err(_) => {}
                 }
             }
@@ -692,7 +732,9 @@ impl App {
         if !ok || !matches!(op, GitOp::Stage | GitOp::Unstage) {
             self.git_panel.log_op(&label, ok, &output);
         }
-        if ok {
+        if self.worktree_op_done(&op, ok, &output) {
+            // Reported (or a follow-up dialog opened) by the worktree flow.
+        } else if ok {
             match &op {
                 GitOp::Commit { push } => {
                     self.git_panel.message.clear();
@@ -707,6 +749,7 @@ impl App {
                 GitOp::Switch(b) => self.notify(Level::Info, format!("Switched to {b}")),
                 GitOp::NewBranch(b) => self.notify(Level::Info, format!("Created and switched to {b}")),
                 GitOp::Stage | GitOp::Unstage => {}
+                GitOp::WorktreeAdd { .. } | GitOp::WorktreeRemove { .. } | GitOp::WorktreePrune => {}
             }
             if op.touches_worktree() {
                 let n = self.editor.reload_clean_from_disk();
@@ -726,6 +769,8 @@ impl App {
         self.project.refresh();
         self.git.refresh_status();
         self.git.load_branches();
+        // Branch switches and worktree operations both change the list.
+        self.git.load_worktrees();
         if self.git_panel.log_loaded() && !matches!(op, GitOp::Stage | GitOp::Unstage) {
             let mut cx = ctx!(self);
             self.git_panel.request_log(&mut cx);
@@ -734,7 +779,7 @@ impl App {
         }
     }
 
-    /// Point git at a new project root (phase 4 worktree switch): bump the
+    /// Point git at a new project root (worktree switch): bump the
     /// generation so in-flight results are dropped, forget the old state,
     /// and load the new one.
     pub fn git_root_changed(&mut self, root: PathBuf) {
@@ -817,10 +862,21 @@ impl App {
                 return;
             }
         };
+        let Some((text, lossy)) = self.decode_file(&path, bytes) else { return };
+        self.editor.open_text(path.clone(), &text, lossy, &self.theme);
+        self.git.load_blob(path, BlobWhich::Head);
+        if focus {
+            self.focus.set(PanelId::Editor);
+        }
+    }
+
+    /// File bytes as text and whether decoding was lossy; `None` (with a
+    /// notification) for binary files.
+    pub fn decode_file(&mut self, path: &std::path::Path, bytes: Vec<u8>) -> Option<(String, bool)> {
         let head = &bytes[..bytes.len().min(8192)];
         if head.contains(&0) {
             self.notify(Level::Warn, format!("{} looks binary; not opening", path.display()));
-            return;
+            return None;
         }
         let (text, lossy) = match String::from_utf8(bytes) {
             Ok(s) => (s, false),
@@ -829,11 +885,7 @@ impl App {
         if lossy {
             self.notify(Level::Warn, format!("{} is not valid UTF-8; shown with replacement characters", path.display()));
         }
-        self.editor.open_text(path.clone(), &text, lossy, &self.theme);
-        self.git.load_blob(path, BlobWhich::Head);
-        if focus {
-            self.focus.set(PanelId::Editor);
-        }
+        Some((text, lossy))
     }
 
     /// OSC 52 copy so the selection reaches the system clipboard through the

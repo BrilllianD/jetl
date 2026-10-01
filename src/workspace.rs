@@ -1,6 +1,15 @@
-//! The project root the IDE is currently showing.
+//! The project root the IDE is currently showing, switching it (worktrees),
+//! and per-root sessions: open tabs with caret and scroll, stored as JSON in
+//! `paths.sessions_dir()/<fnv hash of root>.json`.
 
 use std::path::{Path, PathBuf};
+
+use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
+
+use crate::app::App;
+use crate::event::{AppMsg, Level};
+use crate::ui::dialog::{Dialog, DialogId};
 
 #[derive(Debug, Clone)]
 pub struct Workspace {
@@ -21,5 +30,257 @@ impl Workspace {
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// Set the root; returns the previous one. The app does the rest of a
+    /// switch in [`App::switch_root`].
+    pub fn switch_root(&mut self, root: PathBuf) -> PathBuf {
+        std::mem::replace(&mut self.root, root)
+    }
+}
+
+/// Open tabs of one root.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Session {
+    pub root: PathBuf,
+    /// Tabs in display order.
+    pub files: Vec<SessionFile>,
+    #[serde(default)]
+    pub active: Option<usize>,
+    /// Indices into `files`, most recently used first.
+    #[serde(default)]
+    pub recent: Vec<usize>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SessionFile {
+    pub path: PathBuf,
+    /// Caret line and character column, 0-based.
+    pub line: usize,
+    pub col: usize,
+    pub scroll_line: usize,
+    pub scroll_col: usize,
+}
+
+/// 64-bit FNV-1a; stable across runs and platforms, unlike `DefaultHasher`.
+pub fn fnv1a64(bytes: &[u8]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in bytes {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
+}
+
+impl Session {
+    pub fn file_for(sessions_dir: &Path, root: &Path) -> PathBuf {
+        sessions_dir.join(format!("{:016x}.json", fnv1a64(root.as_os_str().as_encoded_bytes())))
+    }
+
+    /// The saved session of `root`. A missing file is silent; unreadable or
+    /// invalid JSON is logged and ignored.
+    pub fn load(sessions_dir: &Path, root: &Path) -> Option<Session> {
+        let file = Self::file_for(sessions_dir, root);
+        let text = match std::fs::read_to_string(&file) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+            Err(e) => {
+                tracing::warn!("session {}: {e}; ignoring", file.display());
+                return None;
+            }
+        };
+        match serde_json::from_str::<Session>(&text) {
+            Ok(s) if s.root == root => Some(s),
+            Ok(s) => {
+                tracing::warn!("session {} belongs to {}; ignoring", file.display(), s.root.display());
+                None
+            }
+            Err(e) => {
+                tracing::warn!("session {}: invalid JSON ({e}); ignoring", file.display());
+                None
+            }
+        }
+    }
+
+    /// Write atomically (temp file, then rename).
+    pub fn save(&self, sessions_dir: &Path) -> Result<()> {
+        std::fs::create_dir_all(sessions_dir).with_context(|| format!("create {}", sessions_dir.display()))?;
+        let file = Self::file_for(sessions_dir, &self.root);
+        let tmp = file.with_extension("json.tmp");
+        std::fs::write(&tmp, serde_json::to_vec_pretty(self)?).with_context(|| format!("write {}", tmp.display()))?;
+        std::fs::rename(&tmp, &file).with_context(|| format!("rename {}", tmp.display()))?;
+        Ok(())
+    }
+}
+
+impl App {
+    /// `Effect::SwitchRoot`: make `path` the project root. Unsaved buffers
+    /// are asked about first (`DialogId::SwitchRootDirty`).
+    pub fn switch_root(&mut self, path: PathBuf) {
+        let root = match std::fs::canonicalize(&path) {
+            Ok(p) if p.is_dir() => p,
+            Ok(p) => return self.notify(Level::Error, format!("{} is not a directory", p.display())),
+            Err(e) => return self.notify(Level::Error, format!("cannot open {}: {e}", path.display())),
+        };
+        if root == self.workspace.root {
+            return self.notify(Level::Info, format!("Already in {}", root.display()));
+        }
+        if self.editor.has_dirty() {
+            let msg = format!("Some files have unsaved changes.\nSave them before switching to {}?", root.display());
+            self.dialog = Some(Dialog::confirm(DialogId::SwitchRootDirty(root), "Unsaved changes", &msg, &["Save all", "Discard", "Cancel"]));
+            return;
+        }
+        self.do_switch_root(root);
+    }
+
+    /// Switch without asking: save the old session, close tabs (per
+    /// `worktree.switch_closes_tabs`), point every service at the new root,
+    /// and restore its session.
+    pub fn do_switch_root(&mut self, root: PathBuf) {
+        self.save_session();
+        if self.config.worktree.switch_closes_tabs {
+            self.editor.force_close_all();
+        }
+        let old = self.workspace.switch_root(root.clone());
+        tracing::info!("switch root {} -> {}", old.display(), root.display());
+        // Bumps the git generation (stale results are dropped), resets the
+        // Git panel, and requests status and branches.
+        self.git_root_changed(root.clone());
+        self.worktrees.reset();
+        self.git.load_worktrees();
+        self.project.reroot(root.clone());
+        crate::tui::set_title(&root);
+        self.restore_session();
+        self.notify(Level::Info, format!("Switched to {}", root.display()));
+    }
+
+    /// Drop unsaved changes by closing the dirty tabs (the "Discard" answer
+    /// when tabs survive a switch).
+    pub fn close_dirty_tabs(&mut self) {
+        for i in (0..self.editor.buffers.len()).rev() {
+            if self.editor.buffers[i].dirty() {
+                self.editor.force_close(i);
+            }
+        }
+    }
+
+    /// The open tabs of the current root as a session.
+    pub fn session(&self) -> Session {
+        let root = self.workspace.root.clone();
+        let mut files = Vec::new();
+        let mut active = None;
+        for (i, b) in self.editor.buffers.iter().enumerate() {
+            let Some(path) = b.path.clone() else { continue };
+            if self.editor.active == Some(i) {
+                active = Some(files.len());
+            }
+            let (line, col) = b.cursor_line_col();
+            files.push(SessionFile { path, line, col, scroll_line: b.scroll_line, scroll_col: b.scroll_col });
+        }
+        let recent = self.editor.recent_paths().iter().filter_map(|p| files.iter().position(|f| &f.path == p)).collect();
+        Session { root, files, active, recent }
+    }
+
+    /// Save the current root's session (on switch and quit). Failures are
+    /// logged only.
+    pub fn save_session(&self) {
+        if let Err(e) = self.session().save(&self.paths.sessions_dir()) {
+            tracing::warn!("saving session: {e:#}");
+        }
+    }
+
+    /// Load the current root's session and its files off the main loop; the
+    /// tabs open in [`App::session_loaded`].
+    pub fn restore_session(&self) {
+        let (dir, root, generation, tx) = (self.paths.sessions_dir(), self.workspace.root.clone(), self.git.generation, self.bus_tx.clone());
+        tokio::task::spawn_blocking(move || {
+            let Some(session) = Session::load(&dir, &root) else { return };
+            let files = session.files.iter().map(|f| std::fs::read(&f.path)).collect();
+            let _ = tx.send(AppMsg::SessionLoaded { generation, session, files });
+        });
+    }
+
+    /// Open the tabs of a loaded session (dropped when the root changed
+    /// since). Missing files are skipped.
+    pub fn session_loaded(&mut self, generation: u64, session: Session, files: Vec<std::io::Result<Vec<u8>>>) {
+        if generation != self.git.generation {
+            tracing::debug!("dropping stale session for {}", session.root.display());
+            return;
+        }
+        for (f, result) in session.files.iter().zip(files) {
+            let bytes = match result {
+                Ok(b) => b,
+                Err(e) => {
+                    tracing::info!("session: skipping {}: {e}", f.path.display());
+                    continue;
+                }
+            };
+            let Some((text, lossy)) = self.decode_file(&f.path, bytes) else { continue };
+            let i = self.editor.open_text(f.path.clone(), &text, lossy, &self.theme);
+            self.editor.restore_view(i, f.line, f.col, f.scroll_line, f.scroll_col);
+            self.git.load_blob(f.path.clone(), crate::git::BlobWhich::Head);
+        }
+        let recent: Vec<PathBuf> = session.recent.iter().filter_map(|i| session.files.get(*i)).map(|f| f.path.clone()).collect();
+        let active = session.active.and_then(|i| session.files.get(i)).map(|f| f.path.as_path());
+        self.editor.restore_recent(&recent, active);
+        self.dirty_frame = true;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("jetl-test-session-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        d
+    }
+
+    #[test]
+    fn fnv_is_stable() {
+        assert_eq!(fnv1a64(b""), 0xcbf29ce484222325);
+        assert_eq!(fnv1a64(b"a"), 0xaf63dc4c8601ec8c);
+        assert_ne!(Session::file_for(Path::new("/s"), Path::new("/tmp/a")), Session::file_for(Path::new("/s"), Path::new("/tmp/b")));
+    }
+
+    #[test]
+    fn session_json_round_trip() {
+        let dir = temp_dir("roundtrip");
+        let root = PathBuf::from("/tmp/some/project");
+        let s = Session {
+            root: root.clone(),
+            files: vec![
+                SessionFile { path: root.join("src/main.rs"), line: 10, col: 4, scroll_line: 2, scroll_col: 0 },
+                SessionFile { path: root.join("README.md"), line: 0, col: 0, scroll_line: 0, scroll_col: 3 },
+            ],
+            active: Some(1),
+            recent: vec![1, 0],
+        };
+        s.save(&dir).unwrap();
+        assert_eq!(Session::load(&dir, &root), Some(s.clone()));
+        // Another root has no session.
+        assert_eq!(Session::load(&dir, Path::new("/tmp/other")), None);
+        // Older files without the optional fields still load.
+        let file = Session::file_for(&dir, &root);
+        std::fs::write(&file, r#"{"root":"/tmp/some/project","files":[{"path":"/tmp/some/project/a"}]}"#).unwrap();
+        let old = Session::load(&dir, &root).unwrap();
+        assert_eq!((old.files[0].line, old.active, old.recent.len()), (0, None, 0));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn bad_or_foreign_session_is_ignored() {
+        let dir = temp_dir("bad");
+        std::fs::create_dir_all(&dir).unwrap();
+        let root = Path::new("/tmp/p");
+        std::fs::write(Session::file_for(&dir, root), "{not json").unwrap();
+        assert_eq!(Session::load(&dir, root), None);
+        // A hash collision (or a copied file) for a different root.
+        let other = Session { root: PathBuf::from("/tmp/q"), ..Default::default() };
+        std::fs::write(Session::file_for(&dir, root), serde_json::to_string(&other).unwrap()).unwrap();
+        assert_eq!(Session::load(&dir, root), None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

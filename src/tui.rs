@@ -40,7 +40,7 @@ pub fn init(root: &Path) -> Result<Term> {
         EnableMouseCapture,
         EnableBracketedPaste,
         EnableFocusChange,
-        SetTitle(format!("jetl – {}", root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default())),
+        SetTitle(title(root)),
     )?;
     ACTIVE.store(true, Ordering::Relaxed);
     if supports_keyboard_enhancement().unwrap_or(false) {
@@ -63,6 +63,17 @@ pub fn init(root: &Path) -> Result<Term> {
     let backend = CrosstermBackend::new(out);
     let terminal = Terminal::new(backend)?;
     Ok(terminal)
+}
+
+fn title(root: &Path) -> String {
+    format!("jetl – {}", root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default())
+}
+
+/// Retitle the terminal after a root switch.
+pub fn set_title(root: &Path) {
+    if ACTIVE.load(Ordering::Relaxed) {
+        let _ = execute!(stdout(), SetTitle(title(root)));
+    }
 }
 
 /// Restore the terminal. Safe to call more than once and from the panic hook.
