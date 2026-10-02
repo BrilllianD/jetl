@@ -122,15 +122,21 @@ impl Buffer {
     /// Apply a transaction. Change positions refer to the buffer state after
     /// the previous change in the same transaction.
     pub fn apply(&mut self, changes: Vec<Change>, sel_after: Selection, kind: TxKind) {
+        self.apply_then(changes, kind, |_| sel_after);
+    }
+
+    /// Like [`Buffer::apply`], but the selection after the transaction is
+    /// computed from the edited rope, so redo restores the same caret.
+    pub fn apply_then(&mut self, changes: Vec<Change>, kind: TxKind, sel_after: impl FnOnce(&Rope) -> Selection) {
         if changes.is_empty() {
-            self.sel = sel_after;
+            self.sel = sel_after(&self.rope);
             return;
         }
         let sel_before = self.sel;
         for c in &changes {
             self.apply_change(c);
         }
-        let mut sel_after = sel_after;
+        let mut sel_after = sel_after(&self.rope);
         sel_after.clamp(self.rope.len_chars());
         self.sel = sel_after;
         self.desired_col = None;
@@ -273,9 +279,9 @@ impl Buffer {
         let (_, col) = self.cursor_line_col();
         let old = self.rope.slice(range.clone()).to_string();
         let new_line = selection::pos_to_line_col(&self.rope, range.start).0;
-        self.apply(vec![Change::delete(range.start, old)], Selection::point(range.start), TxKind::Other);
-        let p = selection::line_col_to_pos(&self.rope, new_line, col);
-        self.sel = Selection::point(p);
+        self.apply_then(vec![Change::delete(range.start, old)], TxKind::Other, |rope| {
+            Selection::point(selection::line_col_to_pos(rope, new_line, col))
+        });
     }
 
     pub fn duplicate_line(&mut self) {
@@ -291,15 +297,10 @@ impl Buffer {
         let mut text = self.rope.slice(lr.clone()).to_string();
         if !text.ends_with('\n') {
             text = format!("{}{}", self.line_ending.as_str(), text);
-            let n = text.chars().count();
-            self.apply(vec![Change::insert(lr.end, text)], Selection::point(lr.end + n), TxKind::Other);
-            let p = selection::line_col_to_pos(&self.rope, line + 1, col);
-            self.sel = Selection::point(p);
-        } else {
-            self.apply(vec![Change::insert(lr.end, text)], Selection::point(lr.end), TxKind::Other);
-            let p = selection::line_col_to_pos(&self.rope, line + 1, col);
-            self.sel = Selection::point(p);
         }
+        self.apply_then(vec![Change::insert(lr.end, text)], TxKind::Other, |rope| {
+            Selection::point(selection::line_col_to_pos(rope, line + 1, col))
+        });
     }
 
     pub fn select_all(&mut self) {
@@ -378,14 +379,18 @@ impl Buffer {
         let (start, end) = (map(r.start, !r.is_empty()), map(r.end, false));
         let sel_after = if forward { Selection::new(start, end) } else { Selection::new(end, start) };
         let was_empty = r.is_empty();
-        self.apply(changes, sel_after, TxKind::Other);
-        if was_empty {
-            // JetBrains moves the caret to the next line after commenting.
-            let (line, col) = self.cursor_line_col();
-            if line + 1 < self.rope.len_lines() {
-                self.sel = Selection::point(selection::line_col_to_pos(&self.rope, line + 1, col));
+        self.apply_then(changes, TxKind::Other, |rope| {
+            if !was_empty {
+                return sel_after;
             }
-        }
+            // JetBrains moves the caret to the next line after commenting.
+            let (line, col) = selection::pos_to_line_col(rope, sel_after.head);
+            if line + 1 < rope.len_lines() {
+                Selection::point(selection::line_col_to_pos(rope, line + 1, col))
+            } else {
+                sel_after
+            }
+        });
     }
 
     pub fn line_text(&self, line: usize) -> String {
@@ -513,6 +518,30 @@ mod tests {
         buf.duplicate_line();
         assert_eq!(buf.text(), "a\na");
         assert_eq!(buf.cursor_line_col(), (1, 0));
+    }
+
+    #[test]
+    fn redo_restores_caret_of_line_ops() {
+        type Op = fn(&mut Buffer);
+        let ops: [(&str, Op); 4] = [
+            ("delete_line", |b| b.delete_line()),
+            ("duplicate_line", |b| b.duplicate_line()),
+            ("duplicate_last_line", |b| {
+                b.goto_line(2, 1);
+                b.duplicate_line();
+            }),
+            ("toggle_comment", |b| b.toggle_line_comment("//")),
+        ];
+        for (name, op) in ops {
+            let mut buf = b("alpha\n  beta\ngamma");
+            buf.goto_line(1, 3);
+            op(&mut buf);
+            let (text, sel) = (buf.text(), buf.sel);
+            assert!(buf.undo(), "{name}");
+            assert!(buf.redo(), "{name}");
+            assert_eq!(buf.text(), text, "{name}");
+            assert_eq!(buf.sel, sel, "{name}");
+        }
     }
 
     #[test]
