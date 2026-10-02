@@ -30,7 +30,8 @@ impl App {
     }
 
     pub(super) fn handle_mouse(&mut self, m: MouseEvent) {
-        if m.kind == MouseEventKind::Moved && self.drag.is_none() {
+        // Motion matters only to drags and to the menu's hover highlight.
+        if m.kind == MouseEventKind::Moved && self.drag.is_none() && self.menu.is_none() {
             return;
         }
         self.dirty_frame = true;
@@ -39,13 +40,14 @@ impl App {
         // A click on a visible part of a toast closes it (the palette and
         // dialogs are drawn over toasts).
         let over_overlay = self.palette.as_ref().is_some_and(|p| p.contains(m.column, m.row))
-            || self.dialog.as_ref().is_some_and(|d| d.contains(m.column, m.row));
+            || self.dialog.as_ref().is_some_and(|d| d.contains(m.column, m.row))
+            || self.menu.as_ref().is_some_and(|c| c.contains(m.column, m.row));
         if matches!(m.kind, MouseEventKind::Down(_)) && !over_overlay && self.toasts.dismiss_at(m.column, m.row) {
             self.drag = None;
             return;
         }
 
-        if self.palette.is_some() && self.dialog.is_none() {
+        if self.palette.is_some() && self.dialog.is_none() && self.menu.is_none() {
             if matches!(m.kind, MouseEventKind::Up(_)) {
                 self.drag = None;
             }
@@ -63,6 +65,20 @@ impl App {
             if let Some(res) = d.handle_mouse(&mouse) {
                 let d = self.dialog.take().unwrap();
                 self.finish_dialog(d.id, res);
+            }
+            return;
+        }
+        if let Some(menu) = &mut self.menu {
+            if matches!(m.kind, MouseEventKind::Up(_)) {
+                self.drag = None;
+            }
+            match menu.handle_mouse(&mouse) {
+                Some(crate::ui::menu::MenuResult::Run(a)) => {
+                    self.menu = None;
+                    self.perform(a);
+                }
+                Some(crate::ui::menu::MenuResult::Cancel) => self.menu = None,
+                None => {}
             }
             return;
         }

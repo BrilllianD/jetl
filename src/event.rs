@@ -62,6 +62,12 @@ pub enum AppMsg {
         matches: usize,
         errors: Vec<String>,
     },
+    /// A file operation from the tree finished.
+    FsOpDone {
+        generation: u64,
+        op: crate::files::ops::FsOp,
+        result: Result<(), String>,
+    },
     /// Re-read tree directories (`ProjectPanel::begin_refresh`), tagged
     /// with the workspace generation.
     TreeLoaded {
@@ -109,6 +115,8 @@ pub enum Effect {
         quiet: bool,
     },
     Clipboard(String),
+    /// Open a context menu (`App.menu`).
+    ContextMenu(crate::ui::menu::ContextMenu),
     Quit,
 }
 

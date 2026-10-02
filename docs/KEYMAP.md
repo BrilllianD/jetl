@@ -132,6 +132,13 @@ Override any of them in `~/.config/jetl/keymap.toml` (see [CONFIG.md](CONFIG.md)
 | `PageDown` | `tree.page_down` | Tree: page down |
 | `Home` | `tree.home` | Tree: first |
 | `End` | `tree.end` | Tree: last |
+| `Alt+Insert` | `tree.new` | Tree: new file or directory |
+| `Shift+F6` | `tree.rename` | Tree: rename |
+| `Delete` | `tree.delete` | Tree: delete |
+| `Ctrl+C` | `tree.copy_path` | Tree: copy absolute path |
+| `Ctrl+Shift+C` * | `tree.copy_path` | Tree: copy absolute path |
+| `Ctrl+Alt+Shift+C` * | `tree.copy_rel_path` | Tree: copy path relative to the project |
+| `Shift+F10` | `tree.context_menu` | Tree: context menu |
 
 ## git
 
@@ -244,6 +251,10 @@ Reachable from Find Action (F1) or by binding them in `keymap.toml`.
 | `editor.line_ending_lf` | Convert line endings to LF |
 | `editor.line_ending_crlf` | Convert line endings to CRLF |
 | `editor.set_language` | Set the file's language (highlighting) |
+| `tree.new_file` | Tree: new file |
+| `tree.new_dir` | Tree: new directory |
+| `tree.toggle_hidden` | Tree: show or hide hidden files |
+| `tree.toggle_ignored` | Tree: show or hide ignored files |
 | `git.unstage_all` | Git: unstage all |
 | `git.commit_and_push` | Git: commit and push |
 | `git.fetch` | Git: fetch |

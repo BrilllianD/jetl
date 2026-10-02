@@ -21,6 +21,7 @@ and backlog are in `docs/ROADMAP.md`; settings in `docs/CONFIG.md`; keys in
 | `app/mouse.rs` | Mouse routing: toasts, overlays, drags, splitters, tabs, status bar, panels. |
 | `app/watch.rs` | Starting the filesystem watcher and acting on its batches. |
 | `app/find.rs` | Replace in files (open tabs through the editor, other files off the main thread). |
+| `app/files.rs` | Tree file operations: `run_fs_op` off the main thread, `fs_op_done` (reload the tree, open, retarget or close tabs). |
 | `workspace.rs` | `Workspace` (root and generation), root switching (`App::switch_root`), sessions (JSON per root). |
 | `worktree/` | `git worktree` parsing and paths (`mod.rs`), the Worktrees tool window (`panel.rs`), the create/remove dialog flow (`flow.rs`, `impl App`). |
 | `actions.rs` | `Action` enums and `REGISTRY` (id, description, action). Keymaps and the palette refer to actions by id. |
@@ -32,7 +33,8 @@ and backlog are in `docs/ROADMAP.md`; settings in `docs/CONFIG.md`; keys in
 | `editor/{find,io}.rs` | Find/replace bar (keys, stepping, rendering); saving, autosave, `write_atomic`. |
 | `editor/view.rs` | `layout_line`: the grapheme walk shared by rendering, `visual_col` and `col_to_char`. |
 | `editor/…` | `selection`, `undo`, `syntax` (tree-sitter, language detection), `search`, `gutter` (git marks), `indent` (`.editorconfig`, detection), `brackets`, `expand`, `nav` (back/forward). |
-| `files/tree.rs` | Project tool window: lazy `ignore` walk, `TreeRefresh` off the main thread, git status colors. |
+| `files/tree.rs` | Project tool window: lazy `ignore` walk, `TreeRefresh` off the main thread, git status colors, speed search, context menu. |
+| `files/ops.rs` | `FsOp` (create, rename, delete; never overwrites, never follows symlinks on delete) and name checks for the tree dialogs. |
 | `files/walk.rs` | The `ignore` walk builder shared by the tree, Go to File and find in files. |
 | `files/find.rs`, `files/find_panel.rs` | Find in files: the search (`Search::run` streams `Batch`es, cancelled by seq) and replacements; the Find tool window. |
 | `files/watch.rs` | Debounced recursive watch of the root (notify); splits batches into working tree paths and a git flag. |
@@ -40,7 +42,7 @@ and backlog are in `docs/ROADMAP.md`; settings in `docs/CONFIG.md`; keys in
 | `git/repo.rs` | Synchronous git2 calls; each opens the repository itself. |
 | `git/cli.rs` | The `git` command line: network, switch, log/show, worktrees. No prompts, 120 s timeout. |
 | `git/{diff,model,panel}.rs` | Diff rows, shared types, the Git tool window (Commit, Log, Console). |
-| `ui/` | `render` (frame order), `layout` (rects and hit testing), `focus` (panel and tool window ids), `dialog`, `palette`, `status_bar`, `tabs`, `toasts`, `tool_strip`, `widgets/{list,text_input}`. |
+| `ui/` | `render` (frame order), `layout` (rects and hit testing), `focus` (panel and tool window ids), `dialog`, `palette`, `menu` (context menu), `status_bar`, `tabs`, `toasts`, `tool_strip`, `widgets/{list,text_input}`. |
 | `util/` | `text` (width helpers), `coalesce` (one background request at a time). |
 
 ## Event flow
@@ -49,8 +51,9 @@ and backlog are in `docs/ROADMAP.md`; settings in `docs/CONFIG.md`; keys in
 redraws when `dirty_frame` is set:
 
 1. **Terminal events** (`EventStream`). Keys go to the open dialog, else the
-   palette, else the find bar or commit message box (which consume editing
-   keys and let the rest fall through), else `Dispatcher::dispatch` with the
+   context menu, else the palette, else the find bar, commit message box,
+   Find window fields or the tree's speed search (which consume their keys
+   and let the rest fall through), else `Dispatcher::dispatch` with the
    context stack from `App::contexts()` (`dialog` | `palette` |
    `editor.find`, focused panel, `global`). An `Action` reaches
    `App::perform`, which hands it to the owning panel. Mouse events go

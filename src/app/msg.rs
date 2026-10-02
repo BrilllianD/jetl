@@ -52,6 +52,8 @@ impl App {
             AppMsg::FsChanged { .. } | AppMsg::WatcherStarted { .. } | AppMsg::DiskText { .. } => {
                 tracing::debug!("dropping stale watcher message");
             }
+            AppMsg::FsOpDone { generation, op, result } if generation == self.workspace.generation => self.fs_op_done(op, result),
+            AppMsg::FsOpDone { op, .. } => tracing::debug!("dropping file operation result of a previous root: {op:?}"),
             AppMsg::Lsp(_) => {}
         }
     }

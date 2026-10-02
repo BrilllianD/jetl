@@ -23,6 +23,14 @@ impl App {
                 Effect::OpenFile(p) => self.open_file(p, true),
                 Effect::OpenFileAt { path, line, col } => self.open_file_at(path, line, col),
                 Effect::Dialog(d) => self.dialog = Some(d),
+                Effect::ContextMenu(mut m) => {
+                    // One shortcut per row (the shortest) keeps the menu narrow.
+                    for item in &mut m.items {
+                        item.shortcut =
+                            self.keymap.bindings_for(&item.action, item.action.contexts()).into_iter().next().unwrap_or_default();
+                    }
+                    self.menu = Some(m);
+                }
                 Effect::FileSaved { path: p, quiet } => {
                     if !quiet {
                         self.notify(Level::Info, format!("Saved {}", p.file_name().map(|n| n.to_string_lossy()).unwrap_or_default()));

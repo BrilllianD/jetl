@@ -19,6 +19,14 @@ pub enum DialogId {
     /// Keyed by buffer, not tab index: tabs can open while the dialog is up.
     CloseTabDirty(crate::editor::buffer::BufferId),
     CloseAllDirty,
+    /// Tree: File or Directory, then a name, created in the directory.
+    TreeNewKind(std::path::PathBuf),
+    TreeNew {
+        dir: std::path::PathBuf,
+        is_dir: bool,
+    },
+    TreeRename(std::path::PathBuf),
+    TreeDelete(std::path::PathBuf),
     /// Replace every Find window result with its replacement text.
     ReplaceInFiles,
     /// Explicit save of a file changed on disk: Overwrite / Reload / Cancel.

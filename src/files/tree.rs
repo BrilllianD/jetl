@@ -8,11 +8,13 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 
-use crate::actions::TreeAction;
+use crate::actions::{Action, TreeAction};
 use crate::app::Ctx;
 use crate::config::theme::Theme;
-use crate::event::Mouse;
+use crate::event::{Effect, Level, Mouse};
 use crate::git::model::FileStatus;
+use crate::ui::dialog::{Dialog, DialogId};
+use crate::ui::menu::{ContextMenu, MenuItem};
 use crate::ui::tool_window_block;
 use crate::ui::widgets::list::ListState;
 
@@ -62,6 +64,9 @@ pub struct ProjectPanel {
     show_hidden: bool,
     show_ignored: bool,
     status: HashMap<PathBuf, FileStatus>,
+    /// Speed search: typed text narrows the rows to matching names (and
+    /// their folders) among the loaded entries.
+    filter: String,
     /// At most one refresh walk at a time.
     refresh: crate::util::coalesce::Coalesce,
     /// Last refresh requested and last one applied.
@@ -95,6 +100,7 @@ impl ProjectPanel {
             show_hidden,
             show_ignored,
             status: HashMap::new(),
+            filter: String::new(),
             refresh: Default::default(),
             refresh_seq: 0,
             applied_seq: 0,
@@ -148,7 +154,27 @@ impl ProjectPanel {
         self.refresh.done().then(|| self.refresh_request())
     }
 
-    fn merge_refresh(&mut self, seq: u64, mut listing: DirListing) -> bool {
+    fn merge_refresh(&mut self, seq: u64, listing: DirListing) -> bool {
+        if seq < self.applied_seq {
+            return false;
+        }
+        self.applied_seq = seq;
+        self.merge_listing(listing);
+        true
+    }
+
+    /// Re-read one directory now (after a file operation in it), keeping
+    /// expansion and selection.
+    pub fn reload_dir(&mut self, dir: &Path) {
+        if self.lists(dir) {
+            self.merge_listing(HashMap::from([(dir.to_path_buf(), read_children(dir, self.show_hidden, self.show_ignored))]));
+        } else if let Some(n) = self.node_mut(dir) {
+            // Collapsed: forget the old listing; expanding reads it afresh.
+            n.children = None;
+        }
+    }
+
+    fn merge_listing(&mut self, mut listing: DirListing) {
         fn merge(old: Vec<Node>, dir: &Path, listing: &mut DirListing) -> Vec<Node> {
             let Some(mut fresh) = listing.remove(dir) else {
                 // Not re-read: keep as is, but descend for deeper listings.
@@ -175,10 +201,6 @@ impl ProjectPanel {
             }
             fresh
         }
-        if seq < self.applied_seq {
-            return false;
-        }
-        self.applied_seq = seq;
         let selected = self.selected_row().map(|r| r.path.clone());
         let nodes = std::mem::take(&mut self.nodes);
         self.nodes = merge(nodes, &self.root.clone(), &mut listing);
@@ -186,7 +208,11 @@ impl ProjectPanel {
         if let Some(i) = selected.and_then(|p| self.rows.iter().position(|r| r.path == p)) {
             self.list.select(i);
         }
-        true
+    }
+
+    #[cfg(test)]
+    pub fn row_names(&self) -> Vec<String> {
+        self.rows.iter().map(|r| r.name.clone()).collect()
     }
 
     #[cfg(test)]
@@ -205,7 +231,11 @@ impl ProjectPanel {
     /// Whether the tree lists the entries of `dir` (the root or an expanded
     /// directory), so a change inside it shows.
     pub fn lists(&self, dir: &Path) -> bool {
-        dir == self.root || self.rows.iter().any(|r| r.is_dir && r.expanded && r.path == dir)
+        fn find<'a>(nodes: &'a [Node], path: &Path) -> Option<&'a Node> {
+            let n = nodes.iter().find(|n| path.starts_with(&n.path))?;
+            if n.path == path { Some(n) } else { find(n.children.as_deref()?, path) }
+        }
+        dir == self.root || find(&self.nodes, dir).is_some_and(|n| n.is_dir && n.expanded)
     }
 
     fn reflatten(&mut self) {
@@ -220,10 +250,153 @@ impl ProjectPanel {
                 }
             }
         }
+        /// Rows whose name contains `filter`, with the folders leading to
+        /// them shown open; returns whether any row matched.
+        fn walk_filtered(nodes: &[Node], depth: usize, filter: &str, out: &mut Vec<Row>) -> bool {
+            let mut any = false;
+            for n in nodes {
+                let mut sub = Vec::new();
+                let inner = n.children.as_deref().is_some_and(|c| walk_filtered(c, depth + 1, filter, &mut sub));
+                if inner || n.name.to_lowercase().contains(filter) {
+                    let expanded = n.expanded || inner;
+                    out.push(Row { path: n.path.clone(), name: n.name.clone(), is_dir: n.is_dir, expanded, depth });
+                    out.append(&mut sub);
+                    any = true;
+                }
+            }
+            any
+        }
         let mut rows = Vec::new();
-        walk(&self.nodes, 0, &mut rows);
+        if self.filter.is_empty() {
+            walk(&self.nodes, 0, &mut rows);
+        } else {
+            walk_filtered(&self.nodes, 0, &self.filter.to_lowercase(), &mut rows);
+        }
         self.rows = rows;
         self.list.set_len(self.rows.len());
+    }
+
+    /// Typing narrows the tree (speed search): printable keys extend the
+    /// filter, Backspace shortens it, Esc clears it. False for other keys
+    /// and for Space, Backspace and Esc with no filter (tree bindings).
+    pub fn handle_key(&mut self, key: crossterm::event::KeyEvent) -> bool {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        if key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) {
+            return false;
+        }
+        match key.code {
+            KeyCode::Char(' ') if self.filter.is_empty() => return false,
+            KeyCode::Char(c) => self.filter.push(c),
+            KeyCode::Backspace if !self.filter.is_empty() => {
+                self.filter.pop();
+            }
+            KeyCode::Esc if !self.filter.is_empty() => self.filter.clear(),
+            _ => return false,
+        }
+        let keep = self.selected_row().map(|r| r.path.clone());
+        self.reflatten();
+        // Select the first name that matches, else stay on the same entry.
+        let f = self.filter.to_lowercase();
+        let first = (!f.is_empty()).then(|| self.rows.iter().position(|r| r.name.to_lowercase().contains(&f))).flatten();
+        if let Some(i) = first.or_else(|| keep.and_then(|p| self.rows.iter().position(|r| r.path == p))) {
+            self.list.select(i);
+        }
+        true
+    }
+
+    pub fn filter(&self) -> &str {
+        &self.filter
+    }
+
+    /// The directory new entries go to: the selected directory, or the
+    /// selected file's directory, or the root.
+    fn target_dir(&self) -> PathBuf {
+        match self.selected_row() {
+            Some(r) if r.is_dir => r.path.clone(),
+            Some(r) => r.path.parent().map(Path::to_path_buf).unwrap_or_else(|| self.root.clone()),
+            None => self.root.clone(),
+        }
+    }
+
+    fn rel(&self, p: &Path) -> String {
+        let rel = p.strip_prefix(&self.root).unwrap_or(p).to_string_lossy().replace('\\', "/");
+        if rel.is_empty() { ".".into() } else { rel }
+    }
+
+    /// Menu for the selected row (`row`) or for empty space (`None`).
+    fn context_menu(&self, row: Option<&Row>, x: u16, y: u16) -> ContextMenu {
+        let t = |a| Action::Tree(a);
+        let on_row = row.is_some();
+        let check = |on: bool| if on { "[x]" } else { "[ ]" };
+        ContextMenu::new(
+            vec![
+                MenuItem::new("New File…", t(TreeAction::NewFile)),
+                MenuItem::new("New Directory…", t(TreeAction::NewDir)),
+                MenuItem::new("Rename…", t(TreeAction::Rename)).enabled(on_row),
+                MenuItem::new("Delete…", t(TreeAction::Delete)).enabled(on_row),
+                MenuItem::new("Copy Path", t(TreeAction::CopyPath)).enabled(on_row),
+                MenuItem::new("Copy Relative Path", t(TreeAction::CopyRelPath)).enabled(on_row),
+                MenuItem::new(format!("{} Show Hidden Files", check(self.show_hidden)), t(TreeAction::ToggleHidden)),
+                MenuItem::new(format!("{} Show Ignored Files", check(self.show_ignored)), t(TreeAction::ToggleIgnored)),
+                MenuItem::new("Refresh", t(TreeAction::Refresh)),
+            ],
+            x,
+            y,
+        )
+    }
+
+    fn file_action(&mut self, a: &TreeAction, cx: &mut Ctx) {
+        let row = self.selected_row().cloned();
+        match a {
+            TreeAction::New => {
+                let d = Dialog::choice(DialogId::TreeNewKind(self.target_dir()), "New", "", vec!["File".into(), "Directory".into()]);
+                cx.effects.push(Effect::Dialog(d));
+            }
+            TreeAction::NewFile | TreeAction::NewDir => {
+                cx.effects.push(Effect::Dialog(new_entry_dialog(&self.target_dir(), &self.root, *a == TreeAction::NewDir)));
+            }
+            TreeAction::Rename => {
+                let Some(r) = row else { return };
+                let msg = format!("Rename {}:", self.rel(&r.path));
+                let d = Dialog::input(DialogId::TreeRename(r.path.clone()), "Rename", &msg, &r.name, "Rename");
+                cx.effects.push(Effect::Dialog(d));
+            }
+            TreeAction::Delete => {
+                let Some(r) = row else { return };
+                let what = if r.is_dir { "directory" } else { "file" };
+                let msg = format!(
+                    "Delete the {what} {}{}?\nThis cannot be undone. Open tabs of it close; unsaved edits there are lost.",
+                    self.rel(&r.path),
+                    if r.is_dir { " and everything in it" } else { "" }
+                );
+                cx.effects.push(Effect::Dialog(Dialog::confirm(DialogId::TreeDelete(r.path), "Delete", &msg, &["Delete", "Cancel"])));
+            }
+            TreeAction::CopyPath | TreeAction::CopyRelPath => {
+                let Some(r) = row else { return };
+                let text = if *a == TreeAction::CopyPath { r.path.display().to_string() } else { self.rel(&r.path) };
+                cx.notify(Level::Info, format!("Copied {text}"));
+                cx.effects.push(Effect::Clipboard(text));
+            }
+            TreeAction::ToggleHidden | TreeAction::ToggleIgnored => {
+                let (flag, what) =
+                    if *a == TreeAction::ToggleHidden { (&mut self.show_hidden, "Hidden") } else { (&mut self.show_ignored, "Ignored") };
+                *flag = !*flag;
+                let state = if *flag { "shown" } else { "hidden" };
+                cx.notify(Level::Info, format!("{what} files {state} in the Project tree"));
+                cx.effects.push(Effect::RefreshTree);
+            }
+            TreeAction::ContextMenu => {
+                let (x, y) = match self.list.selected.checked_sub(self.list.offset) {
+                    Some(vi) if row.is_some() && (vi as u16) < self.inner.height => {
+                        let depth = row.as_ref().map_or(0, |r| r.depth) as u16;
+                        (self.inner.x + depth * 2 + 2, self.inner.y + vi as u16)
+                    }
+                    _ => (self.inner.x + 2, self.inner.y),
+                };
+                cx.effects.push(Effect::ContextMenu(self.context_menu(row.as_ref(), x, y)));
+            }
+            _ => {}
+        }
     }
 
     fn node_mut(&mut self, path: &Path) -> Option<&mut Node> {
@@ -327,7 +500,17 @@ impl ProjectPanel {
                 }
             }
             TreeAction::Open => self.open_or_toggle(cx),
-            TreeAction::Refresh => cx.effects.push(crate::event::Effect::RefreshTree),
+            TreeAction::Refresh => cx.effects.push(Effect::RefreshTree),
+            TreeAction::New
+            | TreeAction::NewFile
+            | TreeAction::NewDir
+            | TreeAction::Rename
+            | TreeAction::Delete
+            | TreeAction::CopyPath
+            | TreeAction::CopyRelPath
+            | TreeAction::ToggleHidden
+            | TreeAction::ToggleIgnored
+            | TreeAction::ContextMenu => self.file_action(a, cx),
             TreeAction::SelectInProject => return false,
         }
         true
@@ -351,6 +534,14 @@ impl ProjectPanel {
 
     pub fn handle_mouse(&mut self, m: &Mouse, _area: Rect, cx: &mut Ctx) -> bool {
         match m.kind {
+            MouseEventKind::Down(MouseButton::Right) => {
+                let row = self.list.hit(self.inner, m.x, m.y).map(|i| {
+                    self.list.select(i);
+                    self.rows[i].clone()
+                });
+                cx.effects.push(Effect::ContextMenu(self.context_menu(row.as_ref(), m.x, m.y)));
+                true
+            }
             MouseEventKind::Down(MouseButton::Left) => {
                 let Some(i) = self.list.hit(self.inner, m.x, m.y) else { return false };
                 self.list.select(i);
@@ -381,8 +572,15 @@ impl ProjectPanel {
     pub fn render(&mut self, frame: &mut Frame, area: Rect, focused: bool, theme: &Theme) {
         let title = format!(" Project: {} ", self.root.file_name().map(|n| n.to_string_lossy()).unwrap_or_default());
         let block = tool_window_block(&title, focused, theme);
-        let inner = block.inner(area);
+        let mut inner = block.inner(area);
         frame.render_widget(block, area);
+        // Speed search: the typed text sits on the last row.
+        if !self.filter.is_empty() && inner.height > 1 {
+            inner.height -= 1;
+            let style = if self.rows.is_empty() { theme.warn } else { theme.dim };
+            let text = format!("Filter: {}", self.filter);
+            frame.buffer_mut().set_stringn(inner.x, inner.bottom(), &text, inner.width as usize, style);
+        }
         self.inner = inner;
         self.list.set_viewport(inner.height as usize);
         let screen = frame.buffer_mut();
@@ -420,6 +618,14 @@ impl ProjectPanel {
             }
         }
     }
+}
+
+/// Name prompt for a new file or directory in `dir`.
+pub fn new_entry_dialog(dir: &Path, root: &Path, is_dir: bool) -> Dialog {
+    let rel = dir.strip_prefix(root).unwrap_or(dir).display().to_string();
+    let (title, what) = if is_dir { ("New Directory", "directory") } else { ("New File", "file") };
+    let msg = format!("New {what} in {}/ (a/b creates folders too):", if rel.is_empty() { "." } else { &rel });
+    Dialog::input(DialogId::TreeNew { dir: dir.to_path_buf(), is_dir }, title, &msg, "", "Create")
 }
 
 #[cfg(test)]

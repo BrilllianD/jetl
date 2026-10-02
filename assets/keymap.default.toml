@@ -138,6 +138,16 @@
 "home" = "tree.home"
 "end" = "tree.end"
 "f5" = "tree.refresh"
+"alt-insert" = "tree.new"
+"shift-f6" = "tree.rename"
+"delete" = "tree.delete"
+"ctrl-shift-c" = "tree.copy_path"
+# Ctrl+Shift+C needs the kitty protocol; Ctrl+C is the legacy fallback.
+"ctrl-c" = "tree.copy_path"
+# Ctrl+Alt+Shift+C needs the kitty protocol; the context menu has the item.
+"ctrl-alt-shift-c" = "tree.copy_rel_path"
+"shift-f10" = "tree.context_menu"
+# Typing filters the tree (speed search); Esc clears the filter first.
 "esc" = "app.focus_editor"
 
 [git]

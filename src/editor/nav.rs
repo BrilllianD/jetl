@@ -1,7 +1,7 @@
 //! Back/forward navigation history (Ctrl+Alt+Left/Right): caret positions
 //! left by jumps and tab switches.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use super::buffer::BufferId;
 
@@ -56,9 +56,26 @@ impl NavRing {
         self.forward.clear();
     }
 
+    /// Follow a rename: positions in `from` or under it move to `to`.
+    pub fn retarget(&mut self, from: &Path, to: &Path) {
+        for p in self.back.iter_mut().chain(self.forward.iter_mut()) {
+            if let Some(path) = &mut p.path
+                && let Some(moved) = moved_path(path, from, to)
+            {
+                *path = moved;
+            }
+        }
+    }
+
     pub fn sizes(&self) -> (usize, usize) {
         (self.back.len(), self.forward.len())
     }
+}
+
+/// `path` after `from` is renamed to `to`, when it is `from` or lies under it.
+pub fn moved_path(path: &Path, from: &Path, to: &Path) -> Option<PathBuf> {
+    let rest = path.strip_prefix(from).ok()?;
+    Some(if rest.as_os_str().is_empty() { to.to_path_buf() } else { to.join(rest) })
 }
 
 fn step(from: &mut Vec<NavPos>, to: &mut Vec<NavPos>, current: Option<NavPos>, usable: impl Fn(&NavPos) -> bool) -> Option<NavPos> {

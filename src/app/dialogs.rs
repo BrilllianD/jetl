@@ -2,6 +2,7 @@
 
 use super::{App, Ctx};
 use crate::event::Level;
+use crate::files::ops::{FsOp, check_name};
 use crate::git::GitOp;
 use crate::ui::dialog::{Dialog, DialogId, DialogResult};
 use crate::ui::focus::PanelId;
@@ -118,6 +119,19 @@ impl App {
                 }
                 self.do_switch_root(root);
             }
+            (DialogId::TreeNewKind(dir), DialogResult::Choice(i)) => {
+                self.dialog = Some(crate::files::tree::new_entry_dialog(&dir, &self.workspace.root, i == 1));
+            }
+            (DialogId::TreeNew { dir, is_dir }, DialogResult::Text(t)) => match check_name(&t, true) {
+                Ok(()) => self.run_fs_op(FsOp::Create { path: dir.join(t.trim()), is_dir }),
+                Err(e) => self.notify(Level::Warn, format!("New {}: {e}", if is_dir { "directory" } else { "file" })),
+            },
+            (DialogId::TreeRename(path), DialogResult::Text(t)) => match check_name(&t, false) {
+                Ok(()) if path.file_name().is_some_and(|n| n == t.trim()) => {}
+                Ok(()) => self.run_fs_op(FsOp::Rename { to: path.with_file_name(t.trim()), from: path }),
+                Err(e) => self.notify(Level::Warn, format!("Rename: {e}")),
+            },
+            (DialogId::TreeDelete(path), DialogResult::Button(0)) => self.run_fs_op(FsOp::Delete { path }),
             (DialogId::Info, _) => {}
             (_, DialogResult::Cancel) => {}
             (

@@ -1,5 +1,6 @@
 pub mod find;
 pub mod find_panel;
+pub mod ops;
 pub mod tree;
 pub mod walk;
 pub mod watch;

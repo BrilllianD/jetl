@@ -119,6 +119,17 @@ pub enum EditorAction {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum TreeAction {
+    /// New file or directory (asks which).
+    New,
+    NewFile,
+    NewDir,
+    Rename,
+    Delete,
+    CopyPath,
+    CopyRelPath,
+    ToggleHidden,
+    ToggleIgnored,
+    ContextMenu,
     Up,
     Down,
     Expand,
@@ -341,6 +352,16 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "tree.page_down" => "Tree: page down", Tree(TreeAction::PageDown);
         "tree.home" => "Tree: first", Tree(TreeAction::Home);
         "tree.end" => "Tree: last", Tree(TreeAction::End);
+        "tree.new" => "Tree: new file or directory", Tree(TreeAction::New);
+        "tree.new_file" => "Tree: new file", Tree(TreeAction::NewFile);
+        "tree.new_dir" => "Tree: new directory", Tree(TreeAction::NewDir);
+        "tree.rename" => "Tree: rename", Tree(TreeAction::Rename);
+        "tree.delete" => "Tree: delete", Tree(TreeAction::Delete);
+        "tree.copy_path" => "Tree: copy absolute path", Tree(TreeAction::CopyPath);
+        "tree.copy_rel_path" => "Tree: copy path relative to the project", Tree(TreeAction::CopyRelPath);
+        "tree.toggle_hidden" => "Tree: show or hide hidden files", Tree(TreeAction::ToggleHidden);
+        "tree.toggle_ignored" => "Tree: show or hide ignored files", Tree(TreeAction::ToggleIgnored);
+        "tree.context_menu" => "Tree: context menu", Tree(TreeAction::ContextMenu);
 
         "git.refresh" => "Git: refresh", Git(GitAction::Refresh);
         "git.toggle_stage" => "Git: stage/unstage selected", Git(GitAction::ToggleStage);

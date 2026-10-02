@@ -39,6 +39,7 @@ macro_rules! ctx {
 // Declared after `ctx!` so the submodules can use it.
 mod dialogs;
 mod effects;
+mod files;
 mod find;
 mod mouse;
 mod msg;
@@ -128,6 +129,9 @@ pub struct App {
     pub dialog: Option<Dialog>,
     /// Command palette overlay; captures input like a dialog.
     pub palette: Option<Palette>,
+    /// Context menu overlay (right click, Shift+F10); takes input like a
+    /// dialog, below dialogs.
+    pub menu: Option<crate::ui::menu::ContextMenu>,
     pub file_index: FileIndex,
     /// A failed branch load was already reported to the open palette.
     branches_error_shown: bool,
@@ -182,6 +186,7 @@ impl App {
             toasts: Default::default(),
             dialog: None,
             palette: None,
+            menu: None,
             file_index: FileIndex::default(),
             branches_error_shown: false,
             status_hits: Vec::new(),
@@ -413,6 +418,20 @@ impl App {
             }
             return;
         }
+        if let Some(m) = &mut self.menu {
+            if key.kind == crossterm::event::KeyEventKind::Release || matches!(key.code, KeyCode::Modifier(_)) {
+                return;
+            }
+            match m.handle_key(key) {
+                Some(crate::ui::menu::MenuResult::Run(a)) => {
+                    self.menu = None;
+                    self.perform(a);
+                }
+                Some(crate::ui::menu::MenuResult::Cancel) => self.menu = None,
+                None => {}
+            }
+            return;
+        }
         if self.palette.is_some() {
             self.palette_key(key);
             return;
@@ -450,6 +469,11 @@ impl App {
                 self.dispatcher.reset();
                 return;
             }
+        }
+        // And for the tree's speed search.
+        if self.focus.is(PanelId::Project) && key.kind != crossterm::event::KeyEventKind::Release && self.project.handle_key(key) {
+            self.dispatcher.reset();
+            return;
         }
         let contexts = self.contexts();
         let r = self.dispatcher.dispatch(key, &contexts, Some(self.mode), &self.keymap);
@@ -975,6 +999,153 @@ pub(crate) mod tests {
         app.handle_msg(msg);
         assert_eq!(std::fs::read_to_string(&b_path).unwrap(), "let bar = 1;\nbar(bar);\n");
         assert!(app.notifications.iter().any(|n| n.text == "Replaced 4 matches in 2 files"), "{:?}", app.notifications);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Wait for the first bus message `want` accepts and handle it; other
+    /// messages are dropped.
+    async fn handle_next(app: &mut App, want: impl Fn(&AppMsg) -> bool) {
+        let msg = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                match app.bus_rx.recv().await {
+                    Some(m) if want(&m) => break m,
+                    Some(_) => {}
+                    None => panic!("bus closed"),
+                }
+            }
+        })
+        .await
+        .expect("message in time");
+        app.handle_msg(msg);
+    }
+
+    fn fs_op_done(m: &AppMsg) -> bool {
+        matches!(m, AppMsg::FsOpDone { .. })
+    }
+
+    #[tokio::test]
+    async fn tree_new_file_creates_opens_and_selects_it() {
+        let (mut app, dir) = test_app("tree-new");
+        let root = app.workspace.root.clone();
+        let path = root.join("src/new.rs");
+        app.finish_dialog(DialogId::TreeNew { dir: root.clone(), is_dir: false }, DialogResult::Text(" src/new.rs ".into()));
+        handle_next(&mut app, fs_op_done).await;
+        assert!(path.is_file());
+        assert_eq!(app.project.selected_row().map(|r| r.path.clone()), Some(path.clone()), "new folders expand to it");
+        handle_next(&mut app, |m| matches!(m, AppMsg::FileLoaded { .. })).await;
+        assert_eq!(app.editor.active_path(), Some(path.as_path()));
+        // A taken name fails without touching the file.
+        std::fs::write(&path, "keep").unwrap();
+        app.finish_dialog(DialogId::TreeNew { dir: root.join("src"), is_dir: false }, DialogResult::Text("new.rs".into()));
+        handle_next(&mut app, fs_op_done).await;
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "keep");
+        assert!(app.notifications.last().is_some_and(|n| n.level == Level::Error && n.text.starts_with("Cannot create src/new.rs")));
+        app.finish_dialog(DialogId::TreeNew { dir: root, is_dir: true }, DialogResult::Text("../out".into()));
+        assert!(app.notifications.last().is_some_and(|n| n.level == Level::Warn), "checked before running");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn tree_rename_retargets_open_tabs() {
+        let (mut app, dir) = test_app("tree-rename");
+        let root = app.workspace.root.clone();
+        let a = load(&mut app, "a.txt", "a\n");
+        type_text(&mut app, "mine ");
+        app.finish_dialog(DialogId::TreeRename(a.clone()), DialogResult::Text("b.txt".into()));
+        handle_next(&mut app, fs_op_done).await;
+        let b = root.join("b.txt");
+        assert!(b.is_file() && !a.exists());
+        assert_eq!(app.editor.buffers[0].path.as_deref(), Some(b.as_path()));
+        assert_eq!(app.editor.buffers[0].name, "b.txt");
+        assert_eq!(app.editor.buffers[0].text(), "mine a\n", "unsaved edits stay");
+        assert_eq!(app.project.selected_row().map(|r| r.path.clone()), Some(b));
+        // Tabs under a renamed directory follow it.
+        std::fs::create_dir_all(root.join("d")).unwrap();
+        let x = load(&mut app, "d/x.txt", "x\n");
+        app.finish_dialog(DialogId::TreeRename(root.join("d")), DialogResult::Text("e".into()));
+        handle_next(&mut app, fs_op_done).await;
+        assert!(!x.exists());
+        assert_eq!(app.editor.active_path(), Some(root.join("e/x.txt").as_path()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn tree_delete_directory_closes_its_tabs() {
+        let (mut app, dir) = test_app("tree-delete");
+        let root = app.workspace.root.clone();
+        std::fs::create_dir_all(root.join("d/sub")).unwrap();
+        load(&mut app, "a.txt", "a\n");
+        load(&mut app, "d/x.txt", "x\n");
+        load(&mut app, "d/sub/y.txt", "y\n");
+        type_text(&mut app, "unsaved ");
+        app.finish_dialog(DialogId::TreeDelete(root.join("d")), DialogResult::Button(1));
+        assert!(root.join("d").exists(), "Cancel keeps it");
+        app.finish_dialog(DialogId::TreeDelete(root.join("d")), DialogResult::Button(0));
+        handle_next(&mut app, fs_op_done).await;
+        assert!(!root.join("d").exists());
+        let names = app.editor.buffers.iter().map(|b| b.name.clone()).collect::<Vec<_>>();
+        assert_eq!(names, ["a.txt"]);
+        assert!(app.notifications.iter().any(|n| n.text == "Deleted d (closed 2 tabs)"), "{:?}", app.notifications);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn tree_typing_filters_rows_and_esc_clears() {
+        use crossterm::event::KeyModifiers;
+        let (mut app, dir) = test_app("tree-filter");
+        let root = app.workspace.root.clone();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        for f in ["alpha.txt", "beta.txt", "src/lib.rs"] {
+            std::fs::write(root.join(f), "").unwrap();
+        }
+        app.project.refresh();
+        app.project.select_path(&root.join("src/lib.rs"));
+        app.focus.set(PanelId::Project);
+        let key = |c| KeyEvent::new(c, KeyModifiers::NONE);
+        let rows = |app: &App| app.project.row_names();
+        app.handle_key(key(KeyCode::Char('l')));
+        app.handle_key(key(KeyCode::Char('i')));
+        assert_eq!(rows(&app), ["src", "lib.rs"], "matches with their folders");
+        assert_eq!(app.project.selected_row().map(|r| r.name.as_str()), Some("lib.rs"));
+        app.handle_key(key(KeyCode::Char('x')));
+        assert!(rows(&app).is_empty());
+        app.handle_key(key(KeyCode::Backspace));
+        assert_eq!(app.project.filter(), "li");
+        app.handle_key(key(KeyCode::Esc));
+        assert_eq!(app.project.filter(), "");
+        assert_eq!(rows(&app), ["src", "lib.rs", "alpha.txt", "beta.txt"]);
+        assert!(app.focus.is(PanelId::Project), "the first Esc only clears");
+        app.handle_key(key(KeyCode::Esc));
+        assert!(app.focus.is(PanelId::Editor));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn tree_right_click_opens_menu_and_enter_runs_an_item() {
+        use crossterm::event::{KeyModifiers, MouseEvent, MouseEventKind};
+        let (mut app, dir) = test_app("tree-menu");
+        let root = app.workspace.root.clone();
+        std::fs::write(root.join("a.txt"), "").unwrap();
+        app.project.refresh();
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+        let frame = term.draw(|f| crate::ui::render(&mut app, f)).unwrap();
+        let (x, y) = (0..30u16)
+            .flat_map(|y| (0..90u16).map(move |x| (x, y)))
+            .find(|&(x, y)| (0..5).all(|i| frame.buffer[(x + i, y)].symbol() == &"a.txt"[i as usize..=i as usize]))
+            .expect("a.txt row drawn");
+        let mouse = |kind| MouseEvent { kind, column: x, row: y, modifiers: KeyModifiers::NONE };
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Right)));
+        app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Right)));
+        let menu = app.menu.as_ref().expect("menu open");
+        assert_eq!(app.project.selected_row().map(|r| r.name.as_str()), Some("a.txt"));
+        let rename = menu.items.iter().find(|i| i.label.starts_with("Rename")).unwrap();
+        assert!(rename.enabled);
+        assert_eq!(rename.shortcut, "Shift+F6");
+        term.draw(|f| crate::ui::render(&mut app, f)).unwrap();
+        // The first item, New File, asks for a name in the row's folder.
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(app.menu.is_none());
+        assert_eq!(app.dialog.as_ref().map(|d| d.id.clone()), Some(DialogId::TreeNew { dir: root, is_dir: false }));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

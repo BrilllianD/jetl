@@ -361,6 +361,34 @@ impl Editor {
         self.set_active(next);
     }
 
+    /// Follow a rename of `from` (a file or a directory) to `to`: tabs of
+    /// it or under it keep their text and history under the new path.
+    pub fn retarget(&mut self, from: &Path, to: &Path) {
+        for b in &mut self.buffers {
+            if let Some(moved) = b.path.as_deref().and_then(|p| nav::moved_path(p, from, to)) {
+                b.name = moved.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                b.path = Some(moved);
+            }
+        }
+        if let Some((p, _)) = &mut self.pending_nav
+            && let Some(moved) = nav::moved_path(p, from, to)
+        {
+            *p = moved;
+        }
+        self.nav.retarget(from, to);
+    }
+
+    /// Close the tabs of `path` or under it, unsaved edits included (the
+    /// file was deleted).
+    pub fn close_under(&mut self, path: &Path) -> usize {
+        let mut closed = 0;
+        while let Some(i) = self.buffers.iter().position(|b| b.path.as_deref().is_some_and(|p| p.starts_with(path))) {
+            self.force_close(i);
+            closed += 1;
+        }
+        closed
+    }
+
     pub fn close_all(&mut self, cx: &mut Ctx) {
         if self.has_dirty() {
             cx.effects.push(Effect::Dialog(Dialog::confirm(
