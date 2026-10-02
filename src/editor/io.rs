@@ -12,7 +12,58 @@ use crate::config::Autosave;
 use crate::event::{Effect, Level};
 use crate::ui::dialog::{Dialog, DialogId};
 
+/// What an outside change of a file means for its tab.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiskChange {
+    /// Not open, our own save, deleted, or already asked about.
+    None,
+    /// The tab has no unsaved edits: read the file and swap it in.
+    Reload,
+    /// The tab at this index has unsaved edits: ask (once).
+    Conflict(usize),
+}
+
 impl Editor {
+    /// Classify a change the watcher saw at `path`.
+    pub fn on_disk_change(&mut self, path: &Path) -> DiskChange {
+        let Some(i) = self.index_of(path) else { return DiskChange::None };
+        let b = &mut self.buffers[i];
+        if !disk_conflict(b) {
+            return DiskChange::None;
+        }
+        if !b.dirty() {
+            return DiskChange::Reload;
+        }
+        if b.autosave_conflict {
+            return DiskChange::None;
+        }
+        b.autosave_conflict = true;
+        DiskChange::Conflict(i)
+    }
+
+    /// Swap in the disk text of `path` if its tab still has no unsaved
+    /// edits and the file still differs from what the tab last saw.
+    pub fn reload_clean(&mut self, path: &Path, text: String) -> bool {
+        let Some(i) = self.index_of(path) else { return false };
+        let b = &mut self.buffers[i];
+        if b.dirty() || !b.changed_on_disk() {
+            return false;
+        }
+        replace_with_disk_text(b, text, path);
+        true
+    }
+
+    /// Overwrite / Reload / Cancel for tab `i`, whose file changed on disk
+    /// under unsaved edits.
+    pub fn conflict_dialog(&self, i: usize) -> Option<Dialog> {
+        let b = self.buffers.get(i)?;
+        let msg = format!(
+            "{} changed on disk since it was opened or saved.\nOverwrite it with your version, or reload it and drop your edits?",
+            b.name
+        );
+        Some(Dialog::confirm(DialogId::OverwriteExternal(b.id), "File changed on disk", &msg, &["Overwrite", "Reload", "Cancel"]))
+    }
+
     /// Write buffer `i` to disk atomically. Synchronous on purpose: saves are
     /// small and the result must be known before quitting. A file changed
     /// on disk since it was loaded or saved is not written; the user picks
@@ -20,12 +71,7 @@ impl Editor {
     pub fn save(&mut self, i: usize, cx: &mut Ctx) -> bool {
         let Some(b) = self.buffers.get(i) else { return false };
         if b.dirty() && disk_conflict(b) {
-            let msg = format!(
-                "{} changed on disk since it was opened or saved.\nOverwrite it with your version, or reload it and drop your edits?",
-                b.name
-            );
-            let d = Dialog::confirm(DialogId::OverwriteExternal(b.id), "File changed on disk", &msg, &["Overwrite", "Reload", "Cancel"]);
-            cx.effects.push(Effect::Dialog(d));
+            cx.effects.extend(self.conflict_dialog(i).map(Effect::Dialog));
             return false;
         }
         self.write(i, cx, false)

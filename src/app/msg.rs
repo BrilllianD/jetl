@@ -31,12 +31,22 @@ impl App {
             AppMsg::SessionLoaded { generation, session, files } => self.session_loaded(generation, session, files),
             AppMsg::TreeLoaded { generation, seq, dirs } => {
                 if generation == self.workspace.generation {
-                    self.project.finish_refresh(seq, dirs);
+                    if let Some(req) = self.project.finish_refresh(seq, dirs) {
+                        self.spawn_tree_refresh(req);
+                    }
                 } else {
                     tracing::debug!("dropping stale tree listing");
                 }
             }
             AppMsg::FileIndex { generation, seq, files } => self.file_index_loaded(generation, seq, files),
+            // Messages of a previous root are dropped; a stale watcher stops
+            // when its message is dropped.
+            AppMsg::FsChanged { generation, changes } if generation == self.workspace.generation => self.fs_changed(changes),
+            AppMsg::WatcherStarted { generation, result } if generation == self.workspace.generation => self.watcher_started(result),
+            AppMsg::DiskText { generation, path, result } if generation == self.workspace.generation => self.disk_text(path, result),
+            AppMsg::FsChanged { .. } | AppMsg::WatcherStarted { .. } | AppMsg::DiskText { .. } => {
+                tracing::debug!("dropping stale watcher message");
+            }
             AppMsg::Lsp(_) => {}
         }
     }
@@ -51,6 +61,7 @@ impl App {
         }
         match msg {
             GitMsg::Status { seq, result, .. } => {
+                self.git.status_done();
                 let prev_head = self.git_panel.snapshot().map(|s| s.head.clone());
                 let mut cx = ctx!(self);
                 let applied = self.git_panel.set_status(seq, result, &mut cx);

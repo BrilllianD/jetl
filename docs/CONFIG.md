@@ -63,7 +63,17 @@ mode = "default"               # "vim" turns on the [mode.*] keymap tables (rese
 [files]
 show_hidden = true             # show dot files in the Project tree and Go to File
 show_ignored = false           # show files ignored by .gitignore in the Project tree and Go to File
+watch = true                   # follow changes made outside jetl (tree, git state, open files)
 ```
+
+With `watch` on, files changed by other programs refresh the Project tree
+and the Git window, and an open tab reloads in place when it has no unsaved
+edits. A tab with unsaved edits asks: Overwrite (write yours now), Reload
+(take the disk version; undoable) or Cancel (decide when you save). Changes
+under `.git` (commits, checkouts, staging from a shell) refresh the Git
+window. If the watch cannot start (for example the inotify watch limit,
+`fs.inotify.max_user_watches`), jetl warns and falls back to refreshing when
+the terminal regains focus.
 
 Autosave writes every modified tab that has a file, silently (errors are
 still shown), and applies `trim_trailing_whitespace` and `final_newline` like

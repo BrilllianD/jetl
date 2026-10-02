@@ -34,6 +34,22 @@ pub enum AppMsg {
         session: crate::workspace::Session,
         files: Vec<std::io::Result<Vec<u8>>>,
     },
+    /// A debounced batch of filesystem changes under the root.
+    FsChanged {
+        generation: u64,
+        changes: crate::files::watch::Changes,
+    },
+    /// The watcher started (it runs off the main thread) or could not.
+    WatcherStarted {
+        generation: u64,
+        result: anyhow::Result<crate::files::watch::Watcher>,
+    },
+    /// An open file read again after it changed on disk.
+    DiskText {
+        generation: u64,
+        path: PathBuf,
+        result: std::io::Result<Vec<u8>>,
+    },
     /// Re-read tree directories (`ProjectPanel::begin_refresh`), tagged
     /// with the workspace generation.
     TreeLoaded {

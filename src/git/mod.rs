@@ -146,6 +146,8 @@ pub struct GitService {
     tx: UnboundedSender<AppMsg>,
     next_id: u64,
     status_seq: AtomicU64,
+    /// At most one status walk at a time.
+    status: crate::util::coalesce::Coalesce,
     blob_seq: AtomicU64,
     /// Running operations (id, label), oldest first.
     pub busy: Vec<(u64, String)>,
@@ -160,6 +162,7 @@ impl GitService {
             tx,
             next_id: 1,
             status_seq: AtomicU64::new(0),
+            status: Default::default(),
             blob_seq: AtomicU64::new(0),
             busy: Vec::new(),
             tab_width: 4,
@@ -173,11 +176,12 @@ impl GitService {
         self.root = root;
         self.generation = generation;
         self.busy.clear();
+        self.status.reset();
     }
 
     #[cfg(test)]
     pub fn status_requests(&self) -> u64 {
-        self.status_seq.load(Ordering::SeqCst)
+        self.status.requests
     }
 
     pub fn is_busy(&self) -> bool {
@@ -201,7 +205,21 @@ impl GitService {
         });
     }
 
-    pub fn refresh_status(&self) {
+    /// Load the status, or once more after the walk in flight finishes.
+    pub fn refresh_status(&mut self) {
+        if self.status.request() {
+            self.spawn_status();
+        }
+    }
+
+    /// A status result of the current generation arrived.
+    pub fn status_done(&mut self) {
+        if self.status.done() {
+            self.spawn_status();
+        }
+    }
+
+    fn spawn_status(&self) {
         let seq = self.status_seq.fetch_add(1, Ordering::SeqCst) + 1;
         self.blocking(repo::status, move |generation, result| GitMsg::Status { generation, seq, result });
     }

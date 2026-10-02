@@ -62,6 +62,8 @@ pub struct ProjectPanel {
     show_hidden: bool,
     show_ignored: bool,
     status: HashMap<PathBuf, FileStatus>,
+    /// At most one refresh walk at a time.
+    refresh: crate::util::coalesce::Coalesce,
     /// Last refresh requested and last one applied.
     refresh_seq: u64,
     applied_seq: u64,
@@ -104,6 +106,7 @@ impl ProjectPanel {
             show_hidden,
             show_ignored,
             status: HashMap::new(),
+            refresh: Default::default(),
             refresh_seq: 0,
             applied_seq: 0,
         };
@@ -113,6 +116,7 @@ impl ProjectPanel {
 
     pub fn reroot(&mut self, root: PathBuf) {
         self.root = root;
+        self.refresh.reset();
         self.nodes = read_children(&self.root, self.show_hidden, self.show_ignored);
         self.list = ListState::default();
         self.reflatten();
@@ -128,7 +132,12 @@ impl ProjectPanel {
 
     /// Start a refresh: the root and every expanded directory, to be read
     /// with [`TreeRefresh::run`] and merged by [`ProjectPanel::finish_refresh`].
-    pub fn begin_refresh(&mut self) -> TreeRefresh {
+    /// `None` while one is running; it then runs again when that finishes.
+    pub fn begin_refresh(&mut self) -> Option<TreeRefresh> {
+        self.refresh.request().then(|| self.refresh_request())
+    }
+
+    fn refresh_request(&mut self) -> TreeRefresh {
         fn expanded(nodes: &[Node], out: &mut Vec<PathBuf>) {
             for n in nodes.iter().filter(|n| n.is_dir && n.expanded) {
                 out.push(n.path.clone());
@@ -143,8 +152,14 @@ impl ProjectPanel {
 
     /// Merge re-read directories, keeping expansion and the selected path.
     /// Directories expanded after the request keep the children they
-    /// loaded. Returns false for a refresh older than the last applied.
-    pub fn finish_refresh(&mut self, seq: u64, mut listing: DirListing) -> bool {
+    /// loaded; a refresh older than the last applied one is ignored.
+    /// Returns the refresh to run next when one was asked for meanwhile.
+    pub fn finish_refresh(&mut self, seq: u64, listing: DirListing) -> Option<TreeRefresh> {
+        self.merge_refresh(seq, listing);
+        self.refresh.done().then(|| self.refresh_request())
+    }
+
+    fn merge_refresh(&mut self, seq: u64, mut listing: DirListing) -> bool {
         fn merge(old: Vec<Node>, dir: &Path, listing: &mut DirListing) -> Vec<Node> {
             let Some(mut fresh) = listing.remove(dir) else {
                 // Not re-read: keep as is, but descend for deeper listings.
@@ -187,15 +202,21 @@ impl ProjectPanel {
 
     #[cfg(test)]
     pub fn refresh_requests(&self) -> u64 {
-        self.refresh_seq
+        self.refresh.requests
     }
 
     /// Re-read every expanded directory on this thread.
     #[cfg(test)]
     pub fn refresh(&mut self) {
-        let req = self.begin_refresh();
+        let req = self.begin_refresh().expect("no refresh running");
         let listing = req.run();
-        self.finish_refresh(req.seq, listing);
+        assert!(self.finish_refresh(req.seq, listing).is_none());
+    }
+
+    /// Whether the tree lists the entries of `dir` (the root or an expanded
+    /// directory), so a change inside it shows.
+    pub fn lists(&self, dir: &Path) -> bool {
+        dir == self.root || self.rows.iter().any(|r| r.is_dir && r.expanded && r.path == dir)
     }
 
     fn reflatten(&mut self) {
@@ -447,25 +468,28 @@ mod tests {
     }
 
     #[test]
-    fn late_or_overtaken_refresh_merges_safely() {
+    fn refreshes_coalesce_and_late_results_merge_safely() {
         let root = tmp_tree("late");
         let mut p = ProjectPanel::new(root.clone(), false, false);
-        let old = p.begin_refresh();
-        let old_listing = old.run();
-        // Expanded after the request: keeps the children it loaded.
+        let first = p.begin_refresh().unwrap();
+        let first_listing = first.run();
+        // Expanded while the walk runs: keeps the children it loaded.
         p.select_path(&root.join("b/two.txt"));
-        let new = p.begin_refresh();
+        assert!(p.begin_refresh().is_none(), "one walk at a time");
         std::fs::write(root.join("b/new.txt"), "").unwrap();
-        let new_listing = new.run();
-        assert!(p.finish_refresh(new.seq, new_listing));
+        let second = p.finish_refresh(first.seq, first_listing).expect("the held-back refresh runs next");
+        assert_eq!(names(&p), ["a", "b", "  two.txt", "c", "z.txt"]);
+        assert!(p.finish_refresh(second.seq, second.run()).is_none());
         assert_eq!(names(&p), ["a", "b", "  new.txt", "  two.txt", "c", "z.txt"]);
-        assert!(!p.finish_refresh(old.seq, old_listing), "older than the applied one");
+        // An older listing arriving late (its request was presumed lost) is ignored.
+        assert!(!p.merge_refresh(first.seq, HashMap::new()));
         assert_eq!(names(&p), ["a", "b", "  new.txt", "  two.txt", "c", "z.txt"]);
         // A listing without `c` (requested before it was expanded) leaves it.
-        let req = p.begin_refresh();
+        let req = p.begin_refresh().unwrap();
         p.select_path(&root.join("c/three.txt"));
         p.finish_refresh(req.seq, req.run());
         assert_eq!(names(&p), ["a", "b", "  new.txt", "  two.txt", "c", "  three.txt", "z.txt"]);
+        assert!(p.lists(&root.join("c")) && p.lists(&root) && !p.lists(&root.join("a")));
         let _ = std::fs::remove_dir_all(&root);
     }
 }

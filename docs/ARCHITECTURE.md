@@ -19,6 +19,7 @@ and backlog are in `docs/ROADMAP.md`; settings in `docs/CONFIG.md`; keys in
 | `app/dialogs.rs` | `request_quit`, `finish_dialog` (one arm per `DialogId` answer). |
 | `app/palette.rs` | Opening the palette, its keys, the file index, accepted rows. |
 | `app/mouse.rs` | Mouse routing: toasts, overlays, drags, splitters, tabs, status bar, panels. |
+| `app/watch.rs` | Starting the filesystem watcher and acting on its batches. |
 | `workspace.rs` | `Workspace` (root and generation), root switching (`App::switch_root`), sessions (JSON per root). |
 | `worktree/` | `git worktree` parsing and paths (`mod.rs`), the Worktrees tool window (`panel.rs`), the create/remove dialog flow (`flow.rs`, `impl App`). |
 | `actions.rs` | `Action` enums and `REGISTRY` (id, description, action). Keymaps and the palette refer to actions by id. |
@@ -31,12 +32,13 @@ and backlog are in `docs/ROADMAP.md`; settings in `docs/CONFIG.md`; keys in
 | `editor/view.rs` | `layout_line`: the grapheme walk shared by rendering, `visual_col` and `col_to_char`. |
 | `editor/…` | `selection`, `undo`, `syntax` (tree-sitter, language detection), `search`, `gutter` (git marks), `indent` (`.editorconfig`, detection), `brackets`, `expand`, `nav` (back/forward). |
 | `files/tree.rs` | Project tool window: lazy `ignore` walk, `TreeRefresh` off the main thread, git status colors. |
+| `files/watch.rs` | Debounced recursive watch of the root (notify); splits batches into working tree paths and a git flag. |
 | `git/mod.rs` | `GitService` (spawns work, tracks busy ops), `GitMsg`, `GitOp`, `GitRequest`. |
 | `git/repo.rs` | Synchronous git2 calls; each opens the repository itself. |
 | `git/cli.rs` | The `git` command line: network, switch, log/show, worktrees. No prompts, 120 s timeout. |
 | `git/{diff,model,panel}.rs` | Diff rows, shared types, the Git tool window (Commit, Log, Console). |
 | `ui/` | `render` (frame order), `layout` (rects and hit testing), `focus` (panel and tool window ids), `dialog`, `palette`, `status_bar`, `tabs`, `toasts`, `tool_strip`, `widgets/{list,text_input}`. |
-| `util/text.rs` | Width helpers. |
+| `util/` | `text` (width helpers), `coalesce` (one background request at a time). |
 
 ## Event flow
 
@@ -54,7 +56,11 @@ redraws when `dirty_frame` is set:
    panel, and the panel gets a `Mouse` with the click count resolved.
 2. **The bus** (`mpsc::unbounded_channel` of `AppMsg`). Background work
    reports here: file loads, sessions, the file index, tree listings,
-   worktree lists, and `AppMsg::Git(GitMsg)`.
+   worktree lists, `AppMsg::Git(GitMsg)`, and the filesystem watcher
+   (`FsChanged`: refresh the tree if a listed directory changed, refresh git
+   status, reload clean tabs in place, ask once about tabs with unsaved
+   edits). Without a watcher (off, or it failed to start), focus gain
+   refreshes instead.
 3. **A 100 ms tick**: toast expiry, gutter recomputation (debounces typing),
    the busy spinner, idle autosave.
 
@@ -101,7 +107,10 @@ Two tags:
   seq.
 
 New background work follows the same pattern: a generation always, a seq
-when the request can repeat while one is in flight. `GitMsg::OpDone` clears
+when the request can repeat while one is in flight. Requests that bursts can
+trigger (git status, tree refresh) also go through `util::Coalesce`: at most
+one runs, a request meanwhile runs once after it, and a root switch resets
+it. `GitMsg::OpDone` clears
 its busy id before the generation check, so the spinner never sticks.
 
 ## Conventions

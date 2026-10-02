@@ -42,6 +42,7 @@ mod effects;
 mod mouse;
 mod msg;
 mod palette;
+mod watch;
 
 /// What panels get while handling input.
 pub struct Ctx<'a> {
@@ -136,6 +137,8 @@ pub struct App {
     pub git_panel: GitPanel,
     pub git: GitService,
     pub editor: Editor,
+    /// Watches the root for outside changes; `None` when off or failed.
+    watcher: Option<crate::files::watch::Watcher>,
     started: Instant,
 }
 
@@ -184,6 +187,7 @@ impl App {
             git_panel,
             git,
             editor: Editor::new(&config),
+            watcher: None,
             started: Instant::now(),
             config,
             paths,
@@ -201,6 +205,7 @@ impl App {
         app.git.load_branches();
         app.git.load_worktrees();
         app.restore_session();
+        app.start_watcher();
         app
     }
 
@@ -341,8 +346,11 @@ impl App {
                 self.needs_clear = true;
             }
             Event::FocusGained => {
-                self.dirty_frame = true;
-                self.apply_effects(vec![Effect::GitRefresh]);
+                // The watcher reports outside changes as they happen.
+                if self.watcher.is_none() {
+                    self.dirty_frame = true;
+                    self.apply_effects(vec![Effect::GitRefresh]);
+                }
             }
             Event::FocusLost => {
                 if self.editor.autosave_on_focus_lost() {
@@ -679,7 +687,7 @@ pub(crate) mod tests {
         let (mut app, dir) = test_app("stale-tree");
         let root = app.workspace.root.clone();
         std::fs::write(root.join("new.txt"), "").unwrap();
-        let req = app.project.begin_refresh();
+        let req = app.project.begin_refresh().unwrap();
         let msg = |generation| AppMsg::TreeLoaded { generation, seq: req.seq, dirs: req.run() };
         app.handle_msg(msg(app.workspace.generation - 1));
         assert_eq!(app.project.selected_row().map(|r| r.name.clone()), None, "listing of the previous root");
@@ -802,6 +810,61 @@ pub(crate) mod tests {
         assert!(app.layout.is_visible(ToolWindowId::Git) && app.focus.is(PanelId::Git), "visible but unfocused: focus");
         app.toggle_tool_window(ToolWindowId::Git);
         assert!(!app.layout.is_visible(ToolWindowId::Git) && app.focus.is(PanelId::Editor));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn outside_change_reloads_clean_tabs_and_asks_once_for_dirty_ones() {
+        use crate::files::watch::Changes;
+        let (mut app, dir) = test_app("outside-change");
+        let g = app.workspace.generation;
+        let a = load(&mut app, "a.txt", "a\n");
+        let b = load(&mut app, "b.txt", "b\n");
+        type_text(&mut app, "mine ");
+        std::thread::sleep(Duration::from_millis(20));
+        std::fs::write(&a, "theirs a\n").unwrap();
+        std::fs::write(&b, "theirs b\n").unwrap();
+        let changed = || Changes { paths: vec![a.clone(), b.clone()], git: false };
+        app.handle_msg(AppMsg::FsChanged { generation: g, changes: changed() });
+        // b.txt has unsaved edits: one question.
+        let d = app.dialog.take().expect("asks about b.txt");
+        assert_eq!(d.id, DialogId::OverwriteExternal(app.editor.buffers[1].id));
+        app.handle_msg(AppMsg::FsChanged { generation: g, changes: changed() });
+        assert!(app.dialog.is_none(), "asked once");
+        // a.txt is clean: read off the main thread, then swapped in.
+        app.handle_msg(AppMsg::DiskText { generation: g, path: a.clone(), result: Ok(b"theirs a\n".to_vec()) });
+        assert_eq!(app.editor.buffers[0].text(), "theirs a\n");
+        assert!(!app.editor.buffers[0].dirty());
+        assert_eq!(app.editor.buffers[1].text(), "mine b\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn outside_change_never_replaces_an_open_dialog() {
+        use crate::files::watch::Changes;
+        let (mut app, dir) = test_app("outside-change-dialog");
+        let g = app.workspace.generation;
+        let a = load(&mut app, "a.txt", "a\n");
+        type_text(&mut app, "mine ");
+        app.perform(Action::App(AppAction::Quit));
+        std::thread::sleep(Duration::from_millis(20));
+        std::fs::write(&a, "theirs\n").unwrap();
+        app.handle_msg(AppMsg::FsChanged { generation: g, changes: Changes { paths: vec![a], git: false } });
+        assert_eq!(app.dialog.as_ref().map(|d| d.id.clone()), Some(DialogId::QuitDirty));
+        assert!(app.notifications.iter().any(|n| n.text.contains("changed on disk")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn watcher_failure_warns_and_focus_gain_refreshes_instead() {
+        let (mut app, dir) = test_app("watch-fail");
+        let g = app.workspace.generation;
+        let err = anyhow::anyhow!("inotify watch limit reached");
+        app.handle_msg(AppMsg::WatcherStarted { generation: g, result: Err(err) });
+        assert!(app.notifications.iter().any(|n| n.level == Level::Warn && n.text.contains("watch limit")));
+        let before = app.git.status_requests();
+        app.handle_term_event(Event::FocusGained);
+        assert_eq!(app.git.status_requests(), before + 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

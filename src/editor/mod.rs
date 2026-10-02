@@ -7,6 +7,7 @@ mod find;
 pub mod gutter;
 pub mod indent;
 mod io;
+pub use io::DiskChange;
 pub mod nav;
 pub mod search;
 pub mod selection;

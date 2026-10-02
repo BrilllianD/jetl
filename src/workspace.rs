@@ -153,6 +153,7 @@ impl App {
         // Points git at the new root and generation, resets the Git panel,
         // and requests status and branches.
         self.git_root_changed(root.clone());
+        self.start_watcher();
         self.worktrees.reset();
         self.git.load_worktrees();
         self.project.reroot(root.clone());

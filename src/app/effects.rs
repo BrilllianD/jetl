@@ -51,7 +51,12 @@ impl App {
     /// Re-read the tree's expanded directories in `spawn_blocking`; the
     /// panel merges the result in `AppMsg::TreeLoaded`.
     pub fn refresh_tree(&mut self) {
-        let req = self.project.begin_refresh();
+        if let Some(req) = self.project.begin_refresh() {
+            self.spawn_tree_refresh(req);
+        }
+    }
+
+    pub(super) fn spawn_tree_refresh(&mut self, req: crate::files::tree::TreeRefresh) {
         let (generation, tx) = (self.workspace.generation, self.bus_tx.clone());
         tokio::task::spawn_blocking(move || {
             let dirs = req.run();

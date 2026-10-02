@@ -130,6 +130,8 @@ pub struct KeymapConfig {
 pub struct FilesConfig {
     pub show_hidden: bool,
     pub show_ignored: bool,
+    /// Watch the project for changes made outside jetl.
+    pub watch: bool,
 }
 
 impl Default for EditorConfig {
@@ -171,7 +173,7 @@ impl Default for KeymapConfig {
 }
 impl Default for FilesConfig {
     fn default() -> Self {
-        Self { show_hidden: true, show_ignored: false }
+        Self { show_hidden: true, show_ignored: false, watch: true }
     }
 }
 
