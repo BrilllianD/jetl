@@ -35,7 +35,7 @@ use find::{FindHit, LastSearch, refresh_search, render_find_bar};
 use nav::{NavPos, NavRing};
 use search::Field;
 use selection::{Selection, apply_motion, line_range, word_at};
-use undo::{Change, TxKind};
+use undo::TxKind;
 use view::{RenderOpts, col_to_char};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -519,16 +519,9 @@ impl Editor {
             }
             let Ok(bytes) = std::fs::read(&path) else { continue };
             let Ok(text) = String::from_utf8(bytes) else { continue };
-            b.disk_mtime = buffer::file_mtime(&path);
-            b.autosave_conflict = false;
-            let old = b.text();
-            if old == text {
-                continue;
-            }
-            let caret = b.sel.head.min(text.chars().count());
-            b.apply(vec![Change::replace(0, old, text)], Selection::point(caret), TxKind::Other);
-            b.mark_saved();
-            n += 1;
+            let changed = b.text() != text;
+            io::replace_with_disk_text(b, text, &path);
+            n += usize::from(changed);
         }
         n
     }
@@ -1212,6 +1205,41 @@ mod tests {
     }
 
     #[test]
+    fn save_conflict_reload_takes_the_disk_text_undoably() {
+        let dir = std::env::temp_dir().join(format!("jetl-test-reload-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (a, b) = (dir.join("a.txt"), dir.join("b.txt"));
+        std::fs::write(&a, "a\n").unwrap();
+        std::fs::write(&b, "b\n").unwrap();
+        let mut ed = Editor::new(&Config::default());
+        ed.open_text(a.clone(), "a\n", false, &Theme::default());
+        ed.open_text(b.clone(), "b\n", false, &Theme::default());
+        ed.buffers[0].insert("mine ", TxKind::Typing);
+        ed.buffers[1].insert("mine ", TxKind::Typing);
+        std::thread::sleep(Duration::from_millis(20));
+        std::fs::write(&a, "theirs a\n").unwrap();
+        std::fs::write(&b, "theirs b\n").unwrap();
+        let notes = with_cx(|cx| {
+            assert!(!ed.save_all(cx));
+            let dialogs: Vec<_> = cx.effects.iter().filter(|e| matches!(e, Effect::Dialog(_))).collect();
+            assert_eq!(dialogs.len(), 1, "one dialog; the other conflict only warns");
+            ed.reload_from_disk(ed.buffers[0].id, cx);
+        });
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert_eq!(ed.buffers[0].text(), "theirs a\n");
+        assert!(!ed.buffers[0].dirty());
+        assert_eq!(std::fs::read_to_string(&b).unwrap(), "theirs b\n");
+        assert!(ed.buffers[0].undo());
+        assert_eq!(ed.buffers[0].text(), "mine a\n");
+        // A file deleted meanwhile is recreated without asking.
+        std::fs::remove_file(&b).unwrap();
+        with_cx(|cx| assert!(ed.save(1, cx)));
+        assert_eq!(std::fs::read_to_string(&b).unwrap(), "mine b\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn idle_autosave_waits_for_the_pause() {
         let t0 = Instant::now();
         let idle = Duration::from_millis(1500);
@@ -1254,8 +1282,13 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "theirs\n");
         assert_eq!(cx.effects.iter().filter(|e| matches!(e, Effect::Notify(Level::Warn, _))).count(), 1);
         assert!(!ed.buffers[0].autosave_candidate());
-        // An explicit save overwrites and lifts the hold.
-        assert!(ed.save(0, &mut cx));
+        // An explicit save asks; Overwrite writes and lifts the hold.
+        cx.effects.clear();
+        assert!(!ed.save(0, &mut cx));
+        let id = ed.buffers[0].id;
+        assert!(matches!(cx.effects.as_slice(), [Effect::Dialog(d)] if d.id == DialogId::OverwriteExternal(id)));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "theirs\n");
+        assert!(ed.overwrite(id, &mut cx));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "xyone\n");
         assert!(!ed.buffers[0].autosave_conflict);
 

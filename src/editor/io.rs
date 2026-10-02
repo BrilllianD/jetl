@@ -4,16 +4,50 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use super::Editor;
-use super::buffer::{self, Buffer};
+use super::buffer::{self, Buffer, BufferId};
+use super::selection::Selection;
+use super::undo::{Change, TxKind};
 use crate::app::Ctx;
 use crate::config::Autosave;
 use crate::event::{Effect, Level};
+use crate::ui::dialog::{Dialog, DialogId};
 
 impl Editor {
     /// Write buffer `i` to disk atomically. Synchronous on purpose: saves are
-    /// small and the result must be known before quitting.
+    /// small and the result must be known before quitting. A file changed
+    /// on disk since it was loaded or saved is not written; the user picks
+    /// Overwrite / Reload / Cancel (`DialogId::OverwriteExternal`).
     pub fn save(&mut self, i: usize, cx: &mut Ctx) -> bool {
+        let Some(b) = self.buffers.get(i) else { return false };
+        if b.dirty() && disk_conflict(b) {
+            let msg = format!(
+                "{} changed on disk since it was opened or saved.\nOverwrite it with your version, or reload it and drop your edits?",
+                b.name
+            );
+            let d = Dialog::confirm(DialogId::OverwriteExternal(b.id), "File changed on disk", &msg, &["Overwrite", "Reload", "Cancel"]);
+            cx.effects.push(Effect::Dialog(d));
+            return false;
+        }
         self.write(i, cx, false)
+    }
+
+    /// Save buffer `id` even though the file changed on disk.
+    pub fn overwrite(&mut self, id: BufferId, cx: &mut Ctx) -> bool {
+        let Some(i) = self.index_of_id(id) else { return false };
+        self.write(i, cx, false)
+    }
+
+    /// Replace buffer `id` with the file's text, dropping unsaved edits
+    /// (undoable).
+    pub fn reload_from_disk(&mut self, id: BufferId, cx: &mut Ctx) {
+        let Some(i) = self.index_of_id(id) else { return };
+        let b = &mut self.buffers[i];
+        let Some(path) = b.path.clone() else { return };
+        match std::fs::read(&path).map(String::from_utf8) {
+            Ok(Ok(text)) => replace_with_disk_text(b, text, &path),
+            Ok(Err(_)) => cx.notify(Level::Error, format!("{} is not valid UTF-8; not reloaded", b.name)),
+            Err(e) => cx.notify(Level::Error, format!("reload {}: {e}", path.display())),
+        }
     }
 
     /// [`Editor::save`]; `quiet` drops the "Saved" toast (errors still show).
@@ -61,12 +95,25 @@ impl Editor {
         }
     }
 
+    /// Save every dirty buffer. Only the first file changed on disk gets the
+    /// Overwrite / Reload dialog; later ones stay unsaved with a warning.
     pub fn save_all(&mut self, cx: &mut Ctx) -> bool {
         let mut ok = true;
+        let mut asked = false;
         for i in 0..self.buffers.len() {
-            if self.buffers[i].dirty() {
-                ok &= self.save(i, cx);
+            let b = &self.buffers[i];
+            if !b.dirty() {
+                continue;
             }
+            if disk_conflict(b) {
+                if asked {
+                    cx.notify(Level::Warn, format!("{} changed on disk; not saved", b.name));
+                    ok = false;
+                    continue;
+                }
+                asked = true;
+            }
+            ok &= self.save(i, cx);
         }
         ok
     }
@@ -83,7 +130,7 @@ impl Editor {
             }
             if b.changed_on_disk() {
                 b.autosave_conflict = true;
-                cx.notify(Level::Warn, format!("{} changed on disk; not autosaving it (save explicitly to overwrite)", b.name));
+                cx.notify(Level::Warn, format!("{} changed on disk; not autosaving it (save explicitly to resolve)", b.name));
                 continue;
             }
             if !self.write(i, cx, true) {
@@ -113,6 +160,25 @@ impl Editor {
         let any = self.buffers.iter().any(Buffer::autosave_candidate);
         idle_autosave_due(self.autosave, self.last_edit, now, self.autosave_idle, any)
     }
+}
+
+/// The file changed on disk since the buffer loaded or saved it. A file
+/// deleted meanwhile is not a conflict: saving recreates it.
+fn disk_conflict(b: &Buffer) -> bool {
+    b.changed_on_disk() && b.path.as_deref().is_some_and(Path::exists)
+}
+
+/// Make `b` the clean text of `path` as read from disk, keeping the caret
+/// where it can stay.
+pub(super) fn replace_with_disk_text(b: &mut Buffer, text: String, path: &Path) {
+    b.disk_mtime = buffer::file_mtime(path);
+    b.autosave_conflict = false;
+    let old = b.text();
+    if old != text {
+        let caret = b.sel.head.min(text.chars().count());
+        b.apply(vec![Change::replace(0, old, text)], Selection::point(caret), TxKind::Other);
+    }
+    b.mark_saved();
 }
 
 /// An idle autosave is due once `idle` has passed since the last edit and

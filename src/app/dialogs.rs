@@ -1,7 +1,6 @@
 //! Dialog answers.
 
 use super::{App, Ctx};
-use crate::actions::{Action, EditorAction};
 use crate::event::Level;
 use crate::git::GitOp;
 use crate::ui::dialog::{Dialog, DialogId, DialogResult};
@@ -25,8 +24,12 @@ impl App {
         self.dirty_frame = true;
         match (id, res) {
             (DialogId::QuitDirty, DialogResult::Button(0)) => {
-                self.perform(Action::Editor(EditorAction::SaveAll));
-                self.should_quit = true;
+                let mut cx = ctx!(self);
+                // A failed save or a disk conflict keeps the app open.
+                let saved = self.editor.save_all(&mut cx);
+                let fx = cx.effects;
+                self.apply_effects(fx);
+                self.should_quit = saved;
             }
             (DialogId::QuitDirty, DialogResult::Button(1)) => self.should_quit = true,
             (DialogId::CloseTabDirty(id), DialogResult::Button(0)) => {
@@ -52,6 +55,18 @@ impl App {
                 self.apply_effects(fx);
             }
             (DialogId::CloseAllDirty, DialogResult::Button(1)) => self.editor.force_close_all(),
+            (DialogId::OverwriteExternal(id), DialogResult::Button(0)) => {
+                let mut cx = ctx!(self);
+                self.editor.overwrite(id, &mut cx);
+                let fx = cx.effects;
+                self.apply_effects(fx);
+            }
+            (DialogId::OverwriteExternal(id), DialogResult::Button(1)) => {
+                let mut cx = ctx!(self);
+                self.editor.reload_from_disk(id, &mut cx);
+                let fx = cx.effects;
+                self.apply_effects(fx);
+            }
             (DialogId::GotoLine, DialogResult::Text(t)) => {
                 let mut it = t.trim().split(':');
                 let line = it.next().and_then(|s| s.trim().parse::<usize>().ok());
