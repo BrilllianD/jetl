@@ -87,6 +87,7 @@ pub struct Editor {
     scrolloff: usize,
     hscrolloff: usize,
     auto_close: bool,
+    highlight_occurrences: bool,
     clipboard: String,
     drag: Option<DragMode>,
     /// Files larger than this open without syntax highlighting.
@@ -111,6 +112,7 @@ impl Editor {
             scrolloff: config.editor.scrolloff,
             hscrolloff: config.editor.hscrolloff,
             auto_close: config.editor.auto_close,
+            highlight_occurrences: config.editor.highlight_occurrences,
             clipboard: String::new(),
             drag: None,
             max_highlight_bytes: config.editor.max_highlight_bytes,
@@ -939,7 +941,7 @@ impl Editor {
             bar_focused = focused && s.focused;
             self.find_hits = render_find_bar(frame, self.find_area, s, bar_focused, theme);
         }
-        let opts = RenderOpts { focused, tab_width: self.tab_width, scrolloff: self.scrolloff, hscrolloff: self.hscrolloff, theme };
+        let opts = RenderOpts { focused, tab_width: self.tab_width, scrolloff: self.scrolloff, hscrolloff: self.hscrolloff, occurrences: self.highlight_occurrences, theme };
         let out = view::render(&mut self.buffers[i], frame.buffer_mut(), text_rect, &opts);
         self.text_area = out.text_area;
         if focused && !bar_focused {

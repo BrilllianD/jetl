@@ -123,6 +123,8 @@ pub struct RenderOpts<'a> {
     pub tab_width: usize,
     pub scrolloff: usize,
     pub hscrolloff: usize,
+    /// Highlight occurrences of the word or selected text at the caret.
+    pub occurrences: bool,
     pub theme: &'a Theme,
 }
 
@@ -147,6 +149,12 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
     let hl = buf.syntax.as_mut().map(|s| s.highlights(rope, buf.scroll_line, area.height as usize)).unwrap_or_default();
     let search = buf.search.as_ref();
     let pair = super::brackets::pair_at(rope, buf.syntax.as_ref().and_then(|s| s.tree()), buf.sel.head);
+    // Occurrences of the word or selection at the caret, visible lines only.
+    // An open find bar owns the match highlighting, so they step aside.
+    let occ = match (o.occurrences && search.is_none()).then(|| super::search::occurrence_target(rope, &buf.sel)).flatten() {
+        Some((target, whole_word)) => super::search::occurrences(rope, buf.scroll_line..buf.scroll_line + area.height as usize, &target, whole_word),
+        None => Vec::new(),
+    };
     let digits = (gutter_w - 3) as usize;
     let mut cursor = None;
 
@@ -189,6 +197,8 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
                 if let Some(cur) = s.match_at(c.char_idx) {
                     style = style.bg(if cur { theme.search_current_bg } else { theme.search_match_bg });
                 }
+            } else if in_ranges(&occ, c.char_idx) {
+                style = style.bg(theme.occurrence_bg);
             }
             if pair.is_some_and(|(a, b)| c.char_idx == a || c.char_idx == b) {
                 style = style.patch(theme.bracket_match);
@@ -239,6 +249,12 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
         }
     }
     RenderOut { cursor, text_area }
+}
+
+/// `ranges` is sorted and non-overlapping.
+fn in_ranges(ranges: &[std::ops::Range<usize>], i: usize) -> bool {
+    let k = ranges.partition_point(|r| r.end <= i);
+    ranges.get(k).is_some_and(|r| r.contains(&i))
 }
 
 pub fn ensure_visible(buf: &mut Buffer, text_area: Rect, o: &RenderOpts) {

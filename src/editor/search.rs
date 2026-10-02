@@ -1,10 +1,12 @@
 //! Find / replace bar state for one buffer.
 
+use std::borrow::Cow;
 use std::ops::Range;
 
 use regex::Regex;
 use ropey::Rope;
 
+use super::selection::{Selection, is_word_char, word_at};
 use crate::ui::widgets::text_input::TextInput;
 
 /// Live search keeps at most this many matches.
@@ -208,6 +210,53 @@ impl SearchState {
     }
 }
 
+/// What the editor highlights occurrences of: the selected text when the
+/// selection is on one line and not just whitespace, otherwise the word at
+/// the caret (or the one ending at it). The bool is the whole-word rule:
+/// words match only as whole words, selected text as plain substrings.
+pub fn occurrence_target(rope: &Rope, sel: &Selection) -> Option<(String, bool)> {
+    if !sel.is_empty() {
+        let text = rope.slice(sel.range()).to_string();
+        let skip = text.contains(['\n', '\r']) || text.trim().is_empty();
+        return (!skip).then_some((text, false));
+    }
+    let is_word = |p: usize| p < rope.len_chars() && is_word_char(rope.char(p));
+    let at = if is_word(sel.head) { sel.head } else if sel.head > 0 && is_word(sel.head - 1) { sel.head - 1 } else { return None };
+    Some((rope.slice(word_at(rope, at)).to_string(), true))
+}
+
+/// Case-sensitive, non-overlapping occurrences of `target` within `lines`
+/// (line indices, end exclusive), as char ranges. With `whole_word` a match
+/// must not touch a word char on either side.
+pub fn occurrences(rope: &Rope, lines: Range<usize>, target: &str, whole_word: bool) -> Vec<Range<usize>> {
+    let mut out = Vec::new();
+    let end_line = lines.end.min(rope.len_lines());
+    if target.is_empty() || lines.start >= end_line {
+        return out;
+    }
+    let start = rope.line_to_char(lines.start);
+    let end = if end_line < rope.len_lines() { rope.line_to_char(end_line) } else { rope.len_chars() };
+    // The slice starts and ends at line boundaries, so its edges are word
+    // boundaries too and the whole-word check needs no outside context.
+    let text: Cow<str> = rope.slice(start..end).into();
+    let (mut byte, mut ch) = (0usize, start);
+    for (b, m) in text.match_indices(target) {
+        if whole_word {
+            let before = text[..b].chars().next_back();
+            let after = text[b + m.len()..].chars().next();
+            if before.is_some_and(is_word_char) || after.is_some_and(is_word_char) {
+                continue;
+            }
+        }
+        ch += text[byte..b].chars().count();
+        let len = m.chars().count();
+        out.push(ch..ch + len);
+        byte = b + m.len();
+        ch += len;
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -263,5 +312,39 @@ mod tests {
         s.query.set_text("a1");
         s.update(&Rope::from_str(text), 1);
         assert_eq!(s.replacement_at(text, 0..2), "x$1");
+    }
+
+    #[test]
+    fn occurrences_respect_word_boundaries() {
+        let rope = Rope::from_str("foo foo_bar foo\nbarfoo (foo) foo2");
+        assert_eq!(occurrences(&rope, 0..2, "foo", true), vec![0..3, 12..15, 24..27]);
+        // Substring mode also finds the ones inside other words.
+        assert_eq!(occurrences(&rope, 0..2, "foo", false), vec![0..3, 4..7, 12..15, 19..22, 24..27, 29..32]);
+        // Only the requested lines are scanned.
+        assert_eq!(occurrences(&rope, 1..9, "foo", true), vec![24..27]);
+        assert!(occurrences(&rope, 0..1, "", false).is_empty());
+    }
+
+    #[test]
+    fn occurrences_with_multibyte_text() {
+        let rope = Rope::from_str("日本 é_x é x\nпривет мир привет");
+        // `é_x` is one word, so the `é` inside it does not count.
+        assert_eq!(occurrences(&rope, 0..2, "é", true), vec![7..8]);
+        assert_eq!(occurrences(&rope, 0..2, "привет", true), vec![11..17, 22..28]);
+        assert_eq!(occurrences(&rope, 0..2, "日本", false), vec![0..2]);
+        // Cyrillic letters are word chars: no match inside `приветы`.
+        let rope = Rope::from_str("приветы привет");
+        assert_eq!(occurrences(&rope, 0..1, "привет", true), vec![8..14]);
+    }
+
+    #[test]
+    fn occurrence_target_rules() {
+        let rope = Rope::from_str("let foo = a.b;\n  x");
+        assert_eq!(occurrence_target(&rope, &Selection::point(5)), Some(("foo".into(), true)));
+        assert_eq!(occurrence_target(&rope, &Selection::point(7)), Some(("foo".into(), true)), "caret right after a word");
+        assert_eq!(occurrence_target(&rope, &Selection::point(8)), None, "punctuation");
+        assert_eq!(occurrence_target(&rope, &Selection::new(10, 13)), Some(("a.b".into(), false)));
+        assert_eq!(occurrence_target(&rope, &Selection::new(14, 17)), None, "spans a line break");
+        assert_eq!(occurrence_target(&rope, &Selection::new(15, 17)), None, "whitespace only");
     }
 }

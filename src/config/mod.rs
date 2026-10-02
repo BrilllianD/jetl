@@ -86,6 +86,7 @@ pub struct EditorConfig {
     pub hscrolloff: usize,
     pub cjk_ambiguous_wide: bool,
     pub auto_close: bool,
+    pub highlight_occurrences: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -128,7 +129,7 @@ pub struct FilesConfig {
 
 impl Default for EditorConfig {
     fn default() -> Self {
-        Self { tab_width: 4, max_highlight_bytes: 2 * 1024 * 1024, scrolloff: 3, hscrolloff: 5, cjk_ambiguous_wide: false, auto_close: true }
+        Self { tab_width: 4, max_highlight_bytes: 2 * 1024 * 1024, scrolloff: 3, hscrolloff: 5, cjk_ambiguous_wide: false, auto_close: true, highlight_occurrences: true }
     }
 }
 impl Default for UiConfig {

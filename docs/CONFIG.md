@@ -34,6 +34,7 @@ scrolloff = 3                  # lines kept visible above and below the caret
 hscrolloff = 5                 # columns kept visible left and right of the caret
 cjk_ambiguous_wide = false     # reserved; has no effect yet
 auto_close = true              # type brackets and quotes in pairs, step over closers, wrap selections
+highlight_occurrences = true   # highlight the word at the caret (or the selected text) elsewhere on screen
 
 [ui]
 theme = "darcula"              # reserved; Darcula is the only built-in theme (use theme.toml to change colors)
@@ -123,8 +124,8 @@ macro = "#b3ae60"                                # = "function.macro"
 - Color fields take a string or a table with just `fg` or `bg`.
 
 Color fields: `bg fg panel_bg strip_bg status_bg status_fg current_line_bg
-selection_bg search_match_bg search_current_bg gutter_added gutter_modified
-gutter_deleted diff_add_bg diff_del_bg diff_mod_bg popup_bg`.
+selection_bg search_match_bg search_current_bg occurrence_bg gutter_added
+gutter_modified gutter_deleted diff_add_bg diff_del_bg diff_mod_bg popup_bg`.
 
 Style fields: `border border_focused title title_focused strip_item
 strip_item_active status_accent tab tab_active tab_dirty line_number

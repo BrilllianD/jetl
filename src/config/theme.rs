@@ -35,6 +35,7 @@ pub struct Theme {
     pub selection_bg: Color,
     pub search_match_bg: Color,
     pub search_current_bg: Color,
+    pub occurrence_bg: Color,
     pub bracket_match: Style,
     pub gutter_added: Color,
     pub gutter_modified: Color,
@@ -90,6 +91,7 @@ impl Theme {
             selection_bg: Color::Rgb(33, 66, 131),
             search_match_bg: Color::Rgb(50, 89, 60),
             search_current_bg: Color::Rgb(155, 110, 30),
+            occurrence_bg: Color::Rgb(52, 65, 52),
             bracket_match: Style::default().bg(Color::Rgb(59, 81, 77)).add_modifier(Modifier::BOLD),
             gutter_added: Color::Rgb(98, 150, 85),
             gutter_modified: Color::Rgb(53, 146, 196),
@@ -222,8 +224,8 @@ macro_rules! theme_fields {
 theme_fields! {
     colors: [
         bg, fg, panel_bg, strip_bg, status_bg, status_fg, current_line_bg, selection_bg, search_match_bg,
-        search_current_bg, gutter_added, gutter_modified, gutter_deleted, diff_add_bg, diff_del_bg, diff_mod_bg,
-        popup_bg,
+        search_current_bg, occurrence_bg, gutter_added, gutter_modified, gutter_deleted, diff_add_bg, diff_del_bg,
+        diff_mod_bg, popup_bg,
     ],
     styles: [
         border, border_focused, title, title_focused, strip_item, strip_item_active, status_accent, tab, tab_active,
