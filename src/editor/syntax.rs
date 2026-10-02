@@ -62,6 +62,30 @@ pub static LANGUAGES: LazyLock<Vec<LanguageDef>> = LazyLock::new(|| {
     v.extend(make("bash", &["sh", "bash", "zsh"], &[".bashrc", ".zshrc", ".profile", ".bash_profile", "PKGBUILD"], tree_sitter_bash::LANGUAGE.into(), &[tree_sitter_bash::HIGHLIGHT_QUERY], Some("#")));
     #[cfg(feature = "lang-md")]
     v.extend(make("markdown", &["md", "markdown"], &[], tree_sitter_md::LANGUAGE.into(), &[tree_sitter_md::HIGHLIGHT_QUERY_BLOCK], None));
+    #[cfg(feature = "lang-csharp")]
+    v.extend(make("csharp", &["cs", "csx"], &[], tree_sitter_c_sharp::LANGUAGE.into(), &[tree_sitter_c_sharp::HIGHLIGHTS_QUERY], Some("//")));
+    #[cfg(feature = "lang-yaml")]
+    // Upstream captures mapping keys as `@string` before `@property`, and
+    // the first pattern for a node wins; lift the key patterns to the front.
+    v.extend(make("yaml", &["yml", "yaml"], &[], tree_sitter_yaml::LANGUAGE.into(), &["(_ key: (flow_node [(double_quote_scalar) (single_quote_scalar)] @property)) (_ key: (flow_node (plain_scalar (string_scalar) @property)))", tree_sitter_yaml::HIGHLIGHTS_QUERY], Some("#")));
+    // Vue single-file components get HTML highlighting until injections
+    // exist; the Vue grammar crate is unmaintained.
+    #[cfg(feature = "lang-html")]
+    v.extend(make("html", &["html", "htm", "xhtml", "vue"], &[], tree_sitter_html::LANGUAGE.into(), &[tree_sitter_html::HIGHLIGHTS_QUERY], None));
+    #[cfg(feature = "lang-css")]
+    v.extend(make("css", &["css"], &[], tree_sitter_css::LANGUAGE.into(), &[tree_sitter_css::HIGHLIGHTS_QUERY], None));
+    #[cfg(feature = "lang-scss")]
+    {
+        // The SCSS query only covers what it adds to CSS (no strings, no
+        // selectors); the CSS query fills in the rest.
+        #[cfg(feature = "lang-css")]
+        let css = tree_sitter_css::HIGHLIGHTS_QUERY;
+        #[cfg(not(feature = "lang-css"))]
+        let css = "";
+        v.extend(make("scss", &["scss"], &[], tree_sitter_scss::language(), &[tree_sitter_scss::HIGHLIGHTS_QUERY, css], Some("//")));
+    }
+    #[cfg(feature = "lang-xml")]
+    v.extend(make("xml", &["xml", "xsd", "xsl", "xslt", "svg", "csproj", "fsproj", "vbproj", "props", "targets", "plist", "resx", "xaml"], &[], tree_sitter_xml::LANGUAGE_XML.into(), &[tree_sitter_xml::XML_HIGHLIGHT_QUERY], None));
     v
 });
 
@@ -309,7 +333,23 @@ mod tests {
 
     #[test]
     fn every_enabled_grammar_compiles_its_query() {
-        let enabled = [cfg!(feature = "lang-rust"), cfg!(feature = "lang-js"), cfg!(feature = "lang-ts"), cfg!(feature = "lang-ts"), cfg!(feature = "lang-python"), cfg!(feature = "lang-json"), cfg!(feature = "lang-toml"), cfg!(feature = "lang-bash"), cfg!(feature = "lang-md")];
+        let enabled = [
+            cfg!(feature = "lang-rust"),
+            cfg!(feature = "lang-js"),
+            cfg!(feature = "lang-ts"),
+            cfg!(feature = "lang-ts"),
+            cfg!(feature = "lang-python"),
+            cfg!(feature = "lang-json"),
+            cfg!(feature = "lang-toml"),
+            cfg!(feature = "lang-bash"),
+            cfg!(feature = "lang-md"),
+            cfg!(feature = "lang-csharp"),
+            cfg!(feature = "lang-yaml"),
+            cfg!(feature = "lang-html"),
+            cfg!(feature = "lang-css"),
+            cfg!(feature = "lang-scss"),
+            cfg!(feature = "lang-xml"),
+        ];
         let names: Vec<&str> = LANGUAGES.iter().map(|l| l.name).collect();
         assert_eq!(names.len(), enabled.iter().filter(|e| **e).count(), "loaded: {names:?}");
     }
@@ -336,5 +376,84 @@ mod tests {
         let rope = Rope::from_str("[package]\nname = \"jetl\"\n");
         let h = syn.highlights(&rope, 0, 2);
         assert_eq!(h.style_at(18), theme.capture_style("string"));
+    }
+
+    /// Style at the first char of `needle` in `src`, highlighted as `file`.
+    #[allow(dead_code)]
+    fn style_of(file: &str, src: &str, needle: &str) -> Option<Style> {
+        let theme = Theme::default();
+        let mut syn = Syntax::for_path(Path::new(file), &theme).unwrap_or_else(|| panic!("grammar for {file}"));
+        let rope = Rope::from_str(src);
+        let h = syn.highlights(&rope, 0, rope.len_lines());
+        let at = src.find(needle).unwrap_or_else(|| panic!("{needle:?} in {src:?}"));
+        h.style_at(rope.byte_to_char(at))
+    }
+
+    #[allow(dead_code)]
+    fn cap(name: &str) -> Option<Style> {
+        Theme::default().capture_style(name)
+    }
+
+    #[cfg(feature = "lang-csharp")]
+    #[test]
+    fn csharp_highlighted() {
+        let src = "// note\npublic class A { string s = \"hi\"; int n = 42; }\n";
+        assert_eq!(style_of("A.cs", src, "// note"), cap("comment"));
+        assert_eq!(style_of("A.cs", src, "public"), cap("keyword"));
+        assert_eq!(style_of("A.cs", src, "\"hi"), cap("string"));
+        assert_eq!(style_of("A.cs", src, "42"), cap("number"));
+    }
+
+    #[cfg(feature = "lang-yaml")]
+    #[test]
+    fn yaml_highlighted() {
+        let src = "# c\nname: \"jetl\"\ncount: 3\n";
+        assert_eq!(style_of("a.yml", src, "# c"), cap("comment"));
+        assert_eq!(style_of("a.yml", src, "\"jetl"), cap("string"));
+        assert_eq!(style_of("a.yml", src, "name"), cap("property"), "key is not a string");
+        assert_eq!(style_of("a.yml", src, "3"), cap("number"));
+    }
+
+    #[cfg(feature = "lang-html")]
+    #[test]
+    fn html_highlighted() {
+        let src = "<!-- c -->\n<div class=\"a\">x</div>\n";
+        assert_eq!(style_of("a.html", src, "<!--"), cap("comment"));
+        assert_eq!(style_of("a.html", src, "div"), cap("tag"));
+        assert_eq!(style_of("a.html", src, "class"), cap("attribute"));
+        assert_eq!(style_of("a.vue", src, "a\">"), cap("string"));
+    }
+
+    #[cfg(feature = "lang-css")]
+    #[test]
+    fn css_highlighted() {
+        let src = "/* c */\n@media print { a { color: red; content: \"x\"; } }\n";
+        assert_eq!(style_of("a.css", src, "/*"), cap("comment"));
+        assert_eq!(style_of("a.css", src, "@media"), cap("media"));
+        assert_eq!(style_of("a.css", src, "a {"), cap("tag"));
+        assert_eq!(style_of("a.css", src, "color"), cap("property"));
+        assert_eq!(style_of("a.css", src, "\"x"), cap("string"));
+    }
+
+    #[cfg(feature = "lang-scss")]
+    #[test]
+    fn scss_highlighted() {
+        let src = "// c\n@use \"base\";\n.a { @include m; }\n";
+        assert_eq!(style_of("a.scss", src, "// c"), cap("comment"));
+        if cfg!(feature = "lang-css") {
+            assert_eq!(style_of("a.scss", src, "\"base"), cap("string"), "string from the CSS query");
+        }
+        assert_eq!(style_of("a.scss", src, "@include"), cap("include"));
+        assert!(cap("include").is_some());
+    }
+
+    #[cfg(feature = "lang-xml")]
+    #[test]
+    fn xml_highlighted() {
+        let src = "<?xml version=\"1.0\"?>\n<!-- c -->\n<Project Sdk=\"x\"><a/></Project>\n";
+        assert_eq!(style_of("a.csproj", src, "<!--"), cap("comment"));
+        assert_eq!(style_of("a.csproj", src, "Project"), cap("tag"));
+        assert!(style_of("a.csproj", src, "Sdk").is_some(), "attribute name highlighted");
+        assert_eq!(style_of("a.csproj", src, "x\"><a"), cap("string"));
     }
 }
