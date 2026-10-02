@@ -15,12 +15,18 @@ pub fn render(app: &mut App, frame: &mut Frame, area: Rect) {
     if area.height < 4 || area.width < 2 {
         return;
     }
+    // Each button is its number and its title; when they do not all fit,
+    // the longest titles are cut first.
+    let mut heights: Vec<u16> = ToolWindowId::ALL.iter().map(|tw| (tw.title().chars().count() as u16 + 1).min(area.height / 2)).collect();
+    while heights.iter().map(|h| h + 1).sum::<u16>() > area.height {
+        let Some(max) = heights.iter_mut().max().filter(|h| **h > 2) else { break };
+        *max -= 1;
+    }
     // Left-side windows stack from the top, bottom-side windows from the bottom.
     let mut top = area.y;
     let mut bottom = area.bottom();
-    for tw in ToolWindowId::ALL {
+    for (tw, h) in ToolWindowId::ALL.into_iter().zip(heights) {
         let label: Vec<char> = tw.title().chars().collect();
-        let h = (label.len() as u16 + 1).min(area.height / 2);
         let rect = match tw.side() {
             Side::Left => {
                 if top + h > bottom {

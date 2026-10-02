@@ -44,6 +44,7 @@ mod find;
 mod mouse;
 mod msg;
 mod palette;
+mod symbols;
 mod watch;
 
 /// What panels get while handling input.
@@ -149,6 +150,12 @@ pub struct App {
     pub worktrees: WorktreePanel,
     pub git_panel: GitPanel,
     pub find: crate::files::find_panel::FindPanel,
+    pub structure: crate::symbols::panel::StructurePanel,
+    /// Project symbols for Go to Symbol, built after the file index loads.
+    pub symbols: crate::symbols::index::SymbolIndex,
+    /// When the open Go to Symbol palette last got the index (it is fed at
+    /// most every `SYMBOLS_FEED` while batches arrive).
+    symbols_fed: Option<Instant>,
     /// Caret target of a file being opened by `open_file_at`.
     pending_goto: Option<(PathBuf, usize, usize)>,
     /// File from the command line (1-based line and column), opened once
@@ -210,6 +217,9 @@ impl App {
             worktrees: WorktreePanel::new(),
             git_panel,
             find: Default::default(),
+            structure: Default::default(),
+            symbols: Default::default(),
+            symbols_fed: None,
             pending_goto: None,
             pending_open: open,
             git,
@@ -234,6 +244,8 @@ impl App {
         app.restore_session();
         app.start_watcher();
         app.load_recent_projects(true);
+        // The symbol index follows the file index.
+        app.refresh_file_index();
         app
     }
 
@@ -552,6 +564,7 @@ impl App {
                 true
             }
             Action::Find(a) => self.find.handle_action(a, &mut cx),
+            Action::Structure(a) => self.structure.handle_action(a, &mut cx),
             Action::Palette(_) => false,
         };
         let effects = cx.effects;
@@ -1238,6 +1251,116 @@ pub(crate) mod tests {
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert!(app.menu.is_none());
         assert_eq!(app.dialog.as_ref().map(|d| d.id.clone()), Some(DialogId::TreeNew { dir: root, is_dir: false }));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn symbol(name: &str, line: usize) -> crate::symbols::Symbol {
+        crate::symbols::Symbol { name: name.into(), kind: "function", line, col: 3, start_line: line, end_line: line, depth: 0 }
+    }
+
+    fn symbol_names(app: &mut App) -> Vec<String> {
+        app.symbols.entries().iter().map(|e| e.symbol.name.to_string()).collect()
+    }
+
+    #[tokio::test]
+    async fn stale_symbol_batches_are_dropped() {
+        use crate::symbols::index::{FileSymbols, SymbolBatch};
+        let (mut app, dir) = test_app("symbols-stale");
+        let (root, g) = (app.workspace.root.clone(), app.workspace.generation);
+        app.symbols.set_files(&["a.rs".to_string()]);
+        let first = app.symbols.start(root.clone()).seq;
+        let second = app.symbols.start(root).seq;
+        let batch = |name: &str| SymbolBatch {
+            files: vec![("a.rs".into(), Some(FileSymbols { mtime: None, symbols: vec![symbol(name, 0)] }))],
+            done: true,
+        };
+        app.handle_msg(AppMsg::Symbols { generation: g, seq: first, batch: batch("older run") });
+        assert!(symbol_names(&mut app).is_empty(), "a batch of an older run is dropped");
+        app.handle_msg(AppMsg::Symbols { generation: g - 1, seq: second, batch: batch("other root") });
+        assert!(symbol_names(&mut app).is_empty(), "a batch of the previous root is dropped");
+        app.handle_msg(AppMsg::Symbols { generation: g, seq: second, batch: batch("current") });
+        assert_eq!(symbol_names(&mut app), ["current"]);
+        assert!(!app.symbols.indexing());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[tokio::test]
+    async fn symbol_palette_jumps_and_changed_files_are_parsed_again() {
+        use crate::actions::{PaletteAction, PaletteKind};
+        use crate::files::watch::Changes;
+        use crate::ui::palette::{Accept, PaletteResult};
+        let (mut app, dir) = test_app("symbols-palette");
+        let (root, g) = (app.workspace.root.clone(), app.workspace.generation);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let path = root.join("src/effects.rs");
+        std::fs::write(&path, "fn other() {}\n\nimpl App {\n    fn apply_effects(&mut self) {}\n}\n").unwrap();
+        std::fs::write(root.join("big.rs"), format!("fn big() {{}}\n{}", "//\n".repeat(200_000))).unwrap();
+        app.handle_msg(AppMsg::FileIndex {
+            generation: g,
+            seq: 1,
+            files: vec!["README.md".into(), "big.rs".into(), "src/effects.rs".into()],
+        });
+        // Run the index on this thread (the app started it in the background).
+        let run = |app: &mut App| {
+            let job = app.symbols.start(app.workspace.root.clone());
+            let (seq, mut batches) = (job.seq, Vec::new());
+            job.run(|b| batches.push(b));
+            for batch in batches {
+                app.handle_msg(AppMsg::Symbols { generation: g, seq, batch });
+            }
+        };
+        run(&mut app);
+        assert_eq!(symbol_names(&mut app), ["other", "apply_effects"], "big.rs is over the size limit");
+        app.perform(Action::App(AppAction::OpenPalette(PaletteKind::Symbols)));
+        for c in "apply".chars() {
+            app.handle_key(KeyEvent::new(KeyCode::Char(c), crossterm::event::KeyModifiers::NONE));
+        }
+        let res = app.palette.as_mut().unwrap().handle_action(&PaletteAction::Accept).unwrap();
+        assert_eq!(res, PaletteResult::Accept(Accept::OpenFileAt { path: path.clone(), line: 3, col: 7 }));
+        app.finish_palette(res);
+        handle_next(&mut app, |m| matches!(m, AppMsg::FileLoaded { .. })).await;
+        assert_eq!(app.editor.active_path(), Some(path.as_path()));
+        assert_eq!(app.editor.status_position().as_deref(), Some("Ln 4, Col 8"));
+        // An outside change drops the file's symbols until it is parsed again.
+        std::fs::write(&path, "fn renamed() {}\n").unwrap();
+        app.handle_msg(AppMsg::FsChanged { generation: g, changes: Changes { paths: vec![path.clone()], git: false } });
+        assert_eq!(symbol_names(&mut app), [] as [&str; 0]);
+        run(&mut app);
+        assert_eq!(symbol_names(&mut app), ["renamed"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[tokio::test]
+    async fn structure_lists_the_active_buffer_and_follows_edits_and_tabs() {
+        let (mut app, dir) = test_app("structure");
+        let names = |app: &App| app.structure.symbols.iter().map(|s| (s.name.to_string(), s.depth)).collect::<Vec<_>>();
+        load(&mut app, "a.rs", "fn one() {}\nmod m {\n    fn two() {}\n}\n");
+        app.perform(Action::App(AppAction::ToggleToolWindow(ToolWindowId::Structure)));
+        assert!(app.layout.is_visible(ToolWindowId::Structure) && app.focus.is(PanelId::Structure));
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+        term.draw(|f| crate::ui::render(&mut app, f)).unwrap();
+        assert_eq!(names(&app), [("one".into(), 0), ("m".into(), 0), ("two".into(), 1)]);
+        // Enter jumps to the selected symbol.
+        app.handle_key(KeyEvent::new(KeyCode::End, crossterm::event::KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Enter, crossterm::event::KeyModifiers::NONE));
+        assert!(app.focus.is(PanelId::Editor));
+        assert_eq!(app.editor.active_buffer().unwrap().cursor_line_col(), (2, 7));
+        // An edit shows on the next frame.
+        app.perform(Action::Editor(EditorAction::Move(crate::actions::Motion::DocStart, false)));
+        type_text(&mut app, "fn zero() {}\n");
+        app.sync_structure();
+        assert_eq!(names(&app)[0], ("zero".into(), 0));
+        // The caret is now on `fn one`, below the inserted line.
+        assert_eq!(app.structure.selected().map(|s| s.name.to_string()).as_deref(), Some("one"), "follows the caret");
+        // Another tab, then plain text.
+        load(&mut app, "b.rs", "struct B;\n");
+        app.sync_structure();
+        assert_eq!(names(&app), [("B".into(), 0)]);
+        load(&mut app, "c.txt", "text\n");
+        app.sync_structure();
+        assert!(names(&app).is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

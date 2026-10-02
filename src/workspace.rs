@@ -179,6 +179,7 @@ impl App {
         self.git_root_changed(root.clone());
         self.start_watcher();
         self.find.reset();
+        self.symbols.reset();
         self.worktrees.reset();
         self.git.load_worktrees();
         self.project.reroot(root.clone());
@@ -332,7 +333,7 @@ mod tests {
             active: Some(1),
             recent: vec![1, 0],
             layout: Some(SessionLayout {
-                left: Some(ToolWindowId::Worktrees),
+                left: Some(ToolWindowId::Structure),
                 left_w: 40,
                 bottom: Some(ToolWindowId::Git),
                 bottom_h: 12,

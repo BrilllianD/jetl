@@ -20,6 +20,7 @@ Override any of them in `~/.config/jetl/keymap.toml` (see [CONFIG.md](CONFIG.md)
 | `Alt+2` | `tool_window.worktrees` | Worktrees tool window |
 | `Alt+9` | `tool_window.git` | Git tool window |
 | `Alt+3` | `tool_window.find` | Find tool window |
+| `Alt+7` | `tool_window.structure` | Structure tool window |
 | `Ctrl+Shift+F12` | `tool_window.hide_all` | Hide all tool windows |
 | `Shift+Esc` * | `tool_window.hide_focused` | Hide active tool window |
 | `Ctrl+N` | `palette.files` | Go to file |
@@ -31,6 +32,8 @@ Override any of them in `~/.config/jetl/keymap.toml` (see [CONFIG.md](CONFIG.md)
 | `Shift Shift` * | `palette.search_everywhere` | Search everywhere |
 | `Ctrl+E` | `palette.recent_files` | Recent files |
 | `Alt+Shift+E` | `palette.recent_projects` | Recent projects |
+| `Alt+Shift+N` | `palette.symbols` | Go to symbol |
+| `Ctrl+Alt+Shift+N` * | `palette.symbols` | Go to symbol |
 | `Ctrl+S` | `editor.save` | Save |
 | `Ctrl+Shift+S` * | `editor.save_all` | Save all |
 | `Alt+Right` | `editor.next_tab` | Next tab |
@@ -232,6 +235,19 @@ Override any of them in `~/.config/jetl/keymap.toml` (see [CONFIG.md](CONFIG.md)
 | `Alt+R` | `find.toggle_replace` | Find: show or hide the replacement |
 | `Alt+A` | `find.replace_all` | Find: replace all results |
 | `Esc` | `find.escape` | Find: back to the editor |
+
+## structure
+
+| Keys | Action | Description |
+|---|---|---|
+| `Esc` | `app.focus_editor` | Focus editor |
+| `Up` | `structure.up` | Structure: up |
+| `Down` | `structure.down` | Structure: down |
+| `PageUp` | `structure.page_up` | Structure: page up |
+| `PageDown` | `structure.page_down` | Structure: page down |
+| `Home` | `structure.home` | Structure: first symbol |
+| `End` | `structure.end` | Structure: last symbol |
+| `Enter` | `structure.open` | Structure: jump to the selected symbol |
 
 ## Without a default binding
 

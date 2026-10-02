@@ -9,6 +9,7 @@ pub enum PanelId {
     Editor,
     Git,
     Find,
+    Structure,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -17,6 +18,7 @@ pub enum ToolWindowId {
     Worktrees,
     Git,
     Find,
+    Structure,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,7 +28,8 @@ pub enum Side {
 }
 
 impl ToolWindowId {
-    pub const ALL: [ToolWindowId; 4] = [ToolWindowId::Project, ToolWindowId::Worktrees, ToolWindowId::Find, ToolWindowId::Git];
+    pub const ALL: [ToolWindowId; 5] =
+        [ToolWindowId::Project, ToolWindowId::Worktrees, ToolWindowId::Structure, ToolWindowId::Find, ToolWindowId::Git];
 
     pub fn panel(self) -> PanelId {
         match self {
@@ -34,11 +37,12 @@ impl ToolWindowId {
             ToolWindowId::Worktrees => PanelId::Worktrees,
             ToolWindowId::Git => PanelId::Git,
             ToolWindowId::Find => PanelId::Find,
+            ToolWindowId::Structure => PanelId::Structure,
         }
     }
     pub fn side(self) -> Side {
         match self {
-            ToolWindowId::Project | ToolWindowId::Worktrees => Side::Left,
+            ToolWindowId::Project | ToolWindowId::Worktrees | ToolWindowId::Structure => Side::Left,
             ToolWindowId::Git | ToolWindowId::Find => Side::Bottom,
         }
     }
@@ -48,6 +52,7 @@ impl ToolWindowId {
             ToolWindowId::Worktrees => "Worktrees",
             ToolWindowId::Git => "Git",
             ToolWindowId::Find => "Find",
+            ToolWindowId::Structure => "Structure",
         }
     }
     pub fn number(self) -> u8 {
@@ -56,6 +61,7 @@ impl ToolWindowId {
             ToolWindowId::Worktrees => 2,
             ToolWindowId::Git => 9,
             ToolWindowId::Find => 3,
+            ToolWindowId::Structure => 7,
         }
     }
 }
@@ -67,6 +73,7 @@ impl PanelId {
             PanelId::Worktrees => Some(ToolWindowId::Worktrees),
             PanelId::Git => Some(ToolWindowId::Git),
             PanelId::Find => Some(ToolWindowId::Find),
+            PanelId::Structure => Some(ToolWindowId::Structure),
             PanelId::Editor => None,
         }
     }
@@ -78,6 +85,7 @@ impl PanelId {
             PanelId::Editor => "editor",
             PanelId::Git => "git",
             PanelId::Find => "find",
+            PanelId::Structure => "structure",
         }
     }
 }

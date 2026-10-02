@@ -4,7 +4,7 @@
 
 use std::ops::Range;
 use std::path::Path;
-use std::sync::LazyLock;
+use std::sync::{LazyLock, OnceLock};
 
 use ratatui::style::Style;
 use ropey::Rope;
@@ -24,6 +24,11 @@ pub struct LanguageDef {
     pub block_comment: Option<(&'static str, &'static str)>,
     /// Enter after a trailing `:` indents one level (Python, YAML).
     pub indent_after_colon: bool,
+    /// Tags query (`@definition.*` and `@name` captures) for symbols:
+    /// the Structure window and the symbol index.
+    pub tags: Option<&'static str>,
+    /// `tags` compiled on first use.
+    tags_query: OnceLock<Option<Query>>,
     /// Whether every query part compiled (no fallback to a partial set).
     #[cfg(test)]
     full_query: bool,
@@ -58,6 +63,8 @@ fn make(
                     line_comment,
                     block_comment: block_comment(name),
                     indent_after_colon: matches!(name, "python" | "yaml"),
+                    tags: None,
+                    tags_query: OnceLock::new(),
                     #[cfg(test)]
                     full_query: n == queries.len(),
                 });
@@ -67,6 +74,35 @@ fn make(
     }
     None
 }
+
+impl LanguageDef {
+    fn with_tags(mut self, tags: &'static str) -> Self {
+        self.tags = Some(tags);
+        self
+    }
+
+    /// The compiled tags query; `None` without one or when it does not
+    /// compile (logged once).
+    pub fn tags_query(&self) -> Option<&Query> {
+        self.tags_query
+            .get_or_init(|| {
+                let src = self.tags?;
+                Query::new(&self.language, src).map_err(|e| tracing::warn!("tags query for {}: {e}", self.name)).ok()
+            })
+            .as_ref()
+    }
+}
+
+/// Query parts joined into one static string (built once per language).
+#[allow(dead_code)]
+fn join_static(parts: &[&str]) -> &'static str {
+    Box::leak(parts.join("\n").into_boxed_str())
+}
+
+/// Prepended to the Rust tags: upstream lists `impl` blocks as references
+/// only, so methods would have no parent in the Structure window.
+#[cfg(feature = "lang-rust")]
+const RUST_TAGS_EXTRA: &str = "(impl_item trait: (_) @trait type: (_) @name) @definition.impl (impl_item type: (_) @name !trait) @definition.impl (const_item name: (identifier) @name) @definition.constant (static_item name: (identifier) @name) @definition.constant";
 
 fn block_comment(name: &str) -> Option<(&'static str, &'static str)> {
     match name {
@@ -95,48 +131,66 @@ pub static LANGUAGES: LazyLock<Vec<LanguageDef>> = LazyLock::new(|| {
     #[cfg(feature = "lang-rust")]
     // Upstream captures numbers as `constant.builtin` (like `true`); Darcula
     // colors them differently, and the first pattern for a node wins.
-    v.extend(make(
-        "rust",
-        &["rs"],
-        &[],
-        tree_sitter_rust::LANGUAGE.into(),
-        &["[(integer_literal) (float_literal)] @number", tree_sitter_rust::HIGHLIGHTS_QUERY],
-        Some("//"),
-    ));
+    v.extend(
+        make(
+            "rust",
+            &["rs"],
+            &[],
+            tree_sitter_rust::LANGUAGE.into(),
+            &["[(integer_literal) (float_literal)] @number", tree_sitter_rust::HIGHLIGHTS_QUERY],
+            Some("//"),
+        )
+        .map(|d| d.with_tags(join_static(&[RUST_TAGS_EXTRA, tree_sitter_rust::TAGS_QUERY]))),
+    );
     #[cfg(feature = "lang-js")]
-    v.extend(make(
-        "javascript",
-        &["js", "mjs", "cjs", "jsx"],
-        &[],
-        tree_sitter_javascript::LANGUAGE.into(),
-        &[tree_sitter_javascript::HIGHLIGHT_QUERY],
-        Some("//"),
-    ));
+    v.extend(
+        make(
+            "javascript",
+            &["js", "mjs", "cjs", "jsx"],
+            &[],
+            tree_sitter_javascript::LANGUAGE.into(),
+            &[tree_sitter_javascript::HIGHLIGHT_QUERY],
+            Some("//"),
+        )
+        .map(|d| d.with_tags(tree_sitter_javascript::TAGS_QUERY)),
+    );
     #[cfg(feature = "lang-ts")]
     {
         #[cfg(feature = "lang-js")]
-        let js = tree_sitter_javascript::HIGHLIGHT_QUERY;
+        let (js, js_tags) = (tree_sitter_javascript::HIGHLIGHT_QUERY, tree_sitter_javascript::TAGS_QUERY);
         #[cfg(not(feature = "lang-js"))]
-        let js = "";
-        v.extend(make(
-            "typescript",
-            &["ts", "mts", "cts"],
-            &[],
-            tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
-            &[tree_sitter_typescript::HIGHLIGHTS_QUERY, js],
-            Some("//"),
-        ));
-        v.extend(make(
-            "tsx",
-            &["tsx"],
-            &[],
-            tree_sitter_typescript::LANGUAGE_TSX.into(),
-            &[tree_sitter_typescript::HIGHLIGHTS_QUERY, js],
-            Some("//"),
-        ));
+        let (js, js_tags) = ("", "");
+        // The TypeScript tags only cover what TypeScript adds (signatures,
+        // interfaces); the JavaScript tags find functions and classes.
+        let tags = join_static(&[tree_sitter_typescript::TAGS_QUERY, js_tags]);
+        v.extend(
+            make(
+                "typescript",
+                &["ts", "mts", "cts"],
+                &[],
+                tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+                &[tree_sitter_typescript::HIGHLIGHTS_QUERY, js],
+                Some("//"),
+            )
+            .map(|d| d.with_tags(tags)),
+        );
+        v.extend(
+            make(
+                "tsx",
+                &["tsx"],
+                &[],
+                tree_sitter_typescript::LANGUAGE_TSX.into(),
+                &[tree_sitter_typescript::HIGHLIGHTS_QUERY, js],
+                Some("//"),
+            )
+            .map(|d| d.with_tags(tags)),
+        );
     }
     #[cfg(feature = "lang-python")]
-    v.extend(make("python", &["py", "pyi"], &[], tree_sitter_python::LANGUAGE.into(), &[tree_sitter_python::HIGHLIGHTS_QUERY], Some("#")));
+    v.extend(
+        make("python", &["py", "pyi"], &[], tree_sitter_python::LANGUAGE.into(), &[tree_sitter_python::HIGHLIGHTS_QUERY], Some("#"))
+            .map(|d| d.with_tags(tree_sitter_python::TAGS_QUERY)),
+    );
     #[cfg(feature = "lang-json")]
     v.extend(make(
         "json",
@@ -214,22 +268,31 @@ pub static LANGUAGES: LazyLock<Vec<LanguageDef>> = LazyLock::new(|| {
     #[cfg(feature = "lang-go")]
     // Upstream lists builtin calls after plain calls, and the first pattern
     // for a node wins; lift them to the front (Lua too).
-    v.extend(make("go", &["go"], &[], tree_sitter_go::LANGUAGE.into(), &["(call_expression function: (identifier) @function.builtin (#match? @function.builtin \"^(append|cap|clear|close|complex|copy|delete|imag|len|make|max|min|new|panic|print|println|real|recover)$\"))", tree_sitter_go::HIGHLIGHTS_QUERY], Some("//")));
+    v.extend(make("go", &["go"], &[], tree_sitter_go::LANGUAGE.into(), &["(call_expression function: (identifier) @function.builtin (#match? @function.builtin \"^(append|cap|clear|close|complex|copy|delete|imag|len|make|max|min|new|panic|print|println|real|recover)$\"))", tree_sitter_go::HIGHLIGHTS_QUERY], Some("//")).map(|d| d.with_tags(tree_sitter_go::TAGS_QUERY)));
     #[cfg(feature = "lang-c")]
-    v.extend(make("c", &["c", "h"], &[], tree_sitter_c::LANGUAGE.into(), &[C_QUERY_FIXES, tree_sitter_c::HIGHLIGHT_QUERY], Some("//")));
+    v.extend(
+        make("c", &["c", "h"], &[], tree_sitter_c::LANGUAGE.into(), &[C_QUERY_FIXES, tree_sitter_c::HIGHLIGHT_QUERY], Some("//"))
+            .map(|d| d.with_tags(tree_sitter_c::TAGS_QUERY)),
+    );
     // The C++ query only covers what C++ adds to C (no comments, numbers or
     // calls); the C query fills in the rest.
     #[cfg(feature = "lang-cpp")]
-    v.extend(make(
-        "cpp",
-        &["cpp", "cc", "cxx", "hpp", "hh"],
-        &[],
-        tree_sitter_cpp::LANGUAGE.into(),
-        &[C_QUERY_FIXES, CPP_QUERY_FIXES, tree_sitter_cpp::HIGHLIGHT_QUERY, tree_sitter_c::HIGHLIGHT_QUERY],
-        Some("//"),
-    ));
+    v.extend(
+        make(
+            "cpp",
+            &["cpp", "cc", "cxx", "hpp", "hh"],
+            &[],
+            tree_sitter_cpp::LANGUAGE.into(),
+            &[C_QUERY_FIXES, CPP_QUERY_FIXES, tree_sitter_cpp::HIGHLIGHT_QUERY, tree_sitter_c::HIGHLIGHT_QUERY],
+            Some("//"),
+        )
+        .map(|d| d.with_tags(tree_sitter_cpp::TAGS_QUERY)),
+    );
     #[cfg(feature = "lang-java")]
-    v.extend(make("java", &["java"], &[], tree_sitter_java::LANGUAGE.into(), &[tree_sitter_java::HIGHLIGHTS_QUERY], Some("//")));
+    v.extend(
+        make("java", &["java"], &[], tree_sitter_java::LANGUAGE.into(), &[tree_sitter_java::HIGHLIGHTS_QUERY], Some("//"))
+            .map(|d| d.with_tags(tree_sitter_java::TAGS_QUERY)),
+    );
     #[cfg(feature = "lang-php")]
     v.extend(make("php", &["php"], &[], tree_sitter_php::LANGUAGE_PHP.into(), &[tree_sitter_php::HIGHLIGHTS_QUERY], Some("//")));
     #[cfg(feature = "lang-lua")]
@@ -350,7 +413,7 @@ fn language_for_alias(name: &str) -> Option<&'static LanguageDef> {
     language_for_name(name)
 }
 
-struct RopeProvider<'a>(&'a Rope);
+pub(crate) struct RopeProvider<'a>(pub &'a Rope);
 
 impl<'a> TextProvider<RopeChunk<'a>> for RopeProvider<'a> {
     type I = RopeChunks<'a>;
@@ -622,6 +685,12 @@ mod tests {
         // A loaded grammar may still have dropped query parts; that is a bug too.
         let partial: Vec<&str> = LANGUAGES.iter().filter(|l| !l.full_query).map(|l| l.name).collect();
         assert!(partial.is_empty(), "query fell back to a partial set for {partial:?}");
+        let tagged: Vec<&str> = LANGUAGES.iter().filter(|l| l.tags.is_some()).map(|l| l.name).collect();
+        let broken: Vec<&str> = LANGUAGES.iter().filter(|l| l.tags.is_some() && l.tags_query().is_none()).map(|l| l.name).collect();
+        assert!(broken.is_empty(), "tags query does not compile for {broken:?}");
+        for name in ["rust", "javascript", "typescript", "tsx", "python", "go", "c", "cpp", "java"] {
+            assert_eq!(tagged.contains(&name), names.contains(&name), "{name} has tags when enabled");
+        }
     }
 
     #[cfg(feature = "lang-json")]

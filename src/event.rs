@@ -82,6 +82,13 @@ pub enum AppMsg {
         seq: u64,
         files: Vec<String>,
     },
+    /// Symbols parsed by the project index (`SymbolIndex::start`), tagged
+    /// with the workspace generation and the run's seq.
+    Symbols {
+        generation: u64,
+        seq: u64,
+        batch: crate::symbols::index::SymbolBatch,
+    },
     /// Recent project roots that still exist, newest first, in request
     /// order (not tied to the root).
     RecentProjects {

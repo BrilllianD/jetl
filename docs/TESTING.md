@@ -77,7 +77,7 @@ double click.
 
 - No kitty keyboard protocol: Ctrl+Shift+letter, Ctrl+Tab, Ctrl+Enter,
   Shift+Enter, Shift+F3 and double Shift do not arrive. Use the legacy
-  fallbacks (Ctrl+N for files, F1 for actions, Alt+Left/Right for tabs,
+  fallbacks (Ctrl+N for files, Alt+Shift+N for symbols, F1 for actions, Alt+Left/Right for tabs,
   Alt+Enter to commit) or check those keys in foot or kitty.
 - Escape followed quickly by another key arrives as Alt+key; pause between
   them.

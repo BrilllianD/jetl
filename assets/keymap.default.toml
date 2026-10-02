@@ -8,6 +8,7 @@
 "alt-2" = "tool_window.worktrees"
 "alt-9" = "tool_window.git"
 "alt-3" = "tool_window.find"
+"alt-7" = "tool_window.structure"
 "ctrl-shift-f" = "find.in_files"
 "ctrl-shift-r" = "find.replace_in_files"
 # Ctrl+Shift+F/R need the kitty protocol (legacy terminals send Ctrl+F/R);
@@ -29,6 +30,10 @@
 "f1" = "palette.actions"
 "ctrl-e" = "palette.recent_files"
 "alt-shift-e" = "palette.recent_projects"
+"ctrl-alt-shift-n" = "palette.symbols"
+# Ctrl+Alt+Shift+N needs the kitty protocol (legacy terminals send
+# Ctrl+Alt+N); Alt+Shift+N is the legacy fallback.
+"alt-shift-n" = "palette.symbols"
 "ctrl-tab" = "editor.switcher"
 "alt-right" = "editor.next_tab"
 "alt-left" = "editor.prev_tab"
@@ -180,6 +185,16 @@
 "delete" = "worktree.remove"
 "p" = "worktree.prune"
 "f5" = "worktree.refresh"
+"esc" = "app.focus_editor"
+
+[structure]
+"up" = "structure.up"
+"down" = "structure.down"
+"pageup" = "structure.page_up"
+"pagedown" = "structure.page_down"
+"home" = "structure.home"
+"end" = "structure.end"
+"enter" = "structure.open"
 "esc" = "app.focus_editor"
 
 [palette]

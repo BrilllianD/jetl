@@ -31,6 +31,7 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     let rects = app.layout.rects.clone();
 
     tool_strip::render(app, frame, rects.strip);
+    app.sync_structure();
 
     if let (Some(tw), r) = (app.layout.left, rects.left)
         && r.width > 0
@@ -39,6 +40,7 @@ pub fn render(app: &mut App, frame: &mut Frame) {
         match tw.panel() {
             PanelId::Project => app.project.render(frame, r, focused, &theme),
             PanelId::Worktrees => app.worktrees.render(frame, r, focused, &theme),
+            PanelId::Structure => app.structure.render(frame, r, focused, &theme),
             _ => {}
         }
     }

@@ -17,10 +17,11 @@ and backlog are in `docs/ROADMAP.md`; settings in `docs/CONFIG.md`; keys in
 | `app/msg.rs` | `handle_msg` for every `AppMsg`, git results (`on_git_msg`, `git_op_done`), `git_root_changed`, file open and decode. |
 | `app/effects.rs` | `apply_effects`, `refresh_tree`, `git_request`. |
 | `app/dialogs.rs` | `request_quit`, `finish_dialog` (one arm per `DialogId` answer). |
-| `app/palette.rs` | Opening the palette, its keys, the file index, the recent projects list, accepted rows. |
+| `app/palette.rs` | Opening the palette, its keys, the file index (walked at startup, on root switches and when a file or symbol palette opens; the symbol index follows each load), the recent projects list, accepted rows. |
 | `app/mouse.rs` | Mouse routing: toasts, overlays, drags, splitters, tabs, status bar, panels. |
 | `app/watch.rs` | Starting the filesystem watcher and acting on its batches. |
 | `app/find.rs` | Replace in files (open tabs through the editor, other files off the main thread). |
+| `app/symbols.rs` | Starting symbol index runs (`request_symbols`, through `Coalesce`), applying `AppMsg::Symbols`, re-queuing watcher paths, and `sync_structure` (called by `ui::render` while the Structure window is shown). |
 | `app/files.rs` | Tree file operations: `run_fs_op` off the main thread, `fs_op_done` (reload the tree, open, retarget or close tabs). |
 | `workspace.rs` | `Workspace` (root and generation), root switching (`App::switch_root`), sessions (JSON per root: tabs, tool window layout and sizes, Git tab, tree hidden/ignored toggles, expanded tree folders; a missing one arrives empty; fields added later are `#[serde(default)]`). `session_loaded` skips tabs already open, applies the layout (sizes clamped, toggles winning over `[files]` config), expands the saved folders on the main thread, then opens the command line file. |
 | `recent_projects.rs` | `state/recent_projects.json`: roots with their last open time, newest first, deduplicated, at most 30. Recorded off the main thread at startup and on every root switch (`App::load_recent_projects`); a missing or corrupt file reads as empty; roots that are no longer directories are not listed. |
@@ -38,7 +39,10 @@ and backlog are in `docs/ROADMAP.md`; settings in `docs/CONFIG.md`; keys in
 | `files/ops.rs` | `FsOp` (create, rename, delete; never overwrites, never follows symlinks on delete) and name checks for the tree dialogs. |
 | `files/walk.rs` | The `ignore` walk builder shared by the tree, Go to File and find in files. |
 | `files/find.rs`, `files/find_panel.rs` | Find in files: the search (`Search::run` streams `Batch`es, cancelled by seq) and replacements; the Find tool window. |
-| `files/watch.rs` | Debounced recursive watch of the root (notify); splits batches into working tree paths and a git flag. |
+| `files/watch.rs` | Debounced recursive watch of the root (notify); splits batches into working tree paths and a git flag. Opens and reads are not changes (jetl's own reads would loop). |
+| `symbols/mod.rs` | `Symbol` and `extract`: runs a language's tags query (`LanguageDef::tags`, from the grammar crates' `TAGS_QUERY`: Rust, JavaScript, TypeScript/TSX, Python, Go, C, C++, Java) over a tree; definitions only, with nesting depth. |
+| `symbols/index.rs` | `SymbolIndex`: the project symbols behind Go to Symbol. Follows the file index (files with tags, at most 5000, each at most 256 KiB), parses in `spawn_blocking` (`IndexJob`), skips files whose mtime is unchanged, drops and re-queues watcher paths. |
+| `symbols/panel.rs` | Structure tool window: the active buffer's symbols from its live tree, re-extracted when the buffer version, language or active tab changes; the selection follows the caret while unfocused. |
 | `git/mod.rs` | `GitService` (spawns work, tracks busy ops), `GitMsg`, `GitOp`, `GitRequest`. |
 | `git/repo.rs` | Synchronous git2 calls; each opens the repository itself. |
 | `git/cli.rs` | The `git` command line: network, switch, log/show, worktrees. No prompts, 120 s timeout. |
@@ -101,7 +105,7 @@ Two tags:
 - **Generation** (`Workspace::generation`) is bumped by every root switch
   (`Workspace::switch_root`). Every result that depends on the root carries
   it: `FileLoaded`, `SessionLoaded`, `FileIndex`, `TreeLoaded`,
-  `Worktrees`, `Find`, `ReplaceDone`, `FsChanged`, every `GitMsg`. `GitService` keeps a copy, set by
+  `Worktrees`, `Find`, `ReplaceDone`, `FsChanged`, `Symbols`, every `GitMsg`. `GitService` keeps a copy, set by
   `set_root(root, generation)`, to tag its own results. A result whose
   generation differs from `workspace.generation` is dropped.
 - **Seq** orders repeated requests of the same kind within a generation, so
@@ -109,7 +113,9 @@ Two tags:
   `GitMsg::Status` (`GitPanel::set_status`), `GitMsg::Blob` (per buffer,
   `Buffer::diff_base_seq`), `FileIndex` (`FileIndex::seq`), `TreeLoaded`
   (`ProjectPanel::finish_refresh`), `Find` batches (`FindPanel::on_batch`;
-  a newer search also stops the old walk through a shared cancel seq). A
+  a newer search also stops the old walk through a shared cancel seq),
+  `Symbols` batches (`SymbolIndex::on_batch`; only the newest run applies,
+  and it stops older runs through a cancel seq). A
   result is applied when its seq is not
   older than the last applied one. Results keyed by what they describe
   (diffs by `DiffKey`, commit details by sha, log pages by `skip`) need no
@@ -117,9 +123,10 @@ Two tags:
 
 New background work follows the same pattern: a generation always, a seq
 when the request can repeat while one is in flight. Requests that bursts can
-trigger (git status, tree refresh) also go through `util::Coalesce`: at most
-one runs, a request meanwhile runs once after it, and a root switch resets
-it. `GitMsg::OpDone` clears
+trigger (git status, tree refresh, symbol index runs) also go through
+`util::Coalesce`: at most one runs, a request meanwhile runs once after it,
+and a root switch resets it. A long run that reports in batches calls
+`Coalesce::touch` so it is not taken for lost. `GitMsg::OpDone` clears
 its busy id before the generation check, so the spinner never sticks.
 
 ## Conventions

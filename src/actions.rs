@@ -13,6 +13,7 @@ pub enum Action {
     Git(GitAction),
     Worktree(WorktreeAction),
     Find(FindAction),
+    Structure(StructureAction),
     Palette(PaletteAction),
     Mode(ModeAction),
 }
@@ -40,6 +41,7 @@ pub enum PaletteKind {
     GotoLine,
     Branches,
     RecentProjects,
+    Symbols,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -208,6 +210,18 @@ pub enum FindAction {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum StructureAction {
+    Up,
+    Down,
+    PageUp,
+    PageDown,
+    Home,
+    End,
+    /// Jump to the selected symbol.
+    Open,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum PaletteAction {
     Up,
     Down,
@@ -254,6 +268,7 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "tool_window.worktrees" => "Worktrees tool window", App(AppAction::ToggleToolWindow(ToolWindowId::Worktrees));
         "tool_window.git" => "Git tool window", App(AppAction::ToggleToolWindow(ToolWindowId::Git));
         "tool_window.find" => "Find tool window", App(AppAction::ToggleToolWindow(ToolWindowId::Find));
+        "tool_window.structure" => "Structure tool window", App(AppAction::ToggleToolWindow(ToolWindowId::Structure));
         "tool_window.hide_all" => "Hide all tool windows", App(AppAction::HideAllToolWindows);
         "tool_window.hide_focused" => "Hide active tool window", App(AppAction::HideFocusedToolWindow);
         "palette.files" => "Go to file", App(AppAction::OpenPalette(PaletteKind::Files));
@@ -262,6 +277,7 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "palette.recent_files" => "Recent files", App(AppAction::OpenPalette(PaletteKind::RecentFiles));
         "palette.goto_line" => "Go to line", App(AppAction::OpenPalette(PaletteKind::GotoLine));
         "palette.recent_projects" => "Recent projects", App(AppAction::OpenPalette(PaletteKind::RecentProjects));
+        "palette.symbols" => "Go to symbol", App(AppAction::OpenPalette(PaletteKind::Symbols));
 
         "editor.newline" => "Insert newline", Editor(E::InsertNewline);
         "editor.tab" => "Insert tab or indent selected lines", Editor(E::InsertTab);
@@ -416,6 +432,14 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "find.replace_all" => "Find: replace all results", Find(FindAction::ReplaceAll);
         "find.escape" => "Find: back to the editor", Find(FindAction::Escape);
 
+        "structure.up" => "Structure: up", Structure(StructureAction::Up);
+        "structure.down" => "Structure: down", Structure(StructureAction::Down);
+        "structure.page_up" => "Structure: page up", Structure(StructureAction::PageUp);
+        "structure.page_down" => "Structure: page down", Structure(StructureAction::PageDown);
+        "structure.home" => "Structure: first symbol", Structure(StructureAction::Home);
+        "structure.end" => "Structure: last symbol", Structure(StructureAction::End);
+        "structure.open" => "Structure: jump to the selected symbol", Structure(StructureAction::Open);
+
         "palette.up" => "Palette: up", Palette(PaletteAction::Up);
         "palette.down" => "Palette: down", Palette(PaletteAction::Down);
         "palette.page_up" => "Palette: page up", Palette(PaletteAction::PageUp);
@@ -452,6 +476,7 @@ impl Action {
             Action::Git(_) => &["git", "global"],
             Action::Worktree(_) => &["worktrees", "global"],
             Action::Find(_) => &["find", "global"],
+            Action::Structure(_) => &["structure", "global"],
             Action::Palette(_) => &["palette"],
             Action::Mode(_) => &["mode.normal", "mode.insert", "mode.visual"],
         }

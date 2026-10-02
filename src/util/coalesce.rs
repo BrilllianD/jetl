@@ -42,6 +42,14 @@ impl Coalesce {
         }
     }
 
+    /// The running request made progress (a long run reporting in
+    /// batches); it is not lost yet.
+    pub fn touch(&mut self) {
+        if self.inflight.is_some() {
+            self.inflight = Some(Instant::now());
+        }
+    }
+
     /// Forget the request in flight (its result will be dropped).
     pub fn reset(&mut self) {
         self.inflight = None;
@@ -71,5 +79,15 @@ mod tests {
     fn a_lost_request_does_not_block_forever() {
         let mut c = Coalesce { inflight: Some(Instant::now() - LOST_AFTER), ..Default::default() };
         assert!(c.request());
+    }
+
+    #[test]
+    fn progress_keeps_a_long_request_alive() {
+        let mut c = Coalesce { inflight: Some(Instant::now() - LOST_AFTER), ..Default::default() };
+        c.touch();
+        assert!(!c.request(), "still running");
+        let mut idle = Coalesce::default();
+        idle.touch();
+        assert!(idle.request(), "touch does not start anything");
     }
 }

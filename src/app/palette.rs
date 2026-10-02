@@ -32,6 +32,14 @@ impl App {
         if p.wants(Source::Actions) {
             p.set_actions(self.palette_actions());
         }
+        if p.wants(Source::Symbols) {
+            p.set_symbols(self.symbols.entries(), self.symbols.indexing());
+            self.symbols_fed = Some(std::time::Instant::now());
+            // Catches files added or changed while nothing was watching.
+            if !p.wants(Source::Files) {
+                self.refresh_file_index();
+            }
+        }
         if p.wants(Source::Projects) {
             p.set_projects(&self.recent_projects);
             self.load_recent_projects(false);
@@ -89,6 +97,8 @@ impl App {
         if let Some(p) = self.palette.as_mut().filter(|p| p.wants(Source::Files)) {
             p.set_files(self.file_index.files.clone(), false);
         }
+        self.symbols.set_files(&self.file_index.files);
+        self.request_symbols();
     }
 
     /// Read the recent projects file in `spawn_blocking`, first recording the
@@ -168,6 +178,9 @@ impl App {
             PaletteResult::Accept(Accept::SwitchBranch(name)) => self.switch_branch(name),
             PaletteResult::Accept(Accept::NewBranch) => self.git_request(GitRequest::NewBranch),
             PaletteResult::Accept(Accept::SwitchRoot(root)) => self.apply_effects(vec![Effect::SwitchRoot(root)]),
+            PaletteResult::Accept(Accept::OpenFileAt { path, line, col }) => {
+                self.apply_effects(vec![Effect::OpenFileAt { path, line, col }])
+            }
         }
     }
 }

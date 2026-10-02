@@ -41,6 +41,7 @@ impl App {
         if changes.paths.iter().any(|p| p.parent().is_some_and(|d| self.project.lists(d))) {
             self.refresh_tree();
         }
+        self.symbols_changed(&changes.paths);
         for path in changes.paths {
             match self.editor.on_disk_change(&path) {
                 DiskChange::None => {}

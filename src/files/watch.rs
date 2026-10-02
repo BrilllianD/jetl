@@ -6,6 +6,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use notify_debouncer_full::notify::event::{AccessKind, AccessMode, EventKind};
 use notify_debouncer_full::notify::{RecommendedWatcher, RecursiveMode};
 use notify_debouncer_full::{DebounceEventResult, Debouncer, RecommendedCache, new_debouncer};
 use tokio::sync::mpsc::UnboundedSender;
@@ -41,7 +42,7 @@ pub fn start(root: &Path, generation: u64, tx: UnboundedSender<AppMsg>) -> anyho
     let (root_c, dirs_c) = (root.to_path_buf(), git_dirs.clone());
     let mut debouncer = new_debouncer(DEBOUNCE, None, move |res: DebounceEventResult| match res {
         Ok(events) => {
-            let changes = classify(&root_c, &dirs_c, events.iter().flat_map(|e| e.paths.iter()));
+            let changes = classify(&root_c, &dirs_c, events.iter().filter(|e| changes_content(&e.kind)).flat_map(|e| e.paths.iter()));
             if !changes.paths.is_empty() || changes.git {
                 let _ = tx.send(AppMsg::FsChanged { generation, changes });
             }
@@ -60,6 +61,13 @@ pub fn start(root: &Path, generation: u64, tx: UnboundedSender<AppMsg>) -> anyho
         }
     }
     Ok(Watcher { _debouncer: debouncer })
+}
+
+/// Whether an event can change what a file holds. inotify also reports
+/// opens and reads, which jetl itself causes (git status, find in files,
+/// the symbol index); reacting to them would loop.
+fn changes_content(kind: &EventKind) -> bool {
+    !matches!(kind, EventKind::Access(a) if *a != AccessKind::Close(AccessMode::Write))
 }
 
 /// Git directories whose changes mean a git refresh: `root/.git`, or the
@@ -113,6 +121,16 @@ mod tests {
         assert!(c(&["/main/.git/worktrees/p/HEAD"]).git, "linked worktree git dir");
         let both = c(&["/p/src/a.rs", "/p/src/a.rs", "/p/.git/HEAD", "/elsewhere/x"]);
         assert_eq!(both, Changes { paths: vec![PathBuf::from("/p/src/a.rs")], git: true });
+    }
+
+    #[test]
+    fn opens_and_reads_are_not_changes() {
+        use notify_debouncer_full::notify::event::{CreateKind, ModifyKind};
+        assert!(!changes_content(&EventKind::Access(AccessKind::Open(AccessMode::Any))));
+        assert!(!changes_content(&EventKind::Access(AccessKind::Close(AccessMode::Read))));
+        assert!(changes_content(&EventKind::Access(AccessKind::Close(AccessMode::Write))));
+        assert!(changes_content(&EventKind::Modify(ModifyKind::Any)));
+        assert!(changes_content(&EventKind::Create(CreateKind::File)));
     }
 
     #[tokio::test]

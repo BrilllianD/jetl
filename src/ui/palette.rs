@@ -1,9 +1,9 @@
-//! Command palette overlay: Go to File, Find Action, Search Everywhere,
-//! Recent Files, Branches and Recent Projects. The app owns it (`App.palette`) and routes all
+//! Command palette overlay: Go to File, Go to Symbol, Find Action, Search
+//! Everywhere, Recent Files, Branches and Recent Projects. The app owns it (`App.palette`) and routes all
 //! input to it while it is open, like a dialog. Keys arrive as
 //! `PaletteAction`s from the `palette` keymap context; unmapped keys edit the
 //! query. The palette holds copies of its candidates (the file index, the
-//! action list, branches, recent files and projects) that the app refreshes
+//! action list, branches, recent files and projects, symbols) that the app refreshes
 //! as they load.
 
 use std::cmp::Reverse;
@@ -23,6 +23,7 @@ use crate::actions::{Action, PaletteAction, PaletteKind};
 use crate::config::theme::Theme;
 use crate::event::Mouse;
 use crate::git::BranchInfo;
+use crate::symbols::index::SymbolEntry;
 use crate::ui::widgets::list::ListState;
 use crate::ui::widgets::text_input::TextInput;
 
@@ -38,6 +39,7 @@ pub enum Source {
     Branches,
     Recent,
     Projects,
+    Symbols,
 }
 
 impl Source {
@@ -48,6 +50,7 @@ impl Source {
             Source::Branches => "Branches",
             Source::Recent => "Recent Files",
             Source::Projects => "Recent Projects",
+            Source::Symbols => "Symbols",
         }
     }
 }
@@ -69,6 +72,12 @@ pub enum Accept {
     SwitchBranch(String),
     NewBranch,
     SwitchRoot(PathBuf),
+    /// Open a file at a 0-based line and char column.
+    OpenFileAt {
+        path: PathBuf,
+        line: usize,
+        col: usize,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -99,6 +108,9 @@ pub struct Palette {
     /// how they are shown (`~` for the home directory).
     projects: Vec<PathBuf>,
     projects_shown: Vec<String>,
+    /// The project symbol index and whether it is still being built.
+    symbols: Arc<Vec<SymbolEntry>>,
+    symbols_loading: bool,
     matcher: Matcher,
     outer: Rect,
     list_rect: Rect,
@@ -110,9 +122,10 @@ impl Palette {
         let tabs = match kind {
             PaletteKind::Files => vec![Source::Files],
             PaletteKind::Actions => vec![Source::Actions],
-            PaletteKind::Everywhere => vec![Source::Files, Source::Actions, Source::Branches],
+            PaletteKind::Everywhere => vec![Source::Files, Source::Symbols, Source::Actions, Source::Branches],
             PaletteKind::RecentFiles => vec![Source::Recent],
             PaletteKind::RecentProjects => vec![Source::Projects],
+            PaletteKind::Symbols => vec![Source::Symbols],
             // Go to Line stays a dialog and never opens a palette.
             PaletteKind::Branches | PaletteKind::GotoLine => vec![Source::Branches],
         };
@@ -131,6 +144,8 @@ impl Palette {
             branches: Vec::new(),
             projects: Vec::new(),
             projects_shown: Vec::new(),
+            symbols: Arc::new(Vec::new()),
+            symbols_loading: false,
             matcher: Matcher::default(),
             outer: Rect::default(),
             list_rect: Rect::default(),
@@ -185,6 +200,14 @@ impl Palette {
         }
     }
 
+    pub fn set_symbols(&mut self, symbols: Arc<Vec<SymbolEntry>>, loading: bool) {
+        self.symbols = symbols;
+        self.symbols_loading = loading;
+        if self.source() == Source::Symbols {
+            self.refilter(false);
+        }
+    }
+
     /// Recent project roots, newest first; the current root is left out.
     pub fn set_projects(&mut self, roots: &[PathBuf]) {
         let home = directories::BaseDirs::new().map(|d| d.home_dir().to_path_buf());
@@ -235,6 +258,13 @@ impl Palette {
                     rank_texts(&q, texts, &mut self.matcher)
                 }
             }
+            Source::Symbols => {
+                if q.is_empty() {
+                    (0..self.symbols.len()).collect()
+                } else {
+                    rank_texts(&q, self.symbols.iter().map(|e| [&*e.symbol.name]), &mut self.matcher)
+                }
+            }
             Source::Branches => {
                 let mut texts: Vec<[&str; 1]> = vec![["New Branch"]];
                 texts.extend(self.branches.iter().map(|b| [b.name.as_str()]));
@@ -261,6 +291,10 @@ impl Palette {
             Source::Files => Accept::OpenFile(self.root.join(self.files.get(i)?)),
             Source::Recent => Accept::OpenFile(self.recent.get(i)?.clone()),
             Source::Projects => Accept::SwitchRoot(self.projects.get(i)?.clone()),
+            Source::Symbols => {
+                let e = self.symbols.get(i)?;
+                Accept::OpenFileAt { path: self.root.join(&*e.path), line: e.symbol.line, col: e.symbol.col }
+            }
             Source::Actions => Accept::Action(self.actions.get(i)?.action.clone()),
             Source::Branches if i == 0 => Accept::NewBranch,
             Source::Branches => Accept::SwitchBranch(self.branches.get(i - 1)?.name.clone()),
@@ -359,6 +393,7 @@ impl Palette {
             PaletteKind::Everywhere => "Search Everywhere",
             PaletteKind::RecentFiles => "Recent Files",
             PaletteKind::RecentProjects => "Recent Projects",
+            PaletteKind::Symbols => "Go to Symbol",
             PaletteKind::Branches | PaletteKind::GotoLine => "Git Branches",
         }
     }
@@ -409,9 +444,15 @@ impl Palette {
         }
 
         // Query row with the match count on the right.
-        let count = match (self.source(), self.files_loading) {
-            (Source::Files, true) if self.files.is_empty() => "indexing…".to_string(),
-            (Source::Files, true) => format!("{} (indexing…)", self.rows.len()),
+        let loading = match self.source() {
+            Source::Files => self.files_loading,
+            Source::Symbols => self.symbols_loading,
+            _ => false,
+        };
+        let count = match self.source() {
+            Source::Files if loading && self.files.is_empty() => "indexing…".to_string(),
+            Source::Symbols if loading && self.symbols.is_empty() => "indexing…".to_string(),
+            _ if loading => format!("{} (indexing…)", self.rows.len()),
             _ => format!("{}", self.rows.len()),
         };
         let cw = count.width() as u16;
@@ -422,6 +463,7 @@ impl Palette {
             Source::Actions => "type an action name",
             Source::Branches => "type a branch name",
             Source::Projects => "type a project name",
+            Source::Symbols => "type a symbol name",
         };
         self.input.render(frame, qrect, Style::default().bg(theme.bg).fg(theme.fg), placeholder, theme.dim.bg(theme.bg), true);
         frame.buffer_mut().set_stringn(inner.right().saturating_sub(cw + 1), y, &count, cw as usize, theme.dim.bg(theme.popup_bg));
@@ -432,7 +474,11 @@ impl Palette {
         self.list_rect = lrect;
         self.list.fit(self.list.len, lrect.height as usize);
         if self.rows.is_empty() {
-            let msg = if self.source() == Source::Files && self.files_loading { "Indexing files…" } else { "Nothing found" };
+            let msg = match self.source() {
+                Source::Files if loading => "Indexing files…",
+                Source::Symbols if loading => "Indexing symbols…",
+                _ => "Nothing found",
+            };
             frame.buffer_mut().set_stringn(lrect.x + 2, lrect.y, msg, lrect.width.saturating_sub(2) as usize, theme.dim.bg(theme.popup_bg));
             return;
         }
@@ -477,6 +523,14 @@ impl Palette {
                             v.push((s.clone(), if selected { base } else { theme.status_accent.bg(theme.popup_bg) }));
                         }
                     }
+                    v
+                }
+                Source::Symbols => {
+                    let e = &self.symbols[i];
+                    let marks = match_indices(&pattern, &e.symbol.name, &mut self.matcher);
+                    let mut v = highlight(&e.symbol.name, |ci| marks.contains(&(ci as u32)), base, hl);
+                    v.push((format!("  {}", e.symbol.kind), dim));
+                    v.push((format!("  {}:{}", e.path, e.symbol.line + 1), dim));
                     v
                 }
                 Source::Branches if i == 0 => vec![(NEW_BRANCH.to_string(), base)],
