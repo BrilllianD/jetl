@@ -146,6 +146,7 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
     let cur_vcol = visual_col(rope, buf.sel.head, o.tab_width);
     let hl = buf.syntax.as_mut().map(|s| s.highlights(rope, buf.scroll_line, area.height as usize)).unwrap_or_default();
     let search = buf.search.as_ref();
+    let pair = super::brackets::pair_at(rope, buf.syntax.as_ref().and_then(|s| s.tree()), buf.sel.head);
     let digits = (gutter_w - 3) as usize;
     let mut cursor = None;
 
@@ -188,6 +189,9 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
                 if let Some(cur) = s.match_at(c.char_idx) {
                     style = style.bg(if cur { theme.search_current_bg } else { theme.search_match_bg });
                 }
+            }
+            if pair.is_some_and(|(a, b)| c.char_idx == a || c.char_idx == b) {
+                style = style.patch(theme.bracket_match);
             }
             if is_cur && o.focused && style.bg.is_none() {
                 style = style.bg(theme.current_line_bg);

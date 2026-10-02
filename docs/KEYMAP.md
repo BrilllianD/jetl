@@ -93,6 +93,7 @@ Override any of them in `~/.config/jetl/keymap.toml` (see [CONFIG.md](CONFIG.md)
 | `Esc` | `editor.escape` | Escape (close find, clear selection) |
 | `Ctrl+/` | `editor.toggle_comment` | Comment with line comment |
 | `Ctrl+7` | `editor.toggle_comment` | Comment with line comment |
+| `Ctrl+Shift+M` * | `editor.goto_bracket` | Move caret to matching bracket |
 | `Ctrl+Up` | `editor.scroll_up` | Scroll up |
 | `Ctrl+Down` | `editor.scroll_down` | Scroll down |
 

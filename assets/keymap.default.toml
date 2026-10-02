@@ -84,6 +84,7 @@
 "ctrl-/" = "editor.toggle_comment"
 # Legacy terminals send Ctrl+/ as 0x1F, which crossterm reports as Ctrl+7.
 "ctrl-7" = "editor.toggle_comment"
+"ctrl-shift-m" = "editor.goto_bracket"
 "ctrl-up" = "editor.scroll_up"
 "ctrl-down" = "editor.scroll_down"
 "esc" = "editor.escape"

@@ -95,6 +95,7 @@ pub enum EditorAction {
     Switcher,
     Escape,
     ToggleComment,
+    GotoBracket,
     ScrollUp(usize),
     ScrollDown(usize),
 }
@@ -268,6 +269,7 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "editor.switcher" => "Switcher (recent tabs)", Editor(E::Switcher);
         "editor.escape" => "Escape (close find, clear selection)", Editor(E::Escape);
         "editor.toggle_comment" => "Comment with line comment", Editor(E::ToggleComment);
+        "editor.goto_bracket" => "Move caret to matching bracket", Editor(E::GotoBracket);
         "editor.scroll_up" => "Scroll up", Editor(E::ScrollUp(1));
         "editor.scroll_down" => "Scroll down", Editor(E::ScrollDown(1));
 

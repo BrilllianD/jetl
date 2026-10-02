@@ -1,5 +1,6 @@
 //! Editor: a tab strip of buffers plus the text view.
 
+pub mod brackets;
 pub mod buffer;
 pub mod gutter;
 pub mod search;
@@ -509,6 +510,17 @@ impl Editor {
                 match token {
                     Some(t) => b.toggle_line_comment(t),
                     None => cx.notify(Level::Info, "No line comment for this file type"),
+                }
+            }
+            E::GotoBracket => {
+                if let Some(s) = &mut b.syntax {
+                    s.reparse(&b.rope);
+                }
+                let tree = b.syntax.as_ref().and_then(|s| s.tree());
+                if let Some((_, other)) = brackets::pair_at(&b.rope, tree, b.sel.head) {
+                    b.sel.set_head(other, false);
+                    b.desired_col = None;
+                    b.undo.break_group = true;
                 }
             }
             E::NextTab | E::PrevTab | E::CloseTab | E::CloseAllTabs | E::Switcher | E::Save | E::SaveAll | E::GotoLine => {}
