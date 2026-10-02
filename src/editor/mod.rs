@@ -436,7 +436,15 @@ impl Editor {
                 b.insert(&s, TxKind::Other);
             }
             E::InsertNewline => b.newline(),
-            E::InsertTab => b.insert_tab(tab_width),
+            E::InsertTab => {
+                let r = b.sel.range();
+                if b.rope.char_to_line(r.start) != b.rope.char_to_line(r.end) {
+                    b.indent_lines(tab_width);
+                } else {
+                    b.insert_tab(tab_width);
+                }
+            }
+            E::Unindent => b.unindent_lines(tab_width),
             E::Backspace => {
                 if !b.backspace_pair(pairs()) {
                     b.backspace();

@@ -49,7 +49,8 @@ Override any of them in `~/.config/jetl/keymap.toml` (see [CONFIG.md](CONFIG.md)
 | Keys | Action | Description |
 |---|---|---|
 | `Enter` | `editor.newline` | Insert newline |
-| `Tab` | `editor.tab` | Insert tab |
+| `Tab` | `editor.tab` | Insert tab or indent selected lines |
+| `Shift+Tab` | `editor.unindent` | Unindent line or selection |
 | `Backspace` | `editor.backspace` | Delete left |
 | `Delete` | `editor.delete` | Delete right |
 | `Ctrl+Backspace` | `editor.delete_word_back` | Delete word left |

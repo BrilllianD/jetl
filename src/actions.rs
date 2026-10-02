@@ -62,6 +62,7 @@ pub enum EditorAction {
     InsertText(String),
     InsertNewline,
     InsertTab,
+    Unindent,
     Backspace,
     Delete,
     DeleteWordBack,
@@ -212,7 +213,8 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "palette.goto_line" => "Go to line", App(AppAction::OpenPalette(PaletteKind::GotoLine));
 
         "editor.newline" => "Insert newline", Editor(E::InsertNewline);
-        "editor.tab" => "Insert tab", Editor(E::InsertTab);
+        "editor.tab" => "Insert tab or indent selected lines", Editor(E::InsertTab);
+        "editor.unindent" => "Unindent line or selection", Editor(E::Unindent);
         "editor.backspace" => "Delete left", Editor(E::Backspace);
         "editor.delete" => "Delete right", Editor(E::Delete);
         "editor.delete_word_back" => "Delete word left", Editor(E::DeleteWordBack);

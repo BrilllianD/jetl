@@ -375,12 +375,7 @@ impl Buffer {
     /// non-blank line is already commented.
     pub fn toggle_line_comment(&mut self, token: &str) {
         let r = self.sel.range();
-        let (l0, _) = selection::pos_to_line_col(&self.rope, r.start);
-        let (mut l1, c1) = selection::pos_to_line_col(&self.rope, r.end);
-        // A selection ending at column 0 does not include that line.
-        if l1 > l0 && c1 == 0 {
-            l1 -= 1;
-        }
+        let (l0, l1) = self.selected_lines();
         // (line, indent, blank) for each covered line.
         let lines: Vec<(usize, usize, bool)> = (l0..=l1)
             .map(|l| {
@@ -413,20 +408,7 @@ impl Buffer {
                 changes.push(Change::insert(ls + min_indent, format!("{token} ")));
             }
         }
-        // Map the selection through the changes (applied last line first).
-        let map = |mut p: usize, stay_at_insert: bool| {
-            for c in &changes {
-                let old_n = c.old.chars().count();
-                if p < c.at || (p == c.at && stay_at_insert && old_n == 0) {
-                    continue;
-                }
-                p = if p >= c.at + old_n { p - old_n + c.new.chars().count() } else { c.at };
-            }
-            p
-        };
-        let forward = self.sel.anchor <= self.sel.head;
-        let (start, end) = (map(r.start, !r.is_empty()), map(r.end, false));
-        let sel_after = if forward { Selection::new(start, end) } else { Selection::new(end, start) };
+        let sel_after = self.sel_through(&changes);
         let was_empty = r.is_empty();
         self.apply_then(changes, TxKind::Other, |rope| {
             if !was_empty {
@@ -440,6 +422,57 @@ impl Buffer {
                 sel_after
             }
         });
+    }
+
+    /// First and last line covered by the selection. A selection ending at
+    /// column 0 does not include that line.
+    fn selected_lines(&self) -> (usize, usize) {
+        let r = self.sel.range();
+        let (l0, _) = selection::pos_to_line_col(&self.rope, r.start);
+        let (mut l1, c1) = selection::pos_to_line_col(&self.rope, r.end);
+        if l1 > l0 && c1 == 0 {
+            l1 -= 1;
+        }
+        (l0, l1)
+    }
+
+    /// The selection mapped through `changes` (applied in order, each
+    /// relative to the text after the previous one). A non-empty selection
+    /// starting where text is inserted grows to include it.
+    fn sel_through(&self, changes: &[Change]) -> Selection {
+        let r = self.sel.range();
+        let (start, end) = (map_through(changes, r.start, !r.is_empty()), map_through(changes, r.end, false));
+        if self.sel.anchor <= self.sel.head { Selection::new(start, end) } else { Selection::new(end, start) }
+    }
+
+    /// Indent every non-blank selected line by `tab_width` spaces.
+    pub fn indent_lines(&mut self, tab_width: usize) {
+        let (l0, l1) = self.selected_lines();
+        let pad = " ".repeat(tab_width);
+        let changes: Vec<Change> = (l0..=l1)
+            .rev()
+            .filter(|&l| selection::indent_of(&self.rope, l) < line_len_no_eol(&self.rope, l))
+            .map(|l| Change::insert(self.rope.line_to_char(l), pad.clone()))
+            .collect();
+        let sel_after = self.sel_through(&changes);
+        self.apply(changes, sel_after, TxKind::Other);
+    }
+
+    /// Remove one level of indentation (a tab or up to `tab_width` spaces)
+    /// from the selected lines, or the caret line.
+    pub fn unindent_lines(&mut self, tab_width: usize) {
+        let (l0, l1) = self.selected_lines();
+        let mut changes = Vec::new();
+        for l in (l0..=l1).rev() {
+            let ls = self.rope.line_to_char(l);
+            let lead: String = self.rope.line(l).chars().take_while(|c| *c == ' ' || *c == '\t').take(tab_width.max(1)).collect();
+            let old: String = if lead.starts_with('\t') { "\t".into() } else { lead.chars().take_while(|c| *c == ' ').collect() };
+            if !old.is_empty() {
+                changes.push(Change::delete(ls, old));
+            }
+        }
+        let sel_after = self.sel_through(&changes);
+        self.apply(changes, sel_after, TxKind::Other);
     }
 
     pub fn line_text(&self, line: usize) -> String {
@@ -456,6 +489,19 @@ impl Buffer {
         self.saved_state = self.undo.state_id();
         self.undo.break_group = true;
     }
+}
+
+/// Map position `p` through `changes`. With `stay_at_insert`, a position
+/// exactly where text is inserted stays before the insertion.
+fn map_through(changes: &[Change], mut p: usize, stay_at_insert: bool) -> usize {
+    for c in changes {
+        let old_n = c.old.chars().count();
+        if p < c.at || (p == c.at && stay_at_insert && old_n == 0) {
+            continue;
+        }
+        p = if p >= c.at + old_n { p - old_n + c.new.chars().count() } else { c.at };
+    }
+    p
 }
 
 #[cfg(test)]
@@ -662,6 +708,37 @@ mod tests {
         buf.sel = Selection::point(0);
         buf.type_char('(', &[], true);
         assert_eq!(buf.text(), "(())", "auto_close = false: no pair");
+    }
+
+    #[test]
+    fn indent_and_unindent_selection() {
+        let original = "fn a() {\n    x;\n\n\ty;\n}\n";
+        let mut buf = b(original);
+        // Lines 1-3; the selection ends at column 0 of line 4.
+        buf.sel = Selection::new(buf.rope.line_to_char(1), buf.rope.line_to_char(4));
+        buf.indent_lines(4);
+        assert_eq!(buf.text(), "fn a() {\n        x;\n\n    \ty;\n}\n", "blank line untouched");
+        assert_eq!(buf.sel.range(), buf.rope.line_to_char(1)..buf.rope.line_to_char(4), "selection covers the same lines");
+        assert_eq!(buf.undo.len(), 1);
+        buf.unindent_lines(4);
+        assert_eq!(buf.text(), original);
+        buf.unindent_lines(4);
+        assert_eq!(buf.text(), "fn a() {\nx;\n\ny;\n}\n", "a leading tab is one level");
+        assert_eq!(buf.undo.len(), 3);
+        assert!(buf.undo());
+        assert_eq!(buf.text(), original);
+    }
+
+    #[test]
+    fn unindent_caret_line_keeps_caret_on_text() {
+        let mut buf = b("      abc\n");
+        buf.goto_line(0, 7);
+        buf.unindent_lines(4);
+        assert_eq!(buf.text(), "  abc\n");
+        assert_eq!(buf.cursor_line_col(), (0, 3));
+        buf.unindent_lines(4);
+        assert_eq!(buf.text(), "abc\n", "fewer spaces than a level");
+        assert_eq!(buf.cursor_line_col(), (0, 1));
     }
 
     #[test]

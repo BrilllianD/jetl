@@ -41,6 +41,7 @@
 [editor]
 "enter" = "editor.newline"
 "tab" = "editor.tab"
+"shift-tab" = "editor.unindent"
 "backspace" = "editor.backspace"
 "delete" = "editor.delete"
 "ctrl-backspace" = "editor.delete_word_back"
