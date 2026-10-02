@@ -657,6 +657,37 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn save_all_refreshes_tree_and_status_once() {
+        let (mut app, dir) = test_app("save-all");
+        let root = app.workspace.root.clone();
+        let g = app.workspace.generation;
+        for name in ["a.txt", "b.txt", "c.txt"] {
+            app.handle_msg(AppMsg::FileLoaded { generation: g, path: root.join(name), result: Ok(b"x".to_vec()), focus: true });
+            app.perform(Action::Editor(EditorAction::InsertText("y".into())));
+        }
+        let (tree, status) = (app.project.refresh_requests(), app.git.status_requests());
+        app.perform(Action::Editor(EditorAction::SaveAll));
+        assert!(!app.editor.has_dirty());
+        assert_eq!(app.project.refresh_requests(), tree + 1);
+        assert_eq!(app.git.status_requests(), status + 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn stale_tree_listing_is_dropped() {
+        let (mut app, dir) = test_app("stale-tree");
+        let root = app.workspace.root.clone();
+        std::fs::write(root.join("new.txt"), "").unwrap();
+        let req = app.project.begin_refresh();
+        let msg = |generation| AppMsg::TreeLoaded { generation, seq: req.seq, dirs: req.run() };
+        app.handle_msg(msg(app.workspace.generation - 1));
+        assert_eq!(app.project.selected_row().map(|r| r.name.clone()), None, "listing of the previous root");
+        app.handle_msg(msg(app.workspace.generation));
+        assert_eq!(app.project.selected_row().map(|r| r.name.clone()).as_deref(), Some("new.txt"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
     async fn branch_load_error_reports_once_per_palette() {
         let (mut app, dir) = test_app("branch-error");
         app.open_palette(crate::actions::PaletteKind::Branches);

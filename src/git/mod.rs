@@ -175,6 +175,11 @@ impl GitService {
         self.busy.clear();
     }
 
+    #[cfg(test)]
+    pub fn status_requests(&self) -> u64 {
+        self.status_seq.load(Ordering::SeqCst)
+    }
+
     pub fn is_busy(&self) -> bool {
         !self.busy.is_empty()
     }

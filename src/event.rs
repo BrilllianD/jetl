@@ -34,6 +34,13 @@ pub enum AppMsg {
         session: crate::workspace::Session,
         files: Vec<std::io::Result<Vec<u8>>>,
     },
+    /// Re-read tree directories (`ProjectPanel::begin_refresh`), tagged
+    /// with the workspace generation.
+    TreeLoaded {
+        generation: u64,
+        seq: u64,
+        dirs: crate::files::tree::DirListing,
+    },
     /// The palette's file walk of the root, tagged with the workspace
     /// generation and its request order.
     FileIndex {
@@ -55,6 +62,9 @@ pub enum Effect {
     Focus(PanelId),
     Notify(Level, String),
     SwitchRoot(PathBuf),
+    /// Re-read the project tree off the main thread.
+    RefreshTree,
+    /// Tree, git status, branches and worktrees.
     GitRefresh,
     /// A git operation or query for the app to run through `GitService`.
     Git(crate::git::GitRequest),

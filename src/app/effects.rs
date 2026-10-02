@@ -2,12 +2,15 @@
 
 use super::App;
 use crate::actions::PaletteKind;
-use crate::event::{Effect, Level};
+use crate::event::{AppMsg, Effect, Level};
 use crate::git::{GitOp, GitRequest};
 use crate::ui::dialog::{Dialog, DialogId};
 
 impl App {
+    /// Apply effects in order. Refreshes are collected and run once after the
+    /// batch, so saving N files re-reads the tree and git status once.
     pub fn apply_effects(&mut self, effects: Vec<Effect>) {
+        let (mut tree, mut status, mut lists) = (false, false, false);
         for e in effects {
             match e {
                 Effect::Notify(level, text) => self.notify(level, text),
@@ -23,21 +26,37 @@ impl App {
                     if !quiet {
                         self.notify(Level::Info, format!("Saved {}", p.file_name().map(|n| n.to_string_lossy()).unwrap_or_default()));
                     }
-                    self.project.refresh();
-                    self.git.refresh_status();
+                    (tree, status) = (true, true);
                 }
                 Effect::Clipboard(text) => self.copy_to_clipboard(&text),
                 Effect::SwitchRoot(p) => self.switch_root(p),
-                Effect::GitRefresh => {
-                    self.project.refresh();
-                    self.git.refresh_status();
-                    self.git.load_branches();
-                    self.git.load_worktrees();
-                }
+                Effect::RefreshTree => tree = true,
+                Effect::GitRefresh => (tree, status, lists) = (true, true, true),
                 Effect::Git(req) => self.git_request(req),
                 Effect::Quit => self.request_quit(),
             }
         }
+        if tree {
+            self.refresh_tree();
+        }
+        if status {
+            self.git.refresh_status();
+        }
+        if lists {
+            self.git.load_branches();
+            self.git.load_worktrees();
+        }
+    }
+
+    /// Re-read the tree's expanded directories in `spawn_blocking`; the
+    /// panel merges the result in `AppMsg::TreeLoaded`.
+    pub fn refresh_tree(&mut self) {
+        let req = self.project.begin_refresh();
+        let (generation, tx) = (self.workspace.generation, self.bus_tx.clone());
+        tokio::task::spawn_blocking(move || {
+            let dirs = req.run();
+            let _ = tx.send(AppMsg::TreeLoaded { generation, seq: req.seq, dirs });
+        });
     }
 
     /// Run a request a panel made through `Effect::Git`.

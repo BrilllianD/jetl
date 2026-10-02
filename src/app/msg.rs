@@ -29,6 +29,13 @@ impl App {
                 }
             }
             AppMsg::SessionLoaded { generation, session, files } => self.session_loaded(generation, session, files),
+            AppMsg::TreeLoaded { generation, seq, dirs } => {
+                if generation == self.workspace.generation {
+                    self.project.finish_refresh(seq, dirs);
+                } else {
+                    tracing::debug!("dropping stale tree listing");
+                }
+            }
             AppMsg::FileIndex { generation, seq, files } => self.file_index_loaded(generation, seq, files),
             AppMsg::Lsp(_) => {}
         }
@@ -137,7 +144,7 @@ impl App {
         } else {
             self.notify(Level::Error, format!("{label}: {}", error_line(&output)));
         }
-        self.project.refresh();
+        self.refresh_tree();
         self.git.refresh_status();
         self.git.load_branches();
         // Branch switches and worktree operations both change the list.

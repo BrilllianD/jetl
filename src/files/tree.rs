@@ -17,7 +17,7 @@ use crate::ui::tool_window_block;
 use crate::ui::widgets::list::ListState;
 
 #[derive(Debug, Clone)]
-struct Node {
+pub struct Node {
     path: PathBuf,
     name: String,
     is_dir: bool,
@@ -34,6 +34,25 @@ pub struct Row {
     pub depth: usize,
 }
 
+/// Children of each directory a refresh re-read, sorted for display.
+pub type DirListing = HashMap<PathBuf, Vec<Node>>;
+
+/// The directories a refresh re-reads (the root and every expanded one),
+/// detached from the panel so the walk can run off the main thread.
+#[derive(Debug)]
+pub struct TreeRefresh {
+    pub seq: u64,
+    dirs: Vec<PathBuf>,
+    show_hidden: bool,
+    show_ignored: bool,
+}
+
+impl TreeRefresh {
+    pub fn run(&self) -> DirListing {
+        self.dirs.iter().map(|d| (d.clone(), read_children(d, self.show_hidden, self.show_ignored))).collect()
+    }
+}
+
 pub struct ProjectPanel {
     root: PathBuf,
     nodes: Vec<Node>,
@@ -43,6 +62,9 @@ pub struct ProjectPanel {
     show_hidden: bool,
     show_ignored: bool,
     status: HashMap<PathBuf, FileStatus>,
+    /// Last refresh requested and last one applied.
+    refresh_seq: u64,
+    applied_seq: u64,
 }
 
 fn read_children(dir: &Path, show_hidden: bool, show_ignored: bool) -> Vec<Node> {
@@ -82,6 +104,8 @@ impl ProjectPanel {
             show_hidden,
             show_ignored,
             status: HashMap::new(),
+            refresh_seq: 0,
+            applied_seq: 0,
         };
         p.reroot(root);
         p
@@ -102,30 +126,76 @@ impl ProjectPanel {
         self.status = status;
     }
 
-    /// Re-read every expanded directory, keeping expansion state.
-    pub fn refresh(&mut self) {
-        fn reload(nodes: &mut Vec<Node>, dir: &Path, show_hidden: bool, show_ignored: bool) {
-            let old: HashMap<PathBuf, Node> = nodes.drain(..).map(|n| (n.path.clone(), n)).collect();
-            let mut fresh = read_children(dir, show_hidden, show_ignored);
+    /// Start a refresh: the root and every expanded directory, to be read
+    /// with [`TreeRefresh::run`] and merged by [`ProjectPanel::finish_refresh`].
+    pub fn begin_refresh(&mut self) -> TreeRefresh {
+        fn expanded(nodes: &[Node], out: &mut Vec<PathBuf>) {
+            for n in nodes.iter().filter(|n| n.is_dir && n.expanded) {
+                out.push(n.path.clone());
+                expanded(n.children.as_deref().unwrap_or_default(), out);
+            }
+        }
+        let mut dirs = vec![self.root.clone()];
+        expanded(&self.nodes, &mut dirs);
+        self.refresh_seq += 1;
+        TreeRefresh { seq: self.refresh_seq, dirs, show_hidden: self.show_hidden, show_ignored: self.show_ignored }
+    }
+
+    /// Merge re-read directories, keeping expansion and the selected path.
+    /// Directories expanded after the request keep the children they
+    /// loaded. Returns false for a refresh older than the last applied.
+    pub fn finish_refresh(&mut self, seq: u64, mut listing: DirListing) -> bool {
+        fn merge(old: Vec<Node>, dir: &Path, listing: &mut DirListing) -> Vec<Node> {
+            let Some(mut fresh) = listing.remove(dir) else {
+                // Not re-read: keep as is, but descend for deeper listings.
+                return old
+                    .into_iter()
+                    .map(|mut n| {
+                        if n.expanded {
+                            n.children = n.children.map(|c| merge(c, &n.path, listing));
+                        }
+                        n
+                    })
+                    .collect();
+            };
+            let mut old: HashMap<PathBuf, Node> = old.into_iter().map(|n| (n.path.clone(), n)).collect();
             for n in &mut fresh {
-                if let Some(o) = old.get(&n.path)
+                if let Some(o) = old.remove(&n.path)
                     && o.is_dir
+                    && n.is_dir
                     && o.expanded
                 {
                     n.expanded = true;
-                    n.children = Some(Vec::new());
-                    let mut kids = o.children.clone().unwrap_or_default();
-                    reload(&mut kids, &n.path, show_hidden, show_ignored);
-                    n.children = Some(kids);
+                    n.children = o.children.map(|c| merge(c, &n.path, listing));
                 }
             }
-            *nodes = fresh;
+            fresh
         }
-        let root = self.root.clone();
-        let mut nodes = std::mem::take(&mut self.nodes);
-        reload(&mut nodes, &root, self.show_hidden, self.show_ignored);
-        self.nodes = nodes;
+        if seq < self.applied_seq {
+            return false;
+        }
+        self.applied_seq = seq;
+        let selected = self.selected_row().map(|r| r.path.clone());
+        let nodes = std::mem::take(&mut self.nodes);
+        self.nodes = merge(nodes, &self.root.clone(), &mut listing);
         self.reflatten();
+        if let Some(i) = selected.and_then(|p| self.rows.iter().position(|r| r.path == p)) {
+            self.list.select(i);
+        }
+        true
+    }
+
+    #[cfg(test)]
+    pub fn refresh_requests(&self) -> u64 {
+        self.refresh_seq
+    }
+
+    /// Re-read every expanded directory on this thread.
+    #[cfg(test)]
+    pub fn refresh(&mut self) {
+        let req = self.begin_refresh();
+        let listing = req.run();
+        self.finish_refresh(req.seq, listing);
     }
 
     fn reflatten(&mut self) {
@@ -247,7 +317,7 @@ impl ProjectPanel {
                 }
             }
             TreeAction::Open => self.open_or_toggle(cx),
-            TreeAction::Refresh => self.refresh(),
+            TreeAction::Refresh => cx.effects.push(crate::event::Effect::RefreshTree),
             TreeAction::SelectInProject => return false,
         }
         true
@@ -339,5 +409,63 @@ impl ProjectPanel {
                 screen.set_stringn(x, y, &r.name, (inner.right() - x) as usize, name_style);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tmp_tree(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("jetl-test-tree-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        for d in ["a/deep", "b", "c"] {
+            std::fs::create_dir_all(dir.join(d)).unwrap();
+        }
+        for f in ["a/deep/x.txt", "a/one.txt", "b/two.txt", "c/three.txt", "z.txt"] {
+            std::fs::write(dir.join(f), "").unwrap();
+        }
+        std::fs::canonicalize(&dir).unwrap()
+    }
+
+    fn names(p: &ProjectPanel) -> Vec<String> {
+        p.rows.iter().map(|r| format!("{}{}", "  ".repeat(r.depth), r.name)).collect()
+    }
+
+    #[test]
+    fn refresh_keeps_expansion_and_selected_path() {
+        let root = tmp_tree("keep");
+        let mut p = ProjectPanel::new(root.clone(), false, false);
+        p.select_path(&root.join("a/deep/x.txt"));
+        assert_eq!(names(&p), ["a", "  deep", "    x.txt", "  one.txt", "b", "c", "z.txt"]);
+        // A new entry sorts in above the selection.
+        std::fs::write(root.join("a/deep/w.txt"), "").unwrap();
+        p.refresh();
+        assert_eq!(names(&p), ["a", "  deep", "    w.txt", "    x.txt", "  one.txt", "b", "c", "z.txt"]);
+        assert_eq!(p.selected_row().unwrap().path, root.join("a/deep/x.txt"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn late_or_overtaken_refresh_merges_safely() {
+        let root = tmp_tree("late");
+        let mut p = ProjectPanel::new(root.clone(), false, false);
+        let old = p.begin_refresh();
+        let old_listing = old.run();
+        // Expanded after the request: keeps the children it loaded.
+        p.select_path(&root.join("b/two.txt"));
+        let new = p.begin_refresh();
+        std::fs::write(root.join("b/new.txt"), "").unwrap();
+        let new_listing = new.run();
+        assert!(p.finish_refresh(new.seq, new_listing));
+        assert_eq!(names(&p), ["a", "b", "  new.txt", "  two.txt", "c", "z.txt"]);
+        assert!(!p.finish_refresh(old.seq, old_listing), "older than the applied one");
+        assert_eq!(names(&p), ["a", "b", "  new.txt", "  two.txt", "c", "z.txt"]);
+        // A listing without `c` (requested before it was expanded) leaves it.
+        let req = p.begin_refresh();
+        p.select_path(&root.join("c/three.txt"));
+        p.finish_refresh(req.seq, req.run());
+        assert_eq!(names(&p), ["a", "b", "  new.txt", "  two.txt", "c", "  three.txt", "z.txt"]);
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
