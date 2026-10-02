@@ -556,16 +556,8 @@ fn rank_texts<'a, const N: usize>(query: &str, items: impl Iterator<Item = [&'a 
 /// honouring the same hidden/ignore settings as the Project tree. Runs in
 /// `spawn_blocking`.
 pub fn walk_files(root: &Path, show_hidden: bool, show_ignored: bool) -> Vec<String> {
-    let mut wb = ignore::WalkBuilder::new(root);
-    wb.hidden(!show_hidden)
-        .git_ignore(!show_ignored)
-        .git_global(!show_ignored)
-        .git_exclude(!show_ignored)
-        .follow_links(false)
-        .require_git(true)
-        .filter_entry(|e| e.file_name() != ".git");
     let mut out = Vec::new();
-    for entry in wb.build().flatten() {
+    for entry in crate::files::walk::builder(root, show_hidden, show_ignored).build().flatten() {
         if !entry.file_type().is_some_and(|t| t.is_file() || t.is_symlink()) {
             continue;
         }

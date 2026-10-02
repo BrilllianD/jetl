@@ -12,6 +12,7 @@ pub enum Action {
     Tree(TreeAction),
     Git(GitAction),
     Worktree(WorktreeAction),
+    Find(FindAction),
     Palette(PaletteAction),
     Mode(ModeAction),
 }
@@ -174,6 +175,27 @@ pub enum WorktreeAction {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum FindAction {
+    /// Open the Find window with the editor selection as the query.
+    InFiles,
+    ReplaceInFiles,
+    NextResult,
+    PrevResult,
+    Up,
+    Down,
+    PageUp,
+    PageDown,
+    Open,
+    NextField,
+    ToggleCase,
+    ToggleWord,
+    ToggleRegex,
+    ToggleReplace,
+    ReplaceAll,
+    Escape,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum PaletteAction {
     Up,
     Down,
@@ -219,6 +241,7 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "tool_window.project" => "Project tool window", App(AppAction::ToggleToolWindow(ToolWindowId::Project));
         "tool_window.worktrees" => "Worktrees tool window", App(AppAction::ToggleToolWindow(ToolWindowId::Worktrees));
         "tool_window.git" => "Git tool window", App(AppAction::ToggleToolWindow(ToolWindowId::Git));
+        "tool_window.find" => "Find tool window", App(AppAction::ToggleToolWindow(ToolWindowId::Find));
         "tool_window.hide_all" => "Hide all tool windows", App(AppAction::HideAllToolWindows);
         "tool_window.hide_focused" => "Hide active tool window", App(AppAction::HideFocusedToolWindow);
         "palette.files" => "Go to file", App(AppAction::OpenPalette(PaletteKind::Files));
@@ -353,6 +376,23 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "worktree.up" => "Worktrees: up", Worktree(WorktreeAction::Up);
         "worktree.down" => "Worktrees: down", Worktree(WorktreeAction::Down);
 
+        "find.in_files" => "Find in files", Find(FindAction::InFiles);
+        "find.replace_in_files" => "Replace in files", Find(FindAction::ReplaceInFiles);
+        "find.next_result" => "Find: next result (opens it)", Find(FindAction::NextResult);
+        "find.prev_result" => "Find: previous result (opens it)", Find(FindAction::PrevResult);
+        "find.up" => "Find: up", Find(FindAction::Up);
+        "find.down" => "Find: down", Find(FindAction::Down);
+        "find.page_up" => "Find: page up", Find(FindAction::PageUp);
+        "find.page_down" => "Find: page down", Find(FindAction::PageDown);
+        "find.open" => "Find: open selected result", Find(FindAction::Open);
+        "find.next_field" => "Find: switch between query and replacement", Find(FindAction::NextField);
+        "find.toggle_case" => "Find: match case", Find(FindAction::ToggleCase);
+        "find.toggle_word" => "Find: whole words", Find(FindAction::ToggleWord);
+        "find.toggle_regex" => "Find: regex", Find(FindAction::ToggleRegex);
+        "find.toggle_replace" => "Find: show or hide the replacement", Find(FindAction::ToggleReplace);
+        "find.replace_all" => "Find: replace all results", Find(FindAction::ReplaceAll);
+        "find.escape" => "Find: back to the editor", Find(FindAction::Escape);
+
         "palette.up" => "Palette: up", Palette(PaletteAction::Up);
         "palette.down" => "Palette: down", Palette(PaletteAction::Down);
         "palette.page_up" => "Palette: page up", Palette(PaletteAction::PageUp);
@@ -388,6 +428,7 @@ impl Action {
             Action::Tree(_) => &["tree", "global"],
             Action::Git(_) => &["git", "global"],
             Action::Worktree(_) => &["worktrees", "global"],
+            Action::Find(_) => &["find", "global"],
             Action::Palette(_) => &["palette"],
             Action::Mode(_) => &["mode.normal", "mode.insert", "mode.visual"],
         }

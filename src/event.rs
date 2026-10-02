@@ -50,6 +50,18 @@ pub enum AppMsg {
         path: PathBuf,
         result: std::io::Result<Vec<u8>>,
     },
+    /// Find in files results (`FindPanel::search`).
+    Find {
+        generation: u64,
+        batch: crate::files::find::Batch,
+    },
+    /// Replace in files finished writing the files that were not open.
+    ReplaceDone {
+        generation: u64,
+        files: usize,
+        matches: usize,
+        errors: Vec<String>,
+    },
     /// Re-read tree directories (`ProjectPanel::begin_refresh`), tagged
     /// with the workspace generation.
     TreeLoaded {
@@ -75,6 +87,12 @@ pub enum LspMsg {}
 #[derive(Debug)]
 pub enum Effect {
     OpenFile(PathBuf),
+    /// Open a file with the caret at a 0-based line and char column.
+    OpenFileAt {
+        path: PathBuf,
+        line: usize,
+        col: usize,
+    },
     Focus(PanelId),
     Notify(Level, String),
     SwitchRoot(PathBuf),

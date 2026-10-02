@@ -11,6 +11,7 @@ use crate::app::Ctx;
 use crate::config::Autosave;
 use crate::event::{Effect, Level};
 use crate::ui::dialog::{Dialog, DialogId};
+use crate::util::fs::write_atomic;
 
 /// What an outside change of a file means for its tab.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,6 +52,19 @@ impl Editor {
         }
         replace_with_disk_text(b, text, path);
         true
+    }
+
+    /// Replace every match of `re` in tab `i` as one undoable edit; returns
+    /// the number replaced. The tab stays modified (not saved).
+    pub fn replace_in_buffer(&mut self, i: usize, re: &regex::Regex, with: &str, expand: bool) -> usize {
+        let Some(b) = self.buffers.get_mut(i) else { return 0 };
+        let reps = crate::files::find::replacements(&b.text(), re, with, expand);
+        let n = reps.len();
+        // Last to first so earlier offsets stay valid.
+        let changes: Vec<Change> = reps.into_iter().rev().map(|r| Change::replace(r.start, r.old, r.new)).collect();
+        let caret = b.sel.head;
+        b.apply_then(changes, TxKind::Other, |rope| Selection::point(caret.min(rope.len_chars())));
+        n
     }
 
     /// Overwrite / Reload / Cancel for tab `i`, whose file changed on disk
@@ -231,22 +245,4 @@ pub(super) fn replace_with_disk_text(b: &mut Buffer, text: String, path: &Path) 
 /// some buffer can be autosaved.
 pub(super) fn idle_autosave_due(mode: Autosave, last_edit: Instant, now: Instant, idle: Duration, any_dirty: bool) -> bool {
     mode == Autosave::Idle && any_dirty && now.saturating_duration_since(last_edit) >= idle
-}
-
-/// Write via a temp file in the same directory, then rename over the target.
-/// The written file keeps the original's permissions; failing to copy them
-/// does not fail the save and comes back as `Ok(Some(error))`.
-pub(super) fn write_atomic(path: &Path, text: &str) -> std::io::Result<Option<std::io::Error>> {
-    use std::io::Write;
-    let dir = path.parent().unwrap_or(Path::new("."));
-    let tmp = dir.join(format!(".{}.jetl-tmp", path.file_name().map(|n| n.to_string_lossy()).unwrap_or_default()));
-    {
-        let mut f = std::fs::File::create(&tmp)?;
-        f.write_all(text.as_bytes())?;
-        f.sync_all()?;
-    }
-    // Preserve permissions of the original file when it exists.
-    let perm_err = std::fs::metadata(path).ok().and_then(|meta| std::fs::set_permissions(&tmp, meta.permissions()).err());
-    std::fs::rename(&tmp, path)?;
-    Ok(perm_err)
 }

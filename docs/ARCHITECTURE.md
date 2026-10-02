@@ -20,6 +20,7 @@ and backlog are in `docs/ROADMAP.md`; settings in `docs/CONFIG.md`; keys in
 | `app/palette.rs` | Opening the palette, its keys, the file index, accepted rows. |
 | `app/mouse.rs` | Mouse routing: toasts, overlays, drags, splitters, tabs, status bar, panels. |
 | `app/watch.rs` | Starting the filesystem watcher and acting on its batches. |
+| `app/find.rs` | Replace in files (open tabs through the editor, other files off the main thread). |
 | `workspace.rs` | `Workspace` (root and generation), root switching (`App::switch_root`), sessions (JSON per root). |
 | `worktree/` | `git worktree` parsing and paths (`mod.rs`), the Worktrees tool window (`panel.rs`), the create/remove dialog flow (`flow.rs`, `impl App`). |
 | `actions.rs` | `Action` enums and `REGISTRY` (id, description, action). Keymaps and the palette refer to actions by id. |
@@ -32,6 +33,8 @@ and backlog are in `docs/ROADMAP.md`; settings in `docs/CONFIG.md`; keys in
 | `editor/view.rs` | `layout_line`: the grapheme walk shared by rendering, `visual_col` and `col_to_char`. |
 | `editor/…` | `selection`, `undo`, `syntax` (tree-sitter, language detection), `search`, `gutter` (git marks), `indent` (`.editorconfig`, detection), `brackets`, `expand`, `nav` (back/forward). |
 | `files/tree.rs` | Project tool window: lazy `ignore` walk, `TreeRefresh` off the main thread, git status colors. |
+| `files/walk.rs` | The `ignore` walk builder shared by the tree, Go to File and find in files. |
+| `files/find.rs`, `files/find_panel.rs` | Find in files: the search (`Search::run` streams `Batch`es, cancelled by seq) and replacements; the Find tool window. |
 | `files/watch.rs` | Debounced recursive watch of the root (notify); splits batches into working tree paths and a git flag. |
 | `git/mod.rs` | `GitService` (spawns work, tracks busy ops), `GitMsg`, `GitOp`, `GitRequest`. |
 | `git/repo.rs` | Synchronous git2 calls; each opens the repository itself. |
@@ -94,14 +97,16 @@ Two tags:
 - **Generation** (`Workspace::generation`) is bumped by every root switch
   (`Workspace::switch_root`). Every result that depends on the root carries
   it: `FileLoaded`, `SessionLoaded`, `FileIndex`, `TreeLoaded`,
-  `Worktrees`, every `GitMsg`. `GitService` keeps a copy, set by
+  `Worktrees`, `Find`, `ReplaceDone`, `FsChanged`, every `GitMsg`. `GitService` keeps a copy, set by
   `set_root(root, generation)`, to tag its own results. A result whose
   generation differs from `workspace.generation` is dropped.
 - **Seq** orders repeated requests of the same kind within a generation, so
   an older request that finishes late cannot overwrite a newer result:
   `GitMsg::Status` (`GitPanel::set_status`), `GitMsg::Blob` (per buffer,
   `Buffer::diff_base_seq`), `FileIndex` (`FileIndex::seq`), `TreeLoaded`
-  (`ProjectPanel::finish_refresh`). A result is applied when its seq is not
+  (`ProjectPanel::finish_refresh`), `Find` batches (`FindPanel::on_batch`;
+  a newer search also stops the old walk through a shared cancel seq). A
+  result is applied when its seq is not
   older than the last applied one. Results keyed by what they describe
   (diffs by `DiffKey`, commit details by sha, log pages by `skip`) need no
   seq.

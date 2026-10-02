@@ -65,6 +65,18 @@ impl Default for SearchState {
     }
 }
 
+/// The regex for a query typed in a find field: literal unless `regex`,
+/// case-insensitive unless `case_sensitive`, `whole_word` adds word
+/// boundaries. Shared by the find bar and find in files.
+pub fn build_pattern(query: &str, regex: bool, case_sensitive: bool, whole_word: bool) -> Result<Regex, String> {
+    let mut pat = if regex { query.to_string() } else { regex::escape(query) };
+    if whole_word {
+        pat = format!(r"\b(?:{pat})\b");
+    }
+    let flags = if case_sensitive { "" } else { "(?i)" };
+    Regex::new(&format!("{flags}{pat}")).map_err(|e| e.to_string())
+}
+
 impl SearchState {
     pub fn new(initial: &str, show_replace: bool) -> Self {
         let mut s = Self { show_replace, ..Default::default() };
@@ -80,13 +92,7 @@ impl SearchState {
     }
 
     pub fn pattern(&self) -> Result<Regex, String> {
-        let q = &self.query.text;
-        let mut pat = if self.regex { q.clone() } else { regex::escape(q) };
-        if self.whole_word {
-            pat = format!(r"\b(?:{pat})\b");
-        }
-        let flags = if self.case_sensitive { "" } else { "(?i)" };
-        Regex::new(&format!("{flags}{pat}")).map_err(|e| e.to_string())
+        build_pattern(&self.query.text, self.regex, self.case_sensitive, self.whole_word)
     }
 
     /// Recompute matches when the query, options or buffer changed.

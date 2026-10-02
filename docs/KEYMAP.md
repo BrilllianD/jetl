@@ -19,6 +19,7 @@ Override any of them in `~/.config/jetl/keymap.toml` (see [CONFIG.md](CONFIG.md)
 | `Alt+1` | `tool_window.project` | Project tool window |
 | `Alt+2` | `tool_window.worktrees` | Worktrees tool window |
 | `Alt+9` | `tool_window.git` | Git tool window |
+| `Alt+3` | `tool_window.find` | Find tool window |
 | `Ctrl+Shift+F12` | `tool_window.hide_all` | Hide all tool windows |
 | `Shift+Esc` * | `tool_window.hide_focused` | Hide active tool window |
 | `Ctrl+N` | `palette.files` | Go to file |
@@ -43,6 +44,10 @@ Override any of them in `~/.config/jetl/keymap.toml` (see [CONFIG.md](CONFIG.md)
 | `Ctrl+T` | `git.pull` | Git: pull (update project) |
 | `Ctrl+Space` | `git.branches_popup` | Git: branches |
 | `` Ctrl+` `` | `git.branches_popup` | Git: branches |
+| `Ctrl+Shift+F` * | `find.in_files` | Find in files |
+| `Ctrl+Shift+R` * | `find.replace_in_files` | Replace in files |
+| `Ctrl+Alt+Down` | `find.next_result` | Find: next result (opens it) |
+| `Ctrl+Alt+Up` | `find.prev_result` | Find: previous result (opens it) |
 
 ## editor
 
@@ -202,6 +207,23 @@ Override any of them in `~/.config/jetl/keymap.toml` (see [CONFIG.md](CONFIG.md)
 | Keys | Action | Description |
 |---|---|---|
 | `Esc` | `mode.normal` | Vim: normal mode |
+
+## find
+
+| Keys | Action | Description |
+|---|---|---|
+| `Up` | `find.up` | Find: up |
+| `Down` | `find.down` | Find: down |
+| `PageUp` | `find.page_up` | Find: page up |
+| `PageDown` | `find.page_down` | Find: page down |
+| `Enter` | `find.open` | Find: open selected result |
+| `Tab` | `find.next_field` | Find: switch between query and replacement |
+| `Alt+C` | `find.toggle_case` | Find: match case |
+| `Alt+W` | `find.toggle_word` | Find: whole words |
+| `Alt+X` | `find.toggle_regex` | Find: regex |
+| `Alt+R` | `find.toggle_replace` | Find: show or hide the replacement |
+| `Alt+A` | `find.replace_all` | Find: replace all results |
+| `Esc` | `find.escape` | Find: back to the editor |
 
 ## Without a default binding
 

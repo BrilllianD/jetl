@@ -144,6 +144,7 @@ impl App {
             PanelId::Project => self.project.handle_mouse(m, area, &mut cx),
             PanelId::Worktrees => self.worktrees.handle_mouse(m, area, &mut cx),
             PanelId::Git => self.git_panel.handle_mouse(m, area, &mut cx),
+            PanelId::Find => self.find.handle_mouse(m, area, &mut cx),
         };
         let fx = cx.effects;
         self.apply_effects(fx);

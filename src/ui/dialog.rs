@@ -19,6 +19,8 @@ pub enum DialogId {
     /// Keyed by buffer, not tab index: tabs can open while the dialog is up.
     CloseTabDirty(crate::editor::buffer::BufferId),
     CloseAllDirty,
+    /// Replace every Find window result with its replacement text.
+    ReplaceInFiles,
     /// Explicit save of a file changed on disk: Overwrite / Reload / Cancel.
     OverwriteExternal(crate::editor::buffer::BufferId),
     /// Unsaved buffers before switching the project root to the path.

@@ -39,6 +39,11 @@ impl App {
                 }
             }
             AppMsg::FileIndex { generation, seq, files } => self.file_index_loaded(generation, seq, files),
+            AppMsg::Find { generation, batch } if generation == self.workspace.generation => self.find.on_batch(batch),
+            AppMsg::ReplaceDone { generation, files, matches, errors } if generation == self.workspace.generation => {
+                self.replace_done(files, matches, errors)
+            }
+            AppMsg::Find { .. } | AppMsg::ReplaceDone { .. } => tracing::debug!("dropping stale find result"),
             // Messages of a previous root are dropped; a stale watcher stops
             // when its message is dropped.
             AppMsg::FsChanged { generation, changes } if generation == self.workspace.generation => self.fs_changed(changes),
@@ -192,6 +197,17 @@ impl App {
         }
     }
 
+    /// Open a file with the caret at a 0-based line and char column.
+    pub fn open_file_at(&mut self, path: PathBuf, line: usize, col: usize) {
+        if self.editor.index_of(&path).is_some() {
+            self.open_file(path, true);
+            self.editor.goto_line(line + 1, col + 1);
+        } else {
+            self.pending_goto = Some((path.clone(), line, col));
+            self.open_file(path, true);
+        }
+    }
+
     /// Open a file: reuse the tab when already open, otherwise read it off
     /// the main loop and finish in `file_loaded`.
     pub fn open_file(&mut self, path: PathBuf, focus: bool) {
@@ -220,6 +236,9 @@ impl App {
         };
         let Some((text, lossy)) = self.decode_file(&path, bytes) else { return };
         self.editor.open_text(path.clone(), &text, lossy, &self.theme);
+        if let Some((_, line, col)) = self.pending_goto.take_if(|(p, ..)| *p == path) {
+            self.editor.goto_line(line + 1, col + 1);
+        }
         self.git.load_blob(path, BlobWhich::Head);
         if focus {
             self.focus.set(PanelId::Editor);

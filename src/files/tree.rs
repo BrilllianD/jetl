@@ -71,23 +71,12 @@ pub struct ProjectPanel {
 
 fn read_children(dir: &Path, show_hidden: bool, show_ignored: bool) -> Vec<Node> {
     let mut out = Vec::new();
-    let mut wb = ignore::WalkBuilder::new(dir);
-    wb.max_depth(Some(1))
-        .hidden(!show_hidden)
-        .git_ignore(!show_ignored)
-        .git_global(!show_ignored)
-        .git_exclude(!show_ignored)
-        .follow_links(false)
-        .require_git(true);
-    for entry in wb.build().flatten() {
+    for entry in crate::files::walk::builder(dir, show_hidden, show_ignored).max_depth(Some(1)).build().flatten() {
         if entry.depth() == 0 {
             continue;
         }
         let path = entry.path().to_path_buf();
         let name = entry.file_name().to_string_lossy().into_owned();
-        if name == ".git" {
-            continue;
-        }
         let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
         out.push(Node { path, name, is_dir, expanded: false, children: None });
     }

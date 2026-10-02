@@ -55,6 +55,7 @@ impl App {
                 self.apply_effects(fx);
             }
             (DialogId::CloseAllDirty, DialogResult::Button(1)) => self.editor.force_close_all(),
+            (DialogId::ReplaceInFiles, DialogResult::Button(0)) => self.replace_in_files(),
             (DialogId::OverwriteExternal(id), DialogResult::Button(0)) => {
                 let mut cx = ctx!(self);
                 self.editor.overwrite(id, &mut cx);

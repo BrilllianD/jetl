@@ -43,10 +43,13 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     }
     if let (Some(tw), r) = (app.layout.bottom, rects.bottom)
         && r.height > 0
-        && tw.panel() == PanelId::Git
     {
-        let focused = app.focus.is(PanelId::Git);
-        app.git_panel.render(frame, r, focused, &theme);
+        let focused = app.focus.is(tw.panel());
+        match tw.panel() {
+            PanelId::Git => app.git_panel.render(frame, r, focused, &theme),
+            PanelId::Find => app.find.render(frame, r, focused, &theme),
+            _ => {}
+        }
     }
 
     for (_, r) in &rects.splitters {

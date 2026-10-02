@@ -21,6 +21,7 @@ impl App {
                     self.focus.set(p);
                 }
                 Effect::OpenFile(p) => self.open_file(p, true),
+                Effect::OpenFileAt { path, line, col } => self.open_file_at(path, line, col),
                 Effect::Dialog(d) => self.dialog = Some(d),
                 Effect::FileSaved { path: p, quiet } => {
                     if !quiet {

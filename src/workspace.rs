@@ -154,6 +154,7 @@ impl App {
         // and requests status and branches.
         self.git_root_changed(root.clone());
         self.start_watcher();
+        self.find.reset();
         self.worktrees.reset();
         self.git.load_worktrees();
         self.project.reroot(root.clone());

@@ -8,6 +8,7 @@ pub enum PanelId {
     Worktrees,
     Editor,
     Git,
+    Find,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -15,6 +16,7 @@ pub enum ToolWindowId {
     Project,
     Worktrees,
     Git,
+    Find,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,19 +26,20 @@ pub enum Side {
 }
 
 impl ToolWindowId {
-    pub const ALL: [ToolWindowId; 3] = [ToolWindowId::Project, ToolWindowId::Worktrees, ToolWindowId::Git];
+    pub const ALL: [ToolWindowId; 4] = [ToolWindowId::Project, ToolWindowId::Worktrees, ToolWindowId::Find, ToolWindowId::Git];
 
     pub fn panel(self) -> PanelId {
         match self {
             ToolWindowId::Project => PanelId::Project,
             ToolWindowId::Worktrees => PanelId::Worktrees,
             ToolWindowId::Git => PanelId::Git,
+            ToolWindowId::Find => PanelId::Find,
         }
     }
     pub fn side(self) -> Side {
         match self {
             ToolWindowId::Project | ToolWindowId::Worktrees => Side::Left,
-            ToolWindowId::Git => Side::Bottom,
+            ToolWindowId::Git | ToolWindowId::Find => Side::Bottom,
         }
     }
     pub fn title(self) -> &'static str {
@@ -44,6 +47,7 @@ impl ToolWindowId {
             ToolWindowId::Project => "Project",
             ToolWindowId::Worktrees => "Worktrees",
             ToolWindowId::Git => "Git",
+            ToolWindowId::Find => "Find",
         }
     }
     pub fn number(self) -> u8 {
@@ -51,6 +55,7 @@ impl ToolWindowId {
             ToolWindowId::Project => 1,
             ToolWindowId::Worktrees => 2,
             ToolWindowId::Git => 9,
+            ToolWindowId::Find => 3,
         }
     }
 }
@@ -61,6 +66,7 @@ impl PanelId {
             PanelId::Project => Some(ToolWindowId::Project),
             PanelId::Worktrees => Some(ToolWindowId::Worktrees),
             PanelId::Git => Some(ToolWindowId::Git),
+            PanelId::Find => Some(ToolWindowId::Find),
             PanelId::Editor => None,
         }
     }
@@ -71,6 +77,7 @@ impl PanelId {
             PanelId::Worktrees => "worktrees",
             PanelId::Editor => "editor",
             PanelId::Git => "git",
+            PanelId::Find => "find",
         }
     }
 }

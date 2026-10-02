@@ -7,6 +7,13 @@
 "alt-1" = "tool_window.project"
 "alt-2" = "tool_window.worktrees"
 "alt-9" = "tool_window.git"
+"alt-3" = "tool_window.find"
+"ctrl-shift-f" = "find.in_files"
+"ctrl-shift-r" = "find.replace_in_files"
+# Ctrl+Shift+F/R need the kitty protocol (legacy terminals send Ctrl+F/R);
+# Alt+3 opens the Find window anywhere, Alt+R there shows the replacement.
+"ctrl-alt-down" = "find.next_result"
+"ctrl-alt-up" = "find.prev_result"
 "alt-0" = "git.commit_box"
 "ctrl-k" = "git.commit_box"
 "ctrl-shift-k" = "git.push"
@@ -103,6 +110,20 @@
 "f11" = "editor.toggle_bookmark"
 "shift-f11" = "editor.show_bookmarks"
 "esc" = "editor.escape"
+
+[find]
+"up" = "find.up"
+"down" = "find.down"
+"pageup" = "find.page_up"
+"pagedown" = "find.page_down"
+"enter" = "find.open"
+"tab" = "find.next_field"
+"alt-c" = "find.toggle_case"
+"alt-w" = "find.toggle_word"
+"alt-x" = "find.toggle_regex"
+"alt-r" = "find.toggle_replace"
+"alt-a" = "find.replace_all"
+"esc" = "find.escape"
 
 [tree]
 "up" = "tree.up"

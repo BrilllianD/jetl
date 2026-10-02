@@ -10,7 +10,7 @@ use futures::StreamExt;
 use ratatui::layout::Rect;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
-use crate::actions::{Action, AppAction, EditorAction, ModeAction};
+use crate::actions::{Action, AppAction, EditorAction, FindAction, ModeAction};
 use crate::config::keymap::Keymap;
 use crate::config::theme::Theme;
 use crate::config::{Config, Paths};
@@ -39,6 +39,7 @@ macro_rules! ctx {
 // Declared after `ctx!` so the submodules can use it.
 mod dialogs;
 mod effects;
+mod find;
 mod mouse;
 mod msg;
 mod palette;
@@ -135,6 +136,9 @@ pub struct App {
     pub project: ProjectPanel,
     pub worktrees: WorktreePanel,
     pub git_panel: GitPanel,
+    pub find: crate::files::find_panel::FindPanel,
+    /// Caret target of a file being opened by `open_file_at`.
+    pending_goto: Option<(PathBuf, usize, usize)>,
     pub git: GitService,
     pub editor: Editor,
     /// Watches the root for outside changes; `None` when off or failed.
@@ -185,6 +189,8 @@ impl App {
             project: ProjectPanel::new(root_for_panels.clone(), config.files.show_hidden, config.files.show_ignored),
             worktrees: WorktreePanel::new(),
             git_panel,
+            find: Default::default(),
+            pending_goto: None,
             git,
             editor: Editor::new(&config),
             watcher: None,
@@ -380,6 +386,11 @@ impl App {
             self.git_panel.paste_into_message(&text);
             return;
         }
+        if self.focus.is(PanelId::Find) {
+            let mut cx = ctx!(self);
+            self.find.paste(&text, &mut cx);
+            return;
+        }
         if self.focus.is(PanelId::Editor) {
             let mut cx = ctx!(self);
             self.editor.handle_action(&EditorAction::InsertText(text), &mut cx);
@@ -422,6 +433,17 @@ impl App {
         if self.focus.is(PanelId::Git) && self.git_panel.message_focused() && key.kind != crossterm::event::KeyEventKind::Release {
             let mut cx = ctx!(self);
             let used = self.git_panel.handle_message_key(key, &mut cx);
+            let fx = cx.effects;
+            self.apply_effects(fx);
+            if used {
+                self.dispatcher.reset();
+                return;
+            }
+        }
+        // And for the Find window's query and replacement fields.
+        if self.focus.is(PanelId::Find) && key.kind != crossterm::event::KeyEventKind::Release {
+            let mut cx = ctx!(self);
+            let used = self.find.handle_key(key, &mut cx);
             let fx = cx.effects;
             self.apply_effects(fx);
             if used {
@@ -473,6 +495,22 @@ impl App {
             Action::Tree(a) => self.project.handle_action(a, &mut cx),
             Action::Git(a) => self.git_panel.handle_action(a, &mut cx),
             Action::Worktree(a) => self.worktrees.handle_action(a, &mut cx),
+            Action::Find(a @ (FindAction::InFiles | FindAction::ReplaceInFiles)) => {
+                let query = self.editor.active_buffer().map(|b| b.selected_text()).filter(|t| !t.contains('\n'));
+                self.layout.show(ToolWindowId::Find);
+                self.focus.set(PanelId::Find);
+                self.find.open(query.as_deref(), *a == FindAction::ReplaceInFiles, &mut cx);
+                true
+            }
+            Action::Find(FindAction::NextResult) => {
+                self.find.step(true, &mut cx);
+                true
+            }
+            Action::Find(FindAction::PrevResult) => {
+                self.find.step(false, &mut cx);
+                true
+            }
+            Action::Find(a) => self.find.handle_action(a, &mut cx),
             Action::Palette(_) => false,
         };
         let effects = cx.effects;
@@ -865,6 +903,78 @@ pub(crate) mod tests {
         let before = app.git.status_requests();
         app.handle_term_event(Event::FocusGained);
         assert_eq!(app.git.status_requests(), before + 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Run the Find window's current search on this thread and deliver it.
+    fn run_find(app: &mut App) {
+        let re = app.find.pattern().unwrap();
+        let search = crate::files::find::Search {
+            root: app.workspace.root.clone(),
+            show_hidden: false,
+            show_ignored: false,
+            re,
+            seq: app.find.current_seq(),
+            cancel: app.find.cancel_handle(),
+        };
+        let g = app.workspace.generation;
+        let mut batches = Vec::new();
+        search.run(|b| batches.push(b));
+        for batch in batches {
+            app.handle_msg(AppMsg::Find { generation: g, batch });
+        }
+    }
+
+    #[tokio::test]
+    async fn find_in_files_opens_results_and_replaces_in_open_and_closed_files() {
+        let (mut app, dir) = test_app("find-in-files");
+        let root = app.workspace.root.clone();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/b.rs"), "let foo = 1;\nfoo(foo);\n").unwrap();
+        let a = load(&mut app, "a.txt", "no\nfoo here\n");
+        app.perform(Action::Find(FindAction::InFiles));
+        assert!(app.layout.is_visible(ToolWindowId::Find) && app.focus.is(PanelId::Find));
+        for c in "foo".chars() {
+            app.handle_key(KeyEvent::new(KeyCode::Char(c), crossterm::event::KeyModifiers::NONE));
+        }
+        run_find(&mut app);
+        assert_eq!(app.find.hit_count(), 4);
+        assert_eq!(app.find.hit_files(), [a.clone(), root.join("src/b.rs")]);
+        // Down from the first hit (a.txt) passes the src/b.rs header to its
+        // first hit; Enter opens it at the match.
+        app.handle_key(KeyEvent::new(KeyCode::Down, crossterm::event::KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Down, crossterm::event::KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Enter, crossterm::event::KeyModifiers::NONE));
+        let g = app.workspace.generation;
+        let b_path = root.join("src/b.rs");
+        let bytes = std::fs::read(&b_path).unwrap();
+        app.handle_msg(AppMsg::FileLoaded { generation: g, path: b_path.clone(), result: Ok(bytes), focus: true });
+        assert_eq!(app.editor.active_path(), Some(b_path.as_path()));
+        assert_eq!(app.editor.status_position().as_deref(), Some("Ln 1, Col 5"));
+        app.editor.force_close(app.editor.index_of(&b_path).unwrap());
+        // Replace: the open a.txt changes in the editor, src/b.rs on disk.
+        app.find.replace.set_text("bar");
+        app.find.show_replace = true;
+        app.finish_dialog(DialogId::ReplaceInFiles, DialogResult::Button(0));
+        let a_buf = &app.editor.buffers[app.editor.index_of(&a).unwrap()];
+        assert_eq!(a_buf.text(), "no\nbar here\n");
+        assert!(a_buf.dirty(), "open files are changed, not saved");
+        assert_eq!(std::fs::read_to_string(&a).unwrap(), "no\nfoo here\n");
+        // The disk part runs off the main thread; wait for its message.
+        let msg = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                match app.bus_rx.recv().await {
+                    Some(m @ AppMsg::ReplaceDone { .. }) => break m,
+                    Some(_) => {}
+                    None => panic!("bus closed"),
+                }
+            }
+        })
+        .await
+        .unwrap();
+        app.handle_msg(msg);
+        assert_eq!(std::fs::read_to_string(&b_path).unwrap(), "let bar = 1;\nbar(bar);\n");
+        assert!(app.notifications.iter().any(|n| n.text == "Replaced 4 matches in 2 files"), "{:?}", app.notifications);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
