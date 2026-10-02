@@ -36,6 +36,10 @@ pub enum DialogId {
     GotoLine,
     /// Item `i` is bookmarked line `.1` of buffer `.0`.
     Bookmarks(Vec<(crate::editor::buffer::BufferId, usize)>),
+    /// Line ending of the buffer: item 0 is LF, 1 is CRLF.
+    LineEnding(crate::editor::buffer::BufferId),
+    /// Language of the buffer: item 0 is plain text, `i` is `LANGUAGES[i - 1]`.
+    Language(crate::editor::buffer::BufferId),
 }
 
 #[derive(Debug, Clone)]

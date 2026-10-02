@@ -703,6 +703,14 @@ impl App {
                     self.focus.set(PanelId::Editor);
                 }
             }
+            (DialogId::LineEnding(id), DialogResult::Choice(i)) => {
+                let le = if i == 0 { crate::editor::buffer::LineEnding::Lf } else { crate::editor::buffer::LineEnding::CrLf };
+                self.editor.set_line_ending(id, le);
+            }
+            (DialogId::Language(id), DialogResult::Choice(i)) => {
+                let def = i.checked_sub(1).and_then(|i| crate::editor::syntax::LANGUAGES.get(i));
+                self.editor.set_language(id, def, &self.theme);
+            }
             (DialogId::NewBranchName, DialogResult::Text(t)) => {
                 let name = t.trim().to_string();
                 if name.is_empty() || name.starts_with('-') || name.contains(char::is_whitespace) {
@@ -1176,6 +1184,10 @@ impl App {
         match hit {
             Some(StatusHit::Branch) => self.perform(Action::Git(crate::actions::GitAction::Branches)),
             Some(StatusHit::Position) => self.perform(Action::Editor(EditorAction::GotoLine)),
+            Some(StatusHit::LineEnding) => self.dialog = self.editor.line_ending_dialog(),
+            Some(StatusHit::Language) => self.perform(Action::Editor(EditorAction::SetLanguage)),
+            // Shown for information; per-buffer indent and encodings come later.
+            Some(StatusHit::Indent | StatusHit::Encoding) => {}
             Some(StatusHit::Notification) => {
                 if let Some(n) = self.notifications.last().cloned() {
                     self.dialog = Some(Dialog::info("Notification", &n.text));

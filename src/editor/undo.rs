@@ -51,6 +51,9 @@ pub struct Transaction {
     pub sel_after: Selection,
     pub at: Instant,
     pub kind: TxKind,
+    /// Line ending before and after, for a line ending conversion; undo and
+    /// redo restore it along with the text.
+    pub line_ending: Option<(super::buffer::LineEnding, super::buffer::LineEnding)>,
 }
 
 #[derive(Debug, Default)]
@@ -127,6 +130,11 @@ impl UndoStack {
         self.undo.push(tx.clone());
         self.break_group = true;
         Some(tx)
+    }
+
+    /// The transaction undo would revert next.
+    pub fn last_mut(&mut self) -> Option<&mut Transaction> {
+        self.undo.last_mut()
     }
 
     pub fn can_undo(&self) -> bool {

@@ -1,4 +1,5 @@
-//! Bottom status bar: project name, branch, notifications, cursor position.
+//! Bottom status bar: project name, branch, notifications, cursor position,
+//! line ending, encoding, indent and language of the active buffer.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -13,6 +14,10 @@ pub enum StatusHit {
     Branch,
     Position,
     Notification,
+    LineEnding,
+    Encoding,
+    Indent,
+    Language,
 }
 
 pub fn render(app: &mut App, frame: &mut Frame, area: Rect) {
@@ -45,30 +50,41 @@ pub fn render(app: &mut App, frame: &mut Frame, area: Rect) {
         x += w + 2;
     }
 
-    // Right side: mode (modal only), position, line ending, keyboard mode.
-    let mut right_parts: Vec<(String, Style)> = Vec::new();
+    // Right side, JetBrains order: position, line ending, encoding, indent,
+    // language; then the mode (modal only) and keyboard mode. Each part has
+    // a drop rank: on narrow widths the highest ranks go first.
+    let mut right_parts: Vec<(String, Style, Option<StatusHit>, u8)> = Vec::new();
     if let Some(pos) = app.editor.status_position() {
-        right_parts.push((pos, base));
+        right_parts.push((pos, base, Some(StatusHit::Position), 0));
     }
     if let Some(le) = app.editor.status_line_ending() {
-        right_parts.push((le, base));
+        right_parts.push((le, base, Some(StatusHit::LineEnding), 2));
+        right_parts.push(("UTF-8".into(), base, Some(StatusHit::Encoding), 6));
+    }
+    if let Some(indent) = app.editor.status_indent() {
+        right_parts.push((indent, base, Some(StatusHit::Indent), 5));
+    }
+    if let Some(lang) = app.editor.status_language() {
+        right_parts.push((lang, base, Some(StatusHit::Language), 3));
     }
     if app.dispatcher.modal {
-        right_parts.push((app.mode.label().to_string(), theme.status_accent.bg(theme.status_bg)));
+        right_parts.push((app.mode.label().to_string(), theme.status_accent.bg(theme.status_bg), None, 1));
     }
     if !app.keyboard_enhanced {
-        right_parts.push(("legacy keys".into(), theme.dim.bg(theme.status_bg)));
+        right_parts.push(("legacy keys".into(), theme.dim.bg(theme.status_bg), None, 4));
+    }
+    let room = area.right().saturating_sub(x);
+    while right_parts.iter().map(|p| p.0.width() as u16 + 2).sum::<u16>() > room {
+        let Some(i) = right_parts.iter().enumerate().max_by_key(|(_, p)| p.3).map(|(i, _)| i) else { break };
+        right_parts.remove(i);
     }
     let mut rx = area.right();
-    for (s, st) in right_parts.iter().rev() {
+    for (s, st, hit, _) in right_parts.iter().rev() {
         let w = s.width() as u16 + 2;
-        if rx < x + w {
-            break;
-        }
         rx -= w;
         buf.set_stringn(rx + 1, area.y, s, w as usize, *st);
-        if s.starts_with("Ln") {
-            app.status_hits.push((StatusHit::Position, Rect::new(rx, area.y, w, 1)));
+        if let Some(h) = hit {
+            app.status_hits.push((*h, Rect::new(rx, area.y, w, 1)));
         }
     }
 

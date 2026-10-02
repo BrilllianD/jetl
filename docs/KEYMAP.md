@@ -219,6 +219,9 @@ Reachable from Find Action (F1) or by binding them in `keymap.toml`.
 | `editor.find_field` | Find: switch between find and replace fields |
 | `editor.select_line` | Select line |
 | `editor.close_all_tabs` | Close all tabs |
+| `editor.line_ending_lf` | Convert line endings to LF |
+| `editor.line_ending_crlf` | Convert line endings to CRLF |
+| `editor.set_language` | Set the file's language (highlighting) |
 | `git.unstage_all` | Git: unstage all |
 | `git.commit_and_push` | Git: commit and push |
 | `git.fetch` | Git: fetch |

@@ -111,6 +111,9 @@ pub enum EditorAction {
     NavForward,
     ToggleBookmark,
     ShowBookmarks,
+    LineEndingLf,
+    LineEndingCrlf,
+    SetLanguage,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -298,6 +301,9 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "editor.nav_forward" => "Navigate forward", Editor(E::NavForward);
         "editor.toggle_bookmark" => "Toggle bookmark on the caret line", Editor(E::ToggleBookmark);
         "editor.show_bookmarks" => "Show bookmarks", Editor(E::ShowBookmarks);
+        "editor.line_ending_lf" => "Convert line endings to LF", Editor(E::LineEndingLf);
+        "editor.line_ending_crlf" => "Convert line endings to CRLF", Editor(E::LineEndingCrlf);
+        "editor.set_language" => "Set the file's language (highlighting)", Editor(E::SetLanguage);
 
         "tree.up" => "Tree: up", Tree(TreeAction::Up);
         "tree.down" => "Tree: down", Tree(TreeAction::Down);

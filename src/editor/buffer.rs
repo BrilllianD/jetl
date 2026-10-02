@@ -33,6 +33,17 @@ impl LineEnding {
 
 pub type BufferId = u64;
 
+/// The buffer's language as picked by hand (status bar, `editor.set_language`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LanguageChoice {
+    /// Detected from the path.
+    #[default]
+    Auto,
+    /// No language, even where the path suggests one.
+    Plain,
+    Named(&'static str),
+}
+
 #[derive(Debug)]
 pub struct Buffer {
     pub id: BufferId,
@@ -55,6 +66,7 @@ pub struct Buffer {
     /// Set after each apply; cleared by whoever consumes it (syntax, gutter).
     pub changed_since_render: bool,
     pub syntax: Option<super::syntax::Syntax>,
+    pub language_choice: LanguageChoice,
     pub gutter: Vec<super::gutter::GutterMark>,
     /// Buffer version the gutter marks were computed for.
     pub gutter_version: u64,
@@ -109,6 +121,7 @@ impl Buffer {
             scroll_col: 0,
             changed_since_render: true,
             syntax: None,
+            language_choice: LanguageChoice::Auto,
             gutter: Vec::new(),
             gutter_version: u64::MAX,
             diff_base: None,
@@ -183,7 +196,7 @@ impl Buffer {
         self.desired_col = None;
         self.version += 1;
         self.changed_since_render = true;
-        self.undo.push(Transaction { id: 0, changes, sel_before, sel_after, at: Instant::now(), kind });
+        self.undo.push(Transaction { id: 0, changes, sel_before, sel_after, at: Instant::now(), kind, line_ending: None });
     }
 
     fn apply_change(&mut self, c: &Change) {
@@ -221,6 +234,9 @@ impl Buffer {
         }
         self.sel = tx.sel_before;
         self.sel.clamp(self.rope.len_chars());
+        if let Some((before, _)) = tx.line_ending {
+            self.line_ending = before;
+        }
         self.version += 1;
         self.changed_since_render = true;
         true
@@ -233,6 +249,9 @@ impl Buffer {
         }
         self.sel = tx.sel_after;
         self.sel.clamp(self.rope.len_chars());
+        if let Some((_, after)) = tx.line_ending {
+            self.line_ending = after;
+        }
         self.version += 1;
         self.changed_since_render = true;
         true
@@ -633,10 +652,54 @@ impl Buffer {
         self.apply(changes, sel_after, TxKind::Other);
     }
 
-    /// The buffer's language: the attached syntax's, else the one its path
-    /// suggests (files too large for syntax have none attached).
+    /// The buffer's language: the one picked by hand, else the attached
+    /// syntax's, else the one its path suggests (files too large for syntax
+    /// have none attached).
     pub fn language(&self) -> Option<&'static super::syntax::LanguageDef> {
-        self.syntax.as_ref().map(|s| s.def).or_else(|| self.path.as_deref().and_then(super::syntax::detect))
+        match self.language_choice {
+            LanguageChoice::Plain => None,
+            LanguageChoice::Named(name) => super::syntax::language_for_name(name),
+            LanguageChoice::Auto => self.syntax.as_ref().map(|s| s.def).or_else(|| self.path.as_deref().and_then(super::syntax::detect)),
+        }
+    }
+
+    /// Override the language (`None` is plain text) and its highlighter.
+    pub fn set_language(&mut self, def: Option<&'static super::syntax::LanguageDef>, syntax: Option<super::syntax::Syntax>) {
+        self.language_choice = def.map_or(LanguageChoice::Plain, |d| LanguageChoice::Named(d.name));
+        self.syntax = syntax;
+        self.changed_since_render = true;
+    }
+
+    /// Convert every line break to `le` (lone `\r` is left alone) as one
+    /// undoable transaction that also carries the old and new `line_ending`,
+    /// so undo and redo switch it back and forth with the text. Text without
+    /// a break to convert only changes the setting.
+    pub fn convert_line_endings(&mut self, le: LineEnding) {
+        let before = self.line_ending;
+        let mut changes = Vec::new();
+        let mut prev = '\0';
+        for (i, ch) in self.rope.chars().enumerate() {
+            if ch == '\n' {
+                match (le, prev == '\r') {
+                    (LineEnding::CrLf, false) => changes.push(Change::insert(i, "\r")),
+                    (LineEnding::Lf, true) => changes.push(Change::delete(i - 1, "\r")),
+                    _ => {}
+                }
+            }
+            prev = ch;
+        }
+        // Back to front: each position is still valid after the later ones.
+        changes.reverse();
+        self.line_ending = le;
+        if changes.is_empty() {
+            return;
+        }
+        // A caret at a line end stays before the inserted `\r`.
+        let sel = Selection::new(map_through(&changes, self.sel.anchor, true), map_through(&changes, self.sel.head, true));
+        self.apply(changes, sel, TxKind::Other);
+        if let Some(tx) = self.undo.last_mut() {
+            tx.line_ending = Some((before, le));
+        }
     }
 
     /// First and last line covered by the selection. A selection ending at
@@ -1623,5 +1686,65 @@ mod tests {
         let old = buf.text();
         buf.apply(vec![Change::replace(0, old, "zero\none\ntwo\nthree\n")], Selection::point(0), TxKind::Other);
         assert_eq!(marks(&buf), vec![3]);
+    }
+
+    #[test]
+    fn line_ending_conversion_is_one_undo_step() {
+        let src = "fn a() {\n\n    x\r\n}\rtail\n";
+        let mut buf = b(src);
+        assert_eq!(buf.line_ending, LineEnding::CrLf);
+        buf.set_bookmarks(&[2, 3]);
+        // Caret at the end of line 2 ("    x").
+        buf.goto_line(2, 5);
+        let caret = buf.sel.head;
+        buf.convert_line_endings(LineEnding::Lf);
+        assert_eq!(buf.text(), "fn a() {\n\n    x\n}\rtail\n");
+        assert_eq!(buf.line_ending, LineEnding::Lf);
+        assert!(buf.dirty());
+        buf.convert_line_endings(LineEnding::CrLf);
+        // Only the breaks changed; the lone `\r` stays.
+        assert_eq!(buf.text(), "fn a() {\r\n\r\n    x\r\n}\rtail\r\n");
+        assert_eq!(buf.text().replace("\r\n", "\n"), src.replace("\r\n", "\n"));
+        assert_eq!(buf.line_ending, LineEnding::CrLf);
+        assert_eq!(buf.cursor_line_col(), (2, 5), "caret stays before the break");
+        assert_eq!(marks(&buf), vec![2, 3]);
+        // Each conversion is a single undo step that restores the setting.
+        assert!(buf.undo());
+        assert_eq!(buf.text(), "fn a() {\n\n    x\n}\rtail\n");
+        assert_eq!(buf.line_ending, LineEnding::Lf);
+        assert!(buf.undo());
+        assert_eq!(buf.text(), src);
+        assert_eq!(buf.line_ending, LineEnding::CrLf);
+        assert_eq!(buf.sel.head, caret);
+        assert!(!buf.dirty());
+        assert!(buf.redo());
+        assert_eq!(buf.line_ending, LineEnding::Lf);
+        // Nothing to convert: only the setting changes, the buffer stays clean.
+        let mut buf = b("one line");
+        buf.convert_line_endings(LineEnding::CrLf);
+        assert_eq!((buf.text().as_str(), buf.line_ending, buf.dirty()), ("one line", LineEnding::CrLf, false));
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[test]
+    fn language_override_beats_path_detection() {
+        let rust = super::super::syntax::language_for_name("rust").unwrap();
+        let theme = crate::config::theme::Theme::default();
+        let mut buf = Buffer::from_text(1, Some(PathBuf::from("/tmp/notes.txt")), "fn main() {}\n", false);
+        assert!(buf.language().is_none());
+        buf.set_language(Some(rust), super::super::syntax::Syntax::new(rust, &theme));
+        assert_eq!(buf.language().map(|d| d.name), Some("rust"));
+        assert!(buf.syntax.is_some());
+        // Plain text wins over the `.rs` the path suggests.
+        let mut buf = Buffer::from_text(1, Some(PathBuf::from("/tmp/main.rs")), "fn main() {}\n", false);
+        buf.syntax = super::super::syntax::Syntax::new(rust, &theme);
+        assert_eq!(buf.language().map(|d| d.name), Some("rust"));
+        buf.set_language(None, None);
+        assert!(buf.language().is_none());
+        assert!(buf.syntax.is_none());
+        assert_eq!(buf.language_choice, LanguageChoice::Plain);
+        // A named language without a highlighter (too large) still counts.
+        buf.set_language(Some(rust), None);
+        assert_eq!(buf.language().map(|d| d.name), Some("rust"));
     }
 }

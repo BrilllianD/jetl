@@ -497,6 +497,47 @@ impl Editor {
         self.active_buffer().map(|b| b.line_ending.label().to_string())
     }
 
+    /// Indentation of the active buffer for the status bar; the editor-wide
+    /// tab width until buffers get their own indent settings.
+    pub fn status_indent(&self) -> Option<String> {
+        self.active_buffer().map(|_| format!("{} spaces", self.tab_width))
+    }
+
+    pub fn status_language(&self) -> Option<String> {
+        self.active_buffer().map(|b| b.language().map_or("Plain text", |d| d.name).to_string())
+    }
+
+    /// Choice of LF / CRLF for the active buffer (status bar click).
+    pub fn line_ending_dialog(&self) -> Option<Dialog> {
+        let b = self.active_buffer()?;
+        let msg = format!("Convert line endings (now {}):", b.line_ending.label());
+        Some(Dialog::choice(DialogId::LineEnding(b.id), "Line Separators", &msg, vec!["LF".into(), "CRLF".into()]))
+    }
+
+    /// Convert buffer `id` to line ending `le` as one undoable edit.
+    pub fn set_line_ending(&mut self, id: BufferId, le: buffer::LineEnding) {
+        if let Some(b) = self.buffers.iter_mut().find(|b| b.id == id) {
+            b.convert_line_endings(le);
+        }
+    }
+
+    /// Choice of plain text and every known language for the active buffer.
+    pub fn language_dialog(&self) -> Option<Dialog> {
+        let b = self.active_buffer()?;
+        let now = b.language().map_or("Plain text", |d| d.name);
+        let items = std::iter::once("Plain text".to_string()).chain(syntax::LANGUAGES.iter().map(|l| l.name.to_string())).collect();
+        Some(Dialog::choice(DialogId::Language(b.id), "Language", &format!("Highlight as (now {now}):"), items))
+    }
+
+    /// Override the language of buffer `id` (`None` is plain text). Files
+    /// above `max_highlight_bytes` get the language but no highlighting.
+    pub fn set_language(&mut self, id: BufferId, def: Option<&'static syntax::LanguageDef>, theme: &Theme) {
+        let max = self.max_highlight_bytes;
+        let Some(b) = self.buffers.iter_mut().find(|b| b.id == id) else { return };
+        let syn = def.filter(|_| b.rope.len_bytes() <= max).and_then(|d| syntax::Syntax::new(d, theme));
+        b.set_language(def, syn);
+    }
+
     /// Set the HEAD text the gutter compares against; marks are recomputed
     /// on the next [`Editor::update_gutters`].
     pub fn set_diff_base(&mut self, path: &Path, text: Option<String>) {
@@ -618,6 +659,18 @@ impl Editor {
             }
             E::ShowBookmarks => {
                 self.show_bookmarks(cx);
+                return true;
+            }
+            E::LineEndingLf | E::LineEndingCrlf => {
+                if let Some(id) = self.active_buffer().map(|b| b.id) {
+                    self.set_line_ending(id, if *a == E::LineEndingLf { buffer::LineEnding::Lf } else { buffer::LineEnding::CrLf });
+                }
+                return true;
+            }
+            E::SetLanguage => {
+                if let Some(d) = self.language_dialog() {
+                    cx.effects.push(Effect::Dialog(d));
+                }
                 return true;
             }
             _ => {}
@@ -781,7 +834,7 @@ impl Editor {
             E::ExpandSelection => b.expand_selection(),
             E::ShrinkSelection => b.shrink_selection(),
             E::ToggleBookmark => b.toggle_bookmark(),
-            E::NextTab | E::PrevTab | E::CloseTab | E::CloseAllTabs | E::Switcher | E::Save | E::SaveAll | E::GotoLine | E::NavBack | E::NavForward | E::ShowBookmarks => {}
+            E::NextTab | E::PrevTab | E::CloseTab | E::CloseAllTabs | E::Switcher | E::Save | E::SaveAll | E::GotoLine | E::NavBack | E::NavForward | E::ShowBookmarks | E::LineEndingLf | E::LineEndingCrlf | E::SetLanguage => {}
         }
         self.note_jump(jump_from);
         true
