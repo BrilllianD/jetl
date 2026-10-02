@@ -171,3 +171,54 @@ impl LayoutState {
         self.strip_hits.iter().find(|(_, r)| r.contains(p)).map(|(tw, _)| *tw)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn show_hide_per_side() {
+        let mut l = LayoutState::new(30, 10);
+        assert!(l.is_visible(ToolWindowId::Project));
+        l.show(ToolWindowId::Git);
+        assert!(l.is_visible(ToolWindowId::Project) && l.is_visible(ToolWindowId::Git), "sides are independent");
+        // Hiding a window that is not shown leaves its side alone.
+        l.hide(ToolWindowId::Worktrees);
+        assert!(l.is_visible(ToolWindowId::Project));
+        l.hide_all();
+        assert_eq!((l.left, l.bottom), (None, None));
+    }
+
+    #[test]
+    fn compute_and_hit_test_agree() {
+        let mut l = LayoutState::new(30, 10);
+        l.show(ToolWindowId::Git);
+        l.compute(Rect::new(0, 0, 120, 40));
+        let r = l.rects.clone();
+        assert_eq!(r.status, Rect::new(0, 39, 120, 1));
+        assert_eq!(r.left.width, 30);
+        assert_eq!(r.bottom.height, 10);
+        assert_eq!(l.hit_test(1, 5), Hit::Strip);
+        assert_eq!(l.hit_test(5, 39), Hit::Status);
+        assert_eq!(l.hit_test(r.left.x, r.left.y), Hit::Panel(PanelId::Project, r.left));
+        assert_eq!(l.hit_test(r.left.right(), 5), Hit::Splitter(SplitterId::Left));
+        assert_eq!(l.hit_test(50, r.bottom.y - 1), Hit::Splitter(SplitterId::Bottom));
+        assert_eq!(l.hit_test(50, r.bottom.y), Hit::Panel(PanelId::Git, r.bottom));
+        assert_eq!(l.hit_test(r.tabs.x, r.tabs.y), Hit::Tabs(r.tabs));
+        assert_eq!(l.hit_test(r.editor.x, r.editor.y), Hit::Panel(PanelId::Editor, r.editor));
+    }
+
+    #[test]
+    fn splitter_drag_respects_minimums_and_compute_clamps() {
+        let mut l = LayoutState::new(30, 10);
+        l.show(ToolWindowId::Git);
+        l.compute(Rect::new(0, 0, 100, 30));
+        l.drag_splitter(SplitterId::Left, 4, 0);
+        assert_eq!(l.left_w, MIN_LEFT_W);
+        l.drag_splitter(SplitterId::Left, 99, 0);
+        l.drag_splitter(SplitterId::Bottom, 0, 0);
+        l.compute(Rect::new(0, 0, 100, 30));
+        assert!(l.rects.editor.width >= MIN_CENTER_W, "left window cannot squeeze the editor away");
+        assert!(l.rects.editor.height + l.rects.tabs.height >= MIN_CENTER_H);
+    }
+}

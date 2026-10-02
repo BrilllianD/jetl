@@ -568,6 +568,7 @@ impl App {
 pub(crate) mod tests {
     use super::*;
     use crate::git::GitMsg;
+    use crate::ui::dialog::{DialogId, DialogResult};
 
     /// An app rooted at a fresh temp directory with config and state under
     /// it, so tests never touch the user's files.
@@ -684,6 +685,123 @@ pub(crate) mod tests {
         assert_eq!(app.project.selected_row().map(|r| r.name.clone()), None, "listing of the previous root");
         app.handle_msg(msg(app.workspace.generation));
         assert_eq!(app.project.selected_row().map(|r| r.name.clone()).as_deref(), Some("new.txt"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Open `name` (with `text`) in a tab of `app`, as a finished load.
+    fn load(app: &mut App, name: &str, text: &str) -> PathBuf {
+        let path = app.workspace.root.join(name);
+        std::fs::write(&path, text).unwrap();
+        let generation = app.workspace.generation;
+        app.handle_msg(AppMsg::FileLoaded { generation, path: path.clone(), result: Ok(text.as_bytes().to_vec()), focus: true });
+        path
+    }
+
+    fn type_text(app: &mut App, text: &str) {
+        app.perform(Action::Editor(EditorAction::InsertText(text.into())));
+    }
+
+    #[tokio::test]
+    async fn stale_worktree_list_and_session_are_dropped() {
+        let (mut app, dir) = test_app("stale-wt-session");
+        let g = app.workspace.generation;
+        app.handle_msg(AppMsg::Worktrees { generation: g - 1, result: Err(anyhow::anyhow!("old root")) });
+        assert_eq!(app.worktrees.error, None);
+        app.handle_msg(AppMsg::Worktrees { generation: g, result: Err(anyhow::anyhow!("fatal: not a git repository")) });
+        assert_eq!(app.worktrees.error.as_deref(), Some("fatal: not a git repository"));
+
+        let path = app.workspace.root.join("a.txt");
+        let file = crate::workspace::SessionFile { path, ..Default::default() };
+        let session = crate::workspace::Session { root: app.workspace.root.clone(), files: vec![file], ..Default::default() };
+        app.handle_msg(AppMsg::SessionLoaded { generation: g - 1, session: session.clone(), files: vec![Ok(b"x".to_vec())] });
+        assert!(app.editor.buffers.is_empty());
+        app.handle_msg(AppMsg::SessionLoaded { generation: g, session, files: vec![Ok(b"x".to_vec())] });
+        assert_eq!(app.editor.buffers.len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn quit_dirty_save_all_quits_only_when_everything_saved() {
+        let (mut app, dir) = test_app("quit-dirty");
+        let a = load(&mut app, "a.txt", "a\n");
+        type_text(&mut app, "1");
+        app.perform(Action::App(AppAction::Quit));
+        let d = app.dialog.take().expect("asks about unsaved changes");
+        assert_eq!(d.id, DialogId::QuitDirty);
+        // The file changed on disk meanwhile: the save waits for an answer.
+        std::thread::sleep(Duration::from_millis(20));
+        std::fs::write(&a, "theirs\n").unwrap();
+        app.finish_dialog(d.id, DialogResult::Button(0));
+        assert!(!app.should_quit);
+        let d = app.dialog.take().expect("overwrite or reload");
+        assert!(matches!(d.id, DialogId::OverwriteExternal(_)));
+        app.finish_dialog(d.id, DialogResult::Button(0));
+        assert_eq!(std::fs::read_to_string(&a).unwrap(), "1a\n");
+        app.perform(Action::App(AppAction::Quit));
+        assert!(app.dialog.is_none() && app.should_quit, "nothing dirty: quits at once");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn quit_dirty_discard_quits_without_writing() {
+        let (mut app, dir) = test_app("quit-discard");
+        let a = load(&mut app, "a.txt", "a\n");
+        type_text(&mut app, "1");
+        app.perform(Action::App(AppAction::Quit));
+        let d = app.dialog.take().unwrap();
+        app.finish_dialog(d.id, DialogResult::Button(1));
+        assert!(app.should_quit);
+        assert_eq!(std::fs::read_to_string(&a).unwrap(), "a\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn switch_root_dirty_save_then_switch() {
+        let (mut app, dir) = test_app("switch-dirty");
+        let other = dir.join("other");
+        std::fs::create_dir_all(&other).unwrap();
+        let other = std::fs::canonicalize(&other).unwrap();
+        let a = load(&mut app, "a.txt", "a\n");
+        type_text(&mut app, "1");
+        let g = app.workspace.generation;
+        app.switch_root(other.clone());
+        let d = app.dialog.take().expect("asks about unsaved changes");
+        assert!(matches!(&d.id, DialogId::SwitchRootDirty(p) if *p == other));
+        assert_eq!(app.workspace.root, a.parent().unwrap(), "no switch before the answer");
+        app.finish_dialog(d.id, DialogResult::Button(0));
+        assert_eq!(std::fs::read_to_string(&a).unwrap(), "1a\n");
+        assert_eq!(app.workspace.root, other);
+        assert_eq!((app.workspace.generation, app.git.generation), (g + 1, g + 1));
+        assert!(app.editor.buffers.is_empty(), "worktree.switch_closes_tabs");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn dialog_takes_keys_before_the_keymap() {
+        use crossterm::event::KeyModifiers;
+        let (mut app, dir) = test_app("dialog-keys");
+        load(&mut app, "a.txt", "a\n");
+        type_text(&mut app, "1");
+        app.perform(Action::App(AppAction::Quit));
+        // Ctrl+Q again would request a quit; the dialog swallows it.
+        app.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL));
+        assert!(app.dialog.is_some() && !app.should_quit);
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(app.dialog.is_none() && !app.should_quit);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn tool_window_toggle_shows_focuses_then_hides() {
+        let (mut app, dir) = test_app("toggle-tw");
+        app.layout.hide_all();
+        app.toggle_tool_window(ToolWindowId::Git);
+        assert!(app.layout.is_visible(ToolWindowId::Git) && app.focus.is(PanelId::Git));
+        app.focus.set(PanelId::Editor);
+        app.toggle_tool_window(ToolWindowId::Git);
+        assert!(app.layout.is_visible(ToolWindowId::Git) && app.focus.is(PanelId::Git), "visible but unfocused: focus");
+        app.toggle_tool_window(ToolWindowId::Git);
+        assert!(!app.layout.is_visible(ToolWindowId::Git) && app.focus.is(PanelId::Editor));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
