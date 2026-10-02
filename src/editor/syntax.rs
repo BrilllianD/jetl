@@ -29,6 +29,12 @@ pub struct LanguageDef {
     full_query: bool,
 }
 
+impl std::fmt::Debug for LanguageDef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.name)
+    }
+}
+
 fn make(name: &'static str, extensions: &'static [&'static str], filenames: &'static [&'static str], language: Language, queries: &[&str], line_comment: Option<&'static str>) -> Option<LanguageDef> {
     // Try the full set first; some grammars ship queries that reference
     // nodes only present in a sibling grammar, so fall back progressively.
@@ -159,6 +165,91 @@ pub fn language_for_name(name: &str) -> Option<&'static LanguageDef> {
     LANGUAGES.iter().find(|l| l.name == name)
 }
 
+/// [`detect`], else the shebang on the first line, else a vim or emacs
+/// modeline in the first or last 5 lines. `text` is the file's text (only
+/// its ends are read) or at least its first and last few lines. A known
+/// extension or filename always wins.
+pub fn detect_text(path: &Path, text: &str) -> Option<&'static LanguageDef> {
+    if let Some(def) = detect(path) {
+        return Some(def);
+    }
+    if let Some(def) = text.lines().next().and_then(shebang) {
+        return Some(def);
+    }
+    text.lines().take(5).chain(text.lines().rev().take(5)).find_map(modeline)
+}
+
+/// The language a `#!` line runs: the interpreter after `env`, its flags
+/// and variable assignments, without a version suffix (`python3.12`).
+fn shebang(line: &str) -> Option<&'static LanguageDef> {
+    fn base(w: &str) -> &str {
+        w.rsplit('/').next().unwrap_or(w)
+    }
+    let mut words = line.strip_prefix("#!")?.split_whitespace();
+    let mut prog = base(words.next()?);
+    if prog == "env" {
+        // `env -S deno run` splits the rest itself; flags and NAME=value
+        // pairs come before the command.
+        prog = base(words.find(|w| !w.starts_with('-') && !w.contains('='))?);
+    }
+    let name = prog.trim_end_matches(|c: char| c.is_ascii_digit() || c == '.');
+    let lang = match name {
+        "sh" | "bash" | "zsh" | "dash" => "bash",
+        n if n.starts_with("python") || n == "pypy" => "python",
+        "node" | "nodejs" | "deno" | "bun" => "javascript",
+        "ts-node" => "typescript",
+        "lua" | "luajit" => "lua",
+        "php" => "php",
+        _ => return None,
+    };
+    language_for_name(lang)
+}
+
+/// The language a vim (`vim: set ft=yaml:`, `vi: ft=sh`, `ex:`) or emacs
+/// (`-*- mode: python -*-`, `-*- python -*-`) modeline names.
+fn modeline(line: &str) -> Option<&'static LanguageDef> {
+    if let Some(start) = line.find("-*-") {
+        let inner = &line[start + 3..];
+        let inner = &inner[..inner.find("-*-")?];
+        let mode = if inner.contains(':') {
+            inner.split(';').find_map(|kv| kv.split_once(':').filter(|(k, _)| k.trim().eq_ignore_ascii_case("mode")).map(|(_, v)| v))?
+        } else {
+            inner
+        };
+        return language_for_alias(mode.trim());
+    }
+    // `vi:` and `ex:` need a blank before them (vim's own rule), so
+    // `regex:` or `index:` are not modelines.
+    let at = ["vim:", "vi:", "ex:"].iter().filter_map(|m| line.match_indices(m).find(|(i, _)| *m == "vim:" || *i == 0 || line[..*i].ends_with(char::is_whitespace)).map(|(i, _)| i + m.len())).min()?;
+    line[at..].split(|c: char| c.is_whitespace() || c == ':').find_map(|opt| match opt.split_once('=')? {
+        ("ft" | "filetype" | "syn" | "syntax", v) => language_for_alias(v),
+        _ => None,
+    })
+}
+
+/// Our language for a vim filetype or emacs mode name, else the language
+/// of that exact name.
+fn language_for_alias(name: &str) -> Option<&'static LanguageDef> {
+    let lower = name.to_ascii_lowercase();
+    let name = lower.strip_suffix("-mode").unwrap_or(&lower);
+    let name = match name {
+        "sh" | "shell" | "shell-script" | "zsh" => "bash",
+        "js" | "js2" | "jsx" | "node" => "javascript",
+        "ts" => "typescript",
+        "py" | "python3" => "python",
+        "cs" | "c#" => "csharp",
+        "c++" => "cpp",
+        "yml" => "yaml",
+        "md" => "markdown",
+        "rs" => "rust",
+        "golang" => "go",
+        "docker" | "containerfile" => "dockerfile",
+        "htm" | "xhtml" => "html",
+        n => n,
+    };
+    language_for_name(name)
+}
+
 struct RopeProvider<'a>(&'a Rope);
 
 impl<'a> TextProvider<RopeChunk<'a>> for RopeProvider<'a> {
@@ -253,6 +344,7 @@ impl Syntax {
         Some(Self { def, parser, tree: None, styles, dirty: true, cache: None })
     }
 
+    #[cfg(test)]
     pub fn for_path(path: &Path, theme: &Theme) -> Option<Self> {
         Self::new(detect(path)?, theme)
     }
@@ -628,5 +720,60 @@ mod tests {
         assert_eq!(style_of("Dockerfile", src, "A=b"), cap("property"));
         assert_eq!(style_of("Dockerfile", src, "8080"), cap("number"));
         assert_eq!(style_of("Dockerfile", src, "\"jetl"), cap("string"));
+    }
+
+    fn lang(path: &str, text: &str) -> Option<&'static str> {
+        detect_text(Path::new(path), text).map(|l| l.name)
+    }
+
+    #[cfg(all(feature = "lang-python", feature = "lang-bash", feature = "lang-js", feature = "lang-ts", feature = "lang-lua", feature = "lang-php"))]
+    #[test]
+    fn shebang_names_the_interpreter() {
+        assert_eq!(lang("/tmp/run", "#!/usr/bin/env python3\nprint(1)\n"), Some("python"));
+        assert_eq!(lang("/tmp/run", "#!/usr/bin/python3.12 -u\n"), Some("python"));
+        assert_eq!(lang("/tmp/run", "#!/bin/bash -e\nset -u\n"), Some("bash"));
+        assert_eq!(lang("/tmp/run", "#! /bin/sh\n"), Some("bash"));
+        assert_eq!(lang("/tmp/run", "#!/usr/bin/env zsh"), Some("bash"));
+        assert_eq!(lang("/tmp/run", "#!/usr/bin/env -S deno run --allow-net\n"), Some("javascript"));
+        assert_eq!(lang("/tmp/run", "#!/usr/bin/env -S NODE_ENV=prod node\n"), Some("javascript"));
+        assert_eq!(lang("/tmp/run", "#!/usr/bin/env bun\n"), Some("javascript"));
+        assert_eq!(lang("/tmp/run", "#!/usr/bin/env ts-node\n"), Some("typescript"));
+        assert_eq!(lang("/tmp/run", "#!/usr/bin/env lua5.4\n"), Some("lua"));
+        assert_eq!(lang("/tmp/run", "#!/usr/bin/php\n<?php\n"), Some("php"));
+        assert_eq!(lang("/tmp/run", "#!/usr/bin/env ruby\n"), None);
+        assert_eq!(lang("/tmp/run", "#!/usr/bin/env\n"), None);
+        assert_eq!(lang("/tmp/run", "\n#!/bin/bash\n"), None, "only on the first line");
+    }
+
+    #[cfg(all(feature = "lang-yaml", feature = "lang-python", feature = "lang-bash", feature = "lang-cpp", feature = "lang-csharp"))]
+    #[test]
+    fn vim_modeline_in_first_or_last_lines() {
+        assert_eq!(lang("/tmp/notes", "# vim: set ft=yaml:\na: 1\n"), Some("yaml"));
+        assert_eq!(lang("/tmp/notes", "a = 1\n\n\n\n\n\n\n# vim: ft=python\n"), Some("python"));
+        assert_eq!(lang("/tmp/notes", "x\n# vi: ts=4 filetype=sh\n"), Some("bash"));
+        assert_eq!(lang("/tmp/notes", "// ex:syntax=cpp:\n"), Some("cpp"));
+        assert_eq!(lang("/tmp/notes", "/* vim: set sw=4 ft=cs: */\n"), Some("csharp"));
+        assert_eq!(lang("/tmp/notes", "regex: ft=python\nindex:ft=sh\n"), None, "vi: and ex: need a blank before them");
+        assert_eq!(lang("/tmp/notes", "# vim: ts=4\n"), None);
+        let middle = format!("{}# vim: ft=yaml\n{}", "x\n".repeat(5), "y\n".repeat(5));
+        assert_eq!(lang("/tmp/notes", &middle), None, "only the first and last 5 lines");
+    }
+
+    #[cfg(all(feature = "lang-python", feature = "lang-cpp", feature = "lang-bash"))]
+    #[test]
+    fn emacs_modeline() {
+        assert_eq!(lang("/tmp/notes", "# -*- mode: python; coding: utf-8 -*-\n"), Some("python"));
+        assert_eq!(lang("/tmp/notes", "# -*- Python -*-\n"), Some("python"));
+        assert_eq!(lang("/tmp/notes", "// -*- c++ -*-\n"), Some("cpp"));
+        assert_eq!(lang("/tmp/notes", "#!/usr/bin/foo\n# -*- mode: shell-script -*-\n"), Some("bash"));
+        assert_eq!(lang("/tmp/notes", "# -*- coding: utf-8 -*-\n"), None);
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[test]
+    fn known_extension_beats_shebang_and_modeline() {
+        assert_eq!(lang("/tmp/main.rs", "#!/usr/bin/env python3\n"), Some("rust"));
+        assert_eq!(lang("/tmp/main.rs", "// vim: ft=python\n"), Some("rust"));
+        assert_eq!(lang("/tmp/notes.txt", "plain\n"), None);
     }
 }

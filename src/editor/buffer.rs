@@ -68,6 +68,9 @@ pub struct Buffer {
     pub changed_since_render: bool,
     pub syntax: Option<super::syntax::Syntax>,
     pub language_choice: LanguageChoice,
+    /// Language found from the path, shebang or modeline when opened; kept
+    /// for files too large to get a syntax attached.
+    pub detected_language: Option<&'static super::syntax::LanguageDef>,
     pub gutter: Vec<super::gutter::GutterMark>,
     /// Buffer version the gutter marks were computed for.
     pub gutter_version: u64,
@@ -128,6 +131,7 @@ impl Buffer {
             changed_since_render: true,
             syntax: None,
             language_choice: LanguageChoice::Auto,
+            detected_language: None,
             gutter: Vec::new(),
             gutter_version: u64::MAX,
             diff_base: None,
@@ -666,13 +670,13 @@ impl Buffer {
     }
 
     /// The buffer's language: the one picked by hand, else the attached
-    /// syntax's, else the one its path suggests (files too large for syntax
-    /// have none attached).
+    /// syntax's, else the one detected on open (files too large for syntax
+    /// have none attached), else the one its path suggests.
     pub fn language(&self) -> Option<&'static super::syntax::LanguageDef> {
         match self.language_choice {
             LanguageChoice::Plain => None,
             LanguageChoice::Named(name) => super::syntax::language_for_name(name),
-            LanguageChoice::Auto => self.syntax.as_ref().map(|s| s.def).or_else(|| self.path.as_deref().and_then(super::syntax::detect)),
+            LanguageChoice::Auto => self.syntax.as_ref().map(|s| s.def).or(self.detected_language).or_else(|| self.path.as_deref().and_then(super::syntax::detect)),
         }
     }
 

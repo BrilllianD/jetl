@@ -177,8 +177,9 @@ impl Editor {
         self.mru.iter().filter_map(|id| self.buffers.iter().find(|b| b.id == *id)).filter_map(|b| b.path.clone()).collect()
     }
 
-    /// Add a loaded file as a new tab and make it active. Syntax
-    /// highlighting is attached only below `max_highlight_bytes`. The
+    /// Add a loaded file as a new tab and make it active. The language
+    /// comes from the path, else a shebang or modeline; its highlighting is
+    /// attached only below `max_highlight_bytes`. The
     /// indent and save options come from `.editorconfig` (looked up here,
     /// once per open: a failed open per ancestor directory without one),
     /// the text and the config.
@@ -189,12 +190,15 @@ impl Editor {
         }
         let id = self.next_id;
         self.next_id += 1;
-        let syntax = if text.len() <= self.max_highlight_bytes { syntax::Syntax::for_path(&path, theme) } else { None };
+        // Only the first and last lines are read for a shebang or modeline.
+        let lang = syntax::detect_text(&path, text);
+        let syntax = lang.filter(|_| text.len() <= self.max_highlight_bytes).and_then(|d| syntax::Syntax::new(d, theme));
         let mtime = buffer::file_mtime(&path);
         let pending = self.pending_nav.take_if(|(p, _)| *p == path).map(|(_, pos)| pos);
         let settings = indent::FileSettings::for_path(&path);
         let mut buf = Buffer::from_text(id, Some(path), text, lossy);
         buf.syntax = syntax;
+        buf.detected_language = lang;
         buf.disk_mtime = mtime;
         buf.indent = settings.indent(&buf.rope, self.tab_width);
         // A file not on disk yet has no line ending of its own.
@@ -1792,5 +1796,26 @@ mod tests {
         ed.set_indent(id, 3);
         assert_eq!(ed.status_indent().as_deref(), Some("8 spaces"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(all(feature = "lang-python", feature = "lang-rust"))]
+    #[test]
+    fn shebang_sets_language_unless_overridden() {
+        let mut ed = editor_with("script", "#!/usr/bin/env python3\nprint(1)\n");
+        assert_eq!(ed.status_language().as_deref(), Some("python"));
+        assert_eq!(ed.buffers[0].syntax.as_ref().map(|s| s.def.name), Some("python"));
+        let id = ed.buffers[0].id;
+        ed.set_language(id, syntax::language_for_name("rust"), &Theme::default());
+        assert_eq!(ed.status_language().as_deref(), Some("rust"), "the language picked by hand wins");
+        ed.set_language(id, None, &Theme::default());
+        assert_eq!(ed.status_language().as_deref(), Some("Plain text"));
+        // Too large for highlighting: the shebang still names the language
+        // (line comments toggle with `#`).
+        let mut config = Config::default();
+        config.editor.max_highlight_bytes = 8;
+        let mut ed = Editor::new(&config);
+        ed.open_text(PathBuf::from("/tmp/big-script"), "#!/usr/bin/env python3\nprint(1)\n", false, &Theme::default());
+        assert!(ed.buffers[0].syntax.is_none());
+        assert_eq!(ed.buffers[0].language().and_then(|d| d.line_comment), Some("#"));
     }
 }
