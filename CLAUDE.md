@@ -1,6 +1,6 @@
 # jetl
 
-Terminal IDE in Rust (ratatui + crossterm) with JetBrains-like UX: project tree, tabbed editor with tree-sitter highlighting, Git tool window, worktree panel. Design notes live in the plan under `~/.claude/plans/` and in `docs/ARCHITECTURE.md`.
+Terminal IDE in Rust (ratatui + crossterm) with JetBrains-like UX: project tree, tabbed editor with tree-sitter highlighting, Git tool window, worktree panel. Feature backlog and phase order: `docs/ROADMAP.md`. Architecture notes go in `docs/ARCHITECTURE.md` (yman task 36, not written yet).
 
 ## Build and run
 
