@@ -65,22 +65,23 @@ impl ListState {
             self.offset = max;
         }
     }
-    /// Set the length and viewport at render time without pulling the view
-    /// back to the selection, so wheel scrolling sticks. The first call (no
-    /// viewport yet) still brings the selection into view.
-    pub fn fit(&mut self, len: usize, viewport: usize) {
+    /// Set the viewport at render time without pulling the view back to the
+    /// selection, so wheel scrolling sticks. The first call (no viewport
+    /// yet) still brings the selection into view.
+    pub fn set_viewport(&mut self, rows: usize) {
         let first = self.viewport == 0;
-        self.len = len;
-        self.selected = self.selected.min(len.saturating_sub(1));
-        self.viewport = viewport;
+        self.viewport = rows;
         if first {
             self.clamp();
         }
-        self.offset = self.offset.min(len.saturating_sub(viewport));
+        self.offset = self.offset.min(self.len.saturating_sub(rows));
     }
-    pub fn set_viewport(&mut self, rows: usize) {
-        self.viewport = rows;
-        self.clamp();
+    /// [`ListState::set_viewport`] for a list whose length is recomputed
+    /// every frame; keeps the selection in range without scrolling to it.
+    pub fn fit(&mut self, len: usize, viewport: usize) {
+        self.len = len;
+        self.selected = self.selected.min(len.saturating_sub(1));
+        self.set_viewport(viewport);
     }
     /// Row index under a screen position, if any.
     pub fn hit(&self, area: Rect, x: u16, y: u16) -> Option<usize> {
@@ -101,7 +102,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn fit_keeps_wheel_scroll_but_first_fit_shows_selection() {
+    fn viewport_keeps_wheel_scroll_but_first_call_shows_selection() {
         let mut l = ListState { selected: 15, ..Default::default() };
         l.fit(20, 5);
         assert_eq!(l.offset, 11, "first fit scrolls the selection into view");
