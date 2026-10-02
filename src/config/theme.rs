@@ -37,6 +37,8 @@ pub struct Theme {
     pub search_current_bg: Color,
     pub occurrence_bg: Color,
     pub bracket_match: Style,
+    /// Gutter glyph of a bookmarked line.
+    pub bookmark: Style,
     pub gutter_added: Color,
     pub gutter_modified: Color,
     pub gutter_deleted: Color,
@@ -93,6 +95,7 @@ impl Theme {
             search_current_bg: Color::Rgb(155, 110, 30),
             occurrence_bg: Color::Rgb(52, 65, 52),
             bracket_match: Style::default().bg(Color::Rgb(59, 81, 77)).add_modifier(Modifier::BOLD),
+            bookmark: Style::default().fg(Color::Rgb(255, 198, 109)),
             gutter_added: Color::Rgb(98, 150, 85),
             gutter_modified: Color::Rgb(53, 146, 196),
             gutter_deleted: Color::Rgb(140, 140, 140),
@@ -229,7 +232,7 @@ theme_fields! {
     ],
     styles: [
         border, border_focused, title, title_focused, strip_item, strip_item_active, status_accent, tab, tab_active,
-        tab_dirty, line_number, line_number_current, bracket_match, git_added, git_modified, git_deleted, git_untracked,
+        tab_dirty, line_number, line_number_current, bracket_match, bookmark, git_added, git_modified, git_deleted, git_untracked,
         git_conflicted, git_ignored, popup_border, list_selected, list_selected_unfocused, dim, error, warn, info,
         splitter,
     ],

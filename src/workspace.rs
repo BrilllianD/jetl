@@ -61,6 +61,9 @@ pub struct SessionFile {
     pub col: usize,
     pub scroll_line: usize,
     pub scroll_col: usize,
+    /// Bookmarked lines, 0-based.
+    #[serde(default)]
+    pub bookmarks: Vec<usize>,
 }
 
 /// 64-bit FNV-1a; stable across runs and platforms, unlike `DefaultHasher`.
@@ -154,6 +157,7 @@ impl App {
         self.palette = None;
         self.refresh_file_index();
         crate::tui::set_title(&root);
+        self.editor.clear_nav();
         self.restore_session();
         self.notify(Level::Info, format!("Switched to {}", root.display()));
     }
@@ -179,7 +183,8 @@ impl App {
                 active = Some(files.len());
             }
             let (line, col) = b.cursor_line_col();
-            files.push(SessionFile { path, line, col, scroll_line: b.scroll_line, scroll_col: b.scroll_col });
+            let bookmarks = b.bookmarks.iter().copied().collect();
+            files.push(SessionFile { path, line, col, scroll_line: b.scroll_line, scroll_col: b.scroll_col, bookmarks });
         }
         let recent = self.editor.recent_paths().iter().filter_map(|p| files.iter().position(|f| &f.path == p)).collect();
         Session { root, files, active, recent }
@@ -222,11 +227,14 @@ impl App {
             let Some((text, lossy)) = self.decode_file(&f.path, bytes) else { continue };
             let i = self.editor.open_text(f.path.clone(), &text, lossy, &self.theme);
             self.editor.restore_view(i, f.line, f.col, f.scroll_line, f.scroll_col);
+            self.editor.buffers[i].set_bookmarks(&f.bookmarks);
             self.git.load_blob(f.path.clone(), crate::git::BlobWhich::Head);
         }
         let recent: Vec<PathBuf> = session.recent.iter().filter_map(|i| session.files.get(*i)).map(|f| f.path.clone()).collect();
         let active = session.active.and_then(|i| session.files.get(i)).map(|f| f.path.as_path());
         self.editor.restore_recent(&recent, active);
+        // Opening the tabs is not navigation.
+        self.editor.clear_nav();
         self.dirty_frame = true;
     }
 }
@@ -255,8 +263,8 @@ mod tests {
         let s = Session {
             root: root.clone(),
             files: vec![
-                SessionFile { path: root.join("src/main.rs"), line: 10, col: 4, scroll_line: 2, scroll_col: 0 },
-                SessionFile { path: root.join("README.md"), line: 0, col: 0, scroll_line: 0, scroll_col: 3 },
+                SessionFile { path: root.join("src/main.rs"), line: 10, col: 4, scroll_line: 2, scroll_col: 0, bookmarks: vec![3, 40] },
+                SessionFile { path: root.join("README.md"), line: 0, col: 0, scroll_line: 0, scroll_col: 3, bookmarks: vec![] },
             ],
             active: Some(1),
             recent: vec![1, 0],
@@ -269,7 +277,7 @@ mod tests {
         let file = Session::file_for(&dir, &root);
         std::fs::write(&file, r#"{"root":"/tmp/some/project","files":[{"path":"/tmp/some/project/a"}]}"#).unwrap();
         let old = Session::load(&dir, &root).unwrap();
-        assert_eq!((old.files[0].line, old.active, old.recent.len()), (0, None, 0));
+        assert_eq!((old.files[0].line, old.active, old.recent.len(), old.files[0].bookmarks.len()), (0, None, 0, 0));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -285,5 +293,29 @@ mod tests {
         std::fs::write(Session::file_for(&dir, root), serde_json::to_string(&other).unwrap()).unwrap();
         assert_eq!(Session::load(&dir, root), None);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn bookmarks_survive_a_session_round_trip() {
+        let (mut app, dir) = crate::app::tests::test_app("session-bookmarks");
+        let path = app.workspace.root.join("a.txt");
+        let text = "zero\none\ntwo\nthree\n";
+        app.editor.open_text(path.clone(), text, false, &app.theme);
+        app.editor.buffers[0].set_bookmarks(&[1, 3]);
+        let session = app.session();
+        assert_eq!(session.files[0].bookmarks, vec![1, 3]);
+        app.session().save(&app.paths.sessions_dir()).unwrap();
+
+        let (mut fresh, fresh_dir) = crate::app::tests::test_app("session-bookmarks-2");
+        fresh.workspace.root = app.workspace.root.clone();
+        let loaded = Session::load(&app.paths.sessions_dir(), &app.workspace.root).unwrap();
+        assert_eq!(loaded, session);
+        // The file lost a line since; the mark past the end is dropped.
+        let generation = fresh.git.generation;
+        fresh.session_loaded(generation, loaded, vec![Ok(b"zero\none\ntwo".to_vec())]);
+        let b = &fresh.editor.buffers[0];
+        assert_eq!(b.bookmarks.iter().copied().collect::<Vec<_>>(), vec![1]);
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&fresh_dir);
     }
 }

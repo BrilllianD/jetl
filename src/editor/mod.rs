@@ -4,6 +4,7 @@ pub mod brackets;
 pub mod buffer;
 pub mod expand;
 pub mod gutter;
+pub mod nav;
 pub mod search;
 pub mod selection;
 pub mod syntax;
@@ -27,6 +28,7 @@ use crate::event::{Effect, Level, Mouse};
 use crate::ui::dialog::{Dialog, DialogId};
 use crate::ui::tabs::TabHits;
 use buffer::{Buffer, BufferId};
+use nav::{NavPos, NavRing};
 use search::{Field, SearchState};
 use selection::{Selection, apply_motion, line_range, word_at};
 use undo::{Change, TxKind};
@@ -102,6 +104,19 @@ pub struct Editor {
     last_search: Option<LastSearch>,
     find_area: Rect,
     find_hits: Vec<(FindHit, Rect)>,
+    /// Back/forward history of caret positions.
+    nav: NavRing,
+    /// A closed file being reopened by back/forward and the caret to put
+    /// in it once it loads.
+    pending_nav: Option<(PathBuf, usize)>,
+}
+
+/// A jump moving the caret by more than this many lines is remembered for
+/// back/forward.
+const NAV_JUMP_LINES: usize = 10;
+
+fn nav_pos(b: &Buffer) -> NavPos {
+    NavPos { id: b.id, path: b.path.clone(), pos: b.sel.head }
 }
 
 impl Editor {
@@ -131,6 +146,8 @@ impl Editor {
             last_search: None,
             find_area: Rect::default(),
             find_hits: Vec::new(),
+            nav: NavRing::default(),
+            pending_nav: None,
         }
     }
 
@@ -167,17 +184,39 @@ impl Editor {
         self.next_id += 1;
         let syntax = if text.len() <= self.max_highlight_bytes { syntax::Syntax::for_path(&path, theme) } else { None };
         let mtime = buffer::file_mtime(&path);
+        let pending = self.pending_nav.take_if(|(p, _)| *p == path).map(|(_, pos)| pos);
         let mut buf = Buffer::from_text(id, Some(path), text, lossy);
         buf.syntax = syntax;
         buf.disk_mtime = mtime;
         // JetBrains inserts the new tab right after the active one.
         let at = self.active.map(|a| a + 1).unwrap_or(self.buffers.len()).min(self.buffers.len());
         self.buffers.insert(at, buf);
-        self.activate_index(at);
+        match pending {
+            // Reopened by back/forward, which already updated the history.
+            Some(pos) => {
+                self.set_active(at);
+                self.buffers[at].goto_pos(pos);
+            }
+            None => self.activate_index(at),
+        }
         at
     }
 
+    /// Make tab `i` active, remembering the position left for back/forward.
     fn activate_index(&mut self, i: usize) {
+        if i >= self.buffers.len() {
+            return;
+        }
+        if self.active != Some(i)
+            && let Some(here) = self.active_buffer().map(nav_pos)
+        {
+            self.nav.push(here);
+        }
+        self.set_active(i);
+    }
+
+    /// [`Editor::activate_index`] without touching the history.
+    fn set_active(&mut self, i: usize) {
         if i >= self.buffers.len() {
             return;
         }
@@ -208,8 +247,83 @@ impl Editor {
         }
         self.mru = ids;
         if let Some(i) = active.and_then(|p| self.index_of(p)) {
-            self.activate_index(i);
+            self.set_active(i);
         }
+    }
+
+    /// Forget the back/forward history (a session was restored or the root
+    /// changed).
+    pub fn clear_nav(&mut self) {
+        self.nav.clear();
+        self.pending_nav = None;
+    }
+
+    /// Remember the active buffer's caret when `from` (taken before an
+    /// action) is more than [`NAV_JUMP_LINES`] lines from it.
+    fn note_jump(&mut self, from: Option<NavPos>) {
+        let (Some(from), Some(b)) = (from, self.active_buffer()) else { return };
+        if from.id != b.id {
+            return;
+        }
+        let line = |p: usize| b.rope.char_to_line(p.min(b.rope.len_chars()));
+        if line(from.pos).abs_diff(line(b.sel.head)) > NAV_JUMP_LINES {
+            self.nav.push(from);
+        }
+    }
+
+    /// Ctrl+Alt+Left / Ctrl+Alt+Right: return to the previous (next)
+    /// position, reopening its file when it was closed.
+    fn nav_step(&mut self, back: bool, cx: &mut Ctx) {
+        let here = self.active_buffer().map(nav_pos);
+        let buffers = &self.buffers;
+        let usable = |p: &NavPos| p.path.is_some() || buffers.iter().any(|b| b.id == p.id);
+        let target = if back { self.nav.back(here, usable) } else { self.nav.forward(here, usable) };
+        let Some(p) = target else {
+            cx.notify(Level::Info, if back { "No earlier position" } else { "No later position" });
+            return;
+        };
+        let found = self.buffers.iter().position(|b| b.id == p.id).or_else(|| p.path.as_deref().and_then(|path| self.index_of(path)));
+        match (found, p.path) {
+            (Some(i), _) => {
+                self.set_active(i);
+                self.buffers[i].goto_pos(p.pos);
+            }
+            (None, Some(path)) => {
+                self.pending_nav = Some((path.clone(), p.pos));
+                cx.effects.push(Effect::OpenFile(path));
+            }
+            (None, None) => {}
+        }
+    }
+
+    /// Shift+F11: a choice dialog of the bookmarks of all open buffers.
+    fn show_bookmarks(&mut self, cx: &mut Ctx) {
+        let root = cx.workspace.root();
+        let mut targets = Vec::new();
+        let mut items = Vec::new();
+        for b in &self.buffers {
+            let name = b.path.as_deref().and_then(|p| p.strip_prefix(root).ok()).map(|p| p.display().to_string()).unwrap_or_else(|| b.name.clone());
+            for &line in &b.bookmarks {
+                items.push(format!("{name}:{} {}", line + 1, b.line_text(line).trim()));
+                targets.push((b.id, line));
+            }
+        }
+        if items.is_empty() {
+            cx.notify(Level::Info, "No bookmarks; F11 toggles one on the caret line");
+            return;
+        }
+        cx.effects.push(Effect::Dialog(Dialog::choice(DialogId::Bookmarks(targets), "Bookmarks", "Go to bookmark:", items)));
+    }
+
+    /// Jump to bookmarked `line` of buffer `id` (from the bookmarks dialog);
+    /// the position left is remembered for back.
+    pub fn goto_bookmark(&mut self, id: BufferId, line: usize) {
+        let Some(i) = self.buffers.iter().position(|b| b.id == id) else { return };
+        if let Some(here) = self.active_buffer().map(nav_pos) {
+            self.nav.push(here);
+        }
+        self.set_active(i);
+        self.buffers[i].goto_line(line, 0);
     }
 
     pub fn activate(&mut self, i: usize, _cx: &mut Ctx) {
@@ -232,6 +346,10 @@ impl Editor {
             return;
         }
         let id = self.buffers[i].id;
+        // Back from the next tab reopens the closed one.
+        if self.active == Some(i) {
+            self.nav.push(nav_pos(&self.buffers[i]));
+        }
         self.buffers.remove(i);
         self.mru.retain(|x| *x != id);
         if self.buffers.is_empty() {
@@ -240,7 +358,7 @@ impl Editor {
         }
         // Prefer the most recently used remaining tab.
         let next = self.mru.first().and_then(|id| self.buffers.iter().position(|b| b.id == *id)).unwrap_or(i.min(self.buffers.len() - 1));
-        self.activate_index(next);
+        self.set_active(next);
     }
 
     pub fn close_all(&mut self, cx: &mut Ctx) {
@@ -356,9 +474,11 @@ impl Editor {
     }
 
     pub fn goto_line(&mut self, line: usize, col: usize) {
+        let from = self.active_buffer().map(nav_pos);
         if let Some(b) = self.active_buffer_mut() {
             b.goto_line(line.saturating_sub(1), col.saturating_sub(1));
         }
+        self.note_jump(from);
     }
 
     pub fn status_position(&self) -> Option<String> {
@@ -492,8 +612,18 @@ impl Editor {
                 }
                 return true;
             }
+            E::NavBack | E::NavForward => {
+                self.nav_step(*a == E::NavBack, cx);
+                return true;
+            }
+            E::ShowBookmarks => {
+                self.show_bookmarks(cx);
+                return true;
+            }
             _ => {}
         }
+        // Jumps far enough away are remembered for back/forward.
+        let jump_from = if matches!(a, E::GotoBracket | E::FindNext | E::FindPrev) { self.active_buffer().map(nav_pos) } else { None };
         let rows = self.text_area.height as usize;
         let tab_width = self.tab_width;
         let auto_close = self.auto_close;
@@ -650,8 +780,10 @@ impl Editor {
             }
             E::ExpandSelection => b.expand_selection(),
             E::ShrinkSelection => b.shrink_selection(),
-            E::NextTab | E::PrevTab | E::CloseTab | E::CloseAllTabs | E::Switcher | E::Save | E::SaveAll | E::GotoLine => {}
+            E::ToggleBookmark => b.toggle_bookmark(),
+            E::NextTab | E::PrevTab | E::CloseTab | E::CloseAllTabs | E::Switcher | E::Save | E::SaveAll | E::GotoLine | E::NavBack | E::NavForward | E::ShowBookmarks => {}
         }
+        self.note_jump(jump_from);
         true
     }
 
@@ -907,6 +1039,10 @@ impl Editor {
         match m.kind {
             MouseEventKind::Down(MouseButton::Left) => {
                 let p = pos_at(b, m.x, m.y);
+                let from = nav_pos(b);
+                if b.rope.char_to_line(b.sel.head).abs_diff(b.rope.char_to_line(p)) > NAV_JUMP_LINES {
+                    self.nav.push(from);
+                }
                 let extend = m.mods.contains(KeyModifiers::SHIFT);
                 match m.clicks {
                     2 => {
@@ -1459,5 +1595,75 @@ mod tests {
         let mut untitled = Buffer::from_text(9, None, "", false);
         untitled.insert("q", TxKind::Typing);
         assert!(!untitled.autosave_candidate());
+    }
+
+    fn caret(ed: &Editor) -> (String, usize) {
+        let b = ed.active_buffer().unwrap();
+        (b.name.clone(), b.cursor_line_col().0)
+    }
+
+    #[test]
+    fn nav_back_and_forward_over_jumps_and_tabs() {
+        let text = "x\n".repeat(100);
+        let mut ed = editor_with("a.txt", &text);
+        // A short move is not remembered; a far goto line is.
+        ed.goto_line(5, 1);
+        ed.goto_line(60, 1);
+        ed.open_text(PathBuf::from("/tmp/b.txt"), &text, false, &Theme::default());
+        assert_eq!(caret(&ed), ("b.txt".into(), 0));
+        let notes = with_cx(|cx| {
+            ed.handle_action(&EditorAction::NavBack, cx);
+            assert_eq!(caret(&ed), ("a.txt".into(), 59));
+            ed.handle_action(&EditorAction::NavBack, cx);
+            assert_eq!(caret(&ed), ("a.txt".into(), 4));
+            ed.handle_action(&EditorAction::NavBack, cx);
+            ed.handle_action(&EditorAction::NavForward, cx);
+            assert_eq!(caret(&ed), ("a.txt".into(), 59));
+            ed.handle_action(&EditorAction::NavForward, cx);
+            assert_eq!(caret(&ed), ("b.txt".into(), 0));
+        });
+        assert_eq!(notes, vec!["No earlier position".to_string()]);
+    }
+
+    #[test]
+    fn nav_back_reopens_a_closed_file_at_its_caret() {
+        let text = "x\n".repeat(30);
+        let mut ed = editor_with("a.txt", &text);
+        ed.goto_line(20, 1);
+        ed.open_text(PathBuf::from("/tmp/b.txt"), &text, false, &Theme::default());
+        ed.activate_index(0);
+        ed.force_close(0);
+        assert_eq!(caret(&ed).0, "b.txt");
+        let config = Config::default();
+        let theme = Theme::default();
+        let workspace = Workspace::new(PathBuf::from("/tmp"));
+        let (bus, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut cx = Ctx { effects: Vec::new(), config: &config, theme: &theme, workspace: &workspace, bus };
+        ed.handle_action(&EditorAction::NavBack, &mut cx);
+        assert!(matches!(cx.effects.as_slice(), [Effect::OpenFile(p)] if p == Path::new("/tmp/a.txt")));
+        // The app loads the file; it opens at the remembered caret.
+        ed.open_text(PathBuf::from("/tmp/a.txt"), &text, false, &theme);
+        assert_eq!(caret(&ed), ("a.txt".into(), 19));
+        ed.handle_action(&EditorAction::NavForward, &mut cx);
+        assert_eq!(caret(&ed).0, "b.txt");
+    }
+
+    #[test]
+    fn bookmarks_dialog_lists_and_jumps() {
+        let mut ed = editor_with("a.txt", "one\ntwo\nthree\n");
+        ed.goto_line(2, 1);
+        with_cx(|cx| {
+            ed.handle_action(&EditorAction::ToggleBookmark, cx);
+            ed.handle_action(&EditorAction::ShowBookmarks, cx);
+            let Some(Effect::Dialog(d)) = cx.effects.pop() else { panic!("no dialog") };
+            let crate::ui::dialog::DialogKind::Choice { items, .. } = &d.kind else { panic!() };
+            assert_eq!(items, &vec!["a.txt:2 two".to_string()]);
+            let DialogId::Bookmarks(t) = d.id else { panic!() };
+            ed.goto_line(3, 1);
+            ed.goto_bookmark(t[0].0, t[0].1);
+            assert_eq!(caret(&ed).1, 1);
+            ed.handle_action(&EditorAction::NavBack, cx);
+            assert_eq!(caret(&ed).1, 2);
+        });
     }
 }

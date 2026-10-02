@@ -1,6 +1,7 @@
 //! A text buffer: rope, selection, undo history, file metadata.
 //! Every mutation goes through [`Buffer::apply`].
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -80,6 +81,9 @@ pub struct Buffer {
     /// The file changed on disk under unsaved edits; no autosave until an
     /// explicit save.
     pub autosave_conflict: bool,
+    /// Bookmarked lines (F11). Every applied change (edits, undo, redo)
+    /// carries them along with their text; lines deleted outright drop out.
+    pub bookmarks: BTreeSet<usize>,
 }
 
 impl Buffer {
@@ -115,6 +119,7 @@ impl Buffer {
             autosave_seen: 0,
             autosave_failed: None,
             autosave_conflict: false,
+            bookmarks: BTreeSet::new(),
         }
     }
 
@@ -184,12 +189,24 @@ impl Buffer {
     fn apply_change(&mut self, c: &Change) {
         let old_len = c.old.chars().count();
         let at = c.at.min(self.rope.len_chars());
+        let marks: Vec<MarkTarget> = self.bookmarks.iter().map(|&l| mark_target(&self.rope, l, at, old_len, c)).collect();
         if old_len > 0 {
             let end = (at + old_len).min(self.rope.len_chars());
             self.rope.remove(at..end);
         }
         if !c.new.is_empty() {
             self.rope.insert(at, &c.new);
+        }
+        if !marks.is_empty() {
+            let (len, last) = (self.rope.len_chars(), self.rope.len_lines() - 1);
+            self.bookmarks = marks
+                .into_iter()
+                .filter_map(|t| match t {
+                    MarkTarget::Pos(p) => Some(self.rope.char_to_line(p.min(len))),
+                    MarkTarget::Line(l) => Some(l.min(last)),
+                    MarkTarget::Drop => None,
+                })
+                .collect();
         }
         if let Some(s) = &mut self.syntax {
             s.note_change(&self.rope, at, old_len, c.new.chars().count(), &c.old, &c.new);
@@ -494,6 +511,13 @@ impl Buffer {
         }
     }
 
+    /// Put the caret at char `pos` (clamped to the text).
+    pub fn goto_pos(&mut self, pos: usize) {
+        self.sel = Selection::point(pos.min(self.rope.len_chars()));
+        self.desired_col = None;
+        self.undo.break_group = true;
+    }
+
     pub fn goto_line(&mut self, line: usize, col: usize) {
         let line = line.min(self.rope.len_lines().saturating_sub(1));
         let p = selection::line_col_to_pos(&self.rope, line, col);
@@ -748,6 +772,20 @@ impl Buffer {
         self.apply(vec![Change::replace(range.start, old, new)], sel_after, TxKind::Other);
     }
 
+    /// Add or remove the bookmark on the caret line.
+    pub fn toggle_bookmark(&mut self) {
+        let line = self.cursor_line_col().0;
+        if !self.bookmarks.remove(&line) {
+            self.bookmarks.insert(line);
+        }
+    }
+
+    /// Replace the bookmarks (from a session), dropping lines past the end.
+    pub fn set_bookmarks(&mut self, lines: &[usize]) {
+        let n = self.rope.len_lines();
+        self.bookmarks = lines.iter().copied().filter(|l| *l < n).collect();
+    }
+
     pub fn line_text(&self, line: usize) -> String {
         let n = line_len_no_eol(&self.rope, line);
         let s = self.rope.line_to_char(line);
@@ -803,6 +841,54 @@ impl Buffer {
 
 pub fn file_mtime(path: &std::path::Path) -> Option<std::time::SystemTime> {
     std::fs::metadata(path).and_then(|m| m.modified()).ok()
+}
+
+/// Where a bookmark goes when a change is applied: the line holding a
+/// position of the edited text, a line number, or nowhere.
+enum MarkTarget {
+    Pos(usize),
+    Line(usize),
+    Drop,
+}
+
+/// Follow bookmarked `line` through change `c` (at `at`, removing `old_len`
+/// chars of `rope`), by its line start. A line whose start is inside the
+/// replaced text and that a pure deletion removes with one of its line
+/// breaks is dropped; one that a deletion only merges into the line above
+/// lands there. Inside a replacement the line is looked up by its text among
+/// the new lines (so moved lines and reloads keep their marks), else keeps
+/// its offset clamped to the new text.
+fn mark_target(rope: &Rope, line: usize, at: usize, old_len: usize, c: &Change) -> MarkTarget {
+    if line >= rope.len_lines() {
+        return MarkTarget::Drop;
+    }
+    let s = rope.line_to_char(line);
+    let del_end = at + old_len;
+    let new_len = c.new.chars().count();
+    if s < at {
+        return MarkTarget::Pos(s);
+    }
+    if old_len == 0 || s >= del_end {
+        // Text inserted at the line start pushes the line down.
+        return MarkTarget::Pos(s - old_len + new_len);
+    }
+    let e = s + line_len_no_eol(rope, line);
+    let has_eol = line + 1 < rope.len_lines();
+    if new_len == 0 {
+        let own_break_gone = s == at && has_eol && rope.line_to_char(line + 1) <= del_end;
+        let prev_break_gone = s > at && e <= del_end;
+        return if own_break_gone || prev_break_gone { MarkTarget::Drop } else { MarkTarget::Pos(at) };
+    }
+    let l0 = rope.char_to_line(at);
+    let k = line - l0;
+    let old_lines: Vec<&str> = c.old.split('\n').collect();
+    let new_lines: Vec<&str> = c.new.split('\n').collect();
+    let Some(text) = old_lines.get(k) else { return MarkTarget::Line(l0) };
+    // The n-th line with this text among the old lines is the n-th one among
+    // the new lines.
+    let nth = old_lines[..k].iter().filter(|l| *l == text).count();
+    let found = new_lines.iter().enumerate().filter(|(_, l)| *l == text).nth(nth).map(|(i, _)| i);
+    MarkTarget::Line(l0 + found.unwrap_or(k.min(new_lines.len() - 1)))
 }
 
 /// Map position `p` through `changes`. With `stay_at_insert`, a position
@@ -1467,5 +1553,75 @@ mod tests {
         assert!(!buf.dirty());
         assert_eq!(buf.undo.len(), 1);
         assert!(buf.undo.can_redo(), "redo history survives");
+    }
+
+    fn marks(buf: &Buffer) -> Vec<usize> {
+        buf.bookmarks.iter().copied().collect()
+    }
+
+    #[test]
+    fn bookmarks_shift_with_lines_inserted_above() {
+        let mut buf = b("a\nb\nc\nd\n");
+        buf.goto_line(2, 0);
+        buf.toggle_bookmark();
+        buf.goto_line(3, 1);
+        buf.toggle_bookmark();
+        assert_eq!(marks(&buf), vec![2, 3]);
+        // Two lines typed at the start of line 1 push both marks down.
+        buf.goto_line(1, 0);
+        buf.insert("x\ny\n", TxKind::Other);
+        assert_eq!(marks(&buf), vec![4, 5]);
+        // Enter at the end of a marked line leaves the mark where it is.
+        buf.goto_line(4, 1);
+        buf.insert("\n", TxKind::Other);
+        assert_eq!(marks(&buf), vec![4, 6]);
+        // Undo and redo map the marks through the same changes.
+        assert!(buf.undo());
+        assert!(buf.undo());
+        assert_eq!(marks(&buf), vec![2, 3]);
+        assert!(buf.redo());
+        assert_eq!(marks(&buf), vec![4, 5]);
+        // Toggling again removes the mark.
+        buf.goto_line(5, 0);
+        buf.toggle_bookmark();
+        assert_eq!(marks(&buf), vec![4]);
+    }
+
+    #[test]
+    fn bookmarks_drop_with_deleted_lines_and_merge_on_join() {
+        let mut buf = b("a\nb\nc\nd");
+        buf.set_bookmarks(&[1, 2, 3, 9]);
+        assert_eq!(marks(&buf), vec![1, 2, 3], "lines past the end are ignored");
+        // Ctrl+Y on line 1 drops its mark and moves the ones below up.
+        buf.goto_line(1, 0);
+        buf.delete_line();
+        assert_eq!((buf.text().as_str(), marks(&buf)), ("a\nc\nd", vec![1, 2]));
+        // Deleting the last line takes its preceding line break along.
+        buf.goto_line(2, 0);
+        buf.delete_line();
+        assert_eq!((buf.text().as_str(), marks(&buf)), ("a\nc", vec![1]));
+        // Backspace at the start of a marked line merges it into the line
+        // above, which inherits the mark.
+        buf.goto_line(1, 0);
+        buf.backspace();
+        assert_eq!((buf.text().as_str(), marks(&buf)), ("ac", vec![0]));
+        // Undo puts the line back; the mark stays with the merged text.
+        assert!(buf.undo());
+        assert_eq!(marks(&buf), vec![0]);
+    }
+
+    #[test]
+    fn bookmarks_follow_moved_lines_and_reloads() {
+        let mut buf = b("one\ntwo\nthree\n");
+        buf.set_bookmarks(&[2]);
+        buf.goto_line(2, 0);
+        buf.move_lines(true);
+        assert_eq!((buf.text().as_str(), marks(&buf)), ("one\nthree\ntwo\n", vec![1]));
+        assert!(buf.undo());
+        assert_eq!(marks(&buf), vec![2]);
+        // A whole-text replacement (reload from disk) keeps marks on their text.
+        let old = buf.text();
+        buf.apply(vec![Change::replace(0, old, "zero\none\ntwo\nthree\n")], Selection::point(0), TxKind::Other);
+        assert_eq!(marks(&buf), vec![3]);
     }
 }

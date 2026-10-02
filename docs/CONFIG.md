@@ -141,7 +141,7 @@ gutter_modified gutter_deleted diff_add_bg diff_del_bg diff_mod_bg popup_bg`.
 
 Style fields: `border border_focused title title_focused strip_item
 strip_item_active status_accent tab tab_active tab_dirty line_number
-line_number_current bracket_match git_added git_modified git_deleted git_untracked
+line_number_current bracket_match bookmark git_added git_modified git_deleted git_untracked
 git_conflicted git_ignored popup_border list_selected list_selected_unfocused
 dim error warn info splitter`.
 

@@ -169,6 +169,9 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
         let num_style = if is_cur { theme.line_number_current } else { theme.line_number };
         let num = format!("{:>width$}", line + 1, width = digits);
         screen.set_stringn(area.x, y, &num, digits, num_style);
+        if buf.bookmarks.contains(&line) {
+            screen.set_string(area.x + digits as u16, y, "◆", theme.bookmark);
+        }
         if let Some(mark) = super::gutter::mark_at(&buf.gutter, line) {
             let (glyph, color) = mark.glyph(theme);
             screen.set_string(area.x + digits as u16 + 1, y, glyph, Style::default().fg(color));

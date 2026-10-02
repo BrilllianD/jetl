@@ -105,6 +105,10 @@ Override any of them in `~/.config/jetl/keymap.toml` (see [CONFIG.md](CONFIG.md)
 | `Ctrl+Alt+Shift+W` * | `editor.shrink_selection` | Shrink selection back one step |
 | `Ctrl+Up` | `editor.scroll_up` | Scroll up |
 | `Ctrl+Down` | `editor.scroll_down` | Scroll down |
+| `Ctrl+Alt+Left` | `editor.nav_back` | Navigate back to the previous caret position |
+| `Ctrl+Alt+Right` | `editor.nav_forward` | Navigate forward |
+| `F11` | `editor.toggle_bookmark` | Toggle bookmark on the caret line |
+| `Shift+F11` | `editor.show_bookmarks` | Show bookmarks |
 
 ## tree
 

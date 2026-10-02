@@ -107,6 +107,10 @@ pub enum EditorAction {
     ShrinkSelection,
     ScrollUp(usize),
     ScrollDown(usize),
+    NavBack,
+    NavForward,
+    ToggleBookmark,
+    ShowBookmarks,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -290,6 +294,10 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "editor.shrink_selection" => "Shrink selection back one step", Editor(E::ShrinkSelection);
         "editor.scroll_up" => "Scroll up", Editor(E::ScrollUp(1));
         "editor.scroll_down" => "Scroll down", Editor(E::ScrollDown(1));
+        "editor.nav_back" => "Navigate back to the previous caret position", Editor(E::NavBack);
+        "editor.nav_forward" => "Navigate forward", Editor(E::NavForward);
+        "editor.toggle_bookmark" => "Toggle bookmark on the caret line", Editor(E::ToggleBookmark);
+        "editor.show_bookmarks" => "Show bookmarks", Editor(E::ShowBookmarks);
 
         "tree.up" => "Tree: up", Tree(TreeAction::Up);
         "tree.down" => "Tree: down", Tree(TreeAction::Down);

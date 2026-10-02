@@ -697,6 +697,12 @@ impl App {
                     None => self.notify(Level::Warn, "Go to line: expected [line][:column]"),
                 }
             }
+            (DialogId::Bookmarks(targets), DialogResult::Choice(i)) => {
+                if let Some(&(id, line)) = targets.get(i) {
+                    self.editor.goto_bookmark(id, line);
+                    self.focus.set(PanelId::Editor);
+                }
+            }
             (DialogId::NewBranchName, DialogResult::Text(t)) => {
                 let name = t.trim().to_string();
                 if name.is_empty() || name.starts_with('-') || name.contains(char::is_whitespace) {

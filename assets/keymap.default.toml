@@ -98,6 +98,10 @@
 "ctrl-alt-shift-w" = "editor.shrink_selection"
 "ctrl-up" = "editor.scroll_up"
 "ctrl-down" = "editor.scroll_down"
+"ctrl-alt-left" = "editor.nav_back"
+"ctrl-alt-right" = "editor.nav_forward"
+"f11" = "editor.toggle_bookmark"
+"shift-f11" = "editor.show_bookmarks"
 "esc" = "editor.escape"
 
 [tree]

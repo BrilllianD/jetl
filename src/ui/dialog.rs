@@ -34,6 +34,8 @@ pub enum DialogId {
     PushSetUpstream(String),
     Info,
     GotoLine,
+    /// Item `i` is bookmarked line `.1` of buffer `.0`.
+    Bookmarks(Vec<(crate::editor::buffer::BufferId, usize)>),
 }
 
 #[derive(Debug, Clone)]
