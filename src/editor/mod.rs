@@ -429,13 +429,21 @@ impl Editor {
                 }
                 let tree = b.syntax.as_ref().and_then(|s| s.tree());
                 let may_pair = !tree.is_some_and(|t| brackets::in_literal_at(&b.rope, t, b.sel.head));
-                b.type_char(*c, pairs, may_pair);
+                // A closer that auto-close steps over keeps the line as is.
+                let steps_over = pairs.iter().any(|(_, cl)| cl == c) && b.sel.head < b.rope.len_chars() && b.rope.char(b.sel.head) == *c;
+                match b.closer_indent(*c, tree).filter(|_| !steps_over) {
+                    Some(indent) => b.type_dedented(*c, &indent),
+                    None => b.type_char(*c, pairs, may_pair),
+                }
             }
             E::InsertText(s) => {
                 let s = if b.line_ending == buffer::LineEnding::CrLf { s.replace("\r\n", "\n").replace('\n', "\r\n") } else { s.replace("\r\n", "\n") };
                 b.insert(&s, TxKind::Other);
             }
-            E::InsertNewline => b.newline(),
+            E::InsertNewline => {
+                let colon = b.path.as_deref().and_then(syntax::detect).is_some_and(|d| d.indent_after_colon);
+                b.newline_smart(tab_width, colon);
+            }
             E::InsertTab => {
                 let r = b.sel.range();
                 if b.rope.char_to_line(r.start) != b.rope.char_to_line(r.end) {
@@ -1206,5 +1214,50 @@ mod tests {
             ed.handle_action(&EditorAction::ToggleComment, cx);
         });
         assert_eq!(ed.active_buffer().unwrap().text(), "// fn main() {}\n");
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[test]
+    fn enter_in_braces_and_closer_dedent() {
+        let mut ed = editor_with("a.rs", "fn f() {\n    let s = \"{\";\n");
+        ed.active_buffer_mut().unwrap().sel = Selection::point(8);
+        with_cx(|cx| {
+            // Auto-close types `{}` and Enter splits it over three lines.
+            ed.handle_action(&EditorAction::InsertNewline, cx);
+            ed.handle_action(&EditorAction::InsertText("if x ".into()), cx);
+            ed.handle_action(&EditorAction::InsertChar('{'), cx);
+            ed.handle_action(&EditorAction::InsertNewline, cx);
+        });
+        let b = ed.active_buffer().unwrap();
+        assert_eq!(b.text(), "fn f() {\n    if x {\n        \n    }\n    let s = \"{\";\n");
+        assert_eq!(b.cursor_line_col(), (2, 8));
+        // `}` on a blank line dedents to the opener's line; the `{` in the
+        // string literal is skipped.
+        let mut ed = editor_with("a.rs", "fn f() {\n    let s = \"{\";\n    ");
+        let end = ed.active_buffer().unwrap().len_chars();
+        ed.active_buffer_mut().unwrap().sel = Selection::point(end);
+        with_cx(|cx| {
+            ed.handle_action(&EditorAction::InsertChar('}'), cx);
+        });
+        assert_eq!(ed.active_buffer().unwrap().text(), "fn f() {\n    let s = \"{\";\n}");
+        // Typing `}` at an existing closer steps over it, line unchanged.
+        let mut ed = editor_with("a.rs", "fn f() {\n    }");
+        ed.active_buffer_mut().unwrap().sel = Selection::point(13);
+        with_cx(|cx| {
+            ed.handle_action(&EditorAction::InsertChar('}'), cx);
+        });
+        assert_eq!(ed.active_buffer().unwrap().text(), "fn f() {\n    }");
+        assert_eq!(ed.active_buffer().unwrap().sel.head, 14);
+    }
+
+    #[cfg(feature = "lang-python")]
+    #[test]
+    fn python_colon_indents() {
+        let mut ed = editor_with("a.py", "def f():");
+        ed.active_buffer_mut().unwrap().sel = Selection::point(8);
+        with_cx(|cx| {
+            ed.handle_action(&EditorAction::InsertNewline, cx);
+        });
+        assert_eq!(ed.active_buffer().unwrap().text(), "def f():\n    ");
     }
 }

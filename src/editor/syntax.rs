@@ -20,6 +20,8 @@ pub struct LanguageDef {
     pub query: Query,
     /// Line comment token for "comment with line comment".
     pub line_comment: Option<&'static str>,
+    /// Enter after a trailing `:` indents one level (Python, YAML).
+    pub indent_after_colon: bool,
 }
 
 fn make(name: &'static str, extensions: &'static [&'static str], filenames: &'static [&'static str], language: Language, queries: &[&str], line_comment: Option<&'static str>) -> Option<LanguageDef> {
@@ -28,7 +30,7 @@ fn make(name: &'static str, extensions: &'static [&'static str], filenames: &'st
     for n in (1..=queries.len()).rev() {
         let src: String = queries[..n].join("\n");
         match Query::new(&language, &src) {
-            Ok(query) => return Some(LanguageDef { name, extensions, filenames, language: language.clone(), query, line_comment }),
+            Ok(query) => return Some(LanguageDef { name, extensions, filenames, language: language.clone(), query, line_comment, indent_after_colon: matches!(name, "python" | "yaml") }),
             Err(e) => tracing::warn!("highlight query for {name} ({n} parts): {e}"),
         }
     }

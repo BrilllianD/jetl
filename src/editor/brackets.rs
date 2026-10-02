@@ -41,6 +41,33 @@ pub fn pair_at(rope: &Rope, tree: Option<&Tree>, pos: usize) -> Option<(usize, u
     None
 }
 
+/// The opener matching a closer `closer` typed at `pos`, by a backwards
+/// nesting scan. With a syntax tree, brackets inside strings and comments
+/// are skipped.
+pub fn opener_before(rope: &Rope, tree: Option<&Tree>, pos: usize, closer: char) -> Option<usize> {
+    let (opener, false) = partner(closer)? else { return None };
+    let mut depth = 0usize;
+    let mut it = rope.chars_at(pos.min(rope.len_chars()));
+    let mut q = pos.min(rope.len_chars());
+    while let Some(ch) = it.prev() {
+        q -= 1;
+        if pos - q > SCAN_LIMIT {
+            break;
+        }
+        if (ch != closer && ch != opener) || tree.is_some_and(|t| in_literal_at(rope, t, q)) {
+            continue;
+        }
+        if ch == closer {
+            depth += 1;
+        } else if depth == 0 {
+            return Some(q);
+        } else {
+            depth -= 1;
+        }
+    }
+    None
+}
+
 /// Match among the bracket token's siblings. A bracket that is not a token
 /// of its own is ignored inside strings and comments and scanned for
 /// elsewhere (plain text such as Markdown prose).
@@ -163,6 +190,14 @@ mod tests {
         assert_eq!(pair_at(&r, None, 3), Some((3, 5)));
         assert_eq!(pair_at(&r, None, 6), Some((5, 3)), "caret at end matches the bracket before it");
         assert_eq!(pair_at(&r, None, 1), Some((0, 2)), "caret after the opener");
+    }
+
+    #[test]
+    fn opener_before_closer() {
+        let r = Rope::from_str("f(a, [b], (c)\n  ");
+        assert_eq!(opener_before(&r, None, r.len_chars(), ')'), Some(1));
+        assert_eq!(opener_before(&r, None, 7, ']'), Some(5));
+        assert_eq!(opener_before(&r, None, r.len_chars(), '}'), None);
     }
 
     #[cfg(feature = "lang-rust")]

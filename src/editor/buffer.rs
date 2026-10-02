@@ -310,13 +310,66 @@ impl Buffer {
         self.apply(vec![Change::delete(p, old)], Selection::point(p), TxKind::Other);
     }
 
-    /// Newline keeping the current line's indentation.
-    pub fn newline(&mut self) {
-        let (line, col) = self.cursor_line_col();
+    /// Newline keeping the current line's indentation, one level deeper
+    /// after an opening bracket (or a `:` when `colon`). Between a bracket
+    /// pair such as `{|}` the closer moves to its own line at the base
+    /// indent. Trailing whitespace before the caret is dropped.
+    pub fn newline_smart(&mut self, tab_width: usize, colon: bool) {
+        let r = self.sel.range();
+        let (line, col) = selection::pos_to_line_col(&self.rope, r.start);
+        let ls = self.rope.line_to_char(line);
         let indent_n = selection::indent_of(&self.rope, line).min(col);
-        let indent: String = self.rope.line(line).chars().take(indent_n).collect();
-        let s = format!("{}{}", self.line_ending.as_str(), indent);
-        self.insert(&s, TxKind::Other);
+        let base: String = self.rope.line(line).chars().take(indent_n).collect();
+        let before = self.rope.slice(ls..r.start).to_string();
+        let kept = before.trim_end_matches([' ', '\t']);
+        let start = ls + kept.chars().count();
+        let last = kept.chars().last();
+        let closer = match last {
+            Some('{') => Some('}'),
+            Some('[') => Some(']'),
+            Some('(') => Some(')'),
+            _ => None,
+        };
+        let deeper = closer.is_some() || (colon && last == Some(':'));
+        let unit = if base.starts_with('\t') { "\t".to_string() } else { " ".repeat(tab_width.max(1)) };
+        let eol = self.line_ending.as_str();
+        let indent = if deeper { format!("{base}{unit}") } else { base.clone() };
+        let mut new = format!("{eol}{indent}");
+        let caret = start + new.chars().count();
+        if closer.is_some() && r.end < self.rope.len_chars() && Some(self.rope.char(r.end)) == closer {
+            new.push_str(&format!("{eol}{base}"));
+        }
+        let old = self.rope.slice(start..r.end).to_string();
+        self.apply(vec![Change::replace(start, old, new)], Selection::point(caret), TxKind::Other);
+    }
+
+    /// Indent for closer `c` typed at the caret on a line that is blank up
+    /// to the caret: that of the line holding the matching opener. None
+    /// when that does not apply or the line already has that indent.
+    pub fn closer_indent(&self, c: char, tree: Option<&tree_sitter::Tree>) -> Option<String> {
+        if !matches!(c, '}' | ']' | ')') || !self.sel.is_empty() {
+            return None;
+        }
+        let p = self.sel.head;
+        let (line, col) = selection::pos_to_line_col(&self.rope, p);
+        if selection::indent_of(&self.rope, line) < col {
+            return None;
+        }
+        let open = super::brackets::opener_before(&self.rope, tree, p, c)?;
+        let ol = self.rope.char_to_line(open);
+        let indent: String = self.rope.line(ol).chars().take(selection::indent_of(&self.rope, ol)).collect();
+        let current: String = self.rope.line(line).chars().take(col).collect();
+        (indent != current).then_some(indent)
+    }
+
+    /// Type closer `c` after replacing the caret line's leading whitespace
+    /// with `indent` (from [`Buffer::closer_indent`]), as one transaction.
+    pub fn type_dedented(&mut self, c: char, indent: &str) {
+        let p = self.sel.head;
+        let ls = self.rope.line_to_char(self.rope.char_to_line(p));
+        let old = self.rope.slice(ls..p).to_string();
+        let caret = ls + indent.chars().count() + 1;
+        self.apply(vec![Change::replace(ls, old, format!("{indent}{c}"))], Selection::point(caret), TxKind::Typing);
     }
 
     pub fn insert_tab(&mut self, tab_width: usize) {
@@ -642,7 +695,7 @@ mod tests {
                     buf.sel = Selection::new(pos, (pos + 3).min(len));
                     buf.delete_selection();
                 }
-                _ => buf.newline(),
+                _ => buf.newline_smart(4, false),
             }
             if buf.undo.len() > n {
                 snapshots.push(buf.text());
@@ -967,5 +1020,104 @@ mod tests {
         buf.sel = Selection::new(0, buf.len_chars());
         buf.toggle_line_comment("#");
         assert_eq!(buf.text(), "# # let a;\n# let b;\n");
+    }
+
+    #[test]
+    fn newline_after_opener_indents() {
+        let mut buf = b("    foo(  ");
+        buf.sel = Selection::point(10);
+        buf.newline_smart(4, false);
+        assert_eq!(buf.text(), "    foo(\n        ", "trailing whitespace dropped, one level deeper");
+        assert_eq!(buf.cursor_line_col(), (1, 8));
+        let mut buf = b("\tx = [");
+        buf.sel = Selection::point(6);
+        buf.newline_smart(4, false);
+        assert_eq!(buf.text(), "\tx = [\n\t\t", "tab indent adds a tab");
+    }
+
+    #[test]
+    fn newline_between_pair_splits_it() {
+        let mut buf = b("  if x {}");
+        buf.sel = Selection::point(8);
+        buf.newline_smart(4, false);
+        assert_eq!(buf.text(), "  if x {\n      \n  }");
+        assert_eq!(buf.cursor_line_col(), (1, 6));
+        assert_eq!(buf.undo.len(), 1);
+        assert!(buf.undo());
+        assert_eq!(buf.text(), "  if x {}");
+        // A non-matching closer is left on the caret line.
+        let mut buf = b("f(]");
+        buf.sel = Selection::point(2);
+        buf.newline_smart(4, false);
+        assert_eq!(buf.text(), "f(\n    ]");
+    }
+
+    #[test]
+    fn newline_colon_only_when_asked() {
+        let mut buf = b("def f():");
+        buf.sel = Selection::point(8);
+        buf.newline_smart(4, true);
+        assert_eq!(buf.text(), "def f():\n    ");
+        let mut buf = b("label:");
+        buf.sel = Selection::point(6);
+        buf.newline_smart(4, false);
+        assert_eq!(buf.text(), "label:\n");
+    }
+
+    #[test]
+    fn newline_copies_indent() {
+        let mut buf = b("    foo\nbar");
+        buf.sel = Selection::point(7);
+        buf.newline_smart(4, false);
+        assert_eq!(buf.text(), "    foo\n    \nbar");
+        assert_eq!(buf.cursor_line_col(), (1, 4));
+        // Caret inside the indent: the rest of the line keeps its column.
+        let mut buf = b("    foo");
+        buf.sel = Selection::point(2);
+        buf.newline_smart(4, false);
+        assert_eq!(buf.text(), "\n    foo");
+        assert_eq!(buf.cursor_line_col(), (1, 2));
+        // A selection is replaced.
+        let mut buf = b("  ab cd");
+        buf.sel = Selection::new(4, 5);
+        buf.newline_smart(4, false);
+        assert_eq!(buf.text(), "  ab\n  cd");
+    }
+
+    #[test]
+    fn closer_on_blank_line_dedents() {
+        let mut buf = b("fn f() {\n    if x {\n        a();\n        ");
+        let end = buf.len_chars();
+        buf.sel = Selection::point(end);
+        let indent = buf.closer_indent('}', None).expect("dedent applies");
+        assert_eq!(indent, "    ");
+        buf.type_dedented('}', &indent);
+        assert_eq!(buf.text(), "fn f() {\n    if x {\n        a();\n    }");
+        assert_eq!(buf.cursor_line_col(), (3, 5));
+        assert!(buf.undo());
+        assert_eq!(buf.text(), "fn f() {\n    if x {\n        a();\n        ");
+        // Not on a line with text before the caret, nor at the right indent already.
+        let mut buf = b("{\n  a");
+        buf.sel = Selection::point(5);
+        assert_eq!(buf.closer_indent('}', None), None);
+        let mut buf = b("  {\n  ");
+        buf.sel = Selection::point(6);
+        assert_eq!(buf.closer_indent('}', None), None);
+        assert_eq!(buf.closer_indent('x', None), None);
+    }
+
+    #[test]
+    fn crlf_newline_smart() {
+        let mut buf = b("a {}\r\nb");
+        assert_eq!(buf.line_ending, LineEnding::CrLf);
+        buf.sel = Selection::point(3);
+        buf.newline_smart(2, false);
+        assert_eq!(buf.text(), "a {\r\n  \r\n}\r\nb");
+        assert_eq!(buf.cursor_line_col(), (1, 2));
+        let mut buf = b("x {\r\n    \r\ny");
+        buf.sel = Selection::point(9);
+        let indent = buf.closer_indent('}', None).unwrap();
+        buf.type_dedented('}', &indent);
+        assert_eq!(buf.text(), "x {\r\n}\r\ny");
     }
 }
