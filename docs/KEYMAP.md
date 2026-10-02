@@ -100,6 +100,8 @@ Override any of them in `~/.config/jetl/keymap.toml` (see [CONFIG.md](CONFIG.md)
 | `Ctrl+Shift+J` * | `editor.join_lines` | Join lines |
 | `Ctrl+Shift+U` * | `editor.toggle_case` | Toggle case |
 | `Ctrl+Shift+M` * | `editor.goto_bracket` | Move caret to matching bracket |
+| `Ctrl+Alt+W` | `editor.expand_selection` | Extend selection to the enclosing syntax node |
+| `Ctrl+Alt+Shift+W` * | `editor.shrink_selection` | Shrink selection back one step |
 | `Ctrl+Up` | `editor.scroll_up` | Scroll up |
 | `Ctrl+Down` | `editor.scroll_down` | Scroll down |
 

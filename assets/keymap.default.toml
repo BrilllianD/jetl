@@ -91,6 +91,8 @@
 "alt-shift-down" = "editor.move_line_down"
 "ctrl-shift-j" = "editor.join_lines"
 "ctrl-shift-u" = "editor.toggle_case"
+"ctrl-alt-w" = "editor.expand_selection"
+"ctrl-alt-shift-w" = "editor.shrink_selection"
 "ctrl-up" = "editor.scroll_up"
 "ctrl-down" = "editor.scroll_down"
 "esc" = "editor.escape"

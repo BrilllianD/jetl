@@ -2,6 +2,7 @@
 
 pub mod brackets;
 pub mod buffer;
+pub mod expand;
 pub mod gutter;
 pub mod search;
 pub mod selection;
@@ -420,6 +421,11 @@ impl Editor {
         let auto_close = self.auto_close;
         let Some(ai) = self.active else { return false };
         let b = &mut self.buffers[ai];
+        // Any other action ends an expand/shrink sequence; scrolling and
+        // copying leave the selection alone, so they keep it.
+        if !matches!(a, E::ExpandSelection | E::ShrinkSelection | E::Copy | E::ScrollUp(_) | E::ScrollDown(_)) {
+            b.expand_stack.clear();
+        }
         let pairs = || if auto_close { brackets::pairs(b.path.as_deref().and_then(syntax::detect).map(|d| d.name)) } else { &[] };
         match a {
             E::InsertChar(c) => {
@@ -557,6 +563,8 @@ impl Editor {
                     b.undo.break_group = true;
                 }
             }
+            E::ExpandSelection => b.expand_selection(),
+            E::ShrinkSelection => b.shrink_selection(),
             E::NextTab | E::PrevTab | E::CloseTab | E::CloseAllTabs | E::Switcher | E::Save | E::SaveAll | E::GotoLine => {}
         }
         true

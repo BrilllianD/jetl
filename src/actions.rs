@@ -102,6 +102,8 @@ pub enum EditorAction {
     JoinLines,
     ToggleCase,
     GotoBracket,
+    ExpandSelection,
+    ShrinkSelection,
     ScrollUp(usize),
     ScrollDown(usize),
 }
@@ -282,6 +284,8 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "editor.join_lines" => "Join lines", Editor(E::JoinLines);
         "editor.toggle_case" => "Toggle case", Editor(E::ToggleCase);
         "editor.goto_bracket" => "Move caret to matching bracket", Editor(E::GotoBracket);
+        "editor.expand_selection" => "Extend selection to the enclosing syntax node", Editor(E::ExpandSelection);
+        "editor.shrink_selection" => "Shrink selection back one step", Editor(E::ShrinkSelection);
         "editor.scroll_up" => "Scroll up", Editor(E::ScrollUp(1));
         "editor.scroll_down" => "Scroll down", Editor(E::ScrollDown(1));
 

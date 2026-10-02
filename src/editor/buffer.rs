@@ -65,6 +65,11 @@ pub struct Buffer {
     /// caret. The view only scrolls to the caret when one of them changes,
     /// so wheel scrolling is not undone on the next frame.
     pub follow_key: Option<(usize, u64, u16, u16)>,
+    /// Expand-selection history: the selection before each step and the
+    /// one the step produced. Shrink only pops while the current selection
+    /// is still the produced one, so selection changes made elsewhere (mouse,
+    /// undo) cannot restore a stale range. Cleared on every edit.
+    pub expand_stack: Vec<(Selection, Selection)>,
 }
 
 impl Buffer {
@@ -95,6 +100,7 @@ impl Buffer {
             diff_base: None,
             search: None,
             follow_key: None,
+            expand_stack: Vec::new(),
         }
     }
 
@@ -128,6 +134,7 @@ impl Buffer {
     /// Like [`Buffer::apply`], but the selection after the transaction is
     /// computed from the edited rope, so redo restores the same caret.
     pub fn apply_then(&mut self, changes: Vec<Change>, kind: TxKind, sel_after: impl FnOnce(&Rope) -> Selection) {
+        self.expand_stack.clear();
         if changes.is_empty() {
             self.sel = sel_after(&self.rope);
             return;
@@ -426,6 +433,36 @@ impl Buffer {
         let (line, _) = self.cursor_line_col();
         let r = line_range(&self.rope, line);
         self.sel = Selection::new(r.start, r.end);
+    }
+
+    /// Select the smallest syntax node (or bracket contents) around the
+    /// selection; word, line, all without a syntax tree.
+    pub fn expand_selection(&mut self) {
+        if let Some(s) = &mut self.syntax {
+            s.reparse(&self.rope);
+        }
+        if self.expand_stack.last().is_some_and(|(_, after)| *after != self.sel) {
+            self.expand_stack.clear();
+        }
+        let tree = self.syntax.as_ref().and_then(|s| s.tree());
+        let Some(r) = super::expand::expand_range(&self.rope, tree, self.sel.range()) else { return };
+        let after = Selection::new(r.start, r.end);
+        self.expand_stack.push((self.sel, after));
+        self.sel = after;
+        self.desired_col = None;
+        self.undo.break_group = true;
+    }
+
+    /// Undo the last expand step, if the selection is still what it made.
+    pub fn shrink_selection(&mut self) {
+        match self.expand_stack.pop() {
+            Some((before, after)) if after == self.sel => {
+                self.sel = before;
+                self.desired_col = None;
+                self.undo.break_group = true;
+            }
+            _ => self.expand_stack.clear(),
+        }
     }
 
     pub fn goto_line(&mut self, line: usize, col: usize) {
@@ -1119,5 +1156,72 @@ mod tests {
         let indent = buf.closer_indent('}', None).unwrap();
         buf.type_dedented('}', &indent);
         assert_eq!(buf.text(), "x {\r\n}\r\ny");
+    }
+
+    /// Expand once and return the selected text.
+    fn grow(buf: &mut Buffer) -> String {
+        buf.expand_selection();
+        buf.selected_text()
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[test]
+    fn expand_and_shrink_by_syntax_node() {
+        let src = "fn main() {\n    let a = 1;\n    foo(bar);\n}\n";
+        let mut buf = b(src);
+        let def = super::super::syntax::language_for_name("rust").unwrap();
+        buf.syntax = super::super::syntax::Syntax::new(def, &crate::config::theme::Theme::default());
+        let caret = src.find("oo(").unwrap();
+        buf.sel = Selection::point(caret);
+        assert_eq!(grow(&mut buf), "foo");
+        assert_eq!(grow(&mut buf), "foo(bar)");
+        assert_eq!(grow(&mut buf), "foo(bar);");
+        // Block contents before the block, as in JetBrains.
+        assert_eq!(grow(&mut buf), "let a = 1;\n    foo(bar);");
+        assert_eq!(grow(&mut buf), "{\n    let a = 1;\n    foo(bar);\n}");
+        assert_eq!(grow(&mut buf), "fn main() {\n    let a = 1;\n    foo(bar);\n}");
+        assert_eq!(grow(&mut buf), src);
+        let top = buf.sel;
+        buf.expand_selection();
+        assert_eq!(buf.sel, top, "nothing larger than the whole text");
+        assert_eq!(buf.sel.anchor, 0, "anchor at start, head at end");
+        for want in ["fn main() {\n    let a = 1;\n    foo(bar);\n}", "{\n    let a = 1;\n    foo(bar);\n}", "let a = 1;\n    foo(bar);", "foo(bar);", "foo(bar)", "foo"] {
+            buf.shrink_selection();
+            assert_eq!(buf.selected_text(), want);
+        }
+        buf.shrink_selection();
+        assert_eq!(buf.sel, Selection::point(caret));
+        buf.shrink_selection();
+        assert_eq!(buf.sel, Selection::point(caret), "empty stack is a no-op");
+        // Caret right after an identifier starts from it; argument parens
+        // get their contents first only when that is larger.
+        buf.sel = Selection::point(src.find("bar").unwrap() + 3);
+        assert_eq!(grow(&mut buf), "bar");
+        assert_eq!(grow(&mut buf), "(bar)");
+    }
+
+    #[test]
+    fn expand_plain_text_and_stale_stack() {
+        let mut buf = b("one two\nthree\n");
+        buf.sel = Selection::point(5);
+        assert_eq!(grow(&mut buf), "two");
+        assert_eq!(grow(&mut buf), "one two\n");
+        assert_eq!(grow(&mut buf), "one two\nthree\n");
+        buf.shrink_selection();
+        assert_eq!(buf.selected_text(), "one two\n");
+        // A selection changed outside expand/shrink (e.g. a mouse drag)
+        // invalidates the stack instead of jumping back.
+        buf.sel = Selection::new(8, 10);
+        buf.shrink_selection();
+        assert_eq!(buf.sel, Selection::new(8, 10));
+        assert!(buf.expand_stack.is_empty());
+        // Edits clear it too.
+        buf.sel = Selection::point(1);
+        buf.expand_selection();
+        buf.insert("x", TxKind::Other);
+        assert!(buf.expand_stack.is_empty());
+        let mut buf = b("");
+        buf.expand_selection();
+        assert!(buf.expand_stack.is_empty(), "nothing to expand in an empty buffer");
     }
 }
