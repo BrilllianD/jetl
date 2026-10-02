@@ -143,6 +143,9 @@ pub struct App {
     pub find: crate::files::find_panel::FindPanel,
     /// Caret target of a file being opened by `open_file_at`.
     pending_goto: Option<(PathBuf, usize, usize)>,
+    /// File from the command line (1-based line and column), opened once
+    /// the session is restored so it ends up the active tab.
+    pub(crate) pending_open: Option<(PathBuf, usize, usize)>,
     pub git: GitService,
     pub editor: Editor,
     /// Watches the root for outside changes; `None` when off or failed.
@@ -151,7 +154,7 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(root: PathBuf, config: Config, paths: Paths) -> Self {
+    pub fn new(root: PathBuf, config: Config, paths: Paths, open: Option<(PathBuf, usize, usize)>) -> Self {
         let (bus_tx, bus_rx) = mpsc::unbounded_channel();
         let (keymap, keymap_errors) = Keymap::load(&paths.keymap_file());
         let (theme, theme_errors) = Theme::load(&paths.theme_file());
@@ -196,6 +199,7 @@ impl App {
             git_panel,
             find: Default::default(),
             pending_goto: None,
+            pending_open: open,
             git,
             editor: Editor::new(&config),
             watcher: None,
@@ -643,13 +647,19 @@ pub(crate) mod tests {
     /// An app rooted at a fresh temp directory with config and state under
     /// it, so tests never touch the user's files.
     pub(crate) fn test_app(name: &str) -> (App, PathBuf) {
+        test_app_open(name, |_| None)
+    }
+
+    /// [`test_app`] with a command line file, given the root.
+    fn test_app_open(name: &str, open: impl FnOnce(&std::path::Path) -> Option<(PathBuf, usize, usize)>) -> (App, PathBuf) {
         let dir = std::env::temp_dir().join(format!("jetl-test-app-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let root = dir.join("root");
         std::fs::create_dir_all(&root).unwrap();
         let root = std::fs::canonicalize(&root).unwrap();
         let paths = Paths { config_dir: dir.join("config"), state_dir: dir.join("state"), cache_dir: dir.join("cache") };
-        (App::new(root.clone(), Config::default(), paths), dir)
+        let open = open(&root);
+        (App::new(root.clone(), Config::default(), paths, open), dir)
     }
 
     #[tokio::test]
@@ -787,6 +797,47 @@ pub(crate) mod tests {
         assert!(app.editor.buffers.is_empty());
         app.handle_msg(AppMsg::SessionLoaded { generation: g, session, files: vec![Ok(b"x".to_vec())] });
         assert_eq!(app.editor.buffers.len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn command_line_file_opens_after_the_session_without_a_duplicate() {
+        let (mut app, dir) = test_app_open("cli-open", |root| Some((root.join("b.txt"), 3, 2)));
+        let root = app.workspace.root.clone();
+        let (a, b) = (root.join("a.txt"), root.join("b.txt"));
+        let file = |path: &PathBuf| crate::workspace::SessionFile { path: path.clone(), ..Default::default() };
+        let session = crate::workspace::Session { root, files: vec![file(&a), file(&b)], active: Some(0), ..Default::default() };
+        let g = app.workspace.generation;
+        let text = || Ok(b"zero\none\ntwo\nthree\n".to_vec());
+        app.handle_msg(AppMsg::SessionLoaded { generation: g, session, files: vec![text(), text()] });
+        assert_eq!(app.editor.buffers.len(), 2);
+        let active = app.editor.active_buffer().unwrap();
+        assert_eq!(active.path.as_ref(), Some(&b));
+        assert_eq!(active.cursor_line_col(), (2, 1));
+        assert!(app.pending_open.is_none());
+        // A later session for the same root (a switch back) skips open tabs.
+        let again = crate::workspace::Session { root: app.workspace.root.clone(), files: vec![file(&b)], ..Default::default() };
+        app.handle_msg(AppMsg::SessionLoaded { generation: g, session: again, files: vec![text()] });
+        assert_eq!(app.editor.buffers.len(), 2);
+        assert_eq!(app.editor.active_buffer().unwrap().cursor_line_col(), (2, 1));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn command_line_file_opens_without_a_session() {
+        let (mut app, dir) = test_app_open("cli-open-fresh", |root| {
+            std::fs::write(root.join("a.txt"), "zero\none\ntwo\n").unwrap();
+            Some((root.join("a.txt"), 2, 3))
+        });
+        // The empty session arrives first, then the file read it starts.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while app.editor.buffers.is_empty() && Instant::now() < deadline {
+            if let Ok(Some(msg)) = tokio::time::timeout(Duration::from_millis(100), app.bus_rx.recv()).await {
+                app.handle_msg(msg);
+            }
+        }
+        assert_eq!(app.editor.buffers.len(), 1);
+        assert_eq!(app.editor.active_buffer().unwrap().cursor_line_col(), (1, 2));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -204,25 +204,30 @@ impl App {
     }
 
     /// Load the current root's session and its files off the main loop; the
-    /// tabs open in [`App::session_loaded`].
+    /// tabs open in [`App::session_loaded`]. No session arrives as an empty
+    /// one, so a pending command line file still opens.
     pub fn restore_session(&self) {
         let (dir, root, generation, tx) =
             (self.paths.sessions_dir(), self.workspace.root.clone(), self.workspace.generation, self.bus_tx.clone());
         tokio::task::spawn_blocking(move || {
-            let Some(session) = Session::load(&dir, &root) else { return };
+            let session = Session::load(&dir, &root).unwrap_or_else(|| Session { root, ..Default::default() });
             let files = session.files.iter().map(|f| std::fs::read(&f.path)).collect();
             let _ = tx.send(AppMsg::SessionLoaded { generation, session, files });
         });
     }
 
     /// Open the tabs of a loaded session (dropped when the root changed
-    /// since). Missing files are skipped.
+    /// since), then the pending command line file. Missing files and files
+    /// already open are skipped.
     pub fn session_loaded(&mut self, generation: u64, session: Session, files: Vec<std::io::Result<Vec<u8>>>) {
         if generation != self.workspace.generation {
             tracing::debug!("dropping stale session for {}", session.root.display());
             return;
         }
         for (f, result) in session.files.iter().zip(files) {
+            if self.editor.index_of(&f.path).is_some() {
+                continue;
+            }
             let bytes = match result {
                 Ok(b) => b,
                 Err(e) => {
@@ -241,6 +246,9 @@ impl App {
         self.editor.restore_recent(&recent, active);
         // Opening the tabs is not navigation.
         self.editor.clear_nav();
+        if let Some((path, line, col)) = self.pending_open.take() {
+            self.open_file_at(path, line.saturating_sub(1), col.saturating_sub(1));
+        }
         self.dirty_frame = true;
     }
 }
