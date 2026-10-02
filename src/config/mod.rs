@@ -55,6 +55,7 @@ pub fn init_logging(paths: &Paths) -> Result<tracing_appender::non_blocking::Wor
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
+#[derive(Default)]
 pub struct Config {
     pub editor: EditorConfig,
     pub ui: UiConfig,
@@ -171,18 +172,6 @@ impl Default for KeymapConfig {
 impl Default for FilesConfig {
     fn default() -> Self {
         Self { show_hidden: true, show_ignored: false }
-    }
-}
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            editor: Default::default(),
-            ui: Default::default(),
-            git: Default::default(),
-            worktree: Default::default(),
-            keymap: Default::default(),
-            files: Default::default(),
-        }
     }
 }
 

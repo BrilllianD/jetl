@@ -83,11 +83,11 @@ impl Dispatcher {
         if let KeyCode::Modifier(m) = key.code {
             if matches!(m, ModifierKeyCode::LeftShift | ModifierKeyCode::RightShift) && key.kind == KeyEventKind::Press {
                 let now = Instant::now();
-                if let Some(prev) = self.last_shift {
-                    if now.duration_since(prev) <= self.double_tap {
-                        self.last_shift = None;
-                        return self.lookup(KeyCombo::double_shift(), contexts, mode, keymap, key);
-                    }
+                if let Some(prev) = self.last_shift
+                    && now.duration_since(prev) <= self.double_tap
+                {
+                    self.last_shift = None;
+                    return self.lookup(KeyCombo::double_shift(), contexts, mode, keymap, key);
                 }
                 self.last_shift = Some(now);
             }
@@ -99,10 +99,10 @@ impl Dispatcher {
         // Any non-shift key cancels a pending double tap.
         self.last_shift = None;
 
-        if let Some(at) = self.pending_at {
-            if at.elapsed() > self.chord_timeout {
-                self.reset();
-            }
+        if let Some(at) = self.pending_at
+            && at.elapsed() > self.chord_timeout
+        {
+            self.reset();
         }
         let combo = KeyCombo::normalize(key.code, key.modifiers);
         self.lookup(combo, contexts, mode, keymap, key)

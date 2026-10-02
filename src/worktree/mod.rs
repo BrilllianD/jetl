@@ -97,10 +97,10 @@ pub fn expand_tilde(p: &str) -> PathBuf {
         if let Some(h) = home() {
             return h;
         }
-    } else if let Some(rest) = p.strip_prefix("~/") {
-        if let Some(h) = home() {
-            return h.join(rest);
-        }
+    } else if let Some(rest) = p.strip_prefix("~/")
+        && let Some(h) = home()
+    {
+        return h.join(rest);
     }
     PathBuf::from(p)
 }

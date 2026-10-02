@@ -89,28 +89,29 @@ impl UndoStack {
     pub fn push(&mut self, mut tx: Transaction) {
         self.redo.clear();
         let id = self.fresh_id();
-        if !self.break_group && tx.kind != TxKind::Other {
-            if let Some(last) = self.undo.last_mut() {
-                let within = self.group_window.map(|w| tx.at.duration_since(last.at) <= w).unwrap_or(true);
-                let contiguous = match tx.kind {
-                    TxKind::Typing => last.changes.last().map(|c| c.end_after()) == tx.changes.first().map(|c| c.at),
-                    TxKind::Deleting => {
-                        let prev = last.changes.last();
-                        let cur = tx.changes.first();
-                        match (prev, cur) {
-                            (Some(p), Some(c)) => c.at == p.at || c.end_after() == p.at || c.at + c.old.chars().count() == p.at,
-                            _ => false,
-                        }
+        if !self.break_group
+            && tx.kind != TxKind::Other
+            && let Some(last) = self.undo.last_mut()
+        {
+            let within = self.group_window.map(|w| tx.at.duration_since(last.at) <= w).unwrap_or(true);
+            let contiguous = match tx.kind {
+                TxKind::Typing => last.changes.last().map(|c| c.end_after()) == tx.changes.first().map(|c| c.at),
+                TxKind::Deleting => {
+                    let prev = last.changes.last();
+                    let cur = tx.changes.first();
+                    match (prev, cur) {
+                        (Some(p), Some(c)) => c.at == p.at || c.end_after() == p.at || c.at + c.old.chars().count() == p.at,
+                        _ => false,
                     }
-                    TxKind::Other => false,
-                };
-                if last.kind == tx.kind && within && contiguous {
-                    last.id = id;
-                    last.changes.extend(tx.changes);
-                    last.sel_after = tx.sel_after;
-                    last.at = tx.at;
-                    return;
                 }
+                TxKind::Other => false,
+            };
+            if last.kind == tx.kind && within && contiguous {
+                last.id = id;
+                last.changes.extend(tx.changes);
+                last.sel_after = tx.sel_after;
+                last.at = tx.at;
+                return;
             }
         }
         self.break_group = false;

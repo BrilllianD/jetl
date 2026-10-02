@@ -65,6 +65,19 @@ impl ListState {
             self.offset = max;
         }
     }
+    /// Set the length and viewport at render time without pulling the view
+    /// back to the selection, so wheel scrolling sticks. The first call (no
+    /// viewport yet) still brings the selection into view.
+    pub fn fit(&mut self, len: usize, viewport: usize) {
+        let first = self.viewport == 0;
+        self.len = len;
+        self.selected = self.selected.min(len.saturating_sub(1));
+        self.viewport = viewport;
+        if first {
+            self.clamp();
+        }
+        self.offset = self.offset.min(len.saturating_sub(viewport));
+    }
     pub fn set_viewport(&mut self, rows: usize) {
         self.viewport = rows;
         self.clamp();
@@ -80,5 +93,24 @@ impl ListState {
     pub fn visible(&self) -> std::ops::Range<usize> {
         let end = (self.offset + self.viewport).min(self.len);
         self.offset..end
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fit_keeps_wheel_scroll_but_first_fit_shows_selection() {
+        let mut l = ListState { selected: 15, ..Default::default() };
+        l.fit(20, 5);
+        assert_eq!(l.offset, 11, "first fit scrolls the selection into view");
+        l.select(0);
+        assert_eq!(l.offset, 0);
+        l.scroll(3);
+        l.fit(20, 5);
+        assert_eq!((l.selected, l.offset), (0, 3), "wheel scroll survives the next frame");
+        l.fit(6, 5);
+        assert_eq!(l.offset, 1, "offset still bounded by the length");
     }
 }

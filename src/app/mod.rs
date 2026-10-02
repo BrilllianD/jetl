@@ -49,6 +49,8 @@ pub struct Ctx<'a> {
     pub config: &'a Config,
     pub theme: &'a Theme,
     pub workspace: &'a Workspace,
+    /// Lets a panel start background work that reports back as an
+    /// `AppMsg`; nothing uses it yet.
     pub bus: UnboundedSender<AppMsg>,
 }
 
@@ -113,11 +115,15 @@ pub struct App {
     drag: Option<Drag>,
     last_click: Option<LastClick>,
     pub notifications: Vec<Notification>,
+    /// Whether the status bar showed a notification at the last tick.
+    notification_shown: bool,
     pub toasts: crate::ui::toasts::Toasts,
     pub dialog: Option<Dialog>,
     /// Command palette overlay; captures input like a dialog.
     pub palette: Option<Palette>,
     pub file_index: FileIndex,
+    /// A failed branch load was already reported to the open palette.
+    branches_error_shown: bool,
     pub status_hits: Vec<(StatusHit, Rect)>,
     pub keyboard_enhanced: bool,
     pub project: ProjectPanel,
@@ -159,10 +165,12 @@ impl App {
             drag: None,
             last_click: None,
             notifications: Vec::new(),
+            notification_shown: false,
             toasts: Default::default(),
             dialog: None,
             palette: None,
             file_index: FileIndex::default(),
+            branches_error_shown: false,
             status_hits: Vec::new(),
             keyboard_enhanced: crate::tui::keyboard_enhanced(),
             project: ProjectPanel::new(root_for_panels.clone(), config.files.show_hidden, config.files.show_ignored),
@@ -282,12 +290,11 @@ impl App {
     }
 
     fn on_tick(&mut self) {
-        // Expire the visible notification and pending chord display.
-        if let Some(n) = self.notifications.last() {
-            let ttl = Duration::from_secs(16);
-            if n.at.elapsed() < ttl && n.at.elapsed().as_millis() % 1000 < 100 {
-                self.dirty_frame = true;
-            }
+        // Redraw once when the status bar notification expires.
+        let shown = self.current_notification().is_some();
+        if shown != self.notification_shown {
+            self.notification_shown = shown;
+            self.dirty_frame = true;
         }
         if self.toasts.expire(Instant::now()) {
             self.dirty_frame = true;
@@ -414,10 +421,12 @@ impl App {
             Dispatch::Action(a) => self.perform(a),
             Dispatch::Pending | Dispatch::Ignore => {}
             Dispatch::Unmapped(k) => {
-                if self.focus.is(PanelId::Editor) && self.mode == Mode::Insert && is_text_input(&k) {
-                    if let KeyCode::Char(c) = k.code {
-                        self.perform(Action::Editor(EditorAction::InsertChar(c)));
-                    }
+                if self.focus.is(PanelId::Editor)
+                    && self.mode == Mode::Insert
+                    && is_text_input(&k)
+                    && let KeyCode::Char(c) = k.code
+                {
+                    self.perform(Action::Editor(EditorAction::InsertChar(c)));
                 }
             }
         }
@@ -552,6 +561,7 @@ impl App {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::git::GitMsg;
 
     /// An app rooted at a fresh temp directory with config and state under
     /// it, so tests never touch the user's files.
@@ -578,6 +588,23 @@ pub(crate) mod tests {
         app.handle_msg(AppMsg::FileLoaded { generation: current, path: path.clone(), result: Ok(b"new".to_vec()), focus: true });
         assert_eq!(app.editor.buffers.len(), 1);
         assert_eq!(app.editor.buffers[0].text(), "new");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn branch_load_error_reports_once_per_palette() {
+        let (mut app, dir) = test_app("branch-error");
+        app.open_palette(crate::actions::PaletteKind::Branches);
+        let errors = |app: &App| app.notifications.iter().filter(|n| n.text.starts_with("Branches:")).count();
+        let fail = |app: &App| AppMsg::Git(GitMsg::Branches { generation: app.git.generation, result: Err(anyhow::anyhow!("not a repo")) });
+        app.handle_msg(fail(&app));
+        app.handle_msg(fail(&app));
+        assert_eq!(errors(&app), 1);
+        // Reopening the palette reports a persisting error again.
+        app.palette = None;
+        app.open_palette(crate::actions::PaletteKind::Branches);
+        app.handle_msg(fail(&app));
+        assert_eq!(errors(&app), 2);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

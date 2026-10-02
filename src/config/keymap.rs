@@ -495,10 +495,10 @@ mod tests {
         let quit = parse_chord("ctrl-q").unwrap();
         let errors = km.merge_toml("[global]\n\"ctrl-q\" = \"none\"\n").unwrap();
         assert!(errors.is_empty());
-        assert!(km.table("global").unwrap().bindings.get(&quit).is_none());
+        assert!(!km.table("global").unwrap().bindings.contains_key(&quit));
         // Nothing else lost its binding, and the dispatcher no longer quits.
         assert!(km.shortcut_for(&Action::App(crate::actions::AppAction::Quit), &["global"]).is_none());
-        assert!(km.table("global").unwrap().bindings.get(&parse_chord("ctrl-s").unwrap()).is_some());
+        assert!(km.table("global").unwrap().bindings.contains_key(&parse_chord("ctrl-s").unwrap()));
         let mut d = crate::dispatch::Dispatcher::new(false);
         let key = crossterm::event::KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL);
         let r = d.dispatch(key, &["editor", "global"], None, &km);
@@ -516,7 +516,7 @@ mod tests {
             km.table("global").unwrap().bindings.get(&parse_chord("f2").unwrap()),
             Some(&Action::App(crate::actions::AppAction::Quit))
         );
-        assert!(km.table("global").unwrap().bindings.get(&parse_chord("ctrl-q").unwrap()).is_some());
+        assert!(km.table("global").unwrap().bindings.contains_key(&parse_chord("ctrl-q").unwrap()));
         assert!(km.merge_toml("[global\n").is_err());
     }
 
@@ -529,7 +529,7 @@ mod tests {
         let (km, msgs) = Keymap::load(&file);
         assert_eq!(msgs.len(), 1);
         assert!(msgs[0].contains("using the default keymap"));
-        assert!(km.table("global").unwrap().bindings.get(&parse_chord("ctrl-q").unwrap()).is_some());
+        assert!(km.table("global").unwrap().bindings.contains_key(&parse_chord("ctrl-q").unwrap()));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

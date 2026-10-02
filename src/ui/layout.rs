@@ -133,15 +133,15 @@ impl LayoutState {
         if self.rects.status.contains(p) {
             return Hit::Status;
         }
-        if let Some(tw) = self.left {
-            if self.rects.left.contains(p) {
-                return Hit::Panel(tw.panel(), self.rects.left);
-            }
+        if let Some(tw) = self.left
+            && self.rects.left.contains(p)
+        {
+            return Hit::Panel(tw.panel(), self.rects.left);
         }
-        if let Some(tw) = self.bottom {
-            if self.rects.bottom.contains(p) {
-                return Hit::Panel(tw.panel(), self.rects.bottom);
-            }
+        if let Some(tw) = self.bottom
+            && self.rects.bottom.contains(p)
+        {
+            return Hit::Panel(tw.panel(), self.rects.bottom);
         }
         if self.rects.tabs.contains(p) {
             return Hit::Tabs(self.rects.tabs);

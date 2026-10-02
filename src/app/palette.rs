@@ -34,6 +34,7 @@ impl App {
         }
         if p.wants(Source::Branches) {
             p.set_branches(self.git_panel.branches.clone());
+            self.branches_error_shown = false;
             self.git.load_branches();
         }
         if !query.is_empty() {

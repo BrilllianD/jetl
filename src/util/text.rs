@@ -5,10 +5,10 @@ use unicode_width::UnicodeWidthStr;
 /// Display width of a grapheme cluster in terminal cells.
 /// Tabs are handled by the caller because their width depends on the column.
 pub fn grapheme_width(g: &str) -> usize {
-    if let Some(c) = g.chars().next() {
-        if c.is_control() {
-            return 2; // rendered as ^X
-        }
+    if let Some(c) = g.chars().next()
+        && c.is_control()
+    {
+        return 2; // rendered as ^X
     }
     g.width()
 }

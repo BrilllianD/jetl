@@ -234,16 +234,16 @@ impl Dialog {
                         DialogKind::Choice { .. } => Some(DialogResult::Cancel),
                     };
                 }
-                if let DialogKind::Choice { list, .. } = &mut self.kind {
-                    if let Some(row) = list.hit(self.list_rect, m.x, m.y) {
-                        let f = self.filtered();
-                        if m.clicks >= 2 {
-                            return f.get(row).map(|i| DialogResult::Choice(*i));
-                        }
-                        let DialogKind::Choice { list, .. } = &mut self.kind else { unreachable!() };
-                        list.select(row);
-                        return None;
+                if let DialogKind::Choice { list, .. } = &mut self.kind
+                    && let Some(row) = list.hit(self.list_rect, m.x, m.y)
+                {
+                    let f = self.filtered();
+                    if m.clicks >= 2 {
+                        return f.get(row).map(|i| DialogResult::Choice(*i));
                     }
+                    let DialogKind::Choice { list, .. } = &mut self.kind else { unreachable!() };
+                    list.select(row);
+                    return None;
                 }
                 if let DialogKind::Input { input, .. } = &mut self.kind {
                     input.click(self.body_rect, m.x, m.y);
@@ -354,8 +354,7 @@ impl Dialog {
                 let f = filter.text.to_lowercase();
                 let filtered: Vec<usize> =
                     items.iter().enumerate().filter(|(_, s)| f.is_empty() || s.to_lowercase().contains(&f)).map(|(i, _)| i).collect();
-                list.set_len(filtered.len());
-                list.set_viewport(lrect.height as usize);
+                list.fit(filtered.len(), lrect.height as usize);
                 for (vi, idx) in filtered.iter().enumerate().skip(list.offset).take(lrect.height as usize) {
                     let y = lrect.y + (vi - list.offset) as u16;
                     let st = if vi == list.selected { theme.list_selected } else { Style::default().fg(theme.fg).bg(theme.popup_bg) };

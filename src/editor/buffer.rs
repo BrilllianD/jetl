@@ -1044,9 +1044,9 @@ mod tests {
             assert_eq!(buf.text(), snapshots[i], "undo step {i}");
         }
         assert!(!buf.undo());
-        for i in 1..=steps {
+        for (i, snap) in snapshots.iter().enumerate().skip(1) {
             assert!(buf.redo());
-            assert_eq!(buf.text(), snapshots[i], "redo step {i}");
+            assert_eq!(buf.text(), *snap, "redo step {i}");
         }
         assert!(!buf.redo());
     }

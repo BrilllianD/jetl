@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use super::{App, Ctx};
-use crate::event::{AppMsg, Effect, Level};
+use crate::event::{AppMsg, Level};
 use crate::git::{BlobWhich, GitMsg, GitOp, GitRequest};
 use crate::ui::dialog::{Dialog, DialogId};
 use crate::ui::focus::PanelId;
@@ -13,8 +13,6 @@ impl App {
     pub(super) fn handle_msg(&mut self, msg: AppMsg) {
         self.dirty_frame = true;
         match msg {
-            AppMsg::Notify { level, text } => self.notify(level, text),
-            AppMsg::SwitchRoot(p) => self.apply_effects(vec![Effect::SwitchRoot(p)]),
             AppMsg::FileLoaded { generation, path, result, focus } => {
                 if generation == self.git.generation {
                     self.file_loaded(path, result, focus);
@@ -22,7 +20,6 @@ impl App {
                     tracing::debug!("dropping stale load of {}", path.display());
                 }
             }
-            AppMsg::FileSaved { .. } => {}
             AppMsg::Git(m) => self.on_git_msg(m),
             AppMsg::Worktrees { generation, result } => {
                 if generation == self.git.generation {
@@ -79,11 +76,17 @@ impl App {
                             p.set_branches(list.clone());
                         }
                         self.git_panel.branches = list;
+                        self.branches_error_shown = false;
                         if worktree {
                             self.open_existing_branch_dialog();
                         }
                     }
-                    Err(e) if palette.is_some() || worktree => self.notify(Level::Error, format!("Branches: {e:#}")),
+                    // The worktree flow asked for this list; an open palette
+                    // reloads it on every refresh, so it reports once.
+                    Err(e) if worktree || (palette.is_some() && !self.branches_error_shown) => {
+                        self.branches_error_shown = true;
+                        self.notify(Level::Error, format!("Branches: {e:#}"));
+                    }
                     Err(_) => {}
                 }
             }
@@ -99,10 +102,7 @@ impl App {
     }
 
     pub(super) fn git_op_done(&mut self, op: GitOp, label: String, ok: bool, output: String) {
-        // Staging is too chatty for the console unless it failed.
-        if !ok || !matches!(op, GitOp::Stage | GitOp::Unstage) {
-            self.git_panel.log_op(&label, ok, &output);
-        }
+        self.git_panel.log_op(&label, ok, &output);
         if self.worktree_op_done(&op, ok, &output) {
             // Reported (or a follow-up dialog opened) by the worktree flow.
         } else if ok {

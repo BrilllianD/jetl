@@ -505,10 +505,11 @@ impl Syntax {
     /// Highlights for `rows` lines starting at `first_line`.
     pub fn highlights(&mut self, rope: &Rope, first_line: usize, rows: usize) -> Highlights {
         let key = (first_line as u64) << 32 | rows as u64;
-        if let Some((k, h)) = &self.cache {
-            if *k == key && !self.dirty {
-                return h.clone();
-            }
+        if let Some((k, h)) = &self.cache
+            && *k == key
+            && !self.dirty
+        {
+            return h.clone();
         }
         self.reparse(rope);
         let Some(tree) = &self.tree else { return Highlights::default() };

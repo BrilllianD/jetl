@@ -31,21 +31,22 @@ pub fn render(app: &mut App, frame: &mut Frame) {
 
     tool_strip::render(app, frame, rects.strip);
 
-    if let (Some(tw), r) = (app.layout.left, rects.left) {
-        if r.width > 0 {
-            let focused = app.focus.is(tw.panel());
-            match tw.panel() {
-                PanelId::Project => app.project.render(frame, r, focused, &theme),
-                PanelId::Worktrees => app.worktrees.render(frame, r, focused, &theme),
-                _ => {}
-            }
+    if let (Some(tw), r) = (app.layout.left, rects.left)
+        && r.width > 0
+    {
+        let focused = app.focus.is(tw.panel());
+        match tw.panel() {
+            PanelId::Project => app.project.render(frame, r, focused, &theme),
+            PanelId::Worktrees => app.worktrees.render(frame, r, focused, &theme),
+            _ => {}
         }
     }
-    if let (Some(tw), r) = (app.layout.bottom, rects.bottom) {
-        if r.height > 0 && tw.panel() == PanelId::Git {
-            let focused = app.focus.is(PanelId::Git);
-            app.git_panel.render(frame, r, focused, &theme);
-        }
+    if let (Some(tw), r) = (app.layout.bottom, rects.bottom)
+        && r.height > 0
+        && tw.panel() == PanelId::Git
+    {
+        let focused = app.focus.is(PanelId::Git);
+        app.git_panel.render(frame, r, focused, &theme);
     }
 
     for (_, r) in &rects.splitters {

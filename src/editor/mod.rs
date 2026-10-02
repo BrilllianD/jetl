@@ -556,10 +556,10 @@ impl Editor {
                 return true;
             }
             E::Switcher => {
-                if let Some(id) = self.mru.get(1).copied() {
-                    if let Some(i) = self.buffers.iter().position(|b| b.id == id) {
-                        self.activate_index(i);
-                    }
+                if let Some(id) = self.mru.get(1).copied()
+                    && let Some(i) = self.buffers.iter().position(|b| b.id == id)
+                {
+                    self.activate_index(i);
                 }
                 return true;
             }
@@ -937,10 +937,11 @@ impl Editor {
         };
         let out = view::render(&mut self.buffers[i], frame.buffer_mut(), text_rect, &opts);
         self.text_area = out.text_area;
-        if focused && !bar_focused {
-            if let Some((x, y)) = out.cursor {
-                frame.set_cursor_position((x, y));
-            }
+        if focused
+            && !bar_focused
+            && let Some((x, y)) = out.cursor
+        {
+            frame.set_cursor_position((x, y));
         }
     }
 

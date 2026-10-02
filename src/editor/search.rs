@@ -136,10 +136,10 @@ impl SearchState {
             ch += len;
         }
         self.compiled = Some(re);
-        if let Some(c) = self.current {
-            if c >= self.matches.len() {
-                self.current = None;
-            }
+        if let Some(c) = self.current
+            && c >= self.matches.len()
+        {
+            self.current = None;
         }
         true
     }

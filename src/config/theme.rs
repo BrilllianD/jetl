@@ -129,9 +129,9 @@ impl Theme {
             if let Some(s) = self.syntax.get(n) {
                 return Some(*s);
             }
-            match n.rfind('.') {
-                Some(i) => n = &n[..i],
-                None => return None,
+            {
+                let i = n.rfind('.')?;
+                n = &n[..i]
             }
         }
     }
@@ -349,11 +349,12 @@ impl Theme {
     fn apply_syntax(&mut self, prefix: &str, table: &toml::Table, errors: &mut Vec<String>) {
         for (k, v) in table {
             let name = if prefix.is_empty() { k.clone() } else { format!("{prefix}.{k}") };
-            if let toml::Value::Table(t) = v {
-                if !t.is_empty() && !t.keys().all(|key| SPEC_KEYS.contains(&key.as_str())) {
-                    self.apply_syntax(&name, t, errors);
-                    continue;
-                }
+            if let toml::Value::Table(t) = v
+                && !t.is_empty()
+                && !t.keys().all(|key| SPEC_KEYS.contains(&key.as_str()))
+            {
+                self.apply_syntax(&name, t, errors);
+                continue;
             }
             match StyleSpec::parse(v) {
                 Ok(spec) => {

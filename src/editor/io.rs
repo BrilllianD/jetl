@@ -39,7 +39,10 @@ impl Editor {
             b.follow_key = Some((b.sel.head, b.version, w, h));
         }
         match write_atomic(&path, &b.text()) {
-            Ok(()) => {
+            Ok(perm_err) => {
+                if let Some(e) = perm_err {
+                    cx.notify(Level::Warn, format!("{}: file mode not kept: {e}", b.name));
+                }
                 b.mark_saved();
                 b.disk_mtime = buffer::file_mtime(&path);
                 b.autosave_failed = None;
@@ -119,7 +122,9 @@ pub(super) fn idle_autosave_due(mode: Autosave, last_edit: Instant, now: Instant
 }
 
 /// Write via a temp file in the same directory, then rename over the target.
-pub(super) fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
+/// The written file keeps the original's permissions; failing to copy them
+/// does not fail the save and comes back as `Ok(Some(error))`.
+pub(super) fn write_atomic(path: &Path, text: &str) -> std::io::Result<Option<std::io::Error>> {
     use std::io::Write;
     let dir = path.parent().unwrap_or(Path::new("."));
     let tmp = dir.join(format!(".{}.jetl-tmp", path.file_name().map(|n| n.to_string_lossy()).unwrap_or_default()));
@@ -129,8 +134,7 @@ pub(super) fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
         f.sync_all()?;
     }
     // Preserve permissions of the original file when it exists.
-    if let Ok(meta) = std::fs::metadata(path) {
-        let _ = std::fs::set_permissions(&tmp, meta.permissions());
-    }
-    std::fs::rename(&tmp, path)
+    let perm_err = std::fs::metadata(path).ok().and_then(|meta| std::fs::set_permissions(&tmp, meta.permissions()).err());
+    std::fs::rename(&tmp, path)?;
+    Ok(perm_err)
 }

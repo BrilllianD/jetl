@@ -402,11 +402,7 @@ impl Palette {
         // Results.
         let lrect = Rect::new(inner.x, y, inner.width, inner.bottom().saturating_sub(y));
         self.list_rect = lrect;
-        // Set the viewport without `clamp`, which would pull a wheel-scrolled
-        // view back to the selection.
-        self.list.viewport = lrect.height as usize;
-        let max = self.list.len.saturating_sub(self.list.viewport);
-        self.list.offset = self.list.offset.min(max);
+        self.list.fit(self.list.len, lrect.height as usize);
         if self.rows.is_empty() {
             let msg = if self.source() == Source::Files && self.files_loading { "Indexing files…" } else { "Nothing found" };
             frame.buffer_mut().set_stringn(lrect.x + 2, lrect.y, msg, lrect.width.saturating_sub(2) as usize, theme.dim.bg(theme.popup_bg));

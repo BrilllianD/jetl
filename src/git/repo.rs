@@ -251,11 +251,11 @@ pub fn branches(root: &Path) -> Result<Vec<BranchInfo>> {
         let (mut upstream, mut ahead, mut behind) = (None, 0, 0);
         if let Ok(up) = b.upstream() {
             upstream = up.name().ok().flatten().map(str::to_string);
-            if let (Some(l), Some(u)) = (b.get().target(), up.get().target()) {
-                if let Ok((a, bh)) = repo.graph_ahead_behind(l, u) {
-                    ahead = a;
-                    behind = bh;
-                }
+            if let (Some(l), Some(u)) = (b.get().target(), up.get().target())
+                && let Ok((a, bh)) = repo.graph_ahead_behind(l, u)
+            {
+                ahead = a;
+                behind = bh;
             }
         }
         out.push(BranchInfo { name, upstream, ahead, behind, current });

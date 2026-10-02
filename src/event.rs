@@ -13,10 +13,6 @@ pub enum Level {
 
 #[derive(Debug)]
 pub enum AppMsg {
-    Notify {
-        level: Level,
-        text: String,
-    },
     /// A file read for a new tab, tagged with the git generation at the time
     /// of the request so loads from a previous root are dropped.
     FileLoaded {
@@ -24,10 +20,6 @@ pub enum AppMsg {
         path: PathBuf,
         result: std::io::Result<Vec<u8>>,
         focus: bool,
-    },
-    FileSaved {
-        path: PathBuf,
-        result: std::io::Result<()>,
     },
     Git(crate::git::GitMsg),
     /// `git worktree list`, tagged with the git generation like `GitMsg`.
@@ -42,7 +34,6 @@ pub enum AppMsg {
         session: crate::workspace::Session,
         files: Vec<std::io::Result<Vec<u8>>>,
     },
-    SwitchRoot(PathBuf),
     /// The palette's file walk of the root, tagged with the git generation.
     FileIndex {
         generation: u64,

@@ -7,7 +7,6 @@ use crossterm::event::{MouseButton, MouseEventKind};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
-use unicode_width::UnicodeWidthStr;
 
 use crate::actions::TreeAction;
 use crate::app::Ctx;
@@ -109,14 +108,15 @@ impl ProjectPanel {
             let old: HashMap<PathBuf, Node> = nodes.drain(..).map(|n| (n.path.clone(), n)).collect();
             let mut fresh = read_children(dir, show_hidden, show_ignored);
             for n in &mut fresh {
-                if let Some(o) = old.get(&n.path) {
-                    if o.is_dir && o.expanded {
-                        n.expanded = true;
-                        n.children = Some(Vec::new());
-                        let mut kids = o.children.clone().unwrap_or_default();
-                        reload(&mut kids, &n.path, show_hidden, show_ignored);
-                        n.children = Some(kids);
-                    }
+                if let Some(o) = old.get(&n.path)
+                    && o.is_dir
+                    && o.expanded
+                {
+                    n.expanded = true;
+                    n.children = Some(Vec::new());
+                    let mut kids = o.children.clone().unwrap_or_default();
+                    reload(&mut kids, &n.path, show_hidden, show_ignored);
+                    n.children = Some(kids);
                 }
             }
             *nodes = fresh;
@@ -132,10 +132,11 @@ impl ProjectPanel {
         fn walk(nodes: &[Node], depth: usize, out: &mut Vec<Row>) {
             for n in nodes {
                 out.push(Row { path: n.path.clone(), name: n.name.clone(), is_dir: n.is_dir, expanded: n.expanded, depth });
-                if n.is_dir && n.expanded {
-                    if let Some(c) = &n.children {
-                        walk(c, depth + 1, out);
-                    }
+                if n.is_dir
+                    && n.expanded
+                    && let Some(c) = &n.children
+                {
+                    walk(c, depth + 1, out);
                 }
             }
         }
@@ -151,12 +152,12 @@ impl ProjectPanel {
                 if n.path == path {
                     return Some(n);
                 }
-                if n.is_dir && path.starts_with(&n.path) {
-                    if let Some(c) = &mut n.children {
-                        if let Some(f) = find(c, path) {
-                            return Some(f);
-                        }
-                    }
+                if n.is_dir
+                    && path.starts_with(&n.path)
+                    && let Some(c) = &mut n.children
+                    && let Some(f) = find(c, path)
+                {
+                    return Some(f);
                 }
             }
             None
@@ -239,10 +240,10 @@ impl ProjectPanel {
             }
             TreeAction::Parent => self.go_parent(),
             TreeAction::Toggle => {
-                if let Some(r) = self.selected_row().cloned() {
-                    if r.is_dir {
-                        self.set_expanded(&r.path, !r.expanded);
-                    }
+                if let Some(r) = self.selected_row().cloned()
+                    && r.is_dir
+                {
+                    self.set_expanded(&r.path, !r.expanded);
                 }
             }
             TreeAction::Open => self.open_or_toggle(cx),
@@ -337,7 +338,6 @@ impl ProjectPanel {
             if x < inner.right() {
                 screen.set_stringn(x, y, &r.name, (inner.right() - x) as usize, name_style);
             }
-            let _ = r.name.width();
         }
     }
 }
