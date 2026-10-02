@@ -37,6 +37,8 @@ auto_close = true              # type brackets and quotes in pairs, step over cl
 highlight_occurrences = true   # highlight the word at the caret (or the selected text) elsewhere on screen
 trim_trailing_whitespace = true # on save, strip trailing spaces and tabs (not on the caret line, never in Markdown)
 final_newline = true           # on save, end a non-empty file with a line break
+autosave = "off"               # "off", "focus" (save when the terminal loses focus) or "idle" (save after a pause in editing)
+autosave_idle_ms = 1500        # pause before an "idle" autosave
 
 [ui]
 theme = "darcula"              # reserved; Darcula is the only built-in theme (use theme.toml to change colors)
@@ -62,6 +64,14 @@ mode = "default"               # "vim" turns on the [mode.*] keymap tables (rese
 show_hidden = true             # show dot files in the Project tree and Go to File
 show_ignored = false           # show files ignored by .gitignore in the Project tree and Go to File
 ```
+
+Autosave writes every modified tab that has a file, silently (errors are
+still shown), and applies `trim_trailing_whitespace` and `final_newline` like
+Ctrl+S. It skips untitled tabs, files that were not valid UTF-8 (saving would
+re-encode them), and files changed on disk since they were opened or last
+saved; Ctrl+S still saves those. After a failed write it waits for the next
+edit before retrying. `"focus"` needs focus reporting from the terminal; under
+tmux that means `set -g focus-events on`.
 
 ## keymap.toml
 

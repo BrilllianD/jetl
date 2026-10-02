@@ -45,7 +45,8 @@ pub enum Effect {
     /// A git operation or query for the app to run through `GitService`.
     Git(crate::git::GitRequest),
     Dialog(crate::ui::dialog::Dialog),
-    FileSaved(PathBuf),
+    /// `quiet` (autosave) skips the "Saved" toast.
+    FileSaved { path: PathBuf, quiet: bool },
     Clipboard(String),
     Quit,
 }

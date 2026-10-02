@@ -11,6 +11,7 @@ pub mod undo;
 pub mod view;
 
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind};
 use ratatui::Frame;
@@ -20,7 +21,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::actions::EditorAction;
 use crate::app::Ctx;
-use crate::config::Config;
+use crate::config::{Autosave, Config};
 use crate::config::theme::Theme;
 use crate::event::{Effect, Level, Mouse};
 use crate::ui::dialog::{Dialog, DialogId};
@@ -90,6 +91,10 @@ pub struct Editor {
     highlight_occurrences: bool,
     trim_trailing_whitespace: bool,
     final_newline: bool,
+    autosave: Autosave,
+    autosave_idle: Duration,
+    /// When a buffer version last changed, as seen by [`Editor::autosave_due`].
+    last_edit: Instant,
     clipboard: String,
     drag: Option<DragMode>,
     /// Files larger than this open without syntax highlighting.
@@ -117,6 +122,9 @@ impl Editor {
             highlight_occurrences: config.editor.highlight_occurrences,
             trim_trailing_whitespace: config.editor.trim_trailing_whitespace,
             final_newline: config.editor.final_newline,
+            autosave: config.editor.autosave,
+            autosave_idle: Duration::from_millis(config.editor.autosave_idle_ms),
+            last_edit: Instant::now(),
             clipboard: String::new(),
             drag: None,
             max_highlight_bytes: config.editor.max_highlight_bytes,
@@ -158,8 +166,10 @@ impl Editor {
         let id = self.next_id;
         self.next_id += 1;
         let syntax = if text.len() <= self.max_highlight_bytes { syntax::Syntax::for_path(&path, theme) } else { None };
+        let mtime = buffer::file_mtime(&path);
         let mut buf = Buffer::from_text(id, Some(path), text, lossy);
         buf.syntax = syntax;
+        buf.disk_mtime = mtime;
         // JetBrains inserts the new tab right after the active one.
         let at = self.active.map(|a| a + 1).unwrap_or(self.buffers.len()).min(self.buffers.len());
         self.buffers.insert(at, buf);
@@ -250,6 +260,11 @@ impl Editor {
     /// Write buffer `i` to disk atomically. Synchronous on purpose: saves are
     /// small and the result must be known before quitting.
     pub fn save(&mut self, i: usize, cx: &mut Ctx) -> bool {
+        self.write(i, cx, false)
+    }
+
+    /// [`Editor::save`]; `quiet` drops the "Saved" toast (errors still show).
+    fn write(&mut self, i: usize, cx: &mut Ctx, quiet: bool) -> bool {
         let (trim, final_newline) = (self.trim_trailing_whitespace, self.final_newline);
         let Some(b) = self.buffers.get_mut(i) else { return false };
         let Some(path) = b.path.clone() else {
@@ -259,15 +274,25 @@ impl Editor {
         if !b.dirty() {
             return true;
         }
+        // Trimming other lines leaves the caret line where it was, so a view
+        // that was following the caret need not scroll back to it (autosave
+        // must not undo wheel scrolling).
+        let follow = b.follow_key.filter(|k| (k.0, k.1) == (b.sel.head, b.version));
         b.prepare_for_save(trim, final_newline);
+        if let Some((_, _, w, h)) = follow {
+            b.follow_key = Some((b.sel.head, b.version, w, h));
+        }
         match write_atomic(&path, &b.text()) {
             Ok(()) => {
                 b.mark_saved();
+                b.disk_mtime = buffer::file_mtime(&path);
+                b.autosave_failed = None;
+                b.autosave_conflict = false;
                 if b.lossy {
                     cx.notify(Level::Warn, format!("{} was not valid UTF-8; saved re-encoded as UTF-8", b.name));
                     b.lossy = false;
                 }
-                cx.effects.push(Effect::FileSaved(path));
+                cx.effects.push(Effect::FileSaved { path, quiet });
                 true
             }
             Err(e) => {
@@ -285,6 +310,49 @@ impl Editor {
             }
         }
         ok
+    }
+
+    /// Save every buffer [`Buffer::autosave_candidate`] allows, without the
+    /// "Saved" toast. A file changed on disk since it was loaded or saved is
+    /// left alone (with a warning) until an explicit save; a failed write is
+    /// not retried before the buffer's next edit.
+    pub fn autosave(&mut self, cx: &mut Ctx) {
+        for i in 0..self.buffers.len() {
+            let b = &mut self.buffers[i];
+            if !b.autosave_candidate() {
+                continue;
+            }
+            if b.changed_on_disk() {
+                b.autosave_conflict = true;
+                cx.notify(Level::Warn, format!("{} changed on disk; not autosaving it (save explicitly to overwrite)", b.name));
+                continue;
+            }
+            if !self.write(i, cx, true) {
+                let b = &mut self.buffers[i];
+                b.autosave_failed = Some(b.version);
+            }
+        }
+    }
+
+    /// Whether `editor.autosave = "focus"`.
+    pub fn autosave_on_focus_lost(&self) -> bool {
+        self.autosave == Autosave::Focus
+    }
+
+    /// Note buffer edits since the last call (the app tick) and say whether
+    /// an idle autosave is due.
+    pub fn autosave_due(&mut self, now: Instant) -> bool {
+        if self.autosave != Autosave::Idle {
+            return false;
+        }
+        for b in &mut self.buffers {
+            if b.autosave_seen != b.version {
+                b.autosave_seen = b.version;
+                self.last_edit = now;
+            }
+        }
+        let any = self.buffers.iter().any(Buffer::autosave_candidate);
+        idle_autosave_due(self.autosave, self.last_edit, now, self.autosave_idle, any)
     }
 
     pub fn goto_line(&mut self, line: usize, col: usize) {
@@ -355,6 +423,8 @@ impl Editor {
             }
             let Ok(bytes) = std::fs::read(&path) else { continue };
             let Ok(text) = String::from_utf8(bytes) else { continue };
+            b.disk_mtime = buffer::file_mtime(&path);
+            b.autosave_conflict = false;
             let old = b.text();
             if old == text {
                 continue;
@@ -1104,6 +1174,12 @@ fn render_find_bar(frame: &mut Frame, area: Rect, s: &mut SearchState, focused: 
 }
 
 /// Write via a temp file in the same directory, then rename over the target.
+/// An idle autosave is due once `idle` has passed since the last edit and
+/// some buffer can be autosaved.
+fn idle_autosave_due(mode: Autosave, last_edit: Instant, now: Instant, idle: Duration, any_dirty: bool) -> bool {
+    mode == Autosave::Idle && any_dirty && now.saturating_duration_since(last_edit) >= idle
+}
+
 fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
     use std::io::Write;
     let dir = path.parent().unwrap_or(Path::new("."));
@@ -1318,5 +1394,70 @@ mod tests {
             ed.handle_action(&EditorAction::InsertNewline, cx);
         });
         assert_eq!(ed.active_buffer().unwrap().text(), "def f():\n    ");
+    }
+
+    #[test]
+    fn idle_autosave_waits_for_the_pause() {
+        let t0 = Instant::now();
+        let idle = Duration::from_millis(1500);
+        let at = |ms| t0 + Duration::from_millis(ms);
+        assert!(!idle_autosave_due(Autosave::Idle, t0, at(1499), idle, true));
+        assert!(idle_autosave_due(Autosave::Idle, t0, at(1500), idle, true));
+        assert!(!idle_autosave_due(Autosave::Idle, t0, at(5000), idle, false), "nothing to save");
+        assert!(!idle_autosave_due(Autosave::Off, t0, at(5000), idle, true));
+        assert!(!idle_autosave_due(Autosave::Focus, t0, at(5000), idle, true));
+        // A clock that appears to run backwards is not a pause.
+        assert!(!idle_autosave_due(Autosave::Idle, at(10), t0, idle, true));
+    }
+
+    #[test]
+    fn autosave_is_quiet_and_holds_back_on_conflict_and_failure() {
+        let dir = std::env::temp_dir().join(format!("jetl-test-autosave-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("a.txt");
+        std::fs::write(&path, "one\n").unwrap();
+        let mut ed = Editor::new(&Config::default());
+        ed.open_text(path.clone(), "one\n", false, &Theme::default());
+        let (config, theme, workspace) = (Config::default(), Theme::default(), Workspace::new(dir.clone()));
+        let (bus, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut cx = Ctx { effects: Vec::new(), config: &config, theme: &theme, workspace: &workspace, bus };
+
+        ed.buffers[0].insert("x", TxKind::Typing);
+        ed.autosave(&mut cx);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "xone\n");
+        assert!(!ed.buffers[0].dirty());
+        assert!(matches!(cx.effects.as_slice(), [Effect::FileSaved { quiet: true, .. }]));
+
+        // Changed on disk under unsaved edits: warn once, keep the disk text.
+        std::thread::sleep(Duration::from_millis(20));
+        std::fs::write(&path, "theirs\n").unwrap();
+        cx.effects.clear();
+        ed.buffers[0].insert("y", TxKind::Typing);
+        ed.autosave(&mut cx);
+        ed.autosave(&mut cx);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "theirs\n");
+        assert_eq!(cx.effects.iter().filter(|e| matches!(e, Effect::Notify(Level::Warn, _))).count(), 1);
+        assert!(!ed.buffers[0].autosave_candidate());
+        // An explicit save overwrites and lifts the hold.
+        assert!(ed.save(0, &mut cx));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "xyone\n");
+        assert!(!ed.buffers[0].autosave_conflict);
+
+        // A failed write waits for the next edit.
+        let _ = std::fs::remove_dir_all(&dir);
+        ed.buffers[0].insert("z", TxKind::Typing);
+        assert!(ed.buffers[0].autosave_candidate());
+        ed.buffers[0].disk_mtime = None;
+        ed.autosave(&mut cx);
+        assert!(ed.buffers[0].dirty());
+        assert!(!ed.buffers[0].autosave_candidate());
+        ed.buffers[0].insert("w", TxKind::Typing);
+        assert!(ed.buffers[0].autosave_candidate());
+
+        // Untitled buffers are never candidates.
+        let mut untitled = Buffer::from_text(9, None, "", false);
+        untitled.insert("q", TxKind::Typing);
+        assert!(!untitled.autosave_candidate());
     }
 }

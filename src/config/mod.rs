@@ -89,6 +89,21 @@ pub struct EditorConfig {
     pub highlight_occurrences: bool,
     pub trim_trailing_whitespace: bool,
     pub final_newline: bool,
+    pub autosave: Autosave,
+    pub autosave_idle_ms: u64,
+}
+
+/// When dirty buffers with a path are written without Ctrl+S.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Autosave {
+    #[default]
+    Off,
+    /// When the terminal loses focus (needs focus reporting, which most
+    /// terminals and tmux with `focus-events on` provide).
+    Focus,
+    /// After `autosave_idle_ms` without edits.
+    Idle,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -131,7 +146,7 @@ pub struct FilesConfig {
 
 impl Default for EditorConfig {
     fn default() -> Self {
-        Self { tab_width: 4, max_highlight_bytes: 2 * 1024 * 1024, scrolloff: 3, hscrolloff: 5, cjk_ambiguous_wide: false, auto_close: true, highlight_occurrences: true, trim_trailing_whitespace: true, final_newline: true }
+        Self { tab_width: 4, max_highlight_bytes: 2 * 1024 * 1024, scrolloff: 3, hscrolloff: 5, cjk_ambiguous_wide: false, auto_close: true, highlight_occurrences: true, trim_trailing_whitespace: true, final_newline: true, autosave: Autosave::Off, autosave_idle_ms: 1500 }
     }
 }
 impl Default for UiConfig {
@@ -211,6 +226,9 @@ mod tests {
         assert_eq!(cfg.editor.scrolloff, EditorConfig::default().scrolloff);
         assert!(!cfg.worktree.switch_closes_tabs);
         assert_eq!(cfg.git.pull_mode, "ff-only");
+        assert_eq!(cfg.editor.autosave, Autosave::Off);
+        assert_eq!(Config::parse("[editor]\nautosave = \"idle\"\n").unwrap().editor.autosave, Autosave::Idle);
+        assert!(Config::parse("[editor]\nautosave = \"Idle\"\n").is_err());
     }
 
     #[test]

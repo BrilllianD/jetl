@@ -290,6 +290,18 @@ impl App {
         if self.git.is_busy() {
             self.dirty_frame = true;
         }
+        if self.editor.autosave_due(Instant::now()) {
+            self.autosave();
+        }
+    }
+
+    fn autosave(&mut self) {
+        let mut cx = ctx!(self);
+        self.editor.autosave(&mut cx);
+        let fx = cx.effects;
+        self.apply_effects(fx);
+        // The tab's dirty mark changes.
+        self.dirty_frame = true;
     }
 
     fn handle_msg(&mut self, msg: AppMsg) {
@@ -337,7 +349,11 @@ impl App {
                 self.dirty_frame = true;
                 self.apply_effects(vec![Effect::GitRefresh]);
             }
-            Event::FocusLost => {}
+            Event::FocusLost => {
+                if self.editor.autosave_on_focus_lost() {
+                    self.autosave();
+                }
+            }
         }
     }
 
@@ -734,8 +750,10 @@ impl App {
                 }
                 Effect::OpenFile(p) => self.open_file(p, true),
                 Effect::Dialog(d) => self.dialog = Some(d),
-                Effect::FileSaved(p) => {
-                    self.notify(Level::Info, format!("Saved {}", p.file_name().map(|n| n.to_string_lossy()).unwrap_or_default()));
+                Effect::FileSaved { path: p, quiet } => {
+                    if !quiet {
+                        self.notify(Level::Info, format!("Saved {}", p.file_name().map(|n| n.to_string_lossy()).unwrap_or_default()));
+                    }
                     self.project.refresh();
                     self.git.refresh_status();
                 }

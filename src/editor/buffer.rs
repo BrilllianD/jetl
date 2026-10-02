@@ -70,6 +70,16 @@ pub struct Buffer {
     /// is still the produced one, so selection changes made elsewhere (mouse,
     /// undo) cannot restore a stale range. Cleared on every edit.
     pub expand_stack: Vec<(Selection, Selection)>,
+    /// Modification time of the file when it was loaded or last saved;
+    /// autosave refuses to write over a file that changed since.
+    pub disk_mtime: Option<std::time::SystemTime>,
+    /// Version the editor's idle autosave timer last saw.
+    pub autosave_seen: u64,
+    /// Version at which an autosave failed; no retry until the next edit.
+    pub autosave_failed: Option<u64>,
+    /// The file changed on disk under unsaved edits; no autosave until an
+    /// explicit save.
+    pub autosave_conflict: bool,
 }
 
 impl Buffer {
@@ -101,11 +111,30 @@ impl Buffer {
             search: None,
             follow_key: None,
             expand_stack: Vec::new(),
+            disk_mtime: None,
+            autosave_seen: 0,
+            autosave_failed: None,
+            autosave_conflict: false,
         }
     }
 
     pub fn dirty(&self) -> bool {
         self.undo.state_id() != self.saved_state
+    }
+
+    /// Modified, has a file, and nothing holds autosave back. Files that
+    /// were not valid UTF-8 are left to an explicit save, which re-encodes.
+    pub fn autosave_candidate(&self) -> bool {
+        self.path.is_some() && self.dirty() && !self.lossy && !self.autosave_conflict && self.autosave_failed != Some(self.version)
+    }
+
+    /// Whether the file's modification time differs from the one recorded at
+    /// load or the last save (a vanished file counts as changed).
+    pub fn changed_on_disk(&self) -> bool {
+        match (&self.path, self.disk_mtime) {
+            (Some(path), Some(m)) => file_mtime(path) != Some(m),
+            _ => false,
+        }
     }
 
     pub fn len_chars(&self) -> usize {
@@ -770,6 +799,10 @@ impl Buffer {
         let ext = self.path.as_deref().and_then(|p| p.extension()).and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase());
         self.language().is_some_and(|d| d.name == "markdown") || matches!(ext.as_deref(), Some("md" | "markdown"))
     }
+}
+
+pub fn file_mtime(path: &std::path::Path) -> Option<std::time::SystemTime> {
+    std::fs::metadata(path).and_then(|m| m.modified()).ok()
 }
 
 /// Map position `p` through `changes`. With `stay_at_insert`, a position
