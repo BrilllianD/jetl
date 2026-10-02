@@ -4,6 +4,7 @@ pub mod brackets;
 pub mod buffer;
 pub mod expand;
 pub mod gutter;
+pub mod indent;
 pub mod nav;
 pub mod search;
 pub mod selection;
@@ -111,6 +112,9 @@ pub struct Editor {
     pending_nav: Option<(PathBuf, usize)>,
 }
 
+/// Indent dialog items: 0 is a tab, else that many spaces.
+const INDENT_CHOICES: [usize; 4] = [0, 2, 4, 8];
+
 /// A jump moving the caret by more than this many lines is remembered for
 /// back/forward.
 const NAV_JUMP_LINES: usize = 10;
@@ -174,7 +178,10 @@ impl Editor {
     }
 
     /// Add a loaded file as a new tab and make it active. Syntax
-    /// highlighting is attached only below `max_highlight_bytes`.
+    /// highlighting is attached only below `max_highlight_bytes`. The
+    /// indent and save options come from `.editorconfig` (looked up here,
+    /// once per open: a failed open per ancestor directory without one),
+    /// the text and the config.
     pub fn open_text(&mut self, path: PathBuf, text: &str, lossy: bool, theme: &Theme) -> usize {
         if let Some(i) = self.index_of(&path) {
             self.activate_index(i);
@@ -185,9 +192,16 @@ impl Editor {
         let syntax = if text.len() <= self.max_highlight_bytes { syntax::Syntax::for_path(&path, theme) } else { None };
         let mtime = buffer::file_mtime(&path);
         let pending = self.pending_nav.take_if(|(p, _)| *p == path).map(|(_, pos)| pos);
+        let settings = indent::FileSettings::for_path(&path);
         let mut buf = Buffer::from_text(id, Some(path), text, lossy);
         buf.syntax = syntax;
         buf.disk_mtime = mtime;
+        buf.indent = settings.indent(&buf.rope, self.tab_width);
+        // A file not on disk yet has no line ending of its own.
+        if let Some(le) = settings.end_of_line.filter(|_| mtime.is_none() && text.is_empty()) {
+            buf.line_ending = le;
+        }
+        buf.settings = settings;
         // JetBrains inserts the new tab right after the active one.
         let at = self.active.map(|a| a + 1).unwrap_or(self.buffers.len()).min(self.buffers.len());
         self.buffers.insert(at, buf);
@@ -385,6 +399,9 @@ impl Editor {
     fn write(&mut self, i: usize, cx: &mut Ctx, quiet: bool) -> bool {
         let (trim, final_newline) = (self.trim_trailing_whitespace, self.final_newline);
         let Some(b) = self.buffers.get_mut(i) else { return false };
+        // `.editorconfig` overrides the editor-wide options per file.
+        let trim = b.settings.trim_trailing_whitespace.unwrap_or(trim);
+        let final_newline = b.settings.insert_final_newline.unwrap_or(final_newline);
         let Some(path) = b.path.clone() else {
             cx.notify(Level::Error, "buffer has no file path");
             return false;
@@ -484,7 +501,7 @@ impl Editor {
     pub fn status_position(&self) -> Option<String> {
         let b = self.active_buffer()?;
         let (line, _) = b.cursor_line_col();
-        let col = view::visual_col(&b.rope, b.sel.head, self.tab_width);
+        let col = view::visual_col(&b.rope, b.sel.head, self.tab_display(b));
         let sel = b.sel.range();
         if sel.is_empty() {
             Some(format!("Ln {}, Col {}", line + 1, col + 1))
@@ -497,10 +514,33 @@ impl Editor {
         self.active_buffer().map(|b| b.line_ending.label().to_string())
     }
 
-    /// Indentation of the active buffer for the status bar; the editor-wide
-    /// tab width until buffers get their own indent settings.
+    /// Indentation of the active buffer for the status bar: "Tab" or
+    /// "N spaces".
     pub fn status_indent(&self) -> Option<String> {
-        self.active_buffer().map(|_| format!("{} spaces", self.tab_width))
+        self.active_buffer().map(|b| b.indent.label())
+    }
+
+    /// Columns per tab stop when drawing buffer `b`: `editor.tab_width`
+    /// unless its `.editorconfig` sets one.
+    fn tab_display(&self, b: &Buffer) -> usize {
+        b.settings.tab_display(b.indent).unwrap_or(self.tab_width)
+    }
+
+    /// Indent choices for the active buffer (status bar click); the items
+    /// match [`INDENT_CHOICES`].
+    pub fn indent_dialog(&self) -> Option<Dialog> {
+        let b = self.active_buffer()?;
+        let items = INDENT_CHOICES.iter().map(|w| if *w == 0 { "Tab".to_string() } else { format!("{w} spaces") }).collect();
+        Some(Dialog::choice(DialogId::Indent(b.id), "Indent", &format!("Indent with (now {}):", b.indent.label()), items))
+    }
+
+    /// Set buffer `id`'s indent to item `i` of [`Editor::indent_dialog`];
+    /// tabs keep the buffer's tab display width. The text is left as is.
+    pub fn set_indent(&mut self, id: BufferId, i: usize) {
+        let Some(&w) = INDENT_CHOICES.get(i) else { return };
+        let Some(bi) = self.buffers.iter().position(|b| b.id == id) else { return };
+        let tab = self.tab_display(&self.buffers[bi]);
+        self.buffers[bi].indent = if w == 0 { indent::IndentStyle::tabs(tab) } else { indent::IndentStyle::spaces(w) };
     }
 
     pub fn status_language(&self) -> Option<String> {
@@ -678,7 +718,6 @@ impl Editor {
         // Jumps far enough away are remembered for back/forward.
         let jump_from = if matches!(a, E::GotoBracket | E::FindNext | E::FindPrev) { self.active_buffer().map(nav_pos) } else { None };
         let rows = self.text_area.height as usize;
-        let tab_width = self.tab_width;
         let auto_close = self.auto_close;
         let Some(ai) = self.active else { return false };
         let b = &mut self.buffers[ai];
@@ -709,17 +748,17 @@ impl Editor {
             }
             E::InsertNewline => {
                 let colon = b.language().is_some_and(|d| d.indent_after_colon);
-                b.newline_smart(tab_width, colon);
+                b.newline_smart(colon);
             }
             E::InsertTab => {
                 let r = b.sel.range();
                 if b.rope.char_to_line(r.start) != b.rope.char_to_line(r.end) {
-                    b.indent_lines(tab_width);
+                    b.indent_lines();
                 } else {
-                    b.insert_tab(tab_width);
+                    b.insert_tab();
                 }
             }
-            E::Unindent => b.unindent_lines(tab_width),
+            E::Unindent => b.unindent_lines(),
             E::MoveLineUp => b.move_lines(true),
             E::MoveLineDown => b.move_lines(false),
             E::JoinLines => b.join_lines(),
@@ -1080,8 +1119,8 @@ impl Editor {
             }
         }
         let text_area = self.text_area;
-        let tab_width = self.tab_width;
         let Some(ai) = self.active else { return false };
+        let tab_width = self.tab_display(&self.buffers[ai]);
         let b = &mut self.buffers[ai];
         let pos_at = |b: &Buffer, x: u16, y: u16| -> usize {
             let row = y.saturating_sub(text_area.y) as usize;
@@ -1213,7 +1252,7 @@ impl Editor {
             bar_focused = focused && s.focused;
             self.find_hits = render_find_bar(frame, self.find_area, s, bar_focused, theme);
         }
-        let opts = RenderOpts { focused, tab_width: self.tab_width, scrolloff: self.scrolloff, hscrolloff: self.hscrolloff, occurrences: self.highlight_occurrences, theme };
+        let opts = RenderOpts { focused, tab_width: self.tab_display(&self.buffers[i]), scrolloff: self.scrolloff, hscrolloff: self.hscrolloff, occurrences: self.highlight_occurrences, theme };
         let out = view::render(&mut self.buffers[i], frame.buffer_mut(), text_rect, &opts);
         self.text_area = out.text_area;
         if focused && !bar_focused {
@@ -1718,5 +1757,40 @@ mod tests {
             ed.handle_action(&EditorAction::NavBack, cx);
             assert_eq!(caret(&ed).1, 2);
         });
+    }
+
+    #[test]
+    fn editorconfig_drives_indent_save_and_new_file_line_ending() {
+        let dir = std::env::temp_dir().join(format!("jetl-test-editor-ec-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(".editorconfig"), "root = true\n[*.c]\nindent_style = tab\ntab_width = 8\ntrim_trailing_whitespace = false\ninsert_final_newline = false\nend_of_line = crlf\n").unwrap();
+        let path = dir.join("a.c");
+        std::fs::write(&path, "int x;\n").unwrap();
+        let mut ed = Editor::new(&Config::default());
+        ed.open_text(path.clone(), "int x;\n", false, &Theme::default());
+        assert_eq!(ed.status_indent().as_deref(), Some("Tab"));
+        assert_eq!(ed.tab_display(&ed.buffers[0]), 8);
+        assert_eq!(ed.buffers[0].line_ending, buffer::LineEnding::Lf, "an existing file keeps its line ending");
+        with_cx(|cx| {
+            ed.buffers[0].goto_line(1, 0);
+            ed.handle_action(&EditorAction::InsertTab, cx);
+            ed.buffers[0].insert("y; ", TxKind::Typing);
+            ed.buffers[0].goto_line(0, 0);
+            assert!(ed.save(0, cx));
+        });
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "int x;\n\ty; ", "no trim, no final newline");
+        // A file not on disk yet takes the line ending; a 2-space file without
+        // settings detects its indent, and the dialog switches it.
+        ed.open_text(dir.join("new.c"), "", false, &Theme::default());
+        assert_eq!(ed.active_buffer().unwrap().line_ending, buffer::LineEnding::CrLf);
+        ed.open_text(dir.join("b.txt"), "a\n  b\n    c\n  d\n    e\n", false, &Theme::default());
+        assert_eq!(ed.status_indent().as_deref(), Some("2 spaces"));
+        let id = ed.active_buffer().unwrap().id;
+        ed.set_indent(id, 0);
+        assert_eq!(ed.active_buffer().unwrap().indent, indent::IndentStyle::tabs(4));
+        ed.set_indent(id, 3);
+        assert_eq!(ed.status_indent().as_deref(), Some("8 spaces"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

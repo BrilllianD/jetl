@@ -40,6 +40,8 @@ pub enum DialogId {
     LineEnding(crate::editor::buffer::BufferId),
     /// Language of the buffer: item 0 is plain text, `i` is `LANGUAGES[i - 1]`.
     Language(crate::editor::buffer::BufferId),
+    /// Indent of the buffer: item 0 is a tab, then 2, 4 and 8 spaces.
+    Indent(crate::editor::buffer::BufferId),
 }
 
 #[derive(Debug, Clone)]

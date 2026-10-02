@@ -46,6 +46,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2"
 anyhow = "1"
+ec4rs = "1.2"
 
 [features]
 default = ["lang-rust", "lang-js", "lang-ts", "lang-python", "lang-json", "lang-toml", "lang-bash", "lang-md", "lang-csharp", "lang-yaml", "lang-html", "lang-css", "lang-scss", "lang-xml"]

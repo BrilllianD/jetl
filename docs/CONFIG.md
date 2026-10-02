@@ -28,7 +28,7 @@ ignored. The full default file:
 
 ```toml
 [editor]
-tab_width = 4                  # columns per tab stop; Tab inserts spaces up to the next stop
+tab_width = 4                  # columns per tab stop and indent level when neither .editorconfig nor the file decides (see below)
 max_highlight_bytes = 2097152  # files above this size (2 MiB) open without syntax highlighting or gutter marks
 scrolloff = 3                  # lines kept visible above and below the caret
 hscrolloff = 5                 # columns kept visible left and right of the caret
@@ -72,6 +72,42 @@ re-encode them), and files changed on disk since they were opened or last
 saved; Ctrl+S still saves those. After a failed write it waits for the next
 edit before retrying. `"focus"` needs focus reporting from the terminal; under
 tmux that means `set -g focus-events on`.
+
+## Indentation and .editorconfig
+
+Each tab has its own indentation, shown in the status bar ("Tab" or
+"N spaces"; click it to switch between a tab and 2, 4 or 8 spaces for that
+tab). Tab, Enter after an opening bracket, indent and unindent use it: with
+tabs, Tab inserts a tab character and unindent removes one; with spaces, Tab
+inserts spaces up to the next stop and unindent removes up to one level of
+spaces (or a tab). When a file opens, its indentation comes from, in order:
+
+1. [EditorConfig](https://editorconfig.org): the `.editorconfig` files in
+   the file's directory and its ancestors, up to the filesystem root or the
+   first file with `root = true`. Closer files win over farther ones, later
+   sections over earlier ones; sections use EditorConfig globs (`[*]`,
+   `[*.rs]`, `[*.{yml,yaml}]`, `[lib/**.rs]`, ...).
+2. The file itself: tabs when more of its first 1000 lines start with a tab
+   than with spaces, otherwise the most common indent step of 2, 4 or 8
+   spaces when there is enough evidence.
+3. `editor.tab_width` spaces.
+
+Keys `.editorconfig` leaves unset are filled from the next source, so
+`indent_style = tab` alone keeps the tab width from `editor.tab_width`, and
+`indent_style = space` alone takes the size the file uses. The keys read:
+
+| Key | Effect |
+|---|---|
+| `indent_style` | `tab` or `space` |
+| `indent_size` | columns per level (`tab` means use `tab_width`) |
+| `tab_width` | display width of a tab in that file (also the level width with tabs) |
+| `end_of_line` | `lf` or `crlf`, for files that do not exist yet; existing files keep the line ending they have |
+| `trim_trailing_whitespace` | overrides `editor.trim_trailing_whitespace` for the file (Markdown is never trimmed) |
+| `insert_final_newline` | overrides `editor.final_newline` for the file |
+
+Without `tab_width` (or `indent_size` with tabs) in `.editorconfig`, tabs are
+drawn `editor.tab_width` columns wide. Changing `.editorconfig` applies to
+files opened after the change.
 
 ## keymap.toml
 

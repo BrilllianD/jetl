@@ -707,6 +707,7 @@ impl App {
                 let le = if i == 0 { crate::editor::buffer::LineEnding::Lf } else { crate::editor::buffer::LineEnding::CrLf };
                 self.editor.set_line_ending(id, le);
             }
+            (DialogId::Indent(id), DialogResult::Choice(i)) => self.editor.set_indent(id, i),
             (DialogId::Language(id), DialogResult::Choice(i)) => {
                 let def = i.checked_sub(1).and_then(|i| crate::editor::syntax::LANGUAGES.get(i));
                 self.editor.set_language(id, def, &self.theme);
@@ -1186,8 +1187,9 @@ impl App {
             Some(StatusHit::Position) => self.perform(Action::Editor(EditorAction::GotoLine)),
             Some(StatusHit::LineEnding) => self.dialog = self.editor.line_ending_dialog(),
             Some(StatusHit::Language) => self.perform(Action::Editor(EditorAction::SetLanguage)),
-            // Shown for information; per-buffer indent and encodings come later.
-            Some(StatusHit::Indent | StatusHit::Encoding) => {}
+            Some(StatusHit::Indent) => self.dialog = self.editor.indent_dialog(),
+            // Shown for information; other encodings come later.
+            Some(StatusHit::Encoding) => {}
             Some(StatusHit::Notification) => {
                 if let Some(n) = self.notifications.last().cloned() {
                     self.dialog = Some(Dialog::info("Notification", &n.text));

@@ -7,6 +7,7 @@ use std::time::Instant;
 
 use ropey::Rope;
 
+use super::indent::{FileSettings, IndentStyle};
 use super::selection::{self, Selection, line_len_no_eol, line_range};
 use super::undo::{Change, Transaction, TxKind, UndoStack};
 
@@ -96,6 +97,11 @@ pub struct Buffer {
     /// Bookmarked lines (F11). Every applied change (edits, undo, redo)
     /// carries them along with their text; lines deleted outright drop out.
     pub bookmarks: BTreeSet<usize>,
+    /// What Tab, Enter and indent/unindent insert; set by the editor on
+    /// open from `.editorconfig`, the text or the config.
+    pub indent: IndentStyle,
+    /// The file's `.editorconfig` settings (all unset without one).
+    pub settings: FileSettings,
 }
 
 impl Buffer {
@@ -133,6 +139,8 @@ impl Buffer {
             autosave_failed: None,
             autosave_conflict: false,
             bookmarks: BTreeSet::new(),
+            indent: IndentStyle::default(),
+            settings: FileSettings::default(),
         }
     }
 
@@ -386,7 +394,7 @@ impl Buffer {
     /// after an opening bracket (or a `:` when `colon`). Between a bracket
     /// pair such as `{|}` the closer moves to its own line at the base
     /// indent. Trailing whitespace before the caret is dropped.
-    pub fn newline_smart(&mut self, tab_width: usize, colon: bool) {
+    pub fn newline_smart(&mut self, colon: bool) {
         let r = self.sel.range();
         let (line, col) = selection::pos_to_line_col(&self.rope, r.start);
         let ls = self.rope.line_to_char(line);
@@ -403,7 +411,7 @@ impl Buffer {
             _ => None,
         };
         let deeper = closer.is_some() || (colon && last == Some(':'));
-        let unit = if base.starts_with('\t') { "\t".to_string() } else { " ".repeat(tab_width.max(1)) };
+        let unit = self.indent.unit();
         let eol = self.line_ending.as_str();
         let indent = if deeper { format!("{base}{unit}") } else { base.clone() };
         let mut new = format!("{eol}{indent}");
@@ -444,10 +452,15 @@ impl Buffer {
         self.apply(vec![Change::replace(ls, old, format!("{indent}{c}"))], Selection::point(caret), TxKind::Typing);
     }
 
-    pub fn insert_tab(&mut self, tab_width: usize) {
+    /// A tab with hard tabs, else spaces up to the next indent stop.
+    pub fn insert_tab(&mut self) {
+        if self.indent.hard_tabs {
+            self.insert("\t", TxKind::Typing);
+            return;
+        }
+        let w = self.indent.width.max(1);
         let (_, col) = self.cursor_line_col();
-        let n = tab_width - (col % tab_width);
-        self.insert(&" ".repeat(n), TxKind::Typing);
+        self.insert(&" ".repeat(w - col % w), TxKind::Typing);
     }
 
     pub fn delete_line(&mut self) {
@@ -723,10 +736,10 @@ impl Buffer {
         if self.sel.anchor <= self.sel.head { Selection::new(start, end) } else { Selection::new(end, start) }
     }
 
-    /// Indent every non-blank selected line by `tab_width` spaces.
-    pub fn indent_lines(&mut self, tab_width: usize) {
+    /// Indent every non-blank selected line by one level.
+    pub fn indent_lines(&mut self) {
         let (l0, l1) = self.selected_lines();
-        let pad = " ".repeat(tab_width);
+        let pad = self.indent.unit();
         let changes: Vec<Change> = (l0..=l1)
             .rev()
             .filter(|&l| selection::indent_of(&self.rope, l) < line_len_no_eol(&self.rope, l))
@@ -736,14 +749,15 @@ impl Buffer {
         self.apply(changes, sel_after, TxKind::Other);
     }
 
-    /// Remove one level of indentation (a tab or up to `tab_width` spaces)
-    /// from the selected lines, or the caret line.
-    pub fn unindent_lines(&mut self, tab_width: usize) {
+    /// Remove one level of indentation (a tab or up to the indent width in
+    /// spaces) from the selected lines, or the caret line.
+    pub fn unindent_lines(&mut self) {
+        let width = self.indent.width.max(1);
         let (l0, l1) = self.selected_lines();
         let mut changes = Vec::new();
         for l in (l0..=l1).rev() {
             let ls = self.rope.line_to_char(l);
-            let lead: String = self.rope.line(l).chars().take_while(|c| *c == ' ' || *c == '\t').take(tab_width.max(1)).collect();
+            let lead: String = self.rope.line(l).chars().take_while(|c| *c == ' ' || *c == '\t').take(width).collect();
             let old: String = if lead.starts_with('\t') { "\t".into() } else { lead.chars().take_while(|c| *c == ' ').collect() };
             if !old.is_empty() {
                 changes.push(Change::delete(ls, old));
@@ -1010,7 +1024,7 @@ mod tests {
                     buf.sel = Selection::new(pos, (pos + 3).min(len));
                     buf.delete_selection();
                 }
-                _ => buf.newline_smart(4, false),
+                _ => buf.newline_smart(false),
             }
             if buf.undo.len() > n {
                 snapshots.push(buf.text());
@@ -1180,13 +1194,13 @@ mod tests {
         let mut buf = b(original);
         // Lines 1-3; the selection ends at column 0 of line 4.
         buf.sel = Selection::new(buf.rope.line_to_char(1), buf.rope.line_to_char(4));
-        buf.indent_lines(4);
+        buf.indent_lines();
         assert_eq!(buf.text(), "fn a() {\n        x;\n\n    \ty;\n}\n", "blank line untouched");
         assert_eq!(buf.sel.range(), buf.rope.line_to_char(1)..buf.rope.line_to_char(4), "selection covers the same lines");
         assert_eq!(buf.undo.len(), 1);
-        buf.unindent_lines(4);
+        buf.unindent_lines();
         assert_eq!(buf.text(), original);
-        buf.unindent_lines(4);
+        buf.unindent_lines();
         assert_eq!(buf.text(), "fn a() {\nx;\n\ny;\n}\n", "a leading tab is one level");
         assert_eq!(buf.undo.len(), 3);
         assert!(buf.undo());
@@ -1197,12 +1211,42 @@ mod tests {
     fn unindent_caret_line_keeps_caret_on_text() {
         let mut buf = b("      abc\n");
         buf.goto_line(0, 7);
-        buf.unindent_lines(4);
+        buf.unindent_lines();
         assert_eq!(buf.text(), "  abc\n");
         assert_eq!(buf.cursor_line_col(), (0, 3));
-        buf.unindent_lines(4);
+        buf.unindent_lines();
         assert_eq!(buf.text(), "abc\n", "fewer spaces than a level");
         assert_eq!(buf.cursor_line_col(), (0, 1));
+    }
+
+    #[test]
+    fn hard_tabs_insert_indent_and_unindent() {
+        let mut buf = b("ab\n");
+        buf.indent = IndentStyle::tabs(4);
+        buf.goto_line(0, 1);
+        buf.insert_tab();
+        assert_eq!(buf.text(), "a\tb\n", "a tab whatever the column");
+        let mut buf = b("x\n  y\n");
+        buf.indent = IndentStyle::tabs(4);
+        buf.sel = Selection::new(0, buf.rope.line_to_char(2));
+        buf.indent_lines();
+        assert_eq!(buf.text(), "\tx\n\t  y\n");
+        buf.unindent_lines();
+        assert_eq!(buf.text(), "x\n  y\n", "one tab per line");
+        buf.unindent_lines();
+        assert_eq!(buf.text(), "x\ny\n", "spaces up to the width");
+        let mut buf = b("\t\tz\n");
+        buf.indent = IndentStyle::tabs(8);
+        buf.unindent_lines();
+        assert_eq!(buf.text(), "\tz\n");
+        // Spaces: up to the next stop of the buffer's width.
+        let mut buf = b("abc\n");
+        buf.indent = IndentStyle::spaces(2);
+        buf.goto_line(0, 3);
+        buf.insert_tab();
+        assert_eq!(buf.text(), "abc \n");
+        buf.insert_tab();
+        assert_eq!(buf.text(), "abc   \n");
     }
 
     #[test]
@@ -1396,12 +1440,13 @@ mod tests {
     fn newline_after_opener_indents() {
         let mut buf = b("    foo(  ");
         buf.sel = Selection::point(10);
-        buf.newline_smart(4, false);
+        buf.newline_smart(false);
         assert_eq!(buf.text(), "    foo(\n        ", "trailing whitespace dropped, one level deeper");
         assert_eq!(buf.cursor_line_col(), (1, 8));
         let mut buf = b("\tx = [");
+        buf.indent = IndentStyle::tabs(4);
         buf.sel = Selection::point(6);
-        buf.newline_smart(4, false);
+        buf.newline_smart(false);
         assert_eq!(buf.text(), "\tx = [\n\t\t", "tab indent adds a tab");
     }
 
@@ -1409,7 +1454,7 @@ mod tests {
     fn newline_between_pair_splits_it() {
         let mut buf = b("  if x {}");
         buf.sel = Selection::point(8);
-        buf.newline_smart(4, false);
+        buf.newline_smart(false);
         assert_eq!(buf.text(), "  if x {\n      \n  }");
         assert_eq!(buf.cursor_line_col(), (1, 6));
         assert_eq!(buf.undo.len(), 1);
@@ -1418,7 +1463,7 @@ mod tests {
         // A non-matching closer is left on the caret line.
         let mut buf = b("f(]");
         buf.sel = Selection::point(2);
-        buf.newline_smart(4, false);
+        buf.newline_smart(false);
         assert_eq!(buf.text(), "f(\n    ]");
     }
 
@@ -1426,11 +1471,11 @@ mod tests {
     fn newline_colon_only_when_asked() {
         let mut buf = b("def f():");
         buf.sel = Selection::point(8);
-        buf.newline_smart(4, true);
+        buf.newline_smart(true);
         assert_eq!(buf.text(), "def f():\n    ");
         let mut buf = b("label:");
         buf.sel = Selection::point(6);
-        buf.newline_smart(4, false);
+        buf.newline_smart(false);
         assert_eq!(buf.text(), "label:\n");
     }
 
@@ -1438,19 +1483,19 @@ mod tests {
     fn newline_copies_indent() {
         let mut buf = b("    foo\nbar");
         buf.sel = Selection::point(7);
-        buf.newline_smart(4, false);
+        buf.newline_smart(false);
         assert_eq!(buf.text(), "    foo\n    \nbar");
         assert_eq!(buf.cursor_line_col(), (1, 4));
         // Caret inside the indent: the rest of the line keeps its column.
         let mut buf = b("    foo");
         buf.sel = Selection::point(2);
-        buf.newline_smart(4, false);
+        buf.newline_smart(false);
         assert_eq!(buf.text(), "\n    foo");
         assert_eq!(buf.cursor_line_col(), (1, 2));
         // A selection is replaced.
         let mut buf = b("  ab cd");
         buf.sel = Selection::new(4, 5);
-        buf.newline_smart(4, false);
+        buf.newline_smart(false);
         assert_eq!(buf.text(), "  ab\n  cd");
     }
 
@@ -1481,7 +1526,8 @@ mod tests {
         let mut buf = b("a {}\r\nb");
         assert_eq!(buf.line_ending, LineEnding::CrLf);
         buf.sel = Selection::point(3);
-        buf.newline_smart(2, false);
+        buf.indent = IndentStyle::spaces(2);
+        buf.newline_smart(false);
         assert_eq!(buf.text(), "a {\r\n  \r\n}\r\nb");
         assert_eq!(buf.cursor_line_col(), (1, 2));
         let mut buf = b("x {\r\n    \r\ny");
