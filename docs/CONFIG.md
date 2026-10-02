@@ -18,8 +18,9 @@ value of the wrong type rejects the whole file, because settings depend on
 each other.
 
 The log is at `$XDG_STATE_HOME/jetl/jetl.log` (usually
-`~/.local/state/jetl/jetl.log`). Sessions (open tabs per project root) live in
-`$XDG_STATE_HOME/jetl/sessions/`.
+`~/.local/state/jetl/jetl.log`). Sessions (per project root: open tabs, tool
+window layout, expanded Project tree folders and its hidden/ignored toggles)
+live in `$XDG_STATE_HOME/jetl/sessions/`.
 
 ## config.toml
 
@@ -61,8 +62,10 @@ switch_closes_tabs = true      # switching worktrees closes the tabs of the old 
 mode = "default"               # "vim" turns on the [mode.*] keymap tables (reserved, minimal)
 
 [files]
-show_hidden = true             # show dot files in the Project tree and Go to File
+show_hidden = true             # show dot files in the Project tree and Go to File; the tree's
+                               # toggle, saved in the session, wins once a root has one
 show_ignored = false           # show files ignored by .gitignore in the Project tree and Go to File
+                               # (same session rule for the tree)
 watch = true                   # follow changes made outside jetl (tree, git state, open files)
 ```
 

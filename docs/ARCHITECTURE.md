@@ -22,7 +22,7 @@ and backlog are in `docs/ROADMAP.md`; settings in `docs/CONFIG.md`; keys in
 | `app/watch.rs` | Starting the filesystem watcher and acting on its batches. |
 | `app/find.rs` | Replace in files (open tabs through the editor, other files off the main thread). |
 | `app/files.rs` | Tree file operations: `run_fs_op` off the main thread, `fs_op_done` (reload the tree, open, retarget or close tabs). |
-| `workspace.rs` | `Workspace` (root and generation), root switching (`App::switch_root`), sessions (JSON per root; a missing one arrives empty). `session_loaded` skips tabs already open, then opens the command line file. |
+| `workspace.rs` | `Workspace` (root and generation), root switching (`App::switch_root`), sessions (JSON per root: tabs, tool window layout and sizes, Git tab, tree hidden/ignored toggles, expanded tree folders; a missing one arrives empty; fields added later are `#[serde(default)]`). `session_loaded` skips tabs already open, applies the layout (sizes clamped, toggles winning over `[files]` config), expands the saved folders on the main thread, then opens the command line file. |
 | `worktree/` | `git worktree` parsing and paths (`mod.rs`), the Worktrees tool window (`panel.rs`), the create/remove dialog flow (`flow.rs`, `impl App`). |
 | `actions.rs` | `Action` enums and `REGISTRY` (id, description, action). Keymaps and the palette refer to actions by id. |
 | `dispatch.rs` | Keys to actions: vim mode table (when modal), then the context stack innermost first, chords with a timeout, double Shift. |

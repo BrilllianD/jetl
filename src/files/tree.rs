@@ -133,16 +133,75 @@ impl ProjectPanel {
     }
 
     fn refresh_request(&mut self) -> TreeRefresh {
-        fn expanded(nodes: &[Node], out: &mut Vec<PathBuf>) {
-            for n in nodes.iter().filter(|n| n.is_dir && n.expanded) {
-                out.push(n.path.clone());
-                expanded(n.children.as_deref().unwrap_or_default(), out);
-            }
-        }
         let mut dirs = vec![self.root.clone()];
-        expanded(&self.nodes, &mut dirs);
+        dirs.extend(self.expanded_dirs());
         self.refresh_seq += 1;
         TreeRefresh { seq: self.refresh_seq, dirs, show_hidden: self.show_hidden, show_ignored: self.show_ignored }
+    }
+
+    /// The expanded directories the tree shows, parents first. One inside a
+    /// collapsed folder is left out.
+    pub fn expanded_dirs(&self) -> Vec<PathBuf> {
+        fn walk(nodes: &[Node], out: &mut Vec<PathBuf>) {
+            for n in nodes.iter().filter(|n| n.is_dir && n.expanded) {
+                out.push(n.path.clone());
+                walk(n.children.as_deref().unwrap_or_default(), out);
+            }
+        }
+        let mut out = Vec::new();
+        walk(&self.nodes, &mut out);
+        out
+    }
+
+    /// Expand each directory in `dirs` (absolute) and its ancestors, reading
+    /// listings on this thread as needed (session restore). Missing
+    /// directories are skipped; the selected path is kept.
+    pub fn expand_paths(&mut self, dirs: &[PathBuf]) {
+        let (sh, si) = (self.show_hidden, self.show_ignored);
+        let mut dirs: Vec<&PathBuf> = dirs.iter().collect();
+        dirs.sort_by_key(|d| d.components().count());
+        for dir in dirs {
+            let Ok(rel) = dir.strip_prefix(&self.root) else { continue };
+            if !dir.is_dir() {
+                continue;
+            }
+            let mut cur = self.root.clone();
+            for c in rel.components() {
+                cur.push(c);
+                let Some(n) = self.node_mut(&cur) else { break };
+                if !n.is_dir {
+                    break;
+                }
+                n.expanded = true;
+                if n.children.is_none() {
+                    n.children = Some(read_children(&n.path, sh, si));
+                }
+            }
+        }
+        let selected = self.selected_row().map(|r| r.path.clone());
+        self.reflatten();
+        if let Some(i) = selected.and_then(|p| self.rows.iter().position(|r| r.path == p)) {
+            self.list.select(i);
+        }
+    }
+
+    /// Whether hidden and ignored entries show.
+    pub fn visibility(&self) -> (bool, bool) {
+        (self.show_hidden, self.show_ignored)
+    }
+
+    /// Set whether hidden and ignored entries show. On a change every listed
+    /// directory is read again on this thread, keeping expansion, and a walk
+    /// still running with the old settings is dropped when it lands.
+    pub fn set_visibility(&mut self, hidden: bool, ignored: bool) {
+        if (hidden, ignored) == (self.show_hidden, self.show_ignored) {
+            return;
+        }
+        (self.show_hidden, self.show_ignored) = (hidden, ignored);
+        self.applied_seq = self.refresh_seq + 1;
+        let mut dirs = vec![self.root.clone()];
+        dirs.extend(self.expanded_dirs());
+        self.merge_listing(dirs.into_iter().map(|d| (d.clone(), read_children(&d, hidden, ignored))).collect());
     }
 
     /// Merge re-read directories, keeping expansion and the selected path.
@@ -659,6 +718,20 @@ mod tests {
         p.refresh();
         assert_eq!(names(&p), ["a", "  deep", "    w.txt", "    x.txt", "  one.txt", "b", "c", "z.txt"]);
         assert_eq!(p.selected_row().unwrap().path, root.join("a/deep/x.txt"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn expand_paths_and_visibility_keep_folders_open() {
+        let root = tmp_tree("expand");
+        std::fs::create_dir_all(root.join("a/.dot")).unwrap();
+        let mut p = ProjectPanel::new(root.clone(), false, false);
+        // Children before parents, a file and a missing folder are fine.
+        p.expand_paths(&[root.join("a/deep"), root.join("a"), root.join("z.txt"), root.join("b/gone"), root.join("c")]);
+        assert_eq!(names(&p), ["a", "  deep", "    x.txt", "  one.txt", "b", "c", "  three.txt", "z.txt"]);
+        assert_eq!(p.expanded_dirs(), [root.join("a"), root.join("a/deep"), root.join("c")]);
+        p.set_visibility(true, false);
+        assert_eq!(names(&p), ["a", "  .dot", "  deep", "    x.txt", "  one.txt", "b", "c", "  three.txt", "z.txt"]);
         let _ = std::fs::remove_dir_all(&root);
     }
 

@@ -11,6 +11,9 @@ pub const MIN_LEFT_W: u16 = 12;
 pub const MIN_BOTTOM_H: u16 = 4;
 pub const MIN_CENTER_W: u16 = 30;
 pub const MIN_CENTER_H: u16 = 5;
+/// Upper bound for a restored tool window size; `compute` then fits it to
+/// the terminal.
+pub const MAX_RESTORED: u16 = 500;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SplitterId {
@@ -73,6 +76,15 @@ impl LayoutState {
             Side::Bottom if self.bottom == Some(tw) => self.bottom = None,
             _ => {}
         }
+    }
+
+    /// Apply saved tool windows and sizes (session restore). A window saved
+    /// on the wrong side is dropped and sizes are clamped to sane bounds.
+    pub fn restore(&mut self, left: Option<ToolWindowId>, left_w: u16, bottom: Option<ToolWindowId>, bottom_h: u16) {
+        self.left = left.filter(|tw| tw.side() == Side::Left);
+        self.bottom = bottom.filter(|tw| tw.side() == Side::Bottom);
+        self.left_w = left_w.clamp(MIN_LEFT_W, MAX_RESTORED);
+        self.bottom_h = bottom_h.clamp(MIN_BOTTOM_H, MAX_RESTORED);
     }
 
     pub fn hide_all(&mut self) {

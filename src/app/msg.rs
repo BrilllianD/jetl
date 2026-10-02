@@ -199,6 +199,14 @@ impl App {
         }
     }
 
+    /// Show a Git window tab (session restore), loading the log if needed.
+    pub fn set_git_tab(&mut self, tab: crate::git::panel::GitTab) {
+        let mut cx = ctx!(self);
+        self.git_panel.set_tab(tab, &mut cx);
+        let fx = cx.effects;
+        self.apply_effects(fx);
+    }
+
     /// Open a file with the caret at a 0-based line and char column.
     pub fn open_file_at(&mut self, path: PathBuf, line: usize, col: usize) {
         if self.editor.index_of(&path).is_some() {

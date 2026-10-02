@@ -27,7 +27,7 @@ use crate::ui::tool_window_block;
 use crate::ui::widgets::list::ListState;
 use crate::ui::widgets::text_input::TextInput;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum GitTab {
     Commit,
     Log,
@@ -493,7 +493,8 @@ impl GitPanel {
         cx.effects.push(Effect::Git(GitRequest::Commit { message, push }));
     }
 
-    fn set_tab(&mut self, tab: GitTab, cx: &mut Ctx) {
+    /// Switch tabs, loading the log the first time it shows.
+    pub fn set_tab(&mut self, tab: GitTab, cx: &mut Ctx) {
         self.tab = tab;
         self.area = Self::default_area(tab);
         if tab == GitTab::Log && !self.log_loaded {

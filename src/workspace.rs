@@ -1,5 +1,6 @@
 //! The project root the IDE is currently showing, switching it (worktrees),
-//! and per-root sessions: open tabs with caret and scroll, stored as JSON in
+//! and per-root sessions: open tabs with caret and scroll, tool window
+//! layout and expanded tree folders, stored as JSON in
 //! `paths.sessions_dir()/<fnv hash of root>.json`.
 
 use std::path::{Path, PathBuf};
@@ -9,7 +10,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::app::App;
 use crate::event::{AppMsg, Level};
+use crate::git::panel::GitTab;
 use crate::ui::dialog::{Dialog, DialogId};
+use crate::ui::focus::{PanelId, ToolWindowId};
 
 #[derive(Debug, Clone)]
 pub struct Workspace {
@@ -41,7 +44,7 @@ impl Workspace {
     }
 }
 
-/// Open tabs of one root.
+/// Open tabs, layout and tree state of one root.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Session {
     pub root: PathBuf,
@@ -52,6 +55,27 @@ pub struct Session {
     /// Indices into `files`, most recently used first.
     #[serde(default)]
     pub recent: Vec<usize>,
+    /// `None` in sessions saved before it existed: the layout stays as is.
+    #[serde(default)]
+    pub layout: Option<SessionLayout>,
+    /// Expanded tree directories relative to the root, parents first.
+    #[serde(default)]
+    pub expanded: Vec<PathBuf>,
+}
+
+/// Tool windows, their sizes, the Git tab and the tree's visibility toggles.
+/// `files.show_hidden` and `files.show_ignored` set the toggles at startup;
+/// a saved layout overrides them, a root without one keeps the current ones.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionLayout {
+    /// Tool window open on each side.
+    pub left: Option<ToolWindowId>,
+    pub left_w: u16,
+    pub bottom: Option<ToolWindowId>,
+    pub bottom_h: u16,
+    pub git_tab: GitTab,
+    pub show_hidden: bool,
+    pub show_ignored: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -192,7 +216,18 @@ impl App {
             files.push(SessionFile { path, line, col, scroll_line: b.scroll_line, scroll_col: b.scroll_col, bookmarks });
         }
         let recent = self.editor.recent_paths().iter().filter_map(|p| files.iter().position(|f| &f.path == p)).collect();
-        Session { root, files, active, recent }
+        let (show_hidden, show_ignored) = self.project.visibility();
+        let layout = Some(SessionLayout {
+            left: self.layout.left,
+            left_w: self.layout.left_w,
+            bottom: self.layout.bottom,
+            bottom_h: self.layout.bottom_h,
+            git_tab: self.git_panel.tab,
+            show_hidden,
+            show_ignored,
+        });
+        let expanded = self.project.expanded_dirs().iter().filter_map(|d| d.strip_prefix(&root).ok()).map(Path::to_path_buf).collect();
+        Session { root, files, active, recent, layout, expanded }
     }
 
     /// Save the current root's session (on switch and quit). Failures are
@@ -217,8 +252,9 @@ impl App {
     }
 
     /// Open the tabs of a loaded session (dropped when the root changed
-    /// since), then the pending command line file. Missing files and files
-    /// already open are skipped.
+    /// since), restore its layout and tree folders, then open the pending
+    /// command line file. Missing files and folders, and files already open,
+    /// are skipped.
     pub fn session_loaded(&mut self, generation: u64, session: Session, files: Vec<std::io::Result<Vec<u8>>>) {
         if generation != self.workspace.generation {
             tracing::debug!("dropping stale session for {}", session.root.display());
@@ -246,6 +282,18 @@ impl App {
         self.editor.restore_recent(&recent, active);
         // Opening the tabs is not navigation.
         self.editor.clear_nav();
+        if let Some(l) = &session.layout {
+            self.layout.restore(l.left, l.left_w, l.bottom, l.bottom_h);
+            if let Some(tw) = self.focus.current.tool_window()
+                && !self.layout.is_visible(tw)
+            {
+                self.focus.set(PanelId::Editor);
+            }
+            self.set_git_tab(l.git_tab);
+            self.project.set_visibility(l.show_hidden, l.show_ignored);
+        }
+        let expanded: Vec<PathBuf> = session.expanded.iter().map(|d| session.root.join(d)).collect();
+        self.project.expand_paths(&expanded);
         if let Some((path, line, col)) = self.pending_open.take() {
             self.open_file_at(path, line.saturating_sub(1), col.saturating_sub(1));
         }
@@ -282,6 +330,16 @@ mod tests {
             ],
             active: Some(1),
             recent: vec![1, 0],
+            layout: Some(SessionLayout {
+                left: Some(ToolWindowId::Worktrees),
+                left_w: 40,
+                bottom: Some(ToolWindowId::Git),
+                bottom_h: 12,
+                git_tab: GitTab::Log,
+                show_hidden: false,
+                show_ignored: true,
+            }),
+            expanded: vec![PathBuf::from("src"), PathBuf::from("src/app")],
         };
         s.save(&dir).unwrap();
         assert_eq!(Session::load(&dir, &root), Some(s.clone()));
@@ -292,6 +350,7 @@ mod tests {
         std::fs::write(&file, r#"{"root":"/tmp/some/project","files":[{"path":"/tmp/some/project/a"}]}"#).unwrap();
         let old = Session::load(&dir, &root).unwrap();
         assert_eq!((old.files[0].line, old.active, old.recent.len(), old.files[0].bookmarks.len()), (0, None, 0, 0));
+        assert_eq!((old.layout, old.expanded.len()), (None, 0));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -331,5 +390,42 @@ mod tests {
         assert_eq!(b.bookmarks.iter().copied().collect::<Vec<_>>(), vec![1]);
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&fresh_dir);
+    }
+
+    #[tokio::test]
+    async fn session_restores_layout_and_tree_folders() {
+        let (mut app, dir) = crate::app::tests::test_app("session-layout");
+        let root = app.workspace.root.clone();
+        for d in ["a/deep", "b", ".hidden"] {
+            std::fs::create_dir_all(root.join(d)).unwrap();
+        }
+        std::fs::write(root.join("a/deep/x.txt"), "").unwrap();
+        app.project.reroot(root.clone());
+        assert!(app.project.row_names().contains(&".hidden".to_string()), "the default config shows hidden files");
+        app.focus.set(PanelId::Project);
+        let layout = SessionLayout {
+            left: None,
+            left_w: 0,
+            bottom: Some(ToolWindowId::Git),
+            bottom_h: 9,
+            git_tab: GitTab::Console,
+            show_hidden: false,
+            show_ignored: false,
+        };
+        // A folder deleted since is skipped.
+        let expanded = vec![PathBuf::from("a"), PathBuf::from("a/deep"), PathBuf::from("gone")];
+        let session = Session { root: root.clone(), layout: Some(layout.clone()), expanded, ..Default::default() };
+        let generation = app.workspace.generation;
+        app.session_loaded(generation, session, vec![]);
+        assert_eq!((app.layout.left, app.layout.bottom, app.layout.bottom_h), (None, Some(ToolWindowId::Git), 9));
+        assert_eq!(app.layout.left_w, crate::ui::layout::MIN_LEFT_W, "sizes are clamped");
+        assert!(app.focus.is(PanelId::Editor), "focus leaves the closed Project window");
+        assert_eq!(app.git_panel.tab, GitTab::Console);
+        assert_eq!(app.project.row_names(), ["a", "deep", "x.txt", "b"]);
+        // Saving gives the same state back.
+        let saved = app.session();
+        assert_eq!(saved.layout, Some(SessionLayout { left_w: crate::ui::layout::MIN_LEFT_W, ..layout }));
+        assert_eq!(saved.expanded, [PathBuf::from("a"), PathBuf::from("a/deep")]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
