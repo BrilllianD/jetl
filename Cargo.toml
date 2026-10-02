@@ -55,6 +55,9 @@ tracing-appender = "0.2"
 anyhow = "1"
 ec4rs = "1.2"
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [features]
 default = ["lang-rust", "lang-js", "lang-ts", "lang-python", "lang-json", "lang-toml", "lang-bash", "lang-md", "lang-csharp", "lang-yaml", "lang-html", "lang-css", "lang-scss", "lang-xml", "lang-go", "lang-c", "lang-cpp", "lang-java", "lang-php", "lang-lua", "lang-dockerfile"]
 lang-rust = ["dep:tree-sitter-rust"]
