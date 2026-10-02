@@ -28,6 +28,7 @@
 # Ctrl+Shift+A/P need the kitty protocol; F1 is the legacy fallback.
 "f1" = "palette.actions"
 "ctrl-e" = "palette.recent_files"
+"alt-shift-e" = "palette.recent_projects"
 "ctrl-tab" = "editor.switcher"
 "alt-right" = "editor.next_tab"
 "alt-left" = "editor.prev_tab"

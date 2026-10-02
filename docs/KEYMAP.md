@@ -30,6 +30,7 @@ Override any of them in `~/.config/jetl/keymap.toml` (see [CONFIG.md](CONFIG.md)
 | `Alt+S` | `palette.search_everywhere` | Search everywhere |
 | `Shift Shift` * | `palette.search_everywhere` | Search everywhere |
 | `Ctrl+E` | `palette.recent_files` | Recent files |
+| `Alt+Shift+E` | `palette.recent_projects` | Recent projects |
 | `Ctrl+S` | `editor.save` | Save |
 | `Ctrl+Shift+S` * | `editor.save_all` | Save all |
 | `Alt+Right` | `editor.next_tab` | Next tab |

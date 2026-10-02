@@ -133,6 +133,14 @@ pub struct App {
     /// dialog, below dialogs.
     pub menu: Option<crate::ui::menu::ContextMenu>,
     pub file_index: FileIndex,
+    /// Recent project roots for the palette, cached from the last load.
+    recent_projects: Vec<PathBuf>,
+    /// Last requested and last applied recent projects load.
+    recent_projects_requested: u64,
+    recent_projects_seq: u64,
+    /// Open the Recent Projects palette when the list first arrives (see
+    /// [`App::pick_project_at_startup`]).
+    pick_project: bool,
     /// A failed branch load was already reported to the open palette.
     branches_error_shown: bool,
     pub status_hits: Vec<(StatusHit, Rect)>,
@@ -191,6 +199,10 @@ impl App {
             palette: None,
             menu: None,
             file_index: FileIndex::default(),
+            recent_projects: Vec::new(),
+            recent_projects_requested: 0,
+            recent_projects_seq: 0,
+            pick_project: false,
             branches_error_shown: false,
             status_hits: Vec::new(),
             keyboard_enhanced: crate::tui::keyboard_enhanced(),
@@ -221,6 +233,7 @@ impl App {
         app.git.load_worktrees();
         app.restore_session();
         app.start_watcher();
+        app.load_recent_projects(true);
         app
     }
 
@@ -894,6 +907,34 @@ pub(crate) mod tests {
         assert_eq!(app.workspace.root, other);
         assert_eq!((app.workspace.generation, app.git.generation), (g + 1, g + 1));
         assert!(app.editor.buffers.is_empty(), "worktree.switch_closes_tabs");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn recent_projects_palette_at_startup_switches_root() {
+        use crate::actions::{PaletteAction, PaletteKind};
+        use crate::ui::palette::{Accept, PaletteResult};
+        let (mut app, dir) = test_app("recent-projects");
+        let root = app.workspace.root.clone();
+        let other = std::fs::canonicalize(root.parent().unwrap()).unwrap().join("other");
+        std::fs::create_dir_all(&other).unwrap();
+        // Only the current root is known: nothing to offer.
+        app.pick_project_at_startup();
+        app.handle_msg(AppMsg::RecentProjects { seq: 1, roots: vec![root.clone()] });
+        assert!(app.palette.is_none());
+
+        app.pick_project_at_startup();
+        app.handle_msg(AppMsg::RecentProjects { seq: 2, roots: vec![root.clone(), other.clone()] });
+        assert_eq!(app.palette.as_ref().map(|p| p.kind), Some(PaletteKind::RecentProjects));
+        // A late reply to an older request does not replace the list.
+        app.handle_msg(AppMsg::RecentProjects { seq: 1, roots: vec![root.clone()] });
+        let res = app.palette.as_mut().unwrap().handle_action(&PaletteAction::Accept).unwrap();
+        assert_eq!(res, PaletteResult::Accept(Accept::SwitchRoot(other.clone())));
+        app.finish_palette(res);
+        assert_eq!(app.workspace.root, other);
+        // Offered once only.
+        app.handle_msg(AppMsg::RecentProjects { seq: 3, roots: vec![other.clone(), root.clone()] });
+        assert!(app.palette.is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

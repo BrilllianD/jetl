@@ -39,6 +39,7 @@ pub enum PaletteKind {
     RecentFiles,
     GotoLine,
     Branches,
+    RecentProjects,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -260,6 +261,7 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "palette.search_everywhere" => "Search everywhere", App(AppAction::OpenPalette(PaletteKind::Everywhere));
         "palette.recent_files" => "Recent files", App(AppAction::OpenPalette(PaletteKind::RecentFiles));
         "palette.goto_line" => "Go to line", App(AppAction::OpenPalette(PaletteKind::GotoLine));
+        "palette.recent_projects" => "Recent projects", App(AppAction::OpenPalette(PaletteKind::RecentProjects));
 
         "editor.newline" => "Insert newline", Editor(E::InsertNewline);
         "editor.tab" => "Insert tab or indent selected lines", Editor(E::InsertTab);

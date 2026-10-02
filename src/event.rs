@@ -82,6 +82,12 @@ pub enum AppMsg {
         seq: u64,
         files: Vec<String>,
     },
+    /// Recent project roots that still exist, newest first, in request
+    /// order (not tied to the root).
+    RecentProjects {
+        seq: u64,
+        roots: Vec<PathBuf>,
+    },
     /// Reserved for the language server integration.
     Lsp(LspMsg),
 }

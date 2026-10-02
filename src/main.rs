@@ -8,7 +8,7 @@ async fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--help" || a == "-h") {
         println!(
-            "jetl {}\n\nUsage: jetl [PATH[:LINE[:COL]]]\n\nOpens a terminal IDE rooted at PATH (default: current directory). A file\nopens at LINE and COL, rooted at its git repository (else its directory).\n\nOptions:\n  -h, --help         Show this help\n  -V, --version      Show the version\n      --dump-keymap  Print the default key bindings as Markdown (docs/KEYMAP.md)\n\nConfig: $XDG_CONFIG_HOME/jetl/{{config,keymap,theme}}.toml (see docs/CONFIG.md)\nLog:    $XDG_STATE_HOME/jetl/jetl.log",
+            "jetl {}\n\nUsage: jetl [PATH[:LINE[:COL]]]\n\nOpens a terminal IDE rooted at PATH (default: current directory). A file\nopens at LINE and COL, rooted at its git repository (else its directory).\nStarted without PATH outside a git repository, it offers the recent projects.\n\nOptions:\n  -h, --help         Show this help\n  -V, --version      Show the version\n      --dump-keymap  Print the default key bindings as Markdown (docs/KEYMAP.md)\n\nConfig: $XDG_CONFIG_HOME/jetl/{{config,keymap,theme}}.toml (see docs/CONFIG.md)\nLog:    $XDG_STATE_HOME/jetl/jetl.log",
             env!("CARGO_PKG_VERSION")
         );
         return Ok(());
@@ -24,8 +24,10 @@ async fn main() -> Result<()> {
     if let Some(bad) = args.iter().find(|a| a.starts_with('-') && a.len() > 1) {
         anyhow::bail!("unknown option {bad} (see jetl --help)");
     }
-    let arg = args.iter().find(|a| !a.starts_with('-')).map(String::as_str).unwrap_or(".");
-    let (root, open) = resolve_target(arg)?;
+    let arg = args.iter().find(|a| !a.starts_with('-')).map(String::as_str);
+    let (root, open) = resolve_target(arg.unwrap_or("."))?;
+    // Started bare outside a repository: likely not in a project yet.
+    let pick_project = arg.is_none() && git2::Repository::discover(&root).is_err();
 
     let paths = config::Paths::new()?;
     let _log_guard = config::init_logging(&paths)?;
@@ -34,6 +36,9 @@ async fn main() -> Result<()> {
     tui::install_panic_hook();
     let mut terminal = tui::init(&root)?;
     let mut app = App::new(root, cfg, paths, open);
+    if pick_project {
+        app.pick_project_at_startup();
+    }
     if let Some(e) = cfg_error {
         app.notify(jetl::event::Level::Error, e);
     }

@@ -5,7 +5,7 @@ use crossterm::event::KeyEvent;
 use super::{App, FileIndex};
 use crate::actions::{Action, AppAction, EditorAction, PaletteKind};
 use crate::dispatch::Dispatch;
-use crate::event::AppMsg;
+use crate::event::{AppMsg, Effect};
 use crate::git::GitRequest;
 use crate::ui::palette::{Accept, ActionEntry, Palette, PaletteResult, Source};
 
@@ -31,6 +31,10 @@ impl App {
         }
         if p.wants(Source::Actions) {
             p.set_actions(self.palette_actions());
+        }
+        if p.wants(Source::Projects) {
+            p.set_projects(&self.recent_projects);
+            self.load_recent_projects(false);
         }
         if p.wants(Source::Branches) {
             p.set_branches(self.git_panel.branches.clone());
@@ -87,6 +91,46 @@ impl App {
         }
     }
 
+    /// Read the recent projects file in `spawn_blocking`, first recording the
+    /// current root when `touch` is set (startup and root switches). The
+    /// result is ordered by a seq; it does not depend on the root.
+    pub(crate) fn load_recent_projects(&mut self, touch: bool) {
+        self.recent_projects_requested += 1;
+        let seq = self.recent_projects_requested;
+        let (file, tx) = (self.paths.recent_projects_file(), self.bus_tx.clone());
+        let root = touch.then(|| self.workspace.root.clone());
+        let at = crate::recent_projects::now();
+        tokio::task::spawn_blocking(move || {
+            let roots = crate::recent_projects::update(&file, root.as_deref(), at);
+            let _ = tx.send(AppMsg::RecentProjects { seq, roots });
+        });
+    }
+
+    pub(super) fn recent_projects_loaded(&mut self, seq: u64, roots: Vec<std::path::PathBuf>) {
+        if seq < self.recent_projects_seq {
+            tracing::debug!("dropping stale recent projects");
+            return;
+        }
+        self.recent_projects_seq = seq;
+        self.recent_projects = roots;
+        if let Some(p) = self.palette.as_mut().filter(|p| p.wants(Source::Projects)) {
+            p.set_projects(&self.recent_projects);
+        }
+        if std::mem::take(&mut self.pick_project)
+            && self.palette.is_none()
+            && self.dialog.is_none()
+            && self.recent_projects.iter().any(|r| *r != self.workspace.root)
+        {
+            self.open_palette(PaletteKind::RecentProjects);
+        }
+    }
+
+    /// Started without an argument outside a git repository: offer the
+    /// recent projects once their list loads (if there are any).
+    pub fn pick_project_at_startup(&mut self) {
+        self.pick_project = true;
+    }
+
     /// Keys while the palette is open: its own keymap context first, then
     /// global bindings (which close it, except those opening a palette).
     pub(super) fn palette_key(&mut self, key: KeyEvent) {
@@ -123,6 +167,7 @@ impl App {
             PaletteResult::Accept(Accept::Action(a)) => self.perform(a),
             PaletteResult::Accept(Accept::SwitchBranch(name)) => self.switch_branch(name),
             PaletteResult::Accept(Accept::NewBranch) => self.git_request(GitRequest::NewBranch),
+            PaletteResult::Accept(Accept::SwitchRoot(root)) => self.apply_effects(vec![Effect::SwitchRoot(root)]),
         }
     }
 }

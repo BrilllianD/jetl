@@ -36,6 +36,9 @@ impl Paths {
     pub fn sessions_dir(&self) -> PathBuf {
         self.state_dir.join("sessions")
     }
+    pub fn recent_projects_file(&self) -> PathBuf {
+        self.state_dir.join("recent_projects.json")
+    }
     pub fn log_file(&self) -> PathBuf {
         self.state_dir.join("jetl.log")
     }

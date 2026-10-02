@@ -166,7 +166,7 @@ impl App {
 
     /// Switch without asking: save the old session, close tabs (per
     /// `worktree.switch_closes_tabs`), point every service at the new root,
-    /// and restore its session.
+    /// restore its session and record it as a recent project.
     pub fn do_switch_root(&mut self, root: PathBuf) {
         self.save_session();
         if self.config.worktree.switch_closes_tabs {
@@ -188,6 +188,7 @@ impl App {
         crate::tui::set_title(&root);
         self.editor.clear_nav();
         self.restore_session();
+        self.load_recent_projects(true);
         self.notify(Level::Info, format!("Switched to {}", root.display()));
     }
 

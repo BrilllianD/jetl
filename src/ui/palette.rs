@@ -1,9 +1,10 @@
 //! Command palette overlay: Go to File, Find Action, Search Everywhere,
-//! Recent Files and Branches. The app owns it (`App.palette`) and routes all
+//! Recent Files, Branches and Recent Projects. The app owns it (`App.palette`) and routes all
 //! input to it while it is open, like a dialog. Keys arrive as
 //! `PaletteAction`s from the `palette` keymap context; unmapped keys edit the
 //! query. The palette holds copies of its candidates (the file index, the
-//! action list, branches, recent files) that the app refreshes as they load.
+//! action list, branches, recent files and projects) that the app refreshes
+//! as they load.
 
 use std::cmp::Reverse;
 use std::path::{Path, PathBuf};
@@ -36,6 +37,7 @@ pub enum Source {
     Actions,
     Branches,
     Recent,
+    Projects,
 }
 
 impl Source {
@@ -45,6 +47,7 @@ impl Source {
             Source::Actions => "Actions",
             Source::Branches => "Branches",
             Source::Recent => "Recent Files",
+            Source::Projects => "Recent Projects",
         }
     }
 }
@@ -65,6 +68,7 @@ pub enum Accept {
     Action(Action),
     SwitchBranch(String),
     NewBranch,
+    SwitchRoot(PathBuf),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -91,6 +95,10 @@ pub struct Palette {
     recent: Vec<PathBuf>,
     actions: Vec<ActionEntry>,
     branches: Vec<BranchInfo>,
+    /// Recent project roots other than the current one, newest first, and
+    /// how they are shown (`~` for the home directory).
+    projects: Vec<PathBuf>,
+    projects_shown: Vec<String>,
     matcher: Matcher,
     outer: Rect,
     list_rect: Rect,
@@ -104,6 +112,7 @@ impl Palette {
             PaletteKind::Actions => vec![Source::Actions],
             PaletteKind::Everywhere => vec![Source::Files, Source::Actions, Source::Branches],
             PaletteKind::RecentFiles => vec![Source::Recent],
+            PaletteKind::RecentProjects => vec![Source::Projects],
             // Go to Line stays a dialog and never opens a palette.
             PaletteKind::Branches | PaletteKind::GotoLine => vec![Source::Branches],
         };
@@ -120,6 +129,8 @@ impl Palette {
             recent: Vec::new(),
             actions: Vec::new(),
             branches: Vec::new(),
+            projects: Vec::new(),
+            projects_shown: Vec::new(),
             matcher: Matcher::default(),
             outer: Rect::default(),
             list_rect: Rect::default(),
@@ -174,6 +185,16 @@ impl Palette {
         }
     }
 
+    /// Recent project roots, newest first; the current root is left out.
+    pub fn set_projects(&mut self, roots: &[PathBuf]) {
+        let home = directories::BaseDirs::new().map(|d| d.home_dir().to_path_buf());
+        self.projects = roots.iter().filter(|r| **r != self.root).cloned().collect();
+        self.projects_shown = self.projects.iter().map(|r| tilde_path(r, home.as_deref())).collect();
+        if self.source() == Source::Projects {
+            self.refilter(false);
+        }
+    }
+
     /// Rank the current source against the query. `reset` moves the
     /// selection to the top (the query changed); otherwise it is kept.
     fn refilter(&mut self, reset: bool) {
@@ -201,6 +222,10 @@ impl Palette {
             Source::Recent => {
                 let shown: Vec<String> = self.recent.iter().map(|p| display_path(p, &self.root)).collect();
                 if q.is_empty() { (0..shown.len()).collect() } else { rank_paths(&q, &shown, &mut self.matcher) }
+            }
+            Source::Projects => {
+                let shown = &self.projects_shown;
+                if q.is_empty() { (0..shown.len()).collect() } else { rank_paths(&q, shown, &mut self.matcher) }
             }
             Source::Actions => {
                 if q.is_empty() {
@@ -235,6 +260,7 @@ impl Palette {
         let a = match self.source() {
             Source::Files => Accept::OpenFile(self.root.join(self.files.get(i)?)),
             Source::Recent => Accept::OpenFile(self.recent.get(i)?.clone()),
+            Source::Projects => Accept::SwitchRoot(self.projects.get(i)?.clone()),
             Source::Actions => Accept::Action(self.actions.get(i)?.action.clone()),
             Source::Branches if i == 0 => Accept::NewBranch,
             Source::Branches => Accept::SwitchBranch(self.branches.get(i - 1)?.name.clone()),
@@ -332,6 +358,7 @@ impl Palette {
             PaletteKind::Actions => "Find Action",
             PaletteKind::Everywhere => "Search Everywhere",
             PaletteKind::RecentFiles => "Recent Files",
+            PaletteKind::RecentProjects => "Recent Projects",
             PaletteKind::Branches | PaletteKind::GotoLine => "Git Branches",
         }
     }
@@ -394,6 +421,7 @@ impl Palette {
             Source::Files | Source::Recent => "type a file name",
             Source::Actions => "type an action name",
             Source::Branches => "type a branch name",
+            Source::Projects => "type a project name",
         };
         self.input.render(frame, qrect, Style::default().bg(theme.bg).fg(theme.fg), placeholder, theme.dim.bg(theme.bg), true);
         frame.buffer_mut().set_stringn(inner.right().saturating_sub(cw + 1), y, &count, cw as usize, theme.dim.bg(theme.popup_bg));
@@ -420,9 +448,12 @@ impl Palette {
             let i = self.rows[vi];
             let width = lrect.width.saturating_sub(2) as usize;
             let spans: Vec<(String, Style)> = match self.source() {
-                Source::Files | Source::Recent => {
-                    let path =
-                        if self.source() == Source::Files { self.files[i].clone() } else { display_path(&self.recent[i], &self.root) };
+                Source::Files | Source::Recent | Source::Projects => {
+                    let path = match self.source() {
+                        Source::Files => self.files[i].clone(),
+                        Source::Projects => self.projects_shown[i].clone(),
+                        _ => display_path(&self.recent[i], &self.root),
+                    };
                     let (dir, name) = match path.rfind('/') {
                         Some(k) => (path[..k + 1].to_string(), path[k + 1..].to_string()),
                         None => (String::new(), path.clone()),
@@ -513,6 +544,15 @@ pub fn display_path(p: &Path, root: &Path) -> String {
     match p.strip_prefix(root) {
         Ok(rel) => rel.to_string_lossy().replace('\\', "/"),
         Err(_) => p.to_string_lossy().into_owned(),
+    }
+}
+
+/// `p` with the home directory written as `~`.
+fn tilde_path(p: &Path, home: Option<&Path>) -> String {
+    match home.and_then(|h| p.strip_prefix(h).ok()) {
+        Some(rel) if rel.as_os_str().is_empty() => "~".to_string(),
+        Some(rel) => format!("~/{}", rel.to_string_lossy()),
+        None => p.to_string_lossy().into_owned(),
     }
 }
 
@@ -628,6 +668,25 @@ mod tests {
         assert_eq!(r.len(), 2);
         let r = rank_texts("palfil", items.iter().copied(), &mut m);
         assert_eq!(r, vec![0]);
+    }
+
+    #[test]
+    fn projects_leave_out_the_root_and_accept_switches_root() {
+        let mut p = Palette::new(PaletteKind::RecentProjects, PathBuf::from("/w/here"));
+        p.set_projects(&[PathBuf::from("/w/here"), PathBuf::from("/w/alpha"), PathBuf::from("/w/beta")]);
+        assert_eq!(p.rows, [0, 1]);
+        assert_eq!(p.handle_action(&PaletteAction::Accept), Some(PaletteResult::Accept(Accept::SwitchRoot(PathBuf::from("/w/alpha")))));
+        p.set_query("beta");
+        assert_eq!(p.handle_action(&PaletteAction::Accept), Some(PaletteResult::Accept(Accept::SwitchRoot(PathBuf::from("/w/beta")))));
+    }
+
+    #[test]
+    fn home_is_shown_as_tilde() {
+        let home = Some(Path::new("/home/u"));
+        assert_eq!(tilde_path(Path::new("/home/u/src/jetl"), home), "~/src/jetl");
+        assert_eq!(tilde_path(Path::new("/home/u"), home), "~");
+        assert_eq!(tilde_path(Path::new("/home/user2/x"), home), "/home/user2/x");
+        assert_eq!(tilde_path(Path::new("/opt/x"), None), "/opt/x");
     }
 
     #[test]

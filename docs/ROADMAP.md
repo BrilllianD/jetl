@@ -12,7 +12,7 @@ task (`yman ls`); phases are umbrella tasks and the rows are their subtasks.
   move-line, external-change detection, autosave.
 - **Shell:** fixed layout with one left slot and one bottom slot. The side each tool window lives
   on is hardcoded in `ToolWindowId::side()`. A new bottom tool window is just a new enum variant
-  and needs no layout rewrite. The palette has Files/Actions/Everywhere/Recent/Branches modes.
+  and needs no layout rewrite. The palette has Files/Actions/Everywhere/Recent/Branches/Recent Projects modes.
   Dialogs come in confirm, input and choice kinds. The session stores tabs, carets, bookmarks, the tool window layout and expanded tree folders.
   `App.notifications` keeps 200 entries, but nothing in the UI shows them.
 - **Git:** staging is whole-file only. Gutter marks are based on HEAD and are render-only. The
