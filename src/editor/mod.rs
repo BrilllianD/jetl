@@ -466,9 +466,15 @@ impl Editor {
 
     /// Set the HEAD text the gutter compares against; marks are recomputed
     /// on the next [`Editor::update_gutters`].
-    pub fn set_diff_base(&mut self, path: &Path, text: Option<String>) {
+    /// HEAD text of `path` from blob request `seq`; an older request that
+    /// finishes after a newer one is ignored.
+    pub fn set_diff_base(&mut self, path: &Path, seq: u64, text: Option<String>) {
         let Some(i) = self.index_of(path) else { return };
         let b = &mut self.buffers[i];
+        if seq < b.diff_base_seq {
+            return;
+        }
+        b.diff_base_seq = seq;
         if text.is_none() {
             b.gutter.clear();
         }

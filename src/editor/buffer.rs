@@ -77,6 +77,8 @@ pub struct Buffer {
     /// HEAD version of the file for gutter marks; `None` for untracked
     /// files, files outside a repository, or before the blob arrives.
     pub diff_base: Option<String>,
+    /// Blob request that produced `diff_base`.
+    pub diff_base_seq: u64,
     pub search: Option<super::search::SearchState>,
     /// Caret, version and text area size when the view last followed the
     /// caret. The view only scrolls to the caret when one of them changes,
@@ -132,6 +134,7 @@ impl Buffer {
             gutter: Vec::new(),
             gutter_version: u64::MAX,
             diff_base: None,
+            diff_base_seq: 0,
             search: None,
             follow_key: None,
             expand_stack: Vec::new(),

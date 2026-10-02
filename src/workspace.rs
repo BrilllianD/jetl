@@ -14,11 +14,15 @@ use crate::ui::dialog::{Dialog, DialogId};
 #[derive(Debug, Clone)]
 pub struct Workspace {
     pub root: PathBuf,
+    /// Bumped on every root switch. Background work tags its result with
+    /// the generation it started under; the app drops results whose tag is
+    /// no longer current.
+    pub generation: u64,
 }
 
 impl Workspace {
     pub fn new(root: PathBuf) -> Self {
-        Self { root }
+        Self { root, generation: 1 }
     }
 
     pub fn name(&self) -> String {
@@ -29,9 +33,10 @@ impl Workspace {
         &self.root
     }
 
-    /// Set the root; returns the previous one. The app does the rest of a
-    /// switch in [`App::switch_root`].
+    /// Set the root and bump the generation; returns the previous root. The
+    /// app does the rest of a switch in [`App::switch_root`].
     pub fn switch_root(&mut self, root: PathBuf) -> PathBuf {
+        self.generation += 1;
         std::mem::replace(&mut self.root, root)
     }
 }
@@ -145,8 +150,8 @@ impl App {
         }
         let old = self.workspace.switch_root(root.clone());
         tracing::info!("switch root {} -> {}", old.display(), root.display());
-        // Bumps the git generation (stale results are dropped), resets the
-        // Git panel, and requests status and branches.
+        // Points git at the new root and generation, resets the Git panel,
+        // and requests status and branches.
         self.git_root_changed(root.clone());
         self.worktrees.reset();
         self.git.load_worktrees();
@@ -200,7 +205,7 @@ impl App {
     /// tabs open in [`App::session_loaded`].
     pub fn restore_session(&self) {
         let (dir, root, generation, tx) =
-            (self.paths.sessions_dir(), self.workspace.root.clone(), self.git.generation, self.bus_tx.clone());
+            (self.paths.sessions_dir(), self.workspace.root.clone(), self.workspace.generation, self.bus_tx.clone());
         tokio::task::spawn_blocking(move || {
             let Some(session) = Session::load(&dir, &root) else { return };
             let files = session.files.iter().map(|f| std::fs::read(&f.path)).collect();
@@ -211,7 +216,7 @@ impl App {
     /// Open the tabs of a loaded session (dropped when the root changed
     /// since). Missing files are skipped.
     pub fn session_loaded(&mut self, generation: u64, session: Session, files: Vec<std::io::Result<Vec<u8>>>) {
-        if generation != self.git.generation {
+        if generation != self.workspace.generation {
             tracing::debug!("dropping stale session for {}", session.root.display());
             return;
         }
@@ -310,7 +315,7 @@ mod tests {
         let loaded = Session::load(&app.paths.sessions_dir(), &app.workspace.root).unwrap();
         assert_eq!(loaded, session);
         // The file lost a line since; the mark past the end is dropped.
-        let generation = fresh.git.generation;
+        let generation = fresh.workspace.generation;
         fresh.session_loaded(generation, loaded, vec![Ok(b"zero\none\ntwo".to_vec())]);
         let b = &fresh.editor.buffers[0];
         assert_eq!(b.bookmarks.iter().copied().collect::<Vec<_>>(), vec![1]);

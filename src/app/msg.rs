@@ -14,7 +14,7 @@ impl App {
         self.dirty_frame = true;
         match msg {
             AppMsg::FileLoaded { generation, path, result, focus } => {
-                if generation == self.git.generation {
+                if generation == self.workspace.generation {
                     self.file_loaded(path, result, focus);
                 } else {
                     tracing::debug!("dropping stale load of {}", path.display());
@@ -22,14 +22,14 @@ impl App {
             }
             AppMsg::Git(m) => self.on_git_msg(m),
             AppMsg::Worktrees { generation, result } => {
-                if generation == self.git.generation {
+                if generation == self.workspace.generation {
                     self.worktrees.set_list(result, &self.workspace.root);
                 } else {
                     tracing::debug!("dropping stale worktree list");
                 }
             }
             AppMsg::SessionLoaded { generation, session, files } => self.session_loaded(generation, session, files),
-            AppMsg::FileIndex { generation, files } => self.file_index_loaded(generation, files),
+            AppMsg::FileIndex { generation, seq, files } => self.file_index_loaded(generation, seq, files),
             AppMsg::Lsp(_) => {}
         }
     }
@@ -38,7 +38,7 @@ impl App {
         if let GitMsg::OpDone { id, .. } = &msg {
             self.git.finish(*id);
         }
-        if msg.generation() != self.git.generation {
+        if msg.generation() != self.workspace.generation {
             tracing::debug!("dropping stale git result");
             return;
         }
@@ -61,8 +61,8 @@ impl App {
                     }
                 }
             }
-            GitMsg::Blob { path, which: BlobWhich::Head, text, .. } => {
-                self.editor.set_diff_base(&path, text);
+            GitMsg::Blob { seq, path, which: BlobWhich::Head, text, .. } => {
+                self.editor.set_diff_base(&path, seq, text);
                 self.editor.update_gutters();
             }
             GitMsg::Blob { .. } => {}
@@ -154,7 +154,7 @@ impl App {
     /// generation so in-flight results are dropped, forget the old state,
     /// and load the new one.
     pub fn git_root_changed(&mut self, root: PathBuf) {
-        self.git.set_root(root);
+        self.git.set_root(root, self.workspace.generation);
         self.git_panel.reset();
         self.project.set_git_status(Default::default());
         for b in &mut self.editor.buffers {
@@ -185,7 +185,7 @@ impl App {
             }
             return;
         }
-        let (tx, generation) = (self.bus_tx.clone(), self.git.generation);
+        let (tx, generation) = (self.bus_tx.clone(), self.workspace.generation);
         tokio::task::spawn_blocking(move || {
             let result = std::fs::read(&path);
             let _ = tx.send(AppMsg::FileLoaded { generation, path, result, focus });

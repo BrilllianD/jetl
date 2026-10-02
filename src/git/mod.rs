@@ -67,6 +67,8 @@ pub enum GitMsg {
     },
     Blob {
         generation: u64,
+        /// Request order; the editor keeps the newest per buffer.
+        seq: u64,
         path: PathBuf,
         which: BlobWhich,
         text: Option<String>,
@@ -139,25 +141,37 @@ pub enum GitRequest {
 
 pub struct GitService {
     pub root: PathBuf,
+    /// The workspace generation of `root`, copied in by `set_root`.
     pub generation: u64,
     tx: UnboundedSender<AppMsg>,
     next_id: u64,
     status_seq: AtomicU64,
+    blob_seq: AtomicU64,
     /// Running operations (id, label), oldest first.
     pub busy: Vec<(u64, String)>,
     pub tab_width: usize,
 }
 
 impl GitService {
-    pub fn new(root: PathBuf, tx: UnboundedSender<AppMsg>) -> Self {
-        Self { root, generation: 1, tx, next_id: 1, status_seq: AtomicU64::new(0), busy: Vec::new(), tab_width: 4 }
+    pub fn new(root: PathBuf, generation: u64, tx: UnboundedSender<AppMsg>) -> Self {
+        Self {
+            root,
+            generation,
+            tx,
+            next_id: 1,
+            status_seq: AtomicU64::new(0),
+            blob_seq: AtomicU64::new(0),
+            busy: Vec::new(),
+            tab_width: 4,
+        }
     }
 
-    /// Point the service at a new root. Results of work started for the old
-    /// root are dropped by generation.
-    pub fn set_root(&mut self, root: PathBuf) {
+    /// Point the service at a new root (`Workspace::generation` already
+    /// bumped). Results of work started for the old root are dropped by
+    /// generation.
+    pub fn set_root(&mut self, root: PathBuf, generation: u64) {
         self.root = root;
-        self.generation += 1;
+        self.generation = generation;
         self.busy.clear();
     }
 
@@ -189,7 +203,11 @@ impl GitService {
 
     pub fn load_blob(&self, path: PathBuf, which: BlobWhich) {
         let p = path.clone();
-        self.blocking(move |root| repo::blob_text(root, &p, which), move |generation, text| GitMsg::Blob { generation, path, which, text });
+        let seq = self.blob_seq.fetch_add(1, Ordering::SeqCst) + 1;
+        self.blocking(
+            move |root| repo::blob_text(root, &p, which),
+            move |generation, text| GitMsg::Blob { generation, seq, path, which, text },
+        );
     }
 
     pub fn load_branches(&self) {

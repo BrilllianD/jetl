@@ -76,8 +76,13 @@ pub struct Notification {
 /// The palette's cached file list of the current root.
 #[derive(Debug, Default)]
 pub struct FileIndex {
-    /// Git generation (bumped on every root switch) the files belong to.
+    /// Workspace generation the files belong to.
     pub generation: u64,
+    /// Request order of the walk that produced `files`; older walks that
+    /// finish later are dropped.
+    pub seq: u64,
+    /// Walks requested so far.
+    pub requested: u64,
     pub files: std::sync::Arc<Vec<String>>,
     pub loading: bool,
 }
@@ -145,12 +150,13 @@ impl App {
         let mode = if modal { Mode::Normal } else { Mode::Insert };
         let layout = LayoutState::new(config.ui.left_width, config.ui.bottom_height);
         let root_for_panels = root.clone();
-        let mut git = GitService::new(root.clone(), bus_tx.clone());
+        let workspace = Workspace::new(root.clone());
+        let mut git = GitService::new(root.clone(), workspace.generation, bus_tx.clone());
         git.tab_width = config.editor.tab_width;
         let mut git_panel = GitPanel::new();
         git_panel.set_log_page(config.git.log_page);
         let mut app = Self {
-            workspace: Workspace::new(root),
+            workspace,
             theme,
             layout,
             focus: Focus::new(),
@@ -579,15 +585,52 @@ pub(crate) mod tests {
     async fn stale_file_load_is_dropped() {
         let (mut app, dir) = test_app("stale-load");
         let path = app.workspace.root.join("a.txt");
-        let old = app.git.generation;
+        let old = app.workspace.generation;
         // The root switches while the read is in flight.
-        app.git.set_root(app.workspace.root.clone());
+        app.workspace.generation += 1;
         app.handle_msg(AppMsg::FileLoaded { generation: old, path: path.clone(), result: Ok(b"old".to_vec()), focus: true });
         assert!(app.editor.buffers.is_empty());
-        let current = app.git.generation;
+        let current = app.workspace.generation;
         app.handle_msg(AppMsg::FileLoaded { generation: current, path: path.clone(), result: Ok(b"new".to_vec()), focus: true });
         assert_eq!(app.editor.buffers.len(), 1);
         assert_eq!(app.editor.buffers[0].text(), "new");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn file_index_keeps_the_newest_walk() {
+        let (mut app, dir) = test_app("file-index-seq");
+        let g = app.workspace.generation;
+        app.file_index.requested = 2;
+        let files = |n: &str| vec![n.to_string()];
+        app.handle_msg(AppMsg::FileIndex { generation: g, seq: 2, files: files("new") });
+        assert!(!app.file_index.loading);
+        app.handle_msg(AppMsg::FileIndex { generation: g, seq: 1, files: files("old") });
+        assert_eq!(*app.file_index.files, files("new"), "an older walk finishing late is dropped");
+        app.file_index.requested = 3;
+        app.handle_msg(AppMsg::FileIndex { generation: g - 1, seq: 3, files: files("other root") });
+        assert_eq!(*app.file_index.files, files("new"), "a walk of the previous root is dropped");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn older_head_blob_does_not_replace_newer() {
+        let (mut app, dir) = test_app("blob-seq");
+        let path = app.workspace.root.join("a.txt");
+        let g = app.workspace.generation;
+        app.handle_msg(AppMsg::FileLoaded { generation: g, path: path.clone(), result: Ok(b"x".to_vec()), focus: true });
+        let blob = |seq: u64, text: &str| {
+            AppMsg::Git(GitMsg::Blob {
+                generation: g,
+                seq,
+                path: path.clone(),
+                which: crate::git::BlobWhich::Head,
+                text: Some(text.into()),
+            })
+        };
+        app.handle_msg(blob(2, "new head"));
+        app.handle_msg(blob(1, "old head"));
+        assert_eq!(app.editor.buffers[0].diff_base.as_deref(), Some("new head"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

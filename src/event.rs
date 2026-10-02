@@ -13,8 +13,8 @@ pub enum Level {
 
 #[derive(Debug)]
 pub enum AppMsg {
-    /// A file read for a new tab, tagged with the git generation at the time
-    /// of the request so loads from a previous root are dropped.
+    /// A file read for a new tab, tagged with the workspace generation at
+    /// the time of the request so loads from a previous root are dropped.
     FileLoaded {
         generation: u64,
         path: PathBuf,
@@ -22,21 +22,23 @@ pub enum AppMsg {
         focus: bool,
     },
     Git(crate::git::GitMsg),
-    /// `git worktree list`, tagged with the git generation like `GitMsg`.
+    /// `git worktree list`, tagged with the workspace generation like `GitMsg`.
     Worktrees {
         generation: u64,
         result: anyhow::Result<Vec<crate::worktree::Worktree>>,
     },
     /// A saved session and its files (`files[i]` belongs to
-    /// `session.files[i]`), tagged with the git generation.
+    /// `session.files[i]`), tagged with the workspace generation.
     SessionLoaded {
         generation: u64,
         session: crate::workspace::Session,
         files: Vec<std::io::Result<Vec<u8>>>,
     },
-    /// The palette's file walk of the root, tagged with the git generation.
+    /// The palette's file walk of the root, tagged with the workspace
+    /// generation and its request order.
     FileIndex {
         generation: u64,
+        seq: u64,
         files: Vec<String>,
     },
     /// Reserved for the language server integration.

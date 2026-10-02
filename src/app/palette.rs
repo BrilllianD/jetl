@@ -62,23 +62,26 @@ impl App {
     }
 
     /// Walk the root for the palette in `spawn_blocking`; the result is
-    /// tagged with the git generation and dropped after a root switch.
+    /// tagged with the workspace generation and dropped after a root switch.
     pub fn refresh_file_index(&mut self) {
         self.file_index.loading = true;
-        let (root, generation, tx) = (self.workspace.root.clone(), self.git.generation, self.bus_tx.clone());
+        self.file_index.requested += 1;
+        let seq = self.file_index.requested;
+        let (root, generation, tx) = (self.workspace.root.clone(), self.workspace.generation, self.bus_tx.clone());
         let (hidden, ignored) = (self.config.files.show_hidden, self.config.files.show_ignored);
         tokio::task::spawn_blocking(move || {
             let files = crate::ui::palette::walk_files(&root, hidden, ignored);
-            let _ = tx.send(AppMsg::FileIndex { generation, files });
+            let _ = tx.send(AppMsg::FileIndex { generation, seq, files });
         });
     }
 
-    pub(super) fn file_index_loaded(&mut self, generation: u64, files: Vec<String>) {
-        if generation != self.git.generation {
+    pub(super) fn file_index_loaded(&mut self, generation: u64, seq: u64, files: Vec<String>) {
+        if generation != self.workspace.generation || seq <= self.file_index.seq {
             tracing::debug!("dropping stale file index");
             return;
         }
-        self.file_index = FileIndex { generation, files: std::sync::Arc::new(files), loading: false };
+        let requested = self.file_index.requested;
+        self.file_index = FileIndex { generation, seq, requested, files: std::sync::Arc::new(files), loading: seq < requested };
         if let Some(p) = self.palette.as_mut().filter(|p| p.wants(Source::Files)) {
             p.set_files(self.file_index.files.clone(), false);
         }
