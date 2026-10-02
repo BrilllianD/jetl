@@ -297,6 +297,19 @@ impl Buffer {
         self.apply(vec![Change::delete(s, old)], Selection::point(s), TxKind::Other);
     }
 
+    pub fn delete_word_forward(&mut self) {
+        if self.delete_selection() {
+            return;
+        }
+        let p = self.sel.head;
+        let e = selection::next_word_boundary(&self.rope, p);
+        if e == p {
+            return;
+        }
+        let old = self.rope.slice(p..e).to_string();
+        self.apply(vec![Change::delete(p, old)], Selection::point(p), TxKind::Other);
+    }
+
     /// Newline keeping the current line's indentation.
     pub fn newline(&mut self) {
         let (line, col) = self.cursor_line_col();
@@ -475,15 +488,64 @@ impl Buffer {
         self.apply(changes, sel_after, TxKind::Other);
     }
 
+    /// Index of the last line, not counting the empty line after a final
+    /// line break.
+    fn last_line(&self) -> usize {
+        let last = self.rope.len_lines() - 1;
+        if last > 0 && line_len_no_eol(&self.rope, last) == 0 { last - 1 } else { last }
+    }
+
+    /// Join the caret line with the next one, or all lines of a multi-line
+    /// selection: the line break, trailing whitespace before it and the
+    /// next line's indentation become one space (none next to an empty
+    /// line). The caret lands at the join point.
+    pub fn join_lines(&mut self) {
+        let (l0, l1) = self.selected_lines();
+        let l1 = if l1 == l0 { l0 + 1 } else { l1 };
+        let l1 = l1.min(self.last_line());
+        if l1 <= l0 {
+            return;
+        }
+        let mut changes = Vec::new();
+        for l in (l0..l1).rev() {
+            let text = self.line_text(l);
+            let kept = text.trim_end().chars().count();
+            let at = self.rope.line_to_char(l) + kept;
+            let next = self.rope.line_to_char(l + 1);
+            let next_indent = selection::indent_of(&self.rope, l + 1);
+            let next_empty = next_indent >= line_len_no_eol(&self.rope, l + 1);
+            let old = self.rope.slice(at..next + next_indent).to_string();
+            let new = if kept == 0 || next_empty { "" } else { " " };
+            changes.push(Change::replace(at, old, new));
+        }
+        let sel_after = if self.sel.is_empty() { Selection::point(changes[0].at) } else { self.sel_through(&changes) };
+        self.apply(changes, sel_after, TxKind::Other);
+    }
+
+    /// Uppercase the selection (or the word at the caret) if it has any
+    /// lowercase char, otherwise lowercase it.
+    pub fn toggle_case(&mut self) {
+        let r = if self.sel.is_empty() { selection::word_at(&self.rope, self.sel.head) } else { self.sel.range() };
+        if r.is_empty() {
+            return;
+        }
+        let old = self.rope.slice(r.clone()).to_string();
+        let new = if old.chars().any(char::is_lowercase) { old.to_uppercase() } else { old.to_lowercase() };
+        if new == old {
+            return;
+        }
+        // Case mapping can change the length (ß -> SS).
+        let n = new.chars().count();
+        let sel_after = if self.sel.is_empty() { Selection::point(self.sel.head.min(r.start + n)) } else { Selection::new(r.start, r.start + n) };
+        self.apply(vec![Change::replace(r.start, old, new)], sel_after, TxKind::Other);
+    }
+
     /// Swap the selected lines (or the caret line) with the line above or
     /// below; the selection moves with them. No-op at the document edge;
     /// the empty line after a final line break does not count as a line.
     pub fn move_lines(&mut self, up: bool) {
         let (l0, l1) = self.selected_lines();
-        let mut last = self.rope.len_lines() - 1;
-        if last > 0 && line_len_no_eol(&self.rope, last) == 0 {
-            last -= 1;
-        }
+        let last = self.last_line();
         if (up && l0 == 0) || (!up && l1 >= last) {
             return;
         }
@@ -817,6 +879,56 @@ mod tests {
         buf.move_lines(true);
         assert_eq!(buf.text(), "a\nb\nx\ny\n");
         assert_eq!(buf.sel.range(), 0..4);
+    }
+
+    #[test]
+    fn join_lines_caret_and_selection() {
+        let mut buf = b("let a = foo(  \n    bar);\n\n  x\n");
+        buf.goto_line(0, 3);
+        buf.join_lines();
+        assert_eq!(buf.text(), "let a = foo( bar);\n\n  x\n");
+        assert_eq!(buf.sel.head, 12, "caret at the join point");
+        // Next to an empty line no space is added.
+        buf.join_lines();
+        assert_eq!(buf.text(), "let a = foo( bar);\n  x\n");
+        let mut buf = b("a\n b\n  c\nd\n");
+        buf.sel = Selection::new(0, buf.rope.line_to_char(2) + 1);
+        buf.join_lines();
+        assert_eq!(buf.text(), "a b c\nd\n");
+        assert_eq!(buf.undo.len(), 1);
+        // The last line has nothing to join with.
+        buf.goto_line(1, 0);
+        buf.join_lines();
+        assert_eq!(buf.text(), "a b c\nd\n");
+    }
+
+    #[test]
+    fn toggle_case_word_and_selection() {
+        let mut buf = b("helloWorld foo");
+        buf.goto_line(0, 2);
+        buf.toggle_case();
+        assert_eq!(buf.text(), "HELLOWORLD foo");
+        assert_eq!(buf.sel.head, 2);
+        buf.toggle_case();
+        assert_eq!(buf.text(), "helloworld foo");
+        let mut buf = b("straße");
+        buf.select_all();
+        buf.toggle_case();
+        assert_eq!(buf.text(), "STRASSE");
+        assert_eq!(buf.sel.range(), 0..7, "selection covers the longer text");
+    }
+
+    #[test]
+    fn delete_word_forward_mirrors_back() {
+        let mut buf = b("foo bar.baz");
+        buf.goto_line(0, 0);
+        buf.delete_word_forward();
+        assert_eq!(buf.text(), "bar.baz");
+        buf.delete_word_forward();
+        assert_eq!(buf.text(), ".baz");
+        buf.goto_line(0, 4);
+        buf.delete_word_forward();
+        assert_eq!(buf.text(), ".baz", "nothing after the end");
     }
 
     #[test]

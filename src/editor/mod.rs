@@ -447,6 +447,8 @@ impl Editor {
             E::Unindent => b.unindent_lines(tab_width),
             E::MoveLineUp => b.move_lines(true),
             E::MoveLineDown => b.move_lines(false),
+            E::JoinLines => b.join_lines(),
+            E::ToggleCase => b.toggle_case(),
             E::Backspace => {
                 if !b.backspace_pair(pairs()) {
                     b.backspace();
@@ -454,6 +456,7 @@ impl Editor {
             }
             E::Delete => b.delete_forward(),
             E::DeleteWordBack => b.delete_word_back(),
+            E::DeleteWordForward => b.delete_word_forward(),
             E::Move(m, extend) => {
                 let page = rows.saturating_sub(1).max(1);
                 apply_motion(&b.rope, &mut b.sel, *m, *extend, &mut b.desired_col, page);

@@ -54,6 +54,7 @@ Override any of them in `~/.config/jetl/keymap.toml` (see [CONFIG.md](CONFIG.md)
 | `Backspace` | `editor.backspace` | Delete left |
 | `Delete` | `editor.delete` | Delete right |
 | `Ctrl+Backspace` | `editor.delete_word_back` | Delete word left |
+| `Ctrl+Delete` | `editor.delete_word_forward` | Delete word right |
 | `Left` | `editor.left` | Move left |
 | `Right` | `editor.right` | Move right |
 | `Up` | `editor.up` | Move up |
@@ -96,6 +97,8 @@ Override any of them in `~/.config/jetl/keymap.toml` (see [CONFIG.md](CONFIG.md)
 | `Ctrl+7` | `editor.toggle_comment` | Comment with line comment |
 | `Alt+Shift+Up` | `editor.move_line_up` | Move line up |
 | `Alt+Shift+Down` | `editor.move_line_down` | Move line down |
+| `Ctrl+Shift+J` * | `editor.join_lines` | Join lines |
+| `Ctrl+Shift+U` * | `editor.toggle_case` | Toggle case |
 | `Ctrl+Shift+M` * | `editor.goto_bracket` | Move caret to matching bracket |
 | `Ctrl+Up` | `editor.scroll_up` | Scroll up |
 | `Ctrl+Down` | `editor.scroll_down` | Scroll down |

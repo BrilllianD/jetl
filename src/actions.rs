@@ -66,6 +66,7 @@ pub enum EditorAction {
     Backspace,
     Delete,
     DeleteWordBack,
+    DeleteWordForward,
     Move(Motion, bool),
     Undo,
     Redo,
@@ -98,6 +99,8 @@ pub enum EditorAction {
     ToggleComment,
     MoveLineUp,
     MoveLineDown,
+    JoinLines,
+    ToggleCase,
     GotoBracket,
     ScrollUp(usize),
     ScrollDown(usize),
@@ -220,6 +223,7 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "editor.backspace" => "Delete left", Editor(E::Backspace);
         "editor.delete" => "Delete right", Editor(E::Delete);
         "editor.delete_word_back" => "Delete word left", Editor(E::DeleteWordBack);
+        "editor.delete_word_forward" => "Delete word right", Editor(E::DeleteWordForward);
         "editor.left" => "Move left", Editor(E::Move(M::Left, false));
         "editor.right" => "Move right", Editor(E::Move(M::Right, false));
         "editor.up" => "Move up", Editor(E::Move(M::Up, false));
@@ -275,6 +279,8 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "editor.toggle_comment" => "Comment with line comment", Editor(E::ToggleComment);
         "editor.move_line_up" => "Move line up", Editor(E::MoveLineUp);
         "editor.move_line_down" => "Move line down", Editor(E::MoveLineDown);
+        "editor.join_lines" => "Join lines", Editor(E::JoinLines);
+        "editor.toggle_case" => "Toggle case", Editor(E::ToggleCase);
         "editor.goto_bracket" => "Move caret to matching bracket", Editor(E::GotoBracket);
         "editor.scroll_up" => "Scroll up", Editor(E::ScrollUp(1));
         "editor.scroll_down" => "Scroll down", Editor(E::ScrollDown(1));
