@@ -20,6 +20,8 @@ pub struct LanguageDef {
     pub query: Query,
     /// Line comment token for "comment with line comment".
     pub line_comment: Option<&'static str>,
+    /// Block comment delimiters for "comment with block comment".
+    pub block_comment: Option<(&'static str, &'static str)>,
     /// Enter after a trailing `:` indents one level (Python, YAML).
     pub indent_after_colon: bool,
 }
@@ -30,11 +32,19 @@ fn make(name: &'static str, extensions: &'static [&'static str], filenames: &'st
     for n in (1..=queries.len()).rev() {
         let src: String = queries[..n].join("\n");
         match Query::new(&language, &src) {
-            Ok(query) => return Some(LanguageDef { name, extensions, filenames, language: language.clone(), query, line_comment, indent_after_colon: matches!(name, "python" | "yaml") }),
+            Ok(query) => return Some(LanguageDef { name, extensions, filenames, language: language.clone(), query, line_comment, block_comment: block_comment(name), indent_after_colon: matches!(name, "python" | "yaml") }),
             Err(e) => tracing::warn!("highlight query for {name} ({n} parts): {e}"),
         }
     }
     None
+}
+
+fn block_comment(name: &str) -> Option<(&'static str, &'static str)> {
+    match name {
+        "rust" | "javascript" | "typescript" | "tsx" | "csharp" | "css" | "scss" => Some(("/*", "*/")),
+        "html" | "xml" | "markdown" => Some(("<!--", "-->")),
+        _ => None,
+    }
 }
 
 pub static LANGUAGES: LazyLock<Vec<LanguageDef>> = LazyLock::new(|| {

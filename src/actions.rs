@@ -97,6 +97,7 @@ pub enum EditorAction {
     Switcher,
     Escape,
     ToggleComment,
+    ToggleBlockComment,
     MoveLineUp,
     MoveLineDown,
     JoinLines,
@@ -279,6 +280,7 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "editor.switcher" => "Switcher (recent tabs)", Editor(E::Switcher);
         "editor.escape" => "Escape (close find, clear selection)", Editor(E::Escape);
         "editor.toggle_comment" => "Comment with line comment", Editor(E::ToggleComment);
+        "editor.toggle_block_comment" => "Comment with block comment", Editor(E::ToggleBlockComment);
         "editor.move_line_up" => "Move line up", Editor(E::MoveLineUp);
         "editor.move_line_down" => "Move line down", Editor(E::MoveLineDown);
         "editor.join_lines" => "Join lines", Editor(E::JoinLines);

@@ -428,7 +428,7 @@ impl Editor {
         if !matches!(a, E::ExpandSelection | E::ShrinkSelection | E::Copy | E::ScrollUp(_) | E::ScrollDown(_)) {
             b.expand_stack.clear();
         }
-        let pairs = || if auto_close { brackets::pairs(b.path.as_deref().and_then(syntax::detect).map(|d| d.name)) } else { &[] };
+        let pairs = || if auto_close { brackets::pairs(b.language().map(|d| d.name)) } else { &[] };
         match a {
             E::InsertChar(c) => {
                 let pairs = pairs();
@@ -449,7 +449,7 @@ impl Editor {
                 b.insert(&s, TxKind::Other);
             }
             E::InsertNewline => {
-                let colon = b.path.as_deref().and_then(syntax::detect).is_some_and(|d| d.indent_after_colon);
+                let colon = b.language().is_some_and(|d| d.indent_after_colon);
                 b.newline_smart(tab_width, colon);
             }
             E::InsertTab => {
@@ -548,12 +548,19 @@ impl Editor {
                 }
             }
             E::ToggleComment => {
-                let token = b.path.as_deref().and_then(syntax::detect).and_then(|d| d.line_comment);
-                match token {
-                    Some(t) => b.toggle_line_comment(t),
-                    None => cx.notify(Level::Info, "No line comment for this file type"),
+                let lang = b.language();
+                match (lang.and_then(|d| d.line_comment), lang.and_then(|d| d.block_comment)) {
+                    (Some(t), _) => b.toggle_line_comment(t),
+                    // CSS, HTML and XML have no line comment; JetBrains
+                    // comments the lines with a block comment instead.
+                    (None, Some((open, close))) => b.toggle_block_comment_lines(open, close),
+                    (None, None) => cx.notify(Level::Info, "No line comment for this file type"),
                 }
             }
+            E::ToggleBlockComment => match b.language().and_then(|d| d.block_comment) {
+                Some((open, close)) => b.toggle_block_comment(open, close),
+                None => cx.notify(Level::Info, "No block comment for this file type"),
+            },
             E::GotoBracket => {
                 if let Some(s) = &mut b.syntax {
                     s.reparse(&b.rope);
@@ -1258,6 +1265,42 @@ mod tests {
         });
         assert_eq!(ed.active_buffer().unwrap().text(), "fn f() {\n    }");
         assert_eq!(ed.active_buffer().unwrap().sel.head, 14);
+    }
+
+    #[cfg(feature = "lang-css")]
+    #[test]
+    fn css_ctrl_slash_falls_back_to_block_comment() {
+        let mut ed = editor_with("a.css", "a {\n    color: red;\n}\n");
+        ed.active_buffer_mut().unwrap().sel = Selection::point(10);
+        let notes = with_cx(|cx| {
+            ed.handle_action(&EditorAction::ToggleComment, cx);
+        });
+        assert!(notes.is_empty(), "{notes:?}");
+        let b = ed.active_buffer().unwrap();
+        assert_eq!(b.text(), "a {\n    /* color: red; */\n}\n");
+        assert_eq!(b.sel.head, 13, "caret stays on the same character");
+        with_cx(|cx| {
+            ed.handle_action(&EditorAction::ToggleComment, cx);
+        });
+        assert_eq!(ed.active_buffer().unwrap().text(), "a {\n    color: red;\n}\n");
+        // A selection over two lines becomes one block from the first indent.
+        ed.active_buffer_mut().unwrap().sel = Selection::new(2, 10);
+        with_cx(|cx| {
+            ed.handle_action(&EditorAction::ToggleComment, cx);
+        });
+        assert_eq!(ed.active_buffer().unwrap().text(), "/* a {\n    color: red; */\n}\n");
+        assert!(ed.active_buffer_mut().unwrap().undo());
+        assert_eq!(ed.active_buffer().unwrap().text(), "a {\n    color: red;\n}\n", "one undo step");
+    }
+
+    #[test]
+    fn block_comment_without_delimiters_notifies() {
+        let mut ed = editor_with("a.txt", "plain");
+        let notes = with_cx(|cx| {
+            ed.handle_action(&EditorAction::ToggleBlockComment, cx);
+        });
+        assert_eq!(notes, vec!["No block comment for this file type".to_string()]);
+        assert_eq!(ed.active_buffer().unwrap().text(), "plain");
     }
 
     #[cfg(feature = "lang-python")]

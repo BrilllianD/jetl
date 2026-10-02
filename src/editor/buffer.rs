@@ -527,6 +527,65 @@ impl Buffer {
         });
     }
 
+    /// Wrap the selection, or the caret line from its indent to the end, in
+    /// a block comment, or unwrap it when its trimmed text already is one.
+    pub fn toggle_block_comment(&mut self, open: &str, close: &str) {
+        let r = if self.sel.is_empty() { self.line_content(self.rope.char_to_line(self.sel.head), self.rope.char_to_line(self.sel.head)) } else { self.sel.range() };
+        self.toggle_block_comment_in(r, open, close);
+    }
+
+    /// Block comment toggle on whole lines: the selected lines (or the caret
+    /// line) from the first one's indent to the last one's end. Ctrl+/ uses
+    /// it in languages without line comments.
+    pub fn toggle_block_comment_lines(&mut self, open: &str, close: &str) {
+        let (l0, l1) = self.selected_lines();
+        let r = self.line_content(l0, l1);
+        self.toggle_block_comment_in(r, open, close);
+    }
+
+    /// From the indent of `l0` to the end of `l1`, without the line break.
+    fn line_content(&self, l0: usize, l1: usize) -> std::ops::Range<usize> {
+        self.rope.line_to_char(l0) + selection::indent_of(&self.rope, l0)..self.rope.line_to_char(l1) + line_len_no_eol(&self.rope, l1)
+    }
+
+    /// Toggle a block comment around the trimmed text of `r`, as one
+    /// transaction. Unwrapping also drops one space inside each delimiter.
+    /// A selection keeps covering the text (and the added delimiters); a
+    /// caret stays on the same character.
+    fn toggle_block_comment_in(&mut self, r: std::ops::Range<usize>, open: &str, close: &str) {
+        let text = self.rope.slice(r.clone()).to_string();
+        let trimmed = text.trim();
+        let start = r.start + text.chars().take_while(|c| c.is_whitespace()).count();
+        let end = start + trimmed.chars().count();
+        let n = |s: &str| s.chars().count();
+        let changes = if trimmed.len() >= open.len() + close.len() && trimmed.starts_with(open) && trimmed.ends_with(close) {
+            let inner = &trimmed[open.len()..trimmed.len() - close.len()];
+            let lead = inner.starts_with(' ');
+            let trail = inner[lead as usize..].ends_with(' ');
+            let close_old = if trail { format!(" {close}") } else { close.to_string() };
+            let open_old = if lead { format!("{open} ") } else { open.to_string() };
+            vec![Change::delete(end - n(&close_old), close_old), Change::delete(start, open_old)]
+        } else if trimmed.is_empty() {
+            vec![Change::insert(start, format!("{open}{close}"))]
+        } else {
+            vec![Change::insert(end, format!(" {close}")), Change::insert(start, format!("{open} "))]
+        };
+        let sel_after = if self.sel.is_empty() {
+            // On a blank line the caret lands between the delimiters.
+            let p = if trimmed.is_empty() { start + n(open) } else { map_through(&changes, self.sel.head, false) };
+            Selection::point(p)
+        } else {
+            self.sel_through(&changes)
+        };
+        self.apply(changes, sel_after, TxKind::Other);
+    }
+
+    /// The buffer's language: the attached syntax's, else the one its path
+    /// suggests (files too large for syntax have none attached).
+    pub fn language(&self) -> Option<&'static super::syntax::LanguageDef> {
+        self.syntax.as_ref().map(|s| s.def).or_else(|| self.path.as_deref().and_then(super::syntax::detect))
+    }
+
     /// First and last line covered by the selection. A selection ending at
     /// column 0 does not include that line.
     fn selected_lines(&self) -> (usize, usize) {
@@ -803,7 +862,7 @@ mod tests {
     #[test]
     fn redo_restores_caret_of_line_ops() {
         type Op = fn(&mut Buffer);
-        let ops: [(&str, Op); 4] = [
+        let ops: [(&str, Op); 5] = [
             ("delete_line", |b| b.delete_line()),
             ("duplicate_line", |b| b.duplicate_line()),
             ("duplicate_last_line", |b| {
@@ -811,6 +870,7 @@ mod tests {
                 b.duplicate_line();
             }),
             ("toggle_comment", |b| b.toggle_line_comment("//")),
+            ("toggle_block_comment", |b| b.toggle_block_comment("/*", "*/")),
         ];
         for (name, op) in ops {
             let mut buf = b("alpha\n  beta\ngamma");
@@ -1057,6 +1117,60 @@ mod tests {
         buf.sel = Selection::new(0, buf.len_chars());
         buf.toggle_line_comment("#");
         assert_eq!(buf.text(), "# # let a;\n# let b;\n");
+    }
+
+    #[test]
+    fn block_comment_wraps_and_unwraps_selection() {
+        let mut buf = b("let a = f(x, y);\n");
+        // Select "f(x, y)" backwards; the selection grows to the delimiters.
+        buf.sel = Selection::new(15, 8);
+        buf.toggle_block_comment("/*", "*/");
+        assert_eq!(buf.text(), "let a = /* f(x, y) */;\n");
+        assert_eq!(buf.selected_text(), "/* f(x, y) */");
+        assert_eq!(buf.sel.head, 8, "direction kept");
+        assert_eq!(buf.undo.len(), 1);
+        buf.toggle_block_comment("/*", "*/");
+        assert_eq!(buf.text(), "let a = f(x, y);\n");
+        assert_eq!(buf.selected_text(), "f(x, y)");
+        // Surrounding whitespace in the selection is left outside; no inner
+        // spaces to drop is fine too.
+        let mut buf = b("<!--x--> y");
+        buf.sel = Selection::new(0, 9);
+        buf.toggle_block_comment("<!--", "-->");
+        assert_eq!(buf.text(), "x y");
+        assert_eq!(buf.selected_text(), "x ");
+        assert!(buf.undo());
+        assert_eq!(buf.text(), "<!--x--> y", "one undo step");
+    }
+
+    #[test]
+    fn block_comment_caret_line() {
+        let mut buf = b("fn f() {\n    call();\n}\n");
+        buf.goto_line(1, 6);
+        buf.toggle_block_comment("/*", "*/");
+        assert_eq!(buf.text(), "fn f() {\n    /* call(); */\n}\n");
+        assert_eq!(buf.cursor_line_col(), (1, 9), "caret stays on the same character");
+        buf.toggle_block_comment("/*", "*/");
+        assert_eq!(buf.text(), "fn f() {\n    call();\n}\n");
+        assert_eq!(buf.cursor_line_col(), (1, 6));
+        // A blank line gets an empty comment with the caret inside.
+        let mut buf = b("a\n  \nb");
+        buf.goto_line(1, 0);
+        buf.toggle_block_comment("/*", "*/");
+        assert_eq!(buf.text(), "a\n  /**/\nb");
+        assert_eq!(buf.cursor_line_col(), (1, 4));
+        buf.toggle_block_comment("/*", "*/");
+        assert_eq!(buf.text(), "a\n  \nb");
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[test]
+    fn language_falls_back_to_path_without_syntax() {
+        let buf = Buffer::from_text(1, Some(PathBuf::from("/tmp/big.rs")), "", false);
+        assert!(buf.syntax.is_none());
+        assert_eq!(buf.language().map(|d| d.name), Some("rust"));
+        assert_eq!(buf.language().and_then(|d| d.block_comment), Some(("/*", "*/")));
+        assert!(b("x").language().is_none());
     }
 
     #[test]

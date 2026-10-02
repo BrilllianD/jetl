@@ -378,12 +378,13 @@ impl Keymap {
 }
 
 /// Whether a displayed binding only arrives with the kitty keyboard
-/// protocol: Ctrl+Shift+letter, Ctrl+Tab, Ctrl+Enter, Shift+Enter, Shift+F3,
-/// Shift+Esc and Shift Shift.
+/// protocol: Ctrl+Shift+letter, Ctrl+? (Ctrl+Shift+/), Ctrl+Tab, Ctrl+Enter,
+/// Shift+Enter, Shift+F3, Shift+Esc and Shift Shift.
 fn needs_kitty(keys: &str) -> bool {
     keys.split(' ').any(|k| {
         let letter = k.rsplit('+').next().is_some_and(|l| l.len() == 1 && l.chars().all(|c| c.is_ascii_alphabetic()));
         (k.starts_with("Ctrl+") && k.contains("Shift+") && letter)
+            || k == "Ctrl+?"
             || k == "Ctrl+Tab"
             || k == "Ctrl+Enter"
             || k == "Shift+Enter"
@@ -433,6 +434,17 @@ mod tests {
         assert_eq!(a, b);
         let t = KeyCombo::normalize(KeyCode::BackTab, KeyModifiers::NONE);
         assert_eq!(t, parse_combo("shift-tab").unwrap());
+    }
+
+    #[test]
+    fn kitty_ctrl_shift_slash_is_ctrl_question_mark() {
+        // With REPORT_ALTERNATE_KEYS crossterm replaces the key with its
+        // shifted form and drops SHIFT; spelling the binding ctrl-shift-/
+        // would collide with Ctrl+/.
+        let km = default_keymap();
+        let got = km.table("editor").unwrap().bindings.get(&vec![KeyCombo::normalize(KeyCode::Char('?'), KeyModifiers::CONTROL)]);
+        assert_eq!(got, Some(&Action::Editor(crate::actions::EditorAction::ToggleBlockComment)));
+        assert_eq!(parse_combo("ctrl-shift-/").unwrap(), parse_combo("ctrl-/").unwrap());
     }
 
     #[test]

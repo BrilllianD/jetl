@@ -95,6 +95,7 @@ Override any of them in `~/.config/jetl/keymap.toml` (see [CONFIG.md](CONFIG.md)
 | `Esc` | `editor.escape` | Escape (close find, clear selection) |
 | `Ctrl+/` | `editor.toggle_comment` | Comment with line comment |
 | `Ctrl+7` | `editor.toggle_comment` | Comment with line comment |
+| `Ctrl+?` * | `editor.toggle_block_comment` | Comment with block comment |
 | `Alt+Shift+Up` | `editor.move_line_up` | Move line up |
 | `Alt+Shift+Down` | `editor.move_line_down` | Move line down |
 | `Ctrl+Shift+J` * | `editor.join_lines` | Join lines |

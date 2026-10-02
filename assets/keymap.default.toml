@@ -86,6 +86,9 @@
 "ctrl-/" = "editor.toggle_comment"
 # Legacy terminals send Ctrl+/ as 0x1F, which crossterm reports as Ctrl+7.
 "ctrl-7" = "editor.toggle_comment"
+# Ctrl+Shift+/ needs the kitty protocol, which reports the shifted key, so it
+# arrives as Ctrl+? (US layout). "ctrl-shift-/" would mean Ctrl+/ here.
+"ctrl-?" = "editor.toggle_block_comment"
 "ctrl-shift-m" = "editor.goto_bracket"
 "alt-shift-up" = "editor.move_line_up"
 "alt-shift-down" = "editor.move_line_down"
