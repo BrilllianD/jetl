@@ -475,6 +475,39 @@ impl Buffer {
         self.apply(changes, sel_after, TxKind::Other);
     }
 
+    /// Swap the selected lines (or the caret line) with the line above or
+    /// below; the selection moves with them. No-op at the document edge;
+    /// the empty line after a final line break does not count as a line.
+    pub fn move_lines(&mut self, up: bool) {
+        let (l0, l1) = self.selected_lines();
+        let mut last = self.rope.len_lines() - 1;
+        if last > 0 && line_len_no_eol(&self.rope, last) == 0 {
+            last -= 1;
+        }
+        if (up && l0 == 0) || (!up && l1 >= last) {
+            return;
+        }
+        let (first, end) = if up { (l0 - 1, l1) } else { (l0, l1 + 1) };
+        let range = line_range(&self.rope, first).start..line_range(&self.rope, end).end;
+        let old = self.rope.slice(range.clone()).to_string();
+        let mut lines: Vec<String> = (first..=end).map(|l| self.line_text(l)).collect();
+        let neighbour_len = if up { lines[0].chars().count() } else { lines[lines.len() - 1].chars().count() };
+        if up {
+            lines.rotate_left(1);
+        } else {
+            lines.rotate_right(1);
+        }
+        let eol = self.line_ending.as_str();
+        let mut new = lines.join(eol);
+        if old.ends_with('\n') {
+            new.push_str(eol);
+        }
+        let shift = neighbour_len + eol.chars().count();
+        let moved = |p: usize| if up { p - shift } else { p + shift };
+        let sel_after = Selection::new(moved(self.sel.anchor), moved(self.sel.head));
+        self.apply(vec![Change::replace(range.start, old, new)], sel_after, TxKind::Other);
+    }
+
     pub fn line_text(&self, line: usize) -> String {
         let n = line_len_no_eol(&self.rope, line);
         let s = self.rope.line_to_char(line);
@@ -739,6 +772,51 @@ mod tests {
         buf.unindent_lines(4);
         assert_eq!(buf.text(), "abc\n", "fewer spaces than a level");
         assert_eq!(buf.cursor_line_col(), (0, 1));
+    }
+
+    #[test]
+    fn move_lines_up_and_down() {
+        let mut buf = b("a\nbb\nccc\n");
+        buf.goto_line(1, 1);
+        buf.move_lines(true);
+        assert_eq!(buf.text(), "bb\na\nccc\n");
+        assert_eq!(buf.cursor_line_col(), (0, 1));
+        buf.move_lines(true);
+        assert_eq!(buf.text(), "bb\na\nccc\n", "first line up is a no-op");
+        buf.move_lines(false);
+        buf.move_lines(false);
+        assert_eq!(buf.text(), "a\nccc\nbb\n");
+        assert_eq!(buf.cursor_line_col(), (2, 1));
+        buf.move_lines(false);
+        assert_eq!(buf.text(), "a\nccc\nbb\n", "the empty line after the final break is not a line");
+        assert_eq!(buf.undo.len(), 3, "one undo step per move");
+    }
+
+    #[test]
+    fn move_last_line_without_break_and_back() {
+        let original = "one\ntwo\nthree";
+        let mut buf = b(original);
+        buf.goto_line(2, 5);
+        buf.move_lines(true);
+        assert_eq!(buf.text(), "one\nthree\ntwo");
+        assert_eq!(buf.cursor_line_col(), (1, 5));
+        buf.move_lines(false);
+        assert_eq!(buf.text(), original);
+        assert_eq!(buf.cursor_line_col(), (2, 5));
+    }
+
+    #[test]
+    fn move_selection_keeps_its_range() {
+        let mut buf = b("x\na\nb\ny\n");
+        // Lines 1-2, ending at column 0 of line 3.
+        buf.sel = Selection::new(buf.rope.line_to_char(3), buf.rope.line_to_char(1));
+        buf.move_lines(false);
+        assert_eq!(buf.text(), "x\ny\na\nb\n");
+        assert_eq!(buf.sel, Selection::new(buf.rope.line_to_char(4), buf.rope.line_to_char(2)));
+        buf.move_lines(true);
+        buf.move_lines(true);
+        assert_eq!(buf.text(), "a\nb\nx\ny\n");
+        assert_eq!(buf.sel.range(), 0..4);
     }
 
     #[test]

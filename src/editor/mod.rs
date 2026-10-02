@@ -445,6 +445,8 @@ impl Editor {
                 }
             }
             E::Unindent => b.unindent_lines(tab_width),
+            E::MoveLineUp => b.move_lines(true),
+            E::MoveLineDown => b.move_lines(false),
             E::Backspace => {
                 if !b.backspace_pair(pairs()) {
                     b.backspace();
