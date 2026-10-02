@@ -67,11 +67,7 @@ impl Dispatcher {
     }
 
     pub fn pending_display(&self) -> Option<String> {
-        if self.pending.is_empty() {
-            None
-        } else {
-            Some(self.pending.iter().map(|c| c.display()).collect::<Vec<_>>().join(" "))
-        }
+        if self.pending.is_empty() { None } else { Some(self.pending.iter().map(|c| c.display()).collect::<Vec<_>>().join(" ")) }
     }
 
     pub fn reset(&mut self) {

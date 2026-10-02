@@ -98,11 +98,7 @@ pub fn unified(rows: &[DiffRow]) -> Vec<DiffRow> {
 /// Number of lines the way imara-diff tokenizes them (a trailing newline
 /// does not start a new line).
 fn line_count(s: &str) -> usize {
-    if s.is_empty() {
-        0
-    } else {
-        s.split_inclusive('\n').count()
-    }
+    if s.is_empty() { 0 } else { s.split_inclusive('\n').count() }
 }
 
 /// Split into display lines without line terminators, tabs expanded.
@@ -198,7 +194,10 @@ mod tests {
         );
         // Removal with more old than new lines leaves fillers on the right.
         let rows = side_by_side("a\nb\nc\nd\n", "a\nX\nd\n");
-        assert_eq!(kinds(&rows), vec![(Equal, Some(0), Some(0)), (Modified, Some(1), Some(1)), (Removed, Some(2), None), (Equal, Some(3), Some(2))]);
+        assert_eq!(
+            kinds(&rows),
+            vec![(Equal, Some(0), Some(0)), (Modified, Some(1), Some(1)), (Removed, Some(2), None), (Equal, Some(3), Some(2))]
+        );
         // Every old and new line appears exactly once, in order.
         let lefts: Vec<usize> = rows.iter().filter_map(|r| r.left).collect();
         let rights: Vec<usize> = rows.iter().filter_map(|r| r.right).collect();
@@ -220,7 +219,14 @@ mod tests {
         let rows = side_by_side("a\nb\nc\n", "a\nB\nC\nD\n");
         assert_eq!(
             kinds(&unified(&rows)),
-            vec![(Equal, Some(0), Some(0)), (Removed, Some(1), None), (Removed, Some(2), None), (Added, None, Some(1)), (Added, None, Some(2)), (Added, None, Some(3))]
+            vec![
+                (Equal, Some(0), Some(0)),
+                (Removed, Some(1), None),
+                (Removed, Some(2), None),
+                (Added, None, Some(1)),
+                (Added, None, Some(2)),
+                (Added, None, Some(3))
+            ]
         );
     }
 

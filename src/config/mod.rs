@@ -20,15 +20,8 @@ pub struct Paths {
 impl Paths {
     pub fn new() -> Result<Self> {
         let dirs = ProjectDirs::from("", "", "jetl").context("no home directory")?;
-        let state_dir = dirs
-            .state_dir()
-            .map(|p| p.to_path_buf())
-            .unwrap_or_else(|| dirs.data_local_dir().to_path_buf());
-        Ok(Self {
-            config_dir: dirs.config_dir().to_path_buf(),
-            state_dir,
-            cache_dir: dirs.cache_dir().to_path_buf(),
-        })
+        let state_dir = dirs.state_dir().map(|p| p.to_path_buf()).unwrap_or_else(|| dirs.data_local_dir().to_path_buf());
+        Ok(Self { config_dir: dirs.config_dir().to_path_buf(), state_dir, cache_dir: dirs.cache_dir().to_path_buf() })
     }
 
     pub fn config_file(&self) -> PathBuf {
@@ -52,16 +45,10 @@ impl Paths {
 /// non-blocking writer flushes.
 pub fn init_logging(paths: &Paths) -> Result<tracing_appender::non_blocking::WorkerGuard> {
     std::fs::create_dir_all(&paths.state_dir)?;
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(paths.log_file())?;
+    let file = std::fs::OpenOptions::new().create(true).append(true).open(paths.log_file())?;
     let (writer, guard) = tracing_appender::non_blocking(file);
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("jetl=info"));
-    tracing_subscriber::registry()
-        .with(filter)
-        .with(fmt::layer().with_writer(writer).with_ansi(false).with_target(true))
-        .init();
+    tracing_subscriber::registry().with(filter).with(fmt::layer().with_writer(writer).with_ansi(false).with_target(true)).init();
     tracing::info!("jetl {} starting", env!("CARGO_PKG_VERSION"));
     Ok(guard)
 }
@@ -146,7 +133,19 @@ pub struct FilesConfig {
 
 impl Default for EditorConfig {
     fn default() -> Self {
-        Self { tab_width: 4, max_highlight_bytes: 2 * 1024 * 1024, scrolloff: 3, hscrolloff: 5, cjk_ambiguous_wide: false, auto_close: true, highlight_occurrences: true, trim_trailing_whitespace: true, final_newline: true, autosave: Autosave::Off, autosave_idle_ms: 1500 }
+        Self {
+            tab_width: 4,
+            max_highlight_bytes: 2 * 1024 * 1024,
+            scrolloff: 3,
+            hscrolloff: 5,
+            cjk_ambiguous_wide: false,
+            auto_close: true,
+            highlight_occurrences: true,
+            trim_trailing_whitespace: true,
+            final_newline: true,
+            autosave: Autosave::Off,
+            autosave_idle_ms: 1500,
+        }
     }
 }
 impl Default for UiConfig {

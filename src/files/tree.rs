@@ -49,7 +49,13 @@ pub struct ProjectPanel {
 fn read_children(dir: &Path, show_hidden: bool, show_ignored: bool) -> Vec<Node> {
     let mut out = Vec::new();
     let mut wb = ignore::WalkBuilder::new(dir);
-    wb.max_depth(Some(1)).hidden(!show_hidden).git_ignore(!show_ignored).git_global(!show_ignored).git_exclude(!show_ignored).follow_links(false).require_git(true);
+    wb.max_depth(Some(1))
+        .hidden(!show_hidden)
+        .git_ignore(!show_ignored)
+        .git_global(!show_ignored)
+        .git_exclude(!show_ignored)
+        .follow_links(false)
+        .require_git(true);
     for entry in wb.build().flatten() {
         if entry.depth() == 0 {
             continue;
@@ -68,7 +74,16 @@ fn read_children(dir: &Path, show_hidden: bool, show_ignored: bool) -> Vec<Node>
 
 impl ProjectPanel {
     pub fn new(root: PathBuf, show_hidden: bool, show_ignored: bool) -> Self {
-        let mut p = Self { root: PathBuf::new(), nodes: Vec::new(), rows: Vec::new(), list: ListState::default(), inner: Rect::default(), show_hidden, show_ignored, status: HashMap::new() };
+        let mut p = Self {
+            root: PathBuf::new(),
+            nodes: Vec::new(),
+            rows: Vec::new(),
+            list: ListState::default(),
+            inner: Rect::default(),
+            show_hidden,
+            show_ignored,
+            status: HashMap::new(),
+        };
         p.reroot(root);
         p
     }

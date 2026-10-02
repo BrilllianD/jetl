@@ -35,7 +35,14 @@ impl std::fmt::Debug for LanguageDef {
     }
 }
 
-fn make(name: &'static str, extensions: &'static [&'static str], filenames: &'static [&'static str], language: Language, queries: &[&str], line_comment: Option<&'static str>) -> Option<LanguageDef> {
+fn make(
+    name: &'static str,
+    extensions: &'static [&'static str],
+    filenames: &'static [&'static str],
+    language: Language,
+    queries: &[&str],
+    line_comment: Option<&'static str>,
+) -> Option<LanguageDef> {
     // Try the full set first; some grammars ship queries that reference
     // nodes only present in a sibling grammar, so fall back progressively.
     for n in (1..=queries.len()).rev() {
@@ -53,7 +60,7 @@ fn make(name: &'static str, extensions: &'static [&'static str], filenames: &'st
                     indent_after_colon: matches!(name, "python" | "yaml"),
                     #[cfg(test)]
                     full_query: n == queries.len(),
-                })
+                });
             }
             Err(e) => tracing::warn!("highlight query for {name} ({n} parts): {e}"),
         }
@@ -63,7 +70,9 @@ fn make(name: &'static str, extensions: &'static [&'static str], filenames: &'st
 
 fn block_comment(name: &str) -> Option<(&'static str, &'static str)> {
     match name {
-        "rust" | "javascript" | "typescript" | "tsx" | "csharp" | "css" | "scss" | "go" | "c" | "cpp" | "java" | "php" => Some(("/*", "*/")),
+        "rust" | "javascript" | "typescript" | "tsx" | "csharp" | "css" | "scss" | "go" | "c" | "cpp" | "java" | "php" => {
+            Some(("/*", "*/"))
+        }
         "lua" => Some(("--[[", "]]")),
         "html" | "xml" | "markdown" => Some(("<!--", "-->")),
         _ => None,
@@ -86,30 +95,86 @@ pub static LANGUAGES: LazyLock<Vec<LanguageDef>> = LazyLock::new(|| {
     #[cfg(feature = "lang-rust")]
     // Upstream captures numbers as `constant.builtin` (like `true`); Darcula
     // colors them differently, and the first pattern for a node wins.
-    v.extend(make("rust", &["rs"], &[], tree_sitter_rust::LANGUAGE.into(), &["[(integer_literal) (float_literal)] @number", tree_sitter_rust::HIGHLIGHTS_QUERY], Some("//")));
+    v.extend(make(
+        "rust",
+        &["rs"],
+        &[],
+        tree_sitter_rust::LANGUAGE.into(),
+        &["[(integer_literal) (float_literal)] @number", tree_sitter_rust::HIGHLIGHTS_QUERY],
+        Some("//"),
+    ));
     #[cfg(feature = "lang-js")]
-    v.extend(make("javascript", &["js", "mjs", "cjs", "jsx"], &[], tree_sitter_javascript::LANGUAGE.into(), &[tree_sitter_javascript::HIGHLIGHT_QUERY], Some("//")));
+    v.extend(make(
+        "javascript",
+        &["js", "mjs", "cjs", "jsx"],
+        &[],
+        tree_sitter_javascript::LANGUAGE.into(),
+        &[tree_sitter_javascript::HIGHLIGHT_QUERY],
+        Some("//"),
+    ));
     #[cfg(feature = "lang-ts")]
     {
         #[cfg(feature = "lang-js")]
         let js = tree_sitter_javascript::HIGHLIGHT_QUERY;
         #[cfg(not(feature = "lang-js"))]
         let js = "";
-        v.extend(make("typescript", &["ts", "mts", "cts"], &[], tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(), &[tree_sitter_typescript::HIGHLIGHTS_QUERY, js], Some("//")));
-        v.extend(make("tsx", &["tsx"], &[], tree_sitter_typescript::LANGUAGE_TSX.into(), &[tree_sitter_typescript::HIGHLIGHTS_QUERY, js], Some("//")));
+        v.extend(make(
+            "typescript",
+            &["ts", "mts", "cts"],
+            &[],
+            tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+            &[tree_sitter_typescript::HIGHLIGHTS_QUERY, js],
+            Some("//"),
+        ));
+        v.extend(make(
+            "tsx",
+            &["tsx"],
+            &[],
+            tree_sitter_typescript::LANGUAGE_TSX.into(),
+            &[tree_sitter_typescript::HIGHLIGHTS_QUERY, js],
+            Some("//"),
+        ));
     }
     #[cfg(feature = "lang-python")]
     v.extend(make("python", &["py", "pyi"], &[], tree_sitter_python::LANGUAGE.into(), &[tree_sitter_python::HIGHLIGHTS_QUERY], Some("#")));
     #[cfg(feature = "lang-json")]
-    v.extend(make("json", &["json", "jsonc", "json5"], &[], tree_sitter_json::LANGUAGE.into(), &[tree_sitter_json::HIGHLIGHTS_QUERY], None));
+    v.extend(make(
+        "json",
+        &["json", "jsonc", "json5"],
+        &[],
+        tree_sitter_json::LANGUAGE.into(),
+        &[tree_sitter_json::HIGHLIGHTS_QUERY],
+        None,
+    ));
     #[cfg(feature = "lang-toml")]
-    v.extend(make("toml", &["toml"], &["Cargo.lock"], tree_sitter_toml_ng::LANGUAGE.into(), &[tree_sitter_toml_ng::HIGHLIGHTS_QUERY], Some("#")));
+    v.extend(make(
+        "toml",
+        &["toml"],
+        &["Cargo.lock"],
+        tree_sitter_toml_ng::LANGUAGE.into(),
+        &[tree_sitter_toml_ng::HIGHLIGHTS_QUERY],
+        Some("#"),
+    ));
     #[cfg(feature = "lang-bash")]
-    v.extend(make("bash", &["sh", "bash", "zsh"], &[".bashrc", ".zshrc", ".profile", ".bash_profile", "PKGBUILD"], tree_sitter_bash::LANGUAGE.into(), &[tree_sitter_bash::HIGHLIGHT_QUERY], Some("#")));
+    v.extend(make(
+        "bash",
+        &["sh", "bash", "zsh"],
+        &[".bashrc", ".zshrc", ".profile", ".bash_profile", "PKGBUILD"],
+        tree_sitter_bash::LANGUAGE.into(),
+        &[tree_sitter_bash::HIGHLIGHT_QUERY],
+        Some("#"),
+    ));
     #[cfg(feature = "lang-md")]
     v.extend(make("markdown", &["md", "markdown"], &[], tree_sitter_md::LANGUAGE.into(), &[tree_sitter_md::HIGHLIGHT_QUERY_BLOCK], None));
     #[cfg(feature = "lang-csharp")]
-    v.extend(make("csharp", &["cs", "csx"], &[], tree_sitter_c_sharp::LANGUAGE.into(), &[tree_sitter_c_sharp::HIGHLIGHTS_QUERY], Some("//")));
+    v.extend(make(
+        "csharp",
+        &["cs", "csx"],
+        &[],
+        tree_sitter_c_sharp::LANGUAGE.into(),
+        &[tree_sitter_c_sharp::HIGHLIGHTS_QUERY],
+        Some("//"),
+    ));
     #[cfg(feature = "lang-yaml")]
     // Upstream captures mapping keys as `@string` before `@property`, and
     // the first pattern for a node wins; lift the key patterns to the front.
@@ -117,7 +182,14 @@ pub static LANGUAGES: LazyLock<Vec<LanguageDef>> = LazyLock::new(|| {
     // Vue single-file components get HTML highlighting until injections
     // exist; the Vue grammar crate is unmaintained.
     #[cfg(feature = "lang-html")]
-    v.extend(make("html", &["html", "htm", "xhtml", "vue"], &[], tree_sitter_html::LANGUAGE.into(), &[tree_sitter_html::HIGHLIGHTS_QUERY], None));
+    v.extend(make(
+        "html",
+        &["html", "htm", "xhtml", "vue"],
+        &[],
+        tree_sitter_html::LANGUAGE.into(),
+        &[tree_sitter_html::HIGHLIGHTS_QUERY],
+        None,
+    ));
     #[cfg(feature = "lang-css")]
     v.extend(make("css", &["css"], &[], tree_sitter_css::LANGUAGE.into(), &[tree_sitter_css::HIGHLIGHTS_QUERY], None));
     #[cfg(feature = "lang-scss")]
@@ -131,7 +203,14 @@ pub static LANGUAGES: LazyLock<Vec<LanguageDef>> = LazyLock::new(|| {
         v.extend(make("scss", &["scss"], &[], tree_sitter_scss::language(), &[tree_sitter_scss::HIGHLIGHTS_QUERY, css], Some("//")));
     }
     #[cfg(feature = "lang-xml")]
-    v.extend(make("xml", &["xml", "xsd", "xsl", "xslt", "svg", "csproj", "fsproj", "vbproj", "props", "targets", "plist", "resx", "xaml"], &[], tree_sitter_xml::LANGUAGE_XML.into(), &[tree_sitter_xml::XML_HIGHLIGHT_QUERY], None));
+    v.extend(make(
+        "xml",
+        &["xml", "xsd", "xsl", "xslt", "svg", "csproj", "fsproj", "vbproj", "props", "targets", "plist", "resx", "xaml"],
+        &[],
+        tree_sitter_xml::LANGUAGE_XML.into(),
+        &[tree_sitter_xml::XML_HIGHLIGHT_QUERY],
+        None,
+    ));
     #[cfg(feature = "lang-go")]
     // Upstream lists builtin calls after plain calls, and the first pattern
     // for a node wins; lift them to the front (Lua too).
@@ -141,7 +220,14 @@ pub static LANGUAGES: LazyLock<Vec<LanguageDef>> = LazyLock::new(|| {
     // The C++ query only covers what C++ adds to C (no comments, numbers or
     // calls); the C query fills in the rest.
     #[cfg(feature = "lang-cpp")]
-    v.extend(make("cpp", &["cpp", "cc", "cxx", "hpp", "hh"], &[], tree_sitter_cpp::LANGUAGE.into(), &[C_QUERY_FIXES, CPP_QUERY_FIXES, tree_sitter_cpp::HIGHLIGHT_QUERY, tree_sitter_c::HIGHLIGHT_QUERY], Some("//")));
+    v.extend(make(
+        "cpp",
+        &["cpp", "cc", "cxx", "hpp", "hh"],
+        &[],
+        tree_sitter_cpp::LANGUAGE.into(),
+        &[C_QUERY_FIXES, CPP_QUERY_FIXES, tree_sitter_cpp::HIGHLIGHT_QUERY, tree_sitter_c::HIGHLIGHT_QUERY],
+        Some("//"),
+    ));
     #[cfg(feature = "lang-java")]
     v.extend(make("java", &["java"], &[], tree_sitter_java::LANGUAGE.into(), &[tree_sitter_java::HIGHLIGHTS_QUERY], Some("//")));
     #[cfg(feature = "lang-php")]
@@ -151,7 +237,14 @@ pub static LANGUAGES: LazyLock<Vec<LanguageDef>> = LazyLock::new(|| {
     // tree-sitter-containerfile is the maintained fork of the Dockerfile
     // grammar (the tree-sitter-dockerfile crate targets tree-sitter 0.20).
     #[cfg(feature = "lang-dockerfile")]
-    v.extend(make("dockerfile", &["dockerfile"], &["Dockerfile", "Containerfile"], tree_sitter_containerfile::LANGUAGE.into(), &[tree_sitter_containerfile::HIGHLIGHTS_QUERY], Some("#")));
+    v.extend(make(
+        "dockerfile",
+        &["dockerfile"],
+        &["Dockerfile", "Containerfile"],
+        tree_sitter_containerfile::LANGUAGE.into(),
+        &[tree_sitter_containerfile::HIGHLIGHTS_QUERY],
+        Some("#"),
+    ));
     v
 });
 
@@ -220,7 +313,14 @@ fn modeline(line: &str) -> Option<&'static LanguageDef> {
     }
     // `vi:` and `ex:` need a blank before them (vim's own rule), so
     // `regex:` or `index:` are not modelines.
-    let at = ["vim:", "vi:", "ex:"].iter().filter_map(|m| line.match_indices(m).find(|(i, _)| *m == "vim:" || *i == 0 || line[..*i].ends_with(char::is_whitespace)).map(|(i, _)| i + m.len())).min()?;
+    let at = ["vim:", "vi:", "ex:"]
+        .iter()
+        .filter_map(|m| {
+            line.match_indices(m)
+                .find(|(i, _)| *m == "vim:" || *i == 0 || line[..*i].ends_with(char::is_whitespace))
+                .map(|(i, _)| i + m.len())
+        })
+        .min()?;
     line[at..].split(|c: char| c.is_whitespace() || c == ':').find_map(|opt| match opt.split_once('=')? {
         ("ft" | "filetype" | "syn" | "syntax", v) => language_for_alias(v),
         _ => None,
@@ -367,7 +467,14 @@ impl Syntax {
         let new_end_byte_r = rope.char_to_byte(new_end_char);
         let new_row = rope.byte_to_line(new_end_byte_r);
         let new_end_position = Point::new(new_row, new_end_byte_r - rope.line_to_byte(new_row));
-        tree.edit(&InputEdit { start_byte, old_end_byte, new_end_byte, start_position: Point::new(start_row, start_col), old_end_position, new_end_position });
+        tree.edit(&InputEdit {
+            start_byte,
+            old_end_byte,
+            new_end_byte,
+            start_position: Point::new(start_row, start_col),
+            old_end_position,
+            new_end_position,
+        });
     }
 
     pub fn reparse(&mut self, rope: &Rope) {
@@ -726,7 +833,14 @@ mod tests {
         detect_text(Path::new(path), text).map(|l| l.name)
     }
 
-    #[cfg(all(feature = "lang-python", feature = "lang-bash", feature = "lang-js", feature = "lang-ts", feature = "lang-lua", feature = "lang-php"))]
+    #[cfg(all(
+        feature = "lang-python",
+        feature = "lang-bash",
+        feature = "lang-js",
+        feature = "lang-ts",
+        feature = "lang-lua",
+        feature = "lang-php"
+    ))]
     #[test]
     fn shebang_names_the_interpreter() {
         assert_eq!(lang("/tmp/run", "#!/usr/bin/env python3\nprint(1)\n"), Some("python"));

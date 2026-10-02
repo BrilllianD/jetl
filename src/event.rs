@@ -13,20 +13,41 @@ pub enum Level {
 
 #[derive(Debug)]
 pub enum AppMsg {
-    Notify { level: Level, text: String },
+    Notify {
+        level: Level,
+        text: String,
+    },
     /// A file read for a new tab, tagged with the git generation at the time
     /// of the request so loads from a previous root are dropped.
-    FileLoaded { generation: u64, path: PathBuf, result: std::io::Result<Vec<u8>>, focus: bool },
-    FileSaved { path: PathBuf, result: std::io::Result<()> },
+    FileLoaded {
+        generation: u64,
+        path: PathBuf,
+        result: std::io::Result<Vec<u8>>,
+        focus: bool,
+    },
+    FileSaved {
+        path: PathBuf,
+        result: std::io::Result<()>,
+    },
     Git(crate::git::GitMsg),
     /// `git worktree list`, tagged with the git generation like `GitMsg`.
-    Worktrees { generation: u64, result: anyhow::Result<Vec<crate::worktree::Worktree>> },
+    Worktrees {
+        generation: u64,
+        result: anyhow::Result<Vec<crate::worktree::Worktree>>,
+    },
     /// A saved session and its files (`files[i]` belongs to
     /// `session.files[i]`), tagged with the git generation.
-    SessionLoaded { generation: u64, session: crate::workspace::Session, files: Vec<std::io::Result<Vec<u8>>> },
+    SessionLoaded {
+        generation: u64,
+        session: crate::workspace::Session,
+        files: Vec<std::io::Result<Vec<u8>>>,
+    },
     SwitchRoot(PathBuf),
     /// The palette's file walk of the root, tagged with the git generation.
-    FileIndex { generation: u64, files: Vec<String> },
+    FileIndex {
+        generation: u64,
+        files: Vec<String>,
+    },
     /// Reserved for the language server integration.
     Lsp(LspMsg),
 }
@@ -46,7 +67,10 @@ pub enum Effect {
     Git(crate::git::GitRequest),
     Dialog(crate::ui::dialog::Dialog),
     /// `quiet` (autosave) skips the "Saved" toast.
-    FileSaved { path: PathBuf, quiet: bool },
+    FileSaved {
+        path: PathBuf,
+        quiet: bool,
+    },
     Clipboard(String),
     Quit,
 }

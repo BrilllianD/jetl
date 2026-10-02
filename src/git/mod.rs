@@ -29,7 +29,9 @@ pub use repo::BlobWhich;
 pub enum GitOp {
     Stage,
     Unstage,
-    Commit { push: bool },
+    Commit {
+        push: bool,
+    },
     Push,
     /// `git push -u origin <branch>`.
     PushUpstream(String),
@@ -38,9 +40,14 @@ pub enum GitOp {
     Switch(String),
     NewBranch(String),
     /// `git worktree add`; `path` is the new worktree.
-    WorktreeAdd { path: PathBuf },
+    WorktreeAdd {
+        path: PathBuf,
+    },
     /// `git -C <main> worktree remove [--force] <path>`.
-    WorktreeRemove { path: PathBuf, force: bool },
+    WorktreeRemove {
+        path: PathBuf,
+        force: bool,
+    },
     WorktreePrune,
 }
 
@@ -53,14 +60,45 @@ impl GitOp {
 
 #[derive(Debug)]
 pub enum GitMsg {
-    Status { generation: u64, seq: u64, result: Result<StatusSnapshot> },
-    Blob { generation: u64, path: PathBuf, which: BlobWhich, text: Option<String> },
-    Diff { generation: u64, key: DiffKey, result: Result<diff::DiffDoc> },
-    Branches { generation: u64, result: Result<Vec<BranchInfo>> },
-    Log { generation: u64, skip: usize, result: Result<Vec<LogRow>> },
-    CommitDetails { generation: u64, sha: String, result: Result<CommitDetails> },
+    Status {
+        generation: u64,
+        seq: u64,
+        result: Result<StatusSnapshot>,
+    },
+    Blob {
+        generation: u64,
+        path: PathBuf,
+        which: BlobWhich,
+        text: Option<String>,
+    },
+    Diff {
+        generation: u64,
+        key: DiffKey,
+        result: Result<diff::DiffDoc>,
+    },
+    Branches {
+        generation: u64,
+        result: Result<Vec<BranchInfo>>,
+    },
+    Log {
+        generation: u64,
+        skip: usize,
+        result: Result<Vec<LogRow>>,
+    },
+    CommitDetails {
+        generation: u64,
+        sha: String,
+        result: Result<CommitDetails>,
+    },
     /// A finished operation; `label` is what the console and spinner show.
-    OpDone { generation: u64, id: u64, op: GitOp, label: String, ok: bool, output: String },
+    OpDone {
+        generation: u64,
+        id: u64,
+        op: GitOp,
+        label: String,
+        ok: bool,
+        output: String,
+    },
 }
 
 impl GitMsg {
@@ -132,7 +170,11 @@ impl GitService {
         self.busy.retain(|(i, _)| *i != id);
     }
 
-    fn blocking<T: Send + 'static>(&self, work: impl FnOnce(&Path) -> T + Send + 'static, wrap: impl FnOnce(u64, T) -> GitMsg + Send + 'static) {
+    fn blocking<T: Send + 'static>(
+        &self,
+        work: impl FnOnce(&Path) -> T + Send + 'static,
+        wrap: impl FnOnce(u64, T) -> GitMsg + Send + 'static,
+    ) {
         let (root, generation, tx) = (self.root.clone(), self.generation, self.tx.clone());
         tokio::task::spawn_blocking(move || {
             let out = work(&root);

@@ -110,10 +110,14 @@ impl FileSettings {
         let detected = || detect(rope);
         match self.indent_tabs {
             Some(true) => IndentStyle::tabs(tab_level),
-            Some(false) => IndentStyle::spaces(space_level.or_else(|| match detected() {
-                Some(Detected::Spaces(n)) => Some(n),
-                _ => None,
-            }).unwrap_or(default_width)),
+            Some(false) => IndentStyle::spaces(
+                space_level
+                    .or_else(|| match detected() {
+                        Some(Detected::Spaces(n)) => Some(n),
+                        _ => None,
+                    })
+                    .unwrap_or(default_width),
+            ),
             None => match detected() {
                 Some(Detected::Tabs) => IndentStyle::tabs(tab_level),
                 Some(Detected::Spaces(n)) => IndentStyle::spaces(space_level.unwrap_or(n)),
@@ -285,7 +289,11 @@ mod tests {
         assert_eq!(get("a.yml").indent_size, Some(2), "[*.{{a,b}}]");
         assert_eq!(get("b.yaml").indent_size, Some(2));
         let rs = get("lib/x/y.rs");
-        assert_eq!((rs.indent_size, rs.trim_trailing_whitespace, rs.insert_final_newline), (Some(3), Some(false), Some(false)), "[path/**.ext]");
+        assert_eq!(
+            (rs.indent_size, rs.trim_trailing_whitespace, rs.insert_final_newline),
+            (Some(3), Some(false), Some(false)),
+            "[path/**.ext]"
+        );
         assert_eq!(get("src/lib/y.rs").indent_size, Some(4), "a path glob is relative to its file");
         let mk = get("Makefile");
         assert_eq!((mk.indent_tabs, mk.tab_width, mk.end_of_line), (Some(true), Some(8), Some(LineEnding::CrLf)));
@@ -303,7 +311,11 @@ mod tests {
         let top = get("a.rs");
         assert_eq!((top.indent_tabs, top.indent_size, top.tab_width), (Some(true), Some(4), Some(8)));
         let sub = get("sub/a.rs");
-        assert_eq!((sub.indent_tabs, sub.indent_size, sub.tab_width), (Some(false), Some(4), Some(8)), "the closer file wins, the rest is inherited");
+        assert_eq!(
+            (sub.indent_tabs, sub.indent_size, sub.tab_width),
+            (Some(false), Some(4), Some(8)),
+            "the closer file wins, the rest is inherited"
+        );
         assert_eq!(get("sub/a.txt").indent_tabs, Some(true));
         let deep = get("sub/deep/a.rs");
         assert_eq!(deep, FileSettings { insert_final_newline: Some(true), ..Default::default() }, "root = true stops the walk");

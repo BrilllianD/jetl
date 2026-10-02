@@ -224,7 +224,8 @@ mod tests {
     #[test]
     fn conflict_beats_everything() {
         let wd = PathBuf::from("/r");
-        let map = tree_status(&wd, vec![(PathBuf::from("/r/d/a"), FileStatus::Modified), (PathBuf::from("/r/d/b"), FileStatus::Conflicted)]);
+        let map =
+            tree_status(&wd, vec![(PathBuf::from("/r/d/a"), FileStatus::Modified), (PathBuf::from("/r/d/b"), FileStatus::Conflicted)]);
         assert_eq!(map[&PathBuf::from("/r/d")], FileStatus::Conflicted);
     }
 

@@ -327,7 +327,8 @@ impl Keymap {
 
 /// Context order in the generated key reference; other contexts follow
 /// alphabetically.
-const DOC_CONTEXTS: [&str; 10] = ["global", "editor", "editor.find", "tree", "git", "worktrees", "palette", "mode.normal", "mode.insert", "mode.visual"];
+const DOC_CONTEXTS: [&str; 10] =
+    ["global", "editor", "editor.find", "tree", "git", "worktrees", "palette", "mode.normal", "mode.insert", "mode.visual"];
 
 impl Keymap {
     /// Markdown reference of every binding, grouped by context, plus the
@@ -347,8 +348,14 @@ impl Keymap {
         out.push_str("then `global`). Bindings marked * need the kitty keyboard protocol (foot, kitty,\n");
         out.push_str("WezTerm, Ghostty); legacy terminals and tmux have the listed fallbacks instead.\n");
         out.push_str("Override any of them in `~/.config/jetl/keymap.toml` (see [CONFIG.md](CONFIG.md)).\n");
-        let mut contexts: Vec<&str> = DOC_CONTEXTS.iter().copied().filter(|c| self.tables.get(*c).is_some_and(|t| !t.bindings.is_empty())).collect();
-        let mut rest: Vec<&str> = self.tables.iter().filter(|(k, t)| !DOC_CONTEXTS.contains(&k.as_str()) && !t.bindings.is_empty()).map(|(k, _)| k.as_str()).collect();
+        let mut contexts: Vec<&str> =
+            DOC_CONTEXTS.iter().copied().filter(|c| self.tables.get(*c).is_some_and(|t| !t.bindings.is_empty())).collect();
+        let mut rest: Vec<&str> = self
+            .tables
+            .iter()
+            .filter(|(k, t)| !DOC_CONTEXTS.contains(&k.as_str()) && !t.bindings.is_empty())
+            .map(|(k, _)| k.as_str())
+            .collect();
         rest.sort();
         contexts.extend(rest);
         for ctx in contexts {
@@ -363,7 +370,13 @@ impl Keymap {
             for (_, _, keys, a) in rows {
                 let info = registry.iter().find(|r| &r.action == a);
                 let kitty = if needs_kitty(&keys) { " *" } else { "" };
-                let _ = writeln!(out, "| {}{kitty} | `{}` | {} |", code(&keys), info.map(|i| i.id).unwrap_or("?"), info.map(|i| i.desc).unwrap_or(""));
+                let _ = writeln!(
+                    out,
+                    "| {}{kitty} | `{}` | {} |",
+                    code(&keys),
+                    info.map(|i| i.id).unwrap_or("?"),
+                    info.map(|i| i.desc).unwrap_or("")
+                );
             }
         }
         out.push_str("\n## Without a default binding\n\nReachable from Find Action (F1) or by binding them in `keymap.toml`.\n\n| Action | Description |\n|---|---|\n");
@@ -495,10 +508,14 @@ mod tests {
     #[test]
     fn user_keymap_errors_are_reported() {
         let mut km = default_keymap();
-        let errors = km.merge_toml("[global]\n\"ctrl-q\" = \"app.nope\"\n\"ctrl-\" = \"app.quit\"\n\"f2\" = \"app.quit\"\n\"f3\" = 1\n").unwrap();
+        let errors =
+            km.merge_toml("[global]\n\"ctrl-q\" = \"app.nope\"\n\"ctrl-\" = \"app.quit\"\n\"f2\" = \"app.quit\"\n\"f3\" = 1\n").unwrap();
         assert_eq!(errors.len(), 3, "{errors:?}");
         // Valid entries still apply; the bad one keeps the default.
-        assert_eq!(km.table("global").unwrap().bindings.get(&parse_chord("f2").unwrap()), Some(&Action::App(crate::actions::AppAction::Quit)));
+        assert_eq!(
+            km.table("global").unwrap().bindings.get(&parse_chord("f2").unwrap()),
+            Some(&Action::App(crate::actions::AppAction::Quit))
+        );
         assert!(km.table("global").unwrap().bindings.get(&parse_chord("ctrl-q").unwrap()).is_some());
         assert!(km.merge_toml("[global\n").is_err());
     }

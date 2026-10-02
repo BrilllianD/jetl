@@ -23,8 +23,8 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::actions::EditorAction;
 use crate::app::Ctx;
-use crate::config::{Autosave, Config};
 use crate::config::theme::Theme;
+use crate::config::{Autosave, Config};
 use crate::event::{Effect, Level, Mouse};
 use crate::ui::dialog::{Dialog, DialogId};
 use crate::ui::tabs::TabHits;
@@ -320,7 +320,12 @@ impl Editor {
         let mut targets = Vec::new();
         let mut items = Vec::new();
         for b in &self.buffers {
-            let name = b.path.as_deref().and_then(|p| p.strip_prefix(root).ok()).map(|p| p.display().to_string()).unwrap_or_else(|| b.name.clone());
+            let name = b
+                .path
+                .as_deref()
+                .and_then(|p| p.strip_prefix(root).ok())
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| b.name.clone());
             for &line in &b.bookmarks {
                 items.push(format!("{name}:{} {}", line + 1, b.line_text(line).trim()));
                 targets.push((b.id, line));
@@ -353,7 +358,12 @@ impl Editor {
         let Some(b) = self.buffers.get(i) else { return };
         if b.dirty() {
             let msg = format!("{} has unsaved changes.", b.name);
-            cx.effects.push(Effect::Dialog(Dialog::confirm(DialogId::CloseTabDirty(i), "Unsaved changes", &msg, &["Save", "Don't save", "Cancel"])));
+            cx.effects.push(Effect::Dialog(Dialog::confirm(
+                DialogId::CloseTabDirty(i),
+                "Unsaved changes",
+                &msg,
+                &["Save", "Don't save", "Cancel"],
+            )));
             return;
         }
         self.force_close(i);
@@ -381,7 +391,12 @@ impl Editor {
 
     pub fn close_all(&mut self, cx: &mut Ctx) {
         if self.has_dirty() {
-            cx.effects.push(Effect::Dialog(Dialog::confirm(DialogId::CloseAllDirty, "Unsaved changes", "Some files have unsaved changes.", &["Save all", "Don't save", "Cancel"])));
+            cx.effects.push(Effect::Dialog(Dialog::confirm(
+                DialogId::CloseAllDirty,
+                "Unsaved changes",
+                "Some files have unsaved changes.",
+                &["Save all", "Don't save", "Cancel"],
+            )));
             return;
         }
         self.force_close_all();
@@ -747,7 +762,11 @@ impl Editor {
                 }
             }
             E::InsertText(s) => {
-                let s = if b.line_ending == buffer::LineEnding::CrLf { s.replace("\r\n", "\n").replace('\n', "\r\n") } else { s.replace("\r\n", "\n") };
+                let s = if b.line_ending == buffer::LineEnding::CrLf {
+                    s.replace("\r\n", "\n").replace('\n', "\r\n")
+                } else {
+                    s.replace("\r\n", "\n")
+                };
                 b.insert(&s, TxKind::Other);
             }
             E::InsertNewline => {
@@ -877,7 +896,20 @@ impl Editor {
             E::ExpandSelection => b.expand_selection(),
             E::ShrinkSelection => b.shrink_selection(),
             E::ToggleBookmark => b.toggle_bookmark(),
-            E::NextTab | E::PrevTab | E::CloseTab | E::CloseAllTabs | E::Switcher | E::Save | E::SaveAll | E::GotoLine | E::NavBack | E::NavForward | E::ShowBookmarks | E::LineEndingLf | E::LineEndingCrlf | E::SetLanguage => {}
+            E::NextTab
+            | E::PrevTab
+            | E::CloseTab
+            | E::CloseAllTabs
+            | E::Switcher
+            | E::Save
+            | E::SaveAll
+            | E::GotoLine
+            | E::NavBack
+            | E::NavForward
+            | E::ShowBookmarks
+            | E::LineEndingLf
+            | E::LineEndingCrlf
+            | E::SetLanguage => {}
         }
         self.note_jump(jump_from);
         true
@@ -917,7 +949,12 @@ impl Editor {
     fn remember_search(&mut self) {
         let Some(s) = self.active_buffer().and_then(|b| b.search.as_ref()) else { return };
         if !s.query.text.is_empty() {
-            self.last_search = Some(LastSearch { query: s.query.text.clone(), case_sensitive: s.case_sensitive, whole_word: s.whole_word, regex: s.regex });
+            self.last_search = Some(LastSearch {
+                query: s.query.text.clone(),
+                case_sensitive: s.case_sensitive,
+                whole_word: s.whole_word,
+                regex: s.regex,
+            });
         }
     }
 
@@ -1256,7 +1293,14 @@ impl Editor {
             bar_focused = focused && s.focused;
             self.find_hits = render_find_bar(frame, self.find_area, s, bar_focused, theme);
         }
-        let opts = RenderOpts { focused, tab_width: self.tab_display(&self.buffers[i]), scrolloff: self.scrolloff, hscrolloff: self.hscrolloff, occurrences: self.highlight_occurrences, theme };
+        let opts = RenderOpts {
+            focused,
+            tab_width: self.tab_display(&self.buffers[i]),
+            scrolloff: self.scrolloff,
+            hscrolloff: self.hscrolloff,
+            occurrences: self.highlight_occurrences,
+            theme,
+        };
         let out = view::render(&mut self.buffers[i], frame.buffer_mut(), text_rect, &opts);
         self.text_area = out.text_area;
         if focused && !bar_focused {
@@ -1373,13 +1417,21 @@ fn render_find_bar(frame: &mut Frame, area: Rect, s: &mut SearchState, focused: 
     x += field.width;
     let on = theme.strip_item_active;
     let off = theme.dim.bg(theme.panel_bg);
-    for (hit, label, enabled) in [(FindHit::Case, " Cc ", s.case_sensitive), (FindHit::Word, " W ", s.whole_word), (FindHit::Regex, " .* ", s.regex)] {
+    for (hit, label, enabled) in
+        [(FindHit::Case, " Cc ", s.case_sensitive), (FindHit::Word, " W ", s.whole_word), (FindHit::Regex, " .* ", s.regex)]
+    {
         put(frame, &mut x, y, " ", bar);
         let r = put(frame, &mut x, y, label, if enabled { on } else { off });
         hits.push((hit, r));
     }
     put(frame, &mut x, y, "  ", bar);
-    let status_style = if s.error.is_some() { theme.error.bg(theme.panel_bg) } else if s.matches.is_empty() && !s.query.text.is_empty() { theme.warn.bg(theme.panel_bg) } else { bar };
+    let status_style = if s.error.is_some() {
+        theme.error.bg(theme.panel_bg)
+    } else if s.matches.is_empty() && !s.query.text.is_empty() {
+        theme.warn.bg(theme.panel_bg)
+    } else {
+        bar
+    };
     put(frame, &mut x, y, &format!("{status:<w$}", w = status_w as usize), status_style);
     put(frame, &mut x, y, "  ", bar);
     for (hit, label) in [(FindHit::Prev, " ↑ "), (FindHit::Next, " ↓ "), (FindHit::Close, " × ")] {

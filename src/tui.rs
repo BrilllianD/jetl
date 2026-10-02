@@ -9,15 +9,11 @@ use anyhow::Result;
 use crossterm::{
     cursor::Show,
     event::{
-        DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
-        EnableFocusChange, EnableMouseCapture, KeyboardEnhancementFlags,
-        PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+        DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste, EnableFocusChange, EnableMouseCapture,
+        KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
     },
     execute,
-    terminal::{
-        EnterAlternateScreen, LeaveAlternateScreen, SetTitle, disable_raw_mode, enable_raw_mode,
-        supports_keyboard_enhancement,
-    },
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, SetTitle, disable_raw_mode, enable_raw_mode, supports_keyboard_enhancement},
 };
 use ratatui::{Terminal, backend::CrosstermBackend};
 
@@ -34,14 +30,7 @@ pub fn keyboard_enhanced() -> bool {
 pub fn init(root: &Path) -> Result<Term> {
     enable_raw_mode()?;
     let mut out = stdout();
-    execute!(
-        out,
-        EnterAlternateScreen,
-        EnableMouseCapture,
-        EnableBracketedPaste,
-        EnableFocusChange,
-        SetTitle(title(root)),
-    )?;
+    execute!(out, EnterAlternateScreen, EnableMouseCapture, EnableBracketedPaste, EnableFocusChange, SetTitle(title(root)),)?;
     ACTIVE.store(true, Ordering::Relaxed);
     if supports_keyboard_enhancement().unwrap_or(false) {
         execute!(
@@ -56,9 +45,7 @@ pub fn init(root: &Path) -> Result<Term> {
         ENHANCED.store(true, Ordering::Relaxed);
         tracing::info!("keyboard enhancement enabled");
     } else {
-        tracing::warn!(
-            "terminal lacks keyboard enhancement: ctrl+shift+letter, ctrl+tab and double-shift bindings unavailable"
-        );
+        tracing::warn!("terminal lacks keyboard enhancement: ctrl+shift+letter, ctrl+tab and double-shift bindings unavailable");
     }
     let backend = CrosstermBackend::new(out);
     let terminal = Terminal::new(backend)?;
@@ -85,14 +72,7 @@ pub fn restore() {
     if ENHANCED.swap(false, Ordering::Relaxed) {
         let _ = execute!(out, PopKeyboardEnhancementFlags);
     }
-    let _ = execute!(
-        out,
-        DisableMouseCapture,
-        DisableBracketedPaste,
-        DisableFocusChange,
-        LeaveAlternateScreen,
-        Show
-    );
+    let _ = execute!(out, DisableMouseCapture, DisableBracketedPaste, DisableFocusChange, LeaveAlternateScreen, Show);
     let _ = disable_raw_mode();
 }
 

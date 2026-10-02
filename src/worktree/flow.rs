@@ -25,7 +25,13 @@ impl App {
                 self.git.load_branches();
             }
             (DialogId::WorktreeCreateKind, DialogResult::Choice(_)) => {
-                self.dialog = Some(Dialog::input(DialogId::WorktreeNewBranchName, "New Worktree", "Name of the new branch (starts at HEAD):", "", "Next"));
+                self.dialog = Some(Dialog::input(
+                    DialogId::WorktreeNewBranchName,
+                    "New Worktree",
+                    "Name of the new branch (starts at HEAD):",
+                    "",
+                    "Next",
+                ));
             }
             (DialogId::WorktreeExistingBranch(names), DialogResult::Choice(i)) => {
                 if let Some(b) = names.get(i) {
@@ -57,7 +63,12 @@ impl App {
             self.notify(Level::Info, "Every local branch is checked out in a worktree; create a new branch instead");
             return;
         }
-        self.dialog = Some(Dialog::choice(DialogId::WorktreeExistingBranch(free.clone()), "New Worktree", "Branch to check out (not checked out elsewhere):", free));
+        self.dialog = Some(Dialog::choice(
+            DialogId::WorktreeExistingBranch(free.clone()),
+            "New Worktree",
+            "Branch to check out (not checked out elsewhere):",
+            free,
+        ));
     }
 
     fn main_root(&self) -> PathBuf {
@@ -119,11 +130,17 @@ impl App {
             GitOp::WorktreeAdd { path } if ok => {
                 self.notify(Level::Info, format!("Created worktree {}", path.display()));
                 let msg = format!("Switch to the new worktree?\n{}", path.display());
-                self.dialog = Some(Dialog::confirm(DialogId::WorktreeSwitchAfterCreate(path.clone()), "Worktree created", &msg, &["Switch", "Stay"]));
+                self.dialog =
+                    Some(Dialog::confirm(DialogId::WorktreeSwitchAfterCreate(path.clone()), "Worktree created", &msg, &["Switch", "Stay"]));
             }
             GitOp::WorktreeRemove { path, force: false } if !ok && output.contains(DIRTY_MARKER) => {
                 let msg = format!("{} contains modified or untracked files.\nForce removal? Those changes will be lost.", path.display());
-                self.dialog = Some(Dialog::confirm(DialogId::WorktreeRemove { path: path.clone(), force: true }, "Remove Worktree", &msg, &["Force remove", "Cancel"]));
+                self.dialog = Some(Dialog::confirm(
+                    DialogId::WorktreeRemove { path: path.clone(), force: true },
+                    "Remove Worktree",
+                    &msg,
+                    &["Force remove", "Cancel"],
+                ));
                 // The default button of a destructive retry is Cancel.
                 if let Some(Dialog { kind: crate::ui::dialog::DialogKind::Confirm { selected, .. }, .. }) = &mut self.dialog {
                     *selected = 1;

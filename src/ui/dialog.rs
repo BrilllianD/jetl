@@ -20,7 +20,10 @@ pub enum DialogId {
     CloseAllDirty,
     /// Unsaved buffers before switching the project root to the path.
     SwitchRootDirty(std::path::PathBuf),
-    WorktreeRemove { path: std::path::PathBuf, force: bool },
+    WorktreeRemove {
+        path: std::path::PathBuf,
+        force: bool,
+    },
     /// Create flow, step 1: item `i` is `worktree::panel::CREATE_KINDS[i]`.
     WorktreeCreateKind,
     /// Create flow, new branch: its name (starts at HEAD).
@@ -28,7 +31,10 @@ pub enum DialogId {
     /// Create flow, existing branch: item `i` is `names[i]`.
     WorktreeExistingBranch(Vec<String>),
     /// Create flow, last step: the directory.
-    WorktreePath { branch: String, new_branch: bool },
+    WorktreePath {
+        branch: String,
+        new_branch: bool,
+    },
     WorktreeSwitchAfterCreate(std::path::PathBuf),
     NewBranchName,
     PushSetUpstream(String),
@@ -219,7 +225,11 @@ impl Dialog {
                     return match &self.kind {
                         DialogKind::Confirm { .. } => Some(DialogResult::Button(i)),
                         DialogKind::Input { input, .. } => {
-                            if i == 0 { Some(DialogResult::Text(input.text.clone())) } else { Some(DialogResult::Cancel) }
+                            if i == 0 {
+                                Some(DialogResult::Text(input.text.clone()))
+                            } else {
+                                Some(DialogResult::Cancel)
+                            }
                         }
                         DialogKind::Choice { .. } => Some(DialogResult::Cancel),
                     };
@@ -309,7 +319,11 @@ impl Dialog {
                 for (i, b) in buttons.iter().enumerate() {
                     let label = format!("[ {b} ]");
                     let bw = label.width() as u16;
-                    let st = if i == *selected { theme.list_selected.add_modifier(Modifier::BOLD) } else { Style::default().fg(theme.fg).bg(theme.popup_bg) };
+                    let st = if i == *selected {
+                        theme.list_selected.add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(theme.fg).bg(theme.popup_bg)
+                    };
                     buf.set_stringn(bx, by, &label, bw as usize, st);
                     self.button_rects.push(Rect::new(bx, by, bw, 1));
                     bx += bw + 1;
@@ -338,7 +352,8 @@ impl Dialog {
                 let lrect = Rect::new(inner.x + 1, fy + 1, inner.width.saturating_sub(2), inner.bottom().saturating_sub(fy + 1));
                 self.list_rect = lrect;
                 let f = filter.text.to_lowercase();
-                let filtered: Vec<usize> = items.iter().enumerate().filter(|(_, s)| f.is_empty() || s.to_lowercase().contains(&f)).map(|(i, _)| i).collect();
+                let filtered: Vec<usize> =
+                    items.iter().enumerate().filter(|(_, s)| f.is_empty() || s.to_lowercase().contains(&f)).map(|(i, _)| i).collect();
                 list.set_len(filtered.len());
                 list.set_viewport(lrect.height as usize);
                 for (vi, idx) in filtered.iter().enumerate().skip(list.offset).take(lrect.height as usize) {

@@ -22,10 +22,7 @@ impl Workspace {
     }
 
     pub fn name(&self) -> String {
-        self.root
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| self.root.display().to_string())
+        self.root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| self.root.display().to_string())
     }
 
     pub fn root(&self) -> &Path {
@@ -131,7 +128,8 @@ impl App {
         }
         if self.editor.has_dirty() {
             let msg = format!("Some files have unsaved changes.\nSave them before switching to {}?", root.display());
-            self.dialog = Some(Dialog::confirm(DialogId::SwitchRootDirty(root), "Unsaved changes", &msg, &["Save all", "Discard", "Cancel"]));
+            self.dialog =
+                Some(Dialog::confirm(DialogId::SwitchRootDirty(root), "Unsaved changes", &msg, &["Save all", "Discard", "Cancel"]));
             return;
         }
         self.do_switch_root(root);
@@ -201,7 +199,8 @@ impl App {
     /// Load the current root's session and its files off the main loop; the
     /// tabs open in [`App::session_loaded`].
     pub fn restore_session(&self) {
-        let (dir, root, generation, tx) = (self.paths.sessions_dir(), self.workspace.root.clone(), self.git.generation, self.bus_tx.clone());
+        let (dir, root, generation, tx) =
+            (self.paths.sessions_dir(), self.workspace.root.clone(), self.git.generation, self.bus_tx.clone());
         tokio::task::spawn_blocking(move || {
             let Some(session) = Session::load(&dir, &root) else { return };
             let files = session.files.iter().map(|f| std::fs::read(&f.path)).collect();

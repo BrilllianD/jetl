@@ -169,7 +169,10 @@ impl App {
             paths,
         };
         if !app.keyboard_enhanced {
-            app.notify(Level::Warn, "Terminal lacks the kitty keyboard protocol: Ctrl+Shift shortcuts, Ctrl+Tab and Shift Shift are unavailable");
+            app.notify(
+                Level::Warn,
+                "Terminal lacks the kitty keyboard protocol: Ctrl+Shift shortcuts, Ctrl+Tab and Shift Shift are unavailable",
+            );
         }
         for e in keymap_errors.into_iter().chain(theme_errors) {
             app.notify(Level::Error, e);
@@ -479,7 +482,10 @@ impl App {
         // network operations do not.
         use crate::actions::GitAction as G;
         match &action {
-            Action::Git(g) if !matches!(g, G::Branches | G::NewBranch | G::Push | G::Pull | G::Fetch | G::Refresh) && !self.layout.is_visible(ToolWindowId::Git) => {
+            Action::Git(g)
+                if !matches!(g, G::Branches | G::NewBranch | G::Push | G::Pull | G::Fetch | G::Refresh)
+                    && !self.layout.is_visible(ToolWindowId::Git) =>
+            {
                 self.layout.show(ToolWindowId::Git);
                 self.focus.set(PanelId::Git);
             }
@@ -565,7 +571,12 @@ impl App {
             .filter(|a| !matches!(a.action, Action::Palette(_)))
             .filter(|a| self.dispatcher.modal || !matches!(a.action, Action::Mode(_)))
             .filter(|a| cfg!(debug_assertions) || a.action != Action::App(AppAction::DebugPanic))
-            .map(|a| ActionEntry { id: a.id, desc: a.desc, action: a.action.clone(), shortcut: self.keymap.shortcut_for(&a.action, a.action.contexts()) })
+            .map(|a| ActionEntry {
+                id: a.id,
+                desc: a.desc,
+                action: a.action.clone(),
+                shortcut: self.keymap.shortcut_for(&a.action, a.action.contexts()),
+            })
             .collect()
     }
 
@@ -656,7 +667,12 @@ impl App {
 
     fn request_quit(&mut self) {
         if self.editor.has_dirty() {
-            self.dialog = Some(Dialog::confirm(DialogId::QuitDirty, "Unsaved changes", "Some files have unsaved changes.", &["Save all and exit", "Discard and exit", "Cancel"]));
+            self.dialog = Some(Dialog::confirm(
+                DialogId::QuitDirty,
+                "Unsaved changes",
+                "Some files have unsaved changes.",
+                &["Save all and exit", "Discard and exit", "Cancel"],
+            ));
         } else {
             self.should_quit = true;
         }
@@ -825,7 +841,13 @@ impl App {
             }
             GitRequest::BranchesPopup => self.open_palette(PaletteKind::Branches),
             GitRequest::NewBranch => {
-                self.dialog = Some(Dialog::input(DialogId::NewBranchName, "New Branch", "Create and switch to a new branch from HEAD:", "", "Create"));
+                self.dialog = Some(Dialog::input(
+                    DialogId::NewBranchName,
+                    "New Branch",
+                    "Create and switch to a new branch from HEAD:",
+                    "",
+                    "Create",
+                ));
             }
             GitRequest::LoadDiff(key) => self.git.load_diff(key),
             GitRequest::LoadLog { skip } => self.git.load_log(skip, self.config.git.log_page, self.config.git.log_all),
@@ -1053,7 +1075,9 @@ impl App {
         let now = Instant::now();
         let limit = Duration::from_millis(self.config.ui.double_click_ms);
         let count = match self.last_click {
-            Some(lc) if lc.button == button && lc.x == m.column && lc.y == m.row && now.duration_since(lc.at) <= limit => (lc.count % 3) + 1,
+            Some(lc) if lc.button == button && lc.x == m.column && lc.y == m.row && now.duration_since(lc.at) <= limit => {
+                (lc.count % 3) + 1
+            }
             _ => 1,
         };
         self.last_click = Some(LastClick { at: now, x: m.column, y: m.row, button, count });
@@ -1069,7 +1093,8 @@ impl App {
         let mouse = Mouse { kind: m.kind, x: m.column, y: m.row, clicks, mods: m.modifiers };
         // A click on a visible part of a toast closes it (the palette and
         // dialogs are drawn over toasts).
-        let over_overlay = self.palette.as_ref().is_some_and(|p| p.contains(m.column, m.row)) || self.dialog.as_ref().is_some_and(|d| d.contains(m.column, m.row));
+        let over_overlay = self.palette.as_ref().is_some_and(|p| p.contains(m.column, m.row))
+            || self.dialog.as_ref().is_some_and(|d| d.contains(m.column, m.row));
         if matches!(m.kind, MouseEventKind::Down(_)) && !over_overlay && self.toasts.dismiss_at(m.column, m.row) {
             self.drag = None;
             return;
@@ -1218,11 +1243,7 @@ impl App {
 /// or `error:` line, else the first non-empty one.
 fn error_line(output: &str) -> String {
     let lines = || output.lines().map(str::trim).filter(|l| !l.is_empty());
-    lines()
-        .find(|l| l.starts_with("fatal:") || l.starts_with("error:"))
-        .or_else(|| lines().next())
-        .unwrap_or("failed")
-        .to_string()
+    lines().find(|l| l.starts_with("fatal:") || l.starts_with("error:")).or_else(|| lines().next()).unwrap_or("failed").to_string()
 }
 
 #[cfg(test)]

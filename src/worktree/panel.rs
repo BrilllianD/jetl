@@ -122,7 +122,12 @@ impl WorktreePanel {
             return;
         }
         let items = CREATE_KINDS.iter().map(|s| s.to_string()).collect();
-        cx.effects.push(Effect::Dialog(Dialog::choice(DialogId::WorktreeCreateKind, "New Worktree", "Check out in the new worktree:", items)));
+        cx.effects.push(Effect::Dialog(Dialog::choice(
+            DialogId::WorktreeCreateKind,
+            "New Worktree",
+            "Check out in the new worktree:",
+            items,
+        )));
     }
 
     fn remove_selected(&mut self, cx: &mut Ctx) {
@@ -248,7 +253,8 @@ impl WorktreePanel {
             let room = width.saturating_sub(label_w + 2 + if tags_w > 0 { tags_w + 2 } else { 0 });
             let mut x = r.x + 1;
             let right = r.right();
-            let label_style = if Some(i) == self.current && !selected { base.patch(theme.status_accent) } else { base }.add_modifier(Modifier::BOLD);
+            let label_style =
+                if Some(i) == self.current && !selected { base.patch(theme.status_accent) } else { base }.add_modifier(Modifier::BOLD);
             buf.set_stringn(x, y, &label, label_w, label_style);
             x += label_w as u16 + 2;
             if room > 0 && x < right {

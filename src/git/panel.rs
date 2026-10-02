@@ -15,9 +15,9 @@ use ratatui::layout::{Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
+use super::GitRequest;
 use super::diff::{DiffDoc, DiffRow, RowKind};
 use super::model::{BranchInfo, ChangeEntry, CommitDetails, DiffKey, LogRow, Section, StatusSnapshot};
-use super::GitRequest;
 use crate::actions::GitAction;
 use crate::app::Ctx;
 use crate::config::theme::Theme;
@@ -274,7 +274,11 @@ impl GitPanel {
         self.rebuild_rows();
         // Keep the same entry selected; when it moved to another section
         // (staged/unstaged) keep the row position instead.
-        let again = prev.and_then(|(sec, rel)| self.rows.iter().position(|r| matches!(r, ListRow::Entry(i) if self.entry(*i).is_some_and(|e| e.section == sec && e.rel == rel))));
+        let again = prev.and_then(|(sec, rel)| {
+            self.rows
+                .iter()
+                .position(|r| matches!(r, ListRow::Entry(i) if self.entry(*i).is_some_and(|e| e.section == sec && e.rel == rel)))
+        });
         match again {
             Some(i) => self.list.select(i),
             None => {
@@ -413,7 +417,8 @@ impl GitPanel {
 
     /// Fetch the next page when the selection or view reached the end.
     fn maybe_page_log(&mut self, cx: &mut Ctx) {
-        let at_end = self.log_list.len > 0 && (self.log_list.selected + 1 >= self.log_list.len || self.log_list.offset + self.log_list.viewport >= self.log_list.len);
+        let at_end = self.log_list.len > 0
+            && (self.log_list.selected + 1 >= self.log_list.len || self.log_list.offset + self.log_list.viewport >= self.log_list.len);
         if at_end && self.log_loaded && !self.log_end && !self.log_loading {
             self.log_loading = true;
             cx.effects.push(Effect::Git(GitRequest::LoadLog { skip: self.commit_count() }));
@@ -633,7 +638,11 @@ impl GitPanel {
                 // Skip graph connector rows in the direction of travel.
                 while self.log.get(self.log_list.selected).is_some_and(|r| r.commit.is_none()) {
                     let before = self.log_list.selected;
-                    if delta < 0 { self.log_list.up(1) } else { self.log_list.down(1) }
+                    if delta < 0 {
+                        self.log_list.up(1)
+                    } else {
+                        self.log_list.down(1)
+                    }
                     if self.log_list.selected == before {
                         break;
                     }
@@ -763,7 +772,14 @@ impl GitPanel {
         let inner = block.inner(area);
         frame.render_widget(block, area);
         self.hits.clear();
-        for r in [&mut self.changes_rect, &mut self.message_rect, &mut self.diff_rect, &mut self.log_rect, &mut self.files_rect, &mut self.console_rect] {
+        for r in [
+            &mut self.changes_rect,
+            &mut self.message_rect,
+            &mut self.diff_rect,
+            &mut self.log_rect,
+            &mut self.files_rect,
+            &mut self.console_rect,
+        ] {
             *r = Rect::default();
         }
         if inner.height < 2 || inner.width < 10 {
@@ -838,13 +854,24 @@ impl GitPanel {
             let r = put(buf, &mut x, y, left.right(), "[Unstage all]", theme.title);
             self.hits.push((Btn::UnstageAll, r));
             y += 1;
-            let label = if self.area == Area::Message && focused { "Commit message (Ctrl/Alt+Enter commits, Esc leaves)" } else { "Commit message (Ctrl+K)" };
+            let label = if self.area == Area::Message && focused {
+                "Commit message (Ctrl/Alt+Enter commits, Esc leaves)"
+            } else {
+                "Commit message (Ctrl+K)"
+            };
             buf.set_stringn(left.x, y, label, left.width as usize, theme.dim);
             y += 1;
         }
         self.message_rect = Rect::new(left.x, y, left.width, msg_h);
         let msg_focused = focused && self.area == Area::Message;
-        self.message.render(frame, self.message_rect, Style::default().bg(theme.bg).fg(theme.fg), "Describe the change", theme.dim.bg(theme.bg), msg_focused);
+        self.message.render(
+            frame,
+            self.message_rect,
+            Style::default().bg(theme.bg).fg(theme.fg),
+            "Describe the change",
+            theme.dim.bg(theme.bg),
+            msg_focused,
+        );
         y += msg_h;
         if y < left.bottom() {
             let buf = frame.buffer_mut();
@@ -954,7 +981,14 @@ impl GitPanel {
             buf.set_stringn(r.x, r.y, msg, r.width as usize, theme.dim);
             return;
         }
-        let palette = [Color::Rgb(104, 151, 187), Color::Rgb(98, 150, 85), Color::Rgb(204, 120, 50), Color::Rgb(152, 118, 170), Color::Rgb(187, 181, 41), Color::Rgb(32, 153, 157)];
+        let palette = [
+            Color::Rgb(104, 151, 187),
+            Color::Rgb(98, 150, 85),
+            Color::Rgb(204, 120, 50),
+            Color::Rgb(152, 118, 170),
+            Color::Rgb(187, 181, 41),
+            Color::Rgb(32, 153, 157),
+        ];
         for (vi, i) in self.log_list.visible().enumerate() {
             let row = &self.log[i];
             let y = r.y + vi as u16;
@@ -990,7 +1024,14 @@ impl GitPanel {
             put(buf, &mut x, y, r.right(), &c.short, if selected { base } else { theme.warn });
             x += 1;
             if !c.refs.is_empty() {
-                put(buf, &mut x, y, r.right(), &format!("({})", c.refs), if selected { base.add_modifier(Modifier::BOLD) } else { theme.status_accent.add_modifier(Modifier::BOLD) });
+                put(
+                    buf,
+                    &mut x,
+                    y,
+                    r.right(),
+                    &format!("({})", c.refs),
+                    if selected { base.add_modifier(Modifier::BOLD) } else { theme.status_accent.add_modifier(Modifier::BOLD) },
+                );
                 x += 1;
             }
             let subject_end = if r.right() > x + right_w + 10 { r.right() - right_w } else { r.right() };

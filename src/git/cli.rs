@@ -128,7 +128,9 @@ pub fn parse_name_status(text: &str) -> Vec<(char, String)> {
 /// parent, matching the `sha^` side of the file diff).
 pub async fn commit_details(root: &Path, sha: &str) -> Result<CommitDetails> {
     let body = git_ok(root, &args(&["show", "-s", "--format=%B", sha])).await?.stdout_text();
-    let files = git_ok(root, &args(&["diff-tree", "--no-commit-id", "--name-status", "-r", "--root", "--diff-merges=first-parent", sha])).await?.stdout_text();
+    let files = git_ok(root, &args(&["diff-tree", "--no-commit-id", "--name-status", "-r", "--root", "--diff-merges=first-parent", sha]))
+        .await?
+        .stdout_text();
     Ok(CommitDetails { sha: sha.to_string(), body: body.trim_end().to_string(), files: parse_name_status(&files) })
 }
 

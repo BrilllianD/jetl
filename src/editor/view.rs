@@ -152,7 +152,9 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
     // Occurrences of the word or selection at the caret, visible lines only.
     // An open find bar owns the match highlighting, so they step aside.
     let occ = match (o.occurrences && search.is_none()).then(|| super::search::occurrence_target(rope, &buf.sel)).flatten() {
-        Some((target, whole_word)) => super::search::occurrences(rope, buf.scroll_line..buf.scroll_line + area.height as usize, &target, whole_word),
+        Some((target, whole_word)) => {
+            super::search::occurrences(rope, buf.scroll_line..buf.scroll_line + area.height as usize, &target, whole_word)
+        }
         None => Vec::new(),
     };
     let digits = (gutter_w - 3) as usize;

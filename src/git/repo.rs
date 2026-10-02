@@ -150,7 +150,9 @@ pub fn change_texts(root: &Path, section: Section, rel: &str) -> Result<(Vec<u8>
     let (repo, wd) = open(root)?;
     let workfile = || std::fs::read(wd.join(rel)).unwrap_or_default();
     Ok(match section {
-        Section::Staged => (read_blob(&repo, BlobWhich::Head, rel).unwrap_or_default(), read_blob(&repo, BlobWhich::Index, rel).unwrap_or_default()),
+        Section::Staged => {
+            (read_blob(&repo, BlobWhich::Head, rel).unwrap_or_default(), read_blob(&repo, BlobWhich::Index, rel).unwrap_or_default())
+        }
         Section::Unstaged => (read_blob(&repo, BlobWhich::Index, rel).unwrap_or_default(), workfile()),
         Section::Untracked => (Vec::new(), workfile()),
     })
@@ -309,7 +311,13 @@ pub(crate) mod tests {
         let snap = status(&r.dir).unwrap();
         assert_eq!(snap.head, None);
         assert!(snap.branch.is_some(), "unborn branch still has a name");
-        assert_eq!(sections(&r.dir), vec![(Section::Untracked, FileStatus::Untracked, "a.txt".into()), (Section::Untracked, FileStatus::Untracked, "dir/b.txt".into())]);
+        assert_eq!(
+            sections(&r.dir),
+            vec![
+                (Section::Untracked, FileStatus::Untracked, "a.txt".into()),
+                (Section::Untracked, FileStatus::Untracked, "dir/b.txt".into())
+            ]
+        );
         assert_eq!(snap.tree[&r.dir.join("dir")], FileStatus::Untracked);
 
         // Nothing staged yet on an unborn branch.
@@ -331,9 +339,15 @@ pub(crate) mod tests {
         // Modify, delete and stage; then unstage against HEAD.
         r.write("a.txt", "one\nmore\n");
         std::fs::remove_file(r.dir.join("dir/b.txt")).unwrap();
-        assert_eq!(sections(&r.dir), vec![(Section::Unstaged, FileStatus::Modified, "a.txt".into()), (Section::Unstaged, FileStatus::Deleted, "dir/b.txt".into())]);
+        assert_eq!(
+            sections(&r.dir),
+            vec![(Section::Unstaged, FileStatus::Modified, "a.txt".into()), (Section::Unstaged, FileStatus::Deleted, "dir/b.txt".into())]
+        );
         stage(&r.dir, &["a.txt".into(), "dir/b.txt".into()]).unwrap();
-        assert_eq!(sections(&r.dir), vec![(Section::Staged, FileStatus::Modified, "a.txt".into()), (Section::Staged, FileStatus::Deleted, "dir/b.txt".into())]);
+        assert_eq!(
+            sections(&r.dir),
+            vec![(Section::Staged, FileStatus::Modified, "a.txt".into()), (Section::Staged, FileStatus::Deleted, "dir/b.txt".into())]
+        );
         let (old, new) = change_texts(&r.dir, Section::Staged, "a.txt").unwrap();
         assert_eq!((old.as_slice(), new.as_slice()), (b"one\n".as_slice(), b"one\nmore\n".as_slice()));
         unstage_all(&r.dir).unwrap();

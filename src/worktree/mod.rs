@@ -82,11 +82,7 @@ pub fn parse_porcelain(text: &str) -> Vec<Worktree> {
 /// Index of the worktree containing `root` (the deepest match, since a
 /// linked worktree may live inside the main one).
 pub fn current_index(list: &[Worktree], root: &Path) -> Option<usize> {
-    list.iter()
-        .enumerate()
-        .filter(|(_, w)| root.starts_with(&w.path))
-        .max_by_key(|(_, w)| w.path.components().count())
-        .map(|(i, _)| i)
+    list.iter().enumerate().filter(|(_, w)| root.starts_with(&w.path)).max_by_key(|(_, w)| w.path.components().count()).map(|(i, _)| i)
 }
 
 /// Local branches that no worktree has checked out.
@@ -173,7 +169,9 @@ mod tests {
 
     #[test]
     fn current_is_deepest_containing_worktree() {
-        let v = parse_porcelain("worktree /r\nbranch refs/heads/a\n\nworktree /r/.wt/b\nbranch refs/heads/b\n\nworktree /r2\nbranch refs/heads/c\n");
+        let v = parse_porcelain(
+            "worktree /r\nbranch refs/heads/a\n\nworktree /r/.wt/b\nbranch refs/heads/b\n\nworktree /r2\nbranch refs/heads/c\n",
+        );
         assert_eq!(current_index(&v, Path::new("/r/src")), Some(0));
         assert_eq!(current_index(&v, Path::new("/r/.wt/b")), Some(1));
         assert_eq!(current_index(&v, Path::new("/r2")), Some(2));
@@ -185,7 +183,10 @@ mod tests {
     #[test]
     fn expands_default_path_template() {
         let main = Path::new("/home/u/src/app");
-        assert_eq!(default_path("{parent}/{repo}.{branch}", main, "feature/login-form"), PathBuf::from("/home/u/src/app.feature-login-form"));
+        assert_eq!(
+            default_path("{parent}/{repo}.{branch}", main, "feature/login-form"),
+            PathBuf::from("/home/u/src/app.feature-login-form")
+        );
         assert_eq!(default_path("{parent}/wt/{repo}/{branch}", main, "a/b/c"), PathBuf::from("/home/u/src/wt/app/a-b-c"));
         assert_eq!(default_path("/tmp/{branch}", main, "x"), PathBuf::from("/tmp/x"));
         if let Some(home) = std::env::var_os("HOME") {
@@ -208,7 +209,9 @@ mod tests {
         let main = r.dir.to_string_lossy().into_owned();
         cli::git_ok(&r.dir, &cli::args(&["worktree", "add", "-b", "feature/x", &p])).await.unwrap();
 
-        let list = |root: PathBuf| async move { parse_porcelain(&cli::git_ok(&root, &cli::args(&["worktree", "list", "--porcelain"])).await.unwrap().stdout_text()) };
+        let list = |root: PathBuf| async move {
+            parse_porcelain(&cli::git_ok(&root, &cli::args(&["worktree", "list", "--porcelain"])).await.unwrap().stdout_text())
+        };
         let v = list(path.clone()).await;
         assert_eq!(v.len(), 2, "{v:?}");
         assert!(v[0].is_main && !v[1].is_main);

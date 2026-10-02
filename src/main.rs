@@ -24,13 +24,8 @@ async fn main() -> Result<()> {
     if let Some(bad) = args.iter().find(|a| a.starts_with('-') && a.len() > 1) {
         anyhow::bail!("unknown option {bad} (see jetl --help)");
     }
-    let root = args
-        .iter()
-        .find(|a| !a.starts_with('-'))
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."));
-    let root = std::fs::canonicalize(&root)
-        .map_err(|e| anyhow::anyhow!("cannot open {}: {e}", root.display()))?;
+    let root = args.iter().find(|a| !a.starts_with('-')).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
+    let root = std::fs::canonicalize(&root).map_err(|e| anyhow::anyhow!("cannot open {}: {e}", root.display()))?;
 
     let paths = config::Paths::new()?;
     let _log_guard = config::init_logging(&paths)?;

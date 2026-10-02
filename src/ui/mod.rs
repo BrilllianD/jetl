@@ -18,17 +18,8 @@ use crate::ui::focus::PanelId;
 
 /// A bordered tool window frame. Returns the inner area.
 pub fn tool_window_block<'a>(title: &'a str, focused: bool, theme: &Theme) -> Block<'a> {
-    let (border, title_style) = if focused {
-        (theme.border_focused, theme.title_focused)
-    } else {
-        (theme.border, theme.title)
-    };
-    Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Plain)
-        .border_style(border)
-        .title(title)
-        .title_style(title_style)
+    let (border, title_style) = if focused { (theme.border_focused, theme.title_focused) } else { (theme.border, theme.title) };
+    Block::default().borders(Borders::ALL).border_type(BorderType::Plain).border_style(border).title(title).title_style(title_style)
 }
 
 pub fn render(app: &mut App, frame: &mut Frame) {

@@ -425,7 +425,8 @@ impl Palette {
             let width = lrect.width.saturating_sub(2) as usize;
             let spans: Vec<(String, Style)> = match self.source() {
                 Source::Files | Source::Recent => {
-                    let path = if self.source() == Source::Files { self.files[i].clone() } else { display_path(&self.recent[i], &self.root) };
+                    let path =
+                        if self.source() == Source::Files { self.files[i].clone() } else { display_path(&self.recent[i], &self.root) };
                     let (dir, name) = match path.rfind('/') {
                         Some(k) => (path[..k + 1].to_string(), path[k + 1..].to_string()),
                         None => (String::new(), path.clone()),
@@ -454,7 +455,10 @@ impl Palette {
                 Source::Branches if i == 0 => vec![(NEW_BRANCH.to_string(), base)],
                 Source::Branches => {
                     let b = &self.branches[i - 1];
-                    let mut v = vec![(if b.current { "* " } else { "  " }.to_string(), base), (b.name.clone(), if b.current { base.add_modifier(Modifier::BOLD) } else { base })];
+                    let mut v = vec![
+                        (if b.current { "* " } else { "  " }.to_string(), base),
+                        (b.name.clone(), if b.current { base.add_modifier(Modifier::BOLD) } else { base }),
+                    ];
                     if let Some(up) = &b.upstream {
                         let mut s = format!("  → {up}");
                         if b.ahead > 0 {

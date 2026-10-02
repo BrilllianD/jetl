@@ -221,7 +221,13 @@ pub fn occurrence_target(rope: &Rope, sel: &Selection) -> Option<(String, bool)>
         return (!skip).then_some((text, false));
     }
     let is_word = |p: usize| p < rope.len_chars() && is_word_char(rope.char(p));
-    let at = if is_word(sel.head) { sel.head } else if sel.head > 0 && is_word(sel.head - 1) { sel.head - 1 } else { return None };
+    let at = if is_word(sel.head) {
+        sel.head
+    } else if sel.head > 0 && is_word(sel.head - 1) {
+        sel.head - 1
+    } else {
+        return None;
+    };
     Some((rope.slice(word_at(rope, at)).to_string(), true))
 }
 

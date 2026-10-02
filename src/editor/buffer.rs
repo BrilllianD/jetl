@@ -110,10 +110,7 @@ pub struct Buffer {
 impl Buffer {
     pub fn from_text(id: BufferId, path: Option<PathBuf>, text: &str, lossy: bool) -> Self {
         let line_ending = if text.contains("\r\n") { LineEnding::CrLf } else { LineEnding::Lf };
-        let name = path
-            .as_ref()
-            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
-            .unwrap_or_else(|| "untitled".into());
+        let name = path.as_ref().and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned())).unwrap_or_else(|| "untitled".into());
         Self {
             id,
             path,
@@ -608,18 +605,18 @@ impl Buffer {
             }
             // JetBrains moves the caret to the next line after commenting.
             let (line, col) = selection::pos_to_line_col(rope, sel_after.head);
-            if line + 1 < rope.len_lines() {
-                Selection::point(selection::line_col_to_pos(rope, line + 1, col))
-            } else {
-                sel_after
-            }
+            if line + 1 < rope.len_lines() { Selection::point(selection::line_col_to_pos(rope, line + 1, col)) } else { sel_after }
         });
     }
 
     /// Wrap the selection, or the caret line from its indent to the end, in
     /// a block comment, or unwrap it when its trimmed text already is one.
     pub fn toggle_block_comment(&mut self, open: &str, close: &str) {
-        let r = if self.sel.is_empty() { self.line_content(self.rope.char_to_line(self.sel.head), self.rope.char_to_line(self.sel.head)) } else { self.sel.range() };
+        let r = if self.sel.is_empty() {
+            self.line_content(self.rope.char_to_line(self.sel.head), self.rope.char_to_line(self.sel.head))
+        } else {
+            self.sel.range()
+        };
         self.toggle_block_comment_in(r, open, close);
     }
 
@@ -676,7 +673,12 @@ impl Buffer {
         match self.language_choice {
             LanguageChoice::Plain => None,
             LanguageChoice::Named(name) => super::syntax::language_for_name(name),
-            LanguageChoice::Auto => self.syntax.as_ref().map(|s| s.def).or(self.detected_language).or_else(|| self.path.as_deref().and_then(super::syntax::detect)),
+            LanguageChoice::Auto => self
+                .syntax
+                .as_ref()
+                .map(|s| s.def)
+                .or(self.detected_language)
+                .or_else(|| self.path.as_deref().and_then(super::syntax::detect)),
         }
     }
 
@@ -819,7 +821,8 @@ impl Buffer {
         }
         // Case mapping can change the length (ß -> SS).
         let n = new.chars().count();
-        let sel_after = if self.sel.is_empty() { Selection::point(self.sel.head.min(r.start + n)) } else { Selection::new(r.start, r.start + n) };
+        let sel_after =
+            if self.sel.is_empty() { Selection::point(self.sel.head.min(r.start + n)) } else { Selection::new(r.start, r.start + n) };
         self.apply(vec![Change::replace(r.start, old, new)], sel_after, TxKind::Other);
     }
 
@@ -1568,7 +1571,14 @@ mod tests {
         buf.expand_selection();
         assert_eq!(buf.sel, top, "nothing larger than the whole text");
         assert_eq!(buf.sel.anchor, 0, "anchor at start, head at end");
-        for want in ["fn main() {\n    let a = 1;\n    foo(bar);\n}", "{\n    let a = 1;\n    foo(bar);\n}", "let a = 1;\n    foo(bar);", "foo(bar);", "foo(bar)", "foo"] {
+        for want in [
+            "fn main() {\n    let a = 1;\n    foo(bar);\n}",
+            "{\n    let a = 1;\n    foo(bar);\n}",
+            "let a = 1;\n    foo(bar);",
+            "foo(bar);",
+            "foo(bar)",
+            "foo",
+        ] {
             buf.shrink_selection();
             assert_eq!(buf.selected_text(), want);
         }
