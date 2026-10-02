@@ -32,7 +32,7 @@ and backlog are in `docs/ROADMAP.md`; settings in `docs/CONFIG.md`; keys in
 | `event.rs` | `AppMsg` (background to app), `Effect` (panel to app), `Mouse`, `Level`. |
 | `editor/mod.rs` | `Editor`: tabs with MRU, open/close, actions, mouse, rendering of tabs and text. |
 | `editor/buffer.rs` | `Buffer`: rope, selection, undo, file metadata (path, line ending, mtime, dirty state). |
-| `editor/{find,io}.rs` | Find/replace bar (keys, stepping, rendering); saving, autosave, `write_atomic`. |
+| `editor/{find,io}.rs` | Find/replace bar (keys, stepping, rendering); saving and autosave. |
 | `editor/view.rs` | `layout_line`: the grapheme walk shared by rendering, `visual_col` and `col_to_char`. |
 | `editor/…` | `selection`, `undo`, `syntax` (tree-sitter, language detection), `search`, `gutter` (git marks), `indent` (`.editorconfig`, detection), `brackets`, `expand`, `nav` (back/forward). |
 | `files/tree.rs` | Project tool window: lazy `ignore` walk, `TreeRefresh` off the main thread, git status colors, speed search, context menu. |
@@ -48,7 +48,7 @@ and backlog are in `docs/ROADMAP.md`; settings in `docs/CONFIG.md`; keys in
 | `git/cli.rs` | The `git` command line: network, switch, log/show, worktrees. No prompts, 120 s timeout. |
 | `git/{diff,model,panel}.rs` | Diff rows, shared types, the Git tool window (Commit, Log, Console). |
 | `ui/` | `render` (frame order), `layout` (rects and hit testing), `focus` (panel and tool window ids), `dialog`, `palette`, `menu` (context menu), `status_bar`, `tabs`, `toasts`, `tool_strip`, `widgets/{list,text_input}`. |
-| `util/` | `text` (width helpers), `coalesce` (one background request at a time). |
+| `util/` | `text` (width helpers), `coalesce` (one background request at a time), `fs` (`write_atomic`, shared by saves and replace in files). |
 
 ## Event flow
 
@@ -67,7 +67,9 @@ redraws when `dirty_frame` is set:
    panel, and the panel gets a `Mouse` with the click count resolved.
 2. **The bus** (`mpsc::unbounded_channel` of `AppMsg`). Background work
    reports here: file loads, sessions, the file index, tree listings,
-   worktree lists, `AppMsg::Git(GitMsg)`, and the filesystem watcher
+   worktree lists, find in files batches, tree file operations
+   (`FsOpDone`), symbol index batches, the recent projects list,
+   `AppMsg::Git(GitMsg)`, and the filesystem watcher
    (`FsChanged`: refresh the tree if a listed directory changed, refresh git
    status, reload clean tabs in place, ask once about tabs with unsaved
    edits). Without a watcher (off, or it failed to start), focus gain
@@ -87,7 +89,7 @@ Dialogs are data: `Dialog { id: DialogId, kind }`. The answer comes back to
 carries its `BufferId`, never a tab index: tabs can open while it is up.
 
 Render order (`ui::render`): tool strip, left and bottom tool windows,
-splitters, editor, status bar, toasts, palette, dialog. Rendering stores the
+splitters, editor, status bar, toasts, palette, context menu, dialog. Rendering stores the
 rects that mouse handling reads (layout rects, list rects, button rects).
 
 ## Background work and stale results
@@ -105,7 +107,8 @@ Two tags:
 - **Generation** (`Workspace::generation`) is bumped by every root switch
   (`Workspace::switch_root`). Every result that depends on the root carries
   it: `FileLoaded`, `SessionLoaded`, `FileIndex`, `TreeLoaded`,
-  `Worktrees`, `Find`, `ReplaceDone`, `FsChanged`, `Symbols`, every `GitMsg`. `GitService` keeps a copy, set by
+  `Worktrees`, `Find`, `ReplaceDone`, `FsChanged`, `WatcherStarted`,
+  `DiskText`, `FsOpDone`, `Symbols`, every `GitMsg`. `GitService` keeps a copy, set by
   `set_root(root, generation)`, to tag its own results. A result whose
   generation differs from `workspace.generation` is dropped.
 - **Seq** orders repeated requests of the same kind within a generation, so
@@ -115,8 +118,9 @@ Two tags:
   (`ProjectPanel::finish_refresh`), `Find` batches (`FindPanel::on_batch`;
   a newer search also stops the old walk through a shared cancel seq),
   `Symbols` batches (`SymbolIndex::on_batch`; only the newest run applies,
-  and it stops older runs through a cancel seq). A
-  result is applied when its seq is not
+  and it stops older runs through a cancel seq), `RecentProjects`
+  (`App::recent_projects_seq`; not tied to the root, so it carries no
+  generation). A result is applied when its seq is not
   older than the last applied one. Results keyed by what they describe
   (diffs by `DiffKey`, commit details by sha, log pages by `skip`) need no
   seq.

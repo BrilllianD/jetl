@@ -1,7 +1,8 @@
 # jetl roadmap
 
 This is the feature backlog for jetl after phases 0-5. Each item below is also tracked as a yman
-task (`yman ls`); phases are umbrella tasks and the rows are their subtasks.
+task (`yman ls`); phases are umbrella tasks and the rows are their subtasks. Phases 6 and 7 are
+done (see Order).
 
 ## What exists today
 
@@ -9,21 +10,24 @@ task (`yman ls`); phases are umbrella tasks and the rows are their subtasks.
   undo grouping, incremental tree-sitter reparse (`Syntax::tree()` feeds brackets, expand selection and the
   Structure window), smart
   Home, word motions, duplicate/delete line, line comment toggle, CRLF detection, atomic save, and
-  a 2 MiB highlight threshold. Missing: bracket logic, wrap, folding, indent/dedent of a selection,
-  move-line, external-change detection, autosave.
+  a 2 MiB highlight threshold. Phase 6 added bracket logic, indent/dedent of a selection,
+  move-line and autosave; open files reload or ask when they change on disk. Missing: wrap,
+  folding, multiple carets, column selection.
 - **Shell:** fixed layout with one left slot and one bottom slot. The side each tool window lives
   on is hardcoded in `ToolWindowId::side()`. A new bottom tool window is just a new enum variant
   and needs no layout rewrite. The palette has Files/Symbols/Actions/Everywhere/Recent/Branches/Recent Projects modes.
-  Dialogs come in confirm, input and choice kinds. The session stores tabs, carets, bookmarks, the tool window layout and expanded tree folders.
+  Dialogs come in confirm, input and choice kinds; the Project tree has a right-click context
+  menu. The session stores tabs, carets, bookmarks, the tool window layout and expanded tree folders.
   `App.notifications` keeps 200 entries, but nothing in the UI shows them.
 - **Git:** staging is whole-file only. Gutter marks are based on HEAD and are render-only. The
   diff is side-by-side or unified depending on width, with line-level coloring. There is a log
   with graph, details and file diff, and branches are reachable from the palette. Missing: amend,
-  stash, blame, discard, hunk operations, merge/rebase, tags, branch delete, a conflict UI, and a
-  filesystem watcher. Refresh only happens on focus gain, save, operation done, and F5.
+  stash, blame, discard, hunk operations, merge/rebase, tags, branch delete and a conflict UI. A
+  filesystem watcher refreshes the tree and git status; focus gain refreshes only when the
+  watcher is off (`[files] watch`) or failed to start.
 - **Infra:** `AppMsg::Lsp(LspMsg)` is an empty stub. Background services follow one pattern:
   clone (root, generation, tx), spawn, send a tagged message, and the app drops stale generations.
-  There is no README, CI, snapshot tests or architecture document yet.
+  `docs/ARCHITECTURE.md` and CI (fmt, clippy, test) exist; there is no README or snapshot tests yet.
 
 ## Feature catalog
 
@@ -61,6 +65,8 @@ Effort: S = hours to a day, M = 1-3 days, L = about a week, XL = multiple weeks.
 | Shebang / modeline detection | S | `detect()` is extension-only today |
 
 ### C. Project-wide navigation and files
+
+All of section C shipped in Phase 7.
 
 | Feature | Effort | Notes |
 |---|---|---|
@@ -125,23 +131,24 @@ Effort: S = hours to a day, M = 1-3 days, L = about a week, XL = multiple weeks.
 
 | Feature | Effort | Notes |
 |---|---|---|
-| `docs/ARCHITECTURE.md`, README | S | |
+| `docs/ARCHITECTURE.md`, README | S | ARCHITECTURE.md done; README open |
 | Render snapshot tests (`TestBackend` + `insta`) | M | `test_app()` harness exists |
-| CI, release binaries, AUR | S | |
+| CI, release binaries, AUR | S | CI done (GitHub Actions, Bitbucket Pipelines); releases open |
 | Crash recovery of dirty buffers | S | Panic hook writes to a recovery dir |
 | Palette filter off the main thread | S | nucleo supports it |
 
 ## Order
 
-1. **Phase 6: editor ergonomics + grammars.** This phase covers the small items in A and the
+1. **Phase 6: editor ergonomics + grammars.** Done. This phase covers the small items in A and the
    grammars in B. It carries no architectural risk and is felt in daily use right away.
-2. **Phase 7: project-wide.** The watcher comes first, then find in files, tree operations,
-   context menus, `file:line` CLI, recent projects and layout persistence.
+2. **Phase 7: project-wide.** Done. The watcher came first, then find and replace in files, tree
+   operations with context menu and speed search, `file:line` CLI, layout persistence, recent
+   projects, and symbol search with the Structure window (pulled forward from Phase 10).
 3. **Phase 8: git depth.** Discard, amend, hunks, intra-line diff, stash, blame, log filters and
    branch management.
 4. **Phase 9: terminal and run.** Terminal, run window, format on save, event log and tab polish.
-5. **Phase 10: language intelligence.** tree-sitter symbols come first, then LSP core, diagnostics
-   and navigation, and last completion, rename and code actions.
+5. **Phase 10: language intelligence.** tree-sitter symbols shipped in Phase 7. LSP core comes
+   first, then diagnostics and navigation, and last completion, rename and code actions.
 6. **Phase 11: editor layout.** Split panes, multi-caret, column selection, folding and wrap. This
    has the highest implementation risk, so it goes last.
 7. **Ongoing:** themes, vim mode, local history, snapshot tests, CI, README, crash recovery.
