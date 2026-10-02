@@ -85,6 +85,7 @@ pub struct Editor {
     tab_width: usize,
     scrolloff: usize,
     hscrolloff: usize,
+    auto_close: bool,
     clipboard: String,
     drag: Option<DragMode>,
     /// Files larger than this open without syntax highlighting.
@@ -108,6 +109,7 @@ impl Editor {
             tab_width: config.editor.tab_width,
             scrolloff: config.editor.scrolloff,
             hscrolloff: config.editor.hscrolloff,
+            auto_close: config.editor.auto_close,
             clipboard: String::new(),
             drag: None,
             max_highlight_bytes: config.editor.max_highlight_bytes,
@@ -415,12 +417,19 @@ impl Editor {
         }
         let rows = self.text_area.height as usize;
         let tab_width = self.tab_width;
+        let auto_close = self.auto_close;
         let Some(ai) = self.active else { return false };
         let b = &mut self.buffers[ai];
+        let pairs = || if auto_close { brackets::pairs(b.path.as_deref().and_then(syntax::detect).map(|d| d.name)) } else { &[] };
         match a {
             E::InsertChar(c) => {
-                let kind = if c.is_whitespace() { TxKind::Other } else { TxKind::Typing };
-                b.insert(&c.to_string(), kind);
+                let pairs = pairs();
+                if let Some(s) = &mut b.syntax {
+                    s.reparse(&b.rope);
+                }
+                let tree = b.syntax.as_ref().and_then(|s| s.tree());
+                let may_pair = !tree.is_some_and(|t| brackets::in_literal_at(&b.rope, t, b.sel.head));
+                b.type_char(*c, pairs, may_pair);
             }
             E::InsertText(s) => {
                 let s = if b.line_ending == buffer::LineEnding::CrLf { s.replace("\r\n", "\n").replace('\n', "\r\n") } else { s.replace("\r\n", "\n") };
@@ -428,7 +437,11 @@ impl Editor {
             }
             E::InsertNewline => b.newline(),
             E::InsertTab => b.insert_tab(tab_width),
-            E::Backspace => b.backspace(),
+            E::Backspace => {
+                if !b.backspace_pair(pairs()) {
+                    b.backspace();
+                }
+            }
             E::Delete => b.delete_forward(),
             E::DeleteWordBack => b.delete_word_back(),
             E::Move(m, extend) => {

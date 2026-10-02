@@ -33,6 +33,7 @@ max_highlight_bytes = 2097152  # files above this size (2 MiB) open without synt
 scrolloff = 3                  # lines kept visible above and below the caret
 hscrolloff = 5                 # columns kept visible left and right of the caret
 cjk_ambiguous_wide = false     # reserved; has no effect yet
+auto_close = true              # type brackets and quotes in pairs, step over closers, wrap selections
 
 [ui]
 theme = "darcula"              # reserved; Darcula is the only built-in theme (use theme.toml to change colors)

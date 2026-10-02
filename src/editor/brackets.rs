@@ -71,6 +71,29 @@ fn match_in_tree(rope: &Rope, tree: &Tree, p: usize, c: char, other: char, opens
     None
 }
 
+/// Pairs typed together when `editor.auto_close` is on, for the language
+/// named `lang`. Rust has no `''` (lifetimes); JavaScript, TypeScript, shell
+/// and Markdown also pair backticks.
+pub fn pairs(lang: Option<&str>) -> &'static [(char, char)] {
+    const BASE: &[(char, char)] = &[('(', ')'), ('[', ']'), ('{', '}'), ('"', '"')];
+    const QUOTES: &[(char, char)] = &[('(', ')'), ('[', ']'), ('{', '}'), ('"', '"'), ('\'', '\'')];
+    const TICKS: &[(char, char)] = &[('(', ')'), ('[', ']'), ('{', '}'), ('"', '"'), ('\'', '\''), ('`', '`')];
+    match lang {
+        Some("rust") => BASE,
+        Some("javascript" | "typescript" | "tsx" | "bash" | "markdown") => TICKS,
+        _ => QUOTES,
+    }
+}
+
+/// The char at `pos` lies inside a string or comment.
+pub fn in_literal_at(rope: &Rope, tree: &Tree, pos: usize) -> bool {
+    if pos >= rope.len_chars() {
+        return false;
+    }
+    let b = rope.char_to_byte(pos);
+    tree.root_node().descendant_for_byte_range(b, b + 1).is_some_and(in_literal)
+}
+
 fn in_literal(node: Node) -> bool {
     let mut n = Some(node);
     while let Some(x) = n {
@@ -160,5 +183,7 @@ mod tests {
         let in_string = src.find("\"(").unwrap() + 1;
         assert_eq!(pair_at(&r, tree, in_string), None, "bracket inside a string literal");
         assert_eq!(pair_at(&r, tree, 7), Some((7, src.len() - 2)), "function body braces");
+        assert!(in_literal_at(&r, tree.unwrap(), in_string), "inside the string");
+        assert!(!in_literal_at(&r, tree.unwrap(), open), "plain code");
     }
 }

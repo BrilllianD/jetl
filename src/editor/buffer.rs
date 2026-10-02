@@ -219,6 +219,55 @@ impl Buffer {
         self.apply(vec![Change::delete(start, old)], Selection::point(start), TxKind::Deleting);
     }
 
+    /// Type `c` with auto-close: wrap a selection in an opener and its
+    /// closer, step over a closer that is already at the caret, or insert
+    /// the pair when `may_pair` and the caret is at a word boundary. An
+    /// empty `pairs` table types `c` as is.
+    pub fn type_char(&mut self, c: char, pairs: &[(char, char)], may_pair: bool) {
+        let kind = if c.is_whitespace() { TxKind::Other } else { TxKind::Typing };
+        let opener = pairs.iter().find(|(o, _)| *o == c).map(|(_, close)| *close);
+        let is_closer = pairs.iter().any(|(_, close)| *close == c);
+        let r = self.sel.range();
+        let len = self.rope.len_chars();
+        if let (Some(close), false) = (opener, r.is_empty()) {
+            let changes = vec![Change::insert(r.end, close.to_string()), Change::insert(r.start, c.to_string())];
+            let sel_after = Selection::new(self.sel.anchor + 1, self.sel.head + 1);
+            self.apply(changes, sel_after, TxKind::Other);
+            return;
+        }
+        let p = self.sel.head;
+        let next = (p < len).then(|| self.rope.char(p));
+        if r.is_empty() && is_closer && next == Some(c) {
+            self.sel = Selection::point(p + 1);
+            return;
+        }
+        if let (Some(close), true, true) = (opener, r.is_empty(), may_pair) {
+            let next_ok = next.is_none_or(|n| n.is_whitespace() || pairs.iter().any(|(_, cl)| *cl == n));
+            let prev_word = p > 0 && selection::is_word_char(self.rope.char(p - 1));
+            if next_ok && (close != c || !prev_word) {
+                self.apply(vec![Change::insert(p, format!("{c}{close}"))], Selection::point(p + 1), kind);
+                return;
+            }
+        }
+        self.insert(&c.to_string(), kind);
+    }
+
+    /// Backspace between an auto-close pair such as `(|)` deletes both.
+    /// Returns false when the caret is not inside a pair.
+    pub fn backspace_pair(&mut self, pairs: &[(char, char)]) -> bool {
+        let p = self.sel.head;
+        if !self.sel.is_empty() || p == 0 || p >= self.rope.len_chars() {
+            return false;
+        }
+        let around = (self.rope.char(p - 1), self.rope.char(p));
+        if !pairs.contains(&around) {
+            return false;
+        }
+        let old = format!("{}{}", around.0, around.1);
+        self.apply(vec![Change::delete(p - 1, old)], Selection::point(p - 1), TxKind::Deleting);
+        true
+    }
+
     pub fn delete_forward(&mut self) {
         if self.delete_selection() {
             return;
@@ -542,6 +591,77 @@ mod tests {
             assert_eq!(buf.text(), text, "{name}");
             assert_eq!(buf.sel, sel, "{name}");
         }
+    }
+
+    const PAIRS: &[(char, char)] = &[('(', ')'), ('[', ']'), ('{', '}'), ('"', '"'), ('\'', '\'')];
+
+    #[test]
+    fn auto_close_wraps_selection() {
+        let mut buf = b("let x = a + b;");
+        buf.sel = Selection::new(13, 8);
+        buf.type_char('(', PAIRS, true);
+        assert_eq!(buf.text(), "let x = (a + b);");
+        assert_eq!(buf.sel, Selection::new(14, 9), "selection stays on the wrapped text");
+        assert!(buf.undo());
+        assert_eq!(buf.text(), "let x = a + b;");
+    }
+
+    #[test]
+    fn auto_close_pairs_and_steps_over() {
+        let mut buf = b("f\n");
+        buf.sel = Selection::point(1);
+        buf.type_char('(', PAIRS, true);
+        assert_eq!(buf.text(), "f()\n");
+        assert_eq!(buf.sel.head, 2);
+        buf.type_char('x', PAIRS, true);
+        buf.type_char(')', PAIRS, true);
+        assert_eq!(buf.text(), "f(x)\n", "closer at the caret is stepped over");
+        assert_eq!(buf.sel.head, 4);
+        // Before a word char the opener is typed alone.
+        buf.sel = Selection::point(0);
+        buf.type_char('[', PAIRS, true);
+        assert_eq!(buf.text(), "[f(x)\n");
+        // Not when the caller says the caret is inside a string or comment.
+        let mut buf = b("");
+        buf.type_char('{', PAIRS, false);
+        assert_eq!(buf.text(), "{");
+    }
+
+    #[test]
+    fn auto_close_quotes_need_a_word_boundary() {
+        let mut buf = b("");
+        buf.type_char('"', PAIRS, true);
+        assert_eq!(buf.text(), "\"\"");
+        buf.type_char('a', PAIRS, true);
+        buf.type_char('"', PAIRS, true);
+        assert_eq!(buf.text(), "\"a\"");
+        assert_eq!(buf.sel.head, 3);
+        let mut buf = b("don");
+        buf.sel = Selection::point(3);
+        buf.type_char('\'', PAIRS, true);
+        assert_eq!(buf.text(), "don'", "apostrophe after a word char");
+        // Rust has no '' pair, so lifetimes type plainly.
+        let rust = crate::editor::brackets::pairs(Some("rust"));
+        let mut buf = b("&");
+        buf.sel = Selection::point(1);
+        buf.type_char('\'', rust, true);
+        assert_eq!(buf.text(), "&'");
+    }
+
+    #[test]
+    fn backspace_deletes_pair_and_disabled_table_types_plainly() {
+        let mut buf = b("");
+        buf.type_char('(', PAIRS, true);
+        assert!(buf.backspace_pair(PAIRS));
+        assert_eq!(buf.text(), "");
+        let mut buf = b("()");
+        buf.sel = Selection::point(1);
+        assert!(!buf.backspace_pair(&[]));
+        buf.type_char(')', &[], true);
+        assert_eq!(buf.text(), "())", "auto_close = false: no step-over");
+        buf.sel = Selection::point(0);
+        buf.type_char('(', &[], true);
+        assert_eq!(buf.text(), "(())", "auto_close = false: no pair");
     }
 
     #[test]

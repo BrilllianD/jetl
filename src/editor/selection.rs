@@ -79,8 +79,12 @@ enum Class {
     Punct,
 }
 
+pub fn is_word_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
+}
+
 fn class(c: char) -> Class {
-    if c.is_alphanumeric() || c == '_' {
+    if is_word_char(c) {
         Class::Word
     } else if c.is_whitespace() {
         Class::Space
