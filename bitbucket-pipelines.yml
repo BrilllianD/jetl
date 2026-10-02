@@ -1,0 +1,36 @@
+# fmt and clippy on stable; tests on stable and the MSRV (rust-version in
+# Cargo.toml). libgit2 is built from the bundled source, no packages needed.
+definitions:
+  caches:
+    cargo-registry: /usr/local/cargo/registry
+  steps:
+    - step: &lint
+        name: fmt and clippy (stable)
+        image: rust:1
+        caches:
+          - cargo-registry
+        script:
+          - rustup component add rustfmt clippy
+          - cargo fmt --check
+          - cargo clippy --all-targets -- -D warnings
+    - step: &test-stable
+        name: test (stable)
+        image: rust:1
+        caches:
+          - cargo-registry
+        script:
+          - cargo test
+    - step: &test-msrv
+        name: test (1.88)
+        image: rust:1.88
+        caches:
+          - cargo-registry
+        script:
+          - cargo test
+
+pipelines:
+  default:
+    - parallel:
+        - step: *lint
+        - step: *test-stable
+        - step: *test-msrv
