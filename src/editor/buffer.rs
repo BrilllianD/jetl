@@ -733,6 +733,43 @@ impl Buffer {
         self.saved_state = self.undo.state_id();
         self.undo.break_group = true;
     }
+
+    /// Clean up before writing: strip trailing spaces and tabs (`trim`) and
+    /// end a non-empty buffer with a line break (`final_newline`), as one
+    /// undoable transaction. The caret line keeps its whitespace, as in
+    /// JetBrains, and Markdown is never trimmed (two trailing spaces are a
+    /// hard break). Nothing to fix means no transaction, so `dirty()` and
+    /// undo stay as they were.
+    pub fn prepare_for_save(&mut self, trim: bool, final_newline: bool) {
+        let len = self.rope.len_chars();
+        let mut changes = Vec::new();
+        if final_newline && len > 0 && !matches!(self.rope.char(len - 1), '\n' | '\r') {
+            changes.push(Change::insert(len, self.line_ending.as_str()));
+        }
+        if trim && !self.is_markdown() {
+            let caret_line = self.cursor_line_col().0;
+            for l in (0..self.rope.len_lines()).rev().filter(|&l| l != caret_line) {
+                let text = self.line_text(l);
+                let kept = text.trim_end_matches([' ', '\t']);
+                if kept.len() < text.len() {
+                    let at = self.rope.line_to_char(l) + kept.chars().count();
+                    changes.push(Change::delete(at, &text[kept.len()..]));
+                }
+            }
+        }
+        if changes.is_empty() {
+            return;
+        }
+        // Positions at an insertion stay before it: a caret at the end of
+        // the file does not jump onto the added empty line.
+        let sel = Selection::new(map_through(&changes, self.sel.anchor, true), map_through(&changes, self.sel.head, true));
+        self.apply(changes, sel, TxKind::Other);
+    }
+
+    fn is_markdown(&self) -> bool {
+        let ext = self.path.as_deref().and_then(|p| p.extension()).and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase());
+        self.language().is_some_and(|d| d.name == "markdown") || matches!(ext.as_deref(), Some("md" | "markdown"))
+    }
 }
 
 /// Map position `p` through `changes`. With `stay_at_insert`, a position
@@ -1337,5 +1374,65 @@ mod tests {
         let mut buf = b("");
         buf.expand_selection();
         assert!(buf.expand_stack.is_empty(), "nothing to expand in an empty buffer");
+    }
+
+    #[test]
+    fn prepare_for_save_trims_except_caret_line() {
+        let mut buf = b("a  \nb\t \nc  \nd");
+        buf.sel = Selection::point(7);
+        buf.prepare_for_save(true, false);
+        assert_eq!(buf.text(), "a\nb\t \nc\nd", "caret line 1 keeps its whitespace");
+        assert_eq!(buf.sel, Selection::point(5), "caret mapped past the trim on line 0");
+        assert!(buf.undo());
+        assert_eq!(buf.text(), "a  \nb\t \nc  \nd", "one transaction restores all of it");
+        // CRLF: the `\r` of a break is not trailing whitespace.
+        let mut buf = b("x \r\ny\r\n");
+        buf.sel = Selection::point(8);
+        buf.prepare_for_save(true, true);
+        assert_eq!(buf.text(), "x\r\ny\r\n");
+    }
+
+    #[test]
+    fn prepare_for_save_adds_final_newline_once() {
+        let mut buf = b("a\nb");
+        buf.sel = Selection::point(3);
+        buf.prepare_for_save(true, true);
+        assert_eq!(buf.text(), "a\nb\n");
+        assert_eq!(buf.sel, Selection::point(3), "caret stays before the added break");
+        let n = buf.undo.len();
+        buf.prepare_for_save(true, true);
+        assert_eq!(buf.text(), "a\nb\n");
+        assert_eq!(buf.undo.len(), n);
+        let mut buf = b("a\r\nb");
+        buf.prepare_for_save(false, true);
+        assert_eq!(buf.text(), "a\r\nb\r\n", "the buffer's line ending");
+        let mut buf = b("");
+        buf.prepare_for_save(true, true);
+        assert_eq!(buf.text(), "", "an empty buffer stays empty");
+        let mut buf = b("a");
+        buf.prepare_for_save(true, false);
+        assert_eq!(buf.text(), "a", "final_newline = false");
+    }
+
+    #[test]
+    fn prepare_for_save_leaves_markdown_whitespace() {
+        let mut buf = Buffer::from_text(1, Some(PathBuf::from("/tmp/notes.md")), "hard  \nbreak  \n", false);
+        buf.prepare_for_save(true, true);
+        assert_eq!(buf.text(), "hard  \nbreak  \n");
+        assert!(!buf.undo.can_undo());
+    }
+
+    #[test]
+    fn prepare_for_save_clean_buffer_creates_no_transaction() {
+        let mut buf = b("");
+        buf.insert("clean\n", TxKind::Other);
+        buf.mark_saved();
+        buf.insert("x", TxKind::Typing);
+        buf.undo();
+        assert!(!buf.dirty());
+        buf.prepare_for_save(true, true);
+        assert!(!buf.dirty());
+        assert_eq!(buf.undo.len(), 1);
+        assert!(buf.undo.can_redo(), "redo history survives");
     }
 }

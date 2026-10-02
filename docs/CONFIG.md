@@ -35,6 +35,8 @@ hscrolloff = 5                 # columns kept visible left and right of the care
 cjk_ambiguous_wide = false     # reserved; has no effect yet
 auto_close = true              # type brackets and quotes in pairs, step over closers, wrap selections
 highlight_occurrences = true   # highlight the word at the caret (or the selected text) elsewhere on screen
+trim_trailing_whitespace = true # on save, strip trailing spaces and tabs (not on the caret line, never in Markdown)
+final_newline = true           # on save, end a non-empty file with a line break
 
 [ui]
 theme = "darcula"              # reserved; Darcula is the only built-in theme (use theme.toml to change colors)

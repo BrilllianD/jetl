@@ -88,6 +88,8 @@ pub struct Editor {
     hscrolloff: usize,
     auto_close: bool,
     highlight_occurrences: bool,
+    trim_trailing_whitespace: bool,
+    final_newline: bool,
     clipboard: String,
     drag: Option<DragMode>,
     /// Files larger than this open without syntax highlighting.
@@ -113,6 +115,8 @@ impl Editor {
             hscrolloff: config.editor.hscrolloff,
             auto_close: config.editor.auto_close,
             highlight_occurrences: config.editor.highlight_occurrences,
+            trim_trailing_whitespace: config.editor.trim_trailing_whitespace,
+            final_newline: config.editor.final_newline,
             clipboard: String::new(),
             drag: None,
             max_highlight_bytes: config.editor.max_highlight_bytes,
@@ -246,6 +250,7 @@ impl Editor {
     /// Write buffer `i` to disk atomically. Synchronous on purpose: saves are
     /// small and the result must be known before quitting.
     pub fn save(&mut self, i: usize, cx: &mut Ctx) -> bool {
+        let (trim, final_newline) = (self.trim_trailing_whitespace, self.final_newline);
         let Some(b) = self.buffers.get_mut(i) else { return false };
         let Some(path) = b.path.clone() else {
             cx.notify(Level::Error, "buffer has no file path");
@@ -254,6 +259,7 @@ impl Editor {
         if !b.dirty() {
             return true;
         }
+        b.prepare_for_save(trim, final_newline);
         match write_atomic(&path, &b.text()) {
             Ok(()) => {
                 b.mark_saved();
