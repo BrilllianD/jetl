@@ -1,6 +1,6 @@
 # jetl
 
-Terminal IDE in Rust (ratatui + crossterm) with JetBrains-like UX: project tree, tabbed editor with tree-sitter highlighting, Git tool window, worktree panel. Feature backlog and phase order: `docs/ROADMAP.md`. Architecture notes go in `docs/ARCHITECTURE.md` (yman task 36, not written yet).
+Terminal IDE in Rust (ratatui + crossterm) with JetBrains-like UX: project tree, tabbed editor with tree-sitter highlighting, Git tool window, worktree panel. Feature backlog and phase order: `docs/ROADMAP.md`. Architecture (module map, event flow, stale-result rules, extension points): `docs/ARCHITECTURE.md`. Manual tmux test harness: `docs/TESTING.md`.
 
 ## Build and run
 
@@ -8,6 +8,7 @@ Terminal IDE in Rust (ratatui + crossterm) with JetBrains-like UX: project tree,
     cargo run --no-default-features --features lang-rust -- .   # faster iteration (fewer grammars)
     RUST_LOG=jetl=debug cargo run -- .               # log to ~/.local/state/jetl/jetl.log
     cargo test
+    cargo clippy --all-targets -- -D warnings && cargo fmt --check   # CI runs both
 
 ## Task tracking (yman)
 
