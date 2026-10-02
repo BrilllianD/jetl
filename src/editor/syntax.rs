@@ -24,6 +24,9 @@ pub struct LanguageDef {
     pub block_comment: Option<(&'static str, &'static str)>,
     /// Enter after a trailing `:` indents one level (Python, YAML).
     pub indent_after_colon: bool,
+    /// Whether every query part compiled (no fallback to a partial set).
+    #[cfg(test)]
+    full_query: bool,
 }
 
 fn make(name: &'static str, extensions: &'static [&'static str], filenames: &'static [&'static str], language: Language, queries: &[&str], line_comment: Option<&'static str>) -> Option<LanguageDef> {
@@ -32,7 +35,20 @@ fn make(name: &'static str, extensions: &'static [&'static str], filenames: &'st
     for n in (1..=queries.len()).rev() {
         let src: String = queries[..n].join("\n");
         match Query::new(&language, &src) {
-            Ok(query) => return Some(LanguageDef { name, extensions, filenames, language: language.clone(), query, line_comment, block_comment: block_comment(name), indent_after_colon: matches!(name, "python" | "yaml") }),
+            Ok(query) => {
+                return Some(LanguageDef {
+                    name,
+                    extensions,
+                    filenames,
+                    language: language.clone(),
+                    query,
+                    line_comment,
+                    block_comment: block_comment(name),
+                    indent_after_colon: matches!(name, "python" | "yaml"),
+                    #[cfg(test)]
+                    full_query: n == queries.len(),
+                })
+            }
             Err(e) => tracing::warn!("highlight query for {name} ({n} parts): {e}"),
         }
     }
@@ -41,11 +57,23 @@ fn make(name: &'static str, extensions: &'static [&'static str], filenames: &'st
 
 fn block_comment(name: &str) -> Option<(&'static str, &'static str)> {
     match name {
-        "rust" | "javascript" | "typescript" | "tsx" | "csharp" | "css" | "scss" => Some(("/*", "*/")),
+        "rust" | "javascript" | "typescript" | "tsx" | "csharp" | "css" | "scss" | "go" | "c" | "cpp" | "java" | "php" => Some(("/*", "*/")),
+        "lua" => Some(("--[[", "]]")),
         "html" | "xml" | "markdown" => Some(("<!--", "-->")),
         _ => None,
     }
 }
+
+/// Prepended to the C and C++ queries: upstream captures a called struct
+/// field as `@property` before `@function`, primitive types only as
+/// `@type` (which Darcula leaves unstyled), and booleans not at all.
+#[cfg(any(feature = "lang-c", feature = "lang-cpp"))]
+const C_QUERY_FIXES: &str = "(call_expression function: (field_expression field: (field_identifier) @function)) [(primitive_type) (sized_type_specifier)] @type.builtin [(true) (false)] @boolean";
+
+/// Prepended to the C++ query: upstream finds function names only one
+/// scope deep (`A::run`, not `ns::A::run`) and leaves `auto` as `@type`.
+#[cfg(feature = "lang-cpp")]
+const CPP_QUERY_FIXES: &str = "(function_declarator declarator: (qualified_identifier name: (qualified_identifier name: (identifier) @function))) (call_expression function: (qualified_identifier name: (qualified_identifier name: (identifier) @function))) (auto) @type.builtin";
 
 pub static LANGUAGES: LazyLock<Vec<LanguageDef>> = LazyLock::new(|| {
     let mut v = Vec::new();
@@ -98,6 +126,26 @@ pub static LANGUAGES: LazyLock<Vec<LanguageDef>> = LazyLock::new(|| {
     }
     #[cfg(feature = "lang-xml")]
     v.extend(make("xml", &["xml", "xsd", "xsl", "xslt", "svg", "csproj", "fsproj", "vbproj", "props", "targets", "plist", "resx", "xaml"], &[], tree_sitter_xml::LANGUAGE_XML.into(), &[tree_sitter_xml::XML_HIGHLIGHT_QUERY], None));
+    #[cfg(feature = "lang-go")]
+    // Upstream lists builtin calls after plain calls, and the first pattern
+    // for a node wins; lift them to the front (Lua too).
+    v.extend(make("go", &["go"], &[], tree_sitter_go::LANGUAGE.into(), &["(call_expression function: (identifier) @function.builtin (#match? @function.builtin \"^(append|cap|clear|close|complex|copy|delete|imag|len|make|max|min|new|panic|print|println|real|recover)$\"))", tree_sitter_go::HIGHLIGHTS_QUERY], Some("//")));
+    #[cfg(feature = "lang-c")]
+    v.extend(make("c", &["c", "h"], &[], tree_sitter_c::LANGUAGE.into(), &[C_QUERY_FIXES, tree_sitter_c::HIGHLIGHT_QUERY], Some("//")));
+    // The C++ query only covers what C++ adds to C (no comments, numbers or
+    // calls); the C query fills in the rest.
+    #[cfg(feature = "lang-cpp")]
+    v.extend(make("cpp", &["cpp", "cc", "cxx", "hpp", "hh"], &[], tree_sitter_cpp::LANGUAGE.into(), &[C_QUERY_FIXES, CPP_QUERY_FIXES, tree_sitter_cpp::HIGHLIGHT_QUERY, tree_sitter_c::HIGHLIGHT_QUERY], Some("//")));
+    #[cfg(feature = "lang-java")]
+    v.extend(make("java", &["java"], &[], tree_sitter_java::LANGUAGE.into(), &[tree_sitter_java::HIGHLIGHTS_QUERY], Some("//")));
+    #[cfg(feature = "lang-php")]
+    v.extend(make("php", &["php"], &[], tree_sitter_php::LANGUAGE_PHP.into(), &[tree_sitter_php::HIGHLIGHTS_QUERY], Some("//")));
+    #[cfg(feature = "lang-lua")]
+    v.extend(make("lua", &["lua"], &[], tree_sitter_lua::LANGUAGE.into(), &["(function_call name: (identifier) @function.builtin (#any-of? @function.builtin \"assert\" \"collectgarbage\" \"dofile\" \"error\" \"getfenv\" \"getmetatable\" \"ipairs\" \"load\" \"loadfile\" \"loadstring\" \"module\" \"next\" \"pairs\" \"pcall\" \"print\" \"rawequal\" \"rawget\" \"rawset\" \"require\" \"select\" \"setfenv\" \"setmetatable\" \"tonumber\" \"tostring\" \"type\" \"unpack\" \"xpcall\"))", tree_sitter_lua::HIGHLIGHTS_QUERY], Some("--")));
+    // tree-sitter-containerfile is the maintained fork of the Dockerfile
+    // grammar (the tree-sitter-dockerfile crate targets tree-sitter 0.20).
+    #[cfg(feature = "lang-dockerfile")]
+    v.extend(make("dockerfile", &["dockerfile"], &["Dockerfile", "Containerfile"], tree_sitter_containerfile::LANGUAGE.into(), &[tree_sitter_containerfile::HIGHLIGHTS_QUERY], Some("#")));
     v
 });
 
@@ -361,9 +409,19 @@ mod tests {
             cfg!(feature = "lang-css"),
             cfg!(feature = "lang-scss"),
             cfg!(feature = "lang-xml"),
+            cfg!(feature = "lang-go"),
+            cfg!(feature = "lang-c"),
+            cfg!(feature = "lang-cpp"),
+            cfg!(feature = "lang-java"),
+            cfg!(feature = "lang-php"),
+            cfg!(feature = "lang-lua"),
+            cfg!(feature = "lang-dockerfile"),
         ];
         let names: Vec<&str> = LANGUAGES.iter().map(|l| l.name).collect();
         assert_eq!(names.len(), enabled.iter().filter(|e| **e).count(), "loaded: {names:?}");
+        // A loaded grammar may still have dropped query parts; that is a bug too.
+        let partial: Vec<&str> = LANGUAGES.iter().filter(|l| !l.full_query).map(|l| l.name).collect();
+        assert!(partial.is_empty(), "query fell back to a partial set for {partial:?}");
     }
 
     #[cfg(feature = "lang-json")]
@@ -467,5 +525,108 @@ mod tests {
         assert_eq!(style_of("a.csproj", src, "Project"), cap("tag"));
         assert!(style_of("a.csproj", src, "Sdk").is_some(), "attribute name highlighted");
         assert_eq!(style_of("a.csproj", src, "x\"><a"), cap("string"));
+    }
+
+    #[cfg(feature = "lang-go")]
+    #[test]
+    fn go_highlighted() {
+        let src = "// c\npackage main\nfunc (t *T) Get() int { return len(\"hi\") + 42 }\nfunc main() { fmt.Println(nil) }\n";
+        assert_eq!(style_of("main.go", src, "// c"), cap("comment"));
+        assert_eq!(style_of("main.go", src, "func"), cap("keyword"));
+        assert_eq!(style_of("main.go", src, "Get"), cap("function"));
+        assert_eq!(style_of("main.go", src, "main()"), cap("function"));
+        assert_eq!(style_of("main.go", src, "len"), cap("function.builtin"), "builtin wins over plain call");
+        assert_eq!(style_of("main.go", src, "\"hi"), cap("string"));
+        assert_eq!(style_of("main.go", src, "42"), cap("number"));
+    }
+
+    #[cfg(feature = "lang-c")]
+    #[test]
+    fn c_highlighted() {
+        let src = "/* b */\n#include <stdio.h>\nstatic unsigned long add(int a) { s.f(); return printf(\"%d\", 1); }\n";
+        assert_eq!(style_of("a.h", src, "/* b"), cap("comment"));
+        assert_eq!(style_of("a.c", src, "#include"), cap("keyword"));
+        assert_eq!(style_of("a.c", src, "static"), cap("keyword"));
+        assert_eq!(style_of("a.c", src, "unsigned"), cap("type.builtin"));
+        assert_eq!(style_of("a.c", src, "int a"), cap("type.builtin"));
+        assert_eq!(style_of("a.c", src, "add"), cap("function"));
+        assert_eq!(style_of("a.c", src, "f()"), cap("function"), "called field is a function, not a property");
+        assert_eq!(style_of("a.c", src, "\"%d"), cap("string"));
+        assert_eq!(style_of("a.c", src, "1)"), cap("number"));
+    }
+
+    #[cfg(feature = "lang-cpp")]
+    #[test]
+    fn cpp_highlighted() {
+        let src = "// c\nnamespace ns { class A { public: void run(); }; }\nvoid ns::A::run() { auto v = std::vector<int>{}; v.push_back(\"x\"); a::b::go(); throw nullptr; }\n";
+        assert_eq!(style_of("a.cpp", src, "// c"), cap("comment"), "comment from the C query");
+        assert_eq!(style_of("a.hpp", src, "namespace"), cap("keyword"));
+        assert_eq!(style_of("a.cc", src, "class"), cap("keyword"));
+        assert_eq!(style_of("a.cpp", src, "run()"), cap("function"));
+        assert_eq!(style_of("a.cpp", src, "run() {"), cap("function"), "two scopes deep");
+        assert_eq!(style_of("a.cpp", src, "go()"), cap("function"));
+        assert_eq!(style_of("a.cpp", src, "auto"), cap("type.builtin"));
+        assert_eq!(style_of("a.cpp", src, "push_back"), cap("function"));
+        assert_eq!(style_of("a.cpp", src, "\"x"), cap("string"));
+    }
+
+    #[cfg(feature = "lang-java")]
+    #[test]
+    fn java_highlighted() {
+        let src = "// c\n@Override\npublic class A { void run() { System.out.println(\"hi\" + 42); } }\n";
+        assert_eq!(style_of("A.java", src, "// c"), cap("comment"));
+        assert_eq!(style_of("A.java", src, "Override"), cap("attribute"));
+        assert_eq!(style_of("A.java", src, "public"), cap("keyword"));
+        assert_eq!(style_of("A.java", src, "void"), cap("type.builtin"));
+        assert_eq!(style_of("A.java", src, "run"), cap("function"));
+        assert_eq!(style_of("A.java", src, "println"), cap("function"));
+        assert_eq!(style_of("A.java", src, "\"hi"), cap("string"));
+        assert_eq!(style_of("A.java", src, "42"), cap("number"));
+    }
+
+    #[cfg(feature = "lang-php")]
+    #[test]
+    fn php_highlighted() {
+        let src = "<?php\n// c\nclass A { public function run() { echo strlen(\"hi\"); return 42; } }\n";
+        assert_eq!(style_of("a.php", src, "<?php"), cap("tag"));
+        assert_eq!(style_of("a.php", src, "// c"), cap("comment"));
+        assert_eq!(style_of("a.php", src, "class"), cap("keyword"));
+        assert_eq!(style_of("a.php", src, "function"), cap("keyword"));
+        assert_eq!(style_of("a.php", src, "run"), cap("function"));
+        assert_eq!(style_of("a.php", src, "strlen"), cap("function"));
+        assert_eq!(style_of("a.php", src, "\"hi"), cap("string"));
+        assert_eq!(style_of("a.php", src, "42"), cap("number"));
+    }
+
+    #[cfg(feature = "lang-lua")]
+    #[test]
+    fn lua_highlighted() {
+        let src = "-- c\nlocal function f(x)\n  if x then print(\"hi\") end\n  for i = 1, 3 do x:go() end\n  return 42\nend\n";
+        assert_eq!(style_of("a.lua", src, "-- c"), cap("comment"));
+        assert_eq!(style_of("a.lua", src, "local"), cap("keyword"));
+        assert_eq!(style_of("a.lua", src, "if"), cap("keyword"));
+        assert_eq!(style_of("a.lua", src, "for"), cap("keyword"));
+        assert_eq!(style_of("a.lua", src, "return"), cap("keyword"));
+        assert_eq!(style_of("a.lua", src, "f("), cap("function"));
+        assert_eq!(style_of("a.lua", src, "go"), cap("function"));
+        assert_eq!(style_of("a.lua", src, "print"), cap("function.builtin"), "builtin wins over plain call");
+        assert_eq!(style_of("a.lua", src, "\"hi"), cap("string"));
+        assert_eq!(style_of("a.lua", src, "42"), cap("number"));
+        assert!(cap("if").is_none() && cap("conditional") == cap("keyword"));
+    }
+
+    #[cfg(feature = "lang-dockerfile")]
+    #[test]
+    fn dockerfile_highlighted() {
+        let src = "# c\nFROM rust:1.80 AS build\nENV A=b\nEXPOSE 8080\nCMD [\"jetl\"]\n";
+        for file in ["Dockerfile", "Containerfile", "dev.Dockerfile"] {
+            assert_eq!(detect(Path::new(file)).map(|l| l.name), Some("dockerfile"), "{file}");
+        }
+        assert_eq!(style_of("Dockerfile", src, "# c"), cap("comment"));
+        assert_eq!(style_of("Dockerfile", src, "FROM"), cap("keyword"));
+        assert_eq!(style_of("Dockerfile", src, "AS"), cap("keyword"));
+        assert_eq!(style_of("Dockerfile", src, "A=b"), cap("property"));
+        assert_eq!(style_of("Dockerfile", src, "8080"), cap("number"));
+        assert_eq!(style_of("Dockerfile", src, "\"jetl"), cap("string"));
     }
 }

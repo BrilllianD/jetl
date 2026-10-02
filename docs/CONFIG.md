@@ -191,7 +191,8 @@ property attribute label operator punctuation punctuation.special
 variable.builtin tag embedded text.title text.literal text.reference
 text.uri none`, plus the CSS/SCSS at-rule captures `media import keyframes
 charset namespace supports at use forward include mixin extend each for
-while return debug warn`. New names (for example `type` or `variable`) can be added;
+while return debug warn` and the Lua captures `conditional repeat method
+preproc`. New names (for example `type` or `variable`) can be added;
 note that the default theme leaves `type` and `variable` unstyled on
 purpose, because highlight queries list them before more specific captures
 of the same node.

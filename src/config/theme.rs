@@ -195,6 +195,11 @@ fn darcula_syntax(fg: Color) -> HashMap<String, Style> {
         ("return", keyword),
         ("debug", keyword),
         ("warn", keyword),
+        // Lua query names for control flow, methods and the shebang line.
+        ("conditional", keyword),
+        ("repeat", keyword),
+        ("method", function),
+        ("preproc", meta),
         ("embedded", plain),
         ("text.title", c(255, 198, 109).add_modifier(Modifier::BOLD)),
         ("text.literal", c(106, 135, 89)),

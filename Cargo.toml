@@ -31,6 +31,13 @@ tree-sitter-html = { version = "0.23", optional = true }
 tree-sitter-css = { version = "0.25", optional = true }
 tree-sitter-scss = { version = "1.0", optional = true }
 tree-sitter-xml = { version = "0.7", optional = true }
+tree-sitter-go = { version = "0.25", optional = true }
+tree-sitter-c = { version = "0.24", optional = true }
+tree-sitter-cpp = { version = "0.23", optional = true }
+tree-sitter-java = { version = "0.23", optional = true }
+tree-sitter-php = { version = "0.24", optional = true }
+tree-sitter-lua = { version = "0.5", optional = true }
+tree-sitter-containerfile = { version = "0.9", optional = true }
 git2 = { version = "0.21", default-features = false }
 imara-diff = "0.2"
 ignore = "0.4"
@@ -49,7 +56,7 @@ anyhow = "1"
 ec4rs = "1.2"
 
 [features]
-default = ["lang-rust", "lang-js", "lang-ts", "lang-python", "lang-json", "lang-toml", "lang-bash", "lang-md", "lang-csharp", "lang-yaml", "lang-html", "lang-css", "lang-scss", "lang-xml"]
+default = ["lang-rust", "lang-js", "lang-ts", "lang-python", "lang-json", "lang-toml", "lang-bash", "lang-md", "lang-csharp", "lang-yaml", "lang-html", "lang-css", "lang-scss", "lang-xml", "lang-go", "lang-c", "lang-cpp", "lang-java", "lang-php", "lang-lua", "lang-dockerfile"]
 lang-rust = ["dep:tree-sitter-rust"]
 lang-js = ["dep:tree-sitter-javascript"]
 lang-ts = ["dep:tree-sitter-typescript"]
@@ -64,6 +71,14 @@ lang-html = ["dep:tree-sitter-html"]
 lang-css = ["dep:tree-sitter-css"]
 lang-scss = ["dep:tree-sitter-scss"]
 lang-xml = ["dep:tree-sitter-xml"]
+lang-go = ["dep:tree-sitter-go"]
+lang-c = ["dep:tree-sitter-c"]
+# The C++ highlight query builds on the C one.
+lang-cpp = ["dep:tree-sitter-cpp", "dep:tree-sitter-c"]
+lang-java = ["dep:tree-sitter-java"]
+lang-php = ["dep:tree-sitter-php"]
+lang-lua = ["dep:tree-sitter-lua"]
+lang-dockerfile = ["dep:tree-sitter-containerfile"]
 
 [profile.dev.package."*"]
 opt-level = 2
