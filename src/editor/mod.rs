@@ -138,6 +138,9 @@ impl Editor {
     pub fn index_of(&self, path: &Path) -> Option<usize> {
         self.buffers.iter().position(|b| b.path.as_deref() == Some(path))
     }
+    pub fn index_of_id(&self, id: BufferId) -> Option<usize> {
+        self.buffers.iter().position(|b| b.id == id)
+    }
     pub fn open_paths(&self) -> Vec<PathBuf> {
         self.buffers.iter().filter_map(|b| b.path.clone()).collect()
     }
@@ -327,7 +330,7 @@ impl Editor {
         if b.dirty() {
             let msg = format!("{} has unsaved changes.", b.name);
             cx.effects.push(Effect::Dialog(Dialog::confirm(
-                DialogId::CloseTabDirty(i),
+                DialogId::CloseTabDirty(b.id),
                 "Unsaved changes",
                 &msg,
                 &["Save", "Don't save", "Cancel"],

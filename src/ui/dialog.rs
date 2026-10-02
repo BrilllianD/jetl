@@ -16,7 +16,8 @@ use crate::ui::widgets::text_input::TextInput;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DialogId {
     QuitDirty,
-    CloseTabDirty(usize),
+    /// Keyed by buffer, not tab index: tabs can open while the dialog is up.
+    CloseTabDirty(crate::editor::buffer::BufferId),
     CloseAllDirty,
     /// Unsaved buffers before switching the project root to the path.
     SwitchRootDirty(std::path::PathBuf),

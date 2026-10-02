@@ -635,6 +635,28 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn close_dirty_answer_hits_the_right_tab_after_a_load() {
+        let (mut app, dir) = test_app("close-dirty");
+        let root = app.workspace.root.clone();
+        let g = app.workspace.generation;
+        let load = |name: &str| AppMsg::FileLoaded { generation: g, path: root.join(name), result: Ok(b"text".to_vec()), focus: true };
+        app.handle_msg(load("a.txt"));
+        app.handle_msg(load("b.txt"));
+        app.perform(Action::Editor(EditorAction::InsertText("dirty ".into())));
+        app.activate_tab(0);
+        app.close_tab_index(1);
+        let d = app.dialog.take().expect("dirty close asks");
+        // A tab opens next to the active one while the dialog is up.
+        app.handle_msg(load("c.txt"));
+        let names = |app: &App| app.editor.buffers.iter().map(|b| b.name.clone()).collect::<Vec<_>>();
+        assert_eq!(names(&app), ["a.txt", "c.txt", "b.txt"]);
+        app.finish_dialog(d.id, crate::ui::dialog::DialogResult::Button(0));
+        assert_eq!(names(&app), ["a.txt", "c.txt"]);
+        assert_eq!(std::fs::read_to_string(root.join("b.txt")).unwrap(), "dirty text\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
     async fn branch_load_error_reports_once_per_palette() {
         let (mut app, dir) = test_app("branch-error");
         app.open_palette(crate::actions::PaletteKind::Branches);

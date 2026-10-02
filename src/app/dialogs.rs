@@ -29,7 +29,8 @@ impl App {
                 self.should_quit = true;
             }
             (DialogId::QuitDirty, DialogResult::Button(1)) => self.should_quit = true,
-            (DialogId::CloseTabDirty(i), DialogResult::Button(0)) => {
+            (DialogId::CloseTabDirty(id), DialogResult::Button(0)) => {
+                let Some(i) = self.editor.index_of_id(id) else { return };
                 let mut cx = ctx!(self);
                 if self.editor.save(i, &mut cx) {
                     self.editor.force_close(i);
@@ -37,7 +38,11 @@ impl App {
                 let fx = cx.effects;
                 self.apply_effects(fx);
             }
-            (DialogId::CloseTabDirty(i), DialogResult::Button(1)) => self.editor.force_close(i),
+            (DialogId::CloseTabDirty(id), DialogResult::Button(1)) => {
+                if let Some(i) = self.editor.index_of_id(id) {
+                    self.editor.force_close(i);
+                }
+            }
             (DialogId::CloseAllDirty, DialogResult::Button(0)) => {
                 let mut cx = ctx!(self);
                 if self.editor.save_all(&mut cx) {
