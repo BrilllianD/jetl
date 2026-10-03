@@ -26,10 +26,20 @@ pub enum AppAction {
     ToggleToolWindow(ToolWindowId),
     HideAllToolWindows,
     HideFocusedToolWindow,
+    /// Move the focused tool window's free edge (Ctrl+Shift+arrows).
+    ResizeToolWindow(Dir),
     Escape,
     OpenPalette(PaletteKind),
     DebugPanic,
     Refresh,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Dir {
+    Left,
+    Right,
+    Up,
+    Down,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -301,6 +311,10 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "tool_window.structure" => "Structure tool window", App(AppAction::ToggleToolWindow(ToolWindowId::Structure));
         "tool_window.hide_all" => "Hide all tool windows", App(AppAction::HideAllToolWindows);
         "tool_window.hide_focused" => "Hide active tool window", App(AppAction::HideFocusedToolWindow);
+        "tool_window.stretch_left" => "Stretch tool window to the left", App(AppAction::ResizeToolWindow(Dir::Left));
+        "tool_window.stretch_right" => "Stretch tool window to the right", App(AppAction::ResizeToolWindow(Dir::Right));
+        "tool_window.stretch_up" => "Stretch tool window up", App(AppAction::ResizeToolWindow(Dir::Up));
+        "tool_window.stretch_down" => "Stretch tool window down", App(AppAction::ResizeToolWindow(Dir::Down));
         "palette.files" => "Go to file", App(AppAction::OpenPalette(PaletteKind::Files));
         "palette.actions" => "Find action", App(AppAction::OpenPalette(PaletteKind::Actions));
         "palette.search_everywhere" => "Search everywhere", App(AppAction::OpenPalette(PaletteKind::Everywhere));

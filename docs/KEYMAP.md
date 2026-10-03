@@ -23,6 +23,10 @@ Override any of them in `~/.config/jetl/keymap.toml` (see [CONFIG.md](CONFIG.md)
 | `Alt+7` | `tool_window.structure` | Structure tool window |
 | `Ctrl+Shift+F12` | `tool_window.hide_all` | Hide all tool windows |
 | `Shift+Esc` * | `tool_window.hide_focused` | Hide active tool window |
+| `Ctrl+Shift+Left` | `tool_window.stretch_left` | Stretch tool window to the left |
+| `Ctrl+Shift+Right` | `tool_window.stretch_right` | Stretch tool window to the right |
+| `Ctrl+Shift+Up` | `tool_window.stretch_up` | Stretch tool window up |
+| `Ctrl+Shift+Down` | `tool_window.stretch_down` | Stretch tool window down |
 | `Ctrl+N` | `palette.files` | Go to file |
 | `Ctrl+Shift+N` * | `palette.files` | Go to file |
 | `Ctrl+Shift+A` * | `palette.actions` | Find action |

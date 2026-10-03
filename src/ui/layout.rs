@@ -178,6 +178,18 @@ impl LayoutState {
         }
     }
 
+    /// Keyboard resize: move a splitter by `delta` cells, bounded below like
+    /// a drag and then fitted to the terminal the way a frame would.
+    pub fn resize(&mut self, id: SplitterId, delta: i16) {
+        match id {
+            SplitterId::Left => self.left_w = self.left_w.saturating_add_signed(delta).max(MIN_LEFT_W),
+            SplitterId::Bottom => self.bottom_h = self.bottom_h.saturating_add_signed(delta).max(MIN_BOTTOM_H),
+        }
+        if !self.rects.area.is_empty() {
+            self.compute(self.rects.area);
+        }
+    }
+
     pub fn strip_hit(&self, x: u16, y: u16) -> Option<ToolWindowId> {
         let p = ratatui::layout::Position::new(x, y);
         self.strip_hits.iter().find(|(_, r)| r.contains(p)).map(|(tw, _)| *tw)
@@ -232,5 +244,24 @@ mod tests {
         l.compute(Rect::new(0, 0, 100, 30));
         assert!(l.rects.editor.width >= MIN_CENTER_W, "left window cannot squeeze the editor away");
         assert!(l.rects.editor.height + l.rects.tabs.height >= MIN_CENTER_H);
+    }
+
+    #[test]
+    fn keyboard_resize_clamps_like_a_drag() {
+        let mut l = LayoutState::new(30, 10);
+        l.show(ToolWindowId::Git);
+        l.compute(Rect::new(0, 0, 100, 30));
+        l.resize(SplitterId::Left, 2);
+        l.resize(SplitterId::Bottom, -1);
+        assert_eq!((l.left_w, l.bottom_h), (32, 9));
+        l.resize(SplitterId::Left, -100);
+        l.resize(SplitterId::Bottom, -100);
+        assert_eq!((l.left_w, l.bottom_h), (MIN_LEFT_W, MIN_BOTTOM_H));
+        // Growing stops where the editor keeps its minimum size.
+        l.resize(SplitterId::Left, 500);
+        l.resize(SplitterId::Bottom, 500);
+        assert_eq!(l.left_w, 100 - STRIP_W - MIN_CENTER_W - 1);
+        assert_eq!(l.bottom_h, 30 - 1 - MIN_CENTER_H - 1);
+        assert_eq!(l.rects.left.width, l.left_w, "rects follow at once");
     }
 }

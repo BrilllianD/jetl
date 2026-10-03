@@ -10,7 +10,7 @@ use futures::StreamExt;
 use ratatui::layout::Rect;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
-use crate::actions::{Action, AppAction, EditorAction, FindAction, ModeAction};
+use crate::actions::{Action, AppAction, Dir, EditorAction, FindAction, ModeAction};
 use crate::config::keymap::Keymap;
 use crate::config::theme::Theme;
 use crate::config::{Config, Paths};
@@ -21,7 +21,7 @@ use crate::files::ProjectPanel;
 use crate::git::{GitPanel, GitService};
 use crate::tui::Term;
 use crate::ui::dialog::Dialog;
-use crate::ui::focus::{Focus, PanelId, ToolWindowId};
+use crate::ui::focus::{Focus, PanelId, Side, ToolWindowId};
 use crate::ui::layout::{LayoutState, SplitterId};
 use crate::ui::palette::Palette;
 use crate::ui::status_bar::StatusHit;
@@ -622,6 +622,7 @@ impl App {
                     self.focus.set(PanelId::Editor);
                 }
             }
+            AppAction::ResizeToolWindow(dir) => self.resize_tool_window(dir),
             AppAction::Escape => self.focus.set(PanelId::Editor),
             AppAction::OpenPalette(kind) => self.open_palette(kind),
             AppAction::DebugPanic => {
@@ -646,6 +647,23 @@ impl App {
             self.layout.hide(tw);
             self.focus.set(PanelId::Editor);
         }
+    }
+
+    /// Ctrl+Shift+arrows, JetBrains-style: move the free edge of the focused
+    /// tool window (width for a left window, height for a bottom one). Keys
+    /// along the other axis, and any with the editor focused, do nothing.
+    fn resize_tool_window(&mut self, dir: Dir) {
+        const STEP_W: i16 = 2;
+        const STEP_H: i16 = 1;
+        let Some(tw) = self.focus.current.tool_window().filter(|tw| self.layout.is_visible(*tw)) else { return };
+        let (id, delta) = match (tw.side(), dir) {
+            (Side::Left, Dir::Right) => (SplitterId::Left, STEP_W),
+            (Side::Left, Dir::Left) => (SplitterId::Left, -STEP_W),
+            (Side::Bottom, Dir::Up) => (SplitterId::Bottom, STEP_H),
+            (Side::Bottom, Dir::Down) => (SplitterId::Bottom, -STEP_H),
+            _ => return,
+        };
+        self.layout.resize(id, delta);
     }
 
     /// `git.file_history`: the selected tree entry when the tree has focus,
@@ -1478,6 +1496,52 @@ pub(crate) mod tests {
         handle_next(&mut app, git_op_done).await;
         assert_eq!(std::fs::read_to_string(&a).unwrap(), "a\n");
         assert_eq!(app.editor.buffers[0].text(), "a\n", "the clean tab reloads");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn ctrl_shift_arrows_resize_the_focused_tool_window() {
+        use crossterm::event::KeyModifiers;
+        let (mut app, dir) = test_app("resize-tool-window");
+        let key = |code| KeyEvent::new(code, KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+        app.layout.compute(Rect::new(0, 0, 120, 30));
+        app.toggle_tool_window(ToolWindowId::Git);
+        let (w, h) = (app.layout.left_w, app.layout.bottom_h);
+        app.handle_key(key(KeyCode::Up));
+        assert_eq!(app.layout.bottom_h, h + 1);
+        app.handle_key(key(KeyCode::Down));
+        app.handle_key(key(KeyCode::Down));
+        assert_eq!(app.layout.bottom_h, h - 1);
+        app.handle_key(key(KeyCode::Left));
+        assert_eq!((app.layout.left_w, app.layout.bottom_h), (w, h - 1), "a bottom window has no width to change");
+        for _ in 0..40 {
+            app.handle_key(key(KeyCode::Up));
+        }
+        assert_eq!(app.layout.bottom_h, 30 - 1 - crate::ui::layout::MIN_CENTER_H - 1, "clamped like a drag");
+        // The commit message box leaves the chord to the keymap.
+        app.perform(Action::Git(crate::actions::GitAction::FocusMessage));
+        assert!(app.git_panel.message_focused());
+        app.handle_key(key(KeyCode::Down));
+        assert_eq!(app.layout.bottom_h, 30 - 1 - crate::ui::layout::MIN_CENTER_H - 2);
+        // A left window changes its width.
+        app.toggle_tool_window(ToolWindowId::Project);
+        assert!(app.focus.is(PanelId::Project));
+        app.handle_key(key(KeyCode::Right));
+        assert_eq!(app.layout.left_w, w + 2);
+        app.handle_key(key(KeyCode::Up));
+        assert_eq!(app.layout.left_w, w + 2);
+        for _ in 0..40 {
+            app.handle_key(key(KeyCode::Left));
+        }
+        assert_eq!(app.layout.left_w, crate::ui::layout::MIN_LEFT_W);
+        // In the editor the chord keeps its meaning: Left/Right select by
+        // word, Up/Down do nothing.
+        app.focus.set(PanelId::Editor);
+        let (w, h) = (app.layout.left_w, app.layout.bottom_h);
+        for code in [KeyCode::Left, KeyCode::Right, KeyCode::Up, KeyCode::Down] {
+            app.handle_key(key(code));
+        }
+        assert_eq!((app.layout.left_w, app.layout.bottom_h), (w, h));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

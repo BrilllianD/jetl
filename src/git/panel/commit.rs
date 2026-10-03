@@ -115,8 +115,11 @@ impl GitPanel {
     pub fn handle_message_key(&mut self, key: KeyEvent, cx: &mut Ctx) -> bool {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let alt = key.modifiers.contains(KeyModifiers::ALT);
+        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
         let m = &mut self.message;
         match key.code {
+            // Ctrl+Shift+arrows resize the window through the keymap.
+            KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down if ctrl && shift => return false,
             // Ctrl+Enter needs the kitty protocol; Alt+Enter works anywhere.
             KeyCode::Enter if ctrl || alt => self.commit(false, cx),
             KeyCode::Enter => m.insert('\n'),

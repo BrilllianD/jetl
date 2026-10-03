@@ -41,6 +41,13 @@
 "ctrl-w" = "editor.close_tab"
 "ctrl-shift-f12" = "tool_window.hide_all"
 "shift-esc" = "tool_window.hide_focused"
+# Resize the focused tool window: Left/Right move a left window's edge,
+# Up/Down a bottom window's. The editor keeps Ctrl+Shift+Left/Right for word
+# selection (its table wins), and Up/Down do nothing while it has focus.
+"ctrl-shift-left" = "tool_window.stretch_left"
+"ctrl-shift-right" = "tool_window.stretch_right"
+"ctrl-shift-up" = "tool_window.stretch_up"
+"ctrl-shift-down" = "tool_window.stretch_down"
 "ctrl-`" = "git.branches_popup"
 # Legacy terminals send Ctrl+` as NUL, which crossterm reports as Ctrl+Space.
 "ctrl-space" = "git.branches_popup"

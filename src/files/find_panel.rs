@@ -253,9 +253,12 @@ impl FindPanel {
     pub fn handle_key(&mut self, key: KeyEvent, cx: &mut Ctx) -> bool {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let alt = key.modifiers.contains(KeyModifiers::ALT);
+        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
         let before = self.query.text.clone();
         let input = self.input();
         match key.code {
+            // Ctrl+Shift+Left/Right resize the window through the keymap.
+            KeyCode::Left | KeyCode::Right if ctrl && shift => return false,
             KeyCode::Backspace if ctrl || alt => input.delete_word_back(),
             KeyCode::Backspace => input.backspace(),
             KeyCode::Delete => input.delete(),
