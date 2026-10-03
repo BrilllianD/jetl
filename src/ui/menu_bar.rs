@@ -210,7 +210,7 @@ pub struct MenuBar {
 impl MenuBar {
     /// A bar with the first menu open. `menus` must not be empty.
     pub fn new(menus: Vec<Menu>, icons: Icons) -> Self {
-        let dropdown = ContextMenu::new(menus[0].items.clone(), 0, 0);
+        let dropdown = ContextMenu::new(menus[0].items.clone(), 0, 0).shifted();
         let icon = format!(" {} ", menu_glyph(icons));
         Self { menus, open: 0, dropdown, icon, bar: Rect::default(), titles: Vec::new() }
     }
@@ -229,7 +229,7 @@ impl MenuBar {
             // Anchored under its title by the next render; until then the
             // old rect keeps a click on the dropdown from closing the bar.
             let rect = self.dropdown.rect();
-            self.dropdown = ContextMenu::new(self.menus[i].items.clone(), 0, 0);
+            self.dropdown = ContextMenu::new(self.menus[i].items.clone(), 0, 0).shifted();
             self.dropdown.set_rect(rect);
         }
     }
@@ -450,6 +450,18 @@ mod tests {
         assert!(b.dropdown.contains(3, 2), "a click before the next frame stays inside");
         draw(&mut b);
         assert!(b.dropdown.contains(10, 2));
+    }
+
+    #[test]
+    fn a_dropdown_past_the_right_edge_shifts_left() {
+        let mut b = bar();
+        b.menus[2].items[0].label = "A label long enough to overflow".into();
+        b.open(2);
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 12)).unwrap();
+        term.draw(|f| b.render(f, f.area(), &Theme::default())).unwrap();
+        let r = b.dropdown.rect();
+        assert_eq!(r.right(), 40, "flush with the right edge, not flipped to column 0: {r:?}");
+        assert!(r.x > 0);
     }
 
     #[test]

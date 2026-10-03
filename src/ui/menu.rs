@@ -66,12 +66,14 @@ pub struct ContextMenu {
     rect: Rect,
     /// First row drawn, when the rows do not fit.
     scroll: usize,
+    /// Shift left to fit instead of flipping (a menu bar dropdown).
+    shift: bool,
 }
 
 impl ContextMenu {
     pub fn new(items: Vec<MenuItem>, x: u16, y: u16) -> Self {
         let selected = items.iter().position(MenuItem::selectable).unwrap_or(0);
-        Self { items, selected, x, y, rect: Rect::default(), scroll: 0 }
+        Self { items, selected, x, y, rect: Rect::default(), scroll: 0, shift: false }
     }
 
     fn step(&mut self, forward: bool) {
@@ -115,6 +117,13 @@ impl ContextMenu {
 
     /// Take over another menu's screen rect until the next render, so a
     /// click right after the rows change still lands inside.
+    /// When the menu does not fit right of its anchor, move it left just
+    /// enough rather than opening left of the anchor.
+    pub fn shifted(mut self) -> Self {
+        self.shift = true;
+        self
+    }
+
     pub fn set_rect(&mut self, rect: Rect) {
         self.rect = rect;
     }
@@ -154,8 +163,16 @@ impl ContextMenu {
         let key_w = self.items.iter().map(|i| i.shortcut.width()).max().unwrap_or(0) as u16;
         let w = (label_w + if key_w > 0 { key_w + 3 } else { 0 } + 4).min(area.width);
         let h = (self.items.len() as u16 + 2).min(area.height);
-        // Open down-right of the pointer, flipping when it would not fit.
-        let x = if self.x + w <= area.right() { self.x } else { self.x.saturating_sub(w).max(area.x) };
+        // Open down-right of the pointer, flipping when it would not fit
+        // (shifting left when the flip would not fit either).
+        let shifted = area.right().saturating_sub(w).max(area.x);
+        let x = if self.x + w <= area.right() {
+            self.x
+        } else if !self.shift && self.x >= area.x + w {
+            self.x - w
+        } else {
+            shifted
+        };
         let y = if self.y + 1 + h <= area.bottom() { self.y + 1 } else { self.y.saturating_sub(h).max(area.y) };
         self.rect = Rect::new(x, y, w, h);
         frame.render_widget(Clear, self.rect);
