@@ -4,6 +4,7 @@ pub mod blame;
 pub mod brackets;
 pub mod buffer;
 mod carets;
+mod column;
 pub mod expand;
 mod find;
 pub mod format;
@@ -51,13 +52,12 @@ enum DragMode {
     Char,
     Word(usize, usize),
     Line(usize, usize),
-    /// Alt held on the press (a caret was added or removed there). Moving
-    /// does nothing yet; column selection will start from this cell.
-    #[allow(dead_code)]
-    AltPending {
-        line: usize,
-        vcol: usize,
-    },
+    /// Alt held on the press (a caret was added or removed there), at this
+    /// (line, visual column). Moving to another cell makes it a column drag
+    /// from there.
+    AltPending((usize, usize)),
+    /// A column block from this (line, visual column) to the pointer.
+    Column((usize, usize)),
 }
 
 pub struct Editor {
@@ -102,6 +102,9 @@ pub struct Editor {
     /// The last copy made at several carets: the clipboard text and each
     /// caret's piece, so pasting it at as many carets splits it again.
     multi_clip: Option<(String, Vec<String>)>,
+    /// Column selection mode: a plain drag and Shift+arrows make blocks.
+    /// Not saved with the session.
+    column_mode: bool,
 }
 
 /// Shown in place of a pinned tab's close button (one column wide).
@@ -147,6 +150,7 @@ impl Editor {
             nav: NavRing::default(),
             pending_nav: None,
             multi_clip: None,
+            column_mode: false,
         }
     }
 
@@ -369,12 +373,16 @@ impl Editor {
         let col = view::visual_col(&b.rope, b.view.sel().head, self.tab_display(b));
         let chars: usize = b.view.sels.iter().map(|s| s.range().len()).sum();
         let carets = b.view.sels.len();
-        Some(match (carets, chars) {
+        let mut s = match (carets, chars) {
             (1, 0) => format!("Ln {}, Col {}", line + 1, col + 1),
             (1, n) => format!("Ln {}, Col {} ({n} chars)", line + 1, col + 1),
             (k, 0) => format!("Ln {}, Col {} ({k} carets)", line + 1, col + 1),
             (k, n) => format!("Ln {}, Col {} ({k} carets, {n} chars)", line + 1, col + 1),
-        })
+        };
+        if self.column_mode {
+            s.push_str(" Column");
+        }
+        Some(s)
     }
 
     pub fn status_line_ending(&self) -> Option<String> {
@@ -683,6 +691,14 @@ impl Editor {
                 }
                 return true;
             }
+            E::ToggleColumnMode => {
+                if self.column_mode || self.active_buffer().is_none_or(Buffer::blocks_supported) {
+                    self.column_mode ^= true;
+                } else {
+                    cx.notify(Level::Info, "Column selection does not work with word wrap");
+                }
+                return true;
+            }
             _ => {}
         }
         // Jumps far enough away are remembered for back/forward.
@@ -694,6 +710,7 @@ impl Editor {
         let rows = self.text_area().height as usize;
         let auto_close = self.auto_close;
         let Some(ai) = self.active() else { return false };
+        let tab_width = self.tab_display(&self.buffers[ai]);
         let b = &mut self.buffers[ai];
         // Any other action ends an expand/shrink sequence; scrolling and
         // copying leave the selection alone, so they keep it.
@@ -737,7 +754,12 @@ impl Editor {
             E::DeleteWordForward => b.delete_word_forward(),
             E::Move(m, extend) => {
                 let page = rows.saturating_sub(1).max(1);
-                apply_motion_all(&b.rope, &mut b.view.sels, *m, *extend, page);
+                // In column selection mode Shift+arrows, Home and End move
+                // the block's corner instead.
+                let block = self.column_mode && *extend && b.blocks_supported() && b.extend_block(*m, page, tab_width);
+                if !block {
+                    apply_motion_all(&b.rope, &mut b.view.sels, *m, *extend, page);
+                }
                 b.undo.break_group = true;
             }
             E::Undo => {
@@ -895,7 +917,8 @@ impl Editor {
             | E::LineEndingLf
             | E::LineEndingCrlf
             | E::SetLanguage
-            | E::ToggleBlame => {}
+            | E::ToggleBlame
+            | E::ToggleColumnMode => {}
         }
         self.note_jump(jump_from);
         true
@@ -921,6 +944,13 @@ impl Editor {
             let line = (b.view.scroll_line + row).min(b.rope.len_lines().saturating_sub(1));
             let col = x.saturating_sub(text_area.x) as usize + b.view.scroll_col;
             if x < text_area.x { b.rope.line_to_char(line) } else { col_to_char(&b.rope, line, col, tab_width) }
+        };
+        // The (line, visual column) under the pointer for column blocks;
+        // the column is not clamped to the line.
+        let cell_at = |b: &Buffer, x: u16, y: u16| -> (usize, usize) {
+            let row = y.saturating_sub(text_area.y) as usize;
+            let line = (b.view.scroll_line + row).min(b.rope.len_lines().saturating_sub(1));
+            (line, x.saturating_sub(text_area.x) as usize + b.view.scroll_col)
         };
         // A click in the blame column shows that line's commit.
         if m.kind == MouseEventKind::Down(MouseButton::Left)
@@ -963,9 +993,7 @@ impl Editor {
                         }
                     }
                     b.undo.break_group = true;
-                    let line = b.rope.char_to_line(p);
-                    let vcol = (m.x - text_area.x) as usize + b.view.scroll_col;
-                    self.drag = Some((g, DragMode::AltPending { line, vcol }));
+                    self.drag = Some((g, DragMode::AltPending(cell_at(b, m.x, m.y))));
                     return true;
                 }
                 let from = nav_pos(b);
@@ -992,6 +1020,18 @@ impl Editor {
                         let r = line_range(&b.rope, line);
                         b.view.set_sel(Selection::new(r.start, r.end));
                         self.drag = Some((g, DragMode::Line(r.start, r.end)));
+                    }
+                    // Column selection mode: a drag makes a block, Shift+click
+                    // moves the block's corner.
+                    _ if self.column_mode && b.blocks_supported() => {
+                        let head = cell_at(b, m.x, m.y);
+                        let anchor = if extend { b.current_block(tab_width).anchor } else { head };
+                        if extend {
+                            b.set_block(view_state::Block { anchor, head }, tab_width);
+                        } else {
+                            b.view.set_sel(Selection::point(p));
+                        }
+                        self.drag = Some((g, DragMode::Column(anchor)));
                     }
                     _ => {
                         let mut s = b.view.sel();
@@ -1023,7 +1063,16 @@ impl Editor {
                         s.set_head(p, true);
                         b.view.set_sel(s);
                     }
-                    DragMode::AltPending { .. } => return true,
+                    // Alt+drag: a column block once the pointer leaves the
+                    // pressed cell (Alt+Shift+drag too).
+                    DragMode::AltPending(anchor) | DragMode::Column(anchor) => {
+                        let head = cell_at(b, m.x, m.y);
+                        if matches!(mode, DragMode::AltPending(_)) && (head == anchor || !b.blocks_supported()) {
+                            return true;
+                        }
+                        b.set_block(view_state::Block { anchor, head }, tab_width);
+                        self.drag = Some((g, DragMode::Column(anchor)));
+                    }
                 }
                 // Auto-scroll while dragging past the edges.
                 if m.y < text_area.y {
@@ -1276,6 +1325,7 @@ fn render_tabs(group: &mut TabGroup, buffers: &[Buffer], frame: &mut Frame, area
 mod tests {
     use super::io::idle_autosave_due;
     use super::*;
+    use crate::actions::Motion;
     use crate::workspace::Workspace;
     use crossterm::event::{KeyCode, KeyEvent};
 
@@ -1421,6 +1471,93 @@ mod tests {
             ed.handle_mouse(&m, Rect::default(), cx);
         });
         assert_eq!(ed.active_buffer().unwrap().view.sels.as_slice(), [Selection::point(0)]);
+    }
+
+    /// Send mouse events with `mods` to `ed`: a press at the first cell,
+    /// motion over the others, a release at the last.
+    fn mouse_path(ed: &mut Editor, mods: KeyModifiers, cells: &[(u16, u16)]) {
+        let ev = |kind, (x, y): (u16, u16)| Mouse { kind, x, y, clicks: 1, mods };
+        with_cx(|cx| {
+            ed.handle_mouse(&ev(MouseEventKind::Down(MouseButton::Left), cells[0]), Rect::default(), cx);
+            for &c in &cells[1..] {
+                ed.handle_mouse(&ev(MouseEventKind::Drag(MouseButton::Left), c), Rect::default(), cx);
+            }
+            ed.handle_mouse(&ev(MouseEventKind::Up(MouseButton::Left), cells[cells.len() - 1]), Rect::default(), cx);
+        });
+    }
+
+    fn sel_texts(ed: &Editor) -> Vec<String> {
+        let b = ed.active_buffer().unwrap();
+        b.view.sels.iter().map(|s| b.rope.slice(s.range()).to_string()).collect()
+    }
+
+    #[test]
+    fn alt_drag_makes_a_column_block_and_alt_click_still_adds_carets() {
+        let mut ed = editor_with("a.txt", "\tab日本語x\n\tab日本語x\nab\n\tab日本語x\n");
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 8)).unwrap();
+        let theme = Theme::default();
+        term.draw(|f| ed.render(f, Rect::new(0, 0, 40, 1), Rect::new(0, 1, 40, 7), true, &theme)).unwrap();
+        let (x0, y0) = (ed.text_area().x, ed.text_area().y);
+        // Cells to columns and back: from col 5 (b) on the first line to
+        // col 7 (the right half of 日) on the last, through the short line.
+        mouse_path(&mut ed, KeyModifiers::ALT, &[(x0 + 5, y0), (x0 + 6, y0 + 2), (x0 + 7, y0 + 3)]);
+        assert_eq!(sel_texts(&ed), ["b日", "b日", "", "b日"]);
+        let b = ed.active_buffer().unwrap();
+        assert_eq!(b.view.sels.primary_index(), 3);
+        assert_eq!(b.view.block, Some(view_state::Block { anchor: (0, 5), head: (3, 7) }));
+        // Each caret head maps back to the cell its line was cut at.
+        let heads: Vec<usize> = b.view.sels.heads().map(|h| view::visual_col(&b.rope, h, 4)).collect();
+        assert_eq!(heads, [8, 8, 2, 8]);
+        // Alt+Shift+drag too, right to left past the line ends.
+        mouse_path(&mut ed, KeyModifiers::ALT | KeyModifiers::SHIFT, &[(x0 + 30, y0 + 1), (x0 + 12, y0)]);
+        assert_eq!(sel_texts(&ed), ["x", "x"]);
+        assert!(ed.active_buffer().unwrap().view.sels.iter().all(|s| s.head < s.anchor));
+        // Typing goes to every line, one undo step.
+        act(&mut ed, EditorAction::InsertChar('Q'));
+        assert_eq!(ed.active_buffer().unwrap().text(), "\tab日本語Q\n\tab日本語Q\nab\n\tab日本語x\n");
+        act(&mut ed, EditorAction::Undo);
+        assert_eq!(sel_texts(&ed), ["x", "x"]);
+        // Alt+click without moving keeps adding a caret.
+        mouse_path(&mut ed, KeyModifiers::ALT, &[(x0, y0 + 2)]);
+        assert_eq!(ed.active_buffer().unwrap().view.sels.len(), 3);
+        // A motion report on the pressed cell is not a drag either.
+        mouse_path(&mut ed, KeyModifiers::ALT, &[(x0 + 1, y0 + 3), (x0 + 1, y0 + 3)]);
+        assert_eq!(ed.active_buffer().unwrap().view.sels.len(), 4);
+    }
+
+    #[test]
+    fn column_mode_keys_drag_and_status() {
+        let mut ed = editor_with("a.txt", "one\ntwo\nx\nfour\n");
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 8)).unwrap();
+        let theme = Theme::default();
+        term.draw(|f| ed.render(f, Rect::new(0, 0, 40, 1), Rect::new(0, 1, 40, 7), true, &theme)).unwrap();
+        let (x0, y0) = (ed.text_area().x, ed.text_area().y);
+        act(&mut ed, EditorAction::Move(Motion::Right, false));
+        act(&mut ed, EditorAction::ToggleColumnMode);
+        assert_eq!(ed.status_position().as_deref(), Some("Ln 1, Col 2 Column"));
+        for _ in 0..3 {
+            act(&mut ed, EditorAction::Move(Motion::Down, true));
+        }
+        assert_eq!(ed.status_position().as_deref(), Some("Ln 4, Col 2 (4 carets) Column"));
+        act(&mut ed, EditorAction::Move(Motion::LineEnd, true));
+        assert_eq!(sel_texts(&ed), ["ne", "wo", "", "our"]);
+        act(&mut ed, EditorAction::Move(Motion::Left, true));
+        act(&mut ed, EditorAction::Move(Motion::Left, true));
+        act(&mut ed, EditorAction::Move(Motion::Left, true));
+        act(&mut ed, EditorAction::InsertText("_".into()));
+        assert_eq!(ed.active_buffer().unwrap().text(), "o_ne\nt_wo\nx_\nf_our\n");
+        // A plain drag is a block; Shift+click moves its corner.
+        mouse_path(&mut ed, KeyModifiers::NONE, &[(x0, y0), (x0 + 2, y0 + 1)]);
+        assert_eq!(sel_texts(&ed), ["o_", "t_"]);
+        mouse_path(&mut ed, KeyModifiers::SHIFT, &[(x0 + 3, y0 + 3)]);
+        assert_eq!(sel_texts(&ed), ["o_n", "t_w", "x_", "f_o"]);
+        // Off again: Shift+Down extends the selection as usual.
+        act(&mut ed, EditorAction::ToggleColumnMode);
+        act(&mut ed, EditorAction::Escape);
+        act(&mut ed, EditorAction::Escape);
+        act(&mut ed, EditorAction::Move(Motion::Down, true));
+        assert_eq!(ed.active_buffer().unwrap().view.sels.len(), 1);
+        assert_eq!(ed.status_position().as_deref(), Some("Ln 5, Col 1 (3 chars)"));
     }
 
     #[test]

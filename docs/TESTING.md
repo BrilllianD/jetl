@@ -128,6 +128,34 @@ caret at a line end on the cell after the text. Then split right (`M-\`),
 type in the new pane, and check that the other pane still draws all its
 carets, moved with the text; `M-Tab` back to it and type at all of them.
 
+### Scenario: column selection
+
+At 80x24 and at 120x40, with a file of tabs, wide characters and a short
+line (`printf '\tab日本語x\n\tab日本語x\nab\n\tab日本語x\n' > $T/docs/notes.md`,
+opened as `jetl $T/docs/notes.md`, the Project window hidden with Alt+1).
+`X` is the 1-based screen column of the text's first cell (`X=10` past the
+tool strip and the gutter; check with `display -p '#{cursor_x}'` plus one
+while the caret is at a line start); the first line is on row 2:
+
+```sh
+press 8 $((X+5)) 2; press 40 $((X+6)) 4; press 40 $((X+7)) 5; release 8 $((X+7)) 5
+/tmp/tm.sh capture-pane -t jetl -p | tail -1     # Ln 4, Col 9 (4 carets, 6 chars)
+/tmp/tm.sh send-keys -t jetl -l 'Q'              # b日 becomes Q on the long lines, Q after "ab"
+/tmp/tm.sh send-keys -t jetl C-z                 # the block again
+press 12 $((X+30)) 3; press 44 $((X+12)) 2; release 12 $((X+12)) 2   # Alt+Shift, right to left: x, x
+/tmp/tm.sh send-keys -t jetl Escape; sleep 0.6; /tmp/tm.sh send-keys -t jetl Escape
+/tmp/tm.sh send-keys -t jetl C-Home Right        # after the tab of line 1
+/tmp/tm.sh send-keys -t jetl M-S-IC              # Alt+Shift+Insert: status ends in " Column"
+for i in 1 2 3; do /tmp/tm.sh send-keys -t jetl S-Down; done   # Ln 4, Col 5 (4 carets) Column
+/tmp/tm.sh send-keys -t jetl -l '#'              # a # on all four lines, at the end of "ab"
+/tmp/tm.sh send-keys -t jetl C-z
+```
+
+`capture-pane -e` shows the selected cells in the selection background
+(the whole 日 when the edge cuts it) and the caret on the short line as
+reverse video after "ab". Alt+click without moving (`press 8`, `release
+8` on one cell) still adds a caret.
+
 ### Limits under tmux
 
 - No kitty keyboard protocol: Ctrl+Shift+letter, Ctrl+Tab, Ctrl+Enter,
@@ -139,8 +167,9 @@ carets, moved with the text; `M-Tab` back to it and type at all of them.
 - Ctrl+Alt+Shift+J (select all occurrences) needs the kitty protocol; use
   Ctrl+Alt+J. Alt+Shift+J arrives as Alt+J with Shift and works.
 - Shift+drag never reaches jetl in foot, kitty or alacritty (they select
-  natively), and some window managers take Alt+click and Alt+drag; send
-  the SGR bytes through tmux to test those gestures.
+  natively), so neither does Alt+Shift+drag; some window managers take
+  Alt+click and Alt+drag. Send the SGR bytes through tmux to test those
+  gestures (Alt adds 8 to the button, Shift 4, motion 32).
 - Pressing Alt+number for a focused tool window hides it; later keys go to
   the editor.
 - OSC 52 copy needs `set -s set-clipboard on`.

@@ -45,12 +45,13 @@ and backlog are in `docs/ROADMAP.md`; settings in `docs/CONFIG.md`; keys in
 | `editor/mod.rs` | `Editor`: the buffers (`buffers`, the document store; its order is not tab order), the tab groups and their split tree, the global MRU, back/forward, actions, mouse, rendering. `active()` is the buffer of the focused group's shown tab, so `active_buffer()` callers need not know about groups. `render` lays the tree out over the centre, draws the splitter bars, then each group (tab bar of the `tabs` height, none in zen mode, over its find bar and text), the focused group last. |
 | `editor/groups.rs` | `TabGroup` (its `View`s in bar order, the shown slot, its own MRU, tab hit rects, text area, find bar hits, caret cell) and the tab operations on `Editor`: `set_active`/`show` (a buffer opened in the focused group gets a tab there, right after the shown one and never among the pinned, with a `fork` of its live view state when it is shown elsewhere), `close_slot` (a buffer with tabs in other groups only loses this one, without asking; its last tab asks when dirty), `force_close` (the buffer and every tab of it), `close_tabs` (close others, close all but pinned and close all act on the focused group), pins, moves (Alt+Shift+Left/Right, a tab drag: `Drag::Tab`, `Editor::drag_tab`, within the pinned or unpinned tabs), `enforce_tab_limit` (`editor.max_tabs` counts buffers; the least recently used clean one without a pinned tab that no group shows goes), the tab context menu, `split`, `unsplit`, `unsplit_all`, `move_to_opposite`, `cycle_group`, `collapse_empty` (a group left without tabs goes, never the last one), `make_live` and `sync_parked` (see Conventions), `hit_test` (`EditorHit`) and `restore_splits`. `check_invariants` (tests) asserts the rules below. |
 | `editor/split.rs` | `SplitNode` (a leaf is a group; a split has an `Axis`, a ratio in permille and two children), `layout` (the leaves' rects and the one-cell bars, `MIN_GROUP_W`/`MIN_GROUP_H` kept while there is room for both sides), `split`, `remove` (the sibling takes the split's place), `sibling`, `set_ratio` by preorder index, `SplitterHit::ratio_at` for a bar drag. |
-| `editor/view_state.rs` | `ViewState`: what one view of a buffer owns (its carets `sels` with their desired columns, scroll, follow key, expand and occurrence history, find bar); `sel()` is the primary selection, `set_sel` makes one caret; `fork` for a new view (the primary caret only). `EditLog`: the buffer's text changes since the last frame (`LogEdit::Edit` in chars, `Reset` for a whole-text replacement), capped at 4096. `Parked`: a view's state while another view of the buffer is live; `catch_up` maps every caret and selection, the top line and the find bar origin through the log (a reload or dropped edits clamp instead; carets that meet merge), drops the expand and occurrence history and keeps a view that followed its primary caret following it without a scroll. |
+| `editor/view_state.rs` | `ViewState`: what one view of a buffer owns (its carets `sels` with their desired columns, scroll, follow key, expand and occurrence history, the column `block` it last made, find bar); `sel()` is the primary selection, `set_sel` makes one caret; `fork` for a new view (the primary caret only). `EditLog`: the buffer's text changes since the last frame (`LogEdit::Edit` in chars, `Reset` for a whole-text replacement), capped at 4096. `Parked`: a view's state while another view of the buffer is live; `catch_up` maps every caret and selection, the top line and the find bar origin through the log (a reload or dropped edits clamp instead; carets that meet merge), drops the expand and occurrence history and keeps a view that followed its primary caret following it without a scroll. |
 | `editor/buffer.rs` | `Buffer`: rope, the live view's state (`view: ViewState`), undo, file metadata (path, line ending, mtime, dirty state), the edit commands (see Carets below: `edit_carets` with a `CaretEdit` per caret, line commands over the union of caret lines). Every change goes through `apply_change`, which also feeds `edit_log` for the parked views. While open on a language server (`lsp_tracked`) every change records a `DocEdit` in `lsp_pending` before the rope changes (at most 512; past that, or for an edit inside a CRLF break, `lsp_full_resync` sends the whole text). |
 | `editor/carets.rs` | Commands that add and remove carets: Add Next Occurrence (Alt+J), Unselect Occurrence, Select All Occurrences (from `search::occurrences`, or the find bar's matches), Clone Caret Above/Below. |
+| `editor/column.rs` | Column selection on a `Buffer`: `set_block`, `current_block`, `extend_block` (Shift+arrows, Home, End in column selection mode) and `blocks_supported`, the one check word wrap has to change. |
 | `editor/{find,io}.rs` | Find/replace bar (keys, stepping, rendering); saving and autosave. |
 | `editor/format.rs` | Formatters: `Formatter` (the `[format]` command of the language, which wins, else `Lsp`: the app decides whether the server formats), `FormatRequest` (the buffer snapshot: text, version, undo state), `format_done` (apply if the version is unchanged, warn on failure, then write for a save), and `Buffer::apply_formatted`: an imara-diff line diff turned into one transaction of the changed hunks, the selection mapped by the code before it, the view kept on its lines. |
-| `editor/view.rs` | `layout_line`: the grapheme walk shared by rendering, `visual_col` and `col_to_char`. Rendering draws `Buffer::diag_marks`: a glyph in the diff mark column (it wins over the diff mark) and the `diag_*` theme style's modifiers over the text of a diagnostic. |
+| `editor/view.rs` | `layout_line`: the grapheme walk shared by rendering, `visual_col`, `col_to_char` and `col_to_char_ceil`; `block_selections` turns a column block into carets. Rendering draws `Buffer::diag_marks`: a glyph in the diff mark column (it wins over the diff mark) and the `diag_*` theme style's modifiers over the text of a diagnostic. |
 | `editor/gutter.rs` | Git marks against the HEAD text (`Buffer::diff_base`), and the change commands built on the same diff: revert the change at the caret (one `Buffer::apply`, so undoable), next/previous change. |
 | `editor/blame.rs` | The blame column (`Buffer::blame`): author and date per line from `git::repo::blame` of HEAD, matched to buffer lines through the HEAD diff (recomputed with the gutter at tick rate, so edits shift it and edited lines show none). |
 | `editor/…` | `selection` (`Selection`, `Selections`, motions), `undo`, `syntax` (tree-sitter, language detection), `search`, `indent` (`.editorconfig`, detection), `brackets`, `expand`, `nav` (back/forward). |
@@ -341,7 +342,24 @@ remembers each caret's piece (`Editor::multi_clip`); pasting the same text
 at as many carets gives each its piece, text with exactly one line per
 caret is split by line, anything else goes to every caret whole. Alt+click
 adds a caret (and makes it the primary) or removes the one clicked; the
-press starts `DragMode::AltPending`, where column selection will hook in.
+press starts `DragMode::AltPending`, which becomes `DragMode::Column` once
+the pointer reaches another cell (Alt+Shift+drag too).
+
+A column block (`view_state::Block`) is two corners, each a (line, visual
+column); the column under the pointer is not clamped to the line, so a
+block can reach past short lines. `view::block_selections` makes it a caret
+per line on the same `layout_line` walk as rendering: the graphemes between
+the two columns (one cut by either edge is inside, so a tab or a wide char
+is taken whole), a caret at the end of a line too short to reach the block
+(there is no virtual space), a caret per line for a zero-width block; the
+head's line holds the primary. `ViewState::block` remembers the corners so
+that extending keeps a column a short line lost; it only counts while the
+carets are still the block's selections (`Buffer::current_block` checks by
+making them again), else the block is taken from the outer carets. Column
+selection mode (`Editor::column_mode`, Alt+Shift+Insert, ` Column` in the
+status bar, not saved) turns a plain drag and Shift+arrows, Home and End
+into block changes (Shift+click moves the head corner). Blocks are buffer lines; word wrap has to refuse them
+in `Buffer::blocks_supported` until blocks are made of visual rows.
 
 ## Extension points
 
@@ -390,9 +408,10 @@ transaction; a `WorkspaceEdit` goes through `App::apply_workspace_edit`. Test ag
 ## Pitfalls
 
 - Mouse capture blocks native selection; Shift+drag passes through in foot,
-  alacritty and kitty. Some window managers take Alt+click and Alt+drag
-  (moving windows); multiple carets then need the keyboard (Alt+J, Clone
-  Caret). Copy uses OSC 52 (`set -s set-clipboard on` in tmux)
+  alacritty and kitty, so Alt+Shift+drag rarely reaches jetl (Alt+drag
+  makes the same block). Some window managers take Alt+click and Alt+drag
+  (moving windows); multiple carets and blocks then need the keyboard
+  (Alt+J, Clone Caret, column selection mode with Shift+arrows). Copy uses OSC 52 (`set -s set-clipboard on` in tmux)
   plus `wl-copy`/`xclip`/`xsel` when found; Ctrl+V reads the clipboard
   through `wl-paste`/`xclip`/`xsel`, the terminal's paste shortcut through
   bracketed paste.

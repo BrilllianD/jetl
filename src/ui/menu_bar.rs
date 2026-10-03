@@ -65,6 +65,7 @@ pub const MAIN_MENU: &[(&str, char, &[Row])] = &[
             Item("Select All Occurrences", "editor.select_all_occurrences"),
             Item("Clone Caret Above", "editor.clone_caret_above"),
             Item("Clone Caret Below", "editor.clone_caret_below"),
+            Item("Column Selection Mode", "editor.toggle_column_mode"),
             Sep,
             Item("Find…", "editor.find"),
             Item("Replace…", "editor.replace"),

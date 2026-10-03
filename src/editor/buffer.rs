@@ -251,6 +251,7 @@ impl Buffer {
         self.view.expand_stack.clear();
         self.view.occ_stack.clear();
         self.view.occ_whole_word = false;
+        self.view.block = None;
         if changes.is_empty() {
             self.view.sels = sel_after(&self.rope).into();
             return;
@@ -326,6 +327,7 @@ impl Buffer {
         self.view.sels = tx.sel_before;
         self.view.sels.clamp(self.rope.len_chars());
         self.view.occ_stack.clear();
+        self.view.block = None;
         if let Some((before, _)) = tx.line_ending {
             self.line_ending = before;
         }
@@ -342,6 +344,7 @@ impl Buffer {
         self.view.sels = tx.sel_after;
         self.view.sels.clamp(self.rope.len_chars());
         self.view.occ_stack.clear();
+        self.view.block = None;
         if let Some((_, after)) = tx.line_ending {
             self.line_ending = after;
         }

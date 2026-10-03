@@ -1,0 +1,230 @@
+//! Column (block) selection: a rectangle of lines by visual columns made
+//! into one caret per line ([`block_selections`]), by Alt+drag or, in
+//! column selection mode, by a plain drag and Shift+arrows.
+
+use super::buffer::Buffer;
+use super::selection::{indent_of, line_len_no_eol, vertical_target};
+use super::view::{block_selections, layout_line, visual_col};
+use super::view_state::Block;
+use crate::actions::Motion;
+
+impl Buffer {
+    /// Whether column blocks can be made here. Blocks are buffer lines by
+    /// visual columns, which word wrap (yman 106) breaks: this is the one
+    /// place that has to refuse column selection (or let it through once
+    /// [`block_selections`] works on visual rows) when wrap is on.
+    pub fn blocks_supported(&self) -> bool {
+        true
+    }
+
+    /// Make the carets the selections of `block`.
+    pub fn set_block(&mut self, block: Block, tab_width: usize) {
+        self.view.sels = block_selections(&self.rope, block.anchor, block.head, tab_width);
+        self.view.block = Some(block);
+        self.view.occ_stack.clear();
+        self.view.occ_whole_word = false;
+        self.undo.break_group = true;
+    }
+
+    /// The block the carets are: the last one made while the carets are
+    /// still its selections, else one from the anchor of the caret farthest
+    /// from the primary (the first or the last) to the primary's head.
+    pub fn current_block(&self, tab_width: usize) -> Block {
+        if let Some(b) = self.view.block
+            && block_selections(&self.rope, b.anchor, b.head, tab_width) == self.view.sels
+        {
+            return b;
+        }
+        let sels = self.view.sels.as_slice();
+        let far = if self.view.sels.primary_index() == 0 { sels[sels.len() - 1] } else { sels[0] };
+        let cell = |p: usize| (self.rope.char_to_line(p), visual_col(&self.rope, p, tab_width));
+        Block { anchor: cell(far.anchor), head: cell(self.view.sel().head) }
+    }
+
+    /// Shift+motion in column selection mode: move the block's head. Left
+    /// and Right step over one grapheme of the head's line (one column past
+    /// its end, up to the widest line of the block), Up/Down and PageUp/Down
+    /// change its line, Home goes to the indent or column 0 like smart Home,
+    /// End to the end of the head's line. False for other motions, which
+    /// act as usual.
+    pub fn extend_block(&mut self, m: Motion, page: usize, tab_width: usize) -> bool {
+        let mut b = self.current_block(tab_width);
+        let (line, col) = b.head;
+        let width = |l: usize| line_width(self, l, tab_width);
+        b.head = match m {
+            Motion::Left => (line, step_col(self, line, col, tab_width, false)),
+            Motion::Right => {
+                let next = step_col(self, line, col, tab_width, true);
+                let widest = (b.anchor.0.min(line)..=b.anchor.0.max(line)).map(width).max().unwrap_or(0);
+                (line, if next > widest { col } else { next })
+            }
+            Motion::Up | Motion::Down | Motion::PageUp | Motion::PageDown => {
+                (vertical_target(&self.rope, line, m, page).unwrap_or(line), col)
+            }
+            Motion::LineStart => {
+                let start = self.rope.line_to_char(line);
+                let indent = visual_col(&self.rope, start + indent_of(&self.rope, line), tab_width);
+                (line, if col == indent { 0 } else { indent })
+            }
+            Motion::LineEnd => (line, width(line)),
+            _ => return false,
+        };
+        self.set_block(b, tab_width);
+        true
+    }
+}
+
+/// Cells taken by `line`.
+fn line_width(buf: &Buffer, line: usize, tab_width: usize) -> usize {
+    visual_col(&buf.rope, buf.rope.line_to_char(line) + line_len_no_eol(&buf.rope, line), tab_width)
+}
+
+/// The grapheme edge on `line` next to visual column `col` (`forward` or
+/// back); one column over at or past the line end.
+fn step_col(buf: &Buffer, line: usize, col: usize, tab_width: usize, forward: bool) -> usize {
+    let mut edges = vec![0];
+    layout_line(&buf.rope, line, tab_width, usize::MAX, &mut |_, c| {
+        edges.push(c.col + c.width);
+        true
+    });
+    let end = edges[edges.len() - 1];
+    match forward {
+        true if col >= end => col + 1,
+        true => edges.into_iter().find(|&e| e > col).unwrap_or(col + 1),
+        false if col > end => col - 1,
+        false => edges.into_iter().rev().find(|&e| e < col).unwrap_or(0),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::editor::selection::Selection;
+    use crate::editor::undo::TxKind;
+    use crate::editor::view::{col_to_char, col_to_char_ceil};
+    use ropey::Rope;
+
+    const TEXT: &str = "\tab日本語x\n\tab日本語x\nab\n\tab日本語x\n";
+
+    fn b(text: &str) -> Buffer {
+        Buffer::from_text(1, None, text, false)
+    }
+
+    fn texts(b: &Buffer) -> Vec<String> {
+        b.view.sels.iter().map(|s| b.rope.slice(s.range()).to_string()).collect()
+    }
+
+    #[test]
+    fn block_over_tabs_wide_chars_and_a_short_line() {
+        // tab (cols 0-3), a(4), b(5), 日(6-7), 本(8-9), 語(10-11), x(12)
+        let mut buf = b(TEXT);
+        buf.set_block(Block { anchor: (0, 5), head: (3, 7) }, 4);
+        // 日 is cut by the right edge, so it is in; "ab" is too short.
+        assert_eq!(texts(&buf), ["b日", "b日", "", "b日"]);
+        let sels = buf.view.sels.as_slice();
+        assert_eq!(sels[2], Selection::point(buf.rope.line_to_char(2) + 2), "the short line: a caret at its end");
+        assert_eq!(buf.view.sels.primary_index(), 3, "the head's line holds the primary");
+        assert!(sels[0].anchor < sels[0].head);
+        // Dragged right to left and bottom to top: the carets at the left
+        // edge, the primary on the first line; the tab cut at col 2 is in,
+        // and "ab" ends right at the edge.
+        buf.set_block(Block { anchor: (3, 7), head: (0, 2) }, 4);
+        assert_eq!(texts(&buf), ["\tab日", "\tab日", "", "\tab日"]);
+        assert_eq!(buf.view.sels.primary_index(), 0);
+        assert!(buf.view.sels.iter().filter(|s| !s.is_empty()).all(|s| s.head < s.anchor));
+        // Zero width, inside 本: a caret before it on every long line.
+        buf.set_block(Block { anchor: (0, 9), head: (3, 9) }, 4);
+        assert_eq!(buf.view.sels.heads().collect::<Vec<_>>(), [4, 12, 18, 23]);
+        // Past every line end: carets at the line ends.
+        buf.set_block(Block { anchor: (1, 40), head: (2, 50) }, 4);
+        assert_eq!(buf.view.sels.as_slice(), [Selection::point(15), Selection::point(18)]);
+    }
+
+    #[test]
+    fn block_edges_agree_with_visual_col() {
+        let lines = ["x\ty\t\tz 😀 end", "\tab日本語x", "", "ab", "😀😀\t1"];
+        let rope = Rope::from_str(&lines.join("\n"));
+        let mut x: u64 = 7;
+        for _ in 0..500 {
+            x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            let (c0, c1, l0, l1) = ((x >> 33) % 24, (x >> 41) % 24, (x >> 49) % 5, (x >> 57) % 5);
+            let (c0, c1, l0, l1) = (c0 as usize, c1 as usize, l0 as usize, l1 as usize);
+            let sels = block_selections(&rope, (l0, c0), (l1, c1), 4);
+            assert_eq!(sels.len(), l0.abs_diff(l1) + 1);
+            let (lo, hi) = (c0.min(c1), c0.max(c1));
+            for (i, s) in sels.iter().enumerate() {
+                let line = l0.min(l1) + i;
+                let r = s.range();
+                let (start, end) = (visual_col(&rope, r.start, 4), visual_col(&rope, r.end, 4));
+                let width = visual_col(&rope, rope.line_to_char(line) + line_len_no_eol(&rope, line), 4);
+                assert_eq!(rope.char_to_line(r.start), line);
+                if width <= lo {
+                    assert_eq!((start, end), (width, width), "short line {line}: a caret at its end");
+                    continue;
+                }
+                // The selection starts at or before the left edge and
+                // nothing before it reaches past that edge.
+                assert!(start <= lo, "{lo}..{hi} on {line}: starts at {start}");
+                assert_eq!(r.start, col_to_char(&rope, line, lo, 4));
+                if lo == hi {
+                    assert!(s.is_empty());
+                } else {
+                    // It ends at or after the right edge (or the line end),
+                    // on the first grapheme starting there.
+                    assert!(end >= hi.min(width), "{lo}..{hi} on {line}: ends at {end}");
+                    assert_eq!(r.end, col_to_char_ceil(&rope, line, hi, 4));
+                    assert!(r.end == r.start || visual_col(&rope, r.end - 1, 4) < hi);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn shift_arrows_extend_the_block() {
+        let mut buf = b(TEXT);
+        // From a caret after the tab of line 0: Shift+Down x3 is a caret per
+        // line (the short one at its end), Shift+Right takes `a` on each long one.
+        buf.view.set_sel(Selection::point(1));
+        for _ in 0..3 {
+            assert!(buf.extend_block(Motion::Down, 10, 4));
+        }
+        assert_eq!(buf.view.sels.len(), 4);
+        assert!(buf.view.sels.iter().all(|s| s.is_empty()));
+        assert!(buf.extend_block(Motion::Right, 10, 4));
+        assert_eq!(texts(&buf), ["a", "a", "", "a"]);
+        // Steps go by graphemes of the head's line: b, then all of 日.
+        assert!(buf.extend_block(Motion::Right, 10, 4));
+        assert!(buf.extend_block(Motion::Right, 10, 4));
+        assert_eq!(texts(&buf), ["ab日", "ab日", "", "ab日"]);
+        // The short line keeps the block's columns: back up over it.
+        assert!(buf.extend_block(Motion::Up, 10, 4));
+        assert!(buf.extend_block(Motion::Up, 10, 4));
+        assert_eq!(texts(&buf), ["ab日", "ab日"]);
+        assert_eq!(buf.current_block(4), Block { anchor: (0, 4), head: (1, 8) });
+        // End, then Right stops at the widest line; Home goes to the indent.
+        assert!(buf.extend_block(Motion::LineEnd, 10, 4));
+        assert!(buf.extend_block(Motion::Right, 10, 4));
+        assert_eq!(buf.current_block(4).head, (1, 13));
+        assert!(buf.extend_block(Motion::LineStart, 10, 4));
+        assert_eq!(buf.current_block(4).head, (1, 4));
+        assert!(!buf.extend_block(Motion::WordRight, 10, 4));
+    }
+
+    #[test]
+    fn typing_into_a_block_edits_every_line_and_undoes_at_once() {
+        let mut buf = b(TEXT);
+        buf.set_block(Block { anchor: (0, 4), head: (3, 6) }, 4);
+        buf.insert("Z", TxKind::Typing);
+        assert_eq!(buf.text(), "\tZ日本語x\n\tZ日本語x\nabZ\n\tZ日本語x\n");
+        assert!(buf.view.block.is_none(), "an edit ends the block");
+        // The carets stay a block for Shift+Down.
+        assert!(buf.extend_block(Motion::Up, 10, 4));
+        assert_eq!(buf.view.sels.len(), 3);
+        buf.insert("Y", TxKind::Typing);
+        assert_eq!(buf.text(), "\tZY日本語x\n\tZY日本語x\nabZY\n\tZ日本語x\n");
+        assert!(buf.undo());
+        assert!(buf.undo());
+        assert_eq!(buf.text(), TEXT);
+        assert_eq!(texts(&buf), ["ab", "ab", "", "ab"], "undo puts the block's selections back");
+    }
+}

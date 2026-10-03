@@ -162,6 +162,9 @@
 "alt-shift-j" = "editor.unselect_occurrence"
 "ctrl-alt-shift-j" = "editor.select_all_occurrences"
 "ctrl-alt-j" = "editor.select_all_occurrences"
+# Column selection: Alt+drag makes a block; in column selection mode a plain
+# drag and Shift+arrows, Home and End do too.
+"alt-shift-insert" = "editor.toggle_column_mode"
 "ctrl-up" = "editor.scroll_up"
 "ctrl-down" = "editor.scroll_down"
 "ctrl-alt-left" = "editor.nav_back"

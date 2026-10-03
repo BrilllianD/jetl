@@ -12,7 +12,7 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 use super::buffer::Buffer;
-use super::selection::{line_len_no_eol, pos_to_line_col};
+use super::selection::{MAX_CARETS, Selection, Selections, line_len_no_eol, pos_to_line_col};
 use crate::config::theme::Theme;
 
 /// One rendered unit: a grapheme (or tab / control char expansion).
@@ -106,6 +106,54 @@ pub fn col_to_char(rope: &Rope, line: usize, target: usize, tab_width: usize) ->
         true
     });
     result
+}
+
+/// Char position of the first grapheme on `line` that starts at visual
+/// column `target` or later, else the line end. With [`col_to_char`] it
+/// bounds a column block: a grapheme either edge cuts through is inside.
+pub fn col_to_char_ceil(rope: &Rope, line: usize, target: usize, tab_width: usize) -> usize {
+    if line >= rope.len_lines() {
+        return rope.len_chars();
+    }
+    let mut result = rope.line_to_char(line) + line_len_no_eol(rope, line);
+    layout_line(rope, line, tab_width, usize::MAX, &mut |_, c| {
+        if c.col >= target {
+            result = c.char_idx;
+            return false;
+        }
+        true
+    });
+    result
+}
+
+/// The carets of a column block from `anchor` to `head`, each a (line,
+/// visual column). Every line between gets the cells between the two
+/// columns, a grapheme cut by either edge included; a line too short to
+/// reach the block gets a caret at its end (there is no virtual space), and
+/// a zero-width block is a caret on every line. Each selection points the
+/// way the block does and the head's line holds the primary. At most
+/// [`MAX_CARETS`] lines, the ones nearest the head.
+///
+/// Rows are buffer lines. Word wrap (yman 106) would make a line several
+/// rows; `Buffer::blocks_supported` is where it refuses column selection
+/// until blocks are made of visual rows here.
+pub fn block_selections(rope: &Rope, anchor: (usize, usize), head: (usize, usize), tab_width: usize) -> Selections {
+    let last = rope.len_lines().saturating_sub(1);
+    let hl = head.0.min(last);
+    let al = anchor.0.min(last).clamp(hl.saturating_sub(MAX_CARETS - 1), hl + MAX_CARETS - 1);
+    let (lo, hi) = (anchor.1.min(head.1), anchor.1.max(head.1));
+    let forward = anchor.1 <= head.1;
+    let ranges = (al.min(hl)..=al.max(hl))
+        .map(|line| {
+            let start = col_to_char(rope, line, lo, tab_width);
+            if lo == hi {
+                return Selection::point(start);
+            }
+            let end = col_to_char_ceil(rope, line, hi, tab_width).max(start);
+            if forward { Selection::new(start, end) } else { Selection::new(end, start) }
+        })
+        .collect();
+    Selections::new(ranges, hl - al.min(hl))
 }
 
 /// Line numbers plus space, diff mark, space; and the blame column first

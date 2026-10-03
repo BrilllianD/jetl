@@ -34,7 +34,20 @@ pub struct ViewState {
     /// Add Next Occurrence started from a bare caret, so it matches whole
     /// words. Cleared with `occ_stack`.
     pub occ_whole_word: bool,
+    /// The column block the carets were last made from, so extending it
+    /// keeps its columns where short lines lost them. Only meant while the
+    /// carets are still its selections (`Buffer::current_block`); cleared
+    /// with the carets and on every edit.
+    pub block: Option<Block>,
     pub search: Option<SearchState>,
+}
+
+/// A column block: two corners, each a (line, visual column). The head is
+/// the corner that moves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Block {
+    pub anchor: (usize, usize),
+    pub head: (usize, usize),
 }
 
 impl ViewState {
@@ -54,6 +67,7 @@ impl ViewState {
     /// Make `s` the only caret, with no desired column.
     pub fn set_sel(&mut self, s: Selection) {
         self.sels = s.into();
+        self.block = None;
         self.occ_stack.clear();
         self.occ_whole_word = false;
     }
@@ -160,6 +174,7 @@ impl Parked {
         s.expand_stack.clear();
         s.occ_stack.clear();
         s.occ_whole_word = false;
+        s.block = None;
         if following && let Some(k) = &mut s.follow_key {
             (k.0, k.1) = (head, version);
         }

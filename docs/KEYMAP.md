@@ -142,6 +142,7 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Alt+Shift+J` | `editor.unselect_occurrence` | Unselect the last added occurrence |
 | `Ctrl+Alt+J` | `editor.select_all_occurrences` | Select all occurrences (a caret at each) |
 | `Ctrl+Alt+Shift+J` * | `editor.select_all_occurrences` | Select all occurrences (a caret at each) |
+| `Alt+Shift+Insert` | `editor.toggle_column_mode` | Toggle column selection mode |
 | `Ctrl+Up` | `editor.scroll_up` | Scroll up |
 | `Ctrl+Down` | `editor.scroll_down` | Scroll down |
 | `Ctrl+Alt+Left` | `editor.nav_back` | Navigate back to the previous caret position |

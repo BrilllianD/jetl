@@ -95,6 +95,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   status bar shows their count. Language server features and completion work at the primary
   caret (the last one added); completion does not pop up by itself while there are several.
   At most 1000 carets.
+- Column (block) selection. Alt+drag (Alt+Shift+drag too) selects a rectangle by screen columns,
+  a caret on every line: tabs and wide characters cut by an edge are taken whole, lines too short
+  to reach it get a caret at their end, and a block of zero width is a caret per line. Typing,
+  paste and deletion then act on every line as with multiple carets, undone in one step.
+  Column Selection Mode (Alt+Shift+Insert, Edit menu) makes a plain drag and Shift+arrows,
+  Shift+Home and Shift+End select blocks too; the status bar shows `Column` while it is on.
 
 ## [0.1.0] - 2026-10-03
 
