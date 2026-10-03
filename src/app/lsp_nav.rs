@@ -28,6 +28,8 @@ use crate::ui::palette::Palette;
 const DEFINITION: &str = "textDocument/definition";
 const REFERENCES: &str = "textDocument/references";
 const HOVER: &str = "textDocument/hover";
+pub(super) const COMPLETION: &str = "textDocument/completion";
+pub(super) const RESOLVE: &str = "completionItem/resolve";
 
 /// The method a tag was sent with.
 fn method_of(tag: &PendingTag) -> &'static str {
@@ -35,6 +37,8 @@ fn method_of(tag: &PendingTag) -> &'static str {
         PendingTag::Definition(_) => DEFINITION,
         PendingTag::References(_) => REFERENCES,
         PendingTag::Hover(_) => HOVER,
+        PendingTag::Completion(_) => COMPLETION,
+        PendingTag::CompletionResolve(_) => RESOLVE,
         PendingTag::Initialize => "initialize",
         PendingTag::Shutdown => "shutdown",
     }
@@ -52,6 +56,8 @@ fn supports(caps: &ServerCapabilities, method: &str) -> Result<(), &'static str>
             matches!(caps.hover_provider, Some(HoverProviderCapability::Simple(true) | HoverProviderCapability::Options(_))),
             "documentation",
         ),
+        COMPLETION => (caps.completion_provider.is_some(), "code completion"),
+        RESOLVE => (caps.completion_provider.as_ref().and_then(|c| c.resolve_provider) == Some(true), "resolving completions"),
         _ => (false, "this request"),
     };
     if ok { Ok(()) } else { Err(what) }
@@ -59,7 +65,7 @@ fn supports(caps: &ServerCapabilities, method: &str) -> Result<(), &'static str>
 
 impl App {
     /// A short note for the user: a toast, not kept in the Event Log.
-    fn lsp_hint(&mut self, text: impl Into<String>) {
+    pub(super) fn lsp_hint(&mut self, text: impl Into<String>) {
         self.toasts.push(Level::Info, &text.into(), std::time::Instant::now());
         self.dirty_frame = true;
     }
@@ -90,6 +96,24 @@ impl App {
         extra: Value,
         tag: fn(DocTag) -> PendingTag,
     ) -> Result<u64, String> {
+        let mut params = json!({"position": pos});
+        if let (Some(p), Value::Object(extra)) = (params.as_object_mut(), extra) {
+            p.extend(extra);
+        }
+        self.lsp_tagged_request(id, pos, method, params, tag)
+    }
+
+    /// Send `method` with `params` (`textDocument` added when it is an
+    /// object) about buffer `id`, tagged with `pos`, cancelling the one in
+    /// flight. Returns the seq, or why it was not sent.
+    pub(super) fn lsp_tagged_request(
+        &mut self,
+        id: BufferId,
+        pos: Position,
+        method: &'static str,
+        mut params: Value,
+        tag: fn(DocTag) -> PendingTag,
+    ) -> Result<u64, String> {
         self.lsp_sync();
         let version = self.editor.index_of_id(id).map(|i| self.editor.buffers[i].version).ok_or_else(String::new)?;
         let (server, uri) = self.lsp_doc_of(id)?;
@@ -104,9 +128,10 @@ impl App {
         }
         self.lsp.last_seq += 1;
         let seq = self.lsp.last_seq;
-        let mut params = json!({"textDocument": {"uri": uri}, "position": pos});
-        if let (Some(p), Value::Object(extra)) = (params.as_object_mut(), extra) {
-            p.extend(extra);
+        if method != RESOLVE
+            && let Some(p) = params.as_object_mut()
+        {
+            p.insert("textDocument".into(), json!({"uri": uri}));
         }
         let client = self.lsp.clients.get_mut(&server).expect("checked above");
         let rid = client.request(method, params, tag(DocTag { buffer: id, version, pos, seq }));
@@ -115,7 +140,7 @@ impl App {
     }
 
     /// The active buffer's id and caret as an LSP position.
-    fn caret_position(&self) -> Option<(BufferId, Position)> {
+    pub(super) fn caret_position(&self) -> Option<(BufferId, Position)> {
         let b = self.editor.active_buffer()?;
         Some((b.id, pos::position(&b.rope, b.sel.head)))
     }
@@ -158,6 +183,7 @@ impl App {
     /// `lsp.quick_doc` (Alt+Q).
     pub(super) fn lsp_quick_doc(&mut self) {
         self.hover = None;
+        self.completion_close();
         let Some((id, pos)) = self.caret_position() else { return };
         if let Err(why) = self.lsp_doc_request(id, pos, HOVER, json!({}), PendingTag::Hover)
             && !why.is_empty()
@@ -178,6 +204,11 @@ impl App {
             }
             _ => return tracing::debug!("dropping a superseded {method} answer"),
         }
+        // Completion checks its answers itself: they stay good while the
+        // word at the caret is typed.
+        if let PendingTag::Completion(_) | PendingTag::CompletionResolve(_) = tag {
+            return self.completion_response(name, tag, result);
+        }
         if self.caret_position() != Some((t.buffer, t.pos)) || self.editor.active_buffer().is_none_or(|b| b.version != t.version) {
             return tracing::debug!("dropping a stale {method} answer");
         }
@@ -191,7 +222,7 @@ impl App {
             PendingTag::Definition(t) => self.lsp_definition_answer(t, value),
             PendingTag::References(t) => self.lsp_usages_answer(t, value),
             PendingTag::Hover(t) => self.lsp_hover_answer(t, value),
-            PendingTag::Initialize | PendingTag::Shutdown => {}
+            PendingTag::Completion(_) | PendingTag::CompletionResolve(_) | PendingTag::Initialize | PendingTag::Shutdown => {}
         }
     }
 

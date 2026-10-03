@@ -54,6 +54,28 @@ impl App {
             return;
         }
 
+        // An accepted completion waiting for its resolve goes in first.
+        self.completion_flush();
+        // The completion popup: the wheel moves its selection, a click on a
+        // row accepts it, a click anywhere else closes it (and does what it
+        // does there).
+        if let Some(c) = &mut self.completion {
+            let on = c.contains(m.column, m.row);
+            match m.kind {
+                MouseEventKind::ScrollUp if on => return c.scroll_by(-1),
+                MouseEventKind::ScrollDown if on => return c.scroll_by(1),
+                MouseEventKind::Down(MouseButton::Left) if on => {
+                    if let Some(row) = c.row_at(m.column, m.row) {
+                        c.state.selected = row;
+                        self.completion_accept();
+                    }
+                    return;
+                }
+                MouseEventKind::Down(_) if on => return,
+                MouseEventKind::Down(_) => self.completion_close(),
+                _ => {}
+            }
+        }
         // The hover popup scrolls under the wheel; a click anywhere closes
         // it (and does what it does there, unless it was on the popup).
         if let Some(h) = &mut self.hover {

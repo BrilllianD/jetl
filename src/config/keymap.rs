@@ -43,6 +43,11 @@ impl KeyCombo {
                 mods |= KeyModifiers::SHIFT;
                 KeyCode::Tab
             }
+            // NUL, which crossterm reports as Ctrl+Space on Unix.
+            KeyCode::Null => {
+                mods |= KeyModifiers::CONTROL;
+                KeyCode::Char(' ')
+            }
             other => other,
         };
         Self { code, mods }

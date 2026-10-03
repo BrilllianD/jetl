@@ -172,6 +172,10 @@
 "ctrl-b" = "lsp.goto_definition"
 "alt-f7" = "lsp.find_usages"
 "alt-q" = "lsp.quick_doc"
+# Code completion. Legacy terminals send Ctrl+Space and Ctrl+` both as NUL,
+# so in the editor the branches popup is on Ctrl+` only with the kitty
+# protocol (or from Git > Branches…).
+"ctrl-space" = "lsp.complete"
 "esc" = "editor.escape"
 
 [find]

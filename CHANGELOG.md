@@ -41,6 +41,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Documentation) shows the hover documentation in a popup at the caret, scrolled with the arrow
   and page keys and closed by Esc or any other key. Back (Ctrl+Alt+Left) returns from every
   jump. Without a server for the file Ctrl+B opens Go to Symbol on the word at the caret.
+- Code completion from language servers. A popup opens under the caret (above it near the
+  bottom) as you type an identifier, after the server's trigger characters such as `.` or `::`,
+  or on Ctrl+Space (Edit > Code Completion). Each row shows a kind glyph, the label and the
+  detail; typing on filters the list fuzzily, Up/Down/PgUp/PgDn select, Enter or Tab (or a click)
+  inserts, Esc closes, and leaving the word closes it too. Inserting applies the item's edit and
+  its extra edits (such as an import) as one undo step, snippets flattened with the caret at
+  their final position; items the server resolves lazily are resolved first, for at most 300 ms.
+  `[lsp] completion_auto` (default on) and `completion_min_chars` (default 1) control the
+  automatic popup. In the editor Ctrl+Space is now completion; legacy terminals send Ctrl+` as
+  the same key, so there the branches popup is Ctrl+` only with the kitty protocol.
 
 ## [0.1.0] - 2026-10-03
 

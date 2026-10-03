@@ -40,6 +40,7 @@ pub use lsp::LspStatus;
 
 // Declared after `ctx!` so the submodules can use it.
 mod clipboard;
+mod completion;
 mod dialogs;
 mod effects;
 mod files;
@@ -206,6 +207,8 @@ pub struct App {
     pub(crate) lsp: lsp::LspService,
     /// The Quick Documentation popup at the caret (`app/lsp_nav.rs`).
     pub hover: Option<crate::ui::hover::HoverPopup>,
+    /// The code completion popup at the caret (`app/completion.rs`).
+    pub completion: Option<crate::ui::completion::CompletionPopup>,
     started: Instant,
 }
 
@@ -279,6 +282,7 @@ impl App {
             terminal: crate::terminal::panel::TerminalPanel::new(config.terminal.scrollback),
             lsp: Default::default(),
             hover: None,
+            completion: None,
             started: Instant::now(),
             config,
             paths,
@@ -442,6 +446,7 @@ impl App {
         if self.git.is_busy() || self.lsp.busy() || (self.run.running() && self.layout.is_visible(ToolWindowId::Run)) {
             self.dirty_frame = true;
         }
+        self.completion_timeout(Instant::now());
         if self.editor.autosave_due(Instant::now()) {
             self.autosave();
         }
@@ -487,6 +492,7 @@ impl App {
     }
 
     fn handle_paste(&mut self, text: String) {
+        self.completion_flush();
         if let Some(d) = &mut self.dialog {
             // Paste into text fields only.
             if let crate::ui::dialog::DialogKind::Input { input, .. } = &mut d.kind {
@@ -524,6 +530,10 @@ impl App {
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
+        // An accepted completion waiting for its resolve goes in first.
+        if key.kind != crossterm::event::KeyEventKind::Release && !matches!(key.code, KeyCode::Modifier(_)) {
+            self.completion_flush();
+        }
         if self.dialog.is_some() {
             if key.kind == crossterm::event::KeyEventKind::Release {
                 return;
@@ -570,6 +580,10 @@ impl App {
         // The hover popup takes Esc and its scroll keys; other keys close
         // it and go on.
         if self.hover.is_some() && self.hover_key(key) {
+            return;
+        }
+        // So does the completion popup with its selection keys, Enter, Tab.
+        if self.completion.is_some() && self.completion_key(key) {
             return;
         }
         // The terminal takes every key but a few (`[terminal]`, Esc Esc).
@@ -728,6 +742,7 @@ impl App {
                     crate::actions::LspAction::GotoDefinition => self.lsp_goto_definition(),
                     crate::actions::LspAction::FindUsages => self.lsp_find_usages(),
                     crate::actions::LspAction::QuickDoc => self.lsp_quick_doc(),
+                    crate::actions::LspAction::Complete => self.lsp_complete(),
                     _ => {}
                 }
                 return;
@@ -753,6 +768,12 @@ impl App {
             _ => {}
         }
         self.apply_effects(effects);
+        // The completion list follows the word at the caret, and typing
+        // may ask for one.
+        if let Action::Editor(a) = &action {
+            let typed = if let EditorAction::InsertChar(c) = a { Some(*c) } else { None };
+            self.completion_after_edit(typed);
+        }
     }
 
     fn perform_app(&mut self, a: AppAction) {

@@ -6,7 +6,9 @@
 //! and keeps open buffers in sync ([`sync`], positions in [`pos`]).
 
 pub mod client;
+pub mod completion;
 pub mod diagnostics;
+pub mod edits;
 #[cfg(test)]
 pub mod fake;
 pub mod locations;
@@ -41,6 +43,10 @@ pub enum PendingTag {
     References(DocTag),
     /// `textDocument/hover`.
     Hover(DocTag),
+    /// `textDocument/completion`.
+    Completion(DocTag),
+    /// `completionItem/resolve` of the item being accepted.
+    CompletionResolve(DocTag),
 }
 
 impl PendingTag {
@@ -48,7 +54,11 @@ impl PendingTag {
     pub fn doc(&self) -> Option<&DocTag> {
         match self {
             PendingTag::Initialize | PendingTag::Shutdown => None,
-            PendingTag::Definition(t) | PendingTag::References(t) | PendingTag::Hover(t) => Some(t),
+            PendingTag::Definition(t)
+            | PendingTag::References(t)
+            | PendingTag::Hover(t)
+            | PendingTag::Completion(t)
+            | PendingTag::CompletionResolve(t) => Some(t),
         }
     }
 }
@@ -159,6 +169,11 @@ pub struct LspConfig {
     pub request_timeout_ms: u64,
     /// Diagnostics kept per file (the most severe first).
     pub max_diagnostics_per_file: usize,
+    /// Open the completion popup while typing (else only Ctrl+Space).
+    pub completion_auto: bool,
+    /// Identifier chars typed before the popup opens by itself (a server's
+    /// trigger character such as `.` opens it at once).
+    pub completion_min_chars: usize,
     /// `[lsp.servers.<name>]`: changes to the built-in servers, or new ones.
     pub servers: BTreeMap<String, ServerOverride>,
 }
@@ -170,6 +185,8 @@ impl Default for LspConfig {
             startup_timeout_ms: 15_000,
             request_timeout_ms: 5_000,
             max_diagnostics_per_file: 1000,
+            completion_auto: true,
+            completion_min_chars: 1,
             servers: BTreeMap::new(),
         }
     }
@@ -252,12 +269,14 @@ mod tests {
         assert_eq!(cfg.server_for("tsx").unwrap().name, "typescript-language-server");
         assert!(cfg.server_for("json").is_none());
         assert_eq!(cfg.max_diagnostics_per_file, 1000);
-        let text = "[lsp]\nstartup_timeout_ms = 100\nmax_diagnostics_per_file = 50\n\
+        assert!(cfg.completion_auto);
+        assert_eq!(cfg.completion_min_chars, 1);
+        let text = "[lsp]\nstartup_timeout_ms = 100\nmax_diagnostics_per_file = 50\ncompletion_min_chars = 3\n\
                     [lsp.servers.rust-analyzer]\nsettings = { rust-analyzer = { checkOnSave = false } }\n\
                     [lsp.servers.clangd]\ncommand = []\n\
                     [lsp.servers.pylsp]\ncommand = [\"pylsp\"]\nlanguages = [\"python\"]\n";
         let cfg = Config::parse(text).unwrap().lsp;
-        assert_eq!((cfg.startup_timeout_ms, cfg.max_diagnostics_per_file), (100, 50));
+        assert_eq!((cfg.startup_timeout_ms, cfg.max_diagnostics_per_file, cfg.completion_min_chars), (100, 50, 3));
         let ra = cfg.server_for("rust").unwrap();
         assert_eq!(ra.command, ["rust-analyzer"], "a partial table keeps the built-in command");
         assert_eq!(ra.settings.unwrap()["rust-analyzer"]["checkOnSave"], false);

@@ -64,7 +64,7 @@ cargo build --no-default-features --features lang-rust
   "XDG_CONFIG_HOME=/tmp/jt-home/config XDG_STATE_HOME=/tmp/jt-home/state $PWD/target/debug/jetl $T 2>/tmp/jetl-stderr.txt"
 sleep 2; /tmp/tm.sh capture-pane -t jetl -p          # dump the screen
 /tmp/tm.sh send-keys -t jetl M-1                     # Alt+1
-/tmp/tm.sh send-keys -t jetl -l 'text'               # literal typing
+/tmp/tm.sh send-keys -t jetl -l 'text'               # literal typing ('\;' for a lone ;)
 /tmp/tm.sh send-keys -t jetl C-s Enter Escape F5     # named keys
 /tmp/tm.sh kill-server
 ```

@@ -40,7 +40,7 @@ are done, except the conflict resolver, which waits for split panes (see Order).
 - **Infra:** an LSP client core (Phase 10 started): servers per language and root, JSON-RPC on
   tokio, incremental document sync in UTF-16, `[lsp]` config, a status bar segment;
   diagnostics in the gutter, the text and a Problems window; go to definition, usages and
-  hover documentation; no completion yet.
+  hover documentation; completion with a popup.
   Background services follow one pattern: clone (root, generation, tx), spawn, send a tagged
   message, and the app drops stale generations.
   `docs/ARCHITECTURE.md`, a README and CI (fmt, clippy, test) exist; there are no snapshot tests yet.
@@ -134,7 +134,7 @@ All of section E shipped in Phase 9 except split editor panes, which belong to P
 | LSP client core | L | Done: `lsp-types`, own JSON-RPC layer on tokio, UTF-16 positions, `[lsp]` config |
 | Diagnostics + Problems window | M | Done: gutter glyphs, underlines, status bar counts, F2, Problems window (Alt+6) |
 | Go to definition, references, hover | M | Done: Ctrl+B and Ctrl+click, Alt+F7 usages with previews, Alt+Q hover popup |
-| Completion popup | L | |
+| Completion popup | L | Done: auto-trigger and Ctrl+Space, fuzzy filter, snippets flattened, additional edits, resolve |
 | Rename, code actions, formatting, document symbols | M | WorkspaceEdit across files |
 
 ### G. Themes, vim, config

@@ -63,6 +63,9 @@ pub struct LspService {
     /// The seq of the newest definition or usages request: the one whose
     /// locations may still open the palette.
     pub(super) nav_seq: u64,
+    /// Completion requests and the item being accepted
+    /// (`app/completion.rs`).
+    pub(super) completion: super::completion::CompletionReqs,
     connector: Connector,
 }
 
@@ -120,6 +123,8 @@ impl LspService {
         self.progress.clear();
         self.diagnostics.clear();
         self.inflight.clear();
+        self.completion.request = None;
+        self.completion.accepting = None;
     }
 
     /// Whether a spinner is shown (a server starting or busy).

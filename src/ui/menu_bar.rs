@@ -76,6 +76,7 @@ pub const MAIN_MENU: &[(&str, char, &[Row])] = &[
             Item("Comment with Line Comment", "editor.toggle_comment"),
             Item("Comment with Block Comment", "editor.toggle_block_comment"),
             Item("Reformat Code", "editor.format"),
+            Item("Code Completion", "lsp.complete"),
         ],
     ),
     (

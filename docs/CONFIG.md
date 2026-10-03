@@ -110,6 +110,8 @@ enabled = true                 # start language servers for open files
 startup_timeout_ms = 15000     # a server that has not initialized by then is killed
 request_timeout_ms = 5000      # a request to a server unanswered by then fails
 max_diagnostics_per_file = 1000  # problems kept per file, the most severe first
+completion_auto = true         # open the completion popup while typing (else Ctrl+Space only)
+completion_min_chars = 1       # identifier chars typed before it opens by itself
 # Built-in servers (table below) take changes here; a table with a new
 # name adds a server. Omitted keys keep the built-in values.
 # [lsp.servers.rust-analyzer]
@@ -284,6 +286,21 @@ position, Ctrl+C copies its message. A file keeps at most
 are kept. A server's problems go when it stops, and all of them on a
 project switch or restart. Problems stay where the server put them while
 you type, until it publishes again.
+
+Code completion comes from the file's server. With `completion_auto` the
+popup opens by itself once the identifier at the caret has
+`completion_min_chars` characters, and at once after one of the server's
+trigger characters (`.` and `::` for rust-analyzer); Ctrl+Space (Edit >
+Code Completion) asks at any time and says so when there is nothing. Typing
+on filters the list (fuzzy, items starting with what you typed first); a
+server that marks its list incomplete is asked again as the word changes.
+Up/Down (wrapping), PgUp/PgDn and the mouse wheel select, Enter, Tab or a
+click insert, Esc closes, and moving out of the word closes the popup.
+Inserting makes the item's edit and its additional edits (an import, say)
+one undo step; snippet placeholders are inserted as plain text with the
+caret at the snippet's end mark (`$0`), else after it. Items a server fills
+in lazily are resolved first; when that takes over 300 ms, or you keep
+typing, the item goes in as it is.
 
 ## Indentation and .editorconfig
 

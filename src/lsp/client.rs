@@ -18,8 +18,9 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use lsp_types::{
-    ClientCapabilities, ClientInfo, GeneralClientCapabilities, GotoCapability, HoverClientCapabilities, InitializeParams, InitializeResult,
-    MarkupKind, PositionEncodingKind, PublishDiagnosticsClientCapabilities, ReferenceClientCapabilities,
+    ClientCapabilities, ClientInfo, CompletionClientCapabilities, CompletionItemCapability, CompletionItemCapabilityResolveSupport,
+    CompletionItemKind, CompletionItemKindCapability, GeneralClientCapabilities, GotoCapability, HoverClientCapabilities, InitializeParams,
+    InitializeResult, MarkupKind, PositionEncodingKind, PublishDiagnosticsClientCapabilities, ReferenceClientCapabilities,
     ShowMessageRequestClientCapabilities, TextDocumentClientCapabilities, TextDocumentSyncClientCapabilities, WindowClientCapabilities,
     WorkspaceClientCapabilities, WorkspaceFolder,
 };
@@ -205,6 +206,7 @@ pub fn client_capabilities() -> ClientCapabilities {
                 content_format: Some(vec![MarkupKind::Markdown, MarkupKind::PlainText]),
                 ..Default::default()
             }),
+            completion: Some(completion_capabilities()),
             ..Default::default()
         }),
         window: Some(WindowClientCapabilities {
@@ -213,6 +215,28 @@ pub fn client_capabilities() -> ClientCapabilities {
             ..Default::default()
         }),
         workspace: Some(WorkspaceClientCapabilities { configuration: Some(true), workspace_folders: Some(true), ..Default::default() }),
+        ..Default::default()
+    }
+}
+
+/// Completion: snippets (flattened on accept), `textEdit` and
+/// `additionalTextEdits`, resolved lazily when accepting; every item kind.
+fn completion_capabilities() -> CompletionClientCapabilities {
+    let kinds = (1..=25).filter_map(|k| serde_json::from_value::<CompletionItemKind>(json!(k)).ok()).collect();
+    CompletionClientCapabilities {
+        completion_item: Some(CompletionItemCapability {
+            snippet_support: Some(true),
+            documentation_format: Some(vec![MarkupKind::Markdown, MarkupKind::PlainText]),
+            deprecated_support: Some(true),
+            preselect_support: Some(true),
+            insert_replace_support: Some(false),
+            resolve_support: Some(CompletionItemCapabilityResolveSupport {
+                properties: ["documentation", "detail", "additionalTextEdits"].map(String::from).to_vec(),
+            }),
+            ..Default::default()
+        }),
+        completion_item_kind: Some(CompletionItemKindCapability { value_set: Some(kinds) }),
+        context_support: Some(true),
         ..Default::default()
     }
 }
