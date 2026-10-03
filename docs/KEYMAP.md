@@ -370,3 +370,4 @@ Reachable from Find Action (F1) or by binding them in `keymap.toml`.
 | `git.commit_and_push` | Git: commit and push |
 | `git.fetch` | Git: fetch |
 | `git.focus_message` | Git: focus commit message |
+| `lsp.restart` | Restart language servers |

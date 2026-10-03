@@ -18,6 +18,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on a 24-row terminal, with a menu button on top that opens the main menu. Hovering a button
   shows its name and shortcut. The icons are one-cell symbols by default; `[ui] icons = "emoji"`
   switches the strip and the menu bar to color emoji (needs a color emoji font).
+- Language server client: servers start per project when the first file of their language opens
+  (built in: rust-analyzer, typescript-language-server, pyright, gopls, clangd,
+  lua-language-server, bash-language-server; `[lsp]` in `config.toml` changes or adds them).
+  Open files are kept in sync incrementally as you type, saves and closed tabs are reported,
+  server messages show as notifications, and the status bar shows the active file's server
+  with its indexing progress, or that it is missing or stopped. Help > Restart Language Servers
+  (`lsp.restart`) starts them again. Servers are shut down on quit and project switch, with
+  everything they started. Diagnostics, navigation and completion build on this next.
 
 ## [0.1.0] - 2026-10-03
 

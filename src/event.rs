@@ -139,12 +139,12 @@ pub enum AppMsg {
         generation: u64,
         id: u64,
     },
-    /// Reserved for the language server integration.
+    /// A language server event, tagged with the workspace generation and
+    /// the server's id (`app/lsp.rs`).
     Lsp(LspMsg),
 }
 
-#[derive(Debug)]
-pub enum LspMsg {}
+pub use crate::lsp::LspMsg;
 
 /// Side effects a panel asks the app to perform after handling input.
 #[derive(Debug)]
@@ -176,6 +176,8 @@ pub enum Effect {
     Format(crate::editor::format::FormatRequest),
     /// Open a context menu (`App.menu`).
     ContextMenu(crate::ui::menu::ContextMenu),
+    /// Ask the language servers (`app/lsp.rs`).
+    Lsp(crate::lsp::LspRequest),
     Quit,
 }
 

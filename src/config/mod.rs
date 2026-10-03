@@ -70,6 +70,7 @@ pub struct Config {
     pub format: FormatConfig,
     pub run: crate::run::RunConfig,
     pub terminal: crate::terminal::TerminalConfig,
+    pub lsp: crate::lsp::LspConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]

@@ -112,6 +112,14 @@ pub struct Buffer {
     /// Pinned tabs come first in the tab bar and survive close others,
     /// close all but pinned and the tab limit.
     pub pinned: bool,
+    /// Open on a language server: edits are recorded in `lsp_pending`.
+    pub lsp_tracked: bool,
+    /// Edits since the last `didChange`, in order, as `contentChanges`
+    /// (`lsp::sync`). Taken by `App::lsp_sync`.
+    pub lsp_pending: Vec<crate::lsp::sync::DocEdit>,
+    /// The next `didChange` sends the whole text: too many edits piled up,
+    /// or one could not be put in LSP terms.
+    pub lsp_full_resync: bool,
 }
 
 impl Buffer {
@@ -152,6 +160,9 @@ impl Buffer {
             indent: IndentStyle::default(),
             settings: FileSettings::default(),
             pinned: false,
+            lsp_tracked: false,
+            lsp_pending: Vec::new(),
+            lsp_full_resync: false,
         }
     }
 
@@ -222,8 +233,9 @@ impl Buffer {
         let old_len = c.old.chars().count();
         let at = c.at.min(self.rope.len_chars());
         let marks: Vec<MarkTarget> = self.bookmarks.iter().map(|&l| mark_target(&self.rope, l, at, old_len, c)).collect();
+        let end = (at + old_len).min(self.rope.len_chars());
+        self.record_lsp_edit(at, end, &c.new);
         if old_len > 0 {
-            let end = (at + old_len).min(self.rope.len_chars());
             self.rope.remove(at..end);
         }
         if !c.new.is_empty() {
@@ -242,6 +254,21 @@ impl Buffer {
         }
         if let Some(s) = &mut self.syntax {
             s.note_change(&self.rope, at, old_len, c.new.chars().count(), &c.old, &c.new);
+        }
+    }
+
+    /// Record the replacement of `start..end` by `text` for the language
+    /// server, before the rope changes.
+    fn record_lsp_edit(&mut self, start: usize, end: usize, text: &str) {
+        if !self.lsp_tracked || self.lsp_full_resync {
+            return;
+        }
+        match crate::lsp::sync::DocEdit::new(&self.rope, start, end, text) {
+            Some(edit) if self.lsp_pending.len() < crate::lsp::sync::MAX_PENDING => self.lsp_pending.push(edit),
+            _ => {
+                self.lsp_pending.clear();
+                self.lsp_full_resync = true;
+            }
         }
     }
 

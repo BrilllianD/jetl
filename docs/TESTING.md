@@ -21,7 +21,12 @@ send its result yourself. Git tests make the root a repository with
 the app runs (git2 or the `git` CLI) report back on the bus, which
 `handle_next(&mut app, want)` waits for. Terminal window tests run
 `/bin/sh` with a cleared environment (`App::terminal_spec` under
-`cfg(test)`), never your shell or its startup files. `docs/KEYMAP.md` is checked by a test; regenerate
+`cfg(test)`), never your shell or its startup files. Language servers are
+off in `test_app`; `app::lsp::tests::with_fake_servers` turns them on with
+in-process servers (`lsp::fake::FakeServer`: answers `initialize` and
+`shutdown` itself, hands the test every message it gets, and sends
+notifications, requests and responses), so tests never start a real
+server. `docs/KEYMAP.md` is checked by a test; regenerate
 it with `cargo run -q -- --dump-keymap > docs/KEYMAP.md`.
 
 ## Manual: the tmux harness

@@ -104,6 +104,18 @@ timeout_ms = 5000              # a formatter still running after this is killed
 shell = ""                     # the Terminal window's shell; "" = $SHELL, else /bin/sh
 args = []                      # its arguments, e.g. ["-l"] for a login shell
 scrollback = 5000              # lines kept above the screen for the mouse wheel
+
+[lsp]
+enabled = true                 # start language servers for open files
+startup_timeout_ms = 15000     # a server that has not initialized by then is killed
+request_timeout_ms = 5000      # a request to a server unanswered by then fails
+# Built-in servers (table below) take changes here; a table with a new
+# name adds a server. Omitted keys keep the built-in values.
+# [lsp.servers.rust-analyzer]
+# command = ["rust-analyzer"]    # the command and its arguments; [] turns the server off
+# languages = ["rust"]           # language ids, as the status bar shows them
+# init_options = {}              # sent as initializationOptions
+# settings = { rust-analyzer = { check = { command = "clippy" } } }  # answers workspace/configuration
 ```
 
 With `watch` on, files changed by other programs refresh the Project tree
@@ -218,6 +230,40 @@ everything running in its session (jobs, background processes, `nohup`
 ones); programs that start a session of their own (`setsid`, daemons)
 survive, as they would a closed terminal. After a project switch the next
 shell starts in the new root.
+
+Language servers (`[lsp]`) start when the first file of one of their
+languages opens, one per server and project, in the project root, without a
+terminal (their own session; stderr goes to the log at debug level). These
+are built in; each one is used only when its command is on `PATH`:
+
+| Server | Command | Languages |
+|---|---|---|
+| `rust-analyzer` | `rust-analyzer` | rust |
+| `typescript-language-server` | `typescript-language-server --stdio` | javascript, typescript, tsx |
+| `pyright` | `pyright-langserver --stdio` | python |
+| `gopls` | `gopls` | go |
+| `clangd` | `clangd` | c, cpp |
+| `lua-language-server` | `lua-language-server` | lua |
+| `bash-language-server` | `bash-language-server start` | bash |
+
+A server you add (a `[lsp.servers.<name>]` table with a new name, a
+`command` and `languages`) comes before the built-in ones, so
+`[lsp.servers.pylsp]` with `languages = ["python"]` replaces pyright. A
+server takes the files it was started for: open buffers are synced as you
+type (only the edited ranges, in UTF-16 positions), saves are reported, and
+closed tabs are closed on the server. `settings` answers the server's
+`workspace/configuration` requests by section (`rust-analyzer` above);
+`init_options` goes with `initialize`.
+
+The status bar shows the server of the active file: its name, a spinner
+with what it reports while it starts or indexes, `LSP: <name> missing` when
+its command was not found (reported once in a notification), `LSP: <name>
+stopped` when it failed or exited, and `LSP: off` with `enabled = false`.
+Nothing is retried on its own: Help > Restart Language Servers
+(`lsp.restart`) stops every server and starts them again for the open
+files, and tries missing commands again. Servers stop when you quit or
+switch projects: jetl asks them to shut down, waits up to two seconds, then
+kills each server's process group (anything it started with it).
 
 ## Indentation and .editorconfig
 

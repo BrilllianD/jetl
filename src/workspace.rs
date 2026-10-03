@@ -176,6 +176,8 @@ impl App {
         self.run_root_changed();
         // The shell belongs to the old root; the next one starts in the new.
         self.terminal.reset();
+        // So do the language servers; new ones start for the open buffers.
+        self.lsp_root_changed();
         if self.config.worktree.switch_closes_tabs {
             self.editor.force_close_all();
         }

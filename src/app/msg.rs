@@ -62,7 +62,7 @@ impl App {
             AppMsg::RunExited { generation, run, end } => self.run_exited(generation, run, end),
             AppMsg::RunTasks { generation, seq, tasks, error } => self.run_tasks_loaded(generation, seq, tasks, error),
             AppMsg::TerminalOutput { generation, id } => self.terminal_output(generation, id),
-            AppMsg::Lsp(_) => {}
+            AppMsg::Lsp(m) => self.lsp_msg(m),
         }
     }
 

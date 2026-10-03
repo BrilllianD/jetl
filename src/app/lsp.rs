@@ -1,0 +1,714 @@
+//! Language servers in the app (`crate::lsp`): one per configured server,
+//! started for the first open buffer of its languages; documents kept in
+//! sync by [`App::lsp_sync`], which the run loop calls after each batch of
+//! input and messages; `LspMsg` routing (generation and server id checked
+//! first); server requests answered; the status bar segment; restart, root
+//! switch and quit.
+
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use lsp_types::{ConfigurationParams, ProgressParams, ProgressParamsValue, ShowMessageParams, TextDocumentSyncKind, Uri, WorkDoneProgress};
+use serde_json::{Value, json};
+
+use super::App;
+use crate::editor::buffer::{Buffer, BufferId};
+use crate::event::Level;
+use crate::lsp::client::{Client, StartSpec, State};
+use crate::lsp::sync::{self, SyncCaps};
+use crate::lsp::transport::{RequestId, ResponseError};
+use crate::lsp::{LspConfig, LspMsg, LspRequest, PendingTag, ServerConfig, ServerId};
+
+/// How servers are reached: processes, or in-process fakes in tests.
+#[derive(Default)]
+enum Connector {
+    #[default]
+    Process,
+    #[cfg(test)]
+    Fake(Box<FakeConnect>),
+}
+
+/// Connects to an in-process server, given the server's name.
+#[cfg(test)]
+type FakeConnect = dyn FnMut(&str) -> std::io::Result<crate::lsp::client::Conn> + Send;
+
+#[derive(Default)]
+pub struct LspService {
+    /// The current root's servers by name; a failed one stays (in
+    /// `State::Failed`) so it is not started again until `lsp.restart`.
+    clients: HashMap<String, Client>,
+    /// Servers whose command could not start; not tried again until
+    /// `lsp.restart`.
+    missing: HashSet<String>,
+    /// Buffers open on a server.
+    docs: HashMap<BufferId, Doc>,
+    /// `[lsp]` servers, resolved on first use.
+    servers: Option<Arc<Vec<ServerConfig>>>,
+    /// The last `ServerId` handed out.
+    last_id: ServerId,
+    /// Work done progress, oldest first: server, token, what it reports.
+    progress: Vec<(ServerId, String, Progress)>,
+    connector: Connector,
+}
+
+/// A buffer as its server knows it.
+#[derive(Debug)]
+struct Doc {
+    server: String,
+    path: PathBuf,
+    language: &'static str,
+    uri: Uri,
+    version: i32,
+}
+
+#[derive(Debug, Clone, Default)]
+struct Progress {
+    title: String,
+    message: Option<String>,
+    percentage: Option<u32>,
+}
+
+/// The status bar segment for the active buffer's server.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LspStatus {
+    Idle(String),
+    /// Starting or reporting progress; drawn with the spinner.
+    Busy(String),
+    /// Off, missing or stopped.
+    Down(String),
+}
+
+impl LspService {
+    /// Stop every server and wait (at most `SHUTDOWN_TIMEOUT`) for them to
+    /// exit (quit).
+    pub(crate) async fn shutdown_all(&mut self) {
+        let stops: Vec<_> = self.clients.drain().map(|(_, c)| c.shutdown()).collect();
+        futures::future::join_all(stops).await;
+    }
+
+    /// Stop every server in the background and forget the documents (root
+    /// switch, restart).
+    fn reset(&mut self) {
+        for (_, c) in self.clients.drain() {
+            tokio::spawn(c.shutdown());
+        }
+        self.docs.clear();
+        self.progress.clear();
+    }
+
+    /// Whether a spinner is shown (a server starting or busy).
+    pub(crate) fn busy(&self) -> bool {
+        !self.progress.is_empty() || self.clients.values().any(|c| matches!(c.state, State::Starting))
+    }
+
+    fn name_of(&self, server: ServerId) -> Option<String> {
+        self.clients.values().find(|c| c.id == server).map(|c| c.name.clone())
+    }
+
+    /// Start `server` for the current root. A command that cannot start
+    /// is remembered as missing and reported once.
+    fn start(
+        &mut self,
+        server: &ServerConfig,
+        cfg: &LspConfig,
+        root: &Path,
+        generation: u64,
+        bus: &tokio::sync::mpsc::UnboundedSender<crate::event::AppMsg>,
+    ) -> Option<(Level, String)> {
+        let conn = match &mut self.connector {
+            Connector::Process => crate::lsp::client::spawn_process(&server.name, &server.command, root),
+            #[cfg(test)]
+            Connector::Fake(connect) => connect(&server.name),
+        };
+        let name = &server.name;
+        let conn = match conn {
+            Ok(conn) => conn,
+            Err(e) => {
+                self.missing.insert(name.clone());
+                return Some(if e.kind() == std::io::ErrorKind::NotFound {
+                    let program = &server.command[0];
+                    let which = if program == name { String::new() } else { format!(" ({program})") };
+                    (
+                        Level::Info,
+                        format!("Language server {name} not found{which}: install it, or set its command in [lsp.servers.{name}]"),
+                    )
+                } else {
+                    (Level::Warn, format!("Language server {name} could not start: {e}"))
+                });
+            }
+        };
+        self.last_id += 1;
+        tracing::info!("starting language server {name} ({:?}) in {}", server.command, root.display());
+        let spec = StartSpec {
+            id: self.last_id,
+            name: name.clone(),
+            root: root.to_path_buf(),
+            generation,
+            init_options: server.init_options.clone(),
+            startup_timeout: std::time::Duration::from_millis(cfg.startup_timeout_ms),
+            request_timeout: std::time::Duration::from_millis(cfg.request_timeout_ms),
+        };
+        self.clients.insert(name.clone(), Client::start(spec, conn, bus.clone()));
+        None
+    }
+
+    /// Close buffer `id`'s document on its server.
+    fn close_doc(&mut self, id: BufferId) {
+        let Some(doc) = self.docs.remove(&id) else { return };
+        if let Some(c) = self.clients.get(&doc.server)
+            && c.capabilities().is_some_and(|caps| SyncCaps::of(caps).open_close)
+        {
+            c.notify("textDocument/didClose", json!({"textDocument": {"uri": doc.uri}}));
+        }
+    }
+
+    /// Forget the documents and progress of a server that went away.
+    fn server_gone(&mut self, name: &str, server: ServerId, buffers: &mut [Buffer]) {
+        self.docs.retain(|_, d| d.server != name);
+        self.progress.retain(|p| p.0 != server);
+        for b in buffers.iter_mut().filter(|b| !self.docs.contains_key(&b.id)) {
+            untrack(b);
+        }
+    }
+}
+
+/// Stop recording edits for the language server.
+fn untrack(b: &mut Buffer) {
+    b.lsp_tracked = false;
+    b.lsp_pending.clear();
+    b.lsp_full_resync = false;
+}
+
+impl App {
+    /// Bring the servers in line with the open buffers: start the server of
+    /// a buffer's language, `didOpen` buffers once it runs, `didChange` with
+    /// the edits recorded since the last call (version + 1), `didClose` for
+    /// closed buffers, close and open again when a path or language changed.
+    pub(crate) fn lsp_sync(&mut self) {
+        if !self.config.lsp.enabled {
+            return;
+        }
+        let servers = Arc::clone(self.lsp.servers.get_or_insert_with(|| Arc::new(self.config.lsp.servers())));
+        let gone: Vec<BufferId> = self.lsp.docs.keys().filter(|id| self.editor.index_of_id(**id).is_none()).copied().collect();
+        for id in gone {
+            self.lsp.close_doc(id);
+        }
+        let mut notes = Vec::new();
+        let lsp = &mut self.lsp;
+        for buf in &mut self.editor.buffers {
+            let language = buf.language().map(|l| l.name);
+            if lsp.docs.get(&buf.id).is_some_and(|d| buf.path.as_ref() != Some(&d.path) || language != Some(d.language)) {
+                lsp.close_doc(buf.id);
+                untrack(buf);
+            }
+            let (Some(language), Some(path)) = (language, buf.path.as_ref()) else { continue };
+            if let Some(doc) = lsp.docs.get_mut(&buf.id) {
+                if buf.lsp_pending.is_empty() && !buf.lsp_full_resync {
+                    continue;
+                }
+                let Some(client) = lsp.clients.get(&doc.server) else { continue };
+                let Some(caps) = client.capabilities().map(SyncCaps::of) else { continue };
+                doc.version += 1;
+                let changes = match caps.change {
+                    TextDocumentSyncKind::INCREMENTAL if !buf.lsp_full_resync => buf.lsp_pending.iter().map(|e| e.change_event()).collect(),
+                    TextDocumentSyncKind::NONE => Vec::new(),
+                    _ => vec![lsp_types::TextDocumentContentChangeEvent { range: None, range_length: None, text: buf.text() }],
+                };
+                if !changes.is_empty() {
+                    let params = json!({"textDocument": {"uri": doc.uri, "version": doc.version}, "contentChanges": changes});
+                    client.notify("textDocument/didChange", params);
+                }
+                buf.lsp_pending.clear();
+                buf.lsp_full_resync = false;
+                continue;
+            }
+            let Some(server) = servers.iter().find(|s| s.languages.iter().any(|l| l == language)) else { continue };
+            if !lsp.clients.contains_key(&server.name) {
+                if !lsp.missing.contains(&server.name) {
+                    notes.extend(lsp.start(server, &self.config.lsp, &self.workspace.root, self.workspace.generation, &self.bus_tx));
+                }
+                continue;
+            }
+            let client = &lsp.clients[&server.name];
+            let (Some(caps), Some(uri)) = (client.capabilities().map(SyncCaps::of), sync::uri(path)) else { continue };
+            if caps.open_close {
+                let item = json!({"uri": uri, "languageId": sync::language_id(language), "version": 1, "text": buf.text()});
+                client.notify("textDocument/didOpen", json!({"textDocument": item}));
+            }
+            lsp.docs.insert(buf.id, Doc { server: server.name.clone(), path: path.clone(), language, uri, version: 1 });
+            untrack(buf);
+            buf.lsp_tracked = true;
+        }
+        for (level, text) in notes {
+            self.notify(level, text);
+        }
+    }
+
+    /// `Effect::FileSaved`: `didSave` after the edits that led to it.
+    pub(super) fn lsp_saved(&mut self, path: &Path) {
+        self.lsp_sync();
+        let Some(doc) = self.lsp.docs.values().find(|d| d.path == path) else { return };
+        let Some(client) = self.lsp.clients.get(&doc.server) else { return };
+        let Some(include_text) = client.capabilities().and_then(|c| SyncCaps::of(c).save) else { return };
+        let mut params = json!({"textDocument": {"uri": doc.uri}});
+        if include_text && let Some(b) = self.editor.index_of(path).map(|i| &self.editor.buffers[i]) {
+            params["text"] = b.text().into();
+        }
+        client.notify("textDocument/didSave", params);
+    }
+
+    pub(super) fn lsp_request(&mut self, req: LspRequest) {
+        match req {
+            LspRequest::Restart => self.lsp_restart(),
+        }
+    }
+
+    /// `lsp.restart`: stop every server, forget which were missing, and
+    /// start them again for the open buffers.
+    pub(super) fn lsp_restart(&mut self) {
+        self.lsp.reset();
+        self.lsp.missing.clear();
+        self.lsp.servers = None;
+        self.editor.buffers.iter_mut().for_each(untrack);
+        if !self.config.lsp.enabled {
+            return self.notify(Level::Info, "Language servers are off ([lsp] enabled = false)");
+        }
+        self.notify(Level::Info, "Restarting language servers");
+        self.lsp_sync();
+    }
+
+    /// The root changed: the old root's servers stop; the new root's start
+    /// for the open buffers on the next sync.
+    pub(crate) fn lsp_root_changed(&mut self) {
+        self.lsp.reset();
+        self.editor.buffers.iter_mut().for_each(untrack);
+    }
+
+    pub(super) fn lsp_msg(&mut self, msg: LspMsg) {
+        let server = msg.server();
+        let name = match self.lsp.name_of(server) {
+            Some(name) if msg.generation() == self.workspace.generation => name,
+            _ => return tracing::debug!("dropping a stale language server message: {msg:?}"),
+        };
+        match msg {
+            LspMsg::Started { caps, .. } => {
+                tracing::info!("{name} started");
+                if let Some(c) = self.lsp.clients.get_mut(&name) {
+                    c.state = State::Running(caps);
+                }
+                self.lsp_sync();
+            }
+            LspMsg::Failed { error, .. } => {
+                self.lsp_server_down(&name, server, error.clone());
+                self.notify(Level::Warn, format!("Language server {name} failed to start: {error}"));
+            }
+            LspMsg::Exited { status, .. } => {
+                self.lsp_server_down(&name, server, status.clone());
+                self.notify(
+                    Level::Warn,
+                    format!("Language server {name} exited ({status}); Help > Restart Language Servers starts it again"),
+                );
+            }
+            LspMsg::Notification { method, params, .. } => self.lsp_notification(&name, server, &method, params),
+            LspMsg::ServerRequest { id, method, params, .. } => self.lsp_server_request(&name, id, &method, params),
+            LspMsg::Response { tag: PendingTag::Initialize | PendingTag::Shutdown, .. } => {}
+        }
+    }
+
+    fn lsp_server_down(&mut self, name: &str, server: ServerId, why: String) {
+        if let Some(c) = self.lsp.clients.get_mut(name) {
+            c.state = State::Failed(why);
+        }
+        self.lsp.server_gone(name, server, &mut self.editor.buffers);
+    }
+
+    fn lsp_notification(&mut self, name: &str, server: ServerId, method: &str, params: Value) {
+        match method {
+            "window/showMessage" => {
+                let Ok(p) = serde_json::from_value::<ShowMessageParams>(params) else { return };
+                let level = match p.typ {
+                    lsp_types::MessageType::ERROR => Level::Error,
+                    lsp_types::MessageType::WARNING => Level::Warn,
+                    _ => Level::Info,
+                };
+                self.notify(level, format!("{name}: {}", p.message));
+            }
+            "window/logMessage" => tracing::debug!("{name}: {}", params["message"].as_str().unwrap_or_default()),
+            "$/progress" => {
+                let Ok(ProgressParams { token, value: ProgressParamsValue::WorkDone(work) }) = serde_json::from_value(params) else {
+                    return;
+                };
+                let token = serde_json::to_string(&token).unwrap_or_default();
+                let at = self.lsp.progress.iter().position(|p| p.0 == server && p.1 == token);
+                match (work, at) {
+                    (WorkDoneProgress::Begin(b), _) => {
+                        let p = Progress { title: b.title, message: b.message, percentage: b.percentage };
+                        self.lsp.progress.retain(|p| !(p.0 == server && p.1 == token));
+                        self.lsp.progress.push((server, token, p));
+                    }
+                    (WorkDoneProgress::Report(r), Some(i)) => {
+                        let p = &mut self.lsp.progress[i].2;
+                        p.message = r.message.or(p.message.take());
+                        p.percentage = r.percentage.or(p.percentage);
+                    }
+                    (WorkDoneProgress::End(_), Some(i)) => {
+                        self.lsp.progress.remove(i);
+                    }
+                    _ => {}
+                }
+            }
+            _ => tracing::debug!("{name}: unhandled notification {method}"),
+        }
+    }
+
+    fn lsp_server_request(&mut self, name: &str, id: RequestId, method: &str, params: Value) {
+        let result = match method {
+            "workspace/configuration" => {
+                let settings = self.lsp.servers.as_ref().and_then(|s| s.iter().find(|s| s.name == name)).and_then(|s| s.settings.clone());
+                let items = serde_json::from_value::<ConfigurationParams>(params).map(|p| p.items).unwrap_or_default();
+                Ok(items.iter().map(|item| section(settings.as_ref(), item.section.as_deref())).collect())
+            }
+            "client/registerCapability" | "client/unregisterCapability" | "window/workDoneProgress/create" => Ok(Value::Null),
+            "workspace/workspaceFolders" => {
+                let root = &self.workspace.root;
+                let name = root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                Ok(sync::uri(root).map_or(Value::Null, |uri| json!([{"uri": uri, "name": name}])))
+            }
+            "window/showMessageRequest" => {
+                if let Ok(p) = serde_json::from_value::<ShowMessageParams>(params) {
+                    self.notify(Level::Info, format!("{name}: {}", p.message));
+                }
+                Ok(Value::Null)
+            }
+            _ => {
+                tracing::debug!("{name}: unhandled request {method}");
+                Err(ResponseError::new(ResponseError::METHOD_NOT_FOUND, format!("unhandled method {method}")))
+            }
+        };
+        if let Some(c) = self.lsp.clients.get(name) {
+            c.respond(id, result);
+        }
+    }
+
+    /// The status bar segment for the active buffer: its server's name,
+    /// with what it is busy with, or why it is not there.
+    pub fn lsp_status(&self) -> Option<LspStatus> {
+        let b = self.editor.active_buffer()?;
+        b.path.as_ref()?;
+        let language = b.language()?.name;
+        let name = match self.lsp.docs.get(&b.id) {
+            Some(doc) => doc.server.clone(),
+            None => match &self.lsp.servers {
+                Some(servers) => servers.iter().find(|s| s.languages.iter().any(|l| l == language))?.name.clone(),
+                None => self.config.lsp.server_for(language)?.name,
+            },
+        };
+        if !self.config.lsp.enabled {
+            return Some(LspStatus::Down("LSP: off".into()));
+        }
+        if self.lsp.missing.contains(&name) {
+            return Some(LspStatus::Down(format!("LSP: {name} missing")));
+        }
+        let client = self.lsp.clients.get(&name)?;
+        Some(match &client.state {
+            State::Starting => LspStatus::Busy(format!("{name}: starting")),
+            State::Failed(_) => LspStatus::Down(format!("LSP: {name} stopped")),
+            State::Running(_) => match self.lsp.progress.iter().rev().find(|p| p.0 == client.id) {
+                Some((_, _, p)) => {
+                    let mut s = format!("{name}: {}", p.title);
+                    if let Some(m) = p.message.as_deref().filter(|m| !m.is_empty()) {
+                        s = format!("{s} {m}");
+                    }
+                    if let Some(pct) = p.percentage {
+                        s = format!("{s} {pct}%");
+                    }
+                    LspStatus::Busy(s)
+                }
+                None => LspStatus::Idle(name),
+            },
+        })
+    }
+}
+
+/// `section` (dotted) of a server's `settings`; null when absent.
+fn section(settings: Option<&Value>, section: Option<&str>) -> Value {
+    let Some(mut v) = settings else { return Value::Null };
+    for key in section.into_iter().flat_map(|s| s.split('.')).filter(|k| !k.is_empty()) {
+        match v.get(key) {
+            Some(next) => v = next,
+            None => return Value::Null,
+        }
+    }
+    v.clone()
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+    use crate::actions::{Action, EditorAction, LspAction, Motion};
+    use crate::app::tests::{handle_next, load, test_app};
+    use crate::editor::buffer::LineEnding;
+    use crate::event::AppMsg;
+    use crate::lsp::fake::{self, FakeServer};
+    use crate::lsp::sync::tests::apply_changes;
+    use tokio::sync::mpsc::UnboundedReceiver;
+
+    /// Turn the language servers of a test app on, served in-process: each
+    /// server the app starts answers `initialize` with `caps` and arrives on
+    /// the returned channel.
+    pub(crate) fn with_fake_servers(app: &mut App, caps: Value) -> UnboundedReceiver<FakeServer> {
+        app.config.lsp.enabled = true;
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        app.lsp.connector = Connector::Fake(Box::new(move |_| {
+            let (conn, server) = fake::connect(caps.clone());
+            let _ = tx.send(server);
+            Ok(conn)
+        }));
+        rx
+    }
+
+    /// Incremental sync with open/close and saves, as rust-analyzer has it.
+    pub(crate) fn incremental() -> Value {
+        json!({"textDocumentSync": {"openClose": true, "change": 2, "save": {"includeText": false}}})
+    }
+
+    pub(crate) fn is_lsp(m: &AppMsg) -> bool {
+        matches!(m, AppMsg::Lsp(_))
+    }
+
+    /// Open `name` with `text` in `app` (fake servers installed) and wait
+    /// until its server runs and has the document.
+    pub(crate) async fn open_on_server(app: &mut App, servers: &mut UnboundedReceiver<FakeServer>, name: &str, text: &str) -> FakeServer {
+        load(app, name, text);
+        app.lsp_sync();
+        let mut server = servers.try_recv().expect("a server started");
+        handle_next(app, |m| matches!(m, AppMsg::Lsp(LspMsg::Started { .. }))).await;
+        server.recv("textDocument/didOpen").await;
+        server
+    }
+
+    fn act(app: &mut App, a: EditorAction) {
+        app.perform(Action::Editor(a));
+        app.lsp_sync();
+    }
+
+    fn range(l0: u32, c0: u32, l1: u32, c1: u32) -> Value {
+        json!({"start": {"line": l0, "character": c0}, "end": {"line": l1, "character": c1}})
+    }
+
+    #[tokio::test]
+    async fn documents_open_change_save_move_and_close() {
+        let (mut app, dir) = test_app("lsp-sync");
+        let mut servers = with_fake_servers(&mut app, incremental());
+        let path = load(&mut app, "a.rs", "a😀b\n日本\n");
+        app.lsp_sync();
+        let mut server = servers.try_recv().expect("started for the first Rust file");
+        assert_eq!(app.lsp_status(), Some(LspStatus::Busy("rust-analyzer: starting".into())));
+        let init = server.recv("initialize").await;
+        assert_eq!(init["params"]["capabilities"]["general"]["positionEncodings"], json!(["utf-16"]));
+        assert!(init["params"]["workspaceFolders"][0]["uri"].as_str().unwrap().starts_with("file:///"));
+        handle_next(&mut app, is_lsp).await;
+        assert_eq!(app.lsp_status(), Some(LspStatus::Idle("rust-analyzer".into())));
+        server.recv("initialized").await;
+        let open = server.recv("textDocument/didOpen").await;
+        let doc = &open["params"]["textDocument"];
+        let uri = sync::uri(&path).unwrap();
+        assert_eq!(doc["uri"], uri.as_str());
+        assert_eq!(
+            (doc["languageId"].as_str(), doc["version"].as_i64(), doc["text"].as_str()),
+            (Some("rust"), Some(1), Some("a😀b\n日本\n"))
+        );
+
+        // After the emoji: UTF-16 column 3.
+        act(&mut app, EditorAction::Move(Motion::Right, false));
+        act(&mut app, EditorAction::Move(Motion::Right, false));
+        act(&mut app, EditorAction::InsertChar('x'));
+        let change = server.recv("textDocument/didChange").await;
+        assert_eq!(change["params"]["textDocument"], json!({"uri": uri.as_str(), "version": 2}));
+        assert_eq!(change["params"]["contentChanges"], json!([{"range": range(0, 3, 0, 3), "text": "x"}]));
+        act(&mut app, EditorAction::Save);
+        assert_eq!(server.recv("textDocument/didSave").await["params"], json!({"textDocument": {"uri": uri.as_str()}}));
+        act(&mut app, EditorAction::Undo);
+        let change = server.recv("textDocument/didChange").await;
+        assert_eq!(change["params"]["textDocument"]["version"], 3);
+        assert_eq!(change["params"]["contentChanges"], json!([{"range": range(0, 3, 0, 4), "text": ""}]));
+        // Nothing changed, nothing sent.
+        app.lsp_sync();
+        assert!(server.drain().is_empty());
+
+        // A rename closes the old document and opens the new one.
+        let moved = app.workspace.root.join("b.rs");
+        app.editor.retarget(&path, &moved);
+        app.lsp_sync();
+        assert_eq!(server.recv("textDocument/didClose").await["params"]["textDocument"]["uri"], uri.as_str());
+        let open = server.recv("textDocument/didOpen").await;
+        let moved_uri = sync::uri(&moved).unwrap();
+        assert_eq!(
+            (open["params"]["textDocument"]["uri"].as_str(), open["params"]["textDocument"]["version"].as_i64()),
+            (Some(moved_uri.as_str()), Some(1))
+        );
+        // Closed with its unsaved undo.
+        app.editor.force_close(app.editor.active.unwrap());
+        app.lsp_sync();
+        assert_eq!(server.recv("textDocument/didClose").await["params"]["textDocument"]["uri"], moved_uri.as_str());
+        // Plain text has no server.
+        load(&mut app, "notes.txt", "x");
+        act(&mut app, EditorAction::InsertChar('y'));
+        assert!(server.drain().is_empty());
+        assert_eq!(app.lsp_status(), None);
+
+        // Quitting asks the server to shut down and exit.
+        app.lsp.shutdown_all().await;
+        server.recv("shutdown").await;
+        server.recv("exit").await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn changes_follow_multi_change_transactions_and_line_endings() {
+        let (mut app, dir) = test_app("lsp-multi");
+        let mut servers = with_fake_servers(&mut app, incremental());
+        let text = "ab 😀\ncd 日本\n";
+        let mut server = open_on_server(&mut app, &mut servers, "a.rs", text).await;
+        let mut mirror = text.to_string();
+        let mut check = async |app: &mut App, server: &mut FakeServer, what: &str| {
+            app.lsp_sync();
+            let change = server.recv("textDocument/didChange").await;
+            let changes: Vec<lsp_types::TextDocumentContentChangeEvent> =
+                serde_json::from_value(change["params"]["contentChanges"].clone()).unwrap();
+            mirror = apply_changes(&mirror, &changes);
+            assert_eq!(mirror, app.editor.active_buffer().unwrap().text(), "{what}: {changes:?}");
+            changes
+        };
+        // Typing an opener over a selection wraps it: the closer goes in
+        // first, at the end, then the opener at the start.
+        app.perform(Action::Editor(EditorAction::SelectAll));
+        app.perform(Action::Editor(EditorAction::InsertChar('(')));
+        let changes = check(&mut app, &mut server, "wrap").await;
+        assert_eq!(changes.len(), 2);
+        assert_eq!(
+            serde_json::to_value(&changes).unwrap(),
+            json!([{"range": range(2, 0, 2, 0), "text": ")"}, {"range": range(0, 0, 0, 0), "text": "("}])
+        );
+        // Several edits between two syncs, undo and redo among them.
+        app.perform(Action::Editor(EditorAction::Move(Motion::DocEnd, false)));
+        app.perform(Action::Editor(EditorAction::InsertText("\nfn 😀() {}".into())));
+        app.perform(Action::Editor(EditorAction::Move(Motion::LineStart, false)));
+        app.perform(Action::Editor(EditorAction::DeleteLine));
+        app.perform(Action::Editor(EditorAction::Undo));
+        app.perform(Action::Editor(EditorAction::Undo));
+        app.perform(Action::Editor(EditorAction::Redo));
+        check(&mut app, &mut server, "edits, undo, redo").await;
+        // Line ending conversions: to CRLF inserts before each \n; back to
+        // LF removes a \r inside a CRLF break, which no LSP position names,
+        // so the whole text goes.
+        let id = app.editor.active_buffer().unwrap().id;
+        app.editor.set_line_ending(id, LineEnding::CrLf);
+        assert!(check(&mut app, &mut server, "to CRLF").await.iter().all(|c| c.range.is_some()));
+        app.editor.set_line_ending(id, LineEnding::Lf);
+        assert!(check(&mut app, &mut server, "to LF").await[0].range.is_none());
+        let id = app.editor.active_buffer().unwrap().id;
+        assert!(!app.editor.buffers.iter().find(|b| b.id == id).unwrap().lsp_full_resync);
+        // Past the cap the next change is the whole text too.
+        for _ in 0..sync::MAX_PENDING + 1 {
+            app.perform(Action::Editor(EditorAction::InsertChar('z')));
+        }
+        let changes = check(&mut app, &mut server, "many edits").await;
+        assert!(changes.len() == 1 && changes[0].range.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn messages_requests_progress_and_stale_results() {
+        let (mut app, dir) = test_app("lsp-msgs");
+        let settings = json!({"rust-analyzer": {"cargo": {"features": "all"}}});
+        let ra = crate::lsp::ServerOverride { settings: Some(settings.clone()), ..Default::default() };
+        app.config.lsp.servers.insert("rust-analyzer".into(), ra);
+        let mut servers = with_fake_servers(&mut app, incremental());
+        let mut server = open_on_server(&mut app, &mut servers, "a.rs", "fn main() {}\n").await;
+        let (g, id) = (app.workspace.generation, app.lsp.clients["rust-analyzer"].id);
+        let show = |generation, server, text: &str| {
+            let params = json!({"type": 1, "message": text});
+            AppMsg::Lsp(LspMsg::Notification { generation, server, method: "window/showMessage".into(), params })
+        };
+        let shown = |app: &App, text: &str| app.notifications.iter().filter(|n| n.text.ends_with(text)).count();
+        // Another root's or another server's message is dropped.
+        app.handle_msg(show(g - 1, id, "old root"));
+        app.handle_msg(show(g, id + 1, "old server"));
+        assert_eq!(shown(&app, "old root") + shown(&app, "old server"), 0);
+        app.handle_msg(show(g, id, "current"));
+        assert_eq!(app.notifications.last().map(|n| (n.level, n.text.as_str())), Some((Level::Error, "rust-analyzer: current")));
+        server.notify("window/showMessage", json!({"type": 2, "message": "careful"}));
+        handle_next(&mut app, is_lsp).await;
+        assert_eq!(app.notifications.last().map(|n| (n.level, n.text.as_str())), Some((Level::Warn, "rust-analyzer: careful")));
+
+        // Progress shows in the status bar until it ends.
+        let progress = |value: Value| json!({"token": "rustAnalyzer/Indexing", "value": value});
+        server.notify("$/progress", progress(json!({"kind": "begin", "title": "Indexing", "percentage": 0})));
+        handle_next(&mut app, is_lsp).await;
+        assert_eq!(app.lsp_status(), Some(LspStatus::Busy("rust-analyzer: Indexing 0%".into())));
+        assert!(app.lsp.busy());
+        server.notify("$/progress", progress(json!({"kind": "report", "message": "3/10", "percentage": 30})));
+        handle_next(&mut app, is_lsp).await;
+        assert_eq!(app.lsp_status(), Some(LspStatus::Busy("rust-analyzer: Indexing 3/10 30%".into())));
+        server.notify("$/progress", progress(json!({"kind": "end"})));
+        handle_next(&mut app, is_lsp).await;
+        assert_eq!(app.lsp_status(), Some(LspStatus::Idle("rust-analyzer".into())));
+        assert!(!app.lsp.busy());
+
+        // Server requests: settings by section, null for the ones that
+        // need nothing, MethodNotFound for the rest.
+        server.request(1, "workspace/configuration", json!({"items": [{"section": "rust-analyzer.cargo"}, {"section": "other"}, {}]}));
+        handle_next(&mut app, is_lsp).await;
+        assert_eq!(server.response(1).await["result"], json!([{"features": "all"}, null, settings]));
+        server.request(2, "window/workDoneProgress/create", json!({"token": "t"}));
+        handle_next(&mut app, is_lsp).await;
+        assert_eq!(server.response(2).await["result"], Value::Null);
+        server.request(3, "custom/unknown", json!({}));
+        handle_next(&mut app, is_lsp).await;
+        assert_eq!(server.response(3).await["error"]["code"], ResponseError::METHOD_NOT_FOUND);
+
+        // A root switch stops the server; its late messages are dropped.
+        let other = dir.join("other");
+        std::fs::create_dir_all(&other).unwrap();
+        app.do_switch_root(other);
+        server.recv("shutdown").await;
+        server.recv("exit").await;
+        app.handle_msg(show(g, id, "after the switch"));
+        app.handle_msg(show(app.workspace.generation, id, "after the switch"));
+        assert_eq!(shown(&app, "after the switch"), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_missing_server_is_reported_once_until_restart() {
+        let (mut app, dir) = test_app("lsp-missing");
+        app.config.lsp.enabled = true;
+        let ra = crate::lsp::ServerOverride { command: Some(vec!["/nonexistent/rust-analyzer".into()]), ..Default::default() };
+        app.config.lsp.servers.insert("rust-analyzer".into(), ra);
+        let reports =
+            |app: &App| app.notifications.iter().filter(|n| n.text.starts_with("Language server rust-analyzer not found")).count();
+        load(&mut app, "a.rs", "fn a() {}\n");
+        app.lsp_sync();
+        app.lsp_sync();
+        load(&mut app, "b.rs", "fn b() {}\n");
+        app.perform(Action::Editor(EditorAction::InsertChar('x')));
+        app.lsp_sync();
+        assert_eq!(reports(&app), 1);
+        let n = app.notifications.iter().find(|n| n.text.contains("not found")).unwrap();
+        assert_eq!(n.level, Level::Info);
+        assert!(n.text.contains("[lsp.servers.rust-analyzer]"), "{}", n.text);
+        assert_eq!(app.lsp_status(), Some(LspStatus::Down("LSP: rust-analyzer missing".into())));
+        assert!(app.editor.buffers.iter().all(|b| !b.lsp_tracked && b.lsp_pending.is_empty()));
+        // Restart tries again.
+        app.perform(Action::Lsp(LspAction::Restart));
+        assert_eq!(reports(&app), 2);
+        // Off: no server, and the status says so.
+        app.config.lsp.enabled = false;
+        app.perform(Action::Lsp(LspAction::Restart));
+        assert_eq!(reports(&app), 2);
+        assert_eq!(app.lsp_status(), Some(LspStatus::Down("LSP: off".into())));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

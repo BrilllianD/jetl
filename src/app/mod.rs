@@ -36,6 +36,8 @@ macro_rules! ctx {
     };
 }
 
+pub use lsp::LspStatus;
+
 // Declared after `ctx!` so the submodules can use it.
 mod clipboard;
 mod dialogs;
@@ -43,6 +45,7 @@ mod effects;
 mod files;
 mod find;
 mod format;
+mod lsp;
 mod main_menu;
 mod mouse;
 mod msg;
@@ -195,6 +198,8 @@ pub struct App {
     pub run_panel: crate::run::panel::RunPanel,
     /// The Terminal window and its shell.
     pub terminal: crate::terminal::panel::TerminalPanel,
+    /// Language servers and the documents open on them.
+    pub(crate) lsp: lsp::LspService,
     started: Instant,
 }
 
@@ -265,6 +270,7 @@ impl App {
             run: Default::default(),
             run_panel: Default::default(),
             terminal: crate::terminal::panel::TerminalPanel::new(config.terminal.scrollback),
+            lsp: Default::default(),
             started: Instant::now(),
             config,
             paths,
@@ -340,11 +346,16 @@ impl App {
         self.git_panel.branch_label()
     }
 
+    /// The busy spinner's current frame.
+    pub fn spinner(&self) -> &'static str {
+        const FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+        FRAMES[(self.started.elapsed().as_millis() / 100) as usize % FRAMES.len()]
+    }
+
     /// Spinner frame and label of the oldest running git operation.
     pub fn busy_label(&self) -> Option<String> {
-        const FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
         let (_, label) = self.git.busy.first()?;
-        let frame = FRAMES[(self.started.elapsed().as_millis() / 100) as usize % FRAMES.len()];
+        let frame = self.spinner();
         let more = if self.git.busy.len() > 1 { format!(" (+{})", self.git.busy.len() - 1) } else { String::new() };
         Some(format!("{frame} {label}{more}"))
     }
@@ -386,6 +397,7 @@ impl App {
             if self.should_quit {
                 break;
             }
+            self.lsp_sync();
             if self.needs_clear {
                 term.clear()?;
                 self.needs_clear = false;
@@ -400,6 +412,7 @@ impl App {
         self.format.abort_all();
         self.run.kill();
         self.terminal.reset();
+        self.lsp.shutdown_all().await;
         Ok(())
     }
 
@@ -417,8 +430,8 @@ impl App {
         if self.editor.update_gutters() {
             self.dirty_frame = true;
         }
-        // The spinner and elapsed time of a running task.
-        if self.git.is_busy() || (self.run.running() && self.layout.is_visible(ToolWindowId::Run)) {
+        // The spinners and the elapsed time of a running task.
+        if self.git.is_busy() || self.lsp.busy() || (self.run.running() && self.layout.is_visible(ToolWindowId::Run)) {
             self.dirty_frame = true;
         }
         if self.editor.autosave_due(Instant::now()) {
@@ -685,6 +698,11 @@ impl App {
                 return;
             }
             Action::Run(a) => self.run_panel.handle_action(a, &mut cx),
+            Action::Lsp(crate::actions::LspAction::Restart) => {
+                drop(cx);
+                self.lsp_restart();
+                return;
+            }
             Action::Palette(_) => false,
         };
         let effects = cx.effects;
@@ -902,7 +920,11 @@ pub(crate) mod tests {
         let root = std::fs::canonicalize(&root).unwrap();
         let paths = Paths { config_dir: dir.join("config"), state_dir: dir.join("state"), cache_dir: dir.join("cache") };
         let open = open(&root);
-        let mut app = App::new(root.clone(), Config::default(), paths, open);
+        // No language servers unless a test installs fakes
+        // (`lsp::tests::with_fake_servers`).
+        let mut config = Config::default();
+        config.lsp.enabled = false;
+        let mut app = App::new(root.clone(), config, paths, open);
         // Never the user's clipboard tools.
         app.clipboard.tools = Some(crate::util::clipboard::Tools { paste: crate::util::clipboard::Paste::Disabled, copy: None });
         (app, dir)

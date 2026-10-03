@@ -1,5 +1,6 @@
 //! Bottom status bar: project name, branch, notifications, cursor position,
-//! line ending, encoding, indent and language of the active buffer.
+//! line ending, encoding, indent and language of the active buffer, and its
+//! language server.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -66,6 +67,16 @@ pub fn render(app: &mut App, frame: &mut Frame, area: Rect) {
     }
     if let Some(lang) = app.editor.status_language() {
         right_parts.push((lang, base, Some(StatusHit::Language), 3));
+    }
+    if let Some(lsp) = app.lsp_status() {
+        use crate::app::LspStatus;
+        let part = match lsp {
+            LspStatus::Idle(s) => (s, base),
+            LspStatus::Busy(s) => (format!("{} {s}", app.spinner()), theme.status_accent.bg(theme.status_bg)),
+            LspStatus::Down(s) => (s, theme.dim.bg(theme.status_bg)),
+        };
+        // Progress messages can be long ("Indexing 120/800 (some_crate)").
+        right_parts.push((crate::util::text::fit(&part.0, 40), part.1, None, 4));
     }
     if app.dispatcher.modal {
         right_parts.push((app.mode.label().to_string(), theme.status_accent.bg(theme.status_bg), None, 1));

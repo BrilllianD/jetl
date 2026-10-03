@@ -10,7 +10,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::widgets::Clear;
 use unicode_width::UnicodeWidthStr;
 
-use crate::actions::{Action, EditorAction, GitAction, TreeAction};
+use crate::actions::{Action, EditorAction, GitAction, LspAction, TreeAction};
 use crate::config::Icons;
 use crate::config::theme::Theme;
 use crate::event::Mouse;
@@ -153,16 +153,25 @@ pub const MAIN_MENU: &[(&str, char, &[Row])] = &[
     (
         "Help",
         'H',
-        &[Item("Find Action…", "palette.actions"), Item("Keymap Reference", "app.keymap_reference"), Sep, Item("About jetl", "app.about")],
+        &[
+            Item("Find Action…", "palette.actions"),
+            Item("Keymap Reference", "app.keymap_reference"),
+            Sep,
+            Item("Restart Language Servers", "lsp.restart"),
+            Sep,
+            Item("About jetl", "app.about"),
+        ],
     ),
 ];
 
 /// Whether a menu row needs an active editor tab: editor actions (but
-/// Back/Forward, which reopen closed files), file history and Select in
-/// Project. Such rows are disabled while no tab is open.
+/// Back/Forward, which reopen closed files), language server actions (but
+/// Restart), file history and Select in Project. Such rows are disabled
+/// while no tab is open.
 pub fn needs_buffer(action: &Action) -> bool {
     match action {
         Action::Editor(a) => !matches!(a, EditorAction::NavBack | EditorAction::NavForward),
+        Action::Lsp(a) => !matches!(a, LspAction::Restart),
         Action::Git(GitAction::FileHistory) | Action::Tree(TreeAction::SelectInProject) => true,
         _ => false,
     }

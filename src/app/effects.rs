@@ -29,6 +29,7 @@ impl App {
                     self.menu = Some(m);
                 }
                 Effect::FileSaved { path: p, quiet } => {
+                    self.lsp_saved(&p);
                     if !quiet {
                         self.notify(Level::Info, format!("Saved {}", p.file_name().map(|n| n.to_string_lossy()).unwrap_or_default()));
                     }
@@ -36,6 +37,7 @@ impl App {
                 }
                 Effect::Clipboard(text) => self.copy_to_clipboard(&text),
                 Effect::Format(req) => self.start_format(req),
+                Effect::Lsp(req) => self.lsp_request(req),
                 Effect::SwitchRoot(p) => self.switch_root(p),
                 Effect::RefreshTree => tree = true,
                 Effect::GitRefresh => (tree, status, lists) = (true, true, true),

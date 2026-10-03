@@ -16,6 +16,7 @@ pub enum Action {
     Structure(StructureAction),
     EventLog(EventLogAction),
     Run(RunAction),
+    Lsp(LspAction),
     Palette(PaletteAction),
     Mode(ModeAction),
 }
@@ -315,6 +316,12 @@ pub enum RunAction {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum LspAction {
+    /// Stop every language server; they start again for the open files.
+    Restart,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum PaletteAction {
     Up,
     Down,
@@ -601,6 +608,8 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "run.next_problem" => "Run: next problem (opens it)", Run(RunAction::NextProblem);
         "run.prev_problem" => "Run: previous problem (opens it)", Run(RunAction::PrevProblem);
 
+        "lsp.restart" => "Restart language servers", Lsp(LspAction::Restart);
+
         "palette.up" => "Palette: up", Palette(PaletteAction::Up);
         "palette.down" => "Palette: down", Palette(PaletteAction::Down);
         "palette.page_up" => "Palette: page up", Palette(PaletteAction::PageUp);
@@ -640,6 +649,7 @@ impl Action {
             Action::Structure(_) => &["structure", "global"],
             Action::EventLog(_) => &["event_log", "global"],
             Action::Run(_) => &["run", "global"],
+            Action::Lsp(_) => &["editor", "global"],
             Action::Palette(_) => &["palette"],
             Action::Mode(_) => &["mode.normal", "mode.insert", "mode.visual"],
         }

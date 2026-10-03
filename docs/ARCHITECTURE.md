@@ -27,9 +27,11 @@ and backlog are in `docs/ROADMAP.md`; settings in `docs/CONFIG.md`; keys in
 | `app/run.rs` | Run tasks: `RunState` (the running job with its process group id, the last task, the picker's tasks), `run_task` (kills a running task first, spawns, starts `run::process::drive`), stop, rerun, `RunOutput`/`RunExited` checked against the generation and the run's seq, the task list loaded off the main thread for the picker. The job is killed on quit, on root switch and when `RunState` is dropped. |
 | `app/terminal.rs` | The Terminal window's shell: started by the first frame that shows the window (`render_terminal`, at that frame's size, in the root; `[terminal] shell`, else `$SHELL`, else `/bin/sh`), `terminal_key` (the `[terminal]` keymap table, Esc Esc at the shell prompt, everything else to the shell or a restart once it ended), paste, `TerminalOutput` checked against the generation and the shell's id. Quitting, a root switch and dropping the app kill the shell's session (`TerminalPanel::reset`); the next one starts lazily in the new root. |
 | `app/main_menu.rs` | The main menu bar (`app.main_menu`, F10): built from `ui::menu_bar::MAIN_MENU` with keymap shortcuts (`App::fill_shortcuts`, shared with context menus) and rows that need an active tab disabled when none is open; its keys and mouse; the chosen row runs through `App::perform`. |
+| `app/lsp.rs` | Language servers in the app: `LspService` (the current root's `Client`s by server name, a failed one kept so it is not restarted; commands that could not start, reported once and not retried until `lsp.restart`; the documents open on servers; work done progress), `App::lsp_sync` (run by the loop after each batch: starts the server of a buffer's language, `didOpen` once it runs, `didChange` with the buffer's recorded edits, `didClose` for closed buffers, close and reopen after a path or language change), `lsp_saved` (`didSave` after a sync), `lsp_msg` (generation and `ServerId` checked, then state changes, `window/showMessage` to notifications, `$/progress` for the status bar, server requests answered: `workspace/configuration` from `settings`, null for capability registration and progress creation, MethodNotFound otherwise), `lsp_status` (the status bar segment), restart, root switch. Tests install in-process servers with `tests::with_fake_servers`. |
 | `app/files.rs` | Tree file operations: `run_fs_op` off the main thread, `fs_op_done` (reload the tree, open, retarget or close tabs). |
 | `workspace.rs` | `Workspace` (root and generation), root switching (`App::switch_root`), sessions (JSON per root: tabs in order with their pins, tool window layout and sizes, Git tab, tree hidden/ignored toggles, expanded tree folders; a missing one arrives empty; fields added later are `#[serde(default)]`). `session_loaded` skips tabs already open, applies the layout (sizes clamped, toggles winning over `[files]` config), expands the saved folders on the main thread, then opens the command line file. |
 | `run/` | Run tasks. `mod.rs`: `RunTask` (`[[run.tasks]]`, `.jetl/run.toml`; a command is a `sh -c` string or a list of words) and the defaults detected from Cargo, npm, make and Go project files. `process.rs`: `spawn` (own session and process group, stdout and stderr on one pipe, stdin closed), `kill_group` (SIGKILL to the group), `drive` (a reader thread splits, cleans and matches lines; batches go out every 50 ms, then the exit). `matcher.rs`: problem matchers (rustc/cargo with the header's severity, tsc, pytest and tracebacks, generic `path:line:col`) turning lines into `RunLine`s with a severity and a link to an existing file. `panel.rs`: the Run tool window (status line, last 10 000 lines, follow unless scrolled up, links opened through `Effect::OpenFileAt`, next/previous problem). |
+| `lsp/` | Language server protocol. `mod.rs`: `LspMsg`, `PendingTag` (what a request was for, carried to its `Response`), `LspRequest` (`Effect::Lsp`), `[lsp]` config with the built-in servers. `transport.rs`: JSON-RPC framing (`Content-Length`) over any `AsyncRead`/`AsyncWrite`, `Incoming`/`Outgoing`, reader and writer tasks. `client.rs`: `spawn_process` (own session, stderr to the log), `Client` (state, `notify`, `request` with a tag, `respond`, `shutdown`: `shutdown` and `exit`, two seconds, then the process group is killed; dropping it kills the group) and the driver task that owns the connection (sends `initialize` and holds everything else until it is answered, keeps the pending requests and fails those older than `request_timeout_ms`, reports a failed start, a startup timeout or an exit). `pos.rs`: char index to UTF-16 `Position` and back, clamped. `sync.rs`: `DocEdit` (one recorded edit in LSP terms), `SyncCaps`, language ids, file URIs. `fake.rs` (tests): an in-process server over `tokio::io::duplex`. |
 | `terminal/` | The Terminal tool window (Alt+F12). `pty.rs`: `Session` (portable-pty; the shell leads its own session with the terminal as its controlling one; a reader thread fills an inbox and sends one `AppMsg::TerminalOutput` wake per batch the app has not drained yet, blocking at 1 MiB; a writer thread for input; a waiter thread reports the exit after the last output; `kill` SIGKILLs every process of the session, found through `/proc` on Linux, and runs on drop). `panel.rs`: `TerminalPanel` (the vt100 parser on the UI thread with 5000 lines of scrollback by default, answers to cursor position and device attribute queries, cell rendering with colors, attributes and wide characters, the real cursor while focused, resize to the text area every frame, wheel scrollback or arrow keys on the alternate screen, mouse reports when the program enabled them). `keys.rs`: xterm encoding of keys (application cursor mode), mouse (X10/normal/button/any motion, default, UTF-8 and SGR encodings) and paste (bracketed when enabled). |
 | `recent_projects.rs` | `state/recent_projects.json`: roots with their last open time, newest first, deduplicated, at most 30. Recorded off the main thread at startup and on every root switch (`App::load_recent_projects`); a missing or corrupt file reads as empty; roots that are no longer directories are not listed. |
 | `worktree/` | `git worktree` parsing and paths (`mod.rs`), the Worktrees tool window (`panel.rs`), the create/remove dialog flow (`flow.rs`, `impl App`). |
@@ -38,7 +40,7 @@ and backlog are in `docs/ROADMAP.md`; settings in `docs/CONFIG.md`; keys in
 | `config/` | `Config` and `Paths` (`mod.rs`), key parsing and tables (`keymap.rs`, defaults in `assets/keymap.default.toml`), `Theme` (`theme.rs`). |
 | `event.rs` | `AppMsg` (background to app), `Effect` (panel to app), `Mouse`, `Level`. |
 | `editor/mod.rs` | `Editor`: tabs with MRU, open/close, actions, mouse, rendering of tabs and text. Pinned tabs (`Buffer::pinned`) are always the first ones; moves (Alt+Shift+Left/Right, a drag in the tab bar: `Drag::Tab`, `Editor::drag_tab`) stay within the pinned or the unpinned group. Close others and close all but pinned skip pinned tabs; close all closes them too. `enforce_tab_limit` (`editor.max_tabs`, run by the app after a file opens and after a session restore) closes the least recently used clean, unpinned, inactive tabs. Right-click on a tab opens its context menu. |
-| `editor/buffer.rs` | `Buffer`: rope, selection, undo, file metadata (path, line ending, mtime, dirty state). |
+| `editor/buffer.rs` | `Buffer`: rope, selection, undo, file metadata (path, line ending, mtime, dirty state). While open on a language server (`lsp_tracked`) every change records a `DocEdit` in `lsp_pending` before the rope changes (at most 512; past that, or for an edit inside a CRLF break, `lsp_full_resync` sends the whole text). |
 | `editor/{find,io}.rs` | Find/replace bar (keys, stepping, rendering); saving and autosave. |
 | `editor/format.rs` | `[format]` formatters: `FormatRequest` (the buffer snapshot: text, version, undo state), `format_done` (apply if the version is unchanged, warn on failure, then write for a save), and `Buffer::apply_formatted`: an imara-diff line diff turned into one transaction of the changed hunks, the selection mapped by the code before it, the view kept on its lines. |
 | `editor/view.rs` | `layout_line`: the grapheme walk shared by rendering, `visual_col` and `col_to_char`. |
@@ -87,7 +89,8 @@ redraws when `dirty_frame` is set:
    (`FsOpDone`), symbol index batches, the recent projects list, clipboard
    reads (`Paste`), formatter results (`Formatted`), Run task output and
    exits and the task picker's list, the Terminal shell's output wakes,
-   `AppMsg::Git(GitMsg)`, and the filesystem watcher
+   language server events (`AppMsg::Lsp`), `AppMsg::Git(GitMsg)`, and the
+   filesystem watcher
    (`FsChanged`: refresh the tree if a listed directory changed, refresh git
    status, reload clean tabs in place, ask once about tabs with unsaved
    edits). Without a watcher (off, or it failed to start), focus gain
@@ -97,6 +100,10 @@ redraws when `dirty_frame` is set:
    the busy spinner, the Run window's spinner and elapsed time while a task
    runs, idle autosave, and the terminal's held-back Esc once no second one
    followed.
+
+After the bus is drained (and unless quitting) the loop calls
+`App::lsp_sync`, so the edits of one batch of input reach the language
+server as one `didChange` per buffer.
 
 Panels never reach into the app. They get a `Ctx` (built by `ctx!(self)`
 from disjoint fields so the panel can be borrowed mutably at the same time)
@@ -135,7 +142,8 @@ Two tags:
   it: `FileLoaded`, `SessionLoaded`, `FileIndex`, `TreeLoaded`,
   `Worktrees`, `Find`, `ReplaceDone`, `FsChanged`, `WatcherStarted`,
   `DiskText`, `FsOpDone`, `Symbols`, `Paste`, `Formatted`, `RunOutput`,
-  `RunExited`, `RunTasks`, `TerminalOutput`, every `GitMsg`. `GitService`
+  `RunExited`, `RunTasks`, `TerminalOutput`, every `LspMsg`, every
+  `GitMsg`. `GitService`
   keeps a copy, set by `set_root(root, generation)`, to tag its own
   results. A result whose generation differs from `workspace.generation` is
   dropped.
@@ -158,7 +166,10 @@ Two tags:
   `RunTasks` (the newest load), `TerminalOutput` (only the running shell's
   id, `TerminalPanel::seq`; the wake carries no bytes, it tells the app to
   drain the shell's inbox, so there is at most one per shell on the bus and
-  a burst of output is parsed and drawn once). A result is applied when its seq is not
+  a burst of output is parsed and drawn once), `LspMsg` (the `ServerId`
+  of the current client for that server name: a restarted or stopped
+  server's late messages are dropped; requests carry a `PendingTag` with
+  the buffer, its version and a seq to check the answer against). A result is applied when its seq is not
   older than the last applied one. Results keyed by what they describe
   need no seq: diffs by `DiffKey` (each diff pane ignores keys it does not
   show), commit details by sha (the Log or Stash tab, whichever has it
@@ -211,12 +222,13 @@ its busy id before the generation check, so the spinner never sticks.
   tab, quitting, switching roots, the overwrite answer, autosave) call
   `Editor::save`/`save_all`, which never format.
 - Child processes that can outlive a request (formatters, Run tasks, the
-  Terminal shell) start in their own session, so they never read from or
+  Terminal shell, language servers) start in their own session, so they never read from or
   draw over jetl's terminal, and are killed with what they started (the
   process group; for the shell, every process of its session): on quit,
   on a root switch and when their owner is dropped; a formatter also on
   its timeout or a newer request for the same buffer, a Run task when
-  another one starts. Clipboard tools are killed after 1 s. Their
+  another one starts. Language servers are asked to shut down first (two
+  seconds on quit, in the background on a root switch or restart). Clipboard tools are killed after 1 s. Their
   results follow the stale-result rules above.
 - Lists keep their wheel scroll: `ListState::set_viewport` and `fit` bound
   the offset without pulling the view back to the selection.
@@ -248,6 +260,14 @@ never a tab index), open it with `Effect::Dialog(Dialog::confirm|input|choice
 from `App::open_palette` (cached data first, then a refresh whose result
 calls a `set_*` on the open palette), and add an `Accept` variant handled in
 `App::finish_palette`.
+
+**A language server feature.** Advertise it in
+`lsp::client::client_capabilities`, add a `PendingTag` variant carrying what
+the answer must still match (buffer id, `Buffer::version`, a seq), send with
+`Client::request` once the client is `Running`, and handle the tag in
+`App::lsp_msg`: deserialize the `Value` there, drop it when the buffer
+version or seq moved on, convert positions with `lsp::pos`. Test against
+`lsp::fake` through `app::lsp::tests::with_fake_servers`.
 
 **New background work.** See the stale-results rules above: tag, send an
 `AppMsg`, check the tag in `handle_msg`.
