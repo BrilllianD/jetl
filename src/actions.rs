@@ -29,6 +29,8 @@ pub enum AppAction {
     HideFocusedToolWindow,
     /// Move the focused tool window's free edge (Ctrl+Shift+arrows).
     ResizeToolWindow(Dir),
+    /// Show only the editor text; again to put the layout back.
+    ToggleZen,
     Escape,
     OpenPalette(PaletteKind),
     DebugPanic,
@@ -331,6 +333,7 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "tool_window.stretch_right" => "Stretch tool window to the right", App(AppAction::ResizeToolWindow(Dir::Right));
         "tool_window.stretch_up" => "Stretch tool window up", App(AppAction::ResizeToolWindow(Dir::Up));
         "tool_window.stretch_down" => "Stretch tool window down", App(AppAction::ResizeToolWindow(Dir::Down));
+        "app.zen" => "Toggle Zen mode (editor text only)", App(AppAction::ToggleZen);
         "palette.files" => "Go to file", App(AppAction::OpenPalette(PaletteKind::Files));
         "palette.actions" => "Find action", App(AppAction::OpenPalette(PaletteKind::Actions));
         "palette.search_everywhere" => "Search everywhere", App(AppAction::OpenPalette(PaletteKind::Everywhere));

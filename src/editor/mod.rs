@@ -1090,7 +1090,7 @@ impl Editor {
         let screen = frame.buffer_mut();
         screen.set_style(area, theme.tab);
         self.tab_hits.clear();
-        if area.width == 0 || self.buffers.is_empty() {
+        if area.is_empty() || self.buffers.is_empty() {
             return;
         }
         // Keep the active tab visible by advancing the scroll offset.

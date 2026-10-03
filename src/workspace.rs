@@ -219,10 +219,12 @@ impl App {
         }
         let recent = self.editor.recent_paths().iter().filter_map(|p| files.iter().position(|f| &f.path == p)).collect();
         let (show_hidden, show_ignored) = self.project.visibility();
+        // Zen mode is not saved: the windows it hides are.
+        let (left, bottom) = self.layout.saved_windows();
         let layout = Some(SessionLayout {
-            left: self.layout.left,
+            left,
             left_w: self.layout.left_w,
-            bottom: self.layout.bottom,
+            bottom,
             bottom_h: self.layout.bottom_h,
             git_tab: self.git_panel.tab,
             show_hidden,

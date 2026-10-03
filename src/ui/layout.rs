@@ -1,6 +1,7 @@
 //! Fixed JetBrains-style layout: tool strip on the left, optional left tool
 //! window, editor (tabs + text) in the centre, optional bottom tool window
-//! spanning the full width, status bar at the bottom.
+//! spanning the full width, status bar at the bottom. Zen mode drops all
+//! of it but the editor text.
 
 use ratatui::layout::Rect;
 
@@ -43,6 +44,15 @@ pub enum Hit {
     None,
 }
 
+/// What zen mode hid, put back when it ends. Sizes need no copy: nothing
+/// changes them while no tool window is shown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ZenSaved {
+    pub left: Option<ToolWindowId>,
+    pub bottom: Option<ToolWindowId>,
+    pub focus: PanelId,
+}
+
 #[derive(Debug, Clone)]
 pub struct LayoutState {
     pub left: Option<ToolWindowId>,
@@ -52,18 +62,31 @@ pub struct LayoutState {
     pub rects: Rects,
     /// Clickable areas of the tool strip, filled by the strip renderer.
     pub strip_hits: Vec<(ToolWindowId, Rect)>,
+    /// Set while in zen mode: the editor text fills the screen.
+    pub zen: Option<ZenSaved>,
 }
 
 impl LayoutState {
     pub fn new(left_w: u16, bottom_h: u16) -> Self {
-        Self { left: Some(ToolWindowId::Project), left_w, bottom: None, bottom_h, rects: Rects::default(), strip_hits: Vec::new() }
+        Self {
+            left: Some(ToolWindowId::Project),
+            left_w,
+            bottom: None,
+            bottom_h,
+            rects: Rects::default(),
+            strip_hits: Vec::new(),
+            zen: None,
+        }
     }
 
     pub fn is_visible(&self, tw: ToolWindowId) -> bool {
         self.left == Some(tw) || self.bottom == Some(tw)
     }
 
+    /// Showing a tool window ends zen mode first, so the window comes back
+    /// with the rest of the pre-zen layout.
     pub fn show(&mut self, tw: ToolWindowId) {
+        self.leave_zen();
         match tw.side() {
             Side::Left => self.left = Some(tw),
             Side::Bottom => self.bottom = Some(tw),
@@ -80,9 +103,14 @@ impl LayoutState {
 
     /// Apply saved tool windows and sizes (session restore). A window saved
     /// on the wrong side is dropped and sizes are clamped to sane bounds.
+    /// In zen mode the windows become the ones zen puts back.
     pub fn restore(&mut self, left: Option<ToolWindowId>, left_w: u16, bottom: Option<ToolWindowId>, bottom_h: u16) {
-        self.left = left.filter(|tw| tw.side() == Side::Left);
-        self.bottom = bottom.filter(|tw| tw.side() == Side::Bottom);
+        let left = left.filter(|tw| tw.side() == Side::Left);
+        let bottom = bottom.filter(|tw| tw.side() == Side::Bottom);
+        match &mut self.zen {
+            Some(z) => (z.left, z.bottom) = (left, bottom),
+            None => (self.left, self.bottom) = (left, bottom),
+        }
         self.left_w = left_w.clamp(MIN_LEFT_W, MAX_RESTORED);
         self.bottom_h = bottom_h.clamp(MIN_BOTTOM_H, MAX_RESTORED);
     }
@@ -92,8 +120,42 @@ impl LayoutState {
         self.bottom = None;
     }
 
+    /// Hide everything but the editor text, remembering the tool windows
+    /// and `focus` for [`LayoutState::leave_zen`].
+    pub fn enter_zen(&mut self, focus: PanelId) {
+        if self.zen.is_none() {
+            self.zen = Some(ZenSaved { left: self.left, bottom: self.bottom, focus });
+            self.hide_all();
+        }
+    }
+
+    /// Put the pre-zen tool windows back; returns the focus to restore, or
+    /// `None` when not in zen mode.
+    pub fn leave_zen(&mut self) -> Option<PanelId> {
+        let z = self.zen.take()?;
+        (self.left, self.bottom) = (z.left, z.bottom);
+        Some(z.focus)
+    }
+
+    /// The tool windows a session saves: the pre-zen ones while in zen mode,
+    /// which is not saved itself.
+    pub fn saved_windows(&self) -> (Option<ToolWindowId>, Option<ToolWindowId>) {
+        match self.zen {
+            Some(z) => (z.left, z.bottom),
+            None => (self.left, self.bottom),
+        }
+    }
+
     pub fn compute(&mut self, area: Rect) {
         let mut r = Rects { area, ..Default::default() };
+        if self.zen.is_some() {
+            // No strip, tabs, status bar or splitters: every other rect stays
+            // empty, so hit testing finds only the editor.
+            r.tabs = Rect::new(area.x, area.y, area.width, 0);
+            r.editor = area;
+            self.rects = r;
+            return;
+        }
         if area.height < 2 || area.width < STRIP_W + 2 {
             self.rects = r;
             return;
@@ -244,6 +306,31 @@ mod tests {
         l.compute(Rect::new(0, 0, 100, 30));
         assert!(l.rects.editor.width >= MIN_CENTER_W, "left window cannot squeeze the editor away");
         assert!(l.rects.editor.height + l.rects.tabs.height >= MIN_CENTER_H);
+    }
+
+    #[test]
+    fn zen_fills_the_screen_and_puts_the_layout_back() {
+        let mut l = LayoutState::new(30, 10);
+        l.show(ToolWindowId::Git);
+        l.enter_zen(PanelId::Git);
+        l.compute(Rect::new(0, 0, 100, 30));
+        let r = l.rects.clone();
+        assert_eq!(r.editor, Rect::new(0, 0, 100, 30));
+        assert!(r.strip.is_empty() && r.status.is_empty() && r.tabs.is_empty() && r.splitters.is_empty());
+        assert_eq!(l.hit_test(0, 0), Hit::Panel(PanelId::Editor, r.editor));
+        assert_eq!(l.hit_test(99, 29), Hit::Panel(PanelId::Editor, r.editor));
+        assert_eq!(l.saved_windows(), (Some(ToolWindowId::Project), Some(ToolWindowId::Git)));
+        // A restored session while in zen replaces what zen puts back.
+        l.restore(None, 40, Some(ToolWindowId::Find), 8);
+        assert_eq!((l.left, l.bottom), (None, None));
+        assert_eq!(l.leave_zen(), Some(PanelId::Git));
+        assert_eq!((l.left, l.bottom, l.left_w, l.bottom_h), (None, Some(ToolWindowId::Find), 40, 8));
+        assert_eq!(l.leave_zen(), None);
+        // Showing a window ends zen with the rest of the layout.
+        l.enter_zen(PanelId::Editor);
+        l.show(ToolWindowId::Project);
+        assert!(l.zen.is_none());
+        assert_eq!((l.left, l.bottom), (Some(ToolWindowId::Project), Some(ToolWindowId::Find)));
     }
 
     #[test]

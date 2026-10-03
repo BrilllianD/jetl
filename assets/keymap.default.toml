@@ -51,6 +51,9 @@
 "ctrl-shift-right" = "tool_window.stretch_right"
 "ctrl-shift-up" = "tool_window.stretch_up"
 "ctrl-shift-down" = "tool_window.stretch_down"
+# JetBrains has no default key for Zen mode; Alt+Shift+Z works in legacy
+# terminals too.
+"alt-shift-z" = "app.zen"
 "ctrl-`" = "git.branches_popup"
 # Legacy terminals send Ctrl+` as NUL, which crossterm reports as Ctrl+Space.
 "ctrl-space" = "git.branches_popup"

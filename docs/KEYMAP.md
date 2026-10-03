@@ -28,6 +28,7 @@ Override any of them in `~/.config/jetl/keymap.toml` (see [CONFIG.md](CONFIG.md)
 | `Ctrl+Shift+Right` | `tool_window.stretch_right` | Stretch tool window to the right |
 | `Ctrl+Shift+Up` | `tool_window.stretch_up` | Stretch tool window up |
 | `Ctrl+Shift+Down` | `tool_window.stretch_down` | Stretch tool window down |
+| `Alt+Shift+Z` | `app.zen` | Toggle Zen mode (editor text only) |
 | `Ctrl+N` | `palette.files` | Go to file |
 | `Ctrl+Shift+N` * | `palette.files` | Go to file |
 | `Ctrl+Shift+A` * | `palette.actions` | Find action |

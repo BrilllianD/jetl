@@ -632,6 +632,7 @@ impl App {
                 self.focus.set(p);
             }
             AppAction::ToggleToolWindow(tw) => self.toggle_tool_window(tw),
+            AppAction::HideAllToolWindows if self.layout.zen.is_some() => self.toggle_zen(),
             AppAction::HideAllToolWindows => {
                 if self.layout.left.is_none() && self.layout.bottom.is_none() {
                     self.layout.show(ToolWindowId::Project);
@@ -647,6 +648,7 @@ impl App {
                 }
             }
             AppAction::ResizeToolWindow(dir) => self.resize_tool_window(dir),
+            AppAction::ToggleZen => self.toggle_zen(),
             AppAction::Escape => self.focus.set(PanelId::Editor),
             AppAction::OpenPalette(kind) => self.open_palette(kind),
             AppAction::DebugPanic => {
@@ -669,6 +671,21 @@ impl App {
             self.focus.set(panel);
         } else {
             self.layout.hide(tw);
+            self.focus.set(PanelId::Editor);
+        }
+    }
+
+    /// Zen mode: hide the tool windows, tabs, strip and status bar, and focus
+    /// the editor; leaving puts back the windows and the focus. Opening a
+    /// tool window meanwhile also leaves (`LayoutState::show`), and the
+    /// caller then focuses that window.
+    fn toggle_zen(&mut self) {
+        if let Some(focus) = self.layout.leave_zen() {
+            // A session restored meanwhile may have dropped the window.
+            let shown = focus.tool_window().is_none_or(|tw| self.layout.is_visible(tw));
+            self.focus.set(if shown { focus } else { PanelId::Editor });
+        } else {
+            self.layout.enter_zen(self.focus.current);
             self.focus.set(PanelId::Editor);
         }
     }
@@ -1583,6 +1600,61 @@ pub(crate) mod tests {
             app.handle_key(key(code));
         }
         assert_eq!((app.layout.left_w, app.layout.bottom_h), (w, h));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn zen_mode_shows_only_text_and_puts_the_layout_back() {
+        use crossterm::event::{KeyModifiers, MouseEvent, MouseEventKind};
+        let (mut app, dir) = test_app("zen");
+        let zen = || KeyEvent::new(KeyCode::Char('Z'), KeyModifiers::ALT | KeyModifiers::SHIFT);
+        let path = app.workspace.root.join("a.txt");
+        app.editor.open_text(path, "alpha\nbeta gamma\n", false, &app.theme);
+        app.toggle_tool_window(ToolWindowId::Git);
+        app.layout.left_w = 33;
+        let before = (app.layout.left, app.layout.left_w, app.layout.bottom, app.layout.bottom_h);
+        assert_eq!((before.0, before.2), (Some(ToolWindowId::Project), Some(ToolWindowId::Git)));
+        assert!(app.focus.is(PanelId::Git));
+
+        app.handle_key(zen());
+        assert!(app.layout.zen.is_some() && app.focus.is(PanelId::Editor));
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+        let frame = term.draw(|f| crate::ui::render(&mut app, f)).unwrap();
+        let rows: Vec<String> = (0..30u16).map(|y| (0..100u16).map(|x| frame.buffer[(x, y)].symbol()).collect::<String>()).collect();
+        assert!(rows[0].contains("alpha") && rows[1].contains("beta gamma"), "text starts on the top row: {rows:#?}");
+        let name = app.workspace.name();
+        assert!(!rows.iter().any(|r| r.contains("a.txt") || r.contains(&name)), "no tabs or status bar: {rows:#?}");
+        assert!(app.layout.strip_hits.is_empty() && app.status_hits.is_empty());
+        assert_eq!(app.layout.rects.editor, Rect::new(0, 0, 100, 30));
+        // A click lands on the character drawn under it.
+        let x = rows[1].find("gamma").unwrap() as u16;
+        let click = |kind| MouseEvent { kind, column: x, row: 1, modifiers: KeyModifiers::NONE };
+        app.handle_mouse(click(MouseEventKind::Down(MouseButton::Left)));
+        app.handle_mouse(click(MouseEventKind::Up(MouseButton::Left)));
+        assert_eq!(app.editor.buffers[0].cursor_line_col(), (1, 5));
+
+        // The session keeps the pre-zen layout.
+        let saved = app.session().layout.unwrap();
+        assert_eq!((saved.left, saved.left_w, saved.bottom, saved.bottom_h), before);
+
+        // Toggling back restores the windows, sizes and focus.
+        app.handle_key(zen());
+        assert!(app.layout.zen.is_none());
+        assert_eq!((app.layout.left, app.layout.left_w, app.layout.bottom, app.layout.bottom_h), before);
+        assert!(app.focus.is(PanelId::Git));
+
+        // A tool window key leaves zen with the rest of the layout and
+        // focuses that window.
+        app.handle_key(zen());
+        app.handle_key(KeyEvent::new(KeyCode::Char('7'), KeyModifiers::ALT));
+        assert!(app.layout.zen.is_none());
+        assert_eq!((app.layout.left, app.layout.bottom), (Some(ToolWindowId::Structure), Some(ToolWindowId::Git)));
+        assert!(app.focus.is(PanelId::Structure));
+        // So does hide all, which puts everything back.
+        app.handle_key(zen());
+        app.perform(Action::App(AppAction::HideAllToolWindows));
+        assert_eq!((app.layout.left, app.layout.bottom), (Some(ToolWindowId::Structure), Some(ToolWindowId::Git)));
+        assert!(app.focus.is(PanelId::Structure));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
