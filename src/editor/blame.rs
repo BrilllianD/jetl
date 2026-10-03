@@ -1,0 +1,118 @@
+//! The blame column: author and date of the commit that last touched each
+//! line, from `git blame` of the HEAD version. Lines are matched to HEAD
+//! through the same diff as the gutter marks, so edits move the column
+//! along with the text and edited lines show no commit.
+
+use crate::git::model::{Blame, BlameCommit};
+
+/// Width of the column, separator included.
+pub const WIDTH: u16 = 24;
+
+/// Blame shown for a buffer.
+#[derive(Debug, Default)]
+pub struct BlameState {
+    /// `None` until the blame arrives.
+    pub data: Option<Blame>,
+    /// Request that produced `data`; older requests are ignored.
+    pub seq: u64,
+    /// Buffer line -> HEAD line (`None`: changed since HEAD).
+    pub map: Vec<Option<u32>>,
+    /// Buffer version `map` was computed for.
+    pub map_version: u64,
+}
+
+impl BlameState {
+    pub fn new() -> Self {
+        Self { map_version: u64::MAX, ..Default::default() }
+    }
+
+    /// The commit of buffer line `line`, if it is unchanged since HEAD.
+    pub fn commit_at(&self, line: usize) -> Option<&BlameCommit> {
+        let data = self.data.as_ref()?;
+        // Before the map exists (no HEAD text yet) lines are taken as is.
+        let head = if self.map.is_empty() { Some(line as u32) } else { *self.map.get(line)? };
+        data.commits.get(*data.lines.get(head? as usize)? as usize)
+    }
+}
+
+/// Buffer line -> HEAD line for `text` against its HEAD version `base`.
+pub fn line_map(base: &str, text: &str) -> Vec<Option<u32>> {
+    let n = text.split_inclusive('\n').count() + 1;
+    let mut map = Vec::with_capacity(n);
+    let (mut old, mut new) = (0u32, 0usize);
+    for h in crate::git::diff::hunks(base, text) {
+        while new < h.after.start as usize {
+            map.push(Some(old));
+            old += 1;
+            new += 1;
+        }
+        map.extend(std::iter::repeat_n(None, h.after.len()));
+        new = h.after.end as usize;
+        old = h.before.end;
+    }
+    while new < n {
+        map.push(Some(old));
+        old += 1;
+        new += 1;
+    }
+    map
+}
+
+/// `author date` padded to the column width.
+pub fn label(c: &BlameCommit) -> String {
+    let w = WIDTH as usize - 1;
+    let date = date(c.time, c.offset_minutes);
+    let author_w = w - date.len() - 1;
+    let author: String = c.author.chars().take(author_w).collect();
+    let pad = author_w.saturating_sub(unicode_width::UnicodeWidthStr::width(author.as_str()));
+    format!("{author}{} {date}", " ".repeat(pad))
+}
+
+/// `YYYY-MM-DD` of a git time in its own time zone.
+pub fn date(secs: i64, offset_minutes: i32) -> String {
+    let days = (secs + i64::from(offset_minutes) * 60).div_euclid(86_400);
+    // Civil from days (Howard Hinnant's algorithm).
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!("{year:04}-{month:02}-{day:02}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn edits_shift_lines_and_changed_lines_have_no_commit() {
+        let base = "a\nb\nc\nd\n";
+        // A line inserted at the top, "c" changed.
+        let map = line_map(base, "new\na\nb\nC\nd\n");
+        assert_eq!(&map[..5], &[None, Some(0), Some(1), None, Some(3)]);
+        assert_eq!(line_map(base, base)[..4], [Some(0), Some(1), Some(2), Some(3)]);
+        let blame =
+            Blame { commits: vec![BlameCommit { sha: "s".into(), author: "Ann".into(), time: 0, offset_minutes: 0 }], lines: vec![0; 4] };
+        let state = BlameState { data: Some(blame), map, ..BlameState::new() };
+        assert!(state.commit_at(0).is_none());
+        assert_eq!(state.commit_at(1).map(|c| c.author.as_str()), Some("Ann"));
+        assert!(state.commit_at(3).is_none());
+    }
+
+    #[test]
+    fn dates_and_labels() {
+        assert_eq!(date(0, 0), "1970-01-01");
+        assert_eq!(date(1_700_000_000, 0), "2023-11-14");
+        // 23:30 UTC on Nov 14 is already Nov 15 at +01:00.
+        assert_eq!(date(1_700_004_600, 60), "2023-11-15");
+        assert_eq!(date(951_782_400, 0), "2000-02-29");
+        let c = BlameCommit { sha: "s".into(), author: "Alexander Somebody".into(), time: 0, offset_minutes: 0 };
+        let l = label(&c);
+        assert_eq!(l, "Alexander So 1970-01-01");
+        assert_eq!(l.chars().count(), WIDTH as usize - 1);
+    }
+}

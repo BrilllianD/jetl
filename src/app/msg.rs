@@ -86,6 +86,9 @@ impl App {
                     for p in self.editor.open_paths() {
                         self.git.load_blob(p, BlobWhich::Head);
                     }
+                    for p in self.editor.blame_paths() {
+                        self.git.load_blame(p);
+                    }
                 }
             }
             GitMsg::Blob { seq, path, which: BlobWhich::Head, text, .. } => {
@@ -117,9 +120,9 @@ impl App {
                     Err(_) => {}
                 }
             }
-            GitMsg::Log { skip, result, .. } => {
+            GitMsg::Log { skip, filter, result, .. } => {
                 let mut cx = ctx!(self);
-                self.git_panel.set_log(skip, result, &mut cx);
+                self.git_panel.set_log(skip, &filter, result, &mut cx);
                 let fx = cx.effects;
                 self.apply_effects(fx);
             }
@@ -131,6 +134,12 @@ impl App {
                 }
             }
             GitMsg::CommitMessages { messages, .. } => self.git_panel.set_history(messages),
+            GitMsg::Blame { seq, path, result, .. } => {
+                if let Some(e) = self.editor.set_blame(&path, seq, result) {
+                    self.notify(Level::Warn, e);
+                }
+                self.editor.update_gutters();
+            }
             GitMsg::Stashes { result, .. } => {
                 let mut cx = ctx!(self);
                 self.git_panel.set_stashes(result, &mut cx);

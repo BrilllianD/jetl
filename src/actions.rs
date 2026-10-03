@@ -122,6 +122,8 @@ pub enum EditorAction {
     RevertChange,
     NextChange,
     PrevChange,
+    /// Show or hide the git blame column.
+    ToggleBlame,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -376,6 +378,7 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "editor.revert_change" => "Revert the change at the caret to HEAD", Editor(E::RevertChange);
         "editor.next_change" => "Go to the next change", Editor(E::NextChange);
         "editor.prev_change" => "Go to the previous change", Editor(E::PrevChange);
+        "editor.toggle_blame" => "Annotate with git blame (show or hide)", Editor(E::ToggleBlame);
 
         "tree.up" => "Tree: up", Tree(TreeAction::Up);
         "tree.down" => "Tree: down", Tree(TreeAction::Down);

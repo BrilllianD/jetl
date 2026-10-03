@@ -108,9 +108,12 @@ pub fn col_to_char(rope: &Rope, line: usize, target: usize, tab_width: usize) ->
     result
 }
 
-pub fn gutter_width(rope: &Rope) -> u16 {
-    let digits = rope.len_lines().max(1).to_string().len().max(3) as u16;
-    digits + 3 // space, diff mark, space
+/// Line numbers plus space, diff mark, space; and the blame column first
+/// when shown.
+pub fn gutter_width(buf: &Buffer) -> u16 {
+    let digits = buf.rope.len_lines().max(1).to_string().len().max(3) as u16;
+    let blame = if buf.blame.is_some() { super::blame::WIDTH } else { 0 };
+    blame + digits + 3
 }
 
 pub struct RenderOut {
@@ -130,7 +133,8 @@ pub struct RenderOpts<'a> {
 
 /// Scroll so that the caret is visible, then render.
 pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts) -> RenderOut {
-    let gutter_w = gutter_width(&buf.rope);
+    let gutter_w = gutter_width(buf);
+    let blame_w = if buf.blame.is_some() { super::blame::WIDTH } else { 0 };
     let text_area = Rect::new(area.x + gutter_w, area.y, area.width.saturating_sub(gutter_w), area.height);
     if text_area.width == 0 || area.height == 0 {
         return RenderOut { cursor: None, text_area };
@@ -157,7 +161,8 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
         }
         None => Vec::new(),
     };
-    let digits = (gutter_w - 3) as usize;
+    let digits = (gutter_w - 3 - blame_w) as usize;
+    let gx = area.x + blame_w;
     let mut cursor = None;
 
     for row in 0..area.height {
@@ -169,14 +174,24 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
         let is_cur = line == cur_line;
         // Gutter: line number and diff mark.
         let num_style = if is_cur { theme.line_number_current } else { theme.line_number };
+        if let Some(b) = &buf.blame {
+            let label = match b.commit_at(line) {
+                Some(c) => Some(super::blame::label(c)),
+                None if b.data.is_none() && row == 0 => Some("blame…".to_string()),
+                None => None,
+            };
+            if let Some(label) = label {
+                screen.set_stringn(area.x, y, label, blame_w as usize - 1, theme.dim);
+            }
+        }
         let num = format!("{:>width$}", line + 1, width = digits);
-        screen.set_stringn(area.x, y, &num, digits, num_style);
+        screen.set_stringn(gx, y, &num, digits, num_style);
         if buf.bookmarks.contains(&line) {
-            screen.set_string(area.x + digits as u16, y, "◆", theme.bookmark);
+            screen.set_string(gx + digits as u16, y, "◆", theme.bookmark);
         }
         if let Some(mark) = super::gutter::mark_at(&buf.gutter, line) {
             let (glyph, color) = mark.glyph(theme);
-            screen.set_string(area.x + digits as u16 + 1, y, glyph, Style::default().fg(color));
+            screen.set_string(gx + digits as u16 + 1, y, glyph, Style::default().fg(color));
         }
         if is_cur && o.focused {
             screen.set_style(Rect::new(text_area.x, y, text_area.width, 1), Style::default().bg(theme.current_line_bg));

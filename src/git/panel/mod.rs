@@ -22,7 +22,7 @@ use unicode_width::UnicodeWidthStr;
 
 use super::GitRequest;
 use super::diff::DiffDoc;
-use super::model::{BranchInfo, CommitDetails, DiffKey, LogRow, Section, StashEntry, StatusSnapshot};
+use super::model::{BranchInfo, CommitDetails, DiffKey, LogFilter, LogRow, Section, StashEntry, StatusSnapshot};
 use crate::actions::GitAction;
 use crate::app::Ctx;
 use crate::config::theme::Theme;
@@ -84,6 +84,7 @@ enum Btn {
     StashDrop,
     DiffLayout,
     DiffCollapse,
+    LogClearFilter,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -122,7 +123,9 @@ pub struct GitPanel {
     log: Vec<LogRow>,
     log_list: ListState,
     log_loaded: bool,
-    log_loading: bool,
+    /// The filter of the log request in flight.
+    log_loading: Option<LogFilter>,
+    log_filter: LogFilter,
     log_end: bool,
     log_page: usize,
     details: Option<CommitDetails>,
@@ -179,7 +182,8 @@ impl GitPanel {
             log: Vec::new(),
             log_list: ListState::default(),
             log_loaded: false,
-            log_loading: false,
+            log_loading: None,
+            log_filter: LogFilter::default(),
             log_end: false,
             log_page: 500,
             details: None,
@@ -556,6 +560,7 @@ impl GitPanel {
             Btn::StashApply => return self.stash_action(StashAction::Apply, cx),
             Btn::StashDrop => return self.stash_action(StashAction::Drop, cx),
             Btn::DiffLayout => return self.toggle_diff_layout(),
+            Btn::LogClearFilter => return self.set_log_filter(LogFilter::default(), cx),
             Btn::DiffCollapse => return self.toggle_diff_collapse(),
             Btn::Refresh => GitRequest::Refresh,
             Btn::Fetch => GitRequest::Fetch,

@@ -7,17 +7,21 @@ use ratatui::layout::{Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use unicode_width::UnicodeWidthStr;
 
-use super::{Area, Btn, GitPanel, put, render_diff, render_toggles};
+use super::{Area, Btn, GitPanel, GitTab, put, render_diff, render_toggles};
 use crate::app::Ctx;
 use crate::config::theme::Theme;
 use crate::event::{Effect, Level, Mouse};
 use crate::git::GitRequest;
-use crate::git::model::{CommitDetails, DiffKey, LogRow};
+use crate::git::model::{CommitDetails, DiffKey, LogFilter, LogRow};
 use crate::ui::widgets::list::ListState;
 
 impl GitPanel {
-    pub fn set_log(&mut self, skip: usize, result: anyhow::Result<Vec<LogRow>>, cx: &mut Ctx) {
-        self.log_loading = false;
+    pub fn set_log(&mut self, skip: usize, filter: &LogFilter, result: anyhow::Result<Vec<LogRow>>, cx: &mut Ctx) {
+        if *filter != self.log_filter {
+            // A page of a filter that was replaced meanwhile.
+            return;
+        }
+        self.log_loading = None;
         let rows = match result {
             Ok(r) => r,
             Err(e) => {
@@ -79,20 +83,49 @@ impl GitPanel {
 
     /// Load the first log page, or reload it after a change.
     pub fn request_log(&mut self, cx: &mut Ctx) {
-        if self.log_loading {
+        if self.log_loading.as_ref() == Some(&self.log_filter) {
             return;
         }
-        self.log_loading = true;
-        cx.effects.push(Effect::Git(GitRequest::LoadLog { skip: 0 }));
+        self.log_loading = Some(self.log_filter.clone());
+        cx.effects.push(Effect::Git(GitRequest::LoadLog { skip: 0, filter: self.log_filter.clone() }));
+    }
+
+    /// List the history `filter` selects, from the top.
+    pub(super) fn set_log_filter(&mut self, filter: LogFilter, cx: &mut Ctx) {
+        if filter == self.log_filter {
+            return;
+        }
+        self.log_filter = filter;
+        self.log.clear();
+        self.log_list = ListState::default();
+        self.log_loaded = false;
+        self.details = None;
+        self.details_error = None;
+        self.request_log(cx);
+    }
+
+    /// Show `sha` in the Log tab: select it when it is listed, else list
+    /// the history from it.
+    pub fn show_commit(&mut self, sha: &str, cx: &mut Ctx) {
+        self.tab = GitTab::Log;
+        self.area = Area::Log;
+        self.log_diff.clear();
+        match self.log.iter().position(|r| r.commit.as_ref().is_some_and(|c| c.sha == sha)) {
+            Some(i) => {
+                self.log_list.select(i);
+                self.sync_details(cx);
+            }
+            None => self.set_log_filter(LogFilter { rev: Some(sha.to_string()) }, cx),
+        }
     }
 
     /// Fetch the next page when the selection or view reached the end.
     pub(super) fn maybe_page_log(&mut self, cx: &mut Ctx) {
         let at_end = self.log_list.len > 0
             && (self.log_list.selected + 1 >= self.log_list.len || self.log_list.offset + self.log_list.viewport >= self.log_list.len);
-        if at_end && self.log_loaded && !self.log_end && !self.log_loading {
-            self.log_loading = true;
-            cx.effects.push(Effect::Git(GitRequest::LoadLog { skip: self.commit_count() }));
+        if at_end && self.log_loaded && !self.log_end && self.log_loading.is_none() {
+            self.log_loading = Some(self.log_filter.clone());
+            cx.effects.push(Effect::Git(GitRequest::LoadLog { skip: self.commit_count(), filter: self.log_filter.clone() }));
         }
     }
 
@@ -152,6 +185,15 @@ impl GitPanel {
             self.hits.extend(hits);
             return;
         }
+        let mut body = body;
+        if let Some(rev) = &self.log_filter.rev {
+            // The history of one commit (from blame): say so, offer the way back.
+            let mut x = body.x;
+            put(buf, &mut x, body.y, body.right(), &format!("History of {} ", &rev[..rev.len().min(8)]), theme.title);
+            let r = put(buf, &mut x, body.y, body.right(), "[× Show all]", theme.title.bg(theme.panel_bg));
+            self.hits.push((Btn::LogClearFilter, r));
+            body = Rect::new(body.x, body.y + 1, body.width, body.height.saturating_sub(1));
+        }
         let left_w = if body.width >= 70 { body.width * 3 / 5 } else { body.width };
         self.log_rect = Rect::new(body.x, body.y, left_w, body.height);
         self.render_log_list(buf, self.log_rect, focused && self.area == Area::Log, theme);
@@ -168,7 +210,7 @@ impl GitPanel {
     fn render_log_list(&mut self, buf: &mut Screen, r: Rect, active: bool, theme: &Theme) {
         self.log_list.set_viewport(r.height as usize);
         if self.log.is_empty() {
-            let msg = if self.log_loading { "Loading…" } else { "No commits yet" };
+            let msg = if self.log_loading.is_some() { "Loading…" } else { "No commits yet" };
             buf.set_stringn(r.x, r.y, msg, r.width as usize, theme.dim);
             return;
         }

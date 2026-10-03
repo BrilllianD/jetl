@@ -1,6 +1,6 @@
 //! Effects panels push through `Ctx`, and git requests.
 
-use super::App;
+use super::{App, Ctx};
 use crate::actions::PaletteKind;
 use crate::event::{AppMsg, Effect, Level};
 use crate::git::{GitOp, GitRequest};
@@ -121,6 +121,15 @@ impl App {
                 self.git.run_repo(GitOp::Stash, label, move |root| repo::stash(root, &op));
             }
             GitRequest::LoadStashes => self.git.load_stashes(),
+            GitRequest::LoadBlame(path) => self.git.load_blame(path),
+            GitRequest::ShowCommit(sha) => {
+                self.layout.show(crate::ui::focus::ToolWindowId::Git);
+                self.focus.set(crate::ui::focus::PanelId::Git);
+                let mut cx = ctx!(self);
+                self.git_panel.show_commit(&sha, &mut cx);
+                let fx = cx.effects;
+                self.apply_effects(fx);
+            }
             GitRequest::ApplyPatch { patch, cached, reverse, op } => {
                 self.git.run_cli_input(op, crate::git::cli::apply_args(cached, reverse), Some(patch.into_bytes()));
             }
@@ -149,7 +158,7 @@ impl App {
                 ));
             }
             GitRequest::LoadDiff(key) => self.git.load_diff(key),
-            GitRequest::LoadLog { skip } => self.git.load_log(skip, self.config.git.log_page, self.config.git.log_all),
+            GitRequest::LoadLog { skip, filter } => self.git.load_log(skip, self.config.git.log_page, self.config.git.log_all, filter),
             GitRequest::LoadCommit(sha) => self.git.load_commit(sha),
             GitRequest::LoadWorktrees => self.git.load_worktrees(),
             GitRequest::WorktreePrune => self.prune_worktrees(),

@@ -166,6 +166,23 @@ pub struct BranchInfo {
     pub current: bool,
 }
 
+/// `git blame` of a file at HEAD: the commit of every line.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Blame {
+    pub commits: Vec<BlameCommit>,
+    /// HEAD line -> index into `commits`.
+    pub lines: Vec<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlameCommit {
+    pub sha: String,
+    pub author: String,
+    /// Author time: seconds since the epoch and the author's UTC offset.
+    pub time: i64,
+    pub offset_minutes: i32,
+}
+
 /// One entry of the stash list.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StashEntry {
@@ -174,6 +191,19 @@ pub struct StashEntry {
     pub message: String,
     /// The stash commit; its first parent is HEAD at the time.
     pub oid: String,
+}
+
+/// What the Log tab lists: history from `rev`, else from HEAD (or all
+/// branches with `[git] log_all`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LogFilter {
+    pub rev: Option<String>,
+}
+
+impl LogFilter {
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 /// One line of `git log --graph`: the graph prefix plus the commit when the

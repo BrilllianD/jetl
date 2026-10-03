@@ -1,5 +1,6 @@
 //! Editor: a tab strip of buffers plus the text view.
 
+pub mod blame;
 pub mod brackets;
 pub mod buffer;
 pub mod expand;
@@ -514,12 +515,69 @@ impl Editor {
         b.gutter_version = u64::MAX;
     }
 
-    /// Recompute gutter marks of buffers edited since the last call (run from
-    /// the app tick, which debounces typing). Returns true when any changed.
+    /// Show or hide the blame column of the active buffer; showing it asks
+    /// for the blame (`GitRequest::LoadBlame`).
+    pub fn toggle_blame(&mut self, cx: &mut Ctx) {
+        let Some(b) = self.active_buffer_mut() else { return };
+        if b.blame.take().is_some() {
+            return;
+        }
+        let Some(path) = b.path.clone() else {
+            cx.notify(Level::Info, "Blame needs a file");
+            return;
+        };
+        b.blame = Some(blame::BlameState::new());
+        cx.effects.push(Effect::Git(crate::git::GitRequest::LoadBlame(path)));
+    }
+
+    /// Paths of buffers showing blame (reloaded when HEAD moves).
+    pub fn blame_paths(&self) -> Vec<PathBuf> {
+        self.buffers.iter().filter(|b| b.blame.is_some()).filter_map(|b| b.path.clone()).collect()
+    }
+
+    /// A blame result for `path` from request `seq`; an older request that
+    /// finishes after a newer one is ignored. An error hides the column and
+    /// comes back for a notification.
+    pub fn set_blame(&mut self, path: &Path, seq: u64, result: anyhow::Result<crate::git::Blame>) -> Option<String> {
+        let i = self.index_of(path)?;
+        let b = &mut self.buffers[i];
+        let state = b.blame.as_mut()?;
+        if seq < state.seq {
+            return None;
+        }
+        state.seq = seq;
+        match result {
+            Ok(data) => {
+                state.data = Some(data);
+                state.map_version = u64::MAX;
+                b.gutter_version = u64::MAX;
+                None
+            }
+            Err(e) => {
+                b.blame = None;
+                Some(format!("Blame: {e:#}"))
+            }
+        }
+    }
+
+    /// Recompute gutter marks (and blame line maps) of buffers edited since
+    /// the last call (run from the app tick, which debounces typing).
+    /// Returns true when any changed.
     pub fn update_gutters(&mut self) -> bool {
         let limit = self.max_highlight_bytes;
         let mut changed = false;
         for b in &mut self.buffers {
+            if let (Some(state), Some(base)) = (&b.blame, &b.diff_base)
+                && state.data.is_some()
+                && state.map_version != b.version
+            {
+                let map = if b.rope.len_bytes() <= limit && base.len() <= limit { blame::line_map(base, &b.text()) } else { Vec::new() };
+                let version = b.version;
+                if let Some(state) = &mut b.blame {
+                    (state.map, state.map_version) = (map, version);
+                }
+                changed = true;
+            }
             if b.gutter_version == b.version {
                 continue;
             }
@@ -622,6 +680,10 @@ impl Editor {
                 if let Some(id) = self.active_buffer().map(|b| b.id) {
                     self.set_line_ending(id, if *a == E::LineEndingLf { buffer::LineEnding::Lf } else { buffer::LineEnding::CrLf });
                 }
+                return true;
+            }
+            E::ToggleBlame => {
+                self.toggle_blame(cx);
                 return true;
             }
             E::SetLanguage => {
@@ -824,7 +886,8 @@ impl Editor {
             | E::ShowBookmarks
             | E::LineEndingLf
             | E::LineEndingCrlf
-            | E::SetLanguage => {}
+            | E::SetLanguage
+            | E::ToggleBlame => {}
         }
         self.note_jump(jump_from);
         true
@@ -851,6 +914,19 @@ impl Editor {
             let col = x.saturating_sub(text_area.x) as usize + b.scroll_col;
             if x < text_area.x { b.rope.line_to_char(line) } else { col_to_char(&b.rope, line, col, tab_width) }
         };
+        // A click in the blame column shows that line's commit.
+        if m.kind == MouseEventKind::Down(MouseButton::Left)
+            && let Some(blame) = &b.blame
+            && m.x < text_area.x.saturating_sub(view::gutter_width(b)) + blame::WIDTH
+            && m.y >= text_area.y
+            && m.y < text_area.bottom()
+        {
+            let line = b.scroll_line + (m.y - text_area.y) as usize;
+            if let Some(c) = blame.commit_at(line) {
+                cx.effects.push(Effect::Git(crate::git::GitRequest::ShowCommit(c.sha.clone())));
+            }
+            return true;
+        }
         // A click on a git mark offers the change commands for that line.
         if m.kind == MouseEventKind::Down(MouseButton::Left) && m.x + 2 == text_area.x && m.y >= text_area.y && m.y < text_area.bottom() {
             let line = b.scroll_line + (m.y - text_area.y) as usize;

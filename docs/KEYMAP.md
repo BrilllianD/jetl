@@ -123,6 +123,7 @@ Override any of them in `~/.config/jetl/keymap.toml` (see [CONFIG.md](CONFIG.md)
 | `F7` | `editor.next_change` | Go to the next change |
 | `Ctrl+Alt+Shift+Up` | `editor.prev_change` | Go to the previous change |
 | `Shift+F7` | `editor.prev_change` | Go to the previous change |
+| `Ctrl+Alt+B` | `editor.toggle_blame` | Annotate with git blame (show or hide) |
 
 ## tree
 

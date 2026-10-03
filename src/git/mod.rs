@@ -20,7 +20,7 @@ use anyhow::Result;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::event::AppMsg;
-pub use model::{BranchInfo, CommitDetails, DiffKey, LogRow, Section, StashEntry, StatusSnapshot};
+pub use model::{Blame, BranchInfo, CommitDetails, DiffKey, LogFilter, LogRow, Section, StashEntry, StatusSnapshot};
 pub use panel::GitPanel;
 pub use repo::BlobWhich;
 
@@ -88,15 +88,24 @@ pub enum GitMsg {
         generation: u64,
         result: Result<Vec<BranchInfo>>,
     },
+    /// A log page for `filter`; the panel drops pages of another filter.
     Log {
         generation: u64,
         skip: usize,
+        filter: LogFilter,
         result: Result<Vec<LogRow>>,
     },
     CommitDetails {
         generation: u64,
         sha: String,
         result: Result<CommitDetails>,
+    },
+    /// Blame of an open file; the editor keeps the newest per buffer.
+    Blame {
+        generation: u64,
+        seq: u64,
+        path: PathBuf,
+        result: Result<Blame>,
     },
     Stashes {
         generation: u64,
@@ -142,6 +151,7 @@ impl GitMsg {
             | GitMsg::PushRemote { generation, .. }
             | GitMsg::HeadMessage { generation, .. }
             | GitMsg::Stashes { generation, .. }
+            | GitMsg::Blame { generation, .. }
             | GitMsg::CommitMessages { generation, .. }
             | GitMsg::OpDone { generation, .. } => *generation,
         }
@@ -168,6 +178,9 @@ pub enum GitRequest {
     LoadHeadMessage,
     Stash(repo::StashOp),
     LoadStashes,
+    LoadBlame(PathBuf),
+    /// Show a commit in the Log tab (from the blame column).
+    ShowCommit(String),
     /// `git apply` a patch (a diff block); `op` is what it counts as
     /// (stage, unstage or discard).
     ApplyPatch {
@@ -184,6 +197,7 @@ pub enum GitRequest {
     LoadDiff(DiffKey),
     LoadLog {
         skip: usize,
+        filter: LogFilter,
     },
     LoadCommit(String),
     LoadWorktrees,
@@ -200,6 +214,7 @@ pub struct GitService {
     /// At most one status walk at a time.
     status: crate::util::coalesce::Coalesce,
     blob_seq: AtomicU64,
+    blame_seq: AtomicU64,
     /// Running operations (id, label), oldest first.
     pub busy: Vec<(u64, String)>,
     pub tab_width: usize,
@@ -217,6 +232,7 @@ impl GitService {
             status_seq: AtomicU64::new(0),
             status: Default::default(),
             blob_seq: AtomicU64::new(0),
+            blame_seq: AtomicU64::new(0),
             busy: Vec::new(),
             tab_width: 4,
             messages_dir: PathBuf::new(),
@@ -291,6 +307,12 @@ impl GitService {
         self.blocking(repo::branches, |generation, result| GitMsg::Branches { generation, result });
     }
 
+    pub fn load_blame(&self, path: PathBuf) {
+        let p = path.clone();
+        let seq = self.blame_seq.fetch_add(1, Ordering::SeqCst) + 1;
+        self.blocking(move |root| repo::blame(root, &p), move |generation, result| GitMsg::Blame { generation, seq, path, result });
+    }
+
     pub fn load_stashes(&self) {
         self.blocking(repo::stashes, |generation, result| GitMsg::Stashes { generation, result });
     }
@@ -336,15 +358,15 @@ impl GitService {
         }
     }
 
-    pub fn load_log(&self, skip: usize, count: usize, all: bool) {
+    pub fn load_log(&self, skip: usize, count: usize, all: bool, filter: LogFilter) {
         let (root, generation, tx) = (self.root.clone(), self.generation, self.tx.clone());
         tokio::spawn(async move {
-            let out = cli::git(&root, &cli::log_args(skip, count, all)).await;
+            let out = cli::git(&root, &cli::log_args(skip, count, all, &filter)).await;
             let result = out.map(|o| {
                 // An unborn branch has no log; show it as empty.
                 if o.ok { cli::parse_log(&o.stdout_text()) } else { Vec::new() }
             });
-            let _ = tx.send(AppMsg::Git(GitMsg::Log { generation, skip, result }));
+            let _ = tx.send(AppMsg::Git(GitMsg::Log { generation, skip, filter, result }));
         });
     }
 

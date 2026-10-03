@@ -1565,4 +1565,31 @@ pub(crate) mod tests {
         assert_eq!(index, base);
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[tokio::test]
+    async fn blame_column_keeps_the_newest_result_and_opens_the_commit() {
+        let (mut app, dir) = test_app("blame");
+        init_repo(&app, &[("a.txt", "one\ntwo\n")]);
+        let a = load(&mut app, "a.txt", "one\ntwo\n");
+        app.perform(Action::Editor(EditorAction::ToggleBlame));
+        assert!(app.editor.buffers[0].blame.is_some());
+        let g = app.git.generation;
+        let blame = crate::git::repo::blame(&app.workspace.root, &a);
+        app.handle_msg(AppMsg::Git(GitMsg::Blame { generation: g, seq: 2, path: a.clone(), result: blame }));
+        let stale = Err(anyhow::anyhow!("older request"));
+        app.handle_msg(AppMsg::Git(GitMsg::Blame { generation: g, seq: 1, path: a.clone(), result: stale }));
+        let state = app.editor.buffers[0].blame.as_ref().expect("still shown");
+        let sha = state.commit_at(1).map(|c| c.sha.clone()).expect("line 2 has a commit");
+        assert_eq!(state.commit_at(0).map(|c| c.author.as_str()), Some("Test"));
+        // The column's commit opens in the Log tab.
+        app.git_request(crate::git::GitRequest::ShowCommit(sha));
+        assert_eq!(app.git_panel.tab, crate::git::panel::GitTab::Log);
+        assert!(app.focus.is(PanelId::Git));
+        // Toggling again hides it; a late result is dropped.
+        app.perform(Action::Editor(EditorAction::ToggleBlame));
+        let blame = crate::git::repo::blame(&app.workspace.root, &a);
+        app.handle_msg(AppMsg::Git(GitMsg::Blame { generation: g, seq: 3, path: a, result: blame }));
+        assert!(app.editor.buffers[0].blame.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

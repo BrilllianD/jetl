@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use anyhow::{Result, anyhow};
 
-use super::model::{CommitDetails, CommitFile, LogCommit, LogRow};
+use super::model::{CommitDetails, CommitFile, LogCommit, LogFilter, LogRow};
 
 pub const TIMEOUT: Duration = Duration::from_secs(120);
 
@@ -157,14 +157,16 @@ pub fn apply_args(cached: bool, reverse: bool) -> Vec<String> {
 }
 
 /// Arguments for one page of the log.
-pub fn log_args(skip: usize, count: usize, all: bool) -> Vec<String> {
+pub fn log_args(skip: usize, count: usize, all: bool, filter: &LogFilter) -> Vec<String> {
     let mut v = args(&["log", "--graph", "--date-order", "--no-color"]);
     v.push(format!("-n{count}"));
     if skip > 0 {
         v.push(format!("--skip={skip}"));
     }
-    if all {
-        v.push("--all".into());
+    match &filter.rev {
+        Some(rev) => v.push(rev.clone()),
+        None if all => v.push("--all".into()),
+        None => {}
     }
     v.push("--format=%x1f%H%x1f%h%x1f%an%x1f%ar%x1f%D%x1f%s".into());
     v
@@ -266,7 +268,7 @@ mod tests {
 
     #[test]
     fn log_args_page() {
-        let a = log_args(500, 500, false);
+        let a = log_args(500, 500, false, &LogFilter::default());
         assert!(a.contains(&"--skip=500".to_string()));
         assert!(a.contains(&"-n500".to_string()));
         assert!(!a.contains(&"--all".to_string()));

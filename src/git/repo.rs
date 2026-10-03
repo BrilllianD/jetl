@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, anyhow, bail};
 use git2::{BranchType, IndexAddOption, ObjectType, Repository, Status, StatusOptions};
 
-use super::model::{BranchInfo, ChangeEntry, FileStatus, Section, StashEntry, StatusSnapshot, tree_status};
+use super::model::{Blame, BlameCommit, BranchInfo, ChangeEntry, FileStatus, Section, StashEntry, StatusSnapshot, tree_status};
 
 /// Open the repository containing `root` and return it with its canonical
 /// work tree.
@@ -340,6 +340,31 @@ pub fn discard(root: &Path, items: &[(Section, String)]) -> Result<String> {
     }
     let n = staged.len() + unstaged.len() + untracked.len();
     Ok(format!("Discarded changes to {n} path{}", if n == 1 { "" } else { "s" }))
+}
+
+/// Blame of the file at `abs` as of HEAD.
+pub fn blame(root: &Path, abs: &Path) -> Result<Blame> {
+    let (repo, wd) = open(root)?;
+    let rel = rel_path(&wd, abs).ok_or_else(|| anyhow!("{} is outside the repository", abs.display()))?;
+    let blame = repo.blame_file(Path::new(&rel), None).map_err(|e| anyhow!("{rel}: {}", e.message()))?;
+    let mut out = Blame::default();
+    let mut index: std::collections::HashMap<git2::Oid, u32> = Default::default();
+    for h in blame.iter() {
+        let id = h.final_commit_id();
+        let i = *index.entry(id).or_insert_with(|| {
+            let (author, when) = match h.final_signature() {
+                Some(s) => (String::from_utf8_lossy(s.name_bytes()).into_owned(), s.when()),
+                None => (String::new(), git2::Time::new(0, 0)),
+            };
+            out.commits.push(BlameCommit { sha: id.to_string(), author, time: when.seconds(), offset_minutes: when.offset_minutes() });
+            (out.commits.len() - 1) as u32
+        });
+        // Hunks come in line order (1-based start lines).
+        let start = h.final_start_line().saturating_sub(1);
+        out.lines.resize(start, i);
+        out.lines.extend(std::iter::repeat_n(i, h.lines_in_hunk()));
+    }
+    Ok(out)
 }
 
 /// Stashes, newest first (`index` 0 is `stash@{0}`).
@@ -716,5 +741,24 @@ pub(crate) mod tests {
         assert!(stash(&r.dir, &StashOp::Drop { oid: list[0].oid.clone() }).unwrap_err().to_string().contains("no longer exists"));
         stash(&r.dir, &StashOp::Drop { oid: list[1].oid.clone() }).unwrap();
         assert!(stashes(&r.dir).unwrap().is_empty());
+    }
+
+    #[test]
+    fn blame_names_the_commit_of_every_line() {
+        let r = TempRepo::new("blame");
+        r.write("a.txt", "one\ntwo\n");
+        stage_all(&r.dir).unwrap();
+        commit(&r.dir, "first").unwrap();
+        r.write("a.txt", "one\nTWO\nthree\n");
+        stage_all(&r.dir).unwrap();
+        commit(&r.dir, "second").unwrap();
+        let b = blame(&r.dir, &r.dir.join("a.txt")).unwrap();
+        assert_eq!(b.lines.len(), 3);
+        assert_eq!(b.commits.len(), 2);
+        assert_ne!(b.lines[0], b.lines[1]);
+        assert_eq!(b.lines[1], b.lines[2]);
+        assert_eq!(b.commits[0].author, "Test");
+        r.write("new.txt", "x\n");
+        assert!(blame(&r.dir, &r.dir.join("new.txt")).is_err(), "untracked");
     }
 }
