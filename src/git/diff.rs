@@ -1,5 +1,8 @@
 //! Line diffs for the diff view (side-by-side and unified rows) and the
-//! editor gutter, computed with imara-diff's histogram algorithm.
+//! editor gutter, computed with imara-diff's histogram algorithm, plus a
+//! second pass on the characters of each modified line pair.
+
+use std::ops::Range;
 
 use imara_diff::{Algorithm, Diff, Hunk, InternedInput};
 
@@ -119,38 +122,10 @@ fn line_count(s: &str) -> usize {
     if s.is_empty() { 0 } else { s.split_inclusive('\n').count() }
 }
 
-/// Split into display lines without line terminators, tabs expanded.
-pub fn display_lines(s: &str, tab_width: usize) -> Vec<String> {
-    s.split_inclusive('\n')
-        .map(|l| {
-            let l = l.strip_suffix('\n').unwrap_or(l);
-            let l = l.strip_suffix('\r').unwrap_or(l);
-            expand_tabs(l, tab_width)
-        })
-        .collect()
-}
-
-fn expand_tabs(s: &str, tab_width: usize) -> String {
-    if !s.contains('\t') && !s.chars().any(|c| c.is_control()) {
-        return s.to_string();
-    }
-    let tw = tab_width.max(1);
-    let mut out = String::with_capacity(s.len() + 8);
-    let mut col = 0;
-    for c in s.chars() {
-        if c == '\t' {
-            let n = tw - col % tw;
-            out.extend(std::iter::repeat_n(' ', n));
-            col += n;
-        } else if c.is_control() {
-            out.push('?');
-            col += 1;
-        } else {
-            out.push(c);
-            col += unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
-        }
-    }
-    out
+/// A line without its terminator.
+pub fn strip_eol(line: &str) -> &str {
+    let l = line.strip_suffix('\n').unwrap_or(line);
+    l.strip_suffix('\r').unwrap_or(l)
 }
 
 /// Split into lines that keep their terminators (the way imara-diff and
@@ -159,16 +134,52 @@ fn raw_lines(s: &str) -> Vec<String> {
     s.split_inclusive('\n').map(str::to_string).collect()
 }
 
+/// Lines longer than this get no character diff.
+const INLINE_MAX_CHARS: usize = 2000;
+
+/// Changed char ranges of a modified line pair (old side, new side), from
+/// a diff on characters. Empty when the lines share too little for the
+/// highlight to help, or are very long.
+pub fn inline_changes(old: &str, new: &str) -> (Vec<Range<usize>>, Vec<Range<usize>>) {
+    let (n_old, n_new) = (old.chars().count(), new.chars().count());
+    if n_old > INLINE_MAX_CHARS || n_new > INLINE_MAX_CHARS {
+        return Default::default();
+    }
+    let mut input = InternedInput::default();
+    input.update_before(old.chars());
+    input.update_after(new.chars());
+    let mut diff = Diff::compute(Algorithm::Histogram, &input);
+    diff.postprocess_no_heuristic(&input);
+    let (mut before, mut after) = (Vec::new(), Vec::new());
+    for h in diff.hunks() {
+        if !h.before.is_empty() {
+            before.push(h.before.start as usize..h.before.end as usize);
+        }
+        if !h.after.is_empty() {
+            after.push(h.after.start as usize..h.after.end as usize);
+        }
+    }
+    let removed: usize = before.iter().map(|r| r.len()).sum();
+    let common = n_old - removed;
+    if common * 3 < n_old.max(n_new) {
+        return Default::default();
+    }
+    (before, after)
+}
+
 /// A computed diff ready for the view.
 #[derive(Debug, Clone, Default)]
 pub struct DiffDoc {
+    /// Lines with their terminators, as in the files.
     pub old: Vec<String>,
     pub new: Vec<String>,
-    /// The same lines with terminators and tabs, for patches.
-    pub old_raw: Vec<String>,
-    pub new_raw: Vec<String>,
     pub rows: Vec<DiffRow>,
     pub unified: Vec<DiffRow>,
+    /// Changed char ranges (without the terminator) per old and new line;
+    /// empty except on modified lines.
+    pub inline_old: Vec<Vec<Range<usize>>>,
+    pub inline_new: Vec<Vec<Range<usize>>>,
+    pub tab_width: usize,
     pub binary: bool,
 }
 
@@ -177,19 +188,16 @@ impl DiffDoc {
         if is_binary(old) || is_binary(new) {
             return Self { binary: true, ..Default::default() };
         }
-        let old_s = String::from_utf8_lossy(old);
-        let new_s = String::from_utf8_lossy(new);
-        let rows = side_by_side(&old_s, &new_s);
+        let (old, new) = (raw_lines(&String::from_utf8_lossy(old)), raw_lines(&String::from_utf8_lossy(new)));
+        let rows = side_by_side(&old.concat(), &new.concat());
         let unified = unified(&rows);
-        Self {
-            old: display_lines(&old_s, tab_width),
-            new: display_lines(&new_s, tab_width),
-            old_raw: raw_lines(&old_s),
-            new_raw: raw_lines(&new_s),
-            rows,
-            unified,
-            binary: false,
+        let (mut inline_old, mut inline_new) = (vec![Vec::new(); old.len()], vec![Vec::new(); new.len()]);
+        for r in rows.iter().filter(|r| r.kind == RowKind::Modified) {
+            if let (Some(l), Some(n)) = (r.left, r.right) {
+                (inline_old[l], inline_new[n]) = inline_changes(strip_eol(&old[l]), strip_eol(&new[n]));
+            }
         }
+        Self { old, new, rows, unified, inline_old, inline_new, tab_width, binary: false }
     }
 
     /// Changed blocks (runs of non-equal rows) of the side-by-side or
@@ -230,20 +238,20 @@ impl DiffDoc {
             }
         };
         for r in &rows[start..b.start] {
-            line(' ', &self.old_raw[r.left?]);
+            line(' ', &self.old[r.left?]);
         }
         for r in &rows[b.clone()] {
             if let Some(l) = r.left {
-                line('-', &self.old_raw[l]);
+                line('-', &self.old[l]);
             }
         }
         for r in &rows[b.clone()] {
             if let Some(l) = r.right {
-                line('+', &self.new_raw[l]);
+                line('+', &self.new[l]);
             }
         }
         for r in &rows[b.end..end] {
-            line(' ', &self.old_raw[r.left?]);
+            line(' ', &self.old[r.left?]);
         }
         Some(out)
     }
@@ -322,13 +330,27 @@ mod tests {
     }
 
     #[test]
-    fn binary_and_display_lines() {
+    fn binary_and_raw_lines() {
         assert!(DiffDoc::build(b"a\0b", b"", 4).binary);
         let d = DiffDoc::build(b"\tx\r\n", b"\tx\r\ny\r\n", 4);
-        assert_eq!(d.old, vec!["    x"]);
-        assert_eq!(d.new, vec!["    x", "y"]);
+        assert_eq!(d.old, vec!["\tx\r\n"]);
+        assert_eq!(d.new, vec!["\tx\r\n", "y\r\n"]);
         assert_eq!(d.first_change(false), Some(1));
         assert!(DiffDoc::build(b"same\n", b"same\n", 4).is_identical());
+    }
+
+    #[test]
+    fn modified_lines_get_changed_characters() {
+        let d = DiffDoc::build(b"let x = foo(1);\nsame\n", b"let y = foo(2);\nsame\n", 4);
+        assert_eq!(d.inline_old[0], vec![4..5, 12..13]);
+        assert_eq!(d.inline_new[0], vec![4..5, 12..13]);
+        assert!(d.inline_old[1].is_empty());
+        // Lines with almost nothing in common are not broken up.
+        assert_eq!(inline_changes("abcdef", "uvwxyz"), (vec![], vec![]));
+        // An insertion only marks the new side.
+        let (old, new) = inline_changes("ab", "aXb");
+        assert!(old.is_empty());
+        assert_eq!(new, vec![Range { start: 1, end: 2 }]);
     }
 
     #[test]

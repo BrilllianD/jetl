@@ -7,7 +7,7 @@ use ratatui::buffer::Buffer as Screen;
 use ratatui::layout::{Position, Rect};
 use ratatui::style::{Modifier, Style};
 
-use super::{Area, Btn, GitPanel, GitTab, ListRow, put, render_diff};
+use super::{Area, Btn, GitPanel, GitTab, ListRow, put, render_diff, render_toggles};
 use crate::app::Ctx;
 use crate::config::theme::Theme;
 use crate::event::{Effect, Level, Mouse};
@@ -349,7 +349,12 @@ impl GitPanel {
                 DiffKey::Commit { .. } => k.label(),
             });
             let pane_focused = focused && self.area == Area::Diff;
-            render_diff(frame.buffer_mut(), right, &mut self.diff, header.as_deref(), pane_focused, theme);
+            let opts = self.diff_opts;
+            render_diff(frame.buffer_mut(), right, &mut self.diff, header.as_deref(), pane_focused, theme, opts);
+            if self.diff.doc.is_some() {
+                let hits = render_toggles(frame.buffer_mut(), right.y, right.x, right.right(), self.diff.unified, opts, theme);
+                self.hits.extend(hits);
+            }
         }
 
         // Left column, bottom up: commit buttons, message, label, stage buttons, list.

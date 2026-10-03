@@ -161,6 +161,8 @@ pub enum GitAction {
     Discard,
     NextHunk,
     PrevHunk,
+    ToggleDiffLayout,
+    ToggleDiffCollapse,
     Commit,
     CommitAndPush,
     CommitBox,
@@ -406,6 +408,8 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "git.discard" => "Git: discard changes of the selected file or section (in the diff: the current change)", Git(GitAction::Discard);
         "git.next_hunk" => "Git: next change in the diff", Git(GitAction::NextHunk);
         "git.prev_hunk" => "Git: previous change in the diff", Git(GitAction::PrevHunk);
+        "git.toggle_diff_layout" => "Git: diff side-by-side or unified", Git(GitAction::ToggleDiffLayout);
+        "git.toggle_diff_collapse" => "Git: fold or show unchanged lines in the diff", Git(GitAction::ToggleDiffCollapse);
         "git.commit" => "Git: commit", Git(GitAction::Commit);
         "git.commit_and_push" => "Git: commit and push", Git(GitAction::CommitAndPush);
         "git.commit_box" => "Git: open commit window", Git(GitAction::CommitBox);

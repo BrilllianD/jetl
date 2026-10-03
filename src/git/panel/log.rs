@@ -7,7 +7,7 @@ use ratatui::layout::{Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use unicode_width::UnicodeWidthStr;
 
-use super::{Area, Btn, GitPanel, put, render_diff};
+use super::{Area, Btn, GitPanel, put, render_diff, render_toggles};
 use crate::app::Ctx;
 use crate::config::theme::Theme;
 use crate::event::{Effect, Level, Mouse};
@@ -146,7 +146,10 @@ impl GitPanel {
             put(buf, &mut x, body.y, body.right(), &header, theme.title);
             let rest = Rect::new(body.x, body.y + 1, body.width, body.height.saturating_sub(1));
             self.diff_rect = rest;
-            render_diff(buf, rest, &mut self.log_diff, None, focused && self.area == Area::LogDiff, theme);
+            let opts = self.diff_opts;
+            render_diff(buf, rest, &mut self.log_diff, None, focused && self.area == Area::LogDiff, theme, opts);
+            let hits = render_toggles(buf, body.y, x, body.right(), self.log_diff.unified, opts, theme);
+            self.hits.extend(hits);
             return;
         }
         let left_w = if body.width >= 70 { body.width * 3 / 5 } else { body.width };

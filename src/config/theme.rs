@@ -51,6 +51,9 @@ pub struct Theme {
     pub diff_add_bg: Color,
     pub diff_del_bg: Color,
     pub diff_mod_bg: Color,
+    /// Changed characters inside a modified line (diff view).
+    pub diff_add_word_bg: Color,
+    pub diff_del_word_bg: Color,
     pub popup_bg: Color,
     pub popup_border: Style,
     pub list_selected: Style,
@@ -108,6 +111,8 @@ impl Theme {
             diff_add_bg: Color::Rgb(41, 66, 54),
             diff_del_bg: Color::Rgb(72, 44, 44),
             diff_mod_bg: Color::Rgb(44, 55, 72),
+            diff_add_word_bg: Color::Rgb(56, 102, 74),
+            diff_del_word_bg: Color::Rgb(117, 58, 58),
             popup_bg: Color::Rgb(53, 53, 56),
             popup_border: Style::default().fg(accent),
             list_selected: Style::default().fg(Color::White).bg(Color::Rgb(44, 83, 148)),
@@ -233,7 +238,7 @@ theme_fields! {
     colors: [
         bg, fg, panel_bg, strip_bg, status_bg, status_fg, current_line_bg, selection_bg, search_match_bg,
         search_current_bg, occurrence_bg, gutter_added, gutter_modified, gutter_deleted, diff_add_bg, diff_del_bg,
-        diff_mod_bg, popup_bg,
+        diff_mod_bg, diff_add_word_bg, diff_del_word_bg, popup_bg,
     ],
     styles: [
         border, border_focused, title, title_focused, strip_item, strip_item_active, status_accent, tab, tab_active,

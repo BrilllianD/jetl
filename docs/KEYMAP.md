@@ -159,6 +159,8 @@ Override any of them in `~/.config/jetl/keymap.toml` (see [CONFIG.md](CONFIG.md)
 | `Ctrl+Alt+Z` | `git.discard` | Git: discard changes of the selected file or section (in the diff: the current change) |
 | `F7` | `git.next_hunk` | Git: next change in the diff |
 | `Shift+F7` | `git.prev_hunk` | Git: previous change in the diff |
+| `Alt+U` | `git.toggle_diff_layout` | Git: diff side-by-side or unified |
+| `Alt+F` | `git.toggle_diff_collapse` | Git: fold or show unchanged lines in the diff |
 | `Alt+Enter` | `git.commit` | Git: commit |
 | `Ctrl+Enter` * | `git.commit` | Git: commit |
 | `Alt+M` | `git.toggle_amend` | Git: amend the last commit (toggle) |

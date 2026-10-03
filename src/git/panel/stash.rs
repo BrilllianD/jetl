@@ -6,7 +6,7 @@ use ratatui::buffer::Buffer as Screen;
 use ratatui::layout::{Position, Rect};
 use ratatui::style::Style;
 
-use super::{Area, Btn, GitPanel, put, render_diff};
+use super::{Area, Btn, GitPanel, put, render_diff, render_toggles};
 use crate::app::Ctx;
 use crate::config::theme::Theme;
 use crate::event::{Effect, Level, Mouse};
@@ -151,7 +151,10 @@ impl GitPanel {
             put(buf, &mut x, body.y, body.right(), &format!(" stash@{{{index}}}  {}", key.label()), theme.title);
             let rest = Rect::new(body.x, body.y + 1, body.width, body.height.saturating_sub(1));
             self.diff_rect = rest;
-            render_diff(buf, rest, &mut self.stash_diff, None, focused && self.area == Area::StashDiff, theme);
+            let opts = self.diff_opts;
+            render_diff(buf, rest, &mut self.stash_diff, None, focused && self.area == Area::StashDiff, theme, opts);
+            let hits = render_toggles(buf, body.y, x, body.right(), self.stash_diff.unified, opts, theme);
+            self.hits.extend(hits);
             return;
         }
         // Toolbar, then the list on the left and the files on the right.

@@ -18,10 +18,10 @@ use ratatui::Frame;
 use ratatui::buffer::Buffer as Screen;
 use ratatui::layout::{Position, Rect};
 use ratatui::style::{Modifier, Style};
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_width::UnicodeWidthStr;
 
 use super::GitRequest;
-use super::diff::{DiffDoc, DiffRow, RowKind};
+use super::diff::DiffDoc;
 use super::model::{BranchInfo, CommitDetails, DiffKey, LogRow, Section, StashEntry, StatusSnapshot};
 use crate::actions::GitAction;
 use crate::app::Ctx;
@@ -33,9 +33,11 @@ use crate::ui::widgets::list::ListState;
 use crate::ui::widgets::text_input::TextInput;
 
 mod commit;
+mod diff_view;
 mod log;
 mod stash;
 
+use diff_view::{DiffOpts, DiffPane, render_diff, render_toggles};
 use stash::StashAction;
 
 /// Stored in sessions (`SessionLayout::git_tab`); add variants, never
@@ -80,6 +82,8 @@ enum Btn {
     StashPop,
     StashApply,
     StashDrop,
+    DiffLayout,
+    DiffCollapse,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -93,102 +97,6 @@ enum ConsoleKind {
     Command,
     Output,
     Error,
-}
-
-/// The diff view: what is shown, the computed rows, and the shared
-/// vertical scroll of both sides.
-#[derive(Debug, Default)]
-struct DiffPane {
-    key: Option<DiffKey>,
-    doc: Option<DiffDoc>,
-    error: Option<String>,
-    loading: bool,
-    scroll: usize,
-    hscroll: usize,
-    /// Rendered unified (narrow) last frame; scroll counts those rows.
-    unified: bool,
-    page: usize,
-    /// The current changed block (`DiffDoc::blocks`): what hunk staging,
-    /// discarding and F7 work on.
-    block: usize,
-    /// Where the rows were drawn last frame (mouse mapping).
-    rows_rect: Rect,
-}
-
-impl DiffPane {
-    fn request(&mut self, key: DiffKey, cx: &mut Ctx) {
-        if self.key.as_ref() != Some(&key) {
-            self.doc = None;
-            self.scroll = 0;
-            self.hscroll = 0;
-        }
-        self.key = Some(key.clone());
-        self.loading = true;
-        self.error = None;
-        cx.effects.push(Effect::Git(GitRequest::LoadDiff(key)));
-    }
-
-    fn clear(&mut self) {
-        *self = DiffPane { unified: self.unified, page: self.page, ..Default::default() };
-    }
-
-    /// Result for `key`; ignored when the pane shows something else now.
-    fn set(&mut self, key: &DiffKey, result: anyhow::Result<DiffDoc>) {
-        if self.key.as_ref() != Some(key) {
-            return;
-        }
-        self.loading = false;
-        match result {
-            Ok(doc) => {
-                // Jump to the first change of a newly opened diff only; a
-                // reload keeps the place (and the block, if it still exists).
-                if self.doc.is_none() {
-                    self.scroll = doc.first_change(self.unified).unwrap_or(0).saturating_sub(2);
-                    self.block = 0;
-                }
-                self.block = self.block.min(doc.blocks(false).len().saturating_sub(1));
-                self.doc = Some(doc);
-                self.error = None;
-            }
-            Err(e) => {
-                self.doc = None;
-                self.error = Some(format!("{e:#}"));
-            }
-        }
-    }
-
-    /// Move to the next or previous changed block and scroll to it.
-    /// Returns false when there is none in that direction.
-    fn step_block(&mut self, forward: bool) -> bool {
-        let Some(doc) = &self.doc else { return false };
-        let blocks = doc.blocks(self.unified);
-        let next = if forward { self.block + 1 } else { self.block.wrapping_sub(1) };
-        let Some(b) = blocks.get(next) else { return false };
-        self.block = next;
-        self.scroll = b.start.saturating_sub(2);
-        true
-    }
-
-    /// Make the block under screen row `y` current.
-    fn click(&mut self, y: u16) {
-        let Some(doc) = &self.doc else { return };
-        if !(self.rows_rect.y..self.rows_rect.bottom()).contains(&y) {
-            return;
-        }
-        let row = self.scroll + (y - self.rows_rect.y) as usize;
-        if let Some(i) = doc.blocks(self.unified).iter().position(|b| b.contains(&row)) {
-            self.block = i;
-        }
-    }
-
-    fn rows_len(&self) -> usize {
-        self.doc.as_ref().map(|d| if self.unified { d.unified.len() } else { d.rows.len() }).unwrap_or(0)
-    }
-
-    fn scroll_by(&mut self, delta: isize) {
-        let max = self.rows_len().saturating_sub(self.page.max(1));
-        self.scroll = self.scroll.saturating_add_signed(delta).min(max);
-    }
 }
 
 pub struct GitPanel {
@@ -228,6 +136,8 @@ pub struct GitPanel {
     stash_details_error: Option<String>,
     stash_files: ListState,
     stash_diff: DiffPane,
+    /// Layout of every diff pane (Alt+U, Alt+F, or the header toggles).
+    diff_opts: DiffOpts,
     console: Vec<(ConsoleKind, String)>,
     /// Lines scrolled up from the bottom of the console.
     console_scroll: usize,
@@ -265,7 +175,7 @@ impl GitPanel {
             history: Vec::new(),
             history_pos: None,
             history_draft: String::new(),
-            diff: DiffPane::default(),
+            diff: DiffPane::new(true),
             log: Vec::new(),
             log_list: ListState::default(),
             log_loaded: false,
@@ -275,14 +185,15 @@ impl GitPanel {
             details: None,
             details_error: None,
             files_list: ListState::default(),
-            log_diff: DiffPane::default(),
+            log_diff: DiffPane::new(true),
             stashes: Vec::new(),
             stash_error: None,
             stash_list: ListState::default(),
             stash_details: None,
             stash_details_error: None,
             stash_files: ListState::default(),
-            stash_diff: DiffPane::default(),
+            stash_diff: DiffPane::new(true),
+            diff_opts: DiffOpts { unified: None, collapse: true },
             console: Vec::new(),
             console_scroll: 0,
             branches: Vec::new(),
@@ -394,6 +305,8 @@ impl GitPanel {
                 (GitTab::Commit, _) => self.toggle_selected(cx),
                 _ => {}
             },
+            G::ToggleDiffLayout => self.toggle_diff_layout(),
+            G::ToggleDiffCollapse => self.toggle_diff_collapse(),
             G::NextHunk | G::PrevHunk => {
                 let forward = *a == G::NextHunk;
                 if !self.diff_pane().step_block(forward) {
@@ -610,6 +523,17 @@ impl GitPanel {
         }
     }
 
+    /// Flip the diff panes between unified and side-by-side (from what the
+    /// current tab shows); the choice then holds at any width.
+    fn toggle_diff_layout(&mut self) {
+        let unified = self.diff_pane().unified;
+        self.diff_opts.unified = Some(!unified);
+    }
+
+    fn toggle_diff_collapse(&mut self) {
+        self.diff_opts.collapse = !self.diff_opts.collapse;
+    }
+
     /// The diff pane of the current tab.
     fn diff_pane(&mut self) -> &mut DiffPane {
         match self.tab {
@@ -631,6 +555,8 @@ impl GitPanel {
             Btn::StashPop => return self.stash_action(StashAction::Pop, cx),
             Btn::StashApply => return self.stash_action(StashAction::Apply, cx),
             Btn::StashDrop => return self.stash_action(StashAction::Drop, cx),
+            Btn::DiffLayout => return self.toggle_diff_layout(),
+            Btn::DiffCollapse => return self.toggle_diff_collapse(),
             Btn::Refresh => GitRequest::Refresh,
             Btn::Fetch => GitRequest::Fetch,
             Btn::Pull => GitRequest::Pull,
@@ -736,147 +662,4 @@ fn put(buf: &mut Screen, x: &mut u16, y: u16, right: u16, text: &str, style: Sty
     let r = Rect::new(*x, y, w, 1);
     *x += w;
     r
-}
-
-/// Draw `text` from display column `skip` into `width` cells at (x, y).
-fn put_cols(buf: &mut Screen, x: u16, y: u16, width: u16, text: &str, skip: usize, style: Style) {
-    let mut col = 0usize;
-    let mut cx = x;
-    let right = x + width;
-    for ch in text.chars() {
-        let w = ch.width().unwrap_or(0);
-        if w == 0 {
-            continue;
-        }
-        if col < skip {
-            // A wide char cut by the scroll edge leaves a blank.
-            if col + w > skip {
-                cx += (col + w - skip) as u16;
-            }
-            col += w;
-            continue;
-        }
-        if cx + w as u16 > right {
-            break;
-        }
-        let mut tmp = [0u8; 4];
-        buf[(cx, y)].set_symbol(ch.encode_utf8(&mut tmp)).set_style(style);
-        for i in 1..w as u16 {
-            buf[(cx + i, y)].reset();
-            buf[(cx + i, y)].set_style(style);
-        }
-        cx += w as u16;
-        col += w;
-    }
-}
-
-/// Render a diff pane: optional header row, then side-by-side rows, or
-/// unified rows when narrower than 100 columns. Both sides share one
-/// vertical scroll.
-fn render_diff(buf: &mut Screen, area: Rect, pane: &mut DiffPane, header: Option<&str>, focused: bool, theme: &Theme) {
-    if area.height == 0 || area.width < 8 {
-        return;
-    }
-    let mut r = area;
-    if let Some(h) = header {
-        let style = if focused { theme.title_focused } else { theme.title };
-        buf.set_stringn(r.x + 1, r.y, crate::util::text::fit(h, r.width.saturating_sub(1) as usize), r.width as usize, style);
-        r = Rect::new(r.x, r.y + 1, r.width, r.height - 1);
-    }
-    pane.page = r.height as usize;
-    pane.rows_rect = r;
-    let msg = |buf: &mut Screen, text: &str, style: Style| buf.set_stringn(r.x + 1, r.y, text, r.width.saturating_sub(1) as usize, style);
-    if r.height == 0 {
-        return;
-    }
-    if pane.key.is_none() {
-        msg(buf, "Select a file to see its changes", theme.dim);
-        return;
-    }
-    if let Some(e) = &pane.error {
-        msg(buf, e, theme.error);
-        return;
-    }
-    let Some(doc) = &pane.doc else {
-        if pane.loading {
-            msg(buf, "Loading…", theme.dim);
-        }
-        return;
-    };
-    if doc.binary {
-        msg(buf, "Binary file; no text diff", theme.dim);
-        return;
-    }
-    if doc.rows.is_empty() {
-        msg(buf, "Empty file", theme.dim);
-        return;
-    }
-    let unified = r.width < 100;
-    if unified != pane.unified {
-        // Keep roughly the same place when the layout switches modes.
-        pane.scroll = map_scroll(doc, pane.scroll, pane.unified);
-        pane.unified = unified;
-    }
-    let rows: &[DiffRow] = if unified { &doc.unified } else { &doc.rows };
-    pane.scroll = pane.scroll.min(rows.len().saturating_sub(r.height as usize));
-    let digits = doc.old.len().max(doc.new.len()).max(1).to_string().len().max(3) as u16;
-    // Line numbers of the current block stand out.
-    let current = doc.blocks(unified).into_iter().nth(pane.block).unwrap_or_default();
-    let add = Style::default().fg(theme.fg).bg(theme.diff_add_bg);
-    let del = Style::default().fg(theme.fg).bg(theme.diff_del_bg);
-    let modi = Style::default().fg(theme.fg).bg(theme.diff_mod_bg);
-    let plain = Style::default().fg(theme.fg).bg(theme.bg);
-    let filler = Style::default().bg(theme.panel_bg);
-    for (vi, row) in rows.iter().skip(pane.scroll).take(r.height as usize).enumerate() {
-        let y = r.y + vi as u16;
-        let num_style = if current.contains(&(pane.scroll + vi)) { theme.warn } else { theme.line_number };
-        if unified {
-            // old# new# sign text
-            let (style, sign) = match row.kind {
-                RowKind::Removed => (del, "-"),
-                RowKind::Added => (add, "+"),
-                _ => (plain, " "),
-            };
-            let nums_w = digits * 2 + 2;
-            buf.set_style(Rect::new(r.x + nums_w, y, r.width.saturating_sub(nums_w), 1), style);
-            if let Some(l) = row.left {
-                buf.set_stringn(r.x, y, format!("{:>w$}", l + 1, w = digits as usize), digits as usize, num_style);
-            }
-            if let Some(l) = row.right {
-                buf.set_stringn(r.x + digits + 1, y, format!("{:>w$}", l + 1, w = digits as usize), digits as usize, num_style);
-            }
-            buf.set_stringn(r.x + nums_w, y, sign, 1, style);
-            let text = row.right.map(|l| &doc.new[l]).or(row.left.map(|l| &doc.old[l])).map(String::as_str).unwrap_or("");
-            let tx = r.x + nums_w + 1;
-            put_cols(buf, tx, y, r.right().saturating_sub(tx), text, pane.hscroll, style);
-        } else {
-            let half = (r.width - 1) / 2;
-            let sides = [(r.x, row.left, &doc.old), (r.x + half + 1, row.right, &doc.new)];
-            for (side, (sx, line, lines)) in sides.into_iter().enumerate() {
-                let w = if side == 0 { half } else { r.right() - sx };
-                let style = match (row.kind, line) {
-                    (_, None) => filler,
-                    (RowKind::Equal, _) => plain,
-                    (RowKind::Modified, _) => modi,
-                    (RowKind::Removed, _) => del,
-                    (RowKind::Added, _) => add,
-                };
-                let text_x = sx + digits + 1;
-                buf.set_style(Rect::new(text_x, y, w.saturating_sub(digits + 1), 1), style);
-                if let Some(l) = line {
-                    buf.set_stringn(sx, y, format!("{:>w$}", l + 1, w = digits as usize), digits as usize, num_style);
-                    put_cols(buf, text_x, y, (sx + w).saturating_sub(text_x), &lines[l], pane.hscroll, style);
-                }
-            }
-            buf[(r.x + half, y)].set_symbol("│").set_style(theme.splitter);
-        }
-    }
-}
-
-/// Translate a scroll position between side-by-side and unified rows by
-/// the old/new line it shows.
-fn map_scroll(doc: &DiffDoc, scroll: usize, from_unified: bool) -> usize {
-    let (from, to) = if from_unified { (&doc.unified, &doc.rows) } else { (&doc.rows, &doc.unified) };
-    let Some(row) = from.get(scroll) else { return 0 };
-    to.iter().position(|r| (row.right.is_some() && r.right == row.right) || (row.left.is_some() && r.left == row.left)).unwrap_or(0)
 }

@@ -187,7 +187,8 @@ macro = "#b3ae60"                                # = "function.macro"
 
 Color fields: `bg fg panel_bg strip_bg status_bg status_fg current_line_bg
 selection_bg search_match_bg search_current_bg occurrence_bg gutter_added
-gutter_modified gutter_deleted diff_add_bg diff_del_bg diff_mod_bg popup_bg`.
+gutter_modified gutter_deleted diff_add_bg diff_del_bg diff_mod_bg
+diff_add_word_bg diff_del_word_bg popup_bg`.
 
 Style fields: `border border_focused title title_focused strip_item
 strip_item_active status_accent tab tab_active tab_dirty line_number

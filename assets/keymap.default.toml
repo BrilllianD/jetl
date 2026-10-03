@@ -179,6 +179,8 @@
 "ctrl-alt-z" = "git.discard"
 "f7" = "git.next_hunk"
 "shift-f7" = "git.prev_hunk"
+"alt-u" = "git.toggle_diff_layout"
+"alt-f" = "git.toggle_diff_collapse"
 "alt-m" = "git.toggle_amend"
 # In the commit message box: recall earlier messages.
 "alt-up" = "git.message_older"
