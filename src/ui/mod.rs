@@ -1,4 +1,5 @@
 pub mod dialog;
+pub mod event_log;
 pub mod focus;
 pub mod layout;
 pub mod menu;
@@ -51,6 +52,7 @@ pub fn render(app: &mut App, frame: &mut Frame) {
         match tw.panel() {
             PanelId::Git => app.git_panel.render(frame, r, focused, &theme),
             PanelId::Find => app.find.render(frame, r, focused, &theme),
+            PanelId::EventLog => app.event_log.render(frame, r, focused, &theme, &app.notifications),
             _ => {}
         }
     }

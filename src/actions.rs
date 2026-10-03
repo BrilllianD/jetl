@@ -14,6 +14,7 @@ pub enum Action {
     Worktree(WorktreeAction),
     Find(FindAction),
     Structure(StructureAction),
+    EventLog(EventLogAction),
     Palette(PaletteAction),
     Mode(ModeAction),
 }
@@ -262,6 +263,20 @@ pub enum StructureAction {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum EventLogAction {
+    Up,
+    Down,
+    PageUp,
+    PageDown,
+    Home,
+    End,
+    /// Show the selected entry's full text.
+    Details,
+    Copy,
+    Clear,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum PaletteAction {
     Up,
     Down,
@@ -309,6 +324,7 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "tool_window.git" => "Git tool window", App(AppAction::ToggleToolWindow(ToolWindowId::Git));
         "tool_window.find" => "Find tool window", App(AppAction::ToggleToolWindow(ToolWindowId::Find));
         "tool_window.structure" => "Structure tool window", App(AppAction::ToggleToolWindow(ToolWindowId::Structure));
+        "tool_window.event_log" => "Event Log tool window", App(AppAction::ToggleToolWindow(ToolWindowId::EventLog));
         "tool_window.hide_all" => "Hide all tool windows", App(AppAction::HideAllToolWindows);
         "tool_window.hide_focused" => "Hide active tool window", App(AppAction::HideFocusedToolWindow);
         "tool_window.stretch_left" => "Stretch tool window to the left", App(AppAction::ResizeToolWindow(Dir::Left));
@@ -511,6 +527,16 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "structure.end" => "Structure: last symbol", Structure(StructureAction::End);
         "structure.open" => "Structure: jump to the selected symbol", Structure(StructureAction::Open);
 
+        "event_log.up" => "Event Log: up", EventLog(EventLogAction::Up);
+        "event_log.down" => "Event Log: down", EventLog(EventLogAction::Down);
+        "event_log.page_up" => "Event Log: page up", EventLog(EventLogAction::PageUp);
+        "event_log.page_down" => "Event Log: page down", EventLog(EventLogAction::PageDown);
+        "event_log.home" => "Event Log: first entry", EventLog(EventLogAction::Home);
+        "event_log.end" => "Event Log: last entry", EventLog(EventLogAction::End);
+        "event_log.details" => "Event Log: show the full text of the selected entry", EventLog(EventLogAction::Details);
+        "event_log.copy" => "Event Log: copy the selected entry", EventLog(EventLogAction::Copy);
+        "event_log.clear" => "Event Log: clear", EventLog(EventLogAction::Clear);
+
         "palette.up" => "Palette: up", Palette(PaletteAction::Up);
         "palette.down" => "Palette: down", Palette(PaletteAction::Down);
         "palette.page_up" => "Palette: page up", Palette(PaletteAction::PageUp);
@@ -548,6 +574,7 @@ impl Action {
             Action::Worktree(_) => &["worktrees", "global"],
             Action::Find(_) => &["find", "global"],
             Action::Structure(_) => &["structure", "global"],
+            Action::EventLog(_) => &["event_log", "global"],
             Action::Palette(_) => &["palette"],
             Action::Mode(_) => &["mode.normal", "mode.insert", "mode.visual"],
         }

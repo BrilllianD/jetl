@@ -10,8 +10,10 @@ pub enum PanelId {
     Git,
     Find,
     Structure,
+    EventLog,
 }
 
+/// Saved in sessions: new variants go last.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ToolWindowId {
     Project,
@@ -19,6 +21,7 @@ pub enum ToolWindowId {
     Git,
     Find,
     Structure,
+    EventLog,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,8 +31,14 @@ pub enum Side {
 }
 
 impl ToolWindowId {
-    pub const ALL: [ToolWindowId; 5] =
-        [ToolWindowId::Project, ToolWindowId::Worktrees, ToolWindowId::Structure, ToolWindowId::Find, ToolWindowId::Git];
+    pub const ALL: [ToolWindowId; 6] = [
+        ToolWindowId::Project,
+        ToolWindowId::Worktrees,
+        ToolWindowId::Structure,
+        ToolWindowId::Find,
+        ToolWindowId::Git,
+        ToolWindowId::EventLog,
+    ];
 
     pub fn panel(self) -> PanelId {
         match self {
@@ -38,12 +47,13 @@ impl ToolWindowId {
             ToolWindowId::Git => PanelId::Git,
             ToolWindowId::Find => PanelId::Find,
             ToolWindowId::Structure => PanelId::Structure,
+            ToolWindowId::EventLog => PanelId::EventLog,
         }
     }
     pub fn side(self) -> Side {
         match self {
             ToolWindowId::Project | ToolWindowId::Worktrees | ToolWindowId::Structure => Side::Left,
-            ToolWindowId::Git | ToolWindowId::Find => Side::Bottom,
+            ToolWindowId::Git | ToolWindowId::Find | ToolWindowId::EventLog => Side::Bottom,
         }
     }
     pub fn title(self) -> &'static str {
@@ -53,15 +63,19 @@ impl ToolWindowId {
             ToolWindowId::Git => "Git",
             ToolWindowId::Find => "Find",
             ToolWindowId::Structure => "Structure",
+            ToolWindowId::EventLog => "Event Log",
         }
     }
-    pub fn number(self) -> u8 {
+    /// The Alt+number key shown on the tool strip; windows opened by other
+    /// keys have none.
+    pub fn number(self) -> Option<u8> {
         match self {
-            ToolWindowId::Project => 1,
-            ToolWindowId::Worktrees => 2,
-            ToolWindowId::Git => 9,
-            ToolWindowId::Find => 3,
-            ToolWindowId::Structure => 7,
+            ToolWindowId::Project => Some(1),
+            ToolWindowId::Worktrees => Some(2),
+            ToolWindowId::Git => Some(9),
+            ToolWindowId::Find => Some(3),
+            ToolWindowId::Structure => Some(7),
+            ToolWindowId::EventLog => None,
         }
     }
 }
@@ -74,6 +88,7 @@ impl PanelId {
             PanelId::Git => Some(ToolWindowId::Git),
             PanelId::Find => Some(ToolWindowId::Find),
             PanelId::Structure => Some(ToolWindowId::Structure),
+            PanelId::EventLog => Some(ToolWindowId::EventLog),
             PanelId::Editor => None,
         }
     }
@@ -86,6 +101,7 @@ impl PanelId {
             PanelId::Git => "git",
             PanelId::Find => "find",
             PanelId::Structure => "structure",
+            PanelId::EventLog => "event_log",
         }
     }
 }

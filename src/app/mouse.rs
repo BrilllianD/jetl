@@ -8,7 +8,6 @@ use ratatui::layout::Rect;
 use super::{App, Ctx, Drag, LastClick};
 use crate::actions::{Action, EditorAction};
 use crate::event::Mouse;
-use crate::ui::dialog::Dialog;
 use crate::ui::focus::PanelId;
 use crate::ui::layout::Hit;
 use crate::ui::status_bar::StatusHit;
@@ -162,6 +161,7 @@ impl App {
             PanelId::Git => self.git_panel.handle_mouse(m, area, &mut cx),
             PanelId::Find => self.find.handle_mouse(m, area, &mut cx),
             PanelId::Structure => self.structure.handle_mouse(m, area, &mut cx),
+            PanelId::EventLog => self.event_log.handle_mouse(m, &self.notifications, &mut cx),
         };
         let fx = cx.effects;
         self.apply_effects(fx);
@@ -178,11 +178,9 @@ impl App {
             Some(StatusHit::Indent) => self.dialog = self.editor.indent_dialog(),
             // Shown for information; other encodings come later.
             Some(StatusHit::Encoding) => {}
-            Some(StatusHit::Notification) => {
-                if let Some(n) = self.notifications.last().cloned() {
-                    self.dialog = Some(Dialog::info("Notification", &n.text));
-                }
-            }
+            // The status bar shows the newest entry.
+            Some(StatusHit::Notification) if !self.notifications.is_empty() => self.open_event_log(self.notifications.len() - 1),
+            Some(StatusHit::Notification) => {}
             None => {}
         }
     }

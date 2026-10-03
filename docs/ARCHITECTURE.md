@@ -53,7 +53,7 @@ and backlog are in `docs/ROADMAP.md`; settings in `docs/CONFIG.md`; keys in
 | `git/messages.rs` | Commit message history per repository (keyed by its common git dir, so worktrees share it) in `state/commit_messages/`. |
 | `git/model.rs` | Shared types: status entries (`old_rel` for renames), `DiffKey`, log rows and `LogFilter`, commit details, `BranchInfo` and `BranchOp`, `Blame`, `StashEntry`. |
 | `git/panel/` | The Git tool window: shared state, input routing, header and console (`mod.rs`); the diff pane of every tab (`diff_view.rs`: folded unchanged runs, the current change, syntax colors, changed characters, side-by-side/unified); the Commit tab with amend and message history (`commit.rs`); the Log tab with its filter bar and commit actions (`log.rs`); the Stash tab (`stash.rs`). |
-| `ui/` | `render` (frame order), `layout` (rects and hit testing), `focus` (panel and tool window ids), `dialog`, `palette`, `menu` (context menu), `status_bar`, `tabs`, `toasts`, `tool_strip`, `widgets/{list,text_input}`. |
+| `ui/` | `render` (frame order), `layout` (rects and hit testing), `focus` (panel and tool window ids), `dialog`, `palette`, `menu` (context menu), `status_bar`, `tabs`, `toasts`, `tool_strip`, `event_log` (the Event Log tool window over `App::notifications`: first line per entry, full text on Enter, follows new entries while its last row is selected and in view; the status bar notification opens it), `widgets/{list,text_input}`. |
 | `util/` | `text` (width helpers), `coalesce` (one background request at a time), `fs` (`write_atomic`, shared by saves and replace in files). |
 
 ## Event flow
@@ -184,13 +184,14 @@ kitty protocol), handle it in the panel's `handle_action`, then regenerate
 the keymap doc: `cargo run -q -- --dump-keymap > docs/KEYMAP.md` (a test
 fails until it matches).
 
-**A new tool window.** In `ui/focus.rs` add a `ToolWindowId` (to `ALL`,
-`panel`, `side`, `title`, `number`) and a `PanelId` (`tool_window`,
-`context`). Add the panel to `App` and construct it in `App::new`; render it
+**A new tool window.** In `ui/focus.rs` add a `ToolWindowId` at the end
+(sessions store it; also to `ALL`, `panel`, `side`, `title`, `number`) and
+a `PanelId` (`tool_window`, `context`). Add the panel to `App` and construct it in `App::new`; render it
 in `ui::render` on its side; route its mouse in `App::forward_mouse`; send
 its actions from `App::perform`; add an `[<context>]` table to the default
 keymap and a `tool_window.<name>` registry entry
-(`AppAction::ToggleToolWindow`) bound to its Alt+number key.
+(`AppAction::ToggleToolWindow`) bound to its Alt+number key (or another
+key; `number` is then `None`).
 
 **A new dialog.** Add a `DialogId` variant (carry a `BufferId` or path,
 never a tab index), open it with `Effect::Dialog(Dialog::confirm|input|choice

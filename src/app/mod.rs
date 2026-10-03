@@ -2,7 +2,7 @@
 //! the event loop.
 
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::Result;
 use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, MouseButton};
@@ -10,7 +10,7 @@ use futures::StreamExt;
 use ratatui::layout::Rect;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
-use crate::actions::{Action, AppAction, Dir, EditorAction, FindAction, ModeAction};
+use crate::actions::{Action, AppAction, Dir, EditorAction, EventLogAction, FindAction, ModeAction};
 use crate::config::keymap::Keymap;
 use crate::config::theme::Theme;
 use crate::config::{Config, Paths};
@@ -70,11 +70,16 @@ impl Ctx<'_> {
     }
 }
 
+/// When the log grows past this, its older half is dropped.
+const NOTIFICATIONS_MAX: usize = 200;
+
 #[derive(Debug, Clone)]
 pub struct Notification {
     pub level: Level,
     pub text: String,
     pub at: Instant,
+    /// Wall clock time, shown in the Event Log.
+    pub wall: SystemTime,
 }
 
 /// The palette's cached file list of the current root.
@@ -123,6 +128,8 @@ pub struct App {
     bus_rx: UnboundedReceiver<AppMsg>,
     drag: Option<Drag>,
     last_click: Option<LastClick>,
+    /// Session notifications, oldest first, at most `NOTIFICATIONS_MAX`;
+    /// listed by the Event Log.
     pub notifications: Vec<Notification>,
     /// Whether the status bar showed a notification at the last tick.
     notification_shown: bool,
@@ -151,6 +158,7 @@ pub struct App {
     pub git_panel: GitPanel,
     pub find: crate::files::find_panel::FindPanel,
     pub structure: crate::symbols::panel::StructurePanel,
+    pub event_log: crate::ui::event_log::EventLogPanel,
     /// Project symbols for Go to Symbol, built after the file index loads.
     pub symbols: crate::symbols::index::SymbolIndex,
     /// When the open Go to Symbol palette last got the index (it is fed at
@@ -220,6 +228,7 @@ impl App {
             git_panel,
             find: Default::default(),
             structure: Default::default(),
+            event_log: Default::default(),
             symbols: Default::default(),
             symbols_fed: None,
             pending_goto: None,
@@ -262,10 +271,13 @@ impl App {
         }
         let now = Instant::now();
         self.toasts.push(level, &text, now);
-        self.notifications.push(Notification { level, text, at: now });
-        if self.notifications.len() > 200 {
-            self.notifications.drain(..100);
+        self.notifications.push(Notification { level, text, at: now, wall: SystemTime::now() });
+        let mut dropped = 0;
+        if self.notifications.len() > NOTIFICATIONS_MAX {
+            dropped = NOTIFICATIONS_MAX / 2;
+            self.notifications.drain(..dropped);
         }
+        self.event_log.pushed(self.notifications.len(), dropped);
         self.dirty_frame = true;
     }
 
@@ -574,6 +586,18 @@ impl App {
             }
             Action::Find(a) => self.find.handle_action(a, &mut cx),
             Action::Structure(a) => self.structure.handle_action(a, &mut cx),
+            Action::EventLog(EventLogAction::Copy) => {
+                drop(cx);
+                self.copy_event();
+                return;
+            }
+            Action::EventLog(EventLogAction::Clear) => {
+                drop(cx);
+                self.notifications.clear();
+                self.event_log.clear();
+                return;
+            }
+            Action::EventLog(a) => self.event_log.handle_action(a, &self.notifications, &mut cx),
             Action::Palette(_) => false,
         };
         let effects = cx.effects;
@@ -689,6 +713,23 @@ impl App {
         self.git_panel.show_history(&rel, &mut cx);
         let fx = cx.effects;
         self.apply_effects(fx);
+    }
+
+    /// Show and focus the Event Log with entry `i` selected.
+    pub(crate) fn open_event_log(&mut self, i: usize) {
+        self.layout.show(ToolWindowId::EventLog);
+        self.focus.set(PanelId::EventLog);
+        self.event_log.state.set_len(self.notifications.len());
+        self.event_log.select(i);
+    }
+
+    /// `event_log.copy`: the selected entry's full text. The confirmation is
+    /// a toast only, so copying does not add to the log it copies from.
+    fn copy_event(&mut self) {
+        let Some(n) = self.notifications.get(self.event_log.state.selected) else { return };
+        let text = n.text.clone();
+        self.copy_to_clipboard(&text);
+        self.toasts.push(Level::Info, "Copied the entry to the clipboard", Instant::now());
     }
 
     fn select_in_project(&mut self) {
@@ -1776,6 +1817,75 @@ pub(crate) mod tests {
         assert!(app.notifications.iter().any(|n| n.text.starts_with("Merge stopped on conflicts")), "{:?}", app.notifications);
         let snap = crate::git::repo::status(&app.workspace.root).unwrap();
         assert_eq!(snap.entries[0].status, crate::git::model::FileStatus::Conflicted);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn event_log_lists_follows_clears_and_opens_from_the_status_bar() {
+        use crossterm::event::{KeyModifiers, MouseEvent, MouseEventKind};
+        let (mut app, dir) = test_app("event-log");
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        app.perform(Action::EventLog(EventLogAction::Clear));
+        assert!(app.notifications.is_empty());
+        for i in 0..30 {
+            app.notify(Level::Info, format!("event {i}"));
+        }
+        app.notify(Level::Error, "push failed\nremote said no");
+        app.handle_key(KeyEvent::new(KeyCode::Char('L'), KeyModifiers::ALT | KeyModifiers::SHIFT));
+        assert!(app.layout.is_visible(ToolWindowId::EventLog) && app.focus.is(PanelId::EventLog));
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+        let screen = |term: &mut ratatui::Terminal<ratatui::backend::TestBackend>, app: &mut App| {
+            let frame = term.draw(|f| crate::ui::render(app, f)).unwrap();
+            let b = &frame.buffer;
+            (0..b.area.height).map(|y| (0..b.area.width).map(|x| b[(x, y)].symbol()).collect::<String>()).collect::<Vec<_>>()
+        };
+        let rows = screen(&mut term, &mut app);
+        // From the bottom: toasts may show the same text above.
+        let row_of = |rows: &[String], text: &str| rows.iter().rposition(|r| r.contains(text));
+        // Newest last, in view, with the rest of a multi-line text marked.
+        let (prev, last) = (row_of(&rows, "event 29").unwrap(), row_of(&rows, "push failed +1 line").unwrap());
+        assert_eq!(last, prev + 1, "{rows:#?}");
+        assert!(rows[last].contains('×'));
+        assert_eq!(app.event_log.state.selected, 30);
+        // Enter shows the full text.
+        app.handle_key(key(KeyCode::Enter));
+        assert_eq!(app.dialog.take().map(|d| d.message).as_deref(), Some("push failed\nremote said no"));
+        // Moving up stops following; End resumes.
+        app.handle_key(key(KeyCode::Up));
+        app.notify(Level::Info, "later");
+        assert_eq!(app.event_log.state.selected, 29);
+        app.handle_key(key(KeyCode::End));
+        app.notify(Level::Warn, "latest");
+        assert_eq!(app.event_log.state.selected, 32);
+        // So does wheeling away from the end.
+        screen(&mut term, &mut app);
+        let r = app.layout.rects.bottom;
+        let wheel = MouseEvent { kind: MouseEventKind::ScrollUp, column: r.x + 5, row: r.y + 2, modifiers: KeyModifiers::NONE };
+        app.handle_mouse(wheel);
+        app.notify(Level::Info, "unseen");
+        assert_eq!(app.event_log.state.selected, 32);
+        let rows = screen(&mut term, &mut app);
+        assert!(!rows[r.y as usize..r.bottom() as usize].iter().any(|row| row.contains("unseen")), "{rows:#?}");
+        // Ctrl+Shift+Up grows it.
+        let h = app.layout.bottom_h;
+        app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::CONTROL | KeyModifiers::SHIFT));
+        assert_eq!(app.layout.bottom_h, h + 1);
+        // Delete clears it.
+        app.handle_key(key(KeyCode::Delete));
+        assert!(app.notifications.is_empty() && app.event_log.state.len == 0);
+        assert!(row_of(&screen(&mut term, &mut app), "No events").is_some());
+        // A click on the status bar notification opens the log on it.
+        app.notify(Level::Info, "one");
+        app.notify(Level::Warn, "disk full");
+        app.perform(Action::App(AppAction::HideFocusedToolWindow));
+        app.event_log.select(0);
+        screen(&mut term, &mut app);
+        let (_, r) = *app.status_hits.iter().find(|(h, _)| *h == StatusHit::Notification).expect("notification shown");
+        let click = |kind| MouseEvent { kind, column: r.x + 1, row: r.y, modifiers: KeyModifiers::NONE };
+        app.handle_mouse(click(MouseEventKind::Down(MouseButton::Left)));
+        app.handle_mouse(click(MouseEventKind::Up(MouseButton::Left)));
+        assert!(app.layout.is_visible(ToolWindowId::EventLog) && app.focus.is(PanelId::EventLog));
+        assert_eq!(app.notifications[app.event_log.state.selected].text, "disk full");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

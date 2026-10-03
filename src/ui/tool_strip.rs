@@ -51,7 +51,9 @@ pub fn render(app: &mut App, frame: &mut Frame, area: Rect) {
         let style = if active { theme.strip_item_active } else { theme.strip_item };
         let style = if focused { style.add_modifier(ratatui::style::Modifier::UNDERLINED) } else { style };
         buf.set_style(rect, style);
-        buf.set_string(rect.x + 1, rect.y, tw.number().to_string(), style.add_modifier(ratatui::style::Modifier::BOLD));
+        if let Some(n) = tw.number() {
+            buf.set_string(rect.x + 1, rect.y, n.to_string(), style.add_modifier(ratatui::style::Modifier::BOLD));
+        }
         for (i, ch) in label.iter().enumerate() {
             let y = rect.y + 1 + i as u16;
             if y >= rect.bottom() {

@@ -21,6 +21,7 @@ Override any of them in `~/.config/jetl/keymap.toml` (see [CONFIG.md](CONFIG.md)
 | `Alt+9` | `tool_window.git` | Git tool window |
 | `Alt+3` | `tool_window.find` | Find tool window |
 | `Alt+7` | `tool_window.structure` | Structure tool window |
+| `Alt+Shift+L` | `tool_window.event_log` | Event Log tool window |
 | `Ctrl+Shift+F12` | `tool_window.hide_all` | Hide all tool windows |
 | `Shift+Esc` * | `tool_window.hide_focused` | Hide active tool window |
 | `Ctrl+Shift+Left` | `tool_window.stretch_left` | Stretch tool window to the left |
@@ -251,6 +252,21 @@ Override any of them in `~/.config/jetl/keymap.toml` (see [CONFIG.md](CONFIG.md)
 | Keys | Action | Description |
 |---|---|---|
 | `Esc` | `mode.normal` | Vim: normal mode |
+
+## event_log
+
+| Keys | Action | Description |
+|---|---|---|
+| `Esc` | `app.focus_editor` | Focus editor |
+| `Up` | `event_log.up` | Event Log: up |
+| `Down` | `event_log.down` | Event Log: down |
+| `PageUp` | `event_log.page_up` | Event Log: page up |
+| `PageDown` | `event_log.page_down` | Event Log: page down |
+| `Home` | `event_log.home` | Event Log: first entry |
+| `End` | `event_log.end` | Event Log: last entry |
+| `Enter` | `event_log.details` | Event Log: show the full text of the selected entry |
+| `Ctrl+C` | `event_log.copy` | Event Log: copy the selected entry |
+| `Delete` | `event_log.clear` | Event Log: clear |
 
 ## find
 

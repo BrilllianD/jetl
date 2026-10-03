@@ -9,6 +9,9 @@
 "alt-9" = "tool_window.git"
 "alt-3" = "tool_window.find"
 "alt-7" = "tool_window.structure"
+# JetBrains has no default key for the Event Log; Alt+Shift+L works in
+# legacy terminals too.
+"alt-shift-l" = "tool_window.event_log"
 "ctrl-shift-f" = "find.in_files"
 "ctrl-shift-r" = "find.replace_in_files"
 # Ctrl+Shift+F/R need the kitty protocol (legacy terminals send Ctrl+F/R);
@@ -234,6 +237,18 @@
 "home" = "structure.home"
 "end" = "structure.end"
 "enter" = "structure.open"
+"esc" = "app.focus_editor"
+
+[event_log]
+"up" = "event_log.up"
+"down" = "event_log.down"
+"pageup" = "event_log.page_up"
+"pagedown" = "event_log.page_down"
+"home" = "event_log.home"
+"end" = "event_log.end"
+"enter" = "event_log.details"
+"ctrl-c" = "event_log.copy"
+"delete" = "event_log.clear"
 "esc" = "app.focus_editor"
 
 [palette]
