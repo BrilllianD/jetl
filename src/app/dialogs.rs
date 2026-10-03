@@ -101,8 +101,11 @@ impl App {
                     self.git.run_cli(GitOp::NewBranch(name.clone()), vec!["switch".into(), "-c".into(), name]);
                 }
             }
-            (DialogId::PushSetUpstream(branch), DialogResult::Button(0)) => {
-                self.git.run_cli(GitOp::PushUpstream(branch.clone()), vec!["push".into(), "-u".into(), "origin".into(), branch]);
+            (DialogId::PushSetUpstream { branch, remote }, DialogResult::Button(0)) => self.push_upstream(branch, remote),
+            (DialogId::PushUpstreamRemote { branch, remotes }, DialogResult::Choice(i)) => {
+                if let Some(remote) = remotes.get(i) {
+                    self.push_upstream(branch, remote.clone());
+                }
             }
             (DialogId::SwitchRootDirty(root), DialogResult::Button(0)) => {
                 let mut cx = ctx!(self);

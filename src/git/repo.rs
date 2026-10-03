@@ -264,6 +264,38 @@ pub fn branches(root: &Path) -> Result<Vec<BranchInfo>> {
     Ok(out)
 }
 
+/// Where `git push -u` sends a branch that has no upstream yet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PushRemote {
+    /// Configured (`branch.<name>.pushRemote`, `remote.pushDefault`) or the
+    /// only remote.
+    One(String),
+    /// Several remotes and no configuration: ask.
+    Choose(Vec<String>),
+    NoRemote,
+}
+
+/// Pick the push remote the way git does for `push -u`: the branch's
+/// `pushRemote`, then `remote.pushDefault`, then the only remote.
+pub fn pick_push_remote(branch_push_remote: Option<String>, push_default: Option<String>, remotes: Vec<String>) -> PushRemote {
+    if let Some(r) = branch_push_remote.or(push_default).filter(|r| !r.is_empty()) {
+        return PushRemote::One(r);
+    }
+    match remotes.len() {
+        0 => PushRemote::NoRemote,
+        1 => PushRemote::One(remotes.into_iter().next().unwrap_or_default()),
+        _ => PushRemote::Choose(remotes),
+    }
+}
+
+pub fn push_remote(root: &Path, branch: &str) -> Result<PushRemote> {
+    let (repo, _) = open(root)?;
+    let cfg = repo.config()?;
+    let get = |key: &str| cfg.get_string(key).ok();
+    let remotes = repo.remotes()?.iter().filter_map(|r| r.ok().flatten().map(str::to_string)).collect();
+    Ok(pick_push_remote(get(&format!("branch.{branch}.pushRemote")), get("remote.pushDefault"), remotes))
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -357,5 +389,22 @@ pub(crate) mod tests {
         let b = branches(&r.dir).unwrap();
         assert_eq!(b.len(), 1);
         assert!(b[0].current);
+    }
+
+    #[test]
+    fn push_remote_prefers_configuration_then_the_only_remote() {
+        let r = TempRepo::new("push-remote");
+        assert_eq!(push_remote(&r.dir, "main").unwrap(), PushRemote::NoRemote);
+        let repo = Repository::open(&r.dir).unwrap();
+        repo.remote("upstream", "https://example.com/a.git").unwrap();
+        assert_eq!(push_remote(&r.dir, "main").unwrap(), PushRemote::One("upstream".into()));
+        repo.remote("fork", "https://example.com/b.git").unwrap();
+        assert_eq!(push_remote(&r.dir, "main").unwrap(), PushRemote::Choose(vec!["fork".into(), "upstream".into()]));
+        let mut cfg = git2::Config::open(&r.dir.join(".git/config")).unwrap();
+        cfg.set_str("remote.pushDefault", "fork").unwrap();
+        assert_eq!(push_remote(&r.dir, "main").unwrap(), PushRemote::One("fork".into()));
+        cfg.set_str("branch.main.pushRemote", "upstream").unwrap();
+        assert_eq!(push_remote(&r.dir, "main").unwrap(), PushRemote::One("upstream".into()));
+        assert_eq!(push_remote(&r.dir, "other").unwrap(), PushRemote::One("fork".into()));
     }
 }

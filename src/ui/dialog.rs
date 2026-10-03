@@ -50,7 +50,16 @@ pub enum DialogId {
     },
     WorktreeSwitchAfterCreate(std::path::PathBuf),
     NewBranchName,
-    PushSetUpstream(String),
+    /// Push the branch to the remote and set it as upstream.
+    PushSetUpstream {
+        branch: String,
+        remote: String,
+    },
+    /// Several remotes: item `i` is `remotes[i]`; picking one pushes.
+    PushUpstreamRemote {
+        branch: String,
+        remotes: Vec<String>,
+    },
     Info,
     GotoLine,
     /// Item `i` is bookmarked line `.1` of buffer `.0`.

@@ -1380,4 +1380,23 @@ pub(crate) mod tests {
         assert_eq!(errors(&app), 2);
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[tokio::test]
+    async fn push_without_upstream_asks_for_the_remote() {
+        use crate::git::repo::PushRemote;
+        let (mut app, dir) = test_app("push-remote");
+        let g = app.git.generation;
+        let msg = |result| AppMsg::Git(GitMsg::PushRemote { generation: g, branch: "feat".into(), result: Ok(result) });
+        app.handle_msg(msg(PushRemote::One("fork".into())));
+        let d = app.dialog.take().expect("confirm");
+        assert_eq!(d.id, DialogId::PushSetUpstream { branch: "feat".into(), remote: "fork".into() });
+        assert!(d.message.contains("fork/feat"));
+        app.handle_msg(msg(PushRemote::Choose(vec!["a".into(), "b".into()])));
+        let d = app.dialog.take().expect("choice");
+        assert_eq!(d.id, DialogId::PushUpstreamRemote { branch: "feat".into(), remotes: vec!["a".into(), "b".into()] });
+        app.handle_msg(msg(PushRemote::NoRemote));
+        assert!(app.dialog.is_none());
+        assert!(app.notifications.last().is_some_and(|n| n.text.starts_with("No remote configured")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

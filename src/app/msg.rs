@@ -124,8 +124,35 @@ impl App {
                 self.apply_effects(fx);
             }
             GitMsg::CommitDetails { sha, result, .. } => self.git_panel.set_details(&sha, result),
+            GitMsg::PushRemote { branch, result, .. } => self.push_remote_known(branch, result),
             GitMsg::OpDone { op, label, ok, output, .. } => self.git_op_done(op, label, ok, output),
         }
+    }
+
+    /// A push failed for lack of an upstream: confirm the configured or only
+    /// remote, or let the user pick one of several.
+    fn push_remote_known(&mut self, branch: String, result: anyhow::Result<crate::git::repo::PushRemote>) {
+        use crate::git::repo::PushRemote;
+        match result {
+            Ok(PushRemote::One(remote)) => {
+                let msg = format!("Branch '{branch}' has no upstream.\nPush it and set the upstream to {remote}/{branch}?");
+                self.dialog = Some(Dialog::confirm(DialogId::PushSetUpstream { branch, remote }, "Push", &msg, &["Push", "Cancel"]));
+            }
+            Ok(PushRemote::Choose(remotes)) => {
+                let msg = format!("Branch '{branch}' has no upstream. Push it to:");
+                self.dialog =
+                    Some(Dialog::choice(DialogId::PushUpstreamRemote { branch, remotes: remotes.clone() }, "Push", &msg, remotes));
+            }
+            Ok(PushRemote::NoRemote) => {
+                self.notify(Level::Error, "No remote configured; nothing to push to. Add one with `git remote add origin <url>`.")
+            }
+            Err(e) => self.notify(Level::Error, format!("Push: {e:#}")),
+        }
+    }
+
+    /// `git push -u <remote> <branch>`.
+    pub(super) fn push_upstream(&mut self, branch: String, remote: String) {
+        self.git.run_cli(GitOp::PushUpstream(branch.clone()), vec!["push".into(), "-u".into(), remote, branch]);
     }
 
     pub(super) fn git_op_done(&mut self, op: GitOp, label: String, ok: bool, output: String) {
@@ -155,10 +182,10 @@ impl App {
                     tracing::info!("reloaded {n} buffer(s) after {label}");
                 }
             }
-        } else if op == GitOp::Push && output.contains("has no upstream branch") {
-            let branch = self.branch_label().unwrap_or_default();
-            let msg = format!("Branch '{branch}' has no upstream.\nPush it and set the upstream to origin/{branch}?");
-            self.dialog = Some(Dialog::confirm(DialogId::PushSetUpstream(branch), "Push", &msg, &["Push", "Cancel"]));
+        } else if op == GitOp::Push && (output.contains("has no upstream branch") || output.contains("No configured push destination")) {
+            // No upstream (one remote) or no default remote (several): ask
+            // where to push once the remote is known (GitMsg::PushRemote).
+            self.git.load_push_remote(self.branch_label().unwrap_or_default());
         } else if matches!(op, GitOp::Commit { .. } | GitOp::Stage | GitOp::Unstage) {
             self.notify(Level::Error, error_line(&output));
         } else {

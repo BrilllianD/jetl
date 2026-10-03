@@ -33,7 +33,7 @@ pub enum GitOp {
         push: bool,
     },
     Push,
-    /// `git push -u origin <branch>`.
+    /// `git push -u <remote> <branch>`; carries the branch.
     PushUpstream(String),
     Pull,
     Fetch,
@@ -92,6 +92,13 @@ pub enum GitMsg {
         sha: String,
         result: Result<CommitDetails>,
     },
+    /// The remote for `git push -u` of `branch` (after a push failed for
+    /// lack of an upstream).
+    PushRemote {
+        generation: u64,
+        branch: String,
+        result: Result<repo::PushRemote>,
+    },
     /// A finished operation; `label` is what the console and spinner show.
     OpDone {
         generation: u64,
@@ -112,6 +119,7 @@ impl GitMsg {
             | GitMsg::Branches { generation, .. }
             | GitMsg::Log { generation, .. }
             | GitMsg::CommitDetails { generation, .. }
+            | GitMsg::PushRemote { generation, .. }
             | GitMsg::OpDone { generation, .. } => *generation,
         }
     }
@@ -235,6 +243,11 @@ impl GitService {
 
     pub fn load_branches(&self) {
         self.blocking(repo::branches, |generation, result| GitMsg::Branches { generation, result });
+    }
+
+    pub fn load_push_remote(&self, branch: String) {
+        let b = branch.clone();
+        self.blocking(move |root| repo::push_remote(root, &b), move |generation, result| GitMsg::PushRemote { generation, branch, result });
     }
 
     pub fn load_diff(&self, key: DiffKey) {
