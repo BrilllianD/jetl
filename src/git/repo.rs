@@ -261,6 +261,53 @@ pub fn commit(root: &Path, message: &str) -> Result<String> {
     Ok(oid.to_string()[..8].to_string())
 }
 
+/// Throw away changes, like `git restore`. Staged paths go back to HEAD in
+/// the index and the working tree (`checkout_head`); unstaged paths go back
+/// to the index, so staged work survives (`checkout_index`); untracked
+/// files, and new files that HEAD does not have, are deleted. Returns a
+/// line for the console.
+pub fn discard(root: &Path, items: &[(Section, String)]) -> Result<String> {
+    let (repo, wd) = open(root)?;
+    let of = |sec: Section| items.iter().filter(move |(s, _)| *s == sec).map(|(_, p)| p.clone()).collect::<Vec<_>>();
+    let (staged, unstaged, untracked) = (of(Section::Staged), of(Section::Unstaged), of(Section::Untracked));
+    let checkout = |paths: &[String]| {
+        let mut b = git2::build::CheckoutBuilder::new();
+        b.force().disable_pathspec_match(true);
+        for p in paths {
+            b.path(p);
+        }
+        b
+    };
+    let mut deleted = untracked.clone();
+    if !staged.is_empty() {
+        unstage(root, &staged)?;
+        let head = repo.head().ok().and_then(|h| h.peel_to_tree().ok());
+        let (known, new): (Vec<String>, Vec<String>) =
+            staged.iter().cloned().partition(|p| head.as_ref().is_some_and(|t| t.get_path(Path::new(p)).is_ok()));
+        if !known.is_empty() {
+            repo.checkout_head(Some(&mut checkout(&known))).context("checkout from HEAD")?;
+        }
+        deleted.extend(new);
+    }
+    if !unstaged.is_empty() {
+        let index = repo.index()?;
+        // The new side of a rename in the working tree is not in the index.
+        let (known, new): (Vec<String>, Vec<String>) = unstaged.iter().cloned().partition(|p| index.get_path(Path::new(p), 0).is_some());
+        if !known.is_empty() {
+            repo.checkout_index(None, Some(&mut checkout(&known))).context("checkout from the index")?;
+        }
+        deleted.extend(new);
+    }
+    for p in &deleted {
+        let abs = wd.join(p);
+        if abs.symlink_metadata().is_ok() {
+            std::fs::remove_file(&abs).with_context(|| format!("delete {p}"))?;
+        }
+    }
+    let n = staged.len() + unstaged.len() + untracked.len();
+    Ok(format!("Discarded changes to {n} path{}", if n == 1 { "" } else { "s" }))
+}
+
 pub fn branches(root: &Path) -> Result<Vec<BranchInfo>> {
     let (repo, _) = open(root)?;
     let mut out = Vec::new();
@@ -466,5 +513,38 @@ pub(crate) mod tests {
         assert_eq!((e.section, e.status, e.rel.as_str(), e.old_rel.as_deref()), (Section::Unstaged, FileStatus::Modified, "new.txt", None));
         unstage(&r.dir, &snap.entries[0].paths()).unwrap();
         assert_eq!(status(&r.dir).unwrap().entries[0].section, Section::Unstaged);
+    }
+
+    #[test]
+    fn discard_restores_head_or_index_and_deletes_new_files() {
+        let r = TempRepo::new("discard");
+        r.write("a.txt", "a\n");
+        r.write("b.txt", "b\n");
+        r.write("c.txt", "c\n");
+        stage_all(&r.dir).unwrap();
+        commit(&r.dir, "first").unwrap();
+        // a: staged edit plus an unstaged edit on top; discarding the
+        // unstaged side keeps the staged one.
+        r.write("a.txt", "a staged\n");
+        stage(&r.dir, &["a.txt".into()]).unwrap();
+        r.write("a.txt", "a unstaged\n");
+        // b: deleted; c: staged edit; new.txt: staged new file; u.txt: untracked.
+        std::fs::remove_file(r.dir.join("b.txt")).unwrap();
+        r.write("c.txt", "c staged\n");
+        r.write("new.txt", "new\n");
+        stage(&r.dir, &["c.txt".into(), "new.txt".into()]).unwrap();
+        r.write("u.txt", "u\n");
+        discard(&r.dir, &[(Section::Unstaged, "a.txt".into()), (Section::Unstaged, "b.txt".into())]).unwrap();
+        let read = |p: &str| std::fs::read_to_string(r.dir.join(p)).ok();
+        assert_eq!(read("a.txt").as_deref(), Some("a staged\n"));
+        assert_eq!(read("b.txt").as_deref(), Some("b\n"));
+        discard(&r.dir, &[(Section::Staged, "a.txt".into()), (Section::Staged, "c.txt".into()), (Section::Staged, "new.txt".into())])
+            .unwrap();
+        assert_eq!(read("a.txt").as_deref(), Some("a\n"));
+        assert_eq!(read("c.txt").as_deref(), Some("c\n"));
+        assert_eq!(read("new.txt"), None);
+        assert_eq!(sections(&r.dir), vec![(Section::Untracked, FileStatus::Untracked, "u.txt".into())]);
+        discard(&r.dir, &[(Section::Untracked, "u.txt".into())]).unwrap();
+        assert!(status(&r.dir).unwrap().entries.is_empty());
     }
 }

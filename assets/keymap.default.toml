@@ -170,6 +170,7 @@
 "enter" = "git.open_file"
 "tab" = "git.next_section"
 "ctrl-alt-a" = "git.stage_all"
+"ctrl-alt-z" = "git.discard"
 "f5" = "git.refresh"
 "alt-c" = "git.tab_commit"
 "alt-l" = "git.tab_log"

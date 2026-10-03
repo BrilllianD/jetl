@@ -101,6 +101,7 @@ impl App {
                     self.git.run_cli(GitOp::NewBranch(name.clone()), vec!["switch".into(), "-c".into(), name]);
                 }
             }
+            (DialogId::GitDiscard(items), DialogResult::Button(0)) => self.git_request(crate::git::GitRequest::Discard(items)),
             (DialogId::PushSetUpstream { branch, remote }, DialogResult::Button(0)) => self.push_upstream(branch, remote),
             (DialogId::PushUpstreamRemote { branch, remotes }, DialogResult::Choice(i)) => {
                 if let Some(remote) = remotes.get(i) {

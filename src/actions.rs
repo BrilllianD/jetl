@@ -154,6 +154,7 @@ pub enum GitAction {
     ToggleStage,
     StageAll,
     UnstageAll,
+    Discard,
     Commit,
     CommitAndPush,
     CommitBox,
@@ -385,6 +386,7 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "git.toggle_stage" => "Git: stage/unstage selected", Git(GitAction::ToggleStage);
         "git.stage_all" => "Git: stage all", Git(GitAction::StageAll);
         "git.unstage_all" => "Git: unstage all", Git(GitAction::UnstageAll);
+        "git.discard" => "Git: discard changes of the selected file or section", Git(GitAction::Discard);
         "git.commit" => "Git: commit", Git(GitAction::Commit);
         "git.commit_and_push" => "Git: commit and push", Git(GitAction::CommitAndPush);
         "git.commit_box" => "Git: open commit window", Git(GitAction::CommitBox);

@@ -173,6 +173,7 @@ impl App {
                 GitOp::Fetch => self.notify(Level::Info, "Fetched"),
                 GitOp::Switch(b) => self.notify(Level::Info, format!("Switched to {b}")),
                 GitOp::NewBranch(b) => self.notify(Level::Info, format!("Created and switched to {b}")),
+                GitOp::Discard => self.notify(Level::Info, output.clone()),
                 GitOp::Stage | GitOp::Unstage => {}
                 GitOp::WorktreeAdd { .. } | GitOp::WorktreeRemove { .. } | GitOp::WorktreePrune => {}
             }
@@ -186,7 +187,7 @@ impl App {
             // No upstream (one remote) or no default remote (several): ask
             // where to push once the remote is known (GitMsg::PushRemote).
             self.git.load_push_remote(self.branch_label().unwrap_or_default());
-        } else if matches!(op, GitOp::Commit { .. } | GitOp::Stage | GitOp::Unstage) {
+        } else if matches!(op, GitOp::Commit { .. } | GitOp::Stage | GitOp::Unstage | GitOp::Discard) {
             self.notify(Level::Error, error_line(&output));
         } else {
             self.notify(Level::Error, format!("{label}: {}", error_line(&output)));

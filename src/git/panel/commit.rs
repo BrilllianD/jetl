@@ -12,7 +12,8 @@ use crate::app::Ctx;
 use crate::config::theme::Theme;
 use crate::event::{Effect, Level, Mouse};
 use crate::git::GitRequest;
-use crate::git::model::{ChangeEntry, DiffKey, Section, StatusSnapshot};
+use crate::git::model::{ChangeEntry, DiffKey, FileStatus, Section, StatusSnapshot};
+use crate::ui::dialog::{Dialog, DialogId};
 
 impl GitPanel {
     // ---- data from the service -------------------------------------------
@@ -165,6 +166,32 @@ impl GitPanel {
         };
         let req = if section == Section::Staged { GitRequest::Unstage(rels) } else { GitRequest::Stage(rels) };
         cx.effects.push(Effect::Git(req));
+    }
+
+    /// Ask to discard the selected entry, or a whole section on its header.
+    pub(super) fn discard_selected(&mut self, cx: &mut Ctx) {
+        let Some(row) = self.rows.get(self.list.selected).copied() else { return };
+        let Some(s) = &self.snapshot else { return };
+        let entries: Vec<&ChangeEntry> = match row {
+            ListRow::Entry(i) => vec![&s.entries[i]],
+            ListRow::Header(sec, _) => s.entries.iter().filter(|e| e.section == sec).collect(),
+        };
+        if entries.iter().any(|e| e.status == FileStatus::Conflicted) {
+            cx.notify(Level::Warn, "Cannot discard a conflicted file; resolve it first");
+            return;
+        }
+        let what = match entries.as_slice() {
+            [e] => e.label(),
+            list => format!("{} files", list.len()),
+        };
+        let deletes = entries.iter().filter(|e| matches!(e.status, FileStatus::Untracked | FileStatus::Added)).count();
+        let mut msg = format!("Discard all changes to {what}?");
+        if deletes > 0 {
+            msg.push_str(&format!("\n{deletes} new file{} will be deleted.", if deletes == 1 { "" } else { "s" }));
+        }
+        msg.push_str("\nThis cannot be undone.");
+        let items = entries.iter().flat_map(|e| e.paths().into_iter().map(|p| (e.section, p))).collect();
+        cx.effects.push(Effect::Dialog(Dialog::confirm(DialogId::GitDiscard(items), "Discard Changes", &msg, &["Discard", "Cancel"])));
     }
 
     pub(super) fn open_selected_file(&mut self, cx: &mut Ctx) {

@@ -151,6 +151,7 @@ Override any of them in `~/.config/jetl/keymap.toml` (see [CONFIG.md](CONFIG.md)
 | `F5` | `git.refresh` | Git: refresh |
 | `Space` | `git.toggle_stage` | Git: stage/unstage selected |
 | `Ctrl+Alt+A` | `git.stage_all` | Git: stage all |
+| `Ctrl+Alt+Z` | `git.discard` | Git: discard changes of the selected file or section |
 | `Alt+Enter` | `git.commit` | Git: commit |
 | `Ctrl+Enter` * | `git.commit` | Git: commit |
 | `Ctrl+Alt+N` | `git.new_branch` | Git: new branch |

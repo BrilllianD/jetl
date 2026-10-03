@@ -92,6 +92,10 @@ impl App {
             GitRequest::UnstageAll => {
                 self.git.run_repo(GitOp::Unstage, "unstage all".into(), |root| repo::unstage_all(root).map(|_| String::new()));
             }
+            GitRequest::Discard(items) => {
+                let label = format!("discard {}", items.iter().map(|(_, p)| p.as_str()).collect::<Vec<_>>().join(" "));
+                self.git.run_repo(GitOp::Discard, label, move |root| repo::discard(root, &items));
+            }
             GitRequest::Commit { message, push } => {
                 let subject = message.lines().next().unwrap_or("").to_string();
                 self.git.run_repo(GitOp::Commit { push }, format!("commit: {subject}"), move |root| repo::commit(root, &message));

@@ -1399,4 +1399,51 @@ pub(crate) mod tests {
         assert!(app.notifications.last().is_some_and(|n| n.text.starts_with("No remote configured")));
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// Make the test app's root a repository with `files` committed.
+    pub(crate) fn init_repo(app: &App, files: &[(&str, &str)]) {
+        let root = &app.workspace.root;
+        let repo = git2::Repository::init(root).unwrap();
+        let mut cfg = git2::Config::open(&root.join(".git/config")).unwrap();
+        cfg.set_str("user.name", "Test").unwrap();
+        cfg.set_str("user.email", "test@example.com").unwrap();
+        for (name, text) in files {
+            std::fs::write(root.join(name), text).unwrap();
+        }
+        crate::git::repo::stage_all(root).unwrap();
+        crate::git::repo::commit(root, "init").unwrap();
+        drop(repo);
+    }
+
+    /// Feed the app a fresh status of its root, as the service would.
+    pub(crate) fn feed_status(app: &mut App, seq: u64) {
+        let result = crate::git::repo::status(&app.workspace.root);
+        app.handle_msg(AppMsg::Git(GitMsg::Status { generation: app.git.generation, seq, result }));
+    }
+
+    fn git_op_done(m: &AppMsg) -> bool {
+        matches!(m, AppMsg::Git(GitMsg::OpDone { .. }))
+    }
+
+    #[tokio::test]
+    async fn discard_asks_then_restores_the_file_and_reloads_its_tab() {
+        use crate::actions::GitAction;
+        let (mut app, dir) = test_app("discard");
+        init_repo(&app, &[("a.txt", "a\n")]);
+        let a = load(&mut app, "a.txt", "changed\n");
+        feed_status(&mut app, 1);
+        app.focus.set(PanelId::Git);
+        // The selection lands on the first entry.
+        app.perform(Action::Git(GitAction::Discard));
+        let d = app.dialog.take().expect("asks first");
+        assert_eq!(d.id, DialogId::GitDiscard(vec![(crate::git::Section::Unstaged, "a.txt".into())]));
+        assert!(d.message.contains("a.txt"));
+        app.finish_dialog(d.id.clone(), DialogResult::Button(1));
+        assert_eq!(std::fs::read_to_string(&a).unwrap(), "changed\n", "Cancel keeps it");
+        app.finish_dialog(d.id, DialogResult::Button(0));
+        handle_next(&mut app, git_op_done).await;
+        assert_eq!(std::fs::read_to_string(&a).unwrap(), "a\n");
+        assert_eq!(app.editor.buffers[0].text(), "a\n", "the clean tab reloads");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

@@ -29,6 +29,8 @@ pub use repo::BlobWhich;
 pub enum GitOp {
     Stage,
     Unstage,
+    /// Throw away working tree (and staged) changes of some paths.
+    Discard,
     Commit {
         push: bool,
     },
@@ -54,7 +56,7 @@ pub enum GitOp {
 impl GitOp {
     /// Whether the operation may rewrite files in the work tree.
     pub fn touches_worktree(&self) -> bool {
-        matches!(self, GitOp::Pull | GitOp::Switch(_) | GitOp::NewBranch(_))
+        matches!(self, GitOp::Pull | GitOp::Switch(_) | GitOp::NewBranch(_) | GitOp::Discard)
     }
 }
 
@@ -134,14 +136,21 @@ pub enum GitRequest {
     Unstage(Vec<String>),
     StageAll,
     UnstageAll,
-    Commit { message: String, push: bool },
+    /// Confirmed already (`DialogId::GitDiscard`).
+    Discard(Vec<(Section, String)>),
+    Commit {
+        message: String,
+        push: bool,
+    },
     Push,
     Pull,
     Fetch,
     BranchesPopup,
     NewBranch,
     LoadDiff(DiffKey),
-    LoadLog { skip: usize },
+    LoadLog {
+        skip: usize,
+    },
     LoadCommit(String),
     LoadWorktrees,
     WorktreePrune,

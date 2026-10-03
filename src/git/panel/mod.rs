@@ -301,6 +301,11 @@ impl GitPanel {
                 }
             }
             G::StageAll => cx.effects.push(Effect::Git(GitRequest::StageAll)),
+            G::Discard => {
+                if self.tab == GitTab::Commit {
+                    self.discard_selected(cx);
+                }
+            }
             G::UnstageAll => cx.effects.push(Effect::Git(GitRequest::UnstageAll)),
             G::Commit => self.commit(false, cx),
             G::CommitAndPush => self.commit(true, cx),
