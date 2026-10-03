@@ -1,6 +1,6 @@
 //! The project root the IDE is currently showing, switching it (worktrees),
-//! and per-root sessions: open tabs with caret and scroll, tool window
-//! layout and expanded tree folders, stored as JSON in
+//! and per-root sessions: open tabs in order with their pins, caret and
+//! scroll, tool window layout and expanded tree folders, stored as JSON in
 //! `paths.sessions_dir()/<fnv hash of root>.json`.
 
 use std::path::{Path, PathBuf};
@@ -90,6 +90,9 @@ pub struct SessionFile {
     /// Bookmarked lines, 0-based.
     #[serde(default)]
     pub bookmarks: Vec<usize>,
+    /// Pinned tabs come first in `files`.
+    #[serde(default)]
+    pub pinned: bool,
 }
 
 /// 64-bit FNV-1a; stable across runs and platforms, unlike `DefaultHasher`.
@@ -203,7 +206,7 @@ impl App {
         }
     }
 
-    /// The open tabs of the current root as a session.
+    /// The open tabs of the current root as a session, in tab order.
     pub fn session(&self) -> Session {
         let root = self.workspace.root.clone();
         let mut files = Vec::new();
@@ -215,7 +218,7 @@ impl App {
             }
             let (line, col) = b.cursor_line_col();
             let bookmarks = b.bookmarks.iter().copied().collect();
-            files.push(SessionFile { path, line, col, scroll_line: b.scroll_line, scroll_col: b.scroll_col, bookmarks });
+            files.push(SessionFile { path, line, col, scroll_line: b.scroll_line, scroll_col: b.scroll_col, bookmarks, pinned: b.pinned });
         }
         let recent = self.editor.recent_paths().iter().filter_map(|p| files.iter().position(|f| &f.path == p)).collect();
         let (show_hidden, show_ignored) = self.project.visibility();
@@ -279,11 +282,16 @@ impl App {
             let i = self.editor.open_text(f.path.clone(), &text, lossy, &self.theme);
             self.editor.restore_view(i, f.line, f.col, f.scroll_line, f.scroll_col);
             self.editor.buffers[i].set_bookmarks(&f.bookmarks);
+            if f.pinned {
+                self.editor.set_pinned(i, true);
+            }
             self.git.load_blob(f.path.clone(), crate::git::BlobWhich::Head);
         }
         let recent: Vec<PathBuf> = session.recent.iter().filter_map(|i| session.files.get(*i)).map(|f| f.path.clone()).collect();
         let active = session.active.and_then(|i| session.files.get(i)).map(|f| f.path.as_path());
         self.editor.restore_recent(&recent, active);
+        // Applied once recency is known, so the limit keeps the recent tabs.
+        self.editor.enforce_tab_limit();
         // Opening the tabs is not navigation.
         self.editor.clear_nav();
         if let Some(l) = &session.layout {
@@ -329,8 +337,24 @@ mod tests {
         let s = Session {
             root: root.clone(),
             files: vec![
-                SessionFile { path: root.join("src/main.rs"), line: 10, col: 4, scroll_line: 2, scroll_col: 0, bookmarks: vec![3, 40] },
-                SessionFile { path: root.join("README.md"), line: 0, col: 0, scroll_line: 0, scroll_col: 3, bookmarks: vec![] },
+                SessionFile {
+                    path: root.join("src/main.rs"),
+                    line: 10,
+                    col: 4,
+                    scroll_line: 2,
+                    scroll_col: 0,
+                    bookmarks: vec![3, 40],
+                    pinned: true,
+                },
+                SessionFile {
+                    path: root.join("README.md"),
+                    line: 0,
+                    col: 0,
+                    scroll_line: 0,
+                    scroll_col: 3,
+                    bookmarks: vec![],
+                    pinned: false,
+                },
             ],
             active: Some(1),
             recent: vec![1, 0],
@@ -354,7 +378,7 @@ mod tests {
         std::fs::write(&file, r#"{"root":"/tmp/some/project","files":[{"path":"/tmp/some/project/a"}]}"#).unwrap();
         let old = Session::load(&dir, &root).unwrap();
         assert_eq!((old.files[0].line, old.active, old.recent.len(), old.files[0].bookmarks.len()), (0, None, 0, 0));
-        assert_eq!((old.layout, old.expanded.len()), (None, 0));
+        assert_eq!((old.layout, old.expanded.len(), old.files[0].pinned), (None, 0, false));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

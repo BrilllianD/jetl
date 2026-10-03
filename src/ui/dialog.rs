@@ -19,6 +19,8 @@ pub enum DialogId {
     /// Keyed by buffer, not tab index: tabs can open while the dialog is up.
     CloseTabDirty(crate::editor::buffer::BufferId),
     CloseAllDirty,
+    /// Close others or close all but pinned with unsaved tabs among them.
+    CloseTabsDirty(Vec<crate::editor::buffer::BufferId>),
     /// Tree: File or Directory, then a name, created in the directory.
     TreeNewKind(std::path::PathBuf),
     TreeNew {

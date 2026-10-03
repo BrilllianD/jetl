@@ -120,6 +120,13 @@ impl App {
                 self.apply_effects(fx);
             }
             (DialogId::CloseAllDirty, DialogResult::Button(1)) => self.editor.force_close_all(),
+            (DialogId::CloseTabsDirty(ids), DialogResult::Button(0)) => {
+                let mut cx = ctx!(self);
+                self.editor.save_and_close_ids(&ids, &mut cx);
+                let fx = cx.effects;
+                self.apply_effects(fx);
+            }
+            (DialogId::CloseTabsDirty(ids), DialogResult::Button(1)) => self.editor.force_close_ids(&ids),
             (DialogId::ReplaceInFiles, DialogResult::Button(0)) => self.replace_in_files(),
             (DialogId::OverwriteExternal(id), DialogResult::Button(0)) => {
                 let mut cx = ctx!(self);

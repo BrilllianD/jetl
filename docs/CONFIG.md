@@ -41,6 +41,8 @@ trim_trailing_whitespace = true # on save, strip trailing spaces and tabs (not o
 final_newline = true           # on save, end a non-empty file with a line break
 autosave = "off"               # "off", "focus" (save when the terminal loses focus) or "idle" (save after a pause in editing)
 autosave_idle_ms = 1500        # pause before an "idle" autosave
+max_tabs = 0                   # open tabs beyond this close the least recently used one that is clean
+                               # and unpinned (none such: the limit is exceeded); 0 = no limit
 
 [ui]
 theme = "darcula"              # reserved; Darcula is the only built-in theme (use theme.toml to change colors)

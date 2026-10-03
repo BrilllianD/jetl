@@ -82,6 +82,9 @@ pub struct EditorConfig {
     pub final_newline: bool,
     pub autosave: Autosave,
     pub autosave_idle_ms: u64,
+    /// Open tabs beyond this close the least recently used clean, unpinned
+    /// tab; 0 means no limit.
+    pub max_tabs: usize,
 }
 
 /// When dirty buffers with a path are written without Ctrl+S.
@@ -151,6 +154,7 @@ impl Default for EditorConfig {
             final_newline: true,
             autosave: Autosave::Off,
             autosave_idle_ms: 1500,
+            max_tabs: 0,
         }
     }
 }

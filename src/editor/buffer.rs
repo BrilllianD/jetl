@@ -109,6 +109,9 @@ pub struct Buffer {
     pub indent: IndentStyle,
     /// The file's `.editorconfig` settings (all unset without one).
     pub settings: FileSettings,
+    /// Pinned tabs come first in the tab bar and survive close others,
+    /// close all but pinned and the tab limit.
+    pub pinned: bool,
 }
 
 impl Buffer {
@@ -148,6 +151,7 @@ impl Buffer {
             bookmarks: BTreeSet::new(),
             indent: IndentStyle::default(),
             settings: FileSettings::default(),
+            pinned: false,
         }
     }
 

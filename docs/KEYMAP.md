@@ -46,6 +46,9 @@ Override any of them in `~/.config/jetl/keymap.toml` (see [CONFIG.md](CONFIG.md)
 | `Alt+Left` | `editor.prev_tab` | Previous tab |
 | `Ctrl+F4` | `editor.close_tab` | Close tab |
 | `Ctrl+W` | `editor.close_tab` | Close tab |
+| `Alt+Shift+P` | `editor.toggle_pin_tab` | Pin or unpin the active tab |
+| `Alt+Shift+Left` | `editor.move_tab_left` | Move the active tab left |
+| `Alt+Shift+Right` | `editor.move_tab_right` | Move the active tab right |
 | `Ctrl+Tab` * | `editor.switcher` | Switcher (recent tabs) |
 | `Alt+F1` | `tree.select_in_project` | Select in Project |
 | `Alt+H` | `git.file_history` | Git: show history for the file (editor) or the selected entry (Project tree) |
@@ -314,7 +317,9 @@ Reachable from Find Action (F1) or by binding them in `keymap.toml`.
 | `editor.find_regex` | Find: toggle regex |
 | `editor.find_field` | Find: switch between find and replace fields |
 | `editor.select_line` | Select line |
-| `editor.close_all_tabs` | Close all tabs |
+| `editor.close_all_tabs` | Close all tabs, pinned ones too |
+| `editor.close_other_tabs` | Close other tabs (keeps pinned ones) |
+| `editor.close_unpinned_tabs` | Close all tabs but pinned |
 | `editor.line_ending_lf` | Convert line endings to LF |
 | `editor.line_ending_crlf` | Convert line endings to CRLF |
 | `editor.set_language` | Set the file's language (highlighting) |

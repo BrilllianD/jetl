@@ -111,6 +111,13 @@ pub enum EditorAction {
     PrevTab,
     CloseTab,
     CloseAllTabs,
+    /// Close every unpinned tab but the active one.
+    CloseOtherTabs,
+    /// Close every unpinned tab.
+    CloseUnpinnedTabs,
+    TogglePinTab,
+    MoveTabLeft,
+    MoveTabRight,
     Switcher,
     Escape,
     ToggleComment,
@@ -398,7 +405,12 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "editor.next_tab" => "Next tab", Editor(E::NextTab);
         "editor.prev_tab" => "Previous tab", Editor(E::PrevTab);
         "editor.close_tab" => "Close tab", Editor(E::CloseTab);
-        "editor.close_all_tabs" => "Close all tabs", Editor(E::CloseAllTabs);
+        "editor.close_all_tabs" => "Close all tabs, pinned ones too", Editor(E::CloseAllTabs);
+        "editor.close_other_tabs" => "Close other tabs (keeps pinned ones)", Editor(E::CloseOtherTabs);
+        "editor.close_unpinned_tabs" => "Close all tabs but pinned", Editor(E::CloseUnpinnedTabs);
+        "editor.toggle_pin_tab" => "Pin or unpin the active tab", Editor(E::TogglePinTab);
+        "editor.move_tab_left" => "Move the active tab left", Editor(E::MoveTabLeft);
+        "editor.move_tab_right" => "Move the active tab right", Editor(E::MoveTabRight);
         "editor.switcher" => "Switcher (recent tabs)", Editor(E::Switcher);
         "editor.escape" => "Escape (close find, clear selection)", Editor(E::Escape);
         "editor.toggle_comment" => "Comment with line comment", Editor(E::ToggleComment);

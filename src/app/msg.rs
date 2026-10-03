@@ -327,6 +327,7 @@ impl App {
         };
         let Some((text, lossy)) = self.decode_file(&path, bytes) else { return };
         self.editor.open_text(path.clone(), &text, lossy, &self.theme);
+        self.editor.enforce_tab_limit();
         if let Some((_, line, col)) = self.pending_goto.take_if(|(p, ..)| *p == path) {
             self.editor.goto_line(line + 1, col + 1);
         }

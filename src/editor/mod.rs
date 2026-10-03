@@ -25,12 +25,13 @@ use ratatui::layout::Rect;
 use ratatui::style::Style;
 use unicode_width::UnicodeWidthStr;
 
-use crate::actions::EditorAction;
+use crate::actions::{Action, EditorAction};
 use crate::app::Ctx;
 use crate::config::theme::Theme;
 use crate::config::{Autosave, Config};
 use crate::event::{Effect, Level, Mouse};
 use crate::ui::dialog::{Dialog, DialogId};
+use crate::ui::menu::{ContextMenu, MenuItem};
 use crate::ui::tabs::TabHits;
 use buffer::{Buffer, BufferId};
 use find::{FindHit, LastSearch, refresh_search, render_find_bar};
@@ -72,6 +73,8 @@ pub struct Editor {
     drag: Option<DragMode>,
     /// Files larger than this open without syntax highlighting.
     max_highlight_bytes: usize,
+    /// `editor.max_tabs`: see [`Editor::enforce_tab_limit`].
+    max_tabs: usize,
     last_search: Option<LastSearch>,
     find_area: Rect,
     find_hits: Vec<(FindHit, Rect)>,
@@ -81,6 +84,9 @@ pub struct Editor {
     /// in it once it loads.
     pending_nav: Option<(PathBuf, usize)>,
 }
+
+/// Shown in place of a pinned tab's close button (one column wide).
+const PIN_MARK: &str = "⚲";
 
 /// Indent dialog items: 0 is a tab, else that many spaces.
 const INDENT_CHOICES: [usize; 4] = [0, 2, 4, 8];
@@ -117,6 +123,7 @@ impl Editor {
             clipboard: String::new(),
             drag: None,
             max_highlight_bytes: config.editor.max_highlight_bytes,
+            max_tabs: config.editor.max_tabs,
             last_search: None,
             find_area: Rect::default(),
             find_hits: Vec::new(),
@@ -179,8 +186,9 @@ impl Editor {
             buf.line_ending = le;
         }
         buf.settings = settings;
-        // JetBrains inserts the new tab right after the active one.
-        let at = self.active.map(|a| a + 1).unwrap_or(self.buffers.len()).min(self.buffers.len());
+        // JetBrains inserts the new tab right after the active one, but
+        // never among the pinned tabs.
+        let at = self.active.map(|a| a + 1).unwrap_or(self.buffers.len()).min(self.buffers.len()).max(self.pinned_count());
         self.buffers.insert(at, buf);
         match pending {
             // Reopened by back/forward, which already updated the history.
@@ -407,6 +415,157 @@ impl Editor {
         self.buffers.clear();
         self.mru.clear();
         self.active = None;
+    }
+
+    /// Close the tabs `ids`, asking first when any has unsaved changes.
+    fn close_ids(&mut self, ids: Vec<BufferId>, cx: &mut Ctx) {
+        if ids.is_empty() {
+            return;
+        }
+        if self.buffers.iter().any(|b| b.dirty() && ids.contains(&b.id)) {
+            cx.effects.push(Effect::Dialog(Dialog::confirm(
+                DialogId::CloseTabsDirty(ids),
+                "Unsaved changes",
+                "Some of these files have unsaved changes.",
+                &["Save", "Don't save", "Cancel"],
+            )));
+            return;
+        }
+        self.force_close_ids(&ids);
+    }
+
+    /// Close the tabs `ids` that are still open, unsaved edits included.
+    pub fn force_close_ids(&mut self, ids: &[BufferId]) {
+        for id in ids {
+            if let Some(i) = self.index_of_id(*id) {
+                self.force_close(i);
+            }
+        }
+    }
+
+    /// Save the unsaved tabs among `ids`, then close those that are clean
+    /// (a save that failed or needs an answer keeps its tab).
+    pub fn save_and_close_ids(&mut self, ids: &[BufferId], cx: &mut Ctx) {
+        for id in ids {
+            let Some(i) = self.index_of_id(*id) else { continue };
+            if !self.buffers[i].dirty() || self.save(i, cx) {
+                self.force_close(i);
+            }
+        }
+    }
+
+    /// Pinned tabs are always the first ones.
+    fn pinned_count(&self) -> usize {
+        self.buffers.iter().take_while(|b| b.pinned).count()
+    }
+
+    pub fn is_pinned(&self, i: usize) -> bool {
+        self.buffers.get(i).is_some_and(|b| b.pinned)
+    }
+
+    /// Pin or unpin tab `i`. A pinned tab moves to the end of the pinned
+    /// ones, an unpinned one to the start of the rest. Returns its new index.
+    pub fn set_pinned(&mut self, i: usize, pinned: bool) -> usize {
+        if i >= self.buffers.len() || self.buffers[i].pinned == pinned {
+            return i;
+        }
+        let n = self.pinned_count();
+        self.buffers[i].pinned = pinned;
+        self.move_tab(i, if pinned { n } else { n - 1 })
+    }
+
+    /// Move tab `from` to index `to` (clamped), keeping the active tab.
+    /// Returns the new index.
+    fn move_tab(&mut self, from: usize, to: usize) -> usize {
+        let to = to.min(self.buffers.len().saturating_sub(1));
+        if from == to || from >= self.buffers.len() {
+            return from;
+        }
+        let b = self.buffers.remove(from);
+        self.buffers.insert(to, b);
+        self.active = self.active.map(|a| match a {
+            a if a == from => to,
+            a if from < a && a <= to => a - 1,
+            a if to <= a && a < from => a + 1,
+            a => a,
+        });
+        to
+    }
+
+    /// The indices tab `i` may move to: pinned tabs stay among the pinned
+    /// ones, the others after them.
+    fn tab_group(&self, i: usize) -> std::ops::Range<usize> {
+        let n = self.pinned_count();
+        if self.is_pinned(i) { 0..n } else { n..self.buffers.len() }
+    }
+
+    /// Alt+Shift+Left / Alt+Shift+Right: move the active tab one place
+    /// within its group.
+    fn step_tab(&mut self, right: bool) {
+        let Some(i) = self.active else { return };
+        let group = self.tab_group(i);
+        let to = if right { i + 1 } else { i.wrapping_sub(1) };
+        if group.contains(&to) {
+            self.move_tab(i, to);
+        }
+    }
+
+    /// A tab drag over column `x`: move tab `id` to the tab under the
+    /// pointer, within its group. It moves only once the pointer is over
+    /// the place it would take, so tabs of different widths do not swap
+    /// back and forth. The hit rects are stale after a move until the next
+    /// frame, so they are cleared.
+    pub fn drag_tab(&mut self, id: BufferId, x: u16) {
+        let Some(cur) = self.index_of_id(id) else { return };
+        let Some(over) = self.tab_hits.tab_at_x(x) else { return };
+        // `cur` is in its group, so the group is not empty.
+        let group = self.tab_group(cur);
+        let to = over.clamp(group.start, group.end - 1);
+        if to == cur {
+            return;
+        }
+        let (Some(from_r), Some(to_r)) = (self.tab_hits.rect_of(cur), self.tab_hits.rect_of(to)) else { return };
+        let reached = if to > cur { x >= to_r.right().saturating_sub(from_r.width) } else { x < to_r.x + from_r.width };
+        if reached {
+            self.move_tab(cur, to);
+            self.tab_hits.clear();
+        }
+    }
+
+    /// Close the least recently used tabs while more than `editor.max_tabs`
+    /// are open (0: no limit). Only clean, unpinned tabs other than the
+    /// active one are closed; when none is left the limit is exceeded.
+    /// Called by the app after a file opens and after a session restore.
+    pub fn enforce_tab_limit(&mut self) -> usize {
+        let mut closed = 0;
+        while self.max_tabs > 0 && self.buffers.len() > self.max_tabs {
+            let active = self.active_buffer().map(|b| b.id);
+            let victim = self.mru.iter().rev().filter_map(|id| self.index_of_id(*id)).find(|&i| {
+                let b = &self.buffers[i];
+                Some(b.id) != active && !b.pinned && !b.dirty()
+            });
+            let Some(i) = victim else { break };
+            tracing::debug!("tab limit {}: closing {}", self.max_tabs, self.buffers[i].name);
+            self.force_close(i);
+            closed += 1;
+        }
+        closed
+    }
+
+    /// Right-click on a tab (already made active): pin and close actions.
+    pub fn tab_menu(&self, x: u16, y: u16, cx: &mut Ctx) {
+        let Some(b) = self.active_buffer() else { return };
+        let e = Action::Editor;
+        let others = self.buffers.iter().enumerate().any(|(i, b)| !b.pinned && Some(i) != self.active);
+        let unpinned = self.buffers.iter().any(|b| !b.pinned);
+        let items = vec![
+            MenuItem::new(if b.pinned { "Unpin Tab" } else { "Pin Tab" }, e(EditorAction::TogglePinTab)),
+            MenuItem::new("Close", e(EditorAction::CloseTab)),
+            MenuItem::new("Close Other Tabs", e(EditorAction::CloseOtherTabs)).enabled(others),
+            MenuItem::new("Close All but Pinned", e(EditorAction::CloseUnpinnedTabs)).enabled(unpinned),
+            MenuItem::new("Close All Tabs", e(EditorAction::CloseAllTabs)),
+        ];
+        cx.effects.push(Effect::ContextMenu(ContextMenu::new(items, x, y)));
     }
 
     pub fn goto_line(&mut self, line: usize, col: usize) {
@@ -644,6 +803,27 @@ impl Editor {
                 self.close_all(cx);
                 return true;
             }
+            E::CloseOtherTabs => {
+                let ids =
+                    self.buffers.iter().enumerate().filter(|(i, b)| !b.pinned && Some(*i) != self.active).map(|(_, b)| b.id).collect();
+                self.close_ids(ids, cx);
+                return true;
+            }
+            E::CloseUnpinnedTabs => {
+                let ids = self.buffers.iter().filter(|b| !b.pinned).map(|b| b.id).collect();
+                self.close_ids(ids, cx);
+                return true;
+            }
+            E::TogglePinTab => {
+                if let Some(i) = self.active {
+                    self.set_pinned(i, !self.buffers[i].pinned);
+                }
+                return true;
+            }
+            E::MoveTabLeft | E::MoveTabRight => {
+                self.step_tab(*a == E::MoveTabRight);
+                return true;
+            }
             E::Switcher => {
                 if let Some(id) = self.mru.get(1).copied()
                     && let Some(i) = self.buffers.iter().position(|b| b.id == id)
@@ -877,6 +1057,11 @@ impl Editor {
             | E::PrevTab
             | E::CloseTab
             | E::CloseAllTabs
+            | E::CloseOtherTabs
+            | E::CloseUnpinnedTabs
+            | E::TogglePinTab
+            | E::MoveTabLeft
+            | E::MoveTabRight
             | E::Switcher
             | E::Save
             | E::SaveAll
@@ -1134,7 +1319,9 @@ impl Editor {
             screen.set_stringn(cx, area.y, &b.name, (area.right() - cx) as usize, style);
             cx += b.name.width() as u16 + 1;
             let close_style = if active { style } else { theme.dim.bg(theme.panel_bg) };
-            screen.set_string(cx, area.y, "×", close_style);
+            // A pinned tab shows a pin in place of its close button; a click
+            // on it unpins.
+            screen.set_string(cx, area.y, if b.pinned { PIN_MARK } else { "×" }, close_style);
             self.tab_hits.close.push((i, Rect::new(cx, area.y, 1, 1)));
             self.tab_hits.tabs.push((i, rect));
             x += w;
@@ -1572,5 +1759,152 @@ mod tests {
         ed.open_text(PathBuf::from("/tmp/big-script"), "#!/usr/bin/env python3\nprint(1)\n", false, &Theme::default());
         assert!(ed.buffers[0].syntax.is_none());
         assert_eq!(ed.buffers[0].language().and_then(|d| d.line_comment), Some("#"));
+    }
+
+    fn names(ed: &Editor) -> Vec<&str> {
+        ed.buffers.iter().map(|b| b.name.as_str()).collect()
+    }
+
+    /// An editor with tabs `a.txt`, `b.txt`, … opened in that order (the
+    /// last one active) under `config`.
+    fn editor_tabs(config: &Config, n: usize) -> Editor {
+        let mut ed = Editor::new(config);
+        for c in ('a'..).take(n) {
+            ed.open_text(PathBuf::from(format!("/tmp/{c}.txt")), "x\n", false, &Theme::default());
+        }
+        ed
+    }
+
+    fn act(ed: &mut Editor, a: EditorAction) -> Vec<Effect> {
+        let config = Config::default();
+        let theme = Theme::default();
+        let workspace = Workspace::new(PathBuf::from("/tmp"));
+        let (bus, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut cx = Ctx { effects: Vec::new(), config: &config, theme: &theme, workspace: &workspace, bus };
+        ed.handle_action(&a, &mut cx);
+        cx.effects
+    }
+
+    #[test]
+    fn tabs_move_and_pinned_tabs_stay_first() {
+        let mut ed = editor_tabs(&Config::default(), 4);
+        assert_eq!(names(&ed), ["a.txt", "b.txt", "c.txt", "d.txt"]);
+        act(&mut ed, EditorAction::MoveTabLeft);
+        act(&mut ed, EditorAction::MoveTabLeft);
+        assert_eq!(names(&ed), ["a.txt", "d.txt", "b.txt", "c.txt"]);
+        assert_eq!(ed.active_buffer().unwrap().name, "d.txt", "the moved tab stays active");
+        // Pinning c moves it to the front; d follows it.
+        ed.activate_index(3);
+        act(&mut ed, EditorAction::TogglePinTab);
+        assert_eq!(names(&ed), ["c.txt", "a.txt", "d.txt", "b.txt"]);
+        ed.activate_index(2);
+        act(&mut ed, EditorAction::TogglePinTab);
+        assert_eq!(names(&ed), ["c.txt", "d.txt", "a.txt", "b.txt"]);
+        // Pinned tabs move only among themselves, the others after them.
+        act(&mut ed, EditorAction::MoveTabRight);
+        assert_eq!(names(&ed), ["c.txt", "d.txt", "a.txt", "b.txt"]);
+        act(&mut ed, EditorAction::MoveTabLeft);
+        assert_eq!(names(&ed), ["d.txt", "c.txt", "a.txt", "b.txt"]);
+        ed.activate_index(2);
+        act(&mut ed, EditorAction::MoveTabLeft);
+        assert_eq!(names(&ed), ["d.txt", "c.txt", "a.txt", "b.txt"]);
+        // A new tab never opens among the pinned ones.
+        ed.activate_index(0);
+        ed.open_text(PathBuf::from("/tmp/e.txt"), "", false, &Theme::default());
+        assert_eq!(names(&ed), ["d.txt", "c.txt", "e.txt", "a.txt", "b.txt"]);
+        // Close others keeps the active tab and the pinned ones.
+        ed.activate_index(3);
+        assert!(act(&mut ed, EditorAction::CloseOtherTabs).is_empty());
+        assert_eq!(names(&ed), ["d.txt", "c.txt", "a.txt"]);
+        assert_eq!(ed.active_buffer().unwrap().name, "a.txt");
+        // Unpinning moves the tab to the start of the others.
+        ed.activate_index(0);
+        act(&mut ed, EditorAction::TogglePinTab);
+        assert_eq!(names(&ed), ["c.txt", "d.txt", "a.txt"]);
+        assert!(!ed.buffers[1].pinned && ed.buffers[0].pinned);
+        // Close all but pinned, then close all.
+        act(&mut ed, EditorAction::CloseUnpinnedTabs);
+        assert_eq!(names(&ed), ["c.txt"]);
+        act(&mut ed, EditorAction::CloseAllTabs);
+        assert!(ed.buffers.is_empty());
+    }
+
+    #[test]
+    fn close_others_asks_about_unsaved_tabs() {
+        let mut ed = editor_tabs(&Config::default(), 3);
+        ed.activate_index(1);
+        act(&mut ed, EditorAction::InsertText("dirty ".into()));
+        ed.activate_index(0);
+        let fx = act(&mut ed, EditorAction::CloseOtherTabs);
+        let ids = match fx.as_slice() {
+            [Effect::Dialog(d)] => match &d.id {
+                DialogId::CloseTabsDirty(ids) => ids.clone(),
+                other => panic!("{other:?}"),
+            },
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(ids, [ed.buffers[1].id, ed.buffers[2].id]);
+        assert_eq!(ed.buffers.len(), 3, "nothing closes before the answer");
+        ed.force_close_ids(&ids);
+        assert_eq!(names(&ed), ["a.txt"]);
+    }
+
+    #[test]
+    fn tab_drag_moves_once_the_pointer_reaches_the_new_place() {
+        let mut ed = editor_tabs(&Config::default(), 3);
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 5)).unwrap();
+        let mut draw = |ed: &mut Editor| {
+            term.draw(|f| ed.render(f, Rect::new(0, 0, 80, 1), Rect::new(0, 1, 80, 4), true, &Theme::default())).unwrap();
+        };
+        // Rename b so the tabs differ in width: a (10), bbbbbbbbbb (15), c (10).
+        ed.buffers[1].name = "bbbbbbbbbb".into();
+        draw(&mut ed);
+        let a = ed.buffers[0].id;
+        assert_eq!(ed.tab_hits.rect_of(1), Some(Rect::new(10, 0, 15, 1)));
+        // Over the start of b: a would land at 15..25, so it stays.
+        ed.drag_tab(a, 12);
+        assert_eq!(names(&ed), ["a.txt", "bbbbbbbbbb", "c.txt"]);
+        ed.drag_tab(a, 16);
+        assert_eq!(names(&ed), ["bbbbbbbbbb", "a.txt", "c.txt"]);
+        // Stale hit rects are ignored until the next frame.
+        ed.drag_tab(a, 30);
+        assert_eq!(names(&ed), ["bbbbbbbbbb", "a.txt", "c.txt"]);
+        draw(&mut ed);
+        ed.drag_tab(a, 30);
+        assert_eq!(names(&ed), ["bbbbbbbbbb", "c.txt", "a.txt"]);
+        // Back to the front in one move.
+        draw(&mut ed);
+        ed.drag_tab(a, 1);
+        assert_eq!(names(&ed), ["a.txt", "bbbbbbbbbb", "c.txt"]);
+        // A pinned tab cannot be dragged past the unpinned ones.
+        ed.set_pinned(0, true);
+        draw(&mut ed);
+        ed.drag_tab(a, 30);
+        assert_eq!(names(&ed), ["a.txt", "bbbbbbbbbb", "c.txt"]);
+    }
+
+    #[test]
+    fn tab_limit_closes_the_least_recent_clean_unpinned_tab() {
+        let mut config = Config::default();
+        config.editor.max_tabs = 3;
+        let mut ed = editor_tabs(&config, 3);
+        // Recency, oldest first: b, then a (pinned), c (dirty), d.
+        ed.activate_index(1);
+        ed.activate_index(0);
+        act(&mut ed, EditorAction::TogglePinTab);
+        ed.activate_index(2);
+        act(&mut ed, EditorAction::InsertText("dirty ".into()));
+        ed.open_text(PathBuf::from("/tmp/d.txt"), "", false, &Theme::default());
+        assert_eq!(ed.enforce_tab_limit(), 1);
+        assert_eq!(names(&ed), ["a.txt", "c.txt", "d.txt"]);
+        // Only pinned, dirty and active tabs are left: the limit gives way.
+        ed.activate_index(2);
+        act(&mut ed, EditorAction::InsertText("dirty ".into()));
+        ed.open_text(PathBuf::from("/tmp/e.txt"), "", false, &Theme::default());
+        assert_eq!(ed.enforce_tab_limit(), 0);
+        assert_eq!(names(&ed), ["a.txt", "c.txt", "d.txt", "e.txt"]);
+        // No limit by default.
+        let mut ed = editor_tabs(&Config::default(), 20);
+        assert_eq!((ed.enforce_tab_limit(), ed.buffers.len()), (0, 20));
     }
 }

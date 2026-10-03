@@ -24,6 +24,14 @@ impl TabHits {
         }
         None
     }
+    /// The tab under column `x`, whatever the row (a tab drag may stray
+    /// off the bar).
+    pub fn tab_at_x(&self, x: u16) -> Option<usize> {
+        self.tabs.iter().find(|(_, r)| r.x <= x && x < r.right()).map(|(i, _)| *i)
+    }
+    pub fn rect_of(&self, i: usize) -> Option<Rect> {
+        self.tabs.iter().find(|(j, _)| *j == i).map(|(_, r)| *r)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -100,6 +100,8 @@ pub struct FileIndex {
 enum Drag {
     Splitter(SplitterId),
     Panel(PanelId, Rect),
+    /// A tab being dragged to a new place in the tab bar.
+    Tab(crate::editor::buffer::BufferId),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1958,6 +1960,112 @@ pub(crate) mod tests {
         app.handle_mouse(click(MouseEventKind::Up(MouseButton::Left)));
         assert!(app.layout.is_visible(ToolWindowId::EventLog) && app.focus.is(PanelId::EventLog));
         assert_eq!(app.notifications[app.event_log.state.selected].text, "disk full");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn tab_bar_drag_pin_menu_and_session() {
+        use crossterm::event::{KeyModifiers, MouseEvent, MouseEventKind};
+        let (mut app, dir) = test_app("tab-polish");
+        for n in ["a.txt", "b.txt", "c.txt"] {
+            load(&mut app, n, "x\n");
+        }
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+        let mut draw = |app: &mut App| {
+            let frame = term.draw(|f| crate::ui::render(app, f)).unwrap();
+            let r = app.layout.rects.tabs;
+            (r.x..r.right()).map(|x| frame.buffer[(x, r.y)].symbol().to_string()).collect::<String>()
+        };
+        let names = |app: &App| app.editor.buffers.iter().map(|b| b.name.clone()).collect::<Vec<_>>();
+        let active = |app: &App| app.editor.active_buffer().unwrap().name.clone();
+        let tab = |app: &App, i| app.editor.tab_hits.rect_of(i).unwrap();
+        let ev = |kind, column, row| MouseEvent { kind, column, row, modifiers: KeyModifiers::NONE };
+        let left = MouseButton::Left;
+        draw(&mut app);
+        // Drag c onto a: it moves to the front and is active.
+        let (c, a) = (tab(&app, 2), tab(&app, 0));
+        app.handle_mouse(ev(MouseEventKind::Down(left), c.x + 2, c.y));
+        app.handle_mouse(ev(MouseEventKind::Drag(left), a.x + 1, a.y + 1));
+        app.handle_mouse(ev(MouseEventKind::Up(left), a.x + 1, a.y + 1));
+        assert_eq!(names(&app), ["c.txt", "a.txt", "b.txt"]);
+        assert_eq!(active(&app), "c.txt");
+        // A click without moving only activates.
+        draw(&mut app);
+        let b = tab(&app, 2);
+        app.handle_mouse(ev(MouseEventKind::Down(left), b.x + 2, b.y));
+        app.handle_mouse(ev(MouseEventKind::Up(left), b.x + 2, b.y));
+        assert_eq!((names(&app), active(&app)), (vec!["c.txt".into(), "a.txt".into(), "b.txt".into()], "b.txt".into()));
+        // Right-click a: its menu pins it, which moves it first and shows
+        // the pin in place of the close button.
+        let a = tab(&app, 1);
+        app.handle_mouse(ev(MouseEventKind::Down(MouseButton::Right), a.x + 2, a.y));
+        assert_eq!(app.menu.as_ref().map(|m| m.items[0].label.as_str()), Some("Pin Tab"));
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(names(&app), ["a.txt", "c.txt", "b.txt"]);
+        assert!(app.editor.buffers[0].pinned);
+        assert!(draw(&mut app).starts_with("  a.txt ⚲ "));
+        // The only pinned tab cannot move right; Alt+Shift+Left moves b
+        // before c.
+        app.perform(Action::Editor(EditorAction::MoveTabRight));
+        assert_eq!(names(&app), ["a.txt", "c.txt", "b.txt"]);
+        app.activate_tab(2);
+        app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::ALT | KeyModifiers::SHIFT));
+        assert_eq!(names(&app), ["a.txt", "b.txt", "c.txt"]);
+
+        // The order and the pin survive a session round trip.
+        let session = app.session();
+        assert_eq!(session.files.iter().map(|f| f.pinned).collect::<Vec<_>>(), [true, false, false]);
+        session.save(&app.paths.sessions_dir()).unwrap();
+        let (mut fresh, fresh_dir) = test_app("tab-polish-2");
+        fresh.workspace.root = app.workspace.root.clone();
+        let loaded = crate::workspace::Session::load(&app.paths.sessions_dir(), &app.workspace.root).unwrap();
+        assert_eq!(loaded, session);
+        let files = loaded.files.iter().map(|_| Ok(b"x\n".to_vec())).collect();
+        let generation = fresh.workspace.generation;
+        fresh.session_loaded(generation, loaded, files);
+        assert_eq!(names(&fresh), ["a.txt", "b.txt", "c.txt"]);
+        assert!(fresh.editor.buffers[0].pinned && !fresh.editor.buffers[1].pinned);
+        assert_eq!(active(&fresh), "b.txt");
+        // Close others keeps the pinned tab.
+        fresh.perform(Action::Editor(EditorAction::CloseOtherTabs));
+        assert_eq!(names(&fresh), ["a.txt", "b.txt"]);
+        // A click on the pin unpins.
+        draw(&mut fresh);
+        let (_, pin) = *fresh.editor.tab_hits.close.iter().find(|(i, _)| *i == 0).unwrap();
+        fresh.handle_mouse(ev(MouseEventKind::Down(left), pin.x, pin.y));
+        fresh.handle_mouse(ev(MouseEventKind::Up(left), pin.x, pin.y));
+        assert_eq!(names(&fresh), ["a.txt", "b.txt"]);
+        assert!(!fresh.editor.buffers[0].pinned);
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&fresh_dir);
+    }
+
+    #[tokio::test]
+    async fn tab_limit_applies_to_opened_files_and_sessions() {
+        let (mut app, dir) = test_app("tab-limit");
+        let mut config = Config::default();
+        config.editor.max_tabs = 2;
+        app.editor = Editor::new(&config);
+        for n in ["a.txt", "b.txt", "c.txt"] {
+            load(&mut app, n, "x\n");
+        }
+        let names = |app: &App| app.editor.buffers.iter().map(|b| b.name.clone()).collect::<Vec<_>>();
+        assert_eq!(names(&app), ["b.txt", "c.txt"]);
+        // A session keeps its most recent tabs, not its first ones.
+        let root = app.workspace.root.clone();
+        let file = |n: &str| crate::workspace::SessionFile { path: root.join(n), ..Default::default() };
+        let session = crate::workspace::Session {
+            root: root.clone(),
+            files: vec![file("x.txt"), file("y.txt"), file("z.txt")],
+            active: Some(0),
+            recent: vec![0, 1, 2],
+            ..Default::default()
+        };
+        app.editor.force_close_all();
+        let generation = app.workspace.generation;
+        app.session_loaded(generation, session, (0..3).map(|_| Ok(b"x\n".to_vec())).collect());
+        assert_eq!(names(&app), ["x.txt", "y.txt"]);
+        assert_eq!(app.editor.active_buffer().unwrap().name, "x.txt");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
