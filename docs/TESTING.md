@@ -16,7 +16,10 @@ goes through the app (messages, effects, dialogs, key routing) use
 temp directory with its own config and state, so tests never touch the
 user's files. Feed background results with `app.handle_msg(AppMsg::…)`;
 nothing reads the bus in tests, so work the app spawns only matters when you
-send its result yourself. `docs/KEYMAP.md` is checked by a test; regenerate
+send its result yourself. Git tests make the root a repository with
+`init_repo(&app, files)` and feed its status with `feed_status`; operations
+the app runs (git2 or the `git` CLI) report back on the bus, which
+`handle_next(&mut app, want)` waits for. `docs/KEYMAP.md` is checked by a test; regenerate
 it with `cargo run -q -- --dump-keymap > docs/KEYMAP.md`.
 
 ## Manual: the tmux harness

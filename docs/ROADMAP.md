@@ -1,8 +1,8 @@
 # jetl roadmap
 
 This is the feature backlog for jetl after phases 0-5. Each item below is also tracked as a yman
-task (`yman ls`); phases are umbrella tasks and the rows are their subtasks. Phases 6 and 7 are
-done (see Order).
+task (`yman ls`); phases are umbrella tasks and the rows are their subtasks. Phases 6, 7 and 8
+are done, except the conflict resolver, which waits for split panes (see Order).
 
 ## What exists today
 
@@ -19,12 +19,17 @@ done (see Order).
   Dialogs come in confirm, input and choice kinds; the Project tree has a right-click context
   menu. The session stores tabs, carets, bookmarks, the tool window layout and expanded tree folders.
   `App.notifications` keeps 200 entries, but nothing in the UI shows them.
-- **Git:** staging is whole-file only. Gutter marks are based on HEAD and are render-only. The
-  diff is side-by-side or unified depending on width, with line-level coloring. There is a log
-  with graph, details and file diff, and branches are reachable from the palette. Missing: amend,
-  stash, blame, discard, hunk operations, merge/rebase, tags, branch delete and a conflict UI. A
-  filesystem watcher refreshes the tree and git status; focus gain refreshes only when the
-  watcher is off (`[files] watch`) or failed to start.
+- **Git:** files or single changes (hunks) are staged, unstaged and discarded; renames show as
+  `R old -> new`. Commits can amend HEAD, and earlier messages are recalled per repository.
+  Gutter marks are based on HEAD; the change at the caret can be reverted, changes are stepped
+  through, and a blame column shows author and date. The diff marks changed characters, is
+  syntax highlighted, folds unchanged lines and switches between side-by-side and unified. The
+  log draws its own graph from parents, filters by branch, text, author and path, shows file
+  history, and runs commit actions (checkout, branch, cherry-pick, revert, tags). There is a
+  Stash tab, and the branches popup checks out, merges, rebases, renames and deletes branches.
+  Missing: a conflict resolver (conflicts show as `U`; resolve them in the editor). A filesystem
+  watcher refreshes the tree and git status; focus gain refreshes only when the watcher is off
+  (`[files] watch`) or failed to start.
 - **Infra:** `AppMsg::Lsp(LspMsg)` is an empty stub. Background services follow one pattern:
   clone (root, generation, tx), spawn, send a tagged message, and the app drops stale generations.
   `docs/ARCHITECTURE.md` and CI (fmt, clippy, test) exist; there is no README or snapshot tests yet.
@@ -80,6 +85,8 @@ All of section C shipped in Phase 7.
 | Persist layout in session | S | `Session` fields with `#[serde(default)]` |
 
 ### D. Git depth
+
+All of section D shipped in Phase 8 except the conflict resolver.
 
 | Feature | Effort | Notes |
 |---|---|---|
@@ -144,11 +151,15 @@ All of section C shipped in Phase 7.
 2. **Phase 7: project-wide.** Done. The watcher came first, then find and replace in files, tree
    operations with context menu and speed search, `file:line` CLI, layout persistence, recent
    projects, and symbol search with the Structure window (pulled forward from Phase 10).
-3. **Phase 8: git depth.** Discard, amend, hunks, intra-line diff, stash, blame, log filters and
-   branch management.
+3. **Phase 8: git depth.** Done, except the 3-pane conflict resolver, which waits for split panes
+   (Phase 11). Discard, amend and message history, hunk staging and gutter revert, intra-line and
+   syntax-highlighted diff, stash, blame, log filters and file history with commit actions, branch
+   management with merge, rebase and tags; also rename detection, the push remote choice and a
+   log graph that keeps its lanes across pages.
 4. **Phase 9: terminal and run.** Terminal, run window, format on save, event log and tab polish.
 5. **Phase 10: language intelligence.** tree-sitter symbols shipped in Phase 7. LSP core comes
    first, then diagnostics and navigation, and last completion, rename and code actions.
 6. **Phase 11: editor layout.** Split panes, multi-caret, column selection, folding and wrap. This
-   has the highest implementation risk, so it goes last.
+   has the highest implementation risk, so it goes last. The conflict resolver from Phase 8
+   follows split panes.
 7. **Ongoing:** themes, vim mode, local history, snapshot tests, CI, README, crash recovery.

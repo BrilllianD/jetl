@@ -14,9 +14,9 @@ and backlog are in `docs/ROADMAP.md`; settings in `docs/CONFIG.md`; keys in
 | `main.rs` | Argument parsing (`PATH[:LINE[:COL]]`: a file is rooted at its git work tree, else its directory, and handed to `App::new` as the file to open; with no argument outside a git repository the Recent Projects palette opens once the list loads), logging (`~/.local/state/jetl/jetl.log`, `RUST_LOG=jetl=debug`), `tui::init`, `App::run`, `tui::restore`. `--dump-keymap` prints `docs/KEYMAP.md`. |
 | `tui.rs` | Owns terminal modes. Restore order is fixed (keyboard flags, mouse, paste, focus, alt screen, raw mode, cursor); the panic hook restores first. |
 | `app/mod.rs` | `App` (all panels and services), `App::new`, the `run` loop, `handle_key`, `perform`, `Ctx` and the `ctx!` macro, tests (`test_app`). |
-| `app/msg.rs` | `handle_msg` for every `AppMsg`, git results (`on_git_msg`, `git_op_done`), `git_root_changed`, file open and decode. |
+| `app/msg.rs` | `handle_msg` for every `AppMsg`, git results (`on_git_msg`, `git_op_done`: follow-ups such as the push remote choice, forcing an unmerged branch delete, conflict hints), `git_root_changed`, file open and decode. |
 | `app/effects.rs` | `apply_effects`, `refresh_tree`, `git_request`. |
-| `app/dialogs.rs` | `request_quit`, `finish_dialog` (one arm per `DialogId` answer). |
+| `app/dialogs.rs` | `request_quit`, `finish_dialog` (one arm per `DialogId` answer), the branches popup's operations (`branch_op`). |
 | `app/palette.rs` | Opening the palette, its keys, the file index (walked at startup, on root switches and when a file or symbol palette opens; the symbol index follows each load), the recent projects list, accepted rows. |
 | `app/mouse.rs` | Mouse routing: toasts, overlays, drags, splitters, tabs, status bar, panels. |
 | `app/watch.rs` | Starting the filesystem watcher and acting on its batches. |
@@ -34,7 +34,9 @@ and backlog are in `docs/ROADMAP.md`; settings in `docs/CONFIG.md`; keys in
 | `editor/buffer.rs` | `Buffer`: rope, selection, undo, file metadata (path, line ending, mtime, dirty state). |
 | `editor/{find,io}.rs` | Find/replace bar (keys, stepping, rendering); saving and autosave. |
 | `editor/view.rs` | `layout_line`: the grapheme walk shared by rendering, `visual_col` and `col_to_char`. |
-| `editor/…` | `selection`, `undo`, `syntax` (tree-sitter, language detection), `search`, `gutter` (git marks), `indent` (`.editorconfig`, detection), `brackets`, `expand`, `nav` (back/forward). |
+| `editor/gutter.rs` | Git marks against the HEAD text (`Buffer::diff_base`), and the change commands built on the same diff: revert the change at the caret (one `Buffer::apply`, so undoable), next/previous change. |
+| `editor/blame.rs` | The blame column (`Buffer::blame`): author and date per line from `git::repo::blame` of HEAD, matched to buffer lines through the HEAD diff (recomputed with the gutter at tick rate, so edits shift it and edited lines show none). |
+| `editor/…` | `selection`, `undo`, `syntax` (tree-sitter, language detection), `search`, `indent` (`.editorconfig`, detection), `brackets`, `expand`, `nav` (back/forward). |
 | `files/tree.rs` | Project tool window: lazy `ignore` walk, `TreeRefresh` off the main thread, git status colors, speed search, context menu. |
 | `files/ops.rs` | `FsOp` (create, rename, delete; never overwrites, never follows symlinks on delete) and name checks for the tree dialogs. |
 | `files/walk.rs` | The `ignore` walk builder shared by the tree, Go to File and find in files. |
@@ -44,10 +46,13 @@ and backlog are in `docs/ROADMAP.md`; settings in `docs/CONFIG.md`; keys in
 | `symbols/index.rs` | `SymbolIndex`: the project symbols behind Go to Symbol. Follows the file index (files with tags, at most 5000, each at most 256 KiB), parses in `spawn_blocking` (`IndexJob`), skips files whose mtime is unchanged, drops and re-queues watcher paths. |
 | `symbols/panel.rs` | Structure tool window: the active buffer's symbols from its live tree, re-extracted when the buffer version, language or active tab changes; the selection follows the caret while unfocused. |
 | `git/mod.rs` | `GitService` (spawns work, tracks busy ops), `GitMsg`, `GitOp`, `GitRequest`. |
-| `git/repo.rs` | Synchronous git2 calls; each opens the repository itself. |
-| `git/cli.rs` | The `git` command line: network, switch, log/show, worktrees. No prompts, 120 s timeout. |
-| `git/{diff,model}.rs` | Diff rows, shared types. |
-| `git/panel/` | The Git tool window: shared state, input routing, header, console and diff renderer (`mod.rs`), the Commit tab (`commit.rs`), the Log tab (`log.rs`). |
+| `git/repo.rs` | Synchronous git2 calls; each opens the repository itself: status (with rename detection), blobs, stage/unstage, discard (`checkout_head` for staged paths, `checkout_index` for unstaged ones, new files deleted), commit and amend, branches (local, then remote), the push remote, stashes, blame. |
+| `git/cli.rs` | The `git` command line: network, switch, log/show, worktrees, `git apply` of a patch on stdin (`git_with_input`), merge, rebase, cherry-pick, revert, branch and tag commands. No prompts, 120 s timeout. |
+| `git/diff.rs` | `DiffDoc`: raw lines of both sides, side-by-side and unified rows, changed blocks, a unified patch of one block (`block_patch`, for hunk staging), and changed characters of modified line pairs (a second imara-diff pass). |
+| `git/graph.rs` | `LogGraph`: lays out the Log tab's lanes from each commit's parents (`%P`), carried from page to page. |
+| `git/messages.rs` | Commit message history per repository (keyed by its common git dir, so worktrees share it) in `state/commit_messages/`. |
+| `git/model.rs` | Shared types: status entries (`old_rel` for renames), `DiffKey`, log rows and `LogFilter`, commit details, `BranchInfo` and `BranchOp`, `Blame`, `StashEntry`. |
+| `git/panel/` | The Git tool window: shared state, input routing, header and console (`mod.rs`); the diff pane of every tab (`diff_view.rs`: folded unchanged runs, the current change, syntax colors, changed characters, side-by-side/unified); the Commit tab with amend and message history (`commit.rs`); the Log tab with its filter bar and commit actions (`log.rs`); the Stash tab (`stash.rs`). |
 | `ui/` | `render` (frame order), `layout` (rects and hit testing), `focus` (panel and tool window ids), `dialog`, `palette`, `menu` (context menu), `status_bar`, `tabs`, `toasts`, `tool_strip`, `widgets/{list,text_input}`. |
 | `util/` | `text` (width helpers), `coalesce` (one background request at a time), `fs` (`write_atomic`, shared by saves and replace in files). |
 
@@ -115,7 +120,8 @@ Two tags:
 - **Seq** orders repeated requests of the same kind within a generation, so
   an older request that finishes late cannot overwrite a newer result:
   `GitMsg::Status` (`GitPanel::set_status`), `GitMsg::Blob` (per buffer,
-  `Buffer::diff_base_seq`), `FileIndex` (`FileIndex::seq`), `TreeLoaded`
+  `Buffer::diff_base_seq`), `GitMsg::Blame` (per buffer, `BlameState::seq`;
+  a buffer whose column was hidden meanwhile drops it), `FileIndex` (`FileIndex::seq`), `TreeLoaded`
   (`ProjectPanel::finish_refresh`), `Find` batches (`FindPanel::on_batch`;
   a newer search also stops the old walk through a shared cancel seq),
   `Symbols` batches (`SymbolIndex::on_batch`; only the newest run applies,
@@ -123,8 +129,12 @@ Two tags:
   (`App::recent_projects_seq`; not tied to the root, so it carries no
   generation). A result is applied when its seq is not
   older than the last applied one. Results keyed by what they describe
-  (diffs by `DiffKey`, commit details by sha, log pages by `skip`) need no
-  seq.
+  need no seq: diffs by `DiffKey` (each diff pane ignores keys it does not
+  show), commit details by sha (the Log or Stash tab, whichever has it
+  selected), log pages by `skip` and their `LogFilter` (a page of a
+  replaced filter is dropped). Stash operations name the stash by its
+  commit, not its index, so a list that changed meanwhile cannot hit the
+  wrong entry.
 
 New background work follows the same pattern: a generation always, a seq
 when the request can repeat while one is in flight. Requests that bursts can
@@ -143,9 +153,16 @@ its busy id before the generation check, so the spinner never sticks.
   (`editor/view.rs`); a test checks they agree.
 - A git2 `Repository` is opened inside the blocking call (`git/repo.rs`) and
   never stored in `App`.
-- Network and worktree operations go through `git/cli.rs`: stdin closed, no
-  terminal prompt, `GIT_SSH_COMMAND` with `BatchMode=yes` for network
-  subcommands, each child in its own session (`setsid`), 120 s timeout.
+- Network, worktree and history-rewriting operations (merge, rebase,
+  cherry-pick, revert, branch and tag commands, `git apply` of hunk
+  patches) go through `git/cli.rs`: stdin closed (or carrying the patch),
+  no terminal prompt, `GIT_EDITOR=true`, `GIT_SSH_COMMAND` with
+  `BatchMode=yes` for network subcommands, each child in its own session
+  (`setsid`), 120 s timeout. Reads, staging, discard, commit and amend,
+  stash and blame use git2.
+- Destructive git operations (discard of files or a hunk, stash drop,
+  branch delete, revert, rebase, tag delete) ask in a confirm dialog first;
+  the request that runs them is sent from `App::finish_dialog`.
 - No `dyn Panel`. Each panel has `handle_action(&XAction, &mut Ctx) -> bool`,
   `handle_mouse(&Mouse, Rect, &mut Ctx) -> bool` and `render(&mut Frame,
   Rect, focused, &Theme)`.
