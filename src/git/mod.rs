@@ -8,6 +8,7 @@
 
 pub mod cli;
 pub mod diff;
+pub mod graph;
 pub mod messages;
 pub mod model;
 pub mod panel;
@@ -20,7 +21,7 @@ use anyhow::Result;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::event::AppMsg;
-pub use model::{Blame, BranchInfo, CommitDetails, DiffKey, LogFilter, LogRev, LogRow, Section, StashEntry, StatusSnapshot};
+pub use model::{Blame, BranchInfo, CommitDetails, DiffKey, LogFilter, LogRev, Section, StashEntry, StatusSnapshot};
 pub use panel::GitPanel;
 pub use repo::BlobWhich;
 
@@ -107,7 +108,7 @@ pub enum GitMsg {
         generation: u64,
         skip: usize,
         filter: LogFilter,
-        result: Result<Vec<LogRow>>,
+        result: Result<Vec<model::LogCommit>>,
     },
     CommitDetails {
         generation: u64,

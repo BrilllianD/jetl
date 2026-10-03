@@ -13,7 +13,8 @@ use crate::app::Ctx;
 use crate::config::theme::Theme;
 use crate::event::{Effect, Level, Mouse};
 use crate::git::GitRequest;
-use crate::git::model::{CommitDetails, DiffKey, LogFilter, LogRev, LogRow};
+use crate::git::graph::LogGraph;
+use crate::git::model::{CommitDetails, DiffKey, LogCommit, LogFilter, LogRev, LogRow};
 use crate::ui::dialog::{Dialog, DialogId};
 use crate::ui::menu::{ContextMenu, MenuItem};
 
@@ -38,7 +39,7 @@ pub(super) enum CommitAction {
 use crate::ui::widgets::list::ListState;
 
 impl GitPanel {
-    pub fn set_log(&mut self, skip: usize, filter: &LogFilter, result: anyhow::Result<Vec<LogRow>>, cx: &mut Ctx) {
+    pub fn set_log(&mut self, skip: usize, filter: &LogFilter, result: anyhow::Result<Vec<LogCommit>>, cx: &mut Ctx) {
         if *filter != self.log_filter {
             // A page of a filter that was replaced meanwhile.
             return;
@@ -51,15 +52,19 @@ impl GitPanel {
                 return;
             }
         };
-        let commits = rows.iter().filter(|r| r.commit.is_some()).count();
+        let commits = rows.len();
         if skip == 0 {
             let prev = self.selected_commit().map(|c| c.to_string());
-            self.log = rows;
+            // The graph starts over with the first page and continues
+            // through the later ones.
+            self.log_graph = LogGraph::default();
+            self.log = self.graph_rows(rows);
             self.log_list.set_len(self.log.len());
-            let again = prev.and_then(|sha| self.log.iter().position(|r| r.commit.as_ref().is_some_and(|c| c.sha == sha)));
+            let again = prev.and_then(|sha| self.log.iter().position(|r| r.commit.sha == sha));
             self.log_list.select(again.unwrap_or(0));
-        } else if skip == self.commit_count() {
-            self.log.extend(rows);
+        } else if skip == self.log.len() {
+            let more = self.graph_rows(rows);
+            self.log.extend(more);
             self.log_list.set_len(self.log.len());
         } else {
             return;
@@ -69,12 +74,12 @@ impl GitPanel {
         self.sync_details(cx);
     }
 
-    fn commit_count(&self) -> usize {
-        self.log.iter().filter(|r| r.commit.is_some()).count()
+    fn graph_rows(&mut self, commits: Vec<LogCommit>) -> Vec<LogRow> {
+        commits.into_iter().map(|c| LogRow { graph: self.log_graph.row(&c.sha, &c.parents), commit: c }).collect()
     }
 
     fn selected_commit(&self) -> Option<&str> {
-        self.log.get(self.log_list.selected).and_then(|r| r.commit.as_ref()).map(|c| c.sha.as_str())
+        self.log.get(self.log_list.selected).map(|r| r.commit.sha.as_str())
     }
 
     /// Load details of the selected commit when they are not shown yet.
@@ -132,7 +137,7 @@ impl GitPanel {
         self.tab = GitTab::Log;
         self.area = Area::Log;
         self.log_diff.clear();
-        match self.log.iter().position(|r| r.commit.as_ref().is_some_and(|c| c.sha == sha)) {
+        match self.log.iter().position(|r| r.commit.sha == sha) {
             Some(i) => {
                 self.log_list.select(i);
                 self.sync_details(cx);
@@ -226,8 +231,7 @@ impl GitPanel {
             }
             CommitAction::CherryPick => cx.effects.push(Effect::Git(GitRequest::CherryPick(sha))),
             CommitAction::Revert => {
-                let subject =
-                    self.log.get(self.log_list.selected).and_then(|r| r.commit.as_ref()).map(|c| c.subject.clone()).unwrap_or_default();
+                let subject = self.log.get(self.log_list.selected).map(|r| r.commit.subject.clone()).unwrap_or_default();
                 let msg = format!("Revert {short} {subject}?\nThis adds a commit that undoes it.");
                 cx.effects.push(Effect::Dialog(Dialog::confirm(
                     DialogId::RevertCommit { sha },
@@ -266,7 +270,7 @@ impl GitPanel {
             && (self.log_list.selected + 1 >= self.log_list.len || self.log_list.offset + self.log_list.viewport >= self.log_list.len);
         if at_end && self.log_loaded && !self.log_end && self.log_loading.is_none() {
             self.log_loading = Some(self.log_filter.clone());
-            cx.effects.push(Effect::Git(GitRequest::LoadLog { skip: self.commit_count(), filter: self.log_filter.clone() }));
+            cx.effects.push(Effect::Git(GitRequest::LoadLog { skip: self.log.len(), filter: self.log_filter.clone() }));
         }
     }
 
@@ -385,7 +389,7 @@ impl GitPanel {
         for (vi, i) in self.log_list.visible().enumerate() {
             let row = &self.log[i];
             let y = r.y + vi as u16;
-            let selected = i == self.log_list.selected && row.commit.is_some();
+            let selected = i == self.log_list.selected;
             let base = if selected {
                 if active { theme.list_selected } else { theme.list_selected_unfocused }
             } else {
@@ -395,20 +399,15 @@ impl GitPanel {
                 buf.set_style(Rect::new(r.x, y, r.width, 1), base);
             }
             let mut x = r.x;
+            // Two columns per lane; each lane keeps its color.
             for (col, ch) in row.graph.chars().enumerate() {
-                let glyph = match ch {
-                    '*' => "●",
-                    '|' => "│",
-                    ' ' => " ",
-                    _ => "",
-                };
-                let mut tmp = [0u8; 4];
-                let s = if glyph.is_empty() { ch.encode_utf8(&mut tmp) } else { glyph };
                 let color = palette[(col / 2) % palette.len()];
                 let st = if selected { base } else { Style::default().fg(color) };
-                put(buf, &mut x, y, r.right(), s, st);
+                let mut tmp = [0u8; 4];
+                put(buf, &mut x, y, r.right(), ch.encode_utf8(&mut tmp), st);
             }
-            let Some(c) = &row.commit else { continue };
+            x += 1;
+            let c = &row.commit;
             let mut right = String::new();
             if !c.author.is_empty() {
                 right = format!(" {}, {}", c.author, c.date);
@@ -454,7 +453,7 @@ impl GitPanel {
             return;
         };
         let mut y = r.y;
-        let commit = self.log.get(self.log_list.selected).and_then(|row| row.commit.as_ref());
+        let commit = self.log.get(self.log_list.selected).map(|row| &row.commit);
         if let Some(c) = commit {
             buf.set_stringn(x0, y, format!("{}  {}, {}", c.short, c.author, c.date), w, theme.title);
             y += 1;

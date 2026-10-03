@@ -1650,7 +1650,7 @@ pub(crate) mod tests {
         app.handle_msg(AppMsg::Git(GitMsg::Log { generation: g, skip: 0, filter: LogFilter::default(), result: Ok(other) }));
         assert!(!app.git_panel.log_loaded());
         let rows = page(&by_path);
-        assert_eq!(rows.iter().filter(|r| r.commit.is_some()).count(), 1);
+        assert_eq!(rows.len(), 1);
         app.handle_msg(AppMsg::Git(GitMsg::Log { generation: g, skip: 0, filter: by_path.clone(), result: Ok(rows) }));
         assert!(app.git_panel.log_loaded());
         // Ctrl+F, Text: the filter keeps the path and adds the text.

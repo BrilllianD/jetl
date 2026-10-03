@@ -123,6 +123,8 @@ pub struct GitPanel {
     history_draft: String,
     diff: DiffPane,
     log: Vec<LogRow>,
+    /// Lanes after the last listed commit, for the next page.
+    log_graph: crate::git::graph::LogGraph,
     log_list: ListState,
     log_loaded: bool,
     /// The filter of the log request in flight.
@@ -184,6 +186,7 @@ impl GitPanel {
             history_draft: String::new(),
             diff: DiffPane::new(true),
             log: Vec::new(),
+            log_graph: Default::default(),
             log_list: ListState::default(),
             log_loaded: false,
             log_loading: None,
@@ -479,18 +482,6 @@ impl GitPanel {
             Area::LogDiff => self.log_diff.scroll_by(delta),
             Area::Log => {
                 step(&mut self.log_list);
-                // Skip graph connector rows in the direction of travel.
-                while self.log.get(self.log_list.selected).is_some_and(|r| r.commit.is_none()) {
-                    let before = self.log_list.selected;
-                    if delta < 0 {
-                        self.log_list.up(1)
-                    } else {
-                        self.log_list.down(1)
-                    }
-                    if self.log_list.selected == before {
-                        break;
-                    }
-                }
                 self.sync_details(cx);
                 self.maybe_page_log(cx);
             }

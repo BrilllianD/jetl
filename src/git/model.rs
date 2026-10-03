@@ -235,17 +235,18 @@ impl LogFilter {
     }
 }
 
-/// One line of `git log --graph`: the graph prefix plus the commit when the
-/// line carries one (connector lines carry only graph characters).
+/// One row of the Log tab: the graph cells (`git::graph`) and the commit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LogRow {
     pub graph: String,
-    pub commit: Option<LogCommit>,
+    pub commit: LogCommit,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LogCommit {
     pub sha: String,
+    /// Full parent shas, first parent first.
+    pub parents: Vec<String>,
     pub short: String,
     pub author: String,
     pub date: String,

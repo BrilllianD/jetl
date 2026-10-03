@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use anyhow::{Result, anyhow};
 
-use super::model::{CommitDetails, CommitFile, LogCommit, LogFilter, LogRev, LogRow};
+use super::model::{CommitDetails, CommitFile, LogCommit, LogFilter, LogRev};
 
 pub const TIMEOUT: Duration = Duration::from_secs(120);
 
@@ -156,9 +156,11 @@ pub fn apply_args(cached: bool, reverse: bool) -> Vec<String> {
     v
 }
 
-/// Arguments for one page of the log.
+/// Arguments for one page of the log. The graph is drawn from the parents
+/// (`git::graph`); `--parents` rewrites them past commits a path filter
+/// leaves out, and `--date-order` lists no parent before its children.
 pub fn log_args(skip: usize, count: usize, all: bool, filter: &LogFilter) -> Vec<String> {
-    let mut v = args(&["log", "--graph", "--date-order", "--no-color"]);
+    let mut v = args(&["log", "--parents", "--date-order", "--no-color"]);
     v.push(format!("-n{count}"));
     if skip > 0 {
         v.push(format!("--skip={skip}"));
@@ -173,7 +175,7 @@ pub fn log_args(skip: usize, count: usize, all: bool, filter: &LogFilter) -> Vec
     if !filter.author.is_empty() {
         v.push(format!("--author={}", filter.author));
     }
-    v.push("--format=%x1f%H%x1f%h%x1f%an%x1f%ar%x1f%D%x1f%s".into());
+    v.push("--format=%H%x1f%P%x1f%h%x1f%an%x1f%ar%x1f%D%x1f%s".into());
     match &filter.rev {
         LogRev::Rev(rev) => v.push(rev.clone()),
         LogRev::All => v.push("--all".into()),
@@ -187,19 +189,17 @@ pub fn log_args(skip: usize, count: usize, all: bool, filter: &LogFilter) -> Vec
     v
 }
 
-/// Parse `git log --graph` output made with [`log_args`]. Each line is a
-/// graph prefix, optionally followed by `\x1f`-separated commit fields;
-/// lines without fields are graph connectors.
-pub fn parse_log(text: &str) -> Vec<LogRow> {
+/// Parse `git log` output made with [`log_args`]: one commit per line,
+/// fields separated by `\x1f`.
+pub fn parse_log(text: &str) -> Vec<LogCommit> {
     text.lines()
-        .map(|line| match line.split_once(SEP) {
-            None => LogRow { graph: line.trim_end().to_string(), commit: None },
-            Some((graph, rest)) => {
-                let mut f = rest.splitn(6, SEP);
-                let mut next = || f.next().unwrap_or("").to_string();
-                let commit = LogCommit { sha: next(), short: next(), author: next(), date: next(), refs: next(), subject: next() };
-                LogRow { graph: graph.to_string(), commit: Some(commit) }
-            }
+        .filter(|l| l.contains(SEP))
+        .map(|line| {
+            let mut f = line.splitn(7, SEP);
+            let mut next = || f.next().unwrap_or("").to_string();
+            let sha = next();
+            let parents = next().split_whitespace().map(str::to_string).collect();
+            LogCommit { sha, parents, short: next(), author: next(), date: next(), refs: next(), subject: next() }
         })
         .collect()
 }
@@ -252,26 +252,23 @@ mod tests {
     }
 
     #[test]
-    fn parses_graph_rows_and_connectors() {
-        let text = "* \x1faaaa1111\x1faaaa\x1fAnn\x1f2 hours ago\x1fHEAD -> main, origin/main\x1fMerge branch 'x'\n\
-                    |\\  \n\
-                    | * \x1fbbbb2222\x1fbbbb\x1fBob\x1f3 days ago\x1f\x1fsubject with \t tab\n\
-                    |/  \n\
-                    * \x1fcccc3333\x1fcccc\x1fAnn\x1f1 year ago\x1ftag: v1\x1froot\n";
-        let rows = parse_log(text);
-        assert_eq!(rows.len(), 5);
-        assert_eq!(rows[0].graph, "* ");
-        let c = rows[0].commit.as_ref().unwrap();
-        assert_eq!((c.sha.as_str(), c.short.as_str(), c.author.as_str(), c.date.as_str()), ("aaaa1111", "aaaa", "Ann", "2 hours ago"));
-        assert_eq!(c.refs, "HEAD -> main, origin/main");
-        assert_eq!(c.subject, "Merge branch 'x'");
-        assert_eq!(rows[1], LogRow { graph: "|\\".into(), commit: None });
-        assert_eq!(rows[2].graph, "| * ");
-        let c = rows[2].commit.as_ref().unwrap();
-        assert_eq!(c.refs, "");
-        assert_eq!(c.subject, "subject with \t tab");
-        assert!(rows[3].commit.is_none());
-        assert_eq!(rows[4].commit.as_ref().unwrap().refs, "tag: v1");
+    fn parses_commits_with_parents() {
+        let text = "aaaa1111\x1fcccc3333 bbbb2222\x1faaaa\x1fAnn\x1f2 hours ago\x1fHEAD -> main, origin/main\x1fMerge branch 'x'\n\
+                    bbbb2222\x1fcccc3333\x1fbbbb\x1fBob\x1f3 days ago\x1f\x1fsubject with \t tab\n\
+                    cccc3333\x1f\x1fcccc\x1fAnn\x1f1 year ago\x1ftag: v1\x1froot\n";
+        let c = parse_log(text);
+        assert_eq!(c.len(), 3);
+        assert_eq!(
+            (c[0].sha.as_str(), c[0].short.as_str(), c[0].author.as_str(), c[0].date.as_str()),
+            ("aaaa1111", "aaaa", "Ann", "2 hours ago")
+        );
+        assert_eq!(c[0].parents, ["cccc3333", "bbbb2222"]);
+        assert_eq!(c[0].refs, "HEAD -> main, origin/main");
+        assert_eq!(c[0].subject, "Merge branch 'x'");
+        assert_eq!(c[1].refs, "");
+        assert_eq!(c[1].subject, "subject with \t tab");
+        assert!(c[2].parents.is_empty());
+        assert_eq!(c[2].refs, "tag: v1");
     }
 
     #[test]
