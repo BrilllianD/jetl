@@ -179,6 +179,12 @@
 "alt-c" = "git.tab_commit"
 "alt-l" = "git.tab_log"
 "alt-o" = "git.tab_console"
+"alt-t" = "git.tab_stash"
+"ctrl-alt-s" = "git.stash_push"
+# Stash tab: pop, apply and drop the selected stash.
+"alt-p" = "git.stash_pop"
+"alt-a" = "git.stash_apply"
+"delete" = "git.stash_drop"
 "ctrl-alt-n" = "git.new_branch"
 "esc" = "git.escape"
 

@@ -243,6 +243,7 @@ impl App {
         app.git.load_branches();
         app.git.load_worktrees();
         app.git.load_messages();
+        app.git.load_stashes();
         app.restore_session();
         app.start_watcher();
         app.load_recent_projects(true);
@@ -1486,6 +1487,41 @@ pub(crate) mod tests {
         assert_eq!(app.git_panel.message.text, "init 2");
         app.perform(Action::Git(GitAction::ToggleAmend));
         assert!(app.git_panel.message.text.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn stash_push_pop_and_drop_round_trip() {
+        use crate::actions::GitAction;
+        let (mut app, dir) = test_app("stash");
+        init_repo(&app, &[("a.txt", "a\n")]);
+        let a = app.workspace.root.join("a.txt");
+        std::fs::write(&a, "mine\n").unwrap();
+        let g = app.git.generation;
+        let feed_stashes = |app: &mut App| {
+            let result = crate::git::repo::stashes(&app.workspace.root);
+            app.handle_msg(AppMsg::Git(GitMsg::Stashes { generation: g, result }));
+        };
+        app.perform(Action::Git(GitAction::TabStash));
+        app.perform(Action::Git(GitAction::StashPush));
+        let d = app.dialog.take().expect("asks for a message");
+        assert_eq!(d.id, DialogId::StashMessage);
+        app.finish_dialog(d.id, DialogResult::Text("wip".into()));
+        handle_next(&mut app, git_op_done).await;
+        assert_eq!(std::fs::read_to_string(&a).unwrap(), "a\n");
+        feed_stashes(&mut app);
+        assert_eq!(app.git_panel.stash_count(), 1);
+        app.perform(Action::Git(GitAction::StashApply));
+        handle_next(&mut app, git_op_done).await;
+        assert_eq!(std::fs::read_to_string(&a).unwrap(), "mine\n");
+        // Drop asks first.
+        app.perform(Action::Git(GitAction::StashDrop));
+        let d = app.dialog.take().expect("confirm");
+        assert!(matches!(d.id, DialogId::StashDrop { .. }) && d.message.contains("wip"));
+        app.finish_dialog(d.id, DialogResult::Button(0));
+        handle_next(&mut app, git_op_done).await;
+        feed_stashes(&mut app);
+        assert_eq!(app.git_panel.stash_count(), 0);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

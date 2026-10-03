@@ -1,12 +1,14 @@
-//! Git tool window (bottom): tabs Commit | Log | Console.
+//! Git tool window (bottom): tabs Commit | Log | Stash | Console.
 //!
 //! Commit: change list grouped Staged / Unstaged / Untracked with stage
 //! checkboxes, the diff of the selected entry, and the commit message box.
 //! Log: `git log --graph` rows, details of the selected commit, and a diff
-//! of a file in it. Console: output of CLI operations.
+//! of a file in it. Stash: the stash list, files of a stash and their diff.
+//! Console: output of CLI operations.
 //!
 //! This module holds the shared state, input routing, the header, the
-//! console and the diff renderer; `commit.rs` and `log.rs` hold the tabs.
+//! console and the diff renderer; `commit.rs`, `log.rs` and `stash.rs`
+//! hold the tabs.
 //!
 //! The panel only holds state; all git work is requested through
 //! `Effect::Git` and the results are fed back by the app.
@@ -20,7 +22,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use super::GitRequest;
 use super::diff::{DiffDoc, DiffRow, RowKind};
-use super::model::{BranchInfo, CommitDetails, DiffKey, LogRow, Section, StatusSnapshot};
+use super::model::{BranchInfo, CommitDetails, DiffKey, LogRow, Section, StashEntry, StatusSnapshot};
 use crate::actions::GitAction;
 use crate::app::Ctx;
 use crate::config::theme::Theme;
@@ -32,12 +34,18 @@ use crate::ui::widgets::text_input::TextInput;
 
 mod commit;
 mod log;
+mod stash;
 
+use stash::StashAction;
+
+/// Stored in sessions (`SessionLayout::git_tab`); add variants, never
+/// rename them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum GitTab {
     Commit,
     Log,
     Console,
+    Stash,
 }
 
 /// Which part of the window has keyboard focus.
@@ -49,6 +57,9 @@ enum Area {
     Log,
     Files,
     LogDiff,
+    Stashes,
+    StashFiles,
+    StashDiff,
     Console,
 }
 
@@ -65,6 +76,10 @@ enum Btn {
     Commit,
     CommitPush,
     Back,
+    StashPush,
+    StashPop,
+    StashApply,
+    StashDrop,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -174,6 +189,13 @@ pub struct GitPanel {
     details_error: Option<String>,
     files_list: ListState,
     log_diff: DiffPane,
+    stashes: Vec<StashEntry>,
+    stash_error: Option<String>,
+    stash_list: ListState,
+    stash_details: Option<CommitDetails>,
+    stash_details_error: Option<String>,
+    stash_files: ListState,
+    stash_diff: DiffPane,
     console: Vec<(ConsoleKind, String)>,
     /// Lines scrolled up from the bottom of the console.
     console_scroll: usize,
@@ -184,6 +206,8 @@ pub struct GitPanel {
     diff_rect: Rect,
     log_rect: Rect,
     files_rect: Rect,
+    stash_rect: Rect,
+    stash_files_rect: Rect,
     console_rect: Rect,
 }
 
@@ -220,6 +244,13 @@ impl GitPanel {
             details_error: None,
             files_list: ListState::default(),
             log_diff: DiffPane::default(),
+            stashes: Vec::new(),
+            stash_error: None,
+            stash_list: ListState::default(),
+            stash_details: None,
+            stash_details_error: None,
+            stash_files: ListState::default(),
+            stash_diff: DiffPane::default(),
             console: Vec::new(),
             console_scroll: 0,
             branches: Vec::new(),
@@ -229,6 +260,8 @@ impl GitPanel {
             diff_rect: Rect::default(),
             log_rect: Rect::default(),
             files_rect: Rect::default(),
+            stash_rect: Rect::default(),
+            stash_files_rect: Rect::default(),
             console_rect: Rect::default(),
         }
     }
@@ -268,6 +301,7 @@ impl GitPanel {
         match tab {
             GitTab::Commit => Area::Changes,
             GitTab::Log => Area::Log,
+            GitTab::Stash => Area::Stashes,
             GitTab::Console => Area::Console,
         }
     }
@@ -275,7 +309,19 @@ impl GitPanel {
     pub fn set_diff(&mut self, key: &DiffKey, result: anyhow::Result<DiffDoc>) {
         match key {
             DiffKey::Change { .. } => self.diff.set(key, result),
+            // A commit diff is shown by the Log tab or by the Stash tab
+            // (stashes are commits); each pane ignores keys it does not show.
+            DiffKey::Commit { .. } if self.stash_diff.key.as_ref() == Some(key) => self.stash_diff.set(key, result),
             DiffKey::Commit { .. } => self.log_diff.set(key, result),
+        }
+    }
+
+    /// Details of a commit: the selected log commit or the selected stash.
+    pub fn set_details(&mut self, sha: &str, result: anyhow::Result<CommitDetails>) {
+        if self.selected_stash().is_some_and(|s| s.oid == sha) {
+            self.set_stash_details(result);
+        } else {
+            self.set_log_details(sha, result);
         }
     }
 
@@ -344,6 +390,23 @@ impl GitPanel {
             G::TabCommit => self.set_tab(GitTab::Commit, cx),
             G::TabLog => self.set_tab(GitTab::Log, cx),
             G::TabConsole => self.set_tab(GitTab::Console, cx),
+            G::TabStash => self.set_tab(GitTab::Stash, cx),
+            G::StashPush => self.stash_push(cx),
+            G::StashPop | G::StashApply | G::StashDrop => {
+                if self.tab != GitTab::Stash {
+                    // Pick a stash first; Delete elsewhere does nothing.
+                    if *a != G::StashDrop {
+                        self.set_tab(GitTab::Stash, cx);
+                    }
+                } else {
+                    let action = match a {
+                        G::StashPop => StashAction::Pop,
+                        G::StashApply => StashAction::Apply,
+                        _ => StashAction::Drop,
+                    };
+                    self.stash_action(action, cx);
+                }
+            }
             G::Up => self.move_by(-1, cx),
             G::Down => self.move_by(1, cx),
             G::PageUp => self.move_by(-(self.page() as isize), cx),
@@ -352,12 +415,16 @@ impl GitPanel {
                 Area::Diff => self.area = Area::Changes,
                 Area::Files => self.area = Area::Log,
                 Area::LogDiff => self.close_log_diff(),
-                Area::Changes | Area::Message | Area::Log | Area::Console => {}
+                Area::StashFiles => self.area = Area::Stashes,
+                Area::StashDiff => self.close_stash_diff(),
+                Area::Changes | Area::Message | Area::Log | Area::Stashes | Area::Console => {}
             },
             G::Right => match self.area {
                 Area::Changes if self.diff.key.is_some() => self.area = Area::Diff,
                 Area::Log if self.details.is_some() => self.area = Area::Files,
                 Area::Files => self.open_commit_file(cx),
+                Area::Stashes if self.stash_details.is_some() => self.area = Area::StashFiles,
+                Area::StashFiles => self.open_stash_file(cx),
                 _ => {}
             },
             G::OpenFile => match self.area {
@@ -368,7 +435,13 @@ impl GitPanel {
                     }
                 }
                 Area::Files => self.open_commit_file(cx),
-                Area::Message | Area::LogDiff | Area::Console => {}
+                Area::Stashes => {
+                    if self.stash_details.as_ref().is_some_and(|d| !d.files.is_empty()) {
+                        self.area = Area::StashFiles;
+                    }
+                }
+                Area::StashFiles => self.open_stash_file(cx),
+                Area::Message | Area::LogDiff | Area::StashDiff | Area::Console => {}
             },
             G::NextSection => {
                 self.area = match self.area {
@@ -377,13 +450,17 @@ impl GitPanel {
                     Area::Message => Area::Changes,
                     Area::Log => Area::Files,
                     Area::Files => Area::Log,
+                    Area::Stashes => Area::StashFiles,
+                    Area::StashFiles => Area::Stashes,
                     a => a,
                 }
             }
             G::Escape => match self.area {
                 Area::LogDiff => self.close_log_diff(),
+                Area::StashDiff => self.close_stash_diff(),
                 Area::Message | Area::Diff => self.area = Area::Changes,
                 Area::Files => self.area = Area::Log,
+                Area::StashFiles => self.area = Area::Stashes,
                 _ => cx.focus(PanelId::Editor),
             },
         }
@@ -397,6 +474,9 @@ impl GitPanel {
             Area::LogDiff => self.log_diff.page,
             Area::Log => self.log_list.viewport,
             Area::Files => self.files_list.viewport,
+            Area::Stashes => self.stash_list.viewport,
+            Area::StashFiles => self.stash_files.viewport,
+            Area::StashDiff => self.stash_diff.page,
             Area::Console | Area::Message => self.console_rect.height as usize,
         };
         rows.saturating_sub(1).max(1)
@@ -431,6 +511,12 @@ impl GitPanel {
                 self.maybe_page_log(cx);
             }
             Area::Files => step(&mut self.files_list),
+            Area::Stashes => {
+                step(&mut self.stash_list);
+                self.sync_stash_details(cx);
+            }
+            Area::StashFiles => step(&mut self.stash_files),
+            Area::StashDiff => self.stash_diff.scroll_by(delta),
             Area::Console => self.console_scroll = self.console_scroll.saturating_add_signed(-delta).min(self.console.len()),
             Area::Message => {}
         }
@@ -447,6 +533,7 @@ impl GitPanel {
                 match self.tab {
                     GitTab::Commit => self.click_commit_tab(m, p, cx),
                     GitTab::Log => self.click_log_tab(m, p, cx),
+                    GitTab::Stash => self.click_stash_tab(m, p, cx),
                     GitTab::Console => self.area = Area::Console,
                 }
                 true
@@ -456,7 +543,11 @@ impl GitPanel {
                 if self.changes_rect.contains(p) {
                     self.list.scroll(d as i32);
                 } else if self.diff_rect.contains(p) {
-                    if self.tab == GitTab::Log { self.log_diff.scroll_by(d) } else { self.diff.scroll_by(d) }
+                    self.diff_pane().scroll_by(d);
+                } else if self.stash_rect.contains(p) {
+                    self.stash_list.scroll(d as i32);
+                } else if self.stash_files_rect.contains(p) {
+                    self.stash_files.scroll(d as i32);
                 } else if self.log_rect.contains(p) {
                     self.log_list.scroll(d as i32);
                     self.maybe_page_log(cx);
@@ -470,13 +561,23 @@ impl GitPanel {
                 true
             }
             MouseEventKind::ScrollLeft | MouseEventKind::ScrollRight => {
-                let pane = if self.tab == GitTab::Log { &mut self.log_diff } else { &mut self.diff };
-                if self.diff_rect.contains(p) {
+                let inside = self.diff_rect.contains(p);
+                let pane = self.diff_pane();
+                if inside {
                     pane.hscroll = if m.kind == MouseEventKind::ScrollLeft { pane.hscroll.saturating_sub(4) } else { pane.hscroll + 4 };
                 }
                 true
             }
             _ => false,
+        }
+    }
+
+    /// The diff pane of the current tab.
+    fn diff_pane(&mut self) -> &mut DiffPane {
+        match self.tab {
+            GitTab::Log => &mut self.log_diff,
+            GitTab::Stash => &mut self.stash_diff,
+            GitTab::Commit | GitTab::Console => &mut self.diff,
         }
     }
 
@@ -486,7 +587,12 @@ impl GitPanel {
             Btn::Commit => return self.commit(false, cx),
             Btn::Amend => return self.toggle_amend(cx),
             Btn::CommitPush => return self.commit(true, cx),
+            Btn::Back if self.tab == GitTab::Stash => return self.close_stash_diff(),
             Btn::Back => return self.close_log_diff(),
+            Btn::StashPush => return self.stash_push(cx),
+            Btn::StashPop => return self.stash_action(StashAction::Pop, cx),
+            Btn::StashApply => return self.stash_action(StashAction::Apply, cx),
+            Btn::StashDrop => return self.stash_action(StashAction::Drop, cx),
             Btn::Refresh => GitRequest::Refresh,
             Btn::Fetch => GitRequest::Fetch,
             Btn::Pull => GitRequest::Pull,
@@ -514,6 +620,8 @@ impl GitPanel {
             &mut self.diff_rect,
             &mut self.log_rect,
             &mut self.files_rect,
+            &mut self.stash_rect,
+            &mut self.stash_files_rect,
             &mut self.console_rect,
         ] {
             *r = Rect::default();
@@ -526,6 +634,7 @@ impl GitPanel {
         match self.tab {
             GitTab::Commit => self.render_commit_tab(frame, body, focused, theme),
             GitTab::Log => self.render_log_tab(frame, body, focused, theme),
+            GitTab::Stash => self.render_stash_tab(frame, body, focused, theme),
             GitTab::Console => self.render_console(frame.buffer_mut(), body, theme),
         }
     }
@@ -534,7 +643,13 @@ impl GitPanel {
     fn render_header(&mut self, buf: &mut Screen, r: Rect, theme: &Theme) {
         buf.set_style(r, Style::default().bg(theme.panel_bg));
         let mut x = r.x;
-        for (tab, label) in [(GitTab::Commit, " Commit "), (GitTab::Log, " Log "), (GitTab::Console, " Console ")] {
+        let stash = match self.stashes.len() {
+            0 => " Stash ".to_string(),
+            n => format!(" Stash ({n}) "),
+        };
+        for (tab, label) in
+            [(GitTab::Commit, " Commit "), (GitTab::Log, " Log "), (GitTab::Stash, stash.as_str()), (GitTab::Console, " Console ")]
+        {
             let st = if self.tab == tab { theme.tab_active } else { theme.tab };
             let rect = put(buf, &mut x, r.y, r.right(), label, st);
             self.hits.push((Btn::Tab(tab), rect));

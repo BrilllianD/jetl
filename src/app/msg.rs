@@ -131,6 +131,12 @@ impl App {
                 }
             }
             GitMsg::CommitMessages { messages, .. } => self.git_panel.set_history(messages),
+            GitMsg::Stashes { result, .. } => {
+                let mut cx = ctx!(self);
+                self.git_panel.set_stashes(result, &mut cx);
+                let fx = cx.effects;
+                self.apply_effects(fx);
+            }
             GitMsg::OpDone { op, label, ok, output, .. } => self.git_op_done(op, label, ok, output),
         }
     }
@@ -180,7 +186,7 @@ impl App {
                 GitOp::Fetch => self.notify(Level::Info, "Fetched"),
                 GitOp::Switch(b) => self.notify(Level::Info, format!("Switched to {b}")),
                 GitOp::NewBranch(b) => self.notify(Level::Info, format!("Created and switched to {b}")),
-                GitOp::Discard => self.notify(Level::Info, output.clone()),
+                GitOp::Discard | GitOp::Stash => self.notify(Level::Info, output.clone()),
                 GitOp::Stage | GitOp::Unstage => {}
                 GitOp::WorktreeAdd { .. } | GitOp::WorktreeRemove { .. } | GitOp::WorktreePrune => {}
             }
@@ -194,7 +200,7 @@ impl App {
             // No upstream (one remote) or no default remote (several): ask
             // where to push once the remote is known (GitMsg::PushRemote).
             self.git.load_push_remote(self.branch_label().unwrap_or_default());
-        } else if matches!(op, GitOp::Commit { .. } | GitOp::Stage | GitOp::Unstage | GitOp::Discard) {
+        } else if matches!(op, GitOp::Commit { .. } | GitOp::Stage | GitOp::Unstage | GitOp::Discard | GitOp::Stash) {
             self.notify(Level::Error, error_line(&output));
         } else {
             self.notify(Level::Error, format!("{label}: {}", error_line(&output)));
@@ -202,6 +208,7 @@ impl App {
         self.refresh_tree();
         self.git.refresh_status();
         self.git.load_branches();
+        self.git.load_stashes();
         // Branch switches and worktree operations both change the list.
         self.git.load_worktrees();
         if self.git_panel.log_loaded() && !matches!(op, GitOp::Stage | GitOp::Unstage) {
@@ -226,6 +233,7 @@ impl App {
         self.git.refresh_status();
         self.git.load_branches();
         self.git.load_messages();
+        self.git.load_stashes();
         for p in self.editor.open_paths() {
             self.git.load_blob(p, BlobWhich::Head);
         }

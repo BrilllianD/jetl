@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, anyhow, bail};
 use git2::{BranchType, IndexAddOption, ObjectType, Repository, Status, StatusOptions};
 
-use super::model::{BranchInfo, ChangeEntry, FileStatus, Section, StatusSnapshot, tree_status};
+use super::model::{BranchInfo, ChangeEntry, FileStatus, Section, StashEntry, StatusSnapshot, tree_status};
 
 /// Open the repository containing `root` and return it with its canonical
 /// work tree.
@@ -342,6 +342,84 @@ pub fn discard(root: &Path, items: &[(Section, String)]) -> Result<String> {
     Ok(format!("Discarded changes to {n} path{}", if n == 1 { "" } else { "s" }))
 }
 
+/// Stashes, newest first (`index` 0 is `stash@{0}`).
+pub fn stashes(root: &Path) -> Result<Vec<StashEntry>> {
+    let (mut repo, _) = open(root)?;
+    let mut out = Vec::new();
+    repo.stash_foreach(|index, message, oid| {
+        out.push(StashEntry { index, message: message.to_string(), oid: oid.to_string() });
+        true
+    })?;
+    Ok(out)
+}
+
+/// What to do with the stash list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StashOp {
+    /// Stash tracked changes; an empty message lets git write "WIP on …".
+    Push {
+        message: String,
+    },
+    /// The stash is named by its commit, so a list that changed since it was
+    /// shown cannot hit the wrong entry.
+    Pop {
+        oid: String,
+    },
+    Apply {
+        oid: String,
+    },
+    Drop {
+        oid: String,
+    },
+}
+
+/// Run a stash operation; returns a line for the console.
+pub fn stash(root: &Path, op: &StashOp) -> Result<String> {
+    let (mut repo, _) = open(root)?;
+    let find = |repo: &mut Repository, oid: &str| -> Result<usize> {
+        let mut found = None;
+        repo.stash_foreach(|i, _, o| {
+            if o.to_string() == oid {
+                found = Some(i);
+            }
+            found.is_none()
+        })?;
+        found.ok_or_else(|| anyhow!("That stash no longer exists; the list changed"))
+    };
+    let applied = |e: git2::Error| match e.code() {
+        git2::ErrorCode::Conflict | git2::ErrorCode::MergeConflict => {
+            anyhow!("Cannot apply the stash: it conflicts with local changes; commit or stash them first ({})", e.message())
+        }
+        _ => anyhow!("{}", e.message()),
+    };
+    Ok(match op {
+        StashOp::Push { message } => {
+            let sig = signature(&repo)?;
+            let msg = Some(message.trim()).filter(|m| !m.is_empty());
+            match repo.stash_save2(&sig, msg, None) {
+                Ok(_) => "Stashed changes as stash@{0}".to_string(),
+                Err(e) if e.code() == git2::ErrorCode::NotFound => bail!("No local changes to stash"),
+                Err(e) => return Err(e.into()),
+            }
+        }
+        StashOp::Pop { oid } => {
+            let i = find(&mut repo, oid)?;
+            repo.stash_pop(i, None).map_err(applied)?;
+            format!("Popped stash@{{{i}}}")
+        }
+        StashOp::Apply { oid } => {
+            let i = find(&mut repo, oid)?;
+            repo.stash_apply(i, None).map_err(applied)?;
+            format!("Applied stash@{{{i}}}")
+        }
+        StashOp::Drop { oid } => {
+            let i = find(&mut repo, oid)?;
+            repo.stash_drop(i)?;
+            format!("Dropped stash@{{{i}}}")
+        }
+    })
+}
+
 pub fn branches(root: &Path) -> Result<Vec<BranchInfo>> {
     let (repo, _) = open(root)?;
     let mut out = Vec::new();
@@ -604,5 +682,39 @@ pub(crate) mod tests {
         assert_eq!(head.parent(0).unwrap().message_bytes(), b"first\n");
         assert!(head.tree().unwrap().get_path(Path::new("c.txt")).is_ok());
         assert!(status(&r.dir).unwrap().entries.is_empty());
+    }
+
+    #[test]
+    fn stash_push_list_apply_pop_and_drop() {
+        let r = TempRepo::new("stash");
+        r.write("a.txt", "a\n");
+        stage_all(&r.dir).unwrap();
+        commit(&r.dir, "first").unwrap();
+        let push = |m: &str| stash(&r.dir, &StashOp::Push { message: m.into() });
+        assert!(push("x").unwrap_err().to_string().contains("No local changes"));
+        r.write("a.txt", "one\n");
+        push("first change").unwrap();
+        assert_eq!(std::fs::read_to_string(r.dir.join("a.txt")).unwrap(), "a\n");
+        r.write("a.txt", "two\n");
+        push("").unwrap();
+        let list = stashes(&r.dir).unwrap();
+        assert_eq!(list.len(), 2);
+        assert!(list[0].message.starts_with("WIP on"), "{}", list[0].message);
+        assert!(list[1].message.ends_with("first change"), "{}", list[1].message);
+        // Apply keeps the entry; pop removes it.
+        stash(&r.dir, &StashOp::Apply { oid: list[1].oid.clone() }).unwrap();
+        assert_eq!(std::fs::read_to_string(r.dir.join("a.txt")).unwrap(), "one\n");
+        assert_eq!(stashes(&r.dir).unwrap().len(), 2);
+        // Applying over local changes to the same file fails and keeps them.
+        assert!(stash(&r.dir, &StashOp::Pop { oid: list[0].oid.clone() }).is_err());
+        assert_eq!(std::fs::read_to_string(r.dir.join("a.txt")).unwrap(), "one\n");
+        discard(&r.dir, &[(Section::Unstaged, "a.txt".into())]).unwrap();
+        stash(&r.dir, &StashOp::Pop { oid: list[0].oid.clone() }).unwrap();
+        assert_eq!(std::fs::read_to_string(r.dir.join("a.txt")).unwrap(), "two\n");
+        let left = stashes(&r.dir).unwrap();
+        assert_eq!((left.len(), left[0].oid.as_str()), (1, list[1].oid.as_str()));
+        assert!(stash(&r.dir, &StashOp::Drop { oid: list[0].oid.clone() }).unwrap_err().to_string().contains("no longer exists"));
+        stash(&r.dir, &StashOp::Drop { oid: list[1].oid.clone() }).unwrap();
+        assert!(stashes(&r.dir).unwrap().is_empty());
     }
 }

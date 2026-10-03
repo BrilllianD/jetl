@@ -20,7 +20,7 @@ use anyhow::Result;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::event::AppMsg;
-pub use model::{BranchInfo, CommitDetails, DiffKey, LogRow, Section, StatusSnapshot};
+pub use model::{BranchInfo, CommitDetails, DiffKey, LogRow, Section, StashEntry, StatusSnapshot};
 pub use panel::GitPanel;
 pub use repo::BlobWhich;
 
@@ -32,6 +32,8 @@ pub enum GitOp {
     Unstage,
     /// Throw away working tree (and staged) changes of some paths.
     Discard,
+    /// Stash push, pop, apply or drop.
+    Stash,
     Commit {
         push: bool,
         amend: bool,
@@ -58,7 +60,7 @@ pub enum GitOp {
 impl GitOp {
     /// Whether the operation may rewrite files in the work tree.
     pub fn touches_worktree(&self) -> bool {
-        matches!(self, GitOp::Pull | GitOp::Switch(_) | GitOp::NewBranch(_) | GitOp::Discard)
+        matches!(self, GitOp::Pull | GitOp::Switch(_) | GitOp::NewBranch(_) | GitOp::Discard | GitOp::Stash)
     }
 }
 
@@ -95,6 +97,10 @@ pub enum GitMsg {
         generation: u64,
         sha: String,
         result: Result<CommitDetails>,
+    },
+    Stashes {
+        generation: u64,
+        result: Result<Vec<StashEntry>>,
     },
     /// The HEAD commit message, to prefill the box when amend turns on.
     HeadMessage {
@@ -135,6 +141,7 @@ impl GitMsg {
             | GitMsg::CommitDetails { generation, .. }
             | GitMsg::PushRemote { generation, .. }
             | GitMsg::HeadMessage { generation, .. }
+            | GitMsg::Stashes { generation, .. }
             | GitMsg::CommitMessages { generation, .. }
             | GitMsg::OpDone { generation, .. } => *generation,
         }
@@ -159,6 +166,8 @@ pub enum GitRequest {
         amend: bool,
     },
     LoadHeadMessage,
+    Stash(repo::StashOp),
+    LoadStashes,
     Push,
     Pull,
     Fetch,
@@ -272,6 +281,10 @@ impl GitService {
 
     pub fn load_branches(&self) {
         self.blocking(repo::branches, |generation, result| GitMsg::Branches { generation, result });
+    }
+
+    pub fn load_stashes(&self) {
+        self.blocking(repo::stashes, |generation, result| GitMsg::Stashes { generation, result });
     }
 
     pub fn load_head_message(&self) {

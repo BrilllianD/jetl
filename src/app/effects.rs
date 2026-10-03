@@ -53,6 +53,7 @@ impl App {
         }
         if lists {
             self.git.load_branches();
+            self.git.load_stashes();
             self.git.load_worktrees();
         }
     }
@@ -109,6 +110,17 @@ impl App {
                 });
             }
             GitRequest::LoadHeadMessage => self.git.load_head_message(),
+            GitRequest::Stash(op) => {
+                let label = match &op {
+                    repo::StashOp::Push { message } if message.trim().is_empty() => "stash push".to_string(),
+                    repo::StashOp::Push { message } => format!("stash push: {}", message.trim()),
+                    repo::StashOp::Pop { oid } => format!("stash pop {}", &oid[..oid.len().min(8)]),
+                    repo::StashOp::Apply { oid } => format!("stash apply {}", &oid[..oid.len().min(8)]),
+                    repo::StashOp::Drop { oid } => format!("stash drop {}", &oid[..oid.len().min(8)]),
+                };
+                self.git.run_repo(GitOp::Stash, label, move |root| repo::stash(root, &op));
+            }
+            GitRequest::LoadStashes => self.git.load_stashes(),
             GitRequest::Push => {
                 self.git.run_cli(GitOp::Push, vec!["push".into()]);
             }

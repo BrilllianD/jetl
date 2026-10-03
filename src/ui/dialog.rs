@@ -50,6 +50,12 @@ pub enum DialogId {
     },
     WorktreeSwitchAfterCreate(std::path::PathBuf),
     NewBranchName,
+    /// Message for a new stash.
+    StashMessage,
+    /// Drop the stash with this commit id.
+    StashDrop {
+        oid: String,
+    },
     /// Discard the changes of these paths (Commit tab).
     GitDiscard(Vec<(crate::git::Section, String)>),
     /// Push the branch to the remote and set it as upstream.

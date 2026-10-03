@@ -169,6 +169,11 @@ pub enum GitAction {
     TabCommit,
     TabLog,
     TabConsole,
+    TabStash,
+    StashPush,
+    StashPop,
+    StashApply,
+    StashDrop,
     Up,
     Down,
     PageUp,
@@ -404,6 +409,11 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "git.tab_commit" => "Git: Commit tab", Git(GitAction::TabCommit);
         "git.tab_log" => "Git: Log tab", Git(GitAction::TabLog);
         "git.tab_console" => "Git: Console tab", Git(GitAction::TabConsole);
+        "git.tab_stash" => "Git: Stash tab", Git(GitAction::TabStash);
+        "git.stash_push" => "Git: stash local changes", Git(GitAction::StashPush);
+        "git.stash_pop" => "Git: pop the selected stash", Git(GitAction::StashPop);
+        "git.stash_apply" => "Git: apply the selected stash", Git(GitAction::StashApply);
+        "git.stash_drop" => "Git: drop the selected stash", Git(GitAction::StashDrop);
         "git.up" => "Git: up", Git(GitAction::Up);
         "git.down" => "Git: down", Git(GitAction::Down);
         "git.page_up" => "Git: page up", Git(GitAction::PageUp);

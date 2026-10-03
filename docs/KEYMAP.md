@@ -161,6 +161,11 @@ Override any of them in `~/.config/jetl/keymap.toml` (see [CONFIG.md](CONFIG.md)
 | `Alt+C` | `git.tab_commit` | Git: Commit tab |
 | `Alt+L` | `git.tab_log` | Git: Log tab |
 | `Alt+O` | `git.tab_console` | Git: Console tab |
+| `Alt+T` | `git.tab_stash` | Git: Stash tab |
+| `Ctrl+Alt+S` | `git.stash_push` | Git: stash local changes |
+| `Alt+P` | `git.stash_pop` | Git: pop the selected stash |
+| `Alt+A` | `git.stash_apply` | Git: apply the selected stash |
+| `Delete` | `git.stash_drop` | Git: drop the selected stash |
 | `Up` | `git.up` | Git: up |
 | `Down` | `git.down` | Git: down |
 | `PageUp` | `git.page_up` | Git: page up |

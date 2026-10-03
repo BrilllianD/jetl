@@ -63,7 +63,7 @@ impl GitPanel {
         cx.effects.push(Effect::Git(GitRequest::LoadCommit(sha)));
     }
 
-    pub fn set_details(&mut self, sha: &str, result: anyhow::Result<CommitDetails>) {
+    pub(super) fn set_log_details(&mut self, sha: &str, result: anyhow::Result<CommitDetails>) {
         if self.selected_commit() != Some(sha) {
             return;
         }

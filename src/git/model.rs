@@ -166,6 +166,16 @@ pub struct BranchInfo {
     pub current: bool,
 }
 
+/// One entry of the stash list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StashEntry {
+    /// Position: `stash@{index}`.
+    pub index: usize,
+    pub message: String,
+    /// The stash commit; its first parent is HEAD at the time.
+    pub oid: String,
+}
+
 /// One line of `git log --graph`: the graph prefix plus the commit when the
 /// line carries one (connector lines carry only graph characters).
 #[derive(Debug, Clone, PartialEq, Eq)]
