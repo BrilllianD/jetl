@@ -88,6 +88,16 @@ timeout_ms = 5000              # a formatter still running after this is killed
 # typescript = ["prettier", "--stdin-filepath", "{path}"]
 # csharp = ["csharpier", "format", "--write-stdout"]
 # go = ["gofmt"]
+
+# Run tasks (Alt+Shift+F10 picks one). None by default; examples:
+# [[run.tasks]]
+# name = "build"                 # shown in the picker and the Run window
+# command = "cargo build 2>&1"   # a string runs through `sh -c`
+# [[run.tasks]]
+# name = "web tests"
+# command = ["npm", "test", "--", "--watch=false"]  # a list of words runs directly, no shell
+# cwd = "web"                    # relative to the project root; default the root
+# env = { CI = "1" }             # added to jetl's environment
 ```
 
 With `watch` on, files changed by other programs refresh the Project tree
@@ -146,6 +156,37 @@ text as it was when you pressed Ctrl+S; your later edits stay unsaved.
 Only explicit saves format. Autosave, and the saves done by closing a tab,
 quitting or switching projects with unsaved changes ("Save all and exit"),
 write at once without the formatter, so they never wait on it.
+
+Run tasks (`[[run.tasks]]`) are listed by `run.pick` (Alt+Shift+F10), then
+the project's own `.jetl/run.toml`, which holds the same entries as
+`[[tasks]]` tables and is read each time the picker opens. When neither has
+any, the picker offers defaults found in the project root: `cargo build`,
+`cargo test` and `cargo run` for a `Cargo.toml`, `npm run <script>` for each
+of the first 20 `package.json` scripts, `make` for a Makefile, and
+`go build ./...` and `go test ./...` for a `go.mod`. A task runs only when
+you pick it (or rerun it), so a project file cannot start anything by
+itself.
+
+A task runs without a terminal: stdin is closed and stdout and stderr share
+one pipe, so their lines interleave as written, but programs that color or
+animate only on a terminal print plain output (escape codes that still come
+through are stripped). The Run window (Alt+4) shows its status, elapsed time
+and the last 10 000 lines, following new output unless you scroll up.
+File locations in the output become links (rustc and cargo, tsc, pytest and
+Python tracebacks, and any `path:line:col`), resolved against the task's
+directory and its parents up to the project root; only files that exist are
+linked. Errors are red, warnings yellow. A click on a link, Enter or a double
+click opens it; F4 and Shift+F4 (Ctrl+Alt+Down/Up in the Run window) step
+through them from anywhere. Shift+F10 or Ctrl+F5 runs the last task again
+(in the Project and Git windows Shift+F10 opens the context menu instead),
+and Ctrl+F2 stops it.
+
+One task runs at a time: starting another kills the running one first, as
+do quitting jetl and switching projects. A stop sends SIGKILL to the task's
+whole process group, so the processes it started (cargo's rustc, npm's node)
+go with it; programs that put themselves in a new session (daemons) are not
+tracked. A task that fails (a non-zero exit code, killed by a signal jetl
+did not send, or a command that cannot start) gives one error notification.
 
 ## Indentation and .editorconfig
 

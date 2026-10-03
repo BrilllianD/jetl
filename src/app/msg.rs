@@ -58,6 +58,9 @@ impl App {
             AppMsg::FsOpDone { op, .. } => tracing::debug!("dropping file operation result of a previous root: {op:?}"),
             AppMsg::Paste { generation, seq, result } => self.paste_done(generation, seq, result),
             AppMsg::Formatted { generation, id, seq, result } => self.format_done(generation, id, seq, result),
+            AppMsg::RunOutput { generation, run, lines } => self.run_output(generation, run, lines),
+            AppMsg::RunExited { generation, run, end } => self.run_exited(generation, run, end),
+            AppMsg::RunTasks { generation, seq, tasks, error } => self.run_tasks_loaded(generation, seq, tasks, error),
             AppMsg::Lsp(_) => {}
         }
     }

@@ -10,7 +10,7 @@ use futures::StreamExt;
 use ratatui::layout::Rect;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
-use crate::actions::{Action, AppAction, Dir, EditorAction, EventLogAction, FindAction, ModeAction};
+use crate::actions::{Action, AppAction, Dir, EditorAction, EventLogAction, FindAction, ModeAction, RunAction};
 use crate::config::keymap::Keymap;
 use crate::config::theme::Theme;
 use crate::config::{Config, Paths};
@@ -46,6 +46,7 @@ mod format;
 mod mouse;
 mod msg;
 mod palette;
+mod run;
 mod symbols;
 mod watch;
 
@@ -181,6 +182,9 @@ pub struct App {
     clipboard: clipboard::ClipboardState,
     /// Formatter runs in flight.
     pub(crate) format: format::FormatState,
+    /// The running task, the last one and the picker's tasks.
+    pub(crate) run: run::RunState,
+    pub run_panel: crate::run::panel::RunPanel,
     started: Instant,
 }
 
@@ -246,6 +250,8 @@ impl App {
             watcher: None,
             clipboard: Default::default(),
             format: Default::default(),
+            run: Default::default(),
+            run_panel: Default::default(),
             started: Instant::now(),
             config,
             paths,
@@ -364,6 +370,7 @@ impl App {
         }
         self.save_session();
         self.format.abort_all();
+        self.run.kill();
         Ok(())
     }
 
@@ -381,7 +388,8 @@ impl App {
         if self.editor.update_gutters() {
             self.dirty_frame = true;
         }
-        if self.git.is_busy() {
+        // The spinner and elapsed time of a running task.
+        if self.git.is_busy() || (self.run.running() && self.layout.is_visible(ToolWindowId::Run)) {
             self.dirty_frame = true;
         }
         if self.editor.autosave_due(Instant::now()) {
@@ -620,6 +628,17 @@ impl App {
                 return;
             }
             Action::EventLog(a) => self.event_log.handle_action(a, &self.notifications, &mut cx),
+            Action::Run(RunAction::Rerun) => {
+                drop(cx);
+                self.rerun();
+                return;
+            }
+            Action::Run(RunAction::Stop) => {
+                drop(cx);
+                self.stop_run();
+                return;
+            }
+            Action::Run(a) => self.run_panel.handle_action(a, &mut cx),
             Action::Palette(_) => false,
         };
         let effects = cx.effects;

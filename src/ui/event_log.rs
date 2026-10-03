@@ -31,19 +31,12 @@ impl EventLogPanel {
     /// Whether new entries move the selection: it is on the last entry and
     /// that row is visible (or the log is empty).
     pub fn following(&self) -> bool {
-        let s = &self.state;
-        s.len == 0 || (s.selected + 1 == s.len && (s.viewport == 0 || s.offset + s.viewport >= s.len))
+        self.state.follows_end()
     }
 
     /// The log grew to `len` entries after dropping `dropped` from the front.
     pub fn pushed(&mut self, len: usize, dropped: usize) {
-        let follow = self.following();
-        self.state.selected = self.state.selected.saturating_sub(dropped);
-        self.state.offset = self.state.offset.saturating_sub(dropped);
-        self.state.set_len(len);
-        if follow {
-            self.state.end();
-        }
+        self.state.grew(len, dropped);
     }
 
     pub fn clear(&mut self) {

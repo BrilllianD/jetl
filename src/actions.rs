@@ -15,6 +15,7 @@ pub enum Action {
     Find(FindAction),
     Structure(StructureAction),
     EventLog(EventLogAction),
+    Run(RunAction),
     Palette(PaletteAction),
     Mode(ModeAction),
 }
@@ -55,6 +56,8 @@ pub enum PaletteKind {
     Branches,
     RecentProjects,
     Symbols,
+    /// The Run task picker.
+    RunTasks,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -288,6 +291,22 @@ pub enum EventLogAction {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum RunAction {
+    Rerun,
+    Stop,
+    Up,
+    Down,
+    PageUp,
+    PageDown,
+    Home,
+    End,
+    /// Open the selected line's location.
+    Open,
+    NextProblem,
+    PrevProblem,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum PaletteAction {
     Up,
     Down,
@@ -336,6 +355,7 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "tool_window.find" => "Find tool window", App(AppAction::ToggleToolWindow(ToolWindowId::Find));
         "tool_window.structure" => "Structure tool window", App(AppAction::ToggleToolWindow(ToolWindowId::Structure));
         "tool_window.event_log" => "Event Log tool window", App(AppAction::ToggleToolWindow(ToolWindowId::EventLog));
+        "tool_window.run" => "Run tool window", App(AppAction::ToggleToolWindow(ToolWindowId::Run));
         "tool_window.hide_all" => "Hide all tool windows", App(AppAction::HideAllToolWindows);
         "tool_window.hide_focused" => "Hide active tool window", App(AppAction::HideFocusedToolWindow);
         "tool_window.stretch_left" => "Stretch tool window to the left", App(AppAction::ResizeToolWindow(Dir::Left));
@@ -555,6 +575,19 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "event_log.copy" => "Event Log: copy the selected entry", EventLog(EventLogAction::Copy);
         "event_log.clear" => "Event Log: clear", EventLog(EventLogAction::Clear);
 
+        "run.pick" => "Run: choose a task and run it", App(AppAction::OpenPalette(PaletteKind::RunTasks));
+        "run.rerun" => "Run: run the last task again", Run(RunAction::Rerun);
+        "run.stop" => "Run: stop the running task", Run(RunAction::Stop);
+        "run.up" => "Run: up", Run(RunAction::Up);
+        "run.down" => "Run: down", Run(RunAction::Down);
+        "run.page_up" => "Run: page up", Run(RunAction::PageUp);
+        "run.page_down" => "Run: page down", Run(RunAction::PageDown);
+        "run.home" => "Run: first line", Run(RunAction::Home);
+        "run.end" => "Run: last line", Run(RunAction::End);
+        "run.open" => "Run: jump to the selected line's location", Run(RunAction::Open);
+        "run.next_problem" => "Run: next problem (opens it)", Run(RunAction::NextProblem);
+        "run.prev_problem" => "Run: previous problem (opens it)", Run(RunAction::PrevProblem);
+
         "palette.up" => "Palette: up", Palette(PaletteAction::Up);
         "palette.down" => "Palette: down", Palette(PaletteAction::Down);
         "palette.page_up" => "Palette: page up", Palette(PaletteAction::PageUp);
@@ -593,6 +626,7 @@ impl Action {
             Action::Find(_) => &["find", "global"],
             Action::Structure(_) => &["structure", "global"],
             Action::EventLog(_) => &["event_log", "global"],
+            Action::Run(_) => &["run", "global"],
             Action::Palette(_) => &["palette"],
             Action::Mode(_) => &["mode.normal", "mode.insert", "mode.visual"],
         }

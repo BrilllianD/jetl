@@ -83,6 +83,22 @@ impl ListState {
         self.selected = self.selected.min(len.saturating_sub(1));
         self.set_viewport(viewport);
     }
+    /// Whether a growing list (a log) moves the selection along: it is on
+    /// the last row and that row is in view (or the list is empty).
+    pub fn follows_end(&self) -> bool {
+        self.len == 0 || (self.selected + 1 == self.len && (self.viewport == 0 || self.offset + self.viewport >= self.len))
+    }
+    /// The list grew to `len` rows after dropping `dropped` from the front:
+    /// the same row stays selected, or the last one while following.
+    pub fn grew(&mut self, len: usize, dropped: usize) {
+        let follow = self.follows_end();
+        self.selected = self.selected.saturating_sub(dropped);
+        self.offset = self.offset.saturating_sub(dropped);
+        self.set_len(len);
+        if follow {
+            self.end();
+        }
+    }
     /// Row index under a screen position, if any.
     pub fn hit(&self, area: Rect, x: u16, y: u16) -> Option<usize> {
         if !area.contains((x, y).into()) {

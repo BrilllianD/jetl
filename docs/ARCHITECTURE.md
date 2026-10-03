@@ -24,8 +24,10 @@ and backlog are in `docs/ROADMAP.md`; settings in `docs/CONFIG.md`; keys in
 | `app/symbols.rs` | Starting symbol index runs (`request_symbols`, through `Coalesce`), applying `AppMsg::Symbols`, re-queuing watcher paths, and `sync_structure` (called by `ui::render` while the Structure window is shown). |
 | `app/clipboard.rs` | Copy (OSC 52, the copy tool, jetl's register) and `editor.paste`: the focused text field (`PasteTarget`), the paste tool run off the main thread (`AppMsg::Paste`, dropped when focus moved), the register fallback with a one-time warning. Dialogs and the palette route the paste key here before their own key handling. |
 | `app/format.rs` | External formatter runs (`Effect::Format`): one per buffer at a time (a newer request aborts the older one and keeps its save), tagged with the generation and a seq, aborted on root switch and quit; `AppMsg::Formatted` goes to `Editor::format_done`. |
+| `app/run.rs` | Run tasks: `RunState` (the running job with its process group id, the last task, the picker's tasks), `run_task` (kills a running task first, spawns, starts `run::process::drive`), stop, rerun, `RunOutput`/`RunExited` checked against the generation and the run's seq, the task list loaded off the main thread for the picker. The job is killed on quit, on root switch and when `RunState` is dropped. |
 | `app/files.rs` | Tree file operations: `run_fs_op` off the main thread, `fs_op_done` (reload the tree, open, retarget or close tabs). |
 | `workspace.rs` | `Workspace` (root and generation), root switching (`App::switch_root`), sessions (JSON per root: tabs in order with their pins, tool window layout and sizes, Git tab, tree hidden/ignored toggles, expanded tree folders; a missing one arrives empty; fields added later are `#[serde(default)]`). `session_loaded` skips tabs already open, applies the layout (sizes clamped, toggles winning over `[files]` config), expands the saved folders on the main thread, then opens the command line file. |
+| `run/` | Run tasks. `mod.rs`: `RunTask` (`[[run.tasks]]`, `.jetl/run.toml`; a command is a `sh -c` string or a list of words) and the defaults detected from Cargo, npm, make and Go project files. `process.rs`: `spawn` (own session and process group, stdout and stderr on one pipe, stdin closed), `kill_group` (SIGKILL to the group), `drive` (a reader thread splits, cleans and matches lines; batches go out every 50 ms, then the exit). `matcher.rs`: problem matchers (rustc/cargo with the header's severity, tsc, pytest and tracebacks, generic `path:line:col`) turning lines into `RunLine`s with a severity and a link to an existing file. `panel.rs`: the Run tool window (status line, last 10 000 lines, follow unless scrolled up, links opened through `Effect::OpenFileAt`, next/previous problem). |
 | `recent_projects.rs` | `state/recent_projects.json`: roots with their last open time, newest first, deduplicated, at most 30. Recorded off the main thread at startup and on every root switch (`App::load_recent_projects`); a missing or corrupt file reads as empty; roots that are no longer directories are not listed. |
 | `worktree/` | `git worktree` parsing and paths (`mod.rs`), the Worktrees tool window (`panel.rs`), the create/remove dialog flow (`flow.rs`, `impl App`). |
 | `actions.rs` | `Action` enums and `REGISTRY` (id, description, action). Keymaps and the palette refer to actions by id. |
@@ -77,14 +79,16 @@ redraws when `dirty_frame` is set:
 2. **The bus** (`mpsc::unbounded_channel` of `AppMsg`). Background work
    reports here: file loads, sessions, the file index, tree listings,
    worktree lists, find in files batches, tree file operations
-   (`FsOpDone`), symbol index batches, the recent projects list,
+   (`FsOpDone`), symbol index batches, the recent projects list, Run task
+   output and exits and the task picker's list,
    `AppMsg::Git(GitMsg)`, and the filesystem watcher
    (`FsChanged`: refresh the tree if a listed directory changed, refresh git
    status, reload clean tabs in place, ask once about tabs with unsaved
    edits). Without a watcher (off, or it failed to start), focus gain
    refreshes instead.
 3. **A 100 ms tick**: toast expiry, gutter recomputation (debounces typing),
-   the busy spinner, idle autosave.
+   the busy spinner, the Run window's spinner and elapsed time while a task
+   runs, idle autosave.
 
 Panels never reach into the app. They get a `Ctx` (built by `ctx!(self)`
 from disjoint fields so the panel can be borrowed mutably at the same time)
@@ -117,7 +121,8 @@ Two tags:
   (`Workspace::switch_root`). Every result that depends on the root carries
   it: `FileLoaded`, `SessionLoaded`, `FileIndex`, `TreeLoaded`,
   `Worktrees`, `Find`, `ReplaceDone`, `FsChanged`, `WatcherStarted`,
-  `DiskText`, `FsOpDone`, `Symbols`, every `GitMsg`. `GitService` keeps a copy, set by
+  `DiskText`, `FsOpDone`, `Symbols`, `RunOutput`, `RunExited`, `RunTasks`,
+  every `GitMsg`. `GitService` keeps a copy, set by
   `set_root(root, generation)`, to tag its own results. A result whose
   generation differs from `workspace.generation` is dropped.
 - **Seq** orders repeated requests of the same kind within a generation, so
@@ -133,7 +138,10 @@ Two tags:
   generation), `Paste` (only the newest request applies, and only while
   the text field it was asked for still has focus), `Formatted` (per
   buffer, only the newest request; the text is applied only while
-  `Buffer::version` still matches the snapshot). A result is applied when its seq is not
+  `Buffer::version` still matches the snapshot), `RunOutput` and
+  `RunExited` (only the current run's `RunState::seq`; a new run, a root
+  switch or quitting forgets the old one after killing its process group),
+  `RunTasks` (the newest load). A result is applied when its seq is not
   older than the last applied one. Results keyed by what they describe
   need no seq: diffs by `DiffKey` (each diff pane ignores keys it does not
   show), commit details by sha (the Log or Stash tab, whichever has it

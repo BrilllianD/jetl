@@ -11,6 +11,7 @@ pub enum PanelId {
     Find,
     Structure,
     EventLog,
+    Run,
 }
 
 /// Saved in sessions: new variants go last.
@@ -22,6 +23,7 @@ pub enum ToolWindowId {
     Find,
     Structure,
     EventLog,
+    Run,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,11 +33,12 @@ pub enum Side {
 }
 
 impl ToolWindowId {
-    pub const ALL: [ToolWindowId; 6] = [
+    pub const ALL: [ToolWindowId; 7] = [
         ToolWindowId::Project,
         ToolWindowId::Worktrees,
         ToolWindowId::Structure,
         ToolWindowId::Find,
+        ToolWindowId::Run,
         ToolWindowId::Git,
         ToolWindowId::EventLog,
     ];
@@ -48,12 +51,13 @@ impl ToolWindowId {
             ToolWindowId::Find => PanelId::Find,
             ToolWindowId::Structure => PanelId::Structure,
             ToolWindowId::EventLog => PanelId::EventLog,
+            ToolWindowId::Run => PanelId::Run,
         }
     }
     pub fn side(self) -> Side {
         match self {
             ToolWindowId::Project | ToolWindowId::Worktrees | ToolWindowId::Structure => Side::Left,
-            ToolWindowId::Git | ToolWindowId::Find | ToolWindowId::EventLog => Side::Bottom,
+            ToolWindowId::Git | ToolWindowId::Find | ToolWindowId::EventLog | ToolWindowId::Run => Side::Bottom,
         }
     }
     pub fn title(self) -> &'static str {
@@ -64,6 +68,7 @@ impl ToolWindowId {
             ToolWindowId::Find => "Find",
             ToolWindowId::Structure => "Structure",
             ToolWindowId::EventLog => "Event Log",
+            ToolWindowId::Run => "Run",
         }
     }
     /// The Alt+number key shown on the tool strip; windows opened by other
@@ -76,6 +81,7 @@ impl ToolWindowId {
             ToolWindowId::Find => Some(3),
             ToolWindowId::Structure => Some(7),
             ToolWindowId::EventLog => None,
+            ToolWindowId::Run => Some(4),
         }
     }
 }
@@ -89,6 +95,7 @@ impl PanelId {
             PanelId::Find => Some(ToolWindowId::Find),
             PanelId::Structure => Some(ToolWindowId::Structure),
             PanelId::EventLog => Some(ToolWindowId::EventLog),
+            PanelId::Run => Some(ToolWindowId::Run),
             PanelId::Editor => None,
         }
     }
@@ -102,6 +109,7 @@ impl PanelId {
             PanelId::Find => "find",
             PanelId::Structure => "structure",
             PanelId::EventLog => "event_log",
+            PanelId::Run => "run",
         }
     }
 }

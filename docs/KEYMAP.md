@@ -22,6 +22,7 @@ Override any of them in `~/.config/jetl/keymap.toml` (see [CONFIG.md](CONFIG.md)
 | `Alt+3` | `tool_window.find` | Find tool window |
 | `Alt+7` | `tool_window.structure` | Structure tool window |
 | `Alt+Shift+L` | `tool_window.event_log` | Event Log tool window |
+| `Alt+4` | `tool_window.run` | Run tool window |
 | `Ctrl+Shift+F12` | `tool_window.hide_all` | Hide all tool windows |
 | `Shift+Esc` * | `tool_window.hide_focused` | Hide active tool window |
 | `Ctrl+Shift+Left` | `tool_window.stretch_left` | Stretch tool window to the left |
@@ -63,6 +64,12 @@ Override any of them in `~/.config/jetl/keymap.toml` (see [CONFIG.md](CONFIG.md)
 | `Ctrl+Shift+R` * | `find.replace_in_files` | Replace in files |
 | `Ctrl+Alt+Down` | `find.next_result` | Find: next result (opens it) |
 | `Ctrl+Alt+Up` | `find.prev_result` | Find: previous result (opens it) |
+| `Alt+Shift+F10` | `run.pick` | Run: choose a task and run it |
+| `Ctrl+F5` | `run.rerun` | Run: run the last task again |
+| `Shift+F10` | `run.rerun` | Run: run the last task again |
+| `Ctrl+F2` | `run.stop` | Run: stop the running task |
+| `F4` | `run.next_problem` | Run: next problem (opens it) |
+| `Shift+F4` | `run.prev_problem` | Run: previous problem (opens it) |
 
 ## editor
 
@@ -289,6 +296,21 @@ Override any of them in `~/.config/jetl/keymap.toml` (see [CONFIG.md](CONFIG.md)
 | `Alt+R` | `find.toggle_replace` | Find: show or hide the replacement |
 | `Alt+A` | `find.replace_all` | Find: replace all results |
 | `Esc` | `find.escape` | Find: back to the editor |
+
+## run
+
+| Keys | Action | Description |
+|---|---|---|
+| `Esc` | `app.focus_editor` | Focus editor |
+| `Up` | `run.up` | Run: up |
+| `Down` | `run.down` | Run: down |
+| `PageUp` | `run.page_up` | Run: page up |
+| `PageDown` | `run.page_down` | Run: page down |
+| `Home` | `run.home` | Run: first line |
+| `End` | `run.end` | Run: last line |
+| `Enter` | `run.open` | Run: jump to the selected line's location |
+| `Ctrl+Alt+Down` | `run.next_problem` | Run: next problem (opens it) |
+| `Ctrl+Alt+Up` | `run.prev_problem` | Run: previous problem (opens it) |
 
 ## structure
 

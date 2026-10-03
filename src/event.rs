@@ -110,6 +110,28 @@ pub enum AppMsg {
         seq: u64,
         result: Result<String, crate::util::format::Failure>,
     },
+    /// Output lines of run `run` (`App::run_task`), tagged with the
+    /// workspace generation.
+    RunOutput {
+        generation: u64,
+        run: u64,
+        lines: Vec<crate::run::matcher::RunLine>,
+    },
+    /// Run `run` ended; sent after its last output.
+    RunExited {
+        generation: u64,
+        run: u64,
+        end: crate::run::process::RunEnd,
+    },
+    /// The task picker's tasks (`App::load_run_tasks`), tagged with the
+    /// workspace generation and the request's seq; the error is an invalid
+    /// `.jetl/run.toml`.
+    RunTasks {
+        generation: u64,
+        seq: u64,
+        tasks: Vec<crate::run::RunTask>,
+        error: Option<String>,
+    },
     /// Reserved for the language server integration.
     Lsp(LspMsg),
 }

@@ -9,6 +9,7 @@
 "alt-9" = "tool_window.git"
 "alt-3" = "tool_window.find"
 "alt-7" = "tool_window.structure"
+"alt-4" = "tool_window.run"
 # JetBrains has no default key for the Event Log; Alt+Shift+L works in
 # legacy terminals too.
 "alt-shift-l" = "tool_window.event_log"
@@ -18,6 +19,17 @@
 # Alt+3 opens the Find window anywhere, Alt+R there shows the replacement.
 "ctrl-alt-down" = "find.next_result"
 "ctrl-alt-up" = "find.prev_result"
+# Run tasks, JetBrains-style: Alt+Shift+F10 picks a task, Shift+F10 runs the
+# last one again (the tree and Git windows keep Shift+F10 for their context
+# menu; Ctrl+F5, Rerun in JetBrains, works everywhere), Ctrl+F2 stops it.
+# F4/Shift+F4 step through the problems in its output from anywhere; in the
+# Run window Ctrl+Alt+Down/Up do the same.
+"alt-shift-f10" = "run.pick"
+"shift-f10" = "run.rerun"
+"ctrl-f5" = "run.rerun"
+"ctrl-f2" = "run.stop"
+"f4" = "run.next_problem"
+"shift-f4" = "run.prev_problem"
 "alt-0" = "git.commit_box"
 "ctrl-k" = "git.commit_box"
 "ctrl-shift-k" = "git.push"
@@ -263,6 +275,18 @@
 "enter" = "event_log.details"
 "ctrl-c" = "event_log.copy"
 "delete" = "event_log.clear"
+"esc" = "app.focus_editor"
+
+[run]
+"up" = "run.up"
+"down" = "run.down"
+"pageup" = "run.page_up"
+"pagedown" = "run.page_down"
+"home" = "run.home"
+"end" = "run.end"
+"enter" = "run.open"
+"ctrl-alt-down" = "run.next_problem"
+"ctrl-alt-up" = "run.prev_problem"
 "esc" = "app.focus_editor"
 
 [palette]

@@ -1,5 +1,5 @@
 //! Command palette overlay: Go to File, Go to Symbol, Find Action, Search
-//! Everywhere, Recent Files, Branches and Recent Projects. The app owns it (`App.palette`) and routes all
+//! Everywhere, Recent Files, Branches, Recent Projects and Run tasks. The app owns it (`App.palette`) and routes all
 //! input to it while it is open, like a dialog. Keys arrive as
 //! `PaletteAction`s from the `palette` keymap context; unmapped keys edit the
 //! query. The palette holds copies of its candidates (the file index, the
@@ -40,6 +40,7 @@ pub enum Source {
     Recent,
     Projects,
     Symbols,
+    Tasks,
 }
 
 impl Source {
@@ -51,6 +52,7 @@ impl Source {
             Source::Recent => "Recent Files",
             Source::Projects => "Recent Projects",
             Source::Symbols => "Symbols",
+            Source::Tasks => "Run",
         }
     }
 }
@@ -79,6 +81,7 @@ pub enum Accept {
         line: usize,
         col: usize,
     },
+    RunTask(Box<crate::run::RunTask>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -112,6 +115,9 @@ pub struct Palette {
     /// The project symbol index and whether it is still being built.
     symbols: Arc<Vec<SymbolEntry>>,
     symbols_loading: bool,
+    /// Run tasks of the root and whether they are still loading.
+    tasks: Vec<crate::run::RunTask>,
+    tasks_loading: bool,
     matcher: Matcher,
     outer: Rect,
     list_rect: Rect,
@@ -127,6 +133,7 @@ impl Palette {
             PaletteKind::RecentFiles => vec![Source::Recent],
             PaletteKind::RecentProjects => vec![Source::Projects],
             PaletteKind::Symbols => vec![Source::Symbols],
+            PaletteKind::RunTasks => vec![Source::Tasks],
             // Go to Line stays a dialog and never opens a palette.
             PaletteKind::Branches | PaletteKind::GotoLine => vec![Source::Branches],
         };
@@ -147,6 +154,8 @@ impl Palette {
             projects_shown: Vec::new(),
             symbols: Arc::new(Vec::new()),
             symbols_loading: false,
+            tasks: Vec::new(),
+            tasks_loading: false,
             matcher: Matcher::default(),
             outer: Rect::default(),
             list_rect: Rect::default(),
@@ -209,6 +218,14 @@ impl Palette {
         }
     }
 
+    pub fn set_tasks(&mut self, tasks: Vec<crate::run::RunTask>, loading: bool) {
+        self.tasks = tasks;
+        self.tasks_loading = loading;
+        if self.source() == Source::Tasks {
+            self.refilter(false);
+        }
+    }
+
     /// Recent project roots, newest first; the current root is left out.
     pub fn set_projects(&mut self, roots: &[PathBuf]) {
         let home = directories::BaseDirs::new().map(|d| d.home_dir().to_path_buf());
@@ -266,6 +283,15 @@ impl Palette {
                     rank_texts(&q, self.symbols.iter().map(|e| [&*e.symbol.name]), &mut self.matcher)
                 }
             }
+            Source::Tasks => {
+                if q.is_empty() {
+                    (0..self.tasks.len()).collect()
+                } else {
+                    let commands: Vec<String> = self.tasks.iter().map(|t| t.command.display()).collect();
+                    let texts = self.tasks.iter().zip(&commands).map(|(t, c)| [t.name.as_str(), c.as_str()]);
+                    rank_texts(&q, texts, &mut self.matcher)
+                }
+            }
             Source::Branches => {
                 let mut texts: Vec<[&str; 1]> = vec![["New Branch"]];
                 texts.extend(self.branches.iter().map(|b| [b.name.as_str()]));
@@ -297,6 +323,7 @@ impl Palette {
                 Accept::OpenFileAt { path: self.root.join(&*e.path), line: e.symbol.line, col: e.symbol.col }
             }
             Source::Actions => Accept::Action(self.actions.get(i)?.action.clone()),
+            Source::Tasks => Accept::RunTask(Box::new(self.tasks.get(i)?.clone())),
             Source::Branches if i == 0 => Accept::NewBranch,
             Source::Branches => Accept::Branch(self.branches.get(i - 1)?.clone()),
         };
@@ -395,6 +422,7 @@ impl Palette {
             PaletteKind::RecentFiles => "Recent Files",
             PaletteKind::RecentProjects => "Recent Projects",
             PaletteKind::Symbols => "Go to Symbol",
+            PaletteKind::RunTasks => "Run",
             PaletteKind::Branches | PaletteKind::GotoLine => "Git Branches",
         }
     }
@@ -448,6 +476,7 @@ impl Palette {
         let loading = match self.source() {
             Source::Files => self.files_loading,
             Source::Symbols => self.symbols_loading,
+            Source::Tasks => self.tasks_loading,
             _ => false,
         };
         let count = match self.source() {
@@ -465,6 +494,7 @@ impl Palette {
             Source::Branches => "type a branch name",
             Source::Projects => "type a project name",
             Source::Symbols => "type a symbol name",
+            Source::Tasks => "type a task name",
         };
         self.input.render(frame, qrect, Style::default().bg(theme.bg).fg(theme.fg), placeholder, theme.dim.bg(theme.bg), true);
         frame.buffer_mut().set_stringn(inner.right().saturating_sub(cw + 1), y, &count, cw as usize, theme.dim.bg(theme.popup_bg));
@@ -478,6 +508,8 @@ impl Palette {
             let msg = match self.source() {
                 Source::Files if loading => "Indexing files…",
                 Source::Symbols if loading => "Indexing symbols…",
+                Source::Tasks if loading => "Loading tasks…",
+                Source::Tasks if self.input.text.trim().is_empty() => "No tasks: add [[run.tasks]] to config.toml or .jetl/run.toml",
                 _ => "Nothing found",
             };
             frame.buffer_mut().set_stringn(lrect.x + 2, lrect.y, msg, lrect.width.saturating_sub(2) as usize, theme.dim.bg(theme.popup_bg));
@@ -532,6 +564,22 @@ impl Palette {
                     let mut v = highlight(&e.symbol.name, |ci| marks.contains(&(ci as u32)), base, hl);
                     v.push((format!("  {}", e.symbol.kind), dim));
                     v.push((format!("  {}:{}", e.path, e.symbol.line + 1), dim));
+                    v
+                }
+                Source::Tasks => {
+                    let t = &self.tasks[i];
+                    let marks = match_indices(&pattern, &t.name, &mut self.matcher);
+                    let mut v = highlight(&t.name, |ci| marks.contains(&(ci as u32)), base, hl);
+                    let command = t.command.display();
+                    if command != t.name {
+                        v.push((format!("  {command}"), dim));
+                    }
+                    let origin = t.origin.label();
+                    let used: usize = v.iter().map(|(t, _)| t.width()).sum();
+                    if used + origin.width() + 2 <= width {
+                        v.push((" ".repeat(width - used - origin.width()), base));
+                        v.push((origin.to_string(), dim));
+                    }
                     v
                 }
                 Source::Branches if i == 0 => vec![(NEW_BRANCH.to_string(), base)],

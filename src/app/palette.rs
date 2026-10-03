@@ -44,6 +44,10 @@ impl App {
             p.set_projects(&self.recent_projects);
             self.load_recent_projects(false);
         }
+        if p.wants(Source::Tasks) {
+            p.set_tasks(self.run.tasks.clone(), true);
+            self.load_run_tasks();
+        }
         if p.wants(Source::Branches) {
             p.set_branches(self.git_panel.branches.clone());
             self.branches_error_shown = false;
@@ -182,6 +186,7 @@ impl App {
             PaletteResult::Accept(Accept::Branch(b)) => self.git_request(GitRequest::BranchOps(b)),
             PaletteResult::Accept(Accept::NewBranch) => self.git_request(GitRequest::NewBranch),
             PaletteResult::Accept(Accept::SwitchRoot(root)) => self.apply_effects(vec![Effect::SwitchRoot(root)]),
+            PaletteResult::Accept(Accept::RunTask(task)) => self.run_task(*task),
             PaletteResult::Accept(Accept::OpenFileAt { path, line, col }) => {
                 self.apply_effects(vec![Effect::OpenFileAt { path, line, col }])
             }
