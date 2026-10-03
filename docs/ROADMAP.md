@@ -37,7 +37,7 @@ are done, except the conflict resolver, which waits for split panes (see Order).
   (`[files] watch`) or failed to start.
 - **Infra:** `AppMsg::Lsp(LspMsg)` is an empty stub. Background services follow one pattern:
   clone (root, generation, tx), spawn, send a tagged message, and the app drops stale generations.
-  `docs/ARCHITECTURE.md` and CI (fmt, clippy, test) exist; there is no README or snapshot tests yet.
+  `docs/ARCHITECTURE.md`, a README and CI (fmt, clippy, test) exist; there are no snapshot tests yet.
 
 ## Feature catalog
 
@@ -145,9 +145,9 @@ All of section E shipped in Phase 9 except split editor panes, which belong to P
 
 | Feature | Effort | Notes |
 |---|---|---|
-| `docs/ARCHITECTURE.md`, README | S | ARCHITECTURE.md done; README open |
+| `docs/ARCHITECTURE.md`, README | S | Both done |
 | Render snapshot tests (`TestBackend` + `insta`) | M | `test_app()` harness exists |
-| CI, release binaries, AUR | S | CI done (GitHub Actions, Bitbucket Pipelines); releases open |
+| CI, release binaries, AUR | S | CI done (GitHub Actions, Bitbucket Pipelines); local release via `scripts/package.sh` (tarball + Arch package); remote releases and AUR open |
 | Crash recovery of dirty buffers | S | Panic hook writes to a recovery dir |
 | Palette filter off the main thread | S | nucleo supports it |
 

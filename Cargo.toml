@@ -5,6 +5,11 @@ edition = "2024"
 rust-version = "1.88"
 description = "Lightweight terminal IDE with JetBrains-like UX"
 license = "MIT"
+authors = ["Bronnikov Aleksandr <brillliand@gmail.com>"]
+repository = "https://bitbucket.org/BrilllianD/jetl-ide"
+readme = "README.md"
+keywords = ["ide", "editor", "terminal", "tui", "git"]
+categories = ["command-line-utilities", "text-editors", "development-tools"]
 
 [[bin]]
 name = "jetl"
@@ -88,3 +93,8 @@ lang-dockerfile = ["dep:tree-sitter-containerfile"]
 
 [profile.dev.package."*"]
 opt-level = 2
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

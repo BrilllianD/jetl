@@ -1,0 +1,35 @@
+# Maintainer: Bronnikov Aleksandr <brillliand@gmail.com>
+#
+# Binary package of jetl, built from the local release tarball.
+#
+# Build with `scripts/package.sh --arch` from the repository root. The script
+# builds dist/jetl-<version>-x86_64-unknown-linux-gnu.tar.gz first and runs
+# makepkg here with SRCDEST and PKGDEST pointing at dist/, and with
+# JETL_VERSION set to the version from Cargo.toml, so this file needs no edit
+# for a new release. Without JETL_VERSION the fallback below is used.
+
+pkgname=jetl-bin
+pkgver=${JETL_VERSION:-0.1.0}
+pkgrel=1
+pkgdesc="Lightweight terminal IDE with JetBrains-like UX"
+arch=(x86_64)
+url="https://bitbucket.org/BrilllianD/jetl-ide"
+license=(MIT)
+# zlib is linked dynamically (libgit2-sys); git is run at run time for
+# network and worktree operations (src/git/cli.rs).
+depends=(glibc gcc-libs zlib git)
+provides=(jetl)
+conflicts=(jetl)
+options=(!debug)
+# Local build: the tarball is produced by scripts/package.sh, not downloaded,
+# so there is no published checksum to pin.
+source=("jetl-$pkgver-x86_64-unknown-linux-gnu.tar.gz")
+sha256sums=('SKIP')
+
+package() {
+    cd "jetl-$pkgver-x86_64-unknown-linux-gnu"
+    install -Dm755 jetl "$pkgdir/usr/bin/jetl"
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+    install -Dm644 -t "$pkgdir/usr/share/doc/jetl" \
+        README.md CHANGELOG.md docs/CONFIG.md docs/KEYMAP.md
+}
