@@ -46,7 +46,8 @@ and backlog are in `docs/ROADMAP.md`; settings in `docs/CONFIG.md`; keys in
 | `git/mod.rs` | `GitService` (spawns work, tracks busy ops), `GitMsg`, `GitOp`, `GitRequest`. |
 | `git/repo.rs` | Synchronous git2 calls; each opens the repository itself. |
 | `git/cli.rs` | The `git` command line: network, switch, log/show, worktrees. No prompts, 120 s timeout. |
-| `git/{diff,model,panel}.rs` | Diff rows, shared types, the Git tool window (Commit, Log, Console). |
+| `git/{diff,model}.rs` | Diff rows, shared types. |
+| `git/panel/` | The Git tool window: shared state, input routing, header, console and diff renderer (`mod.rs`), the Commit tab (`commit.rs`), the Log tab (`log.rs`). |
 | `ui/` | `render` (frame order), `layout` (rects and hit testing), `focus` (panel and tool window ids), `dialog`, `palette`, `menu` (context menu), `status_bar`, `tabs`, `toasts`, `tool_strip`, `widgets/{list,text_input}`. |
 | `util/` | `text` (width helpers), `coalesce` (one background request at a time), `fs` (`write_atomic`, shared by saves and replace in files). |
 
