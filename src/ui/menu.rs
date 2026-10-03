@@ -1,7 +1,8 @@
 //! Context menu: a small list of actions drawn at the pointer, over
 //! everything but dialogs. It takes keys and mouse like a dialog: Up/Down
-//! (skipping disabled rows), Enter, Esc, a click on a row, or a click
-//! outside to close.
+//! (skipping disabled rows and separators), Enter, Esc, a click on a row,
+//! or a click outside to close. The main menu's dropdowns are the same
+//! widget (`ui::menu_bar`).
 
 use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEventKind};
 use ratatui::Frame;
@@ -21,11 +22,22 @@ pub struct MenuItem {
     pub enabled: bool,
     /// Filled in by the app from the keymap.
     pub shortcut: String,
+    /// A divider line between groups; never selected or run.
+    pub separator: bool,
 }
 
 impl MenuItem {
     pub fn new(label: impl Into<String>, action: Action) -> Self {
-        Self { label: label.into(), action, enabled: true, shortcut: String::new() }
+        Self { label: label.into(), action, enabled: true, shortcut: String::new(), separator: false }
+    }
+
+    pub fn separator() -> Self {
+        Self { separator: true, ..Self::new("", Action::App(crate::actions::AppAction::Escape)) }
+    }
+
+    /// Whether keys and the pointer can select this row.
+    fn selectable(&self) -> bool {
+        self.enabled && !self.separator
     }
 
     pub fn enabled(mut self, enabled: bool) -> Self {
@@ -52,7 +64,7 @@ pub struct ContextMenu {
 
 impl ContextMenu {
     pub fn new(items: Vec<MenuItem>, x: u16, y: u16) -> Self {
-        let selected = items.iter().position(|i| i.enabled).unwrap_or(0);
+        let selected = items.iter().position(MenuItem::selectable).unwrap_or(0);
         Self { items, selected, x, y, rect: Rect::default() }
     }
 
@@ -61,7 +73,7 @@ impl ContextMenu {
         let mut i = self.selected;
         for _ in 0..n {
             i = if forward { (i + 1) % n } else { (i + n - 1) % n };
-            if self.items[i].enabled {
+            if self.items[i].selectable() {
                 self.selected = i;
                 return;
             }
@@ -69,7 +81,7 @@ impl ContextMenu {
     }
 
     fn run(&self, i: usize) -> Option<MenuResult> {
-        let item = self.items.get(i).filter(|it| it.enabled)?;
+        let item = self.items.get(i).filter(|it| it.selectable())?;
         Some(MenuResult::Run(item.action.clone()))
     }
 
@@ -89,6 +101,12 @@ impl ContextMenu {
         }
     }
 
+    /// Move the point the menu opens at (the main menu anchors its
+    /// dropdown under the open title, known once the bar is drawn).
+    pub fn move_to(&mut self, x: u16, y: u16) {
+        (self.x, self.y) = (x, y);
+    }
+
     pub fn contains(&self, x: u16, y: u16) -> bool {
         self.rect.contains((x, y).into())
     }
@@ -106,7 +124,7 @@ impl ContextMenu {
                 self.row_at(m.x, m.y).and_then(|i| self.run(i))
             }
             MouseEventKind::Moved | MouseEventKind::Drag(_) => {
-                if let Some(i) = self.row_at(m.x, m.y).filter(|&i| self.items[i].enabled) {
+                if let Some(i) = self.row_at(m.x, m.y).filter(|&i| self.items[i].selectable()) {
                     self.selected = i;
                 }
                 None
@@ -135,6 +153,12 @@ impl ContextMenu {
         let buf = frame.buffer_mut();
         for (i, item) in self.items.iter().enumerate().take(inner.height as usize) {
             let y = inner.y + i as u16;
+            if item.separator {
+                // Joined to the border on both sides.
+                let line = format!("├{}┤", "─".repeat(inner.width as usize));
+                buf.set_string(self.rect.x, y, line, theme.popup_border.bg(theme.popup_bg));
+                continue;
+            }
             let base = if !item.enabled {
                 theme.dim.bg(theme.popup_bg)
             } else if i == self.selected {
@@ -180,6 +204,53 @@ mod tests {
         assert_eq!(m.selected, 1, "wraps past the disabled row");
         assert_eq!(m.handle_key(key(KeyCode::Enter)), Some(MenuResult::Run(Action::Tree(TreeAction::New))));
         assert_eq!(m.handle_key(key(KeyCode::Esc)), Some(MenuResult::Cancel));
+    }
+
+    #[test]
+    fn separators_are_skipped_and_inert() {
+        let quit = || Action::App(AppAction::Quit);
+        let mut m = ContextMenu::new(
+            vec![
+                MenuItem::separator(),
+                MenuItem::new("New", Action::Tree(TreeAction::New)),
+                MenuItem::separator(),
+                MenuItem::new("Quit", quit()),
+            ],
+            10,
+            5,
+        );
+        let key = |c| KeyEvent::new(c, KeyModifiers::NONE);
+        assert_eq!(m.selected, 1, "starts past a leading separator");
+        m.handle_key(key(KeyCode::Down));
+        assert_eq!(m.selected, 3);
+        m.handle_key(key(KeyCode::Tab));
+        assert_eq!(m.selected, 1, "wraps past the separator at the top");
+        m.handle_key(key(KeyCode::BackTab));
+        assert_eq!(m.selected, 3);
+        m.rect = Rect::new(10, 6, 12, 6);
+        let at = |kind, x, y| Mouse { kind, x, y, clicks: 1, mods: KeyModifiers::NONE };
+        assert_eq!(m.handle_mouse(&at(MouseEventKind::Down(MouseButton::Left), 12, 9)), None, "click on a separator");
+        m.handle_mouse(&at(MouseEventKind::Moved, 12, 9));
+        assert_eq!(m.selected, 3, "hover on a separator keeps the selection");
+        assert_eq!(m.handle_key(key(KeyCode::Enter)), Some(MenuResult::Run(quit())));
+    }
+
+    #[test]
+    fn separator_renders_as_a_line() {
+        let mut m = ContextMenu::new(
+            vec![
+                MenuItem::new("New", Action::Tree(TreeAction::New)),
+                MenuItem::separator(),
+                MenuItem::new("Quit", Action::App(AppAction::Quit)),
+            ],
+            0,
+            0,
+        );
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(20, 8)).unwrap();
+        term.draw(|f| m.render(f, f.area(), &Theme::default())).unwrap();
+        let buf = term.backend().buffer();
+        let row: String = (m.rect.x..m.rect.right()).map(|x| buf[(x, m.rect.y + 2)].symbol()).collect();
+        assert_eq!(row, format!("├{}┤", "─".repeat(m.rect.width as usize - 2)));
     }
 
     #[test]

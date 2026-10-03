@@ -18,6 +18,7 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Ctrl+Q` | `app.quit` | Exit jetl |
 | `F5` | `app.refresh` | Refresh project and git state |
 | `F12` | `app.debug_panic` | Debug: trigger a panic |
+| `F10` | `app.main_menu` | Main menu |
 | `Alt+1` | `tool_window.project` | Project tool window |
 | `Alt+2` | `tool_window.worktrees` | Worktrees tool window |
 | `Alt+9` | `tool_window.git` | Git tool window |
@@ -344,6 +345,7 @@ Reachable from Find Action (F1) or by binding them in `keymap.toml`.
 | Action | Description |
 |---|---|
 | `app.escape` | Escape |
+| `app.about` | About jetl |
 | `palette.goto_line` | Go to line |
 | `editor.replace_one` | Replace current match |
 | `editor.replace_all` | Replace all matches |

@@ -36,6 +36,10 @@ pub enum AppAction {
     OpenPalette(PaletteKind),
     DebugPanic,
     Refresh,
+    /// Open the main menu bar, or close it when open.
+    MainMenu,
+    /// Show the version.
+    About,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -349,6 +353,8 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "app.escape" => "Escape", App(AppAction::Escape);
         "app.refresh" => "Refresh project and git state", App(AppAction::Refresh);
         "app.debug_panic" => "Debug: trigger a panic", App(AppAction::DebugPanic);
+        "app.main_menu" => "Main menu", App(AppAction::MainMenu);
+        "app.about" => "About jetl", App(AppAction::About);
         "tool_window.project" => "Project tool window", App(AppAction::ToggleToolWindow(ToolWindowId::Project));
         "tool_window.worktrees" => "Worktrees tool window", App(AppAction::ToggleToolWindow(ToolWindowId::Worktrees));
         "tool_window.git" => "Git tool window", App(AppAction::ToggleToolWindow(ToolWindowId::Git));

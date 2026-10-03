@@ -26,6 +26,7 @@ and backlog are in `docs/ROADMAP.md`; settings in `docs/CONFIG.md`; keys in
 | `app/format.rs` | External formatter runs (`Effect::Format`): one per buffer at a time (a newer request aborts the older one and keeps its save), tagged with the generation and a seq, aborted on root switch and quit; `AppMsg::Formatted` goes to `Editor::format_done`. |
 | `app/run.rs` | Run tasks: `RunState` (the running job with its process group id, the last task, the picker's tasks), `run_task` (kills a running task first, spawns, starts `run::process::drive`), stop, rerun, `RunOutput`/`RunExited` checked against the generation and the run's seq, the task list loaded off the main thread for the picker. The job is killed on quit, on root switch and when `RunState` is dropped. |
 | `app/terminal.rs` | The Terminal window's shell: started by the first frame that shows the window (`render_terminal`, at that frame's size, in the root; `[terminal] shell`, else `$SHELL`, else `/bin/sh`), `terminal_key` (the `[terminal]` keymap table, Esc Esc at the shell prompt, everything else to the shell or a restart once it ended), paste, `TerminalOutput` checked against the generation and the shell's id. Quitting, a root switch and dropping the app kill the shell's session (`TerminalPanel::reset`); the next one starts lazily in the new root. |
+| `app/main_menu.rs` | The main menu bar (`app.main_menu`, F10): built from `ui::menu_bar::MAIN_MENU` with keymap shortcuts (`App::fill_shortcuts`, shared with context menus) and rows that need an active tab disabled when none is open; its keys and mouse; the chosen row runs through `App::perform`. |
 | `app/files.rs` | Tree file operations: `run_fs_op` off the main thread, `fs_op_done` (reload the tree, open, retarget or close tabs). |
 | `workspace.rs` | `Workspace` (root and generation), root switching (`App::switch_root`), sessions (JSON per root: tabs in order with their pins, tool window layout and sizes, Git tab, tree hidden/ignored toggles, expanded tree folders; a missing one arrives empty; fields added later are `#[serde(default)]`). `session_loaded` skips tabs already open, applies the layout (sizes clamped, toggles winning over `[files]` config), expands the saved folders on the main thread, then opens the command line file. |
 | `run/` | Run tasks. `mod.rs`: `RunTask` (`[[run.tasks]]`, `.jetl/run.toml`; a command is a `sh -c` string or a list of words) and the defaults detected from Cargo, npm, make and Go project files. `process.rs`: `spawn` (own session and process group, stdout and stderr on one pipe, stdin closed), `kill_group` (SIGKILL to the group), `drive` (a reader thread splits, cleans and matches lines; batches go out every 50 ms, then the exit). `matcher.rs`: problem matchers (rustc/cargo with the header's severity, tsc, pytest and tracebacks, generic `path:line:col`) turning lines into `RunLine`s with a severity and a link to an existing file. `panel.rs`: the Run tool window (status line, last 10 000 lines, follow unless scrolled up, links opened through `Effect::OpenFileAt`, next/previous problem). |
@@ -60,7 +61,7 @@ and backlog are in `docs/ROADMAP.md`; settings in `docs/CONFIG.md`; keys in
 | `git/messages.rs` | Commit message history per repository (keyed by its common git dir, so worktrees share it) in `state/commit_messages/`. |
 | `git/model.rs` | Shared types: status entries (`old_rel` for renames), `DiffKey`, log rows and `LogFilter`, commit details, `BranchInfo` and `BranchOp`, `Blame`, `StashEntry`. |
 | `git/panel/` | The Git tool window: shared state, input routing, header and console (`mod.rs`); the diff pane of every tab (`diff_view.rs`: folded unchanged runs, the current change, syntax colors, changed characters, side-by-side/unified); the Commit tab with amend and message history (`commit.rs`); the Log tab with its filter bar and commit actions (`log.rs`); the Stash tab (`stash.rs`). |
-| `ui/` | `render` (frame order), `layout` (rects and hit testing; zen mode, where the editor text fills the screen and `LayoutState::zen` keeps the hidden tool windows and focus: showing any tool window leaves it, and sessions save the hidden windows, never zen itself), `focus` (panel and tool window ids), `dialog`, `palette`, `menu` (context menu), `status_bar`, `tabs`, `toasts`, `tool_strip`, `event_log` (the Event Log tool window over `App::notifications`: first line per entry, full text on Enter, follows new entries while its last row is selected and in view; the status bar notification opens it), `widgets/{list,text_input}`. |
+| `ui/` | `render` (frame order), `layout` (rects and hit testing; zen mode, where the editor text fills the screen and `LayoutState::zen` keeps the hidden tool windows and focus: showing any tool window leaves it, and sessions save the hidden windows, never zen itself), `focus` (panel and tool window ids), `dialog`, `palette`, `menu` (context menu, also the main menu's dropdowns; rows can be separators), `menu_bar` (the main menu: the static `MAIN_MENU` table of labels and registry ids, a bar over the top screen row with the open menu's dropdown under its title), `status_bar`, `tabs`, `toasts`, `tool_strip`, `event_log` (the Event Log tool window over `App::notifications`: first line per entry, full text on Enter, follows new entries while its last row is selected and in view; the status bar notification opens it), `widgets/{list,text_input}`. |
 | `util/` | `text` (width helpers), `coalesce` (one background request at a time), `fs` (`write_atomic`, shared by saves and replace in files), `clipboard` (clipboard tool selection from the environment and `[clipboard]`, running them with a 1 s timeout), `format` (running a formatter: stdin to stdout, its own session, the process group killed on timeout or when dropped). |
 
 ## Event flow
@@ -69,7 +70,7 @@ and backlog are in `docs/ROADMAP.md`; settings in `docs/CONFIG.md`; keys in
 redraws when `dirty_frame` is set:
 
 1. **Terminal events** (`EventStream`). Keys go to the open dialog, else the
-   context menu, else the palette, else the focused Terminal window (which
+   main menu bar, else the context menu, else the palette, else the focused Terminal window (which
    keeps only its `[terminal]` keymap table and Esc Esc for jetl and sends
    the rest to the shell), else the find bar, commit message box,
    Find window fields or the tree's speed search (which consume their keys
@@ -109,8 +110,11 @@ Dialogs are data: `Dialog { id: DialogId, kind }`. The answer comes back to
 carries its `BufferId`, never a tab index: tabs can open while it is up.
 
 Render order (`ui::render`): tool strip, left and bottom tool windows,
-splitters, editor, status bar, toasts, palette, context menu, dialog. Rendering stores the
-rects that mouse handling reads (layout rects, list rects, button rects).
+splitters, editor, status bar, toasts, palette, context menu, main menu bar
+(over the top row, in zen mode too), dialog. Mouse events go to the topmost
+open overlay (dialog, main menu bar, context menu, palette) before anything
+below; the menus also get motion, for hover. Rendering stores the rects that
+mouse handling reads (layout rects, list rects, button rects).
 
 ## Background work and stale results
 

@@ -70,6 +70,8 @@
 "ctrl-shift-right" = "tool_window.stretch_right"
 "ctrl-shift-up" = "tool_window.stretch_up"
 "ctrl-shift-down" = "tool_window.stretch_down"
+# The main menu bar, as F10 in JetBrains on Linux; F10 again closes it.
+"f10" = "app.main_menu"
 # JetBrains has no default key for Zen mode; Alt+Shift+Z works in legacy
 # terminals too.
 "alt-shift-z" = "app.zen"

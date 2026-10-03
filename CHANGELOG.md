@@ -5,6 +5,15 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Application main menu, JetBrains-style: F10 opens a menu bar over the top row (File, Edit,
+  View, Navigate, Git, Run, Help) with shortcuts next to each item. Left/Right or the underlined
+  letter switch menus, the mouse works too, Esc or F10 closes it. Help > About jetl shows the
+  version.
+
 ## [0.1.0] - 2026-10-03
 
 First release.

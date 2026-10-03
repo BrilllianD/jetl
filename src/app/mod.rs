@@ -43,6 +43,7 @@ mod effects;
 mod files;
 mod find;
 mod format;
+mod main_menu;
 mod mouse;
 mod msg;
 mod palette;
@@ -146,6 +147,9 @@ pub struct App {
     /// Context menu overlay (right click, Shift+F10); takes input like a
     /// dialog, below dialogs.
     pub menu: Option<crate::ui::menu::ContextMenu>,
+    /// Main menu bar overlay (F10); takes input like a dialog, below
+    /// dialogs and above the context menu.
+    pub menu_bar: Option<crate::ui::menu_bar::MenuBar>,
     pub file_index: FileIndex,
     /// Recent project roots for the palette, cached from the last load.
     recent_projects: Vec<PathBuf>,
@@ -230,6 +234,7 @@ impl App {
             dialog: None,
             palette: None,
             menu: None,
+            menu_bar: None,
             file_index: FileIndex::default(),
             recent_projects: Vec::new(),
             recent_projects_requested: 0,
@@ -299,6 +304,19 @@ impl App {
         }
         self.event_log.pushed(self.notifications.len(), dropped);
         self.dirty_frame = true;
+    }
+
+    /// Fill each row's shortcut from the keymap: one per row (the
+    /// shortest) keeps menus narrow.
+    pub(crate) fn fill_shortcuts(&self, items: &mut [crate::ui::menu::MenuItem]) {
+        for item in items.iter_mut().filter(|i| !i.separator) {
+            item.shortcut = self.shortcut(&item.action).unwrap_or_default();
+        }
+    }
+
+    /// The shortest binding of an action in its usual contexts.
+    pub(crate) fn shortcut(&self, action: &Action) -> Option<String> {
+        self.keymap.bindings_for(action, action.contexts()).into_iter().next()
     }
 
     pub fn current_notification(&self) -> Option<&Notification> {
@@ -495,6 +513,12 @@ impl App {
             if let Some(res) = d.handle_key(key) {
                 let d = self.dialog.take().unwrap();
                 self.finish_dialog(d.id, res);
+            }
+            return;
+        }
+        if self.menu_bar.is_some() {
+            if key.kind != crossterm::event::KeyEventKind::Release && !matches!(key.code, KeyCode::Modifier(_)) {
+                self.main_menu_key(key);
             }
             return;
         }
@@ -714,6 +738,8 @@ impl App {
                 }
             }
             AppAction::Refresh => self.apply_effects(vec![Effect::GitRefresh]),
+            AppAction::MainMenu => self.toggle_main_menu(),
+            AppAction::About => self.notify(Level::Info, format!("jetl {}", env!("CARGO_PKG_VERSION"))),
         }
     }
 
@@ -1384,6 +1410,46 @@ pub(crate) mod tests {
         assert!(app.focus.is(PanelId::Project), "the first Esc only clears");
         app.handle_key(key(KeyCode::Esc));
         assert!(app.focus.is(PanelId::Editor));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn f10_opens_the_main_menu_and_about_shows_the_version() {
+        use crossterm::event::KeyModifiers;
+        let (mut app, dir) = test_app("main-menu");
+        let key = |c| KeyEvent::new(c, KeyModifiers::NONE);
+        // The action closes a context menu and toggles.
+        app.menu = Some(crate::ui::menu::ContextMenu::new(Vec::new(), 0, 0));
+        app.perform(Action::App(AppAction::MainMenu));
+        assert!(app.menu.is_none() && app.menu_bar.is_some());
+        app.perform(Action::App(AppAction::MainMenu));
+        assert!(app.menu_bar.is_none());
+        app.handle_key(key(KeyCode::F(10)));
+        let bar = app.menu_bar.as_ref().expect("menu bar open");
+        assert_eq!(bar.open_title(), "File");
+        let save = bar.dropdown().items.iter().find(|i| i.label == "Save").unwrap();
+        assert!(!save.enabled, "no tab is open");
+        assert_eq!(save.shortcut, "Ctrl+S");
+        app.handle_key(key(KeyCode::Right));
+        assert_eq!(app.menu_bar.as_ref().map(|b| b.open_title()), Some("Edit"));
+        app.handle_key(key(KeyCode::Esc));
+        assert!(app.menu_bar.is_none());
+        app.handle_key(key(KeyCode::F(10)));
+        app.handle_key(key(KeyCode::F(10)));
+        assert!(app.menu_bar.is_none(), "F10 toggles");
+        // Drawn in zen mode too, over the editor's top row.
+        app.perform(Action::App(AppAction::ToggleZen));
+        app.handle_key(key(KeyCode::F(10)));
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+        let frame = term.draw(|f| crate::ui::render(&mut app, f)).unwrap();
+        let top: String = (0..30).map(|x| frame.buffer[(x, 0)].symbol().to_string()).collect();
+        assert!(top.starts_with(" ≡  File  Edit  View  Navigate"), "{top:?}");
+        app.handle_key(key(KeyCode::Char('h')));
+        app.handle_key(key(KeyCode::Down));
+        app.handle_key(key(KeyCode::Enter));
+        assert!(app.menu_bar.is_none());
+        let version = format!("jetl {}", env!("CARGO_PKG_VERSION"));
+        assert!(app.notifications.last().is_some_and(|n| n.level == Level::Info && n.text == version), "{:?}", app.notifications);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

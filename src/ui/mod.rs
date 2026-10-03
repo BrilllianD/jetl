@@ -3,6 +3,7 @@ pub mod event_log;
 pub mod focus;
 pub mod layout;
 pub mod menu;
+pub mod menu_bar;
 pub mod palette;
 pub mod status_bar;
 pub mod tabs;
@@ -83,6 +84,9 @@ pub fn render(app: &mut App, frame: &mut Frame) {
         p.render(frame, area, &theme);
     }
     if let Some(m) = &mut app.menu {
+        m.render(frame, area, &theme);
+    }
+    if let Some(m) = &mut app.menu_bar {
         m.render(frame, area, &theme);
     }
     if let Some(d) = &mut app.dialog {

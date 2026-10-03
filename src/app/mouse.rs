@@ -29,8 +29,8 @@ impl App {
     }
 
     pub(super) fn handle_mouse(&mut self, m: MouseEvent) {
-        // Motion matters only to drags and to the menu's hover highlight.
-        if m.kind == MouseEventKind::Moved && self.drag.is_none() && self.menu.is_none() {
+        // Motion matters only to drags and to the menus' hover highlight.
+        if m.kind == MouseEventKind::Moved && self.drag.is_none() && self.menu.is_none() && self.menu_bar.is_none() {
             return;
         }
         self.dirty_frame = true;
@@ -40,13 +40,14 @@ impl App {
         // dialogs are drawn over toasts).
         let over_overlay = self.palette.as_ref().is_some_and(|p| p.contains(m.column, m.row))
             || self.dialog.as_ref().is_some_and(|d| d.contains(m.column, m.row))
-            || self.menu.as_ref().is_some_and(|c| c.contains(m.column, m.row));
+            || self.menu.as_ref().is_some_and(|c| c.contains(m.column, m.row))
+            || self.menu_bar.as_ref().is_some_and(|b| b.contains(m.column, m.row));
         if matches!(m.kind, MouseEventKind::Down(_)) && !over_overlay && self.toasts.dismiss_at(m.column, m.row) {
             self.drag = None;
             return;
         }
 
-        if self.palette.is_some() && self.dialog.is_none() && self.menu.is_none() {
+        if self.palette.is_some() && self.dialog.is_none() && self.menu.is_none() && self.menu_bar.is_none() {
             if matches!(m.kind, MouseEventKind::Up(_)) {
                 self.drag = None;
             }
@@ -65,6 +66,10 @@ impl App {
                 let d = self.dialog.take().unwrap();
                 self.finish_dialog(d.id, res);
             }
+            return;
+        }
+        if self.menu_bar.is_some() {
+            self.main_menu_mouse(&m, &mouse);
             return;
         }
         if let Some(menu) = &mut self.menu {
