@@ -24,6 +24,8 @@ are done, except the conflict resolver, which waits for split panes (see Order).
   emulation), Run (tasks from config or detected project files, problem matchers with
   click-to-jump) and Event Log (the 200 entries of `App.notifications`), zen mode, keyboard
   resize of tool windows, and paste from the system clipboard (`wl-paste`/`xclip`/`xsel`).
+  After it came an F10 application menu bar, and a compact tool strip: a menu button, then
+  number and icon buttons with the name and shortcut in a hover tooltip.
 - **Git:** files or single changes (hunks) are staged, unstaged and discarded; renames show as
   `R old -> new`. Commits can amend HEAD, and earlier messages are recalled per repository.
   Gutter marks are based on HEAD; the change at the caret can be reverted, changes are stepped

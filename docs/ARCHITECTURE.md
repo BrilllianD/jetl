@@ -61,7 +61,7 @@ and backlog are in `docs/ROADMAP.md`; settings in `docs/CONFIG.md`; keys in
 | `git/messages.rs` | Commit message history per repository (keyed by its common git dir, so worktrees share it) in `state/commit_messages/`. |
 | `git/model.rs` | Shared types: status entries (`old_rel` for renames), `DiffKey`, log rows and `LogFilter`, commit details, `BranchInfo` and `BranchOp`, `Blame`, `StashEntry`. |
 | `git/panel/` | The Git tool window: shared state, input routing, header and console (`mod.rs`); the diff pane of every tab (`diff_view.rs`: folded unchanged runs, the current change, syntax colors, changed characters, side-by-side/unified); the Commit tab with amend and message history (`commit.rs`); the Log tab with its filter bar and commit actions (`log.rs`); the Stash tab (`stash.rs`). |
-| `ui/` | `render` (frame order), `layout` (rects and hit testing; zen mode, where the editor text fills the screen and `LayoutState::zen` keeps the hidden tool windows and focus: showing any tool window leaves it, and sessions save the hidden windows, never zen itself), `focus` (panel and tool window ids), `dialog`, `palette`, `menu` (context menu, also the main menu's dropdowns; rows can be separators), `menu_bar` (the main menu: the static `MAIN_MENU` table of labels and registry ids, a bar over the top screen row with the open menu's dropdown under its title), `status_bar`, `tabs`, `toasts`, `tool_strip`, `event_log` (the Event Log tool window over `App::notifications`: first line per entry, full text on Enter, follows new entries while its last row is selected and in view; the status bar notification opens it), `widgets/{list,text_input}`. |
+| `ui/` | `render` (frame order), `layout` (rects and hit testing; zen mode, where the editor text fills the screen and `LayoutState::zen` keeps the hidden tool windows and focus: showing any tool window leaves it, and sessions save the hidden windows, never zen itself), `focus` (panel and tool window ids), `dialog`, `palette`, `menu` (context menu, also the main menu's dropdowns; rows can be separators), `menu_bar` (the main menu: the static `MAIN_MENU` table of labels and registry ids, a bar over the top screen row with the open menu's dropdown under its title), `status_bar`, `tabs`, `toasts`, `tool_strip` (the left edge: a main menu button on the top row, then one two-row button per tool window, its Alt-number over `ToolWindowId::icon()`; the hit rects go to `LayoutState::strip_hits` as `StripButton`s, and the hovered one, `App::strip_hover`, gets a one-line tooltip with its name and shortcut), `event_log` (the Event Log tool window over `App::notifications`: first line per entry, full text on Enter, follows new entries while its last row is selected and in view; the status bar notification opens it), `widgets/{list,text_input}`. |
 | `util/` | `text` (width helpers), `coalesce` (one background request at a time), `fs` (`write_atomic`, shared by saves and replace in files), `clipboard` (clipboard tool selection from the environment and `[clipboard]`, running them with a 1 s timeout), `format` (running a formatter: stdin to stdout, its own session, the process group killed on timeout or when dropped). |
 
 ## Event flow
@@ -110,10 +110,12 @@ Dialogs are data: `Dialog { id: DialogId, kind }`. The answer comes back to
 carries its `BufferId`, never a tab index: tabs can open while it is up.
 
 Render order (`ui::render`): tool strip, left and bottom tool windows,
-splitters, editor, status bar, toasts, palette, context menu, main menu bar
-(over the top row, in zen mode too), dialog. Mouse events go to the topmost
-open overlay (dialog, main menu bar, context menu, palette) before anything
-below; the menus also get motion, for hover. Rendering stores the rects that
+splitters, editor, status bar, strip tooltip (hidden while an overlay is
+open), toasts, palette, context menu, main menu bar (over the top row, in zen
+mode too), dialog. Mouse events go to the topmost open overlay (dialog, main
+menu bar, context menu, palette) before anything below; the menus also get
+motion, for hover. Other motion only updates the strip hover and redraws when
+it changes. Rendering stores the rects that
 mouse handling reads (layout rects, list rects, button rects).
 
 ## Background work and stale results

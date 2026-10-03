@@ -150,6 +150,9 @@ pub struct App {
     /// Main menu bar overlay (F10); takes input like a dialog, below
     /// dialogs and above the context menu.
     pub menu_bar: Option<crate::ui::menu_bar::MenuBar>,
+    /// Tool strip button under the pointer, with its rect; it shows a
+    /// tooltip.
+    pub strip_hover: Option<(crate::ui::layout::StripButton, Rect)>,
     pub file_index: FileIndex,
     /// Recent project roots for the palette, cached from the last load.
     recent_projects: Vec<PathBuf>,
@@ -235,6 +238,7 @@ impl App {
             palette: None,
             menu: None,
             menu_bar: None,
+            strip_hover: None,
             file_index: FileIndex::default(),
             recent_projects: Vec::new(),
             recent_projects_requested: 0,
@@ -1443,7 +1447,7 @@ pub(crate) mod tests {
         let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
         let frame = term.draw(|f| crate::ui::render(&mut app, f)).unwrap();
         let top: String = (0..30).map(|x| frame.buffer[(x, 0)].symbol().to_string()).collect();
-        assert!(top.starts_with(" ≡  File  Edit  View  Navigate"), "{top:?}");
+        assert!(top.starts_with(" ≣  File  Edit  View  Navigate"), "{top:?}");
         app.handle_key(key(KeyCode::Char('h')));
         app.handle_key(key(KeyCode::Down));
         app.handle_key(key(KeyCode::Enter));
@@ -2182,6 +2186,83 @@ pub(crate) mod tests {
         app.session_loaded(generation, session, (0..3).map(|_| Ok(b"x\n".to_vec())).collect());
         assert_eq!(names(&app), ["x.txt", "y.txt"]);
         assert_eq!(app.editor.active_buffer().unwrap().name, "x.txt");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod strip_tests {
+    use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+
+    use super::tests::test_app;
+    use crate::ui::focus::ToolWindowId;
+    use crate::ui::layout::StripButton;
+
+    fn ev(kind: MouseEventKind, column: u16, row: u16) -> MouseEvent {
+        MouseEvent { kind, column, row, modifiers: KeyModifiers::NONE }
+    }
+
+    fn draw(app: &mut super::App) -> ratatui::buffer::Buffer {
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 24)).unwrap();
+        term.draw(|f| crate::ui::render(app, f)).unwrap().buffer.clone()
+    }
+
+    #[tokio::test]
+    async fn every_strip_button_fits_24_rows_and_clicks() {
+        let (mut app, dir) = test_app("strip-fit");
+        draw(&mut app);
+        assert_eq!(app.layout.rects.strip.height, 23);
+        let hits = app.layout.strip_hits.clone();
+        assert_eq!(hits.len(), 1 + ToolWindowId::ALL.len(), "{hits:?}");
+        assert_eq!(hits[0], (StripButton::Menu, ratatui::layout::Rect::new(0, 0, 3, 1)));
+        for (i, (_, a)) in hits.iter().enumerate() {
+            assert!(app.layout.rects.strip.contains(a.as_position()) && a.bottom() <= app.layout.rects.strip.bottom());
+            assert!(hits[i + 1..].iter().all(|(_, b)| a.intersection(*b).is_empty()), "{hits:?}");
+        }
+
+        // The menu button opens the main menu; the bar then covers it.
+        app.handle_mouse(ev(MouseEventKind::Down(MouseButton::Left), 1, 0));
+        app.handle_mouse(ev(MouseEventKind::Up(MouseButton::Left), 1, 0));
+        assert!(app.menu_bar.is_some());
+        app.toggle_main_menu();
+        // A tool button toggles its window, on either row.
+        let (_, r) = *hits.iter().find(|(b, _)| *b == StripButton::Tool(ToolWindowId::Git)).unwrap();
+        app.handle_mouse(ev(MouseEventKind::Down(MouseButton::Left), r.x + 1, r.y + 1));
+        assert!(app.layout.is_visible(ToolWindowId::Git));
+        app.handle_mouse(ev(MouseEventKind::Down(MouseButton::Left), r.x + 1, r.y));
+        assert!(!app.layout.is_visible(ToolWindowId::Git));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn hovering_a_strip_button_shows_its_name_and_shortcut() {
+        let (mut app, dir) = test_app("strip-hover");
+        draw(&mut app);
+        let (_, r) = *app.layout.strip_hits.iter().find(|(b, _)| *b == StripButton::Tool(ToolWindowId::Project)).unwrap();
+        app.dirty_frame = false;
+        app.handle_mouse(ev(MouseEventKind::Moved, r.x, r.y + 1));
+        assert_eq!(app.strip_hover, Some((StripButton::Tool(ToolWindowId::Project), r)));
+        assert!(app.dirty_frame);
+        // Motion within the same button does not redraw.
+        app.dirty_frame = false;
+        app.handle_mouse(ev(MouseEventKind::Moved, r.x + 2, r.y));
+        assert!(!app.dirty_frame);
+        let buf = draw(&mut app);
+        let row: String = (r.right()..r.right() + 16).map(|x| buf[(x, r.y)].symbol().to_string()).collect();
+        assert_eq!(row, " Project  Alt+1 ");
+
+        app.handle_mouse(ev(MouseEventKind::Moved, 1, 0));
+        assert_eq!(app.strip_hover.map(|(b, _)| b), Some(StripButton::Menu));
+        let buf = draw(&mut app);
+        let row: String = (3..19).map(|x| buf[(x, 0)].symbol().to_string()).collect();
+        assert_eq!(row, " Main Menu  F10 ");
+
+        // Leaving the strip, or a press, clears it.
+        app.handle_mouse(ev(MouseEventKind::Moved, 50, 10));
+        assert!(app.strip_hover.is_none() && app.dirty_frame);
+        app.handle_mouse(ev(MouseEventKind::Moved, 1, 0));
+        app.handle_mouse(ev(MouseEventKind::Down(MouseButton::Left), 50, 10));
+        assert!(app.strip_hover.is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

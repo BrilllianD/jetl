@@ -76,6 +76,20 @@ impl ToolWindowId {
             ToolWindowId::Terminal => "Terminal",
         }
     }
+    /// The tool strip glyph: one cell wide everywhere, East Asian ambiguous
+    /// width included.
+    pub fn icon(self) -> &'static str {
+        match self {
+            ToolWindowId::Project => "⌂",
+            ToolWindowId::Worktrees => "◫",
+            ToolWindowId::Git => "⎇",
+            ToolWindowId::Find => "⌕",
+            ToolWindowId::Structure => "⊢",
+            ToolWindowId::EventLog => "⚑",
+            ToolWindowId::Run => "►",
+            ToolWindowId::Terminal => "❯",
+        }
+    }
     /// The Alt+number key shown on the tool strip; windows opened by other
     /// keys have none.
     pub fn number(self) -> Option<u8> {
@@ -146,5 +160,22 @@ impl Focus {
 impl Default for Focus {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use unicode_width::UnicodeWidthStr;
+
+    #[test]
+    fn icons_are_one_cell_and_distinct() {
+        for tw in ToolWindowId::ALL {
+            assert_eq!((tw.icon().width(), tw.icon().width_cjk()), (1, 1), "{tw:?}");
+        }
+        let mut icons: Vec<&str> = ToolWindowId::ALL.iter().map(|tw| tw.icon()).collect();
+        icons.sort();
+        icons.dedup();
+        assert_eq!(icons.len(), ToolWindowId::ALL.len());
     }
 }

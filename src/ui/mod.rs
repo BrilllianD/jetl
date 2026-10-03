@@ -77,6 +77,7 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     app.editor.render(frame, rects.tabs, rects.editor, editor_focused, &theme);
 
     status_bar::render(app, frame, rects.status);
+    tool_strip::render_tooltip(app, frame, area);
 
     // Toasts sit below the palette and dialogs, which own the input.
     app.toasts.render(frame, area, &theme);

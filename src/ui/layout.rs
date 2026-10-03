@@ -53,6 +53,14 @@ pub struct ZenSaved {
     pub focus: PanelId,
 }
 
+/// A button of the tool strip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StripButton {
+    /// The top button, which opens the main menu.
+    Menu,
+    Tool(ToolWindowId),
+}
+
 #[derive(Debug, Clone)]
 pub struct LayoutState {
     pub left: Option<ToolWindowId>,
@@ -61,7 +69,7 @@ pub struct LayoutState {
     pub bottom_h: u16,
     pub rects: Rects,
     /// Clickable areas of the tool strip, filled by the strip renderer.
-    pub strip_hits: Vec<(ToolWindowId, Rect)>,
+    pub strip_hits: Vec<(StripButton, Rect)>,
     /// Set while in zen mode: the editor text fills the screen.
     pub zen: Option<ZenSaved>,
 }
@@ -252,9 +260,10 @@ impl LayoutState {
         }
     }
 
-    pub fn strip_hit(&self, x: u16, y: u16) -> Option<ToolWindowId> {
+    /// The strip button under a point, with its rect.
+    pub fn strip_hit(&self, x: u16, y: u16) -> Option<(StripButton, Rect)> {
         let p = ratatui::layout::Position::new(x, y);
-        self.strip_hits.iter().find(|(_, r)| r.contains(p)).map(|(tw, _)| *tw)
+        self.strip_hits.iter().find(|(_, r)| r.contains(p)).copied()
     }
 }
 

@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   View, Navigate, Git, Run, Help) with shortcuts next to each item. Left/Right or the underlined
   letter switch menus, the mouse works too, Esc or F10 closes it. Help > About jetl shows the
   version.
+- Compact tool strip: each tool window button is its Alt-number over an icon, so all of them fit
+  on a 24-row terminal, with a menu button on top that opens the main menu. Hovering a button
+  shows its name and shortcut.
 
 ## [0.1.0] - 2026-10-03
 

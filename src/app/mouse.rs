@@ -9,7 +9,7 @@ use super::{App, Ctx, Drag, LastClick};
 use crate::actions::{Action, EditorAction};
 use crate::event::Mouse;
 use crate::ui::focus::PanelId;
-use crate::ui::layout::Hit;
+use crate::ui::layout::{Hit, StripButton};
 use crate::ui::status_bar::StatusHit;
 use crate::ui::tabs::TabHit;
 
@@ -29,11 +29,18 @@ impl App {
     }
 
     pub(super) fn handle_mouse(&mut self, m: MouseEvent) {
-        // Motion matters only to drags and to the menus' hover highlight.
+        // Motion matters to drags and to the menus' hover highlight; other
+        // motion only moves the strip tooltip, redrawn when it changes.
         if m.kind == MouseEventKind::Moved && self.drag.is_none() && self.menu.is_none() && self.menu_bar.is_none() {
+            let hover = if self.palette.is_none() && self.dialog.is_none() { self.layout.strip_hit(m.column, m.row) } else { None };
+            if hover != self.strip_hover {
+                self.strip_hover = hover;
+                self.dirty_frame = true;
+            }
             return;
         }
         self.dirty_frame = true;
+        self.strip_hover = None;
         let clicks = self.resolve_clicks(&m);
         let mouse = Mouse { kind: m.kind, x: m.column, y: m.row, clicks, mods: m.modifiers };
         // A click on a visible part of a toast closes it (the palette and
@@ -115,11 +122,11 @@ impl App {
             MouseEventKind::Down(button) => match hit {
                 Hit::Splitter(id) if button == MouseButton::Left => self.drag = Some(Drag::Splitter(id)),
                 Hit::Splitter(_) => {}
-                Hit::Strip => {
-                    if let Some(tw) = self.layout.strip_hit(m.column, m.row) {
-                        self.toggle_tool_window(tw);
-                    }
-                }
+                Hit::Strip => match self.layout.strip_hit(m.column, m.row) {
+                    Some((StripButton::Menu, _)) => self.toggle_main_menu(),
+                    Some((StripButton::Tool(tw), _)) => self.toggle_tool_window(tw),
+                    None => {}
+                },
                 Hit::Status => self.click_status(&mouse),
                 Hit::Tabs(area) => {
                     self.focus.set(PanelId::Editor);

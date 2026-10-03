@@ -165,8 +165,12 @@ pub struct Menu {
     pub items: Vec<MenuItem>,
 }
 
-/// Leading glyph of the bar (the main menu button's symbol).
-const ICON: &str = " ≡ ";
+/// The main menu's symbol, also the tool strip's menu button. One cell wide
+/// everywhere: `≡` is East Asian ambiguous and `☰` is wide.
+pub const MENU_GLYPH: &str = "≣";
+
+/// Leading cells of the bar: the menu symbol padded.
+const ICON: &str = " ≣ ";
 
 #[derive(Debug, Clone)]
 pub struct MenuBar {
@@ -318,7 +322,8 @@ mod tests {
 
     #[test]
     fn icon_is_one_cell() {
-        assert_eq!(ICON.width(), 3);
+        assert_eq!((ICON.width(), MENU_GLYPH.width_cjk()), (3, 1));
+        assert_eq!(ICON.trim(), MENU_GLYPH);
     }
 
     #[test]
@@ -361,7 +366,7 @@ mod tests {
     fn mouse_switches_titles_and_cancels_outside() {
         let mut b = bar();
         draw(&mut b);
-        // " ≡  File  Edit  Help ": Edit's cell starts at 9.
+        // " ≣  File  Edit  Help ": Edit's cell starts at 9.
         assert_eq!(b.titles[1].x, 9);
         assert!(b.dropdown.contains(3, 2), "File's dropdown is under its title");
         assert_eq!(b.handle_mouse(&at(MouseEventKind::Down(MouseButton::Left), 10, 0)), None);
