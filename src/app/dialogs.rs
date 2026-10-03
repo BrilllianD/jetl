@@ -107,6 +107,10 @@ impl App {
             (DialogId::StashDrop { oid }, DialogResult::Button(0)) => {
                 self.git_request(crate::git::GitRequest::Stash(crate::git::repo::StashOp::Drop { oid }))
             }
+            (DialogId::DiscardHunk { patch }, DialogResult::Button(0)) => {
+                let op = crate::git::GitOp::Discard;
+                self.git_request(crate::git::GitRequest::ApplyPatch { patch, cached: false, reverse: true, op })
+            }
             (DialogId::GitDiscard(items), DialogResult::Button(0)) => self.git_request(crate::git::GitRequest::Discard(items)),
             (DialogId::PushSetUpstream { branch, remote }, DialogResult::Button(0)) => self.push_upstream(branch, remote),
             (DialogId::PushUpstreamRemote { branch, remotes }, DialogResult::Choice(i)) => {

@@ -633,7 +633,11 @@ impl Editor {
             _ => {}
         }
         // Jumps far enough away are remembered for back/forward.
-        let jump_from = if matches!(a, E::GotoBracket | E::FindNext | E::FindPrev) { self.active_buffer().map(nav_pos) } else { None };
+        let jump_from = if matches!(a, E::GotoBracket | E::FindNext | E::FindPrev | E::NextChange | E::PrevChange) {
+            self.active_buffer().map(nav_pos)
+        } else {
+            None
+        };
         let rows = self.text_area.height as usize;
         let auto_close = self.auto_close;
         let Some(ai) = self.active else { return false };
@@ -791,6 +795,19 @@ impl Editor {
                     b.undo.break_group = true;
                 }
             }
+            E::RevertChange => {
+                if b.diff_base.is_none() {
+                    cx.notify(Level::Info, "No HEAD version to revert to");
+                } else if !b.revert_change_at_caret() {
+                    cx.notify(Level::Info, "No change at the caret");
+                }
+            }
+            E::NextChange | E::PrevChange => {
+                let forward = *a == E::NextChange;
+                if !b.goto_change(forward) {
+                    cx.notify(Level::Info, if forward { "No more changes below" } else { "No more changes above" });
+                }
+            }
             E::ExpandSelection => b.expand_selection(),
             E::ShrinkSelection => b.shrink_selection(),
             E::ToggleBookmark => b.toggle_bookmark(),
@@ -834,6 +851,23 @@ impl Editor {
             let col = x.saturating_sub(text_area.x) as usize + b.scroll_col;
             if x < text_area.x { b.rope.line_to_char(line) } else { col_to_char(&b.rope, line, col, tab_width) }
         };
+        // A click on a git mark offers the change commands for that line.
+        if m.kind == MouseEventKind::Down(MouseButton::Left) && m.x + 2 == text_area.x && m.y >= text_area.y && m.y < text_area.bottom() {
+            let line = b.scroll_line + (m.y - text_area.y) as usize;
+            if gutter::mark_at(&b.gutter, line).is_some() {
+                b.sel = Selection::point(b.rope.line_to_char(line));
+                b.desired_col = None;
+                use crate::actions::{Action, EditorAction as E};
+                use crate::ui::menu::{ContextMenu, MenuItem};
+                let items = vec![
+                    MenuItem::new("Revert Change", Action::Editor(E::RevertChange)),
+                    MenuItem::new("Next Change", Action::Editor(E::NextChange)),
+                    MenuItem::new("Previous Change", Action::Editor(E::PrevChange)),
+                ];
+                cx.effects.push(Effect::ContextMenu(ContextMenu::new(items, m.x, m.y + 1)));
+                return true;
+            }
+        }
         match m.kind {
             MouseEventKind::Down(MouseButton::Left) => {
                 let p = pos_at(b, m.x, m.y);

@@ -121,6 +121,9 @@ impl App {
                 self.git.run_repo(GitOp::Stash, label, move |root| repo::stash(root, &op));
             }
             GitRequest::LoadStashes => self.git.load_stashes(),
+            GitRequest::ApplyPatch { patch, cached, reverse, op } => {
+                self.git.run_cli_input(op, crate::git::cli::apply_args(cached, reverse), Some(patch.into_bytes()));
+            }
             GitRequest::Push => {
                 self.git.run_cli(GitOp::Push, vec!["push".into()]);
             }

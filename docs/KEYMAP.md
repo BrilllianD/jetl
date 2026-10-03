@@ -118,6 +118,11 @@ Override any of them in `~/.config/jetl/keymap.toml` (see [CONFIG.md](CONFIG.md)
 | `Ctrl+Alt+Right` | `editor.nav_forward` | Navigate forward |
 | `F11` | `editor.toggle_bookmark` | Toggle bookmark on the caret line |
 | `Shift+F11` | `editor.show_bookmarks` | Show bookmarks |
+| `Ctrl+Alt+Z` | `editor.revert_change` | Revert the change at the caret to HEAD |
+| `Ctrl+Alt+Shift+Down` | `editor.next_change` | Go to the next change |
+| `F7` | `editor.next_change` | Go to the next change |
+| `Ctrl+Alt+Shift+Up` | `editor.prev_change` | Go to the previous change |
+| `Shift+F7` | `editor.prev_change` | Go to the previous change |
 
 ## tree
 
@@ -149,9 +154,11 @@ Override any of them in `~/.config/jetl/keymap.toml` (see [CONFIG.md](CONFIG.md)
 | Keys | Action | Description |
 |---|---|---|
 | `F5` | `git.refresh` | Git: refresh |
-| `Space` | `git.toggle_stage` | Git: stage/unstage selected |
+| `Space` | `git.toggle_stage` | Git: stage/unstage selected (in the diff: the current change) |
 | `Ctrl+Alt+A` | `git.stage_all` | Git: stage all |
-| `Ctrl+Alt+Z` | `git.discard` | Git: discard changes of the selected file or section |
+| `Ctrl+Alt+Z` | `git.discard` | Git: discard changes of the selected file or section (in the diff: the current change) |
+| `F7` | `git.next_hunk` | Git: next change in the diff |
+| `Shift+F7` | `git.prev_hunk` | Git: previous change in the diff |
 | `Alt+Enter` | `git.commit` | Git: commit |
 | `Ctrl+Enter` * | `git.commit` | Git: commit |
 | `Alt+M` | `git.toggle_amend` | Git: amend the last commit (toggle) |

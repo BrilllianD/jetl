@@ -95,6 +95,24 @@ pub fn unified(rows: &[DiffRow]) -> Vec<DiffRow> {
     out
 }
 
+/// Runs of consecutive non-equal rows.
+pub fn blocks(rows: &[DiffRow]) -> Vec<std::ops::Range<usize>> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < rows.len() {
+        if rows[i].kind == RowKind::Equal {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < rows.len() && rows[i].kind != RowKind::Equal {
+            i += 1;
+        }
+        out.push(start..i);
+    }
+    out
+}
+
 /// Number of lines the way imara-diff tokenizes them (a trailing newline
 /// does not start a new line).
 fn line_count(s: &str) -> usize {
@@ -135,11 +153,20 @@ fn expand_tabs(s: &str, tab_width: usize) -> String {
     out
 }
 
+/// Split into lines that keep their terminators (the way imara-diff and
+/// patches count lines).
+fn raw_lines(s: &str) -> Vec<String> {
+    s.split_inclusive('\n').map(str::to_string).collect()
+}
+
 /// A computed diff ready for the view.
 #[derive(Debug, Clone, Default)]
 pub struct DiffDoc {
     pub old: Vec<String>,
     pub new: Vec<String>,
+    /// The same lines with terminators and tabs, for patches.
+    pub old_raw: Vec<String>,
+    pub new_raw: Vec<String>,
     pub rows: Vec<DiffRow>,
     pub unified: Vec<DiffRow>,
     pub binary: bool,
@@ -154,7 +181,71 @@ impl DiffDoc {
         let new_s = String::from_utf8_lossy(new);
         let rows = side_by_side(&old_s, &new_s);
         let unified = unified(&rows);
-        Self { old: display_lines(&old_s, tab_width), new: display_lines(&new_s, tab_width), rows, unified, binary: false }
+        Self {
+            old: display_lines(&old_s, tab_width),
+            new: display_lines(&new_s, tab_width),
+            old_raw: raw_lines(&old_s),
+            new_raw: raw_lines(&new_s),
+            rows,
+            unified,
+            binary: false,
+        }
+    }
+
+    /// Changed blocks (runs of non-equal rows) of the side-by-side or
+    /// unified rows; both views have the same blocks in the same order.
+    pub fn blocks(&self, unified: bool) -> Vec<std::ops::Range<usize>> {
+        blocks(if unified { &self.unified } else { &self.rows })
+    }
+
+    /// A unified patch of changed block `block` with up to `context` equal
+    /// lines around it, for `git apply` (`a/old_path` to `b/new_path`).
+    pub fn block_patch(&self, block: usize, old_path: &str, new_path: &str, context: usize) -> Option<String> {
+        let rows = &self.rows;
+        let b = blocks(rows).into_iter().nth(block)?;
+        let equal = |i: usize| rows[i].kind == RowKind::Equal;
+        let mut start = b.start;
+        while start > 0 && b.start - start < context && equal(start - 1) {
+            start -= 1;
+        }
+        let mut end = b.end;
+        while end < rows.len() && end - b.end < context && equal(end) {
+            end += 1;
+        }
+        let count = |range: std::ops::Range<usize>, left: bool| {
+            rows[range].iter().filter(|r| if left { r.left.is_some() } else { r.right.is_some() }).count()
+        };
+        // A side without lines starts at the line before (git's convention).
+        let header = |left: bool| {
+            let (before, n) = (count(0..start, left), count(start..end, left));
+            format!("{},{n}", if n == 0 { before } else { before + 1 })
+        };
+        let mut out = format!("diff --git a/{old_path} b/{new_path}\n--- a/{old_path}\n+++ b/{new_path}\n");
+        out.push_str(&format!("@@ -{} +{} @@\n", header(true), header(false)));
+        let mut line = |sign: char, text: &str| {
+            out.push(sign);
+            out.push_str(text);
+            if !text.ends_with('\n') {
+                out.push_str("\n\\ No newline at end of file\n");
+            }
+        };
+        for r in &rows[start..b.start] {
+            line(' ', &self.old_raw[r.left?]);
+        }
+        for r in &rows[b.clone()] {
+            if let Some(l) = r.left {
+                line('-', &self.old_raw[l]);
+            }
+        }
+        for r in &rows[b.clone()] {
+            if let Some(l) = r.right {
+                line('+', &self.new_raw[l]);
+            }
+        }
+        for r in &rows[b.end..end] {
+            line(' ', &self.old_raw[r.left?]);
+        }
+        Some(out)
     }
 
     /// Index of the first changed row (side-by-side or unified).
@@ -238,5 +329,26 @@ mod tests {
         assert_eq!(d.new, vec!["    x", "y"]);
         assert_eq!(d.first_change(false), Some(1));
         assert!(DiffDoc::build(b"same\n", b"same\n", 4).is_identical());
+    }
+
+    #[test]
+    fn block_patches_carry_context_and_counts() {
+        let old = "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n";
+        let new = "1\n2\nthree\n4\n5\n6\n7\n8\n9\n10\neleven";
+        let d = DiffDoc::build(old.as_bytes(), new.as_bytes(), 4);
+        assert_eq!(d.blocks(false).len(), 2);
+        assert_eq!(d.blocks(true).len(), 2);
+        let p = d.block_patch(0, "f.txt", "f.txt", 3).unwrap();
+        assert_eq!(p, "diff --git a/f.txt b/f.txt\n--- a/f.txt\n+++ b/f.txt\n@@ -1,6 +1,6 @@\n 1\n 2\n-3\n+three\n 4\n 5\n 6\n");
+        // An addition at the end without a final newline.
+        let p = d.block_patch(1, "f.txt", "f.txt", 3).unwrap();
+        assert_eq!(
+            p,
+            "diff --git a/f.txt b/f.txt\n--- a/f.txt\n+++ b/f.txt\n@@ -8,3 +8,4 @@\n 8\n 9\n 10\n+eleven\n\\ No newline at end of file\n"
+        );
+        assert!(d.block_patch(2, "f.txt", "f.txt", 3).is_none());
+        // Insertion at the very top: the old side starts at line 0.
+        let d = DiffDoc::build(b"a\n", b"new\na\n", 4);
+        assert!(d.block_patch(0, "f", "f", 0).unwrap().contains("@@ -0,0 +1,1 @@\n+new\n"));
     }
 }

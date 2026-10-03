@@ -124,6 +124,7 @@ impl GitPanel {
         if self.stash_diff.key.is_some() {
             if self.diff_rect.contains(p) {
                 self.area = Area::StashDiff;
+                self.stash_diff.click(m.y);
             }
             return;
         }

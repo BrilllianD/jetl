@@ -56,6 +56,10 @@ pub enum DialogId {
     StashDrop {
         oid: String,
     },
+    /// Reverse-apply this patch (one diff block) to the work tree.
+    DiscardHunk {
+        patch: String,
+    },
     /// Discard the changes of these paths (Commit tab).
     GitDiscard(Vec<(crate::git::Section, String)>),
     /// Push the branch to the remote and set it as upstream.

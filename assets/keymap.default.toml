@@ -115,6 +115,12 @@
 "ctrl-alt-right" = "editor.nav_forward"
 "f11" = "editor.toggle_bookmark"
 "shift-f11" = "editor.show_bookmarks"
+"ctrl-alt-z" = "editor.revert_change"
+"ctrl-alt-shift-down" = "editor.next_change"
+"ctrl-alt-shift-up" = "editor.prev_change"
+# Ctrl+Alt+Shift+Up/Down need modifier-aware arrows; F7/Shift+F7 work anywhere.
+"f7" = "editor.next_change"
+"shift-f7" = "editor.prev_change"
 "esc" = "editor.escape"
 
 [find]
@@ -171,6 +177,8 @@
 "tab" = "git.next_section"
 "ctrl-alt-a" = "git.stage_all"
 "ctrl-alt-z" = "git.discard"
+"f7" = "git.next_hunk"
+"shift-f7" = "git.prev_hunk"
 "alt-m" = "git.toggle_amend"
 # In the commit message box: recall earlier messages.
 "alt-up" = "git.message_older"

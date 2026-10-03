@@ -11,8 +11,8 @@ use super::{Area, Btn, GitPanel, GitTab, ListRow, put, render_diff};
 use crate::app::Ctx;
 use crate::config::theme::Theme;
 use crate::event::{Effect, Level, Mouse};
-use crate::git::GitRequest;
 use crate::git::model::{ChangeEntry, DiffKey, FileStatus, Section, StatusSnapshot};
+use crate::git::{GitOp, GitRequest};
 use crate::ui::dialog::{Dialog, DialogId};
 
 impl GitPanel {
@@ -239,6 +239,41 @@ impl GitPanel {
         cx.effects.push(Effect::Git(req));
     }
 
+    /// Stage or unstage (`discard`: throw away, after a confirmation) the
+    /// current block of the diff. Only plain modifications have hunks to
+    /// pick; anything else falls back to the whole file.
+    pub(super) fn hunk_op(&mut self, discard: bool, cx: &mut Ctx) {
+        let Some(e) = self.selected_entry() else { return };
+        if e.status != FileStatus::Modified || e.section == Section::Untracked {
+            return if discard { self.discard_selected(cx) } else { self.toggle_selected(cx) };
+        }
+        let (section, rel) = (e.section, e.rel.clone());
+        let Some(doc) = &self.diff.doc else { return };
+        let Some(patch) = doc.block_patch(self.diff.block, &rel, &rel, 3) else {
+            cx.notify(Level::Info, "No change selected in the diff");
+            return;
+        };
+        let req = match (section, discard) {
+            (Section::Staged, false) => GitRequest::ApplyPatch { patch, cached: true, reverse: true, op: GitOp::Unstage },
+            (_, false) => GitRequest::ApplyPatch { patch, cached: true, reverse: false, op: GitOp::Stage },
+            (Section::Staged, true) => {
+                cx.notify(Level::Warn, "Unstage the change first (Space), then discard it");
+                return;
+            }
+            (_, true) => {
+                let msg = format!("Discard this change in {rel}?\nThis cannot be undone.");
+                cx.effects.push(Effect::Dialog(Dialog::confirm(
+                    DialogId::DiscardHunk { patch },
+                    "Discard Change",
+                    &msg,
+                    &["Discard", "Cancel"],
+                )));
+                return;
+            }
+        };
+        cx.effects.push(Effect::Git(req));
+    }
+
     /// Ask to discard the selected entry, or a whole section on its header.
     pub(super) fn discard_selected(&mut self, cx: &mut Ctx) {
         let Some(row) = self.rows.get(self.list.selected).copied() else { return };
@@ -280,6 +315,7 @@ impl GitPanel {
             self.message.click(self.message_rect, m.x, m.y);
         } else if self.diff_rect.contains(p) {
             self.area = Area::Diff;
+            self.diff.click(m.y);
         } else if let Some(i) = self.list.hit(self.changes_rect, m.x, m.y) {
             self.area = Area::Changes;
             self.list.select(i);

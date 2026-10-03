@@ -26,7 +26,7 @@ use super::model::{BranchInfo, CommitDetails, DiffKey, LogRow, Section, StashEnt
 use crate::actions::GitAction;
 use crate::app::Ctx;
 use crate::config::theme::Theme;
-use crate::event::{Effect, Mouse};
+use crate::event::{Effect, Level, Mouse};
 use crate::ui::focus::PanelId;
 use crate::ui::tool_window_block;
 use crate::ui::widgets::list::ListState;
@@ -108,6 +108,11 @@ struct DiffPane {
     /// Rendered unified (narrow) last frame; scroll counts those rows.
     unified: bool,
     page: usize,
+    /// The current changed block (`DiffDoc::blocks`): what hunk staging,
+    /// discarding and F7 work on.
+    block: usize,
+    /// Where the rows were drawn last frame (mouse mapping).
+    rows_rect: Rect,
 }
 
 impl DiffPane {
@@ -135,10 +140,13 @@ impl DiffPane {
         self.loading = false;
         match result {
             Ok(doc) => {
-                // Jump to the first change of a newly opened diff only.
+                // Jump to the first change of a newly opened diff only; a
+                // reload keeps the place (and the block, if it still exists).
                 if self.doc.is_none() {
                     self.scroll = doc.first_change(self.unified).unwrap_or(0).saturating_sub(2);
+                    self.block = 0;
                 }
+                self.block = self.block.min(doc.blocks(false).len().saturating_sub(1));
                 self.doc = Some(doc);
                 self.error = None;
             }
@@ -146,6 +154,30 @@ impl DiffPane {
                 self.doc = None;
                 self.error = Some(format!("{e:#}"));
             }
+        }
+    }
+
+    /// Move to the next or previous changed block and scroll to it.
+    /// Returns false when there is none in that direction.
+    fn step_block(&mut self, forward: bool) -> bool {
+        let Some(doc) = &self.doc else { return false };
+        let blocks = doc.blocks(self.unified);
+        let next = if forward { self.block + 1 } else { self.block.wrapping_sub(1) };
+        let Some(b) = blocks.get(next) else { return false };
+        self.block = next;
+        self.scroll = b.start.saturating_sub(2);
+        true
+    }
+
+    /// Make the block under screen row `y` current.
+    fn click(&mut self, y: u16) {
+        let Some(doc) = &self.doc else { return };
+        if !(self.rows_rect.y..self.rows_rect.bottom()).contains(&y) {
+            return;
+        }
+        let row = self.scroll + (y - self.rows_rect.y) as usize;
+        if let Some(i) = doc.blocks(self.unified).iter().position(|b| b.contains(&row)) {
+            self.block = i;
         }
     }
 
@@ -357,17 +389,23 @@ impl GitPanel {
         use GitAction as G;
         match a {
             G::Refresh => cx.effects.push(Effect::Git(GitRequest::Refresh)),
-            G::ToggleStage => {
-                if self.tab == GitTab::Commit {
-                    self.toggle_selected(cx);
+            G::ToggleStage => match (self.tab, self.area) {
+                (GitTab::Commit, Area::Diff) => self.hunk_op(false, cx),
+                (GitTab::Commit, _) => self.toggle_selected(cx),
+                _ => {}
+            },
+            G::NextHunk | G::PrevHunk => {
+                let forward = *a == G::NextHunk;
+                if !self.diff_pane().step_block(forward) {
+                    cx.notify(Level::Info, if forward { "No more changes below" } else { "No more changes above" });
                 }
             }
             G::StageAll => cx.effects.push(Effect::Git(GitRequest::StageAll)),
-            G::Discard => {
-                if self.tab == GitTab::Commit {
-                    self.discard_selected(cx);
-                }
-            }
+            G::Discard => match (self.tab, self.area) {
+                (GitTab::Commit, Area::Diff) => self.hunk_op(true, cx),
+                (GitTab::Commit, _) => self.discard_selected(cx),
+                _ => {}
+            },
             G::UnstageAll => cx.effects.push(Effect::Git(GitRequest::UnstageAll)),
             G::Commit => self.commit(false, cx),
             G::CommitAndPush => self.commit(true, cx),
@@ -746,6 +784,7 @@ fn render_diff(buf: &mut Screen, area: Rect, pane: &mut DiffPane, header: Option
         r = Rect::new(r.x, r.y + 1, r.width, r.height - 1);
     }
     pane.page = r.height as usize;
+    pane.rows_rect = r;
     let msg = |buf: &mut Screen, text: &str, style: Style| buf.set_stringn(r.x + 1, r.y, text, r.width.saturating_sub(1) as usize, style);
     if r.height == 0 {
         return;
@@ -781,7 +820,8 @@ fn render_diff(buf: &mut Screen, area: Rect, pane: &mut DiffPane, header: Option
     let rows: &[DiffRow] = if unified { &doc.unified } else { &doc.rows };
     pane.scroll = pane.scroll.min(rows.len().saturating_sub(r.height as usize));
     let digits = doc.old.len().max(doc.new.len()).max(1).to_string().len().max(3) as u16;
-    let num_style = theme.line_number;
+    // Line numbers of the current block stand out.
+    let current = doc.blocks(unified).into_iter().nth(pane.block).unwrap_or_default();
     let add = Style::default().fg(theme.fg).bg(theme.diff_add_bg);
     let del = Style::default().fg(theme.fg).bg(theme.diff_del_bg);
     let modi = Style::default().fg(theme.fg).bg(theme.diff_mod_bg);
@@ -789,6 +829,7 @@ fn render_diff(buf: &mut Screen, area: Rect, pane: &mut DiffPane, header: Option
     let filler = Style::default().bg(theme.panel_bg);
     for (vi, row) in rows.iter().skip(pane.scroll).take(r.height as usize).enumerate() {
         let y = r.y + vi as u16;
+        let num_style = if current.contains(&(pane.scroll + vi)) { theme.warn } else { theme.line_number };
         if unified {
             // old# new# sign text
             let (style, sign) = match row.kind {

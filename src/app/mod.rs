@@ -1524,4 +1524,45 @@ pub(crate) mod tests {
         assert_eq!(app.git_panel.stash_count(), 0);
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// Feed the Commit tab the diff it asked for, computed on this thread.
+    fn feed_change_diff(app: &mut App, section: crate::git::Section, rel: &str) {
+        let (old, new) = crate::git::repo::change_texts(&app.workspace.root, section, rel, None).unwrap();
+        let key = crate::git::DiffKey::Change { section, rel: rel.into(), old: None };
+        let result = Ok(crate::git::diff::DiffDoc::build(&old, &new, 4));
+        app.handle_msg(AppMsg::Git(GitMsg::Diff { generation: app.git.generation, key, result }));
+    }
+
+    #[tokio::test]
+    async fn space_in_the_diff_stages_and_unstages_one_change() {
+        use crate::actions::GitAction;
+        use crate::git::{BlobWhich, Section};
+        let (mut app, dir) = test_app("hunk-stage");
+        let base: String = (1..=12).map(|i| format!("{i}\n")).collect();
+        init_repo(&app, &[("f.txt", &base)]);
+        let f = app.workspace.root.join("f.txt");
+        std::fs::write(&f, base.replacen("2\n", "two\n", 1).replace("11\n", "eleven\n")).unwrap();
+        feed_status(&mut app, 1);
+        feed_change_diff(&mut app, Section::Unstaged, "f.txt");
+        app.focus.set(PanelId::Git);
+        app.perform(Action::Git(GitAction::NextSection));
+        // The second change, then Space.
+        app.perform(Action::Git(GitAction::NextHunk));
+        app.perform(Action::Git(GitAction::ToggleStage));
+        handle_next(&mut app, git_op_done).await;
+        let index = crate::git::repo::blob_text(&app.workspace.root, &f, BlobWhich::Index).unwrap();
+        assert_eq!(index, base.replace("11\n", "eleven\n"), "only the second change is staged");
+        // Unstage it again from the Staged diff.
+        feed_status(&mut app, 2);
+        app.perform(Action::Git(GitAction::Escape));
+        app.perform(Action::Git(GitAction::Up));
+        app.perform(Action::Git(GitAction::Up));
+        feed_change_diff(&mut app, Section::Staged, "f.txt");
+        app.perform(Action::Git(GitAction::NextSection));
+        app.perform(Action::Git(GitAction::ToggleStage));
+        handle_next(&mut app, git_op_done).await;
+        let index = crate::git::repo::blob_text(&app.workspace.root, &f, BlobWhich::Index).unwrap();
+        assert_eq!(index, base);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

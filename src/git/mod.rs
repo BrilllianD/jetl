@@ -168,6 +168,14 @@ pub enum GitRequest {
     LoadHeadMessage,
     Stash(repo::StashOp),
     LoadStashes,
+    /// `git apply` a patch (a diff block); `op` is what it counts as
+    /// (stage, unstage or discard).
+    ApplyPatch {
+        patch: String,
+        cached: bool,
+        reverse: bool,
+        op: GitOp,
+    },
     Push,
     Pull,
     Fetch,
@@ -394,11 +402,16 @@ impl GitService {
     /// Run `git <args>` as an operation; output goes to the console.
     /// Worktree commands use this with their own `GitOp`s.
     pub fn run_cli(&mut self, op: GitOp, args: Vec<String>) -> u64 {
+        self.run_cli_input(op, args, None)
+    }
+
+    /// [`GitService::run_cli`] with `input` on stdin.
+    pub fn run_cli_input(&mut self, op: GitOp, args: Vec<String>, input: Option<Vec<u8>>) -> u64 {
         let label = format!("git {}", args.join(" "));
         let id = self.start(&label);
         let (root, generation, tx) = (self.root.clone(), self.generation, self.tx.clone());
         tokio::spawn(async move {
-            let (ok, output) = match cli::git(&root, &args).await {
+            let (ok, output) = match cli::git_with_input(&root, &args, input).await {
                 Ok(o) => (o.ok, o.combined()),
                 Err(e) => (false, format!("{e:#}")),
             };

@@ -118,6 +118,10 @@ pub enum EditorAction {
     LineEndingLf,
     LineEndingCrlf,
     SetLanguage,
+    /// Put the HEAD text of the change at the caret back.
+    RevertChange,
+    NextChange,
+    PrevChange,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -155,6 +159,8 @@ pub enum GitAction {
     StageAll,
     UnstageAll,
     Discard,
+    NextHunk,
+    PrevHunk,
     Commit,
     CommitAndPush,
     CommitBox,
@@ -365,6 +371,9 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "editor.line_ending_lf" => "Convert line endings to LF", Editor(E::LineEndingLf);
         "editor.line_ending_crlf" => "Convert line endings to CRLF", Editor(E::LineEndingCrlf);
         "editor.set_language" => "Set the file's language (highlighting)", Editor(E::SetLanguage);
+        "editor.revert_change" => "Revert the change at the caret to HEAD", Editor(E::RevertChange);
+        "editor.next_change" => "Go to the next change", Editor(E::NextChange);
+        "editor.prev_change" => "Go to the previous change", Editor(E::PrevChange);
 
         "tree.up" => "Tree: up", Tree(TreeAction::Up);
         "tree.down" => "Tree: down", Tree(TreeAction::Down);
@@ -391,10 +400,12 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "tree.context_menu" => "Tree: context menu", Tree(TreeAction::ContextMenu);
 
         "git.refresh" => "Git: refresh", Git(GitAction::Refresh);
-        "git.toggle_stage" => "Git: stage/unstage selected", Git(GitAction::ToggleStage);
+        "git.toggle_stage" => "Git: stage/unstage selected (in the diff: the current change)", Git(GitAction::ToggleStage);
         "git.stage_all" => "Git: stage all", Git(GitAction::StageAll);
         "git.unstage_all" => "Git: unstage all", Git(GitAction::UnstageAll);
-        "git.discard" => "Git: discard changes of the selected file or section", Git(GitAction::Discard);
+        "git.discard" => "Git: discard changes of the selected file or section (in the diff: the current change)", Git(GitAction::Discard);
+        "git.next_hunk" => "Git: next change in the diff", Git(GitAction::NextHunk);
+        "git.prev_hunk" => "Git: previous change in the diff", Git(GitAction::PrevHunk);
         "git.commit" => "Git: commit", Git(GitAction::Commit);
         "git.commit_and_push" => "Git: commit and push", Git(GitAction::CommitAndPush);
         "git.commit_box" => "Git: open commit window", Git(GitAction::CommitBox);

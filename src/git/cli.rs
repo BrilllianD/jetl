@@ -44,6 +44,12 @@ impl CliOutput {
 /// Run `git <args>` in `root`. Errors only when git cannot be started or
 /// times out; a non-zero exit is reported through `CliOutput::ok`.
 pub async fn git(root: &Path, args: &[String]) -> Result<CliOutput> {
+    git_with_input(root, args, None).await
+}
+
+/// [`git`] with `input` on stdin (a patch for `git apply`).
+pub async fn git_with_input(root: &Path, args: &[String], input: Option<Vec<u8>>) -> Result<CliOutput> {
+    use tokio::io::AsyncWriteExt;
     let ssh = if is_network(args) { ssh_command(root).await } else { None };
     let mut cmd = tokio::process::Command::new("git");
     cmd.args(["-c", "core.quotepath=off", "-c", "color.ui=never"])
@@ -52,7 +58,7 @@ pub async fn git(root: &Path, args: &[String]) -> Result<CliOutput> {
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_EDITOR", "true")
         .env("GIT_PAGER", "cat")
-        .stdin(Stdio::null())
+        .stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
@@ -69,7 +75,11 @@ pub async fn git(root: &Path, args: &[String]) -> Result<CliOutput> {
             Ok(())
         });
     }
-    let child = cmd.spawn().map_err(|e| anyhow!("cannot run git: {e}"))?;
+    let mut child = cmd.spawn().map_err(|e| anyhow!("cannot run git: {e}"))?;
+    if let (Some(input), Some(mut stdin)) = (input, child.stdin.take()) {
+        // Small inputs (patches); closing stdin ends the input.
+        stdin.write_all(&input).await?;
+    }
     // Dropping the future on timeout drops the child, which kills it.
     match tokio::time::timeout(TIMEOUT, child.wait_with_output()).await {
         Ok(out) => {
@@ -130,6 +140,20 @@ pub async fn git_ok(root: &Path, args: &[String]) -> Result<CliOutput> {
 
 pub fn args(a: &[&str]) -> Vec<String> {
     a.iter().map(|s| s.to_string()).collect()
+}
+
+/// `git apply` of a patch on stdin: to the index (`cached`) or the work
+/// tree, forwards or reversed.
+pub fn apply_args(cached: bool, reverse: bool) -> Vec<String> {
+    let mut v = args(&["apply", "--whitespace=nowarn"]);
+    if cached {
+        v.push("--cached".into());
+    }
+    if reverse {
+        v.push("--reverse".into());
+    }
+    v.push("-".into());
+    v
 }
 
 /// Arguments for one page of the log.
