@@ -313,8 +313,10 @@ impl App {
     /// Fill each row's shortcut from the keymap: one per row (the
     /// shortest) keeps menus narrow.
     pub(crate) fn fill_shortcuts(&self, items: &mut [crate::ui::menu::MenuItem]) {
-        for item in items.iter_mut().filter(|i| !i.separator) {
-            item.shortcut = self.shortcut(&item.action).unwrap_or_default();
+        for item in items.iter_mut() {
+            if let Some(action) = &item.action {
+                item.shortcut = self.shortcut(action).unwrap_or_default();
+            }
         }
     }
 
@@ -744,6 +746,32 @@ impl App {
             AppAction::Refresh => self.apply_effects(vec![Effect::GitRefresh]),
             AppAction::MainMenu => self.toggle_main_menu(),
             AppAction::About => self.notify(Level::Info, format!("jetl {}", env!("CARGO_PKG_VERSION"))),
+            AppAction::OpenSettings => self.open_settings(),
+            AppAction::KeymapReference => self.keymap_reference(),
+        }
+    }
+
+    fn open_settings(&mut self) {
+        let path = self.paths.config_file();
+        if !path.exists() {
+            let created = path
+                .parent()
+                .map_or(Ok(()), std::fs::create_dir_all)
+                .and_then(|()| std::fs::write(&path, "# jetl settings; every key and its default: docs/CONFIG.md\n"));
+            if let Err(e) = created {
+                return self.notify(Level::Error, format!("create {}: {e}", path.display()));
+            }
+        }
+        self.open_file(path, true);
+    }
+
+    fn keymap_reference(&mut self) {
+        let local = self.workspace.root.join("docs/KEYMAP.md");
+        if local.is_file() {
+            self.open_file(local, true);
+        } else {
+            let url = concat!(env!("CARGO_PKG_REPOSITORY"), "/src/main/docs/KEYMAP.md");
+            self.notify(Level::Info, format!("Keymap reference: {url}"));
         }
     }
 
@@ -1447,13 +1475,42 @@ pub(crate) mod tests {
         let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
         let frame = term.draw(|f| crate::ui::render(&mut app, f)).unwrap();
         let top = super::strip_tests::row_text(frame.buffer, 0, 31);
-        assert!(top.starts_with(" ☰  File  Edit  View  Navigate"), "{top:?}");
+        assert!(top.starts_with(" ≣  File  Edit  View  Navigate"), "{top:?}");
         app.handle_key(key(KeyCode::Char('h')));
         app.handle_key(key(KeyCode::Down));
         app.handle_key(key(KeyCode::Enter));
         assert!(app.menu_bar.is_none());
+        // No docs/KEYMAP.md in this project: the online copy.
+        assert!(app.notifications.last().is_some_and(|n| n.text.ends_with("/docs/KEYMAP.md")), "{:?}", app.notifications);
+        app.handle_key(key(KeyCode::F(10)));
+        app.handle_key(key(KeyCode::Char('h')));
+        app.handle_key(key(KeyCode::Up));
+        app.handle_key(key(KeyCode::Enter));
         let version = format!("jetl {}", env!("CARGO_PKG_VERSION"));
         assert!(app.notifications.last().is_some_and(|n| n.level == Level::Info && n.text == version), "{:?}", app.notifications);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn open_settings_creates_and_opens_config_toml() {
+        let (mut app, dir) = test_app("open-settings");
+        let path = app.paths.config_file();
+        assert!(!path.exists());
+        app.perform(Action::App(AppAction::OpenSettings));
+        assert!(std::fs::read_to_string(&path).unwrap().contains("docs/CONFIG.md"));
+        let msg = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                match app.bus_rx.recv().await {
+                    Some(m @ AppMsg::FileLoaded { .. }) => break m,
+                    Some(_) => {}
+                    None => panic!("bus closed"),
+                }
+            }
+        })
+        .await
+        .unwrap();
+        app.handle_msg(msg);
+        assert_eq!(app.editor.active_buffer().and_then(|b| b.path.clone()), Some(path));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

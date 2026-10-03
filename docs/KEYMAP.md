@@ -346,6 +346,8 @@ Reachable from Find Action (F1) or by binding them in `keymap.toml`.
 |---|---|
 | `app.escape` | Escape |
 | `app.about` | About jetl |
+| `app.open_settings` | Open settings (config.toml) |
+| `app.keymap_reference` | Keymap reference |
 | `palette.goto_line` | Go to line |
 | `editor.replace_one` | Replace current match |
 | `editor.replace_all` | Replace all matches |

@@ -1,8 +1,9 @@
 //! Context menu: a small list of actions drawn at the pointer, over
 //! everything but dialogs. It takes keys and mouse like a dialog: Up/Down
 //! (skipping disabled rows and separators), Enter, Esc, a click on a row,
-//! or a click outside to close. The main menu's dropdowns are the same
-//! widget (`ui::menu_bar`).
+//! or a click outside to close. Rows that do not fit scroll, with `▲`/`▼`
+//! on the border. The main menu's dropdowns are the same widget
+//! (`ui::menu_bar`).
 
 use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEventKind};
 use ratatui::Frame;
@@ -18,26 +19,29 @@ use crate::event::Mouse;
 #[derive(Debug, Clone)]
 pub struct MenuItem {
     pub label: String,
-    pub action: Action,
+    /// None for a divider line between groups, never selected or run.
+    pub action: Option<Action>,
     pub enabled: bool,
     /// Filled in by the app from the keymap.
     pub shortcut: String,
-    /// A divider line between groups; never selected or run.
-    pub separator: bool,
 }
 
 impl MenuItem {
     pub fn new(label: impl Into<String>, action: Action) -> Self {
-        Self { label: label.into(), action, enabled: true, shortcut: String::new(), separator: false }
+        Self { label: label.into(), action: Some(action), enabled: true, shortcut: String::new() }
     }
 
     pub fn separator() -> Self {
-        Self { separator: true, ..Self::new("", Action::App(crate::actions::AppAction::Escape)) }
+        Self { label: String::new(), action: None, enabled: true, shortcut: String::new() }
+    }
+
+    pub fn is_separator(&self) -> bool {
+        self.action.is_none()
     }
 
     /// Whether keys and the pointer can select this row.
     fn selectable(&self) -> bool {
-        self.enabled && !self.separator
+        self.enabled && !self.is_separator()
     }
 
     pub fn enabled(mut self, enabled: bool) -> Self {
@@ -60,12 +64,14 @@ pub struct ContextMenu {
     x: u16,
     y: u16,
     rect: Rect,
+    /// First row drawn, when the rows do not fit.
+    scroll: usize,
 }
 
 impl ContextMenu {
     pub fn new(items: Vec<MenuItem>, x: u16, y: u16) -> Self {
         let selected = items.iter().position(MenuItem::selectable).unwrap_or(0);
-        Self { items, selected, x, y, rect: Rect::default() }
+        Self { items, selected, x, y, rect: Rect::default(), scroll: 0 }
     }
 
     fn step(&mut self, forward: bool) {
@@ -82,7 +88,7 @@ impl ContextMenu {
 
     fn run(&self, i: usize) -> Option<MenuResult> {
         let item = self.items.get(i).filter(|it| it.selectable())?;
-        Some(MenuResult::Run(item.action.clone()))
+        item.action.clone().map(MenuResult::Run)
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Option<MenuResult> {
@@ -107,13 +113,23 @@ impl ContextMenu {
         (self.x, self.y) = (x, y);
     }
 
+    /// Take over another menu's screen rect until the next render, so a
+    /// click right after the rows change still lands inside.
+    pub fn set_rect(&mut self, rect: Rect) {
+        self.rect = rect;
+    }
+
+    pub fn rect(&self) -> Rect {
+        self.rect
+    }
+
     pub fn contains(&self, x: u16, y: u16) -> bool {
         self.rect.contains((x, y).into())
     }
 
     fn row_at(&self, x: u16, y: u16) -> Option<usize> {
         let inner = Rect::new(self.rect.x + 1, self.rect.y + 1, self.rect.width.saturating_sub(2), self.rect.height.saturating_sub(2));
-        inner.contains((x, y).into()).then(|| (y - inner.y) as usize)
+        inner.contains((x, y).into()).then(|| self.scroll + (y - inner.y) as usize).filter(|&i| i < self.items.len())
     }
 
     pub fn handle_mouse(&mut self, m: &Mouse) -> Option<MenuResult> {
@@ -150,10 +166,28 @@ impl ContextMenu {
             .style(Style::default().bg(theme.popup_bg).fg(theme.fg));
         let inner = block.inner(self.rect);
         frame.render_widget(block, self.rect);
+        // Keep the selected row on screen.
+        let rows = inner.height as usize;
+        let max_scroll = self.items.len().saturating_sub(rows);
+        if rows > 0 {
+            if self.selected < self.scroll {
+                self.scroll = self.selected;
+            } else if self.selected >= self.scroll + rows {
+                self.scroll = self.selected + 1 - rows;
+            }
+        }
+        self.scroll = self.scroll.min(max_scroll);
         let buf = frame.buffer_mut();
-        for (i, item) in self.items.iter().enumerate().take(inner.height as usize) {
-            let y = inner.y + i as u16;
-            if item.separator {
+        let mid = self.rect.x + self.rect.width / 2;
+        if self.scroll > 0 {
+            buf.set_string(mid, self.rect.y, "▲", theme.popup_border.bg(theme.popup_bg));
+        }
+        if self.scroll < max_scroll {
+            buf.set_string(mid, self.rect.bottom() - 1, "▼", theme.popup_border.bg(theme.popup_bg));
+        }
+        for (i, item) in self.items.iter().enumerate().skip(self.scroll).take(rows) {
+            let y = inner.y + (i - self.scroll) as u16;
+            if item.is_separator() {
                 // Joined to the border on both sides.
                 let line = format!("├{}┤", "─".repeat(inner.width as usize));
                 buf.set_string(self.rect.x, y, line, theme.popup_border.bg(theme.popup_bg));
@@ -251,6 +285,42 @@ mod tests {
         let buf = term.backend().buffer();
         let row: String = (m.rect.x..m.rect.right()).map(|x| buf[(x, m.rect.y + 2)].symbol()).collect();
         assert_eq!(row, format!("├{}┤", "─".repeat(m.rect.width as usize - 2)));
+    }
+
+    #[test]
+    fn long_menus_scroll_to_the_selection() {
+        let items = (0..30).map(|i| MenuItem::new(format!("Row {i}"), Action::App(AppAction::About))).collect();
+        let mut m = ContextMenu::new(items, 0, 0);
+        m.items[29].action = Some(Action::App(AppAction::Quit));
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(30, 24)).unwrap();
+        let mut draw = |m: &mut ContextMenu| term.draw(|f| m.render(f, Rect::new(0, 1, 30, 23), &Theme::default())).unwrap().buffer.clone();
+        let buf = draw(&mut m);
+        let rows = m.rect.height as usize - 2;
+        assert_eq!(rows, 21, "23 rows below the anchor, two for the border");
+        let mid = m.rect.x + m.rect.width / 2;
+        assert_eq!(buf[(mid, m.rect.bottom() - 1)].symbol(), "▼");
+        assert_ne!(buf[(mid, m.rect.y)].symbol(), "▲");
+        let key = |c| KeyEvent::new(c, KeyModifiers::NONE);
+        for _ in 0..29 {
+            m.handle_key(key(KeyCode::Down));
+            let buf = draw(&mut m);
+            let y = m.rect.y + 1 + (m.selected - m.scroll) as u16;
+            let line: String = (m.rect.x + 2..m.rect.x + 8).map(|x| buf[(x, y)].symbol()).collect();
+            assert_eq!(line.trim_end(), format!("Row {}", m.selected), "the selected row is drawn");
+        }
+        let buf = draw(&mut m);
+        assert_eq!(buf[(mid, m.rect.y)].symbol(), "▲");
+        assert_ne!(buf[(mid, m.rect.bottom() - 1)].symbol(), "▼");
+        assert_eq!(m.handle_key(key(KeyCode::Enter)), Some(MenuResult::Run(Action::App(AppAction::Quit))));
+        let at = |kind, x, y| Mouse { kind, x, y, clicks: 1, mods: KeyModifiers::NONE };
+        let last = m.rect.bottom() - 2;
+        assert_eq!(
+            m.handle_mouse(&at(MouseEventKind::Down(MouseButton::Left), m.rect.x + 2, last)),
+            Some(MenuResult::Run(Action::App(AppAction::Quit))),
+            "a click maps through the scroll"
+        );
+        m.handle_mouse(&at(MouseEventKind::Moved, m.rect.x + 2, m.rect.y + 1));
+        assert_eq!(m.selected, 30 - rows);
     }
 
     #[test]

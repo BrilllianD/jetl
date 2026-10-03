@@ -41,6 +41,8 @@ pub const MAIN_MENU: &[(&str, char, &[Row])] = &[
             Item("Close Other Tabs", "editor.close_other_tabs"),
             Item("Close All Tabs", "editor.close_all_tabs"),
             Sep,
+            Item("Settings…", "app.open_settings"),
+            Sep,
             Item("Exit", "app.quit"),
         ],
     ),
@@ -55,6 +57,8 @@ pub const MAIN_MENU: &[(&str, char, &[Row])] = &[
             Item("Copy", "editor.copy"),
             Item("Paste", "editor.paste"),
             Item("Select All", "editor.select_all"),
+            Item("Extend Selection", "editor.expand_selection"),
+            Item("Shrink Selection", "editor.shrink_selection"),
             Sep,
             Item("Find…", "editor.find"),
             Item("Replace…", "editor.replace"),
@@ -66,6 +70,8 @@ pub const MAIN_MENU: &[(&str, char, &[Row])] = &[
             Item("Join Lines", "editor.join_lines"),
             Item("Move Line Up", "editor.move_line_up"),
             Item("Move Line Down", "editor.move_line_down"),
+            Item("Indent", "editor.tab"),
+            Item("Unindent", "editor.unindent"),
             Sep,
             Item("Comment with Line Comment", "editor.toggle_comment"),
             Item("Comment with Block Comment", "editor.toggle_block_comment"),
@@ -144,7 +150,11 @@ pub const MAIN_MENU: &[(&str, char, &[Row])] = &[
             Item("Previous Problem", "run.prev_problem"),
         ],
     ),
-    ("Help", 'H', &[Item("Find Action…", "palette.actions"), Sep, Item("About jetl", "app.about")]),
+    (
+        "Help",
+        'H',
+        &[Item("Find Action…", "palette.actions"), Item("Keymap Reference", "app.keymap_reference"), Sep, Item("About jetl", "app.about")],
+    ),
 ];
 
 /// Whether a menu row needs an active editor tab: editor actions (but
@@ -207,8 +217,11 @@ impl MenuBar {
     fn open(&mut self, i: usize) {
         if i != self.open {
             self.open = i;
-            // Anchored under its title by the next render.
+            // Anchored under its title by the next render; until then the
+            // old rect keeps a click on the dropdown from closing the bar.
+            let rect = self.dropdown.rect();
             self.dropdown = ContextMenu::new(self.menus[i].items.clone(), 0, 0);
+            self.dropdown.set_rect(rect);
         }
     }
 
@@ -224,7 +237,6 @@ impl MenuBar {
         }
         match key.code {
             KeyCode::Esc => Some(MenuResult::Cancel),
-            KeyCode::F(10) if key.modifiers.is_empty() => Some(MenuResult::Cancel),
             KeyCode::Left => {
                 self.open((self.open + n - 1) % n);
                 None
@@ -263,6 +275,8 @@ impl MenuBar {
 
     pub fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
         if area.height < 2 {
+            (self.bar, self.titles) = (Rect::default(), Vec::new());
+            self.dropdown.set_rect(Rect::default());
             return;
         }
         self.bar = Rect::new(area.x, area.y, area.width, 1);
@@ -370,7 +384,7 @@ mod tests {
         b.handle_key(key(KeyCode::Right));
         assert_eq!(b.open_title(), "Edit");
         assert_eq!(b.handle_key(key(KeyCode::Esc)), Some(MenuResult::Cancel));
-        assert_eq!(b.handle_key(key(KeyCode::F(10))), Some(MenuResult::Cancel));
+        assert_eq!(b.handle_key(key(KeyCode::F(10))), None, "F10 closes through the keymap (App::main_menu_key)");
     }
 
     #[test]
@@ -417,6 +431,25 @@ mod tests {
         assert_eq!(b.handle_mouse(&at(MouseEventKind::Down(MouseButton::Left), 40, 8)), Some(MenuResult::Cancel));
         assert_eq!(b.handle_mouse(&at(MouseEventKind::Down(MouseButton::Left), 30, 0)), None, "empty bar space");
         assert_eq!(b.handle_mouse(&at(MouseEventKind::Down(MouseButton::Left), 16, 0)), Some(MenuResult::Cancel), "open title");
+    }
+
+    #[test]
+    fn switching_menus_keeps_the_dropdown_hit_area_until_redrawn() {
+        let mut b = bar();
+        draw(&mut b);
+        b.handle_key(key(KeyCode::Right));
+        assert!(b.dropdown.contains(3, 2), "a click before the next frame stays inside");
+        draw(&mut b);
+        assert!(b.dropdown.contains(10, 2));
+    }
+
+    #[test]
+    fn a_too_short_area_clears_the_hit_areas() {
+        let mut b = bar();
+        draw(&mut b);
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(60, 1)).unwrap();
+        term.draw(|f| b.render(f, f.area(), &Theme::default())).unwrap();
+        assert!(!b.contains(3, 0) && !b.contains(3, 2));
     }
 
     #[test]

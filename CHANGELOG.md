@@ -11,12 +11,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Application main menu, JetBrains-style: F10 opens a menu bar over the top row (File, Edit,
   View, Navigate, Git, Run, Help) with shortcuts next to each item. Left/Right or the underlined
-  letter switch menus, the mouse works too, Esc or F10 closes it. Help > About jetl shows the
-  version.
+  letter switch menus, the mouse works too, Esc or F10 closes it. Menus taller than the
+  terminal scroll. File > Settings… opens `config.toml` (created when missing), Help > Keymap
+  Reference opens `docs/KEYMAP.md`, Help > About jetl shows the version.
 - Compact tool strip: each tool window button is its Alt-number over an icon, so all of them fit
   on a 24-row terminal, with a menu button on top that opens the main menu. Hovering a button
-  shows its name and shortcut. The icons are color emoji by default; `[ui] icons = "unicode"`
-  switches the strip and the menu bar to one-cell symbols.
+  shows its name and shortcut. The icons are one-cell symbols by default; `[ui] icons = "emoji"`
+  switches the strip and the menu bar to color emoji (needs a color emoji font).
 
 ## [0.1.0] - 2026-10-03
 

@@ -49,7 +49,7 @@ theme = "darcula"              # reserved; Darcula is the only built-in theme (u
 left_width = 32                # initial width of the left tool window (Project, Worktrees)
 bottom_height = 14             # initial height of the bottom tool window (Git)
 double_click_ms = 400          # double click and Shift Shift interval
-icons = "emoji"                # tool strip and menu icons: "emoji" (needs a color emoji font) or "unicode" (one-cell symbols)
+icons = "unicode"              # tool strip and menu icons: "unicode" (one-cell symbols) or "emoji" (needs a color emoji font)
 
 [git]
 pull_mode = "ff-only"          # "ff-only" (git pull --ff-only), "rebase" (--rebase) or "merge" (--no-rebase)
