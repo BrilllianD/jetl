@@ -891,7 +891,13 @@ impl Buffer {
     }
 
     pub fn mark_saved(&mut self) {
-        self.saved_state = self.undo.state_id();
+        self.mark_saved_at(self.undo.state_id());
+    }
+
+    /// The file now holds the text of undo state `state` (the current one,
+    /// or an earlier one a formatted save wrote).
+    pub fn mark_saved_at(&mut self, state: u64) {
+        self.saved_state = state;
         self.undo.break_group = true;
     }
 

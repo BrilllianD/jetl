@@ -134,6 +134,7 @@ Override any of them in `~/.config/jetl/keymap.toml` (see [CONFIG.md](CONFIG.md)
 | `Ctrl+Alt+Shift+Up` | `editor.prev_change` | Go to the previous change |
 | `Shift+F7` | `editor.prev_change` | Go to the previous change |
 | `Ctrl+Alt+B` | `editor.toggle_blame` | Annotate with git blame (show or hide) |
+| `Ctrl+Alt+L` | `editor.format` | Reformat code with the external formatter |
 
 ## tree
 

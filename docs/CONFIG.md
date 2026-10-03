@@ -75,6 +75,19 @@ watch = true                   # follow changes made outside jetl (tree, git sta
 paste_command = ""             # prints the system clipboard; "" = detect, "none" = jetl's own last copy only
 copy_command = ""              # takes copied text on stdin, besides OSC 52; "" = the detected tool's
                                # partner, "none" = OSC 52 only
+
+[format]
+on_save = false                # Ctrl+S and save all run the file's formatter before writing
+timeout_ms = 5000              # a formatter still running after this is killed
+# One entry per language: the command and its arguments, as a list. Keys are
+# language ids (the status bar shows them): rust, python, javascript, typescript,
+# tsx, csharp, go, json, ... None are set by default. Examples:
+# rust = ["rustfmt", "--edition", "2021", "--emit", "stdout"]
+# python = ["black", "-q", "-"]
+# javascript = ["prettier", "--stdin-filepath", "{path}"]
+# typescript = ["prettier", "--stdin-filepath", "{path}"]
+# csharp = ["csharpier", "format", "--write-stdout"]
+# go = ["gofmt"]
 ```
 
 With `watch` on, files changed by other programs refresh the Project tree
@@ -109,6 +122,30 @@ without OSC 52 still leaves the clipboard and paste in step. That tool keeps
 a process running to serve the clipboard until something else is copied, as
 it does from a shell. A configured `paste_command` gets no copy tool unless
 `copy_command` names one.
+
+Formatting (`[format]`) pipes the whole file through an external command:
+the text goes in on stdin and the formatted text must come out on stdout,
+so a formatter that only rewrites files in place (`dotnet format`) does not
+fit; use one with a stdin mode (CSharpier for C#). `{path}` in an argument
+becomes the file's absolute path, for tools that pick their settings or
+parser from it (prettier's `--stdin-filepath`). The command runs in the
+project root, without a terminal, and is killed with everything it started
+after `timeout_ms`. Ctrl+Alt+L (`editor.format`, Reformat Code) formats the
+current file without saving, whether or not `on_save` is set.
+
+The result is applied as one undoable edit of the changed lines only: Ctrl+Z
+takes the whole reformat back, the caret stays on the same code and the view
+on the same lines. Output identical to the buffer changes nothing. With
+`on_save`, Ctrl+S first applies the save cleanup (`trim_trailing_whitespace`,
+`final_newline`), then waits for the formatter and writes its text. If the
+formatter fails or times out, the file is saved unformatted and a warning
+shows its first error line (the full output is in the Event Log, Alt+Shift+L).
+If you type while it runs, the reformat is dropped and the file gets the
+text as it was when you pressed Ctrl+S; your later edits stay unsaved.
+
+Only explicit saves format. Autosave, and the saves done by closing a tab,
+quitting or switching projects with unsaved changes ("Save all and exit"),
+write at once without the formatter, so they never wait on it.
 
 ## Indentation and .editorconfig
 

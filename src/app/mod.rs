@@ -42,6 +42,7 @@ mod dialogs;
 mod effects;
 mod files;
 mod find;
+mod format;
 mod mouse;
 mod msg;
 mod palette;
@@ -178,6 +179,8 @@ pub struct App {
     watcher: Option<crate::files::watch::Watcher>,
     /// Clipboard tools, jetl's copy register and the paste in flight.
     clipboard: clipboard::ClipboardState,
+    /// Formatter runs in flight.
+    pub(crate) format: format::FormatState,
     started: Instant,
 }
 
@@ -242,6 +245,7 @@ impl App {
             editor: Editor::new(&config),
             watcher: None,
             clipboard: Default::default(),
+            format: Default::default(),
             started: Instant::now(),
             config,
             paths,
@@ -359,6 +363,7 @@ impl App {
             }
         }
         self.save_session();
+        self.format.abort_all();
         Ok(())
     }
 

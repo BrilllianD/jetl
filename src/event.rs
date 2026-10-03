@@ -102,6 +102,14 @@ pub enum AppMsg {
         seq: u64,
         result: Result<String, String>,
     },
+    /// A formatter run for buffer `id` (`App::start_format`), tagged with
+    /// the workspace generation and the request's seq.
+    Formatted {
+        generation: u64,
+        id: crate::editor::buffer::BufferId,
+        seq: u64,
+        result: Result<String, crate::util::format::Failure>,
+    },
     /// Reserved for the language server integration.
     Lsp(LspMsg),
 }
@@ -135,6 +143,8 @@ pub enum Effect {
         quiet: bool,
     },
     Clipboard(String),
+    /// Run a formatter off the main thread (`App::start_format`).
+    Format(crate::editor::format::FormatRequest),
     /// Open a context menu (`App.menu`).
     ContextMenu(crate::ui::menu::ContextMenu),
     Quit,

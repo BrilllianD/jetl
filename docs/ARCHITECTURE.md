@@ -23,6 +23,7 @@ and backlog are in `docs/ROADMAP.md`; settings in `docs/CONFIG.md`; keys in
 | `app/find.rs` | Replace in files (open tabs through the editor, other files off the main thread). |
 | `app/symbols.rs` | Starting symbol index runs (`request_symbols`, through `Coalesce`), applying `AppMsg::Symbols`, re-queuing watcher paths, and `sync_structure` (called by `ui::render` while the Structure window is shown). |
 | `app/clipboard.rs` | Copy (OSC 52, the copy tool, jetl's register) and `editor.paste`: the focused text field (`PasteTarget`), the paste tool run off the main thread (`AppMsg::Paste`, dropped when focus moved), the register fallback with a one-time warning. Dialogs and the palette route the paste key here before their own key handling. |
+| `app/format.rs` | External formatter runs (`Effect::Format`): one per buffer at a time (a newer request aborts the older one and keeps its save), tagged with the generation and a seq, aborted on root switch and quit; `AppMsg::Formatted` goes to `Editor::format_done`. |
 | `app/files.rs` | Tree file operations: `run_fs_op` off the main thread, `fs_op_done` (reload the tree, open, retarget or close tabs). |
 | `workspace.rs` | `Workspace` (root and generation), root switching (`App::switch_root`), sessions (JSON per root: tabs in order with their pins, tool window layout and sizes, Git tab, tree hidden/ignored toggles, expanded tree folders; a missing one arrives empty; fields added later are `#[serde(default)]`). `session_loaded` skips tabs already open, applies the layout (sizes clamped, toggles winning over `[files]` config), expands the saved folders on the main thread, then opens the command line file. |
 | `recent_projects.rs` | `state/recent_projects.json`: roots with their last open time, newest first, deduplicated, at most 30. Recorded off the main thread at startup and on every root switch (`App::load_recent_projects`); a missing or corrupt file reads as empty; roots that are no longer directories are not listed. |
@@ -34,6 +35,7 @@ and backlog are in `docs/ROADMAP.md`; settings in `docs/CONFIG.md`; keys in
 | `editor/mod.rs` | `Editor`: tabs with MRU, open/close, actions, mouse, rendering of tabs and text. Pinned tabs (`Buffer::pinned`) are always the first ones; moves (Alt+Shift+Left/Right, a drag in the tab bar: `Drag::Tab`, `Editor::drag_tab`) stay within the pinned or the unpinned group. Close others and close all but pinned skip pinned tabs; close all closes them too. `enforce_tab_limit` (`editor.max_tabs`, run by the app after a file opens and after a session restore) closes the least recently used clean, unpinned, inactive tabs. Right-click on a tab opens its context menu. |
 | `editor/buffer.rs` | `Buffer`: rope, selection, undo, file metadata (path, line ending, mtime, dirty state). |
 | `editor/{find,io}.rs` | Find/replace bar (keys, stepping, rendering); saving and autosave. |
+| `editor/format.rs` | `[format]` formatters: `FormatRequest` (the buffer snapshot: text, version, undo state), `format_done` (apply if the version is unchanged, warn on failure, then write for a save), and `Buffer::apply_formatted`: an imara-diff line diff turned into one transaction of the changed hunks, the selection mapped by the code before it, the view kept on its lines. |
 | `editor/view.rs` | `layout_line`: the grapheme walk shared by rendering, `visual_col` and `col_to_char`. |
 | `editor/gutter.rs` | Git marks against the HEAD text (`Buffer::diff_base`), and the change commands built on the same diff: revert the change at the caret (one `Buffer::apply`, so undoable), next/previous change. |
 | `editor/blame.rs` | The blame column (`Buffer::blame`): author and date per line from `git::repo::blame` of HEAD, matched to buffer lines through the HEAD diff (recomputed with the gutter at tick rate, so edits shift it and edited lines show none). |
@@ -55,7 +57,7 @@ and backlog are in `docs/ROADMAP.md`; settings in `docs/CONFIG.md`; keys in
 | `git/model.rs` | Shared types: status entries (`old_rel` for renames), `DiffKey`, log rows and `LogFilter`, commit details, `BranchInfo` and `BranchOp`, `Blame`, `StashEntry`. |
 | `git/panel/` | The Git tool window: shared state, input routing, header and console (`mod.rs`); the diff pane of every tab (`diff_view.rs`: folded unchanged runs, the current change, syntax colors, changed characters, side-by-side/unified); the Commit tab with amend and message history (`commit.rs`); the Log tab with its filter bar and commit actions (`log.rs`); the Stash tab (`stash.rs`). |
 | `ui/` | `render` (frame order), `layout` (rects and hit testing; zen mode, where the editor text fills the screen and `LayoutState::zen` keeps the hidden tool windows and focus: showing any tool window leaves it, and sessions save the hidden windows, never zen itself), `focus` (panel and tool window ids), `dialog`, `palette`, `menu` (context menu), `status_bar`, `tabs`, `toasts`, `tool_strip`, `event_log` (the Event Log tool window over `App::notifications`: first line per entry, full text on Enter, follows new entries while its last row is selected and in view; the status bar notification opens it), `widgets/{list,text_input}`. |
-| `util/` | `text` (width helpers), `coalesce` (one background request at a time), `fs` (`write_atomic`, shared by saves and replace in files), `clipboard` (clipboard tool selection from the environment and `[clipboard]`, running them with a 1 s timeout). |
+| `util/` | `text` (width helpers), `coalesce` (one background request at a time), `fs` (`write_atomic`, shared by saves and replace in files), `clipboard` (clipboard tool selection from the environment and `[clipboard]`, running them with a 1 s timeout), `format` (running a formatter: stdin to stdout, its own session, the process group killed on timeout or when dropped). |
 
 ## Event flow
 
@@ -129,7 +131,9 @@ Two tags:
   and it stops older runs through a cancel seq), `RecentProjects`
   (`App::recent_projects_seq`; not tied to the root, so it carries no
   generation), `Paste` (only the newest request applies, and only while
-  the text field it was asked for still has focus). A result is applied when its seq is not
+  the text field it was asked for still has focus), `Formatted` (per
+  buffer, only the newest request; the text is applied only while
+  `Buffer::version` still matches the snapshot). A result is applied when its seq is not
   older than the last applied one. Results keyed by what they describe
   need no seq: diffs by `DiffKey` (each diff pane ignores keys it does not
   show), commit details by sha (the Log or Stash tab, whichever has it
@@ -173,7 +177,14 @@ its busy id before the generation check, so the spinner never sticks.
   `pub(super)`.
 - Saves are synchronous and atomic (`write_atomic`: temp file, fsync,
   rename, permissions kept). An explicit save of a file changed on disk asks
-  first (`DialogId::OverwriteExternal`); autosave skips it.
+  first (`DialogId::OverwriteExternal`); autosave skips it. The exception is
+  an explicit save (`editor.save`, `editor.save_all`) with `[format]
+  on_save` and a formatter for the language: the cleanup runs, the
+  formatter runs off the main thread, and `Editor::format_done` writes when
+  it answers (formatted, unformatted after a failure, or the snapshot when
+  the buffer changed meanwhile). Saves that must finish at once (closing a
+  tab, quitting, switching roots, the overwrite answer, autosave) call
+  `Editor::save`/`save_all`, which never format.
 - Lists keep their wheel scroll: `ListState::set_viewport` and `fit` bound
   the offset without pulling the view back to the selection.
 

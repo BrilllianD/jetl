@@ -172,6 +172,7 @@ impl App {
     /// restore its session and record it as a recent project.
     pub fn do_switch_root(&mut self, root: PathBuf) {
         self.save_session();
+        self.format.abort_all();
         if self.config.worktree.switch_closes_tabs {
             self.editor.force_close_all();
         }

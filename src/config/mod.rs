@@ -67,6 +67,7 @@ pub struct Config {
     pub keymap: KeymapConfig,
     pub files: FilesConfig,
     pub clipboard: ClipboardConfig,
+    pub format: FormatConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -150,6 +151,27 @@ pub struct ClipboardConfig {
     pub paste_command: String,
     /// Reads text to put on the clipboard from stdin.
     pub copy_command: String,
+}
+
+/// External formatters (`editor::format`): the buffer text goes in on
+/// stdin and the formatted text comes back on stdout.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct FormatConfig {
+    /// Format before an explicit save (Ctrl+S, save all).
+    pub on_save: bool,
+    /// A formatter that has not finished by then is killed.
+    pub timeout_ms: u64,
+    /// Command and arguments per language id (`LanguageDef::name`); `{path}`
+    /// in an argument becomes the file's path.
+    #[serde(flatten)]
+    pub commands: std::collections::HashMap<String, Vec<String>>,
+}
+
+impl Default for FormatConfig {
+    fn default() -> Self {
+        Self { on_save: false, timeout_ms: 5000, commands: Default::default() }
+    }
 }
 
 impl Default for EditorConfig {
@@ -238,6 +260,21 @@ mod tests {
         assert_eq!(cfg.editor.autosave, Autosave::Off);
         assert_eq!(Config::parse("[editor]\nautosave = \"idle\"\n").unwrap().editor.autosave, Autosave::Idle);
         assert!(Config::parse("[editor]\nautosave = \"Idle\"\n").is_err());
+    }
+
+    #[test]
+    fn format_commands_are_keyed_by_language() {
+        let cfg = Config::default().format;
+        assert!(!cfg.on_save && cfg.commands.is_empty(), "off unless configured");
+        let text = "[format]\non_save = true\ntimeout_ms = 900\nrust = [\"rustfmt\", \"--emit\", \"stdout\"]\n\
+                    typescript = [\"prettier\", \"--stdin-filepath\", \"{path}\"]\n";
+        let cfg = Config::parse(text).unwrap().format;
+        assert!(cfg.on_save);
+        assert_eq!(cfg.timeout_ms, 900);
+        assert_eq!(cfg.commands["rust"], ["rustfmt", "--emit", "stdout"]);
+        assert_eq!(cfg.commands["typescript"][2], "{path}");
+        assert_eq!(cfg.commands.len(), 2);
+        assert!(Config::parse("[format]\nrust = \"rustfmt\"\n").is_err(), "a command is a list of words");
     }
 
     #[test]

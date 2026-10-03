@@ -5,6 +5,7 @@ pub mod brackets;
 pub mod buffer;
 pub mod expand;
 mod find;
+pub mod format;
 pub mod gutter;
 pub mod indent;
 mod io;
@@ -74,6 +75,8 @@ pub struct Editor {
     max_highlight_bytes: usize,
     /// `editor.max_tabs`: see [`Editor::enforce_tab_limit`].
     max_tabs: usize,
+    /// `[format]`: formatters per language and whether saves run them.
+    pub format: crate::config::FormatConfig,
     last_search: Option<LastSearch>,
     find_area: Rect,
     find_hits: Vec<(FindHit, Rect)>,
@@ -122,6 +125,7 @@ impl Editor {
             drag: None,
             max_highlight_bytes: config.editor.max_highlight_bytes,
             max_tabs: config.editor.max_tabs,
+            format: config.format.clone(),
             last_search: None,
             find_area: Rect::default(),
             find_hits: Vec::new(),
@@ -831,13 +835,17 @@ impl Editor {
                 return true;
             }
             E::SaveAll => {
-                self.save_all(cx);
+                self.save_all_with(cx, self.format.on_save);
                 return true;
             }
             E::Save => {
                 if let Some(i) = self.active {
-                    self.save(i, cx);
+                    self.save_with(i, cx, self.format.on_save);
                 }
+                return true;
+            }
+            E::Format => {
+                self.format_active(cx);
                 return true;
             }
             E::GotoLine => {
@@ -1058,6 +1066,7 @@ impl Editor {
             | E::Switcher
             | E::Save
             | E::SaveAll
+            | E::Format
             | E::GotoLine
             | E::NavBack
             | E::NavForward

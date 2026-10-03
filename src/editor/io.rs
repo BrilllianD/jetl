@@ -83,10 +83,28 @@ impl Editor {
     /// on disk since it was loaded or saved is not written; the user picks
     /// Overwrite / Reload / Cancel (`DialogId::OverwriteExternal`).
     pub fn save(&mut self, i: usize, cx: &mut Ctx) -> bool {
+        self.save_with(i, cx, false)
+    }
+
+    /// [`Editor::save`]; with `format`, a buffer whose language has a
+    /// formatter is cleaned up, handed to it (`Effect::Format`), and written
+    /// when it answers ([`Editor::format_done`]); true then means started.
+    /// Only explicit saves format: closing, quitting and switching roots
+    /// save through [`Editor::save`] and need the file written at once.
+    pub(super) fn save_with(&mut self, i: usize, cx: &mut Ctx, format: bool) -> bool {
         let Some(b) = self.buffers.get(i) else { return false };
         if b.dirty() && disk_conflict(b) {
             cx.effects.extend(self.conflict_dialog(i).map(Effect::Dialog));
             return false;
+        }
+        if format && b.path.is_some() && b.dirty() && self.formatter(i).is_some() {
+            if let Err(done) = self.prepare_write(i, cx) {
+                return done;
+            }
+            if let Some(req) = self.format_request(i, true) {
+                cx.effects.push(Effect::Format(req));
+                return true;
+            }
         }
         self.write(i, cx, false)
     }
@@ -112,17 +130,29 @@ impl Editor {
 
     /// [`Editor::save`]; `quiet` drops the "Saved" toast (errors still show).
     pub(super) fn write(&mut self, i: usize, cx: &mut Ctx, quiet: bool) -> bool {
+        if let Err(done) = self.prepare_write(i, cx) {
+            return done;
+        }
+        let b = &self.buffers[i];
+        let (text, state) = (b.text(), b.undo.state_id());
+        self.write_text(i, text, state, cx, quiet)
+    }
+
+    /// Before writing buffer `i`: it needs a path and unsaved edits (`Err`
+    /// carries the save's result otherwise), then the save cleanup
+    /// (`trim_trailing_whitespace`, `final_newline`).
+    fn prepare_write(&mut self, i: usize, cx: &mut Ctx) -> Result<(), bool> {
         let (trim, final_newline) = (self.trim_trailing_whitespace, self.final_newline);
-        let Some(b) = self.buffers.get_mut(i) else { return false };
+        let Some(b) = self.buffers.get_mut(i) else { return Err(false) };
         // `.editorconfig` overrides the editor-wide options per file.
         let trim = b.settings.trim_trailing_whitespace.unwrap_or(trim);
         let final_newline = b.settings.insert_final_newline.unwrap_or(final_newline);
-        let Some(path) = b.path.clone() else {
+        if b.path.is_none() {
             cx.notify(Level::Error, "buffer has no file path");
-            return false;
-        };
+            return Err(false);
+        }
         if !b.dirty() {
-            return true;
+            return Err(true);
         }
         // Trimming other lines leaves the caret line where it was, so a view
         // that was following the caret need not scroll back to it (autosave
@@ -132,12 +162,19 @@ impl Editor {
         if let Some((_, _, w, h)) = follow {
             b.follow_key = Some((b.sel.head, b.version, w, h));
         }
-        match write_atomic(&path, &b.text()) {
+        Ok(())
+    }
+
+    /// Write `text`, the buffer's undo state `state`, as buffer `i`'s file.
+    pub(super) fn write_text(&mut self, i: usize, text: String, state: u64, cx: &mut Ctx, quiet: bool) -> bool {
+        let Some(b) = self.buffers.get_mut(i) else { return false };
+        let Some(path) = b.path.clone() else { return false };
+        match write_atomic(&path, &text) {
             Ok(perm_err) => {
                 if let Some(e) = perm_err {
                     cx.notify(Level::Warn, format!("{}: file mode not kept: {e}", b.name));
                 }
-                b.mark_saved();
+                b.mark_saved_at(state);
                 b.disk_mtime = buffer::file_mtime(&path);
                 b.autosave_failed = None;
                 b.autosave_conflict = false;
@@ -158,6 +195,11 @@ impl Editor {
     /// Save every dirty buffer. Only the first file changed on disk gets the
     /// Overwrite / Reload dialog; later ones stay unsaved with a warning.
     pub fn save_all(&mut self, cx: &mut Ctx) -> bool {
+        self.save_all_with(cx, false)
+    }
+
+    /// [`Editor::save_all`], formatting like [`Editor::save_with`].
+    pub(super) fn save_all_with(&mut self, cx: &mut Ctx, format: bool) -> bool {
         let mut ok = true;
         let mut asked = false;
         for i in 0..self.buffers.len() {
@@ -173,7 +215,7 @@ impl Editor {
                 }
                 asked = true;
             }
-            ok &= self.save(i, cx);
+            ok &= self.save_with(i, cx, format);
         }
         ok
     }
@@ -224,7 +266,7 @@ impl Editor {
 
 /// The file changed on disk since the buffer loaded or saved it. A file
 /// deleted meanwhile is not a conflict: saving recreates it.
-fn disk_conflict(b: &Buffer) -> bool {
+pub(super) fn disk_conflict(b: &Buffer) -> bool {
     b.changed_on_disk() && b.path.as_deref().is_some_and(Path::exists)
 }
 

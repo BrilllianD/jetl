@@ -140,6 +140,8 @@
 "shift-f11" = "editor.show_bookmarks"
 "ctrl-alt-z" = "editor.revert_change"
 "ctrl-alt-b" = "editor.toggle_blame"
+# Reformat Code runs the [format] command for the file's language.
+"ctrl-alt-l" = "editor.format"
 "ctrl-alt-shift-down" = "editor.next_change"
 "ctrl-alt-shift-up" = "editor.prev_change"
 # Ctrl+Alt+Shift+Up/Down need modifier-aware arrows; F7/Shift+F7 work anywhere.

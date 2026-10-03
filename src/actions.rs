@@ -144,6 +144,8 @@ pub enum EditorAction {
     PrevChange,
     /// Show or hide the git blame column.
     ToggleBlame,
+    /// Reformat the buffer with its language's external formatter.
+    Format,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -435,6 +437,7 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "editor.next_change" => "Go to the next change", Editor(E::NextChange);
         "editor.prev_change" => "Go to the previous change", Editor(E::PrevChange);
         "editor.toggle_blame" => "Annotate with git blame (show or hide)", Editor(E::ToggleBlame);
+        "editor.format" => "Reformat code with the external formatter", Editor(E::Format);
 
         "tree.up" => "Tree: up", Tree(TreeAction::Up);
         "tree.down" => "Tree: down", Tree(TreeAction::Down);

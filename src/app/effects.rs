@@ -38,6 +38,7 @@ impl App {
                     (tree, status) = (true, true);
                 }
                 Effect::Clipboard(text) => self.copy_to_clipboard(&text),
+                Effect::Format(req) => self.start_format(req),
                 Effect::SwitchRoot(p) => self.switch_root(p),
                 Effect::RefreshTree => tree = true,
                 Effect::GitRefresh => (tree, status, lists) = (true, true, true),
