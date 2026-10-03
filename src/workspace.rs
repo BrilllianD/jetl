@@ -1,7 +1,7 @@
 //! The project root the IDE is currently showing, switching it (worktrees),
 //! and per-root sessions: open tabs in order with their pins, caret and
-//! scroll, tool window layout and expanded tree folders, stored as JSON in
-//! `paths.sessions_dir()/<fnv hash of root>.json`.
+//! scroll, the split editor's groups, tool window layout and expanded tree
+//! folders, stored as JSON in `paths.sessions_dir()/<fnv hash of root>.json`.
 
 use std::path::{Path, PathBuf};
 
@@ -9,6 +9,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::app::App;
+use crate::editor::split::{Axis, SplitNode};
 use crate::event::{AppMsg, Level};
 use crate::git::panel::GitTab;
 use crate::ui::dialog::{Dialog, DialogId};
@@ -61,6 +62,44 @@ pub struct Session {
     /// Expanded tree directories relative to the root, parents first.
     #[serde(default)]
     pub expanded: Vec<PathBuf>,
+    /// The split editor: written only with more than one tab group. `files`
+    /// still lists every tab once, so sessions without it load as one group.
+    #[serde(default)]
+    pub splits: Option<SessionSplits>,
+}
+
+/// The editor's split tree and the focused group.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionSplits {
+    pub tree: SessionNode,
+    /// The focused group's place among the leaves, in layout order.
+    pub focused: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SessionNode {
+    Leaf(SessionGroup),
+    Split { axis: Axis, ratio: u16, a: Box<SessionNode>, b: Box<SessionNode> },
+}
+
+/// One tab group's tabs in order and the shown one.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionGroup {
+    pub views: Vec<SessionView>,
+    pub active: Option<usize>,
+}
+
+/// A tab of a group: an index into `Session::files` and its own caret and
+/// scroll.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SessionView {
+    pub file: usize,
+    pub line: usize,
+    pub col: usize,
+    pub scroll_line: usize,
+    pub scroll_col: usize,
+    pub pinned: bool,
 }
 
 /// Tool windows, their sizes, the Git tab and the tree's visibility toggles.
@@ -217,14 +256,24 @@ impl App {
         let root = self.workspace.root.clone();
         let mut files = Vec::new();
         let mut active = None;
-        for (i, b) in self.editor.buffers.iter().enumerate() {
+        let pinned = self.editor.pinned_ids();
+        for i in self.editor.tab_order() {
+            let b = &self.editor.buffers[i];
             let Some(path) = b.path.clone() else { continue };
-            if self.editor.active == Some(i) {
+            if self.editor.active() == Some(i) {
                 active = Some(files.len());
             }
             let (line, col) = b.cursor_line_col();
             let bookmarks = b.bookmarks.iter().copied().collect();
-            files.push(SessionFile { path, line, col, scroll_line: b.scroll_line, scroll_col: b.scroll_col, bookmarks, pinned: b.pinned });
+            files.push(SessionFile {
+                path,
+                line,
+                col,
+                scroll_line: b.view.scroll_line,
+                scroll_col: b.view.scroll_col,
+                bookmarks,
+                pinned: pinned.contains(&b.id),
+            });
         }
         let recent = self.editor.recent_paths().iter().filter_map(|p| files.iter().position(|f| &f.path == p)).collect();
         let (show_hidden, show_ignored) = self.project.visibility();
@@ -240,7 +289,44 @@ impl App {
             show_ignored,
         });
         let expanded = self.project.expanded_dirs().iter().filter_map(|d| d.strip_prefix(&root).ok()).map(Path::to_path_buf).collect();
-        Session { root, files, active, recent, layout, expanded }
+        let splits = self.session_splits(&files);
+        Session { root, files, active, recent, layout, expanded, splits }
+    }
+
+    /// The editor's groups as a session, `None` with one group.
+    fn session_splits(&self, files: &[SessionFile]) -> Option<SessionSplits> {
+        let ed = &self.editor;
+        let leaves = ed.group_ids();
+        if leaves.len() < 2 {
+            return None;
+        }
+        let file = |path: &Path| files.iter().position(|f| f.path == path);
+        let leaf = |g| {
+            let group = ed.group(g)?;
+            let mut out = SessionGroup::default();
+            for (slot, v) in group.views.iter().enumerate() {
+                let Some(b) = ed.index_of_id(v.id).map(|i| &ed.buffers[i]) else { continue };
+                let Some(file) = b.path.as_deref().and_then(file) else { continue };
+                let state = v.parked.as_ref().map_or(&b.view, |p| &p.state);
+                let (line, col) = crate::editor::selection::pos_to_line_col(&b.rope, state.sel.head);
+                if group.active == Some(slot) {
+                    out.active = Some(out.views.len());
+                }
+                let (scroll_line, scroll_col) = (state.scroll_line, state.scroll_col);
+                out.views.push(SessionView { file, line, col, scroll_line, scroll_col, pinned: v.pinned });
+            }
+            Some(SessionNode::Leaf(out))
+        };
+        fn node(n: &SplitNode, leaf: &dyn Fn(u32) -> Option<SessionNode>) -> Option<SessionNode> {
+            Some(match n {
+                SplitNode::Leaf(g) => leaf(*g)?,
+                SplitNode::Split { axis, ratio, a, b } => {
+                    SessionNode::Split { axis: *axis, ratio: *ratio, a: Box::new(node(a, leaf)?), b: Box::new(node(b, leaf)?) }
+                }
+            })
+        }
+        let focused = leaves.iter().position(|g| *g == ed.focused_group().id)?;
+        Some(SessionSplits { tree: node(ed.split_tree(), &leaf)?, focused })
     }
 
     /// Save the current root's session (on switch and quit). Failures are
@@ -292,6 +378,10 @@ impl App {
                 self.editor.set_pinned(i, true);
             }
             self.git.load_blob(f.path.clone(), crate::git::BlobWhich::Head);
+        }
+        if let Some(splits) = &session.splits {
+            let buffers: Vec<Option<usize>> = session.files.iter().map(|f| self.editor.index_of(&f.path)).collect();
+            self.editor.restore_splits(splits, &buffers);
         }
         let recent: Vec<PathBuf> = session.recent.iter().filter_map(|i| session.files.get(*i)).map(|f| f.path.clone()).collect();
         let active = session.active.and_then(|i| session.files.get(i)).map(|f| f.path.as_path());
@@ -374,6 +464,21 @@ mod tests {
                 show_ignored: true,
             }),
             expanded: vec![PathBuf::from("src"), PathBuf::from("src/app")],
+            splits: Some(SessionSplits {
+                tree: SessionNode::Split {
+                    axis: Axis::Horizontal,
+                    ratio: 400,
+                    a: Box::new(SessionNode::Leaf(SessionGroup {
+                        views: vec![SessionView { file: 1, ..Default::default() }],
+                        active: Some(0),
+                    })),
+                    b: Box::new(SessionNode::Leaf(SessionGroup {
+                        views: vec![SessionView { file: 0, line: 3, col: 1, scroll_line: 2, scroll_col: 0, pinned: true }],
+                        active: Some(0),
+                    })),
+                },
+                focused: 1,
+            }),
         };
         s.save(&dir).unwrap();
         assert_eq!(Session::load(&dir, &root), Some(s.clone()));
@@ -384,7 +489,7 @@ mod tests {
         std::fs::write(&file, r#"{"root":"/tmp/some/project","files":[{"path":"/tmp/some/project/a"}]}"#).unwrap();
         let old = Session::load(&dir, &root).unwrap();
         assert_eq!((old.files[0].line, old.active, old.recent.len(), old.files[0].bookmarks.len()), (0, None, 0, 0));
-        assert_eq!((old.layout, old.expanded.len(), old.files[0].pinned), (None, 0, false));
+        assert_eq!((old.layout, old.expanded.len(), old.files[0].pinned, old.splits), (None, 0, false, None));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -424,6 +529,61 @@ mod tests {
         assert_eq!(b.bookmarks.iter().copied().collect::<Vec<_>>(), vec![1]);
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&fresh_dir);
+    }
+
+    #[tokio::test]
+    async fn split_groups_survive_a_session_round_trip() {
+        use crate::actions::{Action, EditorAction};
+        let (mut app, dir) = crate::app::tests::test_app("session-splits");
+        let text: String = (0..60).map(|i| format!("line {i}\n")).collect();
+        let a = crate::app::tests::load(&mut app, "a.txt", &text);
+        crate::app::tests::load(&mut app, "b.txt", "b\n");
+        app.editor.show_slot(0);
+        app.perform(Action::Editor(EditorAction::SplitRight));
+        app.editor.goto_line(40, 3);
+        app.perform(Action::Editor(EditorAction::SplitDown));
+        crate::app::tests::load(&mut app, "c.txt", "c\n");
+        app.perform(Action::Editor(EditorAction::TogglePinTab));
+        let session = app.session();
+        let splits = session.splits.clone().expect("three groups");
+        assert_eq!(splits.focused, 2);
+        assert_eq!(session.files.len(), 3, "each file once");
+        session.save(&app.paths.sessions_dir()).unwrap();
+
+        let (mut fresh, fresh_dir) = crate::app::tests::test_app("session-splits-2");
+        fresh.workspace.root = app.workspace.root.clone();
+        let loaded = Session::load(&app.paths.sessions_dir(), &app.workspace.root).unwrap();
+        assert_eq!(loaded, session);
+        let files = loaded.files.iter().map(|f| std::fs::read(&f.path)).collect();
+        let generation = fresh.workspace.generation;
+        fresh.session_loaded(generation, loaded, files);
+        let ed = &mut fresh.editor;
+        ed.check_invariants();
+        assert_eq!(ed.group_ids().len(), 3);
+        assert_eq!(ed.tab_names(), ["c.txt", "a.txt"], "the focused group, its pin first");
+        assert!(ed.focused_group().views[0].pinned);
+        assert_eq!(ed.active_buffer().unwrap().name, "c.txt");
+        // Each view of a.txt has its own caret.
+        ed.show_slot(1);
+        assert_eq!(ed.active_buffer().unwrap().cursor_line_col(), (39, 2));
+        ed.focus_group(ed.group_ids()[0]);
+        assert_eq!(ed.tab_names(), ["a.txt", "b.txt"]);
+        assert_eq!(ed.active_buffer().unwrap().cursor_line_col(), (0, 0));
+        assert_eq!(ed.index_of(&a), Some(0));
+        // A session from before splits loads as one group.
+        let mut json = serde_json::to_value(&session).unwrap();
+        json.as_object_mut().unwrap().remove("splits");
+        let old: Session = serde_json::from_value(json).unwrap();
+        let (mut one, one_dir) = crate::app::tests::test_app("session-splits-3");
+        one.workspace.root = app.workspace.root.clone();
+        let files = old.files.iter().map(|f| std::fs::read(&f.path)).collect();
+        let generation = one.workspace.generation;
+        one.session_loaded(generation, old, files);
+        assert_eq!(one.editor.group_ids().len(), 1);
+        assert_eq!(one.editor.tab_names(), ["c.txt", "a.txt", "b.txt"], "c was pinned");
+        for d in [dir, fresh_dir, one_dir] {
+            let _ = std::fs::remove_dir_all(d);
+        }
     }
 
     #[tokio::test]

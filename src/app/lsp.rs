@@ -461,7 +461,7 @@ impl App {
     pub(super) fn lsp_step_problem(&mut self, forward: bool) {
         self.sync_diag_marks();
         let Some(b) = self.editor.active_buffer_mut() else { return };
-        match b.diag_marks.step(b.sel.head, forward) {
+        match b.diag_marks.step(b.view.sel.head, forward) {
             Some(pos) => b.goto_pos(pos),
             None => self.notify(Level::Info, "No problems in this file"),
         }
@@ -480,7 +480,7 @@ impl App {
     /// status bar.
     pub fn caret_problem(&self) -> Option<(Severity, &str)> {
         let b = self.editor.active_buffer()?;
-        b.diag_marks.at(b.sel.head).map(|m| (m.severity, m.message.as_str()))
+        b.diag_marks.at(b.view.sel.head).map(|m| (m.severity, m.message.as_str()))
     }
 
     /// Show and focus the Problems window on the active file's problems
@@ -651,7 +651,7 @@ pub(crate) mod tests {
             (Some(moved_uri.as_str()), Some(1))
         );
         // Closed with its unsaved undo.
-        app.editor.force_close(app.editor.active.unwrap());
+        app.editor.force_close(app.editor.active().unwrap());
         app.lsp_sync();
         assert_eq!(server.recv("textDocument/didClose").await["params"]["textDocument"]["uri"], moved_uri.as_str());
         // Plain text has no server.
@@ -838,7 +838,7 @@ pub(crate) mod tests {
 
     fn caret(app: &App) -> (usize, usize) {
         let b = app.editor.active_buffer().unwrap();
-        crate::editor::selection::pos_to_line_col(&b.rope, b.sel.head)
+        crate::editor::selection::pos_to_line_col(&b.rope, b.view.sel.head)
     }
 
     /// The second line has an emoji (two UTF-16 units) before the error.
@@ -871,7 +871,7 @@ pub(crate) mod tests {
         let b = app.editor.active_buffer().unwrap();
         let line1 = b.rope.line_to_char(1);
         assert_eq!(b.diag_marks.marks.iter().map(|m| m.range.clone()).collect::<Vec<_>>(), [3..7, line1 + 17..line1 + 18]);
-        let ta = app.editor.text_area;
+        let ta = app.editor.text_area();
         let (y0, y1) = (ta.y, ta.y + 1);
         // The glyph sits in the diff mark column, just left of the text.
         assert_eq!(buf[(ta.x - 2, y0)].symbol(), "⚠");

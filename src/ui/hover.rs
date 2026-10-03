@@ -20,6 +20,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::config::theme::Theme;
 use crate::editor::buffer::BufferId;
+use crate::editor::groups::GroupId;
 
 /// Widest the popup gets (with its border), in cells.
 const MAX_WIDTH: u16 = 82;
@@ -37,6 +38,7 @@ pub enum Kind {
 #[derive(Debug)]
 pub struct HoverPopup {
     /// What the popup was asked for: dropped when any of these change.
+    pub group: GroupId,
     pub buffer: BufferId,
     pub version: u64,
     pub head: usize,
@@ -49,9 +51,9 @@ pub struct HoverPopup {
 
 impl HoverPopup {
     /// The popup for a hover answer; `None` when it has no text.
-    pub fn new(buffer: BufferId, version: u64, head: usize, contents: HoverContents) -> Option<Self> {
+    pub fn new(group: GroupId, buffer: BufferId, version: u64, head: usize, contents: HoverContents) -> Option<Self> {
         let lines = contents_lines(contents);
-        (!lines.is_empty()).then_some(Self { buffer, version, head, lines, scroll: 0, page: 1, rect: Rect::default() })
+        (!lines.is_empty()).then_some(Self { group, buffer, version, head, lines, scroll: 0, page: 1, rect: Rect::default() })
     }
 
     #[cfg(test)]

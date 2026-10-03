@@ -57,6 +57,10 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Alt+Shift+Left` | `editor.move_tab_left` | Move the active tab left |
 | `Alt+Shift+Right` | `editor.move_tab_right` | Move the active tab right |
 | `Ctrl+Tab` * | `editor.switcher` | Switcher (recent tabs) |
+| `Alt+\` | `editor.split_right` | Split right (the tab in a new group beside) |
+| `Alt+-` | `editor.split_down` | Split down (the tab in a new group below) |
+| `Alt+Tab` | `editor.next_group` | Next tab group |
+| `Alt+Shift+Tab` | `editor.prev_group` | Previous tab group |
 | `Alt+F1` | `tree.select_in_project` | Select in Project |
 | `Alt+H` | `git.file_history` | Git: show history for the file (editor) or the selected entry (Project tree) |
 | `Alt+0` | `git.commit_box` | Git: open commit window |
@@ -383,6 +387,9 @@ Reachable from Find Action (F1) or by binding them in `keymap.toml`.
 | `editor.close_all_tabs` | Close all tabs, pinned ones too |
 | `editor.close_other_tabs` | Close other tabs (keeps pinned ones) |
 | `editor.close_unpinned_tabs` | Close all tabs but pinned |
+| `editor.unsplit` | Unsplit (merge the group into the one beside it) |
+| `editor.unsplit_all` | Unsplit all (one group) |
+| `editor.move_tab_to_opposite_group` | Move the active tab to the opposite group |
 | `editor.line_ending_lf` | Convert line endings to LF |
 | `editor.line_ending_crlf` | Convert line endings to CRLF |
 | `editor.set_language` | Set the file's language (highlighting) |

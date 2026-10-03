@@ -62,6 +62,14 @@
 "alt-shift-left" = "editor.move_tab_left"
 "alt-shift-right" = "editor.move_tab_right"
 "alt-shift-p" = "editor.toggle_pin_tab"
+# Split panes. JetBrains has no default keys for these; Ctrl+\ is avoided
+# (legacy terminals send it as Ctrl+4). The window manager may take
+# Alt+Tab, and Alt+Shift+Tab needs the kitty protocol: the View menu and the
+# action palette have the same commands.
+"alt-backslash" = "editor.split_right"
+"alt-minus" = "editor.split_down"
+"alt-tab" = "editor.next_group"
+"alt-shift-tab" = "editor.prev_group"
 "ctrl-shift-f12" = "tool_window.hide_all"
 "shift-esc" = "tool_window.hide_focused"
 # Resize the focused tool window: Left/Right move a left window's edge,

@@ -135,6 +135,19 @@ pub enum EditorAction {
     MoveTabLeft,
     MoveTabRight,
     Switcher,
+    /// Split the focused tab group: a new group to the right or below
+    /// shows the same tab.
+    SplitRight,
+    SplitDown,
+    /// Focus the next (previous) tab group.
+    NextGroup,
+    PrevGroup,
+    /// Merge the focused group's tabs into the group beside it.
+    Unsplit,
+    UnsplitAll,
+    /// Move the active tab to the group beside (splitting right first when
+    /// there is one group).
+    MoveTabToOppositeGroup,
     Escape,
     ToggleComment,
     ToggleBlockComment,
@@ -492,6 +505,13 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "editor.move_tab_left" => "Move the active tab left", Editor(E::MoveTabLeft);
         "editor.move_tab_right" => "Move the active tab right", Editor(E::MoveTabRight);
         "editor.switcher" => "Switcher (recent tabs)", Editor(E::Switcher);
+        "editor.split_right" => "Split right (the tab in a new group beside)", Editor(E::SplitRight);
+        "editor.split_down" => "Split down (the tab in a new group below)", Editor(E::SplitDown);
+        "editor.next_group" => "Next tab group", Editor(E::NextGroup);
+        "editor.prev_group" => "Previous tab group", Editor(E::PrevGroup);
+        "editor.unsplit" => "Unsplit (merge the group into the one beside it)", Editor(E::Unsplit);
+        "editor.unsplit_all" => "Unsplit all (one group)", Editor(E::UnsplitAll);
+        "editor.move_tab_to_opposite_group" => "Move the active tab to the opposite group", Editor(E::MoveTabToOppositeGroup);
         "editor.escape" => "Escape (close find, clear selection)", Editor(E::Escape);
         "editor.toggle_comment" => "Comment with line comment", Editor(E::ToggleComment);
         "editor.toggle_block_comment" => "Comment with block comment", Editor(E::ToggleBlockComment);

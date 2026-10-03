@@ -90,13 +90,13 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     status_bar::render(app, frame, rects.status);
     // The hover popup sits at the caret, over everything but the overlays.
     app.hover_check();
-    if let (Some(h), Some(anchor)) = (&mut app.hover, app.editor.caret_cell) {
+    if let (Some(h), Some(anchor)) = (&mut app.hover, app.editor.caret_cell()) {
         let above_status = ratatui::layout::Rect { height: rects.status.y.saturating_sub(area.y), ..area };
         h.render(frame, above_status, anchor, &theme);
     }
     // The completion popup too, its rows under the word being completed.
     app.completion_check();
-    if let (Some(c), Some(anchor)) = (&mut app.completion, app.editor.caret_cell) {
+    if let (Some(c), Some(anchor)) = (&mut app.completion, app.editor.caret_cell()) {
         let above_status = ratatui::layout::Rect { height: rects.status.y.saturating_sub(area.y), ..area };
         let word = unicode_width::UnicodeWidthStr::width(c.state.prefix.as_str()) as u16;
         c.render(frame, above_status, anchor, word, &theme);

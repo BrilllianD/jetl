@@ -75,7 +75,7 @@ impl App {
     /// Ask at the caret; `trigger` is the trigger character typed.
     fn completion_request(&mut self, kind: u8, trigger: Option<char>, explicit: bool) {
         let Some(b) = self.editor.active_buffer() else { return };
-        let origin = Origin::new(b.id, &b.rope, b.sel.head);
+        let origin = Origin::new(b.id, &b.rope, b.view.sel.head);
         let mut context = json!({"triggerKind": kind});
         if let Some(c) = trigger {
             context["triggerCharacter"] = json!(c.to_string());
@@ -114,10 +114,10 @@ impl App {
         if triggers.iter().any(|t| t.ends_with(c)) && !is_word_char(c) {
             return self.completion_request(TRIGGER_CHARACTER, Some(c), false);
         }
-        if !is_word_char(c) || !b.sel.is_empty() || self.completion.is_some() {
+        if !is_word_char(c) || !b.view.sel.is_empty() || self.completion.is_some() {
             return;
         }
-        let head = b.sel.head;
+        let head = b.view.sel.head;
         let coming = self.lsp.completion.request.as_ref().is_some_and(|(_, o, _)| o.buffer == b.id && o.prefix(&b.rope, head).is_some());
         let word = head - completion::word_start(&b.rope, head);
         if !coming && word >= self.config.lsp.completion_min_chars.max(1) {
@@ -131,12 +131,16 @@ impl App {
     fn completion_refilter(&mut self) -> bool {
         let Some(p) = &mut self.completion else { return false };
         let overlay = self.palette.is_some() || self.dialog.is_some() || self.menu.is_some() || self.menu_bar.is_some();
-        let here = !overlay && self.focus.is(PanelId::Editor) && !self.editor.find_focused() && self.mode == Mode::Insert;
+        let here = !overlay
+            && self.focus.is(PanelId::Editor)
+            && p.group == self.editor.focused_group().id
+            && !self.editor.find_focused()
+            && self.mode == Mode::Insert;
         let prefix = self
             .editor
             .active_buffer()
-            .filter(|b| here && b.id == p.state.origin.buffer && b.sel.is_empty())
-            .and_then(|b| p.state.origin.prefix(&b.rope, b.sel.head));
+            .filter(|b| here && b.id == p.state.origin.buffer && b.view.sel.is_empty())
+            .and_then(|b| p.state.origin.prefix(&b.rope, b.view.sel.head));
         let Some(prefix) = prefix else {
             self.completion_close();
             return false;
@@ -209,7 +213,7 @@ impl App {
         let Some(item) = p.state.selected_item().cloned() else { return };
         let origin = p.state.origin.clone();
         let Some(b) = self.editor.active_buffer() else { return };
-        let pos = crate::lsp::pos::position(&b.rope, b.sel.head);
+        let pos = crate::lsp::pos::position(&b.rope, b.view.sel.head);
         let params = serde_json::to_value(&item).unwrap_or(Value::Null);
         let resolvable = self
             .lsp
@@ -248,11 +252,11 @@ impl App {
     /// in the word the list was for.
     fn completion_apply(&mut self, origin: &Origin, item: &CompletionItem) {
         let Some(b) = self.editor.active_buffer_mut() else { return };
-        if b.id != origin.buffer || !b.sel.is_empty() || origin.prefix(&b.rope, b.sel.head).is_none() {
+        if b.id != origin.buffer || !b.view.sel.is_empty() || origin.prefix(&b.rope, b.view.sel.head).is_none() {
             return tracing::debug!("completion: the caret left the word; not accepted");
         }
         let crlf = b.line_ending == crate::editor::buffer::LineEnding::CrLf;
-        let acc = completion::edit_for(item, origin, &b.rope, b.sel.head, crlf);
+        let acc = completion::edit_for(item, origin, &b.rope, b.view.sel.head, crlf);
         b.apply(acc.changes, Selection::point(acc.caret), TxKind::Other);
         self.dirty_frame = true;
     }
@@ -286,8 +290,8 @@ impl App {
         let prefix = self
             .editor
             .active_buffer()
-            .filter(|b| here && b.id == origin.buffer && b.sel.is_empty())
-            .and_then(|b| origin.prefix(&b.rope, b.sel.head));
+            .filter(|b| here && b.id == origin.buffer && b.view.sel.is_empty())
+            .and_then(|b| origin.prefix(&b.rope, b.view.sel.head));
         let Some(prefix) = prefix else { return tracing::debug!("dropping a stale completion answer") };
         let (items, incomplete) = completion::parse(value);
         let state = CompletionState::new(origin, items, incomplete, &prefix, &mut self.lsp.completion.matcher);
@@ -300,7 +304,7 @@ impl App {
             return;
         }
         self.hover = None;
-        self.completion = Some(CompletionPopup::new(state));
+        self.completion = Some(CompletionPopup::new(state, self.editor.focused_group().id));
     }
 }
 
@@ -351,7 +355,7 @@ mod tests {
     /// The caret line with `|` at the caret.
     fn caret_line(app: &App) -> String {
         let b = app.editor.active_buffer().unwrap();
-        let (line, col) = crate::editor::selection::pos_to_line_col(&b.rope, b.sel.head);
+        let (line, col) = crate::editor::selection::pos_to_line_col(&b.rope, b.view.sel.head);
         let mut l: Vec<char> = b.line_text(line).chars().collect();
         l.insert(col, '|');
         l.into_iter().collect()
@@ -414,7 +418,7 @@ mod tests {
         app.toasts = Default::default();
         // Drawn under the caret line, rows lined up with the word.
         let rows = draw(&mut app, 80, 24);
-        let (cx, cy) = app.editor.caret_cell.unwrap();
+        let (cx, cy) = app.editor.caret_cell().unwrap();
         let below = &rows[cy as usize + 1..cy as usize + 6];
         assert!(below[0].contains('┌'), "{below:#?}");
         assert!(below[1].contains("f print!"), "{below:#?}");
@@ -570,6 +574,27 @@ mod tests {
         server.recv("completionItem/resolve").await;
         typ(&mut app, ";");
         assert_eq!(caret_line(&app), "    HashMap;|");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn the_popup_anchors_in_the_focused_group_and_closes_when_it_changes() {
+        let (mut app, mut server, dir) = setup("compl-split", false).await;
+        app.perform(Action::Editor(EditorAction::SplitRight));
+        draw(&mut app, 100, 24);
+        typ(&mut app, "p");
+        let req = completion_req(&mut server).await;
+        reply(&mut app, &mut server, &req, items(1, 4, 5)).await;
+        app.toasts = Default::default();
+        let rows = draw(&mut app, 100, 24);
+        let (cx, cy) = app.editor.caret_cell().unwrap();
+        assert!(cx > 66, "the caret of the right group");
+        let x = rows[cy as usize + 2].chars().position(|c| c == 'p').unwrap() as u16;
+        // Under the word, or moved left to fit the screen, but in the group.
+        assert!(x > 66 && x < cx, "{x} {cx}");
+        app.perform(Action::Editor(EditorAction::PrevGroup));
+        draw(&mut app, 100, 24);
+        assert!(app.completion.is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

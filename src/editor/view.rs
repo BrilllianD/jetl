@@ -139,25 +139,25 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
     if text_area.width == 0 || area.height == 0 {
         return RenderOut { cursor: None, text_area };
     }
-    let follow_key = (buf.sel.head, buf.version, text_area.width, text_area.height);
-    if buf.follow_key != Some(follow_key) {
+    let follow_key = (buf.view.sel.head, buf.version, text_area.width, text_area.height);
+    if buf.view.follow_key != Some(follow_key) {
         ensure_visible(buf, text_area, o);
-        buf.follow_key = Some(follow_key);
+        buf.view.follow_key = Some(follow_key);
     }
 
     let theme = o.theme;
     let rope = &buf.rope;
-    let sel = buf.sel.range();
-    let (cur_line, _) = pos_to_line_col(rope, buf.sel.head);
-    let cur_vcol = visual_col(rope, buf.sel.head, o.tab_width);
-    let hl = buf.syntax.as_mut().map(|s| s.highlights(rope, buf.scroll_line, area.height as usize)).unwrap_or_default();
-    let search = buf.search.as_ref();
-    let pair = super::brackets::pair_at(rope, buf.syntax.as_ref().and_then(|s| s.tree()), buf.sel.head);
+    let sel = buf.view.sel.range();
+    let (cur_line, _) = pos_to_line_col(rope, buf.view.sel.head);
+    let cur_vcol = visual_col(rope, buf.view.sel.head, o.tab_width);
+    let hl = buf.syntax.as_mut().map(|s| s.highlights(rope, buf.view.scroll_line, area.height as usize)).unwrap_or_default();
+    let search = buf.view.search.as_ref();
+    let pair = super::brackets::pair_at(rope, buf.syntax.as_ref().and_then(|s| s.tree()), buf.view.sel.head);
     // Occurrences of the word or selection at the caret, visible lines only.
     // An open find bar owns the match highlighting, so they step aside.
-    let occ = match (o.occurrences && search.is_none()).then(|| super::search::occurrence_target(rope, &buf.sel)).flatten() {
+    let occ = match (o.occurrences && search.is_none()).then(|| super::search::occurrence_target(rope, &buf.view.sel)).flatten() {
         Some((target, whole_word)) => {
-            super::search::occurrences(rope, buf.scroll_line..buf.scroll_line + area.height as usize, &target, whole_word)
+            super::search::occurrences(rope, buf.view.scroll_line..buf.view.scroll_line + area.height as usize, &target, whole_word)
         }
         None => Vec::new(),
     };
@@ -169,7 +169,7 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
 
     for row in 0..area.height {
         let y = area.y + row;
-        let line = buf.scroll_line + row as usize;
+        let line = buf.view.scroll_line + row as usize;
         if line >= rope.len_lines() {
             break;
         }
@@ -204,8 +204,8 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
         }
         let line_start = rope.line_to_char(line);
         let line_end = line_start + line_len_no_eol(rope, line);
-        let max_chars = buf.scroll_col + text_area.width as usize + 256;
-        let scroll_col = buf.scroll_col;
+        let max_chars = buf.view.scroll_col + text_area.width as usize + 256;
+        let scroll_col = buf.view.scroll_col;
         let right = text_area.right();
         layout_line(rope, line, o.tab_width, max_chars, &mut |g, c| {
             if c.col + c.width <= scroll_col {
@@ -307,22 +307,22 @@ pub fn ensure_visible(buf: &mut Buffer, text_area: Rect, o: &RenderOpts) {
     if rows == 0 || cols == 0 {
         return;
     }
-    let (line, _) = pos_to_line_col(&buf.rope, buf.sel.head);
+    let (line, _) = pos_to_line_col(&buf.rope, buf.view.sel.head);
     let so = o.scrolloff.min(rows.saturating_sub(1) / 2);
-    if line < buf.scroll_line + so {
-        buf.scroll_line = line.saturating_sub(so);
-    } else if line + so >= buf.scroll_line + rows {
-        buf.scroll_line = line + so + 1 - rows;
+    if line < buf.view.scroll_line + so {
+        buf.view.scroll_line = line.saturating_sub(so);
+    } else if line + so >= buf.view.scroll_line + rows {
+        buf.view.scroll_line = line + so + 1 - rows;
     }
     let max_scroll = buf.rope.len_lines().saturating_sub(1);
-    buf.scroll_line = buf.scroll_line.min(max_scroll);
+    buf.view.scroll_line = buf.view.scroll_line.min(max_scroll);
 
-    let vcol = visual_col(&buf.rope, buf.sel.head, o.tab_width);
+    let vcol = visual_col(&buf.rope, buf.view.sel.head, o.tab_width);
     let ho = o.hscrolloff.min(cols.saturating_sub(1) / 2);
-    if vcol < buf.scroll_col + ho {
-        buf.scroll_col = vcol.saturating_sub(ho);
-    } else if vcol + ho >= buf.scroll_col + cols {
-        buf.scroll_col = vcol + ho + 1 - cols;
+    if vcol < buf.view.scroll_col + ho {
+        buf.view.scroll_col = vcol.saturating_sub(ho);
+    } else if vcol + ho >= buf.view.scroll_col + cols {
+        buf.view.scroll_col = vcol + ho + 1 - cols;
     }
 }
 

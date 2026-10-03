@@ -7,6 +7,7 @@ use ratatui::layout::Rect;
 
 use super::{App, Ctx, Drag, LastClick};
 use crate::actions::{Action, EditorAction};
+use crate::editor::groups::{EditorHit, GroupId};
 use crate::event::Mouse;
 use crate::ui::focus::PanelId;
 use crate::ui::layout::{Hit, StripButton};
@@ -148,7 +149,8 @@ impl App {
                 MouseEventKind::Drag(_) | MouseEventKind::Moved => match drag {
                     Drag::Splitter(id) => self.layout.drag_splitter(id, m.column, m.row),
                     Drag::Panel(p, area) => self.forward_mouse(p, area, &mouse),
-                    Drag::Tab(id) => self.editor.drag_tab(id, m.column),
+                    Drag::Tab(g, id) => self.editor.drag_tab(g, id, m.column),
+                    Drag::GroupSplitter(n) => self.editor.drag_splitter(n, m.column, m.row),
                 },
                 _ => {}
             }
@@ -156,6 +158,13 @@ impl App {
         }
 
         let hit = self.layout.hit_test(m.column, m.row);
+        // The editor area holds the groups: their splitters, tab bars and
+        // text.
+        if let Hit::Tabs(area) | Hit::Panel(PanelId::Editor, area) = hit
+            && let Some(eh) = self.editor.hit_test(m.column, m.row)
+        {
+            return self.editor_area_mouse(eh, area, &mouse);
+        }
         match m.kind {
             MouseEventKind::Down(button) => match hit {
                 Hit::Splitter(id) if button == MouseButton::Left => self.drag = Some(Drag::Splitter(id)),
@@ -166,36 +175,7 @@ impl App {
                     None => {}
                 },
                 Hit::Status => self.click_status(&mouse),
-                Hit::Tabs(area) => {
-                    self.focus.set(PanelId::Editor);
-                    match self.editor.tab_hits.hit(m.column, m.row) {
-                        // A pinned tab's close button is its pin.
-                        Some(TabHit::Close(i)) if self.editor.is_pinned(i) => {
-                            self.editor.set_pinned(i, false);
-                        }
-                        Some(TabHit::Close(i)) => self.close_tab_index(i),
-                        Some(TabHit::Tab(i)) if button == MouseButton::Middle => self.close_tab_index(i),
-                        Some(TabHit::Tab(i)) if button == MouseButton::Right => {
-                            self.activate_tab(i);
-                            let mut cx = ctx!(self);
-                            self.editor.tab_menu(m.column, m.row, &mut cx);
-                            let fx = cx.effects;
-                            self.apply_effects(fx);
-                        }
-                        // The press activates; dragging before the release
-                        // moves the tab.
-                        Some(TabHit::Tab(i)) => {
-                            self.activate_tab(i);
-                            self.drag = self.editor.buffers.get(i).map(|b| Drag::Tab(b.id));
-                        }
-                        None => {
-                            let mut cx = ctx!(self);
-                            self.editor.handle_tab_mouse(&mouse, area, &mut cx);
-                            let fx = cx.effects;
-                            self.apply_effects(fx);
-                        }
-                    }
-                }
+                Hit::Tabs(_) => self.focus.set(PanelId::Editor),
                 Hit::Panel(p, area) => {
                     self.focus.set(p);
                     if button == MouseButton::Left {
@@ -208,14 +188,63 @@ impl App {
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown | MouseEventKind::ScrollLeft | MouseEventKind::ScrollRight => {
                 if let Hit::Panel(p, area) = hit {
                     self.forward_mouse(p, area, &mouse);
-                } else if let Hit::Tabs(area) = hit {
-                    let mut cx = ctx!(self);
-                    self.editor.handle_tab_mouse(&mouse, area, &mut cx);
-                    let fx = cx.effects;
-                    self.apply_effects(fx);
                 }
             }
             _ => {}
+        }
+    }
+
+    /// A press or the wheel over the editor area (`area` is the layout's
+    /// rect the editor gets mouse events in). A press focuses the group it
+    /// lands in; the wheel scrolls whatever it is over without moving focus.
+    fn editor_area_mouse(&mut self, hit: EditorHit, area: Rect, mouse: &Mouse) {
+        let wheel = matches!(
+            mouse.kind,
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown | MouseEventKind::ScrollLeft | MouseEventKind::ScrollRight
+        );
+        if wheel {
+            match hit {
+                EditorHit::Tab(g, _) | EditorHit::Strip(g) => {
+                    self.editor.handle_tab_mouse(g, mouse);
+                }
+                EditorHit::Body(g) if g == self.editor.focused_group().id => self.forward_mouse(PanelId::Editor, area, mouse),
+                EditorHit::Body(g) => self.editor.scroll_group(g, mouse),
+                EditorHit::Splitter(_) => {}
+            }
+            return;
+        }
+        let MouseEventKind::Down(button) = mouse.kind else { return };
+        self.focus.set(PanelId::Editor);
+        match hit {
+            EditorHit::Splitter(n) if button == MouseButton::Left => self.drag = Some(Drag::GroupSplitter(n)),
+            EditorHit::Splitter(_) => {}
+            // A pinned tab's close button is its pin.
+            EditorHit::Tab(g, TabHit::Close(i)) if self.editor.is_pinned_slot(g, i) => {
+                self.editor.set_pinned_slot(g, i, false);
+            }
+            EditorHit::Tab(g, TabHit::Close(i)) => self.close_tab_slot(g, i),
+            EditorHit::Tab(g, TabHit::Tab(i)) if button == MouseButton::Middle => self.close_tab_slot(g, i),
+            EditorHit::Tab(g, TabHit::Tab(i)) if button == MouseButton::Right => {
+                self.editor.activate_slot(g, i);
+                let mut cx = ctx!(self);
+                self.editor.tab_menu(mouse.x, mouse.y, &mut cx);
+                let fx = cx.effects;
+                self.apply_effects(fx);
+            }
+            // The press activates; dragging before the release moves the
+            // tab.
+            EditorHit::Tab(g, TabHit::Tab(i)) => {
+                self.editor.activate_slot(g, i);
+                self.drag = self.editor.active_buffer().map(|b| Drag::Tab(g, b.id));
+            }
+            EditorHit::Strip(g) => self.editor.focus_group(g),
+            EditorHit::Body(g) => {
+                self.editor.focus_group(g);
+                if button == MouseButton::Left {
+                    self.drag = Some(Drag::Panel(PanelId::Editor, area));
+                }
+                self.forward_mouse(PanelId::Editor, area, mouse);
+            }
         }
     }
 
@@ -256,16 +285,9 @@ impl App {
         }
     }
 
-    pub(super) fn activate_tab(&mut self, i: usize) {
+    pub(super) fn close_tab_slot(&mut self, g: GroupId, slot: usize) {
         let mut cx = ctx!(self);
-        self.editor.activate(i, &mut cx);
-        let fx = cx.effects;
-        self.apply_effects(fx);
-    }
-
-    pub(super) fn close_tab_index(&mut self, i: usize) {
-        let mut cx = ctx!(self);
-        self.editor.close(i, &mut cx);
+        self.editor.close_slot(g, slot, &mut cx);
         let fx = cx.effects;
         self.apply_effects(fx);
     }

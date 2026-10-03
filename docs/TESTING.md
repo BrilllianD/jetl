@@ -83,10 +83,31 @@ press 64 10 4                                 # wheel up; 65 = wheel down
 Leave more than 400 ms between clicks on the same cell unless you want a
 double click.
 
+### Scenario: split panes
+
+At 80x24 and at 120x40, with a long file open (`docs/notes.md` with 80
+lines works):
+
+```sh
+/tmp/tm.sh send-keys -t jetl 'M-\'        # split right: both panes show the file
+/tmp/tm.sh send-keys -t jetl -l 'NEW'; /tmp/tm.sh send-keys -t jetl Enter
+/tmp/tm.sh send-keys -t jetl M-Tab        # the other pane: its caret moved down a line
+/tmp/tm.sh send-keys -t jetl M--          # split down
+/tmp/tm.sh display -p -t jetl '#{cursor_x},#{cursor_y}'   # the cursor is in the focused pane
+```
+
+Then click into another pane's text (it takes focus and the caret), wheel
+over a pane that is not focused (it scrolls, the cursor stays), drag a bar
+between panes (find its column in the captured screen; a pane keeps 20
+columns and 4 rows while there is room), right-click a tab (the menu has
+Split Right/Down, Move to Opposite Group, Unsplit), and run Unsplit and
+Unsplit All from F1. At 80x24 with the Project window open a second split
+right is refused with a toast.
+
 ### Limits under tmux
 
 - No kitty keyboard protocol: Ctrl+Shift+letter, Ctrl+Tab, Ctrl+Enter,
-  Shift+Enter, Shift+F3 and double Shift do not arrive. Use the legacy
+  Shift+Enter, Shift+F3, Alt+Shift+Tab and double Shift do not arrive. Use the legacy
   fallbacks (Ctrl+N for files, Alt+Shift+N for symbols, F1 for actions, Alt+Left/Right for tabs,
   Alt+Enter to commit) or check those keys in foot or kitty.
 - Escape followed quickly by another key arrives as Alt+key; pause between

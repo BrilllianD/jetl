@@ -54,7 +54,7 @@ impl LastSearch {
 impl Editor {
     /// The active buffer's find bar has keyboard focus.
     pub fn find_focused(&self) -> bool {
-        self.active_buffer().and_then(|b| b.search.as_ref()).is_some_and(|s| s.focused)
+        self.active_buffer().and_then(|b| b.view.search.as_ref()).is_some_and(|s| s.focused)
     }
 
     /// Open the find bar (or refocus it). A single-line selection becomes
@@ -63,8 +63,8 @@ impl Editor {
         let last = self.last_search.clone();
         let Some(b) = self.active_buffer_mut() else { return };
         let sel_text = Some(b.selected_text()).filter(|t| !t.is_empty() && !t.contains('\n'));
-        let origin = b.sel.range().start;
-        let s = b.search.get_or_insert_with(|| last.map(|l| l.to_state()).unwrap_or_default());
+        let origin = b.view.sel.range().start;
+        let s = b.view.search.get_or_insert_with(|| last.map(|l| l.to_state()).unwrap_or_default());
         if let Some(t) = sel_text {
             s.query.set_text(&t);
         }
@@ -79,12 +79,12 @@ impl Editor {
     pub(super) fn close_find(&mut self) {
         self.remember_search();
         if let Some(b) = self.active_buffer_mut() {
-            b.search = None;
+            b.view.search = None;
         }
     }
 
     pub(super) fn remember_search(&mut self) {
-        let Some(s) = self.active_buffer().and_then(|b| b.search.as_ref()) else { return };
+        let Some(s) = self.active_buffer().and_then(|b| b.view.search.as_ref()) else { return };
         if !s.query.text.is_empty() {
             self.last_search = Some(LastSearch {
                 query: s.query.text.clone(),
@@ -101,7 +101,7 @@ impl Editor {
         let last = self.last_search.clone();
         let Some(b) = self.active_buffer_mut() else { return };
         let mut temp = None;
-        let s = match b.search.as_mut() {
+        let s = match b.view.search.as_mut() {
             Some(s) => s,
             None => match last {
                 Some(l) => temp.insert(l.to_state()),
@@ -116,7 +116,7 @@ impl Editor {
             cx.notify(Level::Warn, e.clone());
             return;
         }
-        let r = b.sel.range();
+        let r = b.view.sel.range();
         let found = if forward { s.first_from(r.end) } else { s.last_before(r.start) };
         let Some(i) = found else {
             if !s.query.text.is_empty() {
@@ -127,8 +127,8 @@ impl Editor {
         let m = s.select(i);
         let wrapped = if forward { m.start < r.end } else { m.start >= r.start };
         s.origin = m.start;
-        b.sel = Selection::new(m.start, m.end);
-        b.desired_col = None;
+        b.view.sel = Selection::new(m.start, m.end);
+        b.view.desired_col = None;
         b.undo.break_group = true;
         if wrapped {
             cx.notify(Level::Info, "Search wrapped");
@@ -139,9 +139,9 @@ impl Editor {
     /// selection is not a match, only move to the next match.
     pub(super) fn replace_one(&mut self, cx: &mut Ctx) {
         let Some(b) = self.active_buffer_mut() else { return };
-        let Some(s) = b.search.as_mut() else { return };
+        let Some(s) = b.view.search.as_mut() else { return };
         s.update(&b.rope, b.version);
-        let r = b.sel.range();
+        let r = b.view.sel.range();
         let i = s.matches.partition_point(|m| m.start < r.start);
         if s.matches.get(i) != Some(&r) {
             self.find_step(true, cx);
@@ -156,19 +156,19 @@ impl Editor {
         let old = b.rope.slice(r.clone()).to_string();
         let after = r.start + rep.chars().count();
         b.apply(vec![Change::replace(r.start, old, rep)], Selection::point(after), TxKind::Other);
-        let Some(s) = b.search.as_mut() else { return };
+        let Some(s) = b.view.search.as_mut() else { return };
         s.update(&b.rope, b.version);
         if let Some(i) = s.first_from(after) {
             let m = s.select(i);
             s.origin = m.start;
-            b.sel = Selection::new(m.start, m.end);
+            b.view.sel = Selection::new(m.start, m.end);
         }
     }
 
     /// Replace every match in one transaction, so one undo reverts it.
     pub(super) fn replace_all(&mut self, cx: &mut Ctx) {
         let Some(b) = self.active_buffer_mut() else { return };
-        let Some(s) = b.search.as_mut() else { return };
+        let Some(s) = b.view.search.as_mut() else { return };
         s.update(&b.rope, b.version);
         if s.matches.is_empty() {
             cx.notify(Level::Info, "No matches to replace");
@@ -191,7 +191,7 @@ impl Editor {
         let n = changes.len();
         let caret = s.matches[0].start;
         b.apply(changes, Selection::point(caret), TxKind::Other);
-        if let Some(s) = b.search.as_mut() {
+        if let Some(s) = b.view.search.as_mut() {
             s.origin = caret;
             s.update(&b.rope, b.version);
         }
@@ -202,9 +202,9 @@ impl Editor {
     /// does not use, so global shortcuts (Ctrl+S, F3, Alt+1) still dispatch.
     pub fn handle_find_key(&mut self, key: KeyEvent, cx: &mut Ctx) -> bool {
         use EditorAction as E;
-        let Some(ai) = self.active else { return false };
+        let Some(ai) = self.active() else { return false };
         let b = &mut self.buffers[ai];
-        let Some(s) = b.search.as_mut().filter(|s| s.focused) else { return false };
+        let Some(s) = b.view.search.as_mut().filter(|s| s.focused) else { return false };
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let alt = key.modifiers.contains(KeyModifiers::ALT);
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
@@ -251,7 +251,7 @@ impl Editor {
     /// Paste into the focused find bar field (newlines dropped).
     pub fn paste_into_find(&mut self, text: &str) {
         let Some(b) = self.active_buffer_mut() else { return };
-        let Some(s) = b.search.as_mut() else { return };
+        let Some(s) = b.view.search.as_mut() else { return };
         s.active_input().insert_str(&text.replace(['\r', '\n'], ""));
         if s.field == Field::Query {
             refresh_search(b);
@@ -263,10 +263,10 @@ impl Editor {
     pub(super) fn click_find_bar(&mut self, m: &Mouse, cx: &mut Ctx) {
         use EditorAction as E;
         let p = ratatui::layout::Position::new(m.x, m.y);
-        let Some((hit, rect)) = self.find_hits.iter().find(|(_, r)| r.contains(p)).copied() else { return };
+        let Some((hit, rect)) = self.focused_group().find_hits.iter().find(|(_, r)| r.contains(p)).copied() else { return };
         let action = match hit {
             FindHit::QueryField | FindHit::ReplaceField => {
-                if let Some(s) = self.active_buffer_mut().and_then(|b| b.search.as_mut()) {
+                if let Some(s) = self.active_buffer_mut().and_then(|b| b.view.search.as_mut()) {
                     s.focused = true;
                     s.field = if hit == FindHit::QueryField { Field::Query } else { Field::Replace };
                     s.active_input().click(rect, m.x, m.y);
@@ -288,13 +288,13 @@ impl Editor {
 
 /// Recompute matches and select the first one at or after the bar's origin.
 pub(super) fn refresh_search(b: &mut Buffer) {
-    let Some(s) = b.search.as_mut() else { return };
+    let Some(s) = b.view.search.as_mut() else { return };
     s.update(&b.rope, b.version);
     match s.first_from(s.origin) {
         Some(i) => {
             let m = s.select(i);
-            b.sel = Selection::new(m.start, m.end);
-            b.desired_col = None;
+            b.view.sel = Selection::new(m.start, m.end);
+            b.view.desired_col = None;
         }
         None => s.current = None,
     }

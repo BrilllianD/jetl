@@ -499,7 +499,7 @@ mod tests {
     fn accept(text: &str, typed: &str, item: &CompletionItem) -> String {
         let at = text.chars().position(|c| c == '|').unwrap();
         let mut b = Buffer::from_text(1, None, &text.replacen('|', "", 1), false);
-        b.sel = Selection::point(at);
+        b.view.sel = Selection::point(at);
         let origin = Origin::new(1, &b.rope, at);
         for c in typed.chars() {
             if c == '<' {
@@ -508,7 +508,7 @@ mod tests {
                 b.insert(&c.to_string(), TxKind::Typing);
             }
         }
-        let caret = b.sel.head;
+        let caret = b.view.sel.head;
         assert!(origin.prefix(&b.rope, caret).is_some(), "the list applies");
         let acc = edit_for(item, &origin, &b.rope, caret, b.line_ending == crate::editor::buffer::LineEnding::CrLf);
         let before = b.text();

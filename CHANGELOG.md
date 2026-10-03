@@ -68,6 +68,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Reformat Code (Ctrl+Alt+L) and format on save use the server when it formats (with the file's
   indentation). A `[format]` command still wins. A save waits for the server at most
   `[lsp] request_timeout_ms`, then writes the file unformatted.
+- Split editor panes: Alt+\\ splits the editor right and Alt+- splits it down (View > Split
+  Right/Down, or the tab's right-click menu); splits nest. Each pane has its own tabs, and the
+  same file can be open in several panes, each with its own caret, selection, scroll and find
+  bar; an edit in one pane moves the carets in the others with the text. Undo restores the caret
+  of the pane that undoes. Alt+Tab and Alt+Shift+Tab move between panes (View > Next Tab Group;
+  the window manager may take Alt+Tab), a click focuses a pane, the wheel scrolls the pane under
+  the pointer, and the bar between two panes drags. Opening a file puts it in the focused pane.
+  Closing a file's tab in one pane keeps the file open in the others without asking; a pane
+  whose last tab closes goes away. Move Tab to Opposite Group moves the tab to the pane beside
+  it (splitting first when there is one), Unsplit merges the focused pane into its neighbour and
+  Unsplit All merges everything into one. Close Others, Close All but Pinned and Close All act on
+  the focused pane. Sessions restore the panes with their tabs, carets and scroll.
 
 ## [0.1.0] - 2026-10-03
 

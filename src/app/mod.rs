@@ -112,7 +112,9 @@ enum Drag {
     Splitter(SplitterId),
     Panel(PanelId, Rect),
     /// A tab being dragged to a new place in the tab bar.
-    Tab(crate::editor::buffer::BufferId),
+    Tab(crate::editor::groups::GroupId, crate::editor::buffer::BufferId),
+    /// The bar between two editor groups (the split's preorder index).
+    GroupSplitter(usize),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -673,6 +675,19 @@ impl App {
                 self.paste();
                 return;
             }
+            // Group commands take the keyboard to the editor, as in JetBrains.
+            Action::Editor(
+                a @ (EditorAction::SplitRight
+                | EditorAction::SplitDown
+                | EditorAction::NextGroup
+                | EditorAction::PrevGroup
+                | EditorAction::Unsplit
+                | EditorAction::UnsplitAll
+                | EditorAction::MoveTabToOppositeGroup),
+            ) => {
+                self.focus.set(PanelId::Editor);
+                self.editor.handle_action(a, &mut cx)
+            }
             Action::Editor(a) => self.editor.handle_action(a, &mut cx),
             Action::Tree(crate::actions::TreeAction::SelectInProject) => {
                 drop(cx);
@@ -1047,12 +1062,13 @@ pub(crate) mod tests {
         app.handle_msg(load("a.txt"));
         app.handle_msg(load("b.txt"));
         app.perform(Action::Editor(EditorAction::InsertText("dirty ".into())));
-        app.activate_tab(0);
-        app.close_tab_index(1);
+        app.editor.show_slot(0);
+        let g = app.editor.focused_group().id;
+        app.close_tab_slot(g, 1);
         let d = app.dialog.take().expect("dirty close asks");
         // A tab opens next to the active one while the dialog is up.
         app.handle_msg(load("c.txt"));
-        let names = |app: &App| app.editor.buffers.iter().map(|b| b.name.clone()).collect::<Vec<_>>();
+        let names = |app: &App| app.editor.tab_names();
         assert_eq!(names(&app), ["a.txt", "c.txt", "b.txt"]);
         app.finish_dialog(d.id, crate::ui::dialog::DialogResult::Button(0));
         assert_eq!(names(&app), ["a.txt", "c.txt"]);
@@ -2230,9 +2246,9 @@ pub(crate) mod tests {
             let r = app.layout.rects.tabs;
             (r.x..r.right()).map(|x| frame.buffer[(x, r.y)].symbol().to_string()).collect::<String>()
         };
-        let names = |app: &App| app.editor.buffers.iter().map(|b| b.name.clone()).collect::<Vec<_>>();
+        let names = |app: &App| app.editor.tab_names();
         let active = |app: &App| app.editor.active_buffer().unwrap().name.clone();
-        let tab = |app: &App, i| app.editor.tab_hits.rect_of(i).unwrap();
+        let tab = |app: &App, i| app.editor.focused_group().tab_hits.rect_of(i).unwrap();
         let ev = |kind, column, row| MouseEvent { kind, column, row, modifiers: KeyModifiers::NONE };
         let left = MouseButton::Left;
         draw(&mut app);
@@ -2256,13 +2272,13 @@ pub(crate) mod tests {
         assert_eq!(app.menu.as_ref().map(|m| m.items[0].label.as_str()), Some("Pin Tab"));
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert_eq!(names(&app), ["a.txt", "c.txt", "b.txt"]);
-        assert!(app.editor.buffers[0].pinned);
+        assert!(app.editor.focused_group().views[0].pinned);
         assert!(draw(&mut app).starts_with("  a.txt ⚲ "));
         // The only pinned tab cannot move right; Alt+Shift+Left moves b
         // before c.
         app.perform(Action::Editor(EditorAction::MoveTabRight));
         assert_eq!(names(&app), ["a.txt", "c.txt", "b.txt"]);
-        app.activate_tab(2);
+        app.editor.show_slot(2);
         app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::ALT | KeyModifiers::SHIFT));
         assert_eq!(names(&app), ["a.txt", "b.txt", "c.txt"]);
 
@@ -2278,18 +2294,18 @@ pub(crate) mod tests {
         let generation = fresh.workspace.generation;
         fresh.session_loaded(generation, loaded, files);
         assert_eq!(names(&fresh), ["a.txt", "b.txt", "c.txt"]);
-        assert!(fresh.editor.buffers[0].pinned && !fresh.editor.buffers[1].pinned);
+        assert!(fresh.editor.focused_group().views[0].pinned && !fresh.editor.focused_group().views[1].pinned);
         assert_eq!(active(&fresh), "b.txt");
         // Close others keeps the pinned tab.
         fresh.perform(Action::Editor(EditorAction::CloseOtherTabs));
         assert_eq!(names(&fresh), ["a.txt", "b.txt"]);
         // A click on the pin unpins.
         draw(&mut fresh);
-        let (_, pin) = *fresh.editor.tab_hits.close.iter().find(|(i, _)| *i == 0).unwrap();
+        let (_, pin) = *fresh.editor.focused_group().tab_hits.close.iter().find(|(i, _)| *i == 0).unwrap();
         fresh.handle_mouse(ev(MouseEventKind::Down(left), pin.x, pin.y));
         fresh.handle_mouse(ev(MouseEventKind::Up(left), pin.x, pin.y));
         assert_eq!(names(&fresh), ["a.txt", "b.txt"]);
-        assert!(!fresh.editor.buffers[0].pinned);
+        assert!(!fresh.editor.focused_group().views[0].pinned);
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&fresh_dir);
     }
@@ -2303,7 +2319,7 @@ pub(crate) mod tests {
         for n in ["a.txt", "b.txt", "c.txt"] {
             load(&mut app, n, "x\n");
         }
-        let names = |app: &App| app.editor.buffers.iter().map(|b| b.name.clone()).collect::<Vec<_>>();
+        let names = |app: &App| app.editor.tab_names();
         assert_eq!(names(&app), ["b.txt", "c.txt"]);
         // A session keeps its most recent tabs, not its first ones.
         let root = app.workspace.root.clone();
@@ -2320,6 +2336,73 @@ pub(crate) mod tests {
         app.session_loaded(generation, session, (0..3).map(|_| Ok(b"x\n".to_vec())).collect());
         assert_eq!(names(&app), ["x.txt", "y.txt"]);
         assert_eq!(app.editor.active_buffer().unwrap().name, "x.txt");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn split_groups_take_clicks_drags_and_the_wheel() {
+        use crossterm::event::{KeyModifiers, MouseEvent, MouseEventKind};
+        let (mut app, dir) = test_app("split-mouse");
+        let text: String = (0..100).map(|i| format!("line {i}\n")).collect();
+        load(&mut app, "a.txt", &text);
+        load(&mut app, "b.txt", "b\n");
+        app.perform(Action::Editor(EditorAction::SplitRight));
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+        let mut draw = |app: &mut App| {
+            term.draw(|f| crate::ui::render(app, f)).unwrap();
+            app.editor.check_invariants();
+        };
+        draw(&mut app);
+        let ids = app.editor.group_ids();
+        let (left, right) = (ids[0], ids[1]);
+        assert_eq!(app.editor.focused_group().id, right);
+        let ev = |kind, column, row| MouseEvent { kind, column, row, modifiers: KeyModifiers::NONE };
+        let left_btn = MouseButton::Left;
+        let click = |app: &mut App, x, y| {
+            app.handle_mouse(ev(MouseEventKind::Down(left_btn), x, y));
+            app.handle_mouse(ev(MouseEventKind::Up(left_btn), x, y));
+        };
+        // A tab click in the left group shows a.txt there and focuses it.
+        let tab = app.editor.group(left).unwrap().tab_hits.rect_of(0).unwrap();
+        click(&mut app, tab.x + 2, tab.y);
+        assert_eq!((app.editor.focused_group().id, app.editor.active_buffer().unwrap().name.as_str()), (left, "a.txt"));
+        // The right group gets a.txt too; a click in the left text focuses
+        // the left group and puts its caret on the clicked cell.
+        app.perform(Action::Editor(EditorAction::NextGroup));
+        app.perform(Action::Editor(EditorAction::Switcher));
+        assert_eq!(app.editor.active_buffer().unwrap().name, "a.txt");
+        draw(&mut app);
+        let ta = app.editor.group(left).unwrap().text_area;
+        click(&mut app, ta.x + 3, ta.y + 2);
+        assert_eq!(app.editor.focused_group().id, left);
+        assert_eq!(app.editor.active_buffer().unwrap().cursor_line_col(), (2, 3));
+        draw(&mut app);
+        // The wheel over the right group scrolls it; focus stays left.
+        let rt = app.editor.group(right).unwrap().text_area;
+        app.handle_mouse(ev(MouseEventKind::ScrollDown, rt.x + 1, rt.y + 1));
+        draw(&mut app);
+        assert_eq!(app.editor.focused_group().id, left);
+        assert_eq!(app.editor.active_buffer().unwrap().view.scroll_line, 0);
+        // A drag that starts in the left text stays there: past the bar it
+        // selects to the end of the left group's line.
+        app.handle_mouse(ev(MouseEventKind::Down(left_btn), ta.x, ta.y + 4));
+        app.handle_mouse(ev(MouseEventKind::Drag(left_btn), rt.x + 5, ta.y + 4));
+        app.handle_mouse(ev(MouseEventKind::Up(left_btn), rt.x + 5, ta.y + 4));
+        let b = app.editor.active_buffer().unwrap();
+        assert_eq!(b.selected_text(), "line 4");
+        assert_eq!(app.editor.focused_group().id, left);
+        app.perform(Action::Editor(EditorAction::NextGroup));
+        let b = app.editor.active_buffer().unwrap();
+        assert_eq!((b.view.scroll_line, b.view.sel.is_empty()), (3, true), "the right view kept its own scroll and caret");
+        draw(&mut app);
+        // Dragging the bar moves it.
+        let bar = app.editor.group(left).unwrap().last_area.right();
+        let y = ta.y + 5;
+        app.handle_mouse(ev(MouseEventKind::Down(left_btn), bar, y));
+        app.handle_mouse(ev(MouseEventKind::Drag(left_btn), bar + 10, y));
+        app.handle_mouse(ev(MouseEventKind::Up(left_btn), bar + 10, y));
+        draw(&mut app);
+        assert_eq!(app.editor.group(left).unwrap().last_area.right(), bar + 10);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

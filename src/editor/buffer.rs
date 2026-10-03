@@ -10,6 +10,7 @@ use ropey::Rope;
 use super::indent::{FileSettings, IndentStyle};
 use super::selection::{self, Selection, line_len_no_eol, line_range};
 use super::undo::{Change, Transaction, TxKind, UndoStack};
+use super::view_state::{EditLog, LogEdit, ViewState};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LineEnding {
@@ -57,13 +58,14 @@ pub struct Buffer {
     /// `undo.state_id()` when the buffer was last saved or loaded; dirty
     /// means the undo stack is somewhere else.
     pub saved_state: u64,
-    pub sel: Selection,
-    pub desired_col: Option<usize>,
+    /// Caret, selection, scroll and find bar of the live view (the one
+    /// drawn or acted on now); other views of this buffer are parked.
+    pub view: ViewState,
+    /// Text changes since the last frame, for the parked views.
+    pub edit_log: EditLog,
     pub undo: UndoStack,
     pub line_ending: LineEnding,
     pub lossy: bool,
-    pub scroll_line: usize,
-    pub scroll_col: usize,
     /// Set after each apply; cleared by whoever consumes it (syntax, gutter).
     pub changed_since_render: bool,
     pub syntax: Option<super::syntax::Syntax>,
@@ -81,16 +83,6 @@ pub struct Buffer {
     pub diff_base_seq: u64,
     /// The blame column, when shown (`editor.toggle_blame`).
     pub blame: Option<super::blame::BlameState>,
-    pub search: Option<super::search::SearchState>,
-    /// Caret, version and text area size when the view last followed the
-    /// caret. The view only scrolls to the caret when one of them changes,
-    /// so wheel scrolling is not undone on the next frame.
-    pub follow_key: Option<(usize, u64, u16, u16)>,
-    /// Expand-selection history: the selection before each step and the
-    /// one the step produced. Shrink only pops while the current selection
-    /// is still the produced one, so selection changes made elsewhere (mouse,
-    /// undo) cannot restore a stale range. Cleared on every edit.
-    pub expand_stack: Vec<(Selection, Selection)>,
     /// Modification time of the file when it was loaded or last saved;
     /// autosave refuses to write over a file that changed since.
     pub disk_mtime: Option<std::time::SystemTime>,
@@ -109,9 +101,6 @@ pub struct Buffer {
     pub indent: IndentStyle,
     /// The file's `.editorconfig` settings (all unset without one).
     pub settings: FileSettings,
-    /// Pinned tabs come first in the tab bar and survive close others,
-    /// close all but pinned and the tab limit.
-    pub pinned: bool,
     /// Open on a language server: edits are recorded in `lsp_pending`.
     pub lsp_tracked: bool,
     /// Edits since the last `didChange`, in order, as `contentChanges`
@@ -137,13 +126,11 @@ impl Buffer {
             rope: Rope::from_str(text),
             version: 0,
             saved_state: 0,
-            sel: Selection::default(),
-            desired_col: None,
+            view: ViewState::default(),
+            edit_log: EditLog::default(),
             undo: UndoStack::new(),
             line_ending,
             lossy,
-            scroll_line: 0,
-            scroll_col: 0,
             changed_since_render: true,
             syntax: None,
             language_choice: LanguageChoice::Auto,
@@ -153,9 +140,6 @@ impl Buffer {
             diff_base: None,
             diff_base_seq: 0,
             blame: None,
-            search: None,
-            follow_key: None,
-            expand_stack: Vec::new(),
             disk_mtime: None,
             autosave_seen: 0,
             autosave_failed: None,
@@ -163,7 +147,6 @@ impl Buffer {
             bookmarks: BTreeSet::new(),
             indent: IndentStyle::default(),
             settings: FileSettings::default(),
-            pinned: false,
             lsp_tracked: false,
             lsp_pending: Vec::new(),
             lsp_full_resync: false,
@@ -199,12 +182,12 @@ impl Buffer {
     }
 
     pub fn selected_text(&self) -> String {
-        let r = self.sel.range();
+        let r = self.view.sel.range();
         self.rope.slice(r).to_string()
     }
 
     pub fn cursor_line_col(&self) -> (usize, usize) {
-        selection::pos_to_line_col(&self.rope, self.sel.head)
+        selection::pos_to_line_col(&self.rope, self.view.sel.head)
     }
 
     /// Apply a transaction. Change positions refer to the buffer state after
@@ -216,19 +199,19 @@ impl Buffer {
     /// Like [`Buffer::apply`], but the selection after the transaction is
     /// computed from the edited rope, so redo restores the same caret.
     pub fn apply_then(&mut self, changes: Vec<Change>, kind: TxKind, sel_after: impl FnOnce(&Rope) -> Selection) {
-        self.expand_stack.clear();
+        self.view.expand_stack.clear();
         if changes.is_empty() {
-            self.sel = sel_after(&self.rope);
+            self.view.sel = sel_after(&self.rope);
             return;
         }
-        let sel_before = self.sel;
+        let sel_before = self.view.sel;
         for c in &changes {
             self.apply_change(c);
         }
         let mut sel_after = sel_after(&self.rope);
         sel_after.clamp(self.rope.len_chars());
-        self.sel = sel_after;
-        self.desired_col = None;
+        self.view.sel = sel_after;
+        self.view.desired_col = None;
         self.version += 1;
         self.changed_since_render = true;
         self.undo.push(Transaction { id: 0, changes, sel_before, sel_after, at: Instant::now(), kind, line_ending: None });
@@ -237,6 +220,11 @@ impl Buffer {
     fn apply_change(&mut self, c: &Change) {
         let old_len = c.old.chars().count();
         let at = c.at.min(self.rope.len_chars());
+        let new_len = c.new.chars().count();
+        // Parked views follow through the log; a whole-text replacement
+        // (a reload) leaves them nothing to map.
+        let whole = at == 0 && old_len > 0 && old_len == self.rope.len_chars();
+        self.edit_log.push(if whole { LogEdit::Reset } else { LogEdit::Edit { at, old_len, new_len } });
         let marks: Vec<MarkTarget> = self.bookmarks.iter().map(|&l| mark_target(&self.rope, l, at, old_len, c)).collect();
         let end = (at + old_len).min(self.rope.len_chars());
         self.record_lsp_edit(at, end, &c.new);
@@ -258,7 +246,7 @@ impl Buffer {
                 .collect();
         }
         if let Some(s) = &mut self.syntax {
-            s.note_change(&self.rope, at, old_len, c.new.chars().count(), &c.old, &c.new);
+            s.note_change(&self.rope, at, old_len, new_len, &c.old, &c.new);
         }
     }
 
@@ -283,8 +271,8 @@ impl Buffer {
             let inv = c.inverse();
             self.apply_change(&inv);
         }
-        self.sel = tx.sel_before;
-        self.sel.clamp(self.rope.len_chars());
+        self.view.sel = tx.sel_before;
+        self.view.sel.clamp(self.rope.len_chars());
         if let Some((before, _)) = tx.line_ending {
             self.line_ending = before;
         }
@@ -298,8 +286,8 @@ impl Buffer {
         for c in &tx.changes {
             self.apply_change(c);
         }
-        self.sel = tx.sel_after;
-        self.sel.clamp(self.rope.len_chars());
+        self.view.sel = tx.sel_after;
+        self.view.sel.clamp(self.rope.len_chars());
         if let Some((_, after)) = tx.line_ending {
             self.line_ending = after;
         }
@@ -310,14 +298,14 @@ impl Buffer {
 
     /// Replace the selection (or insert at the caret) with `s`.
     pub fn insert(&mut self, s: &str, kind: TxKind) {
-        let r = self.sel.range();
+        let r = self.view.sel.range();
         let old = self.rope.slice(r.clone()).to_string();
         let after = r.start + s.chars().count();
         self.apply(vec![Change::replace(r.start, old, s)], Selection::point(after), kind);
     }
 
     pub fn delete_selection(&mut self) -> bool {
-        let r = self.sel.range();
+        let r = self.view.sel.range();
         if r.is_empty() {
             return false;
         }
@@ -330,7 +318,7 @@ impl Buffer {
         if self.delete_selection() {
             return;
         }
-        let p = self.sel.head;
+        let p = self.view.sel.head;
         if p == 0 {
             return;
         }
@@ -350,18 +338,18 @@ impl Buffer {
         let kind = if c.is_whitespace() { TxKind::Other } else { TxKind::Typing };
         let opener = pairs.iter().find(|(o, _)| *o == c).map(|(_, close)| *close);
         let is_closer = pairs.iter().any(|(_, close)| *close == c);
-        let r = self.sel.range();
+        let r = self.view.sel.range();
         let len = self.rope.len_chars();
         if let (Some(close), false) = (opener, r.is_empty()) {
             let changes = vec![Change::insert(r.end, close.to_string()), Change::insert(r.start, c.to_string())];
-            let sel_after = Selection::new(self.sel.anchor + 1, self.sel.head + 1);
+            let sel_after = Selection::new(self.view.sel.anchor + 1, self.view.sel.head + 1);
             self.apply(changes, sel_after, TxKind::Other);
             return;
         }
-        let p = self.sel.head;
+        let p = self.view.sel.head;
         let next = (p < len).then(|| self.rope.char(p));
         if r.is_empty() && is_closer && next == Some(c) {
-            self.sel = Selection::point(p + 1);
+            self.view.sel = Selection::point(p + 1);
             return;
         }
         if let (Some(close), true, true) = (opener, r.is_empty(), may_pair) {
@@ -378,8 +366,8 @@ impl Buffer {
     /// Backspace between an auto-close pair such as `(|)` deletes both.
     /// Returns false when the caret is not inside a pair.
     pub fn backspace_pair(&mut self, pairs: &[(char, char)]) -> bool {
-        let p = self.sel.head;
-        if !self.sel.is_empty() || p == 0 || p >= self.rope.len_chars() {
+        let p = self.view.sel.head;
+        if !self.view.sel.is_empty() || p == 0 || p >= self.rope.len_chars() {
             return false;
         }
         let around = (self.rope.char(p - 1), self.rope.char(p));
@@ -395,7 +383,7 @@ impl Buffer {
         if self.delete_selection() {
             return;
         }
-        let p = self.sel.head;
+        let p = self.view.sel.head;
         if p >= self.rope.len_chars() {
             return;
         }
@@ -411,7 +399,7 @@ impl Buffer {
         if self.delete_selection() {
             return;
         }
-        let p = self.sel.head;
+        let p = self.view.sel.head;
         let s = selection::prev_word_boundary(&self.rope, p);
         if s == p {
             return;
@@ -424,7 +412,7 @@ impl Buffer {
         if self.delete_selection() {
             return;
         }
-        let p = self.sel.head;
+        let p = self.view.sel.head;
         let e = selection::next_word_boundary(&self.rope, p);
         if e == p {
             return;
@@ -438,7 +426,7 @@ impl Buffer {
     /// pair such as `{|}` the closer moves to its own line at the base
     /// indent. Trailing whitespace before the caret is dropped.
     pub fn newline_smart(&mut self, colon: bool) {
-        let r = self.sel.range();
+        let r = self.view.sel.range();
         let (line, col) = selection::pos_to_line_col(&self.rope, r.start);
         let ls = self.rope.line_to_char(line);
         let indent_n = selection::indent_of(&self.rope, line).min(col);
@@ -470,10 +458,10 @@ impl Buffer {
     /// to the caret: that of the line holding the matching opener. None
     /// when that does not apply or the line already has that indent.
     pub fn closer_indent(&self, c: char, tree: Option<&tree_sitter::Tree>) -> Option<String> {
-        if !matches!(c, '}' | ']' | ')') || !self.sel.is_empty() {
+        if !matches!(c, '}' | ']' | ')') || !self.view.sel.is_empty() {
             return None;
         }
-        let p = self.sel.head;
+        let p = self.view.sel.head;
         let (line, col) = selection::pos_to_line_col(&self.rope, p);
         if selection::indent_of(&self.rope, line) < col {
             return None;
@@ -488,7 +476,7 @@ impl Buffer {
     /// Type closer `c` after replacing the caret line's leading whitespace
     /// with `indent` (from [`Buffer::closer_indent`]), as one transaction.
     pub fn type_dedented(&mut self, c: char, indent: &str) {
-        let p = self.sel.head;
+        let p = self.view.sel.head;
         let ls = self.rope.line_to_char(self.rope.char_to_line(p));
         let old = self.rope.slice(ls..p).to_string();
         let caret = ls + indent.chars().count() + 1;
@@ -507,7 +495,7 @@ impl Buffer {
     }
 
     pub fn delete_line(&mut self) {
-        let r = self.sel.range();
+        let r = self.view.sel.range();
         let (l0, _) = selection::pos_to_line_col(&self.rope, r.start);
         let (l1, _) = selection::pos_to_line_col(&self.rope, r.end);
         let mut range = line_range(&self.rope, l0).start..line_range(&self.rope, l1).end;
@@ -528,7 +516,7 @@ impl Buffer {
     }
 
     pub fn duplicate_line(&mut self) {
-        let r = self.sel.range();
+        let r = self.view.sel.range();
         if !r.is_empty() {
             let text = self.rope.slice(r.clone()).to_string();
             let n = text.chars().count();
@@ -547,13 +535,13 @@ impl Buffer {
     }
 
     pub fn select_all(&mut self) {
-        self.sel = Selection::new(0, self.rope.len_chars());
+        self.view.sel = Selection::new(0, self.rope.len_chars());
     }
 
     pub fn select_line(&mut self) {
         let (line, _) = self.cursor_line_col();
         let r = line_range(&self.rope, line);
-        self.sel = Selection::new(r.start, r.end);
+        self.view.sel = Selection::new(r.start, r.end);
     }
 
     /// Select the smallest syntax node (or bracket contents) around the
@@ -562,42 +550,42 @@ impl Buffer {
         if let Some(s) = &mut self.syntax {
             s.reparse(&self.rope);
         }
-        if self.expand_stack.last().is_some_and(|(_, after)| *after != self.sel) {
-            self.expand_stack.clear();
+        if self.view.expand_stack.last().is_some_and(|(_, after)| *after != self.view.sel) {
+            self.view.expand_stack.clear();
         }
         let tree = self.syntax.as_ref().and_then(|s| s.tree());
-        let Some(r) = super::expand::expand_range(&self.rope, tree, self.sel.range()) else { return };
+        let Some(r) = super::expand::expand_range(&self.rope, tree, self.view.sel.range()) else { return };
         let after = Selection::new(r.start, r.end);
-        self.expand_stack.push((self.sel, after));
-        self.sel = after;
-        self.desired_col = None;
+        self.view.expand_stack.push((self.view.sel, after));
+        self.view.sel = after;
+        self.view.desired_col = None;
         self.undo.break_group = true;
     }
 
     /// Undo the last expand step, if the selection is still what it made.
     pub fn shrink_selection(&mut self) {
-        match self.expand_stack.pop() {
-            Some((before, after)) if after == self.sel => {
-                self.sel = before;
-                self.desired_col = None;
+        match self.view.expand_stack.pop() {
+            Some((before, after)) if after == self.view.sel => {
+                self.view.sel = before;
+                self.view.desired_col = None;
                 self.undo.break_group = true;
             }
-            _ => self.expand_stack.clear(),
+            _ => self.view.expand_stack.clear(),
         }
     }
 
     /// Put the caret at char `pos` (clamped to the text).
     pub fn goto_pos(&mut self, pos: usize) {
-        self.sel = Selection::point(pos.min(self.rope.len_chars()));
-        self.desired_col = None;
+        self.view.sel = Selection::point(pos.min(self.rope.len_chars()));
+        self.view.desired_col = None;
         self.undo.break_group = true;
     }
 
     pub fn goto_line(&mut self, line: usize, col: usize) {
         let line = line.min(self.rope.len_lines().saturating_sub(1));
         let p = selection::line_col_to_pos(&self.rope, line, col);
-        self.sel = Selection::point(p);
-        self.desired_col = None;
+        self.view.sel = Selection::point(p);
+        self.view.desired_col = None;
         self.undo.break_group = true;
     }
 
@@ -605,7 +593,7 @@ impl Buffer {
     /// line comment `token`, as one transaction. Uncomments only when every
     /// non-blank line is already commented.
     pub fn toggle_line_comment(&mut self, token: &str) {
-        let r = self.sel.range();
+        let r = self.view.sel.range();
         let (l0, l1) = self.selected_lines();
         // (line, indent, blank) for each covered line.
         let lines: Vec<(usize, usize, bool)> = (l0..=l1)
@@ -654,10 +642,10 @@ impl Buffer {
     /// Wrap the selection, or the caret line from its indent to the end, in
     /// a block comment, or unwrap it when its trimmed text already is one.
     pub fn toggle_block_comment(&mut self, open: &str, close: &str) {
-        let r = if self.sel.is_empty() {
-            self.line_content(self.rope.char_to_line(self.sel.head), self.rope.char_to_line(self.sel.head))
+        let r = if self.view.sel.is_empty() {
+            self.line_content(self.rope.char_to_line(self.view.sel.head), self.rope.char_to_line(self.view.sel.head))
         } else {
-            self.sel.range()
+            self.view.sel.range()
         };
         self.toggle_block_comment_in(r, open, close);
     }
@@ -698,9 +686,9 @@ impl Buffer {
         } else {
             vec![Change::insert(end, format!(" {close}")), Change::insert(start, format!("{open} "))]
         };
-        let sel_after = if self.sel.is_empty() {
+        let sel_after = if self.view.sel.is_empty() {
             // On a blank line the caret lands between the delimiters.
-            let p = if trimmed.is_empty() { start + n(open) } else { map_through(&changes, self.sel.head, false) };
+            let p = if trimmed.is_empty() { start + n(open) } else { map_through(&changes, self.view.sel.head, false) };
             Selection::point(p)
         } else {
             self.sel_through(&changes)
@@ -756,7 +744,7 @@ impl Buffer {
             return;
         }
         // A caret at a line end stays before the inserted `\r`.
-        let sel = Selection::new(map_through(&changes, self.sel.anchor, true), map_through(&changes, self.sel.head, true));
+        let sel = Selection::new(map_through(&changes, self.view.sel.anchor, true), map_through(&changes, self.view.sel.head, true));
         self.apply(changes, sel, TxKind::Other);
         if let Some(tx) = self.undo.last_mut() {
             tx.line_ending = Some((before, le));
@@ -766,7 +754,7 @@ impl Buffer {
     /// First and last line covered by the selection. A selection ending at
     /// column 0 does not include that line.
     fn selected_lines(&self) -> (usize, usize) {
-        let r = self.sel.range();
+        let r = self.view.sel.range();
         let (l0, _) = selection::pos_to_line_col(&self.rope, r.start);
         let (mut l1, c1) = selection::pos_to_line_col(&self.rope, r.end);
         if l1 > l0 && c1 == 0 {
@@ -779,9 +767,9 @@ impl Buffer {
     /// relative to the text after the previous one). A non-empty selection
     /// starting where text is inserted grows to include it.
     fn sel_through(&self, changes: &[Change]) -> Selection {
-        let r = self.sel.range();
+        let r = self.view.sel.range();
         let (start, end) = (map_through(changes, r.start, !r.is_empty()), map_through(changes, r.end, false));
-        if self.sel.anchor <= self.sel.head { Selection::new(start, end) } else { Selection::new(end, start) }
+        if self.view.sel.anchor <= self.view.sel.head { Selection::new(start, end) } else { Selection::new(end, start) }
     }
 
     /// Indent every non-blank selected line by one level.
@@ -845,14 +833,14 @@ impl Buffer {
             let new = if kept == 0 || next_empty { "" } else { " " };
             changes.push(Change::replace(at, old, new));
         }
-        let sel_after = if self.sel.is_empty() { Selection::point(changes[0].at) } else { self.sel_through(&changes) };
+        let sel_after = if self.view.sel.is_empty() { Selection::point(changes[0].at) } else { self.sel_through(&changes) };
         self.apply(changes, sel_after, TxKind::Other);
     }
 
     /// Uppercase the selection (or the word at the caret) if it has any
     /// lowercase char, otherwise lowercase it.
     pub fn toggle_case(&mut self) {
-        let r = if self.sel.is_empty() { selection::word_at(&self.rope, self.sel.head) } else { self.sel.range() };
+        let r = if self.view.sel.is_empty() { selection::word_at(&self.rope, self.view.sel.head) } else { self.view.sel.range() };
         if r.is_empty() {
             return;
         }
@@ -863,8 +851,11 @@ impl Buffer {
         }
         // Case mapping can change the length (ß -> SS).
         let n = new.chars().count();
-        let sel_after =
-            if self.sel.is_empty() { Selection::point(self.sel.head.min(r.start + n)) } else { Selection::new(r.start, r.start + n) };
+        let sel_after = if self.view.sel.is_empty() {
+            Selection::point(self.view.sel.head.min(r.start + n))
+        } else {
+            Selection::new(r.start, r.start + n)
+        };
         self.apply(vec![Change::replace(r.start, old, new)], sel_after, TxKind::Other);
     }
 
@@ -894,7 +885,7 @@ impl Buffer {
         }
         let shift = neighbour_len + eol.chars().count();
         let moved = |p: usize| if up { p - shift } else { p + shift };
-        let sel_after = Selection::new(moved(self.sel.anchor), moved(self.sel.head));
+        let sel_after = Selection::new(moved(self.view.sel.anchor), moved(self.view.sel.head));
         self.apply(vec![Change::replace(range.start, old, new)], sel_after, TxKind::Other);
     }
 
@@ -961,7 +952,7 @@ impl Buffer {
         }
         // Positions at an insertion stay before it: a caret at the end of
         // the file does not jump onto the added empty line.
-        let sel = Selection::new(map_through(&changes, self.sel.anchor, true), map_through(&changes, self.sel.head, true));
+        let sel = Selection::new(map_through(&changes, self.view.sel.anchor, true), map_through(&changes, self.view.sel.head, true));
         self.apply(changes, sel, TxKind::Other);
     }
 
@@ -1027,13 +1018,19 @@ fn mark_target(rope: &Rope, line: usize, at: usize, old_len: usize, c: &Change) 
 /// exactly where text is inserted stays before the insertion.
 fn map_through(changes: &[Change], mut p: usize, stay_at_insert: bool) -> usize {
     for c in changes {
-        let old_n = c.old.chars().count();
-        if p < c.at || (p == c.at && stay_at_insert && old_n == 0) {
-            continue;
-        }
-        p = if p >= c.at + old_n { p - old_n + c.new.chars().count() } else { c.at };
+        p = map_one(p, c.at, c.old.chars().count(), c.new.chars().count(), stay_at_insert);
     }
     p
+}
+
+/// Map position `p` through the replacement of `old_n` chars at `at` by
+/// `new_n` chars, as [`map_through`] does: a position inside the replaced
+/// text moves to its start.
+pub fn map_one(p: usize, at: usize, old_n: usize, new_n: usize, stay_at_insert: bool) -> usize {
+    if p < at || (p == at && stay_at_insert && old_n == 0) {
+        return p;
+    }
+    if p >= at + old_n { p - old_n + new_n } else { at }
 }
 
 #[cfg(test)]
@@ -1056,7 +1053,7 @@ mod tests {
         assert_eq!(buf.text(), "");
         assert!(buf.redo());
         assert_eq!(buf.text(), "hello");
-        assert_eq!(buf.sel.head, 5);
+        assert_eq!(buf.view.sel.head, 5);
     }
 
     #[test]
@@ -1069,14 +1066,14 @@ mod tests {
             x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
             let len = buf.len_chars();
             let pos = (x >> 33) as usize % (len + 1);
-            buf.sel = Selection::point(pos);
+            buf.view.sel = Selection::point(pos);
             buf.undo.break_group = true;
             let n = buf.undo.len();
             match i % 4 {
                 0 => buf.insert(&format!("w{i} "), TxKind::Other),
                 1 => buf.backspace(),
                 2 => {
-                    buf.sel = Selection::new(pos, (pos + 3).min(len));
+                    buf.view.sel = Selection::new(pos, (pos + 3).min(len));
                     buf.delete_selection();
                 }
                 _ => buf.newline_smart(false),
@@ -1103,7 +1100,7 @@ mod tests {
     fn undo_back_to_saved_text_is_clean() {
         let mut buf = b("abc");
         assert!(!buf.dirty());
-        buf.sel = Selection::point(3);
+        buf.view.sel = Selection::point(3);
         buf.insert("d", TxKind::Typing);
         assert!(buf.dirty());
         assert!(buf.undo());
@@ -1164,11 +1161,11 @@ mod tests {
             let mut buf = b("alpha\n  beta\ngamma");
             buf.goto_line(1, 3);
             op(&mut buf);
-            let (text, sel) = (buf.text(), buf.sel);
+            let (text, sel) = (buf.text(), buf.view.sel);
             assert!(buf.undo(), "{name}");
             assert!(buf.redo(), "{name}");
             assert_eq!(buf.text(), text, "{name}");
-            assert_eq!(buf.sel, sel, "{name}");
+            assert_eq!(buf.view.sel, sel, "{name}");
         }
     }
 
@@ -1177,10 +1174,10 @@ mod tests {
     #[test]
     fn auto_close_wraps_selection() {
         let mut buf = b("let x = a + b;");
-        buf.sel = Selection::new(13, 8);
+        buf.view.sel = Selection::new(13, 8);
         buf.type_char('(', PAIRS, true);
         assert_eq!(buf.text(), "let x = (a + b);");
-        assert_eq!(buf.sel, Selection::new(14, 9), "selection stays on the wrapped text");
+        assert_eq!(buf.view.sel, Selection::new(14, 9), "selection stays on the wrapped text");
         assert!(buf.undo());
         assert_eq!(buf.text(), "let x = a + b;");
     }
@@ -1188,16 +1185,16 @@ mod tests {
     #[test]
     fn auto_close_pairs_and_steps_over() {
         let mut buf = b("f\n");
-        buf.sel = Selection::point(1);
+        buf.view.sel = Selection::point(1);
         buf.type_char('(', PAIRS, true);
         assert_eq!(buf.text(), "f()\n");
-        assert_eq!(buf.sel.head, 2);
+        assert_eq!(buf.view.sel.head, 2);
         buf.type_char('x', PAIRS, true);
         buf.type_char(')', PAIRS, true);
         assert_eq!(buf.text(), "f(x)\n", "closer at the caret is stepped over");
-        assert_eq!(buf.sel.head, 4);
+        assert_eq!(buf.view.sel.head, 4);
         // Before a word char the opener is typed alone.
-        buf.sel = Selection::point(0);
+        buf.view.sel = Selection::point(0);
         buf.type_char('[', PAIRS, true);
         assert_eq!(buf.text(), "[f(x)\n");
         // Not when the caller says the caret is inside a string or comment.
@@ -1214,15 +1211,15 @@ mod tests {
         buf.type_char('a', PAIRS, true);
         buf.type_char('"', PAIRS, true);
         assert_eq!(buf.text(), "\"a\"");
-        assert_eq!(buf.sel.head, 3);
+        assert_eq!(buf.view.sel.head, 3);
         let mut buf = b("don");
-        buf.sel = Selection::point(3);
+        buf.view.sel = Selection::point(3);
         buf.type_char('\'', PAIRS, true);
         assert_eq!(buf.text(), "don'", "apostrophe after a word char");
         // Rust has no '' pair, so lifetimes type plainly.
         let rust = crate::editor::brackets::pairs(Some("rust"));
         let mut buf = b("&");
-        buf.sel = Selection::point(1);
+        buf.view.sel = Selection::point(1);
         buf.type_char('\'', rust, true);
         assert_eq!(buf.text(), "&'");
     }
@@ -1234,11 +1231,11 @@ mod tests {
         assert!(buf.backspace_pair(PAIRS));
         assert_eq!(buf.text(), "");
         let mut buf = b("()");
-        buf.sel = Selection::point(1);
+        buf.view.sel = Selection::point(1);
         assert!(!buf.backspace_pair(&[]));
         buf.type_char(')', &[], true);
         assert_eq!(buf.text(), "())", "auto_close = false: no step-over");
-        buf.sel = Selection::point(0);
+        buf.view.sel = Selection::point(0);
         buf.type_char('(', &[], true);
         assert_eq!(buf.text(), "(())", "auto_close = false: no pair");
     }
@@ -1248,10 +1245,10 @@ mod tests {
         let original = "fn a() {\n    x;\n\n\ty;\n}\n";
         let mut buf = b(original);
         // Lines 1-3; the selection ends at column 0 of line 4.
-        buf.sel = Selection::new(buf.rope.line_to_char(1), buf.rope.line_to_char(4));
+        buf.view.sel = Selection::new(buf.rope.line_to_char(1), buf.rope.line_to_char(4));
         buf.indent_lines();
         assert_eq!(buf.text(), "fn a() {\n        x;\n\n    \ty;\n}\n", "blank line untouched");
-        assert_eq!(buf.sel.range(), buf.rope.line_to_char(1)..buf.rope.line_to_char(4), "selection covers the same lines");
+        assert_eq!(buf.view.sel.range(), buf.rope.line_to_char(1)..buf.rope.line_to_char(4), "selection covers the same lines");
         assert_eq!(buf.undo.len(), 1);
         buf.unindent_lines();
         assert_eq!(buf.text(), original);
@@ -1283,7 +1280,7 @@ mod tests {
         assert_eq!(buf.text(), "a\tb\n", "a tab whatever the column");
         let mut buf = b("x\n  y\n");
         buf.indent = IndentStyle::tabs(4);
-        buf.sel = Selection::new(0, buf.rope.line_to_char(2));
+        buf.view.sel = Selection::new(0, buf.rope.line_to_char(2));
         buf.indent_lines();
         assert_eq!(buf.text(), "\tx\n\t  y\n");
         buf.unindent_lines();
@@ -1339,14 +1336,14 @@ mod tests {
     fn move_selection_keeps_its_range() {
         let mut buf = b("x\na\nb\ny\n");
         // Lines 1-2, ending at column 0 of line 3.
-        buf.sel = Selection::new(buf.rope.line_to_char(3), buf.rope.line_to_char(1));
+        buf.view.sel = Selection::new(buf.rope.line_to_char(3), buf.rope.line_to_char(1));
         buf.move_lines(false);
         assert_eq!(buf.text(), "x\ny\na\nb\n");
-        assert_eq!(buf.sel, Selection::new(buf.rope.line_to_char(4), buf.rope.line_to_char(2)));
+        assert_eq!(buf.view.sel, Selection::new(buf.rope.line_to_char(4), buf.rope.line_to_char(2)));
         buf.move_lines(true);
         buf.move_lines(true);
         assert_eq!(buf.text(), "a\nb\nx\ny\n");
-        assert_eq!(buf.sel.range(), 0..4);
+        assert_eq!(buf.view.sel.range(), 0..4);
     }
 
     #[test]
@@ -1355,12 +1352,12 @@ mod tests {
         buf.goto_line(0, 3);
         buf.join_lines();
         assert_eq!(buf.text(), "let a = foo( bar);\n\n  x\n");
-        assert_eq!(buf.sel.head, 12, "caret at the join point");
+        assert_eq!(buf.view.sel.head, 12, "caret at the join point");
         // Next to an empty line no space is added.
         buf.join_lines();
         assert_eq!(buf.text(), "let a = foo( bar);\n  x\n");
         let mut buf = b("a\n b\n  c\nd\n");
-        buf.sel = Selection::new(0, buf.rope.line_to_char(2) + 1);
+        buf.view.sel = Selection::new(0, buf.rope.line_to_char(2) + 1);
         buf.join_lines();
         assert_eq!(buf.text(), "a b c\nd\n");
         assert_eq!(buf.undo.len(), 1);
@@ -1376,14 +1373,14 @@ mod tests {
         buf.goto_line(0, 2);
         buf.toggle_case();
         assert_eq!(buf.text(), "HELLOWORLD foo");
-        assert_eq!(buf.sel.head, 2);
+        assert_eq!(buf.view.sel.head, 2);
         buf.toggle_case();
         assert_eq!(buf.text(), "helloworld foo");
         let mut buf = b("straße");
         buf.select_all();
         buf.toggle_case();
         assert_eq!(buf.text(), "STRASSE");
-        assert_eq!(buf.sel.range(), 0..7, "selection covers the longer text");
+        assert_eq!(buf.view.sel.range(), 0..7, "selection covers the longer text");
     }
 
     #[test]
@@ -1412,11 +1409,11 @@ mod tests {
         let original = "    a\n\n  b\n      c\nd\n";
         let mut buf = b(original);
         // Lines 0-3; the selection ends at column 0 of line 4, which is left out.
-        buf.sel = Selection::new(0, buf.rope.line_to_char(4));
+        buf.view.sel = Selection::new(0, buf.rope.line_to_char(4));
         buf.toggle_line_comment("//");
         assert_eq!(buf.text(), "  //   a\n\n  // b\n  //     c\nd\n");
         assert_eq!(buf.undo.len(), 1);
-        assert_eq!(buf.sel.range(), 0..buf.rope.line_to_char(4));
+        assert_eq!(buf.view.sel.range(), 0..buf.rope.line_to_char(4));
         buf.toggle_line_comment("//");
         assert_eq!(buf.text(), original);
         assert!(buf.undo());
@@ -1432,7 +1429,7 @@ mod tests {
         assert_eq!(buf.text(), "# let a;\nlet b;\n");
         assert_eq!(buf.cursor_line_col(), (1, 5));
         // Partially commented selection: comment everything again.
-        buf.sel = Selection::new(0, buf.len_chars());
+        buf.view.sel = Selection::new(0, buf.len_chars());
         buf.toggle_line_comment("#");
         assert_eq!(buf.text(), "# # let a;\n# let b;\n");
     }
@@ -1441,11 +1438,11 @@ mod tests {
     fn block_comment_wraps_and_unwraps_selection() {
         let mut buf = b("let a = f(x, y);\n");
         // Select "f(x, y)" backwards; the selection grows to the delimiters.
-        buf.sel = Selection::new(15, 8);
+        buf.view.sel = Selection::new(15, 8);
         buf.toggle_block_comment("/*", "*/");
         assert_eq!(buf.text(), "let a = /* f(x, y) */;\n");
         assert_eq!(buf.selected_text(), "/* f(x, y) */");
-        assert_eq!(buf.sel.head, 8, "direction kept");
+        assert_eq!(buf.view.sel.head, 8, "direction kept");
         assert_eq!(buf.undo.len(), 1);
         buf.toggle_block_comment("/*", "*/");
         assert_eq!(buf.text(), "let a = f(x, y);\n");
@@ -1453,7 +1450,7 @@ mod tests {
         // Surrounding whitespace in the selection is left outside; no inner
         // spaces to drop is fine too.
         let mut buf = b("<!--x--> y");
-        buf.sel = Selection::new(0, 9);
+        buf.view.sel = Selection::new(0, 9);
         buf.toggle_block_comment("<!--", "-->");
         assert_eq!(buf.text(), "x y");
         assert_eq!(buf.selected_text(), "x ");
@@ -1494,13 +1491,13 @@ mod tests {
     #[test]
     fn newline_after_opener_indents() {
         let mut buf = b("    foo(  ");
-        buf.sel = Selection::point(10);
+        buf.view.sel = Selection::point(10);
         buf.newline_smart(false);
         assert_eq!(buf.text(), "    foo(\n        ", "trailing whitespace dropped, one level deeper");
         assert_eq!(buf.cursor_line_col(), (1, 8));
         let mut buf = b("\tx = [");
         buf.indent = IndentStyle::tabs(4);
-        buf.sel = Selection::point(6);
+        buf.view.sel = Selection::point(6);
         buf.newline_smart(false);
         assert_eq!(buf.text(), "\tx = [\n\t\t", "tab indent adds a tab");
     }
@@ -1508,7 +1505,7 @@ mod tests {
     #[test]
     fn newline_between_pair_splits_it() {
         let mut buf = b("  if x {}");
-        buf.sel = Selection::point(8);
+        buf.view.sel = Selection::point(8);
         buf.newline_smart(false);
         assert_eq!(buf.text(), "  if x {\n      \n  }");
         assert_eq!(buf.cursor_line_col(), (1, 6));
@@ -1517,7 +1514,7 @@ mod tests {
         assert_eq!(buf.text(), "  if x {}");
         // A non-matching closer is left on the caret line.
         let mut buf = b("f(]");
-        buf.sel = Selection::point(2);
+        buf.view.sel = Selection::point(2);
         buf.newline_smart(false);
         assert_eq!(buf.text(), "f(\n    ]");
     }
@@ -1525,11 +1522,11 @@ mod tests {
     #[test]
     fn newline_colon_only_when_asked() {
         let mut buf = b("def f():");
-        buf.sel = Selection::point(8);
+        buf.view.sel = Selection::point(8);
         buf.newline_smart(true);
         assert_eq!(buf.text(), "def f():\n    ");
         let mut buf = b("label:");
-        buf.sel = Selection::point(6);
+        buf.view.sel = Selection::point(6);
         buf.newline_smart(false);
         assert_eq!(buf.text(), "label:\n");
     }
@@ -1537,19 +1534,19 @@ mod tests {
     #[test]
     fn newline_copies_indent() {
         let mut buf = b("    foo\nbar");
-        buf.sel = Selection::point(7);
+        buf.view.sel = Selection::point(7);
         buf.newline_smart(false);
         assert_eq!(buf.text(), "    foo\n    \nbar");
         assert_eq!(buf.cursor_line_col(), (1, 4));
         // Caret inside the indent: the rest of the line keeps its column.
         let mut buf = b("    foo");
-        buf.sel = Selection::point(2);
+        buf.view.sel = Selection::point(2);
         buf.newline_smart(false);
         assert_eq!(buf.text(), "\n    foo");
         assert_eq!(buf.cursor_line_col(), (1, 2));
         // A selection is replaced.
         let mut buf = b("  ab cd");
-        buf.sel = Selection::new(4, 5);
+        buf.view.sel = Selection::new(4, 5);
         buf.newline_smart(false);
         assert_eq!(buf.text(), "  ab\n  cd");
     }
@@ -1558,7 +1555,7 @@ mod tests {
     fn closer_on_blank_line_dedents() {
         let mut buf = b("fn f() {\n    if x {\n        a();\n        ");
         let end = buf.len_chars();
-        buf.sel = Selection::point(end);
+        buf.view.sel = Selection::point(end);
         let indent = buf.closer_indent('}', None).expect("dedent applies");
         assert_eq!(indent, "    ");
         buf.type_dedented('}', &indent);
@@ -1568,10 +1565,10 @@ mod tests {
         assert_eq!(buf.text(), "fn f() {\n    if x {\n        a();\n        ");
         // Not on a line with text before the caret, nor at the right indent already.
         let mut buf = b("{\n  a");
-        buf.sel = Selection::point(5);
+        buf.view.sel = Selection::point(5);
         assert_eq!(buf.closer_indent('}', None), None);
         let mut buf = b("  {\n  ");
-        buf.sel = Selection::point(6);
+        buf.view.sel = Selection::point(6);
         assert_eq!(buf.closer_indent('}', None), None);
         assert_eq!(buf.closer_indent('x', None), None);
     }
@@ -1580,13 +1577,13 @@ mod tests {
     fn crlf_newline_smart() {
         let mut buf = b("a {}\r\nb");
         assert_eq!(buf.line_ending, LineEnding::CrLf);
-        buf.sel = Selection::point(3);
+        buf.view.sel = Selection::point(3);
         buf.indent = IndentStyle::spaces(2);
         buf.newline_smart(false);
         assert_eq!(buf.text(), "a {\r\n  \r\n}\r\nb");
         assert_eq!(buf.cursor_line_col(), (1, 2));
         let mut buf = b("x {\r\n    \r\ny");
-        buf.sel = Selection::point(9);
+        buf.view.sel = Selection::point(9);
         let indent = buf.closer_indent('}', None).unwrap();
         buf.type_dedented('}', &indent);
         assert_eq!(buf.text(), "x {\r\n}\r\ny");
@@ -1606,7 +1603,7 @@ mod tests {
         let def = super::super::syntax::language_for_name("rust").unwrap();
         buf.syntax = super::super::syntax::Syntax::new(def, &crate::config::theme::Theme::default());
         let caret = src.find("oo(").unwrap();
-        buf.sel = Selection::point(caret);
+        buf.view.sel = Selection::point(caret);
         assert_eq!(grow(&mut buf), "foo");
         assert_eq!(grow(&mut buf), "foo(bar)");
         assert_eq!(grow(&mut buf), "foo(bar);");
@@ -1615,10 +1612,10 @@ mod tests {
         assert_eq!(grow(&mut buf), "{\n    let a = 1;\n    foo(bar);\n}");
         assert_eq!(grow(&mut buf), "fn main() {\n    let a = 1;\n    foo(bar);\n}");
         assert_eq!(grow(&mut buf), src);
-        let top = buf.sel;
+        let top = buf.view.sel;
         buf.expand_selection();
-        assert_eq!(buf.sel, top, "nothing larger than the whole text");
-        assert_eq!(buf.sel.anchor, 0, "anchor at start, head at end");
+        assert_eq!(buf.view.sel, top, "nothing larger than the whole text");
+        assert_eq!(buf.view.sel.anchor, 0, "anchor at start, head at end");
         for want in [
             "fn main() {\n    let a = 1;\n    foo(bar);\n}",
             "{\n    let a = 1;\n    foo(bar);\n}",
@@ -1631,12 +1628,12 @@ mod tests {
             assert_eq!(buf.selected_text(), want);
         }
         buf.shrink_selection();
-        assert_eq!(buf.sel, Selection::point(caret));
+        assert_eq!(buf.view.sel, Selection::point(caret));
         buf.shrink_selection();
-        assert_eq!(buf.sel, Selection::point(caret), "empty stack is a no-op");
+        assert_eq!(buf.view.sel, Selection::point(caret), "empty stack is a no-op");
         // Caret right after an identifier starts from it; argument parens
         // get their contents first only when that is larger.
-        buf.sel = Selection::point(src.find("bar").unwrap() + 3);
+        buf.view.sel = Selection::point(src.find("bar").unwrap() + 3);
         assert_eq!(grow(&mut buf), "bar");
         assert_eq!(grow(&mut buf), "(bar)");
     }
@@ -1644,7 +1641,7 @@ mod tests {
     #[test]
     fn expand_plain_text_and_stale_stack() {
         let mut buf = b("one two\nthree\n");
-        buf.sel = Selection::point(5);
+        buf.view.sel = Selection::point(5);
         assert_eq!(grow(&mut buf), "two");
         assert_eq!(grow(&mut buf), "one two\n");
         assert_eq!(grow(&mut buf), "one two\nthree\n");
@@ -1652,32 +1649,32 @@ mod tests {
         assert_eq!(buf.selected_text(), "one two\n");
         // A selection changed outside expand/shrink (e.g. a mouse drag)
         // invalidates the stack instead of jumping back.
-        buf.sel = Selection::new(8, 10);
+        buf.view.sel = Selection::new(8, 10);
         buf.shrink_selection();
-        assert_eq!(buf.sel, Selection::new(8, 10));
-        assert!(buf.expand_stack.is_empty());
+        assert_eq!(buf.view.sel, Selection::new(8, 10));
+        assert!(buf.view.expand_stack.is_empty());
         // Edits clear it too.
-        buf.sel = Selection::point(1);
+        buf.view.sel = Selection::point(1);
         buf.expand_selection();
         buf.insert("x", TxKind::Other);
-        assert!(buf.expand_stack.is_empty());
+        assert!(buf.view.expand_stack.is_empty());
         let mut buf = b("");
         buf.expand_selection();
-        assert!(buf.expand_stack.is_empty(), "nothing to expand in an empty buffer");
+        assert!(buf.view.expand_stack.is_empty(), "nothing to expand in an empty buffer");
     }
 
     #[test]
     fn prepare_for_save_trims_except_caret_line() {
         let mut buf = b("a  \nb\t \nc  \nd");
-        buf.sel = Selection::point(7);
+        buf.view.sel = Selection::point(7);
         buf.prepare_for_save(true, false);
         assert_eq!(buf.text(), "a\nb\t \nc\nd", "caret line 1 keeps its whitespace");
-        assert_eq!(buf.sel, Selection::point(5), "caret mapped past the trim on line 0");
+        assert_eq!(buf.view.sel, Selection::point(5), "caret mapped past the trim on line 0");
         assert!(buf.undo());
         assert_eq!(buf.text(), "a  \nb\t \nc  \nd", "one transaction restores all of it");
         // CRLF: the `\r` of a break is not trailing whitespace.
         let mut buf = b("x \r\ny\r\n");
-        buf.sel = Selection::point(8);
+        buf.view.sel = Selection::point(8);
         buf.prepare_for_save(true, true);
         assert_eq!(buf.text(), "x\r\ny\r\n");
     }
@@ -1685,10 +1682,10 @@ mod tests {
     #[test]
     fn prepare_for_save_adds_final_newline_once() {
         let mut buf = b("a\nb");
-        buf.sel = Selection::point(3);
+        buf.view.sel = Selection::point(3);
         buf.prepare_for_save(true, true);
         assert_eq!(buf.text(), "a\nb\n");
-        assert_eq!(buf.sel, Selection::point(3), "caret stays before the added break");
+        assert_eq!(buf.view.sel, Selection::point(3), "caret stays before the added break");
         let n = buf.undo.len();
         buf.prepare_for_save(true, true);
         assert_eq!(buf.text(), "a\nb\n");
@@ -1804,7 +1801,7 @@ mod tests {
         buf.set_bookmarks(&[2, 3]);
         // Caret at the end of line 2 ("    x").
         buf.goto_line(2, 5);
-        let caret = buf.sel.head;
+        let caret = buf.view.sel.head;
         buf.convert_line_endings(LineEnding::Lf);
         assert_eq!(buf.text(), "fn a() {\n\n    x\n}\rtail\n");
         assert_eq!(buf.line_ending, LineEnding::Lf);
@@ -1823,7 +1820,7 @@ mod tests {
         assert!(buf.undo());
         assert_eq!(buf.text(), src);
         assert_eq!(buf.line_ending, LineEnding::CrLf);
-        assert_eq!(buf.sel.head, caret);
+        assert_eq!(buf.view.sel.head, caret);
         assert!(!buf.dirty());
         assert!(buf.redo());
         assert_eq!(buf.line_ending, LineEnding::Lf);

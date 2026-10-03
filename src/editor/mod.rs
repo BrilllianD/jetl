@@ -6,6 +6,7 @@ pub mod buffer;
 pub mod expand;
 mod find;
 pub mod format;
+pub mod groups;
 pub mod gutter;
 pub mod indent;
 mod io;
@@ -13,9 +14,11 @@ pub use io::DiskChange;
 pub mod nav;
 pub mod search;
 pub mod selection;
+pub mod split;
 pub mod syntax;
 pub mod undo;
 pub mod view;
+pub mod view_state;
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -26,19 +29,19 @@ use ratatui::layout::Rect;
 use ratatui::style::Style;
 use unicode_width::UnicodeWidthStr;
 
-use crate::actions::{Action, EditorAction};
+use crate::actions::EditorAction;
 use crate::app::Ctx;
 use crate::config::theme::Theme;
 use crate::config::{Autosave, Config};
 use crate::event::{Effect, Level, Mouse};
 use crate::ui::dialog::{Dialog, DialogId};
-use crate::ui::menu::{ContextMenu, MenuItem};
-use crate::ui::tabs::TabHits;
 use buffer::{Buffer, BufferId};
-use find::{FindHit, LastSearch, refresh_search, render_find_bar};
+use find::{LastSearch, refresh_search, render_find_bar};
+use groups::{GroupId, TabGroup};
 use nav::{NavPos, NavRing};
 use search::Field;
 use selection::{Selection, apply_motion, line_range, word_at};
+use split::{SplitNode, SplitterHit};
 use undo::TxKind;
 use view::{RenderOpts, col_to_char};
 
@@ -50,15 +53,19 @@ enum DragMode {
 }
 
 pub struct Editor {
+    /// The open documents; tab order lives in the groups.
     pub buffers: Vec<Buffer>,
-    pub active: Option<usize>,
+    /// The panes; at least one, each a leaf of `tree`.
+    groups: Vec<TabGroup>,
+    tree: SplitNode,
+    /// The bars between the groups as last drawn.
+    splitters: Vec<SplitterHit>,
+    /// The group keys and the mouse act on.
+    focused: GroupId,
+    next_group: GroupId,
     /// Most recently used buffer ids, most recent first.
     mru: Vec<BufferId>,
     next_id: BufferId,
-    pub tab_hits: TabHits,
-    tab_scroll: usize,
-    pub(crate) text_area: Rect,
-    last_area: Rect,
     tab_width: usize,
     scrolloff: usize,
     hscrolloff: usize,
@@ -70,7 +77,8 @@ pub struct Editor {
     autosave_idle: Duration,
     /// When a buffer version last changed, as seen by [`Editor::autosave_due`].
     last_edit: Instant,
-    drag: Option<DragMode>,
+    /// A text drag and the group it started in.
+    drag: Option<(GroupId, DragMode)>,
     /// Files larger than this open without syntax highlighting.
     max_highlight_bytes: usize,
     /// `editor.max_tabs`: see [`Editor::enforce_tab_limit`].
@@ -78,16 +86,11 @@ pub struct Editor {
     /// `[format]`: formatters per language and whether saves run them.
     pub format: crate::config::FormatConfig,
     last_search: Option<LastSearch>,
-    find_area: Rect,
-    find_hits: Vec<(FindHit, Rect)>,
     /// Back/forward history of caret positions.
     nav: NavRing,
     /// A closed file being reopened by back/forward and the caret to put
     /// in it once it loads.
     pending_nav: Option<(PathBuf, usize)>,
-    /// The screen cell of the active buffer's caret as last drawn (`None`
-    /// when it is scrolled out of view); popups at the caret anchor there.
-    pub caret_cell: Option<(u16, u16)>,
 }
 
 /// Shown in place of a pinned tab's close button (one column wide).
@@ -101,20 +104,20 @@ const INDENT_CHOICES: [usize; 4] = [0, 2, 4, 8];
 const NAV_JUMP_LINES: usize = 10;
 
 fn nav_pos(b: &Buffer) -> NavPos {
-    NavPos { id: b.id, path: b.path.clone(), pos: b.sel.head }
+    NavPos { id: b.id, path: b.path.clone(), pos: b.view.sel.head }
 }
 
 impl Editor {
     pub fn new(config: &Config) -> Self {
         Self {
             buffers: Vec::new(),
-            active: None,
+            groups: vec![TabGroup::new(0)],
+            tree: SplitNode::Leaf(0),
+            splitters: Vec::new(),
+            focused: 0,
+            next_group: 1,
             mru: Vec::new(),
             next_id: 1,
-            tab_hits: TabHits::default(),
-            tab_scroll: 0,
-            text_area: Rect::default(),
-            last_area: Rect::default(),
             tab_width: config.editor.tab_width,
             scrolloff: config.editor.scrolloff,
             hscrolloff: config.editor.hscrolloff,
@@ -130,19 +133,16 @@ impl Editor {
             max_tabs: config.editor.max_tabs,
             format: config.format.clone(),
             last_search: None,
-            find_area: Rect::default(),
-            find_hits: Vec::new(),
             nav: NavRing::default(),
             pending_nav: None,
-            caret_cell: None,
         }
     }
 
     pub fn active_buffer(&self) -> Option<&Buffer> {
-        self.active.and_then(|i| self.buffers.get(i))
+        self.active().and_then(|i| self.buffers.get(i))
     }
     pub fn active_buffer_mut(&mut self) -> Option<&mut Buffer> {
-        self.active.and_then(move |i| self.buffers.get_mut(i))
+        self.active().and_then(move |i| self.buffers.get_mut(i))
     }
     pub fn active_path(&self) -> Option<&Path> {
         self.active_buffer().and_then(|b| b.path.as_deref())
@@ -192,10 +192,8 @@ impl Editor {
             buf.line_ending = le;
         }
         buf.settings = settings;
-        // JetBrains inserts the new tab right after the active one, but
-        // never among the pinned tabs.
-        let at = self.active.map(|a| a + 1).unwrap_or(self.buffers.len()).min(self.buffers.len()).max(self.pinned_count());
-        self.buffers.insert(at, buf);
+        self.buffers.push(buf);
+        let at = self.buffers.len() - 1;
         match pending {
             // Reopened by back/forward, which already updated the history.
             Some(pos) => {
@@ -207,38 +205,13 @@ impl Editor {
         at
     }
 
-    /// Make tab `i` active, remembering the position left for back/forward.
-    fn activate_index(&mut self, i: usize) {
-        if i >= self.buffers.len() {
-            return;
-        }
-        if self.active != Some(i)
-            && let Some(here) = self.active_buffer().map(nav_pos)
-        {
-            self.nav.push(here);
-        }
-        self.set_active(i);
-    }
-
-    /// [`Editor::activate_index`] without touching the history.
-    fn set_active(&mut self, i: usize) {
-        if i >= self.buffers.len() {
-            return;
-        }
-        self.active = Some(i);
-        let id = self.buffers[i].id;
-        self.mru.retain(|x| *x != id);
-        self.mru.insert(0, id);
-        self.buffers[i].undo.break_group = true;
-    }
-
     /// Put back a session's caret and scroll for tab `i` (clamped to the
     /// file as it is now). The first render still keeps the caret visible.
     pub fn restore_view(&mut self, i: usize, line: usize, col: usize, scroll_line: usize, scroll_col: usize) {
         let Some(b) = self.buffers.get_mut(i) else { return };
         b.goto_line(line, col);
-        b.scroll_line = scroll_line.min(b.rope.len_lines().saturating_sub(1));
-        b.scroll_col = scroll_col;
+        b.view.scroll_line = scroll_line.min(b.rope.len_lines().saturating_sub(1));
+        b.view.scroll_col = scroll_col;
     }
 
     /// Restore tab recency from a session (`recent` most recent first; tabs
@@ -279,7 +252,7 @@ impl Editor {
             return;
         }
         let line = |p: usize| b.rope.char_to_line(p.min(b.rope.len_chars()));
-        if line(from.pos).abs_diff(line(b.sel.head)) > NAV_JUMP_LINES {
+        if line(from.pos).abs_diff(line(b.view.sel.head)) > NAV_JUMP_LINES {
             self.nav.push(from);
         }
     }
@@ -342,46 +315,6 @@ impl Editor {
         self.buffers[i].goto_line(line, 0);
     }
 
-    pub fn activate(&mut self, i: usize, _cx: &mut Ctx) {
-        self.activate_index(i);
-    }
-
-    /// Close tab `i`, asking first when it has unsaved changes.
-    pub fn close(&mut self, i: usize, cx: &mut Ctx) {
-        let Some(b) = self.buffers.get(i) else { return };
-        if b.dirty() {
-            let msg = format!("{} has unsaved changes.", b.name);
-            cx.effects.push(Effect::Dialog(Dialog::confirm(
-                DialogId::CloseTabDirty(b.id),
-                "Unsaved changes",
-                &msg,
-                &["Save", "Don't save", "Cancel"],
-            )));
-            return;
-        }
-        self.force_close(i);
-    }
-
-    pub fn force_close(&mut self, i: usize) {
-        if i >= self.buffers.len() {
-            return;
-        }
-        let id = self.buffers[i].id;
-        // Back from the next tab reopens the closed one.
-        if self.active == Some(i) {
-            self.nav.push(nav_pos(&self.buffers[i]));
-        }
-        self.buffers.remove(i);
-        self.mru.retain(|x| *x != id);
-        if self.buffers.is_empty() {
-            self.active = None;
-            return;
-        }
-        // Prefer the most recently used remaining tab.
-        let next = self.mru.first().and_then(|id| self.buffers.iter().position(|b| b.id == *id)).unwrap_or(i.min(self.buffers.len() - 1));
-        self.set_active(next);
-    }
-
     /// Follow a rename of `from` (a file or a directory) to `to`: tabs of
     /// it or under it keep their text and history under the new path.
     pub fn retarget(&mut self, from: &Path, to: &Path) {
@@ -410,176 +343,6 @@ impl Editor {
         closed
     }
 
-    pub fn close_all(&mut self, cx: &mut Ctx) {
-        if self.has_dirty() {
-            cx.effects.push(Effect::Dialog(Dialog::confirm(
-                DialogId::CloseAllDirty,
-                "Unsaved changes",
-                "Some files have unsaved changes.",
-                &["Save all", "Don't save", "Cancel"],
-            )));
-            return;
-        }
-        self.force_close_all();
-    }
-
-    pub fn force_close_all(&mut self) {
-        self.buffers.clear();
-        self.mru.clear();
-        self.active = None;
-    }
-
-    /// Close the tabs `ids`, asking first when any has unsaved changes.
-    fn close_ids(&mut self, ids: Vec<BufferId>, cx: &mut Ctx) {
-        if ids.is_empty() {
-            return;
-        }
-        if self.buffers.iter().any(|b| b.dirty() && ids.contains(&b.id)) {
-            cx.effects.push(Effect::Dialog(Dialog::confirm(
-                DialogId::CloseTabsDirty(ids),
-                "Unsaved changes",
-                "Some of these files have unsaved changes.",
-                &["Save", "Don't save", "Cancel"],
-            )));
-            return;
-        }
-        self.force_close_ids(&ids);
-    }
-
-    /// Close the tabs `ids` that are still open, unsaved edits included.
-    pub fn force_close_ids(&mut self, ids: &[BufferId]) {
-        for id in ids {
-            if let Some(i) = self.index_of_id(*id) {
-                self.force_close(i);
-            }
-        }
-    }
-
-    /// Save the unsaved tabs among `ids`, then close those that are clean
-    /// (a save that failed or needs an answer keeps its tab).
-    pub fn save_and_close_ids(&mut self, ids: &[BufferId], cx: &mut Ctx) {
-        for id in ids {
-            let Some(i) = self.index_of_id(*id) else { continue };
-            if !self.buffers[i].dirty() || self.save(i, cx) {
-                self.force_close(i);
-            }
-        }
-    }
-
-    /// Pinned tabs are always the first ones.
-    fn pinned_count(&self) -> usize {
-        self.buffers.iter().take_while(|b| b.pinned).count()
-    }
-
-    pub fn is_pinned(&self, i: usize) -> bool {
-        self.buffers.get(i).is_some_and(|b| b.pinned)
-    }
-
-    /// Pin or unpin tab `i`. A pinned tab moves to the end of the pinned
-    /// ones, an unpinned one to the start of the rest. Returns its new index.
-    pub fn set_pinned(&mut self, i: usize, pinned: bool) -> usize {
-        if i >= self.buffers.len() || self.buffers[i].pinned == pinned {
-            return i;
-        }
-        let n = self.pinned_count();
-        self.buffers[i].pinned = pinned;
-        self.move_tab(i, if pinned { n } else { n - 1 })
-    }
-
-    /// Move tab `from` to index `to` (clamped), keeping the active tab.
-    /// Returns the new index.
-    fn move_tab(&mut self, from: usize, to: usize) -> usize {
-        let to = to.min(self.buffers.len().saturating_sub(1));
-        if from == to || from >= self.buffers.len() {
-            return from;
-        }
-        let b = self.buffers.remove(from);
-        self.buffers.insert(to, b);
-        self.active = self.active.map(|a| match a {
-            a if a == from => to,
-            a if from < a && a <= to => a - 1,
-            a if to <= a && a < from => a + 1,
-            a => a,
-        });
-        to
-    }
-
-    /// The indices tab `i` may move to: pinned tabs stay among the pinned
-    /// ones, the others after them.
-    fn tab_group(&self, i: usize) -> std::ops::Range<usize> {
-        let n = self.pinned_count();
-        if self.is_pinned(i) { 0..n } else { n..self.buffers.len() }
-    }
-
-    /// Alt+Shift+Left / Alt+Shift+Right: move the active tab one place
-    /// within its group.
-    fn step_tab(&mut self, right: bool) {
-        let Some(i) = self.active else { return };
-        let group = self.tab_group(i);
-        let to = if right { i + 1 } else { i.wrapping_sub(1) };
-        if group.contains(&to) {
-            self.move_tab(i, to);
-        }
-    }
-
-    /// A tab drag over column `x`: move tab `id` to the tab under the
-    /// pointer, within its group. It moves only once the pointer is over
-    /// the place it would take, so tabs of different widths do not swap
-    /// back and forth. The hit rects are stale after a move until the next
-    /// frame, so they are cleared.
-    pub fn drag_tab(&mut self, id: BufferId, x: u16) {
-        let Some(cur) = self.index_of_id(id) else { return };
-        let Some(over) = self.tab_hits.tab_at_x(x) else { return };
-        // `cur` is in its group, so the group is not empty.
-        let group = self.tab_group(cur);
-        let to = over.clamp(group.start, group.end - 1);
-        if to == cur {
-            return;
-        }
-        let (Some(from_r), Some(to_r)) = (self.tab_hits.rect_of(cur), self.tab_hits.rect_of(to)) else { return };
-        let reached = if to > cur { x >= to_r.right().saturating_sub(from_r.width) } else { x < to_r.x + from_r.width };
-        if reached {
-            self.move_tab(cur, to);
-            self.tab_hits.clear();
-        }
-    }
-
-    /// Close the least recently used tabs while more than `editor.max_tabs`
-    /// are open (0: no limit). Only clean, unpinned tabs other than the
-    /// active one are closed; when none is left the limit is exceeded.
-    /// Called by the app after a file opens and after a session restore.
-    pub fn enforce_tab_limit(&mut self) -> usize {
-        let mut closed = 0;
-        while self.max_tabs > 0 && self.buffers.len() > self.max_tabs {
-            let active = self.active_buffer().map(|b| b.id);
-            let victim = self.mru.iter().rev().filter_map(|id| self.index_of_id(*id)).find(|&i| {
-                let b = &self.buffers[i];
-                Some(b.id) != active && !b.pinned && !b.dirty()
-            });
-            let Some(i) = victim else { break };
-            tracing::debug!("tab limit {}: closing {}", self.max_tabs, self.buffers[i].name);
-            self.force_close(i);
-            closed += 1;
-        }
-        closed
-    }
-
-    /// Right-click on a tab (already made active): pin and close actions.
-    pub fn tab_menu(&self, x: u16, y: u16, cx: &mut Ctx) {
-        let Some(b) = self.active_buffer() else { return };
-        let e = Action::Editor;
-        let others = self.buffers.iter().enumerate().any(|(i, b)| !b.pinned && Some(i) != self.active);
-        let unpinned = self.buffers.iter().any(|b| !b.pinned);
-        let items = vec![
-            MenuItem::new(if b.pinned { "Unpin Tab" } else { "Pin Tab" }, e(EditorAction::TogglePinTab)),
-            MenuItem::new("Close", e(EditorAction::CloseTab)),
-            MenuItem::new("Close Other Tabs", e(EditorAction::CloseOtherTabs)).enabled(others),
-            MenuItem::new("Close All but Pinned", e(EditorAction::CloseUnpinnedTabs)).enabled(unpinned),
-            MenuItem::new("Close All Tabs", e(EditorAction::CloseAllTabs)),
-        ];
-        cx.effects.push(Effect::ContextMenu(ContextMenu::new(items, x, y)));
-    }
-
     pub fn goto_line(&mut self, line: usize, col: usize) {
         let from = self.active_buffer().map(nav_pos);
         if let Some(b) = self.active_buffer_mut() {
@@ -591,8 +354,8 @@ impl Editor {
     pub fn status_position(&self) -> Option<String> {
         let b = self.active_buffer()?;
         let (line, _) = b.cursor_line_col();
-        let col = view::visual_col(&b.rope, b.sel.head, self.tab_display(b));
-        let sel = b.sel.range();
+        let col = view::visual_col(&b.rope, b.view.sel.head, self.tab_display(b));
+        let sel = b.view.sel.range();
         if sel.is_empty() {
             Some(format!("Ln {}, Col {}", line + 1, col + 1))
         } else {
@@ -787,53 +550,71 @@ impl Editor {
     pub fn handle_action(&mut self, a: &EditorAction, cx: &mut Ctx) -> bool {
         use EditorAction as E;
         match a {
-            E::NextTab => {
-                if let Some(i) = self.active {
-                    let n = self.buffers.len();
-                    if n > 0 {
-                        self.activate_index((i + 1) % n);
-                    }
-                }
-                return true;
-            }
-            E::PrevTab => {
-                if let Some(i) = self.active {
-                    let n = self.buffers.len();
-                    if n > 0 {
-                        self.activate_index((i + n - 1) % n);
-                    }
+            E::NextTab | E::PrevTab => {
+                let (g, group) = (self.focused, self.focused_group());
+                if let Some(i) = group.active {
+                    let n = group.views.len();
+                    self.activate_slot(g, if *a == E::NextTab { (i + 1) % n } else { (i + n - 1) % n });
                 }
                 return true;
             }
             E::CloseTab => {
-                if let Some(i) = self.active {
-                    self.close(i, cx);
+                if let Some(slot) = self.focused_group().active {
+                    self.close_slot(self.focused, slot, cx);
                 }
                 return true;
             }
             E::CloseAllTabs => {
-                self.close_all(cx);
+                // With one group that is every buffer, asked about at once.
+                if self.groups.len() == 1 {
+                    self.close_all(cx);
+                } else {
+                    let ids = self.focused_group().views.iter().map(|v| v.id).collect();
+                    self.close_tabs(ids, cx);
+                }
                 return true;
             }
             E::CloseOtherTabs => {
+                let group = self.focused_group();
                 let ids =
-                    self.buffers.iter().enumerate().filter(|(i, b)| !b.pinned && Some(*i) != self.active).map(|(_, b)| b.id).collect();
-                self.close_ids(ids, cx);
+                    group.views.iter().enumerate().filter(|(i, v)| !v.pinned && Some(*i) != group.active).map(|(_, v)| v.id).collect();
+                self.close_tabs(ids, cx);
                 return true;
             }
             E::CloseUnpinnedTabs => {
-                let ids = self.buffers.iter().filter(|b| !b.pinned).map(|b| b.id).collect();
-                self.close_ids(ids, cx);
+                let ids = self.focused_group().views.iter().filter(|v| !v.pinned).map(|v| v.id).collect();
+                self.close_tabs(ids, cx);
                 return true;
             }
             E::TogglePinTab => {
-                if let Some(i) = self.active {
-                    self.set_pinned(i, !self.buffers[i].pinned);
+                if let Some(slot) = self.focused_group().active {
+                    let pinned = self.is_pinned_slot(self.focused, slot);
+                    self.set_pinned_slot(self.focused, slot, !pinned);
                 }
                 return true;
             }
             E::MoveTabLeft | E::MoveTabRight => {
                 self.step_tab(*a == E::MoveTabRight);
+                return true;
+            }
+            E::SplitRight | E::SplitDown => {
+                self.split(if *a == E::SplitRight { split::Axis::Horizontal } else { split::Axis::Vertical }, cx);
+                return true;
+            }
+            E::NextGroup | E::PrevGroup => {
+                self.cycle_group(*a == E::NextGroup);
+                return true;
+            }
+            E::Unsplit => {
+                self.unsplit(self.focused);
+                return true;
+            }
+            E::UnsplitAll => {
+                self.unsplit_all();
+                return true;
+            }
+            E::MoveTabToOppositeGroup => {
+                self.move_to_opposite(cx);
                 return true;
             }
             E::Switcher => {
@@ -849,7 +630,7 @@ impl Editor {
                 return true;
             }
             E::Save => {
-                if let Some(i) = self.active {
+                if let Some(i) = self.active() {
                     self.save_with(i, cx, self.format.on_save);
                 }
                 return true;
@@ -859,7 +640,7 @@ impl Editor {
                 return true;
             }
             E::GotoLine => {
-                if self.active.is_some() {
+                if self.active().is_some() {
                     cx.effects.push(Effect::Dialog(Dialog::input(DialogId::GotoLine, "Go to Line", "[Line] [:column]:", "", "OK")));
                 }
                 return true;
@@ -896,14 +677,14 @@ impl Editor {
         } else {
             None
         };
-        let rows = self.text_area.height as usize;
+        let rows = self.text_area().height as usize;
         let auto_close = self.auto_close;
-        let Some(ai) = self.active else { return false };
+        let Some(ai) = self.active() else { return false };
         let b = &mut self.buffers[ai];
         // Any other action ends an expand/shrink sequence; scrolling and
         // copying leave the selection alone, so they keep it.
         if !matches!(a, E::ExpandSelection | E::ShrinkSelection | E::Copy | E::ScrollUp(_) | E::ScrollDown(_)) {
-            b.expand_stack.clear();
+            b.view.expand_stack.clear();
         }
         let pairs = || if auto_close { brackets::pairs(b.language().map(|d| d.name)) } else { &[] };
         match a {
@@ -913,9 +694,10 @@ impl Editor {
                     s.reparse(&b.rope);
                 }
                 let tree = b.syntax.as_ref().and_then(|s| s.tree());
-                let may_pair = !tree.is_some_and(|t| brackets::in_literal_at(&b.rope, t, b.sel.head));
+                let may_pair = !tree.is_some_and(|t| brackets::in_literal_at(&b.rope, t, b.view.sel.head));
                 // A closer that auto-close steps over keeps the line as is.
-                let steps_over = pairs.iter().any(|(_, cl)| cl == c) && b.sel.head < b.rope.len_chars() && b.rope.char(b.sel.head) == *c;
+                let steps_over =
+                    pairs.iter().any(|(_, cl)| cl == c) && b.view.sel.head < b.rope.len_chars() && b.rope.char(b.view.sel.head) == *c;
                 match b.closer_indent(*c, tree).filter(|_| !steps_over) {
                     Some(indent) => b.type_dedented(*c, &indent),
                     None => b.type_char(*c, pairs, may_pair),
@@ -934,7 +716,7 @@ impl Editor {
                 b.newline_smart(colon);
             }
             E::InsertTab => {
-                let r = b.sel.range();
+                let r = b.view.sel.range();
                 if b.rope.char_to_line(r.start) != b.rope.char_to_line(r.end) {
                     b.indent_lines();
                 } else {
@@ -956,7 +738,7 @@ impl Editor {
             E::DeleteWordForward => b.delete_word_forward(),
             E::Move(m, extend) => {
                 let page = rows.saturating_sub(1).max(1);
-                apply_motion(&b.rope, &mut b.sel, *m, *extend, &mut b.desired_col, page);
+                apply_motion(&b.rope, &mut b.view.sel, *m, *extend, &mut b.view.desired_col, page);
                 b.undo.break_group = true;
             }
             E::Undo => {
@@ -974,14 +756,15 @@ impl Editor {
             E::SelectAll => b.select_all(),
             E::SelectLine => b.select_line(),
             E::Copy => {
-                let text = if b.sel.is_empty() { b.line_text(b.cursor_line_col().0) + b.line_ending.as_str() } else { b.selected_text() };
+                let text =
+                    if b.view.sel.is_empty() { b.line_text(b.cursor_line_col().0) + b.line_ending.as_str() } else { b.selected_text() };
                 cx.effects.push(Effect::Clipboard(text));
             }
             E::Cut => {
-                if b.sel.is_empty() {
+                if b.view.sel.is_empty() {
                     let (line, _) = b.cursor_line_col();
                     let r = line_range(&b.rope, line);
-                    b.sel = Selection::new(r.start, r.end);
+                    b.view.sel = Selection::new(r.start, r.end);
                 }
                 cx.effects.push(Effect::Clipboard(b.selected_text()));
                 b.delete_selection();
@@ -990,14 +773,14 @@ impl Editor {
             // `InsertText`.
             E::Paste => {}
             E::Escape => {
-                if b.search.is_some() {
+                if b.view.search.is_some() {
                     self.close_find();
                 } else {
-                    b.sel.collapse();
+                    b.view.sel.collapse();
                 }
             }
-            E::ScrollUp(n) => b.scroll_line = b.scroll_line.saturating_sub(*n),
-            E::ScrollDown(n) => b.scroll_line = (b.scroll_line + n).min(b.rope.len_lines().saturating_sub(1)),
+            E::ScrollUp(n) => b.view.scroll_line = b.view.scroll_line.saturating_sub(*n),
+            E::ScrollDown(n) => b.view.scroll_line = (b.view.scroll_line + n).min(b.rope.len_lines().saturating_sub(1)),
             E::Find => self.open_find(false),
             E::Replace => self.open_find(true),
             E::FindNext => self.find_step(true, cx),
@@ -1005,7 +788,7 @@ impl Editor {
             E::ReplaceOne => self.replace_one(cx),
             E::ReplaceAll => self.replace_all(cx),
             E::FindToggleCase | E::FindToggleWord | E::FindToggleRegex => {
-                if let Some(s) = &mut b.search {
+                if let Some(s) = &mut b.view.search {
                     match a {
                         E::FindToggleCase => s.case_sensitive ^= true,
                         E::FindToggleWord => s.whole_word ^= true,
@@ -1016,7 +799,7 @@ impl Editor {
                 }
             }
             E::FindToggleField => {
-                if let Some(s) = &mut b.search {
+                if let Some(s) = &mut b.view.search {
                     if s.show_replace {
                         s.field = if s.field == Field::Query { Field::Replace } else { Field::Query };
                     }
@@ -1042,9 +825,9 @@ impl Editor {
                     s.reparse(&b.rope);
                 }
                 let tree = b.syntax.as_ref().and_then(|s| s.tree());
-                if let Some((_, other)) = brackets::pair_at(&b.rope, tree, b.sel.head) {
-                    b.sel.set_head(other, false);
-                    b.desired_col = None;
+                if let Some((_, other)) = brackets::pair_at(&b.rope, tree, b.view.sel.head) {
+                    b.view.sel.set_head(other, false);
+                    b.view.desired_col = None;
                     b.undo.break_group = true;
                 }
             }
@@ -1074,6 +857,13 @@ impl Editor {
             | E::MoveTabLeft
             | E::MoveTabRight
             | E::Switcher
+            | E::SplitRight
+            | E::SplitDown
+            | E::NextGroup
+            | E::PrevGroup
+            | E::Unsplit
+            | E::UnsplitAll
+            | E::MoveTabToOppositeGroup
             | E::Save
             | E::SaveAll
             | E::Format
@@ -1092,23 +882,23 @@ impl Editor {
 
     pub fn handle_mouse(&mut self, m: &Mouse, _area: Rect, cx: &mut Ctx) -> bool {
         if m.kind == MouseEventKind::Down(MouseButton::Left) {
-            if self.find_area.contains(ratatui::layout::Position::new(m.x, m.y)) {
+            if self.focused_group().find_area.contains(ratatui::layout::Position::new(m.x, m.y)) {
                 self.click_find_bar(m, cx);
                 return true;
             }
             // A click in the text hands keyboard focus back to the text.
-            if let Some(s) = self.active_buffer_mut().and_then(|b| b.search.as_mut()) {
+            if let Some(s) = self.active_buffer_mut().and_then(|b| b.view.search.as_mut()) {
                 s.focused = false;
             }
         }
-        let text_area = self.text_area;
-        let Some(ai) = self.active else { return false };
+        let (g, text_area) = (self.focused, self.text_area());
+        let Some(ai) = self.active() else { return false };
         let tab_width = self.tab_display(&self.buffers[ai]);
         let b = &mut self.buffers[ai];
         let pos_at = |b: &Buffer, x: u16, y: u16| -> usize {
             let row = y.saturating_sub(text_area.y) as usize;
-            let line = (b.scroll_line + row).min(b.rope.len_lines().saturating_sub(1));
-            let col = x.saturating_sub(text_area.x) as usize + b.scroll_col;
+            let line = (b.view.scroll_line + row).min(b.rope.len_lines().saturating_sub(1));
+            let col = x.saturating_sub(text_area.x) as usize + b.view.scroll_col;
             if x < text_area.x { b.rope.line_to_char(line) } else { col_to_char(&b.rope, line, col, tab_width) }
         };
         // A click in the blame column shows that line's commit.
@@ -1118,7 +908,7 @@ impl Editor {
             && m.y >= text_area.y
             && m.y < text_area.bottom()
         {
-            let line = b.scroll_line + (m.y - text_area.y) as usize;
+            let line = b.view.scroll_line + (m.y - text_area.y) as usize;
             if let Some(c) = blame.commit_at(line) {
                 cx.effects.push(Effect::Git(crate::git::GitRequest::ShowCommit(c.sha.clone())));
             }
@@ -1126,10 +916,10 @@ impl Editor {
         }
         // A click on a git mark offers the change commands for that line.
         if m.kind == MouseEventKind::Down(MouseButton::Left) && m.x + 2 == text_area.x && m.y >= text_area.y && m.y < text_area.bottom() {
-            let line = b.scroll_line + (m.y - text_area.y) as usize;
+            let line = b.view.scroll_line + (m.y - text_area.y) as usize;
             if gutter::mark_at(&b.gutter, line).is_some() {
-                b.sel = Selection::point(b.rope.line_to_char(line));
-                b.desired_col = None;
+                b.view.sel = Selection::point(b.rope.line_to_char(line));
+                b.view.desired_col = None;
                 use crate::actions::{Action, EditorAction as E};
                 use crate::ui::menu::{ContextMenu, MenuItem};
                 let items = vec![
@@ -1145,14 +935,14 @@ impl Editor {
             MouseEventKind::Down(MouseButton::Left) => {
                 let p = pos_at(b, m.x, m.y);
                 let from = nav_pos(b);
-                if b.rope.char_to_line(b.sel.head).abs_diff(b.rope.char_to_line(p)) > NAV_JUMP_LINES {
+                if b.rope.char_to_line(b.view.sel.head).abs_diff(b.rope.char_to_line(p)) > NAV_JUMP_LINES {
                     self.nav.push(from);
                 }
                 // Ctrl+click: the caret to the clicked char, then go to
                 // what is defined there.
                 if m.mods.contains(KeyModifiers::CONTROL) && m.clicks == 1 && m.x >= text_area.x {
-                    b.sel = Selection::point(p);
-                    b.desired_col = None;
+                    b.view.sel = Selection::point(p);
+                    b.view.desired_col = None;
                     b.undo.break_group = true;
                     cx.effects.push(Effect::Lsp(crate::lsp::LspRequest::Definition));
                     return true;
@@ -1161,48 +951,46 @@ impl Editor {
                 match m.clicks {
                     2 => {
                         let r = word_at(&b.rope, p);
-                        b.sel = Selection::new(r.start, r.end);
-                        self.drag = Some(DragMode::Word(r.start, r.end));
+                        b.view.sel = Selection::new(r.start, r.end);
+                        self.drag = Some((g, DragMode::Word(r.start, r.end)));
                     }
                     3 => {
                         let (line, _) = selection::pos_to_line_col(&b.rope, p);
                         let r = line_range(&b.rope, line);
-                        b.sel = Selection::new(r.start, r.end);
-                        self.drag = Some(DragMode::Line(r.start, r.end));
+                        b.view.sel = Selection::new(r.start, r.end);
+                        self.drag = Some((g, DragMode::Line(r.start, r.end)));
                     }
                     _ => {
-                        b.sel.set_head(p, extend);
-                        self.drag = Some(DragMode::Char);
+                        b.view.sel.set_head(p, extend);
+                        self.drag = Some((g, DragMode::Char));
                     }
                 }
-                b.desired_col = None;
+                b.view.desired_col = None;
                 b.undo.break_group = true;
                 true
             }
             MouseEventKind::Drag(MouseButton::Left) => {
-                // Only a drag that started in the text selects (not one
-                // that started on a find bar button).
-                if self.drag.is_none() {
-                    return true;
-                }
+                // Only a drag that started in this group's text selects
+                // (not one that started on a find bar button).
+                let Some((_, mode)) = self.drag.filter(|(dg, _)| *dg == g) else { return true };
                 let p = pos_at(b, m.x, m.y);
-                match self.drag {
-                    Some(DragMode::Word(s, e)) => {
+                match mode {
+                    DragMode::Word(s, e) => {
                         let w = word_at(&b.rope, p);
-                        if p < s { b.sel = Selection::new(e, w.start) } else { b.sel = Selection::new(s, w.end.max(e)) }
+                        if p < s { b.view.sel = Selection::new(e, w.start) } else { b.view.sel = Selection::new(s, w.end.max(e)) }
                     }
-                    Some(DragMode::Line(s, e)) => {
+                    DragMode::Line(s, e) => {
                         let (line, _) = selection::pos_to_line_col(&b.rope, p);
                         let r = line_range(&b.rope, line);
-                        if r.start < s { b.sel = Selection::new(e, r.start) } else { b.sel = Selection::new(s, r.end.max(e)) }
+                        if r.start < s { b.view.sel = Selection::new(e, r.start) } else { b.view.sel = Selection::new(s, r.end.max(e)) }
                     }
-                    _ => b.sel.set_head(p, true),
+                    DragMode::Char => b.view.sel.set_head(p, true),
                 }
                 // Auto-scroll while dragging past the edges.
                 if m.y < text_area.y {
-                    b.scroll_line = b.scroll_line.saturating_sub(1);
+                    b.view.scroll_line = b.view.scroll_line.saturating_sub(1);
                 } else if m.y >= text_area.bottom() {
-                    b.scroll_line = (b.scroll_line + 1).min(b.rope.len_lines().saturating_sub(1));
+                    b.view.scroll_line = (b.view.scroll_line + 1).min(b.rope.len_lines().saturating_sub(1));
                 }
                 true
             }
@@ -1210,48 +998,87 @@ impl Editor {
                 self.drag = None;
                 true
             }
-            MouseEventKind::ScrollUp => {
-                b.scroll_line = b.scroll_line.saturating_sub(3);
-                true
-            }
-            MouseEventKind::ScrollDown => {
-                b.scroll_line = (b.scroll_line + 3).min(b.rope.len_lines().saturating_sub(1));
-                true
-            }
-            MouseEventKind::ScrollLeft => {
-                b.scroll_col = b.scroll_col.saturating_sub(4);
-                true
-            }
-            MouseEventKind::ScrollRight => {
-                b.scroll_col += 4;
-                true
-            }
-            _ => false,
+            _ => wheel(b, m.kind),
         }
     }
 
-    pub fn handle_tab_mouse(&mut self, m: &Mouse, _area: Rect, _cx: &mut Ctx) -> bool {
+    /// The wheel over group `g` when it is not the focused one: its view
+    /// scrolls, focus stays.
+    pub fn scroll_group(&mut self, g: GroupId, m: &Mouse) {
+        let Some(slot) = self.group(g).and_then(|x| x.active) else { return };
+        self.make_live(g, slot);
+        if let Some(i) = self.group(g).and_then(TabGroup::active_id).and_then(|id| self.index_of_id(id)) {
+            wheel(&mut self.buffers[i], m.kind);
+        }
+        if let Some(slot) = self.focused_group().active {
+            self.make_live(self.focused, slot);
+        }
+    }
+
+    /// The wheel over group `g`'s tab bar scrolls the tabs.
+    pub fn handle_tab_mouse(&mut self, g: GroupId, m: &Mouse) -> bool {
+        let Some(group) = self.group_mut(g) else { return false };
         match m.kind {
             MouseEventKind::ScrollUp | MouseEventKind::ScrollLeft => {
-                self.tab_scroll = self.tab_scroll.saturating_sub(1);
+                group.tab_scroll = group.tab_scroll.saturating_sub(1);
                 true
             }
             MouseEventKind::ScrollDown | MouseEventKind::ScrollRight => {
-                self.tab_scroll = (self.tab_scroll + 1).min(self.buffers.len().saturating_sub(1));
+                group.tab_scroll = (group.tab_scroll + 1).min(group.views.len().saturating_sub(1));
                 true
             }
             _ => false,
         }
     }
 
+    /// Draw the groups over the centre: `tabs` (one row, none in zen mode)
+    /// above `area`. Each group gets a tab bar of that height over its text.
+    /// The focused group is drawn last, so its tab stays the live view of
+    /// its buffer between frames.
     pub fn render(&mut self, frame: &mut Frame, tabs: Rect, area: Rect, focused: bool, theme: &Theme) {
-        self.last_area = area;
-        self.render_tabs(frame, tabs, theme);
-        self.caret_cell = None;
+        self.sync_parked();
+        let center = Rect::new(area.x, tabs.y, area.width, tabs.height + area.height);
+        let mut leaves = Vec::new();
+        self.splitters.clear();
+        self.tree.layout(center, &mut leaves, &mut self.splitters);
+        let screen = frame.buffer_mut();
+        for bar in &self.splitters {
+            screen.set_style(bar.rect, theme.splitter);
+            let (cells, glyph): (Vec<(u16, u16)>, _) = match bar.axis {
+                split::Axis::Horizontal => ((bar.rect.y..bar.rect.bottom()).map(|y| (bar.rect.x, y)).collect(), "│"),
+                split::Axis::Vertical => ((bar.rect.x..bar.rect.right()).map(|x| (x, bar.rect.y)).collect(), "─"),
+            };
+            for c in cells {
+                screen[c].set_symbol(glyph);
+            }
+        }
+        leaves.sort_by_key(|(g, _)| *g == self.focused);
+        for (g, r) in leaves {
+            let Some(gi) = self.group_index(g) else { continue };
+            if let Some(slot) = self.groups[gi].active {
+                self.make_live(g, slot);
+            }
+            let strip = tabs.height.min(r.height);
+            let tabs_r = Rect::new(r.x, r.y, r.width, strip);
+            let body = Rect::new(r.x, r.y + strip, r.width, r.height - strip);
+            self.render_group(frame, gi, tabs_r, body, focused && g == self.focused, theme);
+        }
+    }
+
+    /// Draw group `gi` (an index into `groups`): its tab bar in `tabs`, its
+    /// shown tab in `area`. `focused` is whether keys go to it.
+    fn render_group(&mut self, frame: &mut Frame, gi: usize, tabs: Rect, area: Rect, focused: bool, theme: &Theme) {
+        let group = &mut self.groups[gi];
+        render_tabs(group, &self.buffers, frame, tabs, theme);
+        group.tab_area = tabs;
+        group.last_area = Rect::new(area.x, tabs.y, area.width, tabs.height + area.height);
+        group.caret_cell = None;
+        group.find_hits.clear();
+        group.find_area = Rect::default();
         let screen = frame.buffer_mut();
         screen.set_style(area, Style::default().bg(theme.bg));
-        let Some(i) = self.active else {
-            self.text_area = area;
+        let Some(i) = group.active_id().and_then(|id| self.buffers.iter().position(|b| b.id == id)) else {
+            group.text_area = area;
             let hint = "No files open. Alt+1 opens the Project view; Ctrl+Shift+N finds a file.";
             if area.height > 2 && area.width > 10 {
                 let x = area.x + area.width.saturating_sub(hint.width() as u16) / 2;
@@ -1259,22 +1086,6 @@ impl Editor {
             }
             return;
         };
-        // The find bar takes the top rows; the text view gets the rest so
-        // `text_area` (and with it mouse mapping) stays exact.
-        self.find_hits.clear();
-        self.find_area = Rect::default();
-        let b = &mut self.buffers[i];
-        let mut text_rect = area;
-        let mut bar_focused = false;
-        if let Some(s) = b.search.as_mut() {
-            // Matches follow buffer edits; recomputed only on change.
-            s.update(&b.rope, b.version);
-            let h = if s.show_replace { 2 } else { 1 }.min(area.height);
-            self.find_area = Rect::new(area.x, area.y, area.width, h);
-            text_rect = Rect::new(area.x, area.y + h, area.width, area.height - h);
-            bar_focused = focused && s.focused;
-            self.find_hits = render_find_bar(frame, self.find_area, s, bar_focused, theme);
-        }
         let opts = RenderOpts {
             focused,
             tab_width: self.tab_display(&self.buffers[i]),
@@ -1283,9 +1094,24 @@ impl Editor {
             occurrences: self.highlight_occurrences,
             theme,
         };
-        let out = view::render(&mut self.buffers[i], frame.buffer_mut(), text_rect, &opts);
-        self.text_area = out.text_area;
-        self.caret_cell = out.cursor;
+        // The find bar takes the top rows; the text view gets the rest so
+        // `text_area` (and with it mouse mapping) stays exact.
+        let group = &mut self.groups[gi];
+        let b = &mut self.buffers[i];
+        let mut text_rect = area;
+        let mut bar_focused = false;
+        if let Some(s) = b.view.search.as_mut() {
+            // Matches follow buffer edits; recomputed only on change.
+            s.update(&b.rope, b.version);
+            let h = if s.show_replace { 2 } else { 1 }.min(area.height);
+            group.find_area = Rect::new(area.x, area.y, area.width, h);
+            text_rect = Rect::new(area.x, area.y + h, area.width, area.height - h);
+            bar_focused = focused && s.focused;
+            group.find_hits = render_find_bar(frame, group.find_area, s, bar_focused, theme);
+        }
+        let out = view::render(b, frame.buffer_mut(), text_rect, &opts);
+        group.text_area = out.text_area;
+        group.caret_cell = out.cursor;
         if focused
             && !bar_focused
             && let Some((x, y)) = out.cursor
@@ -1293,62 +1119,82 @@ impl Editor {
             frame.set_cursor_position((x, y));
         }
     }
+}
 
-    fn render_tabs(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
-        let screen = frame.buffer_mut();
-        screen.set_style(area, theme.tab);
-        self.tab_hits.clear();
-        if area.is_empty() || self.buffers.is_empty() {
-            return;
+/// The wheel over a view: three lines up or down, four columns sideways.
+fn wheel(b: &mut Buffer, kind: MouseEventKind) -> bool {
+    let v = &mut b.view;
+    match kind {
+        MouseEventKind::ScrollUp => v.scroll_line = v.scroll_line.saturating_sub(3),
+        MouseEventKind::ScrollDown => v.scroll_line = (v.scroll_line + 3).min(b.rope.len_lines().saturating_sub(1)),
+        MouseEventKind::ScrollLeft => v.scroll_col = v.scroll_col.saturating_sub(4),
+        MouseEventKind::ScrollRight => v.scroll_col += 4,
+        _ => return false,
+    }
+    true
+}
+
+/// Draw `group`'s tab bar into `area` and record its hit rects by slot.
+fn render_tabs(group: &mut TabGroup, buffers: &[Buffer], frame: &mut Frame, area: Rect, theme: &Theme) {
+    let screen = frame.buffer_mut();
+    screen.set_style(area, theme.tab);
+    group.tab_hits.clear();
+    if area.is_empty() || group.views.is_empty() {
+        return;
+    }
+    let tabs: Vec<(&groups::View, &Buffer)> =
+        group.views.iter().filter_map(|v| buffers.iter().find(|b| b.id == v.id).map(|b| (v, b))).collect();
+    if tabs.len() != group.views.len() {
+        return;
+    }
+    // Keep the active tab visible by advancing the scroll offset.
+    let widths: Vec<u16> = tabs.iter().map(|(_, b)| b.name.width() as u16 + 5).collect();
+    group.tab_scroll = group.tab_scroll.min(tabs.len() - 1);
+    if let Some(a) = group.active {
+        if a < group.tab_scroll {
+            group.tab_scroll = a;
         }
-        // Keep the active tab visible by advancing the scroll offset.
-        let widths: Vec<u16> = self.buffers.iter().map(|b| b.name.width() as u16 + 5).collect();
-        if let Some(a) = self.active {
-            if a < self.tab_scroll {
-                self.tab_scroll = a;
-            }
-            loop {
-                let total: u16 = widths[self.tab_scroll..=a].iter().sum();
-                if total <= area.width || self.tab_scroll >= a {
-                    break;
-                }
-                self.tab_scroll += 1;
-            }
-        }
-        let mut x = area.x;
-        if self.tab_scroll > 0 {
-            screen.set_string(x, area.y, "‹", theme.dim);
-            x += 1;
-        }
-        for (i, b) in self.buffers.iter().enumerate().skip(self.tab_scroll) {
-            let w = widths[i];
-            if x + w > area.right() {
-                if x < area.right() {
-                    screen.set_string(area.right() - 1, area.y, "›", theme.dim);
-                }
+        loop {
+            let total: u16 = widths[group.tab_scroll..=a].iter().sum();
+            if total <= area.width || group.tab_scroll >= a {
                 break;
             }
-            let active = self.active == Some(i);
-            let style = if active { theme.tab_active } else { theme.tab };
-            let rect = Rect::new(x, area.y, w, 1);
-            screen.set_style(rect, style);
-            let mut cx = x + 1;
-            if b.dirty() {
-                screen.set_string(cx, area.y, "*", theme.tab_dirty.bg(style.bg.unwrap_or(theme.panel_bg)));
-            } else {
-                screen.set_string(cx, area.y, " ", style);
-            }
-            cx += 1;
-            screen.set_stringn(cx, area.y, &b.name, (area.right() - cx) as usize, style);
-            cx += b.name.width() as u16 + 1;
-            let close_style = if active { style } else { theme.dim.bg(theme.panel_bg) };
-            // A pinned tab shows a pin in place of its close button; a click
-            // on it unpins.
-            screen.set_string(cx, area.y, if b.pinned { PIN_MARK } else { "×" }, close_style);
-            self.tab_hits.close.push((i, Rect::new(cx, area.y, 1, 1)));
-            self.tab_hits.tabs.push((i, rect));
-            x += w;
+            group.tab_scroll += 1;
         }
+    }
+    let mut x = area.x;
+    if group.tab_scroll > 0 {
+        screen.set_string(x, area.y, "‹", theme.dim);
+        x += 1;
+    }
+    for (i, (v, b)) in tabs.iter().enumerate().skip(group.tab_scroll) {
+        let w = widths[i];
+        if x + w > area.right() {
+            if x < area.right() {
+                screen.set_string(area.right() - 1, area.y, "›", theme.dim);
+            }
+            break;
+        }
+        let active = group.active == Some(i);
+        let style = if active { theme.tab_active } else { theme.tab };
+        let rect = Rect::new(x, area.y, w, 1);
+        screen.set_style(rect, style);
+        let mut cx = x + 1;
+        if b.dirty() {
+            screen.set_string(cx, area.y, "*", theme.tab_dirty.bg(style.bg.unwrap_or(theme.panel_bg)));
+        } else {
+            screen.set_string(cx, area.y, " ", style);
+        }
+        cx += 1;
+        screen.set_stringn(cx, area.y, &b.name, (area.right() - cx) as usize, style);
+        cx += b.name.width() as u16 + 1;
+        let close_style = if active { style } else { theme.dim.bg(theme.panel_bg) };
+        // A pinned tab shows a pin in place of its close button; a click
+        // on it unpins.
+        screen.set_string(cx, area.y, if v.pinned { PIN_MARK } else { "×" }, close_style);
+        group.tab_hits.close.push((i, Rect::new(cx, area.y, 1, 1)));
+        group.tab_hits.tabs.push((i, rect));
+        x += w;
     }
 }
 
@@ -1389,27 +1235,27 @@ mod tests {
             for c in "foo".chars() {
                 assert!(ed.handle_find_key(key(KeyCode::Char(c), KeyModifiers::NONE), cx));
             }
-            assert_eq!(ed.active_buffer().unwrap().sel.range(), 0..3);
+            assert_eq!(ed.active_buffer().unwrap().view.sel.range(), 0..3);
             assert!(ed.handle_find_key(key(KeyCode::Enter, KeyModifiers::NONE), cx));
-            assert_eq!(ed.active_buffer().unwrap().sel.range(), 8..11);
+            assert_eq!(ed.active_buffer().unwrap().view.sel.range(), 8..11);
             assert!(ed.handle_find_key(key(KeyCode::Enter, KeyModifiers::SHIFT), cx));
-            assert_eq!(ed.active_buffer().unwrap().sel.range(), 0..3);
+            assert_eq!(ed.active_buffer().unwrap().view.sel.range(), 0..3);
             // Shift+Enter from the first match wraps to the last.
             assert!(ed.handle_find_key(key(KeyCode::Enter, KeyModifiers::SHIFT), cx));
-            assert_eq!(ed.active_buffer().unwrap().sel.range(), 16..19);
+            assert_eq!(ed.active_buffer().unwrap().view.sel.range(), 16..19);
             // Ctrl+S is not consumed by the bar.
             assert!(!ed.handle_find_key(key(KeyCode::Char('s'), KeyModifiers::CONTROL), cx));
             // Alt+C toggles case sensitivity.
             assert!(ed.handle_find_key(key(KeyCode::Char('c'), KeyModifiers::ALT), cx));
-            assert!(ed.active_buffer().unwrap().search.as_ref().unwrap().case_sensitive);
+            assert!(ed.active_buffer().unwrap().view.search.as_ref().unwrap().case_sensitive);
             // Esc closes the bar and leaves the match selected.
             assert!(ed.handle_find_key(key(KeyCode::Esc, KeyModifiers::NONE), cx));
-            assert!(ed.active_buffer().unwrap().search.is_none());
+            assert!(ed.active_buffer().unwrap().view.search.is_none());
             assert!(!ed.find_focused());
             // F3 with the bar closed reuses the last query.
             ed.handle_action(&EditorAction::FindNext, cx);
-            assert_eq!(ed.active_buffer().unwrap().sel.range(), 0..3);
-            assert!(ed.active_buffer().unwrap().search.is_none());
+            assert_eq!(ed.active_buffer().unwrap().view.sel.range(), 0..3);
+            assert!(ed.active_buffer().unwrap().view.search.is_none());
         });
         assert_eq!(notes.iter().filter(|n| *n == "Search wrapped").count(), 2);
     }
@@ -1420,7 +1266,7 @@ mod tests {
         let notes = with_cx(|cx| {
             ed.handle_action(&EditorAction::Replace, cx);
             let b = ed.active_buffer_mut().unwrap();
-            let s = b.search.as_mut().unwrap();
+            let s = b.view.search.as_mut().unwrap();
             s.query.set_text("foo");
             s.replace.set_text("quux");
             let before = b.undo.len();
@@ -1440,17 +1286,17 @@ mod tests {
         with_cx(|cx| {
             ed.handle_action(&EditorAction::Replace, cx);
             let b = ed.active_buffer_mut().unwrap();
-            let s = b.search.as_mut().unwrap();
+            let s = b.view.search.as_mut().unwrap();
             s.regex = true;
             s.query.set_text(r"\ba(\d)");
             s.replace.set_text("<$1>");
             s.field = Field::Replace;
             refresh_search(b);
-            assert_eq!(b.sel.range(), 0..2);
+            assert_eq!(b.view.sel.range(), 0..2);
             assert!(ed.handle_find_key(key(KeyCode::Enter, KeyModifiers::NONE), cx));
             let b = ed.active_buffer().unwrap();
             assert_eq!(b.text(), "<1> a2 b3");
-            assert_eq!(b.sel.range(), 4..6);
+            assert_eq!(b.view.sel.range(), 4..6);
         });
     }
 
@@ -1476,7 +1322,7 @@ mod tests {
     #[test]
     fn enter_in_braces_and_closer_dedent() {
         let mut ed = editor_with("a.rs", "fn f() {\n    let s = \"{\";\n");
-        ed.active_buffer_mut().unwrap().sel = Selection::point(8);
+        ed.active_buffer_mut().unwrap().view.sel = Selection::point(8);
         with_cx(|cx| {
             // Auto-close types `{}` and Enter splits it over three lines.
             ed.handle_action(&EditorAction::InsertNewline, cx);
@@ -1491,39 +1337,39 @@ mod tests {
         // string literal is skipped.
         let mut ed = editor_with("a.rs", "fn f() {\n    let s = \"{\";\n    ");
         let end = ed.active_buffer().unwrap().len_chars();
-        ed.active_buffer_mut().unwrap().sel = Selection::point(end);
+        ed.active_buffer_mut().unwrap().view.sel = Selection::point(end);
         with_cx(|cx| {
             ed.handle_action(&EditorAction::InsertChar('}'), cx);
         });
         assert_eq!(ed.active_buffer().unwrap().text(), "fn f() {\n    let s = \"{\";\n}");
         // Typing `}` at an existing closer steps over it, line unchanged.
         let mut ed = editor_with("a.rs", "fn f() {\n    }");
-        ed.active_buffer_mut().unwrap().sel = Selection::point(13);
+        ed.active_buffer_mut().unwrap().view.sel = Selection::point(13);
         with_cx(|cx| {
             ed.handle_action(&EditorAction::InsertChar('}'), cx);
         });
         assert_eq!(ed.active_buffer().unwrap().text(), "fn f() {\n    }");
-        assert_eq!(ed.active_buffer().unwrap().sel.head, 14);
+        assert_eq!(ed.active_buffer().unwrap().view.sel.head, 14);
     }
 
     #[cfg(feature = "lang-css")]
     #[test]
     fn css_ctrl_slash_falls_back_to_block_comment() {
         let mut ed = editor_with("a.css", "a {\n    color: red;\n}\n");
-        ed.active_buffer_mut().unwrap().sel = Selection::point(10);
+        ed.active_buffer_mut().unwrap().view.sel = Selection::point(10);
         let notes = with_cx(|cx| {
             ed.handle_action(&EditorAction::ToggleComment, cx);
         });
         assert!(notes.is_empty(), "{notes:?}");
         let b = ed.active_buffer().unwrap();
         assert_eq!(b.text(), "a {\n    /* color: red; */\n}\n");
-        assert_eq!(b.sel.head, 13, "caret stays on the same character");
+        assert_eq!(b.view.sel.head, 13, "caret stays on the same character");
         with_cx(|cx| {
             ed.handle_action(&EditorAction::ToggleComment, cx);
         });
         assert_eq!(ed.active_buffer().unwrap().text(), "a {\n    color: red;\n}\n");
         // A selection over two lines becomes one block from the first indent.
-        ed.active_buffer_mut().unwrap().sel = Selection::new(2, 10);
+        ed.active_buffer_mut().unwrap().view.sel = Selection::new(2, 10);
         with_cx(|cx| {
             ed.handle_action(&EditorAction::ToggleComment, cx);
         });
@@ -1546,7 +1392,7 @@ mod tests {
     #[test]
     fn python_colon_indents() {
         let mut ed = editor_with("a.py", "def f():");
-        ed.active_buffer_mut().unwrap().sel = Selection::point(8);
+        ed.active_buffer_mut().unwrap().view.sel = Selection::point(8);
         with_cx(|cx| {
             ed.handle_action(&EditorAction::InsertNewline, cx);
         });
@@ -1692,7 +1538,7 @@ mod tests {
         let mut ed = editor_with("a.txt", &text);
         ed.goto_line(20, 1);
         ed.open_text(PathBuf::from("/tmp/b.txt"), &text, false, &Theme::default());
-        ed.activate_index(0);
+        ed.show_slot(0);
         ed.force_close(0);
         assert_eq!(caret(&ed).0, "b.txt");
         let config = Config::default();
@@ -1784,8 +1630,9 @@ mod tests {
         assert_eq!(ed.buffers[0].language().and_then(|d| d.line_comment), Some("#"));
     }
 
-    fn names(ed: &Editor) -> Vec<&str> {
-        ed.buffers.iter().map(|b| b.name.as_str()).collect()
+    fn names(ed: &Editor) -> Vec<String> {
+        ed.check_invariants();
+        ed.tab_names()
     }
 
     /// An editor with tabs `a.txt`, `b.txt`, … opened in that order (the
@@ -1817,10 +1664,10 @@ mod tests {
         assert_eq!(names(&ed), ["a.txt", "d.txt", "b.txt", "c.txt"]);
         assert_eq!(ed.active_buffer().unwrap().name, "d.txt", "the moved tab stays active");
         // Pinning c moves it to the front; d follows it.
-        ed.activate_index(3);
+        ed.show_slot(3);
         act(&mut ed, EditorAction::TogglePinTab);
         assert_eq!(names(&ed), ["c.txt", "a.txt", "d.txt", "b.txt"]);
-        ed.activate_index(2);
+        ed.show_slot(2);
         act(&mut ed, EditorAction::TogglePinTab);
         assert_eq!(names(&ed), ["c.txt", "d.txt", "a.txt", "b.txt"]);
         // Pinned tabs move only among themselves, the others after them.
@@ -1828,23 +1675,23 @@ mod tests {
         assert_eq!(names(&ed), ["c.txt", "d.txt", "a.txt", "b.txt"]);
         act(&mut ed, EditorAction::MoveTabLeft);
         assert_eq!(names(&ed), ["d.txt", "c.txt", "a.txt", "b.txt"]);
-        ed.activate_index(2);
+        ed.show_slot(2);
         act(&mut ed, EditorAction::MoveTabLeft);
         assert_eq!(names(&ed), ["d.txt", "c.txt", "a.txt", "b.txt"]);
         // A new tab never opens among the pinned ones.
-        ed.activate_index(0);
+        ed.show_slot(0);
         ed.open_text(PathBuf::from("/tmp/e.txt"), "", false, &Theme::default());
         assert_eq!(names(&ed), ["d.txt", "c.txt", "e.txt", "a.txt", "b.txt"]);
         // Close others keeps the active tab and the pinned ones.
-        ed.activate_index(3);
+        ed.show_slot(3);
         assert!(act(&mut ed, EditorAction::CloseOtherTabs).is_empty());
         assert_eq!(names(&ed), ["d.txt", "c.txt", "a.txt"]);
         assert_eq!(ed.active_buffer().unwrap().name, "a.txt");
         // Unpinning moves the tab to the start of the others.
-        ed.activate_index(0);
+        ed.show_slot(0);
         act(&mut ed, EditorAction::TogglePinTab);
         assert_eq!(names(&ed), ["c.txt", "d.txt", "a.txt"]);
-        assert!(!ed.buffers[1].pinned && ed.buffers[0].pinned);
+        assert!(!ed.focused_group().views[1].pinned && ed.focused_group().views[0].pinned);
         // Close all but pinned, then close all.
         act(&mut ed, EditorAction::CloseUnpinnedTabs);
         assert_eq!(names(&ed), ["c.txt"]);
@@ -1855,9 +1702,9 @@ mod tests {
     #[test]
     fn close_others_asks_about_unsaved_tabs() {
         let mut ed = editor_tabs(&Config::default(), 3);
-        ed.activate_index(1);
+        ed.show_slot(1);
         act(&mut ed, EditorAction::InsertText("dirty ".into()));
-        ed.activate_index(0);
+        ed.show_slot(0);
         let fx = act(&mut ed, EditorAction::CloseOtherTabs);
         let ids = match fx.as_slice() {
             [Effect::Dialog(d)] => match &d.id {
@@ -1883,26 +1730,26 @@ mod tests {
         ed.buffers[1].name = "bbbbbbbbbb".into();
         draw(&mut ed);
         let a = ed.buffers[0].id;
-        assert_eq!(ed.tab_hits.rect_of(1), Some(Rect::new(10, 0, 15, 1)));
+        assert_eq!(ed.focused_group().tab_hits.rect_of(1), Some(Rect::new(10, 0, 15, 1)));
         // Over the start of b: a would land at 15..25, so it stays.
-        ed.drag_tab(a, 12);
+        ed.drag_tab(0, a, 12);
         assert_eq!(names(&ed), ["a.txt", "bbbbbbbbbb", "c.txt"]);
-        ed.drag_tab(a, 16);
+        ed.drag_tab(0, a, 16);
         assert_eq!(names(&ed), ["bbbbbbbbbb", "a.txt", "c.txt"]);
         // Stale hit rects are ignored until the next frame.
-        ed.drag_tab(a, 30);
+        ed.drag_tab(0, a, 30);
         assert_eq!(names(&ed), ["bbbbbbbbbb", "a.txt", "c.txt"]);
         draw(&mut ed);
-        ed.drag_tab(a, 30);
+        ed.drag_tab(0, a, 30);
         assert_eq!(names(&ed), ["bbbbbbbbbb", "c.txt", "a.txt"]);
         // Back to the front in one move.
         draw(&mut ed);
-        ed.drag_tab(a, 1);
+        ed.drag_tab(0, a, 1);
         assert_eq!(names(&ed), ["a.txt", "bbbbbbbbbb", "c.txt"]);
         // A pinned tab cannot be dragged past the unpinned ones.
         ed.set_pinned(0, true);
         draw(&mut ed);
-        ed.drag_tab(a, 30);
+        ed.drag_tab(0, a, 30);
         assert_eq!(names(&ed), ["a.txt", "bbbbbbbbbb", "c.txt"]);
     }
 
@@ -1912,16 +1759,16 @@ mod tests {
         config.editor.max_tabs = 3;
         let mut ed = editor_tabs(&config, 3);
         // Recency, oldest first: b, then a (pinned), c (dirty), d.
-        ed.activate_index(1);
-        ed.activate_index(0);
+        ed.show_slot(1);
+        ed.show_slot(0);
         act(&mut ed, EditorAction::TogglePinTab);
-        ed.activate_index(2);
+        ed.show_slot(2);
         act(&mut ed, EditorAction::InsertText("dirty ".into()));
         ed.open_text(PathBuf::from("/tmp/d.txt"), "", false, &Theme::default());
         assert_eq!(ed.enforce_tab_limit(), 1);
         assert_eq!(names(&ed), ["a.txt", "c.txt", "d.txt"]);
         // Only pinned, dirty and active tabs are left: the limit gives way.
-        ed.activate_index(2);
+        ed.show_slot(2);
         act(&mut ed, EditorAction::InsertText("dirty ".into()));
         ed.open_text(PathBuf::from("/tmp/e.txt"), "", false, &Theme::default());
         assert_eq!(ed.enforce_tab_limit(), 0);

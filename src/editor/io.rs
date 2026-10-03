@@ -62,7 +62,7 @@ impl Editor {
         let n = reps.len();
         // Last to first so earlier offsets stay valid.
         let changes: Vec<Change> = reps.into_iter().rev().map(|r| Change::replace(r.start, r.old, r.new)).collect();
-        let caret = b.sel.head;
+        let caret = b.view.sel.head;
         b.apply_then(changes, TxKind::Other, |rope| Selection::point(caret.min(rope.len_chars())));
         n
     }
@@ -158,10 +158,10 @@ impl Editor {
         // Trimming other lines leaves the caret line where it was, so a view
         // that was following the caret need not scroll back to it (autosave
         // must not undo wheel scrolling).
-        let follow = b.follow_key.filter(|k| (k.0, k.1) == (b.sel.head, b.version));
+        let follow = b.view.follow_key.filter(|k| (k.0, k.1) == (b.view.sel.head, b.version));
         b.prepare_for_save(trim, final_newline);
         if let Some((_, _, w, h)) = follow {
-            b.follow_key = Some((b.sel.head, b.version, w, h));
+            b.view.follow_key = Some((b.view.sel.head, b.version, w, h));
         }
         Ok(())
     }
@@ -278,7 +278,7 @@ pub(super) fn replace_with_disk_text(b: &mut Buffer, text: String, path: &Path) 
     b.autosave_conflict = false;
     let old = b.text();
     if old != text {
-        let caret = b.sel.head.min(text.chars().count());
+        let caret = b.view.sel.head.min(text.chars().count());
         b.apply(vec![Change::replace(0, old, text)], Selection::point(caret), TxKind::Other);
     }
     b.mark_saved();

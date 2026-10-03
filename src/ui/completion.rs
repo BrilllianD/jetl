@@ -17,6 +17,7 @@ use ratatui::widgets::{Block, Borders, Clear};
 use unicode_width::UnicodeWidthStr;
 
 use crate::config::theme::Theme;
+use crate::editor::groups::GroupId;
 use crate::lsp::completion::{CompletionState, kind_glyph};
 
 /// Rows shown at most; longer lists scroll.
@@ -29,6 +30,8 @@ const MIN_WIDTH: u16 = 24;
 #[derive(Debug)]
 pub struct CompletionPopup {
     pub state: CompletionState,
+    /// The editor group it was opened in; it closes when focus leaves it.
+    pub group: GroupId,
     /// First row shown.
     scroll: usize,
     /// The popup and its list rows as last drawn (empty when not drawn).
@@ -37,8 +40,8 @@ pub struct CompletionPopup {
 }
 
 impl CompletionPopup {
-    pub fn new(state: CompletionState) -> Self {
-        Self { state, scroll: 0, rect: Rect::default(), rows: Rect::default() }
+    pub fn new(state: CompletionState, group: GroupId) -> Self {
+        Self { state, group, scroll: 0, rect: Rect::default(), rows: Rect::default() }
     }
 
     /// Rows that fit, as last drawn (a page for PgUp/PgDn).

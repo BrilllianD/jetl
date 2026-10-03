@@ -109,8 +109,8 @@ impl Buffer {
         let cur = self.cursor_line_col().0;
         let target = if forward { lines.into_iter().find(|&l| l > cur) } else { lines.into_iter().rev().find(|&l| l < cur) };
         let Some(line) = target else { return false };
-        self.sel = Selection::point(self.rope.line_to_char(line.min(self.rope.len_lines().saturating_sub(1))));
-        self.desired_col = None;
+        self.view.sel = Selection::point(self.rope.line_to_char(line.min(self.rope.len_lines().saturating_sub(1))));
+        self.view.desired_col = None;
         self.undo.break_group = true;
         true
     }

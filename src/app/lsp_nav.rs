@@ -206,7 +206,7 @@ impl App {
     /// The active buffer's id and caret as an LSP position.
     pub(super) fn caret_position(&self) -> Option<(BufferId, Position)> {
         let b = self.editor.active_buffer()?;
-        Some((b.id, pos::position(&b.rope, b.sel.head)))
+        Some((b.id, pos::position(&b.rope, b.view.sel.head)))
     }
 
     /// `lsp.goto_definition` (Ctrl+B, Ctrl+click). Without a server for
@@ -216,7 +216,7 @@ impl App {
         match self.lsp_doc_request(id, pos, DEFINITION, json!({}), PendingTag::Definition) {
             Ok(seq) => self.lsp.nav_seq = seq,
             Err(why) => {
-                let word = self.editor.active_buffer().map(|b| word_at(b, b.sel.head)).unwrap_or_default();
+                let word = self.editor.active_buffer().map(|b| word_at(b, b.view.sel.head)).unwrap_or_default();
                 if !self.lsp.docs.contains_key(&id) && !word.is_empty() {
                     self.open_palette(PaletteKind::Symbols);
                     if let Some(p) = &mut self.palette {
@@ -334,15 +334,15 @@ impl App {
         if targets.is_empty() {
             return self.lsp_hint("No usages found");
         }
-        let word = self.editor.active_buffer().map(|b| word_at(b, b.sel.head)).unwrap_or_default();
+        let word = self.editor.active_buffer().map(|b| word_at(b, b.view.sel.head)).unwrap_or_default();
         let title = if word.is_empty() { "Usages".to_string() } else { format!("Usages of {word}") };
         self.show_location_targets(title, t.seq, targets);
     }
 
     fn lsp_hover_answer(&mut self, t: DocTag, value: Value) {
         let hover = serde_json::from_value::<Option<lsp_types::Hover>>(value).ok().flatten();
-        let Some(head) = self.editor.active_buffer().map(|b| b.sel.head) else { return };
-        match hover.and_then(|h| HoverPopup::new(t.buffer, t.version, head, h.contents)) {
+        let Some(head) = self.editor.active_buffer().map(|b| b.view.sel.head) else { return };
+        match hover.and_then(|h| HoverPopup::new(self.editor.focused_group().id, t.buffer, t.version, head, h.contents)) {
             Some(popup) => self.hover = Some(popup),
             None => self.lsp_hint("No documentation found"),
         }
@@ -403,7 +403,8 @@ impl App {
     pub(crate) fn hover_check(&mut self) {
         let Some(h) = &self.hover else { return };
         let overlay = self.palette.is_some() || self.dialog.is_some() || self.menu.is_some() || self.menu_bar.is_some();
-        let same = self.editor.active_buffer().is_some_and(|b| b.id == h.buffer && b.version == h.version && b.sel.head == h.head);
+        let same = self.editor.focused_group().id == h.group
+            && self.editor.active_buffer().is_some_and(|b| b.id == h.buffer && b.version == h.version && b.view.sel.head == h.head);
         if overlay || !same || !self.focus.is(PanelId::Editor) {
             self.hover = None;
             self.dirty_frame = true;
@@ -470,7 +471,7 @@ mod tests {
 
     fn caret(app: &App) -> (usize, usize) {
         let b = app.editor.active_buffer().unwrap();
-        crate::editor::selection::pos_to_line_col(&b.rope, b.sel.head)
+        crate::editor::selection::pos_to_line_col(&b.rope, b.view.sel.head)
     }
 
     fn act(app: &mut App, a: LspAction) {
@@ -633,7 +634,7 @@ mod tests {
         answer(&mut app, &mut server, "textDocument/hover", hover(doc)).await;
         assert!(app.hover.is_some());
         let buf = draw(&mut app, 80, 24);
-        let (cx, cy) = app.editor.caret_cell.unwrap();
+        let (cx, cy) = app.editor.caret_cell().unwrap();
         // Under the caret line, from the caret column.
         let popup: Vec<String> = (cy + 1..cy + 6).map(|y| row(&buf, y)).collect();
         assert!(popup[0][..].contains('┌'), "{popup:#?}");
@@ -668,7 +669,7 @@ mod tests {
         act(&mut app, LspAction::QuickDoc);
         answer(&mut app, &mut server, "textDocument/hover", hover("one\n\ntwo")).await;
         let buf = draw(&mut app, 80, 24);
-        let (_, cy) = app.editor.caret_cell.unwrap();
+        let (_, cy) = app.editor.caret_cell().unwrap();
         assert!(row(&buf, cy - 1).contains('└'), "{}", row(&buf, cy - 1));
         assert!(row(&buf, cy - 2).contains("two"));
         let _ = std::fs::remove_dir_all(&dir);
@@ -718,7 +719,7 @@ mod tests {
         let mut server = open_on_server(&mut app, &mut servers, "a.rs", A).await;
         app.toasts = Default::default();
         draw(&mut app, 100, 24);
-        let ta = app.editor.text_area;
+        let ta = app.editor.text_area();
         // `helper` on line 2 is at visual column 22 (the emoji and the CJK
         // chars take two cells each): click its `l`, cell 25.
         app.handle_mouse(MouseEvent {
@@ -751,6 +752,28 @@ mod tests {
         let _server = open_on_server(&mut app, &mut servers, "a.rs", A).await;
         act(&mut app, LspAction::QuickDoc);
         assert!(toasts(&app).contains(&"rust-analyzer does not support documentation".to_string()), "{:?}", toasts(&app));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn hover_anchors_in_the_focused_group_and_closes_when_it_changes() {
+        let (mut app, dir) = test_app("lsp-hover-split");
+        let mut servers = with_fake_servers(&mut app, caps());
+        let mut server = open_on_server(&mut app, &mut servers, "a.rs", A).await;
+        app.perform(Action::Editor(EditorAction::SplitRight));
+        goto(&mut app, 1, 21);
+        draw(&mut app, 100, 24);
+        act(&mut app, LspAction::QuickDoc);
+        answer(&mut app, &mut server, "textDocument/hover", hover("doc")).await;
+        app.toasts = Default::default();
+        let buf = draw(&mut app, 100, 24);
+        let (cx, cy) = app.editor.caret_cell().unwrap();
+        assert!(cx > 66, "the caret of the right group");
+        let x0 = (0..100).find(|&x| buf[(x, cy + 1)].symbol() == "┌").unwrap();
+        assert!(x0 > 66, "{x0}");
+        app.perform(Action::Editor(EditorAction::PrevGroup));
+        draw(&mut app, 100, 24);
+        assert!(app.hover.is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
