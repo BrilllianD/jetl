@@ -68,6 +68,10 @@
 "ctrl-q" = "app.quit"
 "f5" = "app.refresh"
 "ctrl-s" = "editor.save"
+# Paste reads the system clipboard (wl-paste, xclip or xsel) into the focused
+# text field: editor, find fields, commit message, palette, dialogs. The
+# terminal's own paste shortcut (Ctrl+Shift+V, Shift+Insert) also works.
+"ctrl-v" = "editor.paste"
 "ctrl-shift-s" = "editor.save_all"
 "f12" = "app.debug_panic"
 
@@ -115,7 +119,6 @@
 "ctrl-a" = "editor.select_all"
 "ctrl-c" = "editor.copy"
 "ctrl-x" = "editor.cut"
-"ctrl-v" = "editor.paste"
 "ctrl-/" = "editor.toggle_comment"
 # Legacy terminals send Ctrl+/ as 0x1F, which crossterm reports as Ctrl+7.
 "ctrl-7" = "editor.toggle_comment"

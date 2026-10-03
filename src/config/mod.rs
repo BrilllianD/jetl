@@ -66,6 +66,7 @@ pub struct Config {
     pub worktree: WorktreeConfig,
     pub keymap: KeymapConfig,
     pub files: FilesConfig,
+    pub clipboard: ClipboardConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -138,6 +139,17 @@ pub struct FilesConfig {
     pub show_ignored: bool,
     /// Watch the project for changes made outside jetl.
     pub watch: bool,
+}
+
+/// System clipboard tools for paste (`util::clipboard`). Empty means
+/// detect from the environment; `"none"` turns the tool off.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct ClipboardConfig {
+    /// Prints the clipboard text on stdout.
+    pub paste_command: String,
+    /// Reads text to put on the clipboard from stdin.
+    pub copy_command: String,
 }
 
 impl Default for EditorConfig {

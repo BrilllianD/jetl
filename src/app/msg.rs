@@ -56,6 +56,7 @@ impl App {
             }
             AppMsg::FsOpDone { generation, op, result } if generation == self.workspace.generation => self.fs_op_done(op, result),
             AppMsg::FsOpDone { op, .. } => tracing::debug!("dropping file operation result of a previous root: {op:?}"),
+            AppMsg::Paste { generation, seq, result } => self.paste_done(generation, seq, result),
             AppMsg::Lsp(_) => {}
         }
     }

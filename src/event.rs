@@ -95,6 +95,13 @@ pub enum AppMsg {
         seq: u64,
         roots: Vec<PathBuf>,
     },
+    /// The system clipboard read by `editor.paste` (`App::paste`), tagged
+    /// with the workspace generation and the request's seq.
+    Paste {
+        generation: u64,
+        seq: u64,
+        result: Result<String, String>,
+    },
     /// Reserved for the language server integration.
     Lsp(LspMsg),
 }

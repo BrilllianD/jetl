@@ -22,6 +22,7 @@ and backlog are in `docs/ROADMAP.md`; settings in `docs/CONFIG.md`; keys in
 | `app/watch.rs` | Starting the filesystem watcher and acting on its batches. |
 | `app/find.rs` | Replace in files (open tabs through the editor, other files off the main thread). |
 | `app/symbols.rs` | Starting symbol index runs (`request_symbols`, through `Coalesce`), applying `AppMsg::Symbols`, re-queuing watcher paths, and `sync_structure` (called by `ui::render` while the Structure window is shown). |
+| `app/clipboard.rs` | Copy (OSC 52, the copy tool, jetl's register) and `editor.paste`: the focused text field (`PasteTarget`), the paste tool run off the main thread (`AppMsg::Paste`, dropped when focus moved), the register fallback with a one-time warning. Dialogs and the palette route the paste key here before their own key handling. |
 | `app/files.rs` | Tree file operations: `run_fs_op` off the main thread, `fs_op_done` (reload the tree, open, retarget or close tabs). |
 | `workspace.rs` | `Workspace` (root and generation), root switching (`App::switch_root`), sessions (JSON per root: tabs in order with their pins, tool window layout and sizes, Git tab, tree hidden/ignored toggles, expanded tree folders; a missing one arrives empty; fields added later are `#[serde(default)]`). `session_loaded` skips tabs already open, applies the layout (sizes clamped, toggles winning over `[files]` config), expands the saved folders on the main thread, then opens the command line file. |
 | `recent_projects.rs` | `state/recent_projects.json`: roots with their last open time, newest first, deduplicated, at most 30. Recorded off the main thread at startup and on every root switch (`App::load_recent_projects`); a missing or corrupt file reads as empty; roots that are no longer directories are not listed. |
@@ -54,7 +55,7 @@ and backlog are in `docs/ROADMAP.md`; settings in `docs/CONFIG.md`; keys in
 | `git/model.rs` | Shared types: status entries (`old_rel` for renames), `DiffKey`, log rows and `LogFilter`, commit details, `BranchInfo` and `BranchOp`, `Blame`, `StashEntry`. |
 | `git/panel/` | The Git tool window: shared state, input routing, header and console (`mod.rs`); the diff pane of every tab (`diff_view.rs`: folded unchanged runs, the current change, syntax colors, changed characters, side-by-side/unified); the Commit tab with amend and message history (`commit.rs`); the Log tab with its filter bar and commit actions (`log.rs`); the Stash tab (`stash.rs`). |
 | `ui/` | `render` (frame order), `layout` (rects and hit testing; zen mode, where the editor text fills the screen and `LayoutState::zen` keeps the hidden tool windows and focus: showing any tool window leaves it, and sessions save the hidden windows, never zen itself), `focus` (panel and tool window ids), `dialog`, `palette`, `menu` (context menu), `status_bar`, `tabs`, `toasts`, `tool_strip`, `event_log` (the Event Log tool window over `App::notifications`: first line per entry, full text on Enter, follows new entries while its last row is selected and in view; the status bar notification opens it), `widgets/{list,text_input}`. |
-| `util/` | `text` (width helpers), `coalesce` (one background request at a time), `fs` (`write_atomic`, shared by saves and replace in files). |
+| `util/` | `text` (width helpers), `coalesce` (one background request at a time), `fs` (`write_atomic`, shared by saves and replace in files), `clipboard` (clipboard tool selection from the environment and `[clipboard]`, running them with a 1 s timeout). |
 
 ## Event flow
 
@@ -127,7 +128,8 @@ Two tags:
   `Symbols` batches (`SymbolIndex::on_batch`; only the newest run applies,
   and it stops older runs through a cancel seq), `RecentProjects`
   (`App::recent_projects_seq`; not tied to the root, so it carries no
-  generation). A result is applied when its seq is not
+  generation), `Paste` (only the newest request applies, and only while
+  the text field it was asked for still has focus). A result is applied when its seq is not
   older than the last applied one. Results keyed by what they describe
   need no seq: diffs by `DiffKey` (each diff pane ignores keys it does not
   show), commit details by sha (the Log or Stash tab, whichever has it
@@ -209,7 +211,10 @@ calls a `set_*` on the open palette), and add an `Accept` variant handled in
 ## Pitfalls
 
 - Mouse capture blocks native selection; Shift+drag passes through in foot,
-  alacritty and kitty. Copy uses OSC 52 (`set -s set-clipboard on` in tmux).
+  alacritty and kitty. Copy uses OSC 52 (`set -s set-clipboard on` in tmux)
+  plus `wl-copy`/`xclip`/`xsel` when found; Ctrl+V reads the clipboard
+  through `wl-paste`/`xclip`/`xsel`, the terminal's paste shortcut through
+  bracketed paste.
 - Without the kitty keyboard protocol (tmux, most legacy terminals)
   Ctrl+Shift+letter, Ctrl+Tab, Ctrl+Enter, Shift+Enter and double Shift do
   not arrive; keep legacy fallbacks in the default keymap.

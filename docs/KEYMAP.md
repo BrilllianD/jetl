@@ -42,6 +42,7 @@ Override any of them in `~/.config/jetl/keymap.toml` (see [CONFIG.md](CONFIG.md)
 | `Ctrl+Alt+Shift+N` * | `palette.symbols` | Go to symbol |
 | `Ctrl+S` | `editor.save` | Save |
 | `Ctrl+Shift+S` * | `editor.save_all` | Save all |
+| `Ctrl+V` | `editor.paste` | Paste |
 | `Alt+Right` | `editor.next_tab` | Next tab |
 | `Alt+Left` | `editor.prev_tab` | Previous tab |
 | `Ctrl+F4` | `editor.close_tab` | Close tab |
@@ -110,7 +111,6 @@ Override any of them in `~/.config/jetl/keymap.toml` (see [CONFIG.md](CONFIG.md)
 | `Ctrl+A` | `editor.select_all` | Select all |
 | `Ctrl+C` | `editor.copy` | Copy |
 | `Ctrl+X` | `editor.cut` | Cut |
-| `Ctrl+V` | `editor.paste` | Paste |
 | `Esc` | `editor.escape` | Escape (close find, clear selection) |
 | `Ctrl+/` | `editor.toggle_comment` | Comment with line comment |
 | `Ctrl+7` | `editor.toggle_comment` | Comment with line comment |

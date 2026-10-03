@@ -70,6 +70,11 @@ show_hidden = true             # show dot files in the Project tree and Go to Fi
 show_ignored = false           # show files ignored by .gitignore in the Project tree and Go to File
                                # (same session rule for the tree)
 watch = true                   # follow changes made outside jetl (tree, git state, open files)
+
+[clipboard]
+paste_command = ""             # prints the system clipboard; "" = detect, "none" = jetl's own last copy only
+copy_command = ""              # takes copied text on stdin, besides OSC 52; "" = the detected tool's
+                               # partner, "none" = OSC 52 only
 ```
 
 With `watch` on, files changed by other programs refresh the Project tree
@@ -88,6 +93,22 @@ re-encode them), and files changed on disk since they were opened or last
 saved; Ctrl+S still saves those. After a failed write it waits for the next
 edit before retrying. `"focus"` needs focus reporting from the terminal; under
 tmux that means `set -g focus-events on`.
+
+Paste (Ctrl+V, `editor.paste`) reads the system clipboard with a command,
+because terminals hand the clipboard over only on their own paste shortcut
+(Ctrl+Shift+V or Shift+Insert, which also works). With `paste_command` empty
+jetl looks on `PATH` once: `wl-paste --no-newline` when `WAYLAND_DISPLAY` is
+set, else `xclip -selection clipboard -o` or `xsel --clipboard --output`
+when `DISPLAY` is set, `pbpaste` on macOS. Commands are split on whitespace
+(no quoting) and killed after 1 s. If none is found or it fails, jetl warns
+once and pastes its own last copy. The text goes to the field that had focus
+when Ctrl+V was pressed; if focus moves before the command answers, it is
+dropped. Copies always go out through OSC 52, and also to the detected tool's
+partner (`wl-copy`, `xclip -i`, `xsel --input`, `pbcopy`), so a terminal
+without OSC 52 still leaves the clipboard and paste in step. That tool keeps
+a process running to serve the clipboard until something else is copied, as
+it does from a shell. A configured `paste_command` gets no copy tool unless
+`copy_command` names one.
 
 ## Indentation and .editorconfig
 

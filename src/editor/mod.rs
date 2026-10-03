@@ -69,7 +69,6 @@ pub struct Editor {
     autosave_idle: Duration,
     /// When a buffer version last changed, as seen by [`Editor::autosave_due`].
     last_edit: Instant,
-    clipboard: String,
     drag: Option<DragMode>,
     /// Files larger than this open without syntax highlighting.
     max_highlight_bytes: usize,
@@ -120,7 +119,6 @@ impl Editor {
             autosave: config.editor.autosave,
             autosave_idle: Duration::from_millis(config.editor.autosave_idle_ms),
             last_edit: Instant::now(),
-            clipboard: String::new(),
             drag: None,
             max_highlight_bytes: config.editor.max_highlight_bytes,
             max_tabs: config.editor.max_tabs,
@@ -959,8 +957,7 @@ impl Editor {
             E::SelectLine => b.select_line(),
             E::Copy => {
                 let text = if b.sel.is_empty() { b.line_text(b.cursor_line_col().0) + b.line_ending.as_str() } else { b.selected_text() };
-                self.clipboard = text;
-                cx.effects.push(Effect::Clipboard(self.clipboard.clone()));
+                cx.effects.push(Effect::Clipboard(text));
             }
             E::Cut => {
                 if b.sel.is_empty() {
@@ -968,16 +965,12 @@ impl Editor {
                     let r = line_range(&b.rope, line);
                     b.sel = Selection::new(r.start, r.end);
                 }
-                self.clipboard = b.selected_text();
+                cx.effects.push(Effect::Clipboard(b.selected_text()));
                 b.delete_selection();
-                cx.effects.push(Effect::Clipboard(self.clipboard.clone()));
             }
-            E::Paste => {
-                if !self.clipboard.is_empty() {
-                    let s = self.clipboard.clone();
-                    b.insert(&s, TxKind::Other);
-                }
-            }
+            // The app reads the clipboard (`App::paste`) and inserts it as
+            // `InsertText`.
+            E::Paste => {}
             E::Escape => {
                 if b.search.is_some() {
                     self.close_find();

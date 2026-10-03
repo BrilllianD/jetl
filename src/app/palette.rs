@@ -148,6 +148,10 @@ impl App {
         let Some(p) = &mut self.palette else { return };
         let res = match r {
             Dispatch::Action(Action::Palette(a)) => p.handle_action(&a),
+            Dispatch::Action(Action::Editor(crate::actions::EditorAction::Paste)) => {
+                self.paste();
+                None
+            }
             Dispatch::Action(Action::App(AppAction::OpenPalette(kind))) => {
                 self.open_palette(kind);
                 None

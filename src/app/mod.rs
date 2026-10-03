@@ -37,6 +37,7 @@ macro_rules! ctx {
 }
 
 // Declared after `ctx!` so the submodules can use it.
+mod clipboard;
 mod dialogs;
 mod effects;
 mod files;
@@ -175,6 +176,8 @@ pub struct App {
     pub editor: Editor,
     /// Watches the root for outside changes; `None` when off or failed.
     watcher: Option<crate::files::watch::Watcher>,
+    /// Clipboard tools, jetl's copy register and the paste in flight.
+    clipboard: clipboard::ClipboardState,
     started: Instant,
 }
 
@@ -238,6 +241,7 @@ impl App {
             git,
             editor: Editor::new(&config),
             watcher: None,
+            clipboard: Default::default(),
             started: Instant::now(),
             config,
             paths,
@@ -452,13 +456,19 @@ impl App {
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
-        if let Some(d) = &mut self.dialog {
+        if self.dialog.is_some() {
             if key.kind == crossterm::event::KeyEventKind::Release {
                 return;
             }
             if let KeyCode::Modifier(_) = key.code {
                 return;
             }
+            // Dialogs take every key, except that the paste key pastes.
+            if self.is_paste_key(key) {
+                self.paste();
+                return;
+            }
+            let Some(d) = &mut self.dialog else { return };
             if let Some(res) = d.handle_key(key) {
                 let d = self.dialog.take().unwrap();
                 self.finish_dialog(d.id, res);
@@ -555,6 +565,11 @@ impl App {
                     ModeAction::Insert => Mode::Insert,
                     ModeAction::Visual => Mode::Visual,
                 };
+                return;
+            }
+            Action::Editor(EditorAction::Paste) => {
+                drop(cx);
+                self.paste();
                 return;
             }
             Action::Editor(a) => self.editor.handle_action(a, &mut cx),
@@ -762,18 +777,6 @@ impl App {
             self.notify(Level::Warn, format!("{} is outside the project", p.display()));
         }
     }
-
-    /// OSC 52 copy so the selection reaches the system clipboard through the
-    /// terminal; the editor keeps its own register for paste.
-    fn copy_to_clipboard(&mut self, text: &str) {
-        use crossterm::clipboard::CopyToClipboard;
-        use std::io::Write;
-        let mut out = std::io::stdout();
-        if crossterm::execute!(out, CopyToClipboard::to_clipboard_from(text)).is_err() {
-            tracing::debug!("OSC 52 copy failed");
-        }
-        let _ = out.flush();
-    }
 }
 
 #[cfg(test)]
@@ -797,7 +800,10 @@ pub(crate) mod tests {
         let root = std::fs::canonicalize(&root).unwrap();
         let paths = Paths { config_dir: dir.join("config"), state_dir: dir.join("state"), cache_dir: dir.join("cache") };
         let open = open(&root);
-        (App::new(root.clone(), Config::default(), paths, open), dir)
+        let mut app = App::new(root.clone(), Config::default(), paths, open);
+        // Never the user's clipboard tools.
+        app.clipboard.tools = Some(crate::util::clipboard::Tools { paste: crate::util::clipboard::Paste::Disabled, copy: None });
+        (app, dir)
     }
 
     #[tokio::test]
@@ -907,7 +913,7 @@ pub(crate) mod tests {
     }
 
     /// Open `name` (with `text`) in a tab of `app`, as a finished load.
-    fn load(app: &mut App, name: &str, text: &str) -> PathBuf {
+    pub(crate) fn load(app: &mut App, name: &str, text: &str) -> PathBuf {
         let path = app.workspace.root.join(name);
         std::fs::write(&path, text).unwrap();
         let generation = app.workspace.generation;
@@ -1221,7 +1227,7 @@ pub(crate) mod tests {
 
     /// Wait for the first bus message `want` accepts and handle it; other
     /// messages are dropped.
-    async fn handle_next(app: &mut App, want: impl Fn(&AppMsg) -> bool) {
+    pub(crate) async fn handle_next(app: &mut App, want: impl Fn(&AppMsg) -> bool) {
         let msg = tokio::time::timeout(Duration::from_secs(5), async {
             loop {
                 match app.bus_rx.recv().await {
