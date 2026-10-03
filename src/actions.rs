@@ -174,6 +174,8 @@ pub enum GitAction {
     LogNewBranch,
     LogCherryPick,
     LogRevert,
+    LogNewTag,
+    LogDeleteTag,
     Commit,
     CommitAndPush,
     CommitBox,
@@ -430,6 +432,8 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "git.log_new_branch" => "Git: new branch at the selected commit", Git(GitAction::LogNewBranch);
         "git.log_cherry_pick" => "Git: cherry-pick the selected commit", Git(GitAction::LogCherryPick);
         "git.log_revert" => "Git: revert the selected commit", Git(GitAction::LogRevert);
+        "git.log_new_tag" => "Git: tag the selected commit", Git(GitAction::LogNewTag);
+        "git.log_delete_tag" => "Git: delete a tag of the selected commit", Git(GitAction::LogDeleteTag);
         "git.commit" => "Git: commit", Git(GitAction::Commit);
         "git.commit_and_push" => "Git: commit and push", Git(GitAction::CommitAndPush);
         "git.commit_box" => "Git: open commit window", Git(GitAction::CommitBox);

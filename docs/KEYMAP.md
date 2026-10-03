@@ -170,6 +170,8 @@ Override any of them in `~/.config/jetl/keymap.toml` (see [CONFIG.md](CONFIG.md)
 | `Alt+Shift+B` | `git.log_new_branch` | Git: new branch at the selected commit |
 | `Alt+Shift+P` | `git.log_cherry_pick` | Git: cherry-pick the selected commit |
 | `Alt+Shift+R` | `git.log_revert` | Git: revert the selected commit |
+| `Alt+Shift+T` | `git.log_new_tag` | Git: tag the selected commit |
+| `Alt+Shift+D` | `git.log_delete_tag` | Git: delete a tag of the selected commit |
 | `Alt+Enter` | `git.commit` | Git: commit |
 | `Ctrl+Enter` * | `git.commit` | Git: commit |
 | `Alt+M` | `git.toggle_amend` | Git: amend the last commit (toggle) |

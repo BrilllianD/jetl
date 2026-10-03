@@ -462,9 +462,21 @@ pub fn branches(root: &Path) -> Result<Vec<BranchInfo>> {
                 behind = bh;
             }
         }
-        out.push(BranchInfo { name, upstream, ahead, behind, current });
+        out.push(BranchInfo { name, upstream, ahead, behind, current, remote: false });
     }
     out.sort_by(|a, b| b.current.cmp(&a.current).then_with(|| a.name.cmp(&b.name)));
+    let mut remotes = Vec::new();
+    for b in repo.branches(Some(BranchType::Remote))? {
+        let (b, _) = b?;
+        // `origin/HEAD` points at another remote branch.
+        if b.get().symbolic_target().ok().flatten().is_some() {
+            continue;
+        }
+        let Some(name) = b.name()?.map(str::to_string) else { continue };
+        remotes.push(BranchInfo { name, upstream: None, ahead: 0, behind: 0, current: false, remote: true });
+    }
+    remotes.sort_by(|a, b| a.name.cmp(&b.name));
+    out.extend(remotes);
     Ok(out)
 }
 
@@ -760,5 +772,24 @@ pub(crate) mod tests {
         assert_eq!(b.commits[0].author, "Test");
         r.write("new.txt", "x\n");
         assert!(blame(&r.dir, &r.dir.join("new.txt")).is_err(), "untracked");
+    }
+
+    #[test]
+    fn branches_list_local_then_remote() {
+        let r = TempRepo::new("branches");
+        r.write("a.txt", "a\n");
+        stage_all(&r.dir).unwrap();
+        commit(&r.dir, "first").unwrap();
+        let repo = Repository::open(&r.dir).unwrap();
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        repo.branch("zeta", &head, false).unwrap();
+        repo.reference("refs/remotes/origin/main", head.id(), false, "test").unwrap();
+        repo.reference_symbolic("refs/remotes/origin/HEAD", "refs/remotes/origin/main", false, "test").unwrap();
+        let b = branches(&r.dir).unwrap();
+        let names: Vec<(&str, bool, bool)> = b.iter().map(|b| (b.name.as_str(), b.current, b.remote)).collect();
+        assert_eq!(names.len(), 3);
+        assert!(names[0].1, "current first");
+        assert_eq!(names[1], ("zeta", false, false));
+        assert_eq!(names[2], ("origin/main", false, true));
     }
 }

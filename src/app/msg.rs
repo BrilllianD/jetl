@@ -198,6 +198,12 @@ impl App {
                 GitOp::Checkout(sha) => self.notify(Level::Info, format!("Checked out {} (detached HEAD)", short(sha))),
                 GitOp::CherryPick(sha) => self.notify(Level::Info, format!("Cherry-picked {}", short(sha))),
                 GitOp::Revert(sha) => self.notify(Level::Info, format!("Reverted {}", short(sha))),
+                GitOp::Merge(b) => self.notify(Level::Info, format!("Merged {b}")),
+                GitOp::Rebase(b) => self.notify(Level::Info, format!("Rebased onto {b}")),
+                GitOp::RenameBranch(b) => self.notify(Level::Info, format!("Renamed the branch to {b}")),
+                GitOp::DeleteBranch { name, .. } => self.notify(Level::Info, format!("Deleted branch {name}")),
+                GitOp::Tag(t) => self.notify(Level::Info, format!("Created tag {t}")),
+                GitOp::DeleteTag(t) => self.notify(Level::Info, format!("Deleted tag {t}")),
                 GitOp::Discard | GitOp::Stash => self.notify(Level::Info, output.clone()),
                 GitOp::Stage | GitOp::Unstage => {}
                 GitOp::WorktreeAdd { .. } | GitOp::WorktreeRemove { .. } | GitOp::WorktreePrune => {}
@@ -212,6 +218,23 @@ impl App {
             // No upstream (one remote) or no default remote (several): ask
             // where to push once the remote is known (GitMsg::PushRemote).
             self.git.load_push_remote(self.branch_label().unwrap_or_default());
+        } else if let GitOp::DeleteBranch { name, force: false } = &op
+            && output.contains("not fully merged")
+        {
+            let msg = format!("Branch '{name}' is not fully merged.\nDelete it anyway? Commits only it has may be lost.");
+            let id = DialogId::DeleteBranch { name: name.clone(), force: true };
+            self.dialog = Some(Dialog::confirm(id, "Delete Branch", &msg, &["Force Delete", "Cancel"]));
+        } else if matches!(op, GitOp::Merge(_) | GitOp::Rebase(_) | GitOp::CherryPick(_) | GitOp::Revert(_)) && output.contains("CONFLICT")
+        {
+            // Conflicted files show as U in the Commit tab.
+            let what = match &op {
+                GitOp::Rebase(_) => {
+                    "Rebase stopped on conflicts: resolve the U files, stage them, then run `git rebase --continue` (or `--abort`)"
+                }
+                GitOp::Merge(_) => "Merge stopped on conflicts: resolve the U files, stage them and commit (or run `git merge --abort`)",
+                _ => "Stopped on conflicts: resolve the U files, stage them and commit",
+            };
+            self.notify(Level::Warn, what);
         } else if matches!(op, GitOp::Commit { .. } | GitOp::Stage | GitOp::Unstage | GitOp::Discard | GitOp::Stash) {
             self.notify(Level::Error, error_line(&output));
         } else {

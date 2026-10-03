@@ -131,8 +131,37 @@ impl App {
             GitRequest::Revert(sha) => {
                 self.git.run_cli(GitOp::Revert(sha.clone()), vec!["revert".into(), "--no-edit".into(), sha]);
             }
-            GitRequest::NewBranchAt { name, sha } => {
-                self.git.run_cli(GitOp::NewBranch(name.clone()), vec!["switch".into(), "-c".into(), name, sha]);
+            GitRequest::NewBranchAt { name, rev } => {
+                self.git.run_cli(GitOp::NewBranch(name.clone()), vec!["switch".into(), "-c".into(), name, rev]);
+            }
+            GitRequest::BranchOps(b) => {
+                let ops = crate::git::model::BranchOp::for_branch(&b, self.git_panel.snapshot().and_then(|s| s.branch.as_deref()));
+                let (ops, items): (Vec<_>, Vec<_>) = ops.into_iter().unzip();
+                let title = format!("Branch '{}'", b.name);
+                self.dialog = Some(Dialog::choice(DialogId::BranchOps { branch: b, ops }, &title, "", items));
+            }
+            GitRequest::Merge(b) => {
+                self.git.run_cli(GitOp::Merge(b.clone()), vec!["merge".into(), "--no-edit".into(), b]);
+            }
+            GitRequest::Rebase(onto) => {
+                self.git.run_cli(GitOp::Rebase(onto.clone()), vec!["rebase".into(), onto]);
+            }
+            GitRequest::CheckoutTracking(remote) => {
+                let local = remote.split_once('/').map_or(remote.as_str(), |(_, l)| l).to_string();
+                self.git.run_cli(GitOp::NewBranch(local), vec!["switch".into(), "--track".into(), remote]);
+            }
+            GitRequest::RenameBranch { from, to } => {
+                self.git.run_cli(GitOp::RenameBranch(to.clone()), vec!["branch".into(), "-m".into(), from, to]);
+            }
+            GitRequest::DeleteBranch { name, force } => {
+                let flag = if force { "-D" } else { "-d" };
+                self.git.run_cli(GitOp::DeleteBranch { name: name.clone(), force }, vec!["branch".into(), flag.into(), name]);
+            }
+            GitRequest::NewTag { name, sha } => {
+                self.git.run_cli(GitOp::Tag(name.clone()), vec!["tag".into(), name, sha]);
+            }
+            GitRequest::DeleteTag(name) => {
+                self.git.run_cli(GitOp::DeleteTag(name.clone()), vec!["tag".into(), "-d".into(), name]);
             }
             GitRequest::ShowCommit(sha) => {
                 self.layout.show(crate::ui::focus::ToolWindowId::Git);

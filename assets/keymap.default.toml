@@ -188,6 +188,8 @@
 "alt-shift-b" = "git.log_new_branch"
 "alt-shift-p" = "git.log_cherry_pick"
 "alt-shift-r" = "git.log_revert"
+"alt-shift-t" = "git.log_new_tag"
+"alt-shift-d" = "git.log_delete_tag"
 "alt-u" = "git.toggle_diff_layout"
 "alt-f" = "git.toggle_diff_collapse"
 "alt-m" = "git.toggle_amend"

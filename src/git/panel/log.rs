@@ -35,6 +35,8 @@ pub(super) enum CommitAction {
     NewBranch,
     CherryPick,
     Revert,
+    NewTag,
+    DeleteTag,
 }
 use crate::ui::widgets::list::ListState;
 
@@ -227,9 +229,26 @@ impl GitPanel {
             CommitAction::Checkout => cx.effects.push(Effect::Git(GitRequest::CheckoutCommit(sha))),
             CommitAction::NewBranch => {
                 let msg = format!("Create and switch to a new branch at {short}:");
-                cx.effects.push(Effect::Dialog(Dialog::input(DialogId::NewBranchAt { sha }, "New Branch", &msg, "", "Create")));
+                cx.effects.push(Effect::Dialog(Dialog::input(DialogId::NewBranchAt { rev: sha }, "New Branch", &msg, "", "Create")));
             }
             CommitAction::CherryPick => cx.effects.push(Effect::Git(GitRequest::CherryPick(sha))),
+            CommitAction::NewTag => {
+                let msg = format!("Tag {short} as:");
+                cx.effects.push(Effect::Dialog(Dialog::input(DialogId::NewTag { sha }, "New Tag", &msg, "", "Create")));
+            }
+            CommitAction::DeleteTag => {
+                let refs = self.log.get(self.log_list.selected).map(|r| r.commit.refs.clone()).unwrap_or_default();
+                let tags: Vec<String> = refs.split(", ").filter_map(|r| r.strip_prefix("tag: ")).map(str::to_string).collect();
+                let d = match tags.as_slice() {
+                    [] => return cx.notify(Level::Info, format!("{short} has no tags")),
+                    [tag] => {
+                        let msg = format!("Delete tag '{tag}'?\nThis cannot be undone.");
+                        Dialog::confirm(DialogId::DeleteTag { tags: tags.clone() }, "Delete Tag", &msg, &["Delete", "Cancel"])
+                    }
+                    _ => Dialog::choice(DialogId::DeleteTag { tags: tags.clone() }, "Delete Tag", "Tag to delete:", tags.clone()),
+                };
+                cx.effects.push(Effect::Dialog(d));
+            }
             CommitAction::Revert => {
                 let subject = self.log.get(self.log_list.selected).map(|r| r.commit.subject.clone()).unwrap_or_default();
                 let msg = format!("Revert {short} {subject}?\nThis adds a commit that undoes it.");
@@ -259,6 +278,8 @@ impl GitPanel {
             MenuItem::new("New Branch…", g(GitAction::LogNewBranch)),
             MenuItem::new("Cherry-Pick", g(GitAction::LogCherryPick)),
             MenuItem::new("Revert Commit…", g(GitAction::LogRevert)),
+            MenuItem::new("New Tag…", g(GitAction::LogNewTag)),
+            MenuItem::new("Delete Tag…", g(GitAction::LogDeleteTag)),
             MenuItem::new("Filter Log…", g(GitAction::LogFilter)),
         ];
         cx.effects.push(Effect::ContextMenu(ContextMenu::new(items, x, y)));

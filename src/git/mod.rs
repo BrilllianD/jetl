@@ -50,6 +50,15 @@ pub enum GitOp {
     Checkout(String),
     CherryPick(String),
     Revert(String),
+    Merge(String),
+    Rebase(String),
+    RenameBranch(String),
+    DeleteBranch {
+        name: String,
+        force: bool,
+    },
+    Tag(String),
+    DeleteTag(String),
     /// `git worktree add`; `path` is the new worktree.
     WorktreeAdd {
         path: PathBuf,
@@ -75,6 +84,8 @@ impl GitOp {
                 | GitOp::Checkout(_)
                 | GitOp::CherryPick(_)
                 | GitOp::Revert(_)
+                | GitOp::Merge(_)
+                | GitOp::Rebase(_)
         )
     }
 }
@@ -200,8 +211,27 @@ pub enum GitRequest {
     Revert(String),
     NewBranchAt {
         name: String,
+        rev: String,
+    },
+    /// The branches popup's operations for this branch.
+    BranchOps(BranchInfo),
+    Merge(String),
+    /// Confirmed already (`DialogId::RebaseOnto`).
+    Rebase(String),
+    CheckoutTracking(String),
+    RenameBranch {
+        from: String,
+        to: String,
+    },
+    DeleteBranch {
+        name: String,
+        force: bool,
+    },
+    NewTag {
+        name: String,
         sha: String,
     },
+    DeleteTag(String),
     /// Show a commit in the Log tab (from the blame column).
     ShowCommit(String),
     /// `git apply` a patch (a diff block); `op` is what it counts as

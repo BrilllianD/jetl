@@ -164,6 +164,49 @@ pub struct BranchInfo {
     pub ahead: usize,
     pub behind: usize,
     pub current: bool,
+    /// A remote-tracking branch (`origin/main`); listed after local ones.
+    pub remote: bool,
+}
+
+/// What the branches popup offers for a branch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BranchOp {
+    Checkout,
+    /// A remote branch: a local branch of the same name tracking it.
+    CheckoutTracking,
+    NewFrom,
+    Merge,
+    Rebase,
+    Rename,
+    Delete,
+}
+
+impl BranchOp {
+    /// The operations for `b`, and their labels (`current` is the branch
+    /// checked out now, if any).
+    pub fn for_branch(b: &BranchInfo, current: Option<&str>) -> Vec<(BranchOp, String)> {
+        let name = &b.name;
+        let cur = current.unwrap_or("HEAD");
+        let mut v = Vec::new();
+        if b.remote {
+            let local = name.split_once('/').map_or(name.as_str(), |(_, l)| l);
+            v.push((BranchOp::CheckoutTracking, format!("Checkout as new local branch '{local}'")));
+        } else if !b.current {
+            v.push((BranchOp::Checkout, "Checkout".to_string()));
+        }
+        v.push((BranchOp::NewFrom, format!("New Branch from '{name}'…")));
+        if !b.current {
+            v.push((BranchOp::Merge, format!("Merge '{name}' into '{cur}'")));
+            v.push((BranchOp::Rebase, format!("Rebase '{cur}' onto '{name}'…")));
+        }
+        if !b.remote {
+            v.push((BranchOp::Rename, "Rename…".to_string()));
+            if !b.current {
+                v.push((BranchOp::Delete, "Delete…".to_string()));
+            }
+        }
+        v
+    }
 }
 
 /// `git blame` of a file at HEAD: the commit of every line.
@@ -340,5 +383,18 @@ mod tests {
         assert_eq!(s.label().as_deref(), Some("main"));
         s.branch = None;
         assert_eq!(s.label().as_deref(), Some("01234567"));
+    }
+
+    #[test]
+    fn branch_ops_depend_on_the_branch() {
+        let b = |name: &str, current, remote| BranchInfo { name: name.into(), upstream: None, ahead: 0, behind: 0, current, remote };
+        let ops = |b: &BranchInfo| BranchOp::for_branch(b, Some("main")).into_iter().map(|(op, _)| op).collect::<Vec<_>>();
+        use BranchOp::*;
+        assert_eq!(ops(&b("dev", false, false)), [Checkout, NewFrom, Merge, Rebase, Rename, Delete]);
+        assert_eq!(ops(&b("main", true, false)), [NewFrom, Rename]);
+        assert_eq!(ops(&b("origin/dev", false, true)), [CheckoutTracking, NewFrom, Merge, Rebase]);
+        let labels = BranchOp::for_branch(&b("origin/dev", false, true), Some("main"));
+        assert_eq!(labels[0].1, "Checkout as new local branch 'dev'");
+        assert_eq!(labels[2].1, "Merge 'origin/dev' into 'main'");
     }
 }

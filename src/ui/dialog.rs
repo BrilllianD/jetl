@@ -57,9 +57,31 @@ pub enum DialogId {
     LogFilterPath,
     /// Log of a branch: item `i` is `revs[i]`.
     LogBranch(Vec<crate::git::LogRev>),
-    /// Name of a new branch at the commit.
+    /// Name of a new branch starting at a commit or branch.
     NewBranchAt {
+        rev: String,
+    },
+    /// The branches popup's operations for a branch: item `i` is `ops[i]`.
+    BranchOps {
+        branch: crate::git::BranchInfo,
+        ops: Vec<crate::git::model::BranchOp>,
+    },
+    RenameBranch {
+        from: String,
+    },
+    DeleteBranch {
+        name: String,
+        force: bool,
+    },
+    RebaseOnto {
+        onto: String,
+    },
+    NewTag {
         sha: String,
+    },
+    /// Delete one of these tags (several on the commit: a choice first).
+    DeleteTag {
+        tags: Vec<String>,
     },
     RevertCommit {
         sha: String,

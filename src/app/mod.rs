@@ -1672,4 +1672,46 @@ pub(crate) mod tests {
         assert!(matches!(d.id, DialogId::RevertCommit { .. }) && d.message.contains("init"));
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    fn git(app: &App, args: &[&str]) {
+        let out = std::process::Command::new("git").args(args).current_dir(&app.workspace.root).output().unwrap();
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    }
+
+    #[tokio::test]
+    async fn branch_delete_asks_to_force_and_merge_conflicts_show_as_u() {
+        use crate::git::model::BranchOp;
+        let (mut app, dir) = test_app("branches");
+        init_repo(&app, &[("a.txt", "a\n")]);
+        let main = crate::git::repo::status(&app.workspace.root).unwrap().branch.unwrap();
+        git(&app, &["switch", "-qc", "dev"]);
+        std::fs::write(app.workspace.root.join("a.txt"), "dev\n").unwrap();
+        git(&app, &["commit", "-qam", "dev change"]);
+        git(&app, &["switch", "-q", &main]);
+        std::fs::write(app.workspace.root.join("a.txt"), "main\n").unwrap();
+        git(&app, &["commit", "-qam", "main change"]);
+        feed_status(&mut app, 1);
+        let dev = crate::git::repo::branches(&app.workspace.root).unwrap().into_iter().find(|b| b.name == "dev").unwrap();
+        // The popup lists the operations; Delete asks first.
+        app.git_request(crate::git::GitRequest::BranchOps(dev.clone()));
+        let d = app.dialog.take().expect("branch operations");
+        let DialogId::BranchOps { ops, .. } = &d.id else { panic!("{:?}", d.id) };
+        let delete = ops.iter().position(|o| *o == BranchOp::Delete).unwrap();
+        app.finish_dialog(d.id.clone(), DialogResult::Choice(delete));
+        let d = app.dialog.take().expect("confirm");
+        assert_eq!(d.id, DialogId::DeleteBranch { name: "dev".into(), force: false });
+        app.finish_dialog(d.id, DialogResult::Button(0));
+        handle_next(&mut app, git_op_done).await;
+        // Not merged: git refuses, and the app offers to force it.
+        let d = app.dialog.take().expect("force?");
+        assert_eq!(d.id, DialogId::DeleteBranch { name: "dev".into(), force: true });
+        app.finish_dialog(d.id, DialogResult::Cancel);
+        // Merging it conflicts; the file shows as conflicted.
+        app.git_request(crate::git::GitRequest::Merge("dev".into()));
+        handle_next(&mut app, git_op_done).await;
+        assert!(app.notifications.iter().any(|n| n.text.starts_with("Merge stopped on conflicts")), "{:?}", app.notifications);
+        let snap = crate::git::repo::status(&app.workspace.root).unwrap();
+        assert_eq!(snap.entries[0].status, crate::git::model::FileStatus::Conflicted);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

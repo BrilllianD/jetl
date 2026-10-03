@@ -3,7 +3,8 @@
 use super::{App, Ctx};
 use crate::event::Level;
 use crate::files::ops::{FsOp, check_name};
-use crate::git::GitOp;
+use crate::git::model::BranchOp;
+use crate::git::{BranchInfo, GitOp, GitRequest};
 use crate::ui::dialog::{Dialog, DialogId, DialogResult};
 use crate::ui::focus::PanelId;
 
@@ -24,6 +25,51 @@ impl App {
         self.git_panel.open_log_filter_dialog(i, &mut cx);
         let fx = cx.effects;
         self.apply_effects(fx);
+    }
+
+    /// A branch or tag name typed in a dialog, or `None` (with a warning)
+    /// when git would take it for an option or split it.
+    fn ref_name(&mut self, text: &str, what: &str) -> Option<String> {
+        let name = text.trim().to_string();
+        if name.is_empty() || name.starts_with('-') || name.contains(char::is_whitespace) {
+            self.notify(Level::Warn, format!("Invalid {what} name {name:?}"));
+            return None;
+        }
+        Some(name)
+    }
+
+    /// Run a choice from the branches popup.
+    fn branch_op(&mut self, b: BranchInfo, op: BranchOp) {
+        let name = b.name.clone();
+        let current = self.branch_label().unwrap_or_else(|| "HEAD".into());
+        match op {
+            BranchOp::Checkout => self.switch_branch(name),
+            BranchOp::CheckoutTracking => self.git_request(GitRequest::CheckoutTracking(name)),
+            BranchOp::NewFrom => {
+                let msg = format!("Create and switch to a new branch from '{name}':");
+                self.dialog = Some(Dialog::input(DialogId::NewBranchAt { rev: name }, "New Branch", &msg, "", "Create"));
+            }
+            BranchOp::Merge => self.git_request(GitRequest::Merge(name)),
+            BranchOp::Rebase => {
+                let msg =
+                    format!("Rebase '{current}' onto '{name}'?\nThis rewrites the commits of '{current}'; conflicts stop it halfway.");
+                self.dialog = Some(Dialog::confirm(DialogId::RebaseOnto { onto: name }, "Rebase", &msg, &["Rebase", "Cancel"]));
+            }
+            BranchOp::Rename => {
+                let msg = format!("Rename branch '{name}' to:");
+                self.dialog = Some(Dialog::input(DialogId::RenameBranch { from: name.clone() }, "Rename Branch", &msg, &name, "Rename"));
+            }
+            BranchOp::Delete => {
+                let msg = format!("Delete branch '{name}'?");
+                self.dialog =
+                    Some(Dialog::confirm(DialogId::DeleteBranch { name, force: false }, "Delete Branch", &msg, &["Delete", "Cancel"]));
+            }
+        }
+    }
+
+    pub(super) fn confirm_delete_tag(&mut self, tag: String) {
+        let msg = format!("Delete tag '{tag}'?\nThis cannot be undone.");
+        self.dialog = Some(Dialog::confirm(DialogId::DeleteTag { tags: vec![tag] }, "Delete Tag", &msg, &["Delete", "Cancel"]));
     }
 
     pub(super) fn request_quit(&mut self) {
@@ -131,12 +177,38 @@ impl App {
                     self.edit_log_filter(|f| f.rev = rev);
                 }
             }
-            (DialogId::NewBranchAt { sha }, DialogResult::Text(t)) => {
-                let name = t.trim().to_string();
-                if name.is_empty() || name.starts_with('-') || name.contains(char::is_whitespace) {
-                    self.notify(Level::Warn, format!("Invalid branch name {name:?}"));
-                } else {
-                    self.git_request(crate::git::GitRequest::NewBranchAt { name, sha });
+            (DialogId::NewBranchAt { rev }, DialogResult::Text(t)) => {
+                if let Some(name) = self.ref_name(&t, "branch") {
+                    self.git_request(GitRequest::NewBranchAt { name, rev });
+                }
+            }
+            (DialogId::BranchOps { branch, ops }, DialogResult::Choice(i)) => {
+                if let Some(op) = ops.get(i).copied() {
+                    self.branch_op(branch, op);
+                }
+            }
+            (DialogId::RenameBranch { from }, DialogResult::Text(t)) => {
+                if let Some(to) = self.ref_name(&t, "branch")
+                    && to != from
+                {
+                    self.git_request(GitRequest::RenameBranch { from, to });
+                }
+            }
+            (DialogId::DeleteBranch { name, force }, DialogResult::Button(0)) => self.git_request(GitRequest::DeleteBranch { name, force }),
+            (DialogId::RebaseOnto { onto }, DialogResult::Button(0)) => self.git_request(GitRequest::Rebase(onto)),
+            (DialogId::NewTag { sha }, DialogResult::Text(t)) => {
+                if let Some(name) = self.ref_name(&t, "tag") {
+                    self.git_request(GitRequest::NewTag { name, sha });
+                }
+            }
+            (DialogId::DeleteTag { tags }, DialogResult::Choice(i)) => {
+                if let Some(tag) = tags.get(i) {
+                    self.confirm_delete_tag(tag.clone());
+                }
+            }
+            (DialogId::DeleteTag { tags }, DialogResult::Button(0)) => {
+                if let Some(tag) = tags.into_iter().next() {
+                    self.git_request(GitRequest::DeleteTag(tag));
                 }
             }
             (DialogId::RevertCommit { sha }, DialogResult::Button(0)) => self.git_request(crate::git::GitRequest::Revert(sha)),

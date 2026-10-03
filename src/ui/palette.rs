@@ -69,7 +69,8 @@ pub struct ActionEntry {
 pub enum Accept {
     OpenFile(PathBuf),
     Action(Action),
-    SwitchBranch(String),
+    /// The branches popup's operations for a branch.
+    Branch(crate::git::BranchInfo),
     NewBranch,
     SwitchRoot(PathBuf),
     /// Open a file at a 0-based line and char column.
@@ -297,7 +298,7 @@ impl Palette {
             }
             Source::Actions => Accept::Action(self.actions.get(i)?.action.clone()),
             Source::Branches if i == 0 => Accept::NewBranch,
-            Source::Branches => Accept::SwitchBranch(self.branches.get(i - 1)?.name.clone()),
+            Source::Branches => Accept::Branch(self.branches.get(i - 1)?.clone()),
         };
         Some(PaletteResult::Accept(a))
     }

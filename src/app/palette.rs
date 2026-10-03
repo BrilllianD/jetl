@@ -175,7 +175,7 @@ impl App {
             PaletteResult::Cancel => {}
             PaletteResult::Accept(Accept::OpenFile(p)) => self.open_file(p, true),
             PaletteResult::Accept(Accept::Action(a)) => self.perform(a),
-            PaletteResult::Accept(Accept::SwitchBranch(name)) => self.switch_branch(name),
+            PaletteResult::Accept(Accept::Branch(b)) => self.git_request(GitRequest::BranchOps(b)),
             PaletteResult::Accept(Accept::NewBranch) => self.git_request(GitRequest::NewBranch),
             PaletteResult::Accept(Accept::SwitchRoot(root)) => self.apply_effects(vec![Effect::SwitchRoot(root)]),
             PaletteResult::Accept(Accept::OpenFileAt { path, line, col }) => {

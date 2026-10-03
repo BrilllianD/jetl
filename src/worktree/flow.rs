@@ -42,7 +42,7 @@ impl App {
                 let name = t.trim().to_string();
                 if name.is_empty() || name.starts_with('-') || name.contains(char::is_whitespace) {
                     self.notify(Level::Warn, format!("Invalid branch name {name:?}"));
-                } else if self.git_panel.branches.iter().any(|b| b.name == name) {
+                } else if self.git_panel.branches.iter().any(|b| !b.remote && b.name == name) {
                     self.notify(Level::Warn, format!("Branch {name} already exists; choose \"Existing branch\""));
                 } else {
                     self.ask_worktree_path(name, true);
@@ -57,7 +57,7 @@ impl App {
 
     /// The branch list arrived for the "Existing branch" step.
     pub fn open_existing_branch_dialog(&mut self) {
-        let names: Vec<String> = self.git_panel.branches.iter().map(|b| b.name.clone()).collect();
+        let names: Vec<String> = self.git_panel.branches.iter().filter(|b| !b.remote).map(|b| b.name.clone()).collect();
         let free = free_branches(&names, &self.worktrees.list);
         if free.is_empty() {
             self.notify(Level::Info, "Every local branch is checked out in a worktree; create a new branch instead");
