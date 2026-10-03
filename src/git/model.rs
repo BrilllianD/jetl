@@ -87,6 +87,23 @@ pub struct ChangeEntry {
     /// Path relative to the work tree, `/`-separated as git reports it.
     pub rel: String,
     pub abs: PathBuf,
+    /// Path before a rename (`status` is `Renamed`).
+    pub old_rel: Option<String>,
+}
+
+impl ChangeEntry {
+    /// `rel`, or `old -> new` for a rename.
+    pub fn label(&self) -> String {
+        match &self.old_rel {
+            Some(old) => format!("{old} -> {}", self.rel),
+            None => self.rel.clone(),
+        }
+    }
+
+    /// Paths to stage or unstage: a rename is its old and new path.
+    pub fn paths(&self) -> Vec<String> {
+        self.old_rel.iter().cloned().chain([self.rel.clone()]).collect()
+    }
 }
 
 /// Result of one status scan.
@@ -171,24 +188,42 @@ pub struct LogCommit {
 pub struct CommitDetails {
     pub sha: String,
     pub body: String,
-    /// (status letter, path) from `git diff-tree --name-status`.
-    pub files: Vec<(char, String)>,
+    /// From `git diff-tree --name-status`.
+    pub files: Vec<CommitFile>,
+}
+
+/// One changed file of a commit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommitFile {
+    pub status: char,
+    pub path: String,
+    /// Source path of a rename or copy.
+    pub old: Option<String>,
 }
 
 /// What the diff view shows.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DiffKey {
     /// A working tree change: Staged = HEAD vs index, Unstaged = index vs
-    /// file, Untracked = nothing vs file.
-    Change { section: Section, rel: String },
-    /// A file in a commit: `sha^:path` vs `sha:path`.
-    Commit { sha: String, rel: String },
+    /// file, Untracked = nothing vs file. `old` is the path before a
+    /// rename, read on the old side.
+    Change { section: Section, rel: String, old: Option<String> },
+    /// A file in a commit: `sha^:old` (or `sha^:path`) vs `sha:path`.
+    Commit { sha: String, rel: String, old: Option<String> },
 }
 
 impl DiffKey {
     pub fn rel(&self) -> &str {
         match self {
             DiffKey::Change { rel, .. } | DiffKey::Commit { rel, .. } => rel,
+        }
+    }
+
+    /// `rel`, or `old -> new` for a rename.
+    pub fn label(&self) -> String {
+        match self {
+            DiffKey::Change { rel, old: Some(old), .. } | DiffKey::Commit { rel, old: Some(old), .. } => format!("{old} -> {rel}"),
+            _ => self.rel().to_string(),
         }
     }
 }

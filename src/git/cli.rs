@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use anyhow::{Result, anyhow};
 
-use super::model::{CommitDetails, LogCommit, LogRow};
+use super::model::{CommitDetails, CommitFile, LogCommit, LogRow};
 
 pub const TIMEOUT: Duration = Duration::from_secs(120);
 
@@ -164,13 +164,14 @@ pub fn parse_log(text: &str) -> Vec<LogRow> {
 }
 
 /// Parse `git diff-tree --name-status` lines (`M\tpath`, `R100\told\tnew`).
-pub fn parse_name_status(text: &str) -> Vec<(char, String)> {
+pub fn parse_name_status(text: &str) -> Vec<CommitFile> {
     text.lines()
         .filter_map(|l| {
             let mut parts = l.split('\t');
-            let st = parts.next()?.chars().next()?;
+            let status = parts.next()?.chars().next()?;
             let path = parts.next_back()?.to_string();
-            Some((st, path))
+            let old = parts.next().filter(|_| matches!(status, 'R' | 'C')).map(str::to_string);
+            Some(CommitFile { status, path, old })
         })
         .collect()
 }
@@ -179,9 +180,10 @@ pub fn parse_name_status(text: &str) -> Vec<(char, String)> {
 /// parent, matching the `sha^` side of the file diff).
 pub async fn commit_details(root: &Path, sha: &str) -> Result<CommitDetails> {
     let body = git_ok(root, &args(&["show", "-s", "--format=%B", sha])).await?.stdout_text();
-    let files = git_ok(root, &args(&["diff-tree", "--no-commit-id", "--name-status", "-r", "--root", "--diff-merges=first-parent", sha]))
-        .await?
-        .stdout_text();
+    let files =
+        git_ok(root, &args(&["diff-tree", "--no-commit-id", "--name-status", "-r", "-M", "--root", "--diff-merges=first-parent", sha]))
+            .await?
+            .stdout_text();
     Ok(CommitDetails { sha: sha.to_string(), body: body.trim_end().to_string(), files: parse_name_status(&files) })
 }
 
@@ -234,7 +236,8 @@ mod tests {
     #[test]
     fn parses_name_status() {
         let v = parse_name_status("M\tsrc/a.rs\nA\tnew file.txt\nR100\told\tnew\n");
-        assert_eq!(v, vec![('M', "src/a.rs".into()), ('A', "new file.txt".into()), ('R', "new".into())]);
+        let f = |status, path: &str, old: Option<&str>| CommitFile { status, path: path.into(), old: old.map(Into::into) };
+        assert_eq!(v, vec![f('M', "src/a.rs", None), f('A', "new file.txt", None), f('R', "new", Some("old"))]);
     }
 
     #[test]

@@ -253,17 +253,20 @@ impl GitService {
     pub fn load_diff(&self, key: DiffKey) {
         let tab_width = self.tab_width;
         match key.clone() {
-            DiffKey::Change { section, rel } => {
+            DiffKey::Change { section, rel, old } => {
                 self.blocking(
-                    move |root| repo::change_texts(root, section, &rel).map(|(old, new)| diff::DiffDoc::build(&old, &new, tab_width)),
+                    move |root| {
+                        repo::change_texts(root, section, &rel, old.as_deref())
+                            .map(|(old, new)| diff::DiffDoc::build(&old, &new, tab_width))
+                    },
                     move |generation, result| GitMsg::Diff { generation, key, result },
                 );
             }
-            DiffKey::Commit { sha, rel } => {
+            DiffKey::Commit { sha, rel, old } => {
                 let (root, generation, tx) = (self.root.clone(), self.generation, self.tx.clone());
                 tokio::spawn(async move {
                     let result = async {
-                        let old = cli::show_file(&root, &format!("{sha}^"), &rel).await?;
+                        let old = cli::show_file(&root, &format!("{sha}^"), old.as_deref().unwrap_or(&rel)).await?;
                         let new = cli::show_file(&root, &sha, &rel).await?;
                         tokio::task::spawn_blocking(move || diff::DiffDoc::build(&old, &new, tab_width)).await.map_err(anyhow::Error::from)
                     }

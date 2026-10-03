@@ -27,18 +27,36 @@ pub fn rel_path(workdir: &Path, abs: &Path) -> Option<String> {
 pub fn status(root: &Path) -> Result<StatusSnapshot> {
     let (repo, workdir) = open(root)?;
     let mut opts = StatusOptions::new();
-    opts.include_untracked(true).recurse_untracked_dirs(true).include_ignored(false).exclude_submodules(false);
+    opts.include_untracked(true)
+        .recurse_untracked_dirs(true)
+        .include_ignored(false)
+        .exclude_submodules(false)
+        .renames_head_to_index(true)
+        .renames_index_to_workdir(true);
     let statuses = repo.statuses(Some(&mut opts)).context("git status")?;
     let mut entries = Vec::new();
     let mut files = Vec::new();
     for s in statuses.iter() {
+        // The entry path is the old one of a rename; each side's new path
+        // comes from its delta.
         let rel = String::from_utf8_lossy(s.path_bytes()).into_owned();
-        let abs = workdir.join(&rel);
         let st = s.status();
-        let mut push = |section, status| entries.push(ChangeEntry { section, status, rel: rel.clone(), abs: abs.clone() });
+        let side = |delta: Option<git2::DiffDelta>, renamed: bool| {
+            let path = |f: git2::DiffFile| f.path_bytes().map(|p| String::from_utf8_lossy(p).into_owned());
+            match delta {
+                Some(d) => (path(d.new_file()).unwrap_or_else(|| rel.clone()), if renamed { path(d.old_file()) } else { None }),
+                None => (rel.clone(), None),
+            }
+        };
+        let index_side = side(s.head_to_index(), st.contains(Status::INDEX_RENAMED));
+        let wt_side = side(s.index_to_workdir(), st.contains(Status::WT_RENAMED));
+        let mut push = |section, status, (rel, old_rel): (String, Option<String>)| {
+            entries.push(ChangeEntry { section, status, abs: workdir.join(&rel), rel, old_rel })
+        };
+        let abs = workdir.join(&wt_side.0);
         if st.is_conflicted() {
-            push(Section::Unstaged, FileStatus::Conflicted);
-            files.push((abs, FileStatus::Conflicted));
+            push(Section::Unstaged, FileStatus::Conflicted, (rel.clone(), None));
+            files.push((workdir.join(&rel), FileStatus::Conflicted));
             continue;
         }
         let index = if st.contains(Status::INDEX_NEW) {
@@ -64,11 +82,11 @@ pub fn status(root: &Path) -> Result<StatusSnapshot> {
             None
         };
         if let Some(i) = index {
-            push(Section::Staged, i);
+            push(Section::Staged, i, index_side.clone());
         }
         match wt {
-            Some(FileStatus::Untracked) => push(Section::Untracked, FileStatus::Untracked),
-            Some(w) => push(Section::Unstaged, w),
+            Some(FileStatus::Untracked) => push(Section::Untracked, FileStatus::Untracked, wt_side),
+            Some(w) => push(Section::Unstaged, w, wt_side),
             None => {}
         }
         // Tree color: a staged new file stays "added" even when edited again.
@@ -145,15 +163,17 @@ pub fn blob_text(root: &Path, abs: &Path, which: BlobWhich) -> Option<String> {
     Some(String::from_utf8_lossy(&bytes).into_owned())
 }
 
-/// Old and new contents for a working tree change.
-pub fn change_texts(root: &Path, section: Section, rel: &str) -> Result<(Vec<u8>, Vec<u8>)> {
+/// Old and new contents for a working tree change; `old` is the path
+/// before a rename, read on the old side.
+pub fn change_texts(root: &Path, section: Section, rel: &str, old: Option<&str>) -> Result<(Vec<u8>, Vec<u8>)> {
     let (repo, wd) = open(root)?;
     let workfile = || std::fs::read(wd.join(rel)).unwrap_or_default();
+    let old_rel = old.unwrap_or(rel);
     Ok(match section {
         Section::Staged => {
-            (read_blob(&repo, BlobWhich::Head, rel).unwrap_or_default(), read_blob(&repo, BlobWhich::Index, rel).unwrap_or_default())
+            (read_blob(&repo, BlobWhich::Head, old_rel).unwrap_or_default(), read_blob(&repo, BlobWhich::Index, rel).unwrap_or_default())
         }
-        Section::Unstaged => (read_blob(&repo, BlobWhich::Index, rel).unwrap_or_default(), workfile()),
+        Section::Unstaged => (read_blob(&repo, BlobWhich::Index, old_rel).unwrap_or_default(), workfile()),
         Section::Untracked => (Vec::new(), workfile()),
     })
 }
@@ -380,7 +400,7 @@ pub(crate) mod tests {
             sections(&r.dir),
             vec![(Section::Staged, FileStatus::Modified, "a.txt".into()), (Section::Staged, FileStatus::Deleted, "dir/b.txt".into())]
         );
-        let (old, new) = change_texts(&r.dir, Section::Staged, "a.txt").unwrap();
+        let (old, new) = change_texts(&r.dir, Section::Staged, "a.txt", None).unwrap();
         assert_eq!((old.as_slice(), new.as_slice()), (b"one\n".as_slice(), b"one\nmore\n".as_slice()));
         unstage_all(&r.dir).unwrap();
         assert!(sections(&r.dir).iter().all(|(s, _, _)| *s == Section::Unstaged));
@@ -406,5 +426,45 @@ pub(crate) mod tests {
         cfg.set_str("branch.main.pushRemote", "upstream").unwrap();
         assert_eq!(push_remote(&r.dir, "main").unwrap(), PushRemote::One("upstream".into()));
         assert_eq!(push_remote(&r.dir, "other").unwrap(), PushRemote::One("fork".into()));
+    }
+
+    #[test]
+    fn renames_show_old_and_new_path() {
+        let r = TempRepo::new("renames");
+        let text = "line one\nline two\nline three\nline four\n";
+        r.write("old.txt", text);
+        stage_all(&r.dir).unwrap();
+        commit(&r.dir, "first").unwrap();
+        // A rename in the working tree: deleted tracked file plus a new one.
+        std::fs::rename(r.dir.join("old.txt"), r.dir.join("new.txt")).unwrap();
+        r.write("new.txt", &format!("{text}line five\n"));
+        let snap = status(&r.dir).unwrap();
+        let e = &snap.entries[0];
+        assert_eq!(snap.entries.len(), 1);
+        assert_eq!(
+            (e.section, e.status, e.rel.as_str(), e.old_rel.as_deref()),
+            (Section::Unstaged, FileStatus::Renamed, "new.txt", Some("old.txt"))
+        );
+        assert_eq!(e.label(), "old.txt -> new.txt");
+        let (old, new) = change_texts(&r.dir, Section::Unstaged, "new.txt", Some("old.txt")).unwrap();
+        assert_eq!(old, text.as_bytes());
+        assert!(new.ends_with(b"five\n"));
+        // Staging both paths records the rename in the index.
+        stage(&r.dir, &e.paths()).unwrap();
+        let snap = status(&r.dir).unwrap();
+        let e = &snap.entries[0];
+        assert_eq!(
+            (e.section, e.status, e.rel.as_str(), e.old_rel.as_deref()),
+            (Section::Staged, FileStatus::Renamed, "new.txt", Some("old.txt"))
+        );
+        let (old, _) = change_texts(&r.dir, Section::Staged, "new.txt", Some("old.txt")).unwrap();
+        assert_eq!(old, text.as_bytes());
+        // Edited again after staging: the unstaged entry is the new path.
+        r.write("new.txt", "edited\n");
+        let snap = status(&r.dir).unwrap();
+        let e = &snap.entries[1];
+        assert_eq!((e.section, e.status, e.rel.as_str(), e.old_rel.as_deref()), (Section::Unstaged, FileStatus::Modified, "new.txt", None));
+        unstage(&r.dir, &snap.entries[0].paths()).unwrap();
+        assert_eq!(status(&r.dir).unwrap().entries[0].section, Section::Unstaged);
     }
 }

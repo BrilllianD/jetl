@@ -95,7 +95,7 @@ impl GitPanel {
     /// Show the diff of the selected entry. With `reload` the current one is
     /// fetched again (its content may have changed).
     pub(super) fn sync_diff(&mut self, reload: bool, cx: &mut Ctx) {
-        let key = self.selected_entry().map(|e| DiffKey::Change { section: e.section, rel: e.rel.clone() });
+        let key = self.selected_entry().map(|e| DiffKey::Change { section: e.section, rel: e.rel.clone(), old: e.old_rel.clone() });
         match key {
             Some(k) if reload || self.diff.key.as_ref() != Some(&k) => self.diff.request(k, cx),
             Some(_) => {}
@@ -160,8 +160,8 @@ impl GitPanel {
         let Some(row) = self.rows.get(self.list.selected).copied() else { return };
         let Some(s) = &self.snapshot else { return };
         let (section, rels): (Section, Vec<String>) = match row {
-            ListRow::Entry(i) => (s.entries[i].section, vec![s.entries[i].rel.clone()]),
-            ListRow::Header(sec, _) => (sec, s.entries.iter().filter(|e| e.section == sec).map(|e| e.rel.clone()).collect()),
+            ListRow::Entry(i) => (s.entries[i].section, s.entries[i].paths()),
+            ListRow::Header(sec, _) => (sec, s.entries.iter().filter(|e| e.section == sec).flat_map(|e| e.paths()).collect()),
         };
         let req = if section == Section::Staged { GitRequest::Unstage(rels) } else { GitRequest::Stage(rels) };
         cx.effects.push(Effect::Git(req));
@@ -209,10 +209,10 @@ impl GitPanel {
             let right = Rect::new(sep_x + 1, body.y, body.right() - sep_x - 1, body.height);
             self.diff_rect = right;
             let header = self.diff.key.as_ref().map(|k| match k {
-                DiffKey::Change { section: Section::Staged, rel } => format!("{rel}  (HEAD ↔ staged)"),
-                DiffKey::Change { section: Section::Unstaged, rel } => format!("{rel}  (staged ↔ working tree)"),
-                DiffKey::Change { section: Section::Untracked, rel } => format!("{rel}  (new file)"),
-                DiffKey::Commit { rel, .. } => rel.clone(),
+                DiffKey::Change { section: Section::Staged, .. } => format!("{}  (HEAD ↔ staged)", k.label()),
+                DiffKey::Change { section: Section::Unstaged, .. } => format!("{}  (staged ↔ working tree)", k.label()),
+                DiffKey::Change { section: Section::Untracked, .. } => format!("{}  (new file)", k.label()),
+                DiffKey::Commit { .. } => k.label(),
             });
             let pane_focused = focused && self.area == Area::Diff;
             render_diff(frame.buffer_mut(), right, &mut self.diff, header.as_deref(), pane_focused, theme);
@@ -317,6 +317,11 @@ impl GitPanel {
                         None => ("", e.rel.as_str()),
                     };
                     let name_style = if selected { base } else { Style::default().fg(st_style.fg.unwrap_or(theme.fg)) };
+                    if let Some(old) = &e.old_rel {
+                        // A rename shows both paths in full.
+                        put(buf, &mut x, y, r.right(), &format!("{old} -> {}", e.rel), name_style);
+                        continue;
+                    }
                     put(buf, &mut x, y, r.right(), name, name_style);
                     if !dir.is_empty() {
                         x += 1;

@@ -98,8 +98,8 @@ impl GitPanel {
 
     pub(super) fn open_commit_file(&mut self, cx: &mut Ctx) {
         let Some(d) = &self.details else { return };
-        let Some((_, rel)) = d.files.get(self.files_list.selected) else { return };
-        let key = DiffKey::Commit { sha: d.sha.clone(), rel: rel.clone() };
+        let Some(f) = d.files.get(self.files_list.selected) else { return };
+        let key = DiffKey::Commit { sha: d.sha.clone(), rel: f.path.clone(), old: f.old.clone() };
         self.log_diff.request(key, cx);
         self.area = Area::LogDiff;
     }
@@ -139,8 +139,8 @@ impl GitPanel {
             let r = put(buf, &mut x, body.y, body.right(), "[← Back]", theme.title.bg(theme.panel_bg));
             self.hits.push((Btn::Back, r));
             let header = match &key {
-                DiffKey::Commit { sha, rel } => format!(" {}  {rel}", &sha[..sha.len().min(8)]),
-                DiffKey::Change { rel, .. } => format!(" {rel}"),
+                DiffKey::Commit { sha, .. } => format!(" {}  {}", &sha[..sha.len().min(8)], key.label()),
+                DiffKey::Change { .. } => format!(" {}", key.label()),
             };
             put(buf, &mut x, body.y, body.right(), &header, theme.title);
             let rest = Rect::new(body.x, body.y + 1, body.width, body.height.saturating_sub(1));
@@ -272,21 +272,25 @@ impl GitPanel {
         self.files_list.set_viewport(self.files_rect.height as usize);
         for (vi, i) in self.files_list.visible().enumerate() {
             let fy = self.files_rect.y + vi as u16;
-            let (st, path) = &d.files[i];
+            let f = &d.files[i];
             let selected = i == self.files_list.selected && active;
             let base = if selected { theme.list_selected } else { Style::default().fg(theme.fg) };
             if selected {
                 buf.set_style(Rect::new(r.x, fy, r.width, 1), base);
             }
-            let st_style = match st {
+            let st_style = match f.status {
                 'A' => theme.git_added,
                 'D' => theme.git_deleted,
                 _ => theme.git_modified,
             };
             let mut x = x0;
-            put(buf, &mut x, fy, r.right(), &st.to_string(), if selected { base } else { st_style });
+            put(buf, &mut x, fy, r.right(), &f.status.to_string(), if selected { base } else { st_style });
             x += 1;
-            put(buf, &mut x, fy, r.right(), path, base);
+            let path = match &f.old {
+                Some(old) => format!("{old} -> {}", f.path),
+                None => f.path.clone(),
+            };
+            put(buf, &mut x, fy, r.right(), &path, base);
         }
     }
 }
