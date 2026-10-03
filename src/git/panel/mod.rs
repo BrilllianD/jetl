@@ -55,6 +55,7 @@ enum Area {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Btn {
     Tab(GitTab),
+    Amend,
     Refresh,
     Fetch,
     Pull,
@@ -152,6 +153,16 @@ pub struct GitPanel {
     rows: Vec<ListRow>,
     list: ListState,
     pub message: TextInput,
+    /// The next commit replaces HEAD.
+    amend: bool,
+    /// The HEAD message put in the box when amend turned on; cleared again
+    /// when amend turns off unedited.
+    amend_prefill: Option<String>,
+    /// Earlier commit messages of the repository, newest first.
+    history: Vec<String>,
+    /// Position in `history` while recalling, and the text typed before.
+    history_pos: Option<usize>,
+    history_draft: String,
     diff: DiffPane,
     log: Vec<LogRow>,
     log_list: ListState,
@@ -193,6 +204,11 @@ impl GitPanel {
             rows: Vec::new(),
             list: ListState::default(),
             message: TextInput::new(true),
+            amend: false,
+            amend_prefill: None,
+            history: Vec::new(),
+            history_pos: None,
+            history_draft: String::new(),
             diff: DiffPane::default(),
             log: Vec::new(),
             log_list: ListState::default(),
@@ -309,6 +325,12 @@ impl GitPanel {
             G::UnstageAll => cx.effects.push(Effect::Git(GitRequest::UnstageAll)),
             G::Commit => self.commit(false, cx),
             G::CommitAndPush => self.commit(true, cx),
+            G::ToggleAmend => self.toggle_amend(cx),
+            G::MessageOlder | G::MessageNewer => {
+                self.tab = GitTab::Commit;
+                self.area = Area::Message;
+                self.recall(*a == G::MessageOlder);
+            }
             G::CommitBox | G::FocusMessage => {
                 self.tab = GitTab::Commit;
                 self.area = Area::Message;
@@ -462,6 +484,7 @@ impl GitPanel {
         let req = match btn {
             Btn::Tab(t) => return self.set_tab(t, cx),
             Btn::Commit => return self.commit(false, cx),
+            Btn::Amend => return self.toggle_amend(cx),
             Btn::CommitPush => return self.commit(true, cx),
             Btn::Back => return self.close_log_diff(),
             Btn::Refresh => GitRequest::Refresh,

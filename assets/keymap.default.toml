@@ -171,6 +171,10 @@
 "tab" = "git.next_section"
 "ctrl-alt-a" = "git.stage_all"
 "ctrl-alt-z" = "git.discard"
+"alt-m" = "git.toggle_amend"
+# In the commit message box: recall earlier messages.
+"alt-up" = "git.message_older"
+"alt-down" = "git.message_newer"
 "f5" = "git.refresh"
 "alt-c" = "git.tab_commit"
 "alt-l" = "git.tab_log"

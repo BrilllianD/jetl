@@ -125,6 +125,12 @@ impl App {
             }
             GitMsg::CommitDetails { sha, result, .. } => self.git_panel.set_details(&sha, result),
             GitMsg::PushRemote { branch, result, .. } => self.push_remote_known(branch, result),
+            GitMsg::HeadMessage { result, .. } => {
+                if let Err(e) = self.git_panel.set_head_message(result) {
+                    self.notify(Level::Warn, e);
+                }
+            }
+            GitMsg::CommitMessages { messages, .. } => self.git_panel.set_history(messages),
             GitMsg::OpDone { op, label, ok, output, .. } => self.git_op_done(op, label, ok, output),
         }
     }
@@ -161,9 +167,10 @@ impl App {
             // Reported (or a follow-up dialog opened) by the worktree flow.
         } else if ok {
             match &op {
-                GitOp::Commit { push } => {
-                    self.git_panel.message.clear();
-                    self.notify(Level::Info, format!("Committed {output}"));
+                GitOp::Commit { push, amend } => {
+                    self.git_panel.committed();
+                    self.git.load_messages();
+                    self.notify(Level::Info, format!("{} {output}", if *amend { "Amended" } else { "Committed" }));
                     if *push {
                         self.git_request(GitRequest::Push);
                     }
@@ -218,6 +225,7 @@ impl App {
         }
         self.git.refresh_status();
         self.git.load_branches();
+        self.git.load_messages();
         for p in self.editor.open_paths() {
             self.git.load_blob(p, BlobWhich::Head);
         }

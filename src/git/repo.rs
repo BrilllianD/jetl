@@ -250,15 +250,49 @@ pub fn commit(root: &Path, message: &str) -> Result<String> {
     if unchanged {
         bail!("Nothing to commit: no staged changes");
     }
-    let sig = repo.signature().map_err(|e| {
-        anyhow!("Cannot commit: git user.name and user.email are not configured ({}). Set them with `git config --global user.email you@example.com` and `git config --global user.name \"Your Name\"`.", e.message())
-    })?;
+    let sig = signature(&repo)?;
     let tree = repo.find_tree(tree_id)?;
+    let parents: Vec<&git2::Commit> = parent.iter().collect();
+    let oid = repo.commit(Some("HEAD"), &sig, &sig, &commit_message(message), &tree, &parents)?;
+    Ok(oid.to_string()[..8].to_string())
+}
+
+fn signature(repo: &Repository) -> Result<git2::Signature<'static>> {
+    repo.signature().map_err(|e| {
+        anyhow!("Cannot commit: git user.name and user.email are not configured ({}). Set them with `git config --global user.email you@example.com` and `git config --global user.name \"Your Name\"`.", e.message())
+    })
+}
+
+fn commit_message(message: &str) -> String {
     let mut msg = message.trim_end().to_string();
     msg.push('\n');
-    let parents: Vec<&git2::Commit> = parent.iter().collect();
-    let oid = repo.commit(Some("HEAD"), &sig, &sig, &msg, &tree, &parents)?;
+    msg
+}
+
+/// Replace the HEAD commit with one of the index and `message`, keeping
+/// its parents and author. Works without staged changes (a new message
+/// only). Returns the short sha.
+pub fn amend(root: &Path, message: &str) -> Result<String> {
+    if message.trim().is_empty() {
+        bail!("Commit message is empty");
+    }
+    let (repo, _) = open(root)?;
+    let mut index = repo.index()?;
+    if index.has_conflicts() {
+        bail!("Cannot amend: resolve merge conflicts first");
+    }
+    let head = repo.head().ok().and_then(|h| h.peel_to_commit().ok()).ok_or_else(|| anyhow!("Nothing to amend: no commit yet"))?;
+    let tree = repo.find_tree(index.write_tree()?)?;
+    let sig = signature(&repo)?;
+    let oid = head.amend(Some("HEAD"), None, Some(&sig), None, Some(&commit_message(message)), Some(&tree))?;
     Ok(oid.to_string()[..8].to_string())
+}
+
+/// Message of the HEAD commit (the amend prefill).
+pub fn head_message(root: &Path) -> Result<String> {
+    let (repo, _) = open(root)?;
+    let head = repo.head().and_then(|h| h.peel_to_commit()).map_err(|_| anyhow!("Nothing to amend: no commit yet"))?;
+    Ok(String::from_utf8_lossy(head.message_bytes()).trim_end().to_string())
 }
 
 /// Throw away changes, like `git restore`. Staged paths go back to HEAD in
@@ -545,6 +579,30 @@ pub(crate) mod tests {
         assert_eq!(read("new.txt"), None);
         assert_eq!(sections(&r.dir), vec![(Section::Untracked, FileStatus::Untracked, "u.txt".into())]);
         discard(&r.dir, &[(Section::Untracked, "u.txt".into())]).unwrap();
+        assert!(status(&r.dir).unwrap().entries.is_empty());
+    }
+
+    #[test]
+    fn amend_replaces_head_keeping_its_parent() {
+        let r = TempRepo::new("amend");
+        assert!(amend(&r.dir, "x").unwrap_err().to_string().contains("no commit yet"));
+        r.write("a.txt", "a\n");
+        stage_all(&r.dir).unwrap();
+        commit(&r.dir, "first").unwrap();
+        r.write("b.txt", "b\n");
+        stage_all(&r.dir).unwrap();
+        commit(&r.dir, "second").unwrap();
+        assert_eq!(head_message(&r.dir).unwrap(), "second");
+        // Message only, then with a staged file.
+        amend(&r.dir, "second, reworded").unwrap();
+        r.write("c.txt", "c\n");
+        stage_all(&r.dir).unwrap();
+        amend(&r.dir, "second, with c\n\nbody").unwrap();
+        assert_eq!(head_message(&r.dir).unwrap(), "second, with c\n\nbody");
+        let repo = Repository::open(&r.dir).unwrap();
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        assert_eq!(head.parent(0).unwrap().message_bytes(), b"first\n");
+        assert!(head.tree().unwrap().get_path(Path::new("c.txt")).is_ok());
         assert!(status(&r.dir).unwrap().entries.is_empty());
     }
 }

@@ -96,10 +96,19 @@ impl App {
                 let label = format!("discard {}", items.iter().map(|(_, p)| p.as_str()).collect::<Vec<_>>().join(" "));
                 self.git.run_repo(GitOp::Discard, label, move |root| repo::discard(root, &items));
             }
-            GitRequest::Commit { message, push } => {
+            GitRequest::Commit { message, push, amend } => {
                 let subject = message.lines().next().unwrap_or("").to_string();
-                self.git.run_repo(GitOp::Commit { push }, format!("commit: {subject}"), move |root| repo::commit(root, &message));
+                let label = format!("{}: {subject}", if amend { "amend" } else { "commit" });
+                let dir = self.git.messages_dir.clone();
+                self.git.run_repo(GitOp::Commit { push, amend }, label, move |root| {
+                    let sha = if amend { repo::amend(root, &message) } else { repo::commit(root, &message) }?;
+                    if let Err(e) = crate::git::messages::record(&dir, root, &message) {
+                        tracing::warn!("commit message history: {e:#}");
+                    }
+                    Ok(sha)
+                });
             }
+            GitRequest::LoadHeadMessage => self.git.load_head_message(),
             GitRequest::Push => {
                 self.git.run_cli(GitOp::Push, vec!["push".into()]);
             }

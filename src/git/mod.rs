@@ -8,6 +8,7 @@
 
 pub mod cli;
 pub mod diff;
+pub mod messages;
 pub mod model;
 pub mod panel;
 pub mod repo;
@@ -33,6 +34,7 @@ pub enum GitOp {
     Discard,
     Commit {
         push: bool,
+        amend: bool,
     },
     Push,
     /// `git push -u <remote> <branch>`; carries the branch.
@@ -94,6 +96,16 @@ pub enum GitMsg {
         sha: String,
         result: Result<CommitDetails>,
     },
+    /// The HEAD commit message, to prefill the box when amend turns on.
+    HeadMessage {
+        generation: u64,
+        result: Result<String>,
+    },
+    /// The commit message history of the repository, newest first.
+    CommitMessages {
+        generation: u64,
+        messages: Vec<String>,
+    },
     /// The remote for `git push -u` of `branch` (after a push failed for
     /// lack of an upstream).
     PushRemote {
@@ -122,6 +134,8 @@ impl GitMsg {
             | GitMsg::Log { generation, .. }
             | GitMsg::CommitDetails { generation, .. }
             | GitMsg::PushRemote { generation, .. }
+            | GitMsg::HeadMessage { generation, .. }
+            | GitMsg::CommitMessages { generation, .. }
             | GitMsg::OpDone { generation, .. } => *generation,
         }
     }
@@ -138,10 +152,13 @@ pub enum GitRequest {
     UnstageAll,
     /// Confirmed already (`DialogId::GitDiscard`).
     Discard(Vec<(Section, String)>),
+    /// `amend` replaces HEAD instead of adding a commit.
     Commit {
         message: String,
         push: bool,
+        amend: bool,
     },
+    LoadHeadMessage,
     Push,
     Pull,
     Fetch,
@@ -169,6 +186,8 @@ pub struct GitService {
     /// Running operations (id, label), oldest first.
     pub busy: Vec<(u64, String)>,
     pub tab_width: usize,
+    /// Where commit message histories live (`git::messages`).
+    pub messages_dir: PathBuf,
 }
 
 impl GitService {
@@ -183,6 +202,7 @@ impl GitService {
             blob_seq: AtomicU64::new(0),
             busy: Vec::new(),
             tab_width: 4,
+            messages_dir: PathBuf::new(),
         }
     }
 
@@ -252,6 +272,15 @@ impl GitService {
 
     pub fn load_branches(&self) {
         self.blocking(repo::branches, |generation, result| GitMsg::Branches { generation, result });
+    }
+
+    pub fn load_head_message(&self) {
+        self.blocking(repo::head_message, |generation, result| GitMsg::HeadMessage { generation, result });
+    }
+
+    pub fn load_messages(&self) {
+        let dir = self.messages_dir.clone();
+        self.blocking(move |root| messages::load(&dir, root), |generation, messages| GitMsg::CommitMessages { generation, messages });
     }
 
     pub fn load_push_remote(&self, branch: String) {

@@ -182,6 +182,7 @@ impl App {
         let workspace = Workspace::new(root.clone());
         let mut git = GitService::new(root.clone(), workspace.generation, bus_tx.clone());
         git.tab_width = config.editor.tab_width;
+        git.messages_dir = paths.state_dir.join("commit_messages");
         let mut git_panel = GitPanel::new();
         git_panel.set_log_page(config.git.log_page);
         let mut app = Self {
@@ -241,6 +242,7 @@ impl App {
         app.git.refresh_status();
         app.git.load_branches();
         app.git.load_worktrees();
+        app.git.load_messages();
         app.restore_session();
         app.start_watcher();
         app.load_recent_projects(true);
@@ -1444,6 +1446,46 @@ pub(crate) mod tests {
         handle_next(&mut app, git_op_done).await;
         assert_eq!(std::fs::read_to_string(&a).unwrap(), "a\n");
         assert_eq!(app.editor.buffers[0].text(), "a\n", "the clean tab reloads");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn amend_prefills_head_message_and_history_recalls_messages() {
+        use crate::actions::GitAction;
+        use crossterm::event::KeyModifiers;
+        let (mut app, dir) = test_app("amend");
+        init_repo(&app, &[("a.txt", "a\n")]);
+        feed_status(&mut app, 1);
+        let g = app.git.generation;
+        app.perform(Action::Git(GitAction::FocusMessage));
+        app.perform(Action::Git(GitAction::ToggleAmend));
+        let head = crate::git::repo::head_message(&app.workspace.root);
+        app.handle_msg(AppMsg::Git(GitMsg::HeadMessage { generation: g, result: head }));
+        assert_eq!(app.git_panel.message.text, "init");
+        // Amending needs no staged changes.
+        app.handle_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT));
+        handle_next(&mut app, git_op_done).await;
+        assert_eq!(crate::git::repo::head_message(&app.workspace.root).unwrap(), "init 2");
+        assert!(app.git_panel.message.text.is_empty(), "the box empties after the amend");
+        // The history was recorded (the app reloads it in the background).
+        app.git_panel.set_history(crate::git::messages::load(&app.git.messages_dir, &app.workspace.root));
+        app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT));
+        assert_eq!(app.git_panel.message.text, "init 2");
+        app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT));
+        assert_eq!(app.git_panel.message.text, "init 2", "stops at the oldest");
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::ALT));
+        assert_eq!(app.git_panel.message.text, "x", "back to the draft");
+        // Turning amend off again drops an unedited prefill.
+        app.git_panel.message.clear();
+        app.perform(Action::Git(GitAction::ToggleAmend));
+        let head = crate::git::repo::head_message(&app.workspace.root);
+        app.handle_msg(AppMsg::Git(GitMsg::HeadMessage { generation: g, result: head }));
+        assert_eq!(app.git_panel.message.text, "init 2");
+        app.perform(Action::Git(GitAction::ToggleAmend));
+        assert!(app.git_panel.message.text.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -158,6 +158,9 @@ pub enum GitAction {
     Commit,
     CommitAndPush,
     CommitBox,
+    ToggleAmend,
+    MessageOlder,
+    MessageNewer,
     Push,
     Pull,
     Fetch,
@@ -390,6 +393,9 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "git.commit" => "Git: commit", Git(GitAction::Commit);
         "git.commit_and_push" => "Git: commit and push", Git(GitAction::CommitAndPush);
         "git.commit_box" => "Git: open commit window", Git(GitAction::CommitBox);
+        "git.toggle_amend" => "Git: amend the last commit (toggle)", Git(GitAction::ToggleAmend);
+        "git.message_older" => "Git: previous commit message from history", Git(GitAction::MessageOlder);
+        "git.message_newer" => "Git: next commit message from history", Git(GitAction::MessageNewer);
         "git.push" => "Git: push", Git(GitAction::Push);
         "git.pull" => "Git: pull (update project)", Git(GitAction::Pull);
         "git.fetch" => "Git: fetch", Git(GitAction::Fetch);

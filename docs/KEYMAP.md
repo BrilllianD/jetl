@@ -154,6 +154,9 @@ Override any of them in `~/.config/jetl/keymap.toml` (see [CONFIG.md](CONFIG.md)
 | `Ctrl+Alt+Z` | `git.discard` | Git: discard changes of the selected file or section |
 | `Alt+Enter` | `git.commit` | Git: commit |
 | `Ctrl+Enter` * | `git.commit` | Git: commit |
+| `Alt+M` | `git.toggle_amend` | Git: amend the last commit (toggle) |
+| `Alt+Up` | `git.message_older` | Git: previous commit message from history |
+| `Alt+Down` | `git.message_newer` | Git: next commit message from history |
 | `Ctrl+Alt+N` | `git.new_branch` | Git: new branch |
 | `Alt+C` | `git.tab_commit` | Git: Commit tab |
 | `Alt+L` | `git.tab_log` | Git: Log tab |

@@ -127,8 +127,9 @@ impl GitPanel {
             KeyCode::Delete => m.delete(),
             KeyCode::Left => m.left(),
             KeyCode::Right => m.right(),
-            KeyCode::Up => m.up(),
-            KeyCode::Down => m.down(),
+            // Alt+Up/Down recall history through the keymap.
+            KeyCode::Up if !alt => m.up(),
+            KeyCode::Down if !alt => m.down(),
             KeyCode::Home => m.home(),
             KeyCode::End => m.end(),
             KeyCode::Char(c) if !ctrl && !alt => m.insert(c),
@@ -149,11 +150,81 @@ impl GitPanel {
             self.area = Area::Message;
             return;
         }
-        if self.snapshot.is_some() && self.staged_count() == 0 {
+        // Amending may only reword HEAD.
+        if !self.amend && self.snapshot.is_some() && self.staged_count() == 0 {
             cx.notify(Level::Warn, "Nothing to commit: no staged changes (Space stages the selected file)");
             return;
         }
-        cx.effects.push(Effect::Git(GitRequest::Commit { message, push }));
+        cx.effects.push(Effect::Git(GitRequest::Commit { message, push, amend: self.amend }));
+    }
+
+    /// A commit or amend went through: start over with an empty box.
+    pub fn committed(&mut self) {
+        self.message.clear();
+        self.amend = false;
+        self.amend_prefill = None;
+        self.history_pos = None;
+    }
+
+    /// Turn amend on (prefilling an empty box with the HEAD message, which
+    /// arrives as `set_head_message`) or off (clearing that prefill when it
+    /// was not edited).
+    pub(super) fn toggle_amend(&mut self, cx: &mut Ctx) {
+        self.amend = !self.amend;
+        if self.amend {
+            if self.message.text.trim().is_empty() {
+                cx.effects.push(Effect::Git(GitRequest::LoadHeadMessage));
+            }
+        } else if let Some(prefill) = self.amend_prefill.take()
+            && self.message.text == prefill
+        {
+            self.message.clear();
+        }
+    }
+
+    /// The HEAD message for the amend prefill; an error turns amend off
+    /// and comes back for a notification.
+    pub fn set_head_message(&mut self, result: anyhow::Result<String>) -> Result<(), String> {
+        match result {
+            Ok(msg) if self.amend && self.message.text.trim().is_empty() => {
+                self.message.set_text(&msg);
+                self.amend_prefill = Some(msg);
+                Ok(())
+            }
+            Ok(_) => Ok(()),
+            Err(e) => {
+                self.amend = false;
+                Err(format!("{e:#}"))
+            }
+        }
+    }
+
+    pub fn set_history(&mut self, messages: Vec<String>) {
+        self.history = messages;
+        self.history_pos = None;
+    }
+
+    /// Step through earlier messages (`older`) or back towards the text
+    /// typed before recalling.
+    pub(super) fn recall(&mut self, older: bool) {
+        let next = match (self.history_pos, older) {
+            (None, true) if !self.history.is_empty() => {
+                self.history_draft = self.message.text.clone();
+                Some(0)
+            }
+            (Some(i), true) => Some((i + 1).min(self.history.len().saturating_sub(1))),
+            (Some(0), false) => None,
+            (Some(i), false) => Some(i - 1),
+            (None, _) => return,
+        };
+        self.history_pos = next;
+        match next {
+            Some(i) => self.message.set_text(&self.history[i]),
+            None => {
+                let draft = std::mem::take(&mut self.history_draft);
+                self.message.set_text(&draft);
+            }
+        }
     }
 
     /// Stage or unstage the selected entry, or a whole section on its header.
@@ -264,11 +335,18 @@ impl GitPanel {
             self.hits.push((Btn::UnstageAll, r));
             y += 1;
             let label = if self.area == Area::Message && focused {
-                "Commit message (Ctrl/Alt+Enter commits, Esc leaves)"
+                "Commit message (Ctrl/Alt+Enter commits, Alt+Up/Down history, Esc leaves)"
             } else {
                 "Commit message (Ctrl+K)"
             };
-            buf.set_stringn(left.x, y, label, left.width as usize, theme.dim);
+            // The amend checkbox sits at the right end of the label row.
+            let amend = if self.amend { "[x] Amend" } else { "[ ] Amend" };
+            let amend_w = amend.len() as u16;
+            let label_w = left.width.saturating_sub(amend_w + 1);
+            buf.set_stringn(left.x, y, crate::util::text::fit(label, label_w as usize), label_w as usize, theme.dim);
+            let mut ax = left.right().saturating_sub(amend_w).max(left.x);
+            let r = put(buf, &mut ax, y, left.right(), amend, if self.amend { theme.warn } else { theme.title });
+            self.hits.push((Btn::Amend, r));
             y += 1;
         }
         self.message_rect = Rect::new(left.x, y, left.width, msg_h);
@@ -285,11 +363,12 @@ impl GitPanel {
         if y < left.bottom() {
             let buf = frame.buffer_mut();
             let mut x = left.x;
-            let style = if self.staged_count() > 0 { theme.tab_active } else { theme.tab };
-            let r = put(buf, &mut x, y, left.right(), " Commit ", style);
+            let style = if self.staged_count() > 0 || self.amend { theme.tab_active } else { theme.tab };
+            let (commit, commit_push) = if self.amend { (" Amend ", " Amend and Push ") } else { (" Commit ", " Commit and Push ") };
+            let r = put(buf, &mut x, y, left.right(), commit, style);
             self.hits.push((Btn::Commit, r));
             x += 1;
-            let r = put(buf, &mut x, y, left.right(), " Commit and Push ", theme.tab);
+            let r = put(buf, &mut x, y, left.right(), commit_push, theme.tab);
             self.hits.push((Btn::CommitPush, r));
         }
     }
