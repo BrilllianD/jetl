@@ -83,15 +83,16 @@ redraws when `dirty_frame` is set:
 2. **The bus** (`mpsc::unbounded_channel` of `AppMsg`). Background work
    reports here: file loads, sessions, the file index, tree listings,
    worktree lists, find in files batches, tree file operations
-   (`FsOpDone`), symbol index batches, the recent projects list, Run task
-   output and exits and the task picker's list, the Terminal shell's output
-   wakes,
+   (`FsOpDone`), symbol index batches, the recent projects list, clipboard
+   reads (`Paste`), formatter results (`Formatted`), Run task output and
+   exits and the task picker's list, the Terminal shell's output wakes,
    `AppMsg::Git(GitMsg)`, and the filesystem watcher
    (`FsChanged`: refresh the tree if a listed directory changed, refresh git
    status, reload clean tabs in place, ask once about tabs with unsaved
    edits). Without a watcher (off, or it failed to start), focus gain
    refreshes instead.
-3. **A 100 ms tick**: toast expiry, gutter recomputation (debounces typing),
+3. **A 100 ms tick**: toast and status bar notification expiry, gutter
+   recomputation (debounces typing),
    the busy spinner, the Run window's spinner and elapsed time while a task
    runs, idle autosave, and the terminal's held-back Esc once no second one
    followed.
@@ -127,11 +128,11 @@ Two tags:
   (`Workspace::switch_root`). Every result that depends on the root carries
   it: `FileLoaded`, `SessionLoaded`, `FileIndex`, `TreeLoaded`,
   `Worktrees`, `Find`, `ReplaceDone`, `FsChanged`, `WatcherStarted`,
-  `DiskText`, `FsOpDone`, `Symbols`, `RunOutput`, `RunExited`, `RunTasks`,
-  `TerminalOutput`,
-  every `GitMsg`. `GitService` keeps a copy, set by
-  `set_root(root, generation)`, to tag its own results. A result whose
-  generation differs from `workspace.generation` is dropped.
+  `DiskText`, `FsOpDone`, `Symbols`, `Paste`, `Formatted`, `RunOutput`,
+  `RunExited`, `RunTasks`, `TerminalOutput`, every `GitMsg`. `GitService`
+  keeps a copy, set by `set_root(root, generation)`, to tag its own
+  results. A result whose generation differs from `workspace.generation` is
+  dropped.
 - **Seq** orders repeated requests of the same kind within a generation, so
   an older request that finishes late cannot overwrite a newer result:
   `GitMsg::Status` (`GitPanel::set_status`), `GitMsg::Blob` (per buffer,
@@ -203,6 +204,14 @@ its busy id before the generation check, so the spinner never sticks.
   the buffer changed meanwhile). Saves that must finish at once (closing a
   tab, quitting, switching roots, the overwrite answer, autosave) call
   `Editor::save`/`save_all`, which never format.
+- Child processes that can outlive a request (formatters, Run tasks, the
+  Terminal shell) start in their own session, so they never read from or
+  draw over jetl's terminal, and are killed with what they started (the
+  process group; for the shell, every process of its session): on quit,
+  on a root switch and when their owner is dropped; a formatter also on
+  its timeout or a newer request for the same buffer, a Run task when
+  another one starts. Clipboard tools are killed after 1 s. Their
+  results follow the stale-result rules above.
 - Lists keep their wheel scroll: `ListState::set_viewport` and `fit` bound
   the offset without pulling the view back to the selection.
 

@@ -1,7 +1,7 @@
 # jetl roadmap
 
 This is the feature backlog for jetl after phases 0-5. Each item below is also tracked as a yman
-task (`yman ls`); phases are umbrella tasks and the rows are their subtasks. Phases 6, 7 and 8
+task (`yman ls`); phases are umbrella tasks and the rows are their subtasks. Phases 6, 7, 8 and 9
 are done, except the conflict resolver, which waits for split panes (see Order).
 
 ## What exists today
@@ -11,14 +11,19 @@ are done, except the conflict resolver, which waits for split panes (see Order).
   Structure window), smart
   Home, word motions, duplicate/delete line, line comment toggle, CRLF detection, atomic save, and
   a 2 MiB highlight threshold. Phase 6 added bracket logic, indent/dedent of a selection,
-  move-line and autosave; open files reload or ask when they change on disk. Missing: wrap,
-  folding, multiple carets, column selection.
+  move-line and autosave; open files reload or ask when they change on disk. Phase 9 added
+  format on save through an external formatter (`[format]`), pinned tabs, tab reorder and a tab
+  limit that closes the least recently used clean, unpinned tab. Missing: wrap, folding,
+  multiple carets, column selection, split panes.
 - **Shell:** fixed layout with one left slot and one bottom slot. The side each tool window lives
   on is hardcoded in `ToolWindowId::side()`. A new bottom tool window is just a new enum variant
   and needs no layout rewrite. The palette has Files/Symbols/Actions/Everywhere/Recent/Branches/Recent Projects modes.
   Dialogs come in confirm, input and choice kinds; the Project tree has a right-click context
-  menu. The session stores tabs, carets, bookmarks, the tool window layout and expanded tree folders.
-  `App.notifications` keeps 200 entries, but nothing in the UI shows them.
+  menu. The session stores tabs (with their pins), carets, bookmarks, the tool window layout and
+  expanded tree folders. Phase 9 added the bottom tool windows Terminal (a PTY shell with vt100
+  emulation), Run (tasks from config or detected project files, problem matchers with
+  click-to-jump) and Event Log (the 200 entries of `App.notifications`), zen mode, keyboard
+  resize of tool windows, and paste from the system clipboard (`wl-paste`/`xclip`/`xsel`).
 - **Git:** files or single changes (hunks) are staged, unstaged and discarded; renames show as
   `R old -> new`. Commits can amend HEAD, and earlier messages are recalled per repository.
   Gutter marks are based on HEAD; the change at the caret can be reverted, changes are stepped
@@ -102,6 +107,8 @@ All of section D shipped in Phase 8 except the conflict resolver.
 
 ### E. Shell, terminal, run
 
+All of section E shipped in Phase 9 except split editor panes, which belong to Phase 11.
+
 | Feature | Effort | Notes |
 |---|---|---|
 | Built-in terminal tool window | L | `portable-pty` + `vt100` (or `tui-term`) |
@@ -156,7 +163,10 @@ All of section D shipped in Phase 8 except the conflict resolver.
    syntax-highlighted diff, stash, blame, log filters and file history with commit actions, branch
    management with merge, rebase and tags; also rename detection, the push remote choice and a
    log graph that keeps its lanes across pages.
-4. **Phase 9: terminal and run.** Terminal, run window, format on save, event log and tab polish.
+4. **Phase 9: terminal and run.** Done. The built-in Terminal window, the Run window with tasks
+   and problem matchers, format on save through an external formatter, the Event Log window, zen
+   mode, tab reorder, pins and a tab limit, keyboard resize of tool windows, and paste from the
+   system clipboard.
 5. **Phase 10: language intelligence.** tree-sitter symbols shipped in Phase 7. LSP core comes
    first, then diagnostics and navigation, and last completion, rename and code actions.
 6. **Phase 11: editor layout.** Split panes, multi-caret, column selection, folding and wrap. This
