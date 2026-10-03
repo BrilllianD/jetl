@@ -1,6 +1,7 @@
-//! Bottom status bar: project name, branch, notifications, cursor position,
-//! line ending, encoding, indent and language of the active buffer, and its
-//! language server.
+//! Bottom status bar: project name, branch, notifications (else the
+//! diagnostic at the caret), the active file's problem counts, cursor
+//! position, line ending, encoding, indent and language of the active
+//! buffer, and its language server.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -19,6 +20,8 @@ pub enum StatusHit {
     Encoding,
     Indent,
     Language,
+    /// Error and warning counts: opens the Problems window.
+    Problems,
 }
 
 pub fn render(app: &mut App, frame: &mut Frame, area: Rect) {
@@ -55,6 +58,16 @@ pub fn render(app: &mut App, frame: &mut Frame, area: Rect) {
     // language; then the mode (modal only) and keyboard mode. Each part has
     // a drop rank: on narrow widths the highest ranks go first.
     let mut right_parts: Vec<(String, Style, Option<StatusHit>, u8)> = Vec::new();
+    if let Some(c) = app.problem_counts() {
+        let style = if c.errors > 0 {
+            theme.diag_error.fg.map_or(theme.error, |fg| Style::default().fg(fg))
+        } else if c.warnings > 0 {
+            theme.diag_warn.fg.map_or(theme.warn, |fg| Style::default().fg(fg))
+        } else {
+            theme.dim
+        };
+        right_parts.push((format!("✖ {} ⚠ {}", c.errors, c.warnings), style.bg(theme.status_bg), Some(StatusHit::Problems), 1));
+    }
     if let Some(pos) = app.editor.status_position() {
         right_parts.push((pos, base, Some(StatusHit::Position), 0));
     }
@@ -114,6 +127,10 @@ pub fn render(app: &mut App, frame: &mut Frame, area: Rect) {
             let text = crate::util::text::fit(&n.text, middle_w);
             buf.set_stringn(x, area.y, &text, middle_w, st);
             app.status_hits.push((StatusHit::Notification, Rect::new(x, area.y, middle_w as u16, 1)));
+        } else if let Some((sev, message)) = app.caret_problem() {
+            let st = Style::default().fg(sev.style(&theme).fg.unwrap_or(theme.status_fg)).bg(theme.status_bg);
+            let text = crate::util::text::fit(&format!("{} {message}", sev.glyph()), middle_w);
+            buf.set_stringn(x, area.y, &text, middle_w, st);
         }
     }
 }

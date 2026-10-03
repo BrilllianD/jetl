@@ -180,8 +180,9 @@ pub struct App {
     /// When the open Go to Symbol palette last got the index (it is fed at
     /// most every `SYMBOLS_FEED` while batches arrive).
     symbols_fed: Option<Instant>,
-    /// Caret target of a file being opened by `open_file_at`.
-    pending_goto: Option<(PathBuf, usize, usize)>,
+    /// Caret target of a file being opened by `open_file_at` or
+    /// `open_file_at_utf16`.
+    pending_goto: Option<(PathBuf, msg::GotoTarget)>,
     /// File from the command line (1-based line and column), opened once
     /// the session is restored so it ends up the active tab.
     pub(crate) pending_open: Option<(PathBuf, usize, usize)>,
@@ -196,6 +197,8 @@ pub struct App {
     /// The running task, the last one and the picker's tasks.
     pub(crate) run: run::RunState,
     pub run_panel: crate::run::panel::RunPanel,
+    /// The Problems window over `lsp.diagnostics`.
+    pub problems: crate::lsp::panel::ProblemsPanel,
     /// The Terminal window and its shell.
     pub terminal: crate::terminal::panel::TerminalPanel,
     /// Language servers and the documents open on them.
@@ -269,6 +272,7 @@ impl App {
             format: Default::default(),
             run: Default::default(),
             run_panel: Default::default(),
+            problems: Default::default(),
             terminal: crate::terminal::panel::TerminalPanel::new(config.terminal.scrollback),
             lsp: Default::default(),
             started: Instant::now(),
@@ -698,9 +702,15 @@ impl App {
                 return;
             }
             Action::Run(a) => self.run_panel.handle_action(a, &mut cx),
+            Action::Problems(a) => self.problems.handle_action(a, &self.lsp.diagnostics, &mut cx),
             Action::Lsp(crate::actions::LspAction::Restart) => {
                 drop(cx);
                 self.lsp_restart();
+                return;
+            }
+            Action::Lsp(a @ (crate::actions::LspAction::NextProblem | crate::actions::LspAction::PrevProblem)) => {
+                drop(cx);
+                self.lsp_step_problem(*a == crate::actions::LspAction::NextProblem);
                 return;
             }
             Action::Palette(_) => false,

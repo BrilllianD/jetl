@@ -22,6 +22,7 @@ impl App {
                 }
                 Effect::OpenFile(p) => self.open_file(p, true),
                 Effect::OpenFileAt { path, line, col } => self.open_file_at(path, line, col),
+                Effect::OpenFileAtUtf16 { path, pos } => self.open_file_at_utf16(path, pos),
                 Effect::Dialog(d) => self.dialog = Some(d),
                 Effect::ContextMenu(mut m) => {
                     self.fill_shortcuts(&mut m.items);

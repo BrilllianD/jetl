@@ -26,6 +26,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with its indexing progress, or that it is missing or stopped. Help > Restart Language Servers
   (`lsp.restart`) starts them again. Servers are shut down on quit and project switch, with
   everything they started. Diagnostics, navigation and completion build on this next.
+- Diagnostics from language servers: a glyph in the gutter (`✖` error, `⚠` warning, `ℹ` info)
+  and an underline in the severity's color over the text, the problem at the caret in the status
+  bar, and the active file's error and warning counts there (`✖ 1 ⚠ 2`; a click opens the
+  Problems window). F2 and Shift+F2 (Navigate > Next/Previous Problem) step through the file's
+  problems. The Problems tool window (Alt+6, View > Problems) lists them grouped by file; Enter
+  or a double click opens one at its position. `[lsp] max_diagnostics_per_file` caps a file's
+  list (default 1000), and the theme styles `diag_error`, `diag_warn`, `diag_info` and
+  `diag_hint` color them.
 
 ## [0.1.0] - 2026-10-03
 

@@ -62,6 +62,13 @@ pub struct Theme {
     pub error: Style,
     pub warn: Style,
     pub info: Style,
+    /// Diagnostics: the gutter glyph and Problems window icon take the
+    /// foreground; text in the range gets the modifiers (underlined in the
+    /// foreground color) and the background, if set.
+    pub diag_error: Style,
+    pub diag_warn: Style,
+    pub diag_info: Style,
+    pub diag_hint: Style,
     pub splitter: Style,
     /// Tree-sitter capture name -> style, looked up by longest dotted prefix.
     pub syntax: HashMap<String, Style>,
@@ -121,6 +128,10 @@ impl Theme {
             error: Style::default().fg(Color::Rgb(255, 107, 104)),
             warn: Style::default().fg(Color::Rgb(255, 198, 109)),
             info: Style::default().fg(Color::Rgb(104, 151, 187)),
+            diag_error: Style::default().fg(Color::Rgb(255, 107, 104)).add_modifier(Modifier::UNDERLINED),
+            diag_warn: Style::default().fg(Color::Rgb(222, 180, 80)).add_modifier(Modifier::UNDERLINED),
+            diag_info: Style::default().fg(Color::Rgb(104, 151, 187)).add_modifier(Modifier::UNDERLINED),
+            diag_hint: Style::default().fg(Color::Rgb(128, 128, 128)),
             splitter: Style::default().fg(Color::Rgb(85, 85, 85)).bg(bg),
             syntax: darcula_syntax(fg),
         }
@@ -244,7 +255,7 @@ theme_fields! {
         border, border_focused, title, title_focused, strip_item, strip_item_active, status_accent, tab, tab_active,
         tab_dirty, line_number, line_number_current, bracket_match, bookmark, git_added, git_modified, git_deleted, git_untracked,
         git_conflicted, git_ignored, popup_border, list_selected, list_selected_unfocused, dim, error, warn, info,
-        splitter,
+        diag_error, diag_warn, diag_info, diag_hint, splitter,
     ],
 }
 

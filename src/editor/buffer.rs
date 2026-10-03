@@ -120,6 +120,10 @@ pub struct Buffer {
     /// The next `didChange` sends the whole text: too many edits piled up,
     /// or one could not be put in LSP terms.
     pub lsp_full_resync: bool,
+    /// Language server diagnostics placed in the text (gutter glyphs,
+    /// underlines, F2); rebuilt by `App::sync_diag_marks` when the store,
+    /// the text or the path changed.
+    pub diag_marks: crate::lsp::diagnostics::DiagMarks,
 }
 
 impl Buffer {
@@ -163,6 +167,7 @@ impl Buffer {
             lsp_tracked: false,
             lsp_pending: Vec::new(),
             lsp_full_resync: false,
+            diag_marks: Default::default(),
         }
     }
 

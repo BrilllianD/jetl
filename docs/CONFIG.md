@@ -109,6 +109,7 @@ scrollback = 5000              # lines kept above the screen for the mouse wheel
 enabled = true                 # start language servers for open files
 startup_timeout_ms = 15000     # a server that has not initialized by then is killed
 request_timeout_ms = 5000      # a request to a server unanswered by then fails
+max_diagnostics_per_file = 1000  # problems kept per file, the most severe first
 # Built-in servers (table below) take changes here; a table with a new
 # name adds a server. Omitted keys keep the built-in values.
 # [lsp.servers.rust-analyzer]
@@ -265,6 +266,25 @@ files, and tries missing commands again. Servers stop when you quit or
 switch projects: jetl asks them to shut down, waits up to two seconds, then
 kills each server's process group (anything it started with it).
 
+Diagnostics the servers publish show in the editor and the Problems window
+(Alt+6, View > Problems). In the editor the line's worst problem puts a
+glyph in the gutter's change column (`✖` error, `⚠` warning, `ℹ` info; it
+covers the diff mark there) and the text in its range is underlined in the
+severity's color (the `diag_error`, `diag_warn`, `diag_info` and `diag_hint`
+theme styles; hints are not underlined by default). F2 and Shift+F2 (Navigate
+> Next/Previous Problem) move the caret through the file's problems, hints
+skipped, wrapping around; the problem at the caret shows in the status bar
+when no notification is up. The status bar also counts the active file's
+errors and warnings (`✖ 1 ⚠ 2`) while it is open on a server; a click opens
+the Problems window on that file. The window groups the problems by file
+(counts on each file row), Enter or a double click opens one at its
+position, Ctrl+C copies its message. A file keeps at most
+`max_diagnostics_per_file` problems and all files together at most 20000
+(a note in the Event Log the first time that cuts a list); the most severe
+are kept. A server's problems go when it stops, and all of them on a
+project switch or restart. Problems stay where the server put them while
+you type, until it publishes again.
+
 ## Indentation and .editorconfig
 
 Each tab has its own indentation, shown in the status bar ("Tab" or
@@ -372,7 +392,10 @@ Style fields: `border border_focused title title_focused strip_item
 strip_item_active status_accent tab tab_active tab_dirty line_number
 line_number_current bracket_match bookmark git_added git_modified git_deleted git_untracked
 git_conflicted git_ignored popup_border list_selected list_selected_unfocused
-dim error warn info splitter`.
+dim error warn info diag_error diag_warn diag_info diag_hint splitter`. The
+`diag_*` styles color a diagnostic's gutter glyph and Problems icon (`fg`)
+and mark the text in its range: their modifiers apply to it, an underline
+takes the `fg` color, and a `bg` replaces the text background.
 
 `[syntax]` keys are tree-sitter capture names. A capture is styled by the
 longest matching dotted prefix, so `keyword` also covers `keyword.function`

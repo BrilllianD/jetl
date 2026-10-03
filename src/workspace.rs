@@ -462,4 +462,21 @@ mod tests {
         assert_eq!(saved.expanded, [PathBuf::from("a"), PathBuf::from("a/deep")]);
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[tokio::test]
+    async fn session_round_trips_the_problems_window() {
+        let (mut app, dir) = crate::app::tests::test_app("session-problems");
+        app.toggle_tool_window(ToolWindowId::Problems);
+        assert_eq!(app.layout.bottom, Some(ToolWindowId::Problems));
+        let json = serde_json::to_string(&app.session()).unwrap();
+        assert!(json.contains("\"Problems\""), "{json}");
+        let session: Session = serde_json::from_str(&json).unwrap();
+        let (mut fresh, fresh_dir) = crate::app::tests::test_app("session-problems-fresh");
+        fresh.layout.hide_all();
+        let generation = fresh.workspace.generation;
+        fresh.session_loaded(generation, Session { root: fresh.workspace.root.clone(), ..session }, vec![]);
+        assert_eq!(fresh.layout.bottom, Some(ToolWindowId::Problems));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&fresh_dir);
+    }
 }

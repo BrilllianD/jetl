@@ -193,6 +193,7 @@ impl App {
             PanelId::EventLog => self.event_log.handle_mouse(m, &self.notifications, &mut cx),
             PanelId::Run => self.run_panel.handle_mouse(m, &mut cx),
             PanelId::Terminal => self.terminal.handle_mouse(m),
+            PanelId::Problems => self.problems.handle_mouse(m, &self.lsp.diagnostics, &mut cx),
         };
         let fx = cx.effects;
         self.apply_effects(fx);
@@ -212,6 +213,7 @@ impl App {
             // The status bar shows the newest entry.
             Some(StatusHit::Notification) if !self.notifications.is_empty() => self.open_event_log(self.notifications.len() - 1),
             Some(StatusHit::Notification) => {}
+            Some(StatusHit::Problems) => self.show_problems(),
             None => {}
         }
     }

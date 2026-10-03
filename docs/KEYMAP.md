@@ -27,6 +27,7 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Alt+Shift+L` | `tool_window.event_log` | Event Log tool window |
 | `Alt+4` | `tool_window.run` | Run tool window |
 | `Alt+F12` | `tool_window.terminal` | Terminal tool window |
+| `Alt+6` | `tool_window.problems` | Problems tool window |
 | `Ctrl+Shift+F12` | `tool_window.hide_all` | Hide all tool windows |
 | `Shift+Esc` * | `tool_window.hide_focused` | Hide active tool window |
 | `Ctrl+Shift+Left` | `tool_window.stretch_left` | Stretch tool window to the left |
@@ -146,6 +147,8 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Shift+F7` | `editor.prev_change` | Go to the previous change |
 | `Ctrl+Alt+B` | `editor.toggle_blame` | Annotate with git blame (show or hide) |
 | `Ctrl+Alt+L` | `editor.format` | Reformat code with the external formatter |
+| `F2` | `lsp.next_problem` | Next problem (diagnostic) in the file |
+| `Shift+F2` | `lsp.prev_problem` | Previous problem (diagnostic) in the file |
 
 ## tree
 
@@ -300,6 +303,20 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Alt+R` | `find.toggle_replace` | Find: show or hide the replacement |
 | `Alt+A` | `find.replace_all` | Find: replace all results |
 | `Esc` | `find.escape` | Find: back to the editor |
+
+## problems
+
+| Keys | Action | Description |
+|---|---|---|
+| `Esc` | `app.focus_editor` | Focus editor |
+| `Up` | `problems.up` | Problems: up |
+| `Down` | `problems.down` | Problems: down |
+| `PageUp` | `problems.page_up` | Problems: page up |
+| `PageDown` | `problems.page_down` | Problems: page down |
+| `Home` | `problems.home` | Problems: first row |
+| `End` | `problems.end` | Problems: last row |
+| `Enter` | `problems.open` | Problems: jump to the selected problem |
+| `Ctrl+C` | `problems.copy` | Problems: copy the selected message |
 
 ## run
 

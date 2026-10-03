@@ -6,8 +6,10 @@
 //! and keeps open buffers in sync ([`sync`], positions in [`pos`]).
 
 pub mod client;
+pub mod diagnostics;
 #[cfg(test)]
 pub mod fake;
+pub mod panel;
 pub mod pos;
 pub mod sync;
 pub mod transport;
@@ -123,13 +125,21 @@ pub struct LspConfig {
     pub startup_timeout_ms: u64,
     /// A request unanswered by then fails.
     pub request_timeout_ms: u64,
+    /// Diagnostics kept per file (the most severe first).
+    pub max_diagnostics_per_file: usize,
     /// `[lsp.servers.<name>]`: changes to the built-in servers, or new ones.
     pub servers: BTreeMap<String, ServerOverride>,
 }
 
 impl Default for LspConfig {
     fn default() -> Self {
-        Self { enabled: true, startup_timeout_ms: 15_000, request_timeout_ms: 5_000, servers: BTreeMap::new() }
+        Self {
+            enabled: true,
+            startup_timeout_ms: 15_000,
+            request_timeout_ms: 5_000,
+            max_diagnostics_per_file: 1000,
+            servers: BTreeMap::new(),
+        }
     }
 }
 
@@ -209,12 +219,13 @@ mod tests {
         assert_eq!(cfg.server_for("rust").unwrap().command, ["rust-analyzer"]);
         assert_eq!(cfg.server_for("tsx").unwrap().name, "typescript-language-server");
         assert!(cfg.server_for("json").is_none());
-        let text = "[lsp]\nstartup_timeout_ms = 100\n\
+        assert_eq!(cfg.max_diagnostics_per_file, 1000);
+        let text = "[lsp]\nstartup_timeout_ms = 100\nmax_diagnostics_per_file = 50\n\
                     [lsp.servers.rust-analyzer]\nsettings = { rust-analyzer = { checkOnSave = false } }\n\
                     [lsp.servers.clangd]\ncommand = []\n\
                     [lsp.servers.pylsp]\ncommand = [\"pylsp\"]\nlanguages = [\"python\"]\n";
         let cfg = Config::parse(text).unwrap().lsp;
-        assert_eq!(cfg.startup_timeout_ms, 100);
+        assert_eq!((cfg.startup_timeout_ms, cfg.max_diagnostics_per_file), (100, 50));
         let ra = cfg.server_for("rust").unwrap();
         assert_eq!(ra.command, ["rust-analyzer"], "a partial table keeps the built-in command");
         assert_eq!(ra.settings.unwrap()["rust-analyzer"]["checkOnSave"], false);

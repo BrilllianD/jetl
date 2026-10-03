@@ -10,6 +10,7 @@
 "alt-3" = "tool_window.find"
 "alt-7" = "tool_window.structure"
 "alt-4" = "tool_window.run"
+"alt-6" = "tool_window.problems"
 "alt-f12" = "tool_window.terminal"
 # JetBrains has no default key for the Event Log; Alt+Shift+L works in
 # legacy terminals too.
@@ -162,6 +163,9 @@
 # Ctrl+Alt+Shift+Up/Down need modifier-aware arrows; F7/Shift+F7 work anywhere.
 "f7" = "editor.next_change"
 "shift-f7" = "editor.prev_change"
+# Language server diagnostics in the file, as Next Highlighted Error.
+"f2" = "lsp.next_problem"
+"shift-f2" = "lsp.prev_problem"
 "esc" = "editor.escape"
 
 [find]
@@ -278,6 +282,17 @@
 "enter" = "event_log.details"
 "ctrl-c" = "event_log.copy"
 "delete" = "event_log.clear"
+"esc" = "app.focus_editor"
+
+[problems]
+"up" = "problems.up"
+"down" = "problems.down"
+"pageup" = "problems.page_up"
+"pagedown" = "problems.page_down"
+"home" = "problems.home"
+"end" = "problems.end"
+"enter" = "problems.open"
+"ctrl-c" = "problems.copy"
 "esc" = "app.focus_editor"
 
 [run]

@@ -3,7 +3,7 @@
 //! file. Typing searches live; Up/Down move through the results, Enter
 //! opens one.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -23,6 +23,7 @@ use crate::files::find::{Batch, Hit, MAX_HITS, Search};
 use crate::ui::dialog::{Dialog, DialogId};
 use crate::ui::focus::PanelId;
 use crate::ui::tool_window_block;
+use crate::ui::widgets::file_rows;
 use crate::ui::widgets::list::ListState;
 use crate::ui::widgets::text_input::TextInput;
 
@@ -484,25 +485,8 @@ impl FindPanel {
             }
             match self.rows[i] {
                 Row::File { first, count } => {
-                    let path = &self.hits[first].path;
-                    let rel = rel_path(&self.root, path);
-                    let (dir, name) = match rel.rfind('/') {
-                        Some(k) => (&rel[..=k], &rel[k + 1..]),
-                        None => ("", rel.as_str()),
-                    };
-                    let mut x = lr.x + 1;
-                    for (text, style) in [
-                        (name, base.add_modifier(ratatui::style::Modifier::BOLD)),
-                        ("  ", base),
-                        (dir, base.patch(theme.dim)),
-                        ("  ", base),
-                    ] {
-                        let w = (text.width() as u16).min(lr.right().saturating_sub(x));
-                        buf.set_stringn(x, y, text, w as usize, style);
-                        x += w;
-                    }
-                    let n = format!("{count}");
-                    buf.set_stringn(x, y, &n, lr.right().saturating_sub(x) as usize, base.patch(theme.dim));
+                    let row = Rect::new(lr.x, y, lr.width, 1);
+                    file_rows::file_header(buf, row, &self.root, &self.hits[first].path, &count.to_string(), base, theme);
                 }
                 Row::Hit(h) => {
                     let hit = &self.hits[h];
@@ -525,9 +509,4 @@ impl FindPanel {
             }
         }
     }
-}
-
-/// `path` relative to `root` with `/` separators, or the full path.
-fn rel_path(root: &Path, path: &Path) -> String {
-    path.strip_prefix(root).unwrap_or(path).to_string_lossy().replace('\\', "/")
 }

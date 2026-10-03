@@ -16,6 +16,7 @@ pub enum Action {
     Structure(StructureAction),
     EventLog(EventLogAction),
     Run(RunAction),
+    Problems(ProblemsAction),
     Lsp(LspAction),
     Palette(PaletteAction),
     Mode(ModeAction),
@@ -315,10 +316,28 @@ pub enum RunAction {
     PrevProblem,
 }
 
+/// The Problems tool window (language server diagnostics).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ProblemsAction {
+    Up,
+    Down,
+    PageUp,
+    PageDown,
+    Home,
+    End,
+    /// Open the selected problem's location.
+    Open,
+    /// Copy the selected problem's message.
+    Copy,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum LspAction {
     /// Stop every language server; they start again for the open files.
     Restart,
+    /// Move the caret to the next diagnostic in the file (wrapping).
+    NextProblem,
+    PrevProblem,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -376,6 +395,7 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "tool_window.event_log" => "Event Log tool window", App(AppAction::ToggleToolWindow(ToolWindowId::EventLog));
         "tool_window.run" => "Run tool window", App(AppAction::ToggleToolWindow(ToolWindowId::Run));
         "tool_window.terminal" => "Terminal tool window", App(AppAction::ToggleToolWindow(ToolWindowId::Terminal));
+        "tool_window.problems" => "Problems tool window", App(AppAction::ToggleToolWindow(ToolWindowId::Problems));
         "tool_window.hide_all" => "Hide all tool windows", App(AppAction::HideAllToolWindows);
         "tool_window.hide_focused" => "Hide active tool window", App(AppAction::HideFocusedToolWindow);
         "tool_window.stretch_left" => "Stretch tool window to the left", App(AppAction::ResizeToolWindow(Dir::Left));
@@ -609,6 +629,17 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "run.prev_problem" => "Run: previous problem (opens it)", Run(RunAction::PrevProblem);
 
         "lsp.restart" => "Restart language servers", Lsp(LspAction::Restart);
+        "lsp.next_problem" => "Next problem (diagnostic) in the file", Lsp(LspAction::NextProblem);
+        "lsp.prev_problem" => "Previous problem (diagnostic) in the file", Lsp(LspAction::PrevProblem);
+
+        "problems.up" => "Problems: up", Problems(ProblemsAction::Up);
+        "problems.down" => "Problems: down", Problems(ProblemsAction::Down);
+        "problems.page_up" => "Problems: page up", Problems(ProblemsAction::PageUp);
+        "problems.page_down" => "Problems: page down", Problems(ProblemsAction::PageDown);
+        "problems.home" => "Problems: first row", Problems(ProblemsAction::Home);
+        "problems.end" => "Problems: last row", Problems(ProblemsAction::End);
+        "problems.open" => "Problems: jump to the selected problem", Problems(ProblemsAction::Open);
+        "problems.copy" => "Problems: copy the selected message", Problems(ProblemsAction::Copy);
 
         "palette.up" => "Palette: up", Palette(PaletteAction::Up);
         "palette.down" => "Palette: down", Palette(PaletteAction::Down);
@@ -649,6 +680,7 @@ impl Action {
             Action::Structure(_) => &["structure", "global"],
             Action::EventLog(_) => &["event_log", "global"],
             Action::Run(_) => &["run", "global"],
+            Action::Problems(_) => &["problems", "global"],
             Action::Lsp(_) => &["editor", "global"],
             Action::Palette(_) => &["palette"],
             Action::Mode(_) => &["mode.normal", "mode.insert", "mode.visual"],

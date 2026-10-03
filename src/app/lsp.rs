@@ -9,13 +9,17 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use lsp_types::{ConfigurationParams, ProgressParams, ProgressParamsValue, ShowMessageParams, TextDocumentSyncKind, Uri, WorkDoneProgress};
+use lsp_types::{
+    ConfigurationParams, ProgressParams, ProgressParamsValue, PublishDiagnosticsParams, ShowMessageParams, TextDocumentSyncKind, Uri,
+    WorkDoneProgress,
+};
 use serde_json::{Value, json};
 
 use super::App;
 use crate::editor::buffer::{Buffer, BufferId};
 use crate::event::Level;
 use crate::lsp::client::{Client, StartSpec, State};
+use crate::lsp::diagnostics::{Counts, Diagnostic, DiagnosticStore, MAX_TOTAL, Severity};
 use crate::lsp::sync::{self, SyncCaps};
 use crate::lsp::transport::{RequestId, ResponseError};
 use crate::lsp::{LspConfig, LspMsg, LspRequest, PendingTag, ServerConfig, ServerId};
@@ -49,6 +53,8 @@ pub struct LspService {
     last_id: ServerId,
     /// Work done progress, oldest first: server, token, what it reports.
     progress: Vec<(ServerId, String, Progress)>,
+    /// What the servers published (`textDocument/publishDiagnostics`).
+    pub(crate) diagnostics: DiagnosticStore,
     connector: Connector,
 }
 
@@ -95,6 +101,7 @@ impl LspService {
         }
         self.docs.clear();
         self.progress.clear();
+        self.diagnostics.clear();
     }
 
     /// Whether a spinner is shown (a server starting or busy).
@@ -167,6 +174,7 @@ impl LspService {
     fn server_gone(&mut self, name: &str, server: ServerId, buffers: &mut [Buffer]) {
         self.docs.retain(|_, d| d.server != name);
         self.progress.retain(|p| p.0 != server);
+        self.diagnostics.clear_server(name);
         for b in buffers.iter_mut().filter(|b| !self.docs.contains_key(&b.id)) {
             untrack(b);
         }
@@ -358,6 +366,17 @@ impl App {
                     _ => {}
                 }
             }
+            "textDocument/publishDiagnostics" => {
+                let Ok(p) = serde_json::from_value::<PublishDiagnosticsParams>(params) else { return };
+                let Some(path) = sync::path(&p.uri) else { return };
+                let items = p.diagnostics.into_iter().map(Diagnostic::from_lsp).collect();
+                if self.lsp.diagnostics.publish(name, path, items, self.config.lsp.max_diagnostics_per_file) {
+                    self.notify(
+                        Level::Warn,
+                        format!("Language servers reported over {MAX_TOTAL} problems; the rest are not shown (the most severe are kept)"),
+                    );
+                }
+            }
             _ => tracing::debug!("{name}: unhandled notification {method}"),
         }
     }
@@ -388,6 +407,52 @@ impl App {
         };
         if let Some(c) = self.lsp.clients.get(name) {
             c.respond(id, result);
+        }
+    }
+
+    /// Bring every buffer's diagnostic marks up to date with the store
+    /// (cheap when nothing changed; `ui::render` calls it each frame).
+    pub(crate) fn sync_diag_marks(&mut self) {
+        let store = &self.lsp.diagnostics;
+        for b in &mut self.editor.buffers {
+            b.diag_marks.sync(store, &b.rope, b.version, b.path.as_deref());
+        }
+    }
+
+    /// `lsp.next_problem` / `lsp.prev_problem` (F2, Shift+F2): the caret to
+    /// the next or previous diagnostic in the file, wrapping around.
+    pub(super) fn lsp_step_problem(&mut self, forward: bool) {
+        self.sync_diag_marks();
+        let Some(b) = self.editor.active_buffer_mut() else { return };
+        match b.diag_marks.step(b.sel.head, forward) {
+            Some(pos) => b.goto_pos(pos),
+            None => self.notify(Level::Info, "No problems in this file"),
+        }
+    }
+
+    /// Error and warning counts of the active file for the status bar:
+    /// shown while the file is open on a server or has diagnostics.
+    pub fn problem_counts(&self) -> Option<Counts> {
+        let b = self.editor.active_buffer()?;
+        let path = b.path.as_deref()?;
+        let counts = self.lsp.diagnostics.counts(path);
+        (self.lsp.docs.contains_key(&b.id) || counts != Counts::default()).then_some(counts)
+    }
+
+    /// The most severe diagnostic at the active buffer's caret, for the
+    /// status bar.
+    pub fn caret_problem(&self) -> Option<(Severity, &str)> {
+        let b = self.editor.active_buffer()?;
+        b.diag_marks.at(b.sel.head).map(|m| (m.severity, m.message.as_str()))
+    }
+
+    /// Show and focus the Problems window on the active file's problems
+    /// (a click on the status bar counts).
+    pub(super) fn show_problems(&mut self) {
+        self.layout.show(crate::ui::focus::ToolWindowId::Problems);
+        self.focus.set(crate::ui::focus::PanelId::Problems);
+        if let Some(path) = self.editor.active_path().map(Path::to_path_buf) {
+            self.problems.select_file(&path, &self.lsp.diagnostics);
         }
     }
 
@@ -709,6 +774,169 @@ pub(crate) mod tests {
         app.perform(Action::Lsp(LspAction::Restart));
         assert_eq!(reports(&app), 2);
         assert_eq!(app.lsp_status(), Some(LspStatus::Down("LSP: off".into())));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn publish(server: &FakeServer, path: &Path, diagnostics: Value) {
+        let uri = sync::uri(path).unwrap();
+        server.notify("textDocument/publishDiagnostics", json!({"uri": uri.as_str(), "version": 1, "diagnostics": diagnostics}));
+    }
+
+    fn diag_json(l0: u32, c0: u32, l1: u32, c1: u32, severity: u8, message: &str) -> Value {
+        json!({"range": range(l0, c0, l1, c1), "severity": severity, "message": message, "source": "rustc"})
+    }
+
+    fn draw(app: &mut App, w: u16, h: u16) -> ratatui::buffer::Buffer {
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, h)).unwrap();
+        term.draw(|f| crate::ui::render(app, f)).unwrap().buffer.clone()
+    }
+
+    fn row(buf: &ratatui::buffer::Buffer, y: u16) -> String {
+        (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect()
+    }
+
+    fn key(app: &mut App, code: crossterm::event::KeyCode, mods: crossterm::event::KeyModifiers) {
+        app.handle_key(crossterm::event::KeyEvent::new(code, mods));
+    }
+
+    fn caret(app: &App) -> (usize, usize) {
+        let b = app.editor.active_buffer().unwrap();
+        crate::editor::selection::pos_to_line_col(&b.rope, b.sel.head)
+    }
+
+    /// The second line has an emoji (two UTF-16 units) before the error.
+    const TEXT: &str = "fn main() {}\nlet a = \"😀\"; let x: i32 = a;\n";
+
+    #[tokio::test]
+    async fn diagnostics_show_in_the_gutter_text_status_bar_and_problems() {
+        use crate::ui::focus::{PanelId, ToolWindowId};
+        use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+        let (mut app, dir) = test_app("lsp-diags");
+        let mut servers = with_fake_servers(&mut app, incremental());
+        let server = open_on_server(&mut app, &mut servers, "a.rs", TEXT).await;
+        let path = app.workspace.root.join("a.rs");
+        // No toast over the text, no notification in the status bar.
+        app.toasts = Default::default();
+        app.notifications.clear();
+        assert_eq!(app.problem_counts(), Some(Counts::default()), "open on a server: counts show, zero");
+        // UTF-16 column 18 is the `x` after `let`, char column 17.
+        publish(
+            &server,
+            &path,
+            json!([diag_json(1, 18, 1, 19, 1, "mismatched types\nexpected `i32`"), diag_json(0, 3, 0, 7, 2, "unused")]),
+        );
+        handle_next(&mut app, is_lsp).await;
+        let store = &app.lsp.diagnostics;
+        assert_eq!(store.get(&path).iter().map(|d| d.severity).collect::<Vec<_>>(), [Severity::Warning, Severity::Error]);
+        assert_eq!(app.problem_counts(), Some(Counts { errors: 1, warnings: 1, ..Default::default() }));
+
+        let buf = draw(&mut app, 100, 24);
+        let b = app.editor.active_buffer().unwrap();
+        let line1 = b.rope.line_to_char(1);
+        assert_eq!(b.diag_marks.marks.iter().map(|m| m.range.clone()).collect::<Vec<_>>(), [3..7, line1 + 17..line1 + 18]);
+        let ta = app.editor.text_area;
+        let (y0, y1) = (ta.y, ta.y + 1);
+        // The glyph sits in the diff mark column, just left of the text.
+        assert_eq!(buf[(ta.x - 2, y0)].symbol(), "⚠");
+        assert_eq!(buf[(ta.x - 2, y1)].symbol(), "✖");
+        assert_eq!(buf[(ta.x - 2, y1)].fg, app.theme.diag_error.fg.unwrap());
+        // `x` is at visual column 18 (the emoji takes two cells).
+        let x = buf[(ta.x + 18, y1)].clone();
+        assert_eq!(x.symbol(), "x");
+        assert!(x.modifier.contains(ratatui::style::Modifier::UNDERLINED));
+        assert_eq!(x.underline_color, app.theme.diag_error.fg.unwrap());
+        assert!(!buf[(ta.x + 17, y1)].modifier.contains(ratatui::style::Modifier::UNDERLINED));
+        assert!(buf[(ta.x + 3, y0)].modifier.contains(ratatui::style::Modifier::UNDERLINED), "the warning too");
+        let status = row(&buf, 23);
+        assert!(status.contains("✖ 1 ⚠ 1"), "{status}");
+
+        // The diagnostic at the caret shows in the status bar.
+        app.perform(Action::Lsp(LspAction::NextProblem));
+        assert_eq!(caret(&app), (0, 3));
+        app.perform(Action::Lsp(LspAction::NextProblem));
+        assert_eq!(caret(&app), (1, 17));
+        let status = row(&draw(&mut app, 140, 24), 23);
+        assert!(status.contains("✖ mismatched types "), "{status}");
+        // F2 wraps; Shift+F2 goes back, wrapping too.
+        key(&mut app, KeyCode::F(2), KeyModifiers::NONE);
+        assert_eq!(caret(&app), (0, 3));
+        key(&mut app, KeyCode::F(2), KeyModifiers::SHIFT);
+        assert_eq!(caret(&app), (1, 17));
+
+        // A click on the counts opens Problems on this file.
+        let (_, r) = *app.status_hits.iter().find(|(h, _)| *h == crate::ui::status_bar::StatusHit::Problems).unwrap();
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: r.x + 1,
+            row: r.y,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert!(app.layout.is_visible(ToolWindowId::Problems) && app.focus.is(PanelId::Problems));
+        app.perform(Action::App(crate::actions::AppAction::FocusEditor));
+        app.perform(Action::Editor(EditorAction::Move(Motion::DocStart, false)));
+
+        // Alt+6 focuses the window; the first problem is selected, Down
+        // the second, Enter jumps to it.
+        key(&mut app, KeyCode::Char('6'), KeyModifiers::ALT);
+        assert!(app.focus.is(PanelId::Problems));
+        let buf = draw(&mut app, 100, 24);
+        let rows: Vec<String> = (0..24).map(|y| row(&buf, y)).collect();
+        assert!(rows.iter().any(|r| r.contains("Problems: 1 error, 1 warning")), "{rows:#?}");
+        assert!(rows.iter().any(|r| r.contains("a.rs") && r.contains("1 error, 1 warning")), "{rows:#?}");
+        assert!(rows.iter().any(|r| r.contains("✖ mismatched types  rustc  2:19")), "{rows:#?}");
+        key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(caret(&app), (1, 17));
+        assert!(app.focus.is(PanelId::Editor));
+
+        // A closed file opens at the converted position once loaded.
+        let other = app.workspace.root.join("b.rs");
+        std::fs::write(&other, "// 日本😀 x\n").unwrap();
+        publish(&server, &other, json!([diag_json(0, 8, 0, 9, 1, "in b")]));
+        handle_next(&mut app, is_lsp).await;
+        app.perform(Action::App(crate::actions::AppAction::FocusPanel(PanelId::Problems)));
+        app.perform(Action::Problems(crate::actions::ProblemsAction::End));
+        app.perform(Action::Problems(crate::actions::ProblemsAction::Open));
+        handle_next(&mut app, |m| matches!(m, AppMsg::FileLoaded { .. })).await;
+        assert_eq!(app.editor.active_path(), Some(other.as_path()));
+        // `// 日本` is 5 units, 😀 2, then a space: unit 8 is `x`, char 7.
+        assert_eq!(caret(&app), (0, 7));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn stale_diagnostics_are_dropped_and_cleared_with_their_server() {
+        let (mut app, dir) = test_app("lsp-diags-stale");
+        let mut servers = with_fake_servers(&mut app, incremental());
+        let server = open_on_server(&mut app, &mut servers, "a.rs", TEXT).await;
+        let path = app.workspace.root.join("a.rs");
+        let (g, id) = (app.workspace.generation, app.lsp.clients["rust-analyzer"].id);
+        let uri = sync::uri(&path).unwrap();
+        let msg = |generation, server| {
+            let params = json!({"uri": uri.as_str(), "diagnostics": [diag_json(0, 0, 0, 1, 1, "stale")]});
+            AppMsg::Lsp(LspMsg::Notification { generation, server, method: "textDocument/publishDiagnostics".into(), params })
+        };
+        app.handle_msg(msg(g - 1, id));
+        app.handle_msg(msg(g, id + 1));
+        assert_eq!(app.lsp.diagnostics.total(), 0, "another root's or server's publish is dropped");
+        publish(&server, &path, json!([diag_json(0, 0, 0, 1, 1, "e")]));
+        handle_next(&mut app, is_lsp).await;
+        assert_eq!(app.lsp.diagnostics.total(), 1);
+        // The server exits: its diagnostics go.
+        app.handle_msg(AppMsg::Lsp(LspMsg::Exited { generation: g, server: id, status: "killed".into() }));
+        assert_eq!(app.lsp.diagnostics.total(), 0);
+        assert_eq!(app.problem_counts(), None, "no server, no diagnostics: no counts");
+        // A restarted server publishes again; a root switch clears it.
+        app.perform(Action::Lsp(LspAction::Restart));
+        let server = servers.recv().await.unwrap();
+        handle_next(&mut app, |m| matches!(m, AppMsg::Lsp(LspMsg::Started { .. }))).await;
+        publish(&server, &path, json!([diag_json(0, 0, 0, 1, 2, "w")]));
+        handle_next(&mut app, is_lsp).await;
+        assert_eq!(app.lsp.diagnostics.total(), 1);
+        let other = dir.join("other");
+        std::fs::create_dir_all(&other).unwrap();
+        app.do_switch_root(other);
+        assert_eq!(app.lsp.diagnostics.total(), 0);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

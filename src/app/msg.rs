@@ -296,13 +296,36 @@ impl App {
 
     /// Open a file with the caret at a 0-based line and char column.
     pub fn open_file_at(&mut self, path: PathBuf, line: usize, col: usize) {
+        self.open_file_goto(path, GotoTarget::Char { line, col });
+    }
+
+    /// Open a file with the caret at an LSP position (0-based line, UTF-16
+    /// column), converted against the text once it is loaded.
+    pub fn open_file_at_utf16(&mut self, path: PathBuf, pos: lsp_types::Position) {
+        self.open_file_goto(path, GotoTarget::Utf16(pos));
+    }
+
+    fn open_file_goto(&mut self, path: PathBuf, target: GotoTarget) {
         if self.editor.index_of(&path).is_some() {
             self.open_file(path, true);
-            self.editor.goto_line(line + 1, col + 1);
+            self.goto_target(target);
         } else {
-            self.pending_goto = Some((path.clone(), line, col));
+            self.pending_goto = Some((path.clone(), target));
             self.open_file(path, true);
         }
+    }
+
+    /// Put the active buffer's caret at `target` (remembered for back).
+    fn goto_target(&mut self, target: GotoTarget) {
+        let (line, col) = match target {
+            GotoTarget::Char { line, col } => (line, col),
+            GotoTarget::Utf16(pos) => {
+                let Some(b) = self.editor.active_buffer() else { return };
+                let idx = crate::lsp::pos::char_index(&b.rope, pos);
+                crate::editor::selection::pos_to_line_col(&b.rope, idx)
+            }
+        };
+        self.editor.goto_line(line + 1, col + 1);
     }
 
     /// Open a file: reuse the tab when already open, otherwise read it off
@@ -334,8 +357,8 @@ impl App {
         let Some((text, lossy)) = self.decode_file(&path, bytes) else { return };
         self.editor.open_text(path.clone(), &text, lossy, &self.theme);
         self.editor.enforce_tab_limit();
-        if let Some((_, line, col)) = self.pending_goto.take_if(|(p, ..)| *p == path) {
-            self.editor.goto_line(line + 1, col + 1);
+        if let Some((_, target)) = self.pending_goto.take_if(|(p, _)| *p == path) {
+            self.goto_target(target);
         }
         self.git.load_blob(path, BlobWhich::Head);
         if focus {
@@ -360,6 +383,15 @@ impl App {
         }
         Some((text, lossy))
     }
+}
+
+/// Where `open_file_at` and `open_file_at_utf16` put the caret.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GotoTarget {
+    /// 0-based line and char column.
+    Char { line: usize, col: usize },
+    /// An LSP position: 0-based line and UTF-16 column.
+    Utf16(lsp_types::Position),
 }
 
 fn short(sha: &str) -> &str {

@@ -57,7 +57,7 @@ pub struct Editor {
     next_id: BufferId,
     pub tab_hits: TabHits,
     tab_scroll: usize,
-    text_area: Rect,
+    pub(crate) text_area: Rect,
     last_area: Rect,
     tab_width: usize,
     scrolloff: usize,

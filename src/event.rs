@@ -156,6 +156,13 @@ pub enum Effect {
         line: usize,
         col: usize,
     },
+    /// Open a file with the caret at an LSP position (0-based line, UTF-16
+    /// column), converted once the text is loaded
+    /// (`App::open_file_at_utf16`).
+    OpenFileAtUtf16 {
+        path: PathBuf,
+        pos: lsp_types::Position,
+    },
     Focus(PanelId),
     Notify(Level, String),
     SwitchRoot(PathBuf),

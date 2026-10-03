@@ -34,6 +34,7 @@ pub fn render(app: &mut App, frame: &mut Frame) {
 
     tool_strip::render(app, frame, rects.strip);
     app.sync_structure();
+    app.sync_diag_marks();
 
     if let (Some(tw), r) = (app.layout.left, rects.left)
         && r.width > 0
@@ -56,6 +57,14 @@ pub fn render(app: &mut App, frame: &mut Frame) {
             PanelId::EventLog => app.event_log.render(frame, r, focused, &theme, &app.notifications),
             PanelId::Run => app.run_panel.render(frame, r, focused, &theme),
             PanelId::Terminal => app.render_terminal(frame, r, focused, &theme),
+            PanelId::Problems => {
+                let hint = if app.config.lsp.enabled {
+                    "No problems reported by the language servers"
+                } else {
+                    "Language servers are off ([lsp] enabled = false in config.toml)"
+                };
+                app.problems.render(frame, r, focused, &theme, &app.lsp.diagnostics, &app.workspace.root, hint);
+            }
             _ => {}
         }
     }

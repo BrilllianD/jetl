@@ -161,6 +161,8 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
         }
         None => Vec::new(),
     };
+    let marks = &buf.diag_marks;
+    let underlines = !marks.spans.is_empty();
     let digits = (gutter_w - 3 - blame_w) as usize;
     let gx = area.x + blame_w;
     let mut cursor = None;
@@ -189,7 +191,11 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
         if buf.bookmarks.contains(&line) {
             screen.set_string(gx + digits as u16, y, "◆", theme.bookmark);
         }
-        if let Some(mark) = super::gutter::mark_at(&buf.gutter, line) {
+        // A diagnostic's glyph takes the diff mark's column over it.
+        if let Some(sev) = marks.lines.get(&line) {
+            let st = sev.style(theme);
+            screen.set_string(gx + digits as u16 + 1, y, sev.glyph(), Style::default().fg(st.fg.unwrap_or(theme.fg)));
+        } else if let Some(mark) = super::gutter::mark_at(&buf.gutter, line) {
             let (glyph, color) = mark.glyph(theme);
             screen.set_string(gx + digits as u16 + 1, y, glyph, Style::default().fg(color));
         }
@@ -211,6 +217,9 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
             }
             let x = x as u16;
             let mut style = hl.style_at(c.char_idx).unwrap_or(Style::default().fg(theme.fg));
+            if underlines && let Some(sev) = marks.severity_at(c.char_idx) {
+                style = diag_overlay(style, sev.style(theme));
+            }
             if sel.contains(&c.char_idx) {
                 style = style.bg(theme.selection_bg);
             } else if let Some(s) = search {
@@ -269,6 +278,21 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
         }
     }
     RenderOut { cursor, text_area }
+}
+
+/// Text under a diagnostic: the severity style's modifiers (an underline
+/// in its foreground color by default) and its background, if any.
+fn diag_overlay(style: Style, d: Style) -> Style {
+    let mut s = style.add_modifier(d.add_modifier).remove_modifier(d.sub_modifier);
+    if d.add_modifier.contains(Modifier::UNDERLINED)
+        && let Some(fg) = d.fg
+    {
+        s = s.underline_color(fg);
+    }
+    if let Some(bg) = d.bg {
+        s = s.bg(bg);
+    }
+    s
 }
 
 /// `ranges` is sorted and non-overlapping.

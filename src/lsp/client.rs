@@ -19,8 +19,8 @@ use std::time::{Duration, Instant};
 
 use lsp_types::{
     ClientCapabilities, ClientInfo, GeneralClientCapabilities, InitializeParams, InitializeResult, PositionEncodingKind,
-    ShowMessageRequestClientCapabilities, TextDocumentClientCapabilities, TextDocumentSyncClientCapabilities, WindowClientCapabilities,
-    WorkspaceClientCapabilities, WorkspaceFolder,
+    PublishDiagnosticsClientCapabilities, ShowMessageRequestClientCapabilities, TextDocumentClientCapabilities,
+    TextDocumentSyncClientCapabilities, WindowClientCapabilities, WorkspaceClientCapabilities, WorkspaceFolder,
 };
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, BufReader};
@@ -190,6 +190,7 @@ pub fn client_capabilities() -> ClientCapabilities {
         general: Some(GeneralClientCapabilities { position_encodings: Some(vec![PositionEncodingKind::UTF16]), ..Default::default() }),
         text_document: Some(TextDocumentClientCapabilities {
             synchronization: Some(TextDocumentSyncClientCapabilities { did_save: Some(true), ..Default::default() }),
+            publish_diagnostics: Some(PublishDiagnosticsClientCapabilities::default()),
             ..Default::default()
         }),
         window: Some(WindowClientCapabilities {
