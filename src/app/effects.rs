@@ -122,6 +122,18 @@ impl App {
             }
             GitRequest::LoadStashes => self.git.load_stashes(),
             GitRequest::LoadBlame(path) => self.git.load_blame(path),
+            GitRequest::CheckoutCommit(sha) => {
+                self.git.run_cli(GitOp::Checkout(sha.clone()), vec!["switch".into(), "--detach".into(), sha]);
+            }
+            GitRequest::CherryPick(sha) => {
+                self.git.run_cli(GitOp::CherryPick(sha.clone()), vec!["cherry-pick".into(), sha]);
+            }
+            GitRequest::Revert(sha) => {
+                self.git.run_cli(GitOp::Revert(sha.clone()), vec!["revert".into(), "--no-edit".into(), sha]);
+            }
+            GitRequest::NewBranchAt { name, sha } => {
+                self.git.run_cli(GitOp::NewBranch(name.clone()), vec!["switch".into(), "-c".into(), name, sha]);
+            }
             GitRequest::ShowCommit(sha) => {
                 self.layout.show(crate::ui::focus::ToolWindowId::Git);
                 self.focus.set(crate::ui::focus::PanelId::Git);

@@ -195,6 +195,9 @@ impl App {
                 GitOp::Fetch => self.notify(Level::Info, "Fetched"),
                 GitOp::Switch(b) => self.notify(Level::Info, format!("Switched to {b}")),
                 GitOp::NewBranch(b) => self.notify(Level::Info, format!("Created and switched to {b}")),
+                GitOp::Checkout(sha) => self.notify(Level::Info, format!("Checked out {} (detached HEAD)", short(sha))),
+                GitOp::CherryPick(sha) => self.notify(Level::Info, format!("Cherry-picked {}", short(sha))),
+                GitOp::Revert(sha) => self.notify(Level::Info, format!("Reverted {}", short(sha))),
                 GitOp::Discard | GitOp::Stash => self.notify(Level::Info, output.clone()),
                 GitOp::Stage | GitOp::Unstage => {}
                 GitOp::WorktreeAdd { .. } | GitOp::WorktreeRemove { .. } | GitOp::WorktreePrune => {}
@@ -327,6 +330,10 @@ impl App {
         }
         Some((text, lossy))
     }
+}
+
+fn short(sha: &str) -> &str {
+    &sha[..sha.len().min(8)]
 }
 
 /// The most telling line of a failed command's output: the first `fatal:`

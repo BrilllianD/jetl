@@ -8,6 +8,24 @@ use crate::ui::dialog::{Dialog, DialogId, DialogResult};
 use crate::ui::focus::PanelId;
 
 impl App {
+    fn edit_log_filter(&mut self, edit: impl FnOnce(&mut crate::git::LogFilter)) {
+        let mut cx = ctx!(self);
+        self.git_panel.edit_log_filter(edit, &mut cx);
+        let fx = cx.effects;
+        self.apply_effects(fx);
+    }
+
+    /// The Ctrl+F choice in the Log tab: open that part's dialog, or clear.
+    fn log_filter_kind(&mut self, i: usize) {
+        if i == 4 {
+            return self.edit_log_filter(|f| *f = Default::default());
+        }
+        let mut cx = ctx!(self);
+        self.git_panel.open_log_filter_dialog(i, &mut cx);
+        let fx = cx.effects;
+        self.apply_effects(fx);
+    }
+
     pub(super) fn request_quit(&mut self) {
         if self.editor.has_dirty() {
             self.dialog = Some(Dialog::confirm(
@@ -101,6 +119,27 @@ impl App {
                     self.git.run_cli(GitOp::NewBranch(name.clone()), vec!["switch".into(), "-c".into(), name]);
                 }
             }
+            (DialogId::LogFilterKind, DialogResult::Choice(i)) => self.log_filter_kind(i),
+            (DialogId::LogFilterText, DialogResult::Text(t)) => self.edit_log_filter(|f| f.text = t.trim().to_string()),
+            (DialogId::LogFilterAuthor, DialogResult::Text(t)) => self.edit_log_filter(|f| f.author = t.trim().to_string()),
+            (DialogId::LogFilterPath, DialogResult::Text(t)) => {
+                let path = t.trim().trim_start_matches("./").trim_end_matches('/').to_string();
+                self.edit_log_filter(|f| f.path = if path == "." { String::new() } else { path })
+            }
+            (DialogId::LogBranch(revs), DialogResult::Choice(i)) => {
+                if let Some(rev) = revs.get(i).cloned() {
+                    self.edit_log_filter(|f| f.rev = rev);
+                }
+            }
+            (DialogId::NewBranchAt { sha }, DialogResult::Text(t)) => {
+                let name = t.trim().to_string();
+                if name.is_empty() || name.starts_with('-') || name.contains(char::is_whitespace) {
+                    self.notify(Level::Warn, format!("Invalid branch name {name:?}"));
+                } else {
+                    self.git_request(crate::git::GitRequest::NewBranchAt { name, sha });
+                }
+            }
+            (DialogId::RevertCommit { sha }, DialogResult::Button(0)) => self.git_request(crate::git::GitRequest::Revert(sha)),
             (DialogId::StashMessage, DialogResult::Text(message)) => {
                 self.git_request(crate::git::GitRequest::Stash(crate::git::repo::StashOp::Push { message }))
             }

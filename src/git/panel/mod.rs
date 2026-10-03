@@ -38,6 +38,7 @@ mod log;
 mod stash;
 
 use diff_view::{DiffOpts, DiffPane, render_diff, render_toggles};
+use log::{CommitAction, LogFilterPart};
 use stash::StashAction;
 
 /// Stored in sessions (`SessionLayout::git_tab`); add variants, never
@@ -85,6 +86,7 @@ enum Btn {
     DiffLayout,
     DiffCollapse,
     LogClearFilter,
+    LogFilter(LogFilterPart),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -126,6 +128,8 @@ pub struct GitPanel {
     /// The filter of the log request in flight.
     log_loading: Option<LogFilter>,
     log_filter: LogFilter,
+    /// `[git] log_all`, for the branch label.
+    log_all: bool,
     log_end: bool,
     log_page: usize,
     details: Option<CommitDetails>,
@@ -184,6 +188,7 @@ impl GitPanel {
             log_loaded: false,
             log_loading: None,
             log_filter: LogFilter::default(),
+            log_all: false,
             log_end: false,
             log_page: 500,
             details: None,
@@ -219,8 +224,9 @@ impl GitPanel {
         let message = std::mem::take(&mut self.message);
         let console = std::mem::take(&mut self.console);
         let tab = self.tab;
-        let log_page = self.log_page;
+        let (log_page, log_all) = (self.log_page, self.log_all);
         *self = Self::new();
+        self.log_all = log_all;
         self.message = message;
         self.console = console;
         self.tab = tab;
@@ -242,6 +248,10 @@ impl GitPanel {
 
     pub fn set_log_page(&mut self, n: usize) {
         self.log_page = n.max(1);
+    }
+
+    pub fn set_log_all(&mut self, all: bool) {
+        self.log_all = all;
     }
 
     fn default_area(tab: GitTab) -> Area {
@@ -309,6 +319,25 @@ impl GitPanel {
                 (GitTab::Commit, _) => self.toggle_selected(cx),
                 _ => {}
             },
+            G::LogFilter => {
+                if self.tab != GitTab::Log {
+                    self.set_tab(GitTab::Log, cx);
+                }
+                let items = ["Branch", "Text in message", "Author", "Path", "Clear all filters"].map(String::from).to_vec();
+                cx.effects.push(Effect::Dialog(crate::ui::dialog::Dialog::choice(
+                    crate::ui::dialog::DialogId::LogFilterKind,
+                    "Filter Log",
+                    "",
+                    items,
+                )));
+            }
+            G::FileHistory => {}
+            G::ContextMenu => self.log_context_menu(None, cx),
+            G::CopySha => self.commit_action(CommitAction::CopySha, cx),
+            G::LogCheckout => self.commit_action(CommitAction::Checkout, cx),
+            G::LogNewBranch => self.commit_action(CommitAction::NewBranch, cx),
+            G::LogCherryPick => self.commit_action(CommitAction::CherryPick, cx),
+            G::LogRevert => self.commit_action(CommitAction::Revert, cx),
             G::ToggleDiffLayout => self.toggle_diff_layout(),
             G::ToggleDiffCollapse => self.toggle_diff_collapse(),
             G::NextHunk | G::PrevHunk => {
@@ -485,11 +514,12 @@ impl GitPanel {
                     self.click_button(btn, cx);
                     return true;
                 }
-                match self.tab {
-                    GitTab::Commit => self.click_commit_tab(m, p, cx),
-                    GitTab::Log => self.click_log_tab(m, p, cx),
-                    GitTab::Stash => self.click_stash_tab(m, p, cx),
-                    GitTab::Console => self.area = Area::Console,
+                self.click_tab(m, p, cx);
+                true
+            }
+            MouseEventKind::Down(MouseButton::Right) => {
+                if self.tab == GitTab::Log {
+                    self.click_log_tab(m, p, cx);
                 }
                 true
             }
@@ -527,6 +557,15 @@ impl GitPanel {
         }
     }
 
+    fn click_tab(&mut self, m: &Mouse, p: Position, cx: &mut Ctx) {
+        match self.tab {
+            GitTab::Commit => self.click_commit_tab(m, p, cx),
+            GitTab::Log => self.click_log_tab(m, p, cx),
+            GitTab::Stash => self.click_stash_tab(m, p, cx),
+            GitTab::Console => self.area = Area::Console,
+        }
+    }
+
     /// Flip the diff panes between unified and side-by-side (from what the
     /// current tab shows); the choice then holds at any width.
     fn toggle_diff_layout(&mut self) {
@@ -561,6 +600,7 @@ impl GitPanel {
             Btn::StashDrop => return self.stash_action(StashAction::Drop, cx),
             Btn::DiffLayout => return self.toggle_diff_layout(),
             Btn::LogClearFilter => return self.set_log_filter(LogFilter::default(), cx),
+            Btn::LogFilter(part) => return self.log_filter_dialog(part, cx),
             Btn::DiffCollapse => return self.toggle_diff_collapse(),
             Btn::Refresh => GitRequest::Refresh,
             Btn::Fetch => GitRequest::Fetch,

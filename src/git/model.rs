@@ -193,11 +193,40 @@ pub struct StashEntry {
     pub oid: String,
 }
 
-/// What the Log tab lists: history from `rev`, else from HEAD (or all
-/// branches with `[git] log_all`).
+/// Where the Log tab's history starts.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum LogRev {
+    /// HEAD, or every branch with `[git] log_all`.
+    #[default]
+    Default,
+    Head,
+    All,
+    /// A branch or commit.
+    Rev(String),
+}
+
+impl LogRev {
+    pub fn label(&self, log_all: bool) -> String {
+        match self {
+            LogRev::Default if log_all => "all".into(),
+            LogRev::Default | LogRev::Head => "HEAD".into(),
+            LogRev::All => "all".into(),
+            LogRev::Rev(r) if r.len() == 40 && r.chars().all(|c| c.is_ascii_hexdigit()) => r[..8].to_string(),
+            LogRev::Rev(r) => r.clone(),
+        }
+    }
+}
+
+/// What the Log tab lists: the history from `rev`, narrowed to commits
+/// whose message contains `text`, whose author matches `author`, and that
+/// touch `path` (each ignored when empty).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LogFilter {
-    pub rev: Option<String>,
+    pub rev: LogRev,
+    pub text: String,
+    pub author: String,
+    /// Relative to the project root.
+    pub path: String,
 }
 
 impl LogFilter {

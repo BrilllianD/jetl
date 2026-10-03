@@ -50,6 +50,20 @@ pub enum DialogId {
     },
     WorktreeSwitchAfterCreate(std::path::PathBuf),
     NewBranchName,
+    /// Log filter: which part to edit (Branch, Text, Author, Path, Clear).
+    LogFilterKind,
+    LogFilterText,
+    LogFilterAuthor,
+    LogFilterPath,
+    /// Log of a branch: item `i` is `revs[i]`.
+    LogBranch(Vec<crate::git::LogRev>),
+    /// Name of a new branch at the commit.
+    NewBranchAt {
+        sha: String,
+    },
+    RevertCommit {
+        sha: String,
+    },
     /// Message for a new stash.
     StashMessage,
     /// Drop the stash with this commit id.

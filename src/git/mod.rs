@@ -20,7 +20,7 @@ use anyhow::Result;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::event::AppMsg;
-pub use model::{Blame, BranchInfo, CommitDetails, DiffKey, LogFilter, LogRow, Section, StashEntry, StatusSnapshot};
+pub use model::{Blame, BranchInfo, CommitDetails, DiffKey, LogFilter, LogRev, LogRow, Section, StashEntry, StatusSnapshot};
 pub use panel::GitPanel;
 pub use repo::BlobWhich;
 
@@ -45,6 +45,10 @@ pub enum GitOp {
     Fetch,
     Switch(String),
     NewBranch(String),
+    /// `git switch --detach <sha>`.
+    Checkout(String),
+    CherryPick(String),
+    Revert(String),
     /// `git worktree add`; `path` is the new worktree.
     WorktreeAdd {
         path: PathBuf,
@@ -60,7 +64,17 @@ pub enum GitOp {
 impl GitOp {
     /// Whether the operation may rewrite files in the work tree.
     pub fn touches_worktree(&self) -> bool {
-        matches!(self, GitOp::Pull | GitOp::Switch(_) | GitOp::NewBranch(_) | GitOp::Discard | GitOp::Stash)
+        matches!(
+            self,
+            GitOp::Pull
+                | GitOp::Switch(_)
+                | GitOp::NewBranch(_)
+                | GitOp::Discard
+                | GitOp::Stash
+                | GitOp::Checkout(_)
+                | GitOp::CherryPick(_)
+                | GitOp::Revert(_)
+        )
     }
 }
 
@@ -179,6 +193,14 @@ pub enum GitRequest {
     Stash(repo::StashOp),
     LoadStashes,
     LoadBlame(PathBuf),
+    CheckoutCommit(String),
+    CherryPick(String),
+    /// Confirmed already (`DialogId::RevertCommit`).
+    Revert(String),
+    NewBranchAt {
+        name: String,
+        sha: String,
+    },
     /// Show a commit in the Log tab (from the blame column).
     ShowCommit(String),
     /// `git apply` a patch (a diff block); `op` is what it counts as

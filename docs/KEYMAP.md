@@ -42,6 +42,7 @@ Override any of them in `~/.config/jetl/keymap.toml` (see [CONFIG.md](CONFIG.md)
 | `Ctrl+W` | `editor.close_tab` | Close tab |
 | `Ctrl+Tab` * | `editor.switcher` | Switcher (recent tabs) |
 | `Alt+F1` | `tree.select_in_project` | Select in Project |
+| `Alt+H` | `git.file_history` | Git: show history for the file (editor) or the selected entry (Project tree) |
 | `Alt+0` | `git.commit_box` | Git: open commit window |
 | `Ctrl+K` | `git.commit_box` | Git: open commit window |
 | `Ctrl+Shift+K` * | `git.push` | Git: push |
@@ -162,6 +163,13 @@ Override any of them in `~/.config/jetl/keymap.toml` (see [CONFIG.md](CONFIG.md)
 | `Shift+F7` | `git.prev_hunk` | Git: previous change in the diff |
 | `Alt+U` | `git.toggle_diff_layout` | Git: diff side-by-side or unified |
 | `Alt+F` | `git.toggle_diff_collapse` | Git: fold or show unchanged lines in the diff |
+| `Ctrl+F` | `git.log_filter` | Git: filter the log (branch, text, author, path) |
+| `Shift+F10` | `git.context_menu` | Git: commit actions for the selected commit |
+| `Ctrl+C` | `git.copy_sha` | Git: copy the selected commit's revision number |
+| `Alt+Shift+C` | `git.log_checkout` | Git: check out the selected commit (detached) |
+| `Alt+Shift+B` | `git.log_new_branch` | Git: new branch at the selected commit |
+| `Alt+Shift+P` | `git.log_cherry_pick` | Git: cherry-pick the selected commit |
+| `Alt+Shift+R` | `git.log_revert` | Git: revert the selected commit |
 | `Alt+Enter` | `git.commit` | Git: commit |
 | `Ctrl+Enter` * | `git.commit` | Git: commit |
 | `Alt+M` | `git.toggle_amend` | Git: amend the last commit (toggle) |

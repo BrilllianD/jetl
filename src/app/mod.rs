@@ -185,6 +185,7 @@ impl App {
         git.messages_dir = paths.state_dir.join("commit_messages");
         let mut git_panel = GitPanel::new();
         git_panel.set_log_page(config.git.log_page);
+        git_panel.set_log_all(config.git.log_all);
         let mut app = Self {
             workspace,
             theme,
@@ -549,6 +550,11 @@ impl App {
                 return;
             }
             Action::Tree(a) => self.project.handle_action(a, &mut cx),
+            Action::Git(crate::actions::GitAction::FileHistory) => {
+                drop(cx);
+                self.file_history();
+                return;
+            }
             Action::Git(a) => self.git_panel.handle_action(a, &mut cx),
             Action::Worktree(a) => self.worktrees.handle_action(a, &mut cx),
             Action::Find(a @ (FindAction::InFiles | FindAction::ReplaceInFiles)) => {
@@ -640,6 +646,31 @@ impl App {
             self.layout.hide(tw);
             self.focus.set(PanelId::Editor);
         }
+    }
+
+    /// `git.file_history`: the selected tree entry when the tree has focus,
+    /// else the active file.
+    fn file_history(&mut self) {
+        let path = if self.focus.is(PanelId::Project) {
+            self.project.selected_row().map(|r| r.path.clone())
+        } else {
+            self.editor.active_path().map(|p| p.to_path_buf())
+        };
+        let Some(path) = path else {
+            self.notify(Level::Info, "No file selected");
+            return;
+        };
+        let Ok(rel) = path.strip_prefix(&self.workspace.root) else {
+            self.notify(Level::Warn, format!("{} is outside the project", path.display()));
+            return;
+        };
+        let rel = rel.to_string_lossy().replace('\\', "/");
+        self.layout.show(ToolWindowId::Git);
+        self.focus.set(PanelId::Git);
+        let mut cx = ctx!(self);
+        self.git_panel.show_history(&rel, &mut cx);
+        let fx = cx.effects;
+        self.apply_effects(fx);
     }
 
     fn select_in_project(&mut self) {
@@ -1590,6 +1621,55 @@ pub(crate) mod tests {
         let blame = crate::git::repo::blame(&app.workspace.root, &a);
         app.handle_msg(AppMsg::Git(GitMsg::Blame { generation: g, seq: 3, path: a, result: blame }));
         assert!(app.editor.buffers[0].blame.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn log_filters_file_history_and_commit_actions() {
+        use crate::actions::GitAction;
+        use crate::git::{LogFilter, LogRev};
+        let (mut app, dir) = test_app("log-filter");
+        init_repo(&app, &[("a.txt", "a\n"), ("b.txt", "b\n")]);
+        load(&mut app, "a.txt", "a\n");
+        let g = app.git.generation;
+        // History of the active file: the Log tab, filtered by its path.
+        app.perform(Action::Git(GitAction::FileHistory));
+        assert_eq!(app.git_panel.tab, crate::git::panel::GitTab::Log);
+        let by_path = LogFilter { path: "a.txt".into(), ..Default::default() };
+        // A page of another filter is dropped; the right one lands.
+        let root = app.workspace.root.clone();
+        let page = |filter: &LogFilter| {
+            let out = std::process::Command::new("git")
+                .args(crate::git::cli::log_args(0, 100, false, filter))
+                .current_dir(&root)
+                .output()
+                .unwrap();
+            crate::git::cli::parse_log(&String::from_utf8_lossy(&out.stdout))
+        };
+        let other = page(&LogFilter::default());
+        app.handle_msg(AppMsg::Git(GitMsg::Log { generation: g, skip: 0, filter: LogFilter::default(), result: Ok(other) }));
+        assert!(!app.git_panel.log_loaded());
+        let rows = page(&by_path);
+        assert_eq!(rows.iter().filter(|r| r.commit.is_some()).count(), 1);
+        app.handle_msg(AppMsg::Git(GitMsg::Log { generation: g, skip: 0, filter: by_path.clone(), result: Ok(rows) }));
+        assert!(app.git_panel.log_loaded());
+        // Ctrl+F, Text: the filter keeps the path and adds the text.
+        app.perform(Action::Git(GitAction::LogFilter));
+        let d = app.dialog.take().unwrap();
+        app.finish_dialog(d.id, DialogResult::Choice(1));
+        let d = app.dialog.take().unwrap();
+        assert_eq!(d.id, DialogId::LogFilterText);
+        app.finish_dialog(d.id, DialogResult::Text(" init ".into()));
+        let f = app.git_panel.log_filter();
+        assert_eq!((f.path.as_str(), f.text.as_str(), &f.rev), ("a.txt", "init", &LogRev::Default));
+        // Commit actions work on the selected commit (the page is reloaded
+        // for the new filter first).
+        let f = f.clone();
+        let rows = page(&f);
+        app.handle_msg(AppMsg::Git(GitMsg::Log { generation: g, skip: 0, filter: f, result: Ok(rows) }));
+        app.perform(Action::Git(GitAction::LogRevert));
+        let d = app.dialog.take().expect("revert asks");
+        assert!(matches!(d.id, DialogId::RevertCommit { .. }) && d.message.contains("init"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

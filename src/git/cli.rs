@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use anyhow::{Result, anyhow};
 
-use super::model::{CommitDetails, CommitFile, LogCommit, LogFilter, LogRow};
+use super::model::{CommitDetails, CommitFile, LogCommit, LogFilter, LogRev, LogRow};
 
 pub const TIMEOUT: Duration = Duration::from_secs(120);
 
@@ -163,12 +163,27 @@ pub fn log_args(skip: usize, count: usize, all: bool, filter: &LogFilter) -> Vec
     if skip > 0 {
         v.push(format!("--skip={skip}"));
     }
-    match &filter.rev {
-        Some(rev) => v.push(rev.clone()),
-        None if all => v.push("--all".into()),
-        None => {}
+    if !filter.text.is_empty() || !filter.author.is_empty() {
+        // Plain substrings, any case.
+        v.extend(args(&["--regexp-ignore-case", "--fixed-strings"]));
+    }
+    if !filter.text.is_empty() {
+        v.push(format!("--grep={}", filter.text));
+    }
+    if !filter.author.is_empty() {
+        v.push(format!("--author={}", filter.author));
     }
     v.push("--format=%x1f%H%x1f%h%x1f%an%x1f%ar%x1f%D%x1f%s".into());
+    match &filter.rev {
+        LogRev::Rev(rev) => v.push(rev.clone()),
+        LogRev::All => v.push("--all".into()),
+        LogRev::Default if all => v.push("--all".into()),
+        LogRev::Default | LogRev::Head => {}
+    }
+    v.push("--".into());
+    if !filter.path.is_empty() {
+        v.push(filter.path.clone());
+    }
     v
 }
 
@@ -272,5 +287,13 @@ mod tests {
         assert!(a.contains(&"--skip=500".to_string()));
         assert!(a.contains(&"-n500".to_string()));
         assert!(!a.contains(&"--all".to_string()));
+        assert_eq!(a.last().map(String::as_str), Some("--"));
+        let f = LogFilter { rev: LogRev::Rev("dev".into()), text: "fix".into(), author: "ann".into(), path: "src/a.rs".into() };
+        let a = log_args(0, 10, true, &f);
+        assert!(!a.contains(&"--all".to_string()), "a branch replaces --all");
+        for want in ["--grep=fix", "--author=ann", "--fixed-strings", "dev"] {
+            assert!(a.contains(&want.to_string()), "{want} in {a:?}");
+        }
+        assert_eq!(&a[a.len() - 2..], ["--", "src/a.rs"]);
     }
 }

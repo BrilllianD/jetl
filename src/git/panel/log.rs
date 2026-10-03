@@ -8,11 +8,33 @@ use ratatui::style::{Color, Modifier, Style};
 use unicode_width::UnicodeWidthStr;
 
 use super::{Area, Btn, GitPanel, GitTab, put, render_diff, render_toggles};
+use crate::actions::{Action, GitAction};
 use crate::app::Ctx;
 use crate::config::theme::Theme;
 use crate::event::{Effect, Level, Mouse};
 use crate::git::GitRequest;
-use crate::git::model::{CommitDetails, DiffKey, LogFilter, LogRow};
+use crate::git::model::{CommitDetails, DiffKey, LogFilter, LogRev, LogRow};
+use crate::ui::dialog::{Dialog, DialogId};
+use crate::ui::menu::{ContextMenu, MenuItem};
+
+/// A part of the log filter (bar buttons, Ctrl+F).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum LogFilterPart {
+    Text,
+    Author,
+    Path,
+    Branch,
+}
+
+/// What to do with the selected commit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum CommitAction {
+    CopySha,
+    Checkout,
+    NewBranch,
+    CherryPick,
+    Revert,
+}
 use crate::ui::widgets::list::ListState;
 
 impl GitPanel {
@@ -115,8 +137,127 @@ impl GitPanel {
                 self.log_list.select(i);
                 self.sync_details(cx);
             }
-            None => self.set_log_filter(LogFilter { rev: Some(sha.to_string()) }, cx),
+            None => self.set_log_filter(LogFilter { rev: LogRev::Rev(sha.to_string()), ..Default::default() }, cx),
         }
+    }
+
+    /// The Log tab with the history of `rel` (a file or directory relative
+    /// to the root; empty for everything).
+    pub fn show_history(&mut self, rel: &str, cx: &mut Ctx) {
+        self.tab = GitTab::Log;
+        self.area = Area::Log;
+        self.log_diff.clear();
+        self.set_log_filter(LogFilter { path: rel.to_string(), ..Default::default() }, cx);
+    }
+
+    pub fn log_filter(&self) -> &LogFilter {
+        &self.log_filter
+    }
+
+    /// Change one part of the log filter (a dialog answer).
+    pub fn edit_log_filter(&mut self, edit: impl FnOnce(&mut LogFilter), cx: &mut Ctx) {
+        let mut f = self.log_filter.clone();
+        edit(&mut f);
+        self.set_log_filter(f, cx);
+    }
+
+    /// Ask for part `i` of the Ctrl+F choice (Branch, Text, Author, Path).
+    pub fn open_log_filter_dialog(&mut self, i: usize, cx: &mut Ctx) {
+        let part = match i {
+            0 => LogFilterPart::Branch,
+            1 => LogFilterPart::Text,
+            2 => LogFilterPart::Author,
+            _ => LogFilterPart::Path,
+        };
+        self.log_filter_dialog(part, cx);
+    }
+
+    /// Ask for one part of the filter.
+    pub(super) fn log_filter_dialog(&mut self, part: LogFilterPart, cx: &mut Ctx) {
+        let f = &self.log_filter;
+        let d = match part {
+            LogFilterPart::Text => {
+                Dialog::input(DialogId::LogFilterText, "Filter Log", "Commits whose message contains:", &f.text, "Filter")
+            }
+            LogFilterPart::Author => {
+                Dialog::input(DialogId::LogFilterAuthor, "Filter Log", "Commits whose author contains:", &f.author, "Filter")
+            }
+            LogFilterPart::Path => {
+                Dialog::input(DialogId::LogFilterPath, "Filter Log", "Commits touching (path relative to the project):", &f.path, "Filter")
+            }
+            LogFilterPart::Branch => {
+                let mut revs = vec![LogRev::Head, LogRev::All];
+                revs.extend(self.branches.iter().map(|b| LogRev::Rev(b.name.clone())));
+                let items = revs
+                    .iter()
+                    .map(|r| match r {
+                        LogRev::Head => "HEAD (current branch)".to_string(),
+                        LogRev::All => "All branches".to_string(),
+                        r => r.label(false),
+                    })
+                    .collect();
+                Dialog::choice(DialogId::LogBranch(revs), "Log of Branch", "", items)
+            }
+        };
+        cx.effects.push(Effect::Dialog(d));
+    }
+
+    /// The commit a commit action works on.
+    fn action_commit(&self, cx: &mut Ctx) -> Option<String> {
+        let sha = (self.tab == GitTab::Log).then(|| self.selected_commit()).flatten().map(str::to_string);
+        if sha.is_none() {
+            cx.notify(Level::Info, "Select a commit in the Log tab");
+        }
+        sha
+    }
+
+    pub(super) fn commit_action(&mut self, action: CommitAction, cx: &mut Ctx) {
+        let Some(sha) = self.action_commit(cx) else { return };
+        let short = sha[..sha.len().min(8)].to_string();
+        match action {
+            CommitAction::CopySha => {
+                cx.notify(Level::Info, format!("Copied {sha}"));
+                cx.effects.push(Effect::Clipboard(sha));
+            }
+            CommitAction::Checkout => cx.effects.push(Effect::Git(GitRequest::CheckoutCommit(sha))),
+            CommitAction::NewBranch => {
+                let msg = format!("Create and switch to a new branch at {short}:");
+                cx.effects.push(Effect::Dialog(Dialog::input(DialogId::NewBranchAt { sha }, "New Branch", &msg, "", "Create")));
+            }
+            CommitAction::CherryPick => cx.effects.push(Effect::Git(GitRequest::CherryPick(sha))),
+            CommitAction::Revert => {
+                let subject =
+                    self.log.get(self.log_list.selected).and_then(|r| r.commit.as_ref()).map(|c| c.subject.clone()).unwrap_or_default();
+                let msg = format!("Revert {short} {subject}?\nThis adds a commit that undoes it.");
+                cx.effects.push(Effect::Dialog(Dialog::confirm(
+                    DialogId::RevertCommit { sha },
+                    "Revert Commit",
+                    &msg,
+                    &["Revert", "Cancel"],
+                )));
+            }
+        }
+    }
+
+    /// Commit actions for the selected commit, at the pointer or its row.
+    pub(super) fn log_context_menu(&mut self, at: Option<(u16, u16)>, cx: &mut Ctx) {
+        if self.tab != GitTab::Log || self.selected_commit().is_none() {
+            return;
+        }
+        let (x, y) = at.unwrap_or_else(|| {
+            let row = self.log_list.selected.saturating_sub(self.log_list.offset) as u16;
+            (self.log_rect.x + 4, self.log_rect.y + row + 1)
+        });
+        let g = |a| Action::Git(a);
+        let items = vec![
+            MenuItem::new("Copy Revision Number", g(GitAction::CopySha)),
+            MenuItem::new("Checkout Revision", g(GitAction::LogCheckout)),
+            MenuItem::new("New Branch…", g(GitAction::LogNewBranch)),
+            MenuItem::new("Cherry-Pick", g(GitAction::LogCherryPick)),
+            MenuItem::new("Revert Commit…", g(GitAction::LogRevert)),
+            MenuItem::new("Filter Log…", g(GitAction::LogFilter)),
+        ];
+        cx.effects.push(Effect::ContextMenu(ContextMenu::new(items, x, y)));
     }
 
     /// Fetch the next page when the selection or view reached the end.
@@ -155,6 +296,9 @@ impl GitPanel {
             self.log_list.select(i);
             self.sync_details(cx);
             self.maybe_page_log(cx);
+            if m.kind == crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Right) {
+                self.log_context_menu(Some((m.x, m.y)), cx);
+            }
         } else if let Some(i) = self.files_list.hit(self.files_rect, m.x, m.y) {
             self.area = Area::Files;
             self.files_list.select(i);
@@ -185,15 +329,27 @@ impl GitPanel {
             self.hits.extend(hits);
             return;
         }
-        let mut body = body;
-        if let Some(rev) = &self.log_filter.rev {
-            // The history of one commit (from blame): say so, offer the way back.
-            let mut x = body.x;
-            put(buf, &mut x, body.y, body.right(), &format!("History of {} ", &rev[..rev.len().min(8)]), theme.title);
-            let r = put(buf, &mut x, body.y, body.right(), "[× Show all]", theme.title.bg(theme.panel_bg));
-            self.hits.push((Btn::LogClearFilter, r));
-            body = Rect::new(body.x, body.y + 1, body.width, body.height.saturating_sub(1));
+        // The filter bar: each part opens its dialog.
+        let f = &self.log_filter;
+        let any = |s: &str| if s.is_empty() { "any".to_string() } else { s.to_string() };
+        let parts = [
+            (Btn::LogFilter(LogFilterPart::Branch), format!("[Branch: {}]", f.rev.label(self.log_all))),
+            (Btn::LogFilter(LogFilterPart::Text), format!("[Text: {}]", any(&f.text))),
+            (Btn::LogFilter(LogFilterPart::Author), format!("[Author: {}]", any(&f.author))),
+            (Btn::LogFilter(LogFilterPart::Path), format!("[Path: {}]", any(&f.path))),
+        ];
+        let filtered = !f.is_empty();
+        let mut x = body.x;
+        for (b, label) in parts {
+            let r = put(buf, &mut x, body.y, body.right(), &label, theme.title);
+            self.hits.push((b, r));
+            x += 1;
         }
+        if filtered {
+            let r = put(buf, &mut x, body.y, body.right(), "[× Clear]", theme.warn);
+            self.hits.push((Btn::LogClearFilter, r));
+        }
+        let body = Rect::new(body.x, body.y + 1, body.width, body.height.saturating_sub(1));
         let left_w = if body.width >= 70 { body.width * 3 / 5 } else { body.width };
         self.log_rect = Rect::new(body.x, body.y, left_w, body.height);
         self.render_log_list(buf, self.log_rect, focused && self.area == Area::Log, theme);
@@ -210,7 +366,11 @@ impl GitPanel {
     fn render_log_list(&mut self, buf: &mut Screen, r: Rect, active: bool, theme: &Theme) {
         self.log_list.set_viewport(r.height as usize);
         if self.log.is_empty() {
-            let msg = if self.log_loading.is_some() { "Loading…" } else { "No commits yet" };
+            let msg = match (self.log_loading.is_some(), self.log_filter.is_empty()) {
+                (true, _) => "Loading…",
+                (false, true) => "No commits yet",
+                (false, false) => "No commits match the filter",
+            };
             buf.set_stringn(r.x, r.y, msg, r.width as usize, theme.dim);
             return;
         }
