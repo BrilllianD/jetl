@@ -98,6 +98,11 @@ timeout_ms = 5000              # a formatter still running after this is killed
 # command = ["npm", "test", "--", "--watch=false"]  # a list of words runs directly, no shell
 # cwd = "web"                    # relative to the project root; default the root
 # env = { CI = "1" }             # added to jetl's environment
+
+[terminal]
+shell = ""                     # the Terminal window's shell; "" = $SHELL, else /bin/sh
+args = []                      # its arguments, e.g. ["-l"] for a login shell
+scrollback = 5000              # lines kept above the screen for the mouse wheel
 ```
 
 With `watch` on, files changed by other programs refresh the Project tree
@@ -187,6 +192,31 @@ whole process group, so the processes it started (cargo's rustc, npm's node)
 go with it; programs that put themselves in a new session (daemons) are not
 tracked. A task that fails (a non-zero exit code, killed by a signal jetl
 did not send, or a command that cannot start) gives one error notification.
+
+The Terminal window (Alt+F12) runs the shell on a pseudo terminal in the
+project root with `TERM=xterm-256color` and `COLORTERM=truecolor`, started
+the first time the window is shown. Full-screen programs (vim, less, htop)
+work, at the window's size, which follows Ctrl+Shift+Up/Down and the
+terminal's own resizes. While it has focus every key goes to the shell,
+global shortcuts such as Ctrl+Q and Ctrl+S included, except the keys in the
+`[terminal]` table of `keymap.toml` (by default Alt+F12 to hide it,
+Ctrl+Shift+Up/Down to resize it and Ctrl+V to paste the system clipboard)
+and Esc Esc at the shell prompt, which focuses the editor. There a lone Esc
+reaches the shell after the double click interval or with the next key;
+full-screen programs get every Esc at once and never lose focus to it. The
+terminal's own paste shortcut pastes too, bracketed when the program asked
+for it. The mouse wheel scrolls back through `scrollback` lines (any key
+returns to the bottom); in less or man it scrolls the page, and programs
+that ask for the mouse (vim with `mouse=a`, htop) get clicks, drags and the
+wheel, unless Shift is held.
+
+One shell runs at a time. When it exits the window shows
+`[process exited N]`, and a key or opening the window again starts a new
+one. Quitting jetl and switching projects kill the shell together with
+everything running in its session (jobs, background processes, `nohup`
+ones); programs that start a session of their own (`setsid`, daemons)
+survive, as they would a closed terminal. After a project switch the next
+shell starts in the new root.
 
 ## Indentation and .editorconfig
 

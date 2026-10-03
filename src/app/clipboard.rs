@@ -33,6 +33,7 @@ pub(super) enum PasteTarget {
     FindBar(BufferId),
     CommitMessage,
     FindWindow,
+    Terminal,
     Editor(BufferId),
 }
 
@@ -59,6 +60,9 @@ impl App {
         }
         if self.palette.is_some() {
             return Some(PasteTarget::Palette);
+        }
+        if self.focus.is(PanelId::Terminal) {
+            return Some(PasteTarget::Terminal);
         }
         let active = self.editor.active_buffer().map(|b| b.id);
         if self.focus.is(PanelId::Editor) && self.editor.find_focused() {

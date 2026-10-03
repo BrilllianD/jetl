@@ -132,6 +132,13 @@ pub enum AppMsg {
         tasks: Vec<crate::run::RunTask>,
         error: Option<String>,
     },
+    /// Output (or the exit) of the Terminal window's shell `id` waits in its
+    /// inbox (`terminal::pty::Session::drain`); tagged with the workspace
+    /// generation. At most one is on the bus per shell.
+    TerminalOutput {
+        generation: u64,
+        id: u64,
+    },
     /// Reserved for the language server integration.
     Lsp(LspMsg),
 }

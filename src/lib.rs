@@ -9,6 +9,7 @@ pub mod git;
 pub mod recent_projects;
 pub mod run;
 pub mod symbols;
+pub mod terminal;
 pub mod tui;
 pub mod ui;
 pub mod util;

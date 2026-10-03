@@ -54,6 +54,7 @@ pub fn render(app: &mut App, frame: &mut Frame) {
             PanelId::Find => app.find.render(frame, r, focused, &theme),
             PanelId::EventLog => app.event_log.render(frame, r, focused, &theme, &app.notifications),
             PanelId::Run => app.run_panel.render(frame, r, focused, &theme),
+            PanelId::Terminal => app.render_terminal(frame, r, focused, &theme),
             _ => {}
         }
     }

@@ -348,6 +348,8 @@ impl Keymap {
         out.push_str("then `global`). Bindings marked * need the kitty keyboard protocol (foot, kitty,\n");
         out.push_str("WezTerm, Ghostty); legacy terminals and tmux have the listed fallbacks instead.\n");
         out.push_str("Override any of them in `~/.config/jetl/keymap.toml` (see [CONFIG.md](CONFIG.md)).\n");
+        out.push_str("While the Terminal window has focus only its `terminal` table is searched: every other\n");
+        out.push_str("key goes to the shell, and Esc Esc at the shell prompt focuses the editor.\n");
         let mut contexts: Vec<&str> =
             DOC_CONTEXTS.iter().copied().filter(|c| self.tables.get(*c).is_some_and(|t| !t.bindings.is_empty())).collect();
         let mut rest: Vec<&str> = self

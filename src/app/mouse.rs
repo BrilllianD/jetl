@@ -180,6 +180,7 @@ impl App {
             PanelId::Structure => self.structure.handle_mouse(m, area, &mut cx),
             PanelId::EventLog => self.event_log.handle_mouse(m, &self.notifications, &mut cx),
             PanelId::Run => self.run_panel.handle_mouse(m, &mut cx),
+            PanelId::Terminal => self.terminal.handle_mouse(m),
         };
         let fx = cx.effects;
         self.apply_effects(fx);

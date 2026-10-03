@@ -10,6 +10,7 @@
 "alt-3" = "tool_window.find"
 "alt-7" = "tool_window.structure"
 "alt-4" = "tool_window.run"
+"alt-f12" = "tool_window.terminal"
 # JetBrains has no default key for the Event Log; Alt+Shift+L works in
 # legacy terminals too.
 "alt-shift-l" = "tool_window.event_log"
@@ -288,6 +289,17 @@
 "ctrl-alt-down" = "run.next_problem"
 "ctrl-alt-up" = "run.prev_problem"
 "esc" = "app.focus_editor"
+
+# While the Terminal window (Alt+F12) has focus every key goes to the shell
+# except the ones in this table, which is the only one consulted there (add
+# keys to keep them for jetl, "none" gives one to the shell), and Esc Esc: a
+# single Esc reaches the shell, a second one within the double click interval
+# focuses the editor.
+[terminal]
+"alt-f12" = "tool_window.terminal"
+"ctrl-shift-up" = "tool_window.stretch_up"
+"ctrl-shift-down" = "tool_window.stretch_down"
+"ctrl-v" = "editor.paste"
 
 [palette]
 "up" = "palette.up"

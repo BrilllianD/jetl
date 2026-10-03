@@ -69,6 +69,7 @@ pub struct Config {
     pub clipboard: ClipboardConfig,
     pub format: FormatConfig,
     pub run: crate::run::RunConfig,
+    pub terminal: crate::terminal::TerminalConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]

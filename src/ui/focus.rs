@@ -12,6 +12,7 @@ pub enum PanelId {
     Structure,
     EventLog,
     Run,
+    Terminal,
 }
 
 /// Saved in sessions: new variants go last.
@@ -24,6 +25,7 @@ pub enum ToolWindowId {
     Structure,
     EventLog,
     Run,
+    Terminal,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,12 +35,13 @@ pub enum Side {
 }
 
 impl ToolWindowId {
-    pub const ALL: [ToolWindowId; 7] = [
+    pub const ALL: [ToolWindowId; 8] = [
         ToolWindowId::Project,
         ToolWindowId::Worktrees,
         ToolWindowId::Structure,
         ToolWindowId::Find,
         ToolWindowId::Run,
+        ToolWindowId::Terminal,
         ToolWindowId::Git,
         ToolWindowId::EventLog,
     ];
@@ -52,12 +55,13 @@ impl ToolWindowId {
             ToolWindowId::Structure => PanelId::Structure,
             ToolWindowId::EventLog => PanelId::EventLog,
             ToolWindowId::Run => PanelId::Run,
+            ToolWindowId::Terminal => PanelId::Terminal,
         }
     }
     pub fn side(self) -> Side {
         match self {
             ToolWindowId::Project | ToolWindowId::Worktrees | ToolWindowId::Structure => Side::Left,
-            ToolWindowId::Git | ToolWindowId::Find | ToolWindowId::EventLog | ToolWindowId::Run => Side::Bottom,
+            ToolWindowId::Git | ToolWindowId::Find | ToolWindowId::EventLog | ToolWindowId::Run | ToolWindowId::Terminal => Side::Bottom,
         }
     }
     pub fn title(self) -> &'static str {
@@ -69,6 +73,7 @@ impl ToolWindowId {
             ToolWindowId::Structure => "Structure",
             ToolWindowId::EventLog => "Event Log",
             ToolWindowId::Run => "Run",
+            ToolWindowId::Terminal => "Terminal",
         }
     }
     /// The Alt+number key shown on the tool strip; windows opened by other
@@ -82,6 +87,7 @@ impl ToolWindowId {
             ToolWindowId::Structure => Some(7),
             ToolWindowId::EventLog => None,
             ToolWindowId::Run => Some(4),
+            ToolWindowId::Terminal => None,
         }
     }
 }
@@ -96,6 +102,7 @@ impl PanelId {
             PanelId::Structure => Some(ToolWindowId::Structure),
             PanelId::EventLog => Some(ToolWindowId::EventLog),
             PanelId::Run => Some(ToolWindowId::Run),
+            PanelId::Terminal => Some(ToolWindowId::Terminal),
             PanelId::Editor => None,
         }
     }
@@ -110,6 +117,7 @@ impl PanelId {
             PanelId::Structure => "structure",
             PanelId::EventLog => "event_log",
             PanelId::Run => "run",
+            PanelId::Terminal => "terminal",
         }
     }
 }

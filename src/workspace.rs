@@ -174,6 +174,8 @@ impl App {
         self.save_session();
         self.format.abort_all();
         self.run_root_changed();
+        // The shell belongs to the old root; the next one starts in the new.
+        self.terminal.reset();
         if self.config.worktree.switch_closes_tabs {
             self.editor.force_close_all();
         }

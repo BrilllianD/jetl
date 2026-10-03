@@ -19,7 +19,9 @@ nothing reads the bus in tests, so work the app spawns only matters when you
 send its result yourself. Git tests make the root a repository with
 `init_repo(&app, files)` and feed its status with `feed_status`; operations
 the app runs (git2 or the `git` CLI) report back on the bus, which
-`handle_next(&mut app, want)` waits for. `docs/KEYMAP.md` is checked by a test; regenerate
+`handle_next(&mut app, want)` waits for. Terminal window tests run
+`/bin/sh` with a cleared environment (`App::terminal_spec` under
+`cfg(test)`), never your shell or its startup files. `docs/KEYMAP.md` is checked by a test; regenerate
 it with `cargo run -q -- --dump-keymap > docs/KEYMAP.md`.
 
 ## Manual: the tmux harness
@@ -87,3 +89,8 @@ double click.
 - Pressing Alt+number for a focused tool window hides it; later keys go to
   the editor.
 - OSC 52 copy needs `set -s set-clipboard on`.
+- The Terminal window runs your `$SHELL` with its startup files. For a
+  predictable prompt put `[terminal]`, `shell = "/bin/bash"` and
+  `args = ["--norc", "--noprofile"]` in the scratch
+  `$XDG_CONFIG_HOME/jetl/config.toml`. Check that quitting left no shell by
+  writing `echo $$` to a file first and looking for that pid afterwards.

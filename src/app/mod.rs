@@ -48,6 +48,7 @@ mod msg;
 mod palette;
 mod run;
 mod symbols;
+mod terminal;
 mod watch;
 
 /// What panels get while handling input.
@@ -185,6 +186,8 @@ pub struct App {
     /// The running task, the last one and the picker's tasks.
     pub(crate) run: run::RunState,
     pub run_panel: crate::run::panel::RunPanel,
+    /// The Terminal window and its shell.
+    pub terminal: crate::terminal::panel::TerminalPanel,
     started: Instant,
 }
 
@@ -252,6 +255,7 @@ impl App {
             format: Default::default(),
             run: Default::default(),
             run_panel: Default::default(),
+            terminal: crate::terminal::panel::TerminalPanel::new(config.terminal.scrollback),
             started: Instant::now(),
             config,
             paths,
@@ -371,6 +375,7 @@ impl App {
         self.save_session();
         self.format.abort_all();
         self.run.kill();
+        self.terminal.reset();
         Ok(())
     }
 
@@ -395,6 +400,7 @@ impl App {
         if self.editor.autosave_due(Instant::now()) {
             self.autosave();
         }
+        self.terminal_tick();
     }
 
     fn autosave(&mut self) {
@@ -445,6 +451,10 @@ impl App {
         }
         if let Some(p) = &mut self.palette {
             p.paste(&text);
+            return;
+        }
+        if self.focus.is(PanelId::Terminal) {
+            self.terminal_paste(&text);
             return;
         }
         if self.focus.is(PanelId::Editor) && self.editor.find_focused() {
@@ -504,6 +514,12 @@ impl App {
         }
         if self.palette.is_some() {
             self.palette_key(key);
+            return;
+        }
+        // The terminal takes every key but a few (`[terminal]`, Esc Esc).
+        if self.focus.is(PanelId::Terminal) && self.layout.is_visible(ToolWindowId::Terminal) {
+            self.dispatcher.reset();
+            self.terminal_key(key);
             return;
         }
         // The find bar consumes its editing keys before the keymap; anything
@@ -705,6 +721,10 @@ impl App {
     /// focus; focused -> hide and return to the editor.
     pub fn toggle_tool_window(&mut self, tw: ToolWindowId) {
         let panel = tw.panel();
+        if tw == ToolWindowId::Terminal {
+            // Opening the window after the shell ended starts a new one.
+            self.terminal.restart();
+        }
         if !self.layout.is_visible(tw) {
             self.layout.show(tw);
             self.focus.set(panel);

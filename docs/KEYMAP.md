@@ -8,6 +8,8 @@ Contexts are searched innermost first (for example `editor.find`, then `editor`,
 then `global`). Bindings marked * need the kitty keyboard protocol (foot, kitty,
 WezTerm, Ghostty); legacy terminals and tmux have the listed fallbacks instead.
 Override any of them in `~/.config/jetl/keymap.toml` (see [CONFIG.md](CONFIG.md)).
+While the Terminal window has focus only its `terminal` table is searched: every other
+key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 
 ## global
 
@@ -23,6 +25,7 @@ Override any of them in `~/.config/jetl/keymap.toml` (see [CONFIG.md](CONFIG.md)
 | `Alt+7` | `tool_window.structure` | Structure tool window |
 | `Alt+Shift+L` | `tool_window.event_log` | Event Log tool window |
 | `Alt+4` | `tool_window.run` | Run tool window |
+| `Alt+F12` | `tool_window.terminal` | Terminal tool window |
 | `Ctrl+Shift+F12` | `tool_window.hide_all` | Hide all tool windows |
 | `Shift+Esc` * | `tool_window.hide_focused` | Hide active tool window |
 | `Ctrl+Shift+Left` | `tool_window.stretch_left` | Stretch tool window to the left |
@@ -324,6 +327,15 @@ Override any of them in `~/.config/jetl/keymap.toml` (see [CONFIG.md](CONFIG.md)
 | `Home` | `structure.home` | Structure: first symbol |
 | `End` | `structure.end` | Structure: last symbol |
 | `Enter` | `structure.open` | Structure: jump to the selected symbol |
+
+## terminal
+
+| Keys | Action | Description |
+|---|---|---|
+| `Alt+F12` | `tool_window.terminal` | Terminal tool window |
+| `Ctrl+Shift+Up` | `tool_window.stretch_up` | Stretch tool window up |
+| `Ctrl+Shift+Down` | `tool_window.stretch_down` | Stretch tool window down |
+| `Ctrl+V` | `editor.paste` | Paste |
 
 ## Without a default binding
 
