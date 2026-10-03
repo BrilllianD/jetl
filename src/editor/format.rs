@@ -8,7 +8,6 @@ use std::time::Duration;
 
 use super::Editor;
 use super::buffer::{Buffer, BufferId, LineEnding};
-use super::selection::Selection;
 use super::undo::{Change, TxKind};
 use crate::app::Ctx;
 use crate::event::{Effect, Level};
@@ -152,10 +151,11 @@ impl Buffer {
             })
             .collect();
         let map = |p: usize| map_pos(&old, &new, &os, &ns, &hunks, p);
-        let sel = Selection::new(map(self.view.sel.anchor), map(self.view.sel.head));
+        let mut sels = self.view.sels.clone();
+        sels.map(map);
         let (old_line, old_scroll) = (self.cursor_line_col().0, self.view.scroll_line);
-        let shown = self.view.follow_key.filter(|k| (k.0, k.1) == (self.view.sel.head, self.version)).map(|k| k.3 as usize);
-        self.apply(changes, sel, TxKind::Other);
+        let shown = self.view.follow_key.filter(|k| (k.0, k.1) == (self.view.sel().head, self.version)).map(|k| k.3 as usize);
+        self.apply(changes, sels, TxKind::Other);
         let new_line = self.cursor_line_col().0;
         match shown {
             // The caret was on screen: it keeps its row.
@@ -166,7 +166,7 @@ impl Buffer {
             // does not jump to the caret.
             Some(_) => {
                 self.view.scroll_line = map_line(&hunks, old_scroll);
-                self.view.follow_key = self.view.follow_key.map(|(_, _, w, h)| (self.view.sel.head, self.version, w, h));
+                self.view.follow_key = self.view.follow_key.map(|(_, _, w, h)| (self.view.sel().head, self.version, w, h));
             }
             None => self.view.scroll_line = map_line(&hunks, old_scroll),
         }
@@ -250,6 +250,7 @@ fn map_line(hunks: &[imara_diff::Hunk], line: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::editor::selection::Selection;
 
     fn buf(text: &str) -> Buffer {
         Buffer::from_text(1, None, text, false)
@@ -288,23 +289,23 @@ mod tests {
         let new = "fn main() {\n    let x = foo(1, 2);\n    bar();\n}\n";
         let mut b = buf(old);
         let at = |s: &str, needle: &str| s.find(needle).map(|i| s[..i].chars().count()).unwrap();
-        b.view.sel = Selection::point(at(old, "2 )"));
+        b.view.set_sel(Selection::point(at(old, "2 )")));
         assert!(b.apply_formatted(new));
-        assert_eq!(b.view.sel.head, at(new, "2);"), "on the 2");
+        assert_eq!(b.view.sel().head, at(new, "2);"), "on the 2");
         // Before the first non-blank of a reindented line: after the new
         // indentation, not at the line start.
         let mut b = buf("{\nx\n}\n");
-        b.view.sel = Selection::point(2);
+        b.view.set_sel(Selection::point(2));
         b.apply_formatted("{\n    x\n}\n");
         assert_eq!(b.cursor_line_col(), (1, 4));
         // Below the changes it moves with its line.
         let mut b = buf("a\nb\nc\n");
-        b.view.sel = Selection::point(5);
+        b.view.set_sel(Selection::point(5));
         b.apply_formatted("a\n\nb\nc\n");
         assert_eq!(b.cursor_line_col(), (3, 1));
         // The view keeps the caret's row.
         let mut b = buf(&"x\n".repeat(50));
-        b.view.sel = Selection::point(60);
+        b.view.set_sel(Selection::point(60));
         b.view.scroll_line = 20;
         b.view.follow_key = Some((60, b.version, 80, 20));
         b.apply_formatted(&format!("y\ny\n{}", "x\n".repeat(50)));

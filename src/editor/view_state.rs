@@ -1,4 +1,4 @@
-//! What one view of a buffer owns: caret, selection, scroll, find bar.
+//! What one view of a buffer owns: carets, selections, scroll, find bar.
 //! `Buffer::view` holds the live view's state; other views of the same
 //! buffer keep theirs parked ([`Parked`]) and catch up on the edits made
 //! meanwhile through the buffer's [`EditLog`].
@@ -9,12 +9,13 @@ use ropey::Rope;
 
 use super::buffer::map_one;
 use super::search::SearchState;
-use super::selection::Selection;
+use super::selection::{Selection, Selections};
 
 #[derive(Debug, Default)]
 pub struct ViewState {
-    pub sel: Selection,
-    pub desired_col: Option<usize>,
+    /// The carets and their selections (with their desired columns); most
+    /// code reads the primary one through [`ViewState::sel`].
+    pub sels: Selections,
     pub scroll_line: usize,
     pub scroll_col: usize,
     /// Caret, version and text area size when the view last followed the
@@ -25,21 +26,36 @@ pub struct ViewState {
     /// one the step produced. Shrink only pops while the current selection
     /// is still the produced one, so selection changes made elsewhere (mouse,
     /// undo) cannot restore a stale range. Cleared on every edit.
-    pub expand_stack: Vec<(Selection, Selection)>,
+    pub expand_stack: Vec<(Selections, Selections)>,
+    /// The selections Add Next Occurrence added, in order, for Unselect
+    /// Occurrence. Cleared with the carets ([`ViewState::set_sel`]) and on
+    /// every edit.
+    pub occ_stack: Vec<Selection>,
+    /// Add Next Occurrence started from a bare caret, so it matches whole
+    /// words. Cleared with `occ_stack`.
+    pub occ_whole_word: bool,
     pub search: Option<SearchState>,
 }
 
 impl ViewState {
-    /// A new view of the same buffer: the caret, selection and scroll, but
-    /// no find bar or expand history.
+    /// A new view of the same buffer: the primary caret, its selection and
+    /// the scroll, but no other carets, find bar or expand history.
     pub fn fork(&self) -> Self {
-        Self {
-            sel: self.sel,
-            desired_col: self.desired_col,
-            scroll_line: self.scroll_line,
-            scroll_col: self.scroll_col,
-            ..Default::default()
-        }
+        let mut sels = self.sels.clone();
+        sels.collapse_to_primary();
+        Self { sels, scroll_line: self.scroll_line, scroll_col: self.scroll_col, ..Default::default() }
+    }
+
+    /// The primary caret and its selection.
+    pub fn sel(&self) -> Selection {
+        self.sels.primary()
+    }
+
+    /// Make `s` the only caret, with no desired column.
+    pub fn set_sel(&mut self, s: Selection) {
+        self.sels = s.into();
+        self.occ_stack.clear();
+        self.occ_whole_word = false;
     }
 }
 
@@ -110,34 +126,40 @@ impl Parked {
         Self { state, seq: log.end(), version, top }
     }
 
-    /// Map the caret, selection, top line and find bar origin through the
+    /// Map the carets, selections, top line and find bar origin through the
     /// edits since the last call; a reload or a dropped edit clamps them
-    /// instead. The expand history is dropped. A view that was following
-    /// its caret keeps following it without scrolling.
+    /// instead. Carets that meet merge. The expand and occurrence history
+    /// is dropped. A view that was following its primary caret keeps
+    /// following it without scrolling.
     pub fn catch_up(&mut self, rope: &Rope, log: &EditLog, version: u64) {
         if self.version == version {
             self.seq = log.end();
             return;
         }
         let s = &mut self.state;
-        let following = s.follow_key.is_some_and(|k| (k.0, k.1) == (s.sel.head, self.version));
+        let following = s.follow_key.is_some_and(|k| (k.0, k.1) == (s.sel().head, self.version));
         let origin = s.search.as_ref().map_or(0, |q| q.origin);
-        let mut ps = [s.sel.anchor, s.sel.head, self.top, origin];
         let edits = log.since(self.seq).map(|it| it.copied().collect::<Vec<_>>()).filter(|v| !v.contains(&LogEdit::Reset));
-        for e in edits.iter().flatten() {
-            if let LogEdit::Edit { at, old_len, new_len } = *e {
-                ps = ps.map(|p| map_one(p, at, old_len, new_len, false));
-            }
-        }
+        let edits = edits.unwrap_or_default();
         let len = rope.len_chars();
-        let [anchor, head, top, origin] = ps.map(|p| p.min(len));
-        s.sel = Selection::new(anchor, head);
+        let map = |p: usize| {
+            let mapped = edits.iter().fold(p, |p, e| match *e {
+                LogEdit::Edit { at, old_len, new_len } => map_one(p, at, old_len, new_len, false),
+                LogEdit::Reset => p,
+            });
+            mapped.min(len)
+        };
+        let (top, origin) = (map(self.top), map(origin));
+        s.sels.map(map);
+        let head = s.sel().head;
         s.scroll_line = rope.char_to_line(top);
         self.top = rope.line_to_char(s.scroll_line);
         if let Some(q) = &mut s.search {
             q.origin = origin;
         }
         s.expand_stack.clear();
+        s.occ_stack.clear();
+        s.occ_whole_word = false;
         if following && let Some(k) = &mut s.follow_key {
             (k.0, k.1) = (head, version);
         }
@@ -161,30 +183,30 @@ mod tests {
     /// A buffer of `text` and a second view of it with the caret at `caret`.
     fn parked(text: &str, caret: usize) -> (Buffer, Parked) {
         let b = Buffer::from_text(1, None, text, false);
-        let state = ViewState { sel: Selection::point(caret), ..Default::default() };
+        let state = ViewState { sels: Selections::point(caret), ..Default::default() };
         let p = Parked::park(state, &b.rope, &b.edit_log, b.version);
         (b, p)
     }
 
     fn caught_up(b: &Buffer, p: &mut Parked) -> Selection {
         p.catch_up(&b.rope, &b.edit_log, b.version);
-        p.state.sel
+        p.state.sel()
     }
 
     #[test]
     fn caret_follows_inserts_before_at_and_across() {
         let (mut b, mut p) = parked("hello world", 6);
-        b.view.sel = Selection::point(0);
+        b.view.set_sel(Selection::point(0));
         b.insert("> ", TxKind::Other);
         assert_eq!(caught_up(&b, &mut p).head, 8, "insert before shifts");
-        b.view.sel = Selection::point(8);
+        b.view.set_sel(Selection::point(8));
         b.insert("big ", TxKind::Other);
         assert_eq!(caught_up(&b, &mut p).head, 12, "insert at the caret pushes it");
-        b.view.sel = Selection::new(14, 16);
+        b.view.set_sel(Selection::new(14, 16));
         b.delete_selection();
         assert_eq!(caught_up(&b, &mut p).head, 12, "a later edit leaves it");
         // A deletion across the caret moves it to the start.
-        b.view.sel = Selection::new(6, 14);
+        b.view.set_sel(Selection::new(6, 14));
         b.delete_selection();
         assert_eq!(caught_up(&b, &mut p).head, 6);
         assert_eq!(b.text(), "> helld");
@@ -193,8 +215,8 @@ mod tests {
     #[test]
     fn selection_undo_and_redo_map_too() {
         let (mut b, mut p) = parked("one two three", 0);
-        p.state.sel = Selection::new(4, 7);
-        b.view.sel = Selection::point(0);
+        p.state.set_sel(Selection::new(4, 7));
+        b.view.set_sel(Selection::point(0));
         b.insert("zero ", TxKind::Other);
         assert_eq!(caught_up(&b, &mut p), Selection::new(9, 12));
         assert!(b.undo());
@@ -202,9 +224,9 @@ mod tests {
         assert!(b.redo());
         assert_eq!(caught_up(&b, &mut p), Selection::new(9, 12));
         // Several edits between catch-ups map in order.
-        b.view.sel = Selection::point(b.len_chars());
+        b.view.set_sel(Selection::point(b.len_chars()));
         b.insert(" four", TxKind::Other);
-        b.view.sel = Selection::point(0);
+        b.view.set_sel(Selection::point(0));
         b.insert("[", TxKind::Other);
         assert_eq!(caught_up(&b, &mut p), Selection::new(10, 13));
     }
@@ -224,10 +246,27 @@ mod tests {
     }
 
     #[test]
+    fn parked_carets_map_through_a_multi_caret_edit_and_merge() {
+        let (mut b, mut p) = parked("aa bb cc dd", 0);
+        p.state.sels = Selections::new(vec![Selection::point(3), Selection::point(9)], 1);
+        b.view.sels = Selections::new(vec![Selection::point(0), Selection::point(6), Selection::point(11)], 0);
+        b.insert("x", TxKind::Typing);
+        assert_eq!(b.text(), "xaa bb xcc ddx");
+        p.catch_up(&b.rope, &b.edit_log, b.version);
+        assert_eq!(p.state.sels.heads().collect::<Vec<_>>(), [4, 11]);
+        assert_eq!(p.state.sels.primary(), Selection::point(11));
+        // Deleting the text between them merges them.
+        b.view.set_sel(Selection::new(2, 12));
+        b.delete_selection();
+        p.catch_up(&b.rope, &b.edit_log, b.version);
+        assert_eq!(p.state.sels.as_slice(), [Selection::point(2)]);
+    }
+
+    #[test]
     fn dropped_edits_clamp() {
         let (mut b, mut p) = parked("xyz", 3);
         for _ in 0..LOG_CAP + 1 {
-            b.view.sel = Selection::point(0);
+            b.view.set_sel(Selection::point(0));
             b.insert("a", TxKind::Other);
         }
         // Mapping would give 3 + 4097; the log lost the first edit.
@@ -240,10 +279,10 @@ mod tests {
         let text: String = (0..50).map(|i| format!("line {i}\n")).collect();
         let (mut b, mut p) = parked(&text, b_pos(&text, 30));
         p.state.scroll_line = 20;
-        p.state.follow_key = Some((p.state.sel.head, b.version, 80, 10));
-        p.state.expand_stack.push((Selection::point(0), Selection::new(0, 4)));
+        p.state.follow_key = Some((p.state.sel().head, b.version, 80, 10));
+        p.state.expand_stack.push((Selections::point(0), Selection::new(0, 4).into()));
         p = Parked::park(std::mem::take(&mut p.state), &b.rope, &b.edit_log, b.version);
-        b.view.sel = Selection::point(0);
+        b.view.set_sel(Selection::point(0));
         b.insert("new 1\nnew 2\n", TxKind::Other);
         let head = caught_up(&b, &mut p).head;
         assert_eq!(b.rope.char_to_line(head), 32);
@@ -252,8 +291,8 @@ mod tests {
         assert!(p.state.expand_stack.is_empty());
         // A view whose caret moved since it last followed it is left to
         // scroll to it when shown.
-        p.state.sel = Selection::point(0);
-        b.view.sel = Selection::point(0);
+        p.state.set_sel(Selection::point(0));
+        b.view.set_sel(Selection::point(0));
         b.insert("x", TxKind::Other);
         caught_up(&b, &mut p);
         assert_ne!(p.state.follow_key.map(|k| k.1), Some(b.version));
@@ -267,12 +306,13 @@ mod tests {
 
     #[test]
     fn fork_keeps_caret_and_scroll_only() {
-        let mut v = ViewState { sel: Selection::new(1, 3), scroll_line: 7, scroll_col: 2, ..Default::default() };
+        let mut v = ViewState { sels: Selection::new(1, 3).into(), scroll_line: 7, scroll_col: 2, ..Default::default() };
+        v.sels.push(Selection::point(9), false);
         v.search = Some(SearchState::default());
-        v.expand_stack.push((Selection::point(0), Selection::point(1)));
+        v.expand_stack.push((Selections::point(0), Selections::point(1)));
         v.follow_key = Some((3, 0, 1, 1));
         let f = v.fork();
-        assert_eq!((f.sel, f.scroll_line, f.scroll_col), (Selection::new(1, 3), 7, 2));
+        assert_eq!((f.sels, f.scroll_line, f.scroll_col), (Selection::new(1, 3).into(), 7, 2));
         assert!(f.search.is_none() && f.expand_stack.is_empty() && f.follow_key.is_none());
     }
 }

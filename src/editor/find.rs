@@ -63,7 +63,7 @@ impl Editor {
         let last = self.last_search.clone();
         let Some(b) = self.active_buffer_mut() else { return };
         let sel_text = Some(b.selected_text()).filter(|t| !t.is_empty() && !t.contains('\n'));
-        let origin = b.view.sel.range().start;
+        let origin = b.view.sel().range().start;
         let s = b.view.search.get_or_insert_with(|| last.map(|l| l.to_state()).unwrap_or_default());
         if let Some(t) = sel_text {
             s.query.set_text(&t);
@@ -100,6 +100,7 @@ impl Editor {
     pub(super) fn find_step(&mut self, forward: bool, cx: &mut Ctx) {
         let last = self.last_search.clone();
         let Some(b) = self.active_buffer_mut() else { return };
+        let r = b.view.sel().range();
         let mut temp = None;
         let s = match b.view.search.as_mut() {
             Some(s) => s,
@@ -116,7 +117,6 @@ impl Editor {
             cx.notify(Level::Warn, e.clone());
             return;
         }
-        let r = b.view.sel.range();
         let found = if forward { s.first_from(r.end) } else { s.last_before(r.start) };
         let Some(i) = found else {
             if !s.query.text.is_empty() {
@@ -127,8 +127,7 @@ impl Editor {
         let m = s.select(i);
         let wrapped = if forward { m.start < r.end } else { m.start >= r.start };
         s.origin = m.start;
-        b.view.sel = Selection::new(m.start, m.end);
-        b.view.desired_col = None;
+        b.view.set_sel(Selection::new(m.start, m.end));
         b.undo.break_group = true;
         if wrapped {
             cx.notify(Level::Info, "Search wrapped");
@@ -139,9 +138,9 @@ impl Editor {
     /// selection is not a match, only move to the next match.
     pub(super) fn replace_one(&mut self, cx: &mut Ctx) {
         let Some(b) = self.active_buffer_mut() else { return };
+        let r = b.view.sel().range();
         let Some(s) = b.view.search.as_mut() else { return };
         s.update(&b.rope, b.version);
-        let r = b.view.sel.range();
         let i = s.matches.partition_point(|m| m.start < r.start);
         if s.matches.get(i) != Some(&r) {
             self.find_step(true, cx);
@@ -161,7 +160,7 @@ impl Editor {
         if let Some(i) = s.first_from(after) {
             let m = s.select(i);
             s.origin = m.start;
-            b.view.sel = Selection::new(m.start, m.end);
+            b.view.set_sel(Selection::new(m.start, m.end));
         }
     }
 
@@ -293,8 +292,7 @@ pub(super) fn refresh_search(b: &mut Buffer) {
     match s.first_from(s.origin) {
         Some(i) => {
             let m = s.select(i);
-            b.view.sel = Selection::new(m.start, m.end);
-            b.view.desired_col = None;
+            b.view.set_sel(Selection::new(m.start, m.end));
         }
         None => s.current = None,
     }

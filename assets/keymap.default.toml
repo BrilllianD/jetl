@@ -156,6 +156,12 @@
 "ctrl-shift-u" = "editor.toggle_case"
 "ctrl-alt-w" = "editor.expand_selection"
 "ctrl-alt-shift-w" = "editor.shrink_selection"
+# Multiple carets. Ctrl+Alt+Shift+J needs the kitty protocol; Ctrl+Alt+J is
+# the legacy fallback. Clone Caret Above/Below have no key (F1, Edit menu).
+"alt-j" = "editor.add_next_occurrence"
+"alt-shift-j" = "editor.unselect_occurrence"
+"ctrl-alt-shift-j" = "editor.select_all_occurrences"
+"ctrl-alt-j" = "editor.select_all_occurrences"
 "ctrl-up" = "editor.scroll_up"
 "ctrl-down" = "editor.scroll_down"
 "ctrl-alt-left" = "editor.nav_back"

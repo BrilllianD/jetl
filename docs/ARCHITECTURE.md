@@ -45,14 +45,15 @@ and backlog are in `docs/ROADMAP.md`; settings in `docs/CONFIG.md`; keys in
 | `editor/mod.rs` | `Editor`: the buffers (`buffers`, the document store; its order is not tab order), the tab groups and their split tree, the global MRU, back/forward, actions, mouse, rendering. `active()` is the buffer of the focused group's shown tab, so `active_buffer()` callers need not know about groups. `render` lays the tree out over the centre, draws the splitter bars, then each group (tab bar of the `tabs` height, none in zen mode, over its find bar and text), the focused group last. |
 | `editor/groups.rs` | `TabGroup` (its `View`s in bar order, the shown slot, its own MRU, tab hit rects, text area, find bar hits, caret cell) and the tab operations on `Editor`: `set_active`/`show` (a buffer opened in the focused group gets a tab there, right after the shown one and never among the pinned, with a `fork` of its live view state when it is shown elsewhere), `close_slot` (a buffer with tabs in other groups only loses this one, without asking; its last tab asks when dirty), `force_close` (the buffer and every tab of it), `close_tabs` (close others, close all but pinned and close all act on the focused group), pins, moves (Alt+Shift+Left/Right, a tab drag: `Drag::Tab`, `Editor::drag_tab`, within the pinned or unpinned tabs), `enforce_tab_limit` (`editor.max_tabs` counts buffers; the least recently used clean one without a pinned tab that no group shows goes), the tab context menu, `split`, `unsplit`, `unsplit_all`, `move_to_opposite`, `cycle_group`, `collapse_empty` (a group left without tabs goes, never the last one), `make_live` and `sync_parked` (see Conventions), `hit_test` (`EditorHit`) and `restore_splits`. `check_invariants` (tests) asserts the rules below. |
 | `editor/split.rs` | `SplitNode` (a leaf is a group; a split has an `Axis`, a ratio in permille and two children), `layout` (the leaves' rects and the one-cell bars, `MIN_GROUP_W`/`MIN_GROUP_H` kept while there is room for both sides), `split`, `remove` (the sibling takes the split's place), `sibling`, `set_ratio` by preorder index, `SplitterHit::ratio_at` for a bar drag. |
-| `editor/view_state.rs` | `ViewState`: what one view of a buffer owns (selection, desired column, scroll, follow key, expand history, find bar); `fork` for a new view. `EditLog`: the buffer's text changes since the last frame (`LogEdit::Edit` in chars, `Reset` for a whole-text replacement), capped at 4096. `Parked`: a view's state while another view of the buffer is live; `catch_up` maps the caret, selection, top line and find bar origin through the log (a reload or dropped edits clamp instead), drops the expand history and keeps a view that followed its caret following it without a scroll. |
-| `editor/buffer.rs` | `Buffer`: rope, the live view's state (`view: ViewState`), undo, file metadata (path, line ending, mtime, dirty state). Every change goes through `apply_change`, which also feeds `edit_log` for the parked views. While open on a language server (`lsp_tracked`) every change records a `DocEdit` in `lsp_pending` before the rope changes (at most 512; past that, or for an edit inside a CRLF break, `lsp_full_resync` sends the whole text). |
+| `editor/view_state.rs` | `ViewState`: what one view of a buffer owns (its carets `sels` with their desired columns, scroll, follow key, expand and occurrence history, find bar); `sel()` is the primary selection, `set_sel` makes one caret; `fork` for a new view (the primary caret only). `EditLog`: the buffer's text changes since the last frame (`LogEdit::Edit` in chars, `Reset` for a whole-text replacement), capped at 4096. `Parked`: a view's state while another view of the buffer is live; `catch_up` maps every caret and selection, the top line and the find bar origin through the log (a reload or dropped edits clamp instead; carets that meet merge), drops the expand and occurrence history and keeps a view that followed its primary caret following it without a scroll. |
+| `editor/buffer.rs` | `Buffer`: rope, the live view's state (`view: ViewState`), undo, file metadata (path, line ending, mtime, dirty state), the edit commands (see Carets below: `edit_carets` with a `CaretEdit` per caret, line commands over the union of caret lines). Every change goes through `apply_change`, which also feeds `edit_log` for the parked views. While open on a language server (`lsp_tracked`) every change records a `DocEdit` in `lsp_pending` before the rope changes (at most 512; past that, or for an edit inside a CRLF break, `lsp_full_resync` sends the whole text). |
+| `editor/carets.rs` | Commands that add and remove carets: Add Next Occurrence (Alt+J), Unselect Occurrence, Select All Occurrences (from `search::occurrences`, or the find bar's matches), Clone Caret Above/Below. |
 | `editor/{find,io}.rs` | Find/replace bar (keys, stepping, rendering); saving and autosave. |
 | `editor/format.rs` | Formatters: `Formatter` (the `[format]` command of the language, which wins, else `Lsp`: the app decides whether the server formats), `FormatRequest` (the buffer snapshot: text, version, undo state), `format_done` (apply if the version is unchanged, warn on failure, then write for a save), and `Buffer::apply_formatted`: an imara-diff line diff turned into one transaction of the changed hunks, the selection mapped by the code before it, the view kept on its lines. |
 | `editor/view.rs` | `layout_line`: the grapheme walk shared by rendering, `visual_col` and `col_to_char`. Rendering draws `Buffer::diag_marks`: a glyph in the diff mark column (it wins over the diff mark) and the `diag_*` theme style's modifiers over the text of a diagnostic. |
 | `editor/gutter.rs` | Git marks against the HEAD text (`Buffer::diff_base`), and the change commands built on the same diff: revert the change at the caret (one `Buffer::apply`, so undoable), next/previous change. |
 | `editor/blame.rs` | The blame column (`Buffer::blame`): author and date per line from `git::repo::blame` of HEAD, matched to buffer lines through the HEAD diff (recomputed with the gutter at tick rate, so edits shift it and edited lines show none). |
-| `editor/…` | `selection`, `undo`, `syntax` (tree-sitter, language detection), `search`, `indent` (`.editorconfig`, detection), `brackets`, `expand`, `nav` (back/forward). |
+| `editor/…` | `selection` (`Selection`, `Selections`, motions), `undo`, `syntax` (tree-sitter, language detection), `search`, `indent` (`.editorconfig`, detection), `brackets`, `expand`, `nav` (back/forward). |
 | `files/tree.rs` | Project tool window: lazy `ignore` walk, `TreeRefresh` off the main thread, git status colors, speed search, context menu. |
 | `files/ops.rs` | `FsOp` (create, rename, delete; never overwrites, never follows symlinks on delete) and name checks for the tree dialogs. |
 | `files/walk.rs` | The `ignore` walk builder shared by the tree, Go to File and find in files. |
@@ -212,9 +213,11 @@ its busy id before the generation check, so the spinner never sticks.
 
 ## Conventions
 
-- All buffer mutation goes through `Buffer::apply(changes, selection,
-  kind)`, which records undo. `rope` is a public field for reading only.
-  Reloading from disk is an `apply` too, so it can be undone.
+- All buffer mutation goes through `Buffer::apply(changes, selections,
+  kind)` (or `apply_then`), which records undo with the carets before and
+  after. `rope` is a public field for reading only. Reloading from disk is
+  an `apply` too, so it can be undone. An edit made at every caret goes
+  through `Buffer::edit_carets` (see Carets).
 - Rendering and mouse mapping in the editor share one `layout_line()` walk
   (`editor/view.rs`); a test checks they agree.
 - Split panes use a live slot. `Buffer::view` holds the state of exactly
@@ -279,6 +282,67 @@ its busy id before the generation check, so the spinner never sticks.
 - Lists keep their wheel scroll: `ListState::set_viewport` and `fit` bound
   the offset without pulling the view back to the selection.
 
+## Carets
+
+A view has one or more carets: `ViewState::sels`, a `Selections`
+(`editor/selection.rs`). It is never empty, sorted by start, and never
+overlapping (`normalize` merges ranges that overlap, and a bare caret that
+touches another caret or range; the merged one keeps the direction of the
+member holding the primary). Each caret has its own desired column for
+Up/Down. The primary caret is the last one added, as in JetBrains: the view
+scrolls to it, the terminal cursor is on it (the others are cells in the
+`secondary_caret` theme style), the status bar reports it, and everything
+that asks about "the caret" reads it through `ViewState::sel()`: hover, go
+to definition, usages, rename, code actions, file structure, bookmarks,
+back/forward positions, the find bar's origin and initial query, the
+occurrence and bracket highlights, and the session (only the primary caret
+is saved). Completion is asked about the primary caret too and its edit is
+made there (the other carets are mapped through it); it does not open by
+itself while there are several carets, only on Ctrl+Space.
+
+Edit commands come in three shapes:
+
+- **At every caret** (typing with auto-close and closer dedent, Backspace,
+  Delete, word deletion, Enter, Tab, toggle case, block comments, duplicate
+  line, paste, cut): `Buffer::edit_carets(f)` asks `f` for each caret's
+  `CaretEdit` (a range of the current text, its new text, where the caret
+  lands: `After::Keep` or offsets in the new text, and the `TxKind`),
+  planned against the unchanged rope. Parts that overlap, or insert at the
+  same place, collapse into the first one; the rest are applied back to
+  front so each `Change.at` stays a position of the text before the edit,
+  each part reduced to its smallest change (`minimal_changes`: a wrapped
+  selection becomes two inserts). The carets after it are computed walking
+  forward with the length change so far. The transaction is `Typing` or
+  `Deleting` only when every part is. Commands that are a single change
+  per caret write a pure `*_edit(&self, sel, ..) -> CaretEdit`.
+- **Over the union of caret lines** (indent, unindent, line comments,
+  delete line, join lines, move lines): the selected lines of every caret,
+  merged where they touch (`line_blocks`), become one change list, and every
+  selection is mapped through it. Line comments make one comment/uncomment
+  decision for all lines; moving is refused when any block is at the edge.
+- **Whole text** (formatting, workspace edits, line ending conversion, the
+  save cleanup, parked views catching up): every caret is mapped through the
+  changes; the save cleanup keeps the trailing whitespace of every caret
+  line.
+
+Commands that place the caret somewhere (a click, go to line, find
+next/previous, replace all, revert or next change, select all, select line,
+back/forward, bookmark jumps, a reload) call `ViewState::set_sel` and leave
+one caret. A path that hands `apply` a single `Selection` also leaves one.
+
+Undo merges consecutive typing by position only for one caret; with
+several carets (or several changes) an edit continues the last transaction
+when it starts from the carets that one left (`sel_before == sel_after`).
+Undo and redo put every caret back.
+
+Esc closes the find bar first, then drops the other carets (the primary
+keeps its selection), then collapses the selection. Copy at several carets
+remembers each caret's piece (`Editor::multi_clip`); pasting the same text
+at as many carets gives each its piece, text with exactly one line per
+caret is split by line, anything else goes to every caret whole. Alt+click
+adds a caret (and makes it the primary) or removes the one clicked; the
+press starts `DragMode::AltPending`, where column selection will hook in.
+
 ## Extension points
 
 **A new action.** Add the variant to its enum in `actions.rs`, a `REGISTRY`
@@ -326,7 +390,9 @@ transaction; a `WorkspaceEdit` goes through `App::apply_workspace_edit`. Test ag
 ## Pitfalls
 
 - Mouse capture blocks native selection; Shift+drag passes through in foot,
-  alacritty and kitty. Copy uses OSC 52 (`set -s set-clipboard on` in tmux)
+  alacritty and kitty. Some window managers take Alt+click and Alt+drag
+  (moving windows); multiple carets then need the keyboard (Alt+J, Clone
+  Caret). Copy uses OSC 52 (`set -s set-clipboard on` in tmux)
   plus `wl-copy`/`xclip`/`xsel` when found; Ctrl+V reads the clipboard
   through `wl-paste`/`xclip`/`xsel`, the terminal's paste shortcut through
   bracketed paste.

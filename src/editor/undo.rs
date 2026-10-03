@@ -3,7 +3,7 @@
 
 use std::time::{Duration, Instant};
 
-use super::selection::Selection;
+use super::selection::Selections;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Change {
@@ -47,8 +47,8 @@ pub struct Transaction {
     /// it did not describe.
     pub id: u64,
     pub changes: Vec<Change>,
-    pub sel_before: Selection,
-    pub sel_after: Selection,
+    pub sel_before: Selections,
+    pub sel_after: Selections,
     pub at: Instant,
     pub kind: TxKind,
     /// Line ending before and after, for a line ending conversion; undo and
@@ -94,7 +94,12 @@ impl UndoStack {
             && let Some(last) = self.undo.last_mut()
         {
             let within = self.group_window.map(|w| tx.at.duration_since(last.at) <= w).unwrap_or(true);
+            // Several carets emit their changes back to front, so the change
+            // positions say nothing; the edit continues the last one when it
+            // starts from the carets that one left.
+            let multi = tx.changes.len() > 1 || tx.sel_before.is_multi() || last.sel_after.is_multi();
             let contiguous = match tx.kind {
+                TxKind::Typing | TxKind::Deleting if multi => last.sel_after == tx.sel_before,
                 TxKind::Typing => last.changes.last().map(|c| c.end_after()) == tx.changes.first().map(|c| c.at),
                 TxKind::Deleting => {
                     let prev = last.changes.last();
@@ -149,5 +154,43 @@ impl UndoStack {
     }
     pub fn is_empty(&self) -> bool {
         self.undo.is_empty()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::selection::Selection;
+    use super::*;
+
+    fn tx(changes: Vec<Change>, before: Selections, after: Selections, kind: TxKind) -> Transaction {
+        Transaction { id: 0, changes, sel_before: before, sel_after: after, at: Instant::now(), kind, line_ending: None }
+    }
+
+    fn sels(ps: &[usize]) -> Selections {
+        Selections::new(ps.iter().map(|&p| Selection::point(p)).collect(), 0)
+    }
+
+    #[test]
+    fn single_caret_typing_merges_by_position() {
+        let mut u = UndoStack::new();
+        u.push(tx(vec![Change::insert(0, "a")], sels(&[0]), sels(&[1]), TxKind::Typing));
+        u.push(tx(vec![Change::insert(1, "b")], sels(&[1]), sels(&[2]), TxKind::Typing));
+        assert_eq!(u.len(), 1);
+        // Somewhere else: a new step, even with the same selections.
+        u.push(tx(vec![Change::insert(9, "c")], sels(&[2]), sels(&[10]), TxKind::Typing));
+        assert_eq!(u.len(), 2);
+    }
+
+    #[test]
+    fn multi_caret_typing_merges_when_it_starts_from_the_last_carets() {
+        let mut u = UndoStack::new();
+        let typed = |at: [usize; 2]| vec![Change::insert(at[1], "x"), Change::insert(at[0], "x")];
+        u.push(tx(typed([0, 5]), sels(&[0, 5]), sels(&[1, 7]), TxKind::Typing));
+        u.push(tx(typed([1, 6]), sels(&[1, 7]), sels(&[2, 9]), TxKind::Typing));
+        assert_eq!(u.len(), 1);
+        assert_eq!(u.last_mut().unwrap().sel_after, sels(&[2, 9]));
+        // Carets that moved in between: not merged.
+        u.push(tx(typed([3, 8]), sels(&[3, 10]), sels(&[4, 12]), TxKind::Typing));
+        assert_eq!(u.len(), 2);
     }
 }

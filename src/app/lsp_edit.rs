@@ -17,7 +17,6 @@ use serde_json::{Value, json};
 use super::App;
 use super::lsp_nav::{CODE_ACTION, CODE_ACTION_RESOLVE, DOCUMENT_SYMBOL, EXECUTE_COMMAND, PREPARE_RENAME, RENAME, word_at};
 use crate::editor::buffer::LineEnding;
-use crate::editor::selection::Selection;
 use crate::editor::undo::TxKind;
 use crate::event::{AppMsg, Effect, Level};
 use crate::lsp::edits::{self, EditCounts, OpenDoc};
@@ -47,7 +46,7 @@ impl App {
         } else {
             self.lsp_check(id, RENAME).map(|_| {
                 let Some(b) = self.editor.active_buffer() else { return };
-                let (word, version) = (word_at(b, b.view.sel.head), b.version);
+                let (word, version) = (word_at(b, b.view.sel().head), b.version);
                 if word.is_empty() {
                     return self.lsp_hint("Cannot rename this element");
                 }
@@ -70,7 +69,7 @@ impl App {
                 b.rope.slice(start..end.max(start)).to_string()
             }
             Some(PrepareRenameResponse::RangeWithPlaceholder { placeholder, .. }) => placeholder,
-            Some(PrepareRenameResponse::DefaultBehavior { .. }) => word_at(b, b.view.sel.head),
+            Some(PrepareRenameResponse::DefaultBehavior { .. }) => word_at(b, b.view.sel().head),
         };
         self.lsp_rename_dialog(t, &name);
     }
@@ -120,9 +119,9 @@ impl App {
         self.hover = None;
         self.completion_close();
         let Some(b) = self.editor.active_buffer() else { return };
-        let r = b.view.sel.range();
+        let r = b.view.sel().range();
         let range = lsp_types::Range::new(pos::position(&b.rope, r.start), pos::position(&b.rope, r.end));
-        let (id, head) = (b.id, pos::position(&b.rope, b.view.sel.head));
+        let (id, head) = (b.id, pos::position(&b.rope, b.view.sel().head));
         let key = |p: lsp_types::Position| (p.line, p.character);
         let diagnostics: Vec<lsp_types::Diagnostic> = b
             .path
@@ -311,8 +310,9 @@ impl App {
                 continue;
             }
             let b = &mut self.editor.buffers[i];
-            let sel = Selection::new(edits::map_pos(&plan.changes, b.view.sel.anchor), edits::map_pos(&plan.changes, b.view.sel.head));
-            b.apply(plan.changes, sel, TxKind::Other);
+            let mut sels = b.view.sels.clone();
+            sels.map(|p| edits::map_pos(&plan.changes, p));
+            b.apply(plan.changes, sels, TxKind::Other);
             done.files += 1;
             done.edits += n;
         }

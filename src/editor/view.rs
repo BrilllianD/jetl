@@ -139,7 +139,7 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
     if text_area.width == 0 || area.height == 0 {
         return RenderOut { cursor: None, text_area };
     }
-    let follow_key = (buf.view.sel.head, buf.version, text_area.width, text_area.height);
+    let follow_key = (buf.view.sel().head, buf.version, text_area.width, text_area.height);
     if buf.view.follow_key != Some(follow_key) {
         ensure_visible(buf, text_area, o);
         buf.view.follow_key = Some(follow_key);
@@ -147,15 +147,27 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
 
     let theme = o.theme;
     let rope = &buf.rope;
-    let sel = buf.view.sel.range();
-    let (cur_line, _) = pos_to_line_col(rope, buf.view.sel.head);
-    let cur_vcol = visual_col(rope, buf.view.sel.head, o.tab_width);
+    let sels = &buf.view.sels;
+    let (cur_line, _) = pos_to_line_col(rope, buf.view.sel().head);
+    // The carets drawn as cells: the others, and the primary too in a view
+    // without the terminal cursor. Sorted, like the selections.
+    let paint_primary = !o.focused && sels.is_multi();
+    let drawn: Vec<usize> = sels
+        .iter()
+        .enumerate()
+        .filter(|&(i, _)| i != sels.primary_index() || paint_primary)
+        .map(|(_, s)| s.head)
+        .filter(|&h| {
+            (buf.view.scroll_line..buf.view.scroll_line + area.height as usize).contains(&rope.char_to_line(h.min(rope.len_chars())))
+        })
+        .collect();
+    let cur_vcol = visual_col(rope, buf.view.sel().head, o.tab_width);
     let hl = buf.syntax.as_mut().map(|s| s.highlights(rope, buf.view.scroll_line, area.height as usize)).unwrap_or_default();
     let search = buf.view.search.as_ref();
-    let pair = super::brackets::pair_at(rope, buf.syntax.as_ref().and_then(|s| s.tree()), buf.view.sel.head);
+    let pair = super::brackets::pair_at(rope, buf.syntax.as_ref().and_then(|s| s.tree()), buf.view.sel().head);
     // Occurrences of the word or selection at the caret, visible lines only.
     // An open find bar owns the match highlighting, so they step aside.
-    let occ = match (o.occurrences && search.is_none()).then(|| super::search::occurrence_target(rope, &buf.view.sel)).flatten() {
+    let occ = match (o.occurrences && search.is_none()).then(|| super::search::occurrence_target(rope, &buf.view.sel())).flatten() {
         Some((target, whole_word)) => {
             super::search::occurrences(rope, buf.view.scroll_line..buf.view.scroll_line + area.height as usize, &target, whole_word)
         }
@@ -173,7 +185,11 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
         if line >= rope.len_lines() {
             break;
         }
-        let is_cur = line == cur_line;
+        let line_start = rope.line_to_char(line);
+        let line_end = line_start + line_len_no_eol(rope, line);
+        let here = &drawn[drawn.partition_point(|&h| h < line_start)..drawn.partition_point(|&h| h <= line_end)];
+        // Every caret line of the focused view counts as current.
+        let is_cur = line == cur_line || (o.focused && !here.is_empty());
         // Gutter: line number and diff mark.
         let num_style = if is_cur { theme.line_number_current } else { theme.line_number };
         if let Some(b) = &buf.blame {
@@ -202,8 +218,6 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
         if is_cur && o.focused {
             screen.set_style(Rect::new(text_area.x, y, text_area.width, 1), Style::default().bg(theme.current_line_bg));
         }
-        let line_start = rope.line_to_char(line);
-        let line_end = line_start + line_len_no_eol(rope, line);
         let max_chars = buf.view.scroll_col + text_area.width as usize + 256;
         let scroll_col = buf.view.scroll_col;
         let right = text_area.right();
@@ -220,7 +234,7 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
             if underlines && let Some(sev) = marks.severity_at(c.char_idx) {
                 style = diag_overlay(style, sev.style(theme));
             }
-            if sel.contains(&c.char_idx) {
+            if sels.contains(c.char_idx) {
                 style = style.bg(theme.selection_bg);
             } else if let Some(s) = search {
                 if let Some(cur) = s.match_at(c.char_idx) {
@@ -234,6 +248,9 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
             }
             if is_cur && o.focused && style.bg.is_none() {
                 style = style.bg(theme.current_line_bg);
+            }
+            if here.binary_search(&c.char_idx).is_ok() {
+                style = style.patch(theme.secondary_caret);
             }
             if c.width == 0 {
                 return true;
@@ -260,13 +277,20 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
             }
             true
         });
-        // Selection that spans the line break: mark one cell past the text.
-        if !sel.is_empty() && sel.start <= line_end && sel.end > line_end && line + 1 < rope.len_lines() {
+        // Selection that spans the line break: mark one cell past the text;
+        // a caret at the line end is drawn there too.
+        let at_end = here.last() == Some(&line_end);
+        if (sels.contains(line_end) && line + 1 < rope.len_lines()) || at_end {
             let vc = visual_col(rope, line_end, o.tab_width);
             if vc >= scroll_col {
                 let x = text_area.x + (vc - scroll_col) as u16;
                 if x < right {
-                    screen[(x, y)].set_style(Style::default().bg(theme.selection_bg));
+                    if sels.contains(line_end) && line + 1 < rope.len_lines() {
+                        screen[(x, y)].set_style(Style::default().bg(theme.selection_bg));
+                    }
+                    if at_end {
+                        screen[(x, y)].set_style(theme.secondary_caret);
+                    }
                 }
             }
         }
@@ -307,7 +331,7 @@ pub fn ensure_visible(buf: &mut Buffer, text_area: Rect, o: &RenderOpts) {
     if rows == 0 || cols == 0 {
         return;
     }
-    let (line, _) = pos_to_line_col(&buf.rope, buf.view.sel.head);
+    let (line, _) = pos_to_line_col(&buf.rope, buf.view.sel().head);
     let so = o.scrolloff.min(rows.saturating_sub(1) / 2);
     if line < buf.view.scroll_line + so {
         buf.view.scroll_line = line.saturating_sub(so);
@@ -317,7 +341,7 @@ pub fn ensure_visible(buf: &mut Buffer, text_area: Rect, o: &RenderOpts) {
     let max_scroll = buf.rope.len_lines().saturating_sub(1);
     buf.view.scroll_line = buf.view.scroll_line.min(max_scroll);
 
-    let vcol = visual_col(&buf.rope, buf.view.sel.head, o.tab_width);
+    let vcol = visual_col(&buf.rope, buf.view.sel().head, o.tab_width);
     let ho = o.hscrolloff.min(cols.saturating_sub(1) / 2);
     if vcol < buf.view.scroll_col + ho {
         buf.view.scroll_col = vcol.saturating_sub(ho);

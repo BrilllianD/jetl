@@ -80,6 +80,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it (splitting first when there is one), Unsplit merges the focused pane into its neighbour and
   Unsplit All merges everything into one. Close Others, Close All but Pinned and Close All act on
   the focused pane. Sessions restore the panes with their tabs, carets and scroll.
+- Multiple carets, as in JetBrains. Alt+J selects the word at the caret, then adds the next
+  occurrence of the selected text as another caret (whole words when it started from a word,
+  wrapping at the end); Alt+Shift+J takes the last one back; Ctrl+Alt+Shift+J (Ctrl+Alt+J in
+  terminals without the kitty protocol) selects every occurrence, or every match of the open find
+  bar. Alt+click adds a caret, or removes the one clicked. Clone Caret Above/Below are in the
+  Edit menu and F1. Typing, Backspace, Delete, word deletion, Enter with smart indent, Tab,
+  auto-close pairs, toggle case, block comments, duplicate line and the motions act at every
+  caret; indent, unindent, line comments, delete, join and move line act on all caret lines; one
+  undo step undoes the edit at every caret and puts every caret back. Copy at several carets
+  copies each selection (or caret line); pasting it at as many carets gives each caret its piece,
+  and text with one line per caret is split the same way. Esc first drops the other carets, then
+  the selection. Extra carets are drawn in reverse video (theme key `secondary_caret`), and the
+  status bar shows their count. Language server features and completion work at the primary
+  caret (the last one added); completion does not pop up by itself while there are several.
+  At most 1000 carets.
 
 ## [0.1.0] - 2026-10-03
 

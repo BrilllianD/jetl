@@ -104,6 +104,30 @@ Split Right/Down, Move to Opposite Group, Unsplit), and run Unsplit and
 Unsplit All from F1. At 80x24 with the Project window open a second split
 right is refused with a toast.
 
+### Scenario: multiple carets
+
+At 80x24 and at 120x40, with a small file whose word repeats
+(`printf 'let a = 1;\nlet b = a + a;\nprint(a);\n' > $T/docs/notes.md`,
+opened as `jetl $T/docs/notes.md`, the Project window hidden with Alt+1):
+
+```sh
+for i in 1 2 3 4; do /tmp/tm.sh send-keys -t jetl Right; done
+for i in 1 2 3; do /tmp/tm.sh send-keys -t jetl M-j; sleep 0.3; done
+/tmp/tm.sh capture-pane -t jetl -p | tail -1     # Ln 2, Col 14 (3 carets, 3 chars)
+/tmp/tm.sh send-keys -t jetl -l 'XY'             # every `a` but the one in print(a)
+/tmp/tm.sh send-keys -t jetl C-z                 # one step back, three carets again
+/tmp/tm.sh send-keys -t jetl Escape; sleep 0.6   # one caret, still selecting
+/tmp/tm.sh send-keys -t jetl Escape              # the selection goes
+press 8 10 2; release 8 10 2                     # Alt+click (8 = Alt): a caret on line 1
+press 8 12 4; release 8 12 4                     # another on line 3, now the primary
+press 8 12 4; release 8 12 4                     # Alt+click on it again removes it
+```
+
+`capture-pane -e` shows the other carets as reverse video (`ESC[7m`), a
+caret at a line end on the cell after the text. Then split right (`M-\`),
+type in the new pane, and check that the other pane still draws all its
+carets, moved with the text; `M-Tab` back to it and type at all of them.
+
 ### Limits under tmux
 
 - No kitty keyboard protocol: Ctrl+Shift+letter, Ctrl+Tab, Ctrl+Enter,
@@ -112,6 +136,11 @@ right is refused with a toast.
   Alt+Enter to commit) or check those keys in foot or kitty.
 - Escape followed quickly by another key arrives as Alt+key; pause between
   them.
+- Ctrl+Alt+Shift+J (select all occurrences) needs the kitty protocol; use
+  Ctrl+Alt+J. Alt+Shift+J arrives as Alt+J with Shift and works.
+- Shift+drag never reaches jetl in foot, kitty or alacritty (they select
+  natively), and some window managers take Alt+click and Alt+drag; send
+  the SGR bytes through tmux to test those gestures.
 - Pressing Alt+number for a focused tool window hides it; later keys go to
   the editor.
 - OSC 52 copy needs `set -s set-clipboard on`.

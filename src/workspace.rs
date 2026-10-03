@@ -308,7 +308,7 @@ impl App {
                 let Some(b) = ed.index_of_id(v.id).map(|i| &ed.buffers[i]) else { continue };
                 let Some(file) = b.path.as_deref().and_then(file) else { continue };
                 let state = v.parked.as_ref().map_or(&b.view, |p| &p.state);
-                let (line, col) = crate::editor::selection::pos_to_line_col(&b.rope, state.sel.head);
+                let (line, col) = crate::editor::selection::pos_to_line_col(&b.rope, state.sel().head);
                 if group.active == Some(slot) {
                     out.active = Some(out.views.len());
                 }

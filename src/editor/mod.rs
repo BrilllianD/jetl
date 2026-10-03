@@ -3,6 +3,7 @@
 pub mod blame;
 pub mod brackets;
 pub mod buffer;
+mod carets;
 pub mod expand;
 mod find;
 pub mod format;
@@ -40,7 +41,7 @@ use find::{LastSearch, refresh_search, render_find_bar};
 use groups::{GroupId, TabGroup};
 use nav::{NavPos, NavRing};
 use search::Field;
-use selection::{Selection, apply_motion, line_range, word_at};
+use selection::{Selection, apply_motion_all, line_range, word_at};
 use split::{SplitNode, SplitterHit};
 use undo::TxKind;
 use view::{RenderOpts, col_to_char};
@@ -50,6 +51,13 @@ enum DragMode {
     Char,
     Word(usize, usize),
     Line(usize, usize),
+    /// Alt held on the press (a caret was added or removed there). Moving
+    /// does nothing yet; column selection will start from this cell.
+    #[allow(dead_code)]
+    AltPending {
+        line: usize,
+        vcol: usize,
+    },
 }
 
 pub struct Editor {
@@ -91,6 +99,9 @@ pub struct Editor {
     /// A closed file being reopened by back/forward and the caret to put
     /// in it once it loads.
     pending_nav: Option<(PathBuf, usize)>,
+    /// The last copy made at several carets: the clipboard text and each
+    /// caret's piece, so pasting it at as many carets splits it again.
+    multi_clip: Option<(String, Vec<String>)>,
 }
 
 /// Shown in place of a pinned tab's close button (one column wide).
@@ -104,7 +115,7 @@ const INDENT_CHOICES: [usize; 4] = [0, 2, 4, 8];
 const NAV_JUMP_LINES: usize = 10;
 
 fn nav_pos(b: &Buffer) -> NavPos {
-    NavPos { id: b.id, path: b.path.clone(), pos: b.view.sel.head }
+    NavPos { id: b.id, path: b.path.clone(), pos: b.view.sel().head }
 }
 
 impl Editor {
@@ -135,6 +146,7 @@ impl Editor {
             last_search: None,
             nav: NavRing::default(),
             pending_nav: None,
+            multi_clip: None,
         }
     }
 
@@ -252,7 +264,7 @@ impl Editor {
             return;
         }
         let line = |p: usize| b.rope.char_to_line(p.min(b.rope.len_chars()));
-        if line(from.pos).abs_diff(line(b.view.sel.head)) > NAV_JUMP_LINES {
+        if line(from.pos).abs_diff(line(b.view.sel().head)) > NAV_JUMP_LINES {
             self.nav.push(from);
         }
     }
@@ -354,13 +366,15 @@ impl Editor {
     pub fn status_position(&self) -> Option<String> {
         let b = self.active_buffer()?;
         let (line, _) = b.cursor_line_col();
-        let col = view::visual_col(&b.rope, b.view.sel.head, self.tab_display(b));
-        let sel = b.view.sel.range();
-        if sel.is_empty() {
-            Some(format!("Ln {}, Col {}", line + 1, col + 1))
-        } else {
-            Some(format!("Ln {}, Col {} ({} chars)", line + 1, col + 1, sel.len()))
-        }
+        let col = view::visual_col(&b.rope, b.view.sel().head, self.tab_display(b));
+        let chars: usize = b.view.sels.iter().map(|s| s.range().len()).sum();
+        let carets = b.view.sels.len();
+        Some(match (carets, chars) {
+            (1, 0) => format!("Ln {}, Col {}", line + 1, col + 1),
+            (1, n) => format!("Ln {}, Col {} ({n} chars)", line + 1, col + 1),
+            (k, 0) => format!("Ln {}, Col {} ({k} carets)", line + 1, col + 1),
+            (k, n) => format!("Ln {}, Col {} ({k} carets, {n} chars)", line + 1, col + 1),
+        })
     }
 
     pub fn status_line_ending(&self) -> Option<String> {
@@ -688,36 +702,25 @@ impl Editor {
         }
         let pairs = || if auto_close { brackets::pairs(b.language().map(|d| d.name)) } else { &[] };
         match a {
-            E::InsertChar(c) => {
-                let pairs = pairs();
-                if let Some(s) = &mut b.syntax {
-                    s.reparse(&b.rope);
-                }
-                let tree = b.syntax.as_ref().and_then(|s| s.tree());
-                let may_pair = !tree.is_some_and(|t| brackets::in_literal_at(&b.rope, t, b.view.sel.head));
-                // A closer that auto-close steps over keeps the line as is.
-                let steps_over =
-                    pairs.iter().any(|(_, cl)| cl == c) && b.view.sel.head < b.rope.len_chars() && b.rope.char(b.view.sel.head) == *c;
-                match b.closer_indent(*c, tree).filter(|_| !steps_over) {
-                    Some(indent) => b.type_dedented(*c, &indent),
-                    None => b.type_char(*c, pairs, may_pair),
-                }
-            }
+            E::InsertChar(c) => b.insert_char(*c, pairs()),
             E::InsertText(s) => {
                 let s = if b.line_ending == buffer::LineEnding::CrLf {
                     s.replace("\r\n", "\n").replace('\n', "\r\n")
                 } else {
                     s.replace("\r\n", "\n")
                 };
-                b.insert(&s, TxKind::Other);
+                match paste_pieces(b, &s, self.multi_clip.as_ref()) {
+                    Some(pieces) => b.insert_pieces(&pieces),
+                    None => b.insert(&s, TxKind::Other),
+                }
             }
             E::InsertNewline => {
                 let colon = b.language().is_some_and(|d| d.indent_after_colon);
                 b.newline_smart(colon);
             }
             E::InsertTab => {
-                let r = b.view.sel.range();
-                if b.rope.char_to_line(r.start) != b.rope.char_to_line(r.end) {
+                let spans = |s: &Selection| b.rope.char_to_line(s.range().start) != b.rope.char_to_line(s.range().end);
+                if b.view.sels.iter().any(spans) {
                     b.indent_lines();
                 } else {
                     b.insert_tab();
@@ -728,17 +731,13 @@ impl Editor {
             E::MoveLineDown => b.move_lines(false),
             E::JoinLines => b.join_lines(),
             E::ToggleCase => b.toggle_case(),
-            E::Backspace => {
-                if !b.backspace_pair(pairs()) {
-                    b.backspace();
-                }
-            }
+            E::Backspace => b.backspace_pairs(pairs()),
             E::Delete => b.delete_forward(),
             E::DeleteWordBack => b.delete_word_back(),
             E::DeleteWordForward => b.delete_word_forward(),
             E::Move(m, extend) => {
                 let page = rows.saturating_sub(1).max(1);
-                apply_motion(&b.rope, &mut b.view.sel, *m, *extend, &mut b.view.desired_col, page);
+                apply_motion_all(&b.rope, &mut b.view.sels, *m, *extend, page);
                 b.undo.break_group = true;
             }
             E::Undo => {
@@ -755,28 +754,31 @@ impl Editor {
             E::DeleteLine => b.delete_line(),
             E::SelectAll => b.select_all(),
             E::SelectLine => b.select_line(),
-            E::Copy => {
-                let text =
-                    if b.view.sel.is_empty() { b.line_text(b.cursor_line_col().0) + b.line_ending.as_str() } else { b.selected_text() };
+            E::Copy | E::Cut => {
+                let pieces = b.clip_pieces();
+                let text = join_pieces(&pieces, b.line_ending.as_str());
+                self.multi_clip = (pieces.len() > 1).then(|| (text.clone(), pieces));
                 cx.effects.push(Effect::Clipboard(text));
-            }
-            E::Cut => {
-                if b.view.sel.is_empty() {
-                    let (line, _) = b.cursor_line_col();
-                    let r = line_range(&b.rope, line);
-                    b.view.sel = Selection::new(r.start, r.end);
+                if *a == E::Cut {
+                    b.cut_carets();
                 }
-                cx.effects.push(Effect::Clipboard(b.selected_text()));
-                b.delete_selection();
             }
             // The app reads the clipboard (`App::paste`) and inserts it as
             // `InsertText`.
             E::Paste => {}
             E::Escape => {
+                // The find bar goes first, then the other carets (the primary
+                // keeps its selection), then the selection.
                 if b.view.search.is_some() {
                     self.close_find();
+                } else if b.view.sels.is_multi() {
+                    b.view.sels.collapse_to_primary();
+                    b.view.occ_stack.clear();
+                    b.undo.break_group = true;
                 } else {
-                    b.view.sel.collapse();
+                    let mut s = b.view.sel();
+                    s.collapse();
+                    b.view.set_sel(s);
                 }
             }
             E::ScrollUp(n) => b.view.scroll_line = b.view.scroll_line.saturating_sub(*n),
@@ -825,9 +827,16 @@ impl Editor {
                     s.reparse(&b.rope);
                 }
                 let tree = b.syntax.as_ref().and_then(|s| s.tree());
-                if let Some((_, other)) = brackets::pair_at(&b.rope, tree, b.view.sel.head) {
-                    b.view.sel.set_head(other, false);
-                    b.view.desired_col = None;
+                let mut moved = false;
+                for (s, d) in b.view.sels.iter_mut_desired() {
+                    if let Some((_, other)) = brackets::pair_at(&b.rope, tree, s.head) {
+                        s.set_head(other, false);
+                        *d = None;
+                        moved = true;
+                    }
+                }
+                if moved {
+                    b.view.sels.normalize();
                     b.undo.break_group = true;
                 }
             }
@@ -846,6 +855,18 @@ impl Editor {
             }
             E::ExpandSelection => b.expand_selection(),
             E::ShrinkSelection => b.shrink_selection(),
+            E::AddNextOccurrence => {
+                if !b.add_next_occurrence() {
+                    cx.notify(Level::Info, "No more occurrences");
+                }
+            }
+            E::UnselectOccurrence => b.unselect_occurrence(),
+            E::SelectAllOccurrences => {
+                if let Some(n) = b.select_all_occurrences() {
+                    cx.notify(Level::Info, format!("{n} occurrences; carets on the first {}", selection::MAX_CARETS));
+                }
+            }
+            E::CloneCaretAbove | E::CloneCaretBelow => b.clone_caret(*a == E::CloneCaretAbove),
             E::ToggleBookmark => b.toggle_bookmark(),
             E::NextTab
             | E::PrevTab
@@ -918,8 +939,7 @@ impl Editor {
         if m.kind == MouseEventKind::Down(MouseButton::Left) && m.x + 2 == text_area.x && m.y >= text_area.y && m.y < text_area.bottom() {
             let line = b.view.scroll_line + (m.y - text_area.y) as usize;
             if gutter::mark_at(&b.gutter, line).is_some() {
-                b.view.sel = Selection::point(b.rope.line_to_char(line));
-                b.view.desired_col = None;
+                b.view.set_sel(Selection::point(b.rope.line_to_char(line)));
                 use crate::actions::{Action, EditorAction as E};
                 use crate::ui::menu::{ContextMenu, MenuItem};
                 let items = vec![
@@ -934,15 +954,28 @@ impl Editor {
         match m.kind {
             MouseEventKind::Down(MouseButton::Left) => {
                 let p = pos_at(b, m.x, m.y);
+                // Alt+click: a caret there, or away with the one there.
+                if m.mods.contains(KeyModifiers::ALT) && m.x >= text_area.x {
+                    match b.view.sels.index_at(p).filter(|_| b.view.sels.is_multi()) {
+                        Some(i) => b.view.sels.remove(i),
+                        None => {
+                            b.view.sels.push(Selection::point(p), true);
+                        }
+                    }
+                    b.undo.break_group = true;
+                    let line = b.rope.char_to_line(p);
+                    let vcol = (m.x - text_area.x) as usize + b.view.scroll_col;
+                    self.drag = Some((g, DragMode::AltPending { line, vcol }));
+                    return true;
+                }
                 let from = nav_pos(b);
-                if b.rope.char_to_line(b.view.sel.head).abs_diff(b.rope.char_to_line(p)) > NAV_JUMP_LINES {
+                if b.rope.char_to_line(b.view.sel().head).abs_diff(b.rope.char_to_line(p)) > NAV_JUMP_LINES {
                     self.nav.push(from);
                 }
                 // Ctrl+click: the caret to the clicked char, then go to
                 // what is defined there.
                 if m.mods.contains(KeyModifiers::CONTROL) && m.clicks == 1 && m.x >= text_area.x {
-                    b.view.sel = Selection::point(p);
-                    b.view.desired_col = None;
+                    b.view.set_sel(Selection::point(p));
                     b.undo.break_group = true;
                     cx.effects.push(Effect::Lsp(crate::lsp::LspRequest::Definition));
                     return true;
@@ -951,21 +984,22 @@ impl Editor {
                 match m.clicks {
                     2 => {
                         let r = word_at(&b.rope, p);
-                        b.view.sel = Selection::new(r.start, r.end);
+                        b.view.set_sel(Selection::new(r.start, r.end));
                         self.drag = Some((g, DragMode::Word(r.start, r.end)));
                     }
                     3 => {
                         let (line, _) = selection::pos_to_line_col(&b.rope, p);
                         let r = line_range(&b.rope, line);
-                        b.view.sel = Selection::new(r.start, r.end);
+                        b.view.set_sel(Selection::new(r.start, r.end));
                         self.drag = Some((g, DragMode::Line(r.start, r.end)));
                     }
                     _ => {
-                        b.view.sel.set_head(p, extend);
+                        let mut s = b.view.sel();
+                        s.set_head(p, extend);
+                        b.view.set_sel(s);
                         self.drag = Some((g, DragMode::Char));
                     }
                 }
-                b.view.desired_col = None;
                 b.undo.break_group = true;
                 true
             }
@@ -977,14 +1011,19 @@ impl Editor {
                 match mode {
                     DragMode::Word(s, e) => {
                         let w = word_at(&b.rope, p);
-                        if p < s { b.view.sel = Selection::new(e, w.start) } else { b.view.sel = Selection::new(s, w.end.max(e)) }
+                        b.view.set_sel(if p < s { Selection::new(e, w.start) } else { Selection::new(s, w.end.max(e)) });
                     }
                     DragMode::Line(s, e) => {
                         let (line, _) = selection::pos_to_line_col(&b.rope, p);
                         let r = line_range(&b.rope, line);
-                        if r.start < s { b.view.sel = Selection::new(e, r.start) } else { b.view.sel = Selection::new(s, r.end.max(e)) }
+                        b.view.set_sel(if r.start < s { Selection::new(e, r.start) } else { Selection::new(s, r.end.max(e)) });
                     }
-                    DragMode::Char => b.view.sel.set_head(p, true),
+                    DragMode::Char => {
+                        let mut s = b.view.sel();
+                        s.set_head(p, true);
+                        b.view.set_sel(s);
+                    }
+                    DragMode::AltPending { .. } => return true,
                 }
                 // Auto-scroll while dragging past the edges.
                 if m.y < text_area.y {
@@ -1121,6 +1160,41 @@ impl Editor {
     }
 }
 
+/// The clipboard text for `pieces` copied at several carets: one after the
+/// other, a line break between those that do not end with one.
+fn join_pieces(pieces: &[String], eol: &str) -> String {
+    let mut out = String::new();
+    for (i, p) in pieces.iter().enumerate() {
+        if i > 0 && !out.ends_with('\n') {
+            out.push_str(eol);
+        }
+        out.push_str(p);
+    }
+    out
+}
+
+/// What each caret of `b` gets when `s` (in the buffer's line ending) is
+/// pasted, or `None` for all of `s` at every caret: the pieces of a copy
+/// made at as many carets (`multi_clip`, its text and pieces), else one
+/// line of `s` per caret when it has exactly that many lines.
+fn paste_pieces(b: &Buffer, s: &str, multi_clip: Option<&(String, Vec<String>)>) -> Option<Vec<String>> {
+    let n = b.view.sels.len();
+    if n < 2 {
+        return None;
+    }
+    let eol = b.line_ending.as_str();
+    let lf = |t: &str| t.replace("\r\n", "\n");
+    if let Some((text, pieces)) = multi_clip
+        && pieces.len() == n
+        && lf(text) == lf(s)
+    {
+        return Some(pieces.iter().map(|p| lf(p).replace('\n', eol)).collect());
+    }
+    let body = s.strip_suffix(eol).unwrap_or(s);
+    let lines: Vec<String> = body.split(eol).map(str::to_string).collect();
+    (lines.len() == n).then_some(lines)
+}
+
 /// The wheel over a view: three lines up or down, four columns sideways.
 fn wheel(b: &mut Buffer, kind: MouseEventKind) -> bool {
     let v = &mut b.view;
@@ -1235,14 +1309,14 @@ mod tests {
             for c in "foo".chars() {
                 assert!(ed.handle_find_key(key(KeyCode::Char(c), KeyModifiers::NONE), cx));
             }
-            assert_eq!(ed.active_buffer().unwrap().view.sel.range(), 0..3);
+            assert_eq!(ed.active_buffer().unwrap().view.sel().range(), 0..3);
             assert!(ed.handle_find_key(key(KeyCode::Enter, KeyModifiers::NONE), cx));
-            assert_eq!(ed.active_buffer().unwrap().view.sel.range(), 8..11);
+            assert_eq!(ed.active_buffer().unwrap().view.sel().range(), 8..11);
             assert!(ed.handle_find_key(key(KeyCode::Enter, KeyModifiers::SHIFT), cx));
-            assert_eq!(ed.active_buffer().unwrap().view.sel.range(), 0..3);
+            assert_eq!(ed.active_buffer().unwrap().view.sel().range(), 0..3);
             // Shift+Enter from the first match wraps to the last.
             assert!(ed.handle_find_key(key(KeyCode::Enter, KeyModifiers::SHIFT), cx));
-            assert_eq!(ed.active_buffer().unwrap().view.sel.range(), 16..19);
+            assert_eq!(ed.active_buffer().unwrap().view.sel().range(), 16..19);
             // Ctrl+S is not consumed by the bar.
             assert!(!ed.handle_find_key(key(KeyCode::Char('s'), KeyModifiers::CONTROL), cx));
             // Alt+C toggles case sensitivity.
@@ -1254,10 +1328,99 @@ mod tests {
             assert!(!ed.find_focused());
             // F3 with the bar closed reuses the last query.
             ed.handle_action(&EditorAction::FindNext, cx);
-            assert_eq!(ed.active_buffer().unwrap().view.sel.range(), 0..3);
+            assert_eq!(ed.active_buffer().unwrap().view.sel().range(), 0..3);
             assert!(ed.active_buffer().unwrap().view.search.is_none());
         });
         assert_eq!(notes.iter().filter(|n| *n == "Search wrapped").count(), 2);
+    }
+
+    #[test]
+    fn escape_closes_find_then_drops_carets_then_the_selection() {
+        let mut ed = editor_with("a.txt", "one two three");
+        act(&mut ed, EditorAction::Find);
+        let b = ed.active_buffer_mut().unwrap();
+        b.view.sels = selection::Selections::new(vec![Selection::point(1), Selection::new(4, 7)], 1);
+        act(&mut ed, EditorAction::Escape);
+        let b = ed.active_buffer().unwrap();
+        assert!(b.view.search.is_none());
+        assert_eq!(b.view.sels.len(), 2, "the find bar goes first");
+        act(&mut ed, EditorAction::Escape);
+        assert_eq!(ed.active_buffer().unwrap().view.sels.as_slice(), [Selection::new(4, 7)], "the primary keeps its selection");
+        act(&mut ed, EditorAction::Escape);
+        assert_eq!(ed.active_buffer().unwrap().view.sels.as_slice(), [Selection::point(7)]);
+    }
+
+    fn clipboard(fx: &[Effect]) -> Option<&str> {
+        fx.iter().find_map(|e| if let Effect::Clipboard(t) = e { Some(t.as_str()) } else { None })
+    }
+
+    #[test]
+    fn copy_and_paste_at_several_carets() {
+        let mut ed = editor_with("a.txt", "a1\nb2\nc3\n");
+        let sels = |v: Vec<Selection>| selection::Selections::new(v, 0);
+        ed.active_buffer_mut().unwrap().view.sels = sels(vec![Selection::new(1, 2), Selection::new(4, 5), Selection::new(7, 8)]);
+        let fx = act(&mut ed, EditorAction::Copy);
+        assert_eq!(clipboard(&fx), Some("1\n2\n3"));
+        // Back at the line starts: each caret gets its own piece.
+        ed.active_buffer_mut().unwrap().view.sels = sels(vec![Selection::point(0), Selection::point(3), Selection::point(6)]);
+        act(&mut ed, EditorAction::InsertText("1\n2\n3".into()));
+        assert_eq!(ed.active_buffer().unwrap().text(), "1a1\n2b2\n3c3\n");
+        // Text from elsewhere with one line per caret is split too.
+        act(&mut ed, EditorAction::InsertText("x\ny\nz\n".into()));
+        assert_eq!(ed.active_buffer().unwrap().text(), "1xa1\n2yb2\n3zc3\n");
+        // Otherwise all of it goes to every caret.
+        act(&mut ed, EditorAction::InsertText("-".into()));
+        assert_eq!(ed.active_buffer().unwrap().text(), "1x-a1\n2y-b2\n3z-c3\n");
+        // Cut with empty carets takes their lines, once each.
+        ed.active_buffer_mut().unwrap().view.sels = sels(vec![Selection::point(0), Selection::point(1), Selection::point(13)]);
+        let fx = act(&mut ed, EditorAction::Cut);
+        assert_eq!(clipboard(&fx), Some("1x-a1\n3z-c3\n"));
+        assert_eq!(ed.active_buffer().unwrap().text(), "2y-b2\n");
+    }
+
+    #[test]
+    fn carets_render_as_cells_and_alt_click_adds_and_removes() {
+        let mut ed = editor_with("a.txt", "abc\nde\nxyz\n");
+        ed.active_buffer_mut().unwrap().view.sels =
+            selection::Selections::new(vec![Selection::new(0, 2), Selection::point(6), Selection::point(9)], 2);
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 6)).unwrap();
+        let theme = Theme::default();
+        let mut draw = |ed: &mut Editor, focused: bool| {
+            term.draw(|f| ed.render(f, Rect::new(0, 0, 40, 1), Rect::new(0, 1, 40, 5), focused, &theme)).unwrap().buffer.clone()
+        };
+        let screen = draw(&mut ed, true);
+        let x0 = ed.text_area().x;
+        let reversed = |x: u16, y: u16| screen[(x, y)].modifier.contains(ratatui::style::Modifier::REVERSED);
+        assert_eq!(screen[(x0, 1)].bg, theme.selection_bg, "the selection");
+        assert_eq!(screen[(x0 + 1, 1)].bg, theme.selection_bg);
+        assert!(reversed(x0 + 2, 1), "the selection's head");
+        assert!(reversed(x0 + 2, 2), "a caret at the line end: the cell after the text");
+        assert!(!reversed(x0 + 2, 3), "the primary is the terminal cursor");
+        assert_eq!(ed.focused_group().caret_cell, Some((x0 + 2, 3)));
+        assert_eq!(ed.status_position().as_deref(), Some("Ln 3, Col 3 (3 carets, 2 chars)"));
+        // Without focus every caret of a multi-caret view is a cell.
+        let screen = draw(&mut ed, false);
+        assert!(screen[(x0 + 2, 3)].modifier.contains(ratatui::style::Modifier::REVERSED));
+        // Alt+click on a caret removes it, elsewhere adds one (the primary).
+        let alt_click = |ed: &mut Editor, x: u16, y: u16| {
+            let m = Mouse { kind: MouseEventKind::Down(MouseButton::Left), x, y, clicks: 1, mods: KeyModifiers::ALT };
+            with_cx(|cx| {
+                ed.handle_mouse(&m, Rect::default(), cx);
+                let up = Mouse { kind: MouseEventKind::Up(MouseButton::Left), ..m };
+                ed.handle_mouse(&up, Rect::default(), cx);
+            });
+        };
+        alt_click(&mut ed, x0 + 2, 2);
+        assert_eq!(ed.active_buffer().unwrap().view.sels.heads().collect::<Vec<_>>(), [2, 9]);
+        alt_click(&mut ed, x0, 2);
+        let sels = &ed.active_buffer().unwrap().view.sels;
+        assert_eq!((sels.heads().collect::<Vec<_>>(), sels.primary()), (vec![2, 4, 9], Selection::point(4)));
+        // A plain click goes back to one caret.
+        let m = Mouse { kind: MouseEventKind::Down(MouseButton::Left), x: x0, y: 1, clicks: 1, mods: KeyModifiers::NONE };
+        with_cx(|cx| {
+            ed.handle_mouse(&m, Rect::default(), cx);
+        });
+        assert_eq!(ed.active_buffer().unwrap().view.sels.as_slice(), [Selection::point(0)]);
     }
 
     #[test]
@@ -1292,11 +1455,11 @@ mod tests {
             s.replace.set_text("<$1>");
             s.field = Field::Replace;
             refresh_search(b);
-            assert_eq!(b.view.sel.range(), 0..2);
+            assert_eq!(b.view.sel().range(), 0..2);
             assert!(ed.handle_find_key(key(KeyCode::Enter, KeyModifiers::NONE), cx));
             let b = ed.active_buffer().unwrap();
             assert_eq!(b.text(), "<1> a2 b3");
-            assert_eq!(b.view.sel.range(), 4..6);
+            assert_eq!(b.view.sel().range(), 4..6);
         });
     }
 
@@ -1322,7 +1485,7 @@ mod tests {
     #[test]
     fn enter_in_braces_and_closer_dedent() {
         let mut ed = editor_with("a.rs", "fn f() {\n    let s = \"{\";\n");
-        ed.active_buffer_mut().unwrap().view.sel = Selection::point(8);
+        ed.active_buffer_mut().unwrap().view.set_sel(Selection::point(8));
         with_cx(|cx| {
             // Auto-close types `{}` and Enter splits it over three lines.
             ed.handle_action(&EditorAction::InsertNewline, cx);
@@ -1337,39 +1500,39 @@ mod tests {
         // string literal is skipped.
         let mut ed = editor_with("a.rs", "fn f() {\n    let s = \"{\";\n    ");
         let end = ed.active_buffer().unwrap().len_chars();
-        ed.active_buffer_mut().unwrap().view.sel = Selection::point(end);
+        ed.active_buffer_mut().unwrap().view.set_sel(Selection::point(end));
         with_cx(|cx| {
             ed.handle_action(&EditorAction::InsertChar('}'), cx);
         });
         assert_eq!(ed.active_buffer().unwrap().text(), "fn f() {\n    let s = \"{\";\n}");
         // Typing `}` at an existing closer steps over it, line unchanged.
         let mut ed = editor_with("a.rs", "fn f() {\n    }");
-        ed.active_buffer_mut().unwrap().view.sel = Selection::point(13);
+        ed.active_buffer_mut().unwrap().view.set_sel(Selection::point(13));
         with_cx(|cx| {
             ed.handle_action(&EditorAction::InsertChar('}'), cx);
         });
         assert_eq!(ed.active_buffer().unwrap().text(), "fn f() {\n    }");
-        assert_eq!(ed.active_buffer().unwrap().view.sel.head, 14);
+        assert_eq!(ed.active_buffer().unwrap().view.sel().head, 14);
     }
 
     #[cfg(feature = "lang-css")]
     #[test]
     fn css_ctrl_slash_falls_back_to_block_comment() {
         let mut ed = editor_with("a.css", "a {\n    color: red;\n}\n");
-        ed.active_buffer_mut().unwrap().view.sel = Selection::point(10);
+        ed.active_buffer_mut().unwrap().view.set_sel(Selection::point(10));
         let notes = with_cx(|cx| {
             ed.handle_action(&EditorAction::ToggleComment, cx);
         });
         assert!(notes.is_empty(), "{notes:?}");
         let b = ed.active_buffer().unwrap();
         assert_eq!(b.text(), "a {\n    /* color: red; */\n}\n");
-        assert_eq!(b.view.sel.head, 13, "caret stays on the same character");
+        assert_eq!(b.view.sel().head, 13, "caret stays on the same character");
         with_cx(|cx| {
             ed.handle_action(&EditorAction::ToggleComment, cx);
         });
         assert_eq!(ed.active_buffer().unwrap().text(), "a {\n    color: red;\n}\n");
         // A selection over two lines becomes one block from the first indent.
-        ed.active_buffer_mut().unwrap().view.sel = Selection::new(2, 10);
+        ed.active_buffer_mut().unwrap().view.set_sel(Selection::new(2, 10));
         with_cx(|cx| {
             ed.handle_action(&EditorAction::ToggleComment, cx);
         });
@@ -1392,7 +1555,7 @@ mod tests {
     #[test]
     fn python_colon_indents() {
         let mut ed = editor_with("a.py", "def f():");
-        ed.active_buffer_mut().unwrap().view.sel = Selection::point(8);
+        ed.active_buffer_mut().unwrap().view.set_sel(Selection::point(8));
         with_cx(|cx| {
             ed.handle_action(&EditorAction::InsertNewline, cx);
         });

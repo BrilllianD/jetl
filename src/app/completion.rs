@@ -75,7 +75,7 @@ impl App {
     /// Ask at the caret; `trigger` is the trigger character typed.
     fn completion_request(&mut self, kind: u8, trigger: Option<char>, explicit: bool) {
         let Some(b) = self.editor.active_buffer() else { return };
-        let origin = Origin::new(b.id, &b.rope, b.view.sel.head);
+        let origin = Origin::new(b.id, &b.rope, b.view.sel().head);
         let mut context = json!({"triggerKind": kind});
         if let Some(c) = trigger {
             context["triggerCharacter"] = json!(c.to_string());
@@ -110,14 +110,18 @@ impl App {
             return;
         }
         let Some(b) = self.editor.active_buffer() else { return };
+        // Not while typing at several carets; Ctrl+Space still asks.
+        if b.view.sels.is_multi() {
+            return;
+        }
         let Some(triggers) = self.completion_triggers(b.id) else { return };
         if triggers.iter().any(|t| t.ends_with(c)) && !is_word_char(c) {
             return self.completion_request(TRIGGER_CHARACTER, Some(c), false);
         }
-        if !is_word_char(c) || !b.view.sel.is_empty() || self.completion.is_some() {
+        if !is_word_char(c) || !b.view.sel().is_empty() || self.completion.is_some() {
             return;
         }
-        let head = b.view.sel.head;
+        let head = b.view.sel().head;
         let coming = self.lsp.completion.request.as_ref().is_some_and(|(_, o, _)| o.buffer == b.id && o.prefix(&b.rope, head).is_some());
         let word = head - completion::word_start(&b.rope, head);
         if !coming && word >= self.config.lsp.completion_min_chars.max(1) {
@@ -139,8 +143,8 @@ impl App {
         let prefix = self
             .editor
             .active_buffer()
-            .filter(|b| here && b.id == p.state.origin.buffer && b.view.sel.is_empty())
-            .and_then(|b| p.state.origin.prefix(&b.rope, b.view.sel.head));
+            .filter(|b| here && b.id == p.state.origin.buffer && b.view.sel().is_empty())
+            .and_then(|b| p.state.origin.prefix(&b.rope, b.view.sel().head));
         let Some(prefix) = prefix else {
             self.completion_close();
             return false;
@@ -213,7 +217,7 @@ impl App {
         let Some(item) = p.state.selected_item().cloned() else { return };
         let origin = p.state.origin.clone();
         let Some(b) = self.editor.active_buffer() else { return };
-        let pos = crate::lsp::pos::position(&b.rope, b.view.sel.head);
+        let pos = crate::lsp::pos::position(&b.rope, b.view.sel().head);
         let params = serde_json::to_value(&item).unwrap_or(Value::Null);
         let resolvable = self
             .lsp
@@ -252,12 +256,17 @@ impl App {
     /// in the word the list was for.
     fn completion_apply(&mut self, origin: &Origin, item: &CompletionItem) {
         let Some(b) = self.editor.active_buffer_mut() else { return };
-        if b.id != origin.buffer || !b.view.sel.is_empty() || origin.prefix(&b.rope, b.view.sel.head).is_none() {
+        if b.id != origin.buffer || !b.view.sel().is_empty() || origin.prefix(&b.rope, b.view.sel().head).is_none() {
             return tracing::debug!("completion: the caret left the word; not accepted");
         }
         let crlf = b.line_ending == crate::editor::buffer::LineEnding::CrLf;
-        let acc = completion::edit_for(item, origin, &b.rope, b.view.sel.head, crlf);
-        b.apply(acc.changes, Selection::point(acc.caret), TxKind::Other);
+        let acc = completion::edit_for(item, origin, &b.rope, b.view.sel().head, crlf);
+        // The edit is made at the primary caret; the others move along.
+        let mut sels = b.view.sels.clone();
+        sels.map(|p| crate::lsp::edits::map_pos(&acc.changes, p));
+        *sels.primary_mut() = Selection::point(acc.caret);
+        sels.normalize();
+        b.apply(acc.changes, sels, TxKind::Other);
         self.dirty_frame = true;
     }
 
@@ -290,8 +299,8 @@ impl App {
         let prefix = self
             .editor
             .active_buffer()
-            .filter(|b| here && b.id == origin.buffer && b.view.sel.is_empty())
-            .and_then(|b| origin.prefix(&b.rope, b.view.sel.head));
+            .filter(|b| here && b.id == origin.buffer && b.view.sel().is_empty())
+            .and_then(|b| origin.prefix(&b.rope, b.view.sel().head));
         let Some(prefix) = prefix else { return tracing::debug!("dropping a stale completion answer") };
         let (items, incomplete) = completion::parse(value);
         let state = CompletionState::new(origin, items, incomplete, &prefix, &mut self.lsp.completion.matcher);
@@ -355,7 +364,7 @@ mod tests {
     /// The caret line with `|` at the caret.
     fn caret_line(app: &App) -> String {
         let b = app.editor.active_buffer().unwrap();
-        let (line, col) = crate::editor::selection::pos_to_line_col(&b.rope, b.view.sel.head);
+        let (line, col) = crate::editor::selection::pos_to_line_col(&b.rope, b.view.sel().head);
         let mut l: Vec<char> = b.line_text(line).chars().collect();
         l.insert(col, '|');
         l.into_iter().collect()
@@ -439,6 +448,28 @@ mod tests {
         assert_eq!(caret_line(&app), "    pri|");
         app.perform(Action::Editor(EditorAction::Undo));
         assert_eq!(text(&app), MAIN);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn several_carets_ask_only_on_ctrl_space_and_accept_at_the_primary() {
+        let (mut app, mut server, dir) = setup("compl-carets", false).await;
+        // A second caret at the start of line 0; the one on line 1 stays primary.
+        let b = app.editor.active_buffer_mut().unwrap();
+        b.view.sels = crate::editor::selection::Selections::new(vec![Selection::point(0), Selection::point(16)], 1);
+        typ(&mut app, "p");
+        assert_eq!(text(&app), "pfn main() {\n    p\n}\n");
+        app.lsp_sync();
+        server.recv("textDocument/didChange").await;
+        assert!(server.drain().iter().all(|m| m["method"] != "textDocument/completion"), "no asking by itself");
+        app.handle_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::CONTROL));
+        let req = completion_req(&mut server).await;
+        assert_eq!(req["params"]["position"], json!({"line": 1, "character": 5}), "about the primary caret");
+        reply(&mut app, &mut server, &req, items(1, 4, 5)).await;
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(text(&app), "pfn main() {\n    print!()\n}\n");
+        let b = app.editor.active_buffer().unwrap();
+        assert_eq!(b.view.sels.heads().collect::<Vec<_>>(), [1, 24], "the other caret stays put");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

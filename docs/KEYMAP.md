@@ -138,6 +138,10 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Ctrl+Shift+M` * | `editor.goto_bracket` | Move caret to matching bracket |
 | `Ctrl+Alt+W` | `editor.expand_selection` | Extend selection to the enclosing syntax node |
 | `Ctrl+Alt+Shift+W` * | `editor.shrink_selection` | Shrink selection back one step |
+| `Alt+J` | `editor.add_next_occurrence` | Add selection for next occurrence (a caret there) |
+| `Alt+Shift+J` | `editor.unselect_occurrence` | Unselect the last added occurrence |
+| `Ctrl+Alt+J` | `editor.select_all_occurrences` | Select all occurrences (a caret at each) |
+| `Ctrl+Alt+Shift+J` * | `editor.select_all_occurrences` | Select all occurrences (a caret at each) |
 | `Ctrl+Up` | `editor.scroll_up` | Scroll up |
 | `Ctrl+Down` | `editor.scroll_down` | Scroll down |
 | `Ctrl+Alt+Left` | `editor.nav_back` | Navigate back to the previous caret position |
@@ -390,6 +394,8 @@ Reachable from Find Action (F1) or by binding them in `keymap.toml`.
 | `editor.unsplit` | Unsplit (merge the group into the one beside it) |
 | `editor.unsplit_all` | Unsplit all (one group) |
 | `editor.move_tab_to_opposite_group` | Move the active tab to the opposite group |
+| `editor.clone_caret_above` | Clone caret above |
+| `editor.clone_caret_below` | Clone caret below |
 | `editor.line_ending_lf` | Convert line endings to LF |
 | `editor.line_ending_crlf` | Convert line endings to CRLF |
 | `editor.set_language` | Set the file's language (highlighting) |

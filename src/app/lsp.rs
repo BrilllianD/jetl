@@ -461,7 +461,7 @@ impl App {
     pub(super) fn lsp_step_problem(&mut self, forward: bool) {
         self.sync_diag_marks();
         let Some(b) = self.editor.active_buffer_mut() else { return };
-        match b.diag_marks.step(b.view.sel.head, forward) {
+        match b.diag_marks.step(b.view.sel().head, forward) {
             Some(pos) => b.goto_pos(pos),
             None => self.notify(Level::Info, "No problems in this file"),
         }
@@ -480,7 +480,7 @@ impl App {
     /// status bar.
     pub fn caret_problem(&self) -> Option<(Severity, &str)> {
         let b = self.editor.active_buffer()?;
-        b.diag_marks.at(b.view.sel.head).map(|m| (m.severity, m.message.as_str()))
+        b.diag_marks.at(b.view.sel().head).map(|m| (m.severity, m.message.as_str()))
     }
 
     /// Show and focus the Problems window on the active file's problems
@@ -838,7 +838,7 @@ pub(crate) mod tests {
 
     fn caret(app: &App) -> (usize, usize) {
         let b = app.editor.active_buffer().unwrap();
-        crate::editor::selection::pos_to_line_col(&b.rope, b.view.sel.head)
+        crate::editor::selection::pos_to_line_col(&b.rope, b.view.sel().head)
     }
 
     /// The second line has an emoji (two UTF-16 units) before the error.

@@ -206,7 +206,7 @@ impl App {
     /// The active buffer's id and caret as an LSP position.
     pub(super) fn caret_position(&self) -> Option<(BufferId, Position)> {
         let b = self.editor.active_buffer()?;
-        Some((b.id, pos::position(&b.rope, b.view.sel.head)))
+        Some((b.id, pos::position(&b.rope, b.view.sel().head)))
     }
 
     /// `lsp.goto_definition` (Ctrl+B, Ctrl+click). Without a server for
@@ -216,7 +216,7 @@ impl App {
         match self.lsp_doc_request(id, pos, DEFINITION, json!({}), PendingTag::Definition) {
             Ok(seq) => self.lsp.nav_seq = seq,
             Err(why) => {
-                let word = self.editor.active_buffer().map(|b| word_at(b, b.view.sel.head)).unwrap_or_default();
+                let word = self.editor.active_buffer().map(|b| word_at(b, b.view.sel().head)).unwrap_or_default();
                 if !self.lsp.docs.contains_key(&id) && !word.is_empty() {
                     self.open_palette(PaletteKind::Symbols);
                     if let Some(p) = &mut self.palette {
@@ -334,14 +334,14 @@ impl App {
         if targets.is_empty() {
             return self.lsp_hint("No usages found");
         }
-        let word = self.editor.active_buffer().map(|b| word_at(b, b.view.sel.head)).unwrap_or_default();
+        let word = self.editor.active_buffer().map(|b| word_at(b, b.view.sel().head)).unwrap_or_default();
         let title = if word.is_empty() { "Usages".to_string() } else { format!("Usages of {word}") };
         self.show_location_targets(title, t.seq, targets);
     }
 
     fn lsp_hover_answer(&mut self, t: DocTag, value: Value) {
         let hover = serde_json::from_value::<Option<lsp_types::Hover>>(value).ok().flatten();
-        let Some(head) = self.editor.active_buffer().map(|b| b.view.sel.head) else { return };
+        let Some(head) = self.editor.active_buffer().map(|b| b.view.sel().head) else { return };
         match hover.and_then(|h| HoverPopup::new(self.editor.focused_group().id, t.buffer, t.version, head, h.contents)) {
             Some(popup) => self.hover = Some(popup),
             None => self.lsp_hint("No documentation found"),
@@ -404,7 +404,7 @@ impl App {
         let Some(h) = &self.hover else { return };
         let overlay = self.palette.is_some() || self.dialog.is_some() || self.menu.is_some() || self.menu_bar.is_some();
         let same = self.editor.focused_group().id == h.group
-            && self.editor.active_buffer().is_some_and(|b| b.id == h.buffer && b.version == h.version && b.view.sel.head == h.head);
+            && self.editor.active_buffer().is_some_and(|b| b.id == h.buffer && b.version == h.version && b.view.sel().head == h.head);
         if overlay || !same || !self.focus.is(PanelId::Editor) {
             self.hover = None;
             self.dirty_frame = true;
@@ -471,7 +471,7 @@ mod tests {
 
     fn caret(app: &App) -> (usize, usize) {
         let b = app.editor.active_buffer().unwrap();
-        crate::editor::selection::pos_to_line_col(&b.rope, b.view.sel.head)
+        crate::editor::selection::pos_to_line_col(&b.rope, b.view.sel().head)
     }
 
     fn act(app: &mut App, a: LspAction) {

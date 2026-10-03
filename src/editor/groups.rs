@@ -542,7 +542,7 @@ impl Editor {
             }
             let sel = Selection::point(line_col_to_pos(&b.rope, sv.line, sv.col));
             let scroll_line = sv.scroll_line.min(b.rope.len_lines() - 1);
-            let state = ViewState { sel, scroll_line, scroll_col: sv.scroll_col, ..Default::default() };
+            let state = ViewState { sels: sel.into(), scroll_line, scroll_col: sv.scroll_col, ..Default::default() };
             let parked = Some(Parked::park(state, &b.rope, &b.edit_log, b.version));
             g.views.push(View { id: b.id, parked, pinned: sv.pinned });
         }
@@ -854,6 +854,7 @@ impl Editor {
             assert!(self.view_count(b.id) >= 1, "{} has a tab", b.name);
             let live = self.groups.iter().filter(|g| g.slot_of(b.id).is_some_and(|s| g.views[s].parked.is_none())).count();
             assert_eq!(live, 1, "{} has one live view", b.name);
+            assert!(b.view.sels.is_normalized(), "{}: carets sorted and apart", b.name);
         }
         let f = self.focused_group();
         assert!(f.active.is_none_or(|a| f.views[a].parked.is_none()), "the focused tab is live");
@@ -861,6 +862,7 @@ impl Editor {
             for (i, v) in g.views.iter().enumerate() {
                 assert!(self.index_of_id(v.id).is_some(), "tab of a closed buffer");
                 assert!(g.views[..i].iter().all(|w| w.id != v.id), "one tab per buffer and group");
+                assert!(v.parked.as_ref().is_none_or(|p| p.state.sels.is_normalized()), "parked carets sorted and apart");
             }
             assert_eq!(g.active.is_some(), !g.views.is_empty(), "a group with tabs shows one");
             assert!(g.active.is_none_or(|a| a < g.views.len()));
@@ -930,22 +932,22 @@ mod tests {
     fn split_forks_the_view_and_edits_move_the_other_caret() {
         let mut ed = Editor::new(&Config::default());
         open(&mut ed, "a.txt", "hello world\n");
-        ed.active_buffer_mut().unwrap().view.sel = Selection::point(6);
+        ed.active_buffer_mut().unwrap().view.set_sel(Selection::point(6));
         let left = ed.focused;
         act(&mut ed, EditorAction::SplitRight);
         assert_ne!(ed.focused, left);
         assert_eq!(ed.group_ids(), [left, ed.focused]);
-        assert_eq!(ed.active_buffer().unwrap().view.sel.head, 6, "the new view starts at the same caret");
+        assert_eq!(ed.active_buffer().unwrap().view.sel().head, 6, "the new view starts at the same caret");
         // Typing in the right group moves the left group's caret.
-        ed.active_buffer_mut().unwrap().view.sel = Selection::point(0);
+        ed.active_buffer_mut().unwrap().view.set_sel(Selection::point(0));
         act(&mut ed, EditorAction::InsertText(">> ".into()));
         act(&mut ed, EditorAction::PrevGroup);
         assert_eq!(ed.focused, left);
-        assert_eq!(ed.active_buffer().unwrap().view.sel.head, 9);
+        assert_eq!(ed.active_buffer().unwrap().view.sel().head, 9);
         // Undo in the left group puts the right group's caret back too.
         act(&mut ed, EditorAction::Undo);
         act(&mut ed, EditorAction::NextGroup);
-        assert_eq!(ed.active_buffer().unwrap().view.sel.head, 0);
+        assert_eq!(ed.active_buffer().unwrap().view.sel().head, 0);
         assert_eq!(ed.buffers.len(), 1, "one buffer, two views");
     }
 
@@ -957,22 +959,22 @@ mod tests {
         open(&mut ed, "b.txt", "other\n");
         // a.txt's live view is in the first group now; the second shows b.
         let a = ed.index_of(&PathBuf::from("/tmp/a.txt")).unwrap();
-        ed.buffers[a].view.sel = Selection::point(4);
+        ed.buffers[a].view.set_sel(Selection::point(4));
         act(&mut ed, EditorAction::PrevGroup);
-        ed.active_buffer_mut().unwrap().view.sel = Selection::point(4);
+        ed.active_buffer_mut().unwrap().view.set_sel(Selection::point(4));
         act(&mut ed, EditorAction::NextGroup);
         // A language server edit lands in a.txt, live in the first group.
         let b = &mut ed.buffers[a];
-        b.apply(vec![Change::insert(0, "zero ")], b.view.sel, TxKind::Other);
+        b.apply(vec![Change::insert(0, "zero ")], b.view.sel(), TxKind::Other);
         act(&mut ed, EditorAction::PrevGroup);
-        assert_eq!(ed.active_buffer().unwrap().view.sel.head, 4, "the live view keeps what the edit set");
+        assert_eq!(ed.active_buffer().unwrap().view.sel().head, 4, "the live view keeps what the edit set");
         // The second group's view of a.txt was parked: shown again, it maps.
         let g = ed.focused;
         act(&mut ed, EditorAction::NextGroup);
         let slot = ed.focused_group().slot_of(ed.buffers[a].id).unwrap();
         ed.show(slot);
         ed.check_invariants();
-        assert_eq!(ed.active_buffer().unwrap().view.sel.head, 9);
+        assert_eq!(ed.active_buffer().unwrap().view.sel().head, 9);
         assert_ne!(ed.focused, g);
     }
 

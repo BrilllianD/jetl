@@ -1876,6 +1876,39 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn alt_j_adds_carets_that_type_together_and_escape_drops_them() {
+        use crossterm::event::KeyModifiers;
+        let (mut app, dir) = test_app("carets");
+        let path = app.workspace.root.join("a.txt");
+        app.editor.open_text(path, "let a = 1;\na + a;\n", false, &app.theme);
+        app.focus.set(PanelId::Editor);
+        app.editor.active_buffer_mut().unwrap().goto_line(0, 4);
+        let alt = |c: char, m: KeyModifiers| KeyEvent::new(KeyCode::Char(c), KeyModifiers::ALT | m);
+        for _ in 0..3 {
+            app.handle_key(alt('j', KeyModifiers::NONE));
+        }
+        let b = app.editor.active_buffer().unwrap();
+        assert_eq!(b.view.sels.len(), 3, "the word, then two more");
+        assert_eq!(app.editor.status_position().as_deref(), Some("Ln 2, Col 6 (3 carets, 3 chars)"));
+        app.handle_key(alt('J', KeyModifiers::SHIFT));
+        assert_eq!(app.editor.active_buffer().unwrap().view.sels.len(), 2, "Alt+Shift+J takes the last one back");
+        // Ctrl+Alt+J (the legacy key) takes them all.
+        app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::ALT | KeyModifiers::CONTROL));
+        assert_eq!(app.editor.active_buffer().unwrap().view.sels.len(), 3);
+        for c in "bc".chars() {
+            app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        assert_eq!(app.editor.active_buffer().unwrap().text(), "let bc = 1;\nbc + bc;\n");
+        app.perform(Action::Editor(EditorAction::Undo));
+        let b = app.editor.active_buffer().unwrap();
+        assert_eq!(b.text(), "let a = 1;\na + a;\n", "one undo step");
+        assert_eq!(b.view.sels.len(), 3, "with every caret back");
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(app.editor.active_buffer().unwrap().view.sels.len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
     async fn zen_mode_shows_only_text_and_puts_the_layout_back() {
         use crossterm::event::{KeyModifiers, MouseEvent, MouseEventKind};
         let (mut app, dir) = test_app("zen");
@@ -2393,7 +2426,7 @@ pub(crate) mod tests {
         assert_eq!(app.editor.focused_group().id, left);
         app.perform(Action::Editor(EditorAction::NextGroup));
         let b = app.editor.active_buffer().unwrap();
-        assert_eq!((b.view.scroll_line, b.view.sel.is_empty()), (3, true), "the right view kept its own scroll and caret");
+        assert_eq!((b.view.scroll_line, b.view.sel().is_empty()), (3, true), "the right view kept its own scroll and caret");
         draw(&mut app);
         // Dragging the bar moves it.
         let bar = app.editor.group(left).unwrap().last_area.right();

@@ -158,6 +158,11 @@ pub enum EditorAction {
     GotoBracket,
     ExpandSelection,
     ShrinkSelection,
+    AddNextOccurrence,
+    UnselectOccurrence,
+    SelectAllOccurrences,
+    CloneCaretAbove,
+    CloneCaretBelow,
     ScrollUp(usize),
     ScrollDown(usize),
     NavBack,
@@ -522,6 +527,11 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "editor.goto_bracket" => "Move caret to matching bracket", Editor(E::GotoBracket);
         "editor.expand_selection" => "Extend selection to the enclosing syntax node", Editor(E::ExpandSelection);
         "editor.shrink_selection" => "Shrink selection back one step", Editor(E::ShrinkSelection);
+        "editor.add_next_occurrence" => "Add selection for next occurrence (a caret there)", Editor(E::AddNextOccurrence);
+        "editor.unselect_occurrence" => "Unselect the last added occurrence", Editor(E::UnselectOccurrence);
+        "editor.select_all_occurrences" => "Select all occurrences (a caret at each)", Editor(E::SelectAllOccurrences);
+        "editor.clone_caret_above" => "Clone caret above", Editor(E::CloneCaretAbove);
+        "editor.clone_caret_below" => "Clone caret below", Editor(E::CloneCaretBelow);
         "editor.scroll_up" => "Scroll up", Editor(E::ScrollUp(1));
         "editor.scroll_down" => "Scroll down", Editor(E::ScrollDown(1));
         "editor.nav_back" => "Navigate back to the previous caret position", Editor(E::NavBack);
