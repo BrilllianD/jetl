@@ -41,6 +41,8 @@ pub struct Theme {
     pub secondary_caret: Style,
     /// Gutter glyph of a bookmarked line.
     pub bookmark: Style,
+    /// What a collapsed fold shows after its header line (`…}`).
+    pub fold_placeholder: Style,
     pub gutter_added: Color,
     pub gutter_modified: Color,
     pub gutter_deleted: Color,
@@ -109,6 +111,7 @@ impl Theme {
             bracket_match: Style::default().bg(Color::Rgb(59, 81, 77)).add_modifier(Modifier::BOLD),
             secondary_caret: Style::default().add_modifier(Modifier::REVERSED),
             bookmark: Style::default().fg(Color::Rgb(255, 198, 109)),
+            fold_placeholder: Style::default().fg(Color::Rgb(150, 150, 150)).bg(Color::Rgb(60, 63, 65)),
             gutter_added: Color::Rgb(98, 150, 85),
             gutter_modified: Color::Rgb(53, 146, 196),
             gutter_deleted: Color::Rgb(140, 140, 140),
@@ -256,7 +259,7 @@ theme_fields! {
     ],
     styles: [
         border, border_focused, title, title_focused, strip_item, strip_item_active, status_accent, tab, tab_active,
-        tab_dirty, line_number, line_number_current, bracket_match, secondary_caret, bookmark, git_added, git_modified, git_deleted, git_untracked,
+        tab_dirty, line_number, line_number_current, bracket_match, secondary_caret, bookmark, fold_placeholder, git_added, git_modified, git_deleted, git_untracked,
         git_conflicted, git_ignored, popup_border, list_selected, list_selected_unfocused, dim, error, warn, info,
         diag_error, diag_warn, diag_info, diag_hint, splitter,
     ],

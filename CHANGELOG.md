@@ -101,6 +101,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   paste and deletion then act on every line as with multiple carets, undone in one step.
   Column Selection Mode (Alt+Shift+Insert, Edit menu) makes a plain drag and Shift+arrows,
   Shift+Home and Shift+End select blocks too; the status bar shows `Column` while it is on.
+- Code folding. A marker column in the gutter shows `▾` where a region can fold (bodies, blocks,
+  classes, bracketed lists, JSON objects and arrays, multi-line comments, runs of line comments
+  and of imports, found in the syntax tree; by indentation in files without a grammar) and `▸`
+  on a folded line; a click on it folds or unfolds. A folded region shows as its first line with
+  a placeholder (`fn main() {…}`, theme key `fold_placeholder`), and the bookmarks, git marks
+  and worst diagnostic of the lines it hides; a click on the placeholder unfolds it. Ctrl+-
+  folds the region at the caret (again: the one around it), Ctrl+= unfolds, Ctrl+Alt+- and
+  Ctrl+Alt+= do it recursively, Ctrl+Shift+- folds everything, Ctrl+. folds the selection; the
+  View menu has Expand, Collapse, Expand All, Collapse All and Fold Selection, and Alt+, Alt+.
+  Alt+< Alt+> collapse, expand, collapse all and expand all in terminals without the kitty
+  protocol. Up/Down, PageUp/PageDown, the wheel and the mouse step over folded lines; a caret
+  that lands inside a fold (Right at the header's end, Enter there, undo, find, go to line, F2,
+  go to definition) unfolds it. Each split pane folds on its own. Folds follow edits and are
+  saved with the session; reloading the file from disk drops them.
 
 ## [0.1.0] - 2026-10-03
 

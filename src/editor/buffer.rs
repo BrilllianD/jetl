@@ -159,6 +159,8 @@ pub struct Buffer {
     /// underlines, F2); rebuilt by `App::sync_diag_marks` when the store,
     /// the text or the path changed.
     pub diag_marks: crate::lsp::diagnostics::DiagMarks,
+    /// The last `fold_candidates` answer: version, lines and the folds.
+    pub fold_cache: Option<(u64, std::ops::Range<usize>, Vec<super::fold::Fold>)>,
 }
 
 impl Buffer {
@@ -197,6 +199,7 @@ impl Buffer {
             lsp_pending: Vec::new(),
             lsp_full_resync: false,
             diag_marks: Default::default(),
+            fold_cache: None,
         }
     }
 
@@ -301,6 +304,13 @@ impl Buffer {
         if let Some(s) = &mut self.syntax {
             s.note_change(&self.rope, at, old_len, new_len, &c.old, &c.new);
         }
+        // The live view's folds follow like its carets; a reload drops them.
+        if whole {
+            self.view.folds.clear();
+        } else {
+            self.view.folds.map_edit(at, old_len, new_len);
+        }
+        self.view.folds.rebuild(&self.rope);
     }
 
     /// Record the replacement of `start..end` by `text` for the language
@@ -989,6 +999,7 @@ impl Buffer {
     pub fn set_language(&mut self, def: Option<&'static super::syntax::LanguageDef>, syntax: Option<super::syntax::Syntax>) {
         self.language_choice = def.map_or(LanguageChoice::Plain, |d| LanguageChoice::Named(d.name));
         self.syntax = syntax;
+        self.fold_cache = None;
         self.changed_since_render = true;
     }
 

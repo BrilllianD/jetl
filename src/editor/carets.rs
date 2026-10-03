@@ -111,7 +111,8 @@ impl Buffer {
         let i = if up { 0 } else { self.view.sels.len() - 1 };
         let (line, col) = selection::pos_to_line_col(&self.rope, s.head);
         let col = self.view.sels.desired_at(i).unwrap_or(col);
-        let target = if up { line.checked_sub(1) } else { (line + 1 < self.rope.len_lines()).then_some(line + 1) };
+        let rows = super::rows::Rows::new(&self.view.folds, self.rope.len_lines());
+        let target = if up { rows.prev(line) } else { rows.next(line) };
         let Some(target) = target else { return };
         let p = selection::line_col_to_pos(&self.rope, target, col);
         if self.view.sels.push(Selection::point(p), true) {

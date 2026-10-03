@@ -165,6 +165,22 @@
 # Column selection: Alt+drag makes a block; in column selection mode a plain
 # drag and Shift+arrows, Home and End do too.
 "alt-shift-insert" = "editor.toggle_column_mode"
+# Code folding. Ctrl+Alt+Minus/Equals act recursively; Ctrl+Shift+Minus
+# (collapse all) arrives as Ctrl+_ with the kitty protocol. Legacy terminals
+# send Ctrl+- as 0x1F (Ctrl+7, toggle comment) and Ctrl+= and Ctrl+. as
+# plain text: Alt+, (collapse), Alt+. (expand), Alt+< (collapse all) and
+# Alt+> (expand all) work there. The View menu has them too.
+"ctrl-minus" = "editor.fold_collapse"
+"ctrl-=" = "editor.fold_expand"
+"ctrl-+" = "editor.fold_expand"
+"ctrl-alt-minus" = "editor.fold_collapse_recursive"
+"ctrl-alt-=" = "editor.fold_expand_recursive"
+"ctrl-_" = "editor.fold_collapse_all"
+"ctrl-." = "editor.fold_selection"
+"alt-," = "editor.fold_collapse"
+"alt-." = "editor.fold_expand"
+"alt-<" = "editor.fold_collapse_all"
+"alt->" = "editor.fold_expand_all"
 "ctrl-up" = "editor.scroll_up"
 "ctrl-down" = "editor.scroll_down"
 "ctrl-alt-left" = "editor.nav_back"

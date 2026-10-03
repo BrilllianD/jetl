@@ -541,8 +541,9 @@ impl Editor {
                 g.active = Some(g.views.len());
             }
             let sel = Selection::point(line_col_to_pos(&b.rope, sv.line, sv.col));
-            let scroll_line = sv.scroll_line.min(b.rope.len_lines() - 1);
-            let state = ViewState { sels: sel.into(), scroll_line, scroll_col: sv.scroll_col, ..Default::default() };
+            let folds = super::fold::Folds::from_session(&sv.folds, &b.rope);
+            let scroll_line = super::rows::Rows::new(&folds, b.rope.len_lines()).visible(sv.scroll_line);
+            let state = ViewState { sels: sel.into(), scroll_line, scroll_col: sv.scroll_col, folds, ..Default::default() };
             let parked = Some(Parked::park(state, &b.rope, &b.edit_log, b.version));
             g.views.push(View { id: b.id, parked, pinned: sv.pinned });
         }

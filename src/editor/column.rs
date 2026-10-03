@@ -3,6 +3,7 @@
 //! column selection mode, by a plain drag and Shift+arrows.
 
 use super::buffer::Buffer;
+use super::rows::Rows;
 use super::selection::{indent_of, line_len_no_eol, vertical_target};
 use super::view::{block_selections, layout_line, visual_col};
 use super::view_state::Block;
@@ -19,7 +20,8 @@ impl Buffer {
 
     /// Make the carets the selections of `block`.
     pub fn set_block(&mut self, block: Block, tab_width: usize) {
-        self.view.sels = block_selections(&self.rope, block.anchor, block.head, tab_width);
+        let rows = Rows::new(&self.view.folds, self.rope.len_lines());
+        self.view.sels = block_selections(&self.rope, &rows, block.anchor, block.head, tab_width);
         self.view.block = Some(block);
         self.view.occ_stack.clear();
         self.view.occ_whole_word = false;
@@ -31,7 +33,8 @@ impl Buffer {
     /// from the primary (the first or the last) to the primary's head.
     pub fn current_block(&self, tab_width: usize) -> Block {
         if let Some(b) = self.view.block
-            && block_selections(&self.rope, b.anchor, b.head, tab_width) == self.view.sels
+            && block_selections(&self.rope, &Rows::new(&self.view.folds, self.rope.len_lines()), b.anchor, b.head, tab_width)
+                == self.view.sels
         {
             return b;
         }
@@ -59,7 +62,8 @@ impl Buffer {
                 (line, if next > widest { col } else { next })
             }
             Motion::Up | Motion::Down | Motion::PageUp | Motion::PageDown => {
-                (vertical_target(&self.rope, line, m, page).unwrap_or(line), col)
+                let rows = Rows::new(&self.view.folds, self.rope.len_lines());
+                (vertical_target(&rows, line, m, page).unwrap_or(line), col)
             }
             Motion::LineStart => {
                 let start = self.rope.line_to_char(line);
@@ -149,7 +153,7 @@ mod tests {
             x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
             let (c0, c1, l0, l1) = ((x >> 33) % 24, (x >> 41) % 24, (x >> 49) % 5, (x >> 57) % 5);
             let (c0, c1, l0, l1) = (c0 as usize, c1 as usize, l0 as usize, l1 as usize);
-            let sels = block_selections(&rope, (l0, c0), (l1, c1), 4);
+            let sels = block_selections(&rope, &Rows::new(&Default::default(), rope.len_lines()), (l0, c0), (l1, c1), 4);
             assert_eq!(sels.len(), l0.abs_diff(l1) + 1);
             let (lo, hi) = (c0.min(c1), c0.max(c1));
             for (i, s) in sels.iter().enumerate() {

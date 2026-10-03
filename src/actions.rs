@@ -164,6 +164,16 @@ pub enum EditorAction {
     CloneCaretAbove,
     CloneCaretBelow,
     ToggleColumnMode,
+    /// Fold the innermost region at each caret not folded yet.
+    FoldCollapse,
+    /// Unfold the region folded on each caret's line.
+    FoldExpand,
+    FoldCollapseRecursive,
+    FoldExpandRecursive,
+    FoldCollapseAll,
+    FoldExpandAll,
+    /// Fold the selected lines; without a selection, unfold.
+    FoldSelection,
     ScrollUp(usize),
     ScrollDown(usize),
     NavBack,
@@ -534,6 +544,13 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "editor.clone_caret_above" => "Clone caret above", Editor(E::CloneCaretAbove);
         "editor.clone_caret_below" => "Clone caret below", Editor(E::CloneCaretBelow);
         "editor.toggle_column_mode" => "Toggle column selection mode", Editor(E::ToggleColumnMode);
+        "editor.fold_collapse" => "Collapse the code region at the caret", Editor(E::FoldCollapse);
+        "editor.fold_expand" => "Expand the folded region at the caret", Editor(E::FoldExpand);
+        "editor.fold_collapse_recursive" => "Collapse the region at the caret and every region in it", Editor(E::FoldCollapseRecursive);
+        "editor.fold_expand_recursive" => "Expand the region at the caret and every region in it", Editor(E::FoldExpandRecursive);
+        "editor.fold_collapse_all" => "Collapse all code regions", Editor(E::FoldCollapseAll);
+        "editor.fold_expand_all" => "Expand all folded regions", Editor(E::FoldExpandAll);
+        "editor.fold_selection" => "Fold the selection (or expand the fold at the caret)", Editor(E::FoldSelection);
         "editor.scroll_up" => "Scroll up", Editor(E::ScrollUp(1));
         "editor.scroll_down" => "Scroll down", Editor(E::ScrollDown(1));
         "editor.nav_back" => "Navigate back to the previous caret position", Editor(E::NavBack);

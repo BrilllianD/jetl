@@ -100,6 +100,8 @@ pub struct SessionView {
     pub scroll_line: usize,
     pub scroll_col: usize,
     pub pinned: bool,
+    /// The view's collapsed folds.
+    pub folds: Vec<SessionFold>,
 }
 
 /// Tool windows, their sizes, the Git tab and the tree's visibility toggles.
@@ -132,6 +134,19 @@ pub struct SessionFile {
     /// Pinned tabs come first in `files`.
     #[serde(default)]
     pub pinned: bool,
+    /// The collapsed folds of the view the file was shown in.
+    #[serde(default)]
+    pub folds: Vec<SessionFold>,
+}
+
+/// A collapsed fold of a view: its anchors as 0-based lines and character
+/// columns.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionFold {
+    pub start_line: usize,
+    pub start_col: usize,
+    pub end_line: usize,
+    pub end_col: usize,
 }
 
 /// 64-bit FNV-1a; stable across runs and platforms, unlike `DefaultHasher`.
@@ -273,6 +288,7 @@ impl App {
                 scroll_col: b.view.scroll_col,
                 bookmarks,
                 pinned: pinned.contains(&b.id),
+                folds: b.view.folds.to_session(&b.rope),
             });
         }
         let recent = self.editor.recent_paths().iter().filter_map(|p| files.iter().position(|f| &f.path == p)).collect();
@@ -312,8 +328,8 @@ impl App {
                 if group.active == Some(slot) {
                     out.active = Some(out.views.len());
                 }
-                let (scroll_line, scroll_col) = (state.scroll_line, state.scroll_col);
-                out.views.push(SessionView { file, line, col, scroll_line, scroll_col, pinned: v.pinned });
+                let (scroll_line, scroll_col, folds) = (state.scroll_line, state.scroll_col, state.folds.to_session(&b.rope));
+                out.views.push(SessionView { file, line, col, scroll_line, scroll_col, pinned: v.pinned, folds });
             }
             Some(SessionNode::Leaf(out))
         };
@@ -372,7 +388,7 @@ impl App {
             };
             let Some((text, lossy)) = self.decode_file(&f.path, bytes) else { continue };
             let i = self.editor.open_text(f.path.clone(), &text, lossy, &self.theme);
-            self.editor.restore_view(i, f.line, f.col, f.scroll_line, f.scroll_col);
+            self.editor.restore_view(i, (f.line, f.col), (f.scroll_line, f.scroll_col), &f.folds);
             self.editor.buffers[i].set_bookmarks(&f.bookmarks);
             if f.pinned {
                 self.editor.set_pinned(i, true);
@@ -441,6 +457,7 @@ mod tests {
                     scroll_col: 0,
                     bookmarks: vec![3, 40],
                     pinned: true,
+                    folds: vec![SessionFold { start_line: 2, start_col: 10, end_line: 5, end_col: 1 }],
                 },
                 SessionFile {
                     path: root.join("README.md"),
@@ -450,6 +467,7 @@ mod tests {
                     scroll_col: 3,
                     bookmarks: vec![],
                     pinned: false,
+                    folds: vec![],
                 },
             ],
             active: Some(1),
@@ -473,7 +491,15 @@ mod tests {
                         active: Some(0),
                     })),
                     b: Box::new(SessionNode::Leaf(SessionGroup {
-                        views: vec![SessionView { file: 0, line: 3, col: 1, scroll_line: 2, scroll_col: 0, pinned: true }],
+                        views: vec![SessionView {
+                            file: 0,
+                            line: 3,
+                            col: 1,
+                            scroll_line: 2,
+                            scroll_col: 0,
+                            pinned: true,
+                            folds: vec![SessionFold { start_line: 0, start_col: 4, end_line: 9, end_col: 0 }],
+                        }],
                         active: Some(0),
                     })),
                 },
@@ -490,6 +516,7 @@ mod tests {
         let old = Session::load(&dir, &root).unwrap();
         assert_eq!((old.files[0].line, old.active, old.recent.len(), old.files[0].bookmarks.len()), (0, None, 0, 0));
         assert_eq!((old.layout, old.expanded.len(), old.files[0].pinned, old.splits), (None, 0, false, None));
+        assert!(old.files[0].folds.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -514,8 +541,13 @@ mod tests {
         let text = "zero\none\ntwo\nthree\n";
         app.editor.open_text(path.clone(), text, false, &app.theme);
         app.editor.buffers[0].set_bookmarks(&[1, 3]);
+        let b = &mut app.editor.buffers[0];
+        let fold = crate::editor::fold::Fold { start: 0, end: b.rope.line_to_char(2) + 3 };
+        assert!(b.view.folds.collapse(fold, &b.rope));
+        b.goto_line(3, 0);
         let session = app.session();
         assert_eq!(session.files[0].bookmarks, vec![1, 3]);
+        assert_eq!(session.files[0].folds, [SessionFold { start_line: 0, start_col: 0, end_line: 2, end_col: 3 }]);
         app.session().save(&app.paths.sessions_dir()).unwrap();
 
         let (mut fresh, fresh_dir) = crate::app::tests::test_app("session-bookmarks-2");
@@ -527,6 +559,7 @@ mod tests {
         fresh.session_loaded(generation, loaded, vec![Ok(b"zero\none\ntwo".to_vec())]);
         let b = &fresh.editor.buffers[0];
         assert_eq!(b.bookmarks.iter().copied().collect::<Vec<_>>(), vec![1]);
+        assert_eq!(b.view.folds.hidden().first(), Some(&(1..3)), "the fold is back");
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&fresh_dir);
     }
@@ -541,6 +574,10 @@ mod tests {
         app.editor.show_slot(0);
         app.perform(Action::Editor(EditorAction::SplitRight));
         app.editor.goto_line(40, 3);
+        // A fold, which the split below copies.
+        let b = app.editor.active_buffer_mut().unwrap();
+        let fold = crate::editor::fold::Fold { start: b.rope.line_to_char(10), end: b.rope.line_to_char(20) };
+        assert!(b.view.folds.collapse(fold, &b.rope));
         app.perform(Action::Editor(EditorAction::SplitDown));
         crate::app::tests::load(&mut app, "c.txt", "c\n");
         app.perform(Action::Editor(EditorAction::TogglePinTab));
@@ -563,12 +600,17 @@ mod tests {
         assert_eq!(ed.tab_names(), ["c.txt", "a.txt"], "the focused group, its pin first");
         assert!(ed.focused_group().views[0].pinned);
         assert_eq!(ed.active_buffer().unwrap().name, "c.txt");
-        // Each view of a.txt has its own caret.
+        // Each view of a.txt has its own caret and folds.
+        let hidden = |ed: &crate::editor::Editor| {
+            ed.active_buffer().unwrap().view.folds.hidden().iter().map(|r| (r.start, r.end)).collect::<Vec<_>>()
+        };
         ed.show_slot(1);
         assert_eq!(ed.active_buffer().unwrap().cursor_line_col(), (39, 2));
+        assert_eq!(hidden(ed), [(11, 20)]);
         ed.focus_group(ed.group_ids()[0]);
         assert_eq!(ed.tab_names(), ["a.txt", "b.txt"]);
         assert_eq!(ed.active_buffer().unwrap().cursor_line_col(), (0, 0));
+        assert!(hidden(ed).is_empty());
         assert_eq!(ed.index_of(&a), Some(0));
         // A session from before splits loads as one group.
         let mut json = serde_json::to_value(&session).unwrap();

@@ -8,6 +8,8 @@ use std::collections::VecDeque;
 use ropey::Rope;
 
 use super::buffer::map_one;
+use super::fold::Folds;
+use super::rows::Rows;
 use super::search::SearchState;
 use super::selection::{Selection, Selections};
 
@@ -40,6 +42,8 @@ pub struct ViewState {
     /// with the carets and on every edit.
     pub block: Option<Block>,
     pub search: Option<SearchState>,
+    /// The collapsed folds; `scroll_line` is never a line they hide.
+    pub folds: Folds,
 }
 
 /// A column block: two corners, each a (line, visual column). The head is
@@ -51,12 +55,13 @@ pub struct Block {
 }
 
 impl ViewState {
-    /// A new view of the same buffer: the primary caret, its selection and
-    /// the scroll, but no other carets, find bar or expand history.
+    /// A new view of the same buffer: the primary caret, its selection,
+    /// the scroll and the folds (its own from then on), but no other
+    /// carets, find bar or expand history.
     pub fn fork(&self) -> Self {
         let mut sels = self.sels.clone();
         sels.collapse_to_primary();
-        Self { sels, scroll_line: self.scroll_line, scroll_col: self.scroll_col, ..Default::default() }
+        Self { sels, scroll_line: self.scroll_line, scroll_col: self.scroll_col, folds: self.folds.clone(), ..Default::default() }
     }
 
     /// The primary caret and its selection.
@@ -140,9 +145,9 @@ impl Parked {
         Self { state, seq: log.end(), version, top }
     }
 
-    /// Map the carets, selections, top line and find bar origin through the
-    /// edits since the last call; a reload or a dropped edit clamps them
-    /// instead. Carets that meet merge. The expand and occurrence history
+    /// Map the carets, selections, folds, top line and find bar origin
+    /// through the edits since the last call; a reload or a dropped edit
+    /// clamps them instead (and drops the folds). Carets that meet merge. The expand and occurrence history
     /// is dropped. A view that was following its primary caret keeps
     /// following it without scrolling.
     pub fn catch_up(&mut self, rope: &Rope, log: &EditLog, version: u64) {
@@ -154,6 +159,17 @@ impl Parked {
         let following = s.follow_key.is_some_and(|k| (k.0, k.1) == (s.sel().head, self.version));
         let origin = s.search.as_ref().map_or(0, |q| q.origin);
         let edits = log.since(self.seq).map(|it| it.copied().collect::<Vec<_>>()).filter(|v| !v.contains(&LogEdit::Reset));
+        match &edits {
+            Some(edits) => {
+                for e in edits {
+                    if let LogEdit::Edit { at, old_len, new_len } = *e {
+                        s.folds.map_edit(at, old_len, new_len);
+                    }
+                }
+            }
+            None => s.folds.clear(),
+        }
+        s.folds.rebuild(rope);
         let edits = edits.unwrap_or_default();
         let len = rope.len_chars();
         let map = |p: usize| {
@@ -166,7 +182,7 @@ impl Parked {
         let (top, origin) = (map(self.top), map(origin));
         s.sels.map(map);
         let head = s.sel().head;
-        s.scroll_line = rope.char_to_line(top);
+        s.scroll_line = Rows::new(&s.folds, rope.len_lines()).visible(rope.char_to_line(top));
         self.top = rope.line_to_char(s.scroll_line);
         if let Some(q) = &mut s.search {
             q.origin = origin;
@@ -329,5 +345,30 @@ mod tests {
         let f = v.fork();
         assert_eq!((f.sels, f.scroll_line, f.scroll_col), (Selection::new(1, 3).into(), 7, 2));
         assert!(f.search.is_none() && f.expand_stack.is_empty() && f.follow_key.is_none());
+    }
+
+    #[test]
+    fn parked_folds_map_through_edits_fork_copies_and_reload_drops() {
+        let text = "fn a() {\n    1;\n    2;\n}\nfn b() {}\n";
+        let (mut b, mut p) = parked(text, 0);
+        let fold = crate::editor::fold::Fold { start: 7, end: 25 };
+        assert!(p.state.folds.collapse(fold, &b.rope));
+        p.state.scroll_line = 2;
+        p = Parked::park(std::mem::take(&mut p.state), &b.rope, &b.edit_log, b.version);
+        let hidden = |p: &Parked| p.state.folds.hidden().iter().map(|r| (r.start, r.end)).collect::<Vec<_>>();
+        assert_eq!(hidden(&p), [(1, 4)]);
+        // The live view's folds are its own.
+        assert!(b.view.folds.is_empty());
+        b.view.set_sel(Selection::point(0));
+        b.insert("// x\n", TxKind::Other);
+        caught_up(&b, &mut p);
+        assert_eq!(hidden(&p), [(2, 5)], "an edit above shifts the fold");
+        assert_eq!(p.state.scroll_line, 1, "a hidden top line snaps to its header");
+        let f = p.state.fork();
+        assert_eq!(f.folds.hidden(), p.state.folds.hidden(), "a fork copies the folds");
+        let old = b.text();
+        b.apply(vec![Change::replace(0, old, "x\n")], Selection::point(0), TxKind::Other);
+        caught_up(&b, &mut p);
+        assert!(p.state.folds.is_empty(), "a whole-text replacement drops them");
     }
 }

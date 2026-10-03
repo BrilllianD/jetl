@@ -12,6 +12,8 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 use super::buffer::Buffer;
+use super::fold::Fold;
+use super::rows::Rows;
 use super::selection::{MAX_CARETS, Selection, Selections, line_len_no_eol, pos_to_line_col};
 use crate::config::theme::Theme;
 
@@ -132,18 +134,22 @@ pub fn col_to_char_ceil(rope: &Rope, line: usize, target: usize, tab_width: usiz
 /// reach the block gets a caret at its end (there is no virtual space), and
 /// a zero-width block is a caret on every line. Each selection points the
 /// way the block does and the head's line holds the primary. At most
-/// [`MAX_CARETS`] lines, the ones nearest the head.
+/// [`MAX_CARETS`] lines, the ones nearest the head. Lines a fold hides
+/// get none (but the head's line always has one).
 ///
 /// Rows are buffer lines. Word wrap (yman 106) would make a line several
 /// rows; `Buffer::blocks_supported` is where it refuses column selection
 /// until blocks are made of visual rows here.
-pub fn block_selections(rope: &Rope, anchor: (usize, usize), head: (usize, usize), tab_width: usize) -> Selections {
+pub fn block_selections(rope: &Rope, rows: &Rows, anchor: (usize, usize), head: (usize, usize), tab_width: usize) -> Selections {
     let last = rope.len_lines().saturating_sub(1);
     let hl = head.0.min(last);
     let al = anchor.0.min(last).clamp(hl.saturating_sub(MAX_CARETS - 1), hl + MAX_CARETS - 1);
     let (lo, hi) = (anchor.1.min(head.1), anchor.1.max(head.1));
     let forward = anchor.1 <= head.1;
-    let ranges = (al.min(hl)..=al.max(hl))
+    let lines: Vec<usize> = (al.min(hl)..=al.max(hl)).filter(|&l| l == hl || !rows.is_hidden(l)).collect();
+    let primary = lines.iter().position(|&l| l == hl).unwrap_or(0);
+    let ranges = lines
+        .into_iter()
         .map(|line| {
             let start = col_to_char(rope, line, lo, tab_width);
             if lo == hi {
@@ -153,15 +159,39 @@ pub fn block_selections(rope: &Rope, anchor: (usize, usize), head: (usize, usize
             if forward { Selection::new(start, end) } else { Selection::new(end, start) }
         })
         .collect();
-    Selections::new(ranges, hl - al.min(hl))
+    Selections::new(ranges, primary)
 }
 
-/// Line numbers plus space, diff mark, space; and the blame column first
-/// when shown.
+/// Line numbers, bookmark, diff mark, fold marker, space; and the blame
+/// column first when shown.
 pub fn gutter_width(buf: &Buffer) -> u16 {
     let digits = buf.rope.len_lines().max(1).to_string().len().max(3) as u16;
     let blame = if buf.blame.is_some() { super::blame::WIDTH } else { 0 };
-    blame + digits + 3
+    blame + digits + 4
+}
+
+/// At most this many cells of fold placeholder.
+const PLACEHOLDER_MAX: usize = 20;
+
+/// What a collapsed fold shows after its header line: `…`, then the
+/// closing line when the fold hides it (`fn main() {…}`).
+pub fn placeholder(rope: &Rope, f: Fold, last: usize) -> String {
+    let mut s = String::from("…");
+    if rope.char_to_line(f.end.min(rope.len_chars())) == last {
+        let text = rope.line(last).to_string();
+        let t = text.trim();
+        let word = |w: &str| t.strip_prefix(w).is_some_and(|r| !r.starts_with(|c: char| c.is_alphanumeric() || c == '_'));
+        if t.starts_with(['}', ']', ')']) || ["end", "fi", "done", "esac"].into_iter().any(word) {
+            s.push_str(t);
+        }
+    }
+    let mut w = 0;
+    s.chars()
+        .take_while(|c| {
+            w += c.to_string().width();
+            w <= PLACEHOLDER_MAX
+        })
+        .collect()
 }
 
 pub struct RenderOut {
@@ -187,14 +217,29 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
     if text_area.width == 0 || area.height == 0 {
         return RenderOut { cursor: None, text_area };
     }
+    // A caret moved into a fold from outside the editor (go to definition,
+    // F2, find in files, bookmarks, back/forward) unfolds it; the top line
+    // is never hidden.
+    let v = &mut buf.view;
+    v.folds.reveal(&buf.rope, &v.sels);
+    v.scroll_line = Rows::new(&v.folds, buf.rope.len_lines()).visible(v.scroll_line);
     let follow_key = (buf.view.sel().head, buf.version, text_area.width, text_area.height);
     if buf.view.follow_key != Some(follow_key) {
         ensure_visible(buf, text_area, o);
         buf.view.follow_key = Some(follow_key);
     }
+    let shown: Vec<usize> = {
+        let rows = Rows::new(&buf.view.folds, buf.rope.len_lines());
+        rows.iter_from(buf.view.scroll_line).take(area.height as usize).map(|r| r.line).collect()
+    };
+    // The lines from the top to the bottom row, hidden ones included.
+    let window = buf.view.scroll_line..shown.last().map_or(buf.view.scroll_line, |l| l + 1);
+    // Headers that can fold get a marker.
+    let foldable: Vec<usize> = buf.fold_candidates(window.clone()).iter().map(|f| buf.rope.char_to_line(f.start)).collect();
 
     let theme = o.theme;
     let rope = &buf.rope;
+    let rows = Rows::new(&buf.view.folds, rope.len_lines());
     let sels = &buf.view.sels;
     let (cur_line, _) = pos_to_line_col(rope, buf.view.sel().head);
     // The carets drawn as cells: the others, and the primary too in a view
@@ -206,39 +251,38 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
         .filter(|&(i, _)| i != sels.primary_index() || paint_primary)
         .map(|(_, s)| s.head)
         .filter(|&h| {
-            (buf.view.scroll_line..buf.view.scroll_line + area.height as usize).contains(&rope.char_to_line(h.min(rope.len_chars())))
+            let line = rope.char_to_line(h.min(rope.len_chars()));
+            window.contains(&line) && !rows.is_hidden(line)
         })
         .collect();
     let cur_vcol = visual_col(rope, buf.view.sel().head, o.tab_width);
-    let hl = buf.syntax.as_mut().map(|s| s.highlights(rope, buf.view.scroll_line, area.height as usize)).unwrap_or_default();
+    let hl = buf.syntax.as_mut().map(|s| s.highlights(rope, window.start, window.len())).unwrap_or_default();
     let search = buf.view.search.as_ref();
     let pair = super::brackets::pair_at(rope, buf.syntax.as_ref().and_then(|s| s.tree()), buf.view.sel().head);
     // Occurrences of the word or selection at the caret, visible lines only.
     // An open find bar owns the match highlighting, so they step aside.
     let occ = match (o.occurrences && search.is_none()).then(|| super::search::occurrence_target(rope, &buf.view.sel())).flatten() {
-        Some((target, whole_word)) => {
-            super::search::occurrences(rope, buf.view.scroll_line..buf.view.scroll_line + area.height as usize, &target, whole_word)
-        }
+        Some((target, whole_word)) => super::search::occurrences(rope, window.clone(), &target, whole_word),
         None => Vec::new(),
     };
     let marks = &buf.diag_marks;
     let underlines = !marks.spans.is_empty();
-    let digits = (gutter_w - 3 - blame_w) as usize;
+    let digits = (gutter_w - 4 - blame_w) as usize;
     let gx = area.x + blame_w;
     let mut cursor = None;
 
-    for row in 0..area.height {
+    for (row, &line) in shown.iter().enumerate() {
+        let row = row as u16;
         let y = area.y + row;
-        let line = buf.view.scroll_line + row as usize;
-        if line >= rope.len_lines() {
-            break;
-        }
         let line_start = rope.line_to_char(line);
         let line_end = line_start + line_len_no_eol(rope, line);
         let here = &drawn[drawn.partition_point(|&h| h < line_start)..drawn.partition_point(|&h| h <= line_end)];
         // Every caret line of the focused view counts as current.
         let is_cur = line == cur_line || (o.focused && !here.is_empty());
-        // Gutter: line number and diff mark.
+        // Gutter: line number, bookmark, diff mark, fold marker. A folded
+        // line shows the marks of the lines it hides too.
+        let folded = buf.view.folds.header_at(line);
+        let span = line..=folded.map_or(line, |(_, last)| last);
         let num_style = if is_cur { theme.line_number_current } else { theme.line_number };
         if let Some(b) = &buf.blame {
             let label = match b.commit_at(line) {
@@ -252,16 +296,22 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
         }
         let num = format!("{:>width$}", line + 1, width = digits);
         screen.set_stringn(gx, y, &num, digits, num_style);
-        if buf.bookmarks.contains(&line) {
+        if buf.bookmarks.range(span.clone()).next().is_some() {
             screen.set_string(gx + digits as u16, y, "◆", theme.bookmark);
         }
         // A diagnostic's glyph takes the diff mark's column over it.
-        if let Some(sev) = marks.lines.get(&line) {
+        let git_mark = buf.gutter.get(buf.gutter.partition_point(|m| m.line < line)).filter(|m| m.line <= *span.end());
+        if let Some(sev) = marks.lines.range(span.clone()).map(|(_, s)| *s).min() {
             let st = sev.style(theme);
             screen.set_string(gx + digits as u16 + 1, y, sev.glyph(), Style::default().fg(st.fg.unwrap_or(theme.fg)));
-        } else if let Some(mark) = super::gutter::mark_at(&buf.gutter, line) {
+        } else if let Some(mark) = git_mark {
             let (glyph, color) = mark.glyph(theme);
             screen.set_string(gx + digits as u16 + 1, y, glyph, Style::default().fg(color));
+        }
+        if folded.is_some() {
+            screen.set_string(gx + digits as u16 + 2, y, "▸", theme.line_number);
+        } else if foldable.binary_search(&line).is_ok() {
+            screen.set_string(gx + digits as u16 + 2, y, "▾", theme.line_number);
         }
         if is_cur && o.focused {
             screen.set_style(Rect::new(text_area.x, y, text_area.width, 1), Style::default().bg(theme.current_line_bg));
@@ -342,6 +392,9 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
                 }
             }
         }
+        if let Some((f, last)) = folded {
+            draw_placeholder(screen, buf, (f, line, last), text_area, y, o.tab_width, theme);
+        }
         if is_cur && cur_vcol >= scroll_col {
             let x = text_area.x + (cur_vcol - scroll_col) as u16;
             if x < right {
@@ -350,6 +403,47 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
         }
     }
     RenderOut { cursor, text_area }
+}
+
+/// The placeholder of collapsed fold `f` (header `line`, hiding up to
+/// `last`) on screen row `y` of `text_area`, from the header line's end.
+/// It takes the selection's background when the selection reaches into the
+/// fold, else a hidden find match's, and the worst hidden diagnostic's mark.
+fn draw_placeholder(
+    screen: &mut Screen,
+    buf: &Buffer,
+    (f, line, last): (Fold, usize, usize),
+    text_area: Rect,
+    y: u16,
+    tab_width: usize,
+    theme: &Theme,
+) {
+    let rope = &buf.rope;
+    let (lo, hi) = (rope.line_to_char(line + 1), rope.line_to_char(last) + line_len_no_eol(rope, last));
+    let mut style = theme.fold_placeholder;
+    if buf.view.sels.contains(lo) {
+        style = style.bg(theme.selection_bg);
+    } else if let Some(s) = &buf.view.search {
+        let k = s.matches.partition_point(|r| r.end <= lo);
+        if s.matches.get(k).is_some_and(|r| r.start <= hi) {
+            style = style.bg(theme.search_match_bg);
+        }
+    }
+    if let Some(sev) = buf.diag_marks.lines.range(line + 1..=last).map(|(_, s)| *s).min() {
+        style = diag_overlay(style, sev.style(theme));
+    }
+    let mut col = visual_col(rope, rope.line_to_char(line) + line_len_no_eol(rope, line), tab_width);
+    for g in placeholder(rope, f, last).graphemes(true) {
+        let w = g.width();
+        if col >= buf.view.scroll_col {
+            let x = text_area.x as usize + col - buf.view.scroll_col;
+            if x + w > text_area.right() as usize {
+                break;
+            }
+            screen.set_stringn(x as u16, y, g, w, style);
+        }
+        col += w;
+    }
 }
 
 /// Text under a diagnostic: the severity style's modifiers (an underline
@@ -381,13 +475,15 @@ pub fn ensure_visible(buf: &mut Buffer, text_area: Rect, o: &RenderOpts) {
     }
     let (line, _) = pos_to_line_col(&buf.rope, buf.view.sel().head);
     let so = o.scrolloff.min(rows.saturating_sub(1) / 2);
-    if line < buf.view.scroll_line + so {
-        buf.view.scroll_line = line.saturating_sub(so);
-    } else if line + so >= buf.view.scroll_line + rows {
-        buf.view.scroll_line = line + so + 1 - rows;
+    // Distances are visible rows: hidden lines take none.
+    let r = Rows::new(&buf.view.folds, buf.rope.len_lines());
+    let (line, top) = (r.visible(line), r.visible(buf.view.scroll_line));
+    if line < top || r.distance(top, line) < so {
+        buf.view.scroll_line = r.step(line, -(so as isize));
+    } else if r.distance(top, line) + so >= rows {
+        buf.view.scroll_line = r.step(line, -((rows - 1 - so) as isize));
     }
-    let max_scroll = buf.rope.len_lines().saturating_sub(1);
-    buf.view.scroll_line = buf.view.scroll_line.min(max_scroll);
+    buf.view.scroll_line = r.visible(buf.view.scroll_line);
 
     let vcol = visual_col(&buf.rope, buf.view.sel().head, o.tab_width);
     let ho = o.hscrolloff.min(cols.saturating_sub(1) / 2);

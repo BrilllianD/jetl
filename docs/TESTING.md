@@ -156,6 +156,35 @@ for i in 1 2 3; do /tmp/tm.sh send-keys -t jetl S-Down; done   # Ln 4, Col 5 (4 
 reverse video after "ab". Alt+click without moving (`press 8`, `release
 8` on one cell) still adds a caret.
 
+### Scenario: code folding
+
+At 80x24 and at 120x40, on a Rust file (`jetl src/editor/fold.rs` from
+the repository root works, the Project window hidden with Alt+1). `G` is the
+1-based screen column of the fold marker (`G=10` past the tool strip and
+a three-digit line number; the text starts at `G+2`); the first text line
+is on row 2:
+
+```sh
+/tmp/tm.sh send-keys -t jetl C-g; /tmp/tm.sh send-keys -t jetl -l '38'; /tmp/tm.sh send-keys -t jetl Enter
+/tmp/tm.sh send-keys -t jetl M-,                 # fold the body around the caret: `pub fn lines(…) -> … {…}`
+/tmp/tm.sh capture-pane -t jetl -p               # ▸ in the marker column, the line numbers jump past it
+/tmp/tm.sh send-keys -t jetl Down Up             # steps over the fold, back to the header's end
+/tmp/tm.sh send-keys -t jetl Right               # into the fold: it opens
+/tmp/tm.sh send-keys -t jetl 'M-<'               # collapse all: every body and comment run is one row
+press 65 10 10; press 65 10 10                   # the wheel steps over folds
+press 0 $((G+4)) 5; release 0 $((G+4)) 5         # a click below folds lands on the line shown there
+press 0 $G 2; release 0 $G 2                     # the ▸ marker unfolds that line; again folds it
+/tmp/tm.sh send-keys -t jetl 'M->'               # expand all
+```
+
+Then fold a function, click its placeholder (`…` after the header: it
+unfolds with the caret at the header's end), fold it again and jump into
+it with Ctrl+G (or F2 on a diagnostic inside): the fold opens. Split right
+(`M-\`) and expand in one pane: the other keeps its folds. Ctrl+- and
+Ctrl+= need the kitty protocol (tmux sends Ctrl+- as Ctrl+7, which toggles
+a line comment); in foot or kitty check them and Ctrl+Shift+- (collapse
+all) too.
+
 ### Limits under tmux
 
 - No kitty keyboard protocol: Ctrl+Shift+letter, Ctrl+Tab, Ctrl+Enter,
@@ -166,6 +195,10 @@ reverse video after "ab". Alt+click without moving (`press 8`, `release
   them.
 - Ctrl+Alt+Shift+J (select all occurrences) needs the kitty protocol; use
   Ctrl+Alt+J. Alt+Shift+J arrives as Alt+J with Shift and works.
+- The folding keys Ctrl+-, Ctrl+=, Ctrl+Alt+-, Ctrl+Alt+=, Ctrl+Shift+- and
+  Ctrl+. need the kitty protocol (Ctrl+- arrives as Ctrl+7, toggle comment;
+  Ctrl+= and Ctrl+. as plain text); use Alt+, Alt+. Alt+< Alt+> or the View
+  menu.
 - Shift+drag never reaches jetl in foot, kitty or alacritty (they select
   natively), so neither does Alt+Shift+drag; some window managers take
   Alt+click and Alt+drag. Send the SGR bytes through tmux to test those

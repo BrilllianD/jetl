@@ -5,6 +5,7 @@ use std::ops::Range;
 
 use ropey::Rope;
 
+use super::rows::Rows;
 use crate::actions::Motion;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -393,20 +394,21 @@ pub fn indent_of(rope: &Rope, line: usize) -> usize {
 }
 
 /// The line a vertical motion (Up, Down, PageUp, PageDown) from `line`
-/// lands on; `None` when there is no line further that way, so the caret
-/// goes to the start or end of the text instead.
-pub fn vertical_target(rope: &Rope, line: usize, m: Motion, page: usize) -> Option<usize> {
-    let last = rope.len_lines().saturating_sub(1);
+/// lands on, counting visible rows (folded lines are skipped); `None` when
+/// there is no line further that way, so the caret goes to the start or
+/// end of the text instead.
+pub fn vertical_target(rows: &Rows, line: usize, m: Motion, page: usize) -> Option<usize> {
+    let page = page.max(1) as isize;
     let target = match m {
-        Motion::Up => line.saturating_sub(1),
-        Motion::Down => (line + 1).min(last),
-        Motion::PageUp => line.saturating_sub(page.max(1)),
-        _ => (line + page.max(1)).min(last),
+        Motion::Up => rows.step(line, -1),
+        Motion::Down => rows.step(line, 1),
+        Motion::PageUp => rows.step(line, -page),
+        _ => rows.step(line, page),
     };
     (target != line).then_some(target)
 }
 
-pub fn apply_motion(rope: &Rope, sel: &mut Selection, m: Motion, extend: bool, desired_col: &mut Option<usize>, page: usize) {
+pub fn apply_motion(rope: &Rope, rows: &Rows, sel: &mut Selection, m: Motion, extend: bool, desired_col: &mut Option<usize>, page: usize) {
     let len = rope.len_chars();
     let head = sel.head.min(len);
     let keep_desired = matches!(m, Motion::Up | Motion::Down | Motion::PageUp | Motion::PageDown);
@@ -441,7 +443,7 @@ pub fn apply_motion(rope: &Rope, sel: &mut Selection, m: Motion, extend: bool, d
             let (line, col) = pos_to_line_col(rope, head);
             let col = desired_col.unwrap_or(col);
             *desired_col = Some(col);
-            match vertical_target(rope, line, m, page) {
+            match vertical_target(rows, line, m, page) {
                 Some(target) => line_col_to_pos(rope, target, col),
                 None if matches!(m, Motion::Up | Motion::PageUp) => 0,
                 None => len,
@@ -471,9 +473,9 @@ pub fn apply_motion(rope: &Rope, sel: &mut Selection, m: Motion, extend: bool, d
 
 /// [`apply_motion`] for every caret, each with its own desired column;
 /// carets that meet merge.
-pub fn apply_motion_all(rope: &Rope, sels: &mut Selections, m: Motion, extend: bool, page: usize) {
+pub fn apply_motion_all(rope: &Rope, rows: &Rows, sels: &mut Selections, m: Motion, extend: bool, page: usize) {
     for (s, d) in sels.iter_mut_desired() {
-        apply_motion(rope, s, m, extend, d, page);
+        apply_motion(rope, rows, s, m, extend, d, page);
     }
     sels.normalize();
 }
@@ -481,6 +483,13 @@ pub fn apply_motion_all(rope: &Rope, sels: &mut Selections, m: Motion, extend: b
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::editor::fold::Folds;
+
+    static NO_FOLDS: std::sync::LazyLock<Folds> = std::sync::LazyLock::new(Folds::default);
+
+    fn rows(r: &Rope) -> Rows<'static> {
+        Rows::new(&NO_FOLDS, r.len_lines())
+    }
 
     #[test]
     fn line_lengths_ignore_breaks() {
@@ -572,16 +581,16 @@ mod tests {
     fn motions_move_every_caret_with_its_own_column() {
         let r = Rope::from_str("abcdef\nab\nabcdef\n");
         let mut s = Selections::new(vec![Selection::point(1), Selection::point(5)], 1);
-        apply_motion_all(&r, &mut s, Motion::Down, false, 10);
+        apply_motion_all(&r, &rows(&r), &mut s, Motion::Down, false, 10);
         assert_eq!(s.heads().collect::<Vec<_>>(), [8, 9], "both clamp to the short line");
-        apply_motion_all(&r, &mut s, Motion::Down, false, 10);
+        apply_motion_all(&r, &rows(&r), &mut s, Motion::Down, false, 10);
         assert_eq!(s.heads().collect::<Vec<_>>(), [10 + 1, 10 + 5], "each keeps its column");
         // Carets that meet merge, and the primary survives.
-        apply_motion_all(&r, &mut s, Motion::LineStart, false, 10);
+        apply_motion_all(&r, &rows(&r), &mut s, Motion::LineStart, false, 10);
         assert_eq!((s.len(), s.primary()), (1, Selection::point(10)));
         // Extending keeps the anchors.
         let mut s = Selections::new(vec![Selection::point(0), Selection::point(7)], 0);
-        apply_motion_all(&r, &mut s, Motion::LineEnd, true, 10);
+        apply_motion_all(&r, &rows(&r), &mut s, Motion::LineEnd, true, 10);
         assert_eq!(s.as_slice(), [Selection::new(0, 6), Selection::new(7, 9)]);
     }
 
@@ -590,9 +599,9 @@ mod tests {
         let r = Rope::from_str("longer line\nab\nlonger line");
         let mut sel = Selection::point(8);
         let mut d = None;
-        apply_motion(&r, &mut sel, Motion::Down, false, &mut d, 10);
+        apply_motion(&r, &rows(&r), &mut sel, Motion::Down, false, &mut d, 10);
         assert_eq!(sel.head, 12 + 2);
-        apply_motion(&r, &mut sel, Motion::Down, false, &mut d, 10);
+        apply_motion(&r, &rows(&r), &mut sel, Motion::Down, false, &mut d, 10);
         assert_eq!(sel.head, 15 + 8);
     }
 }

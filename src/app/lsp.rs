@@ -873,10 +873,10 @@ pub(crate) mod tests {
         assert_eq!(b.diag_marks.marks.iter().map(|m| m.range.clone()).collect::<Vec<_>>(), [3..7, line1 + 17..line1 + 18]);
         let ta = app.editor.text_area();
         let (y0, y1) = (ta.y, ta.y + 1);
-        // The glyph sits in the diff mark column, just left of the text.
-        assert_eq!(buf[(ta.x - 2, y0)].symbol(), "⚠");
-        assert_eq!(buf[(ta.x - 2, y1)].symbol(), "✖");
-        assert_eq!(buf[(ta.x - 2, y1)].fg, app.theme.diag_error.fg.unwrap());
+        // The glyph sits in the diff mark column, left of the fold markers.
+        assert_eq!(buf[(ta.x - 3, y0)].symbol(), "⚠");
+        assert_eq!(buf[(ta.x - 3, y1)].symbol(), "✖");
+        assert_eq!(buf[(ta.x - 3, y1)].fg, app.theme.diag_error.fg.unwrap());
         // `x` is at visual column 18 (the emoji takes two cells).
         let x = buf[(ta.x + 18, y1)].clone();
         assert_eq!(x.symbol(), "x");

@@ -398,12 +398,17 @@ impl Keymap {
 }
 
 /// Whether a displayed binding only arrives with the kitty keyboard
-/// protocol: Ctrl+Shift+letter, Ctrl+? (Ctrl+Shift+/), Ctrl+Tab, Ctrl+Enter,
-/// Shift+Enter, Shift+F3, Shift+Esc and Shift Shift.
+/// protocol: Ctrl+Shift+letter, Ctrl+? (Ctrl+Shift+/), Ctrl with `-`, `=`,
+/// `+`, `_` or `.`, Ctrl+Tab, Ctrl+Enter, Shift+Enter, Shift+F3, Shift+Esc
+/// and Shift Shift.
 fn needs_kitty(keys: &str) -> bool {
     keys.split(' ').any(|k| {
-        let letter = k.rsplit('+').next().is_some_and(|l| l.len() == 1 && l.chars().all(|c| c.is_ascii_alphabetic()));
+        let key = k.rsplit('+').next().unwrap_or("");
+        let letter = key.len() == 1 && key.chars().all(|c| c.is_ascii_alphabetic());
+        // `Ctrl++` splits into an empty last part.
+        let punct = matches!(key, "-" | "=" | "_" | ".") || k.ends_with("++");
         (k.starts_with("Ctrl+") && k.contains("Shift+") && letter)
+            || (k.starts_with("Ctrl+") && punct)
             || k == "Ctrl+?"
             || k == "Ctrl+Tab"
             || k == "Ctrl+Enter"

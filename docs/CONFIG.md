@@ -415,13 +415,16 @@ diff_add_word_bg diff_del_word_bg popup_bg`.
 
 Style fields: `border border_focused title title_focused strip_item
 strip_item_active status_accent tab tab_active tab_dirty line_number
-line_number_current bracket_match secondary_caret bookmark git_added git_modified git_deleted git_untracked
+line_number_current bracket_match secondary_caret bookmark fold_placeholder git_added git_modified git_deleted git_untracked
 git_conflicted git_ignored popup_border list_selected list_selected_unfocused
 dim error warn info diag_error diag_warn diag_info diag_hint splitter`.
 `secondary_caret` is the cell of every caret but the primary one (which is
 the terminal cursor; in a split pane without focus every caret of a
 multi-caret view gets it): reverse video by default, which an override keeps,
-so its `fg` and `bg` swap on screen. The
+so its `fg` and `bg` swap on screen. `fold_placeholder` is what a collapsed
+fold shows after its header line (`…`, plus the closing line it hides, as in
+`fn main() {…}`): it takes the selection or find match background when one
+reaches into the fold, and the mark of the worst diagnostic it hides. The
 `diag_*` styles color a diagnostic's gutter glyph and Problems icon (`fg`)
 and mark the text in its range: their modifiers apply to it, an underline
 takes the `fg` color, and a `bg` replaces the text background.

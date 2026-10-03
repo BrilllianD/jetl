@@ -143,6 +143,17 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Ctrl+Alt+J` | `editor.select_all_occurrences` | Select all occurrences (a caret at each) |
 | `Ctrl+Alt+Shift+J` * | `editor.select_all_occurrences` | Select all occurrences (a caret at each) |
 | `Alt+Shift+Insert` | `editor.toggle_column_mode` | Toggle column selection mode |
+| `Alt+,` | `editor.fold_collapse` | Collapse the code region at the caret |
+| `Ctrl+-` * | `editor.fold_collapse` | Collapse the code region at the caret |
+| `Alt+.` | `editor.fold_expand` | Expand the folded region at the caret |
+| `Ctrl++` * | `editor.fold_expand` | Expand the folded region at the caret |
+| `Ctrl+=` * | `editor.fold_expand` | Expand the folded region at the caret |
+| `Ctrl+Alt+-` * | `editor.fold_collapse_recursive` | Collapse the region at the caret and every region in it |
+| `Ctrl+Alt+=` * | `editor.fold_expand_recursive` | Expand the region at the caret and every region in it |
+| `Alt+<` | `editor.fold_collapse_all` | Collapse all code regions |
+| `Ctrl+_` * | `editor.fold_collapse_all` | Collapse all code regions |
+| `Alt+>` | `editor.fold_expand_all` | Expand all folded regions |
+| `Ctrl+.` * | `editor.fold_selection` | Fold the selection (or expand the fold at the caret) |
 | `Ctrl+Up` | `editor.scroll_up` | Scroll up |
 | `Ctrl+Down` | `editor.scroll_down` | Scroll down |
 | `Ctrl+Alt+Left` | `editor.nav_back` | Navigate back to the previous caret position |
