@@ -1446,8 +1446,8 @@ pub(crate) mod tests {
         app.handle_key(key(KeyCode::F(10)));
         let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
         let frame = term.draw(|f| crate::ui::render(&mut app, f)).unwrap();
-        let top: String = (0..30).map(|x| frame.buffer[(x, 0)].symbol().to_string()).collect();
-        assert!(top.starts_with(" ≣  File  Edit  View  Navigate"), "{top:?}");
+        let top = super::strip_tests::row_text(frame.buffer, 0, 31);
+        assert!(top.starts_with(" ☰  File  Edit  View  Navigate"), "{top:?}");
         app.handle_key(key(KeyCode::Char('h')));
         app.handle_key(key(KeyCode::Down));
         app.handle_key(key(KeyCode::Enter));
@@ -2205,6 +2205,40 @@ mod strip_tests {
     fn draw(app: &mut super::App) -> ratatui::buffer::Buffer {
         let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 24)).unwrap();
         term.draw(|f| crate::ui::render(app, f)).unwrap().buffer.clone()
+    }
+
+    /// The first `w` columns of row `y` as they show: a wide symbol's
+    /// trailing cell is hidden behind it.
+    pub(super) fn row_text(buf: &ratatui::buffer::Buffer, y: u16, w: u16) -> String {
+        use unicode_width::UnicodeWidthStr;
+        let mut text = String::new();
+        let mut x = 0;
+        while x < w {
+            let symbol = buf[(x, y)].symbol();
+            text.push_str(symbol);
+            x += symbol.width().max(1) as u16;
+        }
+        text
+    }
+
+    #[tokio::test]
+    async fn icons_follow_the_config() {
+        use crate::config::Icons;
+        let (mut app, dir) = test_app("strip-icons");
+        for (icons, project, bar) in [(Icons::Emoji, "📁", " ☰  File"), (Icons::Unicode, "⌂", " ≣  File")] {
+            app.config.ui.icons = icons;
+            let buf = draw(&mut app);
+            let (_, r) = *app.layout.strip_hits.iter().find(|(b, _)| *b == StripButton::Tool(ToolWindowId::Project)).unwrap();
+            assert_eq!(row_text(&buf, r.y + 1, 3).trim(), project, "{icons:?}");
+            // The button colours span the whole strip, behind a wide glyph too.
+            assert!((0..3).all(|x| buf[(x, r.y + 1)].bg == buf[(0, r.y)].bg), "{icons:?}");
+            assert_eq!(row_text(&buf, 0, 3).trim(), crate::ui::menu_bar::menu_glyph(icons));
+            app.toggle_main_menu();
+            let buf = draw(&mut app);
+            assert!(row_text(&buf, 0, 20).starts_with(bar), "{icons:?}");
+            app.toggle_main_menu();
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]

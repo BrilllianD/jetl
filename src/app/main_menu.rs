@@ -42,7 +42,7 @@ impl App {
                 Menu { title: title.to_string(), mnemonic, items }
             })
             .collect();
-        MenuBar::new(menus)
+        MenuBar::new(menus, self.config.ui.icons)
     }
 
     pub(super) fn main_menu_key(&mut self, key: KeyEvent) {

@@ -12,13 +12,14 @@ use crate::actions::{Action, AppAction};
 use crate::app::App;
 use crate::ui::focus::{Side, ToolWindowId};
 use crate::ui::layout::StripButton;
-use crate::ui::menu_bar::MENU_GLYPH;
+use crate::ui::menu_bar::menu_glyph;
 
 /// Rows of a tool button: the Alt-number, then the icon.
 const BUTTON_H: u16 = 2;
 
 pub fn render(app: &mut App, frame: &mut Frame, area: Rect) {
     let theme = &app.theme;
+    let icons = app.config.ui.icons;
     let buf = frame.buffer_mut();
     buf.set_style(area, Style::default().bg(theme.strip_bg));
     app.layout.strip_hits.clear();
@@ -27,7 +28,7 @@ pub fn render(app: &mut App, frame: &mut Frame, area: Rect) {
     }
     let menu = Rect::new(area.x, area.y, area.width, 1);
     buf.set_style(menu, theme.strip_item);
-    centred(buf, menu, MENU_GLYPH, theme.strip_item);
+    centred(buf, menu, menu_glyph(icons), theme.strip_item);
     app.layout.strip_hits.push((StripButton::Menu, menu));
 
     // A blank row between buttons when that fits; buttons that still do not
@@ -64,15 +65,19 @@ pub fn render(app: &mut App, frame: &mut Frame, area: Rect) {
         if let Some(n) = tw.number() {
             centred(buf, rect, &n.to_string(), style.add_modifier(Modifier::BOLD));
         }
-        centred(buf, Rect { y: rect.y + 1, ..rect }, tw.icon(), style);
+        centred(buf, Rect { y: rect.y + 1, ..rect }, tw.icon(icons), style);
         app.layout.strip_hits.push((StripButton::Tool(tw), rect));
     }
 }
 
-/// `text` centred on the first row of `rect`.
+/// `text` centred by display width on the first row of `rect`.
 fn centred(buf: &mut Buffer, rect: Rect, text: &str, style: Style) {
     let x = rect.x + rect.width.saturating_sub(text.width() as u16) / 2;
-    buf.set_stringn(x, rect.y, text, rect.right().saturating_sub(x) as usize, style);
+    // The button's colours, already painted, to restore below.
+    let under = buf[(x, rect.y)].style().patch(style);
+    let (end, _) = buf.set_stringn(x, rect.y, text, rect.right().saturating_sub(x) as usize, style);
+    // set_stringn resets the cell behind a wide glyph, colours included.
+    buf.set_style(Rect::new(x, rect.y, end - x, 1), under);
 }
 
 /// The hovered button's name and shortcut on one line right of it. Hidden

@@ -11,6 +11,7 @@ use ratatui::widgets::Clear;
 use unicode_width::UnicodeWidthStr;
 
 use crate::actions::{Action, EditorAction, GitAction, TreeAction};
+use crate::config::Icons;
 use crate::config::theme::Theme;
 use crate::event::Mouse;
 use crate::ui::menu::{ContextMenu, MenuItem, MenuResult};
@@ -165,18 +166,23 @@ pub struct Menu {
     pub items: Vec<MenuItem>,
 }
 
-/// The main menu's symbol, also the tool strip's menu button. One cell wide
-/// everywhere: `≡` is East Asian ambiguous and `☰` is wide.
-pub const MENU_GLYPH: &str = "≣";
-
-/// Leading cells of the bar: the menu symbol padded.
-const ICON: &str = " ≣ ";
+/// The main menu's symbol, also the tool strip's menu button. `☰` is East
+/// Asian wide, so two cells everywhere; `≣` is one cell everywhere, where
+/// `≡` would be ambiguous.
+pub fn menu_glyph(icons: Icons) -> &'static str {
+    match icons {
+        Icons::Emoji => "☰",
+        Icons::Unicode => "≣",
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct MenuBar {
     menus: Vec<Menu>,
     open: usize,
     dropdown: ContextMenu,
+    /// Leading cells of the bar: the menu symbol padded.
+    icon: String,
     /// The bar row and each title's cell from the last frame, for the mouse.
     bar: Rect,
     titles: Vec<Rect>,
@@ -184,9 +190,10 @@ pub struct MenuBar {
 
 impl MenuBar {
     /// A bar with the first menu open. `menus` must not be empty.
-    pub fn new(menus: Vec<Menu>) -> Self {
+    pub fn new(menus: Vec<Menu>, icons: Icons) -> Self {
         let dropdown = ContextMenu::new(menus[0].items.clone(), 0, 0);
-        Self { menus, open: 0, dropdown, bar: Rect::default(), titles: Vec::new() }
+        let icon = format!(" {} ", menu_glyph(icons));
+        Self { menus, open: 0, dropdown, icon, bar: Rect::default(), titles: Vec::new() }
     }
 
     pub fn open_title(&self) -> &str {
@@ -245,7 +252,7 @@ impl MenuBar {
         match (m.kind, title) {
             // A press on the open title or the icon closes, as the button would.
             (MouseEventKind::Down(_), Some(i)) if i == self.open => Some(MenuResult::Cancel),
-            (MouseEventKind::Down(_), None) if m.x < self.bar.x + ICON.width() as u16 => Some(MenuResult::Cancel),
+            (MouseEventKind::Down(_), None) if m.x < self.bar.x + self.icon.width() as u16 => Some(MenuResult::Cancel),
             (MouseEventKind::Down(_) | MouseEventKind::Moved | MouseEventKind::Drag(_), Some(i)) => {
                 self.open(i);
                 None
@@ -263,9 +270,11 @@ impl MenuBar {
         let style = Style::default().bg(theme.popup_bg).fg(theme.fg);
         let buf = frame.buffer_mut();
         buf.set_style(self.bar, style);
-        buf.set_stringn(self.bar.x, self.bar.y, ICON, self.bar.width as usize, theme.popup_border.bg(theme.popup_bg));
+        let icon_style = style.patch(theme.popup_border.bg(theme.popup_bg));
+        let (mut x, _) = buf.set_stringn(self.bar.x, self.bar.y, &self.icon, self.bar.width as usize, icon_style);
+        // A wide glyph's trailing cell was reset; paint the bar back over it.
+        buf.set_style(Rect::new(self.bar.x, self.bar.y, x - self.bar.x, 1), icon_style);
         self.titles.clear();
-        let mut x = self.bar.x + ICON.width() as u16;
         for (i, menu) in self.menus.iter().enumerate() {
             let w = (menu.title.width() as u16 + 2).min(self.bar.right().saturating_sub(x));
             let cell = Rect::new(x, self.bar.y, w, 1);
@@ -295,25 +304,32 @@ mod tests {
     use crossterm::event::MouseButton;
 
     fn bar() -> MenuBar {
+        bar_with(Icons::Unicode)
+    }
+
+    fn bar_with(icons: Icons) -> MenuBar {
         let a = |id| Action::from_id(id).unwrap();
-        MenuBar::new(vec![
-            Menu { title: "File".into(), mnemonic: 'F', items: vec![MenuItem::new("Exit", a("app.quit"))] },
-            Menu {
-                title: "Edit".into(),
-                mnemonic: 'E',
-                items: vec![MenuItem::new("Undo", a("editor.undo")), MenuItem::separator(), MenuItem::new("Copy", a("editor.copy"))],
-            },
-            Menu { title: "Help".into(), mnemonic: 'H', items: vec![MenuItem::new("About jetl", a("app.about"))] },
-        ])
+        MenuBar::new(
+            vec![
+                Menu { title: "File".into(), mnemonic: 'F', items: vec![MenuItem::new("Exit", a("app.quit"))] },
+                Menu {
+                    title: "Edit".into(),
+                    mnemonic: 'E',
+                    items: vec![MenuItem::new("Undo", a("editor.undo")), MenuItem::separator(), MenuItem::new("Copy", a("editor.copy"))],
+                },
+                Menu { title: "Help".into(), mnemonic: 'H', items: vec![MenuItem::new("About jetl", a("app.about"))] },
+            ],
+            icons,
+        )
     }
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
     }
 
-    fn draw(b: &mut MenuBar) {
+    fn draw(b: &mut MenuBar) -> ratatui::buffer::Buffer {
         let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(60, 12)).unwrap();
-        term.draw(|f| b.render(f, f.area(), &Theme::default())).unwrap();
+        term.draw(|f| b.render(f, f.area(), &Theme::default())).unwrap().buffer.clone()
     }
 
     fn at(kind: MouseEventKind, x: u16, y: u16) -> Mouse {
@@ -321,9 +337,27 @@ mod tests {
     }
 
     #[test]
-    fn icon_is_one_cell() {
-        assert_eq!((ICON.width(), MENU_GLYPH.width_cjk()), (3, 1));
-        assert_eq!(ICON.trim(), MENU_GLYPH);
+    fn glyph_widths_hold_everywhere() {
+        let unicode = menu_glyph(Icons::Unicode);
+        assert_eq!((unicode.width(), unicode.width_cjk()), (1, 1));
+        let emoji = menu_glyph(Icons::Emoji);
+        assert_eq!((emoji.width(), emoji.width_cjk()), (2, 2));
+        assert_eq!(bar_with(Icons::Emoji).icon, " ☰ ");
+    }
+
+    #[test]
+    fn wide_glyph_shifts_titles_and_keeps_the_bar_colour() {
+        let mut b = bar_with(Icons::Emoji);
+        let buf = draw(&mut b);
+        // " ☰  File  Edit  Help ": the glyph takes cells 1 and 2.
+        assert_eq!((buf[(1, 0)].symbol(), buf[(2, 0)].symbol()), ("☰", " "));
+        assert_eq!(buf[(2, 0)].bg, buf[(0, 0)].bg, "the cell behind the glyph keeps the bar colour");
+        assert_eq!(b.titles[0].x, 4);
+        assert_eq!(b.handle_mouse(&at(MouseEventKind::Down(MouseButton::Left), 3, 0)), Some(MenuResult::Cancel), "icon");
+        let mut b = bar_with(Icons::Emoji);
+        draw(&mut b);
+        assert_eq!(b.handle_mouse(&at(MouseEventKind::Down(MouseButton::Left), 10, 0)), None);
+        assert_eq!(b.open_title(), "Edit");
     }
 
     #[test]

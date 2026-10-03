@@ -111,6 +111,18 @@ pub struct UiConfig {
     pub left_width: u16,
     pub bottom_height: u16,
     pub double_click_ms: u64,
+    pub icons: Icons,
+}
+
+/// Symbols on the tool strip and the main menu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Icons {
+    /// Color emoji, two cells each (needs a color emoji font).
+    #[default]
+    Emoji,
+    /// One-cell symbols that any monospace font has.
+    Unicode,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -196,7 +208,7 @@ impl Default for EditorConfig {
 }
 impl Default for UiConfig {
     fn default() -> Self {
-        Self { theme: "darcula".into(), left_width: 32, bottom_height: 14, double_click_ms: 400 }
+        Self { theme: "darcula".into(), left_width: 32, bottom_height: 14, double_click_ms: 400, icons: Icons::Emoji }
     }
 }
 impl Default for GitConfig {
@@ -262,6 +274,8 @@ mod tests {
         assert_eq!(cfg.editor.autosave, Autosave::Off);
         assert_eq!(Config::parse("[editor]\nautosave = \"idle\"\n").unwrap().editor.autosave, Autosave::Idle);
         assert!(Config::parse("[editor]\nautosave = \"Idle\"\n").is_err());
+        assert_eq!(cfg.ui.icons, Icons::Emoji);
+        assert_eq!(Config::parse("[ui]\nicons = \"unicode\"\n").unwrap().ui.icons, Icons::Unicode);
     }
 
     #[test]

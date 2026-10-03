@@ -15,7 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   version.
 - Compact tool strip: each tool window button is its Alt-number over an icon, so all of them fit
   on a 24-row terminal, with a menu button on top that opens the main menu. Hovering a button
-  shows its name and shortcut.
+  shows its name and shortcut. The icons are color emoji by default; `[ui] icons = "unicode"`
+  switches the strip and the menu bar to one-cell symbols.
 
 ## [0.1.0] - 2026-10-03
 

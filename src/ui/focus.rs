@@ -2,6 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::config::Icons;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PanelId {
     Project,
@@ -76,9 +78,21 @@ impl ToolWindowId {
             ToolWindowId::Terminal => "Terminal",
         }
     }
-    /// The tool strip glyph: one cell wide everywhere, East Asian ambiguous
-    /// width included.
-    pub fn icon(self) -> &'static str {
+    /// The tool strip glyph: a two-cell emoji, or a symbol one cell wide
+    /// everywhere, East Asian ambiguous width included.
+    pub fn icon(self, icons: Icons) -> &'static str {
+        if icons == Icons::Emoji {
+            return match self {
+                ToolWindowId::Project => "📁",
+                ToolWindowId::Worktrees => "🌿",
+                ToolWindowId::Git => "🔀",
+                ToolWindowId::Find => "🔍",
+                ToolWindowId::Structure => "🧩",
+                ToolWindowId::EventLog => "🔔",
+                ToolWindowId::Run => "🚀",
+                ToolWindowId::Terminal => "💻",
+            };
+        }
         match self {
             ToolWindowId::Project => "⌂",
             ToolWindowId::Worktrees => "◫",
@@ -169,13 +183,16 @@ mod tests {
     use unicode_width::UnicodeWidthStr;
 
     #[test]
-    fn icons_are_one_cell_and_distinct() {
-        for tw in ToolWindowId::ALL {
-            assert_eq!((tw.icon().width(), tw.icon().width_cjk()), (1, 1), "{tw:?}");
+    fn icons_have_one_width_and_are_distinct() {
+        for (set, w) in [(Icons::Unicode, 1), (Icons::Emoji, 2)] {
+            for tw in ToolWindowId::ALL {
+                let icon = tw.icon(set);
+                assert_eq!((icon.width(), icon.width_cjk()), (w, w), "{tw:?} {set:?}");
+            }
+            let mut icons: Vec<&str> = ToolWindowId::ALL.iter().map(|tw| tw.icon(set)).collect();
+            icons.sort();
+            icons.dedup();
+            assert_eq!(icons.len(), ToolWindowId::ALL.len(), "{set:?}");
         }
-        let mut icons: Vec<&str> = ToolWindowId::ALL.iter().map(|tw| tw.icon()).collect();
-        icons.sort();
-        icons.dedup();
-        assert_eq!(icons.len(), ToolWindowId::ALL.len());
     }
 }
