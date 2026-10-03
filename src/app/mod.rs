@@ -47,6 +47,7 @@ mod files;
 mod find;
 mod format;
 mod lsp;
+mod lsp_edit;
 mod lsp_nav;
 mod main_menu;
 mod mouse;
@@ -447,6 +448,7 @@ impl App {
             self.dirty_frame = true;
         }
         self.completion_timeout(Instant::now());
+        self.format_timeout(Instant::now());
         if self.editor.autosave_due(Instant::now()) {
             self.autosave();
         }
@@ -743,6 +745,9 @@ impl App {
                     crate::actions::LspAction::FindUsages => self.lsp_find_usages(),
                     crate::actions::LspAction::QuickDoc => self.lsp_quick_doc(),
                     crate::actions::LspAction::Complete => self.lsp_complete(),
+                    crate::actions::LspAction::Rename => self.lsp_rename(),
+                    crate::actions::LspAction::ContextActions => self.lsp_context_actions(),
+                    crate::actions::LspAction::FileStructure => self.lsp_file_structure(),
                     _ => {}
                 }
                 return;

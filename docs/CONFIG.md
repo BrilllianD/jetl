@@ -164,6 +164,14 @@ project root, without a terminal, and is killed with everything it started
 after `timeout_ms`. Ctrl+Alt+L (`editor.format`, Reformat Code) formats the
 current file without saving, whether or not `on_save` is set.
 
+A `[format]` command for the file's language always wins. Without one, the
+file's language server formats it when it can (`textDocument/formatting`,
+with the file's indentation: its width as the tab size, spaces or tabs), for
+Ctrl+Alt+L and `on_save` alike; `timeout_ms` does not apply, the server gets
+`[lsp] request_timeout_ms` and a save writes the file unformatted after that
+(or when the server stops). A file with neither is saved as it is, and
+Ctrl+Alt+L says why there is no formatter.
+
 The result is applied as one undoable edit of the changed lines only: Ctrl+Z
 takes the whole reformat back, the caret stays on the same code and the view
 on the same lines. Output identical to the buffer changes nothing. With

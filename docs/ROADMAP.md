@@ -1,8 +1,8 @@
 # jetl roadmap
 
 This is the feature backlog for jetl after phases 0-5. Each item below is also tracked as a yman
-task (`yman ls`); phases are umbrella tasks and the rows are their subtasks. Phases 6, 7, 8 and 9
-are done, except the conflict resolver, which waits for split panes (see Order).
+task (`yman ls`); phases are umbrella tasks and the rows are their subtasks. Phases 6, 7, 8, 9 and
+10 are done, except the conflict resolver, which waits for split panes (see Order).
 
 ## What exists today
 
@@ -37,10 +37,12 @@ are done, except the conflict resolver, which waits for split panes (see Order).
   Missing: a conflict resolver (conflicts show as `U`; resolve them in the editor). A filesystem
   watcher refreshes the tree and git status; focus gain refreshes only when the watcher is off
   (`[files] watch`) or failed to start.
-- **Infra:** an LSP client core (Phase 10 started): servers per language and root, JSON-RPC on
+- **Infra:** an LSP client (Phase 10): servers per language and root, JSON-RPC on
   tokio, incremental document sync in UTF-16, `[lsp]` config, a status bar segment;
   diagnostics in the gutter, the text and a Problems window; go to definition, usages and
-  hover documentation; completion with a popup.
+  hover documentation; completion with a popup; rename, context actions and workspace edits
+  (open files one undo step each, the rest edited on disk), file structure, and formatting
+  through the server when `[format]` has no command.
   Background services follow one pattern: clone (root, generation, tx), spawn, send a tagged
   message, and the app drops stale generations.
   `docs/ARCHITECTURE.md`, a README and CI (fmt, clippy, test) exist; there are no snapshot tests yet.
@@ -135,7 +137,7 @@ All of section E shipped in Phase 9 except split editor panes, which belong to P
 | Diagnostics + Problems window | M | Done: gutter glyphs, underlines, status bar counts, F2, Problems window (Alt+6) |
 | Go to definition, references, hover | M | Done: Ctrl+B and Ctrl+click, Alt+F7 usages with previews, Alt+Q hover popup |
 | Completion popup | L | Done: auto-trigger and Ctrl+Space, fuzzy filter, snippets flattened, additional edits, resolve |
-| Rename, code actions, formatting, document symbols | M | WorkspaceEdit across files |
+| Rename, code actions, formatting, document symbols | M | Done: Shift+F6 rename across files, Alt+Enter context actions with resolve and `workspace/applyEdit`, Ctrl+F12 file structure, formatting through the server when `[format]` has no command |
 
 ### G. Themes, vim, config
 
@@ -173,8 +175,9 @@ All of section E shipped in Phase 9 except split editor panes, which belong to P
    and problem matchers, format on save through an external formatter, the Event Log window, zen
    mode, tab reorder, pins and a tab limit, keyboard resize of tool windows, and paste from the
    system clipboard.
-5. **Phase 10: language intelligence.** tree-sitter symbols shipped in Phase 7. LSP core comes
-   first, then diagnostics and navigation, and last completion, rename and code actions.
+5. **Phase 10: language intelligence.** Done. tree-sitter symbols shipped in Phase 7. The LSP
+   core came first, then diagnostics and navigation, completion, and last rename, code actions,
+   file structure and formatting through the server.
 6. **Phase 11: editor layout.** Split panes, multi-caret, column selection, folding and wrap. This
    has the highest implementation risk, so it goes last. The conflict resolver from Phase 8
    follows split panes.

@@ -1,7 +1,8 @@
-//! Reformatting with an external formatter (`[format]` in config.toml):
-//! requests the app runs off the main thread (`Effect::Format`), and their
-//! results applied as one undoable edit that touches only the changed
-//! lines, with the caret kept on the same code.
+//! Reformatting: with the external formatter of the file's language
+//! (`[format]` in config.toml), else with its language server
+//! (`textDocument/formatting`). Requests the app runs (`Effect::Format`),
+//! and their results applied as one undoable edit that touches only the
+//! changed lines, with the caret kept on the same code.
 
 use std::time::Duration;
 
@@ -25,11 +26,21 @@ pub struct Snapshot {
     pub saved: u64,
 }
 
-/// Format buffer `id` with `argv`; `save` writes it once formatted.
+/// What formats a buffer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Formatter {
+    /// The `[format]` command of its language (`{path}` expanded); it wins.
+    Command(Vec<String>),
+    /// Its language server, if it formats (the app checks); without one a
+    /// save writes the text as it is.
+    Lsp,
+}
+
+/// Format buffer `id` with `via`; `save` writes it once formatted.
 #[derive(Debug)]
 pub struct FormatRequest {
     pub id: BufferId,
-    pub argv: Vec<String>,
+    pub via: Formatter,
     pub timeout: Duration,
     pub snapshot: Snapshot,
     pub save: bool,
@@ -45,14 +56,23 @@ impl Editor {
         Some(crate::util::format::expand(argv, &path))
     }
 
-    /// A request to format buffer `i`, or `None` when its language has no
-    /// formatter. Edits made while it runs start their own undo step.
+    /// What may format buffer `i`: its `[format]` command, else its
+    /// language server; `None` without a language.
+    pub(super) fn format_via(&self, i: usize) -> Option<Formatter> {
+        match self.formatter(i) {
+            Some(argv) => Some(Formatter::Command(argv)),
+            None => self.buffers.get(i)?.language().map(|_| Formatter::Lsp),
+        }
+    }
+
+    /// A request to format buffer `i`, or `None` when it has no language.
+    /// Edits made while it runs start their own undo step.
     pub(super) fn format_request(&mut self, i: usize, save: bool) -> Option<FormatRequest> {
-        let argv = self.formatter(i)?;
+        let via = self.format_via(i)?;
         let b = &mut self.buffers[i];
         b.undo.break_group = true;
         let snapshot = Snapshot { text: b.text(), version: b.version, state: b.undo.state_id(), saved: b.saved_state };
-        Some(FormatRequest { id: b.id, argv, timeout: Duration::from_millis(self.format.timeout_ms), snapshot, save })
+        Some(FormatRequest { id: b.id, via, timeout: Duration::from_millis(self.format.timeout_ms), snapshot, save })
     }
 
     /// `editor.format`: reformat the active buffer without saving.
@@ -60,14 +80,7 @@ impl Editor {
         let Some(i) = self.active else { return };
         match self.format_request(i, false) {
             Some(req) => cx.effects.push(Effect::Format(req)),
-            None => {
-                let b = &self.buffers[i];
-                let msg = match b.language() {
-                    Some(d) => format!("No formatter for {} files: add `{} = [...]` under [format] in config.toml", d.name, d.name),
-                    None => format!("No formatter for {}: it has no language", b.name),
-                };
-                cx.notify(Level::Warn, msg);
-            }
+            None => cx.notify(Level::Warn, format!("No formatter for {}: it has no language", self.buffers[i].name)),
         }
     }
 

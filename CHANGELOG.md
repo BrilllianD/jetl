@@ -51,6 +51,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `[lsp] completion_auto` (default on) and `completion_min_chars` (default 1) control the
   automatic popup. In the editor Ctrl+Space is now completion; legacy terminals send Ctrl+` as
   the same key, so there the branches popup is Ctrl+` only with the kitty protocol.
+- Rename through the language server: Shift+F6 in the editor (Edit > Rename…) asks for the new
+  name of the symbol at the caret (the server says what can be renamed, where it supports that)
+  and renames it with its usages across the project. Open files change as one undo step each
+  and stay unsaved; files that are not open are rewritten on disk. A toast says how many
+  occurrences in how many files changed. An edit the server made for an older version of an
+  open file, or one that needs creating, renaming or deleting files, changes nothing.
+- Context actions: Alt+Enter in the editor (Edit > Show Context Actions) lists the server's quick
+  fixes and refactorings for the caret or selection, given the problems there; choosing one makes
+  its edit, resolving it first when the server computes edits lazily, and runs its command on the
+  server, which may edit files in turn (`workspace/applyEdit`).
+- File structure: Ctrl+F12 (Navigate > File Structure…) lists the file's symbols from its
+  language server, nested by indentation with a kind glyph; typing filters, Enter jumps. The
+  Structure window (Alt+7) stays tree-sitter based.
+- Formatting through the language server: without a `[format]` command for the file's language,
+  Reformat Code (Ctrl+Alt+L) and format on save use the server when it formats (with the file's
+  indentation). A `[format]` command still wins. A save waits for the server at most
+  `[lsp] request_timeout_ms`, then writes the file unformatted.
 
 ## [0.1.0] - 2026-10-03
 

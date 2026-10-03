@@ -100,4 +100,8 @@ impl FakeServer {
     pub fn respond(&self, id: i64, result: Value) {
         let _ = self.to_client.send(json!({"jsonrpc": "2.0", "id": id, "result": result}));
     }
+
+    pub fn respond_error(&self, id: i64, code: i64, message: &str) {
+        let _ = self.to_client.send(json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}}));
+    }
 }

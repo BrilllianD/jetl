@@ -64,6 +64,10 @@ impl App {
             AppMsg::TerminalOutput { generation, id } => self.terminal_output(generation, id),
             AppMsg::Lsp(m) => self.lsp_msg(m),
             AppMsg::Locations { generation, seq, title, items } => self.locations_loaded(generation, seq, title, items),
+            AppMsg::EditsApplied { generation, origin, done, errors } if generation == self.workspace.generation => {
+                self.edits_applied(origin, done, errors)
+            }
+            AppMsg::EditsApplied { .. } => tracing::debug!("dropping a workspace edit report of a previous root"),
         }
     }
 

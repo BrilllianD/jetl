@@ -77,6 +77,9 @@ pub const MAIN_MENU: &[(&str, char, &[Row])] = &[
             Item("Comment with Block Comment", "editor.toggle_block_comment"),
             Item("Reformat Code", "editor.format"),
             Item("Code Completion", "lsp.complete"),
+            Sep,
+            Item("Rename…", "lsp.rename"),
+            Item("Show Context Actions", "lsp.context_actions"),
         ],
     ),
     (
@@ -107,6 +110,7 @@ pub const MAIN_MENU: &[(&str, char, &[Row])] = &[
             Item("Search Everywhere…", "palette.search_everywhere"),
             Item("File…", "palette.files"),
             Item("Symbol…", "palette.symbols"),
+            Item("File Structure…", "lsp.file_structure"),
             Item("Line…", "editor.goto_line"),
             Item("Recent Files…", "palette.recent_files"),
             Sep,

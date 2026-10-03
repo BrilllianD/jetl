@@ -350,6 +350,12 @@ pub enum LspAction {
     QuickDoc,
     /// Ctrl+Space: code completion at the caret.
     Complete,
+    /// Shift+F6: rename the symbol at the caret and its usages.
+    Rename,
+    /// Alt+Enter: quick fixes and refactorings at the caret.
+    ContextActions,
+    /// Ctrl+F12: the file's symbols in a palette.
+    FileStructure,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -509,7 +515,7 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "editor.next_change" => "Go to the next change", Editor(E::NextChange);
         "editor.prev_change" => "Go to the previous change", Editor(E::PrevChange);
         "editor.toggle_blame" => "Annotate with git blame (show or hide)", Editor(E::ToggleBlame);
-        "editor.format" => "Reformat code with the external formatter", Editor(E::Format);
+        "editor.format" => "Reformat code ([format] command, else the language server)", Editor(E::Format);
 
         "tree.up" => "Tree: up", Tree(TreeAction::Up);
         "tree.down" => "Tree: down", Tree(TreeAction::Down);
@@ -647,6 +653,9 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "lsp.find_usages" => "Find usages of the symbol at the caret", Lsp(LspAction::FindUsages);
         "lsp.quick_doc" => "Quick documentation for the symbol at the caret", Lsp(LspAction::QuickDoc);
         "lsp.complete" => "Code completion at the caret", Lsp(LspAction::Complete);
+        "lsp.rename" => "Rename the symbol at the caret and its usages", Lsp(LspAction::Rename);
+        "lsp.context_actions" => "Show context actions (quick fixes, refactorings) at the caret", Lsp(LspAction::ContextActions);
+        "lsp.file_structure" => "File structure: the file's symbols from its language server", Lsp(LspAction::FileStructure);
 
         "problems.up" => "Problems: up", Problems(ProblemsAction::Up);
         "problems.down" => "Problems: down", Problems(ProblemsAction::Down);

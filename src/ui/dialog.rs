@@ -120,6 +120,10 @@ pub enum DialogId {
     Language(crate::editor::buffer::BufferId),
     /// Indent of the buffer: item 0 is a tab, then 2, 4 and 8 spaces.
     Indent(crate::editor::buffer::BufferId),
+    /// The new name for a language server rename at this place.
+    LspRename(crate::lsp::DocTag),
+    /// The context actions answered to this request (kept in the app).
+    LspCodeAction(crate::lsp::DocTag),
 }
 
 #[derive(Debug, Clone)]

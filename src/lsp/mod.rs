@@ -14,6 +14,7 @@ pub mod fake;
 pub mod locations;
 pub mod panel;
 pub mod pos;
+pub mod symbols;
 pub mod sync;
 pub mod transport;
 
@@ -47,6 +48,21 @@ pub enum PendingTag {
     Completion(DocTag),
     /// `completionItem/resolve` of the item being accepted.
     CompletionResolve(DocTag),
+    /// `textDocument/prepareRename`.
+    PrepareRename(DocTag),
+    /// `textDocument/rename`.
+    Rename(DocTag),
+    /// `textDocument/codeAction`.
+    CodeAction(DocTag),
+    /// `codeAction/resolve` of the chosen action.
+    CodeActionResolve(DocTag),
+    /// `workspace/executeCommand` of a chosen action.
+    ExecuteCommand(DocTag),
+    /// `textDocument/documentSymbol`.
+    DocumentSymbols(DocTag),
+    /// `textDocument/formatting`; checked against the format job of the
+    /// buffer (`app/format.rs`), not the caret.
+    Formatting(DocTag),
 }
 
 impl PendingTag {
@@ -58,7 +74,14 @@ impl PendingTag {
             | PendingTag::References(t)
             | PendingTag::Hover(t)
             | PendingTag::Completion(t)
-            | PendingTag::CompletionResolve(t) => Some(t),
+            | PendingTag::CompletionResolve(t)
+            | PendingTag::PrepareRename(t)
+            | PendingTag::Rename(t)
+            | PendingTag::CodeAction(t)
+            | PendingTag::CodeActionResolve(t)
+            | PendingTag::ExecuteCommand(t)
+            | PendingTag::DocumentSymbols(t)
+            | PendingTag::Formatting(t) => Some(t),
         }
     }
 }
@@ -73,6 +96,19 @@ pub struct DocTag {
     pub version: u64,
     pub pos: lsp_types::Position,
     pub seq: u64,
+}
+
+/// What a workspace edit was for, carried until it is applied (the files
+/// that are not open are edited off the main thread,
+/// `AppMsg::EditsApplied`).
+#[derive(Debug, Clone)]
+pub enum EditOrigin {
+    /// A rename to this name.
+    Rename(String),
+    /// The code action with this title.
+    CodeAction(String),
+    /// `workspace/applyEdit` from `server`, answered once applied.
+    ServerRequest { server: String, id: RequestId, label: Option<String> },
 }
 
 /// A language server event for the app, tagged with the workspace

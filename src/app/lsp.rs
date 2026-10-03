@@ -66,6 +66,8 @@ pub struct LspService {
     /// Completion requests and the item being accepted
     /// (`app/completion.rs`).
     pub(super) completion: super::completion::CompletionReqs,
+    /// Rename, context actions (`app/lsp_edit.rs`).
+    pub(super) edit: super::lsp_edit::EditReqs,
     connector: Connector,
 }
 
@@ -85,7 +87,7 @@ pub(super) struct Doc {
     path: PathBuf,
     language: &'static str,
     pub uri: Uri,
-    version: i32,
+    pub version: i32,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -125,6 +127,7 @@ impl LspService {
         self.inflight.clear();
         self.completion.request = None;
         self.completion.accepting = None;
+        self.edit = Default::default();
     }
 
     /// Whether a spinner is shown (a server starting or busy).
@@ -353,6 +356,7 @@ impl App {
             c.state = State::Failed(why);
         }
         self.lsp.server_gone(name, server, &mut self.editor.buffers);
+        self.format_server_gone(name);
     }
 
     fn lsp_notification(&mut self, name: &str, server: ServerId, method: &str, params: Value) {
@@ -407,6 +411,15 @@ impl App {
 
     fn lsp_server_request(&mut self, name: &str, id: RequestId, method: &str, params: Value) {
         let result = match method {
+            // Answered once applied (`App::edits_applied`).
+            "workspace/applyEdit" => match serde_json::from_value::<lsp_types::ApplyWorkspaceEditParams>(params) {
+                Ok(p) => {
+                    let origin = crate::lsp::EditOrigin::ServerRequest { server: name.to_string(), id, label: p.label };
+                    self.apply_workspace_edit(p.edit, origin);
+                    return;
+                }
+                Err(e) => Err(ResponseError::new(ResponseError::INVALID_PARAMS, format!("invalid params: {e}"))),
+            },
             "workspace/configuration" => {
                 let settings = self.lsp.servers.as_ref().and_then(|s| s.iter().find(|s| s.name == name)).and_then(|s| s.settings.clone());
                 let items = serde_json::from_value::<ConfigurationParams>(params).map(|p| p.items).unwrap_or_default();

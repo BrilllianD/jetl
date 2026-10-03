@@ -11,7 +11,7 @@
 //! off the main thread); a single definition is jumped to, and a definition
 //! that is where the caret already is lists the usages instead.
 
-use lsp_types::{HoverProviderCapability, OneOf, Position, ServerCapabilities, Uri};
+use lsp_types::{CodeActionProviderCapability, HoverProviderCapability, OneOf, Position, ServerCapabilities, Uri};
 use serde_json::{Value, json};
 
 use super::App;
@@ -30,6 +30,13 @@ const REFERENCES: &str = "textDocument/references";
 const HOVER: &str = "textDocument/hover";
 pub(super) const COMPLETION: &str = "textDocument/completion";
 pub(super) const RESOLVE: &str = "completionItem/resolve";
+pub(super) const PREPARE_RENAME: &str = "textDocument/prepareRename";
+pub(super) const RENAME: &str = "textDocument/rename";
+pub(super) const CODE_ACTION: &str = "textDocument/codeAction";
+pub(super) const CODE_ACTION_RESOLVE: &str = "codeAction/resolve";
+pub(super) const EXECUTE_COMMAND: &str = "workspace/executeCommand";
+pub(super) const DOCUMENT_SYMBOL: &str = "textDocument/documentSymbol";
+pub(super) const FORMATTING: &str = "textDocument/formatting";
 
 /// The method a tag was sent with.
 fn method_of(tag: &PendingTag) -> &'static str {
@@ -39,9 +46,22 @@ fn method_of(tag: &PendingTag) -> &'static str {
         PendingTag::Hover(_) => HOVER,
         PendingTag::Completion(_) => COMPLETION,
         PendingTag::CompletionResolve(_) => RESOLVE,
+        PendingTag::PrepareRename(_) => PREPARE_RENAME,
+        PendingTag::Rename(_) => RENAME,
+        PendingTag::CodeAction(_) => CODE_ACTION,
+        PendingTag::CodeActionResolve(_) => CODE_ACTION_RESOLVE,
+        PendingTag::ExecuteCommand(_) => EXECUTE_COMMAND,
+        PendingTag::DocumentSymbols(_) => DOCUMENT_SYMBOL,
+        PendingTag::Formatting(_) => FORMATTING,
         PendingTag::Initialize => "initialize",
         PendingTag::Shutdown => "shutdown",
     }
+}
+
+/// Whether `method`'s params are about a document (`textDocument` is
+/// added); a resolve or a command carries what the server gave instead.
+fn about_document(method: &str) -> bool {
+    ![RESOLVE, CODE_ACTION_RESOLVE, EXECUTE_COMMAND].contains(&method)
 }
 
 /// Whether the server answers `method`, and what to call it otherwise.
@@ -58,6 +78,22 @@ fn supports(caps: &ServerCapabilities, method: &str) -> Result<(), &'static str>
         ),
         COMPLETION => (caps.completion_provider.is_some(), "code completion"),
         RESOLVE => (caps.completion_provider.as_ref().and_then(|c| c.resolve_provider) == Some(true), "resolving completions"),
+        PREPARE_RENAME => (matches!(&caps.rename_provider, Some(OneOf::Right(o)) if o.prepare_provider == Some(true)), "checking renames"),
+        RENAME => (on(&caps.rename_provider), "rename"),
+        CODE_ACTION => (
+            matches!(
+                caps.code_action_provider,
+                Some(CodeActionProviderCapability::Simple(true) | CodeActionProviderCapability::Options(_))
+            ),
+            "context actions",
+        ),
+        CODE_ACTION_RESOLVE => (
+            matches!(&caps.code_action_provider, Some(CodeActionProviderCapability::Options(o)) if o.resolve_provider == Some(true)),
+            "resolving context actions",
+        ),
+        EXECUTE_COMMAND => (caps.execute_command_provider.is_some(), "commands"),
+        DOCUMENT_SYMBOL => (on(&caps.document_symbol_provider), "file structure"),
+        FORMATTING => (on(&caps.document_formatting_provider), "formatting"),
         _ => (false, "this request"),
     };
     if ok { Ok(()) } else { Err(what) }
@@ -111,32 +147,60 @@ impl App {
         id: BufferId,
         pos: Position,
         method: &'static str,
-        mut params: Value,
+        params: Value,
         tag: fn(DocTag) -> PendingTag,
     ) -> Result<u64, String> {
+        self.lsp_send(id, pos, method, params, tag, true).map(|s| s.seq)
+    }
+
+    /// Whether buffer `id`'s server takes `method` now: its server's name
+    /// and the document's URI, or why not (empty: no such buffer). Syncs
+    /// first, so a request sent next is about the current text.
+    pub(super) fn lsp_check(&mut self, id: BufferId, method: &str) -> Result<(String, Uri), String> {
         self.lsp_sync();
-        let version = self.editor.index_of_id(id).map(|i| self.editor.buffers[i].version).ok_or_else(String::new)?;
+        self.editor.index_of_id(id).ok_or_else(String::new)?;
         let (server, uri) = self.lsp_doc_of(id)?;
         let Some(caps) = self.lsp.clients.get(&server).and_then(|c| c.capabilities()) else {
             return Err(format!("{server} is not running"));
         };
         supports(caps, method).map_err(|what| format!("{server} does not support {what}"))?;
-        if let Some(old) = self.lsp.inflight.remove(method)
+        Ok((server, uri))
+    }
+
+    /// [`App::lsp_tagged_request`]; `newest` makes it the request of its
+    /// method in flight (cancelling the one before), else it is left to
+    /// the caller to track (formatting, one per buffer).
+    pub(super) fn lsp_send(
+        &mut self,
+        id: BufferId,
+        pos: Position,
+        method: &'static str,
+        mut params: Value,
+        tag: fn(DocTag) -> PendingTag,
+        newest: bool,
+    ) -> Result<super::lsp::Inflight, String> {
+        let (server, uri) = self.lsp_check(id, method)?;
+        let version = self.editor.index_of_id(id).map(|i| self.editor.buffers[i].version).ok_or_else(String::new)?;
+        if newest
+            && let Some(old) = self.lsp.inflight.remove(method)
             && let Some(c) = self.lsp.clients.get(&old.server)
         {
             c.cancel(old.id);
         }
         self.lsp.last_seq += 1;
         let seq = self.lsp.last_seq;
-        if method != RESOLVE
+        if about_document(method)
             && let Some(p) = params.as_object_mut()
         {
             p.insert("textDocument".into(), json!({"uri": uri}));
         }
         let client = self.lsp.clients.get_mut(&server).expect("checked above");
         let rid = client.request(method, params, tag(DocTag { buffer: id, version, pos, seq }));
-        self.lsp.inflight.insert(method, super::lsp::Inflight { server, id: rid, seq });
-        Ok(seq)
+        let sent = super::lsp::Inflight { server, id: rid, seq };
+        if newest {
+            self.lsp.inflight.insert(method, sent.clone());
+        }
+        Ok(sent)
     }
 
     /// The active buffer's id and caret as an LSP position.
@@ -197,6 +261,10 @@ impl App {
     /// as they were when it was sent.
     pub(super) fn lsp_response(&mut self, name: &str, tag: PendingTag, result: Result<Value, ResponseError>) {
         let Some(t) = tag.doc().cloned() else { return };
+        // Formatting is checked against its buffer's format job.
+        if let PendingTag::Formatting(t) = tag {
+            return self.lsp_format_answer(name, t, result);
+        }
         let method = method_of(&tag);
         match self.lsp.inflight.get(method) {
             Some(f) if f.seq == t.seq => {
@@ -208,6 +276,16 @@ impl App {
         // word at the caret is typed.
         if let PendingTag::Completion(_) | PendingTag::CompletionResolve(_) = tag {
             return self.completion_response(name, tag, result);
+        }
+        // A command's answer says nothing but whether it failed; what it
+        // does comes as `workspace/applyEdit`.
+        if let PendingTag::ExecuteCommand(_) = tag {
+            if let Err(e) = result
+                && ![ResponseError::REQUEST_CANCELLED, ResponseError::CONTENT_MODIFIED].contains(&e.code)
+            {
+                self.lsp_hint(format!("{name}: {}", e.message));
+            }
+            return;
         }
         if self.caret_position() != Some((t.buffer, t.pos)) || self.editor.active_buffer().is_none_or(|b| b.version != t.version) {
             return tracing::debug!("dropping a stale {method} answer");
@@ -222,7 +300,17 @@ impl App {
             PendingTag::Definition(t) => self.lsp_definition_answer(t, value),
             PendingTag::References(t) => self.lsp_usages_answer(t, value),
             PendingTag::Hover(t) => self.lsp_hover_answer(t, value),
-            PendingTag::Completion(_) | PendingTag::CompletionResolve(_) | PendingTag::Initialize | PendingTag::Shutdown => {}
+            PendingTag::PrepareRename(t) => self.lsp_prepare_rename_answer(t, value),
+            PendingTag::Rename(t) => self.lsp_rename_answer(t, value),
+            PendingTag::CodeAction(t) => self.lsp_code_actions_answer(t, value),
+            PendingTag::CodeActionResolve(t) => self.lsp_code_action_resolved(t, value),
+            PendingTag::DocumentSymbols(t) => self.lsp_document_symbols_answer(t, value),
+            PendingTag::Completion(_)
+            | PendingTag::CompletionResolve(_)
+            | PendingTag::ExecuteCommand(_)
+            | PendingTag::Formatting(_)
+            | PendingTag::Initialize
+            | PendingTag::Shutdown => {}
         }
     }
 
@@ -348,7 +436,7 @@ impl App {
 }
 
 /// The identifier at char `at` of `b` (empty when there is none).
-fn word_at(b: &crate::editor::buffer::Buffer, at: usize) -> String {
+pub(super) fn word_at(b: &crate::editor::buffer::Buffer, at: usize) -> String {
     let r = crate::editor::selection::word_at(&b.rope, at);
     let w = b.rope.slice(r).to_string();
     if w.chars().all(|c| c.is_alphanumeric() || c == '_') { w } else { String::new() }

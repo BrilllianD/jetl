@@ -156,7 +156,8 @@
 "shift-f11" = "editor.show_bookmarks"
 "ctrl-alt-z" = "editor.revert_change"
 "ctrl-alt-b" = "editor.toggle_blame"
-# Reformat Code runs the [format] command for the file's language.
+# Reformat Code runs the [format] command for the file's language, else asks
+# its language server.
 "ctrl-alt-l" = "editor.format"
 "ctrl-alt-shift-down" = "editor.next_change"
 "ctrl-alt-shift-up" = "editor.prev_change"
@@ -176,6 +177,12 @@
 # so in the editor the branches popup is on Ctrl+` only with the kitty
 # protocol (or from Git > Branches…).
 "ctrl-space" = "lsp.complete"
+# Refactoring through the language server: Rename (Shift+F6), Show Context
+# Actions (Alt+Enter: quick fixes, imports, refactorings), File Structure
+# (Ctrl+F12; the Structure window, Alt+7, stays tree-sitter based).
+"shift-f6" = "lsp.rename"
+"alt-enter" = "lsp.context_actions"
+"ctrl-f12" = "lsp.file_structure"
 "esc" = "editor.escape"
 
 [find]

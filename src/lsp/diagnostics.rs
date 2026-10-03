@@ -83,15 +83,47 @@ pub struct Diagnostic {
     /// `rustc`, `clippy`, `eslint`…
     pub source: Option<String>,
     pub code: Option<String>,
+    /// What the server sent that is only given back to it (code actions
+    /// ask with the diagnostics at the caret): the code as sent, and
+    /// `data`.
+    pub raw_code: Option<NumberOrString>,
+    pub data: Option<serde_json::Value>,
 }
 
 impl Diagnostic {
     pub fn from_lsp(d: lsp_types::Diagnostic) -> Self {
-        let code = d.code.map(|c| match c {
+        let code = d.code.as_ref().map(|c| match c {
             NumberOrString::Number(n) => n.to_string(),
-            NumberOrString::String(s) => s,
+            NumberOrString::String(s) => s.clone(),
         });
-        Self { range: d.range, severity: Severity::of(d.severity), message: d.message, source: d.source, code }
+        Self {
+            range: d.range,
+            severity: Severity::of(d.severity),
+            message: d.message,
+            source: d.source,
+            code,
+            raw_code: d.code,
+            data: d.data,
+        }
+    }
+
+    /// The diagnostic in LSP terms again, for the server that sent it.
+    pub fn to_lsp(&self) -> lsp_types::Diagnostic {
+        let severity = match self.severity {
+            Severity::Error => lsp_types::DiagnosticSeverity::ERROR,
+            Severity::Warning => lsp_types::DiagnosticSeverity::WARNING,
+            Severity::Info => lsp_types::DiagnosticSeverity::INFORMATION,
+            Severity::Hint => lsp_types::DiagnosticSeverity::HINT,
+        };
+        lsp_types::Diagnostic {
+            range: self.range,
+            severity: Some(severity),
+            code: self.raw_code.clone(),
+            source: self.source.clone(),
+            message: self.message.clone(),
+            data: self.data.clone(),
+            ..Default::default()
+        }
     }
 
     /// The first line of the message (they can span several).
@@ -366,6 +398,8 @@ pub(crate) mod tests {
             message: message.into(),
             source: None,
             code: None,
+            raw_code: None,
+            data: None,
         }
     }
 

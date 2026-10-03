@@ -86,9 +86,10 @@ impl Editor {
         self.save_with(i, cx, false)
     }
 
-    /// [`Editor::save`]; with `format`, a buffer whose language has a
-    /// formatter is cleaned up, handed to it (`Effect::Format`), and written
-    /// when it answers ([`Editor::format_done`]); true then means started.
+    /// [`Editor::save`]; with `format`, a buffer with a language is cleaned
+    /// up, handed to its formatter (`Effect::Format`: its `[format]`
+    /// command, else its language server, else none) and written when it
+    /// answers ([`Editor::format_done`]); true then means started.
     /// Only explicit saves format: closing, quitting and switching roots
     /// save through [`Editor::save`] and need the file written at once.
     pub(super) fn save_with(&mut self, i: usize, cx: &mut Ctx, format: bool) -> bool {
@@ -97,7 +98,7 @@ impl Editor {
             cx.effects.extend(self.conflict_dialog(i).map(Effect::Dialog));
             return false;
         }
-        if format && b.path.is_some() && b.dirty() && self.formatter(i).is_some() {
+        if format && b.path.is_some() && b.dirty() && self.format_via(i).is_some() {
             if let Err(done) = self.prepare_write(i, cx) {
                 return done;
             }

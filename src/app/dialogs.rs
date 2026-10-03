@@ -160,6 +160,8 @@ impl App {
                 self.editor.set_line_ending(id, le);
             }
             (DialogId::Indent(id), DialogResult::Choice(i)) => self.editor.set_indent(id, i),
+            (DialogId::LspRename(t), DialogResult::Text(name)) => self.lsp_rename_to(t, name),
+            (DialogId::LspCodeAction(t), DialogResult::Choice(i)) => self.lsp_code_action_chosen(t, i),
             (DialogId::Language(id), DialogResult::Choice(i)) => {
                 let def = i.checked_sub(1).and_then(|i| crate::editor::syntax::LANGUAGES.get(i));
                 self.editor.set_language(id, def, &self.theme);

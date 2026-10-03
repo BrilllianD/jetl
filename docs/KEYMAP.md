@@ -146,13 +146,16 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Ctrl+Alt+Shift+Up` | `editor.prev_change` | Go to the previous change |
 | `Shift+F7` | `editor.prev_change` | Go to the previous change |
 | `Ctrl+Alt+B` | `editor.toggle_blame` | Annotate with git blame (show or hide) |
-| `Ctrl+Alt+L` | `editor.format` | Reformat code with the external formatter |
+| `Ctrl+Alt+L` | `editor.format` | Reformat code ([format] command, else the language server) |
 | `F2` | `lsp.next_problem` | Next problem (diagnostic) in the file |
 | `Shift+F2` | `lsp.prev_problem` | Previous problem (diagnostic) in the file |
 | `Ctrl+B` | `lsp.goto_definition` | Go to declaration (on a declaration: its usages) |
 | `Alt+F7` | `lsp.find_usages` | Find usages of the symbol at the caret |
 | `Alt+Q` | `lsp.quick_doc` | Quick documentation for the symbol at the caret |
 | `Ctrl+Space` | `lsp.complete` | Code completion at the caret |
+| `Shift+F6` | `lsp.rename` | Rename the symbol at the caret and its usages |
+| `Alt+Enter` | `lsp.context_actions` | Show context actions (quick fixes, refactorings) at the caret |
+| `Ctrl+F12` | `lsp.file_structure` | File structure: the file's symbols from its language server |
 
 ## tree
 

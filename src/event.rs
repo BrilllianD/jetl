@@ -151,6 +151,15 @@ pub enum AppMsg {
         title: String,
         items: Vec<crate::lsp::locations::LocationItem>,
     },
+    /// A workspace edit's files that were not open were edited on disk
+    /// (`App::apply_workspace_edit`): how many changed and what failed,
+    /// with what was done in the open buffers before.
+    EditsApplied {
+        generation: u64,
+        origin: crate::lsp::EditOrigin,
+        done: crate::lsp::edits::EditCounts,
+        errors: Vec<String>,
+    },
 }
 
 pub use crate::lsp::LspMsg;

@@ -18,11 +18,14 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use lsp_types::{
-    ClientCapabilities, ClientInfo, CompletionClientCapabilities, CompletionItemCapability, CompletionItemCapabilityResolveSupport,
-    CompletionItemKind, CompletionItemKindCapability, GeneralClientCapabilities, GotoCapability, HoverClientCapabilities, InitializeParams,
-    InitializeResult, MarkupKind, PositionEncodingKind, PublishDiagnosticsClientCapabilities, ReferenceClientCapabilities,
-    ShowMessageRequestClientCapabilities, TextDocumentClientCapabilities, TextDocumentSyncClientCapabilities, WindowClientCapabilities,
-    WorkspaceClientCapabilities, WorkspaceFolder,
+    ClientCapabilities, ClientInfo, CodeActionCapabilityResolveSupport, CodeActionClientCapabilities, CodeActionKindLiteralSupport,
+    CodeActionLiteralSupport, CompletionClientCapabilities, CompletionItemCapability, CompletionItemCapabilityResolveSupport,
+    CompletionItemKind, CompletionItemKindCapability, DocumentFormattingClientCapabilities, DocumentSymbolClientCapabilities,
+    ExecuteCommandClientCapabilities, FailureHandlingKind, GeneralClientCapabilities, GotoCapability, HoverClientCapabilities,
+    InitializeParams, InitializeResult, MarkupKind, PositionEncodingKind, PublishDiagnosticsClientCapabilities,
+    ReferenceClientCapabilities, RenameClientCapabilities, ShowMessageRequestClientCapabilities, TextDocumentClientCapabilities,
+    TextDocumentSyncClientCapabilities, WindowClientCapabilities, WorkspaceClientCapabilities, WorkspaceEditClientCapabilities,
+    WorkspaceFolder,
 };
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, BufReader};
@@ -207,6 +210,13 @@ pub fn client_capabilities() -> ClientCapabilities {
                 ..Default::default()
             }),
             completion: Some(completion_capabilities()),
+            rename: Some(RenameClientCapabilities { prepare_support: Some(true), ..Default::default() }),
+            code_action: Some(code_action_capabilities()),
+            document_symbol: Some(DocumentSymbolClientCapabilities {
+                hierarchical_document_symbol_support: Some(true),
+                ..Default::default()
+            }),
+            formatting: Some(DocumentFormattingClientCapabilities::default()),
             ..Default::default()
         }),
         window: Some(WindowClientCapabilities {
@@ -214,7 +224,21 @@ pub fn client_capabilities() -> ClientCapabilities {
             show_message: Some(ShowMessageRequestClientCapabilities::default()),
             ..Default::default()
         }),
-        workspace: Some(WorkspaceClientCapabilities { configuration: Some(true), workspace_folders: Some(true), ..Default::default() }),
+        workspace: Some(WorkspaceClientCapabilities {
+            configuration: Some(true),
+            workspace_folders: Some(true),
+            apply_edit: Some(true),
+            // Text edits only: file operations are refused. An edit is
+            // checked before anything changes; a file that is not open and
+            // cannot be written leaves the others edited.
+            workspace_edit: Some(WorkspaceEditClientCapabilities {
+                document_changes: Some(true),
+                failure_handling: Some(FailureHandlingKind::Abort),
+                ..Default::default()
+            }),
+            execute_command: Some(ExecuteCommandClientCapabilities::default()),
+            ..Default::default()
+        }),
         ..Default::default()
     }
 }
@@ -237,6 +261,22 @@ fn completion_capabilities() -> CompletionClientCapabilities {
         }),
         completion_item_kind: Some(CompletionItemKindCapability { value_set: Some(kinds) }),
         context_support: Some(true),
+        ..Default::default()
+    }
+}
+
+/// Code actions as literals with their kinds, resolved lazily for their
+/// edit when the server supports it.
+fn code_action_capabilities() -> CodeActionClientCapabilities {
+    let kinds = ["", "quickfix", "refactor", "refactor.extract", "refactor.inline", "refactor.rewrite", "source", "source.organizeImports"];
+    CodeActionClientCapabilities {
+        code_action_literal_support: Some(CodeActionLiteralSupport {
+            code_action_kind: CodeActionKindLiteralSupport { value_set: kinds.map(String::from).to_vec() },
+        }),
+        is_preferred_support: Some(true),
+        disabled_support: Some(true),
+        data_support: Some(true),
+        resolve_support: Some(CodeActionCapabilityResolveSupport { properties: vec!["edit".into()] }),
         ..Default::default()
     }
 }

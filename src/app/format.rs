@@ -1,13 +1,25 @@
-//! External formatter runs (`Effect::Format`): one per buffer at a time,
-//! off the main thread, results checked against the generation and the
-//! request's seq before the editor applies them (`Editor::format_done`).
+//! Formatter runs (`Effect::Format`), one per buffer at a time: the
+//! `[format]` command off the main thread, or the buffer's language server
+//! (`textDocument/formatting`, given up after `[lsp] request_timeout_ms`,
+//! or when the server goes away). Results are checked against the
+//! generation and the request's seq before the editor applies them
+//! (`Editor::format_done`); a save waiting for one writes either way.
 
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
+use lsp_types::{Position, TextEdit};
+use serde_json::{Value, json};
+
+use super::lsp::Inflight;
+use super::lsp_nav::FORMATTING;
 use super::{App, Ctx};
 use crate::editor::buffer::BufferId;
-use crate::editor::format::{FormatRequest, Snapshot};
-use crate::event::AppMsg;
+use crate::editor::format::{FormatRequest, Formatter, Snapshot};
+use crate::event::{AppMsg, Level};
+use crate::lsp::transport::ResponseError;
+use crate::lsp::{DocTag, PendingTag};
+use crate::util::format::Failure;
 
 #[derive(Debug, Default)]
 pub struct FormatState {
@@ -22,52 +34,157 @@ struct Job {
     seq: u64,
     save: bool,
     snapshot: Snapshot,
+    run: Run,
+}
+
+#[derive(Debug)]
+enum Run {
     /// Aborting drops the run, which kills the formatter.
-    task: tokio::task::AbortHandle,
+    Command(tokio::task::AbortHandle),
+    /// A language server request, and when to stop waiting for it.
+    Lsp { req: Inflight, deadline: Instant },
 }
 
 impl FormatState {
     /// Stop every run (root switch, quit).
     pub(crate) fn abort_all(&mut self) {
         for (_, job) in self.jobs.drain() {
-            job.task.abort();
+            if let Run::Command(task) = job.run {
+                task.abort();
+            }
         }
     }
 }
 
+fn failure(summary: String) -> Failure {
+    Failure { summary, stderr: String::new() }
+}
+
 impl App {
-    /// Run `req`'s formatter in the project root. A newer request for the
-    /// same buffer replaces one in flight (killing it) and keeps its save.
+    /// Run `req`'s formatter. A newer request for the same buffer replaces
+    /// one in flight (killing or cancelling it) and keeps its save.
     pub(super) fn start_format(&mut self, req: FormatRequest) {
         self.format.seq += 1;
         let seq = self.format.seq;
         let mut save = req.save;
         if let Some(old) = self.format.jobs.remove(&req.id) {
-            old.task.abort();
+            self.stop_format_run(old.run);
             save |= old.save;
         }
+        let argv = match req.via {
+            Formatter::Command(argv) => argv,
+            Formatter::Lsp => return self.start_lsp_format(req.id, seq, save, req.snapshot),
+        };
         let (generation, tx, root) = (self.workspace.generation, self.bus_tx.clone(), self.workspace.root.clone());
-        let (id, argv, timeout, input) = (req.id, req.argv, req.timeout, req.snapshot.text.clone());
+        let (id, timeout, input) = (req.id, req.timeout, req.snapshot.text.clone());
         tracing::debug!("formatting buffer {id} with {argv:?}");
         let task = tokio::spawn(async move {
             let result = crate::util::format::run(&argv, &root, input, timeout).await;
             let _ = tx.send(AppMsg::Formatted { generation, id, seq, result });
         });
-        self.format.jobs.insert(id, Job { seq, save, snapshot: req.snapshot, task: task.abort_handle() });
+        self.format.jobs.insert(id, Job { seq, save, snapshot: req.snapshot, run: Run::Command(task.abort_handle()) });
+    }
+
+    fn stop_format_run(&self, run: Run) {
+        match run {
+            Run::Command(task) => task.abort(),
+            Run::Lsp { req, .. } => {
+                if let Some(c) = self.lsp.clients.get(&req.server) {
+                    c.cancel(req.id);
+                }
+            }
+        }
+    }
+
+    /// Ask buffer `id`'s language server to format it. Without one that
+    /// formats, a save writes the text as it is, and a manual format says
+    /// how to get a formatter.
+    fn start_lsp_format(&mut self, id: BufferId, seq: u64, save: bool, snapshot: Snapshot) {
+        let Some(b) = self.editor.index_of_id(id).map(|i| &self.editor.buffers[i]) else { return };
+        let (language, indent) = (b.language().map_or("", |l| l.name), b.indent);
+        let params = json!({"options": {"tabSize": indent.width, "insertSpaces": !indent.hard_tabs}});
+        match self.lsp_send(id, Position::default(), FORMATTING, params, PendingTag::Formatting, false) {
+            Ok(req) => {
+                let deadline = Instant::now() + Duration::from_millis(self.config.lsp.request_timeout_ms);
+                self.format.jobs.insert(id, Job { seq, save, snapshot, run: Run::Lsp { req, deadline } });
+            }
+            Err(_) if save => {
+                let text = snapshot.text.clone();
+                self.finish_format(id, save, snapshot, Ok(text));
+            }
+            Err(why) => {
+                let mut msg = format!("No formatter for {language} files: add `{language} = [...]` under [format] in config.toml");
+                if !why.is_empty() {
+                    msg = format!("{msg} ({why})");
+                }
+                self.notify(Level::Warn, msg);
+            }
+        }
     }
 
     /// A formatter finished. Dropped when the root changed or a newer
     /// request for the buffer is in flight.
-    pub(super) fn format_done(&mut self, generation: u64, id: BufferId, seq: u64, result: Result<String, crate::util::format::Failure>) {
+    pub(super) fn format_done(&mut self, generation: u64, id: BufferId, seq: u64, result: Result<String, Failure>) {
         if generation != self.workspace.generation || self.format.jobs.get(&id).is_none_or(|j| j.seq != seq) {
             tracing::debug!("dropping a stale format result for buffer {id}");
             return;
         }
         let Some(job) = self.format.jobs.remove(&id) else { return };
+        self.finish_format(id, job.save, job.snapshot, result);
+    }
+
+    fn finish_format(&mut self, id: BufferId, save: bool, snapshot: Snapshot, result: Result<String, Failure>) {
         let mut cx = ctx!(self);
-        self.editor.format_done(id, job.save, job.snapshot, result, &mut cx);
+        self.editor.format_done(id, save, snapshot, result, &mut cx);
         let fx = cx.effects;
         self.apply_effects(fx);
+    }
+
+    /// A language server's formatting answer: the text with its edits made
+    /// (applied by the editor while the buffer is as it was sent).
+    pub(super) fn lsp_format_answer(&mut self, name: &str, t: DocTag, result: Result<Value, ResponseError>) {
+        let current = self.format.jobs.get(&t.buffer).is_some_and(|j| matches!(&j.run, Run::Lsp { req, .. } if req.seq == t.seq));
+        if !current {
+            return tracing::debug!("dropping a stale formatting answer for buffer {}", t.buffer);
+        }
+        let Some(job) = self.format.jobs.remove(&t.buffer) else { return };
+        let result = match result.map(serde_json::from_value::<Option<Vec<TextEdit>>>) {
+            Ok(Ok(edits)) => crate::lsp::edits::edit_text(&job.snapshot.text, &edits.unwrap_or_default())
+                .map(|(text, _)| text)
+                .map_err(|_| failure(format!("{name}: overlapping edits"))),
+            Ok(Err(e)) => Err(failure(format!("{name}: unexpected answer ({e})"))),
+            Err(e) => Err(failure(format!("{name}: {}", e.message))),
+        };
+        self.finish_format(t.buffer, job.save, job.snapshot, result);
+    }
+
+    /// Give up on language server formats unanswered by `now` (the tick):
+    /// a save waiting for one writes the text unformatted.
+    pub(super) fn format_timeout(&mut self, now: Instant) {
+        let secs = Duration::from_millis(self.config.lsp.request_timeout_ms).as_secs_f32();
+        self.fail_lsp_formats(|req, deadline| (now >= deadline).then(|| format!("{}: no answer in {secs} s", req.server)));
+    }
+
+    /// Server `name` went away: its formats fail.
+    pub(super) fn format_server_gone(&mut self, name: &str) {
+        self.fail_lsp_formats(|req, _| (req.server == name).then(|| format!("{name} stopped")));
+    }
+
+    fn fail_lsp_formats(&mut self, why: impl Fn(&Inflight, Instant) -> Option<String>) {
+        let failed: Vec<(BufferId, String)> = self
+            .format
+            .jobs
+            .iter()
+            .filter_map(|(id, j)| match &j.run {
+                Run::Lsp { req, deadline } => why(req, *deadline).map(|w| (*id, w)),
+                Run::Command(_) => None,
+            })
+            .collect();
+        for (id, why) in failed {
+            let Some(job) = self.format.jobs.remove(&id) else { continue };
+            self.stop_format_run(job.run);
+            self.finish_format(id, job.save, job.snapshot, Err(failure(why)));
+        }
     }
 }
 
@@ -205,5 +322,136 @@ mod tests {
         assert!(app.should_quit && app.format.jobs.is_empty());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "xyfn a() {}\n");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    mod lsp {
+        use super::*;
+        use crate::app::lsp::tests::{incremental, is_lsp, open_on_server, with_fake_servers};
+        use crate::lsp::fake::FakeServer;
+        use serde_json::json;
+
+        const UGLY: &str = "fn a(){\nx( 1,2 );\n}\n";
+        const PRETTY: &str = "fn a() {\n    x(1, 2);\n}\n";
+
+        /// The edits a server makes of `UGLY` into `PRETTY`.
+        fn edits() -> serde_json::Value {
+            let r =
+                |l0: u32, c0: u32, l1: u32, c1: u32| json!({"start": {"line": l0, "character": c0}, "end": {"line": l1, "character": c1}});
+            json!([
+                {"range": r(0, 6, 0, 6), "newText": " "},
+                {"range": r(1, 0, 1, 0), "newText": "    "},
+                {"range": r(1, 2, 1, 3), "newText": ""},
+                {"range": r(1, 5, 1, 5), "newText": " "},
+                {"range": r(1, 6, 1, 7), "newText": ""},
+            ])
+        }
+
+        /// a.rs open on a server that formats (or not), saves formatting.
+        async fn setup(name: &str, formats: bool) -> (App, FakeServer, std::path::PathBuf, std::path::PathBuf) {
+            let (mut app, dir) = test_app(name);
+            let mut caps = incremental();
+            caps["documentFormattingProvider"] = json!(formats);
+            let mut servers = with_fake_servers(&mut app, caps);
+            app.editor.format.on_save = true;
+            let server = open_on_server(&mut app, &mut servers, "a.rs", UGLY).await;
+            let path = app.workspace.root.join("a.rs");
+            (app, server, dir, path)
+        }
+
+        #[tokio::test]
+        async fn without_a_command_the_language_server_formats() {
+            let (mut app, mut server, dir, path) = setup("format-lsp", true).await;
+            act(&mut app, EditorAction::Format);
+            let req = server.recv("textDocument/formatting").await;
+            assert_eq!(req["params"]["options"], json!({"tabSize": 4, "insertSpaces": true}));
+            assert!(req["params"]["textDocument"]["uri"].as_str().unwrap().ends_with("/a.rs"));
+            server.respond(req["id"].as_i64().unwrap(), edits());
+            handle_next(&mut app, is_lsp).await;
+            assert_eq!(text(&app), PRETTY);
+            assert!(app.editor.active_buffer().unwrap().dirty());
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), UGLY, "a manual format does not save");
+            act(&mut app, EditorAction::Undo);
+            assert_eq!(text(&app), UGLY, "one undo step");
+            // Nothing to change: said so.
+            act(&mut app, EditorAction::Redo);
+            act(&mut app, EditorAction::Format);
+            let req = server.recv("textDocument/formatting").await;
+            server.respond(req["id"].as_i64().unwrap(), json!(null));
+            handle_next(&mut app, is_lsp).await;
+            assert!(app.notifications.iter().any(|n| n.text == "a.rs is already formatted"));
+
+            // A [format] command wins over the server.
+            app.editor.format.commands.insert("rust".into(), vec!["tr".into(), "a-z".into(), "A-Z".into()]);
+            act(&mut app, EditorAction::Format);
+            handle_next(&mut app, formatted).await;
+            assert_eq!(text(&app), PRETTY.to_uppercase());
+            app.lsp_sync();
+            assert!(server.drain().iter().all(|m| m["method"] != "textDocument/formatting"));
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        #[tokio::test]
+        async fn save_waits_for_the_server_and_writes_the_formatted_text() {
+            let (mut app, mut server, dir, path) = setup("format-lsp-save", true).await;
+            // Edited (dirty) back to the text the edits are for.
+            act(&mut app, EditorAction::InsertText(" ".into()));
+            act(&mut app, EditorAction::Backspace);
+            act(&mut app, EditorAction::Save);
+            let req = server.recv("textDocument/formatting").await;
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), UGLY, "not written before the answer");
+            server.respond(req["id"].as_i64().unwrap(), edits());
+            handle_next(&mut app, is_lsp).await;
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), PRETTY);
+            assert!(!app.editor.active_buffer().unwrap().dirty());
+            assert!(warnings(&app).is_empty(), "{:?}", warnings(&app));
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        #[tokio::test]
+        async fn a_server_that_does_not_answer_in_time_saves_unformatted() {
+            let (mut app, mut server, dir, path) = setup("format-lsp-timeout", true).await;
+            act(&mut app, EditorAction::InsertText("// x\n".into()));
+            act(&mut app, EditorAction::Save);
+            let req = server.recv("textDocument/formatting").await;
+            let late = Duration::from_millis(app.config.lsp.request_timeout_ms);
+            app.format_timeout(Instant::now() + late);
+            let saved = format!("// x\n{UGLY}");
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), saved);
+            assert!(!app.editor.active_buffer().unwrap().dirty());
+            assert_eq!(warnings(&app), ["Format a.rs: rust-analyzer: no answer in 5 s; saved unformatted"]);
+            assert_eq!(server.recv("$/cancelRequest").await["params"]["id"], req["id"]);
+            // The late answer changes nothing.
+            server.respond(req["id"].as_i64().unwrap(), edits());
+            handle_next(&mut app, is_lsp).await;
+            assert_eq!(text(&app), saved);
+            // Quitting with unsaved edits saves at once, without the server.
+            act(&mut app, EditorAction::InsertText("y".into()));
+            app.perform(Action::App(crate::actions::AppAction::Quit));
+            let d = app.dialog.take().unwrap();
+            app.finish_dialog(d.id, crate::ui::dialog::DialogResult::Button(0));
+            assert!(app.should_quit && app.format.jobs.is_empty());
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), format!("// x\ny{UGLY}"));
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        #[tokio::test]
+        async fn without_a_formatter_save_writes_at_once_and_format_says_so() {
+            let (mut app, mut server, dir, path) = setup("format-lsp-none", false).await;
+            act(&mut app, EditorAction::InsertText("x".into()));
+            act(&mut app, EditorAction::Save);
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), format!("x{UGLY}"));
+            assert!(warnings(&app).is_empty(), "{:?}", warnings(&app));
+            act(&mut app, EditorAction::Format);
+            assert_eq!(
+                warnings(&app),
+                [
+                    "No formatter for rust files: add `rust = [...]` under [format] in config.toml (rust-analyzer does not support formatting)"
+                ]
+            );
+            assert!(app.format.jobs.is_empty());
+            app.lsp_sync();
+            assert!(server.drain().iter().all(|m| m["method"] != "textDocument/formatting"));
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 }

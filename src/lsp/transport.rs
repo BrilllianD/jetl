@@ -33,6 +33,8 @@ pub struct ResponseError {
 impl ResponseError {
     /// `MethodNotFound`, the answer to server requests jetl does not know.
     pub const METHOD_NOT_FOUND: i64 = -32601;
+    /// A server request whose params could not be read.
+    pub const INVALID_PARAMS: i64 = -32602;
     /// The answer to a request the client cancelled (`$/cancelRequest`).
     pub const REQUEST_CANCELLED: i64 = -32800;
     /// The document changed under a request; it no longer applies.
