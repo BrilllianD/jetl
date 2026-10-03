@@ -18,9 +18,10 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use lsp_types::{
-    ClientCapabilities, ClientInfo, GeneralClientCapabilities, InitializeParams, InitializeResult, PositionEncodingKind,
-    PublishDiagnosticsClientCapabilities, ShowMessageRequestClientCapabilities, TextDocumentClientCapabilities,
-    TextDocumentSyncClientCapabilities, WindowClientCapabilities, WorkspaceClientCapabilities, WorkspaceFolder,
+    ClientCapabilities, ClientInfo, GeneralClientCapabilities, GotoCapability, HoverClientCapabilities, InitializeParams, InitializeResult,
+    MarkupKind, PositionEncodingKind, PublishDiagnosticsClientCapabilities, ReferenceClientCapabilities,
+    ShowMessageRequestClientCapabilities, TextDocumentClientCapabilities, TextDocumentSyncClientCapabilities, WindowClientCapabilities,
+    WorkspaceClientCapabilities, WorkspaceFolder,
 };
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, BufReader};
@@ -156,6 +157,13 @@ impl Client {
         id
     }
 
+    /// Tell the server request `id` is no longer wanted
+    /// (`$/cancelRequest`). Its answer (often a `RequestCancelled` error)
+    /// still arrives and is dropped by its seq.
+    pub fn cancel(&self, id: i64) {
+        self.notify("$/cancelRequest", json!({ "id": id }));
+    }
+
     /// Answer a server request.
     pub fn respond(&self, id: RequestId, result: Result<Value, ResponseError>) {
         let _ = self.cmds.send(Command::Send(Outgoing::Response { id, result }, None));
@@ -191,6 +199,12 @@ pub fn client_capabilities() -> ClientCapabilities {
         text_document: Some(TextDocumentClientCapabilities {
             synchronization: Some(TextDocumentSyncClientCapabilities { did_save: Some(true), ..Default::default() }),
             publish_diagnostics: Some(PublishDiagnosticsClientCapabilities::default()),
+            definition: Some(GotoCapability { link_support: Some(true), ..Default::default() }),
+            references: Some(ReferenceClientCapabilities::default()),
+            hover: Some(HoverClientCapabilities {
+                content_format: Some(vec![MarkupKind::Markdown, MarkupKind::PlainText]),
+                ..Default::default()
+            }),
             ..Default::default()
         }),
         window: Some(WindowClientCapabilities {

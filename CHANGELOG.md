@@ -34,6 +34,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   or a double click opens one at its position. `[lsp] max_diagnostics_per_file` caps a file's
   list (default 1000), and the theme styles `diag_error`, `diag_warn`, `diag_info` and
   `diag_hint` color them.
+- Language server navigation. Ctrl+B or Ctrl+click goes to the declaration of the symbol at the
+  caret (Navigate > Declaration or Usages); with several candidates a list opens, and on the
+  declaration itself it lists the usages. Alt+F7 (Navigate > Find Usages) lists the usages with
+  a preview of each line; typing filters the list and Enter jumps. Alt+Q (View > Quick
+  Documentation) shows the hover documentation in a popup at the caret, scrolled with the arrow
+  and page keys and closed by Esc or any other key. Back (Ctrl+Alt+Left) returns from every
+  jump. Without a server for the file Ctrl+B opens Go to Symbol on the word at the caret.
 
 ## [0.1.0] - 2026-10-03
 

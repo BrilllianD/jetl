@@ -166,6 +166,12 @@
 # Language server diagnostics in the file, as Next Highlighted Error.
 "f2" = "lsp.next_problem"
 "shift-f2" = "lsp.prev_problem"
+# Language server navigation. Ctrl+B on a declaration lists its usages;
+# Ctrl+click goes to a definition too. Quick Documentation is Ctrl+Q in
+# JetBrains, which stays quit here.
+"ctrl-b" = "lsp.goto_definition"
+"alt-f7" = "lsp.find_usages"
+"alt-q" = "lsp.quick_doc"
 "esc" = "editor.escape"
 
 [find]

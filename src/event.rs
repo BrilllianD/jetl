@@ -142,6 +142,15 @@ pub enum AppMsg {
     /// A language server event, tagged with the workspace generation and
     /// the server's id (`app/lsp.rs`).
     Lsp(LspMsg),
+    /// Definitions or usages with their line previews, the ones in files
+    /// that are not open read from disk; shown in the Locations palette
+    /// unless a newer definition or usages request (`seq`) was made.
+    Locations {
+        generation: u64,
+        seq: u64,
+        title: String,
+        items: Vec<crate::lsp::locations::LocationItem>,
+    },
 }
 
 pub use crate::lsp::LspMsg;

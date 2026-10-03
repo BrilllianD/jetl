@@ -85,6 +85,9 @@ pub struct Editor {
     /// A closed file being reopened by back/forward and the caret to put
     /// in it once it loads.
     pending_nav: Option<(PathBuf, usize)>,
+    /// The screen cell of the active buffer's caret as last drawn (`None`
+    /// when it is scrolled out of view); popups at the caret anchor there.
+    pub caret_cell: Option<(u16, u16)>,
 }
 
 /// Shown in place of a pinned tab's close button (one column wide).
@@ -131,6 +134,7 @@ impl Editor {
             find_hits: Vec::new(),
             nav: NavRing::default(),
             pending_nav: None,
+            caret_cell: None,
         }
     }
 
@@ -259,6 +263,14 @@ impl Editor {
         self.pending_nav = None;
     }
 
+    /// Remember the active buffer's caret for back/forward (before a jump
+    /// that may not move far, such as go to definition).
+    pub fn push_nav_here(&mut self) {
+        if let Some(here) = self.active_buffer().map(nav_pos) {
+            self.nav.push(here);
+        }
+    }
+
     /// Remember the active buffer's caret when `from` (taken before an
     /// action) is more than [`NAV_JUMP_LINES`] lines from it.
     fn note_jump(&mut self, from: Option<NavPos>) {
@@ -325,9 +337,7 @@ impl Editor {
     /// the position left is remembered for back.
     pub fn goto_bookmark(&mut self, id: BufferId, line: usize) {
         let Some(i) = self.buffers.iter().position(|b| b.id == id) else { return };
-        if let Some(here) = self.active_buffer().map(nav_pos) {
-            self.nav.push(here);
-        }
+        self.push_nav_here();
         self.set_active(i);
         self.buffers[i].goto_line(line, 0);
     }
@@ -1138,6 +1148,15 @@ impl Editor {
                 if b.rope.char_to_line(b.sel.head).abs_diff(b.rope.char_to_line(p)) > NAV_JUMP_LINES {
                     self.nav.push(from);
                 }
+                // Ctrl+click: the caret to the clicked char, then go to
+                // what is defined there.
+                if m.mods.contains(KeyModifiers::CONTROL) && m.clicks == 1 && m.x >= text_area.x {
+                    b.sel = Selection::point(p);
+                    b.desired_col = None;
+                    b.undo.break_group = true;
+                    cx.effects.push(Effect::Lsp(crate::lsp::LspRequest::Definition));
+                    return true;
+                }
                 let extend = m.mods.contains(KeyModifiers::SHIFT);
                 match m.clicks {
                     2 => {
@@ -1228,6 +1247,7 @@ impl Editor {
     pub fn render(&mut self, frame: &mut Frame, tabs: Rect, area: Rect, focused: bool, theme: &Theme) {
         self.last_area = area;
         self.render_tabs(frame, tabs, theme);
+        self.caret_cell = None;
         let screen = frame.buffer_mut();
         screen.set_style(area, Style::default().bg(theme.bg));
         let Some(i) = self.active else {
@@ -1265,6 +1285,7 @@ impl Editor {
         };
         let out = view::render(&mut self.buffers[i], frame.buffer_mut(), text_rect, &opts);
         self.text_area = out.text_area;
+        self.caret_cell = out.cursor;
         if focused
             && !bar_focused
             && let Some((x, y)) = out.cursor

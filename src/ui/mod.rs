@@ -1,6 +1,7 @@
 pub mod dialog;
 pub mod event_log;
 pub mod focus;
+pub mod hover;
 pub mod layout;
 pub mod menu;
 pub mod menu_bar;
@@ -86,6 +87,12 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     app.editor.render(frame, rects.tabs, rects.editor, editor_focused, &theme);
 
     status_bar::render(app, frame, rects.status);
+    // The hover popup sits at the caret, over everything but the overlays.
+    app.hover_check();
+    if let (Some(h), Some(anchor)) = (&mut app.hover, app.editor.caret_cell) {
+        let above_status = ratatui::layout::Rect { height: rects.status.y.saturating_sub(area.y), ..area };
+        h.render(frame, above_status, anchor, &theme);
+    }
     tool_strip::render_tooltip(app, frame, area);
 
     // Toasts sit below the palette and dialogs, which own the input.

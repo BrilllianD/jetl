@@ -63,6 +63,7 @@ impl App {
             AppMsg::RunTasks { generation, seq, tasks, error } => self.run_tasks_loaded(generation, seq, tasks, error),
             AppMsg::TerminalOutput { generation, id } => self.terminal_output(generation, id),
             AppMsg::Lsp(m) => self.lsp_msg(m),
+            AppMsg::Locations { generation, seq, title, items } => self.locations_loaded(generation, seq, title, items),
         }
     }
 
@@ -317,15 +318,19 @@ impl App {
 
     /// Put the active buffer's caret at `target` (remembered for back).
     fn goto_target(&mut self, target: GotoTarget) {
-        let (line, col) = match target {
-            GotoTarget::Char { line, col } => (line, col),
-            GotoTarget::Utf16(pos) => {
-                let Some(b) = self.editor.active_buffer() else { return };
-                let idx = crate::lsp::pos::char_index(&b.rope, pos);
-                crate::editor::selection::pos_to_line_col(&b.rope, idx)
-            }
-        };
+        let (line, col) = self.target_line_col(target);
         self.editor.goto_line(line + 1, col + 1);
+    }
+
+    /// `target` in the active buffer as a 0-based line and char column.
+    fn target_line_col(&self, target: GotoTarget) -> (usize, usize) {
+        match target {
+            GotoTarget::Char { line, col } => (line, col),
+            GotoTarget::Utf16(pos) => match self.editor.active_buffer() {
+                Some(b) => crate::editor::selection::pos_to_line_col(&b.rope, crate::lsp::pos::char_index(&b.rope, pos)),
+                None => (0, 0),
+            },
+        }
     }
 
     /// Open a file: reuse the tab when already open, otherwise read it off
@@ -358,7 +363,12 @@ impl App {
         self.editor.open_text(path.clone(), &text, lossy, &self.theme);
         self.editor.enforce_tab_limit();
         if let Some((_, target)) = self.pending_goto.take_if(|(p, _)| *p == path) {
-            self.goto_target(target);
+            // Opening the tab remembered the position left; the new tab's
+            // first caret is not worth going back to.
+            let (line, col) = self.target_line_col(target);
+            if let Some(b) = self.editor.active_buffer_mut() {
+                b.goto_line(line, col);
+            }
         }
         self.git.load_blob(path, BlobWhich::Head);
         if focus {

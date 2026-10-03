@@ -46,6 +46,7 @@ mod files;
 mod find;
 mod format;
 mod lsp;
+mod lsp_nav;
 mod main_menu;
 mod mouse;
 mod msg;
@@ -203,6 +204,8 @@ pub struct App {
     pub terminal: crate::terminal::panel::TerminalPanel,
     /// Language servers and the documents open on them.
     pub(crate) lsp: lsp::LspService,
+    /// The Quick Documentation popup at the caret (`app/lsp_nav.rs`).
+    pub hover: Option<crate::ui::hover::HoverPopup>,
     started: Instant,
 }
 
@@ -275,6 +278,7 @@ impl App {
             problems: Default::default(),
             terminal: crate::terminal::panel::TerminalPanel::new(config.terminal.scrollback),
             lsp: Default::default(),
+            hover: None,
             started: Instant::now(),
             config,
             paths,
@@ -563,6 +567,11 @@ impl App {
             self.palette_key(key);
             return;
         }
+        // The hover popup takes Esc and its scroll keys; other keys close
+        // it and go on.
+        if self.hover.is_some() && self.hover_key(key) {
+            return;
+        }
         // The terminal takes every key but a few (`[terminal]`, Esc Esc).
         if self.focus.is(PanelId::Terminal) && self.layout.is_visible(ToolWindowId::Terminal) {
             self.dispatcher.reset();
@@ -711,6 +720,16 @@ impl App {
             Action::Lsp(a @ (crate::actions::LspAction::NextProblem | crate::actions::LspAction::PrevProblem)) => {
                 drop(cx);
                 self.lsp_step_problem(*a == crate::actions::LspAction::NextProblem);
+                return;
+            }
+            Action::Lsp(a) => {
+                drop(cx);
+                match a {
+                    crate::actions::LspAction::GotoDefinition => self.lsp_goto_definition(),
+                    crate::actions::LspAction::FindUsages => self.lsp_find_usages(),
+                    crate::actions::LspAction::QuickDoc => self.lsp_quick_doc(),
+                    _ => {}
+                }
                 return;
             }
             Action::Palette(_) => false,

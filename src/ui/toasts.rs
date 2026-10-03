@@ -130,7 +130,7 @@ impl Toasts {
 
 /// Greedy wrap at spaces (or anywhere for long words) into at most
 /// `max_lines` lines of `width` cells; a cut last line ends with `…`.
-fn wrap(text: &str, width: usize, max_lines: usize) -> Vec<String> {
+pub(crate) fn wrap(text: &str, width: usize, max_lines: usize) -> Vec<String> {
     let width = width.max(1);
     let mut lines: Vec<String> = Vec::new();
     for para in text.lines() {

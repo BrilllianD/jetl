@@ -22,7 +22,7 @@ use crate::lsp::client::{Client, StartSpec, State};
 use crate::lsp::diagnostics::{Counts, Diagnostic, DiagnosticStore, MAX_TOTAL, Severity};
 use crate::lsp::sync::{self, SyncCaps};
 use crate::lsp::transport::{RequestId, ResponseError};
-use crate::lsp::{LspConfig, LspMsg, LspRequest, PendingTag, ServerConfig, ServerId};
+use crate::lsp::{LspConfig, LspMsg, LspRequest, ServerConfig, ServerId};
 
 /// How servers are reached: processes, or in-process fakes in tests.
 #[derive(Default)]
@@ -41,12 +41,12 @@ type FakeConnect = dyn FnMut(&str) -> std::io::Result<crate::lsp::client::Conn> 
 pub struct LspService {
     /// The current root's servers by name; a failed one stays (in
     /// `State::Failed`) so it is not started again until `lsp.restart`.
-    clients: HashMap<String, Client>,
+    pub(super) clients: HashMap<String, Client>,
     /// Servers whose command could not start; not tried again until
     /// `lsp.restart`.
     missing: HashSet<String>,
     /// Buffers open on a server.
-    docs: HashMap<BufferId, Doc>,
+    pub(super) docs: HashMap<BufferId, Doc>,
     /// `[lsp]` servers, resolved on first use.
     servers: Option<Arc<Vec<ServerConfig>>>,
     /// The last `ServerId` handed out.
@@ -55,16 +55,33 @@ pub struct LspService {
     progress: Vec<(ServerId, String, Progress)>,
     /// What the servers published (`textDocument/publishDiagnostics`).
     pub(crate) diagnostics: DiagnosticStore,
+    /// The request in flight per method (`app/lsp_nav.rs`): only its
+    /// answer is used, and a newer request of the method cancels it.
+    pub(super) inflight: HashMap<&'static str, Inflight>,
+    /// The last seq handed to a request (`DocTag::seq`).
+    pub(super) last_seq: u64,
+    /// The seq of the newest definition or usages request: the one whose
+    /// locations may still open the palette.
+    pub(super) nav_seq: u64,
     connector: Connector,
+}
+
+/// A request in flight: the server, its id there (for `$/cancelRequest`)
+/// and its seq.
+#[derive(Debug, Clone)]
+pub(super) struct Inflight {
+    pub server: String,
+    pub id: i64,
+    pub seq: u64,
 }
 
 /// A buffer as its server knows it.
 #[derive(Debug)]
-struct Doc {
-    server: String,
+pub(super) struct Doc {
+    pub server: String,
     path: PathBuf,
     language: &'static str,
-    uri: Uri,
+    pub uri: Uri,
     version: i32,
 }
 
@@ -102,6 +119,7 @@ impl LspService {
         self.docs.clear();
         self.progress.clear();
         self.diagnostics.clear();
+        self.inflight.clear();
     }
 
     /// Whether a spinner is shown (a server starting or busy).
@@ -269,6 +287,7 @@ impl App {
     pub(super) fn lsp_request(&mut self, req: LspRequest) {
         match req {
             LspRequest::Restart => self.lsp_restart(),
+            LspRequest::Definition => self.lsp_goto_definition(),
         }
     }
 
@@ -320,7 +339,7 @@ impl App {
             }
             LspMsg::Notification { method, params, .. } => self.lsp_notification(&name, server, &method, params),
             LspMsg::ServerRequest { id, method, params, .. } => self.lsp_server_request(&name, id, &method, params),
-            LspMsg::Response { tag: PendingTag::Initialize | PendingTag::Shutdown, .. } => {}
+            LspMsg::Response { tag, result, .. } => self.lsp_response(&name, tag, result),
         }
     }
 

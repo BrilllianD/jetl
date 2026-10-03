@@ -34,6 +34,21 @@ pub fn char_index(rope: &Rope, pos: Position) -> usize {
     rope.utf16_cu_to_char(at16)
 }
 
+/// The char column of UTF-16 column `character` in `line` (one line's
+/// text, without its break), clamped to the end of the line; a column
+/// inside a surrogate pair is the char it belongs to. For text that is not
+/// in a rope (a line read from disk).
+pub fn line_char_col(line: &str, character: u32) -> usize {
+    let mut units = 0;
+    for (i, c) in line.chars().enumerate() {
+        units += c.len_utf16();
+        if units > character as usize {
+            return i;
+        }
+    }
+    line.chars().count()
+}
+
 /// Whether char index `idx` falls between the `\r` and `\n` of a CRLF
 /// line break, a place no LSP position can name.
 pub fn inside_crlf(rope: &Rope, idx: usize) -> bool {
@@ -63,6 +78,21 @@ mod tests {
         // Past the last line: the end of the text.
         assert_eq!(char_index(&r, p(2, 0)), 6);
         assert_eq!(char_index(&r, p(9, 9)), 6);
+    }
+
+    #[test]
+    fn line_columns_on_cjk_and_surrogate_pairs() {
+        let line = "日本😀x𝄞y";
+        // 日 本 😀(2) x 𝄞(2) y: units 0 1 2-3 4 5-6 7.
+        let expect = [(0, 0), (1, 1), (2, 2), (3, 2), (4, 3), (5, 4), (6, 4), (7, 5), (8, 6), (99, 6)];
+        for (unit, ch) in expect {
+            assert_eq!(line_char_col(line, unit), ch, "unit {unit}");
+        }
+        // Agrees with the rope conversion on whole-char columns.
+        let r = Rope::from_str(line);
+        for unit in [0, 1, 2, 4, 5, 7, 8] {
+            assert_eq!(line_char_col(line, unit), char_index(&r, Position::new(0, unit)), "unit {unit}");
+        }
     }
 
     #[test]

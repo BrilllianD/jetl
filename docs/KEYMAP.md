@@ -149,6 +149,9 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Ctrl+Alt+L` | `editor.format` | Reformat code with the external formatter |
 | `F2` | `lsp.next_problem` | Next problem (diagnostic) in the file |
 | `Shift+F2` | `lsp.prev_problem` | Previous problem (diagnostic) in the file |
+| `Ctrl+B` | `lsp.goto_definition` | Go to declaration (on a declaration: its usages) |
+| `Alt+F7` | `lsp.find_usages` | Find usages of the symbol at the caret |
+| `Alt+Q` | `lsp.quick_doc` | Quick documentation for the symbol at the caret |
 
 ## tree
 

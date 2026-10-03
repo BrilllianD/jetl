@@ -68,6 +68,9 @@ pub enum PaletteKind {
     Symbols,
     /// The Run task picker.
     RunTasks,
+    /// Places a language server answered with (definitions, usages); opened
+    /// by the app with its rows (`App::show_locations`), not by an action.
+    Locations,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -338,6 +341,13 @@ pub enum LspAction {
     /// Move the caret to the next diagnostic in the file (wrapping).
     NextProblem,
     PrevProblem,
+    /// Ctrl+B: go to the definition at the caret; on the definition
+    /// itself, its usages.
+    GotoDefinition,
+    /// Alt+F7: the usages of what is at the caret.
+    FindUsages,
+    /// Alt+Q: the hover documentation at the caret in a popup.
+    QuickDoc,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -631,6 +641,9 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "lsp.restart" => "Restart language servers", Lsp(LspAction::Restart);
         "lsp.next_problem" => "Next problem (diagnostic) in the file", Lsp(LspAction::NextProblem);
         "lsp.prev_problem" => "Previous problem (diagnostic) in the file", Lsp(LspAction::PrevProblem);
+        "lsp.goto_definition" => "Go to declaration (on a declaration: its usages)", Lsp(LspAction::GotoDefinition);
+        "lsp.find_usages" => "Find usages of the symbol at the caret", Lsp(LspAction::FindUsages);
+        "lsp.quick_doc" => "Quick documentation for the symbol at the caret", Lsp(LspAction::QuickDoc);
 
         "problems.up" => "Problems: up", Problems(ProblemsAction::Up);
         "problems.down" => "Problems: down", Problems(ProblemsAction::Down);

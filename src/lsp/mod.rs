@@ -9,6 +9,7 @@ pub mod client;
 pub mod diagnostics;
 #[cfg(test)]
 pub mod fake;
+pub mod locations;
 pub mod panel;
 pub mod pos;
 pub mod sync;
@@ -34,6 +35,34 @@ pub enum PendingTag {
     Initialize,
     /// `shutdown`, answered inside the client.
     Shutdown,
+    /// `textDocument/definition`.
+    Definition(DocTag),
+    /// `textDocument/references`.
+    References(DocTag),
+    /// `textDocument/hover`.
+    Hover(DocTag),
+}
+
+impl PendingTag {
+    /// The document request's tag, for the requests the app makes.
+    pub fn doc(&self) -> Option<&DocTag> {
+        match self {
+            PendingTag::Initialize | PendingTag::Shutdown => None,
+            PendingTag::Definition(t) | PendingTag::References(t) | PendingTag::Hover(t) => Some(t),
+        }
+    }
+}
+
+/// What a request about a position in a buffer is checked against when
+/// its answer arrives: the buffer, its `Buffer::version` and the position
+/// (UTF-16) when it was sent, and the request's seq (the newest request of
+/// a kind wins; `app/lsp.rs` keeps it per method).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DocTag {
+    pub buffer: crate::editor::buffer::BufferId,
+    pub version: u64,
+    pub pos: lsp_types::Position,
+    pub seq: u64,
 }
 
 /// A language server event for the app, tagged with the workspace
@@ -114,6 +143,9 @@ impl LspMsg {
 pub enum LspRequest {
     /// Stop every server; they start again for the open buffers.
     Restart,
+    /// Go to the definition of what is at the active buffer's caret (a
+    /// Ctrl+click puts the caret on the clicked char first).
+    Definition,
 }
 
 /// `[lsp]` in config.toml.

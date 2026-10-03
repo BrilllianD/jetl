@@ -54,6 +54,22 @@ impl App {
             return;
         }
 
+        // The hover popup scrolls under the wheel; a click anywhere closes
+        // it (and does what it does there, unless it was on the popup).
+        if let Some(h) = &mut self.hover {
+            let on = h.contains(m.column, m.row);
+            match m.kind {
+                MouseEventKind::ScrollUp if on => return h.scroll_by(-3),
+                MouseEventKind::ScrollDown if on => return h.scroll_by(3),
+                MouseEventKind::Down(_) => {
+                    self.hover = None;
+                    if on {
+                        return;
+                    }
+                }
+                _ => {}
+            }
+        }
         if self.palette.is_some() && self.dialog.is_none() && self.menu.is_none() && self.menu_bar.is_none() {
             if matches!(m.kind, MouseEventKind::Up(_)) {
                 self.drag = None;

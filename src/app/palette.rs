@@ -187,7 +187,9 @@ impl App {
             PaletteResult::Accept(Accept::NewBranch) => self.git_request(GitRequest::NewBranch),
             PaletteResult::Accept(Accept::SwitchRoot(root)) => self.apply_effects(vec![Effect::SwitchRoot(root)]),
             PaletteResult::Accept(Accept::RunTask(task)) => self.run_task(*task),
+            // A symbol or location: back returns here even after a short jump.
             PaletteResult::Accept(Accept::OpenFileAt { path, line, col }) => {
+                self.editor.push_nav_here();
                 self.apply_effects(vec![Effect::OpenFileAt { path, line, col }])
             }
         }

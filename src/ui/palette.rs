@@ -1,5 +1,6 @@
 //! Command palette overlay: Go to File, Go to Symbol, Find Action, Search
-//! Everywhere, Recent Files, Branches, Recent Projects and Run tasks. The app owns it (`App.palette`) and routes all
+//! Everywhere, Recent Files, Branches, Recent Projects, Run tasks and a
+//! language server's locations (definitions, usages). The app owns it (`App.palette`) and routes all
 //! input to it while it is open, like a dialog. Keys arrive as
 //! `PaletteAction`s from the `palette` keymap context; unmapped keys edit the
 //! query. The palette holds copies of its candidates (the file index, the
@@ -23,6 +24,7 @@ use crate::actions::{Action, PaletteAction, PaletteKind};
 use crate::config::theme::Theme;
 use crate::event::Mouse;
 use crate::git::BranchInfo;
+use crate::lsp::locations::LocationItem;
 use crate::symbols::index::SymbolEntry;
 use crate::ui::widgets::list::ListState;
 use crate::ui::widgets::text_input::TextInput;
@@ -41,6 +43,8 @@ pub enum Source {
     Projects,
     Symbols,
     Tasks,
+    /// A language server's locations (`PaletteKind::Locations`).
+    Locations,
 }
 
 impl Source {
@@ -53,6 +57,7 @@ impl Source {
             Source::Projects => "Recent Projects",
             Source::Symbols => "Symbols",
             Source::Tasks => "Run",
+            Source::Locations => "Locations",
         }
     }
 }
@@ -118,6 +123,9 @@ pub struct Palette {
     /// Run tasks of the root and whether they are still loading.
     tasks: Vec<crate::run::RunTask>,
     tasks_loading: bool,
+    /// Locations and the title they are shown under.
+    locations: Vec<LocationItem>,
+    locations_title: String,
     matcher: Matcher,
     outer: Rect,
     list_rect: Rect,
@@ -134,6 +142,7 @@ impl Palette {
             PaletteKind::RecentProjects => vec![Source::Projects],
             PaletteKind::Symbols => vec![Source::Symbols],
             PaletteKind::RunTasks => vec![Source::Tasks],
+            PaletteKind::Locations => vec![Source::Locations],
             // Go to Line stays a dialog and never opens a palette.
             PaletteKind::Branches | PaletteKind::GotoLine => vec![Source::Branches],
         };
@@ -156,6 +165,8 @@ impl Palette {
             symbols_loading: false,
             tasks: Vec::new(),
             tasks_loading: false,
+            locations: Vec::new(),
+            locations_title: String::new(),
             matcher: Matcher::default(),
             outer: Rect::default(),
             list_rect: Rect::default(),
@@ -226,6 +237,15 @@ impl Palette {
         }
     }
 
+    /// The rows of a Locations palette, in the order given, under `title`.
+    pub fn set_locations(&mut self, title: String, items: Vec<LocationItem>) {
+        self.locations = items;
+        self.locations_title = title;
+        if self.source() == Source::Locations {
+            self.refilter(true);
+        }
+    }
+
     /// Recent project roots, newest first; the current root is left out.
     pub fn set_projects(&mut self, roots: &[PathBuf]) {
         let home = directories::BaseDirs::new().map(|d| d.home_dir().to_path_buf());
@@ -292,6 +312,15 @@ impl Palette {
                     rank_texts(&q, texts, &mut self.matcher)
                 }
             }
+            Source::Locations => {
+                if q.is_empty() {
+                    (0..self.locations.len()).collect()
+                } else {
+                    let paths: Vec<String> = self.locations.iter().map(|l| display_path(&l.path, &self.root)).collect();
+                    let texts = self.locations.iter().zip(&paths).map(|(l, p)| [l.text.as_str(), p.as_str()]);
+                    rank_texts(&q, texts, &mut self.matcher)
+                }
+            }
             Source::Branches => {
                 let mut texts: Vec<[&str; 1]> = vec![["New Branch"]];
                 texts.extend(self.branches.iter().map(|b| [b.name.as_str()]));
@@ -324,6 +353,10 @@ impl Palette {
             }
             Source::Actions => Accept::Action(self.actions.get(i)?.action.clone()),
             Source::Tasks => Accept::RunTask(Box::new(self.tasks.get(i)?.clone())),
+            Source::Locations => {
+                let l = self.locations.get(i)?;
+                Accept::OpenFileAt { path: l.path.clone(), line: l.line, col: l.col }
+            }
             Source::Branches if i == 0 => Accept::NewBranch,
             Source::Branches => Accept::Branch(self.branches.get(i - 1)?.clone()),
         };
@@ -414,8 +447,9 @@ impl Palette {
         }
     }
 
-    fn title(&self) -> &'static str {
+    fn title(&self) -> &str {
         match self.kind {
+            PaletteKind::Locations => &self.locations_title,
             PaletteKind::Files => "Go to File",
             PaletteKind::Actions => "Find Action",
             PaletteKind::Everywhere => "Search Everywhere",
@@ -495,6 +529,7 @@ impl Palette {
             Source::Projects => "type a project name",
             Source::Symbols => "type a symbol name",
             Source::Tasks => "type a task name",
+            Source::Locations => "type to filter",
         };
         self.input.render(frame, qrect, Style::default().bg(theme.bg).fg(theme.fg), placeholder, theme.dim.bg(theme.bg), true);
         frame.buffer_mut().set_stringn(inner.right().saturating_sub(cw + 1), y, &count, cw as usize, theme.dim.bg(theme.popup_bg));
@@ -580,6 +615,18 @@ impl Palette {
                         v.push((" ".repeat(width - used - origin.width()), base));
                         v.push((origin.to_string(), dim));
                     }
+                    v
+                }
+                Source::Locations => {
+                    // The text, cut to leave room for the place on the right.
+                    let l = &self.locations[i];
+                    let place = format!("{}:{}", display_path(&l.path, &self.root), l.line + 1);
+                    let text = crate::util::text::fit(&l.text, width.saturating_sub(place.width() + 2));
+                    let marks = match_indices(&pattern, &l.text, &mut self.matcher);
+                    let mut v = highlight(&text, |ci| marks.contains(&(ci as u32)), base, hl);
+                    let used = text.width();
+                    v.push((" ".repeat(width.saturating_sub(used + place.width()).max(2)), base));
+                    v.push((place, dim));
                     v
                 }
                 Source::Branches if i == 0 => vec![(NEW_BRANCH.to_string(), base)],
