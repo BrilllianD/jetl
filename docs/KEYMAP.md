@@ -61,6 +61,26 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Alt+-` | `editor.split_down` | Split down (the tab in a new group below) |
 | `Alt+Tab` | `editor.next_group` | Next tab group |
 | `Alt+Shift+Tab` | `editor.prev_group` | Previous tab group |
+| `Ctrl+0` * | `editor.goto_bookmark_0` | Go to bookmark 0 |
+| `Alt+B 0` | `editor.goto_bookmark_0` | Go to bookmark 0 |
+| `Ctrl+1` * | `editor.goto_bookmark_1` | Go to bookmark 1 |
+| `Alt+B 1` | `editor.goto_bookmark_1` | Go to bookmark 1 |
+| `Ctrl+2` * | `editor.goto_bookmark_2` | Go to bookmark 2 |
+| `Alt+B 2` | `editor.goto_bookmark_2` | Go to bookmark 2 |
+| `Ctrl+3` * | `editor.goto_bookmark_3` | Go to bookmark 3 |
+| `Alt+B 3` | `editor.goto_bookmark_3` | Go to bookmark 3 |
+| `Ctrl+4` | `editor.goto_bookmark_4` | Go to bookmark 4 |
+| `Alt+B 4` | `editor.goto_bookmark_4` | Go to bookmark 4 |
+| `Ctrl+5` | `editor.goto_bookmark_5` | Go to bookmark 5 |
+| `Alt+B 5` | `editor.goto_bookmark_5` | Go to bookmark 5 |
+| `Ctrl+6` | `editor.goto_bookmark_6` | Go to bookmark 6 |
+| `Alt+B 6` | `editor.goto_bookmark_6` | Go to bookmark 6 |
+| `Ctrl+7` | `editor.goto_bookmark_7` | Go to bookmark 7 |
+| `Alt+B 7` | `editor.goto_bookmark_7` | Go to bookmark 7 |
+| `Ctrl+8` * | `editor.goto_bookmark_8` | Go to bookmark 8 |
+| `Alt+B 8` | `editor.goto_bookmark_8` | Go to bookmark 8 |
+| `Ctrl+9` * | `editor.goto_bookmark_9` | Go to bookmark 9 |
+| `Alt+B 9` | `editor.goto_bookmark_9` | Go to bookmark 9 |
 | `Alt+F1` | `tree.select_in_project` | Select in Project |
 | `Alt+H` | `git.file_history` | Git: show history for the file (editor) or the selected entry (Project tree) |
 | `Alt+0` | `git.commit_box` | Git: open commit window |
@@ -160,6 +180,7 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Ctrl+Alt+Right` | `editor.nav_forward` | Navigate forward |
 | `F11` | `editor.toggle_bookmark` | Toggle bookmark on the caret line |
 | `Shift+F11` | `editor.show_bookmarks` | Show bookmarks |
+| `Ctrl+F11` | `editor.toggle_numbered_bookmark` | Toggle numbered bookmark (a digit) on the caret line |
 | `Ctrl+Alt+Z` | `editor.revert_change` | Revert the change at the caret to HEAD |
 | `Ctrl+Alt+Shift+Down` | `editor.next_change` | Go to the next change |
 | `F7` | `editor.next_change` | Go to the next change |

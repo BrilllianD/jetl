@@ -156,9 +156,17 @@ impl App {
                 }
             }
             (DialogId::Bookmarks(targets), DialogResult::Choice(i)) => {
-                if let Some(&(id, line)) = targets.get(i) {
-                    self.editor.goto_bookmark(id, line);
+                if let Some(t) = targets.get(i) {
+                    let mut cx = ctx!(self);
+                    self.editor.goto_bookmark_target(t, &mut cx);
+                    let fx = cx.effects;
+                    self.apply_effects(fx);
                     self.focus.set(PanelId::Editor);
+                }
+            }
+            (DialogId::BookmarkDigit(id, line), DialogResult::Button(d)) => {
+                if let Ok(d) = u8::try_from(d) {
+                    self.editor.set_bookmark_digit(id, line, d);
                 }
             }
             (DialogId::LineEnding(id), DialogResult::Choice(i)) => {

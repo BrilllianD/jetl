@@ -164,6 +164,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   are named in the notification. Open tabs keep their soft wrap; the new default applies to files
   opened afterwards.
 
+- Numbered bookmarks, JetBrains-style: Ctrl+F11 asks for a digit for the caret line's bookmark
+  (pressing the line's own digit removes it; a digit used elsewhere moves here), Ctrl+0..9 jump
+  to the bookmark with that digit, opening its file when it was closed. Without the kitty
+  keyboard protocol Alt+B then the digit jumps. The gutter shows the digit instead of ◆, the
+  Shift+F11 list shows it too, and sessions keep the digits (older session files load as before).
+
 ### Changed
 
 - Dialogs are wide enough to show their whole title.
@@ -181,6 +187,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The hint shown in an editor without tabs wraps onto centred lines in a narrow pane instead of
   being cut at the right edge.
+- A dialog with many buttons is wide enough for all of them.
 
 ## [0.1.0] - 2026-10-03
 

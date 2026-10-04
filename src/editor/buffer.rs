@@ -1,7 +1,7 @@
 //! A text buffer: rope, selection, undo history, file metadata.
 //! Every mutation goes through [`Buffer::apply`].
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -139,9 +139,12 @@ pub struct Buffer {
     /// The file changed on disk under unsaved edits; no autosave until an
     /// explicit save.
     pub autosave_conflict: bool,
-    /// Bookmarked lines (F11). Every applied change (edits, undo, redo)
-    /// carries them along with their text; lines deleted outright drop out.
-    pub bookmarks: BTreeSet<usize>,
+    /// Bookmarked lines (F11) and their mnemonic digit, if any (Ctrl+F11;
+    /// the editor keeps each digit unique across buffers). Every applied
+    /// change (edits, undo, redo) carries them along with their text; lines
+    /// deleted outright drop out, and of two marks merged into one line a
+    /// digit wins over none.
+    pub bookmarks: BTreeMap<usize, Option<u8>>,
     /// What Tab, Enter and indent/unindent insert; set by the editor on
     /// open from `.editorconfig`, the text or the config.
     pub indent: IndentStyle,
@@ -203,7 +206,7 @@ impl Buffer {
             autosave_seen: 0,
             autosave_failed: None,
             autosave_conflict: false,
-            bookmarks: BTreeSet::new(),
+            bookmarks: BTreeMap::new(),
             indent: IndentStyle::default(),
             settings: FileSettings::default(),
             lsp_tracked: false,
@@ -303,7 +306,8 @@ impl Buffer {
         // (a reload) leaves them nothing to map.
         let whole = at == 0 && old_len > 0 && old_len == self.rope.len_chars();
         self.edit_log.push(if whole { LogEdit::Reset } else { LogEdit::Edit { at, old_len, new_len } });
-        let marks: Vec<MarkTarget> = self.bookmarks.iter().map(|&l| mark_target(&self.rope, l, at, old_len, c)).collect();
+        let marks: Vec<(MarkTarget, Option<u8>)> =
+            self.bookmarks.iter().map(|(&l, &d)| (mark_target(&self.rope, l, at, old_len, c), d)).collect();
         let end = (at + old_len).min(self.rope.len_chars());
         self.record_lsp_edit(at, end, &c.new);
         if old_len > 0 {
@@ -314,14 +318,19 @@ impl Buffer {
         }
         if !marks.is_empty() {
             let (len, last) = (self.rope.len_chars(), self.rope.len_lines() - 1);
-            self.bookmarks = marks
-                .into_iter()
-                .filter_map(|t| match t {
-                    MarkTarget::Pos(p) => Some(self.rope.char_to_line(p.min(len))),
-                    MarkTarget::Line(l) => Some(l.min(last)),
-                    MarkTarget::Drop => None,
-                })
-                .collect();
+            let mut moved = BTreeMap::new();
+            for (t, digit) in marks {
+                let line = match t {
+                    MarkTarget::Pos(p) => self.rope.char_to_line(p.min(len)),
+                    MarkTarget::Line(l) => l.min(last),
+                    MarkTarget::Drop => continue,
+                };
+                let slot = moved.entry(line).or_insert(None);
+                if slot.is_none() {
+                    *slot = digit;
+                }
+            }
+            self.bookmarks = moved;
         }
         if let Some(s) = &mut self.syntax {
             s.note_change(&self.rope, at, old_len, new_len, &c.old, &c.new);
@@ -1246,15 +1255,25 @@ impl Buffer {
     /// Add or remove the bookmark on the caret line.
     pub fn toggle_bookmark(&mut self) {
         let line = self.cursor_line_col().0;
-        if !self.bookmarks.remove(&line) {
-            self.bookmarks.insert(line);
+        if self.bookmarks.remove(&line).is_none() {
+            self.bookmarks.insert(line, None);
         }
     }
 
     /// Replace the bookmarks (from a session), dropping lines past the end.
     pub fn set_bookmarks(&mut self, lines: &[usize]) {
         let n = self.rope.len_lines();
-        self.bookmarks = lines.iter().copied().filter(|l| *l < n).collect();
+        self.bookmarks = lines.iter().copied().filter(|l| *l < n).map(|l| (l, None)).collect();
+    }
+
+    /// The line of the bookmark with mnemonic `digit`.
+    pub fn digit_line(&self, digit: u8) -> Option<usize> {
+        self.bookmarks.iter().find(|(_, d)| **d == Some(digit)).map(|(l, _)| *l)
+    }
+
+    /// The numbered bookmarks as (digit, line), by line.
+    pub fn digits(&self) -> Vec<(u8, usize)> {
+        self.bookmarks.iter().filter_map(|(l, d)| d.map(|d| (d, *l))).collect()
     }
 
     pub fn line_text(&self, line: usize) -> String {
@@ -2379,7 +2398,7 @@ g()
     }
 
     fn marks(buf: &Buffer) -> Vec<usize> {
-        buf.bookmarks.iter().copied().collect()
+        buf.bookmarks.keys().copied().collect()
     }
 
     #[test]
@@ -2446,6 +2465,24 @@ g()
         let old = buf.text();
         buf.apply(vec![Change::replace(0, old, "zero\none\ntwo\nthree\n")], Selection::point(0), TxKind::Other);
         assert_eq!(marks(&buf), vec![3]);
+    }
+
+    #[test]
+    fn numbered_bookmarks_follow_edits_and_win_merges() {
+        let mut buf = b("a\nb\nc\nd\n");
+        buf.set_bookmarks(&[1]);
+        buf.bookmarks.insert(2, Some(3));
+        buf.goto_line(0, 0);
+        buf.insert("x\n", TxKind::Other);
+        assert_eq!((marks(&buf), buf.digits(), buf.digit_line(3)), (vec![2, 3], vec![(3, 3)], Some(3)));
+        // Backspace at the start of line 3 merges it into marked line 2:
+        // the merged mark keeps the digit.
+        buf.goto_line(3, 0);
+        buf.backspace();
+        assert_eq!(buf.bookmarks.iter().map(|(l, d)| (*l, *d)).collect::<Vec<_>>(), vec![(2, Some(3))]);
+        assert!(buf.undo());
+        assert_eq!(buf.digit_line(3), Some(2));
+        assert_eq!(buf.digit_line(4), None);
     }
 
     #[test]

@@ -10,6 +10,7 @@
 
 use std::path::PathBuf;
 
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use insta::assert_snapshot;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
@@ -251,6 +252,45 @@ async fn editor_fold_indent_txt() {
     let term = draw_editor(app, 50, 10);
     let marks = editor_marks(&app.theme);
     assert_snapshot!("editor_fold_indent_txt", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
+async fn editor_bookmarks() {
+    let mut fx = stable_app("bookmarks");
+    let app = &mut fx.app;
+    load(app, "notes.log", PLAIN);
+    draw_editor(app, 40, 8);
+    // A plain bookmark on line 1, bookmark 3 on line 3, bookmark 7 on
+    // line 6; the caret ends on line 4.
+    editor(app, EditorAction::ToggleBookmark);
+    for (down, digit) in [(2, '3'), (3, '7')] {
+        moves(app, Motion::Down, down);
+        editor(app, EditorAction::ToggleNumberedBookmark);
+        app.handle_key(KeyEvent::new(KeyCode::Char(digit), KeyModifiers::NONE));
+    }
+    moves(app, Motion::Up, 2);
+    let term = draw_editor(app, 40, 8);
+    // A digit is drawn reversed, so it does not read as part of the line
+    // number (the caret mark is reversed too: B goes first).
+    let mut marks = vec![Mark::style('B', "bookmark", app.theme.bookmark)];
+    marks.extend(editor_marks(&app.theme));
+    assert_snapshot!("editor_bookmarks", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
+async fn bookmark_digit_dialog() {
+    let mut fx = stable_app("bookmark-digit-dialog");
+    let app = &mut fx.app;
+    load(app, "notes.log", PLAIN);
+    moves(app, Motion::Down, 2);
+    // Digit 1 is taken, so 2 is preselected; all ten buttons fit inside.
+    editor(app, EditorAction::ToggleNumberedBookmark);
+    app.handle_key(KeyEvent::new(KeyCode::Char('1'), KeyModifiers::NONE));
+    moves(app, Motion::Down, 1);
+    editor(app, EditorAction::ToggleNumberedBookmark);
+    let term = draw_app(app, 80, 24);
+    let marks = [Mark::style('B', "selected button", app.theme.list_selected)];
+    assert_snapshot!("bookmark_digit_dialog", snapshot(&term, &marks, None));
 }
 
 const WRAPPED: &str = "short\nthe quick brown fox jumps over the lazy dog héllo 世界 again and again\n\ttabbed line that wraps after the tab and more words\nend\n";

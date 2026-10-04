@@ -932,7 +932,7 @@ class A:
             let b = ed.active_buffer_mut().unwrap();
             b.diag_marks.lines.insert(2, crate::lsp::diagnostics::Severity::Error);
             b.diag_marks.lines.insert(5, crate::lsp::diagnostics::Severity::Warning);
-            b.bookmarks.insert(1);
+            b.bookmarks.insert(1, None);
             let rows = draw(&mut ed, 40, 8);
             let col = |rows: &[String], y: usize, x: u16| rows[y].chars().nth(x as usize).unwrap();
             let (x0, y0) = (ed.text_area().x, ed.text_area().y as usize);

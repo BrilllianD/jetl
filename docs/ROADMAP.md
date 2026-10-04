@@ -76,6 +76,7 @@ Effort: S = hours to a day, M = 1-3 days, L = about a week, XL = multiple weeks.
 | Multiple carets | L | Done: `Selections`, `Buffer::edit_carets` |
 | Code folding by tree-sitter node | M | Done: `editor/fold.rs` (`Folds` per view), visible rows through `editor/rows.rs`; wrap extends `Rows` with segments |
 | Back/forward caret navigation, bookmarks | S-M | Position ring in `Editor`; bookmarks persisted in session |
+| Numbered bookmarks (Ctrl+F11, Ctrl+0..9) | S | Done: `editor/bookmarks.rs`, a digit per `Buffer::bookmarks` entry, unique per session; closed files keep theirs; legacy fallback Alt+B then the digit |
 | Line-ending conversion, BOM preservation, language override from the status bar | S | Status bar gains language/indent/encoding segments |
 | Redo caret mismatch after delete_line/duplicate_line/toggle_comment | S | Bug: `sel` is set after `apply` |
 | Autosave on focus loss / idle | S | `editor.autosave = "off" \| "focus" \| "idle"` |

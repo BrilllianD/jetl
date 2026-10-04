@@ -112,8 +112,11 @@ pub enum DialogId {
     },
     Info,
     GotoLine,
-    /// Item `i` is bookmarked line `.1` of buffer `.0`.
-    Bookmarks(Vec<(crate::editor::buffer::BufferId, usize)>),
+    /// Item `i` goes to bookmark `.0[i]`.
+    Bookmarks(Vec<crate::editor::BookmarkTarget>),
+    /// Ctrl+F11: button `d` gives digit `d` to the bookmark on line `.1`
+    /// of buffer `.0`.
+    BookmarkDigit(crate::editor::buffer::BufferId, usize),
     /// Line ending of the buffer: item 0 is LF, 1 is CRLF.
     LineEnding(crate::editor::buffer::BufferId),
     /// Language of the buffer: item 0 is plain text, `i` is `LANGUAGES[i - 1]`.
@@ -381,7 +384,8 @@ impl Dialog {
         let msg_w = msg_lines.iter().map(|l| l.width()).max().unwrap_or(0);
         let (w, h) = match &self.kind {
             DialogKind::Confirm { buttons, .. } => {
-                let bw: usize = buttons.iter().map(|b| b.width() + 4).sum::<usize>() + 2;
+                // "[ label ]" per button, one column between them.
+                let bw: usize = buttons.iter().map(|b| b.width() + 4).sum::<usize>() + buttons.len().saturating_sub(1) + 2;
                 ((msg_w.max(bw) + 4).max(30), msg_lines.len() + 4)
             }
             DialogKind::Input { .. } => ((msg_w + 4).max(50), msg_lines.len() + 5),

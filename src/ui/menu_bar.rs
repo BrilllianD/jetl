@@ -142,6 +142,7 @@ pub const MAIN_MENU: &[(&str, char, &[Row])] = &[
             Item("Forward", "editor.nav_forward"),
             Sep,
             Item("Toggle Bookmark", "editor.toggle_bookmark"),
+            Item("Toggle Numbered Bookmark…", "editor.toggle_numbered_bookmark"),
             Item("Bookmarks…", "editor.show_bookmarks"),
             Sep,
             Item("Next Change", "editor.next_change"),

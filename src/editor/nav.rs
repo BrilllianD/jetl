@@ -17,6 +17,15 @@ pub struct NavPos {
     pub pos: usize,
 }
 
+/// Where the caret goes in a file that is being reopened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PendingAt {
+    /// A char offset (back/forward).
+    Pos(usize),
+    /// The start of a line (a numbered bookmark).
+    Line(usize),
+}
+
 #[derive(Debug, Default)]
 pub struct NavRing {
     back: Vec<NavPos>,

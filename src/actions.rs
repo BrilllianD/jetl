@@ -181,6 +181,10 @@ pub enum EditorAction {
     NavForward,
     ToggleBookmark,
     ShowBookmarks,
+    /// Ctrl+F11: choose a digit for the caret line's bookmark.
+    ToggleNumberedBookmark,
+    /// Ctrl+0..9: jump to the bookmark with this digit.
+    GotoNumberedBookmark(u8),
     LineEndingLf,
     LineEndingCrlf,
     SetLanguage,
@@ -585,6 +589,17 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "editor.nav_forward" => "Navigate forward", Editor(E::NavForward);
         "editor.toggle_bookmark" => "Toggle bookmark on the caret line", Editor(E::ToggleBookmark);
         "editor.show_bookmarks" => "Show bookmarks", Editor(E::ShowBookmarks);
+        "editor.toggle_numbered_bookmark" => "Toggle numbered bookmark (a digit) on the caret line", Editor(E::ToggleNumberedBookmark);
+        "editor.goto_bookmark_0" => "Go to bookmark 0", Editor(E::GotoNumberedBookmark(0));
+        "editor.goto_bookmark_1" => "Go to bookmark 1", Editor(E::GotoNumberedBookmark(1));
+        "editor.goto_bookmark_2" => "Go to bookmark 2", Editor(E::GotoNumberedBookmark(2));
+        "editor.goto_bookmark_3" => "Go to bookmark 3", Editor(E::GotoNumberedBookmark(3));
+        "editor.goto_bookmark_4" => "Go to bookmark 4", Editor(E::GotoNumberedBookmark(4));
+        "editor.goto_bookmark_5" => "Go to bookmark 5", Editor(E::GotoNumberedBookmark(5));
+        "editor.goto_bookmark_6" => "Go to bookmark 6", Editor(E::GotoNumberedBookmark(6));
+        "editor.goto_bookmark_7" => "Go to bookmark 7", Editor(E::GotoNumberedBookmark(7));
+        "editor.goto_bookmark_8" => "Go to bookmark 8", Editor(E::GotoNumberedBookmark(8));
+        "editor.goto_bookmark_9" => "Go to bookmark 9", Editor(E::GotoNumberedBookmark(9));
         "editor.line_ending_lf" => "Convert line endings to LF", Editor(E::LineEndingLf);
         "editor.line_ending_crlf" => "Convert line endings to CRLF", Editor(E::LineEndingCrlf);
         "editor.set_language" => "Set the file's language (highlighting)", Editor(E::SetLanguage);

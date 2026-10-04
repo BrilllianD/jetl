@@ -911,7 +911,9 @@ impl Editor {
             | E::CloseUnpinnedTabs
             | E::NavBack
             | E::NavForward
-            | E::ShowBookmarks => cx.notify(Level::Info, BUSY),
+            | E::ShowBookmarks
+            | E::ToggleNumberedBookmark
+            | E::GotoNumberedBookmark(_) => cx.notify(Level::Info, BUSY),
             E::Save | E::Format => cx.notify(Level::Info, "Apply (Ctrl+Enter) saves the merge result"),
             _ => return false,
         }

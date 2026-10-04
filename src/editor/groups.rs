@@ -669,6 +669,7 @@ impl Editor {
             return;
         }
         let id = self.buffers[i].id;
+        self.park_digits(i);
         // Back from the next tab reopens the closed one.
         if self.active() == Some(i) {
             self.nav.push(nav_pos(&self.buffers[i]));
@@ -699,6 +700,9 @@ impl Editor {
 
     /// Close every buffer and go back to one empty group.
     pub fn force_close_all(&mut self) {
+        for i in 0..self.buffers.len() {
+            self.park_digits(i);
+        }
         self.buffers.clear();
         self.mru.clear();
         self.groups = vec![TabGroup::new(self.next_group)];

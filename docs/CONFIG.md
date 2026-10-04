@@ -409,9 +409,9 @@ contexts, keys are key strings, values are action ids:
   `[mode.insert]` and `[mode.visual]` are only consulted when
   `[keymap] mode = "vim"`.
 - Without the kitty keyboard protocol (tmux, many legacy terminals),
-  Ctrl+Shift+letter, Ctrl+Tab, Ctrl+Enter and Shift Shift never arrive; the
-  default keymap carries fallbacks for them (Ctrl+N, Alt+S, F1, Alt+Enter,
-  Alt+Left/Right). The status bar shows `legacy keys` in that case.
+  Ctrl+Shift+letter, Ctrl+Tab, Ctrl+Enter, Shift Shift and most Ctrl+digit
+  keys never arrive; the default keymap carries fallbacks for them (Ctrl+N,
+  Alt+S, F1, Alt+Enter, Alt+Left/Right, Alt+B then a digit for Ctrl+0..9). The status bar shows `legacy keys` in that case.
 
 To regenerate KEYMAP.md after changing the defaults or the action registry:
 

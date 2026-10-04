@@ -1,6 +1,8 @@
 //! Editor: a tab strip of buffers plus the text view.
 
 pub mod blame;
+mod bookmarks;
+pub use bookmarks::BookmarkTarget;
 pub mod brackets;
 pub mod buffer;
 mod carets;
@@ -105,9 +107,12 @@ pub struct Editor {
     last_search: Option<LastSearch>,
     /// Back/forward history of caret positions.
     nav: NavRing,
-    /// A closed file being reopened by back/forward and the caret to put
-    /// in it once it loads.
-    pending_nav: Option<(PathBuf, usize)>,
+    /// A closed file being reopened by back/forward or a numbered
+    /// bookmark, and where to put the caret once it loads.
+    pending_nav: Option<(PathBuf, nav::PendingAt)>,
+    /// Numbered bookmarks of files without a tab: digit to path and line
+    /// (see `bookmarks.rs`).
+    closed_digits: std::collections::BTreeMap<u8, (PathBuf, usize)>,
     /// The last copy made at several carets: the clipboard text and each
     /// caret's piece, so pasting it at as many carets splits it again.
     multi_clip: Option<(String, Vec<String>)>,
@@ -169,6 +174,7 @@ impl Editor {
             last_search: None,
             nav: NavRing::default(),
             pending_nav: None,
+            closed_digits: Default::default(),
             multi_clip: None,
             column_mode: false,
             merge: None,
@@ -264,7 +270,10 @@ impl Editor {
         let mtime = buffer::file_mtime(&path);
         let pending = self.pending_nav.take_if(|(p, _)| *p == path).map(|(_, pos)| pos);
         let settings = indent::FileSettings::for_path(&path);
+        let digits = self.unpark_digits(&path);
         let mut buf = Buffer::from_text(id, Some(path), text, lossy);
+        let last = buf.rope.len_lines() - 1;
+        buf.bookmarks.extend(digits.into_iter().map(|(line, d)| (line.min(last), Some(d))));
         buf.syntax = syntax;
         buf.detected_language = lang;
         buf.disk_mtime = mtime;
@@ -279,9 +288,13 @@ impl Editor {
         let at = self.buffers.len() - 1;
         match pending {
             // Reopened by back/forward, which already updated the history.
-            Some(pos) => {
+            Some(nav::PendingAt::Pos(pos)) => {
                 self.set_active(at);
                 self.buffers[at].goto_pos(pos);
+            }
+            Some(nav::PendingAt::Line(line)) => {
+                self.set_active(at);
+                self.buffers[at].goto_line(line, 0);
             }
             None => self.activate_index(at),
         }
@@ -409,44 +422,11 @@ impl Editor {
                 self.buffers[i].goto_pos(p.pos);
             }
             (None, Some(path)) => {
-                self.pending_nav = Some((path.clone(), p.pos));
+                self.pending_nav = Some((path.clone(), nav::PendingAt::Pos(p.pos)));
                 cx.effects.push(Effect::OpenFile(path));
             }
             (None, None) => {}
         }
-    }
-
-    /// Shift+F11: a choice dialog of the bookmarks of all open buffers.
-    fn show_bookmarks(&mut self, cx: &mut Ctx) {
-        let root = cx.workspace.root();
-        let mut targets = Vec::new();
-        let mut items = Vec::new();
-        for b in &self.buffers {
-            let name = b
-                .path
-                .as_deref()
-                .and_then(|p| p.strip_prefix(root).ok())
-                .map(|p| p.display().to_string())
-                .unwrap_or_else(|| b.name.clone());
-            for &line in &b.bookmarks {
-                items.push(format!("{name}:{} {}", line + 1, b.line_text(line).trim()));
-                targets.push((b.id, line));
-            }
-        }
-        if items.is_empty() {
-            cx.notify(Level::Info, "No bookmarks; F11 toggles one on the caret line");
-            return;
-        }
-        cx.effects.push(Effect::Dialog(Dialog::choice(DialogId::Bookmarks(targets), "Bookmarks", "Go to bookmark:", items)));
-    }
-
-    /// Jump to bookmarked `line` of buffer `id` (from the bookmarks dialog);
-    /// the position left is remembered for back.
-    pub fn goto_bookmark(&mut self, id: BufferId, line: usize) {
-        let Some(i) = self.buffers.iter().position(|b| b.id == id).filter(|_| self.merge.is_none()) else { return };
-        self.push_nav_here();
-        self.set_active(i);
-        self.buffers[i].goto_line(line, 0);
     }
 
     /// Follow a rename of `from` (a file or a directory) to `to`: tabs of
@@ -464,6 +444,7 @@ impl Editor {
             *p = moved;
         }
         self.nav.retarget(from, to);
+        self.retarget_closed(from, to);
     }
 
     /// Close the tabs of `path` or under it, unsaved edits included (the
@@ -474,6 +455,7 @@ impl Editor {
             self.force_close(i);
             closed += 1;
         }
+        self.drop_closed_under(path);
         closed
     }
 
@@ -796,6 +778,14 @@ impl Editor {
                 self.show_bookmarks(cx);
                 return true;
             }
+            E::ToggleNumberedBookmark => {
+                self.choose_digit(cx);
+                return true;
+            }
+            E::GotoNumberedBookmark(d) => {
+                self.goto_digit(*d, cx);
+                return true;
+            }
             E::LineEndingLf | E::LineEndingCrlf => {
                 if let Some(id) = self.active_buffer().map(|b| b.id) {
                     self.set_line_ending(id, if *a == E::LineEndingLf { buffer::LineEnding::Lf } else { buffer::LineEnding::CrLf });
@@ -1071,6 +1061,8 @@ impl Editor {
             | E::NavBack
             | E::NavForward
             | E::ShowBookmarks
+            | E::ToggleNumberedBookmark
+            | E::GotoNumberedBookmark(_)
             | E::LineEndingLf
             | E::LineEndingCrlf
             | E::SetLanguage
@@ -2175,10 +2167,10 @@ mod tests {
             ed.handle_action(&EditorAction::ShowBookmarks, cx);
             let Some(Effect::Dialog(d)) = cx.effects.pop() else { panic!("no dialog") };
             let crate::ui::dialog::DialogKind::Choice { items, .. } = &d.kind else { panic!() };
-            assert_eq!(items, &vec!["a.txt:2 two".to_string()]);
+            assert_eq!(items, &vec!["◆ a.txt:2 two".to_string()]);
             let DialogId::Bookmarks(t) = d.id else { panic!() };
             ed.goto_line(3, 1);
-            ed.goto_bookmark(t[0].0, t[0].1);
+            ed.goto_bookmark_target(&t[0], cx);
             assert_eq!(caret(&ed).1, 1);
             ed.handle_action(&EditorAction::NavBack, cx);
             assert_eq!(caret(&ed).1, 2);

@@ -220,7 +220,8 @@ theme_fields! {
         bracket_match,
         /// The carets other than the primary one (which is the terminal cursor).
         secondary_caret,
-        /// Gutter glyph of a bookmarked line.
+        /// Gutter glyph of a bookmarked line (◆, or a numbered one's digit
+        /// drawn reversed).
         bookmark,
         /// What a collapsed fold shows after its header line (`…}`).
         fold_placeholder,

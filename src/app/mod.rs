@@ -563,7 +563,7 @@ impl App {
         }
     }
 
-    fn handle_key(&mut self, key: KeyEvent) {
+    pub(crate) fn handle_key(&mut self, key: KeyEvent) {
         // An accepted completion waiting for its resolve goes in first.
         if key.kind != crossterm::event::KeyEventKind::Release && !matches!(key.code, KeyCode::Modifier(_)) {
             self.completion_flush();
@@ -716,6 +716,13 @@ impl App {
                 | EditorAction::MoveTabToOppositeGroup),
             ) => {
                 self.focus.set(PanelId::Editor);
+                self.editor.handle_action(a, &mut cx)
+            }
+            // So does a jump to a numbered bookmark that exists.
+            Action::Editor(a @ EditorAction::GotoNumberedBookmark(d)) => {
+                if self.editor.has_digit(*d) && !self.editor.merge_active() {
+                    self.focus.set(PanelId::Editor);
+                }
                 self.editor.handle_action(a, &mut cx)
             }
             Action::Editor(a) => self.editor.handle_action(a, &mut cx),

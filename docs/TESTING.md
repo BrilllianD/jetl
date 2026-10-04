@@ -36,7 +36,8 @@ it with `cargo run -q -- --dump-keymap > docs/KEYMAP.md`.
 `src/app/snapshot_tests.rs` draws whole frames, or the editor area alone,
 on ratatui's `TestBackend` and compares them as text with
 [`insta`](https://insta.rs) against `src/app/snapshots/*.snap`. They cover
-split panes, carets, occurrences, folding, soft wrap, the project tree, the
+split panes, carets, occurrences, folding, soft wrap, bookmarks and the
+numbered bookmark chooser, the project tree, the
 Git window's Commit tab, the palettes, the conflict resolver and the crash
 recovery dialogs.
 
@@ -430,12 +431,37 @@ printf '[ui]\ntheme = "light"\n' > $C/.t && mv $C/.t $C/config.toml; sleep 1   #
 Then open File > Settings…, change `scrolloff`, press Ctrl+S: "Reloaded
 config.toml". Run `touch $C/config.toml`: nothing.
 
+### Scenario: numbered bookmarks
+
+At 80x24 and at 120x40, on the scratch project `$T` above with an 80-line
+`docs/notes.md` (`seq 1 80 | sed 's/^/line /' > $T/docs/notes.md`), opened as
+`jetl $T/docs/notes.md`. tmux does not pass Ctrl+digit, so the jumps use the
+legacy fallback Alt+B then the digit:
+
+```sh
+/tmp/tm.sh send-keys -t jetl C-g; /tmp/tm.sh send-keys -t jetl -l 20; /tmp/tm.sh send-keys -t jetl Enter
+/tmp/tm.sh send-keys -t jetl C-F11      # Numbered Bookmark: ten digit buttons inside the box, [ 1 ] selected
+/tmp/tm.sh send-keys -t jetl 3          # the gutter of line 20 shows 3 (reversed: capture -e has ESC[7m)
+/tmp/tm.sh send-keys -t jetl C-n; /tmp/tm.sh send-keys -t jetl -l main.rs; /tmp/tm.sh send-keys -t jetl Enter
+/tmp/tm.sh send-keys -t jetl M-b 3      # back in notes.md, Ln 20
+/tmp/tm.sh send-keys -t jetl C-M-Left   # main.rs again
+/tmp/tm.sh send-keys -t jetl M-b 3 C-w  # close notes.md
+/tmp/tm.sh send-keys -t jetl M-b 3      # notes.md reopens at Ln 20 with its 3
+/tmp/tm.sh send-keys -t jetl S-F11      # the list shows "3 docs/notes.md:20 line 20"
+/tmp/tm.sh send-keys -t jetl Escape C-w C-q
+```
+
+Start jetl again on `$T` (notes.md closed): Alt+B 3 opens it at line 20
+with the 3 in the gutter. Ctrl+F11 then 3 on that line removes the
+bookmark; 3 on another line moves it there.
+
 ### Limits under tmux
 
 - No kitty keyboard protocol: Ctrl+Shift+letter, Ctrl+Tab, Ctrl+Enter,
-  Shift+Enter, Shift+F3, Alt+Shift+Tab and double Shift do not arrive. Use the legacy
+  Shift+Enter, Shift+F3, Alt+Shift+Tab, double Shift and Ctrl+digit do not arrive. Use the legacy
   fallbacks (Ctrl+N for files, Alt+Shift+N for symbols, F1 for actions, Alt+Left/Right for tabs,
-  Alt+Enter to commit) or check those keys in foot or kitty.
+  Alt+Enter to commit, Alt+B then a digit for numbered bookmarks) or check those keys in foot or
+  kitty.
 - Escape followed quickly by another key arrives as Alt+key; pause between
   them.
 - Ctrl+Alt+Shift+J (select all occurrences) needs the kitty protocol; use

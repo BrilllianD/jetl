@@ -436,8 +436,17 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
         } else {
             let num = format!("{:>width$}", line + 1, width = digits);
             screen.set_stringn(gx, y, &num, digits, num_style);
-            if buf.bookmarks.range(span.clone()).next().is_some() {
-                screen.set_string(gx + digits as u16, y, "◆", theme.bookmark);
+            // A numbered bookmark shows its digit (on a fold's header the
+            // first digit it hides), any other one ◆.
+            let mut marked = buf.bookmarks.range(span.clone()).peekable();
+            if marked.peek().is_some() {
+                // A digit is drawn reversed, as a badge, so that it does not
+                // read as one more digit of the line number.
+                let (glyph, style) = match marked.find_map(|(_, d)| *d) {
+                    Some(d) => (char::from(b'0' + d).to_string(), theme.bookmark.add_modifier(Modifier::REVERSED)),
+                    None => ("◆".to_string(), theme.bookmark),
+                };
+                screen.set_string(gx + digits as u16, y, glyph, style);
             }
             // A diagnostic's glyph takes the diff mark's column over it.
             let git_mark = buf.gutter.get(buf.gutter.partition_point(|m| m.line < line)).filter(|m| m.line <= *span.end());

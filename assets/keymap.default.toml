@@ -98,6 +98,31 @@
 "ctrl-v" = "editor.paste"
 "ctrl-shift-s" = "editor.save_all"
 "f12" = "app.debug_panic"
+# Numbered bookmarks (Ctrl+F11 sets one), JetBrains-style. Ctrl+digit needs
+# the kitty protocol for 0-3, 8 and 9: legacy terminals send Ctrl+0, 1 and 9
+# as plain digits, Ctrl+2 as Ctrl+Space, Ctrl+3 as Esc and Ctrl+8 as
+# Backspace. Alt+B then the digit works everywhere. In the editor Ctrl+7 stays Comment with Line Comment (legacy
+# terminals send Ctrl+/ as Ctrl+7), so bookmark 7 is Alt+B 7 there.
+"ctrl-0" = "editor.goto_bookmark_0"
+"ctrl-1" = "editor.goto_bookmark_1"
+"ctrl-2" = "editor.goto_bookmark_2"
+"ctrl-3" = "editor.goto_bookmark_3"
+"ctrl-4" = "editor.goto_bookmark_4"
+"ctrl-5" = "editor.goto_bookmark_5"
+"ctrl-6" = "editor.goto_bookmark_6"
+"ctrl-7" = "editor.goto_bookmark_7"
+"ctrl-8" = "editor.goto_bookmark_8"
+"ctrl-9" = "editor.goto_bookmark_9"
+"alt-b 0" = "editor.goto_bookmark_0"
+"alt-b 1" = "editor.goto_bookmark_1"
+"alt-b 2" = "editor.goto_bookmark_2"
+"alt-b 3" = "editor.goto_bookmark_3"
+"alt-b 4" = "editor.goto_bookmark_4"
+"alt-b 5" = "editor.goto_bookmark_5"
+"alt-b 6" = "editor.goto_bookmark_6"
+"alt-b 7" = "editor.goto_bookmark_7"
+"alt-b 8" = "editor.goto_bookmark_8"
+"alt-b 9" = "editor.goto_bookmark_9"
 
 [editor]
 "enter" = "editor.newline"
@@ -187,6 +212,7 @@
 "ctrl-alt-right" = "editor.nav_forward"
 "f11" = "editor.toggle_bookmark"
 "shift-f11" = "editor.show_bookmarks"
+"ctrl-f11" = "editor.toggle_numbered_bookmark"
 "ctrl-alt-z" = "editor.revert_change"
 "ctrl-alt-b" = "editor.toggle_blame"
 # Reformat Code runs the [format] command for the file's language, else asks
