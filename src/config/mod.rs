@@ -2,9 +2,11 @@
 
 pub mod color;
 pub mod keymap;
+pub mod reload;
 pub mod theme;
+pub mod watch;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use directories::ProjectDirs;
@@ -278,26 +280,51 @@ impl Default for FilesConfig {
     }
 }
 
+/// What reading a config file gave: hot reload compares it with what the
+/// file held when it was last processed.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum FileText {
+    /// The file does not exist.
+    #[default]
+    Missing,
+    Text(String),
+    /// It exists but cannot be read (or is not UTF-8): the reason.
+    Unreadable(String),
+}
+
+impl FileText {
+    pub fn read(path: &Path) -> Self {
+        match std::fs::read_to_string(path) {
+            Ok(t) => FileText::Text(t),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => FileText::Missing,
+            Err(e) => FileText::Unreadable(e.to_string()),
+        }
+    }
+}
+
 impl Config {
     /// Load `config.toml`. A missing file gives the defaults silently; an
     /// unreadable or invalid one is logged and also gives the defaults, with
     /// a message for a startup notification.
     pub fn load(paths: &Paths) -> (Self, Option<String>) {
         let file = paths.config_file();
-        let text = match std::fs::read_to_string(&file) {
-            Ok(t) => t,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return (Config::default(), None),
-            Err(e) => {
-                tracing::error!("cannot read {}: {e}; using defaults", file.display());
-                return (Config::default(), Some(format!("{}: {e}; using defaults", file.display())));
-            }
-        };
-        match Self::parse(&text) {
+        match Self::from_file_text(&FileText::read(&file), &file) {
             Ok(cfg) => (cfg, None),
             Err(e) => {
-                tracing::error!("invalid {}: {e}; using defaults", file.display());
-                (Config::default(), Some(format!("{}: {}; using defaults", file.display(), theme::error_summary(&e.to_string()))))
+                tracing::error!("{e}; using defaults");
+                (Config::default(), Some(format!("{e}; using defaults")))
             }
+        }
+    }
+
+    /// The config `text` (read from `file`) holds: the defaults when the
+    /// file is missing. The error starts with the path and says nothing
+    /// about a fallback; the caller decides that.
+    pub fn from_file_text(text: &FileText, file: &Path) -> Result<Config, String> {
+        match text {
+            FileText::Missing => Ok(Config::default()),
+            FileText::Unreadable(e) => Err(format!("{}: {e}", file.display())),
+            FileText::Text(t) => Self::parse(t).map_err(|e| format!("{}: {}", file.display(), theme::error_summary(&e.to_string()))),
         }
     }
 
@@ -358,6 +385,44 @@ mod tests {
         assert_eq!(cfg.commands["typescript"][2], "{path}");
         assert_eq!(cfg.commands.len(), 2);
         assert!(Config::parse("[format]\nrust = \"rustfmt\"\n").is_err(), "a command is a list of words");
+    }
+
+    /// A fresh directory for one test case.
+    fn test_dir(case: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("jetl-test-config-{case}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn file_text_read_kinds() {
+        let dir = test_dir("filetext");
+        assert_eq!(FileText::read(&dir.join("nope.toml")), FileText::Missing);
+        std::fs::write(dir.join("a.toml"), "x = 1\n").unwrap();
+        assert_eq!(FileText::read(&dir.join("a.toml")), FileText::Text("x = 1\n".into()));
+        assert!(matches!(FileText::read(&dir), FileText::Unreadable(_)), "a directory");
+        std::fs::write(dir.join("bin.toml"), [0xff, 0xfe, 0x00]).unwrap();
+        assert!(matches!(FileText::read(&dir.join("bin.toml")), FileText::Unreadable(_)), "not UTF-8");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn config_from_file_text_errors_have_no_fallback_wording() {
+        let file = Path::new("/cfg/config.toml");
+        let cfg = Config::from_file_text(&FileText::Missing, file).unwrap();
+        assert_eq!(cfg.editor.tab_width, EditorConfig::default().tab_width);
+        let ok = Config::from_file_text(&FileText::Text("[editor]\ntab_width = 2\n".into()), file).unwrap();
+        assert_eq!(ok.editor.tab_width, 2);
+        for text in [
+            FileText::Text("[editor\n".into()),
+            FileText::Text("[editor]\ntab_width = \"x\"\n".into()),
+            FileText::Unreadable("denied".into()),
+        ] {
+            let e = Config::from_file_text(&text, file).unwrap_err();
+            assert!(e.starts_with("/cfg/config.toml: "), "{e}");
+            assert!(!e.contains("using defaults"), "{e}");
+        }
     }
 
     #[test]

@@ -153,6 +153,8 @@ jetl reads three optional files from `$XDG_CONFIG_HOME/jetl/` (usually `~/.confi
 - `keymap.toml`: key bindings merged on top of the built-in keymap.
 - `theme.toml`: color overrides on top of the theme chosen by `ui.theme`.
 
+Changes to these files apply while jetl runs.
+
 The log, sessions and the recent projects list live in `$XDG_STATE_HOME/jetl/` (usually
 `~/.local/state/jetl/`). Set `RUST_LOG=jetl=debug` for verbose logging.
 

@@ -483,6 +483,12 @@ impl Highlights {
     }
 }
 
+/// The theme's style for each capture of the language's query, by capture
+/// index.
+fn styles_for(def: &LanguageDef, theme: &Theme) -> Vec<Option<Style>> {
+    def.query.capture_names().iter().map(|n| theme.capture_style(n)).collect()
+}
+
 pub struct Syntax {
     pub def: &'static LanguageDef,
     parser: Parser,
@@ -503,8 +509,14 @@ impl Syntax {
     pub fn new(def: &'static LanguageDef, theme: &Theme) -> Option<Self> {
         let mut parser = Parser::new();
         parser.set_language(&def.language).map_err(|e| tracing::error!("set_language {}: {e}", def.name)).ok()?;
-        let styles = def.query.capture_names().iter().map(|n| theme.capture_style(n)).collect();
-        Some(Self { def, parser, tree: None, styles, dirty: true, cache: None })
+        Some(Self { def, parser, tree: None, styles: styles_for(def, theme), dirty: true, cache: None })
+    }
+
+    /// Take the capture styles from `theme` again (hot reload); the parse
+    /// tree stays.
+    pub fn restyle(&mut self, theme: &Theme) {
+        self.styles = styles_for(self.def, theme);
+        self.cache = None;
     }
 
     #[cfg(test)]
@@ -652,6 +664,22 @@ mod tests {
         assert_eq!(h.style_at(21 + 11), Some(st));
         assert_eq!(h.style_at(12), Some(kw), "inserted let is a keyword");
         assert_eq!(h.style_at(20), theme.capture_style("number"), "integer literal");
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[test]
+    fn restyle_changes_highlight_styles() {
+        use ratatui::style::Color;
+        let def = language_for_name("rust").expect("rust grammar");
+        let mut syn = Syntax::new(def, &Theme::darcula()).unwrap();
+        let rope = Rope::from_str("fn main() {}\n");
+        let before = syn.highlights(&rope, 0, 1).style_at(0).unwrap();
+        assert_ne!(before.fg, Some(Color::Rgb(1, 2, 3)));
+        let mut theme = Theme::darcula();
+        theme.apply_toml("[syntax]\nkeyword = \"#010203\"\n", false).unwrap();
+        syn.restyle(&theme);
+        // Same window as before: the cache must not serve the old style.
+        assert_eq!(syn.highlights(&rope, 0, 1).style_at(0).unwrap().fg, Some(Color::Rgb(1, 2, 3)));
     }
 
     #[test]

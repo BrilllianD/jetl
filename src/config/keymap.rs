@@ -7,11 +7,13 @@
 //! of the Shift key.
 
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 
 use anyhow::{Result, anyhow, bail};
 use crossterm::event::{KeyCode, KeyModifiers, MediaKeyCode, ModifierKeyCode};
 
 use crate::actions::Action;
+use crate::config::FileText;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct KeyCombo {
@@ -275,30 +277,43 @@ impl Keymap {
         Ok(errors)
     }
 
+    /// The default keymap with `text` (read from `file`) merged on top, and
+    /// the messages of skipped entries ("(entry ignored)"). A missing file
+    /// gives the defaults. A file that cannot be read or does not parse is
+    /// an `Err` starting with the path, with no fallback wording.
+    pub fn from_file_text(text: &FileText, file: &Path) -> Result<(Keymap, Vec<String>), String> {
+        let mut km = default_keymap();
+        let text = match text {
+            FileText::Missing => return Ok((km, Vec::new())),
+            FileText::Unreadable(e) => return Err(format!("{}: {e}", file.display())),
+            FileText::Text(t) => t,
+        };
+        match km.merge_toml(text) {
+            Ok(errors) => {
+                let msgs = errors.iter().map(|e| format!("{}: {e} (entry ignored)", file.display())).collect();
+                Ok((km, msgs))
+            }
+            Err(e) => Err(format!("{}: {}", file.display(), crate::config::theme::error_summary(&e.to_string()))),
+        }
+    }
+
+    /// [`Keymap::from_file_text`] for startup: a whole-file failure gives
+    /// the default keymap and a message for a notification.
+    pub fn load_text(text: &FileText, file: &Path) -> (Keymap, Vec<String>) {
+        match Self::from_file_text(text, file) {
+            Ok(loaded) => loaded,
+            Err(e) => {
+                tracing::error!("{e}; using the default keymap");
+                (default_keymap(), vec![format!("{e}; using the default keymap")])
+            }
+        }
+    }
+
     /// The default keymap with the user's `keymap.toml` merged on top, plus
     /// messages for a startup notification. A file that does not parse is
     /// ignored as a whole (defaults only).
-    pub fn load(file: &std::path::Path) -> (Keymap, Vec<String>) {
-        let mut km = default_keymap();
-        let text = match std::fs::read_to_string(file) {
-            Ok(t) => t,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return (km, Vec::new()),
-            Err(e) => {
-                tracing::error!("cannot read {}: {e}", file.display());
-                return (km, vec![format!("{}: {e}; using the default keymap", file.display())]);
-            }
-        };
-        match km.merge_toml(&text) {
-            Ok(errors) => {
-                let msgs = errors.iter().map(|e| format!("{}: {e} (entry ignored)", file.display())).collect();
-                (km, msgs)
-            }
-            Err(e) => {
-                tracing::error!("invalid {}: {e}; using the default keymap", file.display());
-                let msg = format!("{}: {}; using the default keymap", file.display(), crate::config::theme::error_summary(&e.to_string()));
-                (default_keymap(), vec![msg])
-            }
-        }
+    pub fn load(file: &Path) -> (Keymap, Vec<String>) {
+        Self::load_text(&FileText::read(file), file)
     }
 
     pub fn table(&self, ctx: &str) -> Option<&Table> {
@@ -530,6 +545,25 @@ mod tests {
         );
         assert!(km.table("global").unwrap().bindings.contains_key(&parse_chord("ctrl-q").unwrap()));
         assert!(km.merge_toml("[global\n").is_err());
+    }
+
+    #[test]
+    fn keymap_from_file_text() {
+        let file = Path::new("/cfg/keymap.toml");
+        let e = Keymap::from_file_text(&FileText::Text("[global\n".into()), file).unwrap_err();
+        assert!(e.starts_with("/cfg/keymap.toml: ") && !e.contains("default keymap"), "{e}");
+        assert!(Keymap::from_file_text(&FileText::Unreadable("denied".into()), file).is_err());
+        let (km, msgs) =
+            Keymap::from_file_text(&FileText::Text("[global]\n\"f3\" = \"no.such\"\n\"f4\" = \"app.about\"\n".into()), file).unwrap();
+        assert_eq!(msgs.len(), 1, "{msgs:?}");
+        assert!(msgs[0].ends_with("(entry ignored)"), "{msgs:?}");
+        assert_eq!(
+            km.table("global").unwrap().bindings.get(&parse_chord("f4").unwrap()),
+            Some(&Action::App(crate::actions::AppAction::About))
+        );
+        let (km, msgs) = Keymap::from_file_text(&FileText::Missing, file).unwrap();
+        assert!(msgs.is_empty());
+        assert!(km.table("global").unwrap().bindings.contains_key(&parse_chord("ctrl-q").unwrap()));
     }
 
     #[test]

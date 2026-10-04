@@ -13,7 +13,8 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::event::AppMsg;
 
-const DEBOUNCE: Duration = Duration::from_millis(150);
+/// How long a burst of events is gathered (also the config watcher's).
+pub(crate) const DEBOUNCE: Duration = Duration::from_millis(150);
 
 /// Keeps the watch alive; dropping it stops watching.
 pub struct Watcher {
@@ -66,7 +67,7 @@ pub fn start(root: &Path, generation: u64, tx: UnboundedSender<AppMsg>) -> anyho
 /// Whether an event can change what a file holds. inotify also reports
 /// opens and reads, which jetl itself causes (git status, find in files,
 /// the symbol index); reacting to them would loop.
-fn changes_content(kind: &EventKind) -> bool {
+pub(crate) fn changes_content(kind: &EventKind) -> bool {
     !matches!(kind, EventKind::Access(a) if *a != AccessKind::Close(AccessMode::Write))
 }
 

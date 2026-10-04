@@ -9,10 +9,14 @@ jetl reads three optional files from its config directory,
 | `keymap.toml` | Key bindings merged on top of the built-in keymap |
 | `theme.toml` | Color overrides on top of the theme chosen by `ui.theme` |
 
-All three are read once at startup. A missing file is fine. If a file cannot
-be read or is not valid TOML, jetl logs the error, shows a notification, and
-uses the built-in defaults for that whole file. In `keymap.toml` and
-`theme.toml`, a single bad entry (unknown action, bad key, bad color) is
+jetl watches these files while it runs and applies a change when a file is
+saved (after a 150 ms pause, like the project watcher; see
+[Reloading](#reloading)). A missing file means the built-in defaults. If a
+file cannot be read or is not valid TOML, jetl logs the error and shows a
+notification. At startup a file that cannot be read or is not valid TOML is
+replaced by the defaults; when a running jetl reloads it, the current
+settings stay instead and a notification names the error. In `keymap.toml`
+and `theme.toml`, a single bad entry (unknown action, bad key, bad color) is
 skipped and reported; the other entries still apply. In `config.toml`, a
 value of the wrong type rejects the whole file, because settings depend on
 each other.
@@ -22,6 +26,33 @@ The log is at `$XDG_STATE_HOME/jetl/jetl.log` (usually
 window layout, expanded Project tree folders and its hidden/ignored toggles)
 live in `$XDG_STATE_HOME/jetl/sessions/`; recently opened project roots (the
 Recent Projects palette, Alt+Shift+E) in `$XDG_STATE_HOME/jetl/recent_projects.json`.
+
+## Reloading
+
+Saving `config.toml`, `keymap.toml`, `theme.toml` or the theme file named by
+`ui.theme` applies it at once, and the status bar says "Reloaded …". Each
+file is reloaded on its own: a broken `keymap.toml` keeps the current key
+bindings while a valid `config.toml` saved with it still applies. A file
+whose text did not change is ignored.
+
+Most settings take effect immediately. These apply to files opened
+afterwards, while open tabs keep their own state: `editor.soft_wrap`,
+`editor.soft_wrap_files`, `editor.tab_width`, `editor.max_highlight_bytes`.
+`terminal.shell`, `terminal.args` and `terminal.scrollback` apply to the
+next shell. `lsp.servers`, `lsp.startup_timeout_ms` and
+`lsp.request_timeout_ms` apply after Help > Restart Language Servers;
+changing `lsp.enabled` stops or starts the servers. `ui.left_width` and
+`ui.bottom_height` are initial sizes and need a restart of jetl. The reload
+notification lists any changed setting that needs a restart.
+`files.show_hidden` and `files.show_ignored` apply to Go to File and Find in
+Files; the Project tree keeps its own toggles. Lowering `editor.max_tabs`
+closes nothing until the next tab opens. An open palette or menu shows the
+new shortcuts the next time it opens.
+
+jetl creates the config directory at startup if it is missing, so that it
+can be watched. If the configuration files are symlinks, their targets are
+watched too. A theme file outside the config directory is watched in its
+own directory, which must exist.
 
 ## config.toml
 
@@ -396,6 +427,9 @@ the complete built-in themes are in `assets/themes/` in the repository. An
 unknown name, or a theme file that cannot be read or is not valid TOML, gives
 a notification and Darcula. `theme.toml` is then applied on top of the chosen
 theme. If it is not valid TOML it is ignored and the chosen theme stays.
+On reload, an unknown theme name, or a theme file or `theme.toml` that
+cannot be read or is not valid TOML, keeps the current theme (at startup
+Darcula is used instead, or the `theme.toml` overrides are skipped).
 
 Without true color (`ui.colors = "auto"` and `$COLORTERM` not `truecolor` or
 `24bit`; ssh, sudo and tmux often drop it), every `"#rrggbb"` color is drawn

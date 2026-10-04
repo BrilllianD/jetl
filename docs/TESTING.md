@@ -26,7 +26,9 @@ off in `test_app`; `app::lsp::tests::with_fake_servers` turns them on with
 in-process servers (`lsp::fake::FakeServer`: answers `initialize` and
 `shutdown` itself, hands the test every message it gets, and sends
 notifications, requests and responses), so tests never start a real
-server. `docs/KEYMAP.md` is checked by a test; regenerate
+server. Config reload tests write files into `app.paths.config_dir` and
+send `AppMsg::ConfigChanged` themselves; every `config.toml` they write sets
+`[lsp] enabled = false`. `docs/KEYMAP.md` is checked by a test; regenerate
 it with `cargo run -q -- --dump-keymap > docs/KEYMAP.md`.
 
 ## Snapshot tests
@@ -397,6 +399,36 @@ merge chunks told apart. Then, one start each:
 - `theme.toml` with `selection_bg = "#ffcc00"` on `theme = "light"`: a
   selection (Shift+Right) shows `48;2;255;204;0`.
 - `[ui] colors = "truecolor"` with COLORTERM unset: RGB codes again.
+
+### Scenario: config hot reload
+
+At 80x24 and at 120x40, on the scratch project `$T` above, with an empty
+config directory and a theme file directory outside it:
+
+```sh
+C=/tmp/jt-home/config/jetl; rm -rf /tmp/jt-home /tmp/jt-theme; mkdir -p $C /tmp/jt-theme
+/tmp/tm.sh -f /dev/null new-session -d -s jetl -x 80 -y 24 \
+  "env COLORTERM=truecolor XDG_CONFIG_HOME=/tmp/jt-home/config XDG_STATE_HOME=/tmp/jt-home/state $PWD/target/debug/jetl $T/src/main.rs"
+printf '[ui]\ntheme = "light"\n' > $C/config.toml; sleep 1
+/tmp/tm.sh capture-pane -t jetl -p | tail -1                 # Reloaded config.toml
+/tmp/tm.sh capture-pane -t jetl -p -e | grep -c '48;2;255;255;255'   # white background
+printf '[syntax]\nkeyword = "#ff0000"\n' > $C/theme.toml; sleep 1   # `fn` turns red: 38;2;255;0;0
+printf '[editor]\n"f2" = "app.about"\n' > $C/keymap.toml; sleep 1   # [editor]: it binds F2 itself
+/tmp/tm.sh send-keys -t jetl F2                               # "jetl 0.1.0"
+printf '[editor\n' > $C/keymap.toml; sleep 1                  # error: keeping the current keymap; F2 still About
+printf '[ui]\ntheme = "light"\nleft_width = 50\n[editor]\nsoft_wrap = true\n' > $C/config.toml; sleep 1
+                                                              # warning names ui.left_width; main.rs stays unwrapped,
+                                                              # a file opened now (Ctrl+N) wraps
+printf 'bg = "#202040"\n' > /tmp/jt-theme/mine.toml
+printf '[ui]\ntheme = "/tmp/jt-theme/mine.toml"\n' > $C/config.toml; sleep 1   # dark blue background
+printf 'bg = "#402020"\n' > /tmp/jt-theme/mine.toml; sleep 1   # follows the new file: dark red
+printf '[ui]\ntheme = "nope"\n' > $C/config.toml; sleep 1     # error, the theme stays
+printf '[ui]\ntheme = "light"\n' > $C/.t && mv $C/.t $C/config.toml; sleep 1   # an atomic rename reloads too
+/tmp/tm.sh kill-server
+```
+
+Then open File > Settings…, change `scrolloff`, press Ctrl+S: "Reloaded
+config.toml". Run `touch $C/config.toml`: nothing.
 
 ### Limits under tmux
 

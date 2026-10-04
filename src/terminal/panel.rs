@@ -118,6 +118,12 @@ impl TerminalPanel {
         self.parser.screen().size()
     }
 
+    /// Lines kept for scrolling back, from the next shell on (hot reload
+    /// of `terminal.scrollback`).
+    pub fn set_scrollback(&mut self, n: usize) {
+        self.scrollback = n;
+    }
+
     /// A new shell of `rows` x `cols` on a clean screen.
     pub fn start(&mut self, session: Session, rows: u16, cols: u16) {
         self.parser = vt100::Parser::new_with_callbacks(rows.max(1), cols.max(1), self.scrollback, Replies::default());

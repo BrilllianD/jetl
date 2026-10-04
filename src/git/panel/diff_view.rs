@@ -258,6 +258,12 @@ impl DiffPane {
         self.scroll = self.scroll.saturating_add_signed(delta).min(max);
     }
 
+    /// The theme changed: the syntax spans are computed again, with the new
+    /// styles, on the next render.
+    pub(super) fn restyle(&mut self) {
+        self.syntax = None;
+    }
+
     /// Syntax spans per line of both sides, from the file's language.
     fn ensure_syntax(&mut self, theme: &Theme) {
         if self.syntax.is_some() {
@@ -607,6 +613,26 @@ mod tests {
         assert_eq!(p.view.len(), 3);
         let p = pane("a\nb\nc\nd\ne\nf\n", "a\nb\nc\nd\ne\nf\n", true);
         assert_eq!(p.view.len(), 6, "nothing to fold around");
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[test]
+    fn restyle_recomputes_syntax_spans() {
+        let mut p = DiffPane::new(false);
+        let key = DiffKey::Commit { sha: "x".into(), rel: "a.rs".into(), old: None };
+        p.key = Some(key.clone());
+        p.set(&key, Ok(DiffDoc::build(b"fn a() {}\n", b"fn b() {}\n", 4)));
+        let fg = |p: &DiffPane| p.syntax.as_ref().and_then(|(_, new)| new[0].first()).and_then(|(_, s)| s.fg);
+        p.ensure_syntax(&Theme::darcula());
+        let before = fg(&p);
+        assert!(before.is_some(), "fn is styled");
+        let mut other = Theme::darcula();
+        other.apply_toml("[syntax]\nkeyword = \"#010203\"\n", false).unwrap();
+        p.ensure_syntax(&other);
+        assert_eq!(fg(&p), before, "spans are kept until the theme changes");
+        p.restyle();
+        p.ensure_syntax(&other);
+        assert_eq!(fg(&p), Some(Color::Rgb(1, 2, 3)));
     }
 
     #[test]

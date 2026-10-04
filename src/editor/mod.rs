@@ -137,7 +137,7 @@ fn nav_pos(b: &Buffer) -> NavPos {
 
 impl Editor {
     pub fn new(config: &Config) -> Self {
-        Self {
+        let mut ed = Self {
             buffers: Vec::new(),
             groups: vec![TabGroup::new(0)],
             tree: SplitNode::Leaf(0),
@@ -146,22 +146,23 @@ impl Editor {
             next_group: 1,
             mru: Vec::new(),
             next_id: 1,
-            tab_width: config.editor.tab_width,
-            scrolloff: config.editor.scrolloff,
-            hscrolloff: config.editor.hscrolloff,
-            auto_close: config.editor.auto_close,
-            highlight_occurrences: config.editor.highlight_occurrences,
-            trim_trailing_whitespace: config.editor.trim_trailing_whitespace,
-            final_newline: config.editor.final_newline,
-            autosave: config.editor.autosave,
-            autosave_idle: Duration::from_millis(config.editor.autosave_idle_ms),
+            // The config fields are set by `apply_config` below.
+            tab_width: 0,
+            scrolloff: 0,
+            hscrolloff: 0,
+            auto_close: false,
+            highlight_occurrences: false,
+            trim_trailing_whitespace: false,
+            final_newline: false,
+            autosave: Autosave::Off,
+            autosave_idle: Duration::ZERO,
             last_edit: Instant::now(),
             drag: None,
-            max_highlight_bytes: config.editor.max_highlight_bytes,
-            max_tabs: config.editor.max_tabs,
-            soft_wrap: config.editor.soft_wrap,
-            soft_wrap_files: config.editor.soft_wrap_files.clone(),
-            format: config.format.clone(),
+            max_highlight_bytes: 0,
+            max_tabs: 0,
+            soft_wrap: false,
+            soft_wrap_files: Vec::new(),
+            format: Default::default(),
             last_search: None,
             nav: NavRing::default(),
             pending_nav: None,
@@ -169,7 +170,49 @@ impl Editor {
             column_mode: false,
             merge: None,
             center: Rect::default(),
+        };
+        ed.apply_config(config);
+        ed
+    }
+
+    /// Take the `[editor]` and `[format]` settings from `config` (startup
+    /// and hot reload). Never touches a view: open tabs keep their wrap,
+    /// indentation and folds; files opened afterwards use the new defaults.
+    pub fn apply_config(&mut self, config: &Config) {
+        // Exhaustive, so a new `[editor]` key must be handled here.
+        let crate::config::EditorConfig {
+            tab_width,
+            max_highlight_bytes,
+            scrolloff,
+            hscrolloff,
+            auto_close,
+            highlight_occurrences,
+            trim_trailing_whitespace,
+            final_newline,
+            autosave,
+            autosave_idle_ms,
+            max_tabs,
+            soft_wrap,
+            soft_wrap_files,
+        } = &config.editor;
+        self.tab_width = *tab_width;
+        self.max_highlight_bytes = *max_highlight_bytes;
+        self.scrolloff = *scrolloff;
+        self.hscrolloff = *hscrolloff;
+        self.auto_close = *auto_close;
+        self.highlight_occurrences = *highlight_occurrences;
+        self.trim_trailing_whitespace = *trim_trailing_whitespace;
+        self.final_newline = *final_newline;
+        if self.autosave != *autosave {
+            // Turning on idle autosave waits a full interval from now.
+            self.last_edit = Instant::now();
         }
+        self.autosave = *autosave;
+        self.autosave_idle = Duration::from_millis(*autosave_idle_ms);
+        self.max_tabs = *max_tabs;
+        self.soft_wrap = *soft_wrap;
+        self.soft_wrap_files.clone_from(soft_wrap_files);
+        self.format.clone_from(&config.format);
     }
 
     pub fn active_buffer(&self) -> Option<&Buffer> {
@@ -266,6 +309,22 @@ impl Editor {
                 Some(suffix) => name.len() > suffix.len() && name.ends_with(suffix),
                 None => *m == name,
             })
+    }
+
+    /// `editor.scrolloff` as applied.
+    #[cfg(test)]
+    pub fn scrolloff(&self) -> usize {
+        self.scrolloff
+    }
+
+    /// Take the capture styles of every buffer (the conflict resolver's
+    /// panes included) from `theme` again (hot reload).
+    pub fn restyle(&mut self, theme: &Theme) {
+        for b in &mut self.buffers {
+            if let Some(s) = b.syntax.as_mut() {
+                s.restyle(theme);
+            }
+        }
     }
 
     /// Put back a session's caret, scroll and folds for tab `i` (clamped
@@ -1937,6 +1996,37 @@ mod tests {
         with_cx(|cx| assert!(ed.save(1, cx)));
         assert_eq!(std::fs::read_to_string(&b).unwrap(), "mine b\n");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn apply_config_changes_defaults_not_views() {
+        let mut ed = editor_with("a.rs", "fn main() {}\n");
+        ed.open_text(PathBuf::from("/tmp/n.md"), "notes\n", false, &Theme::default());
+        assert!(!ed.buffers[0].view.wrap.on && ed.buffers[1].view.wrap.on);
+        let config = Config::parse("[editor]\nsoft_wrap = true\nsoft_wrap_files = []\nscrolloff = 9\n").unwrap();
+        ed.apply_config(&config);
+        assert!(!ed.buffers[0].view.wrap.on, "an open tab keeps its wrap");
+        assert!(ed.buffers[1].view.wrap.on);
+        assert!(ed.soft_wrap_for(Some(Path::new("b.rs"))));
+        assert_eq!(ed.scrolloff, 9);
+        ed.apply_config(&Config::parse("[editor]\nsoft_wrap_files = []\n").unwrap());
+        assert!(!ed.soft_wrap_for(Some(Path::new("c.md"))));
+        assert!(ed.buffers[1].view.wrap.on);
+    }
+
+    #[test]
+    fn turning_idle_autosave_on_waits() {
+        let mut ed = editor_with("a.txt", "one\n");
+        ed.buffers[0].insert("x", TxKind::Typing);
+        // The edit was made long ago, while autosave was off.
+        ed.last_edit = Instant::now() - Duration::from_secs(60);
+        ed.buffers[0].autosave_seen = ed.buffers[0].version;
+        let now = Instant::now();
+        assert!(!ed.autosave_due(now));
+        ed.apply_config(&Config::parse("[editor]\nautosave = \"idle\"\n").unwrap());
+        let now = Instant::now();
+        assert!(!ed.autosave_due(now), "no save at once");
+        assert!(ed.autosave_due(now + Duration::from_secs(2)));
     }
 
     #[test]

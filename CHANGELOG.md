@@ -158,6 +158,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   files on disk do not change and autosave leaves them alone until you save. Esc keeps the
   changes for the next time. Dumps of other projects, and of a jetl that is still running, are
   left alone.
+- Config hot reload: saving `config.toml`, `keymap.toml`, `theme.toml` or the `ui.theme` file
+  applies it while jetl runs. A file that cannot be read or is not valid TOML keeps the current
+  settings and shows the error; settings that need a restart of jetl or of the language servers
+  are named in the notification. Open tabs keep their soft wrap; the new default applies to files
+  opened afterwards.
 
 ### Changed
 

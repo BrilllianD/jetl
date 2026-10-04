@@ -20,6 +20,7 @@ and backlog are in `docs/ROADMAP.md`; settings in `docs/CONFIG.md`; keys in
 | `app/palette.rs` | Opening the palette, its keys, the file index (walked at startup, on root switches and when a file or symbol palette opens; the symbol index follows each load), the recent projects list, accepted rows. |
 | `app/mouse.rs` | Mouse routing: toasts, overlays, drags, splitters, tabs, status bar, panels. Over the editor area `Editor::hit_test` comes first (`editor_area_mouse`): a group splitter starts `Drag::GroupSplitter`, a press on a tab or body focuses its group, the wheel scrolls the group under the pointer without moving focus. |
 | `app/watch.rs` | Starting the filesystem watcher and acting on its batches. |
+| `app/config_reload.rs` | Hot reload: `ConfigChanged` from the config watcher; each file reloads on its own (text compared with what was last processed, so repeats are silent); `apply_config` swaps `App::config` and applies the live keys (`config::reload` classes); the theme reload restyles buffers and diff panes; restart-needed keys are named in the notification; errors keep the old value. |
 | `app/find.rs` | Replace in files (open tabs through the editor, other files off the main thread). |
 | `app/symbols.rs` | Starting symbol index runs (`request_symbols`, through `Coalesce`), applying `AppMsg::Symbols`, re-queuing watcher paths, and `sync_structure` (called by `ui::render` while the Structure window is shown). |
 | `app/clipboard.rs` | Copy (OSC 52, the copy tool, jetl's register) and `editor.paste`: the focused text field (`PasteTarget`), the paste tool run off the main thread (`AppMsg::Paste`, dropped when focus moved), the register fallback with a one-time warning. Dialogs and the palette route the paste key here before their own key handling. |
@@ -44,7 +45,7 @@ and backlog are in `docs/ROADMAP.md`; settings in `docs/CONFIG.md`; keys in
 | `worktree/` | `git worktree` parsing and paths (`mod.rs`), the Worktrees tool window (`panel.rs`), the create/remove dialog flow (`flow.rs`, `impl App`). |
 | `actions.rs` | `Action` enums and `REGISTRY` (id, description, action). Keymaps and the palette refer to actions by id. |
 | `dispatch.rs` | Keys to actions: vim mode table (when modal), then the context stack innermost first, chords with a timeout, double Shift. |
-| `config/` | `Config` and `Paths` (`mod.rs`), key parsing and tables (`keymap.rs`, defaults in `assets/keymap.default.toml`), `Theme` (`theme.rs`: built-in themes in `assets/themes/*.toml`, `Theme::load`), color depth and the 256-color mapping (`color.rs`). |
+| `config/` | `Config`, `Paths` and `FileText` (`mod.rs`), key parsing and tables (`keymap.rs`, defaults in `assets/keymap.default.toml`), `Theme` (`theme.rs`: built-in themes in `assets/themes/*.toml`, `Theme::load`, `Theme::load_report` for reload, `Theme::sources`), color depth and the 256-color mapping (`color.rs`), every key's reload class and `diff` (`reload.rs`; the macro destructures each section exhaustively, so a new key must be classified), `ConfigWatcher` (`watch.rs`: a non-recursive debounced watch of the config dir, the theme file's dir and symlink targets; re-targeted after every config reload). |
 | `event.rs` | `AppMsg` (background to app), `Effect` (panel to app), `Mouse`, `Level`. |
 | `editor/mod.rs` | `Editor`: the buffers (`buffers`, the document store; its order is not tab order), the tab groups and their split tree, the global MRU, back/forward, actions, mouse, rendering. `active()` is the buffer of the focused group's shown tab, so `active_buffer()` callers need not know about groups. `render` lays the tree out over the centre, draws the splitter bars, then each group (tab bar of the `tabs` height, none in zen mode, over its find bar and text), the focused group last. |
 | `editor/groups.rs` | `TabGroup` (its `View`s in bar order, the shown slot, its own MRU, tab hit rects, text area, find bar hits, caret cell) and the tab operations on `Editor`: `set_active`/`show` (a buffer opened in the focused group gets a tab there, right after the shown one and never among the pinned, with a `fork` of its live view state when it is shown elsewhere), `close_slot` (a buffer with tabs in other groups only loses this one, without asking; its last tab asks when dirty), `force_close` (the buffer and every tab of it), `close_tabs` (close others, close all but pinned and close all act on the focused group), pins, moves (Alt+Shift+Left/Right, a tab drag: `Drag::Tab`, `Editor::drag_tab`, within the pinned or unpinned tabs), `enforce_tab_limit` (`editor.max_tabs` counts buffers; the least recently used clean one without a pinned tab that no group shows goes), the tab context menu, `split`, `unsplit`, `unsplit_all`, `move_to_opposite`, `cycle_group`, `collapse_empty` (a group left without tabs goes, never the last one), `make_live` and `sync_parked` (see Conventions), `hit_test` (`EditorHit`) and `restore_splits`. `check_invariants` (tests) asserts the rules below. |
@@ -67,7 +68,7 @@ and backlog are in `docs/ROADMAP.md`; settings in `docs/CONFIG.md`; keys in
 | `files/ops.rs` | `FsOp` (create, rename, delete; never overwrites, never follows symlinks on delete) and name checks for the tree dialogs. |
 | `files/walk.rs` | The `ignore` walk builder shared by the tree, Go to File and find in files. |
 | `files/find.rs`, `files/find_panel.rs` | Find in files: the search (`Search::run` streams `Batch`es, cancelled by seq) and replacements; the Find tool window. |
-| `files/watch.rs` | Debounced recursive watch of the root (notify); splits batches into working tree paths and a git flag. Opens and reads are not changes (jetl's own reads would loop). |
+| `files/watch.rs` | Debounced recursive watch of the root (notify); splits batches into working tree paths and a git flag. Opens and reads are not changes (jetl's own reads would loop). `changes_content` and `DEBOUNCE` are shared with the config watcher. |
 | `symbols/mod.rs` | `Symbol` and `extract`: runs a language's tags query (`LanguageDef::tags`, from the grammar crates' `TAGS_QUERY`: Rust, JavaScript, TypeScript/TSX, Python, Go, C, C++, Java) over a tree; definitions only, with nesting depth. |
 | `symbols/index.rs` | `SymbolIndex`: the project symbols behind Go to Symbol. Follows the file index (files with tags, at most 5000, each at most 256 KiB), parses in `spawn_blocking` (`IndexJob`), skips files whose mtime is unchanged, drops and re-queues watcher paths. |
 | `symbols/panel.rs` | Structure tool window: the active buffer's symbols from its live tree, re-extracted when the buffer version, language or active tab changes; the selection follows the caret while unfocused. |
@@ -111,8 +112,8 @@ redraws when `dirty_frame` is set:
    (`FsOpDone`), symbol index batches, the recent projects list, clipboard
    reads (`Paste`), formatter results (`Formatted`), Run task output and
    exits and the task picker's list, the Terminal shell's output wakes,
-   language server events (`AppMsg::Lsp`), `AppMsg::Git(GitMsg)`, and the
-   filesystem watcher
+   language server events (`AppMsg::Lsp`), `AppMsg::Git(GitMsg)`, config
+   file changes (`ConfigChanged`), and the filesystem watcher
    (`FsChanged`: refresh the tree if a listed directory changed, refresh git
    status, reload clean tabs in place, ask once about tabs with unsaved
    edits). Without a watcher (off, or it failed to start), focus gain
@@ -174,7 +175,8 @@ Two tags, and one rule for popups:
   `GitMsg`. `GitService`
   keeps a copy, set by `set_root(root, generation)`, to tag its own
   results. A result whose generation differs from `workspace.generation` is
-  dropped.
+  dropped. `ConfigChanged` carries no tag: it does not depend on the root,
+  and the reload reads the files when it runs.
 - **Seq** orders repeated requests of the same kind within a generation, so
   an older request that finishes late cannot overwrite a newer result:
   `GitMsg::Status` (`GitPanel::set_status`), `GitMsg::Blob` (per buffer,
@@ -424,9 +426,14 @@ returns the theme and the messages for notifications. `App::new` calls it
 with `color::colorterm_env()`, which is always true color in tests, so
 snapshots and color assertions do not depend on the environment. The
 `Theme` struct is generated by `theme_fields!`, so every field is a theme
-key and reached by `Theme::map_colors`. Hot reload must call `Theme::load`
-again and rebuild the cached capture styles (each buffer's `Syntax`, the
-conflict resolver's panes, the diff view).
+key and reached by `Theme::map_colors`. Hot reload
+(`app/config_reload.rs`) calls `Theme::load_report` with
+`OnBadFile::Reject`, so a document that fails as a whole keeps the current
+theme instead of falling back to Darcula; when the theme changed,
+`Editor::restyle` gives every buffer's `Syntax` (the conflict resolver's
+panes included) its new capture styles, keeping the parse tree, and
+`GitPanel::theme_changed` drops the diff panes' syntax spans, which the next
+render computes again.
 
 ## Extension points
 
@@ -468,6 +475,13 @@ version or seq moved on, convert positions with `lsp::pos`. Edits made at
 once (several `TextEdit`s) go through `lsp::edits::plan` into one
 transaction; a `WorkspaceEdit` goes through `App::apply_workspace_edit`. Test against
 `lsp::fake` through `app::lsp::tests::with_fake_servers`.
+
+**A new config key.** Add the field and its `Default`, document it in
+CONFIG.md, and classify it in `config/reload.rs` (the build fails until it
+is). A `Live` key is applied in `App::apply_config`
+(`app/config_reload.rs`), or in `Editor::apply_config` for `[editor]` keys
+(which destructures `EditorConfig`, so it fails to build too); a key read
+only at startup is `Restart`.
 
 **A new theme key.** Add it to `theme_fields!` in `config/theme.rs` with a
 doc comment, set it in every `assets/themes/*.toml`

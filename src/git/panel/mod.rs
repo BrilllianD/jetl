@@ -257,6 +257,14 @@ impl GitPanel {
         self.log_all = all;
     }
 
+    /// The theme changed (hot reload): the diff panes compute their syntax
+    /// colors again on the next render.
+    pub fn theme_changed(&mut self) {
+        for pane in [&mut self.diff, &mut self.log_diff, &mut self.stash_diff] {
+            pane.restyle();
+        }
+    }
+
     fn default_area(tab: GitTab) -> Area {
         match tab {
             GitTab::Commit => Area::Changes,

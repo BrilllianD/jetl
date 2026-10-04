@@ -34,6 +34,12 @@ pub enum AppMsg {
         session: crate::workspace::Session,
         files: Vec<std::io::Result<Vec<u8>>>,
     },
+    /// Config files changed (`config::watch::ConfigWatcher`): which kinds,
+    /// sorted. No generation: not tied to the root, and the reload reads
+    /// the files when it runs.
+    ConfigChanged {
+        files: Vec<crate::config::watch::ConfigFile>,
+    },
     /// A debounced batch of filesystem changes under the root.
     FsChanged {
         generation: u64,

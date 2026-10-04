@@ -150,7 +150,7 @@ All of section E shipped in Phase 9 except split editor panes, which shipped in 
 | Feature | Effort | Notes |
 |---|---|---|
 | Named themes, built-in light theme, 256-color fallback | S-M | Done: `ui.theme` darcula/light/theme file, `theme.toml` on top, 256-color fallback (`$COLORTERM`, `ui.colors`) |
-| Config hot reload | S | After the watcher |
+| Config hot reload | S | Done: config, keymap and theme files reload through a config-dir watch; broken files keep the current value; restart-needed keys are named |
 | Vim mode | L | Dispatcher mode tables exist |
 | Local History | M | Reuse `DiffDoc` view |
 | Scratch files | S | Buffers rooted in the state dir |

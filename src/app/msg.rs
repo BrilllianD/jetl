@@ -13,6 +13,7 @@ impl App {
     pub(super) fn handle_msg(&mut self, msg: AppMsg) {
         self.dirty_frame = true;
         match msg {
+            AppMsg::ConfigChanged { files } => self.config_changed(files),
             AppMsg::FileLoaded { generation, path, result, focus } => {
                 if generation == self.workspace.generation {
                     self.file_loaded(path, result, focus);

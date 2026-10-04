@@ -229,7 +229,7 @@ impl Default for LspConfig {
 }
 
 /// A `[lsp.servers.<name>]` table; omitted keys keep the built-in values.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct ServerOverride {
     /// The command and its arguments; empty turns the server off.

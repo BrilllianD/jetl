@@ -41,6 +41,7 @@ pub use lsp::LspStatus;
 // Declared after `ctx!` so the submodules can use it.
 mod clipboard;
 mod completion;
+mod config_reload;
 mod dialogs;
 mod effects;
 mod files;
@@ -225,13 +226,17 @@ pub struct App {
     pub(crate) recorder: crate::recovery::Recorder,
     /// Crash dumps of this root waiting for an answer (`app/recovery.rs`).
     recovery_offer: Option<recovery::RecoveryOffer>,
+    /// The config watcher and what the config files held when last
+    /// reloaded (`app/config_reload.rs`).
+    pub(crate) config_reload: config_reload::ConfigReload,
     started: Instant,
 }
 
 impl App {
     pub fn new(root: PathBuf, config: Config, paths: Paths, open: Option<(PathBuf, usize, usize)>) -> Self {
         let (bus_tx, bus_rx) = mpsc::unbounded_channel();
-        let (keymap, keymap_errors) = Keymap::load(&paths.keymap_file());
+        let keymap_text = crate::config::FileText::read(&paths.keymap_file());
+        let (keymap, keymap_errors) = Keymap::load_text(&keymap_text, &paths.keymap_file());
         let (theme, theme_errors) = Theme::load(&config, &paths.config_dir, crate::config::color::colorterm_env().as_deref());
         let modal = config.keymap.mode == "vim";
         let mut dispatcher = Dispatcher::new(modal);
@@ -303,6 +308,7 @@ impl App {
             completion: None,
             recorder,
             recovery_offer: None,
+            config_reload: Default::default(),
             started: Instant::now(),
             config,
             paths,
@@ -316,6 +322,7 @@ impl App {
         for e in keymap_errors.into_iter().chain(theme_errors) {
             app.notify(Level::Error, e);
         }
+        app.start_config_reload(keymap_text);
         app.git.refresh_status();
         app.git.load_branches();
         app.git.load_worktrees();
@@ -870,13 +877,13 @@ impl App {
     fn open_settings(&mut self) {
         let path = self.paths.config_file();
         if !path.exists() {
-            let created = path
-                .parent()
-                .map_or(Ok(()), std::fs::create_dir_all)
-                .and_then(|()| std::fs::write(&path, "# jetl settings; every key and its default: docs/CONFIG.md\n"));
+            let created =
+                path.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|()| std::fs::write(&path, config_reload::SETTINGS_STUB));
             if let Err(e) = created {
                 return self.notify(Level::Error, format!("create {}: {e}", path.display()));
             }
+            // Its own write is not a change for hot reload.
+            self.settings_created(config_reload::SETTINGS_STUB);
         }
         self.open_file(path, true);
     }

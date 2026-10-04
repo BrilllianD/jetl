@@ -410,41 +410,97 @@ impl Theme {
     /// Problems are logged and returned for notifications; a missing or
     /// broken theme file gives Darcula, a broken `theme.toml` is skipped.
     pub fn load(config: &Config, config_dir: &Path, colorterm: Option<&str>) -> (Theme, Vec<String>) {
+        let r = Theme::load_report(config, config_dir, colorterm, OnBadFile::Fallback);
+        (r.theme, r.messages)
+    }
+
+    /// [`Theme::load`] with a choice of what a whole-document failure (an
+    /// unknown `ui.theme` name, a theme file that is missing, unreadable
+    /// or not valid TOML, a broken `theme.toml`) does: `Fallback` as at
+    /// startup, or `Reject` for hot reload, which sets `rejected` so the
+    /// caller keeps its current theme. Every problem is reported either way;
+    /// skipped entries ("(entry ignored)") never reject.
+    pub fn load_report(config: &Config, config_dir: &Path, colorterm: Option<&str>, on_bad: OnBadFile) -> ThemeLoad {
+        const KEEP: &str = "; keeping the current theme";
         let ansi256 = !config.ui.colors.truecolor(colorterm);
-        let mut msgs = Vec::new();
+        let mut messages = Vec::new();
+        let mut rejected = false;
+        let mut whole = |m: String, fallback: &str, messages: &mut Vec<String>| match on_bad {
+            OnBadFile::Fallback => messages.push(format!("{m}{fallback}")),
+            OnBadFile::Reject => {
+                rejected = true;
+                messages.push(format!("{m}{KEEP}"));
+            }
+        };
         let mut theme = match resolve_theme(&config.ui.theme, config_dir) {
             ThemeSource::Builtin(b) => Theme::builtin(b, ansi256),
             ThemeSource::File(path) => {
                 let mut t = Theme::builtin(&DARCULA, ansi256);
                 match apply_file(&mut t, &path, ansi256) {
-                    Ok(entries) => msgs.extend(entries),
-                    Err(FileError::Missing(m) | FileError::Rejected(m)) => msgs.push(format!("{m}; using darcula")),
+                    Ok(entries) => messages.extend(entries),
+                    Err(FileError::Missing(m) | FileError::Rejected(m)) => whole(m, "; using darcula", &mut messages),
                 }
                 t
             }
             ThemeSource::Unknown(name) => {
                 let names: Vec<&str> = BUILTIN_THEMES.iter().map(|b| b.name).collect();
-                msgs.push(format!(
-                    "ui.theme: unknown theme {name:?} (built-in: {}; a theme file is a path ending in .toml); using darcula",
-                    names.join(", ")
-                ));
+                let m =
+                    format!("ui.theme: unknown theme {name:?} (built-in: {}; a theme file is a path ending in .toml)", names.join(", "));
+                whole(m, "; using darcula", &mut messages);
                 Theme::builtin(&DARCULA, ansi256)
             }
         };
         match apply_file(&mut theme, &config_dir.join("theme.toml"), ansi256) {
-            Ok(entries) => msgs.extend(entries),
+            Ok(entries) => messages.extend(entries),
             Err(FileError::Missing(_)) => {}
-            Err(FileError::Rejected(m)) => msgs.push(format!("{m}; its overrides are not applied")),
+            Err(FileError::Rejected(m)) => whole(m, "; its overrides are not applied", &mut messages),
         }
         if ansi256 {
             // Catches the RGB colors of theme files and theme.toml.
             theme.map_colors(color::to_ansi256);
         }
-        for m in &msgs {
+        for m in &messages {
             tracing::error!("{m}");
         }
-        (theme, msgs)
+        ThemeLoad { theme, messages, rejected }
     }
+
+    /// The files the theme is read from, in layer order: the `ui.theme`
+    /// file (when it names one), then `config_dir/theme.toml`; no path
+    /// twice.
+    pub fn sources(config: &Config, config_dir: &Path) -> Vec<PathBuf> {
+        let mut out = Vec::new();
+        if let ThemeSource::File(p) = resolve_theme(&config.ui.theme, config_dir) {
+            out.push(p);
+        }
+        let toml = config_dir.join("theme.toml");
+        if !out.contains(&toml) {
+            out.push(toml);
+        }
+        out
+    }
+}
+
+/// What [`Theme::load_report`] does with a document that cannot be applied
+/// as a whole.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OnBadFile {
+    /// Startup: Darcula for a bad `ui.theme`, no overrides for a bad
+    /// `theme.toml`.
+    Fallback,
+    /// Hot reload: report it and set [`ThemeLoad::rejected`].
+    Reject,
+}
+
+/// The result of [`Theme::load_report`].
+#[derive(Debug)]
+pub struct ThemeLoad {
+    pub theme: Theme,
+    /// Problems for notifications, already logged.
+    pub messages: Vec<String>,
+    /// With [`OnBadFile::Reject`]: a document failed as a whole, so `theme`
+    /// is not what the files ask for.
+    pub rejected: bool,
 }
 
 /// Why a theme document was not applied at all; the message starts with
@@ -794,6 +850,52 @@ mod tests {
         assert_eq!(msgs.len(), 1, "{msgs:?}");
         assert!(msgs[0].contains("its overrides are not applied"), "{msgs:?}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reject_mode_flags_whole_file_failures() {
+        let dir = test_dir("reject");
+        let reject = |config: &Config| Theme::load_report(config, &dir, TRUE, OnBadFile::Reject);
+        std::fs::write(dir.join("theme.toml"), "bg = \"#000000\"\n[[[").unwrap();
+        let r = reject(&Config::default());
+        assert!(r.rejected);
+        assert_eq!(r.messages.len(), 1, "{:?}", r.messages);
+        assert!(r.messages[0].contains("theme.toml") && r.messages[0].ends_with("keeping the current theme"), "{:?}", r.messages);
+        std::fs::remove_file(dir.join("theme.toml")).unwrap();
+        for name in ["mine.toml", "nope"] {
+            let r = reject(&theme_config(name));
+            assert!(r.rejected, "{name}");
+            assert_eq!(r.messages.len(), 1, "{:?}", r.messages);
+            assert!(r.messages[0].ends_with("keeping the current theme"), "{:?}", r.messages);
+            assert!(!r.messages[0].contains("darcula;"), "{:?}", r.messages);
+        }
+        assert!(reject(&theme_config("nope")).messages[0].contains("unknown theme \"nope\""));
+        let r = reject(&Config::default());
+        assert!(!r.rejected && r.messages.is_empty(), "a missing theme.toml is fine");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reject_mode_applies_entry_errors() {
+        let dir = test_dir("reject-entry");
+        std::fs::write(dir.join("theme.toml"), "bg = \"#zz\"\nfg = \"#010203\"\n").unwrap();
+        let r = Theme::load_report(&Config::default(), &dir, TRUE, OnBadFile::Reject);
+        assert!(!r.rejected);
+        assert_eq!(r.theme.fg, Color::Rgb(1, 2, 3));
+        assert_eq!(r.theme.bg, Theme::darcula().bg);
+        assert_eq!(r.messages.len(), 1, "{:?}", r.messages);
+        assert!(r.messages[0].ends_with("(entry ignored)"), "{:?}", r.messages);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn sources_lists_theme_file_then_theme_toml() {
+        let dir = Path::new("/cfg");
+        assert_eq!(Theme::sources(&Config::default(), dir), [dir.join("theme.toml")]);
+        assert_eq!(Theme::sources(&theme_config("light"), dir), [dir.join("theme.toml")]);
+        assert_eq!(Theme::sources(&theme_config("mine.toml"), dir), [dir.join("mine.toml"), dir.join("theme.toml")]);
+        assert_eq!(Theme::sources(&theme_config("/abs/x.toml"), dir), [PathBuf::from("/abs/x.toml"), dir.join("theme.toml")]);
+        assert_eq!(Theme::sources(&theme_config("theme.toml"), dir), [dir.join("theme.toml")], "no path twice");
     }
 
     #[test]
