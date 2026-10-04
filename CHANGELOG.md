@@ -140,6 +140,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stages it and closes; Cancel (Esc) closes without writing, asking first when you changed
   something. Layout commands and opening other files wait until it closes.
 
+### Changed
+
+- Minimum supported Rust version is now 1.90 (was 1.88). tree-sitter 0.27 already required
+  1.90, so 1.88 never built; hover Markdown parsing no longer uses `if let` match guards.
+
 ## [0.1.0] - 2026-10-03
 
 First release.

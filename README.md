@@ -99,7 +99,7 @@ Run the commands in the directory that holds both downloaded files. The archive 
 
 Requirements:
 
-- Rust 1.88 or newer.
+- Rust 1.90 or newer.
 - A C compiler. The tree-sitter grammars and the bundled libgit2 are compiled from C sources.
 - At run time, `git` on `PATH` (push, pull, merge, rebase and worktree operations use the git
   CLI).

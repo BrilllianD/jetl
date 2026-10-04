@@ -2,7 +2,7 @@
 name = "jetl"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.90"
 description = "Lightweight terminal IDE with JetBrains-like UX"
 license = "MIT"
 authors = ["Bronnikov Aleksandr <brillliand@gmail.com>"]

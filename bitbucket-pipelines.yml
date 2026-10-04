@@ -21,8 +21,8 @@ definitions:
         script:
           - cargo test
     - step: &test-msrv
-        name: test (1.88)
-        image: rust:1.88
+        name: test (1.90)
+        image: rust:1.90
         caches:
           - cargo-registry
         script:

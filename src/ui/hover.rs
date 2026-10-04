@@ -237,19 +237,19 @@ fn inline(s: &str) -> String {
             i += 1;
             continue;
         }
+        if c == '['
+            && let Some((close, end)) = link_span(&chars, i)
+        {
+            out.push_str(&inline(&chars[i + 1..close].iter().collect::<String>()));
+            i = end + 1;
+            continue;
+        }
         match c {
             '\\' if next.is_some_and(|n| n.is_ascii_punctuation()) => {
                 out.push(next.unwrap_or_default());
                 i += 2;
             }
             '*' if next == Some('*') => i += 2,
-            '[' if let Some(close) = chars[i + 1..].iter().position(|&c| c == ']').map(|k| i + 1 + k)
-                && chars.get(close + 1) == Some(&'(')
-                && let Some(end) = chars[close + 2..].iter().position(|&c| c == ')').map(|k| close + 2 + k) =>
-            {
-                out.push_str(&inline(&chars[i + 1..close].iter().collect::<String>()));
-                i = end + 1;
-            }
             _ => {
                 out.push(c);
                 i += 1;
@@ -257,6 +257,16 @@ fn inline(s: &str) -> String {
         }
     }
     out
+}
+
+/// `[text](url)` starting at `open`: indexes of `]` and `)`.
+fn link_span(chars: &[char], open: usize) -> Option<(usize, usize)> {
+    let close = chars[open + 1..].iter().position(|&c| c == ']')? + open + 1;
+    if chars.get(close + 1) != Some(&'(') {
+        return None;
+    }
+    let end = chars[close + 2..].iter().position(|&c| c == ')')? + close + 2;
+    Some((close, end))
 }
 
 /// Rows of `width` cells: prose wrapped at spaces, code cut by cells.

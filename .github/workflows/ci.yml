@@ -23,7 +23,7 @@ jobs:
     strategy:
       matrix:
         # stable and the MSRV from Cargo.toml (rust-version)
-        toolchain: [stable, "1.88"]
+        toolchain: [stable, "1.90"]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
