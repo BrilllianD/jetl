@@ -34,3 +34,47 @@ pub fn fit(s: &str, max: usize) -> String {
     out.push('…');
     out
 }
+
+/// Break `phrases` into lines of at most `max` cells: whole phrases joined
+/// by spaces while they fit, a phrase wider than `max` broken between its
+/// words, and a word wider than `max` cut with `…`.
+pub fn wrap_phrases(phrases: &[&str], max: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut cur = String::new();
+    for p in phrases {
+        let units: Vec<&str> = if p.width() <= max { vec![p] } else { p.split_whitespace().collect() };
+        for u in units {
+            if !cur.is_empty() && cur.width() + 1 + u.width() <= max {
+                cur.push(' ');
+                cur.push_str(u);
+                continue;
+            }
+            if !cur.is_empty() {
+                lines.push(std::mem::take(&mut cur));
+            }
+            cur = fit(u, max);
+        }
+    }
+    if !cur.is_empty() {
+        lines.push(cur);
+    }
+    lines
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wrap_phrases_keeps_phrases_whole_when_they_fit() {
+        let p = ["No files open.", "Alt+1 opens the Project view;", "Ctrl+Shift+N finds a file."];
+        assert_eq!(wrap_phrases(&p, 80), vec!["No files open. Alt+1 opens the Project view; Ctrl+Shift+N finds a file."]);
+        assert_eq!(wrap_phrases(&p, 44), vec!["No files open. Alt+1 opens the Project view;", "Ctrl+Shift+N finds a file."]);
+        assert_eq!(wrap_phrases(&p, 42), vec!["No files open.", "Alt+1 opens the Project view;", "Ctrl+Shift+N finds a file."]);
+        // A phrase too wide breaks between words; a word too wide is cut
+        // with an ellipsis, never silently.
+        assert_eq!(wrap_phrases(&p, 16), vec!["No files open.", "Alt+1 opens the", "Project view;", "Ctrl+Shift+N", "finds a file."]);
+        assert_eq!(wrap_phrases(&["Ctrl+Shift+N"], 8), vec!["Ctrl+Sh…"]);
+        assert!(wrap_phrases(&p, 10).iter().all(|l| l.width() <= 10));
+    }
+}

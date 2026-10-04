@@ -177,6 +177,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `editor.cjk_ambiguous_wide`, which was reserved and had no effect. Configs that still set it
   load as before (unknown keys are ignored).
 
+### Fixed
+
+- The hint shown in an editor without tabs wraps onto centred lines in a narrow pane instead of
+  being cut at the right edge.
+
 ## [0.1.0] - 2026-10-03
 
 First release.

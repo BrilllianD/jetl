@@ -121,6 +121,9 @@ pub struct Editor {
     center: Rect,
 }
 
+/// Shown in a group without tabs, as phrases that wrap as a whole.
+const EMPTY_HINT: [&str; 3] = ["No files open.", "Alt+1 opens the Project view;", "Ctrl+Shift+N finds a file."];
+
 /// Shown in place of a pinned tab's close button (one column wide).
 const PIN_MARK: &str = "⚲";
 
@@ -1414,10 +1417,23 @@ impl Editor {
         screen.set_style(area, Style::default().bg(theme.bg));
         let Some(i) = group.active_id().and_then(|id| self.buffers.iter().position(|b| b.id == id)) else {
             group.text_area = area;
-            let hint = "No files open. Alt+1 opens the Project view; Ctrl+Shift+N finds a file.";
             if area.height > 2 && area.width > 10 {
-                let x = area.x + area.width.saturating_sub(hint.width() as u16) / 2;
-                screen.set_stringn(x, area.y + area.height / 2, hint, area.width as usize, theme.dim);
+                // Centred lines, broken between the phrases (or words) so a
+                // narrow pane cuts nothing.
+                let max = area.width.saturating_sub(2) as usize;
+                let mut lines = crate::util::text::wrap_phrases(&EMPTY_HINT, max);
+                let h = area.height as usize;
+                if lines.len() > h {
+                    lines.truncate(h);
+                    let last = format!("{} …", lines[h - 1]);
+                    lines[h - 1] = crate::util::text::fit(&last, max);
+                }
+                // One line sits on the middle row, as before; more centre on it.
+                let top = area.y + (area.height + 1 - lines.len() as u16) / 2;
+                for (row, line) in lines.iter().enumerate() {
+                    let x = area.x + area.width.saturating_sub(line.width() as u16) / 2;
+                    screen.set_stringn(x, top + row as u16, line, max, theme.dim);
+                }
             }
             return;
         };
