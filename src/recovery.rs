@@ -1,0 +1,526 @@
+//! Crash recovery of unsaved buffers.
+//!
+//! The run loop keeps a [`RecoverySnapshot`] of every dirty buffer (rope
+//! clones, O(1) each) in a mutex shared with the panic hook
+//! ([`Recorder`]). On a panic the hook takes it without ever blocking
+//! ([`take_snapshot`]: a bounded `try_lock`) and writes it, best effort, to
+//! this process's own directory, `state/recovery/<pid>-<start secs>/`: one
+//! `<id>.txt` per buffer, then `manifest.json` ([`write_dump`]). A clean
+//! exit removes that directory ([`Recorder::clear`]).
+//!
+//! On the next session load of the same root, [`scan`] finds the dumps of
+//! processes that are gone (a live owner's directory is never offered nor
+//! removed; dumps of other roots are left for when that project opens) and
+//! the app offers to restore them (`app/recovery.rs`).
+
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock, TryLockError};
+
+use ropey::Rope;
+use serde::{Deserialize, Serialize};
+
+use crate::editor::buffer::{Buffer, BufferId};
+
+/// The manifest's file name in a dump directory; written last.
+pub const MANIFEST: &str = "manifest.json";
+/// The manifest format this build reads and writes.
+const VERSION: u32 = 1;
+
+/// What the panic hook would write: the root and every dirty buffer that
+/// is not one of the conflict resolver's scratch buffers.
+#[derive(Debug, Clone, Default)]
+pub struct RecoverySnapshot {
+    pub root: PathBuf,
+    pub buffers: Vec<SnapBuffer>,
+}
+
+/// One dirty buffer in a [`RecoverySnapshot`].
+#[derive(Debug, Clone)]
+pub struct SnapBuffer {
+    pub id: BufferId,
+    pub path: Option<PathBuf>,
+    pub name: String,
+    pub version: u64,
+    pub saved_state: u64,
+    pub text: Rope,
+}
+
+impl SnapBuffer {
+    pub fn of(b: &Buffer) -> Self {
+        Self { id: b.id, path: b.path.clone(), name: b.name.clone(), version: b.version, saved_state: b.saved_state, text: b.rope.clone() }
+    }
+}
+
+/// `manifest.json` of a dump directory.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Manifest {
+    /// Format version, 1.
+    pub version: u32,
+    pub pid: u32,
+    pub root: PathBuf,
+    /// When the dump was written, in Unix seconds.
+    pub time: u64,
+    pub buffers: Vec<Entry>,
+}
+
+/// One buffer of a [`Manifest`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Entry {
+    /// The text's file in the dump directory, `<id>.txt`.
+    pub file: String,
+    pub path: Option<PathBuf>,
+    /// `path.is_none()`; readers trust `path`.
+    #[serde(default)]
+    pub untitled: bool,
+    pub name: String,
+}
+
+/// A buffer to offer for recovery, from [`scan`].
+#[derive(Debug, Clone)]
+pub struct FoundEntry {
+    pub text_file: PathBuf,
+    pub path: Option<PathBuf>,
+    pub name: String,
+}
+
+impl FoundEntry {
+    /// How the dialog lists it: the path relative to `root` (else the full
+    /// path), or `name (untitled)`.
+    pub fn label(&self, root: &Path) -> String {
+        match &self.path {
+            Some(p) => p.strip_prefix(root).unwrap_or(p).display().to_string(),
+            None => format!("{} (untitled)", self.name),
+        }
+    }
+}
+
+/// The dumps of one root: every directory to remove once answered, and the
+/// entries to offer (newest dump first, the newest entry per path only).
+#[derive(Debug, Clone)]
+pub struct Found {
+    pub root: PathBuf,
+    pub dirs: Vec<PathBuf>,
+    pub entries: Vec<FoundEntry>,
+}
+
+/// This process's dump directory name, `<pid>-<unix secs>`.
+pub fn instance_name() -> String {
+    format!("{}-{}", std::process::id(), crate::recent_projects::now())
+}
+
+/// Write `snap` into `dir`: each buffer to `<id>.txt` (through a `.tmp`
+/// and a rename; one that fails is skipped), then the manifest the same
+/// way. No fsync: this runs in a dying process. Returns the number of
+/// buffers written; `Ok(0)` without creating anything when `snap` is empty.
+pub fn write_dump(dir: &Path, snap: &RecoverySnapshot, pid: u32, time: u64) -> std::io::Result<usize> {
+    if snap.buffers.is_empty() {
+        return Ok(0);
+    }
+    std::fs::create_dir_all(dir)?;
+    let mut buffers = Vec::with_capacity(snap.buffers.len());
+    for b in &snap.buffers {
+        let file = format!("{}.txt", b.id);
+        if let Err(e) = write_rope(&dir.join(&file), &b.text) {
+            tracing::warn!("recovery: writing {}: {e}", b.name);
+            continue;
+        }
+        // serde_json cannot store a path that is not UTF-8: keep the text
+        // as an untitled entry named after it.
+        let entry = match &b.path {
+            Some(p) if p.to_str().is_none() => Entry { file, path: None, untitled: true, name: p.display().to_string() },
+            p => Entry { file, path: p.clone(), untitled: p.is_none(), name: b.name.clone() },
+        };
+        buffers.push(entry);
+    }
+    let n = buffers.len();
+    let manifest = Manifest { version: VERSION, pid, root: snap.root.clone(), time, buffers };
+    let json = serde_json::to_vec_pretty(&manifest).map_err(std::io::Error::other)?;
+    let tmp = dir.join(format!("{MANIFEST}.tmp"));
+    std::fs::write(&tmp, json)?;
+    std::fs::rename(&tmp, dir.join(MANIFEST))?;
+    Ok(n)
+}
+
+/// `text` to `path` through `path.tmp` and a rename.
+fn write_rope(path: &Path, text: &Rope) -> std::io::Result<()> {
+    let tmp = path.with_extension("txt.tmp");
+    let mut w = std::io::BufWriter::new(std::fs::File::create(&tmp)?);
+    for chunk in text.chunks() {
+        w.write_all(chunk.as_bytes())?;
+    }
+    w.into_inner().map_err(|e| e.into_error())?;
+    std::fs::rename(&tmp, path)
+}
+
+/// The manifest of the dump in `dir`; `None` when missing, unreadable, not
+/// valid or of another format version.
+pub fn read_manifest(dir: &Path) -> Option<Manifest> {
+    let bytes = std::fs::read(dir.join(MANIFEST)).ok()?;
+    serde_json::from_slice::<Manifest>(&bytes).ok().filter(|m| m.version == VERSION)
+}
+
+/// The dumps under `recovery_dir` to offer for `root`. Directories not
+/// named `<pid>-<secs>` and those of a live process are left alone; a dead
+/// process's directory without a manifest (an unfinished dump) or with no
+/// buffers is removed; an invalid manifest is logged and left; dumps of
+/// other roots are left for when that project opens.
+pub fn scan(recovery_dir: &Path, root: &Path) -> Option<Found> {
+    let rd = std::fs::read_dir(recovery_dir).ok()?;
+    let mut dumps: Vec<(u64, String, PathBuf, Manifest)> = Vec::new();
+    for entry in rd.flatten() {
+        let dir = entry.path();
+        let Some(name) = entry.file_name().to_str().map(str::to_string) else { continue };
+        let Some(pid) = owner_pid(&name) else { continue };
+        if !dir.is_dir() || process_alive(pid) {
+            continue;
+        }
+        if !dir.join(MANIFEST).exists() {
+            remove_dumps(std::slice::from_ref(&dir));
+            continue;
+        }
+        let Some(m) = read_manifest(&dir) else {
+            tracing::warn!("recovery: unreadable manifest in {}; left alone", dir.display());
+            continue;
+        };
+        if m.root != root {
+            continue;
+        }
+        if m.buffers.is_empty() {
+            remove_dumps(std::slice::from_ref(&dir));
+            continue;
+        }
+        dumps.push((m.time, name, dir, m));
+    }
+    if dumps.is_empty() {
+        return None;
+    }
+    // Newest first; the name breaks ties so the order is stable.
+    dumps.sort_by(|a, b| (b.0, &b.1).cmp(&(a.0, &a.1)));
+    let mut entries: Vec<FoundEntry> = Vec::new();
+    let mut dirs = Vec::with_capacity(dumps.len());
+    for (_, _, dir, m) in dumps {
+        for e in m.buffers {
+            // Only a plain file name inside the dump directory.
+            if Path::new(&e.file).file_name().and_then(|n| n.to_str()) != Some(e.file.as_str()) {
+                continue;
+            }
+            if e.path.is_some() && entries.iter().any(|f| f.path == e.path) {
+                continue;
+            }
+            entries.push(FoundEntry { text_file: dir.join(&e.file), path: e.path, name: e.name });
+        }
+        dirs.push(dir);
+    }
+    Some(Found { root: root.to_path_buf(), dirs, entries })
+}
+
+/// Remove dump directories; errors other than a missing one are logged.
+pub fn remove_dumps(dirs: &[PathBuf]) {
+    for d in dirs {
+        if let Err(e) = std::fs::remove_dir_all(d)
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::warn!("recovery: removing {}: {e}", d.display());
+        }
+    }
+}
+
+/// The owner's pid of a dump directory named `<u32>-<u64>`.
+fn owner_pid(dir_name: &str) -> Option<u32> {
+    let (pid, secs) = dir_name.split_once('-')?;
+    secs.parse::<u64>().ok()?;
+    pid.parse().ok()
+}
+
+/// Whether process `pid` exists (one we may not signal counts too).
+#[cfg(unix)]
+fn process_alive(pid: u32) -> bool {
+    if pid == 0 || pid > i32::MAX as u32 {
+        return false;
+    }
+    // SAFETY: signal 0 sends nothing; `kill` only checks that the process
+    // exists and may be signalled.
+    if unsafe { libc::kill(pid as libc::pid_t, 0) } == 0 {
+        return true;
+    }
+    std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+#[cfg(not(unix))]
+fn process_alive(_: u32) -> bool {
+    false
+}
+
+/// A copy of the shared snapshot for the panic hook: `try_lock` up to 50
+/// times, 2 ms apart, never a blocking `lock` (the panicking thread might
+/// hold it). A poisoned lock is still read: the value is only ever replaced
+/// whole. `None` when it stayed busy.
+fn take_snapshot(m: &Mutex<RecoverySnapshot>) -> Option<RecoverySnapshot> {
+    const TRIES: usize = 50;
+    for i in 0..TRIES {
+        match m.try_lock() {
+            Ok(g) => return Some(g.clone()),
+            Err(TryLockError::Poisoned(e)) => return Some(e.into_inner().clone()),
+            Err(TryLockError::WouldBlock) => {
+                if i + 1 < TRIES {
+                    std::thread::sleep(std::time::Duration::from_millis(2));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Where the panic hook writes and what.
+struct Armed {
+    dir: PathBuf,
+    snap: Arc<Mutex<RecoverySnapshot>>,
+}
+
+static ARMED: OnceLock<Armed> = OnceLock::new();
+
+/// Let the panic hook write `snap` into `dir`. The first call wins; tests
+/// never call it.
+pub fn arm(dir: PathBuf, snap: Arc<Mutex<RecoverySnapshot>>) {
+    let _ = ARMED.set(Armed { dir, snap });
+}
+
+/// The panic hook's part: write the armed snapshot. `None` when not armed,
+/// nothing is dirty, the lock stayed busy or the write failed.
+pub fn dump_on_panic() -> Option<(PathBuf, usize)> {
+    let armed = ARMED.get()?;
+    let snap = take_snapshot(&armed.snap)?;
+    match write_dump(&armed.dir, &snap, std::process::id(), crate::recent_projects::now()) {
+        Ok(0) => None,
+        Ok(n) => Some((armed.dir.clone(), n)),
+        Err(e) => {
+            tracing::error!("recovery: writing {}: {e}", armed.dir.display());
+            None
+        }
+    }
+}
+
+/// The run loop's side: keeps the shared snapshot current and this
+/// process's dump directory.
+pub struct Recorder {
+    /// This process's dump directory (created only by a dump).
+    pub dir: PathBuf,
+    shared: Arc<Mutex<RecoverySnapshot>>,
+    last: RecoverySnapshot,
+    generation: u64,
+    stored: u64,
+}
+
+impl Recorder {
+    pub fn new(recovery_dir: &Path) -> Self {
+        Self {
+            dir: recovery_dir.join(instance_name()),
+            shared: Arc::default(),
+            last: RecoverySnapshot::default(),
+            generation: 0,
+            stored: 0,
+        }
+    }
+
+    /// Hand the shared snapshot to the panic hook.
+    pub fn arm(&self) {
+        arm(self.dir.clone(), self.shared.clone());
+    }
+
+    /// Whether the stored snapshot still describes `dirty` (in order) and
+    /// `generation`: same buffers, versions, saved states and paths.
+    /// Allocates nothing.
+    pub fn is_current<'a>(&self, generation: u64, mut dirty: impl Iterator<Item = &'a Buffer>) -> bool {
+        if generation != self.generation {
+            return false;
+        }
+        let mut last = self.last.buffers.iter();
+        loop {
+            match (last.next(), dirty.next()) {
+                (None, None) => return true,
+                (Some(s), Some(b)) if s.id == b.id && s.version == b.version && s.saved_state == b.saved_state && s.path == b.path => {}
+                _ => return false,
+            }
+        }
+    }
+
+    /// Make `snap` the one the panic hook writes.
+    pub fn store(&mut self, generation: u64, snap: RecoverySnapshot) {
+        self.generation = generation;
+        self.last = snap.clone();
+        let mut guard = self.shared.lock().unwrap_or_else(|e| e.into_inner());
+        let old = std::mem::replace(&mut *guard, snap);
+        drop(guard);
+        drop(old);
+        self.stored += 1;
+    }
+
+    /// A clean exit: nothing left to write, and this process's dump (from
+    /// a background thread's panic) goes.
+    pub fn clear(&mut self) {
+        self.store(self.generation, RecoverySnapshot::default());
+        remove_dumps(std::slice::from_ref(&self.dir));
+    }
+
+    pub fn last(&self) -> &RecoverySnapshot {
+        &self.last
+    }
+
+    /// How many snapshots were stored (tests).
+    pub fn stored(&self) -> u64 {
+        self.stored
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::editor::undo::TxKind;
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("jetl-test-recovery-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        d
+    }
+
+    fn snap_buffer(id: BufferId, path: Option<&Path>, name: &str, text: &str) -> SnapBuffer {
+        SnapBuffer { id, path: path.map(Path::to_path_buf), name: name.into(), version: 1, saved_state: 0, text: Rope::from_str(text) }
+    }
+
+    const DEAD: u32 = 999_999_999;
+
+    #[test]
+    fn dump_round_trip() {
+        let rec = temp_dir("round-trip");
+        let root = PathBuf::from("/tmp/project");
+        let dump = rec.join(format!("{DEAD}-1700000000"));
+        let text = "line é世\r\nsecond\r\n";
+        let snap = RecoverySnapshot {
+            root: root.clone(),
+            buffers: vec![snap_buffer(3, Some(&root.join("src/a.rs")), "a.rs", text), snap_buffer(7, None, "scratch", "note\n")],
+        };
+        assert_eq!(write_dump(&dump, &snap, DEAD, 1_700_000_000).unwrap(), 2);
+        let want = Manifest {
+            version: 1,
+            pid: DEAD,
+            root: root.clone(),
+            time: 1_700_000_000,
+            buffers: vec![
+                Entry { file: "3.txt".into(), path: Some(root.join("src/a.rs")), untitled: false, name: "a.rs".into() },
+                Entry { file: "7.txt".into(), path: None, untitled: true, name: "scratch".into() },
+            ],
+        };
+        assert_eq!(read_manifest(&dump), Some(want));
+        assert_eq!(std::fs::read(dump.join("3.txt")).unwrap(), text.as_bytes());
+        assert_eq!(std::fs::read(dump.join("7.txt")).unwrap(), b"note\n");
+        assert!(!dump.join("3.txt.tmp").exists() && !dump.join("manifest.json.tmp").exists());
+
+        let found = scan(&rec, &root).expect("offered for its root");
+        assert_eq!(found.dirs, std::slice::from_ref(&dump));
+        let got: Vec<(Option<PathBuf>, &str, PathBuf)> =
+            found.entries.iter().map(|e| (e.path.clone(), e.name.as_str(), e.text_file.clone())).collect();
+        assert_eq!(got, [(Some(root.join("src/a.rs")), "a.rs", dump.join("3.txt")), (None, "scratch", dump.join("7.txt"))]);
+        assert_eq!(found.entries[0].label(&root), "src/a.rs");
+        assert_eq!(found.entries[1].label(&root), "scratch (untitled)");
+
+        assert!(scan(&rec, Path::new("/tmp/other")).is_none());
+        assert!(dump.join(MANIFEST).exists(), "another root's dump is left alone");
+        remove_dumps(std::slice::from_ref(&dump));
+        assert!(!dump.exists());
+        let _ = std::fs::remove_dir_all(&rec);
+    }
+
+    #[test]
+    fn empty_snapshot_writes_nothing() {
+        let rec = temp_dir("empty");
+        let dump = rec.join(format!("{DEAD}-1"));
+        let snap = RecoverySnapshot { root: "/tmp/project".into(), buffers: vec![] };
+        assert_eq!(write_dump(&dump, &snap, DEAD, 1).unwrap(), 0);
+        assert!(!dump.exists());
+    }
+
+    #[test]
+    fn scan_skips_live_and_removes_dead_empty() {
+        let rec = temp_dir("scan");
+        let root = PathBuf::from("/tmp/project");
+        let a = root.join("a.txt");
+        let one = |id, text: &str| RecoverySnapshot { root: root.clone(), buffers: vec![snap_buffer(id, Some(&a), "a.txt", text)] };
+        // A live owner (this test's process): neither offered nor removed.
+        let live = rec.join(format!("{}-1", std::process::id()));
+        write_dump(&live, &one(1, "live"), std::process::id(), 50).unwrap();
+        // A dead owner without a manifest: an unfinished dump.
+        let unfinished = rec.join(format!("{DEAD}-1"));
+        std::fs::create_dir_all(&unfinished).unwrap();
+        std::fs::write(unfinished.join("1.txt"), "partial").unwrap();
+        // Not a dump directory.
+        let notes = rec.join("notes");
+        std::fs::create_dir_all(&notes).unwrap();
+        // Two dead dumps of the same file: the newer wins.
+        let older = rec.join(format!("{DEAD}-10"));
+        write_dump(&older, &one(1, "older"), DEAD, 100).unwrap();
+        let newer = rec.join(format!("{DEAD}-20"));
+        write_dump(&newer, &one(2, "newer"), DEAD, 200).unwrap();
+
+        let found = scan(&rec, &root).expect("dead dumps offered");
+        assert_eq!(found.dirs, [newer.clone(), older.clone()]);
+        assert_eq!(found.entries.len(), 1);
+        assert_eq!(found.entries[0].text_file, newer.join("2.txt"));
+        assert!(live.join(MANIFEST).exists());
+        assert!(!unfinished.exists());
+        assert!(notes.exists());
+        let _ = std::fs::remove_dir_all(&rec);
+    }
+
+    #[test]
+    fn busy_lock_gives_up() {
+        let m = Mutex::new(RecoverySnapshot::default());
+        let held = m.lock().unwrap();
+        assert!(take_snapshot(&m).is_none(), "bounded: gives up instead of hanging");
+        drop(held);
+        assert!(take_snapshot(&m).is_some());
+    }
+
+    #[test]
+    fn poisoned_lock_is_still_read() {
+        let m = Arc::new(Mutex::new(RecoverySnapshot { root: "/tmp/project".into(), buffers: vec![] }));
+        let m2 = m.clone();
+        let _ = std::thread::spawn(move || {
+            let _held = m2.lock().unwrap();
+            panic!("poison the lock");
+        })
+        .join();
+        assert!(m.is_poisoned());
+        assert_eq!(take_snapshot(&m).map(|s| s.root), Some(PathBuf::from("/tmp/project")));
+    }
+
+    #[test]
+    fn is_current_tracks_version_saved_state_path() {
+        let rec = temp_dir("is-current");
+        let mut r = Recorder::new(&rec);
+        let mut b = Buffer::from_text(1, Some(PathBuf::from("/tmp/project/a.txt")), "a\n", false);
+        assert!(r.is_current(0, std::iter::empty()));
+        assert!(!r.is_current(1, std::iter::empty()), "a root switch");
+        b.insert("x", TxKind::Typing);
+        assert!(!r.is_current(0, std::iter::once(&b)));
+        let store =
+            |r: &mut Recorder, b: &Buffer| r.store(0, RecoverySnapshot { root: "/tmp/project".into(), buffers: vec![SnapBuffer::of(b)] });
+        store(&mut r, &b);
+        assert!(r.is_current(0, std::iter::once(&b)));
+        assert_eq!(r.last().buffers[0].text.to_string(), "xa\n");
+        b.insert("y", TxKind::Typing);
+        assert!(!r.is_current(0, std::iter::once(&b)), "version");
+        store(&mut r, &b);
+        b.mark_saved();
+        assert!(!r.is_current(0, std::iter::once(&b)), "saved state");
+        store(&mut r, &b);
+        b.path = Some(PathBuf::from("/tmp/project/b.txt"));
+        assert!(!r.is_current(0, std::iter::once(&b)), "path");
+        store(&mut r, &b);
+        assert!(r.is_current(0, std::iter::once(&b)));
+        assert!(!r.is_current(0, std::iter::empty()), "the buffer was saved or closed");
+        assert_eq!(r.stored(), 4);
+        r.clear();
+        assert!(r.last().buffers.is_empty() && !r.dir.exists());
+    }
+}

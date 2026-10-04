@@ -8,6 +8,7 @@ pub mod files;
 pub mod git;
 pub mod lsp;
 pub mod recent_projects;
+pub mod recovery;
 pub mod run;
 pub mod symbols;
 pub mod terminal;

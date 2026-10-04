@@ -54,6 +54,22 @@ impl Editor {
         true
     }
 
+    /// Replace buffer `i`'s text with text recovered after a crash: one
+    /// undoable change, so the buffer is dirty against the file and undo
+    /// returns to it. Nothing is written; autosave leaves it alone until an
+    /// explicit save. False when the text is already the same.
+    pub fn recover_text(&mut self, i: usize, text: &str) -> bool {
+        let Some(b) = self.buffers.get_mut(i) else { return false };
+        let old = b.text();
+        if old == text {
+            return false;
+        }
+        let caret = b.view.sel().head.min(text.chars().count());
+        b.apply(vec![Change::replace(0, old, text)], Selection::point(caret), TxKind::Other);
+        b.recovered = true;
+        true
+    }
+
     /// Replace every match of `re` in tab `i` as one undoable edit; returns
     /// the number replaced. The tab stays modified (not saved).
     pub fn replace_in_buffer(&mut self, i: usize, re: &regex::Regex, with: &str, expand: bool) -> usize {
@@ -179,6 +195,7 @@ impl Editor {
                 b.disk_mtime = buffer::file_mtime(&path);
                 b.autosave_failed = None;
                 b.autosave_conflict = false;
+                b.recovered = false;
                 if b.lossy {
                     cx.notify(Level::Warn, format!("{} was not valid UTF-8; saved re-encoded as UTF-8", b.name));
                     b.lossy = false;

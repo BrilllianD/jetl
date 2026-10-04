@@ -242,6 +242,21 @@ impl Editor {
         at
     }
 
+    /// Add an empty buffer without a file, named `name`, as a new tab and
+    /// make it active.
+    pub fn open_untitled(&mut self, name: &str) -> usize {
+        let id = self.next_id;
+        self.next_id += 1;
+        let mut buf = Buffer::from_text(id, None, "", false);
+        buf.name = name.to_string();
+        buf.indent = indent::FileSettings::default().indent(&buf.rope, self.tab_width);
+        buf.view.wrap.on = self.soft_wrap_for(None);
+        self.buffers.push(buf);
+        let at = self.buffers.len() - 1;
+        self.activate_index(at);
+        at
+    }
+
     /// Whether a file at `path` opens soft-wrapped: all do with
     /// `editor.soft_wrap`, else those `editor.soft_wrap_files` matches.
     pub fn soft_wrap_for(&self, path: Option<&Path>) -> bool {
@@ -2266,5 +2281,35 @@ mod tests {
         // No limit by default.
         let mut ed = editor_tabs(&Config::default(), 20);
         assert_eq!((ed.enforce_tab_limit(), ed.buffers.len()), (0, 20));
+    }
+
+    #[test]
+    fn recover_text_is_undoable_and_holds_autosave() {
+        let dir = std::env::temp_dir().join(format!("jetl-test-editor-recover-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("a.txt");
+        std::fs::write(&path, "disk\n").unwrap();
+        let mut ed = Editor::new(&Config::default());
+        ed.open_text(path.clone(), "disk\n", false, &Theme::default());
+        assert!(ed.recover_text(0, "recovered\n"));
+        assert!(!ed.recover_text(0, "recovered\n"), "already the same");
+        let b = &ed.buffers[0];
+        assert_eq!(b.text(), "recovered\n");
+        assert!(b.dirty() && b.recovered);
+        assert!(!b.autosave_candidate(), "no autosave before an explicit save");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "disk\n");
+        assert!(ed.buffers[0].undo());
+        assert_eq!(ed.buffers[0].text(), "disk\n");
+        assert!(!ed.buffers[0].dirty(), "undo goes back to the file's text");
+        assert!(ed.buffers[0].redo());
+        with_cx(|cx| assert!(ed.save(0, cx)));
+        assert!(!ed.buffers[0].recovered && !ed.buffers[0].dirty());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "recovered\n");
+        let i = ed.open_untitled("scratch");
+        let b = &ed.buffers[i];
+        assert_eq!((b.path.as_deref(), b.name.as_str()), (None, "scratch"));
+        assert_eq!(ed.active(), Some(i));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

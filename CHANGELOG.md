@@ -144,9 +144,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and the conflict resolver are drawn on a test backend and compared as text with `insta`
   (`src/app/snapshots/`). Carets, selections, fold placeholders and chunk colors show as letters
   in a grid under each frame, so a highlight in the wrong cell fails a test.
+- Crash recovery: when jetl crashes, the unsaved changes of every modified file are written to
+  `$XDG_STATE_HOME/jetl/recovery/` (by default `~/.local/state/jetl/recovery/`), and the next
+  time that project opens a dialog offers them: Restore all, Discard, or Review… to restore or
+  skip each file. Restored files open unsaved over the text on disk (undo goes back to it); the
+  files on disk do not change and autosave leaves them alone until you save. Esc keeps the
+  changes for the next time. Dumps of other projects, and of a jetl that is still running, are
+  left alone.
 
 ### Changed
 
+- Dialogs are wide enough to show their whole title.
 - Minimum supported Rust version is now 1.90 (was 1.88). tree-sitter 0.27 already required
   1.90, so 1.88 never built; hover Markdown parsing no longer uses `if let` match guards.
 

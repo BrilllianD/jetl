@@ -90,7 +90,7 @@ impl App {
 
     pub(super) fn finish_dialog(&mut self, id: DialogId, res: DialogResult) {
         self.dirty_frame = true;
-        if self.finish_merge_dialog(&id, &res) {
+        if self.finish_merge_dialog(&id, &res) || self.finish_recovery_dialog(&id, &res) {
             return;
         }
         match (id, res) {

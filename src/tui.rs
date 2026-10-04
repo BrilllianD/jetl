@@ -1,5 +1,7 @@
 //! Terminal setup and teardown. Everything that touches the real terminal
 //! state lives here so that normal exit and panics restore it identically.
+//! The panic hook restores the terminal first, then writes the crash
+//! recovery dump of unsaved buffers (`recovery.rs`).
 
 use std::io::{self, Stdout, stdout};
 use std::path::Path;
@@ -76,12 +78,29 @@ pub fn restore() {
     let _ = disable_raw_mode();
 }
 
+/// Chain a panic hook that restores the terminal first, then writes the
+/// unsaved buffers (`recovery::dump_on_panic`), then logs and runs the
+/// default hook, and last tells the user where the buffers went.
 pub fn install_panic_hook() {
     let default = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         restore();
+        // After the terminal is back, so a failure here cannot leave it raw.
+        let saved = crate::recovery::dump_on_panic();
         tracing::error!("panic: {info}");
+        if let Some((dir, n)) = &saved {
+            tracing::error!("recovery: {n} unsaved buffers written to {}", dir.display());
+        }
         default(info);
+        if let Some((dir, n)) = saved {
+            use std::io::Write;
+            // Not `eprintln!`: it panics when stderr cannot be written.
+            let _ = writeln!(
+                std::io::stderr(),
+                "jetl: unsaved changes of {n} buffer(s) saved to {}; they are offered when the project opens again",
+                dir.display()
+            );
+        }
     }));
 }
 

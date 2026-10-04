@@ -468,3 +468,37 @@ async fn merge_after_accept() {
     let marks = merge_marks(&app.theme);
     assert_snapshot!("merge_after_accept", snapshot(&term, &marks, None));
 }
+
+#[tokio::test]
+async fn recovery_dialog() {
+    let mut fx = stable_app("recovery-dialog");
+    let app = &mut fx.app;
+    super::recovery::tests::seed_dump(
+        app,
+        1_700_000_000,
+        &[(Some("src/main.rs"), "main.rs", "fn main() {}\n"), (None, "scratch", "note\n")],
+    );
+    let (generation, root) = (app.workspace.generation, app.workspace.root.clone());
+    app.handle_msg(AppMsg::SessionLoaded { generation, session: crate::workspace::Session { root, ..Default::default() }, files: vec![] });
+    let term = draw_app(app, 80, 24);
+    let marks = [Mark::style('B', "selected button", app.theme.list_selected)];
+    assert_snapshot!("recovery_dialog", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
+async fn recovery_review_dialog() {
+    let mut fx = stable_app("recovery-review");
+    let app = &mut fx.app;
+    super::recovery::tests::seed_dump(
+        app,
+        1_700_000_000,
+        &[(Some("src/main.rs"), "main.rs", "fn main() {}\n"), (None, "scratch", "note\n")],
+    );
+    app.offer_recovery();
+    let d = app.dialog.take().expect("the recovery dialog");
+    // Review…: the first entry, the title wider than the message.
+    app.finish_dialog(d.id, crate::ui::dialog::DialogResult::Button(2));
+    let term = draw_app(app, 80, 24);
+    let marks = [Mark::style('B', "selected button", app.theme.list_selected)];
+    assert_snapshot!("recovery_review_dialog", snapshot(&term, &marks, None));
+}

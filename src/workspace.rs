@@ -372,8 +372,8 @@ impl App {
 
     /// Open the tabs of a loaded session (dropped when the root changed
     /// since), restore its layout and tree folders, then open the pending
-    /// command line file. Missing files and folders, and files already open,
-    /// are skipped.
+    /// command line file and offer the root's crash dumps. Missing files and
+    /// folders, and files already open, are skipped.
     pub fn session_loaded(&mut self, generation: u64, session: Session, files: Vec<std::io::Result<Vec<u8>>>) {
         if generation != self.workspace.generation {
             tracing::debug!("dropping stale session for {}", session.root.display());
@@ -425,6 +425,7 @@ impl App {
         if let Some((path, line, col)) = self.pending_open.take() {
             self.open_file_at(path, line.saturating_sub(1), col.saturating_sub(1));
         }
+        self.offer_recovery();
         self.dirty_frame = true;
     }
 }

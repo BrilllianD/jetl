@@ -1,0 +1,31 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &marks, None)"
+---
+80x24 cursor=hidden
+00  ≣ ┌ Project: root ───────────────┐│
+01    │                              ││
+02  1 │                              ││
+03  ⌂ │                              ││
+04  2 │  ┌ Recover Unsaved Changes ─────────────────────────────────────────┐
+05  ◫ │  │ jetl did not exit cleanly. Unsaved changes of 2 files were kept: │
+06  7 │  │                                                                  │
+07  ⊢ │  │   src/main.rs                                                    │
+08    │  │   scratch (untitled)                                             │
+09    │  │                                                                  │
+10    │  │ Restored files open unsaved; the files on disk do not change.    │
+11    │  │                                                                  │
+12  ⚑ │  │             [ Restore all ] [ Discard ] [ Review… ]              │ view;
+13  9 │  └──────────────────────────────────────────────────────────────────┘
+14  ⎇ │                              ││
+15    │                              ││
+16  ❯ │                              ││
+17  6 │                              ││
+18  ⚠ │                              ││
+19  4 │                              ││
+20  ► │                              ││
+21  3 │                              ││
+22  ⌕ └──────────────────────────────┘│
+23  root
+-- marks: B=selected button
+12                     BBBBBBBBBBBBBBB

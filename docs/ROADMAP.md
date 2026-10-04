@@ -49,7 +49,9 @@ done (see Order).
   through the server when `[format]` has no command.
   Background services follow one pattern: clone (root, generation, tx), spawn, send a tagged
   message, and the app drops stale generations.
-  `docs/ARCHITECTURE.md`, a README and CI (fmt, clippy, test) exist; there are no snapshot tests yet.
+  `docs/ARCHITECTURE.md`, a README and CI (fmt, clippy, test) exist, with render snapshot
+  tests. A panic writes the unsaved buffers to a recovery directory, and the next session load
+  of that project offers to restore them (`recovery.rs`, `app/recovery.rs`).
 
 ## Feature catalog
 
@@ -160,7 +162,7 @@ All of section E shipped in Phase 9 except split editor panes, which shipped in 
 | `docs/ARCHITECTURE.md`, README | S | Both done |
 | Render snapshot tests (`TestBackend` + `insta`) | M | `test_app()` harness exists |
 | CI, release binaries, AUR | S | CI done (GitHub Actions, Bitbucket Pipelines); local release via `scripts/package.sh` (tarball + Arch package); remote releases and AUR open |
-| Crash recovery of dirty buffers | S | Panic hook writes to a recovery dir |
+| Crash recovery of dirty buffers | S | Done: the panic hook writes the dirty buffers to `state/recovery/<pid>-<secs>/` (bounded `try_lock`, never blocks); the next session load of that root offers Restore all / Discard / Review…; restored text opens unsaved and undoable, no autosave until an explicit save. Save As for untitled buffers is open |
 | Palette filter off the main thread | S | nucleo supports it |
 
 ## Order
@@ -185,4 +187,4 @@ All of section E shipped in Phase 9 except split editor panes, which shipped in 
 6. **Phase 11: editor layout.** Done. Split panes, multi-caret, column selection, folding and soft
    wrap; it had the highest implementation risk, so it went last. The conflict resolver from
    Phase 8 followed split panes.
-7. **Ongoing:** themes, vim mode, local history, snapshot tests, CI, README, crash recovery.
+7. **Ongoing:** themes, vim mode, local history, snapshot tests, CI, README.

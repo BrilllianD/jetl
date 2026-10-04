@@ -164,6 +164,9 @@ pub struct Buffer {
     /// No edit changes the text (the conflict resolver's yours and theirs
     /// panes): `apply` only moves the carets, undo and redo do nothing.
     pub read_only: bool,
+    /// Text restored after a crash (`Editor::recover_text`): no autosave
+    /// until an explicit save writes it.
+    pub recovered: bool,
 }
 
 impl Buffer {
@@ -209,6 +212,7 @@ impl Buffer {
             diag_marks: Default::default(),
             fold_cache: None,
             read_only: false,
+            recovered: false,
         }
     }
 
@@ -217,9 +221,15 @@ impl Buffer {
     }
 
     /// Modified, has a file, and nothing holds autosave back. Files that
-    /// were not valid UTF-8 are left to an explicit save, which re-encodes.
+    /// were not valid UTF-8 are left to an explicit save, which re-encodes;
+    /// so is text recovered after a crash.
     pub fn autosave_candidate(&self) -> bool {
-        self.path.is_some() && self.dirty() && !self.lossy && !self.autosave_conflict && self.autosave_failed != Some(self.version)
+        self.path.is_some()
+            && self.dirty()
+            && !self.lossy
+            && !self.recovered
+            && !self.autosave_conflict
+            && self.autosave_failed != Some(self.version)
     }
 
     /// Whether the file's modification time differs from the one recorded at

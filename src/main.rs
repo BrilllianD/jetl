@@ -36,6 +36,7 @@ async fn main() -> Result<()> {
     tui::install_panic_hook();
     let mut terminal = tui::init(&root)?;
     let mut app = App::new(root, cfg, paths, open);
+    app.arm_recovery();
     if pick_project {
         app.pick_project_at_startup();
     }

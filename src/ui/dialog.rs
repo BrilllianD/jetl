@@ -141,6 +141,11 @@ pub enum DialogId {
     MergeCancel,
     /// Quit while the resolver holds the user's work.
     MergeQuit,
+    /// Unsaved changes recovered after a crash (`App::offer_recovery`):
+    /// Restore all / Discard / Review…
+    Recover,
+    /// Review: restore or skip recovered entry `.0`.
+    RecoverEntry(usize),
 }
 
 #[derive(Debug, Clone)]
@@ -382,6 +387,8 @@ impl Dialog {
             DialogKind::Input { .. } => ((msg_w + 4).max(50), msg_lines.len() + 5),
             DialogKind::Choice { .. } => ((msg_w + 4).max(50), (msg_lines.len() + 3 + 12).min(area.height as usize)),
         };
+        // Wide enough for the title (" title " plus the corners).
+        let w = w.max(self.title.width() + 4);
         let w = (w as u16).min(area.width.saturating_sub(2)).max(10);
         let h = (h as u16).min(area.height.saturating_sub(1)).max(5);
         let x = area.x + (area.width.saturating_sub(w)) / 2;

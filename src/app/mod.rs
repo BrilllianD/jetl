@@ -54,6 +54,7 @@ mod merge;
 mod mouse;
 mod msg;
 mod palette;
+mod recovery;
 mod run;
 mod symbols;
 mod terminal;
@@ -219,6 +220,11 @@ pub struct App {
     pub hover: Option<crate::ui::hover::HoverPopup>,
     /// The code completion popup at the caret (`app/completion.rs`).
     pub completion: Option<crate::ui::completion::CompletionPopup>,
+    /// The dirty buffers the panic hook writes (`recovery.rs`), refreshed
+    /// by the run loop.
+    pub(crate) recorder: crate::recovery::Recorder,
+    /// Crash dumps of this root waiting for an answer (`app/recovery.rs`).
+    recovery_offer: Option<recovery::RecoveryOffer>,
     started: Instant,
 }
 
@@ -240,6 +246,7 @@ impl App {
         let mut git_panel = GitPanel::new();
         git_panel.set_log_page(config.git.log_page);
         git_panel.set_log_all(config.git.log_all);
+        let recorder = crate::recovery::Recorder::new(&paths.recovery_dir());
         let mut app = Self {
             workspace,
             theme,
@@ -294,6 +301,8 @@ impl App {
             lsp: Default::default(),
             hover: None,
             completion: None,
+            recorder,
+            recovery_offer: None,
             started: Instant::now(),
             config,
             paths,
@@ -423,6 +432,7 @@ impl App {
             if self.should_quit {
                 break;
             }
+            self.recovery_snapshot();
             self.lsp_sync();
             if self.needs_clear {
                 term.clear()?;
@@ -434,6 +444,8 @@ impl App {
                 self.dirty_frame = false;
             }
         }
+        // Quitting on purpose: a panic from here on writes nothing.
+        self.recorder.clear();
         self.save_session();
         self.format.abort_all();
         self.run.kill();

@@ -35,7 +35,8 @@ it with `cargo run -q -- --dump-keymap > docs/KEYMAP.md`.
 on ratatui's `TestBackend` and compares them as text with
 [`insta`](https://insta.rs) against `src/app/snapshots/*.snap`. They cover
 split panes, carets, occurrences, folding, soft wrap, the project tree, the
-Git window's Commit tab, the palettes and the conflict resolver.
+Git window's Commit tab, the palettes, the conflict resolver and the crash
+recovery dialogs.
 
 Helpers (in `snapshot_tests.rs` unless noted):
 
@@ -321,6 +322,47 @@ back with nothing written (`UU a.rs`). With nothing typed, the header's
 [Cancel] closes at once; Alt+Enter with conflicts left asks first. Typing into
 yours or theirs changes nothing; Alt+\ and a file picked in Ctrl+N answer "Finish or cancel
 the merge first".
+
+### Scenario: crash recovery
+
+At 80x24 and at 120x40. The debug build is needed: `app.debug_panic`
+("Debug: trigger a panic") panics only with debug assertions. jetl runs
+in a shell that stays open, so the screen after the crash can be read:
+
+```sh
+T=/tmp/jt-rec; rm -rf $T /tmp/jt-home; mkdir -p $T && git -C $T init -q
+printf 'one\ntwo\n' > $T/notes.txt; printf 'alpha\n' > $T/b.txt
+cargo build --no-default-features --features lang-rust
+run() { /tmp/tm.sh -f /dev/null new-session -d -s jetl -x 80 -y 24 \
+  "XDG_CONFIG_HOME=/tmp/jt-home/config XDG_STATE_HOME=/tmp/jt-home/state $PWD/target/debug/jetl $T/notes.txt 2>/tmp/jetl-stderr.txt; echo EXIT=\$?; sleep 600"; }
+run; sleep 2
+/tmp/tm.sh send-keys -t jetl -l 'RECOVERED '
+/tmp/tm.sh send-keys -t jetl F1; /tmp/tm.sh send-keys -t jetl -l 'trigger a panic'; /tmp/tm.sh send-keys -t jetl Enter
+sleep 1; /tmp/tm.sh capture-pane -t jetl -p        # a plain shell screen (terminal restored), EXIT=101
+cat /tmp/jetl-stderr.txt                           # the panic, then "jetl: unsaved changes of 1 buffer(s) saved to /tmp/jt-home/state/jetl/recovery/<pid>-<secs>; …"
+cat /tmp/jt-home/state/jetl/recovery/*/manifest.json   # root, time, the notes.txt entry with "untitled": false
+cat $T/notes.txt                                   # still one, two
+/tmp/tm.sh kill-server; run; sleep 2
+/tmp/tm.sh capture-pane -t jetl -p                 # "Recover Unsaved Changes" listing notes.txt, [ Restore all ] [ Discard ] [ Review… ]
+/tmp/tm.sh send-keys -t jetl Enter                 # Restore all: *notes.txt, "RECOVERED one", an Info toast
+cat $T/notes.txt; ls /tmp/jt-home/state/jetl/recovery/   # the file unchanged, no dump left
+/tmp/tm.sh send-keys -t jetl C-z                   # back to the file's text, the tab clean
+/tmp/tm.sh kill-server
+```
+
+Then repeat the crash with two modified files (type in notes.txt, Ctrl+N
+`b.txt`, type there) and check, one start each:
+
+- Review… (Tab Tab Enter): "Recover Unsaved Changes (1 of 2)" with the
+  whole title, Restore / Skip per file (Esc skips); only the restored file
+  opens modified; the dump is gone after the last one.
+- Esc on the first dialog: nothing opens, a toast says the changes are kept,
+  the dump stays and the dialog comes back on the next start. Ctrl+Q quits
+  with EXIT=0 and leaves that dump alone (only its own directory goes).
+- Discard (Tab Enter): nothing opens, the dump is gone.
+- With a dump for `$T` present, start jetl on another project
+  (`mkdir -p /tmp/jt-other; echo x > /tmp/jt-other/x.txt`, run it on
+  `/tmp/jt-other/x.txt`): no dialog, and the `$T` dump is still there.
 
 ### Limits under tmux
 

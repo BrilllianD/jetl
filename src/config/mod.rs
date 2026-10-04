@@ -42,6 +42,11 @@ impl Paths {
     pub fn log_file(&self) -> PathBuf {
         self.state_dir.join("jetl.log")
     }
+    /// Crash dumps of unsaved buffers, one directory per process
+    /// (`recovery.rs`).
+    pub fn recovery_dir(&self) -> PathBuf {
+        self.state_dir.join("recovery")
+    }
 }
 
 /// Install a file logger. Returns a guard that must live until exit so the
