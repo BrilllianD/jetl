@@ -1,5 +1,6 @@
 //! Configuration, paths and logging.
 
+pub mod color;
 pub mod keymap;
 pub mod theme;
 
@@ -85,7 +86,6 @@ pub struct EditorConfig {
     pub max_highlight_bytes: usize,
     pub scrolloff: usize,
     pub hscrolloff: usize,
-    pub cjk_ambiguous_wide: bool,
     pub auto_close: bool,
     pub highlight_occurrences: bool,
     pub trim_trailing_whitespace: bool,
@@ -123,6 +123,33 @@ pub struct UiConfig {
     pub bottom_height: u16,
     pub double_click_ms: u64,
     pub icons: Icons,
+    /// Color depth: true color or the 256-color palette.
+    pub colors: ColorMode,
+}
+
+/// Color depth of the theme (`ui.colors`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+pub enum ColorMode {
+    /// True color when `$COLORTERM` is `truecolor` or `24bit`, else 256 colors.
+    #[default]
+    #[serde(rename = "auto")]
+    Auto,
+    #[serde(rename = "truecolor")]
+    TrueColor,
+    /// Every RGB color drawn as the nearest color of the 256-color palette.
+    #[serde(rename = "256")]
+    Ansi256,
+}
+
+impl ColorMode {
+    /// Whether RGB colors are drawn as they are, given `$COLORTERM`.
+    pub fn truecolor(self, colorterm: Option<&str>) -> bool {
+        match self {
+            ColorMode::Auto => color::truecolor_from_env(colorterm),
+            ColorMode::TrueColor => true,
+            ColorMode::Ansi256 => false,
+        }
+    }
 }
 
 /// Symbols on the tool strip and the main menu.
@@ -206,7 +233,6 @@ impl Default for EditorConfig {
             max_highlight_bytes: 2 * 1024 * 1024,
             scrolloff: 3,
             hscrolloff: 5,
-            cjk_ambiguous_wide: false,
             auto_close: true,
             highlight_occurrences: true,
             trim_trailing_whitespace: true,
@@ -221,7 +247,14 @@ impl Default for EditorConfig {
 }
 impl Default for UiConfig {
     fn default() -> Self {
-        Self { theme: "darcula".into(), left_width: 32, bottom_height: 14, double_click_ms: 400, icons: Icons::Unicode }
+        Self {
+            theme: "darcula".into(),
+            left_width: 32,
+            bottom_height: 14,
+            double_click_ms: 400,
+            icons: Icons::Unicode,
+            colors: ColorMode::Auto,
+        }
     }
 }
 impl Default for GitConfig {
@@ -289,6 +322,27 @@ mod tests {
         assert!(Config::parse("[editor]\nautosave = \"Idle\"\n").is_err());
         assert_eq!(cfg.ui.icons, Icons::Unicode);
         assert_eq!(Config::parse("[ui]\nicons = \"emoji\"\n").unwrap().ui.icons, Icons::Emoji);
+    }
+
+    #[test]
+    fn removed_keys_are_ignored() {
+        // `editor.cjk_ambiguous_wide` was reserved and removed; old configs still load.
+        let cfg = Config::parse("[editor]\ncjk_ambiguous_wide = true\ntab_width = 2\n").unwrap();
+        assert_eq!(cfg.editor.tab_width, 2);
+        assert_eq!(Config::parse("[editor]\ntab_width = 3\n").unwrap().editor.tab_width, 3);
+    }
+
+    #[test]
+    fn color_mode_parses() {
+        assert_eq!(Config::default().ui.colors, ColorMode::Auto);
+        assert_eq!(Config::parse("[ui]\ncolors = \"256\"\n").unwrap().ui.colors, ColorMode::Ansi256);
+        assert_eq!(Config::parse("[ui]\ncolors = \"truecolor\"\n").unwrap().ui.colors, ColorMode::TrueColor);
+        assert_eq!(Config::parse("[ui]\ncolors = \"auto\"\n").unwrap().ui.colors, ColorMode::Auto);
+        assert!(Config::parse("[ui]\ncolors = \"16\"\n").is_err());
+        assert!(ColorMode::Auto.truecolor(Some("24bit")));
+        assert!(!ColorMode::Auto.truecolor(None));
+        assert!(ColorMode::TrueColor.truecolor(None));
+        assert!(!ColorMode::Ansi256.truecolor(Some("truecolor")));
     }
 
     #[test]

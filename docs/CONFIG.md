@@ -7,7 +7,7 @@ jetl reads three optional files from its config directory,
 |---|---|
 | `config.toml` | Editor, UI, git, worktree, keymap mode and file tree settings |
 | `keymap.toml` | Key bindings merged on top of the built-in keymap |
-| `theme.toml` | Color overrides on top of the built-in Darcula theme |
+| `theme.toml` | Color overrides on top of the theme chosen by `ui.theme` |
 
 All three are read once at startup. A missing file is fine. If a file cannot
 be read or is not valid TOML, jetl logs the error, shows a notification, and
@@ -34,7 +34,6 @@ tab_width = 4                  # columns per tab stop and indent level when neit
 max_highlight_bytes = 2097152  # files above this size (2 MiB) open without syntax highlighting or gutter marks
 scrolloff = 3                  # lines kept visible above and below the caret
 hscrolloff = 5                 # columns kept visible left and right of the caret
-cjk_ambiguous_wide = false     # reserved; has no effect yet
 auto_close = true              # type brackets and quotes in pairs, step over closers, wrap selections
 highlight_occurrences = true   # highlight the word at the caret (or the selected text) elsewhere on screen
 trim_trailing_whitespace = true # on save, strip trailing spaces and tabs (not on the caret line, never in Markdown)
@@ -48,11 +47,14 @@ soft_wrap_files = ["*.md", "*.txt", "*.rst", "*.adoc"]  # files soft-wrapped whe
                                # names ending in ".ext", anything else a whole file name
 
 [ui]
-theme = "darcula"              # reserved; Darcula is the only built-in theme (use theme.toml to change colors)
+theme = "darcula"              # "darcula", "light", or a theme file: a path ending in .toml
+                               # (relative to this directory; "~/" expands), layered on Darcula
 left_width = 32                # initial width of the left tool window (Project, Worktrees)
 bottom_height = 14             # initial height of the bottom tool window (Git)
 double_click_ms = 400          # double click and Shift Shift interval
 icons = "unicode"              # tool strip and menu icons: "unicode" (one-cell symbols) or "emoji" (needs a color emoji font)
+colors = "auto"                # "auto" (true color when $COLORTERM is truecolor or 24bit, else
+                               # the 256-color palette), "truecolor" or "256"
 
 [git]
 pull_mode = "ff-only"          # "ff-only" (git pull --ff-only), "rebase" (--rebase) or "merge" (--no-rebase)
@@ -384,10 +386,29 @@ To regenerate KEYMAP.md after changing the defaults or the action registry:
 
     cargo run -q -- --dump-keymap > docs/KEYMAP.md
 
-## theme.toml
+## Themes and theme.toml
 
-Overrides the Darcula theme. Each entry is either a color string or a style
-table:
+`ui.theme` picks the colors: the built-in `darcula` (default) or `light`, or
+a theme file. A value with a `/`, a leading `~` or a `.toml` ending is a file
+path, relative to the config directory. A theme file has the same format as
+`theme.toml` and is applied on top of Darcula, so it may set only some keys;
+the complete built-in themes are in `assets/themes/` in the repository. An
+unknown name, or a theme file that cannot be read or is not valid TOML, gives
+a notification and Darcula. `theme.toml` is then applied on top of the chosen
+theme. If it is not valid TOML it is ignored and the chosen theme stays.
+
+Without true color (`ui.colors = "auto"` and `$COLORTERM` not `truecolor` or
+`24bit`; ssh, sudo and tmux often drop it), every `"#rrggbb"` color is drawn
+as the nearest color of the 256-color palette, indices 16 to 255. Color names
+and indices like `"208"` are used as they are. Dark tints tend to end up
+gray, so a theme can give exact colors for that case in a `[colors256]`
+table, which takes the same entries as the top level and applies only with
+256 colors (Darcula uses it for diff and merge backgrounds). Set
+`ui.colors = "truecolor"` if your terminal supports true color but does not
+say so.
+
+Each entry of `theme.toml` or a theme file is either a color string or a
+style table:
 
 ```toml
 bg = "#1e1f22"                                   # color
@@ -401,14 +422,17 @@ keyword = { fg = "#cf8e6d", bold = false }
 
 [syntax.function]                                # ...or a nested table
 macro = "#b3ae60"                                # = "function.macro"
+
+[colors256]                                      # only with 256 colors
+selection_bg = "24"
 ```
 
 - Colors are `"#rrggbb"`, a color name (`black red green yellow blue magenta
   cyan gray darkgray lightred lightgreen lightyellow lightblue lightmagenta
   lightcyan white`), `"reset"` (the terminal default), or a 256-color index
   like `"208"`.
-- A table may contain `fg`, `bg` (colors) and `bold`, `italic`, `underline`
-  (`true` adds, `false` removes). Anything else is an error.
+- A table may contain `fg`, `bg` (colors) and `bold`, `italic`, `underline`,
+  `reverse` (`true` adds, `false` removes). Anything else is an error.
 - Color fields take a string or a table with just `fg` or `bg`.
 
 Color fields: `bg fg panel_bg strip_bg status_bg status_fg current_line_bg
@@ -426,8 +450,8 @@ git_conflicted git_ignored popup_border list_selected list_selected_unfocused
 dim error warn info diag_error diag_warn diag_info diag_hint splitter`.
 `secondary_caret` is the cell of every caret but the primary one (which is
 the terminal cursor; in a split pane without focus every caret of a
-multi-caret view gets it): reverse video by default, which an override keeps,
-so its `fg` and `bg` swap on screen. `fold_placeholder` is what a collapsed
+multi-caret view gets it): reverse video by default, which an override keeps
+unless it sets `reverse = false`, so its `fg` and `bg` swap on screen. `fold_placeholder` is what a collapsed
 fold shows after its header line (`…`, plus the closing line it hides, as in
 `fn main() {…}`): it takes the selection or find match background when one
 reaches into the fold, and the mark of the worst diagnostic it hides. The

@@ -4,7 +4,7 @@
 use ratatui::Frame;
 use ratatui::buffer::Buffer as Screen;
 use ratatui::layout::{Position, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use unicode_width::UnicodeWidthStr;
 
 use super::{Area, Btn, GitPanel, GitTab, put, render_diff, render_toggles};
@@ -399,14 +399,12 @@ impl GitPanel {
             buf.set_stringn(r.x, r.y, msg, r.width as usize, theme.dim);
             return;
         }
-        let palette = [
-            Color::Rgb(104, 151, 187),
-            Color::Rgb(98, 150, 85),
-            Color::Rgb(204, 120, 50),
-            Color::Rgb(152, 118, 170),
-            Color::Rgb(187, 181, 41),
-            Color::Rgb(32, 153, 157),
-        ];
+        // Graph lane colors, from theme keys so they follow the theme and the
+        // 256-color fallback.
+        let fg = |s: Style| s.fg.unwrap_or(theme.fg);
+        let syn = |n: &str| theme.capture_style(n).and_then(|s| s.fg).unwrap_or(theme.fg);
+        let palette =
+            [fg(theme.git_modified), fg(theme.git_added), fg(theme.git_untracked), syn("constant"), syn("attribute"), syn("label")];
         for (vi, i) in self.log_list.visible().enumerate() {
             let row = &self.log[i];
             let y = r.y + vi as u16;

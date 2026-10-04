@@ -232,7 +232,7 @@ impl App {
     pub fn new(root: PathBuf, config: Config, paths: Paths, open: Option<(PathBuf, usize, usize)>) -> Self {
         let (bus_tx, bus_rx) = mpsc::unbounded_channel();
         let (keymap, keymap_errors) = Keymap::load(&paths.keymap_file());
-        let (theme, theme_errors) = Theme::load(&paths.theme_file());
+        let (theme, theme_errors) = Theme::load(&config, &paths.config_dir, crate::config::color::colorterm_env().as_deref());
         let modal = config.keymap.mode == "vim";
         let mut dispatcher = Dispatcher::new(modal);
         dispatcher.double_tap = Duration::from_millis(config.ui.double_click_ms);

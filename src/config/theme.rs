@@ -1,153 +1,39 @@
-//! Colors: Darcula-like defaults plus overrides from `theme.toml`.
+//! Colors: the built-in themes (`assets/themes/*.toml`), theme files and
+//! `theme.toml` overrides, and the 256-color fallback (`Theme::load`).
 //!
-//! `theme.toml` entries are `name = "#rrggbb"` or `name = { fg, bg, bold,
-//! italic, underline }`. Top-level names are `Theme` fields; the `[syntax]`
-//! table holds tree-sitter capture names (`keyword`, `"string.escape"`). A
-//! color string on a style sets its foreground; a table changes only the
-//! attributes it lists. See `docs/CONFIG.md`.
+//! Theme documents have entries `name = "#rrggbb"` or `name = { fg, bg,
+//! bold, italic, underline, reverse }`. Top-level names are `Theme` fields;
+//! the `[syntax]` table holds tree-sitter capture names (`keyword`,
+//! `"string.escape"`), and `[colors256]` holds entries used only with 256
+//! colors. A color string on a style sets its foreground; a table changes
+//! only the attributes it lists. See `docs/CONFIG.md`.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 
 use ratatui::style::{Color, Modifier, Style};
 
-#[derive(Debug, Clone)]
-pub struct Theme {
-    pub bg: Color,
-    pub fg: Color,
-    pub panel_bg: Color,
-    pub border: Style,
-    pub border_focused: Style,
-    pub title: Style,
-    pub title_focused: Style,
-    pub strip_bg: Color,
-    pub strip_item: Style,
-    pub strip_item_active: Style,
-    pub status_bg: Color,
-    pub status_fg: Color,
-    pub status_accent: Style,
-    pub tab: Style,
-    pub tab_active: Style,
-    pub tab_dirty: Style,
-    pub line_number: Style,
-    pub line_number_current: Style,
-    pub current_line_bg: Color,
-    pub selection_bg: Color,
-    pub search_match_bg: Color,
-    pub search_current_bg: Color,
-    pub occurrence_bg: Color,
-    pub bracket_match: Style,
-    /// The carets other than the primary one (which is the terminal cursor).
-    pub secondary_caret: Style,
-    /// Gutter glyph of a bookmarked line.
-    pub bookmark: Style,
-    /// What a collapsed fold shows after its header line (`…}`).
-    pub fold_placeholder: Style,
-    pub gutter_added: Color,
-    pub gutter_modified: Color,
-    pub gutter_deleted: Color,
-    pub git_added: Style,
-    pub git_modified: Style,
-    pub git_deleted: Style,
-    pub git_untracked: Style,
-    pub git_conflicted: Style,
-    pub git_ignored: Style,
-    pub diff_add_bg: Color,
-    pub diff_del_bg: Color,
-    pub diff_mod_bg: Color,
-    /// Changed characters inside a modified line (diff view).
-    pub diff_add_word_bg: Color,
-    pub diff_del_word_bg: Color,
-    /// Conflict resolver: an unresolved conflict's lines (one-sided changes
-    /// take `diff_add_bg`, `diff_del_bg` or `diff_mod_bg`), and the lines of
-    /// a resolved chunk.
-    pub merge_conflict_bg: Color,
-    pub merge_resolved_bg: Color,
-    pub popup_bg: Color,
-    pub popup_border: Style,
-    pub list_selected: Style,
-    pub list_selected_unfocused: Style,
-    pub dim: Style,
-    pub error: Style,
-    pub warn: Style,
-    pub info: Style,
-    /// Diagnostics: the gutter glyph and Problems window icon take the
-    /// foreground; text in the range gets the modifiers (underlined in the
-    /// foreground color) and the background, if set.
-    pub diag_error: Style,
-    pub diag_warn: Style,
-    pub diag_info: Style,
-    pub diag_hint: Style,
-    pub splitter: Style,
-    /// Tree-sitter capture name -> style, looked up by longest dotted prefix.
-    pub syntax: HashMap<String, Style>,
-}
+use crate::config::{Config, color};
 
 impl Theme {
+    /// Darcula, the default theme (parsed once).
     pub fn darcula() -> Self {
-        let bg = Color::Rgb(43, 43, 43);
-        let panel_bg = Color::Rgb(60, 63, 65);
-        let fg = Color::Rgb(169, 183, 198);
-        let accent = Color::Rgb(75, 110, 175);
-        Self {
-            bg,
-            fg,
-            panel_bg,
-            border: Style::default().fg(Color::Rgb(85, 85, 85)),
-            border_focused: Style::default().fg(accent),
-            title: Style::default().fg(Color::Rgb(187, 187, 187)),
-            title_focused: Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
-            strip_bg: Color::Rgb(49, 51, 53),
-            strip_item: Style::default().fg(Color::Rgb(150, 150, 150)).bg(Color::Rgb(49, 51, 53)),
-            strip_item_active: Style::default().fg(Color::White).bg(accent).add_modifier(Modifier::BOLD),
-            status_bg: Color::Rgb(49, 51, 53),
-            status_fg: Color::Rgb(187, 187, 187),
-            status_accent: Style::default().fg(Color::Rgb(104, 151, 187)),
-            tab: Style::default().fg(Color::Rgb(187, 187, 187)).bg(panel_bg),
-            tab_active: Style::default().fg(Color::White).bg(Color::Rgb(78, 82, 84)).add_modifier(Modifier::BOLD),
-            tab_dirty: Style::default().fg(Color::Rgb(255, 198, 109)),
-            line_number: Style::default().fg(Color::Rgb(96, 99, 102)),
-            line_number_current: Style::default().fg(Color::Rgb(164, 167, 171)),
-            current_line_bg: Color::Rgb(50, 50, 50),
-            selection_bg: Color::Rgb(33, 66, 131),
-            search_match_bg: Color::Rgb(50, 89, 60),
-            search_current_bg: Color::Rgb(155, 110, 30),
-            occurrence_bg: Color::Rgb(52, 65, 52),
-            bracket_match: Style::default().bg(Color::Rgb(59, 81, 77)).add_modifier(Modifier::BOLD),
-            secondary_caret: Style::default().add_modifier(Modifier::REVERSED),
-            bookmark: Style::default().fg(Color::Rgb(255, 198, 109)),
-            fold_placeholder: Style::default().fg(Color::Rgb(150, 150, 150)).bg(Color::Rgb(60, 63, 65)),
-            gutter_added: Color::Rgb(98, 150, 85),
-            gutter_modified: Color::Rgb(53, 146, 196),
-            gutter_deleted: Color::Rgb(140, 140, 140),
-            git_added: Style::default().fg(Color::Rgb(98, 150, 85)),
-            git_modified: Style::default().fg(Color::Rgb(104, 151, 187)),
-            git_deleted: Style::default().fg(Color::Rgb(140, 140, 140)),
-            git_untracked: Style::default().fg(Color::Rgb(204, 120, 50)),
-            git_conflicted: Style::default().fg(Color::Rgb(255, 100, 100)),
-            git_ignored: Style::default().fg(Color::Rgb(110, 110, 110)),
-            diff_add_bg: Color::Rgb(41, 66, 54),
-            diff_del_bg: Color::Rgb(72, 44, 44),
-            diff_mod_bg: Color::Rgb(44, 55, 72),
-            diff_add_word_bg: Color::Rgb(56, 102, 74),
-            diff_del_word_bg: Color::Rgb(117, 58, 58),
-            merge_conflict_bg: Color::Rgb(98, 54, 44),
-            merge_resolved_bg: Color::Rgb(55, 55, 55),
-            popup_bg: Color::Rgb(53, 53, 56),
-            popup_border: Style::default().fg(accent),
-            list_selected: Style::default().fg(Color::White).bg(Color::Rgb(44, 83, 148)),
-            list_selected_unfocused: Style::default().fg(Color::White).bg(Color::Rgb(13, 41, 62)),
-            dim: Style::default().fg(Color::Rgb(120, 120, 120)),
-            error: Style::default().fg(Color::Rgb(255, 107, 104)),
-            warn: Style::default().fg(Color::Rgb(255, 198, 109)),
-            info: Style::default().fg(Color::Rgb(104, 151, 187)),
-            diag_error: Style::default().fg(Color::Rgb(255, 107, 104)).add_modifier(Modifier::UNDERLINED),
-            diag_warn: Style::default().fg(Color::Rgb(222, 180, 80)).add_modifier(Modifier::UNDERLINED),
-            diag_info: Style::default().fg(Color::Rgb(104, 151, 187)).add_modifier(Modifier::UNDERLINED),
-            diag_hint: Style::default().fg(Color::Rgb(128, 128, 128)),
-            splitter: Style::default().fg(Color::Rgb(85, 85, 85)).bg(bg),
-            syntax: darcula_syntax(fg),
+        static DARCULA_THEME: LazyLock<Theme> = LazyLock::new(|| Theme::builtin(&DARCULA, false));
+        DARCULA_THEME.clone()
+    }
+
+    /// A built-in theme, with 256-color values when `ansi256`. Built-in
+    /// files set every key (checked by a test), so they start from a blank
+    /// theme.
+    pub fn builtin(b: &BuiltinTheme, ansi256: bool) -> Theme {
+        let mut t = Theme::blank();
+        let errors = t.apply_toml(b.toml, ansi256).expect("built-in theme is valid TOML");
+        debug_assert!(errors.is_empty(), "built-in theme {}: {errors:?}", b.name);
+        if ansi256 {
+            t.map_colors(color::to_ansi256);
         }
+        t
     }
 
     /// Style for a capture such as `function.method`: tries the full name,
@@ -166,85 +52,116 @@ impl Theme {
     }
 }
 
-fn darcula_syntax(fg: Color) -> HashMap<String, Style> {
-    let c = |r, g, b| Style::default().fg(Color::Rgb(r, g, b));
-    let keyword = c(204, 120, 50);
-    let string = c(106, 135, 89);
-    let comment = c(128, 128, 128);
-    let number = c(104, 151, 187);
-    let function = c(255, 198, 109);
-    let constant = c(152, 118, 170);
-    let meta = c(187, 181, 41);
-    let plain = Style::default().fg(fg);
-    // Identifier-level captures drawn in the default color (variables,
-    // types) are left out so they never shadow a more specific capture of
-    // the same node (e.g. `@variable` listed before `@function`).
-    let pairs: Vec<(&str, Style)> = vec![
-        ("keyword", keyword),
-        ("keyword.directive", meta),
-        ("string", string),
-        ("string.special", c(106, 135, 89)),
-        ("string.special.key", c(152, 118, 170)),
-        ("string.escape", keyword),
-        ("escape", keyword),
-        ("comment", comment.add_modifier(Modifier::ITALIC)),
-        ("comment.documentation", c(98, 151, 85).add_modifier(Modifier::ITALIC)),
-        ("number", number),
-        ("boolean", keyword),
-        ("constant", constant),
-        ("constant.builtin", keyword),
-        ("function", function),
-        ("function.builtin", c(136, 136, 198)),
-        ("function.macro", meta),
-        ("type.builtin", keyword),
-        ("property", constant),
-        ("attribute", meta),
-        ("label", c(32, 153, 157)),
-        ("operator", plain),
-        ("punctuation", plain),
-        ("punctuation.special", keyword),
-        ("variable.builtin", c(148, 85, 141)),
-        ("tag", c(232, 191, 106)),
-        // CSS and SCSS queries capture each at-rule under its own name.
-        ("media", keyword),
-        ("import", keyword),
-        ("keyframes", keyword),
-        ("charset", keyword),
-        ("namespace", keyword),
-        ("supports", keyword),
-        ("at", keyword),
-        ("use", keyword),
-        ("forward", keyword),
-        ("include", keyword),
-        ("mixin", keyword),
-        ("extend", keyword),
-        ("each", keyword),
-        ("for", keyword),
-        ("while", keyword),
-        ("return", keyword),
-        ("debug", keyword),
-        ("warn", keyword),
-        // Lua query names for control flow, methods and the shebang line.
-        ("conditional", keyword),
-        ("repeat", keyword),
-        ("method", function),
-        ("preproc", meta),
-        ("embedded", plain),
-        ("text.title", c(255, 198, 109).add_modifier(Modifier::BOLD)),
-        ("text.literal", c(106, 135, 89)),
-        ("text.reference", c(104, 151, 187)),
-        ("text.uri", c(104, 151, 187).add_modifier(Modifier::UNDERLINED)),
-        ("none", plain),
-    ];
-    pairs.into_iter().map(|(k, v)| (k.to_string(), v)).collect()
+/// A theme shipped with jetl, embedded from `assets/themes/`.
+#[derive(Debug, PartialEq)]
+pub struct BuiltinTheme {
+    pub name: &'static str,
+    pub toml: &'static str,
 }
 
-/// Declares which `Theme` fields `theme.toml` can set, by type.
+/// Name of the table holding a theme's 256-color values.
+const COLORS256: &str = "colors256";
+
+pub const DARCULA: BuiltinTheme = BuiltinTheme { name: "darcula", toml: include_str!("../../assets/themes/darcula.toml") };
+
+pub const LIGHT: BuiltinTheme = BuiltinTheme { name: "light", toml: include_str!("../../assets/themes/light.toml") };
+
+/// Every built-in theme, selectable by name with `ui.theme`.
+pub const BUILTIN_THEMES: &[BuiltinTheme] = &[DARCULA, LIGHT];
+
+/// The `[syntax]` captures every built-in theme sets.
+pub const BUILTIN_CAPTURES: &[&str] = &[
+    "keyword",
+    "keyword.directive",
+    "string",
+    "string.special",
+    "string.special.key",
+    "string.escape",
+    "escape",
+    "comment",
+    "comment.documentation",
+    "number",
+    "boolean",
+    "constant",
+    "constant.builtin",
+    "function",
+    "function.builtin",
+    "function.macro",
+    "type.builtin",
+    "property",
+    "attribute",
+    "label",
+    "operator",
+    "punctuation",
+    "punctuation.special",
+    "variable.builtin",
+    "tag",
+    "embedded",
+    "text.title",
+    "text.literal",
+    "text.reference",
+    "text.uri",
+    "none",
+    "media",
+    "import",
+    "keyframes",
+    "charset",
+    "namespace",
+    "supports",
+    "at",
+    "use",
+    "forward",
+    "include",
+    "mixin",
+    "extend",
+    "each",
+    "for",
+    "while",
+    "return",
+    "debug",
+    "warn",
+    "conditional",
+    "repeat",
+    "method",
+    "preproc",
+];
+
+/// Declares the `Theme` struct: every color and style field, each of which
+/// is also a `theme.toml` key, mapped by the 256-color fallback.
 macro_rules! theme_fields {
-    (colors: [$($c:ident),* $(,)?], styles: [$($s:ident),* $(,)?] $(,)?) => {
+    (
+        colors: [$($(#[$cm:meta])* $c:ident),* $(,)?],
+        styles: [$($(#[$sm:meta])* $s:ident),* $(,)?] $(,)?
+    ) => {
+        #[derive(Debug, Clone, PartialEq)]
+        pub struct Theme {
+            $($(#[$cm])* pub $c: Color,)*
+            $($(#[$sm])* pub $s: Style,)*
+            /// Tree-sitter capture name -> style, looked up by longest dotted prefix.
+            pub syntax: HashMap<String, Style>,
+        }
+
         impl Theme {
             /// Every field name `theme.toml` accepts at the top level.
             pub const FIELDS: &'static [&'static str] = &[$(stringify!($c),)* $(stringify!($s),)*];
+
+            /// All colors `Reset`, all styles empty, no captures.
+            fn blank() -> Self {
+                Self {
+                    $($c: Color::Reset,)*
+                    $($s: Style::default(),)*
+                    syntax: HashMap::new(),
+                }
+            }
+
+            /// Replace every color in the theme (fields, styles, captures) with `f(color)`.
+            pub fn map_colors(&mut self, f: impl Fn(Color) -> Color) {
+                $(self.$c = f(self.$c);)*
+                $(self.$s = map_style(self.$s, &f);)*
+                for s in self.syntax.values_mut() {
+                    *s = map_style(*s, &f);
+                }
+            }
 
             fn set_field(&mut self, name: &str, spec: &StyleSpec) -> Result<(), String> {
                 match name {
@@ -260,16 +177,83 @@ macro_rules! theme_fields {
 
 theme_fields! {
     colors: [
-        bg, fg, panel_bg, strip_bg, status_bg, status_fg, current_line_bg, selection_bg, search_match_bg,
-        search_current_bg, occurrence_bg, gutter_added, gutter_modified, gutter_deleted, diff_add_bg, diff_del_bg,
-        diff_mod_bg, diff_add_word_bg, diff_del_word_bg, merge_conflict_bg, merge_resolved_bg, popup_bg,
+        bg,
+        fg,
+        panel_bg,
+        strip_bg,
+        status_bg,
+        status_fg,
+        current_line_bg,
+        selection_bg,
+        search_match_bg,
+        search_current_bg,
+        occurrence_bg,
+        gutter_added,
+        gutter_modified,
+        gutter_deleted,
+        diff_add_bg,
+        diff_del_bg,
+        diff_mod_bg,
+        /// Changed characters inside a modified line (diff view).
+        diff_add_word_bg,
+        diff_del_word_bg,
+        /// Conflict resolver: an unresolved conflict's lines (one-sided changes
+        /// take `diff_add_bg`, `diff_del_bg` or `diff_mod_bg`), and the lines of
+        /// a resolved chunk.
+        merge_conflict_bg,
+        merge_resolved_bg,
+        popup_bg,
     ],
     styles: [
-        border, border_focused, title, title_focused, strip_item, strip_item_active, status_accent, tab, tab_active,
-        tab_dirty, line_number, line_number_current, bracket_match, secondary_caret, bookmark, fold_placeholder, git_added, git_modified, git_deleted, git_untracked,
-        git_conflicted, git_ignored, popup_border, list_selected, list_selected_unfocused, dim, error, warn, info,
-        diag_error, diag_warn, diag_info, diag_hint, splitter,
+        border,
+        border_focused,
+        title,
+        title_focused,
+        strip_item,
+        strip_item_active,
+        status_accent,
+        tab,
+        tab_active,
+        tab_dirty,
+        line_number,
+        line_number_current,
+        bracket_match,
+        /// The carets other than the primary one (which is the terminal cursor).
+        secondary_caret,
+        /// Gutter glyph of a bookmarked line.
+        bookmark,
+        /// What a collapsed fold shows after its header line (`…}`).
+        fold_placeholder,
+        git_added,
+        git_modified,
+        git_deleted,
+        git_untracked,
+        git_conflicted,
+        git_ignored,
+        popup_border,
+        list_selected,
+        list_selected_unfocused,
+        dim,
+        error,
+        warn,
+        info,
+        /// Diagnostics: the gutter glyph and Problems window icon take the
+        /// foreground; text in the range gets the modifiers (underlined in the
+        /// foreground color) and the background, if set.
+        diag_error,
+        diag_warn,
+        diag_info,
+        diag_hint,
+        splitter,
     ],
+}
+
+/// `s` with its foreground, background and underline colors mapped by `f`.
+fn map_style(mut s: Style, f: &impl Fn(Color) -> Color) -> Style {
+    s.fg = s.fg.map(f);
+    s.bg = s.bg.map(f);
+    s.underline_color = s.underline_color.map(f);
+    s
 }
 
 /// One `theme.toml` value: a color string (foreground) or a table.
@@ -280,9 +264,10 @@ struct StyleSpec {
     bold: Option<bool>,
     italic: Option<bool>,
     underline: Option<bool>,
+    reverse: Option<bool>,
 }
 
-const SPEC_KEYS: [&str; 5] = ["fg", "bg", "bold", "italic", "underline"];
+const SPEC_KEYS: [&str; 6] = ["fg", "bg", "bold", "italic", "underline", "reverse"];
 
 impl StyleSpec {
     fn parse(v: &toml::Value) -> Result<Self, String> {
@@ -300,7 +285,8 @@ impl StyleSpec {
                         "bold" => spec.bold = Some(flag()?),
                         "italic" => spec.italic = Some(flag()?),
                         "underline" => spec.underline = Some(flag()?),
-                        other => return Err(format!("unknown key {other:?} (expected fg, bg, bold, italic, underline)")),
+                        "reverse" => spec.reverse = Some(flag()?),
+                        other => return Err(format!("unknown key {other:?} (expected fg, bg, bold, italic, underline, reverse)")),
                     }
                 }
                 Ok(spec)
@@ -312,8 +298,8 @@ impl StyleSpec {
     /// The value for a plain color field: the string, or the table's `fg`
     /// (else `bg`).
     fn color(&self) -> Result<Color, String> {
-        if self.bold.is_some() || self.italic.is_some() || self.underline.is_some() {
-            return Err("a color field takes no bold/italic/underline".into());
+        if self.bold.is_some() || self.italic.is_some() || self.underline.is_some() || self.reverse.is_some() {
+            return Err("a color field takes no bold/italic/underline/reverse".into());
         }
         self.fg.or(self.bg).ok_or_else(|| "expected a color".into())
     }
@@ -326,7 +312,12 @@ impl StyleSpec {
         if let Some(c) = self.bg {
             base = base.bg(c);
         }
-        for (flag, m) in [(self.bold, Modifier::BOLD), (self.italic, Modifier::ITALIC), (self.underline, Modifier::UNDERLINED)] {
+        for (flag, m) in [
+            (self.bold, Modifier::BOLD),
+            (self.italic, Modifier::ITALIC),
+            (self.underline, Modifier::UNDERLINED),
+            (self.reverse, Modifier::REVERSED),
+        ] {
             match flag {
                 Some(true) => base = base.add_modifier(m),
                 Some(false) => base = base.remove_modifier(m),
@@ -352,37 +343,54 @@ fn parse_color(s: &str) -> Result<Color, String> {
 }
 
 impl Theme {
-    /// Apply a `theme.toml` document. A TOML syntax error rejects the whole
-    /// file (`Err`, nothing applied); invalid entries are skipped and
-    /// returned as messages while the rest apply.
-    pub fn apply_toml(&mut self, text: &str) -> anyhow::Result<Vec<String>> {
+    /// Apply a theme document (a built-in, a theme file or `theme.toml`).
+    /// A TOML syntax error rejects the whole file (`Err`, nothing applied);
+    /// invalid entries are skipped and returned as messages while the rest
+    /// apply. The `[colors256]` table applies only when `ansi256`, right
+    /// after the top level; otherwise it is only checked for errors.
+    pub fn apply_toml(&mut self, text: &str, ansi256: bool) -> anyhow::Result<Vec<String>> {
         let raw: toml::Table = toml::from_str(text)?;
         let mut errors = Vec::new();
-        for (k, v) in &raw {
-            if k == "syntax" {
-                match v {
-                    toml::Value::Table(t) => self.apply_syntax("", t, &mut errors),
-                    _ => errors.push("syntax: expected a table".into()),
-                }
-                continue;
-            }
-            if let Err(e) = StyleSpec::parse(v).and_then(|spec| self.set_field(k, &spec)) {
-                errors.push(format!("{k}: {e}"));
-            }
+        self.apply_table(&raw, "", &mut errors);
+        match raw.get(COLORS256) {
+            None => {}
+            Some(toml::Value::Table(t)) if ansi256 => self.apply_table(t, "colors256.", &mut errors),
+            Some(toml::Value::Table(t)) => self.clone().apply_table(t, "colors256.", &mut errors),
+            Some(_) => errors.push(format!("{COLORS256}: expected a table")),
         }
         Ok(errors)
     }
 
+    /// Top-level entries (fields and `[syntax]`) of a document or of its
+    /// `[colors256]` table; `prefix` starts each error message.
+    fn apply_table(&mut self, raw: &toml::Table, prefix: &str, errors: &mut Vec<String>) {
+        for (k, v) in raw {
+            if k == "syntax" {
+                match v {
+                    toml::Value::Table(t) => self.apply_syntax(prefix, "", t, errors),
+                    _ => errors.push(format!("{prefix}syntax: expected a table")),
+                }
+                continue;
+            }
+            if k == COLORS256 && prefix.is_empty() {
+                continue;
+            }
+            if let Err(e) = StyleSpec::parse(v).and_then(|spec| self.set_field(k, &spec)) {
+                errors.push(format!("{prefix}{k}: {e}"));
+            }
+        }
+    }
+
     /// `[syntax]` entries; nested tables that are not style tables are
     /// dotted capture prefixes (`[syntax.string] escape = ...`).
-    fn apply_syntax(&mut self, prefix: &str, table: &toml::Table, errors: &mut Vec<String>) {
+    fn apply_syntax(&mut self, err_prefix: &str, prefix: &str, table: &toml::Table, errors: &mut Vec<String>) {
         for (k, v) in table {
             let name = if prefix.is_empty() { k.clone() } else { format!("{prefix}.{k}") };
             if let toml::Value::Table(t) = v
                 && !t.is_empty()
                 && !t.keys().all(|key| SPEC_KEYS.contains(&key.as_str()))
             {
-                self.apply_syntax(&name, t, errors);
+                self.apply_syntax(err_prefix, &name, t, errors);
                 continue;
             }
             match StyleSpec::parse(v) {
@@ -390,38 +398,103 @@ impl Theme {
                     let base = self.syntax.get(&name).copied().unwrap_or_default();
                     self.syntax.insert(name, spec.patch(base));
                 }
-                Err(e) => errors.push(format!("syntax.{name}: {e}")),
+                Err(e) => errors.push(format!("{err_prefix}syntax.{name}: {e}")),
             }
         }
     }
 
-    /// The default theme with `file` applied when it exists. Problems are
-    /// logged and returned for a startup notification; a file that does not
-    /// parse leaves the defaults untouched.
-    pub fn load(file: &Path) -> (Theme, Vec<String>) {
-        let mut theme = Theme::default();
-        let text = match std::fs::read_to_string(file) {
-            Ok(t) => t,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return (theme, Vec::new()),
-            Err(e) => {
-                tracing::error!("cannot read {}: {e}", file.display());
-                return (theme, vec![format!("{}: {e}; using the default theme", file.display())]);
+    /// The theme `config` asks for: the built-in or theme file named by
+    /// `ui.theme` (a theme file is layered on Darcula), then
+    /// `config_dir/theme.toml` on top, then the 256-color mapping unless
+    /// `ui.colors` and `colorterm` (the `$COLORTERM` value) give true color.
+    /// Problems are logged and returned for notifications; a missing or
+    /// broken theme file gives Darcula, a broken `theme.toml` is skipped.
+    pub fn load(config: &Config, config_dir: &Path, colorterm: Option<&str>) -> (Theme, Vec<String>) {
+        let ansi256 = !config.ui.colors.truecolor(colorterm);
+        let mut msgs = Vec::new();
+        let mut theme = match resolve_theme(&config.ui.theme, config_dir) {
+            ThemeSource::Builtin(b) => Theme::builtin(b, ansi256),
+            ThemeSource::File(path) => {
+                let mut t = Theme::builtin(&DARCULA, ansi256);
+                match apply_file(&mut t, &path, ansi256) {
+                    Ok(entries) => msgs.extend(entries),
+                    Err(FileError::Missing(m) | FileError::Rejected(m)) => msgs.push(format!("{m}; using darcula")),
+                }
+                t
+            }
+            ThemeSource::Unknown(name) => {
+                let names: Vec<&str> = BUILTIN_THEMES.iter().map(|b| b.name).collect();
+                msgs.push(format!(
+                    "ui.theme: unknown theme {name:?} (built-in: {}; a theme file is a path ending in .toml); using darcula",
+                    names.join(", ")
+                ));
+                Theme::builtin(&DARCULA, ansi256)
             }
         };
-        match theme.apply_toml(&text) {
-            Ok(errors) => {
-                for e in &errors {
-                    tracing::error!("{}: {e}", file.display());
-                }
-                let msgs = errors.iter().map(|e| format!("{}: {e} (entry ignored)", file.display())).collect();
-                (theme, msgs)
-            }
-            Err(e) => {
-                tracing::error!("invalid {}: {e}; using the default theme", file.display());
-                (Theme::default(), vec![format!("{}: {}; using the default theme", file.display(), error_summary(&e.to_string()))])
-            }
+        match apply_file(&mut theme, &config_dir.join("theme.toml"), ansi256) {
+            Ok(entries) => msgs.extend(entries),
+            Err(FileError::Missing(_)) => {}
+            Err(FileError::Rejected(m)) => msgs.push(format!("{m}; its overrides are not applied")),
         }
+        if ansi256 {
+            // Catches the RGB colors of theme files and theme.toml.
+            theme.map_colors(color::to_ansi256);
+        }
+        for m in &msgs {
+            tracing::error!("{m}");
+        }
+        (theme, msgs)
     }
+}
+
+/// Why a theme document was not applied at all; the message starts with
+/// its path.
+enum FileError {
+    /// The file does not exist.
+    Missing(String),
+    /// It cannot be read or is not valid TOML.
+    Rejected(String),
+}
+
+/// Apply the theme document at `path`. Returns the messages of skipped
+/// entries; on `Err` the theme is unchanged.
+fn apply_file(theme: &mut Theme, path: &Path, ansi256: bool) -> Result<Vec<String>, FileError> {
+    let p = path.display();
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(FileError::Missing(format!("{p}: {e}"))),
+        Err(e) => return Err(FileError::Rejected(format!("{p}: {e}"))),
+    };
+    match theme.apply_toml(&text, ansi256) {
+        Ok(errors) => Ok(errors.iter().map(|e| format!("{p}: {e} (entry ignored)")).collect()),
+        Err(e) => Err(FileError::Rejected(format!("{p}: {}", error_summary(&e.to_string())))),
+    }
+}
+
+/// Where `ui.theme` points.
+#[derive(Debug, PartialEq)]
+pub enum ThemeSource {
+    Builtin(&'static BuiltinTheme),
+    File(PathBuf),
+    Unknown(String),
+}
+
+/// Resolve a `ui.theme` value: empty is Darcula, a built-in name matches
+/// case-insensitively, and a value with a `/`, a leading `~` or a `.toml`
+/// ending is a theme file (`~/` expands; relative to `config_dir`).
+pub fn resolve_theme(value: &str, config_dir: &Path) -> ThemeSource {
+    let v = value.trim();
+    if v.is_empty() {
+        return ThemeSource::Builtin(&DARCULA);
+    }
+    if let Some(b) = BUILTIN_THEMES.iter().find(|b| b.name.eq_ignore_ascii_case(v)) {
+        return ThemeSource::Builtin(b);
+    }
+    if v.contains('/') || v.starts_with('~') || v.ends_with(".toml") {
+        let p = crate::worktree::expand_tilde(v);
+        return ThemeSource::File(if p.is_relative() { config_dir.join(p) } else { p });
+    }
+    ThemeSource::Unknown(v.to_string())
 }
 
 /// A one-line summary of a (possibly multi-line) parse error: TOML errors
@@ -448,7 +521,7 @@ mod tests {
     #[test]
     fn hex_and_named_colors() {
         let mut t = Theme::default();
-        let errors = t.apply_toml("bg = \"#102030\"\nfg = \"red\"\ndim = \"#ffffff\"\nmerge_conflict_bg = \"#400000\"\n").unwrap();
+        let errors = t.apply_toml("bg = \"#102030\"\nfg = \"red\"\ndim = \"#ffffff\"\nmerge_conflict_bg = \"#400000\"\n", false).unwrap();
         assert!(errors.is_empty(), "{errors:?}");
         assert_eq!(t.merge_conflict_bg, Color::Rgb(0x40, 0, 0));
         assert_eq!(t.bg, Color::Rgb(0x10, 0x20, 0x30));
@@ -469,7 +542,7 @@ mod tests {
             [syntax.function]
             macro = "#0000ff"
         "##;
-        let errors = t.apply_toml(text).unwrap();
+        let errors = t.apply_toml(text, false).unwrap();
         assert!(errors.is_empty(), "{errors:?}");
         let tf = t.title_focused;
         assert_eq!(tf.fg, Some(Color::Rgb(0, 0, 0)));
@@ -488,32 +561,263 @@ mod tests {
     }
 
     #[test]
+    fn builtin_themes_set_every_key() {
+        use std::collections::BTreeSet;
+        let fields: BTreeSet<&str> = Theme::FIELDS.iter().copied().collect();
+        let captures: BTreeSet<&str> = BUILTIN_CAPTURES.iter().copied().collect();
+        assert_eq!(captures.len(), BUILTIN_CAPTURES.len(), "duplicate capture");
+        for b in BUILTIN_THEMES {
+            let raw: toml::Table = toml::from_str(b.toml).unwrap();
+            let top: BTreeSet<&str> = raw.keys().map(String::as_str).filter(|k| *k != "syntax" && *k != "colors256").collect();
+            assert_eq!(top, fields, "{}", b.name);
+            let mut t = Theme::blank();
+            let errors = t.apply_toml(b.toml, false).unwrap();
+            assert!(errors.is_empty(), "{}: {errors:?}", b.name);
+            let errors = Theme::blank().apply_toml(b.toml, true).unwrap();
+            assert!(errors.is_empty(), "{} (256 colors): {errors:?}", b.name);
+            let set: BTreeSet<&str> = t.syntax.keys().map(String::as_str).collect();
+            assert_eq!(set, captures, "{}", b.name);
+        }
+    }
+
+    #[test]
+    fn colors256_applies_only_in_256_mode() {
+        assert_eq!(Theme::builtin(&DARCULA, false).diff_add_bg, Color::Rgb(41, 66, 54));
+        let mut t = Theme::builtin(&DARCULA, true);
+        assert_eq!(t.diff_add_bg, Color::Indexed(22));
+        // A later layer's top level beats an earlier layer's [colors256].
+        assert!(t.apply_toml("diff_add_bg = \"#00ff00\"", true).unwrap().is_empty());
+        t.map_colors(color::to_ansi256);
+        assert_eq!(t.diff_add_bg, Color::Indexed(46));
+    }
+
+    #[test]
+    fn colors256_errors_reported_in_truecolor_mode() {
+        let mut t = Theme::darcula();
+        let errors = t.apply_toml("[colors256]\nbg = \"#zz\"\nfg = \"22\"\n[colors256.syntax]\nkeyword = 5\n", false).unwrap();
+        assert_eq!(errors.len(), 2, "{errors:?}");
+        assert!(errors.iter().any(|e| e.starts_with("colors256.bg:")), "{errors:?}");
+        assert!(errors.iter().any(|e| e.starts_with("colors256.syntax.keyword:")), "{errors:?}");
+        assert_eq!(t, Theme::darcula());
+        let errors = t.apply_toml("colors256 = 3\n[colors256x]\n", false).unwrap();
+        assert_eq!(errors.len(), 2, "{errors:?}");
+        let errors = t.apply_toml("[colors256.colors256]\nbg = \"1\"\n", true).unwrap();
+        assert!(errors[0].starts_with("colors256.colors256: unknown theme field"), "{errors:?}");
+    }
+
+    #[test]
+    fn builtin_themes_keep_highlights_apart() {
+        for b in BUILTIN_THEMES {
+            for ansi256 in [false, true] {
+                let t = Theme::builtin(b, ansi256);
+                let sel = t.list_selected.bg.unwrap();
+                let unf = t.list_selected_unfocused.bg.unwrap();
+                let groups: [(&str, Vec<Color>); 5] = [
+                    ("editor", vec![t.bg, t.current_line_bg, t.selection_bg, t.search_match_bg, t.search_current_bg, t.occurrence_bg]),
+                    ("merge", vec![t.bg, t.merge_conflict_bg, t.diff_add_bg, t.diff_del_bg, t.diff_mod_bg, t.merge_resolved_bg]),
+                    ("diff", vec![t.bg, t.diff_add_bg, t.diff_del_bg, t.diff_mod_bg, t.diff_add_word_bg, t.diff_del_word_bg]),
+                    ("panel lists", vec![t.panel_bg, sel, unf]),
+                    ("editor lists", vec![t.bg, sel, unf]),
+                ];
+                for (name, colors) in groups {
+                    for (i, a) in colors.iter().enumerate() {
+                        for c in &colors[i + 1..] {
+                            assert_ne!(a, c, "{} ansi256={ansi256} {name}: {colors:?}", b.name);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn map_colors_reaches_every_color() {
+        let mut t = Theme::darcula();
+        t.border.underline_color = Some(Color::Rgb(1, 2, 3));
+        t.map_colors(|_| Color::Indexed(200));
+        t.map_colors(|c| {
+            assert_eq!(c, Color::Indexed(200));
+            c
+        });
+        assert_eq!(t.bg, Color::Indexed(200));
+        assert_eq!(t.tab.fg, Some(Color::Indexed(200)));
+        assert_eq!(t.tab.bg, Some(Color::Indexed(200)));
+        assert_eq!(t.border.underline_color, Some(Color::Indexed(200)));
+        assert_eq!(t.capture_style("keyword").unwrap().fg, Some(Color::Indexed(200)));
+        // Styles without a color stay without one.
+        assert_eq!(t.secondary_caret.fg, None);
+    }
+
+    #[test]
+    fn reverse_flag_adds_and_removes() {
+        let mut t = Theme::default();
+        assert!(t.secondary_caret.add_modifier.contains(Modifier::REVERSED));
+        assert!(t.apply_toml("secondary_caret = { reverse = false }", false).unwrap().is_empty());
+        assert!(!t.secondary_caret.add_modifier.contains(Modifier::REVERSED));
+        t.dim = Style::default();
+        assert!(t.apply_toml("dim = { reverse = true }", false).unwrap().is_empty());
+        assert!(t.dim.add_modifier.contains(Modifier::REVERSED));
+        let errors = t.apply_toml("bg = { fg = \"#000000\", reverse = true }", false).unwrap();
+        assert_eq!(errors.len(), 1, "{errors:?}");
+    }
+
+    #[test]
     fn invalid_values_are_reported_and_skipped() {
         let mut t = Theme::default();
         let text = "bg = \"#zzzzzz\"\nfg = \"#123456\"\nnope = \"#000000\"\ndim = 5\nborder = { fg = \"#000000\", blink = true }\nselection_bg = { fg = \"#000000\", bold = true }\n";
-        let errors = t.apply_toml(text).unwrap();
+        let errors = t.apply_toml(text, false).unwrap();
         assert_eq!(errors.len(), 5, "{errors:?}");
         assert!(errors.iter().any(|e| e.starts_with("bg: invalid color \"#zzzzzz\"")), "{errors:?}");
         assert!(errors.iter().any(|e| e.starts_with("nope: unknown theme field")));
         assert_eq!(t.bg, Theme::default().bg);
         assert_eq!(t.fg, Color::Rgb(0x12, 0x34, 0x56));
         // A syntax error rejects the file.
-        assert!(Theme::default().apply_toml("bg = ").is_err());
+        assert!(Theme::default().apply_toml("bg = ", false).is_err());
+    }
+
+    /// A fresh config directory for one test case.
+    fn test_dir(case: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("jetl-test-theme-{case}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn theme_config(theme: &str) -> Config {
+        Config::parse(&format!("[ui]\ntheme = {theme:?}\n")).unwrap()
+    }
+
+    const TRUE: Option<&str> = Some("truecolor");
+
+    #[test]
+    fn resolve_theme_values() {
+        let dir = Path::new("/cfg");
+        assert_eq!(resolve_theme("", dir), ThemeSource::Builtin(&DARCULA));
+        assert_eq!(resolve_theme(" darcula ", dir), ThemeSource::Builtin(&DARCULA));
+        assert_eq!(resolve_theme("LIGHT", dir), ThemeSource::Builtin(&LIGHT));
+        assert_eq!(resolve_theme("x", dir), ThemeSource::Unknown("x".into()));
+        assert_eq!(resolve_theme("x.toml", dir), ThemeSource::File("/cfg/x.toml".into()));
+        assert_eq!(resolve_theme("sub/x", dir), ThemeSource::File("/cfg/sub/x".into()));
+        assert_eq!(resolve_theme("/abs/x", dir), ThemeSource::File("/abs/x".into()));
+        if std::env::var_os("HOME").is_some() {
+            match resolve_theme("~/x.toml", dir) {
+                ThemeSource::File(p) => assert!(!p.starts_with("~") && p.ends_with("x.toml"), "{p:?}"),
+                other => panic!("{other:?}"),
+            }
+        }
     }
 
     #[test]
-    fn load_falls_back_on_broken_file() {
-        let dir = std::env::temp_dir().join(format!("jetl-test-theme-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let file = dir.join("theme.toml");
-        let (t, msgs) = Theme::load(&file);
-        assert!(msgs.is_empty());
-        assert_eq!(t.bg, Theme::default().bg);
-        std::fs::write(&file, "bg = \"#000000\"\n[[[").unwrap();
-        let (t, msgs) = Theme::load(&file);
-        assert_eq!(msgs.len(), 1);
-        assert!(msgs[0].contains("using the default theme"), "{msgs:?}");
-        assert_eq!(t.bg, Theme::default().bg);
+    fn load_default_is_darcula() {
+        let dir = test_dir("default");
+        let (t, msgs) = Theme::load(&Config::default(), &dir, TRUE);
+        assert!(msgs.is_empty(), "{msgs:?}");
+        assert_eq!(t, Theme::darcula());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_light_by_name() {
+        let dir = test_dir("light");
+        for name in ["light", "Light"] {
+            let (t, msgs) = Theme::load(&theme_config(name), &dir, TRUE);
+            assert!(msgs.is_empty(), "{msgs:?}");
+            assert_eq!(t, Theme::builtin(&LIGHT, false));
+            assert_eq!(t.bg, Color::Rgb(255, 255, 255));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_theme_file_layers_on_darcula() {
+        let dir = test_dir("file");
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        for f in ["mine.toml", "sub/mine.toml"] {
+            std::fs::write(dir.join(f), "bg = \"#010203\"\n").unwrap();
+        }
+        let abs = dir.join("mine.toml").display().to_string();
+        for name in ["mine.toml", "sub/mine.toml", abs.as_str()] {
+            let (t, msgs) = Theme::load(&theme_config(name), &dir, TRUE);
+            assert!(msgs.is_empty(), "{name}: {msgs:?}");
+            assert_eq!(t.bg, Color::Rgb(1, 2, 3), "{name}");
+            assert_eq!(t.fg, Theme::darcula().fg);
+        }
+        // A bad entry is skipped; the rest applies.
+        std::fs::write(dir.join("mine.toml"), "bg = \"#010203\"\nnope = \"red\"\n").unwrap();
+        let (t, msgs) = Theme::load(&theme_config("mine.toml"), &dir, TRUE);
+        assert_eq!(t.bg, Color::Rgb(1, 2, 3));
+        assert_eq!(msgs.len(), 1, "{msgs:?}");
+        assert!(msgs[0].contains("nope: unknown theme field (entry ignored)"), "{msgs:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_unknown_name_falls_back() {
+        let dir = test_dir("unknown");
+        let (t, msgs) = Theme::load(&theme_config("solarized"), &dir, TRUE);
+        assert_eq!(t, Theme::darcula());
+        assert_eq!(msgs.len(), 1, "{msgs:?}");
+        assert!(msgs[0].contains("unknown theme") && msgs[0].contains("darcula"), "{msgs:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_bad_theme_file_falls_back() {
+        let dir = test_dir("badfile");
+        std::fs::write(dir.join("broken.toml"), "bg = \"#000000\"\n[[[").unwrap();
+        for name in ["gone.toml", "broken.toml"] {
+            let (t, msgs) = Theme::load(&theme_config(name), &dir, TRUE);
+            assert_eq!(t, Theme::darcula(), "{name}");
+            assert_eq!(msgs.len(), 1, "{msgs:?}");
+            assert!(msgs[0].contains("using darcula"), "{msgs:?}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn theme_toml_overrides_light() {
+        let dir = test_dir("override");
+        std::fs::write(dir.join("theme.toml"), "selection_bg = \"#123456\"\n").unwrap();
+        let (t, msgs) = Theme::load(&theme_config("light"), &dir, TRUE);
+        assert!(msgs.is_empty(), "{msgs:?}");
+        assert_eq!(t.selection_bg, Color::Rgb(0x12, 0x34, 0x56));
+        assert_eq!(t.bg, Theme::builtin(&LIGHT, false).bg);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn broken_theme_toml_keeps_chosen_theme() {
+        let dir = test_dir("broken");
+        std::fs::write(dir.join("theme.toml"), "bg = \"#000000\"\n[[[").unwrap();
+        let (t, msgs) = Theme::load(&theme_config("light"), &dir, TRUE);
+        assert_eq!(t, Theme::builtin(&LIGHT, false));
+        assert_eq!(msgs.len(), 1, "{msgs:?}");
+        assert!(msgs[0].contains("its overrides are not applied"), "{msgs:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_maps_to_256_without_truecolor() {
+        let dir = test_dir("ansi256");
+        std::fs::write(dir.join("theme.toml"), "selection_bg = \"#123456\"\n").unwrap();
+        let has_rgb = |t: &mut Theme| {
+            let found = std::cell::Cell::new(false);
+            t.map_colors(|c| {
+                if matches!(c, Color::Rgb(..)) {
+                    found.set(true);
+                }
+                c
+            });
+            found.get()
+        };
+        let (mut t, msgs) = Theme::load(&Config::default(), &dir, None);
+        assert!(msgs.is_empty(), "{msgs:?}");
+        assert!(!has_rgb(&mut t));
+        assert_eq!(t.diff_add_bg, Color::Indexed(22), "darcula's [colors256]");
+        let (mut t, _) = Theme::load(&Config::parse("[ui]\ncolors = \"truecolor\"\n").unwrap(), &dir, None);
+        assert!(has_rgb(&mut t));
+        let (mut t, _) = Theme::load(&Config::parse("[ui]\ncolors = \"256\"\ntheme = \"light\"\n").unwrap(), &dir, TRUE);
+        assert!(!has_rgb(&mut t));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

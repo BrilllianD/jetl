@@ -1,0 +1,114 @@
+# Light, inspired by JetBrains IntelliJ Light. Every theme key is set here.
+
+bg = "#ffffff"
+fg = "#080808"
+panel_bg = "#f7f8fa"
+strip_bg = "#ebecf0"
+status_bg = "#ebecf0"
+status_fg = "#494b57"
+current_line_bg = "#eef2fa"
+selection_bg = "#a6d2ff"
+search_match_bg = "#ffe8a6"
+search_current_bg = "#f7c34a"
+occurrence_bg = "#dcdcf5"
+gutter_added = "#5ca35f"
+gutter_modified = "#4a86e8"
+gutter_deleted = "#9aa0a6"
+diff_add_bg = "#ddf4dd"
+diff_del_bg = "#fbe0e0"
+diff_mod_bg = "#dde8fb"
+diff_add_word_bg = "#b5e6b5"
+diff_del_word_bg = "#f5b8b8"
+merge_conflict_bg = "#f7c1b0"
+merge_resolved_bg = "#e4e6eb"
+popup_bg = "#f2f3f5"
+
+border = "#c9ccd6"
+border_focused = "#3574f0"
+title = "#494b57"
+title_focused = { fg = "#000000", bold = true }
+strip_item = { fg = "#6c707e", bg = "#ebecf0" }
+strip_item_active = { fg = "#ffffff", bg = "#3574f0", bold = true }
+status_accent = "#3574f0"
+tab = { fg = "#494b57", bg = "#ebecf0" }
+tab_active = { fg = "#000000", bg = "#ffffff", bold = true }
+tab_dirty = "#a85f00"
+line_number = "#aeb3c2"
+line_number_current = "#767a8a"
+bracket_match = { bg = "#93d9d9", bold = true }
+secondary_caret = { reverse = true }
+bookmark = "#a85f00"
+fold_placeholder = { fg = "#6c707e", bg = "#e4e6eb" }
+git_added = "#0a7700"
+git_modified = "#0032a0"
+git_deleted = "#6c707e"
+git_untracked = "#993300"
+git_conflicted = "#d21f1f"
+git_ignored = "#9a9da6"
+popup_border = "#3574f0"
+list_selected = { fg = "#000000", bg = "#d4e2ff" }
+list_selected_unfocused = { fg = "#000000", bg = "#dfe1e5" }
+dim = "#818594"
+error = "#c7222d"
+warn = "#a36200"
+info = "#3574f0"
+diag_error = { fg = "#db3b4b", underline = true }
+diag_warn = { fg = "#b08800", underline = true }
+diag_info = { fg = "#3574f0", underline = true }
+diag_hint = "#9a9da6"
+splitter = { fg = "#c9ccd6", bg = "#ffffff" }
+
+[syntax]
+keyword = "#0033b3"
+"keyword.directive" = "#7a6a00"
+string = "#067d17"
+"string.special" = "#067d17"
+"string.special.key" = "#871094"
+"string.escape" = "#0037a6"
+escape = "#0037a6"
+comment = { fg = "#8c8c8c", italic = true }
+"comment.documentation" = { fg = "#5f826b", italic = true }
+number = "#1750eb"
+boolean = "#0033b3"
+constant = "#871094"
+"constant.builtin" = "#0033b3"
+function = "#00627a"
+"function.builtin" = "#1f6f8b"
+"function.macro" = "#7a6a00"
+"type.builtin" = "#0033b3"
+property = "#871094"
+attribute = "#7a6a00"
+label = "#19807e"
+operator = "#080808"
+punctuation = "#080808"
+"punctuation.special" = "#0033b3"
+"variable.builtin" = "#871094"
+tag = "#0033b3"
+embedded = "#080808"
+"text.title" = { fg = "#0033b3", bold = true }
+"text.literal" = "#067d17"
+"text.reference" = "#1750eb"
+"text.uri" = { fg = "#1750eb", underline = true }
+none = "#080808"
+media = "#0033b3"
+import = "#0033b3"
+keyframes = "#0033b3"
+charset = "#0033b3"
+namespace = "#0033b3"
+supports = "#0033b3"
+at = "#0033b3"
+use = "#0033b3"
+forward = "#0033b3"
+include = "#0033b3"
+mixin = "#0033b3"
+extend = "#0033b3"
+each = "#0033b3"
+for = "#0033b3"
+while = "#0033b3"
+return = "#0033b3"
+debug = "#0033b3"
+warn = "#0033b3"
+conditional = "#0033b3"
+repeat = "#0033b3"
+method = "#00627a"
+preproc = "#7a6a00"

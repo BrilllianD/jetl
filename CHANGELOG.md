@@ -18,6 +18,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on a 24-row terminal, with a menu button on top that opens the main menu. Hovering a button
   shows its name and shortcut. The icons are one-cell symbols by default; `[ui] icons = "emoji"`
   switches the strip and the menu bar to color emoji (needs a color emoji font).
+- Themes: `[ui] theme` picks the built-in `darcula` (default) or `light` (IntelliJ Light colors),
+  or a theme file (a path ending in `.toml`, relative to the config directory) layered on
+  Darcula. `theme.toml` still overrides single colors on top. An unknown name or a broken theme
+  file falls back to Darcula with a notification. Style tables accept `reverse`.
+- 256-color fallback: unless `$COLORTERM` is `truecolor` or `24bit`, theme colors are drawn as
+  the nearest colors of the 256-color palette. `[ui] colors = "truecolor"` or `"256"` overrides
+  the detection, and themes can give exact colors for this case in a `[colors256]` table.
 - Language server client: servers start per project when the first file of their language opens
   (built in: rust-analyzer, typescript-language-server, pyright, gopls, clangd,
   lua-language-server, bash-language-server; `[lsp]` in `config.toml` changes or adds them).
@@ -157,6 +164,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Dialogs are wide enough to show their whole title.
 - Minimum supported Rust version is now 1.90 (was 1.88). tree-sitter 0.27 already required
   1.90, so 1.88 never built; hover Markdown parsing no longer uses `if let` match guards.
+- An invalid `theme.toml` now leaves the chosen theme in place instead of falling back to
+  Darcula. Git log graph lanes take their colors from the theme.
+
+### Removed
+
+- `editor.cjk_ambiguous_wide`, which was reserved and had no effect. Configs that still set it
+  load as before (unknown keys are ignored).
 
 ## [0.1.0] - 2026-10-03
 

@@ -1,0 +1,130 @@
+# Darcula, jetl's default theme. Every theme key is set here; theme files
+# named by `ui.theme` are layered on top of it. See docs/CONFIG.md.
+
+bg = "#2b2b2b"
+fg = "#a9b7c6"
+panel_bg = "#3c3f41"
+strip_bg = "#313335"
+status_bg = "#313335"
+status_fg = "#bbbbbb"
+current_line_bg = "#323232"
+selection_bg = "#214283"
+search_match_bg = "#32593c"
+search_current_bg = "#9b6e1e"
+occurrence_bg = "#344134"
+gutter_added = "#629655"
+gutter_modified = "#3592c4"
+gutter_deleted = "#8c8c8c"
+diff_add_bg = "#294236"
+diff_del_bg = "#482c2c"
+diff_mod_bg = "#2c3748"
+diff_add_word_bg = "#38664a"
+diff_del_word_bg = "#753a3a"
+merge_conflict_bg = "#62362c"
+merge_resolved_bg = "#373737"
+popup_bg = "#353538"
+
+border = "#555555"
+border_focused = "#4b6eaf"
+title = "#bbbbbb"
+title_focused = { fg = "white", bold = true }
+strip_item = { fg = "#969696", bg = "#313335" }
+strip_item_active = { fg = "white", bg = "#4b6eaf", bold = true }
+status_accent = "#6897bb"
+tab = { fg = "#bbbbbb", bg = "#3c3f41" }
+tab_active = { fg = "white", bg = "#4e5254", bold = true }
+tab_dirty = "#ffc66d"
+line_number = "#606366"
+line_number_current = "#a4a7ab"
+bracket_match = { bg = "#3b514d", bold = true }
+secondary_caret = { reverse = true }
+bookmark = "#ffc66d"
+fold_placeholder = { fg = "#969696", bg = "#3c3f41" }
+git_added = "#629655"
+git_modified = "#6897bb"
+git_deleted = "#8c8c8c"
+git_untracked = "#cc7832"
+git_conflicted = "#ff6464"
+git_ignored = "#6e6e6e"
+popup_border = "#4b6eaf"
+list_selected = { fg = "white", bg = "#2c5394" }
+list_selected_unfocused = { fg = "white", bg = "#0d293e" }
+dim = "#787878"
+error = "#ff6b68"
+warn = "#ffc66d"
+info = "#6897bb"
+diag_error = { fg = "#ff6b68", underline = true }
+diag_warn = { fg = "#deb450", underline = true }
+diag_info = { fg = "#6897bb", underline = true }
+diag_hint = "#808080"
+splitter = { fg = "#555555", bg = "#2b2b2b" }
+
+[syntax]
+keyword = "#cc7832"
+"keyword.directive" = "#bbb529"
+string = "#6a8759"
+"string.special" = "#6a8759"
+"string.special.key" = "#9876aa"
+"string.escape" = "#cc7832"
+escape = "#cc7832"
+comment = { fg = "#808080", italic = true }
+"comment.documentation" = { fg = "#629755", italic = true }
+number = "#6897bb"
+boolean = "#cc7832"
+constant = "#9876aa"
+"constant.builtin" = "#cc7832"
+function = "#ffc66d"
+"function.builtin" = "#8888c6"
+"function.macro" = "#bbb529"
+"type.builtin" = "#cc7832"
+property = "#9876aa"
+attribute = "#bbb529"
+label = "#20999d"
+operator = "#a9b7c6"
+punctuation = "#a9b7c6"
+"punctuation.special" = "#cc7832"
+"variable.builtin" = "#94558d"
+tag = "#e8bf6a"
+embedded = "#a9b7c6"
+"text.title" = { fg = "#ffc66d", bold = true }
+"text.literal" = "#6a8759"
+"text.reference" = "#6897bb"
+"text.uri" = { fg = "#6897bb", underline = true }
+none = "#a9b7c6"
+# CSS and SCSS queries capture each at-rule under its own name.
+media = "#cc7832"
+import = "#cc7832"
+keyframes = "#cc7832"
+charset = "#cc7832"
+namespace = "#cc7832"
+supports = "#cc7832"
+at = "#cc7832"
+use = "#cc7832"
+forward = "#cc7832"
+include = "#cc7832"
+mixin = "#cc7832"
+extend = "#cc7832"
+each = "#cc7832"
+for = "#cc7832"
+while = "#cc7832"
+return = "#cc7832"
+debug = "#cc7832"
+warn = "#cc7832"
+# Lua query names for control flow, methods and the shebang line.
+conditional = "#cc7832"
+repeat = "#cc7832"
+method = "#ffc66d"
+preproc = "#bbb529"
+
+# With 256 colors the nearest palette color would turn these dark tints
+# gray, so diff and merge chunks would look alike.
+[colors256]
+search_match_bg = "23"
+occurrence_bg = "239"
+list_selected_unfocused = { bg = "17" }
+diff_add_bg = "22"
+diff_del_bg = "52"
+diff_mod_bg = "17"
+diff_add_word_bg = "28"
+diff_del_word_bg = "88"
+merge_conflict_bg = "88"

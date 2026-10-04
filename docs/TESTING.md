@@ -364,6 +364,40 @@ Then repeat the crash with two modified files (type in notes.txt, Ctrl+N
   (`mkdir -p /tmp/jt-other; echo x > /tmp/jt-other/x.txt`, run it on
   `/tmp/jt-other/x.txt`): no dialog, and the `$T` dump is still there.
 
+### Scenario: themes and 256 colors
+
+At 80x24 and at 120x40, on the scratch project `$T` above. jetl reads
+`$COLORTERM` itself, so set it (or unset it) on its command line:
+
+```sh
+mkdir -p /tmp/jt-home/config/jetl
+printf '[ui]\ntheme = "light"\n' > /tmp/jt-home/config/jetl/config.toml
+run() { /tmp/tm.sh -f /dev/null new-session -d -s jetl -x 80 -y 24 \
+  "env $1 XDG_CONFIG_HOME=/tmp/jt-home/config XDG_STATE_HOME=/tmp/jt-home/state $PWD/target/debug/jetl $T"; }
+run COLORTERM=truecolor; sleep 2
+/tmp/tm.sh capture-pane -t jetl -p -e | grep -o '[34]8;2;[0-9;]*' | sort | uniq -c | sort -rn | head
+                                                   # RGB codes; the editor background is 48;2;255;255;255
+/tmp/tm.sh kill-server; run '-u COLORTERM'; sleep 2
+/tmp/tm.sh capture-pane -t jetl -p -e | grep -c '[34]8;2;'   # 0: no RGB codes left
+/tmp/tm.sh capture-pane -t jetl -p -e | grep -o '[34]8;5;[0-9]*' | sort | uniq -c | sort -rn | head
+                                                   # 256-color codes; the editor background is 48;5;231
+/tmp/tm.sh kill-server
+```
+
+In both modes, and with Darcula too (`theme = "darcula"`), look at the
+Project tree, the Git window (Commit tab, the Log graph, a diff), the file
+palette (Ctrl+N), Problems, a folded function and the conflict resolver
+(the `/tmp/jt-merge` fixture above): every highlight readable, and diff and
+merge chunks told apart. Then, one start each:
+
+- `theme = "nope"`: a notification about the unknown theme, then Darcula.
+- `theme = "mine.toml"` with `bg = "#202040"` in
+  `/tmp/jt-home/config/jetl/mine.toml`: Darcula with that background
+  (`48;2;32;32;64`).
+- `theme.toml` with `selection_bg = "#ffcc00"` on `theme = "light"`: a
+  selection (Shift+Right) shows `48;2;255;204;0`.
+- `[ui] colors = "truecolor"` with COLORTERM unset: RGB codes again.
+
 ### Limits under tmux
 
 - No kitty keyboard protocol: Ctrl+Shift+letter, Ctrl+Tab, Ctrl+Enter,

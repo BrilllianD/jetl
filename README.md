@@ -61,7 +61,7 @@ built-in terminal and a Run window, all driven by JetBrains-style key bindings a
 
 **UI and configuration**
 
-- Darcula theme with color overrides, rebindable keymap, and a TOML config file.
+- Darcula and light themes (or your own theme file) with color overrides, rebindable keymap, and a TOML config file.
 - Zen mode, keyboard resize of tool windows, an Event Log tool window, toasts and dialogs.
 - Mouse support for clicks, selection and wheel scrolling.
 
@@ -151,7 +151,7 @@ jetl reads three optional files from `$XDG_CONFIG_HOME/jetl/` (usually `~/.confi
 
 - `config.toml`: editor, UI, git, worktree, files, clipboard, format, run and terminal settings.
 - `keymap.toml`: key bindings merged on top of the built-in keymap.
-- `theme.toml`: color overrides on top of the built-in Darcula theme.
+- `theme.toml`: color overrides on top of the theme chosen by `ui.theme`.
 
 The log, sessions and the recent projects list live in `$XDG_STATE_HOME/jetl/` (usually
 `~/.local/state/jetl/`). Set `RUST_LOG=jetl=debug` for verbose logging.
