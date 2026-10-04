@@ -171,6 +171,7 @@ impl Buffer {
             None => self.view.scroll_line = map_line(&hunks, old_scroll),
         }
         self.view.scroll_line = super::rows::Rows::new(&self.view.folds, self.len_lines()).visible(self.view.scroll_line);
+        self.view.scroll_seg = 0;
         true
     }
 }

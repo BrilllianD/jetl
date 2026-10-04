@@ -90,6 +90,11 @@ pub struct EditorConfig {
     /// Open tabs beyond this close the least recently used clean, unpinned
     /// tab; 0 means no limit.
     pub max_tabs: usize,
+    /// Soft-wrap every file when opened.
+    pub soft_wrap: bool,
+    /// Files soft-wrapped when opened even with `soft_wrap` off: `*.ext`
+    /// matches a name ending in `.ext`, anything else a whole file name.
+    pub soft_wrap_files: Vec<String>,
 }
 
 /// When dirty buffers with a path are written without Ctrl+S.
@@ -204,6 +209,8 @@ impl Default for EditorConfig {
             autosave: Autosave::Off,
             autosave_idle_ms: 1500,
             max_tabs: 0,
+            soft_wrap: false,
+            soft_wrap_files: ["*.md", "*.txt", "*.rst", "*.adoc"].map(String::from).to_vec(),
         }
     }
 }

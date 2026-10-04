@@ -543,7 +543,7 @@ impl Buffer {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::editor::selection::Selection;
 
@@ -766,7 +766,7 @@ class A:
 
     /// Editor-level tests: rendering, motions, mouse and actions over folds.
     #[cfg(feature = "lang-rust")]
-    mod editor {
+    pub(crate) mod editor {
         use std::path::PathBuf;
 
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind};
@@ -781,15 +781,15 @@ class A:
         use crate::event::{Effect, Mouse};
         use crate::workspace::Workspace;
 
-        pub(super) const TEXT: &str = "fn main() {\n    let a = 1;\n    let b = 2;\n}\nfn two() {\n    x();\n}\nlast\n";
+        pub(crate) const TEXT: &str = "fn main() {\n    let a = 1;\n    let b = 2;\n}\nfn two() {\n    x();\n}\nlast\n";
 
-        pub(super) fn editor(text: &str) -> Editor {
+        pub(crate) fn editor(text: &str) -> Editor {
             let mut ed = Editor::new(&Config::default());
             ed.open_text(PathBuf::from("/tmp/a.rs"), text, false, &Theme::default());
             ed
         }
 
-        pub(super) fn act(ed: &mut Editor, a: E) -> Vec<Effect> {
+        pub(crate) fn act(ed: &mut Editor, a: E) -> Vec<Effect> {
             let (config, theme, workspace) = (Config::default(), Theme::default(), Workspace::new(PathBuf::from("/tmp")));
             let (bus, _rx) = tokio::sync::mpsc::unbounded_channel();
             let mut cx = Ctx { effects: Vec::new(), config: &config, theme: &theme, workspace: &workspace, bus };
@@ -797,7 +797,7 @@ class A:
             cx.effects
         }
 
-        pub(super) fn mouse(ed: &mut Editor, kind: MouseEventKind, (x, y): (u16, u16), mods: KeyModifiers) {
+        pub(crate) fn mouse(ed: &mut Editor, kind: MouseEventKind, (x, y): (u16, u16), mods: KeyModifiers) {
             let (config, theme, workspace) = (Config::default(), Theme::default(), Workspace::new(PathBuf::from("/tmp")));
             let (bus, _rx) = tokio::sync::mpsc::unbounded_channel();
             let mut cx = Ctx { effects: Vec::new(), config: &config, theme: &theme, workspace: &workspace, bus };
@@ -806,7 +806,7 @@ class A:
 
         /// Draw at `w` x `h` (a tab row, then the text); the screen rows as
         /// strings.
-        pub(super) fn draw(ed: &mut Editor, w: u16, h: u16) -> Vec<String> {
+        pub(crate) fn draw(ed: &mut Editor, w: u16, h: u16) -> Vec<String> {
             let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, h)).unwrap();
             let theme = Theme::default();
             let buf = term.draw(|f| ed.render(f, Rect::new(0, 0, w, 1), Rect::new(0, 1, w, h - 1), true, &theme)).unwrap().buffer.clone();
@@ -814,7 +814,7 @@ class A:
         }
 
         /// Collapse the innermost fold holding `line`.
-        pub(super) fn collapse(ed: &mut Editor, line: usize) {
+        pub(crate) fn collapse(ed: &mut Editor, line: usize) {
             let b = ed.active_buffer_mut().unwrap();
             let f = b.fold_chain(line)[0];
             assert!(b.view.folds.collapse(f, &b.rope), "{f:?} {:?} {:?}", f.lines(&b.rope), b.text());

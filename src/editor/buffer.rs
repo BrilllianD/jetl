@@ -164,6 +164,11 @@ pub struct Buffer {
 }
 
 impl Buffer {
+    /// The live view's rows: its folds and its wrap.
+    pub fn rows(&self) -> super::rows::Rows<'_> {
+        super::rows::Rows::view(&self.view.folds, &self.view.wrap, &self.rope, self.version)
+    }
+
     pub fn from_text(id: BufferId, path: Option<PathBuf>, text: &str, lossy: bool) -> Self {
         let line_ending = if text.contains("\r\n") { LineEnding::CrLf } else { LineEnding::Lf };
         let name = path.as_ref().and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned())).unwrap_or_else(|| "untitled".into());

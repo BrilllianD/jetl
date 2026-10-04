@@ -23,6 +23,7 @@ pub mod syntax;
 pub mod undo;
 pub mod view;
 pub mod view_state;
+pub mod wrap;
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -43,12 +44,12 @@ use buffer::{Buffer, BufferId};
 use find::{LastSearch, refresh_search, render_find_bar};
 use groups::{GroupId, TabGroup};
 use nav::{NavPos, NavRing};
-use rows::Rows;
+use rows::{Row, Rows};
 use search::Field;
 use selection::{Selection, apply_motion_all, line_range, word_at};
 use split::{SplitNode, SplitterHit};
 use undo::TxKind;
-use view::{RenderOpts, col_to_char};
+use view::RenderOpts;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DragMode {
@@ -94,6 +95,10 @@ pub struct Editor {
     max_highlight_bytes: usize,
     /// `editor.max_tabs`: see [`Editor::enforce_tab_limit`].
     max_tabs: usize,
+    /// `editor.soft_wrap` and `editor.soft_wrap_files`: whether a file
+    /// opens wrapped ([`Editor::soft_wrap_for`]).
+    soft_wrap: bool,
+    soft_wrap_files: Vec<String>,
     /// `[format]`: formatters per language and whether saves run them.
     pub format: crate::config::FormatConfig,
     last_search: Option<LastSearch>,
@@ -148,6 +153,8 @@ impl Editor {
             drag: None,
             max_highlight_bytes: config.editor.max_highlight_bytes,
             max_tabs: config.editor.max_tabs,
+            soft_wrap: config.editor.soft_wrap,
+            soft_wrap_files: config.editor.soft_wrap_files.clone(),
             format: config.format.clone(),
             last_search: None,
             nav: NavRing::default(),
@@ -211,6 +218,7 @@ impl Editor {
             buf.line_ending = le;
         }
         buf.settings = settings;
+        buf.view.wrap.on = self.soft_wrap_for(buf.path.as_deref());
         self.buffers.push(buf);
         let at = self.buffers.len() - 1;
         match pending {
@@ -222,6 +230,17 @@ impl Editor {
             None => self.activate_index(at),
         }
         at
+    }
+
+    /// Whether a file at `path` opens soft-wrapped: all do with
+    /// `editor.soft_wrap`, else those `editor.soft_wrap_files` matches.
+    pub fn soft_wrap_for(&self, path: Option<&Path>) -> bool {
+        let name = path.and_then(Path::file_name).map(|n| n.to_string_lossy()).unwrap_or_default();
+        self.soft_wrap
+            || self.soft_wrap_files.iter().any(|m| match m.strip_prefix('*') {
+                Some(suffix) => name.len() > suffix.len() && name.ends_with(suffix),
+                None => *m == name,
+            })
     }
 
     /// Put back a session's caret, scroll and folds for tab `i` (clamped
@@ -238,6 +257,7 @@ impl Editor {
         b.goto_line(line, col);
         b.view.folds = fold::Folds::from_session(folds, &b.rope);
         b.view.scroll_line = Rows::new(&b.view.folds, b.rope.len_lines()).visible(scroll_line);
+        b.view.scroll_seg = 0;
         b.view.scroll_col = scroll_col;
     }
 
@@ -706,7 +726,22 @@ impl Editor {
                 if self.column_mode || self.active_buffer().is_none_or(Buffer::blocks_supported) {
                     self.column_mode ^= true;
                 } else {
-                    cx.notify(Level::Info, "Column selection does not work with word wrap");
+                    cx.notify(Level::Info, "Column selection does not work with soft wrap");
+                }
+                return true;
+            }
+            E::ToggleSoftWrap => {
+                let Some(b) = self.active_buffer_mut() else { return true };
+                let v = &mut b.view;
+                v.wrap.on ^= true;
+                // Desired columns change meaning (chars or row x).
+                for (_, d) in v.sels.iter_mut_desired() {
+                    *d = None;
+                }
+                (v.scroll_col, v.scroll_seg, v.follow_key) = (0, 0, None);
+                if v.wrap.on && self.column_mode {
+                    self.column_mode = false;
+                    cx.notify(Level::Info, "Column selection mode is off: it does not work with soft wrap");
                 }
                 return true;
             }
@@ -769,7 +804,7 @@ impl Editor {
                 // the block's corner instead.
                 let block = self.column_mode && *extend && b.blocks_supported() && b.extend_block(*m, page, tab_width);
                 if !block {
-                    let rows = Rows::new(&b.view.folds, b.rope.len_lines());
+                    let rows = Rows::view(&b.view.folds, &b.view.wrap, &b.rope, b.version);
                     apply_motion_all(&b.rope, &rows, &mut b.view.sels, *m, *extend, page);
                 }
                 b.undo.break_group = true;
@@ -817,7 +852,8 @@ impl Editor {
             }
             E::ScrollUp(n) | E::ScrollDown(n) => {
                 let delta = if matches!(a, E::ScrollUp(_)) { -(*n as isize) } else { *n as isize };
-                b.view.scroll_line = Rows::new(&b.view.folds, b.rope.len_lines()).step(b.view.scroll_line, delta);
+                let top = b.rows().step_row(b.view.top(), delta);
+                b.view.set_top(top);
             }
             E::Find => self.open_find(false),
             E::Replace => self.open_find(true),
@@ -949,7 +985,8 @@ impl Editor {
             | E::LineEndingCrlf
             | E::SetLanguage
             | E::ToggleBlame
-            | E::ToggleColumnMode => {}
+            | E::ToggleColumnMode
+            | E::ToggleSoftWrap => {}
         }
         // A motion or edit that put a caret into a fold unfolds it.
         if let Some(b) = self.active_buffer_mut() {
@@ -982,36 +1019,43 @@ impl Editor {
         let Some(ai) = self.active() else { return false };
         let tab_width = self.tab_display(&self.buffers[ai]);
         let b = &mut self.buffers[ai];
-        // The line on screen row `y` (the last one below the text).
-        let line_at = |b: &Buffer, y: u16| -> usize {
-            let rows = Rows::new(&b.view.folds, b.rope.len_lines());
-            rows.at_offset(b.view.scroll_line, y.saturating_sub(text_area.y) as usize).map_or(rows.last_visible(), |r| r.line)
+        // The row on screen row `y` (the last one below the text).
+        let row_at = |b: &Buffer, y: u16| -> Row {
+            let rows = b.rows();
+            rows.at_offset(b.view.top(), y.saturating_sub(text_area.y) as usize).unwrap_or(rows.last_row())
         };
+        let line_at = |b: &Buffer, y: u16| -> usize { row_at(b, y).line };
+        // The char under the pointer; in the gutter, the row's first char.
         let pos_at = |b: &Buffer, x: u16, y: u16| -> usize {
-            let line = line_at(b, y);
-            let col = x.saturating_sub(text_area.x) as usize + b.view.scroll_col;
-            if x < text_area.x { b.rope.line_to_char(line) } else { col_to_char(&b.rope, line, col, tab_width) }
+            let (rows, row) = (b.rows(), row_at(b, y));
+            if x < text_area.x {
+                return rows.seg_range(&b.rope, row).start;
+            }
+            let scroll_col = if rows.wraps() { 0 } else { b.view.scroll_col };
+            view::row_x_to_char(&b.rope, &rows, row, (x - text_area.x) as usize + scroll_col, tab_width)
         };
         // The (line, visual column) under the pointer for column blocks;
         // the column is not clamped to the line.
         let cell_at =
             |b: &Buffer, x: u16, y: u16| -> (usize, usize) { (line_at(b, y), x.saturating_sub(text_area.x) as usize + b.view.scroll_col) };
-        // A click in the blame column shows that line's commit.
+        // A click in the blame column shows that line's commit (on its
+        // first row: the others show none).
         if m.kind == MouseEventKind::Down(MouseButton::Left)
             && let Some(blame) = &b.blame
             && m.x < text_area.x.saturating_sub(view::gutter_width(b)) + blame::WIDTH
             && m.y >= text_area.y
             && m.y < text_area.bottom()
         {
-            if let Some(c) = blame.commit_at(line_at(b, m.y)) {
+            let row = row_at(b, m.y);
+            if let Some(c) = blame.commit_at(row.line).filter(|_| row.seg == 0) {
                 cx.effects.push(Effect::Git(crate::git::GitRequest::ShowCommit(c.sha.clone())));
             }
             return true;
         }
         // A click on a git mark offers the change commands for that line.
         if m.kind == MouseEventKind::Down(MouseButton::Left) && m.x + 3 == text_area.x && m.y >= text_area.y && m.y < text_area.bottom() {
-            let line = line_at(b, m.y);
-            if gutter::mark_at(&b.gutter, line).is_some() {
+            let Row { line, seg } = row_at(b, m.y);
+            if seg == 0 && gutter::mark_at(&b.gutter, line).is_some() {
                 b.view.set_sel(Selection::point(b.rope.line_to_char(line)));
                 use crate::actions::{Action, EditorAction as E};
                 use crate::ui::menu::{ContextMenu, MenuItem};
@@ -1024,23 +1068,26 @@ impl Editor {
                 return true;
             }
         }
-        // The fold marker column collapses or expands there; a click on a
-        // fold's placeholder expands it, the caret at the header's end.
-        let row_line = |b: &Buffer| {
-            let rows = Rows::new(&b.view.folds, b.rope.len_lines());
-            (m.y >= text_area.y).then(|| rows.at_offset(b.view.scroll_line, (m.y - text_area.y) as usize)).flatten().map(|r| r.line)
-        };
+        // The fold marker column collapses or expands there (on a line's
+        // first row); a click on a fold's placeholder (after the header's
+        // last row) expands it, the caret at the header's end.
+        let row_here = |b: &Buffer| (m.y >= text_area.y).then(|| b.rows().at_offset(b.view.top(), (m.y - text_area.y) as usize)).flatten();
         if m.kind == MouseEventKind::Down(MouseButton::Left)
             && m.y < text_area.bottom()
-            && let Some(line) = row_line(b)
+            && let Some(row) = row_here(b)
         {
+            let line = row.line;
             if m.x + 2 == text_area.x {
-                b.toggle_fold(line);
+                if row.seg == 0 {
+                    b.toggle_fold(line);
+                }
                 return true;
             }
             let end = b.rope.line_to_char(line) + selection::line_len_no_eol(&b.rope, line);
-            let past_end =
-                m.x >= text_area.x && (m.x - text_area.x) as usize + b.view.scroll_col >= view::visual_col(&b.rope, end, tab_width);
+            let rows = b.rows();
+            let scroll_col = if rows.wraps() { 0 } else { b.view.scroll_col };
+            let (end_row, end_x) = view::char_to_row_x(&b.rope, &rows, end, tab_width);
+            let past_end = m.x >= text_area.x && end_row == row && (m.x - text_area.x) as usize + scroll_col >= end_x;
             if past_end && b.view.folds.expand_at(line, &b.rope, false) {
                 b.view.set_sel(Selection::point(end));
                 b.undo.break_group = true;
@@ -1139,11 +1186,10 @@ impl Editor {
                     }
                 }
                 // Auto-scroll while dragging past the edges.
-                let rows = Rows::new(&b.view.folds, b.rope.len_lines());
-                if m.y < text_area.y {
-                    b.view.scroll_line = rows.step(b.view.scroll_line, -1);
-                } else if m.y >= text_area.bottom() {
-                    b.view.scroll_line = rows.step(b.view.scroll_line, 1);
+                let delta = if m.y < text_area.y { -1 } else { (m.y >= text_area.bottom()) as isize };
+                if delta != 0 {
+                    let top = b.rows().step_row(b.view.top(), delta);
+                    b.view.set_top(top);
                 }
                 true
             }
@@ -1321,15 +1367,17 @@ fn view_line_range(b: &Buffer, p: usize) -> std::ops::Range<usize> {
     }
 }
 
-/// The wheel over a view: three rows up or down, four columns sideways.
+/// The wheel over a view: three rows up or down, four columns sideways
+/// (none when wrapped).
 fn wheel(b: &mut Buffer, kind: MouseEventKind) -> bool {
-    let v = &mut b.view;
-    let rows = Rows::new(&v.folds, b.rope.len_lines());
+    let wraps = b.rows().wraps();
+    let step = |b: &Buffer, d: isize| b.rows().step_row(b.view.top(), d);
     match kind {
-        MouseEventKind::ScrollUp => v.scroll_line = rows.step(v.scroll_line, -3),
-        MouseEventKind::ScrollDown => v.scroll_line = rows.step(v.scroll_line, 3),
-        MouseEventKind::ScrollLeft => v.scroll_col = v.scroll_col.saturating_sub(4),
-        MouseEventKind::ScrollRight => v.scroll_col += 4,
+        MouseEventKind::ScrollUp => b.view.set_top(step(b, -3)),
+        MouseEventKind::ScrollDown => b.view.set_top(step(b, 3)),
+        MouseEventKind::ScrollLeft | MouseEventKind::ScrollRight if wraps => {}
+        MouseEventKind::ScrollLeft => b.view.scroll_col = b.view.scroll_col.saturating_sub(4),
+        MouseEventKind::ScrollRight => b.view.scroll_col += 4,
         _ => return false,
     }
     true
@@ -1571,7 +1619,7 @@ mod tests {
 
     #[test]
     fn alt_drag_makes_a_column_block_and_alt_click_still_adds_carets() {
-        let mut ed = editor_with("a.txt", "\tab日本語x\n\tab日本語x\nab\n\tab日本語x\n");
+        let mut ed = editor_with("a.cfg", "\tab日本語x\n\tab日本語x\nab\n\tab日本語x\n");
         let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 8)).unwrap();
         let theme = Theme::default();
         term.draw(|f| ed.render(f, Rect::new(0, 0, 40, 1), Rect::new(0, 1, 40, 7), true, &theme)).unwrap();
@@ -1605,7 +1653,7 @@ mod tests {
 
     #[test]
     fn column_mode_keys_drag_and_status() {
-        let mut ed = editor_with("a.txt", "one\ntwo\nx\nfour\n");
+        let mut ed = editor_with("a.cfg", "one\ntwo\nx\nfour\n");
         let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 8)).unwrap();
         let theme = Theme::default();
         term.draw(|f| ed.render(f, Rect::new(0, 0, 40, 1), Rect::new(0, 1, 40, 7), true, &theme)).unwrap();

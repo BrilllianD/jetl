@@ -16,7 +16,8 @@ task (`yman ls`); phases are umbrella tasks and the rows are their subtasks. Pha
   format on save through an external formatter (`[format]`), pinned tabs, tab reorder and a tab
   limit that closes the least recently used clean, unpinned tab. Phase 11 added split panes:
   nested tab groups whose tabs are views over shared buffers, then multiple carets, column
-  selection and code folding (per view, through `editor/rows.rs`). Missing: wrap.
+  selection, code folding (per view, through `editor/rows.rs`) and soft wrap (`editor/wrap.rs`,
+  segments in `Rows`).
 - **Shell:** fixed layout with one left slot and one bottom slot. The side each tool window lives
   on is hardcoded in `ToolWindowId::side()`. A new bottom tool window is just a new enum variant
   and needs no layout rewrite. The palette has Files/Symbols/Actions/Everywhere/Recent/Branches/Recent Projects modes.
@@ -67,7 +68,7 @@ Effort: S = hours to a day, M = 1-3 days, L = about a week, XL = multiple weeks.
 | Block comment toggle (Ctrl+Shift+/) | S | `block_comment` on `LanguageDef` |
 | Strip trailing whitespace and ensure final newline on save | S | In `save()`, as an undoable transaction |
 | Hard tabs, indent auto-detection, `.editorconfig` | M | Per-buffer indent settings |
-| Word wrap | M | Must stay inside the shared `layout_line()` walk |
+| Word wrap | M | Done: `editor/wrap.rs` on the shared `layout_line()` walk, segments in `Rows`; follow-ups: extra continuation indent setting, per-file persistence |
 | Column (block) selection | M | Done: `view::block_selections`, `DragMode::Column`; wrap must go through `Buffer::blocks_supported` |
 | Multiple carets | L | Done: `Selections`, `Buffer::edit_carets` |
 | Code folding by tree-sitter node | M | Done: `editor/fold.rs` (`Folds` per view), visible rows through `editor/rows.rs`; wrap extends `Rows` with segments |
@@ -181,6 +182,6 @@ All of section E shipped in Phase 9 except split editor panes, which shipped in 
    core came first, then diagnostics and navigation, completion, and last rename, code actions,
    file structure and formatting through the server.
 6. **Phase 11: editor layout.** Split panes (done), multi-caret (done), column selection (done), folding (done)
-   and wrap. This has the highest implementation risk, so it goes last. The conflict resolver from
+   and soft wrap (done). This has the highest implementation risk, so it goes last. The conflict resolver from
    Phase 8 follows split panes.
 7. **Ongoing:** themes, vim mode, local history, snapshot tests, CI, README, crash recovery.

@@ -5,7 +5,8 @@ use std::ops::Range;
 
 use ropey::Rope;
 
-use super::rows::Rows;
+use super::rows::{Row, Rows};
+use super::view::{char_to_row_x, row_x_to_char};
 use crate::actions::Motion;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -393,19 +394,20 @@ pub fn indent_of(rope: &Rope, line: usize) -> usize {
     l.chars().take_while(|c| *c == ' ' || *c == '\t').count()
 }
 
-/// The line a vertical motion (Up, Down, PageUp, PageDown) from `line`
+/// The row a vertical motion (Up, Down, PageUp, PageDown) from `row`
 /// lands on, counting visible rows (folded lines are skipped); `None` when
-/// there is no line further that way, so the caret goes to the start or
+/// there is no row further that way, so the caret goes to the start or
 /// end of the text instead.
-pub fn vertical_target(rows: &Rows, line: usize, m: Motion, page: usize) -> Option<usize> {
+pub fn vertical_target(rows: &Rows, row: Row, m: Motion, page: usize) -> Option<Row> {
     let page = page.max(1) as isize;
+    let row = rows.clamp(row);
     let target = match m {
-        Motion::Up => rows.step(line, -1),
-        Motion::Down => rows.step(line, 1),
-        Motion::PageUp => rows.step(line, -page),
-        _ => rows.step(line, page),
+        Motion::Up => rows.step_row(row, -1),
+        Motion::Down => rows.step_row(row, 1),
+        Motion::PageUp => rows.step_row(row, -page),
+        _ => rows.step_row(row, page),
     };
-    (target != line).then_some(target)
+    (target != row).then_some(target)
 }
 
 pub fn apply_motion(rope: &Rope, rows: &Rows, sel: &mut Selection, m: Motion, extend: bool, desired_col: &mut Option<usize>, page: usize) {
@@ -440,27 +442,63 @@ pub fn apply_motion(rope: &Rope, rows: &Rows, sel: &mut Selection, m: Motion, ex
             }
         }
         Motion::Up | Motion::Down | Motion::PageUp | Motion::PageDown => {
-            let (line, col) = pos_to_line_col(rope, head);
-            let col = desired_col.unwrap_or(col);
-            *desired_col = Some(col);
-            match vertical_target(rows, line, m, page) {
-                Some(target) => line_col_to_pos(rope, target, col),
-                None if matches!(m, Motion::Up | Motion::PageUp) => 0,
-                None => len,
+            let up = matches!(m, Motion::Up | Motion::PageUp);
+            match rows.wrap_tab() {
+                // Wrapped, the desired column is a row x: the caret keeps
+                // its place on screen across rows.
+                Some(tab) => {
+                    let (row, x) = char_to_row_x(rope, rows, head, tab);
+                    let x = desired_col.unwrap_or(x);
+                    *desired_col = Some(x);
+                    match vertical_target(rows, row, m, page) {
+                        Some(target) => row_x_to_char(rope, rows, target, x, tab),
+                        None if up => 0,
+                        None => len,
+                    }
+                }
+                None => {
+                    let (line, col) = pos_to_line_col(rope, head);
+                    let col = desired_col.unwrap_or(col);
+                    *desired_col = Some(col);
+                    match vertical_target(rows, Row::line(line), m, page) {
+                        Some(target) => line_col_to_pos(rope, target.line, col),
+                        None if up => 0,
+                        None => len,
+                    }
+                }
             }
         }
         Motion::WordLeft => prev_word_boundary(rope, head),
         Motion::WordRight => next_word_boundary(rope, head),
         Motion::LineStart => {
+            // Wrapped: the row's start first, then smart Home.
+            let row = rows.row_of(rope, head);
+            let row_start = rows.seg_range(rope, row).start;
             let (line, col) = pos_to_line_col(rope, head);
             let indent = indent_of(rope, line);
             let start = rope.line_to_char(line);
-            // JetBrains: Home toggles between first non-blank and column 0.
-            if col == indent { start } else { start + indent }
+            if row.seg > 0 && head != row_start {
+                row_start
+            } else if col == indent {
+                // JetBrains: Home toggles between first non-blank and column 0.
+                start
+            } else {
+                start + indent
+            }
         }
         Motion::LineEnd => {
             let (line, _) = pos_to_line_col(rope, head);
-            rope.line_to_char(line) + line_len_no_eol(rope, line)
+            let end = rope.line_to_char(line) + line_len_no_eol(rope, line);
+            // Wrapped: the row's last grapheme first (there is no caret
+            // after it on the same row), then the line end.
+            match rows.wrap_tab() {
+                Some(tab) => {
+                    let row = rows.row_of(rope, head);
+                    let last = row_x_to_char(rope, rows, row, usize::MAX, tab);
+                    if last < end && last != head { last } else { end }
+                }
+                None => end,
+            }
         }
         Motion::DocStart => 0,
         Motion::DocEnd => len,

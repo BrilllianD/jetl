@@ -121,6 +121,7 @@ pub const MAIN_MENU: &[(&str, char, &[Row])] = &[
             Sep,
             Item("Quick Documentation", "lsp.quick_doc"),
             Item("Git Blame", "editor.toggle_blame"),
+            Item("Soft-Wrap", "editor.toggle_soft_wrap"),
         ],
     ),
     (

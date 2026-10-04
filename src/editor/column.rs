@@ -3,7 +3,7 @@
 //! column selection mode, by a plain drag and Shift+arrows.
 
 use super::buffer::Buffer;
-use super::rows::Rows;
+use super::rows::{Row, Rows};
 use super::selection::{indent_of, line_len_no_eol, vertical_target};
 use super::view::{block_selections, layout_line, visual_col};
 use super::view_state::Block;
@@ -11,11 +11,11 @@ use crate::actions::Motion;
 
 impl Buffer {
     /// Whether column blocks can be made here. Blocks are buffer lines by
-    /// visual columns, which word wrap (yman 106) breaks: this is the one
-    /// place that has to refuse column selection (or let it through once
+    /// visual columns, which soft wrap breaks: this is the one place that
+    /// refuses column selection (or would let it through once
     /// [`block_selections`] works on visual rows) when wrap is on.
     pub fn blocks_supported(&self) -> bool {
-        true
+        !self.view.wrap.on
     }
 
     /// Make the carets the selections of `block`.
@@ -63,7 +63,7 @@ impl Buffer {
             }
             Motion::Up | Motion::Down | Motion::PageUp | Motion::PageDown => {
                 let rows = Rows::new(&self.view.folds, self.rope.len_lines());
-                (vertical_target(&rows, line, m, page).unwrap_or(line), col)
+                (vertical_target(&rows, Row::line(line), m, page).map_or(line, |r| r.line), col)
             }
             Motion::LineStart => {
                 let start = self.rope.line_to_char(line);

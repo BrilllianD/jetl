@@ -115,6 +115,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that lands inside a fold (Right at the header's end, Enter there, undo, find, go to line, F2,
   go to definition) unfolds it. Each split pane folds on its own. Folds follow edits and are
   saved with the session; reloading the file from disk drops them.
+- Soft wrap. Lines longer than the editor is wide continue on the next screen rows, broken after
+  whitespace (a word longer than a row is cut), continuation rows indented like the line and
+  marked `↪` in the gutter. Markdown, plain text, reStructuredText and AsciiDoc files open
+  wrapped (`[editor] soft_wrap_files`), everything with `soft_wrap = true`; View > Soft-Wrap
+  (`editor.toggle_soft_wrap`, no default key) turns it on or off for the active editor. Up/Down,
+  PageUp/PageDown, the wheel, Clone Caret and the mouse go by screen rows and keep the caret's
+  place on screen; Home and End stop at the row's ends before the line's. Each split pane wraps
+  at its own width; folding works alongside. Column selection is not available while wrapped.
+  The toggle is not saved with the session.
 
 ## [0.1.0] - 2026-10-03
 

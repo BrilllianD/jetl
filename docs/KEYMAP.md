@@ -408,6 +408,7 @@ Reachable from Find Action (F1) or by binding them in `keymap.toml`.
 | `editor.move_tab_to_opposite_group` | Move the active tab to the opposite group |
 | `editor.clone_caret_above` | Clone caret above |
 | `editor.clone_caret_below` | Clone caret below |
+| `editor.toggle_soft_wrap` | Soft-wrap the active editor (on or off) |
 | `editor.line_ending_lf` | Convert line endings to LF |
 | `editor.line_ending_crlf` | Convert line endings to CRLF |
 | `editor.set_language` | Set the file's language (highlighting) |

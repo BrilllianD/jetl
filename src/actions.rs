@@ -164,6 +164,7 @@ pub enum EditorAction {
     CloneCaretAbove,
     CloneCaretBelow,
     ToggleColumnMode,
+    ToggleSoftWrap,
     /// Fold the innermost region at each caret not folded yet.
     FoldCollapse,
     /// Unfold the region folded on each caret's line.
@@ -544,6 +545,7 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "editor.clone_caret_above" => "Clone caret above", Editor(E::CloneCaretAbove);
         "editor.clone_caret_below" => "Clone caret below", Editor(E::CloneCaretBelow);
         "editor.toggle_column_mode" => "Toggle column selection mode", Editor(E::ToggleColumnMode);
+        "editor.toggle_soft_wrap" => "Soft-wrap the active editor (on or off)", Editor(E::ToggleSoftWrap);
         "editor.fold_collapse" => "Collapse the code region at the caret", Editor(E::FoldCollapse);
         "editor.fold_expand" => "Expand the folded region at the caret", Editor(E::FoldExpand);
         "editor.fold_collapse_recursive" => "Collapse the region at the caret and every region in it", Editor(E::FoldCollapseRecursive);

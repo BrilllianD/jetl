@@ -185,6 +185,37 @@ Ctrl+= need the kitty protocol (tmux sends Ctrl+- as Ctrl+7, which toggles
 a line comment); in foot or kitty check them and Ctrl+Shift+- (collapse
 all) too.
 
+### Scenario: soft wrap
+
+At 80x24 and at 120x40, on a Markdown file with paragraphs longer than the
+editor (`.md` opens wrapped), an indented one and a word longer than a row,
+opened as `jetl $T/docs/notes.md` with the Project window hidden (Alt+1).
+`X` is the 1-based screen column of the text's first cell (`X=11` past the
+tool strip and the gutter; `↪` sits at `X-2` on continuation rows):
+
+```sh
+for i in 1 2 3 4 5; do /tmp/tm.sh send-keys -t jetl Right; done
+/tmp/tm.sh send-keys -t jetl Down Down Down       # onto a paragraph's second row, same screen column
+/tmp/tm.sh display -p -t jetl '#{cursor_x},#{cursor_y}'
+/tmp/tm.sh send-keys -t jetl End                  # the row's last grapheme (its hanging space) ...
+/tmp/tm.sh send-keys -t jetl End                  # ... then the line end, rows below
+/tmp/tm.sh send-keys -t jetl Home Home Home       # the row's start, then smart Home: indent, column 1
+press 0 $((X+9)) 6; release 0 $((X+9)) 6          # a continuation row: the caret lands on that row
+press 0 79 6; release 0 79 6                      # past its text: on its last grapheme, same row
+press 0 $((X-1)) 7; release 0 $((X-1)) 7          # the gutter: the row's first char
+press 65 30 10; press 64 30 10                    # the wheel scrolls by rows
+```
+
+On the indented paragraph, continuation rows start under its text; a click
+left of it goes to the row's start. Then open `src/main.rs` (code does not
+wrap), F1 `soft-wrap` Enter: long lines wrap and the view never scrolls
+sideways. Fold a body holding a wrapped line (`M-,`) and unfold it (`M->`):
+the marker and placeholder stay on the header's first and last rows.
+Alt+Shift+Insert shows "Column selection does not work with soft wrap".
+Split right (`M-\`) and drag the bar: each pane breaks at its own width
+and keeps its caret in view. Open the Project window: the editor re-wraps
+to the narrower width.
+
 ### Limits under tmux
 
 - No kitty keyboard protocol: Ctrl+Shift+letter, Ctrl+Tab, Ctrl+Enter,

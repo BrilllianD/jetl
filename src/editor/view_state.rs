@@ -9,16 +9,19 @@ use ropey::Rope;
 
 use super::buffer::map_one;
 use super::fold::Folds;
-use super::rows::Rows;
+use super::rows::{Row, Rows};
 use super::search::SearchState;
 use super::selection::{Selection, Selections};
+use super::wrap::Wrap;
 
 #[derive(Debug, Default)]
 pub struct ViewState {
     /// The carets and their selections (with their desired columns); most
     /// code reads the primary one through [`ViewState::sel`].
     pub sels: Selections,
+    /// The top row: `scroll_line` and the wrap segment of it shown first.
     pub scroll_line: usize,
+    pub scroll_seg: u16,
     pub scroll_col: usize,
     /// Caret, version and text area size when the view last followed the
     /// caret. The view only scrolls to the caret when one of them changes,
@@ -44,6 +47,8 @@ pub struct ViewState {
     pub search: Option<SearchState>,
     /// The collapsed folds; `scroll_line` is never a line they hide.
     pub folds: Folds,
+    /// Soft wrap: on or off for this view, and its breaks.
+    pub wrap: Wrap,
 }
 
 /// A column block: two corners, each a (line, visual column). The head is
@@ -56,12 +61,29 @@ pub struct Block {
 
 impl ViewState {
     /// A new view of the same buffer: the primary caret, its selection,
-    /// the scroll and the folds (its own from then on), but no other
-    /// carets, find bar or expand history.
+    /// the scroll, the folds (its own from then on) and whether it wraps,
+    /// but no other carets, find bar or expand history.
     pub fn fork(&self) -> Self {
         let mut sels = self.sels.clone();
         sels.collapse_to_primary();
-        Self { sels, scroll_line: self.scroll_line, scroll_col: self.scroll_col, folds: self.folds.clone(), ..Default::default() }
+        Self {
+            sels,
+            scroll_line: self.scroll_line,
+            scroll_seg: self.scroll_seg,
+            scroll_col: self.scroll_col,
+            folds: self.folds.clone(),
+            wrap: Wrap::new(self.wrap.on),
+            ..Default::default()
+        }
+    }
+
+    /// The top row.
+    pub fn top(&self) -> Row {
+        Row { line: self.scroll_line, seg: self.scroll_seg }
+    }
+
+    pub fn set_top(&mut self, r: Row) {
+        (self.scroll_line, self.scroll_seg) = (r.line, r.seg);
     }
 
     /// The primary caret and its selection.

@@ -13,7 +13,7 @@ use unicode_width::UnicodeWidthStr;
 
 use super::buffer::Buffer;
 use super::fold::Fold;
-use super::rows::Rows;
+use super::rows::{Row, Rows};
 use super::selection::{MAX_CARETS, Selection, Selections, line_len_no_eol, pos_to_line_col};
 use crate::config::theme::Theme;
 
@@ -128,6 +128,90 @@ pub fn col_to_char_ceil(rope: &Rope, line: usize, target: usize, tab_width: usiz
     result
 }
 
+/// Where the cells of a screen row go. A cell's row x (its column on the
+/// row before any sideways scroll) is `indent + col - origin`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RowGeom {
+    /// The row's chars: `start..end`.
+    pub start: usize,
+    pub end: usize,
+    /// Visual column of `start` in the unwrapped line.
+    pub origin: usize,
+    /// Cells the row is shifted right by (wrap indent).
+    pub indent: usize,
+    /// The line's last row: the line end is on it.
+    pub last: bool,
+}
+
+pub fn row_geom(rope: &Rope, rows: &Rows, row: Row) -> RowGeom {
+    let r = rows.seg_range(rope, row);
+    match rows.line_wrap(row.line) {
+        Some(w) => {
+            RowGeom { start: r.start, end: r.end, origin: w.start(row.seg).1, indent: w.indent_of(row.seg), last: row.seg + 1 >= w.segs() }
+        }
+        None => RowGeom { start: r.start, end: r.end, origin: 0, indent: 0, last: true },
+    }
+}
+
+/// [`layout_line`] for one screen row: the callback also gets each cell's
+/// row x. Without wrap the row is the whole line, walked up to about
+/// `cols` cells.
+pub fn layout_row(rope: &Rope, rows: &Rows, row: Row, tab_width: usize, cols: usize, f: &mut dyn FnMut(&str, Cell, usize) -> bool) {
+    let g = row_geom(rope, rows, row);
+    let max_chars =
+        if rows.wraps() && row.line < rope.len_lines() { g.end - rope.line_to_char(row.line) } else { cols.saturating_add(256) };
+    layout_line(rope, row.line, tab_width, max_chars, &mut |s, c| {
+        if c.char_idx < g.start {
+            return true;
+        }
+        if c.char_idx >= g.end {
+            return false;
+        }
+        f(s, c, g.indent + c.col - g.origin)
+    });
+}
+
+/// The screen row char position `pos` is on and its row x (where the caret
+/// there is drawn, before sideways scroll).
+pub fn char_to_row_x(rope: &Rope, rows: &Rows, pos: usize, tab_width: usize) -> (Row, usize) {
+    let row = rows.row_of(rope, pos);
+    let mut x = row_geom(rope, rows, row).indent;
+    layout_row(rope, rows, row, tab_width, usize::MAX, &mut |_, c, rx| {
+        if c.char_idx >= pos {
+            x = rx;
+            return false;
+        }
+        x = rx + c.width;
+        true
+    });
+    (row, x)
+}
+
+/// Char position for a click at row x `x` on screen row `row`: the
+/// grapheme there (its right half too); left of a continuation row's text,
+/// the row's first char; past the text, the line end on the line's last
+/// row, else the start of the row's last grapheme (so the caret stays on
+/// the row).
+pub fn row_x_to_char(rope: &Rope, rows: &Rows, row: Row, x: usize, tab_width: usize) -> usize {
+    if row.line >= rope.len_lines() {
+        return rope.len_chars();
+    }
+    let g = row_geom(rope, rows, row);
+    if x < g.indent {
+        return g.start;
+    }
+    let (mut hit, mut last_start) = (None, g.start);
+    layout_row(rope, rows, row, tab_width, usize::MAX, &mut |_, c, rx| {
+        if rx + c.width > x {
+            hit = Some(c.char_idx);
+            return false;
+        }
+        last_start = c.char_idx;
+        true
+    });
+    hit.unwrap_or(if g.last { g.end } else { last_start })
+}
+
 /// The carets of a column block from `anchor` to `head`, each a (line,
 /// visual column). Every line between gets the cells between the two
 /// columns, a grapheme cut by either edge included; a line too short to
@@ -137,9 +221,9 @@ pub fn col_to_char_ceil(rope: &Rope, line: usize, target: usize, tab_width: usiz
 /// [`MAX_CARETS`] lines, the ones nearest the head. Lines a fold hides
 /// get none (but the head's line always has one).
 ///
-/// Rows are buffer lines. Word wrap (yman 106) would make a line several
-/// rows; `Buffer::blocks_supported` is where it refuses column selection
-/// until blocks are made of visual rows here.
+/// Rows are buffer lines. Soft wrap makes a line several rows;
+/// `Buffer::blocks_supported` is where it refuses column selection until
+/// blocks are made of visual rows here.
 pub fn block_selections(rope: &Rope, rows: &Rows, anchor: (usize, usize), head: (usize, usize), tab_width: usize) -> Selections {
     let last = rope.len_lines().saturating_sub(1);
     let hl = head.0.min(last);
@@ -222,24 +306,23 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
     // is never hidden.
     let v = &mut buf.view;
     v.folds.reveal(&buf.rope, &v.sels);
-    v.scroll_line = Rows::new(&v.folds, buf.rope.len_lines()).visible(v.scroll_line);
+    v.wrap.set_geometry(text_area.width, o.tab_width);
+    let top = Rows::view(&v.folds, &v.wrap, &buf.rope, buf.version).clamp(v.top());
+    v.set_top(top);
     let follow_key = (buf.view.sel().head, buf.version, text_area.width, text_area.height);
     if buf.view.follow_key != Some(follow_key) {
         ensure_visible(buf, text_area, o);
         buf.view.follow_key = Some(follow_key);
     }
-    let shown: Vec<usize> = {
-        let rows = Rows::new(&buf.view.folds, buf.rope.len_lines());
-        rows.iter_from(buf.view.scroll_line).take(area.height as usize).map(|r| r.line).collect()
-    };
+    let shown: Vec<Row> = buf.rows().iter_from(buf.view.top()).take(area.height as usize).collect();
     // The lines from the top to the bottom row, hidden ones included.
-    let window = buf.view.scroll_line..shown.last().map_or(buf.view.scroll_line, |l| l + 1);
+    let window = buf.view.scroll_line..shown.last().map_or(buf.view.scroll_line, |r| r.line + 1);
     // Headers that can fold get a marker.
     let foldable: Vec<usize> = buf.fold_candidates(window.clone()).iter().map(|f| buf.rope.char_to_line(f.start)).collect();
 
     let theme = o.theme;
     let rope = &buf.rope;
-    let rows = Rows::new(&buf.view.folds, rope.len_lines());
+    let rows = Rows::view(&buf.view.folds, &buf.view.wrap, rope, buf.version);
     let sels = &buf.view.sels;
     let (cur_line, _) = pos_to_line_col(rope, buf.view.sel().head);
     // The carets drawn as cells: the others, and the primary too in a view
@@ -255,7 +338,7 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
             window.contains(&line) && !rows.is_hidden(line)
         })
         .collect();
-    let cur_vcol = visual_col(rope, buf.view.sel().head, o.tab_width);
+    let (cur_row, cur_x) = char_to_row_x(rope, &rows, buf.view.sel().head, o.tab_width);
     let hl = buf.syntax.as_mut().map(|s| s.highlights(rope, window.start, window.len())).unwrap_or_default();
     let search = buf.view.search.as_ref();
     let pair = super::brackets::pair_at(rope, buf.syntax.as_ref().and_then(|s| s.tree()), buf.view.sel().head);
@@ -269,61 +352,73 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
     let underlines = !marks.spans.is_empty();
     let digits = (gutter_w - 4 - blame_w) as usize;
     let gx = area.x + blame_w;
+    // Wrapped views never scroll sideways.
+    let scroll_col = if rows.wraps() { 0 } else { buf.view.scroll_col };
+    let right = text_area.right();
     let mut cursor = None;
 
-    for (row, &line) in shown.iter().enumerate() {
-        let row = row as u16;
-        let y = area.y + row;
+    for (row_i, &row) in shown.iter().enumerate() {
+        let line = row.line;
+        let row_i = row_i as u16;
+        let y = area.y + row_i;
         let line_start = rope.line_to_char(line);
         let line_end = line_start + line_len_no_eol(rope, line);
-        let here = &drawn[drawn.partition_point(|&h| h < line_start)..drawn.partition_point(|&h| h <= line_end)];
-        // Every caret line of the focused view counts as current.
-        let is_cur = line == cur_line || (o.focused && !here.is_empty());
-        // Gutter: line number, bookmark, diff mark, fold marker. A folded
-        // line shows the marks of the lines it hides too.
+        let seg = rows.seg_range(rope, row);
+        let last_seg = seg.end == line_end;
+        let in_line = &drawn[drawn.partition_point(|&h| h < line_start)..drawn.partition_point(|&h| h <= line_end)];
+        // The carets on this row: the line end belongs to the last one.
+        let here =
+            &in_line[in_line.partition_point(|&h| h < seg.start)..in_line.partition_point(|&h| h < seg.end || (last_seg && h == seg.end))];
+        // Every caret line of the focused view counts as current, all its
+        // rows.
+        let is_cur = line == cur_line || (o.focused && !in_line.is_empty());
+        // Gutter: line number, bookmark, diff mark, fold marker on a line's
+        // first row; a wrap mark on the others. A folded line shows the
+        // marks of the lines it hides too.
         let folded = buf.view.folds.header_at(line);
         let span = line..=folded.map_or(line, |(_, last)| last);
         let num_style = if is_cur { theme.line_number_current } else { theme.line_number };
         if let Some(b) = &buf.blame {
             let label = match b.commit_at(line) {
-                Some(c) => Some(super::blame::label(c)),
-                None if b.data.is_none() && row == 0 => Some("blame…".to_string()),
-                None => None,
+                Some(c) if row.seg == 0 => Some(super::blame::label(c)),
+                None if b.data.is_none() && row_i == 0 => Some("blame…".to_string()),
+                _ => None,
             };
             if let Some(label) = label {
                 screen.set_stringn(area.x, y, label, blame_w as usize - 1, theme.dim);
             }
         }
-        let num = format!("{:>width$}", line + 1, width = digits);
-        screen.set_stringn(gx, y, &num, digits, num_style);
-        if buf.bookmarks.range(span.clone()).next().is_some() {
-            screen.set_string(gx + digits as u16, y, "◆", theme.bookmark);
-        }
-        // A diagnostic's glyph takes the diff mark's column over it.
-        let git_mark = buf.gutter.get(buf.gutter.partition_point(|m| m.line < line)).filter(|m| m.line <= *span.end());
-        if let Some(sev) = marks.lines.range(span.clone()).map(|(_, s)| *s).min() {
-            let st = sev.style(theme);
-            screen.set_string(gx + digits as u16 + 1, y, sev.glyph(), Style::default().fg(st.fg.unwrap_or(theme.fg)));
-        } else if let Some(mark) = git_mark {
-            let (glyph, color) = mark.glyph(theme);
-            screen.set_string(gx + digits as u16 + 1, y, glyph, Style::default().fg(color));
-        }
-        if folded.is_some() {
-            screen.set_string(gx + digits as u16 + 2, y, "▸", theme.line_number);
-        } else if foldable.binary_search(&line).is_ok() {
-            screen.set_string(gx + digits as u16 + 2, y, "▾", theme.line_number);
+        if row.seg > 0 {
+            screen.set_string(gx + digits as u16 + 2, y, "↪", theme.line_number);
+        } else {
+            let num = format!("{:>width$}", line + 1, width = digits);
+            screen.set_stringn(gx, y, &num, digits, num_style);
+            if buf.bookmarks.range(span.clone()).next().is_some() {
+                screen.set_string(gx + digits as u16, y, "◆", theme.bookmark);
+            }
+            // A diagnostic's glyph takes the diff mark's column over it.
+            let git_mark = buf.gutter.get(buf.gutter.partition_point(|m| m.line < line)).filter(|m| m.line <= *span.end());
+            if let Some(sev) = marks.lines.range(span.clone()).map(|(_, s)| *s).min() {
+                let st = sev.style(theme);
+                screen.set_string(gx + digits as u16 + 1, y, sev.glyph(), Style::default().fg(st.fg.unwrap_or(theme.fg)));
+            } else if let Some(mark) = git_mark {
+                let (glyph, color) = mark.glyph(theme);
+                screen.set_string(gx + digits as u16 + 1, y, glyph, Style::default().fg(color));
+            }
+            if folded.is_some() {
+                screen.set_string(gx + digits as u16 + 2, y, "▸", theme.line_number);
+            } else if foldable.binary_search(&line).is_ok() {
+                screen.set_string(gx + digits as u16 + 2, y, "▾", theme.line_number);
+            }
         }
         if is_cur && o.focused {
             screen.set_style(Rect::new(text_area.x, y, text_area.width, 1), Style::default().bg(theme.current_line_bg));
         }
-        let max_chars = buf.view.scroll_col + text_area.width as usize + 256;
-        let scroll_col = buf.view.scroll_col;
-        let right = text_area.right();
-        layout_line(rope, line, o.tab_width, max_chars, &mut |g, c| {
-            if c.col + c.width <= scroll_col {
+        layout_row(rope, &rows, row, o.tab_width, scroll_col + text_area.width as usize, &mut |g, c, rx| {
+            if rx + c.width <= scroll_col {
                 return true;
             }
-            let x = text_area.x as usize + c.col.saturating_sub(scroll_col);
+            let x = text_area.x as usize + rx.saturating_sub(scroll_col);
             if x >= right as usize {
                 return false;
             }
@@ -376,29 +471,35 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
             true
         });
         // Selection that spans the line break: mark one cell past the text;
-        // a caret at the line end is drawn there too.
+        // a caret at the line end is drawn there too. Both on the line's
+        // last row, as is a fold's placeholder.
+        let end_x = last_seg.then(|| char_to_row_x(rope, &rows, line_end, o.tab_width).1);
         let at_end = here.last() == Some(&line_end);
-        if (sels.contains(line_end) && line + 1 < rope.len_lines()) || at_end {
-            let vc = visual_col(rope, line_end, o.tab_width);
-            if vc >= scroll_col {
-                let x = text_area.x + (vc - scroll_col) as u16;
-                if x < right {
-                    if sels.contains(line_end) && line + 1 < rope.len_lines() {
-                        screen[(x, y)].set_style(Style::default().bg(theme.selection_bg));
-                    }
-                    if at_end {
-                        screen[(x, y)].set_style(theme.secondary_caret);
-                    }
+        if let Some(vc) = end_x
+            && ((sels.contains(line_end) && line + 1 < rope.len_lines()) || at_end)
+            && vc >= scroll_col
+        {
+            let x = text_area.x as usize + vc - scroll_col;
+            if x < right as usize {
+                let x = x as u16;
+                if sels.contains(line_end) && line + 1 < rope.len_lines() {
+                    screen[(x, y)].set_style(Style::default().bg(theme.selection_bg));
+                }
+                if at_end {
+                    screen[(x, y)].set_style(theme.secondary_caret);
                 }
             }
         }
-        if let Some((f, last)) = folded {
-            draw_placeholder(screen, buf, (f, line, last), text_area, y, o.tab_width, theme);
+        if let (Some((f, last)), Some(vc)) = (folded, end_x) {
+            draw_placeholder(screen, buf, (f, line, last), (text_area, y), vc, scroll_col, theme);
         }
-        if is_cur && cur_vcol >= scroll_col {
-            let x = text_area.x + (cur_vcol - scroll_col) as u16;
-            if x < right {
-                cursor = Some((x, y));
+        if row == cur_row && cur_x >= scroll_col {
+            let x = text_area.x as usize + cur_x - scroll_col;
+            if x < right as usize {
+                cursor = Some((x as u16, y));
+            } else if rows.wraps() {
+                // Hanging whitespace past the edge: the caret stays on screen.
+                cursor = Some((right - 1, y));
             }
         }
     }
@@ -406,16 +507,17 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
 }
 
 /// The placeholder of collapsed fold `f` (header `line`, hiding up to
-/// `last`) on screen row `y` of `text_area`, from the header line's end.
+/// `last`) on screen row `y` of `text_area`, from row x `start` (the header
+/// line's end on its last row; `scroll_col` is the view's sideways scroll).
 /// It takes the selection's background when the selection reaches into the
 /// fold, else a hidden find match's, and the worst hidden diagnostic's mark.
 fn draw_placeholder(
     screen: &mut Screen,
     buf: &Buffer,
     (f, line, last): (Fold, usize, usize),
-    text_area: Rect,
-    y: u16,
-    tab_width: usize,
+    (text_area, y): (Rect, u16),
+    start: usize,
+    scroll_col: usize,
     theme: &Theme,
 ) {
     let rope = &buf.rope;
@@ -432,11 +534,11 @@ fn draw_placeholder(
     if let Some(sev) = buf.diag_marks.lines.range(line + 1..=last).map(|(_, s)| *s).min() {
         style = diag_overlay(style, sev.style(theme));
     }
-    let mut col = visual_col(rope, rope.line_to_char(line) + line_len_no_eol(rope, line), tab_width);
+    let mut col = start;
     for g in placeholder(rope, f, last).graphemes(true) {
         let w = g.width();
-        if col >= buf.view.scroll_col {
-            let x = text_area.x as usize + col - buf.view.scroll_col;
+        if col >= scroll_col {
+            let x = text_area.x as usize + col - scroll_col;
             if x + w > text_area.right() as usize {
                 break;
             }
@@ -473,17 +575,24 @@ pub fn ensure_visible(buf: &mut Buffer, text_area: Rect, o: &RenderOpts) {
     if rows == 0 || cols == 0 {
         return;
     }
-    let (line, _) = pos_to_line_col(&buf.rope, buf.view.sel().head);
     let so = o.scrolloff.min(rows.saturating_sub(1) / 2);
-    // Distances are visible rows: hidden lines take none.
-    let r = Rows::new(&buf.view.folds, buf.rope.len_lines());
-    let (line, top) = (r.visible(line), r.visible(buf.view.scroll_line));
-    if line < top || r.distance(top, line) < so {
-        buf.view.scroll_line = r.step(line, -(so as isize));
-    } else if r.distance(top, line) + so >= rows {
-        buf.view.scroll_line = r.step(line, -((rows - 1 - so) as isize));
+    // Distances are visible rows: hidden lines take none, wrapped ones
+    // one per segment.
+    let r = buf.rows();
+    let (caret, top) = (r.clamp(r.row_of(&buf.rope, buf.view.sel().head)), r.clamp(buf.view.top()));
+    let top = if caret < top || r.row_distance(top, caret, so) < so {
+        r.step_row(caret, -(so as isize))
+    } else if r.row_distance(top, caret, rows) + so >= rows {
+        r.step_row(caret, -((rows - 1 - so) as isize))
+    } else {
+        top
+    };
+    let wraps = r.wraps();
+    buf.view.set_top(top);
+    if wraps {
+        buf.view.scroll_col = 0;
+        return;
     }
-    buf.view.scroll_line = r.visible(buf.view.scroll_line);
 
     let vcol = visual_col(&buf.rope, buf.view.sel().head, o.tab_width);
     let ho = o.hscrolloff.min(cols.saturating_sub(1) / 2);

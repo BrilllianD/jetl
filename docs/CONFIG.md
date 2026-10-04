@@ -43,6 +43,9 @@ autosave = "off"               # "off", "focus" (save when the terminal loses fo
 autosave_idle_ms = 1500        # pause before an "idle" autosave
 max_tabs = 0                   # open tabs beyond this close the least recently used one that is clean
                                # and unpinned (none such: the limit is exceeded); 0 = no limit
+soft_wrap = false              # soft-wrap every file when opened
+soft_wrap_files = ["*.md", "*.txt", "*.rst", "*.adoc"]  # files soft-wrapped when opened anyway: "*.ext" matches
+                               # names ending in ".ext", anything else a whole file name
 
 [ui]
 theme = "darcula"              # reserved; Darcula is the only built-in theme (use theme.toml to change colors)
