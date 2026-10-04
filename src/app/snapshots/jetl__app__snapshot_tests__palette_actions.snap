@@ -1,0 +1,31 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &marks, None)"
+---
+80x24 cursor=(11,5)
+00  ≣ ┌ Project: root ───────────────┐│
+01    │                              ││
+02  1 │                              ││
+03  ⌂ │                              ││
+04  2┌ Find Action ─────────────────────────────────────────────────────────────┐
+05  ◫│ › split                                                                7 │
+06  7│ Split right (the tab in a new group beside)  editor.split_right    Alt+\ │
+07  ⊢│ Split down (the tab in a new group below)  editor.split_down       Alt+- │
+08   │ Unsplit (merge the group into the one beside it)  editor.unsplit         │
+09   │ Unsplit all (one group)  editor.unsplit_all                              │
+10   │ Run: previous problem (opens it)  run.prev_problem                       │
+11   │ Previous problem (diagnostic) in the file  lsp.prev_problem     Shift+F2 │
+12  ⚑│ Escape (close find, clear selection)  editor.escape                  Esc │w;
+13  9└──────────────────────────────────────────────────────────────────────────┘
+14  ⎇ │                              ││
+15    │                              ││
+16  ❯ │                              ││
+17  6 │                              ││
+18  ⚠ │                              ││
+19  4 │                              ││
+20  ► │                              ││
+21  3 │                              ││
+22  ⌕ └──────────────────────────────┘│
+23  root
+-- marks: L=selected
+06    LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL

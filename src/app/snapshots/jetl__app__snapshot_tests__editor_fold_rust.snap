@@ -1,0 +1,27 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &marks, None)"
+---
+60x20 cursor=(43,7)
+00   point.rs ×
+01   1  ▾ struct Point {
+02   2        x: i32,
+03   3        y: i32,
+04   4    }
+05   5
+06   6  ▾ impl Point {
+07   7  ▸     fn new(x: i32, y: i32) -> Self {…}
+08  10
+09  11  ▾     fn sum(&self) -> i32 {
+10  12            self.x + self.y
+11  13        }
+12  14    }
+13  15
+14  16  ▾ fn main() {
+15  17        let p = Point::new(1, 2);
+16  18        println!("{}", p.sum());
+17  19    }
+18  20
+19
+-- marks: C=caret S=selection F=fold O=occurrence
+07                                            FF

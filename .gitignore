@@ -4,3 +4,5 @@
 /packaging/arch/pkg
 /packaging/arch/*.tar.*
 /packaging/arch/*.log
+*.snap.new
+*.pending-snap

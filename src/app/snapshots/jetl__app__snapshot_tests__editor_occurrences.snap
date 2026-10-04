@@ -1,0 +1,18 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &marks, None)"
+---
+40x8 cursor=(10,2)
+00   occ.log ×
+01   1    let foo = 1;
+02   2    foo + bar;
+03   3    print(foo);
+04   4    foofoo foo
+05   5
+06
+07
+-- marks: C=caret S=selection F=fold O=occurrence
+01            SSSC
+02        SSS
+03              OOO
+04        OOOOOO OOO

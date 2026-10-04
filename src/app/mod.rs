@@ -59,6 +59,9 @@ mod symbols;
 mod terminal;
 mod watch;
 
+#[cfg(test)]
+mod snapshot_tests;
+
 /// What panels get while handling input.
 pub struct Ctx<'a> {
     pub effects: Vec<Effect>,
@@ -1580,7 +1583,7 @@ pub(crate) mod tests {
         app.handle_key(key(KeyCode::F(10)));
         let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
         let frame = term.draw(|f| crate::ui::render(&mut app, f)).unwrap();
-        let top = super::strip_tests::row_text(frame.buffer, 0, 31);
+        let top = crate::ui::snapshot::row_text(frame.buffer, 0, 31);
         assert!(top.starts_with(" ≣  File  Edit  View  Navigate"), "{top:?}");
         app.handle_key(key(KeyCode::Char('h')));
         app.handle_key(key(KeyCode::Down));
@@ -2460,6 +2463,7 @@ mod strip_tests {
     use super::tests::test_app;
     use crate::ui::focus::ToolWindowId;
     use crate::ui::layout::StripButton;
+    use crate::ui::snapshot::row_text;
 
     fn ev(kind: MouseEventKind, column: u16, row: u16) -> MouseEvent {
         MouseEvent { kind, column, row, modifiers: KeyModifiers::NONE }
@@ -2468,20 +2472,6 @@ mod strip_tests {
     fn draw(app: &mut super::App) -> ratatui::buffer::Buffer {
         let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 24)).unwrap();
         term.draw(|f| crate::ui::render(app, f)).unwrap().buffer.clone()
-    }
-
-    /// The first `w` columns of row `y` as they show: a wide symbol's
-    /// trailing cell is hidden behind it.
-    pub(super) fn row_text(buf: &ratatui::buffer::Buffer, y: u16, w: u16) -> String {
-        use unicode_width::UnicodeWidthStr;
-        let mut text = String::new();
-        let mut x = 0;
-        while x < w {
-            let symbol = buf[(x, y)].symbol();
-            text.push_str(symbol);
-            x += symbol.width().max(1) as u16;
-        }
-        text
     }
 
     #[tokio::test]

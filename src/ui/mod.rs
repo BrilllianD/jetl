@@ -13,6 +13,9 @@ pub mod toasts;
 pub mod tool_strip;
 pub mod widgets;
 
+#[cfg(test)]
+pub(crate) mod snapshot;
+
 use ratatui::Frame;
 use ratatui::style::Style;
 use ratatui::widgets::{Block, BorderType, Borders};

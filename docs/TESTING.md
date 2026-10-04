@@ -29,6 +29,68 @@ notifications, requests and responses), so tests never start a real
 server. `docs/KEYMAP.md` is checked by a test; regenerate
 it with `cargo run -q -- --dump-keymap > docs/KEYMAP.md`.
 
+## Snapshot tests
+
+`src/app/snapshot_tests.rs` draws whole frames, or the editor area alone,
+on ratatui's `TestBackend` and compares them as text with
+[`insta`](https://insta.rs) against `src/app/snapshots/*.snap`. They cover
+split panes, carets, occurrences, folding, soft wrap, the project tree, the
+Git window's Commit tab, the palettes and the conflict resolver.
+
+Helpers (in `snapshot_tests.rs` unless noted):
+
+- `stable_app(name)`: a `test_app` with nothing that depends on the
+  terminal or the clock. It turns the kitty keyboard flag on, clears
+  notifications and toasts, and drops the startup requests' results. It
+  returns a `Fixture` that removes the temp directory on drop.
+- `draw_app(app, w, h)`: the whole frame (`ui::render`). `draw_editor(app,
+  w, h)`: only `Editor::render`, its tab bars on the top row, so editor
+  tests do not change when the chrome does. Both settle first: they drop
+  whatever background work sent meanwhile and update the gutters. They
+  also fail if a notification is showing, because how long it shows
+  depends on the test's speed.
+- Soft wrap needs the view's width, so draw once before moving by screen
+  rows, as the run loop always has.
+- `ui::snapshot::snapshot(term, marks, mark_area)` makes the text;
+  `Mark::bg`, `Mark::style` and `Mark::modifier` name the cells to mark.
+
+Format:
+
+```
+80x14 cursor=(51,6)          width x height, the terminal cursor or "hidden"
+00   notes.log ×             one line per screen row: its number, then the
+01   1  ▾ alpha beta gamma   text as it shows (right-trimmed)
+-- marks: C=caret S=selection F=fold O=occurrence
+03          OOOOO            the same columns, a letter per marked cell
+```
+
+The marks grid lists only rows with a marked cell, and only inside
+`mark_area` when one is given. The first mark that matches a cell wins. A
+wide glyph's letter repeats over both of its cells, so it lines up under
+the text in an editor. Colors are never printed: each mark names a theme
+field (`selection_bg`, `fold_placeholder`, `merge_conflict_bg`, …), so a
+theme change does not touch the snapshots, but a highlight in the wrong
+cell does. The terminal cursor is the primary caret; the other carets are
+`C` cells. A snapshot must not contain the temp directory path.
+
+Updating (cargo-insta is not needed):
+
+```sh
+INSTA_UPDATE=always cargo test snapshot_tests   # rewrite the .snap files
+git diff src/app/snapshots/                      # review every change
+```
+
+Read each changed snapshot and check that the cursor, the carets and the
+marks are in the right cells before committing it. A snapshot that records
+a bug is worse than none. If a frame shows a bug you are not fixing, keep
+the snapshot as it is, say so in a comment at the test, and file the bug.
+Without `INSTA_UPDATE`, a local run writes `*.snap.new` next to a
+mismatching snapshot; they are git-ignored. On CI (`CI=true`, set by
+GitHub Actions and Bitbucket Pipelines) nothing is written, and a missing
+or different snapshot fails the test. Tests that need a grammar (`.rs`
+folding) are behind `#[cfg(feature = "lang-rust")]`; the rest use plain
+file types, so every feature set gives the same frames.
+
 ## Manual: the tmux harness
 
 Behavior that needs a real terminal (rendering, mouse, focus, timing) is

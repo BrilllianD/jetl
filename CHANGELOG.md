@@ -139,6 +139,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is editable; an edit inside a change resolves it. Apply (Ctrl+Enter, Alt+Enter) writes the file,
   stages it and closes; Cancel (Esc) closes without writing, asking first when you changed
   something. Layout commands and opening other files wait until it closes.
+- Render snapshot tests: split panes, multiple carets, occurrences, folding and soft wrap in the
+  editor, the project tree, the Git window's Commit tab, the Find Action and Go to File palettes
+  and the conflict resolver are drawn on a test backend and compared as text with `insta`
+  (`src/app/snapshots/`). Carets, selections, fold placeholders and chunk colors show as letters
+  in a grid under each frame, so a highlight in the wrong cell fails a test.
 
 ### Changed
 
