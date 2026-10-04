@@ -209,13 +209,20 @@ impl App {
                 }
                 EditorHit::Body(g) if g == self.editor.focused_group().id => self.forward_mouse(PanelId::Editor, area, mouse),
                 EditorHit::Body(g) => self.editor.scroll_group(g, mouse),
-                EditorHit::Splitter(_) => {}
+                EditorHit::Splitter(_) | EditorHit::MergeHeader(_) => {}
             }
             return;
         }
         let MouseEventKind::Down(button) = mouse.kind else { return };
         self.focus.set(PanelId::Editor);
         match hit {
+            EditorHit::MergeHeader(Some(a)) if button == MouseButton::Left => {
+                let mut cx = ctx!(self);
+                self.editor.merge_button(a, &mut cx);
+                let fx = cx.effects;
+                self.apply_effects(fx);
+            }
+            EditorHit::MergeHeader(_) => {}
             EditorHit::Splitter(n) if button == MouseButton::Left => self.drag = Some(Drag::GroupSplitter(n)),
             EditorHit::Splitter(_) => {}
             // A pinned tab's close button is its pin.

@@ -218,6 +218,24 @@
 "ctrl-f12" = "lsp.file_structure"
 "esc" = "editor.escape"
 
+# The conflict resolver (Git > Resolve Conflicts) while it is open.
+# JetBrains: F7/Shift+F7 step through the changes; Alt+Shift+Left/Right take
+# yours or theirs at the caret (after the other side: both). Esc closes it
+# after the editor's own Esc steps (find bar, extra carets, selection).
+# Accept Yours/Theirs for the whole file are in the header and the action
+# palette.
+[editor.merge]
+"f7" = "merge.next_conflict"
+"shift-f7" = "merge.prev_conflict"
+"alt-shift-left" = "merge.accept_left"
+"alt-shift-right" = "merge.accept_right"
+"alt-shift-x" = "merge.ignore"
+"alt-shift-a" = "merge.apply_non_conflicting"
+"ctrl-enter" = "merge.apply"
+# Ctrl+Enter needs the kitty protocol; Alt+Enter is the legacy fallback.
+"alt-enter" = "merge.apply"
+"esc" = "merge.cancel"
+
 [find]
 "up" = "find.up"
 "down" = "find.down"

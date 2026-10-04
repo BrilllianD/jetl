@@ -148,11 +148,13 @@ pub enum EditorHit {
     Strip(GroupId),
     /// A group's find bar or text.
     Body(GroupId),
+    /// The conflict resolver's header row, on a button or not.
+    MergeHeader(Option<crate::actions::MergeAction>),
 }
 
 /// Take tab `slot` out of `group`; a shown tab hands over to the next one
 /// ([`TabGroup::next_after_close`]).
-fn remove_view(group: &mut TabGroup, slot: usize) -> View {
+pub(super) fn remove_view(group: &mut TabGroup, slot: usize) -> View {
     let was_active = group.active == Some(slot);
     let next = group.next_after_close(slot);
     let v = group.views.remove(slot);
@@ -211,12 +213,15 @@ impl Editor {
 
     /// Buffers with a pinned tab in some group.
     pub fn pinned_ids(&self) -> Vec<BufferId> {
-        self.groups.iter().flat_map(|g| g.views.iter().filter(|v| v.pinned).map(|v| v.id)).collect()
+        self.session_layout().0.iter().flat_map(|g| g.views.iter().filter(|v| v.pinned).map(|v| v.id)).collect()
     }
 
     /// The splitter, tab, tab bar or group body at `x`, `y`, as last drawn.
     pub fn hit_test(&self, x: u16, y: u16) -> Option<EditorHit> {
         let p = ratatui::layout::Position::new(x, y);
+        if let Some(a) = self.merge_header_hit(x, y) {
+            return Some(EditorHit::MergeHeader(a));
+        }
         if let Some(s) = self.splitters.iter().find(|s| s.rect.contains(p)) {
             return Some(EditorHit::Splitter(s.node));
         }
@@ -236,10 +241,11 @@ impl Editor {
     }
 
     /// Buffer indices in tab order: the groups in layout order, each buffer
-    /// once.
+    /// once (the layout the resolver put aside while it is open).
     pub fn tab_order(&self) -> Vec<usize> {
+        let (groups, tree, _) = self.session_layout();
         let mut out = Vec::new();
-        for g in self.tree.leaves().into_iter().filter_map(|g| self.group(g)) {
+        for g in tree.leaves().into_iter().filter_map(|g| groups.iter().find(|x| x.id == g)) {
             for v in &g.views {
                 if let Some(i) = self.index_of_id(v.id).filter(|i| !out.contains(i)) {
                     out.push(i);
@@ -323,7 +329,9 @@ impl Editor {
     /// Bring every parked view up to the edits made since the last frame,
     /// then forget them. Run at the start of each frame.
     pub(super) fn sync_parked(&mut self) {
-        for g in &mut self.groups {
+        self.merge_catch_up();
+        let saved = self.merge.as_mut().map(|m| &mut m.saved.groups);
+        for g in self.groups.iter_mut().chain(saved.into_iter().flatten()) {
             for v in &mut g.views {
                 if let Some(p) = &mut v.parked
                     && let Some(b) = self.buffers.iter().find(|b| b.id == v.id)
@@ -480,9 +488,17 @@ impl Editor {
         }
     }
 
-    /// The split tree (for sessions).
+    /// The split tree.
     pub fn split_tree(&self) -> &SplitNode {
         &self.tree
+    }
+
+    /// Index in `buffers` of the tab a session restores as active: the
+    /// focused group's shown tab, of the layout the resolver put aside
+    /// while it is open.
+    pub fn session_active(&self) -> Option<usize> {
+        let (groups, _, focused) = self.session_layout();
+        groups.iter().find(|g| g.id == focused).and_then(TabGroup::active_id).and_then(|id| self.index_of_id(id))
     }
 
     /// Lay the tabs out in a session's groups (`buffers` maps its files to
@@ -569,7 +585,7 @@ impl Editor {
 
     /// Remove the groups left without tabs (never the last one); focus
     /// moves on from a removed focused group.
-    fn collapse_empty(&mut self) {
+    pub(super) fn collapse_empty(&mut self) {
         while self.groups.len() > 1 {
             let Some(g) = self.groups.iter().find(|x| x.views.is_empty()).map(|x| x.id) else { break };
             let next = self.tree.sibling(g);
@@ -601,7 +617,12 @@ impl Editor {
 
     /// Close tab `slot` of group `g`. The buffer stays open while another
     /// group shows it; its last tab asks first when it has unsaved changes.
+    /// While the conflict resolver is open this cancels it.
     pub fn close_slot(&mut self, g: GroupId, slot: usize, cx: &mut Ctx) {
+        // A resolver pane's tab closes the resolver.
+        if self.merge.is_some() {
+            return self.merge_cancel(false, cx);
+        }
         let Some(id) = self.group(g).and_then(|x| x.views.get(slot)).map(|v| v.id) else { return };
         if self.view_count(id) > 1 {
             self.drop_view(g, slot);
@@ -652,7 +673,8 @@ impl Editor {
         if self.active() == Some(i) {
             self.nav.push(nav_pos(&self.buffers[i]));
         }
-        for g in &mut self.groups {
+        let saved = self.merge.as_mut().map(|m| &mut m.saved.groups);
+        for g in self.groups.iter_mut().chain(saved.into_iter().flatten()) {
             if let Some(slot) = g.slot_of(id) {
                 remove_view(g, slot);
             }
@@ -852,15 +874,20 @@ impl Editor {
         ids.sort_unstable();
         assert_eq!(leaves, ids, "the tree's leaves are the groups");
         assert!(self.groups.len() == 1 || self.groups.iter().all(|g| !g.views.is_empty()), "no empty group beside others");
+        let saved = self.merge.as_ref().map_or(&[][..], |m| &m.saved.groups[..]);
+        let all = || self.groups.iter().chain(saved);
         for b in &self.buffers {
-            assert!(self.view_count(b.id) >= 1, "{} has a tab", b.name);
-            let live = self.groups.iter().filter(|g| g.slot_of(b.id).is_some_and(|s| g.views[s].parked.is_none())).count();
+            assert!(all().any(|g| g.slot_of(b.id).is_some()), "{} has a tab", b.name);
+            let live = all().filter(|g| g.slot_of(b.id).is_some_and(|s| g.views[s].parked.is_none())).count();
             assert_eq!(live, 1, "{} has one live view", b.name);
             assert!(b.view.sels.is_normalized(), "{}: carets sorted and apart", b.name);
         }
         let f = self.focused_group();
         assert!(f.active.is_none_or(|a| f.views[a].parked.is_none()), "the focused tab is live");
-        for g in &self.groups {
+        if let Some(m) = &self.merge {
+            assert!(self.groups.iter().flat_map(|g| &g.views).all(|v| m.ids.contains(&v.id)), "only the resolver's panes");
+        }
+        for g in all() {
             for (i, v) in g.views.iter().enumerate() {
                 assert!(self.index_of_id(v.id).is_some(), "tab of a closed buffer");
                 assert!(g.views[..i].iter().all(|w| w.id != v.id), "one tab per buffer and group");

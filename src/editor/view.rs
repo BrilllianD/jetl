@@ -3,10 +3,11 @@
 //! can never disagree.
 
 use std::borrow::Cow;
+use std::ops::Range;
 
 use ratatui::buffer::Buffer as Screen;
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ropey::Rope;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
@@ -246,12 +247,46 @@ pub fn block_selections(rope: &Rope, rows: &Rows, anchor: (usize, usize), head: 
     Selections::new(ranges, primary)
 }
 
-/// Line numbers, bookmark, diff mark, fold marker, space; and the blame
-/// column first when shown.
-pub fn gutter_width(buf: &Buffer) -> u16 {
+/// Line numbers, bookmark, diff mark, fold marker, space; the blame
+/// column before them when shown, and first `action_w` cells of
+/// [`LineDecor`] glyphs.
+pub fn gutter_width(buf: &Buffer, action_w: u16) -> u16 {
     let digits = buf.rope.len_lines().max(1).to_string().len().max(3) as u16;
     let blame = if buf.blame.is_some() { super::blame::WIDTH } else { 0 };
-    blame + digits + 4
+    action_w + blame + digits + 4
+}
+
+/// What the conflict resolver adds to a view: line backgrounds and a
+/// column of clickable glyphs at the left edge of the gutter.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LineDecor {
+    /// Cells of the glyph column (0: none).
+    pub action_w: u16,
+    /// Sorted by line.
+    pub lines: Vec<DecorLine>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecorLine {
+    /// Lines with the background; may be empty (a chunk with no lines in
+    /// this text), the glyphs still go on `lines.start`.
+    pub lines: Range<usize>,
+    pub bg: Option<Color>,
+    /// One cell per char on the first line (spaces keep the places).
+    pub glyphs: String,
+}
+
+impl LineDecor {
+    /// The background of `line`.
+    pub fn bg_at(&self, line: usize) -> Option<Color> {
+        let k = self.lines.partition_point(|d| d.lines.end <= line);
+        self.lines[k..].iter().take_while(|d| d.lines.start <= line).find(|d| d.lines.contains(&line)).and_then(|d| d.bg)
+    }
+
+    /// The glyphs shown on `line`.
+    pub fn glyphs_at(&self, line: usize) -> Option<&str> {
+        self.lines.iter().find(|d| d.lines.start == line && !d.glyphs.trim().is_empty()).map(|d| d.glyphs.as_str())
+    }
 }
 
 /// At most this many cells of fold placeholder.
@@ -291,11 +326,16 @@ pub struct RenderOpts<'a> {
     /// Highlight occurrences of the word or selected text at the caret.
     pub occurrences: bool,
     pub theme: &'a Theme,
+    /// Scroll to the caret when it moved (else the scroll stays, as the
+    /// resolver's linked panes set it).
+    pub follow: bool,
+    pub decor: Option<&'a LineDecor>,
 }
 
 /// Scroll so that the caret is visible, then render.
 pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts) -> RenderOut {
-    let gutter_w = gutter_width(buf);
+    let action_w = o.decor.map_or(0, |d| d.action_w);
+    let gutter_w = gutter_width(buf, action_w);
     let blame_w = if buf.blame.is_some() { super::blame::WIDTH } else { 0 };
     let text_area = Rect::new(area.x + gutter_w, area.y, area.width.saturating_sub(gutter_w), area.height);
     if text_area.width == 0 || area.height == 0 {
@@ -311,7 +351,9 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
     v.set_top(top);
     let follow_key = (buf.view.sel().head, buf.version, text_area.width, text_area.height);
     if buf.view.follow_key != Some(follow_key) {
-        ensure_visible(buf, text_area, o);
+        if o.follow {
+            ensure_visible(buf, text_area, o);
+        }
         buf.view.follow_key = Some(follow_key);
     }
     let shown: Vec<Row> = buf.rows().iter_from(buf.view.top()).take(area.height as usize).collect();
@@ -350,8 +392,9 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
     };
     let marks = &buf.diag_marks;
     let underlines = !marks.spans.is_empty();
-    let digits = (gutter_w - 4 - blame_w) as usize;
-    let gx = area.x + blame_w;
+    let digits = (gutter_w - 4 - blame_w - action_w) as usize;
+    let bx = area.x + action_w;
+    let gx = bx + blame_w;
     // Wrapped views never scroll sideways.
     let scroll_col = if rows.wraps() { 0 } else { buf.view.scroll_col };
     let right = text_area.right();
@@ -385,7 +428,7 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
                 _ => None,
             };
             if let Some(label) = label {
-                screen.set_stringn(area.x, y, label, blame_w as usize - 1, theme.dim);
+                screen.set_stringn(bx, y, label, blame_w as usize - 1, theme.dim);
             }
         }
         if row.seg > 0 {
@@ -411,8 +454,15 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
                 screen.set_string(gx + digits as u16 + 2, y, "▾", theme.line_number);
             }
         }
-        if is_cur && o.focused {
-            screen.set_style(Rect::new(text_area.x, y, text_area.width, 1), Style::default().bg(theme.current_line_bg));
+        // A resolver chunk's background wins over the current line's.
+        let decor_bg = o.decor.and_then(|d| d.bg_at(line));
+        let row_bg = decor_bg.or((is_cur && o.focused).then_some(theme.current_line_bg));
+        if let Some(bg) = row_bg {
+            screen.set_style(Rect::new(text_area.x, y, text_area.width, 1), Style::default().bg(bg));
+        }
+        if let Some(g) = o.decor.and_then(|d| d.glyphs_at(line)).filter(|_| row.seg == 0) {
+            let style = Style::default().fg(theme.fg).add_modifier(Modifier::BOLD);
+            screen.set_stringn(area.x, y, g, action_w as usize, style);
         }
         layout_row(rope, &rows, row, o.tab_width, scroll_col + text_area.width as usize, &mut |g, c, rx| {
             if rx + c.width <= scroll_col {
@@ -439,8 +489,8 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
             if pair.is_some_and(|(a, b)| c.char_idx == a || c.char_idx == b) {
                 style = style.patch(theme.bracket_match);
             }
-            if is_cur && o.focused && style.bg.is_none() {
-                style = style.bg(theme.current_line_bg);
+            if let Some(bg) = row_bg.filter(|_| style.bg.is_none()) {
+                style = style.bg(bg);
             }
             if here.binary_search(&c.char_idx).is_ok() {
                 style = style.patch(theme.secondary_caret);
@@ -619,6 +669,42 @@ mod tests {
         assert_eq!(col_to_char(&r, 0, 40, 4), 7); // past end -> line end
         assert_eq!(visual_col(&r, 3, 4), 6);
         assert_eq!(visual_col(&r, 7, 4), 13);
+    }
+
+    #[test]
+    fn decor_paints_lines_and_glyphs_left_of_the_gutter() {
+        let theme = Theme::default();
+        let mut buf = Buffer::from_text(1, None, "a\nb\nc\n", false);
+        let decor = LineDecor {
+            action_w: 2,
+            lines: vec![
+                DecorLine { lines: 1..2, bg: Some(Color::Red), glyphs: "»×".into() },
+                DecorLine { lines: 3..3, bg: Some(Color::Blue), glyphs: " ×".into() },
+            ],
+        };
+        let o = RenderOpts {
+            focused: false,
+            tab_width: 4,
+            scrolloff: 0,
+            hscrolloff: 0,
+            occurrences: false,
+            theme: &theme,
+            follow: true,
+            decor: Some(&decor),
+        };
+        let area = Rect::new(0, 0, 20, 5);
+        let mut screen = Screen::empty(area);
+        let out = render(&mut buf, &mut screen, area, &o);
+        assert_eq!(out.text_area.x, 2 + 3 + 4, "the glyph column, three digits, the marks");
+        let row = |y: u16| (0..20).map(|x| screen[(x, y)].symbol().to_string()).collect::<String>();
+        assert_eq!(row(1), "»×  2    b          ");
+        assert_eq!(row(3), " ×  4               ", "an empty range still shows its glyphs");
+        assert_eq!(screen[(9, 1)].bg, Color::Red);
+        assert_eq!(screen[(19, 1)].bg, Color::Red, "the whole row");
+        assert_ne!(screen[(9, 0)].bg, Color::Red);
+        assert_ne!(screen[(9, 3)].bg, Color::Blue, "no lines, no background");
+        assert_eq!(decor.glyphs_at(1), Some("»×"));
+        assert_eq!(decor.glyphs_at(0), None);
     }
 
     #[test]

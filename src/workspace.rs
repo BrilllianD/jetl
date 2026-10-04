@@ -226,6 +226,8 @@ impl App {
     /// restore its session and record it as a recent project.
     pub fn do_switch_root(&mut self, root: PathBuf) {
         self.save_session();
+        // The resolver's work is not kept across roots.
+        self.editor.merge_close();
         self.format.abort_all();
         self.run_root_changed();
         // The shell belongs to the old root; the next one starts in the new.
@@ -260,7 +262,8 @@ impl App {
     /// when tabs survive a switch).
     pub fn close_dirty_tabs(&mut self) {
         for i in (0..self.editor.buffers.len()).rev() {
-            if self.editor.buffers[i].dirty() {
+            let b = &self.editor.buffers[i];
+            if b.dirty() && !self.editor.is_scratch(b.id) {
                 self.editor.force_close(i);
             }
         }
@@ -275,7 +278,7 @@ impl App {
         for i in self.editor.tab_order() {
             let b = &self.editor.buffers[i];
             let Some(path) = b.path.clone() else { continue };
-            if self.editor.active() == Some(i) {
+            if self.editor.session_active() == Some(i) {
                 active = Some(files.len());
             }
             let (line, col) = b.cursor_line_col();
@@ -312,13 +315,14 @@ impl App {
     /// The editor's groups as a session, `None` with one group.
     fn session_splits(&self, files: &[SessionFile]) -> Option<SessionSplits> {
         let ed = &self.editor;
-        let leaves = ed.group_ids();
+        let (groups, tree, focused) = ed.session_layout();
+        let leaves = tree.leaves();
         if leaves.len() < 2 {
             return None;
         }
         let file = |path: &Path| files.iter().position(|f| f.path == path);
         let leaf = |g| {
-            let group = ed.group(g)?;
+            let group = groups.iter().find(|x| x.id == g)?;
             let mut out = SessionGroup::default();
             for (slot, v) in group.views.iter().enumerate() {
                 let Some(b) = ed.index_of_id(v.id).map(|i| &ed.buffers[i]) else { continue };
@@ -341,8 +345,8 @@ impl App {
                 }
             })
         }
-        let focused = leaves.iter().position(|g| *g == ed.focused_group().id)?;
-        Some(SessionSplits { tree: node(ed.split_tree(), &leaf)?, focused })
+        let focused = leaves.iter().position(|g| *g == focused)?;
+        Some(SessionSplits { tree: node(tree, &leaf)?, focused })
     }
 
     /// Save the current root's session (on switch and quit). Failures are

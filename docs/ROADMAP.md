@@ -1,8 +1,8 @@
 # jetl roadmap
 
 This is the feature backlog for jetl after phases 0-5. Each item below is also tracked as a yman
-task (`yman ls`); phases are umbrella tasks and the rows are their subtasks. Phases 6, 7, 8, 9 and
-10 are done, except the conflict resolver, which can now build on split panes (see Order).
+task (`yman ls`); phases are umbrella tasks and the rows are their subtasks. Phases 6 to 11 are
+done (see Order).
 
 ## What exists today
 
@@ -17,7 +17,8 @@ task (`yman ls`); phases are umbrella tasks and the rows are their subtasks. Pha
   limit that closes the least recently used clean, unpinned tab. Phase 11 added split panes:
   nested tab groups whose tabs are views over shared buffers, then multiple carets, column
   selection, code folding (per view, through `editor/rows.rs`) and soft wrap (`editor/wrap.rs`,
-  segments in `Rows`).
+  segments in `Rows`). The three-pane conflict resolver (`editor/merge.rs`) lays its panes out
+  in the same groups.
 - **Shell:** fixed layout with one left slot and one bottom slot. The side each tool window lives
   on is hardcoded in `ToolWindowId::side()`. A new bottom tool window is just a new enum variant
   and needs no layout rewrite. The palette has Files/Symbols/Actions/Everywhere/Recent/Branches/Recent Projects modes.
@@ -37,7 +38,7 @@ task (`yman ls`); phases are umbrella tasks and the rows are their subtasks. Pha
   log draws its own graph from parents, filters by branch, text, author and path, shows file
   history, and runs commit actions (checkout, branch, cherry-pick, revert, tags). There is a
   Stash tab, and the branches popup checks out, merges, rebases, renames and deletes branches.
-  Missing: a conflict resolver (conflicts show as `U`; resolve them in the editor). A filesystem
+  Conflicted files (`U`) open in a three-pane resolver (yours, result, theirs). A filesystem
   watcher refreshes the tree and git status; focus gain refreshes only when the watcher is off
   (`[files] watch`) or failed to start.
 - **Infra:** an LSP client (Phase 10): servers per language and root, JSON-RPC on
@@ -102,7 +103,7 @@ All of section C shipped in Phase 7.
 
 ### D. Git depth
 
-All of section D shipped in Phase 8 except the conflict resolver.
+All of section D shipped in Phase 8; the conflict resolver came after split panes (Phase 11).
 
 | Feature | Effort | Notes |
 |---|---|---|
@@ -114,7 +115,7 @@ All of section D shipped in Phase 8 except the conflict resolver.
 | Blame gutter | M | git2 blame in `spawn_blocking` |
 | Log filters, file history, commit actions | M | Extend `cli::log`; actions through `GitOp` |
 | Branch delete/rename/remote/merge/rebase, tags | M | CLI for merge/rebase |
-| Conflict resolver (3-pane merge) | L | Builds on split panes |
+| Conflict resolver (3-pane merge) | L | Done: a temporary layout of split panes over scratch buffers (`editor/merge.rs`) |
 
 ### E. Shell, terminal, run
 
@@ -169,7 +170,7 @@ All of section E shipped in Phase 9 except split editor panes, which shipped in 
 2. **Phase 7: project-wide.** Done. The watcher came first, then find and replace in files, tree
    operations with context menu and speed search, `file:line` CLI, layout persistence, recent
    projects, and symbol search with the Structure window (pulled forward from Phase 10).
-3. **Phase 8: git depth.** Done, except the 3-pane conflict resolver, which waits for split panes
+3. **Phase 8: git depth.** Done. The 3-pane conflict resolver came last, on split panes
    (Phase 11). Discard, amend and message history, hunk staging and gutter revert, intra-line and
    syntax-highlighted diff, stash, blame, log filters and file history with commit actions, branch
    management with merge, rebase and tags; also rename detection, the push remote choice and a
@@ -181,7 +182,7 @@ All of section E shipped in Phase 9 except split editor panes, which shipped in 
 5. **Phase 10: language intelligence.** Done. tree-sitter symbols shipped in Phase 7. The LSP
    core came first, then diagnostics and navigation, completion, and last rename, code actions,
    file structure and formatting through the server.
-6. **Phase 11: editor layout.** Split panes (done), multi-caret (done), column selection (done), folding (done)
-   and soft wrap (done). This has the highest implementation risk, so it goes last. The conflict resolver from
-   Phase 8 follows split panes.
+6. **Phase 11: editor layout.** Done. Split panes, multi-caret, column selection, folding and soft
+   wrap; it had the highest implementation risk, so it went last. The conflict resolver from
+   Phase 8 followed split panes.
 7. **Ongoing:** themes, vim mode, local history, snapshot tests, CI, README, crash recovery.

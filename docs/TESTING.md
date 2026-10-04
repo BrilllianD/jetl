@@ -216,6 +216,50 @@ Split right (`M-\`) and drag the bar: each pane breaks at its own width
 and keeps its caret in view. Open the Project window: the editor re-wraps
 to the narrower width.
 
+### Scenario: conflict resolver
+
+At 80x24 (two panes: yours and theirs share the left one) and at 120x40
+(three panes), in a repository stopped on a merge conflict: two branches
+change the same lines twice, and one of them also changes a line of its
+own:
+
+```sh
+T=/tmp/jt-merge; rm -rf $T; mkdir -p $T && cd $T && git init -q
+g() { git -c user.name=t -c user.email=t@t "$@"; }
+printf 'fn main() {\n    let a = 1;\n    let b = 2;\n    let c = 3;\n    let d = 4;\n    let e = 5;\n}\n' > a.rs
+echo readme > README.md; git add . && g commit -qm init; main=$(git branch --show-current)
+git switch -qc dev; sed -i 's/a = 1/a = 100/; s/c = 3/c = 30/; s/e = 5/e = 500/' a.rs; g commit -qam dev
+git switch -q $main; sed -i 's/a = 1/a = 10/; s/e = 5/e = 50/' a.rs; g commit -qam main
+g merge -q dev; cd -                              # CONFLICT (content): a.rs
+```
+
+Start jetl on `$T/README.md`, hide the Project window (Alt+1 twice: at
+120 columns with it open the editor is under 90 columns and gets two
+panes) and split right (`M-\`) so the layout to come back to has two
+groups:
+
+```sh
+/tmp/tm.sh send-keys -t jetl F1; /tmp/tm.sh send-keys -t jetl -l 'resolve conflicts'
+/tmp/tm.sh send-keys -t jetl Enter Enter Enter   # the action, a.rs, Merge…
+/tmp/tm.sh capture-pane -t jetl -p               # header "a.rs  2 of 2 conflicts left [Accept Yours] …"; c = 30 already in
+/tmp/tm.sh send-keys -t jetl M-S-Left            # yours on the first conflict: 1 of 2 left, « × stay to add theirs
+/tmp/tm.sh send-keys -t jetl F7                  # the caret to the second conflict
+press 0 $C 8; release 0 $C 8                     # the » on that row (C: its 1-based column, at the result pane's left edge)
+/tmp/tm.sh send-keys -t jetl M-S-Right           # theirs after yours: both lines, "All changes resolved"
+/tmp/tm.sh send-keys -t jetl M-Enter             # Apply (or click [Apply]): the split comes back, a.rs open
+git -C $T status --short; git -C $T diff --cached  # M  a.rs, no markers
+```
+
+`capture-pane -e` shows conflicts in `merge_conflict_bg`, resolved changes in
+`merge_resolved_bg`, and the splitter cells beside them in the same color.
+At 80x24 `M-Tab` to the left pane and Alt+Right shows theirs. Then `git -C $T
+merge --abort; git -C $T merge dev` (the watcher reloads), open the resolver
+again, type into the result and press Esc: Cancel asks; Discard puts the split
+back with nothing written (`UU a.rs`). With nothing typed, the header's
+[Cancel] closes at once; Alt+Enter with conflicts left asks first. Typing into
+yours or theirs changes nothing; Alt+\ and a file picked in Ctrl+N answer "Finish or cancel
+the merge first".
+
 ### Limits under tmux
 
 - No kitty keyboard protocol: Ctrl+Shift+letter, Ctrl+Tab, Ctrl+Enter,

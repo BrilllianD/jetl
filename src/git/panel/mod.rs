@@ -334,7 +334,7 @@ impl GitPanel {
                     items,
                 )));
             }
-            G::FileHistory => {}
+            G::FileHistory | G::ResolveConflicts => {}
             G::ContextMenu => self.log_context_menu(None, cx),
             G::CopySha => self.commit_action(CommitAction::CopySha, cx),
             G::LogCheckout => self.commit_action(CommitAction::Checkout, cx),

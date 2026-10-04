@@ -124,6 +124,23 @@ pub enum DialogId {
     LspRename(crate::lsp::DocTag),
     /// The context actions answered to this request (kept in the app).
     LspCodeAction(crate::lsp::DocTag),
+    /// Git > Resolve Conflicts: item `i` is conflicted path `rels[i]`
+    /// (relative to the work tree).
+    ResolveConflictPick(Vec<String>),
+    /// What to do with conflicted `abs` (`rel` in the work tree): Merge…,
+    /// Accept Yours, Accept Theirs, Cancel; without `merge` (no line merge
+    /// possible) the first button is left out.
+    ResolveConflict {
+        abs: std::path::PathBuf,
+        rel: String,
+        merge: bool,
+    },
+    /// Apply the merge result with changes still unresolved.
+    MergeApply,
+    /// Close the resolver, dropping the user's work in the result.
+    MergeCancel,
+    /// Quit while the resolver holds the user's work.
+    MergeQuit,
 }
 
 #[derive(Debug, Clone)]

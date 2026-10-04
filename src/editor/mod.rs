@@ -14,6 +14,7 @@ pub mod gutter;
 pub mod indent;
 mod io;
 pub use io::DiskChange;
+pub mod merge;
 pub mod nav;
 pub mod rows;
 pub mod search;
@@ -113,6 +114,11 @@ pub struct Editor {
     /// Column selection mode: a plain drag and Shift+arrows make blocks.
     /// Not saved with the session.
     column_mode: bool,
+    /// The conflict resolver, while open (its panes are the groups then).
+    merge: Option<merge::MergeSession>,
+    /// The groups' area as last drawn (the resolver picks two or three
+    /// panes by its width).
+    center: Rect,
 }
 
 /// Shown in place of a pinned tab's close button (one column wide).
@@ -161,6 +167,8 @@ impl Editor {
             pending_nav: None,
             multi_clip: None,
             column_mode: false,
+            merge: None,
+            center: Rect::default(),
         }
     }
 
@@ -173,8 +181,10 @@ impl Editor {
     pub fn active_path(&self) -> Option<&Path> {
         self.active_buffer().and_then(|b| b.path.as_deref())
     }
+    /// Unsaved edits in a file's buffer (the resolver's scratch buffers do
+    /// not count).
     pub fn has_dirty(&self) -> bool {
-        self.buffers.iter().any(|b| b.dirty())
+        self.buffers.iter().any(|b| b.dirty() && !self.is_scratch(b.id))
     }
     pub fn index_of(&self, path: &Path) -> Option<usize> {
         self.buffers.iter().position(|b| b.path.as_deref() == Some(path))
@@ -356,7 +366,7 @@ impl Editor {
     /// Jump to bookmarked `line` of buffer `id` (from the bookmarks dialog);
     /// the position left is remembered for back.
     pub fn goto_bookmark(&mut self, id: BufferId, line: usize) {
-        let Some(i) = self.buffers.iter().position(|b| b.id == id) else { return };
+        let Some(i) = self.buffers.iter().position(|b| b.id == id).filter(|_| self.merge.is_none()) else { return };
         self.push_nav_here();
         self.set_active(i);
         self.buffers[i].goto_line(line, 0);
@@ -602,6 +612,9 @@ impl Editor {
 
     pub fn handle_action(&mut self, a: &EditorAction, cx: &mut Ctx) -> bool {
         use EditorAction as E;
+        if self.merge_guard(a, cx) {
+            return true;
+        }
         match a {
             E::NextTab | E::PrevTab => {
                 let (g, group) = (self.focused, self.focused_group());
@@ -986,7 +999,8 @@ impl Editor {
             | E::SetLanguage
             | E::ToggleBlame
             | E::ToggleColumnMode
-            | E::ToggleSoftWrap => {}
+            | E::ToggleSoftWrap
+            | E::Merge(_) => {}
         }
         // A motion or edit that put a caret into a fold unfolds it.
         if let Some(b) = self.active_buffer_mut() {
@@ -1005,6 +1019,10 @@ impl Editor {
     }
 
     fn mouse(&mut self, m: &Mouse, _area: Rect, cx: &mut Ctx) -> bool {
+        // The conflict resolver's glyphs left of the gutter.
+        if m.kind == MouseEventKind::Down(MouseButton::Left) && self.merge_mouse(m.x, m.y, cx.theme) {
+            return true;
+        }
         if m.kind == MouseEventKind::Down(MouseButton::Left) {
             if self.focused_group().find_area.contains(ratatui::layout::Position::new(m.x, m.y)) {
                 self.click_find_bar(m, cx);
@@ -1042,7 +1060,7 @@ impl Editor {
         // first row: the others show none).
         if m.kind == MouseEventKind::Down(MouseButton::Left)
             && let Some(blame) = &b.blame
-            && m.x < text_area.x.saturating_sub(view::gutter_width(b)) + blame::WIDTH
+            && m.x < text_area.x.saturating_sub(view::gutter_width(b, 0)) + blame::WIDTH
             && m.y >= text_area.y
             && m.y < text_area.bottom()
         {
@@ -1234,9 +1252,20 @@ impl Editor {
     /// above `area`. Each group gets a tab bar of that height over its text.
     /// The focused group is drawn last, so its tab stays the live view of
     /// its buffer between frames.
+    ///
+    /// With the conflict resolver open its header takes the top row, and
+    /// the pane leading the linked scroll is drawn first so the others can
+    /// follow it.
     pub fn render(&mut self, frame: &mut Frame, tabs: Rect, area: Rect, focused: bool, theme: &Theme) {
         self.sync_parked();
-        let center = Rect::new(area.x, tabs.y, area.width, tabs.height + area.height);
+        let mut center = Rect::new(area.x, tabs.y, area.width, tabs.height + area.height);
+        self.center = center;
+        if self.merge.is_some() {
+            self.merge_fit(center.width);
+            let header = Rect::new(center.x, center.y, center.width, center.height.min(1));
+            self.render_merge_header(frame, header, theme);
+            (center.y, center.height) = (center.y + header.height, center.height - header.height);
+        }
         let mut leaves = Vec::new();
         self.splitters.clear();
         self.tree.layout(center, &mut leaves, &mut self.splitters);
@@ -1251,8 +1280,17 @@ impl Editor {
                 screen[c].set_symbol(glyph);
             }
         }
-        leaves.sort_by_key(|(g, _)| *g == self.focused);
-        for (g, r) in leaves {
+        let master = self.merge_master();
+        let shows = |ed: &Editor, g: GroupId| ed.group(g).and_then(TabGroup::active_id);
+        match master {
+            Some(id) => leaves.sort_by_key(|(g, _)| shows(self, *g) != Some(id)),
+            None => leaves.sort_by_key(|(g, _)| *g == self.focused),
+        }
+        let decors: std::collections::HashMap<BufferId, view::LineDecor> = match &self.merge {
+            Some(m) => m.ids.iter().filter_map(|id| Some((*id, self.merge_decor(*id, theme)?))).collect(),
+            None => Default::default(),
+        };
+        for (n, (g, r)) in leaves.into_iter().enumerate() {
             let Some(gi) = self.group_index(g) else { continue };
             if let Some(slot) = self.groups[gi].active {
                 self.make_live(g, slot);
@@ -1260,13 +1298,37 @@ impl Editor {
             let strip = tabs.height.min(r.height);
             let tabs_r = Rect::new(r.x, r.y, r.width, strip);
             let body = Rect::new(r.x, r.y + strip, r.width, r.height - strip);
-            self.render_group(frame, gi, tabs_r, body, focused && g == self.focused, theme);
+            let shown = shows(self, g);
+            let follow = master.is_none_or(|id| shown == Some(id));
+            let decor = shown.and_then(|id| decors.get(&id));
+            self.render_group(frame, gi, tabs_r, body, focused && g == self.focused, (follow, decor), theme);
+            if n == 0
+                && let Some(id) = master
+            {
+                self.merge_follow(id);
+            }
+        }
+        if master.is_some() {
+            self.merge_paint_splitters(frame, &decors);
+            self.merge_note_tops();
         }
     }
 
     /// Draw group `gi` (an index into `groups`): its tab bar in `tabs`, its
-    /// shown tab in `area`. `focused` is whether keys go to it.
-    fn render_group(&mut self, frame: &mut Frame, gi: usize, tabs: Rect, area: Rect, focused: bool, theme: &Theme) {
+    /// shown tab in `area`. `focused` is whether keys go to it; `follow`
+    /// whether the view scrolls to a caret that moved, `decor` the
+    /// resolver's marks.
+    #[allow(clippy::too_many_arguments)]
+    fn render_group(
+        &mut self,
+        frame: &mut Frame,
+        gi: usize,
+        tabs: Rect,
+        area: Rect,
+        focused: bool,
+        (follow, decor): (bool, Option<&view::LineDecor>),
+        theme: &Theme,
+    ) {
         let group = &mut self.groups[gi];
         render_tabs(group, &self.buffers, frame, tabs, theme);
         group.tab_area = tabs;
@@ -1292,6 +1354,8 @@ impl Editor {
             hscrolloff: self.hscrolloff,
             occurrences: self.highlight_occurrences,
             theme,
+            follow,
+            decor,
         };
         // The find bar takes the top rows; the text view gets the rest so
         // `text_area` (and with it mouse mapping) stays exact.

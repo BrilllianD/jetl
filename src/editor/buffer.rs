@@ -161,6 +161,9 @@ pub struct Buffer {
     pub diag_marks: crate::lsp::diagnostics::DiagMarks,
     /// The last `fold_candidates` answer: version, lines and the folds.
     pub fold_cache: Option<(u64, std::ops::Range<usize>, Vec<super::fold::Fold>)>,
+    /// No edit changes the text (the conflict resolver's yours and theirs
+    /// panes): `apply` only moves the carets, undo and redo do nothing.
+    pub read_only: bool,
 }
 
 impl Buffer {
@@ -205,6 +208,7 @@ impl Buffer {
             lsp_full_resync: false,
             diag_marks: Default::default(),
             fold_cache: None,
+            read_only: false,
         }
     }
 
@@ -262,6 +266,9 @@ impl Buffer {
         self.view.block = None;
         if changes.is_empty() {
             self.view.sels = sel_after(&self.rope).into();
+            return;
+        }
+        if self.read_only {
             return;
         }
         let sel_before = self.view.sels.clone();
@@ -334,6 +341,9 @@ impl Buffer {
     }
 
     pub fn undo(&mut self) -> bool {
+        if self.read_only {
+            return false;
+        }
         let Some(tx) = self.undo.pop_undo() else { return false };
         for c in tx.changes.iter().rev() {
             let inv = c.inverse();
@@ -352,6 +362,9 @@ impl Buffer {
     }
 
     pub fn redo(&mut self) -> bool {
+        if self.read_only {
+            return false;
+        }
         let Some(tx) = self.undo.pop_redo() else { return false };
         for c in &tx.changes {
             self.apply_change(c);
@@ -1013,6 +1026,9 @@ impl Buffer {
     /// so undo and redo switch it back and forth with the text. Text without
     /// a break to convert only changes the setting.
     pub fn convert_line_endings(&mut self, le: LineEnding) {
+        if self.read_only {
+            return;
+        }
         let before = self.line_ending;
         let mut changes = Vec::new();
         let mut prev = '\0';
@@ -1415,6 +1431,22 @@ mod tests {
 
     fn b(text: &str) -> Buffer {
         Buffer::from_text(1, None, text, false)
+    }
+
+    #[test]
+    fn a_read_only_buffer_moves_carets_but_keeps_its_text() {
+        let mut buf = b("one\ntwo\n");
+        buf.read_only = true;
+        buf.view.set_sel(Selection::point(1));
+        buf.insert("x", TxKind::Typing);
+        buf.delete_forward();
+        buf.delete_line();
+        buf.convert_line_endings(LineEnding::CrLf);
+        assert_eq!((buf.text().as_str(), buf.version, buf.dirty()), ("one\ntwo\n", 0, false));
+        assert!(!buf.undo() && !buf.redo());
+        assert!(buf.edit_log.since(0).is_some_and(|mut e| e.next().is_none()), "nothing for the parked views");
+        buf.select_all();
+        assert_eq!(buf.view.sel().range(), 0..8);
     }
 
     #[test]

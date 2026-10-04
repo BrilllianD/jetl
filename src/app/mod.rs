@@ -50,6 +50,7 @@ mod lsp;
 mod lsp_edit;
 mod lsp_nav;
 mod main_menu;
+mod merge;
 mod mouse;
 mod msg;
 mod palette;
@@ -188,6 +189,9 @@ pub struct App {
     /// Caret target of a file being opened by `open_file_at` or
     /// `open_file_at_utf16`.
     pending_goto: Option<(PathBuf, msg::GotoTarget)>,
+    /// An operation stopped on conflicts: the next status listing
+    /// conflicted files opens Resolve Conflicts.
+    pending_conflicts: bool,
     /// File from the command line (1-based line and column), opened once
     /// the session is restored so it ends up the active tab.
     pub(crate) pending_open: Option<(PathBuf, usize, usize)>,
@@ -273,6 +277,7 @@ impl App {
             symbols: Default::default(),
             symbols_fed: None,
             pending_goto: None,
+            pending_conflicts: false,
             pending_open: open,
             git,
             editor: Editor::new(&config),
@@ -385,6 +390,9 @@ impl App {
         } else {
             if self.focus.is(PanelId::Editor) && self.editor.find_focused() {
                 v.push("editor.find");
+            }
+            if self.focus.is(PanelId::Editor) && self.editor.merge_active() {
+                v.push("editor.merge");
             }
             v.push(self.focus.current.context());
         }
@@ -698,6 +706,11 @@ impl App {
             Action::Git(crate::actions::GitAction::FileHistory) => {
                 drop(cx);
                 self.file_history();
+                return;
+            }
+            Action::Git(crate::actions::GitAction::ResolveConflicts) => {
+                drop(cx);
+                self.resolve_conflicts();
                 return;
             }
             Action::Git(a) => self.git_panel.handle_action(a, &mut cx),

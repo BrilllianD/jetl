@@ -58,6 +58,11 @@ pub struct Theme {
     /// Changed characters inside a modified line (diff view).
     pub diff_add_word_bg: Color,
     pub diff_del_word_bg: Color,
+    /// Conflict resolver: an unresolved conflict's lines (one-sided changes
+    /// take `diff_add_bg`, `diff_del_bg` or `diff_mod_bg`), and the lines of
+    /// a resolved chunk.
+    pub merge_conflict_bg: Color,
+    pub merge_resolved_bg: Color,
     pub popup_bg: Color,
     pub popup_border: Style,
     pub list_selected: Style,
@@ -126,6 +131,8 @@ impl Theme {
             diff_mod_bg: Color::Rgb(44, 55, 72),
             diff_add_word_bg: Color::Rgb(56, 102, 74),
             diff_del_word_bg: Color::Rgb(117, 58, 58),
+            merge_conflict_bg: Color::Rgb(98, 54, 44),
+            merge_resolved_bg: Color::Rgb(55, 55, 55),
             popup_bg: Color::Rgb(53, 53, 56),
             popup_border: Style::default().fg(accent),
             list_selected: Style::default().fg(Color::White).bg(Color::Rgb(44, 83, 148)),
@@ -255,7 +262,7 @@ theme_fields! {
     colors: [
         bg, fg, panel_bg, strip_bg, status_bg, status_fg, current_line_bg, selection_bg, search_match_bg,
         search_current_bg, occurrence_bg, gutter_added, gutter_modified, gutter_deleted, diff_add_bg, diff_del_bg,
-        diff_mod_bg, diff_add_word_bg, diff_del_word_bg, popup_bg,
+        diff_mod_bg, diff_add_word_bg, diff_del_word_bg, merge_conflict_bg, merge_resolved_bg, popup_bg,
     ],
     styles: [
         border, border_focused, title, title_focused, strip_item, strip_item_active, status_accent, tab, tab_active,
@@ -441,8 +448,9 @@ mod tests {
     #[test]
     fn hex_and_named_colors() {
         let mut t = Theme::default();
-        let errors = t.apply_toml("bg = \"#102030\"\nfg = \"red\"\ndim = \"#ffffff\"\n").unwrap();
+        let errors = t.apply_toml("bg = \"#102030\"\nfg = \"red\"\ndim = \"#ffffff\"\nmerge_conflict_bg = \"#400000\"\n").unwrap();
         assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(t.merge_conflict_bg, Color::Rgb(0x40, 0, 0));
         assert_eq!(t.bg, Color::Rgb(0x10, 0x20, 0x30));
         assert_eq!(t.fg, Color::Red);
         assert_eq!(t.dim.fg, Some(Color::Rgb(255, 255, 255)));

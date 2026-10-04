@@ -9,6 +9,7 @@
 pub mod cli;
 pub mod diff;
 pub mod graph;
+pub mod merge;
 pub mod messages;
 pub mod model;
 pub mod panel;
@@ -69,6 +70,9 @@ pub enum GitOp {
         force: bool,
     },
     WorktreePrune,
+    /// A conflicted path resolved by taking one side whole; carries the
+    /// console line's path.
+    Resolve(String),
 }
 
 impl GitOp {
@@ -86,6 +90,7 @@ impl GitOp {
                 | GitOp::Revert(_)
                 | GitOp::Merge(_)
                 | GitOp::Rebase(_)
+                | GitOp::Resolve(_)
         )
     }
 }
@@ -154,6 +159,12 @@ pub enum GitMsg {
         branch: String,
         result: Result<repo::PushRemote>,
     },
+    /// The stages and work file of a conflicted path, for the resolver.
+    Conflict {
+        generation: u64,
+        path: PathBuf,
+        result: Result<merge::ConflictSides>,
+    },
     /// A finished operation; `label` is what the console and spinner show.
     OpDone {
         generation: u64,
@@ -179,6 +190,7 @@ impl GitMsg {
             | GitMsg::Stashes { generation, .. }
             | GitMsg::Blame { generation, .. }
             | GitMsg::CommitMessages { generation, .. }
+            | GitMsg::Conflict { generation, .. }
             | GitMsg::OpDone { generation, .. } => *generation,
         }
     }
@@ -255,6 +267,14 @@ pub enum GitRequest {
     LoadCommit(String),
     LoadWorktrees,
     WorktreePrune,
+    /// Read a conflicted file's stages and open the resolver on them.
+    LoadConflict(PathBuf),
+    /// Resolve a conflicted path (relative to the work tree) by taking
+    /// one side whole.
+    ResolveSide {
+        rel: String,
+        side: repo::ConflictSide,
+    },
 }
 
 pub struct GitService {
@@ -354,6 +374,11 @@ impl GitService {
             move |root| repo::blob_text(root, &p, which),
             move |generation, text| GitMsg::Blob { generation, seq, path, which, text },
         );
+    }
+
+    pub fn load_conflict(&self, path: PathBuf) {
+        let p = path.clone();
+        self.blocking(move |root| repo::conflict_sides(root, &p), move |generation, result| GitMsg::Conflict { generation, path, result });
     }
 
     pub fn load_branches(&self) {

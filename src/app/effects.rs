@@ -94,6 +94,12 @@ impl App {
             GitRequest::UnstageAll => {
                 self.git.run_repo(GitOp::Unstage, "unstage all".into(), |root| repo::unstage_all(root).map(|_| String::new()));
             }
+            GitRequest::LoadConflict(path) => self.git.load_conflict(path),
+            GitRequest::ResolveSide { rel, side } => {
+                let label = format!("resolve {rel} with {}", if side == repo::ConflictSide::Ours { "yours" } else { "theirs" });
+                let op = GitOp::Resolve(rel.clone());
+                self.git.run_repo(op, label, move |root| repo::resolve_side(root, &rel, side));
+            }
             GitRequest::Discard(items) => {
                 let label = format!("discard {}", items.iter().map(|(_, p)| p.as_str()).collect::<Vec<_>>().join(" "));
                 self.git.run_repo(GitOp::Discard, label, move |root| repo::discard(root, &items));

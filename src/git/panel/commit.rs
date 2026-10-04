@@ -303,9 +303,13 @@ impl GitPanel {
         cx.effects.push(Effect::Dialog(Dialog::confirm(DialogId::GitDiscard(items), "Discard Changes", &msg, &["Discard", "Cancel"])));
     }
 
+    /// Open the selected entry's file; a conflicted one opens the
+    /// conflict resolver.
     pub(super) fn open_selected_file(&mut self, cx: &mut Ctx) {
         let Some(e) = self.selected_entry() else { return };
-        if e.abs.is_file() {
+        if e.status == FileStatus::Conflicted {
+            cx.effects.push(Effect::Git(GitRequest::LoadConflict(e.abs.clone())));
+        } else if e.abs.is_file() {
             cx.open_file(e.abs.clone());
         } else {
             cx.notify(Level::Info, format!("{} is deleted", e.rel));

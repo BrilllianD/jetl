@@ -73,6 +73,9 @@ impl App {
     }
 
     pub(super) fn request_quit(&mut self) {
+        if !self.quit_merge() {
+            return;
+        }
         if self.editor.has_dirty() {
             self.dialog = Some(Dialog::confirm(
                 DialogId::QuitDirty,
@@ -87,6 +90,9 @@ impl App {
 
     pub(super) fn finish_dialog(&mut self, id: DialogId, res: DialogResult) {
         self.dirty_frame = true;
+        if self.finish_merge_dialog(&id, &res) {
+            return;
+        }
         match (id, res) {
             (DialogId::QuitDirty, DialogResult::Button(0)) => {
                 let mut cx = ctx!(self);

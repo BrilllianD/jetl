@@ -90,6 +90,7 @@ impl App {
                 if !applied {
                     return;
                 }
+                self.offer_conflicts();
                 let snap = self.git_panel.snapshot();
                 self.project.set_git_status(snap.map(|s| s.tree.clone()).unwrap_or_default());
                 // A new HEAD changes every gutter base.
@@ -157,6 +158,7 @@ impl App {
                 let fx = cx.effects;
                 self.apply_effects(fx);
             }
+            GitMsg::Conflict { path, result, .. } => self.conflict_loaded(path, result),
             GitMsg::OpDone { op, label, ok, output, .. } => self.git_op_done(op, label, ok, output),
         }
     }
@@ -215,7 +217,7 @@ impl App {
                 GitOp::DeleteBranch { name, .. } => self.notify(Level::Info, format!("Deleted branch {name}")),
                 GitOp::Tag(t) => self.notify(Level::Info, format!("Created tag {t}")),
                 GitOp::DeleteTag(t) => self.notify(Level::Info, format!("Deleted tag {t}")),
-                GitOp::Discard | GitOp::Stash => self.notify(Level::Info, output.clone()),
+                GitOp::Discard | GitOp::Stash | GitOp::Resolve(_) => self.notify(Level::Info, output.clone()),
                 GitOp::Stage | GitOp::Unstage => {}
                 GitOp::WorktreeAdd { .. } | GitOp::WorktreeRemove { .. } | GitOp::WorktreePrune => {}
             }
@@ -237,15 +239,19 @@ impl App {
             self.dialog = Some(Dialog::confirm(id, "Delete Branch", &msg, &["Force Delete", "Cancel"]));
         } else if matches!(op, GitOp::Merge(_) | GitOp::Rebase(_) | GitOp::CherryPick(_) | GitOp::Revert(_)) && output.contains("CONFLICT")
         {
-            // Conflicted files show as U in the Commit tab.
+            // Conflicted files show as U in the Commit tab; the next status
+            // opens Resolve Conflicts.
             let what = match &op {
                 GitOp::Rebase(_) => {
-                    "Rebase stopped on conflicts: resolve the U files, stage them, then run `git rebase --continue` (or `--abort`)"
+                    "Rebase stopped on conflicts: resolve the U files (Git > Resolve Conflicts), then run `git rebase --continue` (or `--abort`)"
                 }
-                GitOp::Merge(_) => "Merge stopped on conflicts: resolve the U files, stage them and commit (or run `git merge --abort`)",
-                _ => "Stopped on conflicts: resolve the U files, stage them and commit",
+                GitOp::Merge(_) => {
+                    "Merge stopped on conflicts: resolve the U files (Git > Resolve Conflicts) and commit (or run `git merge --abort`)"
+                }
+                _ => "Stopped on conflicts: resolve the U files (Git > Resolve Conflicts) and commit",
             };
             self.notify(Level::Warn, what);
+            self.pending_conflicts = true;
         } else if matches!(op, GitOp::Commit { .. } | GitOp::Stage | GitOp::Unstage | GitOp::Discard | GitOp::Stash) {
             self.notify(Level::Error, error_line(&output));
         } else {
@@ -311,6 +317,9 @@ impl App {
     }
 
     fn open_file_goto(&mut self, path: PathBuf, target: GotoTarget) {
+        if self.editor.merge_active() {
+            return self.notify(Level::Info, crate::editor::merge::BUSY);
+        }
         if self.editor.index_of(&path).is_some() {
             self.open_file(path, true);
             self.goto_target(target);
@@ -340,6 +349,9 @@ impl App {
     /// Open a file: reuse the tab when already open, otherwise read it off
     /// the main loop and finish in `file_loaded`.
     pub fn open_file(&mut self, path: PathBuf, focus: bool) {
+        if self.editor.merge_active() {
+            return self.notify(Level::Info, crate::editor::merge::BUSY);
+        }
         if let Some(i) = self.editor.index_of(&path) {
             let mut cx = ctx!(self);
             self.editor.activate(i, &mut cx);
@@ -363,8 +375,15 @@ impl App {
                 return;
             }
         };
+        if self.editor.merge_active() {
+            return self.notify(Level::Info, format!("{} not opened: {}", path.display(), crate::editor::merge::BUSY));
+        }
         let Some((text, lossy)) = self.decode_file(&path, bytes) else { return };
         self.editor.open_text(path.clone(), &text, lossy, &self.theme);
+        if self.is_conflicted(&path) {
+            let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            self.notify(Level::Info, format!("{name} has conflicts: Git > Resolve Conflicts"));
+        }
         self.editor.enforce_tab_limit();
         if let Some((_, target)) = self.pending_goto.take_if(|(p, _)| *p == path) {
             // Opening the tab remembered the position left; the new tab's

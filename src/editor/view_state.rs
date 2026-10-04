@@ -143,7 +143,7 @@ impl EditLog {
     }
 
     /// The edits from `seq` on, or `None` when some of them were dropped.
-    fn since(&self, seq: u64) -> Option<impl Iterator<Item = &LogEdit>> {
+    pub(super) fn since(&self, seq: u64) -> Option<impl Iterator<Item = &LogEdit>> {
         (seq >= self.base).then(|| self.entries.iter().skip((seq - self.base) as usize))
     }
 }

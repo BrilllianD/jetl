@@ -414,7 +414,10 @@ macro = "#b3ae60"                                # = "function.macro"
 Color fields: `bg fg panel_bg strip_bg status_bg status_fg current_line_bg
 selection_bg search_match_bg search_current_bg occurrence_bg gutter_added
 gutter_modified gutter_deleted diff_add_bg diff_del_bg diff_mod_bg
-diff_add_word_bg diff_del_word_bg popup_bg`.
+diff_add_word_bg diff_del_word_bg merge_conflict_bg merge_resolved_bg popup_bg`.
+The conflict resolver colors an unresolved conflict with `merge_conflict_bg`, a
+change only one side made with `diff_add_bg`, `diff_del_bg` or `diff_mod_bg`,
+and a resolved change with `merge_resolved_bg`.
 
 Style fields: `border border_focused title title_focused strip_item
 strip_item_active status_accent tab tab_active tab_dirty line_number

@@ -192,6 +192,30 @@ pub enum EditorAction {
     ToggleBlame,
     /// Reformat the buffer with its language's external formatter.
     Format,
+    /// The conflict resolver's commands (`editor.merge` context).
+    Merge(MergeAction),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MergeAction {
+    /// Caret to the next (previous) unresolved change in the focused pane.
+    NextConflict,
+    PrevConflict,
+    /// Yours (theirs) for the change at the caret; after the other side,
+    /// both.
+    AcceptLeft,
+    AcceptRight,
+    /// Leave the change at the caret out.
+    Ignore,
+    ApplyNonConflicting,
+    /// Yours (theirs) for the whole file.
+    AcceptAllLeft,
+    AcceptAllRight,
+    /// Write the result, stage it and close the resolver.
+    Apply,
+    /// Close the resolver without writing (Esc does the editor's Esc first
+    /// while that has something to do).
+    Cancel,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -235,6 +259,8 @@ pub enum GitAction {
     ToggleDiffCollapse,
     /// History of the active file or the selected tree entry.
     FileHistory,
+    /// Pick a conflicted file, then merge it or take one side.
+    ResolveConflicts,
     LogFilter,
     ContextMenu,
     CopySha,
@@ -602,6 +628,7 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "git.toggle_diff_layout" => "Git: diff side-by-side or unified", Git(GitAction::ToggleDiffLayout);
         "git.toggle_diff_collapse" => "Git: fold or show unchanged lines in the diff", Git(GitAction::ToggleDiffCollapse);
         "git.file_history" => "Git: show history for the file (editor) or the selected entry (Project tree)", Git(GitAction::FileHistory);
+        "git.resolve_conflicts" => "Git: resolve conflicts (three-pane merge or take one side)", Git(GitAction::ResolveConflicts);
         "git.log_filter" => "Git: filter the log (branch, text, author, path)", Git(GitAction::LogFilter);
         "git.context_menu" => "Git: commit actions for the selected commit", Git(GitAction::ContextMenu);
         "git.copy_sha" => "Git: copy the selected commit's revision number", Git(GitAction::CopySha);
@@ -640,6 +667,17 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "git.focus_message" => "Git: focus commit message", Git(GitAction::FocusMessage);
         "git.next_section" => "Git: next pane", Git(GitAction::NextSection);
         "git.escape" => "Git: back (close diff, leave message, return to editor)", Git(GitAction::Escape);
+
+        "merge.next_conflict" => "Merge: next unresolved change", Editor(E::Merge(MergeAction::NextConflict));
+        "merge.prev_conflict" => "Merge: previous unresolved change", Editor(E::Merge(MergeAction::PrevConflict));
+        "merge.accept_left" => "Merge: accept yours for the change at the caret", Editor(E::Merge(MergeAction::AcceptLeft));
+        "merge.accept_right" => "Merge: accept theirs for the change at the caret", Editor(E::Merge(MergeAction::AcceptRight));
+        "merge.ignore" => "Merge: ignore the change at the caret", Editor(E::Merge(MergeAction::Ignore));
+        "merge.apply_non_conflicting" => "Merge: apply all non-conflicting changes", Editor(E::Merge(MergeAction::ApplyNonConflicting));
+        "merge.accept_all_left" => "Merge: take yours for the whole file", Editor(E::Merge(MergeAction::AcceptAllLeft));
+        "merge.accept_all_right" => "Merge: take theirs for the whole file", Editor(E::Merge(MergeAction::AcceptAllRight));
+        "merge.apply" => "Merge: save the result, stage it and close the resolver", Editor(E::Merge(MergeAction::Apply));
+        "merge.cancel" => "Merge: close the resolver without saving", Editor(E::Merge(MergeAction::Cancel));
 
         "worktree.refresh" => "Worktrees: refresh", Worktree(WorktreeAction::Refresh);
         "worktree.new" => "Worktrees: new", Worktree(WorktreeAction::New);
@@ -748,6 +786,7 @@ impl Action {
     pub fn contexts(&self) -> &'static [&'static str] {
         match self {
             Action::App(_) => &["global"],
+            Action::Editor(EditorAction::Merge(_)) => &["editor.merge"],
             Action::Editor(_) => &["editor", "global"],
             Action::Tree(_) => &["tree", "global"],
             Action::Git(_) => &["git", "global"],

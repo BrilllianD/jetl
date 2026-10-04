@@ -124,6 +124,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   place on screen; Home and End stop at the row's ends before the line's. Each split pane wraps
   at its own width; folding works alongside. Column selection is not available while wrapped.
   The toggle is not saved with the session.
+- Three-pane conflict resolver. Git > Resolve Conflicts (`git.resolve_conflicts`, also offered
+  by itself after a merge, rebase, cherry-pick or revert stops on conflicts) lists the conflicted
+  files; pick one, then Merge… or take yours or theirs whole (the only choice for a binary file or
+  one a side deleted). Enter or a double click on a `U` file in the Commit tab opens the merge
+  too. The editor area becomes yours, the result and theirs side by side (below 90 columns yours
+  and theirs share the left pane as two tabs, Alt+Left/Right), scrolling together; the layout
+  comes back when it closes. The result starts from the common base with every non-conflicting
+  change applied (undo shows the base). Changes are colored, conflicts in `merge_conflict_bg`;
+  `»` takes yours, `«` theirs (after the other side: both) and `×` ignores, by click or
+  Alt+Shift+Left/Right and Alt+Shift+X at the caret; F7 and Shift+F7 step through what is left,
+  Alt+Shift+A applies the remaining non-conflicting changes, and the header has the counter and
+  Accept Yours, Accept Theirs (whole file), Apply Non-Conflicting, Apply and Cancel. The result
+  is editable; an edit inside a change resolves it. Apply (Ctrl+Enter, Alt+Enter) writes the file,
+  stages it and closes; Cancel (Esc) closes without writing, asking first when you changed
+  something. Layout commands and opening other files wait until it closes.
 
 ## [0.1.0] - 2026-10-03
 

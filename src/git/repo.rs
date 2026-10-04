@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, anyhow, bail};
 use git2::{BranchType, IndexAddOption, ObjectType, Repository, Status, StatusOptions};
 
+use super::merge::ConflictSides;
 use super::model::{Blame, BlameCommit, BranchInfo, ChangeEntry, FileStatus, Section, StashEntry, StatusSnapshot, tree_status};
 
 /// Open the repository containing `root` and return it with its canonical
@@ -340,6 +341,122 @@ pub fn discard(root: &Path, items: &[(Section, String)]) -> Result<String> {
     }
     let n = staged.len() + unstaged.len() + untracked.len();
     Ok(format!("Discarded changes to {n} path{}", if n == 1 { "" } else { "s" }))
+}
+
+/// The index's conflict entry for `rel`, if it has one.
+fn find_conflict(index: &git2::Index, rel: &str) -> Result<Option<git2::IndexConflict>> {
+    for c in index.conflicts()? {
+        let c = c?;
+        let path = [&c.our, &c.their, &c.ancestor].into_iter().flatten().next().map(|e| e.path.clone());
+        if path.as_deref() == Some(rel.as_bytes()) {
+            return Ok(Some(c));
+        }
+    }
+    Ok(None)
+}
+
+/// The stages of conflicted `abs` (each `None` when missing, all `None`
+/// when the index records no conflict for it), its work tree file, and
+/// what to call yours and theirs.
+pub fn conflict_sides(root: &Path, abs: &Path) -> Result<ConflictSides> {
+    let (repo, wd) = open(root)?;
+    let rel = rel_path(&wd, abs).ok_or_else(|| anyhow!("{} is outside the repository", abs.display()))?;
+    let index = repo.index()?;
+    let blob = |e: &Option<git2::IndexEntry>| -> Result<Option<Vec<u8>>> {
+        e.as_ref().map(|e| Ok(repo.find_blob(e.id)?.content().to_vec())).transpose()
+    };
+    let mut sides = ConflictSides { rel: rel.clone(), ..Default::default() };
+    if let Some(c) = find_conflict(&index, &rel)? {
+        (sides.base, sides.ours, sides.theirs) = (blob(&c.ancestor)?, blob(&c.our)?, blob(&c.their)?);
+    }
+    sides.work = std::fs::read(wd.join(&rel)).unwrap_or_default();
+    (sides.ours_label, sides.theirs_label) = conflict_labels(&repo);
+    Ok(sides)
+}
+
+/// Names for yours and theirs from the operation that stopped: the
+/// branch (else commit) for a merge, the commit picked or reverted, and
+/// during a rebase the upstream as yours and the commit being replayed as
+/// theirs.
+fn conflict_labels(repo: &Repository) -> (String, String) {
+    let short = |oid: git2::Oid| oid.to_string()[..7].to_string();
+    let head = repo.head().ok();
+    let head_sha = head.as_ref().and_then(|h| h.target()).map(short);
+    let head_name = match &head {
+        Some(h) if h.is_branch() => h.shorthand().ok().map(str::to_string),
+        _ => head_sha.clone(),
+    }
+    .unwrap_or_else(|| "HEAD".into());
+    let read = |name: &str| {
+        let text = std::fs::read_to_string(repo.path().join(name)).ok()?;
+        git2::Oid::from_str(text.lines().next()?.trim()).ok()
+    };
+    let branch_at = |oid: git2::Oid| {
+        let branches = repo.branches(Some(BranchType::Local)).ok()?;
+        branches.flatten().find(|(b, _)| b.get().target() == Some(oid)).and_then(|(b, _)| b.name().ok().flatten().map(str::to_string))
+    };
+    let subject = |oid: git2::Oid| {
+        let summary = repo.find_commit(oid).ok().and_then(|c| c.summary().ok().flatten().map(str::to_string));
+        format!("{} {}", short(oid), summary.unwrap_or_default()).trim_end().to_string()
+    };
+    use git2::RepositoryState as S;
+    let theirs = match repo.state() {
+        S::Merge => read("MERGE_HEAD").map(|o| branch_at(o).unwrap_or_else(|| short(o))),
+        S::CherryPick | S::CherryPickSequence => read("CHERRY_PICK_HEAD").map(|o| format!("cherry-pick {}", subject(o))),
+        S::Revert | S::RevertSequence => read("REVERT_HEAD").map(|o| format!("revert {}", subject(o))),
+        S::Rebase | S::RebaseInteractive | S::RebaseMerge => {
+            let replayed = read("REBASE_HEAD").map(subject).unwrap_or_else(|| "the commit being rebased".into());
+            return (format!("upstream {}", head_sha.unwrap_or_default()).trim_end().to_string(), replayed);
+        }
+        _ => None,
+    };
+    (head_name, theirs.unwrap_or_else(|| "theirs".into()))
+}
+
+/// Which side of a conflict to take whole.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConflictSide {
+    Ours,
+    Theirs,
+}
+
+/// Resolve conflicted `rel` by taking one side whole, like `git checkout
+/// --ours/--theirs` and `git add`: that stage's blob is written to the
+/// work tree (its executable bit kept) and staged; a side that deleted the
+/// file deletes it and stages the deletion. Returns a line for the console.
+pub fn resolve_side(root: &Path, rel: &str, side: ConflictSide) -> Result<String> {
+    let (repo, wd) = open(root)?;
+    let mut index = repo.index()?;
+    let c = find_conflict(&index, rel)?.ok_or_else(|| anyhow!("{rel} has no conflict to resolve"))?;
+    let (entry, name) = match side {
+        ConflictSide::Ours => (c.our, "yours"),
+        ConflictSide::Theirs => (c.their, "theirs"),
+    };
+    let abs = wd.join(rel);
+    match entry {
+        Some(e) => {
+            if e.mode == 0o120000 {
+                bail!("{rel} is a symbolic link; resolve it with the git command line");
+            }
+            let blob = repo.find_blob(e.id)?;
+            std::fs::write(&abs, blob.content()).with_context(|| format!("write {rel}"))?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mode = if e.mode & 0o111 != 0 { 0o755 } else { 0o644 };
+                std::fs::set_permissions(&abs, std::fs::Permissions::from_mode(mode)).with_context(|| format!("chmod {rel}"))?;
+            }
+            index.add_path(Path::new(rel)).with_context(|| format!("stage {rel}"))?;
+        }
+        None => {
+            if abs.symlink_metadata().is_ok() {
+                std::fs::remove_file(&abs).with_context(|| format!("delete {rel}"))?;
+            }
+            index.remove_path(Path::new(rel)).with_context(|| format!("stage deletion of {rel}"))?;
+        }
+    }
+    index.write()?;
+    Ok(format!("Resolved {rel} with {name}"))
 }
 
 /// Blame of the file at `abs` as of HEAD.
@@ -772,6 +889,80 @@ pub(crate) mod tests {
         assert_eq!(b.commits[0].author, "Test");
         r.write("new.txt", "x\n");
         assert!(blame(&r.dir, &r.dir.join("new.txt")).is_err(), "untracked");
+    }
+
+    /// Run the git command line in `dir`; `ok` false allows a failure
+    /// (a merge stopping on conflicts).
+    fn git_cli(dir: &Path, args: &[&str], ok: bool) {
+        let out = std::process::Command::new("git").args(args).current_dir(dir).output().unwrap();
+        assert!(!ok || out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    }
+
+    /// A repository where merging `dev` into the first branch conflicts in
+    /// a.txt (both changed line two; only the first branch added line
+    /// four) and b.txt (modified on the first branch, deleted on dev).
+    fn conflicted_merge(name: &str) -> TempRepo {
+        let r = TempRepo::new(name);
+        r.write("a.txt", "one\ntwo\nthree\n");
+        r.write("b.txt", "b\n");
+        stage_all(&r.dir).unwrap();
+        commit(&r.dir, "first").unwrap();
+        let main = status(&r.dir).unwrap().branch.unwrap();
+        git_cli(&r.dir, &["switch", "-qc", "dev"], true);
+        r.write("a.txt", "one\nTWO dev\nthree\n");
+        std::fs::remove_file(r.dir.join("b.txt")).unwrap();
+        git_cli(&r.dir, &["commit", "-qam", "dev change"], true);
+        git_cli(&r.dir, &["switch", "-q", &main], true);
+        r.write("a.txt", "one\nTWO main\nthree\nfour\n");
+        r.write("b.txt", "b changed\n");
+        git_cli(&r.dir, &["commit", "-qam", "main change"], true);
+        git_cli(&r.dir, &["merge", "-q", "dev"], false);
+        r
+    }
+
+    #[test]
+    fn conflict_sides_read_the_stages_and_resolve_side_takes_one() {
+        use crate::git::merge::{ChunkKind, MergeInput, chunks};
+        let r = conflicted_merge("conflict-sides");
+        let main = status(&r.dir).unwrap().branch.unwrap();
+        let s = conflict_sides(&r.dir, &r.dir.join("a.txt")).unwrap();
+        assert_eq!(s.base.as_deref(), Some(b"one\ntwo\nthree\n".as_slice()));
+        assert_eq!(s.ours.as_deref(), Some(b"one\nTWO main\nthree\nfour\n".as_slice()));
+        assert_eq!(s.theirs.as_deref(), Some(b"one\nTWO dev\nthree\n".as_slice()));
+        assert!(String::from_utf8_lossy(&s.work).contains("<<<<<<<"));
+        assert_eq!((s.ours_label.as_str(), s.theirs_label.as_str()), (main.as_str(), "dev"));
+        let MergeInput::Text(t) = MergeInput::classify(&s).unwrap() else { panic!("a text merge") };
+        let kinds: Vec<ChunkKind> = chunks(&t.base, &t.ours, &t.theirs).into_iter().map(|c| c.kind).collect();
+        assert_eq!(kinds, [ChunkKind::Conflict, ChunkKind::OursOnly]);
+        // Modified here, deleted on dev: no line merge.
+        let b = conflict_sides(&r.dir, &r.dir.join("b.txt")).unwrap();
+        assert!(b.theirs.is_none() && b.ours.is_some());
+        assert!(matches!(MergeInput::classify(&b).unwrap(), MergeInput::SidesOnly(_)));
+        // Taking a side writes and stages it.
+        resolve_side(&r.dir, "a.txt", ConflictSide::Theirs).unwrap();
+        assert_eq!(std::fs::read_to_string(r.dir.join("a.txt")).unwrap(), "one\nTWO dev\nthree\n");
+        resolve_side(&r.dir, "b.txt", ConflictSide::Theirs).unwrap();
+        assert!(!r.dir.join("b.txt").exists(), "theirs deleted it");
+        let repo = Repository::open(&r.dir).unwrap();
+        let index = repo.index().unwrap();
+        assert!(!index.has_conflicts());
+        assert!(index.get_path(Path::new("b.txt"), 0).is_none());
+        assert!(resolve_side(&r.dir, "a.txt", ConflictSide::Ours).unwrap_err().to_string().contains("no conflict"));
+        // No stages left: the work file has no markers either.
+        let s = conflict_sides(&r.dir, &r.dir.join("a.txt")).unwrap();
+        assert!(s.ours.is_none());
+        assert!(MergeInput::classify(&s).unwrap_err().to_string().contains("no conflict markers"));
+    }
+
+    #[test]
+    fn resolve_side_keeps_a_file_the_other_side_deleted() {
+        let r = conflicted_merge("conflict-keep");
+        resolve_side(&r.dir, "b.txt", ConflictSide::Ours).unwrap();
+        assert_eq!(std::fs::read_to_string(r.dir.join("b.txt")).unwrap(), "b changed\n");
+        // Yours is HEAD's version: nothing left to show for it.
+        assert!(status(&r.dir).unwrap().entries.iter().all(|e| e.rel != "b.txt"));
+        let repo = Repository::open(&r.dir).unwrap();
+        assert!(repo.index().unwrap().get_path(Path::new("b.txt"), 0).is_some());
     }
 
     #[test]

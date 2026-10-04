@@ -205,7 +205,7 @@ impl Editor {
         let mut asked = false;
         for i in 0..self.buffers.len() {
             let b = &self.buffers[i];
-            if !b.dirty() {
+            if !b.dirty() || self.is_scratch(b.id) {
                 continue;
             }
             if disk_conflict(b) {

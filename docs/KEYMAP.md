@@ -177,6 +177,20 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Alt+Enter` | `lsp.context_actions` | Show context actions (quick fixes, refactorings) at the caret |
 | `Ctrl+F12` | `lsp.file_structure` | File structure: the file's symbols from its language server |
 
+## editor.merge
+
+| Keys | Action | Description |
+|---|---|---|
+| `F7` | `merge.next_conflict` | Merge: next unresolved change |
+| `Shift+F7` | `merge.prev_conflict` | Merge: previous unresolved change |
+| `Alt+Shift+Left` | `merge.accept_left` | Merge: accept yours for the change at the caret |
+| `Alt+Shift+Right` | `merge.accept_right` | Merge: accept theirs for the change at the caret |
+| `Alt+Shift+X` | `merge.ignore` | Merge: ignore the change at the caret |
+| `Alt+Shift+A` | `merge.apply_non_conflicting` | Merge: apply all non-conflicting changes |
+| `Alt+Enter` | `merge.apply` | Merge: save the result, stage it and close the resolver |
+| `Ctrl+Enter` * | `merge.apply` | Merge: save the result, stage it and close the resolver |
+| `Esc` | `merge.cancel` | Merge: close the resolver without saving |
+
 ## tree
 
 | Keys | Action | Description |
@@ -417,7 +431,10 @@ Reachable from Find Action (F1) or by binding them in `keymap.toml`.
 | `tree.toggle_hidden` | Tree: show or hide hidden files |
 | `tree.toggle_ignored` | Tree: show or hide ignored files |
 | `git.unstage_all` | Git: unstage all |
+| `git.resolve_conflicts` | Git: resolve conflicts (three-pane merge or take one side) |
 | `git.commit_and_push` | Git: commit and push |
 | `git.fetch` | Git: fetch |
 | `git.focus_message` | Git: focus commit message |
+| `merge.accept_all_left` | Merge: take yours for the whole file |
+| `merge.accept_all_right` | Merge: take theirs for the whole file |
 | `lsp.restart` | Restart language servers |
