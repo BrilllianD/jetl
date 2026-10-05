@@ -70,9 +70,19 @@ impl App {
         if let Err(e) = std::fs::create_dir_all(&self.paths.config_dir) {
             tracing::warn!("cannot create {}: {e}", self.paths.config_dir.display());
         }
-        match ConfigWatcher::start(watch::targets(&self.paths, &self.config), self.bus_tx.clone()) {
+        let started = ConfigWatcher::start(watch::targets(&self.paths, &self.config), self.bus_tx.clone());
+        self.config_watcher_started(started);
+    }
+
+    /// Keep the config watcher, or tell the user once (it is started only
+    /// here) that config changes apply at the next start.
+    fn config_watcher_started(&mut self, result: anyhow::Result<ConfigWatcher>) {
+        match result {
             Ok(w) => self.config_reload.watcher = Some(w),
-            Err(e) => tracing::warn!("config watcher unavailable ({e:#}); config changes apply at the next start"),
+            Err(e) => {
+                tracing::warn!("config watcher unavailable ({e:#}); config changes apply at the next start");
+                self.notify(Level::Warn, format!("Config hot reload unavailable ({e:#}); config changes apply at the next start"));
+            }
         }
     }
 
@@ -292,6 +302,25 @@ mod tests {
     fn last(app: &App) -> (Level, String) {
         let n = app.notifications.last().expect("a notification");
         (n.level, n.text.clone())
+    }
+
+    #[tokio::test]
+    async fn watcher_failure_is_reported() {
+        let (mut app, dir) = test_app("config-watch-fails");
+        app.config_reload.watcher = None;
+        let before = app.notifications.len();
+        app.config_watcher_started(Err(anyhow::anyhow!("inotify instance limit reached")));
+        assert!(app.config_reload.watcher.is_none());
+        assert_eq!(app.notifications.len(), before + 1);
+        assert_eq!(
+            last(&app),
+            (Level::Warn, "Config hot reload unavailable (inotify instance limit reached); config changes apply at the next start".into())
+        );
+        // A later config change (here, by hand) still reloads without a watcher.
+        write(&app, "config.toml", &format!("{NO_LSP}[editor]\ntab_width = 8\n"));
+        reload(&mut app, &[ConfigFile::Config]);
+        assert_eq!(app.config.editor.tab_width, 8);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn bound(app: &App, keys: &str) -> Option<Action> {

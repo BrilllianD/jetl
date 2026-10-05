@@ -11,7 +11,9 @@ jetl reads three optional files from its config directory,
 
 jetl watches these files while it runs and applies a change when a file is
 saved (after a 150 ms pause, like the project watcher; see
-[Reloading](#reloading)). A missing file means the built-in defaults. If a
+[Reloading](#reloading)). If the watch cannot start (for example the
+system's inotify limit is reached), a warning says so once and changes apply
+at the next start. A missing file means the built-in defaults. If a
 file cannot be read or is not valid TOML, jetl logs the error and shows a
 notification. At startup a file that cannot be read or is not valid TOML is
 replaced by the defaults; when a running jetl reloads it, the current
