@@ -136,9 +136,9 @@ pub struct Editor {
     /// A closed file being reopened by back/forward or a numbered
     /// bookmark, and where to put the caret once it loads.
     pending_nav: Option<(PathBuf, nav::PendingAt)>,
-    /// Numbered bookmarks of files without a tab: digit to path and line
-    /// (see `bookmarks.rs`).
-    closed_digits: std::collections::BTreeMap<u8, (PathBuf, usize)>,
+    /// Bookmarks of files without a tab: path to line and digit, as in
+    /// `Buffer::bookmarks` (see `bookmarks.rs`).
+    closed_bookmarks: std::collections::BTreeMap<PathBuf, std::collections::BTreeMap<usize, Option<u8>>>,
     /// The last copy made at several carets: the clipboard text and each
     /// caret's piece, so pasting it at as many carets splits it again.
     multi_clip: Option<(String, Vec<String>)>,
@@ -200,7 +200,7 @@ impl Editor {
             last_search: None,
             nav: NavRing::default(),
             pending_nav: None,
-            closed_digits: Default::default(),
+            closed_bookmarks: Default::default(),
             multi_clip: None,
             column_mode: false,
             merge: None,
@@ -292,12 +292,19 @@ impl Editor {
         self.next_id += 1;
         let setup = self.path_setup(&path, text, theme);
         let pending = self.pending_nav.take_if(|(p, _)| *p == path).map(|(_, pos)| pos);
-        let digits = self.unpark_digits(&path);
+        let parked = self.unpark_bookmarks(&path);
         // A file not on disk yet has no line ending of its own.
         let le = setup.settings.end_of_line.filter(|_| setup.mtime.is_none() && text.is_empty());
         let mut buf = Buffer::from_text(id, None, text, lossy);
         let last = buf.rope.len_lines() - 1;
-        buf.bookmarks.extend(digits.into_iter().map(|(line, d)| (line.min(last), Some(d))));
+        for (line, digit) in parked {
+            // Lines past the end (the file shrank) land on the last one; a
+            // digit wins over a plain bookmark there.
+            let slot = buf.bookmarks.entry(line.min(last)).or_insert(digit);
+            if slot.is_none() {
+                *slot = digit;
+            }
+        }
         adopt_path(&mut buf, path, setup, self.tab_width);
         if let Some(le) = le {
             buf.line_ending = le;

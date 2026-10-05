@@ -1,13 +1,14 @@
 //! Bookmarks across buffers: the chooser (Shift+F11), numbered bookmarks
 //! (Ctrl+F11 sets a digit, Ctrl+0..9 or Alt+B then a digit jumps) and the
-//! numbered bookmarks of closed files.
+//! bookmarks of closed files.
 //!
 //! A digit belongs to at most one bookmark of the session: giving it to a
 //! line removes the bookmark that had it (JetBrains). Line bookmarks live in
 //! `Buffer::bookmarks`, so they follow edits; when a file's last tab closes
-//! its numbered bookmarks wait in `Editor::closed_digits` (by path and line)
-//! and go back into the buffer when the file opens again.
+//! its bookmarks, plain and numbered, wait in `Editor::closed_bookmarks` (by
+//! path and line) and go back into the buffer when the file opens again.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use super::Editor;
@@ -22,9 +23,12 @@ use crate::ui::dialog::{Dialog, DialogId, DialogKind};
 pub enum BookmarkTarget {
     /// A line of an open buffer.
     Open(BufferId, usize),
-    /// The numbered bookmark of a closed file.
-    Closed(u8),
+    /// A bookmarked line of a closed file.
+    Closed(PathBuf, usize),
 }
+
+/// A bookmark of a closed file: its path, 0-based line and digit.
+pub type ClosedBookmark = (PathBuf, usize, Option<u8>);
 
 /// The gutter glyph of a bookmark: its digit, else ◆.
 fn glyph(digit: Option<u8>) -> char {
@@ -37,7 +41,7 @@ const PREFERRED: [u8; 10] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 0];
 
 impl Editor {
     /// Shift+F11: a choice dialog of the bookmarks of all open buffers,
-    /// then the numbered bookmarks of closed files.
+    /// then those of closed files.
     pub(super) fn show_bookmarks(&mut self, cx: &mut Ctx) {
         let root = cx.workspace.root();
         let rel = |p: &Path| p.strip_prefix(root).unwrap_or(p).display().to_string();
@@ -50,9 +54,11 @@ impl Editor {
                 targets.push(BookmarkTarget::Open(b.id, line));
             }
         }
-        for (&digit, (path, line)) in &self.closed_digits {
-            items.push(format!("{digit} {}:{} (closed)", rel(path), line + 1));
-            targets.push(BookmarkTarget::Closed(digit));
+        for (path, lines) in &self.closed_bookmarks {
+            for (&line, &digit) in lines {
+                items.push(format!("{} {}:{} (closed)", glyph(digit), rel(path), line + 1));
+                targets.push(BookmarkTarget::Closed(path.clone(), line));
+            }
         }
         if items.is_empty() {
             cx.notify(Level::Info, "No bookmarks; F11 toggles one on the caret line, Ctrl+F11 a numbered one");
@@ -63,10 +69,25 @@ impl Editor {
 
     /// Go to an item of the bookmarks dialog.
     pub fn goto_bookmark_target(&mut self, target: &BookmarkTarget, cx: &mut Ctx) {
-        match *target {
-            BookmarkTarget::Open(id, line) => self.goto_bookmark(id, line),
-            BookmarkTarget::Closed(digit) => self.goto_digit(digit, cx),
+        match target {
+            BookmarkTarget::Open(id, line) => self.goto_bookmark(*id, *line),
+            BookmarkTarget::Closed(path, line) => self.open_closed_at(path.clone(), *line, cx),
         }
+    }
+
+    /// Open the closed file `path` with the caret going to `line` once it
+    /// loads (already open: just go there).
+    fn open_closed_at(&mut self, path: PathBuf, line: usize, cx: &mut Ctx) {
+        if self.merge.is_some() {
+            return;
+        }
+        if let Some(id) = self.index_of(&path).map(|i| self.buffers[i].id) {
+            self.goto_bookmark(id, line);
+            return;
+        }
+        self.push_nav_here();
+        self.pending_nav = Some((path.clone(), PendingAt::Line(line)));
+        cx.effects.push(Effect::OpenFile(path));
     }
 
     /// Jump to bookmarked `line` of buffer `id`; the position left is
@@ -86,13 +107,16 @@ impl Editor {
         }
         if let Some((id, line)) = self.buffers.iter().find_map(|b| b.digit_line(digit).map(|l| (b.id, l))) {
             self.goto_bookmark(id, line);
-        } else if let Some((path, line)) = self.closed_digits.get(&digit).cloned() {
-            self.push_nav_here();
-            self.pending_nav = Some((path.clone(), PendingAt::Line(line)));
-            cx.effects.push(Effect::OpenFile(path));
+        } else if let Some((path, line)) = self.closed_digit(digit) {
+            self.open_closed_at(path, line, cx);
         } else {
             cx.notify(Level::Info, format!("No bookmark {digit}; Ctrl+F11 numbers the caret line"));
         }
+    }
+
+    /// The closed file's bookmark numbered `digit`: its path and line.
+    fn closed_digit(&self, digit: u8) -> Option<(PathBuf, usize)> {
+        self.closed_bookmarks.iter().find_map(|(p, lines)| lines.iter().find(|(_, d)| **d == Some(digit)).map(|(l, _)| (p.clone(), *l)))
     }
 
     /// Ctrl+F11: ask for the digit of the caret line's bookmark. Each digit
@@ -126,7 +150,7 @@ impl Editor {
     /// The digits in use, in open buffers and closed files.
     fn used_digits(&self) -> Vec<u8> {
         let open = self.buffers.iter().flat_map(|b| b.digits().into_iter().map(|(d, _)| d));
-        open.chain(self.closed_digits.keys().copied()).collect()
+        open.chain(self.closed_bookmarks.values().flat_map(|lines| lines.values().filter_map(|d| *d))).collect()
     }
 
     /// The answer of the Ctrl+F11 dialog: give `digit` to the bookmark on
@@ -147,23 +171,25 @@ impl Editor {
         for b in &mut self.buffers {
             b.bookmarks.retain(|_, d| *d != Some(digit));
         }
-        self.closed_digits.remove(&digit);
+        for lines in self.closed_bookmarks.values_mut() {
+            lines.retain(|_, d| *d != Some(digit));
+        }
+        self.closed_bookmarks.retain(|_, lines| !lines.is_empty());
     }
 
-    /// Keep the numbered bookmarks of buffer `i`, which is closing.
-    pub(super) fn park_digits(&mut self, i: usize) {
+    /// Keep the bookmarks of buffer `i`, which is closing.
+    pub(super) fn park_bookmarks(&mut self, i: usize) {
         let b = &self.buffers[i];
         let Some(path) = &b.path else { return };
-        for (digit, line) in b.digits() {
-            self.closed_digits.insert(digit, (path.clone(), line));
+        if !b.bookmarks.is_empty() {
+            self.closed_bookmarks.insert(path.clone(), b.bookmarks.clone());
         }
     }
 
-    /// The numbered bookmarks parked for `path`, as (line, digit), taken
-    /// out of the closed list (the file is opening).
-    pub(super) fn unpark_digits(&mut self, path: &Path) -> Vec<(usize, u8)> {
-        let digits: Vec<u8> = self.closed_digits.iter().filter(|(_, (p, _))| p == path).map(|(d, _)| *d).collect();
-        digits.into_iter().filter_map(|d| self.closed_digits.remove(&d).map(|(_, line)| (line, d))).collect()
+    /// The bookmarks parked for `path`, line to digit, taken out of the
+    /// closed list (the file is opening).
+    pub(super) fn unpark_bookmarks(&mut self, path: &Path) -> BTreeMap<usize, Option<u8>> {
+        self.closed_bookmarks.remove(path).unwrap_or_default()
     }
 
     /// Give buffer `i` the numbered bookmarks of a session, (digit, line);
@@ -178,35 +204,46 @@ impl Editor {
         }
     }
 
-    /// The numbered bookmarks of closed files, (digit, path, line).
-    pub fn closed_digits(&self) -> Vec<(u8, PathBuf, usize)> {
-        self.closed_digits.iter().map(|(d, (p, l))| (*d, p.clone(), *l)).collect()
+    /// The bookmarks of closed files, by path then line.
+    pub fn closed_bookmarks(&self) -> Vec<ClosedBookmark> {
+        self.closed_bookmarks.iter().flat_map(|(p, lines)| lines.iter().map(|(l, d)| (p.clone(), *l, *d))).collect()
     }
 
-    /// Replace the numbered bookmarks of closed files (a session loaded, or
-    /// the root changed). A digit in use or a file that is open is skipped.
-    pub fn restore_closed_digits(&mut self, digits: &[(u8, PathBuf, usize)]) {
-        self.closed_digits.clear();
-        for (digit, path, line) in digits {
-            if *digit > 9 || self.used_digits().contains(digit) || self.index_of(path).is_some() {
+    /// The numbered bookmarks of closed files, (digit, path, line), by
+    /// digit.
+    pub fn closed_digits(&self) -> Vec<(u8, PathBuf, usize)> {
+        let mut out: Vec<_> = self.closed_bookmarks().into_iter().filter_map(|(p, l, d)| d.map(|d| (d, p, l))).collect();
+        out.sort();
+        out
+    }
+
+    /// Replace the bookmarks of closed files (a session loaded, or the root
+    /// changed). A file that is open, a digit past 9 or already in use is
+    /// skipped; a line given twice keeps its first digit.
+    pub fn restore_closed_bookmarks(&mut self, bookmarks: &[ClosedBookmark]) {
+        self.closed_bookmarks.clear();
+        for (path, line, digit) in bookmarks {
+            if self.index_of(path).is_some() || digit.is_some_and(|d| d > 9 || self.used_digits().contains(&d)) {
                 continue;
             }
-            self.closed_digits.insert(*digit, (path.clone(), *line));
+            let slot = self.closed_bookmarks.entry(path.clone()).or_default().entry(*line).or_insert(*digit);
+            if slot.is_none() {
+                *slot = *digit;
+            }
         }
     }
 
-    /// Forget the numbered bookmarks of files under `path` that are closed
-    /// (it was deleted).
+    /// Forget the bookmarks of closed files under `path` (it was deleted).
     pub(super) fn drop_closed_under(&mut self, path: &Path) {
-        self.closed_digits.retain(|_, (p, _)| !p.starts_with(path));
+        self.closed_bookmarks.retain(|p, _| !p.starts_with(path));
     }
 
     /// Follow a rename of `from` to `to` in the closed files' bookmarks.
     pub(super) fn retarget_closed(&mut self, from: &Path, to: &Path) {
-        for (p, _) in self.closed_digits.values_mut() {
-            if let Some(moved) = super::nav::moved_path(p, from, to) {
-                *p = moved;
-            }
+        let old = std::mem::take(&mut self.closed_bookmarks);
+        for (p, lines) in old {
+            let p = super::nav::moved_path(&p, from, to).unwrap_or(p);
+            self.closed_bookmarks.entry(p).or_default().extend(lines);
         }
     }
 }
@@ -347,6 +384,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn plain_bookmarks_of_a_closed_file_come_back() {
+        let (mut app, dir) = test_app("bookmark-plain-closed");
+        open(&mut app, "a.txt", "a0\na1\na2\na3\n");
+        goto(&mut app, 1);
+        app.perform(Action::Editor(EditorAction::ToggleBookmark));
+        goto(&mut app, 3);
+        number(&mut app, KeyCode::Char('6'));
+        let a = app.workspace.root.join("a.txt");
+        app.editor.force_close(app.editor.index_of(&a).unwrap());
+        assert_eq!(app.editor.closed_bookmarks(), vec![(a.clone(), 1, None), (a.clone(), 3, Some(6))]);
+        // Reopened (shorter on disk now): both are back, the numbered one
+        // on the last line.
+        app.editor.open_text(a.clone(), "a0\na1\na2", false, &app.theme);
+        let b = app.editor.active_buffer().unwrap();
+        assert_eq!(b.bookmarks.iter().map(|(l, d)| (*l, *d)).collect::<Vec<_>>(), vec![(1, None), (2, Some(6))]);
+        assert!(app.editor.closed_bookmarks().is_empty());
+        // Close All parks them too; a rename follows; a delete drops them.
+        app.editor.force_close_all();
+        let moved = app.workspace.root.join("b.txt");
+        app.editor.retarget(&a, &moved);
+        assert_eq!(app.editor.closed_bookmarks(), vec![(moved.clone(), 1, None), (moved.clone(), 2, Some(6))]);
+        app.editor.close_under(&moved);
+        assert!(app.editor.closed_bookmarks().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
     async fn ctrl_7_comments_in_legacy_terminals_and_jumps_with_kitty() {
         let (mut app, dir) = test_app("bookmark-ctrl-7");
         open(&mut app, "a.rs", "fn a() {}\nfn b() {}\nfn c() {}\n");
@@ -380,12 +444,13 @@ mod tests {
         goto(&mut app, 1);
         number(&mut app, KeyCode::Char('4'));
         open(&mut app, "b.txt", "x\ny\n");
+        app.perform(Action::Editor(EditorAction::ToggleBookmark));
         goto(&mut app, 1);
         number(&mut app, KeyCode::Char('2'));
         app.editor.force_close(app.editor.index_of(&app.workspace.root.join("b.txt")).unwrap());
         app.perform(Action::Editor(EditorAction::ShowBookmarks));
         let Some(DialogKind::Choice { items, .. }) = app.dialog.as_ref().map(|d| &d.kind) else { panic!("no dialog") };
-        assert_eq!(items, &["◆ a.txt:1 one", "4 a.txt:2 two", "2 b.txt:2 (closed)"]);
+        assert_eq!(items, &["◆ a.txt:1 one", "4 a.txt:2 two", "◆ b.txt:1 (closed)", "2 b.txt:2 (closed)"]);
         // Choosing the closed one opens its file at the line.
         key(&mut app, KeyCode::Up, KeyModifiers::NONE);
         key(&mut app, KeyCode::End, KeyModifiers::NONE);

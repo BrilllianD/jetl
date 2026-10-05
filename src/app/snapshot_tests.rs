@@ -293,6 +293,27 @@ async fn bookmark_digit_dialog() {
     assert_snapshot!("bookmark_digit_dialog", snapshot(&term, &marks, None));
 }
 
+#[tokio::test]
+async fn bookmarks_dialog_with_closed_files() {
+    let mut fx = stable_app("bookmarks-dialog-closed");
+    let app = &mut fx.app;
+    // notes.log: a plain bookmark on line 1 and bookmark 3 on line 4,
+    // then closed; other.log stays open with a plain bookmark on line 2.
+    let notes = load(app, "notes.log", PLAIN);
+    editor(app, EditorAction::ToggleBookmark);
+    moves(app, Motion::Down, 3);
+    editor(app, EditorAction::ToggleNumberedBookmark);
+    app.handle_key(KeyEvent::new(KeyCode::Char('3'), KeyModifiers::NONE));
+    load(app, "other.log", PLAIN);
+    moves(app, Motion::Down, 1);
+    editor(app, EditorAction::ToggleBookmark);
+    app.editor.force_close(app.editor.index_of(&notes).unwrap());
+    editor(app, EditorAction::ShowBookmarks);
+    let term = draw_app(app, 80, 24);
+    let marks = [Mark::bg('L', "selected", app.theme.list_selected.bg.unwrap())];
+    assert_snapshot!("bookmarks_dialog_with_closed_files", snapshot(&term, &marks, None));
+}
+
 const WRAPPED: &str = "short\nthe quick brown fox jumps over the lazy dog héllo 世界 again and again\n\ttabbed line that wraps after the tab and more words\nend\n";
 
 #[tokio::test]

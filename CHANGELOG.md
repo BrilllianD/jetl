@@ -210,6 +210,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - With 256 colors (`ui.colors = "256"`, or no true color detected) the Terminal window no longer
   passes RGB colors through: they are drawn as the nearest palette colors, and the shell no
   longer gets `COLORTERM=truecolor` (a change of `ui.colors` applies to the next shell).
+- Plain (F11) bookmarks of a file are kept when its tab closes, like numbered ones: they come
+  back when the file opens again, are listed in Shift+F11 as "(closed)", and are saved with the
+  session.
 - With the kitty keyboard protocol, Ctrl+7 in the editor jumps to numbered bookmark 7 instead of
   toggling a line comment. In legacy terminals and tmux, where Ctrl+/ and Ctrl+7 send the same
   key, it is read as Ctrl+/ everywhere, so a `ctrl-7` binding in `keymap.toml` needs the kitty

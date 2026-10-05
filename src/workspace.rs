@@ -69,6 +69,19 @@ pub struct Session {
     /// Numbered bookmarks of files without a tab.
     #[serde(default)]
     pub closed_bookmarks: Vec<SessionBookmark>,
+    /// Plain bookmarks of files without a tab (a field of its own, so
+    /// sessions stay readable by builds that know only numbered ones).
+    #[serde(default)]
+    pub closed_plain_bookmarks: Vec<SessionClosedFile>,
+}
+
+/// The plain bookmarks of a file without a tab.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SessionClosedFile {
+    pub path: PathBuf,
+    /// Bookmarked lines, 0-based.
+    pub lines: Vec<usize>,
 }
 
 /// A numbered bookmark of a file without a tab.
@@ -272,7 +285,7 @@ impl App {
         self.editor.clear_nav();
         self.pending_revert = None;
         // The closed files' numbered bookmarks come with the new session.
-        self.editor.restore_closed_digits(&[]);
+        self.editor.restore_closed_bookmarks(&[]);
         self.restore_session();
         self.load_recent_projects(true);
         self.notify(Level::Info, format!("Switched to {}", root.display()));
@@ -332,7 +345,15 @@ impl App {
         let splits = self.session_splits(&files);
         let closed_bookmarks =
             self.editor.closed_digits().into_iter().map(|(digit, path, line)| SessionBookmark { digit, path, line }).collect();
-        Session { root, files, active, recent, layout, expanded, splits, closed_bookmarks }
+        let mut closed_plain_bookmarks: Vec<SessionClosedFile> = Vec::new();
+        // By path then line, so one entry per file.
+        for (path, line, _) in self.editor.closed_bookmarks().into_iter().filter(|(_, _, d)| d.is_none()) {
+            match closed_plain_bookmarks.last_mut() {
+                Some(f) if f.path == path => f.lines.push(line),
+                _ => closed_plain_bookmarks.push(SessionClosedFile { path, lines: vec![line] }),
+            }
+        }
+        Session { root, files, active, recent, layout, expanded, splits, closed_bookmarks, closed_plain_bookmarks }
     }
 
     /// The editor's groups as a session, `None` with one group.
@@ -434,8 +455,10 @@ impl App {
         self.editor.enforce_tab_limit();
         // Opening the tabs is not navigation.
         self.editor.clear_nav();
-        let closed: Vec<_> = session.closed_bookmarks.iter().map(|b| (b.digit, b.path.clone(), b.line)).collect();
-        self.editor.restore_closed_digits(&closed);
+        let numbered = session.closed_bookmarks.iter().map(|b| (b.path.clone(), b.line, Some(b.digit)));
+        let plain = session.closed_plain_bookmarks.iter().flat_map(|f| f.lines.iter().map(|&l| (f.path.clone(), l, None)));
+        let closed: Vec<_> = numbered.chain(plain).collect();
+        self.editor.restore_closed_bookmarks(&closed);
         if let Some(l) = &session.layout {
             self.layout.restore(l.left, l.left_w, l.bottom, l.bottom_h);
             if let Some(tw) = self.focus.current.tool_window()
@@ -539,6 +562,7 @@ mod tests {
                 focused: 1,
             }),
             closed_bookmarks: vec![SessionBookmark { digit: 2, path: root.join("src/lib.rs"), line: 12 }],
+            closed_plain_bookmarks: vec![SessionClosedFile { path: root.join("src/lib.rs"), lines: vec![3, 40] }],
         };
         s.save(&dir).unwrap();
         assert_eq!(Session::load(&dir, &root), Some(s.clone()));
@@ -551,7 +575,7 @@ mod tests {
         assert_eq!((old.files[0].line, old.active, old.recent.len(), old.files[0].bookmarks.len()), (0, None, 0, 0));
         assert_eq!((old.layout, old.expanded.len(), old.files[0].pinned, old.splits), (None, 0, false, None));
         assert!(old.files[0].folds.is_empty());
-        assert!(old.files[0].bookmark_digits.is_empty() && old.closed_bookmarks.is_empty());
+        assert!(old.files[0].bookmark_digits.is_empty() && old.closed_bookmarks.is_empty() && old.closed_plain_bookmarks.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -579,7 +603,7 @@ mod tests {
         let id = app.editor.buffers[0].id;
         app.editor.set_bookmark_digit(id, 1, 5);
         let gone = app.workspace.root.join("gone.txt");
-        app.editor.restore_closed_digits(&[(2, gone.clone(), 4)]);
+        app.editor.restore_closed_bookmarks(&[(gone.clone(), 4, Some(2)), (gone.clone(), 1, None), (gone.clone(), 7, None)]);
         let b = &mut app.editor.buffers[0];
         let fold = crate::editor::fold::Fold { start: 0, end: b.rope.line_to_char(2) + 3 };
         assert!(b.view.folds.collapse(fold, &b.rope));
@@ -588,6 +612,7 @@ mod tests {
         assert_eq!(session.files[0].bookmarks, vec![1, 3]);
         assert_eq!(session.files[0].bookmark_digits, vec![(5, 1)]);
         assert_eq!(session.closed_bookmarks, vec![SessionBookmark { digit: 2, path: gone.clone(), line: 4 }]);
+        assert_eq!(session.closed_plain_bookmarks, vec![SessionClosedFile { path: gone.clone(), lines: vec![1, 7] }]);
         assert_eq!(session.files[0].folds, [SessionFold { start_line: 0, start_col: 0, end_line: 2, end_col: 3 }]);
         app.session().save(&app.paths.sessions_dir()).unwrap();
 
@@ -601,7 +626,7 @@ mod tests {
         let b = &fresh.editor.buffers[0];
         assert_eq!(b.bookmarks.keys().copied().collect::<Vec<_>>(), vec![1]);
         assert_eq!(b.digits(), vec![(5, 1)]);
-        assert_eq!(fresh.editor.closed_digits(), vec![(2, gone, 4)]);
+        assert_eq!(fresh.editor.closed_bookmarks(), vec![(gone.clone(), 1, None), (gone.clone(), 4, Some(2)), (gone, 7, None)]);
         assert_eq!(b.view.folds.hidden().first(), Some(&(1..3)), "the fold is back");
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&fresh_dir);
