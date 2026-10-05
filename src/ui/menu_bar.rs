@@ -10,7 +10,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::widgets::Clear;
 use unicode_width::UnicodeWidthStr;
 
-use crate::actions::{Action, EditorAction, GitAction, LspAction, TreeAction};
+use crate::actions::{Action, AppAction, EditorAction, GitAction, LspAction, TreeAction};
 use crate::config::Icons;
 use crate::config::theme::Theme;
 use crate::event::Mouse;
@@ -35,6 +35,7 @@ pub const MAIN_MENU: &[(&str, char, &[Row])] = &[
             Item("Recent Projects…", "palette.recent_projects"),
             Item("New Scratch File…", "editor.new_scratch"),
             Item("Scratch Files…", "editor.scratch_files"),
+            Item("Local History…", "editor.local_history"),
             Sep,
             Item("Save", "editor.save"),
             Item("Save As…", "editor.save_as"),
@@ -210,7 +211,7 @@ pub fn needs_buffer(action: &Action) -> bool {
     match action {
         Action::Editor(a) => !matches!(a, EditorAction::NavBack | EditorAction::NavForward),
         Action::Lsp(a) => !matches!(a, LspAction::Restart),
-        Action::Git(GitAction::FileHistory) | Action::Tree(TreeAction::SelectInProject) => true,
+        Action::Git(GitAction::FileHistory) | Action::Tree(TreeAction::SelectInProject) | Action::App(AppAction::LocalHistory) => true,
         _ => false,
     }
 }

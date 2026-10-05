@@ -353,7 +353,7 @@ impl GitPanel {
                 DiffKey::Change { section: Section::Staged, .. } => format!("{}  (HEAD ↔ staged)", k.label()),
                 DiffKey::Change { section: Section::Unstaged, .. } => format!("{}  (staged ↔ working tree)", k.label()),
                 DiffKey::Change { section: Section::Untracked, .. } => format!("{}  (new file)", k.label()),
-                DiffKey::Commit { .. } => k.label(),
+                DiffKey::Commit { .. } | DiffKey::Local { .. } => k.label(),
             });
             let pane_focused = focused && self.area == Area::Diff;
             let opts = self.diff_opts;

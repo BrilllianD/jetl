@@ -1,4 +1,4 @@
-//! The diff pane of the Commit, Log and Stash tabs: side-by-side or unified
+//! The diff pane of the Commit, Log, Stash and History tabs: side-by-side or unified
 //! rows sharing one vertical scroll, unchanged runs folded into one row
 //! (a click unfolds it), the current change (what hunk staging and F7 work
 //! on), syntax colors, and the changed characters of modified lines.

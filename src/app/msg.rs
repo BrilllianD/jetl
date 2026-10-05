@@ -69,6 +69,7 @@ impl App {
                 self.edits_applied(origin, done, errors)
             }
             AppMsg::EditsApplied { .. } => tracing::debug!("dropping a workspace edit report of a previous root"),
+            AppMsg::LocalHistory(m) => self.history_msg(m),
         }
     }
 
@@ -223,7 +224,11 @@ impl App {
                 GitOp::WorktreeAdd { .. } | GitOp::WorktreeRemove { .. } | GitOp::WorktreePrune => {}
             }
             if op.touches_worktree() {
-                let n = self.editor.reload_clean_from_disk();
+                let mut sink = Vec::new();
+                let n = self.editor.reload_clean_from_disk(&mut sink);
+                for c in sink {
+                    self.history.capture(c);
+                }
                 if n > 0 {
                     tracing::info!("reloaded {n} buffer(s) after {label}");
                 }
@@ -386,6 +391,9 @@ impl App {
             self.notify(Level::Info, format!("{name} has conflicts: Git > Resolve Conflicts"));
         }
         self.editor.enforce_tab_limit();
+        if let Some((_, text)) = self.pending_revert.take_if(|(p, _)| *p == path) {
+            self.apply_revert(&path, &text);
+        }
         if let Some((_, target)) = self.pending_goto.take_if(|(p, _)| *p == path) {
             // Opening the tab remembered the position left; the new tab's
             // first caret is not worth going back to.

@@ -48,6 +48,7 @@ mod effects;
 mod files;
 mod find;
 mod format;
+mod history;
 mod lsp;
 mod lsp_edit;
 mod lsp_nav;
@@ -203,6 +204,11 @@ pub struct App {
     /// the session is restored so it ends up the active tab.
     pub(crate) pending_open: Option<(PathBuf, usize, usize)>,
     pub git: GitService,
+    /// Local history's worker (`history/`); `GitService` holds a clone.
+    pub history: crate::history::Handle,
+    /// A snapshot to put into a file once its tab opens (a revert of a
+    /// file that was not open), as `pending_goto`.
+    pub(crate) pending_revert: Option<(PathBuf, String)>,
     pub editor: Editor,
     /// Watches the root for outside changes; `None` when off or failed.
     watcher: Option<crate::files::watch::Watcher>,
@@ -254,6 +260,10 @@ impl App {
         git_panel.set_log_page(config.git.log_page);
         git_panel.set_log_all(config.git.log_all);
         let recorder = crate::recovery::Recorder::new(&paths.recovery_dir());
+        let history = crate::history::Handle::spawn(paths.history_dir(), config.local_history.clone(), bus_tx.clone());
+        // The first job: retention applies before anything new is stored.
+        history.prune();
+        git.history = history.clone();
         let mut app = Self {
             workspace,
             theme,
@@ -297,6 +307,8 @@ impl App {
             pending_conflicts: false,
             pending_open: open,
             git,
+            history,
+            pending_revert: None,
             editor: Editor::new(&config),
             watcher: None,
             clipboard: Default::default(),
@@ -455,6 +467,8 @@ impl App {
         }
         // Quitting on purpose: a panic from here on writes nothing.
         self.recorder.clear();
+        // Snapshots still queued (the saves of the quit dialog) are written.
+        self.history.flush(Duration::from_secs(3));
         self.save_session();
         self.format.abort_all();
         self.run.kill();
@@ -881,6 +895,7 @@ impl App {
             AppAction::OpenSettings => self.open_settings(),
             AppAction::KeymapReference => self.keymap_reference(),
             AppAction::NewScratch => self.new_scratch(),
+            AppAction::LocalHistory => self.local_history(),
         }
     }
 
@@ -1045,7 +1060,17 @@ pub(crate) mod tests {
         let mut app = App::new(root.clone(), config, paths, open);
         // Never the user's clipboard tools.
         app.clipboard.tools = Some(crate::util::clipboard::Tools { paste: crate::util::clipboard::Paste::Disabled, copy: None });
+        // No local history unless a test turns it on (`with_history`): the
+        // worker would write into the temp dir after the test removed it.
+        app.history = crate::history::Handle::disabled();
+        app.git.history = app.history.clone();
         (app, dir)
+    }
+
+    /// Local history on, in the test's temp state dir (`paths.history_dir`).
+    pub(crate) fn with_history(app: &mut App) {
+        app.history = crate::history::Handle::spawn(app.paths.history_dir(), app.config.local_history.clone(), app.bus_tx.clone());
+        app.git.history = app.history.clone();
     }
 
     #[tokio::test]

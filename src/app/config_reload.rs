@@ -214,6 +214,12 @@ impl App {
         if diff.has("lsp.enabled") {
             self.lsp_restart();
         }
+        if diff.has_section("local_history") {
+            self.history.set_settings(self.config.local_history.clone());
+            if diff.has("local_history.keep_days") || diff.has("local_history.max_total_mb") {
+                self.history.prune();
+            }
+        }
         tracing::info!("config reloaded: {:?}", diff.changed);
         diff
     }

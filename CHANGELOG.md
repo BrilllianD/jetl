@@ -180,6 +180,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `$XDG_STATE_HOME/jetl/scratches/`. File > Scratch Files… lists them, newest first, with their
   language and date; Enter opens one, Shift+Delete deletes it after asking. They save, autosave
   and come back with the session like any file; language servers leave them alone.
+- Local history: every save stores a snapshot of the file, and so does everything that is about
+  to overwrite or delete one (git operations that rewrite the work tree, reloads from disk,
+  Overwrite of an outside change, Save As over a file, Delete in the Project tree). File > Local
+  History… (also in the Project tree's context menu) lists a file's snapshots with their date,
+  reason, size and line change; Enter shows one against the current text in the Git window's
+  new History tab, where Revert (Alt+R) puts it back as one undoable edit. Snapshots live in
+  `$XDG_STATE_HOME/jetl/history/`, shared by every project, and are pruned after 5 days or
+  beyond 100 MB (`[local_history]`).
 
 ### Changed
 

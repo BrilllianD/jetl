@@ -10,7 +10,12 @@ use crate::files::ops::FsOp;
 impl App {
     pub(super) fn run_fs_op(&mut self, op: FsOp) {
         let (generation, tx) = (self.workspace.generation, self.bus_tx.clone());
+        // A delete waits for the local history snapshot of what it removes.
+        let pre = if let FsOp::Delete { path } = &op { self.history.before_delete(path) } else { None };
         tokio::task::spawn_blocking(move || {
+            if let Some(ack) = pre {
+                ack.wait();
+            }
             let result = op.run().map_err(|e| e.to_string());
             let _ = tx.send(AppMsg::FsOpDone { generation, op, result });
         });

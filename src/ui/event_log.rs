@@ -176,7 +176,8 @@ pub fn clock(t: SystemTime) -> String {
     hms(secs + local_offset(secs))
 }
 
-fn hms(secs: i64) -> String {
+/// `HH:MM:SS` of Unix seconds (already shifted to local time).
+pub fn hms(secs: i64) -> String {
     let s = secs.rem_euclid(86_400);
     format!("{:02}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60)
 }

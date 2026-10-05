@@ -270,6 +270,8 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Alt+L` | `git.tab_log` | Git: Log tab |
 | `Alt+O` | `git.tab_console` | Git: Console tab |
 | `Alt+T` | `git.tab_stash` | Git: Stash tab |
+| `Alt+Y` | `git.tab_history` | Git: History tab (local history diff) |
+| `Alt+R` | `git.history_revert` | Git: revert the file to the local history snapshot shown |
 | `Ctrl+Alt+S` | `git.stash_push` | Git: stash local changes |
 | `Alt+P` | `git.stash_pop` | Git: pop the selected stash |
 | `Alt+A` | `git.stash_apply` | Git: apply the selected stash |
@@ -432,6 +434,7 @@ Reachable from Find Action (F1) or by binding them in `keymap.toml`.
 | `app.keymap_reference` | Keymap reference |
 | `palette.goto_line` | Go to line |
 | `editor.scratch_files` | Scratch files |
+| `editor.local_history` | Local history of the file (editor) or the selected entry (Project tree) |
 | `editor.replace_one` | Replace current match |
 | `editor.replace_all` | Replace all matches |
 | `editor.find_case` | Find: toggle match case |

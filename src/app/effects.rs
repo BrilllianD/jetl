@@ -40,6 +40,7 @@ impl App {
                 Effect::Clipboard(text) => self.copy_to_clipboard(&text),
                 Effect::Format(req) => self.start_format(req),
                 Effect::Lsp(req) => self.lsp_request(req),
+                Effect::History(req) => self.history_request(req),
                 Effect::SwitchRoot(p) => self.switch_root(p),
                 Effect::RefreshTree => tree = true,
                 Effect::GitRefresh => (tree, status, lists) = (true, true, true),
@@ -206,6 +207,7 @@ impl App {
                     "Create",
                 ));
             }
+            GitRequest::LoadDiff(key @ crate::git::DiffKey::Local { .. }) => self.load_local_diff(key),
             GitRequest::LoadDiff(key) => self.git.load_diff(key),
             GitRequest::LoadLog { skip, filter } => self.git.load_log(skip, self.config.git.log_page, self.config.git.log_all, filter),
             GitRequest::LoadCommit(sha) => self.git.load_commit(sha),

@@ -344,6 +344,10 @@
 "alt-l" = "git.tab_log"
 "alt-o" = "git.tab_console"
 "alt-t" = "git.tab_stash"
+# History tab (local history): Alt+H is File History everywhere, so Alt+Y;
+# Alt+R reverts the file to the snapshot shown (undoable).
+"alt-y" = "git.tab_history"
+"alt-r" = "git.history_revert"
 "ctrl-alt-s" = "git.stash_push"
 # Stash tab: pop, apply and drop the selected stash.
 "alt-p" = "git.stash_pop"

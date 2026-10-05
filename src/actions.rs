@@ -48,6 +48,9 @@ pub enum AppAction {
     KeymapReference,
     /// Ask for a language, then create and open a scratch file.
     NewScratch,
+    /// The Local History palette of the active file or the selected tree
+    /// entry.
+    LocalHistory,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -75,6 +78,9 @@ pub enum PaletteKind {
     Locations,
     /// The scratch files (`scratch.rs`), newest first.
     Scratches,
+    /// A file's local history snapshots (`history/`), newest first; opened
+    /// by `AppAction::LocalHistory` with the file, not by `OpenPalette`.
+    LocalHistory,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -294,6 +300,10 @@ pub enum GitAction {
     TabLog,
     TabConsole,
     TabStash,
+    /// The History tab: a local history snapshot against the current text.
+    TabHistory,
+    /// Put the snapshot the History tab shows back into the file (undoable).
+    HistoryRevert,
     StashPush,
     StashPop,
     StashApply,
@@ -534,6 +544,7 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "editor.save_all" => "Save all", Editor(E::SaveAll);
         "editor.new_scratch" => "New scratch file…", App(AppAction::NewScratch);
         "editor.scratch_files" => "Scratch files", App(AppAction::OpenPalette(PaletteKind::Scratches));
+        "editor.local_history" => "Local history of the file (editor) or the selected entry (Project tree)", App(AppAction::LocalHistory);
         "editor.find" => "Find", Editor(E::Find);
         "editor.replace" => "Replace", Editor(E::Replace);
         "editor.find_next" => "Find next", Editor(E::FindNext);
@@ -678,6 +689,8 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "git.tab_log" => "Git: Log tab", Git(GitAction::TabLog);
         "git.tab_console" => "Git: Console tab", Git(GitAction::TabConsole);
         "git.tab_stash" => "Git: Stash tab", Git(GitAction::TabStash);
+        "git.tab_history" => "Git: History tab (local history diff)", Git(GitAction::TabHistory);
+        "git.history_revert" => "Git: revert the file to the local history snapshot shown", Git(GitAction::HistoryRevert);
         "git.stash_push" => "Git: stash local changes", Git(GitAction::StashPush);
         "git.stash_pop" => "Git: pop the selected stash", Git(GitAction::StashPop);
         "git.stash_apply" => "Git: apply the selected stash", Git(GitAction::StashApply);

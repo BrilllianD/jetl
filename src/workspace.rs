@@ -270,6 +270,7 @@ impl App {
         self.refresh_file_index();
         crate::tui::set_title(&root);
         self.editor.clear_nav();
+        self.pending_revert = None;
         // The closed files' numbered bookmarks come with the new session.
         self.editor.restore_closed_digits(&[]);
         self.restore_session();

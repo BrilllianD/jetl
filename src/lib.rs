@@ -6,6 +6,7 @@ pub mod editor;
 pub mod event;
 pub mod files;
 pub mod git;
+pub mod history;
 pub mod lsp;
 pub mod recent_projects;
 pub mod recovery;

@@ -118,6 +118,10 @@ impl App {
         }
         // A formatter's late answer must not be written to the new path.
         self.format.abort(id);
+        // The file about to be overwritten (after `SaveAsOverwrite`).
+        if path.is_file() {
+            self.capture_disk(&path, crate::history::Kind::BeforeSaveAs);
+        }
         let mut cx = ctx!(self);
         // `FileSaved` syncs the language server: the old document closes
         // and the new one opens.

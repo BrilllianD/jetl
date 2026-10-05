@@ -343,7 +343,7 @@ impl GitPanel {
             self.hits.push((Btn::Back, r));
             let header = match &key {
                 DiffKey::Commit { sha, .. } => format!(" {}  {}", &sha[..sha.len().min(8)], key.label()),
-                DiffKey::Change { .. } => format!(" {}", key.label()),
+                DiffKey::Change { .. } | DiffKey::Local { .. } => format!(" {}", key.label()),
             };
             put(buf, &mut x, body.y, body.right(), &header, theme.title);
             let rest = Rect::new(body.x, body.y + 1, body.width, body.height.saturating_sub(1));

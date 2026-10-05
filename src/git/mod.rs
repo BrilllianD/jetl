@@ -293,6 +293,9 @@ pub struct GitService {
     pub tab_width: usize,
     /// Where commit message histories live (`git::messages`).
     pub messages_dir: PathBuf,
+    /// Local history: an operation that rewrites the work tree waits for
+    /// a snapshot of the changed files first (set by `App::new`).
+    pub history: crate::history::Handle,
 }
 
 impl GitService {
@@ -309,6 +312,7 @@ impl GitService {
             busy: Vec::new(),
             tab_width: 4,
             messages_dir: PathBuf::new(),
+            history: crate::history::Handle::disabled(),
         }
     }
 
@@ -433,6 +437,8 @@ impl GitService {
                     let _ = tx.send(AppMsg::Git(GitMsg::Diff { generation, key, result }));
                 });
             }
+            // `App::git_request` loads these itself (`App::load_local_diff`).
+            DiffKey::Local { .. } => tracing::debug!("local history diff reached the git service: {key:?}"),
         }
     }
 
@@ -484,12 +490,22 @@ impl GitService {
         id
     }
 
+    /// A local history snapshot of the changed files, asked for before an
+    /// operation that rewrites the work tree.
+    fn before(&self, op: &GitOp, label: &str) -> Option<crate::history::Ack> {
+        if op.touches_worktree() { self.history.before_git(&self.root, label) } else { None }
+    }
+
     /// Run a git2 operation in `spawn_blocking`. `work` returns a line for
     /// the console on success.
     pub fn run_repo(&mut self, op: GitOp, label: String, work: impl FnOnce(&Path) -> Result<String> + Send + 'static) -> u64 {
         let id = self.start(&label);
+        let pre = self.before(&op, &label);
         let (root, generation, tx) = (self.root.clone(), self.generation, self.tx.clone());
         tokio::task::spawn_blocking(move || {
+            if let Some(ack) = pre {
+                ack.wait();
+            }
             let (ok, output) = match work(&root) {
                 Ok(s) => (true, s),
                 Err(e) => (false, format!("{e:#}")),
@@ -509,8 +525,12 @@ impl GitService {
     pub fn run_cli_input(&mut self, op: GitOp, args: Vec<String>, input: Option<Vec<u8>>) -> u64 {
         let label = format!("git {}", args.join(" "));
         let id = self.start(&label);
+        let pre = self.before(&op, &label);
         let (root, generation, tx) = (self.root.clone(), self.generation, self.tx.clone());
         tokio::spawn(async move {
+            if let Some(ack) = pre {
+                let _ = tokio::task::spawn_blocking(move || ack.wait()).await;
+            }
             let (ok, output) = match cli::git_with_input(&root, &args, input).await {
                 Ok(o) => (o.ok, o.combined()),
                 Err(e) => (false, format!("{e:#}")),

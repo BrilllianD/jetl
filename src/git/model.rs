@@ -323,12 +323,17 @@ pub enum DiffKey {
     Change { section: Section, rel: String, old: Option<String> },
     /// A file in a commit: `sha^:old` (or `sha^:path`) vs `sha:path`.
     Commit { sha: String, rel: String, old: Option<String> },
+    /// A local history snapshot (`history::store`, blob `id` taken at `at`,
+    /// Unix ms) vs the file's current text (its open buffer, else the
+    /// disk). `rel` is the path as shown: relative to the root when inside
+    /// it. Loaded by `App::load_local_diff`, not the git service.
+    Local { path: PathBuf, rel: String, id: String, at: u64 },
 }
 
 impl DiffKey {
     pub fn rel(&self) -> &str {
         match self {
-            DiffKey::Change { rel, .. } | DiffKey::Commit { rel, .. } => rel,
+            DiffKey::Change { rel, .. } | DiffKey::Commit { rel, .. } | DiffKey::Local { rel, .. } => rel,
         }
     }
 

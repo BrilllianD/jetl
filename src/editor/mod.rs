@@ -695,9 +695,10 @@ impl Editor {
     }
 
     /// Re-read unmodified buffers whose file changed on disk (after a branch
-    /// switch or pull). The reload is one undoable transaction. Returns the
-    /// number of reloaded buffers.
-    pub fn reload_clean_from_disk(&mut self) -> usize {
+    /// switch or pull). The reload is one undoable transaction; the texts
+    /// replaced go to `sink` as local history snapshots. Returns the number
+    /// of reloaded buffers.
+    pub fn reload_clean_from_disk(&mut self, sink: &mut Vec<crate::history::Capture>) -> usize {
         let mut n = 0;
         for b in &mut self.buffers {
             let Some(path) = b.path.clone() else { continue };
@@ -706,9 +707,10 @@ impl Editor {
             }
             let Ok(bytes) = std::fs::read(&path) else { continue };
             let Ok(text) = String::from_utf8(bytes) else { continue };
-            let changed = b.text() != text;
-            io::replace_with_disk_text(b, text, &path);
-            n += usize::from(changed);
+            if let Some(old) = io::replace_with_disk_text(b, text, &path) {
+                sink.push(crate::history::Capture::rope(path, old, crate::history::Kind::BeforeReload));
+                n += 1;
+            }
         }
         n
     }
@@ -1659,6 +1661,7 @@ mod tests {
     use super::io::idle_autosave_due;
     use super::*;
     use crate::actions::Motion;
+    use crate::history::{Capture, CaptureText, Kind, Request};
     use crate::workspace::Workspace;
     use crossterm::event::{KeyCode, KeyEvent};
 
@@ -2129,7 +2132,14 @@ mod tests {
         ed.autosave(&mut cx);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "xone\n");
         assert!(!ed.buffers[0].dirty());
-        assert!(matches!(cx.effects.as_slice(), [Effect::FileSaved { quiet: true, .. }]));
+        // The text written goes to local history as an autosave.
+        assert!(matches!(
+            cx.effects.as_slice(),
+            [
+                Effect::History(Request::Capture(Capture { path: p, text: CaptureText::Text(t), kind: Kind::Autosave, .. })),
+                Effect::FileSaved { quiet: true, .. }
+            ] if *p == path && t == "xone\n"
+        ));
 
         // Changed on disk under unsaved edits: warn once, keep the disk text.
         std::thread::sleep(Duration::from_millis(20));
@@ -2443,6 +2453,50 @@ mod tests {
     }
 
     #[test]
+    fn reloads_hand_the_replaced_text_to_local_history() {
+        let dir = std::env::temp_dir().join(format!("jetl-test-editor-reload-sink-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("a.txt");
+        std::fs::write(&path, "old\n").unwrap();
+        let mut ed = Editor::new(&Config::default());
+        ed.open_text(path.clone(), "old\n", false, &Theme::default());
+        ed.buffers[0].disk_mtime = Some(std::time::UNIX_EPOCH);
+        std::fs::write(&path, "new\n").unwrap();
+        let mut sink = Vec::new();
+        assert!(ed.reload_clean(&path, "new\n".into(), &mut sink));
+        assert_eq!(ed.buffers[0].text(), "new\n");
+        let [Capture { path: p, text: CaptureText::Rope(r), kind: Kind::BeforeReload, .. }] = sink.as_slice() else {
+            panic!("one capture: {sink:?}")
+        };
+        assert_eq!((p, r.to_string()), (&path, "old\n".to_string()));
+        // The same text again: nothing replaced, nothing captured.
+        sink.clear();
+        std::fs::write(&path, "newer\n").unwrap();
+        ed.buffers[0].disk_mtime = Some(std::time::UNIX_EPOCH);
+        ed.buffers[0].insert("x", TxKind::Typing);
+        assert!(!ed.reload_clean(&path, "newer\n".into(), &mut sink), "unsaved edits are not reloaded");
+        assert_eq!(ed.reload_clean_from_disk(&mut sink), 0);
+        ed.buffers[0].undo();
+        assert_eq!(ed.reload_clean_from_disk(&mut sink), 1);
+        assert!(matches!(sink.as_slice(), [Capture { text: CaptureText::Rope(r), .. }] if r == "new\n"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn restore_text_is_one_undoable_edit() {
+        let mut ed = editor_with("restore.txt", "now\n");
+        assert!(ed.restore_text(0, "then\n"));
+        assert!(!ed.restore_text(0, "then\n"), "already the same");
+        let b = &ed.buffers[0];
+        assert_eq!(b.text(), "then\n");
+        assert!(b.dirty() && !b.recovered, "an ordinary edit");
+        assert!(ed.buffers[0].undo());
+        assert_eq!(ed.buffers[0].text(), "now\n");
+        assert!(!ed.buffers[0].dirty());
+    }
+
+    #[test]
     fn recover_text_is_undoable_and_holds_autosave() {
         let dir = std::env::temp_dir().join(format!("jetl-test-editor-recover-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -2499,7 +2553,13 @@ mod tests {
         assert_eq!(b.language().map(|l| l.name), Some("rust"));
         assert!(b.syntax.is_some() && b.disk_mtime.is_some());
         assert!(!b.dirty() && !b.recovered);
-        assert!(matches!(fx.as_slice(), [Effect::FileSaved { path: p, quiet: false }] if *p == path));
+        assert!(matches!(
+            fx.as_slice(),
+            [
+                Effect::History(Request::Capture(Capture { path: h, text: CaptureText::Text(t), kind: Kind::SaveAs, .. })),
+                Effect::FileSaved { path: p, quiet: false }
+            ] if *p == path && *h == path && t == "fn main() {}\n"
+        ));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "fn main() {}\n");
         let _ = std::fs::remove_dir_all(&dir);
     }

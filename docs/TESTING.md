@@ -519,6 +519,47 @@ Tab Enter (Cancel) in the delete dialog keeps the file and reopens the
 palette. Alt+F1 (Select in Project) on a scratch tab says it is a scratch
 file instead of selecting anything.
 
+### Scenario: local history
+
+At 80x24 and at 120x40 (`-x 120 -y 40`), with config and state under
+`/tmp/jetl-lh` and language servers off:
+
+```sh
+LH=/tmp/jetl-lh; rm -rf $LH; mkdir -p $LH/repo/d $LH/cfg/jetl
+printf '[lsp]\nenabled = false\n' > $LH/cfg/jetl/config.toml
+git -C $LH/repo init -q; printf 'one\ntwo\n' > $LH/repo/notes.txt; echo x > $LH/repo/d/x.txt
+git -C $LH/repo add . && git -C $LH/repo -c user.name=t -c user.email=t@t commit -qm init && git -C $LH/repo branch other
+cargo build --no-default-features --features lang-rust
+run() { /tmp/tm.sh -f /dev/null new-session -d -s jetl -x 80 -y 24 \
+  "XDG_CONFIG_HOME=$LH/cfg XDG_STATE_HOME=$LH/state $PWD/target/debug/jetl $LH/repo/notes.txt 2>/tmp/jetl-stderr.txt; echo EXIT=\$?; sleep 600"; }
+s() { /tmp/tm.sh send-keys -t jetl "$@"; sleep 0.4; }
+run; sleep 2
+s -l 'A '; s C-s; s -l 'B '; s C-s
+s F1; s -l 'local history'; s Enter    # "Local History: notes.txt": two "Saved" rows, newest first, "12 B  =" and "10 B"
+s Down; s Enter                        # Git window, History tab: "[Revert] [Snapshots…] notes.txt  <date time>  Saved  ↔  current",
+                                       # "A one" against "A B one"
+s M-r                                  # *notes.txt is "A one", toast "Reverted notes.txt to … (Ctrl+Z undoes)", editor focused
+s C-z                                  # "A B one" again, the tab clean
+echo outside >> $LH/repo/notes.txt     # the clean tab reloads (nothing new stored: its text was the last snapshot)
+s F1; s -l 'Git: branches'; s Enter; s -l other; s Enter; s Enter   # Checkout: "Switched to other"
+s F1; s -l 'local history'; s Enter    # a "Before git switch other" row on top, "20 B  +1 line"
+s Escape; s M-1; s Home; s Right; s Down; s Delete; s Enter   # delete d/x.txt from the tree
+ls $LH/state/jetl/history/index        # a second index file (d/x.txt, "before_delete")
+s C-q                                  # EXIT=0
+/tmp/tm.sh kill-server
+printf '[lsp]\nenabled = false\n[local_history]\nkeep_days = 0\n' > $LH/cfg/jetl/config.toml
+run; sleep 2
+ls $LH/state/jetl/history/index        # empty: every entry pruned at startup (the log says how many);
+                                       # the blobs stay until they are 10 minutes old
+/tmp/tm.sh kill-server; rm -rf $LH
+```
+
+At 80 columns the Git window's header drops its Refresh button (F5) to fit
+the History tab. Shift+F10 in the Project tree opens its context menu with
+Local History under Show History. Alt+1 and Alt+9 hide their window when it
+already has focus; under tmux, Ctrl+Space in the editor is completion, not
+the branches popup, hence Find Action above.
+
 ### Limits under tmux
 
 - No kitty keyboard protocol: Ctrl+Shift+letter, Ctrl+Tab, Ctrl+Enter,

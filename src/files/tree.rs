@@ -396,6 +396,7 @@ impl ProjectPanel {
                 MenuItem::new("Copy Path", t(TreeAction::CopyPath)).enabled(on_row),
                 MenuItem::new("Copy Relative Path", t(TreeAction::CopyRelPath)).enabled(on_row),
                 MenuItem::new("Show History", Action::Git(crate::actions::GitAction::FileHistory)).enabled(on_row),
+                MenuItem::new("Local History", Action::App(crate::actions::AppAction::LocalHistory)).enabled(on_row),
                 MenuItem::new(format!("{} Show Hidden Files", check(self.show_hidden)), t(TreeAction::ToggleHidden)),
                 MenuItem::new(format!("{} Show Ignored Files", check(self.show_ignored)), t(TreeAction::ToggleIgnored)),
                 MenuItem::new("Refresh", t(TreeAction::Refresh)),

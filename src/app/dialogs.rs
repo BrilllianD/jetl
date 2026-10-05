@@ -112,6 +112,10 @@ impl App {
             (DialogId::SaveAsOverwrite { id, path, then }, DialogResult::Button(0)) => self.save_as_write(id, path, then),
             (DialogId::ReplaceInFiles, DialogResult::Button(0)) => self.replace_in_files(),
             (DialogId::OverwriteExternal(id), DialogResult::Button(0)) => {
+                // The outside change about to be overwritten.
+                if let Some(path) = self.editor.index_of_id(id).and_then(|i| self.editor.buffers[i].path.clone()) {
+                    self.capture_disk(&path, crate::history::Kind::BeforeOverwrite);
+                }
                 let mut cx = ctx!(self);
                 self.editor.overwrite(id, &mut cx);
                 let fx = cx.effects;

@@ -287,6 +287,7 @@ mod tests {
     #[tokio::test]
     async fn edits_while_formatting_drop_the_format() {
         let (mut app, dir, path) = app_with("format-stale", "tr a-z A-Z", "fn a() {}\n");
+        crate::app::tests::with_history(&mut app);
         act(&mut app, EditorAction::Format);
         act(&mut app, EditorAction::InsertText("x".into()));
         handle_next(&mut app, formatted).await;
@@ -296,6 +297,9 @@ mod tests {
         act(&mut app, EditorAction::InsertText("y".into()));
         handle_next(&mut app, formatted).await;
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "xfn a() {}\n");
+        // Local history has what was written, not the buffer.
+        let snaps = crate::app::history::tests::snapshots(&app, &path);
+        assert_eq!(snaps.first().map(|(_, t)| t.as_str()), Some("xfn a() {}\n"));
         let b = app.editor.active_buffer().unwrap();
         assert_eq!(b.text(), "xyfn a() {}\n");
         assert!(b.dirty(), "the later edit is not saved");

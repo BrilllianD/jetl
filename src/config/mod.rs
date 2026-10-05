@@ -44,6 +44,11 @@ impl Paths {
     pub fn scratches_dir(&self) -> PathBuf {
         self.state_dir.join("scratches")
     }
+    /// Local history snapshots (`history/store.rs`), shared by every
+    /// project; made by the first snapshot.
+    pub fn history_dir(&self) -> PathBuf {
+        self.state_dir.join("history")
+    }
     pub fn recent_projects_file(&self) -> PathBuf {
         self.state_dir.join("recent_projects.json")
     }
@@ -84,6 +89,7 @@ pub struct Config {
     pub run: crate::run::RunConfig,
     pub terminal: crate::terminal::TerminalConfig,
     pub lsp: crate::lsp::LspConfig,
+    pub local_history: crate::history::LocalHistoryConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]

@@ -1,14 +1,15 @@
-//! Git tool window (bottom): tabs Commit | Log | Stash | Console.
+//! Git tool window (bottom): tabs Commit | Log | Stash | Console | History.
 //!
 //! Commit: change list grouped Staged / Unstaged / Untracked with stage
 //! checkboxes, the diff of the selected entry, and the commit message box.
 //! Log: `git log --graph` rows, details of the selected commit, and a diff
 //! of a file in it. Stash: the stash list, files of a stash and their diff.
-//! Console: output of CLI operations.
+//! Console: output of CLI operations. History: a local history snapshot
+//! (`history/`) against the file's current text, with Revert.
 //!
 //! This module holds the shared state, input routing, the header, the
-//! console and the diff renderer; `commit.rs`, `log.rs` and `stash.rs`
-//! hold the tabs.
+//! console and the diff renderer; `commit.rs`, `log.rs`, `stash.rs` and
+//! `history.rs` hold the tabs.
 //!
 //! The panel only holds state; all git work is requested through
 //! `Effect::Git` and the results are fed back by the app.
@@ -34,6 +35,7 @@ use crate::ui::widgets::text_input::TextInput;
 
 mod commit;
 mod diff_view;
+mod history;
 mod log;
 mod stash;
 
@@ -49,6 +51,7 @@ pub enum GitTab {
     Log,
     Console,
     Stash,
+    History,
 }
 
 /// Which part of the window has keyboard focus.
@@ -64,6 +67,7 @@ enum Area {
     StashFiles,
     StashDiff,
     Console,
+    HistoryDiff,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,6 +91,8 @@ enum Btn {
     DiffCollapse,
     LogClearFilter,
     LogFilter(LogFilterPart),
+    HistoryRevert,
+    HistoryList,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -145,6 +151,10 @@ pub struct GitPanel {
     stash_details_error: Option<String>,
     stash_files: ListState,
     stash_diff: DiffPane,
+    /// The History tab: a local history snapshot against the current text,
+    /// and the snapshot's date and label.
+    history_diff: DiffPane,
+    history_title: String,
     /// Layout of every diff pane (Alt+U, Alt+F, or the header toggles).
     diff_opts: DiffOpts,
     console: Vec<(ConsoleKind, String)>,
@@ -205,6 +215,8 @@ impl GitPanel {
             stash_details_error: None,
             stash_files: ListState::default(),
             stash_diff: DiffPane::new(true),
+            history_diff: DiffPane::new(true),
+            history_title: String::new(),
             diff_opts: DiffOpts { unified: None, collapse: true },
             console: Vec::new(),
             console_scroll: 0,
@@ -260,7 +272,7 @@ impl GitPanel {
     /// The theme changed (hot reload): the diff panes compute their syntax
     /// colors again on the next render.
     pub fn theme_changed(&mut self) {
-        for pane in [&mut self.diff, &mut self.log_diff, &mut self.stash_diff] {
+        for pane in [&mut self.diff, &mut self.log_diff, &mut self.stash_diff, &mut self.history_diff] {
             pane.restyle();
         }
     }
@@ -271,6 +283,7 @@ impl GitPanel {
             GitTab::Log => Area::Log,
             GitTab::Stash => Area::Stashes,
             GitTab::Console => Area::Console,
+            GitTab::History => Area::HistoryDiff,
         }
     }
 
@@ -281,6 +294,7 @@ impl GitPanel {
             // (stashes are commits); each pane ignores keys it does not show.
             DiffKey::Commit { .. } if self.stash_diff.key.as_ref() == Some(key) => self.stash_diff.set(key, result),
             DiffKey::Commit { .. } => self.log_diff.set(key, result),
+            DiffKey::Local { .. } => self.history_diff.set(key, result),
         }
     }
 
@@ -324,6 +338,8 @@ impl GitPanel {
     pub fn handle_action(&mut self, a: &GitAction, cx: &mut Ctx) -> bool {
         use GitAction as G;
         match a {
+            // F5 on the History tab compares with the current text again.
+            G::Refresh if self.tab == GitTab::History => self.reload_history_diff(cx),
             G::Refresh => cx.effects.push(Effect::Git(GitRequest::Refresh)),
             G::ToggleStage => match (self.tab, self.area) {
                 (GitTab::Commit, Area::Diff) => self.hunk_op(false, cx),
@@ -388,6 +404,8 @@ impl GitPanel {
             G::TabLog => self.set_tab(GitTab::Log, cx),
             G::TabConsole => self.set_tab(GitTab::Console, cx),
             G::TabStash => self.set_tab(GitTab::Stash, cx),
+            G::TabHistory => self.set_tab(GitTab::History, cx),
+            G::HistoryRevert => self.history_revert(cx),
             G::StashPush => self.stash_push(cx),
             G::StashPop | G::StashApply | G::StashDrop => {
                 if self.tab != GitTab::Stash {
@@ -414,7 +432,7 @@ impl GitPanel {
                 Area::LogDiff => self.close_log_diff(),
                 Area::StashFiles => self.area = Area::Stashes,
                 Area::StashDiff => self.close_stash_diff(),
-                Area::Changes | Area::Message | Area::Log | Area::Stashes | Area::Console => {}
+                Area::Changes | Area::Message | Area::Log | Area::Stashes | Area::Console | Area::HistoryDiff => {}
             },
             G::Right => match self.area {
                 Area::Changes if self.diff.key.is_some() => self.area = Area::Diff,
@@ -438,6 +456,7 @@ impl GitPanel {
                     }
                 }
                 Area::StashFiles => self.open_stash_file(cx),
+                Area::HistoryDiff => self.open_history_file(cx),
                 Area::Message | Area::LogDiff | Area::StashDiff | Area::Console => {}
             },
             G::NextSection => {
@@ -474,6 +493,7 @@ impl GitPanel {
             Area::Stashes => self.stash_list.viewport,
             Area::StashFiles => self.stash_files.viewport,
             Area::StashDiff => self.stash_diff.page,
+            Area::HistoryDiff => self.history_diff.page,
             Area::Console | Area::Message => self.console_rect.height as usize,
         };
         rows.saturating_sub(1).max(1)
@@ -502,6 +522,7 @@ impl GitPanel {
             }
             Area::StashFiles => step(&mut self.stash_files),
             Area::StashDiff => self.stash_diff.scroll_by(delta),
+            Area::HistoryDiff => self.history_diff.scroll_by(delta),
             Area::Console => self.console_scroll = self.console_scroll.saturating_add_signed(-delta).min(self.console.len()),
             Area::Message => {}
         }
@@ -564,6 +585,7 @@ impl GitPanel {
             GitTab::Log => self.click_log_tab(m, p, cx),
             GitTab::Stash => self.click_stash_tab(m, p, cx),
             GitTab::Console => self.area = Area::Console,
+            GitTab::History => self.click_history_tab(m, p),
         }
     }
 
@@ -583,6 +605,7 @@ impl GitPanel {
         match self.tab {
             GitTab::Log => &mut self.log_diff,
             GitTab::Stash => &mut self.stash_diff,
+            GitTab::History => &mut self.history_diff,
             GitTab::Commit | GitTab::Console => &mut self.diff,
         }
     }
@@ -603,6 +626,8 @@ impl GitPanel {
             Btn::LogClearFilter => return self.set_log_filter(LogFilter::default(), cx),
             Btn::LogFilter(part) => return self.log_filter_dialog(part, cx),
             Btn::DiffCollapse => return self.toggle_diff_collapse(),
+            Btn::HistoryRevert => return self.history_revert(cx),
+            Btn::HistoryList => return self.history_list(cx),
             Btn::Refresh => GitRequest::Refresh,
             Btn::Fetch => GitRequest::Fetch,
             Btn::Pull => GitRequest::Pull,
@@ -646,6 +671,7 @@ impl GitPanel {
             GitTab::Log => self.render_log_tab(frame, body, focused, theme),
             GitTab::Stash => self.render_stash_tab(frame, body, focused, theme),
             GitTab::Console => self.render_console(frame.buffer_mut(), body, theme),
+            GitTab::History => self.render_history_tab(frame, body, focused, theme),
         }
     }
 
@@ -657,19 +683,30 @@ impl GitPanel {
             0 => " Stash ".to_string(),
             n => format!(" Stash ({n}) "),
         };
-        for (tab, label) in
-            [(GitTab::Commit, " Commit "), (GitTab::Log, " Log "), (GitTab::Stash, stash.as_str()), (GitTab::Console, " Console ")]
-        {
+        let tabs = [
+            (GitTab::Commit, " Commit "),
+            (GitTab::Log, " Log "),
+            (GitTab::Stash, stash.as_str()),
+            (GitTab::Console, " Console "),
+            (GitTab::History, " History "),
+        ];
+        for (tab, label) in tabs {
             let st = if self.tab == tab { theme.tab_active } else { theme.tab };
             let rect = put(buf, &mut x, r.y, r.right(), label, st);
             self.hits.push((Btn::Tab(tab), rect));
             x += 1;
         }
-        let tools = [(Btn::Refresh, " Refresh "), (Btn::Fetch, " Fetch "), (Btn::Pull, " Pull "), (Btn::Push, " Push ")];
-        let w: u16 = tools.iter().map(|(_, l)| l.width() as u16 + 1).sum();
-        if r.right() > x + w {
+        // As many tools as fit, Refresh (F5) dropped first.
+        let mut tools: &[(Btn, &str)] =
+            &[(Btn::Refresh, " Refresh "), (Btn::Fetch, " Fetch "), (Btn::Pull, " Pull "), (Btn::Push, " Push ")];
+        let width = |tools: &[(Btn, &str)]| -> u16 { tools.iter().map(|(_, l)| l.width() as u16 + 1).sum() };
+        while !tools.is_empty() && r.right() <= x + width(tools) {
+            tools = &tools[1..];
+        }
+        let w = width(tools);
+        if !tools.is_empty() {
             let mut tx = r.right() - w;
-            for (b, label) in tools {
+            for &(b, label) in tools {
                 let rect = put(buf, &mut tx, r.y, r.right(), label, theme.title.bg(theme.panel_bg));
                 self.hits.push((b, rect));
                 tx += 1;

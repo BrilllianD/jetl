@@ -18,6 +18,11 @@ impl App {
             self.perform(Action::Editor(EditorAction::GotoLine));
             return;
         }
+        // It needs a file: the editor's or the tree's.
+        if kind == PaletteKind::LocalHistory {
+            self.palette = None;
+            return self.perform(Action::App(AppAction::LocalHistory));
+        }
         if self.palette.as_ref().is_some_and(|p| p.kind == kind) {
             return;
         }
@@ -193,6 +198,7 @@ impl App {
             PaletteResult::Accept(Accept::SwitchRoot(root)) => self.apply_effects(vec![Effect::SwitchRoot(root)]),
             PaletteResult::Accept(Accept::RunTask(task)) => self.run_task(*task),
             PaletteResult::Accept(Accept::DeleteScratch(path)) => self.ask_delete_scratch(path),
+            PaletteResult::Accept(Accept::LocalHistoryDiff { path, id, at, title }) => self.show_local_diff(path, id, at, title),
             // A symbol or location: back returns here even after a short jump.
             PaletteResult::Accept(Accept::OpenFileAt { path, line, col }) => {
                 self.editor.push_nav_here();

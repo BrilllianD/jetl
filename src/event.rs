@@ -166,6 +166,9 @@ pub enum AppMsg {
         done: crate::lsp::edits::EditCounts,
         errors: Vec<String>,
     },
+    /// A local history list or snapshot (`history::HistoryMsg`); no
+    /// generation: the store is global.
+    LocalHistory(crate::history::HistoryMsg),
 }
 
 pub use crate::lsp::LspMsg;
@@ -215,6 +218,9 @@ pub enum Effect {
     ContextMenu(crate::ui::menu::ContextMenu),
     /// Ask the language servers (`app/lsp.rs`).
     Lsp(crate::lsp::LspRequest),
+    /// Take a snapshot, show a file's snapshots, revert to one
+    /// (`app/history.rs`).
+    History(crate::history::Request),
     Quit,
 }
 

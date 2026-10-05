@@ -74,8 +74,12 @@ impl App {
             Ok(Err(_)) => return tracing::debug!("{} is no longer UTF-8; not reloaded", path.display()),
             Err(e) => return tracing::debug!("reload {}: {e}", path.display()),
         };
-        if self.editor.reload_clean(&path, text) {
+        let mut sink = Vec::new();
+        if self.editor.reload_clean(&path, text, &mut sink) {
             tracing::info!("reloaded {} after an outside change", path.display());
+        }
+        for c in sink {
+            self.history.capture(c);
         }
     }
 }

@@ -27,7 +27,9 @@ window layout, expanded Project tree folders and its hidden/ignored toggles)
 live in `$XDG_STATE_HOME/jetl/sessions/`; recently opened project roots (the
 Recent Projects palette, Alt+Shift+E) in `$XDG_STATE_HOME/jetl/recent_projects.json`;
 scratch files (File > New Scratch File…, shared by every project) in
-`$XDG_STATE_HOME/jetl/scratches/`, created with the first one.
+`$XDG_STATE_HOME/jetl/scratches/`, created with the first one; local history
+snapshots (File > Local History…, shared by every project and jetl
+instance) in `$XDG_STATE_HOME/jetl/history/`, created with the first one.
 
 ## Reloading
 
@@ -157,6 +159,12 @@ completion_min_chars = 1       # identifier chars typed before it opens by itsel
 # languages = ["rust"]           # language ids, as the status bar shows them
 # init_options = {}              # sent as initializationOptions
 # settings = { rust-analyzer = { check = { command = "clippy" } } }  # answers workspace/configuration
+
+[local_history]
+enabled = true                 # snapshot files on save and before they are overwritten or deleted
+keep_days = 5                  # snapshots older than this are pruned (0 drops every one at the next prune)
+max_total_mb = 100             # the oldest snapshots are pruned while the store holds more
+max_file_kb = 2048             # larger files are not snapshotted
 ```
 
 With `watch` on, files changed by other programs refresh the Project tree
@@ -348,6 +356,42 @@ one undo step; snippet placeholders are inserted as plain text with the
 caret at the snippet's end mark (`$0`), else after it. Items a server fills
 in lazily are resolved first; when that takes over 300 ms, or you keep
 typing, the item goes in as it is.
+
+Local history (`[local_history]`) keeps snapshots of your files in
+`$XDG_STATE_HOME/jetl/history/`, outside every project, so it works in any
+folder, git or not, scratch files included. A snapshot is taken on every
+save (Ctrl+S, Save All, autosave, Save As, the saves of closing and
+quitting) of the text written, and before jetl overwrites or deletes a
+file: a git operation that rewrites the work tree (switch, checkout, pull,
+merge, rebase, cherry-pick, revert, stash, discard of files or changes,
+taking one side of a conflict) first stores every changed or untracked file
+of the repository (at most 500), a reload from disk stores the tab's text,
+Overwrite in the changed-on-disk dialog and Save As over a file store the
+file on disk, and Delete in the Project tree stores the file, or the files
+under a folder that the tree would show (at most 500). A snapshot equal to
+the file's last one is not stored again, and identical contents are stored
+once for all files. Binary files and files over `max_file_kb` are skipped.
+
+File > Local History… (`editor.local_history`, no key by default; also the
+Project tree's context menu) lists the snapshots of the active file, or of
+the selected tree entry when the tree has focus, newest first: date and
+time, what it was taken for ("Saved", "Before git switch main"), size and
+the line count change from the one before. Typing filters by date or label.
+Enter shows the snapshot against the file's current text (its unsaved
+edits included) in the Git window's History tab (Alt+Y there), with the
+layout toggles and F7 of every Git diff; F5 compares again. Revert (the
+button, or Alt+R in the Git window) puts the snapshot's text into the
+file's tab as one undoable edit (Ctrl+Z takes it back), opening the file
+first if needed; nothing is written until you save. [Snapshots…] goes back
+to the list.
+
+Snapshots older than `keep_days` go, then the oldest while the store holds
+more than `max_total_mb`, when jetl starts and when either setting
+changes; all four settings apply at once. Several jetl instances share the
+store: one prunes at a time, and a snapshot stored by another instance
+during a prune may be lost. Snapshots are plain files, like crash recovery
+dumps, protected only by the state directory's permissions. A path is recorded as it was opened, so a file reached through a
+symlink has its own history.
 
 ## Indentation and .editorconfig
 

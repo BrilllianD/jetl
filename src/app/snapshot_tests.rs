@@ -17,8 +17,8 @@ use ratatui::backend::TestBackend;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 
-use super::App;
 use super::tests::{load, test_app};
+use super::{App, Ctx};
 use crate::actions::{Action, EditorAction, MergeAction, Motion, PaletteKind};
 use crate::config::theme::Theme;
 use crate::editor::selection::Selection;
@@ -477,6 +477,59 @@ async fn palette_scratches() {
     let term = draw_app(app, 80, 24);
     let marks = palette_marks(&app.theme);
     assert_snapshot!("palette_scratches", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
+async fn palette_local_history() {
+    let mut fx = stable_app("palette-local-history");
+    let app = &mut fx.app;
+    let path = app.workspace.root.join("notes.txt");
+    app.open_local_history(path.clone());
+    // Noon UTC on three days, shown at UTC; newest first.
+    let entry = |day: u64, len: u64, lines: u64, kind, detail: Option<&str>| crate::history::Entry {
+        v: 1,
+        path: path.to_string_lossy().into_owned(),
+        at: (day * 86_400 + 12 * 3600) * 1000,
+        blob: format!("{day:040}"),
+        len,
+        lines,
+        kind,
+        detail: detail.map(String::from),
+    };
+    use crate::history::Kind;
+    let entries = vec![
+        entry(20_000, 1300, 40, Kind::Save, None),
+        entry(19_999, 1200, 37, Kind::BeforeGit, Some("git switch main")),
+        entry(19_998, 900, 39, Kind::BeforeReload, None),
+        entry(19_990, 512, 39, Kind::Autosave, None),
+    ];
+    app.palette.as_mut().unwrap().set_history(entries, |_| 0);
+    let term = draw_app(app, 80, 24);
+    let marks = palette_marks(&app.theme);
+    assert_snapshot!("palette_local_history", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
+async fn git_history_tab() {
+    let mut fx = stable_app("git-history-tab");
+    let app = &mut fx.app;
+    // A plain `.txt` file: no grammar, so the frame is the same with any
+    // set of language features.
+    let path = app.workspace.root.join("notes.txt");
+    app.toggle_tool_window(ToolWindowId::Git);
+    let key = DiffKey::Local { path, rel: "notes.txt".into(), id: "0".repeat(40), at: 0 };
+    let mut cx = ctx!(app);
+    app.git_panel.show_local_diff(key.clone(), "2024-10-04 12:00:00  Saved".into(), &mut cx);
+    // The load it asks for is answered below instead.
+    drop(cx);
+    let old = "alpha\nbeta\ngamma\ndelta\n";
+    let new = "alpha\nbeta two\ngamma\nepsilon\ndelta\n";
+    let result = Ok(crate::git::diff::DiffDoc::build(old.as_bytes(), new.as_bytes(), app.git.tab_width));
+    app.handle_msg(AppMsg::Git(GitMsg::Diff { generation: app.git.generation, key, result }));
+    let term = draw_app(app, 100, 24);
+    let marks = diff_marks(&app.theme);
+    let bottom = app.layout.rects.bottom;
+    assert_snapshot!("git_history_tab", snapshot(&term, &marks, Some(bottom)));
 }
 
 /// The resolver's fixture (as in `editor/merge.rs`): yours changes `one`,

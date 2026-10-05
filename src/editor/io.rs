@@ -10,6 +10,7 @@ use super::undo::{Change, TxKind};
 use crate::app::Ctx;
 use crate::config::Autosave;
 use crate::event::{Effect, Level};
+use crate::history::{Capture, Kind};
 use crate::ui::dialog::{Dialog, DialogId};
 use crate::util::fs::write_atomic;
 
@@ -43,14 +44,17 @@ impl Editor {
     }
 
     /// Swap in the disk text of `path` if its tab still has no unsaved
-    /// edits and the file still differs from what the tab last saw.
-    pub fn reload_clean(&mut self, path: &Path, text: String) -> bool {
+    /// edits and the file still differs from what the tab last saw. The
+    /// text replaced goes to `sink` as a local history snapshot.
+    pub fn reload_clean(&mut self, path: &Path, text: String, sink: &mut Vec<Capture>) -> bool {
         let Some(i) = self.index_of(path) else { return false };
         let b = &mut self.buffers[i];
         if b.dirty() || !b.changed_on_disk() {
             return false;
         }
-        replace_with_disk_text(b, text, path);
+        if let Some(old) = replace_with_disk_text(b, text, path) {
+            sink.push(Capture::rope(path.to_path_buf(), old, Kind::BeforeReload));
+        }
         true
     }
 
@@ -67,6 +71,20 @@ impl Editor {
         let caret = b.view.sel().head.min(text.chars().count());
         b.apply(vec![Change::replace(0, old, text)], Selection::point(caret), TxKind::Other);
         b.recovered = true;
+        true
+    }
+
+    /// Replace buffer `i`'s text with a local history snapshot: one
+    /// undoable change, an ordinary edit (dirty, autosave may write it).
+    /// False when the text is already the same.
+    pub fn restore_text(&mut self, i: usize, text: &str) -> bool {
+        let Some(b) = self.buffers.get_mut(i) else { return false };
+        let old = b.text();
+        if old == text {
+            return false;
+        }
+        let caret = b.view.sel().head.min(text.chars().count());
+        b.apply(vec![Change::replace(0, old, text)], Selection::point(caret), TxKind::Other);
         true
     }
 
@@ -133,13 +151,18 @@ impl Editor {
     }
 
     /// Replace buffer `id` with the file's text, dropping unsaved edits
-    /// (undoable).
+    /// (undoable; the edits also go to local history).
     pub fn reload_from_disk(&mut self, id: BufferId, cx: &mut Ctx) {
         let Some(i) = self.index_of_id(id) else { return };
         let b = &mut self.buffers[i];
         let Some(path) = b.path.clone() else { return };
         match std::fs::read(&path).map(String::from_utf8) {
-            Ok(Ok(text)) => replace_with_disk_text(b, text, &path),
+            Ok(Ok(text)) => {
+                if let Some(old) = replace_with_disk_text(b, text, &path) {
+                    let c = Capture::rope(path, old, Kind::BeforeReload);
+                    cx.effects.push(Effect::History(crate::history::Request::Capture(c)));
+                }
+            }
             Ok(Err(_)) => cx.notify(Level::Error, format!("{} is not valid UTF-8; not reloaded", b.name)),
             Err(e) => cx.notify(Level::Error, format!("reload {}: {e}", path.display())),
         }
@@ -194,7 +217,8 @@ impl Editor {
         let Some(path) = b.path.clone() else { return false };
         match write_atomic(&path, &text) {
             Ok(perm_err) => {
-                mark_written(b, path, state, perm_err, cx, quiet);
+                let kind = if quiet { Kind::Autosave } else { Kind::Save };
+                mark_written(b, path, state, perm_err, cx, quiet, Capture::text(PathBuf::new(), text, kind));
                 true
             }
             Err(e) => {
@@ -222,7 +246,7 @@ impl Editor {
                 let setup = self.path_setup(&path, &text, cx.theme);
                 let b = &mut self.buffers[i];
                 super::adopt_path(b, path.clone(), setup, self.tab_width);
-                mark_written(b, path, state, perm_err, cx, false);
+                mark_written(b, path, state, perm_err, cx, false, Capture::text(PathBuf::new(), text, Kind::SaveAs));
                 true
             }
             Err(e) => {
@@ -307,9 +331,10 @@ impl Editor {
 }
 
 /// `b` was written to `path` at undo state `state`: it is clean, the
-/// file's mtime is noted, autosave may try again, and `Effect::FileSaved`
+/// file's mtime is noted, autosave may try again, the text written goes to
+/// local history (`snap`, its path set here), and `Effect::FileSaved`
 /// follows (with the "Saved" toast unless `quiet`).
-fn mark_written(b: &mut Buffer, path: PathBuf, state: u64, perm_err: Option<std::io::Error>, cx: &mut Ctx, quiet: bool) {
+fn mark_written(b: &mut Buffer, path: PathBuf, state: u64, perm_err: Option<std::io::Error>, cx: &mut Ctx, quiet: bool, mut snap: Capture) {
     if let Some(e) = perm_err {
         cx.notify(Level::Warn, format!("{}: file mode not kept: {e}", b.name));
     }
@@ -322,6 +347,8 @@ fn mark_written(b: &mut Buffer, path: PathBuf, state: u64, perm_err: Option<std:
         cx.notify(Level::Warn, format!("{} was not valid UTF-8; saved re-encoded as UTF-8", b.name));
         b.lossy = false;
     }
+    snap.path = path.clone();
+    cx.effects.push(Effect::History(crate::history::Request::Capture(snap)));
     cx.effects.push(Effect::FileSaved { path, quiet });
 }
 
@@ -332,16 +359,20 @@ pub(super) fn disk_conflict(b: &Buffer) -> bool {
 }
 
 /// Make `b` the clean text of `path` as read from disk, keeping the caret
-/// where it can stay.
-pub(super) fn replace_with_disk_text(b: &mut Buffer, text: String, path: &Path) {
+/// where it can stay. Returns the text replaced, when it differed.
+pub(super) fn replace_with_disk_text(b: &mut Buffer, text: String, path: &Path) -> Option<ropey::Rope> {
     b.disk_mtime = buffer::file_mtime(path);
     b.autosave_conflict = false;
     let old = b.text();
-    if old != text {
+    let replaced = (old != text).then(|| {
+        // A rope clone is O(1); the worker makes it bytes.
+        let before = b.rope.clone();
         let caret = b.view.sel().head.min(text.chars().count());
         b.apply(vec![Change::replace(0, old, text)], Selection::point(caret), TxKind::Other);
-    }
+        before
+    });
     b.mark_saved();
+    replaced
 }
 
 /// An idle autosave is due once `idle` has passed since the last edit and

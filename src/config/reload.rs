@@ -6,6 +6,7 @@
 //! `Live`, applied in `App::apply_config` or `Editor::apply_config`).
 
 use super::{ClipboardConfig, Config, EditorConfig, FilesConfig, FormatConfig, GitConfig, KeymapConfig, UiConfig, WorktreeConfig};
+use crate::history::LocalHistoryConfig;
 use crate::lsp::LspConfig;
 use crate::run::RunConfig;
 use crate::terminal::TerminalConfig;
@@ -144,6 +145,12 @@ sections! {
         completion_min_chars => Live,
         servers => LspRestart,
     }
+    local_history: LocalHistoryConfig {
+        enabled => Live,
+        keep_days => Live,
+        max_total_mb => Live,
+        max_file_kb => Live,
+    }
 }
 
 #[cfg(test)]
@@ -192,7 +199,7 @@ mod tests {
         names.dedup();
         assert_eq!(names.len(), KEYS.len());
         // 13 editor, 6 ui, 3 git, 2 worktree, 1 keymap, 3 files, 2 clipboard,
-        // 3 format, 1 run, 3 terminal, 7 lsp.
-        assert_eq!(KEYS.len(), 44);
+        // 3 format, 1 run, 3 terminal, 7 lsp, 4 local_history.
+        assert_eq!(KEYS.len(), 48);
     }
 }
