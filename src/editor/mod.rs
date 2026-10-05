@@ -38,7 +38,7 @@ use ratatui::style::Style;
 use unicode_width::UnicodeWidthStr;
 
 use crate::actions::EditorAction;
-use crate::app::Ctx;
+use crate::app::{AfterSave, Ctx};
 use crate::config::theme::Theme;
 use crate::config::{Autosave, Config};
 use crate::event::{Effect, Level, Mouse};
@@ -65,6 +65,32 @@ enum DragMode {
     AltPending((usize, usize)),
     /// A column block from this (line, visual column) to the pointer.
     Column((usize, usize)),
+}
+
+/// What [`Editor::path_setup`] works out from a path, for [`adopt_path`].
+pub(super) struct PathSetup {
+    lang: Option<&'static syntax::LanguageDef>,
+    syntax: Option<syntax::Syntax>,
+    mtime: Option<std::time::SystemTime>,
+    settings: indent::FileSettings,
+    wrap: bool,
+}
+
+/// Make `b` the buffer of `path`: its name, language (detected again, a
+/// language picked by hand is dropped), highlighting, mtime, `.editorconfig`
+/// settings, indent and soft wrap. The text and undo history stay.
+pub(super) fn adopt_path(b: &mut Buffer, path: PathBuf, s: PathSetup, tab_width: usize) {
+    b.name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    b.path = Some(path);
+    b.language_choice = buffer::LanguageChoice::Auto;
+    b.syntax = s.syntax;
+    b.detected_language = s.lang;
+    b.disk_mtime = s.mtime;
+    b.indent = s.settings.indent(&b.rope, tab_width);
+    b.settings = s.settings;
+    b.view.wrap.on = s.wrap;
+    b.fold_cache = None;
+    b.changed_since_render = true;
 }
 
 pub struct Editor {
@@ -264,26 +290,18 @@ impl Editor {
         }
         let id = self.next_id;
         self.next_id += 1;
-        // Only the first and last lines are read for a shebang or modeline.
-        let lang = syntax::detect_text(&path, text);
-        let syntax = lang.filter(|_| text.len() <= self.max_highlight_bytes).and_then(|d| syntax::Syntax::new(d, theme));
-        let mtime = buffer::file_mtime(&path);
+        let setup = self.path_setup(&path, text, theme);
         let pending = self.pending_nav.take_if(|(p, _)| *p == path).map(|(_, pos)| pos);
-        let settings = indent::FileSettings::for_path(&path);
         let digits = self.unpark_digits(&path);
-        let mut buf = Buffer::from_text(id, Some(path), text, lossy);
+        // A file not on disk yet has no line ending of its own.
+        let le = setup.settings.end_of_line.filter(|_| setup.mtime.is_none() && text.is_empty());
+        let mut buf = Buffer::from_text(id, None, text, lossy);
         let last = buf.rope.len_lines() - 1;
         buf.bookmarks.extend(digits.into_iter().map(|(line, d)| (line.min(last), Some(d))));
-        buf.syntax = syntax;
-        buf.detected_language = lang;
-        buf.disk_mtime = mtime;
-        buf.indent = settings.indent(&buf.rope, self.tab_width);
-        // A file not on disk yet has no line ending of its own.
-        if let Some(le) = settings.end_of_line.filter(|_| mtime.is_none() && text.is_empty()) {
+        adopt_path(&mut buf, path, setup, self.tab_width);
+        if let Some(le) = le {
             buf.line_ending = le;
         }
-        buf.settings = settings;
-        buf.view.wrap.on = self.soft_wrap_for(buf.path.as_deref());
         self.buffers.push(buf);
         let at = self.buffers.len() - 1;
         match pending {
@@ -299,6 +317,32 @@ impl Editor {
             None => self.activate_index(at),
         }
         at
+    }
+
+    /// What a buffer takes from its file's path and text: the language (the
+    /// path, else a shebang or modeline; highlighting only below
+    /// `max_highlight_bytes`), the file's mtime, `.editorconfig` and soft
+    /// wrap. Shared by [`Editor::open_text`] and Save As.
+    pub(super) fn path_setup(&self, path: &Path, text: &str, theme: &Theme) -> PathSetup {
+        // Only the first and last lines are read for a shebang or modeline.
+        let lang = syntax::detect_text(path, text);
+        let syntax = lang.filter(|_| text.len() <= self.max_highlight_bytes).and_then(|d| syntax::Syntax::new(d, theme));
+        PathSetup {
+            lang,
+            syntax,
+            mtime: buffer::file_mtime(path),
+            settings: indent::FileSettings::for_path(path),
+            wrap: self.soft_wrap_for(Some(path)),
+        }
+    }
+
+    /// The first untitled buffer with unsaved edits in tab order (the
+    /// resolver's buffers do not count), among `within` when given.
+    pub fn untitled_dirty(&self, within: Option<&[BufferId]>) -> Option<BufferId> {
+        self.tab_order().into_iter().map(|i| &self.buffers[i]).find_map(|b| {
+            let wanted = b.path.is_none() && b.dirty() && !self.is_merge_buffer(b.id);
+            (wanted && within.is_none_or(|ids| ids.contains(&b.id))).then_some(b.id)
+        })
     }
 
     /// Add an empty buffer without a file, named `name`, as a new tab and
@@ -752,11 +796,27 @@ impl Editor {
             }
             E::SaveAll => {
                 self.save_all_with(cx, self.format.on_save);
+                // Then the untitled buffers, one prompt at a time, unless a
+                // file changed on disk is being asked about.
+                if !cx.effects.iter().any(|e| matches!(e, Effect::Dialog(_)))
+                    && let Some(id) = self.untitled_dirty(None)
+                {
+                    cx.effects.push(Effect::SaveAs { id, then: AfterSave::SaveAll });
+                }
                 return true;
             }
             E::Save => {
-                if let Some(i) = self.active() {
+                // An untitled buffer asks where to save it.
+                if let Some(b) = self.active_buffer().filter(|b| b.path.is_none()) {
+                    cx.effects.push(Effect::SaveAs { id: b.id, then: AfterSave::Nothing });
+                } else if let Some(i) = self.active() {
                     self.save_with(i, cx, self.format.on_save);
+                }
+                return true;
+            }
+            E::SaveAs => {
+                if let Some(b) = self.active_buffer() {
+                    cx.effects.push(Effect::SaveAs { id: b.id, then: AfterSave::Nothing });
                 }
                 return true;
             }
@@ -1055,6 +1115,7 @@ impl Editor {
             | E::UnsplitAll
             | E::MoveTabToOppositeGroup
             | E::Save
+            | E::SaveAs
             | E::SaveAll
             | E::Format
             | E::GotoLine
@@ -2409,5 +2470,86 @@ mod tests {
         assert_eq!((b.path.as_deref(), b.name.as_str()), (None, "scratch"));
         assert_eq!(ed.active(), Some(i));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn save_as_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("jetl-test-save-as-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[test]
+    fn save_as_gives_an_untitled_buffer_its_path() {
+        let dir = save_as_dir("untitled");
+        let mut ed = Editor::new(&Config::default());
+        let i = ed.open_untitled("notes (recovered)");
+        ed.buffers[i].insert("fn main() {}\n", TxKind::Typing);
+        ed.buffers[i].recovered = true;
+        let path = dir.join("a.rs");
+        let mut fx = Vec::new();
+        let notes = with_cx(|cx| {
+            assert!(ed.save_as(i, path.clone(), cx));
+            fx = std::mem::take(&mut cx.effects);
+        });
+        assert!(notes.is_empty(), "{notes:?}");
+        let b = &ed.buffers[i];
+        assert_eq!((b.path.as_deref(), b.name.as_str()), (Some(path.as_path()), "a.rs"));
+        assert_eq!(b.language().map(|l| l.name), Some("rust"));
+        assert!(b.syntax.is_some() && b.disk_mtime.is_some());
+        assert!(!b.dirty() && !b.recovered);
+        assert!(matches!(fx.as_slice(), [Effect::FileSaved { path: p, quiet: false }] if *p == path));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "fn main() {}\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_as_of_a_file_writes_a_copy_and_follows_it() {
+        let dir = save_as_dir("copy");
+        let (a, b) = (dir.join("a.txt"), dir.join("b.txt"));
+        std::fs::write(&a, "a\n").unwrap();
+        let mut ed = Editor::new(&Config::default());
+        let i = ed.open_text(a.clone(), "a\n", false, &Theme::default());
+        ed.buffers[i].insert("mine ", TxKind::Typing);
+        with_cx(|cx| assert!(ed.save_as(i, b.clone(), cx)));
+        assert_eq!(std::fs::read_to_string(&a).unwrap(), "a\n", "the old file is left alone");
+        assert_eq!(std::fs::read_to_string(&b).unwrap(), "mine a\n");
+        assert_eq!(ed.buffers[i].path.as_deref(), Some(b.as_path()));
+        assert_eq!(ed.index_of(&a), None);
+        assert!(!ed.buffers[i].dirty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn failed_save_as_leaves_the_buffer_as_it_was() {
+        let dir = save_as_dir("fail");
+        let mut ed = Editor::new(&Config::default());
+        let i = ed.open_untitled("untitled");
+        ed.buffers[i].insert("text\n", TxKind::Typing);
+        let notes = with_cx(|cx| assert!(!ed.save_as(i, dir.join("missing/x.txt"), cx)));
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        let b = &ed.buffers[i];
+        assert_eq!((b.path.as_deref(), b.name.as_str()), (None, "untitled"));
+        assert!(b.dirty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_of_an_untitled_buffer_asks_for_a_path() {
+        let mut ed = editor_with("a.txt", "a\n");
+        ed.buffers[0].insert("x", TxKind::Typing);
+        let j = ed.open_untitled("untitled");
+        let id = ed.buffers[j].id;
+        ed.buffers[j].insert("u", TxKind::Typing);
+        let mut fx = Vec::new();
+        let notes = with_cx(|cx| {
+            ed.handle_action(&EditorAction::Save, cx);
+            fx = std::mem::take(&mut cx.effects);
+        });
+        assert!(notes.is_empty(), "no 'buffer has no file path': {notes:?}");
+        assert!(matches!(fx.as_slice(), [Effect::SaveAs { id: x, then: AfterSave::Nothing }] if *x == id));
+        assert_eq!(ed.untitled_dirty(None), Some(id));
+        assert_eq!(ed.untitled_dirty(Some(&[ed.buffers[0].id])), None);
     }
 }

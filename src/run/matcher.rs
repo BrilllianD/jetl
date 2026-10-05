@@ -15,10 +15,12 @@
 
 use std::collections::HashMap;
 use std::ops::Range;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
 use regex::Regex;
+
+use crate::util::fs::normalize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Severity {
@@ -191,22 +193,6 @@ impl Matcher {
 
 fn severity(word: &str) -> Severity {
     if word == "error" { Severity::Error } else { Severity::Warning }
-}
-
-/// `p` without `.` components and with `..` applied, so a file reached as
-/// `./src/a.rs` opens the same tab as `src/a.rs`.
-fn normalize(p: &Path) -> PathBuf {
-    let mut out = PathBuf::new();
-    for c in p.components() {
-        match c {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                out.pop();
-            }
-            c => out.push(c),
-        }
-    }
-    out
 }
 
 #[cfg(test)]

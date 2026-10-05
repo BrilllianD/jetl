@@ -752,11 +752,16 @@ impl Editor {
     }
 
     /// Save the unsaved buffers among `ids`, then close those that are
-    /// clean (a save that failed or needs an answer keeps its tab).
+    /// clean (a save that failed or needs an answer keeps its tab, and so
+    /// does an untitled buffer, left to Save As).
     pub fn save_and_close_ids(&mut self, ids: &[BufferId], cx: &mut Ctx) {
         for id in ids {
             let Some(i) = self.index_of_id(*id) else { continue };
-            if !self.buffers[i].dirty() || self.save(i, cx) {
+            let b = &self.buffers[i];
+            if b.dirty() && b.path.is_none() {
+                continue;
+            }
+            if !b.dirty() || self.save(i, cx) {
                 self.force_close(i);
             }
         }

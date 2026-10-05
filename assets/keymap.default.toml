@@ -97,6 +97,9 @@
 # terminal's own paste shortcut (Ctrl+Shift+V, Shift+Insert) also works.
 "ctrl-v" = "editor.paste"
 "ctrl-shift-s" = "editor.save_all"
+# No Save As key in JetBrains; Alt+Shift+S sits next to Save All and works
+# in legacy terminals and tmux.
+"alt-shift-s" = "editor.save_as"
 "f12" = "app.debug_panic"
 # Numbered bookmarks (Ctrl+F11 sets one), JetBrains-style. Ctrl+digit needs
 # the kitty protocol for 0-3, 8 and 9: legacy terminals send Ctrl+0, 1 and 9

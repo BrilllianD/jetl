@@ -47,6 +47,7 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Alt+Shift+N` | `palette.symbols` | Go to symbol |
 | `Ctrl+Alt+Shift+N` * | `palette.symbols` | Go to symbol |
 | `Ctrl+S` | `editor.save` | Save |
+| `Alt+Shift+S` | `editor.save_as` | Save as… |
 | `Ctrl+Shift+S` * | `editor.save_all` | Save all |
 | `Ctrl+V` | `editor.paste` | Paste |
 | `Alt+Right` | `editor.next_tab` | Next tab |

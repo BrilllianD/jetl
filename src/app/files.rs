@@ -54,7 +54,7 @@ impl App {
 
     /// Re-read the tree directories from the root down to `path`'s parent,
     /// so folders created on the way show too.
-    fn reload_parents(&mut self, path: &Path) {
+    pub(super) fn reload_parents(&mut self, path: &Path) {
         let root = self.workspace.root.clone();
         let mut dirs: Vec<&Path> = path.ancestors().skip(1).take_while(|d| d.starts_with(&root)).collect();
         dirs.reverse();

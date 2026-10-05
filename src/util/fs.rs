@@ -1,6 +1,6 @@
 //! File helpers.
 
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 
 /// Write via a temp file in the same directory, then rename over the target.
 /// The written file keeps the original's permissions; failing to copy them
@@ -18,4 +18,20 @@ pub fn write_atomic(path: &Path, text: &str) -> std::io::Result<Option<std::io::
     let perm_err = std::fs::metadata(path).ok().and_then(|meta| std::fs::set_permissions(&tmp, meta.permissions()).err());
     std::fs::rename(&tmp, path)?;
     Ok(perm_err)
+}
+
+/// `p` without `.` components and with `..` applied, so a file reached as
+/// `./src/a.rs` opens the same tab as `src/a.rs`.
+pub fn normalize(p: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for c in p.components() {
+        match c {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            c => out.push(c),
+        }
+    }
+    out
 }

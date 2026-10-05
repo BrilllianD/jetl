@@ -914,7 +914,7 @@ impl Editor {
             | E::ShowBookmarks
             | E::ToggleNumberedBookmark
             | E::GotoNumberedBookmark(_) => cx.notify(Level::Info, BUSY),
-            E::Save | E::Format => cx.notify(Level::Info, "Apply (Ctrl+Enter) saves the merge result"),
+            E::Save | E::SaveAs | E::Format => cx.notify(Level::Info, "Apply (Ctrl+Enter) saves the merge result"),
             _ => return false,
         }
         true

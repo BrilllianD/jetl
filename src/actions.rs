@@ -104,6 +104,7 @@ pub enum EditorAction {
     Undo,
     Redo,
     Save,
+    SaveAs,
     SaveAll,
     Find,
     Replace,
@@ -523,6 +524,7 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "editor.undo" => "Undo", Editor(E::Undo);
         "editor.redo" => "Redo", Editor(E::Redo);
         "editor.save" => "Save", Editor(E::Save);
+        "editor.save_as" => "Save as…", Editor(E::SaveAs);
         "editor.save_all" => "Save all", Editor(E::SaveAll);
         "editor.find" => "Find", Editor(E::Find);
         "editor.replace" => "Replace", Editor(E::Replace);

@@ -197,6 +197,12 @@ pub enum Effect {
     /// A git operation or query for the app to run through `GitService`.
     Git(crate::git::GitRequest),
     Dialog(crate::ui::dialog::Dialog),
+    /// Ask where to save buffer `id` (`App::ask_save_as`), then go on with
+    /// `then`.
+    SaveAs {
+        id: crate::editor::buffer::BufferId,
+        then: crate::app::AfterSave,
+    },
     /// `quiet` (autosave) skips the "Saved" toast.
     FileSaved {
         path: PathBuf,

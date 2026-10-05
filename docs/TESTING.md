@@ -38,8 +38,8 @@ on ratatui's `TestBackend` and compares them as text with
 [`insta`](https://insta.rs) against `src/app/snapshots/*.snap`. They cover
 split panes, carets, occurrences, folding, soft wrap, bookmarks and the
 numbered bookmark chooser, the project tree, the
-Git window's Commit tab, the palettes, the conflict resolver and the crash
-recovery dialogs.
+Git window's Commit tab, the palettes, the conflict resolver, the crash
+recovery dialogs and the Save As prompt.
 
 Helpers (in `snapshot_tests.rs` unless noted):
 
@@ -454,6 +454,42 @@ legacy fallback Alt+B then the digit:
 Start jetl again on `$T` (notes.md closed): Alt+B 3 opens it at line 20
 with the 3 in the gutter. Ctrl+F11 then 3 on that line removes the
 bookmark; 3 on another line moves it there.
+
+### Scenario: Save As
+
+At 80x24 and at 120x40, with `run()` and `$T` from the crash recovery
+scenario (fresh `$T` and `/tmp/jt-home`). Alt+Shift+S arrives under tmux as
+`M-S`. The prompt is prefilled; clear it with Backspace (`send-keys -N 20
+BSpace`) before typing a path:
+
+```sh
+run; sleep 2
+/tmp/tm.sh send-keys -t jetl -l 'EDIT '; /tmp/tm.sh send-keys -t jetl M-S   # "Save As", "Where to save notes.txt?", prefilled notes.txt
+/tmp/tm.sh send-keys -t jetl -N 20 BSpace; /tmp/tm.sh send-keys -t jetl -l sub/copy.txt; /tmp/tm.sh send-keys -t jetl Enter
+cat $T/notes.txt $T/sub/copy.txt      # one, two unchanged; the copy has "EDIT one"
+                                      # the tab is copy.txt (clean), the tree shows sub/
+/tmp/tm.sh send-keys -t jetl M-S; /tmp/tm.sh send-keys -t jetl -N 20 BSpace; /tmp/tm.sh send-keys -t jetl -l b.txt; /tmp/tm.sh send-keys -t jetl Enter
+                                      # "b.txt already exists. Overwrite it?" [ Overwrite ] [ Cancel ]; Enter writes it
+```
+
+With b.txt open in another tab (Ctrl+N `b.txt`), Save As of notes.txt to
+`b.txt` is refused with a warning ("b.txt is open in another tab; close it
+first").
+
+Untitled buffers: crash with notes.txt modified (as in the crash recovery
+scenario), `chmod 000 $T/notes.txt`, `run`, Restore all: the tab is
+`*notes.txt (recovered)` with no file.
+
+- Ctrl+S opens Save As prefilled `notes.txt`; change it to `rescued.txt`,
+  Enter: the tab is `rescued.txt`, the file has the text, Ctrl+Q exits with
+  EXIT=0.
+- Repeat with two unreadable files (notes.txt and b.txt modified before the
+  crash, both `chmod 000`). Ctrl+Q, Enter ("Save all and exit"): a prompt
+  for notes.txt (recovered); type `n2.txt`, Enter; a prompt for b.txt
+  (recovered); Esc: jetl stays open, n2.txt is written. Ctrl+Q, Enter, then
+  `b2.txt` Enter at the one prompt left: EXIT=0.
+
+`chmod 644` the files afterwards, so `rm -rf $T` works.
 
 ### Limits under tmux
 

@@ -218,9 +218,10 @@ shows its first error line (the full output is in the Event Log, Alt+Shift+L).
 If you type while it runs, the reformat is dropped and the file gets the
 text as it was when you pressed Ctrl+S; your later edits stay unsaved.
 
-Only explicit saves format. Autosave, and the saves done by closing a tab,
-quitting or switching projects with unsaved changes ("Save all and exit"),
-write at once without the formatter, so they never wait on it.
+Only explicit saves format. Autosave, Save As (Alt+Shift+S), and the saves
+done by closing a tab, quitting or switching projects with unsaved changes
+("Save all and exit"), write at once without the formatter, so they never
+wait on it.
 
 Run tasks (`[[run.tasks]]`) are listed by `run.pick` (Alt+Shift+F10), then
 the project's own `.jetl/run.toml`, which holds the same entries as

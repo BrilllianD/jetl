@@ -37,6 +37,7 @@ macro_rules! ctx {
 }
 
 pub use lsp::LspStatus;
+pub use save_as::AfterSave;
 
 // Declared after `ctx!` so the submodules can use it.
 mod clipboard;
@@ -57,6 +58,7 @@ mod msg;
 mod palette;
 mod recovery;
 mod run;
+mod save_as;
 mod symbols;
 mod terminal;
 mod watch;

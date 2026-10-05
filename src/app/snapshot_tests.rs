@@ -542,3 +542,19 @@ async fn recovery_review_dialog() {
     let marks = [Mark::style('B', "selected button", app.theme.list_selected)];
     assert_snapshot!("recovery_review_dialog", snapshot(&term, &marks, None));
 }
+
+#[tokio::test]
+async fn save_as_dialog() {
+    let mut fx = stable_app("save-as-dialog");
+    let app = &mut fx.app;
+    // A buffer restored after a crash that has no file: quitting saves the
+    // files, then asks where this one goes.
+    let i = app.editor.open_untitled("notes (recovered)");
+    app.editor.buffers[i].insert("rescued text\n", crate::editor::undo::TxKind::Typing);
+    app.focus.set(PanelId::Editor);
+    app.request_quit();
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    let term = draw_app(app, 80, 24);
+    let marks = [Mark::style('B', "selected button", app.theme.list_selected)];
+    assert_snapshot!("save_as_dialog", snapshot(&term, &marks, None));
+}

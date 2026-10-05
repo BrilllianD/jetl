@@ -35,6 +35,7 @@ pub const MAIN_MENU: &[(&str, char, &[Row])] = &[
             Item("Recent Projects…", "palette.recent_projects"),
             Sep,
             Item("Save", "editor.save"),
+            Item("Save As…", "editor.save_as"),
             Item("Save All", "editor.save_all"),
             Sep,
             Item("Close Tab", "editor.close_tab"),

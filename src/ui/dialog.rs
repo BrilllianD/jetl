@@ -144,6 +144,18 @@ pub enum DialogId {
     MergeCancel,
     /// Quit while the resolver holds the user's work.
     MergeQuit,
+    /// Save As of buffer `id`: the path typed, then `then`
+    /// (`App::finish_save_as`). Esc drops the continuation.
+    SaveAs {
+        id: crate::editor::buffer::BufferId,
+        then: crate::app::AfterSave,
+    },
+    /// Save As onto an existing file: Overwrite / Cancel.
+    SaveAsOverwrite {
+        id: crate::editor::buffer::BufferId,
+        path: std::path::PathBuf,
+        then: crate::app::AfterSave,
+    },
     /// Unsaved changes recovered after a crash (`App::offer_recovery`):
     /// Restore all / Discard / Review…
     Recover,

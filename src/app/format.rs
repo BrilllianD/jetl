@@ -46,6 +46,15 @@ enum Run {
 }
 
 impl FormatState {
+    /// Stop buffer `id`'s run, if any (Save As: its result must not be
+    /// written to the new path). A language server's late answer finds no
+    /// job and is dropped.
+    pub(crate) fn abort(&mut self, id: BufferId) {
+        if let Some(Job { run: Run::Command(task), .. }) = self.jobs.remove(&id) {
+            task.abort();
+        }
+    }
+
     /// Stop every run (root switch, quit).
     pub(crate) fn abort_all(&mut self) {
         for (_, job) in self.jobs.drain() {

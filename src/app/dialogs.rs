@@ -1,6 +1,6 @@
 //! Dialog answers.
 
-use super::{App, Ctx};
+use super::{AfterSave, App, Ctx};
 use crate::event::Level;
 use crate::files::ops::{FsOp, check_name};
 use crate::git::model::BranchOp;
@@ -94,45 +94,22 @@ impl App {
             return;
         }
         match (id, res) {
-            (DialogId::QuitDirty, DialogResult::Button(0)) => {
-                let mut cx = ctx!(self);
-                // A failed save or a disk conflict keeps the app open.
-                let saved = self.editor.save_all(&mut cx);
-                let fx = cx.effects;
-                self.apply_effects(fx);
-                self.should_quit = saved;
-            }
+            // A failed save or a disk conflict keeps the app open; untitled
+            // buffers are asked about one at a time (`save_as.rs`).
+            (DialogId::QuitDirty, DialogResult::Button(0)) => self.save_then(AfterSave::Quit),
             (DialogId::QuitDirty, DialogResult::Button(1)) => self.should_quit = true,
-            (DialogId::CloseTabDirty(id), DialogResult::Button(0)) => {
-                let Some(i) = self.editor.index_of_id(id) else { return };
-                let mut cx = ctx!(self);
-                if self.editor.save(i, &mut cx) {
-                    self.editor.force_close(i);
-                }
-                let fx = cx.effects;
-                self.apply_effects(fx);
-            }
+            (DialogId::CloseTabDirty(id), DialogResult::Button(0)) => self.save_then(AfterSave::CloseTab(id)),
             (DialogId::CloseTabDirty(id), DialogResult::Button(1)) => {
                 if let Some(i) = self.editor.index_of_id(id) {
                     self.editor.force_close(i);
                 }
             }
-            (DialogId::CloseAllDirty, DialogResult::Button(0)) => {
-                let mut cx = ctx!(self);
-                if self.editor.save_all(&mut cx) {
-                    self.editor.force_close_all();
-                }
-                let fx = cx.effects;
-                self.apply_effects(fx);
-            }
+            (DialogId::CloseAllDirty, DialogResult::Button(0)) => self.save_then(AfterSave::CloseAll),
             (DialogId::CloseAllDirty, DialogResult::Button(1)) => self.editor.force_close_all(),
-            (DialogId::CloseTabsDirty(ids), DialogResult::Button(0)) => {
-                let mut cx = ctx!(self);
-                self.editor.save_and_close_ids(&ids, &mut cx);
-                let fx = cx.effects;
-                self.apply_effects(fx);
-            }
+            (DialogId::CloseTabsDirty(ids), DialogResult::Button(0)) => self.save_then(AfterSave::CloseTabs(ids)),
             (DialogId::CloseTabsDirty(ids), DialogResult::Button(1)) => self.editor.force_close_ids(&ids),
+            (DialogId::SaveAs { id, then }, DialogResult::Text(t)) => self.finish_save_as(id, t, then),
+            (DialogId::SaveAsOverwrite { id, path, then }, DialogResult::Button(0)) => self.save_as_write(id, path, then),
             (DialogId::ReplaceInFiles, DialogResult::Button(0)) => self.replace_in_files(),
             (DialogId::OverwriteExternal(id), DialogResult::Button(0)) => {
                 let mut cx = ctx!(self);
@@ -252,15 +229,7 @@ impl App {
                     self.push_upstream(branch, remote.clone());
                 }
             }
-            (DialogId::SwitchRootDirty(root), DialogResult::Button(0)) => {
-                let mut cx = ctx!(self);
-                let saved = self.editor.save_all(&mut cx);
-                let fx = cx.effects;
-                self.apply_effects(fx);
-                if saved {
-                    self.do_switch_root(root);
-                }
-            }
+            (DialogId::SwitchRootDirty(root), DialogResult::Button(0)) => self.save_then(AfterSave::SwitchRoot(root)),
             (DialogId::SwitchRootDirty(root), DialogResult::Button(1)) => {
                 if !self.config.worktree.switch_closes_tabs {
                     self.close_dirty_tabs();

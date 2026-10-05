@@ -169,6 +169,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to the bookmark with that digit, opening its file when it was closed. Without the kitty
   keyboard protocol Alt+B then the digit jumps. The gutter shows the digit instead of ◆, the
   Shift+F11 list shows it too, and sessions keep the digits (older session files load as before).
+- Save As (File > Save As…, Alt+Shift+S): asks for a path relative to the project root (`~` and
+  absolute paths work too), creates missing folders, asks before overwriting an existing file
+  and refuses a file open in another tab. The tab then follows the new file, with its language
+  and `.editorconfig` settings. Untitled buffers (crash recovery's `(recovered)` copies) can now
+  be saved: Ctrl+S and Save All ask for their path, and quitting, closing tabs or switching
+  projects with "Save" asks for each one in turn; Esc at any prompt cancels the quit or close.
 
 ### Changed
 
