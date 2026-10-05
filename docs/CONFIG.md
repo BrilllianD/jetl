@@ -267,8 +267,12 @@ tracked. A task that fails (a non-zero exit code, killed by a signal jetl
 did not send, or a command that cannot start) gives one error notification.
 
 The Terminal window (Alt+F12) runs the shell on a pseudo terminal in the
-project root with `TERM=xterm-256color` and `COLORTERM=truecolor`, started
-the first time the window is shown. Full-screen programs (vim, less, htop)
+project root with `TERM=xterm-256color`, started the first time the window
+is shown. With true color (see `ui.colors`) the shell also gets
+`COLORTERM=truecolor`; without it `COLORTERM` is removed and RGB colors that
+programs still send are drawn as their nearest 256-color palette entries. A
+change of `ui.colors` applies to the window's colors at once and to the
+environment of the next shell; a running shell keeps its `COLORTERM`. Full-screen programs (vim, less, htop)
 work, at the window's size, which follows Ctrl+Shift+Up/Down and the
 terminal's own resizes. While it has focus every key goes to the shell,
 global shortcuts such as Ctrl+Q and Ctrl+S included, except the keys in the
@@ -488,7 +492,7 @@ gray, so a theme can give exact colors for that case in a `[colors256]`
 table, which takes the same entries as the top level and applies only with
 256 colors (Darcula uses it for diff and merge backgrounds). Set
 `ui.colors = "truecolor"` if your terminal supports true color but does not
-say so.
+say so. The Terminal window follows the same choice (see above).
 
 Each entry of `theme.toml` or a theme file is either a color string or a
 style table:

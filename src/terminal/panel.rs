@@ -267,7 +267,9 @@ impl TerminalPanel {
         }
     }
 
-    pub fn render(&mut self, frame: &mut Frame, area: Rect, focused: bool, theme: &Theme) {
+    /// Draw the screen; without `truecolor` the cells' RGB colors become
+    /// their nearest 256-color palette entries, like the theme's.
+    pub fn render(&mut self, frame: &mut Frame, area: Rect, focused: bool, theme: &Theme, truecolor: bool) {
         let inner = Self::inner(area);
         self.area = inner;
         self.resize(inner.height, inner.width);
@@ -294,7 +296,7 @@ impl TerminalPanel {
                 let out = &mut buf[(inner.x + col, inner.y + row)];
                 let text = cell.contents();
                 out.set_symbol(if text.is_empty() { " " } else { text });
-                out.set_style(cell_style(cell, theme));
+                out.set_style(cell_style(cell, theme, truecolor));
             }
         }
         if focused && self.running() && !screen.hide_cursor() && screen.scrollback() == 0 {
@@ -307,9 +309,11 @@ impl TerminalPanel {
 }
 
 /// The theme's colors stand in for the defaults; inverse swaps after that.
-fn cell_style(cell: &vt100::Cell, theme: &Theme) -> Style {
-    let mut fg = color(cell.fgcolor()).unwrap_or(theme.fg);
-    let mut bg = color(cell.bgcolor()).unwrap_or(theme.bg);
+/// Without `truecolor`, RGB cells map to the 256-color palette.
+fn cell_style(cell: &vt100::Cell, theme: &Theme, truecolor: bool) -> Style {
+    let depth = |c: Color| if truecolor { c } else { crate::config::color::to_ansi256(c) };
+    let mut fg = color(cell.fgcolor()).map(depth).unwrap_or(theme.fg);
+    let mut bg = color(cell.bgcolor()).map(depth).unwrap_or(theme.bg);
     if cell.inverse() {
         std::mem::swap(&mut fg, &mut bg);
     }
@@ -365,7 +369,7 @@ mod tests {
         let mut p = TerminalPanel::new(100);
         p.parser.process(b"\x1b[1;31mred\x1b[0m \x1b[38;5;200mx\x1b[48;2;1;2;3my\x1b[0m \x1b[7;4mi\x1b[0m\r\n\xe4\xb8\x96z");
         let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(20, 5)).unwrap();
-        term.draw(|f| p.render(f, f.area(), true, &theme)).unwrap();
+        term.draw(|f| p.render(f, f.area(), true, &theme, true)).unwrap();
         assert_eq!(p.size(), (3, 18), "the screen takes the text area's size");
         let buf = term.backend().buffer();
         let at = |x: u16, y: u16| &buf[(x + 1, y + 1)];
@@ -380,6 +384,21 @@ mod tests {
         assert!(at(7, 0).modifier.contains(Modifier::UNDERLINED));
         assert_eq!(at(0, 1).symbol(), "世");
         assert_eq!(at(2, 1).symbol(), "z", "the wide character takes two cells");
+    }
+
+    #[test]
+    fn rgb_cells_map_to_the_palette_without_true_color() {
+        let theme = Theme::darcula();
+        let mut p = TerminalPanel::new(100);
+        p.parser.process(b"\x1b[38;2;255;0;0;48;2;128;128;128mx\x1b[0m\x1b[38;5;200my\x1b[0m\x1b[31mz\x1b[0m");
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(10, 3)).unwrap();
+        term.draw(|f| p.render(f, f.area(), true, &theme, false)).unwrap();
+        let buf = term.backend().buffer();
+        let at = |x: u16| &buf[(x + 1, 1)];
+        assert_eq!((at(0).fg, at(0).bg), (Color::Indexed(196), Color::Indexed(244)));
+        assert_eq!(at(1).fg, Color::Indexed(200), "palette colors are kept");
+        assert_eq!(at(2).fg, Color::Red);
+        assert_eq!(at(3).bg, theme.bg);
     }
 
     #[test]

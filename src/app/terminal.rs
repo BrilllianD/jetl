@@ -20,7 +20,16 @@ use crate::ui::focus::PanelId;
 
 impl App {
     fn terminal_spec(&self, rows: u16, cols: u16) -> Spec {
-        let mut env = vec![("TERM".to_string(), "xterm-256color".to_string()), ("COLORTERM".to_string(), "truecolor".to_string())];
+        let mut env = vec![("TERM".to_string(), "xterm-256color".to_string())];
+        // Promise 24-bit color only when jetl draws it; else programs fall
+        // back to the palette instead of sending RGB the outer terminal may
+        // not show (an inherited COLORTERM goes too).
+        let mut env_remove = Vec::new();
+        if self.theme_truecolor {
+            env.push(("COLORTERM".to_string(), "truecolor".to_string()));
+        } else {
+            env_remove.push("COLORTERM".to_string());
+        }
         let mut argv = self.config.terminal.argv();
         let mut clear_env = false;
         // Tests never run the user's shell or its startup files.
@@ -31,7 +40,7 @@ impl App {
             env.push(("PS1".into(), "$ ".into()));
             env.push(("HOME".into(), self.workspace.root.to_string_lossy().into_owned()));
         }
-        Spec { argv, cwd: self.workspace.root.clone(), env, clear_env, rows, cols }
+        Spec { argv, cwd: self.workspace.root.clone(), env, env_remove, clear_env, rows, cols }
     }
 
     /// Start the shell on a `rows` x `cols` terminal.
@@ -56,7 +65,7 @@ impl App {
         if self.terminal.status == Status::Idle && inner.width > 0 && inner.height > 0 {
             self.start_terminal(inner.height, inner.width);
         }
-        self.terminal.render(frame, area, focused, theme);
+        self.terminal.render(frame, area, focused, theme, self.theme_truecolor);
     }
 
     /// A key while the terminal has focus: the `[terminal]` keymap table's
@@ -184,6 +193,27 @@ mod tests {
         // The next key restarts it at the next frame.
         press(&mut app, KeyCode::Char('x'));
         assert_eq!(app.terminal.status, Status::Idle);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn colorterm_follows_the_color_depth() {
+        let (mut app, dir) = test_app("term-colorterm");
+        assert!(app.theme_truecolor, "tests see COLORTERM=truecolor");
+        let spec = app.terminal_spec(10, 60);
+        assert!(spec.env.contains(&("COLORTERM".into(), "truecolor".into())));
+        assert!(spec.env_remove.is_empty());
+        // `ui.colors = "256"` by hot reload: the next shell gets no COLORTERM.
+        let mut config = app.config.clone();
+        config.ui.colors = crate::config::ColorMode::Ansi256;
+        app.apply_config(config);
+        assert!(!app.theme_truecolor);
+        let spec = app.terminal_spec(10, 60);
+        assert!(!spec.env.iter().any(|(k, _)| k == "COLORTERM"));
+        assert_eq!(spec.env_remove, ["COLORTERM"]);
+        open(&mut app);
+        type_text(&mut app, "echo \"[${COLORTERM-unset}]\"\n");
+        until(&mut app, "COLORTERM unset", |a| a.terminal.contents().lines().any(|l| l == "[unset]")).await;
         let _ = std::fs::remove_dir_all(&dir);
     }
 

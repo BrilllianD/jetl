@@ -183,6 +183,10 @@ pub struct App {
     branches_error_shown: bool,
     pub status_hits: Vec<(StatusHit, Rect)>,
     pub keyboard_enhanced: bool,
+    /// Whether colors are drawn as true color (`ui.colors` and
+    /// `$COLORTERM`); else the theme and the Terminal window's cells use
+    /// the 256-color palette. Updated by config hot reload.
+    pub theme_truecolor: bool,
     pub project: ProjectPanel,
     pub worktrees: WorktreePanel,
     pub git_panel: GitPanel,
@@ -245,7 +249,9 @@ impl App {
         let (bus_tx, bus_rx) = mpsc::unbounded_channel();
         let keymap_text = crate::config::FileText::read(&paths.keymap_file());
         let (keymap, keymap_errors) = Keymap::load_text(&keymap_text, &paths.keymap_file());
-        let (theme, theme_errors) = Theme::load(&config, &paths.config_dir, crate::config::color::colorterm_env().as_deref());
+        let colorterm = crate::config::color::colorterm_env();
+        let (theme, theme_errors) = Theme::load(&config, &paths.config_dir, colorterm.as_deref());
+        let theme_truecolor = config.ui.colors.truecolor(colorterm.as_deref());
         let modal = config.keymap.mode == "vim";
         let mut dispatcher = Dispatcher::new(modal);
         dispatcher.double_tap = Duration::from_millis(config.ui.double_click_ms);
@@ -295,6 +301,7 @@ impl App {
             branches_error_shown: false,
             status_hits: Vec::new(),
             keyboard_enhanced: crate::tui::keyboard_enhanced(),
+            theme_truecolor,
             project: ProjectPanel::new(root_for_panels.clone(), config.files.show_hidden, config.files.show_ignored),
             worktrees: WorktreePanel::new(),
             git_panel,

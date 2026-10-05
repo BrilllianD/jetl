@@ -207,6 +207,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The hint shown in an editor without tabs wraps onto centred lines in a narrow pane instead of
   being cut at the right edge.
 - A dialog with many buttons is wide enough for all of them.
+- With 256 colors (`ui.colors = "256"`, or no true color detected) the Terminal window no longer
+  passes RGB colors through: they are drawn as the nearest palette colors, and the shell no
+  longer gets `COLORTERM=truecolor` (a change of `ui.colors` applies to the next shell).
 - When the config files cannot be watched (for example the inotify limit is reached), a warning
   now says that config changes apply at the next start, instead of hot reload silently not
   happening.

@@ -32,6 +32,8 @@ pub struct Spec {
     pub cwd: PathBuf,
     /// Added to jetl's environment (or to an empty one with `clear_env`).
     pub env: Vec<(String, String)>,
+    /// Removed from jetl's environment.
+    pub env_remove: Vec<String>,
     pub clear_env: bool,
     pub rows: u16,
     pub cols: u16,
@@ -105,6 +107,9 @@ impl Session {
         cmd.cwd(&spec.cwd);
         if spec.clear_env {
             cmd.env_clear();
+        }
+        for k in &spec.env_remove {
+            cmd.env_remove(k);
         }
         for (k, v) in &spec.env {
             cmd.env(k, v);

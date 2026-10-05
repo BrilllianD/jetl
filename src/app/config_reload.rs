@@ -214,6 +214,9 @@ impl App {
             self.mode = if modal { Mode::Normal } else { Mode::Insert };
         }
         self.terminal.set_scrollback(self.config.terminal.scrollback);
+        // The theme follows through `reload_theme`; a shell already running
+        // keeps the COLORTERM it started with.
+        self.theme_truecolor = self.config.ui.colors.truecolor(crate::config::color::colorterm_env().as_deref());
         if diff.has_section("clipboard") {
             // Detected again, from the new commands, on next use.
             self.clipboard.tools = None;
