@@ -387,7 +387,7 @@ impl Editor {
     }
 
     /// One of the resolver's scratch buffers.
-    pub fn is_scratch(&self, id: BufferId) -> bool {
+    pub fn is_merge_buffer(&self, id: BufferId) -> bool {
         self.merge.as_ref().is_some_and(|m| m.ids.contains(&id))
     }
 

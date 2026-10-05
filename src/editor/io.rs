@@ -222,7 +222,7 @@ impl Editor {
         let mut asked = false;
         for i in 0..self.buffers.len() {
             let b = &self.buffers[i];
-            if !b.dirty() || self.is_scratch(b.id) {
+            if !b.dirty() || self.is_merge_buffer(b.id) {
                 continue;
             }
             if disk_conflict(b) {

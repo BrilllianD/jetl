@@ -236,7 +236,7 @@ impl Editor {
     /// Unsaved edits in a file's buffer (the resolver's scratch buffers do
     /// not count).
     pub fn has_dirty(&self) -> bool {
-        self.buffers.iter().any(|b| b.dirty() && !self.is_scratch(b.id))
+        self.buffers.iter().any(|b| b.dirty() && !self.is_merge_buffer(b.id))
     }
     pub fn index_of(&self, path: &Path) -> Option<usize> {
         self.buffers.iter().position(|b| b.path.as_deref() == Some(path))

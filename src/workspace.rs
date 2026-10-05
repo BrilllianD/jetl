@@ -282,7 +282,7 @@ impl App {
     pub fn close_dirty_tabs(&mut self) {
         for i in (0..self.editor.buffers.len()).rev() {
             let b = &self.editor.buffers[i];
-            if b.dirty() && !self.editor.is_scratch(b.id) {
+            if b.dirty() && !self.editor.is_merge_buffer(b.id) {
                 self.editor.force_close(i);
             }
         }

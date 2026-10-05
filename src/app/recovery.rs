@@ -33,7 +33,7 @@ impl App {
     pub(super) fn recovery_snapshot(&mut self) {
         let generation = self.workspace.generation;
         let ed = &self.editor;
-        let dirty = || ed.buffers.iter().filter(|b| b.dirty() && !ed.is_scratch(b.id));
+        let dirty = || ed.buffers.iter().filter(|b| b.dirty() && !ed.is_merge_buffer(b.id));
         if self.recorder.is_current(generation, dirty()) {
             return;
         }
