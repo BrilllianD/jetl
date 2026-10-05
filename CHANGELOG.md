@@ -225,6 +225,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   offered).
 - When jetl stops on a terminal error (a failed redraw) instead of a panic, unsaved buffers are
   still written as a crash recovery dump and offered when the project opens again.
+- When jetl stops on a terminal error, it now also cleans up as a normal quit does: the session
+  is saved, a running task and the Terminal shell are stopped with everything they started, and
+  language servers are shut down.
 - In a narrow Git window the diff header (the file name and what it compares) is cut with `…`
   before the `[Unified]` and `Collapse` toggles instead of running under them. In the Log,
   Stash and History tabs a long header no longer hides the toggles.

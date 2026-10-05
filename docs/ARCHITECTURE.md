@@ -11,9 +11,9 @@ and backlog are in `docs/ROADMAP.md`; settings in `docs/CONFIG.md`; keys in
 
 | Path | Role |
 |---|---|
-| `main.rs` | Argument parsing (`PATH[:LINE[:COL]]`: a file is rooted at its git work tree, else its directory, and handed to `App::new` as the file to open; with no argument outside a git repository the Recent Projects palette opens once the list loads), logging (`~/.local/state/jetl/jetl.log`, `RUST_LOG=jetl=debug`), `tui::init`, `App::new`, `app.arm_recovery()` (hands the crash recovery snapshot to the panic hook), `app.prune_recovery_dumps()` (removes dumps older than 30 days of other roots, in `spawn_blocking`), `app.start_recent_projects()` (records the root in the recent projects file, and every root switch's from then on), `App::run`, then on an error (a failed draw, which skips the quit prompt) `App::dump_after_error` (the same dump the panic hook writes, into this process's recovery directory), `tui::restore`, and the hook's stderr note (`recovery::print_dump_note`). `--dump-keymap` prints `docs/KEYMAP.md`. |
+| `main.rs` | Argument parsing (`PATH[:LINE[:COL]]`: a file is rooted at its git work tree, else its directory, and handed to `App::new` as the file to open; with no argument outside a git repository the Recent Projects palette opens once the list loads), logging (`~/.local/state/jetl/jetl.log`, `RUST_LOG=jetl=debug`), `tui::init`, `App::new`, `app.arm_recovery()` (hands the crash recovery snapshot to the panic hook), `app.prune_recovery_dumps()` (removes dumps older than 30 days of other roots, in `spawn_blocking`), `app.start_recent_projects()` (records the root in the recent projects file, and every root switch's from then on), `App::run`, then on an error (a failed draw, which skips the quit prompt) `App::finish_after_error` (`App::dump_after_error`, the same dump the panic hook writes, into this process's recovery directory, then `App::shutdown`), `tui::restore`, and the hook's stderr note (`recovery::print_dump_note`). `--dump-keymap` prints `docs/KEYMAP.md`. |
 | `tui.rs` | Owns terminal modes. Restore order is fixed (keyboard flags, mouse, paste, focus, alt screen, raw mode, cursor); the panic hook restores first, then writes the unsaved buffers (`recovery::dump_on_panic`), then logs and runs the default hook, and last prints where the buffers went on stderr. |
-| `app/mod.rs` | `App` (all panels and services), `App::new`, the `run` loop, `handle_key`, `perform`, `Ctx` and the `ctx!` macro, tests (`test_app`). |
+| `app/mod.rs` | `App` (all panels and services), `App::new`, the `run` loop, `shutdown` (what leaving jetl does without drawing, after a quit or a run loop error), `handle_key`, `perform`, `Ctx` and the `ctx!` macro, tests (`test_app`). |
 | `app/msg.rs` | `handle_msg` for every `AppMsg`, git results (`on_git_msg`, `git_op_done`: follow-ups such as the push remote choice, forcing an unmerged branch delete, conflict hints), `git_root_changed`, file open and decode (`open_file_at` with a char column, `open_file_at_utf16` with an LSP position converted against the text once it is loaded; `Effect::OpenFileAt`/`OpenFileAtUtf16`). |
 | `app/effects.rs` | `apply_effects`, `refresh_tree`, `git_request`. |
 | `app/dialogs.rs` | `request_quit`, `finish_dialog` (one arm per `DialogId` answer; the conflict resolver's and crash recovery's dialogs go to `finish_merge_dialog` and `finish_recovery_dialog` first; the Save buttons of the unsaved-changes dialogs go to `save_then`), the branches popup's operations (`branch_op`). |
@@ -135,10 +135,14 @@ crash recovery snapshot (`App::recovery_snapshot`, only when a dirty
 buffer's version, saved state or path, or the generation, changed), then
 calls `App::lsp_sync`, so the edits of one batch of input reach the language
 server as one `didChange` per buffer. Leaving the loop on quit clears the
-snapshot and removes this process's recovery directory before the session
-is saved. Leaving it with an error (`term.draw` or `term.clear` failed)
-skips all of that; `main.rs` then writes the dirty buffers as a crash dump
-(`App::dump_after_error`) before restoring the terminal.
+snapshot and removes this process's recovery directory, then runs
+`App::shutdown`: the queued local history snapshots are flushed, the
+session saved, formatters, the Run task and the Terminal shell killed,
+and the language servers shut down; nothing there draws. Leaving it with
+an error (`term.draw` or `term.clear` failed) returns at once; `main.rs`
+then calls `App::finish_after_error`, which writes the dirty buffers as a
+crash dump (`App::dump_after_error`) and then runs the same
+`App::shutdown`, before restoring the terminal. The dump stays.
 
 Panels never reach into the app. They get a `Ctx` (built by `ctx!(self)`
 from disjoint fields so the panel can be borrowed mutably at the same time)
@@ -341,7 +345,8 @@ its busy id before the generation check, so the spinner never sticks.
 - Child processes that can outlive a request (formatters, Run tasks, the
   Terminal shell, language servers) start in their own session, so they never read from or
   draw over jetl's terminal, and are killed with what they started (the
-  process group; for the shell, every process of its session): on quit,
+  process group; for the shell, every process of its session): on quit
+  and after a run loop error (`App::shutdown`),
   on a root switch and when their owner is dropped; a formatter also on
   its timeout or a newer request for the same buffer, a Run task when
   another one starts. Language servers are asked to shut down first (two

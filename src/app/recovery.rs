@@ -62,7 +62,7 @@ impl App {
     /// would, so they are offered when the project opens again. Returns
     /// the directory and the number of buffers written; `None` when nothing
     /// was dirty or the write failed (logged).
-    pub fn dump_after_error(&mut self) -> Option<(std::path::PathBuf, usize)> {
+    pub(crate) fn dump_after_error(&mut self) -> Option<(std::path::PathBuf, usize)> {
         self.recovery_snapshot();
         let dir = self.recorder.dir.clone();
         match crate::recovery::write_dump(&dir, self.recorder.last(), std::process::id(), crate::recent_projects::now()) {
@@ -76,6 +76,17 @@ impl App {
                 None
             }
         }
+    }
+
+    /// `run` returned an error (`main.rs`): the crash dump first
+    /// ([`App::dump_after_error`]), then the rest of a quit that does not
+    /// draw ([`App::shutdown`]). The dump stays for the next start; the
+    /// result is the dump's directory and buffer count, for the note
+    /// printed once the terminal is restored.
+    pub async fn finish_after_error(&mut self) -> Option<(std::path::PathBuf, usize)> {
+        let saved = self.dump_after_error();
+        self.shutdown().await;
+        saved
     }
 
     /// Offer the crash dumps of the current root (the end of every session
@@ -417,6 +428,43 @@ pub(crate) mod tests {
         assert_eq!(m.root, app.workspace.root);
         assert_eq!(m.buffers[0].path.as_deref(), Some(&*app.workspace.root.join("a.txt")));
         assert_eq!(std::fs::read_to_string(dump.join(&m.buffers[0].file)).unwrap(), "typed disk\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A run loop error writes the dump, then cleans up as a quit does:
+    /// session saved, the Run task and the Terminal shell killed, language
+    /// servers shut down. The dump stays.
+    #[tokio::test]
+    async fn run_error_cleans_up_like_a_quit() {
+        use crate::app::lsp::tests::{incremental, open_on_server, with_fake_servers};
+        let (mut app, dir) = test_app("recovery-error-cleanup");
+        let mut servers = with_fake_servers(&mut app, incremental());
+        let mut server = open_on_server(&mut app, &mut servers, "a.rs", "fn a() {}\n").await;
+        app.perform(Action::Editor(EditorAction::InsertText("// x\n".into())));
+        let pid_file = dir.join("pid");
+        let text = format!("[[run.tasks]]\nname = \"wait\"\ncommand = \"sleep 30 & echo $! > '{}'; wait\"\n", pid_file.display());
+        let task = crate::config::Config::parse(&text).unwrap().run.tasks.remove(0);
+        app.run_task(task);
+        let task_pid = app.run.pid().unwrap();
+        app.toggle_tool_window(crate::ui::focus::ToolWindowId::Terminal);
+        app.start_terminal(10, 60);
+        let shell = app.terminal.pid().unwrap();
+
+        let (dump, n) = app.finish_after_error().await.expect("a dump");
+        assert_eq!(n, 1);
+        let m = crate::recovery::read_manifest(&dump).expect("the dump stays");
+        assert_eq!(std::fs::read_to_string(dump.join(&m.buffers[0].file)).unwrap(), "// x\nfn a() {}\n");
+        let session = Session::load(&app.paths.sessions_dir(), &app.workspace.root).expect("session saved");
+        assert_eq!(session.files.iter().map(|f| f.path.clone()).collect::<Vec<_>>(), [app.workspace.root.join("a.rs")]);
+        assert!(!app.run.running() && !app.terminal.running());
+        server.recv("shutdown").await;
+        server.recv("exit").await;
+        #[cfg(target_os = "linux")]
+        {
+            assert!(crate::util::process_gone(task_pid).await, "the Run task {task_pid} still runs");
+            assert!(crate::util::process_gone(shell).await, "the shell {shell} still runs");
+        }
+        let _ = (task_pid, shell);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

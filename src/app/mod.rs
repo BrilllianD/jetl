@@ -445,7 +445,18 @@ impl App {
         v
     }
 
+    /// The event loop until a quit, then [`App::shutdown`]. An error (a
+    /// failed draw or clear) returns at once, skipping the quit prompt and
+    /// the shutdown: `main.rs` then calls [`App::finish_after_error`].
     pub async fn run(&mut self, term: &mut Term) -> Result<()> {
+        self.event_loop(term).await?;
+        // Quitting on purpose: a panic from here on writes nothing.
+        self.recorder.clear();
+        self.shutdown().await;
+        Ok(())
+    }
+
+    async fn event_loop(&mut self, term: &mut Term) -> Result<()> {
         let mut events = EventStream::new();
         let mut tick = tokio::time::interval(Duration::from_millis(100));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -477,16 +488,21 @@ impl App {
                 self.dirty_frame = false;
             }
         }
-        // Quitting on purpose: a panic from here on writes nothing.
-        self.recorder.clear();
-        // Snapshots still queued (the saves of the quit dialog) are written.
+        Ok(())
+    }
+
+    /// Leaving jetl, after a quit or a run loop error; nothing here draws.
+    /// Writes the local history snapshots still queued (the saves of the
+    /// quit dialog) and the session, kills formatters, the Run task and the
+    /// Terminal shell with what they started, and shuts the language
+    /// servers down (two seconds at most).
+    pub(crate) async fn shutdown(&mut self) {
         self.history.flush(Duration::from_secs(3));
         self.save_session();
         self.format.abort_all();
         self.run.kill();
         self.terminal.reset();
         self.lsp.shutdown_all().await;
-        Ok(())
     }
 
     fn on_tick(&mut self) {
