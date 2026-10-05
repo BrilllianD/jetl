@@ -347,6 +347,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ctrl_7_comments_in_legacy_terminals_and_jumps_with_kitty() {
+        let (mut app, dir) = test_app("bookmark-ctrl-7");
+        open(&mut app, "a.rs", "fn a() {}\nfn b() {}\nfn c() {}\n");
+        goto(&mut app, 2);
+        number(&mut app, KeyCode::Char('7'));
+        goto(&mut app, 0);
+        let line0 = |app: &App| app.editor.active_buffer().unwrap().line_text(0).trim_end().to_string();
+        // Legacy terminal: Ctrl+/ arrives as Ctrl+7 and comments.
+        assert!(!app.keyboard_enhanced);
+        key(&mut app, KeyCode::Char('7'), KeyModifiers::CONTROL);
+        assert_eq!((line0(&app), here(&app)), ("// fn a() {}".into(), ("a.rs".into(), 1)), "commented, the caret moves down");
+        goto(&mut app, 0);
+        key(&mut app, KeyCode::Char('/'), KeyModifiers::CONTROL);
+        assert_eq!(line0(&app), "fn a() {}");
+        // Kitty protocol: Ctrl+7 is bookmark 7, Ctrl+/ still comments.
+        app.keyboard_enhanced = true;
+        goto(&mut app, 0);
+        key(&mut app, KeyCode::Char('7'), KeyModifiers::CONTROL);
+        assert_eq!((line0(&app), here(&app)), ("fn a() {}".into(), ("a.rs".into(), 2)));
+        goto(&mut app, 0);
+        key(&mut app, KeyCode::Char('/'), KeyModifiers::CONTROL);
+        assert_eq!(line0(&app), "// fn a() {}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
     async fn bookmarks_dialog_lists_digits_and_closed_files() {
         let (mut app, dir) = test_app("bookmark-list");
         open(&mut app, "a.txt", "one\ntwo\n");

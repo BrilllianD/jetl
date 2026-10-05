@@ -542,7 +542,10 @@ and wait on it off the main thread before touching the files.
   bracketed paste.
 - Without the kitty keyboard protocol (tmux, most legacy terminals)
   Ctrl+Shift+letter, Ctrl+Tab, Ctrl+Enter, Shift+Enter and double Shift do
-  not arrive; keep legacy fallbacks in the default keymap.
+  not arrive; keep legacy fallbacks in the default keymap. There Ctrl+/ and
+  Ctrl+7 are the same byte: `App::handle_key` reads Ctrl+7 as Ctrl+/
+  (`KeyCombo::legacy_input`) unless `App::keyboard_enhanced`, so a
+  `ctrl-7` binding needs the kitty protocol.
 - In raw mode Ctrl+C is copy and Ctrl+Z is undo.
 - A panic in a background thread (a `spawn_blocking` task) runs the panic
   hook too: the terminal is restored and a recovery dump written while the

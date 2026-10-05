@@ -55,6 +55,18 @@ impl KeyCombo {
         Self { code, mods }
     }
 
+    /// A key as the keymap should see it. Without the kitty keyboard
+    /// protocol (`enhanced` false) Ctrl+/ arrives as 0x1F, which crossterm
+    /// reports as Ctrl+7 (a real Ctrl+7 sends the same byte), so it is read
+    /// as Ctrl+/. With the protocol the two keys are distinct and Ctrl+7
+    /// stays itself (numbered bookmark 7).
+    pub fn legacy_input(key: crossterm::event::KeyEvent, enhanced: bool) -> crossterm::event::KeyEvent {
+        if !enhanced && key.code == KeyCode::Char('7') && key.modifiers == KeyModifiers::CONTROL {
+            return crossterm::event::KeyEvent { code: KeyCode::Char('/'), ..key };
+        }
+        key
+    }
+
     /// Double tap of Shift is represented by this pseudo combo.
     pub fn double_shift() -> Self {
         Self { code: KeyCode::Modifier(ModifierKeyCode::LeftShift), mods: KeyModifiers::SHIFT | KeyModifiers::ALT | KeyModifiers::CONTROL }
@@ -414,8 +426,9 @@ impl Keymap {
 
 /// Whether a displayed binding only arrives with the kitty keyboard
 /// protocol: Ctrl+Shift+letter, Ctrl+? (Ctrl+Shift+/), Ctrl with `-`, `=`,
-/// `+`, `_` or `.`, Ctrl with a digit other than 4-7 (legacy terminals send
-/// those as Ctrl+\, Ctrl+], Ctrl+^ and Ctrl+/), Ctrl+Tab, Ctrl+Enter,
+/// `+`, `_` or `.`, Ctrl with a digit other than 4-6 (legacy terminals send
+/// those as Ctrl+\, Ctrl+] and Ctrl+^; Ctrl+7 is Ctrl+/ there, which jetl
+/// reads as Ctrl+/: [`KeyCombo::legacy_input`]), Ctrl+Tab, Ctrl+Enter,
 /// Shift+Enter, Shift+F3, Shift+Esc and Shift Shift.
 fn needs_kitty(keys: &str) -> bool {
     keys.split(' ').any(|k| {
@@ -425,7 +438,7 @@ fn needs_kitty(keys: &str) -> bool {
         let punct = matches!(key, "-" | "=" | "_" | ".") || k.ends_with("++");
         (k.starts_with("Ctrl+") && k.contains("Shift+") && letter)
             || (k.starts_with("Ctrl+") && punct)
-            || matches!(k, "Ctrl+0" | "Ctrl+1" | "Ctrl+2" | "Ctrl+3" | "Ctrl+8" | "Ctrl+9")
+            || matches!(k, "Ctrl+0" | "Ctrl+1" | "Ctrl+2" | "Ctrl+3" | "Ctrl+7" | "Ctrl+8" | "Ctrl+9")
             || k == "Ctrl+?"
             || k == "Ctrl+Tab"
             || k == "Ctrl+Enter"
@@ -487,6 +500,28 @@ mod tests {
         let got = km.table("editor").unwrap().bindings.get(&vec![KeyCombo::normalize(KeyCode::Char('?'), KeyModifiers::CONTROL)]);
         assert_eq!(got, Some(&Action::Editor(crate::actions::EditorAction::ToggleBlockComment)));
         assert_eq!(parse_combo("ctrl-shift-/").unwrap(), parse_combo("ctrl-/").unwrap());
+    }
+
+    #[test]
+    fn legacy_ctrl_7_is_ctrl_slash_only_without_kitty() {
+        use crossterm::event::KeyEvent;
+        let ctrl = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
+        assert_eq!(KeyCombo::legacy_input(ctrl('7'), false), ctrl('/'));
+        assert_eq!(KeyCombo::legacy_input(ctrl('7'), true), ctrl('7'));
+        assert_eq!(KeyCombo::legacy_input(ctrl('/'), false), ctrl('/'));
+        let alt7 = KeyEvent::new(KeyCode::Char('7'), KeyModifiers::ALT);
+        assert_eq!(KeyCombo::legacy_input(alt7, false), alt7);
+        let plain = KeyEvent::new(KeyCode::Char('7'), KeyModifiers::NONE);
+        assert_eq!(KeyCombo::legacy_input(plain, false), plain);
+        // The editor table no longer binds Ctrl+7: with kitty it reaches
+        // the global numbered bookmark.
+        let km = default_keymap();
+        let ctrl7 = parse_chord("ctrl-7").unwrap();
+        assert_eq!(km.table("editor").unwrap().bindings.get(&ctrl7), None);
+        assert_eq!(
+            km.table("global").unwrap().bindings.get(&ctrl7),
+            Some(&Action::Editor(crate::actions::EditorAction::GotoNumberedBookmark(7)))
+        );
     }
 
     #[test]

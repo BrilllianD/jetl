@@ -107,8 +107,10 @@
 # Numbered bookmarks (Ctrl+F11 sets one), JetBrains-style. Ctrl+digit needs
 # the kitty protocol for 0-3, 8 and 9: legacy terminals send Ctrl+0, 1 and 9
 # as plain digits, Ctrl+2 as Ctrl+Space, Ctrl+3 as Esc and Ctrl+8 as
-# Backspace. Alt+B then the digit works everywhere. In the editor Ctrl+7 stays Comment with Line Comment (legacy
-# terminals send Ctrl+/ as Ctrl+7), so bookmark 7 is Alt+B 7 there.
+# Backspace. Alt+B then the digit works everywhere. Legacy terminals send
+# Ctrl+/ and Ctrl+7 as the same byte, read as Ctrl+/ (Comment with Line
+# Comment), so bookmark 7 is Alt+B 7 there; with the kitty protocol Ctrl+7
+# jumps everywhere.
 "ctrl-0" = "editor.goto_bookmark_0"
 "ctrl-1" = "editor.goto_bookmark_1"
 "ctrl-2" = "editor.goto_bookmark_2"
@@ -174,9 +176,9 @@
 "ctrl-a" = "editor.select_all"
 "ctrl-c" = "editor.copy"
 "ctrl-x" = "editor.cut"
+# Legacy terminals send Ctrl+/ as 0x1F, which crossterm reports as Ctrl+7;
+# jetl reads it as Ctrl+/ unless the kitty protocol is active.
 "ctrl-/" = "editor.toggle_comment"
-# Legacy terminals send Ctrl+/ as 0x1F, which crossterm reports as Ctrl+7.
-"ctrl-7" = "editor.toggle_comment"
 # Ctrl+Shift+/ needs the kitty protocol, which reports the shifted key, so it
 # arrives as Ctrl+? (US layout). "ctrl-shift-/" would mean Ctrl+/ here.
 "ctrl-?" = "editor.toggle_block_comment"

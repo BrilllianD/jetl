@@ -77,7 +77,7 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Alt+B 5` | `editor.goto_bookmark_5` | Go to bookmark 5 |
 | `Ctrl+6` | `editor.goto_bookmark_6` | Go to bookmark 6 |
 | `Alt+B 6` | `editor.goto_bookmark_6` | Go to bookmark 6 |
-| `Ctrl+7` | `editor.goto_bookmark_7` | Go to bookmark 7 |
+| `Ctrl+7` * | `editor.goto_bookmark_7` | Go to bookmark 7 |
 | `Alt+B 7` | `editor.goto_bookmark_7` | Go to bookmark 7 |
 | `Ctrl+8` * | `editor.goto_bookmark_8` | Go to bookmark 8 |
 | `Alt+B 8` | `editor.goto_bookmark_8` | Go to bookmark 8 |
@@ -151,7 +151,6 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Ctrl+X` | `editor.cut` | Cut |
 | `Esc` | `editor.escape` | Escape (close find, clear selection) |
 | `Ctrl+/` | `editor.toggle_comment` | Comment with line comment |
-| `Ctrl+7` | `editor.toggle_comment` | Comment with line comment |
 | `Ctrl+?` * | `editor.toggle_block_comment` | Comment with block comment |
 | `Alt+Shift+Up` | `editor.move_line_up` | Move line up |
 | `Alt+Shift+Down` | `editor.move_line_down` | Move line down |
