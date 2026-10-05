@@ -93,13 +93,7 @@ pub fn install_panic_hook() {
         }
         default(info);
         if let Some((dir, n)) = saved {
-            use std::io::Write;
-            // Not `eprintln!`: it panics when stderr cannot be written.
-            let _ = writeln!(
-                std::io::stderr(),
-                "jetl: unsaved changes of {n} buffer(s) saved to {}; they are offered when the project opens again",
-                dir.display()
-            );
+            crate::recovery::print_dump_note(&dir, n);
         }
     }));
 }

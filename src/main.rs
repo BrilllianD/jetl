@@ -44,7 +44,13 @@ async fn main() -> Result<()> {
         app.notify(jetl::event::Level::Error, e);
     }
     let result = app.run(&mut terminal).await;
+    // A failed draw ends the loop without the quit prompt: keep the
+    // unsaved buffers the way the panic hook does.
+    let saved = if result.is_err() { app.dump_after_error() } else { None };
     tui::restore();
+    if let Some((dir, n)) = saved {
+        jetl::recovery::print_dump_note(&dir, n);
+    }
     result
 }
 

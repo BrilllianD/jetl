@@ -41,6 +41,27 @@ impl App {
         self.recorder.store(generation, snap);
     }
 
+    /// `run` returned an error (a failed draw, not a panic): write the
+    /// dirty buffers into this process's dump directory, as the panic hook
+    /// would, so they are offered when the project opens again. Returns
+    /// the directory and the number of buffers written; `None` when nothing
+    /// was dirty or the write failed (logged).
+    pub fn dump_after_error(&mut self) -> Option<(std::path::PathBuf, usize)> {
+        self.recovery_snapshot();
+        let dir = self.recorder.dir.clone();
+        match crate::recovery::write_dump(&dir, self.recorder.last(), std::process::id(), crate::recent_projects::now()) {
+            Ok(0) => None,
+            Ok(n) => {
+                tracing::error!("recovery: {n} unsaved buffers written to {}", dir.display());
+                Some((dir, n))
+            }
+            Err(e) => {
+                tracing::error!("recovery: writing {}: {e}", dir.display());
+                None
+            }
+        }
+    }
+
     /// Offer the crash dumps of the current root (the end of every session
     /// load). Skipped while an offer or another dialog is up, or the
     /// conflict resolver is open: the dumps stay for the next time.
@@ -346,6 +367,23 @@ pub(crate) mod tests {
         assert_eq!(buffer(&app, "a.txt").text(), "mine disk\n");
         let copy = buffer(&app, "a.txt (recovered)");
         assert_eq!((copy.path.as_deref(), copy.text().as_str(), copy.dirty()), (None, "recovered\n", true));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn run_error_dumps_dirty_buffers() {
+        let (mut app, dir) = test_app("recovery-run-error");
+        load(&mut app, "a.txt", "disk\n");
+        assert!(app.dump_after_error().is_none(), "nothing dirty: nothing written");
+        assert!(!app.recorder.dir.exists());
+        // Typed after the run loop's last snapshot: still written.
+        app.perform(Action::Editor(EditorAction::InsertText("typed ".into())));
+        let (dump, n) = app.dump_after_error().expect("a dump");
+        assert_eq!((dump.as_path(), n), (app.recorder.dir.as_path(), 1));
+        let m = crate::recovery::read_manifest(&dump).expect("manifest");
+        assert_eq!(m.root, app.workspace.root);
+        assert_eq!(m.buffers[0].path.as_deref(), Some(&*app.workspace.root.join("a.txt")));
+        assert_eq!(std::fs::read_to_string(dump.join(&m.buffers[0].file)).unwrap(), "typed disk\n");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

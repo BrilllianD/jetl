@@ -301,6 +301,17 @@ pub fn dump_on_panic() -> Option<(PathBuf, usize)> {
     }
 }
 
+/// Tell the user on stderr where a dump of `n` buffers went (after the
+/// terminal is restored). Not `eprintln!`: it panics when stderr cannot be
+/// written.
+pub fn print_dump_note(dir: &Path, n: usize) {
+    let _ = writeln!(
+        std::io::stderr(),
+        "jetl: unsaved changes of {n} buffer(s) saved to {}; they are offered when the project opens again",
+        dir.display()
+    );
+}
+
 /// The run loop's side: keeps the shared snapshot current and this
 /// process's dump directory.
 pub struct Recorder {

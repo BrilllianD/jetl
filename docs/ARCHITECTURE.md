@@ -11,7 +11,7 @@ and backlog are in `docs/ROADMAP.md`; settings in `docs/CONFIG.md`; keys in
 
 | Path | Role |
 |---|---|
-| `main.rs` | Argument parsing (`PATH[:LINE[:COL]]`: a file is rooted at its git work tree, else its directory, and handed to `App::new` as the file to open; with no argument outside a git repository the Recent Projects palette opens once the list loads), logging (`~/.local/state/jetl/jetl.log`, `RUST_LOG=jetl=debug`), `tui::init`, `App::new`, `app.arm_recovery()` (hands the crash recovery snapshot to the panic hook), `App::run`, `tui::restore`. `--dump-keymap` prints `docs/KEYMAP.md`. |
+| `main.rs` | Argument parsing (`PATH[:LINE[:COL]]`: a file is rooted at its git work tree, else its directory, and handed to `App::new` as the file to open; with no argument outside a git repository the Recent Projects palette opens once the list loads), logging (`~/.local/state/jetl/jetl.log`, `RUST_LOG=jetl=debug`), `tui::init`, `App::new`, `app.arm_recovery()` (hands the crash recovery snapshot to the panic hook), `App::run`, then on an error (a failed draw, which skips the quit prompt) `App::dump_after_error` (the same dump the panic hook writes, into this process's recovery directory), `tui::restore`, and the hook's stderr note (`recovery::print_dump_note`). `--dump-keymap` prints `docs/KEYMAP.md`. |
 | `tui.rs` | Owns terminal modes. Restore order is fixed (keyboard flags, mouse, paste, focus, alt screen, raw mode, cursor); the panic hook restores first, then writes the unsaved buffers (`recovery::dump_on_panic`), then logs and runs the default hook, and last prints where the buffers went on stderr. |
 | `app/mod.rs` | `App` (all panels and services), `App::new`, the `run` loop, `handle_key`, `perform`, `Ctx` and the `ctx!` macro, tests (`test_app`). |
 | `app/msg.rs` | `handle_msg` for every `AppMsg`, git results (`on_git_msg`, `git_op_done`: follow-ups such as the push remote choice, forcing an unmerged branch delete, conflict hints), `git_root_changed`, file open and decode (`open_file_at` with a char column, `open_file_at_utf16` with an LSP position converted against the text once it is loaded; `Effect::OpenFileAt`/`OpenFileAtUtf16`). |
@@ -136,7 +136,9 @@ buffer's version, saved state or path, or the generation, changed), then
 calls `App::lsp_sync`, so the edits of one batch of input reach the language
 server as one `didChange` per buffer. Leaving the loop on quit clears the
 snapshot and removes this process's recovery directory before the session
-is saved.
+is saved. Leaving it with an error (`term.draw` or `term.clear` failed)
+skips all of that; `main.rs` then writes the dirty buffers as a crash dump
+(`App::dump_after_error`) before restoring the terminal.
 
 Panels never reach into the app. They get a `Ctx` (built by `ctx!(self)`
 from disjoint fields so the panel can be borrowed mutably at the same time)
