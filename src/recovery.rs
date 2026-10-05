@@ -215,6 +215,39 @@ pub fn scan(recovery_dir: &Path, root: &Path) -> Option<Found> {
     Some(Found { root: root.to_path_buf(), dirs, entries })
 }
 
+/// How long a dump is kept for a project that never opens again.
+pub const MAX_AGE_SECS: u64 = 30 * 24 * 60 * 60;
+
+/// Remove the dumps under `recovery_dir` older than `max_age` seconds at
+/// `now` (startup, off the main thread), so those of projects never
+/// reopened do not stay forever. A dump's age is its manifest's time, else
+/// (no or an unreadable manifest) its owner's start time from the directory
+/// name. Directories not named `<pid>-<secs>`, those of a live process and
+/// the dumps of `keep_root` (offered when its session loads) are left
+/// alone. Returns how many were removed.
+pub fn prune(recovery_dir: &Path, keep_root: &Path, now: u64, max_age: u64) -> usize {
+    let Ok(rd) = std::fs::read_dir(recovery_dir) else { return 0 };
+    let mut old = Vec::new();
+    for entry in rd.flatten() {
+        let dir = entry.path();
+        let Some(name) = entry.file_name().to_str().map(str::to_string) else { continue };
+        let Some((pid, started)) = owner(&name) else { continue };
+        if !dir.is_dir() || process_alive(pid) {
+            continue;
+        }
+        let manifest = read_manifest(&dir);
+        if manifest.as_ref().is_some_and(|m| m.root == keep_root) {
+            continue;
+        }
+        let time = manifest.map_or(started, |m| m.time);
+        if now.saturating_sub(time) > max_age {
+            old.push(dir);
+        }
+    }
+    remove_dumps(&old);
+    old.iter().filter(|d| !d.exists()).count()
+}
+
 /// Remove dump directories; errors other than a missing one are logged.
 pub fn remove_dumps(dirs: &[PathBuf]) {
     for d in dirs {
@@ -228,9 +261,13 @@ pub fn remove_dumps(dirs: &[PathBuf]) {
 
 /// The owner's pid of a dump directory named `<u32>-<u64>`.
 fn owner_pid(dir_name: &str) -> Option<u32> {
+    owner(dir_name).map(|(pid, _)| pid)
+}
+
+/// The owner's pid and start time of a dump directory named `<u32>-<u64>`.
+fn owner(dir_name: &str) -> Option<(u32, u64)> {
     let (pid, secs) = dir_name.split_once('-')?;
-    secs.parse::<u64>().ok()?;
-    pid.parse().ok()
+    Some((pid.parse().ok()?, secs.parse().ok()?))
 }
 
 /// Whether process `pid` exists (one we may not signal counts too).
@@ -480,6 +517,43 @@ mod tests {
         assert!(live.join(MANIFEST).exists());
         assert!(!unfinished.exists());
         assert!(notes.exists());
+        let _ = std::fs::remove_dir_all(&rec);
+    }
+
+    #[test]
+    fn prune_removes_only_old_dead_dumps_of_other_roots() {
+        let rec = temp_dir("prune");
+        let root = PathBuf::from("/tmp/project");
+        let other = PathBuf::from("/tmp/other");
+        let day = 24 * 60 * 60;
+        let now = 100 * day;
+        let dump = |name: &str, root: &Path, pid: u32, time: u64| {
+            let dir = rec.join(name);
+            let snap = RecoverySnapshot { root: root.to_path_buf(), buffers: vec![snap_buffer(1, Some(&root.join("a")), "a", "x")] };
+            write_dump(&dir, &snap, pid, time).unwrap();
+            dir
+        };
+        // Started long ago, but dumped recently: the manifest's time counts.
+        let recent = dump(&format!("{DEAD}-1"), &other, DEAD, now - 29 * day);
+        let old = dump(&format!("{DEAD}-2"), &other, DEAD, now - 31 * day);
+        // The current root's old dump is offered when its session loads.
+        let current = dump(&format!("{DEAD}-3"), &root, DEAD, now - 40 * day);
+        let live = dump(&format!("{}-4", std::process::id()), &other, std::process::id(), now - 40 * day);
+        // No manifest: the start time in the name counts.
+        let unfinished_old = rec.join(format!("{DEAD}-{}", now - 31 * day));
+        let unfinished_new = rec.join(format!("{DEAD}-{}", now - day));
+        for d in [&unfinished_old, &unfinished_new] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let notes = rec.join("notes");
+        std::fs::create_dir_all(&notes).unwrap();
+
+        assert_eq!(prune(&rec, &root, now, MAX_AGE_SECS), 2);
+        assert!(!old.exists() && !unfinished_old.exists());
+        for kept in [&recent, &current, &live, &unfinished_new, &notes] {
+            assert!(kept.exists(), "{} kept", kept.display());
+        }
+        assert_eq!(prune(&rec.join("missing"), &root, now, MAX_AGE_SECS), 0);
         let _ = std::fs::remove_dir_all(&rec);
     }
 

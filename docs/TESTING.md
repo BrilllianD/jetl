@@ -363,6 +363,10 @@ Then repeat the crash with two modified files (type in notes.txt, Ctrl+N
   the dump stays and the dialog comes back on the next start. Ctrl+Q quits
   with EXIT=0 and leaves that dump alone (only its own directory goes).
 - Discard (Tab Enter): nothing opens, the dump is gone.
+- Pruning: a dump of another root older than 30 days goes at startup.
+  Make one with `mkdir -p /tmp/jt-home/state/jetl/recovery/999999999-1`
+  (no manifest, so the start time 1 in the name counts) and start once:
+  the directory is gone, `jetl.log` says `pruned 1 crash dump(s)`.
 - With a dump for `$T` present, start jetl on another project
   (`mkdir -p /tmp/jt-other; echo x > /tmp/jt-other/x.txt`, run it on
   `/tmp/jt-other/x.txt`): no dialog, and the `$T` dump is still there.

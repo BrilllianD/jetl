@@ -207,6 +207,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The hint shown in an editor without tabs wraps onto centred lines in a narrow pane instead of
   being cut at the right edge.
 - A dialog with many buttons is wide enough for all of them.
+- Crash recovery dumps of projects that are never opened again no longer stay forever: dumps
+  older than 30 days are removed when jetl starts (the opened project's own dumps are still
+  offered).
 - When jetl stops on a terminal error (a failed redraw) instead of a panic, unsaved buffers are
   still written as a crash recovery dump and offered when the project opens again.
 

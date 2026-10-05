@@ -27,6 +27,22 @@ impl App {
         self.recorder.arm();
     }
 
+    /// Remove crash dumps older than 30 days in the background, except the
+    /// current root's (`main.rs` at startup; tests never call it), so dumps
+    /// of projects never opened again do not stay forever.
+    pub fn prune_recovery_dumps(&self) {
+        let dir = self.paths.recovery_dir();
+        let root = self.workspace.root.clone();
+        tokio::task::spawn_blocking(move || {
+            let n = crate::recovery::prune(&dir, &root, crate::recent_projects::now(), crate::recovery::MAX_AGE_SECS);
+            if n > 0 {
+                tracing::info!("recovery: pruned {n} crash dump(s) older than 30 days from {}", dir.display());
+            } else {
+                tracing::debug!("recovery: no crash dumps to prune");
+            }
+        });
+    }
+
     /// Refresh the panic hook's snapshot when a dirty buffer's version,
     /// saved state or path, or the root, changed since the last one (the
     /// run loop, once per turn). Rope clones are O(1).
@@ -367,6 +383,23 @@ pub(crate) mod tests {
         assert_eq!(buffer(&app, "a.txt").text(), "mine disk\n");
         let copy = buffer(&app, "a.txt (recovered)");
         assert_eq!((copy.path.as_deref(), copy.text().as_str(), copy.dirty()), (None, "recovered\n", true));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn startup_prunes_old_dumps_of_other_roots() {
+        let (app, dir) = test_app("recovery-prune");
+        let other = seed_dump_of(&app, Path::new("/elsewhere"), 100, &[(Some("a.txt"), "a.txt", "old\n")]);
+        let own = seed_dump(&app, 101, &[(Some("a.txt"), "a.txt", "old\n")]);
+        app.prune_recovery_dumps();
+        for _ in 0..200 {
+            if !other.exists() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(!other.exists(), "a month-old dump of another root is pruned");
+        assert!(own.exists(), "the current root's dump is left for the offer");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
