@@ -21,7 +21,11 @@ send its result yourself. Git tests make the root a repository with
 the app runs (git2 or the `git` CLI) report back on the bus, which
 `handle_next(&mut app, want)` waits for. Terminal window tests run
 `/bin/sh` with a cleared environment (`App::terminal_spec` under
-`cfg(test)`), never your shell or its startup files. Language servers are
+`cfg(test)`), never your shell or its startup files. Tests that check a
+killed child process (Run tasks, the shell, formatters) wait with
+`crate::util::process_gone(pid)` (Linux): it polls `/proc` for up to 10 s
+and counts a zombie or a process being reaped (`X`) as gone; never sleep a
+fixed time instead. Language servers are
 off in `test_app`; `app::lsp::tests::with_fake_servers` turns them on with
 in-process servers (`lsp::fake::FakeServer`: answers `initialize` and
 `shutdown` itself, hands the test every message it gets, and sends

@@ -169,12 +169,7 @@ mod tests {
             let pid = std::fs::read_to_string(&pid_file).unwrap().trim().to_string();
             // The background sleep (a grandchild) is gone too, or at most a
             // zombie waiting for its new parent to reap it.
-            let gone = || std::fs::read_to_string(format!("/proc/{pid}/stat")).map_or(true, |s| s.contains(") Z "));
-            let deadline = std::time::Instant::now() + Duration::from_secs(2);
-            while !gone() && std::time::Instant::now() < deadline {
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-            assert!(gone(), "sleep {pid} still runs");
+            assert!(crate::util::process_gone(pid.parse().unwrap()).await, "sleep {pid} still runs");
         }
         let _ = std::fs::remove_dir_all(&dir);
     }

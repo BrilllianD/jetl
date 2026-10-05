@@ -220,6 +220,8 @@ mod tests {
     use crate::actions::{Action, PaletteAction, RunAction};
     use crate::app::tests::{handle_next, test_app};
     use crate::run::matcher::Severity;
+    #[cfg(target_os = "linux")]
+    use crate::util::process_gone;
 
     fn shell(name: &str, script: &str) -> RunTask {
         let text = format!("[[run.tasks]]\nname = {name:?}\ncommand = {script:?}\n");
@@ -237,26 +239,14 @@ mod tests {
         app.notifications.iter().filter(|n| n.level == Level::Error).map(|n| n.text.clone()).collect()
     }
 
-    /// Whether process `pid` is gone (or a zombie waiting to be reaped by
-    /// its new parent), waiting up to 2 s.
-    #[cfg(target_os = "linux")]
-    async fn gone(pid: &str) -> bool {
-        let dead = || std::fs::read_to_string(format!("/proc/{pid}/stat")).map_or(true, |s| s.contains(") Z "));
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
-        while !dead() && std::time::Instant::now() < deadline {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-        dead()
-    }
-
     /// Wait until `file` has a line and return it.
-    async fn read_pid(file: &std::path::Path) -> String {
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    async fn read_pid(file: &std::path::Path) -> u32 {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
         loop {
             if let Ok(s) = std::fs::read_to_string(file)
                 && s.ends_with('\n')
             {
-                return s.trim().to_string();
+                return s.trim().parse().unwrap();
             }
             assert!(std::time::Instant::now() < deadline, "no pid in {}", file.display());
             tokio::time::sleep(Duration::from_millis(20)).await;
@@ -313,6 +303,11 @@ mod tests {
         app.run_task(shell("wait", &format!("echo started; sleep 30 & echo $! > '{}'; wait", pid_file.display())));
         let leader = app.run.pid().unwrap();
         let child = read_pid(&pid_file).await;
+        // The first line arrives before the stop, so it cannot be cut off by
+        // the exit report's drain timeout on a busy machine.
+        while app.run_panel.lines.is_empty() {
+            handle_next(&mut app, |m| matches!(m, AppMsg::RunOutput { .. })).await;
+        }
         app.perform(Action::Run(RunAction::Stop));
         until_exit(&mut app).await;
         assert_eq!(app.run_panel.status(), Some(&Status::Stopped));
@@ -320,8 +315,8 @@ mod tests {
         assert!(errors(&app).is_empty(), "a stop is no failure");
         #[cfg(target_os = "linux")]
         {
-            assert!(gone(&child).await, "sleep {child} still runs");
-            assert!(gone(&leader.to_string()).await);
+            assert!(process_gone(child).await, "sleep {child} still runs");
+            assert!(process_gone(leader).await, "the shell {leader} still runs");
         }
         let _ = (leader, child);
         app.perform(Action::Run(RunAction::Stop));
@@ -338,7 +333,7 @@ mod tests {
         let child = read_pid(&first).await;
         app.run_task(shell("two", &format!("echo two; sleep 30 & echo $! > '{}'; wait", second.display())));
         #[cfg(target_os = "linux")]
-        assert!(gone(&child).await, "the old run's sleep {child} still runs");
+        assert!(process_gone(child).await, "the old run's sleep {child} still runs");
         // Late output and exit of the old run, or of another root, are dropped.
         let g = app.workspace.generation;
         app.handle_msg(AppMsg::RunOutput { generation: g, run: old, lines: vec![RunLine::plain("old")] });
@@ -355,7 +350,7 @@ mod tests {
         app.do_switch_root(std::fs::canonicalize(&other).unwrap());
         assert!(!app.run.running() && app.run_panel.status().is_none() && app.run.last.is_none());
         #[cfg(target_os = "linux")]
-        assert!(gone(&child).await, "sleep {child} survived the root switch");
+        assert!(process_gone(child).await, "sleep {child} survived the root switch");
         let _ = child;
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -158,17 +158,6 @@ mod tests {
         }
     }
 
-    /// Whether process `pid` is gone (or a zombie), waiting up to 2 s.
-    #[cfg(target_os = "linux")]
-    async fn gone(pid: u32) -> bool {
-        let dead = || std::fs::read_to_string(format!("/proc/{pid}/stat")).map_or(true, |s| s.contains(") Z "));
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while !dead() && Instant::now() < deadline {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-        dead()
-    }
-
     fn open(app: &mut App) {
         app.perform(Action::App(AppAction::ToggleToolWindow(ToolWindowId::Terminal)));
         assert!(app.focus.is(PanelId::Terminal));
@@ -293,8 +282,8 @@ mod tests {
         app.handle_msg(AppMsg::TerminalOutput { generation: g, id });
         #[cfg(target_os = "linux")]
         {
-            assert!(gone(shell).await, "the shell {shell} survived the root switch");
-            assert!(gone(job).await, "its job {job} survived the root switch");
+            assert!(crate::util::process_gone(shell).await, "the shell {shell} survived the root switch");
+            assert!(crate::util::process_gone(job).await, "its job {job} survived the root switch");
         }
         // A new shell starts in the new root; dropping the app kills it.
         app.start_terminal(5, 40);
@@ -304,7 +293,7 @@ mod tests {
         until(&mut app, "the new root", |a| a.terminal.contents().lines().any(|l| l == root)).await;
         drop(app);
         #[cfg(target_os = "linux")]
-        assert!(gone(shell).await, "the shell {shell} survived the app");
+        assert!(crate::util::process_gone(shell).await, "the shell {shell} survived the app");
         let _ = (shell, job);
         let _ = std::fs::remove_dir_all(&dir);
     }
