@@ -88,7 +88,7 @@ impl App {
         }
     }
 
-    pub(super) fn finish_dialog(&mut self, id: DialogId, res: DialogResult) {
+    pub(crate) fn finish_dialog(&mut self, id: DialogId, res: DialogResult) {
         self.dirty_frame = true;
         if self.finish_merge_dialog(&id, &res) || self.finish_recovery_dialog(&id, &res) {
             return;
@@ -249,6 +249,9 @@ impl App {
                 Err(e) => self.notify(Level::Warn, format!("Rename: {e}")),
             },
             (DialogId::TreeDelete(path), DialogResult::Button(0)) => self.run_fs_op(FsOp::Delete { path }),
+            (DialogId::NewScratch, DialogResult::Choice(i)) => self.create_scratch(i),
+            (DialogId::DeleteScratch(path), DialogResult::Button(b)) => self.finish_delete_scratch(path, b == 0),
+            (DialogId::DeleteScratch(path), DialogResult::Cancel) => self.finish_delete_scratch(path, false),
             (DialogId::Info, _) => {}
             (_, DialogResult::Cancel) => {}
             (

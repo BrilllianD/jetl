@@ -1,0 +1,31 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &marks, None)"
+---
+80x24 cursor=(6,5)
+00  ≣ ┌ Project: root ───────────────┐│
+01    │                              ││
+02  1 │                              ││
+03  ⌂ │                              ││
+04  2┌ Scratch Files ───────────────────────────────────────────────────────────┐
+05  ◫│ › type a scratch name · Shift+Del deletes                              3 │
+06  7│ scratch_2.txt                                     Plain text  2024-10-04 │
+07  ⊢│ notes.log                                         Plain text  2024-05-07 │
+08   │ scratch_1.txt                                     Plain text  2022-01-08 │
+09   │                                                                          │
+10   │                                                                          │
+11   │                                                                          │
+12  ⚑└──────────────────────────────────────────────────────────────────────────┘
+13  9 │                              ││         Ctrl+Shift+N finds a file.
+14  ⎇ │                              ││
+15    │                              ││
+16  ❯ │                              ││
+17  6 │                              ││
+18  ⚠ │                              ││
+19  4 │                              ││
+20  ► │                              ││
+21  3 │                              ││
+22  ⌕ └──────────────────────────────┘│
+23  root
+-- marks: L=selected
+06    LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL

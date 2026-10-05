@@ -175,6 +175,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and `.editorconfig` settings. Untitled buffers (crash recovery's `(recovered)` copies) can now
   be saved: Ctrl+S and Save All ask for their path, and quitting, closing tabs or switching
   projects with "Save" asks for each one in turn; Esc at any prompt cancels the quit or close.
+- Scratch files: File > New Scratch File… (Ctrl+Alt+Shift+Insert, as in JetBrains) asks for a
+  language and opens a new `scratch_<n>.<ext>` kept outside every project, in
+  `$XDG_STATE_HOME/jetl/scratches/`. File > Scratch Files… lists them, newest first, with their
+  language and date; Enter opens one, Shift+Delete deletes it after asking. They save, autosave
+  and come back with the session like any file; language servers leave them alone.
 
 ### Changed
 

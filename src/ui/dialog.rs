@@ -156,6 +156,11 @@ pub enum DialogId {
         path: std::path::PathBuf,
         then: crate::app::AfterSave,
     },
+    /// New Scratch File: item 0 is plain text, `i` is `LANGUAGES[i - 1]`.
+    NewScratch,
+    /// Delete this scratch file (from the Scratch Files palette): Delete /
+    /// Cancel; both reopen the palette.
+    DeleteScratch(std::path::PathBuf),
     /// Unsaved changes recovered after a crash (`App::offer_recovery`):
     /// Restore all / Discard / Review…
     Recover,

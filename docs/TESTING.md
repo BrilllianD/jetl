@@ -38,8 +38,8 @@ on ratatui's `TestBackend` and compares them as text with
 [`insta`](https://insta.rs) against `src/app/snapshots/*.snap`. They cover
 split panes, carets, occurrences, folding, soft wrap, bookmarks and the
 numbered bookmark chooser, the project tree, the
-Git window's Commit tab, the palettes, the conflict resolver, the crash
-recovery dialogs and the Save As prompt.
+Git window's Commit tab, the palettes (Scratch Files included), the
+conflict resolver, the crash recovery dialogs and the Save As prompt.
 
 Helpers (in `snapshot_tests.rs` unless noted):
 
@@ -490,6 +490,34 @@ scenario), `chmod 000 $T/notes.txt`, `run`, Restore all: the tab is
   `b2.txt` Enter at the one prompt left: EXIT=0.
 
 `chmod 644` the files afterwards, so `rm -rf $T` works.
+
+### Scenario: scratch files
+
+At 80x24 and at 120x40, with `run()` and `$T` from the crash recovery
+scenario (fresh `$T` and `/tmp/jt-home`). Ctrl+Alt+Shift+Insert arrives
+under tmux as `C-M-S-IC`; F1 "new scratch" does the same. Shift+Delete is
+`S-DC`:
+
+```sh
+run; sleep 2
+ls /tmp/jt-home/state/jetl                         # no scratches/ yet
+/tmp/tm.sh send-keys -t jetl C-M-S-IC              # "New Scratch File", Plain text first, then the languages
+/tmp/tm.sh send-keys -t jetl -l rust; /tmp/tm.sh send-keys -t jetl Enter
+ls /tmp/jt-home/state/jetl/scratches               # scratch_1.rs, open in a tab, status bar "rust", no language server
+/tmp/tm.sh send-keys -t jetl -l 'fn main() {}'; /tmp/tm.sh send-keys -t jetl C-s
+/tmp/tm.sh send-keys -t jetl F1; /tmp/tm.sh send-keys -t jetl -l 'new scratch'; /tmp/tm.sh send-keys -t jetl Enter Enter
+                                                   # scratch_1.txt (plain text) in a new tab
+/tmp/tm.sh send-keys -t jetl F1; /tmp/tm.sh send-keys -t jetl -l 'scratch files'; /tmp/tm.sh send-keys -t jetl Enter
+                                                   # "Scratch Files": scratch_1.txt, scratch_1.rs (newest first), language and date on the right
+/tmp/tm.sh send-keys -t jetl S-DC                  # "Delete scratch file scratch_1.txt?", "Its tab closes; unsaved edits are lost."
+/tmp/tm.sh send-keys -t jetl Enter                 # the file and its tab are gone, the palette is back with scratch_1.rs
+/tmp/tm.sh send-keys -t jetl Escape; /tmp/tm.sh send-keys -t jetl C-q   # EXIT=0
+/tmp/tm.sh kill-server; run; sleep 2               # the session brings the scratch_1.rs tab back
+```
+
+Tab Enter (Cancel) in the delete dialog keeps the file and reopens the
+palette. Alt+F1 (Select in Project) on a scratch tab says it is a scratch
+file instead of selecting anything.
 
 ### Limits under tmux
 

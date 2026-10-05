@@ -49,6 +49,7 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Ctrl+S` | `editor.save` | Save |
 | `Alt+Shift+S` | `editor.save_as` | Save as… |
 | `Ctrl+Shift+S` * | `editor.save_all` | Save all |
+| `Ctrl+Alt+Shift+Insert` | `editor.new_scratch` | New scratch file… |
 | `Ctrl+V` | `editor.paste` | Paste |
 | `Alt+Right` | `editor.next_tab` | Next tab |
 | `Alt+Left` | `editor.prev_tab` | Previous tab |
@@ -313,6 +314,7 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Ctrl+W` | `palette.delete_word` | Palette: delete word |
 | `Tab` | `palette.next_tab` | Palette: next tab |
 | `Shift+Tab` | `palette.prev_tab` | Palette: previous tab |
+| `Shift+Delete` | `palette.delete_item` | Palette: delete the selected item (Scratch Files) |
 
 ## mode.normal
 
@@ -429,6 +431,7 @@ Reachable from Find Action (F1) or by binding them in `keymap.toml`.
 | `app.open_settings` | Open settings (config.toml) |
 | `app.keymap_reference` | Keymap reference |
 | `palette.goto_line` | Go to line |
+| `editor.scratch_files` | Scratch files |
 | `editor.replace_one` | Replace current match |
 | `editor.replace_all` | Replace all matches |
 | `editor.find_case` | Find: toggle match case |

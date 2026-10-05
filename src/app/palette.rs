@@ -48,6 +48,11 @@ impl App {
             p.set_tasks(self.run.tasks.clone(), true);
             self.load_run_tasks();
         }
+        if p.wants(Source::Scratches) {
+            // One read of a small directory jetl owns: current at once, and
+            // right after a delete.
+            p.set_scratches(crate::scratch::list(&self.paths.scratches_dir()));
+        }
         if p.wants(Source::Branches) {
             p.set_branches(self.git_panel.branches.clone());
             self.branches_error_shown = false;
@@ -187,6 +192,7 @@ impl App {
             PaletteResult::Accept(Accept::NewBranch) => self.git_request(GitRequest::NewBranch),
             PaletteResult::Accept(Accept::SwitchRoot(root)) => self.apply_effects(vec![Effect::SwitchRoot(root)]),
             PaletteResult::Accept(Accept::RunTask(task)) => self.run_task(*task),
+            PaletteResult::Accept(Accept::DeleteScratch(path)) => self.ask_delete_scratch(path),
             // A symbol or location: back returns here even after a short jump.
             PaletteResult::Accept(Accept::OpenFileAt { path, line, col }) => {
                 self.editor.push_nav_here();

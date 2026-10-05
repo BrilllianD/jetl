@@ -880,6 +880,7 @@ impl App {
             AppAction::About => self.notify(Level::Info, format!("jetl {}", env!("CARGO_PKG_VERSION"))),
             AppAction::OpenSettings => self.open_settings(),
             AppAction::KeymapReference => self.keymap_reference(),
+            AppAction::NewScratch => self.new_scratch(),
         }
     }
 
@@ -1007,7 +1008,10 @@ impl App {
         };
         self.layout.show(ToolWindowId::Project);
         self.focus.set(PanelId::Project);
-        if !self.project.select_path(&p) {
+        if p.starts_with(self.paths.scratches_dir()) {
+            let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            self.notify(Level::Info, format!("{name} is a scratch file, outside every project (File > Scratch Files…)"));
+        } else if !self.project.select_path(&p) {
             self.notify(Level::Warn, format!("{} is outside the project", p.display()));
         }
     }

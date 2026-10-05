@@ -100,6 +100,9 @@
 # No Save As key in JetBrains; Alt+Shift+S sits next to Save All and works
 # in legacy terminals and tmux.
 "alt-shift-s" = "editor.save_as"
+# New Scratch File, as in JetBrains. Legacy terminals and tmux send the
+# modified Insert key too. Scratch Files has no key (File menu, Find Action).
+"ctrl-alt-shift-insert" = "editor.new_scratch"
 "f12" = "app.debug_panic"
 # Numbered bookmarks (Ctrl+F11 sets one), JetBrains-style. Ctrl+digit needs
 # the kitty protocol for 0-3, 8 and 9: legacy terminals send Ctrl+0, 1 and 9
@@ -429,6 +432,9 @@
 "ctrl-w" = "palette.delete_word"
 "tab" = "palette.next_tab"
 "shift-tab" = "palette.prev_tab"
+# Deletes the selected scratch file (Scratch Files); elsewhere it deletes
+# forward in the query, like Delete.
+"shift-delete" = "palette.delete_item"
 
 # Reserved for the future vim mode (inert unless [keymap] mode = "vim").
 [mode.normal]

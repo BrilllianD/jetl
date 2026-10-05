@@ -183,7 +183,7 @@ fn hms(secs: i64) -> String {
 
 /// Seconds east of UTC at `secs`, from the C library's time zone data.
 #[cfg(unix)]
-fn local_offset(secs: i64) -> i64 {
+pub fn local_offset(secs: i64) -> i64 {
     let t = secs as libc::time_t;
     // SAFETY: `localtime_r` only writes the `tm` it is given; a zeroed `tm`
     // is a valid value.
@@ -192,7 +192,7 @@ fn local_offset(secs: i64) -> i64 {
 }
 
 #[cfg(not(unix))]
-fn local_offset(_secs: i64) -> i64 {
+pub fn local_offset(_secs: i64) -> i64 {
     0
 }
 

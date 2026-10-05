@@ -33,6 +33,8 @@ pub const MAIN_MENU: &[(&str, char, &[Row])] = &[
             Item("Go to File…", "palette.files"),
             Item("Recent Files…", "palette.recent_files"),
             Item("Recent Projects…", "palette.recent_projects"),
+            Item("New Scratch File…", "editor.new_scratch"),
+            Item("Scratch Files…", "editor.scratch_files"),
             Sep,
             Item("Save", "editor.save"),
             Item("Save As…", "editor.save_as"),

@@ -154,7 +154,7 @@ All of section E shipped in Phase 9 except split editor panes, which shipped in 
 | Config hot reload | S | Done: config, keymap and theme files reload through a config-dir watch; broken files keep the current value; restart-needed keys are named |
 | Vim mode | L | Dispatcher mode tables exist |
 | Local History | M | Reuse `DiffDoc` view |
-| Scratch files | S | Buffers rooted in the state dir |
+| Scratch files | S | Done: File > New Scratch File… (Ctrl+Alt+Shift+Insert) picks a language and opens `scratch_<n>.<ext>` in `state/scratches/`; File > Scratch Files… lists them (Shift+Delete deletes); no language server for them |
 
 ### H. Quality and distribution
 

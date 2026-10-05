@@ -10,6 +10,7 @@ pub mod lsp;
 pub mod recent_projects;
 pub mod recovery;
 pub mod run;
+pub mod scratch;
 pub mod symbols;
 pub mod terminal;
 pub mod tui;

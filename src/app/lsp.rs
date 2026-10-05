@@ -229,6 +229,7 @@ impl App {
             self.lsp.close_doc(id);
         }
         let mut notes = Vec::new();
+        let scratches = self.paths.scratches_dir();
         let lsp = &mut self.lsp;
         for buf in &mut self.editor.buffers {
             let language = buf.language().map(|l| l.name);
@@ -237,6 +238,11 @@ impl App {
                 untrack(buf);
             }
             let (Some(language), Some(path)) = (language, buf.path.as_ref()) else { continue };
+            // Scratch files belong to no project: no server for them (one
+            // saved into the directory was closed above).
+            if path.starts_with(&scratches) {
+                continue;
+            }
             if let Some(doc) = lsp.docs.get_mut(&buf.id) {
                 if buf.lsp_pending.is_empty() && !buf.lsp_full_resync {
                     continue;
@@ -664,6 +670,31 @@ pub(crate) mod tests {
         app.lsp.shutdown_all().await;
         server.recv("shutdown").await;
         server.recv("exit").await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn scratch_files_get_no_server() {
+        let (mut app, dir) = test_app("lsp-scratch");
+        let mut servers = with_fake_servers(&mut app, incremental());
+        let rust = crate::editor::syntax::LANGUAGES.iter().position(|l| l.name == "rust").unwrap();
+        app.create_scratch(rust + 1);
+        let scratch = app.editor.active_path().unwrap().to_path_buf();
+        assert!(scratch.starts_with(app.paths.scratches_dir()) && scratch.extension().is_some_and(|e| e == "rs"));
+        act(&mut app, EditorAction::InsertChar('x'));
+        assert!(servers.try_recv().is_err(), "no server started for a scratch");
+        assert!(app.lsp.docs.is_empty());
+
+        // A project file moved into the scratches directory leaves its server.
+        let mut server = open_on_server(&mut app, &mut servers, "a.rs", "fn a() {}\n").await;
+        let path = app.workspace.root.join("a.rs");
+        let uri = sync::uri(&path).unwrap();
+        app.editor.retarget(&path, &app.paths.scratches_dir().join("a.rs"));
+        app.lsp_sync();
+        assert_eq!(server.recv("textDocument/didClose").await["params"]["textDocument"]["uri"], uri.as_str());
+        app.lsp_sync();
+        assert!(server.drain().iter().all(|m| m["method"] != "textDocument/didOpen"));
+        assert!(app.lsp.docs.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

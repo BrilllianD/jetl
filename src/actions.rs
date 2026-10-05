@@ -46,6 +46,8 @@ pub enum AppAction {
     OpenSettings,
     /// Open the project's `docs/KEYMAP.md`, else point at the online copy.
     KeymapReference,
+    /// Ask for a language, then create and open a scratch file.
+    NewScratch,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -71,6 +73,8 @@ pub enum PaletteKind {
     /// Places a language server answered with (definitions, usages); opened
     /// by the app with its rows (`App::show_locations`), not by an action.
     Locations,
+    /// The scratch files (`scratch.rs`), newest first.
+    Scratches,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -431,6 +435,8 @@ pub enum PaletteAction {
     DeleteWord,
     NextTab,
     PrevTab,
+    /// Delete the selected item where a list allows it (Scratch Files).
+    DeleteItem,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -526,6 +532,8 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "editor.save" => "Save", Editor(E::Save);
         "editor.save_as" => "Save as…", Editor(E::SaveAs);
         "editor.save_all" => "Save all", Editor(E::SaveAll);
+        "editor.new_scratch" => "New scratch file…", App(AppAction::NewScratch);
+        "editor.scratch_files" => "Scratch files", App(AppAction::OpenPalette(PaletteKind::Scratches));
         "editor.find" => "Find", Editor(E::Find);
         "editor.replace" => "Replace", Editor(E::Replace);
         "editor.find_next" => "Find next", Editor(E::FindNext);
@@ -782,6 +790,7 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "palette.delete_word" => "Palette: delete word", Palette(PaletteAction::DeleteWord);
         "palette.next_tab" => "Palette: next tab", Palette(PaletteAction::NextTab);
         "palette.prev_tab" => "Palette: previous tab", Palette(PaletteAction::PrevTab);
+        "palette.delete_item" => "Palette: delete the selected item (Scratch Files)", Palette(PaletteAction::DeleteItem);
 
         "mode.normal" => "Vim: normal mode", Mode(ModeAction::Normal);
         "mode.insert" => "Vim: insert mode", Mode(ModeAction::Insert);

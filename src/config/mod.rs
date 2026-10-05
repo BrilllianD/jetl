@@ -39,6 +39,11 @@ impl Paths {
     pub fn sessions_dir(&self) -> PathBuf {
         self.state_dir.join("sessions")
     }
+    /// Scratch files (`scratch.rs`), shared by every project; made by the
+    /// first scratch.
+    pub fn scratches_dir(&self) -> PathBuf {
+        self.state_dir.join("scratches")
+    }
     pub fn recent_projects_file(&self) -> PathBuf {
         self.state_dir.join("recent_projects.json")
     }

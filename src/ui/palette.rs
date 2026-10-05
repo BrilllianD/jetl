@@ -1,7 +1,8 @@
 //! Command palette overlay: Go to File, Go to Symbol, Find Action, Search
-//! Everywhere, Recent Files, Branches, Recent Projects, Run tasks and a
-//! language server's locations (definitions, usages). The app owns it (`App.palette`) and routes all
-//! input to it while it is open, like a dialog. Keys arrive as
+//! Everywhere, Recent Files, Branches, Recent Projects, Run tasks, Scratch
+//! Files and a language server's locations (definitions, usages). The app
+//! owns it (`App.palette`) and routes all input to it while it is open,
+//! like a dialog. Keys arrive as
 //! `PaletteAction`s from the `palette` keymap context; unmapped keys edit the
 //! query. The palette holds copies of its candidates (the file index, the
 //! action list, branches, recent files and projects, symbols) that the app refreshes
@@ -25,6 +26,7 @@ use crate::config::theme::Theme;
 use crate::event::Mouse;
 use crate::git::BranchInfo;
 use crate::lsp::locations::LocationItem;
+use crate::scratch::ScratchFile;
 use crate::symbols::index::SymbolEntry;
 use crate::ui::widgets::list::ListState;
 use crate::ui::widgets::text_input::TextInput;
@@ -45,6 +47,7 @@ pub enum Source {
     Tasks,
     /// A language server's locations (`PaletteKind::Locations`).
     Locations,
+    Scratches,
 }
 
 impl Source {
@@ -58,6 +61,7 @@ impl Source {
             Source::Symbols => "Symbols",
             Source::Tasks => "Run",
             Source::Locations => "Locations",
+            Source::Scratches => "Scratch Files",
         }
     }
 }
@@ -87,6 +91,8 @@ pub enum Accept {
         col: usize,
     },
     RunTask(Box<crate::run::RunTask>),
+    /// Shift+Delete on a scratch file: the app asks first.
+    DeleteScratch(PathBuf),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -126,6 +132,11 @@ pub struct Palette {
     /// Locations and the title they are shown under.
     locations: Vec<LocationItem>,
     locations_title: String,
+    /// Scratch files, newest first, their names (what is matched) and
+    /// local modification dates.
+    scratches: Vec<ScratchFile>,
+    scratch_names: Vec<String>,
+    scratch_dates: Vec<String>,
     matcher: Matcher,
     outer: Rect,
     list_rect: Rect,
@@ -143,6 +154,7 @@ impl Palette {
             PaletteKind::Symbols => vec![Source::Symbols],
             PaletteKind::RunTasks => vec![Source::Tasks],
             PaletteKind::Locations => vec![Source::Locations],
+            PaletteKind::Scratches => vec![Source::Scratches],
             // Go to Line stays a dialog and never opens a palette.
             PaletteKind::Branches | PaletteKind::GotoLine => vec![Source::Branches],
         };
@@ -167,6 +179,9 @@ impl Palette {
             tasks_loading: false,
             locations: Vec::new(),
             locations_title: String::new(),
+            scratches: Vec::new(),
+            scratch_names: Vec::new(),
+            scratch_dates: Vec::new(),
             matcher: Matcher::default(),
             outer: Rect::default(),
             list_rect: Rect::default(),
@@ -246,6 +261,22 @@ impl Palette {
         }
     }
 
+    /// The scratch files, newest first (`scratch::list`).
+    pub fn set_scratches(&mut self, files: Vec<ScratchFile>) {
+        self.scratch_names = files.iter().map(|f| f.name.clone()).collect();
+        self.scratch_dates = files
+            .iter()
+            .map(|f| {
+                let offset = crate::ui::event_log::local_offset(f.modified) / 60;
+                crate::editor::blame::date(f.modified, i32::try_from(offset).unwrap_or(0))
+            })
+            .collect();
+        self.scratches = files;
+        if self.source() == Source::Scratches {
+            self.refilter(false);
+        }
+    }
+
     /// Recent project roots, newest first; the current root is left out.
     pub fn set_projects(&mut self, roots: &[PathBuf]) {
         let home = directories::BaseDirs::new().map(|d| d.home_dir().to_path_buf());
@@ -287,6 +318,10 @@ impl Palette {
             Source::Projects => {
                 let shown = &self.projects_shown;
                 if q.is_empty() { (0..shown.len()).collect() } else { rank_paths(&q, shown, &mut self.matcher) }
+            }
+            Source::Scratches => {
+                let names = &self.scratch_names;
+                if q.is_empty() { (0..names.len()).collect() } else { rank_paths(&q, names, &mut self.matcher) }
             }
             Source::Actions => {
                 if q.is_empty() {
@@ -353,6 +388,7 @@ impl Palette {
             }
             Source::Actions => Accept::Action(self.actions.get(i)?.action.clone()),
             Source::Tasks => Accept::RunTask(Box::new(self.tasks.get(i)?.clone())),
+            Source::Scratches => Accept::OpenFile(self.scratches.get(i)?.path.clone()),
             Source::Locations => {
                 let l = self.locations.get(i)?;
                 Accept::OpenFileAt { path: l.path.clone(), line: l.line, col: l.col }
@@ -382,6 +418,15 @@ impl Palette {
             }
             PaletteAction::NextTab => self.switch_tab((self.tab + 1) % self.tabs.len()),
             PaletteAction::PrevTab => self.switch_tab((self.tab + self.tabs.len() - 1) % self.tabs.len()),
+            PaletteAction::DeleteItem if self.source() == Source::Scratches => {
+                let f = self.rows.get(self.list.selected).and_then(|&i| self.scratches.get(i))?;
+                return Some(PaletteResult::Accept(Accept::DeleteScratch(f.path.clone())));
+            }
+            // Nothing to delete: Shift+Delete deletes in the query, as before.
+            PaletteAction::DeleteItem => {
+                self.input.delete();
+                self.refilter(true);
+            }
         }
         None
     }
@@ -457,6 +502,7 @@ impl Palette {
             PaletteKind::RecentProjects => "Recent Projects",
             PaletteKind::Symbols => "Go to Symbol",
             PaletteKind::RunTasks => "Run",
+            PaletteKind::Scratches => "Scratch Files",
             PaletteKind::Branches | PaletteKind::GotoLine => "Git Branches",
         }
     }
@@ -530,6 +576,7 @@ impl Palette {
             Source::Symbols => "type a symbol name",
             Source::Tasks => "type a task name",
             Source::Locations => "type to filter",
+            Source::Scratches => "type a scratch name · Shift+Del deletes",
         };
         self.input.render(frame, qrect, Style::default().bg(theme.bg).fg(theme.fg), placeholder, theme.dim.bg(theme.bg), true);
         frame.buffer_mut().set_stringn(inner.right().saturating_sub(cw + 1), y, &count, cw as usize, theme.dim.bg(theme.popup_bg));
@@ -545,6 +592,7 @@ impl Palette {
                 Source::Symbols if loading => "Indexing symbols…",
                 Source::Tasks if loading => "Loading tasks…",
                 Source::Tasks if self.input.text.trim().is_empty() => "No tasks: add [[run.tasks]] to config.toml or .jetl/run.toml",
+                Source::Scratches if self.input.text.trim().is_empty() => "No scratch files: File > New Scratch File…",
                 _ => "Nothing found",
             };
             frame.buffer_mut().set_stringn(lrect.x + 2, lrect.y, msg, lrect.width.saturating_sub(2) as usize, theme.dim.bg(theme.popup_bg));
@@ -614,6 +662,19 @@ impl Palette {
                     if used + origin.width() + 2 <= width {
                         v.push((" ".repeat(width - used - origin.width()), base));
                         v.push((origin.to_string(), dim));
+                    }
+                    v
+                }
+                Source::Scratches => {
+                    // The name, then the language and date on the right.
+                    let name = &self.scratch_names[i];
+                    let marks = match_indices(&pattern, name, &mut self.matcher);
+                    let mut v = highlight(name, |ci| marks.contains(&(ci as u32)), base, hl);
+                    let info = format!("{}  {}", self.scratches[i].language, self.scratch_dates[i]);
+                    let used = name.width();
+                    if used + info.width() + 2 <= width {
+                        v.push((" ".repeat(width - used - info.width()), base));
+                        v.push((info, dim));
                     }
                     v
                 }
@@ -828,6 +889,30 @@ mod tests {
         assert_eq!(p.handle_action(&PaletteAction::Accept), Some(PaletteResult::Accept(Accept::SwitchRoot(PathBuf::from("/w/alpha")))));
         p.set_query("beta");
         assert_eq!(p.handle_action(&PaletteAction::Accept), Some(PaletteResult::Accept(Accept::SwitchRoot(PathBuf::from("/w/beta")))));
+    }
+
+    #[test]
+    fn delete_item_deletes_a_scratch_only_on_scratch_files() {
+        let f = |name: &str| ScratchFile { path: PathBuf::from("/s").join(name), name: name.into(), language: "Plain text", modified: 0 };
+        let mut p = Palette::new(PaletteKind::Scratches, PathBuf::from("/w"));
+        p.set_scratches(vec![f("scratch_2.txt"), f("scratch_1.txt")]);
+        p.set_query("1");
+        let del = Some(PaletteResult::Accept(Accept::DeleteScratch(PathBuf::from("/s/scratch_1.txt"))));
+        assert_eq!(p.handle_action(&PaletteAction::DeleteItem), del);
+        assert_eq!(
+            p.handle_action(&PaletteAction::Accept),
+            Some(PaletteResult::Accept(Accept::OpenFile(PathBuf::from("/s/scratch_1.txt"))))
+        );
+        p.set_query("zzz");
+        assert_eq!(p.handle_action(&PaletteAction::DeleteItem), None);
+
+        // Elsewhere it deletes forward in the query.
+        let mut p = Palette::new(PaletteKind::RecentProjects, PathBuf::from("/w/here"));
+        p.set_projects(&[PathBuf::from("/w/alpha")]);
+        p.set_query("ab");
+        p.input.home();
+        assert_eq!(p.handle_action(&PaletteAction::DeleteItem), None);
+        assert_eq!(p.input.text, "b");
     }
 
     #[test]

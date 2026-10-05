@@ -460,6 +460,25 @@ async fn palette_files() {
     assert_snapshot!("palette_files", snapshot(&term, &marks, None));
 }
 
+#[tokio::test]
+async fn palette_scratches() {
+    let mut fx = stable_app("palette-scratches");
+    let app = &mut fx.app;
+    // Noon UTC, so the local date is the same in nearly every time zone;
+    // no grammar-dependent extensions, so the languages are the same with
+    // any set of language features.
+    let dir = app.paths.scratches_dir();
+    std::fs::create_dir_all(&dir).unwrap();
+    for (name, day) in [("scratch_1.txt", 19_000), ("notes.log", 19_850), ("scratch_2.txt", 20_000)] {
+        let at = std::time::UNIX_EPOCH + std::time::Duration::from_secs(day * 86_400 + 12 * 3600);
+        std::fs::File::create(dir.join(name)).unwrap().set_modified(at).unwrap();
+    }
+    app.open_palette(PaletteKind::Scratches);
+    let term = draw_app(app, 80, 24);
+    let marks = palette_marks(&app.theme);
+    assert_snapshot!("palette_scratches", snapshot(&term, &marks, None));
+}
+
 /// The resolver's fixture (as in `editor/merge.rs`): yours changes `one`,
 /// theirs changes `three`, and both change `five`. A plain extension keeps
 /// the frame the same with any set of language features.
