@@ -25,7 +25,11 @@ the app runs (git2 or the `git` CLI) report back on the bus, which
 killed child process (Run tasks, the shell, formatters) wait with
 `crate::util::process_gone(pid)` (Linux): it polls `/proc` for up to 10 s
 and counts a zombie or a process being reaped (`X`) as gone; never sleep a
-fixed time instead. Language servers are
+fixed time instead. Nothing `App::new` starts writes in
+the background (`main.rs` starts the recent projects file and the crash
+dump prune; local history is `Handle::disabled()` in `test_app`), so a
+removed temp directory stays removed: keep it that way for new startup
+work. Language servers are
 off in `test_app`; `app::lsp::tests::with_fake_servers` turns them on with
 in-process servers (`lsp::fake::FakeServer`: answers `initialize` and
 `shutdown` itself, hands the test every message it gets, and sends

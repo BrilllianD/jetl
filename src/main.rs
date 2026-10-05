@@ -38,6 +38,7 @@ async fn main() -> Result<()> {
     let mut app = App::new(root, cfg, paths, open);
     app.arm_recovery();
     app.prune_recovery_dumps();
+    app.start_recent_projects();
     if pick_project {
         app.pick_project_at_startup();
     }

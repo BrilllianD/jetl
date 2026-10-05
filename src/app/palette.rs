@@ -115,14 +115,23 @@ impl App {
         self.request_symbols();
     }
 
+    /// Record the current root in the recent projects file and load the
+    /// list (`main.rs` at startup; tests never call it); root switches
+    /// record their root from then on.
+    pub fn start_recent_projects(&mut self) {
+        self.record_recent = true;
+        self.load_recent_projects(true);
+    }
+
     /// Read the recent projects file in `spawn_blocking`, first recording the
-    /// current root when `touch` is set (startup and root switches). The
-    /// result is ordered by a seq; it does not depend on the root.
+    /// current root when `touch` is set and recording is on (startup and
+    /// root switches). The result is ordered by a seq; it does not depend on
+    /// the root.
     pub(crate) fn load_recent_projects(&mut self, touch: bool) {
         self.recent_projects_requested += 1;
         let seq = self.recent_projects_requested;
         let (file, tx) = (self.paths.recent_projects_file(), self.bus_tx.clone());
-        let root = touch.then(|| self.workspace.root.clone());
+        let root = (touch && self.record_recent).then(|| self.workspace.root.clone());
         let at = crate::recent_projects::now();
         tokio::task::spawn_blocking(move || {
             let roots = crate::recent_projects::update(&file, root.as_deref(), at);

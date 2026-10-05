@@ -176,6 +176,11 @@ pub struct App {
     /// Last requested and last applied recent projects load.
     recent_projects_requested: u64,
     recent_projects_seq: u64,
+    /// Record the root in the recent projects file (at startup and on root
+    /// switches). Off until `main.rs` calls [`App::start_recent_projects`],
+    /// so tests never write it: the write would land after the test removed
+    /// its temp dir and make it again.
+    record_recent: bool,
     /// Open the Recent Projects palette when the list first arrives (see
     /// [`App::pick_project_at_startup`]).
     pick_project: bool,
@@ -297,6 +302,7 @@ impl App {
             recent_projects: Vec::new(),
             recent_projects_requested: 0,
             recent_projects_seq: 0,
+            record_recent: false,
             pick_project: false,
             branches_error_shown: false,
             status_hits: Vec::new(),
@@ -351,7 +357,6 @@ impl App {
         app.git.load_stashes();
         app.restore_session();
         app.start_watcher();
-        app.load_recent_projects(true);
         // The symbol index follows the file index.
         app.refresh_file_index();
         app
@@ -1342,6 +1347,29 @@ pub(crate) mod tests {
         // Offered once only.
         app.handle_msg(AppMsg::RecentProjects { seq: 3, roots: vec![other.clone(), root.clone()] });
         assert!(app.palette.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn recent_projects_are_recorded_only_once_started() {
+        let recent = |m: &AppMsg| matches!(m, AppMsg::RecentProjects { .. });
+        let (mut app, dir) = test_app("recent-record");
+        let (root, file) = (app.workspace.root.clone(), app.paths.recent_projects_file());
+        let other = dir.join("other");
+        std::fs::create_dir_all(&other).unwrap();
+        let other = std::fs::canonicalize(&other).unwrap();
+        // Tests never start it: a root switch loads the list but writes nothing.
+        app.do_switch_root(other.clone());
+        handle_next(&mut app, recent).await;
+        assert!(!file.exists(), "nothing recorded before start_recent_projects");
+        // What main.rs does at startup; root switches record from then on.
+        app.start_recent_projects();
+        handle_next(&mut app, recent).await;
+        assert_eq!(app.recent_projects, vec![other.clone()]);
+        app.do_switch_root(root.clone());
+        handle_next(&mut app, recent).await;
+        let roots: Vec<PathBuf> = crate::recent_projects::load(&file).into_iter().map(|p| p.root).collect();
+        assert_eq!(roots, [root, other]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
