@@ -421,10 +421,9 @@ fn diff_marks(theme: &Theme) -> Vec<Mark> {
     ]
 }
 
-#[tokio::test]
-async fn app_git_commit_tab() {
-    let mut fx = stable_app("git-commit");
-    let app = &mut fx.app;
+/// A repository with a modified and an untracked file, the Git window on
+/// its Commit tab and the first change's diff loaded.
+fn git_commit_fixture(app: &mut App) {
     super::tests::init_repo(app, &[("main.rs", "fn main() {\n    println!(\"hello\");\n}\n"), ("README.md", "# demo\n")]);
     let root = app.workspace.root.clone();
     std::fs::write(root.join("main.rs"), "fn main() {\n    println!(\"hello, world\");\n    run();\n}\n").unwrap();
@@ -444,10 +443,30 @@ async fn app_git_commit_tab() {
         .map(|(old, new)| crate::git::diff::DiffDoc::build(&old, &new, app.git.tab_width));
     app.handle_msg(AppMsg::Git(GitMsg::Diff { generation: app.git.generation, key, result }));
     assert_eq!(app.busy_label(), None);
+}
+
+#[tokio::test]
+async fn app_git_commit_tab() {
+    let mut fx = stable_app("git-commit");
+    let app = &mut fx.app;
+    git_commit_fixture(app);
     let term = draw_app(app, 120, 30);
     let marks = diff_marks(&app.theme);
     let bottom = app.layout.rects.bottom;
     assert_snapshot!("app_git_commit_tab", snapshot(&term, &marks, Some(bottom)));
+}
+
+/// At 80 columns the diff header is cut before the layout toggles instead
+/// of running under them.
+#[tokio::test]
+async fn app_git_commit_tab_80_columns() {
+    let mut fx = stable_app("git-commit-80");
+    let app = &mut fx.app;
+    git_commit_fixture(app);
+    let term = draw_app(app, 80, 24);
+    let marks = diff_marks(&app.theme);
+    let bottom = app.layout.rects.bottom;
+    assert_snapshot!("app_git_commit_tab_80_columns", snapshot(&term, &marks, Some(bottom)));
 }
 
 /// The palette's selected row.

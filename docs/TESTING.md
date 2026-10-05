@@ -46,7 +46,7 @@ on ratatui's `TestBackend` and compares them as text with
 [`insta`](https://insta.rs) against `src/app/snapshots/*.snap`. They cover
 split panes, carets, occurrences, folding, soft wrap, bookmarks, the
 numbered bookmark chooser and the bookmarks list with closed files, the project tree, the
-Git window's Commit tab, the palettes (Scratch Files included), the
+Git window's Commit tab (also at 80 columns, its diff header cut before the toggles), the palettes (Scratch Files included), the
 conflict resolver, the crash recovery dialogs and the Save As prompt.
 
 Helpers (in `snapshot_tests.rs` unless noted):

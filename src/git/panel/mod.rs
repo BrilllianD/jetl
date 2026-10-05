@@ -39,7 +39,7 @@ mod history;
 mod log;
 mod stash;
 
-use diff_view::{DiffOpts, DiffPane, render_diff, render_toggles};
+use diff_view::{DiffOpts, DiffPane, render_diff, render_diff_header};
 use log::{CommitAction, LogFilterPart};
 use stash::StashAction;
 
@@ -671,7 +671,7 @@ impl GitPanel {
             GitTab::Log => self.render_log_tab(frame, body, focused, theme),
             GitTab::Stash => self.render_stash_tab(frame, body, focused, theme),
             GitTab::Console => self.render_console(frame.buffer_mut(), body, theme),
-            GitTab::History => self.render_history_tab(frame, body, focused, theme),
+            GitTab::History => self.render_history_tab(frame, body, theme),
         }
     }
 

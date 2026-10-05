@@ -6,7 +6,7 @@
 use ratatui::Frame;
 use ratatui::layout::{Position, Rect};
 
-use super::{Area, Btn, GitPanel, GitTab, put, render_diff, render_toggles};
+use super::{Area, Btn, GitPanel, GitTab, put, render_diff, render_diff_header};
 use crate::app::Ctx;
 use crate::config::theme::Theme;
 use crate::event::{Effect, Level, Mouse};
@@ -67,7 +67,7 @@ impl GitPanel {
         }
     }
 
-    pub(super) fn render_history_tab(&mut self, frame: &mut Frame, body: Rect, focused: bool, theme: &Theme) {
+    pub(super) fn render_history_tab(&mut self, frame: &mut Frame, body: Rect, theme: &Theme) {
         let buf = frame.buffer_mut();
         let Some(DiffKey::Local { rel, .. }) = self.history_diff.key.clone() else {
             let msg = "File > Local History… picks a snapshot to compare with the current text";
@@ -80,12 +80,14 @@ impl GitPanel {
             self.hits.push((b, r));
             x += 1;
         }
-        put(buf, &mut x, body.y, body.right(), &format!("{rel}  {}  ↔  current", self.history_title), theme.title);
+        let opts = self.diff_opts;
+        let title = format!("{rel}  {}  ↔  current", self.history_title);
         let rest = Rect::new(body.x, body.y + 1, body.width, body.height.saturating_sub(1));
         self.diff_rect = rest;
-        let opts = self.diff_opts;
-        render_diff(buf, rest, &mut self.history_diff, None, focused && self.area == Area::HistoryDiff, theme, opts);
-        let hits = render_toggles(buf, body.y, x, body.right(), self.history_diff.unified, opts, theme);
+        // First: it picks the layout the toggles show.
+        render_diff(buf, rest, &mut self.history_diff, theme, opts);
+        let toggles = Some((self.history_diff.unified, opts));
+        let hits = render_diff_header(buf, (x, body.y, body.right()), &title, theme.title, toggles, theme);
         self.hits.extend(hits);
     }
 }

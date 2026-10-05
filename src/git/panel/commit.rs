@@ -7,7 +7,7 @@ use ratatui::buffer::Buffer as Screen;
 use ratatui::layout::{Position, Rect};
 use ratatui::style::{Modifier, Style};
 
-use super::{Area, Btn, GitPanel, GitTab, ListRow, put, render_diff, render_toggles};
+use super::{Area, Btn, GitPanel, GitTab, ListRow, put, render_diff, render_diff_header};
 use crate::app::Ctx;
 use crate::config::theme::Theme;
 use crate::event::{Effect, Level, Mouse};
@@ -355,11 +355,19 @@ impl GitPanel {
                 DiffKey::Change { section: Section::Untracked, .. } => format!("{}  (new file)", k.label()),
                 DiffKey::Commit { .. } | DiffKey::Local { .. } => k.label(),
             });
-            let pane_focused = focused && self.area == Area::Diff;
             let opts = self.diff_opts;
-            render_diff(frame.buffer_mut(), right, &mut self.diff, header.as_deref(), pane_focused, theme, opts);
-            if self.diff.doc.is_some() {
-                let hits = render_toggles(frame.buffer_mut(), right.y, right.x, right.right(), self.diff.unified, opts, theme);
+            let header = header.filter(|_| right.height > 0);
+            let rest = match header {
+                Some(_) => Rect::new(right.x, right.y + 1, right.width, right.height - 1),
+                None => right,
+            };
+            // First: it picks the layout the toggles show.
+            render_diff(frame.buffer_mut(), rest, &mut self.diff, theme, opts);
+            if let Some(title) = header {
+                let style = if focused && self.area == Area::Diff { theme.title_focused } else { theme.title };
+                let toggles = self.diff.doc.is_some().then_some((self.diff.unified, opts));
+                let row = (right.x + 1, right.y, right.right());
+                let hits = render_diff_header(frame.buffer_mut(), row, &title, style, toggles, theme);
                 self.hits.extend(hits);
             }
         }

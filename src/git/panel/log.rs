@@ -7,7 +7,7 @@ use ratatui::layout::{Position, Rect};
 use ratatui::style::{Modifier, Style};
 use unicode_width::UnicodeWidthStr;
 
-use super::{Area, Btn, GitPanel, GitTab, put, render_diff, render_toggles};
+use super::{Area, Btn, GitPanel, GitTab, put, render_diff, render_diff_header};
 use crate::actions::{Action, GitAction};
 use crate::app::Ctx;
 use crate::config::theme::Theme;
@@ -345,12 +345,13 @@ impl GitPanel {
                 DiffKey::Commit { sha, .. } => format!(" {}  {}", &sha[..sha.len().min(8)], key.label()),
                 DiffKey::Change { .. } | DiffKey::Local { .. } => format!(" {}", key.label()),
             };
-            put(buf, &mut x, body.y, body.right(), &header, theme.title);
+            let opts = self.diff_opts;
             let rest = Rect::new(body.x, body.y + 1, body.width, body.height.saturating_sub(1));
             self.diff_rect = rest;
-            let opts = self.diff_opts;
-            render_diff(buf, rest, &mut self.log_diff, None, focused && self.area == Area::LogDiff, theme, opts);
-            let hits = render_toggles(buf, body.y, x, body.right(), self.log_diff.unified, opts, theme);
+            // First: it picks the layout the toggles show.
+            render_diff(buf, rest, &mut self.log_diff, theme, opts);
+            let toggles = Some((self.log_diff.unified, opts));
+            let hits = render_diff_header(buf, (x, body.y, body.right()), &header, theme.title, toggles, theme);
             self.hits.extend(hits);
             return;
         }

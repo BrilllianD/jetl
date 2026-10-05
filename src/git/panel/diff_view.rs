@@ -320,30 +320,41 @@ fn map_row(doc: &DiffDoc, row: usize, from_unified: bool) -> usize {
     to.iter().position(|t| (r.right.is_some() && t.right == r.right) || (r.left.is_some() && t.left == r.left)).unwrap_or(0)
 }
 
-/// The layout toggles at the right end of a diff header row; returns their
-/// buttons.
-pub(super) fn render_toggles(
+/// Cells of the title a diff header row keeps before its toggles go.
+const MIN_TITLE: u16 = 10;
+
+/// A diff pane's header row on `y` from `left` to `right`: `title` in
+/// `style`, and with `toggles` (the pane's unified layout and options) the
+/// layout toggles at the right end when the row has room for them and
+/// [`MIN_TITLE`] cells of title. The title is cut with `…` before the
+/// toggles, so they never draw over it. Returns the toggles' buttons.
+pub(super) fn render_diff_header(
     buf: &mut Screen,
-    y: u16,
-    left: u16,
-    right: u16,
-    unified: bool,
-    opts: DiffOpts,
+    (left, y, right): (u16, u16, u16),
+    title: &str,
+    style: Style,
+    toggles: Option<(bool, DiffOpts)>,
     theme: &Theme,
 ) -> Vec<(Btn, Rect)> {
-    let layout = if unified { "[Unified]" } else { "[Side-by-side]" };
-    let collapse = if opts.collapse { "[x] Collapse" } else { "[ ] Collapse" };
-    let w = (layout.len() + collapse.len() + 2) as u16;
-    if right < left + w + 10 {
-        return Vec::new();
-    }
-    let mut x = right - w;
     let mut out = Vec::new();
-    buf.set_stringn(x, y, " ", 1, theme.title);
-    x += 1;
-    out.push((Btn::DiffLayout, put(buf, &mut x, y, right, layout, theme.title)));
-    x += 1;
-    out.push((Btn::DiffCollapse, put(buf, &mut x, y, right, collapse, theme.title)));
+    let mut title_right = right;
+    if let Some((unified, opts)) = toggles {
+        let layout = if unified { "[Unified]" } else { "[Side-by-side]" };
+        let collapse = if opts.collapse { "[x] Collapse" } else { "[ ] Collapse" };
+        let w = (layout.len() + collapse.len() + 2) as u16;
+        if right >= left + w + MIN_TITLE {
+            title_right = right - w;
+            let mut x = title_right;
+            buf.set_stringn(x, y, " ", 1, theme.title);
+            x += 1;
+            out.push((Btn::DiffLayout, put(buf, &mut x, y, right, layout, theme.title)));
+            buf.set_stringn(x, y, " ", 1, theme.title);
+            x += 1;
+            out.push((Btn::DiffCollapse, put(buf, &mut x, y, right, collapse, theme.title)));
+        }
+    }
+    let w = title_right.saturating_sub(left);
+    buf.set_stringn(left, y, crate::util::text::fit(title, w as usize), w as usize, style);
     out
 }
 
@@ -420,24 +431,11 @@ fn draw_line(
 
 /// Render a diff pane: optional header row, then the view rows,
 /// side-by-side or unified (by width unless `opts` forces one).
-pub(super) fn render_diff(
-    buf: &mut Screen,
-    area: Rect,
-    pane: &mut DiffPane,
-    header: Option<&str>,
-    focused: bool,
-    theme: &Theme,
-    opts: DiffOpts,
-) {
+pub(super) fn render_diff(buf: &mut Screen, area: Rect, pane: &mut DiffPane, theme: &Theme, opts: DiffOpts) {
     if area.height == 0 || area.width < 8 {
         return;
     }
-    let mut r = area;
-    if let Some(h) = header {
-        let style = if focused { theme.title_focused } else { theme.title };
-        buf.set_stringn(r.x + 1, r.y, crate::util::text::fit(h, r.width.saturating_sub(1) as usize), r.width as usize, style);
-        r = Rect::new(r.x, r.y + 1, r.width, r.height - 1);
-    }
+    let r = area;
     pane.page = r.height as usize;
     pane.rows_rect = r;
     let msg = |buf: &mut Screen, text: &str, style: Style| buf.set_stringn(r.x + 1, r.y, text, r.width.saturating_sub(1) as usize, style);
@@ -580,6 +578,24 @@ mod tests {
         p.key = Some(key.clone());
         p.set(&key, Ok(DiffDoc::build(old.as_bytes(), new.as_bytes(), 4)));
         p
+    }
+
+    #[test]
+    fn header_title_is_cut_before_the_toggles() {
+        let theme = Theme::default();
+        let opts = DiffOpts { unified: None, collapse: true };
+        let row = |buf: &Screen| (0..buf.area.width).map(|x| buf[(x, 0)].symbol().to_string()).collect::<String>();
+        let title = "notes.txt  (staged ↔ working tree)";
+        // Room for the toggles and part of the title: cut with an ellipsis.
+        let mut buf = Screen::empty(Rect::new(0, 0, 40, 1));
+        let hits = render_diff_header(&mut buf, (0, 0, 40), title, theme.title, Some((true, opts)), &theme);
+        assert_eq!(row(&buf), "notes.txt  (stag… [Unified] [x] Collapse");
+        assert_eq!(hits.iter().map(|(b, r)| (*b, r.x)).collect::<Vec<_>>(), [(Btn::DiffLayout, 18), (Btn::DiffCollapse, 28)]);
+        // No room for both: the title alone, cut at the edge.
+        let mut buf = Screen::empty(Rect::new(0, 0, 30, 1));
+        let hits = render_diff_header(&mut buf, (0, 0, 30), title, theme.title, Some((false, opts)), &theme);
+        assert_eq!(row(&buf), "notes.txt  (staged ↔ working …");
+        assert!(hits.is_empty());
     }
 
     #[test]

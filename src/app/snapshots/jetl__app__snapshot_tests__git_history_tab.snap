@@ -14,7 +14,7 @@ expression: "snapshot(&term, &marks, Some(bottom))"
 08    ─────────────────────────────────────────────────────────────────────────────────────────────────
 09    ┌ Git ──────────────────────────────────────────────────────────────────────────────────────────┐
 10    │ Commit   Log   Stash   Console   History                       Refresh   Fetch   Pull   Push  │
-11    │[Revert] [Snapshots…] notes.txt  2024-10-04 12:00:00  Saved  ↔  current                        │
+11    │[Revert] [Snapshots…] notes.txt  2024-10-04 12:00:00  Saved  ↔  current  [Unified] [x] Collapse│
 12  ⚑ │  1   1  alpha                                                                                 │
 13  9 │  2     -beta                                                                                  │
 14  ⎇ │      2 +beta two                                                                              │

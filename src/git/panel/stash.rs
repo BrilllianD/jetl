@@ -6,7 +6,7 @@ use ratatui::buffer::Buffer as Screen;
 use ratatui::layout::{Position, Rect};
 use ratatui::style::Style;
 
-use super::{Area, Btn, GitPanel, put, render_diff, render_toggles};
+use super::{Area, Btn, GitPanel, put, render_diff, render_diff_header};
 use crate::app::Ctx;
 use crate::config::theme::Theme;
 use crate::event::{Effect, Level, Mouse};
@@ -148,12 +148,14 @@ impl GitPanel {
             let r = put(buf, &mut x, body.y, body.right(), "[← Back]", theme.title.bg(theme.panel_bg));
             self.hits.push((Btn::Back, r));
             let index = self.selected_stash().map(|s| s.index).unwrap_or(0);
-            put(buf, &mut x, body.y, body.right(), &format!(" stash@{{{index}}}  {}", key.label()), theme.title);
+            let opts = self.diff_opts;
+            let title = format!(" stash@{{{index}}}  {}", key.label());
             let rest = Rect::new(body.x, body.y + 1, body.width, body.height.saturating_sub(1));
             self.diff_rect = rest;
-            let opts = self.diff_opts;
-            render_diff(buf, rest, &mut self.stash_diff, None, focused && self.area == Area::StashDiff, theme, opts);
-            let hits = render_toggles(buf, body.y, x, body.right(), self.stash_diff.unified, opts, theme);
+            // First: it picks the layout the toggles show.
+            render_diff(buf, rest, &mut self.stash_diff, theme, opts);
+            let toggles = Some((self.stash_diff.unified, opts));
+            let hits = render_diff_header(buf, (x, body.y, body.right()), &title, theme.title, toggles, theme);
             self.hits.extend(hits);
             return;
         }
