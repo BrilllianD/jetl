@@ -671,6 +671,37 @@ async fn save_as_dialog() {
     assert_snapshot!("save_as_dialog", snapshot(&term, &marks, None));
 }
 
+#[tokio::test]
+async fn save_as_path_completion() {
+    let mut fx = stable_app("save-as-complete");
+    let app = &mut fx.app;
+    let root = app.workspace.root.clone();
+    for n in 0..40 {
+        std::fs::write(root.join(format!("f{n:02}.txt")), "").unwrap();
+    }
+    // Sorts among the visible rows as "f0dir/".
+    std::fs::create_dir(root.join("f0dir")).unwrap();
+    // Never listed for "f".
+    std::fs::write(root.join(".fhidden"), "").unwrap();
+    let i = app.editor.open_untitled("draft");
+    app.editor.buffers[i].insert("text\n", crate::editor::undo::TxKind::Typing);
+    app.focus.set(PanelId::Editor);
+    app.perform(Action::Editor(EditorAction::SaveAs));
+    // Replace the prefill "draft" with "f", then Tab Tab: the list.
+    for _ in 0.."draft".len() {
+        app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+    }
+    app.handle_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    let term = draw_app(app, 80, 24);
+    let area = app.dialog.as_ref().unwrap().rect();
+    let mut dim = app.theme.dim;
+    dim.bg = Some(app.theme.popup_bg);
+    let marks = [Mark::style('D', "dim", dim)];
+    assert_snapshot!("save_as_path_completion", snapshot(&term, &marks, Some(area)));
+}
+
 /// Search hits and the selected row of a results list.
 fn find_marks(theme: &Theme) -> Vec<Mark> {
     vec![Mark::bg('L', "selected", theme.list_selected.bg.unwrap()), Mark::bg('H', "match", theme.search_match_bg)]

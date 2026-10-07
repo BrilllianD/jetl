@@ -10,6 +10,8 @@
 //! With `[format] on_save`, a Save As of unsaved edits writes first, then
 //! formats for the new path and writes again, unless what follows needs
 //! the file written at once (`AfterSave::formats`).
+//!
+//! Tab completes the typed path (`App::complete_dialog_path`, `files::complete`).
 
 use std::path::PathBuf;
 
@@ -59,8 +61,11 @@ impl App {
                 name => name.to_string(),
             },
         };
-        let msg = format!("Where to save {}?\nPath relative to the project root:", b.name);
-        self.dialog = Some(Dialog::input(DialogId::SaveAs { id, then }, "Save As", &msg, &prefill, "Save"));
+        let msg = format!("Where to save {}?\nPath relative to the project root (Tab completes):", b.name);
+        self.dialog = Some(
+            Dialog::input(DialogId::SaveAs { id, then }, "Save As", &msg, &prefill, "Save")
+                .with_path_completion(self.workspace.root.clone()),
+        );
     }
 
     /// The typed path made absolute: `~` expanded, joined to the root,
@@ -468,6 +473,143 @@ mod tests {
         assert_eq!(open["params"]["textDocument"]["uri"], new.as_str());
         assert_eq!(open["params"]["textDocument"]["text"], "fn a() {}\n");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    mod completion {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        use super::*;
+        use crate::ui::dialog::{Dialog, PathHint};
+
+        fn key(app: &mut App, code: KeyCode) {
+            app.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
+        }
+
+        fn tab(app: &mut App) {
+            key(app, KeyCode::Tab);
+        }
+
+        /// The open input dialog's text and cursor.
+        fn typed(app: &App) -> (String, usize) {
+            match &app.dialog.as_ref().expect("a dialog").kind {
+                DialogKind::Input { input, .. } => (input.text.clone(), input.cursor),
+                k => panic!("not an input: {k:?}"),
+            }
+        }
+
+        fn text(app: &App) -> String {
+            typed(app).0
+        }
+
+        fn hint(app: &App) -> Option<PathHint> {
+            app.dialog.as_ref().unwrap().paths.as_ref().unwrap().hint.clone()
+        }
+
+        fn set_text(app: &mut App, t: &str) {
+            let Some(Dialog { kind: DialogKind::Input { input, .. }, .. }) = &mut app.dialog else { panic!("no input dialog") };
+            input.set_text(t);
+        }
+
+        fn note(s: &str) -> Option<PathHint> {
+            Some(PathHint::Note(s.into()))
+        }
+
+        fn list(names: &[&str]) -> Option<PathHint> {
+            Some(PathHint::List(names.iter().map(|s| s.to_string()).collect()))
+        }
+
+        /// A Save As prompt for a new untitled buffer, its text `t`.
+        fn prompt_with(app: &mut App, t: &str) -> BufferId {
+            let id = untitled(app, "u", "u\n");
+            app.ask_save_as(id, AfterSave::Nothing);
+            set_text(app, t);
+            id
+        }
+
+        #[tokio::test]
+        async fn tab_completes_save_as_path() {
+            let (mut app, dir) = fresh_app("save-as-tab");
+            let root = app.workspace.root.clone();
+            std::fs::create_dir_all(root.join("src")).unwrap();
+            std::fs::write(root.join("src/main.rs"), "").unwrap();
+            std::fs::write(root.join("src/lib.rs"), "").unwrap();
+            std::fs::write(root.join("notes.txt"), "").unwrap();
+            let id = prompt_with(&mut app, "s");
+            tab(&mut app);
+            assert_eq!((text(&app), hint(&app)), ("src/".to_string(), None));
+            // Nothing more to add right after a Tab: the list at once.
+            tab(&mut app);
+            assert_eq!((text(&app), hint(&app)), ("src/".to_string(), list(&["lib.rs", "main.rs"])));
+            key(&mut app, KeyCode::Char('m'));
+            assert_eq!(hint(&app), None, "another key clears it");
+            tab(&mut app);
+            assert_eq!(text(&app), "src/main.rs");
+            key(&mut app, KeyCode::Enter);
+            let d = app.dialog.take().expect("overwrite?");
+            assert_eq!(d.id, DialogId::SaveAsOverwrite { id, path: root.join("src/main.rs"), then: AfterSave::Nothing });
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        #[tokio::test]
+        async fn first_ambiguous_tab_completes_then_lists() {
+            let (mut app, dir) = fresh_app("save-as-tab-list");
+            std::fs::write(app.workspace.root.join("notes.txt"), "").unwrap();
+            std::fs::write(app.workspace.root.join("notes.md"), "").unwrap();
+            prompt_with(&mut app, "no");
+            tab(&mut app);
+            assert_eq!((text(&app), hint(&app)), ("notes.".to_string(), note("2 matches; Tab again lists them")));
+            tab(&mut app);
+            assert_eq!((text(&app), hint(&app)), ("notes.".to_string(), list(&["notes.md", "notes.txt"])));
+            tab(&mut app);
+            assert_eq!((text(&app), hint(&app)), ("notes.".to_string(), list(&["notes.md", "notes.txt"])), "no cycling");
+            key(&mut app, KeyCode::Backspace);
+            assert_eq!((text(&app), hint(&app)), ("notes".to_string(), None));
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        #[tokio::test]
+        async fn tab_keeps_text_after_cursor() {
+            let (mut app, dir) = fresh_app("save-as-tab-cursor");
+            std::fs::create_dir_all(app.workspace.root.join("src")).unwrap();
+            prompt_with(&mut app, "sr.bak");
+            key(&mut app, KeyCode::Left);
+            key(&mut app, KeyCode::Left);
+            key(&mut app, KeyCode::Left);
+            key(&mut app, KeyCode::Left);
+            tab(&mut app);
+            assert_eq!(typed(&app), ("src/.bak".to_string(), 4));
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        #[tokio::test]
+        async fn tab_no_match_and_paste_clear() {
+            let (mut app, dir) = fresh_app("save-as-tab-none");
+            prompt_with(&mut app, "zz");
+            tab(&mut app);
+            assert_eq!((text(&app), hint(&app)), ("zz".to_string(), note("No match")));
+            app.handle_paste("x".into());
+            assert_eq!((text(&app), hint(&app)), ("zzx".to_string(), None));
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        #[tokio::test]
+        async fn tab_in_other_dialogs_unchanged() {
+            let (mut app, dir) = fresh_app("save-as-tab-other");
+            let root = app.workspace.root.clone();
+            std::fs::write(root.join("abc.txt"), "").unwrap();
+            app.dialog = Some(Dialog::input(DialogId::TreeRename(root.join("abc.txt")), "Rename", "New name:", "ab", "Rename"));
+            tab(&mut app);
+            assert_eq!(text(&app), "ab", "no completion without opting in");
+            // The overwrite confirm still moves between its buttons.
+            let id = prompt_with(&mut app, "abc.txt");
+            key(&mut app, KeyCode::Enter);
+            let d = app.dialog.as_ref().unwrap();
+            assert_eq!(d.id, DialogId::SaveAsOverwrite { id, path: root.join("abc.txt"), then: AfterSave::Nothing });
+            assert!(matches!(d.kind, DialogKind::Confirm { selected: 0, .. }));
+            tab(&mut app);
+            assert!(matches!(app.dialog.as_ref().unwrap().kind, DialogKind::Confirm { selected: 1, .. }));
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 
     /// Save As with `[format] on_save`: Rust files format with a script in

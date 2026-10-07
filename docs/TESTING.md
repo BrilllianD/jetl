@@ -52,7 +52,7 @@ toggles), its Log, Stash and Console tabs, the Find and Problems windows
 (diagnostic underlines in the editor too), the main menu bar, confirm,
 input and choice dialogs, the hover and completion popups, toasts, the
 palettes (Scratch Files included), the conflict resolver, the crash
-recovery dialogs and the Save As prompt.
+recovery dialogs and the Save As prompt and its path completion list.
 
 Things that depend on the clock are given as data: the Log tab's commits
 carry their relative dates as `git log` formatted them, toasts expire on
@@ -522,6 +522,27 @@ cat $T/notes.txt $T/sub/copy.txt      # one, two unchanged; the copy has "EDIT o
 /tmp/tm.sh send-keys -t jetl M-S; /tmp/tm.sh send-keys -t jetl -N 20 BSpace; /tmp/tm.sh send-keys -t jetl -l b.txt; /tmp/tm.sh send-keys -t jetl Enter
                                       # "b.txt already exists. Overwrite it?" [ Overwrite ] [ Cancel ]; Enter writes it
 ```
+
+Tab completes the typed path (`$T` holds `notes.txt`, `b.txt`,
+`sub/copy.txt` and `.git/` by now):
+
+```sh
+/tmp/tm.sh send-keys -t jetl M-S; /tmp/tm.sh send-keys -t jetl -N 20 BSpace; /tmp/tm.sh send-keys -t jetl -l s; /tmp/tm.sh send-keys -t jetl Tab
+                                      # the input reads sub/
+/tmp/tm.sh send-keys -t jetl Tab      # sub/copy.txt (the only file)
+/tmp/tm.sh send-keys -t jetl -N 20 BSpace; /tmp/tm.sh send-keys -t jetl Tab
+                                      # "3 matches; Tab again lists them" (the hidden .git not counted)
+/tmp/tm.sh send-keys -t jetl Tab      # b.txt  notes.txt  sub/ under the input
+/tmp/tm.sh send-keys -t jetl -l .; /tmp/tm.sh send-keys -t jetl Tab   # .git/
+/tmp/tm.sh send-keys -t jetl -N 20 BSpace; /tmp/tm.sh send-keys -t jetl -l '~/'; /tmp/tm.sh send-keys -t jetl Tab Tab
+                                      # the home folder's entries, at most 8 rows ("… and N more" when
+                                      # they do not fit); the text keeps ~/
+/tmp/tm.sh send-keys -t jetl -l zz; /tmp/tm.sh send-keys -t jetl Tab    # "No match"
+/tmp/tm.sh send-keys -t jetl Escape
+```
+
+Tab in another input dialog (Rename, Shift+F6 in the Project window) does
+nothing, and Tab in the Overwrite confirm still moves between its buttons.
 
 With b.txt open in another tab (Ctrl+N `b.txt`), Save As of notes.txt to
 `b.txt` is refused with a warning ("b.txt is open in another tab; close it

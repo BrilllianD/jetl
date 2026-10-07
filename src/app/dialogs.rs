@@ -5,7 +5,7 @@ use crate::event::Level;
 use crate::files::ops::{FsOp, check_name};
 use crate::git::model::BranchOp;
 use crate::git::{BranchInfo, GitOp, GitRequest};
-use crate::ui::dialog::{Dialog, DialogId, DialogResult};
+use crate::ui::dialog::{Dialog, DialogId, DialogKind, DialogResult, PathHint};
 use crate::ui::focus::PanelId;
 
 impl App {
@@ -86,6 +86,31 @@ impl App {
         } else {
             self.should_quit = true;
         }
+    }
+
+    /// Tab in an input dialog with path completion (Save As): complete the
+    /// path before the cursor against its folder, read here on the main
+    /// thread (one `read_dir`; Save As touches the same path synchronously
+    /// at Enter). The first Tab that adds nothing to an ambiguous path says
+    /// how many match; the next one lists them.
+    pub(super) fn complete_dialog_path(&mut self) {
+        let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+        let Some(d) = &mut self.dialog else { return };
+        let (Some(pc), DialogKind::Input { input, .. }) = (&mut d.paths, &mut d.kind) else { return };
+        let before: String = input.text.chars().take(input.cursor).collect();
+        let again = std::mem::replace(&mut pc.tabbed, true);
+        pc.hint = match crate::files::complete::complete(&before, &pc.base, home.as_deref()) {
+            Err(e) => Some(PathHint::Note(format!("Cannot read the folder: {e}"))),
+            Ok(c) if c.matches.is_empty() => Some(PathHint::Note("No match".into())),
+            Ok(c) => {
+                input.insert_str(&c.insert);
+                match c.matches.len() {
+                    1 => None,
+                    _ if again && c.insert.is_empty() => Some(PathHint::List(c.matches)),
+                    n => Some(PathHint::Note(format!("{n} matches; Tab again lists them"))),
+                }
+            }
+        };
     }
 
     pub(crate) fn finish_dialog(&mut self, id: DialogId, res: DialogResult) {

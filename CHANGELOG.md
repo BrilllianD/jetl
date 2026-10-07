@@ -183,7 +183,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   be saved: Ctrl+S and Save All ask for their path, and quitting, closing tabs or switching
   projects with "Save" asks for each one in turn; Esc at any prompt cancels the quit or close.
   With `[format] on_save`, Save As formats the file for its new path, as Ctrl+S does (the
-  language may change: `notes.txt` saved as `notes.rs` gets the Rust formatter).
+  language may change: `notes.txt` saved as `notes.rs` gets the Rust formatter). Tab completes
+  the typed path like a shell: the common prefix first, the matching files and folders listed
+  under the input on a second Tab (folders end in `/`, hidden ones only after a typed `.`).
 - Scratch files: File > New Scratch File… (Ctrl+Alt+Shift+Insert, as in JetBrains) asks for a
   language and opens a new `scratch_<n>.<ext>` kept outside every project, in
   `$XDG_STATE_HOME/jetl/scratches/`. File > Scratch Files… lists them, newest first, with their

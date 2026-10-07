@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::Result;
-use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, MouseButton};
+use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyModifiers, MouseButton};
 use futures::StreamExt;
 use ratatui::layout::Rect;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
@@ -575,6 +575,7 @@ impl App {
             // Paste into text fields only.
             if let crate::ui::dialog::DialogKind::Input { input, .. } = &mut d.kind {
                 input.insert_str(&text.replace(['\n', '\r'], " "));
+                d.clear_path_hint();
             }
             return;
         }
@@ -623,6 +624,11 @@ impl App {
             // Dialogs take every key, except that the paste key pastes.
             if self.is_paste_key(key) {
                 self.paste();
+                return;
+            }
+            // Tab completes a typed path (Save As); other dialogs keep their Tab.
+            if key.code == KeyCode::Tab && key.modifiers == KeyModifiers::NONE && self.dialog.as_ref().is_some_and(|d| d.paths.is_some()) {
+                self.complete_dialog_path();
                 return;
             }
             let Some(d) = &mut self.dialog else { return };

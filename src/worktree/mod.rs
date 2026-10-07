@@ -90,15 +90,20 @@ pub fn free_branches(branches: &[String], list: &[Worktree]) -> Vec<String> {
     branches.iter().filter(|b| !list.iter().any(|w| w.branch.as_deref() == Some(b.as_str()))).cloned().collect()
 }
 
-/// Expand a leading `~` to the home directory.
+/// Expand a leading `~` to the home directory (`$HOME`).
 pub fn expand_tilde(p: &str) -> PathBuf {
-    let home = || std::env::var_os("HOME").map(PathBuf::from);
+    expand_tilde_in(p, std::env::var_os("HOME").map(PathBuf::from).as_deref())
+}
+
+/// `p` with a leading `~` or `~/` replaced by `home` (unchanged without
+/// one; `~user` is not expanded).
+pub fn expand_tilde_in(p: &str, home: Option<&Path>) -> PathBuf {
     if p == "~" {
-        if let Some(h) = home() {
-            return h;
+        if let Some(h) = home {
+            return h.to_path_buf();
         }
     } else if let Some(rest) = p.strip_prefix("~/")
-        && let Some(h) = home()
+        && let Some(h) = home
     {
         return h.join(rest);
     }

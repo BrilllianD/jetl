@@ -1,3 +1,4 @@
+pub mod complete;
 pub mod find;
 pub mod find_panel;
 pub mod ops;

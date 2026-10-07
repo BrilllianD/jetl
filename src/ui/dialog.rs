@@ -1,5 +1,7 @@
 //! Modal dialogs: confirmation with buttons, text input, and a choice list.
 
+use std::path::PathBuf;
+
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -175,6 +177,29 @@ pub enum DialogKind {
     Choice { items: Vec<String>, list: ListState, filter: TextInput },
 }
 
+/// Tab completion of a typed path in an input dialog
+/// (`Dialog::with_path_completion`); `App::complete_dialog_path` reads the folder.
+#[derive(Debug, Clone)]
+pub struct PathCompletion {
+    /// Relative paths start here (the project root).
+    pub base: PathBuf,
+    /// The last key was Tab: a Tab that adds nothing then lists the matches.
+    pub tabbed: bool,
+    /// Shown under the input until the next other key.
+    pub hint: Option<PathHint>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PathHint {
+    /// One dim line: "No match", "N matches; Tab again lists them", a read error.
+    Note(String),
+    /// The matches, directories ending in `/`.
+    List(Vec<String>),
+}
+
+/// Rows of a path hint, at most this many (the last one may say how many more).
+const MAX_HINT_ROWS: usize = 8;
+
 #[derive(Debug, Clone)]
 pub enum DialogResult {
     Button(usize),
@@ -189,6 +214,9 @@ pub struct Dialog {
     pub title: String,
     pub message: String,
     pub kind: DialogKind,
+    /// Tab completes a typed path (input dialogs that opt in). Boxed: most
+    /// dialogs have none, and `Effect::Dialog` carries a whole `Dialog`.
+    pub paths: Option<Box<PathCompletion>>,
     button_rects: Vec<Rect>,
     body_rect: Rect,
     list_rect: Rect,
@@ -201,6 +229,7 @@ impl Dialog {
             title: title.into(),
             message: message.into(),
             kind: DialogKind::Confirm { buttons: buttons.iter().map(|s| s.to_string()).collect(), selected: 0 },
+            paths: None,
             button_rects: vec![],
             body_rect: Rect::default(),
             list_rect: Rect::default(),
@@ -215,6 +244,7 @@ impl Dialog {
             title: title.into(),
             message: message.into(),
             kind: DialogKind::Input { input: TextInput::new(false).with_text(initial), ok: ok.into() },
+            paths: None,
             button_rects: vec![],
             body_rect: Rect::default(),
             list_rect: Rect::default(),
@@ -228,9 +258,25 @@ impl Dialog {
             title: title.into(),
             message: message.into(),
             kind: DialogKind::Choice { items, list, filter: TextInput::new(false) },
+            paths: None,
             button_rects: vec![],
             body_rect: Rect::default(),
             list_rect: Rect::default(),
+        }
+    }
+
+    /// Tab completes the typed path, relative paths starting at `base`
+    /// (an input dialog; `App::complete_dialog_path`).
+    pub fn with_path_completion(mut self, base: PathBuf) -> Self {
+        self.paths = Some(Box::new(PathCompletion { base, tabbed: false, hint: None }));
+        self
+    }
+
+    /// Drop the path hint and the Tab streak: the text changed otherwise.
+    pub fn clear_path_hint(&mut self) {
+        if let Some(p) = &mut self.paths {
+            p.tabbed = false;
+            p.hint = None;
         }
     }
 
@@ -246,6 +292,10 @@ impl Dialog {
 
     /// Returns Some when the dialog is finished.
     pub fn handle_key(&mut self, key: KeyEvent) -> Option<DialogResult> {
+        // Any key here is "another key" for path completion: App takes Tab
+        // first in dialogs with `paths` (`App::complete_dialog_path`), so
+        // routing Tab through here would clear the hint it just set.
+        self.clear_path_hint();
         match &mut self.kind {
             DialogKind::Confirm { buttons, selected } => match key.code {
                 KeyCode::Esc => Some(DialogResult::Cancel),
@@ -365,6 +415,8 @@ impl Dialog {
                 }
                 if let DialogKind::Input { input, .. } = &mut self.kind {
                     input.click(self.body_rect, m.x, m.y);
+                    // The cursor may have moved: the hint is about the old place.
+                    self.clear_path_hint();
                 }
                 if !self.body_rect.contains(p) && !self.outer_rect().contains(p) {
                     return Some(DialogResult::Cancel);
@@ -391,6 +443,11 @@ impl Dialog {
         self.body_rect
     }
 
+    /// The dialog's area as last drawn.
+    pub fn rect(&self) -> Rect {
+        self.outer_rect()
+    }
+
     /// Whether a screen cell is inside the dialog as last drawn.
     pub fn contains(&self, x: u16, y: u16) -> bool {
         self.outer_rect().contains(ratatui::layout::Position::new(x, y))
@@ -399,7 +456,7 @@ impl Dialog {
     pub fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let msg_lines: Vec<&str> = self.message.lines().collect();
         let msg_w = msg_lines.iter().map(|l| l.width()).max().unwrap_or(0);
-        let (w, h) = match &self.kind {
+        let (w, mut h) = match &self.kind {
             DialogKind::Confirm { buttons, .. } => {
                 // "[ label ]" per button, one column between them.
                 let bw: usize = buttons.iter().map(|b| b.width() + 4).sum::<usize>() + buttons.len().saturating_sub(1) + 2;
@@ -411,6 +468,18 @@ impl Dialog {
         // Wide enough for the title (" title " plus the corners).
         let w = w.max(self.title.width() + 4);
         let w = (w as u16).min(area.width.saturating_sub(2)).max(10);
+        // A path hint goes between the input and the buttons, as many rows
+        // as the screen has room for.
+        let hint = self.paths.as_ref().and_then(|p| p.hint.as_ref()).filter(|_| matches!(self.kind, DialogKind::Input { .. }));
+        let hints = match hint {
+            Some(hint) => {
+                let base_h = msg_lines.len() + 5;
+                let rows = MAX_HINT_ROWS.min((area.height as usize).saturating_sub(1).saturating_sub(base_h));
+                hint_lines(hint, (w as usize).saturating_sub(4), rows)
+            }
+            None => vec![],
+        };
+        h += hints.len();
         let h = (h as u16).min(area.height.saturating_sub(1)).max(5);
         let x = area.x + (area.width.saturating_sub(w)) / 2;
         let y = area.y + (area.height.saturating_sub(h)) / 3;
@@ -464,6 +533,12 @@ impl Dialog {
                     self.button_rects.push(Rect::new(bx, by, bw, 1));
                     bx += bw + 1;
                 }
+                let hint_w = inner.width.saturating_sub(2);
+                for (k, (line, dim)) in hints.iter().enumerate() {
+                    let st = Style::default().fg(theme.fg).bg(theme.popup_bg);
+                    let st = if *dim { st.patch(theme.dim) } else { st };
+                    buf.set_stringn(inner.x + 1, iy + 1 + k as u16, line, hint_w as usize, st);
+                }
                 input.render(frame, irect, Style::default().bg(theme.bg).fg(theme.fg), "", theme.dim, true);
                 self.body_rect = rect;
             }
@@ -486,5 +561,85 @@ impl Dialog {
                 filter.render(frame, frect, Style::default().bg(theme.bg).fg(theme.fg), "type to filter", theme.dim, true);
             }
         }
+    }
+}
+
+/// `hint` as lines `width` cells wide, at most `rows`, each with whether it
+/// is dim: a note, or the names in columns as wide as the longest plus two,
+/// filled row by row; when they do not fit, the last line is "… and N more".
+fn hint_lines(hint: &PathHint, width: usize, rows: usize) -> Vec<(String, bool)> {
+    if rows == 0 || width == 0 {
+        return vec![];
+    }
+    let names = match hint {
+        PathHint::Note(s) => return vec![(s.clone(), true)],
+        PathHint::List(names) => names,
+    };
+    let col = names.iter().map(|n| n.width()).max().unwrap_or(0) + 2;
+    let cols = ((width + 2) / col).max(1);
+    let need = names.len().div_ceil(cols);
+    let shown = if need <= rows { need } else { rows - 1 };
+    let mut out: Vec<(String, bool)> = names
+        .chunks(cols)
+        .take(shown)
+        .map(|row| {
+            let mut line = String::new();
+            for n in row {
+                line.push_str(n);
+                line.extend(std::iter::repeat_n(' ', col - n.width()));
+            }
+            (line.trim_end().to_string(), false)
+        })
+        .collect();
+    if shown < need {
+        out.push((format!("… and {} more", names.len() - shown * cols), true));
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn list(names: &[&str]) -> PathHint {
+        PathHint::List(names.iter().map(|s| s.to_string()).collect())
+    }
+
+    fn texts(lines: &[(String, bool)]) -> Vec<&str> {
+        lines.iter().map(|(s, _)| s.as_str()).collect()
+    }
+
+    #[test]
+    fn a_note_is_one_dim_line() {
+        assert_eq!(hint_lines(&PathHint::Note("No match".into()), 40, 8), vec![("No match".to_string(), true)]);
+    }
+
+    #[test]
+    fn names_fill_columns_row_by_row() {
+        assert_eq!(hint_lines(&list(&["a.rs", "b.rs", "c/"]), 40, 8), vec![("a.rs  b.rs  c/".to_string(), false)]);
+        let names: Vec<String> = (0..12).map(|i| format!("n{i:02}")).collect();
+        let names: Vec<&str> = names.iter().map(String::as_str).collect();
+        // Columns 5 wide: (20 + 2) / 5 = 4 a row.
+        let lines = hint_lines(&list(&names), 20, 8);
+        assert_eq!(texts(&lines), ["n00  n01  n02  n03", "n04  n05  n06  n07", "n08  n09  n10  n11"]);
+        assert!(lines.iter().all(|(_, dim)| !dim));
+    }
+
+    #[test]
+    fn overflow_ends_with_how_many_more() {
+        let names: Vec<String> = (0..41).map(|i| format!("n{i:02}")).collect();
+        let names: Vec<&str> = names.iter().map(String::as_str).collect();
+        let lines = hint_lines(&list(&names), 20, 8);
+        assert_eq!(lines.len(), 8);
+        assert_eq!(lines[6].0, "n24  n25  n26  n27");
+        assert_eq!(lines[7], ("… and 13 more".to_string(), true));
+        assert_eq!(hint_lines(&list(&names), 20, 1), vec![("… and 41 more".to_string(), true)]);
+        assert!(hint_lines(&list(&names), 20, 0).is_empty());
+    }
+
+    #[test]
+    fn a_wide_name_gets_one_column() {
+        let lines = hint_lines(&list(&["a-very-long-name.txt", "b"]), 10, 8);
+        assert_eq!(texts(&lines), ["a-very-long-name.txt", "b"]);
     }
 }

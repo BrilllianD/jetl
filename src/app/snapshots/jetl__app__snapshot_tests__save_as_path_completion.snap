@@ -1,0 +1,31 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &marks, Some(area))"
+---
+80x24 cursor=(16,7)
+00  ≣ ┌ Project: root ───────────────┐│ *draft ×
+01    │                              ││  1    text
+02  1 │                              ││  2
+03  ⌂ │         ┌ Save As ───────────────────────────────────────────┐
+04  2 │         │ Where to save draft?                               │
+05  ◫ │         │ Path relative to the project root (Tab completes): │
+06  7 │         │                                                    │
+07  ⊢ │         │ f                                                  │
+08    │         │ f00.txt  f01.txt  f02.txt  f03.txt  f04.txt        │
+09    │         │ f05.txt  f06.txt  f07.txt  f08.txt  f09.txt        │
+10    │         │ f0dir/   f10.txt  f11.txt  f12.txt  f13.txt        │
+11    │         │ f14.txt  f15.txt  f16.txt  f17.txt  f18.txt        │
+12  ⚑ │         │ f19.txt  f20.txt  f21.txt  f22.txt  f23.txt        │
+13  9 │         │ f24.txt  f25.txt  f26.txt  f27.txt  f28.txt        │
+14  ⎇ │         │ f29.txt  f30.txt  f31.txt  f32.txt  f33.txt        │
+15    │         │ … and 6 more                                       │
+16  ❯ │         │                [ Save ] [ Cancel ]                 │
+17  6 │         └────────────────────────────────────────────────────┘
+18  ⚠ │                              ││
+19  4 │                              ││
+20  ► │                              ││
+21  3 │                              ││
+22  ⌕ └──────────────────────────────┘│
+23  root                              Ln 2, Col 1  LF  UTF-8  4 spaces  Plain text
+-- marks: D=dim
+15                DDDDDDDDDDDD
