@@ -1,4 +1,5 @@
-//! The diff pane of the Commit, Log, Stash and History tabs: side-by-side or unified
+//! The diff pane of the Git window's Commit, Log and Stash tabs and of the
+//! Local History window: side-by-side or unified
 //! rows sharing one vertical scroll, unchanged runs folded into one row
 //! (a click unfolds it), the current change (what hunk staging and F7 work
 //! on), syntax colors, and the changed characters of modified lines.
@@ -12,7 +13,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use unicode_width::UnicodeWidthChar;
 
-use super::{Btn, put};
+use super::put;
 use crate::app::Ctx;
 use crate::config::theme::Theme;
 use crate::event::Effect;
@@ -28,7 +29,7 @@ const SYNTAX_MAX_BYTES: usize = 512 * 1024;
 
 /// How every diff pane is laid out (Git window settings).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct DiffOpts {
+pub(crate) struct DiffOpts {
     /// Forced unified (`Some(true)`) or side-by-side; `None` picks by width.
     pub unified: Option<bool>,
     /// Fold unchanged runs.
@@ -49,7 +50,7 @@ type LineSpans = Vec<Vec<(Range<usize>, Style)>>;
 /// The diff view: what is shown, the computed rows, and the shared
 /// vertical scroll of both sides.
 #[derive(Debug, Default)]
-pub(super) struct DiffPane {
+pub(crate) struct DiffPane {
     pub key: Option<DiffKey>,
     pub doc: Option<DiffDoc>,
     pub error: Option<String>,
@@ -81,6 +82,13 @@ impl DiffPane {
     }
 
     pub fn request(&mut self, key: DiffKey, cx: &mut Ctx) {
+        self.begin(key.clone());
+        cx.effects.push(Effect::Git(GitRequest::LoadDiff(key)));
+    }
+
+    /// Show `key`, loading: a new key starts over, the same one keeps the
+    /// doc and the scroll until the reload lands. The caller asks for it.
+    pub fn begin(&mut self, key: DiffKey) {
         if self.key.as_ref() != Some(&key) {
             self.doc = None;
             self.scroll = 0;
@@ -90,10 +98,9 @@ impl DiffPane {
             self.row_view.clear();
             self.syntax = None;
         }
-        self.key = Some(key.clone());
+        self.key = Some(key);
         self.loading = true;
         self.error = None;
-        cx.effects.push(Effect::Git(GitRequest::LoadDiff(key)));
     }
 
     pub fn clear(&mut self) {
@@ -260,7 +267,7 @@ impl DiffPane {
 
     /// The theme changed: the syntax spans are computed again, with the new
     /// styles, on the next render.
-    pub(super) fn restyle(&mut self) {
+    pub(crate) fn restyle(&mut self) {
         self.syntax = None;
     }
 
@@ -320,6 +327,15 @@ fn map_row(doc: &DiffDoc, row: usize, from_unified: bool) -> usize {
     to.iter().position(|t| (r.right.is_some() && t.right == r.right) || (r.left.is_some() && t.left == r.left)).unwrap_or(0)
 }
 
+/// A layout toggle of a diff header row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DiffToggle {
+    /// Unified or side-by-side.
+    Layout,
+    /// Fold unchanged runs.
+    Collapse,
+}
+
 /// Cells of the title a diff header row keeps before its toggles go.
 const MIN_TITLE: u16 = 10;
 
@@ -328,14 +344,14 @@ const MIN_TITLE: u16 = 10;
 /// layout toggles at the right end when the row has room for them and
 /// [`MIN_TITLE`] cells of title. The title is cut with `…` before the
 /// toggles, so they never draw over it. Returns the toggles' buttons.
-pub(super) fn render_diff_header(
+pub(crate) fn render_diff_header(
     buf: &mut Screen,
     (left, y, right): (u16, u16, u16),
     title: &str,
     style: Style,
     toggles: Option<(bool, DiffOpts)>,
     theme: &Theme,
-) -> Vec<(Btn, Rect)> {
+) -> Vec<(DiffToggle, Rect)> {
     let mut out = Vec::new();
     let mut title_right = right;
     if let Some((unified, opts)) = toggles {
@@ -347,10 +363,10 @@ pub(super) fn render_diff_header(
             let mut x = title_right;
             buf.set_stringn(x, y, " ", 1, theme.title);
             x += 1;
-            out.push((Btn::DiffLayout, put(buf, &mut x, y, right, layout, theme.title)));
+            out.push((DiffToggle::Layout, put(buf, &mut x, y, right, layout, theme.title)));
             buf.set_stringn(x, y, " ", 1, theme.title);
             x += 1;
-            out.push((Btn::DiffCollapse, put(buf, &mut x, y, right, collapse, theme.title)));
+            out.push((DiffToggle::Collapse, put(buf, &mut x, y, right, collapse, theme.title)));
         }
     }
     let w = title_right.saturating_sub(left);
@@ -431,7 +447,7 @@ fn draw_line(
 
 /// Render a diff pane: optional header row, then the view rows,
 /// side-by-side or unified (by width unless `opts` forces one).
-pub(super) fn render_diff(buf: &mut Screen, area: Rect, pane: &mut DiffPane, theme: &Theme, opts: DiffOpts) {
+pub(crate) fn render_diff(buf: &mut Screen, area: Rect, pane: &mut DiffPane, theme: &Theme, opts: DiffOpts) {
     if area.height == 0 || area.width < 8 {
         return;
     }
@@ -590,7 +606,7 @@ mod tests {
         let mut buf = Screen::empty(Rect::new(0, 0, 40, 1));
         let hits = render_diff_header(&mut buf, (0, 0, 40), title, theme.title, Some((true, opts)), &theme);
         assert_eq!(row(&buf), "notes.txt  (stag… [Unified] [x] Collapse");
-        assert_eq!(hits.iter().map(|(b, r)| (*b, r.x)).collect::<Vec<_>>(), [(Btn::DiffLayout, 18), (Btn::DiffCollapse, 28)]);
+        assert_eq!(hits.iter().map(|(b, r)| (*b, r.x)).collect::<Vec<_>>(), [(DiffToggle::Layout, 18), (DiffToggle::Collapse, 28)]);
         // No room for both: the title alone, cut at the edge.
         let mut buf = Screen::empty(Rect::new(0, 0, 30, 1));
         let hits = render_diff_header(&mut buf, (0, 0, 30), title, theme.title, Some((false, opts)), &theme);

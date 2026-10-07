@@ -156,7 +156,7 @@ impl GitPanel {
             render_diff(buf, rest, &mut self.stash_diff, theme, opts);
             let toggles = Some((self.stash_diff.unified, opts));
             let hits = render_diff_header(buf, (x, body.y, body.right()), &title, theme.title, toggles, theme);
-            self.hits.extend(hits);
+            self.hits.extend(hits.into_iter().map(|(t, r)| (Btn::Diff(t), r)));
             return;
         }
         // Toolbar, then the list on the left and the files on the right.

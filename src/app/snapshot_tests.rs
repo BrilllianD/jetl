@@ -532,13 +532,14 @@ async fn palette_recent_projects() {
     assert_snapshot!("palette_recent_projects", snapshot(&term, &marks, None));
 }
 
-#[tokio::test]
-async fn palette_local_history() {
-    let mut fx = stable_app("palette-local-history");
-    let app = &mut fx.app;
+/// The Local History window on `notes.txt` (a plain `.txt`: no grammar,
+/// so the frame is the same with any set of language features): seven
+/// snapshots at noon UTC on seven days, shown at UTC, the `row`th row
+/// selected, `filter` typed, and its diff loaded as the app would.
+fn local_history_fixture(app: &mut App, row: usize, filter: &str) {
+    use crate::history::{HistoryMsg, Kind, Request};
     let path = app.workspace.root.join("notes.txt");
-    app.open_local_history(path.clone());
-    // Noon UTC on three days, shown at UTC; newest first.
+    app.show_local_history(path.clone());
     let entry = |day: u64, len: u64, lines: u64, kind, detail: Option<&str>| crate::history::Entry {
         v: 1,
         path: path.to_string_lossy().into_owned(),
@@ -550,7 +551,6 @@ async fn palette_local_history() {
         detail: detail.map(String::from),
         since: None,
     };
-    use crate::history::Kind;
     let old = app.workspace.root.join("old/notes.txt").to_string_lossy().into_owned();
     let entries = vec![
         entry(20_001, 1340, 41, Kind::Unsaved, None),
@@ -563,34 +563,71 @@ async fn palette_local_history() {
         entry(19_995, 900, 39, Kind::Renamed, Some(&old)),
         entry(19_990, 512, 39, Kind::Autosave, None),
     ];
-    app.palette.as_mut().unwrap().set_history(entries, |_| 0);
-    let term = draw_app(app, 80, 24);
-    let mut marks = palette_marks(&app.theme);
-    marks.push(Mark::modifier('B', "bold", Modifier::BOLD));
-    assert_snapshot!("palette_local_history", snapshot(&term, &marks, None));
-}
-
-#[tokio::test]
-async fn git_history_tab() {
-    let mut fx = stable_app("git-history-tab");
-    let app = &mut fx.app;
-    // A plain `.txt` file: no grammar, so the frame is the same with any
-    // set of language features.
-    let path = app.workspace.root.join("notes.txt");
-    app.toggle_tool_window(ToolWindowId::Git);
-    let key = DiffKey::Local { path, rel: "notes.txt".into(), id: "0".repeat(40), at: 0 };
+    // The requests go nowhere: the diff is answered below.
+    let root = app.workspace.root.clone();
     let mut cx = ctx!(app);
-    app.git_panel.show_local_diff(key.clone(), "2024-10-04 12:00:00  Saved".into(), &mut cx);
-    // The load it asks for is answered below instead.
-    drop(cx);
+    app.history_panel.set_entries(entries, &root, |_| 0, &mut cx);
+    for c in filter.chars() {
+        app.history_panel.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE), &mut cx);
+    }
+    for _ in 0..row {
+        app.history_panel.handle_action(&crate::actions::HistoryAction::Down, &mut cx);
+    }
+    let Some((key, seq)) = cx.effects.into_iter().rev().find_map(|e| match e {
+        crate::event::Effect::History(Request::Diff { key, seq }) => Some((key, seq)),
+        _ => None,
+    }) else {
+        panic!("a diff request")
+    };
     let old = "alpha\nbeta\ngamma\ndelta\n";
     let new = "alpha\nbeta two\ngamma\nepsilon\ndelta\n";
     let result = Ok(crate::git::diff::DiffDoc::build(old.as_bytes(), new.as_bytes(), app.git.tab_width));
-    app.handle_msg(AppMsg::Git(GitMsg::Diff { generation: app.git.generation, key, result }));
-    let term = draw_app(app, 100, 24);
-    let marks = diff_marks(&app.theme);
+    app.handle_msg(AppMsg::LocalHistory(HistoryMsg::Diff { key, seq, result }));
+}
+
+/// The diff's changes, the selected row and the label's bold.
+fn history_marks(theme: &Theme) -> Vec<Mark> {
+    let mut marks = diff_marks(theme);
+    marks.push(Mark::modifier('B', "bold", Modifier::BOLD));
+    marks
+}
+
+#[tokio::test]
+async fn local_history_window() {
+    let mut fx = stable_app("local-history-window");
+    let app = &mut fx.app;
+    local_history_fixture(app, 1, "");
+    let term = draw_app(app, 80, 24);
+    let marks = history_marks(&app.theme);
     let bottom = app.layout.rects.bottom;
-    assert_snapshot!("git_history_tab", snapshot(&term, &marks, Some(bottom)));
+    assert_snapshot!("local_history_window", snapshot(&term, &marks, Some(bottom)));
+}
+
+#[tokio::test]
+async fn local_history_window_wide() {
+    let mut fx = stable_app("local-history-window-wide");
+    let app = &mut fx.app;
+    local_history_fixture(app, 1, "save");
+    // Unified at this width; Alt+U flips the layout the frame drew.
+    draw_app(app, 140, 40);
+    app.history_panel.handle_action(&crate::actions::HistoryAction::ToggleDiffLayout, &mut ctx!(app));
+    let term = draw_app(app, 140, 40);
+    let marks = history_marks(&app.theme);
+    let bottom = app.layout.rects.bottom;
+    assert_snapshot!("local_history_window_wide", snapshot(&term, &marks, Some(bottom)));
+}
+
+#[tokio::test]
+async fn local_history_window_narrow() {
+    let mut fx = stable_app("local-history-window-narrow");
+    let app = &mut fx.app;
+    local_history_fixture(app, 4, "");
+    // Narrow: the diff takes the whole width once it has focus.
+    app.history_panel.handle_action(&crate::actions::HistoryAction::Right, &mut ctx!(app));
+    let term = draw_app(app, 60, 24);
+    let marks = history_marks(&app.theme);
+    let bottom = app.layout.rects.bottom;
+    assert_snapshot!("local_history_window_narrow", snapshot(&term, &marks, Some(bottom)));
 }
 
 /// The resolver's fixture (as in `editor/merge.rs`): yours changes `one`,

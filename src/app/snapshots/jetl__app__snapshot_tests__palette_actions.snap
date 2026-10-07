@@ -8,17 +8,17 @@ expression: "snapshot(&term, &marks, None)"
 02  1 │                              ││
 03  ⌂ │                              ││
 04  2┌ Find Action ─────────────────────────────────────────────────────────────┐
-05  ◫│ › split                                                                7 │
+05  ◫│ › split                                                                9 │
 06  7│ Split right (the tab in a new group beside)  editor.split_right    Alt+\ │
 07  ⊢│ Split down (the tab in a new group below)  editor.split_down       Alt+- │
-08   │ Unsplit (merge the group into the one beside it)  editor.unsplit         │
-09   │ Unsplit all (one group)  editor.unsplit_all                              │
-10   │ Run: previous problem (opens it)  run.prev_problem                       │
-11   │ Previous problem (diagnostic) in the file  lsp.prev_problem     Shift+F2 │
-12  ⚑│ Escape (close find, clear selection)  editor.escape                  Esc │
-13  9└──────────────────────────────────────────────────────────────────────────┘
-14  ⎇ │                              ││
-15    │                              ││
+08   │ Local History: back to the snapshot list  local_history.left        Left │
+09   │ Unsplit (merge the group into the one beside it)  editor.unsplit         │
+10  ⟲│ Unsplit all (one group)  editor.unsplit_all                              │
+11   │ Run: previous problem (opens it)  run.prev_problem                       │
+12  ⚑│ Previous problem (diagnostic) in the file  lsp.prev_problem     Shift+F2 │
+13  9│ Local History: open the file in the editor  local_history.open_file      │
+14  ⎇│ Escape (close find, clear selection)  editor.escape                  Esc │
+15   └──────────────────────────────────────────────────────────────────────────┘
 16  ❯ │                              ││
 17  6 │                              ││
 18  ⚠ │                              ││

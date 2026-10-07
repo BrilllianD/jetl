@@ -232,6 +232,8 @@ pub struct App {
     pub run_panel: crate::run::panel::RunPanel,
     /// The Problems window over `lsp.diagnostics`.
     pub problems: crate::lsp::panel::ProblemsPanel,
+    /// The Local History window (`history/panel.rs`).
+    pub history_panel: crate::history::panel::LocalHistoryPanel,
     /// The Terminal window and its shell.
     pub terminal: crate::terminal::panel::TerminalPanel,
     /// Language servers and the documents open on them.
@@ -336,6 +338,7 @@ impl App {
             run: Default::default(),
             run_panel: Default::default(),
             problems: Default::default(),
+            history_panel: Default::default(),
             terminal: crate::terminal::panel::TerminalPanel::new(config.terminal.scrollback),
             lsp: Default::default(),
             hover: None,
@@ -725,6 +728,17 @@ impl App {
             self.dispatcher.reset();
             return;
         }
+        // And for the Local History window's filter.
+        if self.focus.is(PanelId::LocalHistory) && key.kind != crossterm::event::KeyEventKind::Release {
+            let mut cx = ctx!(self);
+            let used = self.history_panel.handle_key(key, &mut cx);
+            let fx = cx.effects;
+            self.apply_effects(fx);
+            if used {
+                self.dispatcher.reset();
+                return;
+            }
+        }
         let contexts = self.contexts();
         let r = self.dispatcher.dispatch(key, &contexts, Some(self.mode), &self.keymap);
         match r {
@@ -845,6 +859,7 @@ impl App {
             }
             Action::Run(a) => self.run_panel.handle_action(a, &mut cx),
             Action::Problems(a) => self.problems.handle_action(a, &self.lsp.diagnostics, &mut cx),
+            Action::History(a) => self.history_panel.handle_action(a, &mut cx),
             Action::Lsp(crate::actions::LspAction::Restart) => {
                 drop(cx);
                 self.lsp_restart();
@@ -979,6 +994,9 @@ impl App {
         if !self.layout.is_visible(tw) {
             self.layout.show(tw);
             self.focus.set(panel);
+            if tw == ToolWindowId::LocalHistory {
+                self.history_window_opened();
+            }
         } else if !self.focus.is(panel) {
             self.focus.set(panel);
         } else {

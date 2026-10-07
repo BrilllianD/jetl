@@ -13,7 +13,7 @@ expression: "snapshot(&term, &marks, Some(area))"
 07  ⊢ │         │ f                                                  │
 08    │         │ f00.txt  f01.txt  f02.txt  f03.txt  f04.txt        │
 09    │         │ f05.txt  f06.txt  f07.txt  f08.txt  f09.txt        │
-10    │         │ f0dir/   f10.txt  f11.txt  f12.txt  f13.txt        │
+10  ⟲ │         │ f0dir/   f10.txt  f11.txt  f12.txt  f13.txt        │
 11    │         │ f14.txt  f15.txt  f16.txt  f17.txt  f18.txt        │
 12  ⚑ │         │ f19.txt  f20.txt  f21.txt  f22.txt  f23.txt        │
 13  9 │         │ f24.txt  f25.txt  f26.txt  f27.txt  f28.txt        │

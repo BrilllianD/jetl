@@ -437,7 +437,7 @@ impl GitService {
                     let _ = tx.send(AppMsg::Git(GitMsg::Diff { generation, key, result }));
                 });
             }
-            // `App::git_request` loads these itself (`App::load_local_diff`).
+            // The Local History window loads these itself (`App::load_local_diff`).
             DiffKey::Local { .. } => tracing::debug!("local history diff reached the git service: {key:?}"),
         }
     }

@@ -13,9 +13,9 @@ expression: "snapshot(&term, &marks, None)"
 07  ⊢ │    │ Rename…                             Shift+F6 │
 08    │    │ Delete…                               Delete │
 09    │    │ Copy Path                             Ctrl+C │
-10    │    │ Copy Relative Path          Ctrl+Alt+Shift+C │
+10  ⟲ │    │ Copy Relative Path          Ctrl+Alt+Shift+C │
 11    │    │ Show History                           Alt+H │les open.
-12  ⚑ │    │ Local History                                │he Project view;
+12  ⚑ │    │ Local History                    Alt+Shift+H │he Project view;
 13  9 │    │ Local History: Put Label…                    │N finds a file.
 14  ⎇ │    │ [x] Show Hidden Files                        │
 15    │    │ [ ] Show Ignored Files                       │
@@ -35,4 +35,5 @@ expression: "snapshot(&term, &marks, None)"
 09                                                 dddddd
 10                                       dddddddddddddddd
 11                                                  ddddd
+12                                            ddddddddddd
 16                                                     dd

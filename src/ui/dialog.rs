@@ -165,8 +165,8 @@ pub enum DialogId {
     DeleteScratch(std::path::PathBuf),
     /// Put Label: the name of a local history label on this file.
     PutLabel(std::path::PathBuf),
-    /// Remove this local history label of `path`: Remove / Cancel; both
-    /// reopen the Local History palette.
+    /// Remove this local history label of `path` (the Local History
+    /// window's Remove Label): Remove / Cancel.
     RemoveLabel {
         path: std::path::PathBuf,
         entry: Box<crate::history::Entry>,

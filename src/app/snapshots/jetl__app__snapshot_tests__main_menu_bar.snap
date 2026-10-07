@@ -7,29 +7,29 @@ expression: "snapshot(&term, &marks, None)"
 01    │     ╭──────────────────────────────────────────────────────╮
 02  1 │     │ Undo                                          Ctrl+Z │
 03  ⌂ │     │ Redo                                    Ctrl+Shift+Z │
-04    │     ├──────────────────────────────────────────────────────┤
-05  2 │     │ Cut                                           Ctrl+X │
-06  ◫ │     │ Copy                                          Ctrl+C │
-07    │     │ Paste                                         Ctrl+V │
-08  7 │     │ Select All                                    Ctrl+A │
-09  ⊢ │     │ Extend Selection                          Ctrl+Alt+W │
+04  2 │     ├──────────────────────────────────────────────────────┤
+05  ◫ │     │ Cut                                           Ctrl+X │
+06  7 │     │ Copy                                          Ctrl+C │
+07  ⊢ │     │ Paste                                         Ctrl+V │
+08    │     │ Select All                                    Ctrl+A │
+09    │     │ Extend Selection                          Ctrl+Alt+W │
 10    │     │ Shrink Selection                    Ctrl+Alt+Shift+W │
 11    │     ├──────────────────────────────────────────────────────┤
 12    │     │ Add Selection for Next Occurrence              Alt+J │
-13  ⚑ │     │ Unselect Occurrence                      Alt+Shift+J │
+13    │     │ Unselect Occurrence                      Alt+Shift+J │
 14    │     │ Select All Occurrences                    Ctrl+Alt+J │1 opens the Project view;
-15  9 │     │ Clone Caret Above                                    │+N finds a file.
-16  ⎇ │     │ Clone Caret Below                                    │
+15    │     │ Clone Caret Above                                    │+N finds a file.
+16  ⟲ │     │ Clone Caret Below                                    │
 17    │     │ Column Selection Mode               Alt+Shift+Insert │
-18    │     ├──────────────────────────────────────────────────────┤
-19  ❯ │     │ Find…                                         Ctrl+F │
-20    │     │ Replace…                                      Ctrl+R │
-21  6 │     │ Find in Files…                          Ctrl+Shift+F │
-22  ⚠ │     │ Replace in Files…                       Ctrl+Shift+R │
-23    │     ├──────────────────────────────────────────────────────┤
-24  4 │     │ Duplicate Line                                Ctrl+D │
-25  ► │     │ Delete Line                                   Ctrl+Y │
-26    │     │ Join Lines                              Ctrl+Shift+J │
+18  ⚑ │     ├──────────────────────────────────────────────────────┤
+19  9 │     │ Find…                                         Ctrl+F │
+20  ⎇ │     │ Replace…                                      Ctrl+R │
+21    │     │ Find in Files…                          Ctrl+Shift+F │
+22  ❯ │     │ Replace in Files…                       Ctrl+Shift+R │
+23  6 │     ├──────────────────────────────────────────────────────┤
+24  ⚠ │     │ Duplicate Line                                Ctrl+D │
+25  4 │     │ Delete Line                                   Ctrl+Y │
+26  ► │     │ Join Lines                              Ctrl+Shift+J │
 27  3 │     │ Move Line Up                            Alt+Shift+Up │
 28  ⌕ └─────│ Move Line Down                        Alt+Shift+Down │
 29  root    ╰───────────────────────────▼──────────────────────────╯

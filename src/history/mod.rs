@@ -6,8 +6,9 @@
 //! a rename in the Project tree carries a file's snapshots to its new path;
 //! Put Label adds a named snapshot that prune keeps.
 //! One global store (`Paths::history_dir`, see `store.rs`), shared by every
-//! project and instance, with snapshots stored compressed; File > Local History… lists a file's snapshots and
-//! the Git window's History tab diffs one against the current text.
+//! project and instance, with snapshots stored compressed. The Local History
+//! tool window (`panel.rs`, File > Local History…) lists a file's snapshots
+//! next to the diff of the selected one against the current text.
 //!
 //! All store work runs on one named thread, `jetl-history`, fed through a
 //! [`Handle`]. Jobs run in order, so the dedupe check, index appends and
@@ -16,6 +17,7 @@
 //! asks for a snapshot first and waits on the returned [`Ack`] (at most
 //! [`ACK_TIMEOUT`]) before it touches the files.
 
+pub mod panel;
 pub mod store;
 
 use std::path::{Path, PathBuf};
@@ -119,20 +121,39 @@ impl Capture {
 #[derive(Debug)]
 pub enum Request {
     Capture(Capture),
-    /// Open the Local History palette of a file.
-    Show(PathBuf),
+    /// List a file's snapshots again (`HistoryMsg::List`).
+    List(PathBuf),
+    /// The diff of a snapshot (`DiffKey::Local`) against the current text,
+    /// answered as `HistoryMsg::Diff` with `seq`.
+    Diff {
+        key: crate::git::DiffKey,
+        seq: u64,
+    },
     /// Put snapshot `id` back into the file's buffer (undoable).
     Revert {
         path: PathBuf,
         id: String,
     },
+    /// Ask a name for a label on this file (Put Label).
+    PutLabel(PathBuf),
+    /// Ask before removing this label of `path`.
+    RemoveLabel {
+        path: PathBuf,
+        entry: Box<Entry>,
+    },
 }
 
-/// Results of the worker (`AppMsg::LocalHistory`). The store is global, so
-/// there is no generation: a list is applied while the palette shows its
-/// path, a blob while it is wanted for that path.
+/// Results of the worker and of the diff loads (`AppMsg::LocalHistory`).
+/// The store is global, so there is no generation: a list, a stored
+/// snapshot or a label change matter while the Local History window shows
+/// its path, a blob while the window has that snapshot selected, a diff
+/// while it is the window's newest request.
 #[derive(Debug)]
 pub enum HistoryMsg {
+    /// A snapshot of `path` (as it was queued) was stored.
+    Stored { path: PathBuf },
+    /// A snapshot against the current text (`App::load_local_diff`).
+    Diff { key: crate::git::DiffKey, seq: u64, result: anyhow::Result<crate::git::diff::DiffDoc> },
     /// The snapshots of `path`, newest first.
     List { path: PathBuf, entries: Vec<Entry> },
     /// A snapshot's text, for a revert.
@@ -390,9 +411,16 @@ impl Worker {
         }
     }
 
+    /// Store a snapshot; a new or replaced entry is reported
+    /// (`HistoryMsg::Stored`), so the Local History window can list again.
     fn record(&self, path: &Path, bytes: &[u8], kind: Kind, detail: Option<String>, at: u64, s: &LocalHistoryConfig) {
         match store::record(&self.dir, path, bytes, kind, detail, at, s.max_file_bytes()) {
-            Ok(r) => tracing::debug!("local history {}: {r:?}", path.display()),
+            Ok(r) => {
+                tracing::debug!("local history {}: {r:?}", path.display());
+                if matches!(r, store::Recorded::Added(_) | store::Recorded::Replaced(_)) {
+                    let _ = self.bus.send(AppMsg::LocalHistory(HistoryMsg::Stored { path: path.to_path_buf() }));
+                }
+            }
             Err(e) => tracing::warn!("local history {}: {e}", path.display()),
         }
     }
@@ -518,10 +546,20 @@ mod tests {
         (Handle::spawn(dir.join("history"), LocalHistoryConfig::default(), tx), rx)
     }
 
+    /// The next message that is not a `Stored` report.
+    fn next(rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppMsg>) -> Result<AppMsg, tokio::sync::mpsc::error::TryRecvError> {
+        loop {
+            match rx.try_recv() {
+                Ok(AppMsg::LocalHistory(HistoryMsg::Stored { .. })) => {}
+                other => return other,
+            }
+        }
+    }
+
     fn listed(h: &Handle, rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppMsg>, path: &Path) -> Vec<Entry> {
         h.list(path);
         h.flush(Duration::from_secs(5));
-        match rx.try_recv() {
+        match next(rx) {
             Ok(AppMsg::LocalHistory(HistoryMsg::List { path: p, entries })) if p == path => entries,
             other => panic!("expected the list, got {other:?}"),
         }
@@ -538,7 +576,7 @@ mod tests {
         assert_eq!(l[0].label(), "Saved");
         h.blob(path.clone(), l[0].blob.clone());
         h.flush(Duration::from_secs(5));
-        match rx.try_recv() {
+        match next(&mut rx) {
             Ok(AppMsg::LocalHistory(HistoryMsg::Blob { result: Ok(bytes), .. })) => assert_eq!(bytes, b"one\n"),
             other => panic!("expected the blob, got {other:?}"),
         }
@@ -550,7 +588,7 @@ mod tests {
         assert!(h.dir().join("blobs-zlib").join(&l[0].blob[..2]).join(&l[0].blob).is_file());
         h.blob(path.clone(), l[0].blob.clone());
         h.flush(Duration::from_secs(5));
-        match rx.try_recv() {
+        match next(&mut rx) {
             Ok(AppMsg::LocalHistory(HistoryMsg::Blob { result: Ok(bytes), .. })) => assert_eq!(bytes, big.as_bytes()),
             other => panic!("expected the blob, got {other:?}"),
         }
@@ -559,6 +597,25 @@ mod tests {
         h.capture(Capture::text(path.clone(), "two\n".into(), Kind::Save));
         assert!(h.before_delete(&path).is_none());
         assert_eq!(listed(&h, &mut rx, &path).len(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_stored_snapshot_is_reported_and_a_same_one_is_not() {
+        let dir = temp("stored");
+        let (h, mut rx) = handle(&dir);
+        let path = dir.join("a.txt");
+        h.capture(Capture::text(path.clone(), "one\n".into(), Kind::Save));
+        h.capture(Capture::text(path.clone(), "one\n".into(), Kind::Save));
+        h.flush(Duration::from_secs(5));
+        let mut stored = Vec::new();
+        while let Ok(m) = rx.try_recv() {
+            match m {
+                AppMsg::LocalHistory(HistoryMsg::Stored { path }) => stored.push(path),
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+        assert_eq!(stored, [path]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -660,7 +717,7 @@ mod tests {
     /// The next `Labelled` / `LabelRemoved` answer, after a flush.
     fn answer(h: &Handle, rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppMsg>) -> HistoryMsg {
         h.flush(Duration::from_secs(5));
-        match rx.try_recv() {
+        match next(rx) {
             Ok(AppMsg::LocalHistory(m @ (HistoryMsg::Labelled { .. } | HistoryMsg::LabelRemoved { .. }))) => m,
             other => panic!("expected a label answer, got {other:?}"),
         }

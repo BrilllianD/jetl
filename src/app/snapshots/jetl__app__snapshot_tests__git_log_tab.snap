@@ -7,29 +7,29 @@ expression: "snapshot(&term, &marks, Some(bottom))"
 01    │                              ││
 02  1 │                              ││
 03  ⌂ │                              ││
-04    │                              ││
-05  2 │                              ││
-06  ◫ │                              ││
-07    │                              ││      No files open. Alt+1 opens the Project view; Ctrl+Shift+N finds a file.
-08  7 │                              ││
-09  ⊢ │                              ││
+04  2 │                              ││
+05  ◫ │                              ││
+06  7 │                              ││
+07  ⊢ │                              ││      No files open. Alt+1 opens the Project view; Ctrl+Shift+N finds a file.
+08    │                              ││
+09    │                              ││
 10    │                              ││
 11    │                              ││
 12    │                              ││
-13  ⚑ └──────────────────────────────┘│
+13    └──────────────────────────────┘│
 14    ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-15  9 ┌ Git ──────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-16  ⎇ │ Commit   Log   Stash   Console   History                                           Refresh   Fetch   Pull   Push  │
+15    ┌ Git ──────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+16  ⟲ │ Commit   Log   Stash   Console                                                     Refresh   Fetch   Pull   Push  │
 17    │[Branch: HEAD] [Text: any] [Author: any] [Path: any]                                                               │
-18    │●─┐ aaaaaaa (HEAD -> main) Merge branch 'parser'     Ann, 2 hours ago│ aaaaaaa  Ann, 2 hours ago                   │
-19  ❯ ││ ● ddddddd (parser) Parse nested lists               Bob, 3 days ago│ Merge branch 'parser'                       │
-20    │● │ bbbbbbb Fix the status bar width                  Ann, 4 days ago│                                             │
-21  6 │├─● eeeeeee Add a parser                              Bob, 5 days ago│ Brings in nested list parsing.              │
-22  ⚠ │● ccccccc (tag: v0.1.0) Initial commit               Ann, 2 weeks ago│ 3 files changed                             │
-23    │                                                                     │ A src/parser.rs                             │
-24  4 │                                                                     │ M src/main.rs                               │
-25  ► │                                                                     │ R docs/grammar.md -> docs/syntax.md         │
-26    │                                                                     │                                             │
+18  ⚑ │●─┐ aaaaaaa (HEAD -> main) Merge branch 'parser'     Ann, 2 hours ago│ aaaaaaa  Ann, 2 hours ago                   │
+19  9 ││ ● ddddddd (parser) Parse nested lists               Bob, 3 days ago│ Merge branch 'parser'                       │
+20  ⎇ │● │ bbbbbbb Fix the status bar width                  Ann, 4 days ago│                                             │
+21    │├─● eeeeeee Add a parser                              Bob, 5 days ago│ Brings in nested list parsing.              │
+22  ❯ │● ccccccc (tag: v0.1.0) Initial commit               Ann, 2 weeks ago│ 3 files changed                             │
+23  6 │                                                                     │ A src/parser.rs                             │
+24  ⚠ │                                                                     │ M src/main.rs                               │
+25  4 │                                                                     │ R docs/grammar.md -> docs/syntax.md         │
+26  ► │                                                                     │                                             │
 27  3 │                                                                     │                                             │
 28  ⌕ └───────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 29  root

@@ -106,6 +106,7 @@ pub const MAIN_MENU: &[(&str, char, &[Row])] = &[
             Item("Problems", "tool_window.problems"),
             Item("Terminal", "tool_window.terminal"),
             Item("Git", "tool_window.git"),
+            Item("Local History", "tool_window.local_history"),
             Item("Event Log", "tool_window.event_log"),
             Sep,
             Item("Hide All Tool Windows", "tool_window.hide_all"),

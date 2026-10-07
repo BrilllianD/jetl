@@ -625,40 +625,39 @@ run() { /tmp/tm.sh -f /dev/null new-session -d -s jetl -x 80 -y 24 \
 s() { /tmp/tm.sh send-keys -t jetl "$@"; sleep 0.4; }
 run; sleep 2
 s -l 'A '; s C-s; s -l 'B '; s C-s
-s F1; s -l 'local history'; s Enter    # "Local History: notes.txt": two "Saved" rows, newest first, "12 B  =" and "10 B"
-s Down; s Enter                        # Git window, History tab: "[Revert] [Snapshots…] notes.txt  <date time>  Saved  ↔  current",
-                                       # "A one" against "A B one"
+s M-H                                  # Local History window (bottom) on notes.txt: two "Saved" rows, newest first,
+                                       # "12 B  =" and "10 B"; the newest one's diff on the right, "type to filter"
+s Down                                 # the diff follows: "Saved  <date time>  ↔  current", "A one" against "A B one"
 s M-r                                  # *notes.txt is "A one", toast "Reverted notes.txt to … (Ctrl+Z undoes)", editor focused
 s C-z                                  # "A B one" again, the tab clean
 echo outside >> $LH/repo/notes.txt     # the clean tab reloads (nothing new stored: its text was the last snapshot)
 s F1; s -l 'Git: branches'; s Enter; s -l other; s Enter; s Enter   # Checkout: "Switched to other"
-s F1; s -l 'local history'; s Enter    # a "Before git switch other" row on top, "20 B  +1 line"
+                                       # the window lists by itself: "Before git switch other" on top,
+                                       # the older "Saved" still selected, its diff now with "+outside"
+s M-H; s M-l; s -l 'before refactor'; s Enter   # Put Label from the window: toast, "Label: before refactor" on top, bold
+s Home; s -l label                     # "filter: label" on the right, only the label row
+s Escape; s DC                         # Esc clears the filter; Delete on the label: "Remove Label" dialog
+s Tab; s Enter                         # Cancel: the label stays
+s DC; s Enter                          # Remove: toast 'Removed label "before refactor"', the row goes in place
+s Down; s DC                           # on a snapshot that is not a label: "Only labels can be removed; …"
 s Escape; s M-1; s Home; s Right; s Down; s Delete; s Enter   # delete d/x.txt from the tree
 ls $LH/state/jetl/history/index        # a second index file (d/x.txt, "before_delete")
 ls $LH/state/jetl/history/blobs-zlib/*/   # one blob: d/x.txt, compressed (notes.txt's are under 64 bytes, raw in blobs/)
 wc -c $LH/state/jetl/history/blobs-zlib/*/*   # about 6.5 KB, under half the 13893 bytes of d/x.txt
 printf '[lsp]\nenabled = false\n[local_history]\nsnapshot_unsaved_secs = 10\n' > $LH/cfg/jetl/config.toml   # live reload: the timer starts now
 s Escape                               # back to the editor (the tree had focus after the delete)
-s -l 'draft '; sleep 11
-s F1; s -l 'local history'; s Enter    # an "Unsaved changes" row on top
-s Escape; s -l 'more '; sleep 11; s F1; s -l 'local history'; s Enter   # still one "Unsaved changes" row (merged), newer size
-s Escape; s C-s; s F1; s -l 'local history'; s Enter   # that row is now "Saved"
-s Escape
+s -l 'draft '; sleep 11                # the window (still open) gets an "Unsaved changes" row on top by itself
+s -l 'more '; sleep 11                 # still one "Unsaved changes" row (merged), newer size
+s C-s                                  # that row is now "Saved"
 s M-F1                                 # Project tree focused, notes.txt selected
 s S-F6; for i in 1 2 3 4 5 6 7 8 9; do s BSpace; done; s -l renamed.txt; s Enter   # "Renamed to renamed.txt", the tab follows
-s F1; s -l 'local history'; s Enter    # "Local History: renamed.txt": "Renamed from notes.txt" on top, the notes.txt rows below
-s -l renamed; s Escape                 # typing filters to the marker row
+                                       # and the window: "Local History: renamed.txt", "Renamed from notes.txt" on top
 ls $LH/state/jetl/history/index        # one index file more; notes.txt's is still there
 s Escape; s -l 'label me '             # editor focused, renamed.txt dirty
 s F1; s -l 'put label'; s Enter        # "Put Label": "Label for renamed.txt:"
 s Enter                                # toast "Put Label: a label needs a name"; nothing stored
-s F1; s -l 'put label'; s Enter; s -l 'before refactor'; s Enter   # toast 'Put label "before refactor" on renamed.txt'
+s F1; s -l 'put label'; s Enter; s -l keep; s Enter   # a label that should survive the prune below
 s C-s                                  # no new row: the saved text is the label's
-s F1; s -l 'local history'; s Enter    # "Label: before refactor" on top, bold
-s S-DC                                 # "Remove Label" dialog
-s Tab; s Enter                         # Cancel: the list comes back with the label
-s S-DC; s Enter                        # Remove: toast 'Removed label "before refactor"', the row is gone
-s Escape; s F1; s -l 'put label'; s Enter; s -l keep; s Enter   # a label that should survive the prune below
 s C-q                                  # EXIT=0
 /tmp/tm.sh kill-server
 printf '[lsp]\nenabled = false\n[local_history]\nkeep_days = 0\n' > $LH/cfg/jetl/config.toml
@@ -669,11 +668,14 @@ cat $LH/state/jetl/history/index/*     # only the "kind":"label" line of "keep":
 /tmp/tm.sh kill-server; rm -rf $LH
 ```
 
-At 80 columns the Git window's header drops its Refresh button (F5) to fit
-the History tab. Shift+F10 in the Project tree opens its context menu with
-Local History and Local History: Put Label… under Show History. Alt+1 and Alt+9 hide their window when it
-already has focus; under tmux, Ctrl+Space in the editor is completion, not
-the branches popup, hence Find Action above.
+At 120 columns the list also shows each snapshot's size and line change,
+and Tab moves to the diff (its header in the focused style); below 60
+columns inside the window the list and the diff take turns. Shift+F10 in
+the Project tree opens its context menu with Local History and Local
+History: Put Label… under Show History; Shift+F10 in the window opens its
+own (Revert, Put Label…, Remove Label…, Open File). Alt+1 and Alt+9 hide
+their window when it already has focus; under tmux, Ctrl+Space in the
+editor is completion, not the branches popup, hence Find Action above.
 
 ### Scenario: palette on a huge tree
 

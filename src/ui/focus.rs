@@ -16,6 +16,7 @@ pub enum PanelId {
     Run,
     Terminal,
     Problems,
+    LocalHistory,
 }
 
 /// Saved in sessions: new variants go last.
@@ -30,6 +31,7 @@ pub enum ToolWindowId {
     Run,
     Terminal,
     Problems,
+    LocalHistory,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,7 +41,8 @@ pub enum Side {
 }
 
 impl ToolWindowId {
-    pub const ALL: [ToolWindowId; 9] = [
+    /// Strip order: left windows from the top, bottom ones from the bottom.
+    pub const ALL: [ToolWindowId; 10] = [
         ToolWindowId::Project,
         ToolWindowId::Worktrees,
         ToolWindowId::Structure,
@@ -49,6 +52,7 @@ impl ToolWindowId {
         ToolWindowId::Terminal,
         ToolWindowId::Git,
         ToolWindowId::EventLog,
+        ToolWindowId::LocalHistory,
     ];
 
     pub fn panel(self) -> PanelId {
@@ -62,6 +66,7 @@ impl ToolWindowId {
             ToolWindowId::Run => PanelId::Run,
             ToolWindowId::Terminal => PanelId::Terminal,
             ToolWindowId::Problems => PanelId::Problems,
+            ToolWindowId::LocalHistory => PanelId::LocalHistory,
         }
     }
     pub fn side(self) -> Side {
@@ -72,7 +77,8 @@ impl ToolWindowId {
             | ToolWindowId::EventLog
             | ToolWindowId::Run
             | ToolWindowId::Terminal
-            | ToolWindowId::Problems => Side::Bottom,
+            | ToolWindowId::Problems
+            | ToolWindowId::LocalHistory => Side::Bottom,
         }
     }
     pub fn title(self) -> &'static str {
@@ -86,6 +92,7 @@ impl ToolWindowId {
             ToolWindowId::Run => "Run",
             ToolWindowId::Terminal => "Terminal",
             ToolWindowId::Problems => "Problems",
+            ToolWindowId::LocalHistory => "Local History",
         }
     }
     /// The tool strip glyph: a two-cell emoji, or a symbol one cell wide
@@ -102,6 +109,7 @@ impl ToolWindowId {
                 ToolWindowId::Run => "🚀",
                 ToolWindowId::Terminal => "💻",
                 ToolWindowId::Problems => "⚠️",
+                ToolWindowId::LocalHistory => "🕘",
             };
         }
         match self {
@@ -114,6 +122,7 @@ impl ToolWindowId {
             ToolWindowId::Run => "►",
             ToolWindowId::Terminal => "❯",
             ToolWindowId::Problems => "⚠",
+            ToolWindowId::LocalHistory => "⟲",
         }
     }
     /// The Alt+number key shown on the tool strip; windows opened by other
@@ -129,6 +138,7 @@ impl ToolWindowId {
             ToolWindowId::Run => Some(4),
             ToolWindowId::Terminal => None,
             ToolWindowId::Problems => Some(6),
+            ToolWindowId::LocalHistory => None,
         }
     }
 }
@@ -145,6 +155,7 @@ impl PanelId {
             PanelId::Run => Some(ToolWindowId::Run),
             PanelId::Terminal => Some(ToolWindowId::Terminal),
             PanelId::Problems => Some(ToolWindowId::Problems),
+            PanelId::LocalHistory => Some(ToolWindowId::LocalHistory),
             PanelId::Editor => None,
         }
     }
@@ -161,6 +172,7 @@ impl PanelId {
             PanelId::Run => "run",
             PanelId::Terminal => "terminal",
             PanelId::Problems => "problems",
+            PanelId::LocalHistory => "local_history",
         }
     }
 }

@@ -7,29 +7,29 @@ expression: "snapshot(&term, &marks, Some(bottom))"
 01    │  main.rs                     ││
 02  1 │  notes.txt                   ││
 03  ⌂ │  README.md                   ││
-04    │                              ││
-05  2 │                              ││
-06  ◫ │                              ││
-07    │                              ││      No files open. Alt+1 opens the Project view; Ctrl+Shift+N finds a file.
-08  7 │                              ││
-09  ⊢ │                              ││
+04  2 │                              ││
+05  ◫ │                              ││
+06  7 │                              ││
+07  ⊢ │                              ││      No files open. Alt+1 opens the Project view; Ctrl+Shift+N finds a file.
+08    │                              ││
+09    │                              ││
 10    │                              ││
 11    │                              ││
 12    │                              ││
-13  ⚑ └──────────────────────────────┘│
+13    └──────────────────────────────┘│
 14    ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-15  9 ┌ Git: main ────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-16  ⎇ │ Commit   Log   Stash   Console   History                                           Refresh   Fetch   Pull   Push  │
+15    ┌ Git: main ────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+16  ⟲ │ Commit   Log   Stash   Console                                                     Refresh   Fetch   Pull   Push  │
 17    │▾ Unstaged (1)                                │ main.rs  (staged ↔ working tree)             [Unified] [x] Collapse│
-18    │  [ ] M main.rs                               │  1   1  fn main() {                                                │
-19  ❯ │▾ Untracked (1)                               │  2     -    println!("hello");                                     │
-20    │  [ ] ? notes.txt                             │      2 +    println!("hello, world");                              │
-21  6 │                                              │      3 +    run();                                                 │
-22  ⚠ │                                              │  3   4  }                                                          │
-23    │[Stage all] [Unstage all]                     │                                                                    │
-24  4 │Commit message (Ctrl+K)              [ ] Amend│                                                                    │
-25  ► │Describe the change                           │                                                                    │
-26    │                                              │                                                                    │
+18  ⚑ │  [ ] M main.rs                               │  1   1  fn main() {                                                │
+19  9 │▾ Untracked (1)                               │  2     -    println!("hello");                                     │
+20  ⎇ │  [ ] ? notes.txt                             │      2 +    println!("hello, world");                              │
+21    │                                              │      3 +    run();                                                 │
+22  ❯ │                                              │  3   4  }                                                          │
+23  6 │[Stage all] [Unstage all]                     │                                                                    │
+24  ⚠ │Commit message (Ctrl+K)              [ ] Amend│                                                                    │
+25  4 │Describe the change                           │                                                                    │
+26  ► │                                              │                                                                    │
 27  3 │ Commit   Commit and Push                     │                                                                    │
 28  ⌕ └───────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 29  root   main

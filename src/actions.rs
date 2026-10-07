@@ -17,6 +17,7 @@ pub enum Action {
     EventLog(EventLogAction),
     Run(RunAction),
     Problems(ProblemsAction),
+    History(HistoryAction),
     Lsp(LspAction),
     Palette(PaletteAction),
     Mode(ModeAction),
@@ -48,7 +49,7 @@ pub enum AppAction {
     KeymapReference,
     /// Ask for a language, then create and open a scratch file.
     NewScratch,
-    /// The Local History palette of the active file or the selected tree
+    /// The Local History window on the active file or the selected tree
     /// entry.
     LocalHistory,
     /// Put a local history label on the active file or the selected tree entry.
@@ -80,9 +81,6 @@ pub enum PaletteKind {
     Locations,
     /// The scratch files (`scratch.rs`), newest first.
     Scratches,
-    /// A file's local history snapshots (`history/`), newest first; opened
-    /// by `AppAction::LocalHistory` with the file, not by `OpenPalette`.
-    LocalHistory,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -302,10 +300,6 @@ pub enum GitAction {
     TabLog,
     TabConsole,
     TabStash,
-    /// The History tab: a local history snapshot against the current text.
-    TabHistory,
-    /// Put the snapshot the History tab shows back into the file (undoable).
-    HistoryRevert,
     StashPush,
     StashPop,
     StashApply,
@@ -409,6 +403,39 @@ pub enum ProblemsAction {
     Open,
     /// Copy the selected problem's message.
     Copy,
+}
+
+/// The Local History tool window (`history/panel.rs`).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum HistoryAction {
+    Up,
+    Down,
+    PageUp,
+    PageDown,
+    Home,
+    End,
+    /// Back to the snapshot list.
+    Left,
+    /// To the diff.
+    Right,
+    /// Between the list and the diff.
+    NextSection,
+    /// Open the file in the editor.
+    OpenFile,
+    NextChange,
+    PrevChange,
+    ToggleDiffLayout,
+    ToggleDiffCollapse,
+    /// List the snapshots again.
+    Refresh,
+    /// Put the selected snapshot back into the file (undoable).
+    Revert,
+    /// Put a label on the file shown.
+    PutLabel,
+    /// Remove the selected label (asks first).
+    RemoveLabel,
+    ContextMenu,
+    Escape,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -546,8 +573,10 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "editor.save_all" => "Save all", Editor(E::SaveAll);
         "editor.new_scratch" => "New scratch file…", App(AppAction::NewScratch);
         "editor.scratch_files" => "Scratch files", App(AppAction::OpenPalette(PaletteKind::Scratches));
-        "editor.local_history" => "Local history of the file (editor) or the selected entry (Project tree)", App(AppAction::LocalHistory);
+        "editor.local_history" => "Local history of the file (editor) or the selected entry (Project tree), in its tool window", App(AppAction::LocalHistory);
         "editor.put_label" => "Local history: put label…", App(AppAction::PutLabel);
+        // After the two above, so "local history" in Find Action picks them first.
+        "tool_window.local_history" => "Local History tool window", App(AppAction::ToggleToolWindow(ToolWindowId::LocalHistory));
         "editor.find" => "Find", Editor(E::Find);
         "editor.replace" => "Replace", Editor(E::Replace);
         "editor.find_next" => "Find next", Editor(E::FindNext);
@@ -692,8 +721,6 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "git.tab_log" => "Git: Log tab", Git(GitAction::TabLog);
         "git.tab_console" => "Git: Console tab", Git(GitAction::TabConsole);
         "git.tab_stash" => "Git: Stash tab", Git(GitAction::TabStash);
-        "git.tab_history" => "Git: History tab (local history diff)", Git(GitAction::TabHistory);
-        "git.history_revert" => "Git: revert the file to the local history snapshot shown", Git(GitAction::HistoryRevert);
         "git.stash_push" => "Git: stash local changes", Git(GitAction::StashPush);
         "git.stash_pop" => "Git: pop the selected stash", Git(GitAction::StashPop);
         "git.stash_apply" => "Git: apply the selected stash", Git(GitAction::StashApply);
@@ -796,6 +823,27 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "problems.open" => "Problems: jump to the selected problem", Problems(ProblemsAction::Open);
         "problems.copy" => "Problems: copy the selected message", Problems(ProblemsAction::Copy);
 
+        "local_history.up" => "Local History: up", History(HistoryAction::Up);
+        "local_history.down" => "Local History: down", History(HistoryAction::Down);
+        "local_history.page_up" => "Local History: page up", History(HistoryAction::PageUp);
+        "local_history.page_down" => "Local History: page down", History(HistoryAction::PageDown);
+        "local_history.home" => "Local History: first row (in the diff: top)", History(HistoryAction::Home);
+        "local_history.end" => "Local History: last row (in the diff: bottom)", History(HistoryAction::End);
+        "local_history.left" => "Local History: back to the snapshot list", History(HistoryAction::Left);
+        "local_history.right" => "Local History: to the diff", History(HistoryAction::Right);
+        "local_history.next_section" => "Local History: switch between the list and the diff", History(HistoryAction::NextSection);
+        "local_history.open_file" => "Local History: open the file in the editor", History(HistoryAction::OpenFile);
+        "local_history.next_change" => "Local History: next change in the diff", History(HistoryAction::NextChange);
+        "local_history.prev_change" => "Local History: previous change in the diff", History(HistoryAction::PrevChange);
+        "local_history.toggle_diff_layout" => "Local History: diff side-by-side or unified", History(HistoryAction::ToggleDiffLayout);
+        "local_history.toggle_diff_collapse" => "Local History: fold or show unchanged lines in the diff", History(HistoryAction::ToggleDiffCollapse);
+        "local_history.refresh" => "Local History: list the snapshots again", History(HistoryAction::Refresh);
+        "local_history.revert" => "Local History: revert the file to the selected snapshot (undoable)", History(HistoryAction::Revert);
+        "local_history.put_label" => "Local History: put a label on the file…", History(HistoryAction::PutLabel);
+        "local_history.remove_label" => "Local History: remove the selected label…", History(HistoryAction::RemoveLabel);
+        "local_history.context_menu" => "Local History: actions for the selected snapshot", History(HistoryAction::ContextMenu);
+        "local_history.escape" => "Local History: clear the filter, back to the list, or focus the editor", History(HistoryAction::Escape);
+
         "palette.up" => "Palette: up", Palette(PaletteAction::Up);
         "palette.down" => "Palette: down", Palette(PaletteAction::Down);
         "palette.page_up" => "Palette: page up", Palette(PaletteAction::PageUp);
@@ -806,7 +854,7 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "palette.delete_word" => "Palette: delete word", Palette(PaletteAction::DeleteWord);
         "palette.next_tab" => "Palette: next tab", Palette(PaletteAction::NextTab);
         "palette.prev_tab" => "Palette: previous tab", Palette(PaletteAction::PrevTab);
-        "palette.delete_item" => "Palette: delete the selected item (Scratch Files, Recent Projects, a Local History label)", Palette(PaletteAction::DeleteItem);
+        "palette.delete_item" => "Palette: delete the selected item (Scratch Files, Recent Projects)", Palette(PaletteAction::DeleteItem);
 
         "mode.normal" => "Vim: normal mode", Mode(ModeAction::Normal);
         "mode.insert" => "Vim: insert mode", Mode(ModeAction::Insert);
@@ -838,6 +886,7 @@ impl Action {
             Action::EventLog(_) => &["event_log", "global"],
             Action::Run(_) => &["run", "global"],
             Action::Problems(_) => &["problems", "global"],
+            Action::History(_) => &["local_history", "global"],
             Action::Lsp(_) => &["editor", "global"],
             Action::Palette(_) => &["palette"],
             Action::Mode(_) => &["mode.normal", "mode.insert", "mode.visual"],

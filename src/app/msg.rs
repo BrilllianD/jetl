@@ -58,8 +58,9 @@ impl App {
                 tracing::debug!("dropping stale watcher message");
             }
             AppMsg::FsOpDone { generation, op, result } if generation == self.workspace.generation => self.fs_op_done(op, result),
-            // The tree and tabs are a previous root's, but the store is global.
-            AppMsg::FsOpDone { op: FsOp::Rename { from, to }, result: Ok(()), .. } => self.history.rename(&from, &to),
+            // The tree and tabs are a previous root's, but the store (and the
+            // Local History window) is global.
+            AppMsg::FsOpDone { op: FsOp::Rename { from, to }, result: Ok(()), .. } => self.history_renamed(&from, &to),
             AppMsg::FsOpDone { op, .. } => tracing::debug!("dropping file operation result of a previous root: {op:?}"),
             AppMsg::Paste { generation, seq, result } => self.paste_done(generation, seq, result),
             AppMsg::Formatted { generation, id, seq, result } => self.format_done(generation, id, seq, result),

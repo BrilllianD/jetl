@@ -368,7 +368,7 @@ impl GitPanel {
                 let toggles = self.diff.doc.is_some().then_some((self.diff.unified, opts));
                 let row = (right.x + 1, right.y, right.right());
                 let hits = render_diff_header(frame.buffer_mut(), row, &title, style, toggles, theme);
-                self.hits.extend(hits);
+                self.hits.extend(hits.into_iter().map(|(t, r)| (Btn::Diff(t), r)));
             }
         }
 

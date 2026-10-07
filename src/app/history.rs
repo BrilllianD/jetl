@@ -1,30 +1,29 @@
-//! Local history in the app: the Local History palette, the History tab's
-//! diff, reverting to a snapshot, labels (Put Label, and their removal from
-//! the palette), snapshots of files on disk before they are overwritten,
-//! and periodic snapshots of unsaved edits (`history/` holds the store and
-//! its worker).
+//! Local history in the app: the Local History window (`history/panel.rs`)
+//! and its requests (the list, the diff of a snapshot against the current
+//! text, reverting to a snapshot, labels: Put Label and removal), the
+//! window following Project tree renames, snapshots of files on disk before
+//! they are overwritten, and periodic snapshots of unsaved edits
+//! (`history/` holds the store and its worker).
 
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use super::{App, Ctx};
-use crate::actions::PaletteKind;
 use crate::event::{AppMsg, Level};
-use crate::git::{DiffKey, GitMsg};
+use crate::git::DiffKey;
 use crate::history::{Capture, CaptureText, Entry, HistoryMsg, Kind, MAX_LABEL_CHARS, Request};
 use crate::ui::dialog::{Dialog, DialogId};
 use crate::ui::focus::{PanelId, ToolWindowId};
-use crate::ui::palette::Palette;
 
 /// Why Put Label does nothing.
 const HISTORY_OFF: &str = "Local history is off ([local_history] enabled = false)";
 
 impl App {
-    /// `editor.local_history`: the selected tree entry when the tree has
-    /// focus, else the active file.
+    /// `editor.local_history`: the Local History window on the selected
+    /// tree entry when the tree has focus, else on the active file.
     pub(super) fn local_history(&mut self) {
         if let Some(path) = self.history_target() {
-            self.open_local_history(path);
+            self.show_local_history(path);
         }
     }
 
@@ -48,12 +47,51 @@ impl App {
         Some(path)
     }
 
+    /// Show and focus the Local History window on `path`; its snapshots
+    /// are asked for and arrive as `HistoryMsg::List`.
+    pub(crate) fn show_local_history(&mut self, path: PathBuf) {
+        self.layout.show(ToolWindowId::LocalHistory);
+        self.focus.set(PanelId::LocalHistory);
+        self.history_panel.set_target(path.clone(), &self.workspace.root);
+        self.history.list(&path);
+    }
+
+    /// The window opened with no file yet: the active file, if any.
+    pub(super) fn history_window_opened(&mut self) {
+        if self.history_panel.target().is_none()
+            && let Some(path) = self.editor.active_path().map(Path::to_path_buf)
+        {
+            self.history_panel.set_target(path.clone(), &self.workspace.root);
+            self.history.list(&path);
+        }
+    }
+
+    /// A Project tree rename succeeded: carry the history (queued before
+    /// the tabs follow, so snapshots of the old path queued until now are
+    /// carried), and move the Local History window along, listing again
+    /// after the carry.
+    pub(super) fn history_renamed(&mut self, from: &Path, to: &Path) {
+        self.history.rename(from, to);
+        if let Some(path) = self.history_panel.retarget(from, to, &self.workspace.root) {
+            self.history.list(&path);
+        }
+    }
+
     /// `editor.put_label`: ask a name for a label on the Local History target.
     pub(super) fn put_label(&mut self) {
         if !self.history.enabled() {
             return self.notify(Level::Info, HISTORY_OFF);
         }
-        let Some(path) = self.history_target() else { return };
+        if let Some(path) = self.history_target() {
+            self.ask_put_label(path);
+        }
+    }
+
+    /// The Put Label dialog for `path` (also the window's Put Label).
+    fn ask_put_label(&mut self, path: PathBuf) {
+        if !self.history.enabled() {
+            return self.notify(Level::Info, HISTORY_OFF);
+        }
         let rel = crate::ui::palette::display_path(&path, &self.workspace.root);
         self.dialog = Some(Dialog::input(DialogId::PutLabel(path), "Put Label", &format!("Label for {rel}:"), "", "Put"));
     }
@@ -72,8 +110,8 @@ impl App {
         }
     }
 
-    /// Shift+Delete on a label row of the Local History palette: ask first.
-    pub(super) fn ask_remove_label(&mut self, path: PathBuf, entry: Entry) {
+    /// Remove Label in the Local History window: ask first.
+    fn ask_remove_label(&mut self, path: PathBuf, entry: Entry) {
         let name = entry.detail.clone().unwrap_or_default();
         let rel = crate::ui::palette::display_path(&path, &self.workspace.root);
         let msg = format!("Remove label \"{name}\" from the local history of {rel}?\nIts text goes too unless another snapshot holds it.");
@@ -81,46 +119,50 @@ impl App {
             Some(Dialog::confirm(DialogId::RemoveLabel { path, entry: Box::new(entry) }, "Remove Label", &msg, &["Remove", "Cancel"]));
     }
 
-    /// The remove dialog's answer; either way the palette comes back (its
-    /// list is queued after the removal, so it shows the row gone).
+    /// The remove dialog's answer; the window lists again once the worker
+    /// reports (`HistoryMsg::LabelRemoved`).
     pub(super) fn finish_remove_label(&mut self, path: PathBuf, entry: Entry, remove: bool) {
         if remove {
-            self.history.remove_label(path.clone(), entry);
+            self.history.remove_label(path, entry);
         }
-        self.open_local_history(path);
     }
 
-    /// The Local History palette of `path`; its snapshots are asked for and
-    /// arrive as `HistoryMsg::List`.
-    pub(crate) fn open_local_history(&mut self, path: PathBuf) {
-        let mut p = Palette::new(PaletteKind::LocalHistory, self.workspace.root.clone());
-        p.set_history_target(path.clone());
-        self.menu = None;
-        self.palette = Some(p);
-        self.dispatcher.reset();
-        self.history.list(&path);
+    /// List `path` again when the window shows it.
+    fn relist_if_shown(&mut self, path: &Path) {
+        if self.history_panel.target() == Some(path) {
+            self.history.list(path);
+        }
     }
 
     pub(super) fn history_request(&mut self, req: Request) {
         match req {
             Request::Capture(c) => self.history.capture(c),
-            Request::Show(path) => self.open_local_history(path),
+            Request::List(path) => self.history.list(&path),
+            Request::Diff { key, seq } => self.load_local_diff(key, seq),
             Request::Revert { path, id } => self.history.blob(path, id),
+            Request::PutLabel(path) => self.ask_put_label(path),
+            Request::RemoveLabel { path, entry } => self.ask_remove_label(path, *entry),
         }
     }
 
     pub(super) fn history_msg(&mut self, msg: HistoryMsg) {
         match msg {
             HistoryMsg::List { path, entries } => {
-                if let Some(p) = self.palette.as_mut().filter(|p| p.history_path() == Some(path.as_path())) {
-                    p.set_history(entries, crate::ui::event_log::local_offset);
+                if self.history_panel.target() == Some(path.as_path()) {
+                    let mut cx = ctx!(self);
+                    self.history_panel.set_entries(entries, &self.workspace.root, crate::ui::event_log::local_offset, &mut cx);
+                    let fx = cx.effects;
+                    self.apply_effects(fx);
                 }
             }
+            // A snapshot of the file shown landed (a save, the unsaved
+            // timer, a git operation): list again.
+            HistoryMsg::Stored { path } => self.relist_if_shown(&path),
+            HistoryMsg::Diff { key, seq, result } => self.history_panel.set_diff(&key, seq, result),
             HistoryMsg::Blob { path, id, result } => {
-                // Only the snapshot the History tab still shows.
-                let shown = matches!(self.git_panel.history_key(), Some(DiffKey::Local { path: p, id: i, .. }) if *p == path && *i == id);
-                if !shown {
-                    return tracing::debug!("dropping a snapshot no longer shown: {}", path.display());
+                // Only the snapshot the window still has selected.
+                if !self.history_panel.shows(&path, &id) {
+                    return tracing::debug!("dropping a snapshot no longer selected: {}", path.display());
                 }
                 match result.map(String::from_utf8) {
                     Ok(Ok(text)) => self.revert_to(path, text),
@@ -132,40 +174,29 @@ impl App {
                 Ok(()) => {
                     let rel = crate::ui::palette::display_path(&path, &self.workspace.root);
                     self.notify(Level::Info, format!("Put label \"{name}\" on {rel}"));
-                    if self.palette.as_ref().is_some_and(|p| p.history_path() == Some(path.as_path())) {
-                        self.history.list(&path);
-                    }
+                    self.relist_if_shown(&path);
                 }
                 Err(e) => self.notify(Level::Warn, format!("Put Label: {e}")),
             },
-            HistoryMsg::LabelRemoved { name, result, .. } => match result {
-                Ok(true) => self.notify(Level::Info, format!("Removed label \"{name}\"")),
-                Ok(false) => self.notify(Level::Info, format!("Label \"{name}\" was already gone")),
-                Err(e) => self.notify(Level::Warn, format!("Remove label: {e}")),
-            },
+            HistoryMsg::LabelRemoved { path, name, result } => {
+                match result {
+                    Ok(true) => self.notify(Level::Info, format!("Removed label \"{name}\"")),
+                    Ok(false) => self.notify(Level::Info, format!("Label \"{name}\" was already gone")),
+                    Err(e) => self.notify(Level::Warn, format!("Remove label: {e}")),
+                }
+                self.relist_if_shown(&path);
+            }
         }
     }
 
-    /// Accepted a Local History row: its diff in the Git window.
-    pub(super) fn show_local_diff(&mut self, path: PathBuf, id: String, at: u64, title: String) {
-        let rel = crate::ui::palette::display_path(&path, &self.workspace.root);
-        self.layout.show(ToolWindowId::Git);
-        self.focus.set(PanelId::Git);
-        let mut cx = ctx!(self);
-        self.git_panel.show_local_diff(DiffKey::Local { path, rel, id, at }, title, &mut cx);
-        let fx = cx.effects;
-        self.apply_effects(fx);
-    }
-
-    /// `GitRequest::LoadDiff` of a snapshot: the snapshot against the open
-    /// buffer (a rope clone) or the file on disk (a missing file is empty),
-    /// built off the main thread; answered as a `GitMsg::Diff`, keyed by
-    /// `DiffKey` like every diff.
-    pub(super) fn load_local_diff(&mut self, key: DiffKey) {
+    /// The diff of a snapshot against the open buffer (a rope clone) or the
+    /// file on disk (a missing file is empty), built off the main thread;
+    /// answered as `HistoryMsg::Diff` with the window's `seq`.
+    pub(super) fn load_local_diff(&mut self, key: DiffKey, seq: u64) {
         let DiffKey::Local { path, id, .. } = &key else { return };
         let current = self.editor.index_of(path).map(|i| self.editor.buffers[i].rope.clone());
         let (dir, path, id) = (self.history.dir().to_path_buf(), path.clone(), id.clone());
-        let (generation, tx, tab_width) = (self.git.generation, self.bus_tx.clone(), self.git.tab_width);
+        let (tx, tab_width) = (self.bus_tx.clone(), self.git.tab_width);
         tokio::task::spawn_blocking(move || {
             let result = (|| {
                 let old = crate::history::store::read_blob(&dir, &id).map_err(|e| anyhow::anyhow!("snapshot {id}: {e}"))?;
@@ -179,7 +210,7 @@ impl App {
                 };
                 Ok(crate::git::diff::DiffDoc::build(&old, &new, tab_width))
             })();
-            let _ = tx.send(AppMsg::Git(GitMsg::Diff { generation, key, result }));
+            let _ = tx.send(AppMsg::LocalHistory(HistoryMsg::Diff { key, seq, result }));
         });
     }
 
@@ -212,13 +243,13 @@ impl App {
         self.focus.set(PanelId::Editor);
         let name = self.editor.buffers[i].name.clone();
         let msg = if self.editor.restore_text(i, text) {
-            format!("Reverted {name} to {} (Ctrl+Z undoes)", self.git_panel.history_title())
+            format!("Reverted {name} to {} (Ctrl+Z undoes)", self.history_panel.selected_title())
         } else {
             format!("{name} already has the text of that snapshot")
         };
         self.notify(Level::Info, msg);
         let mut cx = ctx!(self);
-        self.git_panel.reload_history_diff(&mut cx);
+        self.history_panel.reload_diff(&mut cx);
         fx.extend(cx.effects);
         self.apply_effects(fx);
     }
@@ -259,14 +290,15 @@ impl App {
 pub(crate) mod tests {
     use std::time::Duration;
 
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
     use super::*;
-    use crate::actions::{Action, AppAction, EditorAction, GitAction, PaletteAction};
+    use crate::actions::{Action, AppAction, EditorAction, HistoryAction};
     use crate::app::tests::{handle_next, init_repo, load, test_app, with_history};
     use crate::files::ops::FsOp;
-    use crate::git::panel::GitTab;
+    use crate::git::GitMsg;
     use crate::history::store;
     use crate::ui::dialog::{DialogId, DialogResult};
-    use crate::ui::palette::{PaletteResult, Source};
 
     /// `path`'s snapshots once the worker is done, newest first: label and
     /// text.
@@ -286,12 +318,43 @@ pub(crate) mod tests {
         app.perform(Action::Editor(EditorAction::InsertText(text.into())));
     }
 
-    fn history_msg(m: &AppMsg) -> bool {
-        matches!(m, AppMsg::LocalHistory(_))
+    /// A list of `path`'s snapshots.
+    fn list_of(path: &Path) -> impl Fn(&AppMsg) -> bool + '_ {
+        move |m| matches!(m, AppMsg::LocalHistory(HistoryMsg::List { path: p, .. }) if p == path)
     }
 
     fn diff_msg(m: &AppMsg) -> bool {
-        matches!(m, AppMsg::Git(GitMsg::Diff { .. }))
+        matches!(m, AppMsg::LocalHistory(HistoryMsg::Diff { .. }))
+    }
+
+    fn blob_msg(m: &AppMsg) -> bool {
+        matches!(m, AppMsg::LocalHistory(HistoryMsg::Blob { .. }))
+    }
+
+    fn stored_msg(m: &AppMsg) -> bool {
+        matches!(m, AppMsg::LocalHistory(HistoryMsg::Stored { .. }))
+    }
+
+    fn label_msg(m: &AppMsg) -> bool {
+        matches!(m, AppMsg::LocalHistory(HistoryMsg::Labelled { .. } | HistoryMsg::LabelRemoved { .. }))
+    }
+
+    fn history(app: &mut App, a: HistoryAction) {
+        app.perform(Action::History(a));
+    }
+
+    fn key(app: &mut App, code: KeyCode) {
+        app.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
+    }
+
+    /// The window's diff of `path` is loaded and its snapshot holds `text`.
+    fn diff_shows(app: &App, path: &Path, text: &str) -> bool {
+        match app.history_panel.diff_state() {
+            (Some(DiffKey::Local { path: p, id, .. }), true) => {
+                p == path && store::read_blob(app.history.dir(), id).unwrap() == text.as_bytes()
+            }
+            _ => false,
+        }
     }
 
     #[tokio::test]
@@ -309,30 +372,76 @@ pub(crate) mod tests {
         app.perform(Action::Editor(EditorAction::Save));
         assert_eq!(snapshots(&app, &path), pairs(&[("Saved", "two three one\n"), ("Saved", "two one\n")]));
 
-        // File > Local History…: the rows arrive from the worker.
+        // File > Local History…: the window on the file, its rows from the worker.
         app.perform(Action::App(AppAction::LocalHistory));
-        assert_eq!(app.palette.as_ref().map(|p| p.source()), Some(Source::LocalHistory));
-        handle_next(&mut app, history_msg).await;
-        let p = app.palette.as_mut().unwrap();
-        p.handle_action(&PaletteAction::Down);
-        let Some(PaletteResult::Accept(accept)) = p.handle_action(&PaletteAction::Accept) else { panic!("a row") };
-        app.finish_palette(PaletteResult::Accept(accept));
-        assert_eq!(app.git_panel.tab, GitTab::History);
-        assert!(app.focus.is(PanelId::Git));
-        assert!(app.git_panel.history_title().ends_with("  Saved"), "{}", app.git_panel.history_title());
+        assert!(app.layout.is_visible(ToolWindowId::LocalHistory));
+        assert!(app.focus.is(PanelId::LocalHistory));
+        assert_eq!(app.history_panel.target(), Some(path.as_path()));
+        handle_next(&mut app, list_of(&path)).await;
+        assert_eq!(app.history_panel.labels(), ["Saved", "Saved"]);
+        // The newest is selected and its diff follows.
         handle_next(&mut app, diff_msg).await;
-        assert!(matches!(app.git_panel.history_key(), Some(DiffKey::Local { rel, .. }) if rel == "a.txt"));
+        assert!(diff_shows(&app, &path, "two three one\n"));
+        history(&mut app, HistoryAction::Down);
+        handle_next(&mut app, diff_msg).await;
+        assert!(diff_shows(&app, &path, "two one\n"));
 
         // Alt+R: the older snapshot comes back as one undoable edit.
-        app.perform(Action::Git(GitAction::HistoryRevert));
-        handle_next(&mut app, history_msg).await;
+        history(&mut app, HistoryAction::Revert);
+        handle_next(&mut app, blob_msg).await;
         let b = app.editor.active_buffer().unwrap();
         assert_eq!(b.text(), "two one\n");
         assert!(b.dirty());
         assert!(app.focus.is(PanelId::Editor));
         assert!(app.notifications.last().is_some_and(|n| n.text.starts_with("Reverted a.txt to ")), "{:?}", app.notifications);
+        assert!(app.notifications.last().is_some_and(|n| n.text.ends_with("  Saved (Ctrl+Z undoes)")), "{:?}", app.notifications);
+        // The window compares again, with the reverted text.
+        handle_next(&mut app, diff_msg).await;
+        assert!(app.history_panel.diff_state().1);
         app.perform(Action::Editor(EditorAction::Undo));
         assert_eq!(app.editor.active_buffer().unwrap().text(), "two three one\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn the_list_follows_new_snapshots_keeping_filter_and_selection() {
+        let (mut app, dir) = test_app("history-live");
+        with_history(&mut app);
+        let path = load(&mut app, "a.txt", "one\n");
+        type_text(&mut app, "x ");
+        app.perform(Action::Editor(EditorAction::Save));
+        app.finish_dialog(DialogId::PutLabel(path.clone()), DialogResult::Text("v1".into()));
+        type_text(&mut app, "y ");
+        app.perform(Action::Editor(EditorAction::Save));
+        assert_eq!(snapshots(&app, &path).len(), 3);
+        app.perform(Action::App(AppAction::LocalHistory));
+        handle_next(&mut app, list_of(&path)).await;
+        assert_eq!(app.history_panel.labels(), ["Saved", "Label: v1", "Saved"]);
+        // Typing filters (case-insensitive); the selection stays on the row.
+        history(&mut app, HistoryAction::Down);
+        key(&mut app, KeyCode::Char('S'));
+        key(&mut app, KeyCode::Char('a'));
+        assert_eq!(app.history_panel.filter(), "Sa");
+        assert_eq!(app.history_panel.labels(), ["Saved", "Saved"]);
+        history(&mut app, HistoryAction::Down);
+        assert_eq!(app.history_panel.selected_label(), Some("Saved"));
+        // A save while the window shows the file: listed again by itself.
+        type_text(&mut app, "z ");
+        app.perform(Action::Editor(EditorAction::Save));
+        handle_next(&mut app, stored_msg).await;
+        handle_next(&mut app, list_of(&path)).await;
+        assert_eq!(app.history_panel.labels(), ["Saved", "Saved", "Saved"]);
+        assert_eq!(app.history_panel.filter(), "Sa");
+        // Still the oldest save: the third row now.
+        handle_next(&mut app, diff_msg).await;
+        assert!(diff_shows(&app, &path, "x one\n"));
+        // Esc clears the filter first, then leaves the window.
+        key(&mut app, KeyCode::Esc);
+        assert_eq!(app.history_panel.filter(), "");
+        assert_eq!(app.history_panel.labels().len(), 4);
+        assert!(app.focus.is(PanelId::LocalHistory));
+        key(&mut app, KeyCode::Esc);
+        assert!(app.focus.is(PanelId::Editor));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -394,9 +503,13 @@ pub(crate) mod tests {
         else {
             panic!("recorded")
         };
-        app.show_local_diff(path.clone(), e.blob, e.at, "then  Saved".into());
-        app.perform(Action::Git(GitAction::HistoryRevert));
-        handle_next(&mut app, history_msg).await;
+        assert_eq!(e.blob.len(), 40);
+        app.focus.set(PanelId::Project);
+        app.project.select_path(&path);
+        app.show_local_history(path.clone());
+        handle_next(&mut app, list_of(&path)).await;
+        history(&mut app, HistoryAction::Revert);
+        handle_next(&mut app, blob_msg).await;
         assert!(app.editor.index_of(&path).is_none());
         handle_next(&mut app, |m| matches!(m, AppMsg::FileLoaded { .. })).await;
         let b = app.editor.active_buffer().unwrap();
@@ -510,34 +623,47 @@ pub(crate) mod tests {
         app.perform(Action::Editor(EditorAction::Save));
         assert_eq!(snapshots(&app, &b)[0], ("Saved".to_string(), "x y one\n".to_string()));
 
-        // The palette and the History tab name the old path relative to the root.
-        app.open_local_history(b.clone());
-        handle_next(&mut app, history_msg).await;
-        let p = app.palette.as_mut().unwrap();
-        p.handle_action(&PaletteAction::Down);
-        let Some(PaletteResult::Accept(accept)) = p.handle_action(&PaletteAction::Accept) else { panic!("a row") };
-        app.finish_palette(PaletteResult::Accept(accept));
-        assert!(app.git_panel.history_title().ends_with("  Renamed from a.txt"), "{}", app.git_panel.history_title());
+        // The window on b.txt names the old path relative to the root.
+        app.show_local_history(b.clone());
+        handle_next(&mut app, list_of(&b)).await;
+        assert_eq!(app.history_panel.selected_label(), Some("Saved"));
+        history(&mut app, HistoryAction::Down);
+        assert_eq!(app.history_panel.selected_label(), Some("Renamed from a.txt"));
 
-        // Every file under a renamed folder.
+        // Every file under a renamed folder; the window follows its file.
         std::fs::create_dir_all(root.join("d")).unwrap();
-        load(&mut app, "d/x.txt", "x\n");
+        let x = load(&mut app, "d/x.txt", "x\n");
         type_text(&mut app, "1");
         app.perform(Action::Editor(EditorAction::Save));
+        app.show_local_history(x.clone());
         app.finish_dialog(DialogId::TreeRename(root.join("d")), DialogResult::Text("e".into()));
         handle_next(&mut app, fs_op_done).await;
-        let e = snapshots(&app, &root.join("e/x.txt"));
+        let ex = root.join("e/x.txt");
+        assert_eq!(app.history_panel.target(), Some(ex.as_path()));
+        handle_next(&mut app, list_of(&ex)).await;
+        assert_eq!(app.history_panel.labels(), ["Renamed from d/x.txt", "Saved"]);
+        handle_next(&mut app, diff_msg).await;
+        assert!(diff_shows(&app, &ex, "1x\n"));
+        let e = snapshots(&app, &ex);
         assert_eq!(e[0].0, format!("Renamed from {}", root.join("d/x.txt").display()));
         assert_eq!(e.len(), 2);
+        // A sibling whose name starts the same is not under it.
+        app.show_local_history(root.join("dd.txt"));
+        app.finish_dialog(DialogId::TreeRename(ex.clone()), DialogResult::Text("y.txt".into()));
+        handle_next(&mut app, fs_op_done).await;
+        assert_eq!(app.history_panel.target(), Some(root.join("dd.txt").as_path()));
 
-        // A result that arrives after the root switched still carries.
+        // A result that arrives after the root switched still carries, and
+        // the window still follows.
         let c = load(&mut app, "c.txt", "c\n");
         type_text(&mut app, "1");
         app.perform(Action::Editor(EditorAction::Save));
+        app.show_local_history(c.clone());
         app.finish_dialog(DialogId::TreeRename(c.clone()), DialogResult::Text("c2.txt".into()));
         app.workspace.generation += 1;
         handle_next(&mut app, fs_op_done).await;
         assert_eq!(snapshots(&app, &root.join("c2.txt"))[0].0, format!("Renamed from {}", c.display()));
+        assert_eq!(app.history_panel.target(), Some(root.join("c2.txt").as_path()));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -577,41 +703,60 @@ pub(crate) mod tests {
         assert!(snapshots(&app, &a).is_empty());
         // The tab's text, unsaved edits included.
         app.finish_dialog(DialogId::PutLabel(a.clone()), DialogResult::Text("  before refactor ".into()));
-        handle_next(&mut app, history_msg).await;
+        handle_next(&mut app, label_msg).await;
         assert_eq!(last(&app), "Put label \"before refactor\" on a.txt");
         assert_eq!(snapshots(&app, &a), pairs(&[("Label: before refactor", "x one\n")]));
         // A save of that text adds no row.
         app.perform(Action::Editor(EditorAction::Save));
         assert_eq!(snapshots(&app, &a).len(), 1);
 
-        // Shift+Delete on its row asks first; Cancel brings the list back.
-        let remove = |app: &mut App| {
-            let p = app.palette.as_mut().expect("the palette");
-            let Some(PaletteResult::Accept(accept)) = p.handle_action(&PaletteAction::DeleteItem) else { panic!("a removal") };
-            app.finish_palette(PaletteResult::Accept(accept));
-            dialog(app)
-        };
-        app.open_local_history(a.clone());
-        handle_next(&mut app, history_msg).await;
-        let id = remove(&mut app);
-        assert!(matches!(&id, DialogId::RemoveLabel { path, .. } if *path == a), "{id:?}");
+        // In the window: Put Label asks for the file shown, and the new row
+        // shows up once stored.
+        app.show_local_history(a.clone());
+        handle_next(&mut app, list_of(&a)).await;
+        assert_eq!(app.history_panel.labels(), ["Label: before refactor"]);
+        history(&mut app, HistoryAction::PutLabel);
+        assert_eq!(dialog(&mut app), DialogId::PutLabel(a.clone()));
+        app.finish_dialog(DialogId::PutLabel(a.clone()), DialogResult::Text("second".into()));
+        handle_next(&mut app, label_msg).await;
+        handle_next(&mut app, list_of(&a)).await;
+        assert_eq!(app.history_panel.labels(), ["Label: second", "Label: before refactor"]);
+        assert_eq!(app.history_panel.selected_label(), Some("Label: before refactor"), "the selection stays");
+
+        // Delete on a label asks first; Cancel keeps it.
+        history(&mut app, HistoryAction::RemoveLabel);
+        let id = dialog(&mut app);
+        assert!(
+            matches!(&id, DialogId::RemoveLabel { path, entry } if *path == a && entry.detail.as_deref() == Some("before refactor")),
+            "{id:?}"
+        );
         app.finish_dialog(id, DialogResult::Button(1));
-        assert_eq!(app.palette.as_ref().map(|p| p.source()), Some(Source::LocalHistory));
-        handle_next(&mut app, history_msg).await;
-        assert_eq!(snapshots(&app, &a).len(), 1);
-        // Remove: the palette comes back without it.
-        let id = remove(&mut app);
+        assert_eq!(snapshots(&app, &a).len(), 2);
+        assert!(app.focus.is(PanelId::LocalHistory));
+        // Remove: the row goes in place.
+        history(&mut app, HistoryAction::RemoveLabel);
+        let id = dialog(&mut app);
         app.finish_dialog(id, DialogResult::Button(0));
-        handle_next(&mut app, history_msg).await;
-        handle_next(&mut app, history_msg).await;
+        handle_next(&mut app, label_msg).await;
         assert_eq!(last(&app), "Removed label \"before refactor\"");
-        assert!(snapshots(&app, &a).is_empty());
-        assert_eq!(app.palette.as_ref().and_then(|p| p.history_path()), Some(a.as_path()));
+        handle_next(&mut app, list_of(&a)).await;
+        assert_eq!(app.history_panel.labels(), ["Label: second"]);
+        assert_eq!(snapshots(&app, &a).len(), 1);
+
+        // Delete on a snapshot that is not a label only says why not.
+        type_text(&mut app, "y ");
+        app.perform(Action::Editor(EditorAction::Save));
+        handle_next(&mut app, stored_msg).await;
+        handle_next(&mut app, list_of(&a)).await;
+        history(&mut app, HistoryAction::Home);
+        assert_eq!(app.history_panel.selected_label(), Some("Saved"));
+        history(&mut app, HistoryAction::RemoveLabel);
+        assert!(app.dialog.is_none());
+        assert!(last(&app).starts_with("Only labels can be removed"), "{}", last(&app));
 
         // A long name is cut.
-        app.palette = None;
         app.finish_dialog(DialogId::PutLabel(a.clone()), DialogResult::Text("n".repeat(150)));
-        handle_next(&mut app, history_msg).await;
+        handle_next(&mut app, label_msg).await;
         assert_eq!(snapshots(&app, &a)[0].0, format!("Label: {}", "n".repeat(MAX_LABEL_CHARS)));
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -642,7 +787,7 @@ pub(crate) mod tests {
         type_text(&mut app, "x ");
         app.perform(Action::Editor(EditorAction::Save));
         app.finish_dialog(DialogId::PutLabel(a.clone()), DialogResult::Text("keep".into()));
-        handle_next(&mut app, history_msg).await;
+        handle_next(&mut app, label_msg).await;
         assert_eq!(snapshots(&app, &a).len(), 2);
         std::thread::sleep(Duration::from_millis(5));
         let mut config = app.config.clone();
@@ -656,13 +801,35 @@ pub(crate) mod tests {
     async fn local_history_needs_a_file() {
         let (mut app, dir) = test_app("history-target");
         app.perform(Action::App(AppAction::LocalHistory));
-        assert!(app.palette.is_none());
+        assert!(!app.layout.is_visible(ToolWindowId::LocalHistory));
         assert_eq!(app.notifications.last().map(|n| n.text.as_str()), Some("No file selected"));
         app.focus.set(PanelId::Project);
         std::fs::create_dir_all(app.workspace.root.join("sub")).unwrap();
         app.project.select_path(&app.workspace.root.join("sub"));
         app.perform(Action::App(AppAction::LocalHistory));
-        assert!(app.palette.is_none());
+        assert!(!app.layout.is_visible(ToolWindowId::LocalHistory));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn the_window_opened_empty_takes_the_active_file() {
+        let (mut app, dir) = test_app("history-toggle");
+        with_history(&mut app);
+        app.toggle_tool_window(ToolWindowId::LocalHistory);
+        assert!(app.layout.is_visible(ToolWindowId::LocalHistory));
+        assert_eq!(app.history_panel.target(), None);
+        app.toggle_tool_window(ToolWindowId::LocalHistory);
+        assert!(!app.layout.is_visible(ToolWindowId::LocalHistory));
+        let a = load(&mut app, "a.txt", "one\n");
+        app.toggle_tool_window(ToolWindowId::LocalHistory);
+        assert_eq!(app.history_panel.target(), Some(a.as_path()));
+        handle_next(&mut app, list_of(&a)).await;
+        // Another tab does not move it.
+        let b = load(&mut app, "b.txt", "two\n");
+        app.toggle_tool_window(ToolWindowId::LocalHistory);
+        app.toggle_tool_window(ToolWindowId::LocalHistory);
+        assert_eq!(app.history_panel.target(), Some(a.as_path()));
+        assert_eq!(app.editor.active_path(), Some(b.as_path()));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

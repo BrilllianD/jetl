@@ -765,4 +765,24 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&fresh_dir);
     }
+
+    #[tokio::test]
+    async fn session_round_trips_the_local_history_window_and_drops_the_history_tab() {
+        let (mut app, dir) = crate::app::tests::test_app("session-local-history");
+        app.toggle_tool_window(ToolWindowId::LocalHistory);
+        let json = serde_json::to_string(&app.session()).unwrap();
+        assert!(json.contains("\"LocalHistory\""), "{json}");
+        // A session saved on the Git window's old History tab opens on Commit.
+        let json = json.replace("\"git_tab\":\"Commit\"", "\"git_tab\":\"History\"");
+        assert!(json.contains("\"History\""), "{json}");
+        let session: Session = serde_json::from_str(&json).unwrap();
+        assert_eq!(session.layout.as_ref().map(|l| l.git_tab), Some(GitTab::Commit));
+        let (mut fresh, fresh_dir) = crate::app::tests::test_app("session-local-history-fresh");
+        fresh.layout.hide_all();
+        let generation = fresh.workspace.generation;
+        fresh.session_loaded(generation, Session { root: fresh.workspace.root.clone(), ..session }, vec![]);
+        assert_eq!(fresh.layout.bottom, Some(ToolWindowId::LocalHistory));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&fresh_dir);
+    }
 }

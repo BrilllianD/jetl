@@ -207,7 +207,6 @@ impl App {
                     "Create",
                 ));
             }
-            GitRequest::LoadDiff(key @ crate::git::DiffKey::Local { .. }) => self.load_local_diff(key),
             GitRequest::LoadDiff(key) => self.git.load_diff(key),
             GitRequest::LoadLog { skip, filter } => self.git.load_log(skip, self.config.git.log_page, self.config.git.log_all, filter),
             GitRequest::LoadCommit(sha) => self.git.load_commit(sha),

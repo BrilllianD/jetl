@@ -352,7 +352,7 @@ impl GitPanel {
             render_diff(buf, rest, &mut self.log_diff, theme, opts);
             let toggles = Some((self.log_diff.unified, opts));
             let hits = render_diff_header(buf, (x, body.y, body.right()), &header, theme.title, toggles, theme);
-            self.hits.extend(hits);
+            self.hits.extend(hits.into_iter().map(|(t, r)| (Btn::Diff(t), r)));
             return;
         }
         // The filter bar: each part opens its dialog.

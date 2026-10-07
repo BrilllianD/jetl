@@ -70,6 +70,7 @@ pub fn render(app: &mut App, frame: &mut Frame) {
                 };
                 app.problems.render(frame, r, focused, &theme, &app.lsp.diagnostics, &app.workspace.root, hint);
             }
+            PanelId::LocalHistory => app.history_panel.render(frame, r, focused, &theme),
             _ => {}
         }
     }

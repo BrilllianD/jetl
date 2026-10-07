@@ -198,6 +198,7 @@ impl App {
             self.theme = r.theme;
             self.editor.restyle(&self.theme);
             self.git_panel.theme_changed();
+            self.history_panel.theme_changed();
         }
         report.reloaded.extend(names);
     }

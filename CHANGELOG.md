@@ -194,9 +194,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Local history: every save stores a snapshot of the file, and so does everything that is about
   to overwrite or delete one (git operations that rewrite the work tree, reloads from disk,
   Overwrite of an outside change, Save As over a file, Delete in the Project tree). File > Local
-  History… (also in the Project tree's context menu) lists a file's snapshots with their date,
-  reason, size and line change; Enter shows one against the current text in the Git window's
-  new History tab, where Revert (Alt+R) puts it back as one undoable edit. Snapshots live in
+  History… (Alt+Shift+H; also in the Project tree's context menu) opens the Local History tool
+  window on the file: its snapshots with their date, reason, size and line change on the left,
+  the selected one against the current text on the right. The list follows new snapshots as
+  they are stored, typing filters it, Revert (Alt+R) puts the snapshot back as one undoable
+  edit, and the window follows the file when it is renamed in the Project tree. Snapshots live in
   `$XDG_STATE_HOME/jetl/history/`, shared by every project, and are pruned after 5 days or
   beyond 100 MB (`[local_history]`).
 - Local history can snapshot unsaved edits on a timer: set `[local_history]
@@ -206,9 +208,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   same text turns the latest into "Saved".
 - Local history labels: File > Local History: Put Label… (also in the Project tree's context
   menu) stores the file's current text under a name you choose, shown as "Label: <name>" in its
-  Local History list. Labels are kept past `keep_days` and pruned for size only after every
-  other snapshot; Shift+Delete on a label's row removes it. A label applies to one file, not the
-  whole project.
+  Local History list; Put Label… (Alt+L) in the Local History window does the same for the file
+  it shows. Labels are kept past `keep_days` and pruned for size only after every other
+  snapshot; Delete on a label's row in the window removes it. A label applies to one file, not
+  the whole project.
 - Recent Projects: Shift+Delete forgets the selected project. Its row goes at once and the
   palette stays open; the project itself is not touched, and opening it again lists it again.
   The current project is never listed, so it cannot be forgotten.
@@ -229,7 +232,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   when a tree has more than 200000 files, not exactly that many.
 - Local history keys a file by its real path, so a file and a symlink to it (or a path through
   a symlinked folder, such as a project opened through a symlink) share one history instead of
-  two. The list and the History tab still show the path you opened. A deleted file stays listed
+  two. The Local History window still shows the path you opened. A deleted file stays listed
   under the path it was opened with. Snapshots stored by an earlier build under a symlinked path
   are merged into the file's history when jetl starts.
 - Local history stores snapshots compressed (zlib), so about three to four times as much
@@ -281,8 +284,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is saved, a running task and the Terminal shell are stopped with everything they started, and
   language servers are shut down.
 - In a narrow Git window the diff header (the file name and what it compares) is cut with `…`
-  before the `[Unified]` and `Collapse` toggles instead of running under them. In the Log,
-  Stash and History tabs a long header no longer hides the toggles.
+  before the `[Unified]` and `Collapse` toggles instead of running under them. In the Log and
+  Stash tabs a long header no longer hides the toggles.
 - Renaming or moving an open file in the Project tree (or a directory with open files in it)
   now sets each tab up for its new path, as Save As does: renaming `a.txt` to `a.rs` gives Rust
   highlighting and the Rust language server, and the `.editorconfig` settings and soft wrap of

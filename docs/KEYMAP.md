@@ -50,6 +50,7 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Alt+Shift+S` | `editor.save_as` | Save as… |
 | `Ctrl+Shift+S` * | `editor.save_all` | Save all |
 | `Ctrl+Alt+Shift+Insert` | `editor.new_scratch` | New scratch file… |
+| `Alt+Shift+H` | `editor.local_history` | Local history of the file (editor) or the selected entry (Project tree), in its tool window |
 | `Ctrl+V` | `editor.paste` | Paste |
 | `Alt+Right` | `editor.next_tab` | Next tab |
 | `Alt+Left` | `editor.prev_tab` | Previous tab |
@@ -269,8 +270,6 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Alt+L` | `git.tab_log` | Git: Log tab |
 | `Alt+O` | `git.tab_console` | Git: Console tab |
 | `Alt+T` | `git.tab_stash` | Git: Stash tab |
-| `Alt+Y` | `git.tab_history` | Git: History tab (local history diff) |
-| `Alt+R` | `git.history_revert` | Git: revert the file to the local history snapshot shown |
 | `Ctrl+Alt+S` | `git.stash_push` | Git: stash local changes |
 | `Alt+P` | `git.stash_pop` | Git: pop the selected stash |
 | `Alt+A` | `git.stash_apply` | Git: apply the selected stash |
@@ -315,7 +314,7 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Ctrl+W` | `palette.delete_word` | Palette: delete word |
 | `Tab` | `palette.next_tab` | Palette: next tab |
 | `Shift+Tab` | `palette.prev_tab` | Palette: previous tab |
-| `Shift+Delete` | `palette.delete_item` | Palette: delete the selected item (Scratch Files, Recent Projects, a Local History label) |
+| `Shift+Delete` | `palette.delete_item` | Palette: delete the selected item (Scratch Files, Recent Projects) |
 
 ## mode.normal
 
@@ -369,6 +368,31 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Alt+R` | `find.toggle_replace` | Find: show or hide the replacement |
 | `Alt+A` | `find.replace_all` | Find: replace all results |
 | `Esc` | `find.escape` | Find: back to the editor |
+
+## local_history
+
+| Keys | Action | Description |
+|---|---|---|
+| `Up` | `local_history.up` | Local History: up |
+| `Down` | `local_history.down` | Local History: down |
+| `PageUp` | `local_history.page_up` | Local History: page up |
+| `PageDown` | `local_history.page_down` | Local History: page down |
+| `Home` | `local_history.home` | Local History: first row (in the diff: top) |
+| `End` | `local_history.end` | Local History: last row (in the diff: bottom) |
+| `Left` | `local_history.left` | Local History: back to the snapshot list |
+| `Right` | `local_history.right` | Local History: to the diff |
+| `Tab` | `local_history.next_section` | Local History: switch between the list and the diff |
+| `Enter` | `local_history.open_file` | Local History: open the file in the editor |
+| `F7` | `local_history.next_change` | Local History: next change in the diff |
+| `Shift+F7` | `local_history.prev_change` | Local History: previous change in the diff |
+| `Alt+U` | `local_history.toggle_diff_layout` | Local History: diff side-by-side or unified |
+| `Alt+F` | `local_history.toggle_diff_collapse` | Local History: fold or show unchanged lines in the diff |
+| `F5` | `local_history.refresh` | Local History: list the snapshots again |
+| `Alt+R` | `local_history.revert` | Local History: revert the file to the selected snapshot (undoable) |
+| `Alt+L` | `local_history.put_label` | Local History: put a label on the file… |
+| `Delete` | `local_history.remove_label` | Local History: remove the selected label… |
+| `Shift+F10` | `local_history.context_menu` | Local History: actions for the selected snapshot |
+| `Esc` | `local_history.escape` | Local History: clear the filter, back to the list, or focus the editor |
 
 ## problems
 
@@ -433,8 +457,8 @@ Reachable from Find Action (F1) or by binding them in `keymap.toml`.
 | `app.keymap_reference` | Keymap reference |
 | `palette.goto_line` | Go to line |
 | `editor.scratch_files` | Scratch files |
-| `editor.local_history` | Local history of the file (editor) or the selected entry (Project tree) |
 | `editor.put_label` | Local history: put label… |
+| `tool_window.local_history` | Local History tool window |
 | `editor.replace_one` | Replace current match |
 | `editor.replace_all` | Replace all matches |
 | `editor.find_case` | Find: toggle match case |

@@ -1,0 +1,35 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &marks, Some(bottom))"
+---
+60x24 cursor=hidden
+00  ≣ ┌ Project: root ─────────┐│
+01    │                        ││
+02  1 │                        ││
+03  ⌂ │                        ││  No files open. Alt+1 opens
+04  2 │                        ││      the Project view;
+05  ◫ │                        ││  Ctrl+Shift+N finds a file.
+06  7 │                        ││
+07  ⊢ └────────────────────────┘│
+08    ─────────────────────────────────────────────────────────
+09    ┌ Local History: notes.txt ─────────────────────────────┐
+10  ⟲ │[Revert] [Put Label…] [Remove Label]                   │
+11    │ Label: before refactor  2024-1… [Unified] [x] Collapse│
+12  ⚑ │  1   1  alpha                                         │
+13  9 │  2     -beta                                          │
+14  ⎇ │      2 +beta two                                      │
+15    │  3   3  gamma                                         │
+16  ❯ │      4 +epsilon                                       │
+17  6 │  4   5  delta                                         │
+18  ⚠ │                                                       │
+19  4 │                                                       │
+20  ► │                                                       │
+21  3 │                                                       │
+22  ⌕ └───────────────────────────────────────────────────────┘
+23  root
+-- marks: A=added D=deleted ~=modified +=added word -=deleted word L=selected B=bold
+09     BBBBBBBBBBBBBBBBBBBBBBBBBB
+11      BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB
+13             DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD
+14             AAAAA++++AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+16             AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA

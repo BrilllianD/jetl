@@ -1,6 +1,6 @@
 //! Command palette overlay: Go to File, Go to Symbol, Find Action, Search
 //! Everywhere, Recent Files, Branches, Recent Projects, Run tasks, Scratch
-//! Files, a file's Local History and a language server's locations
+//! Files and a language server's locations
 //! (definitions, usages). The app
 //! owns it (`App.palette`) and routes all input to it while it is open,
 //! like a dialog. Keys arrive as
@@ -102,8 +102,6 @@ pub enum Source {
     /// A language server's locations (`PaletteKind::Locations`).
     Locations,
     Scratches,
-    /// One file's local history snapshots (`PaletteKind::LocalHistory`).
-    LocalHistory,
 }
 
 impl Source {
@@ -118,7 +116,6 @@ impl Source {
             Source::Tasks => "Run",
             Source::Locations => "Locations",
             Source::Scratches => "Scratch Files",
-            Source::LocalHistory => "Local History",
         }
     }
 }
@@ -153,31 +150,6 @@ pub enum Accept {
     /// Shift+Delete on a recent project: the palette has dropped the row
     /// and stays open; the app drops it from the recent projects file.
     ForgetProject(PathBuf),
-    /// A local history snapshot of `path`: its diff against the current
-    /// text, in the Git window's History tab; `title` is the row's date,
-    /// time and label.
-    LocalHistoryDiff {
-        path: PathBuf,
-        id: String,
-        at: u64,
-        title: String,
-    },
-    /// Shift+Delete on a local history label of `path`: the app asks first.
-    RemoveLabel {
-        path: PathBuf,
-        entry: Box<crate::history::Entry>,
-    },
-}
-
-/// One Local History row, formatted once (`Palette::set_history`).
-#[derive(Debug, Clone)]
-struct HistoryRow {
-    entry: crate::history::Entry,
-    /// `YYYY-MM-DD HH:MM:SS`, local time.
-    when: String,
-    label: String,
-    /// "1.2 KB  +3 lines".
-    info: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -222,12 +194,6 @@ pub struct Palette {
     scratches: Vec<ScratchFile>,
     scratch_names: Vec<String>,
     scratch_dates: Vec<String>,
-    /// Local History: the file, the title, its snapshots newest first and
-    /// whether they are still loading.
-    history_path: Option<PathBuf>,
-    history_title: String,
-    history: Vec<HistoryRow>,
-    history_loading: bool,
     matcher: Matcher,
     /// Where large sources are filtered (set by `App::open_palette`); none
     /// filters everything at once.
@@ -255,7 +221,6 @@ impl Palette {
             PaletteKind::RunTasks => vec![Source::Tasks],
             PaletteKind::Locations => vec![Source::Locations],
             PaletteKind::Scratches => vec![Source::Scratches],
-            PaletteKind::LocalHistory => vec![Source::LocalHistory],
             // Go to Line stays a dialog and never opens a palette.
             PaletteKind::Branches | PaletteKind::GotoLine => vec![Source::Branches],
         };
@@ -283,10 +248,6 @@ impl Palette {
             scratches: Vec::new(),
             scratch_names: Vec::new(),
             scratch_dates: Vec::new(),
-            history_path: None,
-            history_title: "Local History".into(),
-            history: Vec::new(),
-            history_loading: false,
             matcher: Matcher::default(),
             bus: None,
             filter_seq: Arc::new(AtomicU64::new(0)),
@@ -411,52 +372,6 @@ impl Palette {
         }
     }
 
-    /// Show the local history of `path`; the snapshots follow
-    /// ([`Palette::set_history`]).
-    pub fn set_history_target(&mut self, path: PathBuf) {
-        let name = path.file_name().map_or_else(|| path.to_string_lossy().into_owned(), |n| n.to_string_lossy().into_owned());
-        self.history_title = format!("Local History: {name}");
-        self.history_path = Some(path);
-        self.history.clear();
-        self.history_loading = true;
-        if self.source() == Source::LocalHistory {
-            self.refilter(true);
-        }
-    }
-
-    /// The file whose local history is shown.
-    pub fn history_path(&self) -> Option<&Path> {
-        self.history_path.as_deref()
-    }
-
-    /// The snapshots of the file, newest first (`history::store::list`);
-    /// `offset` gives seconds east of UTC at a time (injected for tests).
-    pub fn set_history(&mut self, entries: Vec<crate::history::Entry>, offset: impl Fn(i64) -> i64) {
-        self.history = entries
-            .iter()
-            .enumerate()
-            .map(|(i, e)| {
-                // Lines added or removed since the next older snapshot.
-                let delta = match entries.get(i + 1) {
-                    None => String::new(),
-                    Some(older) if older.lines == e.lines => "  =".into(),
-                    Some(older) if e.lines > older.lines => plural(e.lines - older.lines, "+"),
-                    Some(older) => plural(older.lines - e.lines, "−"),
-                };
-                HistoryRow {
-                    entry: e.clone(),
-                    when: crate::history::local_time(e.at, &offset),
-                    label: e.label_in(&self.root),
-                    info: format!("{}{delta}", human_size(e.len)),
-                }
-            })
-            .collect();
-        self.history_loading = false;
-        if self.source() == Source::LocalHistory {
-            self.refilter(false);
-        }
-    }
-
     /// Recent project roots, newest first; the current root is left out.
     pub fn set_projects(&mut self, roots: &[PathBuf]) {
         let home = directories::BaseDirs::new().map(|d| d.home_dir().to_path_buf());
@@ -568,13 +483,6 @@ impl Palette {
                 let names = &self.scratch_names;
                 if q.is_empty() { (0..names.len()).collect() } else { rank_paths(q, names, &mut self.matcher) }
             }
-            Source::LocalHistory => {
-                if q.is_empty() {
-                    (0..self.history.len()).collect()
-                } else {
-                    rank_texts(q, self.history.iter().map(|r| [r.label.as_str(), r.when.as_str()]), &mut self.matcher)
-                }
-            }
             Source::Actions => {
                 if q.is_empty() {
                     (0..self.actions.len()).collect()
@@ -656,11 +564,6 @@ impl Palette {
         }
     }
 
-    /// The selected Local History row.
-    fn selected_history(&self) -> Option<&HistoryRow> {
-        self.history.get(*self.rows.get(self.list.selected)?)
-    }
-
     /// What the selected row shows (files and symbols only).
     fn selected_key(&self) -> Option<RowKey> {
         let i = *self.rows.get(self.list.selected)?;
@@ -715,11 +618,6 @@ impl Palette {
             Source::Actions => Accept::Action(self.actions.get(i)?.action.clone()),
             Source::Tasks => Accept::RunTask(Box::new(self.tasks.get(i)?.clone())),
             Source::Scratches => Accept::OpenFile(self.scratches.get(i)?.path.clone()),
-            Source::LocalHistory => {
-                let r = self.history.get(i)?;
-                let title = format!("{}  {}", r.when, r.label);
-                Accept::LocalHistoryDiff { path: self.history_path.clone()?, id: r.entry.blob.clone(), at: r.entry.at, title }
-            }
             Source::Locations => {
                 let l = self.locations.get(i)?;
                 Accept::OpenFileAt { path: l.path.clone(), line: l.line, col: l.col }
@@ -778,13 +676,6 @@ impl Palette {
                 self.projects_shown.remove(i);
                 self.refilter(false);
                 return Some(PaletteResult::Accept(Accept::ForgetProject(root)));
-            }
-            // A label: the app asks before removing it. Other snapshots go by prune only.
-            PaletteAction::DeleteItem
-                if self.source() == Source::LocalHistory && self.selected_history().is_some_and(|r| r.entry.kind.pinned()) =>
-            {
-                let entry = Box::new(self.selected_history()?.entry.clone());
-                return Some(PaletteResult::Accept(Accept::RemoveLabel { path: self.history_path.clone()?, entry }));
             }
             // Nothing to delete: Shift+Delete deletes in the query, as before.
             PaletteAction::DeleteItem => {
@@ -860,7 +751,6 @@ impl Palette {
     fn title(&self) -> &str {
         match self.kind {
             PaletteKind::Locations => &self.locations_title,
-            PaletteKind::LocalHistory => &self.history_title,
             PaletteKind::Files => "Go to File",
             PaletteKind::Actions => "Find Action",
             PaletteKind::Everywhere => "Search Everywhere",
@@ -925,11 +815,9 @@ impl Palette {
             Source::Files => self.files_loading || pending.is_some_and(|p| !Arc::ptr_eq(&p.files, &self.shown.files)),
             Source::Symbols => self.symbols_loading || pending.is_some_and(|p| !Arc::ptr_eq(&p.symbols, &self.shown.symbols)),
             Source::Tasks => self.tasks_loading,
-            Source::LocalHistory => self.history_loading,
             _ => false,
         };
         let count = match self.source() {
-            Source::LocalHistory if loading => "loading…".to_string(),
             Source::Files if loading && self.files.is_empty() => "indexing…".to_string(),
             Source::Symbols if loading && self.symbols.is_empty() => "indexing…".to_string(),
             _ if loading => format!("{} (indexing…)", self.rows.len()),
@@ -947,7 +835,6 @@ impl Palette {
             Source::Tasks => "type a task name",
             Source::Locations => "type to filter",
             Source::Scratches => "type a scratch name · Shift+Del deletes",
-            Source::LocalHistory => "type a date or reason · Enter diffs · Shift+Del removes a label",
         };
         self.input.render(frame, qrect, Style::default().bg(theme.bg).fg(theme.fg), placeholder, theme.dim.bg(theme.bg), true);
         frame.buffer_mut().set_stringn(inner.right().saturating_sub(cw + 1), y, &count, cw as usize, theme.dim.bg(theme.popup_bg));
@@ -964,12 +851,8 @@ impl Palette {
                 Source::Tasks if loading => "Loading tasks…",
                 Source::Tasks if self.input.text.trim().is_empty() => "No tasks: add [[run.tasks]] to config.toml or .jetl/run.toml",
                 Source::Scratches if self.input.text.trim().is_empty() => "No scratch files: File > New Scratch File…",
-                Source::LocalHistory if loading => "Loading…",
-                Source::LocalHistory if self.input.text.trim().is_empty() => "No local history for {name} yet: saves record it",
                 _ => "Nothing found",
             };
-            let name = self.history_path.as_deref().and_then(Path::file_name).map(|n| n.to_string_lossy()).unwrap_or_default();
-            let msg = msg.replace("{name}", &name);
             frame.buffer_mut().set_stringn(lrect.x + 2, lrect.y, msg, lrect.width.saturating_sub(2) as usize, theme.dim.bg(theme.popup_bg));
             return;
         }
@@ -1054,18 +937,6 @@ impl Palette {
                     }
                     v
                 }
-                Source::LocalHistory => {
-                    // Date and label, then the size and line change on the right.
-                    let r = &self.history[i];
-                    let label = if r.entry.kind.pinned() { base.add_modifier(Modifier::BOLD) } else { base };
-                    let mut v = vec![(r.when.clone(), dim), ("  ".into(), base), (r.label.clone(), label)];
-                    let used = r.when.width() + 2 + r.label.width();
-                    if used + r.info.width() + 2 <= width {
-                        v.push((" ".repeat(width - used - r.info.width()), base));
-                        v.push((r.info.clone(), dim));
-                    }
-                    v
-                }
                 Source::Locations => {
                     // The text, cut to leave room for the place on the right.
                     let l = &self.locations[i];
@@ -1118,20 +989,6 @@ impl Drop for Palette {
         if let Some(p) = &self.pending {
             let _ = self.filter_seq.compare_exchange(p.seq, p.seq + 1, Ordering::Relaxed, Ordering::Relaxed);
         }
-    }
-}
-
-/// "1 line" / "+3 lines" with `sign` in front.
-fn plural(n: u64, sign: &str) -> String {
-    format!("  {sign}{n} line{}", if n == 1 { "" } else { "s" })
-}
-
-/// "512 B", "1.2 KB", "3.4 MB".
-fn human_size(bytes: u64) -> String {
-    match bytes {
-        b if b < 1024 => format!("{b} B"),
-        b if b < 1024 * 1024 => format!("{:.1} KB", b as f64 / 1024.0),
-        b => format!("{:.1} MB", b as f64 / (1024.0 * 1024.0)),
     }
 }
 
@@ -1385,33 +1242,6 @@ mod tests {
         p.input.home();
         assert_eq!(p.handle_action(&PaletteAction::DeleteItem), None);
         assert_eq!(p.input.text, "b");
-    }
-
-    #[test]
-    fn delete_item_on_a_label_row_asks_to_remove_it() {
-        use crate::history::{Entry, Kind};
-        let path = PathBuf::from("/w/a.txt");
-        let e = |at, kind, detail: Option<&str>| Entry {
-            v: 1,
-            path: "/w/a.txt".into(),
-            at,
-            blob: format!("{at:040}"),
-            len: 1,
-            lines: 1,
-            kind,
-            detail: detail.map(Into::into),
-            since: None,
-        };
-        let mut p = Palette::new(PaletteKind::LocalHistory, PathBuf::from("/w"));
-        p.set_history_target(path.clone());
-        p.set_history(vec![e(2, Kind::Save, None), e(1, Kind::Label, Some("v1"))], |_| 0);
-        // Not a label: Shift+Delete deletes in the (empty) query.
-        assert_eq!(p.handle_action(&PaletteAction::DeleteItem), None);
-        p.handle_action(&PaletteAction::Down);
-        let Some(PaletteResult::Accept(Accept::RemoveLabel { path: p2, entry })) = p.handle_action(&PaletteAction::DeleteItem) else {
-            panic!("a label removal")
-        };
-        assert_eq!((p2, entry.detail.as_deref()), (path, Some("v1")));
     }
 
     #[test]

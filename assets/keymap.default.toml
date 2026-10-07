@@ -89,6 +89,9 @@
 "ctrl-space" = "git.branches_popup"
 "alt-f1" = "tree.select_in_project"
 "alt-h" = "git.file_history"
+# Local History of the file (the selected tree entry when the tree has focus)
+# in its tool window; JetBrains has no default key.
+"alt-shift-h" = "editor.local_history"
 "ctrl-q" = "app.quit"
 "f5" = "app.refresh"
 "ctrl-s" = "editor.save"
@@ -346,10 +349,6 @@
 "alt-l" = "git.tab_log"
 "alt-o" = "git.tab_console"
 "alt-t" = "git.tab_stash"
-# History tab (local history): Alt+H is File History everywhere, so Alt+Y;
-# Alt+R reverts the file to the snapshot shown (undoable).
-"alt-y" = "git.tab_history"
-"alt-r" = "git.history_revert"
 "ctrl-alt-s" = "git.stash_push"
 # Stash tab: pop, apply and drop the selected stash.
 "alt-p" = "git.stash_pop"
@@ -424,6 +423,30 @@
 "ctrl-shift-down" = "tool_window.stretch_down"
 "ctrl-v" = "editor.paste"
 
+# The Local History window (Alt+Shift+H): typing filters the snapshot list,
+# Esc clears the filter first.
+[local_history]
+"up" = "local_history.up"
+"down" = "local_history.down"
+"pageup" = "local_history.page_up"
+"pagedown" = "local_history.page_down"
+"home" = "local_history.home"
+"end" = "local_history.end"
+"left" = "local_history.left"
+"right" = "local_history.right"
+"tab" = "local_history.next_section"
+"enter" = "local_history.open_file"
+"f7" = "local_history.next_change"
+"shift-f7" = "local_history.prev_change"
+"alt-u" = "local_history.toggle_diff_layout"
+"alt-f" = "local_history.toggle_diff_collapse"
+"f5" = "local_history.refresh"
+"alt-r" = "local_history.revert"
+"alt-l" = "local_history.put_label"
+"delete" = "local_history.remove_label"
+"shift-f10" = "local_history.context_menu"
+"esc" = "local_history.escape"
+
 [palette]
 "up" = "palette.up"
 "down" = "palette.down"
@@ -438,9 +461,9 @@
 "ctrl-w" = "palette.delete_word"
 "tab" = "palette.next_tab"
 "shift-tab" = "palette.prev_tab"
-# Deletes the selected scratch file (Scratch Files), forgets the selected
-# project (Recent Projects) or removes the selected label (Local History);
-# elsewhere it deletes forward in the query, like Delete.
+# Deletes the selected scratch file (Scratch Files) or forgets the selected
+# project (Recent Projects); elsewhere it deletes forward in the query, like
+# Delete.
 "shift-delete" = "palette.delete_item"
 
 # Reserved for the future vim mode (inert unless [keymap] mode = "vim").

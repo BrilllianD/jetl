@@ -30,7 +30,7 @@ live in `$XDG_STATE_HOME/jetl/sessions/`; recently opened project roots (the
 Recent Projects palette, Alt+Shift+E; Shift+Delete forgets one) in `$XDG_STATE_HOME/jetl/recent_projects.json`;
 scratch files (File > New Scratch File…, shared by every project) in
 `$XDG_STATE_HOME/jetl/scratches/`, created with the first one; local history
-snapshots (File > Local History…, shared by every project and jetl
+snapshots (File > Local History…, Alt+Shift+H; shared by every project and jetl
 instance) in `$XDG_STATE_HOME/jetl/history/`, created with the first one.
 
 ## Reloading
@@ -409,12 +409,13 @@ snapshots.
 
 Put a label on a file to keep a named snapshot: File > Local History: Put
 Label… (`editor.put_label`, no key by default; also the Project tree's
-context menu) asks a name and stores the active file's text, unsaved edits
+context menu, and Put Label… or Alt+L in the Local History window, for the
+file it shows) asks a name and stores the active file's text, unsaved edits
 included (or the selected tree file as on disk), as a "Label: <name>" row,
 in bold. A label applies to one file, not the whole project as in
 JetBrains. It is kept past `keep_days`, and dropped by the size limit only
-after every other snapshot; Shift+Delete on its row in the Local History
-list removes it (after asking). A label moves with its file when renamed in
+after every other snapshot; Delete on its row in the Local History
+window removes it (after asking). A label moves with its file when renamed in
 the Project tree. Saving the labelled text right after adds no row.
 
 With `snapshot_unsaved_secs` set, the text of every tab with unsaved edits
@@ -429,18 +430,29 @@ Snapshots are stored compressed (zlib), so about three
 to four times as much source text fits under `max_total_mb`, which counts
 the size on disk. Binary files and files over `max_file_kb` are skipped.
 
-File > Local History… (`editor.local_history`, no key by default; also the
-Project tree's context menu) lists the snapshots of the active file, or of
-the selected tree entry when the tree has focus, newest first: date and
-time, what it was taken for ("Saved", "Before git switch main"), size and
-the line count change from the one before. Typing filters by date or label.
-Enter shows the snapshot against the file's current text (its unsaved
-edits included) in the Git window's History tab (Alt+Y there), with the
-layout toggles and F7 of every Git diff; F5 compares again. Revert (the
-button, or Alt+R in the Git window) puts the snapshot's text into the
-file's tab as one undoable edit (Ctrl+Z takes it back), opening the file
-first if needed; nothing is written until you save. [Snapshots…] goes back
-to the list.
+File > Local History… (`editor.local_history`, Alt+Shift+H; also the
+Project tree's context menu) opens the Local History tool window (bottom;
+View > Local History or its strip button toggle it) on the active file, or
+on the selected tree entry when the tree has focus. It keeps showing that
+file when you switch tabs, until Local History is asked for another file;
+renaming the file or a folder above it in the Project tree takes the window
+along. On the left are the file's snapshots, newest first: date and time,
+what it was taken for ("Saved", "Before git switch main", labels in bold),
+and on wide windows the size and the line count change from the one
+before. The list follows new snapshots as they are stored (saves,
+autosaves, the unsaved timer, git operations, labels), keeping the selected
+snapshot and the filter. Typing filters it (every word must appear in the
+date or the label; Backspace deletes, Esc clears). On the right is the
+selected snapshot against the file's current text (its unsaved edits
+included), with the layout toggles of every diff (Alt+U, Alt+F), F7 and
+Shift+F7 to step through the changes; Tab, Right and Left move between the
+list and the diff (below 60 columns they take turns), F5 lists again, Enter
+opens the file. Revert (the button, or Alt+R) puts the snapshot's text into
+the file's tab as one undoable edit (Ctrl+Z takes it back), opening the
+file first if needed; nothing is written until you save. Put Label… (Alt+L)
+and Remove Label (Delete, on a label row) work in place; Shift+F10 or a
+right click opens the same actions as a menu. Esc clears the filter, then
+goes back to the list, then to the editor.
 
 Snapshots older than `keep_days` go (labels excepted), then the oldest
 while the store holds more than `max_total_mb`, labels last, when jetl starts and when either setting

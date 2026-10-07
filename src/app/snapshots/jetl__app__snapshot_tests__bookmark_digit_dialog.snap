@@ -13,7 +13,7 @@ expression: "snapshot(&term, &marks, None)"
 07  ⊢ │   │ Press a digit to bookmark line 4 with it.                     │
 08    │   │ A digit used elsewhere moves here; Esc cancels.               │
 09    │   │                                                               │
-10    │   │  [ 0 ] [ 1 ] [ 2 ] [ 3 ] [ 4 ] [ 5 ] [ 6 ] [ 7 ] [ 8 ] [ 9 ]  │
+10  ⟲ │   │  [ 0 ] [ 1 ] [ 2 ] [ 3 ] [ 4 ] [ 5 ] [ 6 ] [ 7 ] [ 8 ] [ 9 ]  │
 11    │   └───────────────────────────────────────────────────────────────┘
 12  ⚑ │                              ││
 13  9 │                              ││
