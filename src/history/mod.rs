@@ -305,7 +305,12 @@ impl Worker {
                     let keep = s.keep_days.saturating_mul(86_400_000);
                     match store::prune(&self.dir, now_ms(), keep, s.max_total_mb.saturating_mul(1 << 20)) {
                         Ok(st) if st.locked => tracing::info!("local history: another instance is pruning"),
-                        Ok(st) => tracing::info!("local history pruned: {} entries, {} blobs", st.entries, st.blobs),
+                        Ok(st) => tracing::info!(
+                            "local history pruned: {} entries, {} blobs; {} moved to canonical keys",
+                            st.entries,
+                            st.blobs,
+                            st.moved
+                        ),
                         Err(e) => tracing::warn!("local history prune: {e}"),
                     }
                 }
@@ -419,6 +424,21 @@ mod tests {
         h.capture(Capture::text(path.clone(), "two\n".into(), Kind::Save));
         assert!(h.before_delete(&path).is_none());
         assert_eq!(listed(&h, &mut rx, &path).len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_list_through_a_symlink_keeps_the_path_asked_with() {
+        let dir = temp("symlink");
+        let real = dir.join("a.txt");
+        std::fs::write(&real, "one\n").unwrap();
+        let link = dir.join("link.txt");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let (h, mut rx) = handle(&dir);
+        h.capture(Capture::text(real.clone(), "one\n".into(), Kind::Save));
+        // `listed` checks the answer names `link`, not the target.
+        assert_eq!(listed(&h, &mut rx, &link).len(), 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

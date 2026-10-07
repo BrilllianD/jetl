@@ -3,9 +3,18 @@
 //!
 //! ```text
 //! history/blobs/<id[0..2]>/<id>   raw bytes, id = git blob sha1 of them
-//! history/index/<fnv1a64(path):016x>.jsonl   one `Entry` per line, oldest first
+//! history/index/<fnv1a64(key):016x>.jsonl   one `Entry` per line, oldest first
 //! history/prune.lock
 //! ```
+//!
+//! A file's key is its canonical path ([`key`]), so a file and every
+//! symlink to it (or to a directory above it) share one history; the caller
+//! keeps the path it asked with for display. A key recorded before keys were
+//! canonical (an older jetl stored the path as opened) is moved under its
+//! canonical key by the next [`prune`], which runs when jetl starts; until
+//! then [`list`] also reads the entries stored under the path as given. The
+//! line format is unchanged (`v` stays 1), so an older jetl reads the index
+//! and finds a file's history when it opens the canonical path.
 //!
 //! Blobs are shared by every entry with the same bytes (any file). Every
 //! index line names its path, so two paths whose hashes collide share a
@@ -118,6 +127,8 @@ pub struct PruneStats {
     pub locked: bool,
     pub entries: usize,
     pub blobs: usize,
+    /// Entries moved under their canonical key ([`key`]).
+    pub moved: usize,
 }
 
 fn blobs_dir(dir: &Path) -> PathBuf {
@@ -138,9 +149,40 @@ fn fnv1a64(bytes: &[u8]) -> u64 {
     h
 }
 
-/// The index file of `path` (keyed by the path as given, not canonicalized).
-pub fn index_file(dir: &Path, path: &str) -> PathBuf {
-    index_dir(dir).join(format!("{:016x}.jsonl", fnv1a64(path.as_bytes())))
+/// The index file of key `key` (see [`key`]).
+pub fn index_file(dir: &Path, key: &str) -> PathBuf {
+    index_dir(dir).join(format!("{:016x}.jsonl", fnv1a64(key.as_bytes())))
+}
+
+/// Symlinks followed at most when resolving a missing path (as `SYMLOOP_MAX`).
+const MAX_LINKS: u32 = 40;
+
+/// The key of `path` in the store: its canonical path, every symlink
+/// resolved. A missing file (deleted, or not yet written) still gets the
+/// key it had while it existed: a dangling symlink is followed to its
+/// target, and otherwise the nearest existing ancestor is canonicalized and
+/// the rest joined on. Touches the filesystem: call it off the main thread.
+pub fn key(path: &Path) -> PathBuf {
+    resolve(path, MAX_LINKS)
+}
+
+fn resolve(path: &Path, links: u32) -> PathBuf {
+    if let Ok(c) = std::fs::canonicalize(path) {
+        return c;
+    }
+    let is_link = links > 0 && std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink());
+    if let Some(target) = is_link.then(|| std::fs::read_link(path).ok()).flatten() {
+        // An absolute target replaces the parent.
+        let target = match path.parent() {
+            Some(p) => p.join(target),
+            None => target,
+        };
+        return resolve(&target, links - 1);
+    }
+    match (path.parent(), path.file_name()) {
+        (Some(parent), Some(name)) if !parent.as_os_str().is_empty() => resolve(parent, links).join(name),
+        _ => path.to_path_buf(),
+    }
 }
 
 /// A blob id is 40 lowercase hex digits; anything else never names a file.
@@ -171,9 +213,22 @@ fn read_entries(file: &Path, path: &str) -> Vec<Entry> {
     text.lines().filter_map(|l| serde_json::from_str::<Entry>(l).ok()).filter(|e| e.path == path).collect()
 }
 
-/// Snapshot `bytes` as `path`'s content at `at_ms`, unless it is too large
-/// (over `max_bytes`), binary, a file of the store, or the same as the
-/// path's last entry.
+/// The entries of `key`, oldest first, with those still stored under
+/// `given` (the path as opened, when it differs: an index not yet
+/// migrated by [`prune`]).
+fn entries_of(dir: &Path, key: &str, given: Option<&str>) -> Vec<Entry> {
+    let mut v = read_entries(&index_file(dir, key), key);
+    if let Some(given) = given.filter(|g| *g != key) {
+        v.extend(read_entries(&index_file(dir, given), given));
+        // Stable: entries at the same time keep their file order.
+        v.sort_by_key(|e| e.at);
+    }
+    v
+}
+
+/// Snapshot `bytes` as the content of `path` (stored under its [`key`]) at
+/// `at_ms`, unless it is too large (over `max_bytes`), binary, a file of
+/// the store, or the same as the file's last entry.
 pub fn record(
     dir: &Path,
     path: &Path,
@@ -189,13 +244,14 @@ pub fn record(
     if crate::git::diff::is_binary(bytes) {
         return Ok(Recorded::Skipped(Skip::Binary));
     }
-    if path.starts_with(dir) {
+    let canonical = key(path);
+    if path.starts_with(dir) || canonical.starts_with(key(dir)) {
         return Ok(Recorded::Skipped(Skip::Internal));
     }
-    let Some(key) = path.to_str() else { return Ok(Recorded::Skipped(Skip::NotUtf8Path)) };
+    let Some(key) = canonical.to_str() else { return Ok(Recorded::Skipped(Skip::NotUtf8Path)) };
     let id = blob_id(bytes)?;
     let index = index_file(dir, key);
-    if read_entries(&index, key).last().is_some_and(|e| e.blob == id) {
+    if entries_of(dir, key, path.to_str()).last().is_some_and(|e| e.blob == id) {
         return Ok(Recorded::Same);
     }
     write_blob(dir, &id, bytes)?;
@@ -232,10 +288,12 @@ fn write_blob(dir: &Path, id: &str, bytes: &[u8]) -> io::Result<()> {
     })
 }
 
-/// The snapshots of `path`, newest first.
+/// The snapshots of `path` (by its [`key`]), newest first. Their `path`
+/// is the key, not `path`: show the path asked with.
 pub fn list(dir: &Path, path: &Path) -> Vec<Entry> {
-    let Some(key) = path.to_str() else { return Vec::new() };
-    let mut v = read_entries(&index_file(dir, key), key);
+    let canonical = key(path);
+    let Some(key) = canonical.to_str() else { return Vec::new() };
+    let mut v = entries_of(dir, key, path.to_str());
     v.reverse();
     v
 }
@@ -290,11 +348,13 @@ struct IndexFile {
     changed: bool,
 }
 
-/// Drop entries older than `keep_ms` before `now_ms`, then the oldest ones
-/// (of any file) while the blobs still referenced exceed `max_bytes`;
-/// rewrite the changed index files (an emptied one is removed) and delete
-/// the blobs no entry references (once older than [`BLOB_GRACE`]). Does
-/// nothing while another instance prunes. Never creates `dir`.
+/// Move entries stored under a path that is not their [`key`] (written by
+/// an older jetl, through a symlink) under the key, then drop entries older
+/// than `keep_ms` before `now_ms`, then the oldest ones (of any file) while
+/// the blobs still referenced exceed `max_bytes`; rewrite the changed index
+/// files (an emptied one is removed) and delete the blobs no entry
+/// references (once older than [`BLOB_GRACE`]). Does nothing while another
+/// instance prunes. Never creates `dir`.
 pub fn prune(dir: &Path, now_ms: u64, keep_ms: u64, max_bytes: u64) -> io::Result<PruneStats> {
     if !dir.is_dir() {
         return Ok(PruneStats::default());
@@ -323,7 +383,7 @@ pub fn prune(dir: &Path, now_ms: u64, keep_ms: u64, max_bytes: u64) -> io::Resul
             files.push(IndexFile { file, entries, corrupt, changed: false });
         }
     }
-    let mut stats = PruneStats::default();
+    let mut stats = PruneStats { moved: migrate_keys(dir, &mut files), ..Default::default() };
     // By age.
     let cutoff = now_ms.saturating_sub(keep_ms);
     for f in &mut files {
@@ -379,6 +439,51 @@ pub fn prune(dir: &Path, now_ms: u64, keep_ms: u64, max_bytes: u64) -> io::Resul
     }
     stats.blobs = gc_blobs(dir, &keep);
     Ok(stats)
+}
+
+/// Move every entry whose path is not its canonical [`key`] into the index
+/// of the key (created when missing), merged by time, so two keys of one
+/// file become one history before the prune counts entries; returns how
+/// many moved. A path that does not resolve (a deleted file whose folders
+/// are gone too) keeps its key.
+fn migrate_keys(dir: &Path, files: &mut Vec<IndexFile>) -> usize {
+    let mut keys: HashMap<String, Option<String>> = HashMap::new();
+    let mut moving: Vec<Entry> = Vec::new();
+    for f in files.iter_mut() {
+        let file = f.file.clone();
+        let mut rekeyed = false;
+        f.entries.retain_mut(|e| {
+            let k = keys.entry(e.path.clone()).or_insert_with(|| key(Path::new(&e.path)).to_str().map(str::to_string));
+            let Some(k) = k.as_ref().filter(|k| **k != e.path) else { return true };
+            e.path = k.clone();
+            rekeyed = true;
+            // Stays when the key's index is this file (a hash collision).
+            if index_file(dir, k) == file {
+                return true;
+            }
+            moving.push(e.clone());
+            false
+        });
+        f.changed |= rekeyed;
+    }
+    let moved = moving.len();
+    let mut at: HashMap<PathBuf, usize> = files.iter().enumerate().map(|(i, f)| (f.file.clone(), i)).collect();
+    let mut touched = HashSet::new();
+    for e in moving {
+        let file = index_file(dir, &e.path);
+        let fi = *at.entry(file.clone()).or_insert_with(|| {
+            files.push(IndexFile { file, entries: Vec::new(), corrupt: false, changed: false });
+            files.len() - 1
+        });
+        files[fi].entries.push(e);
+        files[fi].changed = true;
+        touched.insert(fi);
+    }
+    for fi in touched {
+        // Stable: entries at the same time keep their order.
+        files[fi].entries.sort_by_key(|e| e.at);
+    }
+    moved
 }
 
 /// Replace an index file by `entries` (through a temp file and a rename);
@@ -564,6 +669,114 @@ mod tests {
         assert_eq!(prune(&none, 1, 0, 0).unwrap(), PruneStats::default());
         assert!(!none.exists());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A real file, a symlink to it and a symlinked folder above it.
+    #[cfg(unix)]
+    fn linked(name: &str) -> (PathBuf, PathBuf, PathBuf, PathBuf) {
+        let dir = temp(name);
+        let real = dir.join("real");
+        std::fs::create_dir_all(real.join("sub")).unwrap();
+        std::fs::write(real.join("a.txt"), "a").unwrap();
+        std::os::unix::fs::symlink(real.join("a.txt"), dir.join("link.txt")).unwrap();
+        std::os::unix::fs::symlink(&real, dir.join("linkdir")).unwrap();
+        let real = std::fs::canonicalize(&real).unwrap();
+        (dir.join("history"), real, dir.join("link.txt"), dir.join("linkdir"))
+    }
+
+    #[cfg(unix)]
+    fn ats(dir: &Path, path: &Path) -> Vec<u64> {
+        list(dir, path).iter().map(|e| e.at).collect()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_file_and_its_symlinks_share_one_history() {
+        let (hist, real, link, linkdir) = linked("symlink");
+        let a = real.join("a.txt");
+        let r = |p: &Path, text: &str, at| record(&hist, p, text.as_bytes(), Kind::Save, None, at, MB).unwrap();
+        assert!(matches!(r(&a, "1", 1), Recorded::Added(_)));
+        assert!(matches!(r(&link, "2", 2), Recorded::Added(_)));
+        // The same bytes as the last entry, through another path: no new one.
+        assert_eq!(r(&linkdir.join("a.txt"), "2", 3), Recorded::Same);
+        assert!(matches!(r(&linkdir.join("a.txt"), "3", 4), Recorded::Added(_)));
+        for p in [&a, &link, &linkdir.join("a.txt")] {
+            assert_eq!(ats(&hist, p), [4, 2, 1], "{}", p.display());
+        }
+        assert!(list(&hist, &a).iter().all(|e| e.path == a.to_str().unwrap()), "stored under the canonical path");
+        assert_eq!(std::fs::read_dir(index_dir(&hist)).unwrap().count(), 1);
+        let _ = std::fs::remove_dir_all(hist.parent().unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_deleted_file_is_still_listed_by_the_path_it_was_opened_with() {
+        let (hist, real, link, linkdir) = linked("deleted");
+        let x = linkdir.join("sub/x.txt");
+        std::fs::write(&x, "x").unwrap();
+        rec(&hist, link.to_str().unwrap(), "a", 1);
+        rec(&hist, x.to_str().unwrap(), "x", 2);
+        std::fs::remove_file(real.join("a.txt")).unwrap();
+        std::fs::remove_dir_all(real.join("sub")).unwrap();
+        // A dangling symlink is followed; a missing folder is joined onto
+        // the nearest one that exists.
+        assert_eq!(key(&link), real.join("a.txt"));
+        assert_eq!(key(&x), real.join("sub/x.txt"));
+        assert_eq!(ats(&hist, &link), [1]);
+        assert_eq!(ats(&hist, &real.join("a.txt")), [1]);
+        assert_eq!(ats(&hist, &x), [2]);
+        // A prune keeps them where they are.
+        let s = prune(&hist, 3, 10, MB).unwrap();
+        assert_eq!((s.entries, s.moved), (0, 0));
+        assert_eq!(ats(&hist, &x), [2]);
+        // Nothing resolves at all: the path as given.
+        assert_eq!(key(Path::new("/no/such/dir/f")), Path::new("/no/such/dir/f"));
+        let _ = std::fs::remove_dir_all(hist.parent().unwrap());
+    }
+
+    /// Append an entry for `path` as an older jetl did: under the path as
+    /// given.
+    #[cfg(unix)]
+    fn legacy(dir: &Path, path: &Path, text: &str, at: u64) {
+        let path = path.to_str().unwrap();
+        let id = blob_id(text.as_bytes()).unwrap();
+        write_blob(dir, &id, text.as_bytes()).unwrap();
+        let e = Entry { v: 1, path: path.into(), at, blob: id, len: text.len() as u64, lines: 1, kind: Kind::Save, detail: None };
+        std::fs::create_dir_all(index_dir(dir)).unwrap();
+        let mut f = std::fs::OpenOptions::new().create(true).append(true).open(index_file(dir, path)).unwrap();
+        writeln!(f, "{}", serde_json::to_string(&e).unwrap()).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn legacy_keys_of_one_file_are_merged_by_prune() {
+        let (hist, real, link, linkdir) = linked("legacy");
+        let a = real.join("a.txt");
+        legacy(&hist, &link, "l1", 1);
+        legacy(&hist, &a, "r2", 2);
+        legacy(&hist, &linkdir.join("a.txt"), "d3", 3);
+        legacy(&hist, &link, "l4", 4);
+        // Before the migration the path as given is read too.
+        assert_eq!(ats(&hist, &link), [4, 2, 1]);
+        assert_eq!(ats(&hist, &a), [2]);
+        // A prune moves them under the canonical key, merged by time, and
+        // counts them with the rest: the oldest goes by age.
+        let s = prune(&hist, 10, 8, MB).unwrap();
+        assert_eq!((s.moved, s.entries), (3, 1));
+        for p in [&a, &link, &linkdir.join("a.txt")] {
+            assert_eq!(ats(&hist, p), [4, 3, 2], "{}", p.display());
+        }
+        assert_eq!(std::fs::read_dir(index_dir(&hist)).unwrap().count(), 1, "the legacy indexes are gone");
+        // Size: 6 bytes referenced, a cap of 3 drops the two oldest.
+        let s = prune(&hist, 10, 8, 3).unwrap();
+        assert_eq!((s.moved, s.entries), (0, 2));
+        assert_eq!(ats(&hist, &link), [4]);
+        // Only a legacy key: its canonical index is created.
+        legacy(&hist, &linkdir.join("b.txt"), "b", 5);
+        std::fs::write(real.join("b.txt"), "b").unwrap();
+        assert_eq!(prune(&hist, 10, 8, MB).unwrap().moved, 1);
+        assert_eq!(list(&hist, &real.join("b.txt"))[0].path, real.join("b.txt").to_str().unwrap());
+        let _ = std::fs::remove_dir_all(hist.parent().unwrap());
     }
 
     #[test]

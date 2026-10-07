@@ -217,6 +217,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The previous results stay on screen until the new ones arrive, and Enter right after typing
   still opens the best match for the full query. The log warns about the file index cap only
   when a tree has more than 200000 files, not exactly that many.
+- Local history keys a file by its real path, so a file and a symlink to it (or a path through
+  a symlinked folder, such as a project opened through a symlink) share one history instead of
+  two. The list and the History tab still show the path you opened. A deleted file stays listed
+  under the path it was opened with. Snapshots stored by an earlier build under a symlinked path
+  are merged into the file's history when jetl starts.
 
 ### Removed
 

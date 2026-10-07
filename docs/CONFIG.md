@@ -406,8 +406,10 @@ more than `max_total_mb`, when jetl starts and when either setting
 changes; all four settings apply at once. Several jetl instances share the
 store: one prunes at a time, and a snapshot stored by another instance
 during a prune may be lost. Snapshots are plain files, like crash recovery
-dumps, protected only by the state directory's permissions. A path is recorded as it was opened, so a file reached through a
-symlink has its own history.
+dumps, protected only by the state directory's permissions. A file has one
+history however it is reached: through a symlink to it, or through a
+symlinked folder (a project opened through a symlink included); the list
+shows the path you opened.
 
 ## Indentation and .editorconfig
 
