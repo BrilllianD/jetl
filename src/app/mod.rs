@@ -255,7 +255,7 @@ impl App {
         let keymap_text = crate::config::FileText::read(&paths.keymap_file());
         let (keymap, keymap_errors) = Keymap::load_text(&keymap_text, &paths.keymap_file());
         let colorterm = crate::config::color::colorterm_env();
-        let (theme, theme_errors) = Theme::load(&config, &paths.config_dir, colorterm.as_deref());
+        let (theme, theme_errors) = Theme::load(&config, &paths.config_dir, paths.omarchy_dir.as_deref(), colorterm.as_deref());
         let theme_truecolor = config.ui.colors.truecolor(colorterm.as_deref());
         let modal = config.keymap.mode == "vim";
         let mut dispatcher = Dispatcher::new(modal);
@@ -1080,7 +1080,7 @@ pub(crate) mod tests {
         let root = dir.join("root");
         std::fs::create_dir_all(&root).unwrap();
         let root = std::fs::canonicalize(&root).unwrap();
-        let paths = Paths { config_dir: dir.join("config"), state_dir: dir.join("state"), cache_dir: dir.join("cache") };
+        let paths = Paths { config_dir: dir.join("config"), state_dir: dir.join("state"), cache_dir: dir.join("cache"), omarchy_dir: None };
         let open = open(&root);
         // No language servers unless a test installs fakes
         // (`lsp::tests::with_fake_servers`).

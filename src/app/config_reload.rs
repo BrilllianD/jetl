@@ -9,14 +9,14 @@
 //! effect at once (`config::reload` classes); keys that need a restart are
 //! named in the notification.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 
 use super::{App, Ctx};
 use crate::config::reload::{self, ConfigDiff, ReloadClass};
 use crate::config::theme::{OnBadFile, Theme};
 use crate::config::watch::{self, ConfigFile, ConfigWatcher};
-use crate::config::{ColorMode, Config, FileText};
+use crate::config::{ColorMode, Config, FileText, Paths};
 use crate::dispatch::Mode;
 use crate::event::Level;
 
@@ -30,8 +30,11 @@ struct ThemeInputs {
 }
 
 impl ThemeInputs {
-    fn read(config: &Config, config_dir: &Path) -> Self {
-        let files = Theme::sources(config, config_dir).into_iter().map(|p| (p.clone(), FileText::read(&p))).collect();
+    fn read(config: &Config, paths: &Paths) -> Self {
+        let files = Theme::sources(config, &paths.config_dir, paths.omarchy_dir.as_deref())
+            .into_iter()
+            .map(|p| (p.clone(), FileText::read(&p)))
+            .collect();
         Self { theme: config.ui.theme.clone(), colors: config.ui.colors, files }
     }
 }
@@ -66,7 +69,7 @@ impl App {
         let r = &mut self.config_reload;
         r.keymap_text = keymap_text;
         r.config_text = FileText::read(&self.paths.config_file());
-        r.theme_inputs = Some(ThemeInputs::read(&self.config, &self.paths.config_dir));
+        r.theme_inputs = Some(ThemeInputs::read(&self.config, &self.paths));
         if let Err(e) = std::fs::create_dir_all(&self.paths.config_dir) {
             tracing::warn!("cannot create {}: {e}", self.paths.config_dir.display());
         }
@@ -162,19 +165,31 @@ impl App {
     /// (`ui.theme` or `ui.colors` changed). A document that fails as a
     /// whole keeps the current theme.
     fn reload_theme(&mut self, force: bool, report: &mut Report) {
-        let inputs = ThemeInputs::read(&self.config, &self.paths.config_dir);
+        let inputs = ThemeInputs::read(&self.config, &self.paths);
         let old = self.config_reload.theme_inputs.replace(inputs.clone());
         if !force && old.as_ref() == Some(&inputs) {
             return;
         }
-        let names: Vec<String> = inputs
+        let omarchy = self.paths.omarchy_dir.as_deref();
+        let mut names: Vec<String> = inputs
             .files
             .iter()
             .filter(|f| !old.as_ref().is_some_and(|o| o.files.contains(f)))
-            .map(|(p, _)| p.file_name().map_or_else(|| p.display().to_string(), |n| n.to_string_lossy().into_owned()))
+            .map(|(p, _)| match p.file_name() {
+                _ if omarchy.is_some_and(|d| p.starts_with(d)) => "the Omarchy theme".to_string(),
+                Some(n) => n.to_string_lossy().into_owned(),
+                None => p.display().to_string(),
+            })
             .collect();
+        names.dedup();
         let colorterm = crate::config::color::colorterm_env();
-        let r = Theme::load_report(&self.config, &self.paths.config_dir, colorterm.as_deref(), OnBadFile::Reject);
+        let r = Theme::load_report(
+            &self.config,
+            &self.paths.config_dir,
+            self.paths.omarchy_dir.as_deref(),
+            colorterm.as_deref(),
+            OnBadFile::Reject,
+        );
         report.errors.extend(r.messages);
         if r.rejected {
             return;
@@ -475,6 +490,39 @@ mod tests {
         reload(&mut app, &[ConfigFile::Theme]);
         assert_eq!(app.theme.bg, Color::Rgb(4, 5, 6));
         assert_eq!(last(&app), (Level::Info, "Reloaded mine.toml".into()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn omarchy_theme_switch_restyles() {
+        use crate::config::omarchy::{self, fixtures};
+        let (mut app, dir) = test_app("reload-omarchy");
+        let current = dir.join("omarchy-current");
+        let set_theme = |colors: &str, name: &str| {
+            // As omarchy-theme-set does: a new theme directory renamed over
+            // the old one, then theme.name.
+            let next = current.join("next-theme");
+            std::fs::create_dir_all(&next).unwrap();
+            std::fs::write(next.join(omarchy::COLORS_FILE), colors).unwrap();
+            let _ = std::fs::remove_dir_all(current.join(omarchy::THEME_DIR));
+            std::fs::rename(&next, current.join(omarchy::THEME_DIR)).unwrap();
+            std::fs::write(current.join(omarchy::NAME_FILE), name).unwrap();
+        };
+        set_theme(fixtures::DARK, "catppuccin");
+        app.paths.omarchy_dir = Some(current.clone());
+        reload(&mut app, &[ConfigFile::Theme]);
+        assert_eq!(app.theme.bg, Color::Rgb(0x1e, 0x1e, 0x2e));
+        assert_eq!(last(&app), (Level::Info, "Reloaded the Omarchy theme".into()));
+        set_theme(fixtures::LIGHT, "light");
+        reload(&mut app, &[ConfigFile::Theme]);
+        assert_eq!(app.theme.bg, Color::Rgb(0xfa, 0xfa, 0xfa));
+        // A broken palette keeps the current theme.
+        set_theme("[[[", "broken");
+        reload(&mut app, &[ConfigFile::Theme]);
+        assert_eq!(app.theme.bg, Color::Rgb(0xfa, 0xfa, 0xfa));
+        let (level, text) = last(&app);
+        assert_eq!(level, Level::Error);
+        assert!(text.starts_with("Omarchy theme: ") && text.ends_with("keeping the current theme"), "{text}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

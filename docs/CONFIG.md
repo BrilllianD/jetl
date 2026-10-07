@@ -36,7 +36,9 @@ instance) in `$XDG_STATE_HOME/jetl/history/`, created with the first one.
 ## Reloading
 
 Saving `config.toml`, `keymap.toml`, `theme.toml` or the theme file named by
-`ui.theme` applies it at once, and the status bar says "Reloaded …". Each
+`ui.theme` applies it at once, and the status bar says "Reloaded …". With
+the Omarchy theme (`ui.theme = "auto"` on Omarchy, see Themes) a switch of
+the desktop theme restyles jetl too. Each
 file is reloaded on its own: a broken `keymap.toml` keeps the current key
 bindings while a valid `config.toml` saved with it still applies. A file
 whose text did not change is ignored.
@@ -84,8 +86,10 @@ soft_wrap_files = ["*.md", "*.txt", "*.rst", "*.adoc"]  # files soft-wrapped whe
                                # names ending in ".ext", anything else a whole file name
 
 [ui]
-theme = "darcula"              # "darcula", "light", or a theme file: a path ending in .toml
-                               # (relative to this directory; "~/" expands), layered on Darcula
+theme = "auto"                 # "auto" (the Omarchy theme's palette when there is one, else
+                               # "github-dark"), "omarchy", "github-dark", "darcula", "light",
+                               # or a theme file: a path ending in .toml (relative to this
+                               # directory; "~/" expands), layered on Darcula
 left_width = 32                # initial width of the left tool window (Project, Worktrees)
 bottom_height = 14             # initial height of the bottom tool window (Git)
 double_click_ms = 400          # double click and Shift Shift interval
@@ -472,17 +476,39 @@ To regenerate KEYMAP.md after changing the defaults or the action registry:
 
 ## Themes and theme.toml
 
-`ui.theme` picks the colors: the built-in `darcula` (default) or `light`, or
-a theme file. A value with a `/`, a leading `~` or a `.toml` ending is a file
-path, relative to the config directory. A theme file has the same format as
-`theme.toml` and is applied on top of Darcula, so it may set only some keys;
-the complete built-in themes are in `assets/themes/` in the repository. An
-unknown name, or a theme file that cannot be read or is not valid TOML, gives
-a notification and Darcula. `theme.toml` is then applied on top of the chosen
-theme. If it is not valid TOML it is ignored and the chosen theme stays.
-On reload, an unknown theme name, or a theme file or `theme.toml` that
-cannot be read or is not valid TOML, keeps the current theme (at startup
-Darcula is used instead, or the `theme.toml` overrides are skipped).
+`ui.theme` picks the colors: `auto` (default), `omarchy`, the built-in
+`github-dark` (GitHub Dark Default), `darcula` (IntelliJ Darcula) or `light`
+(IntelliJ Light), or a theme file. A value with a `/`, a leading `~` or a
+`.toml` ending is a file path, relative to the config directory. A theme
+file has the same format as `theme.toml` and is applied on top of Darcula,
+so it may set only some keys; the complete built-in themes are in
+`assets/themes/` in the repository. An unknown name, or a theme file that
+cannot be read or is not valid TOML, gives a notification and GitHub Dark.
+`theme.toml` is then applied on top of the chosen theme. If it is not valid
+TOML it is ignored and the chosen theme stays. On reload, an unknown theme
+name, or a theme file or `theme.toml` that cannot be read or is not valid
+TOML, keeps the current theme (at startup GitHub Dark is used instead, or
+the `theme.toml` overrides are skipped).
+
+### Omarchy
+
+On [Omarchy](https://omarchy.org), `auto` (and `omarchy`) takes its colors
+from the current desktop theme: the palette in
+`$XDG_STATE_HOME/omarchy/current/theme/colors.toml` (or
+`~/.config/omarchy/current/theme/colors.toml` on older releases) is mapped
+onto every theme key by `assets/themes/omarchy.toml`, with syntax colors
+like Omarchy's Helix theme. Palettes with only `color0`..`color15` work too,
+and missing shades are derived as Omarchy derives them. Switching the
+Omarchy theme (`omarchy-theme-set`, the theme menu) restyles jetl at once.
+Without Omarchy `auto` is GitHub Dark; `omarchy` gives a notification and
+GitHub Dark.
+
+A `jetl.toml` in the Omarchy theme directory (shipped by a theme, or made
+from an Omarchy template `~/.config/omarchy/themed/jetl.toml.tpl`) is
+applied on top of the palette, before `theme.toml`, in the same format. A
+palette that is not valid TOML or lacks one of `background`, `foreground`,
+`red`, `green`, `yellow`, `blue`, `magenta` and `cyan` gives a notification
+and GitHub Dark at startup, and keeps the current theme on reload.
 
 Without true color (`ui.colors = "auto"` and `$COLORTERM` not `truecolor` or
 `24bit`; ssh, sudo and tmux often drop it), every `"#rrggbb"` color is drawn
@@ -490,7 +516,7 @@ as the nearest color of the 256-color palette, indices 16 to 255. Color names
 and indices like `"208"` are used as they are. Dark tints tend to end up
 gray, so a theme can give exact colors for that case in a `[colors256]`
 table, which takes the same entries as the top level and applies only with
-256 colors (Darcula uses it for diff and merge backgrounds). Set
+256 colors (the dark built-in themes use it for diff and merge backgrounds). Set
 `ui.colors = "truecolor"` if your terminal supports true color but does not
 say so. The Terminal window follows the same choice (see above).
 

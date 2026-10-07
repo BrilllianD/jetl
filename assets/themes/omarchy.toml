@@ -1,0 +1,131 @@
+# The Omarchy theme: rendered from the palette of the current Omarchy theme
+# (~/.local/state/omarchy/current/theme/colors.toml) by src/config/omarchy.rs.
+# `{{name}}` is a palette color and `{{mix a b pct}}` blends pct percent of
+# `b` into `a`. Every theme key is set here; syntax colors follow Omarchy's
+# Helix template. Light palettes drop the [colors256] table. See
+# docs/CONFIG.md.
+
+bg = "{{background}}"
+fg = "{{foreground}}"
+panel_bg = "{{dark_background}}"
+strip_bg = "{{darker_background}}"
+status_bg = "{{dark_background}}"
+status_fg = "{{light_foreground}}"
+current_line_bg = "{{mix background foreground 5}}"
+selection_bg = "{{selection}}"
+search_match_bg = "{{mix background green 30}}"
+search_current_bg = "{{mix background yellow 45}}"
+occurrence_bg = "{{mix background foreground 14}}"
+gutter_added = "{{green}}"
+gutter_modified = "{{blue}}"
+gutter_deleted = "{{muted}}"
+diff_add_bg = "{{mix background green 15}}"
+diff_del_bg = "{{mix background red 15}}"
+diff_mod_bg = "{{mix background blue 15}}"
+diff_add_word_bg = "{{mix background green 32}}"
+diff_del_word_bg = "{{mix background red 32}}"
+merge_conflict_bg = "{{mix background orange 28}}"
+merge_resolved_bg = "{{mix background foreground 8}}"
+popup_bg = "{{lighter_background}}"
+
+border = "{{muted}}"
+border_focused = "{{accent}}"
+title = "{{foreground}}"
+title_focused = { fg = "{{bright_foreground}}", bold = true }
+strip_item = { fg = "{{mix foreground background 35}}", bg = "{{darker_background}}" }
+strip_item_active = { fg = "{{background}}", bg = "{{accent}}", bold = true }
+status_accent = "{{accent}}"
+tab = { fg = "{{mix foreground background 25}}", bg = "{{dark_background}}" }
+tab_active = { fg = "{{bright_foreground}}", bg = "{{background}}", bold = true }
+tab_dirty = "{{yellow}}"
+line_number = "{{mix foreground background 55}}"
+line_number_current = "{{foreground}}"
+bracket_match = { bg = "{{mix background accent 30}}", bold = true }
+secondary_caret = { reverse = true }
+bookmark = "{{yellow}}"
+fold_placeholder = { fg = "{{mix foreground background 35}}", bg = "{{lighter_background}}" }
+git_added = "{{green}}"
+git_modified = "{{blue}}"
+git_deleted = "{{mix foreground background 45}}"
+git_untracked = "{{orange}}"
+git_conflicted = "{{red}}"
+git_ignored = "{{mix foreground background 60}}"
+popup_border = "{{accent}}"
+list_selected = { fg = "{{bright_foreground}}", bg = "{{mix background accent 40}}" }
+list_selected_unfocused = { fg = "{{foreground}}", bg = "{{mix background accent 18}}" }
+dim = "{{mix foreground background 45}}"
+error = "{{red}}"
+warn = "{{yellow}}"
+info = "{{blue}}"
+diag_error = { fg = "{{red}}", underline = true }
+diag_warn = { fg = "{{yellow}}", underline = true }
+diag_info = { fg = "{{blue}}", underline = true }
+diag_hint = "{{muted}}"
+splitter = { fg = "{{muted}}", bg = "{{background}}" }
+
+[syntax]
+keyword = "{{magenta}}"
+"keyword.directive" = "{{magenta}}"
+string = "{{green}}"
+"string.special" = "{{blue}}"
+"string.special.key" = "{{blue}}"
+"string.escape" = "{{magenta}}"
+escape = "{{magenta}}"
+comment = { fg = "{{muted}}", italic = true }
+"comment.documentation" = { fg = "{{mix muted foreground 30}}", italic = true }
+number = "{{yellow}}"
+boolean = "{{yellow}}"
+constant = "{{yellow}}"
+"constant.builtin" = "{{yellow}}"
+function = "{{blue}}"
+"function.builtin" = "{{blue}}"
+"function.macro" = "{{magenta}}"
+"type.builtin" = "{{magenta}}"
+property = "{{blue}}"
+attribute = "{{yellow}}"
+label = "{{blue}}"
+operator = "{{cyan}}"
+punctuation = "{{foreground}}"
+"punctuation.special" = "{{cyan}}"
+"variable.builtin" = "{{red}}"
+tag = "{{blue}}"
+embedded = "{{foreground}}"
+"text.title" = { fg = "{{accent}}", bold = true }
+"text.literal" = "{{green}}"
+"text.reference" = "{{blue}}"
+"text.uri" = { fg = "{{blue}}", underline = true }
+none = "{{foreground}}"
+# CSS and SCSS queries capture each at-rule under its own name.
+media = "{{magenta}}"
+import = "{{magenta}}"
+keyframes = "{{magenta}}"
+charset = "{{magenta}}"
+namespace = "{{magenta}}"
+supports = "{{magenta}}"
+at = "{{magenta}}"
+use = "{{magenta}}"
+forward = "{{magenta}}"
+include = "{{magenta}}"
+mixin = "{{magenta}}"
+extend = "{{magenta}}"
+each = "{{magenta}}"
+for = "{{magenta}}"
+while = "{{magenta}}"
+return = "{{magenta}}"
+debug = "{{magenta}}"
+warn = "{{magenta}}"
+# Lua query names for control flow, methods and the shebang line.
+conditional = "{{magenta}}"
+repeat = "{{magenta}}"
+method = "{{blue}}"
+preproc = "{{magenta}}"
+
+# With 256 colors the nearest palette color would turn these dark tints
+# gray, so diff and merge chunks would look alike.
+[colors256]
+diff_add_bg = "22"
+diff_del_bg = "52"
+diff_mod_bg = "17"
+diff_add_word_bg = "28"
+diff_del_word_bg = "88"
+merge_conflict_bg = "94"

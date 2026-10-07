@@ -405,13 +405,41 @@ palette (Ctrl+N), Problems, a folded function and the conflict resolver
 (the `/tmp/jt-merge` fixture above): every highlight readable, and diff and
 merge chunks told apart. Then, one start each:
 
-- `theme = "nope"`: a notification about the unknown theme, then Darcula.
+- `theme = "nope"`: a notification about the unknown theme, then GitHub
+  Dark.
+- No `theme` (or `theme = "auto"`) and no Omarchy palette under
+  `/tmp/jt-home/state`: GitHub Dark (`48;2;13;17;23`).
 - `theme = "mine.toml"` with `bg = "#202040"` in
   `/tmp/jt-home/config/jetl/mine.toml`: Darcula with that background
   (`48;2;32;32;64`).
 - `theme.toml` with `selection_bg = "#ffcc00"` on `theme = "light"`: a
   selection (Shift+Right) shows `48;2;255;204;0`.
 - `[ui] colors = "truecolor"` with COLORTERM unset: RGB codes again.
+
+### Scenario: Omarchy theme
+
+At 80x24 and at 120x40, on the scratch project `$T` above, with a fake
+Omarchy state directory (the real desktop theme is left alone; Omarchy's
+themes are in `~/.local/share/omarchy/themes/`):
+
+```sh
+O=/tmp/jt-home/state/omarchy/current; rm -rf /tmp/jt-home; mkdir -p $O/theme /tmp/jt-home/config/jetl
+cp ~/.local/share/omarchy/themes/tokyo-night/colors.toml $O/theme/; echo tokyo-night > $O/theme.name
+/tmp/tm.sh -f /dev/null new-session -d -s jetl -x 80 -y 24 \
+  "env COLORTERM=truecolor XDG_CONFIG_HOME=/tmp/jt-home/config XDG_STATE_HOME=/tmp/jt-home/state $PWD/target/debug/jetl $T/src/main.rs"
+sleep 2; /tmp/tm.sh capture-pane -t jetl -p -e | grep -c '48;2;26;27;38'   # Tokyo Night background #1a1b26
+# Switch as omarchy-theme-set does: a new directory renamed over the old one, then theme.name.
+mkdir $O/next-theme; cp ~/.local/share/omarchy/themes/gruvbox/colors.toml $O/next-theme/
+rm -rf $O/theme; mv $O/next-theme $O/theme; echo gruvbox > $O/theme.name; sleep 1
+/tmp/tm.sh capture-pane -t jetl -p | tail -1                 # Reloaded the Omarchy theme
+/tmp/tm.sh capture-pane -t jetl -p -e | grep -c '48;2;40;40;40'     # Gruvbox background #282828
+printf 'bg = "#202040"\n' > $O/theme/jetl.toml; echo gruvbox2 > $O/theme.name; sleep 1   # dark blue background
+printf '[ui]\ntheme = "darcula"\n' > /tmp/jt-home/config/jetl/config.toml; sleep 1   # Darcula
+/tmp/tm.sh kill-server
+```
+
+Check the same windows as in the themes scenario, also with COLORTERM
+unset: every highlight readable.
 
 ### Scenario: config hot reload
 

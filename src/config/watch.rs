@@ -33,7 +33,7 @@ pub type Targets = Vec<(PathBuf, ConfigFile)>;
 /// editing the file a dotfile manager links to is noticed too.
 pub fn targets(paths: &Paths, config: &Config) -> Targets {
     let mut out = vec![(paths.config_file(), ConfigFile::Config), (paths.keymap_file(), ConfigFile::Keymap)];
-    out.extend(Theme::sources(config, &paths.config_dir).into_iter().map(|p| (p, ConfigFile::Theme)));
+    out.extend(Theme::sources(config, &paths.config_dir, paths.omarchy_dir.as_deref()).into_iter().map(|p| (p, ConfigFile::Theme)));
     let links: Vec<(PathBuf, ConfigFile)> = out
         .iter()
         .filter(|(p, _)| std::fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_symlink()))
@@ -147,7 +147,12 @@ mod tests {
     }
 
     fn paths(config_dir: &Path) -> Paths {
-        Paths { config_dir: config_dir.to_path_buf(), state_dir: config_dir.join("state"), cache_dir: config_dir.join("cache") }
+        Paths {
+            config_dir: config_dir.to_path_buf(),
+            state_dir: config_dir.join("state"),
+            cache_dir: config_dir.join("cache"),
+            omarchy_dir: None,
+        }
     }
 
     #[test]
@@ -225,6 +230,32 @@ mod tests {
         // Back to the built-in theme: the other directory is dropped.
         w.set_targets(targets(&paths(&cfg), &Config::default()));
         assert_eq!(w.dirs(), std::slice::from_ref(&cfg));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn watcher_sees_an_omarchy_theme_switch() {
+        use crate::config::omarchy::{COLORS_FILE, NAME_FILE, THEME_DIR};
+        let dir = test_dir("omarchy");
+        let cfg = dir.join("config");
+        let current = dir.join("current");
+        std::fs::create_dir_all(&cfg).unwrap();
+        std::fs::create_dir_all(current.join(THEME_DIR)).unwrap();
+        std::fs::write(current.join(THEME_DIR).join(COLORS_FILE), "").unwrap();
+        let mut p = paths(&cfg);
+        p.omarchy_dir = Some(current.clone());
+        let t = targets(&p, &Config::default());
+        assert!(t.contains(&(current.join(NAME_FILE), ConfigFile::Theme)), "{t:?}");
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let w = ConfigWatcher::start(t, tx).unwrap();
+        assert!(w.dirs().contains(&current), "{:?}", w.dirs());
+        // omarchy-theme-set: the theme directory replaced, then theme.name.
+        let next = current.join("next-theme");
+        std::fs::create_dir_all(&next).unwrap();
+        std::fs::remove_dir_all(current.join(THEME_DIR)).unwrap();
+        std::fs::rename(&next, current.join(THEME_DIR)).unwrap();
+        std::fs::write(current.join(NAME_FILE), "nord\n").unwrap();
+        wait_for(&mut rx, ConfigFile::Theme).await;
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

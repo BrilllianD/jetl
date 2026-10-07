@@ -1,0 +1,128 @@
+# GitHub Dark Default (GitHub's Primer colors), jetl's default theme outside
+# Omarchy. Every theme key is set here. See docs/CONFIG.md.
+
+bg = "#0d1117"
+fg = "#e6edf3"
+panel_bg = "#010409"
+strip_bg = "#010409"
+status_bg = "#010409"
+status_fg = "#8b949e"
+current_line_bg = "#171b22"
+selection_bg = "#264f78"
+search_match_bg = "#7f6e3b"
+search_current_bg = "#9e6a03"
+occurrence_bg = "#2c313a"
+gutter_added = "#2ea043"
+gutter_modified = "#bb8009"
+gutter_deleted = "#f85149"
+diff_add_bg = "#10231c"
+diff_del_bg = "#2c161b"
+diff_mod_bg = "#101f37"
+diff_add_word_bg = "#1c4328"
+diff_del_word_bg = "#563132"
+merge_conflict_bg = "#382d13"
+merge_resolved_bg = "#161b22"
+popup_bg = "#161b22"
+
+border = "#30363d"
+border_focused = "#1f6feb"
+title = "#8b949e"
+title_focused = { fg = "#e6edf3", bold = true }
+strip_item = { fg = "#7d8590", bg = "#010409" }
+strip_item_active = { fg = "#ffffff", bg = "#1f6feb", bold = true }
+status_accent = "#2f81f7"
+tab = { fg = "#7d8590", bg = "#010409" }
+tab_active = { fg = "#e6edf3", bg = "#0d1117", bold = true }
+tab_dirty = "#d29922"
+line_number = "#6e7681"
+line_number_current = "#e6edf3"
+bracket_match = { bg = "#193b25", bold = true }
+secondary_caret = { reverse = true }
+bookmark = "#d29922"
+fold_placeholder = { fg = "#7d8590", bg = "#21262d" }
+git_added = "#3fb950"
+git_modified = "#d29922"
+git_deleted = "#f85149"
+git_untracked = "#3fb950"
+git_conflicted = "#db6d28"
+git_ignored = "#6e7681"
+popup_border = "#30363d"
+list_selected = { fg = "#ffffff", bg = "#14376c" }
+list_selected_unfocused = { fg = "#e6edf3", bg = "#21262d" }
+dim = "#7d8590"
+error = "#f85149"
+warn = "#d29922"
+info = "#2f81f7"
+diag_error = { fg = "#f85149", underline = true }
+diag_warn = { fg = "#d29922", underline = true }
+diag_info = { fg = "#2f81f7", underline = true }
+diag_hint = "#8b949e"
+splitter = { fg = "#30363d", bg = "#0d1117" }
+
+[syntax]
+keyword = "#ff7b72"
+"keyword.directive" = "#ff7b72"
+string = "#a5d6ff"
+"string.special" = "#a5d6ff"
+"string.special.key" = "#7ee787"
+"string.escape" = "#79c0ff"
+escape = "#79c0ff"
+comment = "#8b949e"
+"comment.documentation" = "#8b949e"
+number = "#79c0ff"
+boolean = "#79c0ff"
+constant = "#79c0ff"
+"constant.builtin" = "#79c0ff"
+function = "#d2a8ff"
+"function.builtin" = "#d2a8ff"
+"function.macro" = "#d2a8ff"
+"type.builtin" = "#ff7b72"
+property = "#79c0ff"
+attribute = "#79c0ff"
+label = "#ffa657"
+operator = "#ff7b72"
+punctuation = "#e6edf3"
+"punctuation.special" = "#ff7b72"
+"variable.builtin" = "#79c0ff"
+tag = "#7ee787"
+embedded = "#e6edf3"
+"text.title" = { fg = "#1f6feb", bold = true }
+"text.literal" = "#79c0ff"
+"text.reference" = "#a5d6ff"
+"text.uri" = { fg = "#a5d6ff", underline = true }
+none = "#e6edf3"
+# CSS and SCSS queries capture each at-rule under its own name.
+media = "#ff7b72"
+import = "#ff7b72"
+keyframes = "#ff7b72"
+charset = "#ff7b72"
+namespace = "#ff7b72"
+supports = "#ff7b72"
+at = "#ff7b72"
+use = "#ff7b72"
+forward = "#ff7b72"
+include = "#ff7b72"
+mixin = "#ff7b72"
+extend = "#ff7b72"
+each = "#ff7b72"
+for = "#ff7b72"
+while = "#ff7b72"
+return = "#ff7b72"
+debug = "#ff7b72"
+warn = "#ff7b72"
+# Lua query names for control flow, methods and the shebang line.
+conditional = "#ff7b72"
+repeat = "#ff7b72"
+method = "#d2a8ff"
+preproc = "#ff7b72"
+
+# With 256 colors the nearest palette color would turn these dark tints
+# black or gray, so diff and merge chunks would look alike.
+[colors256]
+occurrence_bg = "237"
+diff_add_bg = "22"
+diff_del_bg = "52"
+diff_mod_bg = "17"
+diff_add_word_bg = "28"
+diff_del_word_bg = "88"
+merge_conflict_bg = "94"

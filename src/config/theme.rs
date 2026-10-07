@@ -14,6 +14,7 @@ use std::sync::LazyLock;
 
 use ratatui::style::{Color, Modifier, Style};
 
+use crate::config::omarchy::{self, Palette};
 use crate::config::{Config, color};
 
 impl Theme {
@@ -66,8 +67,10 @@ pub const DARCULA: BuiltinTheme = BuiltinTheme { name: "darcula", toml: include_
 
 pub const LIGHT: BuiltinTheme = BuiltinTheme { name: "light", toml: include_str!("../../assets/themes/light.toml") };
 
+pub const GITHUB_DARK: BuiltinTheme = BuiltinTheme { name: "github-dark", toml: include_str!("../../assets/themes/github-dark.toml") };
+
 /// Every built-in theme, selectable by name with `ui.theme`.
-pub const BUILTIN_THEMES: &[BuiltinTheme] = &[DARCULA, LIGHT];
+pub const BUILTIN_THEMES: &[BuiltinTheme] = &[DARCULA, LIGHT, GITHUB_DARK];
 
 /// The `[syntax]` captures every built-in theme sets.
 pub const BUILTIN_CAPTURES: &[&str] = &[
@@ -404,25 +407,35 @@ impl Theme {
         }
     }
 
-    /// The theme `config` asks for: the built-in or theme file named by
-    /// `ui.theme` (a theme file is layered on Darcula), then
+    /// The theme `config` asks for: by default (`auto`) the palette of the
+    /// current Omarchy theme when `omarchy` (Omarchy's `current/`
+    /// directory) has one, else GitHub Dark; or the built-in or theme file
+    /// named by `ui.theme` (a theme file is layered on Darcula). Then
     /// `config_dir/theme.toml` on top, then the 256-color mapping unless
     /// `ui.colors` and `colorterm` (the `$COLORTERM` value) give true color.
     /// Problems are logged and returned for notifications; a missing or
-    /// broken theme file gives Darcula, a broken `theme.toml` is skipped.
-    pub fn load(config: &Config, config_dir: &Path, colorterm: Option<&str>) -> (Theme, Vec<String>) {
-        let r = Theme::load_report(config, config_dir, colorterm, OnBadFile::Fallback);
+    /// broken theme gives GitHub Dark, a broken `theme.toml` is skipped.
+    pub fn load(config: &Config, config_dir: &Path, omarchy: Option<&Path>, colorterm: Option<&str>) -> (Theme, Vec<String>) {
+        let r = Theme::load_report(config, config_dir, omarchy, colorterm, OnBadFile::Fallback);
         (r.theme, r.messages)
     }
 
     /// [`Theme::load`] with a choice of what a whole-document failure (an
     /// unknown `ui.theme` name, a theme file that is missing, unreadable
-    /// or not valid TOML, a broken `theme.toml`) does: `Fallback` as at
-    /// startup, or `Reject` for hot reload, which sets `rejected` so the
-    /// caller keeps its current theme. Every problem is reported either way;
-    /// skipped entries ("(entry ignored)") never reject.
-    pub fn load_report(config: &Config, config_dir: &Path, colorterm: Option<&str>, on_bad: OnBadFile) -> ThemeLoad {
+    /// or not valid TOML, a bad Omarchy palette, a broken `theme.toml`)
+    /// does: `Fallback` as at startup, or `Reject` for hot reload, which
+    /// sets `rejected` so the caller keeps its current theme. Every problem
+    /// is reported either way; skipped entries ("(entry ignored)") never
+    /// reject.
+    pub fn load_report(
+        config: &Config,
+        config_dir: &Path,
+        omarchy: Option<&Path>,
+        colorterm: Option<&str>,
+        on_bad: OnBadFile,
+    ) -> ThemeLoad {
         const KEEP: &str = "; keeping the current theme";
+        const FALLBACK: &str = "; using github-dark";
         let ansi256 = !config.ui.colors.truecolor(colorterm);
         let mut messages = Vec::new();
         let mut rejected = false;
@@ -433,28 +446,54 @@ impl Theme {
                 messages.push(format!("{m}{KEEP}"));
             }
         };
-        let mut theme = match resolve_theme(&config.ui.theme, config_dir) {
+        let source = resolve_theme(&config.ui.theme, config_dir, omarchy);
+        let mut theme = match &source {
             ThemeSource::Builtin(b) => Theme::builtin(b, ansi256),
             ThemeSource::File(path) => {
                 let mut t = Theme::builtin(&DARCULA, ansi256);
-                match apply_file(&mut t, &path, ansi256) {
-                    Ok(entries) => messages.extend(entries),
-                    Err(FileError::Missing(m) | FileError::Rejected(m)) => whole(m, "; using darcula", &mut messages),
+                match apply_file(&mut t, path, ansi256) {
+                    Ok(entries) => {
+                        messages.extend(entries);
+                        t
+                    }
+                    Err(FileError::Missing(m) | FileError::Rejected(m)) => {
+                        whole(m, FALLBACK, &mut messages);
+                        Theme::builtin(&GITHUB_DARK, ansi256)
+                    }
                 }
-                t
             }
+            ThemeSource::Omarchy(dir) => match Theme::omarchy(&dir.join(omarchy::THEME_DIR), ansi256) {
+                Ok(t) => t,
+                Err(m) => {
+                    whole(format!("Omarchy theme: {m}"), FALLBACK, &mut messages);
+                    Theme::builtin(&GITHUB_DARK, ansi256)
+                }
+            },
             ThemeSource::Unknown(name) => {
-                let names: Vec<&str> = BUILTIN_THEMES.iter().map(|b| b.name).collect();
-                let m =
-                    format!("ui.theme: unknown theme {name:?} (built-in: {}; a theme file is a path ending in .toml)", names.join(", "));
-                whole(m, "; using darcula", &mut messages);
-                Theme::builtin(&DARCULA, ansi256)
+                let m = if name.eq_ignore_ascii_case(OMARCHY) {
+                    "ui.theme: no Omarchy theme found".to_string()
+                } else {
+                    let names: Vec<&str> = BUILTIN_THEMES.iter().map(|b| b.name).collect();
+                    format!(
+                        "ui.theme: unknown theme {name:?} ({AUTO}, {OMARCHY}, built-in: {}; a theme file is a path ending in .toml)",
+                        names.join(", ")
+                    )
+                };
+                whole(m, FALLBACK, &mut messages);
+                Theme::builtin(&GITHUB_DARK, ansi256)
             }
         };
-        match apply_file(&mut theme, &config_dir.join("theme.toml"), ansi256) {
-            Ok(entries) => messages.extend(entries),
-            Err(FileError::Missing(_)) => {}
-            Err(FileError::Rejected(m)) => whole(m, "; its overrides are not applied", &mut messages),
+        let mut overrides = Vec::new();
+        if let ThemeSource::Omarchy(dir) = &source {
+            overrides.push(dir.join(omarchy::THEME_DIR).join(omarchy::JETL_FILE));
+        }
+        overrides.push(config_dir.join("theme.toml"));
+        for path in overrides {
+            match apply_file(&mut theme, &path, ansi256) {
+                Ok(entries) => messages.extend(entries),
+                Err(FileError::Missing(_)) => {}
+                Err(FileError::Rejected(m)) => whole(m, "; its overrides are not applied", &mut messages),
+            }
         }
         if ansi256 {
             // Catches the RGB colors of theme files and theme.toml.
@@ -466,13 +505,59 @@ impl Theme {
         ThemeLoad { theme, messages, rejected }
     }
 
+    /// The theme rendered from the palette of the Omarchy theme directory
+    /// `theme_dir`, before its `jetl.toml`.
+    fn omarchy(theme_dir: &Path, ansi256: bool) -> Result<Theme, String> {
+        Theme::from_palette(&Palette::read(theme_dir)?, ansi256)
+    }
+
+    /// The Omarchy template rendered with `palette`.
+    fn from_palette(palette: &Palette, ansi256: bool) -> Result<Theme, String> {
+        let text = palette.render(omarchy::TEMPLATE)?;
+        let mut t = Theme::blank();
+        let errors = t.apply_toml(&text, ansi256).map_err(|e| error_summary(&e.to_string()))?;
+        debug_assert!(errors.is_empty(), "omarchy template: {errors:?}");
+        t.separate_highlights(ansi256);
+        Ok(t)
+    }
+
+    /// Make the highlights of each [`HIGHLIGHT_GROUPS`] group differ as
+    /// drawn (after the 256-color mapping when `ansi256`): a color equal to
+    /// an earlier one of its group moves toward `fg` in small steps. Any
+    /// palette can give equal mixes, and the coarse 256-color gray ramp
+    /// often does.
+    fn separate_highlights(&mut self, ansi256: bool) {
+        let Color::Rgb(fr, fg, fb) = self.fg else { return };
+        let shown = |c: Color| if ansi256 { color::to_ansi256(c) } else { c };
+        for group in HIGHLIGHT_GROUPS {
+            for j in 1..group.len() {
+                for _ in 0..20 {
+                    let c = *group[j](self);
+                    if !(0..j).any(|i| shown(*group[i](self)) == shown(c)) {
+                        break;
+                    }
+                    // Fixed palette indices ([colors256]) stay.
+                    let Color::Rgb(r, g, b) = c else { break };
+                    let step = |x: u8, y: u8| (x as i32 + (y as i32 - x as i32).signum() * ((y as i32 - x as i32).abs() / 16).max(1)) as u8;
+                    *group[j](self) = Color::Rgb(step(r, fr), step(g, fg), step(b, fb));
+                }
+            }
+        }
+    }
+
     /// The files the theme is read from, in layer order: the `ui.theme`
-    /// file (when it names one), then `config_dir/theme.toml`; no path
-    /// twice.
-    pub fn sources(config: &Config, config_dir: &Path) -> Vec<PathBuf> {
+    /// file (when it names one) or the Omarchy files (`theme.name`, which
+    /// changes on every theme switch, the palette and the theme's
+    /// `jetl.toml`), then `config_dir/theme.toml`; no path twice.
+    pub fn sources(config: &Config, config_dir: &Path, omarchy: Option<&Path>) -> Vec<PathBuf> {
         let mut out = Vec::new();
-        if let ThemeSource::File(p) = resolve_theme(&config.ui.theme, config_dir) {
-            out.push(p);
+        match resolve_theme(&config.ui.theme, config_dir, omarchy) {
+            ThemeSource::File(p) => out.push(p),
+            ThemeSource::Omarchy(dir) => {
+                let theme_dir = dir.join(omarchy::THEME_DIR);
+                out.extend([dir.join(omarchy::NAME_FILE), theme_dir.join(omarchy::COLORS_FILE), theme_dir.join(omarchy::JETL_FILE)]);
+            }
+            ThemeSource::Builtin(_) | ThemeSource::Unknown(_) => {}
         }
         let toml = config_dir.join("theme.toml");
         if !out.contains(&toml) {
@@ -486,8 +571,8 @@ impl Theme {
 /// as a whole.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OnBadFile {
-    /// Startup: Darcula for a bad `ui.theme`, no overrides for a bad
-    /// `theme.toml`.
+    /// Startup: GitHub Dark for a bad `ui.theme`, no overrides for a bad
+    /// `theme.toml` or `jetl.toml`.
     Fallback,
     /// Hot reload: report it and set [`ThemeLoad::rejected`].
     Reject,
@@ -528,21 +613,75 @@ fn apply_file(theme: &mut Theme, path: &Path, ansi256: bool) -> Result<Vec<Strin
     }
 }
 
+/// A color of a theme, for [`HIGHLIGHT_GROUPS`].
+type Slot = fn(&mut Theme) -> &mut Color;
+
+/// The background of a style (set to `Reset` when it has none).
+fn style_bg(s: &mut Style) -> &mut Color {
+    s.bg.get_or_insert(Color::Reset)
+}
+
+/// Backgrounds drawn over or beside one another, which must differ: each
+/// group starts with the background they sit on.
+const HIGHLIGHT_GROUPS: &[&[Slot]] = &[
+    &[
+        |t| &mut t.bg,
+        |t| &mut t.current_line_bg,
+        |t| &mut t.selection_bg,
+        |t| &mut t.search_match_bg,
+        |t| &mut t.search_current_bg,
+        |t| &mut t.occurrence_bg,
+    ],
+    &[
+        |t| &mut t.bg,
+        |t| &mut t.merge_conflict_bg,
+        |t| &mut t.diff_add_bg,
+        |t| &mut t.diff_del_bg,
+        |t| &mut t.diff_mod_bg,
+        |t| &mut t.merge_resolved_bg,
+    ],
+    &[
+        |t| &mut t.bg,
+        |t| &mut t.diff_add_bg,
+        |t| &mut t.diff_del_bg,
+        |t| &mut t.diff_mod_bg,
+        |t| &mut t.diff_add_word_bg,
+        |t| &mut t.diff_del_word_bg,
+    ],
+    &[|t| &mut t.panel_bg, |t| style_bg(&mut t.list_selected), |t| style_bg(&mut t.list_selected_unfocused)],
+    &[|t| &mut t.bg, |t| style_bg(&mut t.list_selected), |t| style_bg(&mut t.list_selected_unfocused)],
+];
+
 /// Where `ui.theme` points.
 #[derive(Debug, PartialEq)]
 pub enum ThemeSource {
     Builtin(&'static BuiltinTheme),
     File(PathBuf),
+    /// The palette of the current Omarchy theme; holds Omarchy's
+    /// `current/` directory.
+    Omarchy(PathBuf),
     Unknown(String),
 }
 
-/// Resolve a `ui.theme` value: empty is Darcula, a built-in name matches
+/// The default `ui.theme`: Omarchy's palette when there is one, else
+/// GitHub Dark.
+pub const AUTO: &str = "auto";
+/// `ui.theme` for Omarchy's palette only.
+pub const OMARCHY: &str = "omarchy";
+
+/// Resolve a `ui.theme` value: empty or `auto` is the Omarchy palette when
+/// `omarchy` (Omarchy's `current/` directory) has one, else GitHub Dark;
+/// `omarchy` is that palette or unknown; a built-in name matches
 /// case-insensitively, and a value with a `/`, a leading `~` or a `.toml`
 /// ending is a theme file (`~/` expands; relative to `config_dir`).
-pub fn resolve_theme(value: &str, config_dir: &Path) -> ThemeSource {
+pub fn resolve_theme(value: &str, config_dir: &Path, omarchy: Option<&Path>) -> ThemeSource {
     let v = value.trim();
-    if v.is_empty() {
-        return ThemeSource::Builtin(&DARCULA);
+    let palette = || omarchy.filter(|d| omarchy::colors_file(d).is_some()).map(|d| ThemeSource::Omarchy(d.to_path_buf()));
+    if v.is_empty() || v.eq_ignore_ascii_case(AUTO) {
+        return palette().unwrap_or(ThemeSource::Builtin(&GITHUB_DARK));
+    }
+    if v.eq_ignore_ascii_case(OMARCHY) {
+        return palette().unwrap_or_else(|| ThemeSource::Unknown(v.to_string()));
     }
     if let Some(b) = BUILTIN_THEMES.iter().find(|b| b.name.eq_ignore_ascii_case(v)) {
         return ThemeSource::Builtin(b);
@@ -617,23 +756,46 @@ mod tests {
         assert_eq!(t.capture_style("function.macro").unwrap().fg, Some(Color::Rgb(0, 0, 255)));
     }
 
-    #[test]
-    fn builtin_themes_set_every_key() {
+    /// A complete theme document: every field, every built-in capture, no
+    /// bad entry in either color mode.
+    fn assert_sets_every_key(name: &str, text: &str) {
         use std::collections::BTreeSet;
         let fields: BTreeSet<&str> = Theme::FIELDS.iter().copied().collect();
         let captures: BTreeSet<&str> = BUILTIN_CAPTURES.iter().copied().collect();
         assert_eq!(captures.len(), BUILTIN_CAPTURES.len(), "duplicate capture");
+        let raw: toml::Table = toml::from_str(text).unwrap();
+        let top: BTreeSet<&str> = raw.keys().map(String::as_str).filter(|k| *k != "syntax" && *k != "colors256").collect();
+        assert_eq!(top, fields, "{name}");
+        let mut t = Theme::blank();
+        let errors = t.apply_toml(text, false).unwrap();
+        assert!(errors.is_empty(), "{name}: {errors:?}");
+        let errors = Theme::blank().apply_toml(text, true).unwrap();
+        assert!(errors.is_empty(), "{name} (256 colors): {errors:?}");
+        let set: BTreeSet<&str> = t.syntax.keys().map(String::as_str).collect();
+        assert_eq!(set, captures, "{name}");
+    }
+
+    #[test]
+    fn builtin_themes_set_every_key() {
         for b in BUILTIN_THEMES {
-            let raw: toml::Table = toml::from_str(b.toml).unwrap();
-            let top: BTreeSet<&str> = raw.keys().map(String::as_str).filter(|k| *k != "syntax" && *k != "colors256").collect();
-            assert_eq!(top, fields, "{}", b.name);
-            let mut t = Theme::blank();
-            let errors = t.apply_toml(b.toml, false).unwrap();
-            assert!(errors.is_empty(), "{}: {errors:?}", b.name);
-            let errors = Theme::blank().apply_toml(b.toml, true).unwrap();
-            assert!(errors.is_empty(), "{} (256 colors): {errors:?}", b.name);
-            let set: BTreeSet<&str> = t.syntax.keys().map(String::as_str).collect();
-            assert_eq!(set, captures, "{}", b.name);
+            assert_sets_every_key(b.name, b.toml);
+        }
+    }
+
+    /// Omarchy fixture palettes and the theme each renders to.
+    fn omarchy_renders() -> Vec<(&'static str, String)> {
+        use crate::config::omarchy::fixtures;
+        [("omarchy dark", fixtures::DARK), ("omarchy light", fixtures::LIGHT)]
+            .into_iter()
+            .map(|(name, text)| (name, Palette::parse(text, false).unwrap().render(omarchy::TEMPLATE).unwrap()))
+            .collect()
+    }
+
+    #[test]
+    fn omarchy_template_sets_every_key() {
+        for (name, text) in omarchy_renders() {
+            assert!(!text.lines().any(|l| !l.trim_start().starts_with('#') && l.contains("{{")), "{name}");
+            assert_sets_every_key(name, &text);
         }
     }
 
@@ -662,27 +824,47 @@ mod tests {
         assert!(errors[0].starts_with("colors256.colors256: unknown theme field"), "{errors:?}");
     }
 
+    /// Highlights drawn over one another or side by side differ, so that
+    /// none disappears.
+    fn assert_highlights_apart(name: &str, t: &Theme, ansi256: bool) {
+        let sel = t.list_selected.bg.unwrap();
+        let unf = t.list_selected_unfocused.bg.unwrap();
+        let groups: [(&str, Vec<Color>); 5] = [
+            ("editor", vec![t.bg, t.current_line_bg, t.selection_bg, t.search_match_bg, t.search_current_bg, t.occurrence_bg]),
+            ("merge", vec![t.bg, t.merge_conflict_bg, t.diff_add_bg, t.diff_del_bg, t.diff_mod_bg, t.merge_resolved_bg]),
+            ("diff", vec![t.bg, t.diff_add_bg, t.diff_del_bg, t.diff_mod_bg, t.diff_add_word_bg, t.diff_del_word_bg]),
+            ("panel lists", vec![t.panel_bg, sel, unf]),
+            ("editor lists", vec![t.bg, sel, unf]),
+        ];
+        for (group, colors) in groups {
+            for (i, a) in colors.iter().enumerate() {
+                for c in &colors[i + 1..] {
+                    assert_ne!(a, c, "{name} ansi256={ansi256} {group}: {colors:?}");
+                }
+            }
+        }
+    }
+
     #[test]
     fn builtin_themes_keep_highlights_apart() {
         for b in BUILTIN_THEMES {
             for ansi256 in [false, true] {
-                let t = Theme::builtin(b, ansi256);
-                let sel = t.list_selected.bg.unwrap();
-                let unf = t.list_selected_unfocused.bg.unwrap();
-                let groups: [(&str, Vec<Color>); 5] = [
-                    ("editor", vec![t.bg, t.current_line_bg, t.selection_bg, t.search_match_bg, t.search_current_bg, t.occurrence_bg]),
-                    ("merge", vec![t.bg, t.merge_conflict_bg, t.diff_add_bg, t.diff_del_bg, t.diff_mod_bg, t.merge_resolved_bg]),
-                    ("diff", vec![t.bg, t.diff_add_bg, t.diff_del_bg, t.diff_mod_bg, t.diff_add_word_bg, t.diff_del_word_bg]),
-                    ("panel lists", vec![t.panel_bg, sel, unf]),
-                    ("editor lists", vec![t.bg, sel, unf]),
-                ];
-                for (name, colors) in groups {
-                    for (i, a) in colors.iter().enumerate() {
-                        for c in &colors[i + 1..] {
-                            assert_ne!(a, c, "{} ansi256={ansi256} {name}: {colors:?}", b.name);
-                        }
-                    }
+                assert_highlights_apart(b.name, &Theme::builtin(b, ansi256), ansi256);
+            }
+        }
+    }
+
+    #[test]
+    fn omarchy_template_keeps_highlights_apart() {
+        use crate::config::omarchy::fixtures;
+        for (name, text) in [("omarchy dark", fixtures::DARK), ("omarchy light", fixtures::LIGHT)] {
+            let palette = Palette::parse(text, false).unwrap();
+            for ansi256 in [false, true] {
+                let mut t = Theme::from_palette(&palette, ansi256).unwrap();
+                if ansi256 {
+                    t.map_colors(color::to_ansi256);
                 }
+                assert_highlights_apart(name, &t, ansi256);
             }
         }
     }
@@ -749,15 +931,18 @@ mod tests {
     #[test]
     fn resolve_theme_values() {
         let dir = Path::new("/cfg");
-        assert_eq!(resolve_theme("", dir), ThemeSource::Builtin(&DARCULA));
-        assert_eq!(resolve_theme(" darcula ", dir), ThemeSource::Builtin(&DARCULA));
-        assert_eq!(resolve_theme("LIGHT", dir), ThemeSource::Builtin(&LIGHT));
-        assert_eq!(resolve_theme("x", dir), ThemeSource::Unknown("x".into()));
-        assert_eq!(resolve_theme("x.toml", dir), ThemeSource::File("/cfg/x.toml".into()));
-        assert_eq!(resolve_theme("sub/x", dir), ThemeSource::File("/cfg/sub/x".into()));
-        assert_eq!(resolve_theme("/abs/x", dir), ThemeSource::File("/abs/x".into()));
+        assert_eq!(resolve_theme("", dir, None), ThemeSource::Builtin(&GITHUB_DARK));
+        assert_eq!(resolve_theme("Auto", dir, None), ThemeSource::Builtin(&GITHUB_DARK));
+        assert_eq!(resolve_theme("omarchy", dir, None), ThemeSource::Unknown("omarchy".into()));
+        assert_eq!(resolve_theme("github-dark", dir, None), ThemeSource::Builtin(&GITHUB_DARK));
+        assert_eq!(resolve_theme(" darcula ", dir, None), ThemeSource::Builtin(&DARCULA));
+        assert_eq!(resolve_theme("LIGHT", dir, None), ThemeSource::Builtin(&LIGHT));
+        assert_eq!(resolve_theme("x", dir, None), ThemeSource::Unknown("x".into()));
+        assert_eq!(resolve_theme("x.toml", dir, None), ThemeSource::File("/cfg/x.toml".into()));
+        assert_eq!(resolve_theme("sub/x", dir, None), ThemeSource::File("/cfg/sub/x".into()));
+        assert_eq!(resolve_theme("/abs/x", dir, None), ThemeSource::File("/abs/x".into()));
         if std::env::var_os("HOME").is_some() {
-            match resolve_theme("~/x.toml", dir) {
+            match resolve_theme("~/x.toml", dir, None) {
                 ThemeSource::File(p) => assert!(!p.starts_with("~") && p.ends_with("x.toml"), "{p:?}"),
                 other => panic!("{other:?}"),
             }
@@ -765,11 +950,12 @@ mod tests {
     }
 
     #[test]
-    fn load_default_is_darcula() {
+    fn load_default_without_omarchy_is_github_dark() {
         let dir = test_dir("default");
-        let (t, msgs) = Theme::load(&Config::default(), &dir, TRUE);
+        let (t, msgs) = Theme::load(&Config::default(), &dir, None, TRUE);
         assert!(msgs.is_empty(), "{msgs:?}");
-        assert_eq!(t, Theme::darcula());
+        assert_eq!(t, Theme::builtin(&GITHUB_DARK, false));
+        assert_eq!(t.bg, Color::Rgb(0x0d, 0x11, 0x17));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -777,7 +963,7 @@ mod tests {
     fn load_light_by_name() {
         let dir = test_dir("light");
         for name in ["light", "Light"] {
-            let (t, msgs) = Theme::load(&theme_config(name), &dir, TRUE);
+            let (t, msgs) = Theme::load(&theme_config(name), &dir, None, TRUE);
             assert!(msgs.is_empty(), "{msgs:?}");
             assert_eq!(t, Theme::builtin(&LIGHT, false));
             assert_eq!(t.bg, Color::Rgb(255, 255, 255));
@@ -794,14 +980,14 @@ mod tests {
         }
         let abs = dir.join("mine.toml").display().to_string();
         for name in ["mine.toml", "sub/mine.toml", abs.as_str()] {
-            let (t, msgs) = Theme::load(&theme_config(name), &dir, TRUE);
+            let (t, msgs) = Theme::load(&theme_config(name), &dir, None, TRUE);
             assert!(msgs.is_empty(), "{name}: {msgs:?}");
             assert_eq!(t.bg, Color::Rgb(1, 2, 3), "{name}");
             assert_eq!(t.fg, Theme::darcula().fg);
         }
         // A bad entry is skipped; the rest applies.
         std::fs::write(dir.join("mine.toml"), "bg = \"#010203\"\nnope = \"red\"\n").unwrap();
-        let (t, msgs) = Theme::load(&theme_config("mine.toml"), &dir, TRUE);
+        let (t, msgs) = Theme::load(&theme_config("mine.toml"), &dir, None, TRUE);
         assert_eq!(t.bg, Color::Rgb(1, 2, 3));
         assert_eq!(msgs.len(), 1, "{msgs:?}");
         assert!(msgs[0].contains("nope: unknown theme field (entry ignored)"), "{msgs:?}");
@@ -811,10 +997,12 @@ mod tests {
     #[test]
     fn load_unknown_name_falls_back() {
         let dir = test_dir("unknown");
-        let (t, msgs) = Theme::load(&theme_config("solarized"), &dir, TRUE);
-        assert_eq!(t, Theme::darcula());
+        let (t, msgs) = Theme::load(&theme_config("solarized"), &dir, None, TRUE);
+        assert_eq!(t, Theme::builtin(&GITHUB_DARK, false));
         assert_eq!(msgs.len(), 1, "{msgs:?}");
-        assert!(msgs[0].contains("unknown theme") && msgs[0].contains("darcula"), "{msgs:?}");
+        assert!(msgs[0].contains("unknown theme") && msgs[0].contains("darcula") && msgs[0].ends_with("using github-dark"), "{msgs:?}");
+        let (_, msgs) = Theme::load(&theme_config("omarchy"), &dir, None, TRUE);
+        assert_eq!(msgs, ["ui.theme: no Omarchy theme found; using github-dark"]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -823,10 +1011,10 @@ mod tests {
         let dir = test_dir("badfile");
         std::fs::write(dir.join("broken.toml"), "bg = \"#000000\"\n[[[").unwrap();
         for name in ["gone.toml", "broken.toml"] {
-            let (t, msgs) = Theme::load(&theme_config(name), &dir, TRUE);
-            assert_eq!(t, Theme::darcula(), "{name}");
+            let (t, msgs) = Theme::load(&theme_config(name), &dir, None, TRUE);
+            assert_eq!(t, Theme::builtin(&GITHUB_DARK, false), "{name}");
             assert_eq!(msgs.len(), 1, "{msgs:?}");
-            assert!(msgs[0].contains("using darcula"), "{msgs:?}");
+            assert!(msgs[0].contains("using github-dark"), "{msgs:?}");
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -835,7 +1023,7 @@ mod tests {
     fn theme_toml_overrides_light() {
         let dir = test_dir("override");
         std::fs::write(dir.join("theme.toml"), "selection_bg = \"#123456\"\n").unwrap();
-        let (t, msgs) = Theme::load(&theme_config("light"), &dir, TRUE);
+        let (t, msgs) = Theme::load(&theme_config("light"), &dir, None, TRUE);
         assert!(msgs.is_empty(), "{msgs:?}");
         assert_eq!(t.selection_bg, Color::Rgb(0x12, 0x34, 0x56));
         assert_eq!(t.bg, Theme::builtin(&LIGHT, false).bg);
@@ -846,7 +1034,7 @@ mod tests {
     fn broken_theme_toml_keeps_chosen_theme() {
         let dir = test_dir("broken");
         std::fs::write(dir.join("theme.toml"), "bg = \"#000000\"\n[[[").unwrap();
-        let (t, msgs) = Theme::load(&theme_config("light"), &dir, TRUE);
+        let (t, msgs) = Theme::load(&theme_config("light"), &dir, None, TRUE);
         assert_eq!(t, Theme::builtin(&LIGHT, false));
         assert_eq!(msgs.len(), 1, "{msgs:?}");
         assert!(msgs[0].contains("its overrides are not applied"), "{msgs:?}");
@@ -856,7 +1044,7 @@ mod tests {
     #[test]
     fn reject_mode_flags_whole_file_failures() {
         let dir = test_dir("reject");
-        let reject = |config: &Config| Theme::load_report(config, &dir, TRUE, OnBadFile::Reject);
+        let reject = |config: &Config| Theme::load_report(config, &dir, None, TRUE, OnBadFile::Reject);
         std::fs::write(dir.join("theme.toml"), "bg = \"#000000\"\n[[[").unwrap();
         let r = reject(&Config::default());
         assert!(r.rejected);
@@ -868,7 +1056,7 @@ mod tests {
             assert!(r.rejected, "{name}");
             assert_eq!(r.messages.len(), 1, "{:?}", r.messages);
             assert!(r.messages[0].ends_with("keeping the current theme"), "{:?}", r.messages);
-            assert!(!r.messages[0].contains("darcula;"), "{:?}", r.messages);
+            assert!(!r.messages[0].contains("using github-dark"), "{:?}", r.messages);
         }
         assert!(reject(&theme_config("nope")).messages[0].contains("unknown theme \"nope\""));
         let r = reject(&Config::default());
@@ -880,10 +1068,10 @@ mod tests {
     fn reject_mode_applies_entry_errors() {
         let dir = test_dir("reject-entry");
         std::fs::write(dir.join("theme.toml"), "bg = \"#zz\"\nfg = \"#010203\"\n").unwrap();
-        let r = Theme::load_report(&Config::default(), &dir, TRUE, OnBadFile::Reject);
+        let r = Theme::load_report(&Config::default(), &dir, None, TRUE, OnBadFile::Reject);
         assert!(!r.rejected);
         assert_eq!(r.theme.fg, Color::Rgb(1, 2, 3));
-        assert_eq!(r.theme.bg, Theme::darcula().bg);
+        assert_eq!(r.theme.bg, Theme::builtin(&GITHUB_DARK, false).bg);
         assert_eq!(r.messages.len(), 1, "{:?}", r.messages);
         assert!(r.messages[0].ends_with("(entry ignored)"), "{:?}", r.messages);
         let _ = std::fs::remove_dir_all(&dir);
@@ -892,11 +1080,11 @@ mod tests {
     #[test]
     fn sources_lists_theme_file_then_theme_toml() {
         let dir = Path::new("/cfg");
-        assert_eq!(Theme::sources(&Config::default(), dir), [dir.join("theme.toml")]);
-        assert_eq!(Theme::sources(&theme_config("light"), dir), [dir.join("theme.toml")]);
-        assert_eq!(Theme::sources(&theme_config("mine.toml"), dir), [dir.join("mine.toml"), dir.join("theme.toml")]);
-        assert_eq!(Theme::sources(&theme_config("/abs/x.toml"), dir), [PathBuf::from("/abs/x.toml"), dir.join("theme.toml")]);
-        assert_eq!(Theme::sources(&theme_config("theme.toml"), dir), [dir.join("theme.toml")], "no path twice");
+        assert_eq!(Theme::sources(&Config::default(), dir, None), [dir.join("theme.toml")]);
+        assert_eq!(Theme::sources(&theme_config("light"), dir, None), [dir.join("theme.toml")]);
+        assert_eq!(Theme::sources(&theme_config("mine.toml"), dir, None), [dir.join("mine.toml"), dir.join("theme.toml")]);
+        assert_eq!(Theme::sources(&theme_config("/abs/x.toml"), dir, None), [PathBuf::from("/abs/x.toml"), dir.join("theme.toml")]);
+        assert_eq!(Theme::sources(&theme_config("theme.toml"), dir, None), [dir.join("theme.toml")], "no path twice");
     }
 
     #[test]
@@ -913,14 +1101,87 @@ mod tests {
             });
             found.get()
         };
-        let (mut t, msgs) = Theme::load(&Config::default(), &dir, None);
+        let (mut t, msgs) = Theme::load(&Config::default(), &dir, None, None);
         assert!(msgs.is_empty(), "{msgs:?}");
         assert!(!has_rgb(&mut t));
-        assert_eq!(t.diff_add_bg, Color::Indexed(22), "darcula's [colors256]");
-        let (mut t, _) = Theme::load(&Config::parse("[ui]\ncolors = \"truecolor\"\n").unwrap(), &dir, None);
+        assert_eq!(t.diff_add_bg, Color::Indexed(22), "github-dark's [colors256]");
+        let (mut t, _) = Theme::load(&Config::parse("[ui]\ncolors = \"truecolor\"\n").unwrap(), &dir, None, None);
         assert!(has_rgb(&mut t));
-        let (mut t, _) = Theme::load(&Config::parse("[ui]\ncolors = \"256\"\ntheme = \"light\"\n").unwrap(), &dir, TRUE);
+        let (mut t, _) = Theme::load(&Config::parse("[ui]\ncolors = \"256\"\ntheme = \"light\"\n").unwrap(), &dir, None, TRUE);
         assert!(!has_rgb(&mut t));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An Omarchy `current/` directory in `dir` whose theme has `colors`.
+    fn omarchy_dir(dir: &Path, colors: &str) -> PathBuf {
+        let current = dir.join("omarchy-current");
+        std::fs::create_dir_all(current.join(omarchy::THEME_DIR)).unwrap();
+        std::fs::write(current.join(omarchy::THEME_DIR).join(omarchy::COLORS_FILE), colors).unwrap();
+        std::fs::write(current.join(omarchy::NAME_FILE), "test\n").unwrap();
+        current
+    }
+
+    #[test]
+    fn auto_follows_omarchy() {
+        use crate::config::omarchy::fixtures;
+        let dir = test_dir("omarchy-auto");
+        let current = omarchy_dir(&dir, fixtures::DARK);
+        let cfg = Path::new("/cfg");
+        assert_eq!(resolve_theme("auto", cfg, Some(&current)), ThemeSource::Omarchy(current.clone()));
+        assert_eq!(resolve_theme("OMARCHY", cfg, Some(&current)), ThemeSource::Omarchy(current.clone()));
+        assert_eq!(resolve_theme("darcula", cfg, Some(&current)), ThemeSource::Builtin(&DARCULA));
+        assert_eq!(resolve_theme("auto", cfg, Some(&dir)), ThemeSource::Builtin(&GITHUB_DARK), "no palette there");
+        let (t, msgs) = Theme::load(&Config::default(), &dir, Some(&current), TRUE);
+        assert!(msgs.is_empty(), "{msgs:?}");
+        assert_eq!(t.bg, Color::Rgb(0x1e, 0x1e, 0x2e));
+        assert_eq!(t.capture_style("keyword").unwrap().fg, Some(Color::Rgb(0xf5, 0xc2, 0xe7)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn omarchy_jetl_toml_then_theme_toml_override() {
+        use crate::config::omarchy::fixtures;
+        let dir = test_dir("omarchy-layers");
+        let current = omarchy_dir(&dir, fixtures::DARK);
+        let jetl = current.join(omarchy::THEME_DIR).join(omarchy::JETL_FILE);
+        std::fs::write(&jetl, "bg = \"#010203\"\nfg = \"#040506\"\n").unwrap();
+        std::fs::write(dir.join("theme.toml"), "fg = \"#070809\"\n").unwrap();
+        let (t, msgs) = Theme::load(&Config::default(), &dir, Some(&current), TRUE);
+        assert!(msgs.is_empty(), "{msgs:?}");
+        assert_eq!((t.bg, t.fg), (Color::Rgb(1, 2, 3), Color::Rgb(7, 8, 9)));
+        std::fs::write(&jetl, "[[[").unwrap();
+        let (t, msgs) = Theme::load(&Config::default(), &dir, Some(&current), TRUE);
+        assert_eq!(t.bg, Color::Rgb(0x1e, 0x1e, 0x2e));
+        assert_eq!(msgs.len(), 1, "{msgs:?}");
+        assert!(msgs[0].contains("jetl.toml") && msgs[0].ends_with("its overrides are not applied"), "{msgs:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn bad_omarchy_palette_falls_back_or_rejects() {
+        let dir = test_dir("omarchy-bad");
+        let current = omarchy_dir(&dir, "background = \"#000000\"\n");
+        let (t, msgs) = Theme::load(&Config::default(), &dir, Some(&current), TRUE);
+        assert_eq!(t, Theme::builtin(&GITHUB_DARK, false));
+        assert_eq!(msgs.len(), 1, "{msgs:?}");
+        assert!(msgs[0].starts_with("Omarchy theme: ") && msgs[0].contains("no foreground color"), "{msgs:?}");
+        assert!(msgs[0].ends_with("using github-dark"), "{msgs:?}");
+        let r = Theme::load_report(&Config::default(), &dir, Some(&current), TRUE, OnBadFile::Reject);
+        assert!(r.rejected);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn sources_of_omarchy_watch_the_theme_name() {
+        use crate::config::omarchy::fixtures;
+        let dir = test_dir("omarchy-sources");
+        let current = omarchy_dir(&dir, fixtures::DARK);
+        let theme_dir = current.join(omarchy::THEME_DIR);
+        assert_eq!(
+            Theme::sources(&Config::default(), &dir, Some(&current)),
+            [current.join("theme.name"), theme_dir.join("colors.toml"), theme_dir.join("jetl.toml"), dir.join("theme.toml")]
+        );
+        assert_eq!(Theme::sources(&theme_config("light"), &dir, Some(&current)), [dir.join("theme.toml")]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

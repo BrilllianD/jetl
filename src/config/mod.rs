@@ -2,6 +2,7 @@
 
 pub mod color;
 pub mod keymap;
+pub mod omarchy;
 pub mod reload;
 pub mod theme;
 pub mod watch;
@@ -18,13 +19,21 @@ pub struct Paths {
     pub config_dir: PathBuf,
     pub state_dir: PathBuf,
     pub cache_dir: PathBuf,
+    /// Omarchy's `current/` directory, when Omarchy is installed
+    /// ([`omarchy::current_dir`]).
+    pub omarchy_dir: Option<PathBuf>,
 }
 
 impl Paths {
     pub fn new() -> Result<Self> {
         let dirs = ProjectDirs::from("", "", "jetl").context("no home directory")?;
         let state_dir = dirs.state_dir().map(|p| p.to_path_buf()).unwrap_or_else(|| dirs.data_local_dir().to_path_buf());
-        Ok(Self { config_dir: dirs.config_dir().to_path_buf(), state_dir, cache_dir: dirs.cache_dir().to_path_buf() })
+        Ok(Self {
+            config_dir: dirs.config_dir().to_path_buf(),
+            state_dir,
+            cache_dir: dirs.cache_dir().to_path_buf(),
+            omarchy_dir: omarchy::current_dir(),
+        })
     }
 
     pub fn config_file(&self) -> PathBuf {
@@ -261,7 +270,7 @@ impl Default for EditorConfig {
 impl Default for UiConfig {
     fn default() -> Self {
         Self {
-            theme: "darcula".into(),
+            theme: theme::AUTO.into(),
             left_width: 32,
             bottom_height: 14,
             double_click_ms: 400,
@@ -441,7 +450,7 @@ mod tests {
         assert!(Config::parse("[editor]\ntab_width = \"wide\"\n").is_err());
         let dir = std::env::temp_dir().join(format!("jetl-test-config-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let paths = Paths { config_dir: dir.clone(), state_dir: dir.clone(), cache_dir: dir.clone() };
+        let paths = Paths { config_dir: dir.clone(), state_dir: dir.clone(), cache_dir: dir.clone(), omarchy_dir: None };
         assert!(Config::load(&paths).1.is_none());
         std::fs::write(paths.config_file(), "[editor\ntab_width = 2").unwrap();
         let (cfg, msg) = Config::load(&paths);

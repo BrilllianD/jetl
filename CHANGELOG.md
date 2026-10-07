@@ -18,10 +18,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on a 24-row terminal, with a menu button on top that opens the main menu. Hovering a button
   shows its name and shortcut. The icons are one-cell symbols by default; `[ui] icons = "emoji"`
   switches the strip and the menu bar to color emoji (needs a color emoji font).
-- Themes: `[ui] theme` picks the built-in `darcula` (default) or `light` (IntelliJ Light colors),
-  or a theme file (a path ending in `.toml`, relative to the config directory) layered on
-  Darcula. `theme.toml` still overrides single colors on top. An unknown name or a broken theme
-  file falls back to Darcula with a notification. Style tables accept `reverse`.
+- Themes: `[ui] theme` picks `auto` (default, see below), `omarchy`, the built-in
+  `github-dark` (GitHub Dark Default), `darcula` or `light` (IntelliJ Light colors), or a theme
+  file (a path ending in `.toml`, relative to the config directory) layered on Darcula.
+  `theme.toml` still overrides single colors on top. An unknown name or a broken theme file
+  falls back to GitHub Dark with a notification. Style tables accept `reverse`.
+- Omarchy theme: on Omarchy, the default `auto` theme takes its colors from the current
+  desktop theme's palette (`~/.local/state/omarchy/current/theme/colors.toml`) and follows
+  every theme switch live. A `jetl.toml` in the Omarchy theme directory overrides colors per
+  theme. Without Omarchy, `auto` is GitHub Dark.
 - 256-color fallback: unless `$COLORTERM` is `truecolor` or `24bit`, theme colors are drawn as
   the nearest colors of the 256-color palette. `[ui] colors = "truecolor"` or `"256"` overrides
   the detection, and themes can give exact colors for this case in a `[colors256]` table.
@@ -191,6 +196,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The default theme is `auto` (the Omarchy palette, else GitHub Dark) instead of Darcula; set
+  `[ui] theme = "darcula"` to keep Darcula.
 - Dialogs are wide enough to show their whole title.
 - Minimum supported Rust version is now 1.90 (was 1.88). tree-sitter 0.27 already required
   1.90, so 1.88 never built; hover Markdown parsing no longer uses `if let` match guards.

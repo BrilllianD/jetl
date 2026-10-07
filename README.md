@@ -61,7 +61,7 @@ built-in terminal and a Run window, all driven by JetBrains-style key bindings a
 
 **UI and configuration**
 
-- Darcula and light themes (or your own theme file) with color overrides, rebindable keymap, and a TOML config file.
+- Follows the Omarchy desktop theme live; otherwise GitHub Dark, Darcula and light themes (or your own theme file) with color overrides, rebindable keymap, and a TOML config file.
 - Zen mode, keyboard resize of tool windows, an Event Log tool window, toasts and dialogs.
 - Mouse support for clicks, selection and wheel scrolling.
 
