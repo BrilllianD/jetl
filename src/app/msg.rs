@@ -396,8 +396,11 @@ impl App {
             self.notify(Level::Info, format!("{name} has conflicts: Git > Resolve Conflicts"));
         }
         self.editor.enforce_tab_limit();
-        if let Some((_, text)) = self.pending_revert.take_if(|(p, _)| *p == path) {
-            self.apply_revert(&path, &text);
+        if let Some((_, pending)) = self.pending_revert.take_if(|(p, _)| *p == path) {
+            match pending {
+                super::history::PendingRevert::Text(text) => self.apply_revert(&path, &text),
+                super::history::PendingRevert::Changes(rev) => self.apply_changes_revert(*rev),
+            }
         }
         if let Some((_, target)) = self.pending_goto.take_if(|(p, _)| *p == path) {
             // Opening the tab remembered the position left; the new tab's

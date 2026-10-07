@@ -206,6 +206,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is stored as "Unsaved changes" each period, so work between saves survives a killed jetl or a
   closed terminal. They merge with autosaves into one snapshot per 5 minutes, and saving the
   same text turns the latest into "Saved".
+- Local history: Revert Change (Ctrl+Alt+Z in the Local History window, its toolbar and menu)
+  puts back only the selected changes of the diff, as one undoable edit, and keeps you in the
+  window to go on. F7 or a click picks a change; Shift+Down / Shift+Up (or a Shift or Ctrl click)
+  grow the selection, Ctrl+A takes every change. Nothing is reverted when the file changed since
+  the diff was made: it is compared again instead.
 - Local history labels: File > Local History: Put Label… (also in the Project tree's context
   menu) stores the file's current text under a name you choose, shown as "Label: <name>" in its
   Local History list; Put Label… (Alt+L) in the Local History window does the same for the file

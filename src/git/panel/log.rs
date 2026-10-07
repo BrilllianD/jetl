@@ -312,7 +312,7 @@ impl GitPanel {
         if self.log_diff.key.is_some() {
             if self.diff_rect.contains(p) {
                 self.area = Area::LogDiff;
-                self.log_diff.click(m.y);
+                self.log_diff.click(m.y, false);
             }
             return;
         }

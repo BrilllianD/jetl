@@ -1,0 +1,36 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &marks, Some(bottom))"
+---
+80x24 cursor=hidden
+00  ≣ ┌ Project: root ───────────────┐│
+01    │                              ││
+02  1 │                              ││
+03  ⌂ │                              ││               No files open.
+04  2 │                              ││       Alt+1 opens the Project view;
+05  ◫ │                              ││         Ctrl+Shift+N finds a file.
+06  7 │                              ││
+07  ⊢ └──────────────────────────────┘│
+08    ─────────────────────────────────────────────────────────────────────────────
+09    ┌ Local History: notes.txt ─────────────────────────────────────────────────┐
+10  ⟲ │[Revert] [Revert 2 Changes] [Put Label…] [Remove Label]                    │
+11    │ 10-05 12:00  Unsaved changes │ Saved  2024-10-04 1… [Unified] [x] Collapse│
+12  ⚑ │ 10-04 12:00  Saved           │  1   1  alpha                              │
+13  9 │ 10-03 12:00  Before git swi… │  2     -beta                               │
+14  ⎇ │ 10-02 12:00  Before reload   │      2 +beta two                           │
+15    │ 10-01 12:00  Label: before … │  3   3  gamma                              │
+16  ❯ │ 09-29 12:00  Renamed from o… │      4 +epsilon                            │
+17  6 │ 09-24 12:00  Autosaved       │  4   5  delta                              │
+18  ⚠ │                              │                                            │
+19  4 │                              │                                            │
+20  ► │                              │                                            │
+21  3 │                              │                                            │
+22  ⌕ └───────────────────────────────────────────────────────────────────────────┘
+23  root
+-- marks: A=added D=deleted ~=modified +=added word -=deleted word L=selected B=bold W=selected change
+09     BBBBBBBBBBBBBBBBBBBBBBBBBB
+11                                     BBBBBBBBBBBBBBBBBBBB
+13                                    WWW     DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD
+14                                        WWW AAAAA++++AAAAAAAAAAAAAAAAAAAAAAAAAAA
+15                   BBBBBBBBBBBBBBB
+16                                        WWW AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA

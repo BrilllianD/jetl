@@ -2575,6 +2575,24 @@ mod tests {
     }
 
     #[test]
+    fn restore_changes_is_one_undoable_edit_on_the_text_it_was_made_for() {
+        let mut ed = editor_with("changes.txt", "A\nb\nC\nD\n");
+        let d = crate::git::diff::DiffDoc::build(b"a\nb\nc\n", b"A\nb\nC\nD\n", 4);
+        let spans = [d.block_lines(0).unwrap(), d.block_lines(1).unwrap()];
+        let changes = crate::editor::gutter::revert_spans(&d.old, &d.new, &spans);
+        // Another text: refused, nothing changed.
+        assert!(!ed.restore_changes(0, "A\nb\n", changes.clone()));
+        assert_eq!(ed.buffers[0].text(), "A\nb\nC\nD\n");
+        assert!(ed.restore_changes(0, &d.new.concat(), changes));
+        let b = &ed.buffers[0];
+        assert_eq!(b.text(), "a\nb\nc\n");
+        assert_eq!(b.cursor_line_col(), (0, 0), "the caret at the topmost change");
+        assert!(b.dirty() && !b.recovered, "an ordinary edit");
+        assert!(ed.buffers[0].undo());
+        assert_eq!(ed.buffers[0].text(), "A\nb\nC\nD\n");
+    }
+
+    #[test]
     fn recover_text_is_undoable_and_holds_autosave() {
         let dir = std::env::temp_dir().join(format!("jetl-test-editor-recover-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);

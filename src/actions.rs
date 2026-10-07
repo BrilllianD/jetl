@@ -430,6 +430,14 @@ pub enum HistoryAction {
     Refresh,
     /// Put the selected snapshot back into the file (undoable).
     Revert,
+    /// Put the selected changes of the diff back (undoable).
+    RevertChanges,
+    /// In the diff: the change above or below joins the selection (in the
+    /// list: up or down).
+    ExtendUp,
+    ExtendDown,
+    /// Select every change of the diff.
+    SelectAllChanges,
     /// Put a label on the file shown.
     PutLabel,
     /// Remove the selected label (asks first).
@@ -839,6 +847,10 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "local_history.toggle_diff_collapse" => "Local History: fold or show unchanged lines in the diff", History(HistoryAction::ToggleDiffCollapse);
         "local_history.refresh" => "Local History: list the snapshots again", History(HistoryAction::Refresh);
         "local_history.revert" => "Local History: revert the file to the selected snapshot (undoable)", History(HistoryAction::Revert);
+        "local_history.revert_changes" => "Local History: revert the selected changes of the diff (undoable)", History(HistoryAction::RevertChanges);
+        "local_history.extend_selection_up" => "Local History: in the diff, select the change above too (in the list: up)", History(HistoryAction::ExtendUp);
+        "local_history.extend_selection_down" => "Local History: in the diff, select the change below too (in the list: down)", History(HistoryAction::ExtendDown);
+        "local_history.select_all_changes" => "Local History: select every change of the diff", History(HistoryAction::SelectAllChanges);
         "local_history.put_label" => "Local History: put a label on the file…", History(HistoryAction::PutLabel);
         "local_history.remove_label" => "Local History: remove the selected label…", History(HistoryAction::RemoveLabel);
         "local_history.context_menu" => "Local History: actions for the selected snapshot", History(HistoryAction::ContextMenu);

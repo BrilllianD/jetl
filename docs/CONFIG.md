@@ -449,7 +449,15 @@ Shift+F7 to step through the changes; Tab, Right and Left move between the
 list and the diff (below 60 columns they take turns), F5 lists again, Enter
 opens the file. Revert (the button, or Alt+R) puts the snapshot's text into
 the file's tab as one undoable edit (Ctrl+Z takes it back), opening the
-file first if needed; nothing is written until you save. Put Label… (Alt+L)
+file first if needed; nothing is written until you save. Revert Change (the
+button, Ctrl+Alt+Z, or "Revert Selected Changes" in the menu) puts back only
+the diff's selected changes, also as one undoable edit, and leaves you in
+the window with the diff compared again: F7 or a click picks one change,
+Shift+Down / Shift+Up in the diff (or a Shift or Ctrl click) grow the
+selection to the changes below or above, Ctrl+A takes them all; their line
+numbers stand out and the button counts them. When the file's text changed
+since the diff was made, nothing is reverted and the diff is compared
+again. Put Label… (Alt+L)
 and Remove Label (Delete, on a label row) work in place; Shift+F10 or a
 right click opens the same actions as a menu. Esc clears the filter, then
 goes back to the list, then to the editor.

@@ -617,7 +617,7 @@ At 80x24 and at 120x40 (`-x 120 -y 40`), with config and state under
 ```sh
 LH=/tmp/jetl-lh; rm -rf $LH; mkdir -p $LH/repo/d $LH/cfg/jetl
 printf '[lsp]\nenabled = false\n' > $LH/cfg/jetl/config.toml
-git -C $LH/repo init -q; printf 'one\ntwo\n' > $LH/repo/notes.txt; seq 1 3000 > $LH/repo/d/x.txt
+git -C $LH/repo init -q; printf 'one\ntwo\nthree\n' > $LH/repo/notes.txt; seq 1 3000 > $LH/repo/d/x.txt
 git -C $LH/repo add . && git -C $LH/repo -c user.name=t -c user.email=t@t commit -qm init && git -C $LH/repo branch other
 cargo build --no-default-features --features lang-rust
 run() { /tmp/tm.sh -f /dev/null new-session -d -s jetl -x 80 -y 24 \
@@ -626,10 +626,19 @@ s() { /tmp/tm.sh send-keys -t jetl "$@"; sleep 0.4; }
 run; sleep 2
 s -l 'A '; s C-s; s -l 'B '; s C-s
 s M-H                                  # Local History window (bottom) on notes.txt: two "Saved" rows, newest first,
-                                       # "12 B  =" and "10 B"; the newest one's diff on the right, "type to filter"
+                                       # "18 B  =" and "16 B"; the newest one's diff on the right, "type to filter"
 s Down                                 # the diff follows: "Saved  <date time>  ↔  current", "A one" against "A B one"
 s M-r                                  # *notes.txt is "A one", toast "Reverted notes.txt to … (Ctrl+Z undoes)", editor focused
 s C-z                                  # "A B one" again, the tab clean
+s C-Home; s Down; s Down; s -l X       # *notes.txt: "A B one", "two", "Xthree"
+s M-H; s Down; s Right                 # the older "Saved" against it, the diff focused: two changes, the first's
+                                       # line numbers highlighted, "[Revert Change]" in the toolbar
+s S-Down                               # both highlighted, "[Revert 2 Changes]"
+s C-M-z                                # *notes.txt "A one", "two", "three"; toast "Reverted 2 changes in notes.txt
+                                       # to … (Ctrl+Z in the editor undoes)"; the window keeps focus, its diff
+                                       # compared again: no change left
+s Escape; s Escape; s C-z              # back in the editor; one Ctrl+Z: "A B one", "two", "Xthree"
+s C-z                                  # "A B one", "two", "three", the tab clean
 echo outside >> $LH/repo/notes.txt     # the clean tab reloads (nothing new stored: its text was the last snapshot)
 s F1; s -l 'Git: branches'; s Enter; s -l other; s Enter; s Enter   # Checkout: "Switched to other"
                                        # the window lists by itself: "Before git switch other" on top,
@@ -673,7 +682,11 @@ and Tab moves to the diff (its header in the focused style); below 60
 columns inside the window the list and the diff take turns. Shift+F10 in
 the Project tree opens its context menu with Local History and Local
 History: Put Label… under Show History; Shift+F10 in the window opens its
-own (Revert, Put Label…, Remove Label…, Open File). Alt+1 and Alt+9 hide
+own (Revert, Revert Selected Changes, Put Label…, Remove Label…, Open File).
+A Ctrl+click on a change in the diff extends the selection to it (Shift+click
+in terminals that pass it on); typing in the tab after the diff was made and
+then Ctrl+Alt+Z in the window reverts nothing: toast "… changed since the
+diff was made", and the diff is compared again. Alt+1 and Alt+9 hide
 their window when it already has focus; under tmux, Ctrl+Space in the
 editor is completion, not the branches popup, hence Find Action above.
 

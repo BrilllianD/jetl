@@ -2,6 +2,8 @@
 //! HEAD version, and the change commands built on them (revert the change
 //! at the caret, go to the next or previous change).
 
+use std::ops::Range;
+
 use imara_diff::Hunk;
 use ratatui::style::Color;
 
@@ -82,9 +84,28 @@ pub fn change_lines(base: &str, text: &str) -> Vec<usize> {
 pub fn revert(base: &str, text: &str, h: &Hunk) -> Change {
     let lines: Vec<&str> = text.split_inclusive('\n').collect();
     let base_lines: Vec<&str> = base.split_inclusive('\n').collect();
-    let (a0, a1) = (h.after.start as usize, h.after.end as usize);
-    let at = lines[..a0].iter().map(|l| l.chars().count()).sum();
-    Change::replace(at, lines[a0..a1].concat(), base_lines[h.before.start as usize..h.before.end as usize].concat())
+    let span = (h.before.start as usize..h.before.end as usize, h.after.start as usize..h.after.end as usize);
+    revert_spans(&base_lines, &lines, &[span]).remove(0)
+}
+
+/// The edits that put old lines back over new ones: for each `(old, new)`
+/// pair of line ranges (ascending, not overlapping; lines keep their
+/// terminators) the new lines are replaced by the old ones. Returned last
+/// first, so as one transaction each change applies to text the ones
+/// before it left untouched above it.
+pub fn revert_spans<S: AsRef<str>>(old: &[S], new: &[S], spans: &[(Range<usize>, Range<usize>)]) -> Vec<Change> {
+    let concat = |lines: &[S]| lines.iter().map(AsRef::as_ref).collect::<String>();
+    let (mut at, mut line) = (0, 0);
+    let mut out: Vec<Change> = spans
+        .iter()
+        .map(|(o, n)| {
+            at += new[line..n.start].iter().map(|l| l.as_ref().chars().count()).sum::<usize>();
+            line = n.start;
+            Change::replace(at, concat(&new[n.clone()]), concat(&old[o.clone()]))
+        })
+        .collect();
+    out.reverse();
+    out
 }
 
 impl Buffer {
@@ -143,6 +164,41 @@ mod tests {
         let m = compute(base, text);
         assert_eq!(mark_at(&m, 3).map(|m| m.kind), Some(MarkKind::Added));
         assert!(mark_at(&m, 2).is_none());
+    }
+
+    /// `new` with the changes of `blocks` (indices into the diff's blocks)
+    /// reverted as one transaction; one undo gives `new` back.
+    fn revert_blocks(old: &str, new: &str, blocks: &[usize]) -> String {
+        let d = crate::git::diff::DiffDoc::build(old.as_bytes(), new.as_bytes(), 4);
+        let spans: Vec<_> = blocks.iter().map(|&i| d.block_lines(i).unwrap()).collect();
+        let mut b = Buffer::from_text(1, None, new, false);
+        b.apply(revert_spans(&d.old, &d.new, &spans), Selection::point(0), TxKind::Other);
+        let out = b.text();
+        assert!(b.undo());
+        assert_eq!(b.text(), new);
+        out
+    }
+
+    #[test]
+    fn reverting_every_change_gives_the_old_text() {
+        let pairs = [
+            ("a\nb\nc\n", "A\nb\nC\nD\n"),
+            ("a\n", "x\ny\na\n"),
+            ("a\nb\nc\n", "a\n"),
+            ("x\ny", "x\ny\nz\n"),
+            ("x\ny\n", "x\nY"),
+            ("one\r\ntwo\r\nthree\r\n", "one\r\n2\r\nthree\r\nfour\r\n"),
+            ("", "new\n"),
+            ("gone\n", ""),
+            ("é\nb\nc\nd\n", "é\nB\nc\nd\nü\n"),
+        ];
+        for (old, new) in pairs {
+            let n = crate::git::diff::DiffDoc::build(old.as_bytes(), new.as_bytes(), 4).blocks(false).len();
+            assert_eq!(revert_blocks(old, new, &(0..n).collect::<Vec<_>>()), old, "{old:?} <- {new:?}");
+        }
+        // One of two: the other stays.
+        assert_eq!(revert_blocks("a\nb\nc\n", "A\nb\nC\nD\n", &[1]), "A\nb\nc\n");
+        assert_eq!(revert_blocks("a\nb\nc\n", "A\nb\nC\nD\n", &[0]), "a\nb\nC\nD\n");
     }
 
     #[test]

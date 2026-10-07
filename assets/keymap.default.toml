@@ -442,6 +442,12 @@
 "alt-f" = "local_history.toggle_diff_collapse"
 "f5" = "local_history.refresh"
 "alt-r" = "local_history.revert"
+# The diff's selected changes: F7 picks one, Shift+Up/Down (or a Shift or
+# Ctrl click) grows the selection, Ctrl+A takes them all.
+"ctrl-alt-z" = "local_history.revert_changes"
+"shift-up" = "local_history.extend_selection_up"
+"shift-down" = "local_history.extend_selection_down"
+"ctrl-a" = "local_history.select_all_changes"
 "alt-l" = "local_history.put_label"
 "delete" = "local_history.remove_label"
 "shift-f10" = "local_history.context_menu"

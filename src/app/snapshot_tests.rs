@@ -618,6 +618,23 @@ async fn local_history_window_wide() {
 }
 
 #[tokio::test]
+async fn local_history_window_changes() {
+    let mut fx = stable_app("local-history-window-changes");
+    let app = &mut fx.app;
+    local_history_fixture(app, 1, "");
+    // The diff focused, both changes selected: their line numbers stand
+    // out and the toolbar counts them.
+    let mut cx = ctx!(app);
+    app.history_panel.handle_action(&crate::actions::HistoryAction::Right, &mut cx);
+    app.history_panel.handle_action(&crate::actions::HistoryAction::SelectAllChanges, &mut cx);
+    let term = draw_app(app, 80, 24);
+    let mut marks = history_marks(&app.theme);
+    marks.push(Mark::style('W', "selected change", app.theme.warn));
+    let bottom = app.layout.rects.bottom;
+    assert_snapshot!("local_history_window_changes", snapshot(&term, &marks, Some(bottom)));
+}
+
+#[tokio::test]
 async fn local_history_window_narrow() {
     let mut fx = stable_app("local-history-window-narrow");
     let app = &mut fx.app;

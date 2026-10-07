@@ -322,7 +322,7 @@ impl GitPanel {
             self.message.click(self.message_rect, m.x, m.y);
         } else if self.diff_rect.contains(p) {
             self.area = Area::Diff;
-            self.diff.click(m.y);
+            self.diff.click(m.y, false);
         } else if let Some(i) = self.list.hit(self.changes_rect, m.x, m.y) {
             self.area = Area::Changes;
             self.list.select(i);

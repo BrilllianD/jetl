@@ -217,9 +217,9 @@ pub struct App {
     pub git: GitService,
     /// Local history's worker (`history/`); `GitService` holds a clone.
     pub history: crate::history::Handle,
-    /// A snapshot to put into a file once its tab opens (a revert of a
-    /// file that was not open), as `pending_goto`.
-    pub(crate) pending_revert: Option<(PathBuf, String)>,
+    /// A snapshot, or changes of one, to put into a file once its tab opens
+    /// (a revert of a file that was not open), as `pending_goto`.
+    pub(crate) pending_revert: Option<(PathBuf, history::PendingRevert)>,
     pub editor: Editor,
     /// Watches the root for outside changes; `None` when off or failed.
     watcher: Option<crate::files::watch::Watcher>,

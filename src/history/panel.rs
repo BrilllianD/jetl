@@ -1,14 +1,15 @@
 //! The Local History tool window (bottom): one file's snapshots, newest
 //! first, next to the diff of the selected one against the file's current
 //! text (its open buffer, else the disk). Typing filters the list; Revert
-//! puts the selected snapshot back (undoable); Put Label and Remove Label
-//! work in place. The window shows one file until `editor.local_history`
+//! puts the selected snapshot back, Revert Change only the diff's selected
+//! changes (both undoable); Put Label and Remove Label work in place. The window shows one file until `editor.local_history`
 //! picks another; a Project tree rename takes it along.
 //!
 //! The panel holds state only. It asks through `Effect::History`: the list
 //! (`HistoryMsg::List`, applied by the app while the window shows that
 //! path), the diff (`HistoryMsg::Diff`, applied only for the newest
-//! request), a revert, and the label dialogs.
+//! request), a revert (of the snapshot, or of changes with the text they
+//! were computed for), and the label dialogs.
 
 use std::path::{Path, PathBuf};
 
@@ -19,7 +20,7 @@ use ratatui::layout::{Position, Rect};
 use ratatui::style::{Modifier, Style};
 use unicode_width::UnicodeWidthStr;
 
-use super::{Entry, Request};
+use super::{ChangesRevert, Entry, Request};
 use crate::actions::{Action, HistoryAction};
 use crate::app::Ctx;
 use crate::config::theme::Theme;
@@ -49,6 +50,7 @@ pub enum Area {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Btn {
     Revert,
+    RevertChanges,
     PutLabel,
     RemoveLabel,
     Toggle(DiffToggle),
@@ -313,11 +315,17 @@ impl LocalHistoryPanel {
                 };
                 self.diff.scroll_by(delta);
             }
-            H::Up | H::Down | H::PageUp | H::PageDown | H::Home | H::End => {
+            H::ExtendUp | H::ExtendDown if self.area == Area::Diff => {
+                let forward = *a == H::ExtendDown;
+                if !self.diff.extend_block(forward) {
+                    cx.notify(Level::Info, if forward { "No more changes below" } else { "No more changes above" });
+                }
+            }
+            H::Up | H::Down | H::PageUp | H::PageDown | H::Home | H::End | H::ExtendUp | H::ExtendDown => {
                 let n = page(self.list.viewport);
                 match a {
-                    H::Up => self.list.up(1),
-                    H::Down => self.list.down(1),
+                    H::Up | H::ExtendUp => self.list.up(1),
+                    H::Down | H::ExtendDown => self.list.down(1),
                     H::PageUp => self.list.up(n),
                     H::PageDown => self.list.down(n),
                     H::Home => self.list.home(),
@@ -355,8 +363,15 @@ impl LocalHistoryPanel {
                 }
             }
             H::Revert => self.revert(cx),
+            H::RevertChanges => self.revert_changes(cx),
+            H::SelectAllChanges => {
+                if !self.diff.select_all_blocks() {
+                    cx.notify(Level::Info, "No changes in the diff");
+                }
+            }
             H::PutLabel => self.put_label(cx),
             H::RemoveLabel => self.remove_label(cx),
+            H::ContextMenu if self.area == Area::Diff => self.context_menu(self.diff_rect.x + 2, self.diff_rect.y, cx),
             H::ContextMenu => {
                 let y = self.list_rect.y + self.list.selected.saturating_sub(self.list.offset) as u16;
                 self.context_menu(self.list_rect.x + 2, y, cx);
@@ -382,6 +397,42 @@ impl LocalHistoryPanel {
         }
     }
 
+    /// The changes the diff has selected, for Revert Change: `None` when
+    /// there is nothing to revert, else the selected range.
+    fn revertible(&self) -> Option<std::ops::Range<usize>> {
+        let doc = self.diff.doc.as_ref().filter(|d| !d.binary && !d.lossy && !self.diff.loading)?;
+        let range = self.diff.selected_blocks();
+        (!range.is_empty() && range.end <= doc.blocks(false).len()).then_some(range)
+    }
+
+    /// Put the diff's selected changes back: the request carries the edits
+    /// and the text they were computed for (they apply only to that text).
+    fn revert_changes(&mut self, cx: &mut Ctx) {
+        let (Some(t), Some(r)) = (&self.target, self.selected()) else {
+            return cx.notify(Level::Info, "Select a snapshot, then the changes to revert in its diff");
+        };
+        let doc = match &self.diff.doc {
+            Some(doc) if matches!(&self.diff.key, Some(DiffKey::Local { id, .. }) if *id == r.entry.blob) => doc,
+            _ => return cx.notify(Level::Info, "The diff is still loading"),
+        };
+        if self.diff.loading {
+            return cx.notify(Level::Info, "Comparing with the current text again; revert once it shows");
+        }
+        if doc.binary || doc.lossy {
+            return cx.notify(Level::Warn, "The snapshot or the file is not valid UTF-8 text; not reverted");
+        }
+        let Some(range) = self.revertible() else {
+            return cx.notify(Level::Info, "No changes: the file has this snapshot's text");
+        };
+        let spans: Vec<_> = range.clone().filter_map(|i| doc.block_lines(i)).collect();
+        let changes = crate::editor::gutter::revert_spans(&doc.old, &doc.new, &spans);
+        let req = ChangesRevert { path: t.path.clone(), base: doc.new.concat(), changes, title: r.title() };
+        cx.effects.push(Effect::History(Request::RevertChanges(Box::new(req))));
+        // After the reload, the change that followed the range is current.
+        self.diff.block = range.start;
+        self.diff.anchor = None;
+    }
+
     fn put_label(&mut self, cx: &mut Ctx) {
         match &self.target {
             Some(t) => cx.effects.push(Effect::History(Request::PutLabel(t.path.clone()))),
@@ -403,6 +454,7 @@ impl LocalHistoryPanel {
         let label = selected.is_some_and(|r| r.entry.kind.pinned());
         let items = vec![
             MenuItem::new("Revert", Action::History(HistoryAction::Revert)).enabled(selected.is_some()),
+            MenuItem::new("Revert Selected Changes", Action::History(HistoryAction::RevertChanges)).enabled(self.revertible().is_some()),
             MenuItem::new("Put Label…", Action::History(HistoryAction::PutLabel)),
             MenuItem::new("Remove Label…", Action::History(HistoryAction::RemoveLabel)).enabled(label),
             MenuItem::new("Open File", Action::History(HistoryAction::OpenFile)),
@@ -419,6 +471,7 @@ impl LocalHistoryPanel {
                 {
                     match b {
                         Btn::Revert => self.revert(cx),
+                        Btn::RevertChanges => self.revert_changes(cx),
                         Btn::PutLabel => self.put_label(cx),
                         Btn::RemoveLabel => self.remove_label(cx),
                         Btn::Toggle(DiffToggle::Layout) => self.diff_opts.unified = Some(!self.diff.unified),
@@ -437,7 +490,19 @@ impl LocalHistoryPanel {
                     }
                 } else if self.diff_rect.contains(p) && self.diff.key.is_some() {
                     self.area = Area::Diff;
-                    self.diff.click(m.y);
+                    if button == MouseButton::Left {
+                        // Shift or Ctrl: many terminals keep Shift+click for
+                        // their own selection.
+                        self.diff.click(m.y, m.mods.intersects(KeyModifiers::SHIFT | KeyModifiers::CONTROL));
+                    } else {
+                        // A right click on a change outside the selection
+                        // selects it first.
+                        let (sel, anchor, block) = (self.diff.selected_blocks(), self.diff.anchor, self.diff.block);
+                        if self.diff.click(m.y, false) && sel.contains(&self.diff.block) {
+                            (self.diff.anchor, self.diff.block) = (anchor, block);
+                        }
+                        self.context_menu(m.x, m.y, cx);
+                    }
                 }
                 true
             }
@@ -480,6 +545,18 @@ impl LocalHistoryPanel {
     #[cfg(test)]
     pub fn diff_state(&self) -> (Option<&DiffKey>, bool) {
         (self.diff.key.as_ref(), self.diff.doc.is_some())
+    }
+
+    /// Whether the newest diff request is still unanswered (tests).
+    #[cfg(test)]
+    pub fn diff_loading(&self) -> bool {
+        self.diff.loading
+    }
+
+    /// The diff's changes and the selected ones (tests).
+    #[cfg(test)]
+    pub fn changes(&self) -> (usize, std::ops::Range<usize>) {
+        (self.diff.doc.as_ref().map_or(0, |d| d.blocks(false).len()), self.diff.selected_blocks())
     }
 
     // ---- rendering -------------------------------------------------------
@@ -526,8 +603,13 @@ impl LocalHistoryPanel {
     fn render_toolbar(&mut self, buf: &mut Screen, r: Rect, focused: bool, theme: &Theme) {
         buf.set_style(r, Style::default().bg(theme.panel_bg));
         let selected = self.selected();
+        let changes = match self.diff.selected_blocks().len() {
+            n if n > 1 => format!("[Revert {n} Changes]"),
+            _ => "[Revert Change]".to_string(),
+        };
         let enabled = [
             (Btn::Revert, "[Revert]", selected.is_some()),
+            (Btn::RevertChanges, changes.as_str(), self.revertible().is_some()),
             (Btn::PutLabel, "[Put Label…]", self.target.is_some()),
             (Btn::RemoveLabel, "[Remove Label]", selected.is_some_and(|r| r.entry.kind.pinned())),
         ];
@@ -694,6 +776,10 @@ mod tests {
                 Effect::History(Request::PutLabel(p)) => format!("label {}", p.display()),
                 Effect::History(Request::RemoveLabel { entry, .. }) => format!("remove {}", entry.detail.unwrap_or_default()),
                 Effect::History(Request::List(p)) => format!("list {}", p.display()),
+                Effect::History(Request::RevertChanges(r)) => {
+                    let ats: Vec<usize> = r.changes.iter().map(|c| c.at).collect();
+                    format!("changes {ats:?} of {:?} to {}", r.base, r.title)
+                }
                 Effect::Notify(_, t) => format!("notify {t}"),
                 Effect::Focus(p) => format!("focus {p:?}"),
                 other => format!("{other:?}"),
@@ -825,6 +911,82 @@ mod tests {
         assert!(act(&mut empty, HistoryAction::Revert)[0].starts_with("notify"));
         assert!(act(&mut empty, HistoryAction::PutLabel)[0].starts_with("notify"));
         assert!(act(&mut empty, HistoryAction::Refresh).is_empty());
+    }
+
+    /// `p` with the diff of its selection answered: `old` against `new`.
+    fn with_diff(p: &mut LocalHistoryPanel, old: &str, new: &str) {
+        let key = p.diff.key.clone().unwrap();
+        p.set_diff(&key, p.diff_seq, Ok(DiffDoc::build(old.as_bytes(), new.as_bytes(), 4)));
+    }
+
+    #[test]
+    fn selected_changes_are_reverted_against_the_text_they_were_made_for() {
+        let mut p = panel(vec![e(2, Kind::Save, None, 1), e(1, Kind::Save, None, 1)]);
+        assert!(act(&mut p, HistoryAction::RevertChanges)[0].starts_with("notify The diff is still loading"));
+        // Three changes: lines 0, 2 and 4.
+        with_diff(&mut p, "a\nb\nc\nd\ne\n", "A\nb\nC\nd\nE\n");
+        let base = "\"A\\nb\\nC\\nd\\nE\\n\"";
+        let title = "2024-10-04 00:02:00  Saved";
+        // The current change alone.
+        assert_eq!(act(&mut p, HistoryAction::RevertChanges), [format!("changes [0] of {base} to {title}")]);
+        // In the diff, Shift+Down grows the selection; last first.
+        act(&mut p, HistoryAction::Right);
+        act(&mut p, HistoryAction::NextChange);
+        act(&mut p, HistoryAction::ExtendDown);
+        assert_eq!(p.diff.selected_blocks(), 1..3);
+        let mut buf = Screen::empty(Rect::new(0, 0, 80, 1));
+        p.render_toolbar(&mut buf, Rect::new(0, 0, 80, 1), true, &Theme::default());
+        let row: String = (0..80).map(|x| buf[(x, 0)].symbol().to_string()).collect();
+        assert!(row.starts_with("[Revert] [Revert 2 Changes] [Put Label…]"), "{row}");
+        assert_eq!(act(&mut p, HistoryAction::RevertChanges), [format!("changes [8, 4] of {base} to {title}")]);
+        // The range's first is current, alone; the app compares again, and
+        // until that lands the old diff is not reverted from.
+        assert_eq!(p.diff.selected_blocks(), 1..2);
+        with_cx(|cx| p.reload_diff(cx));
+        assert!(act(&mut p, HistoryAction::RevertChanges)[0].starts_with("notify Comparing with the current text again"));
+        with_diff(&mut p, "a\nb\nc\nd\ne\n", "A\nb\nc\nd\ne\n");
+        assert_eq!(p.diff.selected_blocks(), 0..1, "clamped to the one change left");
+        act(&mut p, HistoryAction::SelectAllChanges);
+        assert_eq!(p.diff.selected_blocks(), 0..1);
+        // Nothing to revert: identical, binary or not UTF-8.
+        with_cx(|cx| p.reload_diff(cx));
+        with_diff(&mut p, "same\n", "same\n");
+        assert!(act(&mut p, HistoryAction::RevertChanges)[0].starts_with("notify No changes"));
+        assert!(act(&mut p, HistoryAction::SelectAllChanges)[0].starts_with("notify No changes in the diff"));
+        with_cx(|cx| p.reload_diff(cx));
+        let key = p.diff.key.clone().unwrap();
+        p.set_diff(&key, p.diff_seq, Ok(DiffDoc::build(b"caf\xe9\n", b"cafe\n", 4)));
+        assert!(act(&mut p, HistoryAction::RevertChanges)[0].starts_with("notify The snapshot or the file is not valid UTF-8"));
+        // In the list, Shift+Down moves the selection.
+        act(&mut p, HistoryAction::Left);
+        assert_eq!(act(&mut p, HistoryAction::ExtendDown), ["diff 0001 #5"]);
+        assert_eq!(p.list.selected, 1);
+    }
+
+    #[test]
+    fn clicks_in_the_diff_pick_and_extend_the_changes() {
+        let mut p = panel(vec![e(2, Kind::Save, None, 1), e(1, Kind::Save, None, 1)]);
+        with_diff(&mut p, "a\nb\nc\nd\ne\n", "A\nb\nC\nd\nE\n");
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 12)).unwrap();
+        term.draw(|f| p.render(f, f.area(), true, &Theme::default())).unwrap();
+        // Unified at this width: -a +A b -c +C d -e +E.
+        let (x, top) = (p.diff_rect.x + 5, p.diff_rect.y);
+        let click = |p: &mut LocalHistoryPanel, button, y: u16, mods| {
+            let m = Mouse { kind: MouseEventKind::Down(button), x, y, clicks: 1, mods };
+            requests(with_cx(|cx| {
+                p.handle_mouse(&m, cx);
+            }))
+        };
+        assert!(click(&mut p, MouseButton::Left, top + 3, KeyModifiers::NONE).is_empty());
+        assert_eq!((p.area, p.diff.selected_blocks()), (Area::Diff, 1..2));
+        click(&mut p, MouseButton::Left, top + 6, KeyModifiers::CONTROL);
+        assert_eq!(p.diff.selected_blocks(), 1..3);
+        // A right click inside the selection keeps it; outside, picks that one.
+        let menu = click(&mut p, MouseButton::Right, top + 4, KeyModifiers::NONE);
+        assert!(menu[0].starts_with("ContextMenu"), "{menu:?}");
+        assert_eq!(p.diff.selected_blocks(), 1..3);
+        click(&mut p, MouseButton::Right, top, KeyModifiers::NONE);
+        assert_eq!(p.diff.selected_blocks(), 0..1);
     }
 
     #[test]

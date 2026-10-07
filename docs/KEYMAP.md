@@ -389,6 +389,10 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Alt+F` | `local_history.toggle_diff_collapse` | Local History: fold or show unchanged lines in the diff |
 | `F5` | `local_history.refresh` | Local History: list the snapshots again |
 | `Alt+R` | `local_history.revert` | Local History: revert the file to the selected snapshot (undoable) |
+| `Ctrl+Alt+Z` | `local_history.revert_changes` | Local History: revert the selected changes of the diff (undoable) |
+| `Shift+Up` | `local_history.extend_selection_up` | Local History: in the diff, select the change above too (in the list: up) |
+| `Shift+Down` | `local_history.extend_selection_down` | Local History: in the diff, select the change below too (in the list: down) |
+| `Ctrl+A` | `local_history.select_all_changes` | Local History: select every change of the diff |
 | `Alt+L` | `local_history.put_label` | Local History: put a label on the file… |
 | `Delete` | `local_history.remove_label` | Local History: remove the selected label… |
 | `Shift+F10` | `local_history.context_menu` | Local History: actions for the selected snapshot |

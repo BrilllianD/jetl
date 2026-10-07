@@ -89,6 +89,20 @@ impl Editor {
         true
     }
 
+    /// Put changes of a local history diff back into buffer `i` as one
+    /// undoable edit (`changes` last first, `gutter::revert_spans`), the
+    /// caret at the topmost. False, with nothing changed, when the buffer is
+    /// read-only or its text is no longer `base`, the text the diff compared.
+    pub fn restore_changes(&mut self, i: usize, base: &str, changes: Vec<Change>) -> bool {
+        let Some(b) = self.buffers.get_mut(i) else { return false };
+        if b.read_only || b.rope != base {
+            return false;
+        }
+        let caret = changes.last().map_or(0, |c| c.at);
+        b.apply(changes, Selection::point(caret), TxKind::Other);
+        true
+    }
+
     /// Replace every match of `re` in tab `i` as one undoable edit; returns
     /// the number replaced. The tab stays modified (not saved).
     pub fn replace_in_buffer(&mut self, i: usize, re: &regex::Regex, with: &str, expand: bool) -> usize {

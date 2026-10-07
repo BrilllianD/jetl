@@ -181,6 +181,9 @@ pub struct DiffDoc {
     pub inline_new: Vec<Vec<Range<usize>>>,
     pub tab_width: usize,
     pub binary: bool,
+    /// A side was not valid UTF-8 (shown with replacement characters), so
+    /// its lines are not the file's text.
+    pub lossy: bool,
 }
 
 impl DiffDoc {
@@ -188,6 +191,7 @@ impl DiffDoc {
         if is_binary(old) || is_binary(new) {
             return Self { binary: true, ..Default::default() };
         }
+        let lossy = std::str::from_utf8(old).is_err() || std::str::from_utf8(new).is_err();
         let (old, new) = (raw_lines(&String::from_utf8_lossy(old)), raw_lines(&String::from_utf8_lossy(new)));
         let rows = side_by_side(&old.concat(), &new.concat());
         let unified = unified(&rows);
@@ -197,7 +201,20 @@ impl DiffDoc {
                 (inline_old[l], inline_new[n]) = inline_changes(strip_eol(&old[l]), strip_eol(&new[n]));
             }
         }
-        Self { old, new, rows, unified, inline_old, inline_new, tab_width, binary: false }
+        Self { old, new, rows, unified, inline_old, inline_new, tab_width, binary: false, lossy }
+    }
+
+    /// The old and new line ranges of changed block `block` (the same block
+    /// in both layouts). A pure insertion has an empty old range where its
+    /// lines would go, a pure deletion an empty new range.
+    pub fn block_lines(&self, block: usize) -> Option<(Range<usize>, Range<usize>)> {
+        let b = blocks(&self.rows).into_iter().nth(block)?;
+        let count = |rows: &[DiffRow], left: bool| rows.iter().filter(|r| if left { r.left.is_some() } else { r.right.is_some() }).count();
+        let side = |left: bool| {
+            let start = count(&self.rows[..b.start], left);
+            start..start + count(&self.rows[b.clone()], left)
+        };
+        Some((side(true), side(false)))
     }
 
     /// Changed blocks (runs of non-equal rows) of the side-by-side or
@@ -351,6 +368,29 @@ mod tests {
         let (old, new) = inline_changes("ab", "aXb");
         assert!(old.is_empty());
         assert_eq!(new, vec![Range { start: 1, end: 2 }]);
+    }
+
+    #[test]
+    fn block_lines_map_changes_to_both_sides() {
+        let lines = |old: &str, new: &str| {
+            let d = DiffDoc::build(old.as_bytes(), new.as_bytes(), 4);
+            (0..d.blocks(false).len()).map(|i| d.block_lines(i).unwrap()).collect::<Vec<_>>()
+        };
+        // A modified first line.
+        assert_eq!(lines("a\nb\n", "A\nb\n"), [(0..1, 0..1)]);
+        // A pure insertion at the top: an empty old range at 0.
+        assert_eq!(lines("a\n", "x\ny\na\n"), [(0..0, 0..2)]);
+        // A pure deletion at the end: an empty new range after the last line.
+        assert_eq!(lines("a\nb\nc\n", "a\n"), [(1..3, 1..1)]);
+        // The last line without a newline, on either side.
+        assert_eq!(lines("x\ny", "x\ny\nz\n"), [(1..2, 1..3)]);
+        assert_eq!(lines("x\ny\n", "x\nY"), [(1..2, 1..2)]);
+        // Two changes one equal line apart stay two blocks.
+        assert_eq!(lines("a\nb\nc\n", "A\nb\nC\nD\n"), [(0..1, 0..1), (2..3, 2..4)]);
+        let d = DiffDoc::build(b"a\n", b"b\n", 4);
+        assert!(d.block_lines(1).is_none());
+        assert!(!d.lossy);
+        assert!(DiffDoc::build(b"caf\xe9\n", b"cafe\n", 4).lossy);
     }
 
     #[test]

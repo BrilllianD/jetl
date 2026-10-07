@@ -134,6 +134,9 @@ pub enum Request {
         path: PathBuf,
         id: String,
     },
+    /// Put the selected changes of the window's diff back into the file's
+    /// buffer (one undoable edit).
+    RevertChanges(Box<ChangesRevert>),
     /// Ask a name for a label on this file (Put Label).
     PutLabel(PathBuf),
     /// Ask before removing this label of `path`.
@@ -141,6 +144,19 @@ pub enum Request {
         path: PathBuf,
         entry: Box<Entry>,
     },
+}
+
+/// Changes of a Local History diff to put back: they apply only to the text
+/// the diff compared the snapshot with.
+#[derive(Debug, Clone)]
+pub struct ChangesRevert {
+    pub path: PathBuf,
+    /// The current text the diff was built from.
+    pub base: String,
+    /// One per change, last first (`editor::gutter::revert_spans`).
+    pub changes: Vec<crate::editor::undo::Change>,
+    /// The snapshot's date and label, for the message.
+    pub title: String,
 }
 
 /// Results of the worker and of the diff loads (`AppMsg::LocalHistory`).

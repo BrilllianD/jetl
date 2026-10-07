@@ -65,6 +65,9 @@ pub(crate) struct DiffPane {
     /// The current changed block (`DiffDoc::blocks`): what hunk staging,
     /// discarding and F7 work on.
     pub block: usize,
+    /// The other end of a range of selected blocks (`selected_blocks`);
+    /// `None`: only the current one. The Local History window sets it.
+    pub anchor: Option<usize>,
     /// Where the rows were drawn last frame (mouse mapping).
     rows_rect: Rect,
     view: Vec<ViewRow>,
@@ -97,6 +100,7 @@ impl DiffPane {
             self.view.clear();
             self.row_view.clear();
             self.syntax = None;
+            self.anchor = None;
         }
         self.key = Some(key);
         self.loading = true;
@@ -125,9 +129,11 @@ impl DiffPane {
                 // reload keeps the place (and the block, if it still exists).
                 if fresh {
                     self.block = 0;
+                    self.anchor = None;
                     self.scroll_to_block();
                 }
                 self.block = self.block.min(blocks.saturating_sub(1));
+                self.anchor = self.anchor.map(|a| a.min(blocks.saturating_sub(1)));
             }
             Err(e) => {
                 self.doc = None;
@@ -225,11 +231,19 @@ impl DiffPane {
         }
     }
 
-    /// Move to the next or previous changed block and scroll to it.
-    /// Returns false when there is none in that direction.
+    /// Move to the next or previous changed block and scroll to it; the
+    /// selection is that block alone. Returns false when there is none in
+    /// that direction.
     pub fn step_block(&mut self, forward: bool) -> bool {
-        let Some(doc) = &self.doc else { return false };
-        let n = doc.blocks(self.unified).len();
+        let moved = self.move_block(forward);
+        if moved {
+            self.anchor = None;
+        }
+        moved
+    }
+
+    fn move_block(&mut self, forward: bool) -> bool {
+        let n = self.block_count();
         let next = if forward { self.block + 1 } else { self.block.wrapping_sub(1) };
         if next >= n {
             return false;
@@ -239,24 +253,67 @@ impl DiffPane {
         true
     }
 
+    /// Grow or shrink the selected range: the current block moves, the
+    /// other end stays. False when there is no block in that direction.
+    pub fn extend_block(&mut self, forward: bool) -> bool {
+        let anchor = self.anchor.unwrap_or(self.block);
+        let moved = self.move_block(forward);
+        if moved {
+            self.anchor = Some(anchor);
+        }
+        moved
+    }
+
+    /// Select every block (the current one is the last). False when there
+    /// is none.
+    pub fn select_all_blocks(&mut self) -> bool {
+        let n = self.block_count();
+        if n == 0 {
+            return false;
+        }
+        self.anchor = Some(0);
+        self.block = n - 1;
+        true
+    }
+
+    fn block_count(&self) -> usize {
+        self.doc.as_ref().map_or(0, |d| d.blocks(false).len())
+    }
+
+    /// The selected blocks: from the anchor to the current one (empty when
+    /// the diff has no changes).
+    pub fn selected_blocks(&self) -> Range<usize> {
+        let n = self.block_count();
+        if n == 0 {
+            return 0..0;
+        }
+        let (a, b) = (self.anchor.unwrap_or(self.block).min(n - 1), self.block.min(n - 1));
+        a.min(b)..a.max(b) + 1
+    }
+
     /// A click at screen row `y`: unfold a fold, or make the block there
-    /// current.
-    pub fn click(&mut self, y: u16) {
+    /// current, alone or (`extend`) as the new end of the selected range.
+    /// Returns whether it hit a changed row.
+    pub fn click(&mut self, y: u16, extend: bool) -> bool {
         if self.doc.is_none() || !(self.rows_rect.y..self.rows_rect.bottom()).contains(&y) {
-            return;
+            return false;
         }
         let v = self.scroll + (y - self.rows_rect.y) as usize;
         match self.view.get(v).copied() {
             Some(ViewRow::Fold { start, .. }) => {
                 self.unfolded.insert(start);
                 self.rebuild();
+                false
             }
             Some(ViewRow::Row(row)) => {
-                if let Some(i) = self.doc.as_ref().and_then(|d| d.blocks(self.unified).iter().position(|b| b.contains(&row))) {
-                    self.block = i;
-                }
+                let Some(i) = self.doc.as_ref().and_then(|d| d.blocks(self.unified).iter().position(|b| b.contains(&row))) else {
+                    return false;
+                };
+                self.anchor = if extend { Some(self.anchor.unwrap_or(self.block)) } else { None };
+                self.block = i;
+                true
             }
-            None => {}
+            None => false,
         }
     }
 
@@ -488,8 +545,9 @@ pub(crate) fn render_diff(buf: &mut Screen, area: Rect, pane: &mut DiffPane, the
     let rows: &[DiffRow] = if unified { &doc.unified } else { &doc.rows };
     pane.scroll = pane.scroll.min(pane.view.len().saturating_sub(r.height as usize));
     let digits = doc.old.len().max(doc.new.len()).max(1).to_string().len().max(3) as u16;
-    // Line numbers of the current block stand out.
-    let current = doc.blocks(unified).into_iter().nth(pane.block).unwrap_or_default();
+    // Line numbers of the selected blocks stand out.
+    let selected = pane.selected_blocks();
+    let current: Vec<Range<usize>> = doc.blocks(unified).into_iter().skip(selected.start).take(selected.len()).collect();
     let no_spans = (Vec::new(), Vec::new());
     let (syn_old, syn_new) = pane.syntax.as_ref().unwrap_or(&no_spans);
     let spans = line_spans;
@@ -511,7 +569,7 @@ pub(crate) fn render_diff(buf: &mut Screen, area: Rect, pane: &mut DiffPane, the
             }
         };
         let row = rows[ri];
-        let num_style = if current.contains(&ri) { theme.warn } else { theme.line_number };
+        let num_style = if current.iter().any(|b| b.contains(&ri)) { theme.warn } else { theme.line_number };
         let num = |l: usize| format!("{:>w$}", l + 1, w = digits as usize);
         if unified {
             // old# new# sign text
@@ -628,7 +686,7 @@ mod tests {
         // A click on the fold shows its lines.
         p.rows_rect = Rect::new(0, 0, 80, 20);
         p.scroll = 0;
-        p.click(0);
+        assert!(!p.click(0, false), "a fold is not a change");
         assert_eq!(p.view.len(), 12 + 3 + 1 + 3 + 1);
         p.set_collapse(false);
         assert_eq!(p.view.len(), 30);
@@ -637,6 +695,50 @@ mod tests {
         p.set_unified(true);
         assert_eq!(p.row_at(p.scroll), Some(15));
         assert!(matches!(p.view[p.scroll], ViewRow::Row(15)));
+    }
+
+    #[test]
+    fn a_range_of_changes_is_selected_from_the_anchor() {
+        // Four changes, two equal lines apart.
+        let old = "a\n1\n2\nb\n3\n4\nc\n5\n6\nd\n";
+        let new = "A\n1\n2\nB\n3\n4\nC\n5\n6\nD\n";
+        let mut p = pane(old, new, false);
+        assert_eq!(p.selected_blocks(), 0..1);
+        assert!(p.extend_block(true) && p.extend_block(true));
+        assert_eq!((p.selected_blocks(), p.block), (0..3, 2));
+        assert!(p.extend_block(false));
+        assert_eq!(p.selected_blocks(), 0..2);
+        // F7 drops the range.
+        assert!(p.step_block(true));
+        assert_eq!(p.selected_blocks(), 2..3);
+        assert!(p.extend_block(true));
+        assert!(!p.extend_block(true), "no change below");
+        assert_eq!(p.selected_blocks(), 2..4);
+        // Upwards past the anchor.
+        for _ in 0..3 {
+            p.extend_block(false);
+        }
+        assert_eq!((p.selected_blocks(), p.block), (0..3, 0));
+        // A click: one change; with extend, a range from the current one.
+        p.rows_rect = Rect::new(0, 0, 80, 20);
+        p.scroll = 0;
+        assert!(p.click(3, false));
+        assert_eq!(p.selected_blocks(), 1..2);
+        assert!(p.click(9, true));
+        assert_eq!(p.selected_blocks(), 1..4);
+        assert!(!p.click(1, true), "an equal row");
+        assert_eq!(p.selected_blocks(), 1..4);
+        assert!(p.select_all_blocks());
+        assert_eq!(p.selected_blocks(), 0..4);
+        // A reload with fewer changes clamps; another diff starts over.
+        let key = p.key.clone().unwrap();
+        p.set(&key, Ok(DiffDoc::build(old.as_bytes(), "A\n1\n2\nB\n3\n4\nc\n5\n6\nd\n".as_bytes(), 4)));
+        assert_eq!(p.selected_blocks(), 0..2);
+        let other = DiffKey::Commit { sha: "y".into(), rel: "f.txt".into(), old: None };
+        p.begin(other.clone());
+        p.set(&other, Ok(DiffDoc::build(old.as_bytes(), new.as_bytes(), 4)));
+        assert_eq!(p.selected_blocks(), 0..1);
+        assert!(pane("a\n", "a\n", false).selected_blocks().is_empty());
     }
 
     #[test]

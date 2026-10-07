@@ -11,12 +11,21 @@ use std::time::Instant;
 use super::{App, Ctx};
 use crate::event::{AppMsg, Level};
 use crate::git::DiffKey;
-use crate::history::{Capture, CaptureText, Entry, HistoryMsg, Kind, MAX_LABEL_CHARS, Request};
+use crate::history::{Capture, CaptureText, ChangesRevert, Entry, HistoryMsg, Kind, MAX_LABEL_CHARS, Request};
 use crate::ui::dialog::{Dialog, DialogId};
 use crate::ui::focus::{PanelId, ToolWindowId};
 
 /// Why Put Label does nothing.
 const HISTORY_OFF: &str = "Local history is off ([local_history] enabled = false)";
+
+/// A revert waiting for its file's tab to open (`App::pending_revert`).
+#[derive(Debug)]
+pub(crate) enum PendingRevert {
+    /// The whole snapshot.
+    Text(String),
+    /// Changes of the window's diff.
+    Changes(Box<ChangesRevert>),
+}
 
 impl App {
     /// `editor.local_history`: the Local History window on the selected
@@ -140,6 +149,7 @@ impl App {
             Request::List(path) => self.history.list(&path),
             Request::Diff { key, seq } => self.load_local_diff(key, seq),
             Request::Revert { path, id } => self.history.blob(path, id),
+            Request::RevertChanges(rev) => self.revert_changes(*rev),
             Request::PutLabel(path) => self.ask_put_label(path),
             Request::RemoveLabel { path, entry } => self.ask_remove_label(path, *entry),
         }
@@ -225,7 +235,7 @@ impl App {
             return self.apply_revert(&path, &text);
         }
         if path.exists() {
-            self.pending_revert = Some((path.clone(), text));
+            self.pending_revert = Some((path.clone(), PendingRevert::Text(text)));
             return self.open_file(path, true);
         }
         self.editor.open_text(path.clone(), "", false, &self.theme);
@@ -251,6 +261,51 @@ impl App {
         let mut cx = ctx!(self);
         self.history_panel.reload_diff(&mut cx);
         fx.extend(cx.effects);
+        self.apply_effects(fx);
+    }
+
+    /// Changes of the window's diff to put back: into the open tab, else
+    /// once the file opens (`pending_revert`; the focus stays); a file
+    /// deleted meanwhile gets an empty tab with its path.
+    fn revert_changes(&mut self, rev: ChangesRevert) {
+        if self.editor.merge_active() {
+            return self.notify(Level::Info, crate::editor::merge::BUSY);
+        }
+        let path = rev.path.clone();
+        if self.editor.index_of(&path).is_some() {
+            return self.apply_changes_revert(rev);
+        }
+        if path.exists() {
+            self.pending_revert = Some((path.clone(), PendingRevert::Changes(Box::new(rev))));
+            return self.open_file(path, false);
+        }
+        self.editor.open_text(path, "", false, &self.theme);
+        self.editor.enforce_tab_limit();
+        self.apply_changes_revert(rev);
+    }
+
+    /// Apply changes of the window's diff to their file's open tab as one
+    /// undoable edit, only while its text is still the one the diff
+    /// compared; show the tab (the focus stays) and compare again.
+    pub(super) fn apply_changes_revert(&mut self, rev: ChangesRevert) {
+        let Some(i) = self.editor.index_of(&rev.path) else { return };
+        let name = self.editor.buffers[i].name.clone();
+        let n = rev.changes.len();
+        if self.editor.buffers[i].read_only {
+            self.notify(Level::Info, format!("{name} is read-only; not reverted"));
+        } else if self.editor.restore_changes(i, &rev.base, rev.changes) {
+            let mut cx = ctx!(self);
+            self.editor.activate(i, &mut cx);
+            let fx = cx.effects;
+            self.apply_effects(fx);
+            let what = if n == 1 { "1 change".to_string() } else { format!("{n} changes") };
+            self.notify(Level::Info, format!("Reverted {what} in {name} to {} (Ctrl+Z in the editor undoes)", rev.title));
+        } else {
+            self.notify(Level::Warn, format!("{name} changed since the diff was made; compared again: revert once it shows"));
+        }
+        let mut cx = ctx!(self);
+        self.history_panel.reload_diff(&mut cx);
+        let fx = cx.effects;
         self.apply_effects(fx);
     }
 
@@ -400,6 +455,119 @@ pub(crate) mod tests {
         assert!(app.history_panel.diff_state().1);
         app.perform(Action::Editor(EditorAction::Undo));
         assert_eq!(app.editor.active_buffer().unwrap().text(), "two three one\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Store a snapshot of `path` holding `text`.
+    fn record(app: &App, path: &Path, text: &str) {
+        let r = store::record(app.history.dir(), path, text.as_bytes(), Kind::Save, None, crate::history::now_ms(), 1 << 20).unwrap();
+        assert!(matches!(r, store::Recorded::Added(_)));
+    }
+
+    /// Handle diff answers until the window's newest one has landed (an
+    /// older request's answer may come first).
+    async fn diff_landed(app: &mut App) {
+        while app.history_panel.diff_loading() {
+            handle_next(app, diff_msg).await;
+        }
+    }
+
+    /// The window on `path`, its list and the diff of the newest snapshot
+    /// loaded, the diff focused.
+    async fn window_with_diff(app: &mut App, path: &Path) {
+        app.show_local_history(path.to_path_buf());
+        handle_next(app, list_of(path)).await;
+        diff_landed(app).await;
+        history(app, HistoryAction::Right);
+    }
+
+    fn last_note(app: &App) -> String {
+        app.notifications.last().map(|n| n.text.clone()).unwrap_or_default()
+    }
+
+    #[tokio::test]
+    async fn selected_changes_revert_as_one_undoable_edit() {
+        let (mut app, dir) = test_app("history-changes");
+        with_history(&mut app);
+        let path = app.workspace.root.join("a.txt");
+        record(&app, &path, "a\nb\nc\nd\ne\n");
+        load(&mut app, "a.txt", "A\nb\nC\nd\nE\n");
+        window_with_diff(&mut app, &path).await;
+        assert_eq!(app.history_panel.changes(), (3, 0..1));
+        // The second change alone; the focus stays in the window.
+        history(&mut app, HistoryAction::NextChange);
+        history(&mut app, HistoryAction::RevertChanges);
+        assert_eq!(app.editor.active_buffer().unwrap().text(), "A\nb\nc\nd\nE\n");
+        assert!(app.focus.is(PanelId::LocalHistory));
+        let note = last_note(&app);
+        assert!(note.starts_with("Reverted 1 change in a.txt to ") && note.ends_with("  Saved (Ctrl+Z in the editor undoes)"), "{note}");
+        // Compared again: the change that followed is current.
+        diff_landed(&mut app).await;
+        assert_eq!(app.history_panel.changes(), (2, 1..2));
+        // Every change left: Ctrl+A, then the revert.
+        history(&mut app, HistoryAction::SelectAllChanges);
+        history(&mut app, HistoryAction::RevertChanges);
+        assert_eq!(last_note(&app).split(" to ").next(), Some("Reverted 2 changes in a.txt"));
+        let b = app.editor.active_buffer().unwrap();
+        assert_eq!((b.text(), b.dirty()), ("a\nb\nc\nd\ne\n".to_string(), true));
+        diff_landed(&mut app).await;
+        assert_eq!(app.history_panel.changes(), (0, 0..0));
+        // One undo step each.
+        app.perform(Action::Editor(EditorAction::Undo));
+        assert_eq!(app.editor.active_buffer().unwrap().text(), "A\nb\nc\nd\nE\n");
+        app.perform(Action::Editor(EditorAction::Undo));
+        assert_eq!(app.editor.active_buffer().unwrap().text(), "A\nb\nC\nd\nE\n");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "A\nb\nC\nd\nE\n", "nothing written");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn changes_made_for_another_text_are_refused_and_compared_again() {
+        let (mut app, dir) = test_app("history-changes-stale");
+        with_history(&mut app);
+        let path = app.workspace.root.join("a.txt");
+        record(&app, &path, "a\nb\n");
+        load(&mut app, "a.txt", "A\nb\n");
+        window_with_diff(&mut app, &path).await;
+        // An edit after the diff was made.
+        type_text(&mut app, "x");
+        history(&mut app, HistoryAction::RevertChanges);
+        assert_eq!(app.editor.active_buffer().unwrap().text(), "xA\nb\n");
+        assert!(last_note(&app).starts_with("a.txt changed since the diff was made"), "{}", last_note(&app));
+        // The new comparison reverts.
+        diff_landed(&mut app).await;
+        history(&mut app, HistoryAction::RevertChanges);
+        assert_eq!(app.editor.active_buffer().unwrap().text(), "a\nb\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn changes_of_a_file_that_is_not_open_apply_once_it_loads() {
+        let (mut app, dir) = test_app("history-changes-unopened");
+        with_history(&mut app);
+        let path = app.workspace.root.join("b.txt");
+        std::fs::write(&path, "B\nx\nY\n").unwrap();
+        record(&app, &path, "b\nx\ny\n");
+        window_with_diff(&mut app, &path).await;
+        assert_eq!(app.history_panel.changes(), (2, 0..1));
+        history(&mut app, HistoryAction::RevertChanges);
+        assert!(app.editor.index_of(&path).is_none());
+        handle_next(&mut app, |m| matches!(m, AppMsg::FileLoaded { .. })).await;
+        let b = app.editor.active_buffer().unwrap();
+        assert_eq!((b.text(), b.dirty()), ("b\nx\nY\n".to_string(), true));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "B\nx\nY\n", "nothing written");
+        assert!(app.focus.is(PanelId::LocalHistory));
+
+        // The disk changed between the diff and the load: refused.
+        let c = app.workspace.root.join("c.txt");
+        std::fs::write(&c, "C\n").unwrap();
+        record(&app, &c, "c\n");
+        window_with_diff(&mut app, &c).await;
+        std::fs::write(&c, "C2\n").unwrap();
+        history(&mut app, HistoryAction::RevertChanges);
+        handle_next(&mut app, |m| matches!(m, AppMsg::FileLoaded { .. })).await;
+        assert_eq!(app.editor.active_buffer().unwrap().text(), "C2\n");
+        assert!(last_note(&app).starts_with("c.txt changed since the diff was made"), "{}", last_note(&app));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
