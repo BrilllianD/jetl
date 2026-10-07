@@ -19,7 +19,7 @@ use ratatui::style::Modifier;
 
 use super::tests::{load, test_app};
 use super::{App, Ctx};
-use crate::actions::{Action, EditorAction, MergeAction, Motion, PaletteKind};
+use crate::actions::{Action, EditorAction, HistoryAction, MergeAction, Motion, PaletteKind};
 use crate::config::theme::Theme;
 use crate::editor::selection::Selection;
 use crate::event::AppMsg;
@@ -645,6 +645,96 @@ async fn local_history_window_narrow() {
     let marks = history_marks(&app.theme);
     let bottom = app.layout.rects.bottom;
     assert_snapshot!("local_history_window_narrow", snapshot(&term, &marks, Some(bottom)));
+}
+
+/// The Local History window's project view on the root: a file with
+/// unsaved changes (selected, its diff loaded), a deleted one, a label put
+/// on both (opened: its files below it), a file renamed away and where it
+/// went (with a label of its own), and a deep path. Noon UTC on six days,
+/// shown at UTC; `filter` typed.
+fn local_history_project_fixture(app: &mut App, filter: &str) {
+    use crate::history::{FileState, HistoryMsg, Kind, RecentFile, Request};
+    let root = app.workspace.root.clone();
+    let entry = |rel: &str, day: u64, kind, detail: Option<&str>| crate::history::Entry {
+        v: 1,
+        path: root.join(rel).to_string_lossy().into_owned(),
+        at: (day * 86_400 + 12 * 3600) * 1000,
+        blob: format!("{day:039}{}", rel.len() % 10),
+        len: 100,
+        lines: 4,
+        kind,
+        detail: detail.map(String::from),
+        since: None,
+    };
+    let file =
+        |rel: &str, newest, labels: Vec<crate::history::Entry>, state| RecentFile { path: root.join(rel), newest, count: 3, labels, state };
+    let release = |rel: &str| entry(rel, 19_999, Kind::Label, Some("release 1.2"));
+    let old = root.join("old/todo.txt").to_string_lossy().into_owned();
+    let files = vec![
+        file("notes.txt", entry("notes.txt", 20_001, Kind::Unsaved, None), vec![release("notes.txt")], FileState::Present),
+        file("docs/guide.md", entry("docs/guide.md", 20_000, Kind::BeforeDelete, None), vec![release("docs/guide.md")], FileState::Deleted),
+        file(
+            "todo.txt",
+            entry("todo.txt", 19_998, Kind::Renamed, Some(&old)),
+            vec![entry("todo.txt", 19_997, Kind::Label, Some("before refactor"))],
+            FileState::Present,
+        ),
+        file("old/todo.txt", entry("old/todo.txt", 19_996, Kind::Save, None), vec![], FileState::Renamed(root.join("todo.txt"))),
+        file(
+            "src/very/deep/path/to/a/module_name.txt",
+            entry("src/very/deep/path/to/a/module_name.txt", 19_990, Kind::Autosave, None),
+            vec![],
+            FileState::Present,
+        ),
+    ];
+    app.show_local_history_dir(root.clone());
+    let mut cx = ctx!(app);
+    app.history_panel.set_files(&root, files, &root, |_| 0, &mut cx);
+    // Open the label, then back to the top row.
+    for a in [HistoryAction::Down, HistoryAction::Down, HistoryAction::OpenFile, HistoryAction::Home] {
+        app.history_panel.handle_action(&a, &mut cx);
+    }
+    for c in filter.chars() {
+        app.history_panel.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE), &mut cx);
+    }
+    let Some((key, seq)) = cx.effects.into_iter().rev().find_map(|e| match e {
+        crate::event::Effect::History(Request::Diff { key, seq }) => Some((key, seq)),
+        _ => None,
+    }) else {
+        panic!("a diff request")
+    };
+    let result = Ok(crate::git::diff::DiffDoc::build(b"alpha\nbeta\n", b"alpha\nbeta two\n", app.git.tab_width));
+    app.handle_msg(AppMsg::LocalHistory(HistoryMsg::Diff { key, seq, result }));
+}
+
+/// The project view's marks: crossed-out (gone) names and `deleted` in warn.
+fn project_marks(theme: &Theme) -> Vec<Mark> {
+    let mut marks = history_marks(theme);
+    marks.insert(0, Mark::modifier('X', "crossed out", Modifier::CROSSED_OUT));
+    marks.push(Mark::style('W', "warn", theme.warn));
+    marks
+}
+
+#[tokio::test]
+async fn local_history_project() {
+    let mut fx = stable_app("local-history-project");
+    let app = &mut fx.app;
+    local_history_project_fixture(app, "");
+    let term = draw_app(app, 80, 24);
+    let marks = project_marks(&app.theme);
+    let bottom = app.layout.rects.bottom;
+    assert_snapshot!("local_history_project", snapshot(&term, &marks, Some(bottom)));
+}
+
+#[tokio::test]
+async fn local_history_project_wide() {
+    let mut fx = stable_app("local-history-project-wide");
+    let app = &mut fx.app;
+    local_history_project_fixture(app, "txt");
+    let term = draw_app(app, 120, 40);
+    let marks = project_marks(&app.theme);
+    let bottom = app.layout.rects.bottom;
+    assert_snapshot!("local_history_project_wide", snapshot(&term, &marks, Some(bottom)));
 }
 
 /// The resolver's fixture (as in `editor/merge.rs`): yours changes `one`,

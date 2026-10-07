@@ -13,7 +13,7 @@ expression: "snapshot(&term, &marks, Some(bottom))"
 07  ⊢ └──────────────────────────────┘│
 08    ─────────────────────────────────────────────────────────────────────────────
 09    ┌ Local History: notes.txt ─────────────────────────────────────────────────┐
-10  ⟲ │[Revert] [Revert 2 Changes] [Put Label…] [Remove Label]                    │
+10  ⟲ │[All Files] [Revert] [Revert 2 Changes] [Put Label…] [Remove Label]        │
 11    │ 10-05 12:00  Unsaved changes │ Saved  2024-10-04 1… [Unified] [x] Collapse│
 12  ⚑ │ 10-04 12:00  Saved           │  1   1  alpha                              │
 13  9 │ 10-03 12:00  Before git swi… │  2     -beta                               │

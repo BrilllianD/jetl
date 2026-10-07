@@ -217,6 +217,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it shows. Labels are kept past `keep_days` and pruned for size only after every other
   snapshot; Delete on a label's row in the window removes it. A label applies to one file, not
   the whole project.
+- Local history lists every file of the project (or of a folder) that has snapshots, deleted
+  files included: Backspace or `[All Files]` in the Local History window, File > Local History…
+  on a folder in the Project tree, or with no file open. Each row shows the file, what its
+  newest snapshot was taken for and when; deleted files are crossed out, files renamed in the
+  Project tree say where they went, and a label is one row that lists its files. The diff shows
+  the selected file's newest snapshot, Revert brings a deleted file back in a tab to save, Enter
+  shows the file's own snapshots and Backspace comes back.
 - Recent Projects: Shift+Delete forgets the selected project. Its row goes at once and the
   palette stays open; the project itself is not touched, and opening it again lists it again.
   The current project is never listed, so it cannot be forgotten.

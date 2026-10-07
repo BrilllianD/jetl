@@ -436,6 +436,9 @@
 "right" = "local_history.right"
 "tab" = "local_history.next_section"
 "enter" = "local_history.open_file"
+# The project's files with history; from a file's history, back to them.
+# With a filter typed, Backspace edits the filter first.
+"backspace" = "local_history.files"
 "f7" = "local_history.next_change"
 "shift-f7" = "local_history.prev_change"
 "alt-u" = "local_history.toggle_diff_layout"

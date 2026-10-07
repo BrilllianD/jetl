@@ -50,7 +50,7 @@ pub enum AppAction {
     /// Ask for a language, then create and open a scratch file.
     NewScratch,
     /// The Local History window on the active file or the selected tree
-    /// entry.
+    /// entry (a folder: its files with history; no file: the project's).
     LocalHistory,
     /// Put a local history label on the active file or the selected tree entry.
     PutLabel,
@@ -420,8 +420,11 @@ pub enum HistoryAction {
     Right,
     /// Between the list and the diff.
     NextSection,
-    /// Open the file in the editor.
+    /// Open the file in the editor (in the project view: show the selected
+    /// file's history, or open or close a label).
     OpenFile,
+    /// The project view: the files with history (from a file's: back).
+    Files,
     NextChange,
     PrevChange,
     ToggleDiffLayout,
@@ -581,7 +584,7 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "editor.save_all" => "Save all", Editor(E::SaveAll);
         "editor.new_scratch" => "New scratch file…", App(AppAction::NewScratch);
         "editor.scratch_files" => "Scratch files", App(AppAction::OpenPalette(PaletteKind::Scratches));
-        "editor.local_history" => "Local history of the file (editor) or the selected entry (Project tree), in its tool window", App(AppAction::LocalHistory);
+        "editor.local_history" => "Local history of the file (editor) or the selected entry (Project tree; a folder lists its files), in its tool window", App(AppAction::LocalHistory);
         "editor.put_label" => "Local history: put label…", App(AppAction::PutLabel);
         // After the two above, so "local history" in Find Action picks them first.
         "tool_window.local_history" => "Local History tool window", App(AppAction::ToggleToolWindow(ToolWindowId::LocalHistory));
@@ -840,19 +843,20 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "local_history.left" => "Local History: back to the snapshot list", History(HistoryAction::Left);
         "local_history.right" => "Local History: to the diff", History(HistoryAction::Right);
         "local_history.next_section" => "Local History: switch between the list and the diff", History(HistoryAction::NextSection);
-        "local_history.open_file" => "Local History: open the file in the editor", History(HistoryAction::OpenFile);
+        "local_history.open_file" => "Local History: open the file in the editor (in the project view: the selected file's history, or a label's files)", History(HistoryAction::OpenFile);
+        "local_history.files" => "Local History: the project's files with history, deleted ones included (from a file's history: back)", History(HistoryAction::Files);
         "local_history.next_change" => "Local History: next change in the diff", History(HistoryAction::NextChange);
         "local_history.prev_change" => "Local History: previous change in the diff", History(HistoryAction::PrevChange);
         "local_history.toggle_diff_layout" => "Local History: diff side-by-side or unified", History(HistoryAction::ToggleDiffLayout);
         "local_history.toggle_diff_collapse" => "Local History: fold or show unchanged lines in the diff", History(HistoryAction::ToggleDiffCollapse);
-        "local_history.refresh" => "Local History: list the snapshots again", History(HistoryAction::Refresh);
+        "local_history.refresh" => "Local History: list the snapshots (or the files) again", History(HistoryAction::Refresh);
         "local_history.revert" => "Local History: revert the file to the selected snapshot (undoable)", History(HistoryAction::Revert);
         "local_history.revert_changes" => "Local History: revert the selected changes of the diff (undoable)", History(HistoryAction::RevertChanges);
         "local_history.extend_selection_up" => "Local History: in the diff, select the change above too (in the list: up)", History(HistoryAction::ExtendUp);
         "local_history.extend_selection_down" => "Local History: in the diff, select the change below too (in the list: down)", History(HistoryAction::ExtendDown);
         "local_history.select_all_changes" => "Local History: select every change of the diff", History(HistoryAction::SelectAllChanges);
         "local_history.put_label" => "Local History: put a label on the file…", History(HistoryAction::PutLabel);
-        "local_history.remove_label" => "Local History: remove the selected label…", History(HistoryAction::RemoveLabel);
+        "local_history.remove_label" => "Local History: remove the selected label (of every file it is on)…", History(HistoryAction::RemoveLabel);
         "local_history.context_menu" => "Local History: actions for the selected snapshot", History(HistoryAction::ContextMenu);
         "local_history.escape" => "Local History: clear the filter, back to the list, or focus the editor", History(HistoryAction::Escape);
 

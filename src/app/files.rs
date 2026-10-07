@@ -46,6 +46,9 @@ impl App {
             }
             FsOp::Delete { path } => {
                 self.reload_parents(path);
+                // Its rows read deleted (a file unchanged since its last
+                // snapshot stored nothing new).
+                self.history_files_changed(path);
                 let closed = self.editor.close_under(path);
                 let tabs = match closed {
                     0 => String::new(),

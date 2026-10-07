@@ -50,7 +50,7 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Alt+Shift+S` | `editor.save_as` | Save as… |
 | `Ctrl+Shift+S` * | `editor.save_all` | Save all |
 | `Ctrl+Alt+Shift+Insert` | `editor.new_scratch` | New scratch file… |
-| `Alt+Shift+H` | `editor.local_history` | Local history of the file (editor) or the selected entry (Project tree), in its tool window |
+| `Alt+Shift+H` | `editor.local_history` | Local history of the file (editor) or the selected entry (Project tree; a folder lists its files), in its tool window |
 | `Ctrl+V` | `editor.paste` | Paste |
 | `Alt+Right` | `editor.next_tab` | Next tab |
 | `Alt+Left` | `editor.prev_tab` | Previous tab |
@@ -382,19 +382,20 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Left` | `local_history.left` | Local History: back to the snapshot list |
 | `Right` | `local_history.right` | Local History: to the diff |
 | `Tab` | `local_history.next_section` | Local History: switch between the list and the diff |
-| `Enter` | `local_history.open_file` | Local History: open the file in the editor |
+| `Enter` | `local_history.open_file` | Local History: open the file in the editor (in the project view: the selected file's history, or a label's files) |
+| `Backspace` | `local_history.files` | Local History: the project's files with history, deleted ones included (from a file's history: back) |
 | `F7` | `local_history.next_change` | Local History: next change in the diff |
 | `Shift+F7` | `local_history.prev_change` | Local History: previous change in the diff |
 | `Alt+U` | `local_history.toggle_diff_layout` | Local History: diff side-by-side or unified |
 | `Alt+F` | `local_history.toggle_diff_collapse` | Local History: fold or show unchanged lines in the diff |
-| `F5` | `local_history.refresh` | Local History: list the snapshots again |
+| `F5` | `local_history.refresh` | Local History: list the snapshots (or the files) again |
 | `Alt+R` | `local_history.revert` | Local History: revert the file to the selected snapshot (undoable) |
 | `Ctrl+Alt+Z` | `local_history.revert_changes` | Local History: revert the selected changes of the diff (undoable) |
 | `Shift+Up` | `local_history.extend_selection_up` | Local History: in the diff, select the change above too (in the list: up) |
 | `Shift+Down` | `local_history.extend_selection_down` | Local History: in the diff, select the change below too (in the list: down) |
 | `Ctrl+A` | `local_history.select_all_changes` | Local History: select every change of the diff |
 | `Alt+L` | `local_history.put_label` | Local History: put a label on the file… |
-| `Delete` | `local_history.remove_label` | Local History: remove the selected label… |
+| `Delete` | `local_history.remove_label` | Local History: remove the selected label (of every file it is on)… |
 | `Shift+F10` | `local_history.context_menu` | Local History: actions for the selected snapshot |
 | `Esc` | `local_history.escape` | Local History: clear the filter, back to the list, or focus the editor |
 

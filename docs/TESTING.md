@@ -667,6 +667,17 @@ s F1; s -l 'put label'; s Enter        # "Put Label": "Label for renamed.txt:"
 s Enter                                # toast "Put Label: a label needs a name"; nothing stored
 s F1; s -l 'put label'; s Enter; s -l keep; s Enter   # a label that should survive the prune below
 s C-s                                  # no new row: the saved text is the label's
+s M-H; s BSpace                        # the project view, "Local History: repo/": renamed.txt on top, "▸ Label: keep
+                                       # 1 file", d/x.txt crossed out "deleted", notes.txt crossed out "renamed to
+                                       # renamed.txt"; "[Show History]" first in the toolbar
+s Down; s Down; s Enter                # on the label: "▾", renamed.txt listed under it
+s -l deleted                           # "filter: deleted": only d/x.txt, its diff against nothing ("↔  deleted")
+s M-r                                  # a tab "*x.txt" with 1..3000 (unsaved), toast "Reverted x.txt to …"
+s C-s                                  # d/x.txt is back on disk
+s M-H; s BSpace                        # the project view again: "No file matches "deleted"" (x.txt is back)
+s Escape                               # the filter cleared: x.txt "Saved" on top
+s Enter                                # its own view, "Local History: d/x.txt": "Saved", "Before delete"
+s BSpace                               # back, x.txt still selected
 s C-q                                  # EXIT=0
 /tmp/tm.sh kill-server
 printf '[lsp]\nenabled = false\n[local_history]\nkeep_days = 0\n' > $LH/cfg/jetl/config.toml
@@ -682,7 +693,10 @@ and Tab moves to the diff (its header in the focused style); below 60
 columns inside the window the list and the diff take turns. Shift+F10 in
 the Project tree opens its context menu with Local History and Local
 History: Put Label… under Show History; Shift+F10 in the window opens its
-own (Revert, Revert Selected Changes, Put Label…, Remove Label…, Open File).
+own (Revert, Revert Selected Changes, Put Label…, Remove Label…, Open File,
+All Files; in the project view Show History, Revert, Revert Selected
+Changes, Remove Label…). File > Local History… on a folder selected in the
+Project tree shows the project view of that folder only.
 A Ctrl+click on a change in the diff extends the selection to it (Shift+click
 in terminals that pass it on); typing in the tab after the diff was made and
 then Ctrl+Alt+Z in the window reverts nothing: toast "… changed since the

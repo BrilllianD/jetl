@@ -8,7 +8,9 @@
 //! One global store (`Paths::history_dir`, see `store.rs`), shared by every
 //! project and instance, with snapshots stored compressed. The Local History
 //! tool window (`panel.rs`, File > Local History…) lists a file's snapshots
-//! next to the diff of the selected one against the current text.
+//! next to the diff of the selected one against the current text, or (its
+//! project view, `project.rs`) the files of the project or a folder that
+//! have history, deleted ones included.
 //!
 //! All store work runs on one named thread, `jetl-history`, fed through a
 //! [`Handle`]. Jobs run in order, so the dedupe check, index appends and
@@ -18,6 +20,7 @@
 //! [`ACK_TIMEOUT`]) before it touches the files.
 
 pub mod panel;
+pub mod project;
 pub mod store;
 
 use std::path::{Path, PathBuf};
@@ -29,7 +32,7 @@ use serde::Deserialize;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::event::AppMsg;
-pub use store::{Entry, Kind};
+pub use store::{Entry, FileState, Kind, RecentFile};
 
 /// The longest a destructive operation waits for its snapshot.
 pub const ACK_TIMEOUT: Duration = Duration::from_secs(10);
@@ -123,6 +126,9 @@ pub enum Request {
     Capture(Capture),
     /// List a file's snapshots again (`HistoryMsg::List`).
     List(PathBuf),
+    /// Scan for the files under a folder that have history
+    /// (`HistoryMsg::Recent`).
+    Recent(PathBuf),
     /// The diff of a snapshot (`DiffKey::Local`) against the current text,
     /// answered as `HistoryMsg::Diff` with `seq`.
     Diff {
@@ -139,10 +145,11 @@ pub enum Request {
     RevertChanges(Box<ChangesRevert>),
     /// Ask a name for a label on this file (Put Label).
     PutLabel(PathBuf),
-    /// Ask before removing this label of `path`.
+    /// Ask before removing label `name`: these entries (one, or every file's
+    /// of a label put on several), each with the file it is shown as.
     RemoveLabel {
-        path: PathBuf,
-        entry: Box<Entry>,
+        name: String,
+        entries: Vec<(PathBuf, Entry)>,
     },
 }
 
@@ -172,12 +179,16 @@ pub enum HistoryMsg {
     Diff { key: crate::git::DiffKey, seq: u64, result: anyhow::Result<crate::git::diff::DiffDoc> },
     /// The snapshots of `path`, newest first.
     List { path: PathBuf, entries: Vec<Entry> },
+    /// The files under `scope` (as asked) that have history, newest change
+    /// first.
+    Recent { scope: PathBuf, files: Vec<RecentFile> },
     /// A snapshot's text, for a revert.
     Blob { path: PathBuf, id: String, result: Result<Vec<u8>, String> },
     /// A label was put on `path`, or why not.
     Labelled { path: PathBuf, name: String, result: Result<(), String> },
-    /// A label of `path` was removed (`Ok(false)`: it was gone already).
-    LabelRemoved { path: PathBuf, name: String, result: Result<bool, String> },
+    /// Label `name` was removed from `paths`: how many entries went (0: they
+    /// were gone already).
+    LabelRemoved { paths: Vec<PathBuf>, name: String, result: Result<usize, String> },
 }
 
 /// Done when the snapshot a destructive operation asked for is stored.
@@ -199,8 +210,9 @@ enum Job {
     BeforeDelete { path: PathBuf, at: u64, done: Sender<()> },
     Rename { from: PathBuf, to: PathBuf, at: u64 },
     Label { path: PathBuf, text: Option<CaptureText>, name: String, at: u64 },
-    RemoveLabel { path: PathBuf, entry: Box<Entry> },
+    RemoveLabel { name: String, entries: Vec<(PathBuf, Entry)> },
     List(PathBuf),
+    Recent(PathBuf),
     Blob { path: PathBuf, id: String },
     Prune,
     Flush(Sender<()>),
@@ -235,7 +247,7 @@ impl Handle {
     pub fn spawn(dir: PathBuf, settings: LocalHistoryConfig, bus: UnboundedSender<AppMsg>) -> Self {
         let settings = Arc::new(Mutex::new(settings));
         let (tx, rx) = mpsc::channel();
-        let worker = Worker { dir: dir.clone(), settings: settings.clone(), bus };
+        let worker = Worker { dir: dir.clone(), settings: settings.clone(), bus, cache: None };
         let spawned = std::thread::Builder::new().name("jetl-history".into()).spawn(move || worker.run(rx));
         let tx = match spawned {
             Ok(_) => Some(tx),
@@ -319,16 +331,23 @@ impl Handle {
         self.enabled() && self.send(Job::Label { path, text, name, at: now_ms() })
     }
 
-    /// Remove label `entry` (as listed) of `path`; answered by
-    /// `HistoryMsg::LabelRemoved`. Runs while local history is off too, as prune does.
-    pub fn remove_label(&self, path: PathBuf, entry: Entry) {
-        self.send(Job::RemoveLabel { path, entry: Box::new(entry) });
+    /// Remove label `name`: `entries` (as listed, each with the path it is
+    /// shown as); answered by `HistoryMsg::LabelRemoved`. Runs while local
+    /// history is off too, as prune does.
+    pub fn remove_label(&self, name: String, entries: Vec<(PathBuf, Entry)>) {
+        self.send(Job::RemoveLabel { name, entries });
     }
 
     /// Ask for `path`'s snapshots (`HistoryMsg::List`); answered even when
     /// snapshots are off.
     pub fn list(&self, path: &Path) {
         self.send(Job::List(path.to_path_buf()));
+    }
+
+    /// Ask for the files under folder `scope` that have history
+    /// (`HistoryMsg::Recent`); answered even when snapshots are off.
+    pub fn recent(&self, scope: &Path) {
+        self.send(Job::Recent(scope.to_path_buf()));
     }
 
     /// Ask for a snapshot's bytes (`HistoryMsg::Blob`).
@@ -355,10 +374,12 @@ struct Worker {
     dir: PathBuf,
     settings: Arc<Mutex<LocalHistoryConfig>>,
     bus: UnboundedSender<AppMsg>,
+    /// The index in brief for project view scans; made by the first one.
+    cache: Option<store::IndexCache>,
 }
 
 impl Worker {
-    fn run(self, rx: Receiver<Job>) {
+    fn run(mut self, rx: Receiver<Job>) {
         while let Ok(job) = rx.recv() {
             let s = self.settings.lock().map(|s| s.clone()).unwrap_or_default();
             match job {
@@ -388,19 +409,18 @@ impl Worker {
                     let result = self.label(&path, text, &name, at, &s);
                     let _ = self.bus.send(AppMsg::LocalHistory(HistoryMsg::Labelled { path, name, result }));
                 }
-                Job::RemoveLabel { path, entry } => {
-                    let result = match store::remove_entry(&self.dir, &entry) {
-                        Ok(store::Removal::Done) => Ok(true),
-                        Ok(store::Removal::Gone) => Ok(false),
-                        Ok(store::Removal::Locked) => Err("another jetl instance is pruning local history; try again".to_string()),
-                        Err(e) => Err(e.to_string()),
-                    };
-                    let name = entry.detail.clone().unwrap_or_default();
-                    let _ = self.bus.send(AppMsg::LocalHistory(HistoryMsg::LabelRemoved { path, name, result }));
+                Job::RemoveLabel { name, entries } => {
+                    let result = self.remove_labels(&entries);
+                    let paths = entries.into_iter().map(|(p, _)| p).collect();
+                    let _ = self.bus.send(AppMsg::LocalHistory(HistoryMsg::LabelRemoved { paths, name, result }));
                 }
                 Job::List(path) => {
                     let entries = store::list(&self.dir, &path);
                     let _ = self.bus.send(AppMsg::LocalHistory(HistoryMsg::List { path, entries }));
+                }
+                Job::Recent(scope) => {
+                    let files = store::recent(&self.dir, &scope, self.cache.get_or_insert_with(Default::default));
+                    let _ = self.bus.send(AppMsg::LocalHistory(HistoryMsg::Recent { scope, files }));
                 }
                 Job::Blob { path, id } => {
                     let result = store::read_blob(&self.dir, &id).map_err(|e| e.to_string());
@@ -454,6 +474,20 @@ impl Worker {
             ),
             Err(e) => tracing::warn!("local history rename {} -> {}: {e}", from.display(), to.display()),
         }
+    }
+
+    /// Remove label entries, each under the lock it takes; how many went.
+    fn remove_labels(&self, entries: &[(PathBuf, Entry)]) -> Result<usize, String> {
+        let mut removed = 0;
+        for (_, entry) in entries {
+            match store::remove_entry(&self.dir, entry) {
+                Ok(store::Removal::Done) => removed += 1,
+                Ok(store::Removal::Gone) => {}
+                Ok(store::Removal::Locked) => return Err("another jetl instance is pruning local history; try again".to_string()),
+                Err(e) => return Err(e.to_string()),
+            }
+        }
+        Ok(removed)
     }
 
     /// Store label `name` of `path`: `text`, else the file on disk.
@@ -726,7 +760,8 @@ mod tests {
         assert!(!h.put_label(PathBuf::from("/a"), None, "v1".into()));
         let label =
             Entry { v: 1, path: "/a".into(), at: 1, blob: String::new(), len: 0, lines: 0, kind: Kind::Label, detail: None, since: None };
-        h.remove_label(PathBuf::from("/a"), label);
+        h.remove_label("v1".into(), vec![(PathBuf::from("/a"), label)]);
+        h.recent(Path::new("/"));
         h.flush(Duration::from_millis(10));
     }
 
@@ -746,7 +781,7 @@ mod tests {
         }
     }
 
-    fn removed_result(m: HistoryMsg) -> Result<bool, String> {
+    fn removed_result(m: HistoryMsg) -> Result<usize, String> {
         match m {
             HistoryMsg::LabelRemoved { result, .. } => result,
             other => panic!("expected LabelRemoved, got {other:?}"),
@@ -781,18 +816,52 @@ mod tests {
         assert!(e.contains("not a regular file"), "{e}");
         // Removal.
         let v2 = listed(&h, &mut rx, &a)[0].clone();
-        h.remove_label(a.clone(), v2.clone());
-        assert_eq!(removed_result(answer(&h, &mut rx)), Ok(true));
+        h.remove_label("v2".into(), vec![(a.clone(), v2.clone())]);
+        assert_eq!(removed_result(answer(&h, &mut rx)), Ok(1));
         let l = listed(&h, &mut rx, &a);
         assert_eq!(l.iter().map(Entry::label).collect::<Vec<_>>(), ["Label: v1"]);
-        h.remove_label(a.clone(), v2);
-        assert_eq!(removed_result(answer(&h, &mut rx)), Ok(false));
+        h.remove_label("v2".into(), vec![(a.clone(), v2)]);
+        assert_eq!(removed_result(answer(&h, &mut rx)), Ok(0));
         // Off: no label is put, but one is still removed.
         h.set_settings(LocalHistoryConfig { enabled: false, ..Default::default() });
         assert!(!h.put_label(a.clone(), None, "v3".into()));
-        h.remove_label(a.clone(), l[0].clone());
-        assert_eq!(removed_result(answer(&h, &mut rx)), Ok(true));
+        h.remove_label("v1".into(), vec![(a.clone(), l[0].clone())]);
+        assert_eq!(removed_result(answer(&h, &mut rx)), Ok(1));
         assert!(listed(&h, &mut rx, &a).is_empty());
+        // A label of several files goes in one request.
+        let b = dir.join("b.txt");
+        std::fs::write(&b, "b\n").unwrap();
+        h.set_settings(LocalHistoryConfig::default());
+        for p in [&a, &b] {
+            h.put_label(p.clone(), None, "both".into());
+            assert_eq!(label_result(answer(&h, &mut rx)), Ok(()));
+        }
+        let both = vec![(a.clone(), listed(&h, &mut rx, &a)[0].clone()), (b.clone(), listed(&h, &mut rx, &b)[0].clone())];
+        h.remove_label("both".into(), both);
+        match answer(&h, &mut rx) {
+            HistoryMsg::LabelRemoved { paths, name, result } => {
+                assert_eq!((paths, name, result), (vec![a.clone(), b.clone()], "both".into(), Ok(2)))
+            }
+            other => panic!("{other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_scan_queued_after_a_capture_sees_it() {
+        let dir = std::fs::canonicalize(temp("recent")).unwrap();
+        let (h, mut rx) = handle(&dir);
+        let a = dir.join("p/a.txt");
+        h.capture(Capture::text(a.clone(), "one\n".into(), Kind::Save));
+        h.recent(&dir.join("p"));
+        h.flush(Duration::from_secs(5));
+        match next(&mut rx) {
+            Ok(AppMsg::LocalHistory(HistoryMsg::Recent { scope, files })) => {
+                assert_eq!(scope, dir.join("p"));
+                assert_eq!(files.iter().map(|f| (f.path.clone(), f.state.clone())).collect::<Vec<_>>(), [(a, FileState::Deleted)]);
+            }
+            other => panic!("expected the scan, got {other:?}"),
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

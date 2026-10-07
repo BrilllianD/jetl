@@ -63,6 +63,12 @@
 //! entry when the store is over its size, [`rename`] moves it (dropping the
 //! old key's copy under the lock), and [`remove_entry`] deletes its line
 //! under `prune.lock`.
+//!
+//! The Local History window's project view asks [`recent`]: the files under
+//! a folder that have history, newest change first, each marked present,
+//! deleted or renamed away. It scans the whole index (as [`prune`] does)
+//! through an [`IndexCache`] the worker keeps, which reads an index file
+//! again only when it changed and keeps a summary per key, not the entries.
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -751,6 +757,185 @@ pub fn list(dir: &Path, path: &Path) -> Vec<Entry> {
     let mut v = entries_of(dir, key, path.to_str());
     v.reverse();
     v
+}
+
+/// One file's history in brief, as the project view needs it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyHistory {
+    pub key: String,
+    /// The latest entry by time.
+    pub newest: Entry,
+    /// How many entries.
+    pub count: usize,
+    /// Its labels (`Kind::pinned`), oldest first.
+    pub labels: Vec<Entry>,
+    /// The old paths of its `Renamed` markers, and when.
+    pub renames: Vec<(String, u64)>,
+}
+
+impl KeyHistory {
+    /// Fold `other` (the same key in another index file) in.
+    fn merge(&mut self, other: &KeyHistory) {
+        if other.newest.at >= self.newest.at {
+            self.newest = other.newest.clone();
+        }
+        self.count += other.count;
+        self.labels.extend(other.labels.iter().cloned());
+        self.labels.sort_by_key(|e| e.at);
+        self.renames.extend(other.renames.iter().cloned());
+    }
+}
+
+/// When an index file last changed: a rewrite goes through a rename, so on
+/// unix the inode tells it apart even with the same size and mtime.
+type Stamp = (Option<SystemTime>, u64, u64);
+
+fn stamp(meta: &std::fs::Metadata) -> Stamp {
+    #[cfg(unix)]
+    let ino = std::os::unix::fs::MetadataExt::ino(meta);
+    #[cfg(not(unix))]
+    let ino = 0;
+    (meta.modified().ok(), meta.len(), ino)
+}
+
+/// The index in brief, kept between [`recent`] scans by the worker: an
+/// index file is read again only when its stamp changed, and only a
+/// [`KeyHistory`] per key is kept (not the entries).
+#[derive(Debug, Default)]
+pub struct IndexCache {
+    files: HashMap<PathBuf, (Stamp, Vec<KeyHistory>)>,
+}
+
+impl IndexCache {
+    /// Read the index files that changed since the last call; forget those
+    /// gone.
+    fn refresh(&mut self, dir: &Path) {
+        let mut seen = HashSet::new();
+        if let Ok(rd) = std::fs::read_dir(index_dir(dir)) {
+            for e in rd.flatten() {
+                let file = e.path();
+                if file.extension().is_none_or(|x| x != "jsonl") {
+                    continue;
+                }
+                let Ok(meta) = std::fs::metadata(&file) else { continue };
+                let st = stamp(&meta);
+                seen.insert(file.clone());
+                if self.files.get(&file).is_some_and(|(s, _)| *s == st) {
+                    continue;
+                }
+                let Ok(text) = std::fs::read_to_string(&file) else { continue };
+                self.files.insert(file, (st, summarize(&text)));
+            }
+        }
+        self.files.retain(|f, _| seen.contains(f));
+    }
+
+    fn keys(&self) -> impl Iterator<Item = &KeyHistory> {
+        self.files.values().flat_map(|(_, keys)| keys)
+    }
+}
+
+/// One [`KeyHistory`] per key of an index file's text (corrupt lines left out).
+fn summarize(text: &str) -> Vec<KeyHistory> {
+    let mut by_key: BTreeMap<String, Vec<Entry>> = BTreeMap::new();
+    for e in text.lines().filter_map(|l| serde_json::from_str::<Entry>(l).ok()) {
+        by_key.entry(e.path.clone()).or_default().push(e);
+    }
+    by_key
+        .into_iter()
+        .filter_map(|(key, mut v)| {
+            // Stable: entries at the same time keep their file order.
+            v.sort_by_key(|e| e.at);
+            let labels = v.iter().filter(|e| e.kind.pinned()).cloned().collect();
+            let renames = v.iter().filter(|e| e.kind == Kind::Renamed).filter_map(|e| Some((e.detail.clone()?, e.at))).collect();
+            let count = v.len();
+            Some(KeyHistory { key, newest: v.pop()?, count, labels, renames })
+        })
+        .collect()
+}
+
+/// Where a file with local history is now.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FileState {
+    Present,
+    /// Gone from disk.
+    Deleted,
+    /// Gone by a Project tree rename (its history was carried there); the
+    /// new path, under the scope as asked when it is in it.
+    Renamed(PathBuf),
+}
+
+/// A file under a scope with local history ([`recent`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecentFile {
+    /// Under the scope as asked (`scope.join(rest of the key)`).
+    pub path: PathBuf,
+    pub newest: Entry,
+    pub count: usize,
+    /// Its labels, oldest first.
+    pub labels: Vec<Entry>,
+    pub state: FileState,
+}
+
+/// The files strictly under `scope` (by key, component-wise) that have
+/// local history, newest change first: one scan of the index through
+/// `cache`, a stat per file for the deleted check, and a canonicalize per
+/// rename marker of a missing file.
+pub fn recent(dir: &Path, scope: &Path, cache: &mut IndexCache) -> Vec<RecentFile> {
+    cache.refresh(dir);
+    let scope_key = key(scope);
+    let mut under: BTreeMap<&str, KeyHistory> = BTreeMap::new();
+    for k in cache.keys() {
+        if !Path::new(&k.key).strip_prefix(&scope_key).is_ok_and(|rest| !rest.as_os_str().is_empty()) {
+            continue;
+        }
+        match under.get_mut(k.key.as_str()) {
+            Some(have) => have.merge(k),
+            None => {
+                under.insert(&k.key, k.clone());
+            }
+        }
+    }
+    let shown = |k: &str| match Path::new(k).strip_prefix(&scope_key) {
+        Ok(rest) => scope.join(rest),
+        Err(_) => PathBuf::from(k),
+    };
+    let missing: HashSet<&str> = under.keys().copied().filter(|k| std::fs::symlink_metadata(k).is_err()).collect();
+    // Old key -> (new key, when), for the missing files a rename left.
+    let mut moved: HashMap<String, (&str, u64)> = HashMap::new();
+    if !missing.is_empty() {
+        for k in cache.keys() {
+            for (detail, at) in &k.renames {
+                let old = if missing.contains(detail.as_str()) {
+                    detail.clone()
+                } else {
+                    match key(Path::new(detail)).to_str() {
+                        Some(o) if missing.contains(o) => o.to_string(),
+                        _ => continue,
+                    }
+                };
+                if moved.get(&old).is_none_or(|(_, t)| *t <= *at) {
+                    moved.insert(old, (&k.key, *at));
+                }
+            }
+        }
+    }
+    let mut out: Vec<RecentFile> = under
+        .into_iter()
+        .map(|(k, h)| {
+            let state = if !missing.contains(k) {
+                FileState::Present
+            } else {
+                match moved.get(k) {
+                    Some((to, at)) if *at >= h.newest.at => FileState::Renamed(shown(to)),
+                    _ => FileState::Deleted,
+                }
+            };
+            RecentFile { path: shown(k), newest: h.newest, count: h.count, labels: h.labels, state }
+        })
+        .collect();
+    out.sort_by(|a, b| b.newest.at.cmp(&a.newest.at).then_with(|| a.path.cmp(&b.path)));
+    out
 }
 
 /// The bytes of blob `id`, from its compressed file or else its raw one.
@@ -1974,6 +2159,95 @@ mod tests {
         let c = mv(&dir, "/p/a.txt", "/p/c.txt", 30);
         assert_eq!((c.unlocked, c.labels), (true, 0));
         assert_eq!((count("/p/a.txt"), count("/p/c.txt")), (1, 1));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn recent_lists_the_files_under_a_scope_newest_first() {
+        let root = temp("recent");
+        let hist = root.join("history");
+        let p = root.join("p");
+        std::fs::create_dir_all(p.join("d/sub")).unwrap();
+        let p = std::fs::canonicalize(&p).unwrap();
+        let d = p.join("d");
+        let mut cache = IndexCache::default();
+        assert!(recent(&hist, &d, &mut cache).is_empty(), "no store yet");
+        for (f, at) in [("d/a.txt", 3), ("d/sub/b.txt", 5), ("d/gone.txt", 4), ("dx.txt", 9), ("other.txt", 8)] {
+            let path = p.join(f);
+            std::fs::write(&path, f).unwrap();
+            rec(&hist, path.to_str().unwrap(), f, at);
+        }
+        rec(&hist, d.join("a.txt").to_str().unwrap(), "a2", 6);
+        lab(&hist, d.join("a.txt").to_str().unwrap(), "a2", "v1", 7);
+        std::fs::remove_file(d.join("gone.txt")).unwrap();
+        let r = recent(&hist, &d, &mut cache);
+        let rows: Vec<(PathBuf, u64, usize, usize, FileState)> =
+            r.iter().map(|f| (f.path.clone(), f.newest.at, f.count, f.labels.len(), f.state.clone())).collect();
+        assert_eq!(
+            rows,
+            [
+                (d.join("a.txt"), 7, 3, 1, FileState::Present),
+                (d.join("sub/b.txt"), 5, 1, 0, FileState::Present),
+                (d.join("gone.txt"), 4, 1, 0, FileState::Deleted),
+            ],
+            "a sibling with a common prefix and a file outside the scope are left out"
+        );
+        assert_eq!(r[0].newest.kind, Kind::Label);
+        // The whole folder above: every file.
+        assert_eq!(recent(&hist, &p, &mut cache).len(), 5);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn recent_marks_a_file_renamed_away() {
+        let root = temp("recent-renamed");
+        let hist = root.join("history");
+        let p = root.join("p");
+        std::fs::create_dir_all(&p).unwrap();
+        let p = std::fs::canonicalize(&p).unwrap();
+        let (a, b) = (p.join("a.txt"), p.join("b.txt"));
+        std::fs::write(&a, "a").unwrap();
+        rec(&hist, a.to_str().unwrap(), "a", 1);
+        std::fs::rename(&a, &b).unwrap();
+        rename(&hist, &a, &b, 5, MB, |f| std::fs::read(f).ok()).unwrap();
+        let mut cache = IndexCache::default();
+        let state = |cache: &mut IndexCache, path: &Path| recent(&hist, &p, cache).into_iter().find(|f| f.path == path).map(|f| f.state);
+        assert_eq!(state(&mut cache, &a), Some(FileState::Renamed(b.clone())));
+        assert_eq!(state(&mut cache, &b), Some(FileState::Present));
+        // A new file at the old path: present again; deleted after a later
+        // snapshot: deleted, not renamed.
+        std::fs::write(&a, "new").unwrap();
+        rec(&hist, a.to_str().unwrap(), "new", 7);
+        assert_eq!(state(&mut cache, &a), Some(FileState::Present));
+        std::fs::remove_file(&a).unwrap();
+        assert_eq!(state(&mut cache, &a), Some(FileState::Deleted));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_index_cache_reads_only_changed_files() {
+        let dir = temp("recent-cache");
+        let mut cache = IndexCache::default();
+        rec(&dir, "/p/a.txt", "a", 1);
+        rec(&dir, "/p/b.txt", "b", 2);
+        let ats = |cache: &mut IndexCache| -> Vec<(String, u64, usize)> {
+            recent(&dir, Path::new("/p"), cache).into_iter().map(|f| (f.path.display().to_string(), f.newest.at, f.count)).collect()
+        };
+        assert_eq!(ats(&mut cache), [("/p/b.txt".into(), 2, 1), ("/p/a.txt".into(), 1, 1)]);
+        // An append and a rewrite (a label removed under the lock) show.
+        rec(&dir, "/p/a.txt", "a2", 3);
+        let l = added(lab(&dir, "/p/b.txt", "b", "v1", 4));
+        assert_eq!(ats(&mut cache), [("/p/b.txt".into(), 4, 2), ("/p/a.txt".into(), 3, 2)]);
+        assert_eq!(remove_entry(&dir, &l).unwrap(), Removal::Done);
+        assert_eq!(ats(&mut cache), [("/p/a.txt".into(), 3, 2), ("/p/b.txt".into(), 2, 1)]);
+        // A file not read again: its stamp is the same (proved by a stale
+        // entry planted in the cache surviving).
+        let file = index_file(&dir, "/p/a.txt");
+        cache.files.get_mut(&file).unwrap().1[0].count = 99;
+        assert_eq!(ats(&mut cache)[0].2, 99);
+        // An index file gone drops its keys.
+        std::fs::remove_file(&file).unwrap();
+        assert_eq!(ats(&mut cache), [("/p/b.txt".into(), 2, 1)]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

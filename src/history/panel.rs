@@ -1,13 +1,20 @@
-//! The Local History tool window (bottom): one file's snapshots, newest
-//! first, next to the diff of the selected one against the file's current
-//! text (its open buffer, else the disk). Typing filters the list; Revert
-//! puts the selected snapshot back, Revert Change only the diff's selected
-//! changes (both undoable); Put Label and Remove Label work in place. The window shows one file until `editor.local_history`
-//! picks another; a Project tree rename takes it along.
+//! The Local History tool window (bottom), two views:
+//! - the file view: one file's snapshots, newest first, next to the diff of
+//!   the selected one against the file's current text (its open buffer,
+//!   else the disk). Revert puts the selected snapshot back, Revert Change
+//!   only the diff's selected changes (both undoable); Put Label and Remove
+//!   Label work in place. It shows one file until `editor.local_history`
+//!   picks another; a Project tree rename takes it along.
+//! - the project view (`project.rs`): the files of the project or a folder
+//!   that have history, deleted ones included, and their labels grouped,
+//!   next to the diff of the selected file's newest snapshot; Enter drills
+//!   into a file's view, Backspace (`[All Files]`) comes back.
 //!
-//! The panel holds state only. It asks through `Effect::History`: the list
-//! (`HistoryMsg::List`, applied by the app while the window shows that
-//! path), the diff (`HistoryMsg::Diff`, applied only for the newest
+//! Typing filters the list shown. The panel holds state only. It asks
+//! through `Effect::History`: the list (`HistoryMsg::List`, applied by the
+//! app while the window shows that path), the scan (`HistoryMsg::Recent`,
+//! applied while the project view shows that folder; one in flight at a
+//! time), the diff (`HistoryMsg::Diff`, applied only for the newest
 //! request), a revert (of the snapshot, or of changes with the text they
 //! were computed for), and the label dialogs.
 
@@ -20,7 +27,8 @@ use ratatui::layout::{Position, Rect};
 use ratatui::style::{Modifier, Style};
 use unicode_width::UnicodeWidthStr;
 
-use super::{ChangesRevert, Entry, Request};
+use super::project::{ProjectView, Selection};
+use super::{ChangesRevert, Entry, RecentFile, Request};
 use crate::actions::{Action, HistoryAction};
 use crate::app::Ctx;
 use crate::config::theme::Theme;
@@ -39,6 +47,18 @@ const NARROW: u16 = 60;
 /// The list's width beside the diff: two fifths, within these bounds.
 const LIST_MIN: u16 = 26;
 const LIST_MAX: u16 = 48;
+/// The project view's list (paths) beside the diff: half, within these.
+const FILES_MIN: u16 = 30;
+const FILES_MAX: u16 = 64;
+
+/// Which view the window shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum View {
+    /// One file's snapshots.
+    File,
+    /// The files of a folder that have history.
+    Project,
+}
 
 /// Which part has the keyboard.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,6 +69,10 @@ pub enum Area {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Btn {
+    /// The project view (from a file's).
+    Files,
+    /// A file's own view (from the project view's row).
+    ShowHistory,
     Revert,
     RevertChanges,
     PutLabel,
@@ -73,13 +97,9 @@ impl Row {
     fn short(&self) -> &str {
         self.when.get(5..16).unwrap_or(&self.when)
     }
-
-    fn title(&self) -> String {
-        format!("{}  {}", self.when, self.label)
-    }
 }
 
-/// The file shown; 167's project-wide view would add a kind here.
+/// The file the file view shows.
 #[derive(Debug, Clone)]
 struct Target {
     path: PathBuf,
@@ -89,7 +109,13 @@ struct Target {
 
 #[derive(Debug)]
 pub struct LocalHistoryPanel {
+    view: View,
+    /// The project view, kept while a file's view is shown.
+    project: Option<ProjectView>,
     target: Option<Target>,
+    /// Select this snapshot when the file's list arrives (a label's file
+    /// picked in the project view).
+    want: Option<Entry>,
     rows: Vec<Row>,
     /// Asked for and not answered yet.
     loading: bool,
@@ -110,7 +136,10 @@ pub struct LocalHistoryPanel {
 impl Default for LocalHistoryPanel {
     fn default() -> Self {
         Self {
+            view: View::File,
+            project: None,
             target: None,
+            want: None,
             rows: Vec::new(),
             loading: false,
             filter: String::new(),
@@ -143,9 +172,25 @@ impl LocalHistoryPanel {
         self.target.as_ref().map(|t| t.path.as_path())
     }
 
+    /// The view shown.
+    pub fn view(&self) -> View {
+        self.view
+    }
+
+    /// The project view's folder, while there is one.
+    pub fn project_scope(&self) -> Option<&Path> {
+        self.project.as_ref().map(|p| p.scope.as_path())
+    }
+
     /// Show `path`'s snapshots (the list follows, `set_entries`). Another
     /// file starts over; the same one keeps its rows, filter and selection.
     pub fn set_target(&mut self, path: PathBuf, root: &Path) {
+        self.want = None;
+        if self.view != View::File {
+            self.view = View::File;
+            self.area = Area::List;
+            self.diff.clear();
+        }
         if self.target() != Some(path.as_path()) {
             self.rows.clear();
             self.shown.clear();
@@ -157,6 +202,95 @@ impl LocalHistoryPanel {
         self.loading = true;
         let rel = rel_to(&path, root);
         self.target = Some(Target { path, rel });
+    }
+
+    /// The project view of folder `scope` (as it was when it shows that
+    /// folder already), scanned again.
+    pub fn show_project(&mut self, scope: PathBuf, cx: &mut Ctx) {
+        if self.project.as_ref().is_none_or(|p| p.scope != scope) {
+            self.project = Some(ProjectView::new(scope, &cx.workspace.root));
+        }
+        self.enter_project(cx);
+    }
+
+    /// Back to the project view: the one kept, else the root's with the
+    /// file shown selected.
+    fn files(&mut self, cx: &mut Ctx) {
+        if self.view == View::Project {
+            return;
+        }
+        if self.project.is_none() {
+            let root = cx.workspace.root.clone();
+            let mut p = ProjectView::new(root.clone(), &root);
+            p.want = self.target().map(Path::to_path_buf);
+            self.project = Some(p);
+        }
+        self.enter_project(cx);
+    }
+
+    fn enter_project(&mut self, cx: &mut Ctx) {
+        if self.view != View::Project {
+            self.view = View::Project;
+            self.area = Area::List;
+            self.diff.clear();
+        }
+        self.rescan(cx);
+        self.request_diff(cx);
+    }
+
+    /// Scan the project view's folder again: now, or once the scan in
+    /// flight has landed (so a burst of snapshots costs two scans).
+    pub fn rescan(&mut self, cx: &mut Ctx) {
+        let Some(p) = &mut self.project else { return };
+        if p.scanning {
+            p.again = true;
+            return;
+        }
+        p.scanning = true;
+        cx.effects.push(Effect::History(Request::Recent(p.scope.clone())));
+    }
+
+    /// Whether the project view is shown on a folder that holds `path`.
+    pub fn project_shows(&self, path: &Path) -> bool {
+        self.view == View::Project && self.project.as_ref().is_some_and(|p| path.starts_with(&p.scope))
+    }
+
+    /// A scan's answer, while the project view shows `scope`: the rows
+    /// follow (filter and selection kept) and the selection's diff is asked
+    /// again; a scan asked meanwhile goes out now.
+    pub fn set_files(&mut self, scope: &Path, files: Vec<RecentFile>, root: &Path, offset: impl Fn(i64) -> i64, cx: &mut Ctx) {
+        let Some(p) = self.project.as_mut().filter(|p| p.scope == scope) else { return };
+        p.scanning = false;
+        p.set_files(files, root, offset);
+        let again = std::mem::take(&mut p.again);
+        if self.view == View::Project {
+            self.request_diff(cx);
+        }
+        if again {
+            self.rescan(cx);
+        }
+    }
+
+    /// The root switched: the project view shows the new root's files.
+    /// Returns whether it is the view shown (to be scanned).
+    pub fn reroot(&mut self, root: &Path) -> bool {
+        if self.project.is_none() {
+            return false;
+        }
+        self.project = Some(ProjectView::new(root.to_path_buf(), root));
+        if self.view == View::Project {
+            self.diff.clear();
+        }
+        self.view == View::Project
+    }
+
+    /// A Project tree rename of the project view's folder or one above it:
+    /// follow it. Returns whether the project view is shown (to be scanned:
+    /// a rename under it changes its rows too).
+    pub fn renamed(&mut self, from: &Path, to: &Path, root: &Path) -> bool {
+        let Some(p) = &mut self.project else { return false };
+        let moved = p.retarget(from, to, root);
+        self.view == View::Project && (moved || from.starts_with(&p.scope) || to.starts_with(&p.scope))
     }
 
     /// A Project tree rename of `from` (a file, or a folder above the file
@@ -174,7 +308,7 @@ impl LocalHistoryPanel {
     /// selection is asked for again, as the current text may have changed.
     /// `offset` gives seconds east of UTC at a time (fixed in tests).
     pub fn set_entries(&mut self, entries: Vec<Entry>, root: &Path, offset: impl Fn(i64) -> i64, cx: &mut Ctx) {
-        let keep = self.selected().map(|r| r.entry.clone());
+        let keep = self.want.take().or_else(|| self.selected().map(|r| r.entry.clone()));
         let at = self.list.selected;
         self.rows = entries
             .iter()
@@ -196,7 +330,9 @@ impl LocalHistoryPanel {
             .collect();
         self.loading = false;
         self.refilter(keep.as_ref(), at);
-        self.request_diff(cx);
+        if self.view == View::File {
+            self.request_diff(cx);
+        }
     }
 
     /// Recompute the rows that match the filter; select `keep` when it is
@@ -219,28 +355,47 @@ impl LocalHistoryPanel {
         self.rows.get(*self.shown.get(self.list.selected)?)
     }
 
+    /// The file and snapshot selected in the view shown: the diff, Revert
+    /// and Revert Change work on it.
+    fn selection(&self) -> Option<Selection> {
+        match self.view {
+            View::File => {
+                let (t, r) = (self.target.as_ref()?, self.selected()?);
+                Some(Selection {
+                    path: t.path.clone(),
+                    rel: t.rel.clone(),
+                    entry: r.entry.clone(),
+                    label: r.label.clone(),
+                    when: r.when.clone(),
+                    deleted: false,
+                })
+            }
+            View::Project => self.project.as_ref()?.selection(),
+        }
+    }
+
     /// The selected snapshot's date and label (the revert message).
     pub fn selected_title(&self) -> String {
-        self.selected().map(Row::title).unwrap_or_default()
+        self.selection().map(|s| format!("{}  {}", s.when, s.label)).unwrap_or_default()
     }
 
     /// Whether the window shows `path` with snapshot `id` selected: a
     /// revert's text is applied only then.
     pub fn shows(&self, path: &Path, id: &str) -> bool {
-        self.target() == Some(path) && self.selected().is_some_and(|r| r.entry.blob == id)
+        self.selection().is_some_and(|s| s.path == path && s.entry.blob == id)
     }
 
     /// Ask for the diff of the selection (a new request each time: the
     /// current text may have changed); nothing selected clears it.
     fn request_diff(&mut self, cx: &mut Ctx) {
-        let (Some(t), Some(r)) = (&self.target, self.selected()) else {
+        let Some(s) = self.selection() else {
             self.diff.clear();
             if self.area == Area::Diff {
                 self.area = Area::List;
             }
             return;
         };
-        let key = DiffKey::Local { path: t.path.clone(), rel: t.rel.clone(), id: r.entry.blob.clone(), at: r.entry.at };
+        let key = DiffKey::Local { path: s.path, rel: s.rel, id: s.entry.blob, at: s.entry.at };
         self.diff_seq += 1;
         self.diff.begin(key.clone());
         cx.effects.push(Effect::History(Request::Diff { key, seq: self.diff_seq }));
@@ -265,9 +420,10 @@ impl LocalHistoryPanel {
 
     /// The selection moved: the diff follows when it shows another snapshot.
     fn selection_moved(&mut self, cx: &mut Ctx) {
-        let id = self.selected().map(|r| r.entry.blob.clone());
+        // Two files may hold the same text: the path counts too.
+        let id = self.selection().map(|s| (s.path, s.entry.blob));
         let shown = match &self.diff.key {
-            Some(DiffKey::Local { id, .. }) => Some(id.clone()),
+            Some(DiffKey::Local { path, id, .. }) => Some((path.clone(), id.clone())),
             _ => None,
         };
         if id != shown || id.is_none() {
@@ -275,19 +431,40 @@ impl LocalHistoryPanel {
         }
     }
 
+    /// The list of the view shown.
+    fn list_mut(&mut self) -> &mut ListState {
+        match (self.view, &mut self.project) {
+            (View::Project, Some(p)) => &mut p.list,
+            _ => &mut self.list,
+        }
+    }
+
+    /// The filter of the view shown.
+    fn filter_mut(&mut self) -> &mut String {
+        match (self.view, &mut self.project) {
+            (View::Project, Some(p)) => &mut p.filter,
+            _ => &mut self.filter,
+        }
+    }
+
     /// Typing filters the list while it has focus (speed search), Backspace
     /// deletes, Esc clears; other keys go to the keymap.
     pub fn handle_key(&mut self, key: KeyEvent, cx: &mut Ctx) -> bool {
-        if self.area != Area::List || self.target.is_none() || key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) {
+        let shown = match self.view {
+            View::File => self.target.is_some(),
+            View::Project => self.project.is_some(),
+        };
+        if self.area != Area::List || !shown || key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) {
             return false;
         }
+        let filter = self.filter_mut();
         match key.code {
-            KeyCode::Char(' ') if self.filter.is_empty() => return false,
-            KeyCode::Char(c) => self.filter.push(c),
-            KeyCode::Backspace if !self.filter.is_empty() => {
-                self.filter.pop();
+            KeyCode::Char(' ') if filter.is_empty() => return false,
+            KeyCode::Char(c) => filter.push(c),
+            KeyCode::Backspace if !filter.is_empty() => {
+                filter.pop();
             }
-            KeyCode::Esc if !self.filter.is_empty() => self.filter.clear(),
+            KeyCode::Esc if !filter.is_empty() => filter.clear(),
             _ => return false,
         }
         self.filter_changed(cx);
@@ -295,9 +472,32 @@ impl LocalHistoryPanel {
     }
 
     fn filter_changed(&mut self, cx: &mut Ctx) {
-        let keep = self.selected().map(|r| r.entry.clone());
-        self.refilter(keep.as_ref(), 0);
+        match (self.view, &mut self.project) {
+            (View::Project, Some(p)) => {
+                let keep = p.selected_id();
+                p.refilter(keep.as_ref(), 0);
+            }
+            _ => {
+                let keep = self.selected().map(|r| r.entry.clone());
+                self.refilter(keep.as_ref(), 0);
+            }
+        }
         self.selection_moved(cx);
+    }
+
+    /// Enter in the project view: a label row opens or closes; a file (or
+    /// a label's file) shows its own view, with that snapshot selected.
+    fn open_in_project(&mut self, cx: &mut Ctx) {
+        let Some(p) = &mut self.project else { return };
+        if p.on_label() {
+            p.toggle();
+            return self.selection_moved(cx);
+        }
+        let Some(s) = p.selection() else { return };
+        let root = cx.workspace.root.clone();
+        self.set_target(s.path.clone(), &root);
+        self.want = Some(s.entry);
+        cx.effects.push(Effect::History(Request::List(s.path)));
     }
 
     pub fn handle_action(&mut self, a: &HistoryAction, cx: &mut Ctx) -> bool {
@@ -322,14 +522,15 @@ impl LocalHistoryPanel {
                 }
             }
             H::Up | H::Down | H::PageUp | H::PageDown | H::Home | H::End | H::ExtendUp | H::ExtendDown => {
-                let n = page(self.list.viewport);
+                let list = self.list_mut();
+                let n = page(list.viewport);
                 match a {
-                    H::Up | H::ExtendUp => self.list.up(1),
-                    H::Down | H::ExtendDown => self.list.down(1),
-                    H::PageUp => self.list.up(n),
-                    H::PageDown => self.list.down(n),
-                    H::Home => self.list.home(),
-                    _ => self.list.end(),
+                    H::Up | H::ExtendUp => list.up(1),
+                    H::Down | H::ExtendDown => list.down(1),
+                    H::PageUp => list.up(n),
+                    H::PageDown => list.down(n),
+                    H::Home => list.home(),
+                    _ => list.end(),
                 }
                 self.selection_moved(cx);
             }
@@ -344,11 +545,13 @@ impl LocalHistoryPanel {
                 Area::List if self.diff.key.is_some() => self.area = Area::Diff,
                 Area::List => {}
             },
+            H::OpenFile if self.view == View::Project => self.open_in_project(cx),
             H::OpenFile => {
                 if let Some(t) = &self.target {
                     cx.open_file(t.path.clone());
                 }
             }
+            H::Files => self.files(cx),
             H::NextChange | H::PrevChange => {
                 let forward = *a == H::NextChange;
                 if !self.diff.step_block(forward) {
@@ -357,6 +560,13 @@ impl LocalHistoryPanel {
             }
             H::ToggleDiffLayout => self.diff_opts.unified = Some(!self.diff.unified),
             H::ToggleDiffCollapse => self.diff_opts.collapse = !self.diff_opts.collapse,
+            H::Refresh if self.view == View::Project => {
+                // Always asks: a lost answer cannot wedge the scans.
+                if let Some(p) = &mut self.project {
+                    (p.scanning, p.again) = (false, false);
+                }
+                self.rescan(cx);
+            }
             H::Refresh => {
                 if let Some(t) = &self.target {
                     cx.effects.push(Effect::History(Request::List(t.path.clone())));
@@ -373,12 +583,13 @@ impl LocalHistoryPanel {
             H::RemoveLabel => self.remove_label(cx),
             H::ContextMenu if self.area == Area::Diff => self.context_menu(self.diff_rect.x + 2, self.diff_rect.y, cx),
             H::ContextMenu => {
-                let y = self.list_rect.y + self.list.selected.saturating_sub(self.list.offset) as u16;
-                self.context_menu(self.list_rect.x + 2, y, cx);
+                let list = self.list_mut();
+                let y = list.selected.saturating_sub(list.offset) as u16;
+                self.context_menu(self.list_rect.x + 2, self.list_rect.y + y, cx);
             }
             H::Escape => {
-                if !self.filter.is_empty() {
-                    self.filter.clear();
+                if !self.filter_mut().is_empty() {
+                    self.filter_mut().clear();
                     self.filter_changed(cx);
                 } else if self.area == Area::Diff {
                     self.area = Area::List;
@@ -391,10 +602,16 @@ impl LocalHistoryPanel {
     }
 
     fn revert(&mut self, cx: &mut Ctx) {
-        match (&self.target, self.selected()) {
-            (Some(t), Some(r)) => cx.effects.push(Effect::History(Request::Revert { path: t.path.clone(), id: r.entry.blob.clone() })),
-            _ => cx.notify(Level::Info, "Select a snapshot to revert to"),
+        match self.selection() {
+            Some(s) => cx.effects.push(Effect::History(Request::Revert { path: s.path, id: s.entry.blob })),
+            None if self.on_label() => cx.notify(Level::Info, "Select one of the label's files to revert it (Enter lists them)"),
+            None => cx.notify(Level::Info, "Select a snapshot to revert to"),
         }
+    }
+
+    /// A label row of the project view is selected.
+    fn on_label(&self) -> bool {
+        self.view == View::Project && self.project.as_ref().is_some_and(ProjectView::on_label)
     }
 
     /// The changes the diff has selected, for Revert Change: `None` when
@@ -408,11 +625,11 @@ impl LocalHistoryPanel {
     /// Put the diff's selected changes back: the request carries the edits
     /// and the text they were computed for (they apply only to that text).
     fn revert_changes(&mut self, cx: &mut Ctx) {
-        let (Some(t), Some(r)) = (&self.target, self.selected()) else {
+        let Some(s) = self.selection() else {
             return cx.notify(Level::Info, "Select a snapshot, then the changes to revert in its diff");
         };
         let doc = match &self.diff.doc {
-            Some(doc) if matches!(&self.diff.key, Some(DiffKey::Local { id, .. }) if *id == r.entry.blob) => doc,
+            Some(doc) if matches!(&self.diff.key, Some(DiffKey::Local { path, id, .. }) if *id == s.entry.blob && *path == s.path) => doc,
             _ => return cx.notify(Level::Info, "The diff is still loading"),
         };
         if self.diff.loading {
@@ -426,7 +643,8 @@ impl LocalHistoryPanel {
         };
         let spans: Vec<_> = range.clone().filter_map(|i| doc.block_lines(i)).collect();
         let changes = crate::editor::gutter::revert_spans(&doc.old, &doc.new, &spans);
-        let req = ChangesRevert { path: t.path.clone(), base: doc.new.concat(), changes, title: r.title() };
+        let title = format!("{}  {}", s.when, s.label);
+        let req = ChangesRevert { path: s.path, base: doc.new.concat(), changes, title };
         cx.effects.push(Effect::History(Request::RevertChanges(Box::new(req))));
         // After the reload, the change that followed the range is current.
         self.diff.block = range.start;
@@ -434,6 +652,9 @@ impl LocalHistoryPanel {
     }
 
     fn put_label(&mut self, cx: &mut Ctx) {
+        if self.view == View::Project {
+            return cx.notify(Level::Info, "Put Label works on one file: Enter shows the selected file's history");
+        }
         match &self.target {
             Some(t) => cx.effects.push(Effect::History(Request::PutLabel(t.path.clone()))),
             None => cx.notify(Level::Info, "No file shown: File > Local History… picks one"),
@@ -441,24 +662,50 @@ impl LocalHistoryPanel {
     }
 
     fn remove_label(&mut self, cx: &mut Ctx) {
-        let (Some(t), Some(r)) = (&self.target, self.selected()) else { return };
-        if r.entry.kind.pinned() {
-            cx.effects.push(Effect::History(Request::RemoveLabel { path: t.path.clone(), entry: Box::new(r.entry.clone()) }));
-        } else {
-            cx.notify(Level::Info, "Only labels can be removed; other snapshots go by age ([local_history] keep_days)");
+        let label = match self.view {
+            View::Project => match &self.project {
+                Some(p) if p.shown_len() > 0 => p.selected_label(),
+                _ => return,
+            },
+            View::File => {
+                let (Some(t), Some(r)) = (&self.target, self.selected()) else { return };
+                r.entry.kind.pinned().then(|| (r.entry.detail.clone().unwrap_or_default(), vec![(t.path.clone(), r.entry.clone())]))
+            }
+        };
+        match label {
+            Some((name, entries)) => cx.effects.push(Effect::History(Request::RemoveLabel { name, entries })),
+            None => cx.notify(Level::Info, "Only labels can be removed; other snapshots go by age ([local_history] keep_days)"),
+        }
+    }
+
+    /// Whether Remove Label applies to the selection.
+    fn label_selected(&self) -> bool {
+        match self.view {
+            View::Project => self.project.as_ref().is_some_and(|p| p.selected_label().is_some()),
+            View::File => self.selected().is_some_and(|r| r.entry.kind.pinned()),
         }
     }
 
     fn context_menu(&self, x: u16, y: u16, cx: &mut Ctx) {
-        let selected = self.selected();
-        let label = selected.is_some_and(|r| r.entry.kind.pinned());
-        let items = vec![
-            MenuItem::new("Revert", Action::History(HistoryAction::Revert)).enabled(selected.is_some()),
-            MenuItem::new("Revert Selected Changes", Action::History(HistoryAction::RevertChanges)).enabled(self.revertible().is_some()),
-            MenuItem::new("Put Label…", Action::History(HistoryAction::PutLabel)),
-            MenuItem::new("Remove Label…", Action::History(HistoryAction::RemoveLabel)).enabled(label),
-            MenuItem::new("Open File", Action::History(HistoryAction::OpenFile)),
-        ];
+        let selected = self.selection().is_some();
+        let label = self.label_selected();
+        let h = |a| Action::History(a);
+        let items = match self.view {
+            View::Project => vec![
+                MenuItem::new("Show History", h(HistoryAction::OpenFile)).enabled(selected),
+                MenuItem::new("Revert", h(HistoryAction::Revert)).enabled(selected),
+                MenuItem::new("Revert Selected Changes", h(HistoryAction::RevertChanges)).enabled(self.revertible().is_some()),
+                MenuItem::new("Remove Label…", h(HistoryAction::RemoveLabel)).enabled(label),
+            ],
+            View::File => vec![
+                MenuItem::new("Revert", h(HistoryAction::Revert)).enabled(selected),
+                MenuItem::new("Revert Selected Changes", h(HistoryAction::RevertChanges)).enabled(self.revertible().is_some()),
+                MenuItem::new("Put Label…", h(HistoryAction::PutLabel)),
+                MenuItem::new("Remove Label…", h(HistoryAction::RemoveLabel)).enabled(label),
+                MenuItem::new("Open File", h(HistoryAction::OpenFile)),
+                MenuItem::new("All Files", h(HistoryAction::Files)),
+            ],
+        };
         cx.effects.push(Effect::ContextMenu(ContextMenu::new(items, x, y)));
     }
 
@@ -470,6 +717,8 @@ impl LocalHistoryPanel {
                     && let Some(b) = self.hits.iter().find(|(_, r)| r.contains(p)).map(|(b, _)| *b)
                 {
                     match b {
+                        Btn::Files => self.files(cx),
+                        Btn::ShowHistory => self.open_in_project(cx),
                         Btn::Revert => self.revert(cx),
                         Btn::RevertChanges => self.revert_changes(cx),
                         Btn::PutLabel => self.put_label(cx),
@@ -479,9 +728,10 @@ impl LocalHistoryPanel {
                     }
                     return true;
                 }
-                if let Some(i) = self.list.hit(self.list_rect, m.x, m.y) {
+                let rect = self.list_rect;
+                if let Some(i) = self.list_mut().hit(rect, m.x, m.y) {
                     self.area = Area::List;
-                    self.list.select(i);
+                    self.list_mut().select(i);
                     self.selection_moved(cx);
                     if button == MouseButton::Right {
                         self.context_menu(m.x, m.y, cx);
@@ -509,7 +759,7 @@ impl LocalHistoryPanel {
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
                 let d: isize = if m.kind == MouseEventKind::ScrollUp { -3 } else { 3 };
                 if self.list_rect.contains(p) {
-                    self.list.scroll(d as i32);
+                    self.list_mut().scroll(d as i32);
                 } else if self.diff_rect.contains(p) {
                     self.diff.scroll_by(d);
                 }
@@ -528,6 +778,12 @@ impl LocalHistoryPanel {
     #[cfg(test)]
     pub fn labels(&self) -> Vec<String> {
         self.shown.iter().map(|&i| self.rows[i].label.clone()).collect()
+    }
+
+    /// The project view's rows (tests; `ProjectView::rows`).
+    #[cfg(test)]
+    pub fn project_rows(&self) -> Vec<String> {
+        self.project.as_ref().map(|p| p.rows()).unwrap_or_default()
     }
 
     /// The selected row's label (tests).
@@ -562,9 +818,10 @@ impl LocalHistoryPanel {
     // ---- rendering -------------------------------------------------------
 
     pub fn render(&mut self, frame: &mut Frame, area: Rect, focused: bool, theme: &Theme) {
-        let title = match &self.target {
-            Some(t) => format!(" Local History: {} ", t.rel),
-            None => " Local History ".to_string(),
+        let title = match (self.view, &self.project, &self.target) {
+            (View::Project, Some(p), _) => format!(" Local History: {} ", p.rel),
+            (View::File, _, Some(t)) => format!(" Local History: {} ", t.rel),
+            _ => " Local History ".to_string(),
         };
         let block = tool_window_block(&title, focused, theme);
         let inner = block.inner(area);
@@ -578,7 +835,8 @@ impl LocalHistoryPanel {
         let buf = frame.buffer_mut();
         self.render_toolbar(buf, Rect::new(inner.x, inner.y, inner.width, 1), focused, theme);
         let body = Rect::new(inner.x, inner.y + 1, inner.width, inner.height - 1);
-        if self.target.is_none() {
+        let project = self.view == View::Project && self.project.is_some();
+        if !project && self.target.is_none() {
             let msg = "Open a file, then File > Local History… (Alt+Shift+H) shows its snapshots";
             buf.set_stringn(body.x + 1, body.y, msg, body.width.saturating_sub(1) as usize, theme.dim);
             return;
@@ -589,40 +847,63 @@ impl LocalHistoryPanel {
                 Area::Diff => (Rect::default(), body),
             }
         } else {
-            let lw = (body.width * 2 / 5).clamp(LIST_MIN, LIST_MAX);
+            let lw = if project { (body.width / 2).clamp(FILES_MIN, FILES_MAX) } else { (body.width * 2 / 5).clamp(LIST_MIN, LIST_MAX) };
             for y in body.y..body.bottom() {
                 buf[(body.x + lw, y)].set_symbol("│").set_style(theme.splitter);
             }
             (Rect::new(body.x, body.y, lw, body.height), Rect::new(body.x + lw + 1, body.y, body.width - lw - 1, body.height))
         };
-        self.render_list(buf, list, focused, theme);
+        match &mut self.project {
+            Some(p) if project => {
+                if list.width > 0 && list.height > 0 && p.render_list(buf, list, focused && self.area == Area::List, theme) {
+                    self.list_rect = list;
+                }
+            }
+            _ => self.render_list(buf, list, focused, theme),
+        }
         self.render_diff_side(buf, diff, focused, theme);
     }
 
     /// The buttons on the left, the filter on the right.
     fn render_toolbar(&mut self, buf: &mut Screen, r: Rect, focused: bool, theme: &Theme) {
         buf.set_style(r, Style::default().bg(theme.panel_bg));
-        let selected = self.selected();
+        let selected = self.selection().is_some();
         let changes = match self.diff.selected_blocks().len() {
             n if n > 1 => format!("[Revert {n} Changes]"),
             _ => "[Revert Change]".to_string(),
         };
+        let project = self.view == View::Project;
+        let (first, label_btn) = if project {
+            ((Btn::ShowHistory, "[Show History]", selected || self.on_label()), None)
+        } else {
+            ((Btn::Files, "[All Files]", true), Some((Btn::PutLabel, "[Put Label…]", self.target.is_some())))
+        };
         let enabled = [
-            (Btn::Revert, "[Revert]", selected.is_some()),
-            (Btn::RevertChanges, changes.as_str(), self.revertible().is_some()),
-            (Btn::PutLabel, "[Put Label…]", self.target.is_some()),
-            (Btn::RemoveLabel, "[Remove Label]", selected.is_some_and(|r| r.entry.kind.pinned())),
+            Some(first),
+            Some((Btn::Revert, "[Revert]", selected)),
+            Some((Btn::RevertChanges, changes.as_str(), self.revertible().is_some())),
+            label_btn,
+            Some((Btn::RemoveLabel, "[Remove Label]", self.label_selected())),
         ];
+        let enabled = enabled.into_iter().flatten();
         let mut x = r.x;
         for (b, label, on) in enabled {
+            // Whole buttons only; the keys and the menu still work.
+            if x + label.width() as u16 > r.right() {
+                break;
+            }
             let style = if on { theme.title } else { theme.dim }.bg(theme.panel_bg);
             let rect = put(buf, &mut x, r.y, r.right(), label, style);
             self.hits.push((b, rect));
             x += 1;
         }
-        let (text, style) = if !self.filter.is_empty() {
-            (format!("filter: {} ", self.filter), theme.status_accent)
-        } else if focused && self.area == Area::List && !self.rows.is_empty() {
+        let (filter, has_rows) = match (&self.project, project) {
+            (Some(p), true) => (p.filter.as_str(), !p.is_empty()),
+            _ => (self.filter.as_str(), !self.rows.is_empty()),
+        };
+        let (text, style) = if !filter.is_empty() {
+            (format!("filter: {filter} "), theme.status_accent)
+        } else if focused && self.area == Area::List && has_rows {
             ("type to filter ".to_string(), theme.dim)
         } else {
             return;
@@ -686,10 +967,14 @@ impl LocalHistoryPanel {
         }
         // The label first: the list shows the date, and a narrow header
         // cuts the end.
-        let Some(title) = self.selected().map(|s| format!("{}  {}  ↔  current", s.label, s.when)) else {
-            if !self.rows.is_empty() {
-                let msg = "Select a snapshot to compare it with the current text";
-                buf.set_stringn(r.x + 1, r.y, msg, r.width.saturating_sub(1) as usize, theme.dim);
+        let title = self.selection().map(|s| format!("{}  {}  ↔  {}", s.label, s.when, if s.deleted { "deleted" } else { "current" }));
+        let Some(title) = title else {
+            let msg = match (&self.project, self.view) {
+                (Some(p), View::Project) => p.label_note(),
+                _ => (!self.rows.is_empty()).then(|| "Select a snapshot to compare it with the current text".to_string()),
+            };
+            if let Some(msg) = msg {
+                buf.set_stringn(r.x + 1, r.y, &msg, r.width.saturating_sub(1) as usize, theme.dim);
             }
             return;
         };
@@ -774,7 +1059,11 @@ mod tests {
                 Effect::History(Request::Diff { key: DiffKey::Local { id, .. }, seq }) => format!("diff {} #{seq}", &id[36..]),
                 Effect::History(Request::Revert { id, .. }) => format!("revert {}", &id[36..]),
                 Effect::History(Request::PutLabel(p)) => format!("label {}", p.display()),
-                Effect::History(Request::RemoveLabel { entry, .. }) => format!("remove {}", entry.detail.unwrap_or_default()),
+                Effect::History(Request::RemoveLabel { name, entries }) => {
+                    let paths: Vec<String> = entries.iter().map(|(p, _)| p.display().to_string()).collect();
+                    if paths.len() == 1 { format!("remove {name}") } else { format!("remove {name} of {}", paths.join(" ")) }
+                }
+                Effect::History(Request::Recent(p)) => format!("scan {}", p.display()),
                 Effect::History(Request::List(p)) => format!("list {}", p.display()),
                 Effect::History(Request::RevertChanges(r)) => {
                     let ats: Vec<usize> = r.changes.iter().map(|c| c.at).collect();
@@ -937,7 +1226,7 @@ mod tests {
         let mut buf = Screen::empty(Rect::new(0, 0, 80, 1));
         p.render_toolbar(&mut buf, Rect::new(0, 0, 80, 1), true, &Theme::default());
         let row: String = (0..80).map(|x| buf[(x, 0)].symbol().to_string()).collect();
-        assert!(row.starts_with("[Revert] [Revert 2 Changes] [Put Label…]"), "{row}");
+        assert!(row.starts_with("[All Files] [Revert] [Revert 2 Changes] [Put Label…]"), "{row}");
         assert_eq!(act(&mut p, HistoryAction::RevertChanges), [format!("changes [8, 4] of {base} to {title}")]);
         // The range's first is current, alone; the app compares again, and
         // until that lands the old diff is not reverted from.
@@ -987,6 +1276,94 @@ mod tests {
         assert_eq!(p.diff.selected_blocks(), 1..3);
         click(&mut p, MouseButton::Right, top, KeyModifiers::NONE);
         assert_eq!(p.diff.selected_blocks(), 0..1);
+    }
+
+    /// The project view of /w with `project::tests::fixture`'s files.
+    fn project_panel() -> LocalHistoryPanel {
+        let mut p = LocalHistoryPanel::default();
+        let fx = requests(with_cx(|cx| p.show_project(PathBuf::from("/w"), cx)));
+        assert_eq!(fx, ["scan /w"]);
+        let fx = requests(with_cx(|cx| p.set_files(Path::new("/w"), super::super::project::tests::fixture(), Path::new("/w"), |_| 0, cx)));
+        assert_eq!(fx, ["diff 0009 #1"], "the newest file's newest snapshot");
+        p
+    }
+
+    #[test]
+    fn the_project_view_drills_into_a_file_and_back() {
+        let mut p = project_panel();
+        assert_eq!(p.view(), View::Project);
+        // A filter, then Enter on a file: its own view, its list asked.
+        typed(&mut p, KeyCode::Char('a'));
+        assert_eq!(act(&mut p, HistoryAction::OpenFile), ["list /w/src/a.rs"]);
+        assert_eq!((p.view(), p.target()), (View::File, Some(Path::new("/w/src/a.rs"))));
+        // Backspace: the project view as it was, scanned again.
+        assert_eq!(act(&mut p, HistoryAction::Files), ["scan /w", "diff 0009 #2"]);
+        assert_eq!((p.view(), p.project.as_ref().unwrap().filter.as_str()), (View::Project, "a"));
+        // A label's file: its view selects the label once listed.
+        typed(&mut p, KeyCode::Backspace);
+        act(&mut p, HistoryAction::Down);
+        act(&mut p, HistoryAction::Down);
+        assert!(act(&mut p, HistoryAction::OpenFile).is_empty(), "the label opens");
+        act(&mut p, HistoryAction::Down);
+        assert_eq!(act(&mut p, HistoryAction::OpenFile), ["list /w/b.txt"]);
+        let entries = vec![e(7, Kind::Save, None, 1), e(5, Kind::Label, Some("v1"), 1)];
+        let fx = requests(with_cx(|cx| p.set_entries(entries, Path::new("/w"), |_| 0, cx)));
+        assert_eq!((fx, p.selected_label()), (vec!["diff 0005 #5".to_string()], Some("Label: v1")));
+    }
+
+    #[test]
+    fn back_from_a_file_with_no_project_view_selects_it_among_the_roots_files() {
+        let mut p = panel(vec![e(1, Kind::Save, None, 1)]);
+        assert_eq!(act(&mut p, HistoryAction::Files), ["scan /w"]);
+        let mut files = super::super::project::tests::fixture();
+        files.push(super::super::project::tests::file("a.txt", 0, &[], crate::history::FileState::Present));
+        with_cx(|cx| p.set_files(Path::new("/w"), files, Path::new("/w"), |_| 0, cx));
+        assert_eq!(p.selected_title(), "2024-10-04 00:00:00  Saved");
+        assert!(p.shows(Path::new("/w/a.txt"), &e(0, Kind::Save, None, 1).blob));
+        // Another folder's answer is dropped.
+        with_cx(|cx| p.set_files(Path::new("/w/d"), Vec::new(), Path::new("/w"), |_| 0, cx));
+        assert!(p.shows(Path::new("/w/a.txt"), &e(0, Kind::Save, None, 1).blob));
+    }
+
+    #[test]
+    fn scans_are_coalesced_and_f5_always_asks() {
+        let mut p = LocalHistoryPanel::default();
+        assert_eq!(requests(with_cx(|cx| p.show_project(PathBuf::from("/w"), cx))), ["scan /w"]);
+        assert!(requests(with_cx(|cx| p.rescan(cx))).is_empty(), "one in flight");
+        assert!(requests(with_cx(|cx| p.rescan(cx))).is_empty());
+        // The answer lands: once more for the requests meanwhile.
+        let fx = requests(with_cx(|cx| p.set_files(Path::new("/w"), Vec::new(), Path::new("/w"), |_| 0, cx)));
+        assert_eq!(fx, ["scan /w"]);
+        assert!(requests(with_cx(|cx| p.rescan(cx))).is_empty());
+        assert_eq!(act(&mut p, HistoryAction::Refresh), ["scan /w"]);
+        assert!(p.project_shows(Path::new("/w/x/y.txt")) && !p.project_shows(Path::new("/v/y.txt")));
+    }
+
+    #[test]
+    fn project_view_actions_work_on_the_selected_row() {
+        let mut p = project_panel();
+        // A deleted file: its newest snapshot is put back.
+        act(&mut p, HistoryAction::Down);
+        assert_eq!(act(&mut p, HistoryAction::Revert), ["revert 0007"]);
+        let only = act(&mut p, HistoryAction::RemoveLabel);
+        assert!(only[0].starts_with("notify Only labels can be removed"), "{only:?}");
+        let put = act(&mut p, HistoryAction::PutLabel);
+        assert!(put[0].starts_with("notify Put Label works on one file"), "{put:?}");
+        // A label of two files: removed from both; no revert of it.
+        act(&mut p, HistoryAction::Down);
+        assert_eq!(act(&mut p, HistoryAction::RemoveLabel), ["remove v1 of /w/b.txt /w/src/a.rs"]);
+        assert!(act(&mut p, HistoryAction::Revert)[0].starts_with("notify Select one of the label's files"));
+        assert!(p.diff.key.is_none(), "no diff for a label");
+        // One of its files: that file's label only.
+        act(&mut p, HistoryAction::OpenFile);
+        act(&mut p, HistoryAction::Down);
+        assert_eq!(act(&mut p, HistoryAction::RemoveLabel), ["remove v1"]);
+        assert_eq!(act(&mut p, HistoryAction::Revert), ["revert 0005"]);
+        // A rename of the folder shown is followed; the root switch starts over.
+        assert!(p.renamed(Path::new("/w"), Path::new("/v"), Path::new("/")));
+        assert_eq!(p.project_scope(), Some(Path::new("/v")));
+        assert!(p.reroot(Path::new("/r")));
+        assert_eq!(p.project_scope(), Some(Path::new("/r")));
     }
 
     #[test]

@@ -32,6 +32,9 @@ impl App {
                 }
                 Effect::FileSaved { path: p, quiet } => {
                     self.lsp_saved(&p);
+                    // A deleted file saved again with its last snapshot's
+                    // text stores nothing, yet its project view row is back.
+                    self.history_files_changed(&p);
                     if !quiet {
                         self.notify(Level::Info, format!("Saved {}", p.file_name().map(|n| n.to_string_lossy()).unwrap_or_default()));
                     }

@@ -413,7 +413,7 @@ context menu, and Put Label… or Alt+L in the Local History window, for the
 file it shows) asks a name and stores the active file's text, unsaved edits
 included (or the selected tree file as on disk), as a "Label: <name>" row,
 in bold. A label applies to one file, not the whole project as in
-JetBrains. It is kept past `keep_days`, and dropped by the size limit only
+JetBrains (the window's list of files shows it as one row). It is kept past `keep_days`, and dropped by the size limit only
 after every other snapshot; Delete on its row in the Local History
 window removes it (after asking). A label moves with its file when renamed in
 the Project tree. Saving the labelled text right after adds no row.
@@ -461,6 +461,29 @@ again. Put Label… (Alt+L)
 and Remove Label (Delete, on a label row) work in place; Shift+F10 or a
 right click opens the same actions as a menu. Esc clears the filter, then
 goes back to the list, then to the editor.
+
+The window also lists the files that have local history, deleted ones
+included: Backspace or `[All Files]` in a file's view, File > Local
+History… on a folder selected in the Project tree (that folder's files), or
+File > Local History… with no file open (the project's). The title names
+the folder (`Local History: src/`). Each row is a file under that folder
+(files of other projects and worktrees are left out), newest change first:
+its name and folder, what its newest snapshot was taken for and when. A
+file deleted since is crossed out and says "deleted"; one renamed in the
+Project tree says where it went. A label shows as one bold row (with how
+many files carry it: a label of the same name and time on several files is
+one row), and Enter lists its files below it. On the right is the
+selected file's newest snapshot (or a label's, on one of its files)
+against its current text, or against nothing for a deleted file. Revert
+(Alt+R) and Revert Change work there too: on a deleted file they open a
+tab with the snapshot's text (its folder is made again if it went too), so
+saving brings the file back. Delete on a label row removes the label from
+every file it is on (after asking). Enter (or a double click) on a file
+shows its own snapshots, and Backspace comes back to the same row. Typing
+filters the rows (every word must appear in the date, the path or what it
+was taken for; `deleted` lists the deleted files). The list follows new
+snapshots and Project tree deletes and renames under the folder while it
+is shown; files deleted outside jetl show as deleted after F5.
 
 Snapshots older than `keep_days` go (labels excepted), then the oldest
 while the store holds more than `max_total_mb`, labels last, when jetl starts and when either setting

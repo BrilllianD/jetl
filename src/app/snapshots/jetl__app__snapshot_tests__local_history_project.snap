@@ -1,0 +1,37 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &marks, Some(bottom))"
+---
+80x24 cursor=hidden
+00  ≣ ┌ Project: root ───────────────┐│
+01    │                              ││
+02  1 │                              ││
+03  ⌂ │                              ││               No files open.
+04  2 │                              ││       Alt+1 opens the Project view;
+05  ◫ │                              ││         Ctrl+Shift+N finds a file.
+06  7 │                              ││
+07  ⊢ └──────────────────────────────┘│
+08    ─────────────────────────────────────────────────────────────────────────────
+09    ┌ Local History: root/ ─────────────────────────────────────────────────────┐
+10  ⟲ │[Show History] [Revert] [Revert Change] [Remove Label]      type to filter │
+11    │ notes.txt  Unsaved ch…  10-05 12:00 │ Unsaved chan… [Unified] [x] Collapse│
+12  ⚑ │ guide.md  do…  deleted  10-04 12:00 │  1   1  alpha                       │
+13  9 │ ▾ Label: release 1.2    10-03 12:00 │  2     -beta                        │
+14  ⎇ │     guide.md  docs/         deleted │      2 +beta two                    │
+15    │     notes.txt                       │                                     │
+16  ❯ │ todo.txt  Renamed fro…  10-02 12:00 │                                     │
+17  6 │ ▸ Label: before refactor     1 file │                                     │
+18  ⚠ │ todo.txt  old/  renam…  09-30 12:00 │                                     │
+19  4 │ module_name.txt  src/…  09-24 12:00 │                                     │
+20  ► │                                     │                                     │
+21  3 │                                     │                                     │
+22  ⌕ └───────────────────────────────────────────────────────────────────────────┘
+23  root
+-- marks: X=crossed out A=added D=deleted ~=modified +=added word -=deleted word L=selected B=bold W=warn
+09     BBBBBBBBBBBBBBBBBBBBBB
+11     LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL
+12      XXXXXXXX       WWWWWWW
+13      BBBBBBBBBBBBBBBBBBBB                 WWW     DDDDDDDDDDDDDDDDDDDDDDDDDDDDD
+14          XXXXXXXX                WWWWWWW      WWW AAAAA++++AAAAAAAAAAAAAAAAAAAA
+17      BBBBBBBBBBBBBBBBBBBBBBBB
+18      XXXXXXXX

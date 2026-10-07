@@ -165,11 +165,12 @@ pub enum DialogId {
     DeleteScratch(std::path::PathBuf),
     /// Put Label: the name of a local history label on this file.
     PutLabel(std::path::PathBuf),
-    /// Remove this local history label of `path` (the Local History
-    /// window's Remove Label): Remove / Cancel.
+    /// Remove local history label `name`: its entries, each with the file
+    /// it is shown as (one, or every file of a label put on several; the
+    /// Local History window's Remove Label): Remove / Cancel.
     RemoveLabel {
-        path: std::path::PathBuf,
-        entry: Box<crate::history::Entry>,
+        name: String,
+        entries: Vec<(std::path::PathBuf, crate::history::Entry)>,
     },
     /// Unsaved changes recovered after a crash (`App::offer_recovery`):
     /// Restore all / Discard / Review…

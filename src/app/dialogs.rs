@@ -282,8 +282,8 @@ impl App {
             (DialogId::DeleteScratch(path), DialogResult::Button(b)) => self.finish_delete_scratch(path, b == 0),
             (DialogId::DeleteScratch(path), DialogResult::Cancel) => self.finish_delete_scratch(path, false),
             (DialogId::PutLabel(path), DialogResult::Text(t)) => self.finish_put_label(path, &t),
-            (DialogId::RemoveLabel { path, entry }, DialogResult::Button(b)) => self.finish_remove_label(path, *entry, b == 0),
-            (DialogId::RemoveLabel { path, entry }, DialogResult::Cancel) => self.finish_remove_label(path, *entry, false),
+            (DialogId::RemoveLabel { name, entries }, DialogResult::Button(b)) => self.finish_remove_label(name, entries, b == 0),
+            (DialogId::RemoveLabel { name, entries }, DialogResult::Cancel) => self.finish_remove_label(name, entries, false),
             (DialogId::Info, _) => {}
             (_, DialogResult::Cancel) => {}
             (
