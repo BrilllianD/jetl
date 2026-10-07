@@ -1,0 +1,18 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &marks, None)"
+---
+40x8 cursor=(17,4)
+00   seps.log ×
+01   1    form^Lfeed
+02   2    vtab^Kx
+03   3    nel\u{85}y
+04   4    ls\u{2028}ps\u{2029}end
+05   5    last
+06   6
+07
+-- marks: C=caret S=selection F=fold O=occurrence D=dim
+01            DD
+02            DD
+03           DDDDDD
+04          DDDDDDDDOODDDDDDDD

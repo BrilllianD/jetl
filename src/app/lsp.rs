@@ -777,6 +777,45 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn unicode_separators_keep_lsp_lines() {
+        let (mut app, dir) = test_app("lsp-separators");
+        let mut servers = with_fake_servers(&mut app, incremental());
+        let text = "a\u{c}b\nc\u{2028}d\n";
+        let mut server = open_on_server(&mut app, &mut servers, "a.rs", text).await;
+        let path = app.workspace.root.join("a.rs");
+        // The form feed and U+2028 are inside their lines, as the server counts them.
+        act(&mut app, EditorAction::Move(Motion::Down, false));
+        act(&mut app, EditorAction::Move(Motion::LineEnd, false));
+        act(&mut app, EditorAction::InsertChar('x'));
+        let change = server.recv("textDocument/didChange").await;
+        assert_eq!(change["params"]["contentChanges"], json!([{"range": range(1, 3, 1, 3), "text": "x"}]));
+        let changes: Vec<lsp_types::TextDocumentContentChangeEvent> =
+            serde_json::from_value(change["params"]["contentChanges"].clone()).unwrap();
+        let mut mirror = apply_changes(text, &changes);
+        assert_eq!(mirror, app.editor.active_buffer().unwrap().text());
+
+        // A diagnostic on the `d` lands on the `d`.
+        publish(&server, &path, json!([diag_json(1, 2, 1, 3, 1, "m")]));
+        handle_next(&mut app, is_lsp).await;
+        app.sync_diag_marks();
+        let b = app.editor.active_buffer().unwrap();
+        assert_eq!(b.diag_marks.spans.len(), 1);
+        assert_eq!(b.diag_marks.spans[0].0, 6..7);
+        assert_eq!(b.diag_marks.lines.keys().copied().collect::<Vec<_>>(), [1]);
+
+        // Delete Line on line 0 removes the whole line, separator and all.
+        app.perform(Action::Editor(EditorAction::Move(Motion::DocStart, false)));
+        act(&mut app, EditorAction::DeleteLine);
+        let change = server.recv("textDocument/didChange").await;
+        let changes: Vec<lsp_types::TextDocumentContentChangeEvent> =
+            serde_json::from_value(change["params"]["contentChanges"].clone()).unwrap();
+        mirror = apply_changes(&mirror, &changes);
+        assert_eq!(mirror, app.editor.active_buffer().unwrap().text());
+        assert_eq!(mirror, "c\u{2028}dx\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
     async fn messages_requests_progress_and_stale_results() {
         let (mut app, dir) = test_app("lsp-msgs");
         let settings = json!({"rust-analyzer": {"cargo": {"features": "all"}}});

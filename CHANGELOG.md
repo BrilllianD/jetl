@@ -303,6 +303,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   highlighting and the Rust language server, and the `.editorconfig` settings and soft wrap of
   the new path apply. What the new path does not change stays as it was: a language, indent or
   soft wrap picked by hand, folds, carets, unsaved edits and undo history.
+- Vertical tab, form feed, NEL (U+0085) and the Unicode line and paragraph separators (U+2028,
+  U+2029) no longer start a new line in the editor: lines are broken only at `\n`, `\r\n` and
+  `\r`, as language servers, git, compilers and find in files count them. Line numbers, git
+  gutter and blame marks, diagnostics, go to definition and LSP edits in such files now land on
+  the right line, and `didChange` no longer desyncs the server. The characters are shown inline
+  as dim escapes (`^K`, `^L`, `\u{85}`, `\u{2028}`, `\u{2029}`), and the file is saved byte for
+  byte as before. Positions remembered in a session for such a file may be a few lines off once.
 
 ## [0.1.0] - 2026-10-03
 

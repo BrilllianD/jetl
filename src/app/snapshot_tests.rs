@@ -173,6 +173,24 @@ async fn editor_occurrences() {
 }
 
 #[tokio::test]
+async fn editor_unusual_line_breaks() {
+    let mut fx = stable_app("unusual-breaks");
+    let app = &mut fx.app;
+    let text = "form\u{c}feed\nvtab\u{b}x\nnel\u{85}y\nls\u{2028}ps\u{2029}end\nlast\n";
+    load(app, "seps.log", text);
+    // VT, FF, NEL, U+2028 and U+2029 break no line: five lines and the
+    // empty one after the last break, each separator a dim escape inside
+    // its line. The caret is right after U+2028.
+    let ps = text.chars().collect::<String>().find("ps").unwrap();
+    let ps = text[..ps].chars().count();
+    app.editor.active_buffer_mut().unwrap().view.set_sel(Selection::point(ps));
+    let term = draw_editor(app, 40, 8);
+    let mut marks = editor_marks(&app.theme);
+    marks.push(Mark::modifier('D', "dim", Modifier::DIM));
+    assert_snapshot!("editor_unusual_line_breaks", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
 async fn editor_carets_split() {
     let mut fx = stable_app("carets-split");
     let app = &mut fx.app;

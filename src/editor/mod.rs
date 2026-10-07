@@ -2900,4 +2900,57 @@ mod tests {
         assert_eq!(ed.untitled_dirty(None), Some(id));
         assert_eq!(ed.untitled_dirty(Some(&[ed.buffers[0].id])), None);
     }
+
+    #[test]
+    fn unicode_separators_are_not_line_breaks() {
+        let mut ed = editor_with("a.txt", "one\u{c}two\nthree\u{2028}four\nend\n");
+        assert_eq!(ed.buffers[0].len_lines(), 4);
+        act(&mut ed, EditorAction::Move(Motion::LineEnd, false));
+        assert_eq!(ed.buffers[0].view.sel().head, 7, "the end of one^Ltwo");
+        assert_eq!(ed.buffers[0].cursor_line_col(), (0, 7));
+        ed.buffers[0].view.set_sel(Selection::point(3));
+        act(&mut ed, EditorAction::Move(Motion::Right, false));
+        assert_eq!(ed.buffers[0].view.sel().head, 4, "over the form feed");
+        assert_eq!(ed.buffers[0].cursor_line_col(), (0, 4));
+        ed.buffers[0].view.set_sel(Selection::point(10));
+        act(&mut ed, EditorAction::DuplicateLine);
+        assert_eq!(ed.buffers[0].text(), "one\u{c}two\nthree\u{2028}four\nthree\u{2028}four\nend\n");
+        act(&mut ed, EditorAction::Undo);
+        ed.buffers[0].view.set_sel(Selection::point(1));
+        act(&mut ed, EditorAction::DeleteLine);
+        assert_eq!(ed.buffers[0].text(), "three\u{2028}four\nend\n");
+    }
+
+    #[test]
+    fn save_keeps_unicode_separators_byte_for_byte() {
+        let dir = std::env::temp_dir().join(format!("jetl-test-seps-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("seps.txt");
+        let final_newline = Config::default().editor.final_newline;
+        let save = |bytes: &[u8]| {
+            std::fs::write(&path, bytes).unwrap();
+            let text = std::str::from_utf8(bytes).unwrap();
+            let mut ed = Editor::new(&Config::default());
+            ed.open_text(path.clone(), text, false, &Theme::default());
+            ed.buffers[0].insert("x", TxKind::Typing);
+            ed.buffers[0].backspace();
+            assert!(ed.buffers[0].dirty());
+            // The cleanup keeps the whitespace of caret lines: the caret on line 1.
+            let end = text.find("end").unwrap();
+            ed.buffers[0].view.set_sel(Selection::point(text[..end].chars().count()));
+            with_cx(|cx| assert!(ed.save(0, cx)));
+            std::fs::read(&path).unwrap()
+        };
+        let got = save(b"a\x0bb\x0cc\xc2\x85d\xe2\x80\xa8e\xe2\x80\xa9f \nend");
+        let want: &[u8] = if final_newline {
+            b"a\x0bb\x0cc\xc2\x85d\xe2\x80\xa8e\xe2\x80\xa9f\nend\n"
+        } else {
+            b"a\x0bb\x0cc\xc2\x85d\xe2\x80\xa8e\xe2\x80\xa9f\nend"
+        };
+        assert_eq!(got, want, "the space trimmed, no separator touched");
+        let clean = b"a\x0bb\x0cc\xc2\x85d\xe2\x80\xa8e\xe2\x80\xa9f\nend\n";
+        assert_eq!(save(clean), clean);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

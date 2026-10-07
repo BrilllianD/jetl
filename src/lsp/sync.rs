@@ -100,19 +100,47 @@ pub(crate) mod tests {
 
     /// Apply `changes` to `text` the way a server does: ranges in UTF-16
     /// against the text after the previous change; no range replaces all.
+    /// Positions go through `lsp_offset`, a model of the protocol that does
+    /// not use ropey, so tests check jetl's line counting against it.
     pub(crate) fn apply_changes(text: &str, changes: &[TextDocumentContentChangeEvent]) -> String {
-        let mut rope = Rope::from_str(text);
+        let mut text = text.to_string();
         for c in changes {
             match c.range {
                 Some(r) => {
-                    let (s, e) = (pos::char_index(&rope, r.start), pos::char_index(&rope, r.end));
-                    rope.remove(s..e);
-                    rope.insert(s, &c.text);
+                    let (s, e) = (lsp_offset(&text, r.start), lsp_offset(&text, r.end));
+                    text.replace_range(s..e, &c.text);
                 }
-                None => rope = Rope::from_str(&c.text),
+                None => text = c.text.clone(),
             }
         }
-        rope.to_string()
+        text
+    }
+
+    /// The byte offset of `p` in `text` as LSP defines it: lines break at
+    /// `\n`, `\r\n` (one break) and a lone `\r`; the column counts UTF-16
+    /// units and clamps to the end of its line (before the break), a column
+    /// inside a surrogate pair naming the char it belongs to; a line past
+    /// the end is the end of the text.
+    pub(crate) fn lsp_offset(text: &str, p: Position) -> usize {
+        let b = text.as_bytes();
+        let mut i = 0;
+        for _ in 0..p.line {
+            match b[i..].iter().position(|&c| c == b'\n' || c == b'\r') {
+                None => return text.len(),
+                Some(k) => {
+                    i += k;
+                    i += if b[i] == b'\r' && b.get(i + 1) == Some(&b'\n') { 2 } else { 1 };
+                }
+            }
+        }
+        let mut units = 0;
+        for (k, c) in text[i..].char_indices() {
+            if c == '\n' || c == '\r' || units + c.len_utf16() > p.character as usize {
+                return i + k;
+            }
+            units += c.len_utf16();
+        }
+        text.len()
     }
 
     #[test]
@@ -131,5 +159,39 @@ pub(crate) mod tests {
         let e = DocEdit::new(&r, 2, 4, "").unwrap();
         assert_eq!((e.start, e.end), (Position::new(0, 2), Position::new(1, 0)));
         assert_eq!(apply_changes("ab\r\ncd", &[e.change_event()]), "abcd");
+    }
+
+    #[test]
+    fn edits_around_unicode_separators() {
+        let t = "a\u{b}b\u{c}c\n\u{85}d\u{2028}e\u{2029}f";
+        let n = t.chars().count();
+        let r = Rope::from_str(t);
+        for start in 0..=n {
+            for end in start..=n {
+                for text in ["", "X", "\n"] {
+                    let e = DocEdit::new(&r, start, end, text).unwrap();
+                    let mut want = r.clone();
+                    want.remove(start..end);
+                    want.insert(start, text);
+                    assert_eq!(apply_changes(t, &[e.change_event()]), want.to_string(), "{start}..{end} {text:?}");
+                }
+            }
+        }
+        // The char before `e` is U+2028, column 2 of line 1.
+        let at = t.chars().position(|c| c == 'e').unwrap() - 1;
+        let e = DocEdit::new(&r, at, at, "X").unwrap();
+        assert_eq!((e.start, e.end), (Position::new(1, 2), Position::new(1, 2)));
+    }
+
+    #[test]
+    fn lsp_offset_counts_every_break_form() {
+        let t = "a\rb\r\nc\nd😀e";
+        let p = Position::new;
+        assert_eq!(lsp_offset(t, p(1, 0)), 2, "after a lone \\r");
+        assert_eq!(lsp_offset(t, p(1, 9)), 3, "clamped before \\r\\n");
+        assert_eq!(lsp_offset(t, p(2, 0)), 5);
+        assert_eq!(lsp_offset(t, p(3, 2)), t.find('😀').unwrap(), "inside the surrogate pair");
+        assert_eq!(lsp_offset(t, p(3, 3)), t.find('e').unwrap());
+        assert_eq!(lsp_offset(t, p(4, 0)), t.len());
     }
 }

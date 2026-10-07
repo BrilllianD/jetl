@@ -20,7 +20,9 @@ ratatui = { version = "0.30", features = ["crossterm_0_29"] }
 crossterm = { version = "0.29", features = ["event-stream", "osc52"] }
 tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "sync", "time", "process", "fs", "io-util"] }
 futures = "0.3"
-ropey = "1.6"
+# Line breaks are \n, \r\n and lone \r only, the ones LSP and every tool jetl talks to count.
+# The default `unicode_lines` also breaks at U+000B, U+000C, U+0085, U+2028 and U+2029.
+ropey = { version = "1.6", default-features = false, features = ["simd", "cr_lines"] }
 tree-sitter = "0.27"
 tree-sitter-rust = { version = "0.24", optional = true }
 tree-sitter-javascript = { version = "0.25", optional = true }

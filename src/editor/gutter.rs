@@ -231,4 +231,14 @@ mod tests {
         b.undo();
         assert_eq!(b.text(), "a\nB\nc\nd\ne\n");
     }
+
+    #[test]
+    fn marks_line_up_with_buffer_lines_across_separators() {
+        let base = "a\u{c}b\nc\nd\u{2028}e\nf\n";
+        let text = "a\u{c}b\nC\nd\u{2028}e\nF\n";
+        assert_eq!(marks(base, text), vec![(1, MarkKind::Modified), (3, MarkKind::Modified)]);
+        let r = ropey::Rope::from_str(text);
+        assert_eq!(r.line(1).to_string(), "C\n");
+        assert_eq!(r.line(3).to_string(), "F\n");
+    }
 }

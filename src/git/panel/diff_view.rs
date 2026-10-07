@@ -469,7 +469,7 @@ fn draw_line(
         }
         let (glyph, w) = match ch {
             '\t' => (' ', tw - col % tw),
-            c if c.is_control() => ('?', 1),
+            c if crate::util::text::shown_escaped(c) => ('?', 1),
             c => (c, c.width().unwrap_or(0)),
         };
         if w == 0 {

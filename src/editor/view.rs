@@ -18,7 +18,8 @@ use super::rows::{Row, Rows};
 use super::selection::{MAX_CARETS, Selection, Selections, line_len_no_eol, pos_to_line_col};
 use crate::config::theme::Theme;
 
-/// One rendered unit: a grapheme (or tab / control char expansion).
+/// One rendered unit: a grapheme (or the expansion of a tab, a control char
+/// or a U+2028/U+2029 separator, drawn as an escape).
 #[derive(Debug, Clone, Copy)]
 pub struct Cell {
     pub char_idx: usize,
@@ -48,7 +49,7 @@ pub fn layout_line(rope: &Rope, line: usize, tab_width: usize, max_chars: usize,
                 return;
             }
             col += w;
-        } else if let Some(c) = g.chars().next().filter(|c| c.is_control()) {
+        } else if let Some(c) = g.chars().next().filter(|&c| crate::util::text::shown_escaped(c)) {
             let shown = control_repr(c);
             let w = shown.len();
             if !f(&shown, Cell { char_idx: idx, col, width: w }) {
@@ -66,6 +67,8 @@ pub fn layout_line(rope: &Rope, line: usize, tab_width: usize, max_chars: usize,
     }
 }
 
+/// The escape drawn for a char `shown_escaped` picks: `^X` for C0 controls
+/// and DEL, `\u{…}` for the rest (C1 controls such as NEL, U+2028, U+2029).
 fn control_repr(c: char) -> String {
     let code = c as u32;
     if code < 32 {
@@ -516,7 +519,7 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
                     }
                     screen[(xi, y)].set_symbol(" ").set_style(style);
                 }
-            } else if g.starts_with('^') && c.width == 2 && g.len() == 2 {
+            } else if crate::util::text::shown_escaped(rope.char(c.char_idx)) {
                 screen.set_stringn(x, y, g, (right - x) as usize, style.add_modifier(Modifier::DIM));
             } else {
                 if x + c.width as u16 > right {
@@ -723,6 +726,70 @@ mod tests {
             let ch = col_to_char(&r, 0, target, 4);
             let vc = visual_col(&r, ch, 4);
             assert!(vc <= target, "col {target}: char {ch} starts at {vc}");
+        }
+    }
+
+    #[test]
+    fn separators_are_drawn_escaped_inside_their_line() {
+        let r = Rope::from_str("a\u{2028}b\u{c}c\u{85}d\n");
+        assert_eq!(r.len_lines(), 2);
+        let mut cells = Vec::new();
+        layout_line(&r, 0, 4, usize::MAX, &mut |g, c| {
+            cells.push((g.to_string(), c.char_idx, c.col, c.width));
+            true
+        });
+        let want = [
+            ("a", 0, 0, 1),
+            ("\\u{2028}", 1, 1, 8),
+            ("b", 2, 9, 1),
+            ("^L", 3, 10, 2),
+            ("c", 4, 12, 1),
+            ("\\u{85}", 5, 13, 6),
+            ("d", 6, 19, 1),
+        ];
+        let want: Vec<_> = want.iter().map(|&(g, i, c, w)| (g.to_string(), i, c, w)).collect();
+        assert_eq!(cells, want);
+        assert_eq!(col_to_char(&r, 0, 5, 4), 1, "inside the escape");
+        assert_eq!(visual_col(&r, 2, 4), 9);
+
+        // Every escape is drawn dim, cell by cell, nothing raw.
+        let theme = Theme::default();
+        let mut buf = Buffer::from_text(1, None, "a\u{2028}b\u{c}c\u{85}d\n", false);
+        let o = RenderOpts {
+            focused: false,
+            tab_width: 4,
+            scrolloff: 0,
+            hscrolloff: 0,
+            occurrences: false,
+            theme: &theme,
+            follow: true,
+            decor: None,
+        };
+        let area = Rect::new(0, 0, 40, 3);
+        let mut screen = Screen::empty(area);
+        let out = render(&mut buf, &mut screen, area, &o);
+        let x0 = out.text_area.x;
+        let row: String = (x0..x0 + 20).map(|x| screen[(x, 0)].symbol().to_string()).collect();
+        assert_eq!(row, "a\\u{2028}b^Lc\\u{85}d");
+        for col in [1u16, 8, 10, 11, 13, 18] {
+            assert!(screen[(x0 + col, 0)].modifier.contains(Modifier::DIM), "col {col}");
+        }
+        assert!(!screen[(x0, 0)].modifier.contains(Modifier::DIM));
+    }
+
+    #[test]
+    fn render_and_map_agree_on_separators() {
+        let r = Rope::from_str("x\u{2028}y\t\u{2029}z\u{b}😀\u{85}end\n");
+        let mut cells = Vec::new();
+        layout_line(&r, 0, 4, usize::MAX, &mut |_, c| {
+            cells.push(c);
+            true
+        });
+        for c in cells {
+            assert_eq!(visual_col(&r, c.char_idx, 4), c.col);
+            for col in c.col..c.col + c.width {
+                assert_eq!(col_to_char(&r, 0, col, 4), c.char_idx, "col {col}");
+            }
         }
     }
 }

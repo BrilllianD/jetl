@@ -6,11 +6,18 @@ use unicode_width::UnicodeWidthStr;
 /// Tabs are handled by the caller because their width depends on the column.
 pub fn grapheme_width(g: &str) -> usize {
     if let Some(c) = g.chars().next()
-        && c.is_control()
+        && shown_escaped(c)
     {
         return 2; // rendered as ^X
     }
     g.width()
+}
+
+/// Chars the editor and diff panes draw as an escape instead of the char
+/// itself: controls, and the line and paragraph separators, which are no
+/// line breaks in jetl and which terminals draw unpredictably.
+pub fn shown_escaped(c: char) -> bool {
+    c.is_control() || matches!(c, '\u{2028}' | '\u{2029}')
 }
 
 /// Truncate a string to fit `max` cells, appending `…` when cut.

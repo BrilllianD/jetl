@@ -115,4 +115,16 @@ mod tests {
         assert_eq!(l, "Alexander So 1970-01-01");
         assert_eq!(l.chars().count(), WIDTH as usize - 1);
     }
+
+    #[test]
+    fn line_map_counts_lines_like_the_rope() {
+        let text = "new\na\u{c}b\nc\n";
+        let map = line_map("a\u{c}b\nc\n", text);
+        assert_eq!(&map[..3], &[None, Some(0), Some(1)]);
+        let r = ropey::Rope::from_str(text);
+        assert_eq!(r.line(1).to_string(), "a\u{c}b\n", "blame line 0");
+        assert_eq!(r.len_lines(), 4);
+        assert_eq!(r.len_lines(), text.split_inclusive('\n').count() + 1);
+        assert_eq!(map.len(), r.len_lines());
+    }
 }
