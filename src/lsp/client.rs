@@ -123,6 +123,9 @@ pub struct Client {
     /// group is killed and the server reaped (so a reused id is never
     /// signalled); 0 for an in-process server.
     pid: Arc<AtomicU32>,
+    /// The server's dynamic registrations (`client/registerCapability`),
+    /// kept by the app on the main thread; gone with the `Client`.
+    pub registry: super::registry::Registry,
 }
 
 impl std::fmt::Debug for Client {
@@ -138,7 +141,7 @@ impl Client {
         let (cmds, rx) = mpsc::unbounded_channel();
         let (id, name) = (spec.id, spec.name.clone());
         tokio::spawn(drive(spec, conn, rx, bus, Arc::clone(&pid)));
-        Self { id, name, state: State::Starting, next_id: 1, cmds, pid }
+        Self { id, name, state: State::Starting, next_id: 1, cmds, pid, registry: Default::default() }
     }
 
     pub fn capabilities(&self) -> Option<&lsp_types::ServerCapabilities> {
@@ -196,27 +199,29 @@ impl Drop for Client {
     }
 }
 
-/// What jetl supports, sent with `initialize`. Positions are UTF-16 only.
+/// What jetl supports, sent with `initialize`. Positions are UTF-16 only;
+/// dynamic registration where `Caps::has` honours it (`lsp::caps`).
 pub fn client_capabilities() -> ClientCapabilities {
     ClientCapabilities {
         general: Some(GeneralClientCapabilities { position_encodings: Some(vec![PositionEncodingKind::UTF16]), ..Default::default() }),
         text_document: Some(TextDocumentClientCapabilities {
             synchronization: Some(TextDocumentSyncClientCapabilities { did_save: Some(true), ..Default::default() }),
             publish_diagnostics: Some(PublishDiagnosticsClientCapabilities::default()),
-            definition: Some(GotoCapability { link_support: Some(true), ..Default::default() }),
-            references: Some(ReferenceClientCapabilities::default()),
+            definition: Some(GotoCapability { dynamic_registration: Some(true), link_support: Some(true) }),
+            references: Some(ReferenceClientCapabilities { dynamic_registration: Some(true) }),
             hover: Some(HoverClientCapabilities {
+                dynamic_registration: Some(true),
                 content_format: Some(vec![MarkupKind::Markdown, MarkupKind::PlainText]),
-                ..Default::default()
             }),
             completion: Some(completion_capabilities()),
-            rename: Some(RenameClientCapabilities { prepare_support: Some(true), ..Default::default() }),
+            rename: Some(RenameClientCapabilities { dynamic_registration: Some(true), prepare_support: Some(true), ..Default::default() }),
             code_action: Some(code_action_capabilities()),
             document_symbol: Some(DocumentSymbolClientCapabilities {
+                dynamic_registration: Some(true),
                 hierarchical_document_symbol_support: Some(true),
                 ..Default::default()
             }),
-            formatting: Some(DocumentFormattingClientCapabilities::default()),
+            formatting: Some(DocumentFormattingClientCapabilities { dynamic_registration: Some(true) }),
             ..Default::default()
         }),
         window: Some(WindowClientCapabilities {
@@ -236,7 +241,7 @@ pub fn client_capabilities() -> ClientCapabilities {
                 failure_handling: Some(FailureHandlingKind::Abort),
                 ..Default::default()
             }),
-            execute_command: Some(ExecuteCommandClientCapabilities::default()),
+            execute_command: Some(ExecuteCommandClientCapabilities { dynamic_registration: Some(true) }),
             ..Default::default()
         }),
         ..Default::default()
@@ -248,6 +253,7 @@ pub fn client_capabilities() -> ClientCapabilities {
 fn completion_capabilities() -> CompletionClientCapabilities {
     let kinds = (1..=25).filter_map(|k| serde_json::from_value::<CompletionItemKind>(json!(k)).ok()).collect();
     CompletionClientCapabilities {
+        dynamic_registration: Some(true),
         completion_item: Some(CompletionItemCapability {
             snippet_support: Some(true),
             documentation_format: Some(vec![MarkupKind::Markdown, MarkupKind::PlainText]),
@@ -270,6 +276,7 @@ fn completion_capabilities() -> CompletionClientCapabilities {
 fn code_action_capabilities() -> CodeActionClientCapabilities {
     let kinds = ["", "quickfix", "refactor", "refactor.extract", "refactor.inline", "refactor.rewrite", "source", "source.organizeImports"];
     CodeActionClientCapabilities {
+        dynamic_registration: Some(true),
         code_action_literal_support: Some(CodeActionLiteralSupport {
             code_action_kind: CodeActionKindLiteralSupport { value_set: kinds.map(String::from).to_vec() },
         }),

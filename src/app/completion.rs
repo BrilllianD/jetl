@@ -89,9 +89,8 @@ impl App {
 
     /// The trigger characters of buffer `id`'s server, when it completes.
     fn completion_triggers(&self, id: crate::editor::buffer::BufferId) -> Option<Vec<String>> {
-        let doc = self.lsp.docs.get(&id)?;
-        let caps = self.lsp.clients.get(&doc.server)?.capabilities()?;
-        Some(caps.completion_provider.as_ref()?.trigger_characters.clone().unwrap_or_default())
+        let caps = self.lsp_caps(id)?;
+        caps.has(COMPLETION).then(|| caps.completion_triggers())
     }
 
     /// After an editor action from the keyboard: refilter the open list or
@@ -219,13 +218,7 @@ impl App {
         let Some(b) = self.editor.active_buffer() else { return };
         let pos = crate::lsp::pos::position(&b.rope, b.view.sel().head);
         let params = serde_json::to_value(&item).unwrap_or(Value::Null);
-        let resolvable = self
-            .lsp
-            .docs
-            .get(&origin.buffer)
-            .and_then(|d| self.lsp.clients.get(&d.server))
-            .and_then(|c| c.capabilities())
-            .is_some_and(|caps| caps.completion_provider.as_ref().and_then(|c| c.resolve_provider) == Some(true));
+        let resolvable = self.lsp_caps(origin.buffer).is_some_and(|c| c.has(RESOLVE));
         if resolvable && let Ok(seq) = self.lsp_tagged_request(origin.buffer, pos, RESOLVE, params, PendingTag::CompletionResolve) {
             self.lsp.completion.accepting = Some(Accepting { seq, item, origin, deadline: Instant::now() + RESOLVE_WAIT });
             return;

@@ -20,6 +20,7 @@ use crate::editor::buffer::{Buffer, BufferId};
 use crate::event::Level;
 use crate::lsp::client::{Client, StartSpec, State};
 use crate::lsp::diagnostics::{Counts, Diagnostic, DiagnosticStore, MAX_TOTAL, Severity};
+use crate::lsp::registry::DocRef;
 use crate::lsp::sync::{self, SyncCaps};
 use crate::lsp::transport::{RequestId, ResponseError};
 use crate::lsp::{LspConfig, LspMsg, LspRequest, ServerConfig, ServerId};
@@ -88,6 +89,13 @@ pub(super) struct Doc {
     language: &'static str,
     pub uri: Uri,
     pub version: i32,
+}
+
+impl Doc {
+    /// The document as a registration's document selector sees it.
+    pub(super) fn doc_ref(&self) -> DocRef<'_> {
+        DocRef { language_id: sync::language_id(self.language), path: &self.path }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -360,6 +368,7 @@ impl App {
     fn lsp_server_down(&mut self, name: &str, server: ServerId, why: String) {
         if let Some(c) = self.lsp.clients.get_mut(name) {
             c.state = State::Failed(why);
+            c.registry.clear();
         }
         self.lsp.server_gone(name, server, &mut self.editor.buffers);
         self.format_server_gone(name);
@@ -431,7 +440,14 @@ impl App {
                 let items = serde_json::from_value::<ConfigurationParams>(params).map(|p| p.items).unwrap_or_default();
                 Ok(items.iter().map(|item| section(settings.as_ref(), item.section.as_deref())).collect())
             }
-            "client/registerCapability" | "client/unregisterCapability" | "window/workDoneProgress/create" => Ok(Value::Null),
+            "client/registerCapability" | "client/unregisterCapability" => {
+                let Some(c) = self.lsp.clients.get_mut(name) else { return };
+                tracing::debug!("{name}: {method} {params}");
+                let done =
+                    if method == "client/registerCapability" { c.registry.register(&params) } else { c.registry.unregister(&params) };
+                done.map(|()| Value::Null).map_err(|e| ResponseError::new(ResponseError::INVALID_PARAMS, format!("invalid params: {e}")))
+            }
+            "window/workDoneProgress/create" => Ok(Value::Null),
             "workspace/workspaceFolders" => {
                 let root = &self.workspace.root;
                 let name = root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -670,6 +686,46 @@ pub(crate) mod tests {
         app.lsp.shutdown_all().await;
         server.recv("shutdown").await;
         server.recv("exit").await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn registrations_are_answered_and_dropped_with_their_server() {
+        use crate::app::lsp_nav::DOCUMENT_SYMBOL;
+        let (mut app, dir) = test_app("lsp-registrations");
+        let mut servers = with_fake_servers(&mut app, incremental());
+        let mut server = open_on_server(&mut app, &mut servers, "a.rs", "fn main() {}\n").await;
+        let id = app.editor.active_buffer().unwrap().id;
+        let sym = json!({"registrations": [{"id": "sym", "method": "textDocument/documentSymbol"}]});
+        server.request(1, "client/registerCapability", sym.clone());
+        handle_next(&mut app, is_lsp).await;
+        assert_eq!(server.response(1).await["result"], Value::Null);
+        assert!(app.lsp_check(id, DOCUMENT_SYMBOL).is_ok(), "no selector: every document");
+        // Malformed: refused whole, nothing changed.
+        server.request(2, "client/registerCapability", json!({"registrations": "nope"}));
+        handle_next(&mut app, is_lsp).await;
+        assert_eq!(server.response(2).await["error"]["code"], ResponseError::INVALID_PARAMS);
+        assert!(app.lsp_check(id, DOCUMENT_SYMBOL).is_ok());
+        // An unknown id (and the misspelled key) is fine.
+        server.request(3, "client/unregisterCapability", json!({"unregistrations": [{"id": "other", "method": "x"}]}));
+        handle_next(&mut app, is_lsp).await;
+        assert_eq!(server.response(3).await["result"], Value::Null);
+        assert!(app.lsp_check(id, DOCUMENT_SYMBOL).is_ok());
+
+        // A restarted server starts with no registrations.
+        app.lsp_restart();
+        let mut server = servers.try_recv().expect("restarted");
+        handle_next(&mut app, |m| matches!(m, AppMsg::Lsp(LspMsg::Started { .. }))).await;
+        server.recv("textDocument/didOpen").await;
+        assert!(app.lsp_check(id, DOCUMENT_SYMBOL).is_err());
+        // A server that exits drops them.
+        server.request(1, "client/registerCapability", sym);
+        handle_next(&mut app, is_lsp).await;
+        assert_eq!(server.response(1).await["result"], Value::Null);
+        assert!(!app.lsp.clients["rust-analyzer"].registry.is_empty());
+        let (generation, server_id) = (app.workspace.generation, app.lsp.clients["rust-analyzer"].id);
+        app.handle_msg(AppMsg::Lsp(LspMsg::Exited { generation, server: server_id, status: "test".into() }));
+        assert!(app.lsp.clients["rust-analyzer"].registry.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

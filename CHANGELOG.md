@@ -310,6 +310,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the right line, and `didChange` no longer desyncs the server. The characters are shown inline
   as dim escapes (`^K`, `^L`, `\u{85}`, `\u{2028}`, `\u{2029}`), and the file is saved byte for
   byte as before. Positions remembered in a session for such a file may be a few lines off once.
+- Language servers that turn on features after they start (dynamic registration) now get
+  them used: formatting, rename, context actions, completion (with its trigger characters),
+  go to definition, find usages, documentation, file structure and commands registered for
+  the file's language or path work, and stop when the server unregisters them. jetl now tells
+  servers it accepts such registrations for these features.
 
 ## [0.1.0] - 2026-10-03
 

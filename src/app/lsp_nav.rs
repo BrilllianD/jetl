@@ -11,7 +11,7 @@
 //! off the main thread); a single definition is jumped to, and a definition
 //! that is where the caret already is lists the usages instead.
 
-use lsp_types::{CodeActionProviderCapability, HoverProviderCapability, OneOf, Position, ServerCapabilities, Uri};
+use lsp_types::{Position, Uri};
 use serde_json::{Value, json};
 
 use super::App;
@@ -25,18 +25,10 @@ use crate::ui::focus::PanelId;
 use crate::ui::hover::HoverPopup;
 use crate::ui::palette::Palette;
 
-const DEFINITION: &str = "textDocument/definition";
-const REFERENCES: &str = "textDocument/references";
-const HOVER: &str = "textDocument/hover";
-pub(super) const COMPLETION: &str = "textDocument/completion";
-pub(super) const RESOLVE: &str = "completionItem/resolve";
-pub(super) const PREPARE_RENAME: &str = "textDocument/prepareRename";
-pub(super) const RENAME: &str = "textDocument/rename";
-pub(super) const CODE_ACTION: &str = "textDocument/codeAction";
-pub(super) const CODE_ACTION_RESOLVE: &str = "codeAction/resolve";
-pub(super) const EXECUTE_COMMAND: &str = "workspace/executeCommand";
-pub(super) const DOCUMENT_SYMBOL: &str = "textDocument/documentSymbol";
-pub(super) const FORMATTING: &str = "textDocument/formatting";
+pub(super) use crate::lsp::caps::{
+    CODE_ACTION, CODE_ACTION_RESOLVE, COMPLETION, DOCUMENT_SYMBOL, EXECUTE_COMMAND, FORMATTING, PREPARE_RENAME, RENAME, RESOLVE,
+};
+use crate::lsp::caps::{Caps, DEFINITION, HOVER, REFERENCES};
 
 /// The method a tag was sent with.
 fn method_of(tag: &PendingTag) -> &'static str {
@@ -64,39 +56,28 @@ fn about_document(method: &str) -> bool {
     ![RESOLVE, CODE_ACTION_RESOLVE, EXECUTE_COMMAND].contains(&method)
 }
 
-/// Whether the server answers `method`, and what to call it otherwise.
-fn supports(caps: &ServerCapabilities, method: &str) -> Result<(), &'static str> {
-    fn on<T>(p: &Option<OneOf<bool, T>>) -> bool {
-        matches!(p, Some(OneOf::Left(true) | OneOf::Right(_)))
+/// What to call `method` when the server lacks it.
+fn what(method: &str) -> &'static str {
+    match method {
+        DEFINITION => "go to definition",
+        REFERENCES => "find usages",
+        HOVER => "documentation",
+        COMPLETION => "code completion",
+        RESOLVE => "resolving completions",
+        PREPARE_RENAME => "checking renames",
+        RENAME => "rename",
+        CODE_ACTION => "context actions",
+        CODE_ACTION_RESOLVE => "resolving context actions",
+        EXECUTE_COMMAND => "commands",
+        DOCUMENT_SYMBOL => "file structure",
+        FORMATTING => "formatting",
+        _ => "this request",
     }
-    let (ok, what) = match method {
-        DEFINITION => (on(&caps.definition_provider), "go to definition"),
-        REFERENCES => (on(&caps.references_provider), "find usages"),
-        HOVER => (
-            matches!(caps.hover_provider, Some(HoverProviderCapability::Simple(true) | HoverProviderCapability::Options(_))),
-            "documentation",
-        ),
-        COMPLETION => (caps.completion_provider.is_some(), "code completion"),
-        RESOLVE => (caps.completion_provider.as_ref().and_then(|c| c.resolve_provider) == Some(true), "resolving completions"),
-        PREPARE_RENAME => (matches!(&caps.rename_provider, Some(OneOf::Right(o)) if o.prepare_provider == Some(true)), "checking renames"),
-        RENAME => (on(&caps.rename_provider), "rename"),
-        CODE_ACTION => (
-            matches!(
-                caps.code_action_provider,
-                Some(CodeActionProviderCapability::Simple(true) | CodeActionProviderCapability::Options(_))
-            ),
-            "context actions",
-        ),
-        CODE_ACTION_RESOLVE => (
-            matches!(&caps.code_action_provider, Some(CodeActionProviderCapability::Options(o)) if o.resolve_provider == Some(true)),
-            "resolving context actions",
-        ),
-        EXECUTE_COMMAND => (caps.execute_command_provider.is_some(), "commands"),
-        DOCUMENT_SYMBOL => (on(&caps.document_symbol_provider), "file structure"),
-        FORMATTING => (on(&caps.document_formatting_provider), "formatting"),
-        _ => (false, "this request"),
-    };
-    if ok { Ok(()) } else { Err(what) }
+}
+
+/// Whether the server answers `method`, and what to call it otherwise.
+fn supports(caps: &Caps<'_>, method: &str) -> Result<(), &'static str> {
+    if caps.has(method) { Ok(()) } else { Err(what(method)) }
 }
 
 impl App {
@@ -160,11 +141,20 @@ impl App {
         self.lsp_sync();
         self.editor.index_of_id(id).ok_or_else(String::new)?;
         let (server, uri) = self.lsp_doc_of(id)?;
-        let Some(caps) = self.lsp.clients.get(&server).and_then(|c| c.capabilities()) else {
+        let Some(caps) = self.lsp_caps(id) else {
             return Err(format!("{server} is not running"));
         };
-        supports(caps, method).map_err(|what| format!("{server} does not support {what}"))?;
+        supports(&caps, method).map_err(|what| format!("{server} does not support {what}"))?;
         Ok((server, uri))
+    }
+
+    /// What buffer `id`'s server offers for it: static capabilities and
+    /// the registrations that apply to the document. `None`: not open on a
+    /// running server.
+    pub(super) fn lsp_caps(&self, id: BufferId) -> Option<Caps<'_>> {
+        let doc = self.lsp.docs.get(&id)?;
+        let client = self.lsp.clients.get(&doc.server)?;
+        Some(Caps { fixed: client.capabilities()?, registry: &client.registry, doc: Some(doc.doc_ref()) })
     }
 
     /// [`App::lsp_tagged_request`]; `newest` makes it the request of its

@@ -489,6 +489,46 @@ mod tests {
             let _ = std::fs::remove_dir_all(&dir);
         }
 
+        #[tokio::test]
+        async fn a_formatter_registered_later_formats_until_unregistered() {
+            use crate::app::lsp_nav::{FORMATTING, RENAME};
+            let (mut app, mut server, dir, _) = setup("format-lsp-dynamic", false).await;
+            let id = app.editor.active_buffer().unwrap().id;
+            assert_eq!(app.lsp_check(id, FORMATTING), Err("rust-analyzer does not support formatting".into()));
+            let selector = json!([{"language": "rust", "scheme": "file", "pattern": "**/*.rs"}]);
+            let fmt = json!({"id": "fmt", "method": "textDocument/formatting", "registerOptions": {"documentSelector": selector}});
+            server.request(1, "client/registerCapability", json!({"registrations": [fmt]}));
+            handle_next(&mut app, is_lsp).await;
+            assert_eq!(server.response(1).await["result"], serde_json::Value::Null);
+            act(&mut app, EditorAction::Format);
+            let req = server.recv("textDocument/formatting").await;
+            server.respond(req["id"].as_i64().unwrap(), edits());
+            handle_next(&mut app, is_lsp).await;
+            assert_eq!(text(&app), PRETTY);
+
+            // A registration for another language does not apply.
+            let py =
+                json!({"id": "py", "method": "textDocument/rename", "registerOptions": {"documentSelector": [{"language": "python"}]}});
+            server.request(2, "client/registerCapability", json!({"registrations": [py]}));
+            handle_next(&mut app, is_lsp).await;
+            assert_eq!(server.response(2).await["result"], serde_json::Value::Null);
+            assert!(app.lsp_check(id, RENAME).is_err());
+
+            server.request(
+                3,
+                "client/unregisterCapability",
+                json!({"unregisterations": [{"id": "fmt", "method": "textDocument/formatting"}]}),
+            );
+            handle_next(&mut app, is_lsp).await;
+            assert_eq!(server.response(3).await["result"], serde_json::Value::Null);
+            assert_eq!(app.lsp_check(id, FORMATTING), Err("rust-analyzer does not support formatting".into()));
+            act(&mut app, EditorAction::Format);
+            assert!(warnings(&app).iter().any(|w| w.starts_with("No formatter for rust files")), "{:?}", warnings(&app));
+            app.lsp_sync();
+            assert!(server.drain().iter().all(|m| m["method"] != "textDocument/formatting"));
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
         /// Answer the Save As prompt for the active buffer with `to`.
         fn save_as(app: &mut App, to: &str) {
             act(app, EditorAction::SaveAs);

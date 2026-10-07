@@ -4,7 +4,10 @@
 //! ([`transport`]). Results come back to the app as [`LspMsg`], tagged with
 //! the workspace generation and the server's id; `app/lsp.rs` routes them
 //! and keeps open buffers in sync ([`sync`], positions in [`pos`]).
+//! Dynamic registrations live in [`registry`], combined with the static
+//! capabilities in [`caps`].
 
+pub mod caps;
 pub mod client;
 pub mod completion;
 pub mod diagnostics;
@@ -14,6 +17,7 @@ pub mod fake;
 pub mod locations;
 pub mod panel;
 pub mod pos;
+pub mod registry;
 pub mod symbols;
 pub mod sync;
 pub mod transport;

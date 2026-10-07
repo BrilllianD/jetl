@@ -987,6 +987,7 @@ dependencies = [
  "ec4rs",
  "futures",
  "git2",
+ "globset",
  "ignore",
  "imara-diff",
  "insta",

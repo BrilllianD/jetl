@@ -214,14 +214,7 @@ impl App {
     /// runs; what it changes arrives as `workspace/applyEdit`.
     fn lsp_execute(&mut self, c: Command) {
         let Some((id, pos)) = self.caret_position() else { return };
-        let runs = self
-            .lsp
-            .docs
-            .get(&id)
-            .and_then(|d| self.lsp.clients.get(&d.server))
-            .and_then(|client| client.capabilities())
-            .and_then(|caps| caps.execute_command_provider.as_ref())
-            .is_some_and(|p| p.commands.contains(&c.command));
+        let runs = self.lsp_caps(id).is_some_and(|caps| caps.runs_command(&c.command));
         if !runs {
             return self.lsp_hint(format!("{}: the command {} is not supported", c.title, c.command));
         }

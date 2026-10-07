@@ -49,6 +49,7 @@ git2 = { version = "0.21", default-features = false }
 imara-diff = "0.2"
 miniz_oxide = { version = "0.9", default-features = false, features = ["with-alloc"] }
 ignore = "0.4"
+globset = "0.4"
 nucleo-matcher = "0.3"
 regex = "1"
 serde = { version = "1", features = ["derive"] }
