@@ -1474,7 +1474,7 @@ pub(crate) mod tests {
     }
 
     /// Run the Find window's current search on this thread and deliver it.
-    fn run_find(app: &mut App) {
+    pub(crate) fn run_find(app: &mut App) {
         let re = app.find.pattern().unwrap();
         let search = crate::files::find::Search {
             root: app.workspace.root.clone(),

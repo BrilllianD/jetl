@@ -1,0 +1,19 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &marks, None)"
+---
+80x10 cursor=(14,1)
+00   notes.log ×
+01  Find:    beta                             Cc   W   .*   2/4            ↑  ↓  ×
+02  Replace: replace with                     Replace   Replace all
+03   1    alpha beta
+04   2    beta gamma beta
+05   3    Beta four
+06   4
+07
+08
+09
+-- marks: H=match S=selection
+03              HHHH
+04        SSSS       HHHH
+05        HHHH

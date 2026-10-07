@@ -1,0 +1,60 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &marks, None)"
+---
+100x30 cursor=hidden
+00  ≣  File  Edit  View  Navigate  Git  Run  Help
+01    │     ╭──────────────────────────────────────────────────────╮
+02  1 │     │ Undo                                          Ctrl+Z │
+03  ⌂ │     │ Redo                                    Ctrl+Shift+Z │
+04    │     ├──────────────────────────────────────────────────────┤
+05  2 │     │ Cut                                           Ctrl+X │
+06  ◫ │     │ Copy                                          Ctrl+C │
+07    │     │ Paste                                         Ctrl+V │
+08  7 │     │ Select All                                    Ctrl+A │
+09  ⊢ │     │ Extend Selection                          Ctrl+Alt+W │
+10    │     │ Shrink Selection                    Ctrl+Alt+Shift+W │
+11    │     ├──────────────────────────────────────────────────────┤
+12    │     │ Add Selection for Next Occurrence              Alt+J │
+13  ⚑ │     │ Unselect Occurrence                      Alt+Shift+J │
+14    │     │ Select All Occurrences                    Ctrl+Alt+J │1 opens the Project view;
+15  9 │     │ Clone Caret Above                                    │+N finds a file.
+16  ⎇ │     │ Clone Caret Below                                    │
+17    │     │ Column Selection Mode               Alt+Shift+Insert │
+18    │     ├──────────────────────────────────────────────────────┤
+19  ❯ │     │ Find…                                         Ctrl+F │
+20    │     │ Replace…                                      Ctrl+R │
+21  6 │     │ Find in Files…                          Ctrl+Shift+F │
+22  ⚠ │     │ Replace in Files…                       Ctrl+Shift+R │
+23    │     ├──────────────────────────────────────────────────────┤
+24  4 │     │ Duplicate Line                                Ctrl+D │
+25  ► │     │ Delete Line                                   Ctrl+Y │
+26    │     │ Join Lines                              Ctrl+Shift+J │
+27  3 │     │ Move Line Up                            Alt+Shift+Up │
+28  ⌕ └─────│ Move Line Down                        Alt+Shift+Down │
+29  root    ╰───────────────────────────▼──────────────────────────╯
+-- marks: L=selected d=dim
+00          LLLLLL
+02           dddddddddddddddddddddddddddddddddddddddddddddddddddddd
+03           dddddddddddddddddddddddddddddddddddddddddddddddddddddd
+05           dddddddddddddddddddddddddddddddddddddddddddddddddddddd
+06           dddddddddddddddddddddddddddddddddddddddddddddddddddddd
+07           dddddddddddddddddddddddddddddddddddddddddddddddddddddd
+08           dddddddddddddddddddddddddddddddddddddddddddddddddddddd
+09           dddddddddddddddddddddddddddddddddddddddddddddddddddddd
+10           dddddddddddddddddddddddddddddddddddddddddddddddddddddd
+12           dddddddddddddddddddddddddddddddddddddddddddddddddddddd
+13           dddddddddddddddddddddddddddddddddddddddddddddddddddddd
+14           dddddddddddddddddddddddddddddddddddddddddddddddddddddd
+15           dddddddddddddddddddddddddddddddddddddddddddddddddddddd
+16           dddddddddddddddddddddddddddddddddddddddddddddddddddddd
+17           dddddddddddddddddddddddddddddddddddddddddddddddddddddd
+19           dddddddddddddddddddddddddddddddddddddddddddddddddddddd
+20           dddddddddddddddddddddddddddddddddddddddddddddddddddddd
+21           LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL
+22                                                    dddddddddddd
+24           dddddddddddddddddddddddddddddddddddddddddddddddddddddd
+25           dddddddddddddddddddddddddddddddddddddddddddddddddddddd
+26           dddddddddddddddddddddddddddddddddddddddddddddddddddddd
+27           dddddddddddddddddddddddddddddddddddddddddddddddddddddd
+28           dddddddddddddddddddddddddddddddddddddddddddddddddddddd

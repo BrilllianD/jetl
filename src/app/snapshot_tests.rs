@@ -670,3 +670,339 @@ async fn save_as_dialog() {
     let marks = [Mark::style('B', "selected button", app.theme.list_selected)];
     assert_snapshot!("save_as_dialog", snapshot(&term, &marks, None));
 }
+
+/// Search hits and the selected row of a results list.
+fn find_marks(theme: &Theme) -> Vec<Mark> {
+    vec![Mark::bg('L', "selected", theme.list_selected.bg.unwrap()), Mark::bg('H', "match", theme.search_match_bg)]
+}
+
+#[tokio::test]
+async fn find_in_files_window() {
+    let mut fx = stable_app("find-in-files");
+    let app = &mut fx.app;
+    let root = app.workspace.root.clone();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("src/parse.log"), "let tokens = lex(input);\nparse(tokens)\n    .map(|t| parse_one(t))\n").unwrap();
+    std::fs::write(root.join("notes.txt"), "nothing to see\nparse later\n").unwrap();
+    std::fs::write(root.join("other.txt"), "no hits here\n").unwrap();
+    // Replace in files, the query typed, the search run here.
+    app.perform(Action::Find(crate::actions::FindAction::ReplaceInFiles));
+    for c in "parse".chars() {
+        app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+    super::tests::run_find(app);
+    app.find.replace.set_text("read");
+    let term = draw_app(app, 80, 24);
+    let marks = find_marks(&app.theme);
+    let bottom = app.layout.rects.bottom;
+    assert_snapshot!("find_in_files_window", snapshot(&term, &marks, Some(bottom)));
+}
+
+#[tokio::test]
+async fn problems_window() {
+    use crate::lsp::diagnostics::Severity;
+    use crate::lsp::diagnostics::tests::diag;
+    let mut fx = stable_app("problems");
+    let app = &mut fx.app;
+    let root = app.workspace.root.clone();
+    let main = load(app, "main.log", "fn main() {\n    let x: u8 = \"one\";\n    unused();\n}\n");
+    let with = |d: crate::lsp::diagnostics::Diagnostic, source: &str, code: Option<&str>| crate::lsp::diagnostics::Diagnostic {
+        source: Some(source.into()),
+        code: code.map(String::from),
+        ..d
+    };
+    let per_file = app.config.lsp.max_diagnostics_per_file;
+    app.lsp.diagnostics.publish(
+        "fake",
+        main,
+        vec![
+            with(diag(1, 16, 1, 21, Severity::Error, "mismatched types\nexpected `u8`, found `&str`"), "rustc", Some("E0308")),
+            with(diag(2, 4, 2, 10, Severity::Warning, "function `unused` is never used"), "rustc", None),
+        ],
+        per_file,
+    );
+    app.lsp.diagnostics.publish(
+        "fake",
+        root.join("src/lib.log"),
+        vec![with(diag(0, 0, 0, 3, Severity::Hint, "consider a doc comment"), "clippy", None)],
+        per_file,
+    );
+    app.toggle_tool_window(ToolWindowId::Problems);
+    let term = draw_app(app, 80, 24);
+    let marks = [
+        Mark::bg('L', "selected", app.theme.list_selected.bg.unwrap()),
+        Mark::underline('E', "error", app.theme.diag_error.fg.unwrap()),
+        Mark::underline('W', "warning", app.theme.diag_warn.fg.unwrap()),
+    ];
+    assert_snapshot!("problems_window", snapshot(&term, &marks, None));
+}
+
+fn sha(c: char) -> String {
+    c.to_string().repeat(40)
+}
+
+/// A commit as `git log` sends it, its relative date already formatted.
+fn commit(c: char, parents: &[char], author: &str, date: &str, refs: &str, subject: &str) -> crate::git::model::LogCommit {
+    crate::git::model::LogCommit {
+        sha: sha(c),
+        parents: parents.iter().map(|&p| sha(p)).collect(),
+        short: sha(c)[..7].to_string(),
+        author: author.into(),
+        date: date.into(),
+        refs: refs.into(),
+        subject: subject.into(),
+    }
+}
+
+#[tokio::test]
+async fn git_log_tab() {
+    use crate::git::model::{CommitDetails, CommitFile};
+    let mut fx = stable_app("git-log");
+    let app = &mut fx.app;
+    app.toggle_tool_window(ToolWindowId::Git);
+    app.perform(Action::Git(crate::actions::GitAction::TabLog));
+    // The first page, with dates as `git log` formats them (relative to
+    // when it ran), so the frame does not depend on the clock: a merge of
+    // a two-commit branch.
+    let commits = vec![
+        commit('a', &['b', 'd'], "Ann", "2 hours ago", "HEAD -> main", "Merge branch 'parser'"),
+        commit('d', &['e'], "Bob", "3 days ago", "parser", "Parse nested lists"),
+        commit('b', &['c'], "Ann", "4 days ago", "", "Fix the status bar width"),
+        commit('e', &['c'], "Bob", "5 days ago", "", "Add a parser"),
+        commit('c', &[], "Ann", "2 weeks ago", "tag: v0.1.0", "Initial commit"),
+    ];
+    let g = app.git.generation;
+    let filter = app.git_panel.log_filter().clone();
+    app.handle_msg(AppMsg::Git(GitMsg::Log { generation: g, skip: 0, filter, result: Ok(commits) }));
+    let details = CommitDetails {
+        sha: sha('a'),
+        body: "Merge branch 'parser'\n\nBrings in nested list parsing.".into(),
+        files: vec![
+            CommitFile { status: 'A', path: "src/parser.rs".into(), old: None },
+            CommitFile { status: 'M', path: "src/main.rs".into(), old: None },
+            CommitFile { status: 'R', path: "docs/syntax.md".into(), old: Some("docs/grammar.md".into()) },
+        ],
+    };
+    app.handle_msg(AppMsg::Git(GitMsg::CommitDetails { generation: g, sha: sha('a'), result: Ok(details) }));
+    let term = draw_app(app, 120, 30);
+    let marks = [Mark::bg('L', "selected", app.theme.list_selected.bg.unwrap())];
+    let bottom = app.layout.rects.bottom;
+    assert_snapshot!("git_log_tab", snapshot(&term, &marks, Some(bottom)));
+}
+
+#[tokio::test]
+async fn git_stash_tab() {
+    use crate::git::model::{CommitDetails, CommitFile, StashEntry};
+    let mut fx = stable_app("git-stash");
+    let app = &mut fx.app;
+    app.toggle_tool_window(ToolWindowId::Git);
+    app.perform(Action::Git(crate::actions::GitAction::TabStash));
+    let g = app.git.generation;
+    let stashes = vec![
+        StashEntry { index: 0, message: "On main: wip parser".into(), oid: sha('1') },
+        StashEntry { index: 1, message: "WIP on main: 1111111 Add a parser".into(), oid: sha('2') },
+    ];
+    app.handle_msg(AppMsg::Git(GitMsg::Stashes { generation: g, result: Ok(stashes) }));
+    let details = CommitDetails {
+        sha: sha('1'),
+        body: "On main: wip parser".into(),
+        files: vec![
+            CommitFile { status: 'M', path: "src/parser.rs".into(), old: None },
+            CommitFile { status: 'D', path: "old.txt".into(), old: None },
+        ],
+    };
+    app.handle_msg(AppMsg::Git(GitMsg::CommitDetails { generation: g, sha: sha('1'), result: Ok(details) }));
+    let term = draw_app(app, 100, 24);
+    let marks = [Mark::bg('L', "selected", app.theme.list_selected.bg.unwrap())];
+    let bottom = app.layout.rects.bottom;
+    assert_snapshot!("git_stash_tab", snapshot(&term, &marks, Some(bottom)));
+}
+
+#[tokio::test]
+async fn git_console_tab() {
+    let mut fx = stable_app("git-console");
+    let app = &mut fx.app;
+    app.toggle_tool_window(ToolWindowId::Git);
+    app.perform(Action::Git(crate::actions::GitAction::TabConsole));
+    app.git_panel.log_op("git fetch --prune", true, "From example.org:demo\n   1111111..2222222  main       -> origin/main");
+    app.git_panel.log_op("git push", false, "error: failed to push some refs to 'example.org:demo'\nhint: Updates were rejected");
+    app.git_panel.log_op("git switch dev", false, "");
+    let term = draw_app(app, 100, 24);
+    let marks =
+        [Mark::style('$', "command", app.theme.status_accent.add_modifier(Modifier::BOLD)), Mark::style('E', "error", app.theme.error)];
+    let bottom = app.layout.rects.bottom;
+    assert_snapshot!("git_console_tab", snapshot(&term, &marks, Some(bottom)));
+}
+
+/// A project tree with a few entries, `src/main.rs` selected and drawn
+/// once (a context menu opens at the selected row as last drawn).
+fn tree_fixture(app: &mut App) {
+    let root = app.workspace.root.clone();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    for name in ["src/main.rs", "src/lib.rs", "README.md"] {
+        std::fs::write(root.join(name), "").unwrap();
+    }
+    load_tree(app);
+    assert!(app.project.select_path(&root.join("src/main.rs")));
+    app.focus.set(PanelId::Project);
+    draw_app(app, 80, 24);
+}
+
+fn tree(app: &mut App, a: crate::actions::TreeAction) {
+    app.perform(Action::Tree(a));
+}
+
+/// The selected row or button, and disabled rows and shortcuts.
+fn menu_marks(theme: &Theme) -> Vec<Mark> {
+    vec![Mark::bg('L', "selected", theme.list_selected.bg.unwrap()), Mark::style('d', "dim", theme.dim.bg(theme.popup_bg))]
+}
+
+#[tokio::test]
+async fn tree_context_menu() {
+    let mut fx = stable_app("tree-context-menu");
+    let app = &mut fx.app;
+    tree_fixture(app);
+    tree(app, crate::actions::TreeAction::ContextMenu);
+    let term = draw_app(app, 80, 24);
+    let marks = menu_marks(&app.theme);
+    assert_snapshot!("tree_context_menu", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
+async fn confirm_dialog() {
+    let mut fx = stable_app("confirm-dialog");
+    let app = &mut fx.app;
+    tree_fixture(app);
+    tree(app, crate::actions::TreeAction::Delete);
+    // Known issue, kept as it draws today: a message line wider than the
+    // screen is cut ("…there are lost" loses its period) instead of
+    // wrapping (yman 182).
+    let term = draw_app(app, 80, 24);
+    let marks = [Mark::style('B', "selected button", app.theme.list_selected)];
+    assert_snapshot!("confirm_dialog", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
+async fn input_dialog() {
+    let mut fx = stable_app("input-dialog");
+    let app = &mut fx.app;
+    tree_fixture(app);
+    tree(app, crate::actions::TreeAction::Rename);
+    let term = draw_app(app, 80, 24);
+    assert_snapshot!("input_dialog", snapshot(&term, &[], None));
+}
+
+#[tokio::test]
+async fn choice_dialog() {
+    let mut fx = stable_app("choice-dialog");
+    let app = &mut fx.app;
+    tree_fixture(app);
+    tree(app, crate::actions::TreeAction::New);
+    let term = draw_app(app, 80, 24);
+    let marks = [Mark::bg('L', "selected", app.theme.list_selected.bg.unwrap())];
+    assert_snapshot!("choice_dialog", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
+async fn main_menu_bar() {
+    let mut fx = stable_app("main-menu");
+    let app = &mut fx.app;
+    // No tab open: the rows that need one are disabled. Edit is open.
+    app.toggle_main_menu();
+    app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+    let term = draw_app(app, 100, 30);
+    let marks = menu_marks(&app.theme);
+    assert_snapshot!("main_menu_bar", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
+async fn hover_popup() {
+    let mut fx = stable_app("hover");
+    let app = &mut fx.app;
+    load(app, "main.log", "fn main() {\n    let n = add_one(1);\n}\n");
+    moves(app, Motion::Down, 1);
+    moves(app, Motion::Right, 14);
+    app.focus.set(PanelId::Editor);
+    // The popup as a hover answer makes it.
+    let b = app.editor.active_buffer().unwrap();
+    let contents = lsp_types::HoverContents::Markup(lsp_types::MarkupContent {
+        kind: lsp_types::MarkupKind::Markdown,
+        value: "```rust\nfn add_one(x: u32) -> u32\n```\n---\n# add_one\nAdds **one** to `x`, wrapping at `u32::MAX`; see [the docs](https://example.org/add_one) for more.".into(),
+    });
+    let popup = crate::ui::hover::HoverPopup::new(app.editor.focused_group().id, b.id, b.version, b.view.sel().head, contents);
+    app.hover = Some(popup.expect("hover text"));
+    let term = draw_app(app, 80, 20);
+    // Code lines keep the editor background; prose is on the popup's.
+    let marks = [Mark::bg('P', "popup", app.theme.popup_bg)];
+    assert_snapshot!("hover_popup", snapshot(&term, &marks, None));
+    assert!(app.hover.is_some(), "the popup still applies");
+}
+
+#[tokio::test]
+async fn completion_popup() {
+    use crate::lsp::completion::{CompletionState, Origin};
+    let mut fx = stable_app("completion");
+    let app = &mut fx.app;
+    load(app, "main.log", "fn main() {\n    pri\n}\n");
+    moves(app, Motion::Down, 1);
+    editor(app, EditorAction::Move(Motion::LineEnd, false));
+    app.focus.set(PanelId::Editor);
+    // The list as a completion answer makes it, filtered by `pri`.
+    let b = app.editor.active_buffer().unwrap();
+    let origin = Origin::new(b.id, &b.rope, b.view.sel().head);
+    let (items, incomplete) = crate::lsp::completion::parse(serde_json::json!([
+        {"label": "println!", "kind": 3, "detail": "macro_rules! println"},
+        {"label": "print!", "kind": 3, "detail": "macro_rules! print"},
+        {"label": "primary_color", "kind": 6, "detail": "Color"},
+        {"label": "priority", "kind": 5, "detail": "u8", "deprecated": true},
+        {"label": "unrelated", "kind": 14},
+    ]));
+    let state = CompletionState::new(origin, items, incomplete, "pri", &mut app.lsp.completion.matcher);
+    app.completion = Some(crate::ui::completion::CompletionPopup::new(state, app.editor.focused_group().id));
+    let term = draw_app(app, 80, 20);
+    let marks = [Mark::bg('L', "selected", app.theme.list_selected.bg.unwrap()), Mark::modifier('X', "deprecated", Modifier::CROSSED_OUT)];
+    assert_snapshot!("completion_popup", snapshot(&term, &marks, None));
+    assert!(app.completion.is_some(), "the popup still applies");
+}
+
+#[tokio::test]
+async fn toasts() {
+    use crate::event::Level;
+    let mut fx = stable_app("toasts");
+    let app = &mut fx.app;
+    // Toasts expire on the tick, never while drawing, so the time they
+    // were pushed at does not show.
+    let now = std::time::Instant::now();
+    app.toasts.push(Level::Info, "Saved notes.txt", now);
+    app.toasts.push(Level::Warn, "Language servers are off", now);
+    app.toasts.push(
+        Level::Error,
+        "Push failed: error: failed to push some refs to 'example.org:demo'; the remote has commits you do not have yet, so pull first",
+        now,
+    );
+    let term = draw_app(app, 100, 30);
+    let marks = [
+        Mark::style('i', "info", app.theme.info.bg(app.theme.popup_bg)),
+        Mark::style('w', "warn", app.theme.warn.bg(app.theme.popup_bg)),
+        Mark::style('e', "error", app.theme.error.bg(app.theme.popup_bg)),
+    ];
+    assert_snapshot!("toasts", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
+async fn editor_find_replace_bar() {
+    let mut fx = stable_app("find-replace-bar");
+    let app = &mut fx.app;
+    load(app, "notes.log", "alpha beta\nbeta gamma beta\nBeta four\n");
+    app.focus.set(PanelId::Editor);
+    editor(app, EditorAction::Replace);
+    for c in "beta".chars() {
+        app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+    // The second match (2/4) is current; it is selected, so it shows as
+    // the selection. Matching ignores case.
+    editor(app, EditorAction::FindNext);
+    let term = draw_editor(app, 80, 10);
+    let marks = [Mark::bg('H', "match", app.theme.search_match_bg), Mark::bg('S', "selection", app.theme.selection_bg)];
+    assert_snapshot!("editor_find_replace_bar", snapshot(&term, &marks, None));
+}

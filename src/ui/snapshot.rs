@@ -41,6 +41,11 @@ impl Mark {
     pub(crate) fn modifier(ch: char, name: &'static str, modifier: Modifier) -> Self {
         Self { ch, name, hit: Box::new(move |c| c.modifier.contains(modifier)) }
     }
+
+    /// Underlined cells whose underline has `color` (diagnostics).
+    pub(crate) fn underline(ch: char, name: &'static str, color: Color) -> Self {
+        Self { ch, name, hit: Box::new(move |c| c.modifier.contains(Modifier::UNDERLINED) && c.underline_color == color) }
+    }
 }
 
 /// The first `w` columns of row `y` as they show: a wide symbol's

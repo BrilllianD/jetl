@@ -1,0 +1,38 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &marks, None)"
+---
+80x24 cursor=hidden
+00  ≣ ┌ Project: root ───────────────┐│
+01    │▾ src                         ││
+02  1 │    lib.rs                    ││
+03  ⌂ │    main.rs                   ││
+04  2 │  RE╭───────────────────────────────────────────╮
+05  ◫ │    │ New File…                                 │
+06  7 │    │ New Directory…                            │
+07  ⊢ │    │ Rename…                          Shift+F6 │
+08    │    │ Delete…                            Delete │
+09    │    │ Copy Path                          Ctrl+C │
+10    │    │ Copy Relative Path       Ctrl+Alt+Shift+C │
+11    │    │ Show History                        Alt+H │ files open.
+12  ⚑ │    │ Local History                             │s the Project view;
+13  9 │    │ [x] Show Hidden Files                     │ft+N finds a file.
+14  ⎇ │    │ [ ] Show Ignored Files                    │
+15    │    │ Refresh                                F5 │
+16  ❯ │    ╰───────────────────────────────────────────╯
+17  6 │                              ││
+18  ⚠ │                              ││
+19  4 │                              ││
+20  ► │                              ││
+21  3 │                              ││
+22  ⌕ └──────────────────────────────┘│
+23  root
+-- marks: L=selected d=dim
+03     LLLLLLLLLLLLLLLLLLLLLLLLLLLLLL
+05          LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL
+07                                            dddddddd
+08                                              dddddd
+09                                              dddddd
+10                                    dddddddddddddddd
+11                                               ddddd
+15                                                  dd

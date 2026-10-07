@@ -1,0 +1,29 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &[], None)"
+---
+80x24 cursor=(24,9)
+00  ≣ ┌ Project: root ───────────────┐│
+01    │▾ src                         ││
+02  1 │    lib.rs                    ││
+03  ⌂ │    main.rs                   ││
+04  2 │  README.md                   ││
+05  ◫ │                              ││
+06  7 │           ┌ Rename ────────────────────────────────────────┐
+07  ⊢ │           │ Rename src/main.rs:                            │
+08    │           │                                                │
+09    │           │ main.rs                                        │
+10    │           │             [ Rename ] [ Cancel ]              │
+11    │           └────────────────────────────────────────────────┘
+12  ⚑ │                              ││       Alt+1 opens the Project view;
+13  9 │                              ││         Ctrl+Shift+N finds a file.
+14  ⎇ │                              ││
+15    │                              ││
+16  ❯ │                              ││
+17  6 │                              ││
+18  ⚠ │                              ││
+19  4 │                              ││
+20  ► │                              ││
+21  3 │                              ││
+22  ⌕ └──────────────────────────────┘│
+23  root

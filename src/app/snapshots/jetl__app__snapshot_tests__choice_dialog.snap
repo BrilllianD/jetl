@@ -1,0 +1,32 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &marks, None)"
+---
+80x24 cursor=(17,4)
+00  ≣ ┌ Project: root ───────────────┐│
+01    │▾ src                         ││
+02  1 │    lib.rs                    ││
+03  ⌂ │    main.rs┌ New ───────────────────────────────────────────┐
+04  2 │  README.md│ type to filter                                 │
+05  ◫ │           │  File                                          │
+06  7 │           │  Directory                                     │
+07  ⊢ │           │                                                │
+08    │           │                                                │
+09    │           │                                                │
+10    │           │                                                │
+11    │           │                                                │
+12  ⚑ │           │                                                │t view;
+13  9 │           │                                                │ file.
+14  ⎇ │           │                                                │
+15    │           │                                                │
+16  ❯ │           │                                                │
+17  6 │           └────────────────────────────────────────────────┘
+18  ⚠ │                              ││
+19  4 │                              ││
+20  ► │                              ││
+21  3 │                              ││
+22  ⌕ └──────────────────────────────┘│
+23  root
+-- marks: L=selected
+03     LLLLLLLLLLL
+05                  LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL

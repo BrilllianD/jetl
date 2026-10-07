@@ -45,9 +45,19 @@ it with `cargo run -q -- --dump-keymap > docs/KEYMAP.md`.
 on ratatui's `TestBackend` and compares them as text with
 [`insta`](https://insta.rs) against `src/app/snapshots/*.snap`. They cover
 split panes, carets, occurrences, folding, soft wrap, bookmarks, the
-numbered bookmark chooser and the bookmarks list with closed files, the project tree, the
-Git window's Commit tab (also at 80 columns, its diff header cut before the toggles), the palettes (Scratch Files included), the
-conflict resolver, the crash recovery dialogs and the Save As prompt.
+numbered bookmark chooser and the bookmarks list with closed files, the
+editor's find/replace bar, the project tree and its context menu, the Git
+window's Commit tab (also at 80 columns, its diff header cut before the
+toggles), its Log, Stash and Console tabs, the Find and Problems windows
+(diagnostic underlines in the editor too), the main menu bar, confirm,
+input and choice dialogs, the hover and completion popups, toasts, the
+palettes (Scratch Files included), the conflict resolver, the crash
+recovery dialogs and the Save As prompt.
+
+Things that depend on the clock are given as data: the Log tab's commits
+carry their relative dates as `git log` formatted them, toasts expire on
+the tick and never while drawing, and LSP popups are built from a hover or
+completion answer without a server.
 
 Helpers (in `snapshot_tests.rs` unless noted):
 
@@ -64,7 +74,8 @@ Helpers (in `snapshot_tests.rs` unless noted):
 - Soft wrap needs the view's width, so draw once before moving by screen
   rows, as the run loop always has.
 - `ui::snapshot::snapshot(term, marks, mark_area)` makes the text;
-  `Mark::bg`, `Mark::style` and `Mark::modifier` name the cells to mark.
+  `Mark::bg`, `Mark::style`, `Mark::modifier` and `Mark::underline` (an
+  underline's color: diagnostics) name the cells to mark.
 
 Format:
 

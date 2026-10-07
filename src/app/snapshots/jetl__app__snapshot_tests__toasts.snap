@@ -1,0 +1,47 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &marks, None)"
+---
+100x30 cursor=hidden
+00  ≣ ┌ Project: root ───────────────┐│
+01    │                              ││             ╭ Error ───────────────────────────────────────×─╮
+02  1 │                              ││             │ Push failed: error: failed to push some refs   │
+03  ⌂ │                              ││             │ to 'example.org:demo'; the remote has commits  │
+04    │                              ││             │ you do not have yet, so pull first             │
+05  2 │                              ││             ╰────────────────────────────────────────────────╯
+06  ◫ │                              ││             ╭ Warning ─────────────────────────────────────×─╮
+07    │                              ││             │ Language servers are off                       │
+08  7 │                              ││             ╰────────────────────────────────────────────────╯
+09  ⊢ │                              ││             ╭ Info ────────────────────────────────────────×─╮
+10    │                              ││             │ Saved notes.txt                                │
+11    │                              ││             ╰────────────────────────────────────────────────╯
+12    │                              ││
+13  ⚑ │                              ││
+14    │                              ││          No files open. Alt+1 opens the Project view;
+15  9 │                              ││                   Ctrl+Shift+N finds a file.
+16  ⎇ │                              ││
+17    │                              ││
+18    │                              ││
+19  ❯ │                              ││
+20    │                              ││
+21  6 │                              ││
+22  ⚠ │                              ││
+23    │                              ││
+24  4 │                              ││
+25  ► │                              ││
+26    │                              ││
+27  3 │                              ││
+28  ⌕ └──────────────────────────────┘│
+29  root
+-- marks: i=info w=warn e=error
+01                                                  eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee ee
+02                                                  e                                                e
+03                                                  e                                                e
+04                                                  e                                                e
+05                                                  eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+06                                                  wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww ww
+07                                                  w                                                w
+08                                                  wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww
+09                                                  iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii ii
+10                                                  i                                                i
+11                                                  iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii
