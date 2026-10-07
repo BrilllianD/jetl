@@ -2,7 +2,7 @@
 //! operations that overwrite or delete them (git operations that rewrite
 //! the work tree, reloads, Save As over a file, Overwrite, tree deletes).
 //! One global store (`Paths::history_dir`, see `store.rs`), shared by every
-//! project and instance; File > Local History… lists a file's snapshots and
+//! project and instance, with snapshots stored compressed; File > Local History… lists a file's snapshots and
 //! the Git window's History tab diffs one against the current text.
 //!
 //! All store work runs on one named thread, `jetl-history`, fed through a
@@ -306,10 +306,11 @@ impl Worker {
                     match store::prune(&self.dir, now_ms(), keep, s.max_total_mb.saturating_mul(1 << 20)) {
                         Ok(st) if st.locked => tracing::info!("local history: another instance is pruning"),
                         Ok(st) => tracing::info!(
-                            "local history pruned: {} entries, {} blobs; {} moved to canonical keys",
+                            "local history pruned: {} entries, {} blobs; {} moved to canonical keys; store holds {} KB",
                             st.entries,
                             st.blobs,
-                            st.moved
+                            st.moved,
+                            st.bytes / 1024
                         ),
                         Err(e) => tracing::warn!("local history prune: {e}"),
                     }
@@ -419,11 +420,23 @@ mod tests {
             Ok(AppMsg::LocalHistory(HistoryMsg::Blob { result: Ok(bytes), .. })) => assert_eq!(bytes, b"one\n"),
             other => panic!("expected the blob, got {other:?}"),
         }
+        // A compressible text is stored compressed and read back whole.
+        let big = "fn main() { println!(\"hello\"); }\n".repeat(200);
+        h.capture(Capture::text(path.clone(), big.clone(), Kind::Save));
+        let l = listed(&h, &mut rx, &path);
+        assert_eq!((l.len(), l[0].len), (2, big.len() as u64));
+        assert!(h.dir().join("blobs-zlib").join(&l[0].blob[..2]).join(&l[0].blob).is_file());
+        h.blob(path.clone(), l[0].blob.clone());
+        h.flush(Duration::from_secs(5));
+        match rx.try_recv() {
+            Ok(AppMsg::LocalHistory(HistoryMsg::Blob { result: Ok(bytes), .. })) => assert_eq!(bytes, big.as_bytes()),
+            other => panic!("expected the blob, got {other:?}"),
+        }
         // Off: nothing more is taken, lists still answer.
         h.set_settings(LocalHistoryConfig { enabled: false, ..Default::default() });
         h.capture(Capture::text(path.clone(), "two\n".into(), Kind::Save));
         assert!(h.before_delete(&path).is_none());
-        assert_eq!(listed(&h, &mut rx, &path).len(), 1);
+        assert_eq!(listed(&h, &mut rx, &path).len(), 2);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

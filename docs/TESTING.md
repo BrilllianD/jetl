@@ -617,7 +617,7 @@ At 80x24 and at 120x40 (`-x 120 -y 40`), with config and state under
 ```sh
 LH=/tmp/jetl-lh; rm -rf $LH; mkdir -p $LH/repo/d $LH/cfg/jetl
 printf '[lsp]\nenabled = false\n' > $LH/cfg/jetl/config.toml
-git -C $LH/repo init -q; printf 'one\ntwo\n' > $LH/repo/notes.txt; echo x > $LH/repo/d/x.txt
+git -C $LH/repo init -q; printf 'one\ntwo\n' > $LH/repo/notes.txt; seq 1 3000 > $LH/repo/d/x.txt
 git -C $LH/repo add . && git -C $LH/repo -c user.name=t -c user.email=t@t commit -qm init && git -C $LH/repo branch other
 cargo build --no-default-features --features lang-rust
 run() { /tmp/tm.sh -f /dev/null new-session -d -s jetl -x 80 -y 24 \
@@ -635,6 +635,8 @@ s F1; s -l 'Git: branches'; s Enter; s -l other; s Enter; s Enter   # Checkout: 
 s F1; s -l 'local history'; s Enter    # a "Before git switch other" row on top, "20 B  +1 line"
 s Escape; s M-1; s Home; s Right; s Down; s Delete; s Enter   # delete d/x.txt from the tree
 ls $LH/state/jetl/history/index        # a second index file (d/x.txt, "before_delete")
+ls $LH/state/jetl/history/blobs-zlib/*/   # one blob: d/x.txt, compressed (notes.txt's are under 64 bytes, raw in blobs/)
+wc -c $LH/state/jetl/history/blobs-zlib/*/*   # about 6.5 KB, under half the 13893 bytes of d/x.txt
 s C-q                                  # EXIT=0
 /tmp/tm.sh kill-server
 printf '[lsp]\nenabled = false\n[local_history]\nkeep_days = 0\n' > $LH/cfg/jetl/config.toml

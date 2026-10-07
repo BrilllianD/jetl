@@ -2,7 +2,8 @@
 //! history worker (`history::Handle`), never on the main thread.
 //!
 //! ```text
-//! history/blobs/<id[0..2]>/<id>   raw bytes, id = git blob sha1 of them
+//! history/blobs/<id[0..2]>/<id>        raw bytes
+//! history/blobs-zlib/<id[0..2]>/<id>   the bytes as a zlib stream
 //! history/index/<fnv1a64(key):016x>.jsonl   one `Entry` per line, oldest first
 //! history/prune.lock
 //! ```
@@ -23,7 +24,16 @@
 //! then a rename (idempotent); an index line is one `write_all` on an
 //! `O_APPEND` file; prune holds `prune.lock` and deletes an unreferenced
 //! blob only once it is older than [`BLOB_GRACE`].
+//!
+//! A blob's id is the git blob sha1 of its raw bytes, whichever way it is
+//! stored. A blob of [`MIN_COMPRESS`] bytes and up is stored compressed
+//! (under `blobs-zlib/`) when that is smaller, otherwise raw (under
+//! `blobs/`, where every blob an older jetl wrote is too); [`read_blob`]
+//! tries the compressed file first. An older jetl never looks in
+//! `blobs-zlib/`: it cannot show those snapshots (a "No such file" error)
+//! and never deletes them. [`prune`] counts the bytes on disk.
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -34,6 +44,17 @@ use serde::{Deserialize, Serialize};
 /// An unreferenced blob younger than this is kept: another instance may
 /// have written it and not yet appended its index line.
 pub const BLOB_GRACE: Duration = Duration::from_secs(10 * 60);
+
+/// A blob shorter than this is stored raw: the zlib header, checksum and
+/// block header rarely pay off.
+const MIN_COMPRESS: usize = 64;
+
+/// The deflate level (miniz_oxide's default).
+const LEVEL: u8 = 6;
+
+/// A sanity cap on an inflated blob (a damaged stream); snapshots are at
+/// most `max_file_kb`.
+const MAX_INFLATED: usize = 1 << 30;
 
 /// A prune lock older than this is taken to be left by a dead instance.
 pub const LOCK_STALE: Duration = Duration::from_secs(60 * 60);
@@ -129,10 +150,16 @@ pub struct PruneStats {
     pub blobs: usize,
     /// Entries moved under their canonical key ([`key`]).
     pub moved: usize,
+    /// The bytes on disk of the blobs still referenced, after the prune.
+    pub bytes: u64,
 }
 
 fn blobs_dir(dir: &Path) -> PathBuf {
     dir.join("blobs")
+}
+
+fn zblobs_dir(dir: &Path) -> PathBuf {
+    dir.join("blobs-zlib")
 }
 
 fn index_dir(dir: &Path) -> PathBuf {
@@ -192,6 +219,35 @@ fn valid_id(id: &str) -> bool {
 
 fn blob_file(dir: &Path, id: &str) -> PathBuf {
     blobs_dir(dir).join(&id[..2]).join(id)
+}
+
+fn zblob_file(dir: &Path, id: &str) -> PathBuf {
+    zblobs_dir(dir).join(&id[..2]).join(id)
+}
+
+/// `bytes` as a zlib stream, when that is smaller and they are at least
+/// [`MIN_COMPRESS`] long.
+fn compress(bytes: &[u8]) -> Option<Vec<u8>> {
+    if bytes.len() < MIN_COMPRESS {
+        return None;
+    }
+    let z = miniz_oxide::deflate::compress_to_vec_zlib(bytes, LEVEL);
+    (z.len() < bytes.len()).then_some(z)
+}
+
+/// The bytes of zlib stream `z`; a damaged stream is an `InvalidData` error.
+fn inflate(z: &[u8]) -> io::Result<Vec<u8>> {
+    miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(z, MAX_INFLATED)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("the stored snapshot is damaged ({e})")))
+}
+
+/// The bytes blob `id` takes on disk: both copies when there are two, 0
+/// when there is none (or `id` is not one).
+fn stored_len(dir: &Path, id: &str) -> u64 {
+    if !valid_id(id) {
+        return 0;
+    }
+    [zblob_file(dir, id), blob_file(dir, id)].iter().map(|f| std::fs::metadata(f).map(|m| m.len()).unwrap_or(0)).sum()
 }
 
 /// The id of `bytes`: their git blob sha1.
@@ -266,22 +322,28 @@ pub fn record(
     Ok(Recorded::Added(entry))
 }
 
-/// Write blob `id` unless it exists; an existing one gets a fresh mtime so
-/// a prune in another instance does not take it for an old orphan.
+/// Write blob `id` (compressed when that is smaller) unless it exists in
+/// either form; an existing one gets a fresh mtime so a prune in another
+/// instance does not take it for an old orphan.
 fn write_blob(dir: &Path, id: &str, bytes: &[u8]) -> io::Result<()> {
-    let file = blob_file(dir, id);
-    if file.is_file() {
-        if let Ok(f) = std::fs::File::options().write(true).open(&file) {
-            let _ = f.set_modified(SystemTime::now());
+    for file in [zblob_file(dir, id), blob_file(dir, id)] {
+        if file.is_file() {
+            if let Ok(f) = std::fs::File::options().write(true).open(&file) {
+                let _ = f.set_modified(SystemTime::now());
+            }
+            return Ok(());
         }
-        return Ok(());
     }
+    let (file, data) = match compress(bytes) {
+        Some(z) => (zblob_file(dir, id), Cow::Owned(z)),
+        None => (blob_file(dir, id), Cow::Borrowed(bytes)),
+    };
     let parent = file.parent().unwrap_or(dir);
     std::fs::create_dir_all(parent)?;
     let tmp = parent.join(format!(".{id}.{}.tmp", std::process::id()));
     {
         let mut f = std::fs::File::create(&tmp)?;
-        f.write_all(bytes)?;
+        f.write_all(&data)?;
     }
     std::fs::rename(&tmp, &file).inspect_err(|_| {
         let _ = std::fs::remove_file(&tmp);
@@ -298,12 +360,18 @@ pub fn list(dir: &Path, path: &Path) -> Vec<Entry> {
     v
 }
 
-/// The bytes of blob `id`.
+/// The bytes of blob `id`, from its compressed file or else its raw one.
+/// A damaged compressed blob with no raw copy is an `InvalidData` error,
+/// never garbage.
 pub fn read_blob(dir: &Path, id: &str) -> io::Result<Vec<u8>> {
     if !valid_id(id) {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, format!("not a snapshot id: {id}")));
     }
-    std::fs::read(blob_file(dir, id))
+    match std::fs::read(zblob_file(dir, id)) {
+        Ok(z) => inflate(&z).or_else(|e| std::fs::read(blob_file(dir, id)).map_err(|_| e)),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => std::fs::read(blob_file(dir, id)),
+        Err(e) => Err(e),
+    }
 }
 
 /// Holds `prune.lock` until dropped.
@@ -351,10 +419,10 @@ struct IndexFile {
 /// Move entries stored under a path that is not their [`key`] (written by
 /// an older jetl, through a symlink) under the key, then drop entries older
 /// than `keep_ms` before `now_ms`, then the oldest ones (of any file) while
-/// the blobs still referenced exceed `max_bytes`; rewrite the changed index
-/// files (an emptied one is removed) and delete the blobs no entry
-/// references (once older than [`BLOB_GRACE`]). Does nothing while another
-/// instance prunes. Never creates `dir`.
+/// the bytes on disk of the blobs still referenced exceed `max_bytes`;
+/// rewrite the changed index files (an emptied one is removed) and delete
+/// the blobs no entry references (once older than [`BLOB_GRACE`]). Does
+/// nothing while another instance prunes. Never creates `dir`.
 pub fn prune(dir: &Path, now_ms: u64, keep_ms: u64, max_bytes: u64) -> io::Result<PruneStats> {
     if !dir.is_dir() {
         return Ok(PruneStats::default());
@@ -397,7 +465,7 @@ pub fn prune(dir: &Path, now_ms: u64, keep_ms: u64, max_bytes: u64) -> io::Resul
     // By size: the unique blobs still referenced, oldest entries first out.
     let mut refs: HashMap<&str, (usize, u64)> = HashMap::new();
     for e in files.iter().flat_map(|f| &f.entries) {
-        refs.entry(e.blob.as_str()).or_insert((0, e.len)).0 += 1;
+        refs.entry(e.blob.as_str()).or_insert_with(|| (0, stored_len(dir, &e.blob))).0 += 1;
     }
     let mut total: u64 = refs.values().map(|(_, len)| len).sum();
     let mut drop_set: HashSet<(usize, usize)> = HashSet::new();
@@ -437,6 +505,7 @@ pub fn prune(dir: &Path, now_ms: u64, keep_ms: u64, max_bytes: u64) -> io::Resul
     for f in files.iter().filter(|f| f.changed || (f.corrupt && !f.entries.is_empty())) {
         rewrite_index(&f.file, &f.entries)?;
     }
+    stats.bytes = total;
     stats.blobs = gc_blobs(dir, &keep);
     Ok(stats)
 }
@@ -506,11 +575,16 @@ fn rewrite_index(file: &Path, entries: &[Entry]) -> io::Result<()> {
 }
 
 /// Delete the blobs (and leftover temp files) not in `keep` that are older
-/// than [`BLOB_GRACE`], and the empty fan-out directories; returns how many
-/// blobs went.
+/// than [`BLOB_GRACE`], raw and compressed, and the empty fan-out
+/// directories; returns how many blobs went.
 fn gc_blobs(dir: &Path, keep: &HashSet<String>) -> usize {
+    gc_tree(&blobs_dir(dir), keep) + gc_tree(&zblobs_dir(dir), keep)
+}
+
+/// [`gc_blobs`] in one tree of fan-out directories.
+fn gc_tree(root: &Path, keep: &HashSet<String>) -> usize {
     let mut removed = 0;
-    let Ok(fans) = std::fs::read_dir(blobs_dir(dir)) else { return 0 };
+    let Ok(fans) = std::fs::read_dir(root) else { return 0 };
     for fan in fans.flatten() {
         let fan = fan.path();
         let Ok(rd) = std::fs::read_dir(&fan) else { continue };
@@ -546,19 +620,48 @@ mod tests {
         record(dir, Path::new(path), text.as_bytes(), Kind::Save, None, at, MB).unwrap()
     }
 
+    /// The files in one blob tree (`blobs_dir` or `zblobs_dir`).
+    fn tree_files(root: &Path) -> Vec<PathBuf> {
+        let Ok(fans) = std::fs::read_dir(root) else { return Vec::new() };
+        fans.flatten().flat_map(|f| std::fs::read_dir(f.path()).into_iter().flatten().flatten().map(|b| b.path())).collect()
+    }
+
+    /// The blob files, raw and compressed.
     fn blob_count(dir: &Path) -> usize {
-        std::fs::read_dir(blobs_dir(dir))
-            .map(|fans| fans.flatten().map(|f| std::fs::read_dir(f.path()).map(|r| r.count()).unwrap_or(0)).sum())
-            .unwrap_or(0)
+        tree_files(&blobs_dir(dir)).len() + tree_files(&zblobs_dir(dir)).len()
     }
 
     /// Make every blob older than the grace period.
     fn age_blobs(dir: &Path) {
         let old = SystemTime::now() - BLOB_GRACE - Duration::from_secs(60);
-        for fan in std::fs::read_dir(blobs_dir(dir)).unwrap().flatten() {
-            for b in std::fs::read_dir(fan.path()).unwrap().flatten() {
-                std::fs::File::options().write(true).open(b.path()).unwrap().set_modified(old).unwrap();
-            }
+        for b in tree_files(&blobs_dir(dir)).into_iter().chain(tree_files(&zblobs_dir(dir))) {
+            std::fs::File::options().write(true).open(b).unwrap().set_modified(old).unwrap();
+        }
+    }
+
+    /// About 7 KB of source text: compresses well.
+    fn source() -> String {
+        "fn main() { println!(\"hello\"); }\n".repeat(200)
+    }
+
+    /// 4 KB of xorshift noise without a NUL: not binary, but deflate makes
+    /// it larger.
+    fn noise() -> Vec<u8> {
+        let mut x: u32 = 0x9e37_79b9;
+        (0..4096)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 17;
+                x ^= x << 5;
+                (x as u8).max(1)
+            })
+            .collect()
+    }
+
+    fn added(r: Recorded) -> Entry {
+        match r {
+            Recorded::Added(e) => e,
+            other => panic!("expected an entry, got {other:?}"),
         }
     }
 
@@ -777,6 +880,158 @@ mod tests {
         assert_eq!(prune(&hist, 10, 8, MB).unwrap().moved, 1);
         assert_eq!(list(&hist, &real.join("b.txt"))[0].path, real.join("b.txt").to_str().unwrap());
         let _ = std::fs::remove_dir_all(hist.parent().unwrap());
+    }
+
+    #[test]
+    fn compress_and_inflate_round_trip() {
+        let text = source();
+        let z = compress(text.as_bytes()).expect("compressible");
+        assert!(z.len() < text.len() / 4);
+        assert_eq!(inflate(&z).unwrap(), text.as_bytes());
+        assert_eq!(compress(&text.as_bytes()[..MIN_COMPRESS - 1]), None);
+        assert!(compress(&text.as_bytes()[..MIN_COMPRESS]).is_some());
+        assert_eq!(compress(&noise()), None);
+    }
+
+    #[test]
+    fn compressible_blobs_are_stored_compressed() {
+        let dir = temp("zstore");
+        let text = source();
+        let e = added(rec(&dir, "/p/a.rs", &text, 1));
+        assert!(zblob_file(&dir, &e.blob).is_file());
+        assert!(!blob_file(&dir, &e.blob).exists());
+        assert!(stored_len(&dir, &e.blob) < text.len() as u64 / 4);
+        assert_eq!(read_blob(&dir, &e.blob).unwrap(), text.as_bytes());
+        assert_eq!(e.len, text.len() as u64, "the index keeps the raw size");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn tiny_and_incompressible_blobs_stay_raw() {
+        let dir = temp("zraw");
+        let short = "ab".repeat(31) + "c";
+        assert_eq!(short.len(), 63);
+        let noise = noise();
+        let entries = [
+            added(rec(&dir, "/p/a.txt", "a", 1)),
+            added(rec(&dir, "/p/b.txt", &short, 2)),
+            added(record(&dir, Path::new("/p/c.bin"), &noise, Kind::Save, None, 3, MB).unwrap()),
+        ];
+        for (e, bytes) in entries.iter().zip([b"a".as_slice(), short.as_bytes(), &noise]) {
+            assert!(blob_file(&dir, &e.blob).is_file());
+            assert!(!zblob_file(&dir, &e.blob).exists());
+            assert_eq!(read_blob(&dir, &e.blob).unwrap(), bytes);
+        }
+        assert_eq!(stored_len(&dir, &entries[2].blob), 4096);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn legacy_raw_blobs_are_read_and_reused() {
+        let dir = temp("zlegacy");
+        let text = source();
+        let id = blob_id(text.as_bytes()).unwrap();
+        // As an older jetl wrote it: raw.
+        let raw = blob_file(&dir, &id);
+        std::fs::create_dir_all(raw.parent().unwrap()).unwrap();
+        std::fs::write(&raw, &text).unwrap();
+        assert_eq!(read_blob(&dir, &id).unwrap(), text.as_bytes());
+        // The same bytes saved again reuse it, not a compressed copy.
+        assert_eq!(added(rec(&dir, "/p/a.rs", &text, 1)).blob, id);
+        assert!(!zblob_file(&dir, &id).exists());
+        assert_eq!(blob_count(&dir), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn compressed_blobs_dedupe_across_files() {
+        let dir = temp("zdedupe");
+        let a = source();
+        let b = a.replace("hello", "world");
+        rec(&dir, "/p/a.rs", &a, 1);
+        rec(&dir, "/p/b.rs", &a, 2);
+        assert_eq!(tree_files(&zblobs_dir(&dir)).len(), 1);
+        rec(&dir, "/p/c.rs", &a, 3);
+        rec(&dir, "/p/c.rs", &b, 4);
+        rec(&dir, "/p/c.rs", &a, 5);
+        assert_eq!(list(&dir, Path::new("/p/c.rs")).len(), 3);
+        assert_eq!(blob_count(&dir), 2);
+        assert_eq!(tree_files(&zblobs_dir(&dir)).len(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn prune_counts_bytes_on_disk() {
+        let dir = temp("zprune");
+        let (t1, t2) = (source(), source().replace("hello", "world"));
+        let c1 = added(rec(&dir, "/p/a.rs", &t1, 1));
+        let c2 = added(rec(&dir, "/p/a.rs", &t2, 2));
+        let (s1, s2) = (stored_len(&dir, &c1.blob), stored_len(&dir, &c2.blob));
+        assert!(s1 + s2 < c1.len, "compressed sizes well under the raw ones");
+        age_blobs(&dir);
+        // Raw lengths would be over the cap and drop one.
+        let s = prune(&dir, 3, 10, s1 + s2).unwrap();
+        assert_eq!((s.entries, s.blobs, s.bytes), (0, 0, s1 + s2));
+        let s = prune(&dir, 3, 10, s2).unwrap();
+        assert_eq!((s.entries, s.blobs, s.bytes), (1, 1, s2));
+        assert!(!zblob_file(&dir, &c1.blob).exists());
+        assert_eq!(list(&dir, Path::new("/p/a.rs"))[0].blob, c2.blob);
+        // A missing blob takes no space; an invalid id neither panics nor counts.
+        let file = index_file(&dir, "/p/a.rs");
+        let mut text = std::fs::read_to_string(&file).unwrap();
+        for (blob, at) in [(blob_id(b"gone").unwrap(), 3), ("x".to_string(), 4)] {
+            let e = Entry { v: 1, path: "/p/a.rs".into(), at, blob, len: 1 << 30, lines: 1, kind: Kind::Save, detail: None };
+            text.push_str(&serde_json::to_string(&e).unwrap());
+            text.push('\n');
+        }
+        std::fs::write(&file, text).unwrap();
+        assert_eq!(stored_len(&dir, "x"), 0);
+        let s = prune(&dir, 5, 10, s2).unwrap();
+        assert_eq!((s.entries, s.bytes), (0, s2));
+        // Both copies of one blob count.
+        std::fs::create_dir_all(blob_file(&dir, &c2.blob).parent().unwrap()).unwrap();
+        std::fs::write(blob_file(&dir, &c2.blob), &t2).unwrap();
+        assert_eq!(stored_len(&dir, &c2.blob), s2 + t2.len() as u64);
+        assert_eq!(prune(&dir, 5, 10, MB).unwrap().bytes, s2 + t2.len() as u64);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn gc_removes_unreferenced_compressed_blobs() {
+        let dir = temp("zgc");
+        rec(&dir, "/p/a.rs", &source(), 0);
+        // Every entry is too old, but the orphaned blob is young.
+        let s = prune(&dir, 1_000_000, 0, MB).unwrap();
+        assert_eq!((s.entries, s.blobs), (1, 0));
+        assert_eq!(tree_files(&zblobs_dir(&dir)).len(), 1);
+        age_blobs(&dir);
+        let s = prune(&dir, 1_000_000, 0, MB).unwrap();
+        assert_eq!(s.blobs, 1);
+        assert_eq!(blob_count(&dir), 0);
+        assert_eq!(std::fs::read_dir(zblobs_dir(&dir)).unwrap().count(), 0, "empty fan-out dirs go");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn damaged_compressed_blob_is_a_clean_error() {
+        let dir = temp("zdamaged");
+        let text = source();
+        let e = added(rec(&dir, "/p/a.rs", &text, 1));
+        let file = zblob_file(&dir, &e.blob);
+        let z = std::fs::read(&file).unwrap();
+        let mut flipped = z.clone();
+        flipped[z.len() / 2] ^= 0xff;
+        for bad in [flipped, z[..z.len() / 2].to_vec(), b"garbage".to_vec(), Vec::new()] {
+            std::fs::write(&file, &bad).unwrap();
+            let err = read_blob(&dir, &e.blob).expect_err("damaged");
+            assert_eq!(err.kind(), io::ErrorKind::InvalidData, "{err}");
+            assert!(err.to_string().contains("damaged"), "{err}");
+        }
+        // A raw copy is the fallback.
+        std::fs::create_dir_all(blob_file(&dir, &e.blob).parent().unwrap()).unwrap();
+        std::fs::write(blob_file(&dir, &e.blob), &text).unwrap();
+        assert_eq!(read_blob(&dir, &e.blob).unwrap(), text.as_bytes());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

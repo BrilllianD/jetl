@@ -222,6 +222,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   two. The list and the History tab still show the path you opened. A deleted file stays listed
   under the path it was opened with. Snapshots stored by an earlier build under a symlinked path
   are merged into the file's history when jetl starts.
+- Local history stores snapshots compressed (zlib), so about three to four times as much
+  source fits in the store; `max_total_mb` counts the compressed size on disk. Snapshots stored
+  by an earlier build stay readable and are pruned as before.
 
 ### Removed
 

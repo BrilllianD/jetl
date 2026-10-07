@@ -169,7 +169,7 @@ completion_min_chars = 1       # identifier chars typed before it opens by itsel
 [local_history]
 enabled = true                 # snapshot files on save and before they are overwritten or deleted
 keep_days = 5                  # snapshots older than this are pruned (0 drops every one at the next prune)
-max_total_mb = 100             # the oldest snapshots are pruned while the store holds more
+max_total_mb = 100             # the oldest snapshots are pruned while the store holds more (compressed size on disk)
 max_file_kb = 2048             # larger files are not snapshotted
 ```
 
@@ -386,7 +386,9 @@ Overwrite in the changed-on-disk dialog and Save As over a file store the
 file on disk, and Delete in the Project tree stores the file, or the files
 under a folder that the tree would show (at most 500). A snapshot equal to
 the file's last one is not stored again, and identical contents are stored
-once for all files. Binary files and files over `max_file_kb` are skipped.
+once for all files. Snapshots are stored compressed (zlib), so about three
+to four times as much source text fits under `max_total_mb`, which counts
+the size on disk. Binary files and files over `max_file_kb` are skipped.
 
 File > Local History… (`editor.local_history`, no key by default; also the
 Project tree's context menu) lists the snapshots of the active file, or of
