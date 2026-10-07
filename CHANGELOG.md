@@ -225,6 +225,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Local history stores snapshots compressed (zlib), so about three to four times as much
   source fits in the store; `max_total_mb` counts the compressed size on disk. Snapshots stored
   by an earlier build stay readable and are pruned as before.
+- Local history merges consecutive autosaves of a file: an autosave replaces the file's last
+  snapshot when that is an autosave whose run began less than 5 minutes ago, so idle autosave
+  no longer floods the list. Saves and snapshots taken before git operations, reloads and
+  deletes are never merged and end a run.
 
 ### Removed
 

@@ -32,6 +32,16 @@
 //! tries the compressed file first. An older jetl never looks in
 //! `blobs-zlib/`: it cannot show those snapshots (a "No such file" error)
 //! and never deletes them. [`prune`] counts the bytes on disk.
+//!
+//! Autosaves come in runs (idle autosave may write every few seconds), so
+//! an autosave whose file's last entry is an autosave of the same run (the
+//! run's first one taken less than [`AUTOSAVE_RUN`] ago) replaces that
+//! entry instead of adding one: [`record`] rewrites the line in place
+//! (temp file and rename) while holding `prune.lock`, or appends when
+//! another instance holds it. The replaced entry's blob is collected by the
+//! next [`prune`] unless another entry still names it. The window is
+//! measured from the run's first autosave (the entry's `since`), so a long
+//! editing session still leaves one entry per window.
 
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
@@ -58,6 +68,14 @@ const MAX_INFLATED: usize = 1 << 30;
 
 /// A prune lock older than this is taken to be left by a dead instance.
 pub const LOCK_STALE: Duration = Duration::from_secs(60 * 60);
+
+/// How long a prune waits before trying a held lock once more: a
+/// [`record`] merging an autosave holds it for a moment.
+const LOCK_RETRY: Duration = Duration::from_millis(50);
+
+/// Autosaves of one file within this long of the first autosave of their
+/// run are merged into one entry (see the module doc).
+pub const AUTOSAVE_RUN: Duration = Duration::from_secs(5 * 60);
 
 /// What a snapshot was taken for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -114,11 +132,20 @@ pub struct Entry {
     pub lines: u64,
     pub kind: Kind,
     pub detail: Option<String>,
+    /// An autosave that replaced others of its run: when the run's first
+    /// one was taken (Unix ms). Absent from the line otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since: Option<u64>,
 }
 
 impl Entry {
     pub fn label(&self) -> String {
         self.kind.label(self.detail.as_deref())
+    }
+
+    /// When the autosave run this entry stands for began.
+    fn run_start(&self) -> u64 {
+        self.since.unwrap_or(self.at)
     }
 }
 
@@ -139,6 +166,9 @@ pub enum Recorded {
     /// The bytes are those of the file's last entry already.
     Same,
     Added(Entry),
+    /// An autosave that replaced the file's last entry, an autosave of the
+    /// same run.
+    Replaced(Entry),
 }
 
 /// What a prune did.
@@ -284,7 +314,9 @@ fn entries_of(dir: &Path, key: &str, given: Option<&str>) -> Vec<Entry> {
 
 /// Snapshot `bytes` as the content of `path` (stored under its [`key`]) at
 /// `at_ms`, unless it is too large (over `max_bytes`), binary, a file of
-/// the store, or the same as the file's last entry.
+/// the store, or the same as the file's last entry. An autosave replaces
+/// the last entry when that is an autosave of the same run (see the module
+/// doc).
 pub fn record(
     dir: &Path,
     path: &Path,
@@ -307,12 +339,37 @@ pub fn record(
     let Some(key) = canonical.to_str() else { return Ok(Recorded::Skipped(Skip::NotUtf8Path)) };
     let id = blob_id(bytes)?;
     let index = index_file(dir, key);
-    if entries_of(dir, key, path.to_str()).last().is_some_and(|e| e.blob == id) {
+    let entries = entries_of(dir, key, path.to_str());
+    let last = entries.last();
+    if last.is_some_and(|e| e.blob == id) {
         return Ok(Recorded::Same);
     }
     write_blob(dir, &id, bytes)?;
-    let entry =
-        Entry { v: 1, path: key.to_string(), at: at_ms, blob: id, len: bytes.len() as u64, lines: count_lines(bytes), kind, detail };
+    let mut entry = Entry {
+        v: 1,
+        path: key.to_string(),
+        at: at_ms,
+        blob: id,
+        len: bytes.len() as u64,
+        lines: count_lines(bytes),
+        kind,
+        detail,
+        since: None,
+    };
+    // An entry still under the path as given (not yet migrated) is left be.
+    let run = last.filter(|p| {
+        kind == Kind::Autosave
+            && p.kind == Kind::Autosave
+            && p.path == key
+            && at_ms.saturating_sub(p.run_start()) < AUTOSAVE_RUN.as_millis() as u64
+    });
+    if let Some(prev) = run {
+        entry.since = Some(prev.run_start());
+        if replace_last(dir, &index, prev, &entry)? {
+            return Ok(Recorded::Replaced(entry));
+        }
+        entry.since = None;
+    }
     let mut line = serde_json::to_string(&entry).map_err(io::Error::other)?;
     line.push('\n');
     std::fs::create_dir_all(index_dir(dir))?;
@@ -320,6 +377,28 @@ pub fn record(
     // instances never interleave.
     std::fs::OpenOptions::new().create(true).append(true).open(&index)?.write_all(line.as_bytes())?;
     Ok(Recorded::Added(entry))
+}
+
+/// Replace `prev`, the last line of its path in index file `index`, by
+/// `entry`, holding `prune.lock` so that no prune rewrites the file
+/// meanwhile; other lines stay as they are. `false`, with nothing written,
+/// when another instance holds the lock or `prev` is no longer the path's
+/// last line.
+fn replace_last(dir: &Path, index: &Path, prev: &Entry, entry: &Entry) -> io::Result<bool> {
+    let Ok(Some(_lock)) = PruneLock::take(dir) else { return Ok(false) };
+    let Ok(text) = std::fs::read_to_string(index) else { return Ok(false) };
+    let mut lines: Vec<&str> = text.lines().collect();
+    let parse = |l: &str| serde_json::from_str::<Entry>(l).ok().filter(|e| e.path == prev.path);
+    let Some(i) = lines.iter().rposition(|l| parse(l).is_some()) else { return Ok(false) };
+    if parse(lines[i]).as_ref() != Some(prev) {
+        return Ok(false);
+    }
+    let line = serde_json::to_string(entry).map_err(io::Error::other)?;
+    lines[i] = &line;
+    let mut text = lines.join("\n");
+    text.push('\n');
+    write_index(index, &text)?;
+    Ok(true)
 }
 
 /// Write blob `id` (compressed when that is smaller) unless it exists in
@@ -427,7 +506,14 @@ pub fn prune(dir: &Path, now_ms: u64, keep_ms: u64, max_bytes: u64) -> io::Resul
     if !dir.is_dir() {
         return Ok(PruneStats::default());
     }
-    let Some(_lock) = PruneLock::take(dir)? else {
+    let lock = match PruneLock::take(dir)? {
+        Some(lock) => Some(lock),
+        None => {
+            std::thread::sleep(LOCK_RETRY);
+            PruneLock::take(dir)?
+        }
+    };
+    let Some(_lock) = lock else {
         return Ok(PruneStats { locked: true, ..Default::default() });
     };
     let mut files = Vec::new();
@@ -569,9 +655,17 @@ fn rewrite_index(file: &Path, entries: &[Entry]) -> io::Result<()> {
         text.push_str(&serde_json::to_string(e).map_err(io::Error::other)?);
         text.push('\n');
     }
+    write_index(file, &text)
+}
+
+/// Replace index file `file` by `text` through a temp file and a rename.
+/// Only under `prune.lock`: the temp name is the pid's.
+fn write_index(file: &Path, text: &str) -> io::Result<()> {
     let tmp = file.with_extension(format!("tmp.{}", std::process::id()));
     std::fs::write(&tmp, text)?;
-    std::fs::rename(&tmp, file)
+    std::fs::rename(&tmp, file).inspect_err(|_| {
+        let _ = std::fs::remove_file(&tmp);
+    })
 }
 
 /// Delete the blobs (and leftover temp files) not in `keep` that are older
@@ -844,7 +938,8 @@ mod tests {
         let path = path.to_str().unwrap();
         let id = blob_id(text.as_bytes()).unwrap();
         write_blob(dir, &id, text.as_bytes()).unwrap();
-        let e = Entry { v: 1, path: path.into(), at, blob: id, len: text.len() as u64, lines: 1, kind: Kind::Save, detail: None };
+        let e =
+            Entry { v: 1, path: path.into(), at, blob: id, len: text.len() as u64, lines: 1, kind: Kind::Save, detail: None, since: None };
         std::fs::create_dir_all(index_dir(dir)).unwrap();
         let mut f = std::fs::OpenOptions::new().create(true).append(true).open(index_file(dir, path)).unwrap();
         writeln!(f, "{}", serde_json::to_string(&e).unwrap()).unwrap();
@@ -980,7 +1075,7 @@ mod tests {
         let file = index_file(&dir, "/p/a.rs");
         let mut text = std::fs::read_to_string(&file).unwrap();
         for (blob, at) in [(blob_id(b"gone").unwrap(), 3), ("x".to_string(), 4)] {
-            let e = Entry { v: 1, path: "/p/a.rs".into(), at, blob, len: 1 << 30, lines: 1, kind: Kind::Save, detail: None };
+            let e = Entry { v: 1, path: "/p/a.rs".into(), at, blob, len: 1 << 30, lines: 1, kind: Kind::Save, detail: None, since: None };
             text.push_str(&serde_json::to_string(&e).unwrap());
             text.push('\n');
         }
@@ -1031,6 +1126,125 @@ mod tests {
         std::fs::create_dir_all(blob_file(&dir, &e.blob).parent().unwrap()).unwrap();
         std::fs::write(blob_file(&dir, &e.blob), &text).unwrap();
         assert_eq!(read_blob(&dir, &e.blob).unwrap(), text.as_bytes());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn auto(dir: &Path, path: &str, text: &str, at: u64) -> Recorded {
+        record(dir, Path::new(path), text.as_bytes(), Kind::Autosave, None, at, MB).unwrap()
+    }
+
+    const MIN: u64 = 60_000;
+
+    /// `(at, since, text)` of `path`'s entries, newest first.
+    fn runs(dir: &Path, path: &str) -> Vec<(u64, Option<u64>, String)> {
+        list(dir, Path::new(path))
+            .into_iter()
+            .map(|e| (e.at, e.since, String::from_utf8(read_blob(dir, &e.blob).unwrap()).unwrap()))
+            .collect()
+    }
+
+    #[test]
+    fn autosaves_within_the_window_merge_into_one_entry() {
+        let dir = temp("autorun");
+        assert!(matches!(auto(&dir, "/p/a.txt", "a", 1000), Recorded::Added(_)));
+        // Another path's line (a hash collision) and a corrupt one in the
+        // same file survive the rewrite.
+        let file = index_file(&dir, "/p/a.txt");
+        let mut other = list(&dir, Path::new("/p/a.txt"))[0].clone();
+        other.path = "/p/other".into();
+        let mut text = std::fs::read_to_string(&file).unwrap();
+        text.push_str(&serde_json::to_string(&other).unwrap());
+        text.push_str("\n{not json\n");
+        std::fs::write(&file, &text).unwrap();
+        let Recorded::Replaced(e) = auto(&dir, "/p/a.txt", "b", 2000) else { panic!("replaced") };
+        assert_eq!((e.at, e.since), (2000, Some(1000)));
+        assert!(matches!(auto(&dir, "/p/a.txt", "c", 3000), Recorded::Replaced(_)));
+        assert_eq!(runs(&dir, "/p/a.txt"), [(3000, Some(1000), "c".into())]);
+        let text = std::fs::read_to_string(&file).unwrap();
+        assert_eq!(text.lines().count(), 3, "{text}");
+        assert!(text.ends_with("{not json\n"));
+        assert_eq!(read_entries(&file, "/p/other").len(), 1);
+        // The same bytes again are still `Same`.
+        assert_eq!(auto(&dir, "/p/a.txt", "c", 4000), Recorded::Same);
+        assert_eq!(runs(&dir, "/p/a.txt").len(), 1);
+        assert!(!dir.join("prune.lock").exists(), "the lock is released");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn other_kinds_break_an_autosave_run() {
+        let dir = temp("autobreak");
+        auto(&dir, "/p/a.txt", "a", 1);
+        rec(&dir, "/p/a.txt", "b", 2);
+        auto(&dir, "/p/a.txt", "c", 3);
+        assert_eq!(list(&dir, Path::new("/p/a.txt")).len(), 3);
+        // A snapshot before a git operation is not merged into the run, and
+        // the autosave after it starts a new one.
+        let git = record(&dir, Path::new("/p/a.txt"), b"d", Kind::BeforeGit, Some("git pull".into()), 4, MB).unwrap();
+        assert!(matches!(git, Recorded::Added(_)));
+        auto(&dir, "/p/a.txt", "e", 5);
+        auto(&dir, "/p/a.txt", "f", 6);
+        let r = runs(&dir, "/p/a.txt");
+        assert_eq!(
+            r.iter().map(|(at, since, _)| (*at, *since)).collect::<Vec<_>>(),
+            [(6, Some(5)), (4, None), (3, None), (2, None), (1, None)]
+        );
+        // Another file's autosave neither merges nor breaks this run.
+        auto(&dir, "/p/b.txt", "x", 7);
+        auto(&dir, "/p/a.txt", "g", 8);
+        assert_eq!(runs(&dir, "/p/a.txt")[0], (8, Some(5), "g".into()));
+        assert_eq!(runs(&dir, "/p/b.txt").len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_window_is_measured_from_the_runs_first_autosave() {
+        let dir = temp("autowindow");
+        auto(&dir, "/p/a.txt", "a", 0);
+        // Past the window: a new entry.
+        auto(&dir, "/p/b.txt", "a", 0);
+        auto(&dir, "/p/b.txt", "b", 5 * MIN);
+        assert_eq!(runs(&dir, "/p/b.txt").len(), 2);
+        // Four minutes apart each, but the third is five minutes after the
+        // run's first: it starts a new run, which the fourth joins.
+        auto(&dir, "/p/a.txt", "b", 4 * MIN);
+        auto(&dir, "/p/a.txt", "c", 8 * MIN);
+        auto(&dir, "/p/a.txt", "d", 12 * MIN);
+        assert_eq!(runs(&dir, "/p/a.txt"), [(12 * MIN, Some(8 * MIN), "d".into()), (4 * MIN, Some(0), "b".into())]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_replaced_blob_is_collected_only_when_unreferenced() {
+        let dir = temp("autogc");
+        let (y, z, w) = (source(), source().replace("hello", "z"), source().replace("hello", "w"));
+        rec(&dir, "/p/b.rs", &y, 0);
+        let ey = added(auto(&dir, "/p/a.rs", &y, 1));
+        let Recorded::Replaced(ez) = auto(&dir, "/p/a.rs", &z, 2) else { panic!("replaced") };
+        let Recorded::Replaced(ew) = auto(&dir, "/p/a.rs", &w, 3) else { panic!("replaced") };
+        assert_eq!(blob_count(&dir), 3);
+        // Young orphans stay.
+        assert_eq!(prune(&dir, 10, 100, MB).unwrap().blobs, 0);
+        age_blobs(&dir);
+        let s = prune(&dir, 10, 100, MB).unwrap();
+        assert_eq!((s.entries, s.blobs), (0, 1));
+        assert!(read_blob(&dir, &ez.blob).is_err(), "z was only in the replaced entry");
+        assert_eq!(read_blob(&dir, &ey.blob).unwrap(), y.as_bytes(), "y is still b.rs's");
+        assert_eq!(read_blob(&dir, &ew.blob).unwrap(), w.as_bytes());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_autosave_appends_while_another_instance_prunes() {
+        let dir = temp("autolock");
+        auto(&dir, "/p/a.txt", "a", 1);
+        std::fs::write(dir.join("prune.lock"), "1").unwrap();
+        assert!(matches!(auto(&dir, "/p/a.txt", "b", 2), Recorded::Added(_)));
+        assert!(dir.join("prune.lock").exists(), "not ours to remove");
+        std::fs::remove_file(dir.join("prune.lock")).unwrap();
+        // The appended entry starts the run the next autosave joins.
+        assert!(matches!(auto(&dir, "/p/a.txt", "c", 3), Recorded::Replaced(_)));
+        assert_eq!(runs(&dir, "/p/a.txt").iter().map(|(at, since, _)| (*at, *since)).collect::<Vec<_>>(), [(3, Some(2)), (1, None)]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

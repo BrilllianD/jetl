@@ -548,6 +548,7 @@ async fn palette_local_history() {
         lines,
         kind,
         detail: detail.map(String::from),
+        since: None,
     };
     use crate::history::Kind;
     let entries = vec![

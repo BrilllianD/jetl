@@ -386,7 +386,12 @@ Overwrite in the changed-on-disk dialog and Save As over a file store the
 file on disk, and Delete in the Project tree stores the file, or the files
 under a folder that the tree would show (at most 500). A snapshot equal to
 the file's last one is not stored again, and identical contents are stored
-once for all files. Snapshots are stored compressed (zlib), so about three
+once for all files. Autosaves are merged so the list stays readable: an
+autosave replaces the file's last snapshot when that is an autosave too and
+the first autosave of that run is less than 5 minutes old, so a long
+editing session leaves one autosave snapshot per 5 minutes (the newest text
+of each). Any other snapshot (a save, Save As, before a git operation, a
+reload or a delete) is never merged and ends the run. Snapshots are stored compressed (zlib), so about three
 to four times as much source text fits under `max_total_mb`, which counts
 the size on disk. Binary files and files over `max_file_kb` are skipped.
 
