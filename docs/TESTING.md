@@ -644,6 +644,11 @@ s F1; s -l 'local history'; s Enter    # an "Unsaved changes" row on top
 s Escape; s -l 'more '; sleep 11; s F1; s -l 'local history'; s Enter   # still one "Unsaved changes" row (merged), newer size
 s Escape; s C-s; s F1; s -l 'local history'; s Enter   # that row is now "Saved"
 s Escape
+s M-F1                                 # Project tree focused, notes.txt selected
+s S-F6; for i in 1 2 3 4 5 6 7 8 9; do s BSpace; done; s -l renamed.txt; s Enter   # "Renamed to renamed.txt", the tab follows
+s F1; s -l 'local history'; s Enter    # "Local History: renamed.txt": "Renamed from notes.txt" on top, the notes.txt rows below
+s -l renamed; s Escape                 # typing filters to the marker row
+ls $LH/state/jetl/history/index        # one index file more; notes.txt's is still there
 s C-q                                  # EXIT=0
 /tmp/tm.sh kill-server
 printf '[lsp]\nenabled = false\n[local_history]\nkeep_days = 0\n' > $LH/cfg/jetl/config.toml

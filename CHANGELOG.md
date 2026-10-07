@@ -237,6 +237,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Local history snapshots the modified and untracked files of a worktree before Force remove
   in the Worktrees window deletes it ("Before git worktree remove --force"), as it already did
   before git operations that rewrite the open project.
+- Local history follows renames made in the Project tree: a renamed file, or every file under a
+  renamed folder, keeps its snapshots under the new name, below a "Renamed from …" row. Save As
+  starts a new history whose first snapshot names the file it came from. Renames made outside
+  jetl, by git or a shell, are not followed yet.
 
 ### Removed
 

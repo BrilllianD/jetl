@@ -414,6 +414,80 @@ pub(crate) mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    fn fs_op_done(m: &AppMsg) -> bool {
+        matches!(m, AppMsg::FsOpDone { .. })
+    }
+
+    #[tokio::test]
+    async fn tree_renames_carry_local_history() {
+        let (mut app, dir) = test_app("history-rename");
+        with_history(&mut app);
+        let root = app.workspace.root.clone();
+        let a = load(&mut app, "a.txt", "one\n");
+        type_text(&mut app, "x ");
+        app.perform(Action::Editor(EditorAction::Save));
+        type_text(&mut app, "y ");
+        app.finish_dialog(DialogId::TreeRename(a.clone()), DialogResult::Text("b.txt".into()));
+        handle_next(&mut app, fs_op_done).await;
+        let b = root.join("b.txt");
+        // The marker holds the text on disk, not the unsaved edits.
+        let renamed = format!("Renamed from {}", a.display());
+        assert_eq!(snapshots(&app, &b), pairs(&[(&renamed, "x one\n"), ("Saved", "x one\n")]));
+        assert_eq!(snapshots(&app, &a), pairs(&[("Saved", "x one\n")]), "the old path keeps its own");
+        app.perform(Action::Editor(EditorAction::Save));
+        assert_eq!(snapshots(&app, &b)[0], ("Saved".to_string(), "x y one\n".to_string()));
+
+        // The palette and the History tab name the old path relative to the root.
+        app.open_local_history(b.clone());
+        handle_next(&mut app, history_msg).await;
+        let p = app.palette.as_mut().unwrap();
+        p.handle_action(&PaletteAction::Down);
+        let Some(PaletteResult::Accept(accept)) = p.handle_action(&PaletteAction::Accept) else { panic!("a row") };
+        app.finish_palette(PaletteResult::Accept(accept));
+        assert!(app.git_panel.history_title().ends_with("  Renamed from a.txt"), "{}", app.git_panel.history_title());
+
+        // Every file under a renamed folder.
+        std::fs::create_dir_all(root.join("d")).unwrap();
+        load(&mut app, "d/x.txt", "x\n");
+        type_text(&mut app, "1");
+        app.perform(Action::Editor(EditorAction::Save));
+        app.finish_dialog(DialogId::TreeRename(root.join("d")), DialogResult::Text("e".into()));
+        handle_next(&mut app, fs_op_done).await;
+        let e = snapshots(&app, &root.join("e/x.txt"));
+        assert_eq!(e[0].0, format!("Renamed from {}", root.join("d/x.txt").display()));
+        assert_eq!(e.len(), 2);
+
+        // A result that arrives after the root switched still carries.
+        let c = load(&mut app, "c.txt", "c\n");
+        type_text(&mut app, "1");
+        app.perform(Action::Editor(EditorAction::Save));
+        app.finish_dialog(DialogId::TreeRename(c.clone()), DialogResult::Text("c2.txt".into()));
+        app.workspace.generation += 1;
+        handle_next(&mut app, fs_op_done).await;
+        assert_eq!(snapshots(&app, &root.join("c2.txt"))[0].0, format!("Renamed from {}", c.display()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn save_as_starts_a_new_history_that_names_the_old_path() {
+        let (mut app, dir) = test_app("history-save-as");
+        with_history(&mut app);
+        let root = app.workspace.root.clone();
+        let c = load(&mut app, "c.txt", "c\n");
+        type_text(&mut app, "1");
+        app.perform(Action::Editor(EditorAction::Save));
+        type_text(&mut app, "2");
+        app.perform(Action::Editor(EditorAction::SaveAs));
+        let d = app.dialog.take().expect("the Save As prompt");
+        app.finish_dialog(d.id, DialogResult::Text("c2.txt".into()));
+        let c2 = root.join("c2.txt");
+        assert_eq!(std::fs::read_to_string(&c2).unwrap(), "12c\n");
+        let from = format!("Saved As from {}", c.display());
+        assert_eq!(snapshots(&app, &c2), pairs(&[(&from, "12c\n")]), "nothing carried");
+        assert_eq!(snapshots(&app, &c), pairs(&[("Saved", "1c\n")]));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[tokio::test]
     async fn local_history_needs_a_file() {
         let (mut app, dir) = test_app("history-target");

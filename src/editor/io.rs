@@ -237,7 +237,8 @@ impl Editor {
     /// and unsaved edits, the new path's formatter then runs
     /// (`Effect::Format` behind `FileSaved`), its answer written again
     /// ([`Editor::format_done`]). The caller has checked that no other
-    /// buffer has `path`.
+    /// buffer has `path`. The snapshot's detail names the old path; its
+    /// history is not carried (Save As is a copy).
     pub fn save_as(&mut self, i: usize, path: PathBuf, cx: &mut Ctx, format: bool) -> bool {
         let Some(b) = self.buffers.get(i) else { return false };
         // As with Ctrl+S, only unsaved edits are formatted.
@@ -247,12 +248,14 @@ impl Editor {
         }
         let b = &self.buffers[i];
         let (text, state) = (b.text(), b.undo.state_id());
+        let from = b.path.as_ref().filter(|p| **p != path).and_then(|p| p.to_str()).map(String::from);
         match write_atomic(&path, &text) {
             Ok(perm_err) => {
                 let setup = self.path_setup(&path, &text, cx.theme);
                 let b = &mut self.buffers[i];
                 super::adopt_path(b, path.clone(), setup, self.tab_width);
-                mark_written(b, path, state, perm_err, cx, false, Capture::text(PathBuf::new(), text, Kind::SaveAs));
+                let capture = Capture { detail: from, ..Capture::text(PathBuf::new(), text, Kind::SaveAs) };
+                mark_written(b, path, state, perm_err, cx, false, capture);
                 // Behind `FileSaved`, so the language server has the new
                 // document first.
                 if format && let Some(req) = self.format_request(i, true) {

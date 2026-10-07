@@ -35,6 +35,8 @@ impl App {
                 }
             }
             FsOp::Rename { from, to } => {
+                // Before the tabs follow: snapshots of the old path queued until now are carried.
+                self.history.rename(from, to);
                 self.reload_parents(from);
                 self.reload_parents(to);
                 self.project.select_path(to);

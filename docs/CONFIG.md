@@ -397,6 +397,16 @@ editing session leaves one autosave snapshot per 5 minutes (the newest text
 of each). Any other snapshot (a save, Save As, before a git operation, a
 reload or a delete) is never merged and ends the run.
 
+Renaming a file or folder in the Project tree carries its snapshots to the
+new path: the list shows a "Renamed from notes.txt" row (the text at the
+rename) above the old path's snapshots, which stay listed under the old
+path too, so a new file created there later starts from that path's
+history. Save As is a copy, not a move: the new file's history starts with
+its "Saved As from notes.txt" snapshot, and the old file keeps its own.
+Renames made outside jetl (`mv` or `git mv` in a terminal, or files renamed
+by a checkout, merge or pull) are not followed: the old path keeps its
+snapshots.
+
 With `snapshot_unsaved_secs` set, the text of every tab with unsaved edits
 that has a file is also snapshotted on that timer ("Unsaved changes"), so
 work between saves survives a killed jetl, a closed terminal, a power loss

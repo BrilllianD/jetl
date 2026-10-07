@@ -443,7 +443,7 @@ impl Palette {
                     id: e.blob.clone(),
                     at: e.at,
                     when: crate::history::local_time(e.at, &offset),
-                    label: e.label(),
+                    label: e.label_in(&self.root),
                     info: format!("{}{delta}", human_size(e.len)),
                 }
             })

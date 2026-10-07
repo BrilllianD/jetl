@@ -48,9 +48,16 @@
 //! A snapshot of the bytes an unsaved snapshot (the file's last entry)
 //! holds is not `Same` unless it is one too: it replaces that entry the
 //! same way, so a save of that text shows as "Saved".
+//!
+//! A rename in the Project tree carries a file's history (or every file's
+//! under a folder) to the new key: [`rename`] appends copies of the entries
+//! (blobs shared) and a `Renamed` entry; the old key keeps its own, so a new
+//! file at the old path starts from that path's history, never mixing with
+//! the renamed one's. Index files may hold entries out of time order after
+//! that; reads sort by time and prune rewrites them sorted.
 
 use std::borrow::Cow;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
@@ -84,7 +91,7 @@ const LOCK_RETRY: Duration = Duration::from_millis(50);
 pub const AUTOSAVE_RUN: Duration = Duration::from_secs(5 * 60);
 
 /// What a snapshot was taken for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
     /// An explicit save (Ctrl+S, Save All, closing, quitting): the text written.
@@ -107,6 +114,8 @@ pub enum Kind {
     /// A changed file before a git operation that rewrites the work tree;
     /// the detail is the operation's label.
     BeforeGit,
+    /// A file renamed or moved in the Project tree: its text then; the detail is the old path.
+    Renamed,
 }
 
 impl Kind {
@@ -116,7 +125,10 @@ impl Kind {
             Kind::Save => "Saved".into(),
             Kind::Autosave => "Autosaved".into(),
             Kind::Unsaved => "Unsaved changes".into(),
-            Kind::SaveAs => "Saved As".into(),
+            Kind::SaveAs => match detail {
+                Some(d) if !d.is_empty() => format!("Saved As from {d}"),
+                _ => "Saved As".into(),
+            },
             Kind::BeforeSaveAs => "Before Save As overwrote it".into(),
             Kind::BeforeOverwrite => "Before overwrite".into(),
             Kind::BeforeReload => "Before reload".into(),
@@ -124,6 +136,10 @@ impl Kind {
             Kind::BeforeGit => match detail {
                 Some(d) if !d.is_empty() => format!("Before {d}"),
                 _ => "Before git".into(),
+            },
+            Kind::Renamed => match detail {
+                Some(d) if !d.is_empty() => format!("Renamed from {d}"),
+                _ => "Renamed".into(),
             },
         }
     }
@@ -157,6 +173,18 @@ pub struct Entry {
 impl Entry {
     pub fn label(&self) -> String {
         self.kind.label(self.detail.as_deref())
+    }
+
+    /// [`Entry::label`] with the path in a detail ("Renamed from …",
+    /// "Saved As from …") shown relative to `root` when under it.
+    pub fn label_in(&self, root: &Path) -> String {
+        match (self.kind, self.detail.as_deref()) {
+            (Kind::Renamed | Kind::SaveAs, Some(d)) => match Path::new(d).strip_prefix(root) {
+                Ok(rel) if !rel.as_os_str().is_empty() => self.kind.label(Some(&rel.to_string_lossy())),
+                _ => self.kind.label(Some(d)),
+            },
+            _ => self.label(),
+        }
     }
 
     /// When the automatic snapshot run this entry stands for began.
@@ -316,16 +344,17 @@ fn read_entries(file: &Path, path: &str) -> Vec<Entry> {
     text.lines().filter_map(|l| serde_json::from_str::<Entry>(l).ok()).filter(|e| e.path == path).collect()
 }
 
-/// The entries of `key`, oldest first, with those still stored under
-/// `given` (the path as opened, when it differs: an index not yet
-/// migrated by [`prune`]).
+/// The entries of `key`, oldest first by time (a [`rename`] appends older
+/// entries after newer ones), with those still stored under `given` (the
+/// path as opened, when it differs: an index not yet migrated by
+/// [`prune`]).
 fn entries_of(dir: &Path, key: &str, given: Option<&str>) -> Vec<Entry> {
     let mut v = read_entries(&index_file(dir, key), key);
     if let Some(given) = given.filter(|g| *g != key) {
         v.extend(read_entries(&index_file(dir, given), given));
-        // Stable: entries at the same time keep their file order.
-        v.sort_by_key(|e| e.at);
     }
+    // Stable: entries at the same time keep their file order.
+    v.sort_by_key(|e| e.at);
     v
 }
 
@@ -417,6 +446,156 @@ fn replace_last(dir: &Path, index: &Path, prev: &Entry, entry: &Entry) -> io::Re
     text.push('\n');
     write_index(index, &text)?;
     Ok(true)
+}
+
+/// What a [`rename`] carried.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Carried {
+    /// Files whose history was carried (one, or those under a folder).
+    pub files: usize,
+    /// Entries copied, markers not counted.
+    pub entries: usize,
+    /// Another instance held `prune.lock`: the lines were appended without it.
+    pub unlocked: bool,
+}
+
+/// One file's history to carry.
+struct Moved {
+    /// The old path as the caller named it (the marker's detail).
+    old_given: PathBuf,
+    new_key: String,
+    new_given: PathBuf,
+    /// The old key's entries, oldest first.
+    old: Vec<Entry>,
+}
+
+/// Carry the history of `from` to `to` after `from` was renamed or moved
+/// there (a file, or every file under a folder): the old key's entries
+/// are appended to the new key's index unchanged but for `path`
+/// (blobs are shared), those the new key has already left out, then a
+/// `Kind::Renamed` entry at `at_ms` whose detail is the old path and whose
+/// text is the file's now (`read`, within `max_bytes` and not binary)
+/// or else the newest carried one. The old key keeps its entries.
+pub fn rename(
+    dir: &Path,
+    from: &Path,
+    to: &Path,
+    at_ms: u64,
+    max_bytes: u64,
+    read: impl Fn(&Path) -> Option<Vec<u8>>,
+) -> io::Result<Carried> {
+    if from.starts_with(dir) || to.starts_with(dir) {
+        return Ok(Carried::default());
+    }
+    let (from_canon, to_canon) = (key(from), key(to));
+    if to_canon.starts_with(key(dir)) {
+        return Ok(Carried::default());
+    }
+    let (Some(from_key), Some(to_key)) = (from_canon.to_str(), to_canon.to_str()) else { return Ok(Carried::default()) };
+    if from_key == to_key {
+        return Ok(Carried::default());
+    }
+    let mut moved = Vec::new();
+    if std::fs::symlink_metadata(to).is_ok_and(|m| m.is_dir()) {
+        for (k, old) in histories_under(dir, Path::new(from_key)) {
+            let Ok(rest) = Path::new(&k).strip_prefix(from_key) else { continue };
+            let Some(new_key) = to_canon.join(rest).to_str().map(str::to_string) else { continue };
+            moved.push(Moved { old_given: from.join(rest), new_key, new_given: to.join(rest), old });
+        }
+    } else {
+        let old = entries_of(dir, from_key, from.to_str());
+        if !old.is_empty() {
+            moved.push(Moved { old_given: from.to_path_buf(), new_key: to_key.to_string(), new_given: to.to_path_buf(), old });
+        }
+    }
+    if moved.is_empty() {
+        return Ok(Carried::default());
+    }
+    let lock = PruneLock::take(dir)?.or_else(|| {
+        std::thread::sleep(LOCK_RETRY);
+        PruneLock::take(dir).ok().flatten()
+    });
+    let mut carried = Carried { unlocked: lock.is_none(), ..Default::default() };
+    std::fs::create_dir_all(index_dir(dir))?;
+    for m in &moved {
+        carried.entries += carry(dir, m, at_ms, max_bytes, &read)?;
+        carried.files += 1;
+    }
+    drop(lock);
+    Ok(carried)
+}
+
+/// Every key strictly under `prefix` (component-wise) with its entries,
+/// oldest first: one scan of the whole index, as [`prune`] does.
+fn histories_under(dir: &Path, prefix: &Path) -> BTreeMap<String, Vec<Entry>> {
+    let mut out: BTreeMap<String, Vec<Entry>> = BTreeMap::new();
+    let Ok(rd) = std::fs::read_dir(index_dir(dir)) else { return out };
+    for e in rd.flatten() {
+        let file = e.path();
+        if file.extension().is_none_or(|x| x != "jsonl") {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&file) else { continue };
+        for e in text.lines().filter_map(|l| serde_json::from_str::<Entry>(l).ok()) {
+            if Path::new(&e.path).strip_prefix(prefix).is_ok_and(|rest| !rest.as_os_str().is_empty()) {
+                out.entry(e.path.clone()).or_default().push(e);
+            }
+        }
+    }
+    for v in out.values_mut() {
+        // Stable: entries at the same time keep their file order.
+        v.sort_by_key(|e| e.at);
+    }
+    out
+}
+
+/// Append `m`'s entries the new key does not have yet (and no "Renamed
+/// from" its own path), then its `Renamed` marker; returns how many entries
+/// were copied.
+fn carry(dir: &Path, m: &Moved, at_ms: u64, max_bytes: u64, read: &impl Fn(&Path) -> Option<Vec<u8>>) -> io::Result<usize> {
+    let new_given = m.new_given.to_str();
+    let existing = entries_of(dir, &m.new_key, new_given);
+    let have: HashSet<(u64, &str, Kind, Option<&str>)> =
+        existing.iter().map(|e| (e.at, e.blob.as_str(), e.kind, e.detail.as_deref())).collect();
+    let copies: Vec<Entry> = m
+        .old
+        .iter()
+        .filter(|e| !have.contains(&(e.at, e.blob.as_str(), e.kind, e.detail.as_deref())))
+        .filter(|e| !(e.kind == Kind::Renamed && e.detail.is_some() && e.detail.as_deref() == new_given))
+        .map(|e| Entry { path: m.new_key.clone(), ..e.clone() })
+        .collect();
+    let now = read(&m.new_given).filter(|b| b.len() as u64 <= max_bytes && !crate::git::diff::is_binary(b));
+    let (blob, len, lines) = match now {
+        Some(bytes) => {
+            let id = blob_id(&bytes)?;
+            write_blob(dir, &id, &bytes)?;
+            (id, bytes.len() as u64, count_lines(&bytes))
+        }
+        None => {
+            // `old` is never empty.
+            let last = m.old.last().ok_or_else(|| io::Error::other("nothing to carry"))?;
+            (last.blob.clone(), last.len, last.lines)
+        }
+    };
+    let marker = Entry {
+        v: 1,
+        path: m.new_key.clone(),
+        at: at_ms,
+        blob,
+        len,
+        lines,
+        kind: Kind::Renamed,
+        detail: m.old_given.to_str().map(Into::into),
+        since: None,
+    };
+    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(index_file(dir, &m.new_key))?;
+    for e in copies.iter().chain([&marker]) {
+        let mut line = serde_json::to_string(e).map_err(io::Error::other)?;
+        line.push('\n');
+        // One write per line, as `record` appends.
+        f.write_all(line.as_bytes())?;
+    }
+    Ok(copies.len())
 }
 
 /// Write blob `id` (compressed when that is smaller) unless it exists in
@@ -606,7 +785,9 @@ pub fn prune(dir: &Path, now_ms: u64, keep_ms: u64, max_bytes: u64) -> io::Resul
             stats.entries += before - f.entries.len();
         }
     }
-    for f in files.iter().filter(|f| f.changed || (f.corrupt && !f.entries.is_empty())) {
+    for f in files.iter_mut().filter(|f| f.changed || (f.corrupt && !f.entries.is_empty())) {
+        // In time order again (a rename appends older entries after newer ones).
+        f.entries.sort_by_key(|e| e.at);
         rewrite_index(&f.file, &f.entries)?;
     }
     stats.bytes = total;
@@ -1349,6 +1530,201 @@ mod tests {
         assert_eq!(l[0].blob, l[1].blob);
         assert!(dir.join("prune.lock").exists(), "not ours to remove");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn now(_: &Path) -> Option<Vec<u8>> {
+        Some(b"now".to_vec())
+    }
+
+    fn mv(dir: &Path, from: &str, to: &str, at: u64) -> Carried {
+        rename(dir, Path::new(from), Path::new(to), at, MB, now).unwrap()
+    }
+
+    fn text_of(dir: &Path, e: &Entry) -> String {
+        String::from_utf8(read_blob(dir, &e.blob).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn a_rename_carries_the_history_and_marks_it() {
+        let dir = temp("rename");
+        rec(&dir, "/p/a.txt", "1", 1);
+        rec(&dir, "/p/a.txt", "2", 2);
+        assert_eq!(mv(&dir, "/p/a.txt", "/p/b.txt", 10), Carried { files: 1, entries: 2, unlocked: false });
+        assert_eq!(
+            labels(&dir, "/p/b.txt"),
+            [("Renamed from /p/a.txt".into(), 10, None), ("Saved".into(), 2, None), ("Saved".into(), 1, None)]
+        );
+        let b = list(&dir, Path::new("/p/b.txt"));
+        assert_eq!(text_of(&dir, &b[0]), "now");
+        assert!(b.iter().all(|e| e.path == "/p/b.txt"));
+        assert_eq!(labels(&dir, "/p/a.txt").len(), 2, "the old key keeps its entries");
+        // Copies share their blobs.
+        assert_eq!(blob_count(&dir), 3);
+        let bytes: u64 = b.iter().map(|e| stored_len(&dir, &e.blob)).sum();
+        assert_eq!(prune(&dir, 20, 100, MB).unwrap().bytes, bytes);
+        // The marker's text saved again is nothing new; it ends an autosave run.
+        assert_eq!(rec(&dir, "/p/b.txt", "now", 11), Recorded::Same);
+        assert!(matches!(auto(&dir, "/p/b.txt", "x", 12), Recorded::Added(_)));
+        assert!(!dir.join("prune.lock").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_rename_without_history_or_to_itself_does_nothing() {
+        let dir = temp("rename-none");
+        assert_eq!(mv(&dir, "/p/a.txt", "/p/b.txt", 1), Carried::default());
+        assert!(!index_dir(&dir).exists());
+        rec(&dir, "/p/a.txt", "1", 1);
+        assert_eq!(mv(&dir, "/p/a.txt", "/p/a.txt", 2), Carried::default());
+        assert_eq!(labels(&dir, "/p/a.txt").len(), 1);
+        // Files of the store itself.
+        let inside = dir.join("index/x.jsonl");
+        assert_eq!(rename(&dir, &inside, Path::new("/p/c.txt"), 3, MB, now).unwrap(), Carried::default());
+        assert_eq!(rename(&dir, Path::new("/p/a.txt"), &inside, 3, MB, now).unwrap(), Carried::default());
+        assert_eq!(std::fs::read_dir(index_dir(&dir)).unwrap().count(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn renaming_a_symlink_keeps_its_targets_history() {
+        let (hist, real, link, _) = linked("rename-link");
+        rec(&hist, link.to_str().unwrap(), "1", 1);
+        let link2 = link.with_file_name("link2.txt");
+        std::fs::rename(&link, &link2).unwrap();
+        let read = |p: &Path| std::fs::read(p).ok();
+        assert_eq!(rename(&hist, &link, &link2, 2, MB, read).unwrap(), Carried::default());
+        assert_eq!(ats(&hist, &link2), [1]);
+        assert_eq!(ats(&hist, &real.join("a.txt")), [1]);
+        let _ = std::fs::remove_dir_all(hist.parent().unwrap());
+    }
+
+    #[test]
+    fn renaming_back_and_forth_does_not_duplicate() {
+        let dir = temp("rename-back");
+        rec(&dir, "/p/a.txt", "1", 1);
+        rec(&dir, "/p/a.txt", "2", 2);
+        mv(&dir, "/p/a.txt", "/p/b.txt", 10);
+        rec(&dir, "/p/b.txt", "3", 11);
+        assert_eq!(mv(&dir, "/p/b.txt", "/p/a.txt", 20).entries, 1);
+        assert_eq!(
+            labels(&dir, "/p/a.txt"),
+            [("Renamed from /p/b.txt".into(), 20, None), ("Saved".into(), 11, None), ("Saved".into(), 2, None), ("Saved".into(), 1, None)]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_folder_rename_carries_every_file_under_it() {
+        let root = temp("rename-folder");
+        let hist = root.join("history");
+        let p = root.join("p");
+        std::fs::create_dir_all(p.join("d/sub")).unwrap();
+        let p = std::fs::canonicalize(&p).unwrap();
+        let (d, e) = (p.join("d"), p.join("e"));
+        for (f, text) in [("d/x.txt", "x"), ("d/sub/y.txt", "y"), ("dx.txt", "dx")] {
+            std::fs::write(p.join(f), text).unwrap();
+            record(&hist, &p.join(f), text.as_bytes(), Kind::Save, None, 1, MB).unwrap();
+        }
+        std::fs::write(d.join("x.txt"), "x2").unwrap();
+        let indexes = std::fs::read_dir(index_dir(&hist)).unwrap().count();
+        std::fs::rename(&d, &e).unwrap();
+        let c = rename(&hist, &d, &e, 5, MB, |f| std::fs::read(f).ok()).unwrap();
+        assert_eq!((c.files, c.entries, c.unlocked), (2, 2, false));
+        for (rel, text) in [("x.txt", "x2"), ("sub/y.txt", "y")] {
+            let l = list(&hist, &e.join(rel));
+            assert_eq!(l.len(), 2, "{rel}");
+            assert_eq!((l[0].kind, l[0].detail.clone()), (Kind::Renamed, Some(d.join(rel).to_str().unwrap().into())));
+            assert_eq!(text_of(&hist, &l[0]), text);
+            assert_eq!(list(&hist, &d.join(rel)).len(), 1, "the old key still lists");
+        }
+        assert_eq!(list(&hist, &p.join("dx.txt")).len(), 1);
+        assert_eq!(std::fs::read_dir(index_dir(&hist)).unwrap().count(), indexes + 2, "nothing for dx.txt");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn carried_entries_merge_by_time_with_the_new_paths_own() {
+        let dir = temp("rename-merge");
+        rec(&dir, "/p/a.txt", "a1", 1);
+        rec(&dir, "/p/b.txt", "b5", 5);
+        rec(&dir, "/p/a.txt", "a10", 10);
+        rec(&dir, "/p/b.txt", "b15", 15);
+        mv(&dir, "/p/a.txt", "/p/b.txt", 20);
+        let ats = |dir: &Path| list(dir, Path::new("/p/b.txt")).iter().map(|e| e.at).collect::<Vec<_>>();
+        assert_eq!(ats(&dir), [20, 15, 10, 5, 1]);
+        let file = index_file(&dir, "/p/b.txt");
+        let on_disk = || read_entries(&file, "/p/b.txt").iter().map(|e| e.at).collect::<Vec<_>>();
+        assert_eq!(on_disk(), [5, 15, 1, 10, 20]);
+        // A prune rewrites the file (here for its corrupt line) in time order.
+        let mut f = std::fs::OpenOptions::new().append(true).open(&file).unwrap();
+        writeln!(f, "{{not json").unwrap();
+        prune(&dir, 30, 100, MB).unwrap();
+        assert_eq!(on_disk(), [1, 5, 10, 15, 20]);
+        // The marker is the last line: an autosave run after it merges.
+        auto(&dir, "/p/b.txt", "c", 21);
+        assert!(matches!(auto(&dir, "/p/b.txt", "d", 22), Recorded::Replaced(_)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_marker_falls_back_to_the_newest_carried_snapshot() {
+        let dir = temp("rename-fallback");
+        rec(&dir, "/p/a.txt", "1", 1);
+        let newest = added(rec(&dir, "/p/a.txt", "2", 2));
+        let big = "x".repeat(10);
+        let reads: [Option<Vec<u8>>; 3] = [None, Some(b"a\0".to_vec()), Some(big.into_bytes())];
+        for (i, bytes) in reads.into_iter().enumerate() {
+            let blobs = blob_count(&dir);
+            let to = format!("/p/b{i}.txt");
+            let c = rename(&dir, Path::new("/p/a.txt"), Path::new(&to), 10, 4, |_| bytes.clone()).unwrap();
+            assert_eq!(c.entries, 2);
+            let l = list(&dir, Path::new(&to));
+            assert_eq!((l[0].kind, &l[0].blob, l[0].len), (Kind::Renamed, &newest.blob, 1));
+            assert_eq!(blob_count(&dir), blobs);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_rename_appends_while_another_instance_prunes() {
+        let dir = temp("rename-lock");
+        rec(&dir, "/p/a.txt", "1", 1);
+        std::fs::write(dir.join("prune.lock"), "1").unwrap();
+        assert_eq!(mv(&dir, "/p/a.txt", "/p/b.txt", 10), Carried { files: 1, entries: 1, unlocked: true });
+        assert_eq!(labels(&dir, "/p/b.txt").len(), 2);
+        assert!(dir.join("prune.lock").exists(), "not ours to remove");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn renamed_kind_name_and_labels() {
+        assert_eq!(serde_json::to_string(&Kind::Renamed).unwrap(), "\"renamed\"");
+        assert_eq!(serde_json::from_str::<Kind>("\"renamed\"").unwrap(), Kind::Renamed);
+        assert!(!Kind::Renamed.automatic());
+        assert_eq!(Kind::Renamed.label(Some("/p/a")), "Renamed from /p/a");
+        assert_eq!(Kind::Renamed.label(None), "Renamed");
+        assert_eq!(Kind::SaveAs.label(None), "Saved As");
+        assert_eq!(Kind::SaveAs.label(Some("/p/a")), "Saved As from /p/a");
+        let e = |kind, detail: Option<&str>| Entry {
+            v: 1,
+            path: "/p/b".into(),
+            at: 1,
+            blob: String::new(),
+            len: 0,
+            lines: 0,
+            kind,
+            detail: detail.map(Into::into),
+            since: None,
+        };
+        let root = Path::new("/p");
+        assert_eq!(e(Kind::Renamed, Some("/p/a")).label_in(root), "Renamed from a");
+        assert_eq!(e(Kind::Renamed, Some("/p/d/x.txt")).label_in(root), "Renamed from d/x.txt");
+        assert_eq!(e(Kind::Renamed, Some("/q/a")).label_in(root), "Renamed from /q/a");
+        assert_eq!(e(Kind::SaveAs, Some("/p/a")).label_in(root), "Saved As from a");
+        assert_eq!(e(Kind::SaveAs, None).label_in(root), "Saved As");
+        assert_eq!(e(Kind::BeforeGit, Some("/p/a")).label_in(root), "Before /p/a");
+        assert_eq!(e(Kind::Save, None).label_in(root), "Saved");
     }
 
     #[test]

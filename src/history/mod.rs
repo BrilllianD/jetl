@@ -2,7 +2,8 @@
 //! operations that overwrite or delete them (git operations that rewrite
 //! the work tree, a forced worktree remove, reloads, Save As over a file,
 //! Overwrite, tree deletes)
-//! and, when `snapshot_unsaved_secs` is set, of unsaved edits on a timer.
+//! and, when `snapshot_unsaved_secs` is set, of unsaved edits on a timer;
+//! a rename in the Project tree carries a file's snapshots to its new path.
 //! One global store (`Paths::history_dir`, see `store.rs`), shared by every
 //! project and instance, with snapshots stored compressed; File > Local History… lists a file's snapshots and
 //! the Git window's History tab diffs one against the current text.
@@ -150,6 +151,7 @@ enum Job {
     Capture { capture: Capture, at: u64 },
     BeforeGit { root: PathBuf, label: String, at: u64, done: Sender<()> },
     BeforeDelete { path: PathBuf, at: u64, done: Sender<()> },
+    Rename { from: PathBuf, to: PathBuf, at: u64 },
     List(PathBuf),
     Blob { path: PathBuf, id: String },
     Prune,
@@ -252,6 +254,16 @@ impl Handle {
         self.send(Job::BeforeDelete { path: path.to_path_buf(), at: now_ms(), done }).then_some(Ack(ack))
     }
 
+    /// Carry `from`'s history to `to` after the Project tree renamed it
+    /// (a file or a folder). Queue it after the rename succeeded and before
+    /// the tabs follow, so snapshots of the old path queued before it are
+    /// carried too.
+    pub fn rename(&self, from: &Path, to: &Path) {
+        if self.enabled() {
+            self.send(Job::Rename { from: from.to_path_buf(), to: to.to_path_buf(), at: now_ms() });
+        }
+    }
+
     /// Ask for `path`'s snapshots (`HistoryMsg::List`); answered even when
     /// snapshots are off.
     pub fn list(&self, path: &Path) {
@@ -306,6 +318,11 @@ impl Worker {
                     }
                     let _ = done.send(());
                 }
+                Job::Rename { from, to, at } => {
+                    if s.enabled {
+                        self.rename(&from, &to, at, &s);
+                    }
+                }
                 Job::List(path) => {
                     let entries = store::list(&self.dir, &path);
                     let _ = self.bus.send(AppMsg::LocalHistory(HistoryMsg::List { path, entries }));
@@ -339,6 +356,20 @@ impl Worker {
         match store::record(&self.dir, path, bytes, kind, detail, at, s.max_file_bytes()) {
             Ok(r) => tracing::debug!("local history {}: {r:?}", path.display()),
             Err(e) => tracing::warn!("local history {}: {e}", path.display()),
+        }
+    }
+
+    fn rename(&self, from: &Path, to: &Path, at: u64, s: &LocalHistoryConfig) {
+        match store::rename(&self.dir, from, to, at, s.max_file_bytes(), |p| Self::read_file(p, s)) {
+            Ok(c) => tracing::debug!(
+                "local history: carried {} entries of {} files from {} to {}{}",
+                c.entries,
+                c.files,
+                from.display(),
+                to.display(),
+                if c.unlocked { " (prune lock held)" } else { "" }
+            ),
+            Err(e) => tracing::warn!("local history rename {} -> {}: {e}", from.display(), to.display()),
         }
     }
 
@@ -513,12 +544,34 @@ mod tests {
     }
 
     #[test]
+    fn a_rename_queued_after_a_capture_carries_it() {
+        let dir = temp("rename");
+        let (a, b, c) = (dir.join("a.txt"), dir.join("b.txt"), dir.join("c.txt"));
+        std::fs::write(&a, "one\n").unwrap();
+        let (h, mut rx) = handle(&dir);
+        h.capture(Capture::text(a.clone(), "one\n".into(), Kind::Save));
+        std::fs::rename(&a, &b).unwrap();
+        h.rename(&a, &b);
+        let l = listed(&h, &mut rx, &b);
+        assert_eq!(l.len(), 2);
+        assert_eq!((l[0].kind, l[0].detail.as_deref()), (Kind::Renamed, a.to_str()));
+        assert_eq!(l[1].label(), "Saved");
+        // Off: nothing is carried.
+        h.set_settings(LocalHistoryConfig { enabled: false, ..Default::default() });
+        std::fs::rename(&b, &c).unwrap();
+        h.rename(&b, &c);
+        assert!(listed(&h, &mut rx, &c).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn a_disabled_handle_does_nothing() {
         let h = Handle::disabled();
         assert!(!h.enabled());
         assert!(h.before_git(Path::new("/"), "x").is_none());
         assert!(h.before_delete(Path::new("/")).is_none());
         h.capture(Capture::text(PathBuf::from("/a"), String::new(), Kind::Save));
+        h.rename(Path::new("/a"), Path::new("/b"));
         h.flush(Duration::from_millis(10));
     }
 
