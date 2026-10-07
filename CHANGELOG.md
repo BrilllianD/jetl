@@ -234,6 +234,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   snapshot when that is an autosave whose run began less than 5 minutes ago, so idle autosave
   no longer floods the list. Saves and snapshots taken before git operations, reloads and
   deletes are never merged and end a run.
+- Local history snapshots the modified and untracked files of a worktree before Force remove
+  in the Worktrees window deletes it ("Before git worktree remove --force"), as it already did
+  before git operations that rewrite the open project.
 
 ### Removed
 

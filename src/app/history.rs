@@ -380,6 +380,41 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn worktree_force_remove_snapshots_its_changed_files() {
+        let (mut app, dir) = test_app("history-worktree");
+        with_history(&mut app);
+        init_repo(&app, &[("a.txt", "one\n")]);
+        let root = app.workspace.root.clone();
+        let wt = std::fs::canonicalize(&dir).unwrap().join("wt");
+        let wt_arg = wt.to_string_lossy().into_owned();
+        crate::git::cli::git_ok(&root, &crate::git::cli::args(&["worktree", "add", "-b", "feature", &wt_arg])).await.unwrap();
+        std::fs::write(wt.join("a.txt"), "edited in the worktree\n").unwrap();
+        std::fs::write(wt.join("new.txt"), "untracked\n").unwrap();
+        // The open root's own changes are not part of it.
+        std::fs::write(root.join("a.txt"), "root edit\n").unwrap();
+        let op_done = |m: &AppMsg| matches!(m, AppMsg::Git(GitMsg::OpDone { .. }));
+
+        // A plain remove fails on the dirty tree and deletes nothing: no
+        // snapshot; the dialog offers the forced retry.
+        app.finish_dialog(DialogId::WorktreeRemove { path: wt.clone(), force: false }, DialogResult::Button(0));
+        handle_next(&mut app, op_done).await;
+        assert!(wt.exists());
+        assert!(snapshots(&app, &wt.join("a.txt")).is_empty());
+        let retry = app.dialog.as_ref().map(|d| d.id.clone());
+        assert_eq!(retry, Some(DialogId::WorktreeRemove { path: wt.clone(), force: true }));
+
+        app.dialog = None;
+        app.finish_dialog(DialogId::WorktreeRemove { path: wt.clone(), force: true }, DialogResult::Button(0));
+        handle_next(&mut app, op_done).await;
+        assert!(!wt.exists(), "{:?}", app.notifications);
+        let label = "Before git worktree remove --force";
+        assert_eq!(snapshots(&app, &wt.join("a.txt")), pairs(&[(label, "edited in the worktree\n")]));
+        assert_eq!(snapshots(&app, &wt.join("new.txt")), pairs(&[(label, "untracked\n")]));
+        assert!(snapshots(&app, &root.join("a.txt")).is_empty(), "the root is not snapshotted");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
     async fn local_history_needs_a_file() {
         let (mut app, dir) = test_app("history-target");
         app.perform(Action::App(AppAction::LocalHistory));

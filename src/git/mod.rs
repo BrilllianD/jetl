@@ -491,9 +491,20 @@ impl GitService {
     }
 
     /// A local history snapshot of the changed files, asked for before an
-    /// operation that rewrites the work tree.
+    /// operation that rewrites the work tree. `worktree remove --force`
+    /// snapshots the worktree it deletes, not the root; a plain remove is
+    /// not snapshotted, since git refuses it when any file is modified or
+    /// untracked (ignored files go either way and are never snapshotted).
+    /// The `.git` check keeps a directory that is no longer a worktree from
+    /// snapshotting an enclosing repository instead.
     fn before(&self, op: &GitOp, label: &str) -> Option<crate::history::Ack> {
-        if op.touches_worktree() { self.history.before_git(&self.root, label) } else { None }
+        match op {
+            GitOp::WorktreeRemove { path, force: true } if path.join(".git").exists() => {
+                self.history.before_git(path, "git worktree remove --force")
+            }
+            _ if op.touches_worktree() => self.history.before_git(&self.root, label),
+            _ => None,
+        }
     }
 
     /// Run a git2 operation in `spawn_blocking`. `work` returns a line for

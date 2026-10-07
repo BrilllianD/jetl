@@ -382,7 +382,10 @@ quitting) of the text written, and before jetl overwrites or deletes a
 file: a git operation that rewrites the work tree (switch, checkout, pull,
 merge, rebase, cherry-pick, revert, stash, discard of files or changes,
 taking one side of a conflict) first stores every changed or untracked file
-of the repository (at most 500), a reload from disk stores the tab's text,
+of the repository (at most 500), Force remove of a worktree in the
+Worktrees window stores the changed and untracked files of that worktree
+the same way (a plain remove needs no snapshot: git refuses it while any
+file is changed or untracked), a reload from disk stores the tab's text,
 Overwrite in the changed-on-disk dialog and Save As over a file store the
 file on disk, and Delete in the Project tree stores the file, or the files
 under a folder that the tree would show (at most 500). A snapshot equal to

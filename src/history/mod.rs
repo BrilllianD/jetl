@@ -1,6 +1,7 @@
 //! Local history: snapshots of files taken on every save and before
 //! operations that overwrite or delete them (git operations that rewrite
-//! the work tree, reloads, Save As over a file, Overwrite, tree deletes)
+//! the work tree, a forced worktree remove, reloads, Save As over a file,
+//! Overwrite, tree deletes)
 //! and, when `snapshot_unsaved_secs` is set, of unsaved edits on a timer.
 //! One global store (`Paths::history_dir`, see `store.rs`), shared by every
 //! project and instance, with snapshots stored compressed; File > Local History… lists a file's snapshots and
