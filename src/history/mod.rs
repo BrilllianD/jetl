@@ -1,6 +1,7 @@
 //! Local history: snapshots of files taken on every save and before
 //! operations that overwrite or delete them (git operations that rewrite
-//! the work tree, reloads, Save As over a file, Overwrite, tree deletes).
+//! the work tree, reloads, Save As over a file, Overwrite, tree deletes)
+//! and, when `snapshot_unsaved_secs` is set, of unsaved edits on a timer.
 //! One global store (`Paths::history_dir`, see `store.rs`), shared by every
 //! project and instance, with snapshots stored compressed; File > Local History… lists a file's snapshots and
 //! the Git window's History tab diffs one against the current text.
@@ -32,6 +33,9 @@ pub const ACK_TIMEOUT: Duration = Duration::from_secs(10);
 /// one tree delete.
 pub const MAX_FILES: usize = 500;
 
+/// Any `snapshot_unsaved_secs` under this counts as this many seconds.
+pub const MIN_UNSAVED_SECS: u64 = 10;
+
 /// `[local_history]` in `config.toml`.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default)]
@@ -44,17 +48,25 @@ pub struct LocalHistoryConfig {
     pub max_total_mb: u64,
     /// Larger files are not snapshotted.
     pub max_file_kb: u64,
+    /// Every this many seconds, snapshot the unsaved edits of open files;
+    /// 0 is off, less than [`MIN_UNSAVED_SECS`] counts as that.
+    pub snapshot_unsaved_secs: u64,
 }
 
 impl Default for LocalHistoryConfig {
     fn default() -> Self {
-        Self { enabled: true, keep_days: 5, max_total_mb: 100, max_file_kb: 2048 }
+        Self { enabled: true, keep_days: 5, max_total_mb: 100, max_file_kb: 2048, snapshot_unsaved_secs: 0 }
     }
 }
 
 impl LocalHistoryConfig {
-    fn max_file_bytes(&self) -> u64 {
+    pub(crate) fn max_file_bytes(&self) -> u64 {
         self.max_file_kb.saturating_mul(1024)
+    }
+
+    /// The period of snapshots of unsaved edits; `None` when off.
+    pub fn unsaved_every(&self) -> Option<Duration> {
+        (self.snapshot_unsaved_secs > 0).then(|| Duration::from_secs(self.snapshot_unsaved_secs.max(MIN_UNSAVED_SECS)))
     }
 }
 
@@ -514,5 +526,14 @@ mod tests {
         let c = crate::config::Config::parse("[local_history]\nkeep_days = 0\n").unwrap().local_history;
         assert_eq!(c, LocalHistoryConfig { keep_days: 0, ..Default::default() });
         assert_eq!(LocalHistoryConfig::default().max_file_bytes(), 2048 * 1024);
+        assert_eq!(LocalHistoryConfig::default().unsaved_every(), None);
+        let every = |secs: &str| {
+            crate::config::Config::parse(&format!("[local_history]\nsnapshot_unsaved_secs = {secs}\n"))
+                .unwrap()
+                .local_history
+                .unsaved_every()
+        };
+        assert_eq!(every("5"), Some(Duration::from_secs(10)));
+        assert_eq!(every("90"), Some(Duration::from_secs(90)));
     }
 }

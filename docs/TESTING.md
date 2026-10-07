@@ -637,6 +637,13 @@ s Escape; s M-1; s Home; s Right; s Down; s Delete; s Enter   # delete d/x.txt f
 ls $LH/state/jetl/history/index        # a second index file (d/x.txt, "before_delete")
 ls $LH/state/jetl/history/blobs-zlib/*/   # one blob: d/x.txt, compressed (notes.txt's are under 64 bytes, raw in blobs/)
 wc -c $LH/state/jetl/history/blobs-zlib/*/*   # about 6.5 KB, under half the 13893 bytes of d/x.txt
+printf '[lsp]\nenabled = false\n[local_history]\nsnapshot_unsaved_secs = 10\n' > $LH/cfg/jetl/config.toml   # live reload: the timer starts now
+s Escape                               # back to the editor (the tree had focus after the delete)
+s -l 'draft '; sleep 11
+s F1; s -l 'local history'; s Enter    # an "Unsaved changes" row on top
+s Escape; s -l 'more '; sleep 11; s F1; s -l 'local history'; s Enter   # still one "Unsaved changes" row (merged), newer size
+s Escape; s C-s; s F1; s -l 'local history'; s Enter   # that row is now "Saved"
+s Escape
 s C-q                                  # EXIT=0
 /tmp/tm.sh kill-server
 printf '[lsp]\nenabled = false\n[local_history]\nkeep_days = 0\n' > $LH/cfg/jetl/config.toml

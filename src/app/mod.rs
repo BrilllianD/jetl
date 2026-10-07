@@ -243,6 +243,9 @@ pub struct App {
     /// The dirty buffers the panic hook writes (`recovery.rs`), refreshed
     /// by the run loop.
     pub(crate) recorder: crate::recovery::Recorder,
+    /// When the next snapshot of unsaved edits is due (`[local_history]
+    /// snapshot_unsaved_secs`); `None` when off.
+    pub(crate) unsaved_due: Option<Instant>,
     /// Crash dumps of this root waiting for an answer (`app/recovery.rs`).
     recovery_offer: Option<recovery::RecoveryOffer>,
     /// The config watcher and what the config files held when last
@@ -273,6 +276,7 @@ impl App {
         git_panel.set_log_page(config.git.log_page);
         git_panel.set_log_all(config.git.log_all);
         let recorder = crate::recovery::Recorder::new(&paths.recovery_dir());
+        let unsaved_due = config.local_history.unsaved_every().map(|d| Instant::now() + d);
         let history = crate::history::Handle::spawn(paths.history_dir(), config.local_history.clone(), bus_tx.clone());
         // The first job: retention applies before anything new is stored.
         history.prune();
@@ -337,6 +341,7 @@ impl App {
             hover: None,
             completion: None,
             recorder,
+            unsaved_due,
             recovery_offer: None,
             config_reload: Default::default(),
             started: Instant::now(),
@@ -531,6 +536,7 @@ impl App {
         if self.editor.autosave_due(Instant::now()) {
             self.autosave();
         }
+        self.unsaved_snapshots(Instant::now());
         self.terminal_tick();
     }
 

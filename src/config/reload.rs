@@ -150,6 +150,7 @@ sections! {
         keep_days => Live,
         max_total_mb => Live,
         max_file_kb => Live,
+        snapshot_unsaved_secs => Live,
     }
 }
 
@@ -199,7 +200,7 @@ mod tests {
         names.dedup();
         assert_eq!(names.len(), KEYS.len());
         // 13 editor, 6 ui, 3 git, 2 worktree, 1 keymap, 3 files, 2 clipboard,
-        // 3 format, 1 run, 3 terminal, 7 lsp, 4 local_history.
-        assert_eq!(KEYS.len(), 48);
+        // 3 format, 1 run, 3 terminal, 7 lsp, 5 local_history.
+        assert_eq!(KEYS.len(), 49);
     }
 }

@@ -10,7 +10,7 @@
 //! named in the notification.
 
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use super::{App, Ctx};
 use crate::config::reload::{self, ConfigDiff, ReloadClass};
@@ -246,6 +246,9 @@ impl App {
             self.history.set_settings(self.config.local_history.clone());
             if diff.has("local_history.keep_days") || diff.has("local_history.max_total_mb") {
                 self.history.prune();
+            }
+            if diff.has("local_history.snapshot_unsaved_secs") {
+                self.unsaved_due = self.config.local_history.unsaved_every().map(|d| Instant::now() + d);
             }
         }
         tracing::info!("config reloaded: {:?}", diff.changed);

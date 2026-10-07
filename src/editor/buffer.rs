@@ -134,6 +134,9 @@ pub struct Buffer {
     pub disk_mtime: Option<std::time::SystemTime>,
     /// Version the editor's idle autosave timer last saw.
     pub autosave_seen: u64,
+    /// Version of the last snapshot of unsaved edits taken
+    /// (`Editor::unsaved_captures`).
+    pub history_seen: u64,
     /// Version at which an autosave failed; no retry until the next edit.
     pub autosave_failed: Option<u64>,
     /// The file changed on disk under unsaved edits; no autosave until an
@@ -204,6 +207,7 @@ impl Buffer {
             blame: None,
             disk_mtime: None,
             autosave_seen: 0,
+            history_seen: 0,
             autosave_failed: None,
             autosave_conflict: false,
             bookmarks: BTreeMap::new(),

@@ -1,8 +1,10 @@
 //! Local history in the app: the Local History palette, the History tab's
-//! diff, reverting to a snapshot, and snapshots of files on disk before
-//! they are overwritten (`history/` holds the store and its worker).
+//! diff, reverting to a snapshot, snapshots of files on disk before they
+//! are overwritten, and periodic snapshots of unsaved edits (`history/`
+//! holds the store and its worker).
 
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use super::{App, Ctx};
 use crate::actions::PaletteKind;
@@ -148,13 +150,31 @@ impl App {
         self.apply_effects(fx);
     }
 
+    /// The tick's part: when due, snapshot the unsaved edits of open files
+    /// and arm the next period. Nothing is taken (nor marked seen) while
+    /// local history is off.
+    pub(super) fn unsaved_snapshots(&mut self, now: Instant) {
+        let (Some(due), Some(every)) = (self.unsaved_due, self.config.local_history.unsaved_every()) else { return };
+        if now < due {
+            return;
+        }
+        self.unsaved_due = Some(now + every);
+        if !self.history.enabled() {
+            return;
+        }
+        let max = self.config.local_history.max_file_bytes();
+        for c in self.editor.unsaved_captures(max) {
+            self.history.capture(c);
+        }
+    }
+
     /// Snapshot a file on disk (main thread, bounded by `max_file_kb`)
     /// before it is overwritten.
     pub(super) fn capture_disk(&mut self, path: &Path, kind: Kind) {
         if !self.history.enabled() {
             return;
         }
-        let max = self.history.settings().max_file_kb.saturating_mul(1024);
+        let max = self.history.settings().max_file_bytes();
         let small = std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.len() <= max);
         if let Some(bytes) = small.then(|| std::fs::read(path).ok()).flatten() {
             self.history.capture(Capture { path: path.to_path_buf(), text: CaptureText::Bytes(bytes), kind, detail: None });
@@ -240,6 +260,53 @@ pub(crate) mod tests {
         assert!(app.notifications.last().is_some_and(|n| n.text.starts_with("Reverted a.txt to ")), "{:?}", app.notifications);
         app.perform(Action::Editor(EditorAction::Undo));
         assert_eq!(app.editor.active_buffer().unwrap().text(), "two three one\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn unsaved_edits_are_snapshotted_on_the_timer() {
+        let (mut app, dir) = test_app("history-unsaved");
+        let set = |app: &mut App, f: &dyn Fn(&mut crate::history::LocalHistoryConfig)| {
+            let mut config = app.config.clone();
+            f(&mut config.local_history);
+            app.apply_config(config);
+        };
+        set(&mut app, &|c| c.snapshot_unsaved_secs = 30);
+        with_history(&mut app);
+        let due = app.unsaved_due.expect("armed");
+        let secs = Duration::from_secs;
+        let path = load(&mut app, "a.txt", "one\n");
+        type_text(&mut app, "x ");
+        app.unsaved_snapshots(due - Duration::from_millis(1));
+        assert!(snapshots(&app, &path).is_empty(), "not due yet");
+        app.unsaved_snapshots(due);
+        assert_eq!(snapshots(&app, &path), pairs(&[("Unsaved changes", "x one\n")]));
+        assert_eq!(app.unsaved_due, Some(due + secs(30)));
+        app.unsaved_snapshots(due);
+        assert_eq!(app.unsaved_due, Some(due + secs(30)), "not due again");
+        // The next period's snapshot replaces this one (one run).
+        type_text(&mut app, "y ");
+        app.unsaved_snapshots(due + secs(30));
+        assert_eq!(snapshots(&app, &path), pairs(&[("Unsaved changes", "x y one\n")]));
+        // A save of that text relabels it.
+        app.perform(Action::Editor(EditorAction::Save));
+        assert_eq!(snapshots(&app, &path), pairs(&[("Saved", "x y one\n")]));
+
+        // Off: nothing is taken, and the edits are taken once it is back on.
+        type_text(&mut app, "z ");
+        set(&mut app, &|c| c.enabled = false);
+        app.unsaved_snapshots(due + secs(60));
+        assert_eq!(snapshots(&app, &path).len(), 1);
+        set(&mut app, &|c| c.enabled = true);
+        app.unsaved_snapshots(due + secs(90));
+        assert_eq!(snapshots(&app, &path), pairs(&[("Unsaved changes", "x y z one\n"), ("Saved", "x y one\n")]));
+
+        // 0 stops the timer.
+        set(&mut app, &|c| c.snapshot_unsaved_secs = 0);
+        assert_eq!(app.unsaved_due, None);
+        type_text(&mut app, "w ");
+        app.unsaved_snapshots(due + secs(3600));
+        assert_eq!(snapshots(&app, &path).len(), 2);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

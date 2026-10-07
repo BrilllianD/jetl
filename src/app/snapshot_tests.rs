@@ -552,6 +552,7 @@ async fn palette_local_history() {
     };
     use crate::history::Kind;
     let entries = vec![
+        entry(20_001, 1340, 41, Kind::Unsaved, None),
         entry(20_000, 1300, 40, Kind::Save, None),
         entry(19_999, 1200, 37, Kind::BeforeGit, Some("git switch main")),
         entry(19_998, 900, 39, Kind::BeforeReload, None),

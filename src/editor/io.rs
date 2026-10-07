@@ -1,4 +1,5 @@
-//! Saving: explicit save, save all, autosave, atomic writes.
+//! Saving: explicit save, save all, autosave, atomic writes, snapshots of
+//! unsaved edits.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -337,6 +338,26 @@ impl Editor {
         }
         let any = self.buffers.iter().any(Buffer::autosave_candidate);
         idle_autosave_due(self.autosave, self.last_edit, now, self.autosave_idle, any)
+    }
+
+    /// Local history snapshots of the unsaved edits of titled buffers changed
+    /// since their last one (rope clones, O(1)); merge buffers, read-only
+    /// panes and texts over `max_bytes` are left out. Marks each buffer seen
+    /// at its version.
+    pub fn unsaved_captures(&mut self, max_bytes: u64) -> Vec<Capture> {
+        let merge = self.merge.as_ref().map(|m| m.ids);
+        let mut out = Vec::new();
+        for b in &mut self.buffers {
+            let Some(path) = &b.path else { continue };
+            if !b.dirty() || b.read_only || merge.is_some_and(|ids| ids.contains(&b.id)) || b.history_seen == b.version {
+                continue;
+            }
+            b.history_seen = b.version;
+            if b.rope.len_bytes() as u64 <= max_bytes {
+                out.push(Capture::rope(path.clone(), b.rope.clone(), Kind::Unsaved));
+            }
+        }
+        out
     }
 }
 

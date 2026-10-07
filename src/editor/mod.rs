@@ -2218,6 +2218,44 @@ mod tests {
         assert!(!untitled.autosave_candidate());
     }
 
+    #[test]
+    fn unsaved_captures_take_changed_titled_buffers_once() {
+        let mut ed = editor_with("a.txt", "one\n");
+        let theme = Theme::default();
+        ed.open_text(PathBuf::from("/tmp/b.txt"), "clean\n", false, &theme);
+        ed.open_text(PathBuf::from("/tmp/big.txt"), "big\n", false, &theme);
+        ed.buffers[2].insert(&"x".repeat(100), TxKind::Typing);
+        let mut untitled = Buffer::from_text(99, None, "", false);
+        untitled.insert("q", TxKind::Typing);
+        ed.buffers.push(untitled);
+        ed.buffers[0].insert("x", TxKind::Typing);
+        let taken = |ed: &mut Editor| -> Vec<(PathBuf, String)> {
+            ed.unsaved_captures(50)
+                .into_iter()
+                .map(|c| match c {
+                    Capture { path, text: CaptureText::Rope(r), kind: Kind::Unsaved, .. } => (path, r.to_string()),
+                    other => panic!("unexpected {other:?}"),
+                })
+                .collect()
+        };
+        assert_eq!(taken(&mut ed), [(PathBuf::from("/tmp/a.txt"), "xone\n".to_string())]);
+        assert!(taken(&mut ed).is_empty(), "nothing changed since");
+        // The large one is not retried while unchanged.
+        assert_eq!(ed.buffers[2].history_seen, ed.buffers[2].version);
+        ed.buffers[0].insert("y", TxKind::Typing);
+        assert_eq!(taken(&mut ed), [(PathBuf::from("/tmp/a.txt"), "xyone\n".to_string())]);
+        // Undone back to the saved text: clean, nothing to take.
+        assert!(ed.buffers[0].undo());
+        assert!(!ed.buffers[0].dirty());
+        assert!(taken(&mut ed).is_empty());
+        // A read-only pane is left out.
+        ed.buffers[1].insert("z", TxKind::Typing);
+        ed.buffers[1].read_only = true;
+        assert!(taken(&mut ed).is_empty());
+        ed.buffers[1].read_only = false;
+        assert_eq!(taken(&mut ed), [(PathBuf::from("/tmp/b.txt"), "zclean\n".to_string())]);
+    }
+
     fn caret(ed: &Editor) -> (String, usize) {
         let b = ed.active_buffer().unwrap();
         (b.name.clone(), b.cursor_line_col().0)

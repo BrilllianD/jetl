@@ -1099,6 +1099,18 @@ mod tests {
         (0..screen.area.width).map(|x| screen[(x, y)].symbol().to_string()).collect()
     }
 
+    #[test]
+    fn merge_buffers_get_no_snapshots_of_unsaved_edits() {
+        let mut ed = Editor::new(&Config::default());
+        open(&mut ed);
+        let i = ed.merge_result_index().unwrap();
+        // Even were the result titled and dirty.
+        ed.buffers[i].path = Some(PathBuf::from("/tmp/main.rs"));
+        edit(&mut ed, EditorAction::InsertChar('x'));
+        assert!(ed.buffers[i].dirty());
+        assert!(ed.unsaved_captures(1 << 20).is_empty());
+    }
+
     /// The chunks: ONE (yours only), THREE (theirs only), five (conflict).
     #[test]
     fn opening_applies_the_non_conflicting_changes_as_one_undo_step() {

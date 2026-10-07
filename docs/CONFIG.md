@@ -171,6 +171,7 @@ enabled = true                 # snapshot files on save and before they are over
 keep_days = 5                  # snapshots older than this are pruned (0 drops every one at the next prune)
 max_total_mb = 100             # the oldest snapshots are pruned while the store holds more (compressed size on disk)
 max_file_kb = 2048             # larger files are not snapshotted
+snapshot_unsaved_secs = 0      # every this many seconds, snapshot unsaved edits of open files (0: off; at least 10; 60 is a good value)
 ```
 
 With `watch` on, files changed by other programs refresh the Project tree
@@ -391,7 +392,17 @@ autosave replaces the file's last snapshot when that is an autosave too and
 the first autosave of that run is less than 5 minutes old, so a long
 editing session leaves one autosave snapshot per 5 minutes (the newest text
 of each). Any other snapshot (a save, Save As, before a git operation, a
-reload or a delete) is never merged and ends the run. Snapshots are stored compressed (zlib), so about three
+reload or a delete) is never merged and ends the run.
+
+With `snapshot_unsaved_secs` set, the text of every tab with unsaved edits
+that has a file is also snapshotted on that timer ("Unsaved changes"), so
+work between saves survives a killed jetl, a closed terminal, a power loss
+or a "Discard and exit". Untitled tabs are not (crash recovery covers them
+on a crash). Snapshots of unsaved edits merge with autosaves like autosaves
+do (one per file per 5 minutes); a save of the same text turns the latest
+one into "Saved", and any other snapshot ends the run.
+
+Snapshots are stored compressed (zlib), so about three
 to four times as much source text fits under `max_total_mb`, which counts
 the size on disk. Binary files and files over `max_file_kb` are skipped.
 
@@ -410,10 +421,13 @@ to the list.
 
 Snapshots older than `keep_days` go, then the oldest while the store holds
 more than `max_total_mb`, when jetl starts and when either setting
-changes; all four settings apply at once. Several jetl instances share the
+changes; all five settings apply at once (changing
+`snapshot_unsaved_secs` restarts its timer). Several jetl instances share the
 store: one prunes at a time, and a snapshot stored by another instance
 during a prune may be lost. Snapshots are plain files, like crash recovery
-dumps, protected only by the state directory's permissions. A file has one
+dumps, protected only by the state directory's permissions; with
+`snapshot_unsaved_secs` set, that includes text you never saved (a pasted
+secret, say). A file has one
 history however it is reached: through a symlink to it, or through a
 symlinked folder (a project opened through a symlink included); the list
 shows the path you opened.

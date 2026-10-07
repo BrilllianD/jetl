@@ -33,15 +33,21 @@
 //! `blobs-zlib/`: it cannot show those snapshots (a "No such file" error)
 //! and never deletes them. [`prune`] counts the bytes on disk.
 //!
-//! Autosaves come in runs (idle autosave may write every few seconds), so
-//! an autosave whose file's last entry is an autosave of the same run (the
-//! run's first one taken less than [`AUTOSAVE_RUN`] ago) replaces that
-//! entry instead of adding one: [`record`] rewrites the line in place
-//! (temp file and rename) while holding `prune.lock`, or appends when
-//! another instance holds it. The replaced entry's blob is collected by the
-//! next [`prune`] unless another entry still names it. The window is
-//! measured from the run's first autosave (the entry's `since`), so a long
-//! editing session still leaves one entry per window.
+//! Automatic snapshots (autosaves and snapshots of unsaved edits,
+//! [`Kind::automatic`]) come in runs (idle autosave may write every few
+//! seconds), so an automatic snapshot whose file's last entry is an
+//! automatic one of the same run (the run's first one taken less than
+//! [`AUTOSAVE_RUN`] ago) replaces that entry instead of adding one:
+//! [`record`] rewrites the line in place (temp file and rename) while
+//! holding `prune.lock`, or appends when another instance holds it. The
+//! replaced entry's blob is collected by the next [`prune`] unless another
+//! entry still names it. The window is measured from the run's first
+//! snapshot (the entry's `since`), so a long editing session still leaves
+//! one entry per window. Any other kind ends the run.
+//!
+//! A snapshot of the bytes an unsaved snapshot (the file's last entry)
+//! holds is not `Same` unless it is one too: it replaces that entry the
+//! same way, so a save of that text shows as "Saved".
 
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
@@ -73,8 +79,8 @@ pub const LOCK_STALE: Duration = Duration::from_secs(60 * 60);
 /// [`record`] merging an autosave holds it for a moment.
 const LOCK_RETRY: Duration = Duration::from_millis(50);
 
-/// Autosaves of one file within this long of the first autosave of their
-/// run are merged into one entry (see the module doc).
+/// Automatic snapshots of one file within this long of the first one of
+/// their run are merged into one entry (see the module doc).
 pub const AUTOSAVE_RUN: Duration = Duration::from_secs(5 * 60);
 
 /// What a snapshot was taken for.
@@ -85,6 +91,9 @@ pub enum Kind {
     Save,
     /// An autosave: the text written.
     Autosave,
+    /// The text of a tab with unsaved edits, taken every
+    /// `snapshot_unsaved_secs`.
+    Unsaved,
     /// Save As: the text written to the new path.
     SaveAs,
     /// The file Save As was about to overwrite.
@@ -106,6 +115,7 @@ impl Kind {
         match self {
             Kind::Save => "Saved".into(),
             Kind::Autosave => "Autosaved".into(),
+            Kind::Unsaved => "Unsaved changes".into(),
             Kind::SaveAs => "Saved As".into(),
             Kind::BeforeSaveAs => "Before Save As overwrote it".into(),
             Kind::BeforeOverwrite => "Before overwrite".into(),
@@ -116,6 +126,12 @@ impl Kind {
                 _ => "Before git".into(),
             },
         }
+    }
+
+    /// Snapshots taken on their own (autosaves, unsaved edits): consecutive
+    /// ones of a file merge.
+    pub fn automatic(self) -> bool {
+        matches!(self, Kind::Autosave | Kind::Unsaved)
     }
 }
 
@@ -132,8 +148,8 @@ pub struct Entry {
     pub lines: u64,
     pub kind: Kind,
     pub detail: Option<String>,
-    /// An autosave that replaced others of its run: when the run's first
-    /// one was taken (Unix ms). Absent from the line otherwise.
+    /// An automatic snapshot that replaced others of its run: when the
+    /// run's first one was taken (Unix ms). Absent from the line otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub since: Option<u64>,
 }
@@ -143,7 +159,7 @@ impl Entry {
         self.kind.label(self.detail.as_deref())
     }
 
-    /// When the autosave run this entry stands for began.
+    /// When the automatic snapshot run this entry stands for began.
     fn run_start(&self) -> u64 {
         self.since.unwrap_or(self.at)
     }
@@ -166,8 +182,9 @@ pub enum Recorded {
     /// The bytes are those of the file's last entry already.
     Same,
     Added(Entry),
-    /// An autosave that replaced the file's last entry, an autosave of the
-    /// same run.
+    /// An automatic snapshot that replaced the file's last entry, an
+    /// automatic one of the same run, or a snapshot that relabelled an
+    /// unsaved snapshot of the same text.
     Replaced(Entry),
 }
 
@@ -314,9 +331,10 @@ fn entries_of(dir: &Path, key: &str, given: Option<&str>) -> Vec<Entry> {
 
 /// Snapshot `bytes` as the content of `path` (stored under its [`key`]) at
 /// `at_ms`, unless it is too large (over `max_bytes`), binary, a file of
-/// the store, or the same as the file's last entry. An autosave replaces
-/// the last entry when that is an autosave of the same run (see the module
-/// doc).
+/// the store, or the same as the file's last entry. An automatic snapshot
+/// replaces the last entry when that is an automatic one of the same run,
+/// and any other snapshot of an unsaved snapshot's text relabels it (see
+/// the module doc).
 pub fn record(
     dir: &Path,
     path: &Path,
@@ -341,7 +359,10 @@ pub fn record(
     let index = index_file(dir, key);
     let entries = entries_of(dir, key, path.to_str());
     let last = entries.last();
-    if last.is_some_and(|e| e.blob == id) {
+    let same = last.is_some_and(|e| e.blob == id);
+    // A save of the text an unsaved snapshot holds relabels that snapshot.
+    let promote = same && last.is_some_and(|e| e.kind == Kind::Unsaved && kind != Kind::Unsaved);
+    if same && !promote {
         return Ok(Recorded::Same);
     }
     write_blob(dir, &id, bytes)?;
@@ -356,15 +377,12 @@ pub fn record(
         detail,
         since: None,
     };
+    let in_run =
+        |p: &Entry| kind.automatic() && p.kind.automatic() && at_ms.saturating_sub(p.run_start()) < AUTOSAVE_RUN.as_millis() as u64;
     // An entry still under the path as given (not yet migrated) is left be.
-    let run = last.filter(|p| {
-        kind == Kind::Autosave
-            && p.kind == Kind::Autosave
-            && p.path == key
-            && at_ms.saturating_sub(p.run_start()) < AUTOSAVE_RUN.as_millis() as u64
-    });
-    if let Some(prev) = run {
-        entry.since = Some(prev.run_start());
+    let prev = last.filter(|p| p.path == key && (promote || in_run(p)));
+    if let Some(prev) = prev {
+        entry.since = in_run(prev).then(|| prev.run_start());
         if replace_last(dir, &index, prev, &entry)? {
             return Ok(Recorded::Replaced(entry));
         }
@@ -1266,5 +1284,78 @@ mod tests {
         }
         assert_eq!(list(&dir, Path::new("/p/a.txt")).len(), 200);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn unsaved(dir: &Path, path: &str, text: &str, at: u64) -> Recorded {
+        record(dir, Path::new(path), text.as_bytes(), Kind::Unsaved, None, at, MB).unwrap()
+    }
+
+    /// `(label, at, since)` of `path`'s entries, newest first.
+    fn labels(dir: &Path, path: &str) -> Vec<(String, u64, Option<u64>)> {
+        list(dir, Path::new(path)).into_iter().map(|e| (e.label(), e.at, e.since)).collect()
+    }
+
+    #[test]
+    fn unsaved_snapshots_and_autosaves_share_a_run() {
+        let dir = temp("unsavedrun");
+        let p = "/p/a.txt";
+        assert!(matches!(unsaved(&dir, p, "a", 0), Recorded::Added(_)));
+        let Recorded::Replaced(e) = unsaved(&dir, p, "b", MIN) else { panic!("replaced") };
+        assert_eq!(e.since, Some(0));
+        let Recorded::Replaced(e) = auto(&dir, p, "c", 2 * MIN) else { panic!("replaced") };
+        assert_eq!((e.kind, e.since), (Kind::Autosave, Some(0)));
+        let Recorded::Replaced(e) = unsaved(&dir, p, "d", 3 * MIN) else { panic!("replaced") };
+        assert_eq!((e.kind, e.since), (Kind::Unsaved, Some(0)));
+        // A save ends the run.
+        assert!(matches!(rec(&dir, p, "e", 4 * MIN), Recorded::Added(_)));
+        let Recorded::Added(e) = unsaved(&dir, p, "f", 9 * MIN / 2) else { panic!("added") };
+        assert_eq!(e.since, None);
+        // Past the window measured from f.
+        assert!(matches!(unsaved(&dir, p, "g", 10 * MIN), Recorded::Added(_)));
+        let u = || "Unsaved changes".to_string();
+        assert_eq!(
+            labels(&dir, p),
+            [(u(), 10 * MIN, None), (u(), 9 * MIN / 2, None), ("Saved".into(), 4 * MIN, None), (u(), 3 * MIN, Some(0))]
+        );
+        assert_eq!(runs(&dir, p)[3].2, "d");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_save_of_the_unsaved_text_relabels_its_snapshot() {
+        let dir = temp("unsavedpromote");
+        let p = "/p/a.txt";
+        unsaved(&dir, p, "x", 1);
+        let Recorded::Replaced(e) = rec(&dir, p, "x", 2) else { panic!("replaced") };
+        assert_eq!((e.kind, e.since), (Kind::Save, None));
+        assert_eq!(labels(&dir, p), [("Saved".into(), 2, None)]);
+        assert_eq!(read_blob(&dir, &e.blob).unwrap(), b"x");
+        // The same text again, saved or not: nothing new.
+        assert_eq!(rec(&dir, p, "x", 3), Recorded::Same);
+        assert_eq!(unsaved(&dir, p, "x", 4), Recorded::Same);
+        // An autosave of the unsaved text keeps the run.
+        unsaved(&dir, p, "y", 5);
+        let Recorded::Replaced(e) = auto(&dir, p, "y", 6) else { panic!("replaced") };
+        assert_eq!((e.kind, e.since), (Kind::Autosave, Some(5)));
+        assert_eq!(labels(&dir, p).len(), 2);
+        // Another instance prunes: the save appends next to the snapshot.
+        std::fs::write(dir.join("prune.lock"), "1").unwrap();
+        assert!(matches!(unsaved(&dir, p, "z", 7), Recorded::Added(_)));
+        let blobs = blob_count(&dir);
+        assert!(matches!(rec(&dir, p, "z", 8), Recorded::Added(_)));
+        assert_eq!(blob_count(&dir), blobs, "one blob for both");
+        let l = list(&dir, Path::new(p));
+        assert_eq!((l[0].label(), l[1].label()), ("Saved".into(), "Unsaved changes".into()));
+        assert_eq!(l[0].blob, l[1].blob);
+        assert!(dir.join("prune.lock").exists(), "not ours to remove");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn unsaved_kind_name_and_label() {
+        assert_eq!(serde_json::to_string(&Kind::Unsaved).unwrap(), "\"unsaved\"");
+        assert_eq!(serde_json::from_str::<Kind>("\"unsaved\"").unwrap(), Kind::Unsaved);
+        assert_eq!(Kind::Unsaved.label(None), "Unsaved changes");
+        assert!(Kind::Unsaved.automatic() && Kind::Autosave.automatic() && !Kind::Save.automatic());
     }
 }
