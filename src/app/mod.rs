@@ -1354,20 +1354,20 @@ pub(crate) mod tests {
         std::fs::create_dir_all(&other).unwrap();
         // Only the current root is known: nothing to offer.
         app.pick_project_at_startup();
-        app.handle_msg(AppMsg::RecentProjects { seq: 1, roots: vec![root.clone()] });
+        app.handle_msg(AppMsg::RecentProjects { seq: 1, roots: vec![root.clone()], error: None });
         assert!(app.palette.is_none());
 
         app.pick_project_at_startup();
-        app.handle_msg(AppMsg::RecentProjects { seq: 2, roots: vec![root.clone(), other.clone()] });
+        app.handle_msg(AppMsg::RecentProjects { seq: 2, roots: vec![root.clone(), other.clone()], error: None });
         assert_eq!(app.palette.as_ref().map(|p| p.kind), Some(PaletteKind::RecentProjects));
         // A late reply to an older request does not replace the list.
-        app.handle_msg(AppMsg::RecentProjects { seq: 1, roots: vec![root.clone()] });
+        app.handle_msg(AppMsg::RecentProjects { seq: 1, roots: vec![root.clone()], error: None });
         let res = app.palette.as_mut().unwrap().handle_action(&PaletteAction::Accept).unwrap();
         assert_eq!(res, PaletteResult::Accept(Accept::SwitchRoot(other.clone())));
         app.finish_palette(res);
         assert_eq!(app.workspace.root, other);
         // Offered once only.
-        app.handle_msg(AppMsg::RecentProjects { seq: 3, roots: vec![other.clone(), root.clone()] });
+        app.handle_msg(AppMsg::RecentProjects { seq: 3, roots: vec![other.clone(), root.clone()], error: None });
         assert!(app.palette.is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1392,6 +1392,67 @@ pub(crate) mod tests {
         handle_next(&mut app, recent).await;
         let roots: Vec<PathBuf> = crate::recent_projects::load(&file).into_iter().map(|p| p.root).collect();
         assert_eq!(roots, [root, other]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn shift_delete_forgets_a_recent_project_and_keeps_the_palette_open() {
+        use crate::actions::PaletteKind;
+        use crate::ui::palette::Source;
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let recent = |m: &AppMsg| matches!(m, AppMsg::RecentProjects { .. });
+        let shift_delete = |app: &mut App| app.handle_key(KeyEvent::new(KeyCode::Delete, KeyModifiers::SHIFT));
+        let (mut app, dir) = test_app("recent-forget");
+        let (root, file) = (app.workspace.root.clone(), app.paths.recent_projects_file());
+        let [a, b, c] = ["a", "b", "c"].map(|n| {
+            std::fs::create_dir_all(dir.join(n)).unwrap();
+            std::fs::canonicalize(dir.join(n)).unwrap()
+        });
+        for (i, r) in [&a, &b, &c, &root].into_iter().enumerate() {
+            crate::recent_projects::update(&file, Some(r), i as u64 + 1);
+        }
+        let on_disk = || crate::recent_projects::load(&file).into_iter().map(|p| p.root).collect::<Vec<_>>();
+        app.open_palette(PaletteKind::RecentProjects);
+        handle_next(&mut app, recent).await;
+        // Rows c, b, a (the current root is not listed): forget b.
+        app.palette.as_mut().unwrap().handle_action(&crate::actions::PaletteAction::Down);
+        shift_delete(&mut app);
+        let p = app.palette.as_ref().expect("stays open");
+        assert_eq!((p.kind, p.rows_selected()), (PaletteKind::RecentProjects, (2, 1)));
+        assert_eq!(app.recent_projects, [root.clone(), c.clone(), a.clone()], "dropped at once");
+        handle_next(&mut app, recent).await;
+        assert_eq!(on_disk(), [root.clone(), c.clone(), a.clone()]);
+        assert_eq!(app.recent_projects, [root.clone(), c.clone(), a.clone()]);
+        assert_eq!(app.palette.as_ref().map(|p| p.rows_selected().0), Some(2));
+
+        // A late reply to a load asked before the forget does not bring it back.
+        app.load_recent_projects(false);
+        shift_delete(&mut app);
+        assert_eq!(app.palette.as_ref().map(|p| p.rows_selected().0), Some(1));
+        handle_next(&mut app, recent).await;
+        handle_next(&mut app, recent).await;
+        assert_eq!(on_disk(), [root.clone(), c.clone()]);
+        assert_eq!(app.recent_projects, [root.clone(), c.clone()]);
+        assert_eq!(app.palette.as_ref().map(|p| p.rows_selected().0), Some(1));
+
+        // A failed write warns and lists the file as it is.
+        std::fs::create_dir_all(file.with_extension("json.tmp")).unwrap();
+        shift_delete(&mut app);
+        assert_eq!(app.palette.as_ref().map(|p| p.rows_selected().0), Some(0));
+        handle_next(&mut app, recent).await;
+        let n = app.notifications.last().expect("a warning");
+        assert!(n.level == Level::Warn && n.text.contains("recent projects"), "{}", n.text);
+        assert_eq!(on_disk(), [root.clone(), c.clone()]);
+        assert_eq!(app.palette.as_ref().map(|p| p.rows_selected().0), Some(1));
+
+        // Other sources still delete forward in the query.
+        app.open_palette(PaletteKind::Actions);
+        for code in [KeyCode::Char('a'), KeyCode::Char('b'), KeyCode::Home] {
+            app.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
+        }
+        shift_delete(&mut app);
+        let p = app.palette.as_ref().expect("stays open");
+        assert_eq!((p.source(), p.input.text.as_str()), (Source::Actions, "b"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

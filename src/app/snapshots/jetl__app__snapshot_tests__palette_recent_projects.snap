@@ -1,0 +1,31 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &marks, None)"
+---
+80x24 cursor=(6,5)
+00  ≣ ┌ Project: root ───────────────┐│
+01    │                              ││
+02  1 │                              ││
+03  ⌂ │                              ││
+04  2┌ Recent Projects ─────────────────────────────────────────────────────────┐
+05  ◫│ › type a project name · Shift+Del forgets                              3 │
+06  7│ alpha  /work/                                                            │
+07  ⊢│ beta  /work/                                                             │
+08   │ gamma  /srv/                                                             │
+09   │                                                                          │
+10   │                                                                          │
+11   │                                                                          │
+12  ⚑└──────────────────────────────────────────────────────────────────────────┘
+13  9 │                              ││         Ctrl+Shift+N finds a file.
+14  ⎇ │                              ││
+15    │                              ││
+16  ❯ │                              ││
+17  6 │                              ││
+18  ⚠ │                              ││
+19  4 │                              ││
+20  ► │                              ││
+21  3 │                              ││
+22  ⌕ └──────────────────────────────┘│
+23  root
+-- marks: L=selected
+06    LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL

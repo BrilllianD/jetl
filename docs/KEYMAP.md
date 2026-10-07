@@ -315,7 +315,7 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Ctrl+W` | `palette.delete_word` | Palette: delete word |
 | `Tab` | `palette.next_tab` | Palette: next tab |
 | `Shift+Tab` | `palette.prev_tab` | Palette: previous tab |
-| `Shift+Delete` | `palette.delete_item` | Palette: delete the selected item (Scratch Files) |
+| `Shift+Delete` | `palette.delete_item` | Palette: delete the selected item (Scratch Files, Recent Projects) |
 
 ## mode.normal
 

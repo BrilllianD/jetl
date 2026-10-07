@@ -199,6 +199,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   new History tab, where Revert (Alt+R) puts it back as one undoable edit. Snapshots live in
   `$XDG_STATE_HOME/jetl/history/`, shared by every project, and are pruned after 5 days or
   beyond 100 MB (`[local_history]`).
+- Recent Projects: Shift+Delete forgets the selected project. Its row goes at once and the
+  palette stays open; the project itself is not touched, and opening it again lists it again.
+  The current project is never listed, so it cannot be forgotten.
 
 ### Changed
 

@@ -97,6 +97,9 @@ pub enum Accept {
     RunTask(Box<crate::run::RunTask>),
     /// Shift+Delete on a scratch file: the app asks first.
     DeleteScratch(PathBuf),
+    /// Shift+Delete on a recent project: the palette has dropped the row
+    /// and stays open; the app drops it from the recent projects file.
+    ForgetProject(PathBuf),
     /// A local history snapshot of `path`: its diff against the current
     /// text, in the Git window's History tab; `title` is the row's date,
     /// time and label.
@@ -227,6 +230,12 @@ impl Palette {
 
     pub fn source(&self) -> Source {
         self.tabs[self.tab]
+    }
+
+    /// Rows shown and the selected one (tests outside this module).
+    #[cfg(test)]
+    pub(crate) fn rows_selected(&self) -> (usize, usize) {
+        (self.rows.len(), self.list.selected)
     }
 
     /// Whether any tab lists `s` (the app only feeds sources that are shown).
@@ -517,6 +526,15 @@ impl Palette {
                 let f = self.rows.get(self.list.selected).and_then(|&i| self.scratches.get(i))?;
                 return Some(PaletteResult::Accept(Accept::DeleteScratch(f.path.clone())));
             }
+            // Dropped at once; the selection stays on the row that moves up
+            // into its place (the one above at the end).
+            PaletteAction::DeleteItem if self.source() == Source::Projects => {
+                let i = *self.rows.get(self.list.selected)?;
+                let root = self.projects.remove(i);
+                self.projects_shown.remove(i);
+                self.refilter(false);
+                return Some(PaletteResult::Accept(Accept::ForgetProject(root)));
+            }
             // Nothing to delete: Shift+Delete deletes in the query, as before.
             PaletteAction::DeleteItem => {
                 self.input.delete();
@@ -670,7 +688,7 @@ impl Palette {
             Source::Files | Source::Recent => "type a file name",
             Source::Actions => "type an action name",
             Source::Branches => "type a branch name",
-            Source::Projects => "type a project name",
+            Source::Projects => "type a project name · Shift+Del forgets",
             Source::Symbols => "type a symbol name",
             Source::Tasks => "type a task name",
             Source::Locations => "type to filter",
@@ -1020,6 +1038,27 @@ mod tests {
     }
 
     #[test]
+    fn delete_item_forgets_a_project_and_keeps_a_neighbour_selected() {
+        let w = |n: &str| PathBuf::from("/w").join(n);
+        let mut p = Palette::new(PaletteKind::RecentProjects, w("here"));
+        p.set_projects(&[w("here"), w("alpha"), w("beta"), w("gamma")]);
+        p.handle_action(&PaletteAction::Down);
+        let forget = |p: &mut Palette| p.handle_action(&PaletteAction::DeleteItem);
+        assert_eq!(forget(&mut p), Some(PaletteResult::Accept(Accept::ForgetProject(w("beta")))));
+        // The row below takes its place; at the end, the one above.
+        assert_eq!((p.rows.len(), p.list.selected), (2, 1));
+        assert_eq!(forget(&mut p), Some(PaletteResult::Accept(Accept::ForgetProject(w("gamma")))));
+        assert_eq!((p.rows.len(), p.list.selected), (1, 0));
+        assert_eq!(p.handle_action(&PaletteAction::Accept), Some(PaletteResult::Accept(Accept::SwitchRoot(w("alpha")))));
+        // A filtered row; nothing left to forget leaves the query alone.
+        p.set_query("alp");
+        assert_eq!(forget(&mut p), Some(PaletteResult::Accept(Accept::ForgetProject(w("alpha")))));
+        assert_eq!(forget(&mut p), None);
+        assert_eq!(p.input.text, "alp");
+        assert!(p.projects.is_empty() && p.projects_shown.is_empty());
+    }
+
+    #[test]
     fn delete_item_deletes_a_scratch_only_on_scratch_files() {
         let f = |name: &str| ScratchFile { path: PathBuf::from("/s").join(name), name: name.into(), language: "Plain text", modified: 0 };
         let mut p = Palette::new(PaletteKind::Scratches, PathBuf::from("/w"));
@@ -1035,8 +1074,7 @@ mod tests {
         assert_eq!(p.handle_action(&PaletteAction::DeleteItem), None);
 
         // Elsewhere it deletes forward in the query.
-        let mut p = Palette::new(PaletteKind::RecentProjects, PathBuf::from("/w/here"));
-        p.set_projects(&[PathBuf::from("/w/alpha")]);
+        let mut p = Palette::new(PaletteKind::Actions, PathBuf::from("/w"));
         p.set_query("ab");
         p.input.home();
         assert_eq!(p.handle_action(&PaletteAction::DeleteItem), None);

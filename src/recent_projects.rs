@@ -1,6 +1,7 @@
 //! Recently opened project roots, newest first, stored as JSON in
 //! `paths.recent_projects_file()`. The app records its root at startup and
-//! on every root switch, and lists the others in the Recent Projects palette.
+//! on every root switch, and lists the others in the Recent Projects palette,
+//! where Shift+Delete forgets one.
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -75,6 +76,28 @@ pub fn update(file: &Path, root: Option<&Path>, at: u64) -> Vec<PathBuf> {
             tracing::warn!("saving recent projects: {e:#}");
         }
     }
+    listed(list)
+}
+
+/// Blocking: drop `root` from the file and return the roots that still
+/// exist as directories, newest first, with the outcome of the write. A
+/// root that is not in the file writes nothing; a failed write lists the
+/// file as it was.
+pub fn forget(file: &Path, root: &Path) -> (Vec<PathBuf>, Result<()>) {
+    let _guard = FILE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let list = load(file);
+    let kept: Vec<RecentProject> = list.iter().filter(|p| p.root != root).cloned().collect();
+    if kept.len() == list.len() {
+        return (listed(list), Ok(()));
+    }
+    match save(file, &kept) {
+        Ok(()) => (listed(kept), Ok(())),
+        Err(e) => (listed(list), Err(e)),
+    }
+}
+
+/// The roots that still exist as directories, in list order.
+fn listed(list: Vec<RecentProject>) -> Vec<PathBuf> {
     list.into_iter().map(|p| p.root).filter(|r| r.is_dir()).collect()
 }
 
@@ -127,6 +150,38 @@ mod tests {
         // A deleted project stays in the file but is not listed.
         std::fs::remove_dir_all(&a).unwrap();
         assert_eq!(update(&file, None, 3), vec![b.clone()]);
+        assert_eq!(load(&file).len(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn forget_drops_one_root_and_reports_a_failed_write() {
+        let dir = std::env::temp_dir().join(format!("jetl-test-recent-forget-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let file = dir.join("state/recent_projects.json");
+        let (a, b, c) = (dir.join("a"), dir.join("b"), dir.join("c"));
+        for d in [&a, &b, &c] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        update(&file, Some(&a), 1);
+        update(&file, Some(&b), 2);
+        update(&file, Some(&c), 3);
+        let (roots, saved) = forget(&file, &b);
+        assert!(saved.is_ok());
+        assert_eq!(roots, [c.clone(), a.clone()]);
+        assert_eq!(roots, load(&file).into_iter().map(|p| p.root).collect::<Vec<_>>());
+        // An unknown root (or a missing file) writes nothing.
+        let mtime = std::fs::metadata(&file).unwrap().modified().unwrap();
+        assert_eq!(forget(&file, &b).0, [c.clone(), a.clone()]);
+        assert_eq!(std::fs::metadata(&file).unwrap().modified().unwrap(), mtime);
+        let (roots, saved) = forget(&dir.join("none.json"), &a);
+        assert!(roots.is_empty() && saved.is_ok());
+        assert!(!dir.join("none.json").exists());
+        // A failed write keeps the file and lists it as it is.
+        std::fs::create_dir_all(file.with_extension("json.tmp")).unwrap();
+        let (roots, saved) = forget(&file, &a);
+        assert!(saved.is_err());
+        assert_eq!(roots, [c.clone(), a.clone()]);
         assert_eq!(load(&file).len(), 2);
         let _ = std::fs::remove_dir_all(&dir);
     }

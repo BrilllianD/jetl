@@ -41,7 +41,7 @@ impl App {
             }
             AppMsg::FileIndex { generation, seq, files } => self.file_index_loaded(generation, seq, files),
             AppMsg::Symbols { generation, seq, batch } => self.symbols_loaded(generation, seq, batch),
-            AppMsg::RecentProjects { seq, roots } => self.recent_projects_loaded(seq, roots),
+            AppMsg::RecentProjects { seq, roots, error } => self.recent_projects_loaded(seq, roots, error),
             AppMsg::Find { generation, batch } if generation == self.workspace.generation => self.find.on_batch(batch),
             AppMsg::ReplaceDone { generation, files, matches, errors } if generation == self.workspace.generation => {
                 self.replace_done(files, matches, errors)

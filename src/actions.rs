@@ -803,7 +803,7 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "palette.delete_word" => "Palette: delete word", Palette(PaletteAction::DeleteWord);
         "palette.next_tab" => "Palette: next tab", Palette(PaletteAction::NextTab);
         "palette.prev_tab" => "Palette: previous tab", Palette(PaletteAction::PrevTab);
-        "palette.delete_item" => "Palette: delete the selected item (Scratch Files)", Palette(PaletteAction::DeleteItem);
+        "palette.delete_item" => "Palette: delete the selected item (Scratch Files, Recent Projects)", Palette(PaletteAction::DeleteItem);
 
         "mode.normal" => "Vim: normal mode", Mode(ModeAction::Normal);
         "mode.insert" => "Vim: insert mode", Mode(ModeAction::Insert);

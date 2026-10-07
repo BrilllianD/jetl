@@ -520,6 +520,19 @@ async fn palette_scratches() {
 }
 
 #[tokio::test]
+async fn palette_recent_projects() {
+    let mut fx = stable_app("palette-recent-projects");
+    let app = &mut fx.app;
+    app.open_palette(PaletteKind::RecentProjects);
+    // Fixed roots outside the home directory, not the temp state's list.
+    let roots: Vec<std::path::PathBuf> = ["/work/alpha", "/work/beta", "/srv/gamma"].iter().map(Into::into).collect();
+    app.palette.as_mut().unwrap().set_projects(&roots);
+    let term = draw_app(app, 80, 24);
+    let marks = palette_marks(&app.theme);
+    assert_snapshot!("palette_recent_projects", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
 async fn palette_local_history() {
     let mut fx = stable_app("palette-local-history");
     let app = &mut fx.app;

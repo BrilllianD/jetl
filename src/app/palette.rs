@@ -135,11 +135,33 @@ impl App {
         let at = crate::recent_projects::now();
         tokio::task::spawn_blocking(move || {
             let roots = crate::recent_projects::update(&file, root.as_deref(), at);
-            let _ = tx.send(AppMsg::RecentProjects { seq, roots });
+            let _ = tx.send(AppMsg::RecentProjects { seq, roots, error: None });
         });
     }
 
-    pub(super) fn recent_projects_loaded(&mut self, seq: u64, roots: Vec<std::path::PathBuf>) {
+    /// Shift+Delete in Recent Projects: the palette already dropped the row
+    /// (and never lists the current root, so it cannot be forgotten here).
+    /// Drop it from the list at once and from the file in `spawn_blocking`,
+    /// under the same seq as the loads: one asked earlier would bring the row
+    /// back, so its late reply is dropped. A failed write lists the file as it
+    /// is and warns.
+    fn forget_recent_project(&mut self, root: std::path::PathBuf) {
+        self.recent_projects.retain(|r| *r != root);
+        self.recent_projects_requested += 1;
+        let seq = self.recent_projects_requested;
+        self.recent_projects_seq = seq;
+        let (file, tx) = (self.paths.recent_projects_file(), self.bus_tx.clone());
+        tokio::task::spawn_blocking(move || {
+            let (roots, saved) = crate::recent_projects::forget(&file, &root);
+            let error = saved.err().map(|e| format!("Forget {} in recent projects: {e:#}", root.display()));
+            let _ = tx.send(AppMsg::RecentProjects { seq, roots, error });
+        });
+    }
+
+    pub(super) fn recent_projects_loaded(&mut self, seq: u64, roots: Vec<std::path::PathBuf>, error: Option<String>) {
+        if let Some(e) = error {
+            self.notify(crate::event::Level::Warn, e);
+        }
         if seq < self.recent_projects_seq {
             tracing::debug!("dropping stale recent projects");
             return;
@@ -196,7 +218,10 @@ impl App {
     }
 
     pub(super) fn finish_palette(&mut self, res: PaletteResult) {
-        self.palette = None;
+        // Forgetting a recent project keeps the palette open, without the row.
+        if !matches!(res, PaletteResult::Accept(Accept::ForgetProject(_))) {
+            self.palette = None;
+        }
         self.dirty_frame = true;
         match res {
             PaletteResult::Cancel => {}
@@ -207,6 +232,7 @@ impl App {
             PaletteResult::Accept(Accept::SwitchRoot(root)) => self.apply_effects(vec![Effect::SwitchRoot(root)]),
             PaletteResult::Accept(Accept::RunTask(task)) => self.run_task(*task),
             PaletteResult::Accept(Accept::DeleteScratch(path)) => self.ask_delete_scratch(path),
+            PaletteResult::Accept(Accept::ForgetProject(root)) => self.forget_recent_project(root),
             PaletteResult::Accept(Accept::LocalHistoryDiff { path, id, at, title }) => self.show_local_diff(path, id, at, title),
             // A symbol or location: back returns here even after a short jump.
             PaletteResult::Accept(Accept::OpenFileAt { path, line, col }) => {

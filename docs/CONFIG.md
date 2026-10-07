@@ -27,7 +27,7 @@ The log is at `$XDG_STATE_HOME/jetl/jetl.log` (usually
 `~/.local/state/jetl/jetl.log`). Sessions (per project root: open tabs, tool
 window layout, expanded Project tree folders and its hidden/ignored toggles)
 live in `$XDG_STATE_HOME/jetl/sessions/`; recently opened project roots (the
-Recent Projects palette, Alt+Shift+E) in `$XDG_STATE_HOME/jetl/recent_projects.json`;
+Recent Projects palette, Alt+Shift+E; Shift+Delete forgets one) in `$XDG_STATE_HOME/jetl/recent_projects.json`;
 scratch files (File > New Scratch File…, shared by every project) in
 `$XDG_STATE_HOME/jetl/scratches/`, created with the first one; local history
 snapshots (File > Local History…, shared by every project and jetl

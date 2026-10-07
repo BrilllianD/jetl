@@ -96,10 +96,12 @@ pub enum AppMsg {
         batch: crate::symbols::index::SymbolBatch,
     },
     /// Recent project roots that still exist, newest first, in request
-    /// order (not tied to the root).
+    /// order (not tied to the root). `error` is a failed write of a
+    /// forgotten project (`App::forget_recent_project`).
     RecentProjects {
         seq: u64,
         roots: Vec<PathBuf>,
+        error: Option<String>,
     },
     /// The system clipboard read by `editor.paste` (`App::paste`), tagged
     /// with the workspace generation and the request's seq.
