@@ -1601,7 +1601,15 @@ pub(crate) mod tests {
         assert_eq!(app.editor.buffers[0].path.as_deref(), Some(b.as_path()));
         assert_eq!(app.editor.buffers[0].name, "b.txt");
         assert_eq!(app.editor.buffers[0].text(), "mine a\n", "unsaved edits stay");
-        assert_eq!(app.project.selected_row().map(|r| r.path.clone()), Some(b));
+        assert_eq!(app.project.selected_row().map(|r| r.path.clone()), Some(b.clone()));
+        // A new extension brings its language.
+        #[cfg(feature = "lang-rust")]
+        {
+            app.finish_dialog(DialogId::TreeRename(b), DialogResult::Text("b.rs".into()));
+            handle_next(&mut app, fs_op_done).await;
+            assert_eq!(app.editor.status_language().as_deref(), Some("rust"));
+            assert_eq!(app.editor.buffers[0].text(), "mine a\n");
+        }
         // Tabs under a renamed directory follow it.
         std::fs::create_dir_all(root.join("d")).unwrap();
         let x = load(&mut app, "d/x.txt", "x\n");

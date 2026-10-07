@@ -403,7 +403,7 @@ mod tests {
         // Close All parks them too; a rename follows; a delete drops them.
         app.editor.force_close_all();
         let moved = app.workspace.root.join("b.txt");
-        app.editor.retarget(&a, &moved);
+        app.editor.retarget(&a, &moved, &app.theme);
         assert_eq!(app.editor.closed_bookmarks(), vec![(moved.clone(), 1, None), (moved.clone(), 2, Some(6))]);
         app.editor.close_under(&moved);
         assert!(app.editor.closed_bookmarks().is_empty());

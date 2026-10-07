@@ -240,6 +240,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - In a narrow Git window the diff header (the file name and what it compares) is cut with `…`
   before the `[Unified]` and `Collapse` toggles instead of running under them. In the Log,
   Stash and History tabs a long header no longer hides the toggles.
+- Renaming or moving an open file in the Project tree (or a directory with open files in it)
+  now sets each tab up for its new path, as Save As does: renaming `a.txt` to `a.rs` gives Rust
+  highlighting and the Rust language server, and the `.editorconfig` settings and soft wrap of
+  the new path apply. What the new path does not change stays as it was: a language, indent or
+  soft wrap picked by hand, folds, carets, unsaved edits and undo history.
 
 ## [0.1.0] - 2026-10-03
 

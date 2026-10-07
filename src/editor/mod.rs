@@ -93,6 +93,33 @@ pub(super) fn adopt_path(b: &mut Buffer, path: PathBuf, s: PathSetup, tab_width:
     b.changed_since_render = true;
 }
 
+/// [`adopt_path`] for a buffer whose file was renamed or moved to `path`
+/// (`s` from [`Editor::path_setup`], `wrap_before` the soft wrap the old
+/// path gave): what the new path decides differently is taken from it,
+/// what it decides the same stays as it was (a language picked by hand and
+/// the parse tree, an indent picked by hand, soft wrap toggled by hand).
+/// The mtime stays too: the file moved, it was not written.
+fn adopt_moved_path(b: &mut Buffer, path: PathBuf, mut s: PathSetup, tab_width: usize, wrap_before: bool) {
+    let same_lang = s.lang.map(|d| d.name) == b.detected_language.map(|d| d.name);
+    let same_settings = s.settings == b.settings;
+    let same_wrap = s.wrap == wrap_before;
+    let (choice, indent, wrap) = (b.language_choice, b.indent, b.view.wrap.on);
+    s.mtime = b.disk_mtime;
+    if same_lang {
+        s.syntax = b.syntax.take();
+    }
+    adopt_path(b, path, s, tab_width);
+    if same_lang {
+        b.language_choice = choice;
+    }
+    if same_settings {
+        b.indent = indent;
+    }
+    if same_wrap {
+        b.view.wrap.on = wrap;
+    }
+}
+
 pub struct Editor {
     /// The open documents; tab order lives in the groups.
     pub buffers: Vec<Buffer>,
@@ -481,13 +508,19 @@ impl Editor {
     }
 
     /// Follow a rename of `from` (a file or a directory) to `to`: tabs of
-    /// it or under it keep their text and history under the new path.
-    pub fn retarget(&mut self, from: &Path, to: &Path) {
-        for b in &mut self.buffers {
-            if let Some(moved) = b.path.as_deref().and_then(|p| nav::moved_path(p, from, to)) {
-                b.name = moved.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                b.path = Some(moved);
-            }
+    /// it or under it keep their text, history, carets, folds and dirty
+    /// state under the new path, and take its name, language,
+    /// `.editorconfig` settings and soft wrap where the new path decides
+    /// them differently ([`adopt_moved_path`]). The language server follows
+    /// in `App::lsp_sync`, as after Save As.
+    pub fn retarget(&mut self, from: &Path, to: &Path, theme: &Theme) {
+        for i in 0..self.buffers.len() {
+            let b = &self.buffers[i];
+            let Some(old) = b.path.as_deref() else { continue };
+            let Some(moved) = nav::moved_path(old, from, to) else { continue };
+            let wrap_before = self.soft_wrap_for(Some(old));
+            let setup = self.path_setup(&moved, &b.text(), theme);
+            adopt_moved_path(&mut self.buffers[i], moved, setup, self.tab_width, wrap_before);
         }
         if let Some((p, _)) = &mut self.pending_nav
             && let Some(moved) = nav::moved_path(p, from, to)
@@ -2585,6 +2618,98 @@ mod tests {
         assert_eq!(ed.buffers[i].path.as_deref(), Some(b.as_path()));
         assert_eq!(ed.index_of(&a), None);
         assert!(!ed.buffers[i].dirty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[test]
+    fn retarget_detects_the_language_again_and_keeps_the_rest() {
+        let dir = save_as_dir("retarget-lang");
+        let (a, b) = (dir.join("a.txt"), dir.join("a.rs"));
+        std::fs::write(&a, "fn main() {}\n").unwrap();
+        let mut ed = Editor::new(&Config::default());
+        let i = ed.open_text(a.clone(), "fn main() {}\n", false, &Theme::default());
+        ed.buffers[i].insert("// mine\n", TxKind::Typing);
+        ed.buffers[i].goto_line(1, 3);
+        // The file changed on disk since it was loaded: the conflict stays.
+        let stamp = std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(7);
+        ed.buffers[i].disk_mtime = Some(stamp);
+        assert!(ed.buffers[i].view.wrap.on && ed.buffers[i].language().is_none());
+        std::fs::rename(&a, &b).unwrap();
+        ed.retarget(&a, &b, &Theme::default());
+        let buf = &ed.buffers[i];
+        assert_eq!((buf.path.as_deref(), buf.name.as_str()), (Some(b.as_path()), "a.rs"));
+        assert_eq!(buf.language().map(|l| l.name), Some("rust"));
+        assert_eq!(buf.syntax.as_ref().map(|s| s.def.name), Some("rust"));
+        assert_eq!(ed.status_language().as_deref(), Some("rust"));
+        assert!(!buf.view.wrap.on, "*.txt wraps, *.rs does not");
+        assert_eq!(buf.disk_mtime, Some(stamp));
+        assert_eq!(buf.text(), "// mine\nfn main() {}\n");
+        assert_eq!(buf.view.sel().head, 11);
+        assert!(buf.dirty());
+        assert!(ed.buffers[i].undo());
+        assert_eq!(ed.buffers[i].text(), "fn main() {}\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[test]
+    fn retarget_within_a_language_keeps_what_was_picked_by_hand() {
+        let dir = save_as_dir("retarget-keep");
+        let (a, b) = (dir.join("a.rs"), dir.join("b.rs"));
+        let text = "fn main() {\n    one();\n    two();\n}\n";
+        std::fs::write(&a, text).unwrap();
+        let mut ed = Editor::new(&Config::default());
+        let i = ed.open_text(a.clone(), text, false, &Theme::default());
+        let id = ed.buffers[i].id;
+        assert!(ed.buffers[i].toggle_fold(0));
+        ed.buffers[i].view.wrap.on = true;
+        ed.set_indent(id, 0);
+        let folds = ed.buffers[i].view.folds.hidden().to_vec();
+        assert!(!folds.is_empty());
+        ed.retarget(&a, &b, &Theme::default());
+        let buf = &ed.buffers[i];
+        assert_eq!(buf.name, "b.rs");
+        assert_eq!(buf.view.folds.hidden(), folds);
+        assert!(buf.view.wrap.on, "wrap toggled by hand");
+        assert_eq!(buf.indent, indent::IndentStyle::tabs(4), "indent picked by hand");
+        assert!(buf.syntax.is_some() && !buf.dirty());
+        // A language picked by hand stays while the path agrees with the
+        // old one, and gives way when it does not.
+        ed.set_language(id, None, &Theme::default());
+        let c = dir.join("c.rs");
+        ed.retarget(&b, &c, &Theme::default());
+        assert_eq!(ed.status_language().as_deref(), Some("Plain text"));
+        ed.retarget(&c, &dir.join("c.txt"), &Theme::default());
+        assert_eq!(ed.buffers[i].language_choice, buffer::LanguageChoice::Auto);
+        assert!(ed.buffers[i].view.wrap.on, "*.txt wraps");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[test]
+    fn retarget_of_a_directory_sets_up_every_buffer_under_it() {
+        let dir = save_as_dir("retarget-dir");
+        std::fs::write(dir.join(".editorconfig"), "root = true\n[tabs/**]\nindent_style = tab\n").unwrap();
+        let (from, to) = (dir.join("spaces"), dir.join("tabs"));
+        std::fs::create_dir_all(&from).unwrap();
+        let mut ed = Editor::new(&Config::default());
+        ed.open_text(from.join("x.rs"), "fn x() {}\n", false, &Theme::default());
+        ed.open_text(from.join("sub/y.txt"), "y\n", false, &Theme::default());
+        ed.open_text(dir.join("z.rs"), "fn z() {}\n", false, &Theme::default());
+        assert!(ed.buffers.iter().all(|b| b.indent == indent::IndentStyle::spaces(4)));
+        std::fs::rename(&from, &to).unwrap();
+        ed.retarget(&from, &to, &Theme::default());
+        let got: Vec<_> = ed.buffers.iter().map(|b| (b.path.clone().unwrap(), b.language().map(|l| l.name), b.indent)).collect();
+        assert_eq!(
+            got,
+            [
+                (to.join("x.rs"), Some("rust"), indent::IndentStyle::tabs(4)),
+                (to.join("sub/y.txt"), None, indent::IndentStyle::tabs(4)),
+                (dir.join("z.rs"), Some("rust"), indent::IndentStyle::spaces(4)),
+            ]
+        );
+        assert!(ed.buffers[1].view.wrap.on && !ed.buffers[0].view.wrap.on);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

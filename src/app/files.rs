@@ -38,7 +38,7 @@ impl App {
                 self.reload_parents(from);
                 self.reload_parents(to);
                 self.project.select_path(to);
-                self.editor.retarget(from, to);
+                self.editor.retarget(from, to, &self.theme);
                 let name = to.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                 self.notify(Level::Info, format!("Renamed to {name}"));
             }

@@ -647,7 +647,7 @@ pub(crate) mod tests {
 
         // A rename closes the old document and opens the new one.
         let moved = app.workspace.root.join("b.rs");
-        app.editor.retarget(&path, &moved);
+        app.editor.retarget(&path, &moved, &app.theme);
         app.lsp_sync();
         assert_eq!(server.recv("textDocument/didClose").await["params"]["textDocument"]["uri"], uri.as_str());
         let open = server.recv("textDocument/didOpen").await;
@@ -674,6 +674,30 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn a_rename_that_changes_the_language_moves_the_document() {
+        let (mut app, dir) = test_app("lsp-rename-language");
+        let mut servers = with_fake_servers(&mut app, incremental());
+        let mut server = open_on_server(&mut app, &mut servers, "a.rs", "fn a() {}\n").await;
+        let notes = load(&mut app, "notes.txt", "fn b() {}\n");
+        app.lsp_sync();
+        assert!(server.drain().is_empty(), "plain text has no server");
+        // Renamed to Rust: opened as Rust.
+        let rs = app.workspace.root.join("notes.rs");
+        app.editor.retarget(&notes, &rs, &app.theme);
+        app.lsp_sync();
+        let doc = server.recv("textDocument/didOpen").await["params"]["textDocument"].clone();
+        let uri = sync::uri(&rs).unwrap();
+        assert_eq!((doc["uri"].as_str(), doc["languageId"].as_str()), (Some(uri.as_str()), Some("rust")));
+        // Renamed back to text: closed.
+        app.editor.retarget(&rs, &notes, &app.theme);
+        app.lsp_sync();
+        assert_eq!(server.recv("textDocument/didClose").await["params"]["textDocument"]["uri"], uri.as_str());
+        app.lsp_sync();
+        assert!(server.drain().iter().all(|m| m["method"] != "textDocument/didOpen"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
     async fn scratch_files_get_no_server() {
         let (mut app, dir) = test_app("lsp-scratch");
         let mut servers = with_fake_servers(&mut app, incremental());
@@ -689,7 +713,7 @@ pub(crate) mod tests {
         let mut server = open_on_server(&mut app, &mut servers, "a.rs", "fn a() {}\n").await;
         let path = app.workspace.root.join("a.rs");
         let uri = sync::uri(&path).unwrap();
-        app.editor.retarget(&path, &app.paths.scratches_dir().join("a.rs"));
+        app.editor.retarget(&path, &app.paths.scratches_dir().join("a.rs"), &app.theme);
         app.lsp_sync();
         assert_eq!(server.recv("textDocument/didClose").await["params"]["textDocument"]["uri"], uri.as_str());
         app.lsp_sync();
