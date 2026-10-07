@@ -164,7 +164,7 @@ All of section E shipped in Phase 9 except split editor panes, which shipped in 
 | Render snapshot tests (`TestBackend` + `insta`) | M | `test_app()` harness exists |
 | CI, release binaries, AUR | S | CI done (GitHub Actions, Bitbucket Pipelines); local release via `scripts/package.sh` (tarball + Arch package); remote releases and AUR open |
 | Crash recovery of dirty buffers | S | Done: the panic hook writes the dirty buffers to `state/recovery/<pid>-<secs>/` (bounded `try_lock`, never blocks); the next session load of that root offers Restore all / Discard / Review…; restored text opens unsaved and undoable, no autosave until an explicit save; Save As (Alt+Shift+S) saves the untitled ones |
-| Palette filter off the main thread | S | nucleo supports it |
+| Palette filter off the main thread | S | Done: Files and Symbols of 10000 candidates and up rank in `spawn_blocking` under an app-wide cancel seq; the shown rows stay until the result, Enter ranks the typed query at once; follow-up: incremental narrowing |
 
 ## Order
 

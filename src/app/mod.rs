@@ -161,6 +161,8 @@ pub struct App {
     pub dialog: Option<Dialog>,
     /// Command palette overlay; captures input like a dialog.
     pub palette: Option<Palette>,
+    /// App-wide palette filter seq, see `FilterBus`.
+    palette_seq: std::sync::Arc<std::sync::atomic::AtomicU64>,
     /// Context menu overlay (right click, Shift+F10); takes input like a
     /// dialog, below dialogs.
     pub menu: Option<crate::ui::menu::ContextMenu>,
@@ -295,6 +297,7 @@ impl App {
             toasts: Default::default(),
             dialog: None,
             palette: None,
+            palette_seq: Default::default(),
             menu: None,
             menu_bar: None,
             strip_hover: None,

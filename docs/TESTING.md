@@ -39,6 +39,15 @@ send `AppMsg::ConfigChanged` themselves; every `config.toml` they write sets
 `[lsp] enabled = false`. `docs/KEYMAP.md` is checked by a test; regenerate
 it with `cargo run -q -- --dump-keymap > docs/KEYMAP.md`.
 
+Palette filtering has an `#[ignore]` benchmark that prints, for 200000
+paths, the per-keystroke main-thread cost of filtering at once (before) and
+off the main thread (after), when the result arrives, the cost of Enter
+right after typing, and the at-once cost by list size (what
+`BACKGROUND_MIN` is tuned on). It asserts only that both ways give the same
+rows; run it in release:
+
+    cargo test --release --lib filter_200k_paths_timing -- --ignored --nocapture
+
 ## Snapshot tests
 
 `src/app/snapshot_tests.rs` draws whole frames, or the editor area alone,
@@ -640,6 +649,32 @@ the History tab. Shift+F10 in the Project tree opens its context menu with
 Local History under Show History. Alt+1 and Alt+9 hide their window when it
 already has focus; under tmux, Ctrl+Space in the editor is completion, not
 the branches popup, hence Find Action above.
+
+### Scenario: palette on a huge tree
+
+200000 files (exactly the file index cap), language servers off, a
+release build:
+
+```sh
+B=/tmp/jetl-big; rm -rf $B; mkdir -p $B/cfg/jetl $B/tree
+printf '[lsp]\nenabled = false\n' > $B/cfg/jetl/config.toml
+for d in $(seq 0 399); do mkdir -p $B/tree/m$d/sub; (cd $B/tree/m$d/sub && seq -f 'file_%g.rs' 0 499 | xargs touch); done   # 200000 files
+cargo build --release --no-default-features --features lang-rust
+/tmp/tm.sh -f /dev/null new-session -d -s jetl -x 120 -y 40 \
+  "RUST_LOG=jetl=debug XDG_CONFIG_HOME=$B/cfg XDG_STATE_HOME=$B/state $PWD/target/release/jetl $B/tree 2>/tmp/jetl-stderr.txt"
+sleep 5; s() { /tmp/tm.sh send-keys -t jetl "$@"; }
+s C-n; sleep 3; s -l 'm24/file_345'    # typed in one burst: rows follow, no stall; count 22
+/tmp/tm.sh capture-pane -t jetl -p     # top row "file_345.rs  m24/sub/", matched chars highlighted
+s BSpace; s BSpace; s -l '99'; s Enter # opens m24/sub/file_399.rs at once
+grep 'palette filter\|capped' $B/state/jetl/jetl.log   # one "N of 200000 in …ms" per settled query,
+                                       # the superseded ones "cancelled"; no "capped" line
+/tmp/tm.sh kill-server; rm -rf $B
+```
+
+Ctrl+N with an empty query lists the opened file first, so it shows which
+one Enter took. Each filter takes about 15-80 ms in release at this size;
+the keystrokes echo at once, and the previous rows stay on screen (with
+their count) until the new ones arrive.
 
 ### Limits under tmux
 

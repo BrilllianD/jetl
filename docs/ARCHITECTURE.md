@@ -116,7 +116,8 @@ redraws when `dirty_frame` is set:
 2. **The bus** (`mpsc::unbounded_channel` of `AppMsg`). Background work
    reports here: file loads, sessions, the file index, tree listings,
    worktree lists, find in files batches, tree file operations
-   (`FsOpDone`), symbol index batches, the recent projects list, clipboard
+   (`FsOpDone`), symbol index batches, palette filter results
+   (`PaletteFiltered`), the recent projects list, clipboard
    reads (`Paste`), formatter results (`Formatted`), Run task output and
    exits and the task picker's list, the Terminal shell's output wakes,
    language server events (`AppMsg::Lsp`), local history lists and
@@ -184,7 +185,7 @@ Two tags, and one rule for popups:
   (`Workspace::switch_root`). Every result that depends on the root carries
   it: `FileLoaded`, `SessionLoaded`, `FileIndex`, `TreeLoaded`,
   `Worktrees`, `Find`, `ReplaceDone`, `FsChanged`, `WatcherStarted`,
-  `DiskText`, `FsOpDone`, `Symbols`, `Paste`, `Formatted`, `RunOutput`,
+  `DiskText`, `FsOpDone`, `Symbols`, `PaletteFiltered`, `Paste`, `Formatted`, `RunOutput`,
   `RunExited`, `RunTasks`, `TerminalOutput`, every `LspMsg`, `Locations`, every
   `GitMsg`. `GitService`
   keeps a copy, set by `set_root(root, generation)`, to tag its own
@@ -199,7 +200,12 @@ Two tags, and one rule for popups:
   (`ProjectPanel::finish_refresh`), `Find` batches (`FindPanel::on_batch`;
   a newer search also stops the old walk through a shared cancel seq),
   `Symbols` batches (`SymbolIndex::on_batch`; only the newest run applies,
-  and it stops older runs through a cancel seq), `RecentProjects`
+  and it stops older runs through a cancel seq), `PaletteFiltered` (one
+  app-wide `App::palette_seq` shared by every palette through `FilterBus`:
+  every refilter takes the next seq, so only the newest filter of the open
+  palette applies; a running filter checks it every 1024 candidates and
+  stops without sending; closing the palette cancels its filter),
+  `RecentProjects`
   (`App::recent_projects_seq`; not tied to the root, so it carries no
   generation; a forget raises it when asked, so older loads are dropped), `Paste` (only the newest request applies, and only while
   the text field it was asked for still has focus), `Formatted` (per
@@ -248,6 +254,18 @@ store is global, and a snapshot is still worth showing after a root
 switch): a list is applied while the palette shows its path, a blob while
 the History tab shows its path and id. Its diff is an ordinary
 `GitMsg::Diff` keyed by `DiffKey::Local`.
+
+Palette filtering of Files and Symbols at or above `BACKGROUND_MIN`
+(10000) candidates with a non-empty query runs in `spawn_blocking`;
+smaller lists, the empty query and a tab switch rank synchronously. While a
+filter runs, the palette keeps showing the previous rows, ranked against
+the candidate `Arc`s and query in `Shown` (render and accept read only
+those, and the match highlight uses that query); results keep the
+selection by item identity unless the query changed. Enter with a filter
+pending ranks the current query synchronously once, unless the user moved
+the selection, which accepts the shown row. Palettes built without
+`App::open_palette` (Local History, Locations, tests) have no `FilterBus`
+and always rank synchronously.
 
 Save As's Tab completion reads one directory on the main thread: an
 explicit keypress, and Enter touches the same path synchronously anyway;

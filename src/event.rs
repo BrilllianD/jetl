@@ -95,6 +95,14 @@ pub enum AppMsg {
         seq: u64,
         batch: crate::symbols::index::SymbolBatch,
     },
+    /// An off-thread palette filter (`Palette::refilter` for large sources):
+    /// candidate indices, best first, of filter `seq`; tagged with the
+    /// workspace generation. Cancelled filters send nothing.
+    PaletteFiltered {
+        generation: u64,
+        seq: u64,
+        rows: Vec<usize>,
+    },
     /// Recent project roots that still exist, newest first, in request
     /// order (not tied to the root). `error` is a failed write of a
     /// forgotten project (`App::forget_recent_project`).

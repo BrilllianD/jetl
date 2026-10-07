@@ -7,7 +7,7 @@ use crate::actions::{Action, AppAction, EditorAction, PaletteKind};
 use crate::dispatch::Dispatch;
 use crate::event::{AppMsg, Effect};
 use crate::git::GitRequest;
-use crate::ui::palette::{Accept, ActionEntry, Palette, PaletteResult, Source};
+use crate::ui::palette::{Accept, ActionEntry, FilterBus, Palette, PaletteResult, Source};
 
 impl App {
     /// Open (or switch) the palette. Candidates come from the caches (file
@@ -27,8 +27,9 @@ impl App {
             return;
         }
         // Switching kinds keeps the typed query.
-        let query = self.palette.take().map(|p| p.input.text).unwrap_or_default();
+        let query = self.palette.take().map(|mut p| std::mem::take(&mut p.input.text)).unwrap_or_default();
         let mut p = Palette::new(kind, self.workspace.root.clone());
+        p.set_background(FilterBus { tx: self.bus_tx.clone(), generation: self.workspace.generation, seq: self.palette_seq.clone() });
         p.set_recent(self.editor.recent_paths());
         if p.wants(Source::Files) {
             p.set_files(self.file_index.files.clone(), true);
@@ -113,6 +114,16 @@ impl App {
         }
         self.symbols.set_files(&self.file_index.files);
         self.request_symbols();
+    }
+
+    /// Rows of an off-thread palette filter; dropped unless they belong to
+    /// the open palette's latest filter.
+    pub(super) fn palette_filtered(&mut self, generation: u64, seq: u64, rows: Vec<usize>) {
+        if generation != self.workspace.generation {
+            tracing::debug!("dropping palette filter of a previous root");
+        } else if !self.palette.as_mut().is_some_and(|p| p.apply_filter(seq, rows)) {
+            tracing::debug!("dropping stale palette filter");
+        }
     }
 
     /// Record the current root in the recent projects file and load the
@@ -240,5 +251,100 @@ impl App {
                 self.apply_effects(vec![Effect::OpenFileAt { path, line, col }])
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::Ordering;
+
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    use super::*;
+    use crate::app::tests::{handle_next, test_app};
+
+    /// Handle filter results until the open palette has none pending; an
+    /// older filter may finish before it sees the cancel, so its result is
+    /// handled (and dropped) too. Other messages are dropped.
+    async fn settle_palette(app: &mut App) {
+        while app.palette.as_ref().is_some_and(|p| p.filter_pending()) {
+            handle_next(app, |m| matches!(m, AppMsg::PaletteFiltered { .. })).await;
+        }
+    }
+
+    /// Go to File with a synthetic index of 5000 paths and
+    /// `src/target_file.rs`, filtering off the main thread from one file up.
+    fn large_go_to_file(app: &mut App) {
+        app.open_palette(PaletteKind::Files);
+        app.palette.as_mut().unwrap().set_background_min(1);
+        let mut files: Vec<String> = (0..5000).map(|i| format!("pkg{}/mod_{i}.rs", i % 50)).collect();
+        files.push("src/target_file.rs".into());
+        files.sort();
+        let (generation, seq) = (app.workspace.generation, app.file_index.requested);
+        app.handle_msg(AppMsg::FileIndex { generation, seq, files });
+    }
+
+    fn type_keys(app: &mut App, text: &str) {
+        for c in text.chars() {
+            app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+    }
+
+    fn accept(app: &mut App) -> Option<PaletteResult> {
+        app.palette.as_mut().unwrap().handle_action(&crate::actions::PaletteAction::Accept)
+    }
+
+    #[tokio::test]
+    async fn go_to_file_filters_large_indexes_off_the_main_thread() {
+        let (mut app, dir) = test_app("palette-large");
+        large_go_to_file(&mut app);
+        assert_eq!(app.palette.as_ref().unwrap().rows_selected(), (5001, 0));
+        type_keys(&mut app, "targ");
+        let p = app.palette.as_ref().unwrap();
+        assert!(p.filter_pending());
+        assert_eq!(p.rows_selected(), (5001, 0), "the previous rows stay until the result");
+        settle_palette(&mut app).await;
+        let target = app.workspace.root.join("src/target_file.rs");
+        assert_eq!(accept(&mut app), Some(PaletteResult::Accept(Accept::OpenFile(target))));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn stale_palette_filter_results_are_dropped() {
+        let (mut app, dir) = test_app("palette-stale");
+        large_go_to_file(&mut app);
+        type_keys(&mut app, "t");
+        let seq = app.palette_seq.load(Ordering::Relaxed);
+        let generation = app.workspace.generation;
+        // A previous root's result, and an older filter's.
+        app.handle_msg(AppMsg::PaletteFiltered { generation: generation + 1, seq, rows: vec![] });
+        app.handle_msg(AppMsg::PaletteFiltered { generation, seq: seq - 1, rows: vec![] });
+        let p = app.palette.as_ref().unwrap();
+        assert!(p.filter_pending());
+        assert_eq!(p.rows_selected(), (5001, 0));
+        settle_palette(&mut app).await;
+        let (rows, _) = app.palette.as_ref().unwrap().rows_selected();
+        assert!(rows > 0 && rows < 5001, "{rows}");
+        // A late result once the palette is closed.
+        app.palette = None;
+        app.handle_msg(AppMsg::PaletteFiltered { generation, seq, rows: vec![0] });
+        assert!(app.palette.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn enter_right_after_typing_opens_the_best_match() {
+        let (mut app, dir) = test_app("palette-enter");
+        let target = app.workspace.root.join("src/target_file.rs");
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(&target, "fn main() {}\n").unwrap();
+        large_go_to_file(&mut app);
+        type_keys(&mut app, "targetfile");
+        assert!(app.palette.as_ref().unwrap().filter_pending());
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(app.palette.is_none());
+        handle_next(&mut app, |m| matches!(m, AppMsg::FileLoaded { .. })).await;
+        assert_eq!(app.editor.active_path(), Some(target.as_path()));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

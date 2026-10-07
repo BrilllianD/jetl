@@ -212,6 +212,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   1.90, so 1.88 never built; hover Markdown parsing no longer uses `if let` match guards.
 - An invalid `theme.toml` now leaves the chosen theme in place instead of falling back to
   Darcula. Git log graph lanes take their colors from the theme.
+- Go to File, Go to Symbol and Search Everywhere filter very large lists (10000 files or
+  symbols and up) off the main thread, so typing stays responsive near the 200000-file cap.
+  The previous results stay on screen until the new ones arrive, and Enter right after typing
+  still opens the best match for the full query. The log warns about the file index cap only
+  when a tree has more than 200000 files, not exactly that many.
 
 ### Removed
 
