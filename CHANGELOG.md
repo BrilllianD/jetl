@@ -204,6 +204,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is stored as "Unsaved changes" each period, so work between saves survives a killed jetl or a
   closed terminal. They merge with autosaves into one snapshot per 5 minutes, and saving the
   same text turns the latest into "Saved".
+- Local history labels: File > Local History: Put Label… (also in the Project tree's context
+  menu) stores the file's current text under a name you choose, shown as "Label: <name>" in its
+  Local History list. Labels are kept past `keep_days` and pruned for size only after every
+  other snapshot; Shift+Delete on a label's row removes it. A label applies to one file, not the
+  whole project.
 - Recent Projects: Shift+Delete forgets the selected project. Its row goes at once and the
   palette stays open; the project itself is not touched, and opening it again lists it again.
   The current project is never listed, so it cannot be forgotten.

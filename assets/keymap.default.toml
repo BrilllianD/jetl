@@ -438,8 +438,9 @@
 "ctrl-w" = "palette.delete_word"
 "tab" = "palette.next_tab"
 "shift-tab" = "palette.prev_tab"
-# Deletes the selected scratch file (Scratch Files); elsewhere it deletes
-# forward in the query, like Delete.
+# Deletes the selected scratch file (Scratch Files), forgets the selected
+# project (Recent Projects) or removes the selected label (Local History);
+# elsewhere it deletes forward in the query, like Delete.
 "shift-delete" = "palette.delete_item"
 
 # Reserved for the future vim mode (inert unless [keymap] mode = "vim").

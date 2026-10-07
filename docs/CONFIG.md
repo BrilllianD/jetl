@@ -168,8 +168,8 @@ completion_min_chars = 1       # identifier chars typed before it opens by itsel
 
 [local_history]
 enabled = true                 # snapshot files on save and before they are overwritten or deleted
-keep_days = 5                  # snapshots older than this are pruned (0 drops every one at the next prune)
-max_total_mb = 100             # the oldest snapshots are pruned while the store holds more (compressed size on disk)
+keep_days = 5                  # snapshots older than this are pruned (0 drops every one at the next prune; labels are kept)
+max_total_mb = 100             # the oldest snapshots are pruned while the store holds more (compressed size on disk; labels go last)
 max_file_kb = 2048             # larger files are not snapshotted
 snapshot_unsaved_secs = 0      # every this many seconds, snapshot unsaved edits of open files (0: off; at least 10; 60 is a good value)
 ```
@@ -407,6 +407,16 @@ Renames made outside jetl (`mv` or `git mv` in a terminal, or files renamed
 by a checkout, merge or pull) are not followed: the old path keeps its
 snapshots.
 
+Put a label on a file to keep a named snapshot: File > Local History: Put
+Label… (`editor.put_label`, no key by default; also the Project tree's
+context menu) asks a name and stores the active file's text, unsaved edits
+included (or the selected tree file as on disk), as a "Label: <name>" row,
+in bold. A label applies to one file, not the whole project as in
+JetBrains. It is kept past `keep_days`, and dropped by the size limit only
+after every other snapshot; Shift+Delete on its row in the Local History
+list removes it (after asking). A label moves with its file when renamed in
+the Project tree. Saving the labelled text right after adds no row.
+
 With `snapshot_unsaved_secs` set, the text of every tab with unsaved edits
 that has a file is also snapshotted on that timer ("Unsaved changes"), so
 work between saves survives a killed jetl, a closed terminal, a power loss
@@ -432,15 +442,15 @@ file's tab as one undoable edit (Ctrl+Z takes it back), opening the file
 first if needed; nothing is written until you save. [Snapshots…] goes back
 to the list.
 
-Snapshots older than `keep_days` go, then the oldest while the store holds
-more than `max_total_mb`, when jetl starts and when either setting
+Snapshots older than `keep_days` go (labels excepted), then the oldest
+while the store holds more than `max_total_mb`, labels last, when jetl starts and when either setting
 changes; all five settings apply at once (changing
 `snapshot_unsaved_secs` restarts its timer). Several jetl instances share the
 store: one prunes at a time, and a snapshot stored by another instance
 during a prune may be lost. Snapshots are plain files, like crash recovery
 dumps, protected only by the state directory's permissions; with
-`snapshot_unsaved_secs` set, that includes text you never saved (a pasted
-secret, say). A file has one
+`snapshot_unsaved_secs` set, or a label put on a tab with unsaved edits,
+that includes text you never saved (a pasted secret, say). A file has one
 history however it is reached: through a symlink to it, or through a
 symlinked folder (a project opened through a symlink included); the list
 shows the path you opened.

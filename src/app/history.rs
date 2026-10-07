@@ -1,7 +1,8 @@
 //! Local history in the app: the Local History palette, the History tab's
-//! diff, reverting to a snapshot, snapshots of files on disk before they
-//! are overwritten, and periodic snapshots of unsaved edits (`history/`
-//! holds the store and its worker).
+//! diff, reverting to a snapshot, labels (Put Label, and their removal from
+//! the palette), snapshots of files on disk before they are overwritten,
+//! and periodic snapshots of unsaved edits (`history/` holds the store and
+//! its worker).
 
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -10,24 +11,81 @@ use super::{App, Ctx};
 use crate::actions::PaletteKind;
 use crate::event::{AppMsg, Level};
 use crate::git::{DiffKey, GitMsg};
-use crate::history::{Capture, CaptureText, HistoryMsg, Kind, Request};
+use crate::history::{Capture, CaptureText, Entry, HistoryMsg, Kind, MAX_LABEL_CHARS, Request};
+use crate::ui::dialog::{Dialog, DialogId};
 use crate::ui::focus::{PanelId, ToolWindowId};
 use crate::ui::palette::Palette;
+
+/// Why Put Label does nothing.
+const HISTORY_OFF: &str = "Local history is off ([local_history] enabled = false)";
 
 impl App {
     /// `editor.local_history`: the selected tree entry when the tree has
     /// focus, else the active file.
     pub(super) fn local_history(&mut self) {
+        if let Some(path) = self.history_target() {
+            self.open_local_history(path);
+        }
+    }
+
+    /// The file local history actions work on: the selected tree entry when
+    /// the tree has focus, else the active file; `None`, with a
+    /// notification, when there is none or it is a folder.
+    fn history_target(&mut self) -> Option<PathBuf> {
         let path = if self.focus.is(PanelId::Project) {
             self.project.selected_row().map(|r| r.path.clone())
         } else {
             self.editor.active_path().map(Path::to_path_buf)
         };
         let Some(path) = path else {
-            return self.notify(Level::Info, "No file selected");
+            self.notify(Level::Info, "No file selected");
+            return None;
         };
         if path.is_dir() {
-            return self.notify(Level::Info, "Local history is per file: select a file");
+            self.notify(Level::Info, "Local history is per file: select a file");
+            return None;
+        }
+        Some(path)
+    }
+
+    /// `editor.put_label`: ask a name for a label on the Local History target.
+    pub(super) fn put_label(&mut self) {
+        if !self.history.enabled() {
+            return self.notify(Level::Info, HISTORY_OFF);
+        }
+        let Some(path) = self.history_target() else { return };
+        let rel = crate::ui::palette::display_path(&path, &self.workspace.root);
+        self.dialog = Some(Dialog::input(DialogId::PutLabel(path), "Put Label", &format!("Label for {rel}:"), "", "Put"));
+    }
+
+    /// The Put Label dialog's name: trimmed, cut to [`MAX_LABEL_CHARS`]; the
+    /// open tab's text (unsaved edits included), else the file on disk.
+    pub(super) fn finish_put_label(&mut self, path: PathBuf, text: &str) {
+        let name = text.trim().chars().take(MAX_LABEL_CHARS).collect::<String>().trim_end().to_string();
+        if name.is_empty() {
+            return self.notify(Level::Warn, "Put Label: a label needs a name");
+        }
+        let tab = self.editor.index_of(&path).map(|i| CaptureText::Rope(self.editor.buffers[i].rope.clone()));
+        if !self.history.put_label(path, tab, name) {
+            // Turned off while the dialog was open.
+            self.notify(Level::Info, HISTORY_OFF);
+        }
+    }
+
+    /// Shift+Delete on a label row of the Local History palette: ask first.
+    pub(super) fn ask_remove_label(&mut self, path: PathBuf, entry: Entry) {
+        let name = entry.detail.clone().unwrap_or_default();
+        let rel = crate::ui::palette::display_path(&path, &self.workspace.root);
+        let msg = format!("Remove label \"{name}\" from the local history of {rel}?\nIts text goes too unless another snapshot holds it.");
+        self.dialog =
+            Some(Dialog::confirm(DialogId::RemoveLabel { path, entry: Box::new(entry) }, "Remove Label", &msg, &["Remove", "Cancel"]));
+    }
+
+    /// The remove dialog's answer; either way the palette comes back (its
+    /// list is queued after the removal, so it shows the row gone).
+    pub(super) fn finish_remove_label(&mut self, path: PathBuf, entry: Entry, remove: bool) {
+        if remove {
+            self.history.remove_label(path.clone(), entry);
         }
         self.open_local_history(path);
     }
@@ -70,6 +128,21 @@ impl App {
                     Err(e) => self.notify(Level::Error, format!("Local history: {e}")),
                 }
             }
+            HistoryMsg::Labelled { path, name, result } => match result {
+                Ok(()) => {
+                    let rel = crate::ui::palette::display_path(&path, &self.workspace.root);
+                    self.notify(Level::Info, format!("Put label \"{name}\" on {rel}"));
+                    if self.palette.as_ref().is_some_and(|p| p.history_path() == Some(path.as_path())) {
+                        self.history.list(&path);
+                    }
+                }
+                Err(e) => self.notify(Level::Warn, format!("Put Label: {e}")),
+            },
+            HistoryMsg::LabelRemoved { name, result, .. } => match result {
+                Ok(true) => self.notify(Level::Info, format!("Removed label \"{name}\"")),
+                Ok(false) => self.notify(Level::Info, format!("Label \"{name}\" was already gone")),
+                Err(e) => self.notify(Level::Warn, format!("Remove label: {e}")),
+            },
         }
     }
 
@@ -485,6 +558,97 @@ pub(crate) mod tests {
         let from = format!("Saved As from {}", c.display());
         assert_eq!(snapshots(&app, &c2), pairs(&[(&from, "12c\n")]), "nothing carried");
         assert_eq!(snapshots(&app, &c), pairs(&[("Saved", "1c\n")]));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn put_label_names_the_tab_text_and_removal_asks_first() {
+        let (mut app, dir) = test_app("history-label");
+        with_history(&mut app);
+        let a = load(&mut app, "a.txt", "one\n");
+        type_text(&mut app, "x ");
+        let last = |app: &App| app.notifications.last().map(|n| n.text.clone()).unwrap_or_default();
+        let dialog = |app: &mut App| app.dialog.take().expect("a dialog").id;
+        app.perform(Action::App(AppAction::PutLabel));
+        assert_eq!(dialog(&mut app), DialogId::PutLabel(a.clone()));
+        // No name: nothing stored.
+        app.finish_dialog(DialogId::PutLabel(a.clone()), DialogResult::Text("   ".into()));
+        assert_eq!(last(&app), "Put Label: a label needs a name");
+        assert!(snapshots(&app, &a).is_empty());
+        // The tab's text, unsaved edits included.
+        app.finish_dialog(DialogId::PutLabel(a.clone()), DialogResult::Text("  before refactor ".into()));
+        handle_next(&mut app, history_msg).await;
+        assert_eq!(last(&app), "Put label \"before refactor\" on a.txt");
+        assert_eq!(snapshots(&app, &a), pairs(&[("Label: before refactor", "x one\n")]));
+        // A save of that text adds no row.
+        app.perform(Action::Editor(EditorAction::Save));
+        assert_eq!(snapshots(&app, &a).len(), 1);
+
+        // Shift+Delete on its row asks first; Cancel brings the list back.
+        let remove = |app: &mut App| {
+            let p = app.palette.as_mut().expect("the palette");
+            let Some(PaletteResult::Accept(accept)) = p.handle_action(&PaletteAction::DeleteItem) else { panic!("a removal") };
+            app.finish_palette(PaletteResult::Accept(accept));
+            dialog(app)
+        };
+        app.open_local_history(a.clone());
+        handle_next(&mut app, history_msg).await;
+        let id = remove(&mut app);
+        assert!(matches!(&id, DialogId::RemoveLabel { path, .. } if *path == a), "{id:?}");
+        app.finish_dialog(id, DialogResult::Button(1));
+        assert_eq!(app.palette.as_ref().map(|p| p.source()), Some(Source::LocalHistory));
+        handle_next(&mut app, history_msg).await;
+        assert_eq!(snapshots(&app, &a).len(), 1);
+        // Remove: the palette comes back without it.
+        let id = remove(&mut app);
+        app.finish_dialog(id, DialogResult::Button(0));
+        handle_next(&mut app, history_msg).await;
+        handle_next(&mut app, history_msg).await;
+        assert_eq!(last(&app), "Removed label \"before refactor\"");
+        assert!(snapshots(&app, &a).is_empty());
+        assert_eq!(app.palette.as_ref().and_then(|p| p.history_path()), Some(a.as_path()));
+
+        // A long name is cut.
+        app.palette = None;
+        app.finish_dialog(DialogId::PutLabel(a.clone()), DialogResult::Text("n".repeat(150)));
+        handle_next(&mut app, history_msg).await;
+        assert_eq!(snapshots(&app, &a)[0].0, format!("Label: {}", "n".repeat(MAX_LABEL_CHARS)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn put_label_needs_local_history_and_a_file() {
+        let (mut app, dir) = test_app("history-label-target");
+        app.perform(Action::App(AppAction::PutLabel));
+        assert!(app.dialog.is_none());
+        assert_eq!(app.notifications.last().map(|n| n.text.as_str()), Some(HISTORY_OFF));
+        with_history(&mut app);
+        app.perform(Action::App(AppAction::PutLabel));
+        assert!(app.dialog.is_none());
+        assert_eq!(app.notifications.last().map(|n| n.text.as_str()), Some("No file selected"));
+        app.focus.set(PanelId::Project);
+        std::fs::create_dir_all(app.workspace.root.join("sub")).unwrap();
+        app.project.select_path(&app.workspace.root.join("sub"));
+        app.perform(Action::App(AppAction::PutLabel));
+        assert!(app.dialog.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_label_outlives_keep_days() {
+        let (mut app, dir) = test_app("history-label-keep");
+        with_history(&mut app);
+        let a = load(&mut app, "a.txt", "one\n");
+        type_text(&mut app, "x ");
+        app.perform(Action::Editor(EditorAction::Save));
+        app.finish_dialog(DialogId::PutLabel(a.clone()), DialogResult::Text("keep".into()));
+        handle_next(&mut app, history_msg).await;
+        assert_eq!(snapshots(&app, &a).len(), 2);
+        std::thread::sleep(Duration::from_millis(5));
+        let mut config = app.config.clone();
+        config.local_history.keep_days = 0;
+        app.apply_config(config);
+        assert_eq!(snapshots(&app, &a), pairs(&[("Label: keep", "x one\n")]));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

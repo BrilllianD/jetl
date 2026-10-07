@@ -557,13 +557,16 @@ async fn palette_local_history() {
         entry(20_000, 1300, 40, Kind::Save, None),
         entry(19_999, 1200, 37, Kind::BeforeGit, Some("git switch main")),
         entry(19_998, 900, 39, Kind::BeforeReload, None),
+        // A label: bold.
+        entry(19_997, 900, 39, Kind::Label, Some("before refactor")),
         // Shown relative to the root: "Renamed from old/notes.txt".
         entry(19_995, 900, 39, Kind::Renamed, Some(&old)),
         entry(19_990, 512, 39, Kind::Autosave, None),
     ];
     app.palette.as_mut().unwrap().set_history(entries, |_| 0);
     let term = draw_app(app, 80, 24);
-    let marks = palette_marks(&app.theme);
+    let mut marks = palette_marks(&app.theme);
+    marks.push(Mark::modifier('B', "bold", Modifier::BOLD));
     assert_snapshot!("palette_local_history", snapshot(&term, &marks, None));
 }
 

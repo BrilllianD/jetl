@@ -55,6 +55,14 @@
 //! file at the old path starts from that path's history, never mixing with
 //! the renamed one's. Index files may hold entries out of time order after
 //! that; reads sort by time and prune rewrites them sorted.
+//!
+//! A label (Put Label, `Kind::Label`, the name in `detail`) is an entry the
+//! user makes and removes: [`record`] always adds it (never `Same`, never
+//! replacing; its blob is shared like any other), it ends an automatic run,
+//! [`prune`] keeps it past `keep_ms` and drops it only after every other
+//! entry when the store is over its size, [`rename`] moves it (dropping the
+//! old key's copy under the lock), and [`remove_entry`] deletes its line
+//! under `prune.lock`.
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -116,6 +124,8 @@ pub enum Kind {
     BeforeGit,
     /// A file renamed or moved in the Project tree: its text then; the detail is the old path.
     Renamed,
+    /// A label the user put on the file (Put Label): its text then; the detail is the name.
+    Label,
 }
 
 impl Kind {
@@ -141,6 +151,10 @@ impl Kind {
                 Some(d) if !d.is_empty() => format!("Renamed from {d}"),
                 _ => "Renamed".into(),
             },
+            Kind::Label => match detail {
+                Some(d) if !d.is_empty() => format!("Label: {d}"),
+                _ => "Label".into(),
+            },
         }
     }
 
@@ -148,6 +162,12 @@ impl Kind {
     /// ones of a file merge.
     pub fn automatic(self) -> bool {
         matches!(self, Kind::Autosave | Kind::Unsaved)
+    }
+
+    /// Entries the user made and removes (labels): never `Same`, kept by the
+    /// age cut and dropped last by the size cut, moved (not copied) by a rename.
+    pub fn pinned(self) -> bool {
+        matches!(self, Kind::Label)
     }
 }
 
@@ -202,6 +222,18 @@ pub enum Skip {
     Internal,
     /// Index lines are JSON strings.
     NotUtf8Path,
+}
+
+impl Skip {
+    /// Why, as the end of a sentence: "… because it is a binary file".
+    pub fn reason(self) -> &'static str {
+        match self {
+            Skip::TooLarge => "it is larger than max_file_kb",
+            Skip::Binary => "it is a binary file",
+            Skip::Internal => "it is a file of the local history store",
+            Skip::NotUtf8Path => "its path is not UTF-8",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -363,7 +395,8 @@ fn entries_of(dir: &Path, key: &str, given: Option<&str>) -> Vec<Entry> {
 /// the store, or the same as the file's last entry. An automatic snapshot
 /// replaces the last entry when that is an automatic one of the same run,
 /// and any other snapshot of an unsaved snapshot's text relabels it (see
-/// the module doc).
+/// the module doc). A label (`Kind::pinned`) is always added: never `Same`,
+/// never replacing an entry.
 pub fn record(
     dir: &Path,
     path: &Path,
@@ -388,7 +421,7 @@ pub fn record(
     let index = index_file(dir, key);
     let entries = entries_of(dir, key, path.to_str());
     let last = entries.last();
-    let same = last.is_some_and(|e| e.blob == id);
+    let same = !kind.pinned() && last.is_some_and(|e| e.blob == id);
     // A save of the text an unsaved snapshot holds relabels that snapshot.
     let promote = same && last.is_some_and(|e| e.kind == Kind::Unsaved && kind != Kind::Unsaved);
     if same && !promote {
@@ -457,6 +490,8 @@ pub struct Carried {
     pub entries: usize,
     /// Another instance held `prune.lock`: the lines were appended without it.
     pub unlocked: bool,
+    /// Labels moved off the old key (0 when unlocked: they stay copied).
+    pub labels: usize,
 }
 
 /// One file's history to carry.
@@ -475,7 +510,9 @@ struct Moved {
 /// (blobs are shared), those the new key has already left out, then a
 /// `Kind::Renamed` entry at `at_ms` whose detail is the old path and whose
 /// text is the file's now (`read`, within `max_bytes` and not binary)
-/// or else the newest carried one. The old key keeps its entries.
+/// or else the newest carried one. The old key keeps its entries, except
+/// its labels, which move: they are dropped from the old key under
+/// `prune.lock` (and stay copied when another instance holds it).
 pub fn rename(
     dir: &Path,
     from: &Path,
@@ -521,8 +558,88 @@ pub fn rename(
         carried.entries += carry(dir, m, at_ms, max_bytes, &read)?;
         carried.files += 1;
     }
+    // Labels move: the old key's copies would be pinned where no one sees them.
+    if lock.is_some() {
+        for m in &moved {
+            carried.labels += drop_labels(dir, &m.old)?;
+        }
+    }
     drop(lock);
     Ok(carried)
+}
+
+/// Drop the labels among `old` (entries of one file, from any of its index
+/// files) from their index files; returns how many lines went. Only under
+/// `prune.lock`.
+fn drop_labels(dir: &Path, old: &[Entry]) -> io::Result<usize> {
+    let labels: Vec<&Entry> = old.iter().filter(|e| e.kind.pinned()).collect();
+    let mut paths: Vec<&str> = labels.iter().map(|e| e.path.as_str()).collect();
+    paths.sort_unstable();
+    paths.dedup();
+    let mut dropped = 0;
+    for path in paths {
+        dropped += drop_lines(&index_file(dir, path), |x| labels.contains(&x))?;
+    }
+    Ok(dropped)
+}
+
+/// What a [`remove_entry`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Removal {
+    /// The entry's line was removed.
+    Done,
+    /// No such line (already removed, by another instance perhaps).
+    Gone,
+    /// Another instance holds `prune.lock`: nothing was done.
+    Locked,
+}
+
+/// Remove `entry` (a label, as listed: `path` is its key) from its index
+/// file under `prune.lock`; other lines stay as they are. Its blob is left
+/// to prune's gc. `Locked` when another instance holds the lock after one retry.
+pub fn remove_entry(dir: &Path, entry: &Entry) -> io::Result<Removal> {
+    if !dir.is_dir() {
+        return Ok(Removal::Gone);
+    }
+    let lock = PruneLock::take(dir)?.or_else(|| {
+        std::thread::sleep(LOCK_RETRY);
+        PruneLock::take(dir).ok().flatten()
+    });
+    let Some(_lock) = lock else { return Ok(Removal::Locked) };
+    Ok(if drop_lines(&index_file(dir, &entry.path), |e| e == entry)? > 0 { Removal::Done } else { Removal::Gone })
+}
+
+/// Drop the lines of index file `file` that parse to an entry `drop`
+/// accepts; lines that do not parse and every other line stay verbatim. A
+/// file left empty is removed. Returns how many lines went. Only under
+/// `prune.lock` (see [`write_index`]).
+fn drop_lines(file: &Path, drop: impl Fn(&Entry) -> bool) -> io::Result<usize> {
+    let text = match std::fs::read_to_string(file) {
+        Ok(t) => t,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(0),
+        Err(e) => return Err(e),
+    };
+    let mut kept: Vec<&str> = Vec::new();
+    let mut dropped = 0;
+    for l in text.lines() {
+        match serde_json::from_str::<Entry>(l) {
+            Ok(e) if drop(&e) => dropped += 1,
+            _ => kept.push(l),
+        }
+    }
+    if dropped == 0 {
+        return Ok(0);
+    }
+    if kept.iter().all(|l| l.trim().is_empty()) {
+        match std::fs::remove_file(file) {
+            Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
+            _ => return Ok(dropped),
+        }
+    }
+    let mut text = kept.join("\n");
+    text.push('\n');
+    write_index(file, &text)?;
+    Ok(dropped)
 }
 
 /// Every key strictly under `prefix` (component-wise) with its entries,
@@ -694,8 +811,9 @@ struct IndexFile {
 
 /// Move entries stored under a path that is not their [`key`] (written by
 /// an older jetl, through a symlink) under the key, then drop entries older
-/// than `keep_ms` before `now_ms`, then the oldest ones (of any file) while
-/// the bytes on disk of the blobs still referenced exceed `max_bytes`;
+/// than `keep_ms` before `now_ms` (labels excepted), then the oldest
+/// entries other than labels (of any file), and then the oldest labels,
+/// while the bytes on disk of the blobs still referenced exceed `max_bytes`;
 /// rewrite the changed index files (an emptied one is removed) and delete
 /// the blobs no entry references (once older than [`BLOB_GRACE`]). Does
 /// nothing while another instance prunes. Never creates `dir`.
@@ -739,7 +857,7 @@ pub fn prune(dir: &Path, now_ms: u64, keep_ms: u64, max_bytes: u64) -> io::Resul
     let cutoff = now_ms.saturating_sub(keep_ms);
     for f in &mut files {
         let before = f.entries.len();
-        f.entries.retain(|e| e.at >= cutoff);
+        f.entries.retain(|e| e.at >= cutoff || e.kind.pinned());
         if f.entries.len() != before {
             f.changed = true;
             stats.entries += before - f.entries.len();
@@ -753,10 +871,15 @@ pub fn prune(dir: &Path, now_ms: u64, keep_ms: u64, max_bytes: u64) -> io::Resul
     let mut total: u64 = refs.values().map(|(_, len)| len).sum();
     let mut drop_set: HashSet<(usize, usize)> = HashSet::new();
     if total > max_bytes {
-        let mut order: Vec<(u64, usize, usize)> =
-            files.iter().enumerate().flat_map(|(fi, f)| f.entries.iter().enumerate().map(move |(ei, e)| (e.at, fi, ei))).collect();
+        // Unlabelled entries first, oldest first; labels only when they alone
+        // exceed the cap.
+        let mut order: Vec<(bool, u64, usize, usize)> = files
+            .iter()
+            .enumerate()
+            .flat_map(|(fi, f)| f.entries.iter().enumerate().map(move |(ei, e)| (e.kind.pinned(), e.at, fi, ei)))
+            .collect();
         order.sort_unstable();
-        for (_, fi, ei) in order {
+        for (_, _, fi, ei) in order {
             if total <= max_bytes {
                 break;
             }
@@ -1549,7 +1672,7 @@ mod tests {
         let dir = temp("rename");
         rec(&dir, "/p/a.txt", "1", 1);
         rec(&dir, "/p/a.txt", "2", 2);
-        assert_eq!(mv(&dir, "/p/a.txt", "/p/b.txt", 10), Carried { files: 1, entries: 2, unlocked: false });
+        assert_eq!(mv(&dir, "/p/a.txt", "/p/b.txt", 10), Carried { files: 1, entries: 2, unlocked: false, labels: 0 });
         assert_eq!(
             labels(&dir, "/p/b.txt"),
             [("Renamed from /p/a.txt".into(), 10, None), ("Saved".into(), 2, None), ("Saved".into(), 1, None)]
@@ -1691,7 +1814,7 @@ mod tests {
         let dir = temp("rename-lock");
         rec(&dir, "/p/a.txt", "1", 1);
         std::fs::write(dir.join("prune.lock"), "1").unwrap();
-        assert_eq!(mv(&dir, "/p/a.txt", "/p/b.txt", 10), Carried { files: 1, entries: 1, unlocked: true });
+        assert_eq!(mv(&dir, "/p/a.txt", "/p/b.txt", 10), Carried { files: 1, entries: 1, unlocked: true, labels: 0 });
         assert_eq!(labels(&dir, "/p/b.txt").len(), 2);
         assert!(dir.join("prune.lock").exists(), "not ours to remove");
         let _ = std::fs::remove_dir_all(&dir);
@@ -1733,5 +1856,146 @@ mod tests {
         assert_eq!(serde_json::from_str::<Kind>("\"unsaved\"").unwrap(), Kind::Unsaved);
         assert_eq!(Kind::Unsaved.label(None), "Unsaved changes");
         assert!(Kind::Unsaved.automatic() && Kind::Autosave.automatic() && !Kind::Save.automatic());
+    }
+
+    fn lab(dir: &Path, path: &str, text: &str, name: &str, at: u64) -> Recorded {
+        record(dir, Path::new(path), text.as_bytes(), Kind::Label, Some(name.into()), at, MB).unwrap()
+    }
+
+    #[test]
+    fn a_label_is_never_same_and_shares_the_blob() {
+        let dir = temp("label-same");
+        let p = "/p/a.txt";
+        rec(&dir, p, "a", 1);
+        assert!(matches!(lab(&dir, p, "a", "v1", 2), Recorded::Added(_)));
+        assert_eq!(blob_count(&dir), 1, "the saved text's blob is shared");
+        assert!(matches!(lab(&dir, p, "a", "v2", 3), Recorded::Added(_)));
+        assert_eq!(labels(&dir, p), [("Label: v2".into(), 3, None), ("Label: v1".into(), 2, None), ("Saved".into(), 1, None)]);
+        // A save of the labelled text adds nothing (as after a Renamed marker).
+        assert_eq!(rec(&dir, p, "a", 4), Recorded::Same);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_label_ends_a_run_and_never_replaces_an_unsaved_snapshot() {
+        let dir = temp("label-run");
+        let p = "/p/a.txt";
+        unsaved(&dir, p, "x", 0);
+        assert!(matches!(lab(&dir, p, "x", "l", 1), Recorded::Added(_)));
+        assert_eq!(labels(&dir, p), [("Label: l".into(), 1, None), ("Unsaved changes".into(), 0, None)]);
+        let Recorded::Added(e) = auto(&dir, p, "y", 2) else { panic!("added") };
+        assert_eq!(e.since, None);
+        let Recorded::Replaced(e) = auto(&dir, p, "z", 3) else { panic!("replaced") };
+        assert_eq!(e.since, Some(2));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn prune_keeps_labels_past_keep_days_and_drops_them_last_by_size() {
+        let dir = temp("label-prune");
+        let day = 86_400_000;
+        rec(&dir, "/p/o.txt", "old", 0);
+        lab(&dir, "/p/a.txt", "kept", "v1", 0);
+        let s = prune(&dir, 11 * day, 5 * day, MB).unwrap();
+        assert_eq!(s.entries, 1);
+        assert!(list(&dir, Path::new("/p/o.txt")).is_empty());
+        assert_eq!(labels(&dir, "/p/a.txt"), [("Label: v1".into(), 0, None)]);
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // Raw blobs (under MIN_COMPRESS): the stored length is the length.
+        let dir = temp("label-prune-size");
+        lab(&dir, "/p/a.txt", "LLLL", "a", 1);
+        rec(&dir, "/p/b.txt", "ssssss", 5);
+        lab(&dir, "/p/c.txt", "MMMMMMMM", "c", 3);
+        // The save goes first, though newer than both labels.
+        let s = prune(&dir, 6, 100, 12).unwrap();
+        assert_eq!((s.entries, s.bytes), (1, 12));
+        assert!(list(&dir, Path::new("/p/b.txt")).is_empty());
+        // Labels alone over the cap: the oldest goes.
+        let s = prune(&dir, 6, 100, 8).unwrap();
+        assert_eq!((s.entries, s.bytes), (1, 8));
+        assert!(list(&dir, Path::new("/p/a.txt")).is_empty());
+        assert_eq!(labels(&dir, "/p/c.txt").len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn remove_entry_drops_only_that_line_under_the_lock() {
+        let dir = temp("label-remove");
+        let p = "/p/a.txt";
+        let label = added(lab(&dir, p, "a", "v1", 1));
+        let save = added(rec(&dir, p, "b", 2));
+        // Another path's line (a hash collision) and garbage in the same file.
+        let file = index_file(&dir, p);
+        let mut other = save.clone();
+        other.path = "/p/other".into();
+        let mut text = std::fs::read_to_string(&file).unwrap();
+        text.push_str(&serde_json::to_string(&other).unwrap());
+        text.push_str("\n{not json\n");
+        std::fs::write(&file, &text).unwrap();
+        assert_eq!(remove_entry(&dir, &label).unwrap(), Removal::Done);
+        let after = std::fs::read_to_string(&file).unwrap();
+        let expect = text.lines().skip(1).map(|l| format!("{l}\n")).collect::<String>();
+        assert_eq!(after, expect, "every other line kept verbatim");
+        assert_eq!(labels(&dir, p), [("Saved".into(), 2, None)]);
+        assert!(!dir.join("prune.lock").exists(), "the lock is released");
+        assert_eq!(remove_entry(&dir, &label).unwrap(), Removal::Gone);
+        // Another instance prunes: nothing changes.
+        std::fs::write(dir.join("prune.lock"), "1").unwrap();
+        assert_eq!(remove_entry(&dir, &save).unwrap(), Removal::Locked);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), after);
+        assert!(dir.join("prune.lock").exists(), "not ours to remove");
+        std::fs::remove_file(dir.join("prune.lock")).unwrap();
+        // The only line: the index file goes.
+        let only = added(lab(&dir, "/p/z.txt", "z", "v", 3));
+        assert_eq!(remove_entry(&dir, &only).unwrap(), Removal::Done);
+        assert!(!index_file(&dir, "/p/z.txt").exists());
+        // A missing store is not created.
+        let none = temp("label-remove-none");
+        assert_eq!(remove_entry(&none, &only).unwrap(), Removal::Gone);
+        assert!(!none.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_rename_moves_labels_off_the_old_key() {
+        let dir = temp("label-rename");
+        rec(&dir, "/p/a.txt", "1", 1);
+        lab(&dir, "/p/a.txt", "1", "v1", 2);
+        assert_eq!(mv(&dir, "/p/a.txt", "/p/b.txt", 10), Carried { files: 1, entries: 2, unlocked: false, labels: 1 });
+        assert!(labels(&dir, "/p/b.txt").iter().any(|(l, ..)| l == "Label: v1"));
+        assert_eq!(labels(&dir, "/p/a.txt"), [("Saved".into(), 1, None)], "the old key keeps the rest");
+        // Renaming back: exactly one label, under a.
+        assert_eq!(mv(&dir, "/p/b.txt", "/p/a.txt", 20).labels, 1);
+        let count = |p: &str| labels(&dir, p).iter().filter(|(l, ..)| l.starts_with("Label")).count();
+        assert_eq!((count("/p/a.txt"), count("/p/b.txt")), (1, 0));
+        // Another instance prunes: the labels stay copied.
+        std::fs::write(dir.join("prune.lock"), "1").unwrap();
+        let c = mv(&dir, "/p/a.txt", "/p/c.txt", 30);
+        assert_eq!((c.unlocked, c.labels), (true, 0));
+        assert_eq!((count("/p/a.txt"), count("/p/c.txt")), (1, 1));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn label_kind_name_and_label() {
+        assert_eq!(serde_json::to_string(&Kind::Label).unwrap(), "\"label\"");
+        assert_eq!(serde_json::from_str::<Kind>("\"label\"").unwrap(), Kind::Label);
+        assert_eq!(Kind::Label.label(Some("v1")), "Label: v1");
+        assert_eq!(Kind::Label.label(None), "Label");
+        assert!(Kind::Label.pinned() && !Kind::Label.automatic() && !Kind::Save.pinned());
+        let e = Entry {
+            v: 1,
+            path: "/p/b".into(),
+            at: 1,
+            blob: String::new(),
+            len: 0,
+            lines: 0,
+            kind: Kind::Label,
+            detail: Some("/p/a".into()),
+            since: None,
+        };
+        assert_eq!(e.label_in(Path::new("/p")), "Label: /p/a");
+        assert_eq!(Skip::Binary.reason(), "it is a binary file");
     }
 }

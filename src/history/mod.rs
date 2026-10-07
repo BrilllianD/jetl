@@ -3,7 +3,8 @@
 //! the work tree, a forced worktree remove, reloads, Save As over a file,
 //! Overwrite, tree deletes)
 //! and, when `snapshot_unsaved_secs` is set, of unsaved edits on a timer;
-//! a rename in the Project tree carries a file's snapshots to its new path.
+//! a rename in the Project tree carries a file's snapshots to its new path;
+//! Put Label adds a named snapshot that prune keeps.
 //! One global store (`Paths::history_dir`, see `store.rs`), shared by every
 //! project and instance, with snapshots stored compressed; File > Local History… lists a file's snapshots and
 //! the Git window's History tab diffs one against the current text.
@@ -37,6 +38,10 @@ pub const MAX_FILES: usize = 500;
 
 /// Any `snapshot_unsaved_secs` under this counts as this many seconds.
 pub const MIN_UNSAVED_SECS: u64 = 10;
+
+/// A label name is cut to this many chars (an index line stays short, so
+/// its single `O_APPEND` write stays safe).
+pub const MAX_LABEL_CHARS: usize = 100;
 
 /// `[local_history]` in `config.toml`.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -132,6 +137,10 @@ pub enum HistoryMsg {
     List { path: PathBuf, entries: Vec<Entry> },
     /// A snapshot's text, for a revert.
     Blob { path: PathBuf, id: String, result: Result<Vec<u8>, String> },
+    /// A label was put on `path`, or why not.
+    Labelled { path: PathBuf, name: String, result: Result<(), String> },
+    /// A label of `path` was removed (`Ok(false)`: it was gone already).
+    LabelRemoved { path: PathBuf, name: String, result: Result<bool, String> },
 }
 
 /// Done when the snapshot a destructive operation asked for is stored.
@@ -152,6 +161,8 @@ enum Job {
     BeforeGit { root: PathBuf, label: String, at: u64, done: Sender<()> },
     BeforeDelete { path: PathBuf, at: u64, done: Sender<()> },
     Rename { from: PathBuf, to: PathBuf, at: u64 },
+    Label { path: PathBuf, text: Option<CaptureText>, name: String, at: u64 },
+    RemoveLabel { path: PathBuf, entry: Box<Entry> },
     List(PathBuf),
     Blob { path: PathBuf, id: String },
     Prune,
@@ -264,6 +275,19 @@ impl Handle {
         }
     }
 
+    /// Put label `name` on `path`: `text` (an open tab's, unsaved edits
+    /// included), else the file on disk, read on the worker. Answered by
+    /// `HistoryMsg::Labelled`; `false` (nothing queued) while local history is off.
+    pub fn put_label(&self, path: PathBuf, text: Option<CaptureText>, name: String) -> bool {
+        self.enabled() && self.send(Job::Label { path, text, name, at: now_ms() })
+    }
+
+    /// Remove label `entry` (as listed) of `path`; answered by
+    /// `HistoryMsg::LabelRemoved`. Runs while local history is off too, as prune does.
+    pub fn remove_label(&self, path: PathBuf, entry: Entry) {
+        self.send(Job::RemoveLabel { path, entry: Box::new(entry) });
+    }
+
     /// Ask for `path`'s snapshots (`HistoryMsg::List`); answered even when
     /// snapshots are off.
     pub fn list(&self, path: &Path) {
@@ -323,6 +347,20 @@ impl Worker {
                         self.rename(&from, &to, at, &s);
                     }
                 }
+                Job::Label { path, text, name, at } => {
+                    let result = self.label(&path, text, &name, at, &s);
+                    let _ = self.bus.send(AppMsg::LocalHistory(HistoryMsg::Labelled { path, name, result }));
+                }
+                Job::RemoveLabel { path, entry } => {
+                    let result = match store::remove_entry(&self.dir, &entry) {
+                        Ok(store::Removal::Done) => Ok(true),
+                        Ok(store::Removal::Gone) => Ok(false),
+                        Ok(store::Removal::Locked) => Err("another jetl instance is pruning local history; try again".to_string()),
+                        Err(e) => Err(e.to_string()),
+                    };
+                    let name = entry.detail.clone().unwrap_or_default();
+                    let _ = self.bus.send(AppMsg::LocalHistory(HistoryMsg::LabelRemoved { path, name, result }));
+                }
                 Job::List(path) => {
                     let entries = store::list(&self.dir, &path);
                     let _ = self.bus.send(AppMsg::LocalHistory(HistoryMsg::List { path, entries }));
@@ -362,15 +400,51 @@ impl Worker {
     fn rename(&self, from: &Path, to: &Path, at: u64, s: &LocalHistoryConfig) {
         match store::rename(&self.dir, from, to, at, s.max_file_bytes(), |p| Self::read_file(p, s)) {
             Ok(c) => tracing::debug!(
-                "local history: carried {} entries of {} files from {} to {}{}",
+                "local history: carried {} entries of {} files from {} to {}, moved {} labels{}",
                 c.entries,
                 c.files,
                 from.display(),
                 to.display(),
+                c.labels,
                 if c.unlocked { " (prune lock held)" } else { "" }
             ),
             Err(e) => tracing::warn!("local history rename {} -> {}: {e}", from.display(), to.display()),
         }
+    }
+
+    /// Store label `name` of `path`: `text`, else the file on disk.
+    fn label(&self, path: &Path, text: Option<CaptureText>, name: &str, at: u64, s: &LocalHistoryConfig) -> Result<(), String> {
+        if !s.enabled {
+            return Err("local history is off".into());
+        }
+        let bytes = match text {
+            Some(t) => t.into_bytes(),
+            None => Self::read_for_label(path, s)?,
+        };
+        match store::record(&self.dir, path, &bytes, Kind::Label, Some(name.to_string()), at, s.max_file_bytes()) {
+            Ok(store::Recorded::Added(_) | store::Recorded::Replaced(_)) => Ok(()),
+            Ok(store::Recorded::Skipped(store::Skip::TooLarge)) => Err(too_large(s)),
+            Ok(store::Recorded::Skipped(k)) => Err(k.reason().into()),
+            Ok(store::Recorded::Same) => Err("nothing stored".into()),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
+    /// The file a label is put on, from disk (symlinks followed): a regular
+    /// file within the size limit, else why not.
+    fn read_for_label(path: &Path, s: &LocalHistoryConfig) -> Result<Vec<u8>, String> {
+        let meta = match std::fs::metadata(path) {
+            Ok(m) => m,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err("the file does not exist".into()),
+            Err(e) => return Err(e.to_string()),
+        };
+        if !meta.is_file() {
+            return Err("it is not a regular file".into());
+        }
+        if meta.len() > s.max_file_bytes() {
+            return Err(too_large(s));
+        }
+        std::fs::read(path).map_err(|e| e.to_string())
     }
 
     /// Read a file for a snapshot when it is a regular file within the size
@@ -422,6 +496,10 @@ impl Worker {
             }
         }
     }
+}
+
+fn too_large(s: &LocalHistoryConfig) -> String {
+    format!("{} ({} KB)", store::Skip::TooLarge.reason(), s.max_file_kb)
 }
 
 #[cfg(test)]
@@ -572,7 +650,77 @@ mod tests {
         assert!(h.before_delete(Path::new("/")).is_none());
         h.capture(Capture::text(PathBuf::from("/a"), String::new(), Kind::Save));
         h.rename(Path::new("/a"), Path::new("/b"));
+        assert!(!h.put_label(PathBuf::from("/a"), None, "v1".into()));
+        let label =
+            Entry { v: 1, path: "/a".into(), at: 1, blob: String::new(), len: 0, lines: 0, kind: Kind::Label, detail: None, since: None };
+        h.remove_label(PathBuf::from("/a"), label);
         h.flush(Duration::from_millis(10));
+    }
+
+    /// The next `Labelled` / `LabelRemoved` answer, after a flush.
+    fn answer(h: &Handle, rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppMsg>) -> HistoryMsg {
+        h.flush(Duration::from_secs(5));
+        match rx.try_recv() {
+            Ok(AppMsg::LocalHistory(m @ (HistoryMsg::Labelled { .. } | HistoryMsg::LabelRemoved { .. }))) => m,
+            other => panic!("expected a label answer, got {other:?}"),
+        }
+    }
+
+    fn label_result(m: HistoryMsg) -> Result<(), String> {
+        match m {
+            HistoryMsg::Labelled { result, .. } => result,
+            other => panic!("expected Labelled, got {other:?}"),
+        }
+    }
+
+    fn removed_result(m: HistoryMsg) -> Result<bool, String> {
+        match m {
+            HistoryMsg::LabelRemoved { result, .. } => result,
+            other => panic!("expected LabelRemoved, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_label_is_answered_and_reads_the_disk_without_text() {
+        let dir = temp("label");
+        let a = dir.join("a.txt");
+        std::fs::write(&a, "disk\n").unwrap();
+        let (h, mut rx) = handle(&dir);
+        assert!(h.put_label(a.clone(), None, "v1".into()));
+        assert_eq!(label_result(answer(&h, &mut rx)), Ok(()));
+        let l = listed(&h, &mut rx, &a);
+        assert_eq!(l[0].label(), "Label: v1");
+        assert_eq!(store::read_blob(h.dir(), &l[0].blob).unwrap(), b"disk\n");
+        assert!(h.put_label(a.clone(), Some(CaptureText::Text("tab\n".into())), "v2".into()));
+        assert_eq!(label_result(answer(&h, &mut rx)), Ok(()));
+        let l = listed(&h, &mut rx, &a);
+        assert_eq!((l[0].label(), store::read_blob(h.dir(), &l[0].blob).unwrap()), ("Label: v2".into(), b"tab\n".to_vec()));
+        // Not stored, and why.
+        h.put_label(dir.join("missing.txt"), None, "x".into());
+        let e = label_result(answer(&h, &mut rx)).unwrap_err();
+        assert!(e.contains("does not exist"), "{e}");
+        std::fs::write(dir.join("bin"), b"a\0b").unwrap();
+        h.put_label(dir.join("bin"), None, "x".into());
+        let e = label_result(answer(&h, &mut rx)).unwrap_err();
+        assert!(e.contains("binary"), "{e}");
+        h.put_label(dir.clone(), None, "x".into());
+        let e = label_result(answer(&h, &mut rx)).unwrap_err();
+        assert!(e.contains("not a regular file"), "{e}");
+        // Removal.
+        let v2 = listed(&h, &mut rx, &a)[0].clone();
+        h.remove_label(a.clone(), v2.clone());
+        assert_eq!(removed_result(answer(&h, &mut rx)), Ok(true));
+        let l = listed(&h, &mut rx, &a);
+        assert_eq!(l.iter().map(Entry::label).collect::<Vec<_>>(), ["Label: v1"]);
+        h.remove_label(a.clone(), v2);
+        assert_eq!(removed_result(answer(&h, &mut rx)), Ok(false));
+        // Off: no label is put, but one is still removed.
+        h.set_settings(LocalHistoryConfig { enabled: false, ..Default::default() });
+        assert!(!h.put_label(a.clone(), None, "v3".into()));
+        h.remove_label(a.clone(), l[0].clone());
+        assert_eq!(removed_result(answer(&h, &mut rx)), Ok(true));
+        assert!(listed(&h, &mut rx, &a).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

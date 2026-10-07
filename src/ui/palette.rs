@@ -162,13 +162,17 @@ pub enum Accept {
         at: u64,
         title: String,
     },
+    /// Shift+Delete on a local history label of `path`: the app asks first.
+    RemoveLabel {
+        path: PathBuf,
+        entry: Box<crate::history::Entry>,
+    },
 }
 
 /// One Local History row, formatted once (`Palette::set_history`).
 #[derive(Debug, Clone)]
 struct HistoryRow {
-    id: String,
-    at: u64,
+    entry: crate::history::Entry,
     /// `YYYY-MM-DD HH:MM:SS`, local time.
     when: String,
     label: String,
@@ -440,8 +444,7 @@ impl Palette {
                     Some(older) => plural(older.lines - e.lines, "−"),
                 };
                 HistoryRow {
-                    id: e.blob.clone(),
-                    at: e.at,
+                    entry: e.clone(),
                     when: crate::history::local_time(e.at, &offset),
                     label: e.label_in(&self.root),
                     info: format!("{}{delta}", human_size(e.len)),
@@ -653,6 +656,11 @@ impl Palette {
         }
     }
 
+    /// The selected Local History row.
+    fn selected_history(&self) -> Option<&HistoryRow> {
+        self.history.get(*self.rows.get(self.list.selected)?)
+    }
+
     /// What the selected row shows (files and symbols only).
     fn selected_key(&self) -> Option<RowKey> {
         let i = *self.rows.get(self.list.selected)?;
@@ -710,7 +718,7 @@ impl Palette {
             Source::LocalHistory => {
                 let r = self.history.get(i)?;
                 let title = format!("{}  {}", r.when, r.label);
-                Accept::LocalHistoryDiff { path: self.history_path.clone()?, id: r.id.clone(), at: r.at, title }
+                Accept::LocalHistoryDiff { path: self.history_path.clone()?, id: r.entry.blob.clone(), at: r.entry.at, title }
             }
             Source::Locations => {
                 let l = self.locations.get(i)?;
@@ -770,6 +778,13 @@ impl Palette {
                 self.projects_shown.remove(i);
                 self.refilter(false);
                 return Some(PaletteResult::Accept(Accept::ForgetProject(root)));
+            }
+            // A label: the app asks before removing it. Other snapshots go by prune only.
+            PaletteAction::DeleteItem
+                if self.source() == Source::LocalHistory && self.selected_history().is_some_and(|r| r.entry.kind.pinned()) =>
+            {
+                let entry = Box::new(self.selected_history()?.entry.clone());
+                return Some(PaletteResult::Accept(Accept::RemoveLabel { path: self.history_path.clone()?, entry }));
             }
             // Nothing to delete: Shift+Delete deletes in the query, as before.
             PaletteAction::DeleteItem => {
@@ -932,7 +947,7 @@ impl Palette {
             Source::Tasks => "type a task name",
             Source::Locations => "type to filter",
             Source::Scratches => "type a scratch name · Shift+Del deletes",
-            Source::LocalHistory => "type a date or label · Enter shows the diff",
+            Source::LocalHistory => "type a date or reason · Enter diffs · Shift+Del removes a label",
         };
         self.input.render(frame, qrect, Style::default().bg(theme.bg).fg(theme.fg), placeholder, theme.dim.bg(theme.bg), true);
         frame.buffer_mut().set_stringn(inner.right().saturating_sub(cw + 1), y, &count, cw as usize, theme.dim.bg(theme.popup_bg));
@@ -1042,7 +1057,8 @@ impl Palette {
                 Source::LocalHistory => {
                     // Date and label, then the size and line change on the right.
                     let r = &self.history[i];
-                    let mut v = vec![(r.when.clone(), dim), ("  ".into(), base), (r.label.clone(), base)];
+                    let label = if r.entry.kind.pinned() { base.add_modifier(Modifier::BOLD) } else { base };
+                    let mut v = vec![(r.when.clone(), dim), ("  ".into(), base), (r.label.clone(), label)];
                     let used = r.when.width() + 2 + r.label.width();
                     if used + r.info.width() + 2 <= width {
                         v.push((" ".repeat(width - used - r.info.width()), base));
@@ -1369,6 +1385,33 @@ mod tests {
         p.input.home();
         assert_eq!(p.handle_action(&PaletteAction::DeleteItem), None);
         assert_eq!(p.input.text, "b");
+    }
+
+    #[test]
+    fn delete_item_on_a_label_row_asks_to_remove_it() {
+        use crate::history::{Entry, Kind};
+        let path = PathBuf::from("/w/a.txt");
+        let e = |at, kind, detail: Option<&str>| Entry {
+            v: 1,
+            path: "/w/a.txt".into(),
+            at,
+            blob: format!("{at:040}"),
+            len: 1,
+            lines: 1,
+            kind,
+            detail: detail.map(Into::into),
+            since: None,
+        };
+        let mut p = Palette::new(PaletteKind::LocalHistory, PathBuf::from("/w"));
+        p.set_history_target(path.clone());
+        p.set_history(vec![e(2, Kind::Save, None), e(1, Kind::Label, Some("v1"))], |_| 0);
+        // Not a label: Shift+Delete deletes in the (empty) query.
+        assert_eq!(p.handle_action(&PaletteAction::DeleteItem), None);
+        p.handle_action(&PaletteAction::Down);
+        let Some(PaletteResult::Accept(Accept::RemoveLabel { path: p2, entry })) = p.handle_action(&PaletteAction::DeleteItem) else {
+            panic!("a label removal")
+        };
+        assert_eq!((p2, entry.detail.as_deref()), (path, Some("v1")));
     }
 
     #[test]

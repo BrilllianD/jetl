@@ -163,6 +163,14 @@ pub enum DialogId {
     /// Delete this scratch file (from the Scratch Files palette): Delete /
     /// Cancel; both reopen the palette.
     DeleteScratch(std::path::PathBuf),
+    /// Put Label: the name of a local history label on this file.
+    PutLabel(std::path::PathBuf),
+    /// Remove this local history label of `path`: Remove / Cancel; both
+    /// reopen the Local History palette.
+    RemoveLabel {
+        path: std::path::PathBuf,
+        entry: Box<crate::history::Entry>,
+    },
     /// Unsaved changes recovered after a crash (`App::offer_recovery`):
     /// Restore all / Discard / Review…
     Recover,

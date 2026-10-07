@@ -51,6 +51,8 @@ pub enum AppAction {
     /// The Local History palette of the active file or the selected tree
     /// entry.
     LocalHistory,
+    /// Put a local history label on the active file or the selected tree entry.
+    PutLabel,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -545,6 +547,7 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "editor.new_scratch" => "New scratch file…", App(AppAction::NewScratch);
         "editor.scratch_files" => "Scratch files", App(AppAction::OpenPalette(PaletteKind::Scratches));
         "editor.local_history" => "Local history of the file (editor) or the selected entry (Project tree)", App(AppAction::LocalHistory);
+        "editor.put_label" => "Local history: put label…", App(AppAction::PutLabel);
         "editor.find" => "Find", Editor(E::Find);
         "editor.replace" => "Replace", Editor(E::Replace);
         "editor.find_next" => "Find next", Editor(E::FindNext);
@@ -803,7 +806,7 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "palette.delete_word" => "Palette: delete word", Palette(PaletteAction::DeleteWord);
         "palette.next_tab" => "Palette: next tab", Palette(PaletteAction::NextTab);
         "palette.prev_tab" => "Palette: previous tab", Palette(PaletteAction::PrevTab);
-        "palette.delete_item" => "Palette: delete the selected item (Scratch Files, Recent Projects)", Palette(PaletteAction::DeleteItem);
+        "palette.delete_item" => "Palette: delete the selected item (Scratch Files, Recent Projects, a Local History label)", Palette(PaletteAction::DeleteItem);
 
         "mode.normal" => "Vim: normal mode", Mode(ModeAction::Normal);
         "mode.insert" => "Vim: insert mode", Mode(ModeAction::Insert);

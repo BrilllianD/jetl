@@ -245,6 +245,7 @@ impl App {
             PaletteResult::Accept(Accept::DeleteScratch(path)) => self.ask_delete_scratch(path),
             PaletteResult::Accept(Accept::ForgetProject(root)) => self.forget_recent_project(root),
             PaletteResult::Accept(Accept::LocalHistoryDiff { path, id, at, title }) => self.show_local_diff(path, id, at, title),
+            PaletteResult::Accept(Accept::RemoveLabel { path, entry }) => self.ask_remove_label(path, *entry),
             // A symbol or location: back returns here even after a short jump.
             PaletteResult::Accept(Accept::OpenFileAt { path, line, col }) => {
                 self.editor.push_nav_here();
@@ -345,6 +346,23 @@ mod tests {
         assert!(app.palette.is_none());
         handle_next(&mut app, |m| matches!(m, AppMsg::FileLoaded { .. })).await;
         assert_eq!(app.editor.active_path(), Some(target.as_path()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// docs/TESTING.md types "local history" in Find Action and expects the
+    /// palette; Put Label, registered after it, comes second.
+    #[tokio::test]
+    async fn find_action_local_history_ranks_the_palette_first() {
+        use crate::actions::{Action, AppAction, PaletteAction};
+        let (mut app, dir) = test_app("palette-local-history-rank");
+        app.open_palette(PaletteKind::Actions);
+        let p = app.palette.as_mut().unwrap();
+        p.set_query("local history");
+        let first = p.handle_action(&PaletteAction::Accept);
+        assert_eq!(first, Some(PaletteResult::Accept(Accept::Action(Action::App(AppAction::LocalHistory)))));
+        p.handle_action(&PaletteAction::Down);
+        let second = p.handle_action(&PaletteAction::Accept);
+        assert_eq!(second, Some(PaletteResult::Accept(Accept::Action(Action::App(AppAction::PutLabel)))));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

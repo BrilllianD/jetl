@@ -621,7 +621,7 @@ git -C $LH/repo init -q; printf 'one\ntwo\n' > $LH/repo/notes.txt; seq 1 3000 > 
 git -C $LH/repo add . && git -C $LH/repo -c user.name=t -c user.email=t@t commit -qm init && git -C $LH/repo branch other
 cargo build --no-default-features --features lang-rust
 run() { /tmp/tm.sh -f /dev/null new-session -d -s jetl -x 80 -y 24 \
-  "XDG_CONFIG_HOME=$LH/cfg XDG_STATE_HOME=$LH/state $PWD/target/debug/jetl $LH/repo/notes.txt 2>/tmp/jetl-stderr.txt; echo EXIT=\$?; sleep 600"; }
+  "XDG_CONFIG_HOME=$LH/cfg XDG_STATE_HOME=$LH/state $PWD/target/debug/jetl ${1:-$LH/repo/notes.txt} 2>/tmp/jetl-stderr.txt; echo EXIT=\$?; sleep 600"; }
 s() { /tmp/tm.sh send-keys -t jetl "$@"; sleep 0.4; }
 run; sleep 2
 s -l 'A '; s C-s; s -l 'B '; s C-s
@@ -649,18 +649,29 @@ s S-F6; for i in 1 2 3 4 5 6 7 8 9; do s BSpace; done; s -l renamed.txt; s Enter
 s F1; s -l 'local history'; s Enter    # "Local History: renamed.txt": "Renamed from notes.txt" on top, the notes.txt rows below
 s -l renamed; s Escape                 # typing filters to the marker row
 ls $LH/state/jetl/history/index        # one index file more; notes.txt's is still there
+s Escape; s -l 'label me '             # editor focused, renamed.txt dirty
+s F1; s -l 'put label'; s Enter        # "Put Label": "Label for renamed.txt:"
+s Enter                                # toast "Put Label: a label needs a name"; nothing stored
+s F1; s -l 'put label'; s Enter; s -l 'before refactor'; s Enter   # toast 'Put label "before refactor" on renamed.txt'
+s C-s                                  # no new row: the saved text is the label's
+s F1; s -l 'local history'; s Enter    # "Label: before refactor" on top, bold
+s S-DC                                 # "Remove Label" dialog
+s Tab; s Enter                         # Cancel: the list comes back with the label
+s S-DC; s Enter                        # Remove: toast 'Removed label "before refactor"', the row is gone
+s Escape; s F1; s -l 'put label'; s Enter; s -l keep; s Enter   # a label that should survive the prune below
 s C-q                                  # EXIT=0
 /tmp/tm.sh kill-server
 printf '[lsp]\nenabled = false\n[local_history]\nkeep_days = 0\n' > $LH/cfg/jetl/config.toml
-run; sleep 2
-ls $LH/state/jetl/history/index        # empty: every entry pruned at startup (the log says how many);
-                                       # the blobs stay until they are 10 minutes old
+run $LH/repo; sleep 2                  # the project (notes.txt is renamed.txt now)
+ls $LH/state/jetl/history/index        # one index file left: renamed.txt's (the log says how many were pruned);
+cat $LH/state/jetl/history/index/*     # only the "kind":"label" line of "keep": labels outlive keep_days;
+                                       # the other blobs stay until they are 10 minutes old
 /tmp/tm.sh kill-server; rm -rf $LH
 ```
 
 At 80 columns the Git window's header drops its Refresh button (F5) to fit
 the History tab. Shift+F10 in the Project tree opens its context menu with
-Local History under Show History. Alt+1 and Alt+9 hide their window when it
+Local History and Local History: Put Label… under Show History. Alt+1 and Alt+9 hide their window when it
 already has focus; under tmux, Ctrl+Space in the editor is completion, not
 the branches popup, hence Find Action above.
 

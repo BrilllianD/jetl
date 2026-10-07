@@ -940,6 +940,7 @@ impl App {
             AppAction::KeymapReference => self.keymap_reference(),
             AppAction::NewScratch => self.new_scratch(),
             AppAction::LocalHistory => self.local_history(),
+            AppAction::PutLabel => self.put_label(),
         }
     }
 
