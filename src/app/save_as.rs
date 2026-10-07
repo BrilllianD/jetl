@@ -6,6 +6,10 @@
 //! buffers are asked about one at a time: quitting, closing tabs, switching
 //! roots and Save All first save the buffers that have a file, then prompt
 //! for the next untitled one after each successful Save As.
+//!
+//! With `[format] on_save`, a Save As of unsaved edits writes first, then
+//! formats for the new path and writes again, unless what follows needs
+//! the file written at once (`AfterSave::formats`).
 
 use std::path::PathBuf;
 
@@ -32,6 +36,14 @@ pub enum AfterSave {
     CloseTabs(Vec<BufferId>),
     /// Switch the project root.
     SwitchRoot(PathBuf),
+}
+
+impl AfterSave {
+    /// Whether its save may wait for the formatter: not when the file
+    /// must be written at once (closing, quitting, switching roots).
+    pub(super) fn formats(&self) -> bool {
+        matches!(self, AfterSave::Nothing | AfterSave::SaveAll)
+    }
 }
 
 impl App {
@@ -79,10 +91,10 @@ impl App {
         };
         let shown = crate::ui::palette::display_path(&path, &self.workspace.root);
         if self.editor.buffers[i].path.as_deref() == Some(path.as_path()) {
-            // Its own file: a plain save, formatted only when nothing waits
-            // for it.
+            // Its own file: a plain save, formatted only when nothing needs
+            // it written at once.
             let mut cx = ctx!(self);
-            let saved = if then == AfterSave::Nothing {
+            let saved = if then.formats() {
                 let format = self.editor.format.on_save;
                 self.editor.save_with(i, &mut cx, format)
             } else {
@@ -117,15 +129,17 @@ impl App {
             return self.notify(Level::Error, format!("Save As: cannot create {}: {e}", dir.display()));
         }
         // A formatter's late answer must not be written to the new path.
-        self.format.abort(id);
+        // Before `Editor::save_as`, which may start the new path's format.
+        self.abort_format(id);
         // The file about to be overwritten (after `SaveAsOverwrite`).
         if path.is_file() {
             self.capture_disk(&path, crate::history::Kind::BeforeSaveAs);
         }
         let mut cx = ctx!(self);
-        // `FileSaved` syncs the language server: the old document closes
-        // and the new one opens.
-        let saved = self.editor.save_as(i, path.clone(), &mut cx);
+        // `FileSaved` syncs the language server (the old document closes
+        // and the new one opens) before the format request behind it.
+        let format = self.editor.format.on_save && then.formats();
+        let saved = self.editor.save_as(i, path.clone(), &mut cx, format);
         let fx = cx.effects;
         self.apply_effects(fx);
         if !saved {
@@ -454,5 +468,181 @@ mod tests {
         assert_eq!(open["params"]["textDocument"]["uri"], new.as_str());
         assert_eq!(open["params"]["textDocument"]["text"], "fn a() {}\n");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Save As with `[format] on_save`: Rust files format with a script in
+    /// the test dir (outside the root) that upper-cases its input, or
+    /// fails, and records each `{path}` it got in `dir/seen`.
+    #[cfg(feature = "lang-rust")]
+    mod format {
+        use super::*;
+        use crate::app::tests::handle_next;
+        use crate::event::AppMsg;
+
+        fn fmt_app(name: &str, fails: bool) -> (App, PathBuf) {
+            let (mut app, dir) = fresh_app(name);
+            let script = dir.join("fmt.sh");
+            let body = if fails { "cat >/dev/null; echo 'error: bad' >&2; exit 1" } else { "tr a-z A-Z" };
+            std::fs::write(&script, format!("printf '%s\\n' \"$1\" >> \"$(dirname \"$0\")/seen\"\n{body}\n")).unwrap();
+            let argv = vec!["sh".into(), script.display().to_string(), "{path}".into()];
+            app.editor.format.on_save = true;
+            app.editor.format.commands.insert("rust".into(), argv);
+            (app, dir)
+        }
+
+        fn formatted(m: &AppMsg) -> bool {
+            matches!(m, AppMsg::Formatted { .. })
+        }
+
+        fn read(path: &Path) -> String {
+            std::fs::read_to_string(path).unwrap()
+        }
+
+        fn save_as(app: &mut App, to: &str) {
+            app.perform(Action::Editor(EditorAction::SaveAs));
+            answer(app, to);
+        }
+
+        #[tokio::test]
+        async fn save_as_formats_for_the_new_path() {
+            let (mut app, dir) = fmt_app("save-as-fmt", false);
+            let a = load(&mut app, "a.txt", "fn a() {}\n");
+            edit(&mut app, "x");
+            save_as(&mut app, "b.rs");
+            let b = app.workspace.root.join("b.rs");
+            assert_eq!(read(&b), "xfn a() {}\n", "written first");
+            let id = app.editor.active_buffer().unwrap().id;
+            assert_eq!(path_of(&app, id), Some(b.clone()));
+            handle_next(&mut app, formatted).await;
+            assert_eq!(read(&b), "XFN A() {}\n");
+            let buf = app.editor.active_buffer().unwrap();
+            assert_eq!(buf.text(), "XFN A() {}\n");
+            assert!(!buf.dirty());
+            assert_eq!(read(&a), "fn a() {}\n");
+            assert_eq!(read(&dir.join("seen")), format!("{}\n", b.display()), "the new path");
+            assert!(errors(&app).is_empty(), "{:?}", errors(&app));
+            app.perform(Action::Editor(EditorAction::Undo));
+            let buf = app.editor.active_buffer().unwrap();
+            assert_eq!(buf.text(), "xfn a() {}\n", "one undo step");
+            assert!(buf.dirty());
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        #[tokio::test]
+        async fn untitled_save_as_is_formatted_by_its_new_language() {
+            let (mut app, dir) = fmt_app("save-as-fmt-untitled", false);
+            untitled(&mut app, "u", "fn a() {}\n");
+            app.perform(Action::Editor(EditorAction::Save));
+            answer(&mut app, "u.rs");
+            handle_next(&mut app, formatted).await;
+            assert_eq!(read(&app.workspace.root.join("u.rs")), "FN A() {}\n");
+            assert!(!app.editor.active_buffer().unwrap().dirty());
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        #[tokio::test]
+        async fn save_as_to_a_path_without_a_formatter_writes_once() {
+            let (mut app, dir) = fmt_app("save-as-fmt-txt", false);
+            load(&mut app, "a.rs", "fn a() {}\n");
+            edit(&mut app, "x");
+            save_as(&mut app, "b.txt");
+            assert!(!app.format.running(None));
+            assert_eq!(read(&app.workspace.root.join("b.txt")), "xfn a() {}\n");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        #[tokio::test]
+        async fn clean_save_as_is_a_plain_copy() {
+            let (mut app, dir) = fmt_app("save-as-fmt-clean", false);
+            let a = load(&mut app, "a.rs", "fn a() {}\n");
+            save_as(&mut app, "b.rs");
+            assert!(!app.format.running(None));
+            assert_eq!(read(&app.workspace.root.join("b.rs")), read(&a));
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        #[tokio::test]
+        async fn failing_formatter_after_save_as_keeps_the_unformatted_file() {
+            let (mut app, dir) = fmt_app("save-as-fmt-fail", true);
+            load(&mut app, "a.rs", "fn a() {}\n");
+            edit(&mut app, "x");
+            save_as(&mut app, "b.rs");
+            handle_next(&mut app, formatted).await;
+            let w = errors(&app);
+            assert_eq!(w.len(), 1, "{w:?}");
+            assert!(w[0].starts_with("Format b.rs:") && w[0].ends_with("; saved unformatted"), "{w:?}");
+            assert_eq!(read(&app.workspace.root.join("b.rs")), "xfn a() {}\n");
+            assert!(!app.editor.active_buffer().unwrap().dirty());
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        #[tokio::test]
+        async fn save_as_waited_on_by_quit_or_close_does_not_format() {
+            let (mut app, dir) = fmt_app("save-as-fmt-quit", false);
+            let id = untitled(&mut app, "u", "fn a() {}\n");
+            app.perform(Action::App(AppAction::Quit));
+            assert_eq!(app.dialog.take().map(|d| d.id), Some(DialogId::QuitDirty));
+            app.finish_dialog(DialogId::QuitDirty, DialogResult::Button(0));
+            answer(&mut app, "u.rs");
+            assert!(app.should_quit && !app.format.running(None));
+            assert_eq!(read(&app.workspace.root.join("u.rs")), "fn a() {}\n");
+            assert!(app.editor.index_of_id(id).is_some());
+            // Closing its tab.
+            let v = untitled(&mut app, "v", "fn v() {}\n");
+            app.finish_dialog(DialogId::CloseTabDirty(v), DialogResult::Button(0));
+            answer(&mut app, "v.rs");
+            assert!(app.editor.index_of_id(v).is_none() && !app.format.running(None));
+            assert_eq!(read(&app.workspace.root.join("v.rs")), "fn v() {}\n");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        #[tokio::test]
+        async fn save_all_formats_the_untitled_buffers_it_asks_about() {
+            let (mut app, dir) = fmt_app("save-as-fmt-save-all", false);
+            let u = untitled(&mut app, "u", "fn a() {}\n");
+            app.perform(Action::Editor(EditorAction::SaveAll));
+            answer(&mut app, "u.rs");
+            assert!(app.format.running(Some(u)));
+            handle_next(&mut app, formatted).await;
+            assert_eq!(read(&app.workspace.root.join("u.rs")), "FN A() {}\n");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        #[tokio::test]
+        async fn edits_while_the_save_as_format_runs_drop_it() {
+            let (mut app, dir) = fmt_app("save-as-fmt-edit", false);
+            load(&mut app, "a.txt", "fn a() {}\n");
+            edit(&mut app, "x");
+            save_as(&mut app, "b.rs");
+            let b = app.workspace.root.join("b.rs");
+            std::fs::remove_file(&b).unwrap();
+            edit(&mut app, "y");
+            handle_next(&mut app, formatted).await;
+            let buf = app.editor.active_buffer().unwrap();
+            assert_eq!(buf.text(), "xyfn a() {}\n");
+            assert!(buf.dirty());
+            assert!(!b.exists(), "the snapshot was saved already");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        #[tokio::test]
+        async fn a_second_save_as_drops_the_first_format() {
+            let (mut app, dir) = fmt_app("save-as-fmt-twice", false);
+            load(&mut app, "a.txt", "fn a() {}\n");
+            edit(&mut app, "x");
+            save_as(&mut app, "b.rs");
+            // Unsaved edits again, so the second Save As formats too.
+            edit(&mut app, "y");
+            save_as(&mut app, "c.rs");
+            handle_next(&mut app, formatted).await;
+            let (b, c) = (app.workspace.root.join("b.rs"), app.workspace.root.join("c.rs"));
+            assert_eq!(read(&c), "XYFN A() {}\n");
+            assert_eq!(read(&b), "xfn a() {}\n", "its format was stopped");
+            let buf = app.editor.active_buffer().unwrap();
+            assert_eq!(buf.path.as_deref(), Some(c.as_path()));
+            assert!(!buf.dirty());
+            assert!(!app.format.running(None));
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 }

@@ -232,10 +232,15 @@ impl Editor {
     /// edits) to `path`, then make it that file's buffer: name, language,
     /// `.editorconfig` and the rest are taken from the new path
     /// ([`super::adopt_path`]). Nothing changes when the write fails. No
-    /// disk conflict check (the old file is not written) and no formatter.
-    /// The caller has checked that no other buffer has `path`.
-    pub fn save_as(&mut self, i: usize, path: PathBuf, cx: &mut Ctx) -> bool {
+    /// disk conflict check (the old file is not written). With `format`
+    /// and unsaved edits, the new path's formatter then runs
+    /// (`Effect::Format` behind `FileSaved`), its answer written again
+    /// ([`Editor::format_done`]). The caller has checked that no other
+    /// buffer has `path`.
+    pub fn save_as(&mut self, i: usize, path: PathBuf, cx: &mut Ctx, format: bool) -> bool {
         let Some(b) = self.buffers.get(i) else { return false };
+        // As with Ctrl+S, only unsaved edits are formatted.
+        let format = format && b.dirty();
         if b.dirty() {
             self.cleanup_for_save(i);
         }
@@ -247,6 +252,11 @@ impl Editor {
                 let b = &mut self.buffers[i];
                 super::adopt_path(b, path.clone(), setup, self.tab_width);
                 mark_written(b, path, state, perm_err, cx, false, Capture::text(PathBuf::new(), text, Kind::SaveAs));
+                // Behind `FileSaved`, so the language server has the new
+                // document first.
+                if format && let Some(req) = self.format_request(i, true) {
+                    cx.effects.push(Effect::Format(req));
+                }
                 true
             }
             Err(e) => {

@@ -46,13 +46,10 @@ enum Run {
 }
 
 impl FormatState {
-    /// Stop buffer `id`'s run, if any (Save As: its result must not be
-    /// written to the new path). A language server's late answer finds no
-    /// job and is dropped.
-    pub(crate) fn abort(&mut self, id: BufferId) {
-        if let Some(Job { run: Run::Command(task), .. }) = self.jobs.remove(&id) {
-            task.abort();
-        }
+    /// Whether buffer `id` (any buffer: `None`) has a run in flight.
+    #[cfg(test)]
+    pub(super) fn running(&self, id: Option<BufferId>) -> bool {
+        id.map_or(!self.jobs.is_empty(), |id| self.jobs.contains_key(&id))
     }
 
     /// Stop every run (root switch, quit).
@@ -92,6 +89,15 @@ impl App {
             let _ = tx.send(AppMsg::Formatted { generation, id, seq, result });
         });
         self.format.jobs.insert(id, Job { seq, save, snapshot: req.snapshot, run: Run::Command(task.abort_handle()) });
+    }
+
+    /// Stop buffer `id`'s run, if any (Save As: its result is for the old
+    /// path). The command is killed, a language server request cancelled;
+    /// a late answer finds no job and is dropped.
+    pub(super) fn abort_format(&mut self, id: BufferId) {
+        if let Some(job) = self.format.jobs.remove(&id) {
+            self.stop_format_run(job.run);
+        }
     }
 
     fn stop_format_run(&self, run: Run) {
@@ -337,6 +343,22 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[tokio::test]
+    async fn a_rename_while_formatting_drops_the_format() {
+        let (mut app, dir, path) = app_with("format-rename", "tr a-z A-Z", "fn a() {}\n");
+        act(&mut app, EditorAction::InsertText("x".into()));
+        act(&mut app, EditorAction::Save);
+        let moved = app.workspace.root.join("b.rs");
+        std::fs::rename(&path, &moved).unwrap();
+        app.editor.retarget(&path, &moved, &app.theme);
+        handle_next(&mut app, formatted).await;
+        assert_eq!(text(&app), "xfn a() {}\n", "not formatted after the move");
+        assert_eq!(std::fs::read_to_string(&moved).unwrap(), "xfn a() {}\n", "the save writes the text as it was");
+        assert!(!app.editor.active_buffer().unwrap().dirty());
+        assert!(!path.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     mod lsp {
         use super::*;
         use crate::app::lsp::tests::{incremental, is_lsp, open_on_server, with_fake_servers};
@@ -464,6 +486,64 @@ mod tests {
             assert!(app.format.jobs.is_empty());
             app.lsp_sync();
             assert!(server.drain().iter().all(|m| m["method"] != "textDocument/formatting"));
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        /// Answer the Save As prompt for the active buffer with `to`.
+        fn save_as(app: &mut App, to: &str) {
+            act(app, EditorAction::SaveAs);
+            let d = app.dialog.take().expect("Save As prompt");
+            app.finish_dialog(d.id, crate::ui::dialog::DialogResult::Text(to.into()));
+        }
+
+        #[tokio::test]
+        async fn save_as_formats_through_the_new_documents_server() {
+            let (mut app, mut server, dir, _) = setup("format-lsp-save-as", true).await;
+            act(&mut app, EditorAction::InsertText(" ".into()));
+            act(&mut app, EditorAction::Backspace);
+            save_as(&mut app, "b.rs");
+            let b = app.workspace.root.join("b.rs");
+            assert_eq!(std::fs::read_to_string(&b).unwrap(), UGLY, "written first");
+            let close = server.recv("textDocument/didClose").await;
+            assert!(close["params"]["textDocument"]["uri"].as_str().unwrap().ends_with("/a.rs"));
+            let open = server.recv("textDocument/didOpen").await;
+            assert!(open["params"]["textDocument"]["uri"].as_str().unwrap().ends_with("/b.rs"));
+            let req = server.recv("textDocument/formatting").await;
+            assert!(req["params"]["textDocument"]["uri"].as_str().unwrap().ends_with("/b.rs"));
+            server.respond(req["id"].as_i64().unwrap(), edits());
+            handle_next(&mut app, is_lsp).await;
+            assert_eq!(std::fs::read_to_string(&b).unwrap(), PRETTY);
+            assert_eq!(text(&app), PRETTY);
+            assert!(!app.editor.active_buffer().unwrap().dirty());
+            assert!(warnings(&app).is_empty(), "{:?}", warnings(&app));
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        #[tokio::test]
+        async fn save_as_cancels_the_servers_format_in_flight() {
+            let (mut app, mut server, dir, path) = setup("format-lsp-save-as-cancel", true).await;
+            act(&mut app, EditorAction::InsertText(" ".into()));
+            act(&mut app, EditorAction::Backspace);
+            act(&mut app, EditorAction::Save);
+            let first = server.recv("textDocument/formatting").await;
+            save_as(&mut app, "b.rs");
+            assert_eq!(server.recv("$/cancelRequest").await["params"]["id"], first["id"]);
+            let second = server.recv("textDocument/formatting").await;
+            assert!(second["params"]["textDocument"]["uri"].as_str().unwrap().ends_with("/b.rs"));
+            // The late answer for a.rs changes nothing.
+            server.respond(first["id"].as_i64().unwrap(), edits());
+            handle_next(&mut app, is_lsp).await;
+            let b = app.workspace.root.join("b.rs");
+            assert_eq!(text(&app), UGLY);
+            assert_eq!(std::fs::read_to_string(&b).unwrap(), UGLY);
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), UGLY);
+            // No answer for b.rs: the file stays as Save As wrote it.
+            std::fs::remove_file(&b).unwrap();
+            let late = Duration::from_millis(app.config.lsp.request_timeout_ms);
+            app.format_timeout(Instant::now() + late);
+            assert_eq!(warnings(&app), ["Format b.rs: rust-analyzer: no answer in 5 s; saved unformatted"]);
+            assert!(!b.exists(), "not written again");
+            assert!(!app.editor.active_buffer().unwrap().dirty());
             let _ = std::fs::remove_dir_all(&dir);
         }
     }

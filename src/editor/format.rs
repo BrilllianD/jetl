@@ -4,6 +4,7 @@
 //! and their results applied as one undoable edit that touches only the
 //! changed lines, with the caret kept on the same code.
 
+use std::path::PathBuf;
 use std::time::Duration;
 
 use super::Editor;
@@ -23,6 +24,9 @@ pub struct Snapshot {
     pub state: u64,
     /// `Buffer::saved_state` at the request; a save meanwhile wins.
     pub saved: u64,
+    /// The buffer's path at the request: a result is applied only while it
+    /// is unchanged (a rename or Save As meanwhile makes it stale).
+    pub path: Option<PathBuf>,
 }
 
 /// What formats a buffer.
@@ -70,7 +74,8 @@ impl Editor {
         let via = self.format_via(i)?;
         let b = &mut self.buffers[i];
         b.undo.break_group = true;
-        let snapshot = Snapshot { text: b.text(), version: b.version, state: b.undo.state_id(), saved: b.saved_state };
+        let snapshot =
+            Snapshot { text: b.text(), version: b.version, state: b.undo.state_id(), saved: b.saved_state, path: b.path.clone() };
         Some(FormatRequest { id: b.id, via, timeout: Duration::from_millis(self.format.timeout_ms), snapshot, save })
     }
 
@@ -84,23 +89,25 @@ impl Editor {
     }
 
     /// A formatter answered for buffer `id`. The text replaces the buffer
-    /// only if the buffer is unchanged since the request; a failure leaves it
-    /// alone with a warning (the first stderr line, all of it in the Event
-    /// Log). A save request writes either way: the formatted text, the
-    /// unformatted one after a failure, or, when the buffer was edited
-    /// meanwhile, the text as it was when the save was asked for (unless
-    /// it was saved since).
+    /// only if the buffer is unchanged since the request (same version, same
+    /// path); a failure leaves it alone with a warning (the first stderr
+    /// line, all of it in the Event Log). A save request writes either way:
+    /// the formatted text, the unformatted one after a failure, or, when the
+    /// buffer was edited or moved meanwhile, the text as it was when the
+    /// save was asked for (unless it was saved since). Nothing is written
+    /// when that text is already the saved state (Save As wrote it before
+    /// formatting, or a save happened meanwhile).
     pub fn format_done(&mut self, id: BufferId, save: bool, snap: Snapshot, result: Result<String, Failure>, cx: &mut Ctx) {
         let Some(i) = self.index_of_id(id) else { return };
         let b = &mut self.buffers[i];
-        let fresh = b.version == snap.version;
+        let fresh = b.version == snap.version && b.path == snap.path;
         match result {
             Ok(text) if fresh => {
                 if !b.apply_formatted(&text) && !save {
                     cx.notify(Level::Info, format!("{} is already formatted", b.name));
                 }
             }
-            Ok(_) => tracing::debug!("{} was edited while formatting; format dropped", b.name),
+            Ok(_) => tracing::debug!("{} was edited or moved while formatting; format dropped", b.name),
             Err(f) => {
                 let then = if save { "; saved unformatted" } else { "" };
                 let mut msg = format!("Format {}: {}{then}", b.name, f.summary);
@@ -118,11 +125,17 @@ impl Editor {
         if !fresh && b.saved_state != snap.saved {
             return;
         }
+        let state = if fresh { b.undo.state_id() } else { snap.state };
+        // Already on disk: Save As wrote it before formatting, or a save
+        // happened meanwhile.
+        if state == b.saved_state {
+            return;
+        }
         if b.dirty() && super::io::disk_conflict(b) {
             cx.effects.extend(self.conflict_dialog(i).map(Effect::Dialog));
             return;
         }
-        let (text, state) = if fresh { (b.text(), b.undo.state_id()) } else { (snap.text, snap.state) };
+        let text = if fresh { b.text() } else { snap.text };
         self.write_text(i, text, state, cx, false);
     }
 }

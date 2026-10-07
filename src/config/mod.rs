@@ -232,7 +232,7 @@ pub struct ClipboardConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct FormatConfig {
-    /// Format before an explicit save (Ctrl+S, save all).
+    /// Format before an explicit save (Ctrl+S, save all, Save As).
     pub on_save: bool,
     /// A formatter that has not finished by then is killed.
     pub timeout_ms: u64,

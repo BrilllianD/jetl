@@ -124,7 +124,7 @@ copy_command = ""              # takes copied text on stdin, besides OSC 52; "" 
                                # partner, "none" = OSC 52 only
 
 [format]
-on_save = false                # Ctrl+S and save all run the file's formatter before writing
+on_save = false                # Ctrl+S, Save All and Save As run the file's formatter before writing
 timeout_ms = 5000              # a formatter still running after this is killed
 # One entry per language: the command and its arguments, as a list. Keys are
 # language ids (the status bar shows them): rust, python, javascript, typescript,
@@ -234,10 +234,16 @@ shows its first error line (the full output is in the Event Log, Alt+Shift+L).
 If you type while it runs, the reformat is dropped and the file gets the
 text as it was when you pressed Ctrl+S; your later edits stay unsaved.
 
-Only explicit saves format. Autosave, Save As (Alt+Shift+S), and the saves
-done by closing a tab, quitting or switching projects with unsaved changes
-("Save all and exit"), write at once without the formatter, so they never
-wait on it.
+Only explicit saves format: Ctrl+S, Save All and Save As (Alt+Shift+S) of a
+file with unsaved changes. Save As writes the file first, then formats it
+with the formatter of the new path's language (`{path}` is the new path;
+`notes.txt` saved as `notes.rs` gets the Rust formatter, or rust-analyzer
+once it runs) and saves the result again; a failure or timeout leaves the
+file as Save As wrote it, with the warning. Autosave, a Save As of a file
+without unsaved changes, and the saves done by closing a tab, quitting or
+switching projects with unsaved changes ("Save all and exit", including the
+Save As prompts they bring up) write at once without the formatter, so they
+never wait on it.
 
 Run tasks (`[[run.tasks]]`) are listed by `run.pick` (Alt+Shift+F10), then
 the project's own `.jetl/run.toml`, which holds the same entries as

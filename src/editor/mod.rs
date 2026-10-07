@@ -2584,7 +2584,7 @@ mod tests {
         let path = dir.join("a.rs");
         let mut fx = Vec::new();
         let notes = with_cx(|cx| {
-            assert!(ed.save_as(i, path.clone(), cx));
+            assert!(ed.save_as(i, path.clone(), cx, false));
             fx = std::mem::take(&mut cx.effects);
         });
         assert!(notes.is_empty(), "{notes:?}");
@@ -2604,6 +2604,106 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[cfg(feature = "lang-rust")]
+    #[test]
+    fn save_as_with_format_asks_the_new_paths_formatter() {
+        let dir = save_as_dir("format");
+        let mut config = Config::default();
+        config.format.commands.insert("rust".into(), vec!["fmt".into(), "{path}".into()]);
+        let mut ed = Editor::new(&config);
+        let i = ed.open_untitled("untitled");
+        ed.buffers[i].insert("fn main() {}\n", TxKind::Typing);
+        let path = dir.join("a.rs");
+        let mut fx = Vec::new();
+        with_cx(|cx| {
+            assert!(ed.save_as(i, path.clone(), cx, true));
+            fx = std::mem::take(&mut cx.effects);
+        });
+        let b = &ed.buffers[i];
+        match fx.as_slice() {
+            [Effect::History(Request::Capture(_)), Effect::FileSaved { path: p, .. }, Effect::Format(req)] => {
+                assert_eq!(*p, path);
+                let want = vec!["fmt".to_string(), path.display().to_string()];
+                assert_eq!(req.via, format::Formatter::Command(want));
+                assert!(req.save);
+                assert_eq!(req.snapshot.path.as_deref(), Some(path.as_path()));
+                assert_eq!(req.snapshot.state, b.saved_state);
+            }
+            other => panic!("{other:?}"),
+        }
+        let format_count = |fx: &[Effect]| fx.iter().filter(|e| matches!(e, Effect::Format(_))).count();
+        // Without `format`: no request.
+        let i = ed.open_untitled("untitled 2");
+        ed.buffers[i].insert("fn b() {}\n", TxKind::Typing);
+        with_cx(|cx| {
+            assert!(ed.save_as(i, dir.join("b.rs"), cx, false));
+            fx = std::mem::take(&mut cx.effects);
+        });
+        assert_eq!(format_count(&fx), 0);
+        // A clean buffer is a plain copy.
+        with_cx(|cx| {
+            assert!(ed.save_as(i, dir.join("c.rs"), cx, true));
+            fx = std::mem::take(&mut cx.effects);
+        });
+        assert_eq!(format_count(&fx), 0);
+        // A target without a language has no formatter.
+        ed.buffers[i].insert("x", TxKind::Typing);
+        with_cx(|cx| {
+            assert!(ed.save_as(i, dir.join("d.txt"), cx, true));
+            fx = std::mem::take(&mut cx.effects);
+        });
+        assert_eq!(format_count(&fx), 0);
+        assert_eq!(std::fs::read_to_string(dir.join("d.txt")).unwrap(), "fn b() {}\nx\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[test]
+    fn format_result_for_a_moved_buffer_is_not_applied() {
+        let dir = save_as_dir("format-moved");
+        let (a, b) = (dir.join("a.rs"), dir.join("b.rs"));
+        std::fs::write(&a, "fn a() {}\n").unwrap();
+        let mut ed = Editor::new(&Config::default());
+        let i = ed.open_text(a.clone(), "fn a() {}\n", false, &Theme::default());
+        ed.buffers[i].insert("x", TxKind::Typing);
+        let req = ed.format_request(i, true).unwrap();
+        std::fs::rename(&a, &b).unwrap();
+        ed.retarget(&a, &b, &Theme::default());
+        let id = ed.buffers[i].id;
+        with_cx(|cx| ed.format_done(id, true, req.snapshot, Ok("X".into()), cx));
+        let buf = &ed.buffers[i];
+        assert_eq!(buf.text(), "xfn a() {}\n", "not applied to the moved buffer");
+        assert_eq!(std::fs::read_to_string(&b).unwrap(), "xfn a() {}\n", "the snapshot is saved");
+        assert!(!buf.dirty());
+        assert!(!a.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[test]
+    fn format_done_writes_nothing_already_saved() {
+        let dir = save_as_dir("format-saved");
+        let a = dir.join("a.rs");
+        std::fs::write(&a, "fn a() {}\n").unwrap();
+        let mut ed = Editor::new(&Config::default());
+        let i = ed.open_text(a.clone(), "fn a() {}\n", false, &Theme::default());
+        ed.buffers[i].insert("x", TxKind::Typing);
+        let req = ed.format_request(i, true).unwrap();
+        let (id, snap) = (ed.buffers[i].id, req.snapshot);
+        // Saved meanwhile (a quit dialog, a close), then the file goes.
+        with_cx(|cx| assert!(ed.save(i, cx)));
+        std::fs::remove_file(&a).unwrap();
+        let notes = with_cx(|cx| ed.format_done(id, true, snap.clone(), Ok(snap.text.clone()), cx));
+        assert!(notes.is_empty(), "{notes:?}");
+        assert!(!a.exists(), "not written again");
+        let failure = crate::util::format::Failure { summary: "fmt: bad".into(), stderr: String::new() };
+        let notes = with_cx(|cx| ed.format_done(id, true, snap, Err(failure), cx));
+        assert_eq!(notes, ["Format a.rs: fmt: bad; saved unformatted"]);
+        assert!(!a.exists(), "not written after a failure either");
+        assert!(!ed.buffers[i].dirty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn save_as_of_a_file_writes_a_copy_and_follows_it() {
         let dir = save_as_dir("copy");
@@ -2612,7 +2712,7 @@ mod tests {
         let mut ed = Editor::new(&Config::default());
         let i = ed.open_text(a.clone(), "a\n", false, &Theme::default());
         ed.buffers[i].insert("mine ", TxKind::Typing);
-        with_cx(|cx| assert!(ed.save_as(i, b.clone(), cx)));
+        with_cx(|cx| assert!(ed.save_as(i, b.clone(), cx, false)));
         assert_eq!(std::fs::read_to_string(&a).unwrap(), "a\n", "the old file is left alone");
         assert_eq!(std::fs::read_to_string(&b).unwrap(), "mine a\n");
         assert_eq!(ed.buffers[i].path.as_deref(), Some(b.as_path()));
@@ -2719,7 +2819,7 @@ mod tests {
         let mut ed = Editor::new(&Config::default());
         let i = ed.open_untitled("untitled");
         ed.buffers[i].insert("text\n", TxKind::Typing);
-        let notes = with_cx(|cx| assert!(!ed.save_as(i, dir.join("missing/x.txt"), cx)));
+        let notes = with_cx(|cx| assert!(!ed.save_as(i, dir.join("missing/x.txt"), cx, false)));
         assert_eq!(notes.len(), 1, "{notes:?}");
         let b = &ed.buffers[i];
         assert_eq!((b.path.as_deref(), b.name.as_str()), (None, "untitled"));

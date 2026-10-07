@@ -527,6 +527,15 @@ With b.txt open in another tab (Ctrl+N `b.txt`), Save As of notes.txt to
 `b.txt` is refused with a warning ("b.txt is open in another tab; close it
 first").
 
+Format on Save As: fresh `$T`, and before `run` write
+`/tmp/jt-home/config/jetl/config.toml` with `[lsp] enabled = false`,
+`[format] on_save = true` and `rust = ["tr", "a-z", "A-Z"]`. Type in
+notes.txt, Alt+Shift+S, change the path to `up.rs`, Enter: `cat $T/up.rs`
+is upper case, the tab is clean, Ctrl+Z undoes the reformat (the tab turns
+dirty). Alt+Shift+S to `low.txt` (no formatter): lower case, the tab clean.
+Alt+Shift+S of that clean tab to `copy.rs`: no reformat, copy.rs is lower
+case too.
+
 Untitled buffers: crash with notes.txt modified (as in the crash recovery
 scenario), `chmod 000 $T/notes.txt`, `run`, Restore all: the tab is
 `*notes.txt (recovered)` with no file.
