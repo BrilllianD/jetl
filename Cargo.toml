@@ -100,6 +100,9 @@ lang-php = ["dep:tree-sitter-php"]
 lang-lua = ["dep:tree-sitter-lua"]
 lang-dockerfile = ["dep:tree-sitter-containerfile"]
 
+[profile.dev]
+debug = "line-tables-only"
+
 [profile.dev.package."*"]
 opt-level = 2
 

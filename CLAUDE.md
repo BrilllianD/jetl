@@ -36,4 +36,4 @@ order), and `yman show 107 -n 0` holds the working mode. Design docs are `yman a
 - A new config key needs a reload class in `src/config/reload.rs` (compile error otherwise); a Live key is applied in `App::apply_config` or `Editor::apply_config`.
 - Tests that write `config.toml` set `[lsp] enabled = false`.
 - Crash-recovered text goes through `Buffer::apply` and sets `Buffer::recovered`, so autosave skips it.
-- MSRV is 1.90: run `cargo +1.90 test` before committing; avoid std APIs and syntax stabilised later.
+- MSRV is 1.90: run `CARGO_INCREMENTAL=0 cargo +1.90 test` before committing; avoid std APIs and syntax stabilised later.
