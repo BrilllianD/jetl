@@ -776,7 +776,7 @@ pub(crate) mod tests {
         // A tree delete: the files are stored before they go.
         std::fs::create_dir_all(root.join("d")).unwrap();
         std::fs::write(root.join("d/x.txt"), "x\n").unwrap();
-        app.run_fs_op(FsOp::Delete { path: root.join("d") });
+        app.run_fs_op(FsOp::Delete { path: root.join("d"), recursive: true });
         handle_next(&mut app, |m| matches!(m, AppMsg::FsOpDone { .. })).await;
         assert!(!root.join("d").exists());
         assert_eq!(snapshots(&app, &root.join("d/x.txt")), pairs(&[("Before delete", "x\n")]));
@@ -852,6 +852,48 @@ pub(crate) mod tests {
 
     fn fs_op_done(m: &AppMsg) -> bool {
         matches!(m, AppMsg::FsOpDone { .. })
+    }
+
+    #[tokio::test]
+    async fn language_server_renames_and_deletes_carry_local_history() {
+        use crate::app::lsp::tests::{incremental, is_lsp, open_on_server, with_fake_servers};
+        use crate::lsp::{EditOrigin, sync};
+        let (mut app, dir) = test_app("history-lsp-ops");
+        with_history(&mut app);
+        let mut servers = with_fake_servers(&mut app, incremental());
+        let server = open_on_server(&mut app, &mut servers, "a.rs", "one\n").await;
+        // An unchanged buffer is not saved: edit it first.
+        type_text(&mut app, "x ");
+        app.perform(Action::Editor(EditorAction::Save));
+        let root = app.workspace.root.clone();
+        let (a, b, c, e) = (root.join("a.rs"), root.join("b.rs"), root.join("c.rs"), root.join("e.rs"));
+        std::fs::write(&c, "gone\n").unwrap();
+        let uri = |p: &Path| sync::uri(p).unwrap().as_str().to_string();
+        server.request(
+            1,
+            "workspace/applyEdit",
+            serde_json::json!({"edit": {"documentChanges": [
+                {"kind": "rename", "oldUri": uri(&a), "newUri": uri(&b)},
+                {"kind": "delete", "uri": uri(&c)},
+            ]}}),
+        );
+        handle_next(&mut app, is_lsp).await;
+        handle_next(&mut app, |m| matches!(m, AppMsg::EditsApplied { .. })).await;
+        assert_eq!(snapshots(&app, &b)[0].0, format!("Renamed from {}", a.display()));
+        assert_eq!(snapshots(&app, &c)[0], ("Before delete".to_string(), "gone\n".to_string()));
+        // A previous root's report: only the history store follows.
+        std::fs::rename(&b, &e).unwrap();
+        app.handle_msg(AppMsg::EditsApplied {
+            generation: app.workspace.generation + 1,
+            origin: EditOrigin::CodeAction("x".into()),
+            done: Default::default(),
+            errors: vec![],
+            ops: vec![FsOp::Rename { from: b.clone(), to: e.clone(), overwrite: false }],
+            failed: None,
+        });
+        assert!(snapshots(&app, &e)[0].0.starts_with("Renamed from"));
+        assert_eq!(app.editor.active_buffer().unwrap().path.as_deref(), Some(b.as_path()), "the tab is not retargeted");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
@@ -1136,7 +1178,7 @@ pub(crate) mod tests {
         handle_next(&mut app, scan_of(&root)).await;
         assert_eq!(app.history_panel.project_rows(), ["d/x.txt · Saved"]);
         // A tree delete of its folder: the row says so (nothing new stored).
-        app.run_fs_op(FsOp::Delete { path: root.join("d") });
+        app.run_fs_op(FsOp::Delete { path: root.join("d"), recursive: true });
         handle_next(&mut app, fs_op_done).await;
         handle_next(&mut app, scan_of(&root)).await;
         assert_eq!(app.history_panel.project_rows(), ["d/x.txt · deleted"]);

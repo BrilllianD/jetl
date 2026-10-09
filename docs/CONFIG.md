@@ -397,7 +397,8 @@ editing session leaves one autosave snapshot per 5 minutes (the newest text
 of each). Any other snapshot (a save, Save As, before a git operation, a
 reload or a delete) is never merged and ends the run.
 
-Renaming a file or folder in the Project tree carries its snapshots to the
+Renaming a file or folder in the Project tree, or a rename a language server
+makes (a module rename, a context action), carries its snapshots to the
 new path: the list shows a "Renamed from notes.txt" row (the text at the
 rename) above the old path's snapshots, which stay listed under the old
 path too, so a new file created there later starts from that path's
@@ -416,7 +417,7 @@ in bold. A label applies to one file, not the whole project as in
 JetBrains (the window's list of files shows it as one row). It is kept past `keep_days`, and dropped by the size limit only
 after every other snapshot; Delete on its row in the Local History
 window removes it (after asking). A label moves with its file when renamed in
-the Project tree. Saving the labelled text right after adds no row.
+jetl. Saving the labelled text right after adds no row.
 
 With `snapshot_unsaved_secs` set, the text of every tab with unsaved edits
 that has a file is also snapshotted on that timer ("Unsaved changes"), so

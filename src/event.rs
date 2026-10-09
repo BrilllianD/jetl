@@ -167,14 +167,18 @@ pub enum AppMsg {
         title: String,
         items: Vec<crate::lsp::locations::LocationItem>,
     },
-    /// A workspace edit's files that were not open were edited on disk
-    /// (`App::apply_workspace_edit`): how many changed and what failed,
-    /// with what was done in the open buffers before.
+    /// A workspace edit's disk steps (files that were not open edited,
+    /// file operations) were made in order (`App::apply_workspace_edit`):
+    /// how many changed, what failed, with what was done in the open
+    /// buffers before; the file operations made, in order; and the
+    /// `documentChanges` index of the step that failed and stopped the rest.
     EditsApplied {
         generation: u64,
         origin: crate::lsp::EditOrigin,
         done: crate::lsp::edits::EditCounts,
         errors: Vec<String>,
+        ops: Vec<crate::files::ops::FsOp>,
+        failed: Option<u32>,
     },
     /// A local history list, stored snapshot, diff or label change
     /// (`history::HistoryMsg`); no generation: the store is global.

@@ -23,9 +23,9 @@ use lsp_types::{
     CompletionItemKind, CompletionItemKindCapability, DocumentFormattingClientCapabilities, DocumentSymbolClientCapabilities,
     ExecuteCommandClientCapabilities, FailureHandlingKind, GeneralClientCapabilities, GotoCapability, HoverClientCapabilities,
     InitializeParams, InitializeResult, MarkupKind, PositionEncodingKind, PublishDiagnosticsClientCapabilities,
-    ReferenceClientCapabilities, RenameClientCapabilities, ShowMessageRequestClientCapabilities, TextDocumentClientCapabilities,
-    TextDocumentSyncClientCapabilities, WindowClientCapabilities, WorkspaceClientCapabilities, WorkspaceEditClientCapabilities,
-    WorkspaceFolder,
+    ReferenceClientCapabilities, RenameClientCapabilities, ResourceOperationKind, ShowMessageRequestClientCapabilities,
+    TextDocumentClientCapabilities, TextDocumentSyncClientCapabilities, WindowClientCapabilities, WorkspaceClientCapabilities,
+    WorkspaceEditClientCapabilities, WorkspaceFolder,
 };
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, BufReader};
@@ -233,11 +233,15 @@ pub fn client_capabilities() -> ClientCapabilities {
             configuration: Some(true),
             workspace_folders: Some(true),
             apply_edit: Some(true),
-            // Text edits only: file operations are refused. An edit is
-            // checked before anything changes; a file that is not open and
-            // cannot be written leaves the others edited.
+            // File operations are checked with the text edits before anything changes;
+            // the disk steps then run in order and stop at the first failure (abort).
             workspace_edit: Some(WorkspaceEditClientCapabilities {
                 document_changes: Some(true),
+                resource_operations: Some(vec![
+                    ResourceOperationKind::Create,
+                    ResourceOperationKind::Rename,
+                    ResourceOperationKind::Delete,
+                ]),
                 failure_handling: Some(FailureHandlingKind::Abort),
                 ..Default::default()
             }),

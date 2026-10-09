@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Language server edits can now create, rename and delete files (rust-analyzer's module
+  rename, "move module to file", code actions that make new files). jetl tells servers it
+  supports this. Everything is checked before anything changes: an edit that would overwrite
+  or delete a file with unsaved changes, touch a path outside the project or inside `.git`,
+  create a file that exists or rename/delete one that does not (unless the server allows it)
+  is refused whole. A renamed file's tab follows it, with its unsaved edits and local
+  history; tabs of deleted files close; created files are not opened. File operations
+  cannot be undone with Undo; Local History keeps a snapshot of deleted and replaced files.
+  If a step fails on disk, the steps after it are not made.
+
 ## [0.2.0] - 2026-10-09
 
 ### Added

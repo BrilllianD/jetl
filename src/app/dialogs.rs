@@ -269,15 +269,15 @@ impl App {
                 self.dialog = Some(crate::files::tree::new_entry_dialog(&dir, &self.workspace.root, i == 1));
             }
             (DialogId::TreeNew { dir, is_dir }, DialogResult::Text(t)) => match check_name(&t, true) {
-                Ok(()) => self.run_fs_op(FsOp::Create { path: dir.join(t.trim()), is_dir }),
+                Ok(()) => self.run_fs_op(FsOp::Create { path: dir.join(t.trim()), is_dir, overwrite: false }),
                 Err(e) => self.notify(Level::Warn, format!("New {}: {e}", if is_dir { "directory" } else { "file" })),
             },
             (DialogId::TreeRename(path), DialogResult::Text(t)) => match check_name(&t, false) {
                 Ok(()) if path.file_name().is_some_and(|n| n == t.trim()) => {}
-                Ok(()) => self.run_fs_op(FsOp::Rename { to: path.with_file_name(t.trim()), from: path }),
+                Ok(()) => self.run_fs_op(FsOp::Rename { to: path.with_file_name(t.trim()), from: path, overwrite: false }),
                 Err(e) => self.notify(Level::Warn, format!("Rename: {e}")),
             },
-            (DialogId::TreeDelete(path), DialogResult::Button(0)) => self.run_fs_op(FsOp::Delete { path }),
+            (DialogId::TreeDelete(path), DialogResult::Button(0)) => self.run_fs_op(FsOp::Delete { path, recursive: true }),
             (DialogId::NewScratch, DialogResult::Choice(i)) => self.create_scratch(i),
             (DialogId::DeleteScratch(path), DialogResult::Button(b)) => self.finish_delete_scratch(path, b == 0),
             (DialogId::DeleteScratch(path), DialogResult::Cancel) => self.finish_delete_scratch(path, false),

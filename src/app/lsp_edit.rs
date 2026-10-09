@@ -3,13 +3,24 @@
 //! the servers' answers and their `workspace/applyEdit` requests alike.
 //! Formatting through a server is in `app/format.rs`.
 //!
-//! A workspace edit is checked and planned against the open buffers first
-//! (`lsp::edits::plan_workspace`): an open buffer the server saw at another
-//! version, overlapping edits or a file operation refuse the whole edit, so
-//! nothing changes. Then each open buffer gets one transaction (one undo
-//! step, left unsaved), and the files that are not open are edited on disk
-//! off the main thread (`AppMsg::EditsApplied`), as replace in files does.
-//! Undo reverts the open buffers only.
+//! A workspace edit is checked and planned against the open buffers and
+//! the disk first (`lsp::edits::plan_workspace`, its file operations
+//! simulated in order): an open buffer the server saw at another version,
+//! overlapping edits, or a file operation its options, its path (outside
+//! the project, inside `.git`) or an open tab (unsaved, or edited and then
+//! deleted or replaced) do not allow refuse the whole edit, so nothing
+//! changes. Then clean tabs of deleted or replaced files close, each open
+//! buffer gets one transaction (one undo step, left unsaved), and the disk
+//! steps (files that are not open edited, files created, renamed and
+//! deleted) run in order off the main thread, stopping at the first that
+//! fails (`AppMsg::EditsApplied`). Renamed files' tabs follow them, with
+//! their local history; created files are not opened.
+//!
+//! Undo reverts the open buffers only: file operations and edits of files
+//! that were not open cannot be undone. Local History keeps a snapshot of
+//! deleted and replaced files, and carries a renamed file's history.
+
+use std::path::Path;
 
 use lsp_types::{CodeAction, CodeActionOrCommand, Command, PrepareRenameResponse, WorkspaceEdit};
 use serde_json::{Value, json};
@@ -19,7 +30,9 @@ use super::lsp_nav::{CODE_ACTION, CODE_ACTION_RESOLVE, DOCUMENT_SYMBOL, EXECUTE_
 use crate::editor::buffer::LineEnding;
 use crate::editor::undo::TxKind;
 use crate::event::{AppMsg, Effect, Level};
-use crate::lsp::edits::{self, EditCounts, OpenDoc};
+use crate::files::ops::FsOp;
+use crate::history::Ack;
+use crate::lsp::edits::{self, DiskStep, EditCounts, OpenDoc};
 use crate::lsp::locations::LocationItem;
 use crate::lsp::{DocTag, EditOrigin, PendingTag, pos, symbols};
 use crate::ui::dialog::{Dialog, DialogId};
@@ -268,34 +281,40 @@ impl App {
     pub(super) fn apply_workspace_edit(&mut self, edit: WorkspaceEdit, origin: EditOrigin) -> bool {
         // The documents' versions as the server knows them.
         self.lsp_sync();
-        let files = match edits::workspace_files(edit) {
-            Ok(files) => files,
+        let steps = match edits::workspace_steps(edit) {
+            Ok(steps) => steps,
             Err(why) => {
                 self.edits_refused(origin, why);
                 return false;
             }
         };
-        let open: Vec<OpenDoc> = files
+        // Every buffer with a path: operations on folders touch tabs under them.
+        let open: Vec<OpenDoc> = self
+            .editor
+            .buffers
             .iter()
-            .filter_map(|f| {
-                let b = &self.editor.buffers[self.editor.index_of(&f.path)?];
+            .filter_map(|b| {
                 Some(OpenDoc {
                     id: b.id,
-                    path: f.path.clone(),
+                    path: b.path.clone()?,
                     name: b.name.clone(),
                     rope: b.rope.clone(),
                     crlf: b.line_ending == LineEnding::CrLf,
                     version: self.lsp.docs.get(&b.id).map(|d| d.version),
+                    dirty: b.dirty(),
                 })
             })
             .collect();
-        let plan = match edits::plan_workspace(files, &open) {
+        let plan = match edits::plan_workspace(steps, &open, &self.workspace.root, &edits::RealDisk) {
             Ok(plan) => plan,
             Err(why) => {
                 self.edits_refused(origin, why);
                 return false;
             }
         };
+        // Clean tabs of files deleted or replaced: closed now, before they
+        // can become dirty.
+        self.editor.force_close_ids(&plan.close);
         let mut done = EditCounts::default();
         for (id, plan, n) in plan.open {
             let Some(i) = self.editor.index_of_id(id) else { continue };
@@ -310,24 +329,58 @@ impl App {
             done.edits += n;
         }
         self.dirty_frame = true;
-        if plan.closed.is_empty() {
-            self.edits_applied(origin, done, Vec::new());
+        if plan.disk.is_empty() {
+            self.edits_applied(origin, done, Vec::new(), Vec::new(), None);
             return true;
         }
-        let (tx, generation) = (self.bus_tx.clone(), self.workspace.generation);
+        // Local history snapshots of what is deleted or replaced, queued in
+        // step order; each destructive step waits for its own.
+        let acks: Vec<Option<Ack>> = plan
+            .disk
+            .iter()
+            .map(|step| match step {
+                DiskStep::Op { op: FsOp::Delete { path, .. } | FsOp::Create { path, overwrite: true, .. }, .. } => {
+                    self.history.before_delete(path)
+                }
+                DiskStep::Op { op: FsOp::Rename { to, overwrite: true, .. }, .. } => self.history.before_delete(to),
+                _ => None,
+            })
+            .collect();
+        let (tx, generation, root) = (self.bus_tx.clone(), self.workspace.generation, self.workspace.root.clone());
         tokio::task::spawn_blocking(move || {
-            let mut errors = Vec::new();
-            for f in plan.closed {
-                match edits::edit_file(&f.path, &f.edits) {
-                    Ok(0) => {}
-                    Ok(n) => {
-                        done.files += 1;
-                        done.edits += n;
-                    }
-                    Err(e) => errors.push(e),
+            let (mut errors, mut ops, mut failed) = (Vec::new(), Vec::new(), None);
+            let total = plan.disk.len();
+            for (i, (step, ack)) in plan.disk.into_iter().zip(acks).enumerate() {
+                if let Some(ack) = ack {
+                    ack.wait();
+                }
+                let error = match step {
+                    DiskStep::Edit(f) => match edits::edit_file(&f.path, &f.edits) {
+                        Ok(0) => None,
+                        Ok(n) => {
+                            done.files += 1;
+                            done.edits += n;
+                            None
+                        }
+                        Err(e) => Some((e, f.index)),
+                    },
+                    DiskStep::Op { index, op } => match op.run() {
+                        Ok(()) => {
+                            ops.push(op);
+                            None
+                        }
+                        Err(e) => Some((format!("Cannot {}: {e}", op.describe(&root)), Some(index))),
+                    },
+                };
+                // Abort: the steps after a failed one are not made.
+                if let Some((e, index)) = error {
+                    errors.push(e);
+                    failed = index;
+                    done.skipped = total - i - 1;
+                    break;
                 }
             }
-            let _ = tx.send(AppMsg::EditsApplied { generation, origin, done, errors });
+            let _ = tx.send(AppMsg::EditsApplied { generation, origin, done, errors, ops, failed });
         });
         true
     }
@@ -350,10 +403,38 @@ impl App {
         }
     }
 
-    /// A workspace edit was made (`AppMsg::EditsApplied` for one with files
-    /// that were not open): report it, answer the server that asked for it.
-    pub(super) fn edits_applied(&mut self, origin: EditOrigin, done: EditCounts, errors: Vec<String>) {
+    /// A workspace edit was made (`AppMsg::EditsApplied` for one with disk
+    /// steps): tabs, local history and the language servers follow its file
+    /// operations; report it, answer the server that asked for it.
+    pub(super) fn edits_applied(
+        &mut self,
+        origin: EditOrigin,
+        done: EditCounts,
+        mut errors: Vec<String>,
+        ops: Vec<FsOp>,
+        failed: Option<u32>,
+    ) {
+        for op in &ops {
+            match op {
+                FsOp::Rename { from, to, .. } => {
+                    // History first: snapshots of the old path queued until now are carried.
+                    self.history_renamed(from, to);
+                    self.editor.retarget(from, to, &self.theme);
+                }
+                FsOp::Delete { path, .. } => {
+                    self.history_files_changed(path);
+                    self.editor.close_under(path);
+                }
+                FsOp::Create { .. } => {}
+            }
+        }
         let title = Self::edit_title(&origin);
+        let s = |n: usize| if n == 1 { "" } else { "s" };
+        if done.skipped > 0
+            && let Some(first) = errors.first_mut()
+        {
+            first.push_str(&format!("; {} later change{} not made", done.skipped, s(done.skipped)));
+        }
         for e in errors.iter().take(3) {
             self.notify(Level::Error, format!("{title}: {e}"));
         }
@@ -363,28 +444,74 @@ impl App {
                 tracing::error!("{title}: {e}");
             }
         }
-        let s = |n: usize| if n == 1 { "" } else { "s" };
+        if !ops.is_empty() {
+            // The renamed documents: didClose of the old URI, didOpen of the new.
+            self.lsp_sync();
+        }
+        let ops_text = describe_ops(&ops, &self.workspace.root);
         match origin {
-            EditOrigin::Rename(name) if done.files > 0 => self.notify(
-                Level::Info,
-                format!("Renamed to {name}: {} occurrence{} in {} file{}", done.edits, s(done.edits), done.files, s(done.files)),
-            ),
+            EditOrigin::Rename(name) if done.files > 0 => {
+                let mut text =
+                    format!("Renamed to {name}: {} occurrence{} in {} file{}", done.edits, s(done.edits), done.files, s(done.files));
+                if let Some(ops) = &ops_text {
+                    text.push_str(&format!("; {ops}"));
+                }
+                self.notify(Level::Info, text);
+            }
+            EditOrigin::Rename(name) if ops_text.is_some() => {
+                self.notify(Level::Info, format!("Renamed to {name}: {}", ops_text.unwrap_or_default()));
+            }
             EditOrigin::Rename(_) if errors.is_empty() => self.lsp_hint("Nothing to rename"),
-            EditOrigin::Rename(_) | EditOrigin::CodeAction(_) => {}
+            EditOrigin::Rename(_) => {}
+            EditOrigin::CodeAction(_) => {
+                if let Some(ops) = ops_text {
+                    self.notify(Level::Info, format!("{title}: {ops}"));
+                }
+            }
             EditOrigin::ServerRequest { server, id, .. } => {
+                if let Some(ops) = ops_text {
+                    self.notify(Level::Info, format!("{title}: {ops}"));
+                }
                 if let Some(c) = self.lsp.clients.get(&server) {
                     let mut answer = json!({"applied": errors.is_empty()});
                     if let Some(e) = errors.first() {
                         answer["failureReason"] = e.clone().into();
                     }
+                    if let Some(i) = failed {
+                        answer["failedChange"] = i.into();
+                    }
                     c.respond(id, Ok(answer));
                 }
             }
         }
-        if done.files > 0 {
+        if done.files > 0 || !ops.is_empty() {
             self.apply_effects(vec![Effect::GitRefresh]);
         }
     }
+}
+
+/// The file operations made, for messages: "created a.rs, renamed b.rs to
+/// c.rs" (three at most, then how many more); `None` when there are none.
+fn describe_ops(ops: &[FsOp], root: &Path) -> Option<String> {
+    if ops.is_empty() {
+        return None;
+    }
+    let rel = |p: &Path| p.strip_prefix(root).unwrap_or(p).display().to_string();
+    let mut text = ops
+        .iter()
+        .take(3)
+        .map(|op| match op {
+            FsOp::Create { path, .. } => format!("created {}", rel(path)),
+            FsOp::Rename { from, to, .. } => format!("renamed {} to {}", rel(from), rel(to)),
+            FsOp::Delete { path, .. } => format!("deleted {}", rel(path)),
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    if ops.len() > 3 {
+        let k = ops.len() - 3;
+        text.push_str(&format!(" and {k} more file operation{}", if k == 1 { "" } else { "s" }));
+    }
+    Some(text)
 }
 
 #[cfg(test)]
@@ -392,12 +519,11 @@ mod tests {
     use super::*;
     use crate::actions::{Action, EditorAction, LspAction, PaletteKind};
     use crate::app::lsp::tests::{incremental, is_lsp, open_on_server, with_fake_servers};
-    use crate::app::tests::{handle_next, test_app};
+    use crate::app::tests::{handle_next, load, test_app};
     use crate::lsp::fake::FakeServer;
     use crate::lsp::sync;
     use crate::ui::dialog::{DialogKind, DialogResult};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    use std::path::Path;
 
     /// Rename (with prepare), context actions (resolved lazily), one
     /// command, file structure and formatting on top of incremental sync.
@@ -464,7 +590,8 @@ mod tests {
         assert!(td["formatting"].is_object());
         assert_eq!(c["workspace"]["applyEdit"], true);
         assert_eq!(c["workspace"]["workspaceEdit"]["documentChanges"], true);
-        assert!(c["workspace"]["workspaceEdit"].get("resourceOperations").is_none(), "file operations are not supported");
+        assert_eq!(c["workspace"]["workspaceEdit"]["resourceOperations"], json!(["create", "rename", "delete"]));
+        assert_eq!(c["workspace"]["workspaceEdit"]["failureHandling"], "abort");
     }
 
     #[tokio::test]
@@ -549,18 +676,19 @@ mod tests {
             (warn.level, warn.text.as_str()),
             (Level::Warn, "Rename: a.rs changed since the language server made the edit; nothing was changed")
         );
-        // Creating a file is not supported: nothing changes either.
+        // Creating a file that exists (no options): nothing changes either.
         app.perform(Action::Lsp(LspAction::Rename));
         answer(&mut app, &mut server, "textDocument/prepareRename", range(1, 18, 1, 21)).await;
         let d = app.dialog.take().unwrap();
         app.finish_dialog(d.id, DialogResult::Text("renamed".into()));
         let we = json!({"documentChanges": [
             {"textDocument": {"uri": uri(&a), "version": 1}, "edits": [edit(1, 18, 1, 21, "renamed")]},
-            {"kind": "create", "uri": uri(&app.workspace.root.join("c.rs"))},
+            {"kind": "create", "uri": uri(&b)},
         ]});
         answer(&mut app, &mut server, "textDocument/rename", we).await;
         assert_eq!(text(&app), A);
-        assert!(app.notifications.last().unwrap().text.contains("creating a file"), "{}", app.notifications.last().unwrap().text);
+        assert_eq!(std::fs::read_to_string(&b).unwrap(), B);
+        assert!(app.notifications.last().unwrap().text.contains("b.rs already exists"), "{}", app.notifications.last().unwrap().text);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -653,17 +781,167 @@ mod tests {
         assert!(text(&app).ends_with("} // fixed\n"));
         server.respond(exec["id"].as_i64().unwrap(), Value::Null);
         handle_next(&mut app, is_lsp).await;
-        // An edit it cannot make is answered with the reason.
+        // An edit it cannot make (deleting the file with unsaved changes)
+        // is answered with the reason.
         server.request(42, "workspace/applyEdit", json!({"edit": {"documentChanges": [{"kind": "delete", "uri": uri(&a)}]}}));
         handle_next(&mut app, is_lsp).await;
         let r = server.response(42).await["result"].clone();
         assert_eq!(r["applied"], false);
-        assert!(r["failureReason"].as_str().unwrap().contains("deleting a file"), "{r}");
+        assert!(r["failureReason"].as_str().unwrap().contains("unsaved changes"), "{r}");
+        assert!(a.exists());
         // Nothing offered: a toast.
         app.perform(Action::Lsp(LspAction::ContextActions));
         answer(&mut app, &mut server, "textDocument/codeAction", json!([])).await;
         assert!(app.dialog.is_none());
         assert!(toasts(&app).contains(&"No context actions here".to_string()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn rename_answer_moves_the_open_file_and_its_tab() {
+        let (mut app, dir) = test_app("lsp-rename-file");
+        let mut servers = with_fake_servers(&mut app, caps());
+        let mut server = open_on_server(&mut app, &mut servers, "a.rs", A).await;
+        let root = app.workspace.root.clone();
+        let (a, b, c) = (root.join("a.rs"), root.join("b.rs"), root.join("c.rs"));
+        std::fs::write(&b, B).unwrap();
+        app.editor.active_buffer_mut().unwrap().goto_line(1, 18);
+        app.perform(Action::Lsp(LspAction::Rename));
+        answer(&mut app, &mut server, "textDocument/prepareRename", range(1, 18, 1, 21)).await;
+        let d = app.dialog.take().unwrap();
+        app.finish_dialog(d.id, DialogResult::Text("renamed".into()));
+        let we = json!({"documentChanges": [
+            {"textDocument": {"uri": uri(&a), "version": 1}, "edits": [edit(1, 18, 1, 21, "renamed")]},
+            {"kind": "rename", "oldUri": uri(&a), "newUri": uri(&c)},
+            {"textDocument": {"uri": uri(&b), "version": null}, "edits": [edit(0, 7, 0, 10, "renamed"), edit(1, 6, 1, 9, "renamed")]},
+        ]});
+        answer(&mut app, &mut server, "textDocument/rename", we).await;
+        let edited = "fn main() {\n    let s = \"😀\"; renamed(s);\n}\n";
+        assert_eq!(text(&app), edited, "the open buffer is edited at once");
+        handle_next(&mut app, applied).await;
+        // On disk: moved with its saved text, the other file edited.
+        assert!(!a.exists());
+        assert_eq!(std::fs::read_to_string(&c).unwrap(), A, "unsaved edits are not written");
+        assert_eq!(std::fs::read_to_string(&b).unwrap(), "pub fn renamed(s: &str) {}\n// 日本 renamed\n");
+        // The tab follows, still dirty.
+        let buf = app.editor.active_buffer().unwrap();
+        assert_eq!((buf.path.as_deref(), buf.name.as_str(), buf.dirty()), (Some(c.as_path()), "c.rs", true));
+        // The server closes the old document and opens the new one.
+        app.lsp_sync();
+        let closed = server.recv("textDocument/didClose").await;
+        assert_eq!(closed["params"]["textDocument"]["uri"], uri(&a));
+        let opened = server.recv("textDocument/didOpen").await;
+        assert_eq!(opened["params"]["textDocument"]["uri"], uri(&c));
+        assert_eq!(opened["params"]["textDocument"]["text"], edited);
+        let want = "Renamed to renamed: 3 occurrences in 2 files; renamed a.rs to c.rs";
+        assert!(toasts(&app).contains(&want.to_string()), "{:?}", toasts(&app));
+        // Undo reverts the text in the moved tab; the file stays moved.
+        app.perform(Action::Editor(EditorAction::Undo));
+        assert_eq!(text(&app), A);
+        assert!(c.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn apply_edit_creates_edits_and_deletes_files() {
+        let (mut app, dir) = test_app("lsp-file-ops");
+        let mut servers = with_fake_servers(&mut app, caps());
+        let server = open_on_server(&mut app, &mut servers, "a.rs", A).await;
+        let mut server = server;
+        let root = app.workspace.root.clone();
+        let (n, old, d) = (root.join("n.rs"), root.join("old.txt"), root.join("d"));
+        std::fs::write(&old, "old\n").unwrap();
+        std::fs::create_dir(&d).unwrap();
+        load(&mut app, "d/x.txt", "x\n");
+        assert!(app.editor.index_of(&d.join("x.txt")).is_some());
+        server.request(
+            50,
+            "workspace/applyEdit",
+            json!({"label": "Move", "edit": {"documentChanges": [
+                {"kind": "create", "uri": uri(&n)},
+                {"textDocument": {"uri": uri(&n), "version": null}, "edits": [edit(0, 0, 0, 0, "fn n() {}\n")]},
+                {"kind": "delete", "uri": uri(&old)},
+                {"kind": "delete", "uri": uri(&d), "options": {"recursive": true}},
+            ]}}),
+        );
+        handle_next(&mut app, is_lsp).await;
+        handle_next(&mut app, applied).await;
+        assert_eq!(server.response(50).await["result"], json!({"applied": true}));
+        assert_eq!(std::fs::read_to_string(&n).unwrap(), "fn n() {}\n");
+        assert!(app.editor.index_of(&n).is_none(), "a created file is not opened");
+        assert!(!old.exists() && !d.exists());
+        assert!(app.editor.buffers.iter().all(|b| !b.path.as_deref().is_some_and(|p| p.starts_with(&d))), "no tab under d");
+        let want = "Move: created n.rs, deleted old.txt, deleted d";
+        assert!(toasts(&app).contains(&want.to_string()), "{:?}", toasts(&app));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn file_operations_that_cannot_be_made_change_nothing() {
+        let (mut app, dir) = test_app("lsp-file-ops-no");
+        let mut servers = with_fake_servers(&mut app, caps());
+        let mut server = open_on_server(&mut app, &mut servers, "a.rs", A).await;
+        let root = app.workspace.root.clone();
+        let (a, b, d) = (root.join("a.rs"), root.join("b.rs"), root.join("d"));
+        std::fs::write(&b, B).unwrap();
+        std::fs::create_dir(&d).unwrap();
+        std::fs::write(d.join("x.txt"), "x").unwrap();
+        let outside = dir.join("outside.rs");
+        let cases = [
+            (json!({"kind": "create", "uri": uri(&b)}), "already exists"),
+            (json!({"kind": "rename", "oldUri": uri(&b), "newUri": uri(&outside)}), "outside the project"),
+            (json!({"kind": "delete", "uri": uri(&d)}), "not empty"),
+            (
+                json!({"textDocument": {"uri": uri(&root.join("z.rs")), "version": null}, "edits": [edit(0, 0, 0, 0, "z")]}),
+                "z.rs does not exist",
+            ),
+            (json!({"kind": "delete", "uri": uri(&a)}), "unsaved changes"),
+        ];
+        for (id, (op, why)) in (60..).zip(cases) {
+            if why == "unsaved changes" {
+                app.perform(Action::Editor(EditorAction::InsertText("x".into())));
+            }
+            let before = text(&app);
+            let changes = json!([{"textDocument": {"uri": uri(&a), "version": null}, "edits": [edit(0, 0, 0, 0, "// x\n")]}, op]);
+            server.request(id, "workspace/applyEdit", json!({"edit": {"documentChanges": changes}}));
+            handle_next(&mut app, is_lsp).await;
+            let r = server.response(id).await["result"].clone();
+            assert_eq!(r["applied"], false, "{why}");
+            assert!(r["failureReason"].as_str().unwrap().contains(why), "{r} should say {why}");
+            assert_eq!(text(&app), before, "{why}");
+            assert_eq!(std::fs::read_to_string(&b).unwrap(), B);
+            assert!(d.join("x.txt").exists() && a.exists() && !outside.exists());
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_failing_step_stops_the_rest() {
+        let (mut app, dir) = test_app("lsp-file-ops-abort");
+        let mut servers = with_fake_servers(&mut app, caps());
+        let mut server = open_on_server(&mut app, &mut servers, "a.rs", A).await;
+        let root = app.workspace.root.clone();
+        let (x, bin, y) = (root.join("x.rs"), root.join("bin.rs"), root.join("y.txt"));
+        std::fs::write(&bin, b"\xff\xfe not text").unwrap();
+        std::fs::write(&y, "y").unwrap();
+        server.request(
+            70,
+            "workspace/applyEdit",
+            json!({"edit": {"documentChanges": [
+                {"kind": "create", "uri": uri(&x)},
+                {"textDocument": {"uri": uri(&bin), "version": null}, "edits": [edit(0, 0, 0, 0, "x")]},
+                {"kind": "delete", "uri": uri(&y)},
+            ]}}),
+        );
+        handle_next(&mut app, is_lsp).await;
+        handle_next(&mut app, applied).await;
+        let r = server.response(70).await["result"].clone();
+        assert_eq!((r["applied"].clone(), r["failedChange"].clone()), (json!(false), json!(1)), "{r}");
+        assert!(r["failureReason"].as_str().unwrap().contains("not valid UTF-8"), "{r}");
+        assert!(x.exists(), "the step before stays");
+        assert!(y.exists(), "the step after is not made");
+        let errors: Vec<&str> = app.notifications.iter().filter(|n| n.level == Level::Error).map(|n| n.text.as_str()).collect();
+        assert!(errors.iter().any(|e| e.ends_with("; 1 later change not made")), "{errors:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

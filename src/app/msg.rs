@@ -60,7 +60,7 @@ impl App {
             AppMsg::FsOpDone { generation, op, result } if generation == self.workspace.generation => self.fs_op_done(op, result),
             // The tree and tabs are a previous root's, but the store (and the
             // Local History window) is global.
-            AppMsg::FsOpDone { op: FsOp::Rename { from, to }, result: Ok(()), .. } => self.history_renamed(&from, &to),
+            AppMsg::FsOpDone { op: FsOp::Rename { from, to, .. }, result: Ok(()), .. } => self.history_renamed(&from, &to),
             AppMsg::FsOpDone { op, .. } => tracing::debug!("dropping file operation result of a previous root: {op:?}"),
             AppMsg::Paste { generation, seq, result } => self.paste_done(generation, seq, result),
             AppMsg::Formatted { generation, id, seq, result } => self.format_done(generation, id, seq, result),
@@ -70,10 +70,18 @@ impl App {
             AppMsg::TerminalOutput { generation, id } => self.terminal_output(generation, id),
             AppMsg::Lsp(m) => self.lsp_msg(m),
             AppMsg::Locations { generation, seq, title, items } => self.locations_loaded(generation, seq, title, items),
-            AppMsg::EditsApplied { generation, origin, done, errors } if generation == self.workspace.generation => {
-                self.edits_applied(origin, done, errors)
+            AppMsg::EditsApplied { generation, origin, done, errors, ops, failed } if generation == self.workspace.generation => {
+                self.edits_applied(origin, done, errors, ops, failed)
             }
-            AppMsg::EditsApplied { .. } => tracing::debug!("dropping a workspace edit report of a previous root"),
+            // As for FsOpDone: only the global history store follows.
+            AppMsg::EditsApplied { ops, .. } => {
+                for op in ops {
+                    if let FsOp::Rename { from, to, .. } = op {
+                        self.history_renamed(&from, &to);
+                    }
+                }
+                tracing::debug!("dropping a workspace edit report of a previous root");
+            }
             AppMsg::LocalHistory(m) => self.history_msg(m),
         }
     }

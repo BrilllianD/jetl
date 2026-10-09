@@ -11,7 +11,7 @@ impl App {
     pub(super) fn run_fs_op(&mut self, op: FsOp) {
         let (generation, tx) = (self.workspace.generation, self.bus_tx.clone());
         // A delete waits for the local history snapshot of what it removes.
-        let pre = if let FsOp::Delete { path } = &op { self.history.before_delete(path) } else { None };
+        let pre = if let FsOp::Delete { path, .. } = &op { self.history.before_delete(path) } else { None };
         tokio::task::spawn_blocking(move || {
             if let Some(ack) = pre {
                 ack.wait();
@@ -27,14 +27,14 @@ impl App {
             return self.notify(Level::Error, format!("Cannot {what}: {e}"));
         }
         match &op {
-            FsOp::Create { path, is_dir } => {
+            FsOp::Create { path, is_dir, .. } => {
                 self.reload_parents(path);
                 self.project.select_path(path);
                 if !is_dir {
                     self.open_file(path.clone(), true);
                 }
             }
-            FsOp::Rename { from, to } => {
+            FsOp::Rename { from, to, .. } => {
                 // Before the tabs follow: snapshots of the old path queued until now are carried.
                 self.history_renamed(from, to);
                 self.reload_parents(from);
@@ -44,7 +44,7 @@ impl App {
                 let name = to.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                 self.notify(Level::Info, format!("Renamed to {name}"));
             }
-            FsOp::Delete { path } => {
+            FsOp::Delete { path, .. } => {
                 self.reload_parents(path);
                 // Its rows read deleted (a file unchanged since its last
                 // snapshot stored nothing new).
