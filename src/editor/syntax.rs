@@ -392,7 +392,7 @@ fn modeline(line: &str) -> Option<&'static LanguageDef> {
 
 /// Our language for a vim filetype or emacs mode name, else the language
 /// of that exact name.
-fn language_for_alias(name: &str) -> Option<&'static LanguageDef> {
+pub fn language_for_alias(name: &str) -> Option<&'static LanguageDef> {
     let lower = name.to_ascii_lowercase();
     let name = lower.strip_suffix("-mode").unwrap_or(&lower);
     let name = match name {
@@ -437,6 +437,28 @@ impl<'a> Iterator for RopeChunks<'a> {
     fn next(&mut self) -> Option<Self::Item> {
         self.0.next().map(RopeChunk)
     }
+}
+
+/// Highlight a standalone text (documentation code) with `def`: per line of `text`
+/// (split at '\n'), the styled char ranges within that line. Empty lists when the
+/// grammar cannot be loaded.
+pub fn highlight_text(def: &'static LanguageDef, text: &str, theme: &Theme) -> Vec<Vec<(Range<usize>, Style)>> {
+    let rope = Rope::from_str(text);
+    let lines = rope.len_lines();
+    let mut out = vec![Vec::new(); lines];
+    let Some(mut syn) = Syntax::new(def, theme) else { return out };
+    let spans = syn.highlights(&rope, 0, lines).spans;
+    for (i, line) in out.iter_mut().enumerate() {
+        let start = rope.line_to_char(i);
+        let end = if i + 1 < lines { rope.line_to_char(i + 1) - 1 } else { rope.len_chars() };
+        for (r, st) in &spans {
+            let (s, e) = (r.start.max(start), r.end.min(end));
+            if s < e {
+                line.push((s - start..e - start, *st));
+            }
+        }
+    }
+    out
 }
 
 #[derive(Debug, Default, Clone)]
@@ -664,6 +686,18 @@ mod tests {
         assert_eq!(h.style_at(21 + 11), Some(st));
         assert_eq!(h.style_at(12), Some(kw), "inserted let is a keyword");
         assert_eq!(h.style_at(20), theme.capture_style("number"), "integer literal");
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[test]
+    fn highlight_text_splits_spans_per_line() {
+        let theme = Theme::default();
+        let def = language_for_name("rust").expect("rust grammar");
+        let lines = highlight_text(def, "fn a() {}\nlet x = 1;", &theme);
+        assert_eq!(lines.len(), 2);
+        let kw = theme.capture_style("keyword").unwrap();
+        assert!(lines[0].contains(&(0..2, kw)));
+        assert_eq!(lines[1][0].0.start, 0);
     }
 
     #[cfg(feature = "lang-rust")]

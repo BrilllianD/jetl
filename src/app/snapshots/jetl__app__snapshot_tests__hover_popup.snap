@@ -1,5 +1,6 @@
 ---
 source: src/app/snapshot_tests.rs
+assertion_line: 1199
 expression: "snapshot(&term, &marks, None)"
 ---
 80x20 cursor=(57,2)
@@ -23,9 +24,9 @@ expression: "snapshot(&term, &marks, None)"
 17  3 │                              ││
 18  ⌕ └──────────────────────────────┘│
 19  root                             Ln 2, Col 15  LF  UTF-8  4 spaces  Plain text
--- marks: P=popup
+-- marks: P=popup K=keyword
 03                  PPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPP
-04                  P                                                             P
+04                  P KK            KKK     KKK                                   P
 05                  PPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPP
 06                  PPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPP
 07                  PPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPP

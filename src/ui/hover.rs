@@ -1,8 +1,10 @@
 //! The Quick Documentation popup (Alt+Q): a language server's hover text
 //! at the caret, drawn next to the caret cell, under it when there is room
 //! and above otherwise. Markdown is shown plainly: fences dropped, code
-//! lines on the editor background, headings bold, emphasis, inline code
-//! marks, escapes and link targets stripped; prose is wrapped to the popup.
+//! lines on the editor background and highlighted by their fence's language
+//! (the buffer's language for a bare fence), headings bold, emphasis, inline
+//! code marks, escapes and link targets stripped; prose is wrapped to the
+//! popup.
 //!
 //! The app drops the popup once the buffer's version or caret differs from
 //! the request's. While it is up, Up/Down/PgUp/PgDn scroll it and Esc closes
@@ -21,6 +23,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use crate::config::theme::Theme;
 use crate::editor::buffer::BufferId;
 use crate::editor::groups::GroupId;
+use crate::editor::syntax::{self, LanguageDef};
 
 /// Widest the popup gets (with its border), in cells.
 const MAX_WIDTH: u16 = 82;
@@ -35,6 +38,30 @@ pub enum Kind {
     Rule,
 }
 
+/// A documentation line as drawn: its kind, its text (tabs already expanded to four
+/// spaces in code), and for code its syntax styles as sorted, non-overlapping char
+/// ranges of `text`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DocLine {
+    pub kind: Kind,
+    pub text: String,
+    pub spans: Vec<(std::ops::Range<usize>, Style)>,
+}
+
+impl DocLine {
+    fn plain(kind: Kind, text: String) -> Self {
+        Self { kind, text, spans: Vec::new() }
+    }
+}
+
+/// What code is highlighted with: the theme, and the language of a fence with no
+/// info string (the buffer's language).
+#[derive(Clone, Copy)]
+pub struct Highlight<'a> {
+    pub theme: &'a Theme,
+    pub fallback: Option<&'static LanguageDef>,
+}
+
 #[derive(Debug)]
 pub struct HoverPopup {
     /// What the popup was asked for: dropped when any of these change.
@@ -42,7 +69,7 @@ pub struct HoverPopup {
     pub buffer: BufferId,
     pub version: u64,
     pub head: usize,
-    lines: Vec<(Kind, String)>,
+    lines: Vec<DocLine>,
     scroll: usize,
     /// Text rows that fit, as last drawn (a page for PgUp/PgDn).
     page: usize,
@@ -51,13 +78,13 @@ pub struct HoverPopup {
 
 impl HoverPopup {
     /// The popup for a hover answer; `None` when it has no text.
-    pub fn new(group: GroupId, buffer: BufferId, version: u64, head: usize, contents: HoverContents) -> Option<Self> {
-        let lines = contents_lines(contents);
+    pub fn new(group: GroupId, buffer: BufferId, version: u64, head: usize, contents: HoverContents, hl: Highlight<'_>) -> Option<Self> {
+        let lines = contents_lines(contents, hl);
         (!lines.is_empty()).then_some(Self { group, buffer, version, head, lines, scroll: 0, page: 1, rect: Rect::default() })
     }
 
     #[cfg(test)]
-    pub fn lines(&self) -> &[(Kind, String)] {
+    pub fn lines(&self) -> &[DocLine] {
         &self.lines
     }
 
@@ -95,7 +122,7 @@ impl HoverPopup {
         if max_w < 12 || ay < area.y || ay >= area.bottom() {
             return;
         }
-        let natural = self.lines.iter().map(|(_, s)| s.width()).max().unwrap_or(0) as u16;
+        let natural = self.lines.iter().map(|l| l.text.width()).max().unwrap_or(0) as u16;
         // Text width: the border and a column of padding each side.
         let iw = natural.clamp(20.min(max_w - 4), max_w - 4);
         let rows = wrap_lines(&self.lines, iw as usize);
@@ -122,41 +149,69 @@ impl HoverPopup {
         }
         let inner = block.inner(rect);
         frame.render_widget(block, rect);
-        let buf = frame.buffer_mut();
-        for (i, (kind, text)) in rows.iter().skip(self.scroll).take(view).enumerate() {
-            let row = Rect::new(inner.x, inner.y + i as u16, inner.width, 1);
-            let style = match kind {
-                Kind::Text => bg,
-                Kind::Code => Style::default().bg(theme.bg).fg(theme.fg),
-                Kind::Heading => bg.add_modifier(Modifier::BOLD),
-                Kind::Rule => theme.dim.bg(theme.popup_bg),
-            };
-            buf.set_style(row, style);
-            match kind {
-                Kind::Rule => buf.set_stringn(row.x, row.y, "─".repeat(row.width as usize), row.width as usize, style),
-                _ => buf.set_stringn(row.x + 1, row.y, text, iw as usize, style),
-            };
+        draw_lines(frame.buffer_mut(), inner, &rows, self.scroll, theme);
+    }
+}
+
+/// Draw `rows` from `scroll` into `inner` (a block's inner rect): one row per line,
+/// text from `inner.x + 1`, at most `inner.width - 2` cells wide.
+pub(crate) fn draw_lines(buf: &mut ratatui::buffer::Buffer, inner: Rect, rows: &[DocLine], scroll: usize, theme: &Theme) {
+    let bg = Style::default().bg(theme.popup_bg).fg(theme.fg);
+    for (i, line) in rows.iter().skip(scroll).take(inner.height as usize).enumerate() {
+        let row = Rect::new(inner.x, inner.y + i as u16, inner.width, 1);
+        let style = match line.kind {
+            Kind::Text => bg,
+            Kind::Code => Style::default().bg(theme.bg).fg(theme.fg),
+            Kind::Heading => bg.add_modifier(Modifier::BOLD),
+            Kind::Rule => theme.dim.bg(theme.popup_bg),
+        };
+        buf.set_style(row, style);
+        if line.kind == Kind::Rule {
+            buf.set_stringn(row.x, row.y, "─".repeat(row.width as usize), row.width as usize, style);
+            continue;
         }
+        let limit = row.x + row.width.saturating_sub(1);
+        let chars: Vec<char> = line.text.chars().collect();
+        let mut x = row.x + 1;
+        let mut at = 0;
+        let run = |buf: &mut ratatui::buffer::Buffer, x: &mut u16, from: usize, to: usize, st: Style| {
+            if from < to && *x < limit {
+                let seg: String = chars[from..to.min(chars.len())].iter().collect();
+                *x = buf.set_stringn(*x, row.y, seg, (limit - *x) as usize, st).0;
+            }
+        };
+        for (r, span_style) in &line.spans {
+            run(buf, &mut x, at, r.start, style);
+            run(buf, &mut x, r.start.max(at), r.end, style.patch(*span_style));
+            at = r.end.max(at);
+        }
+        run(buf, &mut x, at, chars.len(), style);
     }
 }
 
 /// Lines of a hover answer: markdown parsed, plain text as it is, code in
 /// `MarkedString`s as code; several parts separated by a rule.
-pub fn contents_lines(contents: HoverContents) -> Vec<(Kind, String)> {
+pub fn contents_lines(contents: HoverContents, hl: Highlight<'_>) -> Vec<DocLine> {
+    let text_lines = |s: &str| s.lines().map(|l| DocLine::plain(Kind::Text, l.to_string())).collect();
     let marked = |m: MarkedString| match m {
-        MarkedString::String(s) => markdown(&s),
-        MarkedString::LanguageString(l) => l.value.lines().map(|l| (Kind::Code, l.to_string())).collect(),
+        MarkedString::String(s) => markdown(&s, hl),
+        MarkedString::LanguageString(l) => code_lines(&l.value, fence_language(&l.language, hl.fallback), hl.theme),
     };
-    let parts: Vec<Vec<(Kind, String)>> = match contents {
+    let parts: Vec<Vec<DocLine>> = match contents {
         HoverContents::Scalar(m) => vec![marked(m)],
         HoverContents::Array(ms) => ms.into_iter().map(marked).collect(),
-        HoverContents::Markup(m) if m.kind == MarkupKind::Markdown => vec![markdown(&m.value)],
-        HoverContents::Markup(m) => vec![m.value.lines().map(|l| (Kind::Text, l.to_string())).collect()],
+        HoverContents::Markup(m) if m.kind == MarkupKind::Markdown => vec![markdown(&m.value, hl)],
+        HoverContents::Markup(m) => vec![text_lines(&m.value)],
     };
-    let mut out: Vec<(Kind, String)> = Vec::new();
+    join_parts(parts)
+}
+
+/// Parts joined with a rule between them; blank lines at the ends, next to rules or doubled go.
+pub(crate) fn join_parts(parts: Vec<Vec<DocLine>>) -> Vec<DocLine> {
+    let mut out: Vec<DocLine> = Vec::new();
     for part in parts.into_iter().map(tidy).filter(|p| !p.is_empty()) {
         if !out.is_empty() {
-            out.push((Kind::Rule, String::new()));
+            out.push(DocLine::plain(Kind::Rule, String::new()));
         }
         out.extend(part);
     }
@@ -164,14 +219,14 @@ pub fn contents_lines(contents: HoverContents) -> Vec<(Kind, String)> {
 }
 
 /// Without blank lines at the ends, next to rules or doubled.
-fn tidy(lines: Vec<(Kind, String)>) -> Vec<(Kind, String)> {
-    let blank = |l: &(Kind, String)| l.0 == Kind::Text && l.1.trim().is_empty();
-    let mut out: Vec<(Kind, String)> = Vec::new();
+fn tidy(lines: Vec<DocLine>) -> Vec<DocLine> {
+    let blank = |l: &DocLine| l.kind == Kind::Text && l.text.trim().is_empty();
+    let mut out: Vec<DocLine> = Vec::new();
     for l in lines {
-        if blank(&l) && out.last().is_none_or(|p| blank(p) || p.0 == Kind::Rule) {
+        if blank(&l) && out.last().is_none_or(|p| blank(p) || p.kind == Kind::Rule) {
             continue;
         }
-        if l.0 == Kind::Rule && out.last().is_some_and(blank) {
+        if l.kind == Kind::Rule && out.last().is_some_and(blank) {
             out.pop();
         }
         out.push(l);
@@ -182,37 +237,76 @@ fn tidy(lines: Vec<(Kind, String)>) -> Vec<(Kind, String)> {
     out
 }
 
+/// Code lines of `code`, highlighted with `def` (plain when `None` or when the
+/// code is huge). Tabs become four spaces.
+pub fn code_lines(code: &str, def: Option<&'static LanguageDef>, theme: &Theme) -> Vec<DocLine> {
+    let text = code.replace('\t', "    ");
+    let mut spans = match def {
+        Some(def) if text.len() <= 100_000 => syntax::highlight_text(def, &text, theme),
+        _ => Vec::new(),
+    };
+    text.lines()
+        .enumerate()
+        .map(|(i, line)| {
+            let line = line.trim_end();
+            let len = line.chars().count();
+            let spans = if i < spans.len() { std::mem::take(&mut spans[i]) } else { Vec::new() };
+            let spans = spans.into_iter().filter(|(r, _)| r.start < len).map(|(r, s)| (r.start..r.end.min(len), s)).collect();
+            DocLine { kind: Kind::Code, text: line.to_string(), spans }
+        })
+        .collect()
+}
+
+/// The language of a fence's info string: its first word (ends at whitespace, `,`
+/// or `{`) by name, the buffer's language for no word, none for an unknown one.
+fn fence_language(info: &str, fallback: Option<&'static LanguageDef>) -> Option<&'static LanguageDef> {
+    let word = info.trim().split(|c: char| c.is_whitespace() || c == ',' || c == '{').next().unwrap_or("");
+    if word.is_empty() { fallback } else { syntax::language_for_alias(word) }
+}
+
 /// Markdown as lines to show: fenced blocks become code lines (the fences
 /// go), `#` headings and `---` rules are marked, link reference
 /// definitions dropped, the rest cleaned by [`inline`].
-pub fn markdown(text: &str) -> Vec<(Kind, String)> {
+pub fn markdown(text: &str, hl: Highlight<'_>) -> Vec<DocLine> {
     let mut out = Vec::new();
-    let mut fence: Option<&str> = None;
+    // The open fence's marker, its language, and the code seen so far.
+    let mut fence: Option<(&str, Option<&'static LanguageDef>)> = None;
+    let mut block: Vec<&str> = Vec::new();
     for line in text.lines() {
         let t = line.trim_start();
-        if let Some(f) = fence {
+        if let Some((f, lang)) = fence {
             if t.starts_with(f) {
                 fence = None;
+                if !block.is_empty() {
+                    out.extend(code_lines(&block.join("\n"), lang, hl.theme));
+                }
+                block.clear();
             } else {
-                out.push((Kind::Code, line.trim_end().to_string()));
+                block.push(line.trim_end());
             }
             continue;
         }
         if t.starts_with("```") || t.starts_with("~~~") {
-            fence = Some(&t[..3]);
+            fence = Some((&t[..3], fence_language(&t[3..], hl.fallback)));
             continue;
         }
         let t = t.trim_end();
         if t.len() >= 3 && (t.chars().all(|c| c == '-') || t.chars().all(|c| c == '*') || t.chars().all(|c| c == '_')) {
-            out.push((Kind::Rule, String::new()));
+            out.push(DocLine::plain(Kind::Rule, String::new()));
         } else if let Some(h) = t.strip_prefix('#') {
-            out.push((Kind::Heading, inline(h.trim_start_matches('#').trim())));
+            out.push(DocLine::plain(Kind::Heading, inline(h.trim_start_matches('#').trim())));
         } else if t.starts_with('[') && t.split_once("]: ").is_some_and(|(_, target)| !target.contains(' ')) {
             // `[label]: target`, a link reference definition.
             continue;
         } else {
-            out.push((Kind::Text, inline(line.trim_end())));
+            out.push(DocLine::plain(Kind::Text, inline(line.trim_end())));
         }
+    }
+    // An unclosed fence keeps its lines as code.
+    if let Some((_, lang)) = fence
+        && !block.is_empty()
+    {
+        out.extend(code_lines(&block.join("\n"), lang, hl.theme));
     }
     out
 }
@@ -269,24 +363,37 @@ fn link_span(chars: &[char], open: usize) -> Option<(usize, usize)> {
     Some((close, end))
 }
 
-/// Rows of `width` cells: prose wrapped at spaces, code cut by cells.
-fn wrap_lines(lines: &[(Kind, String)], width: usize) -> Vec<(Kind, String)> {
+/// Rows of `width` cells: prose wrapped at spaces, code cut by cells (spans cut with it).
+pub(crate) fn wrap_lines(lines: &[DocLine], width: usize) -> Vec<DocLine> {
     let mut rows = Vec::new();
-    for (kind, text) in lines {
-        match kind {
-            Kind::Rule => rows.push((Kind::Rule, "─".repeat(width))),
+    for line in lines {
+        match line.kind {
+            Kind::Rule => rows.push(DocLine::plain(Kind::Rule, "─".repeat(width))),
             Kind::Code => {
                 let mut cur = String::new();
-                for c in text.replace('\t', "    ").chars() {
+                let (mut a, mut b) = (0, 0);
+                let cut = |cur: String, a: usize, b: usize| DocLine {
+                    kind: Kind::Code,
+                    text: cur,
+                    spans: line
+                        .spans
+                        .iter()
+                        .filter(|(r, _)| r.start < b && r.end > a)
+                        .map(|(r, s)| (r.start.max(a) - a..r.end.min(b) - a, *s))
+                        .collect(),
+                };
+                for c in line.text.chars() {
                     if cur.width() + c.width().unwrap_or(0) > width {
-                        rows.push((Kind::Code, std::mem::take(&mut cur)));
+                        rows.push(cut(std::mem::take(&mut cur), a, b));
+                        a = b;
                     }
                     cur.push(c);
+                    b += 1;
                 }
-                rows.push((Kind::Code, cur));
+                rows.push(cut(cur, a, b));
             }
-            _ if text.is_empty() => rows.push((*kind, String::new())),
-            _ => rows.extend(crate::ui::toasts::wrap(text, width, usize::MAX).into_iter().map(|l| (*kind, l))),
+            _ if line.text.is_empty() => rows.push(DocLine::plain(line.kind, String::new())),
+            _ => rows.extend(crate::ui::toasts::wrap(&line.text, width, usize::MAX).into_iter().map(|l| DocLine::plain(line.kind, l))),
         }
     }
     rows
@@ -297,14 +404,19 @@ mod tests {
     use super::*;
     use lsp_types::{LanguageString, MarkupContent};
 
-    fn texts(lines: &[(Kind, String)]) -> Vec<String> {
-        lines.iter().map(|(k, s)| format!("{k:?}:{s}")).collect()
+    fn texts(lines: &[DocLine]) -> Vec<String> {
+        lines.iter().map(|l| format!("{:?}:{}", l.kind, l.text)).collect()
+    }
+
+    fn hl(theme: &Theme) -> Highlight<'_> {
+        Highlight { theme, fallback: None }
     }
 
     #[test]
     fn markdown_is_shown_plainly() {
+        let theme = Theme::default();
         let md = "\n```rust\nfn len(&self) -> usize\n```\n\n---\n\n# Returns\n\nThe **length** of `self`, see [`Vec`](https://x/y) \\[1\\] a[0].\n\n\n[`Vec`]: https://x/y\nlast";
-        let lines = contents_lines(HoverContents::Markup(MarkupContent { kind: MarkupKind::Markdown, value: md.into() }));
+        let lines = contents_lines(HoverContents::Markup(MarkupContent { kind: MarkupKind::Markdown, value: md.into() }), hl(&theme));
         assert_eq!(
             texts(&lines),
             [
@@ -319,24 +431,43 @@ mod tests {
         );
         // Plain text is not parsed; several parts get a rule between them.
         let plain = HoverContents::Markup(MarkupContent { kind: MarkupKind::PlainText, value: "a **b**\n".into() });
-        assert_eq!(texts(&contents_lines(plain)), ["Text:a **b**"]);
+        assert_eq!(texts(&contents_lines(plain, hl(&theme))), ["Text:a **b**"]);
         let parts = HoverContents::Array(vec![
             MarkedString::LanguageString(LanguageString { language: "rust".into(), value: "struct S".into() }),
             MarkedString::String("".into()),
             MarkedString::String("doc".into()),
         ]);
-        assert_eq!(texts(&contents_lines(parts)), ["Code:struct S", "Rule:", "Text:doc"]);
-        assert!(contents_lines(HoverContents::Array(vec![])).is_empty());
+        assert_eq!(texts(&contents_lines(parts, hl(&theme))), ["Code:struct S", "Rule:", "Text:doc"]);
+        assert!(contents_lines(HoverContents::Array(vec![]), hl(&theme)).is_empty());
     }
 
     #[test]
     fn rows_wrap_prose_and_cut_code() {
-        let lines = vec![
-            (Kind::Text, "one two three".to_string()),
-            (Kind::Text, String::new()),
-            (Kind::Code, "abcdefgh".to_string()),
-            (Kind::Rule, String::new()),
-        ];
+        let line = |k, t: &str| DocLine::plain(k, t.to_string());
+        let lines = vec![line(Kind::Text, "one two three"), line(Kind::Text, ""), line(Kind::Code, "abcdefgh"), line(Kind::Rule, "")];
         assert_eq!(texts(&wrap_lines(&lines, 5)), ["Text:one", "Text:two", "Text:three", "Text:", "Code:abcde", "Code:fgh", "Rule:─────"]);
+        // Spans are cut with the code.
+        let st = Style::default().fg(ratatui::style::Color::Red);
+        let code = DocLine { kind: Kind::Code, text: "abcdefgh".into(), spans: vec![(3..6, st)] };
+        let rows = wrap_lines(&[code], 5);
+        assert_eq!(rows[0].spans, [(3..5, st)]);
+        assert_eq!(rows[1].spans, [(0..1, st)]);
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[test]
+    fn fences_pick_their_language_or_the_buffers() {
+        let theme = Theme::default();
+        let rust = syntax::language_for_name("rust");
+        let styled = |md: &str, fallback| {
+            let lines = markdown(md, Highlight { theme: &theme, fallback });
+            assert_eq!(lines.len(), 1, "{md}");
+            !lines[0].spans.is_empty()
+        };
+        assert!(styled("```rust\nfn a() {}\n```", None));
+        assert!(styled("```\nfn a() {}\n```", rust));
+        assert!(!styled("```\nfn a() {}\n```", None));
+        assert!(!styled("```text\nfn a() {}\n```", rust));
+        assert!(styled("```rust,ignore\nfn a() {}\n```", None));
     }
 }

@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Quick Documentation (Alt+Q) highlights fenced code: a fence's language (```` ```rust ````), or the
+  file's language for a bare fence; unknown languages stay plain.
 - Completion snippets have tabstops: accepting a function selects its first argument
   placeholder, Tab and Shift+Tab move between the placeholders (several copies of one are
   edited together), and the last Tab goes to the end of the snippet. Esc, or moving the caret

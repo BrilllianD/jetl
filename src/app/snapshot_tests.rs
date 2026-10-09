@@ -1185,15 +1185,17 @@ async fn hover_popup() {
     app.focus.set(PanelId::Editor);
     // The popup as a hover answer makes it.
     let b = app.editor.active_buffer().unwrap();
+    let hl = crate::ui::hover::Highlight { theme: &app.theme, fallback: None };
     let contents = lsp_types::HoverContents::Markup(lsp_types::MarkupContent {
         kind: lsp_types::MarkupKind::Markdown,
         value: "```rust\nfn add_one(x: u32) -> u32\n```\n---\n# add_one\nAdds **one** to `x`, wrapping at `u32::MAX`; see [the docs](https://example.org/add_one) for more.".into(),
     });
-    let popup = crate::ui::hover::HoverPopup::new(app.editor.focused_group().id, b.id, b.version, b.view.sel().head, contents);
+    let popup = crate::ui::hover::HoverPopup::new(app.editor.focused_group().id, b.id, b.version, b.view.sel().head, contents, hl);
     app.hover = Some(popup.expect("hover text"));
     let term = draw_app(app, 80, 20);
     // Code lines keep the editor background; prose is on the popup's.
-    let marks = [Mark::bg('P', "popup", app.theme.popup_bg)];
+    let kw = app.theme.capture_style("keyword").unwrap();
+    let marks = [Mark::bg('P', "popup", app.theme.popup_bg), Mark::style('K', "keyword", kw.bg(app.theme.bg))];
     assert_snapshot!("hover_popup", snapshot(&term, &marks, None));
     assert!(app.hover.is_some(), "the popup still applies");
 }

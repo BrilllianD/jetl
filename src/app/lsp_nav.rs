@@ -340,7 +340,9 @@ impl App {
     fn lsp_hover_answer(&mut self, t: DocTag, value: Value) {
         let hover = serde_json::from_value::<Option<lsp_types::Hover>>(value).ok().flatten();
         let Some(head) = self.editor.active_buffer().map(|b| b.view.sel().head) else { return };
-        match hover.and_then(|h| HoverPopup::new(self.editor.focused_group().id, t.buffer, t.version, head, h.contents)) {
+        let fallback = self.editor.index_of_id(t.buffer).and_then(|i| self.editor.buffers[i].language());
+        let hl = crate::ui::hover::Highlight { theme: &self.theme, fallback };
+        match hover.and_then(|h| HoverPopup::new(self.editor.focused_group().id, t.buffer, t.version, head, h.contents, hl)) {
             Some(popup) => self.hover = Some(popup),
             None => self.lsp_hint("No documentation found"),
         }
@@ -692,7 +694,7 @@ mod tests {
         assert!(app.hover.is_none(), "the cancelled request's answer");
         server.respond(second, hover("new"));
         handle_next(&mut app, is_lsp).await;
-        assert_eq!(app.hover.as_ref().unwrap().lines()[0].1, "new");
+        assert_eq!(app.hover.as_ref().unwrap().lines()[0].text, "new");
         // Moving the caret drops the popup.
         app.perform(Action::Editor(EditorAction::Move(Motion::Right, false)));
         app.hover_check();
