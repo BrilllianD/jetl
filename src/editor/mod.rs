@@ -1015,7 +1015,7 @@ impl Editor {
                 // the block's corner instead.
                 let block = self.column_mode && *extend && b.blocks_supported() && b.extend_block(*m, page, tab_width);
                 if !block {
-                    let rows = Rows::view(&b.view.folds, &b.view.wrap, &b.rope, b.version);
+                    let rows = Rows::view(&b.view.folds, &b.view.wrap, &b.view.fillers, &b.rope, b.version);
                     apply_motion_all(&b.rope, &rows, &mut b.view.sels, *m, *extend, page, tab_width);
                 }
                 // A moved caret ends an Add Next Occurrence run.
@@ -1504,6 +1504,9 @@ impl Editor {
             }
         }
         let master = self.merge_master();
+        if self.merge.is_some() {
+            self.merge_fill(theme);
+        }
         let shows = |ed: &Editor, g: GroupId| ed.group(g).and_then(TabGroup::active_id);
         match master {
             Some(id) => leaves.sort_by_key(|(g, _)| shows(self, *g) != Some(id)),

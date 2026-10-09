@@ -18,9 +18,15 @@
 //! counts as resolving it.
 //!
 //! The panes scroll together: the pane that scrolled since the last frame
-//! (else the focused one) leads, and the others show the line that maps to
-//! its top through the chunks (`map_line`; no filler rows, so the lines
-//! inside a chunk of unequal sizes drift until the next unchanged line).
+//! (else the focused one) leads, and the others show the row that matches
+//! its top. Every pane is cut into blocks (the unchanged run before the
+//! first chunk, each chunk, each run between chunks, the run after the
+//! last); a pane with fewer lines in a block than the longest gets blank
+//! filler rows after the block's last line (`merge_fill`,
+//! [`super::rows::Filler`]), so a block takes the same rows in all three
+//! panes and a top row maps by its block and its offset into it
+//! (`block_offset`, `block_row`). A block that is empty at the very top of
+//! a pane has no line to pad after and gets no fillers.
 
 use std::collections::HashMap;
 use std::ops::Range;
@@ -34,7 +40,7 @@ use unicode_width::UnicodeWidthStr;
 
 use super::buffer::{Buffer, BufferId};
 use super::groups::{GroupId, TabGroup, View};
-use super::rows::Rows;
+use super::rows::{Filler, Row, Rows};
 use super::selection::Selection;
 use super::split::{Axis, SplitNode};
 use super::undo::{Change, TxKind};
@@ -137,7 +143,7 @@ pub struct MergeSession {
     header_area: Rect,
     header: Vec<(Rect, MergeAction)>,
     /// Each pane's top line as last drawn, to tell which one scrolled.
-    last_tops: [usize; 3],
+    last_tops: [Row; 3],
 }
 
 /// The lines `r` (chars, normally whole lines) covers: a range that ends
@@ -164,27 +170,72 @@ fn line_offsets(lines: &[String]) -> Vec<usize> {
     out
 }
 
-/// `start + off` kept inside `start..end` (at `start` when it is empty).
-fn clamp_in(r: Range<usize>, off: usize) -> usize {
-    if r.end > r.start { (r.start + off).min(r.end - 1) } else { r.start }
+/// A pane's lines per block: the unchanged run before chunk 0, chunk 0,
+/// the run after it, …, the run after the last chunk up to `n` (the
+/// pane's `len_lines`). `chunks` is `MergeSession::ranges` of the pane.
+fn blocks(chunks: &[Range<usize>], n: usize) -> Vec<Range<usize>> {
+    let mut out = Vec::with_capacity(2 * chunks.len() + 1);
+    let mut at = 0;
+    for c in chunks {
+        out.push(at..c.start.max(at));
+        out.push(c.clone());
+        at = c.end.max(at);
+    }
+    out.push(at..n.max(at));
+    out
 }
 
-/// The line of the pane with chunk lines `to` (and `n_to` lines) that
-/// shows what `line` of the pane with chunk lines `from` shows: the same
-/// offset into the unchanged run or chunk it is in, clamped to that run's
-/// counterpart.
-pub fn map_line(from: &[Range<usize>], to: &[Range<usize>], n_to: usize, line: usize) -> usize {
-    let (mut pf, mut pt) = (0, 0);
-    for (f, t) in from.iter().zip(to) {
-        if line < f.start {
-            return clamp_in(pt..t.start.max(pt), line - pf);
+/// Filler rows that line the panes up: in each block, every pane with
+/// fewer lines than the longest gets the difference after the block's
+/// last line, or after the line before an empty block; an empty block
+/// at the top gets none (no line before it). `bg` is left `None`.
+fn plan_fillers(blocks: &[Vec<Range<usize>>; 3]) -> [Vec<Filler>; 3] {
+    let mut out: [Vec<Filler>; 3] = Default::default();
+    for b in 0..blocks[0].len() {
+        let most = blocks.iter().map(|p| p[b].len()).max().unwrap_or(0);
+        for (p, list) in blocks.iter().zip(&mut out) {
+            let r = &p[b];
+            let line = if r.is_empty() { r.start.checked_sub(1) } else { Some(r.end - 1) };
+            let missing = most - r.len();
+            if let (Some(line), true) = (line, missing > 0) {
+                list.push(Filler { line, rows: missing.min(u16::MAX as usize) as u16, block: b, bg: None });
+            }
         }
-        if line < f.end {
-            return clamp_in(t.clone(), line - f.start);
-        }
-        (pf, pt) = (f.end, t.end);
     }
-    clamp_in(pt..n_to.max(pt + 1), line.saturating_sub(pf))
+    for list in &mut out {
+        list.sort_by_key(|f| f.line);
+    }
+    out
+}
+
+/// Where top row `top` of a pane is: its block and the offset into it,
+/// counting the block's lines, then its filler rows.
+fn block_offset(rows: &Rows, blocks: &[Range<usize>], top: Row) -> (usize, usize) {
+    let last = blocks.len() - 1;
+    if let Some((f, k)) = rows.filler(top) {
+        let b = f.block.min(last);
+        return (b, blocks[b].len() + k as usize);
+    }
+    let b = blocks.iter().position(|r| top.line < r.end).unwrap_or(last);
+    (b, top.line.saturating_sub(blocks[b].start))
+}
+
+/// The row of a pane at offset `v` into block `b`: one of its lines,
+/// else one of its filler rows, else (no fillers there) its last line;
+/// clamped to the visible rows.
+fn block_row(rows: &Rows, blocks: &[Range<usize>], b: usize, v: usize) -> Row {
+    let b = b.min(blocks.len() - 1);
+    let r = &blocks[b];
+    if v < r.len() {
+        return rows.clamp(Row::line(r.start + v));
+    }
+    if let Some(k) = rows.fillers().iter().position(|f| f.block == b) {
+        let f = &rows.fillers()[k];
+        let before = rows.fillers()[..k].iter().filter(|g| g.line == f.line).fold(0u16, |n, g| n.saturating_add(g.rows));
+        let seg = rows.text_segs(f.line).saturating_add(before).saturating_add((v - r.len()).min(f.rows as usize - 1) as u16);
+        return rows.clamp(Row { line: f.line, seg });
+    }
+    rows.clamp(Row::line(if r.is_empty() { r.start } else { r.end - 1 }))
 }
 
 impl MergeSession {
@@ -457,7 +508,7 @@ impl Editor {
             work,
             header_area: Rect::default(),
             header: Vec::new(),
-            last_tops: [0; 3],
+            last_tops: [Row::line(0); 3],
         };
         session.record(0);
         self.merge = Some(session);
@@ -920,12 +971,40 @@ impl Editor {
         true
     }
 
+    /// Pad the three panes with filler rows so each block takes the same
+    /// rows in all of them (also the tab hidden in two-pane mode).
+    pub(super) fn merge_fill(&mut self, theme: &Theme) {
+        let Some(ri) = self.merge_result_index() else { return };
+        let Some(m) = &self.merge else { return };
+        let result = &self.buffers[ri].rope;
+        let idx: Vec<Option<usize>> = Pane::ALL.iter().map(|p| self.index_of_id(m.id(*p))).collect();
+        let Some(lens) = idx.iter().map(|i| i.map(|i| self.buffers[i].rope.len_lines())).collect::<Option<Vec<_>>>() else { return };
+        let bl: [Vec<Range<usize>>; 3] = std::array::from_fn(|p| blocks(&m.ranges(Pane::ALL[p], result), lens[p]));
+        let mut fills = plan_fillers(&bl);
+        for (p, list) in fills.iter_mut().enumerate() {
+            for f in list.iter_mut().filter(|f| f.block % 2 == 1) {
+                let k = f.block / 2;
+                let marks = match Pane::ALL[p] {
+                    Pane::Result => true,
+                    Pane::Ours => m.changes(k, true),
+                    Pane::Theirs => m.changes(k, false),
+                };
+                f.bg = marks.then(|| m.chunk_bg(k, theme));
+            }
+        }
+        for (i, list) in idx.into_iter().zip(fills) {
+            if let Some(i) = i {
+                self.buffers[i].view.fillers = list;
+            }
+        }
+    }
+
     /// The pane that leads the linked scroll this frame: the one that
     /// scrolled since the last frame, else the focused one.
     pub(super) fn merge_master(&self) -> Option<BufferId> {
         let m = self.merge.as_ref()?;
         let shown: Vec<BufferId> = self.groups.iter().filter_map(TabGroup::active_id).collect();
-        let top = |id: BufferId| self.index_of_id(id).map(|i| self.buffers[i].view.scroll_line);
+        let top = |id: BufferId| self.index_of_id(id).map(|i| self.buffers[i].view.top());
         let moved = Pane::ALL
             .iter()
             .map(|p| m.id(*p))
@@ -933,34 +1012,34 @@ impl Editor {
         moved.or_else(|| self.focused_group().active_id().filter(|id| m.ids.contains(id))).or(Some(m.ids[1]))
     }
 
-    /// Scroll every other pane to the line matching `master`'s top.
+    /// Scroll every other pane to the row matching `master`'s top: the same
+    /// offset into the same block.
     pub(super) fn merge_follow(&mut self, master: BufferId) {
         let (Some(m), Some(ri)) = (&self.merge, self.merge_result_index()) else { return };
         let Some(mp) = m.pane_of(master) else { return };
         let Some(mi) = self.index_of_id(master) else { return };
         let result = &self.buffers[ri].rope;
-        let from = m.ranges(mp, result);
-        let top = self.buffers[mi].view.scroll_line;
-        let targets: Vec<(usize, usize)> = Pane::ALL
+        let blocks_of = |p: Pane, i: usize| blocks(&m.ranges(p, result), self.buffers[i].rope.len_lines());
+        let mb = &self.buffers[mi];
+        let rows = mb.rows();
+        let (block, v) = block_offset(&rows, &blocks_of(mp, mi), rows.clamp(mb.view.top()));
+        let targets: Vec<(usize, Row)> = Pane::ALL
             .iter()
             .filter(|p| **p != mp)
             .filter_map(|p| {
                 let i = self.index_of_id(m.id(*p))?;
-                let n = self.buffers[i].rope.len_lines();
-                Some((i, map_line(&from, &m.ranges(*p, result), n, top)))
+                Some((i, block_row(&self.buffers[i].rows(), &blocks_of(*p, i), block, v)))
             })
             .collect();
-        for (i, line) in targets {
-            let b = &mut self.buffers[i];
-            b.view.scroll_line = Rows::new(&b.view.folds, b.rope.len_lines()).visible(line);
-            b.view.scroll_seg = 0;
+        for (i, row) in targets {
+            self.buffers[i].view.set_top(row);
         }
     }
 
     /// Remember each pane's top as drawn.
     pub(super) fn merge_note_tops(&mut self) {
-        let tops: Vec<usize> = match &self.merge {
-            Some(m) => m.ids.iter().map(|id| self.index_of_id(*id).map_or(0, |i| self.buffers[i].view.scroll_line)).collect(),
+        let tops: Vec<Row> = match &self.merge {
+            Some(m) => m.ids.iter().map(|id| self.index_of_id(*id).map_or(Row::line(0), |i| self.buffers[i].view.top())).collect(),
             None => return,
         };
         if let Some(m) = &mut self.merge {
@@ -983,7 +1062,10 @@ impl Editor {
                         return None;
                     }
                     let row = b.rows().at_offset(b.view.top(), (y - t.y) as usize)?;
-                    decors.get(&b.id)?.bg_at(row.line)
+                    match b.rows().filler(row) {
+                        Some((f, _)) => f.bg,
+                        None => decors.get(&b.id)?.bg_at(row.line),
+                    }
                 });
                 if let Some(bg) = bg {
                     screen[(x, y)].set_bg(bg);
@@ -1302,15 +1384,7 @@ mod tests {
     }
 
     #[test]
-    fn linked_scroll_maps_lines_through_the_chunks() {
-        // Yours: 2 extra lines in chunk 0 (lines 2..5 vs 2..3).
-        let from = [2..5, 10..10];
-        let to = [2..3, 8..9];
-        assert_eq!(map_line(&from, &to, 20, 0), 0);
-        assert_eq!(map_line(&from, &to, 20, 3), 2, "inside the bigger chunk: clamped");
-        assert_eq!(map_line(&from, &to, 20, 5), 3, "the unchanged run after it");
-        assert_eq!(map_line(&from, &to, 20, 12), 11);
-        assert_eq!(map_line(&from, &to, 10, 30), 9);
+    fn linked_scroll_follows_the_leading_pane() {
         // In the editor: scrolling the result scrolls the others.
         let mut ed = Editor::new(&Config::default());
         let long = |t: &str| format!("{}{t}", "x\n".repeat(40));
@@ -1334,5 +1408,77 @@ mod tests {
         draw(&mut ed, 120, 20);
         let u = tops(&ed);
         assert_eq!((u[0], u[1], u[2]), (t[0] - 3, t[1] - 3, t[2] - 3));
+    }
+
+    #[test]
+    #[allow(clippy::single_range_in_vec_init)]
+    fn blocks_and_fillers_line_the_panes_up() {
+        assert_eq!(blocks(&[2..3, 5..5], 8), [0..2, 2..3, 3..5, 5..5, 5..8]);
+        assert_eq!(blocks(&[], 4), [0..4]);
+        // One chunk of 1, 3 and 1 lines at line 2.
+        let bl = [blocks(&[2..3], 6), blocks(&[2..5], 8), blocks(&[2..3], 6)];
+        let fills = plan_fillers(&bl);
+        assert_eq!(fills[0], [Filler { line: 2, rows: 2, block: 1, bg: None }]);
+        assert!(fills[1].is_empty());
+        assert_eq!(fills[2], fills[0]);
+        // An empty chunk at the top has no line to pad after; elsewhere it pads after the line before.
+        let top = plan_fillers(&[blocks(&[0..0], 3), blocks(&[0..2], 5), blocks(&[0..0], 3)]);
+        assert!(top[0].is_empty() && top[2].is_empty());
+        let mid = plan_fillers(&[blocks(&[1..1], 3), blocks(&[1..3], 5), blocks(&[1..1], 3)]);
+        assert_eq!(mid[0], [Filler { line: 0, rows: 2, block: 1, bg: None }]);
+        // A filler row of one pane maps to the matching text line of another.
+        let rope = Rope::from_str(&"l\n".repeat(5));
+        let (folds, wrap) = (crate::editor::fold::Folds::default(), crate::editor::wrap::Wrap::new(false));
+        let short = Rows::view(&folds, &wrap, &fills[0], &rope, 0);
+        let long_rope = Rope::from_str(&"l\n".repeat(7));
+        let long = Rows::view(&folds, &wrap, &fills[1], &long_rope, 0);
+        let (b0, b1) = (&bl[0], &bl[1]);
+        let filler = Row { line: 2, seg: 2 };
+        assert_eq!(block_offset(&short, b0, filler), (1, 2), "one line, then the second filler row");
+        assert_eq!(block_row(&long, b1, 1, 2), Row::line(4));
+        assert_eq!(block_row(&short, b0, 1, 2), filler);
+        assert_eq!(block_row(&short, b0, 1, 9), filler, "past the fillers: the last one");
+        assert_eq!(block_offset(&long, b1, Row::line(4)), (1, 2));
+        assert_eq!(block_offset(&long, b1, Row::line(6)), (2, 1));
+        assert_eq!(block_row(&short, b0, 0, 1), Row::line(1));
+    }
+
+    #[test]
+    fn linked_scroll_keeps_chunks_aligned() {
+        let mut ed = Editor::new(&Config::default());
+        let doc = |mid: &str| format!("{}{mid}{}", "x\n".repeat(40), "y\n".repeat(40));
+        let texts = MergeTexts { base: doc("c\n"), ours: doc("O\n"), theirs: doc("t1\nt2\nt3\nt4\nt5\n") };
+        ed.open_merge(PathBuf::from("/tmp/m.rs"), "m.rs".into(), texts, ["a".into(), "b".into()], String::new(), &Theme::default());
+        draw(&mut ed, 120, 20);
+        let wheel = |kind| crate::event::Mouse { kind, x: 1, y: 3, mods: crossterm::event::KeyModifiers::NONE, clicks: 1 };
+        let theirs = ed.groups[2].id;
+        let tops = |ed: &Editor| ed.merge_session().unwrap().ids.map(|id| ed.buffers[ed.index_of_id(id).unwrap()].view.top());
+        let rows_of = |ed: &Editor, p: usize| {
+            let b = &ed.buffers[ed.index_of_id(ed.merge_session().unwrap().ids[p]).unwrap()];
+            (b.rows().is_filler(b.view.top()), b.view.top())
+        };
+        // Theirs leads with the chunk's 3rd line on top.
+        let ti = ed.index_of_id(ed.merge_session().unwrap().ids[2]).unwrap();
+        ed.buffers[ti].view.set_top(Row::line(39));
+        ed.scroll_group(theirs, &wheel(crossterm::event::MouseEventKind::ScrollDown));
+        draw(&mut ed, 120, 20);
+        let t = tops(&ed);
+        assert_eq!(t[2], Row::line(42), "theirs is on the chunk's 3rd line: {t:?}");
+        assert!(rows_of(&ed, 0).0 && rows_of(&ed, 1).0, "yours and the result show filler rows: {t:?}");
+        assert_eq!((t[0].line, t[1].line, t[0].seg, t[1].seg), (40, 40, 2, 2));
+        // Past the chunk all three show the same following line.
+        ed.buffers[ti].view.set_top(Row::line(44));
+        ed.scroll_group(theirs, &wheel(crossterm::event::MouseEventKind::ScrollDown));
+        draw(&mut ed, 120, 20);
+        let t = tops(&ed);
+        assert_eq!((t[2], t[0], t[1]), (Row::line(47), Row::line(43), Row::line(43)), "{t:?}");
+        // Down from yours' chunk line lands on the next text line, not a filler.
+        let yi = ed.index_of_id(ed.merge_session().unwrap().ids[0]).unwrap();
+        ed.buffers[yi].goto_line(40, 0);
+        let yours = ed.groups[0].id;
+        ed.focus_group(yours);
+        edit(&mut ed, EditorAction::Move(crate::actions::Motion::Down, false));
+        let b = &ed.buffers[yi];
+        assert_eq!(b.rope.char_to_line(b.view.sel().head), 41);
     }
 }

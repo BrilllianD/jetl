@@ -49,6 +49,8 @@ pub struct ViewState {
     pub folds: Folds,
     /// Soft wrap: on or off for this view, and its breaks.
     pub wrap: Wrap,
+    /// Filler rows (the conflict resolver's aligned panes, set every frame); empty elsewhere.
+    pub fillers: Vec<super::rows::Filler>,
 }
 
 /// A column block: two corners, each a (line, visual column). The head is

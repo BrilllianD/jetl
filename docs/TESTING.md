@@ -60,7 +60,7 @@ window's Commit tab (also at 80 columns, its diff header cut before the
 toggles), its Log, Stash and Console tabs, the Find and Problems windows
 (diagnostic underlines in the editor too), the lightbulb in the gutter, the main menu bar, confirm,
 input and choice dialogs, the hover and completion popups, toasts, the
-palettes (Scratch Files and Recent Projects included), the conflict resolver, the crash
+palettes (Scratch Files and Recent Projects included), the conflict resolver (filler rows included), the crash
 recovery dialogs and the Save As prompt and its path completion list.
 
 Things that depend on the clock are given as data: the Log tab's commits

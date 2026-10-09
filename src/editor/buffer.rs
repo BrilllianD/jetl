@@ -188,7 +188,7 @@ pub struct Buffer {
 impl Buffer {
     /// The live view's rows: its folds and its wrap.
     pub fn rows(&self) -> super::rows::Rows<'_> {
-        super::rows::Rows::view(&self.view.folds, &self.view.wrap, &self.rope, self.version)
+        super::rows::Rows::view(&self.view.folds, &self.view.wrap, &self.view.fillers, &self.rope, self.version)
     }
 
     pub fn from_text(id: BufferId, path: Option<PathBuf>, text: &str, lossy: bool) -> Self {

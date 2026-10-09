@@ -148,6 +148,10 @@ pub struct RowGeom {
 }
 
 pub fn row_geom(rope: &Rope, rows: &Rows, row: Row) -> RowGeom {
+    if rows.is_filler(row) {
+        let e = rows.seg_range(rope, row).end;
+        return RowGeom { start: e, end: e, origin: 0, indent: 0, last: false };
+    }
     let r = rows.seg_range(rope, row);
     match rows.line_wrap(row.line) {
         Some(w) => {
@@ -161,6 +165,9 @@ pub fn row_geom(rope: &Rope, rows: &Rows, row: Row) -> RowGeom {
 /// row x. Without wrap the row is the whole line, walked up to about
 /// `cols` cells.
 pub fn layout_row(rope: &Rope, rows: &Rows, row: Row, tab_width: usize, cols: usize, f: &mut dyn FnMut(&str, Cell, usize) -> bool) {
+    if rows.is_filler(row) {
+        return;
+    }
     let g = row_geom(rope, rows, row);
     let max_chars =
         if rows.wraps() && row.line < rope.len_lines() { g.end - rope.line_to_char(row.line) } else { cols.saturating_add(256) };
@@ -211,6 +218,9 @@ pub fn char_to_row_x(rope: &Rope, rows: &Rows, pos: usize, upstream: bool, tab_w
 pub fn row_x_to_char(rope: &Rope, rows: &Rows, row: Row, x: usize, tab_width: usize) -> (usize, bool) {
     if row.line >= rope.len_lines() {
         return (rope.len_chars(), false);
+    }
+    if rows.is_filler(row) {
+        return (rows.seg_range(rope, row).end, false);
     }
     let g = row_geom(rope, rows, row);
     if x < g.indent {
@@ -374,7 +384,7 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
     let was_visible = buf.view.follow_key != Some(follow_key) && buf.view.follow_key.is_some_and(|k| caret_on_screen(buf, k.2, k.3, o));
     let v = &mut buf.view;
     v.wrap.set_geometry(text_area.width, o.tab_width, o.wrap_extra_indent);
-    let top = Rows::view(&v.folds, &v.wrap, &buf.rope, buf.version).clamp(v.top());
+    let top = Rows::view(&v.folds, &v.wrap, &v.fillers, &buf.rope, buf.version).clamp(v.top());
     v.set_top(top);
     if buf.view.follow_key != Some(follow_key) {
         // A resize alone re-scrolls only a caret that was on screen and is
@@ -393,7 +403,7 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
 
     let theme = o.theme;
     let rope = &buf.rope;
-    let rows = Rows::view(&buf.view.folds, &buf.view.wrap, rope, buf.version);
+    let rows = Rows::view(&buf.view.folds, &buf.view.wrap, &buf.view.fillers, rope, buf.version);
     let sels = &buf.view.sels;
     let (cur_line, _) = pos_to_line_col(rope, buf.view.sel().head);
     // The carets drawn as cells: the others, and the primary too in a view
@@ -439,6 +449,12 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
         let line = row.line;
         let row_i = row_i as u16;
         let y = area.y + row_i;
+        if rows.is_filler(row) {
+            if let Some(bg) = rows.filler(row).and_then(|(f, _)| f.bg) {
+                screen.set_style(Rect::new(text_area.x, y, text_area.width, 1), Style::default().bg(bg));
+            }
+            continue;
+        }
         let line_start = rope.line_to_char(line);
         let line_end = line_start + line_len_no_eol(rope, line);
         let seg = rows.seg_range(rope, row);
@@ -925,5 +941,26 @@ mod tests {
         // Narrower, each line takes more rows: line 4 is past the old height.
         render_at(&mut buf, &theme, 14, 5);
         assert!(buf.view.scroll_line >= 3, "scrolled to the caret, top line {}", buf.view.scroll_line);
+    }
+
+    #[test]
+    fn filler_rows_have_no_cells_and_click_to_the_line_end() {
+        let rope = Rope::from_str("ab\ncd\n");
+        let folds = crate::editor::fold::Folds::default();
+        let wrap = crate::editor::wrap::Wrap::new(false);
+        let fill = [crate::editor::rows::Filler { line: 0, rows: 2, block: 1, bg: None }];
+        let rows = Rows::view(&folds, &wrap, &fill, &rope, 0);
+        let filler = Row { line: 0, seg: 1 };
+        assert_eq!(row_x_to_char(&rope, &rows, filler, 0, 4), (2, false));
+        assert_eq!(row_x_to_char(&rope, &rows, filler, 30, 4), (2, false));
+        let mut cells = 0;
+        layout_row(&rope, &rows, filler, 4, 80, &mut |_, _, _| {
+            cells += 1;
+            true
+        });
+        assert_eq!(cells, 0);
+        let g = row_geom(&rope, &rows, Row { line: 0, seg: 2 });
+        assert_eq!((g.start, g.end), (2, 2));
+        assert_eq!(row_x_to_char(&rope, &rows, Row::line(1), 0, 4), (3, false), "text rows are unchanged");
     }
 }

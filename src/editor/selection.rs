@@ -411,6 +411,7 @@ pub fn vertical_target(rows: &Rows, row: Row, m: Motion, page: usize) -> Option<
         Motion::PageUp => rows.step_row(row, -page),
         _ => rows.step_row(row, page),
     };
+    let target = rows.text_row(target, matches!(m, Motion::Down | Motion::PageDown));
     (target != row).then_some(target)
 }
 

@@ -114,7 +114,10 @@ impl Buffer {
         if let Some(tab) = rows.wrap_tab() {
             let (row, x) = super::view::char_to_row_x(&self.rope, &rows, s.head, s.upstream, tab);
             let x = self.view.sels.desired_at(i).unwrap_or(x);
-            let Some(target) = (if up { rows.prev_row(row) } else { rows.next_row(row) }) else { return };
+            let Some(target) = (if up { rows.prev_row(row) } else { rows.next_row(row) }).map(|t| rows.text_row(t, !up)) else { return };
+            if target == row {
+                return;
+            }
             let (p, upstream) = super::view::row_x_to_char(&self.rope, &rows, target, x, tab);
             if self.view.sels.push(Selection { upstream, ..Selection::point(p) }, true) {
                 self.view.sels.set_primary_desired(Some(x));

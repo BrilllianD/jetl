@@ -3,10 +3,17 @@
 //! [`super::wrap`]). Every vertical walk over the text (rendering,
 //! scrolling, Up/Down, mouse rows, column blocks) goes through [`Rows`], so
 //! hidden lines and wrapped segments are handled in one place.
+//!
+//! A view may also carry [`Filler`]s: blank rows that no text backs, which
+//! the conflict resolver adds after a line to keep its panes aligned. They
+//! are extra segments after the line's text segments (`Row::seg >=
+//! text_segs`), so every walk counts them; [`Rows::text_row`] moves a caret
+//! off one.
 
 use std::ops::Range;
 use std::rc::Rc;
 
+use ratatui::style::Color;
 use ropey::Rope;
 
 use super::fold::Folds;
@@ -29,6 +36,20 @@ impl Row {
     }
 }
 
+/// Blank rows after a line that no text backs: the conflict resolver
+/// pads its panes with them so they stay aligned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Filler {
+    /// The line the rows follow.
+    pub line: usize,
+    pub rows: u16,
+    /// The resolver's block they pad (`editor::merge`), for the linked
+    /// scroll.
+    pub block: usize,
+    /// Their background.
+    pub bg: Option<Color>,
+}
+
 /// The visible rows of a buffer of `last + 1` lines under its folds and,
 /// when given one that is on, its wrap.
 #[derive(Debug, Clone, Copy)]
@@ -38,20 +59,22 @@ pub struct Rows<'a> {
     last: usize,
     /// The wrap (active), the text and its version.
     wrap: Option<(&'a Wrap, &'a Rope, u64)>,
+    /// Sorted by line, stable within one.
+    fill: &'a [Filler],
 }
 
 impl<'a> Rows<'a> {
     /// One row per visible line, whatever the wrap.
     pub fn new(folds: &'a Folds, len_lines: usize) -> Self {
-        Self { hidden: folds.hidden(), last: len_lines.saturating_sub(1), wrap: None }
+        Self { hidden: folds.hidden(), last: len_lines.saturating_sub(1), wrap: None, fill: &[] }
     }
 
     /// The rows of a view: its folds and its wrap over `rope` at buffer
     /// `version`. Takes the fields, not the view, so the caller can borrow
     /// the carets mutably alongside (`Buffer::rows` is the shorthand).
-    pub fn view(folds: &'a Folds, wrap: &'a Wrap, rope: &'a Rope, version: u64) -> Self {
+    pub fn view(folds: &'a Folds, wrap: &'a Wrap, fill: &'a [Filler], rope: &'a Rope, version: u64) -> Self {
         let wrap = wrap.active().then_some((wrap, rope, version));
-        Self { wrap, ..Self::new(folds, rope.len_lines()) }
+        Self { wrap, fill, ..Self::new(folds, rope.len_lines()) }
     }
 
     /// Whether lines wrap.
@@ -121,9 +144,55 @@ impl<'a> Rows<'a> {
         hi - lo - hidden
     }
 
-    /// The rows `line` takes on screen.
-    pub fn segs(&self, line: usize) -> u16 {
+    /// The fillers after `line`.
+    fn fill_on(&self, line: usize) -> &'a [Filler] {
+        let lo = self.fill.partition_point(|f| f.line < line);
+        let hi = self.fill.partition_point(|f| f.line <= line);
+        &self.fill[lo..hi]
+    }
+
+    pub fn fillers(&self) -> &'a [Filler] {
+        self.fill
+    }
+
+    /// The rows the text of `line` takes.
+    pub fn text_segs(&self, line: usize) -> u16 {
         self.line_wrap(line).map_or(1, |w| w.segs())
+    }
+
+    /// The rows `line` takes on screen: its text and its fillers.
+    pub fn segs(&self, line: usize) -> u16 {
+        let fill = self.fill_on(line).iter().fold(0u16, |n, f| n.saturating_add(f.rows));
+        self.text_segs(line).saturating_add(fill)
+    }
+
+    /// Whether `row` is a filler row.
+    pub fn is_filler(&self, row: Row) -> bool {
+        row.seg >= self.text_segs(row.line)
+    }
+
+    /// The filler `row` is in and its index inside it.
+    pub fn filler(&self, row: Row) -> Option<(&'a Filler, u16)> {
+        let mut k = row.seg.checked_sub(self.text_segs(row.line))?;
+        for f in self.fill_on(row.line) {
+            if k < f.rows {
+                return Some((f, k));
+            }
+            k -= f.rows;
+        }
+        None
+    }
+
+    /// `row` when it holds text; a filler row gives the next visible
+    /// line's first row (`down`) or the line's last text row.
+    pub fn text_row(&self, row: Row, down: bool) -> Row {
+        if !self.is_filler(row) {
+            return row;
+        }
+        if down && let Some(n) = self.next(row.line) {
+            return Row::line(n);
+        }
+        Row { line: row.line, seg: self.text_segs(row.line) - 1 }
     }
 
     /// The chars of `row`: from its first char to the next row's (the line
@@ -134,6 +203,9 @@ impl<'a> Rows<'a> {
         }
         let start = rope.line_to_char(row.line);
         let end = start + line_len_no_eol(rope, row.line);
+        if self.is_filler(row) {
+            return end..end;
+        }
         match self.line_wrap(row.line) {
             Some(w) if row.seg + 1 < w.segs() => start + w.start(row.seg).0..start + w.start(row.seg + 1).0,
             Some(w) => (start + w.start(row.seg).0).min(end)..end,
@@ -176,7 +248,7 @@ impl<'a> Rows<'a> {
     /// `delta` rows from `row` (clamped first), stopping at either end of
     /// the text.
     pub fn step_row(&self, row: Row, delta: isize) -> Row {
-        if !self.wraps() {
+        if !self.wraps() && self.fill.is_empty() {
             return Row::line(self.step(row.line, delta));
         }
         let mut r = self.clamp(row);
@@ -192,7 +264,7 @@ impl<'a> Rows<'a> {
     /// Rows from `from` to `to` (in either order, both visible), counting
     /// one end. Wrapped rows are walked, so the count stops at `cap`.
     pub fn row_distance(&self, from: Row, to: Row, cap: usize) -> usize {
-        if !self.wraps() {
+        if !self.wraps() && self.fill.is_empty() {
             return self.distance(from.line, to.line);
         }
         let (mut r, hi) = (from.min(to), from.max(to));
@@ -300,7 +372,7 @@ mod tests {
     fn wrapped_rows_next_to_a_fold() {
         let (rope, f, w) = wrapped();
         assert_eq!(f.hidden(), std::slice::from_ref(&(2..4)));
-        let r = Rows::view(&f, &w, &rope, 0);
+        let r = Rows::view(&f, &w, &[], &rope, 0);
         assert!(r.wraps() && (r.segs(0), r.segs(1), r.segs(4), r.segs(5)) == (3, 1, 2, 1));
         let all: Vec<Row> = r.iter_from(row(0, 0)).collect();
         assert_eq!(all, [row(0, 0), row(0, 1), row(0, 2), row(1, 0), row(4, 0), row(4, 1), row(5, 0), row(6, 0)]);
@@ -324,9 +396,39 @@ mod tests {
         assert_eq!((plain.segs(0), plain.row_of(&rope, 24), plain.seg_range(&rope, row(0, 0))), (1, row(0, 0), 0..24));
         // Off, or not drawn yet: no wrap.
         let mut off = Wrap::new(true);
-        assert!(!Rows::view(&f, &off, &rope, 0).wraps());
+        assert!(!Rows::view(&f, &off, &[], &rope, 0).wraps());
         off.set_geometry(10, 4, 0);
         off.on = false;
-        assert!(!Rows::view(&f, &off, &rope, 0).wraps());
+        assert!(!Rows::view(&f, &off, &[], &rope, 0).wraps());
+    }
+
+    #[test]
+    fn filler_rows_follow_their_line() {
+        let rope = Rope::from_str("l0\nl1\nl2\nl3\nl4\nl5");
+        let f = Folds::default();
+        let w = Wrap::new(false);
+        let fill = [Filler { line: 1, rows: 2, block: 1, bg: None }, Filler { line: 5, rows: 1, block: 3, bg: None }];
+        let r = Rows::view(&f, &w, &fill, &rope, 0);
+        let all: Vec<Row> = r.iter_from(Row::line(0)).collect();
+        assert_eq!(all, [row(0, 0), row(1, 0), row(1, 1), row(1, 2), row(2, 0), row(3, 0), row(4, 0), row(5, 0), row(5, 1)]);
+        assert_eq!(r.step_row(Row::line(0), 3), row(1, 2));
+        assert_eq!(r.row_distance(row(0, 0), row(2, 0), 99), 4);
+        assert_eq!(r.last_row(), row(5, 1));
+        assert_eq!(r.filler(row(1, 1)), Some((&fill[0], 0)));
+        assert_eq!(r.filler(row(1, 2)), Some((&fill[0], 1)));
+        assert!(!r.is_filler(row(1, 0)) && r.filler(row(1, 0)).is_none());
+        assert_eq!(r.seg_range(&rope, row(1, 2)), 5..5, "the end of l1, empty");
+        assert_eq!(r.text_row(row(1, 1), true), row(2, 0));
+        assert_eq!(r.text_row(row(1, 2), false), row(1, 0));
+        assert_eq!(r.text_row(row(5, 1), true), row(5, 0), "no line below");
+        assert_eq!(r.text_row(row(2, 0), true), row(2, 0));
+        // With wrap: the fillers come after the text segments.
+        let (rope, f, w) = wrapped();
+        let fill = [Filler { line: 0, rows: 1, block: 0, bg: None }];
+        let r = Rows::view(&f, &w, &fill, &rope, 0);
+        assert_eq!(r.segs(0), 4);
+        assert!(r.filler(row(0, 3)).is_some() && r.is_filler(row(0, 3)) && !r.is_filler(row(0, 2)));
+        assert_eq!(r.seg_range(&rope, row(0, 3)), 24..24);
+        assert_eq!(r.prev_row(row(1, 0)), Some(row(0, 3)));
     }
 }

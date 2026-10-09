@@ -837,10 +837,19 @@ const OURS: &str = "fn main() {\n    ONE();\n    two();\n    three();\n    four(
 const THEIRS: &str = "fn main() {\n    one();\n    two();\n    THREE();\n    four();\n    five_theirs();\n}\n";
 
 fn open_merge(app: &mut App) {
+    open_merge_texts(app, [BASE, OURS, THEIRS]);
+}
+
+/// One conflict whose sides differ in length: yours 1 line, theirs 3.
+const FILL_BASE: &str = "fn main() {\n    one();\n    two();\n}\n";
+const FILL_OURS: &str = "fn main() {\n    ONE();\n    two();\n}\n";
+const FILL_THEIRS: &str = "fn main() {\n    uno();\n    dos();\n    tres();\n    two();\n}\n";
+
+fn open_merge_texts(app: &mut App, [base, ours, theirs]: [&str; 3]) {
     let path = app.workspace.root.join("main.log");
-    let texts = crate::git::merge::MergeTexts { base: BASE.into(), ours: OURS.into(), theirs: THEIRS.into() };
+    let texts = crate::git::merge::MergeTexts { base: base.into(), ours: ours.into(), theirs: theirs.into() };
     let theme = app.theme.clone();
-    app.editor.open_merge(path, "main.log".into(), texts, ["main".into(), "dev".into()], BASE.into(), &theme);
+    app.editor.open_merge(path, "main.log".into(), texts, ["main".into(), "dev".into()], base.into(), &theme);
 }
 
 /// The resolver's chunk backgrounds, and the carets.
@@ -876,6 +885,29 @@ async fn merge_after_accept() {
     let term = draw_editor(app, 120, 12);
     let marks = merge_marks(&app.theme);
     assert_snapshot!("merge_after_accept", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
+async fn merge_filler_rows() {
+    let mut fx = stable_app("merge-fill");
+    let app = &mut fx.app;
+    open_merge_texts(app, [FILL_BASE, FILL_OURS, FILL_THEIRS]);
+    let term = draw_editor(app, 120, 12);
+    let marks = merge_marks(&app.theme);
+    assert_snapshot!("merge_filler_rows", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
+async fn merge_filler_rows_both_accepted() {
+    let mut fx = stable_app("merge-fill-both");
+    let app = &mut fx.app;
+    open_merge_texts(app, [FILL_BASE, FILL_OURS, FILL_THEIRS]);
+    draw_editor(app, 120, 12);
+    editor(app, EditorAction::Merge(MergeAction::AcceptLeft));
+    editor(app, EditorAction::Merge(MergeAction::AcceptRight));
+    let term = draw_editor(app, 120, 12);
+    let marks = merge_marks(&app.theme);
+    assert_snapshot!("merge_filler_rows_both_accepted", snapshot(&term, &marks, None));
 }
 
 #[tokio::test]

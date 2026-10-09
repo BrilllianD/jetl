@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The conflict resolver pads the shorter side of a change with blank rows, so the three panes stay aligned
+  while scrolling, inside a change of unequal sizes and after accepting both sides.
 - After a conflicted file is resolved (Accept Yours/Theirs or Apply in the resolver), Resolve Conflicts
   reopens with the files left, or says that all conflicts are resolved.
 - Conflicted symbolic links and submodules can be resolved by taking yours or theirs (a link is
