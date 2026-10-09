@@ -560,7 +560,7 @@ impl Editor {
             let sel = Selection::point(line_col_to_pos(&b.rope, sv.line, sv.col));
             let folds = super::fold::Folds::from_session(&sv.folds, &b.rope);
             let scroll_line = super::rows::Rows::new(&folds, b.rope.len_lines()).visible(sv.scroll_line);
-            let wrap = super::wrap::Wrap::new(self.soft_wrap_for(b.path.as_deref()));
+            let wrap = super::wrap::Wrap::new(sv.wrap.unwrap_or_else(|| self.soft_wrap_for(b.path.as_deref())));
             let state = ViewState { sels: sel.into(), scroll_line, scroll_col: sv.scroll_col, folds, wrap, ..Default::default() };
             let parked = Some(Parked::park(state, &b.rope, &b.edit_log, b.version));
             g.views.push(View { id: b.id, parked, pinned: sv.pinned });

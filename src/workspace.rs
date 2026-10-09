@@ -128,6 +128,10 @@ pub struct SessionView {
     pub pinned: bool,
     /// The view's collapsed folds.
     pub folds: Vec<SessionFold>,
+    /// Soft wrap when toggled away from the configured default; `None`
+    /// follows the config.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wrap: Option<bool>,
 }
 
 /// Tool windows, their sizes, the Git tab and the tree's visibility toggles.
@@ -167,6 +171,10 @@ pub struct SessionFile {
     /// The collapsed folds of the view the file was shown in.
     #[serde(default)]
     pub folds: Vec<SessionFold>,
+    /// Soft wrap when toggled away from the configured default; `None`
+    /// follows the config.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wrap: Option<bool>,
 }
 
 /// A collapsed fold of a view: its anchors as 0-based lines and character
@@ -327,6 +335,7 @@ impl App {
                 bookmark_digits: b.digits(),
                 pinned: pinned.contains(&b.id),
                 folds: b.view.folds.to_session(&b.rope),
+                wrap: (b.view.wrap.on != self.editor.soft_wrap_for(b.path.as_deref())).then_some(b.view.wrap.on),
             });
         }
         let recent = self.editor.recent_paths().iter().filter_map(|p| files.iter().position(|f| &f.path == p)).collect();
@@ -378,7 +387,8 @@ impl App {
                     out.active = Some(out.views.len());
                 }
                 let (scroll_line, scroll_col, folds) = (state.scroll_line, state.scroll_col, state.folds.to_session(&b.rope));
-                out.views.push(SessionView { file, line, col, scroll_line, scroll_col, pinned: v.pinned, folds });
+                let wrap = (state.wrap.on != ed.soft_wrap_for(b.path.as_deref())).then_some(state.wrap.on);
+                out.views.push(SessionView { file, line, col, scroll_line, scroll_col, pinned: v.pinned, folds, wrap });
             }
             Some(SessionNode::Leaf(out))
         };
@@ -437,7 +447,7 @@ impl App {
             };
             let Some((text, lossy)) = self.decode_file(&f.path, bytes) else { continue };
             let i = self.editor.open_text(f.path.clone(), &text, lossy, &self.theme);
-            self.editor.restore_view(i, (f.line, f.col), (f.scroll_line, f.scroll_col), &f.folds);
+            self.editor.restore_view(i, (f.line, f.col), (f.scroll_line, f.scroll_col), &f.folds, f.wrap);
             self.editor.buffers[i].set_bookmarks(&f.bookmarks);
             self.editor.restore_digits(i, &f.bookmark_digits);
             if f.pinned {
@@ -514,6 +524,7 @@ mod tests {
                     bookmark_digits: vec![(7, 40)],
                     pinned: true,
                     folds: vec![SessionFold { start_line: 2, start_col: 10, end_line: 5, end_col: 1 }],
+                    wrap: Some(true),
                 },
                 SessionFile {
                     path: root.join("README.md"),
@@ -525,6 +536,7 @@ mod tests {
                     bookmark_digits: vec![],
                     pinned: false,
                     folds: vec![],
+                    wrap: None,
                 },
             ],
             active: Some(1),
@@ -556,6 +568,7 @@ mod tests {
                             scroll_col: 0,
                             pinned: true,
                             folds: vec![SessionFold { start_line: 0, start_col: 4, end_line: 9, end_col: 0 }],
+                            wrap: Some(false),
                         }],
                         active: Some(0),
                     })),
@@ -647,6 +660,100 @@ mod tests {
         assert_eq!(b.bookmarks.iter().map(|(l, d)| (*l, *d)).collect::<Vec<_>>(), vec![(1, None), (2, None)]);
         assert!(app.editor.closed_digits().is_empty());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn soft_wrap_toggles_survive_a_session_round_trip() {
+        let (mut app, dir) = crate::app::tests::test_app("session-wrap");
+        // Default: .txt and .md wrap, .rs does not.
+        crate::app::tests::load(&mut app, "a.txt", "a\n");
+        crate::app::tests::load(&mut app, "b.rs", "b\n");
+        crate::app::tests::load(&mut app, "c.md", "c\n");
+        let wrap = |app: &mut App, name: &str, on: Option<bool>| {
+            let i = app.editor.buffers.iter().position(|b| b.name == name).unwrap();
+            if let Some(on) = on {
+                app.editor.buffers[i].view.wrap.on = on;
+            }
+            app.editor.buffers[i].view.wrap.on
+        };
+        assert_eq!((wrap(&mut app, "a.txt", None), wrap(&mut app, "b.rs", None), wrap(&mut app, "c.md", None)), (true, false, true));
+        wrap(&mut app, "a.txt", Some(false));
+        wrap(&mut app, "b.rs", Some(true));
+        let session = app.session();
+        let by_name = |s: &Session, n: &str| s.files.iter().find(|f| f.path.ends_with(n)).unwrap().wrap;
+        assert_eq!((by_name(&session, "a.txt"), by_name(&session, "b.rs"), by_name(&session, "c.md")), (Some(false), Some(true), None));
+        let json = serde_json::to_value(&session).unwrap();
+        let c = json["files"].as_array().unwrap().iter().find(|f| f["path"].as_str().unwrap().ends_with("c.md")).unwrap();
+        assert!(c.get("wrap").is_none(), "an untouched file stores nothing");
+        session.save(&app.paths.sessions_dir()).unwrap();
+
+        let (mut fresh, fresh_dir) = crate::app::tests::test_app("session-wrap-2");
+        fresh.workspace.root = app.workspace.root.clone();
+        let loaded = Session::load(&app.paths.sessions_dir(), &app.workspace.root).unwrap();
+        assert_eq!(loaded, session);
+        let files = loaded.files.iter().map(|f| std::fs::read(&f.path)).collect();
+        let generation = fresh.workspace.generation;
+        fresh.session_loaded(generation, loaded, files);
+        assert_eq!((wrap(&mut fresh, "a.txt", None), wrap(&mut fresh, "b.rs", None), wrap(&mut fresh, "c.md", None)), (false, true, true));
+        for d in [dir, fresh_dir] {
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_session_without_wrap_fields_loads() {
+        let (mut app, dir) = crate::app::tests::test_app("session-no-wrap");
+        let (txt, rs) = (app.workspace.root.join("a.txt"), app.workspace.root.join("b.rs"));
+        std::fs::write(&txt, "a\n").unwrap();
+        std::fs::write(&rs, "b\n").unwrap();
+        let json = serde_json::json!({
+            "root": app.workspace.root,
+            "files": [{ "path": txt, "line": 0 }, { "path": rs }],
+            "splits": { "tree": { "Leaf": { "views": [{ "file": 0 }, { "file": 1 }], "active": 0 } }, "focused": 0 },
+        });
+        let session: Session = serde_json::from_value(json).unwrap();
+        assert_eq!((session.files[0].wrap, session.files[1].wrap), (None, None));
+        let generation = app.workspace.generation;
+        app.session_loaded(generation, session, vec![Ok(b"a\n".to_vec()), Ok(b"b\n".to_vec())]);
+        let on: Vec<bool> = app.editor.buffers.iter().map(|b| b.view.wrap.on).collect();
+        assert_eq!(on, [true, false], "defaults apply");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn split_views_keep_their_own_soft_wrap() {
+        use crate::actions::{Action, EditorAction};
+        let (mut app, dir) = crate::app::tests::test_app("session-split-wrap");
+        crate::app::tests::load(&mut app, "a.txt", "a\n");
+        app.editor.active_buffer_mut().unwrap().view.wrap.on = false;
+        // The new group's view starts as a copy; wrap it again there.
+        app.perform(Action::Editor(EditorAction::SplitRight));
+        app.editor.active_buffer_mut().unwrap().view.wrap.on = true;
+        let session = app.session();
+        assert_eq!(session.files[0].wrap, None, "the live view is at the default");
+        let SessionNode::Split { a, b, .. } = &session.splits.as_ref().expect("two groups").tree else { panic!("a split") };
+        let wraps: Vec<Option<bool>> = [a, b]
+            .iter()
+            .map(|n| match &***n {
+                SessionNode::Leaf(g) => g.views[0].wrap,
+                SessionNode::Split { .. } => unreachable!(),
+            })
+            .collect();
+        assert_eq!(wraps, [Some(false), None]);
+        let (mut fresh, fresh_dir) = crate::app::tests::test_app("session-split-wrap-2");
+        fresh.workspace.root = app.workspace.root.clone();
+        let files = session.files.iter().map(|f| std::fs::read(&f.path)).collect();
+        let generation = fresh.workspace.generation;
+        fresh.session_loaded(generation, session, files);
+        let ed = &mut fresh.editor;
+        let ids = ed.group_ids();
+        ed.focus_group(ids[0]);
+        assert!(!ed.active_buffer().unwrap().view.wrap.on, "first group keeps its off");
+        ed.focus_group(ids[1]);
+        assert!(ed.active_buffer().unwrap().view.wrap.on);
+        for d in [dir, fresh_dir] {
+            let _ = std::fs::remove_dir_all(d);
+        }
     }
 
     #[tokio::test]

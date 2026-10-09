@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A file's View | Soft Wrap toggle is saved in the session (per view in split groups) and restored on
+  restart; files left at their configured default store nothing and keep following the config.
 - `editor.soft_wrap_extra_indent` (cells, default 0, applies at once) shifts the continuation rows of a
   soft-wrapped line further right, after the line's own indent; together at most half the width.
 - `[lsp] scratches = true` (default off, applies at once) gives scratch files language servers: a

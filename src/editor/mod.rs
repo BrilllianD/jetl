@@ -439,8 +439,12 @@ impl Editor {
         (line, col): (usize, usize),
         (scroll_line, scroll_col): (usize, usize),
         folds: &[crate::workspace::SessionFold],
+        wrap: Option<bool>,
     ) {
         let Some(b) = self.buffers.get_mut(i) else { return };
+        if let Some(w) = wrap {
+            b.view.wrap.on = w;
+        }
         b.goto_line(line, col);
         b.view.folds = fold::Folds::from_session(folds, &b.rope);
         b.view.scroll_line = Rows::new(&b.view.folds, b.rope.len_lines()).visible(scroll_line);
