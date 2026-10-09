@@ -184,7 +184,7 @@ directory walks) or a tokio task (the `git` CLI). The pattern:
 3. Send a tagged `AppMsg`.
 4. In `handle_msg`, drop the result when its tag is stale.
 
-Two tags, and one rule for popups:
+Three tags, and one rule for popups:
 
 - **Generation** (`Workspace::generation`) is bumped by every root switch
   (`Workspace::switch_root`). Every result that depends on the root carries
@@ -197,6 +197,10 @@ Two tags, and one rule for popups:
   results. A result whose generation differs from `workspace.generation` is
   dropped. `ConfigChanged` carries no tag: it does not depend on the root,
   and the reload reads the files when it runs.
+- **Group id**: LSP doc answers (`DocTag::group`) carry the focused editor
+  group of their request and are dropped when another group is focused
+  when they arrive (the same buffer in two groups shows no popup in the
+  other one); completion and its docs answers check it too.
 - **Seq** orders repeated requests of the same kind within a generation, so
   an older request that finishes late cannot overwrite a newer result:
   `GitMsg::Status` (`GitPanel::set_status`), `GitMsg::Blob` (per buffer,

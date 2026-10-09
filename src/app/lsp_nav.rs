@@ -187,8 +187,9 @@ impl App {
         {
             p.insert("textDocument".into(), json!({"uri": uri}));
         }
+        let group = self.editor.focused_group().id;
         let client = self.lsp.clients.get_mut(&server).expect("checked above");
-        let rid = client.request(method, params, tag(DocTag { buffer: id, version, pos, seq }));
+        let rid = client.request(method, params, tag(DocTag { buffer: id, version, pos, seq, group }));
         let sent = super::lsp::Inflight { server, id: rid, seq };
         if newest {
             self.lsp.inflight.insert(method, sent.clone());
@@ -284,7 +285,10 @@ impl App {
             }
             return;
         }
-        if self.caret_position() != Some((t.buffer, t.pos)) || self.editor.active_buffer().is_none_or(|b| b.version != t.version) {
+        if self.caret_position() != Some((t.buffer, t.pos))
+            || self.editor.active_buffer().is_none_or(|b| b.version != t.version)
+            || self.editor.focused_group().id != t.group
+        {
             return tracing::debug!("dropping a stale {method} answer");
         }
         let value = match result {
@@ -803,6 +807,22 @@ mod tests {
         assert!(x0 > 66, "{x0}");
         app.perform(Action::Editor(EditorAction::PrevGroup));
         draw(&mut app, 100, 24);
+        assert!(app.hover.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn hover_answer_for_another_group_is_dropped() {
+        let (mut app, dir) = test_app("lsp-hover-other-group");
+        let mut servers = with_fake_servers(&mut app, caps());
+        let mut server = open_on_server(&mut app, &mut servers, "a.rs", A).await;
+        goto(&mut app, 1, 21);
+        draw(&mut app, 100, 24);
+        act(&mut app, LspAction::QuickDoc);
+        // The split focuses a new group showing the same buffer at the same caret.
+        app.perform(Action::Editor(EditorAction::SplitRight));
+        draw(&mut app, 100, 24);
+        answer(&mut app, &mut server, "textDocument/hover", hover("doc")).await;
         assert!(app.hover.is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }

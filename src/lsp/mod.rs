@@ -107,6 +107,8 @@ pub struct DocTag {
     pub version: u64,
     pub pos: lsp_types::Position,
     pub seq: u64,
+    /// The editor group that was focused when it was sent.
+    pub group: crate::editor::groups::GroupId,
 }
 
 /// What a workspace edit was for, carried until it is applied (the files

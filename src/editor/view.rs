@@ -374,7 +374,11 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
     v.set_top(top);
     let follow_key = (buf.view.sel().head, buf.version, text_area.width, text_area.height);
     if buf.view.follow_key != Some(follow_key) {
-        if o.follow {
+        // A resize alone re-scrolls only a caret that was on screen and is
+        // not any more; one already off screen stays where it was.
+        let resized_only = buf.view.follow_key.is_some_and(|k| (k.0, k.1) == (follow_key.0, follow_key.1));
+        let was_visible = buf.view.follow_key.is_some_and(|k| caret_on_screen(buf, k.2, k.3, o));
+        if o.follow && (!resized_only || (was_visible && !caret_on_screen(buf, text_area.width, text_area.height, o))) {
             ensure_visible(buf, text_area, o);
         }
         buf.view.follow_key = Some(follow_key);
@@ -678,6 +682,22 @@ fn in_ranges(ranges: &[std::ops::Range<usize>], i: usize) -> bool {
     ranges.get(k).is_some_and(|r| r.contains(&i))
 }
 
+/// Whether the caret is inside a text area of `w` x `h` at the view's scroll.
+fn caret_on_screen(buf: &Buffer, w: u16, h: u16, o: &RenderOpts) -> bool {
+    let r = buf.rows();
+    let sel = buf.view.sel();
+    let caret = r.clamp(char_to_row_x(&buf.rope, &r, sel.head, sel.upstream, o.tab_width).0);
+    let top = r.clamp(buf.view.top());
+    if caret < top || r.row_distance(top, caret, h as usize) >= h as usize {
+        return false;
+    }
+    if r.wraps() {
+        return true;
+    }
+    let vcol = visual_col(&buf.rope, sel.head, o.tab_width);
+    (buf.view.scroll_col..buf.view.scroll_col + w as usize).contains(&vcol)
+}
+
 pub fn ensure_visible(buf: &mut Buffer, text_area: Rect, o: &RenderOpts) {
     let rows = text_area.height as usize;
     let cols = text_area.width as usize;
@@ -842,5 +862,52 @@ mod tests {
                 assert_eq!(col_to_char(&r, 0, col, 4), c.char_idx, "col {col}");
             }
         }
+    }
+
+    fn resize_opts(theme: &Theme) -> RenderOpts<'_> {
+        RenderOpts {
+            focused: true,
+            tab_width: 4,
+            wrap_extra_indent: 0,
+            scrolloff: 0,
+            hscrolloff: 0,
+            occurrences: false,
+            theme,
+            follow: true,
+            decor: None,
+        }
+    }
+
+    fn render_at(buf: &mut Buffer, theme: &Theme, w: u16, h: u16) {
+        let area = Rect::new(0, 0, w, h);
+        render(buf, &mut Screen::empty(area), area, &resize_opts(theme));
+    }
+
+    #[test]
+    fn resize_does_not_rescroll_a_caret_already_off_screen() {
+        let theme = Theme::default();
+        let text: String = (0..100).map(|i| format!("line {i}\n")).collect();
+        let mut buf = Buffer::from_text(1, None, &text, false);
+        buf.goto_line(50, 0);
+        render_at(&mut buf, &theme, 40, 10);
+        assert!(buf.view.scroll_line > 40, "scrolled to the caret");
+        // Scrolled away by hand: the caret is off screen at both sizes.
+        buf.view.scroll_line = 0;
+        render_at(&mut buf, &theme, 40, 10);
+        assert_eq!(buf.view.scroll_line, 0);
+        render_at(&mut buf, &theme, 50, 12);
+        assert_eq!(buf.view.scroll_line, 0, "a resize alone leaves the view");
+    }
+
+    #[test]
+    fn resize_scrolls_when_the_caret_drops_off_screen() {
+        let theme = Theme::default();
+        let text: String = (0..100).map(|i| format!("line {i}\n")).collect();
+        let mut buf = Buffer::from_text(1, None, &text, false);
+        buf.goto_line(3, 0);
+        render_at(&mut buf, &theme, 40, 10);
+        assert_eq!(buf.view.scroll_line, 0);
+        render_at(&mut buf, &theme, 40, 2);
+        assert_eq!(buf.view.scroll_line, 2, "the caret line is the last row");
     }
 }

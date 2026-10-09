@@ -74,6 +74,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and Up/Down keep the visual column across tabs (soft wrap off); any caret motion resets Add Next
   Occurrence (and its whole-word mode); Alt+Shift+drag adds the column block to the existing
   carets; Ctrl+Shift+Left/Right in column mode extend the block by word.
+- Split groups: a hover, signature or completion answer requested in one group no longer shows in
+  another group showing the same buffer; resizing a view no longer re-scrolls a caret that was
+  already off screen; reloading a file changed on disk keeps every caret (parked views too), fold
+  and bookmark on its line through a line diff. Alt+Shift+Tab (previous group) is marked as needing
+  the kitty keyboard protocol; Alt+Tab cycles groups elsewhere.
 
 ## [0.2.0] - 2026-10-09
 

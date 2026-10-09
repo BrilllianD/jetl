@@ -6,7 +6,8 @@ Do not edit by hand; `cargo test` fails when it is out of date.
 
 Contexts are searched innermost first (for example `editor.find`, then `editor`,
 then `global`). Bindings marked * need the kitty keyboard protocol (foot, kitty,
-WezTerm, Ghostty); legacy terminals and tmux have the listed fallbacks instead.
+WezTerm, Ghostty); legacy terminals and tmux have the listed fallbacks instead
+(where Alt+Shift+Tab does not arrive, Alt+Tab cycles the tab groups).
 Override any of them in `~/.config/jetl/keymap.toml` (see [CONFIG.md](CONFIG.md)).
 While the Terminal window has focus only its `terminal` table is searched: every other
 key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
@@ -63,7 +64,7 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Alt+\` | `editor.split_right` | Split right (the tab in a new group beside) |
 | `Alt+-` | `editor.split_down` | Split down (the tab in a new group below) |
 | `Alt+Tab` | `editor.next_group` | Next tab group |
-| `Alt+Shift+Tab` | `editor.prev_group` | Previous tab group |
+| `Alt+Shift+Tab` * | `editor.prev_group` | Previous tab group |
 | `Ctrl+0` * | `editor.goto_bookmark_0` | Go to bookmark 0 |
 | `Alt+B 0` | `editor.goto_bookmark_0` | Go to bookmark 0 |
 | `Ctrl+1` * | `editor.goto_bookmark_1` | Go to bookmark 1 |

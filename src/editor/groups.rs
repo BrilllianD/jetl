@@ -1018,6 +1018,38 @@ mod tests {
     }
 
     #[test]
+    fn disk_reload_maps_live_and_parked_carets_by_line() {
+        let dir = std::env::temp_dir().join(format!("jetl-test-reload-groups-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("a.txt");
+        let old = lines(30);
+        let new = format!("top 1\ntop 2\n{old}");
+        std::fs::write(&path, &new).unwrap();
+        let mut ed = Editor::new(&Config::default());
+        ed.open_text(path.clone(), &old, false, &Theme::default());
+        let at = ed.buffers[0].rope.line_to_char(10) + 2;
+        ed.active_buffer_mut().unwrap().view.set_sel(Selection::point(at));
+        let first = ed.focused;
+        act(&mut ed, EditorAction::SplitRight);
+        assert_ne!(ed.focused, first);
+        ed.buffers[0].disk_mtime = Some(std::time::UNIX_EPOCH);
+        let mut sink = Vec::new();
+        assert!(ed.reload_clean(&path, new.clone(), &mut sink));
+        assert_eq!(ed.buffers[0].text(), new);
+        let line = |ed: &Editor| ed.active_buffer().unwrap().cursor_line_col();
+        // The live view (right group).
+        assert_eq!(line(&ed), (12, 2));
+        // The parked view (left group), brought up to date at the next frame.
+        ed.sync_parked();
+        act(&mut ed, EditorAction::PrevGroup);
+        assert_eq!(ed.focused, first);
+        assert_eq!(line(&ed), (12, 2));
+        ed.check_invariants();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn closing_tabs_with_views_elsewhere_and_unsplit() {
         let mut ed = Editor::new(&Config::default());
         open(&mut ed, "a.txt", "a\n");

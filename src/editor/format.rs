@@ -163,14 +163,22 @@ impl Buffer {
     /// stays on the same code and the view on the same lines. Returns false,
     /// with no transaction, when nothing changes.
     pub fn apply_formatted(&mut self, formatted: &str) -> bool {
-        let old = self.text();
         let lf = formatted.replace("\r\n", "\n");
         let new = if self.line_ending == LineEnding::CrLf { lf.replace('\n', "\r\n") } else { lf };
+        self.replace_by_lines(&new)
+    }
+
+    /// Replace the text with `new` (taken as is) like [`Buffer::apply_formatted`]:
+    /// one undoable transaction of the changed lines, selections, folds and
+    /// bookmarks mapped by line, the view kept on the same lines. Returns
+    /// false, with no transaction, when nothing changes.
+    pub fn replace_by_lines(&mut self, new: &str) -> bool {
+        let old = self.text();
         if old == new {
             return false;
         }
-        let hunks = crate::git::diff::hunks(&old, &new);
-        let (os, ns) = (line_starts(&old), line_starts(&new));
+        let hunks = crate::git::diff::hunks(&old, new);
+        let (os, ns) = (line_starts(&old), line_starts(new));
         // In order; each at its place in the new text, since everything
         // before it already matches the new text when it is applied.
         let changes: Vec<Change> = hunks
@@ -180,7 +188,7 @@ impl Buffer {
                 Change::replace(ns[a0].1, &old[os[b0].0..os[b1].0], &new[ns[a0].0..ns[a1].0])
             })
             .collect();
-        let map = |p: usize| map_pos(&old, &new, &os, &ns, &hunks, p);
+        let map = |p: usize| map_pos(&old, new, &os, &ns, &hunks, p);
         let mut sels = self.view.sels.clone();
         sels.map(map);
         let (old_line, old_scroll) = (self.cursor_line_col().0, self.view.scroll_line);

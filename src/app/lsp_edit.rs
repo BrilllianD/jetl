@@ -70,7 +70,7 @@ impl App {
                 if word.is_empty() {
                     return self.lsp_hint("Cannot rename this element");
                 }
-                self.lsp_rename_dialog(DocTag { buffer: id, version, pos, seq: 0 }, &word);
+                self.lsp_rename_dialog(DocTag { buffer: id, version, pos, seq: 0, group: self.editor.focused_group().id }, &word);
             })
         };
         if let Err(why) = result

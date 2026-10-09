@@ -411,6 +411,9 @@ impl App {
             }
             PendingTag::CompletionDocs(t) => {
                 let Some((_, origin, i)) = self.lsp.completion.docs.take_if(|d| d.0 == t.seq) else { return };
+                if t.group != self.editor.focused_group().id {
+                    return tracing::debug!("dropping a stale completion docs answer");
+                }
                 let Some(p) =
                     self.completion.as_mut().filter(|p| p.state.origin == origin && p.state.order.get(p.state.selected) == Some(&i))
                 else {
@@ -429,6 +432,9 @@ impl App {
 
     fn completion_answer(&mut self, name: &str, t: DocTag, result: Result<Value, ResponseError>) {
         let Some((_, origin, explicit)) = self.lsp.completion.request.take_if(|r| r.0 == t.seq) else { return };
+        if t.group != self.editor.focused_group().id {
+            return tracing::debug!("dropping a stale completion answer");
+        }
         let value = match result {
             Ok(v) => v,
             Err(e) if [ResponseError::REQUEST_CANCELLED, ResponseError::CONTENT_MODIFIED].contains(&e.code) => return,

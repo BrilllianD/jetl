@@ -390,7 +390,8 @@ impl Keymap {
         out.push_str("Do not edit by hand; `cargo test` fails when it is out of date.\n\n");
         out.push_str("Contexts are searched innermost first (for example `editor.find`, then `editor`,\n");
         out.push_str("then `global`). Bindings marked * need the kitty keyboard protocol (foot, kitty,\n");
-        out.push_str("WezTerm, Ghostty); legacy terminals and tmux have the listed fallbacks instead.\n");
+        out.push_str("WezTerm, Ghostty); legacy terminals and tmux have the listed fallbacks instead\n");
+        out.push_str("(where Alt+Shift+Tab does not arrive, Alt+Tab cycles the tab groups).\n");
         out.push_str("Override any of them in `~/.config/jetl/keymap.toml` (see [CONFIG.md](CONFIG.md)).\n");
         out.push_str("While the Terminal window has focus only its `terminal` table is searched: every other\n");
         out.push_str("key goes to the shell, and Esc Esc at the shell prompt focuses the editor.\n");
@@ -441,7 +442,7 @@ impl Keymap {
 /// `+`, `_` or `.`, Ctrl with a digit other than 4-6 (legacy terminals send
 /// those as Ctrl+\, Ctrl+] and Ctrl+^; Ctrl+7 is Ctrl+/ there, which jetl
 /// reads as Ctrl+/: [`KeyCombo::legacy_input`]), Ctrl+Tab, Ctrl+Enter,
-/// Shift+Enter, Shift+F3, Shift+Esc and Shift Shift.
+/// Shift+Enter, Shift+F3, Shift+Esc, Alt+Shift+Tab and Shift Shift.
 fn needs_kitty(keys: &str) -> bool {
     keys.split(' ').any(|k| {
         let key = k.rsplit('+').next().unwrap_or("");
@@ -457,6 +458,7 @@ fn needs_kitty(keys: &str) -> bool {
             || k == "Shift+Enter"
             || k == "Shift+F3"
             || k == "Shift+Esc"
+            || k == "Alt+Shift+Tab"
     }) || keys == "Shift Shift"
 }
 

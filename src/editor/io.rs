@@ -411,14 +411,9 @@ pub(super) fn disk_conflict(b: &Buffer) -> bool {
 pub(super) fn replace_with_disk_text(b: &mut Buffer, text: String, path: &Path) -> Option<ropey::Rope> {
     b.disk_mtime = buffer::file_mtime(path);
     b.autosave_conflict = false;
-    let old = b.text();
-    let replaced = (old != text).then(|| {
-        // A rope clone is O(1); the worker makes it bytes.
-        let before = b.rope.clone();
-        let caret = b.view.sel().head.min(text.chars().count());
-        b.apply(vec![Change::replace(0, old, text)], Selection::point(caret), TxKind::Other);
-        before
-    });
+    // A rope clone is O(1); the worker makes it bytes.
+    let before = b.rope.clone();
+    let replaced = b.replace_by_lines(&text).then_some(before);
     b.mark_saved();
     replaced
 }
