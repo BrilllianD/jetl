@@ -104,9 +104,9 @@ impl Buffer {
     }
 
     /// Add a caret on the line above the topmost caret (`up`) or below the
-    /// bottommost one, at the same column (kept across short lines, as Up
+    /// bottommost one, at the same visual column (kept across short lines, as Up
     /// and Down do). The new caret is the primary.
-    pub fn clone_caret(&mut self, up: bool) {
+    pub fn clone_caret(&mut self, up: bool, tab_width: usize) {
         let s = if up { self.view.sels.as_slice()[0] } else { self.view.sels.as_slice()[self.view.sels.len() - 1] };
         let i = if up { 0 } else { self.view.sels.len() - 1 };
         // Wrapped: the row above or below at the same row x.
@@ -122,12 +122,12 @@ impl Buffer {
             }
             return;
         }
-        let (line, col) = selection::pos_to_line_col(&self.rope, s.head);
-        let col = self.view.sels.desired_at(i).unwrap_or(col);
+        let (line, _) = selection::pos_to_line_col(&self.rope, s.head);
+        let col = self.view.sels.desired_at(i).unwrap_or_else(|| super::view::visual_col(&self.rope, s.head, tab_width));
         let rows = super::rows::Rows::new(&self.view.folds, self.rope.len_lines());
         let target = if up { rows.prev(line) } else { rows.next(line) };
         let Some(target) = target else { return };
-        let p = selection::line_col_to_pos(&self.rope, target, col);
+        let p = super::view::col_to_char(&self.rope, target, col, tab_width);
         if self.view.sels.push(Selection::point(p), true) {
             self.view.sels.set_primary_desired(Some(col));
             self.undo.break_group = true;
@@ -176,6 +176,18 @@ mod tests {
     }
 
     #[test]
+    fn clone_caret_keeps_visual_column_across_tabs() {
+        let mut buf = b("\tab\n\t\tcd\nabcdefgh\n");
+        buf.view.set_sel(Selection::point(1));
+        buf.clone_caret(false, 4);
+        assert_eq!(buf.view.sels.heads().collect::<Vec<_>>(), [1, 5], "visual column 4 is after the first tab");
+        buf.clone_caret(false, 4);
+        assert_eq!(buf.view.sels.heads().collect::<Vec<_>>(), [1, 5, 13], "and four chars in on the plain line");
+        buf.clone_caret(true, 4);
+        assert_eq!(buf.view.sels.len(), 3, "nothing above the first line");
+    }
+
+    #[test]
     fn select_all_occurrences_and_clone_carets() {
         let mut buf = b("x = x + xx;\nx");
         buf.view.set_sel(Selection::point(4));
@@ -184,10 +196,10 @@ mod tests {
         assert_eq!(buf.view.sel(), Selection::new(4, 5), "the caret's occurrence stays primary");
         let mut buf = b("abcdef\nab\nabcdef\n");
         buf.view.set_sel(Selection::point(4));
-        buf.clone_caret(false);
-        buf.clone_caret(false);
+        buf.clone_caret(false, 4);
+        buf.clone_caret(false, 4);
         assert_eq!(buf.view.sels.heads().collect::<Vec<_>>(), [4, 9, 14], "the column survives the short line");
-        buf.clone_caret(true);
+        buf.clone_caret(true, 4);
         assert_eq!(buf.view.sels.len(), 3, "nothing above the first line");
         let many = "a ".repeat(MAX_CARETS + 10);
         let mut buf = b(&many);

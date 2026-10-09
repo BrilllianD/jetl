@@ -50,7 +50,7 @@ use groups::{GroupId, TabGroup};
 use nav::{NavPos, NavRing};
 use rows::{Row, Rows};
 use search::Field;
-use selection::{Selection, apply_motion_all, line_range, word_at};
+use selection::{Selection, Selections, apply_motion_all, line_range, word_at};
 use split::{SplitNode, SplitterHit};
 use undo::TxKind;
 use view::RenderOpts;
@@ -148,6 +148,9 @@ pub struct Editor {
     last_edit: Instant,
     /// A text drag and the group it started in.
     drag: Option<(GroupId, DragMode)>,
+    /// Alt+Shift+press: the carets before it, which the dragged column
+    /// block is added to.
+    alt_base: Option<Selections>,
     /// Files larger than this open without syntax highlighting.
     max_highlight_bytes: usize,
     /// `editor.max_tabs`: see [`Editor::enforce_tab_limit`].
@@ -224,6 +227,7 @@ impl Editor {
             autosave_idle: Duration::ZERO,
             last_edit: Instant::now(),
             drag: None,
+            alt_base: None,
             max_highlight_bytes: 0,
             max_tabs: 0,
             soft_wrap: false,
@@ -1009,8 +1013,11 @@ impl Editor {
                 let block = self.column_mode && *extend && b.blocks_supported() && b.extend_block(*m, page, tab_width);
                 if !block {
                     let rows = Rows::view(&b.view.folds, &b.view.wrap, &b.rope, b.version);
-                    apply_motion_all(&b.rope, &rows, &mut b.view.sels, *m, *extend, page);
+                    apply_motion_all(&b.rope, &rows, &mut b.view.sels, *m, *extend, page, tab_width);
                 }
+                // A moved caret ends an Add Next Occurrence run.
+                b.view.occ_stack.clear();
+                b.view.occ_whole_word = false;
                 b.undo.break_group = true;
             }
             E::Undo => {
@@ -1142,7 +1149,7 @@ impl Editor {
                     cx.notify(Level::Info, format!("{n} occurrences; carets on the first {}", selection::MAX_CARETS));
                 }
             }
-            E::CloneCaretAbove | E::CloneCaretBelow => b.clone_caret(*a == E::CloneCaretAbove),
+            E::CloneCaretAbove | E::CloneCaretBelow => b.clone_caret(*a == E::CloneCaretAbove, tab_width),
             E::FoldCollapse
             | E::FoldCollapseRecursive
             | E::FoldExpand
@@ -1312,7 +1319,11 @@ impl Editor {
             MouseEventKind::Down(MouseButton::Left) => {
                 let (p, up) = pos_at(b, m.x, m.y);
                 // Alt+click: a caret there, or away with the one there.
+                self.alt_base = None;
                 if m.mods.contains(KeyModifiers::ALT) && m.x >= text_area.x {
+                    if m.mods.contains(KeyModifiers::SHIFT) {
+                        self.alt_base = Some(b.view.sels.clone());
+                    }
                     match b.view.sels.index_at(p).filter(|_| b.view.sels.is_multi()) {
                         Some(i) => b.view.sels.remove(i),
                         None => {
@@ -1398,6 +1409,11 @@ impl Editor {
                             return true;
                         }
                         b.set_block(view_state::Block { anchor, head }, tab_width);
+                        if let Some(base) = &self.alt_base {
+                            for s in base.iter() {
+                                b.view.sels.push(*s, false);
+                            }
+                        }
                         self.drag = Some((g, DragMode::Column(anchor)));
                     }
                 }
@@ -1411,6 +1427,7 @@ impl Editor {
             }
             MouseEventKind::Up(MouseButton::Left) => {
                 self.drag = None;
+                self.alt_base = None;
                 true
             }
             _ => wheel(b, m.kind),
@@ -1911,8 +1928,9 @@ mod tests {
         // Each caret head maps back to the cell its line was cut at.
         let heads: Vec<usize> = b.view.sels.heads().map(|h| view::visual_col(&b.rope, h, 4)).collect();
         assert_eq!(heads, [8, 8, 2, 8]);
-        // Alt+Shift+drag too, right to left past the line ends.
-        mouse_path(&mut ed, KeyModifiers::ALT | KeyModifiers::SHIFT, &[(x0 + 30, y0 + 1), (x0 + 12, y0)]);
+        // A plain Alt+drag replaces the carets, right to left past the line
+        // ends.
+        mouse_path(&mut ed, KeyModifiers::ALT, &[(x0 + 30, y0 + 1), (x0 + 12, y0)]);
         assert_eq!(sel_texts(&ed), ["x", "x"]);
         assert!(ed.active_buffer().unwrap().view.sels.iter().all(|s| s.head < s.anchor));
         // Typing goes to every line, one undo step.
@@ -1926,6 +1944,36 @@ mod tests {
         // A motion report on the pressed cell is not a drag either.
         mouse_path(&mut ed, KeyModifiers::ALT, &[(x0 + 1, y0 + 3), (x0 + 1, y0 + 3)]);
         assert_eq!(ed.active_buffer().unwrap().view.sels.len(), 4);
+    }
+
+    #[test]
+    fn alt_shift_drag_adds_a_block_to_existing_carets() {
+        let mut ed = editor_with("a.cfg", "one\ntwo\nthree\nfour\nfive\n");
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 8)).unwrap();
+        let theme = Theme::default();
+        term.draw(|f| ed.render(f, Rect::new(0, 0, 40, 1), Rect::new(0, 1, 40, 7), true, &theme)).unwrap();
+        let (x0, y0) = (ed.text_area().x, ed.text_area().y);
+        // A second caret on line 0, then a block over lines 2-3.
+        mouse_path(&mut ed, KeyModifiers::ALT, &[(x0 + 1, y0)]);
+        mouse_path(&mut ed, KeyModifiers::ALT | KeyModifiers::SHIFT, &[(x0, y0 + 2), (x0 + 2, y0 + 3)]);
+        assert_eq!(sel_texts(&ed), ["", "", "th", "fo"], "the carets on line 0 stay");
+        assert_eq!(ed.active_buffer().unwrap().view.sels.heads().take(2).collect::<Vec<_>>(), [0, 1]);
+        // Without Shift the block replaces the carets.
+        mouse_path(&mut ed, KeyModifiers::ALT, &[(x0, y0 + 1), (x0 + 2, y0 + 2)]);
+        assert_eq!(sel_texts(&ed), ["tw", "th"]);
+    }
+
+    #[test]
+    fn moving_resets_add_next_occurrence() {
+        let mut ed = editor_with("a.cfg", "foo foo_x foo\n");
+        act(&mut ed, EditorAction::Move(Motion::Right, false));
+        act(&mut ed, EditorAction::AddNextOccurrence);
+        act(&mut ed, EditorAction::AddNextOccurrence);
+        let v = &ed.active_buffer().unwrap().view;
+        assert!(v.occ_whole_word && !v.occ_stack.is_empty());
+        act(&mut ed, EditorAction::Move(Motion::Right, false));
+        let v = &ed.active_buffer().unwrap().view;
+        assert!(!v.occ_whole_word && v.occ_stack.is_empty());
     }
 
     #[test]

@@ -50,6 +50,11 @@ pub struct CaretEdit {
     pub kind: TxKind,
 }
 
+/// A coalesced run of caret edits in [`Buffer::edit_carets`]: the edit,
+/// its member selections, whether one holds the primary, and the landing
+/// (and primary flag) of each further member planning the very same edit.
+type CaretGroup = (CaretEdit, Vec<Selection>, bool, Vec<(After, bool)>);
+
 /// Where a caret lands after its [`CaretEdit`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum After {
@@ -423,12 +428,21 @@ impl Buffer {
         let mut parts: Vec<(CaretEdit, Selection, bool)> =
             self.view.sels.iter().enumerate().map(|(i, s)| (f(self, *s), *s, i == primary)).collect();
         parts.sort_by_key(|(e, _, _)| (e.range.start, e.range.end));
-        // Coalesce: (edit, member selections, holds the primary).
-        let mut groups: Vec<(CaretEdit, Vec<Selection>, bool)> = Vec::with_capacity(parts.len());
+        // Coalesce: (edit, member selections, holds the primary, the
+        // landing of each further member whose part is the very same edit).
+        let mut groups: Vec<CaretGroup> = Vec::with_capacity(parts.len());
         for (e, s, p) in parts {
             if let Some(last) = groups.last_mut() {
                 let a = &last.0;
                 let together = !e.is_noop() && !a.is_noop() && e.range.start == a.range.start;
+                if together && e.range == a.range && e.text == a.text && matches!((e.after, a.after), (After::At { .. }, After::At { .. }))
+                {
+                    // The same edit twice (Duplicate Line, two carets on a
+                    // line): applied once, but each caret keeps its landing.
+                    last.1.push(s);
+                    last.3.push((e.after, p));
+                    continue;
+                }
                 if e.range.start < a.range.end || together {
                     // The first part's text stands for the union. Text a
                     // later part reaches past its end goes, unless that part
@@ -445,13 +459,13 @@ impl Buffer {
                     continue;
                 }
             }
-            groups.push((e, vec![s], p));
+            groups.push((e, vec![s], p, Vec::new()));
         }
         let mut sels = Vec::with_capacity(groups.len());
         let mut primary = 0;
         let mut delta = 0isize;
         let mut kind = None;
-        for (e, members, p) in &groups {
+        for (e, members, p, more) in &groups {
             let (r, n) = (e.range.clone(), e.text.chars().count());
             let shift = |x: usize| (x as isize + delta) as usize;
             if *p {
@@ -473,7 +487,17 @@ impl Buffer {
                     }
                     sels.extend(members.iter().map(|s| Selection::new(map(s.anchor), map(s.head))));
                 }
-                After::At { anchor, head } => sels.push(Selection::new(shift(r.start + anchor), shift(r.start + head))),
+                After::At { anchor, head } => {
+                    sels.push(Selection::new(shift(r.start + anchor), shift(r.start + head)));
+                    for (after, member_primary) in more {
+                        if let After::At { anchor, head } = after {
+                            if *member_primary {
+                                primary = sels.len();
+                            }
+                            sels.push(Selection::new(shift(r.start + anchor), shift(r.start + head)));
+                        }
+                    }
+                }
             }
             if !e.is_noop() {
                 kind = match kind {
@@ -487,7 +511,7 @@ impl Buffer {
         let changes: Vec<Change> = groups
             .iter()
             .rev()
-            .flat_map(|(e, _, _)| minimal_changes(e.range.start, &self.rope.slice(e.range.clone()).to_string(), &e.text))
+            .flat_map(|(e, ..)| minimal_changes(e.range.start, &self.rope.slice(e.range.clone()).to_string(), &e.text))
             .collect();
         let sels = Selections::new(sels, primary);
         self.apply(changes, sels, kind.unwrap_or(TxKind::Other));
@@ -1847,12 +1871,12 @@ g()
         buf.toggle_case();
         assert_eq!(buf.text(), "ONE two\nTHREE");
         assert_eq!(heads(&buf), [1, 9]);
-        // Two carets on one line duplicate it once (and become one).
+        // Two carets on one line duplicate it once.
         let mut buf = b("ab\ncd\n");
         carets(&mut buf, &[0, 1, 4]);
         buf.duplicate_line();
         assert_eq!(buf.text(), "ab\nab\ncd\ncd\n");
-        assert_eq!(heads(&buf), [3, 10]);
+        assert_eq!(heads(&buf), [3, 4, 10]);
         let mut buf = b("x = 1;\n  y;\n");
         carets(&mut buf, &[2, 10]);
         buf.toggle_block_comment("/*", "*/");
@@ -1860,6 +1884,17 @@ g()
         assert_eq!(heads(&buf), [5, 19]);
         buf.toggle_block_comment("/*", "*/");
         assert_eq!(buf.text(), "x = 1;\n  y;\n");
+    }
+
+    #[test]
+    fn duplicate_line_keeps_two_carets_on_one_line() {
+        let mut buf = b("abcd\n");
+        carets(&mut buf, &[1, 3]);
+        buf.view.sels.set_primary(1);
+        buf.duplicate_line();
+        assert_eq!(buf.text(), "abcd\nabcd\n");
+        assert_eq!(heads(&buf), [6, 8], "each caret on its own copy position");
+        assert_eq!(buf.view.sels.primary_index(), 1);
     }
 
     #[test]

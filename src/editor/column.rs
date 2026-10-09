@@ -4,8 +4,8 @@
 
 use super::buffer::Buffer;
 use super::rows::{Row, Rows};
-use super::selection::{indent_of, line_len_no_eol, vertical_target};
-use super::view::{block_selections, layout_line, visual_col};
+use super::selection::{indent_of, line_len_no_eol, next_word_boundary, prev_word_boundary, vertical_target};
+use super::view::{block_selections, col_to_char, layout_line, visual_col};
 use super::view_state::Block;
 use crate::actions::Motion;
 
@@ -71,6 +71,20 @@ impl Buffer {
                 (line, if col == indent { 0 } else { indent })
             }
             Motion::LineEnd => (line, width(line)),
+            Motion::WordLeft | Motion::WordRight => {
+                let right = m == Motion::WordRight;
+                let w = width(line);
+                if col > w {
+                    // Past the line's end: left snaps to the end, right stays.
+                    (line, if right { col } else { w })
+                } else {
+                    let start = self.rope.line_to_char(line);
+                    let pos = col_to_char(&self.rope, line, col, tab_width);
+                    let to = if right { next_word_boundary(&self.rope, pos) } else { prev_word_boundary(&self.rope, pos) };
+                    let to = to.clamp(start, start + line_len_no_eol(&self.rope, line));
+                    (line, visual_col(&self.rope, to, tab_width))
+                }
+            }
             _ => return false,
         };
         self.set_block(b, tab_width);
@@ -105,7 +119,7 @@ mod tests {
     use super::*;
     use crate::editor::selection::Selection;
     use crate::editor::undo::TxKind;
-    use crate::editor::view::{col_to_char, col_to_char_ceil};
+    use crate::editor::view::col_to_char_ceil;
     use ropey::Rope;
 
     const TEXT: &str = "\tab日本語x\n\tab日本語x\nab\n\tab日本語x\n";
@@ -211,7 +225,32 @@ mod tests {
         assert_eq!(buf.current_block(4).head, (1, 13));
         assert!(buf.extend_block(Motion::LineStart, 10, 4));
         assert_eq!(buf.current_block(4).head, (1, 4));
-        assert!(!buf.extend_block(Motion::WordRight, 10, 4));
+        assert!(!buf.extend_block(Motion::DocStart, 10, 4));
+    }
+
+    #[test]
+    fn ctrl_shift_word_right_extends_each_row_by_word() {
+        let mut buf = b("foo bar baz\nfo\nfoo bar baz\n");
+        buf.view.set_sel(Selection::point(0));
+        assert!(buf.extend_block(Motion::Down, 10, 4));
+        assert!(buf.extend_block(Motion::Down, 10, 4));
+        assert!(buf.extend_block(Motion::WordRight, 10, 4));
+        assert_eq!(texts(&buf), ["foo ", "fo", "foo "], "the short row stops at its end");
+        assert!(buf.extend_block(Motion::WordRight, 10, 4));
+        assert_eq!(texts(&buf), ["foo bar ", "fo", "foo bar "]);
+        assert_eq!(buf.current_block(4).head, (2, 8));
+        assert!(buf.extend_block(Motion::WordLeft, 10, 4));
+        assert_eq!(buf.current_block(4).head, (2, 4));
+    }
+
+    #[test]
+    fn word_left_past_line_width_snaps_to_width() {
+        let mut buf = b("foo bar\nab\n");
+        buf.set_block(Block { anchor: (0, 0), head: (1, 6) }, 4);
+        assert!(buf.extend_block(Motion::WordRight, 10, 4));
+        assert_eq!(buf.current_block(4).head, (1, 6), "right past the width leaves it");
+        assert!(buf.extend_block(Motion::WordLeft, 10, 4));
+        assert_eq!(buf.current_block(4).head, (1, 2));
     }
 
     #[test]

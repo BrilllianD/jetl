@@ -68,6 +68,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   move or duplicate (the copy too). Select All and Select Line no longer expand the folds they
   cover. The gutter mark for deleted lines is `▔` instead of `▸`, which looked like a fold arrow.
 
+### Fixed
+
+- Multiple carets: Duplicate Line with two carets on one line keeps both; Clone Caret Above/Below
+  and Up/Down keep the visual column across tabs (soft wrap off); any caret motion resets Add Next
+  Occurrence (and its whole-word mode); Alt+Shift+drag adds the column block to the existing
+  carets; Ctrl+Shift+Left/Right in column mode extend the block by word.
+
 ## [0.2.0] - 2026-10-09
 
 ### Added

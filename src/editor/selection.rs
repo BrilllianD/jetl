@@ -6,7 +6,7 @@ use std::ops::Range;
 use ropey::Rope;
 
 use super::rows::{Row, Rows};
-use super::view::{char_to_row_x, row_x_to_char};
+use super::view::{char_to_row_x, col_to_char, row_x_to_char, visual_col};
 use crate::actions::Motion;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -414,7 +414,17 @@ pub fn vertical_target(rows: &Rows, row: Row, m: Motion, page: usize) -> Option<
     (target != row).then_some(target)
 }
 
-pub fn apply_motion(rope: &Rope, rows: &Rows, sel: &mut Selection, m: Motion, extend: bool, desired_col: &mut Option<usize>, page: usize) {
+#[allow(clippy::too_many_arguments)]
+pub fn apply_motion(
+    rope: &Rope,
+    rows: &Rows,
+    sel: &mut Selection,
+    m: Motion,
+    extend: bool,
+    desired_col: &mut Option<usize>,
+    page: usize,
+    tab_width: usize,
+) {
     let len = rope.len_chars();
     let head = sel.head.min(len);
     let keep_desired = matches!(m, Motion::Up | Motion::Down | Motion::PageUp | Motion::PageDown);
@@ -471,11 +481,11 @@ pub fn apply_motion(rope: &Rope, rows: &Rows, sel: &mut Selection, m: Motion, ex
                     }
                 }
                 None => {
-                    let (line, col) = pos_to_line_col(rope, head);
-                    let col = desired_col.unwrap_or(col);
+                    let (line, _) = pos_to_line_col(rope, head);
+                    let col = desired_col.unwrap_or_else(|| visual_col(rope, head, tab_width));
                     *desired_col = Some(col);
                     match vertical_target(rows, Row::line(line), m, page) {
-                        Some(target) => line_col_to_pos(rope, target.line, col),
+                        Some(target) => col_to_char(rope, target.line, col, tab_width),
                         None if up => 0,
                         None => len,
                     }
@@ -534,9 +544,9 @@ pub fn apply_motion(rope: &Rope, rows: &Rows, sel: &mut Selection, m: Motion, ex
 
 /// [`apply_motion`] for every caret, each with its own desired column;
 /// carets that meet merge.
-pub fn apply_motion_all(rope: &Rope, rows: &Rows, sels: &mut Selections, m: Motion, extend: bool, page: usize) {
+pub fn apply_motion_all(rope: &Rope, rows: &Rows, sels: &mut Selections, m: Motion, extend: bool, page: usize, tab_width: usize) {
     for (s, d) in sels.iter_mut_desired() {
-        apply_motion(rope, rows, s, m, extend, d, page);
+        apply_motion(rope, rows, s, m, extend, d, page, tab_width);
     }
     sels.normalize();
 }
@@ -642,16 +652,16 @@ mod tests {
     fn motions_move_every_caret_with_its_own_column() {
         let r = Rope::from_str("abcdef\nab\nabcdef\n");
         let mut s = Selections::new(vec![Selection::point(1), Selection::point(5)], 1);
-        apply_motion_all(&r, &rows(&r), &mut s, Motion::Down, false, 10);
+        apply_motion_all(&r, &rows(&r), &mut s, Motion::Down, false, 10, 4);
         assert_eq!(s.heads().collect::<Vec<_>>(), [8, 9], "both clamp to the short line");
-        apply_motion_all(&r, &rows(&r), &mut s, Motion::Down, false, 10);
+        apply_motion_all(&r, &rows(&r), &mut s, Motion::Down, false, 10, 4);
         assert_eq!(s.heads().collect::<Vec<_>>(), [10 + 1, 10 + 5], "each keeps its column");
         // Carets that meet merge, and the primary survives.
-        apply_motion_all(&r, &rows(&r), &mut s, Motion::LineStart, false, 10);
+        apply_motion_all(&r, &rows(&r), &mut s, Motion::LineStart, false, 10, 4);
         assert_eq!((s.len(), s.primary()), (1, Selection::point(10)));
         // Extending keeps the anchors.
         let mut s = Selections::new(vec![Selection::point(0), Selection::point(7)], 0);
-        apply_motion_all(&r, &rows(&r), &mut s, Motion::LineEnd, true, 10);
+        apply_motion_all(&r, &rows(&r), &mut s, Motion::LineEnd, true, 10, 4);
         assert_eq!(s.as_slice(), [Selection::new(0, 6), Selection::new(7, 9)]);
     }
 
@@ -660,9 +670,23 @@ mod tests {
         let r = Rope::from_str("longer line\nab\nlonger line");
         let mut sel = Selection::point(8);
         let mut d = None;
-        apply_motion(&r, &rows(&r), &mut sel, Motion::Down, false, &mut d, 10);
+        apply_motion(&r, &rows(&r), &mut sel, Motion::Down, false, &mut d, 10, 4);
         assert_eq!(sel.head, 12 + 2);
-        apply_motion(&r, &rows(&r), &mut sel, Motion::Down, false, &mut d, 10);
+        apply_motion(&r, &rows(&r), &mut sel, Motion::Down, false, &mut d, 10, 4);
         assert_eq!(sel.head, 15 + 8);
+    }
+
+    #[test]
+    fn up_down_keep_visual_column_across_tabs() {
+        // A caret after a tab (visual column 4) lands at column 4 below.
+        let r = Rope::from_str("\tab\nabcdefgh\n\t\tx");
+        let mut sel = Selection::point(1);
+        let mut d = None;
+        apply_motion(&r, &rows(&r), &mut sel, Motion::Down, false, &mut d, 10, 4);
+        assert_eq!(sel.head, 4 + 4);
+        apply_motion(&r, &rows(&r), &mut sel, Motion::Down, false, &mut d, 10, 4);
+        assert_eq!(sel.head, 13 + 1, "visual column 4 is after the first tab");
+        apply_motion(&r, &rows(&r), &mut sel, Motion::Up, false, &mut d, 10, 4);
+        assert_eq!(sel.head, 8);
     }
 }
