@@ -694,8 +694,13 @@ next scan (F5), the file watcher does not trigger one. Labels: an older dev buil
   last entry's bytes, as after a Renamed marker). Labels can keep the store
   at its cap: they are dropped only when they alone exceed it.
   `test_app` has `Handle::disabled()` (a worker could write into the temp
-  dir after the test removed it); `with_history` turns it on in the
-  test's temp state dir, and `app::history::tests::snapshots` flushes first.
+  dir after the test removed it), after flushing `App::new`'s worker so its
+  startup prune cannot hold `prune.lock` while a later worker replaces an
+  entry; `with_history` turns it on in the
+  test's temp state dir, and `app::history::tests::snapshots` flushes first
+  (and fails when the queue did not drain). Tests wait for the window's
+  newest diff with `diff_landed`, never for any `HistoryMsg::Diff`: an older
+  request's answer may land first and is dropped by its seq.
   For the same reason `App::new` starts no background work that writes:
   the recent projects file is recorded only after `main.rs` calls
   `App::start_recent_projects`, as crash dumps are pruned only by

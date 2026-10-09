@@ -440,7 +440,7 @@ pub(crate) mod tests {
     /// `path`'s snapshots once the worker is done, newest first: label and
     /// text.
     pub(crate) fn snapshots(app: &App, path: &Path) -> Vec<(String, String)> {
-        app.history.flush(Duration::from_secs(5));
+        assert!(app.history.flush(Duration::from_secs(5)), "the local history worker did not drain its queue");
         store::list(app.history.dir(), path)
             .into_iter()
             .map(|e| (e.label(), String::from_utf8(store::read_blob(app.history.dir(), &e.blob).unwrap()).unwrap()))
@@ -517,10 +517,10 @@ pub(crate) mod tests {
         handle_next(&mut app, list_of(&path)).await;
         assert_eq!(app.history_panel.labels(), ["Saved", "Saved"]);
         // The newest is selected and its diff follows.
-        handle_next(&mut app, diff_msg).await;
+        diff_landed(&mut app).await;
         assert!(diff_shows(&app, &path, "two three one\n"));
         history(&mut app, HistoryAction::Down);
-        handle_next(&mut app, diff_msg).await;
+        diff_landed(&mut app).await;
         assert!(diff_shows(&app, &path, "two one\n"));
 
         // Alt+R: the older snapshot comes back as one undoable edit.
@@ -533,7 +533,7 @@ pub(crate) mod tests {
         assert!(app.notifications.last().is_some_and(|n| n.text.starts_with("Reverted a.txt to ")), "{:?}", app.notifications);
         assert!(app.notifications.last().is_some_and(|n| n.text.ends_with("  Saved (Ctrl+Z undoes)")), "{:?}", app.notifications);
         // The window compares again, with the reverted text.
-        handle_next(&mut app, diff_msg).await;
+        diff_landed(&mut app).await;
         assert!(app.history_panel.diff_state().1);
         app.perform(Action::Editor(EditorAction::Undo));
         assert_eq!(app.editor.active_buffer().unwrap().text(), "two three one\n");
@@ -683,7 +683,7 @@ pub(crate) mod tests {
         assert_eq!(app.history_panel.labels(), ["Saved", "Saved", "Saved"]);
         assert_eq!(app.history_panel.filter(), "Sa");
         // Still the oldest save: the third row now.
-        handle_next(&mut app, diff_msg).await;
+        diff_landed(&mut app).await;
         assert!(diff_shows(&app, &path, "x one\n"));
         // Esc clears the filter first, then leaves the window.
         key(&mut app, KeyCode::Esc);
@@ -892,7 +892,7 @@ pub(crate) mod tests {
         assert_eq!(app.history_panel.target(), Some(ex.as_path()));
         handle_next(&mut app, list_of(&ex)).await;
         assert_eq!(app.history_panel.labels(), ["Renamed from d/x.txt", "Saved"]);
-        handle_next(&mut app, diff_msg).await;
+        diff_landed(&mut app).await;
         assert!(diff_shows(&app, &ex, "1x\n"));
         let e = snapshots(&app, &ex);
         assert_eq!(e[0].0, format!("Renamed from {}", root.join("d/x.txt").display()));

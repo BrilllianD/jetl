@@ -361,12 +361,15 @@ impl Handle {
     }
 
     /// Wait (at most `timeout`) until the jobs queued so far are done; at
-    /// quit, so queued snapshots are not lost.
-    pub fn flush(&self, timeout: Duration) {
+    /// quit, so queued snapshots are not lost. False when they were not
+    /// done in time (no worker: nothing to wait for, true).
+    pub fn flush(&self, timeout: Duration) -> bool {
         let (done, rx) = mpsc::channel();
         if self.send(Job::Flush(done)) && rx.recv_timeout(timeout).is_err() {
             tracing::warn!("local history: queue not drained in {timeout:?} at quit");
+            return false;
         }
+        true
     }
 }
 

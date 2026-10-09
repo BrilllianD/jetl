@@ -1121,6 +1121,11 @@ pub(crate) mod tests {
         let mut config = Config::default();
         config.lsp.enabled = false;
         let mut app = App::new(root.clone(), config, paths, open);
+        // `App::new`'s worker queued a prune of this test's store: let it run
+        // (on no store yet) before that worker is dropped, or it may run late
+        // and hold `prune.lock` while `with_history`'s worker replaces an
+        // entry, which then appends one instead.
+        assert!(app.history.flush(Duration::from_secs(5)), "the startup prune did not finish");
         // Never the user's clipboard tools.
         app.clipboard.tools = Some(crate::util::clipboard::Tools { paste: crate::util::clipboard::Paste::Disabled, copy: None });
         // No local history unless a test turns it on (`with_history`): the
