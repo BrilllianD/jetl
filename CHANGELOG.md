@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `[lsp] scratches = true` (default off, applies at once) gives scratch files language servers: a
+  separate client per server, named `<server> (scratches)` and rooted at the scratches directory
+  (rust-analyzer gets the scratch files as `detachedFiles`; a new Rust scratch restarts that
+  client). Their problems show in the editor and status bar; the Problems window lists them only
+  in its current-file scope, and its project scope counts only the files it lists.
 - The Locations list (Find Usages, several declarations) groups its rows by file under file headers
   when the results span several files, shows each line number, and highlights the usage itself in
   the preview. Enter on a header opens that file's first location. Find Usages with a single

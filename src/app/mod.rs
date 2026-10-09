@@ -338,7 +338,7 @@ impl App {
             format: Default::default(),
             run: Default::default(),
             run_panel: Default::default(),
-            problems: Default::default(),
+            problems: crate::lsp::panel::ProblemsPanel::excluding(paths.scratches_dir()),
             history_panel: Default::default(),
             terminal: crate::terminal::panel::TerminalPanel::new(config.terminal.scrollback),
             lsp: Default::default(),

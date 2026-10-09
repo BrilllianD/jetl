@@ -154,7 +154,7 @@ All of section E shipped in Phase 9 except split editor panes, which shipped in 
 | Config hot reload | S | Done: config, keymap and theme files reload through a config-dir watch; broken files keep the current value; restart-needed keys are named |
 | Vim mode | L | Dispatcher mode tables exist |
 | Local History | M | Done: snapshots on every save and before git operations that rewrite the work tree, reloads, Overwrite, Save As over a file and tree deletes, and optionally of unsaved edits on a timer (`snapshot_unsaved_secs`), in one global content-addressed, compressed store (`state/history/`, its own writer thread, pruned by `[local_history]` age and size); File > Local History… (Alt+Shift+H) opens the Local History tool window: the file's live snapshot list (filter, follows renames) next to the diff of the selected one, Revert (Alt+R) is one undoable edit, Revert Change (Ctrl+Alt+Z) puts back only the diff's selected changes; Put Label keeps named snapshots, put and removed in the window; its project view lists the files of the project or a folder with history, deleted and renamed ones included, labels grouped |
-| Scratch files | S | Done: File > New Scratch File… (Ctrl+Alt+Shift+Insert) picks a language and opens `scratch_<n>.<ext>` in `state/scratches/`; File > Scratch Files… lists them (Shift+Delete deletes); no language server for them |
+| Scratch files | S | Done: File > New Scratch File… (Ctrl+Alt+Shift+Insert) picks a language and opens `scratch_<n>.<ext>` in `state/scratches/`; File > Scratch Files… lists them (Shift+Delete deletes); no language server for them unless `[lsp] scratches = true` (own clients rooted at the scratches directory, rust-analyzer via `detachedFiles`) |
 
 ### H. Quality and distribution
 

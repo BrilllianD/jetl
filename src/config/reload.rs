@@ -143,6 +143,7 @@ sections! {
         max_diagnostics_per_file => Live,
         completion_auto => Live,
         completion_min_chars => Live,
+        scratches => Live,
         servers => LspRestart,
     }
     local_history: LocalHistoryConfig {
@@ -200,7 +201,7 @@ mod tests {
         names.dedup();
         assert_eq!(names.len(), KEYS.len());
         // 13 editor, 6 ui, 3 git, 2 worktree, 1 keymap, 3 files, 2 clipboard,
-        // 3 format, 1 run, 3 terminal, 7 lsp, 5 local_history.
-        assert_eq!(KEYS.len(), 49);
+        // 3 format, 1 run, 3 terminal, 8 lsp, 5 local_history.
+        assert_eq!(KEYS.len(), 50);
     }
 }

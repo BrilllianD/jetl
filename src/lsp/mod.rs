@@ -221,6 +221,10 @@ pub struct LspConfig {
     /// Identifier chars typed before the popup opens by itself (a server's
     /// trigger character such as `.` opens it at once).
     pub completion_min_chars: usize,
+    /// Start language servers for scratch files too: separate clients rooted
+    /// at the scratches directory (rust-analyzer gets them as
+    /// `detachedFiles`).
+    pub scratches: bool,
     /// `[lsp.servers.<name>]`: changes to the built-in servers, or new ones.
     pub servers: BTreeMap<String, ServerOverride>,
 }
@@ -234,9 +238,23 @@ impl Default for LspConfig {
             max_diagnostics_per_file: 1000,
             completion_auto: true,
             completion_min_chars: 1,
+            scratches: false,
             servers: BTreeMap::new(),
         }
     }
+}
+
+/// What a scratch client's name ends with (`rust-analyzer (scratches)`).
+pub const SCRATCH_SUFFIX: &str = " (scratches)";
+
+/// The client name of server `name` for scratch files.
+pub fn scratch_client(name: &str) -> String {
+    format!("{name}{SCRATCH_SUFFIX}")
+}
+
+/// The server a client name stands for (the scratch suffix removed).
+pub fn server_name(client: &str) -> &str {
+    client.strip_suffix(SCRATCH_SUFFIX).unwrap_or(client)
 }
 
 /// A `[lsp.servers.<name>]` table; omitted keys keep the built-in values.
@@ -318,12 +336,16 @@ mod tests {
         assert_eq!(cfg.max_diagnostics_per_file, 1000);
         assert!(cfg.completion_auto);
         assert_eq!(cfg.completion_min_chars, 1);
-        let text = "[lsp]\nstartup_timeout_ms = 100\nmax_diagnostics_per_file = 50\ncompletion_min_chars = 3\n\
+        assert!(!cfg.scratches);
+        assert_eq!(super::scratch_client("gopls"), "gopls (scratches)");
+        assert_eq!((super::server_name("gopls (scratches)"), super::server_name("gopls")), ("gopls", "gopls"));
+        let text = "[lsp]\nscratches = true\nstartup_timeout_ms = 100\nmax_diagnostics_per_file = 50\ncompletion_min_chars = 3\n\
                     [lsp.servers.rust-analyzer]\nsettings = { rust-analyzer = { checkOnSave = false } }\n\
                     [lsp.servers.clangd]\ncommand = []\n\
                     [lsp.servers.pylsp]\ncommand = [\"pylsp\"]\nlanguages = [\"python\"]\n";
         let cfg = Config::parse(text).unwrap().lsp;
         assert_eq!((cfg.startup_timeout_ms, cfg.max_diagnostics_per_file, cfg.completion_min_chars), (100, 50, 3));
+        assert!(cfg.scratches);
         let ra = cfg.server_for("rust").unwrap();
         assert_eq!(ra.command, ["rust-analyzer"], "a partial table keeps the built-in command");
         assert_eq!(ra.settings.unwrap()["rust-analyzer"]["checkOnSave"], false);

@@ -240,7 +240,7 @@ impl App {
         if diff.has("files.watch") {
             self.start_watcher();
         }
-        if diff.has("lsp.enabled") {
+        if diff.has("lsp.enabled") || diff.has("lsp.scratches") {
             self.lsp_restart();
         }
         if diff.has_section("local_history") {

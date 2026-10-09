@@ -46,6 +46,9 @@ pub struct LspService {
     /// Servers whose command could not start; not tried again until
     /// `lsp.restart`.
     missing: HashSet<String>,
+    /// The `detachedFiles` each rust-analyzer scratch client was started
+    /// with, by client key.
+    detached: HashMap<String, Vec<PathBuf>>,
     /// Buffers open on a server.
     pub(super) docs: HashMap<BufferId, Doc>,
     /// `[lsp]` servers, resolved on first use.
@@ -156,6 +159,7 @@ impl LspService {
             tokio::spawn(c.shutdown());
         }
         self.docs.clear();
+        self.detached.clear();
         self.progress.clear();
         self.diagnostics.clear();
         self.inflight.clear();
@@ -175,8 +179,10 @@ impl LspService {
         self.clients.values().find(|c| c.id == server).map(|c| c.name.clone())
     }
 
-    /// Start `server` for the current root. A command that cannot start
-    /// is remembered as missing and reported once.
+    /// Start `server` as client `key` (its name, or its scratch client's)
+    /// rooted at `root`. A command that cannot start is remembered as
+    /// missing and reported once.
+    #[allow(clippy::too_many_arguments)]
     fn start(
         &mut self,
         server: &ServerConfig,
@@ -184,11 +190,13 @@ impl LspService {
         root: &Path,
         generation: u64,
         bus: &tokio::sync::mpsc::UnboundedSender<crate::event::AppMsg>,
+        key: String,
+        init_options: Option<Value>,
     ) -> Option<(Level, String)> {
         let conn = match &mut self.connector {
-            Connector::Process => crate::lsp::client::spawn_process(&server.name, &server.command, root),
+            Connector::Process => crate::lsp::client::spawn_process(&key, &server.command, root),
             #[cfg(test)]
-            Connector::Fake(connect) => connect(&server.name),
+            Connector::Fake(connect) => connect(&key),
         };
         let name = &server.name;
         let conn = match conn {
@@ -211,14 +219,14 @@ impl LspService {
         tracing::info!("starting language server {name} ({:?}) in {}", server.command, root.display());
         let spec = StartSpec {
             id: self.last_id,
-            name: name.clone(),
+            name: key.clone(),
             root: root.to_path_buf(),
             generation,
-            init_options: server.init_options.clone(),
+            init_options,
             startup_timeout: std::time::Duration::from_millis(cfg.startup_timeout_ms),
             request_timeout: std::time::Duration::from_millis(cfg.request_timeout_ms),
         };
-        self.clients.insert(name.clone(), Client::start(spec, conn, bus.clone()));
+        self.clients.insert(key, Client::start(spec, conn, bus.clone()));
         None
     }
 
@@ -232,6 +240,16 @@ impl LspService {
         }
     }
 
+    /// Stop client `key` and forget its documents (the caller also calls
+    /// `App::format_server_gone`).
+    fn stop_client(&mut self, key: &str, buffers: &mut [Buffer]) {
+        let Some(client) = self.clients.remove(key) else { return };
+        let id = client.id;
+        tokio::spawn(client.shutdown());
+        self.server_gone(key, id, buffers);
+        self.detached.remove(key);
+    }
+
     /// Forget the documents and progress of a server that went away.
     fn server_gone(&mut self, name: &str, server: ServerId, buffers: &mut [Buffer]) {
         self.docs.retain(|_, d| d.server != name);
@@ -241,6 +259,36 @@ impl LspService {
             untrack(b);
         }
     }
+}
+
+/// The server that gets `detachedFiles` for its scratch client.
+const RUST_ANALYZER: &str = "rust-analyzer";
+
+/// The scratch files `server` serves: those in `dir` whose language is one
+/// of its languages, and the open ones given, sorted and deduplicated. A
+/// small directory read on the main thread, once per scratch client start.
+fn scratch_files<'a>(dir: &Path, server: &ServerConfig, open: impl Iterator<Item = &'a Path>) -> Vec<PathBuf> {
+    let on_disk = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| crate::editor::syntax::detect(p).is_some_and(|def| server.languages.iter().any(|l| l == def.name)));
+    let mut files: Vec<PathBuf> = on_disk.chain(open.map(Path::to_path_buf)).collect();
+    files.sort();
+    files.dedup();
+    files
+}
+
+/// `initializationOptions` of a scratch client: rust-analyzer's own with
+/// `detachedFiles` set to `files`; none for other servers.
+fn scratch_init_options(server: &ServerConfig, files: &[PathBuf]) -> Option<Value> {
+    if server.name != RUST_ANALYZER {
+        return None;
+    }
+    let mut options = server.init_options.clone().filter(Value::is_object).unwrap_or_else(|| json!({}));
+    options["detachedFiles"] = files.iter().map(|p| p.to_string_lossy().into_owned()).collect();
+    Some(options)
 }
 
 /// Stop recording edits for the language server.
@@ -254,7 +302,10 @@ impl App {
     /// Bring the servers in line with the open buffers: start the server of
     /// a buffer's language, `didOpen` buffers once it runs, `didChange` with
     /// the edits recorded since the last call (version + 1), `didClose` for
-    /// closed buffers, close and open again when a path or language changed.
+    /// closed buffers, close and open again when a path, language or client
+    /// changed. Scratch files open on their own clients, rooted at the
+    /// scratches directory, when `[lsp] scratches` is on; else they open on
+    /// none.
     pub(crate) fn lsp_sync(&mut self) {
         if !self.config.lsp.enabled {
             return;
@@ -266,17 +317,32 @@ impl App {
         }
         let mut notes = Vec::new();
         let scratches = self.paths.scratches_dir();
+        let scratch_on = self.config.lsp.scratches;
+        // Open scratch buffers and their languages, for `detachedFiles`.
+        let open_scratches: Vec<(PathBuf, &'static str)> = if scratch_on {
+            let under = |p: &PathBuf| p.starts_with(&scratches);
+            self.editor.buffers.iter().filter_map(|b| Some((b.path.clone().filter(under)?, b.language()?.name))).collect()
+        } else {
+            Vec::new()
+        };
+        let mut restart: Vec<String> = Vec::new();
         let lsp = &mut self.lsp;
         for buf in &mut self.editor.buffers {
             let language = buf.language().map(|l| l.name);
-            if lsp.docs.get(&buf.id).is_some_and(|d| buf.path.as_ref() != Some(&d.path) || language != Some(d.language)) {
+            let is_scratch = buf.path.as_ref().is_some_and(|p| p.starts_with(&scratches));
+            let server = language.and_then(|language| servers.iter().find(|s| s.languages.iter().any(|l| l == language)));
+            let key = server.map(|server| if is_scratch { crate::lsp::scratch_client(&server.name) } else { server.name.clone() });
+            if lsp.docs.get(&buf.id).is_some_and(|d| {
+                buf.path.as_ref() != Some(&d.path) || language != Some(d.language) || key.as_deref() != Some(d.server.as_str())
+            }) {
                 lsp.close_doc(buf.id);
                 untrack(buf);
             }
-            let (Some(language), Some(path)) = (language, buf.path.as_ref()) else { continue };
-            // Scratch files belong to no project: no server for them (one
-            // saved into the directory was closed above).
-            if path.starts_with(&scratches) {
+            let (Some(language), Some(path), Some(server), Some(key)) = (language, buf.path.as_ref(), server, key) else { continue };
+            // Scratch files belong to no project: no server for them unless
+            // `[lsp] scratches` is on (one saved into the directory was
+            // closed above).
+            if is_scratch && !scratch_on {
                 continue;
             }
             if let Some(doc) = lsp.docs.get_mut(&buf.id) {
@@ -308,25 +374,42 @@ impl App {
                 buf.lsp_full_resync = false;
                 continue;
             }
-            let Some(server) = servers.iter().find(|s| s.languages.iter().any(|l| l == language)) else { continue };
-            if !lsp.clients.contains_key(&server.name) {
+            if !lsp.clients.contains_key(&key) {
                 if !lsp.missing.contains(&server.name) {
-                    notes.extend(lsp.start(server, &self.config.lsp, &self.workspace.root, self.workspace.generation, &self.bus_tx));
+                    let (root, init_options) = if is_scratch {
+                        let open = open_scratches.iter().filter(|(_, l)| server.languages.iter().any(|s| s == l)).map(|(p, _)| p.as_path());
+                        let files = scratch_files(&scratches, server, open);
+                        let options = scratch_init_options(server, &files);
+                        lsp.detached.insert(key.clone(), files);
+                        (scratches.as_path(), options)
+                    } else {
+                        (self.workspace.root.as_path(), server.init_options.clone())
+                    };
+                    notes.extend(lsp.start(server, &self.config.lsp, root, self.workspace.generation, &self.bus_tx, key, init_options));
                 }
                 continue;
             }
-            let client = &lsp.clients[&server.name];
+            // rust-analyzer reads `detachedFiles` once: a scratch it was not
+            // started with needs a new start.
+            if is_scratch && server.name == RUST_ANALYZER && lsp.detached.get(&key).is_some_and(|files| !files.contains(path)) {
+                if !restart.contains(&key) {
+                    restart.push(key);
+                }
+                continue;
+            }
+            let client = &lsp.clients[&key];
             let (Some(caps), Some(uri)) = (client.capabilities().map(SyncCaps::of), sync::uri(path)) else { continue };
             if caps.open_close {
                 let item = json!({"uri": uri, "languageId": sync::language_id(language), "version": 1, "text": buf.text()});
                 client.notify("textDocument/didOpen", json!({"textDocument": item}));
             }
-            lsp.docs.insert(
-                buf.id,
-                Doc { server: server.name.clone(), path: path.clone(), language, uri, version: 1, sent: Default::default() },
-            );
+            lsp.docs.insert(buf.id, Doc { server: key, path: path.clone(), language, uri, version: 1, sent: Default::default() });
             untrack(buf);
             buf.lsp_tracked = true;
+        }
+        for key in restart {
+            self.lsp.stop_client(&key, &mut self.editor.buffers);
+            self.format_server_gone(&key);
         }
         for (level, text) in notes {
             self.notify(level, text);
@@ -486,7 +569,12 @@ impl App {
                 Err(e) => Err(ResponseError::new(ResponseError::INVALID_PARAMS, format!("invalid params: {e}"))),
             },
             "workspace/configuration" => {
-                let settings = self.lsp.servers.as_ref().and_then(|s| s.iter().find(|s| s.name == name)).and_then(|s| s.settings.clone());
+                let settings = self
+                    .lsp
+                    .servers
+                    .as_ref()
+                    .and_then(|s| s.iter().find(|s| s.name == crate::lsp::server_name(name)))
+                    .and_then(|s| s.settings.clone());
                 let items = serde_json::from_value::<ConfigurationParams>(params).map(|p| p.items).unwrap_or_default();
                 Ok(items.iter().map(|item| section(settings.as_ref(), item.section.as_deref())).collect())
             }
@@ -499,7 +587,8 @@ impl App {
             }
             "window/workDoneProgress/create" => Ok(Value::Null),
             "workspace/workspaceFolders" => {
-                let root = &self.workspace.root;
+                let scratches = self.paths.scratches_dir();
+                let root = if name.ends_with(crate::lsp::SCRATCH_SUFFIX) { &scratches } else { &self.workspace.root };
                 let name = root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                 Ok(sync::uri(root).map_or(Value::Null, |uri| json!([{"uri": uri, "name": name}])))
             }
@@ -573,15 +662,23 @@ impl App {
         let language = b.language()?.name;
         let name = match self.lsp.docs.get(&b.id) {
             Some(doc) => doc.server.clone(),
-            None => match &self.lsp.servers {
-                Some(servers) => servers.iter().find(|s| s.languages.iter().any(|l| l == language))?.name.clone(),
-                None => self.config.lsp.server_for(language)?.name,
-            },
+            None => {
+                let server = match &self.lsp.servers {
+                    Some(servers) => servers.iter().find(|s| s.languages.iter().any(|l| l == language))?.name.clone(),
+                    None => self.config.lsp.server_for(language)?.name,
+                };
+                match b.path.as_ref() {
+                    Some(p) if self.config.lsp.scratches && p.starts_with(self.paths.scratches_dir()) => {
+                        crate::lsp::scratch_client(&server)
+                    }
+                    _ => server,
+                }
+            }
         };
         if !self.config.lsp.enabled {
             return Some(LspStatus::Down("LSP: off".into()));
         }
-        if self.lsp.missing.contains(&name) {
+        if self.lsp.missing.contains(crate::lsp::server_name(&name)) {
             return Some(LspStatus::Down(format!("LSP: {name} missing")));
         }
         let client = self.lsp.clients.get(&name)?;
@@ -825,6 +922,62 @@ pub(crate) mod tests {
         app.lsp_sync();
         assert!(server.drain().iter().all(|m| m["method"] != "textDocument/didOpen"));
         assert!(app.lsp.docs.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn scratch_files_open_on_their_own_client_when_enabled() {
+        let (mut app, dir) = test_app("lsp-scratch-on");
+        let mut servers = with_fake_servers(&mut app, incremental());
+        app.config.lsp.scratches = true;
+        let scratches = app.paths.scratches_dir();
+        let rust = crate::editor::syntax::LANGUAGES.iter().position(|l| l.name == "rust").unwrap();
+        app.create_scratch(rust + 1);
+        let first = app.editor.active_path().unwrap().to_path_buf();
+        let id = app.editor.active_buffer().unwrap().id;
+        app.lsp_sync();
+        let mut scratch_server = servers.try_recv().expect("a server started for the scratch");
+        assert_eq!(app.lsp_status(), Some(LspStatus::Busy("rust-analyzer (scratches): starting".into())));
+        let init = scratch_server.recv("initialize").await;
+        assert_eq!(init["params"]["rootUri"], sync::uri(&scratches).unwrap().as_str());
+        assert_eq!(init["params"]["initializationOptions"]["detachedFiles"], json!([first.to_string_lossy()]));
+        handle_next(&mut app, is_lsp).await;
+        let open = scratch_server.recv("textDocument/didOpen").await;
+        assert_eq!(open["params"]["textDocument"]["uri"], sync::uri(&first).unwrap().as_str());
+        assert_eq!(app.lsp.docs[&id].server, "rust-analyzer (scratches)");
+
+        // A project file starts the project client, not the scratch one.
+        open_on_server(&mut app, &mut servers, "a.rs", "fn a() {}\n").await;
+        assert!(servers.try_recv().is_err());
+        let a = app.editor.active_buffer().unwrap().id;
+        assert_eq!(app.lsp.docs[&a].server, "rust-analyzer");
+
+        // The scratch's problems are stored and marked, but not listed.
+        publish(&scratch_server, &first, json!([diag_json(0, 0, 0, 1, 1, "bad")]));
+        handle_next(&mut app, is_lsp).await;
+        assert!(!app.lsp.diagnostics.get(&first).is_empty());
+        app.problems.sync(&app.lsp.diagnostics, None);
+        assert_eq!(app.problems.list.len, 0, "the project scope lists no scratch");
+
+        // The server's workspace folder is the scratches directory.
+        scratch_server.request(7, "workspace/workspaceFolders", json!({}));
+        handle_next(&mut app, is_lsp).await;
+        let folders = scratch_server.response(7).await;
+        assert_eq!(folders["result"][0]["uri"], sync::uri(&scratches).unwrap().as_str());
+        assert_eq!(folders["result"][0]["name"], "scratches");
+
+        // A second Rust scratch restarts the scratch client with both files.
+        app.create_scratch(rust + 1);
+        let second = app.editor.active_path().unwrap().to_path_buf();
+        assert_ne!(first, second);
+        app.lsp_sync();
+        scratch_server.recv("shutdown").await;
+        app.lsp_sync();
+        let mut third = servers.try_recv().expect("the scratch client started again");
+        let init = third.recv("initialize").await;
+        let mut want = vec![first.to_string_lossy().into_owned(), second.to_string_lossy().into_owned()];
+        want.sort();
+        assert_eq!(init["params"]["initializationOptions"]["detachedFiles"], json!(want));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

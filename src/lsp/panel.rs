@@ -67,10 +67,17 @@ pub struct ProblemsPanel {
     keep: Option<Keep>,
     /// Only the editor's active file is listed (in memory only).
     current_only: bool,
+    /// Files under it are left out of the project scope: scratch files.
+    pub exclude: Option<PathBuf>,
     list_rect: Rect,
 }
 
 impl ProblemsPanel {
+    /// A panel whose project scope leaves out the files under `dir`.
+    pub fn excluding(dir: PathBuf) -> Self {
+        Self { exclude: Some(dir), ..Default::default() }
+    }
+
     /// Rebuild the rows when the store (or, filtered, the active file)
     /// changed, keeping the selection on the same problem (or file) when it
     /// is still listed.
@@ -83,7 +90,9 @@ impl ProblemsPanel {
         self.built = Some(key);
         self.files.clear();
         self.rows.clear();
-        let listed = store.files().filter(|(p, _)| !self.current_only || active == Some(*p));
+        let exclude = self.exclude.as_deref();
+        let listed =
+            store.files().filter(|(p, _)| if self.current_only { active == Some(*p) } else { !exclude.is_some_and(|d| p.starts_with(d)) });
         for (fi, (path, items)) in listed.enumerate() {
             self.files.push(path.to_path_buf());
             self.rows.push(Row::File(fi));
@@ -257,7 +266,14 @@ impl ProblemsPanel {
         let title = if self.current_only {
             format!(" Problems (current file): {} ", summary(active.map(|p| store.counts(p)).unwrap_or_default()))
         } else {
-            format!(" Problems: {} ", summary(store.total_counts()))
+            let mut total = Counts::default();
+            for n in self.files.iter().map(|p| store.counts(p)) {
+                total.errors += n.errors;
+                total.warnings += n.warnings;
+                total.infos += n.infos;
+                total.hints += n.hints;
+            }
+            format!(" Problems: {} ", summary(total))
         };
         let filtered_hint;
         let hint = match (self.current_only, active) {
@@ -402,6 +418,20 @@ mod tests {
         assert_eq!(summary(Counts { warnings: 1, hints: 3, ..Default::default() }), "1 warning");
         assert_eq!(summary(Counts { hints: 1, ..Default::default() }), "1 hint");
         assert_eq!(summary(Counts::default()), "no problems");
+    }
+
+    #[test]
+    fn scratches_are_left_out_of_the_project_scope() {
+        let mut store = DiagnosticStore::default();
+        let (a, x) = (PathBuf::from("/w/a.rs"), PathBuf::from("/s/x.rs"));
+        store.publish("ra", a.clone(), vec![diag(0, 0, 0, 1, Severity::Error, "e")], 100);
+        store.publish("ra (scratches)", x.clone(), vec![diag(0, 0, 0, 1, Severity::Error, "x")], 100);
+        let mut p = ProblemsPanel { exclude: Some("/s".into()), ..Default::default() };
+        p.sync(&store, Some(&x));
+        assert_eq!(p.files, [a]);
+        p.current_only = true;
+        p.sync(&store, Some(&x));
+        assert_eq!(p.files, [x]);
     }
 
     fn related(path: &str, line: u32, message: &str) -> Related {

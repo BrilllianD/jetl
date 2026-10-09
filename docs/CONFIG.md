@@ -158,6 +158,7 @@ request_timeout_ms = 5000      # a request to a server unanswered by then fails
 max_diagnostics_per_file = 1000  # problems kept per file, the most severe first
 completion_auto = true         # open the completion popup while typing (else Ctrl+Space only)
 completion_min_chars = 1       # identifier chars typed before it opens by itself
+scratches = false              # language servers for scratch files too (own clients)
 # Built-in servers (table below) take changes here; a table with a new
 # name adds a server. Omitted keys keep the built-in values.
 # [lsp.servers.rust-analyzer]
@@ -336,6 +337,16 @@ type (only the edited ranges, in UTF-16 positions), saves are reported, and
 closed tabs are closed on the server. `settings` answers the server's
 `workspace/configuration` requests by section (`rust-analyzer` above);
 `init_options` goes with `initialize`.
+
+Scratch files (File > New Scratch File…) get no language server by default.
+With `scratches = true` every configured server also gets a separate client
+for them, named `<server> (scratches)`, rooted at the scratches directory and
+started with the server's own `command`, `settings` and `init_options`.
+rust-analyzer is told about the scratch files as `detachedFiles` (read once
+at its start, so a new Rust scratch restarts that client). The scratches'
+problems show in the editor and the status bar, in the Problems window only
+in its current-file scope (Alt+C). The key applies at once and restarts the
+servers.
 
 The status bar shows the server of the active file: its name, a spinner
 with what it reports while it starts or indexes, `LSP: <name> missing` when
