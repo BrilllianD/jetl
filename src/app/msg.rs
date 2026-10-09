@@ -106,6 +106,7 @@ impl App {
                     return;
                 }
                 self.offer_conflicts();
+                self.offer_next_conflict();
                 let snap = self.git_panel.snapshot();
                 self.project.set_git_status(snap.map(|s| s.tree.clone()).unwrap_or_default());
                 // A new HEAD changes every gutter base.
@@ -232,7 +233,13 @@ impl App {
                 GitOp::DeleteBranch { name, .. } => self.notify(Level::Info, format!("Deleted branch {name}")),
                 GitOp::Tag(t) => self.notify(Level::Info, format!("Created tag {t}")),
                 GitOp::DeleteTag(t) => self.notify(Level::Info, format!("Deleted tag {t}")),
-                GitOp::Discard | GitOp::Stash | GitOp::Resolve(_) => self.notify(Level::Info, output.clone()),
+                GitOp::Discard | GitOp::Stash => self.notify(Level::Info, output.clone()),
+                GitOp::Resolve(rel) => {
+                    if !output.is_empty() {
+                        self.notify(Level::Info, output.clone());
+                    }
+                    self.resolved_conflict = Some(rel.clone());
+                }
                 GitOp::Stage | GitOp::Unstage => {}
                 GitOp::WorktreeAdd { .. } | GitOp::WorktreeRemove { .. } | GitOp::WorktreePrune => {}
             }
@@ -300,6 +307,7 @@ impl App {
     pub fn git_root_changed(&mut self, root: PathBuf) {
         self.git.set_root(root, self.workspace.generation);
         self.git_panel.reset();
+        self.resolved_conflict = None;
         self.project.set_git_status(Default::default());
         for b in &mut self.editor.buffers {
             b.diff_base = None;

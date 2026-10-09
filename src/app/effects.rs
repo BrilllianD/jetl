@@ -105,6 +105,11 @@ impl App {
                 let op = GitOp::Resolve(rel.clone());
                 self.git.run_repo(op, label, move |root| repo::resolve_side(root, &rel, side));
             }
+            GitRequest::StageResolved(rel) => {
+                let label = format!("stage {rel}");
+                let op = GitOp::Resolve(rel.clone());
+                self.git.run_repo(op, label, move |root| repo::stage(root, std::slice::from_ref(&rel)).map(|_| String::new()));
+            }
             GitRequest::Discard(items) => {
                 let label = format!("discard {}", items.iter().map(|(_, p)| p.as_str()).collect::<Vec<_>>().join(" "));
                 self.git.run_repo(GitOp::Discard, label, move |root| repo::discard(root, &items));

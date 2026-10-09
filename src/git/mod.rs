@@ -275,6 +275,8 @@ pub enum GitRequest {
         rel: String,
         side: repo::ConflictSide,
     },
+    /// Stage a conflicted path the resolver just wrote (relative to the work tree); runs as GitOp::Resolve.
+    StageResolved(String),
 }
 
 pub struct GitService {

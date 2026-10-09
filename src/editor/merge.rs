@@ -840,7 +840,7 @@ impl Editor {
         }
         if self.write(i, cx, true) {
             cx.notify(Level::Info, format!("Merged {rel}; staged"));
-            cx.effects.push(Effect::Git(crate::git::GitRequest::Stage(vec![rel])));
+            cx.effects.push(Effect::Git(crate::git::GitRequest::StageResolved(rel)));
         }
     }
 

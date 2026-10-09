@@ -212,6 +212,8 @@ pub struct App {
     /// An operation stopped on conflicts: the next status listing
     /// conflicted files opens Resolve Conflicts.
     pending_conflicts: bool,
+    /// A conflicted path just resolved (GitOp::Resolve): the first status that no longer lists it offers the conflicted files left.
+    resolved_conflict: Option<String>,
     /// File from the command line (1-based line and column), opened once
     /// the session is restored so it ends up the active tab.
     pub(crate) pending_open: Option<(PathBuf, usize, usize)>,
@@ -328,6 +330,7 @@ impl App {
             symbols_fed: None,
             pending_goto: None,
             pending_conflicts: false,
+            resolved_conflict: None,
             pending_open: open,
             git,
             history,

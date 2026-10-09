@@ -1,7 +1,8 @@
 //! Conflict resolution in the app: Git > Resolve Conflicts (pick a
 //! conflicted file, then merge it in the three-pane resolver or take one
 //! side whole), the resolver opening when the stages arrive, and the
-//! dialog after an operation stopped on conflicts.
+//! dialog after an operation stopped on conflicts, and the offer of the
+//! conflicted files left after each resolve.
 
 use std::path::PathBuf;
 
@@ -129,6 +130,24 @@ impl App {
         }
     }
 
+    /// After a conflicted file was resolved, the first status that no
+    /// longer lists it offers the conflicted files left (Resolve Conflicts
+    /// again), or says that none are; a status from before the resolve
+    /// waits. Nothing is offered over a dialog or the resolver.
+    pub(super) fn offer_next_conflict(&mut self) {
+        let Some(rel) = &self.resolved_conflict else { return };
+        let left = self.conflicted();
+        if left.contains(rel) {
+            return;
+        }
+        self.resolved_conflict = None;
+        if left.is_empty() {
+            self.notify(Level::Info, "All conflicts resolved");
+        } else if self.dialog.is_none() && !self.editor.merge_active() {
+            self.resolve_conflicts();
+        }
+    }
+
     /// Ask before dropping the resolver's work when quitting; true when
     /// the quit may go on.
     pub(super) fn quit_merge(&mut self) -> bool {
@@ -226,6 +245,51 @@ mod tests {
         handle_next(&mut app, op_done).await;
         let repo = git2::Repository::open(&root).unwrap();
         assert!(!repo.index().unwrap().has_conflicts(), "staged");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn resolving_a_file_offers_the_next_one() {
+        let (mut app, dir) = test_app("merge-next");
+        let root = app.workspace.root.clone();
+        init_repo(&app, &[("a.txt", "one\ntwo\n"), ("b.txt", "x\ny\n")]);
+        let main = crate::git::repo::status(&root).unwrap().branch.unwrap();
+        git(&root, &["switch", "-qc", "dev"]);
+        std::fs::write(root.join("a.txt"), "ONE dev\ntwo\n").unwrap();
+        std::fs::write(root.join("b.txt"), "X dev\ny\n").unwrap();
+        git(&root, &["commit", "-qam", "dev"]);
+        git(&root, &["switch", "-q", &main]);
+        std::fs::write(root.join("a.txt"), "ONE main\ntwo\n").unwrap();
+        std::fs::write(root.join("b.txt"), "X main\ny\n").unwrap();
+        git(&root, &["commit", "-qam", "main"]);
+        app.git_request(crate::git::GitRequest::Merge("dev".into()));
+        handle_next(&mut app, op_done).await;
+        feed_status(&mut app, 1);
+        let d = app.dialog.take().expect("Resolve Conflicts");
+        assert_eq!(d.id, DialogId::ResolveConflictPick(vec!["a.txt".into(), "b.txt".into()]));
+        app.finish_dialog(d.id, DialogResult::Choice(0));
+        let d = app.dialog.take().expect("merge or take a side");
+        assert!(matches!(&d.id, DialogId::ResolveConflict { merge: true, .. }));
+        // Taken before the resolve starts, so it still lists a.txt.
+        let stale = crate::git::repo::status(&root);
+        app.finish_dialog(d.id, DialogResult::Button(1));
+        handle_next(&mut app, op_done).await;
+        // A status from before the resolve still lists a.txt: nothing yet.
+        app.handle_msg(AppMsg::Git(GitMsg::Status { generation: app.git.generation, seq: 2, result: stale }));
+        assert!(app.dialog.is_none());
+        feed_status(&mut app, 3);
+        let d = app.dialog.take().expect("the next file");
+        assert_eq!(d.id, DialogId::ResolveConflictPick(vec!["b.txt".into()]));
+        app.finish_dialog(d.id, DialogResult::Choice(0));
+        let d = app.dialog.take().expect("merge or take a side");
+        app.finish_dialog(d.id, DialogResult::Button(0));
+        handle_next(&mut app, conflict).await;
+        app.perform(merge(MergeAction::AcceptLeft));
+        app.perform(merge(MergeAction::Apply));
+        handle_next(&mut app, op_done).await;
+        feed_status(&mut app, 4);
+        assert!(app.dialog.is_none());
+        assert_eq!(app.notifications.last().unwrap().text, "All conflicts resolved");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
