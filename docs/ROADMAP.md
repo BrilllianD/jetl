@@ -71,7 +71,7 @@ Effort: S = hours to a day, M = 1-3 days, L = about a week, XL = multiple weeks.
 | Block comment toggle (Ctrl+Shift+/) | S | `block_comment` on `LanguageDef` |
 | Strip trailing whitespace and ensure final newline on save | S | In `save()`, as an undoable transaction |
 | Hard tabs, indent auto-detection, `.editorconfig` | M | Per-buffer indent settings |
-| Word wrap | M | Done: `editor/wrap.rs` on the shared `layout_line()` walk, segments in `Rows`; follow-ups: extra continuation indent setting, per-file persistence |
+| Word wrap | M | Done: `editor/wrap.rs` on the shared `layout_line()` walk, segments in `Rows`; extra continuation indent done (`editor.soft_wrap_extra_indent`); follow-up: per-file persistence |
 | Column (block) selection | M | Done: `view::block_selections`, `DragMode::Column`; wrap must go through `Buffer::blocks_supported` |
 | Multiple carets | L | Done: `Selections`, `Buffer::edit_carets` |
 | Code folding by tree-sitter node | M | Done: `editor/fold.rs` (`Folds` per view), visible rows through `editor/rows.rs`; wrap extends `Rows` with segments |

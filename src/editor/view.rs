@@ -328,6 +328,8 @@ pub struct RenderOut {
 pub struct RenderOpts<'a> {
     pub focused: bool,
     pub tab_width: usize,
+    /// `editor.soft_wrap_extra_indent`.
+    pub wrap_extra_indent: usize,
     pub scrolloff: usize,
     pub hscrolloff: usize,
     /// Highlight occurrences of the word or selected text at the caret.
@@ -353,7 +355,7 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
     // is never hidden.
     let v = &mut buf.view;
     v.folds.reveal(&buf.rope, &v.sels);
-    v.wrap.set_geometry(text_area.width, o.tab_width);
+    v.wrap.set_geometry(text_area.width, o.tab_width, o.wrap_extra_indent);
     let top = Rows::view(&v.folds, &v.wrap, &buf.rope, buf.version).clamp(v.top());
     v.set_top(top);
     let follow_key = (buf.view.sel().head, buf.version, text_area.width, text_area.height);
@@ -715,6 +717,7 @@ mod tests {
         let o = RenderOpts {
             focused: false,
             tab_width: 4,
+            wrap_extra_indent: 0,
             scrolloff: 0,
             hscrolloff: 0,
             occurrences: false,
@@ -776,6 +779,7 @@ mod tests {
         let o = RenderOpts {
             focused: false,
             tab_width: 4,
+            wrap_extra_indent: 0,
             scrolloff: 0,
             hscrolloff: 0,
             occurrences: false,

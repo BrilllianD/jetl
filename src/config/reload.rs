@@ -93,6 +93,7 @@ sections! {
         max_tabs => Live,
         soft_wrap => NewViews,
         soft_wrap_files => NewViews,
+        soft_wrap_extra_indent => Live,
     }
     ui: UiConfig {
         theme => Live,
@@ -200,8 +201,8 @@ mod tests {
         names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), KEYS.len());
-        // 13 editor, 6 ui, 3 git, 2 worktree, 1 keymap, 3 files, 2 clipboard,
+        // 14 editor, 6 ui, 3 git, 2 worktree, 1 keymap, 3 files, 2 clipboard,
         // 3 format, 1 run, 3 terminal, 8 lsp, 5 local_history.
-        assert_eq!(KEYS.len(), 50);
+        assert_eq!(KEYS.len(), 51);
     }
 }

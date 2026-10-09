@@ -84,6 +84,7 @@ max_tabs = 0                   # open tabs beyond this close the least recently 
 soft_wrap = false              # soft-wrap every file when opened
 soft_wrap_files = ["*.md", "*.txt", "*.rst", "*.adoc"]  # files soft-wrapped when opened anyway: "*.ext" matches
                                # names ending in ".ext", anything else a whole file name
+soft_wrap_extra_indent = 0     # extra cells continuation rows of a wrapped line are shifted by, after the line's own indent (at most half the width together)
 
 [ui]
 theme = "auto"                 # "auto" (the Omarchy theme's palette when there is one, else

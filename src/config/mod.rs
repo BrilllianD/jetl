@@ -122,6 +122,9 @@ pub struct EditorConfig {
     /// Files soft-wrapped when opened even with `soft_wrap` off: `*.ext`
     /// matches a name ending in `.ext`, anything else a whole file name.
     pub soft_wrap_files: Vec<String>,
+    /// Extra cells the continuation rows of a wrapped line are shifted by,
+    /// after the line's own indent (at most half the width together).
+    pub soft_wrap_extra_indent: usize,
 }
 
 /// When dirty buffers with a path are written without Ctrl+S.
@@ -264,6 +267,7 @@ impl Default for EditorConfig {
             max_tabs: 0,
             soft_wrap: false,
             soft_wrap_files: ["*.md", "*.txt", "*.rst", "*.adoc"].map(String::from).to_vec(),
+            soft_wrap_extra_indent: 0,
         }
     }
 }

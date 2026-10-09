@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `editor.soft_wrap_extra_indent` (cells, default 0, applies at once) shifts the continuation rows of a
+  soft-wrapped line further right, after the line's own indent; together at most half the width.
 - `[lsp] scratches = true` (default off, applies at once) gives scratch files language servers: a
   separate client per server, named `<server> (scratches)` and rooted at the scratches directory
   (rust-analyzer gets the scratch files as `detachedFiles`; a new Rust scratch restarts that

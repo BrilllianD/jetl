@@ -156,6 +156,8 @@ pub struct Editor {
     /// opens wrapped ([`Editor::soft_wrap_for`]).
     soft_wrap: bool,
     soft_wrap_files: Vec<String>,
+    /// `editor.soft_wrap_extra_indent`: see [`wrap::wrap_line`].
+    soft_wrap_extra_indent: usize,
     /// `[format]`: formatters per language and whether saves run them.
     pub format: crate::config::FormatConfig,
     last_search: Option<LastSearch>,
@@ -226,6 +228,7 @@ impl Editor {
             max_tabs: 0,
             soft_wrap: false,
             soft_wrap_files: Vec::new(),
+            soft_wrap_extra_indent: 0,
             format: Default::default(),
             last_search: None,
             nav: NavRing::default(),
@@ -260,6 +263,7 @@ impl Editor {
             max_tabs,
             soft_wrap,
             soft_wrap_files,
+            soft_wrap_extra_indent,
         } = &config.editor;
         self.tab_width = *tab_width;
         self.max_highlight_bytes = *max_highlight_bytes;
@@ -278,6 +282,7 @@ impl Editor {
         self.max_tabs = *max_tabs;
         self.soft_wrap = *soft_wrap;
         self.soft_wrap_files.clone_from(soft_wrap_files);
+        self.soft_wrap_extra_indent = *soft_wrap_extra_indent;
         self.format.clone_from(&config.format);
     }
 
@@ -1550,6 +1555,7 @@ impl Editor {
         let opts = RenderOpts {
             focused,
             tab_width: self.tab_display(&self.buffers[i]),
+            wrap_extra_indent: self.soft_wrap_extra_indent,
             scrolloff: self.scrolloff,
             hscrolloff: self.hscrolloff,
             occurrences: self.highlight_occurrences,

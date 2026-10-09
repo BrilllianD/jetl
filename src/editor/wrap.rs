@@ -62,8 +62,10 @@ impl LineWrap {
 /// Breaks go before the first grapheme after a run of whitespace (the
 /// whitespace hangs at the row's end); a word longer than the row breaks
 /// before the grapheme that does not fit. Graphemes are never split, and
-/// one wider than the row still gets a row of its own.
-pub fn wrap_line(rope: &Rope, line: usize, tab_width: usize, text_w: u16) -> LineWrap {
+/// one wider than the row still gets a row of its own. Continuation rows
+/// start at the line's own indent plus `extra_indent`, together at most
+/// half the width.
+pub fn wrap_line(rope: &Rope, line: usize, tab_width: usize, text_w: u16, extra_indent: usize) -> LineWrap {
     if text_w < 2 || line >= rope.len_lines() || line_len_no_eol(rope, line) > MAX_WRAP_CHARS {
         return LineWrap::default();
     }
@@ -79,7 +81,7 @@ pub fn wrap_line(rope: &Rope, line: usize, tab_width: usize, text_w: u16) -> Lin
         }
         true
     });
-    let indent = lead.unwrap_or(0).min(avail / 2);
+    let indent = (lead.unwrap_or(0) + extra_indent).min(avail / 2);
     out.indent = indent as u16;
     let cont = (avail - indent).max(1);
     // The current segment: first char, its column and its width.
@@ -120,13 +122,14 @@ pub struct Wrap {
     pub on: bool,
     width: u16,
     tab: usize,
+    extra_indent: usize,
     cache: RefCell<WrapCache>,
 }
 
 #[derive(Debug, Default)]
 struct WrapCache {
-    /// Buffer version, width and tab width the lines were broken for.
-    key: (u64, u16, usize),
+    /// Buffer version, width, tab width and extra indent the lines were broken for.
+    key: (u64, u16, usize, usize),
     lines: HashMap<usize, Rc<LineWrap>>,
 }
 
@@ -135,9 +138,10 @@ impl Wrap {
         Self { on, ..Default::default() }
     }
 
-    /// The text area width and tab width to break lines for.
-    pub fn set_geometry(&mut self, width: u16, tab: usize) {
-        (self.width, self.tab) = (width, tab.max(1));
+    /// The text area width, tab width and extra continuation indent to
+    /// break lines for.
+    pub fn set_geometry(&mut self, width: u16, tab: usize, extra_indent: usize) {
+        (self.width, self.tab, self.extra_indent) = (width, tab.max(1), extra_indent);
     }
 
     /// On, and drawn at least once at a usable width.
@@ -151,13 +155,13 @@ impl Wrap {
 
     /// How `line` of `rope` (at buffer `version`) wraps.
     pub fn line(&self, rope: &Rope, version: u64, line: usize) -> Rc<LineWrap> {
-        let key = (version, self.width, self.tab);
+        let key = (version, self.width, self.tab, self.extra_indent);
         let mut c = self.cache.borrow_mut();
         if c.key != key || c.lines.len() > CACHE_LINES {
             c.lines.clear();
             c.key = key;
         }
-        c.lines.entry(line).or_insert_with(|| Rc::new(wrap_line(rope, line, self.tab, self.width))).clone()
+        c.lines.entry(line).or_insert_with(|| Rc::new(wrap_line(rope, line, self.tab, self.width, self.extra_indent))).clone()
     }
 }
 
@@ -168,7 +172,7 @@ mod tests {
     /// The rows of the first line of `text` at `w` cells, as strings.
     fn rows(text: &str, w: u16) -> Vec<String> {
         let rope = Rope::from_str(text);
-        let lw = wrap_line(&rope, 0, 4, w);
+        let lw = wrap_line(&rope, 0, 4, w, 0);
         let line: Vec<char> = rope.line(0).chars().filter(|c| *c != '\n').collect();
         let mut bounds: Vec<usize> = vec![0];
         bounds.extend(lw.starts.iter().map(|&(c, _)| c as usize));
@@ -196,7 +200,7 @@ mod tests {
         // a(0) tab(1-3) b(4) tab(5-7) c(8): c is past 8 cells of text.
         assert_eq!(rows("a\tb\tc\td", 9), ["a\tb\t", "c\td"]);
         let rope = Rope::from_str("a\tb\tc\td");
-        let lw = wrap_line(&rope, 0, 4, 9);
+        let lw = wrap_line(&rope, 0, 4, 9, 0);
         assert_eq!(lw.starts, [(4, 8)], "the column is the unwrapped one");
     }
 
@@ -213,14 +217,23 @@ mod tests {
     #[test]
     fn continuation_rows_take_the_indent_capped_at_half() {
         let rope = Rope::from_str("    aaa bbb ccc ddd");
-        let lw = wrap_line(&rope, 0, 4, 13);
+        let lw = wrap_line(&rope, 0, 4, 13, 0);
         assert_eq!(lw.indent, 4);
         // 12 cells: the first row fits "    aaa bbb ", the rest 8 each.
         assert_eq!(rows("    aaa bbb ccc ddd", 13), ["    aaa bbb ", "ccc ddd"]);
         assert_eq!(rows("    aaaaaaaaaaaaaaaaaaaa", 13), ["    aaaaaaaa", "aaaaaaaa", "aaaa"]);
         let deep = format!("{}x y", " ".repeat(30));
-        let lw = wrap_line(&Rope::from_str(&deep), 0, 4, 11);
+        let lw = wrap_line(&Rope::from_str(&deep), 0, 4, 11, 0);
         assert_eq!(lw.indent, 5, "half of 10");
+    }
+
+    #[test]
+    fn continuation_rows_take_the_extra_indent_capped_at_half() {
+        let rope = Rope::from_str("    aaa bbb ccc ddd eee fff");
+        let indent = |extra| wrap_line(&rope, 0, 4, 21, extra).indent;
+        assert_eq!(indent(0), 4);
+        assert_eq!(indent(2), 6);
+        assert_eq!(indent(20), 10, "half of 20");
     }
 
     #[test]
@@ -235,16 +248,16 @@ mod tests {
     #[test]
     fn segments_and_cache() {
         let rope = Rope::from_str("aaa bbb ccc\nabc");
-        let lw = wrap_line(&rope, 0, 4, 5);
+        let lw = wrap_line(&rope, 0, 4, 5, 0);
         assert_eq!((lw.segs(), lw.start(1), lw.start(2)), (3, (4, 4), (8, 8)));
         assert_eq!((lw.seg_of(0), lw.seg_of(3), lw.seg_of(4), lw.seg_of(11)), (0, 0, 1, 2));
         let mut w = Wrap::new(true);
         assert!(!w.active(), "not drawn yet");
-        w.set_geometry(5, 4);
+        w.set_geometry(5, 4, 0);
         assert!(w.active());
         assert_eq!(w.line(&rope, 0, 0).segs(), 3);
         assert_eq!(w.line(&rope, 0, 1).segs(), 1);
-        w.set_geometry(40, 4);
+        w.set_geometry(40, 4, 0);
         assert_eq!(w.line(&rope, 0, 0).segs(), 1, "a new width breaks again");
     }
 }
@@ -308,6 +321,17 @@ mod editor_tests {
         ed.active_buffer_mut().unwrap().view.wrap.on = false;
         let rows = draw(&mut ed, 20, 7);
         assert_eq!(trimmed(&rows[1..3]), ["  1        aaaa bbbb", "  2    next"]);
+    }
+
+    #[test]
+    fn extra_indent_shifts_continuation_rows_and_applies_live() {
+        let mut ed = wrapped("    aaaa bbbb cccc dddd\nnext\n");
+        let rows = draw(&mut ed, 20, 7);
+        assert_eq!(trimmed(&rows[1..3]), ["  1        aaaa", "     ↪     bbbb"]);
+        let config = Config::parse("[editor]\nsoft_wrap_extra_indent = 2\n").unwrap();
+        ed.apply_config(&config);
+        let rows = draw(&mut ed, 20, 7);
+        assert_eq!(trimmed(&rows[1..3]), ["  1        aaaa", "     ↪       bbbb"], "first row unchanged, continuation 2 further right");
     }
 
     #[test]

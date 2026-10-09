@@ -288,7 +288,7 @@ mod tests {
         let start = rope.line_to_char(1) + 7;
         f.collapse(Fold { start, end: rope.line_to_char(3) + 1 }, &rope);
         let mut w = Wrap::new(true);
-        w.set_geometry(10, 4);
+        w.set_geometry(10, 4, 0);
         (rope, f, w)
     }
 
@@ -325,7 +325,7 @@ mod tests {
         // Off, or not drawn yet: no wrap.
         let mut off = Wrap::new(true);
         assert!(!Rows::view(&f, &off, &rope, 0).wraps());
-        off.set_geometry(10, 4);
+        off.set_geometry(10, 4, 0);
         off.on = false;
         assert!(!Rows::view(&f, &off, &rope, 0).wraps());
     }
