@@ -1104,6 +1104,20 @@ class A:
         }
 
         #[test]
+        fn duplicate_line_counts_the_lines_an_earlier_selection_copy_adds() {
+            use crate::editor::selection::{Selection, Selections};
+            let mut ed = editor(&format!("a\nb\n{TEXT}"));
+            collapse(&mut ed, 2);
+            let b = ed.active_buffer_mut().unwrap();
+            let caret = b.rope.line_to_char(2) + 3;
+            b.view.sels = Selections::new(vec![Selection::new(0, 3), Selection::point(caret)], 1);
+            act(&mut ed, E::DuplicateLine);
+            let main = "fn main() {\n    let a = 1;\n    let b = 2;\n}\n";
+            assert_eq!(text(&ed), format!("a\nba\nb\n{main}{main}fn two() {{\n    x();\n}}\nlast\n"));
+            assert_eq!(hidden(&ed), [(4, 7), (8, 11)], "both fold the main block, no other text");
+        }
+
+        #[test]
         fn move_line_down_jumps_over_a_folded_neighbour() {
             let mut ed = editor("a\nfn main() {\n    let a = 1;\n    let b = 2;\n}\nz\n");
             collapse(&mut ed, 2);

@@ -369,15 +369,17 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
     // is never hidden.
     let v = &mut buf.view;
     v.folds.reveal(&buf.rope, &v.sels);
+    // Measured before the rows are re-broken for the new width.
+    let follow_key = (buf.view.sel().head, buf.version, text_area.width, text_area.height);
+    let was_visible = buf.view.follow_key != Some(follow_key) && buf.view.follow_key.is_some_and(|k| caret_on_screen(buf, k.2, k.3, o));
+    let v = &mut buf.view;
     v.wrap.set_geometry(text_area.width, o.tab_width, o.wrap_extra_indent);
     let top = Rows::view(&v.folds, &v.wrap, &buf.rope, buf.version).clamp(v.top());
     v.set_top(top);
-    let follow_key = (buf.view.sel().head, buf.version, text_area.width, text_area.height);
     if buf.view.follow_key != Some(follow_key) {
         // A resize alone re-scrolls only a caret that was on screen and is
         // not any more; one already off screen stays where it was.
         let resized_only = buf.view.follow_key.is_some_and(|k| (k.0, k.1) == (follow_key.0, follow_key.1));
-        let was_visible = buf.view.follow_key.is_some_and(|k| caret_on_screen(buf, k.2, k.3, o));
         if o.follow && (!resized_only || (was_visible && !caret_on_screen(buf, text_area.width, text_area.height, o))) {
             ensure_visible(buf, text_area, o);
         }
@@ -909,5 +911,19 @@ mod tests {
         assert_eq!(buf.view.scroll_line, 0);
         render_at(&mut buf, &theme, 40, 2);
         assert_eq!(buf.view.scroll_line, 2, "the caret line is the last row");
+    }
+
+    #[test]
+    fn narrowing_a_wrapped_pane_keeps_a_bottom_row_caret_on_screen() {
+        let theme = Theme::default();
+        let text: String = (0..12).map(|_| "aaaa bbbb cccc dddd eeee\n").collect();
+        let mut buf = Buffer::from_text(1, None, &text, false);
+        buf.view.wrap.on = true;
+        buf.goto_line(4, 0);
+        render_at(&mut buf, &theme, 40, 5);
+        assert_eq!(buf.view.scroll_line, 0, "the caret is on the bottom row");
+        // Narrower, each line takes more rows: line 4 is past the old height.
+        render_at(&mut buf, &theme, 14, 5);
+        assert!(buf.view.scroll_line >= 3, "scrolled to the caret, top line {}", buf.view.scroll_line);
     }
 }

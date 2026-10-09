@@ -879,12 +879,32 @@ impl Buffer {
         }
         blocks.sort_unstable();
         let saved = self.view.folds.to_session(&self.rope);
+        // Each non-empty selection copies its text after its end: the
+        // newlines in it push the later blocks down.
+        let copies: Vec<(usize, usize)> = self
+            .view
+            .sels
+            .iter()
+            .filter(|s| !s.is_empty())
+            .map(|s| {
+                let r = s.range();
+                (r.end, self.rope.slice(r).chars().filter(|&c| c == '\n').count())
+            })
+            .collect();
         let mut earlier = 0;
         let mut out = Vec::new();
         for (first, last) in blocks {
             let n = last - first + 1;
+            let (start, end) = (self.rope.line_to_char(first), line_range(&self.rope, last).end);
+            if copies.iter().any(|&(at, _)| start < at && at <= end) {
+                // A selection copy lands inside the block: where its copy
+                // sits is unclear, so the copy stays expanded.
+                earlier += n;
+                continue;
+            }
+            let above: usize = copies.iter().filter(|&&(at, _)| at <= start).map(|&(_, k)| k).sum();
             for f in saved.iter().filter(|f| first <= f.start_line && f.start_line <= last) {
-                out.push(shifted(f, (earlier + n) as isize));
+                out.push(shifted(f, (earlier + above + n) as isize));
             }
             earlier += n;
         }

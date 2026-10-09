@@ -1330,13 +1330,18 @@ impl Editor {
                     match b.view.sels.index_at(p).filter(|_| b.view.sels.is_multi()) {
                         Some(i) => b.view.sels.remove(i),
                         None => {
-                            b.view.sels.push(Selection::point(p), true);
+                            let mut s = Selection::point(p);
+                            s.upstream = up;
+                            b.view.sels.push(s, true);
                         }
                     }
                     b.undo.break_group = true;
                     self.drag = Some((g, DragMode::AltPending(cell_at(b, m.x, m.y))));
                     return true;
                 }
+                // Past a wrapped row's end `p` is the next row's first char:
+                // what is looked up there is the char before.
+                let at = if up { p.saturating_sub(1) } else { p };
                 let from = nav_pos(b);
                 if b.rope.char_to_line(b.view.sel().head).abs_diff(b.rope.char_to_line(p)) > NAV_JUMP_LINES {
                     self.nav.push(from);
@@ -1344,7 +1349,7 @@ impl Editor {
                 // Ctrl+click: the caret to the clicked char, then go to
                 // what is defined there.
                 if m.mods.contains(KeyModifiers::CONTROL) && m.clicks == 1 && m.x >= text_area.x {
-                    b.view.set_sel(Selection::point(p));
+                    b.view.set_sel(Selection::point(at));
                     b.undo.break_group = true;
                     cx.effects.push(Effect::Lsp(crate::lsp::LspRequest::Definition));
                     return true;
@@ -1352,7 +1357,7 @@ impl Editor {
                 let extend = m.mods.contains(KeyModifiers::SHIFT);
                 match m.clicks {
                     2 => {
-                        let r = word_at(&b.rope, p);
+                        let r = word_at(&b.rope, at);
                         b.view.set_sel(Selection::new(r.start, r.end));
                         self.drag = Some((g, DragMode::Word(r.start, r.end)));
                     }
@@ -1391,7 +1396,7 @@ impl Editor {
                 let (p, up) = pos_at(b, m.x, m.y);
                 match mode {
                     DragMode::Word(s, e) => {
-                        let w = word_at(&b.rope, p);
+                        let w = word_at(&b.rope, if up { p.saturating_sub(1) } else { p });
                         b.view.set_sel(if p < s { Selection::new(e, w.start) } else { Selection::new(s, w.end.max(e)) });
                     }
                     DragMode::Line(s, e) => {

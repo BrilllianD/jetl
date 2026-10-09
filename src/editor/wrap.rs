@@ -408,6 +408,43 @@ mod editor_tests {
         }
     }
 
+    /// A press with `clicks` clicks, like a double click.
+    fn press(ed: &mut Editor, (x, y): (u16, u16), clicks: u8, mods: KeyModifiers) {
+        use crate::app::Ctx;
+        use crate::editor::Mouse;
+        use crate::workspace::Workspace;
+        let (config, theme, workspace) = (Config::default(), Theme::default(), Workspace::new(PathBuf::from("/tmp")));
+        let (bus, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut cx = Ctx { effects: Vec::new(), config: &config, theme: &theme, workspace: &workspace, bus };
+        let m = Mouse { kind: MouseEventKind::Down(MouseButton::Left), x, y, clicks, mods };
+        ed.handle_mouse(&m, ratatui::layout::Rect::default(), &mut cx);
+    }
+
+    #[test]
+    fn clicks_past_a_wrapped_row_end_act_on_the_clicked_row() {
+        let ta_of = |ed: &Editor| ed.text_area();
+        // Rows of 12: "aaaa bbbb " and "cccc dddd".
+        let mut ed = wrapped("aaaa bbbb cccc dddd\n");
+        draw(&mut ed, 19, 8);
+        let ta = ta_of(&ed);
+        assert_eq!(ta.width, 12);
+        // Alt+click far past the first row's text: a second caret drawn on that row.
+        press(&mut ed, (ta.right() - 1, ta.y), 1, KeyModifiers::ALT);
+        draw(&mut ed, 19, 8);
+        let b = ed.active_buffer().unwrap();
+        assert!(b.view.sels.is_multi());
+        let added = b.view.sel();
+        assert!(added.upstream, "the added caret keeps the row above");
+        assert_eq!(ed.focused_group().caret_cell.map(|c| c.1), Some(ta.y), "drawn on the clicked row");
+        // Double click there selects what ends the clicked row (its hanging
+        // space), not the next row's word.
+        let mut ed = wrapped("aaaa bbbb cccc dddd\n");
+        draw(&mut ed, 19, 8);
+        press(&mut ed, (ta.right() - 1, ta.y), 2, KeyModifiers::NONE);
+        let b = ed.active_buffer().unwrap();
+        assert_eq!(b.selected_text(), " ");
+    }
+
     #[test]
     fn gutter_and_placeholder_clicks_need_the_right_row() {
         let mut ed = wrapped("aaaa bbbb cccc\n  x\n  y\nz\n");
