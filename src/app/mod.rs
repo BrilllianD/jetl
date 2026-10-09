@@ -539,6 +539,7 @@ impl App {
             self.dirty_frame = true;
         }
         self.completion_timeout(Instant::now());
+        self.completion_docs_tick(Instant::now());
         self.format_timeout(Instant::now());
         self.lightbulb_tick(Instant::now());
         if self.editor.autosave_due(Instant::now()) {

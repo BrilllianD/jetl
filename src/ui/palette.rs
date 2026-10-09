@@ -31,6 +31,7 @@ use crate::git::BranchInfo;
 use crate::lsp::locations::LocationItem;
 use crate::scratch::ScratchFile;
 use crate::symbols::index::SymbolEntry;
+use crate::ui::widgets::highlight;
 use crate::ui::widgets::list::ListState;
 use crate::ui::widgets::text_input::TextInput;
 
@@ -990,20 +991,6 @@ impl Drop for Palette {
             let _ = self.filter_seq.compare_exchange(p.seq, p.seq + 1, Ordering::Relaxed, Ordering::Relaxed);
         }
     }
-}
-
-/// Split `text` into runs, styling the chars for which `marked(char index)`
-/// holds with `hl`.
-fn highlight(text: &str, marked: impl Fn(usize) -> bool, base: Style, hl: Style) -> Vec<(String, Style)> {
-    let mut out: Vec<(String, Style)> = Vec::new();
-    for (ci, c) in text.chars().enumerate() {
-        let st = if marked(ci) { hl } else { base };
-        match out.last_mut() {
-            Some((s, last)) if *last == st => s.push(c),
-            _ => out.push((c.to_string(), st)),
-        }
-    }
-    out
 }
 
 /// Char indices of `path` that the query matched (for highlighting).

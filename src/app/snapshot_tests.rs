@@ -1214,7 +1214,7 @@ async fn completion_popup() {
     let origin = Origin::new(b.id, &b.rope, b.view.sel().head);
     let (items, incomplete) = crate::lsp::completion::parse(serde_json::json!([
         {"label": "println!", "kind": 3, "detail": "macro_rules! println"},
-        {"label": "print!", "kind": 3, "detail": "macro_rules! print"},
+        {"label": "print!", "kind": 3, "detail": "macro_rules! print", "labelDetails": {"detail": "(…)"}},
         {"label": "primary_color", "kind": 6, "detail": "Color"},
         {"label": "priority", "kind": 5, "detail": "u8", "deprecated": true},
         {"label": "unrelated", "kind": 14},
@@ -1222,9 +1222,64 @@ async fn completion_popup() {
     let state = CompletionState::new(origin, items, incomplete, "pri", &mut app.lsp.completion.matcher);
     app.completion = Some(crate::ui::completion::CompletionPopup::new(state, app.editor.focused_group().id));
     let term = draw_app(app, 80, 20);
-    let marks = [Mark::bg('L', "selected", app.theme.list_selected.bg.unwrap()), Mark::modifier('X', "deprecated", Modifier::CROSSED_OUT)];
+    let marks = [
+        Mark::modifier('U', "underlined", Modifier::UNDERLINED),
+        Mark::style('M', "matched", ratatui::style::Style::default().fg(app.theme.status_accent.fg.unwrap()).add_modifier(Modifier::BOLD)),
+        Mark::bg('L', "selected", app.theme.list_selected.bg.unwrap()),
+        Mark::modifier('X', "deprecated", Modifier::CROSSED_OUT),
+    ];
     assert_snapshot!("completion_popup", snapshot(&term, &marks, None));
     assert!(app.completion.is_some(), "the popup still applies");
+}
+
+/// A popup over `pri` with documentation on its items, drawn at `w`x`h`
+/// after the panel's delay (no server: the item's own docs are used).
+/// `wide` adds an item that makes the list too wide for a panel beside it.
+fn completion_with_docs(app: &mut App, w: u16, h: u16, wide: bool) -> Terminal<TestBackend> {
+    use crate::lsp::completion::{CompletionState, Origin};
+    load(app, "main.log", "fn main() {\n    pri\n}\n");
+    moves(app, Motion::Down, 1);
+    editor(app, EditorAction::Move(Motion::LineEnd, false));
+    app.focus.set(PanelId::Editor);
+    let b = app.editor.active_buffer().unwrap();
+    let origin = Origin::new(b.id, &b.rope, b.view.sel().head);
+    let docs = "Prints to the standard output, with a newline.\n\n```rust\nprintln!(\"{}\", 1);\n```\n\nSee also `print!`.";
+    let mut list = vec![
+        serde_json::json!({"label": "println!", "kind": 3, "detail": "fn println!(…)", "documentation": {"kind": "markdown", "value": docs}}),
+        serde_json::json!({"label": "print!", "kind": 3, "detail": "fn print!(…)", "documentation": {"kind": "markdown", "value": docs}}),
+    ];
+    if wide {
+        list.push(serde_json::json!({"label": "print_everything_to_the_log", "kind": 3,
+            "labelDetails": {"description": "crate::logging::print_everything_to_the_log"}}));
+    }
+    let (items, incomplete) = crate::lsp::completion::parse(serde_json::Value::Array(list));
+    let state = CompletionState::new(origin, items, incomplete, "pri", &mut app.lsp.completion.matcher);
+    app.completion = Some(crate::ui::completion::CompletionPopup::new(state, app.editor.focused_group().id));
+    let now = std::time::Instant::now();
+    app.completion_docs_tick(now);
+    app.completion_docs_tick(now + std::time::Duration::from_millis(150));
+    assert!(app.completion.as_ref().unwrap().docs.is_some(), "the docs are shown");
+    draw_app(app, w, h)
+}
+
+fn docs_marks(app: &App) -> [Mark; 2] {
+    [Mark::bg('P', "popup bg", app.theme.popup_bg), Mark::bg('L', "selected", app.theme.list_selected.bg.unwrap())]
+}
+
+#[tokio::test]
+async fn completion_docs_beside() {
+    let mut fx = stable_app("completion-docs-beside");
+    let app = &mut fx.app;
+    let term = completion_with_docs(app, 120, 40, false);
+    assert_snapshot!("completion_docs_beside", snapshot(&term, &docs_marks(app), None));
+}
+
+#[tokio::test]
+async fn completion_docs_stacked() {
+    let mut fx = stable_app("completion-docs-stacked");
+    let app = &mut fx.app;
+    let term = completion_with_docs(app, 80, 24, true);
+    assert_snapshot!("completion_docs_stacked", snapshot(&term, &docs_marks(app), None));
 }
 
 #[tokio::test]

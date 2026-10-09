@@ -62,7 +62,11 @@ impl App {
         // does there).
         if let Some(c) = &mut self.completion {
             let on = c.contains(m.column, m.row);
+            let on_docs = c.docs_contains(m.column, m.row);
             match m.kind {
+                MouseEventKind::ScrollUp if on_docs => return c.scroll_docs(-3),
+                MouseEventKind::ScrollDown if on_docs => return c.scroll_docs(3),
+                MouseEventKind::Down(_) if on_docs => return,
                 MouseEventKind::ScrollUp if on => return c.scroll_by(-1),
                 MouseEventKind::ScrollDown if on => return c.scroll_by(1),
                 MouseEventKind::Down(MouseButton::Left) if on => {

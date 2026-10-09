@@ -161,6 +161,7 @@ impl LspService {
         self.inflight.clear();
         self.completion.request = None;
         self.completion.accepting = None;
+        self.completion.docs = None;
         self.edit = Default::default();
         self.lightbulb = Default::default();
     }

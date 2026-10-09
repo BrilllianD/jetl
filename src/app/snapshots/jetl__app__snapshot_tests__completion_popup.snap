@@ -8,7 +8,7 @@ expression: "snapshot(&term, &marks, None)"
 02  1 │                              ││  2        pri
 03  ⌂ │                              ││  3 ┌──────────────────────────────────────┐
 04  2 │                              ││  4 │v primary_color                 Color │
-05  ◫ │                              ││    │f print!           macro_rules! print │
+05  ◫ │                              ││    │f print!(…)        macro_rules! print │
 06  7 │                              ││    │f println!       macro_rules! println │
 07  ⊢ │                              ││    │d priority                         u8 │
 08    │                              ││    └──────────────────────────────────────┘
@@ -23,6 +23,8 @@ expression: "snapshot(&term, &marks, None)"
 17  3 │                              ││
 18  ⌕ └──────────────────────────────┘│
 19  root                              Ln 2, Col 8  LF  UTF-8  4 spaces  Plain text
--- marks: L=selected X=deprecated
-04                                          LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL
-07                                            XXXXXXXX
+-- marks: U=underlined M=matched L=selected X=deprecated
+04                                          LLUUULLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL
+05                                            MMM
+06                                            MMM
+07                                            MMMXXXXX

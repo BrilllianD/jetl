@@ -159,6 +159,25 @@ impl CompletionState {
         self.selected = was.and_then(|w| self.order.iter().position(|&i| i == w)).unwrap_or(0);
     }
 
+    /// Char indices of `items[i]`'s label that the prefix matched (for
+    /// highlighting); empty without a prefix or a match. Always against the
+    /// label, whatever `filterText` is.
+    pub fn match_indices(&self, i: usize, matcher: &mut Matcher) -> Vec<u32> {
+        let mut idx = Vec::new();
+        if self.prefix.is_empty() {
+            return idx;
+        }
+        matcher.config = nucleo_matcher::Config::DEFAULT;
+        let pattern = Pattern::new(&self.prefix, CaseMatching::Ignore, Normalization::Smart, AtomKind::Fuzzy);
+        let mut buf = Vec::new();
+        if pattern.indices(Utf32Str::new(&self.items[i].label, &mut buf), matcher, &mut idx).is_none() {
+            idx.clear();
+        }
+        idx.sort_unstable();
+        idx.dedup();
+        idx
+    }
+
     pub fn selected_item(&self) -> Option<&CompletionItem> {
         self.order.get(self.selected).map(|&i| &self.items[i])
     }
@@ -722,6 +741,18 @@ mod tests {
         assert_eq!(o.prefix(&gone, 7), None, "deleted past the start");
         let spaced = Rope::from_str("let foo.ba  = 1;");
         assert_eq!(o.prefix(&spaced, 11), None, "a space typed");
+    }
+
+    #[test]
+    fn match_indices_are_the_label_chars_the_prefix_matched() {
+        let mut m = Matcher::default();
+        let items = vec![item("println!")];
+        let mut st = CompletionState::new(Origin::new(1, &Rope::from_str("pln"), 3), items, false, "pln", &mut m);
+        assert_eq!(st.match_indices(0, &mut m), [0, 5, 6]);
+        st.prefix = "zz".into();
+        assert!(st.match_indices(0, &mut m).is_empty());
+        st.prefix.clear();
+        assert!(st.match_indices(0, &mut m).is_empty());
     }
 
     #[test]

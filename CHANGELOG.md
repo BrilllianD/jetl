@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Completion shows a documentation panel beside the popup (stacked above or below it when
+  there is no room) with the selected item's signature and documentation, fetched from the
+  server a moment after the selection settles; Alt+Up/Alt+Down and the mouse wheel scroll it.
+  The characters you typed are highlighted in each label, the server's label details are
+  shown dimmed after it, and commit characters (such as `(`) accept the selected item and are
+  then typed, once the list was asked for with Ctrl+Space or the selection was moved.
 - Quick Documentation (Alt+Q) highlights fenced code: a fence's language (```` ```rust ````), or the
   file's language for a bare fence; unknown languages stay plain.
 - Completion snippets have tabstops: accepting a function selects its first argument

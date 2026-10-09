@@ -38,7 +38,7 @@ fn method_of(tag: &PendingTag) -> &'static str {
         PendingTag::References(_) => REFERENCES,
         PendingTag::Hover(_) => HOVER,
         PendingTag::Completion(_) => COMPLETION,
-        PendingTag::CompletionResolve(_) => RESOLVE,
+        PendingTag::CompletionResolve(_) | PendingTag::CompletionDocs(_) => RESOLVE,
         PendingTag::PrepareRename(_) => PREPARE_RENAME,
         PendingTag::Rename(_) => RENAME,
         PendingTag::CodeAction(_) => CODE_ACTION,
@@ -271,7 +271,7 @@ impl App {
         }
         // Completion checks its answers itself: they stay good while the
         // word at the caret is typed.
-        if let PendingTag::Completion(_) | PendingTag::CompletionResolve(_) = tag {
+        if let PendingTag::Completion(_) | PendingTag::CompletionResolve(_) | PendingTag::CompletionDocs(_) = tag {
             return self.completion_response(name, tag, result);
         }
         // A command's answer says nothing but whether it failed; what it
@@ -304,6 +304,7 @@ impl App {
             PendingTag::DocumentSymbols(t) => self.lsp_document_symbols_answer(t, value),
             PendingTag::Completion(_)
             | PendingTag::CompletionResolve(_)
+            | PendingTag::CompletionDocs(_)
             | PendingTag::ExecuteCommand(_)
             | PendingTag::Formatting(_)
             | PendingTag::Lightbulb(_)

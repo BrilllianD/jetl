@@ -1,0 +1,56 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &docs_marks(app), None)"
+---
+120x40 cursor=(50,2)
+00  ≣ ┌ Project: root ───────────────┐│  main.log ×
+01    │                              ││  1  ▾ fn main() {
+02  1 │                              ││  2        pri
+03  ⌂ │                              ││  3    }┌───────────────────────────┐┌─────────────────────────────────────────────┐
+04    │                              ││  4     │f print!      fn print!(…) ││ fn print!(…)                                │
+05  2 │                              ││        │f println!  fn println!(…) ││─────────────────────────────────────────────│
+06  ◫ │                              ││        └───────────────────────────┘│ Prints to the standard output, with a       │
+07    │                              ││                                     │ newline.                                    │
+08  7 │                              ││                                     │                                             │
+09  ⊢ │                              ││                                     │ println!("{}", 1);                          │
+10    │                              ││                                     │                                             │
+11    │                              ││                                     │ See also print!.                            │
+12    │                              ││                                     └─────────────────────────────────────────────┘
+13    │                              ││
+14    │                              ││
+15    │                              ││
+16    │                              ││
+17    │                              ││
+18    │                              ││
+19    │                              ││
+20  ⟲ │                              ││
+21    │                              ││
+22    │                              ││
+23  ⚑ │                              ││
+24    │                              ││
+25  9 │                              ││
+26  ⎇ │                              ││
+27    │                              ││
+28    │                              ││
+29  ❯ │                              ││
+30    │                              ││
+31  6 │                              ││
+32  ⚠ │                              ││
+33    │                              ││
+34  4 │                              ││
+35  ► │                              ││
+36    │                              ││
+37  3 │                              ││
+38  ⌕ └──────────────────────────────┘│
+39  root                                                                      Ln 2, Col 8  LF  UTF-8  4 spaces  Plain text
+-- marks: P=popup bg L=selected
+03                                             PPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPP
+04                                             PLLLLLLLLLLLLLLLLLLLLLLLLLLLPP                                             P
+05                                             PPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPP
+06                                             PPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPP
+07                                                                          PPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPP
+08                                                                          PPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPP
+09                                                                          P                                             P
+10                                                                          PPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPP
+11                                                                          PPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPP
+12                                                                          PPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPP

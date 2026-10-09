@@ -17,6 +17,17 @@
 //! accepts at once without it. The item's edits are one transaction (one
 //! undo step).
 //!
+//! The documentation panel of the selected item (`ui::completion`) is
+//! filled 150 ms after the selection settles (`completion_docs_tick` on the
+//! tick): resolved with `completionItem/resolve` when the server supports
+//! it (the answer counts only while the popup, its origin and the selected
+//! item are unchanged; the resolved item is merged into the list, so
+//! accepting reuses it), else from the item itself.
+//!
+//! A commit character typed after the popup was asked for with Ctrl+Space,
+//! or after the selection was moved, accepts the item and then goes on to
+//! the editor as typed text.
+//!
 //! Accepting a snippet at one caret selects its first tabstop (its mirrors
 //! as extra carets); Tab and Shift+Tab then walk the tabstops
 //! (`editor.snippet`, see `editor::snippet`) until the last one, Esc, or
@@ -24,7 +35,7 @@
 
 use std::time::{Duration, Instant};
 
-use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use lsp_types::CompletionItem;
 use nucleo_matcher::Matcher;
 use serde_json::{Value, json};
@@ -38,11 +49,14 @@ use crate::editor::undo::TxKind;
 use crate::lsp::completion::{self, CompletionState, Origin};
 use crate::lsp::transport::ResponseError;
 use crate::lsp::{DocTag, PendingTag};
-use crate::ui::completion::CompletionPopup;
+use crate::ui::completion::{CompletionPopup, Docs, docs_lines};
 use crate::ui::focus::PanelId;
+use crate::ui::hover::Highlight;
 
 /// How long accepting waits for `completionItem/resolve`.
 pub(super) const RESOLVE_WAIT: Duration = Duration::from_millis(300);
+/// How long the selection must rest before the documentation is fetched.
+pub(super) const DOCS_DELAY: Duration = Duration::from_millis(150);
 
 /// `CompletionTriggerKind`.
 const INVOKED: u8 = 1;
@@ -57,6 +71,9 @@ pub(super) struct CompletionReqs {
     pub request: Option<(u64, Origin, bool)>,
     /// An accepted item waiting for its resolve.
     pub accepting: Option<Accepting>,
+    /// The resolve for the documentation panel: its seq, the popup's
+    /// origin and the item index.
+    pub docs: Option<(u64, Origin, usize)>,
     pub matcher: Matcher,
 }
 
@@ -174,10 +191,61 @@ impl App {
         }
     }
 
+    /// The tick at `now`: schedule the documentation of the selected item
+    /// once the selection has rested for [`DOCS_DELAY`], then fetch it.
+    pub(super) fn completion_docs_tick(&mut self, now: Instant) {
+        let Some(p) = &mut self.completion else { return };
+        let want = p.state.order.get(p.state.selected).copied();
+        if p.docs_want != want {
+            p.docs_want = want;
+            p.docs_due = want.map(|_| now + DOCS_DELAY);
+            return;
+        }
+        if !p.docs_due.is_some_and(|d| now >= d) {
+            return;
+        }
+        p.docs_due = None;
+        if let Some(i) = want
+            && p.docs.as_ref().is_none_or(|d| d.item != i)
+        {
+            self.completion_docs_fetch(i);
+        }
+    }
+
+    /// Resolve item `i` for the panel when the server can, else show it as it is.
+    fn completion_docs_fetch(&mut self, i: usize) {
+        let Some(p) = &self.completion else { return };
+        let origin = p.state.origin.clone();
+        if !p.resolved.contains(&i) && self.lsp_caps(origin.buffer).is_some_and(|c| c.has(RESOLVE)) {
+            let params = serde_json::to_value(&p.state.items[i]).unwrap_or(Value::Null);
+            if let Ok(seq) = self.lsp_tagged_request(origin.buffer, origin.pos, RESOLVE, params, PendingTag::CompletionDocs) {
+                self.lsp.completion.docs = Some((seq, origin, i));
+                return;
+            }
+        }
+        self.completion_docs_show(i);
+    }
+
+    /// Fill the panel from item `i` as it is now.
+    pub(super) fn completion_docs_show(&mut self, i: usize) {
+        let Some(p) = &mut self.completion else { return };
+        let fallback = self.editor.index_of_id(p.state.origin.buffer).and_then(|ix| self.editor.buffers[ix].language());
+        let lines = docs_lines(&p.state.items[i], Highlight { theme: &self.theme, fallback });
+        p.docs = Some(Docs { item: i, lines, scroll: 0 });
+        self.dirty_frame = true;
+    }
+
     /// Close the popup and forget the request on its way.
     pub(super) fn completion_close(&mut self) {
         if self.completion.take().is_some() {
             self.dirty_frame = true;
+        }
+        if let Some((seq, ..)) = self.lsp.completion.docs.take()
+            && self.lsp.inflight.get(RESOLVE).is_some_and(|f| f.seq == seq)
+            && let Some(old) = self.lsp.inflight.remove(RESOLVE)
+            && let Some(c) = self.lsp.clients.get(&old.server)
+        {
+            c.cancel(old.id);
         }
         if self.lsp.completion.request.take().is_some()
             && let Some(old) = self.lsp.inflight.remove(COMPLETION)
@@ -196,15 +264,49 @@ impl App {
         if key.kind == KeyEventKind::Release || matches!(key.code, KeyCode::Modifier(_)) || p.state.order.is_empty() {
             return false;
         }
+        if key.modifiers == KeyModifiers::ALT && matches!(key.code, KeyCode::Up | KeyCode::Down) {
+            if p.docs_shown() {
+                p.scroll_docs(if key.code == KeyCode::Up { -1 } else { 1 });
+                self.dirty_frame = true;
+                self.dispatcher.reset();
+                return true;
+            }
+            return false;
+        }
+        if let KeyCode::Char(c) = key.code
+            && p.armed
+            && (key.modifiers - KeyModifiers::SHIFT).is_empty()
+        {
+            let own = p.state.selected_item().and_then(|it| it.commit_characters.clone());
+            let buffer = p.state.origin.buffer;
+            let set = own.unwrap_or_else(|| self.lsp_caps(buffer).map(|c| c.completion_commit_chars()).unwrap_or_default());
+            if set.contains(&c.to_string()) {
+                self.completion_accept();
+                self.completion_flush();
+            }
+            return false;
+        }
         if !key.modifiers.is_empty() {
             return false;
         }
         let page = p.page() as isize;
         match key.code {
-            KeyCode::Up => p.state.step(-1, true),
-            KeyCode::Down => p.state.step(1, true),
-            KeyCode::PageUp => p.state.step(-page, false),
-            KeyCode::PageDown => p.state.step(page, false),
+            KeyCode::Up => {
+                p.state.step(-1, true);
+                p.armed = true;
+            }
+            KeyCode::Down => {
+                p.state.step(1, true);
+                p.armed = true;
+            }
+            KeyCode::PageUp => {
+                p.state.step(-page, false);
+                p.armed = true;
+            }
+            KeyCode::PageDown => {
+                p.state.step(page, false);
+                p.armed = true;
+            }
             KeyCode::Enter | KeyCode::Tab => self.completion_accept(),
             KeyCode::Esc => self.completion_close(),
             _ => return false,
@@ -220,11 +322,12 @@ impl App {
         self.completion_close();
         self.dirty_frame = true;
         let Some(item) = p.state.selected_item().cloned() else { return };
+        let resolved = p.state.order.get(p.state.selected).is_some_and(|i| p.resolved.contains(i));
         let origin = p.state.origin.clone();
         let Some(b) = self.editor.active_buffer() else { return };
         let pos = crate::lsp::pos::position(&b.rope, b.view.sel().head);
         let params = serde_json::to_value(&item).unwrap_or(Value::Null);
-        let resolvable = self.lsp_caps(origin.buffer).is_some_and(|c| c.has(RESOLVE));
+        let resolvable = !resolved && self.lsp_caps(origin.buffer).is_some_and(|c| c.has(RESOLVE));
         if resolvable && let Ok(seq) = self.lsp_tagged_request(origin.buffer, pos, RESOLVE, params, PendingTag::CompletionResolve) {
             self.lsp.completion.accepting = Some(Accepting { seq, item, origin, deadline: Instant::now() + RESOLVE_WAIT });
             return;
@@ -306,6 +409,19 @@ impl App {
                 };
                 self.completion_apply(&a.origin, &item);
             }
+            PendingTag::CompletionDocs(t) => {
+                let Some((_, origin, i)) = self.lsp.completion.docs.take_if(|d| d.0 == t.seq) else { return };
+                let Some(p) =
+                    self.completion.as_mut().filter(|p| p.state.origin == origin && p.state.order.get(p.state.selected) == Some(&i))
+                else {
+                    return tracing::debug!("dropping a stale completion docs answer");
+                };
+                if let Ok(Ok(resolved)) = result.map(serde_json::from_value::<CompletionItem>) {
+                    p.state.items[i] = merge_resolved(p.state.items[i].clone(), resolved);
+                }
+                p.resolved.push(i);
+                self.completion_docs_show(i);
+            }
             _ => {}
         }
     }
@@ -326,6 +442,7 @@ impl App {
             .filter(|b| here && b.id == origin.buffer && b.view.sel().is_empty())
             .and_then(|b| origin.prefix(&b.rope, b.view.sel().head));
         let Some(prefix) = prefix else { return tracing::debug!("dropping a stale completion answer") };
+        let armed = explicit || self.completion.as_ref().is_some_and(|p| p.armed);
         let (items, incomplete) = completion::parse(value);
         let state = CompletionState::new(origin, items, incomplete, &prefix, &mut self.lsp.completion.matcher);
         self.dirty_frame = true;
@@ -337,7 +454,9 @@ impl App {
             return;
         }
         self.hover = None;
-        self.completion = Some(CompletionPopup::new(state, self.editor.focused_group().id));
+        let mut popup = CompletionPopup::new(state, self.editor.focused_group().id);
+        popup.armed = armed;
+        self.completion = Some(popup);
     }
 }
 
@@ -349,6 +468,10 @@ fn merge_resolved(orig: CompletionItem, mut r: CompletionItem) -> CompletionItem
     r.insert_text_format = r.insert_text_format.or(orig.insert_text_format);
     r.additional_text_edits = r.additional_text_edits.or(orig.additional_text_edits);
     r.filter_text = r.filter_text.or(orig.filter_text);
+    r.documentation = r.documentation.or(orig.documentation);
+    r.detail = r.detail.or(orig.detail);
+    r.label_details = r.label_details.or(orig.label_details);
+    r.commit_characters = r.commit_characters.or(orig.commit_characters);
     if r.label.is_empty() {
         r.label = orig.label;
     }
@@ -721,6 +844,117 @@ mod tests {
         server.recv("completionItem/resolve").await;
         typ(&mut app, ";");
         assert_eq!(caret_line(&app), "    HashMap;|");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Two items with resolve data, completing the word `p` on line 1.
+    fn two_items() -> Value {
+        let r = json!({"start": {"line": 1, "character": 4}, "end": {"line": 1, "character": 5}});
+        json!([
+            {"label": "pa", "data": 1, "textEdit": {"range": r, "newText": "pa"}},
+            {"label": "pb", "data": 2, "textEdit": {"range": r, "newText": "pb"}},
+        ])
+    }
+
+    #[tokio::test]
+    async fn docs_resolve_lazily_and_stale_answers_are_dropped() {
+        let (mut app, mut server, dir) = setup("compl-docs", true).await;
+        typ(&mut app, "p");
+        let req = completion_req(&mut server).await;
+        reply(&mut app, &mut server, &req, two_items()).await;
+        let tick = |app: &mut App| {
+            let now = Instant::now();
+            app.completion_docs_tick(now);
+            app.completion_docs_tick(now + DOCS_DELAY);
+        };
+        tick(&mut app);
+        let res = server.recv("completionItem/resolve").await;
+        assert_eq!(res["params"]["data"], json!(1));
+        // The selection moved before the answer: it is dropped.
+        key(&mut app, KeyCode::Down);
+        let docs = |text: &str| json!({"label": "pa", "documentation": {"kind": "markdown", "value": text}});
+        reply(&mut app, &mut server, &res, docs("Old")).await;
+        let p = app.completion.as_ref().unwrap();
+        assert!(p.docs.is_none() && p.resolved.is_empty());
+        // The new selection resolves and shows.
+        tick(&mut app);
+        let res = server.recv("completionItem/resolve").await;
+        assert_eq!(res["params"]["data"], json!(2));
+        let mut resolved = docs("Docs **here**");
+        resolved["label"] = json!("pb");
+        resolved["additionalTextEdits"] =
+            json!([{"range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 0}}, "newText": "use a::pb;\n"}]);
+        reply(&mut app, &mut server, &res, resolved).await;
+        let p = app.completion.as_ref().unwrap();
+        let d = p.docs.as_ref().expect("the docs");
+        assert_eq!(d.item, 1);
+        assert_eq!(d.lines.len(), 1);
+        assert_eq!(d.lines[0].text, "Docs here");
+        assert_eq!(d.lines[0].kind, crate::ui::hover::Kind::Text);
+        // Accepting reuses the resolved item: no second resolve.
+        server.drain();
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(text(&app), "use a::pb;\nfn main() {\n    pb\n}\n");
+        assert!(server.drain().iter().all(|m| m["method"] != "completionItem/resolve"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn commit_characters_accept_only_when_armed() {
+        let (mut app, dir) = test_app("compl-commit");
+        let mut c = incremental();
+        c["completionProvider"] = json!({"allCommitCharacters": ["("], "triggerCharacters": ["."]});
+        let mut servers = with_fake_servers(&mut app, c);
+        let mut server = open_on_server(&mut app, &mut servers, "a.rs", MAIN).await;
+        app.editor.active_buffer_mut().unwrap().goto_line(1, 4);
+        // Auto-opened and not moved in: `(` is only typed.
+        typ(&mut app, "f");
+        let req = completion_req(&mut server).await;
+        reply(&mut app, &mut server, &req, json!([{"label": "foo"}])).await;
+        assert!(!app.completion.as_ref().unwrap().armed);
+        typ(&mut app, "(");
+        assert_eq!(caret_line(&app), "    f(|)");
+        while text(&app) != MAIN {
+            app.perform(Action::Editor(EditorAction::Undo));
+        }
+        assert_eq!(caret_line(&app), "    |");
+        // Asked for with Ctrl+Space: accepted, then `(` typed (auto-paired).
+        app.handle_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::CONTROL));
+        let req = completion_req(&mut server).await;
+        reply(&mut app, &mut server, &req, json!([{"label": "foo"}])).await;
+        typ(&mut app, "(");
+        assert_eq!(caret_line(&app), "    foo(|)");
+        while text(&app) != MAIN {
+            app.perform(Action::Editor(EditorAction::Undo));
+        }
+        // Auto-opened, then the selection moved.
+        typ(&mut app, "f");
+        let req = completion_req(&mut server).await;
+        reply(&mut app, &mut server, &req, json!([{"label": "foo"}])).await;
+        key(&mut app, KeyCode::Down);
+        typ(&mut app, "(");
+        assert_eq!(caret_line(&app), "    foo(|)");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn alt_up_down_scroll_the_docs() {
+        let (mut app, mut server, dir) = setup("compl-docs-scroll", false).await;
+        typ(&mut app, "p");
+        let req = completion_req(&mut server).await;
+        let long = (1..=40).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        reply(&mut app, &mut server, &req, json!([{"label": "pa", "documentation": long}])).await;
+        let now = Instant::now();
+        app.completion_docs_tick(now);
+        app.completion_docs_tick(now + DOCS_DELAY);
+        draw(&mut app, 120, 40);
+        assert!(app.completion.as_ref().unwrap().docs_shown());
+        let before = text(&app);
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::ALT));
+        assert_eq!(app.completion.as_ref().unwrap().docs.as_ref().unwrap().scroll, 1);
+        assert_eq!(text(&app), before);
+        app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT));
+        assert_eq!(app.completion.as_ref().unwrap().docs.as_ref().unwrap().scroll, 0);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

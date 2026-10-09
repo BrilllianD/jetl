@@ -261,7 +261,8 @@ pub fn client_capabilities() -> ClientCapabilities {
 
 /// Completion: snippets (tabstops walked with Tab; choices and variables
 /// flattened), `textEdit` and `additionalTextEdits`, resolved lazily when
-/// accepting; every item kind.
+/// accepting; every item kind; documentation shown beside the popup,
+/// resolved lazily; labelDetails; commit characters.
 fn completion_capabilities() -> CompletionClientCapabilities {
     let kinds = (1..=25).filter_map(|k| serde_json::from_value::<CompletionItemKind>(json!(k)).ok()).collect();
     CompletionClientCapabilities {
@@ -272,6 +273,8 @@ fn completion_capabilities() -> CompletionClientCapabilities {
             deprecated_support: Some(true),
             preselect_support: Some(true),
             insert_replace_support: Some(false),
+            label_details_support: Some(true),
+            commit_characters_support: Some(true),
             resolve_support: Some(CompletionItemCapabilityResolveSupport {
                 properties: ["documentation", "detail", "additionalTextEdits"].map(String::from).to_vec(),
             }),

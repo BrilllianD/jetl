@@ -110,6 +110,19 @@ impl<'a> Caps<'a> {
         out
     }
 
+    /// Completion commit characters: static `allCommitCharacters`, then registered ones, deduplicated in order.
+    pub fn completion_commit_chars(&self) -> Vec<String> {
+        let fixed = self.fixed.completion_provider.as_ref().and_then(|c| c.all_commit_characters.as_ref()).into_iter().flatten();
+        let mut out: Vec<String> = Vec::new();
+        let registered = self.dynamic(COMPLETION).flat_map(|o| strings(o, "allCommitCharacters"));
+        for t in fixed.map(String::as_str).chain(registered) {
+            if !out.iter().any(|o| o == t) {
+                out.push(t.to_string());
+            }
+        }
+        out
+    }
+
     /// Code action kinds the server says it returns: `None` means any kind (static
     /// `Simple(true)`, Options without `code_action_kinds`, or any applicable registration
     /// without `codeActionKinds`); otherwise the union, deduplicated in order.
@@ -182,14 +195,22 @@ mod tests {
 
     #[test]
     fn registration_options_add_triggers_resolve_and_commands() {
-        let f = fixed(json!({"completionProvider": {"triggerCharacters": [".", ":"]}, "executeCommandProvider": {"commands": ["a"]}}));
+        let f = fixed(
+            json!({"completionProvider": {"triggerCharacters": [".", ":"], "allCommitCharacters": ["("]}, "executeCommandProvider": {"commands": ["a"]}}),
+        );
         let mut r = Registry::default();
-        register(&mut r, "c", COMPLETION, json!({"triggerCharacters": [":", ">"], "resolveProvider": true}));
+        register(
+            &mut r,
+            "c",
+            COMPLETION,
+            json!({"triggerCharacters": [":", ">"], "allCommitCharacters": [";", "("], "resolveProvider": true}),
+        );
         register(&mut r, "r", RENAME, json!({"prepareProvider": true}));
         register(&mut r, "a", CODE_ACTION, json!({"resolveProvider": true}));
         register(&mut r, "x", EXECUTE_COMMAND, json!({"commands": ["b"]}));
         let c = caps(&f, &r, rust());
         assert_eq!(c.completion_triggers(), [".", ":", ">"]);
+        assert_eq!(c.completion_commit_chars(), ["(", ";"]);
         assert!(c.has(RESOLVE) && c.has(PREPARE_RENAME) && c.has(CODE_ACTION_RESOLVE));
         assert!(c.runs_command("a") && c.runs_command("b") && !c.runs_command("c"));
     }
@@ -243,5 +264,13 @@ mod tests {
         assert_eq!(d["relatedInformation"], true);
         assert_eq!(d["tagSupport"]["valueSet"], serde_json::json!([1, 2]));
         assert_eq!(d["versionSupport"], true);
+    }
+
+    #[test]
+    fn completion_item_details_are_advertised() {
+        let c = serde_json::to_value(client_capabilities()).unwrap();
+        let i = &c["textDocument"]["completion"]["completionItem"];
+        assert_eq!(i["labelDetailsSupport"], true);
+        assert_eq!(i["commitCharactersSupport"], true);
     }
 }

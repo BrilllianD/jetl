@@ -52,6 +52,8 @@ pub enum PendingTag {
     Completion(DocTag),
     /// `completionItem/resolve` of the item being accepted.
     CompletionResolve(DocTag),
+    /// `completionItem/resolve` for the documentation panel of the selected item.
+    CompletionDocs(DocTag),
     /// `textDocument/prepareRename`.
     PrepareRename(DocTag),
     /// `textDocument/rename`.
@@ -82,6 +84,7 @@ impl PendingTag {
             | PendingTag::Hover(t)
             | PendingTag::Completion(t)
             | PendingTag::CompletionResolve(t)
+            | PendingTag::CompletionDocs(t)
             | PendingTag::PrepareRename(t)
             | PendingTag::Rename(t)
             | PendingTag::CodeAction(t)
