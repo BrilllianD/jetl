@@ -10,6 +10,14 @@ use anyhow::{Result, bail};
 
 use super::diff::{hunks, is_binary, strip_eol};
 
+/// A conflicted path that is not a regular file on some side: only
+/// taking a side whole makes sense.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Special {
+    Symlink,
+    Submodule,
+}
+
 /// What the index and the work tree hold for a conflicted path.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ConflictSides {
@@ -27,6 +35,9 @@ pub struct ConflictSides {
     /// what the operation makes of it during a rebase or cherry-pick.
     pub ours_label: String,
     pub theirs_label: String,
+    /// Set when a stage is a symbolic link or a submodule; then
+    /// `ours`/`theirs` hold the link target or the commit id in hex.
+    pub special: Option<Special>,
 }
 
 /// The three texts the resolver shows, line endings made alike.
@@ -51,6 +62,11 @@ impl MergeInput {
     /// parsed. When the sides disagree on CRLF and LF, all three take the
     /// work file's line ending, which the result keeps.
     pub fn classify(s: &ConflictSides) -> Result<MergeInput> {
+        match s.special {
+            Some(Special::Symlink) => return Ok(MergeInput::SidesOnly(format!("{} is a symbolic link", s.rel))),
+            Some(Special::Submodule) => return Ok(MergeInput::SidesOnly(format!("{} is a submodule", s.rel))),
+            None => {}
+        }
         if s.base.is_none() && s.ours.is_none() && s.theirs.is_none() {
             if is_binary(&s.work) {
                 return Ok(MergeInput::SidesOnly(format!("{} is binary", s.rel)));
@@ -336,6 +352,12 @@ mod tests {
         let mut s = sides("", "x\n", "y\n", "");
         s.base = None;
         assert_eq!(texts(&s).base, "");
+        // A link or a submodule: sides only, whatever the stages hold.
+        let mut s = sides("a\n", "b\n", "c\n", "");
+        s.special = Some(Special::Symlink);
+        assert!(matches!(MergeInput::classify(&s).unwrap(), MergeInput::SidesOnly(r) if r == "f.txt is a symbolic link"));
+        s.special = Some(Special::Submodule);
+        assert!(matches!(MergeInput::classify(&s).unwrap(), MergeInput::SidesOnly(r) if r == "f.txt is a submodule"));
     }
 
     #[test]

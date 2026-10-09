@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, anyhow, bail};
 use git2::{BranchType, IndexAddOption, ObjectType, Repository, Status, StatusOptions};
 
-use super::merge::ConflictSides;
+use super::merge::{ConflictSides, Special};
 use super::model::{Blame, BlameCommit, BranchInfo, ChangeEntry, FileStatus, Section, StashEntry, StatusSnapshot, tree_status};
 
 /// Open the repository containing `root` and return it with its canonical
@@ -343,6 +343,12 @@ pub fn discard(root: &Path, items: &[(Section, String)]) -> Result<String> {
     Ok(format!("Discarded changes to {n} path{}", if n == 1 { "" } else { "s" }))
 }
 
+/// Index entry modes of a symbolic link and of a submodule.
+const SYMLINK: u32 = 0o120000;
+const GITLINK: u32 = 0o160000;
+/// The bits of an index entry's flags that hold its stage.
+const STAGE_MASK: u16 = 0x3000;
+
 /// The index's conflict entry for `rel`, if it has one.
 fn find_conflict(index: &git2::Index, rel: &str) -> Result<Option<git2::IndexConflict>> {
     for c in index.conflicts()? {
@@ -363,13 +369,25 @@ pub fn conflict_sides(root: &Path, abs: &Path) -> Result<ConflictSides> {
     let rel = rel_path(&wd, abs).ok_or_else(|| anyhow!("{} is outside the repository", abs.display()))?;
     let index = repo.index()?;
     let blob = |e: &Option<git2::IndexEntry>| -> Result<Option<Vec<u8>>> {
-        e.as_ref().map(|e| Ok(repo.find_blob(e.id)?.content().to_vec())).transpose()
+        e.as_ref()
+            .map(|e| if e.mode == GITLINK { Ok(e.id.to_string().into_bytes()) } else { Ok(repo.find_blob(e.id)?.content().to_vec()) })
+            .transpose()
     };
     let mut sides = ConflictSides { rel: rel.clone(), ..Default::default() };
     if let Some(c) = find_conflict(&index, &rel)? {
         (sides.base, sides.ours, sides.theirs) = (blob(&c.ancestor)?, blob(&c.our)?, blob(&c.their)?);
+        let modes = || [&c.ancestor, &c.our, &c.their].into_iter().flatten().map(|e| e.mode);
+        sides.special = if modes().any(|m| m == GITLINK) {
+            Some(Special::Submodule)
+        } else if modes().any(|m| m == SYMLINK) {
+            Some(Special::Symlink)
+        } else {
+            None
+        };
     }
-    sides.work = std::fs::read(wd.join(&rel)).unwrap_or_default();
+    if sides.special.is_none() {
+        sides.work = std::fs::read(wd.join(&rel)).unwrap_or_default();
+    }
     (sides.ours_label, sides.theirs_label) = conflict_labels(&repo);
     Ok(sides)
 }
@@ -420,25 +438,58 @@ pub enum ConflictSide {
     Theirs,
 }
 
+/// Make room for a new file or link at `abs`: remove a file or symlink
+/// there (never following it); refuse a directory.
+fn clear_path(abs: &Path, rel: &str) -> Result<()> {
+    match abs.symlink_metadata() {
+        Err(_) => Ok(()),
+        Ok(m) if m.is_dir() => bail!("{rel} is a directory in the work tree; resolve it with the git command line"),
+        Ok(_) => std::fs::remove_file(abs).with_context(|| format!("replace {rel}")),
+    }
+}
+
 /// Resolve conflicted `rel` by taking one side whole, like `git checkout
 /// --ours/--theirs` and `git add`: that stage's blob is written to the
-/// work tree (its executable bit kept) and staged; a side that deleted the
-/// file deletes it and stages the deletion. Returns a line for the console.
+/// work tree (its executable bit kept) and staged; a symbolic link is
+/// recreated as a link; a submodule's commit is staged without touching
+/// the work tree; a side that deleted the path deletes it (a submodule's
+/// checkout stays) and stages the deletion. Whatever file or link is in
+/// the way is replaced, never written through. Returns a line for the
+/// console.
 pub fn resolve_side(root: &Path, rel: &str, side: ConflictSide) -> Result<String> {
     let (repo, wd) = open(root)?;
     let mut index = repo.index()?;
     let c = find_conflict(&index, rel)?.ok_or_else(|| anyhow!("{rel} has no conflict to resolve"))?;
+    let submodule = [&c.ancestor, &c.our, &c.their].into_iter().flatten().any(|e| e.mode == GITLINK);
     let (entry, name) = match side {
         ConflictSide::Ours => (c.our, "yours"),
         ConflictSide::Theirs => (c.their, "theirs"),
     };
     let abs = wd.join(rel);
+    let mut line = format!("Resolved {rel} with {name}");
     match entry {
-        Some(e) => {
-            if e.mode == 0o120000 {
-                bail!("{rel} is a symbolic link; resolve it with the git command line");
+        Some(e) if e.mode == GITLINK => {
+            let id = e.id;
+            index.remove_path(Path::new(rel)).with_context(|| format!("clear conflict of {rel}"))?;
+            index.add(&git2::IndexEntry { flags: e.flags & !STAGE_MASK, ..e }).with_context(|| format!("stage {rel}"))?;
+            let id = id.to_string();
+            line = format!("{line} (submodule commit {}; run `git submodule update` to check it out)", &id[..7]);
+        }
+        Some(e) if e.mode == SYMLINK => {
+            #[cfg(unix)]
+            {
+                use std::os::unix::ffi::OsStrExt;
+                let blob = repo.find_blob(e.id)?;
+                clear_path(&abs, rel)?;
+                std::os::unix::fs::symlink(std::ffi::OsStr::from_bytes(blob.content()), &abs).with_context(|| format!("link {rel}"))?;
+                index.add_path(Path::new(rel)).with_context(|| format!("stage {rel}"))?;
             }
+            #[cfg(not(unix))]
+            bail!("{rel} is a symbolic link; resolve it with the git command line");
+        }
+        Some(e) => {
             let blob = repo.find_blob(e.id)?;
+            clear_path(&abs, rel)?;
             std::fs::write(&abs, blob.content()).with_context(|| format!("write {rel}"))?;
             #[cfg(unix)]
             {
@@ -448,15 +499,16 @@ pub fn resolve_side(root: &Path, rel: &str, side: ConflictSide) -> Result<String
             }
             index.add_path(Path::new(rel)).with_context(|| format!("stage {rel}"))?;
         }
+        None if submodule => {
+            index.remove_path(Path::new(rel)).with_context(|| format!("stage deletion of {rel}"))?;
+        }
         None => {
-            if abs.symlink_metadata().is_ok() {
-                std::fs::remove_file(&abs).with_context(|| format!("delete {rel}"))?;
-            }
+            clear_path(&abs, rel)?;
             index.remove_path(Path::new(rel)).with_context(|| format!("stage deletion of {rel}"))?;
         }
     }
     index.write()?;
-    Ok(format!("Resolved {rel} with {name}"))
+    Ok(line)
 }
 
 /// Blame of the file at `abs` as of HEAD.
@@ -963,6 +1015,90 @@ pub(crate) mod tests {
         assert!(status(&r.dir).unwrap().entries.iter().all(|e| e.rel != "b.txt"));
         let repo = Repository::open(&r.dir).unwrap();
         assert!(repo.index().unwrap().get_path(Path::new("b.txt"), 0).is_some());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_conflicts_take_a_side_as_a_link() {
+        use crate::git::merge::{MergeInput, Special};
+        let r = TempRepo::new("conflict-symlink");
+        r.write("a.txt", "a\n");
+        std::os::unix::fs::symlink("x", r.dir.join("l")).unwrap();
+        git_cli(&r.dir, &["add", "-A"], true);
+        git_cli(&r.dir, &["commit", "-qm", "first"], true);
+        let main = status(&r.dir).unwrap().branch.unwrap();
+        git_cli(&r.dir, &["switch", "-qc", "dev"], true);
+        std::fs::remove_file(r.dir.join("l")).unwrap();
+        std::os::unix::fs::symlink("dev-target", r.dir.join("l")).unwrap();
+        git_cli(&r.dir, &["commit", "-qam", "dev"], true);
+        git_cli(&r.dir, &["switch", "-q", &main], true);
+        std::fs::remove_file(r.dir.join("l")).unwrap();
+        std::os::unix::fs::symlink("main-target", r.dir.join("l")).unwrap();
+        git_cli(&r.dir, &["commit", "-qam", "main"], true);
+        git_cli(&r.dir, &["merge", "-q", "dev"], false);
+        let s = conflict_sides(&r.dir, &r.dir.join("l")).unwrap();
+        assert_eq!(s.special, Some(Special::Symlink));
+        assert_eq!(s.ours, Some(b"main-target".to_vec()));
+        assert_eq!(s.theirs, Some(b"dev-target".to_vec()));
+        assert!(matches!(MergeInput::classify(&s).unwrap(), MergeInput::SidesOnly(r) if r.contains("symbolic link")));
+        resolve_side(&r.dir, "l", ConflictSide::Theirs).unwrap();
+        assert_eq!(std::fs::read_link(r.dir.join("l")).unwrap(), Path::new("dev-target"));
+        let repo = Repository::open(&r.dir).unwrap();
+        let index = repo.index().unwrap();
+        assert!(!index.has_conflicts());
+        assert_eq!(index.get_path(Path::new("l"), 0).unwrap().mode, 0o120000);
+    }
+
+    #[test]
+    fn submodule_conflicts_stage_the_commit_without_touching_the_work_tree() {
+        use crate::git::merge::{MergeInput, Special};
+        let r = TempRepo::new("conflict-gitlink");
+        r.write("a.txt", "a\n");
+        stage_all(&r.dir).unwrap();
+        commit(&r.dir, "first").unwrap();
+        let mut shas = Vec::new();
+        for m in ["c1", "c2", "c3"] {
+            git_cli(&r.dir, &["commit", "-q", "--allow-empty", "-m", m], true);
+            shas.push(Repository::open(&r.dir).unwrap().head().unwrap().target().unwrap().to_string());
+        }
+        let [c1, c2, c3] = [shas[0].clone(), shas[1].clone(), shas[2].clone()];
+        let main = status(&r.dir).unwrap().branch.unwrap();
+        git_cli(&r.dir, &["update-index", "--add", "--cacheinfo", &format!("160000,{c1},sub")], true);
+        git_cli(&r.dir, &["commit", "-qm", "add sub"], true);
+        git_cli(&r.dir, &["switch", "-qc", "dev"], true);
+        git_cli(&r.dir, &["update-index", "--cacheinfo", &format!("160000,{c2},sub")], true);
+        git_cli(&r.dir, &["commit", "-qm", "dev sub"], true);
+        git_cli(&r.dir, &["switch", "-q", &main], true);
+        git_cli(&r.dir, &["update-index", "--cacheinfo", &format!("160000,{c3},sub")], true);
+        git_cli(&r.dir, &["commit", "-qm", "main sub"], true);
+        git_cli(&r.dir, &["merge", "-q", "dev"], false);
+        let s = conflict_sides(&r.dir, &r.dir.join("sub")).unwrap();
+        assert_eq!(s.special, Some(Special::Submodule));
+        assert_eq!(s.ours, Some(c3.clone().into_bytes()));
+        assert!(matches!(MergeInput::classify(&s).unwrap(), MergeInput::SidesOnly(r) if r.contains("submodule")));
+        let st = status(&r.dir).unwrap();
+        assert!(st.entries.iter().any(|e| e.rel == "sub" && e.status == FileStatus::Conflicted));
+        let before = r.dir.join("sub").exists();
+        let line = resolve_side(&r.dir, "sub", ConflictSide::Theirs).unwrap();
+        assert!(line.contains("submodule commit") && line.contains(&c2[..7]), "{line}");
+        assert_eq!(r.dir.join("sub").exists(), before);
+        let repo = Repository::open(&r.dir).unwrap();
+        let index = repo.index().unwrap();
+        assert!(!index.has_conflicts());
+        let e = index.get_path(Path::new("sub"), 0).unwrap();
+        assert_eq!((e.mode, e.id.to_string()), (0o160000, c2));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_side_never_writes_through_a_symlink() {
+        let r = conflicted_merge("conflict-through-link");
+        std::fs::remove_file(r.dir.join("a.txt")).unwrap();
+        std::os::unix::fs::symlink("b.txt", r.dir.join("a.txt")).unwrap();
+        resolve_side(&r.dir, "a.txt", ConflictSide::Theirs).unwrap();
+        assert!(r.dir.join("a.txt").symlink_metadata().unwrap().file_type().is_file());
+        assert_eq!(std::fs::read_to_string(r.dir.join("a.txt")).unwrap(), "one\nTWO dev\nthree\n");
+        assert_eq!(std::fs::read_to_string(r.dir.join("b.txt")).unwrap(), "b changed\n");
     }
 
     #[test]

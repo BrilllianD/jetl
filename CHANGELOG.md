@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Conflicted symbolic links and submodules can be resolved by taking yours or theirs (a link is
+  recreated, a submodule's commit is staged without touching its checkout).
 - Tabs drag between split groups: onto another group's tab bar (left half of a tab inserts before it, right
   half after, pinned tabs stay among the pinned ones), or onto its text, where a ghost tab shows and the
   release appends it. The target group takes focus; an emptied group collapses. Not while the merge
