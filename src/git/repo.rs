@@ -567,7 +567,8 @@ pub enum StashOp {
     },
 }
 
-/// Run a stash operation; returns a line for the console.
+/// Run a stash push or drop; returns a line for the console. Pop and apply
+/// go through `cli::stash_apply`, so conflicts reach the resolver.
 pub fn stash(root: &Path, op: &StashOp) -> Result<String> {
     let (mut repo, _) = open(root)?;
     let find = |repo: &mut Repository, oid: &str| -> Result<usize> {
@@ -580,12 +581,6 @@ pub fn stash(root: &Path, op: &StashOp) -> Result<String> {
         })?;
         found.ok_or_else(|| anyhow!("That stash no longer exists; the list changed"))
     };
-    let applied = |e: git2::Error| match e.code() {
-        git2::ErrorCode::Conflict | git2::ErrorCode::MergeConflict => {
-            anyhow!("Cannot apply the stash: it conflicts with local changes; commit or stash them first ({})", e.message())
-        }
-        _ => anyhow!("{}", e.message()),
-    };
     Ok(match op {
         StashOp::Push { message } => {
             let sig = signature(&repo)?;
@@ -596,15 +591,8 @@ pub fn stash(root: &Path, op: &StashOp) -> Result<String> {
                 Err(e) => return Err(e.into()),
             }
         }
-        StashOp::Pop { oid } => {
-            let i = find(&mut repo, oid)?;
-            repo.stash_pop(i, None).map_err(applied)?;
-            format!("Popped stash@{{{i}}}")
-        }
-        StashOp::Apply { oid } => {
-            let i = find(&mut repo, oid)?;
-            repo.stash_apply(i, None).map_err(applied)?;
-            format!("Applied stash@{{{i}}}")
+        StashOp::Pop { .. } | StashOp::Apply { .. } => {
+            bail!("stash pop and apply run through the git command line (cli::stash_apply)")
         }
         StashOp::Drop { oid } => {
             let i = find(&mut repo, oid)?;
@@ -890,8 +878,9 @@ pub(crate) mod tests {
         assert!(status(&r.dir).unwrap().entries.is_empty());
     }
 
-    #[test]
-    fn stash_push_list_apply_pop_and_drop() {
+    #[tokio::test]
+    async fn stash_push_list_apply_pop_and_drop() {
+        use crate::git::cli::stash_apply;
         let r = TempRepo::new("stash");
         r.write("a.txt", "a\n");
         stage_all(&r.dir).unwrap();
@@ -908,20 +897,47 @@ pub(crate) mod tests {
         assert!(list[0].message.starts_with("WIP on"), "{}", list[0].message);
         assert!(list[1].message.ends_with("first change"), "{}", list[1].message);
         // Apply keeps the entry; pop removes it.
-        stash(&r.dir, &StashOp::Apply { oid: list[1].oid.clone() }).unwrap();
+        let applied = stash_apply(&r.dir, &list[1].oid, false).await.unwrap();
+        assert_eq!(applied, (true, "Applied stash@{1}".to_string()));
         assert_eq!(std::fs::read_to_string(r.dir.join("a.txt")).unwrap(), "one\n");
         assert_eq!(stashes(&r.dir).unwrap().len(), 2);
-        // Applying over local changes to the same file fails and keeps them.
-        assert!(stash(&r.dir, &StashOp::Pop { oid: list[0].oid.clone() }).is_err());
+        // Popping over local changes to the same file is refused and keeps them.
+        let (ok, output) = stash_apply(&r.dir, &list[0].oid, true).await.unwrap();
+        assert!(!ok && !output.contains("CONFLICT"), "{output}");
         assert_eq!(std::fs::read_to_string(r.dir.join("a.txt")).unwrap(), "one\n");
+        assert_eq!(stashes(&r.dir).unwrap().len(), 2);
         discard(&r.dir, &[(Section::Unstaged, "a.txt".into())]).unwrap();
-        stash(&r.dir, &StashOp::Pop { oid: list[0].oid.clone() }).unwrap();
+        let popped = stash_apply(&r.dir, &list[0].oid, true).await.unwrap();
+        assert_eq!(popped, (true, "Popped stash@{0}".to_string()));
         assert_eq!(std::fs::read_to_string(r.dir.join("a.txt")).unwrap(), "two\n");
         let left = stashes(&r.dir).unwrap();
         assert_eq!((left.len(), left[0].oid.as_str()), (1, list[1].oid.as_str()));
+        let stale = stash_apply(&r.dir, &list[0].oid, true).await.unwrap_err();
+        assert!(stale.to_string().contains("no longer exists"), "{stale}");
         assert!(stash(&r.dir, &StashOp::Drop { oid: list[0].oid.clone() }).unwrap_err().to_string().contains("no longer exists"));
         stash(&r.dir, &StashOp::Drop { oid: list[1].oid.clone() }).unwrap();
         assert!(stashes(&r.dir).unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn stash_pop_conflicting_with_head_leaves_conflicts() {
+        let r = TempRepo::new("stash-conflict");
+        r.write("a.txt", "a\n");
+        stage_all(&r.dir).unwrap();
+        commit(&r.dir, "first").unwrap();
+        r.write("a.txt", "mine\n");
+        stash(&r.dir, &StashOp::Push { message: "wip".into() }).unwrap();
+        r.write("a.txt", "head\n");
+        stage_all(&r.dir).unwrap();
+        commit(&r.dir, "second").unwrap();
+        let oid = stashes(&r.dir).unwrap()[0].oid.clone();
+        let (ok, output) = crate::git::cli::stash_apply(&r.dir, &oid, true).await.unwrap();
+        assert!(!ok && output.contains("CONFLICT"), "{output}");
+        assert!(open(&r.dir).unwrap().0.index().unwrap().has_conflicts());
+        assert_eq!(stashes(&r.dir).unwrap().len(), 1, "a conflicting pop keeps the entry");
+        let sides = conflict_sides(&r.dir, &r.dir.join("a.txt")).unwrap();
+        assert_eq!(sides.ours, Some(b"head\n".to_vec()));
+        assert_eq!(sides.theirs, Some(b"mine\n".to_vec()));
     }
 
     #[test]

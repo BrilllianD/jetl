@@ -2278,6 +2278,33 @@ pub(crate) mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[tokio::test]
+    async fn a_conflicting_stash_pop_offers_the_resolver() {
+        use crate::git::{GitRequest, repo};
+        let (mut app, dir) = test_app("stash-conflict");
+        init_repo(&app, &[("a.txt", "a\n")]);
+        let root = app.workspace.root.clone();
+        std::fs::write(root.join("a.txt"), "mine\n").unwrap();
+        repo::stash(&root, &repo::StashOp::Push { message: "wip".into() }).unwrap();
+        std::fs::write(root.join("a.txt"), "head\n").unwrap();
+        repo::stage_all(&root).unwrap();
+        repo::commit(&root, "second").unwrap();
+        let oid = repo::stashes(&root).unwrap()[0].oid.clone();
+        app.git_request(GitRequest::Stash(repo::StashOp::Pop { oid }));
+        handle_next(&mut app, git_op_done).await;
+        let n = app.notifications.last().expect("a warning");
+        assert_eq!(n.level, Level::Warn);
+        assert_eq!(
+            n.text,
+            "The stash conflicts with your files: resolve the U files (Git > Resolve Conflicts); the stash entry is kept, drop it when done"
+        );
+        assert_eq!(repo::stashes(&root).unwrap().len(), 1, "the entry is kept");
+        feed_status(&mut app, 1);
+        let d = app.dialog.take().expect("Resolve Conflicts");
+        assert_eq!(d.id, DialogId::ResolveConflictPick(vec!["a.txt".into()]));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Feed the Commit tab the diff it asked for, computed on this thread.
     fn feed_change_diff(app: &mut App, section: crate::git::Section, rel: &str) {
         let (old, new) = crate::git::repo::change_texts(&app.workspace.root, section, rel, None).unwrap();

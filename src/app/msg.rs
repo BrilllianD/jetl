@@ -256,7 +256,8 @@ impl App {
             let msg = format!("Branch '{name}' is not fully merged.\nDelete it anyway? Commits only it has may be lost.");
             let id = DialogId::DeleteBranch { name: name.clone(), force: true };
             self.dialog = Some(Dialog::confirm(id, "Delete Branch", &msg, &["Force Delete", "Cancel"]));
-        } else if matches!(op, GitOp::Merge(_) | GitOp::Rebase(_) | GitOp::CherryPick(_) | GitOp::Revert(_)) && output.contains("CONFLICT")
+        } else if matches!(op, GitOp::Merge(_) | GitOp::Rebase(_) | GitOp::CherryPick(_) | GitOp::Revert(_) | GitOp::Stash)
+            && output.contains("CONFLICT")
         {
             // Conflicted files show as U in the Commit tab; the next status
             // opens Resolve Conflicts.
@@ -266,6 +267,9 @@ impl App {
                 }
                 GitOp::Merge(_) => {
                     "Merge stopped on conflicts: resolve the U files (Git > Resolve Conflicts) and commit (or run `git merge --abort`)"
+                }
+                GitOp::Stash => {
+                    "The stash conflicts with your files: resolve the U files (Git > Resolve Conflicts); the stash entry is kept, drop it when done"
                 }
                 _ => "Stopped on conflicts: resolve the U files (Git > Resolve Conflicts) and commit",
             };

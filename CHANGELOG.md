@@ -65,6 +65,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- A stash pop or apply that conflicts with the current commit now leaves the conflicts for Resolve Conflicts
+  (the entry is kept) instead of refusing; local changes in the way still make it refuse and change nothing.
 - Soft wrap: End and vertical moves stop at the end of a wrapped row, with the caret drawn after
   its last character (not on the next row); a click past a row's text does the same. Typing there
   inserts at that offset, and Right moves the caret to the next row's start.

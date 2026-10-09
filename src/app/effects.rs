@@ -130,7 +130,17 @@ impl App {
                     repo::StashOp::Apply { oid } => format!("stash apply {}", &oid[..oid.len().min(8)]),
                     repo::StashOp::Drop { oid } => format!("stash drop {}", &oid[..oid.len().min(8)]),
                 };
-                self.git.run_repo(GitOp::Stash, label, move |root| repo::stash(root, &op));
+                match op {
+                    repo::StashOp::Pop { oid } => {
+                        self.git.stash_apply(oid, true, label);
+                    }
+                    repo::StashOp::Apply { oid } => {
+                        self.git.stash_apply(oid, false, label);
+                    }
+                    op => {
+                        self.git.run_repo(GitOp::Stash, label, move |root| repo::stash(root, &op));
+                    }
+                }
             }
             GitRequest::LoadStashes => self.git.load_stashes(),
             GitRequest::LoadBlame(path) => self.git.load_blame(path),

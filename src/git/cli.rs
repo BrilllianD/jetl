@@ -138,6 +138,27 @@ pub async fn git_ok(root: &Path, args: &[String]) -> Result<CliOutput> {
     }
 }
 
+/// `git stash pop` or `apply` of the stash whose commit is `oid` (looked
+/// up in `git stash list`, so a list that changed cannot hit another
+/// entry). A stash that conflicts with HEAD is applied with conflict
+/// stages and markers, like a merge stop (pop keeps the entry then);
+/// local changes in the way make git refuse and change nothing. Returns
+/// whether git succeeded and the console text: a short line on success,
+/// git's output otherwise.
+pub async fn stash_apply(root: &Path, oid: &str, pop: bool) -> Result<(bool, String)> {
+    let list = git_ok(root, &args(&["stash", "list", "--format=%H"])).await?;
+    let text = list.stdout_text();
+    let i = text.lines().position(|l| l.trim() == oid).ok_or_else(|| anyhow!("That stash no longer exists; the list changed"))?;
+    let verb = if pop { "pop" } else { "apply" };
+    let out = git(root, &["stash".into(), verb.into(), format!("stash@{{{i}}}")]).await?;
+    if out.ok {
+        let done = if pop { "Popped" } else { "Applied" };
+        Ok((true, format!("{done} stash@{{{i}}}")))
+    } else {
+        Ok((false, out.combined()))
+    }
+}
+
 pub fn args(a: &[&str]) -> Vec<String> {
     a.iter().map(|s| s.to_string()).collect()
 }

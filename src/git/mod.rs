@@ -551,6 +551,22 @@ impl GitService {
         id
     }
 
+    /// `git stash pop|apply` of the stash with commit `oid` (see
+    /// [`cli::stash_apply`]); answers as a [`GitOp::Stash`] result.
+    pub fn stash_apply(&mut self, oid: String, pop: bool, label: String) -> u64 {
+        let id = self.start(&label);
+        let pre = self.before(&GitOp::Stash, &label);
+        let (root, generation, tx) = (self.root.clone(), self.generation, self.tx.clone());
+        tokio::spawn(async move {
+            if let Some(ack) = pre {
+                let _ = tokio::task::spawn_blocking(move || ack.wait()).await;
+            }
+            let (ok, output) = cli::stash_apply(&root, &oid, pop).await.unwrap_or_else(|e| (false, format!("{e:#}")));
+            let _ = tx.send(AppMsg::Git(GitMsg::OpDone { generation, id, op: GitOp::Stash, label, ok, output }));
+        });
+        id
+    }
+
     /// `git fetch --prune`, failing early when no remote is configured
     /// (plain `git fetch` silently succeeds then).
     pub fn fetch(&mut self) -> u64 {
