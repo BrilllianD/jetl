@@ -21,7 +21,7 @@ use crate::event::Level;
 use crate::lsp::client::{Client, StartSpec, State};
 use crate::lsp::diagnostics::{Counts, Diagnostic, DiagnosticStore, MAX_TOTAL, Severity};
 use crate::lsp::registry::DocRef;
-use crate::lsp::sync::{self, SyncCaps};
+use crate::lsp::sync::{self, DocEdit, SyncCaps};
 use crate::lsp::transport::{RequestId, ResponseError};
 use crate::lsp::{LspConfig, LspMsg, LspRequest, ServerConfig, ServerId};
 
@@ -83,6 +83,9 @@ pub(super) struct Inflight {
     pub seq: u64,
 }
 
+/// `didChange`s remembered per document (`Doc::sent`).
+const SENT_KEEP: usize = 64;
+
 /// A buffer as its server knows it.
 #[derive(Debug)]
 pub(super) struct Doc {
@@ -91,9 +94,30 @@ pub(super) struct Doc {
     language: &'static str,
     pub uri: Uri,
     pub version: i32,
+    /// What each `didChange` sent, newest last, for mapping a publish made
+    /// for an older version: the version and its edits, `None` when the
+    /// whole text went (the edits are unknown). At most `SENT_KEEP`.
+    sent: std::collections::VecDeque<(i32, Option<Vec<DocEdit>>)>,
 }
 
 impl Doc {
+    /// The edits sent after `version`, in order; `None` when they are not
+    /// all known (older than `sent` reaches, a whole-text change between,
+    /// or a version this document never had).
+    fn edits_since(&self, version: i32) -> Option<impl Iterator<Item = &DocEdit>> {
+        if version > self.version {
+            return None;
+        }
+        let later = self.sent.iter().filter(move |(v, _)| *v > version);
+        if version < self.version && self.sent.front().is_none_or(|(v, _)| *v > version + 1) {
+            return None;
+        }
+        if later.clone().any(|(_, e)| e.is_none()) {
+            return None;
+        }
+        Some(later.flat_map(|(_, e)| e.iter().flatten()))
+    }
+
     /// The document as a registration's document selector sees it.
     pub(super) fn doc_ref(&self) -> DocRef<'_> {
         DocRef { language_id: sync::language_id(self.language), path: &self.path }
@@ -261,6 +285,15 @@ impl App {
                 let Some(client) = lsp.clients.get(&doc.server) else { continue };
                 let Some(caps) = client.capabilities().map(SyncCaps::of) else { continue };
                 doc.version += 1;
+                // The store follows the text as the server now knows it.
+                let sent = (!buf.lsp_full_resync).then(|| buf.lsp_pending.clone());
+                if let Some(edits) = &sent {
+                    lsp.diagnostics.shift(&doc.path, edits);
+                }
+                doc.sent.push_back((doc.version, sent));
+                if doc.sent.len() > SENT_KEEP {
+                    doc.sent.pop_front();
+                }
                 let changes = match caps.change {
                     TextDocumentSyncKind::INCREMENTAL if !buf.lsp_full_resync => buf.lsp_pending.iter().map(|e| e.change_event()).collect(),
                     TextDocumentSyncKind::NONE => Vec::new(),
@@ -287,7 +320,10 @@ impl App {
                 let item = json!({"uri": uri, "languageId": sync::language_id(language), "version": 1, "text": buf.text()});
                 client.notify("textDocument/didOpen", json!({"textDocument": item}));
             }
-            lsp.docs.insert(buf.id, Doc { server: server.name.clone(), path: path.clone(), language, uri, version: 1 });
+            lsp.docs.insert(
+                buf.id,
+                Doc { server: server.name.clone(), path: path.clone(), language, uri, version: 1, sent: Default::default() },
+            );
             untrack(buf);
             buf.lsp_tracked = true;
         }
@@ -415,7 +451,17 @@ impl App {
             "textDocument/publishDiagnostics" => {
                 let Ok(p) = serde_json::from_value::<PublishDiagnosticsParams>(params) else { return };
                 let Some(path) = sync::path(&p.uri) else { return };
-                let items = p.diagnostics.into_iter().map(Diagnostic::from_lsp).collect();
+                let mut items: Vec<Diagnostic> = p.diagnostics.into_iter().map(Diagnostic::from_lsp).collect();
+                // Made for an older text: moved through what was sent since.
+                if let Some(doc) = self.lsp.docs.values().find(|d| d.path == path && d.server == name) {
+                    let v = p.version.unwrap_or(doc.version);
+                    match doc.edits_since(v) {
+                        Some(edits) => {
+                            crate::lsp::diagnostics::shift_all(&mut items, &path, edits);
+                        }
+                        None => tracing::debug!("{name}: diagnostics for {path:?} version {v} cannot be mapped to {}", doc.version),
+                    }
+                }
                 if self.lsp.diagnostics.publish(name, path, items, self.config.lsp.max_diagnostics_per_file) {
                     self.notify(
                         Level::Warn,
@@ -513,8 +559,8 @@ impl App {
     pub(super) fn show_problems(&mut self) {
         self.layout.show(crate::ui::focus::ToolWindowId::Problems);
         self.focus.set(crate::ui::focus::PanelId::Problems);
-        if let Some(path) = self.editor.active_path().map(Path::to_path_buf) {
-            self.problems.select_file(&path, &self.lsp.diagnostics);
+        if let Some(path) = self.editor.active_path() {
+            self.problems.select_file(path, &self.lsp.diagnostics, Some(path));
         }
     }
 
@@ -968,8 +1014,17 @@ pub(crate) mod tests {
     }
 
     fn publish(server: &FakeServer, path: &Path, diagnostics: Value) {
+        publish_v(server, path, Some(1), diagnostics);
+    }
+
+    /// A publish for document `version` (`None`: the key left out).
+    fn publish_v(server: &FakeServer, path: &Path, version: Option<i32>, diagnostics: Value) {
         let uri = sync::uri(path).unwrap();
-        server.notify("textDocument/publishDiagnostics", json!({"uri": uri.as_str(), "version": 1, "diagnostics": diagnostics}));
+        let mut params = json!({"uri": uri.as_str(), "diagnostics": diagnostics});
+        if let Some(v) = version {
+            params["version"] = v.into();
+        }
+        server.notify("textDocument/publishDiagnostics", params);
     }
 
     fn diag_json(l0: u32, c0: u32, l1: u32, c1: u32, severity: u8, message: &str) -> Value {
@@ -1127,6 +1182,105 @@ pub(crate) mod tests {
         std::fs::create_dir_all(&other).unwrap();
         app.do_switch_root(other);
         assert_eq!(app.lsp.diagnostics.total(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The active buffer's diagnostic marks as (line, char column) ranges.
+    fn mark_cols(app: &mut App) -> Vec<(usize, usize, usize)> {
+        app.sync_diag_marks();
+        let b = app.editor.active_buffer().unwrap();
+        b.diag_marks
+            .marks
+            .iter()
+            .map(|m| {
+                let start = b.rope.line_to_char(m.line);
+                (m.line, m.range.start - start, m.range.end - start)
+            })
+            .collect()
+    }
+
+    fn stored(app: &App, path: &Path) -> Vec<lsp_types::Range> {
+        app.lsp.diagnostics.get(path).iter().map(|d| d.range).collect()
+    }
+
+    fn lsp_range(l0: u32, c0: u32, l1: u32, c1: u32) -> lsp_types::Range {
+        lsp_types::Range::new(lsp_types::Position::new(l0, c0), lsp_types::Position::new(l1, c1))
+    }
+
+    #[tokio::test]
+    async fn diagnostics_follow_edits_until_the_next_publish() {
+        let (mut app, dir) = test_app("lsp-diags-follow");
+        let mut servers = with_fake_servers(&mut app, incremental());
+        let server = open_on_server(&mut app, &mut servers, "a.rs", TEXT).await;
+        let path = app.workspace.root.join("a.rs");
+        publish(&server, &path, json!([diag_json(1, 18, 1, 19, 1, "mismatched types")]));
+        handle_next(&mut app, is_lsp).await;
+        assert_eq!(mark_cols(&mut app), [(1, 17, 18)]);
+        // A line inserted at the top: the mark moves down a line.
+        act(&mut app, EditorAction::InsertText("// top\n".into()));
+        draw(&mut app, 100, 24);
+        assert_eq!(mark_cols(&mut app), [(2, 17, 18)]);
+        assert_eq!(stored(&app, &path), [lsp_range(2, 18, 2, 19)]);
+        // A char typed on its line before it: one column right.
+        act(&mut app, EditorAction::Move(Motion::Down, false));
+        act(&mut app, EditorAction::InsertChar('q'));
+        assert_eq!(mark_cols(&mut app), [(2, 18, 19)]);
+        // Undo both: back where it was published.
+        act(&mut app, EditorAction::Undo);
+        act(&mut app, EditorAction::Undo);
+        assert_eq!(app.editor.active_buffer().unwrap().text(), TEXT);
+        assert_eq!(mark_cols(&mut app), [(1, 17, 18)]);
+        assert_eq!(stored(&app, &path), [lsp_range(1, 18, 1, 19)]);
+        // The erroneous `x` deleted: the problem goes with it.
+        app.perform(Action::Editor(EditorAction::Move(Motion::DocStart, false)));
+        app.perform(Action::Editor(EditorAction::Move(Motion::Down, false)));
+        for _ in 0..17 {
+            app.perform(Action::Editor(EditorAction::Move(Motion::Right, false)));
+        }
+        app.perform(Action::Editor(EditorAction::Move(Motion::Right, true)));
+        act(&mut app, EditorAction::Backspace);
+        assert!(mark_cols(&mut app).is_empty());
+        assert_eq!(app.problem_counts().map(|c| c.errors), Some(0));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn older_publish_is_mapped_forward() {
+        let (mut app, dir) = test_app("lsp-diags-older");
+        let mut servers = with_fake_servers(&mut app, incremental());
+        let server = open_on_server(&mut app, &mut servers, "a.rs", TEXT).await;
+        let path = app.workspace.root.join("a.rs");
+        act(&mut app, EditorAction::InsertText("// top\n".into()));
+        assert_eq!(app.lsp.docs.values().next().unwrap().version, 2);
+        let error = || json!([diag_json(1, 18, 1, 19, 1, "e")]);
+        publish_v(&server, &path, Some(1), error());
+        handle_next(&mut app, is_lsp).await;
+        assert_eq!(stored(&app, &path), [lsp_range(2, 18, 2, 19)], "made for version 1: moved through version 2's edits");
+        publish_v(&server, &path, Some(2), error());
+        handle_next(&mut app, is_lsp).await;
+        assert_eq!(stored(&app, &path), [lsp_range(1, 18, 1, 19)], "the current version: as sent");
+        publish_v(&server, &path, None, error());
+        handle_next(&mut app, is_lsp).await;
+        assert_eq!(stored(&app, &path), [lsp_range(1, 18, 1, 19)], "no version counts as the current one");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn unmappable_publish_is_stored_as_sent() {
+        let (mut app, dir) = test_app("lsp-diags-unmappable");
+        let mut servers = with_fake_servers(&mut app, incremental());
+        let server = open_on_server(&mut app, &mut servers, "a.rs", TEXT).await;
+        let path = app.workspace.root.join("a.rs");
+        app.perform(Action::Editor(EditorAction::InsertText("// top\n".into())));
+        app.editor.active_buffer_mut().unwrap().lsp_full_resync = true;
+        app.lsp_sync();
+        publish_v(&server, &path, Some(1), json!([diag_json(1, 18, 1, 19, 1, "e")]));
+        handle_next(&mut app, is_lsp).await;
+        assert_eq!(stored(&app, &path), [lsp_range(1, 18, 1, 19)], "a whole-text change in between: stored as published");
+        // A version this document never had: as published too.
+        publish_v(&server, &path, Some(7), json!([diag_json(0, 0, 0, 1, 1, "e")]));
+        handle_next(&mut app, is_lsp).await;
+        assert_eq!(stored(&app, &path), [lsp_range(0, 0, 0, 1)]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

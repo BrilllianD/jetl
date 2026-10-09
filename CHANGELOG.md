@@ -24,6 +24,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Lightbulb: when the caret rests on a line with a problem and the language server has quick
   fixes for it, a `✱` replaces the line's gutter glyph (new `lightbulb` theme style).
   Alt+Enter lists the server's preferred fixes first, so Enter runs the preferred one.
+- Diagnostics follow your edits: underlines, gutter marks, F2 and the Problems window move
+  with the text you type until the language server reports again, and a report made for an
+  older version of the file is moved to where the text is now. A problem whose text you
+  delete disappears at once.
+- Code the language server marks as unused is drawn faded, deprecated code struck through.
+- The Problems window lists each problem's related locations under it (Enter jumps there),
+  and Alt+C (or the context menu) shows only the file open in the editor.
 
 ## [0.2.0] - 2026-10-09
 

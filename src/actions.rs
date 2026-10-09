@@ -403,6 +403,8 @@ pub enum ProblemsAction {
     Open,
     /// Copy the selected problem's message.
     Copy,
+    /// Show only the active file's problems, or all again.
+    ToggleCurrentFile,
 }
 
 /// The Local History tool window (`history/panel.rs`).
@@ -833,6 +835,7 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "problems.end" => "Problems: last row", Problems(ProblemsAction::End);
         "problems.open" => "Problems: jump to the selected problem", Problems(ProblemsAction::Open);
         "problems.copy" => "Problems: copy the selected message", Problems(ProblemsAction::Copy);
+        "problems.toggle_current_file" => "Problems: show only the current file", Problems(ProblemsAction::ToggleCurrentFile);
 
         "local_history.up" => "Local History: up", History(HistoryAction::Up);
         "local_history.down" => "Local History: down", History(HistoryAction::Down);

@@ -398,6 +398,7 @@
 "end" = "problems.end"
 "enter" = "problems.open"
 "ctrl-c" = "problems.copy"
+"alt-c" = "problems.toggle_current_file"
 "esc" = "app.focus_editor"
 
 [run]

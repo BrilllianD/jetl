@@ -1,0 +1,14 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &marks, Some(text))"
+---
+40x6 cursor=(7,1)
+00   tags.log ×
+01   1    use old::api;
+02   2 ⚠  let unused = 1;
+03   3    call(api);
+04   4
+05
+-- marks: X=deprecated U=unnecessary W=warning
+01            XXXXXXXX
+02            UUUUUU

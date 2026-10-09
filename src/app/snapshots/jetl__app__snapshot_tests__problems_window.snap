@@ -1,6 +1,6 @@
 ---
 source: src/app/snapshot_tests.rs
-expression: "snapshot(&term, &marks, None)"
+expression: "snapshot(&term, &problems_marks(&app.theme), None)"
 ---
 80x24 cursor=hidden
 00  ≣ ┌ Project: root ───────────────┐│  main.log ×
@@ -15,11 +15,11 @@ expression: "snapshot(&term, &marks, None)"
 09    ┌ Problems: 1 error, 1 warning ─────────────────────────────────────────────┐
 10  ⟲ │ main.log    1 error, 1 warning                                            │
 11    │   ✖ mismatched types  rustc E0308  2:17                                   │
-12  ⚑ │   ⚠ function `unused` is never used  rustc  3:5                           │
-13  9 │ lib.log  src/  1 hint                                                     │
-14  ⎇ │   · consider a doc comment  clippy  1:1                                   │
-15    │                                                                           │
-16  ❯ │                                                                           │
+12  ⚑ │       ↳ expected due to this  2:12                                        │
+13  9 │       ↳ the type is declared here  src/lib.log:1:1                        │
+14  ⎇ │   ⚠ function `unused` is never used  rustc  3:5                           │
+15    │ lib.log  src/  1 hint                                                     │
+16  ❯ │   · consider a doc comment  clippy  1:1                                   │
 17  6 │                                                                           │
 18  ⚠ │                                                                           │
 19  4 │                                                                           │

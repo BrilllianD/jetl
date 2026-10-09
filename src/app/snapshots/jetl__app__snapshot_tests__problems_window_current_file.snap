@@ -1,0 +1,33 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &problems_marks(&app.theme), None)"
+---
+80x24 cursor=hidden
+00  ≣ ┌ Project: root ───────────────┐│  main.log ×
+01    │                              ││  1  ▾ fn main() {
+02  1 │                              ││  2 ✖      let x: u8 = "one";
+03  ⌂ │                              ││  3 ⚠      unused();
+04  2 │                              ││  4    }
+05  ◫ │                              ││  5
+06  7 │                              ││
+07  ⊢ └──────────────────────────────┘│
+08    ─────────────────────────────────────────────────────────────────────────────
+09    ┌ Problems (current file): 1 error, 1 warning ──────────────────────────────┐
+10  ⟲ │ main.log    1 error, 1 warning                                            │
+11    │   ✖ mismatched types  rustc E0308  2:17                                   │
+12  ⚑ │       ↳ expected due to this  2:12                                        │
+13  9 │       ↳ the type is declared here  src/lib.log:1:1                        │
+14  ⎇ │   ⚠ function `unused` is never used  rustc  3:5                           │
+15    │                                                                           │
+16  ❯ │                                                                           │
+17  6 │                                                                           │
+18  ⚠ │                                                                           │
+19  4 │                                                                           │
+20  ► │                                                                           │
+21  3 │                                                                           │
+22  ⌕ └───────────────────────────────────────────────────────────────────────────┘
+23  root                     ✖ 1 ⚠ 1  Ln 1, Col 1  LF  UTF-8  4 spaces  Plain text
+-- marks: L=selected E=error W=warning
+02                                                            EEEEE
+03                                                WWWWWW
+11     LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL

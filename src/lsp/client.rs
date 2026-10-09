@@ -20,12 +20,13 @@ use std::time::{Duration, Instant};
 use lsp_types::{
     ClientCapabilities, ClientInfo, CodeActionCapabilityResolveSupport, CodeActionClientCapabilities, CodeActionKindLiteralSupport,
     CodeActionLiteralSupport, CompletionClientCapabilities, CompletionItemCapability, CompletionItemCapabilityResolveSupport,
-    CompletionItemKind, CompletionItemKindCapability, DocumentFormattingClientCapabilities, DocumentRangeFormattingClientCapabilities,
-    DocumentSymbolClientCapabilities, ExecuteCommandClientCapabilities, FailureHandlingKind, GeneralClientCapabilities, GotoCapability,
-    HoverClientCapabilities, InitializeParams, InitializeResult, MarkupKind, PositionEncodingKind, PublishDiagnosticsClientCapabilities,
-    ReferenceClientCapabilities, RenameClientCapabilities, ResourceOperationKind, ShowMessageRequestClientCapabilities,
-    TextDocumentClientCapabilities, TextDocumentSyncClientCapabilities, WindowClientCapabilities, WorkspaceClientCapabilities,
-    WorkspaceEditClientCapabilities, WorkspaceFolder,
+    CompletionItemKind, CompletionItemKindCapability, DiagnosticTag, DocumentFormattingClientCapabilities,
+    DocumentRangeFormattingClientCapabilities, DocumentSymbolClientCapabilities, ExecuteCommandClientCapabilities, FailureHandlingKind,
+    GeneralClientCapabilities, GotoCapability, HoverClientCapabilities, InitializeParams, InitializeResult, MarkupKind,
+    PositionEncodingKind, PublishDiagnosticsClientCapabilities, ReferenceClientCapabilities, RenameClientCapabilities,
+    ResourceOperationKind, ShowMessageRequestClientCapabilities, TagSupport, TextDocumentClientCapabilities,
+    TextDocumentSyncClientCapabilities, WindowClientCapabilities, WorkspaceClientCapabilities, WorkspaceEditClientCapabilities,
+    WorkspaceFolder,
 };
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, BufReader};
@@ -206,7 +207,12 @@ pub fn client_capabilities() -> ClientCapabilities {
         general: Some(GeneralClientCapabilities { position_encodings: Some(vec![PositionEncodingKind::UTF16]), ..Default::default() }),
         text_document: Some(TextDocumentClientCapabilities {
             synchronization: Some(TextDocumentSyncClientCapabilities { did_save: Some(true), ..Default::default() }),
-            publish_diagnostics: Some(PublishDiagnosticsClientCapabilities::default()),
+            publish_diagnostics: Some(PublishDiagnosticsClientCapabilities {
+                related_information: Some(true),
+                tag_support: Some(TagSupport { value_set: vec![DiagnosticTag::UNNECESSARY, DiagnosticTag::DEPRECATED] }),
+                version_support: Some(true),
+                ..Default::default()
+            }),
             definition: Some(GotoCapability { dynamic_registration: Some(true), link_support: Some(true) }),
             references: Some(ReferenceClientCapabilities { dynamic_registration: Some(true) }),
             hover: Some(HoverClientCapabilities {

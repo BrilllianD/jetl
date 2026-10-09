@@ -235,4 +235,13 @@ mod tests {
         assert!(c["workspace"]["didChangeWatchedFiles"].is_null());
         assert!(c["workspace"]["didChangeConfiguration"].is_null());
     }
+
+    #[test]
+    fn diagnostic_tags_related_and_versions_are_advertised() {
+        let c = serde_json::to_value(client_capabilities()).unwrap();
+        let d = &c["textDocument"]["publishDiagnostics"];
+        assert_eq!(d["relatedInformation"], true);
+        assert_eq!(d["tagSupport"]["valueSet"], serde_json::json!([1, 2]));
+        assert_eq!(d["versionSupport"], true);
+    }
 }

@@ -68,7 +68,8 @@ pub fn render(app: &mut App, frame: &mut Frame) {
                 } else {
                     "Language servers are off ([lsp] enabled = false in config.toml)"
                 };
-                app.problems.render(frame, r, focused, &theme, &app.lsp.diagnostics, &app.workspace.root, hint);
+                let active = app.editor.active_path();
+                app.problems.render(frame, r, focused, &theme, &app.lsp.diagnostics, &app.workspace.root, active, hint);
             }
             PanelId::LocalHistory => app.history_panel.render(frame, r, focused, &theme),
             _ => {}

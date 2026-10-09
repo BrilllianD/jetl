@@ -860,7 +860,7 @@ impl App {
                 return;
             }
             Action::Run(a) => self.run_panel.handle_action(a, &mut cx),
-            Action::Problems(a) => self.problems.handle_action(a, &self.lsp.diagnostics, &mut cx),
+            Action::Problems(a) => self.problems.handle_action(a, &self.lsp.diagnostics, self.editor.active_path(), &mut cx),
             Action::History(a) => self.history_panel.handle_action(a, &mut cx),
             Action::Lsp(crate::actions::LspAction::Restart) => {
                 drop(cx);

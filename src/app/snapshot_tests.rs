@@ -912,12 +912,11 @@ async fn find_in_files_window() {
     assert_snapshot!("find_in_files_window", snapshot(&term, &marks, Some(bottom)));
 }
 
-#[tokio::test]
-async fn problems_window() {
-    use crate::lsp::diagnostics::Severity;
+/// Diagnostics in two files, the first error with related locations in
+/// its own file and in the other; `main.log` active.
+fn problems_setup(app: &mut App) {
     use crate::lsp::diagnostics::tests::diag;
-    let mut fx = stable_app("problems");
-    let app = &mut fx.app;
+    use crate::lsp::diagnostics::{Related, Severity};
     let root = app.workspace.root.clone();
     let main = load(app, "main.log", "fn main() {\n    let x: u8 = \"one\";\n    unused();\n}\n");
     let with = |d: crate::lsp::diagnostics::Diagnostic, source: &str, code: Option<&str>| crate::lsp::diagnostics::Diagnostic {
@@ -925,14 +924,17 @@ async fn problems_window() {
         code: code.map(String::from),
         ..d
     };
+    let at = |l, c| lsp_types::Range::new(lsp_types::Position::new(l, c), lsp_types::Position::new(l, c + 1));
+    let mut error = with(diag(1, 16, 1, 21, Severity::Error, "mismatched types\nexpected `u8`, found `&str`"), "rustc", Some("E0308"));
+    error.related = vec![
+        Related { path: main.clone(), range: at(1, 11), message: "expected due to this".into() },
+        Related { path: root.join("src/lib.log"), range: at(0, 0), message: "the type is declared here".into() },
+    ];
     let per_file = app.config.lsp.max_diagnostics_per_file;
     app.lsp.diagnostics.publish(
         "fake",
         main,
-        vec![
-            with(diag(1, 16, 1, 21, Severity::Error, "mismatched types\nexpected `u8`, found `&str`"), "rustc", Some("E0308")),
-            with(diag(2, 4, 2, 10, Severity::Warning, "function `unused` is never used"), "rustc", None),
-        ],
+        vec![error, with(diag(2, 4, 2, 10, Severity::Warning, "function `unused` is never used"), "rustc", None)],
         per_file,
     );
     app.lsp.diagnostics.publish(
@@ -942,13 +944,57 @@ async fn problems_window() {
         per_file,
     );
     app.toggle_tool_window(ToolWindowId::Problems);
+}
+
+fn problems_marks(theme: &Theme) -> [Mark; 3] {
+    [
+        Mark::bg('L', "selected", theme.list_selected.bg.unwrap()),
+        Mark::underline('E', "error", theme.diag_error.fg.unwrap()),
+        Mark::underline('W', "warning", theme.diag_warn.fg.unwrap()),
+    ]
+}
+
+#[tokio::test]
+async fn problems_window() {
+    let mut fx = stable_app("problems");
+    let app = &mut fx.app;
+    problems_setup(app);
     let term = draw_app(app, 80, 24);
+    assert_snapshot!("problems_window", snapshot(&term, &problems_marks(&app.theme), None));
+}
+
+#[tokio::test]
+async fn problems_window_current_file() {
+    let mut fx = stable_app("problems-current");
+    let app = &mut fx.app;
+    problems_setup(app);
+    app.perform(Action::Problems(crate::actions::ProblemsAction::ToggleCurrentFile));
+    let term = draw_app(app, 80, 24);
+    assert_snapshot!("problems_window_current_file", snapshot(&term, &problems_marks(&app.theme), None));
+}
+
+#[tokio::test]
+async fn editor_diagnostic_tags() {
+    use crate::lsp::diagnostics::tests::diag;
+    use crate::lsp::diagnostics::{Severity, Tags};
+    let mut fx = stable_app("diagnostic-tags");
+    let app = &mut fx.app;
+    let path = load(app, "tags.log", "use old::api;\nlet unused = 1;\ncall(api);\n");
+    let mut unused = diag(1, 4, 1, 10, Severity::Warning, "unused variable");
+    unused.tags = Tags { unnecessary: true, deprecated: false };
+    let mut deprecated = diag(0, 4, 0, 12, Severity::Hint, "deprecated");
+    deprecated.tags = Tags { unnecessary: false, deprecated: true };
+    let per_file = app.config.lsp.max_diagnostics_per_file;
+    app.lsp.diagnostics.publish("fake", path, vec![unused, deprecated], per_file);
+    app.sync_diag_marks();
+    let term = draw_editor(app, 40, 6);
     let marks = [
-        Mark::bg('L', "selected", app.theme.list_selected.bg.unwrap()),
-        Mark::underline('E', "error", app.theme.diag_error.fg.unwrap()),
+        Mark::modifier('X', "deprecated", Modifier::CROSSED_OUT),
+        Mark::style('U', "unnecessary", ratatui::style::Style::default().fg(app.theme.dim.fg.unwrap())),
         Mark::underline('W', "warning", app.theme.diag_warn.fg.unwrap()),
     ];
-    assert_snapshot!("problems_window", snapshot(&term, &marks, None));
+    let text = app.editor.text_area();
+    assert_snapshot!("editor_diagnostic_tags", snapshot(&term, &marks, Some(text)));
 }
 
 fn sha(c: char) -> String {

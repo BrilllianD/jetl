@@ -267,7 +267,7 @@ impl App {
             PanelId::EventLog => self.event_log.handle_mouse(m, &self.notifications, &mut cx),
             PanelId::Run => self.run_panel.handle_mouse(m, &mut cx),
             PanelId::Terminal => self.terminal.handle_mouse(m),
-            PanelId::Problems => self.problems.handle_mouse(m, &self.lsp.diagnostics, &mut cx),
+            PanelId::Problems => self.problems.handle_mouse(m, &self.lsp.diagnostics, self.editor.active_path(), &mut cx),
             PanelId::LocalHistory => self.history_panel.handle_mouse(m, &mut cx),
         };
         let fx = cx.effects;

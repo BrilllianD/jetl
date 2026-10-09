@@ -4,9 +4,13 @@
 //! (char ranges in the current text, the worst severity per line, and
 //! non-overlapping underline spans).
 //!
-//! The store keeps LSP ranges (UTF-16). They are converted against the
-//! buffer's text when its marks are built, so they drift with edits made
-//! after the publish until the server publishes again.
+//! The store keeps LSP ranges (UTF-16). An open document's ranges are in
+//! terms of the text last sent to its server: `App::lsp_sync` shifts them
+//! through the edits it sends ([`DiagnosticStore::shift`]), and a publish
+//! made for an older version is mapped forward through the edits sent
+//! since ([`shift_all`]). Marks are converted against the buffer's text
+//! after that sync, so they follow edits until the server publishes again.
+//! A whole-text resync (edits unknown) leaves them to drift until then.
 
 use std::collections::BTreeMap;
 use std::ops::Range;
@@ -17,6 +21,7 @@ use ratatui::style::Style;
 use ropey::Rope;
 
 use super::pos;
+use super::sync::DocEdit;
 use crate::config::theme::Theme;
 use crate::editor::selection::line_len_no_eol;
 
@@ -74,6 +79,24 @@ impl Severity {
     }
 }
 
+/// `DiagnosticTag`s jetl draws.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Tags {
+    /// Unused or unnecessary code: drawn faded (`theme.dim`'s foreground).
+    pub unnecessary: bool,
+    /// Deprecated: drawn struck through.
+    pub deprecated: bool,
+}
+
+/// One `relatedInformation` entry: a location (a file path; entries whose
+/// URI is not a file are left out) and its message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Related {
+    pub path: PathBuf,
+    pub range: lsp_types::Range,
+    pub message: String,
+}
+
 /// One diagnostic as published, in LSP positions.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Diagnostic {
@@ -88,6 +111,9 @@ pub struct Diagnostic {
     /// `data`.
     pub raw_code: Option<NumberOrString>,
     pub data: Option<serde_json::Value>,
+    pub tags: Tags,
+    /// Other locations that explain it (`relatedInformation`).
+    pub related: Vec<Related>,
 }
 
 impl Diagnostic {
@@ -96,6 +122,14 @@ impl Diagnostic {
             NumberOrString::Number(n) => n.to_string(),
             NumberOrString::String(s) => s.clone(),
         });
+        let has = |t| d.tags.as_ref().is_some_and(|tags| tags.contains(&t));
+        let tags = Tags { unnecessary: has(lsp_types::DiagnosticTag::UNNECESSARY), deprecated: has(lsp_types::DiagnosticTag::DEPRECATED) };
+        let related = d
+            .related_information
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|r| Some(Related { path: super::sync::path(&r.location.uri)?, range: r.location.range, message: r.message }))
+            .collect();
         Self {
             range: d.range,
             severity: Severity::of(d.severity),
@@ -104,6 +138,8 @@ impl Diagnostic {
             code,
             raw_code: d.code,
             data: d.data,
+            tags,
+            related,
         }
     }
 
@@ -122,8 +158,39 @@ impl Diagnostic {
             source: self.source.clone(),
             message: self.message.clone(),
             data: self.data.clone(),
+            tags: (self.tags != Tags::default()).then(|| {
+                let mut tags = Vec::new();
+                if self.tags.unnecessary {
+                    tags.push(lsp_types::DiagnosticTag::UNNECESSARY);
+                }
+                if self.tags.deprecated {
+                    tags.push(lsp_types::DiagnosticTag::DEPRECATED);
+                }
+                tags
+            }),
+            related_information: (!self.related.is_empty()).then(|| {
+                self.related
+                    .iter()
+                    .filter_map(|r| {
+                        Some(lsp_types::DiagnosticRelatedInformation {
+                            location: lsp_types::Location::new(super::sync::uri(&r.path)?, r.range),
+                            message: r.message.clone(),
+                        })
+                    })
+                    .collect()
+            }),
             ..Default::default()
         }
+    }
+
+    /// The same problem, wherever it is now (the Problems window finds its
+    /// selection again after the ranges moved): everything but the ranges.
+    pub fn same_problem(&self, o: &Diagnostic) -> bool {
+        self.severity == o.severity
+            && self.message == o.message
+            && self.source == o.source
+            && self.code == o.code
+            && self.related.len() == o.related.len()
     }
 
     /// The first line of the message (they can span several).
@@ -144,6 +211,100 @@ impl Diagnostic {
     fn sort_key(&self) -> (u32, u32, Severity) {
         (self.range.start.line, self.range.start.character, self.severity)
     }
+}
+
+/// Sort a file's diagnostics by position, then severity.
+fn sort_items(items: &mut [Diagnostic]) {
+    items.sort_by_key(Diagnostic::sort_key);
+}
+
+/// Where the text `text` inserted at `at` ends: lines break at `\n`,
+/// `\r\n` (one break) and a lone `\r`, as LSP and the rope count them;
+/// the column counts UTF-16 units.
+fn text_end(at: Position, text: &str) -> Position {
+    let mut breaks = 0;
+    let mut last = None;
+    let mut chars = text.char_indices().peekable();
+    while let Some((i, c)) = chars.next() {
+        match c {
+            '\r' if chars.peek().is_some_and(|&(_, n)| n == '\n') => {}
+            '\r' | '\n' => {
+                breaks += 1;
+                last = Some(i + 1);
+            }
+            _ => {}
+        }
+    }
+    let units = |s: &str| s.encode_utf16().count() as u32;
+    match last {
+        None => Position::new(at.line, at.character + units(text)),
+        Some(k) => Position::new(at.line + breaks, units(&text[k..])),
+    }
+}
+
+/// `p` through edit `e` (its range in the text before it). Before the
+/// edit: unchanged; after its end: moved by the edit's delta (same line as
+/// the end: column relative to the inserted text's end); inside the
+/// replaced range or at its end: the end of the inserted text. At its
+/// start: unchanged, except that a pure insertion there moves `p` past the
+/// inserted text when `after`.
+pub fn shift_pos(p: Position, e: &DocEdit, after: bool) -> Position {
+    let (s, t) = (e.start, e.end);
+    if p < s || (p == s && !(after && s == t)) {
+        return p;
+    }
+    let n = text_end(s, &e.text);
+    if p <= t {
+        return n;
+    }
+    if p.line == t.line {
+        Position::new(n.line, n.character + (p.character - t.character))
+    } else {
+        Position::new(p.line - t.line + n.line, p.character)
+    }
+}
+
+/// `r` through `e` with the start sticking after text inserted at it and
+/// the end before it (text typed at either boundary is not absorbed).
+fn shift_range_keep(r: lsp_types::Range, e: &DocEdit) -> lsp_types::Range {
+    let start = shift_pos(r.start, e, true);
+    let end = shift_pos(r.end, e, false).max(start);
+    lsp_types::Range::new(start, end)
+}
+
+/// `r` through `e`; `None` when a non-empty range became empty (its text
+/// is gone).
+fn shift_range(r: lsp_types::Range, e: &DocEdit) -> Option<lsp_types::Range> {
+    let n = shift_range_keep(r, e);
+    (r.start == r.end || n.start != n.end).then_some(n)
+}
+
+/// Move `items` (the diagnostics of `path`) through `edits` in order:
+/// ranges shifted, emptied ones dropped, related locations in `path`
+/// shifted (never dropped); re-sorted by position. True if anything
+/// changed.
+pub fn shift_all<'a>(items: &mut Vec<Diagnostic>, path: &Path, edits: impl IntoIterator<Item = &'a DocEdit>) -> bool {
+    let mut changed = false;
+    for e in edits {
+        items.retain_mut(|d| {
+            let Some(r) = shift_range(d.range, e) else {
+                changed = true;
+                return false;
+            };
+            changed |= r != d.range;
+            d.range = r;
+            for rel in d.related.iter_mut().filter(|rel| rel.path == path) {
+                let r = shift_range_keep(rel.range, e);
+                changed |= r != rel.range;
+                rel.range = r;
+            }
+            true
+        });
+    }
+    if changed {
+        sort_items(items);
+    }
+    changed
 }
 
 /// Counts by severity.
@@ -237,7 +398,7 @@ impl DiagnosticStore {
             items.sort_by_key(|d| (d.severity, d.range.start.line, d.range.start.character));
             items.truncate(cap);
         }
-        items.sort_by_key(Diagnostic::sort_key);
+        sort_items(&mut items);
         if old > 0 || !items.is_empty() {
             self.version += 1;
         }
@@ -248,6 +409,25 @@ impl DiagnosticStore {
         let note = over_total && !self.overflow_noted;
         self.overflow_noted |= over_total;
         note
+    }
+
+    /// Move `path`'s diagnostics through `edits` (just sent to its server,
+    /// in order), dropping those whose text went; bumps the version when
+    /// anything moved.
+    pub fn shift(&mut self, path: &Path, edits: &[DocEdit]) {
+        if edits.is_empty() {
+            return;
+        }
+        let Some(f) = self.files.get_mut(path) else { return };
+        let before = f.items.len();
+        if !shift_all(&mut f.items, path, edits) {
+            return;
+        }
+        self.total -= before - f.items.len();
+        if f.items.is_empty() {
+            self.files.remove(path);
+        }
+        self.version += 1;
     }
 
     /// Forget what `server` published (it stopped or exited).
@@ -279,6 +459,7 @@ pub struct Mark {
     pub line: usize,
     pub severity: Severity,
     pub message: String,
+    pub tags: Tags,
 }
 
 /// A buffer's diagnostics as drawn, cached by store version, buffer
@@ -292,6 +473,10 @@ pub struct DiagMarks {
     pub lines: BTreeMap<usize, Severity>,
     /// Sorted, non-overlapping; the worst severity wins where they overlap.
     pub spans: Vec<(Range<usize>, Severity)>,
+    /// Char ranges tagged unnecessary, sorted and merged.
+    pub unnecessary: Vec<Range<usize>>,
+    /// Char ranges tagged deprecated, sorted and merged.
+    pub deprecated: Vec<Range<usize>>,
 }
 
 impl DiagMarks {
@@ -316,7 +501,18 @@ impl DiagMarks {
             lines.entry(m.line).and_modify(|s: &mut Severity| *s = (*s).min(m.severity)).or_insert(m.severity);
         }
         let spans = spans(&marks);
-        Self { key: None, marks, lines, spans }
+        let unnecessary = merged(marks.iter().filter(|m| m.tags.unnecessary).map(|m| m.range.clone()));
+        let deprecated = merged(marks.iter().filter(|m| m.tags.deprecated).map(|m| m.range.clone()));
+        Self { key: None, marks, lines, spans, unnecessary, deprecated }
+    }
+
+    /// The tags over char `i`.
+    pub fn tags_at(&self, i: usize) -> Tags {
+        let over = |rs: &[Range<usize>]| {
+            let k = rs.partition_point(|r| r.end <= i);
+            rs.get(k).is_some_and(|r| r.contains(&i))
+        };
+        Tags { unnecessary: over(&self.unnecessary), deprecated: over(&self.deprecated) }
     }
 
     /// The worst severity underlining char `i`.
@@ -360,7 +556,24 @@ fn place(d: &Diagnostic, rope: &Rope) -> Mark {
             range = start - 1..start;
         }
     }
-    Mark { range, line, severity: d.severity, message: d.summary().to_string() }
+    // A point diagnostic is underlined over a char, but tags no text.
+    let tags = if d.range.start == d.range.end { Tags::default() } else { d.tags };
+    Mark { range, line, severity: d.severity, message: d.summary().to_string(), tags }
+}
+
+/// `ranges` sorted, the empty ones left out, overlapping or touching ones
+/// joined.
+fn merged(ranges: impl Iterator<Item = Range<usize>>) -> Vec<Range<usize>> {
+    let mut rs: Vec<Range<usize>> = ranges.filter(|r| !r.is_empty()).collect();
+    rs.sort_by_key(|r| r.start);
+    let mut out: Vec<Range<usize>> = Vec::new();
+    for r in rs {
+        match out.last_mut() {
+            Some(last) if r.start <= last.end => last.end = last.end.max(r.end),
+            _ => out.push(r),
+        }
+    }
+    out
 }
 
 /// Non-overlapping underline spans of `marks`, the worst severity on top.
@@ -400,6 +613,8 @@ pub(crate) mod tests {
             code: None,
             raw_code: None,
             data: None,
+            tags: Tags::default(),
+            related: Vec::new(),
         }
     }
 
@@ -478,7 +693,7 @@ pub(crate) mod tests {
             diag(2, 9, 2, 9, Severity::Hint, "at the end"),
         ];
         let m = DiagMarks::build(&items, &rope);
-        assert_eq!(m.marks[0], Mark { range: 2..4, line: 0, severity: Severity::Warning, message: "warn".into() });
+        assert_eq!(m.marks[0], Mark { range: 2..4, line: 0, severity: Severity::Warning, message: "warn".into(), tags: Tags::default() });
         assert_eq!(m.marks[1].range, 3..5);
         assert_eq!(m.marks[2].range, 6..6, "nothing to underline on an empty line");
         assert_eq!(m.marks[3].range, 15..16, "an empty range at the end of a line takes the char before");
@@ -512,5 +727,154 @@ pub(crate) mod tests {
         assert!(m.sync(&s, &rope, 2, Some(&p)), "the text changed");
         assert!(m.sync(&s, &rope, 2, Some(Path::new("/r/b.rs"))), "the path changed");
         assert!(m.marks.is_empty());
+    }
+
+    #[test]
+    fn from_lsp_reads_tags_and_related() {
+        let d: lsp_types::Diagnostic = serde_json::from_value(serde_json::json!({
+            "range": {"start": {"line": 0, "character": 1}, "end": {"line": 0, "character": 2}},
+            "message": "m",
+            "tags": [1, 2, 99],
+            "relatedInformation": [
+                {"location": {"uri": "file:///r/a.rs", "range": {"start": {"line": 3, "character": 0}, "end": {"line": 3, "character": 4}}}, "message": "here"},
+                {"location": {"uri": "untitled:Untitled-1", "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 0}}}, "message": "gone"}
+            ]
+        }))
+        .unwrap();
+        let d = Diagnostic::from_lsp(d);
+        assert_eq!(d.tags, Tags { unnecessary: true, deprecated: true });
+        let r = lsp_types::Range::new(Position::new(3, 0), Position::new(3, 4));
+        assert_eq!(d.related, [Related { path: PathBuf::from("/r/a.rs"), range: r, message: "here".into() }]);
+        let back = serde_json::to_value(d.to_lsp()).unwrap();
+        assert_eq!(back["tags"], serde_json::json!([1, 2]));
+        assert_eq!(back["relatedInformation"].as_array().map(Vec::len), Some(1));
+        assert_eq!(back["relatedInformation"][0]["location"]["uri"], "file:///r/a.rs");
+        assert_eq!(back["relatedInformation"][0]["message"], "here");
+        // Nothing to say: the keys stay out.
+        let plain = serde_json::to_value(diag(0, 0, 0, 1, Severity::Error, "e").to_lsp()).unwrap();
+        assert!(plain.get("tags").is_none() && plain.get("relatedInformation").is_none(), "{plain}");
+    }
+
+    fn edit(l0: u32, c0: u32, l1: u32, c1: u32, text: &str) -> DocEdit {
+        DocEdit { start: Position::new(l0, c0), end: Position::new(l1, c1), text: text.into() }
+    }
+
+    #[test]
+    fn shift_pos_cases() {
+        let p = |l, c| Position::new(l, c);
+        // Replace (1,2)..(1,4) with "xyz".
+        let e = edit(1, 2, 1, 4, "xyz");
+        assert_eq!(shift_pos(p(1, 1), &e, true), p(1, 1), "before");
+        assert_eq!(shift_pos(p(0, 9), &e, true), p(0, 9), "an earlier line");
+        assert_eq!(shift_pos(p(1, 6), &e, true), p(1, 7), "same line after the end: column delta");
+        assert_eq!(shift_pos(p(2, 3), &e, true), p(2, 3), "a later line, no line delta");
+        assert_eq!(shift_pos(p(1, 3), &e, true), p(1, 5), "inside: the end of the new text");
+        assert_eq!(shift_pos(p(1, 4), &e, false), p(1, 5), "at the end: the end of the new text");
+        assert_eq!(shift_pos(p(1, 2), &e, true), p(1, 2), "at the start of a replacement: stays");
+        // Insert "a\nbc" at (1,2): one line more, column 2 on the new line.
+        let e = edit(1, 2, 1, 2, "a\nbc");
+        assert_eq!(shift_pos(p(1, 5), &e, true), p(2, 5));
+        assert_eq!(shift_pos(p(4, 1), &e, true), p(5, 1));
+        assert_eq!(shift_pos(p(1, 2), &e, true), p(2, 2), "a pure insertion at p, bias after");
+        assert_eq!(shift_pos(p(1, 2), &e, false), p(1, 2), "a pure insertion at p, bias before");
+        // Delete from (1,3) to (2,1), joining the lines.
+        let e = edit(1, 3, 2, 1, "");
+        assert_eq!(shift_pos(p(2, 4), &e, true), p(1, 6));
+        assert_eq!(shift_pos(p(3, 0), &e, true), p(2, 0));
+        // A lone \r and a \r\n each break once.
+        assert_eq!(shift_pos(p(0, 1), &edit(0, 0, 0, 0, "a\rb\r\ncd"), true), p(2, 3));
+        // An emoji counts two units.
+        assert_eq!(shift_pos(p(0, 1), &edit(0, 0, 0, 0, "😀"), true), p(0, 3));
+    }
+
+    #[test]
+    fn shift_all_follows_text() {
+        use crate::lsp::sync::tests::{apply_changes, lsp_offset};
+        let path = Path::new("/r/a.rs");
+        let text = "fn main() {\n    let x = 1;\n    let yy = gone;\n    foo(bar);\n    baz;\n}\n";
+        let r = |l0, c0, l1, c1| lsp_types::Range::new(Position::new(l0, c0), Position::new(l1, c1));
+        let with_related = |mut d: Diagnostic| {
+            d.related = vec![
+                Related { path: path.to_path_buf(), range: r(4, 4, 4, 7), message: "baz".into() },
+                Related { path: PathBuf::from("/r/b.rs"), range: r(0, 0, 0, 1), message: "other".into() },
+            ];
+            d
+        };
+        let mut items = vec![
+            with_related(diag(1, 8, 1, 9, Severity::Error, "x")),
+            diag(2, 13, 2, 17, Severity::Error, "gone"),
+            diag(3, 8, 3, 11, Severity::Warning, "bar"),
+            diag(2, 15, 2, 15, Severity::Hint, "point"),
+            diag(4, 4, 4, 7, Severity::Info, "baz"),
+        ];
+        let under = |t: &str, r: lsp_types::Range| t[lsp_offset(t, r.start)..lsp_offset(t, r.end)].to_string();
+        let before: Vec<String> = items.iter().map(|d| under(text, d.range)).collect();
+        assert_eq!(before, ["x", "gone", "bar", "", "baz"]);
+        let edits = [
+            // Typing at the start and the end of `x` (two carets): not absorbed.
+            edit(1, 9, 1, 9, "!"),
+            edit(1, 8, 1, 8, "?"),
+            // Lines inserted above everything.
+            edit(0, 0, 0, 0, "// a\n// b\n"),
+            // Same line, before `bar`.
+            edit(5, 4, 5, 4, "pre_"),
+            // A deletion wholly covering `gone` and the point inside it.
+            edit(4, 13, 4, 17, ""),
+            // A replacement exactly covering `baz`.
+            edit(6, 4, 6, 7, "quux"),
+        ];
+        let changes: Vec<_> = edits.iter().map(DocEdit::change_event).collect();
+        let after = apply_changes(text, &changes);
+        assert!(shift_all(&mut items, path, &edits));
+        let now: Vec<(String, String)> = items.iter().map(|d| (d.message.clone(), under(&after, d.range))).collect();
+        assert_eq!(
+            now,
+            [("x".into(), "x".into()), ("point".into(), "".into()), ("bar".into(), "bar".into()), ("baz".into(), "quux".into())],
+            "{after}"
+        );
+        assert_eq!(items[1].range, r(4, 13, 4, 13), "the point moved to the deletion's start");
+        let x = &items[0];
+        assert_eq!(under(&after, x.related[0].range), "quux", "a related location in the same file follows");
+        assert_eq!(x.related[1].range, r(0, 0, 0, 1), "another file's is left alone");
+        // Nothing moves: false.
+        assert!(!shift_all(&mut items, path, &[edit(20, 0, 20, 0, "z")]));
+    }
+
+    #[test]
+    fn store_shift_bumps_only_on_change() {
+        let mut s = DiagnosticStore::default();
+        let (a, b) = (PathBuf::from("/r/a.rs"), PathBuf::from("/r/b.rs"));
+        s.publish("ra", a.clone(), vec![diag(1, 0, 1, 2, Severity::Error, "e"), diag(2, 0, 2, 1, Severity::Warning, "w")], 10);
+        s.publish("ra", b.clone(), vec![diag(0, 0, 0, 1, Severity::Error, "b")], 10);
+        let v = s.version();
+        s.shift(&a, &[edit(5, 0, 5, 0, "x")]);
+        s.shift(&a, &[]);
+        s.shift(Path::new("/r/none.rs"), &[edit(0, 0, 0, 0, "x")]);
+        assert_eq!(s.version(), v, "after every diagnostic, empty or another file: no change");
+        s.shift(&a, &[edit(0, 0, 0, 0, "\n")]);
+        assert_eq!(s.version(), v + 1);
+        assert_eq!(s.get(&a)[0].range.start.line, 2);
+        s.shift(&a, &[edit(2, 0, 2, 2, "")]);
+        assert_eq!((s.version(), s.total(), s.get(&a).len()), (v + 2, 2, 1));
+        s.shift(&b, &[edit(0, 0, 0, 1, "")]);
+        assert_eq!((s.total(), s.files().count()), (1, 1), "an emptied file disappears");
+    }
+
+    #[test]
+    fn tags_are_merged_ranges() {
+        let rope = Rope::from_str("abcdefghij\n");
+        let tagged = |l0, c0, c1, unnecessary, deprecated| {
+            let mut d = diag(l0, c0, l0, c1, Severity::Hint, "t");
+            d.tags = Tags { unnecessary, deprecated };
+            d
+        };
+        let items = [tagged(0, 1, 4, true, false), tagged(0, 3, 6, true, false), tagged(0, 8, 9, false, true), tagged(0, 0, 0, true, true)];
+        let m = DiagMarks::build(&items, &rope);
+        assert_eq!(m.unnecessary, vec![1..6]);
+        assert_eq!(m.deprecated, vec![8..9]);
+        assert_eq!(m.tags_at(4), Tags { unnecessary: true, deprecated: false });
+        assert_eq!(m.tags_at(6), Tags::default(), "the end is outside");
+        assert_eq!(m.tags_at(8), Tags { unnecessary: false, deprecated: true });
+        assert_eq!(m.tags_at(0), Tags::default(), "a point diagnostic tags nothing");
     }
 }

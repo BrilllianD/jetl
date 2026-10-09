@@ -412,6 +412,7 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `End` | `problems.end` | Problems: last row |
 | `Enter` | `problems.open` | Problems: jump to the selected problem |
 | `Ctrl+C` | `problems.copy` | Problems: copy the selected message |
+| `Alt+C` | `problems.toggle_current_file` | Problems: show only the current file |
 
 ## run
 

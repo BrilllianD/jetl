@@ -495,6 +495,15 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
             }
             let x = x as u16;
             let mut style = hl.style_at(c.char_idx).unwrap_or(Style::default().fg(theme.fg));
+            if underlines {
+                let t = marks.tags_at(c.char_idx);
+                if t.unnecessary {
+                    style = style.fg(theme.dim.fg.unwrap_or(theme.fg));
+                }
+                if t.deprecated {
+                    style = style.add_modifier(Modifier::CROSSED_OUT);
+                }
+            }
             if underlines && let Some(sev) = marks.severity_at(c.char_idx) {
                 style = diag_overlay(style, sev.style(theme));
             }
