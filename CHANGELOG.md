@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-09
+
 ### Added
 
 - Application main menu, JetBrains-style: F10 opens a menu bar over the top row (File, Edit,
@@ -399,4 +401,6 @@ First release.
   for Phase 11).
 - No 3-pane conflict resolver; conflicted files show as `U` and are resolved in the editor.
 
+[Unreleased]: https://bitbucket.org/BrilllianD/jetl-ide/branches/compare/HEAD..v0.2.0
+[0.2.0]: https://bitbucket.org/BrilllianD/jetl-ide/src/v0.2.0/
 [0.1.0]: https://bitbucket.org/BrilllianD/jetl-ide/src/v0.1.0/
