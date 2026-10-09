@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Tabs drag between split groups: onto another group's tab bar (left half of a tab inserts before it, right
+  half after, pinned tabs stay among the pinned ones), or onto its text, where a ghost tab shows and the
+  release appends it. The target group takes focus; an emptied group collapses. Not while the merge
+  view is open.
 - A file's View | Soft Wrap toggle is saved in the session (per view in split groups) and restored on
   restart; files left at their configured default store nothing and keep following the config.
 - `editor.soft_wrap_extra_indent` (cells, default 0, applies at once) shifts the continuation rows of a

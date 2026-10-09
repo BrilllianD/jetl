@@ -152,6 +152,17 @@ pub enum EditorHit {
     MergeHeader(Option<crate::actions::MergeAction>),
 }
 
+/// The slot a tab dropped at column `x` of `group`'s bar takes: before the
+/// tab under the left half, after the one under the right half, at the end
+/// past the last tab.
+fn slot_under(group: &TabGroup, x: u16) -> usize {
+    match group.tab_hits.tab_at_x(x).and_then(|i| group.tab_hits.rect_of(i).map(|r| (i, r))) {
+        Some((i, r)) if x >= r.x + r.width / 2 => i + 1,
+        Some((i, _)) => i,
+        None => group.views.len(),
+    }
+}
+
 /// Take tab `slot` out of `group`; a shown tab hands over to the next one
 /// ([`TabGroup::next_after_close`]).
 pub(super) fn remove_view(group: &mut TabGroup, slot: usize) -> View {
@@ -805,27 +816,101 @@ impl Editor {
         }
     }
 
-    /// A tab drag over column `x`: move tab `id` of group `g` to the tab
-    /// under the pointer, within its pin range. It moves only once the
-    /// pointer is over the place it would take, so tabs of different widths
-    /// do not swap back and forth. The hit rects are stale after a move
-    /// until the next frame, so they are cleared.
-    pub fn drag_tab(&mut self, g: GroupId, id: BufferId, x: u16) {
-        let Some(group) = self.group_mut(g) else { return };
-        let Some(cur) = group.slot_of(id) else { return };
-        let Some(over) = group.tab_hits.tab_at_x(x) else { return };
+    /// A tab drag of buffer `id` from group `g` to `x`, `y`. Over a tab bar
+    /// of another group the tab moves there, to the slot under the pointer
+    /// (never while the conflict resolver is open); over another group's
+    /// body only a hint is set ([`Editor::drop_tab`] moves it). Anywhere
+    /// else the tab moves to the tab under the pointer within its pin
+    /// range, and only once the pointer is over the place it would take, so
+    /// tabs of different widths do not swap back and forth. The hit rects
+    /// are stale after a move until the next frame, so they are cleared.
+    /// Returns the group the tab is in afterwards.
+    pub fn drag_tab(&mut self, g: GroupId, id: BufferId, x: u16, y: u16) -> GroupId {
+        let p = ratatui::layout::Position::new(x, y);
+        let other = self.groups.iter().find(|o| o.id != g && o.last_area.contains(p)).map(|o| (o.id, o.tab_area.contains(p)));
+        match other {
+            Some((to, true)) if self.merge.is_none() => {
+                self.tab_drop = None;
+                let at = self.group(to).map(|t| slot_under(t, x));
+                return self.move_tab_across(g, id, to, at);
+            }
+            Some((to, false)) if self.merge.is_none() => {
+                self.tab_drop = Some(to);
+                return g;
+            }
+            Some(_) => {
+                self.tab_drop = None;
+                return g;
+            }
+            None => self.tab_drop = None,
+        }
+        let Some(group) = self.group_mut(g) else { return g };
+        let Some(cur) = group.slot_of(id) else { return g };
+        let Some(over) = group.tab_hits.tab_at_x(x) else { return g };
         // `cur` is in its range, so the range is not empty.
         let range = group.pin_range(cur);
         let to = over.clamp(range.start, range.end - 1);
         if to == cur {
-            return;
+            return g;
         }
-        let (Some(from_r), Some(to_r)) = (group.tab_hits.rect_of(cur), group.tab_hits.rect_of(to)) else { return };
+        let (Some(from_r), Some(to_r)) = (group.tab_hits.rect_of(cur), group.tab_hits.rect_of(to)) else { return g };
         let reached = if to > cur { x >= to_r.right().saturating_sub(from_r.width) } else { x < to_r.x + from_r.width };
         if reached {
             group.move_tab(cur, to);
             group.tab_hits.clear();
         }
+        g
+    }
+
+    /// The release of a tab drag at `x`, `y`: over the body of the group
+    /// the hint showed, the tab is appended to that group.
+    pub fn drop_tab(&mut self, g: GroupId, id: BufferId, x: u16, y: u16) {
+        let Some(to) = self.tab_drop.take() else { return };
+        let p = ratatui::layout::Position::new(x, y);
+        let over_body = self.group(to).is_some_and(|t| t.last_area.contains(p) && !t.tab_area.contains(p));
+        if over_body && self.merge.is_none() {
+            self.move_tab_across(g, id, to, None);
+        }
+    }
+
+    /// Forget the hover hint of a tab drag whose release was lost.
+    pub fn cancel_tab_drag(&mut self) {
+        self.tab_drop = None;
+    }
+
+    /// Move buffer `id`'s tab from group `g` to group `to`, at slot `at`
+    /// (clamped to the pin range; `None` appends). A target that shows the
+    /// buffer already keeps its tab and the source one is dropped. The
+    /// target is focused and shows the tab; an emptied source collapses.
+    /// Returns the group the tab is in.
+    fn move_tab_across(&mut self, g: GroupId, id: BufferId, to: GroupId, at: Option<usize>) -> GroupId {
+        let Some(slot) = self.group(g).and_then(|x| x.slot_of(id)) else { return g };
+        let Some(existing) = self.group(to).map(|t| t.slot_of(id)) else { return g };
+        let shown = if let Some(ts) = existing {
+            self.drop_view(g, slot);
+            ts
+        } else {
+            let src = self.group_mut(g).expect("source group exists");
+            let v = remove_view(src, slot);
+            src.tab_hits.clear();
+            let pinned = v.pinned;
+            let t = self.group_mut(to).expect("target group exists");
+            let n = t.pinned_count();
+            let (lo, hi) = if pinned { (0, n) } else { (n, t.views.len()) };
+            let at = at.unwrap_or(t.views.len()).clamp(lo, hi);
+            t.views.insert(at, v);
+            if let Some(a) = t.active.filter(|a| *a >= at) {
+                t.active = Some(a + 1);
+            }
+            at
+        };
+        if let Some(t) = self.group_mut(to) {
+            t.tab_hits.clear();
+        }
+        self.focused = to;
+        self.show(shown);
+        self.collapse_empty();
+        to
     }
 
     /// Close the least recently used buffers while more than

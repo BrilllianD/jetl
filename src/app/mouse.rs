@@ -140,20 +140,26 @@ impl App {
         // A press while a drag is active means its release was lost.
         if matches!(m.kind, MouseEventKind::Down(_)) {
             self.drag = None;
+            self.editor.cancel_tab_drag();
         }
         // An active drag owns every event until the button is released.
         if let Some(drag) = self.drag {
             match m.kind {
                 MouseEventKind::Up(_) => {
                     self.drag = None;
-                    if let Drag::Panel(p, area) = drag {
-                        self.forward_mouse(p, area, &mouse);
+                    match drag {
+                        Drag::Panel(p, area) => self.forward_mouse(p, area, &mouse),
+                        Drag::Tab(g, id) => self.editor.drop_tab(g, id, m.column, m.row),
+                        _ => {}
                     }
                 }
                 MouseEventKind::Drag(_) | MouseEventKind::Moved => match drag {
                     Drag::Splitter(id) => self.layout.drag_splitter(id, m.column, m.row),
                     Drag::Panel(p, area) => self.forward_mouse(p, area, &mouse),
-                    Drag::Tab(g, id) => self.editor.drag_tab(g, id, m.column),
+                    Drag::Tab(g, id) => {
+                        let g2 = self.editor.drag_tab(g, id, m.column, m.row);
+                        self.drag = Some(Drag::Tab(g2, id));
+                    }
                     Drag::GroupSplitter(n) => self.editor.drag_splitter(n, m.column, m.row),
                 },
                 _ => {}

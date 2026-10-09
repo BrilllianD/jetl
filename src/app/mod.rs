@@ -2678,6 +2678,182 @@ pub(crate) mod tests {
         assert_eq!(app.editor.group(left).unwrap().last_area.right(), bar + 10);
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// Two split groups at 100x30: the left shows `files`, the right the
+    /// last of them (one buffer in two groups) and then `right_only`.
+    struct TabDrag {
+        app: App,
+        dir: PathBuf,
+        term: ratatui::Terminal<ratatui::backend::TestBackend>,
+        left: crate::editor::groups::GroupId,
+        right: crate::editor::groups::GroupId,
+    }
+
+    impl TabDrag {
+        fn new(name: &str, files: &[&str], right_only: &[&str]) -> Self {
+            let (mut app, dir) = test_app(name);
+            for f in files {
+                load(&mut app, f, "x\n");
+            }
+            app.perform(Action::Editor(EditorAction::SplitRight));
+            let term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+            let ids = app.editor.group_ids();
+            let mut t = Self { app, dir, term, left: ids[0], right: ids[1] };
+            for f in right_only {
+                load(&mut t.app, f, "x\n");
+            }
+            t.draw();
+            t
+        }
+
+        fn draw(&mut self) {
+            let app = &mut self.app;
+            self.term.draw(|f| crate::ui::render(app, f)).unwrap();
+            app.editor.check_invariants();
+        }
+
+        fn names(&self, g: crate::editor::groups::GroupId) -> Vec<String> {
+            let ed = &self.app.editor;
+            let group = ed.group(g).unwrap();
+            group.views.iter().map(|v| ed.buffers.iter().find(|b| b.id == v.id).unwrap().name.clone()).collect()
+        }
+
+        /// The cell at `pct` percent of the width of group `g`'s tab `slot`.
+        fn tab_cell(&self, g: crate::editor::groups::GroupId, slot: usize, pct: u16) -> (u16, u16) {
+            let r = self.app.editor.group(g).unwrap().tab_hits.rect_of(slot).unwrap();
+            (r.x + (r.width - 1) * pct / 100, r.y)
+        }
+
+        /// The last cell of group `g`'s tab bar (past its last tab).
+        fn bar_end(&self, g: crate::editor::groups::GroupId) -> (u16, u16) {
+            let bar = self.app.editor.group(g).unwrap().tab_area;
+            (bar.right() - 1, bar.y)
+        }
+
+        fn ev(&mut self, kind: crossterm::event::MouseEventKind, (x, y): (u16, u16)) {
+            let m = crossterm::event::MouseEvent { kind, column: x, row: y, modifiers: crossterm::event::KeyModifiers::NONE };
+            self.app.handle_mouse(m);
+        }
+
+        /// Press on `from`, move through `via`, release on the last cell.
+        fn drag(&mut self, from: (u16, u16), via: &[(u16, u16)]) {
+            use crossterm::event::{MouseButton::Left, MouseEventKind::*};
+            self.ev(Down(Left), from);
+            for p in via {
+                self.ev(Drag(Left), *p);
+            }
+            self.ev(Up(Left), *via.last().unwrap());
+            self.draw();
+        }
+    }
+
+    #[tokio::test]
+    async fn tab_drag_reorders_within_a_group() {
+        let mut t = TabDrag::new("tab-drag-reorder", &["a.txt", "b.txt", "c.txt"], &[]);
+        let left = t.left;
+        assert_eq!(t.names(left), ["a.txt", "b.txt", "c.txt"]);
+        let from = t.tab_cell(left, 0, 50);
+        let to = t.tab_cell(left, 2, 90);
+        t.drag(from, &[to]);
+        assert_eq!(t.names(left), ["b.txt", "c.txt", "a.txt"]);
+        assert_eq!(t.names(t.right), ["c.txt"]);
+        let _ = std::fs::remove_dir_all(&t.dir);
+    }
+
+    #[tokio::test]
+    async fn tab_drag_moves_to_another_bar_at_the_slot() {
+        let mut t = TabDrag::new("tab-drag-move", &["a.txt", "b.txt", "c.txt"], &["d.txt"]);
+        let (left, right) = (t.left, t.right);
+        assert_eq!(t.names(right), ["c.txt", "d.txt"]);
+        // Left half of d.txt: before it.
+        let (from, to) = (t.tab_cell(left, 0, 50), t.tab_cell(right, 1, 10));
+        t.drag(from, &[to]);
+        assert_eq!(t.names(left), ["b.txt", "c.txt"]);
+        assert_eq!(t.names(right), ["c.txt", "a.txt", "d.txt"]);
+        assert_eq!(t.app.editor.focused_group().id, right);
+        assert_eq!(t.app.editor.active_buffer().unwrap().name, "a.txt");
+        // Right half of c.txt puts b.txt after it.
+        let (from, to) = (t.tab_cell(left, 0, 50), t.tab_cell(right, 0, 90));
+        t.drag(from, &[to]);
+        assert_eq!(t.names(left), ["c.txt"]);
+        assert_eq!(t.names(right), ["c.txt", "b.txt", "a.txt", "d.txt"]);
+        let _ = std::fs::remove_dir_all(&t.dir);
+    }
+
+    #[tokio::test]
+    async fn tab_drag_keeps_pinned_tabs_in_the_pinned_range() {
+        let mut t = TabDrag::new("tab-drag-pinned", &["a.txt", "b.txt", "c.txt"], &["d.txt"]);
+        let (left, right) = (t.left, t.right);
+        // c.txt (slot 0) is pinned in the right group: a.txt lands after it.
+        t.app.editor.set_pinned_slot(right, 0, true);
+        t.draw();
+        let (from, to) = (t.tab_cell(left, 0, 50), t.tab_cell(right, 0, 10));
+        t.drag(from, &[to]);
+        assert_eq!(t.names(right), ["c.txt", "a.txt", "d.txt"]);
+        // A pinned tab dropped past the last tab stays among the pinned.
+        t.app.editor.set_pinned_slot(left, 0, true);
+        t.draw();
+        let (from, to) = (t.tab_cell(left, 0, 50), t.bar_end(right));
+        t.drag(from, &[to]);
+        assert_eq!(t.names(right), ["c.txt", "b.txt", "a.txt", "d.txt"]);
+        let views = &t.app.editor.group(right).unwrap().views;
+        assert_eq!(views.iter().map(|v| v.pinned).collect::<Vec<_>>(), [true, true, false, false]);
+        let _ = std::fs::remove_dir_all(&t.dir);
+    }
+
+    #[tokio::test]
+    async fn tab_drag_onto_a_group_that_shows_the_buffer_drops_the_source_view() {
+        let mut t = TabDrag::new("tab-drag-shared", &["a.txt", "b.txt", "c.txt"], &["d.txt"]);
+        let (left, right) = (t.left, t.right);
+        let (from, to) = (t.tab_cell(left, 2, 50), t.tab_cell(right, 1, 10));
+        t.drag(from, &[to]);
+        assert_eq!(t.names(left), ["a.txt", "b.txt"]);
+        assert_eq!(t.names(right), ["c.txt", "d.txt"]);
+        assert_eq!(t.app.editor.focused_group().id, right);
+        assert_eq!(t.app.editor.active_buffer().unwrap().name, "c.txt");
+        let _ = std::fs::remove_dir_all(&t.dir);
+    }
+
+    #[tokio::test]
+    async fn tab_drag_of_the_last_tab_collapses_the_source_group() {
+        let mut t = TabDrag::new("tab-drag-collapse", &["a.txt", "b.txt"], &["d.txt"]);
+        let (left, right) = (t.left, t.right);
+        // Leave d.txt alone in the right group.
+        t.app.editor.activate_slot(right, 0);
+        t.app.perform(Action::Editor(EditorAction::CloseTab));
+        t.draw();
+        assert_eq!(t.names(right), ["d.txt"]);
+        let (from, to) = (t.tab_cell(right, 0, 50), t.tab_cell(left, 1, 90));
+        t.drag(from, &[to]);
+        assert_eq!(t.app.editor.group_ids(), [left]);
+        assert_eq!(t.names(left), ["a.txt", "b.txt", "d.txt"]);
+        assert_eq!(t.app.editor.active_buffer().unwrap().name, "d.txt");
+        let _ = std::fs::remove_dir_all(&t.dir);
+    }
+
+    #[tokio::test]
+    async fn tab_drop_on_another_body_appends_and_focuses() {
+        use crossterm::event::{MouseButton::Left, MouseEventKind::*};
+        let mut t = TabDrag::new("tab-drag-body", &["a.txt", "b.txt", "c.txt"], &["d.txt"]);
+        let (left, right) = (t.left, t.right);
+        let from = t.tab_cell(left, 1, 50);
+        let body = t.app.editor.group(right).unwrap().text_area;
+        let over = (body.x + 3, body.y + 2);
+        t.ev(Down(Left), from);
+        t.ev(Drag(Left), over);
+        t.draw();
+        assert_eq!(t.names(right), ["c.txt", "d.txt"], "hovering moves nothing");
+        let bar = t.app.editor.group(right).unwrap().tab_area;
+        let row: String = (bar.x..bar.right()).map(|x| t.term.backend().buffer()[(x, bar.y)].symbol().to_string()).collect();
+        assert!(row.contains(" + b.txt "), "{row:?}");
+        t.ev(Up(Left), over);
+        t.draw();
+        assert_eq!(t.names(left), ["a.txt", "c.txt"]);
+        assert_eq!(t.names(right), ["c.txt", "d.txt", "b.txt"]);
+        assert_eq!(t.app.editor.focused_group().id, right);
+        assert_eq!(t.app.editor.active_buffer().unwrap().name, "b.txt");
+        let _ = std::fs::remove_dir_all(&t.dir);
+    }
 }
 
 #[cfg(test)]

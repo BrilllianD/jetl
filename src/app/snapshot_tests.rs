@@ -127,6 +127,25 @@ async fn editor_split_right() {
 }
 
 #[tokio::test]
+async fn editor_tab_drag_hint() {
+    let mut fx = stable_app("tab-drag-hint");
+    let app = &mut fx.app;
+    load(app, "notes.log", PLAIN);
+    load(app, "other.log", "first line of other\nsecond\n");
+    editor(app, EditorAction::SplitRight);
+    // Drag notes.log from the left bar over the right group's text.
+    let (left, right) = (app.editor.group_ids()[0], app.editor.group_ids()[1]);
+    app.editor.activate_slot(left, 0);
+    draw_editor(app, 80, 14);
+    let id = app.editor.active_buffer().unwrap().id;
+    let body = app.editor.group(right).unwrap().text_area;
+    app.editor.drag_tab(left, id, body.x + 4, body.y + 3);
+    let term = draw_editor(app, 80, 14);
+    let marks = editor_marks(&app.theme);
+    assert_snapshot!("editor_tab_drag_hint", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
 async fn editor_split_nested() {
     let mut fx = stable_app("split-nested");
     let app = &mut fx.app;

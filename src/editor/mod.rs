@@ -131,6 +131,8 @@ pub struct Editor {
     splitters: Vec<SplitterHit>,
     /// The group keys and the mouse act on.
     focused: GroupId,
+    /// The group whose body a dragged tab hovers: it shows a ghost tab.
+    tab_drop: Option<GroupId>,
     next_group: GroupId,
     /// Most recently used buffer ids, most recent first.
     mru: Vec<BufferId>,
@@ -212,6 +214,7 @@ impl Editor {
             tree: SplitNode::Leaf(0),
             splitters: Vec::new(),
             focused: 0,
+            tab_drop: None,
             next_group: 1,
             mru: Vec::new(),
             next_id: 1,
@@ -1544,8 +1547,10 @@ impl Editor {
         (follow, decor): (bool, Option<&view::LineDecor>),
         theme: &Theme,
     ) {
+        // The dragged tab is the shown one of the focused group it came from.
+        let ghost = (self.tab_drop == Some(self.groups[gi].id)).then(|| self.active_buffer().map(|b| b.name.to_string())).flatten();
         let group = &mut self.groups[gi];
-        render_tabs(group, &self.buffers, frame, tabs, theme);
+        render_tabs(group, &self.buffers, ghost.as_deref(), frame, tabs, theme);
         group.tab_area = tabs;
         group.last_area = Rect::new(area.x, tabs.y, area.width, tabs.height + area.height);
         group.caret_cell = None;
@@ -1677,7 +1682,7 @@ fn wheel(b: &mut Buffer, kind: MouseEventKind) -> bool {
 }
 
 /// Draw `group`'s tab bar into `area` and record its hit rects by slot.
-fn render_tabs(group: &mut TabGroup, buffers: &[Buffer], frame: &mut Frame, area: Rect, theme: &Theme) {
+fn render_tabs(group: &mut TabGroup, buffers: &[Buffer], ghost: Option<&str>, frame: &mut Frame, area: Rect, theme: &Theme) {
     let screen = frame.buffer_mut();
     screen.set_style(area, theme.tab);
     group.tab_hits.clear();
@@ -1737,6 +1742,13 @@ fn render_tabs(group: &mut TabGroup, buffers: &[Buffer], frame: &mut Frame, area
         group.tab_hits.close.push((i, Rect::new(cx, area.y, 1, 1)));
         group.tab_hits.tabs.push((i, rect));
         x += w;
+    }
+    // A dragged tab hovering the body shows where it would land.
+    if let Some(name) = ghost
+        && x < area.right()
+    {
+        let text = format!(" + {name} ");
+        screen.set_stringn(x, area.y, &text, (area.right() - x) as usize, theme.tab_active);
     }
 }
 
@@ -2559,24 +2571,24 @@ mod tests {
         let a = ed.buffers[0].id;
         assert_eq!(ed.focused_group().tab_hits.rect_of(1), Some(Rect::new(10, 0, 15, 1)));
         // Over the start of b: a would land at 15..25, so it stays.
-        ed.drag_tab(0, a, 12);
+        ed.drag_tab(0, a, 12, 0);
         assert_eq!(names(&ed), ["a.txt", "bbbbbbbbbb", "c.txt"]);
-        ed.drag_tab(0, a, 16);
+        ed.drag_tab(0, a, 16, 0);
         assert_eq!(names(&ed), ["bbbbbbbbbb", "a.txt", "c.txt"]);
         // Stale hit rects are ignored until the next frame.
-        ed.drag_tab(0, a, 30);
+        ed.drag_tab(0, a, 30, 0);
         assert_eq!(names(&ed), ["bbbbbbbbbb", "a.txt", "c.txt"]);
         draw(&mut ed);
-        ed.drag_tab(0, a, 30);
+        ed.drag_tab(0, a, 30, 0);
         assert_eq!(names(&ed), ["bbbbbbbbbb", "c.txt", "a.txt"]);
         // Back to the front in one move.
         draw(&mut ed);
-        ed.drag_tab(0, a, 1);
+        ed.drag_tab(0, a, 1, 0);
         assert_eq!(names(&ed), ["a.txt", "bbbbbbbbbb", "c.txt"]);
         // A pinned tab cannot be dragged past the unpinned ones.
         ed.set_pinned(0, true);
         draw(&mut ed);
-        ed.drag_tab(0, a, 30);
+        ed.drag_tab(0, a, 30, 0);
         assert_eq!(names(&ed), ["a.txt", "bbbbbbbbbb", "c.txt"]);
     }
 

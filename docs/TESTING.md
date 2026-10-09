@@ -198,6 +198,14 @@ Split Right/Down, Move to Opposite Group, Unsplit), and run Unsplit and
 Unsplit All from F1. At 80x24 with the Project window open a second split
 right is refused with a toast.
 
+Tab drags between panes (needs mouse drags, e.g. an SGR mouse script, which
+tmux `send-keys` cannot send): with two panes holding several tabs, drag a
+tab onto the other pane's bar (left half of a tab drops before it, right
+half after, past the last tab appends; the other pane takes focus), onto the
+other pane's text (` + name ` ghost tab at the end of its bar, the release
+appends), and a pinned tab onto the other bar (it stays among the pinned
+ones). Dragging the only tab of a pane out collapses that pane.
+
 ### Scenario: multiple carets
 
 At 80x24 and at 120x40, with a small file whose word repeats
