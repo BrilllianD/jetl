@@ -359,8 +359,20 @@ impl Keymap {
 
 /// Context order in the generated key reference; other contexts follow
 /// alphabetically.
-const DOC_CONTEXTS: [&str; 11] =
-    ["global", "editor", "editor.find", "editor.merge", "tree", "git", "worktrees", "palette", "mode.normal", "mode.insert", "mode.visual"];
+const DOC_CONTEXTS: [&str; 12] = [
+    "global",
+    "editor",
+    "editor.find",
+    "editor.merge",
+    "editor.snippet",
+    "tree",
+    "git",
+    "worktrees",
+    "palette",
+    "mode.normal",
+    "mode.insert",
+    "mode.visual",
+];
 
 impl Keymap {
     /// Markdown reference of every binding, grouped by context, plus the

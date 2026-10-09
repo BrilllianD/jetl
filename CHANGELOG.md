@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Completion snippets have tabstops: accepting a function selects its first argument
+  placeholder, Tab and Shift+Tab move between the placeholders (several copies of one are
+  edited together), and the last Tab goes to the end of the snippet. Esc, or moving the caret
+  out of the placeholders, ends it; Tab then indents again.
 - Language server edits can now create, rename and delete files (rust-analyzer's module
   rename, "move module to file", code actions that make new files). jetl tells servers it
   supports this. Everything is checked before anything changes: an edit that would overwrite

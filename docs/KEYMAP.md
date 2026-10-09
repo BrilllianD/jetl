@@ -214,6 +214,13 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Ctrl+Enter` * | `merge.apply` | Merge: save the result, stage it and close the resolver |
 | `Esc` | `merge.cancel` | Merge: close the resolver without saving |
 
+## editor.snippet
+
+| Keys | Action | Description |
+|---|---|---|
+| `Tab` | `editor.next_tabstop` | Snippet: select the next tabstop (the last one ends the snippet) |
+| `Shift+Tab` | `editor.prev_tabstop` | Snippet: select the previous tabstop |
+
 ## tree
 
 | Keys | Action | Description |

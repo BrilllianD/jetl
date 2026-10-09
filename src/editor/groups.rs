@@ -330,6 +330,7 @@ impl Editor {
     /// then forget them. Run at the start of each frame.
     pub(super) fn sync_parked(&mut self) {
         self.merge_catch_up();
+        self.snippet_catch_up();
         let saved = self.merge.as_mut().map(|m| &mut m.saved.groups);
         for g in self.groups.iter_mut().chain(saved.into_iter().flatten()) {
             for v in &mut g.views {

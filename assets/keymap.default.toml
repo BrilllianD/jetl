@@ -273,6 +273,14 @@
 "alt-enter" = "merge.apply"
 "esc" = "merge.cancel"
 
+# A completion snippet's tabstops (rust-analyzer's argument placeholders,
+# selected one at a time) while they last: Tab selects the next one, the last
+# goes on to the snippet's end and finishes it; Shift+Tab goes back. Esc, or
+# moving the caret out of the tabstops, finishes it too.
+[editor.snippet]
+"tab" = "editor.next_tabstop"
+"shift-tab" = "editor.prev_tabstop"
+
 [find]
 "up" = "find.up"
 "down" = "find.down"

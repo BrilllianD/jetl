@@ -448,6 +448,9 @@ impl App {
             if self.focus.is(PanelId::Editor) && self.editor.find_focused() {
                 v.push("editor.find");
             }
+            if self.focus.is(PanelId::Editor) && self.editor.snippet_active() {
+                v.push("editor.snippet");
+            }
             if self.focus.is(PanelId::Editor) && self.editor.merge_active() {
                 v.push("editor.merge");
             }
@@ -741,6 +744,7 @@ impl App {
                 return;
             }
         }
+        self.snippet_check();
         let contexts = self.contexts();
         let r = self.dispatcher.dispatch(key, &contexts, Some(self.mode), &self.keymap);
         match r {

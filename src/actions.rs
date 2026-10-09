@@ -160,6 +160,11 @@ pub enum EditorAction {
     /// there is one group).
     MoveTabToOppositeGroup,
     Escape,
+    /// Select a completion snippet's next tabstop (`editor.snippet`); past
+    /// the last one, the snippet's end, which finishes it.
+    NextTabstop,
+    /// Select a completion snippet's previous tabstop.
+    PrevTabstop,
     ToggleComment,
     ToggleBlockComment,
     MoveLineUp,
@@ -626,6 +631,8 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "editor.unsplit_all" => "Unsplit all (one group)", Editor(E::UnsplitAll);
         "editor.move_tab_to_opposite_group" => "Move the active tab to the opposite group", Editor(E::MoveTabToOppositeGroup);
         "editor.escape" => "Escape (close find, clear selection)", Editor(E::Escape);
+        "editor.next_tabstop" => "Snippet: select the next tabstop (the last one ends the snippet)", Editor(E::NextTabstop);
+        "editor.prev_tabstop" => "Snippet: select the previous tabstop", Editor(E::PrevTabstop);
         "editor.toggle_comment" => "Comment with line comment", Editor(E::ToggleComment);
         "editor.toggle_block_comment" => "Comment with block comment", Editor(E::ToggleBlockComment);
         "editor.move_line_up" => "Move line up", Editor(E::MoveLineUp);
@@ -896,6 +903,7 @@ impl Action {
         match self {
             Action::App(_) => &["global"],
             Action::Editor(EditorAction::Merge(_)) => &["editor.merge"],
+            Action::Editor(EditorAction::NextTabstop | EditorAction::PrevTabstop) => &["editor.snippet"],
             Action::Editor(_) => &["editor", "global"],
             Action::Tree(_) => &["tree", "global"],
             Action::Git(_) => &["git", "global"],

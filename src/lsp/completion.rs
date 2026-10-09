@@ -1,8 +1,9 @@
 //! Code completion, the parts that do not need the app: where a request
 //! was made ([`Origin`]) and whether its answer still applies, the list
 //! filtered by what was typed since ([`CompletionState`], fuzzy matched by
-//! nucleo), snippets flattened to text ([`flatten_snippet`]), and the edit
-//! accepting an item makes ([`edit_for`]).
+//! nucleo), snippets parsed to text and tabstops ([`parse_snippet`]), and
+//! the edit accepting an item makes ([`edit_for`]) with the snippet's
+//! tabstops where it put them (walked by `editor::snippet`).
 //!
 //! A list is used while only identifier chars are typed or deleted at the
 //! caret: the caret stays in the word the list was asked for, and the text
@@ -23,6 +24,7 @@ use super::edits::{self, CharEdit};
 use super::pos;
 use crate::editor::buffer::BufferId;
 use crate::editor::selection::is_word_char;
+use crate::editor::snippet::Tabstop;
 use crate::editor::undo::Change;
 
 /// Where a completion request was made.
@@ -205,14 +207,16 @@ pub fn kind_glyph(kind: Option<CompletionItemKind>) -> &'static str {
     kind.and_then(|k| GLYPHS.iter().find(|(g, _)| *g == k)).map(|(_, s)| *s).unwrap_or(" ")
 }
 
-/// Snippet text as plain text: tabstops dropped, placeholders inlined
+/// Snippet text as plain text and its tabstops: placeholders inlined
 /// (nested ones too), the first of a choice, a variable's default (else
 /// nothing), escapes resolved; text that is not snippet syntax stays as it
-/// is. Returns the text and the char offset of `$0` in it, if there is one.
-pub fn flatten_snippet(s: &str) -> (String, Option<usize>) {
-    let mut p = Snippet { c: s.chars().collect(), i: 0, out: String::new(), n: 0, caret: None };
+/// is. Each `$n`, `${n}`, `${n:placeholder}` and `${n|choice|}` is a
+/// [`Tabstop`] over its text, in chars of the returned text, in the order
+/// they appear.
+pub fn parse_snippet(s: &str) -> (String, Vec<Tabstop>) {
+    let mut p = Snippet { c: s.chars().collect(), i: 0, out: String::new(), n: 0, stops: Vec::new(), open: Vec::new() };
     p.body(false);
-    (p.out, p.caret)
+    (p.out, p.stops)
 }
 
 struct Snippet {
@@ -221,7 +225,9 @@ struct Snippet {
     out: String,
     /// Chars in `out`.
     n: usize,
-    caret: Option<usize>,
+    stops: Vec<Tabstop>,
+    /// Indices into `stops` of the placeholders being parsed, innermost last.
+    open: Vec<usize>,
 }
 
 impl Snippet {
@@ -252,10 +258,10 @@ impl Snippet {
         true
     }
 
-    fn tabstop(&mut self, n: u32) {
-        if n == 0 && self.caret.is_none() {
-            self.caret = Some(self.n);
-        }
+    /// Record an empty tabstop `n` here; returns its index.
+    fn tabstop(&mut self, n: u32) -> usize {
+        self.stops.push(Tabstop { n, range: self.n..self.n, parent: self.open.last().copied() });
+        self.stops.len() - 1
     }
 
     /// Text up to the end, or up to an unescaped `}` when `nested` (left
@@ -280,10 +286,11 @@ impl Snippet {
     /// `$1`, `$name`, `${1}`, `${1:text}`, `${1|a,b|}`, `${name}`,
     /// `${name:default}`, `${name/re/fmt/}`; anything else is a plain `$`.
     fn dollar(&mut self) {
-        let at = Mark { at: self.i, len: self.out.len(), n: self.n, caret: self.caret };
+        let at = Mark { at: self.i, len: self.out.len(), n: self.n, stops: self.stops.len(), open: self.open.len() };
         self.i += 1;
         if let Some(n) = self.number() {
-            return self.tabstop(n);
+            self.tabstop(n);
+            return;
         }
         if self.name() {
             return;
@@ -300,17 +307,22 @@ impl Snippet {
                 }
                 Some(':') => {
                     self.i += 1;
-                    self.tabstop(n);
+                    let k = self.tabstop(n);
+                    self.open.push(k);
                     self.body(true);
+                    self.open.pop();
                     if self.peek() != Some('}') {
                         return self.literal(at);
                     }
                     self.i += 1;
+                    self.stops[k].range.end = self.n;
                 }
                 Some('|') => {
                     self.i += 1;
-                    self.tabstop(n);
-                    if !self.choice() {
+                    let k = self.tabstop(n);
+                    if self.choice() {
+                        self.stops[k].range.end = self.n;
+                    } else {
                         self.literal(at);
                     }
                 }
@@ -379,7 +391,8 @@ impl Snippet {
     fn literal(&mut self, mark: Mark) {
         self.out.truncate(mark.len);
         self.n = mark.n;
-        self.caret = mark.caret;
+        self.stops.truncate(mark.stops);
+        self.open.truncate(mark.open);
         self.i = mark.at + 1;
         self.push('$');
     }
@@ -391,20 +404,24 @@ struct Mark {
     at: usize,
     len: usize,
     n: usize,
-    caret: Option<usize>,
+    stops: usize,
+    open: usize,
 }
 
 /// What accepting an item does: the changes of one transaction (sorted for
-/// `Buffer::apply`, see [`edits::plan`]) and the caret after it.
+/// `Buffer::apply`, see [`edits::plan`]), the caret after it, and a
+/// snippet's tabstops as char ranges in the text after it (empty for plain
+/// text; with an implicit `$0` at the end when the snippet has none).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Accept {
     pub changes: Vec<Change>,
     pub caret: usize,
+    pub stops: Vec<Tabstop>,
 }
 
 /// The edit accepting `item` makes: its `textEdit` (else its `insertText`,
-/// else its label, replacing the word typed so far), snippets flattened,
-/// with its `additionalTextEdits` (an import, say) in the same
+/// else its label, replacing the word typed so far), snippets flattened
+/// (their tabstops in [`Accept::stops`]), with its `additionalTextEdits` (an import, say) in the same
 /// transaction; those overlapping the main edit or each other are left
 /// out. The list was asked for at `origin`, the caret is now at `caret`
 /// in `rope` and `origin.prefix(rope, caret)` holds. The caret ends at the
@@ -417,14 +434,26 @@ pub fn edit_for(item: &CompletionItem, origin: &Origin, rope: &Rope, caret: usiz
         Some(CompletionTextEdit::InsertAndReplace(e)) => (map(e.insert.start, false), map(e.insert.end, true), e.new_text.as_str()),
         None => (origin.start, caret, item.insert_text.as_deref().unwrap_or(&item.label)),
     };
-    let (text, at) = match item.insert_text_format {
+    let (text, at, mut stops) = match item.insert_text_format {
         Some(InsertTextFormat::SNIPPET) => {
-            let (t, at) = flatten_snippet(text);
-            let len = t.chars().count();
-            (t, at.unwrap_or(len))
+            let (t, mut stops) = parse_snippet(&text.replace("\r\n", "\n"));
+            if !stops.iter().any(|s| s.n == 0) {
+                let len = t.chars().count();
+                stops.push(Tabstop { n: 0, range: len..len, parent: None });
+            }
+            let at = stops.iter().find(|s| s.n == 0).map_or(0, |s| s.range.start);
+            (t, at, stops)
         }
-        _ => (text.to_string(), text.chars().count()),
+        _ => (text.to_string(), text.chars().count(), Vec::new()),
     };
+    if crlf {
+        // Each '\n' before a bound becomes "\r\n": one char more.
+        let breaks: Vec<usize> = text.chars().enumerate().filter(|&(_, c)| c == '\n').map(|(i, _)| i).collect();
+        let shift = |p: usize| p + breaks.partition_point(|&b| b < p);
+        for s in &mut stops {
+            s.range = shift(s.range.start)..shift(s.range.end);
+        }
+    }
     let (text, at) = edits::line_breaks(&text, at, crlf);
     let main = CharEdit::new(start, end, text);
     let mut all = vec![main.clone()];
@@ -443,8 +472,14 @@ pub fn edit_for(item: &CompletionItem, origin: &Origin, rope: &Rope, caret: usiz
         edits::plan(rope, &all[..1])
     });
     match plan {
-        Ok(plan) => Accept { caret: plan.starts[0] + at, changes: plan.changes },
-        Err(_) => Accept { changes: Vec::new(), caret },
+        Ok(plan) => {
+            let base = plan.starts[0];
+            for s in &mut stops {
+                s.range = base + s.range.start..base + s.range.end;
+            }
+            Accept { caret: base + at, changes: plan.changes, stops }
+        }
+        Err(_) => Accept { changes: Vec::new(), caret, stops: Vec::new() },
     }
 }
 
@@ -571,14 +606,27 @@ mod tests {
         assert_eq!(accept("x\n\"😀日\" he|", "l", &it), "x\n\"😀日\" helper|");
     }
 
+    fn stop(n: u32, range: std::ops::Range<usize>, parent: Option<usize>) -> Tabstop {
+        Tabstop { n, range, parent }
+    }
+
+    /// The flat text of a snippet and its stops as (number, range).
+    fn stops_of(s: &str) -> (String, Vec<(u32, std::ops::Range<usize>)>) {
+        let (t, stops) = parse_snippet(s);
+        (t, stops.into_iter().map(|s| (s.n, s.range)).collect())
+    }
+
     #[test]
-    fn snippets_are_flattened_with_the_caret_at_dollar_zero() {
-        assert_eq!(flatten_snippet("foo(${1:x}, ${2:y})$0"), ("foo(x, y)".into(), Some(9)));
-        assert_eq!(flatten_snippet("println!(\"$1\")$0"), ("println!(\"\")".into(), Some(12)));
-        assert_eq!(flatten_snippet("if ${1:cond} {\n\t$0\n}"), ("if cond {\n\t\n}".into(), Some(11)));
-        assert_eq!(flatten_snippet("${1:outer ${2:inner}} ${3|one,two|}"), ("outer inner one".into(), None));
-        assert_eq!(flatten_snippet(r"cost \$5 \} \\ $ ${TM_FILENAME} ${NAME:dflt}"), (r"cost $5 } \ $  dflt".into(), None));
-        assert_eq!(flatten_snippet("a ${1:unclosed"), ("a ${1:unclosed".into(), None));
+    fn snippets_parse_to_text_and_tabstops() {
+        assert_eq!(stops_of("foo(${1:x}, ${2:y})$0"), ("foo(x, y)".into(), vec![(1, 4..5), (2, 7..8), (0, 9..9)]));
+        assert_eq!(stops_of("println!(\"$1\")$0"), ("println!(\"\")".into(), vec![(1, 10..10), (0, 12..12)]));
+        assert_eq!(stops_of("if ${1:cond} {\n\t$0\n}"), ("if cond {\n\t\n}".into(), vec![(1, 3..7), (0, 11..11)]));
+        let (t, stops) = parse_snippet("${1:outer ${2:inner}} ${3|one,two|}");
+        assert_eq!(t, "outer inner one");
+        assert_eq!(stops, [stop(1, 0..11, None), stop(2, 6..11, Some(0)), stop(3, 12..15, None)]);
+        assert_eq!(stops_of(r"cost \$5 \} \\ $ ${TM_FILENAME} ${NAME:dflt}"), (r"cost $5 } \ $  dflt".into(), vec![]));
+        assert_eq!(stops_of("a ${1:unclosed"), ("a ${1:unclosed".into(), vec![]));
+        assert_eq!(stops_of("$1 and ${1}"), (" and ".into(), vec![(1, 0..0), (1, 5..5)]));
         let it = CompletionItem {
             insert_text: Some("vec![${1:x}; ${2:n}]$0".into()),
             insert_text_format: Some(InsertTextFormat::SNIPPET),
@@ -594,6 +642,44 @@ mod tests {
         // Plain text keeps its dollars.
         let it = CompletionItem { insert_text: Some("$x".into()), ..item("$x") };
         assert_eq!(accept("x|", "", &it), "$x|");
+    }
+
+    /// Accept `item` at the `|` in `text`: each stop's number, start and
+    /// the text it covers in the buffer after the accept.
+    fn accept_stops(text: &str, item: &CompletionItem) -> Vec<(u32, usize, String)> {
+        let at = text.chars().position(|c| c == '|').unwrap();
+        let mut b = Buffer::from_text(1, None, &text.replacen('|', "", 1), false);
+        let origin = Origin::new(1, &b.rope, at);
+        let acc = edit_for(item, &origin, &b.rope, at, b.line_ending == crate::editor::buffer::LineEnding::CrLf);
+        b.apply(acc.changes, Selection::point(acc.caret), TxKind::Other);
+        acc.stops.into_iter().map(|s| (s.n, s.range.start, b.rope.slice(s.range).to_string())).collect()
+    }
+
+    #[test]
+    fn accept_returns_absolute_tabstops() {
+        let snippet = |text: &str| CompletionItem {
+            insert_text: Some(text.into()),
+            insert_text_format: Some(InsertTextFormat::SNIPPET),
+            ..item("x")
+        };
+        let it = snippet("vec![${1:x}; ${2:n}]$0");
+        assert_eq!(accept_stops("let v = ve|", &it), [(1, 13, "x".into()), (2, 16, "n".into()), (0, 18, String::new())]);
+        // No $0: one is put at the end.
+        assert_eq!(accept_stops("f|", &snippet("f(${1:a})")), [(1, 2, "a".into()), (0, 4, String::new())]);
+        // CRLF: the stop after a line break is one char further.
+        assert_eq!(accept_stops("x\r\n|", &snippet("a\n${1:b}")), [(1, 6, "b".into()), (0, 7, String::new())]);
+        // Plain text has none.
+        assert!(accept_stops("x|", &item("xyz")).is_empty());
+        // An import added above shifts them.
+        let it = CompletionItem {
+            text_edit: Some(CompletionTextEdit::Edit(TextEdit::new(range(1, 4, 1, 6), "HashMap::with_capacity(${1:n})".into()))),
+            insert_text_format: Some(InsertTextFormat::SNIPPET),
+            additional_text_edits: Some(vec![TextEdit::new(range(0, 0, 0, 0), "use std::collections::HashMap;\n".into())]),
+            ..item("HashMap")
+        };
+        let out = accept_stops("fn f() {\n    Ha|\n}\n", &it);
+        assert_eq!(out[0].2, "n");
+        assert_eq!(out[0].1, 31 + 9 + 4 + 23);
     }
 
     #[test]

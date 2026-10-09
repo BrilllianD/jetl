@@ -259,8 +259,9 @@ pub fn client_capabilities() -> ClientCapabilities {
     }
 }
 
-/// Completion: snippets (flattened on accept), `textEdit` and
-/// `additionalTextEdits`, resolved lazily when accepting; every item kind.
+/// Completion: snippets (tabstops walked with Tab; choices and variables
+/// flattened), `textEdit` and `additionalTextEdits`, resolved lazily when
+/// accepting; every item kind.
 fn completion_capabilities() -> CompletionClientCapabilities {
     let kinds = (1..=25).filter_map(|k| serde_json::from_value::<CompletionItemKind>(json!(k)).ok()).collect();
     CompletionClientCapabilities {

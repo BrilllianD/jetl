@@ -21,6 +21,7 @@ pub mod nav;
 pub mod rows;
 pub mod search;
 pub mod selection;
+pub mod snippet;
 pub mod split;
 pub mod syntax;
 pub mod undo;
@@ -174,6 +175,8 @@ pub struct Editor {
     column_mode: bool,
     /// The conflict resolver, while open (its panes are the groups then).
     merge: Option<merge::MergeSession>,
+    /// A completion snippet's tabstops while Tab walks them.
+    pub(crate) snippet: Option<snippet::SnippetSession>,
     /// The groups' area as last drawn (the resolver picks two or three
     /// panes by its width).
     center: Rect,
@@ -231,6 +234,7 @@ impl Editor {
             multi_clip: None,
             column_mode: false,
             merge: None,
+            snippet: None,
             center: Rect::default(),
         };
         ed.apply_config(config);
@@ -761,6 +765,15 @@ impl Editor {
             return true;
         }
         match a {
+            E::NextTabstop | E::PrevTabstop => {
+                self.snippet_step(*a == E::NextTabstop);
+                return true;
+            }
+            // Ends the snippet session, then does its usual step.
+            E::Escape => self.snippet = None,
+            _ => {}
+        }
+        match a {
             E::NextTab | E::PrevTab => {
                 let (g, group) = (self.focused, self.focused_group());
                 if let Some(i) = group.active {
@@ -1172,7 +1185,9 @@ impl Editor {
             | E::ToggleBlame
             | E::ToggleColumnMode
             | E::ToggleSoftWrap
-            | E::Merge(_) => {}
+            | E::Merge(_)
+            | E::NextTabstop
+            | E::PrevTabstop => {}
         }
         // A motion or edit that put a caret into a fold unfolds it.
         if let Some(b) = self.active_buffer_mut() {

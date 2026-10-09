@@ -16,6 +16,11 @@
 //! waiting at most [`RESOLVE_WAIT`]; a key, click or paste meanwhile
 //! accepts at once without it. The item's edits are one transaction (one
 //! undo step).
+//!
+//! Accepting a snippet at one caret selects its first tabstop (its mirrors
+//! as extra carets); Tab and Shift+Tab then walk the tabstops
+//! (`editor.snippet`, see `editor::snippet`) until the last one, Esc, or
+//! the caret leaving them.
 
 use std::time::{Duration, Instant};
 
@@ -28,6 +33,7 @@ use super::App;
 use super::lsp_nav::{COMPLETION, RESOLVE};
 use crate::dispatch::Mode;
 use crate::editor::selection::{Selection, is_word_char};
+use crate::editor::snippet::SnippetSession;
 use crate::editor::undo::TxKind;
 use crate::lsp::completion::{self, CompletionState, Origin};
 use crate::lsp::transport::ResponseError;
@@ -248,19 +254,44 @@ impl App {
     /// Make the edit of `item` as one transaction, if the caret is still
     /// in the word the list was for.
     fn completion_apply(&mut self, origin: &Origin, item: &CompletionItem) {
+        let group = self.editor.focused_group().id;
         let Some(b) = self.editor.active_buffer_mut() else { return };
         if b.id != origin.buffer || !b.view.sel().is_empty() || origin.prefix(&b.rope, b.view.sel().head).is_none() {
             return tracing::debug!("completion: the caret left the word; not accepted");
         }
         let crlf = b.line_ending == crate::editor::buffer::LineEnding::CrLf;
         let acc = completion::edit_for(item, origin, &b.rope, b.view.sel().head, crlf);
-        // The edit is made at the primary caret; the others move along.
-        let mut sels = b.view.sels.clone();
-        sels.map(|p| crate::lsp::edits::map_pos(&acc.changes, p));
-        *sels.primary_mut() = Selection::point(acc.caret);
-        sels.normalize();
+        // A snippet's tabstops are walked only from a single caret.
+        let session = if b.view.sels.is_multi() { None } else { SnippetSession::new(b.id, group, acc.stops.clone()) };
+        let sels = match &session {
+            Some(s) => s.selections(),
+            None => {
+                // The edit is made at the primary caret; the others move along.
+                let mut sels = b.view.sels.clone();
+                sels.map(|p| crate::lsp::edits::map_pos(&acc.changes, p));
+                *sels.primary_mut() = Selection::point(acc.caret);
+                sels.normalize();
+                sels
+            }
+        };
+        let before = b.version;
         b.apply(acc.changes, sels, TxKind::Other);
+        if let Some(mut s) = session.filter(|_| b.version != before) {
+            s.attach(b);
+            self.editor.set_snippet(Some(s));
+        }
         self.dirty_frame = true;
+    }
+
+    /// End the snippet session when it no longer applies (before a key
+    /// is looked up, so Tab indents again once it is over).
+    pub(super) fn snippet_check(&mut self) {
+        if !self.editor.snippet_active() {
+            return;
+        }
+        let overlay = self.palette.is_some() || self.dialog.is_some() || self.menu.is_some() || self.menu_bar.is_some();
+        let here = !overlay && self.focus.is(PanelId::Editor) && !self.editor.find_focused() && self.mode == Mode::Insert;
+        self.editor.snippet_check(here);
     }
 
     /// A completion or resolve answer (the newest of its method).
@@ -435,12 +466,104 @@ mod tests {
         assert_eq!(caret_line(&app), "    pri|");
         key(&mut app, KeyCode::Enter);
         assert!(app.completion.is_none());
-        assert_eq!(caret_line(&app), "    println!(\"\")|");
+        // The caret is at the snippet's `$1`, inside the quotes.
+        assert_eq!(caret_line(&app), "    println!(\"|\")");
+        assert!(app.editor.snippet.is_some());
         // One undo step back to the typed word, another to nothing.
         app.perform(Action::Editor(EditorAction::Undo));
         assert_eq!(caret_line(&app), "    pri|");
+        app.snippet_check();
+        assert!(app.editor.snippet.is_none(), "undoing the insertion ends the snippet");
         app.perform(Action::Editor(EditorAction::Undo));
         assert_eq!(text(&app), MAIN);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A snippet item over `line` from char `l0` to `c`.
+    fn snippet_item(line: u32, l0: u32, c: u32, label: &str, text: &str) -> Value {
+        let r = json!({"start": {"line": line, "character": l0}, "end": {"line": line, "character": c}});
+        json!([{"label": label, "kind": 3, "insertTextFormat": 2, "textEdit": {"range": r, "newText": text}}])
+    }
+
+    /// The selected text of the primary caret.
+    fn selected(app: &App) -> String {
+        let b = app.editor.active_buffer().unwrap();
+        b.rope.slice(b.view.sel().range()).to_string()
+    }
+
+    #[tokio::test]
+    async fn snippet_tabstops_are_walked_with_tab() {
+        let (mut app, mut server, dir) = setup("compl-snippet-tab", false).await;
+        typ(&mut app, "f");
+        let req = completion_req(&mut server).await;
+        reply(&mut app, &mut server, &req, snippet_item(1, 4, 5, "foo(…)", "foo(${1:a}, ${2:b})$0")).await;
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(text(&app), "fn main() {\n    foo(a, b)\n}\n");
+        assert_eq!(selected(&app), "a");
+        assert!(app.contexts().contains(&"editor.snippet"));
+        // Typing replaces the placeholder; Tab and Shift+Tab walk the stops.
+        typ(&mut app, "x1");
+        key(&mut app, KeyCode::Tab);
+        assert_eq!(selected(&app), "b");
+        key(&mut app, KeyCode::BackTab);
+        assert_eq!(selected(&app), "x1");
+        key(&mut app, KeyCode::Tab);
+        key(&mut app, KeyCode::Tab);
+        assert_eq!(caret_line(&app), "    foo(x1, b)|");
+        assert!(app.editor.snippet.is_none());
+        assert!(!app.contexts().contains(&"editor.snippet"));
+        // Over: Tab indents again.
+        key(&mut app, KeyCode::Tab);
+        let line = caret_line(&app);
+        assert!(line.starts_with("    foo(x1, b)") && line.len() > "    foo(x1, b)|".len(), "{line}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn snippet_mirrors_esc_and_leaving_end_it() {
+        let (mut app, mut server, dir) = setup("compl-snippet-esc", false).await;
+        typ(&mut app, "l");
+        let req = completion_req(&mut server).await;
+        reply(&mut app, &mut server, &req, snippet_item(1, 4, 5, "let", "let ${1:v} = 1; $1")).await;
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(app.editor.active_buffer().unwrap().view.sels.len(), 2, "a caret at each $1");
+        typ(&mut app, "w");
+        assert_eq!(text(&app), "fn main() {\n    let w = 1; w\n}\n");
+        // One Esc ends the snippet and drops the mirror caret.
+        key(&mut app, KeyCode::Esc);
+        assert!(app.editor.snippet.is_none());
+        assert!(!app.editor.active_buffer().unwrap().view.sels.is_multi());
+        // Again on the next line; moving out of the stops ends it.
+        key(&mut app, KeyCode::End);
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(caret_line(&app), "    |");
+        typ(&mut app, "l");
+        let req = completion_req(&mut server).await;
+        reply(&mut app, &mut server, &req, snippet_item(2, 4, 5, "let", "let ${1:v} = 1; $1")).await;
+        key(&mut app, KeyCode::Enter);
+        assert!(app.editor.snippet.is_some());
+        app.perform(Action::Editor(EditorAction::Move(Motion::Up, false)));
+        app.snippet_check();
+        assert!(app.editor.snippet.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn completing_inside_a_tabstop_keeps_the_session() {
+        let (mut app, mut server, dir) = setup("compl-snippet-nested", false).await;
+        typ(&mut app, "f");
+        let req = completion_req(&mut server).await;
+        reply(&mut app, &mut server, &req, snippet_item(1, 4, 5, "foo(…)", "foo(${1:a}, ${2:b})$0")).await;
+        key(&mut app, KeyCode::Enter);
+        // Typing in the first argument asks; a plain item is accepted there.
+        typ(&mut app, "x");
+        let req = completion_req(&mut server).await;
+        reply(&mut app, &mut server, &req, json!([{"label": "xval"}])).await;
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(caret_line(&app), "    foo(xval|, b)");
+        assert!(app.editor.snippet.is_some());
+        key(&mut app, KeyCode::Tab);
+        assert_eq!(selected(&app), "b");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
