@@ -418,8 +418,9 @@ impl App {
                 };
                 if let Ok(Ok(resolved)) = result.map(serde_json::from_value::<CompletionItem>) {
                     p.state.items[i] = merge_resolved(p.state.items[i].clone(), resolved);
+                    // A failed resolve leaves the item unresolved: accepting asks again.
+                    p.resolved.push(i);
                 }
-                p.resolved.push(i);
                 self.completion_docs_show(i);
             }
             _ => {}
@@ -896,6 +897,32 @@ mod tests {
         key(&mut app, KeyCode::Enter);
         assert_eq!(text(&app), "use a::pb;\nfn main() {\n    pb\n}\n");
         assert!(server.drain().iter().all(|m| m["method"] != "completionItem/resolve"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn failed_docs_resolve_leaves_the_item_for_accept_to_resolve() {
+        let (mut app, mut server, dir) = setup("compl-docs-fail", true).await;
+        typ(&mut app, "p");
+        let req = completion_req(&mut server).await;
+        reply(&mut app, &mut server, &req, two_items()).await;
+        let now = Instant::now();
+        app.completion_docs_tick(now);
+        app.completion_docs_tick(now + DOCS_DELAY);
+        let res = server.recv("completionItem/resolve").await;
+        assert_eq!(res["params"]["data"], json!(1));
+        server.respond_error(res["id"].as_i64().unwrap(), ResponseError::CONTENT_MODIFIED, "modified");
+        handle_next(&mut app, is_lsp).await;
+        assert!(app.completion.as_ref().unwrap().resolved.is_empty());
+        // Accepting resolves on its own and applies the auto-import.
+        server.drain();
+        key(&mut app, KeyCode::Enter);
+        let res = server.recv("completionItem/resolve").await;
+        let mut resolved = json!({"label": "pa"});
+        resolved["additionalTextEdits"] =
+            json!([{"range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 0}}, "newText": "use a::pa;\n"}]);
+        reply(&mut app, &mut server, &res, resolved).await;
+        assert_eq!(text(&app), "use a::pa;\nfn main() {\n    pa\n}\n");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
