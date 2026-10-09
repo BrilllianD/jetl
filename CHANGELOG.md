@@ -62,6 +62,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Soft wrap: End and vertical moves stop at the end of a wrapped row, with the caret drawn after
   its last character (not on the next row); a click past a row's text does the same. Typing there
   inserts at that offset, and Right moves the caret to the next row's start.
+- A collapsed fold counts as one line for Delete Line, Duplicate Line, Select Line, Move Line
+  Up/Down, Comment Line and Indent/Unindent: the header and its hidden lines are handled together,
+  moving a line past a folded one jumps over the whole fold, and the fold stays collapsed after a
+  move or duplicate (the copy too). Select All and Select Line no longer expand the folds they
+  cover. The gutter mark for deleted lines is `▔` instead of `▸`, which looked like a fold arrow.
 
 ## [0.2.0] - 2026-10-09
 

@@ -30,7 +30,7 @@ impl GutterMark {
         match self.kind {
             MarkKind::Added => ("▎", theme.gutter_added),
             MarkKind::Modified => ("▎", theme.gutter_modified),
-            MarkKind::Deleted => ("▸", theme.gutter_deleted),
+            MarkKind::Deleted => ("▔", theme.gutter_deleted),
         }
     }
 }

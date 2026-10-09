@@ -271,6 +271,12 @@ press 0 $G 2; release 0 $G 2                     # the ▸ marker unfolds that l
 /tmp/tm.sh send-keys -t jetl 'M->'               # expand all
 ```
 
+Line commands treat a fold as one line: with a function folded, Alt+Shift+Down
+on the line above it jumps over the whole fold; Alt+Shift+Up on the folded
+header moves the block up, still collapsed; Ctrl+D on the header copies the
+block and the copy is collapsed too; Ctrl+Y deletes it whole; Ctrl+A leaves
+the folds collapsed.
+
 Then fold a function, click its placeholder (`…` after the header: it
 unfolds with the caret at the header's end), fold it again and jump into
 it with Ctrl+G (or F2 on a diagnostic inside): the fold opens. Split right

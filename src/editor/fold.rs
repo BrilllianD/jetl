@@ -118,7 +118,8 @@ impl Folds {
         *self = Self::default();
     }
 
-    /// Expand every fold hiding a caret (its head). True when one went.
+    /// Expand every fold hiding a caret (its head), unless a selection
+    /// covers all of the fold's hidden text. True when one went.
     pub fn reveal(&mut self, rope: &Rope, sels: &Selections) -> bool {
         if self.list.is_empty() {
             return false;
@@ -133,7 +134,15 @@ impl Folds {
             let lo = rope.line_to_char(h + 1);
             let hi = rope.line_to_char(last) + line_len_no_eol(rope, last);
             let k = heads.partition_point(|&p| p < lo);
-            !heads.get(k).is_some_and(|&p| p <= hi)
+            if !heads.get(k).is_some_and(|&p| p <= hi) {
+                return true;
+            }
+            // A selection over the whole hidden text (Select All, Select
+            // Line on the header) leaves the fold alone.
+            sels.iter().any(|s| {
+                let r = s.range();
+                r.start <= lo && hi <= r.end
+            })
         });
         if self.list.len() == before {
             return false;
@@ -209,13 +218,22 @@ impl Folds {
     /// Folds from a session, clamped to the text as it is now; those past
     /// its end or hiding nothing are dropped.
     pub fn from_session(saved: &[SessionFold], rope: &Rope) -> Self {
-        let pos =
-            |line: usize, col: usize| (line < rope.len_lines()).then(|| rope.line_to_char(line) + col.min(line_len_no_eol(rope, line)));
-        let list = saved.iter().filter_map(|s| Some(Fold { start: pos(s.start_line, s.start_col)?, end: pos(s.end_line, s.end_col)? }));
-        let mut f = Self { list: list.collect(), ..Default::default() };
+        let mut f = Self { list: session_folds(saved, rope), ..Default::default() };
         f.rebuild(rope);
         f
     }
+
+    /// Collapse the folds of a session form (clamped like
+    /// [`Folds::from_session`]) that hide something and are not collapsed.
+    pub fn collapse_saved(&mut self, saved: &[SessionFold], rope: &Rope) {
+        self.collapse_all(session_folds(saved, rope), rope);
+    }
+}
+
+/// `saved` as char folds in `rope`; those past its end are dropped.
+fn session_folds(saved: &[SessionFold], rope: &Rope) -> Vec<Fold> {
+    let pos = |line: usize, col: usize| (line < rope.len_lines()).then(|| rope.line_to_char(line) + col.min(line_len_no_eol(rope, line)));
+    saved.iter().filter_map(|s| Some(Fold { start: pos(s.start_line, s.start_col)?, end: pos(s.end_line, s.end_col)? })).collect()
 }
 
 /// Tokens that close a bracketed node.
@@ -1056,6 +1074,97 @@ class A:
             let (top, ta) = (ed.active_buffer().unwrap().view.scroll_line, ed.text_area());
             assert!(top > 42);
             assert_eq!(ed.focused_group().caret_cell.map(|c| c.1 - ta.y), Some((60 - top) as u16));
+        }
+
+        fn text(ed: &Editor) -> String {
+            ed.active_buffer().unwrap().text()
+        }
+
+        #[test]
+        fn delete_line_on_a_folded_header_deletes_the_block() {
+            let mut ed = editor(TEXT);
+            collapse(&mut ed, 1);
+            ed.active_buffer_mut().unwrap().goto_line(0, 3);
+            act(&mut ed, E::DeleteLine);
+            assert_eq!(text(&ed), "fn two() {\n    x();\n}\nlast\n");
+            assert_eq!(head(&ed), (0, 3));
+            assert!(!folded(&ed));
+        }
+
+        #[test]
+        fn duplicate_line_on_a_folded_header_copies_the_block_and_keeps_both_folded() {
+            let mut ed = editor(TEXT);
+            collapse(&mut ed, 1);
+            ed.active_buffer_mut().unwrap().goto_line(0, 3);
+            act(&mut ed, E::DuplicateLine);
+            let main = "fn main() {\n    let a = 1;\n    let b = 2;\n}\n";
+            assert_eq!(text(&ed), format!("{main}{main}fn two() {{\n    x();\n}}\nlast\n"));
+            assert_eq!(hidden(&ed), [(1, 4), (5, 8)]);
+            assert_eq!(head(&ed), (4, 3), "the caret is on the copy's header");
+        }
+
+        #[test]
+        fn move_line_down_jumps_over_a_folded_neighbour() {
+            let mut ed = editor("a\nfn main() {\n    let a = 1;\n    let b = 2;\n}\nz\n");
+            collapse(&mut ed, 2);
+            ed.active_buffer_mut().unwrap().goto_line(0, 1);
+            act(&mut ed, E::MoveLineDown);
+            assert_eq!(text(&ed), "fn main() {\n    let a = 1;\n    let b = 2;\n}\na\nz\n");
+            assert_eq!(head(&ed), (4, 1));
+            assert_eq!(hidden(&ed), [(1, 4)], "the fold stays collapsed");
+        }
+
+        #[test]
+        fn move_folded_block_up_keeps_it_collapsed() {
+            let mut ed = editor("a\nb\nfn main() {\n    let a = 1;\n    let b = 2;\n}\nz\n");
+            collapse(&mut ed, 3);
+            ed.active_buffer_mut().unwrap().goto_line(2, 2);
+            act(&mut ed, E::MoveLineUp);
+            assert_eq!(text(&ed), "a\nfn main() {\n    let a = 1;\n    let b = 2;\n}\nb\nz\n");
+            assert_eq!(head(&ed), (1, 2));
+            assert_eq!(hidden(&ed), [(2, 5)]);
+            // Past a folded block upwards, the neighbour moves down whole.
+            ed.active_buffer_mut().unwrap().goto_line(5, 0);
+            act(&mut ed, E::MoveLineUp);
+            assert_eq!(text(&ed), "a\nb\nfn main() {\n    let a = 1;\n    let b = 2;\n}\nz\n");
+            assert_eq!(hidden(&ed), [(3, 6)]);
+        }
+
+        #[test]
+        fn select_line_on_a_folded_header_selects_the_block_without_expanding() {
+            let mut ed = editor(TEXT);
+            collapse(&mut ed, 1);
+            ed.active_buffer_mut().unwrap().goto_line(0, 3);
+            act(&mut ed, E::SelectLine);
+            let b = ed.active_buffer().unwrap();
+            assert_eq!(b.rope.slice(b.view.sel().range()).to_string(), "fn main() {\n    let a = 1;\n    let b = 2;\n}\n");
+            assert!(folded(&ed));
+            draw(&mut ed, 40, 6);
+            assert!(folded(&ed), "drawing does not reveal it either");
+        }
+
+        #[test]
+        fn select_all_keeps_folds_collapsed() {
+            let mut ed = editor(TEXT);
+            collapse(&mut ed, 1);
+            collapse(&mut ed, 5);
+            act(&mut ed, E::SelectAll);
+            assert_eq!(hidden(&ed), [(1, 4), (5, 7)]);
+            // A caret inside hidden text still expands.
+            ed.active_buffer_mut().unwrap().goto_line(2, 0);
+            act(&mut ed, E::Move(Motion::Right, false));
+            assert_eq!(hidden(&ed), [(5, 7)]);
+        }
+
+        #[test]
+        fn comment_lone_caret_on_a_header_steps_past_the_fold() {
+            let mut ed = editor(TEXT);
+            collapse(&mut ed, 1);
+            ed.active_buffer_mut().unwrap().goto_line(0, 2);
+            act(&mut ed, E::ToggleComment);
+            assert_eq!(text(&ed), "// fn main() {\n//     let a = 1;\n//     let b = 2;\n// }\nfn two() {\n    x();\n}\nlast\n");
+            assert_eq!(head(&ed), (4, 5));
+            assert!(folded(&ed));
         }
     }
 }

@@ -247,6 +247,19 @@ async fn editor_fold_rust() {
 
 #[cfg(feature = "lang-rust")]
 #[tokio::test]
+async fn editor_fold_line_ops() {
+    let mut fx = stable_app("fold-line-ops");
+    let app = &mut fx.app;
+    load(app, "point.rs", RUST);
+    editor(app, EditorAction::FoldCollapseAll);
+    editor(app, EditorAction::MoveLineDown);
+    let term = draw_editor(app, 80, 14);
+    let marks = editor_marks(&app.theme);
+    assert_snapshot!("editor_fold_line_ops", snapshot(&term, &marks, None));
+}
+
+#[cfg(feature = "lang-rust")]
+#[tokio::test]
 async fn editor_fold_all_rust() {
     let mut fx = stable_app("fold-all-rust");
     let app = &mut fx.app;

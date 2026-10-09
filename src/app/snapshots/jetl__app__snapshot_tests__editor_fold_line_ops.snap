@@ -1,0 +1,23 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &marks, None)"
+---
+80x14 cursor=(7,2)
+00  *point.rs ×
+01   1
+02   2  ▸ struct Point {…}
+03   6  ▸ impl Point {…}
+04  15
+05  16  ▸ fn main() {…}
+06  20
+07
+08
+09
+10
+11
+12
+13
+-- marks: C=caret S=selection F=fold O=occurrence
+02        OOOOOO        FF
+03                    FF
+05                   FF

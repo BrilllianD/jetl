@@ -8,10 +8,12 @@ use std::time::Instant;
 
 use ropey::Rope;
 
+use super::fold::Fold;
 use super::indent::{FileSettings, IndentStyle};
 use super::selection::{self, Selection, Selections, line_len_no_eol, line_range};
 use super::undo::{Change, Transaction, TxKind, UndoStack};
 use super::view_state::{EditLog, LogEdit, ViewState};
+use crate::workspace::SessionFold;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LineEnding {
@@ -768,7 +770,7 @@ impl Buffer {
         let mut blocks: Vec<(usize, usize)> = Vec::new();
         for s in &sels {
             let r = s.range();
-            let (l0, l1) = (self.rope.char_to_line(r.start), self.rope.char_to_line(r.end));
+            let (l0, l1) = self.fold_block(self.rope.char_to_line(r.start), self.rope.char_to_line(r.end));
             match blocks.last_mut() {
                 Some(b) if l0 <= b.1 + 1 => b.1 = b.1.max(l1),
                 _ => blocks.push((l0, l1)),
@@ -812,6 +814,8 @@ impl Buffer {
     /// (once per line).
     pub fn duplicate_line(&mut self) {
         let eol = self.line_ending.as_str();
+        let copies = self.duplicated_folds();
+        let version = self.version;
         self.edit_carets(|b, sel| {
             let r = sel.range();
             if !r.is_empty() {
@@ -820,15 +824,56 @@ impl Buffer {
                 return CaretEdit { range: r.end..r.end, text, after: After::At { anchor: 0, head: n }, kind: TxKind::Other };
             }
             let (line, col) = selection::pos_to_line_col(&b.rope, sel.head);
-            let lr = line_range(&b.rope, line);
+            let (first, last) = b.fold_block(line, line);
+            let lr = line_range(&b.rope, first).start..line_range(&b.rope, last).end;
             let mut text = b.rope.slice(lr.clone()).to_string();
-            let mut caret = col;
+            let mut caret = if line == first { col } else { 0 };
             if !text.ends_with('\n') {
                 text = format!("{eol}{text}");
                 caret += eol.chars().count();
             }
             CaretEdit::replace(lr.end..lr.end, text, TxKind::Other).caret_at(caret)
         });
+        if self.version != version {
+            self.view.folds.collapse_saved(&copies, &self.rope);
+        }
+    }
+
+    /// The collapsed folds in the lines [`Buffer::duplicate_line`] copies,
+    /// as they will sit in the copies (once per block).
+    fn duplicated_folds(&self) -> Vec<SessionFold> {
+        if self.view.folds.is_empty() {
+            return Vec::new();
+        }
+        let mut blocks: Vec<(usize, usize)> = Vec::new();
+        for s in self.view.sels.iter().filter(|s| s.is_empty()) {
+            let line = self.rope.char_to_line(s.head);
+            let b = self.fold_block(line, line);
+            if !blocks.contains(&b) {
+                blocks.push(b);
+            }
+        }
+        blocks.sort_unstable();
+        let saved = self.view.folds.to_session(&self.rope);
+        let mut earlier = 0;
+        let mut out = Vec::new();
+        for (first, last) in blocks {
+            let n = last - first + 1;
+            for f in saved.iter().filter(|f| first <= f.start_line && f.start_line <= last) {
+                out.push(shifted(f, (earlier + n) as isize));
+            }
+            earlier += n;
+        }
+        out
+    }
+
+    /// The first and last line of the block holding lines `l0..=l1`: a
+    /// collapsed fold's header with its hidden lines count as one line.
+    fn fold_block(&self, l0: usize, l1: usize) -> (usize, usize) {
+        let folds = &self.view.folds;
+        let first = super::rows::Rows::new(folds, self.rope.len_lines()).visible(l0);
+        let last = folds.hidden().iter().find(|r| r.start <= l1 + 1 && l1 < r.end).map_or(l1, |r| r.end - 1);
+        (first, last)
     }
 
     pub fn select_all(&mut self) {
@@ -837,8 +882,8 @@ impl Buffer {
 
     pub fn select_line(&mut self) {
         let (line, _) = self.cursor_line_col();
-        let r = line_range(&self.rope, line);
-        self.view.set_sel(Selection::new(r.start, r.end));
+        let (first, last) = self.fold_block(line, line);
+        self.view.set_sel(Selection::new(line_range(&self.rope, first).start, line_range(&self.rope, last).end));
     }
 
     /// Select the smallest syntax node (or bracket contents) around each
@@ -937,11 +982,13 @@ impl Buffer {
         let sel_after = self.sels_through(&changes);
         // JetBrains moves a lone caret to the next line after commenting.
         let next_line = !self.view.sels.is_multi() && self.view.sel().is_empty();
+        // Past a folded block, not just its header.
+        let below = blocks.last().map_or(0, |b| b.1) + 1;
         self.apply_then(changes, TxKind::Other, |rope| {
             let head = sel_after.primary().head;
-            let (line, col) = selection::pos_to_line_col(rope, head);
-            if next_line && line + 1 < rope.len_lines() {
-                Selection::point(selection::line_col_to_pos(rope, line + 1, col)).into()
+            let (_, col) = selection::pos_to_line_col(rope, head);
+            if next_line && below < rope.len_lines() {
+                Selection::point(selection::line_col_to_pos(rope, below, col)).into()
             } else {
                 sel_after
             }
@@ -1084,12 +1131,14 @@ impl Buffer {
         }
     }
 
-    /// The selected lines of every caret ([`selected_lines`]), with runs
-    /// that overlap or touch merged; sorted.
+    /// The selected lines of every caret ([`selected_lines`]) widened over
+    /// collapsed folds ([`Buffer::fold_block`]), with runs that overlap or
+    /// touch merged; sorted.
     fn line_blocks(&self) -> Vec<(usize, usize)> {
         let mut blocks: Vec<(usize, usize)> = Vec::new();
         for s in self.view.sels.iter() {
             let (l0, l1) = selected_lines(&self.rope, *s);
+            let (l0, l1) = self.fold_block(l0, l1);
             match blocks.last_mut() {
                 Some(b) if l0 <= b.1 + 1 => b.1 = b.1.max(l1),
                 _ => blocks.push((l0, l1)),
@@ -1220,26 +1269,47 @@ impl Buffer {
         }
         let eol = self.line_ending.as_str();
         let mut changes = Vec::with_capacity(blocks.len());
+        let mut kept = Vec::new();
         // How far each block's text moves, including the length change of
         // the blocks before it.
         let mut moves = Vec::with_capacity(blocks.len());
         let mut delta = 0isize;
         for &(l0, l1) in &blocks {
-            let (first, end) = if up { (l0 - 1, l1) } else { (l0, l1 + 1) };
+            // The neighbour is a whole folded block too.
+            let (first, end) = if up { (self.fold_block(l0 - 1, l0 - 1).0, l1) } else { (l0, self.fold_block(l1 + 1, l1 + 1).1) };
+            let nb_lines = if up { l0 - first } else { end - l1 };
             let range = line_range(&self.rope, first).start..line_range(&self.rope, end).end;
             let old = self.rope.slice(range.clone()).to_string();
             let mut lines: Vec<String> = (first..=end).map(|l| self.line_text(l)).collect();
-            let neighbour_len = if up { lines[0].chars().count() } else { lines[lines.len() - 1].chars().count() };
+            let neighbour_len: usize =
+                if up { &lines[..nb_lines] } else { &lines[lines.len() - nb_lines..] }.iter().map(|l| l.chars().count()).sum();
             if up {
-                lines.rotate_left(1);
+                lines.rotate_left(nb_lines);
             } else {
-                lines.rotate_right(1);
+                lines.rotate_right(nb_lines);
             }
             let mut new = lines.join(eol);
             if old.ends_with('\n') {
                 new.push_str(eol);
             }
-            let shift = (neighbour_len + eol.chars().count()) as isize;
+            if !self.view.folds.is_empty() && !self.read_only {
+                // Folds in the span: the block's go by the neighbour's size,
+                // the neighbour's by the block's.
+                let own = l1 - l0 + 1;
+                for f in self.view.folds.to_session(&self.rope).iter().filter(|f| first <= f.start_line && f.start_line <= end) {
+                    let in_block = l0 <= f.start_line && f.start_line <= l1;
+                    let by = match (in_block, up) {
+                        (true, true) => -(nb_lines as isize),
+                        (true, false) => nb_lines as isize,
+                        (false, true) => own as isize,
+                        (false, false) => -(own as isize),
+                    };
+                    kept.push(shifted(f, by));
+                }
+                let span = Fold { start: range.start, end: range.end };
+                self.view.folds.expand_within(span, &self.rope);
+            }
+            let shift = (neighbour_len + nb_lines * eol.chars().count()) as isize;
             moves.push(delta + if up { -shift } else { shift });
             delta += new.chars().count() as isize - old.chars().count() as isize;
             changes.push(Change::replace(range.start, old, new));
@@ -1258,6 +1328,7 @@ impl Buffer {
             .collect();
         let sel_after = Selections::new(mapped, self.view.sels.primary_index());
         self.apply(changes, sel_after, TxKind::Other);
+        self.view.folds.collapse_saved(&kept, &self.rope);
     }
 
     /// Add or remove the bookmark on the caret line.
@@ -1354,6 +1425,12 @@ fn selected_lines(rope: &Rope, sel: Selection) -> (usize, usize) {
         l1 -= 1;
     }
     (l0, l1)
+}
+
+/// `f` moved `by` lines.
+fn shifted(f: &SessionFold, by: isize) -> SessionFold {
+    let line = |l: usize| (l as isize + by) as usize;
+    SessionFold { start_line: line(f.start_line), end_line: line(f.end_line), ..*f }
 }
 
 /// `sel` mapped through `changes` (applied in order, each relative to the
