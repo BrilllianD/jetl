@@ -281,7 +281,7 @@ impl App {
                 let text = if line < b.rope.len_lines() { b.line_text(line) } else { String::new() };
                 let col = pos::line_char_col(&text, r.pos.character);
                 let shown = format!("{}{} {}", "  ".repeat(r.depth), symbols::kind_glyph(r.kind), r.name);
-                LocationItem { path: path.clone(), line, col, text: shown }
+                LocationItem { path: path.clone(), line, col, text: shown, mark: None }
             })
             .collect();
         let title = format!("Structure of {}", b.name);

@@ -1,7 +1,8 @@
 //! Command palette overlay: Go to File, Go to Symbol, Find Action, Search
 //! Everywhere, Recent Files, Branches, Recent Projects, Run tasks, Scratch
 //! Files and a language server's locations
-//! (definitions, usages). The app
+//! (definitions, usages; grouped by file under headers when they span
+//! several, each usage's range marked). The app
 //! owns it (`App.palette`) and routes all input to it while it is open,
 //! like a dialog. Keys arrive as
 //! `PaletteAction`s from the `palette` keymap context; unmapped keys edit the
@@ -31,9 +32,9 @@ use crate::git::BranchInfo;
 use crate::lsp::locations::LocationItem;
 use crate::scratch::ScratchFile;
 use crate::symbols::index::SymbolEntry;
-use crate::ui::widgets::highlight;
 use crate::ui::widgets::list::ListState;
 use crate::ui::widgets::text_input::TextInput;
+use crate::ui::widgets::{file_rows, highlight, runs};
 
 /// Upper bound for the cached file walk, so a huge directory cannot stall
 /// matching.
@@ -190,6 +191,9 @@ pub struct Palette {
     /// Locations and the title they are shown under.
     locations: Vec<LocationItem>,
     locations_title: String,
+    /// The Locations rows shown: file headers (when the items span several
+    /// files) and items, both indexing `locations`. `rows` index into this.
+    loc_rows: Vec<LocRow>,
     /// Scratch files, newest first, their names (what is matched) and
     /// local modification dates.
     scratches: Vec<ScratchFile>,
@@ -246,6 +250,7 @@ impl Palette {
             tasks_loading: false,
             locations: Vec::new(),
             locations_title: String::new(),
+            loc_rows: Vec::new(),
             scratches: Vec::new(),
             scratch_names: Vec::new(),
             scratch_dates: Vec::new(),
@@ -432,9 +437,34 @@ impl Palette {
         self.shown = Shown { files: self.files.clone(), symbols: self.symbols.clone(), query: q };
         self.list.set_len(self.rows.len());
         if reset {
-            self.list.select(0);
+            // Under a file header, start on its first item.
+            let skip_header =
+                self.source() == Source::Locations && matches!(self.loc_rows.first(), Some(LocRow::File { .. })) && self.rows.len() > 1;
+            self.list.select(usize::from(skip_header));
             self.list.offset = 0;
         }
+    }
+
+    /// Build `loc_rows` from the matched item indices: flat when the items
+    /// span fewer than two files, else in file order under a header per file.
+    fn group_locations(&mut self, mut matched: Vec<usize>) {
+        let first = self.locations.first().map(|l| &l.path);
+        let grouped = first.is_some_and(|f| self.locations.iter().any(|l| &l.path != f));
+        if !grouped {
+            self.loc_rows = matched.into_iter().map(LocRow::Item).collect();
+            return;
+        }
+        matched.sort_unstable();
+        let mut out = Vec::with_capacity(matched.len() * 2);
+        let mut k = 0;
+        while k < matched.len() {
+            let path = &self.locations[matched[k]].path;
+            let count = matched[k..].iter().take_while(|&&i| &self.locations[i].path == path).count();
+            out.push(LocRow::File { first: matched[k], count });
+            out.extend(matched[k..k + count].iter().map(|&i| LocRow::Item(i)));
+            k += count;
+        }
+        self.loc_rows = out;
     }
 
     /// The candidates to rank off the main thread for `q`, if it should be.
@@ -510,13 +540,15 @@ impl Palette {
                 }
             }
             Source::Locations => {
-                if q.is_empty() {
+                let matched = if q.is_empty() {
                     (0..self.locations.len()).collect()
                 } else {
                     let paths: Vec<String> = self.locations.iter().map(|l| display_path(&l.path, &self.root)).collect();
                     let texts = self.locations.iter().zip(&paths).map(|(l, p)| [l.text.as_str(), p.as_str()]);
                     rank_texts(q, texts, &mut self.matcher)
-                }
+                };
+                self.group_locations(matched);
+                (0..self.loc_rows.len()).collect()
             }
             Source::Branches => {
                 let mut texts: Vec<[&str; 1]> = vec![["New Branch"]];
@@ -620,7 +652,11 @@ impl Palette {
             Source::Tasks => Accept::RunTask(Box::new(self.tasks.get(i)?.clone())),
             Source::Scratches => Accept::OpenFile(self.scratches.get(i)?.path.clone()),
             Source::Locations => {
-                let l = self.locations.get(i)?;
+                let at = match self.loc_rows.get(i)? {
+                    LocRow::File { first, .. } => *first,
+                    LocRow::Item(k) => *k,
+                };
+                let l = self.locations.get(at)?;
                 Accept::OpenFileAt { path: l.path.clone(), line: l.line, col: l.col }
             }
             Source::Branches if i == 0 => Accept::NewBranch,
@@ -822,6 +858,7 @@ impl Palette {
             Source::Files if loading && self.files.is_empty() => "indexing…".to_string(),
             Source::Symbols if loading && self.symbols.is_empty() => "indexing…".to_string(),
             _ if loading => format!("{} (indexing…)", self.rows.len()),
+            Source::Locations => format!("{}", self.loc_rows.iter().filter(|r| matches!(r, LocRow::Item(_))).count()),
             _ => format!("{}", self.rows.len()),
         };
         let cw = count.width() as u16;
@@ -939,16 +976,47 @@ impl Palette {
                     v
                 }
                 Source::Locations => {
-                    // The text, cut to leave room for the place on the right.
-                    let l = &self.locations[i];
-                    let place = format!("{}:{}", display_path(&l.path, &self.root), l.line + 1);
-                    let text = crate::util::text::fit(&l.text, width.saturating_sub(place.width() + 2));
+                    let k = match self.loc_rows[i] {
+                        LocRow::File { first, count } => {
+                            let r = Rect::new(lrect.x, ry, lrect.width, 1);
+                            file_rows::file_header(
+                                frame.buffer_mut(),
+                                r,
+                                &self.root,
+                                &self.locations[first].path,
+                                &count.to_string(),
+                                base,
+                                theme,
+                            );
+                            continue;
+                        }
+                        LocRow::Item(k) => k,
+                    };
+                    let l = &self.locations[k];
+                    let grouped = self.loc_rows.iter().any(|r| matches!(r, LocRow::File { .. }));
                     let marks = match_indices(&pattern, &l.text, &mut self.matcher);
-                    let mut v = highlight(&text, |ci| marks.contains(&(ci as u32)), base, hl);
-                    let used = text.width();
-                    v.push((" ".repeat(width.saturating_sub(used + place.width()).max(2)), base));
-                    v.push((place, dim));
-                    v
+                    let usage = l.mark.clone().unwrap_or(0..0);
+                    let style_of = |ci: usize| {
+                        let st = if marks.contains(&(ci as u32)) { hl } else { base };
+                        if usage.contains(&ci) { st.bg(theme.search_match_bg) } else { st }
+                    };
+                    if grouped {
+                        // The line number, then the text.
+                        let num = format!("{:>4}  ", l.line + 1);
+                        let text = crate::util::text::fit(&l.text, width.saturating_sub(num.width()));
+                        let mut v = vec![(num, base.patch(theme.line_number))];
+                        v.extend(runs(&text, style_of));
+                        v
+                    } else {
+                        // The text, cut to leave room for the place on the right.
+                        let place = format!("{}:{}", display_path(&l.path, &self.root), l.line + 1);
+                        let text = crate::util::text::fit(&l.text, width.saturating_sub(place.width() + 2));
+                        let mut v = runs(&text, style_of);
+                        let used = text.width();
+                        v.push((" ".repeat(width.saturating_sub(used + place.width()).max(2)), base));
+                        v.push((place, dim));
+                        v
+                    }
                 }
                 Source::Branches if i == 0 => vec![(NEW_BRANCH.to_string(), base)],
                 Source::Branches => {
@@ -981,6 +1049,14 @@ impl Palette {
             }
         }
     }
+}
+
+/// A Locations row: a file header (its first item and item count) or an
+/// item; indices into `Palette::locations`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LocRow {
+    File { first: usize, count: usize },
+    Item(usize),
 }
 
 /// Closing the palette stops its filter; a newer palette's filter (already

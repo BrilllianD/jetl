@@ -333,6 +333,11 @@ impl App {
         if targets.is_empty() {
             return self.lsp_hint("No usages found");
         }
+        if let [one] = targets.as_slice() {
+            self.editor.push_nav_here();
+            self.open_file_at_utf16(one.path.clone(), one.range.start);
+            return self.lsp_hint("Only one usage");
+        }
         let word = self.editor.active_buffer().map(|b| word_at(b, b.view.sel().head)).unwrap_or_default();
         let title = if word.is_empty() { "Usages".to_string() } else { format!("Usages of {word}") };
         self.show_location_targets(title, t.seq, targets);
@@ -359,7 +364,7 @@ impl App {
                 Some(b) => {
                     let line = t.range.start.line as usize;
                     let text = (line < b.rope.len_lines()).then(|| b.line_text(line));
-                    items.push(LocationItem::at(t.path, t.range.start, text.as_deref()));
+                    items.push(LocationItem::at(t.path, t.range, text.as_deref()));
                 }
                 None => disk.push(t),
             }
@@ -547,7 +552,12 @@ mod tests {
         handle_next(&mut app, |m| matches!(m, AppMsg::Locations { .. })).await;
         let p = app.palette.as_mut().expect("the Locations palette");
         assert_eq!(p.kind, PaletteKind::Locations);
-        // Sorted by file: a.rs first; Down then Enter picks b.rs.
+        // Grouped by file: headers carry the name and count, not `path:line`.
+        let buf = draw(&mut app, 100, 30);
+        let rows: Vec<String> = (0..30).map(|y| row(&buf, y)).collect();
+        assert!(rows.iter().any(|r| r.contains("b.rs") && r.contains('1') && !r.contains("b.rs:")), "{rows:#?}");
+        // Rows are [a.rs, a item, b.rs, b item], the selection on a's item;
+        // Down lands on b.rs's header and Enter opens b's first location.
         app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert!(app.palette.is_none());
@@ -592,11 +602,10 @@ mod tests {
         let rows: Vec<String> = (0..30).map(|y| row(&buf, y)).collect();
         assert!(rows.iter().any(|r| r.contains("Usages of helper")), "{rows:#?}");
         // (Wide chars are followed by a blank cell in the rows.)
-        assert!(rows.iter().any(|r| r.contains("let s = \"日") && r.contains("\"; helper(s);") && r.contains("a.rs:2")), "{rows:#?}");
-        assert!(
-            rows.iter().any(|r| r.contains("/* 😀") && r.contains("*/ pub fn helper(s: &str) {}") && r.contains("b.rs:2")),
-            "{rows:#?}"
-        );
+        assert!(rows.iter().any(|r| r.contains("a.rs") && !r.contains("a.rs:")), "{rows:#?}");
+        assert!(rows.iter().any(|r| r.contains("   2  let s = \"日") && r.contains("\"; helper(s);")), "{rows:#?}");
+        assert!(rows.iter().any(|r| r.contains("b.rs") && !r.contains("b.rs:")), "{rows:#?}");
+        assert!(rows.iter().any(|r| r.contains("   2  /* 😀") && r.contains("*/ pub fn helper(s: &str) {}")), "{rows:#?}");
         // Accepting the first row jumps to the call's char column.
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         handle_next(&mut app, |m| matches!(m, AppMsg::FileLoaded { .. })).await;
@@ -606,6 +615,26 @@ mod tests {
         app.handle_key(KeyEvent::new(KeyCode::F(7), KeyModifiers::ALT));
         answer(&mut app, &mut server, "textDocument/references", json!([])).await;
         assert!(toasts(&app).contains(&"No usages found".to_string()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn one_usage_jumps_straight_to_it() {
+        let (mut app, dir) = test_app("lsp-one-usage");
+        let mut servers = with_fake_servers(&mut app, caps());
+        let mut server = open_on_server(&mut app, &mut servers, "a.rs", A).await;
+        let b = app.workspace.root.join("b.rs");
+        std::fs::write(&b, B).unwrap();
+        goto(&mut app, 1, 21);
+        app.handle_key(KeyEvent::new(KeyCode::F(7), KeyModifiers::ALT));
+        app.toasts = Default::default();
+        answer(&mut app, &mut server, "textDocument/references", json!([loc(&b, range(1, 16, 1, 22))])).await;
+        assert!(app.palette.is_none());
+        handle_next(&mut app, |m| matches!(m, AppMsg::FileLoaded { .. })).await;
+        assert_eq!((app.editor.active_path(), caret(&app)), (Some(b.as_path()), (1, 15)));
+        assert!(toasts(&app).contains(&"Only one usage".to_string()), "{:?}", toasts(&app));
+        app.perform(Action::Editor(EditorAction::NavBack));
+        assert_eq!((app.editor.active_buffer().unwrap().name.as_str(), caret(&app)), ("a.rs", (1, 21)));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

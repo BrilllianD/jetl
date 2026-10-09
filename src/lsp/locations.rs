@@ -2,7 +2,8 @@
 //! `textDocument/references`, and the rows the Locations palette shows for
 //! them: the path, the line and char column, and the line's text as a
 //! preview (from the open buffer when there is one, else from disk, read
-//! off the main thread by [`read_items`]).
+//! off the main thread by [`read_items`]), and the chars of the preview the
+//! usage's range covers (`mark`).
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -57,24 +58,31 @@ pub fn contains(range: &Range, pos: Position) -> bool {
 /// Longest preview kept of a line, in chars.
 const PREVIEW_MAX: usize = 200;
 
-/// A Locations palette row: a 0-based line and char column in `path`, and
-/// the text shown (a line preview, or a symbol's name).
+/// A Locations palette row: a 0-based line and char column in `path`, the
+/// text shown (a line preview, or a symbol's name), and `mark`, the chars of
+/// `text` the usage covers (cut at the line end; `None` for a point range or
+/// a symbol).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LocationItem {
     pub path: PathBuf,
     pub line: usize,
     pub col: usize,
     pub text: String,
+    pub mark: Option<std::ops::Range<usize>>,
 }
 
 impl LocationItem {
-    /// The row for `pos` on a line whose text is `line_text` (without its
+    /// The row for `range` on a line whose text is `line_text` (without its
     /// break, or `None` past the end of the file).
-    pub fn at(path: PathBuf, pos: Position, line_text: Option<&str>) -> Self {
-        let line_text = line_text.unwrap_or("");
-        let col = pos::line_char_col(line_text, pos.character);
-        let text: String = line_text.trim().chars().take(PREVIEW_MAX).collect();
-        Self { path, line: pos.line as usize, col, text }
+    pub fn at(path: PathBuf, range: Range, line_text: Option<&str>) -> Self {
+        let line = line_text.unwrap_or("");
+        let col = pos::line_char_col(line, range.start.character);
+        let lead = line.chars().take_while(|c| c.is_whitespace()).count();
+        let end = if range.end.line == range.start.line { pos::line_char_col(line, range.end.character) } else { line.chars().count() };
+        let text: String = line.trim().chars().take(PREVIEW_MAX).collect();
+        let n = text.chars().count();
+        let mark = Some(col.saturating_sub(lead).min(n)..end.saturating_sub(lead).min(n)).filter(|r| !r.is_empty());
+        Self { path, line: range.start.line as usize, col, text, mark }
     }
 }
 
@@ -89,7 +97,7 @@ pub fn read_items(targets: Vec<Target>) -> Vec<LocationItem> {
                 .entry(t.path.clone())
                 .or_insert_with(|| std::fs::read(&t.path).ok().map(|b| String::from_utf8_lossy(&b).into_owned()));
             let line = text.as_deref().and_then(|s| s.lines().nth(t.range.start.line as usize));
-            LocationItem::at(t.path, t.range.start, line)
+            LocationItem::at(t.path, t.range, line)
         })
         .collect()
 }
@@ -140,7 +148,7 @@ mod tests {
         std::fs::write(&path, "fn a() {}\n    let s = \"日本😀\"; s.len();\n").unwrap();
         let t = |line, character| Target {
             path: path.clone(),
-            range: Range::new(Position::new(line, character), Position::new(line, character)),
+            range: Range::new(Position::new(line, character), Position::new(line, character + 1)),
         };
         let missing = Target { path: dir.join("gone.rs"), range: Range::default() };
         // `    let s = "日本😀"; ` is 20 UTF-16 units before `s.len`: the
@@ -149,6 +157,10 @@ mod tests {
         let items = read_items(vec![t(1, 20), t(0, 3), t(7, 0), missing, t(1, 16)]);
         assert_eq!((items[0].line, items[0].col, items[0].text.as_str()), (1, 19, "let s = \"日本😀\"; s.len();"));
         assert_eq!(items[4].col, 15);
+        // The `s` of `s.len()` in the trimmed text.
+        assert_eq!(items[0].mark, Some(15..16));
+        let point = Target { path: path.clone(), range: Range::new(Position::new(1, 20), Position::new(1, 20)) };
+        assert_eq!(read_items(vec![point])[0].mark, None, "a point range marks nothing");
         assert_eq!((items[1].line, items[1].col, items[1].text.as_str()), (0, 3, "fn a() {}"));
         assert_eq!((items[2].col, items[2].text.as_str()), (0, ""), "past the end of the file");
         assert_eq!(items[3].text, "", "an unreadable file has no preview");

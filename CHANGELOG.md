@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The Locations list (Find Usages, several declarations) groups its rows by file under file headers
+  when the results span several files, shows each line number, and highlights the usage itself in
+  the preview. Enter on a header opens that file's first location. Find Usages with a single
+  result jumps straight to it.
 - Completion shows a documentation panel beside the popup (stacked above or below it when
   there is no room) with the selected item's signature and documentation, fetched from the
   server a moment after the selection settles; Alt+Up/Alt+Down and the mouse wheel scroll it.

@@ -550,6 +550,28 @@ async fn palette_recent_projects() {
     assert_snapshot!("palette_recent_projects", snapshot(&term, &marks, None));
 }
 
+#[tokio::test]
+async fn palette_locations_grouped() {
+    use crate::lsp::locations::LocationItem;
+    use lsp_types::{Position, Range};
+    let mut fx = stable_app("palette-locations-grouped");
+    let app = &mut fx.app;
+    let root = app.workspace.root.clone();
+    let r = |l, c0, c1| Range::new(Position::new(l, c0), Position::new(l, c1));
+    let item = |file: &str, range, text: &str| LocationItem::at(root.join(file), range, Some(text));
+    let items = vec![
+        item("src/a.rs", r(2, 16, 22), "    let total = helper(1);"),
+        item("src/a.rs", r(9, 4, 10), "    helper(total);"),
+        item("src/b.rs", r(4, 19, 25), "    println!(\"{}\", helper(2));"),
+        item("src/b.rs", r(7, 8, 14), "        helper(3)"),
+    ];
+    app.show_locations("Usages of helper".into(), items);
+    let term = draw_app(app, 100, 30);
+    let mut marks = palette_marks(&app.theme);
+    marks.push(Mark::bg('H', "usage", app.theme.search_match_bg));
+    assert_snapshot!("palette_locations_grouped", snapshot(&term, &marks, None));
+}
+
 /// The Local History window on `notes.txt` (a plain `.txt`: no grammar,
 /// so the frame is the same with any set of language features): seven
 /// snapshots at noon UTC on seven days, shown at UTC, the `row`th row
