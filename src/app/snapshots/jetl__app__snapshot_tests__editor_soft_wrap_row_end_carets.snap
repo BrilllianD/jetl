@@ -1,0 +1,21 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &marks, None)"
+---
+40x12 cursor=(37,3)
+00   wrap.log ×
+01   1    short
+02   2  ▾ the quick brown fox jumps over
+03      ↪ the lazy dog héllo 世界 again
+04      ↪ and again
+05   3        tabbed line that wraps after
+06      ↪     the tab and more words
+07   4    end
+08   5
+09
+10
+11
+-- marks: C=caret S=selection F=fold O=occurrence
+02                                       C
+04        OOO
+06                    OOO

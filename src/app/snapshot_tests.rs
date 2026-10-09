@@ -349,6 +349,26 @@ async fn editor_soft_wrap() {
 }
 
 #[tokio::test]
+async fn editor_soft_wrap_row_end_caret() {
+    let mut fx = stable_app("wrap-row-end");
+    let app = &mut fx.app;
+    load(app, "wrap.log", WRAPPED);
+    editor(app, EditorAction::ToggleSoftWrap);
+    draw_editor(app, 40, 12);
+    // Line 2's first row, End: the caret after the row's last char, not on
+    // the next row's first. A caret cloned below it sits at the end of the
+    // second row; the first is then a secondary one drawn upstream.
+    app.editor.active_buffer_mut().unwrap().view.set_sel(Selection::point(6));
+    editor(app, EditorAction::Move(Motion::LineEnd, false));
+    let term = draw_editor(app, 40, 12);
+    let marks = editor_marks(&app.theme);
+    assert_snapshot!("editor_soft_wrap_row_end_caret", snapshot(&term, &marks, None));
+    editor(app, EditorAction::CloneCaretBelow);
+    let term = draw_editor(app, 40, 12);
+    assert_snapshot!("editor_soft_wrap_row_end_carets", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
 async fn editor_wrap_and_fold() {
     let mut fx = stable_app("wrap-fold");
     let app = &mut fx.app;

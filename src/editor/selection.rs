@@ -13,14 +13,17 @@ use crate::actions::Motion;
 pub struct Selection {
     pub anchor: usize,
     pub head: usize,
+    /// Soft wrap: the head is at the first char of a continuation row and is
+    /// drawn at the end of the row above. Meaningless anywhere else.
+    pub upstream: bool,
 }
 
 impl Selection {
     pub fn point(p: usize) -> Self {
-        Self { anchor: p, head: p }
+        Self { anchor: p, head: p, upstream: false }
     }
     pub fn new(anchor: usize, head: usize) -> Self {
-        Self { anchor, head }
+        Self { anchor, head, upstream: false }
     }
     pub fn range(&self) -> Range<usize> {
         self.anchor.min(self.head)..self.anchor.max(self.head)
@@ -33,6 +36,7 @@ impl Selection {
     }
     pub fn set_head(&mut self, head: usize, extend: bool) {
         self.head = head;
+        self.upstream = false;
         if !extend {
             self.anchor = head;
         }
@@ -414,6 +418,7 @@ pub fn apply_motion(rope: &Rope, rows: &Rows, sel: &mut Selection, m: Motion, ex
     let len = rope.len_chars();
     let head = sel.head.min(len);
     let keep_desired = matches!(m, Motion::Up | Motion::Down | Motion::PageUp | Motion::PageDown);
+    let mut upstream = false;
     let new_head = match m {
         Motion::Left => {
             if !extend && !sel.is_empty() {
@@ -427,6 +432,11 @@ pub fn apply_motion(rope: &Rope, rows: &Rows, sel: &mut Selection, m: Motion, ex
             } else {
                 0
             }
+        }
+        Motion::Right if sel.upstream && sel.is_empty() && !extend => {
+            // Off the row end onto the next row's start: same offset.
+            sel.upstream = false;
+            return;
         }
         Motion::Right => {
             if !extend && !sel.is_empty() {
@@ -447,11 +457,15 @@ pub fn apply_motion(rope: &Rope, rows: &Rows, sel: &mut Selection, m: Motion, ex
                 // Wrapped, the desired column is a row x: the caret keeps
                 // its place on screen across rows.
                 Some(tab) => {
-                    let (row, x) = char_to_row_x(rope, rows, head, tab);
+                    let (row, x) = char_to_row_x(rope, rows, head, sel.upstream, tab);
                     let x = desired_col.unwrap_or(x);
                     *desired_col = Some(x);
                     match vertical_target(rows, row, m, page) {
-                        Some(target) => row_x_to_char(rope, rows, target, x, tab),
+                        Some(target) => {
+                            let (p, u) = row_x_to_char(rope, rows, target, x, tab);
+                            upstream = u;
+                            p
+                        }
                         None if up => 0,
                         None => len,
                     }
@@ -472,7 +486,10 @@ pub fn apply_motion(rope: &Rope, rows: &Rows, sel: &mut Selection, m: Motion, ex
         Motion::WordRight => next_word_boundary(rope, head),
         Motion::LineStart => {
             // Wrapped: the row's start first, then smart Home.
-            let row = rows.row_of(rope, head);
+            let row = match rows.wrap_tab() {
+                Some(tab) => char_to_row_x(rope, rows, head, sel.upstream, tab).0,
+                None => rows.row_of(rope, head),
+            };
             let row_start = rows.seg_range(rope, row).start;
             let (line, col) = pos_to_line_col(rope, head);
             let indent = indent_of(rope, line);
@@ -493,9 +510,14 @@ pub fn apply_motion(rope: &Rope, rows: &Rows, sel: &mut Selection, m: Motion, ex
             // after it on the same row), then the line end.
             match rows.wrap_tab() {
                 Some(tab) => {
-                    let row = rows.row_of(rope, head);
-                    let last = row_x_to_char(rope, rows, row, usize::MAX, tab);
-                    if last < end && last != head { last } else { end }
+                    let row = char_to_row_x(rope, rows, head, sel.upstream, tab).0;
+                    let (p, up) = row_x_to_char(rope, rows, row, usize::MAX, tab);
+                    if (p, up) != (head, sel.upstream) && p < end {
+                        upstream = up;
+                        p
+                    } else {
+                        end
+                    }
                 }
                 None => end,
             }
@@ -507,6 +529,7 @@ pub fn apply_motion(rope: &Rope, rows: &Rows, sel: &mut Selection, m: Motion, ex
         *desired_col = None;
     }
     sel.set_head(new_head, extend);
+    sel.upstream = upstream;
 }
 
 /// [`apply_motion`] for every caret, each with its own desired column;

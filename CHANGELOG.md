@@ -57,6 +57,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The Problems window lists each problem's related locations under it (Enter jumps there),
   and Alt+C (or the context menu) shows only the file open in the editor.
 
+### Changed
+
+- Soft wrap: End and vertical moves stop at the end of a wrapped row, with the caret drawn after
+  its last character (not on the next row); a click past a row's text does the same. Typing there
+  inserts at that offset, and Right moves the caret to the next row's start.
+
 ## [0.2.0] - 2026-10-09
 
 ### Added

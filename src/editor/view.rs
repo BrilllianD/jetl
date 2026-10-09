@@ -177,8 +177,20 @@ pub fn layout_row(rope: &Rope, rows: &Rows, row: Row, tab_width: usize, cols: us
 
 /// The screen row char position `pos` is on and its row x (where the caret
 /// there is drawn, before sideways scroll).
-pub fn char_to_row_x(rope: &Rope, rows: &Rows, pos: usize, tab_width: usize) -> (Row, usize) {
-    let row = rows.row_of(rope, pos);
+///
+/// With `upstream` (soft wrap, `pos` at the start of a continuation row) it
+/// is the previous row and the x after its last grapheme, unclamped.
+pub fn char_to_row_x(rope: &Rope, rows: &Rows, pos: usize, upstream: bool, tab_width: usize) -> (Row, usize) {
+    let mut row = rows.row_of(rope, pos);
+    if upstream && rows.wraps() && row.seg > 0 && pos == row_geom(rope, rows, row).start {
+        row.seg -= 1;
+        let mut x = row_geom(rope, rows, row).indent;
+        layout_row(rope, rows, row, tab_width, usize::MAX, &mut |_, c, rx| {
+            x = rx + c.width;
+            true
+        });
+        return (row, x);
+    }
     let mut x = row_geom(rope, rows, row).indent;
     layout_row(rope, rows, row, tab_width, usize::MAX, &mut |_, c, rx| {
         if c.char_idx >= pos {
@@ -191,29 +203,31 @@ pub fn char_to_row_x(rope: &Rope, rows: &Rows, pos: usize, tab_width: usize) -> 
     (row, x)
 }
 
-/// Char position for a click at row x `x` on screen row `row`: the
-/// grapheme there (its right half too); left of a continuation row's text,
-/// the row's first char; past the text, the line end on the line's last
-/// row, else the start of the row's last grapheme (so the caret stays on
-/// the row).
-pub fn row_x_to_char(rope: &Rope, rows: &Rows, row: Row, x: usize, tab_width: usize) -> usize {
+/// Char position and affinity for a click at row x `x` on screen row
+/// `row`: the grapheme there (its right half too); left of a continuation
+/// row's text, the row's first char; past the text, the line end on the
+/// line's last row, else the row's end with the upstream affinity (the
+/// caret stays on the row).
+pub fn row_x_to_char(rope: &Rope, rows: &Rows, row: Row, x: usize, tab_width: usize) -> (usize, bool) {
     if row.line >= rope.len_lines() {
-        return rope.len_chars();
+        return (rope.len_chars(), false);
     }
     let g = row_geom(rope, rows, row);
     if x < g.indent {
-        return g.start;
+        return (g.start, false);
     }
-    let (mut hit, mut last_start) = (None, g.start);
+    let mut hit = None;
     layout_row(rope, rows, row, tab_width, usize::MAX, &mut |_, c, rx| {
         if rx + c.width > x {
             hit = Some(c.char_idx);
             return false;
         }
-        last_start = c.char_idx;
         true
     });
-    hit.unwrap_or(if g.last { g.end } else { last_start })
+    match hit {
+        Some(i) => (i, false),
+        None => (g.end, !g.last),
+    }
 }
 
 /// The carets of a column block from `anchor` to `head`, each a (line,
@@ -379,17 +393,23 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
     // The carets drawn as cells: the others, and the primary too in a view
     // without the terminal cursor. Sorted, like the selections.
     let paint_primary = !o.focused && sels.is_multi();
-    let drawn: Vec<usize> = sels
+    let visible: Vec<_> = sels
         .iter()
         .enumerate()
         .filter(|&(i, _)| i != sels.primary_index() || paint_primary)
-        .map(|(_, s)| s.head)
-        .filter(|&h| {
-            let line = rope.char_to_line(h.min(rope.len_chars()));
+        .map(|(_, s)| *s)
+        .filter(|s| {
+            let line = rope.char_to_line(s.head.min(rope.len_chars()));
             window.contains(&line) && !rows.is_hidden(line)
         })
         .collect();
-    let (cur_row, cur_x) = char_to_row_x(rope, &rows, buf.view.sel().head, o.tab_width);
+    // Upstream heads at a continuation row's start are drawn after the row
+    // above's text instead.
+    let is_up =
+        |s: &Selection| s.upstream && rows.wraps() && char_to_row_x(rope, &rows, s.head, true, o.tab_width).0 != rows.row_of(rope, s.head);
+    let drawn_up: Vec<usize> = visible.iter().filter(|s| is_up(s)).map(|s| s.head).collect();
+    let drawn: Vec<usize> = visible.iter().filter(|s| !is_up(s)).map(|s| s.head).collect();
+    let (cur_row, cur_x) = char_to_row_x(rope, &rows, buf.view.sel().head, buf.view.sel().upstream, o.tab_width);
     let hl = buf.syntax.as_mut().map(|s| s.highlights(rope, window.start, window.len())).unwrap_or_default();
     let search = buf.view.search.as_ref();
     let pair = super::brackets::pair_at(rope, buf.syntax.as_ref().and_then(|s| s.tree()), buf.view.sel().head);
@@ -555,7 +575,7 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
         // Selection that spans the line break: mark one cell past the text;
         // a caret at the line end is drawn there too. Both on the line's
         // last row, as is a fold's placeholder.
-        let end_x = last_seg.then(|| char_to_row_x(rope, &rows, line_end, o.tab_width).1);
+        let end_x = last_seg.then(|| char_to_row_x(rope, &rows, line_end, false, o.tab_width).1);
         let at_end = here.last() == Some(&line_end);
         if let Some(vc) = end_x
             && ((sels.contains(line_end) && line + 1 < rope.len_lines()) || at_end)
@@ -570,6 +590,13 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
                 if at_end {
                     screen[(x, y)].set_style(theme.secondary_caret);
                 }
+            }
+        }
+        if !last_seg && drawn_up.binary_search(&seg.end).is_ok() {
+            let end = char_to_row_x(rope, &rows, seg.end, true, o.tab_width).1;
+            if end >= scroll_col {
+                let x = (text_area.x as usize + end - scroll_col).min(right as usize - 1);
+                screen[(x as u16, y)].set_style(theme.secondary_caret);
             }
         }
         if let (Some((f, last)), Some(vc)) = (folded, end_x) {
@@ -661,7 +688,9 @@ pub fn ensure_visible(buf: &mut Buffer, text_area: Rect, o: &RenderOpts) {
     // Distances are visible rows: hidden lines take none, wrapped ones
     // one per segment.
     let r = buf.rows();
-    let (caret, top) = (r.clamp(r.row_of(&buf.rope, buf.view.sel().head)), r.clamp(buf.view.top()));
+    let sel = buf.view.sel();
+    let caret = r.clamp(char_to_row_x(&buf.rope, &r, sel.head, sel.upstream, o.tab_width).0);
+    let top = r.clamp(buf.view.top());
     let top = if caret < top || r.row_distance(top, caret, so) < so {
         r.step_row(caret, -(so as isize))
     } else if r.row_distance(top, caret, rows) + so >= rows {

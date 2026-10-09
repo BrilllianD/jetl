@@ -1240,10 +1240,10 @@ impl Editor {
         };
         let line_at = |b: &Buffer, y: u16| -> usize { row_at(b, y).line };
         // The char under the pointer; in the gutter, the row's first char.
-        let pos_at = |b: &Buffer, x: u16, y: u16| -> usize {
+        let pos_at = |b: &Buffer, x: u16, y: u16| -> (usize, bool) {
             let (rows, row) = (b.rows(), row_at(b, y));
             if x < text_area.x {
-                return rows.seg_range(&b.rope, row).start;
+                return (rows.seg_range(&b.rope, row).start, false);
             }
             let scroll_col = if rows.wraps() { 0 } else { b.view.scroll_col };
             view::row_x_to_char(&b.rope, &rows, row, (x - text_area.x) as usize + scroll_col, tab_width)
@@ -1300,7 +1300,7 @@ impl Editor {
             let end = b.rope.line_to_char(line) + selection::line_len_no_eol(&b.rope, line);
             let rows = b.rows();
             let scroll_col = if rows.wraps() { 0 } else { b.view.scroll_col };
-            let (end_row, end_x) = view::char_to_row_x(&b.rope, &rows, end, tab_width);
+            let (end_row, end_x) = view::char_to_row_x(&b.rope, &rows, end, false, tab_width);
             let past_end = m.x >= text_area.x && end_row == row && (m.x - text_area.x) as usize + scroll_col >= end_x;
             if past_end && b.view.folds.expand_at(line, &b.rope, false) {
                 b.view.set_sel(Selection::point(end));
@@ -1310,7 +1310,7 @@ impl Editor {
         }
         match m.kind {
             MouseEventKind::Down(MouseButton::Left) => {
-                let p = pos_at(b, m.x, m.y);
+                let (p, up) = pos_at(b, m.x, m.y);
                 // Alt+click: a caret there, or away with the one there.
                 if m.mods.contains(KeyModifiers::ALT) && m.x >= text_area.x {
                     match b.view.sels.index_at(p).filter(|_| b.view.sels.is_multi()) {
@@ -1362,6 +1362,7 @@ impl Editor {
                     _ => {
                         let mut s = b.view.sel();
                         s.set_head(p, extend);
+                        s.upstream = up;
                         b.view.set_sel(s);
                         self.drag = Some((g, DragMode::Char));
                     }
@@ -1373,7 +1374,7 @@ impl Editor {
                 // Only a drag that started in this group's text selects
                 // (not one that started on a find bar button).
                 let Some((_, mode)) = self.drag.filter(|(dg, _)| *dg == g) else { return true };
-                let p = pos_at(b, m.x, m.y);
+                let (p, up) = pos_at(b, m.x, m.y);
                 match mode {
                     DragMode::Word(s, e) => {
                         let w = word_at(&b.rope, p);
@@ -1386,6 +1387,7 @@ impl Editor {
                     DragMode::Char => {
                         let mut s = b.view.sel();
                         s.set_head(p, true);
+                        s.upstream = up;
                         b.view.set_sel(s);
                     }
                     // Alt+drag: a column block once the pointer leaves the

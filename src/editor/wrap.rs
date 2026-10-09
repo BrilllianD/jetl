@@ -419,7 +419,8 @@ mod editor_tests {
         assert!(!ed.active_buffer().unwrap().view.folds.is_empty());
         // Past the text of the header's first row: a caret, still folded.
         click(&mut ed, ta.x + 11, ta.y);
-        assert_eq!(head(&ed), 9, "the start of the row's last grapheme");
+        assert_eq!(head(&ed), 10, "the row's end: the next row's start, drawn upstream");
+        assert!(ed.active_buffer().unwrap().view.sel().upstream);
         assert!(!ed.active_buffer().unwrap().view.folds.is_empty());
         // On the placeholder after the last row: expanded.
         click(&mut ed, ta.x + 5, ta.y + 1);
@@ -444,11 +445,12 @@ mod editor_tests {
         let mut ed = wrapped(ROWS);
         draw(&mut ed, 20, 10);
         ed.active_buffer_mut().unwrap().view.set_sel(Selection::point(21));
-        assert_eq!(moved(&mut ed, Motion::Down), 32, "past a row's text: its last grapheme");
+        assert_eq!(moved(&mut ed, Motion::Down), 33, "past a row's text: its end");
+        assert!(ed.active_buffer().unwrap().view.sel().upstream);
         assert_eq!(moved(&mut ed, Motion::Down), 37, "past the last row's text: the line end");
         assert_eq!(moved(&mut ed, Motion::Down), 42, "the next line, at its end");
         assert_eq!(moved(&mut ed, Motion::Up), 37);
-        assert_eq!(moved(&mut ed, Motion::Up), 32);
+        assert_eq!(moved(&mut ed, Motion::Up), 33);
         assert_eq!(moved(&mut ed, Motion::Up), 21, "back at row x 10");
         assert_eq!(moved(&mut ed, Motion::Up), 10);
         assert_eq!(moved(&mut ed, Motion::Up), 0, "above the first row: the text start");
@@ -467,13 +469,41 @@ mod editor_tests {
         assert_eq!(moved(&mut ed, Motion::LineStart), 11, "the row's start");
         assert_eq!(moved(&mut ed, Motion::LineStart), 0, "then smart Home on the line");
         ed.active_buffer_mut().unwrap().view.set_sel(Selection::point(19));
-        assert_eq!(moved(&mut ed, Motion::LineEnd), 22, "the row's last grapheme");
+        assert_eq!(moved(&mut ed, Motion::LineEnd), 23, "the row's end");
+        assert!(ed.active_buffer().unwrap().view.sel().upstream);
         assert_eq!(moved(&mut ed, Motion::LineEnd), 37, "then the line end");
         assert_eq!(moved(&mut ed, Motion::LineEnd), 37);
         // Off: plain Home and End.
         ed.active_buffer_mut().unwrap().view.wrap.on = false;
         ed.active_buffer_mut().unwrap().view.set_sel(Selection::point(19));
         assert_eq!((moved(&mut ed, Motion::LineEnd), moved(&mut ed, Motion::LineStart)), (37, 0));
+    }
+
+    #[test]
+    fn end_then_typing_inserts_at_the_row_end() {
+        let mut ed = wrapped(ROWS);
+        draw(&mut ed, 20, 10);
+        ed.active_buffer_mut().unwrap().view.set_sel(Selection::point(19));
+        assert_eq!(moved(&mut ed, Motion::LineEnd), 23);
+        act(&mut ed, E::InsertText("x".into()));
+        let b = ed.active_buffer().unwrap();
+        assert_eq!(b.rope.to_string(), ROWS.replacen("delta ", "delta x", 1));
+        assert_eq!((b.view.sel().head, b.view.sel().upstream), (24, false));
+    }
+
+    #[test]
+    fn right_from_a_row_end_moves_to_the_next_row_start() {
+        let mut ed = wrapped(ROWS);
+        draw(&mut ed, 20, 10);
+        ed.active_buffer_mut().unwrap().view.set_sel(Selection::point(19));
+        assert_eq!(moved(&mut ed, Motion::LineEnd), 23);
+        draw(&mut ed, 20, 10);
+        let ta = ed.text_area();
+        assert_eq!(ed.focused_group().caret_cell, Some((ta.x + 12, ta.y + 1)), "drawn after the row's last grapheme");
+        assert_eq!(moved(&mut ed, Motion::Right), 23, "same offset");
+        assert!(!ed.active_buffer().unwrap().view.sel().upstream);
+        draw(&mut ed, 20, 10);
+        assert_eq!(ed.focused_group().caret_cell, Some((ta.x, ta.y + 2)), "drawn at the next row's start");
     }
 
     fn notes(effects: &[crate::event::Effect]) -> Vec<&str> {

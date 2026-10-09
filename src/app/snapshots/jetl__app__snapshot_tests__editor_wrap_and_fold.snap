@@ -14,5 +14,4 @@ expression: "snapshot(&term, &marks, None)"
 08   6
 09
 -- marks: C=caret S=selection F=fold O=occurrence
-02                                       S
 03          SSSSSSSSSSSSSSSSSSSSSSSSSSF

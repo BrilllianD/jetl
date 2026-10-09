@@ -112,11 +112,11 @@ impl Buffer {
         // Wrapped: the row above or below at the same row x.
         let rows = self.rows();
         if let Some(tab) = rows.wrap_tab() {
-            let (row, x) = super::view::char_to_row_x(&self.rope, &rows, s.head, tab);
+            let (row, x) = super::view::char_to_row_x(&self.rope, &rows, s.head, s.upstream, tab);
             let x = self.view.sels.desired_at(i).unwrap_or(x);
             let Some(target) = (if up { rows.prev_row(row) } else { rows.next_row(row) }) else { return };
-            let p = super::view::row_x_to_char(&self.rope, &rows, target, x, tab);
-            if self.view.sels.push(Selection::point(p), true) {
+            let (p, upstream) = super::view::row_x_to_char(&self.rope, &rows, target, x, tab);
+            if self.view.sels.push(Selection { upstream, ..Selection::point(p) }, true) {
                 self.view.sels.set_primary_desired(Some(x));
                 self.undo.break_group = true;
             }
