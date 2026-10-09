@@ -18,6 +18,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   history; tabs of deleted files close; created files are not opened. File operations
   cannot be undone with Undo; Local History keeps a snapshot of deleted and replaced files.
   If a step fails on disk, the steps after it are not made.
+- Reformat Code (Ctrl+Alt+L) with a selection formats only the selection when the language
+  server supports range formatting (several selections: the span from the first to the
+  last); otherwise, and for `[format]` commands and saves, the whole file is formatted.
+- Lightbulb: when the caret rests on a line with a problem and the language server has quick
+  fixes for it, a `✱` replaces the line's gutter glyph (new `lightbulb` theme style).
+  Alt+Enter lists the server's preferred fixes first, so Enter runs the preferred one.
 
 ## [0.2.0] - 2026-10-09
 

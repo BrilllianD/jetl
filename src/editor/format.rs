@@ -1,9 +1,12 @@
 //! Reformatting: with the external formatter of the file's language
 //! (`[format]` in config.toml), else with its language server
-//! (`textDocument/formatting`). Requests the app runs (`Effect::Format`),
+//! (`textDocument/formatting`, or `textDocument/rangeFormatting` for the
+//! selection of `editor.format` when the server has it). Requests the app
+//! runs (`Effect::Format`),
 //! and their results applied as one undoable edit that touches only the
 //! changed lines, with the caret kept on the same code.
 
+use std::ops::Range;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -47,6 +50,16 @@ pub struct FormatRequest {
     pub timeout: Duration,
     pub snapshot: Snapshot,
     pub save: bool,
+    /// Char range in `snapshot.text` to format (the selection of
+    /// `editor.format`); `None` formats the whole file. Only a language
+    /// server that formats ranges uses it.
+    pub range: Option<Range<usize>>,
+}
+
+/// The span covering every non-empty selection of `b`, or `None` when all
+/// are empty.
+fn selection_span(b: &Buffer) -> Option<Range<usize>> {
+    b.view.sels.iter().map(|s| s.range()).filter(|r| !r.is_empty()).reduce(|a, r| a.start.min(r.start)..a.end.max(r.end))
 }
 
 impl Editor {
@@ -76,14 +89,18 @@ impl Editor {
         b.undo.break_group = true;
         let snapshot =
             Snapshot { text: b.text(), version: b.version, state: b.undo.state_id(), saved: b.saved_state, path: b.path.clone() };
-        Some(FormatRequest { id: b.id, via, timeout: Duration::from_millis(self.format.timeout_ms), snapshot, save })
+        Some(FormatRequest { id: b.id, via, timeout: Duration::from_millis(self.format.timeout_ms), snapshot, save, range: None })
     }
 
-    /// `editor.format`: reformat the active buffer without saving.
+    /// `editor.format`: reformat the active buffer (or the span of its
+    /// selections) without saving.
     pub(super) fn format_active(&mut self, cx: &mut Ctx) {
         let Some(i) = self.active() else { return };
         match self.format_request(i, false) {
-            Some(req) => cx.effects.push(Effect::Format(req)),
+            Some(mut req) => {
+                req.range = selection_span(&self.buffers[i]);
+                cx.effects.push(Effect::Format(req));
+            }
             None => cx.notify(Level::Warn, format!("No formatter for {}: it has no language", self.buffers[i].name)),
         }
     }
@@ -330,5 +347,21 @@ mod tests {
     fn lines_map_through_hunks() {
         let hunks = crate::git::diff::hunks("a\nb\nc\nd\n", "a\nB\nB2\nc\nd\n");
         assert_eq!([0, 1, 2, 3].map(|l| map_line(&hunks, l)), [0, 1, 3, 4]);
+    }
+
+    #[test]
+    fn selection_span_covers_every_non_empty_selection() {
+        use crate::editor::selection::Selections;
+        let mut b = buf("ab\ncd\nef\ngh\n");
+        assert_eq!(selection_span(&b), None, "no selection");
+        b.view.sels = Selections::new(vec![Selection::point(1), Selection::point(4)], 0);
+        assert_eq!(selection_span(&b), None, "carets only");
+        b.view.set_sel(Selection::new(5, 3));
+        assert_eq!(selection_span(&b), Some(3..5), "one, backwards");
+        b.view.sels = Selections::new(vec![Selection::new(0, 1), Selection::point(4), Selection::new(9, 7)], 2);
+        assert_eq!(selection_span(&b), Some(0..9), "two disjoint, the caret between ignored");
+        // A block selection: columns 0..1 of lines 1 to 3.
+        b.view.sels = Selections::new(vec![Selection::new(3, 4), Selection::new(6, 7), Selection::new(9, 10)], 2);
+        assert_eq!(selection_span(&b), Some(3..10), "a block: from its first cell to its last, not whole lines");
     }
 }

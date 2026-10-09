@@ -23,6 +23,7 @@ pub const CODE_ACTION_RESOLVE: &str = "codeAction/resolve";
 pub const EXECUTE_COMMAND: &str = "workspace/executeCommand";
 pub const DOCUMENT_SYMBOL: &str = "textDocument/documentSymbol";
 pub const FORMATTING: &str = "textDocument/formatting";
+pub const RANGE_FORMATTING: &str = "textDocument/rangeFormatting";
 
 /// What a running server offers for one document: its `initialize`
 /// capabilities plus the registrations that apply to the document.
@@ -86,6 +87,7 @@ impl<'a> Caps<'a> {
             EXECUTE_COMMAND => fixed.execute_command_provider.is_some() || self.any(EXECUTE_COMMAND),
             DOCUMENT_SYMBOL => on(&fixed.document_symbol_provider) || self.any(DOCUMENT_SYMBOL),
             FORMATTING => on(&fixed.document_formatting_provider) || self.any(FORMATTING),
+            RANGE_FORMATTING => on(&fixed.document_range_formatting_provider) || self.any(RANGE_FORMATTING),
             _ => false,
         }
     }
@@ -106,6 +108,29 @@ impl<'a> Caps<'a> {
             }
         }
         out
+    }
+
+    /// Code action kinds the server says it returns: `None` means any kind (static
+    /// `Simple(true)`, Options without `code_action_kinds`, or any applicable registration
+    /// without `codeActionKinds`); otherwise the union, deduplicated in order.
+    pub fn code_action_kinds(&self) -> Option<Vec<String>> {
+        let mut out: Vec<String> = Vec::new();
+        let mut push = |k: &str| {
+            if !out.iter().any(|o| o == k) {
+                out.push(k.to_string());
+            }
+        };
+        match &self.fixed.code_action_provider {
+            Some(CodeActionProviderCapability::Simple(true)) => return None,
+            Some(CodeActionProviderCapability::Options(o)) => o.code_action_kinds.as_ref()?.iter().for_each(|k| push(k.as_str())),
+            Some(CodeActionProviderCapability::Simple(false)) | None => {}
+        }
+        for o in self.dynamic(CODE_ACTION) {
+            // Without a list it may return any kind.
+            o.get("codeActionKinds").and_then(Value::as_array)?;
+            strings(o, "codeActionKinds").for_each(&mut push);
+        }
+        if out.is_empty() { None } else { Some(out) }
     }
 
     /// Whether `workspace/executeCommand` runs `command` (static `commands` ∪ registered `commands`).
@@ -170,9 +195,39 @@ mod tests {
     }
 
     #[test]
+    fn range_formatting_is_static_or_registered() {
+        let f = fixed(json!({"documentRangeFormattingProvider": true}));
+        let r = Registry::default();
+        assert!(caps(&f, &r, rust()).has(RANGE_FORMATTING));
+        let f = fixed(json!({}));
+        let mut r = Registry::default();
+        assert!(!caps(&f, &r, rust()).has(RANGE_FORMATTING));
+        register(&mut r, "rf", RANGE_FORMATTING, json!({"documentSelector": [{"language": "rust"}]}));
+        assert!(caps(&f, &r, rust()).has(RANGE_FORMATTING));
+        assert!(!caps(&f, &r, python()).has(RANGE_FORMATTING));
+    }
+
+    #[test]
+    fn code_action_kinds_are_the_union_or_any() {
+        let r = Registry::default();
+        let f = fixed(json!({"codeActionProvider": {}}));
+        assert_eq!(caps(&f, &r, rust()).code_action_kinds(), None);
+        let f = fixed(json!({"codeActionProvider": true}));
+        assert_eq!(caps(&f, &r, rust()).code_action_kinds(), None);
+        let f = fixed(json!({"codeActionProvider": {"codeActionKinds": ["quickfix", "refactor"]}}));
+        let mut r = Registry::default();
+        register(&mut r, "a", CODE_ACTION, json!({"codeActionKinds": ["source", "quickfix"]}));
+        assert_eq!(caps(&f, &r, rust()).code_action_kinds().unwrap(), ["quickfix", "refactor", "source"]);
+        register(&mut r, "b", CODE_ACTION, json!({"resolveProvider": true}));
+        assert_eq!(caps(&f, &r, rust()).code_action_kinds(), None);
+    }
+
+    #[test]
     fn dynamic_registration_is_advertised_where_honoured() {
         let c = serde_json::to_value(client_capabilities()).unwrap();
-        for k in ["definition", "references", "hover", "completion", "rename", "codeAction", "documentSymbol", "formatting"] {
+        for k in
+            ["definition", "references", "hover", "completion", "rename", "codeAction", "documentSymbol", "formatting", "rangeFormatting"]
+        {
             assert_eq!(c["textDocument"][k]["dynamicRegistration"], true, "{k}");
         }
         assert_eq!(c["workspace"]["executeCommand"]["dynamicRegistration"], true);

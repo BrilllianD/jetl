@@ -67,6 +67,9 @@ pub enum PendingTag {
     /// `textDocument/formatting`; checked against the format job of the
     /// buffer (`app/format.rs`), not the caret.
     Formatting(DocTag),
+    /// `textDocument/codeAction` for the lightbulb; checked against
+    /// `LspService::lightbulb` (`app/lightbulb.rs`), not `inflight`.
+    Lightbulb(DocTag),
 }
 
 impl PendingTag {
@@ -85,7 +88,8 @@ impl PendingTag {
             | PendingTag::CodeActionResolve(t)
             | PendingTag::ExecuteCommand(t)
             | PendingTag::DocumentSymbols(t)
-            | PendingTag::Formatting(t) => Some(t),
+            | PendingTag::Formatting(t)
+            | PendingTag::Lightbulb(t) => Some(t),
         }
     }
 }

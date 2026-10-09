@@ -58,7 +58,7 @@ numbered bookmark chooser and the bookmarks list with closed files, the
 editor's find/replace bar, the project tree and its context menu, the Git
 window's Commit tab (also at 80 columns, its diff header cut before the
 toggles), its Log, Stash and Console tabs, the Find and Problems windows
-(diagnostic underlines in the editor too), the main menu bar, confirm,
+(diagnostic underlines in the editor too), the lightbulb in the gutter, the main menu bar, confirm,
 input and choice dialogs, the hover and completion popups, toasts, the
 palettes (Scratch Files and Recent Projects included), the conflict resolver, the crash
 recovery dialogs and the Save As prompt and its path completion list.

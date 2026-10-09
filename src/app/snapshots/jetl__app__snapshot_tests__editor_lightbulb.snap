@@ -1,0 +1,14 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &marks, None)"
+---
+40x6 cursor=(11,2)
+00   main.log ×
+01   1  ▾ fn main() {
+02   2 ✱      let x: u8 = "one";
+03   3 ⚠      unused();
+04   4    }
+05   5
+-- marks: L=lightbulb C=caret S=selection F=fold O=occurrence
+02     L      OOO
+03     L

@@ -26,7 +26,8 @@ use crate::ui::hover::HoverPopup;
 use crate::ui::palette::Palette;
 
 pub(super) use crate::lsp::caps::{
-    CODE_ACTION, CODE_ACTION_RESOLVE, COMPLETION, DOCUMENT_SYMBOL, EXECUTE_COMMAND, FORMATTING, PREPARE_RENAME, RENAME, RESOLVE,
+    CODE_ACTION, CODE_ACTION_RESOLVE, COMPLETION, DOCUMENT_SYMBOL, EXECUTE_COMMAND, FORMATTING, PREPARE_RENAME, RANGE_FORMATTING, RENAME,
+    RESOLVE,
 };
 use crate::lsp::caps::{Caps, DEFINITION, HOVER, REFERENCES};
 
@@ -45,6 +46,7 @@ fn method_of(tag: &PendingTag) -> &'static str {
         PendingTag::ExecuteCommand(_) => EXECUTE_COMMAND,
         PendingTag::DocumentSymbols(_) => DOCUMENT_SYMBOL,
         PendingTag::Formatting(_) => FORMATTING,
+        PendingTag::Lightbulb(_) => CODE_ACTION,
         PendingTag::Initialize => "initialize",
         PendingTag::Shutdown => "shutdown",
     }
@@ -71,6 +73,7 @@ fn what(method: &str) -> &'static str {
         EXECUTE_COMMAND => "commands",
         DOCUMENT_SYMBOL => "file structure",
         FORMATTING => "formatting",
+        RANGE_FORMATTING => "formatting a selection",
         _ => "this request",
     }
 }
@@ -255,6 +258,10 @@ impl App {
         if let PendingTag::Formatting(t) = tag {
             return self.lsp_format_answer(name, t, result);
         }
+        // So is the lightbulb, against its own request.
+        if let PendingTag::Lightbulb(t) = tag {
+            return self.lightbulb_answer(t, result);
+        }
         let method = method_of(&tag);
         match self.lsp.inflight.get(method) {
             Some(f) if f.seq == t.seq => {
@@ -299,6 +306,7 @@ impl App {
             | PendingTag::CompletionResolve(_)
             | PendingTag::ExecuteCommand(_)
             | PendingTag::Formatting(_)
+            | PendingTag::Lightbulb(_)
             | PendingTag::Initialize
             | PendingTag::Shutdown => {}
         }

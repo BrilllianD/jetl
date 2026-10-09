@@ -61,6 +61,7 @@ diag_error = { fg = "{{red}}", underline = true }
 diag_warn = { fg = "{{yellow}}", underline = true }
 diag_info = { fg = "{{blue}}", underline = true }
 diag_hint = "{{muted}}"
+lightbulb = "{{yellow}}"
 splitter = { fg = "{{muted}}", bg = "{{background}}" }
 
 [syntax]

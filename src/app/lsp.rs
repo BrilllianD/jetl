@@ -69,6 +69,8 @@ pub struct LspService {
     pub(super) completion: super::completion::CompletionReqs,
     /// Rename, context actions (`app/lsp_edit.rs`).
     pub(super) edit: super::lsp_edit::EditReqs,
+    /// The lightbulb's request and debounce (`app/lightbulb.rs`).
+    pub(super) lightbulb: super::lightbulb::Lightbulb,
     connector: Connector,
 }
 
@@ -136,6 +138,7 @@ impl LspService {
         self.completion.request = None;
         self.completion.accepting = None;
         self.edit = Default::default();
+        self.lightbulb = Default::default();
     }
 
     /// Whether a spinner is shown (a server starting or busy).

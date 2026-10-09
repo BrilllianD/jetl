@@ -1220,3 +1220,40 @@ async fn editor_find_replace_bar() {
     let marks = [Mark::bg('H', "match", app.theme.search_match_bg), Mark::bg('S', "selection", app.theme.selection_bg)];
     assert_snapshot!("editor_find_replace_bar", snapshot(&term, &marks, None));
 }
+
+#[tokio::test]
+async fn editor_lightbulb() {
+    use crate::lsp::diagnostics::Severity;
+    use crate::lsp::diagnostics::tests::diag;
+    use crate::ui::snapshot::row_text;
+    let mut fx = stable_app("lightbulb");
+    let app = &mut fx.app;
+    let main = load(app, "main.log", "fn main() {\n    let x: u8 = \"one\";\n    unused();\n}\n");
+    let per_file = app.config.lsp.max_diagnostics_per_file;
+    app.lsp.diagnostics.publish(
+        "fake",
+        main,
+        vec![diag(1, 16, 1, 21, Severity::Error, "mismatched types"), diag(2, 4, 2, 10, Severity::Warning, "never used")],
+        per_file,
+    );
+    app.sync_diag_marks();
+    let b = app.editor.active_buffer_mut().unwrap();
+    b.goto_line(1, 4);
+    b.lightbulb = Some((b.version, 1));
+    let term = draw_editor(app, 40, 6);
+    let mut marks = vec![Mark::style('L', "lightbulb", app.theme.lightbulb)];
+    marks.extend(editor_marks(&app.theme));
+    assert_snapshot!("editor_lightbulb", snapshot(&term, &marks, None));
+
+    // Unfocused, or for an older version: the diagnostic's glyph.
+    let theme = app.theme.clone();
+    let mut term = Terminal::new(TestBackend::new(40, 6)).unwrap();
+    term.draw(|f| app.editor.render(f, Rect::new(0, 0, 40, 1), Rect::new(0, 1, 40, 5), false, &theme)).unwrap();
+    let line = row_text(term.backend().buffer(), 2, 40);
+    assert!(line.contains('✖') && !line.contains('✱'), "{line}");
+    let b = app.editor.active_buffer_mut().unwrap();
+    b.lightbulb = Some((b.version + 1, 1));
+    let term = draw_editor(app, 40, 6);
+    let line = row_text(term.backend().buffer(), 2, 40);
+    assert!(line.contains('✖') && !line.contains('✱'), "{line}");
+}

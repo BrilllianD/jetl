@@ -20,9 +20,9 @@ use std::time::{Duration, Instant};
 use lsp_types::{
     ClientCapabilities, ClientInfo, CodeActionCapabilityResolveSupport, CodeActionClientCapabilities, CodeActionKindLiteralSupport,
     CodeActionLiteralSupport, CompletionClientCapabilities, CompletionItemCapability, CompletionItemCapabilityResolveSupport,
-    CompletionItemKind, CompletionItemKindCapability, DocumentFormattingClientCapabilities, DocumentSymbolClientCapabilities,
-    ExecuteCommandClientCapabilities, FailureHandlingKind, GeneralClientCapabilities, GotoCapability, HoverClientCapabilities,
-    InitializeParams, InitializeResult, MarkupKind, PositionEncodingKind, PublishDiagnosticsClientCapabilities,
+    CompletionItemKind, CompletionItemKindCapability, DocumentFormattingClientCapabilities, DocumentRangeFormattingClientCapabilities,
+    DocumentSymbolClientCapabilities, ExecuteCommandClientCapabilities, FailureHandlingKind, GeneralClientCapabilities, GotoCapability,
+    HoverClientCapabilities, InitializeParams, InitializeResult, MarkupKind, PositionEncodingKind, PublishDiagnosticsClientCapabilities,
     ReferenceClientCapabilities, RenameClientCapabilities, ResourceOperationKind, ShowMessageRequestClientCapabilities,
     TextDocumentClientCapabilities, TextDocumentSyncClientCapabilities, WindowClientCapabilities, WorkspaceClientCapabilities,
     WorkspaceEditClientCapabilities, WorkspaceFolder,
@@ -222,6 +222,7 @@ pub fn client_capabilities() -> ClientCapabilities {
                 ..Default::default()
             }),
             formatting: Some(DocumentFormattingClientCapabilities { dynamic_registration: Some(true) }),
+            range_formatting: Some(DocumentRangeFormattingClientCapabilities { dynamic_registration: Some(true) }),
             ..Default::default()
         }),
         window: Some(WindowClientCapabilities {

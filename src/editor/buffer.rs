@@ -165,6 +165,9 @@ pub struct Buffer {
     /// underlines, F2); rebuilt by `App::sync_diag_marks` when the store,
     /// the text or the path changed.
     pub diag_marks: crate::lsp::diagnostics::DiagMarks,
+    /// The language server has quick fixes on this line at this version
+    /// (`app/lightbulb.rs`); drawn on the caret line while both still hold.
+    pub lightbulb: Option<(u64, usize)>,
     /// The last `fold_candidates` answer: version, lines and the folds.
     pub fold_cache: Option<(u64, std::ops::Range<usize>, Vec<super::fold::Fold>)>,
     /// No edit changes the text (the conflict resolver's yours and theirs
@@ -217,6 +220,7 @@ impl Buffer {
             lsp_pending: Vec::new(),
             lsp_full_resync: false,
             diag_marks: Default::default(),
+            lightbulb: None,
             fold_cache: None,
             read_only: false,
             recovered: false,

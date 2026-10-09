@@ -1,7 +1,9 @@
 //! Language server edits and structure: rename (Shift+F6), context actions
 //! (Alt+Enter), File Structure (Ctrl+F12), and applying workspace edits,
 //! the servers' answers and their `workspace/applyEdit` requests alike.
-//! Formatting through a server is in `app/format.rs`.
+//! Formatting through a server is in `app/format.rs`; the lightbulb (quick
+//! fixes on the caret line) in `app/lightbulb.rs`. Context actions list the
+//! server's preferred ones first, so Enter runs the preferred fix.
 //!
 //! A workspace edit is checked and planned against the open buffers and
 //! the disk first (`lsp::edits::plan_workspace`, its file operations
@@ -27,7 +29,7 @@ use serde_json::{Value, json};
 
 use super::App;
 use super::lsp_nav::{CODE_ACTION, CODE_ACTION_RESOLVE, DOCUMENT_SYMBOL, EXECUTE_COMMAND, PREPARE_RENAME, RENAME, word_at};
-use crate::editor::buffer::LineEnding;
+use crate::editor::buffer::{Buffer, LineEnding};
 use crate::editor::undo::TxKind;
 use crate::event::{AppMsg, Effect, Level};
 use crate::files::ops::FsOp;
@@ -36,6 +38,11 @@ use crate::lsp::edits::{self, DiskStep, EditCounts, OpenDoc};
 use crate::lsp::locations::LocationItem;
 use crate::lsp::{DocTag, EditOrigin, PendingTag, pos, symbols};
 use crate::ui::dialog::{Dialog, DialogId};
+
+/// Put the server's preferred code actions first, keeping the order otherwise.
+fn preferred_first(items: &mut [CodeActionOrCommand]) {
+    items.sort_by_key(|a| !matches!(a, CodeActionOrCommand::CodeAction(c) if c.is_preferred == Some(true)));
+}
 
 /// Rename and context action requests (in `LspService`).
 #[derive(Default)]
@@ -135,16 +142,7 @@ impl App {
         let r = b.view.sel().range();
         let range = lsp_types::Range::new(pos::position(&b.rope, r.start), pos::position(&b.rope, r.end));
         let (id, head) = (b.id, pos::position(&b.rope, b.view.sel().head));
-        let key = |p: lsp_types::Position| (p.line, p.character);
-        let diagnostics: Vec<lsp_types::Diagnostic> = b
-            .path
-            .as_deref()
-            .map(|p| self.lsp.diagnostics.get(p))
-            .unwrap_or_default()
-            .iter()
-            .filter(|d| key(d.range.start) <= key(range.end) && key(range.start) <= key(d.range.end))
-            .map(|d| d.to_lsp())
-            .collect();
+        let diagnostics = self.diagnostics_overlapping(b, range);
         let params = json!({"range": range, "context": {"diagnostics": diagnostics, "triggerKind": 1}});
         if let Err(why) = self.lsp_tagged_request(id, head, CODE_ACTION, params, PendingTag::CodeAction)
             && !why.is_empty()
@@ -153,14 +151,28 @@ impl App {
         }
     }
 
+    /// The diagnostics of `b`'s file whose range overlaps `range`, as LSP sends them.
+    pub(super) fn diagnostics_overlapping(&self, b: &Buffer, range: lsp_types::Range) -> Vec<lsp_types::Diagnostic> {
+        let key = |p: lsp_types::Position| (p.line, p.character);
+        b.path
+            .as_deref()
+            .map(|p| self.lsp.diagnostics.get(p))
+            .unwrap_or_default()
+            .iter()
+            .filter(|d| key(d.range.start) <= key(range.end) && key(range.start) <= key(d.range.end))
+            .map(|d| d.to_lsp())
+            .collect()
+    }
+
     pub(super) fn lsp_code_actions_answer(&mut self, t: DocTag, value: Value) {
-        let items: Vec<CodeActionOrCommand> = serde_json::from_value::<Option<Vec<CodeActionOrCommand>>>(value)
+        let mut items: Vec<CodeActionOrCommand> = serde_json::from_value::<Option<Vec<CodeActionOrCommand>>>(value)
             .ok()
             .flatten()
             .unwrap_or_default()
             .into_iter()
             .filter(|a| !matches!(a, CodeActionOrCommand::CodeAction(c) if c.disabled.is_some()))
             .collect();
+        preferred_first(&mut items);
         if items.is_empty() {
             return self.lsp_hint("No context actions here");
         }
@@ -714,6 +726,24 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[test]
+    fn preferred_code_actions_come_first() {
+        let item = |v: Value| serde_json::from_value::<CodeActionOrCommand>(v).unwrap();
+        let title = |a: &CodeActionOrCommand| match a {
+            CodeActionOrCommand::Command(c) => c.title.clone(),
+            CodeActionOrCommand::CodeAction(a) => a.title.clone(),
+        };
+        let mut items = vec![
+            item(json!({"title": "cmd", "command": "c"})),
+            item(json!({"title": "a"})),
+            item(json!({"title": "p1", "isPreferred": true})),
+            item(json!({"title": "b", "isPreferred": false})),
+            item(json!({"title": "p2", "isPreferred": true})),
+        ];
+        preferred_first(&mut items);
+        assert_eq!(items.iter().map(title).collect::<Vec<_>>(), ["p1", "p2", "cmd", "a", "b"]);
+    }
+
     #[tokio::test]
     async fn context_actions_apply_edits_resolve_and_run_commands() {
         let (mut app, dir) = test_app("lsp-actions");
@@ -749,6 +779,18 @@ mod tests {
         assert_eq!(caret(&app), (2, 19), "the caret stays on its code");
         app.perform(Action::Editor(EditorAction::Undo));
         assert_eq!(text(&app), A);
+
+        // A preferred one comes first.
+        let mut preferred = lazy.clone();
+        preferred["isPreferred"] = json!(true);
+        app.perform(Action::Lsp(LspAction::ContextActions));
+        answer(&mut app, &mut server, "textDocument/codeAction", json!([fix, preferred, cmd])).await;
+        let d = app.dialog.take().unwrap();
+        match &d.kind {
+            DialogKind::Choice { items, .. } => assert_eq!(items, &["Inline", "Import old", "Fix all"]),
+            k => panic!("{k:?}"),
+        }
+        app.finish_dialog(d.id, DialogResult::Cancel);
 
         // One without its edit is resolved first.
         app.perform(Action::Lsp(LspAction::ContextActions));

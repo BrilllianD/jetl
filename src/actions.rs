@@ -671,7 +671,7 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "editor.next_change" => "Go to the next change", Editor(E::NextChange);
         "editor.prev_change" => "Go to the previous change", Editor(E::PrevChange);
         "editor.toggle_blame" => "Annotate with git blame (show or hide)", Editor(E::ToggleBlame);
-        "editor.format" => "Reformat code ([format] command, else the language server)", Editor(E::Format);
+        "editor.format" => "Reformat code or the selection ([format] command, else the language server)", Editor(E::Format);
 
         "tree.up" => "Tree: up", Tree(TreeAction::Up);
         "tree.down" => "Tree: down", Tree(TreeAction::Down);

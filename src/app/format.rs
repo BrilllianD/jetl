@@ -1,24 +1,27 @@
 //! Formatter runs (`Effect::Format`), one per buffer at a time: the
 //! `[format]` command off the main thread, or the buffer's language server
-//! (`textDocument/formatting`, given up after `[lsp] request_timeout_ms`,
-//! or when the server goes away). Results are checked against the
+//! (`textDocument/formatting`; `textDocument/rangeFormatting` for a
+//! selection when the server has it, else the whole file; given up after
+//! `[lsp] request_timeout_ms`, or when the server goes away). A request
+//! that inherits a pending save formats the whole file. Results are checked against the
 //! generation and the request's seq before the editor applies them
 //! (`Editor::format_done`); a save waiting for one writes either way.
 
 use std::collections::HashMap;
+use std::ops::Range;
 use std::time::{Duration, Instant};
 
 use lsp_types::{Position, TextEdit};
 use serde_json::{Value, json};
 
 use super::lsp::Inflight;
-use super::lsp_nav::FORMATTING;
+use super::lsp_nav::{FORMATTING, RANGE_FORMATTING};
 use super::{App, Ctx};
 use crate::editor::buffer::BufferId;
 use crate::editor::format::{FormatRequest, Formatter, Snapshot};
 use crate::event::{AppMsg, Level};
 use crate::lsp::transport::ResponseError;
-use crate::lsp::{DocTag, PendingTag};
+use crate::lsp::{DocTag, PendingTag, pos};
 use crate::util::format::Failure;
 
 #[derive(Debug, Default)]
@@ -77,9 +80,11 @@ impl App {
             self.stop_format_run(old.run);
             save |= old.save;
         }
+        // A save always writes a whole-file format.
+        let range = if save { None } else { req.range };
         let argv = match req.via {
             Formatter::Command(argv) => argv,
-            Formatter::Lsp => return self.start_lsp_format(req.id, seq, save, req.snapshot),
+            Formatter::Lsp => return self.start_lsp_format(req.id, seq, save, req.snapshot, range),
         };
         let (generation, tx, root) = (self.workspace.generation, self.bus_tx.clone(), self.workspace.root.clone());
         let (id, timeout, input) = (req.id, req.timeout, req.snapshot.text.clone());
@@ -111,14 +116,21 @@ impl App {
         }
     }
 
-    /// Ask buffer `id`'s language server to format it. Without one that
+    /// Ask buffer `id`'s language server to format it, or only char
+    /// `range` of it when the server formats ranges. Without one that
     /// formats, a save writes the text as it is, and a manual format says
     /// how to get a formatter.
-    fn start_lsp_format(&mut self, id: BufferId, seq: u64, save: bool, snapshot: Snapshot) {
+    fn start_lsp_format(&mut self, id: BufferId, seq: u64, save: bool, snapshot: Snapshot, range: Option<Range<usize>>) {
         let Some(b) = self.editor.index_of_id(id).map(|i| &self.editor.buffers[i]) else { return };
-        let (language, indent) = (b.language().map_or("", |l| l.name), b.indent);
-        let params = json!({"options": {"tabSize": indent.width, "insertSpaces": !indent.hard_tabs}});
-        match self.lsp_send(id, Position::default(), FORMATTING, params, PendingTag::Formatting, false) {
+        let (language, indent) = (b.language().map_or("", |l| l.name).to_string(), b.indent);
+        let lsp_range = range.map(|r| lsp_types::Range { start: pos::position(&b.rope, r.start), end: pos::position(&b.rope, r.end) });
+        let opts = json!({"tabSize": indent.width, "insertSpaces": !indent.hard_tabs});
+        let ranged = lsp_range.filter(|_| self.lsp_check(id, RANGE_FORMATTING).is_ok());
+        let (method, params) = match ranged {
+            Some(r) => (RANGE_FORMATTING, json!({"range": r, "options": opts})),
+            None => (FORMATTING, json!({"options": opts})),
+        };
+        match self.lsp_send(id, Position::default(), method, params, PendingTag::Formatting, false) {
             Ok(req) => {
                 let deadline = Instant::now() + Duration::from_millis(self.config.lsp.request_timeout_ms);
                 self.format.jobs.insert(id, Job { seq, save, snapshot, run: Run::Lsp { req, deadline } });
@@ -362,6 +374,7 @@ mod tests {
     mod lsp {
         use super::*;
         use crate::app::lsp::tests::{incremental, is_lsp, open_on_server, with_fake_servers};
+        use crate::editor::selection::{Selection, Selections};
         use crate::lsp::fake::FakeServer;
         use serde_json::json;
 
@@ -383,9 +396,15 @@ mod tests {
 
         /// a.rs open on a server that formats (or not), saves formatting.
         async fn setup(name: &str, formats: bool) -> (App, FakeServer, std::path::PathBuf, std::path::PathBuf) {
+            setup_with(name, formats, false).await
+        }
+
+        /// [`setup`], with a server that formats ranges (or not).
+        async fn setup_with(name: &str, formats: bool, range: bool) -> (App, FakeServer, std::path::PathBuf, std::path::PathBuf) {
             let (mut app, dir) = test_app(name);
             let mut caps = incremental();
             caps["documentFormattingProvider"] = json!(formats);
+            caps["documentRangeFormattingProvider"] = json!(range);
             let mut servers = with_fake_servers(&mut app, caps);
             app.editor.format.on_save = true;
             let server = open_on_server(&mut app, &mut servers, "a.rs", UGLY).await;
@@ -526,6 +545,85 @@ mod tests {
             assert!(warnings(&app).iter().any(|w| w.starts_with("No formatter for rust files")), "{:?}", warnings(&app));
             app.lsp_sync();
             assert!(server.drain().iter().all(|m| m["method"] != "textDocument/formatting"));
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        fn pos(line: u32, character: u32) -> serde_json::Value {
+            json!({"line": line, "character": character})
+        }
+
+        fn select(app: &mut App, sels: Vec<Selection>) {
+            app.editor.active_buffer_mut().unwrap().view.sels = Selections::new(sels, 0);
+        }
+
+        #[tokio::test]
+        async fn the_server_formats_only_the_selection() {
+            let (mut app, mut server, dir, _) = setup_with("format-lsp-range", true, true).await;
+            // Line 1, `x( 1,2 );\n`.
+            select(&mut app, vec![Selection::new(8, 18)]);
+            act(&mut app, EditorAction::Format);
+            let req = server.recv("textDocument/rangeFormatting").await;
+            assert_eq!(req["params"]["range"], json!({"start": pos(1, 0), "end": pos(2, 0)}));
+            assert_eq!(req["params"]["options"], json!({"tabSize": 4, "insertSpaces": true}));
+            assert!(req["params"]["textDocument"]["uri"].as_str().unwrap().ends_with("/a.rs"));
+            let line1: Vec<_> = edits().as_array().unwrap()[1..].to_vec();
+            server.respond(req["id"].as_i64().unwrap(), json!(line1));
+            handle_next(&mut app, is_lsp).await;
+            assert_eq!(text(&app), "fn a(){\n    x(1, 2);\n}\n");
+            act(&mut app, EditorAction::Undo);
+            assert_eq!(text(&app), UGLY, "one undo step");
+
+            // No selection: the whole file.
+            select(&mut app, vec![Selection::point(0)]);
+            act(&mut app, EditorAction::Format);
+            let req = server.recv("textDocument/formatting").await;
+            assert!(req["params"]["range"].is_null());
+            server.respond(req["id"].as_i64().unwrap(), edits());
+            handle_next(&mut app, is_lsp).await;
+            assert_eq!(text(&app), PRETTY);
+            act(&mut app, EditorAction::Undo);
+
+            // Several selections: the span from the first to the last.
+            select(&mut app, vec![Selection::new(0, 3), Selection::new(9, 12)]);
+            act(&mut app, EditorAction::Format);
+            let req = server.recv("textDocument/rangeFormatting").await;
+            assert_eq!(req["params"]["range"], json!({"start": pos(0, 0), "end": pos(1, 4)}));
+            server.respond(req["id"].as_i64().unwrap(), json!(null));
+            handle_next(&mut app, is_lsp).await;
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        #[tokio::test]
+        async fn without_range_support_the_whole_file_is_formatted() {
+            let (mut app, mut server, dir, _) = setup_with("format-lsp-no-range", true, false).await;
+            select(&mut app, vec![Selection::new(8, 18)]);
+            act(&mut app, EditorAction::Format);
+            let req = server.recv("textDocument/formatting").await;
+            server.respond(req["id"].as_i64().unwrap(), edits());
+            handle_next(&mut app, is_lsp).await;
+            assert_eq!(text(&app), PRETTY);
+            app.lsp_sync();
+            assert!(server.drain().iter().all(|m| m["method"] != "textDocument/rangeFormatting"));
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        #[tokio::test]
+        async fn a_pending_save_makes_a_selection_format_the_whole_file() {
+            let (mut app, mut server, dir, path) = setup_with("format-lsp-range-save", true, true).await;
+            act(&mut app, EditorAction::InsertText(" ".into()));
+            act(&mut app, EditorAction::Backspace);
+            act(&mut app, EditorAction::Save);
+            let first = server.recv("textDocument/formatting").await;
+            select(&mut app, vec![Selection::new(8, 18)]);
+            act(&mut app, EditorAction::Format);
+            assert_eq!(server.recv("$/cancelRequest").await["params"]["id"], first["id"]);
+            let req = server.recv("textDocument/formatting").await;
+            server.respond(req["id"].as_i64().unwrap(), edits());
+            handle_next(&mut app, is_lsp).await;
+            assert_eq!(text(&app), PRETTY);
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), PRETTY);
+            app.lsp_sync();
+            assert!(server.drain().iter().all(|m| m["method"] != "textDocument/rangeFormatting"));
             let _ = std::fs::remove_dir_all(&dir);
         }
 

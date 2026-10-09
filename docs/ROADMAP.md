@@ -144,7 +144,7 @@ All of section E shipped in Phase 9 except split editor panes, which shipped in 
 | Diagnostics + Problems window | M | Done: gutter glyphs, underlines, status bar counts, F2, Problems window (Alt+6) |
 | Go to definition, references, hover | M | Done: Ctrl+B and Ctrl+click, Alt+F7 usages with previews, Alt+Q hover popup |
 | Completion popup | L | Done: auto-trigger and Ctrl+Space, fuzzy filter, snippets flattened, additional edits, resolve |
-| Rename, code actions, formatting, document symbols | M | Done: Shift+F6 rename across files, Alt+Enter context actions with resolve and `workspace/applyEdit`, Ctrl+F12 file structure, formatting through the server when `[format]` has no command; workspace edits create, rename and delete files |
+| Rename, code actions, formatting, document symbols | M | Done: Shift+F6 rename across files, Alt+Enter context actions with resolve and `workspace/applyEdit`, Ctrl+F12 file structure, formatting through the server when `[format]` has no command (the selection only when the server formats ranges); a lightbulb for quick fixes, preferred actions first; workspace edits create, rename and delete files |
 
 ### G. Themes, vim, config
 

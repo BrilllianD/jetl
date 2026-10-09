@@ -250,9 +250,9 @@ pub fn block_selections(rope: &Rope, rows: &Rows, anchor: (usize, usize), head: 
     Selections::new(ranges, primary)
 }
 
-/// Line numbers, bookmark, diff mark, fold marker, space; the blame
-/// column before them when shown, and first `action_w` cells of
-/// [`LineDecor`] glyphs.
+/// Line numbers, bookmark, diff mark (or diagnostic glyph, or lightbulb),
+/// fold marker, space; the blame column before them when shown, and first
+/// `action_w` cells of [`LineDecor`] glyphs.
 pub fn gutter_width(buf: &Buffer, action_w: u16) -> u16 {
     let digits = buf.rope.len_lines().max(1).to_string().len().max(3) as u16;
     let blame = if buf.blame.is_some() { super::blame::WIDTH } else { 0 };
@@ -294,6 +294,10 @@ impl LineDecor {
 
 /// At most this many cells of fold placeholder.
 const PLACEHOLDER_MAX: usize = 20;
+
+/// The lightbulb glyph: U+2731, one cell in every terminal (the emoji bulb
+/// is two and would break the gutter).
+const LIGHTBULB: &str = "✱";
 
 /// What a collapsed fold shows after its header line: `…`, then the
 /// closing line when the fold hides it (`fn main() {…}`).
@@ -451,9 +455,14 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
                 };
                 screen.set_string(gx + digits as u16, y, glyph, style);
             }
-            // A diagnostic's glyph takes the diff mark's column over it.
+            // A diagnostic's glyph takes the diff mark's column over it, and
+            // the lightbulb (quick fixes, `app/lightbulb.rs`) both, on the
+            // caret line of the focused view.
             let git_mark = buf.gutter.get(buf.gutter.partition_point(|m| m.line < line)).filter(|m| m.line <= *span.end());
-            if let Some(sev) = marks.lines.range(span.clone()).map(|(_, s)| *s).min() {
+            let bulb = o.focused && line == cur_line && buf.lightbulb == Some((buf.version, line));
+            if bulb {
+                screen.set_string(gx + digits as u16 + 1, y, LIGHTBULB, theme.lightbulb);
+            } else if let Some(sev) = marks.lines.range(span.clone()).map(|(_, s)| *s).min() {
                 let st = sev.style(theme);
                 screen.set_string(gx + digits as u16 + 1, y, sev.glyph(), Style::default().fg(st.fg.unwrap_or(theme.fg)));
             } else if let Some(mark) = git_mark {

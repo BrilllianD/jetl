@@ -248,6 +248,9 @@ theme_fields! {
         diag_warn,
         diag_info,
         diag_hint,
+        /// Gutter glyph (✱) on the caret line when the language server has
+        /// quick fixes there.
+        lightbulb,
         splitter,
     ],
 }

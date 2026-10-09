@@ -225,6 +225,13 @@ Ctrl+Alt+L and `on_save` alike; `timeout_ms` does not apply, the server gets
 (or when the server stops). A file with neither is saved as it is, and
 Ctrl+Alt+L says why there is no formatter.
 
+With a selection, Ctrl+Alt+L asks the language server to format only the
+selected text (`textDocument/rangeFormatting`) when the server can; with
+several selections (a block selection too) it asks for the span from the start
+of the first to the end of the last, which may start and end mid-line; many
+servers widen a range to whole lines or statements. A server without range formatting formats the
+whole file. `[format]` commands and saves always format the whole file.
+
 The result is applied as one undoable edit of the changed lines only: Ctrl+Z
 takes the whole reformat back, the caret stays on the same code and the view
 on the same lines. Output identical to the buffer changes nothing. With
@@ -358,6 +365,13 @@ position, Ctrl+C copies its message. A file keeps at most
 are kept. A server's problems go when it stops, and all of them on a
 project switch or restart. Problems stay where the server put them while
 you type, until it publishes again.
+
+When the caret rests on a line with a problem, jetl asks the server (after
+about a quarter of a second) whether it has quick fixes there; if it does, a
+`✱` lightbulb (the `lightbulb` theme style) replaces the line's glyph in the
+gutter until you type or move to another line. The underline and the status
+bar still show the problem. Alt+Enter lists the fixes, the server's preferred
+ones first, so Enter runs the preferred fix.
 
 Code completion comes from the file's server. With `completion_auto` the
 popup opens by itself once the identifier at the caret has
@@ -656,7 +670,7 @@ Style fields: `border border_focused title title_focused strip_item
 strip_item_active status_accent tab tab_active tab_dirty line_number
 line_number_current bracket_match secondary_caret bookmark fold_placeholder git_added git_modified git_deleted git_untracked
 git_conflicted git_ignored popup_border list_selected list_selected_unfocused
-dim error warn info diag_error diag_warn diag_info diag_hint splitter`.
+dim error warn info diag_error diag_warn diag_info diag_hint lightbulb splitter`.
 `secondary_caret` is the cell of every caret but the primary one (which is
 the terminal cursor; in a split pane without focus every caret of a
 multi-caret view gets it): reverse video by default, which an override keeps

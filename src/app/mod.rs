@@ -49,6 +49,7 @@ mod files;
 mod find;
 mod format;
 mod history;
+mod lightbulb;
 mod lsp;
 mod lsp_edit;
 mod lsp_nav;
@@ -536,6 +537,7 @@ impl App {
         }
         self.completion_timeout(Instant::now());
         self.format_timeout(Instant::now());
+        self.lightbulb_tick(Instant::now());
         if self.editor.autosave_due(Instant::now()) {
             self.autosave();
         }
