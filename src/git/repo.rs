@@ -1,6 +1,7 @@
 //! Synchronous git2 operations. Each function opens the repository fresh and
 //! is meant to run inside `spawn_blocking`; no `Repository` outlives a call.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -23,6 +24,69 @@ pub fn rel_path(workdir: &Path, abs: &Path) -> Option<String> {
     let rel = abs.strip_prefix(workdir).ok()?;
     let s = rel.to_str()?;
     (!s.is_empty()).then(|| s.replace(std::path::MAIN_SEPARATOR, "/"))
+}
+
+/// What a work tree operation starts from, to tell the renames it made from
+/// those already staged.
+#[derive(Debug, Clone, Default)]
+pub struct RenameBase {
+    tree: Option<git2::Oid>,
+    /// `(old_rel, rel)` of the renames `status` reported.
+    staged: HashSet<(String, String)>,
+}
+
+fn head_tree_id(repo: &Repository) -> Option<git2::Oid> {
+    repo.head().ok()?.peel_to_tree().ok().map(|t| t.id())
+}
+
+fn status_renames(root: &Path) -> Result<HashSet<(String, String)>> {
+    Ok(status(root)?.entries.into_iter().filter_map(|e| e.old_rel.map(|old| (old, e.rel))).collect())
+}
+
+/// The HEAD tree and the renames staged now.
+pub fn rename_base(root: &Path) -> Result<RenameBase> {
+    let (repo, _) = open(root)?;
+    Ok(RenameBase { tree: head_tree_id(&repo), staged: status_renames(root)? })
+}
+
+/// The files renamed since `base`, as absolute `(old, new)`: renames between
+/// the base tree and HEAD now (checkout, merge, rebase...) and renames newly
+/// staged (stash apply, revert --no-commit...). Only moves, not copies: the
+/// old path is gone and the new one is a file. Errors give no renames.
+pub fn renames_since(root: &Path, base: &RenameBase) -> Vec<(PathBuf, PathBuf)> {
+    let found = || -> Result<Vec<(PathBuf, PathBuf)>> {
+        let (repo, workdir) = open(root)?;
+        let mut pairs = Vec::new();
+        if let (Some(old), Some(new)) = (base.tree, head_tree_id(&repo))
+            && old != new
+        {
+            let mut diff = repo.diff_tree_to_tree(Some(&repo.find_tree(old)?), Some(&repo.find_tree(new)?), None)?;
+            diff.find_similar(Some(git2::DiffFindOptions::new().renames(true)))?;
+            for d in diff.deltas().filter(|d| d.status() == git2::Delta::Renamed) {
+                if let (Some(from), Some(to)) = (d.old_file().path(), d.new_file().path()) {
+                    pairs.push((workdir.join(from), workdir.join(to)));
+                }
+            }
+        }
+        for (old, rel) in status_renames(root)?.difference(&base.staged) {
+            pairs.push((workdir.join(old), workdir.join(rel)));
+        }
+        Ok(pairs)
+    };
+    let mut out: Vec<(PathBuf, PathBuf)> = Vec::new();
+    match found() {
+        Ok(pairs) => {
+            for (from, to) in pairs {
+                let moved = std::fs::symlink_metadata(&from).is_err() && std::fs::symlink_metadata(&to).is_ok_and(|m| m.is_file());
+                if moved && !out.contains(&(from.clone(), to.clone())) {
+                    out.push((from, to));
+                }
+            }
+        }
+        Err(e) => tracing::debug!("renames since the operation: {e:#}"),
+    }
+    out.truncate(crate::history::MAX_FILES);
+    out
 }
 
 pub fn status(root: &Path) -> Result<StatusSnapshot> {
@@ -977,6 +1041,61 @@ pub(crate) mod tests {
         assert_eq!(b.commits[0].author, "Test");
         r.write("new.txt", "x\n");
         assert!(blame(&r.dir, &r.dir.join("new.txt")).is_err(), "untracked");
+    }
+
+    fn commit_all(r: &TempRepo, msg: &str) {
+        git_cli(&r.dir, &["add", "-A"], true);
+        git_cli(&r.dir, &["commit", "-qm", msg], true);
+    }
+
+    #[test]
+    fn renames_since_reports_a_committed_rename_after_checkout() {
+        let r = TempRepo::new("renames-since");
+        r.write("a.txt", "one\ntwo\nthree\nfour\n");
+        stage_all(&r.dir).unwrap();
+        commit(&r.dir, "first").unwrap();
+        let main = status(&r.dir).unwrap().branch.unwrap();
+        git_cli(&r.dir, &["switch", "-qc", "dev"], true);
+        git_cli(&r.dir, &["mv", "a.txt", "b.txt"], true);
+        commit_all(&r, "rename");
+        git_cli(&r.dir, &["switch", "-q", &main], true);
+        let base = rename_base(&r.dir).unwrap();
+        git_cli(&r.dir, &["switch", "-q", "dev"], true);
+        assert_eq!(renames_since(&r.dir, &base), [(r.dir.join("a.txt"), r.dir.join("b.txt"))]);
+    }
+
+    #[test]
+    fn renames_since_ignores_renames_staged_before() {
+        let r = TempRepo::new("renames-staged");
+        r.write("a.txt", "one\ntwo\nthree\nfour\n");
+        stage_all(&r.dir).unwrap();
+        commit(&r.dir, "first").unwrap();
+        git_cli(&r.dir, &["mv", "a.txt", "b.txt"], true);
+        let base = rename_base(&r.dir).unwrap();
+        assert!(renames_since(&r.dir, &base).is_empty());
+        // A rename staged after the base is reported.
+        r.write("c.txt", "five\nsix\nseven\neight\n");
+        stage_all(&r.dir).unwrap();
+        commit(&r.dir, "second").unwrap();
+        let base = rename_base(&r.dir).unwrap();
+        git_cli(&r.dir, &["mv", "c.txt", "d.txt"], true);
+        assert_eq!(renames_since(&r.dir, &base), [(r.dir.join("c.txt"), r.dir.join("d.txt"))]);
+    }
+
+    #[test]
+    fn renames_since_skips_copies() {
+        let r = TempRepo::new("renames-copy");
+        r.write("a.txt", "one\ntwo\nthree\nfour\n");
+        stage_all(&r.dir).unwrap();
+        commit(&r.dir, "first").unwrap();
+        let main = status(&r.dir).unwrap().branch.unwrap();
+        git_cli(&r.dir, &["switch", "-qc", "dev"], true);
+        r.write("b.txt", "one\ntwo\nthree\nfour\n");
+        commit_all(&r, "copy");
+        git_cli(&r.dir, &["switch", "-q", &main], true);
+        let base = rename_base(&r.dir).unwrap();
+        git_cli(&r.dir, &["switch", "-q", "dev"], true);
+        assert!(renames_since(&r.dir, &base).is_empty());
     }
 
     /// Run the git command line in `dir`; `ok` false allows a failure

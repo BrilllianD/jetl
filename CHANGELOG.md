@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Local History follows files that git renames: after checkout, switch, pull, merge, rebase, cherry-pick,
+  revert or stash apply, the history of each renamed file moves to its new path with a "Renamed from" row,
+  as for a rename in the Project tree.
 - Local History keeps the unsaved edits you discard: answering Don't Save when quitting, closing tabs or
   switching the project root first stores each dirty file's text as "Before discarding unsaved edits",
   whether or not the periodic unsaved snapshots are on.

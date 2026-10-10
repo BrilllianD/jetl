@@ -86,9 +86,13 @@ impl App {
         }
     }
 
-    pub(super) fn on_git_msg(&mut self, msg: GitMsg) {
-        if let GitMsg::OpDone { id, .. } = &msg {
+    pub(super) fn on_git_msg(&mut self, mut msg: GitMsg) {
+        if let GitMsg::OpDone { id, renames, .. } = &mut msg {
             self.git.finish(*id);
+            // Absolute paths and a move that happened: carried even when the
+            // root switched meanwhile.
+            let renames = std::mem::take(renames);
+            self.history_moved(renames);
         }
         if msg.generation() != self.workspace.generation {
             tracing::debug!("dropping stale git result");

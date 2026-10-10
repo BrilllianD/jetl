@@ -617,6 +617,17 @@ and wait on it off the main thread before touching the files.
 calls `App::history_renamed(from, to)` (`history.rename`, then the Local
 History window follows) on the main thread once the move succeeded and
 before the tabs retarget, so the file's local history follows it.
+A move you only learn of afterwards (git renames) goes through
+`App::history_moved(pairs)` instead: `Handle::moved` -> `Job::Moved`, where the
+worker carries only pairs whose old path is gone and new path exists, and
+answers `HistoryMsg::Moved` (`history_retarget` moves the window). `GitService`
+records `repo::rename_base` before an operation that touches the work tree
+(only with local history on), `repo::renames_since` after it (HEAD tree
+renames found by `find_similar`, plus newly staged ones) and sends them in
+`GitMsg::OpDone.renames`; `on_git_msg` hands them on before the stale-root
+check, since the paths are absolute. `store::carry` skips a second
+"Renamed from" marker for the same old path within `RENAME_ECHO` (60 s) when
+it copied nothing, so one move seen twice marks once.
 
 **A new local history entry the user owns** (one kept until removed, as a
 label) sets `Kind::pinned`; anything that rewrites an index file does it
@@ -697,9 +708,10 @@ under `prune.lock` (`drop_lines` / `write_index`).
   by `keep_days`. Renames: an older dev build cannot parse
   `"kind":"renamed"` lines (skipped, and dropped when its prune rewrites
   that index), and its `Kind::label` ignores a Save As detail (plain
-  "Saved As"). Only Project tree renames are followed: `mv` or `git mv` in
-  a shell, renames by checkout, merge or pull, and other tools leave the
-  history under the old path; another instance with a tab on the old path
+  "Saved As"). Only Project tree renames and those git makes through jetl's
+  git operations (checkout, switch, pull, merge, rebase, cherry-pick, revert,
+  stash apply/pop; not copies, not `fetch`) are followed: `mv` or `git mv` in
+  a shell, and other tools leave the history under the old path; another instance with a tab on the old path
   keeps saving there. A folder rename costs one scan of `index/` on the
   worker; carried copies double index lines, not blob bytes (prune counts
   each blob once, and a copy has its original's time, so both age out

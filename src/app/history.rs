@@ -135,6 +135,19 @@ impl App {
     /// after the carry.
     pub(super) fn history_renamed(&mut self, from: &Path, to: &Path) {
         self.history.rename(from, to);
+        self.history_retarget(from, to);
+    }
+
+    /// Files moved by something other than the Project tree (git renames
+    /// after an operation): carry their history. The window follows when the
+    /// worker answers `HistoryMsg::Moved`.
+    pub(super) fn history_moved(&mut self, pairs: Vec<(PathBuf, PathBuf)>) {
+        self.history.moved(pairs);
+    }
+
+    /// Move the Local History window along with a carried `from` -> `to`,
+    /// listing again after the carry.
+    fn history_retarget(&mut self, from: &Path, to: &Path) {
         if let Some(path) = self.history_panel.retarget(from, to, &self.workspace.root) {
             self.history.list(&path);
         }
@@ -255,6 +268,11 @@ impl App {
                 }
                 Err(e) => self.notify(Level::Warn, format!("Put Label: {e}")),
             },
+            HistoryMsg::Moved { pairs } => {
+                for (from, to) in &pairs {
+                    self.history_retarget(from, to);
+                }
+            }
             HistoryMsg::LabelRemoved { paths, name, result } => {
                 match result {
                     Ok(0) => self.notify(Level::Info, format!("Label \"{name}\" was already gone")),
@@ -457,7 +475,7 @@ pub(crate) mod tests {
     use crate::actions::{Action, AppAction, EditorAction, HistoryAction};
     use crate::app::tests::{handle_next, init_repo, load, test_app, with_history};
     use crate::files::ops::FsOp;
-    use crate::git::GitMsg;
+    use crate::git::{GitMsg, GitOp};
     use crate::history::store;
     use crate::ui::dialog::{DialogId, DialogResult};
 
@@ -949,6 +967,36 @@ pub(crate) mod tests {
         assert_eq!(snapshots(&app, &wt.join("a.txt")), pairs(&[(label, "edited in the worktree\n")]));
         assert_eq!(snapshots(&app, &wt.join("new.txt")), pairs(&[(label, "untracked\n")]));
         assert!(snapshots(&app, &root.join("a.txt")).is_empty(), "the root is not snapshotted");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn git_checkout_rename_carries_history() {
+        let (mut app, dir) = test_app("history-git-rename");
+        with_history(&mut app);
+        init_repo(&app, &[("a.txt", "one\ntwo\nthree\nfour\n")]);
+        let root = app.workspace.root.clone();
+        let (a, b) = (root.join("a.txt"), root.join("b.txt"));
+        record(&app, &a, "one\ntwo\nthree\nfour\n");
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git").args(args).current_dir(&root).output().unwrap();
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        let main = crate::git::repo::status(&root).unwrap().branch.unwrap();
+        git(&["switch", "-qc", "dev"]);
+        git(&["mv", "a.txt", "b.txt"]);
+        git(&["commit", "-qm", "rename"]);
+        git(&["switch", "-q", &main]);
+        app.git.run_cli(GitOp::Switch("dev".into()), vec!["switch".into(), "dev".into()]);
+        let op_done = |m: &AppMsg| matches!(m, AppMsg::Git(GitMsg::OpDone { .. }));
+        handle_next(&mut app, op_done).await;
+        assert!(b.exists() && !a.exists());
+        // The window on the old path follows once the worker carried.
+        app.show_local_history(a.clone());
+        handle_next(&mut app, |m| matches!(m, AppMsg::LocalHistory(HistoryMsg::Moved { .. }))).await;
+        assert_eq!(app.history_panel.target(), Some(b.as_path()));
+        let renamed = format!("Renamed from {}", a.display());
+        assert_eq!(snapshots(&app, &b), pairs(&[(&renamed, "one\ntwo\nthree\nfour\n"), ("Saved", "one\ntwo\nthree\nfour\n")]));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -173,7 +173,24 @@ pub enum GitMsg {
         label: String,
         ok: bool,
         output: String,
+        /// Files the operation renamed in the work tree (old, new), absolute.
+        renames: Vec<(PathBuf, PathBuf)>,
     },
+}
+
+/// The tree and staged renames before a work tree operation (`None`: not
+/// tracked, or the repository is unreadable).
+async fn base_of(root: PathBuf, track: bool) -> Option<repo::RenameBase> {
+    if !track {
+        return None;
+    }
+    tokio::task::spawn_blocking(move || repo::rename_base(&root).ok()).await.ok().flatten()
+}
+
+/// The files the operation renamed since `base`.
+async fn renames_after(root: PathBuf, base: Option<repo::RenameBase>) -> Vec<(PathBuf, PathBuf)> {
+    let Some(base) = base else { return Vec::new() };
+    tokio::task::spawn_blocking(move || repo::renames_since(&root, &base)).await.unwrap_or_default()
 }
 
 impl GitMsg {
@@ -514,16 +531,19 @@ impl GitService {
     pub fn run_repo(&mut self, op: GitOp, label: String, work: impl FnOnce(&Path) -> Result<String> + Send + 'static) -> u64 {
         let id = self.start(&label);
         let pre = self.before(&op, &label);
+        let track = op.touches_worktree() && self.history.enabled();
         let (root, generation, tx) = (self.root.clone(), self.generation, self.tx.clone());
         tokio::task::spawn_blocking(move || {
             if let Some(ack) = pre {
                 ack.wait();
             }
+            let base = if track { repo::rename_base(&root).ok() } else { None };
             let (ok, output) = match work(&root) {
                 Ok(s) => (true, s),
                 Err(e) => (false, format!("{e:#}")),
             };
-            let _ = tx.send(AppMsg::Git(GitMsg::OpDone { generation, id, op, label, ok, output }));
+            let renames = base.map(|b| repo::renames_since(&root, &b)).unwrap_or_default();
+            let _ = tx.send(AppMsg::Git(GitMsg::OpDone { generation, id, op, label, ok, output, renames }));
         });
         id
     }
@@ -539,16 +559,19 @@ impl GitService {
         let label = format!("git {}", args.join(" "));
         let id = self.start(&label);
         let pre = self.before(&op, &label);
+        let track = op.touches_worktree() && self.history.enabled();
         let (root, generation, tx) = (self.root.clone(), self.generation, self.tx.clone());
         tokio::spawn(async move {
             if let Some(ack) = pre {
                 let _ = tokio::task::spawn_blocking(move || ack.wait()).await;
             }
+            let base = base_of(root.clone(), track).await;
             let (ok, output) = match cli::git_with_input(&root, &args, input).await {
                 Ok(o) => (o.ok, o.combined()),
                 Err(e) => (false, format!("{e:#}")),
             };
-            let _ = tx.send(AppMsg::Git(GitMsg::OpDone { generation, id, op, label, ok, output }));
+            let renames = renames_after(root, base).await;
+            let _ = tx.send(AppMsg::Git(GitMsg::OpDone { generation, id, op, label, ok, output, renames }));
         });
         id
     }
@@ -558,13 +581,16 @@ impl GitService {
     pub fn stash_apply(&mut self, oid: String, pop: bool, label: String) -> u64 {
         let id = self.start(&label);
         let pre = self.before(&GitOp::Stash, &label);
+        let track = GitOp::Stash.touches_worktree() && self.history.enabled();
         let (root, generation, tx) = (self.root.clone(), self.generation, self.tx.clone());
         tokio::spawn(async move {
             if let Some(ack) = pre {
                 let _ = tokio::task::spawn_blocking(move || ack.wait()).await;
             }
+            let base = base_of(root.clone(), track).await;
             let (ok, output) = cli::stash_apply(&root, &oid, pop).await.unwrap_or_else(|e| (false, format!("{e:#}")));
-            let _ = tx.send(AppMsg::Git(GitMsg::OpDone { generation, id, op: GitOp::Stash, label, ok, output }));
+            let renames = renames_after(root, base).await;
+            let _ = tx.send(AppMsg::Git(GitMsg::OpDone { generation, id, op: GitOp::Stash, label, ok, output, renames }));
         });
         id
     }
@@ -586,7 +612,7 @@ impl GitService {
             }
             .await;
             let (ok, output) = res.unwrap_or_else(|e| (false, format!("{e:#}")));
-            let _ = tx.send(AppMsg::Git(GitMsg::OpDone { generation, id, op: GitOp::Fetch, label, ok, output }));
+            let _ = tx.send(AppMsg::Git(GitMsg::OpDone { generation, id, op: GitOp::Fetch, label, ok, output, renames: Vec::new() }));
         });
         id
     }

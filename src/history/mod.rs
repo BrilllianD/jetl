@@ -197,6 +197,9 @@ pub enum HistoryMsg {
     /// Label `name` was removed from `paths`: how many entries went (0: they
     /// were gone already).
     LabelRemoved { paths: Vec<PathBuf>, name: String, result: Result<usize, String> },
+    /// History was carried from each old path to its new one (renames made
+    /// by git); only pairs that carried something.
+    Moved { pairs: Vec<(PathBuf, PathBuf)> },
 }
 
 /// Done when the snapshot a destructive operation asked for is stored.
@@ -217,6 +220,7 @@ enum Job {
     BeforeGit { root: PathBuf, label: String, at: u64, done: Sender<()> },
     BeforeDelete { path: PathBuf, at: u64, done: Sender<()> },
     Rename { from: PathBuf, to: PathBuf, at: u64 },
+    Moved { pairs: Vec<(PathBuf, PathBuf)>, at: u64 },
     Label { path: PathBuf, text: Option<CaptureText>, name: String, at: u64 },
     RemoveLabel { name: String, entries: Vec<(PathBuf, Entry)> },
     List(PathBuf),
@@ -332,6 +336,16 @@ impl Handle {
         }
     }
 
+    /// Carry the history of each `(old, new)` pair a git operation or
+    /// another tool renamed: the worker checks that the old path is gone and
+    /// the new one exists, and answers `HistoryMsg::Moved` with the pairs that
+    /// carried something.
+    pub fn moved(&self, pairs: Vec<(PathBuf, PathBuf)>) {
+        if self.enabled() && !pairs.is_empty() {
+            self.send(Job::Moved { pairs, at: now_ms() });
+        }
+    }
+
     /// Put label `name` on `path`: `text` (an open tab's, unsaved edits
     /// included), else the file on disk, read on the worker. Answered by
     /// `HistoryMsg::Labelled`; `false` (nothing queued) while local history is off.
@@ -416,6 +430,18 @@ impl Worker {
                         self.rename(&from, &to, at, &s);
                     }
                 }
+                Job::Moved { pairs, at } => {
+                    if s.enabled {
+                        let pairs: Vec<_> = pairs
+                            .into_iter()
+                            .filter(|(from, to)| std::fs::symlink_metadata(from).is_err() && std::fs::symlink_metadata(to).is_ok())
+                            .filter(|(from, to)| self.rename(from, to, at, &s).files > 0)
+                            .collect();
+                        if !pairs.is_empty() {
+                            let _ = self.bus.send(AppMsg::LocalHistory(HistoryMsg::Moved { pairs }));
+                        }
+                    }
+                }
                 Job::Label { path, text, name, at } => {
                     let result = self.label(&path, text, &name, at, &s);
                     let _ = self.bus.send(AppMsg::LocalHistory(HistoryMsg::Labelled { path, name, result }));
@@ -479,18 +505,24 @@ impl Worker {
         }
     }
 
-    fn rename(&self, from: &Path, to: &Path, at: u64, s: &LocalHistoryConfig) {
+    fn rename(&self, from: &Path, to: &Path, at: u64, s: &LocalHistoryConfig) -> store::Carried {
         match store::rename(&self.dir, from, to, at, s.max_file_bytes(), |p| Self::read_file(p, s)) {
-            Ok(c) => tracing::debug!(
-                "local history: carried {} entries of {} files from {} to {}, moved {} labels{}",
-                c.entries,
-                c.files,
-                from.display(),
-                to.display(),
-                c.labels,
-                if c.unlocked { " (prune lock held)" } else { "" }
-            ),
-            Err(e) => tracing::warn!("local history rename {} -> {}: {e}", from.display(), to.display()),
+            Ok(c) => {
+                tracing::debug!(
+                    "local history: carried {} entries of {} files from {} to {}, moved {} labels{}",
+                    c.entries,
+                    c.files,
+                    from.display(),
+                    to.display(),
+                    c.labels,
+                    if c.unlocked { " (prune lock held)" } else { "" }
+                );
+                c
+            }
+            Err(e) => {
+                tracing::warn!("local history rename {} -> {}: {e}", from.display(), to.display());
+                store::Carried::default()
+            }
         }
     }
 
@@ -743,6 +775,30 @@ mod tests {
         assert_eq!(store::list(&hist, &d.join("x.txt"))[0].label(), "Before delete");
         assert_eq!(store::list(&hist, &d.join("sub/y.txt")).len(), 1);
         assert!(store::list(&hist, &d.join("bin")).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn moved_carries_only_pairs_that_are_gone_and_arrived() {
+        let dir = temp("moved");
+        let (a, b, c, d) = (dir.join("a.txt"), dir.join("b.txt"), dir.join("c.txt"), dir.join("d.txt"));
+        std::fs::write(&a, "one\n").unwrap();
+        std::fs::write(&c, "two\n").unwrap();
+        let (h, mut rx) = handle(&dir);
+        h.capture(Capture::text(a.clone(), "one\n".into(), Kind::Save));
+        h.capture(Capture::text(c.clone(), "two\n".into(), Kind::Save));
+        // a -> b: the old path is still there (a copy), so not carried.
+        std::fs::write(&b, "one\n").unwrap();
+        // c -> d: really moved.
+        std::fs::rename(&c, &d).unwrap();
+        h.moved(vec![(a.clone(), b.clone()), (c.clone(), d.clone())]);
+        h.flush(Duration::from_secs(5));
+        match next(&mut rx) {
+            Ok(AppMsg::LocalHistory(HistoryMsg::Moved { pairs })) => assert_eq!(pairs, [(c, d.clone())]),
+            other => panic!("expected the move, got {other:?}"),
+        }
+        assert!(listed(&h, &mut rx, &b).is_empty());
+        assert_eq!(listed(&h, &mut rx, &d).len(), 2);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

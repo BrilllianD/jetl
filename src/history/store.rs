@@ -100,6 +100,11 @@ pub const LOCK_STALE: Duration = Duration::from_secs(60 * 60);
 /// [`record`] merging an autosave holds it for a moment.
 const LOCK_RETRY: Duration = Duration::from_millis(50);
 
+/// A rename that carries nothing new and repeats the newest "Renamed from"
+/// marker within this long is an echo of the same move seen twice (the
+/// Project tree and git both report it), and writes no second marker.
+pub const RENAME_ECHO: Duration = Duration::from_secs(60);
+
 /// Automatic snapshots of one file within this long of the first one of
 /// their run are merged into one entry (see the module doc).
 pub const AUTOSAVE_RUN: Duration = Duration::from_secs(5 * 60);
@@ -687,6 +692,15 @@ fn carry(dir: &Path, m: &Moved, at_ms: u64, max_bytes: u64, read: &impl Fn(&Path
         .filter(|e| !(e.kind == Kind::Renamed && e.detail.is_some() && e.detail.as_deref() == new_given))
         .map(|e| Entry { path: m.new_key.clone(), ..e.clone() })
         .collect();
+    if copies.is_empty()
+        && existing.last().is_some_and(|l| {
+            l.kind == Kind::Renamed
+                && l.detail.as_deref() == m.old_given.to_str()
+                && at_ms.saturating_sub(l.at) < RENAME_ECHO.as_millis() as u64
+        })
+    {
+        return Ok(0);
+    }
     let now = read(&m.new_given).filter(|b| b.len() as u64 <= max_bytes && !crate::git::diff::is_binary(b));
     let (blob, len, lines) = match now {
         Some(bytes) => {
@@ -1909,6 +1923,20 @@ mod tests {
         assert_eq!(rec(&dir, "/p/b.txt", "now", 11), Recorded::Same);
         assert!(matches!(auto(&dir, "/p/b.txt", "x", 12), Recorded::Added(_)));
         assert!(!dir.join("prune.lock").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rename_echo_writes_one_marker_within_the_window() {
+        let dir = temp("rename-echo");
+        rec(&dir, "/p/a.txt", "1", 1);
+        mv(&dir, "/p/a.txt", "/p/b.txt", 10);
+        let marks = |dir: &Path| labels(dir, "/p/b.txt").iter().filter(|l| l.0.starts_with("Renamed from")).count();
+        assert_eq!(marks(&dir), 1);
+        let again = mv(&dir, "/p/a.txt", "/p/b.txt", 10 + 5_000);
+        assert_eq!((again.entries, marks(&dir)), (0, 1), "the echo adds nothing");
+        mv(&dir, "/p/a.txt", "/p/b.txt", 10 + RENAME_ECHO.as_millis() as u64);
+        assert_eq!(marks(&dir), 2, "past the window a rename marks again");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
