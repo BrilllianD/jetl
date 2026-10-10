@@ -1,0 +1,20 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &marks, None)"
+---
+120x12 cursor=(50,2)
+00  main.log  All changes resolved                 [Accept Yours] [Accept Theirs] [Apply Non-Conflicting] [Apply] [Cancel]
+01   Yours: main ×                        │  Result: main.log ×                   │  Theirs: dev ×
+02                                        │     1    // added                     │    1    // added
+03                                        │     2    // lines                     │    2    // lines
+04     1  ▾ fn main() {                   │     3  ▾ fn main() {                  │    3  ▾ fn main() {
+05     2        one();                    │     4        one();                   │    4        one();
+06     3    }                             │     5    }                            │    5    }
+07     4                                  │     6                                 │    6
+08                                        │                                       │
+09                                        │                                       │
+10                                        │                                       │
+11                                        │                                       │
+-- marks: C=caret M=conflict A=added D=deleted ~=modified R=resolved
+02                                        R          RRRRRRRRRRRRRRRRRRRRRRRRRRRRRR         RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+03                                        R          RRRRRRRRRRRRRRRRRRRRRRRRRRRRRR         RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR

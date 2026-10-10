@@ -898,6 +898,19 @@ async fn merge_filler_rows() {
 }
 
 #[tokio::test]
+async fn merge_filler_rows_at_top() {
+    const TOP_BASE: &str = "fn main() {\n    one();\n}\n";
+    const TOP_OURS: &str = TOP_BASE;
+    const TOP_THEIRS: &str = "// added\n// lines\nfn main() {\n    one();\n}\n";
+    let mut fx = stable_app("merge-fill-top");
+    let app = &mut fx.app;
+    open_merge_texts(app, [TOP_BASE, TOP_OURS, TOP_THEIRS]);
+    let term = draw_editor(app, 120, 12);
+    let marks = merge_marks(&app.theme);
+    assert_snapshot!("merge_filler_rows_at_top", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
 async fn merge_filler_rows_both_accepted() {
     let mut fx = stable_app("merge-fill-both");
     let app = &mut fx.app;

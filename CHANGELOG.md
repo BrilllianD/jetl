@@ -83,6 +83,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Conflicts after a merge, rebase, cherry-pick, revert or stash pop open Resolve Conflicts with a localized git too (git runs in the C locale), and a failed status refresh after a resolve no longer reports that all conflicts are resolved.
+- The conflict resolver keeps its panes aligned when a change adds lines at the very top of the file (the other panes get blank rows before their first line).
 - After a conflicting stash pop or apply the resolver names theirs after the stash (`stash On main: wip`) instead of `theirs`.
 - Multiple carets: Duplicate Line with two carets on one line keeps both; Clone Caret Above/Below
   and Up/Down keep the visual column across tabs (soft wrap off); any caret motion resets Add Next

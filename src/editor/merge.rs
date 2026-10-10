@@ -26,7 +26,7 @@
 //! [`super::rows::Filler`]), so a block takes the same rows in all three
 //! panes and a top row maps by its block and its offset into it
 //! (`block_offset`, `block_row`). A block that is empty at the very top of
-//! a pane has no line to pad after and gets no fillers.
+//! a pane gets its filler rows before the pane's first line.
 
 use std::collections::HashMap;
 use std::ops::Range;
@@ -188,22 +188,23 @@ fn blocks(chunks: &[Range<usize>], n: usize) -> Vec<Range<usize>> {
 /// Filler rows that line the panes up: in each block, every pane with
 /// fewer lines than the longest gets the difference after the block's
 /// last line, or after the line before an empty block; an empty block
-/// at the top gets none (no line before it). `bg` is left `None`.
+/// at the top gets its fillers before line 0. `bg` is left `None`.
 fn plan_fillers(blocks: &[Vec<Range<usize>>; 3]) -> [Vec<Filler>; 3] {
     let mut out: [Vec<Filler>; 3] = Default::default();
     for b in 0..blocks[0].len() {
         let most = blocks.iter().map(|p| p[b].len()).max().unwrap_or(0);
         for (p, list) in blocks.iter().zip(&mut out) {
             let r = &p[b];
-            let line = if r.is_empty() { r.start.checked_sub(1) } else { Some(r.end - 1) };
+            let top = r.is_empty() && r.start == 0;
+            let line = if r.is_empty() { r.start.saturating_sub(1) } else { r.end - 1 };
             let missing = most - r.len();
-            if let (Some(line), true) = (line, missing > 0) {
-                list.push(Filler { line, rows: missing.min(u16::MAX as usize) as u16, block: b, bg: None });
+            if missing > 0 {
+                list.push(Filler { line, rows: missing.min(u16::MAX as usize) as u16, block: b, bg: None, top });
             }
         }
     }
     for list in &mut out {
-        list.sort_by_key(|f| f.line);
+        list.sort_by_key(|f| (f.line, !f.top));
     }
     out
 }
@@ -230,10 +231,8 @@ fn block_row(rows: &Rows, blocks: &[Range<usize>], b: usize, v: usize) -> Row {
         return rows.clamp(Row::line(r.start + v));
     }
     if let Some(k) = rows.fillers().iter().position(|f| f.block == b) {
-        let f = &rows.fillers()[k];
-        let before = rows.fillers()[..k].iter().filter(|g| g.line == f.line).fold(0u16, |n, g| n.saturating_add(g.rows));
-        let seg = rows.text_segs(f.line).saturating_add(before).saturating_add((v - r.len()).min(f.rows as usize - 1) as u16);
-        return rows.clamp(Row { line: f.line, seg });
+        let i = (v - r.len()).min(u16::MAX as usize) as u16;
+        return rows.clamp(rows.filler_row(k, i));
     }
     rows.clamp(Row::line(if r.is_empty() { r.start } else { r.end - 1 }))
 }
@@ -1418,14 +1417,23 @@ mod tests {
         // One chunk of 1, 3 and 1 lines at line 2.
         let bl = [blocks(&[2..3], 6), blocks(&[2..5], 8), blocks(&[2..3], 6)];
         let fills = plan_fillers(&bl);
-        assert_eq!(fills[0], [Filler { line: 2, rows: 2, block: 1, bg: None }]);
+        assert_eq!(fills[0], [Filler { line: 2, rows: 2, block: 1, bg: None, top: false }]);
         assert!(fills[1].is_empty());
         assert_eq!(fills[2], fills[0]);
-        // An empty chunk at the top has no line to pad after; elsewhere it pads after the line before.
-        let top = plan_fillers(&[blocks(&[0..0], 3), blocks(&[0..2], 5), blocks(&[0..0], 3)]);
-        assert!(top[0].is_empty() && top[2].is_empty());
+        // An empty chunk at the top pads before line 0; elsewhere it pads after the line before.
+        let bl0 = blocks(&[0..0], 3);
+        let top = plan_fillers(&[bl0.clone(), blocks(&[0..2], 5), bl0.clone()]);
+        assert_eq!(top[0], [Filler { line: 0, rows: 2, block: 1, bg: None, top: true }]);
+        assert_eq!(top[2], top[0]);
+        let rope0 = Rope::from_str("a\nb\nc");
+        let (folds0, wrap0) = (crate::editor::fold::Folds::default(), crate::editor::wrap::Wrap::new(false));
+        let r0 = Rows::view(&folds0, &wrap0, &top[0], &rope0, 0);
+        assert_eq!(block_row(&r0, &bl0, 1, 0), Row { line: 0, seg: -2 });
+        assert_eq!(block_row(&r0, &bl0, 1, 1), Row { line: 0, seg: -1 });
+        assert_eq!(block_offset(&r0, &bl0, Row { line: 0, seg: -1 }), (1, 1));
+        assert_eq!(block_offset(&r0, &bl0, Row::line(0)), (2, 0));
         let mid = plan_fillers(&[blocks(&[1..1], 3), blocks(&[1..3], 5), blocks(&[1..1], 3)]);
-        assert_eq!(mid[0], [Filler { line: 0, rows: 2, block: 1, bg: None }]);
+        assert_eq!(mid[0], [Filler { line: 0, rows: 2, block: 1, bg: None, top: false }]);
         // A filler row of one pane maps to the matching text line of another.
         let rope = Rope::from_str(&"l\n".repeat(5));
         let (folds, wrap) = (crate::editor::fold::Folds::default(), crate::editor::wrap::Wrap::new(false));
@@ -1480,5 +1488,34 @@ mod tests {
         edit(&mut ed, EditorAction::Move(crate::actions::Motion::Down, false));
         let b = &ed.buffers[yi];
         assert_eq!(b.rope.char_to_line(b.view.sel().head), 41);
+    }
+
+    #[test]
+    fn a_change_at_the_top_pads_the_other_panes_before_line_0() {
+        let mut ed = Editor::new(&Config::default());
+        let base = "x\n".repeat(40);
+        let texts = MergeTexts { base: base.clone(), ours: base.clone(), theirs: format!("t1\nt2\n{base}") };
+        ed.open_merge(PathBuf::from("/tmp/m.rs"), "m.rs".into(), texts, ["a".into(), "b".into()], String::new(), &Theme::default());
+        draw(&mut ed, 120, 20);
+        let wheel = |kind| crate::event::Mouse { kind, x: 1, y: 3, mods: crossterm::event::KeyModifiers::NONE, clicks: 1 };
+        let tops = |ed: &Editor| ed.merge_session().unwrap().ids.map(|id| ed.buffers[ed.index_of_id(id).unwrap()].view.top());
+        let first = [Row { line: 0, seg: -2 }, Row::line(0), Row::line(0)];
+        assert_eq!(tops(&ed), first);
+        let yi = ed.index_of_id(ed.merge_session().unwrap().ids[0]).unwrap();
+        assert!(ed.buffers[yi].rows().is_filler(ed.buffers[yi].view.top()));
+        let theirs = ed.groups[2].id;
+        ed.scroll_group(theirs, &wheel(crossterm::event::MouseEventKind::ScrollDown));
+        draw(&mut ed, 120, 20);
+        let t = tops(&ed);
+        assert_eq!((t[2], t[0]), (Row::line(3), Row::line(1)), "{t:?}");
+        ed.scroll_group(theirs, &wheel(crossterm::event::MouseEventKind::ScrollUp));
+        draw(&mut ed, 120, 20);
+        assert_eq!(tops(&ed), first);
+        // Up from yours' first line stays on the text.
+        ed.buffers[yi].goto_line(0, 0);
+        let yours = ed.groups[0].id;
+        ed.focus_group(yours);
+        edit(&mut ed, EditorAction::Move(crate::actions::Motion::Up, false));
+        assert_eq!(ed.buffers[yi].view.sel().head, 0);
     }
 }

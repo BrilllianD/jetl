@@ -21,7 +21,7 @@ pub struct ViewState {
     pub sels: Selections,
     /// The top row: `scroll_line` and the wrap segment of it shown first.
     pub scroll_line: usize,
-    pub scroll_seg: u16,
+    pub scroll_seg: i32,
     pub scroll_col: usize,
     /// Caret, version and text area size when the view last followed the
     /// caret. The view only scrolls to the caret when one of them changes,

@@ -155,7 +155,8 @@ pub fn row_geom(rope: &Rope, rows: &Rows, row: Row) -> RowGeom {
     let r = rows.seg_range(rope, row);
     match rows.line_wrap(row.line) {
         Some(w) => {
-            RowGeom { start: r.start, end: r.end, origin: w.start(row.seg).1, indent: w.indent_of(row.seg), last: row.seg + 1 >= w.segs() }
+            let s = u16::try_from(row.seg).unwrap_or_default();
+            RowGeom { start: r.start, end: r.end, origin: w.start(s).1, indent: w.indent_of(s), last: s + 1 >= w.segs() }
         }
         None => RowGeom { start: r.start, end: r.end, origin: 0, indent: 0, last: true },
     }
@@ -948,7 +949,7 @@ mod tests {
         let rope = Rope::from_str("ab\ncd\n");
         let folds = crate::editor::fold::Folds::default();
         let wrap = crate::editor::wrap::Wrap::new(false);
-        let fill = [crate::editor::rows::Filler { line: 0, rows: 2, block: 1, bg: None }];
+        let fill = [crate::editor::rows::Filler { line: 0, rows: 2, block: 1, bg: None, top: false }];
         let rows = Rows::view(&folds, &wrap, &fill, &rope, 0);
         let filler = Row { line: 0, seg: 1 };
         assert_eq!(row_x_to_char(&rope, &rows, filler, 0, 4), (2, false));
