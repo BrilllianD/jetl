@@ -109,6 +109,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Double-click, Ctrl+click and Alt+click past the end of a wrapped row act on that row's last word or end.
 - Local history: a running jetl prunes the store every hour, not only at startup, so orphan blobs of merged
   snapshots do not pile up past `max_total_mb` in a long session.
 - Local history: pruning keeps index lines written by a newer jetl (an unknown kind) and their blobs, instead

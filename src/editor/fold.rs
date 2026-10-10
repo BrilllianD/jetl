@@ -1118,6 +1118,23 @@ class A:
         }
 
         #[test]
+        fn duplicate_line_leaves_a_selection_copy_inside_a_block_expanded() {
+            use crate::editor::selection::{Selection, Selections};
+            let mut ed = editor(&format!("a\n{TEXT}"));
+            collapse(&mut ed, 1);
+            let b = ed.active_buffer_mut().unwrap();
+            let (header, inner) = (b.rope.line_to_char(1) + 3, b.rope.line_to_char(2) + 4);
+            b.view.sels = Selections::new(vec![Selection::point(header), Selection::new(inner, inner + 3)], 0);
+            act(&mut ed, E::DuplicateLine);
+            let main = "fn main() {\n    let a = 1;\n    let b = 2;\n}\n";
+            assert_eq!(
+                text(&ed),
+                format!("a\nfn main() {{\n    letlet a = 1;\n    let b = 2;\n}}\n{main}fn two() {{\n    x();\n}}\nlast\n")
+            );
+            assert_eq!(hidden(&ed), [], "the copy beside the selection copy stays expanded, no fold moves");
+        }
+
+        #[test]
         fn move_line_down_jumps_over_a_folded_neighbour() {
             let mut ed = editor("a\nfn main() {\n    let a = 1;\n    let b = 2;\n}\nz\n");
             collapse(&mut ed, 2);

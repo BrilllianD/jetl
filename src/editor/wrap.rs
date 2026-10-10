@@ -409,7 +409,7 @@ mod editor_tests {
     }
 
     /// A press with `clicks` clicks, like a double click.
-    fn press(ed: &mut Editor, (x, y): (u16, u16), clicks: u8, mods: KeyModifiers) {
+    fn press(ed: &mut Editor, (x, y): (u16, u16), clicks: u8, mods: KeyModifiers) -> Vec<crate::event::Effect> {
         use crate::app::Ctx;
         use crate::editor::Mouse;
         use crate::workspace::Workspace;
@@ -418,6 +418,7 @@ mod editor_tests {
         let mut cx = Ctx { effects: Vec::new(), config: &config, theme: &theme, workspace: &workspace, bus };
         let m = Mouse { kind: MouseEventKind::Down(MouseButton::Left), x, y, clicks, mods };
         ed.handle_mouse(&m, ratatui::layout::Rect::default(), &mut cx);
+        cx.effects
     }
 
     #[test]
@@ -436,13 +437,32 @@ mod editor_tests {
         let added = b.view.sel();
         assert!(added.upstream, "the added caret keeps the row above");
         assert_eq!(ed.focused_group().caret_cell.map(|c| c.1), Some(ta.y), "drawn on the clicked row");
-        // Double click there selects what ends the clicked row (its hanging
-        // space), not the next row's word.
+        // Alt+click past the row end with a caret at the next row's start
+        // (and another one): the caret there stays (the added one merges
+        // into it), it is not removed.
+        let mut ed = wrapped("aaaa bbbb cccc dddd\n");
+        draw(&mut ed, 19, 8);
+        let b = ed.active_buffer_mut().unwrap();
+        b.view.sels.push(Selection::point(0), false);
+        b.view.sels.push(Selection::point(10), true);
+        assert_eq!(b.view.sels.len(), 2);
+        press(&mut ed, (ta.right() - 1, ta.y), 1, KeyModifiers::ALT);
+        let b = ed.active_buffer().unwrap();
+        assert_eq!(b.view.sels.len(), 2, "the caret at the next row's start is kept");
+        assert!(b.view.sels.iter().any(|s| s.head == 10));
+        // Double click there selects the last word of the clicked row, not
+        // its hanging space or the next row's word.
         let mut ed = wrapped("aaaa bbbb cccc dddd\n");
         draw(&mut ed, 19, 8);
         press(&mut ed, (ta.right() - 1, ta.y), 2, KeyModifiers::NONE);
         let b = ed.active_buffer().unwrap();
-        assert_eq!(b.selected_text(), " ");
+        assert_eq!(b.selected_text(), "bbbb");
+        // Ctrl+click there: the caret lands in that word and asks for its definition.
+        let mut ed = wrapped("aaaa bbbb cccc dddd\n");
+        draw(&mut ed, 19, 8);
+        let effects = press(&mut ed, (ta.right() - 1, ta.y), 1, KeyModifiers::CONTROL);
+        assert_eq!(head(&ed), 8);
+        assert!(effects.iter().any(|e| matches!(e, crate::event::Effect::Lsp(crate::lsp::LspRequest::Definition))));
     }
 
     #[test]

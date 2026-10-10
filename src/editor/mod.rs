@@ -1327,7 +1327,17 @@ impl Editor {
                     if m.mods.contains(KeyModifiers::SHIFT) {
                         self.alt_base = Some(b.view.sels.clone());
                     }
-                    match b.view.sels.index_at(p).filter(|_| b.view.sels.is_multi()) {
+                    // Past a wrapped row's end `p` is the next row's first
+                    // char: only a caret drawn on the clicked row is there.
+                    let hit = if up {
+                        b.view
+                            .sels
+                            .iter()
+                            .position(|s| if s.is_empty() { s.head == p && s.upstream } else { s.range().start < p && p <= s.range().end })
+                    } else {
+                        b.view.sels.index_at(p)
+                    };
+                    match hit.filter(|_| b.view.sels.is_multi()) {
                         Some(i) => b.view.sels.remove(i),
                         None => {
                             let mut s = Selection::point(p);
@@ -1341,7 +1351,7 @@ impl Editor {
                 }
                 // Past a wrapped row's end `p` is the next row's first char:
                 // what is looked up there is the char before.
-                let at = if up { p.saturating_sub(1) } else { p };
+                let at = click_target(b, p, up, b.rows().seg_range(&b.rope, row_at(b, m.y)).start);
                 let from = nav_pos(b);
                 if b.rope.char_to_line(b.view.sel().head).abs_diff(b.rope.char_to_line(p)) > NAV_JUMP_LINES {
                     self.nav.push(from);
@@ -1396,7 +1406,8 @@ impl Editor {
                 let (p, up) = pos_at(b, m.x, m.y);
                 match mode {
                     DragMode::Word(s, e) => {
-                        let w = word_at(&b.rope, if up { p.saturating_sub(1) } else { p });
+                        let row_start = b.rows().seg_range(&b.rope, row_at(b, m.y)).start;
+                        let w = word_at(&b.rope, click_target(b, p, up, row_start));
                         b.view.set_sel(if p < s { Selection::new(e, w.start) } else { Selection::new(s, w.end.max(e)) });
                     }
                     DragMode::Line(s, e) => {
@@ -1671,6 +1682,17 @@ fn view_line_range(b: &Buffer, p: usize) -> std::ops::Range<usize> {
         None if b.view.folds.header_at(line).is_some() => r.start..b.rope.len_chars(),
         None => r,
     }
+}
+
+/// The char a word click at `p` looks up. Past a wrapped row's end (`up`)
+/// `p` is the next row's first char, so it is the last non-blank char of the
+/// clicked row (from `row_start`), or the char before `p` when the row holds
+/// only blanks.
+fn click_target(b: &Buffer, p: usize, up: bool, row_start: usize) -> usize {
+    if !up {
+        return p;
+    }
+    (row_start..p).rev().find(|&i| !matches!(b.rope.char(i), ' ' | '\t')).unwrap_or(p.saturating_sub(1))
 }
 
 /// The wheel over a view: three rows up or down, four columns sideways
