@@ -678,7 +678,10 @@ under `prune.lock` (`drop_lines` / `write_index`).
   older jetl ignores it and drops it when its prune rewrites an index (the
   next autosave then starts a new run). An older dev build cannot parse
   `"kind":"unsaved"` lines: it skips them in lists and drops them when its
-  prune rewrites that index (corrupt lines are dropped on rewrite). Blobs
+  prune rewrites that index (corrupt lines are dropped on rewrite). From this
+  build on, prune keeps lines of unknown kinds (forward compatibility): a line
+  that is JSON with `v`, `at` and `kind` but no known `Entry` is rewritten
+  verbatim in time order and its `blob` is not collected; lists still skip it. Blobs
   replaced by a merge of automatic snapshots are orphans until the next
   prune (at startup or on a retention change), so a long session with a
   short `snapshot_unsaved_secs` can leave the store over `max_total_mb`

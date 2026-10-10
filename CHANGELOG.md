@@ -82,6 +82,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Local history: pruning keeps index lines written by a newer jetl (an unknown kind) and their blobs, instead
+  of dropping them when it rewrites an index.
 - Conflicts after a merge, rebase, cherry-pick, revert or stash pop open Resolve Conflicts with a localized git too (git's messages are in the C locale), and a failed status refresh after a resolve no longer reports that all conflicts are resolved.
 - The conflict resolver keeps its panes aligned when a change adds lines at the very top of the file (the other panes get blank rows before their first line).
 - After a conflicting stash pop or apply the resolver names theirs after the stash (`stash On main: wip`) instead of `theirs`.

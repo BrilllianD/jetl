@@ -985,10 +985,24 @@ impl Drop for PruneLock {
     }
 }
 
+/// An index line this build cannot read as an [`Entry`] (a newer jetl's kind) but that is one: kept verbatim by the prune.
+#[derive(Deserialize)]
+struct ForeignLine {
+    #[allow(dead_code)]
+    v: u32,
+    at: u64,
+    #[allow(dead_code)]
+    kind: String,
+    #[serde(default)]
+    blob: Option<String>,
+}
+
 /// One index file read for a prune.
 struct IndexFile {
     file: PathBuf,
     entries: Vec<Entry>,
+    /// Lines of an unknown kind as `(at, line)`, kept verbatim.
+    foreign: Vec<(u64, String)>,
     /// Lines that did not parse (dropped when the file is rewritten).
     corrupt: bool,
     changed: bool,
@@ -1025,16 +1039,18 @@ pub fn prune(dir: &Path, now_ms: u64, keep_ms: u64, max_bytes: u64) -> io::Resul
             }
             let Ok(text) = std::fs::read_to_string(&file) else { continue };
             let mut corrupt = false;
-            let entries = text
-                .lines()
-                .filter(|l| !l.trim().is_empty())
-                .filter_map(|l| {
-                    let e = serde_json::from_str::<Entry>(l).ok();
-                    corrupt |= e.is_none();
-                    e
-                })
-                .collect();
-            files.push(IndexFile { file, entries, corrupt, changed: false });
+            let mut entries = Vec::new();
+            let mut foreign = Vec::new();
+            for l in text.lines().filter(|l| !l.trim().is_empty()) {
+                if let Ok(e) = serde_json::from_str::<Entry>(l) {
+                    entries.push(e);
+                } else if let Ok(f) = serde_json::from_str::<ForeignLine>(l) {
+                    foreign.push((f.at, l.to_string()));
+                } else {
+                    corrupt = true;
+                }
+            }
+            files.push(IndexFile { file, entries, foreign, corrupt, changed: false });
         }
     }
     let mut stats = PruneStats { moved: migrate_keys(dir, &mut files), ..Default::default() };
@@ -1052,6 +1068,12 @@ pub fn prune(dir: &Path, now_ms: u64, keep_ms: u64, max_bytes: u64) -> io::Resul
     let mut refs: HashMap<&str, (usize, u64)> = HashMap::new();
     for e in files.iter().flat_map(|f| &f.entries) {
         refs.entry(e.blob.as_str()).or_insert_with(|| (0, stored_len(dir, &e.blob))).0 += 1;
+    }
+    // Foreign lines are never cut, so their blobs stay referenced.
+    let foreign_blobs: Vec<String> =
+        files.iter().flat_map(|f| &f.foreign).filter_map(|(_, l)| serde_json::from_str::<ForeignLine>(l).ok()?.blob).collect();
+    for id in &foreign_blobs {
+        refs.entry(id.as_str()).or_insert_with(|| (0, stored_len(dir, id))).0 += 1;
     }
     let mut total: u64 = refs.values().map(|(_, len)| len).sum();
     let mut drop_set: HashSet<(usize, usize)> = HashSet::new();
@@ -1093,10 +1115,10 @@ pub fn prune(dir: &Path, now_ms: u64, keep_ms: u64, max_bytes: u64) -> io::Resul
             stats.entries += before - f.entries.len();
         }
     }
-    for f in files.iter_mut().filter(|f| f.changed || (f.corrupt && !f.entries.is_empty())) {
+    for f in files.iter_mut().filter(|f| f.changed || (f.corrupt && !(f.entries.is_empty() && f.foreign.is_empty()))) {
         // In time order again (a rename appends older entries after newer ones).
         f.entries.sort_by_key(|e| e.at);
-        rewrite_index(&f.file, &f.entries)?;
+        rewrite_index(&f.file, &f.entries, &f.foreign)?;
     }
     stats.bytes = total;
     stats.blobs = gc_blobs(dir, &keep);
@@ -1134,7 +1156,7 @@ fn migrate_keys(dir: &Path, files: &mut Vec<IndexFile>) -> usize {
     for e in moving {
         let file = index_file(dir, &e.path);
         let fi = *at.entry(file.clone()).or_insert_with(|| {
-            files.push(IndexFile { file, entries: Vec::new(), corrupt: false, changed: false });
+            files.push(IndexFile { file, entries: Vec::new(), foreign: Vec::new(), corrupt: false, changed: false });
             files.len() - 1
         });
         files[fi].entries.push(e);
@@ -1148,18 +1170,25 @@ fn migrate_keys(dir: &Path, files: &mut Vec<IndexFile>) -> usize {
     moved
 }
 
-/// Replace an index file by `entries` (through a temp file and a rename);
-/// none left removes it.
-fn rewrite_index(file: &Path, entries: &[Entry]) -> io::Result<()> {
-    if entries.is_empty() {
+/// Replace an index file by `entries` and the `foreign` lines (verbatim),
+/// merged by time, entries first at equal times (through a temp file and a
+/// rename); none of either left removes it.
+fn rewrite_index(file: &Path, entries: &[Entry], foreign: &[(u64, String)]) -> io::Result<()> {
+    if entries.is_empty() && foreign.is_empty() {
         return match std::fs::remove_file(file) {
             Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
             _ => Ok(()),
         };
     }
-    let mut text = String::new();
+    let mut lines: Vec<(u64, u8, String)> = Vec::with_capacity(entries.len() + foreign.len());
     for e in entries {
-        text.push_str(&serde_json::to_string(e).map_err(io::Error::other)?);
+        lines.push((e.at, 0, serde_json::to_string(e).map_err(io::Error::other)?));
+    }
+    lines.extend(foreign.iter().map(|(at, l)| (*at, 1, l.clone())));
+    lines.sort_by_key(|(at, rank, _)| (*at, *rank));
+    let mut text = String::new();
+    for (_, _, l) in lines {
+        text.push_str(&l);
         text.push('\n');
     }
     write_index(file, &text)
@@ -2072,6 +2101,60 @@ mod tests {
         assert_eq!(e.since, None);
         let Recorded::Replaced(e) = auto(&dir, p, "z", 3) else { panic!("replaced") };
         assert_eq!(e.since, Some(2));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A line like `e` but of a kind this build does not know.
+    fn foreign_line(e: &Entry) -> String {
+        let mut line = serde_json::to_string(e).unwrap();
+        let from = format!("\"kind\":{}", serde_json::to_string(&e.kind).unwrap());
+        assert!(line.contains(&from), "kind field in {line}");
+        line = line.replace(&from, "\"kind\":\"before_teleport\"");
+        line
+    }
+
+    #[test]
+    fn prune_keeps_lines_of_unknown_kinds() {
+        let dir = temp("foreign");
+        let day = 86_400_000;
+        let p = "/p/a.txt";
+        rec(&dir, p, "old", 0);
+        let fresh = added(rec(&dir, p, "fresh-and-foreign", 10 * day));
+        let foreign = foreign_line(&fresh);
+        let file = index_file(&dir, p);
+        let old_line = std::fs::read_to_string(&file).unwrap().lines().next().unwrap().to_string();
+        std::fs::write(&file, format!("{old_line}\nnot json\n{foreign}\n")).unwrap();
+        age_blobs(&dir);
+        // The day-0 save is age-cut, so the file is rewritten.
+        let s = prune(&dir, 11 * day, 5 * day, MB).unwrap();
+        assert_eq!(s.entries, 1);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), format!("{foreign}\n"));
+        assert_eq!(s.blobs, 1, "only the old save's blob went");
+        assert_eq!(blob_count(&dir), 1);
+        assert_eq!(read_blob(&dir, &fresh.blob).unwrap(), b"fresh-and-foreign");
+        // A size cut of zero does not take the foreign blob either.
+        let s = prune(&dir, 11 * day, 5 * day, 0).unwrap();
+        assert_eq!(s.blobs, 0);
+        assert_eq!(read_blob(&dir, &fresh.blob).unwrap(), b"fresh-and-foreign");
+        assert!(list(&dir, Path::new(p)).is_empty(), "lists keep skipping it");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_file_of_only_foreign_lines_is_not_removed() {
+        let dir = temp("foreign-only");
+        let p = "/p/a.txt";
+        let e = added(rec(&dir, p, "text", 5));
+        let foreign = foreign_line(&e);
+        let file = index_file(&dir, p);
+        std::fs::write(&file, format!("garbage\n{foreign}\n")).unwrap();
+        age_blobs(&dir);
+        prune(&dir, 6, 100, MB).unwrap();
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), format!("{foreign}\n"));
+        assert_eq!(blob_count(&dir), 1);
+        // Untouched when nothing is corrupt or cut.
+        prune(&dir, 6, 100, MB).unwrap();
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), format!("{foreign}\n"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
