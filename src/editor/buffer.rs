@@ -300,8 +300,9 @@ impl Buffer {
             return;
         }
         let sel_before = self.view.sels.clone();
-        for c in &changes {
-            self.apply_change(c);
+        let mut folds = Vec::new();
+        for (i, c) in changes.iter().enumerate() {
+            folds.extend(self.apply_change(c).into_iter().map(|f| (i, f)));
         }
         let mut sel_after: Selections = sel_after(&self.rope).into();
         sel_after.clamp(self.rope.len_chars());
@@ -310,10 +311,12 @@ impl Buffer {
         self.view.sels = sel_after.clone();
         self.version += 1;
         self.changed_since_render = true;
-        self.undo.push(Transaction { id: 0, changes, sel_before, sel_after, at: Instant::now(), kind, line_ending: None });
+        self.undo.push(Transaction { id: 0, changes, sel_before, sel_after, at: Instant::now(), kind, line_ending: None, folds });
     }
 
-    fn apply_change(&mut self, c: &Change) {
+    /// Apply one change; returns the collapsed folds it dropped, in the
+    /// coordinates before the change.
+    fn apply_change(&mut self, c: &Change) -> Vec<super::fold::Fold> {
         let old_len = c.old.chars().count();
         let at = c.at.min(self.rope.len_chars());
         let new_len = c.new.chars().count();
@@ -323,6 +326,7 @@ impl Buffer {
         self.edit_log.push(if whole { LogEdit::Reset } else { LogEdit::Edit { at, old_len, new_len } });
         let marks: Vec<(MarkTarget, Option<u8>)> =
             self.bookmarks.iter().map(|(&l, &d)| (mark_target(&self.rope, l, at, old_len, c), d)).collect();
+        let before = self.view.folds.list().to_vec();
         let end = (at + old_len).min(self.rope.len_chars());
         self.record_lsp_edit(at, end, &c.new);
         if old_len > 0 {
@@ -357,6 +361,11 @@ impl Buffer {
             self.view.folds.map_edit(at, old_len, new_len);
         }
         self.view.folds.rebuild(&self.rope);
+        if whole {
+            return before;
+        }
+        let now = self.view.folds.list();
+        before.into_iter().filter(|&f| super::fold::map_fold(f, at, old_len, new_len).is_none_or(|m| !now.contains(&m))).collect()
     }
 
     /// Record the replacement of `start..end` by `text` for the language
@@ -379,9 +388,11 @@ impl Buffer {
             return false;
         }
         let Some(tx) = self.undo.pop_undo() else { return false };
-        for c in tx.changes.iter().rev() {
+        for (i, c) in tx.changes.iter().enumerate().rev() {
             let inv = c.inverse();
             self.apply_change(&inv);
+            let dropped: Vec<_> = tx.folds.iter().filter(|(j, _)| *j == i).map(|&(_, f)| f).collect();
+            self.view.folds.collapse_all(dropped, &self.rope);
         }
         self.view.sels = tx.sel_before;
         self.view.sels.clamp(self.rope.len_chars());

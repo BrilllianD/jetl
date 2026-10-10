@@ -78,15 +78,18 @@ impl Folds {
     /// replaced text strictly contains it. Text inserted right at the end
     /// stays outside. Call [`Folds::rebuild`] after.
     pub fn map_edit(&mut self, at: usize, old_len: usize, new_len: usize) {
-        let inside = |p: usize| at < p && p < at + old_len;
-        self.list.retain_mut(|f| {
-            if inside(f.start) || inside(f.end) {
-                return false;
+        self.list.retain_mut(|f| match map_fold(*f, at, old_len, new_len) {
+            Some(m) => {
+                *f = m;
+                true
             }
-            f.start = map_one(f.start, at, old_len, new_len, false);
-            f.end = map_one(f.end, at, old_len, new_len, true);
-            true
+            None => false,
         });
+    }
+
+    /// The collapsed folds, sorted by start.
+    pub fn list(&self) -> &[Fold] {
+        &self.list
     }
 
     /// Recompute the lines from the text, dropping folds that no longer
@@ -228,6 +231,16 @@ impl Folds {
     pub fn collapse_saved(&mut self, saved: &[SessionFold], rope: &Rope) {
         self.collapse_all(session_folds(saved, rope), rope);
     }
+}
+
+/// `f` after the replacement of `old_len` chars at `at` by `new_len`
+/// chars; `None` when the replaced text strictly contains an anchor.
+pub fn map_fold(f: Fold, at: usize, old_len: usize, new_len: usize) -> Option<Fold> {
+    let inside = |p: usize| at < p && p < at + old_len;
+    if inside(f.start) || inside(f.end) {
+        return None;
+    }
+    Some(Fold { start: map_one(f.start, at, old_len, new_len, false), end: map_one(f.end, at, old_len, new_len, true) })
 }
 
 /// `saved` as char folds in `rope`; those past its end are dropped.
@@ -1132,6 +1145,55 @@ class A:
                 format!("a\nfn main() {{\n    letlet a = 1;\n    let b = 2;\n}}\n{main}fn two() {{\n    x();\n}}\nlast\n")
             );
             assert_eq!(hidden(&ed), [], "the copy beside the selection copy stays expanded, no fold moves");
+        }
+
+        /// Select `from..to` in the first buffer line range and type a char.
+        fn type_over(ed: &mut Editor, from: usize, to: usize, c: char) {
+            use crate::editor::selection::Selection;
+            ed.active_buffer_mut().unwrap().view.sels = Selection::new(from, to).into();
+            act(ed, E::InsertChar(c));
+        }
+
+        #[test]
+        fn undo_restores_a_fold_the_edit_dropped_and_redo_drops_it_again() {
+            let mut ed = editor(TEXT);
+            collapse(&mut ed, 0);
+            assert_eq!(hidden(&ed), [(1, 4)]);
+            type_over(&mut ed, 5, 11, 'x');
+            assert_eq!(hidden(&ed), [], "the edit drops the fold");
+            act(&mut ed, E::Undo);
+            assert_eq!(text(&ed), TEXT);
+            assert_eq!(hidden(&ed), [(1, 4)], "undo collapses it again");
+            act(&mut ed, E::Redo);
+            assert_eq!(hidden(&ed), [], "redo drops it again");
+        }
+
+        #[test]
+        fn one_undo_restores_a_fold_dropped_by_the_second_of_two_merged_typing_edits() {
+            let mut ed = editor(TEXT);
+            collapse(&mut ed, 0);
+            type_over(&mut ed, 0, 0, 'q');
+            assert_eq!(hidden(&ed), [(1, 4)]);
+            type_over(&mut ed, 1, 15, 'x');
+            assert_eq!(hidden(&ed), []);
+            act(&mut ed, E::Undo);
+            assert_eq!(text(&ed), TEXT, "both edits are one transaction");
+            assert_eq!(hidden(&ed), [(1, 4)]);
+        }
+
+        #[test]
+        fn undo_of_a_reload_restores_the_cleared_folds() {
+            use crate::editor::selection::Selection;
+            use crate::editor::undo::Change;
+            use crate::editor::undo::TxKind;
+            let mut ed = editor(TEXT);
+            collapse(&mut ed, 0);
+            let b = ed.active_buffer_mut().unwrap();
+            b.apply(vec![Change { at: 0, old: TEXT.into(), new: TEXT.replace("two", "three") }], Selection::point(0), TxKind::Other);
+            assert_eq!(hidden(&ed), [], "the reload clears the folds");
+            act(&mut ed, E::Undo);
+            assert_eq!(text(&ed), TEXT);
+            assert_eq!(hidden(&ed), [(1, 4)]);
         }
 
         #[test]

@@ -54,6 +54,9 @@ pub struct Transaction {
     /// Line ending before and after, for a line ending conversion; undo and
     /// redo restore it along with the text.
     pub line_ending: Option<(super::buffer::LineEnding, super::buffer::LineEnding)>,
+    /// Collapsed folds the edits dropped, as (index into `changes`, fold in
+    /// the coordinates just before that change); undo collapses them again.
+    pub folds: Vec<(usize, super::fold::Fold)>,
 }
 
 #[derive(Debug, Default)]
@@ -113,6 +116,8 @@ impl UndoStack {
             };
             if last.kind == tx.kind && within && contiguous {
                 last.id = id;
+                let offset = last.changes.len();
+                last.folds.extend(tx.folds.into_iter().map(|(i, f)| (i + offset, f)));
                 last.changes.extend(tx.changes);
                 last.sel_after = tx.sel_after;
                 last.at = tx.at;
@@ -163,7 +168,7 @@ mod tests {
     use super::*;
 
     fn tx(changes: Vec<Change>, before: Selections, after: Selections, kind: TxKind) -> Transaction {
-        Transaction { id: 0, changes, sel_before: before, sel_after: after, at: Instant::now(), kind, line_ending: None }
+        Transaction { id: 0, changes, sel_before: before, sel_after: after, at: Instant::now(), kind, line_ending: None, folds: Vec::new() }
     }
 
     fn sels(ps: &[usize]) -> Selections {
