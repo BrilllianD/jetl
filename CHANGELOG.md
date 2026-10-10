@@ -101,6 +101,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Go to File and Go to Symbol narrow the previous matches while a query is being typed, so keystrokes in large
+  projects are much cheaper.
 - A stash pop or apply that conflicts with the current commit now leaves the conflicts for Resolve Conflicts
   (the entry is kept) instead of refusing; local changes in the way still make it refuse and change nothing.
 - Soft wrap: End and vertical moves stop at the end of a wrapped row, with the caret drawn after

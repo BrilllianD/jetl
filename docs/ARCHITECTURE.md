@@ -296,7 +296,11 @@ the candidate `Arc`s and query in `Shown` (render and accept read only
 those, and the match highlight uses that query); results keep the
 selection by item identity unless the query changed. Enter with a filter
 pending ranks the current query synchronously once, unless the user moved
-the selection, which accepts the shown row. Palettes built without
+the selection, which accepts the shown row. A query that extends the shown one (same candidate `Arc`s and source in
+`Shown`, no `! \ ^ $ '`, see `narrowable`) ranks only the shown rows, which
+are the complete match set of the shown query, and gives the same rows as
+a full rank; a narrowed subset under `BACKGROUND_MIN` ranks at once, and
+Enter's synchronous rank narrows too. Palettes built without
 `App::open_palette` (Locations, tests) have no `FilterBus`
 and always rank synchronously.
 

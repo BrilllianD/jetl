@@ -65,6 +65,8 @@ struct Shown {
     files: Arc<Vec<String>>,
     symbols: Arc<Vec<SymbolEntry>>,
     query: String,
+    /// The source `rows` were ranked for.
+    source: Source,
 }
 
 /// A filter running off the main thread.
@@ -77,6 +79,7 @@ struct Pending {
     files: Arc<Vec<String>>,
     symbols: Arc<Vec<SymbolEntry>>,
     query: String,
+    source: Source,
 }
 
 /// The candidates of one off-thread filter.
@@ -229,6 +232,7 @@ impl Palette {
             // Go to Line stays a dialog and never opens a palette.
             PaletteKind::Branches | PaletteKind::GotoLine => vec![Source::Branches],
         };
+        let first = tabs[0];
         Self {
             kind,
             tabs,
@@ -258,7 +262,7 @@ impl Palette {
             bus: None,
             filter_seq: Arc::new(AtomicU64::new(0)),
             background_min: BACKGROUND_MIN,
-            shown: Shown { files: Arc::new(Vec::new()), symbols: Arc::new(Vec::new()), query: String::new() },
+            shown: Shown { files: Arc::new(Vec::new()), symbols: Arc::new(Vec::new()), query: String::new(), source: first },
             pending: None,
             outer: Rect::default(),
             list_rect: Rect::default(),
@@ -407,7 +411,8 @@ impl Palette {
             reset |= p.reset;
             moved = !reset && p.moved;
         }
-        let input = if background { self.background_input(&q) } else { None };
+        let subset = if q.is_empty() { None } else { self.narrow_rows(&q) };
+        let input = if background { self.background_input(&q, subset.as_ref().map(Vec::len)) } else { None };
         if let Some(input) = input {
             let Some(bus) = &self.bus else { return };
             let (tx, generation, latest) = (bus.tx.clone(), bus.generation, self.filter_seq.clone());
@@ -420,21 +425,30 @@ impl Palette {
                     FilterInput::Paths(p) => p.len(),
                     FilterInput::Symbols(s) => s.len(),
                 };
-                match rank_large(&query, &input, &mut m, &cancelled) {
+                match rank_large(&query, &input, subset.as_deref(), &mut m, &cancelled) {
                     None => tracing::debug!("palette filter {seq} cancelled"),
                     Some(rows) => {
-                        tracing::debug!("palette filter {seq}: {} of {n} in {:?}", rows.len(), t.elapsed());
+                        let from = subset.as_ref().map_or(n, Vec::len);
+                        tracing::debug!("palette filter {seq}: {} of {n} (ranked {from}) in {:?}", rows.len(), t.elapsed());
                         if !cancelled() {
                             let _ = tx.send(crate::event::AppMsg::PaletteFiltered { generation, seq, rows });
                         }
                     }
                 }
             });
-            self.pending = Some(Pending { seq, reset, moved, files: self.files.clone(), symbols: self.symbols.clone(), query: q });
+            self.pending = Some(Pending {
+                seq,
+                reset,
+                moved,
+                files: self.files.clone(),
+                symbols: self.symbols.clone(),
+                query: q,
+                source: self.source(),
+            });
             return;
         }
         self.rows = self.rank_now(&q);
-        self.shown = Shown { files: self.files.clone(), symbols: self.symbols.clone(), query: q };
+        self.shown = Shown { files: self.files.clone(), symbols: self.symbols.clone(), query: q, source: self.source() };
         self.list.set_len(self.rows.len());
         if reset {
             // Under a file header, start on its first item.
@@ -468,15 +482,31 @@ impl Palette {
     }
 
     /// The candidates to rank off the main thread for `q`, if it should be.
-    fn background_input(&self, q: &str) -> Option<FilterInput> {
+    /// `narrowed` is the number of rows to rank when narrowing a shown filter.
+    fn background_input(&self, q: &str, narrowed: Option<usize>) -> Option<FilterInput> {
         if q.is_empty() || self.bus.is_none() || tokio::runtime::Handle::try_current().is_err() {
             return None;
         }
         match self.source() {
-            Source::Files if self.files.len() >= self.background_min => Some(FilterInput::Paths(self.files.clone())),
-            Source::Symbols if self.symbols.len() >= self.background_min => Some(FilterInput::Symbols(self.symbols.clone())),
+            Source::Files if narrowed.unwrap_or(self.files.len()) >= self.background_min => Some(FilterInput::Paths(self.files.clone())),
+            Source::Symbols if narrowed.unwrap_or(self.symbols.len()) >= self.background_min => {
+                Some(FilterInput::Symbols(self.symbols.clone()))
+            }
             _ => None,
         }
+    }
+
+    /// The shown rows to rank for `q` instead of every candidate: the shown
+    /// rows are the complete match set of the shown query, so when `q`
+    /// extends it (see [`narrowable`]) over the same candidates and source,
+    /// nothing outside them can match. `None` means rank everything.
+    fn narrow_rows(&self, q: &str) -> Option<Vec<usize>> {
+        let same = match self.source() {
+            Source::Files => Arc::ptr_eq(&self.shown.files, &self.files),
+            Source::Symbols => Arc::ptr_eq(&self.shown.symbols, &self.symbols),
+            _ => return None,
+        };
+        (same && self.shown.source == self.source() && narrowable(&self.shown.query, q)).then(|| self.rows.clone())
     }
 
     /// The current source ranked against `q` on this thread.
@@ -499,7 +529,8 @@ impl Palette {
                     rows
                 } else {
                     let input = FilterInput::Paths(self.files.clone());
-                    rank_large(q, &input, &mut self.matcher, &|| false).unwrap_or_default()
+                    let subset = self.narrow_rows(q);
+                    rank_large(q, &input, subset.as_deref(), &mut self.matcher, &|| false).unwrap_or_default()
                 }
             }
             Source::Recent => {
@@ -527,7 +558,8 @@ impl Palette {
                     (0..self.symbols.len()).collect()
                 } else {
                     let input = FilterInput::Symbols(self.symbols.clone());
-                    rank_large(q, &input, &mut self.matcher, &|| false).unwrap_or_default()
+                    let subset = self.narrow_rows(q);
+                    rank_large(q, &input, subset.as_deref(), &mut self.matcher, &|| false).unwrap_or_default()
                 }
             }
             Source::Tasks => {
@@ -585,7 +617,7 @@ impl Palette {
     fn show_rows(&mut self, p: Pending, rows: Vec<usize>) {
         let key = if p.moved || !p.reset { self.selected_key() } else { None };
         self.rows = rows;
-        self.shown = Shown { files: p.files, symbols: p.symbols, query: p.query };
+        self.shown = Shown { files: p.files, symbols: p.symbols, query: p.query, source: p.source };
         self.list.set_len(self.rows.len());
         match key.and_then(|k| self.rows.iter().position(|&i| self.row_is(i, &k))) {
             Some(row) => self.list.select(row),
@@ -1109,18 +1141,30 @@ fn tilde_path(p: &Path, home: Option<&Path>) -> String {
 /// too, so `apprs` prefers `src/app.rs` over `src/apply/parse.rs`; ties go to
 /// the shorter, then alphabetically first path.
 pub fn rank_paths(query: &str, paths: &[String], matcher: &mut Matcher) -> Vec<usize> {
-    rank_paths_until(query, paths, matcher, &|| false).unwrap_or_default()
+    rank_paths_until(query, paths, None, matcher, &|| false).unwrap_or_default()
 }
 
-/// [`rank_paths`] that checks `cancelled` every [`CANCEL_EVERY`] paths and
-/// before the sort, and gives up with `None` once it holds.
-fn rank_paths_until(query: &str, paths: &[String], matcher: &mut Matcher, cancelled: &dyn Fn() -> bool) -> Option<Vec<usize>> {
+/// [`rank_paths`] that checks `cancelled` every [`CANCEL_EVERY`] scored paths
+/// and before the sort, and gives up with `None` once it holds. `subset`
+/// limits the ranking to those indices of `paths`.
+fn rank_paths_until(
+    query: &str,
+    paths: &[String],
+    subset: Option<&[usize]>,
+    matcher: &mut Matcher,
+    cancelled: &dyn Fn() -> bool,
+) -> Option<Vec<usize>> {
     matcher.config = nucleo_matcher::Config::DEFAULT.match_paths();
     let pattern = Pattern::parse(query, CaseMatching::Smart, Normalization::Smart);
     let mut buf = Vec::new();
     let mut scored: Vec<(u32, usize)> = Vec::new();
-    for (i, p) in paths.iter().enumerate() {
-        if i % CANCEL_EVERY == 0 && i > 0 && cancelled() {
+    let indices: Box<dyn Iterator<Item = usize> + '_> = match subset {
+        Some(s) => Box::new(s.iter().copied()),
+        None => Box::new(0..paths.len()),
+    };
+    for (k, i) in indices.enumerate() {
+        let p = &paths[i];
+        if k % CANCEL_EVERY == 0 && k > 0 && cancelled() {
             return None;
         }
         let Some(full) = pattern.score(Utf32Str::new(p, &mut buf), matcher) else { continue };
@@ -1138,14 +1182,15 @@ fn rank_paths_until(query: &str, paths: &[String], matcher: &mut Matcher, cancel
 /// Indices of candidates (each with one or more texts) matching `query`,
 /// best text score first; ties keep the input order.
 fn rank_texts<'a, const N: usize>(query: &str, items: impl Iterator<Item = [&'a str; N]>, matcher: &mut Matcher) -> Vec<usize> {
-    rank_texts_until(query, items, matcher, &|| false).unwrap_or_default()
+    rank_texts_until(query, items.enumerate(), matcher, &|| false).unwrap_or_default()
 }
 
 /// [`rank_texts`] that checks `cancelled` every [`CANCEL_EVERY`] candidates
-/// and before the sort, and gives up with `None` once it holds.
+/// and before the sort, and gives up with `None` once it holds. Each item
+/// carries its original index, which is returned and breaks ties.
 fn rank_texts_until<'a, const N: usize>(
     query: &str,
-    items: impl Iterator<Item = [&'a str; N]>,
+    items: impl Iterator<Item = (usize, [&'a str; N])>,
     matcher: &mut Matcher,
     cancelled: &dyn Fn() -> bool,
 ) -> Option<Vec<usize>> {
@@ -1153,8 +1198,8 @@ fn rank_texts_until<'a, const N: usize>(
     let pattern = Pattern::parse(query, CaseMatching::Smart, Normalization::Smart);
     let mut buf = Vec::new();
     let mut scored: Vec<(u32, usize)> = Vec::new();
-    for (i, texts) in items.enumerate() {
-        if i % CANCEL_EVERY == 0 && i > 0 && cancelled() {
+    for (k, (i, texts)) in items.enumerate() {
+        if k % CANCEL_EVERY == 0 && k > 0 && cancelled() {
             return None;
         }
         let best = texts.iter().filter_map(|t| pattern.score(Utf32Str::new(t, &mut buf), matcher)).max();
@@ -1171,12 +1216,31 @@ fn rank_texts_until<'a, const N: usize>(
 
 /// Rank a large source (files or symbols) against a non-empty query; the
 /// one ranking used both off the main thread and on it, so both give the
-/// same rows. `None` when `cancelled` turned true.
-fn rank_large(query: &str, input: &FilterInput, matcher: &mut Matcher, cancelled: &dyn Fn() -> bool) -> Option<Vec<usize>> {
+/// same rows. `subset` limits it to those candidate indices. `None` when
+/// `cancelled` turned true.
+fn rank_large(
+    query: &str,
+    input: &FilterInput,
+    subset: Option<&[usize]>,
+    matcher: &mut Matcher,
+    cancelled: &dyn Fn() -> bool,
+) -> Option<Vec<usize>> {
     match input {
-        FilterInput::Paths(paths) => rank_paths_until(query, paths, matcher, cancelled),
-        FilterInput::Symbols(symbols) => rank_texts_until(query, symbols.iter().map(|e| [&*e.symbol.name]), matcher, cancelled),
+        FilterInput::Paths(paths) => rank_paths_until(query, paths, subset, matcher, cancelled),
+        FilterInput::Symbols(symbols) => match subset {
+            Some(s) => rank_texts_until(query, s.iter().map(|&i| (i, [&*symbols[i].symbol.name])), matcher, cancelled),
+            None => rank_texts_until(query, symbols.iter().enumerate().map(|(i, e)| (i, [&*e.symbol.name])), matcher, cancelled),
+        },
     }
+}
+
+/// Whether the rows matching `prev` hold every row matching `q`, so `q` can
+/// be ranked over them alone. Plain fuzzy atoms, added atoms, smart case and
+/// smart normalization keep the subset property; nucleo pattern syntax does
+/// not (`!a` to `!ab` matches more, and `foo$` to `foo$x`, `'` and `^` atoms
+/// change meaning), so any such character in `q` rules narrowing out.
+fn narrowable(prev: &str, q: &str) -> bool {
+    !prev.is_empty() && q.len() > prev.len() && q.starts_with(prev) && !q.contains(['!', '\\', '^', '$', '\''])
 }
 
 /// Every file under `root` as a sorted, `/`-separated relative path,
@@ -1325,11 +1389,14 @@ mod tests {
     fn rank_until_stops_when_cancelled_and_matches_otherwise() {
         let files = fixture();
         let mut m = Matcher::default();
-        assert_eq!(rank_paths_until("src", &files, &mut m, &|| true), None);
-        assert_eq!(rank_paths_until("src", &files, &mut m, &|| false), Some(rank_paths("src", &files, &mut m)));
-        let texts = || files.iter().map(|f| [f.as_str()]);
+        assert_eq!(rank_paths_until("src", &files, None, &mut m, &|| true), None);
+        assert_eq!(rank_paths_until("src", &files, None, &mut m, &|| false), Some(rank_paths("src", &files, &mut m)));
+        let texts = || files.iter().enumerate().map(|(i, f)| (i, [f.as_str()]));
         assert_eq!(rank_texts_until("src", texts(), &mut m, &|| true), None);
-        assert_eq!(rank_texts_until("src", texts(), &mut m, &|| false), Some(rank_texts("src", texts(), &mut m)));
+        assert_eq!(
+            rank_texts_until("src", texts(), &mut m, &|| false),
+            Some(rank_texts("src", files.iter().map(|f| [f.as_str()]), &mut m))
+        );
         // A long list stops part way, at the first check.
         let many: Vec<String> = (0..10 * CANCEL_EVERY).map(|i| format!("f{i}")).collect();
         let checks = std::cell::Cell::new(0);
@@ -1337,8 +1404,132 @@ mod tests {
             checks.set(checks.get() + 1);
             true
         };
-        assert_eq!(rank_paths_until("f", &many, &mut m, &cancelled), None);
+        assert_eq!(rank_paths_until("f", &many, None, &mut m, &cancelled), None);
         assert_eq!(checks.get(), 1);
+    }
+
+    #[test]
+    fn narrowable_rejects_pattern_syntax() {
+        assert!(narrowable("ab", "abc"));
+        assert!(narrowable("a", "a b"));
+        assert!(narrowable("ab", "abC"));
+        assert!(!narrowable("ab", "ab"));
+        assert!(!narrowable("abc", "ab"));
+        assert!(!narrowable("ab", "xabc"));
+        assert!(!narrowable("", "a"));
+        for c in ['!', '\\', '^', '$', '\''] {
+            assert!(!narrowable("ab", &format!("ab{c}")), "{c}");
+            assert!(!narrowable("ab", &format!("ab{c}c")), "{c}");
+        }
+    }
+
+    fn generated_paths() -> Vec<String> {
+        let mut v: Vec<String> = (0..3000)
+            .map(|i| {
+                let ext = if i % 3 == 0 { "rs" } else { "toml" };
+                let case = if i % 5 == 0 { "Mod" } else { "mod" };
+                format!("CRATE{}/src/{case}{}/sub-{}/file_{i}.{ext}", i % 4, i % 11, i % 7)
+            })
+            .collect();
+        v.extend(["src/café.rs", "src/cafe.rs", "src/app/mod.rs", "src/app.rs"].map(String::from));
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn narrowed_rows_equal_a_full_rank() {
+        let paths = generated_paths();
+        let files = Arc::new(paths.clone());
+        for typed in ["src/app", "Mod1 fi", "file_12 rs", "cafe", "CRATE3/sub"] {
+            let mut p = Palette::new(PaletteKind::Files, PathBuf::from("/w"));
+            p.set_files(files.clone(), false);
+            let mut prefix = String::new();
+            for c in typed.chars() {
+                prefix.push(c);
+                p.set_query(&prefix);
+                let full = rank_paths(prefix.trim(), &paths, &mut Matcher::default());
+                assert_eq!(p.rows, full, "query {prefix:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn narrowing_skips_negation() {
+        let paths: Vec<String> = ["xa", "ab", "b"].map(String::from).to_vec();
+        let mut p = Palette::new(PaletteKind::Files, PathBuf::from("/w"));
+        p.set_files(Arc::new(paths.clone()), false);
+        p.set_query("!a");
+        p.set_query("!ab");
+        let full = rank_paths("!ab", &paths, &mut Matcher::default());
+        assert!(full.contains(&0));
+        assert_eq!(p.rows, full);
+    }
+
+    fn symbol_entry(name: &str, line: usize) -> SymbolEntry {
+        SymbolEntry {
+            path: Arc::from("src/lib.rs"),
+            symbol: crate::symbols::Symbol {
+                name: Arc::from(name),
+                kind: "function",
+                line,
+                col: 3,
+                start_line: line,
+                end_line: line,
+                depth: 0,
+            },
+        }
+    }
+
+    #[test]
+    fn narrowed_symbols_equal_a_full_rank() {
+        let symbols: Vec<SymbolEntry> =
+            (0..500).map(|i| symbol_entry(&format!("{}handle_{}_{i}", ["Do", "do", "run_"][i % 3], i % 13), i)).collect();
+        let symbols = Arc::new(symbols);
+        let mut p = Palette::new(PaletteKind::Symbols, PathBuf::from("/w"));
+        p.set_symbols(symbols.clone(), false);
+        let mut prefix = String::new();
+        for c in "handle_1 4".chars() {
+            prefix.push(c);
+            p.set_query(&prefix);
+            let full = rank_texts(prefix.trim(), symbols.iter().map(|e| [&*e.symbol.name]), &mut Matcher::default());
+            assert_eq!(p.rows, full, "query {prefix:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn background_narrowing_equals_a_full_rank() {
+        let (mut p, mut rx) = bus_palette(PaletteKind::Files);
+        p.set_files(Arc::new(fixture()), false);
+        p.set_query("s");
+        let (seq, rows) = next_filter(&mut rx).await;
+        assert!(p.apply_filter(seq, rows));
+        p.set_query("sr");
+        assert!(p.filter_pending());
+        let (seq, rows) = next_filter(&mut rx).await;
+        assert!(p.apply_filter(seq, rows));
+        assert_eq!(p.rows, rank_paths("sr", &fixture(), &mut Matcher::default()));
+    }
+
+    #[tokio::test]
+    async fn narrowed_subset_below_threshold_ranks_at_once() {
+        let paths: Vec<String> = (0..100)
+            .map(|i| match i {
+                0..=9 => format!("xq{i:03}"),
+                10..=59 => format!("x{i:03}"),
+                _ => format!("y{i:03}"),
+            })
+            .collect();
+        let (mut p, mut rx) = bus_palette(PaletteKind::Files);
+        p.set_background_min(70);
+        p.set_files(Arc::new(paths.clone()), false);
+        p.set_query("x");
+        assert!(p.filter_pending());
+        let (seq, rows) = next_filter(&mut rx).await;
+        assert!(p.apply_filter(seq, rows));
+        assert_eq!(p.rows.len(), 60);
+        p.set_query("xq");
+        assert!(!p.filter_pending());
+        assert_eq!(p.rows, rank_paths("xq", &paths, &mut Matcher::default()));
     }
 
     /// A Files palette filtering off the main thread from one candidate up,
@@ -1595,6 +1786,19 @@ mod tests {
         let t = Instant::now();
         p.set_query("");
         eprintln!("empty query (at once): {:.2} ms", ms(t.elapsed()));
+        // Typing a query char by char: each keystroke narrows the last.
+        let mut p = Palette::new(PaletteKind::Files, PathBuf::from("/w"));
+        p.set_files(paths.clone(), false);
+        let (mut prefix, mut total, mut worst) = (String::new(), Duration::ZERO, Duration::ZERO);
+        for c in "file_1234".chars() {
+            prefix.push(c);
+            let t = Instant::now();
+            p.set_query(&prefix);
+            let d = t.elapsed();
+            total += d;
+            worst = worst.max(d);
+        }
+        eprintln!("file_1234 typed char by char: total {:.2} ms, worst keystroke {:.2} ms", ms(total), ms(worst));
         // The cost of one keystroke at once, by list size: where to start
         // filtering off the main thread.
         for n in [5_000, 10_000, 15_000, 20_000, 50_000, 100_000] {
