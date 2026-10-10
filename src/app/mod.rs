@@ -253,6 +253,13 @@ pub struct App {
     pub(crate) unsaved_due: Option<Instant>,
     /// When the next hourly prune of the Local History store is due.
     pub(crate) prune_due: Option<Instant>,
+    /// Local History diff builds: one at a time (`app/history.rs`).
+    pub(crate) local_diff: crate::util::coalesce::Coalesce,
+    /// The diff request held back while a build runs; the newest wins.
+    pub(crate) local_diff_next: Option<(crate::git::DiffKey, u64)>,
+    /// The path, tab `version` and time of the open-tab diff last built:
+    /// the tick asks again when the tab moved on.
+    pub(crate) local_diff_follow: Option<(PathBuf, u64, Instant)>,
     /// Crash dumps of this root waiting for an answer (`app/recovery.rs`).
     recovery_offer: Option<recovery::RecoveryOffer>,
     /// The config watcher and what the config files held when last
@@ -352,6 +359,9 @@ impl App {
             recorder,
             unsaved_due,
             prune_due: Some(Instant::now() + crate::history::PRUNE_EVERY),
+            local_diff: Default::default(),
+            local_diff_next: None,
+            local_diff_follow: None,
             recovery_offer: None,
             config_reload: Default::default(),
             started: Instant::now(),
@@ -553,6 +563,7 @@ impl App {
         }
         self.unsaved_snapshots(Instant::now());
         self.history_prune_tick(Instant::now());
+        self.history_diff_follow(Instant::now());
         self.terminal_tick();
     }
 
@@ -1666,6 +1677,9 @@ pub(crate) mod tests {
             loop {
                 match app.bus_rx.recv().await {
                     Some(m) if want(&m) => break m,
+                    // Local History diff builds run one at a time: an answer
+                    // skipped here would hold the next one back for good.
+                    Some(m @ AppMsg::LocalHistory(crate::history::HistoryMsg::Diff { .. })) => app.handle_msg(m),
                     Some(_) => {}
                     None => panic!("bus closed"),
                 }

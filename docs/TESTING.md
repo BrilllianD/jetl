@@ -653,6 +653,9 @@ s C-M-z                                # *notes.txt "A one", "two", "three"; toa
                                        # compared again: no change left
 s Escape; s Escape; s C-z              # back in the editor; one Ctrl+Z: "A B one", "two", "Xthree"
 s C-z                                  # "A B one", "two", "three", the tab clean
+s M-H; s Down; s Escape; s -l Q         # the window stays open beside the editor; typing in notes.txt: within half a second
+                                       # the diff's right side shows the typed "Q", scroll and selected change kept
+s C-z                                  # the diff follows again, without "Q"
 echo outside >> $LH/repo/notes.txt     # the clean tab reloads (nothing new stored: its text was the last snapshot)
 s F1; s -l 'Git: branches'; s Enter; s -l other; s Enter; s Enter   # Checkout: "Switched to other"
                                        # the window lists by itself: "Before git switch other" on top,

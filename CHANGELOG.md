@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The Local History window's diff follows edits of the shown file: while the window is visible and the diff
+  compares a snapshot with an open tab, typing in that tab updates the diff within half a second, keeping the
+  scroll and the selected change. Quick selection moves no longer pile up diff builds: one runs, the newest waits.
 - Revert on a label row of the Local History window's project view asks `Revert N files to label "x"?` and,
   on Revert, puts every file of the label back to its labelled text: one undoable edit per open tab, files
   without a tab opened in the background, a missing file reopened as an empty tab with the text. The edits stay

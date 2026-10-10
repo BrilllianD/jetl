@@ -7,7 +7,7 @@
 //! worker).
 
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use super::{App, Ctx};
 use crate::editor::buffer::BufferId;
@@ -276,7 +276,18 @@ impl App {
                 self.relist_if_shown(&path);
                 self.history_files_changed(&path);
             }
-            HistoryMsg::Diff { key, seq, result } => self.history_panel.set_diff(&key, seq, result),
+            HistoryMsg::Diff { key, seq, result } => {
+                self.history_panel.set_diff(&key, seq, result);
+                // The build that held the others back is over: start the
+                // newest one asked for meanwhile.
+                if self.local_diff.done() {
+                    if let Some((k, s)) = self.local_diff_next.take() {
+                        self.start_local_diff(k, s);
+                    }
+                } else {
+                    self.local_diff_next = None;
+                }
+            }
             HistoryMsg::Blob { path, id, result } => {
                 // Only the snapshot the window still has selected.
                 if !self.history_panel.shows(&path, &id) {
@@ -334,7 +345,34 @@ impl App {
     /// file on disk (a missing file is empty), built off the main thread;
     /// answered as `HistoryMsg::Diff` with the window's `seq`.
     pub(super) fn load_local_diff(&mut self, key: DiffKey, seq: u64) {
+        if self.local_diff.request() {
+            self.start_local_diff(key, seq);
+        } else {
+            // One build at a time: the newest request waits for it.
+            self.local_diff_next = Some((key, seq));
+        }
+    }
+
+    /// The tick's part: the diff compares a snapshot with an open tab that
+    /// has changed since (the diff was built from another `version`); ask
+    /// again, at most every half second. Scroll and block stay (same key).
+    pub(super) fn history_diff_follow(&mut self, now: Instant) {
+        let Some((path, v, at)) = &self.local_diff_follow else { return };
+        if !self.layout.is_visible(ToolWindowId::LocalHistory) || now.duration_since(*at) < Duration::from_millis(500) {
+            return;
+        }
+        if !matches!(self.history_panel.diff_state().0, Some(DiffKey::Local { path: p, .. }) if p == path) {
+            return;
+        }
+        if self.editor.index_of(path).is_some_and(|i| self.editor.buffers[i].version != *v) {
+            self.with_history_panel(|p, cx| p.reload_diff(cx));
+        }
+    }
+
+    fn start_local_diff(&mut self, key: DiffKey, seq: u64) {
         let DiffKey::Local { path, id, .. } = &key else { return };
+        let tab = self.editor.index_of(path);
+        self.local_diff_follow = tab.map(|i| (path.clone(), self.editor.buffers[i].version, Instant::now()));
         let current = self.editor.index_of(path).map(|i| self.editor.buffers[i].rope.clone());
         let (dir, path, id) = (self.history.dir().to_path_buf(), path.clone(), id.clone());
         let (tx, tab_width) = (self.bus_tx.clone(), self.git.tab_width);
@@ -706,6 +744,68 @@ pub(crate) mod tests {
 
     fn last_note(app: &App) -> String {
         app.notifications.last().map(|n| n.text.clone()).unwrap_or_default()
+    }
+
+    #[tokio::test]
+    async fn diff_builds_coalesce() {
+        let (mut app, dir) = test_app("history-diff-coalesce");
+        with_history(&mut app);
+        let path = load(&mut app, "a.txt", "one\n");
+        type_text(&mut app, "two ");
+        app.perform(Action::Editor(EditorAction::Save));
+        assert!(app.history.flush(Duration::from_secs(5)));
+        window_with_diff(&mut app, &path).await;
+        let before = app.local_diff.requests;
+        type_text(&mut app, "x");
+        // Two requests back to back: the first builds, the second waits.
+        app.with_history_panel(|p, cx| p.reload_diff(cx));
+        app.with_history_panel(|p, cx| p.reload_diff(cx));
+        assert_eq!(app.local_diff.requests, before + 2);
+        assert!(app.local_diff_next.is_some(), "the second request is held back");
+        // The first answer is stale (older seq): not applied, the held one starts.
+        handle_next(&mut app, diff_msg).await;
+        assert!(app.history_panel.diff_loading());
+        assert!(app.local_diff_next.is_none());
+        handle_next(&mut app, diff_msg).await;
+        assert!(!app.history_panel.diff_loading());
+        assert!(app.history_panel.diff_new_text().contains('x'));
+        let third = tokio::time::timeout(Duration::from_millis(300), async {
+            while let Some(m) = app.bus_rx.recv().await {
+                if diff_msg(&m) {
+                    return true;
+                }
+            }
+            false
+        })
+        .await;
+        assert!(third.is_err(), "no third build");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn diff_follows_edits() {
+        let (mut app, dir) = test_app("history-diff-follows");
+        with_history(&mut app);
+        let path = load(&mut app, "a.txt", "one\n");
+        type_text(&mut app, "two ");
+        app.perform(Action::Editor(EditorAction::Save));
+        assert!(app.history.flush(Duration::from_secs(5)));
+        window_with_diff(&mut app, &path).await;
+        assert!(!app.history_panel.diff_new_text().contains('x'));
+        let later = Instant::now() + Duration::from_secs(1);
+        // Nothing changed in the tab: no request.
+        let n = app.local_diff.requests;
+        app.history_diff_follow(later);
+        assert_eq!(app.local_diff.requests, n);
+        type_text(&mut app, "x");
+        app.history_diff_follow(later);
+        assert_eq!(app.local_diff.requests, n + 1);
+        diff_landed(&mut app).await;
+        assert!(app.history_panel.diff_new_text().contains('x'));
+        // The new diff was built from the edited tab: no further request.
+        app.history_diff_follow(later + Duration::from_secs(1));
+        assert_eq!(app.local_diff.requests, n + 1);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]

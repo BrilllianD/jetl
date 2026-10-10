@@ -812,8 +812,7 @@ impl LocalHistoryPanel {
         &self.filter
     }
 
-    /// The snapshot the diff shows and whether its doc is there (tests).
-    #[cfg(test)]
+    /// The snapshot the diff shows and whether its doc is there.
     pub fn diff_state(&self) -> (Option<&DiffKey>, bool) {
         (self.diff.key.as_ref(), self.diff.doc.is_some())
     }
@@ -822,6 +821,12 @@ impl LocalHistoryPanel {
     #[cfg(test)]
     pub fn diff_loading(&self) -> bool {
         self.diff.loading
+    }
+
+    /// The text of the diff's new side (tests).
+    #[cfg(test)]
+    pub fn diff_new_text(&self) -> String {
+        self.diff.doc.as_ref().map_or_else(String::new, |d| d.new.concat())
     }
 
     /// The diff's changes and the selected ones (tests).
