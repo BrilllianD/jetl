@@ -26,6 +26,9 @@ const HISTORY_OFF: &str = "Local history is off ([local_history] enabled = false
 pub(crate) enum PendingRevert {
     /// The whole snapshot.
     Text(String),
+    /// The whole text of a label's member: the focus stays, no message of
+    /// its own (`App::revert_label` toasts once).
+    Member(String),
     /// Changes of the window's diff.
     Changes(Box<ChangesRevert>),
 }
@@ -204,6 +207,16 @@ impl App {
         }
     }
 
+    /// Revert on a label row of the Local History window: ask first.
+    fn ask_revert_label(&mut self, at: u64, name: String, members: Vec<(PathBuf, Entry)>) {
+        if self.editor.merge_active() {
+            return self.notify(Level::Info, crate::editor::merge::BUSY);
+        }
+        let n = members.len();
+        let msg = format!("Revert {n} file{} to label \"{name}\"?\nThe edits stay unsaved in their tabs.", if n == 1 { "" } else { "s" });
+        self.dialog = Some(Dialog::confirm(DialogId::RevertLabel { at, name, members }, "Revert to Label", &msg, &["Revert", "Cancel"]));
+    }
+
     /// Remove Label in the Local History window: ask first.
     fn ask_remove_label(&mut self, name: String, entries: Vec<(PathBuf, Entry)>) {
         let of = match entries.as_slice() {
@@ -239,6 +252,7 @@ impl App {
             Request::RevertChanges(rev) => self.revert_changes(*rev),
             Request::PutLabel(path) => self.ask_put_label(path),
             Request::RemoveLabel { name, entries } => self.ask_remove_label(name, entries),
+            Request::RevertLabel { at, name, members } => self.ask_revert_label(at, name, members),
         }
     }
 
@@ -274,6 +288,7 @@ impl App {
                     Err(e) => self.notify(Level::Error, format!("Local history: {e}")),
                 }
             }
+            HistoryMsg::Blobs { at, name, items } => self.revert_label(at, name, items),
             HistoryMsg::Labelled { path, name, result } => match result {
                 Ok(n) => {
                     let rel = crate::ui::palette::display_path(&path, &self.workspace.root);
@@ -344,37 +359,94 @@ impl App {
     /// the file opens (`pending_revert`); a file deleted meanwhile gets an
     /// empty tab with its path, so saving recreates it.
     fn revert_to(&mut self, path: PathBuf, text: String) {
+        self.revert_to_with(path, text, true);
+    }
+
+    /// `revert_to`; `focus` false leaves the focus where it is (one file of
+    /// a label revert).
+    fn revert_to_with(&mut self, path: PathBuf, text: String, focus: bool) {
+        let quiet = !focus;
         if self.editor.merge_active() {
             return self.notify(Level::Info, crate::editor::merge::BUSY);
         }
         if self.editor.index_of(&path).is_some() {
-            return self.apply_revert(&path, &text);
+            return self.apply_revert_with(&path, &text, quiet);
         }
         if path.exists() {
-            self.pending_revert = Some((path.clone(), PendingRevert::Text(text)));
-            return self.open_file(path, true);
+            let pending = if focus { PendingRevert::Text(text) } else { PendingRevert::Member(text) };
+            self.pending_revert.insert(path.clone(), pending);
+            return self.open_file(path, focus);
         }
         self.recreate_parent(&path);
         self.editor.open_text(path.clone(), "", false, &self.theme);
+        if focus {
+            self.editor.enforce_tab_limit();
+        }
+        self.apply_revert_with(&path, &text, quiet);
+    }
+
+    /// The texts of a label arrived: every member goes back to its text, one
+    /// undoable edit per tab, unsaved; the focus stays in the window. Members
+    /// that are not UTF-8 or whose blob is gone are skipped and named.
+    fn revert_label(&mut self, at: u64, name: String, items: Vec<(PathBuf, Result<Vec<u8>, String>)>) {
+        if !self.history_panel.shows_label(at, &name) {
+            return tracing::debug!("dropping the texts of label {name}: no longer shown");
+        }
+        if self.editor.merge_active() {
+            return self.notify(Level::Info, crate::editor::merge::BUSY);
+        }
+        let (mut done, mut skipped) = (0, Vec::new());
+        for (path, bytes) in items {
+            match bytes.map_err(|e| e.to_string()).and_then(|b| String::from_utf8(b).map_err(|_| "not valid UTF-8".to_string())) {
+                Ok(text) => {
+                    self.revert_member(path, text);
+                    done += 1;
+                }
+                Err(e) => {
+                    tracing::debug!("label revert skips {}: {e}", path.display());
+                    skipped.push(crate::ui::palette::display_path(&path, &self.workspace.root));
+                }
+            }
+        }
         self.editor.enforce_tab_limit();
-        self.apply_revert(&path, &text);
+        self.focus.set(PanelId::LocalHistory);
+        let mut msg =
+            format!("Reverted {done} file{} to label \"{name}\" (unsaved; Ctrl+Z in each tab undoes)", if done == 1 { "" } else { "s" });
+        if !skipped.is_empty() {
+            msg.push_str(&format!("; skipped {} (no text to restore): {}", skipped.len(), skipped.join(", ")));
+        }
+        self.notify(if skipped.is_empty() { Level::Info } else { Level::Warn }, msg);
+    }
+
+    /// One file of a label revert: `revert_to` without the focus.
+    fn revert_member(&mut self, path: PathBuf, text: String) {
+        self.revert_to_with(path, text, false);
     }
 
     /// Put `text` into `path`'s open tab as one undoable change, show the
     /// tab and compare again.
     pub(super) fn apply_revert(&mut self, path: &Path, text: &str) {
+        self.apply_revert_with(path, text, false);
+    }
+
+    /// `apply_revert`; `quiet` keeps the focus and the message for the
+    /// caller (a label revert).
+    pub(super) fn apply_revert_with(&mut self, path: &Path, text: &str, quiet: bool) {
         let Some(i) = self.editor.index_of(path) else { return };
         let mut cx = ctx!(self);
         self.editor.activate(i, &mut cx);
         let mut fx = cx.effects;
-        self.focus.set(PanelId::Editor);
         let name = self.editor.buffers[i].name.clone();
-        let msg = if self.editor.restore_text(i, text) {
-            format!("Reverted {name} to {} (Ctrl+Z undoes)", self.history_panel.selected_title())
-        } else {
-            format!("{name} already has the text of that snapshot")
-        };
-        self.notify(Level::Info, msg);
+        let changed = self.editor.restore_text(i, text);
+        if !quiet {
+            self.focus.set(PanelId::Editor);
+            let msg = if changed {
+                format!("Reverted {name} to {} (Ctrl+Z undoes)", self.history_panel.selected_title())
+            } else {
+                format!("{name} already has the text of that snapshot")
+            };
+            self.notify(Level::Info, msg);
+        }
         let mut cx = ctx!(self);
         self.history_panel.reload_diff(&mut cx);
         fx.extend(cx.effects);
@@ -393,7 +465,7 @@ impl App {
             return self.apply_changes_revert(rev);
         }
         if path.exists() {
-            self.pending_revert = Some((path.clone(), PendingRevert::Changes(Box::new(rev))));
+            self.pending_revert.insert(path.clone(), PendingRevert::Changes(Box::new(rev)));
             return self.open_file(path, false);
         }
         self.recreate_parent(&path);
@@ -1460,6 +1532,59 @@ pub(crate) mod tests {
         // Its text is its last snapshot's (nothing stored), yet the row is back.
         handle_next(&mut app, scan_of(&root)).await;
         assert_eq!(app.history_panel.project_rows(), ["d/x.txt · Saved"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn blobs_msg(m: &AppMsg) -> bool {
+        matches!(m, AppMsg::LocalHistory(HistoryMsg::Blobs { .. }))
+    }
+
+    fn file_loaded(m: &AppMsg) -> bool {
+        matches!(m, AppMsg::FileLoaded { .. })
+    }
+
+    #[tokio::test]
+    async fn revert_label_restores_every_member() {
+        let (mut app, dir) = test_app("history-revert-label");
+        with_history(&mut app);
+        let root = app.workspace.root.clone();
+        let d = root.join("d");
+        let closed = saved(&app, "d/closed.txt", "closed v1\n");
+        let gone = saved(&app, "d/sub/gone.txt", "gone v1\n");
+        let open = load(&mut app, "d/open.txt", "open v1\n");
+        app.finish_dialog(DialogId::PutLabel(d.clone()), DialogResult::Text("v1".into()));
+        handle_next(&mut app, label_msg).await;
+        assert_eq!(last_note(&app), "Put label \"v1\" on d/ (3 files)");
+        // Everything changes afterwards: an unsaved edit, a rewrite, a delete.
+        type_text(&mut app, "edit ");
+        std::fs::write(&closed, "closed v2\n").unwrap();
+        std::fs::remove_dir_all(d.join("sub")).unwrap();
+        app.show_local_history_dir(d.clone());
+        handle_next(&mut app, scan_of(&d)).await;
+        let rows = app.history_panel.project_rows();
+        let label = rows.iter().position(|r| r.starts_with("Label")).unwrap_or_else(|| panic!("a label row in {rows:?}"));
+        for _ in 0..label {
+            history(&mut app, HistoryAction::Down);
+        }
+        history(&mut app, HistoryAction::Revert);
+        let dlg = app.dialog.take().expect("a confirm");
+        assert_eq!(dlg.title, "Revert to Label");
+        assert!(dlg.message.starts_with("Revert 3 files to label \"v1\"?"), "{}", dlg.message);
+        assert!(matches!(dlg.id, DialogId::RevertLabel { .. }));
+        app.finish_dialog(dlg.id, DialogResult::Button(0));
+        handle_next(&mut app, blobs_msg).await;
+        handle_next(&mut app, file_loaded).await;
+        let text = |p: &Path| {
+            let i = app.editor.index_of(p).unwrap_or_else(|| panic!("a tab for {}", p.display()));
+            (app.editor.buffers[i].text(), app.editor.buffers[i].dirty())
+        };
+        assert_eq!(text(&open), ("open v1\n".to_string(), true));
+        assert_eq!(text(&closed), ("closed v1\n".to_string(), true));
+        assert_eq!(text(&gone), ("gone v1\n".to_string(), true));
+        assert!(gone.parent().unwrap().is_dir());
+        assert_eq!(std::fs::read_to_string(&closed).unwrap(), "closed v2\n", "nothing is saved");
+        assert!(app.focus.is(PanelId::LocalHistory));
+        assert_eq!(last_note(&app), "Reverted 3 files to label \"v1\" (unsaved; Ctrl+Z in each tab undoes)");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

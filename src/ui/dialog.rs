@@ -172,6 +172,14 @@ pub enum DialogId {
         name: String,
         entries: Vec<(std::path::PathBuf, crate::history::Entry)>,
     },
+    /// Revert every file of local history label `name` (put at `at`) to its
+    /// labelled text (the Local History window's Revert on a label row):
+    /// Revert / Cancel.
+    RevertLabel {
+        at: u64,
+        name: String,
+        members: Vec<(std::path::PathBuf, crate::history::Entry)>,
+    },
     /// Unsaved changes recovered after a crash (`App::offer_recovery`):
     /// Restore all / Discard / Review…
     Recover,

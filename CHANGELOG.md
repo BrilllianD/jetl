@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Revert on a label row of the Local History window's project view asks `Revert N files to label "x"?` and,
+  on Revert, puts every file of the label back to its labelled text: one undoable edit per open tab, files
+  without a tab opened in the background, a missing file reopened as an empty tab with the text. The edits stay
+  unsaved; files that are not UTF-8 or whose text is gone are skipped and named in the toast. Refused while
+  the conflict resolver is active.
 - Put Label works on a folder or the whole project: select a folder in the Project tree (or use Put Label in
   the Local History window's project view) and every open file under it (unsaved edits included), every
   changed file git lists and every file with history gets the same label, which the project view shows as

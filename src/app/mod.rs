@@ -222,7 +222,7 @@ pub struct App {
     pub history: crate::history::Handle,
     /// A snapshot, or changes of one, to put into a file once its tab opens
     /// (a revert of a file that was not open), as `pending_goto`.
-    pub(crate) pending_revert: Option<(PathBuf, history::PendingRevert)>,
+    pub(crate) pending_revert: std::collections::HashMap<PathBuf, history::PendingRevert>,
     pub editor: Editor,
     /// Watches the root for outside changes; `None` when off or failed.
     watcher: Option<crate::files::watch::Watcher>,
@@ -336,7 +336,7 @@ impl App {
             pending_open: open,
             git,
             history,
-            pending_revert: None,
+            pending_revert: std::collections::HashMap::new(),
             editor: Editor::new(&config),
             watcher: None,
             clipboard: Default::default(),

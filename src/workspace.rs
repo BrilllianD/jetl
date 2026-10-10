@@ -291,7 +291,7 @@ impl App {
         self.refresh_file_index();
         crate::tui::set_title(&root);
         self.editor.clear_nav();
-        self.pending_revert = None;
+        self.pending_revert.clear();
         self.history_root_changed();
         // The closed files' numbered bookmarks come with the new session.
         self.editor.restore_closed_bookmarks(&[]);

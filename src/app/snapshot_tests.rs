@@ -819,6 +819,20 @@ async fn local_history_project() {
 }
 
 #[tokio::test]
+async fn local_history_revert_label_dialog() {
+    let mut fx = stable_app("local-history-revert-label");
+    let app = &mut fx.app;
+    local_history_project_fixture(app, "");
+    app.perform(Action::History(HistoryAction::Down));
+    app.perform(Action::History(HistoryAction::Down));
+    app.perform(Action::History(HistoryAction::Revert));
+    assert!(app.dialog.is_some(), "the confirm");
+    let term = draw_app(app, 80, 24);
+    let marks = [Mark::style('B', "selected button", app.theme.list_selected)];
+    assert_snapshot!("local_history_revert_label_dialog", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
 async fn local_history_project_wide() {
     let mut fx = stable_app("local-history-project-wide");
     let app = &mut fx.app;

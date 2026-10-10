@@ -723,6 +723,13 @@ own (Revert, Revert Selected Changes, Put Label…, Remove Label…, Open File,
 All Files; in the project view Show History, Revert, Revert Selected
 Changes, Remove Label…). File > Local History… on a folder selected in the
 Project tree shows the project view of that folder only.
+Revert a whole label: Put Label "v1" on a folder with an open tab, a closed
+file and (after deleting it) a missing one, edit all three, then in the
+project view select the label row and press Alt+R: the confirm reads
+`Revert 3 files to label "v1"?`; Revert puts each back to its labelled text
+in an unsaved tab (the missing file's folder is made again), the toast reads
+`Reverted 3 files to label "v1" (unsaved; Ctrl+Z in each tab undoes)`, and
+the focus stays in the window.
 A Ctrl+click on a change in the diff extends the selection to it (Shift+click
 in terminals that pass it on); typing in the tab after the diff was made and
 then Ctrl+Alt+Z in the window reverts nothing: toast "… changed since the

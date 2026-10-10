@@ -420,9 +420,10 @@ impl App {
             self.notify(Level::Info, format!("{name} has conflicts: Git > Resolve Conflicts"));
         }
         self.editor.enforce_tab_limit();
-        if let Some((_, pending)) = self.pending_revert.take_if(|(p, _)| *p == path) {
+        if let Some(pending) = self.pending_revert.remove(&path) {
             match pending {
                 super::history::PendingRevert::Text(text) => self.apply_revert(&path, &text),
+                super::history::PendingRevert::Member(text) => self.apply_revert_with(&path, &text, true),
                 super::history::PendingRevert::Changes(rev) => self.apply_changes_revert(*rev),
             }
         }

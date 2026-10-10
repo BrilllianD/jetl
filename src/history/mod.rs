@@ -159,6 +159,13 @@ pub enum Request {
         name: String,
         entries: Vec<(PathBuf, Entry)>,
     },
+    /// Ask before putting every file of the label (put at `at`) back to its
+    /// labelled text: the label's members, each with the file it is shown as.
+    RevertLabel {
+        at: u64,
+        name: String,
+        members: Vec<(PathBuf, Entry)>,
+    },
 }
 
 /// Changes of a Local History diff to put back: they apply only to the text
@@ -192,6 +199,9 @@ pub enum HistoryMsg {
     Recent { scope: PathBuf, files: Vec<RecentFile> },
     /// A snapshot's text, for a revert.
     Blob { path: PathBuf, id: String, result: Result<Vec<u8>, String> },
+    /// The texts of label `name` (put at `at`), one per member file, for a
+    /// label revert.
+    Blobs { at: u64, name: String, items: Vec<(PathBuf, Result<Vec<u8>, String>)> },
     /// A label was put on `path` (a file: 1; a folder: on how many files), or
     /// why not.
     Labelled { path: PathBuf, name: String, result: Result<usize, String> },
@@ -228,6 +238,7 @@ enum Job {
     List(PathBuf),
     Recent(PathBuf),
     Blob { path: PathBuf, id: String },
+    Blobs { at: u64, name: String, items: Vec<(PathBuf, String)> },
     Prune,
     Flush(Sender<()>),
 }
@@ -387,6 +398,12 @@ impl Handle {
         self.send(Job::Blob { path, id });
     }
 
+    /// Ask for the snapshots `items` (file, blob id) of label `name` put at
+    /// `at` (`HistoryMsg::Blobs`).
+    pub fn blobs(&self, at: u64, name: String, items: Vec<(PathBuf, String)>) {
+        self.send(Job::Blobs { at, name, items });
+    }
+
     /// Queue a prune with the current settings.
     pub fn prune(&self) {
         self.send(Job::Prune);
@@ -476,6 +493,11 @@ impl Worker {
                 Job::Blob { path, id } => {
                     let result = store::read_blob(&self.dir, &id).map_err(|e| e.to_string());
                     let _ = self.bus.send(AppMsg::LocalHistory(HistoryMsg::Blob { path, id, result }));
+                }
+                Job::Blobs { at, name, items } => {
+                    let items =
+                        items.into_iter().map(|(path, id)| (path, store::read_blob(&self.dir, &id).map_err(|e| e.to_string()))).collect();
+                    let _ = self.bus.send(AppMsg::LocalHistory(HistoryMsg::Blobs { at, name, items }));
                 }
                 Job::Prune => {
                     let keep = s.keep_days.saturating_mul(86_400_000);
@@ -742,6 +764,17 @@ mod tests {
         match next(&mut rx) {
             Ok(AppMsg::LocalHistory(HistoryMsg::Blob { result: Ok(bytes), .. })) => assert_eq!(bytes, b"one\n"),
             other => panic!("expected the blob, got {other:?}"),
+        }
+        // A label revert's texts: one per member, a missing blob an error.
+        h.blobs(7, "v1".into(), vec![(path.clone(), l[0].blob.clone()), (dir.join("gone.txt"), "0".repeat(64))]);
+        h.flush(Duration::from_secs(5));
+        match next(&mut rx) {
+            Ok(AppMsg::LocalHistory(HistoryMsg::Blobs { at: 7, name, items })) => {
+                assert_eq!(name, "v1");
+                assert_eq!(items[0].1.as_deref(), Ok(&b"one\n"[..]));
+                assert!(items[1].0.ends_with("gone.txt") && items[1].1.is_err());
+            }
+            other => panic!("expected the blobs, got {other:?}"),
         }
         // A compressible text is stored compressed and read back whole.
         let big = "fn main() { println!(\"hello\"); }\n".repeat(200);

@@ -295,6 +295,10 @@ impl App {
             (DialogId::PutLabel(path), DialogResult::Text(t)) => self.finish_put_label(path, &t),
             (DialogId::RemoveLabel { name, entries }, DialogResult::Button(b)) => self.finish_remove_label(name, entries, b == 0),
             (DialogId::RemoveLabel { name, entries }, DialogResult::Cancel) => self.finish_remove_label(name, entries, false),
+            (DialogId::RevertLabel { at, name, members }, DialogResult::Button(0)) => {
+                let items = members.into_iter().map(|(path, e)| (path, e.blob)).collect();
+                self.history.blobs(at, name, items);
+            }
             (DialogId::Info, _) => {}
             (_, DialogResult::Cancel) => {}
             (

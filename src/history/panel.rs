@@ -385,6 +385,12 @@ impl LocalHistoryPanel {
         self.selection().is_some_and(|s| s.path == path && s.entry.blob == id)
     }
 
+    /// Whether the project view still lists label `name` put at `at`: a
+    /// label revert's texts are applied only then.
+    pub fn shows_label(&self, at: u64, name: &str) -> bool {
+        self.view == View::Project && self.project.as_ref().is_some_and(|p| p.has_label(at, name))
+    }
+
     /// Ask for the diff of the selection (a new request each time: the
     /// current text may have changed); nothing selected clears it.
     fn request_diff(&mut self, cx: &mut Ctx) {
@@ -604,7 +610,11 @@ impl LocalHistoryPanel {
     fn revert(&mut self, cx: &mut Ctx) {
         match self.selection() {
             Some(s) => cx.effects.push(Effect::History(Request::Revert { path: s.path, id: s.entry.blob })),
-            None if self.on_label() => cx.notify(Level::Info, "Select one of the label's files to revert it (Enter lists them)"),
+            None if self.on_label() => {
+                if let Some((at, name, members)) = self.project.as_ref().and_then(ProjectView::label_group) {
+                    cx.effects.push(Effect::History(Request::RevertLabel { at, name, members }));
+                }
+            }
             None => cx.notify(Level::Info, "Select a snapshot to revert to"),
         }
     }
@@ -698,7 +708,7 @@ impl LocalHistoryPanel {
         let items = match self.view {
             View::Project => vec![
                 MenuItem::new("Show History", h(HistoryAction::OpenFile)).enabled(selected),
-                MenuItem::new("Revert", h(HistoryAction::Revert)).enabled(selected),
+                MenuItem::new("Revert", h(HistoryAction::Revert)).enabled(selected || self.on_label()),
                 MenuItem::new("Revert Selected Changes", h(HistoryAction::RevertChanges)).enabled(self.revertible().is_some()),
                 MenuItem::new("Remove Label…", h(HistoryAction::RemoveLabel)).enabled(label),
             ],
@@ -885,7 +895,7 @@ impl LocalHistoryPanel {
         };
         let enabled = [
             Some(first),
-            Some((Btn::Revert, "[Revert]", selected)),
+            Some((Btn::Revert, "[Revert]", selected || self.on_label())),
             Some((Btn::RevertChanges, changes.as_str(), self.revertible().is_some())),
             label_btn,
             Some((Btn::RemoveLabel, "[Remove Label]", self.label_selected())),
@@ -1064,6 +1074,7 @@ mod tests {
                 Effect::History(Request::Diff { key: DiffKey::Local { id, .. }, seq }) => format!("diff {} #{seq}", &id[36..]),
                 Effect::History(Request::Revert { id, .. }) => format!("revert {}", &id[36..]),
                 Effect::History(Request::PutLabel(p)) => format!("label {}", p.display()),
+                Effect::History(Request::RevertLabel { name, members, .. }) => format!("revert label {name} of {}", members.len()),
                 Effect::History(Request::RemoveLabel { name, entries }) => {
                     let paths: Vec<String> = entries.iter().map(|(p, _)| p.display().to_string()).collect();
                     if paths.len() == 1 { format!("remove {name}") } else { format!("remove {name} of {}", paths.join(" ")) }
@@ -1353,11 +1364,11 @@ mod tests {
         let only = act(&mut p, HistoryAction::RemoveLabel);
         assert!(only[0].starts_with("notify Only labels can be removed"), "{only:?}");
         assert_eq!(act(&mut p, HistoryAction::PutLabel), ["label /w/b.txt"]);
-        // A label of two files: removed from both; no revert of it.
+        // A label of two files: removed from both, reverted as a whole.
         act(&mut p, HistoryAction::Down);
         assert_eq!(act(&mut p, HistoryAction::PutLabel), ["label /w"], "a label row: the scanned folder");
         assert_eq!(act(&mut p, HistoryAction::RemoveLabel), ["remove v1 of /w/b.txt /w/src/a.rs"]);
-        assert!(act(&mut p, HistoryAction::Revert)[0].starts_with("notify Select one of the label's files"));
+        assert_eq!(act(&mut p, HistoryAction::Revert), ["revert label v1 of 2"]);
         assert!(p.diff.key.is_none(), "no diff for a label");
         // One of its files: that file's label only.
         act(&mut p, HistoryAction::OpenFile);

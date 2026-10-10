@@ -78,6 +78,9 @@ struct Group {
     members: Vec<(usize, Entry)>,
 }
 
+/// A label row's time, name and every file's entry of it.
+pub type LabelGroup = (u64, String, Vec<(PathBuf, Entry)>);
+
 /// The selected row's file and snapshot, for the diff and the revert.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Selection {
@@ -321,6 +324,19 @@ impl ProjectView {
             }
             Row::File(_) => None,
         }
+    }
+
+    /// The selected label row's time, name and every file's entry of it;
+    /// `None` on any other row.
+    pub fn label_group(&self) -> Option<LabelGroup> {
+        let Row::Label(g) = self.selected_row()? else { return None };
+        let grp = &self.groups[g];
+        Some((grp.at, grp.name.clone(), grp.members.iter().map(|(fi, e)| (self.files[*fi].path.clone(), e.clone())).collect()))
+    }
+
+    /// Whether the view has a label `name` put at `at`.
+    pub fn has_label(&self, at: u64, name: &str) -> bool {
+        self.groups.iter().any(|g| g.at == at && g.name == name)
     }
 
     /// Whether a label row (not one of its files) is selected.
