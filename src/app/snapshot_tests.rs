@@ -177,6 +177,20 @@ async fn editor_carets_column() {
 }
 
 #[tokio::test]
+async fn editor_carets_column_virtual() {
+    let mut fx = stable_app("carets-column-virtual");
+    let app = &mut fx.app;
+    load(app, "cols.log", "abcdefgh\nabcdefgh\nab\nabcdefgh\n");
+    // A zero-width block at column 5 passing the short line: its caret is
+    // drawn at the block column, past the line end.
+    let b = app.editor.active_buffer_mut().unwrap();
+    b.set_block(crate::editor::view_state::Block { anchor: (0, 5), head: (3, 5) }, 4);
+    let term = draw_editor(app, 40, 8);
+    let marks = editor_marks(&app.theme);
+    assert_snapshot!("editor_carets_column_virtual", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
 async fn editor_occurrences() {
     let mut fx = stable_app("occurrences");
     let app = &mut fx.app;

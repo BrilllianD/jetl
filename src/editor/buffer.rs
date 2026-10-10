@@ -141,6 +141,10 @@ pub struct Buffer {
     pub disk_mtime: Option<std::time::SystemTime>,
     /// Version the editor's idle autosave timer last saw.
     pub autosave_seen: u64,
+    /// Spaces each caret's next insert first adds, set from a live column
+    /// block's short lines (`Buffer::block_pads`) and taken by
+    /// [`Buffer::edit_carets`].
+    pub(crate) virtual_pad: Vec<usize>,
     /// Version of the last snapshot of unsaved edits taken
     /// (`Editor::unsaved_captures`).
     pub history_seen: u64,
@@ -217,6 +221,7 @@ impl Buffer {
             blame: None,
             disk_mtime: None,
             autosave_seen: 0,
+            virtual_pad: Vec::new(),
             history_seen: 0,
             autosave_failed: None,
             autosave_conflict: false,
@@ -436,8 +441,30 @@ impl Buffer {
     /// part is, so undo groups it like the single-caret edit.
     pub fn edit_carets(&mut self, mut f: impl FnMut(&Buffer, Selection) -> CaretEdit) {
         let primary = self.view.sels.primary_index();
-        let mut parts: Vec<(CaretEdit, Selection, bool)> =
-            self.view.sels.iter().enumerate().map(|(i, s)| (f(self, *s), *s, i == primary)).collect();
+        let pads = std::mem::take(&mut self.virtual_pad);
+        let pads = if pads.len() == self.view.sels.len() { pads } else { Vec::new() };
+        let mut parts: Vec<(CaretEdit, Selection, bool)> = self
+            .view
+            .sels
+            .iter()
+            .enumerate()
+            .map(|(i, s)| {
+                let mut e = f(self, *s);
+                let pad = pads.get(i).copied().unwrap_or(0);
+                if pad > 0
+                    && s.is_empty()
+                    && !e.is_noop()
+                    && e.range.start == s.head
+                    && let After::At { anchor, head } = &mut e.after
+                {
+                    // Virtual space of a column block: pad up to its column.
+                    e.text.insert_str(0, &" ".repeat(pad));
+                    *anchor += pad;
+                    *head += pad;
+                }
+                (e, *s, i == primary)
+            })
+            .collect();
         parts.sort_by_key(|(e, _, _)| (e.range.start, e.range.end));
         // Coalesce: (edit, member selections, holds the primary, the
         // landing of each further member whose part is the very same edit).

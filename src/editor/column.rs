@@ -28,14 +28,36 @@ impl Buffer {
         self.undo.break_group = true;
     }
 
+    /// The block made by [`Buffer::set_block`] while the carets are still
+    /// its selections.
+    pub fn live_block(&self, tab_width: usize) -> Option<Block> {
+        let b = self.view.block?;
+        let rows = Rows::new(&self.view.folds, self.rope.len_lines());
+        (block_selections(&self.rope, &rows, b.anchor, b.head, tab_width) == self.view.sels).then_some(b)
+    }
+
+    /// Per selection of a live block, the spaces its line lacks to reach
+    /// the block's left column (an empty selection on a shorter line), else
+    /// 0. Empty without a live block. Typing pads by these ("virtual space").
+    pub fn block_pads(&self, tab_width: usize) -> Vec<usize> {
+        let Some(b) = self.live_block(tab_width) else { return Vec::new() };
+        let lo = b.anchor.1.min(b.head.1);
+        self.view
+            .sels
+            .iter()
+            .map(|s| {
+                let line = self.rope.char_to_line(s.head);
+                let w = line_width(self, line, tab_width);
+                if s.is_empty() && w < lo { lo - w } else { 0 }
+            })
+            .collect()
+    }
+
     /// The block the carets are: the last one made while the carets are
     /// still its selections, else one from the anchor of the caret farthest
     /// from the primary (the first or the last) to the primary's head.
     pub fn current_block(&self, tab_width: usize) -> Block {
-        if let Some(b) = self.view.block
-            && block_selections(&self.rope, &Rows::new(&self.view.folds, self.rope.len_lines()), b.anchor, b.head, tab_width)
-                == self.view.sels
-        {
+        if let Some(b) = self.live_block(tab_width) {
             return b;
         }
         let sels = self.view.sels.as_slice();
@@ -269,5 +291,41 @@ mod tests {
         assert!(buf.undo());
         assert_eq!(buf.text(), TEXT);
         assert_eq!(texts(&buf), ["ab", "ab", "", "ab"], "undo puts the block's selections back");
+    }
+
+    #[test]
+    fn typing_in_a_block_pads_short_lines() {
+        let make = || {
+            let mut buf = b("abcdef\nab\nabcdef\n");
+            buf.set_block(Block { anchor: (0, 4), head: (2, 4) }, 4);
+            buf
+        };
+        let buf = make();
+        assert_eq!(buf.block_pads(4), [0, 2, 0]);
+        let mut buf = make();
+        buf.virtual_pad = buf.block_pads(4);
+        buf.insert("X", TxKind::Typing);
+        assert_eq!(buf.rope.to_string(), "abcdXef\nab  X\nabcdXef\n");
+        let heads: Vec<usize> = buf.view.sels.iter().map(|s| s.head).collect();
+        assert_eq!(heads, [5, 13, 19]);
+        buf.undo();
+        assert_eq!(buf.rope.to_string(), "abcdef\nab\nabcdef\n", "one undo takes pad and text");
+        let mut buf = make();
+        buf.virtual_pad = buf.block_pads(4);
+        buf.insert_char('X', &[]);
+        assert_eq!(buf.rope.to_string(), "abcdXef\nab  X\nabcdXef\n");
+        assert!(buf.virtual_pad.is_empty(), "the pad is used up");
+        let mut buf = make();
+        buf.insert("Y", TxKind::Typing);
+        assert_eq!(buf.rope.to_string(), "abcdYef\nabY\nabcdYef\n", "no pad set: no padding");
+    }
+
+    #[test]
+    fn no_pads_without_a_live_block() {
+        let mut buf = b("abcdef\nab\n");
+        assert!(buf.block_pads(4).is_empty());
+        buf.set_block(Block { anchor: (0, 4), head: (1, 4) }, 4);
+        buf.view.set_sel(Selection::point(0));
+        assert!(buf.block_pads(4).is_empty());
     }
 }

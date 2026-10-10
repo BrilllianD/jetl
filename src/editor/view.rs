@@ -244,7 +244,8 @@ pub fn row_x_to_char(rope: &Rope, rows: &Rows, row: Row, x: usize, tab_width: us
 /// The carets of a column block from `anchor` to `head`, each a (line,
 /// visual column). Every line between gets the cells between the two
 /// columns, a grapheme cut by either edge included; a line too short to
-/// reach the block gets a caret at its end (there is no virtual space), and
+/// reach the block gets a caret at its end (`render` draws it at the block
+/// column, see `Buffer::block_pads`), and
 /// a zero-width block is a caret on every line. Each selection points the
 /// way the block does and the head's line holds the primary. At most
 /// [`MAX_CARETS`] lines, the ones nearest the head. Lines a fold hides
@@ -426,7 +427,17 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
         |s: &Selection| s.upstream && rows.wraps() && char_to_row_x(rope, &rows, s.head, true, o.tab_width).0 != rows.row_of(rope, s.head);
     let drawn_up: Vec<usize> = visible.iter().filter(|s| is_up(s)).map(|s| s.head).collect();
     let drawn: Vec<usize> = visible.iter().filter(|s| !is_up(s)).map(|s| s.head).collect();
-    let (cur_row, cur_x) = char_to_row_x(rope, &rows, buf.view.sel().head, buf.view.sel().upstream, o.tab_width);
+    let (cur_row, mut cur_x) = char_to_row_x(rope, &rows, buf.view.sel().head, buf.view.sel().upstream, o.tab_width);
+    // Virtual space: carets of a live column block on lines too short to
+    // reach it are drawn at its left column.
+    let virtual_col = if sels.is_multi() { buf.live_block(o.tab_width).map(|b| b.anchor.1.min(b.head.1)) } else { None };
+    if let Some(lo) = virtual_col {
+        let head = buf.view.sel().head;
+        let line = rope.char_to_line(head);
+        if head == rope.line_to_char(line) + line_len_no_eol(rope, line) && cur_x < lo {
+            cur_x = lo;
+        }
+    }
     let hl = buf.syntax.as_mut().map(|s| s.highlights(rope, window.start, window.len())).unwrap_or_default();
     let search = buf.view.search.as_ref();
     let pair = super::brackets::pair_at(rope, buf.syntax.as_ref().and_then(|s| s.tree()), buf.view.sel().head);
@@ -600,7 +611,9 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
         // last row, as is a fold's placeholder.
         let end_x = last_seg.then(|| char_to_row_x(rope, &rows, line_end, false, o.tab_width).1);
         let at_end = here.last() == Some(&line_end);
-        if let Some(vc) = end_x
+        // The caret cell: the line end, or the block column past a short line.
+        let caret_x = end_x.map(|vc| if at_end { virtual_col.map_or(vc, |lo| vc.max(lo)) } else { vc });
+        if let Some(vc) = caret_x
             && ((sels.contains(line_end) && line + 1 < rope.len_lines()) || at_end)
             && vc >= scroll_col
         {

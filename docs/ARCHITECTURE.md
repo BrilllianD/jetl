@@ -499,15 +499,26 @@ column); the column under the pointer is not clamped to the line, so a
 block can reach past short lines. `view::block_selections` makes it a caret
 per line on the same `layout_line` walk as rendering: the graphemes between
 the two columns (one cut by either edge is inside, so a tab or a wide char
-is taken whole), a caret at the end of a line too short to reach the block
-(there is no virtual space), a caret per line for a zero-width block; the
+is taken whole), a caret at the end of a line too short to reach the block,
+a caret per line for a zero-width block; the
 head's line holds the primary. `ViewState::block` remembers the corners so
 that extending keeps a column a short line lost; it only counts while the
 carets are still the block's selections (`Buffer::current_block` checks by
 making them again), else the block is taken from the outer carets. Column
 selection mode (`Editor::column_mode`, Alt+Shift+Insert, ` Column` in the
 status bar, not saved) turns a plain drag and Shift+arrows, Home and End
-into block changes (Shift+click moves the head corner). Blocks are buffer lines; soft wrap refuses them
+into block changes (Shift+click moves the head corner).
+
+Virtual space exists only for typing and pasting into a live block
+(`Buffer::live_block`, the carets still its selections): `Buffer::block_pads`
+gives each empty caret on a line narrower than the block's left column the
+spaces it lacks, `handle_action` leaves them in `Buffer::virtual_pad` before
+`InsertChar`/`InsertText`, and `edit_carets` takes them and prepends them to
+that caret's edit, so pad and text are one undo step. `render` draws such a
+caret (and the terminal cursor) at the block's left column. Not supported
+yet: Backspace, Delete, Enter and Tab in virtual space, Alt+click into it, a
+selection highlight past a line end, Shift+Right past the widest line, and
+virtual space outside a live block. Blocks are buffer lines; soft wrap refuses them
 in `Buffer::blocks_supported` (toggling column mode shows a notice; wrapping turns it off) until blocks are
 made of visual rows.
 

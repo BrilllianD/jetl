@@ -251,6 +251,10 @@ press 12 $((X+30)) 3; press 44 $((X+12)) 2; release 12 $((X+12)) 2   # Alt+Shift
 for i in 1 2 3; do /tmp/tm.sh send-keys -t jetl S-Down; done   # Ln 4, Col 5 (4 carets) Column
 /tmp/tm.sh send-keys -t jetl -l '#'              # a # on all four lines, at the end of "ab"
 /tmp/tm.sh send-keys -t jetl C-z
+# Virtual space: a zero-width block passing the short line, then typing
+press 8 $((X+5)) 2; press 40 $((X+5)) 4; release 8 $((X+5)) 4   # Alt+drag down at column 4
+/tmp/tm.sh send-keys -t jetl -l 'V'              # "ab" is padded with spaces to the column, V in line
+/tmp/tm.sh send-keys -t jetl C-z                 # pad and V gone in one step
 ```
 
 `capture-pane -e` shows the selected cells in the selection background

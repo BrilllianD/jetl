@@ -974,6 +974,7 @@ impl Editor {
         if !matches!(a, E::ExpandSelection | E::ShrinkSelection | E::Copy | E::ScrollUp(_) | E::ScrollDown(_)) {
             b.view.expand_stack.clear();
         }
+        b.virtual_pad = if matches!(a, E::InsertChar(_) | E::InsertText(_)) { b.block_pads(tab_width) } else { Vec::new() };
         let pairs = || if auto_close { brackets::pairs(b.language().map(|d| d.name)) } else { &[] };
         match a {
             E::InsertChar(c) => b.insert_char(*c, pairs()),
@@ -3101,5 +3102,16 @@ mod tests {
         let clean = b"a\x0bb\x0cc\xc2\x85d\xe2\x80\xa8e\xe2\x80\xa9f\nend\n";
         assert_eq!(save(clean), clean);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn paste_into_a_block_pads_short_lines() {
+        let mut ed = editor_with("virtual.txt", "abcdef\nab\nabcdef\n");
+        let tw = ed.tab_display(&ed.buffers[0]);
+        ed.buffers[0].set_block(view_state::Block { anchor: (0, 4), head: (2, 4) }, tw);
+        act(&mut ed, EditorAction::InsertText("1\n2\n3".into()));
+        assert_eq!(ed.buffers[0].rope.to_string(), "abcd1ef\nab  2\nabcd3ef\n");
+        assert!(ed.buffers[0].undo());
+        assert_eq!(ed.buffers[0].rope.to_string(), "abcdef\nab\nabcdef\n");
     }
 }
