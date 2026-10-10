@@ -113,6 +113,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Format on save waits for a language server that is still starting (Save As to a new language, or Ctrl+S right after
+  opening).
 - After a rename in the Project tree, the change gutter and blame keep comparing with the file's committed version until the rename is committed.
 - Undo brings back a collapsed fold that the undone edit removed.
 - Accepting a completion with several carets inserts it at every caret that typed the same prefix.

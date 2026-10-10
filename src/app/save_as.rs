@@ -135,6 +135,7 @@ impl App {
         }
         // A formatter's late answer must not be written to the new path.
         // Before `Editor::save_as`, which may start the new path's format.
+        let force_format = self.save_format_pending(id);
         self.abort_format(id);
         // The file about to be overwritten (after `SaveAsOverwrite`).
         if path.is_file() {
@@ -144,7 +145,7 @@ impl App {
         // `FileSaved` syncs the language server (the old document closes
         // and the new one opens) before the format request behind it.
         let format = self.editor.format.on_save && then.formats();
-        let saved = self.editor.save_as(i, path.clone(), &mut cx, format);
+        let saved = self.editor.save_as(i, path.clone(), &mut cx, format, force_format);
         let fx = cx.effects;
         self.apply_effects(fx);
         if !saved {

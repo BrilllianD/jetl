@@ -2,8 +2,10 @@
 //! `[format]` command off the main thread, or the buffer's language server
 //! (`textDocument/formatting`; `textDocument/rangeFormatting` for a
 //! selection when the server has it, else the whole file; given up after
-//! `[lsp] request_timeout_ms`, or when the server goes away). A request
-//! that inherits a pending save formats the whole file. Results are checked against the
+//! `[lsp] request_timeout_ms`, or when the server goes away). A save whose
+//! server is still starting waits for it, within the same timeout counted
+//! from the save. A request that inherits a pending save formats the whole
+//! file. Results are checked against the
 //! generation and the request's seq before the editor applies them
 //! (`Editor::format_done`); a save waiting for one writes either way.
 
@@ -20,6 +22,7 @@ use super::{App, Ctx};
 use crate::editor::buffer::BufferId;
 use crate::editor::format::{FormatRequest, Formatter, Snapshot};
 use crate::event::{AppMsg, Level};
+use crate::lsp::client::State;
 use crate::lsp::transport::ResponseError;
 use crate::lsp::{DocTag, PendingTag, pos};
 use crate::util::format::Failure;
@@ -46,6 +49,9 @@ enum Run {
     Command(tokio::task::AbortHandle),
     /// A language server request, and when to stop waiting for it.
     Lsp { req: Inflight, deadline: Instant },
+    /// A save waiting for language server `server` to start, and when to
+    /// give up; the request goes out on [`App::format_server_started`].
+    Starting { server: String, deadline: Instant, range: Option<Range<usize>> },
 }
 
 impl FormatState {
@@ -84,7 +90,7 @@ impl App {
         let range = if save { None } else { req.range };
         let argv = match req.via {
             Formatter::Command(argv) => argv,
-            Formatter::Lsp => return self.start_lsp_format(req.id, seq, save, req.snapshot, range),
+            Formatter::Lsp => return self.start_lsp_format(req.id, seq, save, req.snapshot, range, None),
         };
         let (generation, tx, root) = (self.workspace.generation, self.bus_tx.clone(), self.workspace.root.clone());
         let (id, timeout, input) = (req.id, req.timeout, req.snapshot.text.clone());
@@ -108,6 +114,7 @@ impl App {
     fn stop_format_run(&self, run: Run) {
         match run {
             Run::Command(task) => task.abort(),
+            Run::Starting { .. } => {}
             Run::Lsp { req, .. } => {
                 if let Some(c) = self.lsp.clients.get(&req.server) {
                     c.cancel(req.id);
@@ -119,11 +126,21 @@ impl App {
     /// Ask buffer `id`'s language server to format it, or only char
     /// `range` of it when the server formats ranges. Without one that
     /// formats, a save writes the text as it is, and a manual format says
-    /// how to get a formatter.
-    fn start_lsp_format(&mut self, id: BufferId, seq: u64, save: bool, snapshot: Snapshot, range: Option<Range<usize>>) {
+    /// how to get a formatter. A save whose server is still starting waits
+    /// for it until `deadline` (default: the request timeout from now).
+    fn start_lsp_format(
+        &mut self,
+        id: BufferId,
+        seq: u64,
+        save: bool,
+        snapshot: Snapshot,
+        range: Option<Range<usize>>,
+        deadline: Option<Instant>,
+    ) {
         let Some(b) = self.editor.index_of_id(id).map(|i| &self.editor.buffers[i]) else { return };
         let (language, indent) = (b.language().map_or("", |l| l.name).to_string(), b.indent);
-        let lsp_range = range.map(|r| lsp_types::Range { start: pos::position(&b.rope, r.start), end: pos::position(&b.rope, r.end) });
+        let lsp_range =
+            range.clone().map(|r| lsp_types::Range { start: pos::position(&b.rope, r.start), end: pos::position(&b.rope, r.end) });
         let opts = json!({"tabSize": indent.width, "insertSpaces": !indent.hard_tabs});
         let ranged = lsp_range.filter(|_| self.lsp_check(id, RANGE_FORMATTING).is_ok());
         let (method, params) = match ranged {
@@ -132,10 +149,15 @@ impl App {
         };
         match self.lsp_send(id, Position::default(), method, params, PendingTag::Formatting, false) {
             Ok(req) => {
-                let deadline = Instant::now() + Duration::from_millis(self.config.lsp.request_timeout_ms);
+                let deadline = deadline.unwrap_or_else(|| self.format_deadline());
                 self.format.jobs.insert(id, Job { seq, save, snapshot, run: Run::Lsp { req, deadline } });
             }
             Err(_) if save => {
+                if let Some(server) = self.starting_server(id) {
+                    let deadline = deadline.unwrap_or_else(|| self.format_deadline());
+                    self.format.jobs.insert(id, Job { seq, save, snapshot, run: Run::Starting { server, deadline, range } });
+                    return;
+                }
                 let text = snapshot.text.clone();
                 self.finish_format(id, save, snapshot, Ok(text));
             }
@@ -147,6 +169,40 @@ impl App {
                 self.notify(Level::Warn, msg);
             }
         }
+    }
+
+    fn format_deadline(&self) -> Instant {
+        Instant::now() + Duration::from_millis(self.config.lsp.request_timeout_ms)
+    }
+
+    /// Buffer `id`'s server, when its client is still starting.
+    fn starting_server(&self, id: BufferId) -> Option<String> {
+        let b = self.editor.index_of_id(id).map(|i| &self.editor.buffers[i])?;
+        let name = self.buffer_server(b)?;
+        let client = self.lsp.clients.get(&name)?;
+        matches!(client.state, State::Starting).then_some(name)
+    }
+
+    /// Server `name` is up: the saves waiting for it format now.
+    pub(super) fn format_server_started(&mut self, name: &str) {
+        let ids: Vec<BufferId> = self
+            .format
+            .jobs
+            .iter()
+            .filter(|(_, j)| matches!(&j.run, Run::Starting { server, .. } if server == name))
+            .map(|(id, _)| *id)
+            .collect();
+        for id in ids {
+            let Some(Job { seq, save, snapshot, run: Run::Starting { deadline, range, .. } }) = self.format.jobs.remove(&id) else {
+                continue;
+            };
+            self.start_lsp_format(id, seq, save, snapshot, range, Some(deadline));
+        }
+    }
+
+    /// Whether buffer `id` has a save waiting on its formatter.
+    pub(super) fn save_format_pending(&self, id: BufferId) -> bool {
+        self.format.jobs.get(&id).is_some_and(|j| j.save)
     }
 
     /// A formatter finished. Dropped when the root changed or a newer
@@ -189,21 +245,25 @@ impl App {
     /// a save waiting for one writes the text unformatted.
     pub(super) fn format_timeout(&mut self, now: Instant) {
         let secs = Duration::from_millis(self.config.lsp.request_timeout_ms).as_secs_f32();
-        self.fail_lsp_formats(|req, deadline| (now >= deadline).then(|| format!("{}: no answer in {secs} s", req.server)));
+        self.fail_lsp_formats(|server, deadline, starting| {
+            (now >= deadline)
+                .then(|| if starting { format!("{server}: not started in {secs} s") } else { format!("{server}: no answer in {secs} s") })
+        });
     }
 
     /// Server `name` went away: its formats fail.
     pub(super) fn format_server_gone(&mut self, name: &str) {
-        self.fail_lsp_formats(|req, _| (req.server == name).then(|| format!("{name} stopped")));
+        self.fail_lsp_formats(|server, _, _| (server == name).then(|| format!("{name} stopped")));
     }
 
-    fn fail_lsp_formats(&mut self, why: impl Fn(&Inflight, Instant) -> Option<String>) {
+    fn fail_lsp_formats(&mut self, why: impl Fn(&str, Instant, bool) -> Option<String>) {
         let failed: Vec<(BufferId, String)> = self
             .format
             .jobs
             .iter()
             .filter_map(|(id, j)| match &j.run {
-                Run::Lsp { req, deadline } => why(req, *deadline).map(|w| (*id, w)),
+                Run::Lsp { req, deadline } => why(&req.server, *deadline, false).map(|w| (*id, w)),
+                Run::Starting { server, deadline, .. } => why(server, *deadline, true).map(|w| (*id, w)),
                 Run::Command(_) => None,
             })
             .collect();
@@ -654,6 +714,100 @@ mod tests {
             assert_eq!(text(&app), PRETTY);
             assert!(!app.editor.active_buffer().unwrap().dirty());
             assert!(warnings(&app).is_empty(), "{:?}", warnings(&app));
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        fn started(m: &AppMsg) -> bool {
+            matches!(m, AppMsg::Lsp(crate::lsp::LspMsg::Started { .. }))
+        }
+
+        /// `name` open (not yet started server) with `text` edited back to
+        /// itself, saves formatting.
+        fn starting(name: &str, file: &str) -> (App, tokio::sync::mpsc::UnboundedReceiver<FakeServer>, std::path::PathBuf) {
+            let (mut app, dir) = test_app(name);
+            let mut caps = incremental();
+            caps["documentFormattingProvider"] = json!(true);
+            let servers = with_fake_servers(&mut app, caps);
+            app.editor.format.on_save = true;
+            load(&mut app, file, UGLY);
+            act(&mut app, EditorAction::InsertText(" ".into()));
+            act(&mut app, EditorAction::Backspace);
+            (app, servers, dir)
+        }
+
+        #[tokio::test]
+        async fn a_save_waits_for_a_starting_server_and_formats() {
+            let (mut app, mut servers, dir) = starting("format-lsp-starting", "a.rs");
+            let path = app.workspace.root.join("a.rs");
+            act(&mut app, EditorAction::Save);
+            let mut server = servers.try_recv().expect("the save started the server");
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), UGLY, "not written while waiting");
+            assert!(app.editor.active_buffer().unwrap().dirty());
+            assert!(app.format.running(None));
+            handle_next(&mut app, started).await;
+            let req = server.recv("textDocument/formatting").await;
+            server.respond(req["id"].as_i64().unwrap(), edits());
+            handle_next(&mut app, is_lsp).await;
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), PRETTY);
+            assert!(!app.editor.active_buffer().unwrap().dirty());
+            assert!(warnings(&app).is_empty(), "{:?}", warnings(&app));
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        #[tokio::test]
+        async fn a_server_that_does_not_start_in_time_saves_unformatted() {
+            let (mut app, mut servers, dir) = starting("format-lsp-starting-late", "a.rs");
+            let path = app.workspace.root.join("a.rs");
+            act(&mut app, EditorAction::InsertText("// x\n".into()));
+            act(&mut app, EditorAction::Save);
+            let _server = servers.try_recv().expect("started");
+            app.format_timeout(Instant::now());
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), UGLY, "still waiting before the deadline");
+            let late = Duration::from_millis(app.config.lsp.request_timeout_ms + 1);
+            app.format_timeout(Instant::now() + late);
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), format!("// x\n{UGLY}"));
+            assert!(!app.editor.active_buffer().unwrap().dirty());
+            assert_eq!(warnings(&app), ["Format a.rs: rust-analyzer: not started in 5 s; saved unformatted"]);
+            assert!(app.format.jobs.is_empty());
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        #[tokio::test]
+        async fn save_as_to_a_new_language_waits_for_its_server() {
+            let (mut app, mut servers, dir) = starting("format-lsp-starting-save-as", "notes.txt");
+            assert!(servers.try_recv().is_err(), "no server for text");
+            save_as(&mut app, "x.rs");
+            let x = app.workspace.root.join("x.rs");
+            let mut server = servers.try_recv().expect("x.rs starts the server");
+            assert_eq!(std::fs::read_to_string(&x).unwrap(), UGLY, "written first");
+            handle_next(&mut app, started).await;
+            let req = server.recv("textDocument/formatting").await;
+            assert!(req["params"]["textDocument"]["uri"].as_str().unwrap().ends_with("/x.rs"));
+            server.respond(req["id"].as_i64().unwrap(), edits());
+            handle_next(&mut app, is_lsp).await;
+            assert_eq!(std::fs::read_to_string(&x).unwrap(), PRETTY);
+            assert_eq!(text(&app), PRETTY);
+            assert!(warnings(&app).is_empty(), "{:?}", warnings(&app));
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        #[tokio::test]
+        async fn a_second_save_as_during_a_pending_format_formats_too() {
+            let (mut app, mut servers, dir) = starting("format-lsp-starting-twice", "notes.txt");
+            save_as(&mut app, "b.rs");
+            let mut server = servers.try_recv().expect("b.rs starts the server");
+            assert!(app.format.running(None));
+            // The buffer is clean now; the format of b.rs still waits.
+            save_as(&mut app, "c.rs");
+            let c = app.workspace.root.join("c.rs");
+            assert_eq!(std::fs::read_to_string(&c).unwrap(), UGLY);
+            handle_next(&mut app, started).await;
+            let req = server.recv("textDocument/formatting").await;
+            assert!(req["params"]["textDocument"]["uri"].as_str().unwrap().ends_with("/c.rs"));
+            server.respond(req["id"].as_i64().unwrap(), edits());
+            handle_next(&mut app, is_lsp).await;
+            assert_eq!(std::fs::read_to_string(&c).unwrap(), PRETTY);
+            assert_eq!(std::fs::read_to_string(app.workspace.root.join("b.rs")).unwrap(), UGLY, "the first copy stays as written");
             let _ = std::fs::remove_dir_all(&dir);
         }
 

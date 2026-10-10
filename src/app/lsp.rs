@@ -470,6 +470,7 @@ impl App {
                     c.state = State::Running(caps);
                 }
                 self.lsp_sync();
+                self.format_server_started(&name);
             }
             LspMsg::Failed { error, .. } => {
                 self.lsp_server_down(&name, server, error.clone());
@@ -654,13 +655,11 @@ impl App {
         }
     }
 
-    /// The status bar segment for the active buffer: its server's name,
-    /// with what it is busy with, or why it is not there.
-    pub fn lsp_status(&self) -> Option<LspStatus> {
-        let b = self.editor.active_buffer()?;
-        b.path.as_ref()?;
+    /// The name of the client that serves buffer `b` (open on it, or the
+    /// one its language would start).
+    pub(super) fn buffer_server(&self, b: &Buffer) -> Option<String> {
         let language = b.language()?.name;
-        let name = match self.lsp.docs.get(&b.id) {
+        Some(match self.lsp.docs.get(&b.id) {
             Some(doc) => doc.server.clone(),
             None => {
                 let server = match &self.lsp.servers {
@@ -674,7 +673,16 @@ impl App {
                     _ => server,
                 }
             }
-        };
+        })
+    }
+
+    /// The status bar segment for the active buffer: its server's name,
+    /// with what it is busy with, or why it is not there.
+    pub fn lsp_status(&self) -> Option<LspStatus> {
+        let b = self.editor.active_buffer()?;
+        b.path.as_ref()?;
+        b.language()?;
+        let name = self.buffer_server(b)?;
         if !self.config.lsp.enabled {
             return Some(LspStatus::Down("LSP: off".into()));
         }

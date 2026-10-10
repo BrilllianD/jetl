@@ -253,10 +253,11 @@ impl Editor {
     /// ([`Editor::format_done`]). The caller has checked that no other
     /// buffer has `path`. The snapshot's detail names the old path; its
     /// history is not carried (Save As is a copy).
-    pub fn save_as(&mut self, i: usize, path: PathBuf, cx: &mut Ctx, format: bool) -> bool {
+    pub fn save_as(&mut self, i: usize, path: PathBuf, cx: &mut Ctx, format: bool, force_format: bool) -> bool {
         let Some(b) = self.buffers.get(i) else { return false };
-        // As with Ctrl+S, only unsaved edits are formatted.
-        let format = format && b.dirty();
+        // As with Ctrl+S, only unsaved edits are formatted, or the text of a
+        // save whose format `force_format` says was still pending.
+        let format = format && (b.dirty() || force_format);
         if b.dirty() {
             self.cleanup_for_save(i);
         }

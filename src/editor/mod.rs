@@ -2864,7 +2864,7 @@ mod tests {
         let path = dir.join("a.rs");
         let mut fx = Vec::new();
         let notes = with_cx(|cx| {
-            assert!(ed.save_as(i, path.clone(), cx, false));
+            assert!(ed.save_as(i, path.clone(), cx, false, false));
             fx = std::mem::take(&mut cx.effects);
         });
         assert!(notes.is_empty(), "{notes:?}");
@@ -2896,7 +2896,7 @@ mod tests {
         let path = dir.join("a.rs");
         let mut fx = Vec::new();
         with_cx(|cx| {
-            assert!(ed.save_as(i, path.clone(), cx, true));
+            assert!(ed.save_as(i, path.clone(), cx, true, false));
             fx = std::mem::take(&mut cx.effects);
         });
         let b = &ed.buffers[i];
@@ -2916,20 +2916,20 @@ mod tests {
         let i = ed.open_untitled("untitled 2");
         ed.buffers[i].insert("fn b() {}\n", TxKind::Typing);
         with_cx(|cx| {
-            assert!(ed.save_as(i, dir.join("b.rs"), cx, false));
+            assert!(ed.save_as(i, dir.join("b.rs"), cx, false, false));
             fx = std::mem::take(&mut cx.effects);
         });
         assert_eq!(format_count(&fx), 0);
         // A clean buffer is a plain copy.
         with_cx(|cx| {
-            assert!(ed.save_as(i, dir.join("c.rs"), cx, true));
+            assert!(ed.save_as(i, dir.join("c.rs"), cx, true, false));
             fx = std::mem::take(&mut cx.effects);
         });
         assert_eq!(format_count(&fx), 0);
         // A target without a language has no formatter.
         ed.buffers[i].insert("x", TxKind::Typing);
         with_cx(|cx| {
-            assert!(ed.save_as(i, dir.join("d.txt"), cx, true));
+            assert!(ed.save_as(i, dir.join("d.txt"), cx, true, false));
             fx = std::mem::take(&mut cx.effects);
         });
         assert_eq!(format_count(&fx), 0);
@@ -2992,7 +2992,7 @@ mod tests {
         let mut ed = Editor::new(&Config::default());
         let i = ed.open_text(a.clone(), "a\n", false, &Theme::default());
         ed.buffers[i].insert("mine ", TxKind::Typing);
-        with_cx(|cx| assert!(ed.save_as(i, b.clone(), cx, false)));
+        with_cx(|cx| assert!(ed.save_as(i, b.clone(), cx, false, false)));
         assert_eq!(std::fs::read_to_string(&a).unwrap(), "a\n", "the old file is left alone");
         assert_eq!(std::fs::read_to_string(&b).unwrap(), "mine a\n");
         assert_eq!(ed.buffers[i].path.as_deref(), Some(b.as_path()));
@@ -3099,7 +3099,7 @@ mod tests {
         let mut ed = Editor::new(&Config::default());
         let i = ed.open_untitled("untitled");
         ed.buffers[i].insert("text\n", TxKind::Typing);
-        let notes = with_cx(|cx| assert!(!ed.save_as(i, dir.join("missing/x.txt"), cx, false)));
+        let notes = with_cx(|cx| assert!(!ed.save_as(i, dir.join("missing/x.txt"), cx, false, false)));
         assert_eq!(notes.len(), 1, "{notes:?}");
         let b = &ed.buffers[i];
         assert_eq!((b.path.as_deref(), b.name.as_str()), (None, "untitled"));
