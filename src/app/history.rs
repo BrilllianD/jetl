@@ -1000,6 +1000,30 @@ pub(crate) mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[tokio::test]
+    async fn watcher_rename_carries_history() {
+        use crate::files::watch::Changes;
+        let (mut app, dir) = test_app("history-watcher-rename");
+        with_history(&mut app);
+        let root = app.workspace.root.clone();
+        let (a, b) = (root.join("a.txt"), root.join("b.txt"));
+        std::fs::write(&a, "one\n").unwrap();
+        record(&app, &a, "one\n");
+        std::fs::rename(&a, &b).unwrap();
+        let deliver = |app: &mut App| {
+            let generation = app.workspace.generation;
+            let changes = Changes { renames: vec![(a.clone(), b.clone())], ..Default::default() };
+            app.handle_msg(AppMsg::FsChanged { generation, changes });
+        };
+        deliver(&mut app);
+        let renamed = format!("Renamed from {}", a.display());
+        assert_eq!(snapshots(&app, &b), pairs(&[(&renamed, "one\n"), ("Saved", "one\n")]));
+        // The same report again (echo) adds no second marker.
+        deliver(&mut app);
+        assert_eq!(snapshots(&app, &b).len(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     fn fs_op_done(m: &AppMsg) -> bool {
         matches!(m, AppMsg::FsOpDone { .. })
     }

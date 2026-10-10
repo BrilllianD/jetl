@@ -678,6 +678,8 @@ s S-F6; for i in 1 2 3 4 5 6 7 8 9; do s BSpace; done; s -l renamed.txt; s Enter
 ls $LH/state/jetl/history/index        # one index file more; notes.txt's is still there
 # git renames: in a repo with local history on, commit `git mv a.txt b.txt` on a branch, switch back, then switch to
 # that branch from the Git window: Local History of b.txt shows a's snapshots and "Renamed from a.txt" on top
+# outside renames: with the project open, `mv notes.txt moved.txt` in another shell; the window on notes.txt
+# retargets to moved.txt, "Renamed from notes.txt" on top (a rename made in jetl shows no second marker)
 s Escape; s -l 'label me '             # editor focused, renamed.txt dirty
 s F1; s -l 'put label'; s Enter        # "Put Label": "Label for renamed.txt:"
 s Enter                                # toast "Put Label: a label needs a name"; nothing stored

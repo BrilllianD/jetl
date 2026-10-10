@@ -6,7 +6,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use notify_debouncer_full::notify::event::{AccessKind, AccessMode, EventKind};
+use notify_debouncer_full::notify::event::{AccessKind, AccessMode, EventKind, ModifyKind, RenameMode};
 use notify_debouncer_full::notify::{RecommendedWatcher, RecursiveMode};
 use notify_debouncer_full::{DebounceEventResult, Debouncer, RecommendedCache, new_debouncer};
 use tokio::sync::mpsc::UnboundedSender;
@@ -34,6 +34,8 @@ pub struct Changes {
     pub paths: Vec<PathBuf>,
     /// HEAD, the index or refs changed.
     pub git: bool,
+    /// Moves inside the root reported as one event (`old`, `new`).
+    pub renames: Vec<(PathBuf, PathBuf)>,
 }
 
 /// Start watching `root`. Blocking: inotify adds a watch per directory, so
@@ -43,8 +45,10 @@ pub fn start(root: &Path, generation: u64, tx: UnboundedSender<AppMsg>) -> anyho
     let (root_c, dirs_c) = (root.to_path_buf(), git_dirs.clone());
     let mut debouncer = new_debouncer(DEBOUNCE, None, move |res: DebounceEventResult| match res {
         Ok(events) => {
-            let changes = classify(&root_c, &dirs_c, events.iter().filter(|e| changes_content(&e.kind)).flat_map(|e| e.paths.iter()));
-            if !changes.paths.is_empty() || changes.git {
+            let mut changes = classify(&root_c, &dirs_c, events.iter().filter(|e| changes_content(&e.kind)).flat_map(|e| e.paths.iter()));
+            changes.renames =
+                renames_of(&root_c, &dirs_c, events.iter().filter(|e| changes_content(&e.kind)).map(|e| (&e.kind, e.paths.as_slice())));
+            if !changes.paths.is_empty() || changes.git || !changes.renames.is_empty() {
                 let _ = tx.send(AppMsg::FsChanged { generation, changes });
             }
         }
@@ -69,6 +73,23 @@ pub fn start(root: &Path, generation: u64, tx: UnboundedSender<AppMsg>) -> anyho
 /// the symbol index); reacting to them would loop.
 pub(crate) fn changes_content(kind: &EventKind) -> bool {
     !matches!(kind, EventKind::Access(a) if *a != AccessKind::Close(AccessMode::Write))
+}
+
+/// Renames reported with both paths (`RenameMode::Both`), both inside
+/// `root` and outside the git directories.
+fn renames_of<'a>(
+    root: &Path,
+    git_dirs: &[PathBuf],
+    events: impl Iterator<Item = (&'a EventKind, &'a [PathBuf])>,
+) -> Vec<(PathBuf, PathBuf)> {
+    let inside = |p: &PathBuf| p.starts_with(root) && !git_dirs.iter().any(|d| p.starts_with(d));
+    events
+        .filter(|(kind, _)| matches!(kind, EventKind::Modify(ModifyKind::Name(RenameMode::Both))))
+        .filter_map(|(_, paths)| match paths {
+            [from, to] if inside(from) && inside(to) => Some((from.clone(), to.clone())),
+            _ => None,
+        })
+        .collect()
 }
 
 /// Git directories whose changes mean a git refresh: `root/.git`, or the
@@ -121,7 +142,23 @@ mod tests {
         assert!(c(&["/p/.git/refs/heads/main"]).git);
         assert!(c(&["/main/.git/worktrees/p/HEAD"]).git, "linked worktree git dir");
         let both = c(&["/p/src/a.rs", "/p/src/a.rs", "/p/.git/HEAD", "/elsewhere/x"]);
-        assert_eq!(both, Changes { paths: vec![PathBuf::from("/p/src/a.rs")], git: true });
+        assert_eq!(both, Changes { paths: vec![PathBuf::from("/p/src/a.rs")], git: true, ..Default::default() });
+    }
+
+    #[test]
+    fn renames_need_both_paths_inside_the_root() {
+        let root = Path::new("/p");
+        let dirs = [root.join(".git")];
+        let both = EventKind::Modify(ModifyKind::Name(RenameMode::Both));
+        let from = EventKind::Modify(ModifyKind::Name(RenameMode::From));
+        let v = |a: &[&str]| a.iter().map(PathBuf::from).collect::<Vec<_>>();
+        let run = |kind: &EventKind, paths: &[PathBuf]| renames_of(root, &dirs, std::iter::once((kind, paths)));
+        assert_eq!(run(&both, &v(&["/p/a.txt", "/p/b.txt"])), vec![(PathBuf::from("/p/a.txt"), PathBuf::from("/p/b.txt"))]);
+        assert!(run(&from, &v(&["/p/a.txt"])).is_empty());
+        assert!(run(&from, &v(&["/p/a.txt", "/p/b.txt"])).is_empty());
+        assert!(run(&both, &v(&["/p/.git/x", "/p/b.txt"])).is_empty());
+        assert!(run(&both, &v(&["/p/a.txt", "/elsewhere/b.txt"])).is_empty());
+        assert!(run(&both, &v(&["/p/a.txt"])).is_empty());
     }
 
     #[test]
@@ -158,6 +195,33 @@ mod tests {
                     git |= changes.git;
                 }
                 other => panic!("expected FsChanged, got {other:?}"),
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn reports_a_rename_as_a_pair() {
+        let dir = std::env::temp_dir().join(format!("jetl-test-watch-mv-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let dir = std::fs::canonicalize(&dir).unwrap();
+        std::fs::write(dir.join("a.txt"), "x").unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let _w = tokio::task::spawn_blocking({
+            let dir = dir.clone();
+            move || start(&dir, 7, tx)
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        std::fs::rename(dir.join("a.txt"), dir.join("b.txt")).unwrap();
+        let want = (dir.join("a.txt"), dir.join("b.txt"));
+        loop {
+            match tokio::time::timeout(Duration::from_secs(5), rx.recv()).await {
+                Ok(Some(AppMsg::FsChanged { changes, .. })) if changes.renames.contains(&want) => break,
+                Ok(Some(_)) => {}
+                other => panic!("expected the rename pair, got {other:?}"),
             }
         }
         let _ = std::fs::remove_dir_all(&dir);

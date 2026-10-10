@@ -30,7 +30,9 @@ impl App {
         }
     }
 
-    pub(super) fn fs_changed(&mut self, changes: Changes) {
+    pub(super) fn fs_changed(&mut self, mut changes: Changes) {
+        let renames = std::mem::take(&mut changes.renames);
+        self.history_moved(renames);
         if changes.git || !changes.paths.is_empty() {
             self.git.refresh_status();
         }

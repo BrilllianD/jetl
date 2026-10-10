@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Local History follows files and folders renamed or moved inside the project by another program (`mv`, a
+  file manager, another editor): the history moves to the new path with a "Renamed from" row, and the
+  Local History window follows. Moves from or to outside the project are not followed.
 - Local History follows files that git renames: after checkout, switch, pull, merge, rebase, cherry-pick,
   revert or stash apply, the history of each renamed file moves to its new path with a "Renamed from" row,
   as for a rename in the Project tree.

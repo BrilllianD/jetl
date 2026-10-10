@@ -1543,7 +1543,7 @@ pub(crate) mod tests {
         std::thread::sleep(Duration::from_millis(20));
         std::fs::write(&a, "theirs a\n").unwrap();
         std::fs::write(&b, "theirs b\n").unwrap();
-        let changed = || Changes { paths: vec![a.clone(), b.clone()], git: false };
+        let changed = || Changes { paths: vec![a.clone(), b.clone()], ..Default::default() };
         app.handle_msg(AppMsg::FsChanged { generation: g, changes: changed() });
         // b.txt has unsaved edits: one question.
         let d = app.dialog.take().expect("asks about b.txt");
@@ -1568,7 +1568,7 @@ pub(crate) mod tests {
         app.perform(Action::App(AppAction::Quit));
         std::thread::sleep(Duration::from_millis(20));
         std::fs::write(&a, "theirs\n").unwrap();
-        app.handle_msg(AppMsg::FsChanged { generation: g, changes: Changes { paths: vec![a], git: false } });
+        app.handle_msg(AppMsg::FsChanged { generation: g, changes: Changes { paths: vec![a], ..Default::default() } });
         assert_eq!(app.dialog.as_ref().map(|d| d.id.clone()), Some(DialogId::QuitDirty));
         assert!(app.notifications.iter().any(|n| n.text.contains("changed on disk")));
         let _ = std::fs::remove_dir_all(&dir);
@@ -1953,7 +1953,7 @@ pub(crate) mod tests {
         assert_eq!(app.editor.status_position().as_deref(), Some("Ln 4, Col 8"));
         // An outside change drops the file's symbols until it is parsed again.
         std::fs::write(&path, "fn renamed() {}\n").unwrap();
-        app.handle_msg(AppMsg::FsChanged { generation: g, changes: Changes { paths: vec![path.clone()], git: false } });
+        app.handle_msg(AppMsg::FsChanged { generation: g, changes: Changes { paths: vec![path.clone()], ..Default::default() } });
         assert_eq!(symbol_names(&mut app), [] as [&str; 0]);
         run(&mut app);
         assert_eq!(symbol_names(&mut app), ["renamed"]);
