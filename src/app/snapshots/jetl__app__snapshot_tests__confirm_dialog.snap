@@ -8,10 +8,10 @@ expression: "snapshot(&term, &marks, None)"
 02  1 │    lib.rs                    ││
 03  ⌂ │    main.rs                   ││
 04  2 │  README.md                   ││
-05  ◫ │                              ││
-06  ┌ Delete ────────────────────────────────────────────────────────────────────┐
-07  │ Delete the file src/main.rs?                                               │
-08  │ This cannot be undone. Open tabs of it close; unsaved edits there are lost │
+05  ┌ Delete ────────────────────────────────────────────────────────────────────┐
+06  │ Delete the file src/main.rs?                                               │
+07  │ This cannot be undone. Open tabs of it close; unsaved edits there are      │
+08  │ lost.                                                                      │
 09  │                                                                            │
 10  │                           [ Delete ] [ Cancel ]                            │
 11  └────────────────────────────────────────────────────────────────────────────┘

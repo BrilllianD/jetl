@@ -1307,12 +1307,20 @@ async fn confirm_dialog() {
     let app = &mut fx.app;
     tree_fixture(app);
     tree(app, crate::actions::TreeAction::Delete);
-    // Known issue, kept as it draws today: a message line wider than the
-    // screen is cut ("…there are lost" loses its period) instead of
-    // wrapping (yman 182).
     let term = draw_app(app, 80, 24);
     let marks = [Mark::style('B', "selected button", app.theme.list_selected)];
     assert_snapshot!("confirm_dialog", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
+async fn confirm_dialog_narrow() {
+    let mut fx = stable_app("confirm-dialog-narrow");
+    let app = &mut fx.app;
+    tree_fixture(app);
+    tree(app, crate::actions::TreeAction::Delete);
+    let term = draw_app(app, 50, 20);
+    let marks = [Mark::style('B', "selected button", app.theme.list_selected)];
+    assert_snapshot!("confirm_dialog_narrow", snapshot(&term, &marks, None));
 }
 
 #[tokio::test]

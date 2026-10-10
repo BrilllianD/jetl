@@ -473,24 +473,30 @@ impl Dialog {
     pub fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let msg_lines: Vec<&str> = self.message.lines().collect();
         let msg_w = msg_lines.iter().map(|l| l.width()).max().unwrap_or(0);
-        let (w, mut h) = match &self.kind {
+        let w = match &self.kind {
             DialogKind::Confirm { buttons, .. } => {
                 // "[ label ]" per button, one column between them.
                 let bw: usize = buttons.iter().map(|b| b.width() + 4).sum::<usize>() + buttons.len().saturating_sub(1) + 2;
-                ((msg_w.max(bw) + 4).max(30), msg_lines.len() + 4)
+                (msg_w.max(bw) + 4).max(30)
             }
-            DialogKind::Input { .. } => ((msg_w + 4).max(50), msg_lines.len() + 5),
-            DialogKind::Choice { .. } => ((msg_w + 4).max(50), (msg_lines.len() + 3 + 12).min(area.height as usize)),
+            DialogKind::Input { .. } | DialogKind::Choice { .. } => (msg_w + 4).max(50),
         };
         // Wide enough for the title (" title " plus the corners).
         let w = w.max(self.title.width() + 4);
         let w = (w as u16).min(area.width.saturating_sub(2)).max(10);
+        // Message lines wider than the text area wrap onto more rows.
+        let msg_rows = message_rows(&self.message, (w as usize).saturating_sub(4));
+        let mut h = match &self.kind {
+            DialogKind::Confirm { .. } => msg_rows.len() + 4,
+            DialogKind::Input { .. } => msg_rows.len() + 5,
+            DialogKind::Choice { .. } => (msg_rows.len() + 3 + 12).min(area.height as usize),
+        };
         // A path hint goes between the input and the buttons, as many rows
         // as the screen has room for.
         let hint = self.paths.as_ref().and_then(|p| p.hint.as_ref()).filter(|_| matches!(self.kind, DialogKind::Input { .. }));
         let hints = match hint {
             Some(hint) => {
-                let base_h = msg_lines.len() + 5;
+                let base_h = msg_rows.len() + 5;
                 let rows = MAX_HINT_ROWS.min((area.height as usize).saturating_sub(1).saturating_sub(base_h));
                 hint_lines(hint, (w as usize).saturating_sub(4), rows)
             }
@@ -513,7 +519,7 @@ impl Dialog {
         frame.render_widget(block, rect);
         let buf = frame.buffer_mut();
         let mut row = inner.y;
-        for line in msg_lines.iter().take(inner.height as usize) {
+        for line in msg_rows.iter().take(inner.height as usize) {
             buf.set_stringn(inner.x + 1, row, line, inner.width.saturating_sub(2) as usize, Style::default().fg(theme.fg));
             row += 1;
         }
@@ -581,6 +587,20 @@ impl Dialog {
     }
 }
 
+/// The message as rows at most `width` cells wide: a line that fits stays as
+/// it is (an empty line stays an empty row), a wider one wraps at spaces.
+fn message_rows(message: &str, width: usize) -> Vec<String> {
+    let mut rows = Vec::new();
+    for line in message.lines() {
+        if line.width() <= width {
+            rows.push(line.to_string());
+        } else {
+            rows.extend(crate::ui::toasts::wrap(line, width, usize::MAX));
+        }
+    }
+    rows
+}
+
 /// `hint` as lines `width` cells wide, at most `rows`, each with whether it
 /// is dim: a note, or the names in columns as wide as the longest plus two,
 /// filled row by row; when they do not fit, the last line is "… and N more".
@@ -620,6 +640,18 @@ mod tests {
 
     fn list(names: &[&str]) -> PathHint {
         PathHint::List(names.iter().map(|s| s.to_string()).collect())
+    }
+
+    #[test]
+    fn long_message_lines_wrap_and_short_ones_stay() {
+        let sentence = "alpha beta gamma delta eps zeta";
+        let msg = format!("  a.rs\n\n{sentence}");
+        let rows = message_rows(&msg, 12);
+        assert_eq!(rows[0], "  a.rs");
+        assert_eq!(rows[1], "");
+        assert!(rows.len() > 3);
+        assert!(rows.iter().all(|r| r.width() <= 12));
+        assert_eq!(rows[2..].join(" "), sentence);
     }
 
     fn texts(lines: &[(String, bool)]) -> Vec<&str> {

@@ -1,0 +1,28 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &marks, None)"
+---
+50x20 cursor=hidden
+00  ≣ ┌ Project: root┐│
+01    │▾ src         ││
+02  1 │    lib.rs    ││
+03  ⌂ │    main.rs   ││
+04  ┌ Delete ──────────────────────────────────────┐
+05  │ Delete the file src/main.rs?                 │
+06  │ This cannot be undone. Open tabs of it       │
+07  │ close; unsaved edits there are lost.         │
+08  │                                              │
+09  │            [ Delete ] [ Cancel ]             │
+10  └──────────────────────────────────────────────┘
+11    │              ││  Ctrl+Shift+N finds a file.
+12  ❯ │              ││
+13  6 │              ││
+14  ⚠ │              ││
+15  4 │              ││
+16  ► │              ││
+17  3 │              ││
+18  ⌕ └──────────────┘│
+19  root
+-- marks: B=selected button
+03     BBBBBBBBBBBBBB
+09               BBBBBBBBBB
