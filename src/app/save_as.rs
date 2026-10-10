@@ -151,7 +151,7 @@ impl App {
             return;
         }
         self.reload_parents(&path);
-        self.git.load_blob(path, BlobWhich::Head);
+        self.git.load_blob(path, BlobWhich::Head, None);
         self.resume(then);
     }
 

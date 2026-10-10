@@ -113,6 +113,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- After a rename in the Project tree, the change gutter and blame keep comparing with the file's committed version until the rename is committed.
 - Undo brings back a collapsed fold that the undone edit removed.
 - Accepting a completion with several carets inserts it at every caret that typed the same prefix.
 - Double-click, Ctrl+click and Alt+click past the end of a wrapped row act on that row's last word or end.

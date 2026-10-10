@@ -218,10 +218,16 @@ fn read_blob(repo: &Repository, which: BlobWhich, rel: &str) -> Option<Vec<u8>> 
 
 /// A stored version of the file at `abs` as text. `None` when the file is
 /// not in that version, is binary, or the root is not a repository.
-pub fn blob_text(root: &Path, abs: &Path, which: BlobWhich) -> Option<String> {
+/// When HEAD has no file at `abs` and `fallback` is given (a renamed file
+/// not yet committed), HEAD's version at `fallback` is read instead.
+pub fn blob_text(root: &Path, abs: &Path, which: BlobWhich, fallback: Option<&Path>) -> Option<String> {
     let (repo, wd) = open(root).ok()?;
     let rel = rel_path(&wd, abs)?;
-    let bytes = read_blob(&repo, which, &rel)?;
+    let found = read_blob(&repo, which, &rel);
+    let bytes = match (found, fallback) {
+        (None, Some(old)) if which == BlobWhich::Head => read_blob(&repo, which, &rel_path(&wd, old)?)?,
+        (found, _) => found?,
+    };
     if super::diff::is_binary(&bytes) {
         return None;
     }
@@ -595,10 +601,17 @@ pub fn resolve_side(root: &Path, rel: &str, side: ConflictSide) -> Result<String
     Ok(line)
 }
 
-/// Blame of the file at `abs` as of HEAD.
-pub fn blame(root: &Path, abs: &Path) -> Result<Blame> {
+/// Blame of the file at `abs` as of HEAD; when HEAD has no file there and
+/// `fallback` is given (a renamed file not yet committed), that path is blamed.
+pub fn blame(root: &Path, abs: &Path, fallback: Option<&Path>) -> Result<Blame> {
     let (repo, wd) = open(root)?;
-    let rel = rel_path(&wd, abs).ok_or_else(|| anyhow!("{} is outside the repository", abs.display()))?;
+    let mut rel = rel_path(&wd, abs).ok_or_else(|| anyhow!("{} is outside the repository", abs.display()))?;
+    if let Some(old) = fallback.and_then(|f| rel_path(&wd, f)) {
+        let in_head = repo.head().and_then(|h| h.peel_to_tree()).map(|t| t.get_path(Path::new(&rel)).is_ok()).unwrap_or(false);
+        if !in_head {
+            rel = old;
+        }
+    }
     let blame = repo.blame_file(Path::new(&rel), None).map_err(|e| anyhow!("{rel}: {}", e.message()))?;
     let mut out = Blame::default();
     let mut index: std::collections::HashMap<git2::Oid, u32> = Default::default();
@@ -841,7 +854,7 @@ pub(crate) mod tests {
         assert_eq!((old.as_slice(), new.as_slice()), (b"one\n".as_slice(), b"one\nmore\n".as_slice()));
         unstage_all(&r.dir).unwrap();
         assert!(sections(&r.dir).iter().all(|(s, _, _)| *s == Section::Unstaged));
-        assert_eq!(blob_text(&r.dir, &r.dir.join("a.txt"), BlobWhich::Head).as_deref(), Some("one\n"));
+        assert_eq!(blob_text(&r.dir, &r.dir.join("a.txt"), BlobWhich::Head, None).as_deref(), Some("one\n"));
 
         let b = branches(&r.dir).unwrap();
         assert_eq!(b.len(), 1);
@@ -1033,19 +1046,39 @@ pub(crate) mod tests {
         r.write("a.txt", "one\nTWO\nthree\n");
         stage_all(&r.dir).unwrap();
         commit(&r.dir, "second").unwrap();
-        let b = blame(&r.dir, &r.dir.join("a.txt")).unwrap();
+        let b = blame(&r.dir, &r.dir.join("a.txt"), None).unwrap();
         assert_eq!(b.lines.len(), 3);
         assert_eq!(b.commits.len(), 2);
         assert_ne!(b.lines[0], b.lines[1]);
         assert_eq!(b.lines[1], b.lines[2]);
         assert_eq!(b.commits[0].author, "Test");
         r.write("new.txt", "x\n");
-        assert!(blame(&r.dir, &r.dir.join("new.txt")).is_err(), "untracked");
+        assert!(blame(&r.dir, &r.dir.join("new.txt"), None).is_err(), "untracked");
     }
 
     fn commit_all(r: &TempRepo, msg: &str) {
         git_cli(&r.dir, &["add", "-A"], true);
         git_cli(&r.dir, &["commit", "-qm", msg], true);
+    }
+
+    #[test]
+    fn a_renamed_file_falls_back_to_the_old_path_until_the_rename_is_committed() {
+        let r = TempRepo::new("rename-base");
+        r.write("a.txt", "one\ntwo\n");
+        stage_all(&r.dir).unwrap();
+        commit(&r.dir, "first").unwrap();
+        let (old, new) = (r.dir.join("a.txt"), r.dir.join("b.txt"));
+        std::fs::rename(&old, &new).unwrap();
+        assert_eq!(blob_text(&r.dir, &new, BlobWhich::Head, None), None);
+        assert_eq!(blob_text(&r.dir, &new, BlobWhich::Head, Some(&old)).as_deref(), Some("one\ntwo\n"));
+        assert_eq!(blob_text(&r.dir, &new, BlobWhich::Index, Some(&old)), None, "only HEAD falls back");
+        assert!(blame(&r.dir, &new, None).is_err());
+        assert_eq!(blame(&r.dir, &new, Some(&old)).unwrap().lines.len(), 2);
+        // Committed: the new path wins, whatever the fallback says.
+        r.write("b.txt", "NEW\n");
+        commit_all(&r, "rename");
+        assert_eq!(blob_text(&r.dir, &new, BlobWhich::Head, Some(&old)).as_deref(), Some("NEW\n"));
+        assert_eq!(blame(&r.dir, &new, Some(&old)).unwrap().lines.len(), 1);
     }
 
     #[test]

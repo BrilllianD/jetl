@@ -148,7 +148,7 @@ impl App {
                 }
             }
             GitRequest::LoadStashes => self.git.load_stashes(),
-            GitRequest::LoadBlame(path) => self.git.load_blame(path),
+            GitRequest::LoadBlame(path, fallback) => self.git.load_blame(path, fallback),
             GitRequest::CheckoutCommit(sha) => {
                 self.git.run_cli(GitOp::Checkout(sha.clone()), vec!["switch".into(), "--detach".into(), sha]);
             }

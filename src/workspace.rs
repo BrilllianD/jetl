@@ -453,7 +453,7 @@ impl App {
             if f.pinned {
                 self.editor.set_pinned(i, true);
             }
-            self.git.load_blob(f.path.clone(), crate::git::BlobWhich::Head);
+            self.git.load_blob(f.path.clone(), crate::git::BlobWhich::Head, None);
         }
         if let Some(splits) = &session.splits {
             let buffers: Vec<Option<usize>> = session.files.iter().map(|f| self.editor.index_of(&f.path)).collect();

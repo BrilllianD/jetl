@@ -83,6 +83,7 @@ pub(super) struct PathSetup {
 pub(super) fn adopt_path(b: &mut Buffer, path: PathBuf, s: PathSetup, tab_width: usize) {
     b.name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     b.path = Some(path);
+    b.base_path = None;
     b.language_choice = buffer::LanguageChoice::Auto;
     b.syntax = s.syntax;
     b.detected_language = s.lang;
@@ -109,7 +110,9 @@ fn adopt_moved_path(b: &mut Buffer, path: PathBuf, mut s: PathSetup, tab_width: 
     if same_lang {
         s.syntax = b.syntax.take();
     }
+    let base = b.base_path.take().or_else(|| b.path.clone());
     adopt_path(b, path, s, tab_width);
+    b.base_path = base.filter(|p| Some(p) != b.path.as_ref());
     if same_lang {
         b.language_choice = choice;
     }
@@ -313,8 +316,10 @@ impl Editor {
     pub fn index_of_id(&self, id: BufferId) -> Option<usize> {
         self.buffers.iter().position(|b| b.id == id)
     }
-    pub fn open_paths(&self) -> Vec<PathBuf> {
-        self.buffers.iter().filter_map(|b| b.path.clone()).collect()
+    /// Open paths with the path whose HEAD version is their git base after
+    /// an uncommitted rename (`Buffer::base_path`).
+    pub fn open_bases(&self) -> Vec<(PathBuf, Option<PathBuf>)> {
+        self.buffers.iter().filter_map(|b| Some((b.path.clone()?, b.base_path.clone()))).collect()
     }
     pub fn recent_paths(&self) -> Vec<PathBuf> {
         self.mru.iter().filter_map(|id| self.buffers.iter().find(|b| b.id == *id)).filter_map(|b| b.path.clone()).collect()
@@ -687,12 +692,13 @@ impl Editor {
             return;
         };
         b.blame = Some(blame::BlameState::new());
-        cx.effects.push(Effect::Git(crate::git::GitRequest::LoadBlame(path)));
+        let fallback = b.base_path.clone();
+        cx.effects.push(Effect::Git(crate::git::GitRequest::LoadBlame(path, fallback)));
     }
 
     /// Paths of buffers showing blame (reloaded when HEAD moves).
-    pub fn blame_paths(&self) -> Vec<PathBuf> {
-        self.buffers.iter().filter(|b| b.blame.is_some()).filter_map(|b| b.path.clone()).collect()
+    pub fn blame_bases(&self) -> Vec<(PathBuf, Option<PathBuf>)> {
+        self.buffers.iter().filter(|b| b.blame.is_some()).filter_map(|b| Some((b.path.clone()?, b.base_path.clone()))).collect()
     }
 
     /// A blame result for `path` from request `seq`; an older request that

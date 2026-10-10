@@ -187,6 +187,8 @@ pub struct Buffer {
     /// Text restored after a crash (`Editor::recover_text`): no autosave
     /// until an explicit save writes it.
     pub recovered: bool,
+    /// The path whose HEAD version is this buffer's git base after a rename not yet committed.
+    pub base_path: Option<PathBuf>,
 }
 
 impl Buffer {
@@ -236,6 +238,7 @@ impl Buffer {
             fold_cache: None,
             read_only: false,
             recovered: false,
+            base_path: None,
         }
     }
 

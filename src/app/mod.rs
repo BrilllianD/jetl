@@ -2351,7 +2351,7 @@ pub(crate) mod tests {
         app.perform(Action::Git(GitAction::NextHunk));
         app.perform(Action::Git(GitAction::ToggleStage));
         handle_next(&mut app, git_op_done).await;
-        let index = crate::git::repo::blob_text(&app.workspace.root, &f, BlobWhich::Index).unwrap();
+        let index = crate::git::repo::blob_text(&app.workspace.root, &f, BlobWhich::Index, None).unwrap();
         assert_eq!(index, base.replace("11\n", "eleven\n"), "only the second change is staged");
         // Unstage it again from the Staged diff.
         feed_status(&mut app, 2);
@@ -2362,7 +2362,7 @@ pub(crate) mod tests {
         app.perform(Action::Git(GitAction::NextSection));
         app.perform(Action::Git(GitAction::ToggleStage));
         handle_next(&mut app, git_op_done).await;
-        let index = crate::git::repo::blob_text(&app.workspace.root, &f, BlobWhich::Index).unwrap();
+        let index = crate::git::repo::blob_text(&app.workspace.root, &f, BlobWhich::Index, None).unwrap();
         assert_eq!(index, base);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2375,7 +2375,7 @@ pub(crate) mod tests {
         app.perform(Action::Editor(EditorAction::ToggleBlame));
         assert!(app.editor.buffers[0].blame.is_some());
         let g = app.git.generation;
-        let blame = crate::git::repo::blame(&app.workspace.root, &a);
+        let blame = crate::git::repo::blame(&app.workspace.root, &a, None);
         app.handle_msg(AppMsg::Git(GitMsg::Blame { generation: g, seq: 2, path: a.clone(), result: blame }));
         let stale = Err(anyhow::anyhow!("older request"));
         app.handle_msg(AppMsg::Git(GitMsg::Blame { generation: g, seq: 1, path: a.clone(), result: stale }));
@@ -2388,9 +2388,44 @@ pub(crate) mod tests {
         assert!(app.focus.is(PanelId::Git));
         // Toggling again hides it; a late result is dropped.
         app.perform(Action::Editor(EditorAction::ToggleBlame));
-        let blame = crate::git::repo::blame(&app.workspace.root, &a);
+        let blame = crate::git::repo::blame(&app.workspace.root, &a, None);
         app.handle_msg(AppMsg::Git(GitMsg::Blame { generation: g, seq: 3, path: a, result: blame }));
         assert!(app.editor.buffers[0].blame.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_renamed_buffer_keeps_its_git_base_until_the_rename_is_committed() {
+        use crate::editor::gutter::MarkKind;
+        use crate::files::ops::FsOp;
+        let (mut app, dir) = test_app("rename-base");
+        let text = "one\ntwo\nthree\n";
+        init_repo(&app, &[("a.rs", text), ("b.rs", "b\n")]);
+        feed_status(&mut app, 1);
+        let old = load(&mut app, "a.rs", text);
+        type_text(&mut app, "x ");
+        let new = app.workspace.root.join("c.rs");
+        app.run_fs_op(FsOp::Rename { from: old.clone(), to: new.clone(), overwrite: false });
+        handle_next(&mut app, |m| matches!(m, AppMsg::FsOpDone { .. })).await;
+        assert_eq!(app.editor.buffers[0].path.as_deref(), Some(new.as_path()));
+        assert_eq!(app.editor.buffers[0].base_path.as_deref(), Some(old.as_path()));
+        // Another file is committed: HEAD moves and every base reloads.
+        let root = app.workspace.root.clone();
+        let git = |args: &[&str]| assert!(std::process::Command::new("git").args(args).current_dir(&root).status().unwrap().success());
+        std::fs::write(root.join("b.rs"), "b2\n").unwrap();
+        git(&["add", "b.rs"]);
+        git(&["-c", "user.name=Test", "-c", "user.email=t@e.x", "commit", "-qm", "other"]);
+        feed_status(&mut app, 2);
+        let want = new.clone();
+        handle_next(&mut app, |m| matches!(m, AppMsg::Git(GitMsg::Blob { path, .. }) if *path == want)).await;
+        app.editor.update_gutters();
+        let kinds = |app: &App| app.editor.buffers[0].gutter.iter().map(|m| (m.line, m.kind)).collect::<Vec<_>>();
+        assert_eq!(app.editor.buffers[0].diff_base.as_deref(), Some(text));
+        assert_eq!(kinds(&app), vec![(0, MarkKind::Modified)], "one edited line, not every line added");
+        // Renaming back drops the old path.
+        app.run_fs_op(FsOp::Rename { from: new, to: old, overwrite: false });
+        handle_next(&mut app, |m| matches!(m, AppMsg::FsOpDone { .. })).await;
+        assert_eq!(app.editor.buffers[0].base_path, None);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -233,7 +233,7 @@ pub enum GitRequest {
     LoadHeadMessage,
     Stash(repo::StashOp),
     LoadStashes,
-    LoadBlame(PathBuf),
+    LoadBlame(PathBuf, Option<PathBuf>),
     CheckoutCommit(String),
     CherryPick(String),
     /// Confirmed already (`DialogId::RevertCommit`).
@@ -390,11 +390,11 @@ impl GitService {
         self.blocking(repo::status, move |generation, result| GitMsg::Status { generation, seq, result });
     }
 
-    pub fn load_blob(&self, path: PathBuf, which: BlobWhich) {
+    pub fn load_blob(&self, path: PathBuf, which: BlobWhich, fallback: Option<PathBuf>) {
         let p = path.clone();
         let seq = self.blob_seq.fetch_add(1, Ordering::SeqCst) + 1;
         self.blocking(
-            move |root| repo::blob_text(root, &p, which),
+            move |root| repo::blob_text(root, &p, which, fallback.as_deref()),
             move |generation, text| GitMsg::Blob { generation, seq, path, which, text },
         );
     }
@@ -408,10 +408,13 @@ impl GitService {
         self.blocking(repo::branches, |generation, result| GitMsg::Branches { generation, result });
     }
 
-    pub fn load_blame(&self, path: PathBuf) {
+    pub fn load_blame(&self, path: PathBuf, fallback: Option<PathBuf>) {
         let p = path.clone();
         let seq = self.blame_seq.fetch_add(1, Ordering::SeqCst) + 1;
-        self.blocking(move |root| repo::blame(root, &p), move |generation, result| GitMsg::Blame { generation, seq, path, result });
+        self.blocking(
+            move |root| repo::blame(root, &p, fallback.as_deref()),
+            move |generation, result| GitMsg::Blame { generation, seq, path, result },
+        );
     }
 
     pub fn load_stashes(&self) {

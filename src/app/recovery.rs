@@ -191,7 +191,7 @@ impl App {
         };
         let i = self.editor.open_text(path.clone(), &disk, lossy, &self.theme);
         if self.editor.buffers[i].disk_mtime.is_some() {
-            self.git.load_blob(path.clone(), crate::git::BlobWhich::Head);
+            self.git.load_blob(path.clone(), crate::git::BlobWhich::Head, None);
         }
         self.editor.recover_text(i, &text)
     }

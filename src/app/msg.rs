@@ -115,11 +115,11 @@ impl App {
                 self.project.set_git_status(snap.map(|s| s.tree.clone()).unwrap_or_default());
                 // A new HEAD changes every gutter base.
                 if snap.map(|s| s.head.clone()) != prev_head {
-                    for p in self.editor.open_paths() {
-                        self.git.load_blob(p, BlobWhich::Head);
+                    for (p, base) in self.editor.open_bases() {
+                        self.git.load_blob(p, BlobWhich::Head, base);
                     }
-                    for p in self.editor.blame_paths() {
-                        self.git.load_blame(p);
+                    for (p, base) in self.editor.blame_bases() {
+                        self.git.load_blame(p, base);
                     }
                 }
             }
@@ -321,8 +321,8 @@ impl App {
         self.git.load_branches();
         self.git.load_messages();
         self.git.load_stashes();
-        for p in self.editor.open_paths() {
-            self.git.load_blob(p, BlobWhich::Head);
+        for (p, base) in self.editor.open_bases() {
+            self.git.load_blob(p, BlobWhich::Head, base);
         }
         if self.git_panel.tab == crate::git::panel::GitTab::Log {
             let mut cx = ctx!(self);
@@ -435,7 +435,7 @@ impl App {
                 b.goto_line(line, col);
             }
         }
-        self.git.load_blob(path, BlobWhich::Head);
+        self.git.load_blob(path, BlobWhich::Head, None);
         if focus {
             self.focus.set(PanelId::Editor);
         }
