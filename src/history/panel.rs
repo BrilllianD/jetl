@@ -532,12 +532,20 @@ impl LocalHistoryPanel {
                     cx.notify(Level::Info, if forward { "No more changes below" } else { "No more changes above" });
                 }
             }
-            H::Up | H::Down | H::PageUp | H::PageDown | H::Home | H::End | H::ExtendUp | H::ExtendDown => {
+            H::LineUp | H::LineDown | H::LineExtendUp | H::LineExtendDown if self.area == Area::Diff => {
+                let forward = matches!(a, H::LineDown | H::LineExtendDown);
+                let extend = matches!(a, H::LineExtendUp | H::LineExtendDown);
+                if !self.diff.step_line(forward, extend) {
+                    cx.notify(Level::Info, if forward { "No more changed lines below" } else { "No more changed lines above" });
+                }
+            }
+            H::LineExtendUp | H::LineExtendDown => {}
+            H::Up | H::Down | H::PageUp | H::PageDown | H::Home | H::End | H::ExtendUp | H::ExtendDown | H::LineUp | H::LineDown => {
                 let list = self.list_mut();
                 let n = page(list.viewport);
                 match a {
-                    H::Up | H::ExtendUp => list.up(1),
-                    H::Down | H::ExtendDown => list.down(1),
+                    H::Up | H::ExtendUp | H::LineUp => list.up(1),
+                    H::Down | H::ExtendDown | H::LineDown => list.down(1),
                     H::PageUp => list.up(n),
                     H::PageDown => list.down(n),
                     H::Home => list.home(),
@@ -599,7 +607,10 @@ impl LocalHistoryPanel {
                 self.context_menu(self.list_rect.x + 2, self.list_rect.y + y, cx);
             }
             H::Escape => {
-                if !self.filter_mut().is_empty() {
+                if self.area == Area::Diff && self.diff.line.is_some() {
+                    self.diff.line = None;
+                    self.diff.line_anchor = None;
+                } else if !self.filter_mut().is_empty() {
                     self.filter_mut().clear();
                     self.filter_changed(cx);
                 } else if self.area == Area::Diff {
@@ -633,8 +644,19 @@ impl LocalHistoryPanel {
     /// there is nothing to revert, else the selected range.
     fn revertible(&self) -> Option<std::ops::Range<usize>> {
         let doc = self.diff.doc.as_ref().filter(|d| !d.binary && !d.lossy && !self.diff.loading)?;
+        if let Some(r) = self.diff.selected_lines() {
+            let rows = if self.diff.unified { &doc.unified } else { &doc.rows };
+            return (r.end <= rows.len()).then_some(r);
+        }
         let range = self.diff.selected_blocks();
         (!range.is_empty() && range.end <= doc.blocks(false).len()).then_some(range)
+    }
+
+    /// Changed rows in the diff's selected lines (line mode only).
+    fn selected_line_count(&self) -> Option<usize> {
+        let (doc, r) = (self.diff.doc.as_ref()?, self.diff.selected_lines()?);
+        let rows = if self.diff.unified { &doc.unified } else { &doc.rows };
+        Some(rows.get(r)?.iter().filter(|row| row.kind != crate::git::diff::RowKind::Equal).count())
     }
 
     /// Put the diff's selected changes back: the request carries the edits
@@ -656,14 +678,24 @@ impl LocalHistoryPanel {
         let Some(range) = self.revertible() else {
             return cx.notify(Level::Info, "No changes: the file has this snapshot's text");
         };
-        let spans: Vec<_> = range.clone().filter_map(|i| doc.block_lines(i)).collect();
+        let line_mode = self.diff.line.is_some();
+        let spans: Vec<_> = if line_mode {
+            vec![doc.row_lines(self.diff.unified, range.clone())]
+        } else {
+            range.clone().filter_map(|i| doc.block_lines(i)).collect()
+        };
         let changes = crate::editor::gutter::revert_spans(&doc.old, &doc.new, &spans);
         let title = format!("{}  {}", s.when, s.label);
         let req = ChangesRevert { path: s.path, base: doc.new.concat(), changes, title };
         cx.effects.push(Effect::History(Request::RevertChanges(Box::new(req))));
         // After the reload, the change that followed the range is current.
-        self.diff.block = range.start;
-        self.diff.anchor = None;
+        if line_mode {
+            self.diff.line = None;
+            self.diff.line_anchor = None;
+        } else {
+            self.diff.block = range.start;
+            self.diff.anchor = None;
+        }
     }
 
     fn put_label(&mut self, cx: &mut Ctx) {
@@ -709,17 +741,18 @@ impl LocalHistoryPanel {
     fn context_menu(&self, x: u16, y: u16, cx: &mut Ctx) {
         let selected = self.selection().is_some();
         let label = self.label_selected();
+        let changes = if self.diff.line.is_some() { "Revert Selected Lines" } else { "Revert Selected Changes" };
         let h = |a| Action::History(a);
         let items = match self.view {
             View::Project => vec![
                 MenuItem::new("Show History", h(HistoryAction::OpenFile)).enabled(selected),
                 MenuItem::new("Revert", h(HistoryAction::Revert)).enabled(selected || self.on_label()),
-                MenuItem::new("Revert Selected Changes", h(HistoryAction::RevertChanges)).enabled(self.revertible().is_some()),
+                MenuItem::new(changes, h(HistoryAction::RevertChanges)).enabled(self.revertible().is_some()),
                 MenuItem::new("Remove Label…", h(HistoryAction::RemoveLabel)).enabled(label),
             ],
             View::File => vec![
                 MenuItem::new("Revert", h(HistoryAction::Revert)).enabled(selected),
-                MenuItem::new("Revert Selected Changes", h(HistoryAction::RevertChanges)).enabled(self.revertible().is_some()),
+                MenuItem::new(changes, h(HistoryAction::RevertChanges)).enabled(self.revertible().is_some()),
                 MenuItem::new("Put Label…", h(HistoryAction::PutLabel)),
                 MenuItem::new("Remove Label…", h(HistoryAction::RemoveLabel)).enabled(label),
                 MenuItem::new("Open File", h(HistoryAction::OpenFile)),
@@ -763,7 +796,14 @@ impl LocalHistoryPanel {
                     if button == MouseButton::Left {
                         // Shift or Ctrl: many terminals keep Shift+click for
                         // their own selection.
-                        self.diff.click(m.y, m.mods.intersects(KeyModifiers::SHIFT | KeyModifiers::CONTROL));
+                        if m.clicks >= 2 {
+                            self.diff.click_line(m.y);
+                        } else {
+                            self.diff.click(m.y, m.mods.intersects(KeyModifiers::SHIFT | KeyModifiers::CONTROL));
+                        }
+                    } else if self.diff.line.is_some() {
+                        // Line mode stays; the menu works on the lines.
+                        self.context_menu(m.x, m.y, cx);
                     } else {
                         // A right click on a change outside the selection
                         // selects it first.
@@ -894,6 +934,7 @@ impl LocalHistoryPanel {
         buf.set_style(r, Style::default().bg(theme.panel_bg));
         let selected = self.selection().is_some();
         let changes = match self.diff.selected_blocks().len() {
+            _ if self.diff.line.is_some() => format!("[Revert {} Lines]", self.selected_line_count().unwrap_or(0)),
             n if n > 1 => format!("[Revert {n} Changes]"),
             _ => "[Revert Change]".to_string(),
         };

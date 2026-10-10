@@ -460,6 +460,13 @@
 "shift-up" = "local_history.extend_selection_up"
 "shift-down" = "local_history.extend_selection_down"
 "ctrl-a" = "local_history.select_all_changes"
+# A line cursor in the diff: Alt+Up/Down moves it, with Shift it grows the
+# selected lines, and Revert Changes then reverts only those lines. A double
+# click on a changed row sets it; Esc leaves line mode.
+"alt-up" = "local_history.line_up"
+"alt-down" = "local_history.line_down"
+"alt-shift-up" = "local_history.line_extend_up"
+"alt-shift-down" = "local_history.line_extend_down"
 "alt-l" = "local_history.put_label"
 "delete" = "local_history.remove_label"
 "shift-f10" = "local_history.context_menu"

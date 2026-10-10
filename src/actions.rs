@@ -448,6 +448,12 @@ pub enum HistoryAction {
     ExtendDown,
     /// Select every change of the diff.
     SelectAllChanges,
+    /// In the diff: the line cursor moves to the changed row below or above
+    /// (in the list: down or up); the extend ones grow the selected lines.
+    LineUp,
+    LineDown,
+    LineExtendUp,
+    LineExtendDown,
     /// Put a label on the file shown.
     PutLabel,
     /// Remove the selected label (asks first).
@@ -865,6 +871,10 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "local_history.extend_selection_up" => "Local History: in the diff, select the change above too (in the list: up)", History(HistoryAction::ExtendUp);
         "local_history.extend_selection_down" => "Local History: in the diff, select the change below too (in the list: down)", History(HistoryAction::ExtendDown);
         "local_history.select_all_changes" => "Local History: select every change of the diff", History(HistoryAction::SelectAllChanges);
+        "local_history.line_up" => "Local History: in the diff, the line cursor to the changed line above (in the list: up)", History(HistoryAction::LineUp);
+        "local_history.line_down" => "Local History: in the diff, the line cursor to the changed line below (in the list: down)", History(HistoryAction::LineDown);
+        "local_history.line_extend_up" => "Local History: in the diff, select the changed line above too", History(HistoryAction::LineExtendUp);
+        "local_history.line_extend_down" => "Local History: in the diff, select the changed line below too", History(HistoryAction::LineExtendDown);
         "local_history.put_label" => "Local History: put a label on the file…", History(HistoryAction::PutLabel);
         "local_history.remove_label" => "Local History: remove the selected label (of every file it is on)…", History(HistoryAction::RemoveLabel);
         "local_history.context_menu" => "Local History: actions for the selected snapshot", History(HistoryAction::ContextMenu);

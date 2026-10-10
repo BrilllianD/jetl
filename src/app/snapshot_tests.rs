@@ -733,6 +733,26 @@ async fn local_history_window_changes() {
 }
 
 #[tokio::test]
+async fn local_history_line_selection() {
+    let mut fx = stable_app("local-history-line-selection");
+    let app = &mut fx.app;
+    local_history_fixture(app, 1, "");
+    // The diff focused, a line cursor on the modified line grown to the
+    // inserted one: only those line numbers are reversed.
+    // (Drawn once first: the rows follow the layout the frame chose.)
+    draw_app(app, 80, 24);
+    let mut cx = ctx!(app);
+    app.history_panel.handle_action(&crate::actions::HistoryAction::Right, &mut cx);
+    app.history_panel.handle_action(&crate::actions::HistoryAction::LineDown, &mut cx);
+    app.history_panel.handle_action(&crate::actions::HistoryAction::LineExtendDown, &mut cx);
+    let term = draw_app(app, 80, 24);
+    let mut marks = history_marks(&app.theme);
+    marks.push(Mark::style('W', "selected line", app.theme.warn.add_modifier(Modifier::REVERSED)));
+    let bottom = app.layout.rects.bottom;
+    assert_snapshot!("local_history_line_selection", snapshot(&term, &marks, Some(bottom)));
+}
+
+#[tokio::test]
 async fn local_history_window_narrow() {
     let mut fx = stable_app("local-history-window-narrow");
     let app = &mut fx.app;

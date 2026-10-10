@@ -653,6 +653,12 @@ s C-M-z                                # *notes.txt "A one", "two", "three"; toa
                                        # compared again: no change left
 s Escape; s Escape; s C-z              # back in the editor; one Ctrl+Z: "A B one", "two", "Xthree"
 s C-z                                  # "A B one", "two", "three", the tab clean
+s C-Home; s Down; s Down; s -l X       # again "Xthree" (and "A B one" above): two changed lines in the file
+s M-H; s Down; s Right; s M-Down       # the diff's first changed row: only its line number(s) reversed, "[Revert 1 Lines]"
+s M-S-Down                             # the next changed row joins them, "[Revert 2 Lines]"; F7 or Esc leaves line mode
+                                       # (the toolbar reads "[Revert Change]" again); a double click on a changed row sets it
+s M-Down; s C-M-z                      # only that line goes back; the other changed line keeps its edit; Ctrl+Z undoes it
+s Escape; s Escape; s C-z; s C-z       # back to "A B one", "two", "three"
 s M-H; s Down; s Escape; s -l Q         # the window stays open beside the editor; typing in notes.txt: within half a second
                                        # the diff's right side shows the typed "Q", scroll and selected change kept
 s C-z                                  # the diff follows again, without "Q"

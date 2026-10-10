@@ -10,7 +10,7 @@ use std::path::Path;
 
 use ratatui::buffer::Buffer as Screen;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
 use unicode_width::UnicodeWidthChar;
 
 use super::put;
@@ -68,6 +68,12 @@ pub(crate) struct DiffPane {
     /// The other end of a range of selected blocks (`selected_blocks`);
     /// `None`: only the current one. The Local History window sets it.
     pub anchor: Option<usize>,
+    /// The line cursor (Local History): a changed row of the current mode's
+    /// rows. While set, Revert Changes works on the selected lines
+    /// (`selected_lines`) and not on blocks.
+    pub line: Option<usize>,
+    /// The other end of a range of selected lines; `None`: only `line`.
+    pub line_anchor: Option<usize>,
     /// Where the rows were drawn last frame (mouse mapping).
     rows_rect: Rect,
     view: Vec<ViewRow>,
@@ -101,6 +107,8 @@ impl DiffPane {
             self.row_view.clear();
             self.syntax = None;
             self.anchor = None;
+            self.line = None;
+            self.line_anchor = None;
         }
         self.key = Some(key);
         self.loading = true;
@@ -130,7 +138,14 @@ impl DiffPane {
                 if fresh {
                     self.block = 0;
                     self.anchor = None;
+                    self.line = None;
+                    self.line_anchor = None;
                     self.scroll_to_block();
+                }
+                let changed = |i: usize| self.rows().get(i).is_some_and(|r| r.kind != RowKind::Equal);
+                if !self.line.is_some_and(changed) || !self.line_anchor.is_none_or(changed) {
+                    self.line = None;
+                    self.line_anchor = None;
                 }
                 self.block = self.block.min(blocks.saturating_sub(1));
                 self.anchor = self.anchor.map(|a| a.min(blocks.saturating_sub(1)));
@@ -206,6 +221,10 @@ impl DiffPane {
             (Some(doc), Some(row)) => map_row(doc, row, self.unified),
             _ => 0,
         };
+        if let Some(doc) = &self.doc {
+            self.line = self.line.map(|l| map_row(doc, l, self.unified));
+            self.line_anchor = self.line_anchor.map(|l| map_row(doc, l, self.unified));
+        }
         self.unified = unified;
         self.unfolded.clear();
         self.rebuild();
@@ -239,7 +258,13 @@ impl DiffPane {
         if moved {
             self.anchor = None;
         }
+        self.drop_lines();
         moved
+    }
+
+    fn drop_lines(&mut self) {
+        self.line = None;
+        self.line_anchor = None;
     }
 
     fn move_block(&mut self, forward: bool) -> bool {
@@ -261,6 +286,7 @@ impl DiffPane {
         if moved {
             self.anchor = Some(anchor);
         }
+        self.drop_lines();
         moved
     }
 
@@ -273,7 +299,47 @@ impl DiffPane {
         }
         self.anchor = Some(0);
         self.block = n - 1;
+        self.drop_lines();
         true
+    }
+
+    /// Move the line cursor to the next or previous changed row (from the
+    /// current block's first row when there is none); `extend` keeps the
+    /// other end of the selected lines. False when there is no such row.
+    pub fn step_line(&mut self, forward: bool, extend: bool) -> bool {
+        let Some(doc) = &self.doc else { return false };
+        let rows = self.rows();
+        let changed = |i: usize| rows[i].kind != RowKind::Equal;
+        let next = match self.line {
+            Some(l) if forward => (l + 1..rows.len()).find(|&i| changed(i)),
+            Some(l) => (0..l).rev().find(|&i| changed(i)),
+            None => doc.blocks(self.unified).get(self.block).map(|b| b.start),
+        };
+        let Some(next) = next else { return false };
+        let anchor = self.line_anchor.or(self.line);
+        self.line_anchor = if extend { anchor } else { None };
+        self.line = Some(next);
+        if let Some(i) = doc.blocks(self.unified).iter().position(|b| b.contains(&next)) {
+            self.block = i;
+        }
+        self.anchor = None;
+        // Keep the row in view.
+        if let Some(&v) = self.row_view.get(next) {
+            let page = self.page.max(1);
+            if v < self.scroll {
+                self.scroll = v;
+            } else if v >= self.scroll + page {
+                self.scroll = v + 1 - page;
+            }
+        }
+        true
+    }
+
+    /// The selected rows of the line cursor, `min..max + 1` of its two ends.
+    pub fn selected_lines(&self) -> Option<Range<usize>> {
+        let l = self.line?;
+        let a = self.line_anchor.unwrap_or(l);
+        Some(a.min(l)..a.max(l) + 1)
     }
 
     fn block_count(&self) -> usize {
@@ -295,6 +361,19 @@ impl DiffPane {
     /// current, alone or (`extend`) as the new end of the selected range.
     /// Returns whether it hit a changed row.
     pub fn click(&mut self, y: u16, extend: bool) -> bool {
+        self.drop_lines();
+        self.click_at(y, extend, false)
+    }
+
+    /// A click at screen row `y` that puts the line cursor on a changed row
+    /// (no range), and the current block on its block.
+    pub fn click_line(&mut self, y: u16) -> bool {
+        self.drop_lines();
+        let hit = self.click_at(y, false, true);
+        hit && self.line.is_some()
+    }
+
+    fn click_at(&mut self, y: u16, extend: bool, line: bool) -> bool {
         if self.doc.is_none() || !(self.rows_rect.y..self.rows_rect.bottom()).contains(&y) {
             return false;
         }
@@ -311,6 +390,9 @@ impl DiffPane {
                 };
                 self.anchor = if extend { Some(self.anchor.unwrap_or(self.block)) } else { None };
                 self.block = i;
+                if line {
+                    self.line = Some(row);
+                }
                 true
             }
             None => false,
@@ -547,7 +629,9 @@ pub(crate) fn render_diff(buf: &mut Screen, area: Rect, pane: &mut DiffPane, the
     let digits = doc.old.len().max(doc.new.len()).max(1).to_string().len().max(3) as u16;
     // Line numbers of the selected blocks stand out.
     let selected = pane.selected_blocks();
-    let current: Vec<Range<usize>> = doc.blocks(unified).into_iter().skip(selected.start).take(selected.len()).collect();
+    let lines = pane.selected_lines();
+    let current: Vec<Range<usize>> =
+        if lines.is_some() { Vec::new() } else { doc.blocks(unified).into_iter().skip(selected.start).take(selected.len()).collect() };
     let no_spans = (Vec::new(), Vec::new());
     let (syn_old, syn_new) = pane.syntax.as_ref().unwrap_or(&no_spans);
     let spans = line_spans;
@@ -569,7 +653,13 @@ pub(crate) fn render_diff(buf: &mut Screen, area: Rect, pane: &mut DiffPane, the
             }
         };
         let row = rows[ri];
-        let num_style = if current.iter().any(|b| b.contains(&ri)) { theme.warn } else { theme.line_number };
+        let num_style = if lines.as_ref().is_some_and(|l| l.contains(&ri) && row.kind != RowKind::Equal) {
+            theme.warn.add_modifier(Modifier::REVERSED)
+        } else if current.iter().any(|b| b.contains(&ri)) {
+            theme.warn
+        } else {
+            theme.line_number
+        };
         let num = |l: usize| format!("{:>w$}", l + 1, w = digits as usize);
         if unified {
             // old# new# sign text
@@ -739,6 +829,61 @@ mod tests {
         p.set(&other, Ok(DiffDoc::build(old.as_bytes(), new.as_bytes(), 4)));
         assert_eq!(p.selected_blocks(), 0..1);
         assert!(pane("a\n", "a\n", false).selected_blocks().is_empty());
+    }
+
+    #[test]
+    fn the_line_cursor_walks_changed_rows_and_block_commands_drop_it() {
+        let old = "a\n1\nb\nc\n2\nd\n";
+        let new = "A\n1\nB\nC\n2\nD\n";
+        let mut p = pane(old, new, false);
+        // From the current block's first row; equal rows are skipped.
+        assert!(p.step_line(true, false));
+        assert_eq!((p.line, p.line_anchor, p.selected_lines()), (Some(0), None, Some(0..1)));
+        assert!(p.step_line(true, false));
+        assert_eq!((p.line, p.block), (Some(2), 1));
+        // Extend builds a range, keeping the other end.
+        assert!(p.step_line(true, true) && p.step_line(true, true));
+        assert_eq!((p.line_anchor, p.line, p.selected_lines()), (Some(2), Some(5), Some(2..6)));
+        assert!(!p.step_line(true, true), "no changed row below");
+        assert!(p.step_line(false, true));
+        assert_eq!(p.selected_lines(), Some(2..4));
+        // A block command leaves line mode.
+        assert!(p.step_block(false));
+        assert_eq!((p.line, p.line_anchor), (None, None));
+        assert!(p.step_line(true, false) && p.select_all_blocks());
+        assert_eq!(p.line, None);
+        // A double click sets it on a changed row only.
+        p.rows_rect = Rect::new(0, 0, 80, 20);
+        p.scroll = 0;
+        assert!(p.click_line(3));
+        assert_eq!((p.line, p.selected_lines()), (Some(3), Some(3..4)));
+        assert!(!p.click_line(1), "an equal row");
+        assert_eq!(p.line, None);
+    }
+
+    #[test]
+    fn the_line_cursor_follows_layout_toggles_and_reloads() {
+        let old = "a\n1\nb\nc\n";
+        let new = "a\n1\nB\nc\n";
+        let mut p = pane(old, new, false);
+        assert!(p.step_line(true, false));
+        assert_eq!(p.line, Some(2));
+        // Side-by-side row 2 (old b, new B) is the unified row of old b.
+        p.set_unified(true);
+        assert_eq!(p.line, Some(2));
+        p.set_unified(false);
+        assert_eq!(p.line, Some(2));
+        // A reload that keeps the row changed keeps the cursor.
+        let key = p.key.clone().unwrap();
+        p.set(&key, Ok(DiffDoc::build(old.as_bytes(), "a\n1\nBB\nc\n".as_bytes(), 4)));
+        assert_eq!(p.line, Some(2));
+        // The row is equal now: cleared. So is a new key's.
+        p.set(&key, Ok(DiffDoc::build(old.as_bytes(), old.as_bytes(), 4)));
+        assert_eq!((p.line, p.line_anchor), (None, None));
+        p.set(&key, Ok(DiffDoc::build(old.as_bytes(), new.as_bytes(), 4)));
+        assert!(p.step_line(true, true));
+        p.begin(DiffKey::Commit { sha: "y".into(), rel: "f.txt".into(), old: None });
+        assert_eq!((p.line, p.line_anchor), (None, None));
     }
 
     #[test]

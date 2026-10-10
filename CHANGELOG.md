@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The Local History window's diff has a line cursor: Alt+Up/Down moves it over the changed rows, Alt+Shift+Up/Down
+  grows the selected lines, a double click on a changed row sets it, and Esc leaves it. Revert Changes (toolbar
+  `[Revert N Lines]`, menu "Revert Selected Lines") then puts back only those lines; the selected rows' line
+  numbers are reversed. F7, Shift+arrows, Ctrl+A and a single click go back to whole changes.
 - The Local History window's file view list shows the seconds (`MM-DD HH:MM:SS`) on rows whose minute equals that
   of the row above or below, so saves within one minute can be told apart.
 - The Local History window's diff follows edits of the shown file: while the window is visible and the diff

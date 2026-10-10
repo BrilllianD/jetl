@@ -402,6 +402,10 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Shift+Up` | `local_history.extend_selection_up` | Local History: in the diff, select the change above too (in the list: up) |
 | `Shift+Down` | `local_history.extend_selection_down` | Local History: in the diff, select the change below too (in the list: down) |
 | `Ctrl+A` | `local_history.select_all_changes` | Local History: select every change of the diff |
+| `Alt+Up` | `local_history.line_up` | Local History: in the diff, the line cursor to the changed line above (in the list: up) |
+| `Alt+Down` | `local_history.line_down` | Local History: in the diff, the line cursor to the changed line below (in the list: down) |
+| `Alt+Shift+Up` | `local_history.line_extend_up` | Local History: in the diff, select the changed line above too |
+| `Alt+Shift+Down` | `local_history.line_extend_down` | Local History: in the diff, select the changed line below too |
 | `Alt+L` | `local_history.put_label` | Local History: put a label on the file… |
 | `Delete` | `local_history.remove_label` | Local History: remove the selected label (of every file it is on)… |
 | `Shift+F10` | `local_history.context_menu` | Local History: actions for the selected snapshot |

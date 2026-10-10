@@ -845,6 +845,26 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn revert_selected_lines_reverts_only_those() {
+        let (mut app, dir) = test_app("history-lines");
+        with_history(&mut app);
+        let path = app.workspace.root.join("a.txt");
+        record(&app, &path, "a\nb\nc\nd\n");
+        load(&mut app, "a.txt", "a\nB\nC\nD\n");
+        window_with_diff(&mut app, &path).await;
+        assert_eq!(app.history_panel.changes(), (1, 0..1));
+        // The second changed row.
+        history(&mut app, HistoryAction::LineDown);
+        history(&mut app, HistoryAction::LineDown);
+        history(&mut app, HistoryAction::RevertChanges);
+        assert_eq!(app.editor.active_buffer().unwrap().text(), "a\nB\nc\nD\n");
+        // The line selection is gone after the revert.
+        diff_landed(&mut app).await;
+        assert_eq!(app.history_panel.changes(), (2, 0..1));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
     async fn changes_made_for_another_text_are_refused_and_compared_again() {
         let (mut app, dir) = test_app("history-changes-stale");
         with_history(&mut app);

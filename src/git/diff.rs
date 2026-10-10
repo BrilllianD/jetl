@@ -208,13 +208,20 @@ impl DiffDoc {
     /// in both layouts). A pure insertion has an empty old range where its
     /// lines would go, a pure deletion an empty new range.
     pub fn block_lines(&self, block: usize) -> Option<(Range<usize>, Range<usize>)> {
-        let b = blocks(&self.rows).into_iter().nth(block)?;
+        blocks(&self.rows).into_iter().nth(block).map(|b| self.row_lines(false, b))
+    }
+
+    /// The old and new line ranges covered by `rows` of the side-by-side or
+    /// unified rows. A side without lines there gets an empty range at the
+    /// count of lines before.
+    pub fn row_lines(&self, unified: bool, rows: Range<usize>) -> (Range<usize>, Range<usize>) {
+        let all = if unified { &self.unified } else { &self.rows };
         let count = |rows: &[DiffRow], left: bool| rows.iter().filter(|r| if left { r.left.is_some() } else { r.right.is_some() }).count();
         let side = |left: bool| {
-            let start = count(&self.rows[..b.start], left);
-            start..start + count(&self.rows[b.clone()], left)
+            let start = count(&all[..rows.start], left);
+            start..start + count(&all[rows.clone()], left)
         };
-        Some((side(true), side(false)))
+        (side(true), side(false))
     }
 
     /// Changed blocks (runs of non-equal rows) of the side-by-side or
@@ -391,6 +398,18 @@ mod tests {
         assert!(d.block_lines(1).is_none());
         assert!(!d.lossy);
         assert!(DiffDoc::build(b"caf\xe9\n", b"cafe\n", 4).lossy);
+    }
+
+    #[test]
+    fn row_lines_count_the_lines_of_some_rows() {
+        let d = DiffDoc::build(b"x\na\nb\nc\ny\n", b"x\nA\nB\nC\ny\n", 4);
+        // The middle row of a three-row modified block, one line before it.
+        assert_eq!(d.row_lines(false, 2..3), (2..3, 2..3));
+        assert_eq!(d.row_lines(false, 1..4), d.block_lines(0).unwrap());
+        // Unified: a deletion row alone has an empty new range at the
+        // block's new start; an addition row an empty old one.
+        assert_eq!(d.row_lines(true, 1..2), (1..2, 1..1));
+        assert_eq!(d.row_lines(true, 4..5), (4..4, 1..2));
     }
 
     #[test]
