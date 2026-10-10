@@ -32,7 +32,8 @@ pub struct ConflictSides {
     /// The work tree file (with git's conflict markers); empty when gone.
     pub work: Vec<u8>,
     /// What yours and theirs are: a branch name or a short commit id, with
-    /// what the operation makes of it during a rebase or cherry-pick.
+    /// what the operation makes of it during a rebase or cherry-pick;
+    /// theirs is `stash <message>` after a stash pop or apply.
     pub ours_label: String,
     pub theirs_label: String,
     /// Set when a stage is a symbolic link or a submodule; then

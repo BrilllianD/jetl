@@ -374,7 +374,9 @@ pub fn conflict_sides(root: &Path, abs: &Path) -> Result<ConflictSides> {
             .transpose()
     };
     let mut sides = ConflictSides { rel: rel.clone(), ..Default::default() };
+    let mut their_id = None;
     if let Some(c) = find_conflict(&index, &rel)? {
+        their_id = c.their.as_ref().map(|e| e.id);
         (sides.base, sides.ours, sides.theirs) = (blob(&c.ancestor)?, blob(&c.our)?, blob(&c.their)?);
         let modes = || [&c.ancestor, &c.our, &c.their].into_iter().flatten().map(|e| e.mode);
         sides.special = if modes().any(|m| m == GITLINK) {
@@ -388,15 +390,16 @@ pub fn conflict_sides(root: &Path, abs: &Path) -> Result<ConflictSides> {
     if sides.special.is_none() {
         sides.work = std::fs::read(wd.join(&rel)).unwrap_or_default();
     }
-    (sides.ours_label, sides.theirs_label) = conflict_labels(&repo);
+    (sides.ours_label, sides.theirs_label) = conflict_labels(&repo, &rel, their_id, &sides.work);
     Ok(sides)
 }
 
 /// Names for yours and theirs from the operation that stopped: the
 /// branch (else commit) for a merge, the commit picked or reverted, and
 /// during a rebase the upstream as yours and the commit being replayed as
-/// theirs.
-fn conflict_labels(repo: &Repository) -> (String, String) {
+/// theirs, and after a stash pop or apply (no operation in progress) the
+/// stash, by its message.
+fn conflict_labels(repo: &Repository, rel: &str, their: Option<git2::Oid>, work: &[u8]) -> (String, String) {
     let short = |oid: git2::Oid| oid.to_string()[..7].to_string();
     let head = repo.head().ok();
     let head_sha = head.as_ref().and_then(|h| h.target()).map(short);
@@ -426,9 +429,26 @@ fn conflict_labels(repo: &Repository) -> (String, String) {
             let replayed = read("REBASE_HEAD").map(subject).unwrap_or_else(|| "the commit being rebased".into());
             return (format!("upstream {}", head_sha.unwrap_or_default()).trim_end().to_string(), replayed);
         }
-        _ => None,
+        _ => stash_label(repo, rel, their, work),
     };
     (head_name, theirs.unwrap_or_else(|| "theirs".into()))
+}
+
+/// A stash pop or apply leaves no state behind; stage 3 is the stash's
+/// saved version of the path, and git marks it `Stashed changes` (that
+/// label is not translated in `builtin/stash.c`). Names the newest stash
+/// whose saved version is `their` by its reflog message, else `stash` when
+/// the markers say so (the stash was dropped since).
+fn stash_label(repo: &Repository, rel: &str, their: Option<git2::Oid>, work: &[u8]) -> Option<String> {
+    if let (Some(id), Ok(reflog)) = (their, repo.reflog("refs/stash")) {
+        for entry in reflog.iter() {
+            let saved = repo.find_commit(entry.id_new()).and_then(|c| c.tree()).and_then(|t| t.get_path(Path::new(rel)));
+            if saved.is_ok_and(|e| e.id() == id) {
+                return Some(format!("stash {}", entry.message().ok().flatten().unwrap_or_default()).trim_end().to_string());
+            }
+        }
+    }
+    String::from_utf8_lossy(work).lines().any(|l| l.starts_with(">>>>>>> Stashed changes")).then(|| "stash".into())
 }
 
 /// Which side of a conflict to take whole.
@@ -986,6 +1006,25 @@ pub(crate) mod tests {
         git_cli(&r.dir, &["commit", "-qam", "main change"], true);
         git_cli(&r.dir, &["merge", "-q", "dev"], false);
         r
+    }
+
+    #[test]
+    fn a_stash_conflict_names_theirs_after_the_stash() {
+        let r = TempRepo::new("conflict-stash");
+        r.write("a.txt", "a\n");
+        stage_all(&r.dir).unwrap();
+        commit(&r.dir, "first").unwrap();
+        let main = status(&r.dir).unwrap().branch.unwrap();
+        r.write("a.txt", "mine\n");
+        git_cli(&r.dir, &["stash", "push", "-qm", "wip"], true);
+        r.write("a.txt", "head\n");
+        git_cli(&r.dir, &["commit", "-qam", "second"], true);
+        git_cli(&r.dir, &["stash", "pop"], false);
+        let s = conflict_sides(&r.dir, &r.dir.join("a.txt")).unwrap();
+        assert_eq!((s.ours_label.as_str(), s.theirs_label.as_str()), (main.as_str(), format!("stash On {main}: wip").as_str()));
+        git_cli(&r.dir, &["stash", "drop", "-q"], true);
+        let s = conflict_sides(&r.dir, &r.dir.join("a.txt")).unwrap();
+        assert_eq!(s.theirs_label, "stash");
     }
 
     #[test]
