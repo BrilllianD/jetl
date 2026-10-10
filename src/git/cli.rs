@@ -1,8 +1,10 @@
 //! The `git` command line, for network, branch switching, log/show and
 //! worktree operations. Never prompts: no controlling terminal, ssh in batch
-//! mode, no editor, stdin closed, killed after a timeout. Runs in the C
-//! locale, so git's messages are the English ones jetl parses.
+//! mode, no editor, stdin closed, killed after a timeout. Git's messages are
+//! in the C locale (`LC_MESSAGES=C`), so they are the English ones jetl
+//! parses; the charset of hooks and helpers stays the user's.
 
+use std::ffi::{OsStr, OsString};
 use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
@@ -59,13 +61,21 @@ pub async fn git_with_input(root: &Path, args: &[String], input: Option<Vec<u8>>
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_EDITOR", "true")
         .env("GIT_PAGER", "cat")
-        // git's messages are parsed (`CONFLICT`, `has no upstream branch`,
-        // `not fully merged`), so they must be the untranslated ones.
-        .env("LC_ALL", "C")
         .stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    // git's messages are parsed (`CONFLICT`, `has no upstream branch`,
+    // `not fully merged`), so they must be the untranslated ones. Only
+    // LC_MESSAGES is set: hooks, credential helpers, gpg and ssh keep the
+    // user's charset.
+    let (set, remove_lc_all) = locale_env(std::env::var_os("LC_ALL").as_deref());
+    for (k, v) in set {
+        cmd.env(k, v);
+    }
+    if remove_lc_all {
+        cmd.env_remove("LC_ALL");
+    }
     if let Some(ssh) = ssh {
         cmd.env("GIT_SSH_COMMAND", ssh);
     }
@@ -91,6 +101,20 @@ pub async fn git_with_input(root: &Path, args: &[String], input: Option<Vec<u8>>
             Ok(CliOutput { ok: out.status.success(), stdout: out.stdout, stderr: String::from_utf8_lossy(&out.stderr).into_owned() })
         }
         Err(_) => Err(anyhow!("git {} timed out after {} s", args.join(" "), TIMEOUT.as_secs())),
+    }
+}
+
+/// Locale variables for the git child: the ones to set, and whether to remove
+/// `LC_ALL` (it overrides `LC_MESSAGES`, so a non-empty one moves to
+/// `LC_CTYPE` and the user's charset stays).
+fn locale_env(lc_all: Option<&OsStr>) -> (Vec<(&'static str, OsString)>, bool) {
+    let mut set = vec![("LC_MESSAGES", OsString::from("C"))];
+    match lc_all {
+        Some(v) if !v.is_empty() => {
+            set.push(("LC_CTYPE", v.to_owned()));
+            (set, true)
+        }
+        _ => (set, false),
     }
 }
 
@@ -267,9 +291,17 @@ mod tests {
 
     #[tokio::test]
     async fn git_runs_in_the_c_locale() {
-        let out = git(&std::env::temp_dir(), &args(&["-c", "alias.lc=!printf %s \"$LC_ALL\"", "lc"])).await.unwrap();
+        let out = git(&std::env::temp_dir(), &args(&["-c", "alias.lc=!printf '%s|%s' \"$LC_ALL\" \"$LC_MESSAGES\"", "lc"])).await.unwrap();
         assert!(out.ok);
-        assert_eq!(out.stdout_text(), "C");
+        assert_eq!(out.stdout_text(), "|C");
+    }
+
+    #[test]
+    fn locale_env_sets_messages_and_moves_lc_all_to_ctype() {
+        let c = || ("LC_MESSAGES", OsString::from("C"));
+        assert_eq!(locale_env(None), (vec![c()], false));
+        assert_eq!(locale_env(Some(OsStr::new(""))), (vec![c()], false));
+        assert_eq!(locale_env(Some(OsStr::new("ru_RU.UTF-8"))), (vec![c(), ("LC_CTYPE", OsString::from("ru_RU.UTF-8"))], true));
     }
 
     #[test]
