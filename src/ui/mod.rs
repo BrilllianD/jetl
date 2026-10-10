@@ -108,8 +108,6 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     }
     tool_strip::render_tooltip(app, frame, area);
 
-    // Toasts sit below the palette and dialogs, which own the input.
-    app.toasts.render(frame, area, &theme);
     if let Some(p) = &mut app.palette {
         p.render(frame, area, &theme);
     }
@@ -122,4 +120,16 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     if let Some(d) = &mut app.dialog {
         d.render(frame, area, &theme);
     }
+    // Toasts are drawn last but never over an overlay, so a visible toast is
+    // always clickable. The menu bar's own row is row 0, which toasts never use.
+    let avoid: Vec<ratatui::layout::Rect> = [
+        app.palette.as_ref().map(|p| p.rect()),
+        app.menu.as_ref().map(|m| m.rect()),
+        app.menu_bar.as_ref().map(|b| b.dropdown().rect()),
+        app.dialog.as_ref().map(|d| d.rect()),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    app.toasts.render(frame, area, &theme, &avoid);
 }

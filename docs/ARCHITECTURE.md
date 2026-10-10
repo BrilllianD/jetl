@@ -165,8 +165,8 @@ carries its `BufferId`, never a tab index: tabs can open while it is up.
 
 Render order (`ui::render`): tool strip, left and bottom tool windows,
 splitters, editor, status bar, hover popup, completion popup, strip tooltip (hidden while an overlay is
-open), toasts, palette, context menu, main menu bar (over the top row, in zen
-mode too), dialog. Mouse events go to the topmost open overlay (dialog, main
+open), palette, context menu, main menu bar (over the top row, in zen
+mode too), dialog, toasts (laid out below any open overlay they would cover, never over one). Mouse events go to the topmost open overlay (dialog, main
 menu bar, context menu, palette) before anything below (the completion
 popup takes the wheel over it and accepts a clicked row, other clicks close
 it; the hover popup takes the wheel over it, and any click closes it); the menus also get

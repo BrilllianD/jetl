@@ -85,23 +85,32 @@ impl Toasts {
         true
     }
 
-    pub fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
+    /// Draw the toasts in their right-hand column. A toast that would cover
+    /// a rect of `avoid` (open overlays) moves down to the first free row
+    /// below it; one that no longer fits is not drawn.
+    pub fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Theme, avoid: &[Rect]) {
         self.rects.clear();
         if self.items.is_empty() || area.width < 24 || area.height < 6 {
             return;
         }
         let w = (area.width / 2).clamp(22, 52);
         let x = area.right().saturating_sub(w + 1);
-        // Keep the lower half free so toasts never cover much of the editor.
-        let bottom = area.y + area.height / 2 + 2;
+        let avoid: Vec<Rect> = avoid.iter().copied().filter(|r| !r.is_empty()).collect();
+        // Keep the lower half free so toasts never cover much of the editor;
+        // around overlays they may reach down to the status bar row.
+        let bottom = if avoid.is_empty() { area.y + area.height / 2 + 2 } else { area.bottom().saturating_sub(1) };
         let mut y = area.y + 1;
         for t in self.items.iter().rev() {
             let lines = wrap(&t.text, (w - 4) as usize, MAX_LINES);
             let h = lines.len() as u16 + 2;
+            let mut rect = Rect::new(x, y, w, h);
+            while let Some(below) = avoid.iter().filter(|r| r.intersects(rect)).map(|r| r.bottom()).max() {
+                y = below;
+                rect = Rect::new(x, y, w, h);
+            }
             if y + h > bottom {
                 break;
             }
-            let rect = Rect::new(x, y, w, h);
             let (accent, title) = match t.level {
                 Level::Info => (theme.info, " Info "),
                 Level::Warn => (theme.warn, " Warning "),
@@ -171,6 +180,29 @@ pub(crate) fn wrap(text: &str, width: usize, max_lines: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    #[test]
+    fn toasts_go_below_overlays() {
+        let theme = Theme::default();
+        let mut ts = Toasts::default();
+        ts.push(Level::Info, "one", Instant::now());
+        ts.push(Level::Warn, "two", Instant::now());
+        let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let area = Rect::new(0, 0, 80, 24);
+        let overlay = Rect::new(2, 3, 76, 7);
+        term.draw(|f| ts.render(f, area, &theme, &[overlay])).unwrap();
+        assert_eq!(ts.rects.len(), 2);
+        for (_, r) in &ts.rects {
+            assert!(r.y >= 10, "{r:?}");
+            assert!(!r.intersects(overlay));
+        }
+        term.draw(|f| ts.render(f, area, &theme, &[area])).unwrap();
+        assert!(ts.rects.is_empty());
+        term.draw(|f| ts.render(f, area, &theme, &[])).unwrap();
+        assert_eq!(ts.rects[0].1.y, 1);
+    }
 
     #[test]
     fn toasts_expire_by_level() {

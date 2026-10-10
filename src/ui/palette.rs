@@ -747,6 +747,11 @@ impl Palette {
         self.refilter(true);
     }
 
+    /// The palette's area as last drawn.
+    pub fn rect(&self) -> Rect {
+        self.outer
+    }
+
     /// Whether a screen cell is inside the palette as last drawn.
     pub fn contains(&self, x: u16, y: u16) -> bool {
         self.outer.contains(ratatui::layout::Position::new(x, y))

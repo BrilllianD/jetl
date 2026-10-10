@@ -44,8 +44,9 @@ impl App {
         self.strip_hover = None;
         let clicks = self.resolve_clicks(&m);
         let mouse = Mouse { kind: m.kind, x: m.column, y: m.row, clicks, mods: m.modifiers };
-        // A click on a visible part of a toast closes it (the palette and
-        // dialogs are drawn over toasts).
+        // A click on a toast closes it. Toasts are laid out around overlays;
+        // the guard keeps a click on an overlay with its overlay in case a
+        // rect is stale.
         let over_overlay = self.palette.as_ref().is_some_and(|p| p.contains(m.column, m.row))
             || self.dialog.as_ref().is_some_and(|d| d.contains(m.column, m.row))
             || self.menu.as_ref().is_some_and(|c| c.contains(m.column, m.row))

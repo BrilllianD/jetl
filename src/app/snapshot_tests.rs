@@ -1313,6 +1313,30 @@ async fn confirm_dialog() {
 }
 
 #[tokio::test]
+async fn toasts_below_dialog() {
+    use crate::event::Level;
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    let mut fx = stable_app("toasts-below-dialog");
+    let app = &mut fx.app;
+    tree_fixture(app);
+    tree(app, crate::actions::TreeAction::Delete);
+    app.toasts.push(
+        Level::Warn,
+        "Language servers are off, so completion, hover and diagnostics are unavailable until they are on",
+        std::time::Instant::now(),
+    );
+    let term = draw_app(app, 80, 24);
+    let marks =
+        [Mark::style('w', "warn", app.theme.warn.bg(app.theme.popup_bg)), Mark::style('B', "selected button", app.theme.list_selected)];
+    assert_snapshot!("toasts_below_dialog", snapshot(&term, &marks, None));
+    let row = (0..24).find(|&y| crate::ui::snapshot::row_text(term.backend().buffer(), y, 80).contains("Warning")).unwrap();
+    let column = (0..80).find(|&x| term.backend().buffer()[(x, row)].symbol() == "W").unwrap();
+    app.handle_mouse(MouseEvent { kind: MouseEventKind::Down(MouseButton::Left), column, row, modifiers: KeyModifiers::NONE });
+    assert!(app.toasts.is_empty());
+    assert!(app.dialog.is_some());
+}
+
+#[tokio::test]
 async fn confirm_dialog_narrow() {
     let mut fx = stable_app("confirm-dialog-narrow");
     let app = &mut fx.app;
