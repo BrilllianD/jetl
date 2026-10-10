@@ -90,13 +90,9 @@ struct Row {
     label: String,
     /// Size and lines added or removed since the next older snapshot.
     info: String,
-}
-
-impl Row {
-    /// The date without the year and the seconds, for the list.
-    fn short(&self) -> &str {
-        self.when.get(5..16).unwrap_or(&self.when)
-    }
+    /// The date without the year, for the list: with the seconds when an
+    /// adjacent row is from the same minute, else without.
+    short: String,
 }
 
 /// The file the file view shows.
@@ -325,9 +321,18 @@ impl LocalHistoryPanel {
                     when: super::local_time(e.at, &offset),
                     label: e.label_in(root),
                     info: format!("{}{delta}", human_size(e.len)),
+                    short: String::new(),
                 }
             })
             .collect();
+        let minute = |r: &Row| r.when.get(..16).map(str::to_string);
+        let minutes: Vec<Option<String>> = self.rows.iter().map(minute).collect();
+        for (i, r) in self.rows.iter_mut().enumerate() {
+            let same_minute = minutes[i].is_some()
+                && (i.checked_sub(1).is_some_and(|j| minutes[j] == minutes[i]) || minutes.get(i + 1) == Some(&minutes[i]));
+            let span = if same_minute { 5..19 } else { 5..16 };
+            r.short = r.when.get(span).unwrap_or(&r.when).to_string();
+        }
         self.loading = false;
         self.refilter(keep.as_ref(), at);
         if self.view == View::File {
@@ -967,10 +972,10 @@ impl LocalHistoryPanel {
             let label_style = if h.entry.kind.pinned() { base.add_modifier(Modifier::BOLD) } else { base };
             let dim = base.patch(theme.dim);
             // One cell of padding on each side.
-            let room = (r.width as usize).saturating_sub(2 + h.short().width() + 2);
+            let room = (r.width as usize).saturating_sub(2 + h.short.as_str().width() + 2);
             let label = crate::util::text::fit(&h.label, room);
             let gap = room.saturating_sub(label.width());
-            let mut parts = vec![(h.short(), dim), ("  ", base), (label.as_str(), label_style)];
+            let mut parts = vec![(h.short.as_str(), dim), ("  ", base), (label.as_str(), label_style)];
             let pad;
             if gap >= h.info.width() + 2 {
                 pad = " ".repeat(gap - h.info.width());
@@ -1073,6 +1078,14 @@ mod tests {
         p
     }
 
+    #[test]
+    fn rows_of_one_minute_show_seconds() {
+        let at = |min: u64, sec: u64| Entry { at: (20_000 * 86_400 + min * 60 + sec) * 1000, ..e(min, Kind::Save, None, 1) };
+        let p = panel(vec![at(180, 0), at(0, 40), at(0, 5)]);
+        let short: Vec<&str> = p.rows.iter().map(|r| r.short.as_str()).collect();
+        assert_eq!(short, ["10-04 03:00", "10-04 00:00:40", "10-04 00:00:05"]);
+    }
+
     fn requests(fx: Vec<Effect>) -> Vec<String> {
         fx.into_iter()
             .map(|e| match e {
@@ -1112,7 +1125,7 @@ mod tests {
     #[test]
     fn rows_have_the_short_date_label_and_change() {
         let p = panel(vec![e(3, Kind::Save, None, 4), e(2, Kind::Label, Some("v1"), 2), e(1, Kind::Autosave, None, 2)]);
-        let r: Vec<(&str, &str, &str)> = p.rows.iter().map(|r| (r.short(), r.label.as_str(), r.info.as_str())).collect();
+        let r: Vec<(&str, &str, &str)> = p.rows.iter().map(|r| (r.short.as_str(), r.label.as_str(), r.info.as_str())).collect();
         assert_eq!(
             r,
             [("10-04 00:03", "Saved", "10 B  +2 lines"), ("10-04 00:02", "Label: v1", "10 B  ="), ("10-04 00:01", "Autosaved", "10 B")]

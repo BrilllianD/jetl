@@ -20,8 +20,8 @@ expression: "snapshot(&term, &marks, Some(bottom))"
 14  ⎇ │ 10-02 12:00  Before reload   │      2 +beta two                           │
 15    │ 10-01 12:00  Label: before … │  3   3  gamma                              │
 16  ❯ │ 09-29 12:00  Renamed from o… │      4 +epsilon                            │
-17  6 │ 09-24 12:00  Autosaved       │  4   5  delta                              │
-18  ⚠ │                              │                                            │
+17  6 │ 09-24 12:00:07  Autosaved    │  4   5  delta                              │
+18  ⚠ │ 09-24 12:00:00  Autosaved    │                                            │
 19  4 │                              │                                            │
 20  ► │                              │                                            │
 21  3 │                              │                                            │

@@ -32,8 +32,8 @@ expression: "snapshot(&term, &marks, Some(bottom))"
 26  ⎇ │[All Files] [Revert] [Revert Change] [Put Label…] [Remove Label]                                                          filter: save │
 27    │ 10-05 12:00  Unsaved changes   1.3 KB  +1 line │ Saved  2024-10-04 12:00:00  ↔  current                    [Side-by-side] [x] Collapse│
 28    │ 10-04 12:00  Saved            1.3 KB  +3 lines │  1 alpha                                 │  1 alpha                                  │
-29  ❯ │ 09-24 12:00  Autosaved                   512 B │  2 beta                                  │  2 beta two                               │
-30    │                                                │  3 gamma                                 │  3 gamma                                  │
+29  ❯ │ 09-24 12:00:07  Autosaved             512 B  = │  2 beta                                  │  2 beta two                               │
+30    │ 09-24 12:00:00  Autosaved                512 B │  3 gamma                                 │  3 gamma                                  │
 31  6 │                                                │                                          │  4 epsilon                                │
 32  ⚠ │                                                │  4 delta                                 │  5 delta                                  │
 33    │                                                │                                                                                      │

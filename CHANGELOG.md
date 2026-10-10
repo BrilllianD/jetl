@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The Local History window's file view list shows the seconds (`MM-DD HH:MM:SS`) on rows whose minute equals that
+  of the row above or below, so saves within one minute can be told apart.
 - The Local History window's diff follows edits of the shown file: while the window is visible and the diff
   compares a snapshot with an open tab, typing in that tab updates the diff within half a second, keeping the
   scroll and the selected change. Quick selection moves no longer pile up diff builds: one runs, the newest waits.

@@ -655,6 +655,12 @@ fn local_history_fixture(app: &mut App, row: usize, filter: &str) {
         entry(19_995, 900, 39, Kind::Renamed, Some(&old)),
         entry(19_990, 512, 39, Kind::Autosave, None),
     ];
+    // Two snapshots of one minute: both rows show the seconds.
+    let mut entries = entries;
+    let mut same_minute = entries[6].clone();
+    same_minute.at += 7_000;
+    same_minute.blob = format!("{:040}", 19_989);
+    entries.insert(6, same_minute);
     // The requests go nowhere: the diff is answered below.
     let root = app.workspace.root.clone();
     let mut cx = ctx!(app);
