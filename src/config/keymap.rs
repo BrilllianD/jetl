@@ -561,6 +561,25 @@ mod tests {
         assert!(expected == actual, "docs/KEYMAP.md is out of date; run: cargo run -q -- --dump-keymap > docs/KEYMAP.md");
     }
 
+    /// Actions whose primary key needs the kitty protocol must also have a key
+    /// that legacy terminals and tmux deliver: (action id, contexts).
+    const LEGACY_REACHABLE: &[(&str, &[&str])] = &[
+        ("editor.redo", &["editor"]),
+        ("editor.save_all", &["global"]),
+        ("git.push", &["global"]),
+        ("tool_window.hide_focused", &["global"]),
+    ];
+
+    #[test]
+    fn kitty_only_actions_have_a_legacy_key() {
+        let km = default_keymap();
+        for (id, contexts) in LEGACY_REACHABLE {
+            let info = crate::actions::REGISTRY.iter().find(|a| a.id == *id).unwrap_or_else(|| panic!("unknown action {id}"));
+            let keys = km.bindings_for(&info.action, contexts);
+            assert!(keys.iter().any(|k| !needs_kitty(k)), "{id} has no legacy-terminal key, only {keys:?}");
+        }
+    }
+
     #[test]
     fn default_keymap_has_no_invalid_entries() {
         let errors = Keymap::default().merge_toml(DEFAULT_KEYMAP_TOML).unwrap();

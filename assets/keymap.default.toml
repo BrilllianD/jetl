@@ -35,6 +35,8 @@
 "alt-0" = "git.commit_box"
 "ctrl-k" = "git.commit_box"
 "ctrl-shift-k" = "git.push"
+# Legacy terminals and tmux do not deliver Ctrl+Shift+K; Alt+Shift+K pushes too.
+"alt-shift-k" = "git.push"
 "ctrl-t" = "git.pull"
 "ctrl-shift-n" = "palette.files"
 "ctrl-n" = "palette.files"
@@ -72,6 +74,8 @@
 "alt-shift-tab" = "editor.prev_group"
 "ctrl-shift-f12" = "tool_window.hide_all"
 "shift-esc" = "tool_window.hide_focused"
+# Shift+Esc needs the kitty protocol; Alt+Shift+Q works in legacy terminals and tmux.
+"alt-shift-q" = "tool_window.hide_focused"
 # Resize the focused tool window: Left/Right move a left window's edge,
 # Up/Down a bottom window's. The editor keeps Ctrl+Shift+Left/Right for word
 # selection (its table wins), and Up/Down do nothing while it has focus.
@@ -100,6 +104,9 @@
 # terminal's own paste shortcut (Ctrl+Shift+V, Shift+Insert) also works.
 "ctrl-v" = "editor.paste"
 "ctrl-shift-s" = "editor.save_all"
+# Alt+Shift+W ("write all") saves all in legacy terminals and tmux. The editor
+# find bar reads Alt+W as Whole Words while it has focus.
+"alt-shift-w" = "editor.save_all"
 # No Save As key in JetBrains; Alt+Shift+S sits next to Save All and works
 # in legacy terminals and tmux.
 "alt-shift-s" = "editor.save_as"
@@ -169,6 +176,8 @@
 "ctrl-shift-end" = "editor.doc_end_extend"
 "ctrl-z" = "editor.undo"
 "ctrl-shift-z" = "editor.redo"
+# Alt+Y redoes in legacy terminals and tmux (Ctrl+Y is Delete Line).
+"alt-y" = "editor.redo"
 "ctrl-y" = "editor.delete_line"
 "ctrl-d" = "editor.duplicate_line"
 "ctrl-f" = "editor.find"

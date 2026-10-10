@@ -30,6 +30,7 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Alt+F12` | `tool_window.terminal` | Terminal tool window |
 | `Alt+6` | `tool_window.problems` | Problems tool window |
 | `Ctrl+Shift+F12` | `tool_window.hide_all` | Hide all tool windows |
+| `Alt+Shift+Q` | `tool_window.hide_focused` | Hide active tool window |
 | `Shift+Esc` * | `tool_window.hide_focused` | Hide active tool window |
 | `Ctrl+Shift+Left` | `tool_window.stretch_left` | Stretch tool window to the left |
 | `Ctrl+Shift+Right` | `tool_window.stretch_right` | Stretch tool window to the right |
@@ -49,6 +50,7 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Ctrl+Alt+Shift+N` * | `palette.symbols` | Go to symbol |
 | `Ctrl+S` | `editor.save` | Save |
 | `Alt+Shift+S` | `editor.save_as` | Save as… |
+| `Alt+Shift+W` | `editor.save_all` | Save all |
 | `Ctrl+Shift+S` * | `editor.save_all` | Save all |
 | `Ctrl+Alt+Shift+Insert` | `editor.new_scratch` | New scratch file… |
 | `Alt+Shift+H` | `editor.local_history` | Local history of the file (editor) or the selected entry (Project tree; a folder lists its files), in its tool window |
@@ -89,6 +91,7 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Alt+H` | `git.file_history` | Git: show history for the file (editor) or the selected entry (Project tree) |
 | `Alt+0` | `git.commit_box` | Git: open commit window |
 | `Ctrl+K` | `git.commit_box` | Git: open commit window |
+| `Alt+Shift+K` | `git.push` | Git: push |
 | `Ctrl+Shift+K` * | `git.push` | Git: push |
 | `Ctrl+T` | `git.pull` | Git: pull (update project) |
 | `Ctrl+Space` | `git.branches_popup` | Git: branches |
@@ -140,6 +143,7 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Ctrl+Shift+Home` | `editor.doc_start_extend` | Select to document start |
 | `Ctrl+Shift+End` | `editor.doc_end_extend` | Select to document end |
 | `Ctrl+Z` | `editor.undo` | Undo |
+| `Alt+Y` | `editor.redo` | Redo |
 | `Ctrl+Shift+Z` * | `editor.redo` | Redo |
 | `Ctrl+F` | `editor.find` | Find |
 | `Ctrl+R` | `editor.replace` | Replace |
