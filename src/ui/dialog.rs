@@ -236,6 +236,7 @@ pub struct Dialog {
     pub paths: Option<Box<PathCompletion>>,
     button_rects: Vec<Rect>,
     body_rect: Rect,
+    input_rect: Rect,
     list_rect: Rect,
 }
 
@@ -249,6 +250,7 @@ impl Dialog {
             paths: None,
             button_rects: vec![],
             body_rect: Rect::default(),
+            input_rect: Rect::default(),
             list_rect: Rect::default(),
         }
     }
@@ -264,6 +266,7 @@ impl Dialog {
             paths: None,
             button_rects: vec![],
             body_rect: Rect::default(),
+            input_rect: Rect::default(),
             list_rect: Rect::default(),
         }
     }
@@ -278,6 +281,7 @@ impl Dialog {
             paths: None,
             button_rects: vec![],
             body_rect: Rect::default(),
+            input_rect: Rect::default(),
             list_rect: Rect::default(),
         }
     }
@@ -431,7 +435,7 @@ impl Dialog {
                     return None;
                 }
                 if let DialogKind::Input { input, .. } = &mut self.kind {
-                    input.click(self.body_rect, m.x, m.y);
+                    input.click(self.input_rect, m.x, m.y);
                     // The cursor may have moved: the hint is about the old place.
                     self.clear_path_hint();
                 }
@@ -545,7 +549,7 @@ impl Dialog {
             DialogKind::Input { input, ok } => {
                 let iy = row + 1;
                 let irect = Rect::new(inner.x + 1, iy, inner.width.saturating_sub(2), 1);
-                self.body_rect = irect;
+                self.input_rect = irect;
                 let by = inner.bottom().saturating_sub(1);
                 let labels = [format!("[ {ok} ]"), "[ Cancel ]".to_string()];
                 let total: u16 = labels.iter().map(|l| l.width() as u16).sum::<u16>() + 1;

@@ -1058,6 +1058,38 @@ async fn save_as_path_completion() {
     assert_snapshot!("save_as_path_completion", snapshot(&term, &marks, Some(area)));
 }
 
+#[tokio::test]
+async fn input_dialog_scrolled() {
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    let mut fx = stable_app("input-dialog-scrolled");
+    let app = &mut fx.app;
+    let i = app.editor.open_untitled("draft");
+    app.editor.buffers[i].insert("text\n", crate::editor::undo::TxKind::Typing);
+    app.focus.set(PanelId::Editor);
+    app.perform(Action::Editor(EditorAction::SaveAs));
+    for _ in 0.."draft".len() {
+        app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+    }
+    let long = "very/long/folder/name/that/does/not/fit/in/the/dialog/notes-for-the-meeting.txt";
+    for c in long.chars() {
+        app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+    let term = draw_app(app, 60, 16);
+    let area = app.dialog.as_ref().unwrap().rect();
+    assert_snapshot!("input_dialog_scrolled", snapshot(&term, &[], Some(area)));
+    app.handle_key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE));
+    let term = draw_app(app, 60, 16);
+    let buf = term.backend().buffer();
+    let row = (0..16).find(|&y| crate::ui::snapshot::row_text(buf, y, 60).contains("very/long")).expect("input row starts with the path");
+    let line = crate::ui::snapshot::row_text(buf, row, 60);
+    let column = line[..line.find("very/long").unwrap()].chars().count() as u16;
+    app.handle_mouse(MouseEvent { kind: MouseEventKind::Down(MouseButton::Left), column: column + 2, row, modifiers: KeyModifiers::NONE });
+    let Some(crate::ui::dialog::Dialog { kind: crate::ui::dialog::DialogKind::Input { input, .. }, .. }) = app.dialog.as_ref() else {
+        panic!("input dialog still open");
+    };
+    assert_eq!(input.cursor, 2);
+}
+
 /// Search hits and the selected row of a results list.
 fn find_marks(theme: &Theme) -> Vec<Mark> {
     vec![Mark::bg('L', "selected", theme.list_selected.bg.unwrap()), Mark::bg('H', "match", theme.search_match_bg)]

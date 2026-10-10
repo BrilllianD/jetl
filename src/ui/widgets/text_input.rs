@@ -13,6 +13,13 @@ pub struct TextInput {
     pub cursor: usize,
     pub multiline: bool,
     pub scroll: usize,
+    /// Single line only: char index of the first visible char.
+    hscroll: usize,
+}
+
+/// Display width of `chars` in cells; a char with no width counts as 1.
+fn cells(chars: &[char]) -> usize {
+    chars.iter().map(|c| c.width().unwrap_or(1)).sum()
 }
 
 impl TextInput {
@@ -149,9 +156,10 @@ impl TextInput {
         let col = (x - area.x) as usize;
         let lines: Vec<&str> = self.text.split('\n').collect();
         let row = row.min(lines.len().saturating_sub(1));
+        let skip = if self.multiline { 0 } else { self.hscroll };
         let mut w = 0;
         let mut ci = 0;
-        for c in lines[row].chars() {
+        for c in lines[row].chars().skip(skip) {
             let cw = c.width().unwrap_or(1);
             if w + cw > col {
                 break;
@@ -159,7 +167,7 @@ impl TextInput {
             w += cw;
             ci += 1;
         }
-        self.cursor = self.line_start(row) + ci;
+        self.cursor = self.line_start(row) + skip + ci;
     }
 
     /// Render and, when `focused`, position the terminal cursor.
@@ -176,8 +184,23 @@ impl TextInput {
         } else if cline >= self.scroll + area.height as usize {
             self.scroll = cline + 1 - area.height as usize;
         }
+        let w = area.width as usize;
+        let chars: Vec<char> = if self.multiline { Vec::new() } else { self.text.chars().collect() };
+        if !self.multiline {
+            // Keep the cursor in view, and no blank cells while text hides on the left.
+            self.hscroll = self.hscroll.min(self.cursor);
+            while self.hscroll < self.cursor && cells(&chars[self.hscroll..self.cursor]) + 1 > w {
+                self.hscroll += 1;
+            }
+            while self.hscroll > 0 && cells(&chars[self.hscroll - 1..]) < w {
+                self.hscroll -= 1;
+            }
+        }
         if self.text.is_empty() {
             buf.set_stringn(area.x, area.y, placeholder, area.width as usize, placeholder_style);
+        } else if !self.multiline {
+            let shown: String = chars[self.hscroll..].iter().collect();
+            buf.set_stringn(area.x, area.y, &shown, w, style);
         } else {
             let lines: Vec<&str> = self.text.split('\n').collect();
             for (i, line) in lines.iter().skip(self.scroll).take(area.height as usize).enumerate() {
@@ -186,10 +209,96 @@ impl TextInput {
         }
         if focused {
             let lines: Vec<&str> = self.text.split('\n').collect();
-            let cw: usize = lines.get(cline).map(|l| l.chars().take(ccol).map(|c| c.width().unwrap_or(1)).sum()).unwrap_or(0);
+            let cw: usize = if self.multiline {
+                lines.get(cline).map(|l| l.chars().take(ccol).map(|c| c.width().unwrap_or(1)).sum()).unwrap_or(0)
+            } else {
+                cells(&chars[self.hscroll..self.cursor])
+            };
             let cx = area.x + (cw as u16).min(area.width.saturating_sub(1));
             let cy = area.y + (cline - self.scroll) as u16;
             frame.set_cursor_position((cx, cy));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    fn draw(input: &mut TextInput, term: &mut Terminal<TestBackend>) {
+        let w = term.size().unwrap().width;
+        term.draw(|f| input.render(f, Rect::new(0, 0, w, 1), Style::default(), "", Style::default(), true)).unwrap();
+    }
+    fn row(term: &Terminal<TestBackend>) -> String {
+        let buf = term.backend().buffer();
+        (0..buf.area.width).map(|x| buf[(x, 0)].symbol().to_string()).collect()
+    }
+    fn term(w: u16) -> Terminal<TestBackend> {
+        Terminal::new(TestBackend::new(w, 1)).unwrap()
+    }
+
+    #[test]
+    fn long_text_scrolls_to_keep_the_cursor_visible() {
+        let mut t = term(10);
+        let mut i = TextInput::new(false).with_text("abcdefghijklmnop");
+        draw(&mut i, &mut t);
+        assert_eq!(row(&t), "hijklmnop ");
+        assert_eq!(t.get_cursor_position().unwrap().x, 9);
+        i.home();
+        draw(&mut i, &mut t);
+        assert_eq!(row(&t), "abcdefghij");
+        assert_eq!(t.get_cursor_position().unwrap().x, 0);
+    }
+
+    #[test]
+    fn deleting_pulls_the_view_back() {
+        let mut t = term(10);
+        let mut i = TextInput::new(false).with_text("abcdefghijklmnop");
+        draw(&mut i, &mut t);
+        for _ in 0..5 {
+            i.backspace();
+        }
+        draw(&mut i, &mut t);
+        // "abcdefghijk" is 11 chars: the last 9 plus the cursor cell.
+        assert_eq!(row(&t), "cdefghijk ");
+        assert_eq!(t.get_cursor_position().unwrap().x, 9);
+    }
+
+    #[test]
+    fn click_maps_through_the_scroll() {
+        let mut t = term(10);
+        let mut i = TextInput::new(false).with_text("abcdefghijklmnop");
+        draw(&mut i, &mut t);
+        i.click(Rect::new(0, 0, 10, 1), 0, 0);
+        assert_eq!(i.cursor, i.hscroll);
+        assert_eq!(i.cursor, 7);
+        i.click(Rect::new(0, 0, 10, 1), 2, 0);
+        assert_eq!(i.cursor, 9);
+    }
+
+    #[test]
+    fn wide_chars_scroll_by_cells() {
+        let mut t = term(10);
+        let mut i = TextInput::new(false).with_text("日本語日本語日本語");
+        draw(&mut i, &mut t);
+        assert!(t.get_cursor_position().unwrap().x < 10);
+        i.home();
+        draw(&mut i, &mut t);
+        assert_eq!(t.get_cursor_position().unwrap().x, 0);
+        i.right();
+        i.right();
+        draw(&mut i, &mut t);
+        assert_eq!(t.get_cursor_position().unwrap().x, 4);
+    }
+
+    #[test]
+    fn multiline_does_not_scroll_sideways() {
+        let mut t = term(5);
+        let mut i = TextInput::new(true).with_text("abcdefghij");
+        draw(&mut i, &mut t);
+        assert_eq!(row(&t), "abcde");
+        assert_eq!(i.hscroll, 0);
     }
 }

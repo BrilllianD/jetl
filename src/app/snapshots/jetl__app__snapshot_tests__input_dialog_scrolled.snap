@@ -1,0 +1,21 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &[], Some(area))"
+---
+60x16 cursor=(54,7)
+00  ≣ ┌ Project: root ─────────┐│ *draft ×
+01    │                        ││  1    text
+02  1 │                        ││  2
+03  ⌂ ┌ Save As ───────────────────────────────────────────┐
+04  2 │ Where to save draft?                               │
+05  ◫ │ Path relative to the project root (Tab completes): │
+06  7 │                                                    │
+07  ⊢ │ s/not/fit/in/the/dialog/notes-for-the-meeting.txt  │
+08    │                [ Save ] [ Cancel ]                 │
+09  6 └────────────────────────────────────────────────────┘
+10  ⚠ │                        ││
+11  4 │                        ││
+12  ► │                        ││
+13  3 │                        ││
+14  ⌕ └────────────────────────┘│
+15  root          Ln 2, Col 1  LF  UTF-8  4 spaces  Plain text
