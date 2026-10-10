@@ -662,6 +662,9 @@ s Home; s -l label                     # "filter: label" on the right, only the 
 s Escape; s DC                         # Esc clears the filter; Delete on the label: "Remove Label" dialog
 s Tab; s Enter                         # Cancel: the label stays
 s DC; s Enter                          # Remove: toast 'Removed label "before refactor"', the row goes in place
+# Put Label on a folder: select a folder in the Project tree (Alt+1), Alt+L / F1 "Put Label"; the dialog reads
+# "Label for src/:"; Enter after a name: toast 'Put label "x" on src/ (N files)'; the Local History window's
+# project view (Alt+Shift+H on the folder) shows one label row for it, Enter lists its files.
 s Down; s DC                           # on a snapshot that is not a label: "Only labels can be removed; …"
 s Escape; s M-1; s Home; s Right; s Down; s Delete; s Enter   # delete d/x.txt from the tree
 ls $LH/state/jetl/history/index        # a second index file (d/x.txt, "before_delete")

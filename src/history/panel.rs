@@ -653,7 +653,12 @@ impl LocalHistoryPanel {
 
     fn put_label(&mut self, cx: &mut Ctx) {
         if self.view == View::Project {
-            return cx.notify(Level::Info, "Put Label works on one file: Enter shows the selected file's history");
+            // The selected file, else the folder the view scans.
+            let path = self.selection().map(|s| s.path).or_else(|| self.project_scope().map(Path::to_path_buf));
+            return match path {
+                Some(path) => cx.effects.push(Effect::History(Request::PutLabel(path))),
+                None => cx.notify(Level::Info, "No file shown: File > Local History… picks one"),
+            };
         }
         match &self.target {
             Some(t) => cx.effects.push(Effect::History(Request::PutLabel(t.path.clone()))),
@@ -1347,10 +1352,10 @@ mod tests {
         assert_eq!(act(&mut p, HistoryAction::Revert), ["revert 0007"]);
         let only = act(&mut p, HistoryAction::RemoveLabel);
         assert!(only[0].starts_with("notify Only labels can be removed"), "{only:?}");
-        let put = act(&mut p, HistoryAction::PutLabel);
-        assert!(put[0].starts_with("notify Put Label works on one file"), "{put:?}");
+        assert_eq!(act(&mut p, HistoryAction::PutLabel), ["label /w/b.txt"]);
         // A label of two files: removed from both; no revert of it.
         act(&mut p, HistoryAction::Down);
+        assert_eq!(act(&mut p, HistoryAction::PutLabel), ["label /w"], "a label row: the scanned folder");
         assert_eq!(act(&mut p, HistoryAction::RemoveLabel), ["remove v1 of /w/b.txt /w/src/a.rs"]);
         assert!(act(&mut p, HistoryAction::Revert)[0].starts_with("notify Select one of the label's files"));
         assert!(p.diff.key.is_none(), "no diff for a label");

@@ -51,17 +51,13 @@ impl App {
         }
     }
 
-    /// The file Put Label works on (`selected_or_active`); `None`, with a
-    /// notification, when there is none or it is a folder.
+    /// The file or folder Put Label works on (`selected_or_active`); `None`,
+    /// with a notification, when there is none.
     fn history_target(&mut self) -> Option<PathBuf> {
         let Some(path) = self.selected_or_active() else {
             self.notify(Level::Info, "No file selected");
             return None;
         };
-        if path.is_dir() {
-            self.notify(Level::Info, "Put Label is per file: select a file");
-            return None;
-        }
         Some(path)
     }
 
@@ -172,18 +168,37 @@ impl App {
             return self.notify(Level::Info, HISTORY_OFF);
         }
         let rel = crate::ui::palette::display_path(&path, &self.workspace.root);
-        self.dialog = Some(Dialog::input(DialogId::PutLabel(path), "Put Label", &format!("Label for {rel}:"), "", "Put"));
+        let of = if path == self.workspace.root {
+            "the project".to_string()
+        } else if path.is_dir() {
+            format!("{rel}/")
+        } else {
+            rel
+        };
+        self.dialog = Some(Dialog::input(DialogId::PutLabel(path), "Put Label", &format!("Label for {of}:"), "", "Put"));
     }
 
     /// The Put Label dialog's name: trimmed, cut to [`MAX_LABEL_CHARS`]; the
-    /// open tab's text (unsaved edits included), else the file on disk.
+    /// open tab's text (unsaved edits included), else the file on disk. On a
+    /// folder: its open tabs' text, and the worker adds the other files.
     pub(super) fn finish_put_label(&mut self, path: PathBuf, text: &str) {
         let name = text.trim().chars().take(MAX_LABEL_CHARS).collect::<String>().trim_end().to_string();
         if name.is_empty() {
             return self.notify(Level::Warn, "Put Label: a label needs a name");
         }
-        let tab = self.editor.index_of(&path).map(|i| CaptureText::Rope(self.editor.buffers[i].rope.clone()));
-        if !self.history.put_label(path, tab, name) {
+        let queued = if path.is_dir() {
+            let open = self
+                .editor
+                .buffers
+                .iter()
+                .filter_map(|b| b.path.as_ref().filter(|p| p.starts_with(&path)).map(|p| (p.clone(), CaptureText::Rope(b.rope.clone()))))
+                .collect();
+            self.history.put_label_dir(path, open, name, self.workspace.root.clone())
+        } else {
+            let tab = self.editor.index_of(&path).map(|i| CaptureText::Rope(self.editor.buffers[i].rope.clone()));
+            self.history.put_label(path, tab, name)
+        };
+        if !queued {
             // Turned off while the dialog was open.
             self.notify(Level::Info, HISTORY_OFF);
         }
@@ -260,11 +275,23 @@ impl App {
                 }
             }
             HistoryMsg::Labelled { path, name, result } => match result {
-                Ok(()) => {
+                Ok(n) => {
                     let rel = crate::ui::palette::display_path(&path, &self.workspace.root);
-                    self.notify(Level::Info, format!("Put label \"{name}\" on {rel}"));
+                    let dir = path.is_dir();
+                    let of = if path == self.workspace.root { "the project".to_string() } else { format!("{rel}/") };
+                    if !dir {
+                        self.notify(Level::Info, format!("Put label \"{name}\" on {rel}"));
+                    } else if n == 0 {
+                        self.notify(Level::Info, format!("Put Label: no files to label under {of}"));
+                    } else {
+                        self.notify(Level::Info, format!("Put label \"{name}\" on {of} ({n} file{})", if n == 1 { "" } else { "s" }));
+                    }
                     self.relist_if_shown(&path);
-                    self.history_files_changed(&path);
+                    if dir && self.history_panel.view() == View::Project && self.layout.is_visible(ToolWindowId::LocalHistory) {
+                        self.with_history_panel(LocalHistoryPanel::rescan);
+                    } else {
+                        self.history_files_changed(&path);
+                    }
                 }
                 Err(e) => self.notify(Level::Warn, format!("Put Label: {e}")),
             },
@@ -1242,8 +1269,72 @@ pub(crate) mod tests {
         app.project.refresh();
         assert!(app.project.select_path(&app.workspace.root.join("sub")));
         app.perform(Action::App(AppAction::PutLabel));
-        assert!(app.dialog.is_none());
-        assert_eq!(app.notifications.last().map(|n| n.text.as_str()), Some("Put Label is per file: select a file"));
+        assert!(app.dialog.is_some(), "a folder takes a label");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn put_label_on_a_folder_labels_its_files() {
+        let (mut app, dir) = test_app("history-label-dir");
+        with_history(&mut app);
+        let root = app.workspace.root.clone();
+        let src = root.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        let (a, b, c) = (src.join("a.txt"), src.join("b.txt"), root.join("outside.txt"));
+        for (p, t) in [(&a, "disk a\n"), (&b, "disk b\n"), (&c, "out\n")] {
+            std::fs::write(p, t).unwrap();
+            record(&app, p, t);
+        }
+        // An open tab with unsaved edits under the folder, no history yet.
+        let open = load(&mut app, "src/open.txt", "open\n");
+        type_text(&mut app, "x ");
+        app.focus.set(PanelId::Project);
+        app.project.refresh();
+        assert!(app.project.select_path(&src));
+        app.perform(Action::App(AppAction::PutLabel));
+        let dlg = app.dialog.take().expect("a dialog");
+        assert_eq!(dlg.id, DialogId::PutLabel(src.clone()));
+        assert!(dlg.message.contains("Label for src/:"));
+        app.finish_dialog(DialogId::PutLabel(src.clone()), DialogResult::Text("v1".into()));
+        handle_next(&mut app, label_msg).await;
+        let last = app.notifications.last().map(|n| n.text.clone()).unwrap_or_default();
+        assert_eq!(last, "Put label \"v1\" on src/ (3 files)");
+        let label_of = |p: &Path| {
+            let l: Vec<_> = store::list(app.history.dir(), p).into_iter().filter(|e| e.kind == Kind::Label).collect();
+            assert_eq!(l.len(), 1, "{}", p.display());
+            (l[0].label(), l[0].at, store::read_blob(app.history.dir(), &l[0].blob).unwrap())
+        };
+        let (la, lb, lo) = (label_of(&a), label_of(&b), label_of(&open));
+        assert_eq!((la.0.as_str(), la.2.as_slice()), ("Label: v1", b"disk a\n".as_slice()));
+        assert_eq!(lo.2, b"x open\n");
+        assert!(la.1 == lb.1 && lb.1 == lo.1, "one time");
+        assert!(store::list(app.history.dir(), &c).iter().all(|e| e.kind != Kind::Label), "outside the folder");
+        // Nothing under a folder: said so.
+        let empty = root.join("empty");
+        std::fs::create_dir_all(&empty).unwrap();
+        app.finish_dialog(DialogId::PutLabel(empty.clone()), DialogResult::Text("v2".into()));
+        handle_next(&mut app, label_msg).await;
+        let last = app.notifications.last().map(|n| n.text.clone()).unwrap_or_default();
+        assert_eq!(last, "Put Label: no files to label under empty/");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn put_label_on_the_root_says_the_project() {
+        let (mut app, dir) = test_app("history-label-root");
+        with_history(&mut app);
+        let root = app.workspace.root.clone();
+        let a = root.join("a.txt");
+        std::fs::write(&a, "a\n").unwrap();
+        record(&app, &a, "a\n");
+        app.ask_put_label(root.clone());
+        let dlg = app.dialog.take().expect("a dialog");
+        assert_eq!(dlg.id, DialogId::PutLabel(root.clone()));
+        assert!(dlg.message.contains("Label for the project:"));
+        app.finish_dialog(DialogId::PutLabel(root.clone()), DialogResult::Text("v1".into()));
+        handle_next(&mut app, label_msg).await;
+        let last = app.notifications.last().map(|n| n.text.clone()).unwrap_or_default();
+        assert_eq!(last, "Put label \"v1\" on the project (1 file)");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

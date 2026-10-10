@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Put Label works on a folder or the whole project: select a folder in the Project tree (or use Put Label in
+  the Local History window's project view) and every open file under it (unsaved edits included), every
+  changed file git lists and every file with history gets the same label, which the project view shows as
+  one label row; removing it removes it from every file.
 - Local History follows files and folders renamed or moved inside the project by another program (`mv`, a
   file manager, another editor): the history moves to the new path with a "Renamed from" row, and the
   Local History window follows. Moves from or to outside the project are not followed.

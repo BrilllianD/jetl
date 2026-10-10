@@ -192,8 +192,9 @@ pub enum HistoryMsg {
     Recent { scope: PathBuf, files: Vec<RecentFile> },
     /// A snapshot's text, for a revert.
     Blob { path: PathBuf, id: String, result: Result<Vec<u8>, String> },
-    /// A label was put on `path`, or why not.
-    Labelled { path: PathBuf, name: String, result: Result<(), String> },
+    /// A label was put on `path` (a file: 1; a folder: on how many files), or
+    /// why not.
+    Labelled { path: PathBuf, name: String, result: Result<usize, String> },
     /// Label `name` was removed from `paths`: how many entries went (0: they
     /// were gone already).
     LabelRemoved { paths: Vec<PathBuf>, name: String, result: Result<usize, String> },
@@ -222,6 +223,7 @@ enum Job {
     Rename { from: PathBuf, to: PathBuf, at: u64 },
     Moved { pairs: Vec<(PathBuf, PathBuf)>, at: u64 },
     Label { path: PathBuf, text: Option<CaptureText>, name: String, at: u64 },
+    LabelDir { root: PathBuf, dir: PathBuf, open: Vec<(PathBuf, CaptureText)>, name: String, at: u64 },
     RemoveLabel { name: String, entries: Vec<(PathBuf, Entry)> },
     List(PathBuf),
     Recent(PathBuf),
@@ -353,6 +355,14 @@ impl Handle {
         self.enabled() && self.send(Job::Label { path, text, name, at: now_ms() })
     }
 
+    /// Put label `name` on the files under folder `dir`: the open tabs `open`
+    /// (their text), the git-changed files and the files with history, all
+    /// with one time. Answered by `HistoryMsg::Labelled` with the count;
+    /// `false` (nothing queued) while local history is off.
+    pub fn put_label_dir(&self, dir: PathBuf, open: Vec<(PathBuf, CaptureText)>, name: String, root: PathBuf) -> bool {
+        self.enabled() && self.send(Job::LabelDir { root, dir, open, name, at: now_ms() })
+    }
+
     /// Remove label `name`: `entries` (as listed, each with the path it is
     /// shown as); answered by `HistoryMsg::LabelRemoved`. Runs while local
     /// history is off too, as prune does.
@@ -445,6 +455,10 @@ impl Worker {
                 Job::Label { path, text, name, at } => {
                     let result = self.label(&path, text, &name, at, &s);
                     let _ = self.bus.send(AppMsg::LocalHistory(HistoryMsg::Labelled { path, name, result }));
+                }
+                Job::LabelDir { root, dir, open, name, at } => {
+                    let result = self.label_dir(&root, &dir, open, &name, at, &s);
+                    let _ = self.bus.send(AppMsg::LocalHistory(HistoryMsg::Labelled { path: dir, name, result }));
                 }
                 Job::RemoveLabel { name, entries } => {
                     let result = self.remove_labels(&entries);
@@ -541,7 +555,7 @@ impl Worker {
     }
 
     /// Store label `name` of `path`: `text`, else the file on disk.
-    fn label(&self, path: &Path, text: Option<CaptureText>, name: &str, at: u64, s: &LocalHistoryConfig) -> Result<(), String> {
+    fn label(&self, path: &Path, text: Option<CaptureText>, name: &str, at: u64, s: &LocalHistoryConfig) -> Result<usize, String> {
         if !s.enabled {
             return Err("local history is off".into());
         }
@@ -550,12 +564,61 @@ impl Worker {
             None => Self::read_for_label(path, s)?,
         };
         match store::record(&self.dir, path, &bytes, Kind::Label, Some(name.to_string()), at, s.max_file_bytes()) {
-            Ok(store::Recorded::Added(_) | store::Recorded::Replaced(_)) => Ok(()),
+            Ok(store::Recorded::Added(_) | store::Recorded::Replaced(_)) => Ok(1),
             Ok(store::Recorded::Skipped(store::Skip::TooLarge)) => Err(too_large(s)),
             Ok(store::Recorded::Skipped(k)) => Err(k.reason().into()),
             Ok(store::Recorded::Same) => Err("nothing stored".into()),
             Err(e) => Err(e.to_string()),
         }
+    }
+
+    /// Label `name` at `at` on the files under `dir` (at most [`MAX_FILES`]):
+    /// the `open` tabs' text, the git-changed files that are not deleted (not
+    /// a git repo: none) and the present files with history, from disk. The
+    /// number of files that got it; a file that cannot be labelled is skipped.
+    fn label_dir(
+        &mut self,
+        root: &Path,
+        dir: &Path,
+        open: Vec<(PathBuf, CaptureText)>,
+        name: &str,
+        at: u64,
+        s: &LocalHistoryConfig,
+    ) -> Result<usize, String> {
+        if !s.enabled {
+            return Err("local history is off".into());
+        }
+        let mut paths = std::collections::BTreeSet::new();
+        let mut texts: std::collections::HashMap<PathBuf, CaptureText> = std::collections::HashMap::new();
+        for (p, t) in open {
+            paths.insert(p.clone());
+            texts.insert(p, t);
+        }
+        if let Ok(snap) = crate::git::repo::status(root) {
+            let changed = snap.entries.into_iter().filter(|e| e.status != crate::git::model::FileStatus::Deleted);
+            paths.extend(changed.map(|e| e.abs).filter(|p| p.starts_with(dir)));
+        }
+        let known = store::recent(&self.dir, dir, self.cache.get_or_insert_with(Default::default));
+        paths.extend(known.into_iter().filter(|f| std::fs::metadata(&f.path).is_ok_and(|m| m.is_file())).map(|f| f.path));
+        let mut labelled = 0;
+        for path in paths.into_iter().take(MAX_FILES) {
+            let bytes = match texts.remove(&path) {
+                Some(t) => t.into_bytes(),
+                None => match Self::read_for_label(&path, s) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        tracing::debug!("label {name}: skipping {}: {e}", path.display());
+                        continue;
+                    }
+                },
+            };
+            match store::record(&self.dir, &path, &bytes, Kind::Label, Some(name.to_string()), at, s.max_file_bytes()) {
+                Ok(store::Recorded::Added(_) | store::Recorded::Replaced(_)) => labelled += 1,
+                Ok(other) => tracing::debug!("label {name}: {} not labelled: {other:?}", path.display()),
+                Err(e) => tracing::debug!("label {name}: {}: {e}", path.display()),
+            }
+        }
+        Ok(labelled)
     }
 
     /// The file a label is put on, from disk (symlinks followed): a regular
@@ -848,7 +911,7 @@ mod tests {
         }
     }
 
-    fn label_result(m: HistoryMsg) -> Result<(), String> {
+    fn label_result(m: HistoryMsg) -> Result<usize, String> {
         match m {
             HistoryMsg::Labelled { result, .. } => result,
             other => panic!("expected Labelled, got {other:?}"),
@@ -869,12 +932,12 @@ mod tests {
         std::fs::write(&a, "disk\n").unwrap();
         let (h, mut rx) = handle(&dir);
         assert!(h.put_label(a.clone(), None, "v1".into()));
-        assert_eq!(label_result(answer(&h, &mut rx)), Ok(()));
+        assert_eq!(label_result(answer(&h, &mut rx)), Ok(1));
         let l = listed(&h, &mut rx, &a);
         assert_eq!(l[0].label(), "Label: v1");
         assert_eq!(store::read_blob(h.dir(), &l[0].blob).unwrap(), b"disk\n");
         assert!(h.put_label(a.clone(), Some(CaptureText::Text("tab\n".into())), "v2".into()));
-        assert_eq!(label_result(answer(&h, &mut rx)), Ok(()));
+        assert_eq!(label_result(answer(&h, &mut rx)), Ok(1));
         let l = listed(&h, &mut rx, &a);
         assert_eq!((l[0].label(), store::read_blob(h.dir(), &l[0].blob).unwrap()), ("Label: v2".into(), b"tab\n".to_vec()));
         // Not stored, and why.
@@ -908,7 +971,7 @@ mod tests {
         h.set_settings(LocalHistoryConfig::default());
         for p in [&a, &b] {
             h.put_label(p.clone(), None, "both".into());
-            assert_eq!(label_result(answer(&h, &mut rx)), Ok(()));
+            assert_eq!(label_result(answer(&h, &mut rx)), Ok(1));
         }
         let both = vec![(a.clone(), listed(&h, &mut rx, &a)[0].clone()), (b.clone(), listed(&h, &mut rx, &b)[0].clone())];
         h.remove_label("both".into(), both);
@@ -918,6 +981,29 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_folder_label_covers_open_tabs_and_files_with_history() {
+        let dir = temp("label-dir");
+        let (src, other) = (dir.join("src"), dir.join("other.txt"));
+        std::fs::create_dir_all(&src).unwrap();
+        let (open, known, bare) = (src.join("open.txt"), src.join("known.txt"), src.join("bare.txt"));
+        for p in [&known, &bare, &other] {
+            std::fs::write(p, "disk\n").unwrap();
+        }
+        let (h, mut rx) = handle(&dir);
+        h.capture(Capture::text(known.clone(), "old\n".into(), Kind::Save));
+        h.capture(Capture::text(other.clone(), "old\n".into(), Kind::Save));
+        assert!(h.put_label_dir(src.clone(), vec![(open.clone(), CaptureText::Text("tab\n".into()))], "v1".into(), dir.clone()));
+        assert_eq!(label_result(answer(&h, &mut rx)), Ok(2));
+        let mut label = |p: &Path| listed(&h, &mut rx, p).into_iter().find(|e| e.kind == Kind::Label);
+        let (o, k) = (label(&open).unwrap(), label(&known).unwrap());
+        assert_eq!((o.label(), o.at), ("Label: v1".to_string(), k.at));
+        assert_eq!(store::read_blob(h.dir(), &o.blob).unwrap(), b"tab\n");
+        assert_eq!(store::read_blob(h.dir(), &k.blob).unwrap(), b"disk\n");
+        assert!(label(&bare).is_none() && label(&other).is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
