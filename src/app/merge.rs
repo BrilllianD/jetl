@@ -133,9 +133,12 @@ impl App {
     /// After a conflicted file was resolved, the first status that no
     /// longer lists it offers the conflicted files left (Resolve Conflicts
     /// again), or says that none are; a status from before the resolve
-    /// waits. Nothing is offered over a dialog or the resolver.
+    /// waits, and so does a failed one (the files left are unknown). Nothing is offered over a dialog or the resolver.
     pub(super) fn offer_next_conflict(&mut self) {
         let Some(rel) = &self.resolved_conflict else { return };
+        if self.git_panel.snapshot().is_none() {
+            return;
+        }
         let left = self.conflicted();
         if left.contains(rel) {
             return;
@@ -287,7 +290,15 @@ mod tests {
         app.perform(merge(MergeAction::AcceptLeft));
         app.perform(merge(MergeAction::Apply));
         handle_next(&mut app, op_done).await;
-        feed_status(&mut app, 4);
+        // A failed status says nothing about the files left: no verdict yet.
+        app.handle_msg(AppMsg::Git(GitMsg::Status {
+            generation: app.git.generation,
+            seq: 4,
+            result: Err(anyhow::anyhow!("status failed")),
+        }));
+        assert!(app.dialog.is_none());
+        assert!(app.notifications.iter().all(|n| n.text != "All conflicts resolved"));
+        feed_status(&mut app, 5);
         assert!(app.dialog.is_none());
         assert_eq!(app.notifications.last().unwrap().text, "All conflicts resolved");
         let _ = std::fs::remove_dir_all(&dir);

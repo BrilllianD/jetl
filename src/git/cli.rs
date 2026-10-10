@@ -1,6 +1,7 @@
 //! The `git` command line, for network, branch switching, log/show and
 //! worktree operations. Never prompts: no controlling terminal, ssh in batch
-//! mode, no editor, stdin closed, killed after a timeout.
+//! mode, no editor, stdin closed, killed after a timeout. Runs in the C
+//! locale, so git's messages are the English ones jetl parses.
 
 use std::path::Path;
 use std::process::Stdio;
@@ -58,6 +59,9 @@ pub async fn git_with_input(root: &Path, args: &[String], input: Option<Vec<u8>>
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_EDITOR", "true")
         .env("GIT_PAGER", "cat")
+        // git's messages are parsed (`CONFLICT`, `has no upstream branch`,
+        // `not fully merged`), so they must be the untranslated ones.
+        .env("LC_ALL", "C")
         .stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -139,8 +143,10 @@ pub async fn git_ok(root: &Path, args: &[String]) -> Result<CliOutput> {
 }
 
 /// `git stash pop` or `apply` of the stash whose commit is `oid` (looked
-/// up in `git stash list`, so a list that changed cannot hit another
-/// entry). A stash that conflicts with HEAD is applied with conflict
+/// up in `git stash list` just before, so a list that changed since it was
+/// shown cannot hit another entry; a stash push or drop that runs between
+/// the lookup and the pop can still shift the index, as stash operations
+/// are not serialised). A stash that conflicts with HEAD is applied with conflict
 /// stages and markers, like a merge stop (pop keeps the entry then);
 /// local changes in the way make git refuse and change nothing. Returns
 /// whether git succeeded and the console text: a short line on success,
@@ -258,6 +264,13 @@ pub async fn show_file(root: &Path, rev: &str, rel: &str) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn git_runs_in_the_c_locale() {
+        let out = git(&std::env::temp_dir(), &args(&["-c", "alias.lc=!printf %s \"$LC_ALL\"", "lc"])).await.unwrap();
+        assert!(out.ok);
+        assert_eq!(out.stdout_text(), "C");
+    }
 
     #[test]
     fn ssh_runs_in_batch_mode_on_top_of_the_users_command() {

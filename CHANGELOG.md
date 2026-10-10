@@ -82,6 +82,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Conflicts after a merge, rebase, cherry-pick, revert or stash pop open Resolve Conflicts with a localized git too (git runs in the C locale), and a failed status refresh after a resolve no longer reports that all conflicts are resolved.
 - Multiple carets: Duplicate Line with two carets on one line keeps both; Clone Caret Above/Below
   and Up/Down keep the visual column across tabs (soft wrap off); any caret motion resets Add Next
   Occurrence (and its whole-word mode); Alt+Shift+drag adds the column block to the existing
