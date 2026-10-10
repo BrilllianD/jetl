@@ -19,8 +19,10 @@ pub struct RecentProject {
     pub last_opened: u64,
 }
 
-/// Serializes read-modify-write of the file between background tasks.
-static FILE_LOCK: Mutex<()> = Mutex::new(());
+/// Serializes read-modify-write of the file between background tasks. The
+/// value counts the file states handed out: each [`update`] and [`forget`]
+/// bumps it while holding the guard, so a higher version saw a later state.
+static FILE_LOCK: Mutex<u64> = Mutex::new(0);
 
 pub fn now() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
@@ -66,9 +68,13 @@ pub fn save(file: &Path, list: &[RecentProject]) -> Result<()> {
 }
 
 /// Blocking: record `root` (when given) at time `at`, and return the roots
-/// that still exist as directories, newest first.
-pub fn update(file: &Path, root: Option<&Path>, at: u64) -> Vec<PathBuf> {
-    let _guard = FILE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+/// that still exist as directories, newest first, with the version taken
+/// under the file lock: a reply with a higher version saw a later state of
+/// the file.
+pub fn update(file: &Path, root: Option<&Path>, at: u64) -> (u64, Vec<PathBuf>) {
+    let mut guard = FILE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    *guard += 1;
+    let version = *guard;
     let mut list = load(file);
     if let Some(root) = root {
         touch(&mut list, root, at);
@@ -76,23 +82,26 @@ pub fn update(file: &Path, root: Option<&Path>, at: u64) -> Vec<PathBuf> {
             tracing::warn!("saving recent projects: {e:#}");
         }
     }
-    listed(list)
+    (version, listed(list))
 }
 
 /// Blocking: drop `root` from the file and return the roots that still
 /// exist as directories, newest first, with the outcome of the write. A
 /// root that is not in the file writes nothing; a failed write lists the
-/// file as it was.
-pub fn forget(file: &Path, root: &Path) -> (Vec<PathBuf>, Result<()>) {
-    let _guard = FILE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+/// file as it was. The version is taken under the file lock, as in
+/// [`update`], also when nothing is written.
+pub fn forget(file: &Path, root: &Path) -> (u64, Vec<PathBuf>, Result<()>) {
+    let mut guard = FILE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    *guard += 1;
+    let version = *guard;
     let list = load(file);
     let kept: Vec<RecentProject> = list.iter().filter(|p| p.root != root).cloned().collect();
     if kept.len() == list.len() {
-        return (listed(list), Ok(()));
+        return (version, listed(list), Ok(()));
     }
     match save(file, &kept) {
-        Ok(()) => (listed(kept), Ok(())),
-        Err(e) => (listed(list), Err(e)),
+        Ok(()) => (version, listed(kept), Ok(())),
+        Err(e) => (version, listed(list), Err(e)),
     }
 }
 
@@ -144,12 +153,12 @@ mod tests {
         let (a, b) = (dir.join("a"), dir.join("b"));
         std::fs::create_dir_all(&a).unwrap();
         std::fs::create_dir_all(&b).unwrap();
-        assert_eq!(update(&file, Some(&a), 1), vec![a.clone()]);
-        assert_eq!(update(&file, Some(&b), 2), [b.clone(), a.clone()]);
+        assert_eq!(update(&file, Some(&a), 1).1, vec![a.clone()]);
+        assert_eq!(update(&file, Some(&b), 2).1, [b.clone(), a.clone()]);
         assert_eq!(load(&file).len(), 2);
         // A deleted project stays in the file but is not listed.
         std::fs::remove_dir_all(&a).unwrap();
-        assert_eq!(update(&file, None, 3), vec![b.clone()]);
+        assert_eq!(update(&file, None, 3).1, vec![b.clone()]);
         assert_eq!(load(&file).len(), 2);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -166,23 +175,37 @@ mod tests {
         update(&file, Some(&a), 1);
         update(&file, Some(&b), 2);
         update(&file, Some(&c), 3);
-        let (roots, saved) = forget(&file, &b);
+        let (_, roots, saved) = forget(&file, &b);
         assert!(saved.is_ok());
         assert_eq!(roots, [c.clone(), a.clone()]);
         assert_eq!(roots, load(&file).into_iter().map(|p| p.root).collect::<Vec<_>>());
         // An unknown root (or a missing file) writes nothing.
         let mtime = std::fs::metadata(&file).unwrap().modified().unwrap();
-        assert_eq!(forget(&file, &b).0, [c.clone(), a.clone()]);
+        assert_eq!(forget(&file, &b).1, [c.clone(), a.clone()]);
         assert_eq!(std::fs::metadata(&file).unwrap().modified().unwrap(), mtime);
-        let (roots, saved) = forget(&dir.join("none.json"), &a);
+        let (_, roots, saved) = forget(&dir.join("none.json"), &a);
         assert!(roots.is_empty() && saved.is_ok());
         assert!(!dir.join("none.json").exists());
         // A failed write keeps the file and lists it as it is.
         std::fs::create_dir_all(file.with_extension("json.tmp")).unwrap();
-        let (roots, saved) = forget(&file, &a);
+        let (_, roots, saved) = forget(&file, &a);
         assert!(saved.is_err());
         assert_eq!(roots, [c.clone(), a.clone()]);
         assert_eq!(load(&file).len(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn versions_follow_lock_order() {
+        let dir = std::env::temp_dir().join(format!("jetl-test-recent-version-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let file = dir.join("state/recent_projects.json");
+        let a = dir.join("a");
+        std::fs::create_dir_all(&a).unwrap();
+        let (v1, _) = update(&file, Some(&a), 1);
+        let (v2, _, _) = forget(&file, &a);
+        let (v3, _) = update(&file, None, 2);
+        assert!(v1 < v2 && v2 < v3, "{v1} {v2} {v3}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

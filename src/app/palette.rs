@@ -131,8 +131,8 @@ impl App {
 
     /// Read the recent projects file in `spawn_blocking`, first recording the
     /// current root when `touch` is set and recording is on (startup and
-    /// root switches). The result is ordered by a seq; it does not depend on
-    /// the root.
+    /// root switches). The reply carries the file's version and does not
+    /// depend on the root.
     pub(crate) fn load_recent_projects(&mut self, touch: bool) {
         self.recent_projects_requested += 1;
         let seq = self.recent_projects_requested;
@@ -140,39 +140,40 @@ impl App {
         let root = (touch && self.record_recent).then(|| self.workspace.root.clone());
         let at = crate::recent_projects::now();
         tokio::task::spawn_blocking(move || {
-            let roots = crate::recent_projects::update(&file, root.as_deref(), at);
-            let _ = tx.send(AppMsg::RecentProjects { seq, roots, error: None });
+            let (version, roots) = crate::recent_projects::update(&file, root.as_deref(), at);
+            let _ = tx.send(AppMsg::RecentProjects { seq, version, roots, error: None });
         });
     }
 
     /// Shift+Delete in Recent Projects: the palette already dropped the row
     /// (and never lists the current root, so it cannot be forgotten here).
-    /// Drop it from the list at once and from the file in `spawn_blocking`,
-    /// under the same seq as the loads: one asked earlier would bring the row
-    /// back, so its late reply is dropped. A failed write lists the file as it
-    /// is and warns.
+    /// Drop it from the list at once and from the file in `spawn_blocking`.
+    /// A load asked earlier would bring the row back, so `recent_projects_forgot`
+    /// drops its reply; a load asked later that read the file before the
+    /// write is dropped by its lower version. A failed write lists the file as
+    /// it is and warns.
     fn forget_recent_project(&mut self, root: std::path::PathBuf) {
         self.recent_projects.retain(|r| *r != root);
         self.recent_projects_requested += 1;
         let seq = self.recent_projects_requested;
-        self.recent_projects_seq = seq;
+        self.recent_projects_forgot = seq;
         let (file, tx) = (self.paths.recent_projects_file(), self.bus_tx.clone());
         tokio::task::spawn_blocking(move || {
-            let (roots, saved) = crate::recent_projects::forget(&file, &root);
+            let (version, roots, saved) = crate::recent_projects::forget(&file, &root);
             let error = saved.err().map(|e| format!("Forget {} in recent projects: {e:#}", root.display()));
-            let _ = tx.send(AppMsg::RecentProjects { seq, roots, error });
+            let _ = tx.send(AppMsg::RecentProjects { seq, version, roots, error });
         });
     }
 
-    pub(super) fn recent_projects_loaded(&mut self, seq: u64, roots: Vec<std::path::PathBuf>, error: Option<String>) {
+    pub(super) fn recent_projects_loaded(&mut self, seq: u64, version: u64, roots: Vec<std::path::PathBuf>, error: Option<String>) {
         if let Some(e) = error {
             self.notify(crate::event::Level::Warn, e);
         }
-        if seq < self.recent_projects_seq {
+        if seq < self.recent_projects_forgot || version <= self.recent_projects_version {
             tracing::debug!("dropping stale recent projects");
             return;
         }
-        self.recent_projects_seq = seq;
+        self.recent_projects_version = version;
         self.recent_projects = roots;
         if let Some(p) = self.palette.as_mut().filter(|p| p.wants(Source::Projects)) {
             p.set_projects(&self.recent_projects);

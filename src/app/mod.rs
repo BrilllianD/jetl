@@ -176,9 +176,12 @@ pub struct App {
     pub file_index: FileIndex,
     /// Recent project roots for the palette, cached from the last load.
     recent_projects: Vec<PathBuf>,
-    /// Last requested and last applied recent projects load.
+    /// Last requested recent projects load or forget, the seq of the latest
+    /// forget (replies to older requests are dropped), and the file version
+    /// of the list shown.
     recent_projects_requested: u64,
-    recent_projects_seq: u64,
+    recent_projects_forgot: u64,
+    recent_projects_version: u64,
     /// Record the root in the recent projects file (at startup and on root
     /// switches). Off until `main.rs` calls [`App::start_recent_projects`],
     /// so tests never write it: the write would land after the test removed
@@ -322,7 +325,8 @@ impl App {
             file_index: FileIndex::default(),
             recent_projects: Vec::new(),
             recent_projects_requested: 0,
-            recent_projects_seq: 0,
+            recent_projects_forgot: 0,
+            recent_projects_version: 0,
             record_recent: false,
             pick_project: false,
             branches_error_shown: false,
@@ -1412,21 +1416,47 @@ pub(crate) mod tests {
         std::fs::create_dir_all(&other).unwrap();
         // Only the current root is known: nothing to offer.
         app.pick_project_at_startup();
-        app.handle_msg(AppMsg::RecentProjects { seq: 1, roots: vec![root.clone()], error: None });
+        app.handle_msg(AppMsg::RecentProjects { seq: 1, version: 1, roots: vec![root.clone()], error: None });
         assert!(app.palette.is_none());
 
         app.pick_project_at_startup();
-        app.handle_msg(AppMsg::RecentProjects { seq: 2, roots: vec![root.clone(), other.clone()], error: None });
+        app.handle_msg(AppMsg::RecentProjects { seq: 2, version: 2, roots: vec![root.clone(), other.clone()], error: None });
         assert_eq!(app.palette.as_ref().map(|p| p.kind), Some(PaletteKind::RecentProjects));
         // A late reply to an older request does not replace the list.
-        app.handle_msg(AppMsg::RecentProjects { seq: 1, roots: vec![root.clone()], error: None });
+        app.handle_msg(AppMsg::RecentProjects { seq: 1, version: 1, roots: vec![root.clone()], error: None });
         let res = app.palette.as_mut().unwrap().handle_action(&PaletteAction::Accept).unwrap();
         assert_eq!(res, PaletteResult::Accept(Accept::SwitchRoot(other.clone())));
         app.finish_palette(res);
         assert_eq!(app.workspace.root, other);
         // Offered once only.
-        app.handle_msg(AppMsg::RecentProjects { seq: 3, roots: vec![other.clone(), root.clone()], error: None });
+        app.handle_msg(AppMsg::RecentProjects { seq: 3, version: 3, roots: vec![other.clone(), root.clone()], error: None });
         assert!(app.palette.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_load_that_read_before_a_forget_does_not_bring_the_root_back() {
+        let (mut app, dir) = test_app("recent-forget-race");
+        let root = app.workspace.root.clone();
+        let (a, b) = (dir.join("a"), dir.join("b"));
+        app.recent_projects = vec![root.clone(), a.clone(), b.clone()];
+        // As if forget seq 1, then load seq 2 were asked.
+        app.recent_projects_requested = 2;
+        app.recent_projects_forgot = 1;
+        let reply = |seq, version, roots: &[&PathBuf]| AppMsg::RecentProjects {
+            seq,
+            version,
+            roots: roots.iter().map(|r| (*r).clone()).collect(),
+            error: None,
+        };
+        // The load read the file first, the forget wrote after it.
+        app.handle_msg(reply(2, 10, &[&root, &a, &b]));
+        app.handle_msg(reply(1, 11, &[&root, &a]));
+        assert_eq!(app.recent_projects, [root.clone(), a.clone()]);
+        // Older than the forget: the barrier. Older file state: the version.
+        app.handle_msg(reply(0, 12, &[&root]));
+        app.handle_msg(reply(3, 9, &[&root, &a, &b]));
+        assert_eq!(app.recent_projects, [root, a]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

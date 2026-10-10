@@ -114,6 +114,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Recent Projects: reopening the palette right after forgetting a project can no longer list it again.
 - Single-line text fields (dialogs, palette, find bars) scroll sideways to keep the cursor visible instead of
   cutting long text; a click in an input dialog's field lands on the char under it.
 - Toasts no longer hide under the palette, menus or dialogs: they move below them and can be clicked away while the overlay stays open.

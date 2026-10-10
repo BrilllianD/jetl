@@ -43,7 +43,7 @@ impl App {
             AppMsg::FileIndex { generation, seq, files } => self.file_index_loaded(generation, seq, files),
             AppMsg::Symbols { generation, seq, batch } => self.symbols_loaded(generation, seq, batch),
             AppMsg::PaletteFiltered { generation, seq, rows } => self.palette_filtered(generation, seq, rows),
-            AppMsg::RecentProjects { seq, roots, error } => self.recent_projects_loaded(seq, roots, error),
+            AppMsg::RecentProjects { seq, version, roots, error } => self.recent_projects_loaded(seq, version, roots, error),
             AppMsg::Find { generation, batch } if generation == self.workspace.generation => self.find.on_batch(batch),
             AppMsg::ReplaceDone { generation, files, matches, errors } if generation == self.workspace.generation => {
                 self.replace_done(files, matches, errors)

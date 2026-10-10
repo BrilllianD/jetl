@@ -103,11 +103,15 @@ pub enum AppMsg {
         seq: u64,
         rows: Vec<usize>,
     },
-    /// Recent project roots that still exist, newest first, in request
-    /// order (not tied to the root). `error` is a failed write of a
+    /// Recent project roots that still exist, newest first (not tied to the
+    /// root). `version` is the file state's version taken under the file
+    /// lock (`recent_projects::update`); a higher one saw a later state, and
+    /// `seq` is the request's, which tells replies older than a forget.
+    /// `error` is a failed write of a
     /// forgotten project (`App::forget_recent_project`).
     RecentProjects {
         seq: u64,
+        version: u64,
         roots: Vec<PathBuf>,
         error: Option<String>,
     },
