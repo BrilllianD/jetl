@@ -1404,7 +1404,29 @@ impl Editor {
                 // Only a drag that started in this group's text selects
                 // (not one that started on a find bar button).
                 let Some((_, mode)) = self.drag.filter(|(dg, _)| *dg == g) else { return true };
-                let (p, up) = pos_at(b, m.x, m.y);
+                // Soft wrap off: a pointer over the gutter or at the right edge
+                // scrolls one column per event; the head follows to the edge cell.
+                if !b.rows().wraps() {
+                    if m.x < text_area.x {
+                        b.view.scroll_col = b.view.scroll_col.saturating_sub(1);
+                    } else if m.x + 1 >= text_area.right() {
+                        let widest = b
+                            .rows()
+                            .iter_from(b.view.top())
+                            .take(text_area.height as usize)
+                            .map(|r| {
+                                let end = b.rope.line_to_char(r.line) + selection::line_len_no_eol(&b.rope, r.line);
+                                view::visual_col(&b.rope, end, tab_width)
+                            })
+                            .max()
+                            .unwrap_or(0);
+                        if b.view.scroll_col + (text_area.width as usize) < widest + 1 {
+                            b.view.scroll_col += 1;
+                        }
+                    }
+                }
+                let x = m.x.clamp(text_area.x, text_area.right().saturating_sub(1));
+                let (p, up) = pos_at(b, x, m.y);
                 match mode {
                     DragMode::Word(s, e) => {
                         let row_start = b.rows().seg_range(&b.rope, row_at(b, m.y)).start;
@@ -1424,7 +1446,7 @@ impl Editor {
                     // Alt+drag: a column block once the pointer leaves the
                     // pressed cell (Alt+Shift+drag too).
                     DragMode::AltPending(anchor) | DragMode::Column(anchor) => {
-                        let head = cell_at(b, m.x, m.y);
+                        let head = cell_at(b, x, m.y);
                         if matches!(mode, DragMode::AltPending(_)) && (head == anchor || !b.blocks_supported()) {
                             return true;
                         }
@@ -1952,6 +1974,52 @@ mod tests {
     fn sel_texts(ed: &Editor) -> Vec<String> {
         let b = ed.active_buffer().unwrap();
         b.view.sels.iter().map(|s| b.rope.slice(s.range()).to_string()).collect()
+    }
+
+    /// A drawn editor of `text` in a 40x8 terminal; returns the text area origin.
+    fn drawn(text: &str) -> (Editor, u16, u16) {
+        let mut ed = editor_with("a.cfg", text);
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 8)).unwrap();
+        let theme = Theme::default();
+        term.draw(|f| ed.render(f, Rect::new(0, 0, 40, 1), Rect::new(0, 1, 40, 7), true, &theme)).unwrap();
+        let ta = ed.text_area();
+        (ed, ta.x, ta.y)
+    }
+
+    #[test]
+    fn drag_past_the_edges_scrolls_sideways() {
+        let (mut ed, x0, y0) = drawn(&"x".repeat(200));
+        let ta = ed.text_area();
+        let right = ta.right() - 1;
+        let drag = |ed: &mut Editor, x: u16| {
+            let m = Mouse { kind: MouseEventKind::Drag(MouseButton::Left), x, y: y0, clicks: 1, mods: KeyModifiers::NONE };
+            with_cx(|cx| {
+                ed.handle_mouse(&m, Rect::default(), cx);
+            });
+        };
+        let press = Mouse { kind: MouseEventKind::Down(MouseButton::Left), x: x0 + 2, y: y0, clicks: 1, mods: KeyModifiers::NONE };
+        with_cx(|cx| {
+            ed.handle_mouse(&press, Rect::default(), cx);
+        });
+        for _ in 0..5 {
+            drag(&mut ed, right);
+        }
+        let b = ed.active_buffer().unwrap();
+        assert_eq!(b.view.scroll_col, 5);
+        assert_eq!(b.view.sels.primary().head, 5 + (ta.width as usize - 1));
+        for _ in 0..3 {
+            drag(&mut ed, x0 - 1);
+        }
+        let b = ed.active_buffer().unwrap();
+        assert_eq!((b.view.scroll_col, b.view.sels.primary().head), (2, 2));
+    }
+
+    #[test]
+    fn drag_at_the_edge_does_not_scroll_a_line_that_fits() {
+        let (mut ed, x0, y0) = drawn("short\n");
+        let right = ed.text_area().right() - 1;
+        mouse_path(&mut ed, KeyModifiers::NONE, &[(x0, y0), (right, y0), (right, y0)]);
+        assert_eq!(ed.active_buffer().unwrap().view.scroll_col, 0);
     }
 
     #[test]

@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Dragging a selection past the left or right edge scrolls sideways (soft wrap off).
 - Column selection: typing and pasting pad lines shorter than the block with spaces up to its left column, and
   their carets are drawn there. Backspace, Delete, Enter and Tab in that virtual space, Alt+click into it and a
   selection highlight past a line end are not supported yet.
