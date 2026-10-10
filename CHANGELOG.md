@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Local History keeps the unsaved edits you discard: answering Don't Save when quitting, closing tabs or
+  switching the project root first stores each dirty file's text as "Before discarding unsaved edits",
+  whether or not the periodic unsaved snapshots are on.
 - The conflict resolver pads the shorter side of a change with blank rows, so the three panes stay aligned
   while scrolling, inside a change of unequal sizes and after accepting both sides.
 - After a conflicted file is resolved (Accept Yours/Theirs or Apply in the resolver), Resolve Conflicts

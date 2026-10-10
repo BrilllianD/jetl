@@ -38,6 +38,11 @@ pub use store::{Entry, FileState, Kind, RecentFile};
 /// How often a running jetl prunes the store (the startup prune is separate).
 pub const PRUNE_EVERY: Duration = Duration::from_secs(3600);
 
+/// The detail of the snapshot taken before unsaved edits are discarded: the
+/// row reads "Before discarding unsaved edits" (`Kind::BeforeGit`, so the
+/// store format stays as it is).
+pub const DISCARD_DETAIL: &str = "discarding unsaved edits";
+
 pub const ACK_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// At most this many files are snapshotted before one git operation or

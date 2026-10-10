@@ -2314,6 +2314,38 @@ mod tests {
     }
 
     #[test]
+    fn discard_captures_ignore_history_seen_and_filter_by_id() {
+        let mut ed = editor_with("a.txt", "one\n");
+        let theme = Theme::default();
+        ed.open_text(PathBuf::from("/tmp/b.txt"), "two\n", false, &theme);
+        ed.open_text(PathBuf::from("/tmp/c.txt"), "clean\n", false, &theme);
+        ed.buffers[0].insert("x", TxKind::Typing);
+        ed.buffers[1].insert("y", TxKind::Typing);
+        let mut untitled = Buffer::from_text(99, None, "", false);
+        untitled.insert("q", TxKind::Typing);
+        ed.buffers.push(untitled);
+        // Already taken by the timer: still returned.
+        assert_eq!(ed.unsaved_captures(50).len(), 2);
+        let paths = |c: Vec<Capture>| -> Vec<(PathBuf, String)> {
+            c.into_iter()
+                .map(|c| match c {
+                    Capture { path, text: CaptureText::Rope(r), kind: Kind::BeforeGit, detail: Some(d) }
+                        if d == crate::history::DISCARD_DETAIL =>
+                    {
+                        (path, r.to_string())
+                    }
+                    other => panic!("unexpected {other:?}"),
+                })
+                .collect()
+        };
+        let all = paths(ed.discard_captures(None, 50));
+        assert_eq!(all, [(PathBuf::from("/tmp/a.txt"), "xone\n".to_string()), (PathBuf::from("/tmp/b.txt"), "ytwo\n".to_string())]);
+        let only_b = ed.buffers[1].id;
+        assert_eq!(paths(ed.discard_captures(Some(&[only_b]), 50)), [(PathBuf::from("/tmp/b.txt"), "ytwo\n".to_string())]);
+        assert!(ed.discard_captures(None, 3).is_empty(), "over the size cap");
+    }
+
+    #[test]
     fn unsaved_captures_take_changed_titled_buffers_once() {
         let mut ed = editor_with("a.txt", "one\n");
         let theme = Theme::default();

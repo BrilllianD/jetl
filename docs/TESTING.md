@@ -702,6 +702,11 @@ cat $LH/state/jetl/history/index/*     # only the "kind":"label" line of "keep":
 /tmp/tm.sh kill-server; rm -rf $LH
 ```
 
+Don't Save keeps the edits: with a dirty `notes.txt` ("A one"), Ctrl+Q, then
+Don't Save, run again, M-H on notes.txt: "Before discarding unsaved edits"
+on top, its diff against the file on disk showing "+A ". The same for a
+tab closed with Don't Save, with `snapshot_unsaved_secs = 0`.
+
 At 120 columns the list also shows each snapshot's size and line change,
 and Tab moves to the diff (its header in the focused style); below 60
 columns inside the window the list and the diff take turns. Shift+F10 in

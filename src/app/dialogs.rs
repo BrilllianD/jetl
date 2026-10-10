@@ -122,17 +122,27 @@ impl App {
             // A failed save or a disk conflict keeps the app open; untitled
             // buffers are asked about one at a time (`save_as.rs`).
             (DialogId::QuitDirty, DialogResult::Button(0)) => self.save_then(AfterSave::Quit),
-            (DialogId::QuitDirty, DialogResult::Button(1)) => self.should_quit = true,
+            (DialogId::QuitDirty, DialogResult::Button(1)) => {
+                self.snapshot_discarded(None);
+                self.should_quit = true;
+            }
             (DialogId::CloseTabDirty(id), DialogResult::Button(0)) => self.save_then(AfterSave::CloseTab(id)),
             (DialogId::CloseTabDirty(id), DialogResult::Button(1)) => {
+                self.snapshot_discarded(Some(&[id]));
                 if let Some(i) = self.editor.index_of_id(id) {
                     self.editor.force_close(i);
                 }
             }
             (DialogId::CloseAllDirty, DialogResult::Button(0)) => self.save_then(AfterSave::CloseAll),
-            (DialogId::CloseAllDirty, DialogResult::Button(1)) => self.editor.force_close_all(),
+            (DialogId::CloseAllDirty, DialogResult::Button(1)) => {
+                self.snapshot_discarded(None);
+                self.editor.force_close_all();
+            }
             (DialogId::CloseTabsDirty(ids), DialogResult::Button(0)) => self.save_then(AfterSave::CloseTabs(ids)),
-            (DialogId::CloseTabsDirty(ids), DialogResult::Button(1)) => self.editor.force_close_ids(&ids),
+            (DialogId::CloseTabsDirty(ids), DialogResult::Button(1)) => {
+                self.snapshot_discarded(Some(&ids));
+                self.editor.force_close_ids(&ids);
+            }
             (DialogId::SaveAs { id, then }, DialogResult::Text(t)) => self.finish_save_as(id, t, then),
             (DialogId::SaveAsOverwrite { id, path, then }, DialogResult::Button(0)) => self.save_as_write(id, path, then),
             (DialogId::ReplaceInFiles, DialogResult::Button(0)) => self.replace_in_files(),
@@ -260,6 +270,7 @@ impl App {
             }
             (DialogId::SwitchRootDirty(root), DialogResult::Button(0)) => self.save_then(AfterSave::SwitchRoot(root)),
             (DialogId::SwitchRootDirty(root), DialogResult::Button(1)) => {
+                self.snapshot_discarded(None);
                 if !self.config.worktree.switch_closes_tabs {
                     self.close_dirty_tabs();
                 }

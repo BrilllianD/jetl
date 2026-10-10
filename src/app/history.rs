@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use super::{App, Ctx};
+use crate::editor::buffer::BufferId;
 use crate::event::{AppMsg, Level};
 use crate::git::DiffKey;
 use crate::history::panel::{LocalHistoryPanel, View};
@@ -419,6 +420,19 @@ impl App {
         }
     }
 
+    /// Snapshot the unsaved edits of the buffers `ids` (all with `None`) just
+    /// before a "Don't Save" discards them. Needs local history on, not the
+    /// unsaved timer.
+    pub(super) fn snapshot_discarded(&mut self, ids: Option<&[BufferId]>) {
+        if !self.history.enabled() {
+            return;
+        }
+        let max = self.config.local_history.max_file_bytes();
+        for c in self.editor.discard_captures(ids, max) {
+            self.history.capture(c);
+        }
+    }
+
     /// Snapshot a file on disk (main thread, bounded by `max_file_kb`)
     /// before it is overwritten.
     pub(super) fn capture_disk(&mut self, path: &Path, kind: Kind) {
@@ -766,6 +780,67 @@ pub(crate) mod tests {
         type_text(&mut app, "w ");
         app.unsaved_snapshots(due + secs(3600));
         assert_eq!(snapshots(&app, &path).len(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    const DISCARD: &str = "Before discarding unsaved edits";
+
+    #[tokio::test]
+    async fn dont_save_on_close_snapshots_the_edits() {
+        let (mut app, dir) = test_app("history-discard-tab");
+        with_history(&mut app);
+        let path = load(&mut app, "a.txt", "one\n");
+        type_text(&mut app, "x ");
+        let id = app.editor.buffers[app.editor.active().unwrap()].id;
+        app.finish_dialog(DialogId::CloseTabDirty(id), DialogResult::Button(1));
+        assert!(app.editor.index_of_id(id).is_none(), "closed");
+        assert_eq!(snapshots(&app, &path), pairs(&[(DISCARD, "x one\n")]));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn dont_save_on_quit_snapshots_every_dirty_tab() {
+        let (mut app, dir) = test_app("history-discard-quit");
+        with_history(&mut app);
+        let a = load(&mut app, "a.txt", "one\n");
+        type_text(&mut app, "x ");
+        let b = load(&mut app, "b.txt", "two\n");
+        type_text(&mut app, "y ");
+        load(&mut app, "c.txt", "clean\n");
+        app.finish_dialog(DialogId::QuitDirty, DialogResult::Button(1));
+        assert!(app.should_quit);
+        assert_eq!(snapshots(&app, &a), pairs(&[(DISCARD, "x one\n")]));
+        assert_eq!(snapshots(&app, &b), pairs(&[(DISCARD, "y two\n")]));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn dont_save_relabels_an_unsaved_snapshot_of_the_same_text() {
+        let (mut app, dir) = test_app("history-discard-relabel");
+        let mut config = app.config.clone();
+        config.local_history.snapshot_unsaved_secs = 30;
+        app.apply_config(config);
+        with_history(&mut app);
+        let due = app.unsaved_due.expect("armed");
+        let path = load(&mut app, "a.txt", "one\n");
+        type_text(&mut app, "x ");
+        app.unsaved_snapshots(due);
+        assert_eq!(snapshots(&app, &path), pairs(&[("Unsaved changes", "x one\n")]));
+        let id = app.editor.buffers[app.editor.active().unwrap()].id;
+        app.finish_dialog(DialogId::CloseTabDirty(id), DialogResult::Button(1));
+        assert_eq!(snapshots(&app, &path), pairs(&[(DISCARD, "x one\n")]));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn dont_save_with_history_off_stores_nothing() {
+        let (mut app, dir) = test_app("history-discard-off");
+        let path = load(&mut app, "a.txt", "one\n");
+        type_text(&mut app, "x ");
+        app.finish_dialog(DialogId::QuitDirty, DialogResult::Button(1));
+        assert!(app.should_quit);
+        assert!(!app.history.enabled());
+        assert!(store::list(app.history.dir(), &path).is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

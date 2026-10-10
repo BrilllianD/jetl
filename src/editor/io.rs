@@ -376,6 +376,28 @@ impl Editor {
         }
         out
     }
+
+    /// Local history captures of the unsaved edits about to be discarded:
+    /// the buffers in `ids` (all with `None`) that are titled, dirty,
+    /// writable and not merge buffers, each as `Kind::BeforeGit` with
+    /// `DISCARD_DETAIL`. `history_seen` is ignored and left alone; texts
+    /// over `max_bytes` are left out.
+    pub fn discard_captures(&self, ids: Option<&[BufferId]>, max_bytes: u64) -> Vec<Capture> {
+        let merge = self.merge.as_ref().map(|m| m.ids);
+        let mut out = Vec::new();
+        for b in &self.buffers {
+            let Some(path) = &b.path else { continue };
+            if !b.dirty() || b.read_only || merge.is_some_and(|m| m.contains(&b.id)) || ids.is_some_and(|ids| !ids.contains(&b.id)) {
+                continue;
+            }
+            if b.rope.len_bytes() as u64 <= max_bytes {
+                let mut c = Capture::rope(path.clone(), b.rope.clone(), Kind::BeforeGit);
+                c.detail = Some(crate::history::DISCARD_DETAIL.to_string());
+                out.push(c);
+            }
+        }
+        out
+    }
 }
 
 /// `b` was written to `path` at undo state `state`: it is clean, the
