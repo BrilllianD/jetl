@@ -88,7 +88,7 @@ impl App {
         }
     }
 
-    /// Tab in an input dialog with path completion (Save As): complete the
+    /// Tab in an input dialog with path completion (Save As, the worktree path): complete the
     /// path before the cursor against its folder, read here on the main
     /// thread (one `read_dir`; Save As touches the same path synchronously
     /// at Enter). The first Tab that adds nothing to an ambiguous path says
@@ -99,7 +99,7 @@ impl App {
         let (Some(pc), DialogKind::Input { input, .. }) = (&mut d.paths, &mut d.kind) else { return };
         let before: String = input.text.chars().take(input.cursor).collect();
         let again = std::mem::replace(&mut pc.tabbed, true);
-        pc.hint = match crate::files::complete::complete(&before, &pc.base, home.as_deref()) {
+        pc.hint = match crate::files::complete::complete(&before, &pc.base, home.as_deref(), pc.folders_only) {
             Err(e) => Some(PathHint::Note(format!("Cannot read the folder: {e}"))),
             Ok(c) if c.matches.is_empty() => Some(PathHint::Note("No match".into())),
             Ok(c) => {

@@ -17,9 +17,12 @@ pub struct Completion {
 /// through `home`, absolute as is, `.`/`..` applied as `App::resolve_save_as`
 /// does. A missing directory matches nothing; another read error is returned.
 ///
+/// `folders_only` leaves files out of the insert, the matches and the count
+/// (the worktree path prompt).
+///
 /// `.` and `..` are never offered (`read_dir` leaves them out): `..` then
 /// Tab matches only a `..foo` entry, `../` then Tab lists the parent.
-pub fn complete(typed: &str, base: &Path, home: Option<&Path>) -> std::io::Result<Completion> {
+pub fn complete(typed: &str, base: &Path, home: Option<&Path>, folders_only: bool) -> std::io::Result<Completion> {
     if typed == "~" {
         return Ok(match home {
             Some(h) if h.is_dir() => Completion { insert: "/".into(), matches: vec!["~/".into()] },
@@ -56,6 +59,9 @@ pub fn complete(typed: &str, base: &Path, home: Option<&Path>) -> std::io::Resul
             Ok(t) => t.is_dir(),
             Err(_) => false,
         };
+        if folders_only && !is_dir {
+            continue;
+        }
         matches.push(if is_dir { format!("{name}/") } else { name });
     }
     matches.sort();
@@ -111,7 +117,7 @@ mod tests {
         std::fs::create_dir_all(d.join("notebook")).unwrap();
         touch(&d, "src/main.rs");
         touch(&d, "src/lib.rs");
-        let run = |t: &str| complete(t, &d, None).unwrap();
+        let run = |t: &str| complete(t, &d, None, false).unwrap();
         assert_eq!(run("REA"), c("DME.md", &["README.md"]));
         assert_eq!(run("sr"), c("c/", &["src/"]), "a directory gets its slash");
         assert_eq!(run("no"), c("te", &["notebook/", "notes.md", "notes.txt"]), "the common prefix");
@@ -128,13 +134,25 @@ mod tests {
     }
 
     #[test]
+    fn folders_only_skips_files() {
+        let d = tmp("folders");
+        touch(&d, "notes.txt");
+        std::fs::create_dir_all(d.join("notebook")).unwrap();
+        std::fs::create_dir_all(d.join("nothing")).unwrap();
+        assert_eq!(complete("no", &d, None, true).unwrap(), c("t", &["notebook/", "nothing/"]));
+        assert_eq!(complete("notes", &d, None, true).unwrap(), Completion::default());
+        assert_eq!(complete("no", &d, None, false).unwrap(), c("t", &["notebook/", "notes.txt", "nothing/"]));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
     fn hidden_entries_need_a_dot() {
         let d = tmp("hidden");
         touch(&d, ".env");
         std::fs::create_dir_all(d.join(".git")).unwrap();
         touch(&d, "a.txt");
-        assert_eq!(complete("", &d, None).unwrap(), c("a.txt", &["a.txt"]));
-        assert_eq!(complete(".", &d, None).unwrap(), c("", &[".env", ".git/"]));
+        assert_eq!(complete("", &d, None, false).unwrap(), c("a.txt", &["a.txt"]));
+        assert_eq!(complete(".", &d, None, false).unwrap(), c("", &[".env", ".git/"]));
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -144,8 +162,8 @@ mod tests {
         touch(&d, "notes.txt");
         touch(&d, "notes.md");
         std::fs::create_dir_all(d.join("sub")).unwrap();
-        assert_eq!(complete("../no", &d.join("sub"), None).unwrap(), c("tes.", &["notes.md", "notes.txt"]));
-        assert_eq!(complete("./x/../no", &d, None).unwrap(), c("tes.", &["notes.md", "notes.txt"]));
+        assert_eq!(complete("../no", &d.join("sub"), None, false).unwrap(), c("tes.", &["notes.md", "notes.txt"]));
+        assert_eq!(complete("./x/../no", &d, None, false).unwrap(), c("tes.", &["notes.md", "notes.txt"]));
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -156,10 +174,10 @@ mod tests {
         std::fs::create_dir_all(home.join("Documents")).unwrap();
         std::fs::create_dir_all(d.join("base")).unwrap();
         let base = d.join("base");
-        assert_eq!(complete("~/Doc", &base, Some(&home)).unwrap(), c("uments/", &["Documents/"]));
-        assert_eq!(complete("~", &base, Some(&home)).unwrap(), c("/", &["~/"]));
-        assert_eq!(complete("~", &base, None).unwrap(), Completion::default());
-        assert_eq!(complete("~/Doc", &base, None).unwrap(), Completion::default(), "a relative ~ folder");
+        assert_eq!(complete("~/Doc", &base, Some(&home), false).unwrap(), c("uments/", &["Documents/"]));
+        assert_eq!(complete("~", &base, Some(&home), false).unwrap(), c("/", &["~/"]));
+        assert_eq!(complete("~", &base, None, false).unwrap(), Completion::default());
+        assert_eq!(complete("~/Doc", &base, None, false).unwrap(), Completion::default(), "a relative ~ folder");
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -168,7 +186,7 @@ mod tests {
         let d = tmp("unicode");
         touch(&d, "été.txt");
         touch(&d, "étude.txt");
-        assert_eq!(complete("é", &d, None).unwrap(), c("t", &["étude.txt", "été.txt"]));
+        assert_eq!(complete("é", &d, None, false).unwrap(), c("t", &["étude.txt", "été.txt"]));
         let names = vec!["éa".to_string(), "éb".to_string()];
         assert_eq!(common_prefix(&names), "é");
         let names = vec!["ab".to_string(), "a".to_string()];
@@ -186,9 +204,9 @@ mod tests {
         std::os::unix::fs::symlink(d.join("real"), d.join("link")).unwrap();
         std::os::unix::fs::symlink(d.join("gone"), d.join("dangling")).unwrap();
         std::fs::write(d.join(OsStr::from_bytes(b"f\xff")), "").unwrap();
-        assert_eq!(complete("li", &d, None).unwrap(), c("nk/", &["link/"]));
-        assert_eq!(complete("da", &d, None).unwrap(), c("ngling", &["dangling"]));
-        assert_eq!(complete("f", &d, None).unwrap(), Completion::default(), "not UTF-8: skipped");
+        assert_eq!(complete("li", &d, None, false).unwrap(), c("nk/", &["link/"]));
+        assert_eq!(complete("da", &d, None, false).unwrap(), c("ngling", &["dangling"]));
+        assert_eq!(complete("f", &d, None, false).unwrap(), Completion::default(), "not UTF-8: skipped");
         let _ = std::fs::remove_dir_all(&d);
     }
 }

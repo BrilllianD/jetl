@@ -568,6 +568,10 @@ Tab completes the typed path (`$T` holds `notes.txt`, `b.txt`,
 /tmp/tm.sh send-keys -t jetl Escape
 ```
 
+The New Worktree directory prompt (last step of the create flow) completes the
+same way relative to the project root, but offers folders only: Tab on a
+parent folder prefix lists no files.
+
 Tab in another input dialog (Rename, Shift+F6 in the Project window) does
 nothing, and Tab in the Overwrite confirm still moves between its buttons.
 

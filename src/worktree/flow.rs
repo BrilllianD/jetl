@@ -79,7 +79,10 @@ impl App {
         let default = default_path(&self.config.worktree.default_dir, &self.main_root(), &branch);
         let msg = format!("Directory for the worktree of {branch}:");
         let id = DialogId::WorktreePath { branch, new_branch };
-        self.dialog = Some(Dialog::input(id, "New Worktree", &msg, &default.to_string_lossy(), "Create"));
+        self.dialog = Some(
+            Dialog::input(id, "New Worktree", &msg, &default.to_string_lossy(), "Create")
+                .with_folder_completion(self.workspace.root.clone()),
+        );
     }
 
     /// `git worktree add [-b <new>] <path> [<branch>]`, run in the current
@@ -154,5 +157,34 @@ impl App {
             _ => return false,
         }
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    use crate::app::tests::test_app;
+    use crate::ui::dialog::{DialogId, DialogKind, DialogResult};
+
+    #[tokio::test]
+    async fn path_prompt_tab_completes_folders_only() {
+        let (mut app, dir) = test_app("worktree-path-complete");
+        let root = app.workspace.root.clone();
+        std::fs::create_dir_all(root.join("sub_dir")).unwrap();
+        std::fs::write(root.join("sub_file.txt"), "").unwrap();
+        app.finish_worktree_dialog(DialogId::WorktreeNewBranchName, DialogResult::Text("feat".into()));
+        let d = app.dialog.as_mut().expect("path dialog");
+        assert!(matches!(d.id, DialogId::WorktreePath { .. }));
+        let DialogKind::Input { input, .. } = &mut d.kind else { panic!("input dialog") };
+        input.set_text("sub");
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        let d = app.dialog.as_ref().expect("dialog still open");
+        let DialogKind::Input { input, .. } = &d.kind else { panic!("input dialog") };
+        assert_eq!(input.text, "sub_dir/");
+        let pc = d.paths.as_ref().expect("completion on");
+        assert!(pc.folders_only);
+        assert_eq!(pc.base, root);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

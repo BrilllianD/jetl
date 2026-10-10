@@ -202,6 +202,8 @@ pub struct PathCompletion {
     pub base: PathBuf,
     /// The last key was Tab: a Tab that adds nothing then lists the matches.
     pub tabbed: bool,
+    /// Offer folders only (the worktree path prompt), not files.
+    pub folders_only: bool,
     /// Shown under the input until the next other key.
     pub hint: Option<PathHint>,
 }
@@ -288,8 +290,17 @@ impl Dialog {
 
     /// Tab completes the typed path, relative paths starting at `base`
     /// (an input dialog; `App::complete_dialog_path`).
-    pub fn with_path_completion(mut self, base: PathBuf) -> Self {
-        self.paths = Some(Box::new(PathCompletion { base, tabbed: false, hint: None }));
+    pub fn with_path_completion(self, base: PathBuf) -> Self {
+        self.with_completion(base, false)
+    }
+
+    /// [`Self::with_path_completion`] offering folders only.
+    pub fn with_folder_completion(self, base: PathBuf) -> Self {
+        self.with_completion(base, true)
+    }
+
+    fn with_completion(mut self, base: PathBuf, folders_only: bool) -> Self {
+        self.paths = Some(Box::new(PathCompletion { base, tabbed: false, folders_only, hint: None }));
         self
     }
 
