@@ -82,6 +82,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Local history: a running jetl prunes the store every hour, not only at startup, so orphan blobs of merged
+  snapshots do not pile up past `max_total_mb` in a long session.
 - Local history: pruning keeps index lines written by a newer jetl (an unknown kind) and their blobs, instead
   of dropping them when it rewrites an index.
 - Conflicts after a merge, rebase, cherry-pick, revert or stash pop open Resolve Conflicts with a localized git too (git's messages are in the C locale), and a failed status refresh after a resolve no longer reports that all conflicts are resolved.

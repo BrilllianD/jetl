@@ -683,7 +683,7 @@ under `prune.lock` (`drop_lines` / `write_index`).
   that is JSON with `v`, `at` and `kind` but no known `Entry` is rewritten
   verbatim in time order and its `blob` is not collected; lists still skip it. Blobs
   replaced by a merge of automatic snapshots are orphans until the next
-  prune (at startup or on a retention change), so a long session with a
+  prune (at startup, every hour (`PRUNE_EVERY`) or on a retention change), so a long session with a
   short `snapshot_unsaved_secs` can leave the store over `max_total_mb`
   for a while. Keys are canonical paths, resolved on
   the worker (never canonicalize on the main thread); an `Entry`'s `path`

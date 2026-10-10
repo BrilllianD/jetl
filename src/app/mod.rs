@@ -251,6 +251,8 @@ pub struct App {
     /// When the next snapshot of unsaved edits is due (`[local_history]
     /// snapshot_unsaved_secs`); `None` when off.
     pub(crate) unsaved_due: Option<Instant>,
+    /// When the next hourly prune of the Local History store is due.
+    pub(crate) prune_due: Option<Instant>,
     /// Crash dumps of this root waiting for an answer (`app/recovery.rs`).
     recovery_offer: Option<recovery::RecoveryOffer>,
     /// The config watcher and what the config files held when last
@@ -349,6 +351,7 @@ impl App {
             completion: None,
             recorder,
             unsaved_due,
+            prune_due: Some(Instant::now() + crate::history::PRUNE_EVERY),
             recovery_offer: None,
             config_reload: Default::default(),
             started: Instant::now(),
@@ -549,6 +552,7 @@ impl App {
             self.autosave();
         }
         self.unsaved_snapshots(Instant::now());
+        self.history_prune_tick(Instant::now());
         self.terminal_tick();
     }
 

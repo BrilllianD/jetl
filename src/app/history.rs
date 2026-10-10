@@ -391,6 +391,16 @@ impl App {
         self.apply_effects(fx);
     }
 
+    /// The tick's part: when the hourly prune is due, queue it and re-arm.
+    /// Does not check `enabled()`, like the startup prune: a disabled store
+    /// still ages out.
+    pub(super) fn history_prune_tick(&mut self, now: Instant) {
+        if self.prune_due.is_some_and(|due| now >= due) {
+            self.history.prune();
+            self.prune_due = Some(now + crate::history::PRUNE_EVERY);
+        }
+    }
+
     /// The tick's part: when due, snapshot the unsaved edits of open files
     /// and arm the next period. Nothing is taken (nor marked seen) while
     /// local history is off.
@@ -692,6 +702,23 @@ pub(crate) mod tests {
         assert!(app.focus.is(PanelId::LocalHistory));
         key(&mut app, KeyCode::Esc);
         assert!(app.focus.is(PanelId::Editor));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn hourly_prune_collects_orphan_blobs() {
+        let (mut app, dir) = test_app("history-hourly-prune");
+        with_history(&mut app);
+        assert!(app.history.flush(Duration::from_secs(5)));
+        let blob = store::write_blob_for_test(app.history.dir(), &"ab".repeat(20), b"orphan").unwrap();
+        let old = std::time::SystemTime::now() - store::BLOB_GRACE - Duration::from_secs(60);
+        std::fs::File::options().write(true).open(&blob).unwrap().set_modified(old).unwrap();
+        app.prune_due = Some(Instant::now());
+        let now = Instant::now();
+        app.history_prune_tick(now);
+        assert!(app.history.flush(Duration::from_secs(5)));
+        assert!(!blob.exists(), "orphan collected");
+        assert_eq!(app.prune_due, Some(now + crate::history::PRUNE_EVERY));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

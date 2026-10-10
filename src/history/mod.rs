@@ -35,6 +35,9 @@ use crate::event::AppMsg;
 pub use store::{Entry, FileState, Kind, RecentFile};
 
 /// The longest a destructive operation waits for its snapshot.
+/// How often a running jetl prunes the store (the startup prune is separate).
+pub const PRUNE_EVERY: Duration = Duration::from_secs(3600);
+
 pub const ACK_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// At most this many files are snapshotted before one git operation or
@@ -433,13 +436,20 @@ impl Worker {
                     let keep = s.keep_days.saturating_mul(86_400_000);
                     match store::prune(&self.dir, now_ms(), keep, s.max_total_mb.saturating_mul(1 << 20)) {
                         Ok(st) if st.locked => tracing::info!("local history: another instance is pruning"),
-                        Ok(st) => tracing::info!(
-                            "local history pruned: {} entries, {} blobs; {} moved to canonical keys; store holds {} KB",
-                            st.entries,
-                            st.blobs,
-                            st.moved,
-                            st.bytes / 1024
-                        ),
+                        Ok(st) => {
+                            let msg = format!(
+                                "local history pruned: {} entries, {} blobs; {} moved to canonical keys; store holds {} KB",
+                                st.entries,
+                                st.blobs,
+                                st.moved,
+                                st.bytes / 1024
+                            );
+                            if st.entries + st.blobs + st.moved > 0 {
+                                tracing::info!("{msg}");
+                            } else {
+                                tracing::debug!("{msg}");
+                            }
+                        }
                         Err(e) => tracing::warn!("local history prune: {e}"),
                     }
                 }
