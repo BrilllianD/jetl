@@ -213,8 +213,10 @@
 # Code folding. Ctrl+Alt+Minus/Equals act recursively; Ctrl+Shift+Minus
 # (collapse all) arrives as Ctrl+_ with the kitty protocol. Legacy terminals
 # send Ctrl+- as 0x1F (Ctrl+7, toggle comment) and Ctrl+= and Ctrl+. as
-# plain text: Alt+, (collapse), Alt+. (expand), Alt+< (collapse all) and
-# Alt+> (expand all) work there. The View menu has them too.
+# plain text: Alt+, (collapse), Alt+. (expand), Alt+< (collapse all),
+# Alt+> (expand all), Alt+Shift+F (fold selection), Alt+{ (collapse
+# recursively) and Alt+} (expand recursively) work there. The View menu has
+# them too.
 "ctrl-minus" = "editor.fold_collapse"
 "ctrl-=" = "editor.fold_expand"
 "ctrl-+" = "editor.fold_expand"
@@ -226,6 +228,9 @@
 "alt-." = "editor.fold_expand"
 "alt-<" = "editor.fold_collapse_all"
 "alt->" = "editor.fold_expand_all"
+"alt-shift-f" = "editor.fold_selection"
+"alt-{" = "editor.fold_collapse_recursive"
+"alt-}" = "editor.fold_expand_recursive"
 "ctrl-up" = "editor.scroll_up"
 "ctrl-down" = "editor.scroll_down"
 "ctrl-alt-left" = "editor.nav_back"

@@ -565,6 +565,9 @@ mod tests {
     /// that legacy terminals and tmux deliver: (action id, contexts).
     const LEGACY_REACHABLE: &[(&str, &[&str])] = &[
         ("editor.redo", &["editor"]),
+        ("editor.fold_selection", &["editor"]),
+        ("editor.fold_collapse_recursive", &["editor"]),
+        ("editor.fold_expand_recursive", &["editor"]),
         ("editor.save_all", &["global"]),
         ("git.push", &["global"]),
         ("tool_window.hide_focused", &["global"]),
@@ -577,6 +580,22 @@ mod tests {
             let info = crate::actions::REGISTRY.iter().find(|a| a.id == *id).unwrap_or_else(|| panic!("unknown action {id}"));
             let keys = km.bindings_for(&info.action, contexts);
             assert!(keys.iter().any(|k| !needs_kitty(k)), "{id} has no legacy-terminal key, only {keys:?}");
+        }
+    }
+
+    #[test]
+    fn kitty_only_fold_keys_are_marked() {
+        for brace in ["{", "}"] {
+            let combo = parse_combo(&format!("alt-{brace}")).unwrap();
+            assert_eq!(combo.code, KeyCode::Char(brace.chars().next().unwrap()));
+            assert!(combo.mods.contains(KeyModifiers::ALT));
+            assert_eq!(combo.display(), format!("Alt+{brace}"));
+        }
+        for k in ["Ctrl+-", "Ctrl+=", "Ctrl++", "Ctrl+Alt+-", "Ctrl+Alt+=", "Ctrl+_", "Ctrl+."] {
+            assert!(needs_kitty(k), "{k}");
+        }
+        for k in ["Alt+Shift+F", "Alt+{", "Alt+}"] {
+            assert!(!needs_kitty(k), "{k}");
         }
     }
 

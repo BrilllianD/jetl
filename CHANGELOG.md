@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Legacy terminal and tmux keys for folding: Alt+Shift+F folds the selection, Alt+{ and Alt+} collapse and expand recursively.
 - Legacy terminal and tmux keys: Alt+Y redoes, Alt+Shift+W saves all, Alt+Shift+K pushes, Alt+Shift+Q hides the active
   tool window.
 - Tab completes the folder in New Worktree's directory prompt (folders only), like Save As.
