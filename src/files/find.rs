@@ -117,13 +117,17 @@ pub fn search_text(path: &Path, bytes: &[u8], re: &Regex, limit: usize) -> Vec<H
         if hits.len() >= limit {
             break;
         }
-        for (i, _) in text[scanned..m.start()].match_indices('\n') {
-            line += 1;
-            line_start = scanned + i + 1;
+        // Lines as the editor counts them: `\n`, `\r\n` and a lone `\r` end one.
+        let bytes = text.as_bytes();
+        for i in scanned..m.start() {
+            if bytes[i] == b'\n' || (bytes[i] == b'\r' && bytes.get(i + 1) != Some(&b'\n')) {
+                line += 1;
+                line_start = i + 1;
+            }
         }
         scanned = m.start();
-        let line_end = text[line_start..].find('\n').map_or(text.len(), |i| line_start + i);
-        let line_text = text[line_start..line_end].trim_end_matches('\r');
+        let line_end = text[line_start..].find(['\n', '\r']).map_or(text.len(), |i| line_start + i);
+        let line_text = &text[line_start..line_end];
         let col = text[line_start..m.start()].chars().count();
         let len = text[m.start()..m.end().min(line_end)].chars().count().max(1);
         let (preview, preview_col) = preview(line_text, col);
@@ -203,6 +207,14 @@ mod tests {
         assert_eq!(hits[0].preview_col, 3);
         assert_eq!(search_text(Path::new("f"), text.as_bytes(), &re, 2).len(), 2, "limit");
         assert!(search_text(Path::new("f"), b"needle\0", &re, 100).is_empty(), "binary");
+    }
+
+    #[test]
+    fn lone_cr_ends_a_line() {
+        let re = build_pattern("foo", false, false, false).unwrap();
+        let hits = search_text(Path::new("f"), b"x\rfoo\rfoo\r\nfoo", &re, 10);
+        let pos: Vec<_> = hits.iter().map(|h| (h.line, h.col, h.preview.as_str())).collect();
+        assert_eq!(pos, [(1, 0, "foo"), (2, 0, "foo"), (3, 0, "foo")]);
     }
 
     #[test]

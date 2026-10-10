@@ -75,8 +75,8 @@ pub fn extract(def: &'static LanguageDef, tree: &Tree, rope: &Rope) -> Vec<Symbo
             kind: kind_label(kind, node.kind()),
             line,
             col,
-            start_line: node.start_position().row,
-            end_line: node.end_position().row,
+            start_line: rope.byte_to_line(node.start_byte().min(rope.len_bytes())),
+            end_line: rope.byte_to_line(node.end_byte().min(rope.len_bytes())),
             depth: 0,
         };
         raw.push((node.byte_range(), m.pattern_index, sym));

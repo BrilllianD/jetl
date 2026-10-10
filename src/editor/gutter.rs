@@ -11,6 +11,7 @@ use super::buffer::Buffer;
 use super::selection::Selection;
 use super::undo::{Change, TxKind};
 use crate::config::theme::Theme;
+use crate::util::text::{line_count_inclusive, lines_inclusive};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MarkKind {
@@ -40,9 +41,9 @@ impl GutterMark {
 /// modified; pure removals put one deleted mark on the line that follows the
 /// removed block (the last line when the block was at the end).
 pub fn compute(base: &str, text: &str) -> Vec<GutterMark> {
-    let last_line = text.split_inclusive('\n').count().saturating_sub(1);
+    let last_line = line_count_inclusive(text).saturating_sub(1);
     let mut out = Vec::new();
-    for h in crate::git::diff::hunks(base, text) {
+    for h in crate::git::diff::rope_hunks(base, text) {
         let (a0, a1) = (h.after.start as usize, h.after.end as usize);
         if h.before.is_empty() {
             out.extend((a0..a1).map(|line| GutterMark { line, kind: MarkKind::Added }));
@@ -65,8 +66,8 @@ fn mark_line(h: &Hunk, last_line: usize) -> usize {
 
 /// The hunk whose marks cover `line`.
 pub fn hunk_at(base: &str, text: &str, line: usize) -> Option<Hunk> {
-    let last_line = text.split_inclusive('\n').count().saturating_sub(1);
-    crate::git::diff::hunks(base, text).into_iter().find(|h| {
+    let last_line = line_count_inclusive(text).saturating_sub(1);
+    crate::git::diff::rope_hunks(base, text).into_iter().find(|h| {
         let start = mark_line(h, last_line);
         line == start || (h.after.start as usize..h.after.end as usize).contains(&line)
     })
@@ -74,16 +75,16 @@ pub fn hunk_at(base: &str, text: &str, line: usize) -> Option<Hunk> {
 
 /// First mark line of every hunk, in order.
 pub fn change_lines(base: &str, text: &str) -> Vec<usize> {
-    let last_line = text.split_inclusive('\n').count().saturating_sub(1);
-    let mut lines: Vec<usize> = crate::git::diff::hunks(base, text).iter().map(|h| mark_line(h, last_line)).collect();
+    let last_line = line_count_inclusive(text).saturating_sub(1);
+    let mut lines: Vec<usize> = crate::git::diff::rope_hunks(base, text).iter().map(|h| mark_line(h, last_line)).collect();
     lines.dedup();
     lines
 }
 
 /// The edit that puts the base lines of hunk `h` back into `text`.
 pub fn revert(base: &str, text: &str, h: &Hunk) -> Change {
-    let lines: Vec<&str> = text.split_inclusive('\n').collect();
-    let base_lines: Vec<&str> = base.split_inclusive('\n').collect();
+    let lines: Vec<&str> = lines_inclusive(text).collect();
+    let base_lines: Vec<&str> = lines_inclusive(base).collect();
     let span = (h.before.start as usize..h.before.end as usize, h.after.start as usize..h.after.end as usize);
     revert_spans(&base_lines, &lines, &[span]).remove(0)
 }
@@ -148,6 +149,15 @@ mod tests {
 
     fn marks(base: &str, text: &str) -> Vec<(usize, MarkKind)> {
         compute(base, text).into_iter().map(|m| (m.line, m.kind)).collect()
+    }
+
+    #[test]
+    fn lone_cr_lines_count_like_the_editor() {
+        let (base, text) = ("a\rb\rc\r", "a\rX\rc\r");
+        assert_eq!(marks(base, text), vec![(1, MarkKind::Modified)]);
+        let h = hunk_at(base, text, 1).unwrap();
+        let c = revert(base, text, &h);
+        assert_eq!((c.at, c.old.as_str(), c.new.as_str()), (2, "X\r", "b\r"));
     }
 
     #[test]

@@ -68,9 +68,62 @@ pub fn wrap_phrases(phrases: &[&str], max: usize) -> Vec<String> {
     lines
 }
 
+/// Lines of `s` that keep their terminators, split the way the editor's
+/// rope counts them: after `\n`, after `\r\n` (one break) and after a lone
+/// `\r`. Empty text has no lines; a trailing break starts no extra line.
+pub fn lines_inclusive(s: &str) -> impl Iterator<Item = &str> {
+    let b = s.as_bytes();
+    let mut start = 0;
+    std::iter::from_fn(move || {
+        if start >= b.len() {
+            return None;
+        }
+        let mut i = start;
+        while i < b.len() {
+            match b[i] {
+                b'\n' => {
+                    i += 1;
+                    break;
+                }
+                b'\r' => {
+                    i += 1;
+                    if b.get(i) == Some(&b'\n') {
+                        i += 1;
+                    }
+                    break;
+                }
+                _ => i += 1,
+            }
+        }
+        let line = &s[start..i];
+        start = i;
+        Some(line)
+    })
+}
+
+/// Number of [`lines_inclusive`] lines.
+pub fn line_count_inclusive(s: &str) -> usize {
+    lines_inclusive(s).count()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lines_inclusive_splits_like_the_rope() {
+        let v = |s| lines_inclusive(s).collect::<Vec<_>>();
+        assert_eq!(v("a\rb\r\nc\nd"), ["a\r", "b\r\n", "c\n", "d"]);
+        assert!(v("").is_empty());
+        assert_eq!(v("a\n"), ["a\n"]);
+        assert_eq!(v("\r\r"), ["\r", "\r"]);
+        for s in ["a\rb\r\nc\nd", "a\n", "\r\r", "x\r", "", "abc", "a\n\nb\r\n"] {
+            let n = line_count_inclusive(s);
+            let len = ropey::Rope::from_str(s).len_lines();
+            let ends_with_break = s.ends_with(['\n', '\r']);
+            assert_eq!(if ends_with_break { n + 1 } else { n.max(1) }, len, "{s:?}");
+        }
+    }
 
     #[test]
     fn wrap_phrases_keeps_phrases_whole_when_they_fit() {

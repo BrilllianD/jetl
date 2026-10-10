@@ -20,6 +20,18 @@ pub fn hunks(old: &str, new: &str) -> Vec<Hunk> {
     diff.hunks().collect()
 }
 
+/// Hunks of a line diff with lines as the editor counts them: a lone `\r`
+/// ends a line, as `\n` and `\r\n` do.
+pub fn rope_hunks(old: &str, new: &str) -> Vec<Hunk> {
+    use crate::util::text::lines_inclusive;
+    let mut input = InternedInput::default();
+    input.update_before(lines_inclusive(old));
+    input.update_after(lines_inclusive(new));
+    let mut diff = Diff::compute(Algorithm::Histogram, &input);
+    diff.postprocess_lines(&input);
+    diff.hunks().collect()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RowKind {
     Equal,
@@ -293,6 +305,13 @@ impl DiffDoc {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn rope_hunks_count_lone_cr_as_a_break() {
+        let h = super::rope_hunks("a\rb\rc", "a\rB\rc");
+        assert_eq!(h.len(), 1);
+        assert_eq!((h[0].before.clone(), h[0].after.clone()), (1..2, 1..2));
+    }
+
     use super::*;
 
     fn kinds(rows: &[DiffRow]) -> Vec<(RowKind, Option<usize>, Option<usize>)> {

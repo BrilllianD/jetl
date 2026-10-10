@@ -277,9 +277,15 @@ fn starts_line(rope: &Rope, pos: usize) -> bool {
 
 /// The last row `node` covers: its end row, or the one before when it
 /// ends with its line break.
-fn last_row(node: &Node) -> usize {
-    let end = node.end_position();
-    if end.column == 0 && end.row > node.start_position().row { end.row - 1 } else { end.row }
+fn last_row(node: &Node, rope: &Rope) -> usize {
+    let end = rope.byte_to_line(node.end_byte());
+    if rope.line_to_byte(end) == node.end_byte() && node.end_byte() > node.start_byte() { end - 1 } else { end }
+}
+
+/// The line (as the rope counts) `node` starts on. Tree-sitter rows count
+/// only `\n`, so a lone `\r` break would put them off.
+fn first_row(node: &Node, rope: &Rope) -> usize {
+    rope.byte_to_line(node.start_byte())
 }
 
 /// The fold of `node` when it can fold: a named node hiding a line, not a
@@ -288,7 +294,7 @@ fn last_row(node: &Node) -> usize {
 fn node_fold(node: &Node, rope: &Rope) -> Option<Fold> {
     let kind = node.kind();
     // A body on one line can still hide it under the header above.
-    let one_line = last_row(node) == node.start_position().row && !is_statement_body(kind);
+    let one_line = last_row(node, rope) == first_row(node, rope) && !is_statement_body(kind);
     if !node.is_named() || node.is_error() || node.is_missing() || one_line || kind.contains("string") {
         return None;
     }
@@ -317,7 +323,7 @@ fn node_fold(node: &Node, rope: &Rope) -> Option<Fold> {
 /// consecutive imports (blank lines between allowed).
 fn runs(kids: &[Node], rope: &Rope, out: &mut Vec<Fold>) {
     let line_comment = |n: &Node| {
-        n.kind().contains("comment") && last_row(n) == n.start_position().row && starts_line(rope, rope.byte_to_char(n.start_byte()))
+        n.kind().contains("comment") && last_row(n, rope) == first_row(n, rope) && starts_line(rope, rope.byte_to_char(n.start_byte()))
     };
     let import = |n: &Node| IMPORT_KINDS.contains(&n.kind());
     let mut push = |run: &[Node]| {
@@ -332,7 +338,7 @@ fn runs(kids: &[Node], rope: &Rope, out: &mut Vec<Fold>) {
     while i < kids.len() {
         let mut j = i + 1;
         if line_comment(&kids[i]) {
-            while j < kids.len() && line_comment(&kids[j]) && kids[j].start_position().row == last_row(&kids[j - 1]) + 1 {
+            while j < kids.len() && line_comment(&kids[j]) && first_row(&kids[j], rope) == last_row(&kids[j - 1], rope) + 1 {
                 j += 1;
             }
         } else if import(&kids[i]) {
@@ -355,7 +361,7 @@ fn tree_folds(tree: &Tree, rope: &Rope, visit: impl Fn(usize, usize) -> bool) ->
         out.extend(node_fold(&node, rope));
         let kids: Vec<Node> = node.children(&mut cursor).collect();
         runs(&kids, rope, &mut out);
-        stack.extend(kids.into_iter().rev().filter(|k| visit(k.start_position().row, k.end_position().row)));
+        stack.extend(kids.into_iter().rev().filter(|k| visit(first_row(k, rope), rope.byte_to_line(k.end_byte()))));
     }
     out
 }
@@ -757,6 +763,15 @@ fn one() {}
         // A window only lists headers in it.
         let some: Vec<_> = b.fold_candidates(9..11).iter().map(|f| f.lines(&rope).unwrap()).collect();
         assert_eq!(some, [(9, 19), (10, 13)]);
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[test]
+    fn lone_cr_breaks_count_as_lines() {
+        let lf = cands(&mut buf("a.rs", "fn a() {\n    x();\n}\n"));
+        let cr = cands(&mut buf("a.rs", "fn a() {\r    x();\r}\r"));
+        assert_eq!(cr, lf);
+        assert_eq!(cr[0].0, 0);
     }
 
     #[cfg(feature = "lang-python")]

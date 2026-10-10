@@ -4,6 +4,7 @@
 //! along with the text and edited lines show no commit.
 
 use crate::git::model::{Blame, BlameCommit};
+use crate::util::text::{line_count_inclusive, lines_inclusive};
 
 /// Width of the column, separator included.
 pub const WIDTH: u16 = 24;
@@ -36,13 +37,29 @@ impl BlameState {
 }
 
 /// Buffer line -> HEAD line for `text` against its HEAD version `base`.
+/// Buffer lines are the editor's (a lone `\r` breaks a line); HEAD lines
+/// are git's, which count only `\n`.
 pub fn line_map(base: &str, text: &str) -> Vec<Option<u32>> {
-    let n = text.split_inclusive('\n').count() + 1;
+    let n = line_count_inclusive(text) + 1;
+    // Git line of each base rope line: the `\n`s before its start.
+    let mut git_line = Vec::new();
+    let mut breaks = 0u32;
+    for l in lines_inclusive(base) {
+        git_line.push(breaks);
+        breaks += l.matches('\n').count() as u32;
+    }
+    // Past the last line (the empty line after a final break) count on from
+    // git's line total.
+    let git_total = base.split_inclusive('\n').count() as u32;
+    let git_of = |rope_line: u32| match git_line.get(rope_line as usize) {
+        Some(&g) => g,
+        None => git_total + rope_line - git_line.len() as u32,
+    };
     let mut map = Vec::with_capacity(n);
     let (mut old, mut new) = (0u32, 0usize);
-    for h in crate::git::diff::hunks(base, text) {
+    for h in crate::git::diff::rope_hunks(base, text) {
         while new < h.after.start as usize {
-            map.push(Some(old));
+            map.push(Some(git_of(old)));
             old += 1;
             new += 1;
         }
@@ -51,7 +68,7 @@ pub fn line_map(base: &str, text: &str) -> Vec<Option<u32>> {
         old = h.before.end;
     }
     while new < n {
-        map.push(Some(old));
+        map.push(Some(git_of(old)));
         old += 1;
         new += 1;
     }
@@ -117,6 +134,12 @@ mod tests {
     }
 
     #[test]
+    fn lone_cr_rope_lines_map_to_git_lines() {
+        // "a\r" and "b\n" are both git line 0; "c\n" is git line 1.
+        assert_eq!(line_map("a\rb\nc\n", "a\rb\nc\n")[..3], [Some(0), Some(0), Some(1)]);
+    }
+
+    #[test]
     fn line_map_counts_lines_like_the_rope() {
         let text = "new\na\u{c}b\nc\n";
         let map = line_map("a\u{c}b\nc\n", text);
@@ -124,7 +147,7 @@ mod tests {
         let r = ropey::Rope::from_str(text);
         assert_eq!(r.line(1).to_string(), "a\u{c}b\n", "blame line 0");
         assert_eq!(r.len_lines(), 4);
-        assert_eq!(r.len_lines(), text.split_inclusive('\n').count() + 1);
+        assert_eq!(r.len_lines(), line_count_inclusive(text) + 1);
         assert_eq!(map.len(), r.len_lines());
     }
 }

@@ -8,7 +8,8 @@ use std::ops::Range;
 
 use anyhow::{Result, bail};
 
-use super::diff::{hunks, is_binary, strip_eol};
+use super::diff::{is_binary, rope_hunks, strip_eol};
+use crate::util::text::lines_inclusive;
 
 /// A conflicted path that is not a regular file on some side: only
 /// taking a side whole makes sense.
@@ -203,9 +204,10 @@ impl ChunkKind {
     }
 }
 
-/// The lines of `s` with their terminators, as diffs count them.
+/// The lines of `s` with their terminators, as the editor counts them (a
+/// lone `\r` ends a line).
 pub fn lines(s: &str) -> Vec<&str> {
-    s.split_inclusive('\n').collect()
+    lines_inclusive(s).collect()
 }
 
 /// The chunks of a three-way merge in base order: the changes of base to
@@ -216,7 +218,7 @@ pub fn chunks(base: &str, ours: &str, theirs: &str) -> Vec<Chunk> {
     // (base lines, side: 0 yours, 1 theirs, side lines)
     let mut all: Vec<(Range<usize>, usize, Range<usize>)> = Vec::new();
     for (side, text) in [ours, theirs].into_iter().enumerate() {
-        all.extend(hunks(base, text).iter().map(|h| (range(&h.before), side, range(&h.after))));
+        all.extend(rope_hunks(base, text).iter().map(|h| (range(&h.before), side, range(&h.after))));
     }
     all.sort_by_key(|(b, _, _)| (b.start, b.end));
     let (ol, tl) = (lines(ours), lines(theirs));
@@ -278,6 +280,13 @@ mod tests {
         let ours = "a\nc\nd\ne\nf\ng\n";
         let theirs = "a\nb\nc\nd\ne\nf\nnew\ng\n";
         assert_eq!(kinds(BASE, ours, theirs), [(OursOnly, 1..2, 1..1, 1..2), (TheirsOnly, 6..6, 5..5, 6..7)]);
+    }
+
+    #[test]
+    fn lone_cr_breaks_lines_in_chunks() {
+        let base = "a\rb\rc\r";
+        assert_eq!(kinds(base, "a\rB\rc\r", base), [(OursOnly, 1..2, 1..2, 1..2)]);
+        assert_eq!(lines("a\rb\r\nc"), ["a\r", "b\r\n", "c"]);
     }
 
     #[test]

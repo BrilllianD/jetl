@@ -113,6 +113,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Files with old Mac (lone CR) line breaks: change gutter, blame, merge, find in files, location previews and folds use the same lines as the editor.
 - Format on save waits for a language server that is still starting (Save As to a new language, or Ctrl+S right after
   opening).
 - After a rename in the Project tree, the change gutter and blame keep comparing with the file's committed version until the rename is committed.

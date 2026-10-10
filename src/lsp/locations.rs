@@ -96,7 +96,9 @@ pub fn read_items(targets: Vec<Target>) -> Vec<LocationItem> {
             let text = files
                 .entry(t.path.clone())
                 .or_insert_with(|| std::fs::read(&t.path).ok().map(|b| String::from_utf8_lossy(&b).into_owned()));
-            let line = text.as_deref().and_then(|s| s.lines().nth(t.range.start.line as usize));
+            let line = text
+                .as_deref()
+                .and_then(|s| crate::util::text::lines_inclusive(s).nth(t.range.start.line as usize).map(crate::git::diff::strip_eol));
             LocationItem::at(t.path, t.range, line)
         })
         .collect()
@@ -138,6 +140,18 @@ mod tests {
         assert_eq!(link, [Target { path: "/w/a.rs".into(), range: r(3, 7, 3, 11) }]);
         assert!(parse(json!({"nonsense": 1})).is_empty());
         assert!(contains(&r(3, 7, 3, 11), Position::new(3, 11)) && !contains(&r(3, 7, 3, 11), Position::new(3, 12)));
+    }
+
+    #[test]
+    fn items_split_lines_at_a_lone_cr() {
+        let dir = std::env::temp_dir().join(format!("jetl-test-locations-cr-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("a.txt");
+        std::fs::write(&path, "x\rfoo\r\nbar\n").unwrap();
+        let t = |line| Target { path: path.clone(), range: Range::new(Position::new(line, 0), Position::new(line, 1)) };
+        let items = read_items(vec![t(1), t(2)]);
+        assert_eq!((items[0].text.as_str(), items[1].text.as_str()), ("foo", "bar"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

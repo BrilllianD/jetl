@@ -680,10 +680,16 @@ under `prune.lock` (`drop_lines` / `write_index`).
   `unicode_lines` would also break at VT, FF, NEL, U+2028 and U+2029, and
   every line number would then disagree with servers, git and compilers
   (`lsp::pos::tests::ropey_breaks_lines_like_lsp` fails if another crate turns
-  it back on through feature unification). Git, find in files and tree-sitter
-  rows still count only `\n`, so a lone `\r` is a break to the editor and the
-  server but not to them. The buffer keeps its line ending and writes it back.
-  Stay on ropey 1.x.
+  it back on through feature unification). The change gutter, blame, the merge
+  editor's chunks, find in files, location previews, folds and outline lines
+  follow the rope's lines (`util::text::lines_inclusive`,
+  `git::diff::rope_hunks`, tree-sitter bytes mapped through the rope). Kept on
+  `\n` on purpose: `DiffDoc`, `side_by_side` and the diff views (git's view of
+  a file, and their line indexes feed `git apply` patches, which count `\n`),
+  Local History revert, `replace_by_lines`, Run problem matchers, highlighting
+  (byte ranges) and conflict marker parsing; so for a lone-`\r` file the diff
+  view and the gutter can disagree on line numbers. The buffer keeps its line
+  ending and writes it back. Stay on ropey 1.x.
 - Grammar C code is slow to build cold; iterate with
   `--no-default-features --features lang-rust`.
 - Scratch files live outside the root: the file watcher does not see them
