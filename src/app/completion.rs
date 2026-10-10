@@ -363,15 +363,30 @@ impl App {
             return tracing::debug!("completion: the caret left the word; not accepted");
         }
         let crlf = b.line_ending == crate::editor::buffer::LineEnding::CrLf;
-        let acc = completion::edit_for(item, origin, &b.rope, b.view.sel().head, crlf);
+        // The other carets (not selections) get the edit too when they typed the same prefix.
+        let primary = b.view.sels.primary_index();
+        let others: Vec<(usize, usize)> =
+            b.view.sels.iter().enumerate().filter(|&(i, s)| i != primary && s.is_empty()).map(|(i, s)| (i, s.head)).collect();
+        let heads: Vec<usize> = others.iter().map(|o| o.1).collect();
+        let acc = completion::edit_for(item, origin, &b.rope, b.view.sel().head, &heads, crlf);
         // A snippet's tabstops are walked only from a single caret.
         let session = if b.view.sels.is_multi() { None } else { SnippetSession::new(b.id, group, acc.stops.clone()) };
         let sels = match &session {
             Some(s) => s.selections(),
             None => {
-                // The edit is made at the primary caret; the others move along.
+                // The other carets move along, or land after their copy of the edit.
                 let mut sels = b.view.sels.clone();
-                sels.map(|p| crate::lsp::edits::map_pos(&acc.changes, p));
+                let mut landing: std::collections::HashMap<usize, usize> =
+                    others.iter().zip(&acc.carets).filter_map(|(&(i, _), l)| l.map(|l| (i, l))).collect();
+                for (i, (sel, _)) in sels.iter_mut_desired().enumerate() {
+                    *sel = match landing.remove(&i) {
+                        Some(l) => Selection::point(l),
+                        None => Selection::new(
+                            crate::lsp::edits::map_pos(&acc.changes, sel.anchor),
+                            crate::lsp::edits::map_pos(&acc.changes, sel.head),
+                        ),
+                    };
+                }
                 *sels.primary_mut() = Selection::point(acc.caret);
                 sels.normalize();
                 sels
@@ -698,13 +713,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn several_carets_ask_only_on_ctrl_space_and_accept_at_the_primary() {
+    async fn several_carets_ask_only_on_ctrl_space_and_accept_at_every_caret() {
         let (mut app, mut server, dir) = setup("compl-carets", false).await;
-        // A second caret at the start of line 0; the one on line 1 stays primary.
+        // A second caret at the end of line 0; the one on line 1 stays primary.
         let b = app.editor.active_buffer_mut().unwrap();
-        b.view.sels = crate::editor::selection::Selections::new(vec![Selection::point(0), Selection::point(16)], 1);
+        b.view.sels = crate::editor::selection::Selections::new(vec![Selection::point(11), Selection::point(16)], 1);
         typ(&mut app, "p");
-        assert_eq!(text(&app), "pfn main() {\n    p\n}\n");
+        assert_eq!(text(&app), "fn main() {p\n    p\n}\n");
         app.lsp_sync();
         server.recv("textDocument/didChange").await;
         assert!(server.drain().iter().all(|m| m["method"] != "textDocument/completion"), "no asking by itself");
@@ -713,9 +728,28 @@ mod tests {
         assert_eq!(req["params"]["position"], json!({"line": 1, "character": 5}), "about the primary caret");
         reply(&mut app, &mut server, &req, items(1, 4, 5)).await;
         key(&mut app, KeyCode::Enter);
-        assert_eq!(text(&app), "pfn main() {\n    print!()\n}\n");
+        assert_eq!(text(&app), "fn main() {print!()\n    print!()\n}\n");
         let b = app.editor.active_buffer().unwrap();
-        assert_eq!(b.view.sels.heads().collect::<Vec<_>>(), [1, 24], "the other caret stays put");
+        assert_eq!(b.view.sels.heads().collect::<Vec<_>>(), [18, 31], "both inside the parentheses");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_caret_with_another_prefix_gets_no_completion() {
+        let (mut app, mut server, dir) = setup("compl-carets-other", false).await;
+        typ(&mut app, "p");
+        let _auto = completion_req(&mut server).await;
+        // A caret after "fn ma" typed something else than "p".
+        let b = app.editor.active_buffer_mut().unwrap();
+        b.view.sels = crate::editor::selection::Selections::new(vec![Selection::point(5), Selection::point(17)], 1);
+        app.handle_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::CONTROL));
+        server.recv("$/cancelRequest").await;
+        let req = completion_req(&mut server).await;
+        reply(&mut app, &mut server, &req, items(1, 4, 5)).await;
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(text(&app), "fn main() {\n    print!()\n}\n");
+        let b = app.editor.active_buffer().unwrap();
+        assert_eq!(b.view.sels.heads().collect::<Vec<_>>(), [5, 23]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

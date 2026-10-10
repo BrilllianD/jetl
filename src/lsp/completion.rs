@@ -436,6 +436,10 @@ pub struct Accept {
     pub changes: Vec<Change>,
     pub caret: usize,
     pub stops: Vec<Tabstop>,
+    /// Parallel to `edit_for`'s `others`: where each other caret lands
+    /// (after its copy of the text, at the snippet's `$0`), or `None` when
+    /// it got no edit.
+    pub carets: Vec<Option<usize>>,
 }
 
 /// The edit accepting `item` makes: its `textEdit` (else its `insertText`,
@@ -444,9 +448,12 @@ pub struct Accept {
 /// transaction; those overlapping the main edit or each other are left
 /// out. The list was asked for at `origin`, the caret is now at `caret`
 /// in `rope` and `origin.prefix(rope, caret)` holds. The caret ends at the
-/// snippet's `$0`, else after the inserted text. `crlf`: the buffer's line
-/// breaks.
-pub fn edit_for(item: &CompletionItem, origin: &Origin, rope: &Rope, caret: usize, crlf: bool) -> Accept {
+/// snippet's `$0`, else after the inserted text. `others`: the other
+/// carets (empty selections); each whose text before it equals the typed
+/// prefix (`rope[main.start..caret]`) gets the same edit, replacing as many
+/// word chars after it as the main edit replaces after the caret. `crlf`:
+/// the buffer's line breaks.
+pub fn edit_for(item: &CompletionItem, origin: &Origin, rope: &Rope, caret: usize, others: &[usize], crlf: bool) -> Accept {
     let map = |p: Position, end: bool| map_position(origin, rope, caret, p, end);
     let (start, end, text) = match &item.text_edit {
         Some(CompletionTextEdit::Edit(e)) => (map(e.range.start, false), map(e.range.end, true), e.new_text.as_str()),
@@ -476,6 +483,17 @@ pub fn edit_for(item: &CompletionItem, origin: &Origin, rope: &Rope, caret: usiz
     let (text, at) = edits::line_breaks(&text, at, crlf);
     let main = CharEdit::new(start, end, text);
     let mut all = vec![main.clone()];
+    let k = caret - main.start.min(caret);
+    let suffix = main.end.saturating_sub(caret);
+    let prefix = rope.slice(main.start.min(caret)..caret);
+    let mut copies: Vec<(usize, CharEdit)> = Vec::new();
+    for (j, &o) in others.iter().enumerate() {
+        if o < k || o > rope.len_chars() || rope.slice(o - k..o) != prefix {
+            continue;
+        }
+        let words = rope.chars_at(o).take(suffix).take_while(|&c| is_word_char(c)).count();
+        copies.push((j, CharEdit::new(o - k, o + words, main.text.clone())));
+    }
     for e in item.additional_text_edits.iter().flatten() {
         let extra = CharEdit::new(map(e.range.start, false), map(e.range.end, true), edits::line_breaks(&e.new_text, 0, crlf).0);
         let overlaps = extra.start < main.end && main.start < extra.end
@@ -486,19 +504,33 @@ pub fn edit_for(item: &CompletionItem, origin: &Origin, rope: &Rope, caret: usiz
             all.push(extra);
         }
     }
-    let plan = edits::plan(rope, &all).or_else(|o| {
-        tracing::debug!("completion: additional edits overlap ({o:?}); only the item's edit");
-        edits::plan(rope, &all[..1])
+    let extras = all.len();
+    let with_copies = |keep_extras: bool| -> Vec<CharEdit> {
+        let mut v = all[..if keep_extras { extras } else { 1 }].to_vec();
+        v.extend(copies.iter().map(|(_, e)| e.clone()));
+        v
+    };
+    let tries = [(with_copies(true), true), (with_copies(false), true), (all[..1].to_vec(), false)];
+    let planned = tries.iter().find_map(|(edits, has_copies)| {
+        let plan = edits::plan(rope, edits).ok()?;
+        Some((plan, *has_copies, edits.len()))
     });
-    match plan {
-        Ok(plan) => {
+    match planned {
+        Some((plan, has_copies, n)) => {
             let base = plan.starts[0];
             for s in &mut stops {
                 s.range = base + s.range.start..base + s.range.end;
             }
-            Accept { caret: base + at, changes: plan.changes, stops }
+            let mut carets = vec![None; others.len()];
+            if has_copies {
+                // The copies are the last `copies.len()` edits of the plan.
+                for (i, (j, _)) in copies.iter().enumerate() {
+                    carets[*j] = Some(plan.starts[n - copies.len() + i] + at);
+                }
+            }
+            Accept { caret: base + at, changes: plan.changes, stops, carets }
         }
-        Err(_) => Accept { changes: Vec::new(), caret, stops: Vec::new() },
+        None => Accept { changes: Vec::new(), caret, stops: Vec::new(), carets: vec![None; others.len()] },
     }
 }
 
@@ -564,7 +596,7 @@ mod tests {
         }
         let caret = b.view.sel().head;
         assert!(origin.prefix(&b.rope, caret).is_some(), "the list applies");
-        let acc = edit_for(item, &origin, &b.rope, caret, b.line_ending == crate::editor::buffer::LineEnding::CrLf);
+        let acc = edit_for(item, &origin, &b.rope, caret, &[], b.line_ending == crate::editor::buffer::LineEnding::CrLf);
         let before = b.text();
         b.apply(acc.changes, Selection::point(acc.caret), TxKind::Other);
         let mut out = b.text();
@@ -669,7 +701,7 @@ mod tests {
         let at = text.chars().position(|c| c == '|').unwrap();
         let mut b = Buffer::from_text(1, None, &text.replacen('|', "", 1), false);
         let origin = Origin::new(1, &b.rope, at);
-        let acc = edit_for(item, &origin, &b.rope, at, b.line_ending == crate::editor::buffer::LineEnding::CrLf);
+        let acc = edit_for(item, &origin, &b.rope, at, &[], b.line_ending == crate::editor::buffer::LineEnding::CrLf);
         b.apply(acc.changes, Selection::point(acc.caret), TxKind::Other);
         acc.stops.into_iter().map(|s| (s.n, s.range.start, b.rope.slice(s.range).to_string())).collect()
     }
@@ -725,6 +757,23 @@ mod tests {
             ..item("ab")
         };
         assert_eq!(accept("x\r\na|", "", &it), "u\r\nx\r\na\r\n|b");
+    }
+
+    #[test]
+    fn edit_for_copies_the_edit_to_the_other_carets_with_the_same_prefix() {
+        // Carets after "pr" (main, 2), after "pr" (13), after "xr" (24).
+        let rope = Rope::from_str("pr\n        pr\n        xr\n");
+        let origin = Origin::new(1, &rope, 2);
+        let item = CompletionItem { label: "print".into(), ..Default::default() };
+        let acc = edit_for(&item, &origin, &rope, 2, &[13, 24], false);
+        assert_eq!(acc.carets, [Some(19), None]);
+        assert_eq!(acc.caret, 5);
+        let mut r = rope.clone();
+        for c in &acc.changes {
+            r.remove(c.at..c.at + c.old.chars().count());
+            r.insert(c.at, &c.new);
+        }
+        assert_eq!(r.to_string(), "print\n        print\n        xr\n");
     }
 
     #[test]

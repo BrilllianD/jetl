@@ -440,9 +440,11 @@ that asks about "the caret" reads it through `ViewState::sel()`: hover, go
 to definition, usages, rename, code actions, file structure, bookmarks,
 back/forward positions, the find bar's origin and initial query, the
 occurrence and bracket highlights, and the session (only the primary caret
-is saved). Completion is asked about the primary caret too and its edit is
-made there (the other carets are mapped through it); it does not open by
-itself while there are several carets, only on Ctrl+Space. Accepting a
+is saved). Completion is asked about the primary caret too; accepting makes the
+item's edit at every caret whose typed prefix equals the primary's (the
+other carets are mapped through the edits) and the additional edits go in
+once; it does not open by itself while there are several carets, only on
+Ctrl+Space. Accepting a
 snippet at a single caret selects its first tabstop instead, its mirrors
 (same-number tabstops) as extra carets, so typing replaces them all; an
 accept made with several carets leaves the caret at `$0` and walks no
