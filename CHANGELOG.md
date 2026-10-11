@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Language servers that ask for file change events get them from jetl's file watcher, including folders outside the project
+  they register (rust-analyzer then stops running its own watcher). With `[files] watch = false` they keep watching by
+  themselves; changing that setting restarts the language servers.
 - Language servers that register document syncing after they start (open, change, save, close) get it honoured
   mid-session.
 - Language server edits marked as needing confirmation (for example rust-analyzer's edits outside the workspace) ask first,

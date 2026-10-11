@@ -53,8 +53,16 @@ impl App {
             // when its message is dropped.
             AppMsg::FsChanged { generation, changes } if generation == self.workspace.generation => self.fs_changed(changes),
             AppMsg::WatcherStarted { generation, result } if generation == self.workspace.generation => self.watcher_started(result),
+            AppMsg::LspWatched { generation, events } if generation == self.workspace.generation => self.lsp_watched(events),
+            AppMsg::LspWatcherStarted { generation, dirs, result } if generation == self.workspace.generation => {
+                self.lsp_watcher_started(dirs, result)
+            }
             AppMsg::DiskText { generation, path, result } if generation == self.workspace.generation => self.disk_text(path, result),
-            AppMsg::FsChanged { .. } | AppMsg::WatcherStarted { .. } | AppMsg::DiskText { .. } => {
+            AppMsg::FsChanged { .. }
+            | AppMsg::WatcherStarted { .. }
+            | AppMsg::LspWatched { .. }
+            | AppMsg::LspWatcherStarted { .. }
+            | AppMsg::DiskText { .. } => {
                 tracing::debug!("dropping stale watcher message");
             }
             AppMsg::FsOpDone { generation, op, is_dir, result } if generation == self.workspace.generation => {

@@ -13,6 +13,7 @@ impl App {
     /// previous watch stops. Without a watcher, focus gain refreshes instead.
     pub fn start_watcher(&mut self) {
         self.watcher = None;
+        self.lsp_set_watch_files(self.config.files.watch);
         if !self.config.files.watch {
             return;
         }
@@ -26,13 +27,18 @@ impl App {
     pub(super) fn watcher_started(&mut self, result: anyhow::Result<Watcher>) {
         match result {
             Ok(w) => self.watcher = Some(w),
-            Err(e) => self.notify(Level::Warn, format!("File watching unavailable ({e:#}); refreshing when the terminal regains focus")),
+            Err(e) => {
+                self.lsp_set_watch_files(false);
+                self.notify(Level::Warn, format!("File watching unavailable ({e:#}); refreshing when the terminal regains focus"))
+            }
         }
     }
 
     pub(super) fn fs_changed(&mut self, mut changes: Changes) {
         let renames = std::mem::take(&mut changes.renames);
         self.history_moved(renames);
+        let events = std::mem::take(&mut changes.events);
+        self.lsp_watched(events);
         if changes.git || !changes.paths.is_empty() {
             self.git.refresh_status();
         }

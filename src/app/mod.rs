@@ -53,6 +53,7 @@ mod lightbulb;
 mod lsp;
 mod lsp_edit;
 mod lsp_nav;
+mod lsp_watch;
 mod main_menu;
 mod merge;
 mod mouse;

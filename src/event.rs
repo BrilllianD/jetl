@@ -50,6 +50,18 @@ pub enum AppMsg {
         generation: u64,
         result: anyhow::Result<crate::files::watch::Watcher>,
     },
+    /// A batch of events from the outside watcher (folders outside the root
+    /// that language servers registered), tagged with the workspace generation.
+    LspWatched {
+        generation: u64,
+        events: Vec<(PathBuf, crate::files::watch::FileChange)>,
+    },
+    /// The outside watcher for `dirs` (`(folder, recursive)`) started or could not.
+    LspWatcherStarted {
+        generation: u64,
+        dirs: Vec<(PathBuf, bool)>,
+        result: anyhow::Result<crate::files::watch::Watcher>,
+    },
     /// An open file read again after it changed on disk.
     DiskText {
         generation: u64,

@@ -77,6 +77,12 @@ pub struct LspService {
     pub(super) lightbulb: super::lightbulb::Lightbulb,
     /// Tree file operations waiting for `will*Files` answers (`app/files.rs`).
     pub(super) file_ops: Vec<super::files::PendingFileOp>,
+    /// Offer servers `didChangeWatchedFiles` (the root watcher runs).
+    pub(super) watch_files: bool,
+    /// Folders outside the root that servers' watchers need, with whether
+    /// they are watched recursively (`app/lsp_watch.rs`).
+    pub(super) outside: Vec<(PathBuf, bool)>,
+    pub(super) outside_watcher: Option<crate::files::watch::Watcher>,
     connector: Connector,
 }
 
@@ -181,6 +187,8 @@ impl LspService {
         self.edit = Default::default();
         self.lightbulb = Default::default();
         self.file_ops.clear();
+        self.outside.clear();
+        self.outside_watcher = None;
     }
 
     /// Whether a spinner is shown (a server starting or busy).
@@ -238,6 +246,7 @@ impl LspService {
             init_options,
             startup_timeout: std::time::Duration::from_millis(cfg.startup_timeout_ms),
             request_timeout: std::time::Duration::from_millis(cfg.request_timeout_ms),
+            watch_files: self.watch_files,
         };
         self.clients.insert(key, Client::start(spec, conn, bus.clone()));
         None
@@ -494,6 +503,7 @@ impl App {
             self.run_fs_op_now(p.op, p.is_dir);
         }
         self.lsp.reset();
+        self.lsp_retarget_watch();
         self.lsp.missing.clear();
         self.lsp.servers = None;
         self.editor.buffers.iter_mut().for_each(untrack);
@@ -512,6 +522,7 @@ impl App {
             self.notify(Level::Warn, format!("Cannot {what}: the project root changed"));
         }
         self.lsp.reset();
+        self.lsp_retarget_watch();
         self.editor.buffers.iter_mut().for_each(untrack);
     }
 
@@ -552,6 +563,7 @@ impl App {
             c.state = State::Failed(why);
             c.registry.clear();
         }
+        self.lsp_retarget_watch();
         self.lsp.server_gone(name, server, &mut self.editor.buffers);
         self.format_server_gone(name);
         self.file_ops_server_gone(name);
@@ -643,7 +655,13 @@ impl App {
                 tracing::debug!("{name}: {method} {params}");
                 let done =
                     if method == "client/registerCapability" { c.registry.register(&params) } else { c.registry.unregister(&params) };
-                done.map(|()| Value::Null).map_err(|e| ResponseError::new(ResponseError::INVALID_PARAMS, format!("invalid params: {e}")))
+                let done = done
+                    .map(|()| Value::Null)
+                    .map_err(|e| ResponseError::new(ResponseError::INVALID_PARAMS, format!("invalid params: {e}")));
+                if done.is_ok() {
+                    self.lsp_retarget_watch();
+                }
+                done
             }
             "window/workDoneProgress/create" => Ok(Value::Null),
             "workspace/workspaceFolders" => {

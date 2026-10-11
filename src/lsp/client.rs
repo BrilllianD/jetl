@@ -21,9 +21,9 @@ use lsp_types::{
     ChangeAnnotationWorkspaceEditClientCapabilities, ClientCapabilities, ClientInfo, CodeActionCapabilityResolveSupport,
     CodeActionClientCapabilities, CodeActionKindLiteralSupport, CodeActionLiteralSupport, CompletionClientCapabilities,
     CompletionItemCapability, CompletionItemCapabilityResolveSupport, CompletionItemKind, CompletionItemKindCapability, DiagnosticTag,
-    DocumentFormattingClientCapabilities, DocumentRangeFormattingClientCapabilities, DocumentSymbolClientCapabilities,
-    ExecuteCommandClientCapabilities, FailureHandlingKind, GeneralClientCapabilities, GotoCapability, HoverClientCapabilities,
-    InitializeParams, InitializeResult, MarkupKind, PositionEncodingKind, PublishDiagnosticsClientCapabilities,
+    DidChangeWatchedFilesClientCapabilities, DocumentFormattingClientCapabilities, DocumentRangeFormattingClientCapabilities,
+    DocumentSymbolClientCapabilities, ExecuteCommandClientCapabilities, FailureHandlingKind, GeneralClientCapabilities, GotoCapability,
+    HoverClientCapabilities, InitializeParams, InitializeResult, MarkupKind, PositionEncodingKind, PublishDiagnosticsClientCapabilities,
     ReferenceClientCapabilities, RenameClientCapabilities, ResourceOperationKind, ShowMessageRequestClientCapabilities, TagSupport,
     TextDocumentClientCapabilities, TextDocumentSyncClientCapabilities, WindowClientCapabilities, WorkspaceClientCapabilities,
     WorkspaceEditClientCapabilities, WorkspaceFileOperationsClientCapabilities, WorkspaceFolder,
@@ -94,6 +94,8 @@ pub struct StartSpec {
     pub init_options: Option<Value>,
     pub startup_timeout: Duration,
     pub request_timeout: Duration,
+    /// Whether `initialize` offers `workspace.didChangeWatchedFiles`.
+    pub watch_files: bool,
 }
 
 /// Where a server is in its life.
@@ -127,6 +129,8 @@ pub struct Client {
     /// The server's dynamic registrations (`client/registerCapability`),
     /// kept by the app on the main thread; gone with the `Client`.
     pub registry: super::registry::Registry,
+    /// Whether this server was offered `didChangeWatchedFiles`.
+    pub watch_files: bool,
 }
 
 impl std::fmt::Debug for Client {
@@ -140,9 +144,9 @@ impl Client {
     pub fn start(spec: StartSpec, conn: Conn, bus: UnboundedSender<AppMsg>) -> Self {
         let pid = Arc::new(AtomicU32::new(conn.child.as_ref().and_then(|c| c.id()).unwrap_or(0)));
         let (cmds, rx) = mpsc::unbounded_channel();
-        let (id, name) = (spec.id, spec.name.clone());
+        let (id, name, watch_files) = (spec.id, spec.name.clone(), spec.watch_files);
         tokio::spawn(drive(spec, conn, rx, bus, Arc::clone(&pid)));
-        Self { id, name, state: State::Starting, next_id: 1, cmds, pid, registry: Default::default() }
+        Self { id, name, state: State::Starting, next_id: 1, cmds, pid, registry: Default::default(), watch_files }
     }
 
     pub fn capabilities(&self) -> Option<&lsp_types::ServerCapabilities> {
@@ -202,8 +206,9 @@ impl Drop for Client {
 
 /// What jetl supports, sent with `initialize`. Positions are UTF-16 only;
 /// dynamic registration where `Caps::has` honours it (`lsp::caps`); file
-/// operations (`will*Files`, `did*Files`) from the Project tree.
-pub fn client_capabilities() -> ClientCapabilities {
+/// operations (`will*Files`, `did*Files`) from the Project tree;
+/// `didChangeWatchedFiles` only while jetl's file watcher runs (`watch_files`).
+pub fn client_capabilities(watch_files: bool) -> ClientCapabilities {
     ClientCapabilities {
         general: Some(GeneralClientCapabilities { position_encodings: Some(vec![PositionEncodingKind::UTF16]), ..Default::default() }),
         text_document: Some(TextDocumentClientCapabilities {
@@ -264,6 +269,10 @@ pub fn client_capabilities() -> ClientCapabilities {
                 ..Default::default()
             }),
             execute_command: Some(ExecuteCommandClientCapabilities { dynamic_registration: Some(true) }),
+            did_change_watched_files: watch_files.then_some(DidChangeWatchedFilesClientCapabilities {
+                dynamic_registration: Some(true),
+                relative_pattern_support: Some(true),
+            }),
             file_operations: Some(WorkspaceFileOperationsClientCapabilities {
                 dynamic_registration: Some(true),
                 did_create: Some(true),
@@ -331,7 +340,7 @@ fn initialize_params(spec: &StartSpec) -> Value {
         process_id: Some(std::process::id()),
         root_uri: root.clone(),
         initialization_options: spec.init_options.clone(),
-        capabilities: client_capabilities(),
+        capabilities: client_capabilities(spec.watch_files),
         workspace_folders: root.map(|uri| vec![WorkspaceFolder { uri, name }]),
         client_info: Some(ClientInfo { name: "jetl".into(), version: Some(env!("CARGO_PKG_VERSION").into()) }),
         ..Default::default()

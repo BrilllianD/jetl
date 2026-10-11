@@ -681,7 +681,7 @@ mod tests {
 
     #[test]
     fn capabilities_advertise_edits() {
-        let c = serde_json::to_value(crate::lsp::client::client_capabilities()).unwrap();
+        let c = serde_json::to_value(crate::lsp::client::client_capabilities(true)).unwrap();
         let td = &c["textDocument"];
         assert_eq!(td["rename"]["prepareSupport"], true);
         assert_eq!(td["codeAction"]["resolveSupport"]["properties"], json!(["edit"]));

@@ -36,6 +36,18 @@ pub struct Changes {
     pub git: bool,
     /// Moves inside the root reported as one event (`old`, `new`).
     pub renames: Vec<(PathBuf, PathBuf)>,
+    /// Per-path created/changed/deleted events under the root, for language
+    /// servers' `workspace/didChangeWatchedFiles`.
+    pub events: Vec<(PathBuf, FileChange)>,
+}
+
+/// What happened to a path, as language servers see it (LSP `FileChangeType`
+/// 1, 2, 3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileChange {
+    Created,
+    Changed,
+    Deleted,
 }
 
 /// Start watching `root`. Blocking: inotify adds a watch per directory, so
@@ -48,6 +60,11 @@ pub fn start(root: &Path, generation: u64, tx: UnboundedSender<AppMsg>) -> anyho
             let mut changes = classify(&root_c, &dirs_c, events.iter().filter(|e| changes_content(&e.kind)).flat_map(|e| e.paths.iter()));
             changes.renames =
                 renames_of(&root_c, &dirs_c, events.iter().filter(|e| changes_content(&e.kind)).map(|e| (&e.kind, e.paths.as_slice())));
+            changes.events = events_of(
+                Some(&root_c),
+                &dirs_c,
+                events.iter().filter(|e| changes_content(&e.kind)).map(|e| (&e.kind, e.paths.as_slice())),
+            );
             if !changes.paths.is_empty() || changes.git || !changes.renames.is_empty() {
                 let _ = tx.send(AppMsg::FsChanged { generation, changes });
             }
@@ -66,6 +83,109 @@ pub fn start(root: &Path, generation: u64, tx: UnboundedSender<AppMsg>) -> anyho
         }
     }
     Ok(Watcher { _debouncer: debouncer })
+}
+
+/// Watch the folders language servers registered that lie outside the
+/// project root. Blocking, like [`start`]. A folder that cannot be watched
+/// is logged and skipped; `Err` when none could be.
+pub fn start_outside(dirs: &[(PathBuf, bool)], generation: u64, tx: UnboundedSender<AppMsg>) -> anyhow::Result<Watcher> {
+    let mut debouncer = new_debouncer(DEBOUNCE, None, move |res: DebounceEventResult| match res {
+        Ok(events) => {
+            let events = events_of(None, &[], events.iter().filter(|e| changes_content(&e.kind)).map(|e| (&e.kind, e.paths.as_slice())));
+            if !events.is_empty() {
+                let _ = tx.send(AppMsg::LspWatched { generation, events });
+            }
+        }
+        Err(errors) => {
+            for e in errors {
+                tracing::warn!("outside watcher: {e}");
+            }
+        }
+    })?;
+    let mut watched = 0;
+    let mut last_err = None;
+    for (dir, recursive) in dirs {
+        let mode = if *recursive { RecursiveMode::Recursive } else { RecursiveMode::NonRecursive };
+        match debouncer.watch(dir, mode) {
+            Ok(()) => watched += 1,
+            Err(e) => {
+                tracing::warn!("outside watcher: cannot watch {}: {e}", dir.display());
+                last_err = Some(e);
+            }
+        }
+    }
+    match last_err {
+        Some(e) if watched == 0 => Err(e.into()),
+        _ => Ok(Watcher { _debouncer: debouncer }),
+    }
+}
+
+/// The change one path of an event stands for; `i` is its index in the event.
+fn change_of(kind: &EventKind, i: usize, path: &Path) -> FileChange {
+    match kind {
+        EventKind::Create(_) => FileChange::Created,
+        EventKind::Remove(_) => FileChange::Deleted,
+        EventKind::Modify(ModifyKind::Name(RenameMode::Both)) => {
+            if i == 0 {
+                FileChange::Deleted
+            } else {
+                FileChange::Created
+            }
+        }
+        EventKind::Modify(ModifyKind::Name(RenameMode::From)) => FileChange::Deleted,
+        EventKind::Modify(ModifyKind::Name(RenameMode::To)) => FileChange::Created,
+        EventKind::Modify(ModifyKind::Name(_)) => {
+            if path.symlink_metadata().is_ok() {
+                FileChange::Created
+            } else {
+                FileChange::Deleted
+            }
+        }
+        _ => FileChange::Changed,
+    }
+}
+
+/// Per-path events of one batch, merged in arrival order. Under `Some(root)`
+/// only paths inside it and outside `git_dirs` count; with `None` (the
+/// outside watcher) paths with a `.git` component are dropped.
+fn events_of<'a>(
+    root: Option<&Path>,
+    git_dirs: &[PathBuf],
+    events: impl Iterator<Item = (&'a EventKind, &'a [PathBuf])>,
+) -> Vec<(PathBuf, FileChange)> {
+    use FileChange::{Changed, Created, Deleted};
+    let mut out: Vec<(PathBuf, FileChange)> = Vec::new();
+    for (kind, paths) in events {
+        for (i, p) in paths.iter().enumerate() {
+            let keep = match root {
+                Some(r) => p.starts_with(r) && !git_dirs.iter().any(|d| p.starts_with(d)),
+                None => !p.components().any(|c| c.as_os_str() == ".git"),
+            };
+            if !keep {
+                continue;
+            }
+            let new = change_of(kind, i, p);
+            match out.iter().position(|(q, _)| q == p) {
+                None => out.push((p.clone(), new)),
+                Some(at) => {
+                    let merged = match (out[at].1, new) {
+                        (Created, Changed) => Some(Created),
+                        (Created, Deleted) => None,
+                        (Deleted, Created) | (Deleted, Changed) => Some(Changed),
+                        (Changed, Created) => Some(Changed),
+                        (_, k) => Some(k),
+                    };
+                    match merged {
+                        Some(k) => out[at].1 = k,
+                        None => {
+                            out.remove(at);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Whether an event can change what a file holds. inotify also reports
@@ -159,6 +279,58 @@ mod tests {
         assert!(run(&both, &v(&["/p/.git/x", "/p/b.txt"])).is_empty());
         assert!(run(&both, &v(&["/p/a.txt", "/elsewhere/b.txt"])).is_empty());
         assert!(run(&both, &v(&["/p/a.txt"])).is_empty());
+    }
+
+    #[test]
+    fn event_kinds_are_classified() {
+        use notify_debouncer_full::notify::event::{CreateKind, DataChange, RemoveKind};
+        let p = Path::new("/nonexistent-jetl/x");
+        let name = |m| EventKind::Modify(ModifyKind::Name(m));
+        assert_eq!(change_of(&EventKind::Create(CreateKind::File), 0, p), FileChange::Created);
+        assert_eq!(change_of(&EventKind::Remove(RemoveKind::File), 0, p), FileChange::Deleted);
+        assert_eq!(change_of(&name(RenameMode::Both), 0, p), FileChange::Deleted);
+        assert_eq!(change_of(&name(RenameMode::Both), 1, p), FileChange::Created);
+        assert_eq!(change_of(&name(RenameMode::From), 0, p), FileChange::Deleted);
+        assert_eq!(change_of(&name(RenameMode::To), 0, p), FileChange::Created);
+        assert_eq!(change_of(&name(RenameMode::Any), 0, p), FileChange::Deleted, "missing path");
+        assert_eq!(change_of(&name(RenameMode::Any), 0, Path::new("/")), FileChange::Created, "existing path");
+        assert_eq!(change_of(&EventKind::Modify(ModifyKind::Data(DataChange::Any)), 0, p), FileChange::Changed);
+        assert_eq!(change_of(&EventKind::Modify(ModifyKind::Any), 0, p), FileChange::Changed);
+        assert_eq!(change_of(&EventKind::Access(AccessKind::Close(AccessMode::Write)), 0, p), FileChange::Changed);
+        assert_eq!(change_of(&EventKind::Any, 0, p), FileChange::Changed);
+        assert_eq!(change_of(&EventKind::Other, 0, p), FileChange::Changed);
+    }
+
+    #[test]
+    fn events_merge_per_path() {
+        use FileChange::{Changed, Created, Deleted};
+        use notify_debouncer_full::notify::event::{CreateKind, RemoveKind};
+        let create = EventKind::Create(CreateKind::File);
+        let remove = EventKind::Remove(RemoveKind::File);
+        let modify = EventKind::Modify(ModifyKind::Any);
+        let root = Path::new("/p");
+        let dirs = [root.join(".git")];
+        let a = vec![PathBuf::from("/p/a")];
+        let run = |root: Option<&Path>, seq: &[(&EventKind, &[PathBuf])]| events_of(root, &dirs, seq.iter().copied());
+        let one = |first: &EventKind, second: &EventKind| run(Some(root), &[(first, &a), (second, &a)]);
+        let at = |k| vec![(PathBuf::from("/p/a"), k)];
+        assert_eq!(run(Some(root), &[(&modify, &a)]), at(Changed));
+        assert_eq!(one(&create, &modify), at(Created));
+        assert_eq!(one(&create, &remove), vec![]);
+        assert_eq!(one(&remove, &create), at(Changed));
+        assert_eq!(one(&remove, &modify), at(Changed));
+        assert_eq!(one(&modify, &remove), at(Deleted));
+        assert_eq!(one(&modify, &create), at(Changed));
+        assert_eq!(one(&create, &create), at(Created));
+        assert_eq!(one(&remove, &remove), at(Deleted));
+        // First-seen order of paths, filtering.
+        let b = vec![PathBuf::from("/p/b")];
+        let junk = vec![PathBuf::from("/p/.git/index"), PathBuf::from("/elsewhere/x")];
+        let got = run(Some(root), &[(&modify, &b), (&modify, &junk), (&create, &a), (&modify, &b)]);
+        assert_eq!(got, vec![(PathBuf::from("/p/b"), Changed), (PathBuf::from("/p/a"), Created)]);
+        // Outside watcher: no root filter, .git paths dropped.
+        let mixed = vec![PathBuf::from("/q/dep/.git/HEAD"), PathBuf::from("/q/dep/lib.rs")];
+        assert_eq!(run(None, &[(&modify, &mixed)]), vec![(PathBuf::from("/q/dep/lib.rs"), Changed)]);
     }
 
     #[test]

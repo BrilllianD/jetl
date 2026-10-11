@@ -40,6 +40,7 @@ pub const DID_OPEN: &str = "textDocument/didOpen";
 pub const DID_CHANGE: &str = "textDocument/didChange";
 pub const DID_SAVE: &str = "textDocument/didSave";
 pub const DID_CLOSE: &str = "textDocument/didClose";
+pub const DID_CHANGE_WATCHED_FILES: &str = "workspace/didChangeWatchedFiles";
 
 /// What a running server offers for one document: its `initialize`
 /// capabilities plus the registrations that apply to the document.
@@ -315,7 +316,7 @@ mod tests {
 
     #[test]
     fn dynamic_registration_is_advertised_where_honoured() {
-        let c = serde_json::to_value(client_capabilities()).unwrap();
+        let c = serde_json::to_value(client_capabilities(true)).unwrap();
         for k in
             ["definition", "references", "hover", "completion", "rename", "codeAction", "documentSymbol", "formatting", "rangeFormatting"]
         {
@@ -325,7 +326,8 @@ mod tests {
         assert_eq!(c["textDocument"]["synchronization"]["dynamicRegistration"], true);
         assert_eq!(c["workspace"]["fileOperations"]["dynamicRegistration"], true);
         assert_eq!(c["workspace"]["fileOperations"]["willRename"], true);
-        assert!(c["workspace"]["didChangeWatchedFiles"].is_null());
+        assert_eq!(c["workspace"]["didChangeWatchedFiles"], json!({"dynamicRegistration": true, "relativePatternSupport": true}));
+        assert!(serde_json::to_value(client_capabilities(false)).unwrap()["workspace"]["didChangeWatchedFiles"].is_null());
         assert!(c["workspace"]["didChangeConfiguration"].is_null());
         assert_eq!(c["workspace"]["workspaceEdit"]["changeAnnotationSupport"]["groupsOnLabel"], false);
         assert_eq!(c["textDocument"]["rename"]["honorsChangeAnnotations"], true);
@@ -379,7 +381,7 @@ mod tests {
 
     #[test]
     fn diagnostic_tags_related_and_versions_are_advertised() {
-        let c = serde_json::to_value(client_capabilities()).unwrap();
+        let c = serde_json::to_value(client_capabilities(true)).unwrap();
         let d = &c["textDocument"]["publishDiagnostics"];
         assert_eq!(d["relatedInformation"], true);
         assert_eq!(d["tagSupport"]["valueSet"], serde_json::json!([1, 2]));
@@ -388,7 +390,7 @@ mod tests {
 
     #[test]
     fn completion_item_details_are_advertised() {
-        let c = serde_json::to_value(client_capabilities()).unwrap();
+        let c = serde_json::to_value(client_capabilities(true)).unwrap();
         let i = &c["textDocument"]["completion"]["completionItem"];
         assert_eq!(i["labelDetailsSupport"], true);
         assert_eq!(i["commitCharactersSupport"], true);

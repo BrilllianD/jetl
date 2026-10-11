@@ -117,7 +117,8 @@ show_hidden = true             # show dot files in the Project tree and Go to Fi
                                # toggle, saved in the session, wins once a root has one
 show_ignored = false           # show files ignored by .gitignore in the Project tree and Go to File
                                # (same session rule for the tree)
-watch = true                   # follow changes made outside jetl (tree, git state, open files)
+watch = true                   # follow changes made outside jetl (tree, git state, open files); also feeds
+                               # language servers' file change events
 
 [clipboard]
 paste_command = ""             # prints the system clipboard; "" = detect, "none" = jetl's own last copy only

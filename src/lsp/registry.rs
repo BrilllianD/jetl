@@ -13,7 +13,9 @@ use std::path::{Path, PathBuf};
 use lsp_types::Uri;
 use serde_json::Value;
 
+use super::caps::DID_CHANGE_WATCHED_FILES;
 use super::sync;
+use crate::files::watch::FileChange;
 
 /// Dynamic registrations of one server (`client/registerCapability`),
 /// in arrival order. Ids are unique: a repeated id replaces the old entry.
@@ -33,6 +35,16 @@ pub struct Registration {
     /// which means the client's own selector, i.e. every document jetl opens
     /// on this server.
     selector: Option<Vec<Filter>>,
+    /// `registerOptions.watchers` of a `workspace/didChangeWatchedFiles`
+    /// registration, compiled (empty for any other method).
+    watchers: Vec<FileWatcher>,
+}
+
+/// One `FileSystemWatcher`: a glob and the `WatchKind` bits (1 create, 2 change, 4 delete).
+#[derive(Debug)]
+struct FileWatcher {
+    pattern: Pattern,
+    kind: u8,
 }
 
 /// One `DocumentFilter`. Matches when every field that is set matches.
@@ -91,7 +103,8 @@ impl Registry {
             let method = entry.get("method").and_then(Value::as_str).ok_or("registration: expected a method string")?;
             let options = entry.get("registerOptions").cloned().unwrap_or(Value::Null);
             let selector = parse_selector(options.get("documentSelector").unwrap_or(&Value::Null))?;
-            parsed.push(Registration { id: id.to_string(), method: method.to_string(), options, selector });
+            let watchers = if method == DID_CHANGE_WATCHED_FILES { parse_watchers(&options)? } else { Vec::new() };
+            parsed.push(Registration { id: id.to_string(), method: method.to_string(), options, selector, watchers });
         }
         for reg in parsed {
             self.regs.retain(|r| r.id != reg.id);
@@ -119,6 +132,40 @@ impl Registry {
     /// selector never applies when `doc` is `None` (workspace-level queries).
     pub fn matching<'a>(&'a self, method: &'a str, doc: Option<DocRef<'a>>) -> impl Iterator<Item = &'a Registration> + 'a {
         self.regs.iter().filter(move |r| r.method == method && r.applies_to(doc))
+    }
+
+    /// Whether some `workspace/didChangeWatchedFiles` registration wants `change` on `path`.
+    pub fn watches(&self, path: &Path, change: FileChange) -> bool {
+        let bit = match change {
+            FileChange::Created => 1,
+            FileChange::Changed => 2,
+            FileChange::Deleted => 4,
+        };
+        self.regs
+            .iter()
+            .filter(|r| r.method == DID_CHANGE_WATCHED_FILES)
+            .flat_map(|r| &r.watchers)
+            .any(|w| w.kind & bit != 0 && w.pattern.matches(path))
+    }
+
+    /// Folders the registered watchers are rooted at, sorted and deduplicated.
+    /// A relative pattern gives its base, an absolute glob its literal prefix
+    /// (the parent when it has no glob characters); a glob that is not
+    /// absolute (`**/*.rs`) is not tied to a folder.
+    pub fn watch_bases(&self) -> Vec<PathBuf> {
+        let mut bases: Vec<PathBuf> = self
+            .regs
+            .iter()
+            .filter(|r| r.method == DID_CHANGE_WATCHED_FILES)
+            .flat_map(|r| &r.watchers)
+            .filter_map(|w| match &w.pattern {
+                Pattern::Relative { base, .. } => Some(base.clone()),
+                Pattern::Absolute { text, .. } => literal_prefix(text),
+            })
+            .collect();
+        bases.sort();
+        bases.dedup();
+        bases
     }
 
     pub fn clear(&mut self) {
@@ -156,6 +203,33 @@ impl Pattern {
             Pattern::Relative { base, glob } => path.strip_prefix(base).is_ok_and(|rest| glob.is_match(rest)),
         }
     }
+}
+
+/// The components of an absolute glob before the first one with a glob
+/// character; the parent when all are literal.
+fn literal_prefix(text: &str) -> Option<PathBuf> {
+    if !text.starts_with('/') {
+        return None;
+    }
+    let comps: Vec<&str> = text.split('/').filter(|c| !c.is_empty()).collect();
+    let literal = comps.iter().take_while(|c| !c.contains(['*', '?', '[', '{'])).count();
+    let keep = if literal == comps.len() { literal.saturating_sub(1) } else { literal };
+    let mut base = PathBuf::from("/");
+    base.extend(&comps[..keep]);
+    Some(base)
+}
+
+fn parse_watchers(options: &Value) -> Result<Vec<FileWatcher>, String> {
+    let entries = options.get("watchers").and_then(Value::as_array).ok_or("watchers: expected an array")?;
+    let mut out = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let Some(pattern) = entry.get("globPattern").and_then(parse_pattern) else {
+            tracing::warn!("ignoring a file watcher with an unusable glob: {entry}");
+            continue;
+        };
+        out.push(FileWatcher { pattern, kind: (entry["kind"].as_u64().unwrap_or(7) & 7) as u8 });
+    }
+    Ok(out)
 }
 
 fn parse_selector(v: &Value) -> Result<Option<Vec<Filter>>, String> {
@@ -306,6 +380,46 @@ mod tests {
         let bad = json!({"registrations": [{"id": "c", "method": "m", "registerOptions": {"documentSelector": 5}}]});
         assert!(r.register(&bad).is_err());
         assert_eq!(r.regs.len(), 1);
+    }
+
+    #[test]
+    fn watchers_match_kind_and_pattern() {
+        use FileChange::{Changed, Created, Deleted};
+        let mut r = Registry::default();
+        let params = json!({"registrations": [{"id": "w", "method": "workspace/didChangeWatchedFiles", "registerOptions": {"watchers": [
+            {"globPattern": "**/*.rs"},
+            {"globPattern": {"baseUri": "file:///p", "pattern": "Cargo.toml"}, "kind": 4},
+            {"globPattern": "{"},
+        ]}}]});
+        r.register(&params).unwrap();
+        let rs = Path::new("/p/src/a.rs");
+        assert!(r.watches(rs, Created) && r.watches(rs, Changed) && r.watches(rs, Deleted));
+        let cargo = Path::new("/p/Cargo.toml");
+        assert!(r.watches(cargo, Deleted));
+        assert!(!r.watches(cargo, Changed) && !r.watches(cargo, Created));
+        assert!(!r.watches(Path::new("/p/notes.txt"), Changed));
+        assert_eq!(r.regs[0].watchers.len(), 2, "the bad glob is skipped");
+        assert!(
+            r.register(
+                &json!({"registrations": [{"id": "x", "method": "workspace/didChangeWatchedFiles", "registerOptions": {"watchers": 5}}]})
+            )
+            .is_err()
+        );
+        assert_eq!(r.regs.len(), 1);
+    }
+
+    #[test]
+    fn watch_bases_are_literal_prefixes() {
+        let mut r = Registry::default();
+        let params = json!({"registrations": [{"id": "w", "method": "workspace/didChangeWatchedFiles", "registerOptions": {"watchers": [
+            {"globPattern": "/q/dep/**/*.rs"},
+            {"globPattern": "/q/x/Cargo.toml"},
+            {"globPattern": "**/*.rs"},
+            {"globPattern": {"baseUri": "file:///p", "pattern": "**/*.rs"}},
+            {"globPattern": {"baseUri": "file:///p", "pattern": "Cargo.toml"}},
+        ]}}]});
+        r.register(&params).unwrap();
+        assert_eq!(r.watch_bases(), [PathBuf::from("/p"), PathBuf::from("/q/dep"), PathBuf::from("/q/x")]);
     }
 
     #[test]
