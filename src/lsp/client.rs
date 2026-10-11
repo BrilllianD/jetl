@@ -26,7 +26,7 @@ use lsp_types::{
     PositionEncodingKind, PublishDiagnosticsClientCapabilities, ReferenceClientCapabilities, RenameClientCapabilities,
     ResourceOperationKind, ShowMessageRequestClientCapabilities, TagSupport, TextDocumentClientCapabilities,
     TextDocumentSyncClientCapabilities, WindowClientCapabilities, WorkspaceClientCapabilities, WorkspaceEditClientCapabilities,
-    WorkspaceFolder,
+    WorkspaceFileOperationsClientCapabilities, WorkspaceFolder,
 };
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, BufReader};
@@ -201,7 +201,8 @@ impl Drop for Client {
 }
 
 /// What jetl supports, sent with `initialize`. Positions are UTF-16 only;
-/// dynamic registration where `Caps::has` honours it (`lsp::caps`).
+/// dynamic registration where `Caps::has` honours it (`lsp::caps`); file
+/// operations (`will*Files`, `did*Files`) from the Project tree.
 pub fn client_capabilities() -> ClientCapabilities {
     ClientCapabilities {
         general: Some(GeneralClientCapabilities { position_encodings: Some(vec![PositionEncodingKind::UTF16]), ..Default::default() }),
@@ -253,6 +254,15 @@ pub fn client_capabilities() -> ClientCapabilities {
                 ..Default::default()
             }),
             execute_command: Some(ExecuteCommandClientCapabilities { dynamic_registration: Some(true) }),
+            file_operations: Some(WorkspaceFileOperationsClientCapabilities {
+                dynamic_registration: Some(true),
+                did_create: Some(true),
+                will_create: Some(true),
+                did_rename: Some(true),
+                will_rename: Some(true),
+                did_delete: Some(true),
+                will_delete: Some(true),
+            }),
             ..Default::default()
         }),
         ..Default::default()

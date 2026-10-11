@@ -57,7 +57,9 @@ impl App {
             AppMsg::FsChanged { .. } | AppMsg::WatcherStarted { .. } | AppMsg::DiskText { .. } => {
                 tracing::debug!("dropping stale watcher message");
             }
-            AppMsg::FsOpDone { generation, op, result } if generation == self.workspace.generation => self.fs_op_done(op, result),
+            AppMsg::FsOpDone { generation, op, is_dir, result } if generation == self.workspace.generation => {
+                self.fs_op_done(op, is_dir, result)
+            }
             // The tree and tabs are a previous root's, but the store (and the
             // Local History window) is global.
             AppMsg::FsOpDone { op: FsOp::Rename { from, to, .. }, result: Ok(()), .. } => self.history_renamed(&from, &to),

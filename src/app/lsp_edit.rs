@@ -401,13 +401,17 @@ impl App {
     fn edit_title(origin: &EditOrigin) -> String {
         match origin {
             EditOrigin::Rename(_) => "Rename".into(),
-            EditOrigin::CodeAction(title) => title.clone(),
+            EditOrigin::CodeAction(title) | EditOrigin::FileOp { title, .. } => title.clone(),
             EditOrigin::ServerRequest { server, label, .. } => label.clone().unwrap_or_else(|| format!("Edit from {server}")),
         }
     }
 
     fn edits_refused(&mut self, origin: EditOrigin, why: String) {
         self.notify(Level::Warn, format!("{}: {why}; nothing was changed", Self::edit_title(&origin)));
+        if let EditOrigin::FileOp { seq, .. } = origin {
+            // The operation still runs: the server's edit was an extra.
+            return self.file_op_continue(seq);
+        }
         if let EditOrigin::ServerRequest { server, id, .. } = origin
             && let Some(c) = self.lsp.clients.get(&server)
         {
@@ -461,6 +465,7 @@ impl App {
             self.lsp_sync();
         }
         let ops_text = describe_ops(&ops, &self.workspace.root);
+        let file_op_seq = if let EditOrigin::FileOp { seq, .. } = &origin { Some(*seq) } else { None };
         match origin {
             EditOrigin::Rename(name) if done.files > 0 => {
                 let mut text =
@@ -476,6 +481,17 @@ impl App {
             EditOrigin::Rename(_) if errors.is_empty() => self.lsp_hint("Nothing to rename"),
             EditOrigin::Rename(_) => {}
             EditOrigin::CodeAction(_) => {
+                if let Some(ops) = ops_text {
+                    self.notify(Level::Info, format!("{title}: {ops}"));
+                }
+            }
+            EditOrigin::FileOp { .. } => {
+                if done.files > 0 {
+                    self.notify(
+                        Level::Info,
+                        format!("{title}: updated {} occurrence{} in {} file{}", done.edits, s(done.edits), done.files, s(done.files)),
+                    );
+                }
                 if let Some(ops) = ops_text {
                     self.notify(Level::Info, format!("{title}: {ops}"));
                 }
@@ -498,6 +514,9 @@ impl App {
         }
         if done.files > 0 || !ops.is_empty() {
             self.apply_effects(vec![Effect::GitRefresh]);
+        }
+        if let Some(seq) = file_op_seq {
+            self.file_op_continue(seq);
         }
     }
 }

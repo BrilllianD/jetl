@@ -49,6 +49,7 @@ fn method_of(tag: &PendingTag) -> &'static str {
         PendingTag::Lightbulb(_) => CODE_ACTION,
         PendingTag::Initialize => "initialize",
         PendingTag::Shutdown => "shutdown",
+        PendingTag::WillFileOp(_) => "workspace/will*Files",
     }
 }
 
@@ -254,6 +255,9 @@ impl App {
     /// newest of its method and the buffer, its version and the caret are
     /// as they were when it was sent.
     pub(super) fn lsp_response(&mut self, name: &str, tag: PendingTag, result: Result<Value, ResponseError>) {
+        if let PendingTag::WillFileOp(seq) = tag {
+            return self.will_file_op_answer(name, seq, result);
+        }
         let Some(t) = tag.doc().cloned() else { return };
         // Formatting is checked against its buffer's format job.
         if let PendingTag::Formatting(t) = tag {
@@ -312,6 +316,7 @@ impl App {
             | PendingTag::ExecuteCommand(_)
             | PendingTag::Formatting(_)
             | PendingTag::Lightbulb(_)
+            | PendingTag::WillFileOp(_)
             | PendingTag::Initialize
             | PendingTag::Shutdown => {}
         }

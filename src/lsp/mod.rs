@@ -72,13 +72,15 @@ pub enum PendingTag {
     /// `textDocument/codeAction` for the lightbulb; checked against
     /// `LspService::lightbulb` (`app/lightbulb.rs`), not `inflight`.
     Lightbulb(DocTag),
+    /// `workspace/will*Files` of a tree file operation; the seq of its `PendingFileOp`.
+    WillFileOp(u64),
 }
 
 impl PendingTag {
     /// The document request's tag, for the requests the app makes.
     pub fn doc(&self) -> Option<&DocTag> {
         match self {
-            PendingTag::Initialize | PendingTag::Shutdown => None,
+            PendingTag::Initialize | PendingTag::Shutdown | PendingTag::WillFileOp(_) => None,
             PendingTag::Definition(t)
             | PendingTag::References(t)
             | PendingTag::Hover(t)
@@ -122,6 +124,9 @@ pub enum EditOrigin {
     CodeAction(String),
     /// `workspace/applyEdit` from `server`, answered once applied.
     ServerRequest { server: String, id: RequestId, label: Option<String> },
+    /// A server's edit before a tree file operation (`will*Files`); `title` names the
+    /// operation and the server.
+    FileOp { seq: u64, title: String },
 }
 
 /// A language server event for the app, tagged with the workspace

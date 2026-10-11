@@ -74,6 +74,8 @@ pub struct LspService {
     pub(super) edit: super::lsp_edit::EditReqs,
     /// The lightbulb's request and debounce (`app/lightbulb.rs`).
     pub(super) lightbulb: super::lightbulb::Lightbulb,
+    /// Tree file operations waiting for `will*Files` answers (`app/files.rs`).
+    pub(super) file_ops: Vec<super::files::PendingFileOp>,
     connector: Connector,
 }
 
@@ -168,6 +170,7 @@ impl LspService {
         self.completion.docs = None;
         self.edit = Default::default();
         self.lightbulb = Default::default();
+        self.file_ops.clear();
     }
 
     /// Whether a spinner is shown (a server starting or busy).
@@ -439,6 +442,10 @@ impl App {
     /// `lsp.restart`: stop every server, forget which were missing, and
     /// start them again for the open buffers.
     pub(super) fn lsp_restart(&mut self) {
+        // The servers are going away; the user's operations still happen.
+        for p in std::mem::take(&mut self.lsp.file_ops) {
+            self.run_fs_op_now(p.op, p.is_dir);
+        }
         self.lsp.reset();
         self.lsp.missing.clear();
         self.lsp.servers = None;
@@ -453,6 +460,10 @@ impl App {
     /// The root changed: the old root's servers stop; the new root's start
     /// for the open buffers on the next sync.
     pub(crate) fn lsp_root_changed(&mut self) {
+        for p in std::mem::take(&mut self.lsp.file_ops) {
+            let what = p.op.describe(&self.workspace.root);
+            self.notify(Level::Warn, format!("Cannot {what}: the project root changed"));
+        }
         self.lsp.reset();
         self.editor.buffers.iter_mut().for_each(untrack);
     }
@@ -496,6 +507,7 @@ impl App {
         }
         self.lsp.server_gone(name, server, &mut self.editor.buffers);
         self.format_server_gone(name);
+        self.file_ops_server_gone(name);
     }
 
     fn lsp_notification(&mut self, name: &str, server: ServerId, method: &str, params: Value) {

@@ -6,10 +6,15 @@
 //! sub-option is true if any source sets it, and lists (trigger characters,
 //! commands) are joined. Nothing is cached: callers ask when they decide.
 
-use lsp_types::{CodeActionProviderCapability, HoverProviderCapability, OneOf, ServerCapabilities};
+use std::path::Path;
+
+use lsp_types::{
+    CodeActionProviderCapability, FileOperationFilter, FileOperationPatternKind, FileOperationRegistrationOptions, HoverProviderCapability,
+    OneOf, ServerCapabilities,
+};
 use serde_json::Value;
 
-use super::registry::{DocRef, Registry};
+use super::registry::{DocRef, Glob, Registry};
 
 pub const DEFINITION: &str = "textDocument/definition";
 pub const REFERENCES: &str = "textDocument/references";
@@ -24,6 +29,12 @@ pub const EXECUTE_COMMAND: &str = "workspace/executeCommand";
 pub const DOCUMENT_SYMBOL: &str = "textDocument/documentSymbol";
 pub const FORMATTING: &str = "textDocument/formatting";
 pub const RANGE_FORMATTING: &str = "textDocument/rangeFormatting";
+pub const WILL_CREATE_FILES: &str = "workspace/willCreateFiles";
+pub const DID_CREATE_FILES: &str = "workspace/didCreateFiles";
+pub const WILL_RENAME_FILES: &str = "workspace/willRenameFiles";
+pub const DID_RENAME_FILES: &str = "workspace/didRenameFiles";
+pub const WILL_DELETE_FILES: &str = "workspace/willDeleteFiles";
+pub const DID_DELETE_FILES: &str = "workspace/didDeleteFiles";
 
 /// What a running server offers for one document: its `initialize`
 /// capabilities plus the registrations that apply to the document.
@@ -41,6 +52,18 @@ fn on<T>(p: &Option<OneOf<bool, T>>) -> bool {
 /// Whether registration options set `key` to true.
 fn flag(o: &Value, key: &str) -> bool {
     o.get(key).and_then(Value::as_bool) == Some(true)
+}
+
+/// Whether `filter` accepts the absolute `path` (a folder when `is_dir`).
+fn filter_matches(filter: &FileOperationFilter, ignore_case: bool, path: &Path, is_dir: bool) -> bool {
+    let p = &filter.pattern;
+    filter.scheme.as_deref().is_none_or(|s| s == "file")
+        && match p.matches {
+            None => true,
+            Some(FileOperationPatternKind::File) => !is_dir,
+            Some(FileOperationPatternKind::Folder) => is_dir,
+        }
+        && Glob::new(&p.glob, ignore_case || p.options.as_ref().and_then(|o| o.ignore_case) == Some(true)).is_some_and(|g| g.is_match(path))
 }
 
 /// The strings of the array `o[key]`.
@@ -144,6 +167,27 @@ impl<'a> Caps<'a> {
             strings(o, "codeActionKinds").for_each(&mut push);
         }
         if out.is_empty() { None } else { Some(out) }
+    }
+
+    /// Whether `method` (`workspace/will*Files` or `did*Files`) is wanted for `path`: static
+    /// `workspace.fileOperations` filters or any registration's `filters` match it.
+    pub fn file_operation(&self, method: &'a str, path: &Path, is_dir: bool) -> bool {
+        let ops = self.fixed.workspace.as_ref().and_then(|w| w.file_operations.as_ref());
+        let fixed = ops.and_then(|o| match method {
+            WILL_CREATE_FILES => o.will_create.as_ref(),
+            DID_CREATE_FILES => o.did_create.as_ref(),
+            WILL_RENAME_FILES => o.will_rename.as_ref(),
+            DID_RENAME_FILES => o.did_rename.as_ref(),
+            WILL_DELETE_FILES => o.will_delete.as_ref(),
+            DID_DELETE_FILES => o.did_delete.as_ref(),
+            _ => None,
+        });
+        let matches = |o: &FileOperationRegistrationOptions| o.filters.iter().any(|f| filter_matches(f, false, path, is_dir));
+        fixed.is_some_and(matches)
+            || self
+                .dynamic(method)
+                .filter_map(|o| serde_json::from_value::<FileOperationRegistrationOptions>(o.clone()).ok())
+                .any(|o| matches(&o))
     }
 
     /// Whether `workspace/executeCommand` runs `command` (static `commands` ∪ registered `commands`).
@@ -253,8 +297,33 @@ mod tests {
         }
         assert_eq!(c["workspace"]["executeCommand"]["dynamicRegistration"], true);
         assert_ne!(c["textDocument"]["synchronization"]["dynamicRegistration"], true);
+        assert_eq!(c["workspace"]["fileOperations"]["dynamicRegistration"], true);
+        assert_eq!(c["workspace"]["fileOperations"]["willRename"], true);
         assert!(c["workspace"]["didChangeWatchedFiles"].is_null());
         assert!(c["workspace"]["didChangeConfiguration"].is_null());
+    }
+
+    #[test]
+    fn file_operation_filters_match_kind_glob_and_scheme() {
+        let f = fixed(json!({"workspace": {"fileOperations": {"willRename": {"filters": [
+            {"scheme": "file", "pattern": {"glob": "**/*.rs", "matches": "file"}},
+            {"pattern": {"glob": "**", "matches": "folder"}}
+        ]}}}}));
+        let mut r = Registry::default();
+        let c = Caps { fixed: &f, registry: &r, doc: None };
+        assert!(c.file_operation(WILL_RENAME_FILES, Path::new("/p/src/a.rs"), false));
+        assert!(!c.file_operation(WILL_RENAME_FILES, Path::new("/p/a.txt"), false));
+        assert!(c.file_operation(WILL_RENAME_FILES, Path::new("/p/src"), true));
+        assert!(!c.file_operation(DID_RENAME_FILES, Path::new("/p/src/a.rs"), false));
+        assert!(!c.file_operation(DID_DELETE_FILES, Path::new("/p/a.txt"), false));
+        register(&mut r, "d", DID_DELETE_FILES, json!({"filters": [{"pattern": {"glob": "**/*.TXT", "options": {"ignoreCase": true}}}]}));
+        let c = Caps { fixed: &f, registry: &r, doc: None };
+        assert!(c.file_operation(DID_DELETE_FILES, Path::new("/p/a.txt"), false));
+        let f = fixed(
+            json!({"workspace": {"fileOperations": {"didCreate": {"filters": [{"scheme": "untitled", "pattern": {"glob": "**"}}]}}}}),
+        );
+        let c = Caps { fixed: &f, registry: &r, doc: None };
+        assert!(!c.file_operation(DID_CREATE_FILES, Path::new("/p/a.rs"), false));
     }
 
     #[test]

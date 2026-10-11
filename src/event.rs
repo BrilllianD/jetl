@@ -72,6 +72,8 @@ pub enum AppMsg {
     FsOpDone {
         generation: u64,
         op: crate::files::ops::FsOp,
+        /// Whether the path (a rename's source) was a directory, read before the operation.
+        is_dir: bool,
         result: Result<(), String>,
     },
     /// Re-read tree directories (`ProjectPanel::begin_refresh`), tagged
