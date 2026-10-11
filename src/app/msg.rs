@@ -12,6 +12,11 @@ use crate::ui::palette::Source;
 
 impl App {
     pub(super) fn handle_msg(&mut self, msg: AppMsg) {
+        self.handle_msg_inner(msg);
+        self.lsp_confirm_orphaned();
+    }
+
+    fn handle_msg_inner(&mut self, msg: AppMsg) {
         self.dirty_frame = true;
         match msg {
             AppMsg::ConfigChanged { files } => self.config_changed(files),

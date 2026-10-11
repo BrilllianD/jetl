@@ -650,6 +650,11 @@ impl App {
     }
 
     pub(crate) fn handle_key(&mut self, key: KeyEvent) {
+        self.handle_key_inner(key);
+        self.lsp_confirm_orphaned();
+    }
+
+    fn handle_key_inner(&mut self, key: KeyEvent) {
         let key = crate::config::keymap::KeyCombo::legacy_input(key, self.keyboard_enhanced);
         // An accepted completion waiting for its resolve goes in first.
         if key.kind != crossterm::event::KeyEventKind::Release && !matches!(key.code, KeyCode::Modifier(_)) {

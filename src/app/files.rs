@@ -318,4 +318,42 @@ mod tests {
         assert!(o.exists() && !n.exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[tokio::test]
+    async fn a_confirmation_lost_behind_another_dialog_still_lets_the_operation_run() {
+        use crate::ui::dialog::{Dialog, DialogId};
+        let (mut app, dir) = test_app("fileop-orphaned-confirm");
+        let root = app.workspace.root.clone();
+        let mut servers = with_fake_servers(&mut app, caps());
+        let mut server = open_on_server(&mut app, &mut servers, "a.rs", "fn main() {}\n").await;
+        let (lib, m, n) = (root.join("lib.rs"), root.join("m.rs"), root.join("n.rs"));
+        std::fs::write(&lib, "mod m;\n").unwrap();
+        std::fs::write(&m, "").unwrap();
+        app.run_fs_op(rename(&m, &n));
+        let req = server.recv("workspace/willRenameFiles").await;
+        let edit = json!({
+            "documentChanges": [{
+                "textDocument": {"uri": sync::uri(&lib).unwrap().to_string(), "version": null},
+                "edits": [{"range": {"start": {"line": 0, "character": 4}, "end": {"line": 0, "character": 5}},
+                           "newText": "n", "annotationId": "x"}]
+            }],
+            "changeAnnotations": {"x": {"label": "Risky", "needsConfirmation": true}}
+        });
+        server.respond(req["id"].as_i64().unwrap(), edit);
+        handle_next(&mut app, is_lsp).await;
+        assert!(app.lsp.edit.confirm.is_some());
+        assert!(matches!(app.dialog.as_ref().map(|d| d.id.clone()), Some(DialogId::LspConfirmEdit(_))));
+        // A harmless message leaves a showing confirmation parked.
+        app.handle_msg(AppMsg::Lsp(LspMsg::Exited { generation: app.workspace.generation + 1, server: 0, status: "x".into() }));
+        assert!(app.lsp.edit.confirm.is_some());
+        // Another dialog takes its place; the next message refuses the edit and the rename goes on.
+        app.dialog = Some(Dialog::info("Other", "x"));
+        app.handle_msg(AppMsg::Lsp(LspMsg::Exited { generation: app.workspace.generation + 1, server: 0, status: "x".into() }));
+        assert!(app.lsp.edit.confirm.is_none());
+        handle_next(&mut app, fs_op_done).await;
+        assert!(n.exists() && !m.exists());
+        assert_eq!(std::fs::read_to_string(&lib).unwrap(), "mod m;\n");
+        server.recv("workspace/didRenameFiles").await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

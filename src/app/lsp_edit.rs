@@ -359,6 +359,17 @@ impl App {
         }
     }
 
+    /// Refuses a parked edit whose dialog was replaced, so its file operation or server answer is not lost.
+    pub(super) fn lsp_confirm_orphaned(&mut self) {
+        let Some(seq) = self.lsp.edit.confirm.as_ref().map(|p| p.seq) else { return };
+        if self.dialog.as_ref().is_some_and(|d| d.id == DialogId::LspConfirmEdit(seq)) {
+            return;
+        }
+        if let Some(p) = self.lsp.edit.confirm.take() {
+            self.edits_refused(p.origin, "declined".into());
+        }
+    }
+
     /// Apply a server's workspace edit (see the module docs). Returns false
     /// when it was refused and nothing changed.
     fn apply_workspace_edit_now(&mut self, edit: WorkspaceEdit, origin: EditOrigin) -> bool {
