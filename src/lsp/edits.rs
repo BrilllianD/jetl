@@ -17,10 +17,12 @@
 //! in order and checked with the text edits. The files that are not open
 //! are edited on disk ([`edit_text`]), in order with the file operations.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use lsp_types::{DocumentChangeOperation, DocumentChanges, OneOf, ResourceOp, TextEdit, WorkspaceEdit};
 use ropey::Rope;
+use serde_json::Value;
 
 use super::{pos, sync};
 use crate::editor::buffer::BufferId;
@@ -634,6 +636,37 @@ pub struct AnnotationRow {
     pub needs_confirmation: bool,
 }
 
+/// The ids of the change annotations that the changes of the raw `WorkspaceEdit` `raw` refer to:
+/// `documentChanges[*].edits[*].annotationId` and `documentChanges[*].annotationId`.
+fn referenced_annotations(raw: &Value) -> HashSet<&str> {
+    let mut ids = HashSet::new();
+    let Some(changes) = raw.get("documentChanges").and_then(Value::as_array) else { return ids };
+    for change in changes {
+        ids.extend(change.get("annotationId").and_then(Value::as_str));
+        for edit in change.get("edits").and_then(Value::as_array).into_iter().flatten() {
+            ids.extend(edit.get("annotationId").and_then(Value::as_str));
+        }
+    }
+    ids
+}
+
+/// Drop the `changeAnnotations` of `edit` that no change of its raw JSON `raw` refers to.
+pub fn prune_annotations(raw: &Value, edit: &mut WorkspaceEdit) {
+    let Some(annotations) = edit.change_annotations.as_mut() else { return };
+    let used = referenced_annotations(raw);
+    annotations.retain(|id, _| used.contains(id.as_str()));
+    if annotations.is_empty() {
+        edit.change_annotations = None;
+    }
+}
+
+/// A `WorkspaceEdit` read from JSON, with only the annotations that its changes refer to.
+pub fn read_workspace_edit(raw: Value) -> Result<WorkspaceEdit, serde_json::Error> {
+    let mut edit = serde_json::from_value::<WorkspaceEdit>(raw.clone())?;
+    prune_annotations(&raw, &mut edit);
+    Ok(edit)
+}
+
 /// When an annotation of `edit` has `needsConfirmation: true`: every annotation (those needing
 /// confirmation first, then by label, then by id) and the number of changes of the edit (text
 /// edits and file operations). `None` otherwise.
@@ -641,7 +674,9 @@ pub struct AnnotationRow {
 /// Decided on `changeAnnotations` alone, and the changes are not counted per annotation:
 /// lsp-types reads an annotated text edit as a plain one (`OneOf<TextEdit, AnnotatedTextEdit>`
 /// tries `TextEdit` first) and drops a `DeleteFile`'s top-level `annotationId`, so which change
-/// refers to which annotation is lost. Asking for the whole edit is the safe side.
+/// refers to which annotation is lost. Asking for the whole edit is the safe side. An edit read
+/// with [`read_workspace_edit`] or pruned with [`prune_annotations`] only has the annotations
+/// some change refers to (rust-analyzer lists an unreferenced one in every edit).
 pub fn confirmation(edit: &WorkspaceEdit) -> Option<(Vec<AnnotationRow>, usize)> {
     let annotations = edit.change_annotations.as_ref()?;
     if !annotations.values().any(|a| a.needs_confirmation == Some(true)) {
@@ -728,6 +763,50 @@ mod tests {
         assert_eq!(rows, [row("Rename in tests", None, true), row("Outside", Some("Edit outside of the workspace"), false)]);
         // Four text edits and a rename.
         assert_eq!(total, 5);
+    }
+
+    fn raw_edit(change: Value) -> Value {
+        serde_json::json!({
+            "documentChanges": [change],
+            "changeAnnotations": {"Out": {"label": "Outside", "needsConfirmation": true}}
+        })
+    }
+
+    fn text_change(annotation: Option<&str>) -> Value {
+        let mut e =
+            serde_json::json!({"range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 1}}, "newText": "x"});
+        if let Some(id) = annotation {
+            e["annotationId"] = id.into();
+        }
+        serde_json::json!({"textDocument": {"uri": "file:///p/a.rs", "version": null}, "edits": [e]})
+    }
+
+    #[test]
+    fn an_unreferenced_annotation_is_pruned() {
+        let edit = read_workspace_edit(raw_edit(text_change(None))).unwrap();
+        assert_eq!(edit.change_annotations, None);
+        assert_eq!(confirmation(&edit), None);
+    }
+
+    #[test]
+    fn an_annotation_of_a_text_edit_is_kept() {
+        let edit = read_workspace_edit(raw_edit(text_change(Some("Out")))).unwrap();
+        let (rows, total) = confirmation(&edit).unwrap();
+        assert_eq!((rows.len(), total), (1, 1));
+        // A reference to an unknown id keeps nothing.
+        let edit = read_workspace_edit(raw_edit(text_change(Some("Other")))).unwrap();
+        assert_eq!(confirmation(&edit), None);
+    }
+
+    #[test]
+    fn an_annotation_of_a_resource_op_is_kept() {
+        for change in [
+            serde_json::json!({"kind": "rename", "oldUri": "file:///p/b.rs", "newUri": "file:///p/c.rs", "annotationId": "Out"}),
+            serde_json::json!({"kind": "delete", "uri": "file:///p/b.rs", "annotationId": "Out"}),
+        ] {
+            let edit = read_workspace_edit(raw_edit(change)).unwrap();
+            assert_eq!(confirmation(&edit).map(|(rows, total)| (rows.len(), total)), Some((1, 1)));
+        }
     }
 
     #[test]

@@ -151,7 +151,8 @@ impl App {
 
     pub(super) fn lsp_rename_answer(&mut self, t: DocTag, value: Value) {
         let Some((_, name)) = self.lsp.edit.rename.take_if(|r| r.0 == t.seq) else { return };
-        match serde_json::from_value::<Option<WorkspaceEdit>>(value) {
+        let edit = if value.is_null() { Ok(None) } else { edits::read_workspace_edit(value).map(Some) };
+        match edit {
             Ok(Some(edit)) => {
                 self.apply_workspace_edit(edit, EditOrigin::Rename(name));
             }
@@ -193,11 +194,20 @@ impl App {
     }
 
     pub(super) fn lsp_code_actions_answer(&mut self, t: DocTag, value: Value) {
-        let mut items: Vec<CodeActionOrCommand> = serde_json::from_value::<Option<Vec<CodeActionOrCommand>>>(value)
+        let mut items: Vec<CodeActionOrCommand> = serde_json::from_value::<Option<Vec<Value>>>(value)
             .ok()
             .flatten()
             .unwrap_or_default()
             .into_iter()
+            .filter_map(|raw| {
+                let mut item = serde_json::from_value::<CodeActionOrCommand>(raw.clone()).ok()?;
+                if let CodeActionOrCommand::CodeAction(a) = &mut item
+                    && let (Some(edit), Some(raw_edit)) = (a.edit.as_mut(), raw.get("edit"))
+                {
+                    edits::prune_annotations(raw_edit, edit);
+                }
+                Some(item)
+            })
             .filter(|a| !matches!(a, CodeActionOrCommand::CodeAction(c) if c.disabled.is_some()))
             .collect();
         preferred_first(&mut items);
@@ -244,7 +254,13 @@ impl App {
     }
 
     pub(super) fn lsp_code_action_resolved(&mut self, _t: DocTag, value: Value) {
-        match serde_json::from_value::<CodeAction>(value) {
+        let action = serde_json::from_value::<CodeAction>(value.clone()).map(|mut a| {
+            if let (Some(edit), Some(raw)) = (a.edit.as_mut(), value.get("edit")) {
+                edits::prune_annotations(raw, edit);
+            }
+            a
+        });
+        match action {
             Ok(a) if a.edit.is_some() || a.command.is_some() => self.lsp_run_code_action(a),
             Ok(a) => self.lsp_hint(format!("{}: nothing to do", a.title)),
             Err(e) => self.lsp_hint(format!("Context action: unexpected answer ({e})")),
@@ -729,9 +745,12 @@ mod tests {
         let we = json!({"documentChanges": [
             {"textDocument": {"uri": uri(&a), "version": 1}, "edits": [edit(1, 18, 1, 21, "renamed")]},
             {"textDocument": {"uri": uri(&b), "version": null}, "edits": [edit(0, 7, 0, 10, "renamed"), edit(1, 6, 1, 9, "renamed")]},
-        ]});
+        ],
+        // As rust-analyzer: an annotation that needs confirmation, that no edit refers to.
+        "changeAnnotations": {"OutsideWorkspace": {"label": "Edit outside of the workspace", "needsConfirmation": true}}});
         let req = answer(&mut app, &mut server, "textDocument/rename", we).await;
         assert_eq!(req["params"]["newName"], "renamed");
+        assert!(app.dialog.is_none(), "no confirmation for an unreferenced annotation");
         // The open buffer changed at once, unsaved, the caret on the name.
         assert_eq!(text(&app), "fn main() {\n    let s = \"😀\"; renamed(s);\n}\n");
         assert!(app.editor.active_buffer().unwrap().dirty());

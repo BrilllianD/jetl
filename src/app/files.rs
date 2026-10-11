@@ -115,7 +115,7 @@ impl App {
         pending.waiting.retain(|w| w != name);
         match result {
             Ok(Value::Null) => {}
-            Ok(v) => match serde_json::from_value::<WorkspaceEdit>(v) {
+            Ok(v) => match crate::lsp::edits::read_workspace_edit(v) {
                 Ok(edit) => pending.edits.push_back((name.to_string(), edit)),
                 Err(e) => tracing::debug!("{name}: unreadable will*Files edit: {e}"),
             },

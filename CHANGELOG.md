@@ -128,6 +128,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Language server edits ask for confirmation only when a change refers to an annotation that needs it: rust-analyzer's
+  renames, quick fixes and file renames no longer always open "Confirm Changes" for an annotation nothing uses.
 - Recent Projects: reopening the palette right after forgetting a project can no longer list it again.
 - Single-line text fields (dialogs, palette, find bars) scroll sideways to keep the cursor visible instead of
   cutting long text; a click in an input dialog's field lands on the char under it.

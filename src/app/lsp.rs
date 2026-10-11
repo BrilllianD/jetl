@@ -632,7 +632,12 @@ impl App {
     fn lsp_server_request(&mut self, name: &str, id: RequestId, method: &str, params: Value) {
         let result = match method {
             // Answered once applied (`App::edits_applied`).
-            "workspace/applyEdit" => match serde_json::from_value::<lsp_types::ApplyWorkspaceEditParams>(params) {
+            "workspace/applyEdit" => match serde_json::from_value::<lsp_types::ApplyWorkspaceEditParams>(params.clone()).map(|mut p| {
+                if let Some(raw) = params.get("edit") {
+                    crate::lsp::edits::prune_annotations(raw, &mut p.edit);
+                }
+                p
+            }) {
                 Ok(p) => {
                     let origin = crate::lsp::EditOrigin::ServerRequest { server: name.to_string(), id, label: p.label };
                     self.apply_workspace_edit(p.edit, origin);
