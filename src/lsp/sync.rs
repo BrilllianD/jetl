@@ -50,7 +50,10 @@ impl DocEdit {
 /// the text (what VS Code assumes too).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SyncCaps {
-    pub open_close: bool,
+    /// `didOpen` wanted.
+    pub open: bool,
+    /// `didClose` wanted.
+    pub close: bool,
     pub change: TextDocumentSyncKind,
     /// `didSave` wanted, and whether with the text.
     pub save: Option<bool>,
@@ -59,9 +62,10 @@ pub struct SyncCaps {
 impl SyncCaps {
     pub fn of(caps: &ServerCapabilities) -> Self {
         match &caps.text_document_sync {
-            Some(TextDocumentSyncCapability::Kind(kind)) => Self { open_close: true, change: *kind, save: Some(false) },
+            Some(TextDocumentSyncCapability::Kind(kind)) => Self { open: true, close: true, change: *kind, save: Some(false) },
             Some(TextDocumentSyncCapability::Options(o)) => Self {
-                open_close: o.open_close.unwrap_or(false),
+                open: o.open_close.unwrap_or(false),
+                close: o.open_close.unwrap_or(false),
                 change: o.change.unwrap_or(TextDocumentSyncKind::NONE),
                 save: match &o.save {
                     Some(TextDocumentSyncSaveOptions::Supported(true)) => Some(false),
@@ -69,7 +73,7 @@ impl SyncCaps {
                     _ => None,
                 },
             },
-            None => Self { open_close: false, change: TextDocumentSyncKind::NONE, save: None },
+            None => Self { open: false, close: false, change: TextDocumentSyncKind::NONE, save: None },
         }
     }
 }

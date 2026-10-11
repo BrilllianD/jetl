@@ -207,7 +207,11 @@ pub fn client_capabilities() -> ClientCapabilities {
     ClientCapabilities {
         general: Some(GeneralClientCapabilities { position_encodings: Some(vec![PositionEncodingKind::UTF16]), ..Default::default() }),
         text_document: Some(TextDocumentClientCapabilities {
-            synchronization: Some(TextDocumentSyncClientCapabilities { did_save: Some(true), ..Default::default() }),
+            synchronization: Some(TextDocumentSyncClientCapabilities {
+                dynamic_registration: Some(true),
+                did_save: Some(true),
+                ..Default::default()
+            }),
             publish_diagnostics: Some(PublishDiagnosticsClientCapabilities {
                 related_information: Some(true),
                 tag_support: Some(TagSupport { value_set: vec![DiagnosticTag::UNNECESSARY, DiagnosticTag::DEPRECATED] }),

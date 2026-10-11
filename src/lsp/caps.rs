@@ -10,11 +10,12 @@ use std::path::Path;
 
 use lsp_types::{
     CodeActionProviderCapability, FileOperationFilter, FileOperationPatternKind, FileOperationRegistrationOptions, HoverProviderCapability,
-    OneOf, ServerCapabilities,
+    OneOf, ServerCapabilities, TextDocumentSyncKind,
 };
 use serde_json::Value;
 
 use super::registry::{DocRef, Glob, Registry};
+use super::sync::SyncCaps;
 
 pub const DEFINITION: &str = "textDocument/definition";
 pub const REFERENCES: &str = "textDocument/references";
@@ -35,6 +36,10 @@ pub const WILL_RENAME_FILES: &str = "workspace/willRenameFiles";
 pub const DID_RENAME_FILES: &str = "workspace/didRenameFiles";
 pub const WILL_DELETE_FILES: &str = "workspace/willDeleteFiles";
 pub const DID_DELETE_FILES: &str = "workspace/didDeleteFiles";
+pub const DID_OPEN: &str = "textDocument/didOpen";
+pub const DID_CHANGE: &str = "textDocument/didChange";
+pub const DID_SAVE: &str = "textDocument/didSave";
+pub const DID_CLOSE: &str = "textDocument/didClose";
 
 /// What a running server offers for one document: its `initialize`
 /// capabilities plus the registrations that apply to the document.
@@ -190,6 +195,27 @@ impl<'a> Caps<'a> {
                 .any(|o| matches(&o))
     }
 
+    /// How the document is synced: the static sync capability, plus the applicable
+    /// `didOpen`/`didClose`/`didChange`/`didSave` registrations (the last `didChange` kind wins).
+    pub fn sync(&self) -> SyncCaps {
+        let mut s = SyncCaps::of(self.fixed);
+        s.open |= self.any(DID_OPEN);
+        s.close |= self.any(DID_CLOSE);
+        let kind = self.dynamic(DID_CHANGE).filter_map(|o| match o.get("syncKind").and_then(Value::as_u64) {
+            Some(0) => Some(TextDocumentSyncKind::NONE),
+            Some(1) => Some(TextDocumentSyncKind::FULL),
+            Some(2) => Some(TextDocumentSyncKind::INCREMENTAL),
+            _ => None,
+        });
+        if let Some(k) = kind.last() {
+            s.change = k;
+        }
+        if self.any(DID_SAVE) {
+            s.save = Some(s.save == Some(true) || self.dynamic(DID_SAVE).any(|o| flag(o, "includeText")));
+        }
+        s
+    }
+
     /// Whether `workspace/executeCommand` runs `command` (static `commands` ∪ registered `commands`).
     pub fn runs_command(&self, command: &str) -> bool {
         self.fixed.execute_command_provider.as_ref().is_some_and(|p| p.commands.iter().any(|c| c == command))
@@ -296,7 +322,7 @@ mod tests {
             assert_eq!(c["textDocument"][k]["dynamicRegistration"], true, "{k}");
         }
         assert_eq!(c["workspace"]["executeCommand"]["dynamicRegistration"], true);
-        assert_ne!(c["textDocument"]["synchronization"]["dynamicRegistration"], true);
+        assert_eq!(c["textDocument"]["synchronization"]["dynamicRegistration"], true);
         assert_eq!(c["workspace"]["fileOperations"]["dynamicRegistration"], true);
         assert_eq!(c["workspace"]["fileOperations"]["willRename"], true);
         assert!(c["workspace"]["didChangeWatchedFiles"].is_null());
@@ -304,6 +330,28 @@ mod tests {
         assert_eq!(c["workspace"]["workspaceEdit"]["changeAnnotationSupport"]["groupsOnLabel"], false);
         assert_eq!(c["textDocument"]["rename"]["honorsChangeAnnotations"], true);
         assert_eq!(c["textDocument"]["codeAction"]["honorsChangeAnnotations"], true);
+    }
+
+    #[test]
+    fn sync_registrations_combine_with_static_sync() {
+        let f = fixed(json!({}));
+        let mut r = Registry::default();
+        let sel = json!([{"language": "rust"}]);
+        register(&mut r, "o", DID_OPEN, json!({"documentSelector": sel}));
+        register(&mut r, "c", DID_CHANGE, json!({"documentSelector": sel, "syncKind": 2}));
+        register(&mut r, "s", DID_SAVE, json!({"documentSelector": sel, "includeText": true}));
+        let s = caps(&f, &r, rust()).sync();
+        assert!(s.open && !s.close);
+        assert_eq!(s.change, TextDocumentSyncKind::INCREMENTAL);
+        assert_eq!(s.save, Some(true));
+        let s = caps(&f, &r, python()).sync();
+        assert!(!s.open && !s.close);
+        assert_eq!(s.change, TextDocumentSyncKind::NONE);
+        assert_eq!(s.save, None);
+        let f = fixed(json!({"textDocumentSync": 1}));
+        let mut r = Registry::default();
+        register(&mut r, "c", DID_CHANGE, json!({"documentSelector": sel, "syncKind": 2}));
+        assert_eq!(caps(&f, &r, rust()).sync().change, TextDocumentSyncKind::INCREMENTAL);
     }
 
     #[test]

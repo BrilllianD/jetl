@@ -18,6 +18,7 @@ use serde_json::{Value, json};
 use super::App;
 use crate::editor::buffer::{Buffer, BufferId};
 use crate::event::Level;
+use crate::lsp::caps::Caps;
 use crate::lsp::client::{Client, StartSpec, State};
 use crate::lsp::diagnostics::{Counts, Diagnostic, DiagnosticStore, MAX_TOTAL, Severity};
 use crate::lsp::registry::DocRef;
@@ -103,6 +104,15 @@ pub(super) struct Doc {
     /// for an older version: the version and its edits, `None` when the
     /// whole text went (the edits are unknown). At most `SENT_KEEP`.
     sent: std::collections::VecDeque<(i32, Option<Vec<DocEdit>>)>,
+    /// `didOpen` sent and not closed since.
+    opened: bool,
+    /// The change kind of the last sync; from `NONE` to another the next change sends the whole text.
+    kind: TextDocumentSyncKind,
+}
+
+/// How `client` wants `doc` synced, once it runs.
+fn sync_caps(client: &Client, doc: DocRef<'_>) -> Option<SyncCaps> {
+    Some(Caps { fixed: client.capabilities()?, registry: &client.registry, doc: Some(doc) }.sync())
 }
 
 impl Doc {
@@ -236,8 +246,9 @@ impl LspService {
     /// Close buffer `id`'s document on its server.
     fn close_doc(&mut self, id: BufferId) {
         let Some(doc) = self.docs.remove(&id) else { return };
-        if let Some(c) = self.clients.get(&doc.server)
-            && c.capabilities().is_some_and(|caps| SyncCaps::of(caps).open_close)
+        if doc.opened
+            && let Some(c) = self.clients.get(&doc.server)
+            && sync_caps(c, doc.doc_ref()).is_some_and(|caps| caps.close)
         {
             c.notify("textDocument/didClose", json!({"textDocument": {"uri": doc.uri}}));
         }
@@ -349,14 +360,38 @@ impl App {
                 continue;
             }
             if let Some(doc) = lsp.docs.get_mut(&buf.id) {
-                if buf.lsp_pending.is_empty() && !buf.lsp_full_resync {
+                let Some(client) = lsp.clients.get(&doc.server) else { continue };
+                let Some(caps) = sync_caps(client, doc.doc_ref()) else { continue };
+                if caps.open && !doc.opened {
+                    doc.version += 1;
+                    let item =
+                        json!({"uri": doc.uri, "languageId": sync::language_id(language), "version": doc.version, "text": buf.text()});
+                    client.notify("textDocument/didOpen", json!({"textDocument": item}));
+                    doc.sent.push_back((doc.version, None));
+                    if doc.sent.len() > SENT_KEEP {
+                        doc.sent.pop_front();
+                    }
+                    doc.opened = true;
+                    doc.kind = caps.change;
+                    buf.lsp_pending.clear();
+                    buf.lsp_full_resync = false;
                     continue;
                 }
-                let Some(client) = lsp.clients.get(&doc.server) else { continue };
-                let Some(caps) = client.capabilities().map(SyncCaps::of) else { continue };
+                if !caps.open && doc.opened {
+                    if caps.close {
+                        client.notify("textDocument/didClose", json!({"textDocument": {"uri": doc.uri}}));
+                    }
+                    doc.opened = false;
+                }
+                let switched = doc.kind == TextDocumentSyncKind::NONE && caps.change != TextDocumentSyncKind::NONE;
+                if buf.lsp_pending.is_empty() && !buf.lsp_full_resync && !switched {
+                    doc.kind = caps.change;
+                    continue;
+                }
+                let full = buf.lsp_full_resync || switched;
                 doc.version += 1;
                 // The store follows the text as the server now knows it.
-                let sent = (!buf.lsp_full_resync).then(|| buf.lsp_pending.clone());
+                let sent = (!full).then(|| buf.lsp_pending.clone());
                 if let Some(edits) = &sent {
                     lsp.diagnostics.shift(&doc.path, edits);
                 }
@@ -365,7 +400,7 @@ impl App {
                     doc.sent.pop_front();
                 }
                 let changes = match caps.change {
-                    TextDocumentSyncKind::INCREMENTAL if !buf.lsp_full_resync => buf.lsp_pending.iter().map(|e| e.change_event()).collect(),
+                    TextDocumentSyncKind::INCREMENTAL if !full => buf.lsp_pending.iter().map(|e| e.change_event()).collect(),
                     TextDocumentSyncKind::NONE => Vec::new(),
                     _ => vec![lsp_types::TextDocumentContentChangeEvent { range: None, range_length: None, text: buf.text() }],
                 };
@@ -373,6 +408,7 @@ impl App {
                     let params = json!({"textDocument": {"uri": doc.uri, "version": doc.version}, "contentChanges": changes});
                     client.notify("textDocument/didChange", params);
                 }
+                doc.kind = caps.change;
                 buf.lsp_pending.clear();
                 buf.lsp_full_resync = false;
                 continue;
@@ -401,12 +437,23 @@ impl App {
                 continue;
             }
             let client = &lsp.clients[&key];
-            let (Some(caps), Some(uri)) = (client.capabilities().map(SyncCaps::of), sync::uri(path)) else { continue };
-            if caps.open_close {
+            let doc_ref = DocRef { language_id: sync::language_id(language), path };
+            let (Some(caps), Some(uri)) = (sync_caps(client, doc_ref), sync::uri(path)) else { continue };
+            if caps.open {
                 let item = json!({"uri": uri, "languageId": sync::language_id(language), "version": 1, "text": buf.text()});
                 client.notify("textDocument/didOpen", json!({"textDocument": item}));
             }
-            lsp.docs.insert(buf.id, Doc { server: key, path: path.clone(), language, uri, version: 1, sent: Default::default() });
+            let doc = Doc {
+                server: key,
+                path: path.clone(),
+                language,
+                uri,
+                version: 1,
+                sent: Default::default(),
+                opened: caps.open,
+                kind: caps.change,
+            };
+            lsp.docs.insert(buf.id, doc);
             untrack(buf);
             buf.lsp_tracked = true;
         }
@@ -424,7 +471,7 @@ impl App {
         self.lsp_sync();
         let Some(doc) = self.lsp.docs.values().find(|d| d.path == path) else { return };
         let Some(client) = self.lsp.clients.get(&doc.server) else { return };
-        let Some(include_text) = client.capabilities().and_then(|c| SyncCaps::of(c).save) else { return };
+        let Some(include_text) = sync_caps(client, doc.doc_ref()).and_then(|c| c.save) else { return };
         let mut params = json!({"textDocument": {"uri": doc.uri}});
         if include_text && let Some(b) = self.editor.index_of(path).map(|i| &self.editor.buffers[i]) {
             params["text"] = b.text().into();
@@ -853,6 +900,79 @@ pub(crate) mod tests {
         app.lsp.shutdown_all().await;
         server.recv("shutdown").await;
         server.recv("exit").await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn registered_sync_opens_switches_and_closes_documents() {
+        let (mut app, dir) = test_app("lsp-dyn-sync");
+        let mut servers = with_fake_servers(&mut app, json!({}));
+        load(&mut app, "a.rs", "ab\n");
+        app.lsp_sync();
+        let mut server = servers.try_recv().expect("started");
+        handle_next(&mut app, |m| matches!(m, AppMsg::Lsp(LspMsg::Started { .. }))).await;
+        app.lsp_sync();
+        assert!(server.drain().iter().all(|m| m["method"] != "textDocument/didOpen"));
+
+        let sel = json!([{"language": "rust"}]);
+        let reg = |id: &str, method: &str, mut options: Value| {
+            options["documentSelector"] = sel.clone();
+            json!({"id": id, "method": method, "registerOptions": options})
+        };
+        let regs = json!({"registrations": [
+            reg("o", "textDocument/didOpen", json!({})),
+            reg("x", "textDocument/didClose", json!({})),
+            reg("c", "textDocument/didChange", json!({"syncKind": 2})),
+            reg("s", "textDocument/didSave", json!({"includeText": true})),
+        ]});
+        server.request(1, "client/registerCapability", regs);
+        handle_next(&mut app, is_lsp).await;
+        assert_eq!(server.response(1).await["result"], Value::Null);
+        app.lsp_sync();
+        let open = server.recv("textDocument/didOpen").await;
+        assert_eq!(
+            (open["params"]["textDocument"]["version"].as_i64(), open["params"]["textDocument"]["text"].as_str()),
+            (Some(2), Some("ab\n"))
+        );
+
+        act(&mut app, EditorAction::InsertChar('x'));
+        let change = server.recv("textDocument/didChange").await;
+        assert_eq!(change["params"]["textDocument"]["version"], 3);
+        assert!(change["params"]["contentChanges"][0]["range"].is_object());
+        act(&mut app, EditorAction::Save);
+        assert_eq!(server.recv("textDocument/didSave").await["params"]["text"], "xab\n");
+
+        // Without a change registration the edits stop.
+        server.request(2, "client/unregisterCapability", json!({"unregistrations": [{"id": "c", "method": "textDocument/didChange"}]}));
+        handle_next(&mut app, is_lsp).await;
+        assert_eq!(server.response(2).await["result"], Value::Null);
+        act(&mut app, EditorAction::InsertChar('y'));
+        app.lsp_sync();
+        assert!(server.drain().iter().all(|m| m["method"] != "textDocument/didChange"));
+        // Back on as Full: the whole text goes.
+        server.request(
+            3,
+            "client/registerCapability",
+            json!({"registrations": [reg("c", "textDocument/didChange", json!({"syncKind": 1}))]}),
+        );
+        handle_next(&mut app, is_lsp).await;
+        assert_eq!(server.response(3).await["result"], Value::Null);
+        app.lsp_sync();
+        let change = server.recv("textDocument/didChange").await;
+        let changes = change["params"]["contentChanges"].as_array().unwrap();
+        assert_eq!(changes.len(), 1);
+        assert!(changes[0].get("range").is_none());
+        assert_eq!(changes[0]["text"], "xyab\n");
+
+        // No longer wanted open: closed once.
+        server.request(4, "client/unregisterCapability", json!({"unregistrations": [{"id": "o", "method": "textDocument/didOpen"}]}));
+        handle_next(&mut app, is_lsp).await;
+        assert_eq!(server.response(4).await["result"], Value::Null);
+        app.lsp_sync();
+        server.recv("textDocument/didClose").await;
+        app.editor.force_close(app.editor.active().unwrap());
+        app.lsp_sync();
+        assert!(server.drain().iter().all(|m| m["method"] != "textDocument/didClose"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

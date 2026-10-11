@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Language servers that register document syncing after they start (open, change, save, close) get it honoured
+  mid-session.
 - Language server edits marked as needing confirmation (for example rust-analyzer's edits outside the workspace) ask first,
   listing the marked changes; Cancel changes nothing.
 - Creating, renaming and deleting files in the Project tree tells language servers (`workspace/willRenameFiles` and the
