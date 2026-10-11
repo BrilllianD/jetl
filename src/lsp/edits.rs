@@ -626,6 +626,53 @@ pub fn edit_file(path: &Path, edits: &[TextEdit]) -> Result<usize, String> {
     Ok(n)
 }
 
+/// A change annotation of a workspace edit, for the confirmation dialog.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnnotationRow {
+    pub label: String,
+    pub description: Option<String>,
+    pub needs_confirmation: bool,
+}
+
+/// When an annotation of `edit` has `needsConfirmation: true`: every annotation (those needing
+/// confirmation first, then by label, then by id) and the number of changes of the edit (text
+/// edits and file operations). `None` otherwise.
+///
+/// Decided on `changeAnnotations` alone, and the changes are not counted per annotation:
+/// lsp-types reads an annotated text edit as a plain one (`OneOf<TextEdit, AnnotatedTextEdit>`
+/// tries `TextEdit` first) and drops a `DeleteFile`'s top-level `annotationId`, so which change
+/// refers to which annotation is lost. Asking for the whole edit is the safe side.
+pub fn confirmation(edit: &WorkspaceEdit) -> Option<(Vec<AnnotationRow>, usize)> {
+    let annotations = edit.change_annotations.as_ref()?;
+    if !annotations.values().any(|a| a.needs_confirmation == Some(true)) {
+        return None;
+    }
+    let total = match &edit.document_changes {
+        Some(DocumentChanges::Edits(docs)) => docs.iter().map(|d| d.edits.len()).sum(),
+        Some(DocumentChanges::Operations(ops)) => ops
+            .iter()
+            .map(|op| match op {
+                DocumentChangeOperation::Edit(d) => d.edits.len(),
+                DocumentChangeOperation::Op(_) => 1,
+            })
+            .sum(),
+        None => edit.changes.iter().flat_map(|c| c.values()).map(Vec::len).sum(),
+    };
+    let mut rows: Vec<(&String, AnnotationRow)> = annotations
+        .iter()
+        .map(|(id, a)| {
+            let row = AnnotationRow {
+                label: a.label.clone(),
+                description: a.description.clone(),
+                needs_confirmation: a.needs_confirmation == Some(true),
+            };
+            (id, row)
+        })
+        .collect();
+    rows.sort_by(|(ia, a), (ib, b)| (!a.needs_confirmation, &a.label, ia).cmp(&(!b.needs_confirmation, &b.label, ib)));
+    Some((rows.into_iter().map(|(_, r)| r).collect(), total))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -640,6 +687,54 @@ mod tests {
         let plan = plan(&b.rope, edits).unwrap();
         b.apply(plan.changes.clone(), Selection::point(0), TxKind::Other);
         (b.text(), plan)
+    }
+
+    fn annotated_edit(needs_a: Option<bool>) -> WorkspaceEdit {
+        let uri = "file:///p/a.rs";
+        let te = |id: Option<&str>| {
+            let t =
+                serde_json::json!({"range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 1}}, "newText": "x"});
+            match id {
+                Some(id) => {
+                    let mut t = t;
+                    t["annotationId"] = id.into();
+                    t
+                }
+                None => t,
+            }
+        };
+        let mut a = serde_json::json!({"label": "Rename in tests"});
+        if let Some(n) = needs_a {
+            a["needsConfirmation"] = n.into();
+        }
+        serde_json::from_value(serde_json::json!({
+            "documentChanges": [
+                {"textDocument": {"uri": uri, "version": 1}, "edits": [te(Some("a")), te(Some("a")), te(Some("b")), te(None)]},
+                {"kind": "rename", "oldUri": "file:///p/b.rs", "newUri": "file:///p/c.rs", "annotationId": "b"}
+            ],
+            "changeAnnotations": {"a": a, "b": {"label": "Outside", "description": "Edit outside of the workspace"}}
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn annotations_needing_confirmation_are_listed() {
+        let (rows, total) = confirmation(&annotated_edit(Some(true))).unwrap();
+        let row = |label: &str, description: Option<&str>, needs| AnnotationRow {
+            label: label.into(),
+            description: description.map(String::from),
+            needs_confirmation: needs,
+        };
+        assert_eq!(rows, [row("Rename in tests", None, true), row("Outside", Some("Edit outside of the workspace"), false)]);
+        // Four text edits and a rename.
+        assert_eq!(total, 5);
+    }
+
+    #[test]
+    fn no_annotation_needing_confirmation_is_none() {
+        assert_eq!(confirmation(&annotated_edit(Some(false))), None);
+        assert_eq!(confirmation(&annotated_edit(None)), None);
+        assert_eq!(confirmation(&WorkspaceEdit::default()), None);
     }
 
     #[test]

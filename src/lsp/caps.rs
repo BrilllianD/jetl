@@ -301,6 +301,9 @@ mod tests {
         assert_eq!(c["workspace"]["fileOperations"]["willRename"], true);
         assert!(c["workspace"]["didChangeWatchedFiles"].is_null());
         assert!(c["workspace"]["didChangeConfiguration"].is_null());
+        assert_eq!(c["workspace"]["workspaceEdit"]["changeAnnotationSupport"]["groupsOnLabel"], false);
+        assert_eq!(c["textDocument"]["rename"]["honorsChangeAnnotations"], true);
+        assert_eq!(c["textDocument"]["codeAction"]["honorsChangeAnnotations"], true);
     }
 
     #[test]

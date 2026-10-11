@@ -129,6 +129,9 @@ pub enum DialogId {
     LspRename(crate::lsp::DocTag),
     /// The context actions answered to this request (kept in the app).
     LspCodeAction(crate::lsp::DocTag),
+    /// A workspace edit with changes that need confirmation (`EditReqs::confirm`, by seq):
+    /// Apply / Cancel.
+    LspConfirmEdit(u64),
     /// Git > Resolve Conflicts: item `i` is conflicted path `rels[i]`
     /// (relative to the work tree).
     ResolveConflictPick(Vec<String>),

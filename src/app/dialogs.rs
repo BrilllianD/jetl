@@ -300,6 +300,8 @@ impl App {
                 self.history.blobs(at, name, items);
             }
             (DialogId::Info, _) => {}
+            (DialogId::LspConfirmEdit(seq), DialogResult::Button(b)) => self.lsp_confirm_edit(seq, b == 0),
+            (DialogId::LspConfirmEdit(seq), DialogResult::Cancel) => self.lsp_confirm_edit(seq, false),
             (_, DialogResult::Cancel) => {}
             (
                 id @ (DialogId::WorktreeCreateKind

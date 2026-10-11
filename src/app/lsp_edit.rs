@@ -39,6 +39,23 @@ use crate::lsp::locations::LocationItem;
 use crate::lsp::{DocTag, EditOrigin, PendingTag, pos, symbols};
 use crate::ui::dialog::{Dialog, DialogId};
 
+/// The confirmation dialog's text: the annotations (at most 8) and the number of changes.
+fn confirm_message(title: &str, rows: &[edits::AnnotationRow], total: usize) -> String {
+    let mut out = format!("{title} asks to confirm these changes:");
+    for r in rows.iter().take(8) {
+        let mark = if r.needs_confirmation { '*' } else { ' ' };
+        out.push_str(&format!("\n{mark} {}", r.label));
+        if let Some(d) = r.description.as_deref().filter(|d| !d.is_empty()) {
+            out.push_str(&format!(" - {d}"));
+        }
+    }
+    if rows.len() > 8 {
+        out.push_str(&format!("\n  ... and {} more", rows.len() - 8));
+    }
+    out.push_str(&format!("\n{total} change{} in all. Apply all of them?", if total == 1 { "" } else { "s" }));
+    out
+}
+
 /// Put the server's preferred code actions first, keeping the order otherwise.
 fn preferred_first(items: &mut [CodeActionOrCommand]) {
     items.sort_by_key(|a| !matches!(a, CodeActionOrCommand::CodeAction(c) if c.is_preferred == Some(true)));
@@ -51,6 +68,17 @@ pub(super) struct EditReqs {
     rename: Option<(u64, String)>,
     /// The context actions in the dialog, with the seq of their request.
     actions: Option<(u64, Vec<CodeActionOrCommand>)>,
+    /// The edit waiting for the user's confirmation.
+    pub(super) confirm: Option<PendingConfirm>,
+}
+
+/// A workspace edit with changes that need confirmation, behind `DialogId::LspConfirmEdit(seq)`.
+pub(super) struct PendingConfirm {
+    seq: u64,
+    edit: WorkspaceEdit,
+    origin: EditOrigin,
+    /// A code action's command, run after the edit.
+    then: Option<Command>,
 }
 
 impl App {
@@ -225,9 +253,8 @@ impl App {
 
     /// Make a code action's edit, then run its command.
     fn lsp_run_code_action(&mut self, a: CodeAction) {
-        if let Some(edit) = a.edit
-            && !self.apply_workspace_edit(edit, EditOrigin::CodeAction(a.title.clone()))
-        {
+        if let Some(edit) = a.edit {
+            self.apply_or_confirm(edit, EditOrigin::CodeAction(a.title.clone()), a.command);
             return;
         }
         if let Some(c) = a.command {
@@ -288,9 +315,53 @@ impl App {
         self.show_locations(title, items);
     }
 
+    /// Apply a server's workspace edit, asking first when it has changes
+    /// that need confirmation. Returns false when it was refused and nothing
+    /// changed; an edit waiting for the user returns false too.
+    pub(super) fn apply_workspace_edit(&mut self, edit: WorkspaceEdit, origin: EditOrigin) -> bool {
+        self.apply_or_confirm(edit, origin, None)
+    }
+
+    /// `apply_workspace_edit`; `then` (a code action's command) runs after the edit was made.
+    fn apply_or_confirm(&mut self, edit: WorkspaceEdit, origin: EditOrigin, then: Option<Command>) -> bool {
+        let Some((rows, total)) = edits::confirmation(&edit) else {
+            let ok = self.apply_workspace_edit_now(edit, origin);
+            if ok && let Some(c) = then {
+                self.lsp_execute(c);
+            }
+            return ok;
+        };
+        if self.dialog.is_some() {
+            self.edits_refused(origin, "another dialog is open".into());
+            return false;
+        }
+        if let Some(old) = self.lsp.edit.confirm.take() {
+            self.edits_refused(old.origin, "replaced by a newer edit".into());
+        }
+        self.lsp.last_seq += 1;
+        let seq = self.lsp.last_seq;
+        let msg = confirm_message(&Self::edit_title(&origin), &rows, total);
+        self.lsp.edit.confirm = Some(PendingConfirm { seq, edit, origin, then });
+        self.dialog = Some(Dialog::confirm(DialogId::LspConfirmEdit(seq), "Confirm Changes", &msg, &["Apply", "Cancel"]));
+        self.dispatcher.reset();
+        false
+    }
+
+    /// The confirmation dialog's answer for the edit parked as `seq`.
+    pub(super) fn lsp_confirm_edit(&mut self, seq: u64, apply: bool) {
+        let Some(p) = self.lsp.edit.confirm.take_if(|p| p.seq == seq) else { return };
+        if !apply {
+            return self.edits_refused(p.origin, "declined".into());
+        }
+        let ok = self.apply_workspace_edit_now(p.edit, p.origin);
+        if ok && let Some(c) = p.then {
+            self.lsp_execute(c);
+        }
+    }
+
     /// Apply a server's workspace edit (see the module docs). Returns false
     /// when it was refused and nothing changed.
-    pub(super) fn apply_workspace_edit(&mut self, edit: WorkspaceEdit, origin: EditOrigin) -> bool {
+    fn apply_workspace_edit_now(&mut self, edit: WorkspaceEdit, origin: EditOrigin) -> bool {
         // The documents' versions as the server knows them.
         self.lsp_sync();
         let steps = match edits::workspace_steps(edit) {
@@ -1055,6 +1126,69 @@ mod tests {
         answer(&mut app, &mut server, "textDocument/documentSymbol", json!([])).await;
         assert!(app.palette.is_none());
         assert!(toasts(&app).contains(&"No symbols in this file".to_string()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A server `workspace/applyEdit` (request 7) renaming `a` to `b` in `a.rs`, annotated `x`.
+    fn annotated_request(server: &FakeServer, a: &Path, needs: bool) {
+        server.request(
+            7,
+            "workspace/applyEdit",
+            json!({"label": "Fix", "edit": {
+                "documentChanges": [{
+                    "textDocument": {"uri": uri(a), "version": 1},
+                    "edits": [{"range": range(0, 3, 0, 4), "newText": "b", "annotationId": "x"}]
+                }],
+                "changeAnnotations": {"x": {"label": "Risky", "needsConfirmation": needs}}
+            }}),
+        );
+    }
+
+    #[tokio::test]
+    async fn a_server_edit_needing_confirmation_waits_for_the_user() {
+        let (mut app, dir) = test_app("lsp-confirm-apply");
+        let mut servers = with_fake_servers(&mut app, caps());
+        let mut server = open_on_server(&mut app, &mut servers, "a.rs", "fn a() {}\n").await;
+        let a = app.workspace.root.join("a.rs");
+        annotated_request(&server, &a, true);
+        handle_next(&mut app, is_lsp).await;
+        let d = app.dialog.take().expect("the confirm dialog");
+        assert!(matches!(d.id, DialogId::LspConfirmEdit(_)));
+        assert!(d.message.contains("* Risky") && d.message.contains("1 change in all"), "{}", d.message);
+        assert_eq!(text(&app), "fn a() {}\n");
+        assert!(server.drain().iter().all(|m| m["id"] != 7 || m.get("method").is_some()));
+        app.finish_dialog(d.id, DialogResult::Button(0));
+        assert_eq!(text(&app), "fn b() {}\n");
+        assert_eq!(server.response(7).await["result"]["applied"], true);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn declining_changes_nothing_and_answers_not_applied() {
+        let (mut app, dir) = test_app("lsp-confirm-decline");
+        let mut servers = with_fake_servers(&mut app, caps());
+        let mut server = open_on_server(&mut app, &mut servers, "a.rs", "fn a() {}\n").await;
+        let a = app.workspace.root.join("a.rs");
+        annotated_request(&server, &a, true);
+        handle_next(&mut app, is_lsp).await;
+        let d = app.dialog.take().expect("the confirm dialog");
+        app.finish_dialog(d.id, DialogResult::Cancel);
+        assert_eq!(text(&app), "fn a() {}\n");
+        assert_eq!(server.response(7).await["result"], json!({"applied": false, "failureReason": "declined"}));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn annotations_without_needs_confirmation_apply_at_once() {
+        let (mut app, dir) = test_app("lsp-confirm-not-needed");
+        let mut servers = with_fake_servers(&mut app, caps());
+        let mut server = open_on_server(&mut app, &mut servers, "a.rs", "fn a() {}\n").await;
+        let a = app.workspace.root.join("a.rs");
+        annotated_request(&server, &a, false);
+        handle_next(&mut app, is_lsp).await;
+        assert!(app.dialog.is_none());
+        assert_eq!(text(&app), "fn b() {}\n");
+        assert_eq!(server.response(7).await["result"]["applied"], true);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

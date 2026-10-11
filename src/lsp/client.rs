@@ -18,15 +18,15 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use lsp_types::{
-    ClientCapabilities, ClientInfo, CodeActionCapabilityResolveSupport, CodeActionClientCapabilities, CodeActionKindLiteralSupport,
-    CodeActionLiteralSupport, CompletionClientCapabilities, CompletionItemCapability, CompletionItemCapabilityResolveSupport,
-    CompletionItemKind, CompletionItemKindCapability, DiagnosticTag, DocumentFormattingClientCapabilities,
-    DocumentRangeFormattingClientCapabilities, DocumentSymbolClientCapabilities, ExecuteCommandClientCapabilities, FailureHandlingKind,
-    GeneralClientCapabilities, GotoCapability, HoverClientCapabilities, InitializeParams, InitializeResult, MarkupKind,
-    PositionEncodingKind, PublishDiagnosticsClientCapabilities, ReferenceClientCapabilities, RenameClientCapabilities,
-    ResourceOperationKind, ShowMessageRequestClientCapabilities, TagSupport, TextDocumentClientCapabilities,
-    TextDocumentSyncClientCapabilities, WindowClientCapabilities, WorkspaceClientCapabilities, WorkspaceEditClientCapabilities,
-    WorkspaceFileOperationsClientCapabilities, WorkspaceFolder,
+    ChangeAnnotationWorkspaceEditClientCapabilities, ClientCapabilities, ClientInfo, CodeActionCapabilityResolveSupport,
+    CodeActionClientCapabilities, CodeActionKindLiteralSupport, CodeActionLiteralSupport, CompletionClientCapabilities,
+    CompletionItemCapability, CompletionItemCapabilityResolveSupport, CompletionItemKind, CompletionItemKindCapability, DiagnosticTag,
+    DocumentFormattingClientCapabilities, DocumentRangeFormattingClientCapabilities, DocumentSymbolClientCapabilities,
+    ExecuteCommandClientCapabilities, FailureHandlingKind, GeneralClientCapabilities, GotoCapability, HoverClientCapabilities,
+    InitializeParams, InitializeResult, MarkupKind, PositionEncodingKind, PublishDiagnosticsClientCapabilities,
+    ReferenceClientCapabilities, RenameClientCapabilities, ResourceOperationKind, ShowMessageRequestClientCapabilities, TagSupport,
+    TextDocumentClientCapabilities, TextDocumentSyncClientCapabilities, WindowClientCapabilities, WorkspaceClientCapabilities,
+    WorkspaceEditClientCapabilities, WorkspaceFileOperationsClientCapabilities, WorkspaceFolder,
 };
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, BufReader};
@@ -221,7 +221,12 @@ pub fn client_capabilities() -> ClientCapabilities {
                 content_format: Some(vec![MarkupKind::Markdown, MarkupKind::PlainText]),
             }),
             completion: Some(completion_capabilities()),
-            rename: Some(RenameClientCapabilities { dynamic_registration: Some(true), prepare_support: Some(true), ..Default::default() }),
+            rename: Some(RenameClientCapabilities {
+                dynamic_registration: Some(true),
+                prepare_support: Some(true),
+                honors_change_annotations: Some(true),
+                ..Default::default()
+            }),
             code_action: Some(code_action_capabilities()),
             document_symbol: Some(DocumentSymbolClientCapabilities {
                 dynamic_registration: Some(true),
@@ -251,6 +256,7 @@ pub fn client_capabilities() -> ClientCapabilities {
                     ResourceOperationKind::Delete,
                 ]),
                 failure_handling: Some(FailureHandlingKind::Abort),
+                change_annotation_support: Some(ChangeAnnotationWorkspaceEditClientCapabilities { groups_on_label: Some(false) }),
                 ..Default::default()
             }),
             execute_command: Some(ExecuteCommandClientCapabilities { dynamic_registration: Some(true) }),
@@ -308,8 +314,8 @@ fn code_action_capabilities() -> CodeActionClientCapabilities {
         is_preferred_support: Some(true),
         disabled_support: Some(true),
         data_support: Some(true),
+        honors_change_annotations: Some(true),
         resolve_support: Some(CodeActionCapabilityResolveSupport { properties: vec!["edit".into()] }),
-        ..Default::default()
     }
 }
 
