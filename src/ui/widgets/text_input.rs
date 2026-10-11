@@ -34,10 +34,12 @@ impl TextInput {
     pub fn set_text(&mut self, s: &str) {
         self.text = s.to_string();
         self.cursor = self.text.chars().count();
+        self.hscroll = 0;
     }
     pub fn clear(&mut self) {
         self.text.clear();
         self.cursor = 0;
+        self.hscroll = 0;
     }
     fn byte_at(&self, ci: usize) -> usize {
         self.text.char_indices().nth(ci).map(|(b, _)| b).unwrap_or(self.text.len())
@@ -156,7 +158,7 @@ impl TextInput {
         let col = (x - area.x) as usize;
         let lines: Vec<&str> = self.text.split('\n').collect();
         let row = row.min(lines.len().saturating_sub(1));
-        let skip = if self.multiline { 0 } else { self.hscroll };
+        let skip = if self.multiline { 0 } else { self.hscroll.min(lines[row].chars().count()) };
         let mut w = 0;
         let mut ci = 0;
         for c in lines[row].chars().skip(skip) {
@@ -276,6 +278,25 @@ mod tests {
         assert_eq!(i.cursor, 7);
         i.click(Rect::new(0, 0, 10, 1), 2, 0);
         assert_eq!(i.cursor, 9);
+    }
+
+    #[test]
+    fn click_after_the_text_shrinks_stays_inside_it() {
+        let mut t = term(10);
+        let mut i = TextInput::new(false).with_text("abcdefghijklmnop");
+        draw(&mut i, &mut t);
+        assert!(i.hscroll > 0);
+        i.set_text("ab");
+        i.click(Rect::new(0, 0, 10, 1), 5, 0);
+        assert!(i.cursor <= 2);
+        draw(&mut i, &mut t);
+
+        let mut i = TextInput::new(false).with_text("abcdefghijklmnop");
+        draw(&mut i, &mut t);
+        i.clear();
+        i.click(Rect::new(0, 0, 10, 1), 5, 0);
+        assert_eq!(i.cursor, 0);
+        draw(&mut i, &mut t);
     }
 
     #[test]
