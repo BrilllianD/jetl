@@ -832,7 +832,7 @@ impl Buffer {
             if hard {
                 return CaretEdit::replace(sel.range(), "\t", TxKind::Typing);
             }
-            let col = super::view::visual_col(&b.rope, sel.head, tab_width) + pad;
+            let col = super::view::visual_col(&b.rope, sel.range().start, tab_width) + pad;
             CaretEdit::replace(sel.range(), " ".repeat(w - col % w), TxKind::Typing)
         });
     }

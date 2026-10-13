@@ -737,7 +737,7 @@ fn in_ranges(ranges: &[std::ops::Range<usize>], i: usize) -> bool {
 /// space: at a line end short of a live column block's head column
 /// (soft wrap off). None otherwise.
 pub fn virtual_caret_col(buf: &Buffer, tab_width: usize) -> Option<usize> {
-    if buf.view.wrap.on {
+    if buf.view.wrap.active() {
         return None;
     }
     let col = buf.live_block(tab_width)?.head.1;

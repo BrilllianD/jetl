@@ -257,14 +257,14 @@ for i in 1 2 3; do /tmp/tm.sh send-keys -t jetl S-Down; done   # Ln 4, Col 5 (4 
 press 8 $((X+5)) 2; press 40 $((X+5)) 4; release 8 $((X+5)) 4   # Alt+drag down at column 4
 /tmp/tm.sh send-keys -t jetl -l 'V'              # "ab" is padded with spaces to the column, V in line
 /tmp/tm.sh send-keys -t jetl C-z                 # pad and V gone in one step
-press 8 $((X+5)) 2; press 40 $((X+5)) 4; release 8 $((X+5)) 4   # the zero-width block again
+press 8 $((X+6)) 2; press 40 $((X+6)) 4; release 8 $((X+6)) 4   # a zero-width block at column 5, after `a`
 /tmp/tm.sh send-keys -t jetl BSpace              # `a` gone on lines 1-2; "ab" kept, its caret one cell left
 /tmp/tm.sh send-keys -t jetl DC                  # `b` gone on lines 1-2; "ab" not joined with line 4
 /tmp/tm.sh send-keys -t jetl C-z                 # both lines back
-press 8 $((X+5)) 2; press 40 $((X+5)) 4; release 8 $((X+5)) 4   # the zero-width block again
+press 8 $((X+5)) 2; press 40 $((X+5)) 4; release 8 $((X+5)) 4   # a zero-width block at column 4 again
 /tmp/tm.sh send-keys -t jetl Tab                 # every caret at the next stop (col 8), "ab" padded
 /tmp/tm.sh send-keys -t jetl C-z
-press 8 $((X+5)) 2; press 40 $((X+5)) 4; release 8 $((X+5)) 4
+press 8 $((X+6)) 2; press 40 $((X+6)) 4; release 8 $((X+6)) 4   # column 5 again
 /tmp/tm.sh send-keys -t jetl Enter               # lines 1-2 split before `b`; "ab" breaks at its end, no spaces
 /tmp/tm.sh send-keys -t jetl C-z
 press 8 $((X+5)) 2; press 40 $((X+14)) 4; release 8 $((X+14)) 4   # a block from col 5 to past "x": cells past the ends selected

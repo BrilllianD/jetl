@@ -3212,6 +3212,17 @@ mod tests {
     }
 
     #[test]
+    fn tab_in_a_wide_block_aligns_every_caret() {
+        let mut ed = editor_with("virtual-tab-wide.txt", "abcdefgh\nabcdefgh\nab\n");
+        let tw = ed.tab_display(&ed.buffers[0]);
+        ed.buffers[0].indent = indent::IndentStyle::spaces(4);
+        ed.buffers[0].set_block(view_state::Block { anchor: (0, 5), head: (2, 6) }, tw);
+        act(&mut ed, EditorAction::InsertTab);
+        assert_eq!(ed.buffers[0].rope.to_string(), "abcde   gh\nabcde   gh\nab      \n");
+        assert!(ed.buffers[0].view.sels.iter().all(|s| selection::pos_to_line_col(&ed.buffers[0].rope, s.head).1 == 8));
+    }
+
+    #[test]
     fn hard_tab_in_a_block_pads_short_lines() {
         let mut ed = editor_with("virtual-tab-hard.txt", "abcdef\nab\nabcdef\n");
         let tw = ed.tab_display(&ed.buffers[0]);
