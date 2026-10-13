@@ -1028,6 +1028,22 @@ async fn save_as_dialog() {
 }
 
 #[tokio::test]
+async fn short_screen_input_dialog() {
+    let mut fx = stable_app("short-input-dialog");
+    let app = &mut fx.app;
+    let msg: Vec<String> = (1..=12).map(|n| format!("line {n}")).collect();
+    app.dialog = Some(crate::ui::dialog::Dialog::input(
+        crate::ui::dialog::DialogId::PutLabel(std::path::PathBuf::from("/x")),
+        "Put Label",
+        &msg.join("\n"),
+        "v1",
+        "OK",
+    ));
+    let term = draw_app(app, 60, 10);
+    assert_snapshot!("short_screen_input_dialog", snapshot(&term, &[], None));
+}
+
+#[tokio::test]
 async fn save_as_path_completion() {
     let mut fx = stable_app("save-as-complete");
     let app = &mut fx.app;

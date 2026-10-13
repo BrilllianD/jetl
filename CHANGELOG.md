@@ -128,6 +128,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Dialogs on short terminals keep their input and buttons visible (the message is cut with `…`); indented paths in dialog
+  messages keep their indent when wrapped; a forgotten recent project no longer reappears briefly.
 - The Local History diff keeps following edits while builds are slow; a label revert names the files that could not be opened.
 - Completion keeps its auto-imports when several carets are active and a caret's copy of the edit overlaps another.
 - Alt+click past a wrapped row end, where a caret sits at the next row's start, shows the caret on the clicked row.

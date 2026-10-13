@@ -182,6 +182,10 @@ pub struct App {
     /// of the list shown.
     recent_projects_requested: u64,
     recent_projects_forgot: u64,
+    /// Forgets whose reply has not arrived, by seq; their roots are filtered
+    /// out of every reply until then, so a load that read the file before the
+    /// forget wrote it cannot show them.
+    recent_projects_forgetting: Vec<(u64, PathBuf)>,
     recent_projects_version: u64,
     /// Record the root in the recent projects file (at startup and on root
     /// switches). Off until `main.rs` calls [`App::start_recent_projects`],
@@ -327,6 +331,7 @@ impl App {
             recent_projects: Vec::new(),
             recent_projects_requested: 0,
             recent_projects_forgot: 0,
+            recent_projects_forgetting: Vec::new(),
             recent_projects_version: 0,
             record_recent: false,
             pick_project: false,
@@ -1449,6 +1454,7 @@ pub(crate) mod tests {
         // As if forget seq 1, then load seq 2 were asked.
         app.recent_projects_requested = 2;
         app.recent_projects_forgot = 1;
+        app.recent_projects_forgetting = vec![(1, b.clone())];
         let reply = |seq, version, roots: &[&PathBuf]| AppMsg::RecentProjects {
             seq,
             version,
@@ -1457,7 +1463,9 @@ pub(crate) mod tests {
         };
         // The load read the file first, the forget wrote after it.
         app.handle_msg(reply(2, 10, &[&root, &a, &b]));
+        assert_eq!(app.recent_projects, [root.clone(), a.clone()]);
         app.handle_msg(reply(1, 11, &[&root, &a]));
+        assert!(app.recent_projects_forgetting.is_empty());
         assert_eq!(app.recent_projects, [root.clone(), a.clone()]);
         // Older than the forget: the barrier. Older file state: the version.
         app.handle_msg(reply(0, 12, &[&root]));

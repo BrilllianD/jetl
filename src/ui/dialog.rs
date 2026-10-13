@@ -535,9 +535,20 @@ impl Dialog {
             .style(Style::default().bg(theme.popup_bg).fg(theme.fg));
         let inner = block.inner(rect);
         frame.render_widget(block, rect);
+        // On a short screen the message gives way to the controls below it.
+        let reserve = match &self.kind {
+            DialogKind::Confirm { .. } => 2,
+            DialogKind::Input { .. } => 3 + hints.len(),
+            DialogKind::Choice { .. } => 2,
+        };
+        let mut msg_rows = msg_rows;
+        let room = (inner.height as usize).saturating_sub(reserve);
+        if msg_rows.len() > room {
+            cut_rows(&mut msg_rows, room, inner.width.saturating_sub(2) as usize);
+        }
         let buf = frame.buffer_mut();
         let mut row = inner.y;
-        for line in msg_rows.iter().take(inner.height as usize) {
+        for line in msg_rows.iter() {
             buf.set_stringn(inner.x + 1, row, line, inner.width.saturating_sub(2) as usize, Style::default().fg(theme.fg));
             row += 1;
         }
@@ -605,13 +616,30 @@ impl Dialog {
     }
 }
 
+/// Keep the first `max` rows, the last of them cut with `…`.
+fn cut_rows(rows: &mut Vec<String>, max: usize, width: usize) {
+    rows.truncate(max);
+    if let Some(last) = rows.last_mut() {
+        *last = crate::util::text::fit(&format!("{last} …"), width);
+        if !last.ends_with('…') {
+            last.push('…');
+        }
+    }
+}
+
 /// The message as rows at most `width` cells wide: a line that fits stays as
-/// it is (an empty line stays an empty row), a wider one wraps at spaces.
+/// it is (an empty line stays an empty row), a wider one wraps at spaces; a
+/// wrapped line keeps its leading indent on every row.
 fn message_rows(message: &str, width: usize) -> Vec<String> {
     let mut rows = Vec::new();
     for line in message.lines() {
+        let rest = line.trim_start_matches(' ');
+        let indent = line.len() - rest.len();
         if line.width() <= width {
             rows.push(line.to_string());
+        } else if indent > 0 && indent < width / 2 {
+            let pad = " ".repeat(indent);
+            rows.extend(crate::ui::toasts::wrap(rest, width - indent, usize::MAX).into_iter().map(|r| format!("{pad}{r}")));
         } else {
             rows.extend(crate::ui::toasts::wrap(line, width, usize::MAX));
         }
@@ -670,6 +698,45 @@ mod tests {
         assert!(rows.len() > 3);
         assert!(rows.iter().all(|r| r.width() <= 12));
         assert_eq!(rows[2..].join(" "), sentence);
+    }
+
+    #[test]
+    fn an_indented_wide_line_keeps_its_indent() {
+        let rows = message_rows("  /aaaa/bbbb/cccc/dddd/eeee", 12);
+        assert!(rows.len() > 1);
+        assert!(rows.iter().all(|r| r.starts_with("  ") && r.width() <= 12), "{rows:?}");
+        let joined: String = rows.iter().map(|r| r.trim_start()).collect();
+        assert_eq!(joined, "/aaaa/bbbb/cccc/dddd/eeee");
+    }
+
+    fn row_text(term: &ratatui::Terminal<ratatui::backend::TestBackend>, y: u16) -> String {
+        let buf = term.backend().buffer();
+        (0..buf.area.width).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>()
+    }
+
+    #[test]
+    fn a_short_screen_cuts_the_message_not_the_controls() {
+        let theme = Theme::default();
+        let msg: Vec<String> = (1..=12).map(|n| format!("line {n}")).collect();
+        let msg = msg.join("\n");
+        let area = Rect::new(0, 0, 60, 10);
+
+        let mut d = Dialog::input(DialogId::PutLabel(std::path::PathBuf::from("/x")), "Put Label", &msg, "v1", "OK");
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(60, 10)).unwrap();
+        term.draw(|f| d.render(f, area, &theme)).unwrap();
+        assert!(d.input_rect.y < d.button_rects[0].y);
+        assert!(d.button_rects[0].y < d.rect().bottom() - 1);
+        let above = row_text(&term, d.input_rect.y - 2);
+        assert!(above.contains('…'), "{above:?}");
+        assert!(above.trim_end().trim_end_matches('│').trim_end().ends_with('…'), "{above:?}");
+
+        let mut d = Dialog::confirm(DialogId::QuitDirty, "Quit", &msg, &["Yes", "No"]);
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(60, 10)).unwrap();
+        term.draw(|f| d.render(f, area, &theme)).unwrap();
+        let by = d.button_rects[0].y;
+        assert!(by < d.rect().bottom() - 1);
+        let above = row_text(&term, by - 2);
+        assert!(above.trim_end().trim_end_matches('│').trim_end().ends_with('…'), "{above:?}");
     }
 
     fn texts(lines: &[(String, bool)]) -> Vec<&str> {

@@ -447,7 +447,7 @@ impl Palette {
             });
             return;
         }
-        self.rows = self.rank_now(&q);
+        self.rows = self.rank_now(&q, subset);
         self.shown = Shown { files: self.files.clone(), symbols: self.symbols.clone(), query: q, source: self.source() };
         self.list.set_len(self.rows.len());
         if reset {
@@ -510,7 +510,7 @@ impl Palette {
     }
 
     /// The current source ranked against `q` on this thread.
-    fn rank_now(&mut self, q: &str) -> Vec<usize> {
+    fn rank_now(&mut self, q: &str, subset: Option<Vec<usize>>) -> Vec<usize> {
         match self.source() {
             Source::Files => {
                 if q.is_empty() {
@@ -529,7 +529,6 @@ impl Palette {
                     rows
                 } else {
                     let input = FilterInput::Paths(self.files.clone());
-                    let subset = self.narrow_rows(q);
                     rank_large(q, &input, subset.as_deref(), &mut self.matcher, &|| false).unwrap_or_default()
                 }
             }
@@ -558,7 +557,6 @@ impl Palette {
                     (0..self.symbols.len()).collect()
                 } else {
                     let input = FilterInput::Symbols(self.symbols.clone());
-                    let subset = self.narrow_rows(q);
                     rank_large(q, &input, subset.as_deref(), &mut self.matcher, &|| false).unwrap_or_default()
                 }
             }
@@ -607,7 +605,8 @@ impl Palette {
     fn finish_now(&mut self) {
         let Some(p) = self.pending.take() else { return };
         self.filter_seq.fetch_add(1, Ordering::Relaxed);
-        let rows = self.rank_now(&p.query);
+        let subset = if p.query.is_empty() { None } else { self.narrow_rows(&p.query) };
+        let rows = self.rank_now(&p.query, subset);
         self.show_rows(p, rows);
     }
 

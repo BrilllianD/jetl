@@ -150,13 +150,15 @@ impl App {
     /// Drop it from the list at once and from the file in `spawn_blocking`.
     /// A load asked earlier would bring the row back, so `recent_projects_forgot`
     /// drops its reply; a load asked later that read the file before the
-    /// write is dropped by its lower version. A failed write lists the file as
-    /// it is and warns.
+    /// write arrives with the row, so `recent_projects_forgetting` filters the
+    /// root out of every reply until the forget's own reply lands. A failed
+    /// write lists the file as it is and warns.
     fn forget_recent_project(&mut self, root: std::path::PathBuf) {
         self.recent_projects.retain(|r| *r != root);
         self.recent_projects_requested += 1;
         let seq = self.recent_projects_requested;
         self.recent_projects_forgot = seq;
+        self.recent_projects_forgetting.push((seq, root.clone()));
         let (file, tx) = (self.paths.recent_projects_file(), self.bus_tx.clone());
         tokio::task::spawn_blocking(move || {
             let (version, roots, saved) = crate::recent_projects::forget(&file, &root);
@@ -169,10 +171,13 @@ impl App {
         if let Some(e) = error {
             self.notify(crate::event::Level::Warn, e);
         }
+        self.recent_projects_forgetting.retain(|(s, _)| *s != seq);
         if seq < self.recent_projects_forgot || version <= self.recent_projects_version {
             tracing::debug!("dropping stale recent projects");
             return;
         }
+        let mut roots = roots;
+        roots.retain(|r| !self.recent_projects_forgetting.iter().any(|(_, f)| f == r));
         self.recent_projects_version = version;
         self.recent_projects = roots;
         if let Some(p) = self.palette.as_mut().filter(|p| p.wants(Source::Projects)) {

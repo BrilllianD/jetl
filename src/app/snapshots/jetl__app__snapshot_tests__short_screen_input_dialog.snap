@@ -1,0 +1,15 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &[], None)"
+---
+60x10 cursor=(9,6)
+00  ≣ ┌ ┌ Put Label ─────────────────────────────────────┐
+01    │ │ line 1                                         │
+02  1 │ │ line 2                                         │
+03  ⌂ │ │ line 3                                         │
+04  2 │ │ line 4 …                                       │ens
+05  ◫ │ │                                                │
+06  7 │ │ v1                                             │le.
+07  ⊢ │ │               [ OK ] [ Cancel ]                │
+08    └─└────────────────────────────────────────────────┘
+09  root
