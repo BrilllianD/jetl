@@ -188,7 +188,8 @@ impl Selections {
     /// Sort by start and merge overlapping selections (and touching ones
     /// where one side is a bare caret). A merged selection keeps the
     /// direction of the member holding the primary (else of its first
-    /// non-empty member), and the primary follows into it.
+    /// non-empty member), and the primary follows into it. Two carets at one
+    /// place merge into a caret with the primary member's upstream flag.
     pub fn normalize(&mut self) {
         if self.ranges.len() == 1 {
             return;
@@ -205,7 +206,17 @@ impl Selections {
                     // Direction: the primary member's, else the first non-empty one's.
                     let lead = if (p && !s.is_empty()) || last.0.is_empty() { s } else { last.0 };
                     let d = if p { d } else { last.1 };
-                    *last = (lead.with_range(r), d, last.2 || p);
+                    let mut merged = lead.with_range(r);
+                    if merged.is_empty() {
+                        merged.upstream = if p {
+                            s.upstream
+                        } else if last.2 {
+                            last.0.upstream
+                        } else {
+                            last.0.upstream || s.upstream
+                        };
+                    }
+                    *last = (merged, d, last.2 || p);
                     continue;
                 }
             }
@@ -561,6 +572,15 @@ mod tests {
 
     fn rows(r: &Rope) -> Rows<'static> {
         Rows::new(&NO_FOLDS, r.len_lines())
+    }
+
+    #[test]
+    fn merged_carets_keep_the_primary_upstream_flag() {
+        let up = Selection { upstream: true, ..Selection::point(10) };
+        let s = Selections::new(vec![Selection::point(10), up], 1);
+        assert_eq!((s.len(), s.iter().next().unwrap().head, s.iter().next().unwrap().upstream), (1, 10, true));
+        let s = Selections::new(vec![Selection::point(10), up], 0);
+        assert_eq!((s.len(), s.iter().next().unwrap().upstream), (1, false));
     }
 
     #[test]

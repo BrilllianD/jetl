@@ -446,7 +446,8 @@ pub struct Accept {
 /// else its label, replacing the word typed so far), snippets flattened
 /// (their tabstops in [`Accept::stops`]), with its `additionalTextEdits` (an import, say) in the same
 /// transaction; those overlapping the main edit or each other are left
-/// out. The list was asked for at `origin`, the caret is now at `caret`
+/// out. When the copies for the other carets cannot go in (they overlap the
+/// main edit or each other), the additional edits still do. The list was asked for at `origin`, the caret is now at `caret`
 /// in `rope` and `origin.prefix(rope, caret)` holds. The caret ends at the
 /// snippet's `$0`, else after the inserted text. `others`: the other
 /// carets (empty selections); each whose text before it equals the typed
@@ -510,7 +511,7 @@ pub fn edit_for(item: &CompletionItem, origin: &Origin, rope: &Rope, caret: usiz
         v.extend(copies.iter().map(|(_, e)| e.clone()));
         v
     };
-    let tries = [(with_copies(true), true), (with_copies(false), true), (all[..1].to_vec(), false)];
+    let tries = [(with_copies(true), true), (with_copies(false), true), (all.clone(), false), (all[..1].to_vec(), false)];
     let planned = tries.iter().find_map(|(edits, has_copies)| {
         let plan = edits::plan(rope, edits).ok()?;
         Some((plan, *has_copies, edits.len()))
@@ -774,6 +775,26 @@ mod tests {
             r.insert(c.at, &c.new);
         }
         assert_eq!(r.to_string(), "print\n        print\n        xr\n");
+    }
+
+    #[test]
+    fn edit_for_keeps_additional_edits_when_a_copy_overlaps() {
+        let rope = Rope::from_str("q\nabab");
+        let origin = Origin::new(1, &rope, 4);
+        let it = CompletionItem {
+            text_edit: Some(CompletionTextEdit::Edit(TextEdit::new(range(1, 0, 1, 4), "abc".into()))),
+            additional_text_edits: Some(vec![TextEdit::new(range(0, 0, 0, 0), "use x;\n".into())]),
+            ..item("abc")
+        };
+        let acc = edit_for(&it, &origin, &rope, 4, &[6], false);
+        let mut r = rope.clone();
+        for c in &acc.changes {
+            r.remove(c.at..c.at + c.old.chars().count());
+            r.insert(c.at, &c.new);
+        }
+        assert_eq!(r.to_string(), "use x;\nq\nabc");
+        assert_eq!(acc.carets, [None]);
+        assert_eq!(acc.caret, 12);
     }
 
     #[test]

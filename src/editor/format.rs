@@ -177,7 +177,7 @@ impl Buffer {
         if old == new {
             return false;
         }
-        let hunks = crate::git::diff::hunks(&old, new);
+        let hunks = crate::git::diff::rope_hunks(&old, new);
         let (os, ns) = (line_starts(&old), line_starts(new));
         // In order; each at its place in the new text, since everything
         // before it already matches the new text when it is applied.
@@ -214,12 +214,12 @@ impl Buffer {
     }
 }
 
-/// (byte, char) offset of each line start the way imara-diff splits lines,
+/// (byte, char) offset of each line start the way the rope splits lines,
 /// plus one for the end of the text.
 fn line_starts(s: &str) -> Vec<(usize, usize)> {
     let mut out = vec![(0, 0)];
     let (mut bytes, mut chars) = (0, 0);
-    for line in s.split_inclusive('\n') {
+    for line in crate::util::text::lines_inclusive(s) {
         bytes += line.len();
         chars += line.chars().count();
         out.push((bytes, chars));
@@ -262,7 +262,15 @@ fn map_pos(old: &str, new: &str, os: &[(usize, usize)], ns: &[(usize, usize)], h
             }
         }
         // Not past the hunk's last line break.
-        let end = if a1 > a0 && new[..ns[a1].0].ends_with('\n') { ns[a1].1 - 1 } else { ns[a1].1 };
+        let head = &new[..ns[a1].0];
+        let brk = if a1 == a0 {
+            0
+        } else if head.ends_with("\r\n") {
+            2
+        } else {
+            usize::from(head.ends_with('\n') || head.ends_with('\r'))
+        };
+        let end = ns[a1].1 - brk;
         return at.min(end.max(ns[a0].1));
     }
     p - shift.0 + shift.1
@@ -293,6 +301,15 @@ mod tests {
 
     fn buf(text: &str) -> Buffer {
         Buffer::from_text(1, None, text, false)
+    }
+
+    #[test]
+    fn lone_cr_lines_are_lines() {
+        let mut b = buf("a\rb\rc\r");
+        b.view.set_sel(Selection::point(4));
+        assert!(b.replace_by_lines("a\rXYZ\rc\r"));
+        assert_eq!(b.text(), "a\rXYZ\rc\r");
+        assert_eq!(b.view.sel().head, 6);
     }
 
     #[test]

@@ -438,8 +438,8 @@ mod editor_tests {
         assert!(added.upstream, "the added caret keeps the row above");
         assert_eq!(ed.focused_group().caret_cell.map(|c| c.1), Some(ta.y), "drawn on the clicked row");
         // Alt+click past the row end with a caret at the next row's start
-        // (and another one): the caret there stays (the added one merges
-        // into it), it is not removed.
+        // (and another one): the caret there stays, not removed; the added
+        // one merges into it and takes its row (upstream).
         let mut ed = wrapped("aaaa bbbb cccc dddd\n");
         draw(&mut ed, 19, 8);
         let b = ed.active_buffer_mut().unwrap();
@@ -449,7 +449,11 @@ mod editor_tests {
         press(&mut ed, (ta.right() - 1, ta.y), 1, KeyModifiers::ALT);
         let b = ed.active_buffer().unwrap();
         assert_eq!(b.view.sels.len(), 2, "the caret at the next row's start is kept");
-        assert!(b.view.sels.iter().any(|s| s.head == 10));
+        assert!(b.view.sels.iter().any(|s| s.head == 10 && s.upstream), "the merged caret is drawn on the clicked row");
+        // The same cell again hits the upstream caret and removes it.
+        press(&mut ed, (ta.right() - 1, ta.y), 1, KeyModifiers::ALT);
+        let b = ed.active_buffer().unwrap();
+        assert_eq!(b.view.sels.len(), 1);
         // Double click there selects the last word of the clicked row, not
         // its hanging space or the next row's word.
         let mut ed = wrapped("aaaa bbbb cccc dddd\n");

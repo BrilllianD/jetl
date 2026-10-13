@@ -128,6 +128,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Completion keeps its auto-imports when several carets are active and a caret's copy of the edit overlaps another.
+- Alt+click past a wrapped row end, where a caret sits at the next row's start, shows the caret on the clicked row.
+- Formatting a file with lone CR line breaks replaces only the changed lines.
 - Language server edits ask for confirmation only when a change refers to an annotation that needs it: rust-analyzer's
   renames, quick fixes and file renames no longer always open "Confirm Changes" for an annotation nothing uses.
 - Recent Projects: reopening the palette right after forgetting a project can no longer list it again.
