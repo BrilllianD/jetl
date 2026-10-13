@@ -616,7 +616,7 @@ impl Buffer {
         self.edit_carets(|b, sel| b.backspace_edit(sel, pairs));
     }
 
-    fn backspace_edit(&self, sel: Selection, pairs: &[(char, char)]) -> CaretEdit {
+    pub(super) fn backspace_edit(&self, sel: Selection, pairs: &[(char, char)]) -> CaretEdit {
         if !sel.is_empty() {
             return CaretEdit::replace(sel.range(), "", TxKind::Other);
         }
@@ -704,20 +704,24 @@ impl Buffer {
     }
 
     pub fn delete_forward(&mut self) {
-        self.edit_carets(|b, sel| {
-            if !sel.is_empty() {
-                return CaretEdit::replace(sel.range(), "", TxKind::Other);
-            }
-            let p = sel.head;
-            if p >= b.rope.len_chars() {
-                return CaretEdit::keep(sel);
-            }
-            let mut end = p + 1;
-            if b.rope.char(p) == '\r' && end < b.rope.len_chars() && b.rope.char(end) == '\n' {
-                end += 1;
-            }
-            CaretEdit::replace(p..end, "", TxKind::Deleting)
-        });
+        self.edit_carets(|b, sel| b.delete_edit(sel));
+    }
+
+    /// Delete at one caret: a selection goes, else the char after the caret
+    /// (a CRLF pair as one).
+    pub(super) fn delete_edit(&self, sel: Selection) -> CaretEdit {
+        if !sel.is_empty() {
+            return CaretEdit::replace(sel.range(), "", TxKind::Other);
+        }
+        let p = sel.head;
+        if p >= self.rope.len_chars() {
+            return CaretEdit::keep(sel);
+        }
+        let mut end = p + 1;
+        if self.rope.char(p) == '\r' && end < self.rope.len_chars() && self.rope.char(end) == '\n' {
+            end += 1;
+        }
+        CaretEdit::replace(p..end, "", TxKind::Deleting)
     }
 
     pub fn delete_word_back(&mut self) {

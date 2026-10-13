@@ -1012,8 +1012,17 @@ impl Editor {
             E::MoveLineDown => b.move_lines(false),
             E::JoinLines => b.join_lines(),
             E::ToggleCase => b.toggle_case(),
-            E::Backspace => b.backspace_pairs(pairs()),
-            E::Delete => b.delete_forward(),
+            E::Backspace => {
+                let p = pairs();
+                if !b.block_delete(true, p, tab_width) {
+                    b.backspace_pairs(p);
+                }
+            }
+            E::Delete => {
+                if !b.block_delete(false, &[], tab_width) {
+                    b.delete_forward();
+                }
+            }
             E::DeleteWordBack => b.delete_word_back(),
             E::DeleteWordForward => b.delete_word_forward(),
             E::Move(m, extend) => {
@@ -3187,5 +3196,17 @@ mod tests {
         assert_eq!(ed.buffers[0].rope.to_string(), "abcd1ef\nab  2\nabcd3ef\n");
         assert!(ed.buffers[0].undo());
         assert_eq!(ed.buffers[0].rope.to_string(), "abcdef\nab\nabcdef\n");
+    }
+
+    #[test]
+    fn backspace_in_a_block_keeps_short_lines() {
+        let mut ed = editor_with("virtual-bs.txt", "abcdef\nab\nabcdef\n");
+        let tw = ed.tab_display(&ed.buffers[0]);
+        ed.buffers[0].set_block(view_state::Block { anchor: (0, 4), head: (2, 4) }, tw);
+        act(&mut ed, EditorAction::Backspace);
+        act(&mut ed, EditorAction::Delete);
+        assert_eq!(ed.buffers[0].rope.to_string(), "abcf\nab\nabcf\n");
+        act(&mut ed, EditorAction::InsertChar('X'));
+        assert_eq!(ed.buffers[0].rope.to_string(), "abcXf\nab X\nabcXf\n");
     }
 }

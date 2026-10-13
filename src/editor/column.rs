@@ -2,7 +2,7 @@
 //! into one caret per line ([`block_selections`]), by Alt+drag or, in
 //! column selection mode, by a plain drag and Shift+arrows.
 
-use super::buffer::Buffer;
+use super::buffer::{Buffer, CaretEdit};
 use super::rows::{Row, Rows};
 use super::selection::{indent_of, line_len_no_eol, next_word_boundary, prev_word_boundary, vertical_target};
 use super::view::{block_selections, col_to_char, layout_line, visual_col};
@@ -51,6 +51,50 @@ impl Buffer {
                 if s.is_empty() && w < lo { lo - w } else { 0 }
             })
             .collect()
+    }
+
+    /// Backspace (`back`) or Delete at every caret of a live block, with
+    /// virtual space: a caret past its line's end (`block_pads`), and every
+    /// empty caret of a block with width, changes no text; the others edit
+    /// as usual. The block stays live at its new column: one left after
+    /// Backspace in a zero-width block, else its left column. False without
+    /// a live block.
+    pub fn block_delete(&mut self, back: bool, pairs: &[(char, char)], tab_width: usize) -> bool {
+        let Some(b) = self.live_block(tab_width) else { return false };
+        let pads = self.block_pads(tab_width);
+        let (lo, hi) = (b.anchor.1.min(b.head.1), b.anchor.1.max(b.head.1));
+        let mut i = 0;
+        self.edit_carets(|buf, sel| {
+            let pad = pads.get(i).copied().unwrap_or(0);
+            i += 1;
+            if sel.is_empty() && (lo < hi || pad > 0) {
+                CaretEdit::keep(sel)
+            } else if back {
+                buf.backspace_edit(sel, pairs)
+            } else {
+                buf.delete_edit(sel)
+            }
+        });
+        let col = if back && lo == hi { lo.saturating_sub(1) } else { lo };
+        self.keep_block(Block { anchor: (b.anchor.0, col), head: (b.head.0, col) }, tab_width);
+        true
+    }
+
+    /// After an edit (which dropped the block): `b`, a zero-width block, is
+    /// live again when the carets are its selections and each sits on its
+    /// column or at the end of a shorter line; else there is none.
+    fn keep_block(&mut self, b: Block, tab_width: usize) {
+        let col = b.head.1;
+        let fits = self.view.sels.iter().all(|s| {
+            let line = self.rope.char_to_line(s.head);
+            let end = self.rope.line_to_char(line) + line_len_no_eol(&self.rope, line);
+            let vc = visual_col(&self.rope, s.head, tab_width);
+            vc == col || (vc < col && s.head == end)
+        });
+        let rows = Rows::new(&self.view.folds, self.rope.len_lines());
+        if fits && block_selections(&self.rope, &rows, b.anchor, b.head, tab_width) == self.view.sels {
+            self.view.block = Some(b);
+        }
     }
 
     /// The block the carets are: the last one made while the carets are
@@ -327,5 +371,54 @@ mod tests {
         buf.set_block(Block { anchor: (0, 4), head: (1, 4) }, 4);
         buf.view.set_sel(Selection::point(0));
         assert!(buf.block_pads(4).is_empty());
+    }
+
+    #[test]
+    fn backspace_and_delete_in_virtual_space() {
+        let make = |text: &str, a: (usize, usize), h: (usize, usize)| {
+            let mut buf = b(text);
+            buf.set_block(Block { anchor: a, head: h }, 4);
+            buf
+        };
+        let mut buf = make("abcdef\nab\nabcdef\n", (0, 4), (2, 4));
+        assert!(buf.block_delete(true, &[], 4));
+        assert_eq!(buf.rope.to_string(), "abcef\nab\nabcef\n");
+        assert_eq!(buf.view.block, Some(Block { anchor: (0, 3), head: (2, 3) }));
+        assert_eq!(buf.block_pads(4), [0, 1, 0]);
+        assert!(buf.block_delete(true, &[], 4));
+        assert_eq!(buf.rope.to_string(), "abef\nab\nabef\n");
+        assert_eq!(buf.view.block, Some(Block { anchor: (0, 2), head: (2, 2) }));
+        assert_eq!(buf.block_pads(4), [0, 0, 0]);
+        assert!(buf.block_delete(true, &[], 4));
+        assert_eq!(buf.rope.to_string(), "aef\na\naef\n");
+        assert!(buf.undo());
+        assert_eq!(buf.rope.to_string(), "abcdef\nab\nabcdef\n");
+
+        let mut buf = make("abcdef\nab\nabcdef\n", (0, 4), (2, 4));
+        assert!(buf.block_delete(false, &[], 4));
+        assert_eq!(buf.rope.to_string(), "abcdf\nab\nabcdf\n");
+        assert_eq!(buf.view.block, Some(Block { anchor: (0, 4), head: (2, 4) }));
+
+        for back in [true, false] {
+            let mut buf = make("abcdef\nab\nabcdef\nabc\n", (0, 2), (3, 4));
+            assert!(buf.block_delete(back, &[], 4));
+            assert_eq!(buf.rope.to_string(), "abef\nab\nabef\nab\n");
+            assert_eq!(buf.view.block, Some(Block { anchor: (0, 2), head: (3, 2) }));
+        }
+
+        let mut buf = make("ab\nab\n", (0, 5), (1, 5));
+        assert!(buf.block_delete(true, &[], 4));
+        assert_eq!(buf.rope.to_string(), "ab\nab\n");
+        assert!(!buf.undo());
+        assert_eq!(buf.view.block, Some(Block { anchor: (0, 4), head: (1, 4) }));
+
+        let mut buf = make(TEXT, (0, 4), (1, 4));
+        assert!(buf.block_delete(true, &[], 4));
+        assert_eq!(buf.rope.to_string(), "ab日本語x\nab日本語x\nab\n\tab日本語x\n");
+        assert!(buf.view.block.is_none());
+
+        let mut buf = b("ab\n");
+        assert!(!buf.block_delete(true, &[], 4));
+        assert_eq!(buf.rope.to_string(), "ab\n");
     }
 }

@@ -191,6 +191,33 @@ async fn editor_carets_column_virtual() {
 }
 
 #[tokio::test]
+async fn editor_carets_column_virtual_backspace() {
+    let mut fx = stable_app("carets-column-virtual-bs");
+    let app = &mut fx.app;
+    load(app, "cols.log", "abcdefgh\nabcdefgh\nab\nabcdefgh\n");
+    let b = app.editor.active_buffer_mut().unwrap();
+    b.set_block(crate::editor::view_state::Block { anchor: (0, 5), head: (3, 5) }, 4);
+    editor(app, EditorAction::Backspace);
+    let term = draw_editor(app, 40, 8);
+    let marks = editor_marks(&app.theme);
+    assert_snapshot!("editor_carets_column_virtual_backspace", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
+async fn editor_carets_column_virtual_delete() {
+    let mut fx = stable_app("carets-column-virtual-del");
+    let app = &mut fx.app;
+    load(app, "cols.log", "abcdefgh\nabcdefgh\nab\nabcdefgh\n");
+    let b = app.editor.active_buffer_mut().unwrap();
+    b.set_block(crate::editor::view_state::Block { anchor: (0, 5), head: (3, 5) }, 4);
+    editor(app, EditorAction::Backspace);
+    editor(app, EditorAction::Delete);
+    let term = draw_editor(app, 40, 8);
+    let marks = editor_marks(&app.theme);
+    assert_snapshot!("editor_carets_column_virtual_delete", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
 async fn editor_occurrences() {
     let mut fx = stable_app("occurrences");
     let app = &mut fx.app;

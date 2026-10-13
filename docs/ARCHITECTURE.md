@@ -521,9 +521,14 @@ Virtual space exists only for typing and pasting into a live block
 gives each empty caret on a line narrower than the block's left column the
 spaces it lacks, `handle_action` leaves them in `Buffer::virtual_pad` before
 `InsertChar`/`InsertText`, and `edit_carets` takes them and prepends them to
-that caret's edit, so pad and text are one undo step. `render` draws such a
+that caret's edit, so pad and text are one undo step. Backspace and Delete in a live block go
+through `Buffer::block_delete`: a caret in virtual space (and every empty caret
+of a block with width) changes no text, the others edit as usual, and
+`keep_block` makes the block live again at its new column (one left after
+Backspace in a zero-width block) when the carets still fit it, so the next key
+keeps the column. `render` draws such a
 caret (and the terminal cursor) at the block's left column. Not supported
-yet: Backspace, Delete, Enter and Tab in virtual space, Alt+click into it, a
+yet: Enter and Tab in virtual space, Alt+click into it, a
 selection highlight past a line end, Shift+Right past the widest line, and
 virtual space outside a live block. Blocks are buffer lines; soft wrap refuses them
 in `Buffer::blocks_supported` (toggling column mode shows a notice; wrapping turns it off) until blocks are

@@ -24,8 +24,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Tab completes the folder in New Worktree's directory prompt (folders only), like Save As.
 - Dragging a selection past the left or right edge scrolls sideways (soft wrap off).
 - Column selection: typing and pasting pad lines shorter than the block with spaces up to its left column, and
-  their carets are drawn there. Backspace, Delete, Enter and Tab in that virtual space, Alt+click into it and a
-  selection highlight past a line end are not supported yet.
+  their carets are drawn there. Backspace there moves the block's column left without touching the short lines, and
+  Delete joins nothing there. Enter and Tab in that virtual space, Alt+click into it and a selection highlight past
+  a line end are not supported yet.
 - The Local History window's diff has a line cursor: Alt+Up/Down moves it over the changed rows, Alt+Shift+Up/Down
   grows the selected lines, a double click on a changed row sets it, and Esc leaves it. Revert Changes (toolbar
   `[Revert N Lines]`, menu "Revert Selected Lines") then puts back only those lines; the selected rows' line
