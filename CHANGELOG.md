@@ -128,6 +128,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The Local History diff keeps following edits while builds are slow; a label revert names the files that could not be opened.
 - Completion keeps its auto-imports when several carets are active and a caret's copy of the edit overlaps another.
 - Alt+click past a wrapped row end, where a caret sits at the next row's start, shows the caret on the clicked row.
 - Formatting a file with lone CR line breaks replaces only the changed lines.

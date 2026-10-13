@@ -422,13 +422,17 @@ impl App {
             Ok(b) => b,
             Err(e) => {
                 self.notify(Level::Error, format!("open {}: {e}", path.display()));
+                self.pending_revert_failed(&path);
                 return;
             }
         };
         if self.editor.merge_active() {
-            return self.notify(Level::Info, format!("{} not opened: {}", path.display(), crate::editor::merge::BUSY));
+            self.notify(Level::Info, format!("{} not opened: {}", path.display(), crate::editor::merge::BUSY));
+            return self.pending_revert_failed(&path);
         }
-        let Some((text, lossy)) = self.decode_file(&path, bytes) else { return };
+        let Some((text, lossy)) = self.decode_file(&path, bytes) else {
+            return self.pending_revert_failed(&path);
+        };
         self.editor.open_text(path.clone(), &text, lossy, &self.theme);
         if self.is_conflicted(&path) {
             let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();

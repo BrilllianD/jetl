@@ -738,12 +738,6 @@ fn carry(dir: &Path, m: &Moved, at_ms: u64, max_bytes: u64, read: &impl Fn(&Path
 /// Write blob `id` (compressed when that is smaller) unless it exists in
 /// either form; an existing one gets a fresh mtime so a prune in another
 /// instance does not take it for an old orphan.
-#[cfg(test)]
-pub(crate) fn write_blob_for_test(dir: &Path, id: &str, bytes: &[u8]) -> io::Result<PathBuf> {
-    write_blob(dir, id, bytes)?;
-    Ok(if zblob_file(dir, id).is_file() { zblob_file(dir, id) } else { blob_file(dir, id) })
-}
-
 fn write_blob(dir: &Path, id: &str, bytes: &[u8]) -> io::Result<()> {
     for file in [zblob_file(dir, id), blob_file(dir, id)] {
         if file.is_file() {
@@ -767,6 +761,13 @@ fn write_blob(dir: &Path, id: &str, bytes: &[u8]) -> io::Result<()> {
     std::fs::rename(&tmp, &file).inspect_err(|_| {
         let _ = std::fs::remove_file(&tmp);
     })
+}
+
+/// `write_blob`, returning the file it wrote (tests).
+#[cfg(test)]
+pub(crate) fn write_blob_for_test(dir: &Path, id: &str, bytes: &[u8]) -> io::Result<PathBuf> {
+    write_blob(dir, id, bytes)?;
+    Ok(if zblob_file(dir, id).is_file() { zblob_file(dir, id) } else { blob_file(dir, id) })
 }
 
 /// The snapshots of `path` (by its [`key`]), newest first. Their `path`

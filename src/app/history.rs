@@ -355,8 +355,13 @@ impl App {
 
     /// The tick's part: the diff compares a snapshot with an open tab that
     /// has changed since (the diff was built from another `version`); ask
-    /// again, at most every half second. Scroll and block stay (same key).
+    /// again, at most every half second; nothing while a request waits for
+    /// the build in flight (it starts when that build lands). Scroll and
+    /// block stay (same key).
     pub(super) fn history_diff_follow(&mut self, now: Instant) {
+        if self.local_diff_next.is_some() {
+            return;
+        }
         let Some((path, v, at)) = &self.local_diff_follow else { return };
         if !self.layout.is_visible(ToolWindowId::LocalHistory) || now.duration_since(*at) < Duration::from_millis(500) {
             return;
@@ -425,7 +430,9 @@ impl App {
 
     /// The texts of a label arrived: every member goes back to its text, one
     /// undoable edit per tab, unsaved; the focus stays in the window. Members
-    /// that are not UTF-8 or whose blob is gone are skipped and named.
+    /// that are not UTF-8 or whose blob is gone are skipped and named; queued
+    /// members that fail to open are reported afterwards
+    /// (`pending_revert_failed`).
     fn revert_label(&mut self, at: u64, name: String, items: Vec<(PathBuf, Result<Vec<u8>, String>)>) {
         if !self.history_panel.shows_label(at, &name) {
             return tracing::debug!("dropping the texts of label {name}: no longer shown");
@@ -454,6 +461,16 @@ impl App {
             msg.push_str(&format!("; skipped {} (no text to restore): {}", skipped.len(), skipped.join(", ")));
         }
         self.notify(if skipped.is_empty() { Level::Info } else { Level::Warn }, msg);
+    }
+
+    /// A queued revert whose file did not open: its entry goes, and a label
+    /// member (`PendingRevert::Member`) is named in a warning, since the
+    /// label's toast already counted it.
+    pub(super) fn pending_revert_failed(&mut self, path: &Path) {
+        if let Some(PendingRevert::Member(_)) = self.pending_revert.remove(path) {
+            let rel = crate::ui::palette::display_path(path, &self.workspace.root);
+            self.notify(Level::Warn, format!("Revert to label: {rel} was not reverted (the file did not open)"));
+        }
     }
 
     /// One file of a label revert: `revert_to` without the focus.
@@ -805,6 +822,30 @@ pub(crate) mod tests {
         // The new diff was built from the edited tab: no further request.
         app.history_diff_follow(later + Duration::from_secs(1));
         assert_eq!(app.local_diff.requests, n + 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn diff_follow_waits_while_a_request_is_held() {
+        let (mut app, dir) = test_app("history-diff-held");
+        with_history(&mut app);
+        let path = load(&mut app, "a.txt", "one\n");
+        type_text(&mut app, "two ");
+        app.perform(Action::Editor(EditorAction::Save));
+        assert!(app.history.flush(Duration::from_secs(5)));
+        window_with_diff(&mut app, &path).await;
+        let later = Instant::now() + Duration::from_secs(1);
+        type_text(&mut app, "x");
+        app.history_diff_follow(later);
+        app.with_history_panel(|p, cx| p.reload_diff(cx));
+        assert!(app.local_diff_next.is_some(), "a request is held");
+        let n = app.local_diff.requests;
+        type_text(&mut app, "y");
+        app.history_diff_follow(later + Duration::from_secs(1));
+        assert_eq!(app.local_diff.requests, n, "no request while one is held");
+        handle_next(&mut app, diff_msg).await;
+        handle_next(&mut app, diff_msg).await;
+        assert!(app.history_panel.diff_new_text().contains("xy"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1705,6 +1746,37 @@ pub(crate) mod tests {
         assert_eq!(std::fs::read_to_string(&closed).unwrap(), "closed v2\n", "nothing is saved");
         assert!(app.focus.is(PanelId::LocalHistory));
         assert_eq!(last_note(&app), "Reverted 3 files to label \"v1\" (unsaved; Ctrl+Z in each tab undoes)");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_label_member_that_cannot_open_is_reported() {
+        let (mut app, dir) = test_app("history-revert-label-fail");
+        with_history(&mut app);
+        let root = app.workspace.root.clone();
+        let d = root.join("d");
+        let closed = saved(&app, "d/closed.txt", "closed v1\n");
+        let _open = load(&mut app, "d/open.txt", "open v1\n");
+        app.finish_dialog(DialogId::PutLabel(d.clone()), DialogResult::Text("v1".into()));
+        handle_next(&mut app, label_msg).await;
+        std::fs::write(&closed, "closed v2\n").unwrap();
+        app.show_local_history_dir(d.clone());
+        handle_next(&mut app, scan_of(&d)).await;
+        let rows = app.history_panel.project_rows();
+        let label = rows.iter().position(|r| r.starts_with("Label")).unwrap_or_else(|| panic!("a label row in {rows:?}"));
+        for _ in 0..label {
+            history(&mut app, HistoryAction::Down);
+        }
+        history(&mut app, HistoryAction::Revert);
+        let dlg = app.dialog.take().expect("a confirm");
+        app.finish_dialog(dlg.id, DialogResult::Button(0));
+        // decode_file refuses a file with a NUL.
+        std::fs::write(&closed, b"bin\0ary").unwrap();
+        handle_next(&mut app, blobs_msg).await;
+        handle_next(&mut app, file_loaded).await;
+        assert!(app.editor.index_of(&closed).is_none());
+        assert!(!app.pending_revert.contains_key(&closed));
+        assert_eq!(last_note(&app), "Revert to label: d/closed.txt was not reverted (the file did not open)");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

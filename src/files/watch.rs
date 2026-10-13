@@ -372,6 +372,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    // FSEvents never reports `RenameMode::Both`.
+    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn reports_a_rename_as_a_pair() {
         let dir = std::env::temp_dir().join(format!("jetl-test-watch-mv-{}", std::process::id()));

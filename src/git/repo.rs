@@ -1129,6 +1129,12 @@ pub(crate) mod tests {
         let base = rename_base(&r.dir).unwrap();
         git_cli(&r.dir, &["switch", "-q", "dev"], true);
         assert!(renames_since(&r.dir, &base).is_empty());
+        // A rename whose old path exists again is not a move.
+        let base = rename_base(&r.dir).unwrap();
+        git_cli(&r.dir, &["mv", "a.txt", "c.txt"], true);
+        commit_all(&r, "rename");
+        r.write("a.txt", "one\ntwo\nthree\nfour\n");
+        assert!(renames_since(&r.dir, &base).is_empty(), "the old path still exists: not a move");
     }
 
     /// Run the git command line in `dir`; `ok` false allows a failure
