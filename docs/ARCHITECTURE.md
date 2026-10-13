@@ -516,22 +516,26 @@ selection mode (`Editor::column_mode`, Alt+Shift+Insert, ` Column` in the
 status bar, not saved) turns a plain drag and Shift+arrows, Home and End
 into block changes (Shift+click moves the head corner).
 
-Virtual space exists only for typing and pasting into a live block
-(`Buffer::live_block`, the carets still its selections): `Buffer::block_pads`
-gives each empty caret on a line narrower than the block's left column the
-spaces it lacks, `handle_action` leaves them in `Buffer::virtual_pad` before
-`InsertChar`, `InsertText` and `InsertTab`, and `edit_carets` takes them and prepends them to
-that caret's edit, so pad and text are one undo step (`insert_tab` counts the pad
-when it picks the tab stop). Backspace and Delete in a live block go
-through `Buffer::block_delete`: a caret in virtual space (and every empty caret
-of a block with width) changes no text, the others edit as usual, and
-`keep_block` makes the block live again at its new column (one left after
-Backspace in a zero-width block) when the carets still fit it, so the next key
-keeps the column. Enter does not pad: the line breaks at its end. `render` draws such a
-caret (and the terminal cursor) at the block's left column. Not supported
-yet: Alt+click into virtual space, a
-selection highlight past a line end, Shift+Right past the widest line, and
-virtual space outside a live block. Blocks are buffer lines; soft wrap refuses them
+Virtual space exists only inside a live block (`Buffer::live_block`, the carets
+still its selections), whose columns are the virtual columns. `Buffer::block_pads`
+gives each empty caret on a line narrower than the block's left column the spaces
+it lacks; `handle_action` leaves them in `Buffer::virtual_pad` before
+`InsertChar`, `InsertText` and `InsertTab`, and `edit_carets` takes them and
+prepends them to that caret's edit, so pad and text are one undo step
+(`insert_tab` counts the pad when it picks the tab stop). Backspace and Delete in
+a live block go through `Buffer::block_delete`: a caret in virtual space (and
+every empty caret of a block with width) changes no text, the others edit as
+usual, and `keep_block` makes the block live again at its new column (one left
+after Backspace in a zero-width block) when the carets still fit it, so the next
+key keeps the column. Enter does not pad: the line breaks at its end. `render`
+paints the block's cells past each line end in the selection colour and draws a
+caret at a line end short of the block's head column (and the terminal cursor)
+on that column; `ensure_visible` follows it (`view::virtual_caret_col`), so
+Shift+Right goes on past the widest line. Every edit, undo and redo drops the
+block, so carets restored on short lines sit at their line ends again. Not
+supported yet (they need a virtual column per caret, yman 230): Alt+click into
+virtual space, Ctrl+Backspace/Ctrl+Delete in it, and virtual space outside a
+live block. Blocks are buffer lines; soft wrap refuses them
 in `Buffer::blocks_supported` (toggling column mode shows a notice; wrapping turns it off) until blocks are
 made of visual rows.
 

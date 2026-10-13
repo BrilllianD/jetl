@@ -111,9 +111,9 @@ impl Buffer {
     }
 
     /// Shift+motion in column selection mode: move the block's head. Left
-    /// and Right step over one grapheme of the head's line (one column past
-    /// its end, up to the widest line of the block), Up/Down and PageUp/Down
-    /// change its line, Home goes to the indent or column 0 like smart Home,
+    /// and Right step over one grapheme of the head's line (one column at a
+    /// time past its end, with no limit: virtual space), Up/Down and
+    /// PageUp/Down change its line, Home goes to the indent or column 0 like smart Home,
     /// End to the end of the head's line. False for other motions, which
     /// act as usual.
     pub fn extend_block(&mut self, m: Motion, page: usize, tab_width: usize) -> bool {
@@ -122,11 +122,7 @@ impl Buffer {
         let width = |l: usize| line_width(self, l, tab_width);
         b.head = match m {
             Motion::Left => (line, step_col(self, line, col, tab_width, false)),
-            Motion::Right => {
-                let next = step_col(self, line, col, tab_width, true);
-                let widest = (b.anchor.0.min(line)..=b.anchor.0.max(line)).map(width).max().unwrap_or(0);
-                (line, if next > widest { col } else { next })
-            }
+            Motion::Right => (line, step_col(self, line, col, tab_width, true)),
             Motion::Up | Motion::Down | Motion::PageUp | Motion::PageDown => {
                 let rows = Rows::new(&self.view.folds, self.rope.len_lines());
                 (vertical_target(&rows, Row::line(line), m, page).map_or(line, |r| r.line), col)
@@ -154,6 +150,9 @@ impl Buffer {
             _ => return false,
         };
         self.set_block(b, tab_width);
+        // A head moving in virtual space leaves the primary's char position
+        // alone, so the view would not follow it otherwise.
+        self.view.follow_key = None;
         true
     }
 }
@@ -285,10 +284,10 @@ mod tests {
         assert!(buf.extend_block(Motion::Up, 10, 4));
         assert_eq!(texts(&buf), ["ab日", "ab日"]);
         assert_eq!(buf.current_block(4), Block { anchor: (0, 4), head: (1, 8) });
-        // End, then Right stops at the widest line; Home goes to the indent.
+        // End, then Right goes on past the line end; Home goes to the indent.
         assert!(buf.extend_block(Motion::LineEnd, 10, 4));
         assert!(buf.extend_block(Motion::Right, 10, 4));
-        assert_eq!(buf.current_block(4).head, (1, 13));
+        assert_eq!(buf.current_block(4).head, (1, 14));
         assert!(buf.extend_block(Motion::LineStart, 10, 4));
         assert_eq!(buf.current_block(4).head, (1, 4));
         assert!(!buf.extend_block(Motion::DocStart, 10, 4));

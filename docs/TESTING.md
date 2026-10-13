@@ -233,8 +233,10 @@ carets, moved with the text; `M-Tab` back to it and type at all of them.
 ### Scenario: column selection
 
 At 80x24 and at 120x40, with a file of tabs, wide characters and a short
-line (`printf '\tab日本語x\n\tab日本語x\nab\n\tab日本語x\n' > $T/docs/notes.md`,
-opened as `jetl $T/docs/notes.md`, the Project window hidden with Alt+1).
+line that does not soft-wrap (`.log`: column selection refuses soft wrap,
+which `.md` files get; `printf '\tab日本語x\n\tab日本語x\nab\n\tab日本語x\n' > $T/docs/notes.log`,
+opened as `jetl $T/docs/notes.log`; the Project window starts focused, so
+hide it with Alt+1 twice).
 `X` is the 1-based screen column of the text's first cell (`X=10` past the
 tool strip and the gutter; check with `display -p '#{cursor_x}'` plus one
 while the caret is at a line start); the first line is on row 2:
@@ -265,11 +267,18 @@ press 8 $((X+5)) 2; press 40 $((X+5)) 4; release 8 $((X+5)) 4   # the zero-width
 press 8 $((X+5)) 2; press 40 $((X+5)) 4; release 8 $((X+5)) 4
 /tmp/tm.sh send-keys -t jetl Enter               # lines 1-2 split before `b`; "ab" breaks at its end, no spaces
 /tmp/tm.sh send-keys -t jetl C-z
+press 8 $((X+5)) 2; press 40 $((X+14)) 4; release 8 $((X+14)) 4   # a block from col 5 to past "x": cells past the ends selected
+/tmp/tm.sh send-keys -t jetl Escape
+/tmp/tm.sh send-keys -t jetl C-Home Right Right  # before `b` of line 1; column mode still on from above
+for i in 1 2; do /tmp/tm.sh send-keys -t jetl S-Down; done
+for i in $(seq 70); do /tmp/tm.sh send-keys -t jetl S-Right; done   # past the widest line; carets on one column
 ```
 
 `capture-pane -e` shows the selected cells in the selection background
-(the whole 日 when the edge cuts it) and the caret on the short line as
-reverse video after "ab". Alt+click without moving (`press 8`, `release
+(the whole 日 when the edge cuts it), the block's cells past each line end
+in the same background, every caret on the block's head column (reverse
+video, also after "ab") and, at 80x24, the view scrolled sideways to keep
+the last Shift+Right in sight (at 120x40 the 70 steps fit without scrolling). Alt+click without moving (`press 8`, `release
 8` on one cell) still adds a caret.
 
 ### Scenario: code folding

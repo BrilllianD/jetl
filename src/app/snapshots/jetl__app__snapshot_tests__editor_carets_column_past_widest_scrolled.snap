@@ -1,0 +1,18 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &marks, None)"
+---
+40x8 cursor=(34,4)
+00   cols.log ×
+01   1
+02   2
+03   3
+04   4
+05   5
+06
+07
+-- marks: C=caret S=selection F=fold O=occurrence
+01        SSSSSSSSSSSSSSSSSSSSSSSSSSSC
+02        SSSSSSSSSSSSSSSSSSSSSSSSSSSC
+03        SSSSSSSSSSSSSSSSSSSSSSSSSSSC
+04        SSSSSSSSSSSSSSSSSSSSSSSSSSS

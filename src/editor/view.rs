@@ -428,15 +428,18 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
     let drawn_up: Vec<usize> = visible.iter().filter(|s| is_up(s)).map(|s| s.head).collect();
     let drawn: Vec<usize> = visible.iter().filter(|s| !is_up(s)).map(|s| s.head).collect();
     let (cur_row, mut cur_x) = char_to_row_x(rope, &rows, buf.view.sel().head, buf.view.sel().upstream, o.tab_width);
-    // Virtual space: carets of a live column block on lines too short to
-    // reach it are drawn at its left column.
-    let virtual_col = if sels.is_multi() { buf.live_block(o.tab_width).map(|b| b.anchor.1.min(b.head.1)) } else { None };
-    if let Some(lo) = virtual_col {
-        let head = buf.view.sel().head;
-        let line = rope.char_to_line(head);
-        if head == rope.line_to_char(line) + line_len_no_eol(rope, line) && cur_x < lo {
-            cur_x = lo;
-        }
+    // Virtual space: a live column block (soft wrap off) paints its cells
+    // past the line ends, and the carets on lines too short to reach it are
+    // drawn on its head column.
+    let vblock = if rows.wraps() { None } else { buf.live_block(o.tab_width) };
+    let head_col = vblock.map(|b| b.head.1);
+    let (lo, hi) = vblock.map_or((0, 0), |b| (b.anchor.1.min(b.head.1), b.anchor.1.max(b.head.1)));
+    let block_lines = vblock.map(|_| {
+        let s = sels.as_slice();
+        rope.char_to_line(s[0].head)..=rope.char_to_line(s[s.len() - 1].head)
+    });
+    if let Some(vc) = virtual_caret_col(buf, o.tab_width) {
+        cur_x = vc;
     }
     let hl = buf.syntax.as_mut().map(|s| s.highlights(rope, window.start, window.len())).unwrap_or_default();
     let search = buf.view.search.as_ref();
@@ -611,8 +614,24 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
         // last row, as is a fold's placeholder.
         let end_x = last_seg.then(|| char_to_row_x(rope, &rows, line_end, false, o.tab_width).1);
         let at_end = here.last() == Some(&line_end);
-        // The caret cell: the line end, or the block column past a short line.
-        let caret_x = end_x.map(|vc| if at_end { virtual_col.map_or(vc, |lo| vc.max(lo)) } else { vc });
+        // The block's cells past the line end, from the end or the block's
+        // left column on.
+        if let (Some(vc), Some(lines)) = (end_x, &block_lines)
+            && folded.is_none()
+            && lo < hi
+            && lines.contains(&line)
+        {
+            let (from, to) = (vc.max(lo).max(scroll_col), hi);
+            if from < to {
+                let x = text_area.x as usize + from - scroll_col;
+                if x < right as usize {
+                    let w = (to - from).min(right as usize - x);
+                    screen.set_style(Rect::new(x as u16, y, w as u16, 1), Style::default().bg(theme.selection_bg));
+                }
+            }
+        }
+        // The caret cell: the line end, or the block's head column past a short line.
+        let caret_x = end_x.map(|vc| if at_end { head_col.map_or(vc, |c| vc.max(c)) } else { vc });
         if let Some(vc) = caret_x
             && ((sels.contains(line_end) && line + 1 < rope.len_lines()) || at_end)
             && vc >= scroll_col
@@ -714,6 +733,21 @@ fn in_ranges(ranges: &[std::ops::Range<usize>], i: usize) -> bool {
     ranges.get(k).is_some_and(|r| r.contains(&i))
 }
 
+/// The column the primary caret is drawn on when it is in virtual
+/// space: at a line end short of a live column block's head column
+/// (soft wrap off). None otherwise.
+pub fn virtual_caret_col(buf: &Buffer, tab_width: usize) -> Option<usize> {
+    if buf.view.wrap.on {
+        return None;
+    }
+    let col = buf.live_block(tab_width)?.head.1;
+    let rope = &buf.rope;
+    let head = buf.view.sel().head;
+    let line = rope.char_to_line(head);
+    let end = rope.line_to_char(line) + line_len_no_eol(rope, line);
+    (head == end && visual_col(rope, end, tab_width) < col).then_some(col)
+}
+
 /// Whether the caret is inside a text area of `w` x `h` at the view's scroll.
 fn caret_on_screen(buf: &Buffer, w: u16, h: u16, o: &RenderOpts) -> bool {
     let r = buf.rows();
@@ -726,7 +760,7 @@ fn caret_on_screen(buf: &Buffer, w: u16, h: u16, o: &RenderOpts) -> bool {
     if r.wraps() {
         return true;
     }
-    let vcol = visual_col(&buf.rope, sel.head, o.tab_width);
+    let vcol = virtual_caret_col(buf, o.tab_width).unwrap_or_else(|| visual_col(&buf.rope, sel.head, o.tab_width));
     (buf.view.scroll_col..buf.view.scroll_col + w as usize).contains(&vcol)
 }
 
@@ -757,7 +791,7 @@ pub fn ensure_visible(buf: &mut Buffer, text_area: Rect, o: &RenderOpts) {
         return;
     }
 
-    let vcol = visual_col(&buf.rope, buf.view.sel().head, o.tab_width);
+    let vcol = virtual_caret_col(buf, o.tab_width).unwrap_or_else(|| visual_col(&buf.rope, buf.view.sel().head, o.tab_width));
     let ho = o.hscrolloff.min(cols.saturating_sub(1) / 2);
     if vcol < buf.view.scroll_col + ho {
         buf.view.scroll_col = vcol.saturating_sub(ho);

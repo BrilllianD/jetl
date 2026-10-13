@@ -245,6 +245,43 @@ async fn editor_carets_column_virtual_enter() {
 }
 
 #[tokio::test]
+async fn editor_carets_column_virtual_rect() {
+    let mut fx = stable_app("carets-column-virtual-rect");
+    let app = &mut fx.app;
+    load(app, "cols.log", "abcdefgh\nabcdefgh\nab\nabcdefgh\n");
+    let b = app.editor.active_buffer_mut().unwrap();
+    b.set_block(crate::editor::view_state::Block { anchor: (0, 6), head: (3, 12) }, 4);
+    let term = draw_editor(app, 40, 8);
+    let marks = editor_marks(&app.theme);
+    assert_snapshot!("editor_carets_column_virtual_rect", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
+async fn editor_carets_column_past_widest() {
+    let mut fx = stable_app("carets-column-past-widest");
+    let app = &mut fx.app;
+    load(app, "cols.log", "abcdefgh\nabcdefgh\nab\nabcdefgh\n");
+    editor(app, EditorAction::ToggleColumnMode);
+    moves(app, Motion::Right, 5);
+    for _ in 0..3 {
+        editor(app, EditorAction::Move(Motion::Down, true));
+    }
+    for _ in 0..10 {
+        editor(app, EditorAction::Move(Motion::Right, true));
+    }
+    let term = draw_editor(app, 40, 8);
+    let marks = editor_marks(&app.theme);
+    assert_snapshot!("editor_carets_column_past_widest", snapshot(&term, &marks, None));
+    for _ in 0..20 {
+        editor(app, EditorAction::Move(Motion::Right, true));
+    }
+    let term = draw_editor(app, 40, 8);
+    assert!(app.editor.active_buffer().unwrap().view.scroll_col > 0);
+    let marks = editor_marks(&app.theme);
+    assert_snapshot!("editor_carets_column_past_widest_scrolled", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
 async fn editor_occurrences() {
     let mut fx = stable_app("occurrences");
     let app = &mut fx.app;
