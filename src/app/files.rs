@@ -27,6 +27,8 @@ pub(super) struct PendingFileOp {
     waiting: Vec<String>,
     /// Their edits with the server's name, in answer order; applied front first.
     edits: VecDeque<(String, WorkspaceEdit)>,
+    /// An edit's disk steps are being written (`EditsApplied` pending).
+    writing: bool,
 }
 
 /// The (`will`, `did`) methods of an operation.
@@ -67,7 +69,7 @@ impl App {
                 c.request(will, params.clone(), PendingTag::WillFileOp(seq));
             }
         }
-        self.lsp.file_ops.push(PendingFileOp { seq, op, is_dir, waiting: servers, edits: VecDeque::new() });
+        self.lsp.file_ops.push(PendingFileOp { seq, op, is_dir, waiting: servers, edits: VecDeque::new(), writing: false });
     }
 
     /// Names of the running, non-scratch servers (sorted) that want `method` for the op's path.
@@ -130,6 +132,7 @@ impl App {
     /// Edits call back here once applied or refused.
     pub(super) fn file_op_continue(&mut self, seq: u64) {
         let Some(i) = self.lsp.file_ops.iter().position(|p| p.seq == seq) else { return };
+        self.lsp.file_ops[i].writing = false;
         // State first: `apply_workspace_edit` may call back synchronously.
         let Some((server, edit)) = self.lsp.file_ops[i].edits.pop_front() else {
             let PendingFileOp { op, is_dir, .. } = self.lsp.file_ops.remove(i);
@@ -139,6 +142,30 @@ impl App {
         let mut chars = what.chars();
         let what = chars.next().map(|c| c.to_uppercase().chain(chars).collect::<String>()).unwrap_or_default();
         self.apply_workspace_edit(edit, EditOrigin::FileOp { seq, title: format!("{what} ({server})") });
+    }
+
+    /// The edit of operation `seq` is being written on a blocking thread.
+    pub(super) fn mark_file_op_writing(&mut self, seq: u64) {
+        if let Some(p) = self.lsp.file_ops.iter_mut().find(|p| p.seq == seq) {
+            p.writing = true;
+        }
+    }
+
+    /// The servers restart: operations still waiting for answers run now; one whose edit is being written waits
+    /// for it (returned, its other servers' edits dropped), so the rename or delete cannot race the
+    /// write.
+    pub(super) fn file_ops_for_restart(&mut self) -> Vec<PendingFileOp> {
+        let mut keep = Vec::new();
+        for mut p in std::mem::take(&mut self.lsp.file_ops) {
+            if p.writing {
+                p.waiting.clear();
+                p.edits.clear();
+                keep.push(p);
+            } else {
+                self.run_fs_op_now(p.op, p.is_dir);
+            }
+        }
+        keep
     }
 
     /// A server went away: it is not waited for any more.
@@ -349,6 +376,65 @@ mod tests {
         // Another dialog takes its place; the next message refuses the edit and the rename goes on.
         app.dialog = Some(Dialog::info("Other", "x"));
         app.handle_msg(AppMsg::Lsp(LspMsg::Exited { generation: app.workspace.generation + 1, server: 0, status: "x".into() }));
+        assert!(app.lsp.edit.confirm.is_none());
+        handle_next(&mut app, fs_op_done).await;
+        assert!(n.exists() && !m.exists());
+        assert_eq!(std::fs::read_to_string(&lib).unwrap(), "mod m;\n");
+        server.recv("workspace/didRenameFiles").await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_restart_waits_for_a_file_op_edit_being_written() {
+        let (mut app, dir) = test_app("fileop-restart-writing");
+        let root = app.workspace.root.clone();
+        let mut servers = with_fake_servers(&mut app, caps());
+        let mut server = open_on_server(&mut app, &mut servers, "a.rs", "fn main() {}\n").await;
+        let (lib, m, n) = (root.join("lib.rs"), root.join("m.rs"), root.join("n.rs"));
+        std::fs::write(&lib, "mod m;\n").unwrap();
+        std::fs::write(&m, "").unwrap();
+        app.run_fs_op(rename(&m, &n));
+        let req = server.recv("workspace/willRenameFiles").await;
+        let edit = json!({"changes": {sync::uri(&lib).unwrap().to_string(): [
+            {"range": {"start": {"line": 0, "character": 4}, "end": {"line": 0, "character": 5}}, "newText": "n"}
+        ]}});
+        server.respond(req["id"].as_i64().unwrap(), edit);
+        handle_next(&mut app, is_lsp).await;
+        // The edit of lib.rs is being written; the restart must not run the rename yet.
+        app.lsp_restart();
+        assert_eq!(app.lsp.file_ops.len(), 1);
+        handle_next(&mut app, |m| matches!(m, AppMsg::EditsApplied { .. })).await;
+        handle_next(&mut app, fs_op_done).await;
+        assert!(n.exists() && !m.exists());
+        assert_eq!(std::fs::read_to_string(&lib).unwrap(), "mod n;\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_confirmation_replaced_on_a_tick_is_declined_at_once() {
+        use crate::ui::dialog::{Dialog, DialogId};
+        let (mut app, dir) = test_app("fileop-orphaned-tick");
+        let root = app.workspace.root.clone();
+        let mut servers = with_fake_servers(&mut app, caps());
+        let mut server = open_on_server(&mut app, &mut servers, "a.rs", "fn main() {}\n").await;
+        let (lib, m, n) = (root.join("lib.rs"), root.join("m.rs"), root.join("n.rs"));
+        std::fs::write(&lib, "mod m;\n").unwrap();
+        std::fs::write(&m, "").unwrap();
+        app.run_fs_op(rename(&m, &n));
+        let req = server.recv("workspace/willRenameFiles").await;
+        let edit = json!({
+            "documentChanges": [{
+                "textDocument": {"uri": sync::uri(&lib).unwrap().to_string(), "version": null},
+                "edits": [{"range": {"start": {"line": 0, "character": 4}, "end": {"line": 0, "character": 5}},
+                           "newText": "n", "annotationId": "x"}]
+            }],
+            "changeAnnotations": {"x": {"label": "Risky", "needsConfirmation": true}}
+        });
+        server.respond(req["id"].as_i64().unwrap(), edit);
+        handle_next(&mut app, is_lsp).await;
+        assert!(matches!(app.dialog.as_ref().map(|d| d.id.clone()), Some(DialogId::LspConfirmEdit(_))));
+        app.dialog = Some(Dialog::info("Other", "x"));
+        app.on_tick();
         assert!(app.lsp.edit.confirm.is_none());
         handle_next(&mut app, fs_op_done).await;
         assert!(n.exists() && !m.exists());

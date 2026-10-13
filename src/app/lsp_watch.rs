@@ -7,6 +7,11 @@
 //! filtered through each server's registrations here. Registered folders
 //! outside the root get one extra watcher (`files::watch::start_outside`),
 //! recursive, except an ancestor of the root, which is watched non-recursively.
+//! A registered folder that does not exist is skipped; one created later is
+//! watched from the next registration change or restart. When that watcher
+//! cannot start, the servers restart once without the capability
+//! (`LspService::outside_failed`, until the root changes) and watch by
+//! themselves.
 //! Without the root watcher the capability is not offered, so servers keep
 //! watching by themselves; toggling that restarts them to renegotiate.
 
@@ -65,6 +70,13 @@ impl App {
             .filter(|c| c.watch_files && !matches!(c.state, State::Failed(_)))
             .flat_map(|c| c.registry.watch_bases())
             .filter(|base| !base.starts_with(root))
+            .filter(|base| {
+                let exists = base.is_dir();
+                if !exists {
+                    tracing::debug!("not watching {} for language servers: it does not exist", base.display());
+                }
+                exists
+            })
             .map(|base| {
                 let recursive = !root.starts_with(&base);
                 (base, recursive)
@@ -101,7 +113,15 @@ impl App {
         }
         match result {
             Ok(w) => self.lsp.outside_watcher = Some(w),
-            Err(e) => self.notify(Level::Warn, format!("Cannot watch files outside the project for language servers: {e:#}")),
+            Err(e) if self.lsp.outside_failed => tracing::debug!("outside watcher failed again: {e:#}"),
+            Err(e) => {
+                self.lsp.outside_failed = true;
+                self.notify(
+                    Level::Warn,
+                    format!("Cannot watch files outside the project for language servers ({e:#}); restarting them to watch by themselves"),
+                );
+                self.lsp_restart();
+            }
         }
     }
 
@@ -113,7 +133,8 @@ impl App {
             return;
         }
         self.lsp.watch_files = on;
-        if self.lsp.clients.values().any(|c| !matches!(c.state, State::Failed(_)) && c.watch_files != on) {
+        let offer = on && !self.lsp.outside_failed;
+        if self.lsp.clients.values().any(|c| !matches!(c.state, State::Failed(_)) && c.watch_files != offer) {
             self.lsp_restart();
         }
     }
@@ -198,6 +219,11 @@ mod tests {
         let unreg = json!({"unregistrations": [{"id": "o", "method": "workspace/didChangeWatchedFiles"}, {"id": "p", "method": "workspace/didChangeWatchedFiles"}]});
         registered(&mut app, &mut server, 3, unreg, "client/unregisterCapability").await;
         assert!(app.lsp.outside.is_empty() && app.lsp.outside_watcher.is_none());
+        // A folder that does not exist is skipped, without a warning.
+        let missing = parent.join("missing-outside");
+        registered(&mut app, &mut server, 4, register("q", options(&missing)), "client/registerCapability").await;
+        assert!(app.lsp.outside.is_empty());
+        assert!(app.notifications.iter().all(|n| !n.text.starts_with("Cannot watch files outside")));
         let _ = std::fs::remove_dir_all(&outside);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -214,6 +240,35 @@ mod tests {
         let init = second.recv("initialize").await;
         assert!(init["params"]["capabilities"]["workspace"]["didChangeWatchedFiles"].is_null());
         assert!(!app.lsp.clients["rust-analyzer"].watch_files);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_failed_outside_watcher_restarts_servers_without_the_capability() {
+        let (mut app, dir) = test_app("lsp-outside-failed");
+        let outside = app.workspace.root.parent().unwrap().join("outside-failed");
+        std::fs::create_dir_all(&outside).unwrap();
+        let mut servers = with_fake_servers(&mut app, incremental());
+        let mut server = open_on_server(&mut app, &mut servers, "a.rs", "x\n").await;
+        let options = json!({"watchers": [{"globPattern": {"baseUri": uri_of(&outside), "pattern": "**/*.rs"}}]});
+        registered(&mut app, &mut server, 1, register("o", options), "client/registerCapability").await;
+        handle_next(&mut app, |m| matches!(m, AppMsg::LspWatcherStarted { .. })).await;
+        app.handle_msg(AppMsg::LspWatcherStarted {
+            generation: app.workspace.generation,
+            dirs: app.lsp.outside.clone(),
+            result: Err(anyhow::anyhow!("boom")),
+        });
+        let warns: Vec<&str> =
+            app.notifications.iter().filter(|n| n.text.starts_with("Cannot watch files outside")).map(|n| n.text.as_str()).collect();
+        assert_eq!(warns.len(), 1, "{warns:?}");
+        assert!(warns[0].starts_with("Cannot watch files outside the project"), "{warns:?}");
+        assert!(app.lsp.outside_failed);
+        app.lsp_sync();
+        let mut second = servers.try_recv().expect("a new server after the restart");
+        let init = second.recv("initialize").await;
+        assert!(init["params"]["capabilities"]["workspace"]["didChangeWatchedFiles"].is_null());
+        assert!(!app.lsp.clients["rust-analyzer"].watch_files);
+        let _ = std::fs::remove_dir_all(&outside);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

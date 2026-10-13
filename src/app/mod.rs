@@ -575,6 +575,7 @@ impl App {
         self.history_prune_tick(Instant::now());
         self.history_diff_follow(Instant::now());
         self.terminal_tick();
+        self.lsp_confirm_orphaned();
     }
 
     fn autosave(&mut self) {
@@ -613,6 +614,7 @@ impl App {
                 }
             }
         }
+        self.lsp_confirm_orphaned();
     }
 
     fn handle_paste(&mut self, text: String) {

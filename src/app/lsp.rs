@@ -79,6 +79,9 @@ pub struct LspService {
     pub(super) file_ops: Vec<super::files::PendingFileOp>,
     /// Offer servers `didChangeWatchedFiles` (the root watcher runs).
     pub(super) watch_files: bool,
+    /// The outside watcher failed for this root: servers are not offered
+    /// `didChangeWatchedFiles`, so they watch by themselves.
+    pub(super) outside_failed: bool,
     /// Folders outside the root that servers' watchers need, with whether
     /// they are watched recursively (`app/lsp_watch.rs`).
     pub(super) outside: Vec<(PathBuf, bool)>,
@@ -112,6 +115,8 @@ pub(super) struct Doc {
     sent: std::collections::VecDeque<(i32, Option<Vec<DocEdit>>)>,
     /// `didOpen` sent and not closed since.
     opened: bool,
+    /// `didClose` sent after a `didOpen` unregistration: no changes until it is opened again.
+    closed: bool,
     /// The change kind of the last sync; from `NONE` to another the next change sends the whole text.
     kind: TextDocumentSyncKind,
 }
@@ -246,7 +251,7 @@ impl LspService {
             init_options,
             startup_timeout: std::time::Duration::from_millis(cfg.startup_timeout_ms),
             request_timeout: std::time::Duration::from_millis(cfg.request_timeout_ms),
-            watch_files: self.watch_files,
+            watch_files: self.watch_files && !self.outside_failed,
         };
         self.clients.insert(key, Client::start(spec, conn, bus.clone()));
         None
@@ -381,6 +386,7 @@ impl App {
                         doc.sent.pop_front();
                     }
                     doc.opened = true;
+                    doc.closed = false;
                     doc.kind = caps.change;
                     buf.lsp_pending.clear();
                     buf.lsp_full_resync = false;
@@ -391,6 +397,13 @@ impl App {
                         client.notify("textDocument/didClose", json!({"textDocument": {"uri": doc.uri}}));
                     }
                     doc.opened = false;
+                    doc.closed = caps.close;
+                }
+                if doc.closed {
+                    buf.lsp_pending.clear();
+                    buf.lsp_full_resync = false;
+                    doc.kind = caps.change;
+                    continue;
                 }
                 let switched = doc.kind == TextDocumentSyncKind::NONE && caps.change != TextDocumentSyncKind::NONE;
                 if buf.lsp_pending.is_empty() && !buf.lsp_full_resync && !switched {
@@ -460,6 +473,7 @@ impl App {
                 version: 1,
                 sent: Default::default(),
                 opened: caps.open,
+                closed: false,
                 kind: caps.change,
             };
             lsp.docs.insert(buf.id, doc);
@@ -499,10 +513,9 @@ impl App {
     /// start them again for the open buffers.
     pub(super) fn lsp_restart(&mut self) {
         // The servers are going away; the user's operations still happen.
-        for p in std::mem::take(&mut self.lsp.file_ops) {
-            self.run_fs_op_now(p.op, p.is_dir);
-        }
+        let writing = self.file_ops_for_restart();
         self.lsp.reset();
+        self.lsp.file_ops = writing;
         self.lsp_retarget_watch();
         self.lsp.missing.clear();
         self.lsp.servers = None;
@@ -522,6 +535,7 @@ impl App {
             self.notify(Level::Warn, format!("Cannot {what}: the project root changed"));
         }
         self.lsp.reset();
+        self.lsp.outside_failed = false;
         self.lsp_retarget_watch();
         self.editor.buffers.iter_mut().for_each(untrack);
     }
@@ -993,6 +1007,17 @@ pub(crate) mod tests {
         assert_eq!(server.response(4).await["result"], Value::Null);
         app.lsp_sync();
         server.recv("textDocument/didClose").await;
+        // Closed on the server: no changes until it is opened again.
+        act(&mut app, EditorAction::InsertChar('z'));
+        app.lsp_sync();
+        assert!(server.drain().iter().all(|m| m["method"] != "textDocument/didChange"));
+        server.request(5, "client/registerCapability", json!({"registrations": [reg("o", "textDocument/didOpen", json!({}))]}));
+        handle_next(&mut app, is_lsp).await;
+        assert_eq!(server.response(5).await["result"], Value::Null);
+        app.lsp_sync();
+        let open = server.recv("textDocument/didOpen").await;
+        assert_eq!(open["params"]["textDocument"]["text"], app.editor.active_buffer().unwrap().text());
+        assert_eq!(open["params"]["textDocument"]["text"], "xyzab\n");
         app.editor.force_close(app.editor.active().unwrap());
         app.lsp_sync();
         assert!(server.drain().iter().all(|m| m["method"] != "textDocument/didClose"));

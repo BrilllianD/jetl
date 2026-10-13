@@ -456,6 +456,9 @@ impl App {
                 _ => None,
             })
             .collect();
+        if let EditOrigin::FileOp { seq, .. } = &origin {
+            self.mark_file_op_writing(*seq);
+        }
         let (tx, generation, root) = (self.bus_tx.clone(), self.workspace.generation, self.workspace.root.clone());
         tokio::task::spawn_blocking(move || {
             let (mut errors, mut ops, mut failed) = (Vec::new(), Vec::new(), None);

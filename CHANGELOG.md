@@ -128,6 +128,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A language server that stops wanting a document open no longer gets changes for it; Restart Language Servers no longer
+  races a server edit of a tree rename; when the watcher for folders outside the project cannot start, the servers restart
+  once and watch by themselves; a confirmation replaced by another dialog is declined at once.
 - Dialogs on short terminals keep their input and buttons visible (the message is cut with `…`); indented paths in dialog
   messages keep their indent when wrapped; a forgotten recent project no longer reappears briefly.
 - The Local History diff keeps following edits while builds are slow; a label revert names the files that could not be opened.
