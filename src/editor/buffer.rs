@@ -819,14 +819,20 @@ impl Buffer {
     }
 
     /// A tab at every caret with hard tabs, else spaces up to the next
-    /// indent stop of the caret's column.
-    pub fn insert_tab(&mut self) {
+    /// indent stop of the caret's visual column. A caret in a column
+    /// block's virtual space (`virtual_pad`, which `edit_carets` prepends)
+    /// counts from the block's column.
+    pub fn insert_tab(&mut self, tab_width: usize) {
         let (hard, w) = (self.indent.hard_tabs, self.indent.width.max(1));
+        let pads = if self.virtual_pad.len() == self.view.sels.len() { self.virtual_pad.clone() } else { Vec::new() };
+        let mut i = 0;
         self.edit_carets(|b, sel| {
+            let pad = pads.get(i).copied().unwrap_or(0);
+            i += 1;
             if hard {
                 return CaretEdit::replace(sel.range(), "\t", TxKind::Typing);
             }
-            let (_, col) = selection::pos_to_line_col(&b.rope, sel.head);
+            let col = super::view::visual_col(&b.rope, sel.head, tab_width) + pad;
             CaretEdit::replace(sel.range(), " ".repeat(w - col % w), TxKind::Typing)
         });
     }
@@ -2120,11 +2126,20 @@ g()
     }
 
     #[test]
+    fn soft_tab_stops_by_visual_column() {
+        let mut buf = b("\tab\n");
+        buf.indent = IndentStyle::spaces(4);
+        buf.goto_line(0, 2);
+        buf.insert_tab(4);
+        assert_eq!(buf.text(), "\ta   b\n", "the tab counts as its width");
+    }
+
+    #[test]
     fn hard_tabs_insert_indent_and_unindent() {
         let mut buf = b("ab\n");
         buf.indent = IndentStyle::tabs(4);
         buf.goto_line(0, 1);
-        buf.insert_tab();
+        buf.insert_tab(4);
         assert_eq!(buf.text(), "a\tb\n", "a tab whatever the column");
         let mut buf = b("x\n  y\n");
         buf.indent = IndentStyle::tabs(4);
@@ -2143,9 +2158,9 @@ g()
         let mut buf = b("abc\n");
         buf.indent = IndentStyle::spaces(2);
         buf.goto_line(0, 3);
-        buf.insert_tab();
+        buf.insert_tab(4);
         assert_eq!(buf.text(), "abc \n");
-        buf.insert_tab();
+        buf.insert_tab(4);
         assert_eq!(buf.text(), "abc   \n");
     }
 

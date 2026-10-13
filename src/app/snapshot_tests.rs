@@ -218,6 +218,33 @@ async fn editor_carets_column_virtual_delete() {
 }
 
 #[tokio::test]
+async fn editor_carets_column_virtual_tab() {
+    let mut fx = stable_app("carets-column-virtual-tab");
+    let app = &mut fx.app;
+    load(app, "cols.log", "abcdefgh\nabcdefgh\nab\nabcdefgh\n");
+    let b = app.editor.active_buffer_mut().unwrap();
+    b.indent = crate::editor::indent::IndentStyle::spaces(4);
+    b.set_block(crate::editor::view_state::Block { anchor: (0, 5), head: (3, 5) }, 4);
+    editor(app, EditorAction::InsertTab);
+    let term = draw_editor(app, 40, 8);
+    let marks = editor_marks(&app.theme);
+    assert_snapshot!("editor_carets_column_virtual_tab", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
+async fn editor_carets_column_virtual_enter() {
+    let mut fx = stable_app("carets-column-virtual-enter");
+    let app = &mut fx.app;
+    load(app, "cols.log", "abcdefgh\nabcdefgh\nab\nabcdefgh\n");
+    let b = app.editor.active_buffer_mut().unwrap();
+    b.set_block(crate::editor::view_state::Block { anchor: (0, 5), head: (3, 5) }, 4);
+    editor(app, EditorAction::InsertNewline);
+    let term = draw_editor(app, 40, 14);
+    let marks = editor_marks(&app.theme);
+    assert_snapshot!("editor_carets_column_virtual_enter", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
 async fn editor_occurrences() {
     let mut fx = stable_app("occurrences");
     let app = &mut fx.app;

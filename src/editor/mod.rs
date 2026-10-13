@@ -980,7 +980,7 @@ impl Editor {
         if !matches!(a, E::ExpandSelection | E::ShrinkSelection | E::Copy | E::ScrollUp(_) | E::ScrollDown(_)) {
             b.view.expand_stack.clear();
         }
-        b.virtual_pad = if matches!(a, E::InsertChar(_) | E::InsertText(_)) { b.block_pads(tab_width) } else { Vec::new() };
+        b.virtual_pad = if matches!(a, E::InsertChar(_) | E::InsertText(_) | E::InsertTab) { b.block_pads(tab_width) } else { Vec::new() };
         let pairs = || if auto_close { brackets::pairs(b.language().map(|d| d.name)) } else { &[] };
         match a {
             E::InsertChar(c) => b.insert_char(*c, pairs()),
@@ -1004,7 +1004,7 @@ impl Editor {
                 if b.view.sels.iter().any(spans) {
                     b.indent_lines();
                 } else {
-                    b.insert_tab();
+                    b.insert_tab(tab_width);
                 }
             }
             E::Unindent => b.unindent_lines(),
@@ -3196,6 +3196,40 @@ mod tests {
         assert_eq!(ed.buffers[0].rope.to_string(), "abcd1ef\nab  2\nabcd3ef\n");
         assert!(ed.buffers[0].undo());
         assert_eq!(ed.buffers[0].rope.to_string(), "abcdef\nab\nabcdef\n");
+    }
+
+    #[test]
+    fn tab_in_a_block_pads_short_lines() {
+        let mut ed = editor_with("virtual-tab.txt", "abcdef\nab\nabcdef\n");
+        let tw = ed.tab_display(&ed.buffers[0]);
+        ed.buffers[0].indent = indent::IndentStyle::spaces(4);
+        ed.buffers[0].set_block(view_state::Block { anchor: (0, 5), head: (2, 5) }, tw);
+        act(&mut ed, EditorAction::InsertTab);
+        assert_eq!(ed.buffers[0].rope.to_string(), "abcde   f\nab      \nabcde   f\n");
+        assert!(ed.buffers[0].view.sels.iter().all(|s| selection::pos_to_line_col(&ed.buffers[0].rope, s.head).1 == 8));
+        assert!(ed.buffers[0].undo());
+        assert_eq!(ed.buffers[0].rope.to_string(), "abcdef\nab\nabcdef\n");
+    }
+
+    #[test]
+    fn hard_tab_in_a_block_pads_short_lines() {
+        let mut ed = editor_with("virtual-tab-hard.txt", "abcdef\nab\nabcdef\n");
+        let tw = ed.tab_display(&ed.buffers[0]);
+        ed.buffers[0].indent = indent::IndentStyle::tabs(4);
+        ed.buffers[0].set_block(view_state::Block { anchor: (0, 5), head: (2, 5) }, tw);
+        act(&mut ed, EditorAction::InsertTab);
+        assert_eq!(ed.buffers[0].rope.to_string(), "abcde\tf\nab   \t\nabcde\tf\n");
+        assert!(ed.buffers[0].undo());
+        assert_eq!(ed.buffers[0].rope.to_string(), "abcdef\nab\nabcdef\n");
+    }
+
+    #[test]
+    fn enter_in_a_block_does_not_pad() {
+        let mut ed = editor_with("virtual-enter.txt", "abcdef\nab\nabcdef\n");
+        let tw = ed.tab_display(&ed.buffers[0]);
+        ed.buffers[0].set_block(view_state::Block { anchor: (0, 4), head: (2, 4) }, tw);
+        act(&mut ed, EditorAction::InsertNewline);
+        assert_eq!(ed.buffers[0].rope.to_string(), "abcd\nef\nab\n\nabcd\nef\n");
     }
 
     #[test]

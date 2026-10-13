@@ -23,10 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tool window.
 - Tab completes the folder in New Worktree's directory prompt (folders only), like Save As.
 - Dragging a selection past the left or right edge scrolls sideways (soft wrap off).
-- Column selection: typing and pasting pad lines shorter than the block with spaces up to its left column, and
+- Column selection: typing, pasting and Tab pad lines shorter than the block with spaces up to its left column, and
   their carets are drawn there. Backspace there moves the block's column left without touching the short lines, and
-  Delete joins nothing there. Enter and Tab in that virtual space, Alt+click into it and a selection highlight past
-  a line end are not supported yet.
+  Delete joins nothing there. Enter there breaks the line at its end without padding. Alt+click into virtual space and
+  a selection highlight past a line end are not supported yet.
 - The Local History window's diff has a line cursor: Alt+Up/Down moves it over the changed rows, Alt+Shift+Up/Down
   grows the selected lines, a double click on a changed row sets it, and Esc leaves it. Revert Changes (toolbar
   `[Revert N Lines]`, menu "Revert Selected Lines") then puts back only those lines; the selected rows' line
@@ -129,6 +129,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Tab with spaces goes to the next indent stop by screen column, so a tab before the caret counts as its width.
 - A language server that stops wanting a document open no longer gets changes for it; Restart Language Servers no longer
   races a server edit of a tree rename; when the watcher for folders outside the project cannot start, the servers restart
   once and watch by themselves; a confirmation replaced by another dialog is declined at once.

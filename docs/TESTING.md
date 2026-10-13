@@ -259,6 +259,12 @@ press 8 $((X+5)) 2; press 40 $((X+5)) 4; release 8 $((X+5)) 4   # the zero-width
 /tmp/tm.sh send-keys -t jetl BSpace              # `a` gone on lines 1-2; "ab" kept, its caret one cell left
 /tmp/tm.sh send-keys -t jetl DC                  # `b` gone on lines 1-2; "ab" not joined with line 4
 /tmp/tm.sh send-keys -t jetl C-z                 # both lines back
+press 8 $((X+5)) 2; press 40 $((X+5)) 4; release 8 $((X+5)) 4   # the zero-width block again
+/tmp/tm.sh send-keys -t jetl Tab                 # every caret at the next stop (col 8), "ab" padded
+/tmp/tm.sh send-keys -t jetl C-z
+press 8 $((X+5)) 2; press 40 $((X+5)) 4; release 8 $((X+5)) 4
+/tmp/tm.sh send-keys -t jetl Enter               # lines 1-2 split before `b`; "ab" breaks at its end, no spaces
+/tmp/tm.sh send-keys -t jetl C-z
 ```
 
 `capture-pane -e` shows the selected cells in the selection background
