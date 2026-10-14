@@ -1,0 +1,20 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &marks, None)"
+---
+60x12 cursor=(7,1)
+00   Diff 1a2b3c4d ×
+01   1    == 1a2b3c4d Fix
+02   2    diff --git a/a.txt b/a.txt
+03   3    --- a/a.txt
+04   4    +++ b/a.txt
+05   5    @@ -1,2 +1,2 @@
+06   6    -old
+07   7  ▾ +new
+08   8     same
+09   9
+10
+11
+-- marks: +=added -=removed
+06        -----------------------------------------------------
+07        +++++++++++++++++++++++++++++++++++++++++++++++++++++

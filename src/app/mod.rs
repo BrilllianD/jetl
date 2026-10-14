@@ -2612,6 +2612,46 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn show_diff_opens_a_patch_tab_with_changes() {
+        use crate::actions::GitAction;
+        let (mut app, dir) = test_app("show-diff");
+        init_repo(&app, &[("a.txt", "a\n")]);
+        let root = app.workspace.root.clone();
+        std::fs::write(root.join("a.txt"), "b\n").unwrap();
+        git(&app, &["commit", "-qam", "change a"]);
+        feed_status(&mut app, 1);
+        app.perform(Action::Git(GitAction::TabLog));
+        let filter = app.git_panel.log_filter().clone();
+        let out =
+            std::process::Command::new("git").args(crate::git::cli::log_args(0, 100, true, &filter)).current_dir(&root).output().unwrap();
+        let rows = crate::git::cli::parse_log(&String::from_utf8_lossy(&out.stdout));
+        let sha8 = rows[0].sha[..8].to_string();
+        let g = app.git.generation;
+        app.handle_msg(AppMsg::Git(GitMsg::Log { generation: g, skip: 0, filter, result: Ok(rows) }));
+        let is_diff = |m: &AppMsg| matches!(m, AppMsg::Git(GitMsg::CommitsDiff { .. }));
+        // A stale answer opens nothing.
+        let before = app.editor.buffers.len();
+        app.handle_msg(AppMsg::Git(GitMsg::CommitsDiff { generation: g + 1, title: "Diff x".into(), result: Ok("x\n".into()) }));
+        assert_eq!(app.editor.buffers.len(), before);
+        app.perform(Action::Git(GitAction::LogShowDiff));
+        handle_next(&mut app, is_diff).await;
+        let b = app.editor.active_buffer().expect("patch tab");
+        assert!(b.read_only && b.path.is_none());
+        assert_eq!(b.name, format!("Diff {sha8}"));
+        let text = b.text();
+        assert!(text.contains("-a\n") && text.contains("+b\n"), "{text}");
+        assert!(app.focus.is(PanelId::Editor));
+        app.perform(Action::Editor(EditorAction::NextChange));
+        let b = app.editor.active_buffer().unwrap();
+        assert_eq!(b.text().lines().nth(b.cursor_line_col().0), Some("-a"));
+        let count = app.editor.buffers.len();
+        app.perform(Action::Git(GitAction::LogShowDiff));
+        handle_next(&mut app, is_diff).await;
+        assert_eq!(app.editor.buffers.len(), count);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
     async fn event_log_lists_follows_clears_and_opens_from_the_status_bar() {
         use crossterm::event::{KeyModifiers, MouseEvent, MouseEventKind};
         let (mut app, dir) = test_app("event-log");

@@ -269,6 +269,8 @@ impl Editor {
                 let setup = self.path_setup(&path, &text, cx.theme);
                 let b = &mut self.buffers[i];
                 super::adopt_path(b, path.clone(), setup, self.tab_width);
+                b.patch = None;
+                b.read_only = false;
                 let capture = Capture { detail: from, ..Capture::text(PathBuf::new(), text, Kind::SaveAs) };
                 mark_written(b, path, state, perm_err, cx, false, capture);
                 // Behind `FileSaved`, so the language server has the new

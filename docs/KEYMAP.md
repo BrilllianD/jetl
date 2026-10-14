@@ -269,6 +269,7 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Ctrl+F` | `git.log_filter` | Git: filter the log (branch, text, author, path) |
 | `Shift+F10` | `git.context_menu` | Git: commit actions for the selected commit |
 | `Ctrl+C` | `git.copy_sha` | Git: copy the selected commit's revision number |
+| `Ctrl+D` | `git.log_show_diff` | Git: show the diff of the selected commits in an editor tab |
 | `Alt+Shift+C` | `git.log_checkout` | Git: check out the selected commit (detached) |
 | `Alt+Shift+B` | `git.log_new_branch` | Git: new branch at the selected commit |
 | `Alt+Shift+P` | `git.log_cherry_pick` | Git: cherry-pick the selected commit |

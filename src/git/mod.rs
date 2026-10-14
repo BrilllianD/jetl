@@ -126,6 +126,11 @@ pub enum GitMsg {
         filter: LogFilter,
         result: Result<Vec<model::LogCommit>>,
     },
+    CommitsDiff {
+        generation: u64,
+        title: String,
+        result: Result<String>,
+    },
     CommitDetails {
         generation: u64,
         sha: String,
@@ -202,6 +207,7 @@ impl GitMsg {
             | GitMsg::Branches { generation, .. }
             | GitMsg::Log { generation, .. }
             | GitMsg::CommitDetails { generation, .. }
+            | GitMsg::CommitsDiff { generation, .. }
             | GitMsg::PushRemote { generation, .. }
             | GitMsg::HeadMessage { generation, .. }
             | GitMsg::Stashes { generation, .. }
@@ -282,6 +288,11 @@ pub enum GitRequest {
         filter: LogFilter,
     },
     LoadCommit(String),
+    /// The combined diff of commit spans, opened as a patch tab.
+    CommitsDiff {
+        title: String,
+        spans: Vec<model::DiffSpan>,
+    },
     LoadWorktrees,
     WorktreePrune,
     /// Read a conflicted file's stages and open the resolver on them.
@@ -473,6 +484,15 @@ impl GitService {
                 if o.ok { cli::parse_log(&o.stdout_text()) } else { Vec::new() }
             });
             let _ = tx.send(AppMsg::Git(GitMsg::Log { generation, skip, filter, result }));
+        });
+    }
+
+    /// The combined diff of `spans`, answered with `GitMsg::CommitsDiff`.
+    pub fn load_commits_diff(&self, title: String, spans: Vec<model::DiffSpan>) {
+        let (root, generation, tx) = (self.root.clone(), self.generation, self.tx.clone());
+        tokio::spawn(async move {
+            let result = cli::commits_diff(&root, &spans).await;
+            let _ = tx.send(AppMsg::Git(GitMsg::CommitsDiff { generation, title, result }));
         });
     }
 

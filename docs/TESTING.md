@@ -60,7 +60,7 @@ window's Commit tab (also at 80 columns, its diff header cut before the
 toggles), its Log (and the Log's commit context menu), Stash and Console tabs, the Find and Problems windows
 (diagnostic underlines in the editor too), the lightbulb in the gutter, the main menu bar, confirm,
 input and choice dialogs, the hover and completion popups, toasts, the
-palettes (Scratch Files and Recent Projects included), the conflict resolver (filler rows included), the crash
+palettes (Scratch Files and Recent Projects included), the conflict resolver (filler rows included), the patch tab, the crash
 recovery dialogs and the Save As prompt and its path completion list.
 
 Things that depend on the clock are given as data: the Log tab's commits
@@ -814,6 +814,9 @@ git -C $T switch -qc dev && echo dev >> $T/README.md && git -C $T -c user.name=t
 # pick Compare: the bar shows "[Branch: HEAD..dev]" and only "dev change"
 # reopen the menu and the dialog, pick Merge: a confirm appears; Cancel
 git -C $T log --oneline -1             # unchanged
+# select "dev change", then Ctrl+D: an editor tab "Diff <sha8>" with a green and a red row (capture-pane -e: different
+# backgrounds); F7 moves the caret to the first change (status bar Ln), Shift+F7 there says "No more changes above";
+# typing changes nothing; Ctrl+D again on the same row adds no tab
 /tmp/tm.sh kill-server
 ```
 

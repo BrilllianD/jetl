@@ -300,6 +300,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn saving_a_patch_tab_makes_it_an_ordinary_editable_file() {
+        let (mut app, dir) = fresh_app("save-as-patch");
+        let i = app.editor.open_patch("Diff 1a2b3c4d", "@@ -1 +1 @@\n-a\n+b\n");
+        let id = app.editor.buffers[i].id;
+        app.perform(Action::Editor(EditorAction::Save));
+        let (_, then, _) = prompt(&mut app);
+        app.finish_dialog(DialogId::SaveAs { id, then }, DialogResult::Text("p.diff".into()));
+        let path = app.workspace.root.join("p.diff");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "@@ -1 +1 @@\n-a\n+b\n");
+        let b = app.editor.active_buffer().unwrap();
+        assert!(b.patch.is_none() && !b.read_only);
+        edit(&mut app, "x");
+        assert!(app.editor.active_buffer().unwrap().dirty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
     async fn quit_asks_for_each_untitled_buffer_in_turn() {
         let (mut app, dir) = fresh_app("save-as-quit");
         let a = load(&mut app, "a.txt", "a\n");

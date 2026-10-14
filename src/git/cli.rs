@@ -287,6 +287,36 @@ pub async fn show_file(root: &Path, rev: &str, rel: &str) -> Result<Vec<u8>> {
     Ok(if out.ok { out.stdout } else { Vec::new() })
 }
 
+/// The combined diff text of `spans`: per span its header, then `git diff`
+/// of base..top (the empty tree for a root commit), spans separated by an
+/// empty line.
+pub async fn commits_diff(root: &Path, spans: &[super::model::DiffSpan]) -> Result<String> {
+    let mut empty: Option<String> = None;
+    let mut parts = Vec::new();
+    for span in spans {
+        let base = match &span.base {
+            Some(b) => b.clone(),
+            None => match &empty {
+                Some(e) => e.clone(),
+                None => {
+                    let out = git_with_input(root, &args(&["hash-object", "-t", "tree", "--stdin"]), Some(Vec::new())).await?;
+                    if !out.ok {
+                        return Err(anyhow!("{}", out.stderr.trim()));
+                    }
+                    let e = out.stdout_text().trim().to_string();
+                    empty = Some(e.clone());
+                    e
+                }
+            },
+        };
+        let out = git_ok(root, &args(&["diff", "--no-color", "--no-ext-diff", "--no-textconv", "-M", &base, &span.top, "--"])).await?;
+        let diff = out.stdout_text();
+        let body = if diff.is_empty() { "(no changes)\n".to_string() } else { diff };
+        parts.push(format!("{}\n{body}", span.header));
+    }
+    Ok(parts.join("\n"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -394,5 +424,41 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(log.len(), 2, "{log:?}");
         assert!(log.iter().all(|c| !c.subject.starts_with("WIP on") && !c.subject.starts_with("index on")), "{log:?}");
+    }
+
+    #[tokio::test]
+    async fn commits_diff_combines_a_chain_and_diffs_a_root_commit() {
+        use super::super::model::DiffSpan;
+        let dir = std::env::temp_dir().join(format!("jetl-commits-diff-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let run = |a: &[&str]| {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&dir)
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(a)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {a:?}: {}", String::from_utf8_lossy(&out.stderr));
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        run(&["init", "-q"]);
+        let mut shas = Vec::new();
+        for n in ["a\n", "b\n"] {
+            std::fs::write(dir.join("a.txt"), n).unwrap();
+            run(&["add", "a.txt"]);
+            run(&["commit", "-qm", "c"]);
+            shas.push(run(&["rev-parse", "HEAD"]));
+        }
+        let span =
+            |base: Option<&str>, top: &str, header: &str| DiffSpan { base: base.map(String::from), top: top.into(), header: header.into() };
+        let chain = commits_diff(&dir, &[span(None, &shas[1], "== chain")]).await.unwrap();
+        let root = commits_diff(&dir, &[span(None, &shas[0], "== root")]).await.unwrap();
+        let step = commits_diff(&dir, &[span(Some(&shas[0]), &shas[1], "== step")]).await.unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(root.starts_with("== root\n") && root.contains("+a"), "{root}");
+        assert!(step.contains("+b") && step.contains("-a"), "{step}");
+        assert!(chain.contains("+b") && !chain.contains("-a"), "{chain}");
     }
 }

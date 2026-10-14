@@ -305,6 +305,51 @@ pub struct LogCommit {
     pub subject: String,
 }
 
+/// One piece of a combined diff: a first-parent chain of selected commits,
+/// diffed from the parent of its oldest commit (`None`: the empty tree) to
+/// its newest.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiffSpan {
+    pub base: Option<String>,
+    pub top: String,
+    pub header: String,
+}
+
+fn short8(sha: &str) -> &str {
+    &sha[..sha.len().min(8)]
+}
+
+/// The tab title and diff spans of `commits` (log order, newest first). A
+/// commit and the next listed one join a chain when the next is the first
+/// commit's first parent; unselected commits are never spanned.
+pub fn commits_diff(commits: &[&LogCommit]) -> (String, Vec<DiffSpan>) {
+    let mut chains: Vec<Vec<&LogCommit>> = Vec::new();
+    for c in commits {
+        match chains.last_mut() {
+            Some(chain) if chain.last().and_then(|l| l.parents.first()) == Some(&c.sha) => chain.push(c),
+            _ => chains.push(vec![c]),
+        }
+    }
+    let spans: Vec<DiffSpan> = chains
+        .iter()
+        .map(|chain| {
+            let (top, oldest) = (chain[0], chain[chain.len() - 1]);
+            let header = if chain.len() == 1 {
+                format!("== {} {}", short8(&top.sha), top.subject)
+            } else {
+                format!("== {}..{} ({} commits)", short8(&oldest.sha), short8(&top.sha), chain.len())
+            };
+            DiffSpan { base: oldest.parents.first().cloned(), top: top.sha.clone(), header }
+        })
+        .collect();
+    let title = match chains.as_slice() {
+        [chain] if chain.len() == 1 => format!("Diff {}", short8(&chain[0].sha)),
+        [chain] => format!("Diff {}..{}", short8(&chain[chain.len() - 1].sha), short8(&chain[0].sha)),
+        _ => format!("Diff of {} commits", commits.len()),
+    };
+    (title, spans)
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct CommitDetails {
     pub sha: String,
@@ -409,5 +454,64 @@ mod tests {
         let labels = BranchOp::for_branch(&b("origin/dev", false, true), Some("main"));
         assert_eq!(labels[0].1, "Checkout as new local branch 'dev'");
         assert_eq!(labels[3].1, "Merge 'origin/dev' into 'main'…");
+    }
+
+    fn lc(sha: &str, parents: &[&str]) -> LogCommit {
+        LogCommit {
+            sha: sha.into(),
+            parents: parents.iter().map(|p| p.to_string()).collect(),
+            short: sha.into(),
+            author: String::new(),
+            date: String::new(),
+            refs: String::new(),
+            subject: format!("subject {sha}"),
+        }
+    }
+
+    #[test]
+    fn diff_of_one_commit() {
+        let c = lc("aaaaaaaaaaaa", &["bbbbbbbbbbbb"]);
+        let (title, spans) = commits_diff(&[&c]);
+        assert_eq!(title, "Diff aaaaaaaa");
+        assert_eq!(
+            spans,
+            [DiffSpan { base: Some("bbbbbbbbbbbb".into()), top: "aaaaaaaaaaaa".into(), header: "== aaaaaaaa subject aaaaaaaaaaaa".into() }]
+        );
+    }
+
+    #[test]
+    fn diff_of_a_first_parent_chain_is_one_span() {
+        let (a, b, c) = (lc("aaaaaaaa1", &["bbbbbbbb2"]), lc("bbbbbbbb2", &["cccccccc3"]), lc("cccccccc3", &["dddddddd4"]));
+        let (title, spans) = commits_diff(&[&a, &b, &c]);
+        assert_eq!(title, "Diff cccccccc..aaaaaaaa");
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].base.as_deref(), Some("dddddddd4"));
+        assert_eq!(spans[0].top, "aaaaaaaa1");
+        assert_eq!(spans[0].header, "== cccccccc..aaaaaaaa (3 commits)");
+    }
+
+    #[test]
+    fn diff_with_a_gap_has_two_spans() {
+        let (a, b, c) = (lc("aaaaaaaa1", &["bbbbbbbb2"]), lc("bbbbbbbb2", &["cccccccc3"]), lc("cccccccc3", &["dddddddd4"]));
+        let (title, spans) = commits_diff(&[&a, &c]);
+        assert_eq!(title, "Diff of 2 commits");
+        assert_eq!(spans.iter().map(|s| s.top.as_str()).collect::<Vec<_>>(), ["aaaaaaaa1", "cccccccc3"]);
+        assert_eq!(spans[0].base.as_deref(), Some("bbbbbbbb2"));
+        let _ = b;
+    }
+
+    #[test]
+    fn diff_of_a_root_commit_has_no_base() {
+        let r = lc("rrrrrrrr1", &[]);
+        assert_eq!(commits_diff(&[&r]).1[0].base, None);
+    }
+
+    #[test]
+    fn diff_of_a_merge_and_its_second_parent_has_two_spans() {
+        let (m, side) = (lc("mmmmmmmm1", &["pppppppp2", "ssssssss3"]), lc("ssssssss3", &["pppppppp2"]));
+        let (title, spans) = commits_diff(&[&m, &side]);
+        assert_eq!(title, "Diff of 2 commits");
+        assert_eq!(spans.len(), 2);
+        assert_eq!(spans[0].base.as_deref(), Some("pppppppp2"));
     }
 }

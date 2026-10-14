@@ -354,6 +354,7 @@
 "ctrl-f" = "git.log_filter"
 "shift-f10" = "git.context_menu"
 "ctrl-c" = "git.copy_sha"
+"ctrl-d" = "git.log_show_diff"
 "alt-shift-c" = "git.log_checkout"
 "alt-shift-b" = "git.log_new_branch"
 "alt-shift-p" = "git.log_cherry_pick"

@@ -126,8 +126,13 @@ impl Buffer {
     /// Move the caret to the start of the next (or previous) change. False
     /// when there is none in that direction.
     pub fn goto_change(&mut self, forward: bool) -> bool {
-        let Some(base) = &self.diff_base else { return false };
-        let lines = change_lines(base, &self.text());
+        let lines = match &self.patch {
+            Some(p) => p.change_starts().to_vec(),
+            None => {
+                let Some(base) = &self.diff_base else { return false };
+                change_lines(base, &self.text())
+            }
+        };
         let cur = self.cursor_line_col().0;
         let target = if forward { lines.into_iter().find(|&l| l > cur) } else { lines.into_iter().rev().find(|&l| l < cur) };
         let Some(line) = target else { return false };
@@ -149,6 +154,20 @@ mod tests {
 
     fn marks(base: &str, text: &str) -> Vec<(usize, MarkKind)> {
         compute(base, text).into_iter().map(|m| (m.line, m.kind)).collect()
+    }
+
+    #[test]
+    fn a_patch_buffer_steps_over_its_change_blocks() {
+        let mut b = Buffer::from_text(1, None, "@@ -1 +1 @@\n-a\n+b\n c\n+d\n", false);
+        b.patch = Some(super::super::patch::Patch::parse(&b.text()));
+        assert!(b.goto_change(true));
+        assert_eq!(b.cursor_line_col().0, 1);
+        assert!(b.goto_change(true));
+        assert_eq!(b.cursor_line_col().0, 4);
+        assert!(!b.goto_change(true));
+        assert!(b.goto_change(false));
+        assert_eq!(b.cursor_line_col().0, 1);
+        assert!(!b.goto_change(false));
     }
 
     #[test]

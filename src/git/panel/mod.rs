@@ -351,6 +351,7 @@ impl GitPanel {
                 Some(b) => cx.effects.push(Effect::Git(GitRequest::BranchOps(b.clone()))),
                 None => cx.notify(Level::Info, format!("Branch '{name}' no longer exists")),
             },
+            G::LogShowDiff => self.show_commits_diff(cx),
             G::CopySha => self.commit_action(CommitAction::CopySha, cx),
             G::LogCheckout => self.commit_action(CommitAction::Checkout, cx),
             G::LogNewBranch => self.commit_action(CommitAction::NewBranch, cx),

@@ -270,6 +270,22 @@ impl GitPanel {
         }
     }
 
+    /// The rows commit actions apply to, ascending: the cursor row.
+    pub(super) fn log_selection(&self) -> Vec<usize> {
+        if self.log_list.selected < self.log.len() { vec![self.log_list.selected] } else { Vec::new() }
+    }
+
+    /// Open the combined diff of the selected commits in an editor tab.
+    pub(super) fn show_commits_diff(&mut self, cx: &mut Ctx) {
+        let rows = self.log_selection();
+        if self.tab != GitTab::Log || rows.is_empty() {
+            return cx.notify(Level::Info, "Select a commit in the Log tab");
+        }
+        let commits: Vec<&LogCommit> = rows.iter().map(|&i| &self.log[i].commit).collect();
+        let (title, spans) = crate::git::model::commits_diff(&commits);
+        cx.effects.push(Effect::Git(GitRequest::CommitsDiff { title, spans }));
+    }
+
     /// Commit actions for the selected commit, at the pointer or its row.
     pub(super) fn log_context_menu(&mut self, at: Option<(u16, u16)>, cx: &mut Ctx) {
         if self.tab != GitTab::Log || self.selected_commit().is_none() {
@@ -282,6 +298,7 @@ impl GitPanel {
         let g = |a| Action::Git(a);
         let mut items = vec![
             MenuItem::new("Copy Revision Number", g(GitAction::CopySha)),
+            MenuItem::new("Show Diff", g(GitAction::LogShowDiff)),
             MenuItem::new("Checkout Revision", g(GitAction::LogCheckout)),
             MenuItem::new("New Branch…", g(GitAction::LogNewBranch)),
             MenuItem::new("Cherry-Pick", g(GitAction::LogCherryPick)),

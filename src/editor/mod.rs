@@ -18,6 +18,7 @@ mod io;
 pub use io::DiskChange;
 pub mod merge;
 pub mod nav;
+pub mod patch;
 pub mod rows;
 pub mod search;
 pub mod selection;
@@ -409,6 +410,27 @@ impl Editor {
         buf.name = name.to_string();
         buf.indent = indent::FileSettings::default().indent(&buf.rope, self.tab_width);
         buf.view.wrap.on = self.soft_wrap_for(None);
+        self.buffers.push(buf);
+        let at = self.buffers.len() - 1;
+        self.activate_index(at);
+        at
+    }
+
+    /// Show `text` (a unified diff) in a read-only, pathless patch tab
+    /// named `title`; a tab already open under that title is activated.
+    pub fn open_patch(&mut self, title: &str, text: &str) -> usize {
+        if let Some(at) = self.buffers.iter().position(|b| b.patch.is_some() && b.name == title) {
+            self.activate_index(at);
+            return at;
+        }
+        let id = self.next_id;
+        self.next_id += 1;
+        let mut buf = Buffer::from_text(id, None, text, false);
+        buf.name = title.to_string();
+        buf.patch = Some(patch::Patch::parse(text));
+        buf.read_only = true;
+        buf.indent = indent::FileSettings::default().indent(&buf.rope, self.tab_width);
+        buf.view.wrap.on = false;
         self.buffers.push(buf);
         let at = self.buffers.len() - 1;
         self.activate_index(at);
@@ -1563,7 +1585,11 @@ impl Editor {
         }
         let decors: std::collections::HashMap<BufferId, view::LineDecor> = match &self.merge {
             Some(m) => m.ids.iter().filter_map(|id| Some((*id, self.merge_decor(*id, theme)?))).collect(),
-            None => Default::default(),
+            None => leaves
+                .iter()
+                .filter_map(|(g, _)| shows(self, *g))
+                .filter_map(|id| Some((id, self.buffers[self.index_of_id(id)?].patch.as_ref()?.decor(theme))))
+                .collect(),
         };
         for (n, (g, r)) in leaves.into_iter().enumerate() {
             let Some(gi) = self.group_index(g) else { continue };

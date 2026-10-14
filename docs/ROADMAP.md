@@ -37,7 +37,7 @@ done (see Order).
   syntax highlighted, folds unchanged lines and switches between side-by-side and unified. The
   log (all branches by default, stashes left out) draws its own graph from parents, filters by branch, text, author and path, shows file
   history, and runs commit actions (checkout, branch, cherry-pick, revert, tags); the commit menu has
-  per-branch operations. There is a Stash tab, and the branches popup checks out, compares, merges, rebases,
+  per-branch operations and Show Diff (the commit's diff in an editor tab, F7 steps through changes). There is a Stash tab, and the branches popup checks out, compares, merges, rebases,
   pushes, renames and deletes branches.
   Conflicted files (`U`) open in a three-pane resolver (yours, result, theirs). A filesystem
   watcher refreshes the tree and git status; focus gain refreshes only when the watcher is off

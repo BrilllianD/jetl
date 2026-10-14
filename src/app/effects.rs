@@ -228,6 +228,7 @@ impl App {
             GitRequest::LoadDiff(key) => self.git.load_diff(key),
             GitRequest::LoadLog { skip, filter } => self.git.load_log(skip, self.config.git.log_page, self.config.git.log_all, filter),
             GitRequest::LoadCommit(sha) => self.git.load_commit(sha),
+            GitRequest::CommitsDiff { title, spans } => self.git.load_commits_diff(title, spans),
             GitRequest::LoadWorktrees => self.git.load_worktrees(),
             GitRequest::WorktreePrune => self.prune_worktrees(),
         }

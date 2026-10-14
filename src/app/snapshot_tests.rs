@@ -127,6 +127,19 @@ async fn editor_split_right() {
 }
 
 #[tokio::test]
+async fn editor_patch_tab() {
+    let mut fx = stable_app("patch-tab");
+    let app = &mut fx.app;
+    app.editor.open_patch(
+        "Diff 1a2b3c4d",
+        "== 1a2b3c4d Fix\ndiff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1,2 +1,2 @@\n-old\n+new\n same\n",
+    );
+    let term = draw_editor(app, 60, 12);
+    let marks = [Mark::bg('+', "added", app.theme.diff_add_bg), Mark::bg('-', "removed", app.theme.diff_del_bg)];
+    assert_snapshot!("editor_patch_tab", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
 async fn editor_tab_drag_hint() {
     let mut fx = stable_app("tab-drag-hint");
     let app = &mut fx.app;

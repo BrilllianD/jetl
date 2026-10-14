@@ -284,6 +284,7 @@ pub enum GitAction {
     LogFilter,
     ContextMenu,
     CopySha,
+    LogShowDiff,
     LogCheckout,
     LogNewBranch,
     LogCherryPick,
@@ -728,6 +729,7 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "git.log_filter" => "Git: filter the log (branch, text, author, path)", Git(GitAction::LogFilter);
         "git.context_menu" => "Git: commit actions for the selected commit", Git(GitAction::ContextMenu);
         "git.copy_sha" => "Git: copy the selected commit's revision number", Git(GitAction::CopySha);
+        "git.log_show_diff" => "Git: show the diff of the selected commits in an editor tab", Git(GitAction::LogShowDiff);
         "git.log_checkout" => "Git: check out the selected commit (detached)", Git(GitAction::LogCheckout);
         "git.log_new_branch" => "Git: new branch at the selected commit", Git(GitAction::LogNewBranch);
         "git.log_cherry_pick" => "Git: cherry-pick the selected commit", Git(GitAction::LogCherryPick);

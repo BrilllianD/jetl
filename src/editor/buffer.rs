@@ -184,6 +184,8 @@ pub struct Buffer {
     /// No edit changes the text (the conflict resolver's yours and theirs
     /// panes): `apply` only moves the carets, undo and redo do nothing.
     pub read_only: bool,
+    /// A patch tab (Git Log Show Diff): its added and removed lines; read-only and pathless.
+    pub patch: Option<super::patch::Patch>,
     /// Text restored after a crash (`Editor::recover_text`): no autosave
     /// until an explicit save writes it.
     pub recovered: bool,
@@ -219,6 +221,7 @@ impl Buffer {
             gutter: Vec::new(),
             gutter_version: u64::MAX,
             diff_base: None,
+            patch: None,
             diff_base_seq: 0,
             blame: None,
             disk_mtime: None,
