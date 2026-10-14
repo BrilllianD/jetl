@@ -1,6 +1,7 @@
 //! Configuration, paths and logging.
 
 pub mod color;
+pub mod edit;
 pub mod keymap;
 pub mod omarchy;
 pub mod reload;

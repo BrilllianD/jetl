@@ -13,6 +13,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use super::{App, Ctx};
+use crate::config::edit::Edit;
 use crate::config::reload::{self, ConfigDiff, ReloadClass};
 use crate::config::theme::{OnBadFile, Theme};
 use crate::config::watch::{self, ConfigFile, ConfigWatcher};
@@ -57,10 +58,20 @@ struct Report {
     errors: Vec<String>,
 }
 
-/// What Open Settings writes into a `config.toml` it creates.
-pub(super) const SETTINGS_STUB: &str = "# jetl settings; every key and its default: docs/CONFIG.md\n";
+pub(super) use crate::config::edit::SETTINGS_STUB;
 
 impl App {
+    /// Write settings into `config.toml` (comments and order kept) and apply
+    /// them through the reload path.
+    #[cfg_attr(not(test), expect(dead_code, reason = "the Settings window calls it (yman 235)"))]
+    pub(crate) fn write_settings(&mut self, edits: &[(&str, Edit)]) -> Result<(), String> {
+        crate::config::edit::write_config(&self.paths.config_file(), edits)?;
+        // The reload path applies it: the text differs from `config_text`, so
+        // this applies once; the watcher's event for the same text is silent.
+        self.config_changed(vec![ConfigFile::Config]);
+        Ok(())
+    }
+
     /// Remember what the config files hold now and start watching them.
     /// `keymap_text` is the text the keymap was just loaded from; the
     /// config and theme files are read again here. The config directory is
@@ -305,6 +316,7 @@ mod tests {
     use super::*;
     use crate::actions::{Action, AppAction, EditorAction};
     use crate::app::tests::test_app;
+    use crate::config::edit::Value;
     use crate::config::keymap::parse_chord;
     use crate::config::theme::LIGHT;
     use crate::event::AppMsg;
@@ -324,6 +336,58 @@ mod tests {
     fn last(app: &App) -> (Level, String) {
         let n = app.notifications.last().expect("a notification");
         (n.level, n.text.clone())
+    }
+
+    #[tokio::test]
+    async fn write_settings_applies_once() {
+        let (mut app, dir) = test_app("write-settings-live");
+        write(&app, "config.toml", "# mine\n[lsp]\nenabled = false\n[editor]\nscrolloff = 3 # keep\n");
+        reload(&mut app, &[ConfigFile::Config]);
+        app.write_settings(&[("editor.scrolloff", Edit::Set(Value::Int(7)))]).unwrap();
+        assert_eq!(app.config.editor.scrolloff, 7);
+        let text = std::fs::read_to_string(app.paths.config_file()).unwrap();
+        assert!(text.contains("# mine") && text.contains("# keep"), "{text}");
+        assert_eq!(last(&app), (Level::Info, "Reloaded config.toml".into()));
+        let n = app.notifications.len();
+        reload(&mut app, &[ConfigFile::Config]);
+        assert_eq!(app.notifications.len(), n, "the watcher event is silent");
+        assert_eq!(app.config.editor.scrolloff, 7);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn write_settings_restart_key_is_named() {
+        let (mut app, dir) = test_app("write-settings-restart");
+        write(&app, "config.toml", NO_LSP);
+        reload(&mut app, &[ConfigFile::Config]);
+        app.write_settings(&[("ui.left_width", Edit::Set(Value::Int(40)))]).unwrap();
+        let (level, text) = last(&app);
+        assert_eq!(level, Level::Warn);
+        assert!(text.contains("ui.left_width"), "{text}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn write_settings_invalid_writes_nothing() {
+        let (mut app, dir) = test_app("write-settings-invalid");
+        write(&app, "config.toml", NO_LSP);
+        reload(&mut app, &[ConfigFile::Config]);
+        let n = app.notifications.len();
+        let r = app.write_settings(&[("editor.tab_width", Edit::Set(Value::Str("wide".into())))]);
+        assert!(r.is_err());
+        assert_eq!(std::fs::read_to_string(app.paths.config_file()).unwrap(), NO_LSP);
+        assert_eq!(app.notifications.len(), n);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn write_settings_creates_missing_file() {
+        let (mut app, dir) = test_app("write-settings-missing");
+        app.write_settings(&[("lsp.enabled", Edit::Set(Value::Bool(false))), ("editor.scrolloff", Edit::Set(Value::Int(6)))]).unwrap();
+        let text = std::fs::read_to_string(app.paths.config_file()).unwrap();
+        assert!(text.starts_with(SETTINGS_STUB), "{text}");
+        assert_eq!(app.config.editor.scrolloff, 6);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]

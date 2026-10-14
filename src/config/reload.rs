@@ -26,6 +26,35 @@ pub enum ReloadClass {
     Restart,
 }
 
+impl ReloadClass {
+    /// Short label for a row; empty for `Live`.
+    pub fn tag(self) -> &'static str {
+        match self {
+            Self::Live => "",
+            Self::NewViews => "new tabs",
+            Self::NextShell => "next shell",
+            Self::LspRestart => "restart servers",
+            Self::Restart => "restart jetl",
+        }
+    }
+
+    /// One sentence on when a change takes effect.
+    pub fn describe(self) -> &'static str {
+        match self {
+            Self::Live => "Applies at once.",
+            Self::NewViews => "Applies to files opened afterwards; open tabs keep theirs.",
+            Self::NextShell => "Applies when the Terminal window's next shell starts.",
+            Self::LspRestart => "Applies after Help > Restart Language Servers.",
+            Self::Restart => "Applies after a restart of jetl.",
+        }
+    }
+}
+
+/// The class of a dotted key (`ui.left_width`), `None` for an unknown key.
+pub fn class_of(key: &str) -> Option<ReloadClass> {
+    KEYS.iter().find(|(k, _)| *k == key).map(|(_, c)| *c)
+}
+
 /// The keys whose values differ between two configs, with their class.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct ConfigDiff {
@@ -159,6 +188,16 @@ sections! {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn class_of_looks_keys_up() {
+        assert_eq!(class_of("ui.left_width"), Some(ReloadClass::Restart));
+        assert_eq!(class_of("editor.scrolloff"), Some(ReloadClass::Live));
+        assert_eq!(class_of("nope.x"), None);
+        assert_eq!(ReloadClass::Live.tag(), "");
+        assert_eq!(ReloadClass::Restart.tag(), "restart jetl");
+        assert_eq!(ReloadClass::Restart.describe(), "Applies after a restart of jetl.");
+    }
 
     #[test]
     fn diff_of_equal_configs_is_empty() {

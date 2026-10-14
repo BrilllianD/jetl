@@ -55,6 +55,7 @@ regex = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "1.1"
+toml_edit = "0.25.15"
 directories = "6"
 unicode-width = "0.2"
 unicode-segmentation = "1.13"
