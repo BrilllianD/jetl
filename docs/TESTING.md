@@ -55,7 +55,8 @@ on ratatui's `TestBackend` and compares them as text with
 [`insta`](https://insta.rs) against `src/app/snapshots/*.snap`. They cover
 split panes, carets, occurrences, folding, soft wrap, bookmarks, the
 numbered bookmark chooser and the bookmarks list with closed files, the
-editor's find/replace bar, the project tree and its context menu, the Git
+editor's find/replace bar, the project tree and its context menu, the Settings window (page tree, Bool, number and
+choice rows, pending markers), the Git
 window's Commit tab (also at 80 columns, its diff header cut before the
 toggles), its Log (also with two commits selected, and the Log's commit context menu), Stash and Console tabs, the Find and Problems windows
 (diagnostic underlines in the editor too), the lightbulb in the gutter, the main menu bar, confirm,
@@ -551,8 +552,41 @@ printf '[ui]\ntheme = "light"\n' > $C/.t && mv $C/.t $C/config.toml; sleep 1   #
 /tmp/tm.sh kill-server
 ```
 
-Then open File > Settings…, change `scrolloff`, press Ctrl+S: "Reloaded
-config.toml". Run `touch $C/config.toml`: nothing.
+Then open File > Settings… and change `scrolloff` (see the Settings window
+scenario below): "Reloaded config.toml". Run `touch $C/config.toml`: nothing.
+
+### Scenario: Settings window
+
+At 80x24 and at 120x40 (fresh `/tmp/jt-home` each time), on the scratch
+project `$T`:
+
+```sh
+C=/tmp/jt-home/config/jetl; rm -rf /tmp/jt-home; mkdir -p $C
+printf '# my settings\n[lsp]\nenabled = false\n[editor]\nscrolloff = 3   # caret margin\n' > $C/config.toml
+/tmp/tm.sh -f /dev/null new-session -d -s jetl -x 80 -y 24 \
+  "XDG_CONFIG_HOME=/tmp/jt-home/config XDG_STATE_HOME=/tmp/jt-home/state $PWD/target/debug/jetl $T/src/main.rs"
+sleep 2; /tmp/tm.sh send-keys -t jetl C-M-s; sleep 0.3; /tmp/tm.sh capture-pane -t jetl -p   # the window, Appearance
+/tmp/tm.sh capture-pane -t jetl -p -e | grep Apply           # [ Apply ] has a dim colour before it: nothing pending
+```
+
+- Down, Down, Enter (Editor > General), Down, Enter (scrolloff), BSpace, `8`,
+  Enter: the row shows `*` and 8; `[ Apply ]` now has no colour code of its
+  own (lit like `[ Cancel ]`).
+- Ctrl+S: status "Reloaded config.toml" (cut to "Reloade…" at 80 columns);
+  `cat $C/config.toml` keeps `# my settings` and `# caret margin` with
+  `scrolloff = 8`.
+- Mouse: a click on a tree row selects the page; a click on a Bool value
+  (`[x]` of "Close brackets…") flips it and marks the row; two clicks on a
+  number row open its value dialog. Esc closes the dialog, a second Esc with
+  a pending change asks "Discard N changed settings?" ([ Discard ] / [ Keep
+  Editing ]).
+- Appearance > Left tool window width: Enter, BSpace x3, `40`, Enter, then a
+  click on `[ Apply ]`: a Warning "Reloaded config.toml; restart jetl to
+  apply ui.left_width"; the file gains `[ui]` `left_width = 40` after a blank
+  line, the other lines unchanged.
+- Esc closes the window; F10 > File > Settings… (click the row) opens it.
+  `touch $C/config.toml`: no new notification.
+- `/tmp/tm.sh kill-server`.
 
 ### Scenario: numbered bookmarks
 
@@ -859,6 +893,8 @@ their count) until the new ones arrive.
   fallbacks (Ctrl+N for files, Alt+Shift+N for symbols, F1 for actions, Alt+Left/Right for tabs,
   Alt+Enter to commit, Alt+B then a digit for numbered bookmarks) or check those keys in foot or
   kitty.
+- Ctrl+Alt+S arrives as `C-M-s` in legacy mode and opens the Settings window;
+  File > Settings… is the fallback.
 - Escape followed quickly by another key arrives as Alt+key; pause between
   them.
 - Ctrl+Alt+Shift+J (select all occurrences) needs the kitty protocol; use
