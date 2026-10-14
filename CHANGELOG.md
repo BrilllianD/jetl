@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The Git Log lists all branches by default (`[git] log_all = true`); stash commits are left out of it. Set `log_all = false` for HEAD only.
+
 ### Fixed
 
 - A document that a language server closed through a `didOpen` unregistration no longer gets `didSave` until it is opened again.

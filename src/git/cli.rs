@@ -210,6 +210,8 @@ pub fn apply_args(cached: bool, reverse: bool) -> Vec<String> {
 /// Arguments for one page of the log. The graph is drawn from the parents
 /// (`git::graph`); `--parents` rewrites them past commits a path filter
 /// leaves out, and `--date-order` lists no parent before its children.
+/// `--all` (a branch filter of `All`, or the default with `all`) comes after
+/// `--exclude=refs/stash`, so stash commits stay out of the list.
 pub fn log_args(skip: usize, count: usize, all: bool, filter: &LogFilter) -> Vec<String> {
     let mut v = args(&["log", "--parents", "--date-order", "--no-color"]);
     v.push(format!("-n{count}"));
@@ -229,8 +231,8 @@ pub fn log_args(skip: usize, count: usize, all: bool, filter: &LogFilter) -> Vec
     v.push("--format=%H%x1f%P%x1f%h%x1f%an%x1f%ar%x1f%D%x1f%s".into());
     match &filter.rev {
         LogRev::Rev(rev) => v.push(rev.clone()),
-        LogRev::All => v.push("--all".into()),
-        LogRev::Default if all => v.push("--all".into()),
+        LogRev::All => v.extend(args(&["--exclude=refs/stash", "--all"])),
+        LogRev::Default if all => v.extend(args(&["--exclude=refs/stash", "--all"])),
         LogRev::Default | LogRev::Head => {}
     }
     v.push("--".into());
@@ -358,5 +360,39 @@ mod tests {
             assert!(a.contains(&want.to_string()), "{want} in {a:?}");
         }
         assert_eq!(&a[a.len() - 2..], ["--", "src/a.rs"]);
+        let followed = |a: &[String]| a.windows(2).any(|w| w[0] == "--exclude=refs/stash" && w[1] == "--all");
+        assert!(followed(&log_args(0, 10, true, &LogFilter::default())));
+        let all = LogFilter { rev: LogRev::All, ..Default::default() };
+        assert!(followed(&log_args(0, 10, false, &all)));
+    }
+
+    #[tokio::test]
+    async fn log_all_leaves_out_stashes() {
+        let dir = std::env::temp_dir().join(format!("jetl-log-all-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let run = |a: &[&str]| {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&dir)
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(a)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {a:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        run(&["init", "-q"]);
+        for n in ["one", "two"] {
+            std::fs::write(dir.join("f.txt"), n).unwrap();
+            run(&["add", "f.txt"]);
+            run(&["commit", "-qm", n]);
+        }
+        std::fs::write(dir.join("f.txt"), "three").unwrap();
+        run(&["stash", "-q"]);
+        let out = git(&dir, &log_args(0, 100, true, &LogFilter::default())).await.unwrap();
+        let log = parse_log(&out.stdout_text());
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(log.len(), 2, "{log:?}");
+        assert!(log.iter().all(|c| !c.subject.starts_with("WIP on") && !c.subject.starts_with("index on")), "{log:?}");
     }
 }

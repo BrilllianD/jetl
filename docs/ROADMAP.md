@@ -35,7 +35,7 @@ done (see Order).
   Gutter marks are based on HEAD; the change at the caret can be reverted, changes are stepped
   through, and a blame column shows author and date. The diff marks changed characters, is
   syntax highlighted, folds unchanged lines and switches between side-by-side and unified. The
-  log draws its own graph from parents, filters by branch, text, author and path, shows file
+  log (all branches by default, stashes left out) draws its own graph from parents, filters by branch, text, author and path, shows file
   history, and runs commit actions (checkout, branch, cherry-pick, revert, tags). There is a
   Stash tab, and the branches popup checks out, merges, rebases, renames and deletes branches.
   Conflicted files (`U`) open in a three-pane resolver (yours, result, theirs). A filesystem

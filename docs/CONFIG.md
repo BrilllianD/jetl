@@ -100,7 +100,7 @@ colors = "auto"                # "auto" (true color when $COLORTERM is truecolor
 
 [git]
 pull_mode = "ff-only"          # "ff-only" (git pull --ff-only), "rebase" (--rebase) or "merge" (--no-rebase)
-log_all = false                # Log tab shows all branches (git log --all) instead of HEAD only
+log_all = true                 # Log tab shows all branches (git log --all, stashes left out); false: HEAD only
 log_page = 500                 # commits loaded per Log page
 
 [worktree]

@@ -239,7 +239,8 @@ pub struct StashEntry {
 /// Where the Log tab's history starts.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum LogRev {
-    /// HEAD, or every branch with `[git] log_all`.
+    /// Every branch except the stash (the default `[git] log_all = true`), or
+    /// HEAD only with `log_all = false`.
     #[default]
     Default,
     Head,

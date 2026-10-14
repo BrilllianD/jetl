@@ -285,7 +285,7 @@ impl Default for UiConfig {
 }
 impl Default for GitConfig {
     fn default() -> Self {
-        Self { pull_mode: "ff-only".into(), log_all: false, log_page: 500 }
+        Self { pull_mode: "ff-only".into(), log_all: true, log_page: 500 }
     }
 }
 impl Default for WorktreeConfig {

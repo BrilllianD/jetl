@@ -244,6 +244,7 @@ A Confirm whose message is longer than the screen (yman 222), at 60x12:
 /tmp/tm.sh capture-pane -p -t jetl
 /tmp/tm.sh send-keys -t jetl Escape
 git -C $T status --short                          # prints nothing
+/tmp/tm.sh kill-server
 ```
 
 The "Replace in Files" box is at most 11 rows, its message ends with a row
