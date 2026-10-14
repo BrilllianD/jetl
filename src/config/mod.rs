@@ -1,5 +1,6 @@
 //! Configuration, paths and logging.
 
+pub mod catalog;
 pub mod color;
 pub mod edit;
 pub mod keymap;

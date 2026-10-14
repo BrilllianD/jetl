@@ -19,7 +19,7 @@ use ratatui::style::Modifier;
 
 use super::tests::{load, test_app};
 use super::{App, Ctx};
-use crate::actions::{Action, EditorAction, HistoryAction, MergeAction, Motion, PaletteKind};
+use crate::actions::{Action, AppAction, EditorAction, HistoryAction, MergeAction, Motion, PaletteKind};
 use crate::config::theme::Theme;
 use crate::editor::selection::Selection;
 use crate::event::AppMsg;
@@ -1792,4 +1792,49 @@ async fn editor_lightbulb() {
     let term = draw_editor(app, 40, 6);
     let line = row_text(term.backend().buffer(), 2, 40);
     assert!(line.contains('✖') && !line.contains('✱'), "{line}");
+}
+
+fn press(app: &mut App, code: KeyCode, times: usize) {
+    for _ in 0..times {
+        app.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
+    }
+}
+
+fn settings_marks(theme: &Theme) -> [Mark; 2] {
+    [Mark::bg('L', "selected", theme.list_selected.bg.unwrap()), Mark::bg('U', "unfocused", theme.list_selected_unfocused.bg.unwrap())]
+}
+
+#[tokio::test]
+async fn settings_window() {
+    let mut fx = stable_app("settings-window");
+    let app = &mut fx.app;
+    std::fs::create_dir_all(&app.paths.config_dir).unwrap();
+    std::fs::write(app.paths.config_file(), "[lsp]\nenabled = false\n[editor]\nscrolloff = 5\n").unwrap();
+    app.perform(Action::App(AppAction::Settings));
+    press(app, KeyCode::Down, 2);
+    press(app, KeyCode::Enter, 1);
+    press(app, KeyCode::Down, 1);
+    let term = draw_app(app, 80, 24);
+    assert_snapshot!("settings_window", snapshot(&term, &settings_marks(&app.theme), None));
+}
+
+#[tokio::test]
+async fn settings_window_wide() {
+    let mut fx = stable_app("settings-window-wide");
+    let app = &mut fx.app;
+    app.perform(Action::App(AppAction::Settings));
+    let term = draw_app(app, 120, 40);
+    assert_snapshot!("settings_window_wide", snapshot(&term, &settings_marks(&app.theme), None));
+}
+
+#[tokio::test]
+async fn settings_window_error() {
+    let mut fx = stable_app("settings-window-error");
+    let app = &mut fx.app;
+    std::fs::create_dir_all(&app.paths.config_dir).unwrap();
+    std::fs::write(app.paths.config_file(), "[editor\n").unwrap();
+    app.perform(Action::App(AppAction::Settings));
+    press(app, KeyCode::Enter, 1);
+    let term = draw_app(app, 80, 24);
+    assert_snapshot!("settings_window_error", snapshot(&term, &settings_marks(&app.theme), None));
 }

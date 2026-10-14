@@ -1,0 +1,32 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &settings_marks(&app.theme), None)"
+---
+80x24 cursor=hidden
+00  ≣┌ Settings ────────────────────────────────────────────────────────────────┐
+01   │Appearance              │Appearance                                       │
+02  1│Editor                  │                                                 │
+03  ⌂│  General               │config.toml is invalid: line 1, column 8:        │
+04  2│  Soft Wraps            │unclosed table, expected `]`                     │
+05  ◫│  Saving                │                                                 │
+06  7│  Formatting            │Open config.toml                                 │
+07  ⊢│Keymap                  │                                                 │
+08   │Version Control         │                                                 │
+09   │  Git                   │                                                 │
+10  ⟲│  Worktrees             │                                                 │
+11   │Files                   │                                                 │
+12  ⚑│Tools                   │                                                 │
+13  9│  Terminal              │                                                 │
+14  ⎇│  Run                   │                                                 │
+15   │  Clipboard             │                                                 │
+16  ❯│  Local History         │                                                 │
+17  6│Language Servers        │                                                 │
+18  ⚠│                        │                                                 │
+19  4│                                                                          │
+20  ►│                                            [ OK ]  [ Cancel ]  [ Apply ] │
+21  3└──────────────────────────────────────────────────────────────────────────┘
+22  ⌕ └──────────────────────────────┘│
+23  root
+-- marks: L=selected U=unfocused
+01    UUUUUUUUUUUUUUUUUUUUUUUU
+06                             LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL

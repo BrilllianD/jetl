@@ -62,6 +62,7 @@ mod palette;
 mod recovery;
 mod run;
 mod save_as;
+mod settings;
 mod symbols;
 mod terminal;
 mod watch;
@@ -171,6 +172,8 @@ pub struct App {
     /// Main menu bar overlay (F10); takes input like a dialog, below
     /// dialogs and above the context menu.
     pub menu_bar: Option<crate::ui::menu_bar::MenuBar>,
+    /// The Settings window, over the menus and under dialogs.
+    pub settings: Option<crate::ui::settings::SettingsWindow>,
     /// Tool strip button under the pointer, with its rect; it shows a
     /// tooltip.
     pub strip_hover: Option<(crate::ui::layout::StripButton, Rect)>,
@@ -326,6 +329,7 @@ impl App {
             palette_seq: Default::default(),
             menu: None,
             menu_bar: None,
+            settings: None,
             strip_hover: None,
             file_index: FileIndex::default(),
             recent_projects: Vec::new(),
@@ -627,6 +631,9 @@ impl App {
             }
             return;
         }
+        if self.settings.is_some() {
+            return;
+        }
         if let Some(p) = &mut self.palette {
             p.paste(&text);
             return;
@@ -688,6 +695,12 @@ impl App {
             if let Some(res) = d.handle_key(key) {
                 let d = self.dialog.take().unwrap();
                 self.finish_dialog(d.id, res);
+            }
+            return;
+        }
+        if self.settings.is_some() {
+            if key.kind != crossterm::event::KeyEventKind::Release && !matches!(key.code, KeyCode::Modifier(_)) {
+                self.settings_key(key);
             }
             return;
         }
@@ -994,6 +1007,7 @@ impl App {
             AppAction::MainMenu => self.toggle_main_menu(),
             AppAction::About => self.notify(Level::Info, format!("jetl {}", env!("CARGO_PKG_VERSION"))),
             AppAction::OpenSettings => self.open_settings(),
+            AppAction::Settings => self.open_settings_window(),
             AppAction::KeymapReference => self.keymap_reference(),
             AppAction::NewScratch => self.new_scratch(),
             AppAction::LocalHistory => self.local_history(),

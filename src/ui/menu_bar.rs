@@ -46,7 +46,7 @@ pub const MAIN_MENU: &[(&str, char, &[Row])] = &[
             Item("Close Other Tabs", "editor.close_other_tabs"),
             Item("Close All Tabs", "editor.close_all_tabs"),
             Sep,
-            Item("Settings…", "app.open_settings"),
+            Item("Settings…", "app.settings"),
             Sep,
             Item("Exit", "app.quit"),
         ],

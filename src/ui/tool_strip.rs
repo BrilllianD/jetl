@@ -88,6 +88,7 @@ pub fn render_tooltip(app: &App, frame: &mut Frame, area: Rect) {
         || app.dialog.is_some()
         || app.menu.is_some()
         || app.menu_bar.is_some()
+        || app.settings.is_some()
         || !app.layout.strip_hits.contains(&hover)
     {
         return;

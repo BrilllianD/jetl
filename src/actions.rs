@@ -45,6 +45,8 @@ pub enum AppAction {
     About,
     /// Open `config.toml`, creating it when missing.
     OpenSettings,
+    /// The Settings window.
+    Settings,
     /// Open the project's `docs/KEYMAP.md`, else point at the online copy.
     KeymapReference,
     /// Ask for a language, then create and open a scratch file.
@@ -538,7 +540,8 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "app.debug_panic" => "Debug: trigger a panic", App(AppAction::DebugPanic);
         "app.main_menu" => "Main menu", App(AppAction::MainMenu);
         "app.about" => "About jetl", App(AppAction::About);
-        "app.open_settings" => "Open settings (config.toml)", App(AppAction::OpenSettings);
+        "app.settings" => "Settings…", App(AppAction::Settings);
+        "app.open_settings" => "Open settings file (config.toml)", App(AppAction::OpenSettings);
         "app.keymap_reference" => "Keymap reference", App(AppAction::KeymapReference);
         "tool_window.project" => "Project tool window", App(AppAction::ToggleToolWindow(ToolWindowId::Project));
         "tool_window.worktrees" => "Worktrees tool window", App(AppAction::ToggleToolWindow(ToolWindowId::Worktrees));

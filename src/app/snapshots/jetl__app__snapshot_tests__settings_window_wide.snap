@@ -1,0 +1,48 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &settings_marks(&app.theme), None)"
+---
+120x40 cursor=hidden
+00  ≣ ┌ Project: root ───────────────┐│
+01    │                              ││
+02  1 │ ┌ Settings ──────────────────────────────────────────────────────────────────────────────────────────────────┐
+03  ⌂ │ │Appearance                │Appearance                                                                       │
+04    │ │Editor                    │                                                                                 │
+05  2 │ │  General                 │Theme                       auto ▾                                               │
+06  ◫ │ │  Soft Wraps              │Color depth                 auto ▾                                               │
+07    │ │  Saving                  │Icons                       unicode ▾                                            │
+08  7 │ │  Formatting              │Double click interval (ms)  400                                                  │
+09  ⊢ │ │Keymap                    │Left tool window width      32                                       restart jetl│
+10    │ │Version Control           │Bottom tool window height   14                                       restart jetl│
+11    │ │  Git                     │                                                                                 │
+12    │ │  Worktrees               │                                                                                 │
+13    │ │Files                     │                                                                                 │
+14    │ │Tools                     │                                                                                 │
+15    │ │  Terminal                │                                                                                 │
+16    │ │  Run                     │                                                                                 │
+17    │ │  Clipboard               │                                                                                 │
+18    │ │  Local History           │                                                                                 │
+19    │ │Language Servers          │                                                                                 │
+20  ⟲ │ │                          │                                                                                 │
+21    │ │                          │                                                                                 │
+22    │ │                          │                                                                                 │
+23  ⚑ │ │                          │                                                                                 │
+24    │ │                          │                                                                                 │
+25  9 │ │                          │                                                                                 │
+26  ⎇ │ │                          │                                                                                 │
+27    │ │                          │                                                                                 │
+28    │ │                          │A built-in theme, "auto" (the Omarchy palette when there is one) or a theme file:│
+29  ❯ │ │                          │a path ending in .toml.                                                          │
+30    │ │                          │Applies at once.                                                                 │
+31  6 │ │                                                                                                            │
+32  ⚠ │ │                                                                              [ OK ]  [ Cancel ]  [ Apply ] │
+33    │ └────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+34  4 │                              ││
+35  ► │                              ││
+36    │                              ││
+37  3 │                              ││
+38  ⌕ └──────────────────────────────┘│
+39  root
+-- marks: L=selected U=unfocused
+03       LLLLLLLLLLLLLLLLLLLLLLLLLL
+05                                  UUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUU

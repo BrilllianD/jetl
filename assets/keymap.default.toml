@@ -4,6 +4,8 @@
 # Key grammar: [ctrl-][alt-][shift-]<key>; space-separated combos form chords.
 
 [global]
+# Settings (JetBrains). In the Git window Ctrl+Alt+S stashes; File > Settings… works there.
+"ctrl-alt-s" = "app.settings"
 "alt-1" = "tool_window.project"
 "alt-2" = "tool_window.worktrees"
 "alt-9" = "tool_window.git"
