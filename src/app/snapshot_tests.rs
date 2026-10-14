@@ -1838,3 +1838,22 @@ async fn settings_window_error() {
     let term = draw_app(app, 80, 24);
     assert_snapshot!("settings_window_error", snapshot(&term, &settings_marks(&app.theme), None));
 }
+
+#[tokio::test]
+async fn settings_window_pending() {
+    let mut fx = stable_app("settings-window-pending");
+    let app = &mut fx.app;
+    std::fs::create_dir_all(&app.paths.config_dir).unwrap();
+    std::fs::write(app.paths.config_file(), "[lsp]\nenabled = false\n").unwrap();
+    app.perform(Action::App(AppAction::Settings));
+    press(app, KeyCode::Down, 4);
+    press(app, KeyCode::Enter, 1);
+    // Autosave: off -> focus -> idle; Final newline toggled.
+    press(app, KeyCode::Right, 2);
+    press(app, KeyCode::Down, 3);
+    press(app, KeyCode::Enter, 1);
+    let term = draw_app(app, 80, 24);
+    let [l, u] = settings_marks(&app.theme);
+    let m = Mark::style('M', "pending", app.theme.git_modified);
+    assert_snapshot!("settings_window_pending", snapshot(&term, &[l, u, m], None));
+}

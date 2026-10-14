@@ -191,6 +191,10 @@ pub enum DialogId {
     Recover,
     /// Review: restore or skip recovered entry `.0`.
     RecoverEntry(usize),
+    /// A new value for this Settings window key.
+    SettingValue(&'static str),
+    /// Close the Settings window, dropping its changes: Discard / Keep Editing.
+    SettingsDiscard,
 }
 
 #[derive(Debug, Clone)]

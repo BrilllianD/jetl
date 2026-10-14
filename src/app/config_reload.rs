@@ -63,7 +63,6 @@ pub(super) use crate::config::edit::SETTINGS_STUB;
 impl App {
     /// Write settings into `config.toml` (comments and order kept) and apply
     /// them through the reload path.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the Settings window calls it (yman 235)"))]
     pub(crate) fn write_settings(&mut self, edits: &[(&str, Edit)]) -> Result<(), String> {
         crate::config::edit::write_config(&self.paths.config_file(), edits)?;
         // The reload path applies it: the text differs from `config_text`, so
@@ -113,6 +112,10 @@ impl App {
             }
             // Also retries directories that could not be watched before.
             self.retarget_config_watch();
+            if let Some(w) = &mut self.settings {
+                let path = self.paths.config_file();
+                w.file_changed(&FileText::read(&path), &path);
+            }
         }
         if files.contains(&ConfigFile::Keymap) {
             self.reload_keymap_file(&mut report);

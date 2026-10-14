@@ -6,22 +6,22 @@ expression: "snapshot(&term, &settings_marks(&app.theme), None)"
 00  ≣┌ Settings ────────────────────────────────────────────────────────────────┐
 01   │Appearance              │Editor › General                                 │
 02  1│Editor                  │                                                 │
-03  ⌂│  General               │Tab width               4                new tabs│
-04  2│  Soft Wraps            │Lines kept above and …  5                        │
-05  ◫│  Saving                │Columns kept left and…  5                        │
-06  7│  Formatting            │Close brackets and qu…  [x]                      │
-07  ⊢│Keymap                  │Highlight the word at…  [x]                      │
-08   │Version Control         │Tab limit               0                        │
-09   │  Git                   │Largest file with syn…  2097152          new tabs│
+03  ⌂│  General               │  Tab width             4                new tabs│
+04  2│  Soft Wraps            │  Lines kept above an…  5                        │
+05  ◫│  Saving                │  Columns kept left a…  5                        │
+06  7│  Formatting            │  Close brackets and …  [x]                      │
+07  ⊢│Keymap                  │  Highlight the word …  [x]                      │
+08   │Version Control         │  Tab limit             0                        │
+09   │  Git                   │  Largest file with s…  2097152          new tabs│
 10  ⟲│  Worktrees             │                                                 │
 11   │Files                   │                                                 │
 12  ⚑│Tools                   │                                                 │
 13  9│  Terminal              │                                                 │
 14  ⎇│  Run                   │                                                 │
 15   │  Clipboard             │                                                 │
-16  ❯│  Local History         │                                                 │
-17  6│Language Servers        │Lines kept visible above and below the caret.    │
-18  ⚠│                        │Applies at once.                                 │
+16  ❯│  Local History         │Lines kept visible above and below the caret.    │
+17  6│Language Servers        │Applies at once.                                 │
+18  ⚠│                        │Delete resets to the default.                    │
 19  4│                                                                          │
 20  ►│                                            [ OK ]  [ Cancel ]  [ Apply ] │
 21  3└──────────────────────────────────────────────────────────────────────────┘

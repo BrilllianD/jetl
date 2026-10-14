@@ -8,12 +8,12 @@ expression: "snapshot(&term, &settings_marks(&app.theme), None)"
 02  1 │ ┌ Settings ──────────────────────────────────────────────────────────────────────────────────────────────────┐
 03  ⌂ │ │Appearance                │Appearance                                                                       │
 04    │ │Editor                    │                                                                                 │
-05  2 │ │  General                 │Theme                       auto ▾                                               │
-06  ◫ │ │  Soft Wraps              │Color depth                 auto ▾                                               │
-07    │ │  Saving                  │Icons                       unicode ▾                                            │
-08  7 │ │  Formatting              │Double click interval (ms)  400                                                  │
-09  ⊢ │ │Keymap                    │Left tool window width      32                                       restart jetl│
-10    │ │Version Control           │Bottom tool window height   14                                       restart jetl│
+05  2 │ │  General                 │  Theme                       auto ▾                                             │
+06  ◫ │ │  Soft Wraps              │  Color depth                 auto ▾                                             │
+07    │ │  Saving                  │  Icons                       unicode ▾                                          │
+08  7 │ │  Formatting              │  Double click interval (ms)  400                                                │
+09  ⊢ │ │Keymap                    │  Left tool window width      32                                     restart jetl│
+10    │ │Version Control           │  Bottom tool window height   14                                     restart jetl│
 11    │ │  Git                     │                                                                                 │
 12    │ │  Worktrees               │                                                                                 │
 13    │ │Files                     │                                                                                 │
@@ -30,10 +30,10 @@ expression: "snapshot(&term, &settings_marks(&app.theme), None)"
 24    │ │                          │                                                                                 │
 25  9 │ │                          │                                                                                 │
 26  ⎇ │ │                          │                                                                                 │
-27    │ │                          │                                                                                 │
-28    │ │                          │A built-in theme, "auto" (the Omarchy palette when there is one) or a theme file:│
-29  ❯ │ │                          │a path ending in .toml.                                                          │
-30    │ │                          │Applies at once.                                                                 │
+27    │ │                          │A built-in theme, "auto" (the Omarchy palette when there is one) or a theme file:│
+28    │ │                          │a path ending in .toml.                                                          │
+29  ❯ │ │                          │Applies at once.                                                                 │
+30    │ │                          │Delete resets to the default.                                                    │
 31  6 │ │                                                                                                            │
 32  ⚠ │ │                                                                              [ OK ]  [ Cancel ]  [ Apply ] │
 33    │ └────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
