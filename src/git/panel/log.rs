@@ -133,6 +133,14 @@ impl GitPanel {
         self.request_log(cx);
     }
 
+    /// Show the Log tab listing the history `rev` selects.
+    pub fn show_log_rev(&mut self, rev: String, cx: &mut Ctx) {
+        self.tab = GitTab::Log;
+        self.area = Area::Log;
+        self.log_diff.clear();
+        self.set_log_filter(LogFilter { rev: LogRev::Rev(rev), ..Default::default() }, cx);
+    }
+
     /// Show `sha` in the Log tab: select it when it is listed, else list
     /// the history from it.
     pub fn show_commit(&mut self, sha: &str, cx: &mut Ctx) {
@@ -272,7 +280,7 @@ impl GitPanel {
             (self.log_rect.x + 4, self.log_rect.y + row + 1)
         });
         let g = |a| Action::Git(a);
-        let items = vec![
+        let mut items = vec![
             MenuItem::new("Copy Revision Number", g(GitAction::CopySha)),
             MenuItem::new("Checkout Revision", g(GitAction::LogCheckout)),
             MenuItem::new("New Branch…", g(GitAction::LogNewBranch)),
@@ -282,6 +290,12 @@ impl GitPanel {
             MenuItem::new("Delete Tag…", g(GitAction::LogDeleteTag)),
             MenuItem::new("Filter Log…", g(GitAction::LogFilter)),
         ];
+        let at = self.log.get(self.log_list.selected).map(|r| branches_at(&r.commit.refs)).unwrap_or_default();
+        let at: Vec<String> = at.into_iter().filter(|n| self.branches.iter().any(|b| b.name == *n)).collect();
+        if !at.is_empty() {
+            items.push(MenuItem::separator());
+            items.extend(at.into_iter().map(|name| MenuItem::new(format!("Branch '{name}' ▸"), g(GitAction::LogBranch(name)))));
+        }
         cx.effects.push(Effect::ContextMenu(ContextMenu::new(items, x, y)));
     }
 
@@ -517,5 +531,27 @@ impl GitPanel {
             };
             put(buf, &mut x, fy, r.right(), &path, base);
         }
+    }
+}
+
+/// The branch names in a commit's decoration (`LogCommit::refs`): no `HEAD`,
+/// tags or remote `HEAD` pointers.
+fn branches_at(refs: &str) -> Vec<String> {
+    refs.split(", ")
+        .map(|r| r.strip_prefix("HEAD -> ").unwrap_or(r))
+        .filter(|r| !r.is_empty() && *r != "HEAD" && !r.starts_with("tag: ") && !r.ends_with("/HEAD"))
+        .map(str::to_string)
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::branches_at;
+
+    #[test]
+    fn branches_at_keeps_only_branches() {
+        assert_eq!(branches_at("HEAD -> main, origin/main, origin/HEAD, tag: v1, dev"), ["main", "origin/main", "dev"]);
+        assert!(branches_at("HEAD").is_empty());
+        assert!(branches_at("").is_empty());
     }
 }

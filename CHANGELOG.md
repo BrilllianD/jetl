@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- The Git Log commit menu has a `Branch '<name>' ▸` row for each branch at the commit; it opens that branch's operations. The Branches popup (Alt+`) gained Compare with the current branch (the Log of `HEAD..<branch>`) and Push, and Merge asks first.
+
 ### Changed
 
 - The Git Log lists all branches by default (`[git] log_all = true`); stash commits are left out of it. Set `log_all = false` for HEAD only.

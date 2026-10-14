@@ -290,6 +290,8 @@ pub enum GitAction {
     LogRevert,
     LogNewTag,
     LogDeleteTag,
+    /// The branch operations of a branch at the selected commit (a context menu row; not in the keymap).
+    LogBranch(String),
     Commit,
     CommitAndPush,
     CommitBox,

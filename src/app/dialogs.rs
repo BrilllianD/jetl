@@ -49,7 +49,19 @@ impl App {
                 let msg = format!("Create and switch to a new branch from '{name}':");
                 self.dialog = Some(Dialog::input(DialogId::NewBranchAt { rev: name }, "New Branch", &msg, "", "Create"));
             }
-            BranchOp::Merge => self.git_request(GitRequest::Merge(name)),
+            BranchOp::Merge => {
+                let msg = format!("Merge '{name}' into '{current}'?\nConflicts stop it halfway.");
+                self.dialog = Some(Dialog::confirm(DialogId::MergeBranch { name }, "Merge", &msg, &["Merge", "Cancel"]));
+            }
+            BranchOp::Compare => {
+                self.layout.show(crate::ui::focus::ToolWindowId::Git);
+                self.focus.set(crate::ui::focus::PanelId::Git);
+                let mut cx = ctx!(self);
+                self.git_panel.show_log_rev(format!("HEAD..{name}"), &mut cx);
+                let fx = cx.effects;
+                self.apply_effects(fx);
+            }
+            BranchOp::Push => self.git_request(GitRequest::Push),
             BranchOp::Rebase => {
                 let msg =
                     format!("Rebase '{current}' onto '{name}'?\nThis rewrites the commits of '{current}'; conflicts stop it halfway.");
@@ -234,6 +246,7 @@ impl App {
                 }
             }
             (DialogId::DeleteBranch { name, force }, DialogResult::Button(0)) => self.git_request(GitRequest::DeleteBranch { name, force }),
+            (DialogId::MergeBranch { name }, DialogResult::Button(0)) => self.git_request(GitRequest::Merge(name)),
             (DialogId::RebaseOnto { onto }, DialogResult::Button(0)) => self.git_request(GitRequest::Rebase(onto)),
             (DialogId::NewTag { sha }, DialogResult::Text(t)) => {
                 if let Some(name) = self.ref_name(&t, "tag") {

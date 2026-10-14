@@ -175,8 +175,12 @@ pub enum BranchOp {
     /// A remote branch: a local branch of the same name tracking it.
     CheckoutTracking,
     NewFrom,
+    /// The Log tab filtered to the commits of the branch that HEAD lacks.
+    Compare,
     Merge,
     Rebase,
+    /// Push the current branch.
+    Push,
     Rename,
     Delete,
 }
@@ -196,8 +200,11 @@ impl BranchOp {
         }
         v.push((BranchOp::NewFrom, format!("New Branch from '{name}'…")));
         if !b.current {
-            v.push((BranchOp::Merge, format!("Merge '{name}' into '{cur}'")));
+            v.push((BranchOp::Compare, format!("Compare with '{cur}'")));
+            v.push((BranchOp::Merge, format!("Merge '{name}' into '{cur}'…")));
             v.push((BranchOp::Rebase, format!("Rebase '{cur}' onto '{name}'…")));
+        } else if !b.remote {
+            v.push((BranchOp::Push, "Push".to_string()));
         }
         if !b.remote {
             v.push((BranchOp::Rename, "Rename…".to_string()));
@@ -396,11 +403,11 @@ mod tests {
         let b = |name: &str, current, remote| BranchInfo { name: name.into(), upstream: None, ahead: 0, behind: 0, current, remote };
         let ops = |b: &BranchInfo| BranchOp::for_branch(b, Some("main")).into_iter().map(|(op, _)| op).collect::<Vec<_>>();
         use BranchOp::*;
-        assert_eq!(ops(&b("dev", false, false)), [Checkout, NewFrom, Merge, Rebase, Rename, Delete]);
-        assert_eq!(ops(&b("main", true, false)), [NewFrom, Rename]);
-        assert_eq!(ops(&b("origin/dev", false, true)), [CheckoutTracking, NewFrom, Merge, Rebase]);
+        assert_eq!(ops(&b("dev", false, false)), [Checkout, NewFrom, Compare, Merge, Rebase, Rename, Delete]);
+        assert_eq!(ops(&b("main", true, false)), [NewFrom, Push, Rename]);
+        assert_eq!(ops(&b("origin/dev", false, true)), [CheckoutTracking, NewFrom, Compare, Merge, Rebase]);
         let labels = BranchOp::for_branch(&b("origin/dev", false, true), Some("main"));
         assert_eq!(labels[0].1, "Checkout as new local branch 'dev'");
-        assert_eq!(labels[2].1, "Merge 'origin/dev' into 'main'");
+        assert_eq!(labels[3].1, "Merge 'origin/dev' into 'main'…");
     }
 }

@@ -2567,6 +2567,51 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn log_menu_branch_rows_open_the_branch_operations() {
+        use crate::actions::GitAction;
+        use crate::git::model::BranchOp;
+        use crate::git::{LogFilter, LogRev};
+        let (mut app, dir) = test_app("log-menu-branches");
+        init_repo(&app, &[("a.txt", "a\n")]);
+        let root = app.workspace.root.clone();
+        let main = crate::git::repo::status(&root).unwrap().branch.unwrap();
+        git(&app, &["branch", "dev"]);
+        feed_status(&mut app, 1);
+        app.git_panel.branches = crate::git::repo::branches(&root).unwrap();
+        app.perform(Action::Git(GitAction::TabLog));
+        let filter = app.git_panel.log_filter().clone();
+        let out =
+            std::process::Command::new("git").args(crate::git::cli::log_args(0, 100, true, &filter)).current_dir(&root).output().unwrap();
+        let rows = crate::git::cli::parse_log(&String::from_utf8_lossy(&out.stdout));
+        let g = app.git.generation;
+        app.handle_msg(AppMsg::Git(GitMsg::Log { generation: g, skip: 0, filter, result: Ok(rows) }));
+        app.perform(Action::Git(GitAction::ContextMenu));
+        let menu = app.menu.as_ref().expect("context menu");
+        let labels: Vec<&str> = menu.items.iter().map(|i| i.label.as_str()).collect();
+        assert!(menu.items.iter().any(|i| i.is_separator()), "separator: {labels:?}");
+        assert!(labels.contains(&format!("Branch '{main}' ▸").as_str()) && labels.contains(&"Branch 'dev' ▸"), "{labels:?}");
+        let row = menu.items.iter().find(|i| i.label == "Branch 'dev' ▸").unwrap();
+        let action = row.action.clone().unwrap();
+        app.menu = None;
+        app.perform(action);
+        let apply = |app: &mut App, op: BranchOp| {
+            let d = app.dialog.take().expect("branch operations");
+            let DialogId::BranchOps { branch, ops } = &d.id else { panic!("{:?}", d.id) };
+            assert_eq!(branch.name, "dev");
+            let i = ops.iter().position(|o| *o == op).unwrap();
+            app.finish_dialog(d.id.clone(), DialogResult::Choice(i));
+        };
+        apply(&mut app, BranchOp::Merge);
+        let d = app.dialog.take().expect("merge confirm");
+        assert_eq!(d.id, DialogId::MergeBranch { name: "dev".into() });
+        app.git_request(crate::git::GitRequest::BranchOps(app.git_panel.branches.iter().find(|b| b.name == "dev").unwrap().clone()));
+        apply(&mut app, BranchOp::Compare);
+        let want = LogFilter { rev: LogRev::Rev("HEAD..dev".into()), ..Default::default() };
+        assert_eq!(app.git_panel.log_filter(), &want);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
     async fn event_log_lists_follows_clears_and_opens_from_the_status_bar() {
         use crossterm::event::{KeyModifiers, MouseEvent, MouseEventKind};
         let (mut app, dir) = test_app("event-log");

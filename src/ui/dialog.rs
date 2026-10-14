@@ -80,6 +80,9 @@ pub enum DialogId {
     RebaseOnto {
         onto: String,
     },
+    MergeBranch {
+        name: String,
+    },
     NewTag {
         sha: String,
     },

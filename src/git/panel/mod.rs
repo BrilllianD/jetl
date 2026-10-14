@@ -347,6 +347,10 @@ impl GitPanel {
             }
             G::FileHistory | G::ResolveConflicts => {}
             G::ContextMenu => self.log_context_menu(None, cx),
+            G::LogBranch(name) => match self.branches.iter().find(|b| b.name == *name) {
+                Some(b) => cx.effects.push(Effect::Git(GitRequest::BranchOps(b.clone()))),
+                None => cx.notify(Level::Info, format!("Branch '{name}' no longer exists")),
+            },
             G::CopySha => self.commit_action(CommitAction::CopySha, cx),
             G::LogCheckout => self.commit_action(CommitAction::Checkout, cx),
             G::LogNewBranch => self.commit_action(CommitAction::NewBranch, cx),

@@ -57,7 +57,7 @@ split panes, carets, occurrences, folding, soft wrap, bookmarks, the
 numbered bookmark chooser and the bookmarks list with closed files, the
 editor's find/replace bar, the project tree and its context menu, the Git
 window's Commit tab (also at 80 columns, its diff header cut before the
-toggles), its Log, Stash and Console tabs, the Find and Problems windows
+toggles), its Log (and the Log's commit context menu), Stash and Console tabs, the Find and Problems windows
 (diagnostic underlines in the editor too), the lightbulb in the gutter, the main menu bar, confirm,
 input and choice dialogs, the hover and completion popups, toasts, the
 palettes (Scratch Files and Recent Projects included), the conflict resolver (filler rows included), the crash
@@ -798,6 +798,24 @@ then Ctrl+Alt+Z in the window reverts nothing: toast "… changed since the
 diff was made", and the diff is compared again. Alt+1 and Alt+9 hide
 their window when it already has focus; under tmux, Ctrl+Space in the
 editor is completion, not the branches popup, hence Find Action above.
+
+### Scenario: Git Log
+
+At 80x24 and at 120x40 (`-x 120 -y 40`), in a scratch project `$T` as above with `dev` one commit ahead:
+
+```sh
+git -C $T switch -qc dev && echo dev >> $T/README.md && git -C $T -c user.name=t -c user.email=t@t commit -qam 'dev change' && git -C $T switch -q -
+# start jetl on $T as above, then:
+/tmp/tm.sh send-keys -t jetl M-9; /tmp/tm.sh send-keys -t jetl M-l   # Git window, Log tab: "[Branch: all]", "dev change" listed
+# "dev change" is the selected row, then:
+/tmp/tm.sh send-keys -t jetl S-F10     # commit menu; "Branch 'dev' ▸" is the last row, after a separator
+/tmp/tm.sh send-keys -t jetl Up Enter  # (Up wraps to that row) the "Branch 'dev'" dialog: Checkout, New Branch from 'dev'…,
+                                       # Compare with '<main>', Merge 'dev' into '<main>'…, Rebase…, Rename…, Delete…
+# pick Compare: the bar shows "[Branch: HEAD..dev]" and only "dev change"
+# reopen the menu and the dialog, pick Merge: a confirm appears; Cancel
+git -C $T log --oneline -1             # unchanged
+/tmp/tm.sh kill-server
+```
 
 ### Scenario: palette on a huge tree
 
