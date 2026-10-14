@@ -345,7 +345,7 @@ pub fn commits_diff(commits: &[&LogCommit]) -> (String, Vec<DiffSpan>) {
     let title = match chains.as_slice() {
         [chain] if chain.len() == 1 => format!("Diff {}", short8(&chain[0].sha)),
         [chain] => format!("Diff {}..{}", short8(&chain[chain.len() - 1].sha), short8(&chain[0].sha)),
-        _ => format!("Diff of {} commits", commits.len()),
+        _ => format!("Diff of {} commits ({}…)", commits.len(), short8(&spans[0].top)),
     };
     (title, spans)
 }
@@ -494,7 +494,7 @@ mod tests {
     fn diff_with_a_gap_has_two_spans() {
         let (a, b, c) = (lc("aaaaaaaa1", &["bbbbbbbb2"]), lc("bbbbbbbb2", &["cccccccc3"]), lc("cccccccc3", &["dddddddd4"]));
         let (title, spans) = commits_diff(&[&a, &c]);
-        assert_eq!(title, "Diff of 2 commits");
+        assert_eq!(title, "Diff of 2 commits (aaaaaaaa…)");
         assert_eq!(spans.iter().map(|s| s.top.as_str()).collect::<Vec<_>>(), ["aaaaaaaa1", "cccccccc3"]);
         assert_eq!(spans[0].base.as_deref(), Some("bbbbbbbb2"));
         let _ = b;
@@ -510,7 +510,7 @@ mod tests {
     fn diff_of_a_merge_and_its_second_parent_has_two_spans() {
         let (m, side) = (lc("mmmmmmmm1", &["pppppppp2", "ssssssss3"]), lc("ssssssss3", &["pppppppp2"]));
         let (title, spans) = commits_diff(&[&m, &side]);
-        assert_eq!(title, "Diff of 2 commits");
+        assert_eq!(title, "Diff of 2 commits (mmmmmmmm…)");
         assert_eq!(spans.len(), 2);
         assert_eq!(spans[0].base.as_deref(), Some("pppppppp2"));
     }

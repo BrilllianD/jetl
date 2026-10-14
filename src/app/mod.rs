@@ -2631,7 +2631,12 @@ pub(crate) mod tests {
         let is_diff = |m: &AppMsg| matches!(m, AppMsg::Git(GitMsg::CommitsDiff { .. }));
         // A stale answer opens nothing.
         let before = app.editor.buffers.len();
-        app.handle_msg(AppMsg::Git(GitMsg::CommitsDiff { generation: g + 1, title: "Diff x".into(), result: Ok("x\n".into()) }));
+        app.handle_msg(AppMsg::Git(GitMsg::CommitsDiff {
+            generation: g + 1,
+            title: "Diff x".into(),
+            spans: Vec::new(),
+            result: Ok("x\n".into()),
+        }));
         assert_eq!(app.editor.buffers.len(), before);
         app.perform(Action::Git(GitAction::LogShowDiff));
         handle_next(&mut app, is_diff).await;
@@ -2705,8 +2710,19 @@ pub(crate) mod tests {
         press(&mut app, 0, MouseButton::Left, KeyModifiers::NONE);
         press(&mut app, 2, MouseButton::Left, KeyModifiers::CONTROL);
         assert_eq!(app.git_panel.log_selection(), [0, 2]);
+        assert_eq!(app.git_panel.log_cursor(), 2);
         press(&mut app, 2, MouseButton::Left, KeyModifiers::CONTROL);
+        // The deselected row gives up the cursor; Show Diff covers row 0 only.
         assert_eq!(app.git_panel.log_selection(), [0]);
+        assert_eq!(app.git_panel.log_cursor(), 0);
+        // The last selected row stays.
+        press(&mut app, 0, MouseButton::Left, KeyModifiers::CONTROL);
+        assert_eq!(app.git_panel.log_selection(), [0]);
+        assert_eq!(app.git_panel.log_cursor(), 0);
+        app.perform(Action::Git(GitAction::LogShowDiff));
+        handle_next(&mut app, is_diff).await;
+        let one = app.editor.active_buffer().unwrap();
+        assert!(one.name.starts_with("Diff ") && !one.name.contains(" of "), "{}", one.name);
         press(&mut app, 0, MouseButton::Left, KeyModifiers::NONE);
         press(&mut app, 2, MouseButton::Left, KeyModifiers::SHIFT);
         assert_eq!(app.git_panel.log_selection(), [0, 1, 2]);

@@ -302,7 +302,7 @@ mod tests {
     #[tokio::test]
     async fn saving_a_patch_tab_makes_it_an_ordinary_editable_file() {
         let (mut app, dir) = fresh_app("save-as-patch");
-        let i = app.editor.open_patch("Diff 1a2b3c4d", "@@ -1 +1 @@\n-a\n+b\n");
+        let i = app.editor.open_patch("Diff 1a2b3c4d", Vec::new(), "@@ -1 +1 @@\n-a\n+b\n");
         let id = app.editor.buffers[i].id;
         app.perform(Action::Editor(EditorAction::Save));
         let (_, then, _) = prompt(&mut app);

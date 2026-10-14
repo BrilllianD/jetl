@@ -132,6 +132,7 @@ async fn editor_patch_tab() {
     let app = &mut fx.app;
     app.editor.open_patch(
         "Diff 1a2b3c4d",
+        Vec::new(),
         "== 1a2b3c4d Fix\ndiff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1,2 +1,2 @@\n-old\n+new\n same\n",
     );
     let term = draw_editor(app, 60, 12);

@@ -287,6 +287,11 @@ impl GitPanel {
         self.log_rect
     }
 
+    #[cfg(test)]
+    pub(crate) fn log_cursor(&self) -> usize {
+        self.log_list.selected
+    }
+
     /// Select only the cursor row.
     fn reset_log_sel(&mut self) {
         self.log_sel.clear();
@@ -305,16 +310,25 @@ impl GitPanel {
         self.maybe_page_log(cx);
     }
 
-    /// Toggle row `i` in the selection; it becomes the cursor and the anchor.
+    /// Toggle row `i` in the selection. A row added becomes the cursor and
+    /// the anchor; a row removed hands both to the nearest selected row, and
+    /// the last selected row stays (the cursor row is always selected).
     fn toggle_log_row(&mut self, i: usize, cx: &mut Ctx) {
         if self.log_sel.is_empty() && self.log_list.selected < self.log.len() {
             self.log_sel.insert(self.log_list.selected);
         }
-        if !self.log_sel.remove(&i) {
+        let to = if self.log_sel.contains(&i) {
+            if self.log_sel.len() == 1 {
+                return;
+            }
+            self.log_sel.remove(&i);
+            self.log_sel.iter().copied().min_by_key(|&r| r.abs_diff(i)).unwrap_or(i)
+        } else {
             self.log_sel.insert(i);
-        }
-        self.log_list.select(i);
-        self.log_anchor = i;
+            i
+        };
+        self.log_list.select(to);
+        self.log_anchor = to;
         self.sync_details(cx);
     }
 

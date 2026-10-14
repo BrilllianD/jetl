@@ -129,6 +129,7 @@ pub enum GitMsg {
     CommitsDiff {
         generation: u64,
         title: String,
+        spans: Vec<model::DiffSpan>,
         result: Result<String>,
     },
     CommitDetails {
@@ -492,7 +493,7 @@ impl GitService {
         let (root, generation, tx) = (self.root.clone(), self.generation, self.tx.clone());
         tokio::spawn(async move {
             let result = cli::commits_diff(&root, &spans).await;
-            let _ = tx.send(AppMsg::Git(GitMsg::CommitsDiff { generation, title, result }));
+            let _ = tx.send(AppMsg::Git(GitMsg::CommitsDiff { generation, title, spans, result }));
         });
     }
 

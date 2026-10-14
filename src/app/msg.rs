@@ -176,8 +176,8 @@ impl App {
                 let fx = cx.effects;
                 self.apply_effects(fx);
             }
-            GitMsg::CommitsDiff { title, result, .. } => match result {
-                Ok(text) => self.open_patch(title, text),
+            GitMsg::CommitsDiff { title, spans, result, .. } => match result {
+                Ok(text) => self.open_patch(title, spans, text),
                 Err(e) => self.notify(Level::Error, format!("Diff: {e:#}")),
             },
             GitMsg::CommitDetails { sha, result, .. } => self.git_panel.set_details(&sha, result),
@@ -404,11 +404,11 @@ impl App {
     }
 
     /// Open a patch tab (Git Log Show Diff) and focus the editor.
-    pub(super) fn open_patch(&mut self, title: String, text: String) {
+    pub(super) fn open_patch(&mut self, title: String, spans: Vec<crate::git::model::DiffSpan>, text: String) {
         if self.editor.merge_active() {
             return self.notify(Level::Info, crate::editor::merge::BUSY);
         }
-        self.editor.open_patch(&title, &text);
+        self.editor.open_patch(&title, spans, &text);
         self.focus.set(PanelId::Editor);
     }
 

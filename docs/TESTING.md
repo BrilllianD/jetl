@@ -820,7 +820,7 @@ git -C $T log --oneline -1             # unchanged
 # multi-select, in a scratch repo with three commits on the current branch: Shift+Down twice: three highlighted rows,
 # the details start with "3 commits selected"; Ctrl+D: one tab "Diff <oldest8>..<newest8>" with one "==" header;
 # Down: one row again. Ctrl+click on rows 1 and 3 (SGR button 16: press 16 <col> <row>; release 16 <col> <row>),
-# then Ctrl+D: a tab "Diff of 2 commits" with two "==" sections.
+# then Ctrl+D: a tab "Diff of 2 commits (<top8>…)" with two "==" sections.
 /tmp/tm.sh kill-server
 ```
 

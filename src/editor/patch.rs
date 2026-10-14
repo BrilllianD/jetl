@@ -19,6 +19,8 @@ pub struct Patch {
     runs: Vec<(Range<usize>, PatchLine)>,
     /// First line of every block of consecutive changed lines.
     starts: Vec<usize>,
+    /// The diff spans the text was built from: the identity of the tab.
+    pub spans: Vec<crate::git::model::DiffSpan>,
 }
 
 impl Patch {
@@ -79,6 +81,20 @@ impl Patch {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn patch_tabs_are_reused_by_spans_not_by_title() {
+        use crate::git::model::DiffSpan;
+        let span = |top: &str| vec![DiffSpan { base: None, top: top.into(), header: format!("== {top}") }];
+        let mut ed = crate::editor::Editor::new(&crate::config::Config::default());
+        let a = ed.open_patch("Diff of 2 commits", span("aaaa"), "@@ -1 +1 @@\n-a\n+a2\n");
+        let b = ed.open_patch("Diff of 2 commits", span("bbbb"), "@@ -1 +1 @@\n-b\n+b2\n");
+        assert_ne!(a, b);
+        assert_eq!(ed.open_patch("Diff of 2 commits", span("aaaa"), "ignored"), a);
+        assert_eq!(ed.open_patch("Diff of 2 commits", span("bbbb"), "ignored"), b);
+        assert!(ed.buffers[a].text().contains("+a2") && ed.buffers[b].text().contains("+b2"));
+        assert_eq!(ed.buffers.len(), 2);
+    }
 
     #[test]
     fn file_headers_are_not_changes_but_dashes_in_a_hunk_are() {

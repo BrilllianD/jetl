@@ -417,9 +417,9 @@ impl Editor {
     }
 
     /// Show `text` (a unified diff) in a read-only, pathless patch tab
-    /// named `title`; a tab already open under that title is activated.
-    pub fn open_patch(&mut self, title: &str, text: &str) -> usize {
-        if let Some(at) = self.buffers.iter().position(|b| b.patch.is_some() && b.name == title) {
+    /// named `title`; a tab already open for the same `spans` is activated.
+    pub fn open_patch(&mut self, title: &str, spans: Vec<crate::git::model::DiffSpan>, text: &str) -> usize {
+        if let Some(at) = self.buffers.iter().position(|b| b.patch.as_ref().is_some_and(|p| p.spans == spans)) {
             self.activate_index(at);
             return at;
         }
@@ -427,7 +427,9 @@ impl Editor {
         self.next_id += 1;
         let mut buf = Buffer::from_text(id, None, text, false);
         buf.name = title.to_string();
-        buf.patch = Some(patch::Patch::parse(text));
+        let mut parsed = patch::Patch::parse(text);
+        parsed.spans = spans;
+        buf.patch = Some(parsed);
         buf.read_only = true;
         buf.indent = indent::FileSettings::default().indent(&buf.rope, self.tab_width);
         buf.view.wrap.on = false;
