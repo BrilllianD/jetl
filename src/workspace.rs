@@ -275,6 +275,8 @@ impl App {
         if self.config.worktree.switch_closes_tabs {
             self.editor.force_close_all();
         }
+        // Queued label reverts name themselves before the root changes.
+        self.pending_reverts_dropped();
         let old = self.workspace.switch_root(root.clone());
         tracing::info!("switch root {} -> {}", old.display(), root.display());
         // Points git at the new root and generation, resets the Git panel,
@@ -291,7 +293,6 @@ impl App {
         self.refresh_file_index();
         crate::tui::set_title(&root);
         self.editor.clear_nav();
-        self.pending_revert.clear();
         self.history_root_changed();
         // The closed files' numbered bookmarks come with the new session.
         self.editor.restore_closed_bookmarks(&[]);

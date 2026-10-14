@@ -268,6 +268,21 @@ mod tests {
         let init = second.recv("initialize").await;
         assert!(init["params"]["capabilities"]["workspace"]["didChangeWatchedFiles"].is_null());
         assert!(!app.lsp.clients["rust-analyzer"].watch_files);
+        // A second failure while `outside_failed` is set: no second warning, no second restart.
+        let id = app.lsp.clients["rust-analyzer"].id;
+        let restarts = app.notifications.iter().filter(|n| n.text == "Restarting language servers").count();
+        app.handle_msg(AppMsg::LspWatcherStarted {
+            generation: app.workspace.generation,
+            dirs: app.lsp.outside.clone(),
+            result: Err(anyhow::anyhow!("boom again")),
+        });
+        app.lsp_sync();
+        let warns = app.notifications.iter().filter(|n| n.text.starts_with("Cannot watch files outside")).count();
+        assert_eq!(warns, 1);
+        assert_eq!(app.notifications.iter().filter(|n| n.text == "Restarting language servers").count(), restarts);
+        assert!(servers.try_recv().is_err(), "no third server");
+        assert_eq!(app.lsp.clients["rust-analyzer"].id, id);
+        assert!(app.lsp.outside_failed);
         let _ = std::fs::remove_dir_all(&outside);
         let _ = std::fs::remove_dir_all(&dir);
     }

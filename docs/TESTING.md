@@ -230,6 +230,27 @@ caret at a line end on the cell after the text. Then split right (`M-\`),
 type in the new pane, and check that the other pane still draws all its
 carets, moved with the text; `M-Tab` back to it and type at all of them.
 
+### Scenario: short screen dialog
+
+A Confirm whose message is longer than the screen (yman 222), at 60x12:
+
+```sh
+# fresh T and session as above (120x30), then:
+/tmp/tm.sh send-keys -t jetl F1; /tmp/tm.sh send-keys -t jetl -l 'replace in files'
+/tmp/tm.sh send-keys -t jetl Enter; /tmp/tm.sh send-keys -t jetl -l 'readme'; sleep 1
+/tmp/tm.sh send-keys -t jetl Tab; /tmp/tm.sh send-keys -t jetl -l "$(printf '%0300d' 0)"; sleep 1
+/tmp/tm.sh resize-window -t jetl -x 60 -y 12; sleep 0.5
+/tmp/tm.sh send-keys -t jetl M-a                  # find.replace_all
+/tmp/tm.sh capture-pane -p -t jetl
+/tmp/tm.sh send-keys -t jetl Escape
+git -C $T status --short                          # prints nothing
+```
+
+The "Replace in Files" box is at most 11 rows, its message ends with a row
+cut with `…`, `[ Replace ]` and `[ Cancel ]` are whole directly above the
+bottom border, and nothing is drawn past the box's borders. Escape closes
+it and nothing is replaced.
+
 ### Scenario: column selection
 
 At 80x24 and at 120x40, with a file of tabs, wide characters and a short

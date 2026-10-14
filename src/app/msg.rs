@@ -24,6 +24,9 @@ impl App {
                 if generation == self.workspace.generation {
                     self.file_loaded(path, result, focus);
                 } else {
+                    // Its queued revert, if any, already went with the root switch
+                    // (`App::pending_reverts_dropped`); a `pending_revert` entry for the
+                    // same path now belongs to the new root and is left alone.
                     tracing::debug!("dropping stale load of {}", path.display());
                 }
             }

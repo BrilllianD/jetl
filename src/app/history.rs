@@ -473,6 +473,20 @@ impl App {
         }
     }
 
+    /// The root is about to switch: every queued revert goes, and each label
+    /// member (`PendingRevert::Member`) is named in a warning, since the
+    /// label's toast already counted it. Called before the root changes, so
+    /// the names are relative to the old root.
+    pub(crate) fn pending_reverts_dropped(&mut self) {
+        let mut members: Vec<PathBuf> =
+            self.pending_revert.drain().filter_map(|(path, pending)| matches!(pending, PendingRevert::Member(_)).then_some(path)).collect();
+        members.sort();
+        for path in members {
+            let rel = crate::ui::palette::display_path(&path, &self.workspace.root);
+            self.notify(Level::Warn, format!("Revert to label: {rel} was not reverted (the project root changed)"));
+        }
+    }
+
     /// One file of a label revert: `revert_to` without the focus.
     fn revert_member(&mut self, path: PathBuf, text: String) {
         self.revert_to_with(path, text, false);
@@ -1777,6 +1791,42 @@ pub(crate) mod tests {
         assert!(app.editor.index_of(&closed).is_none());
         assert!(!app.pending_revert.contains_key(&closed));
         assert_eq!(last_note(&app), "Revert to label: d/closed.txt was not reverted (the file did not open)");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_label_member_queued_when_the_root_switches_is_reported() {
+        let (mut app, dir) = test_app("history-revert-label-switch");
+        with_history(&mut app);
+        let root = app.workspace.root.clone();
+        let d = root.join("d");
+        let closed = saved(&app, "d/closed.txt", "closed v1\n");
+        let _open = load(&mut app, "d/open.txt", "open v1\n");
+        app.finish_dialog(DialogId::PutLabel(d.clone()), DialogResult::Text("v1".into()));
+        handle_next(&mut app, label_msg).await;
+        std::fs::write(&closed, "closed v2\n").unwrap();
+        app.show_local_history_dir(d.clone());
+        handle_next(&mut app, scan_of(&d)).await;
+        let rows = app.history_panel.project_rows();
+        let label = rows.iter().position(|r| r.starts_with("Label")).unwrap_or_else(|| panic!("a label row in {rows:?}"));
+        for _ in 0..label {
+            history(&mut app, HistoryAction::Down);
+        }
+        history(&mut app, HistoryAction::Revert);
+        let dlg = app.dialog.take().expect("a confirm");
+        app.finish_dialog(dlg.id, DialogResult::Button(0));
+        handle_next(&mut app, blobs_msg).await;
+        assert!(matches!(app.pending_revert.get(&closed), Some(PendingRevert::Member(_))), "queued, its load in flight");
+        let other = dir.join("other");
+        std::fs::create_dir_all(&other).unwrap();
+        let other = std::fs::canonicalize(&other).unwrap();
+        app.do_switch_root(other);
+        assert!(app.pending_revert.is_empty());
+        let texts: Vec<&str> = app.notifications.iter().map(|n| n.text.as_str()).collect();
+        assert!(texts.contains(&"Revert to label: d/closed.txt was not reverted (the project root changed)"), "{texts:?}");
+        // The old root's load arrives stale and opens nothing.
+        handle_next(&mut app, file_loaded).await;
+        assert!(app.editor.index_of(&closed).is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

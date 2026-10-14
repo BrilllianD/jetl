@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A document that a language server closed through a `didOpen` unregistration no longer gets `didSave` until it is opened again.
+- Switching the project root while a Revert to Label still waits for closed files to open now names each file that was not reverted instead of dropping it silently.
+
 ## [0.3.0] - 2026-10-13
 
 ### Added

@@ -492,7 +492,8 @@ impl App {
     /// `Effect::FileSaved`: `didSave` after the edits that led to it.
     pub(super) fn lsp_saved(&mut self, path: &Path) {
         self.lsp_sync();
-        let Some(doc) = self.lsp.docs.values().find(|d| d.path == path) else { return };
+        // A document closed by a `didOpen` unregistration gets no `didSave` until it is opened again.
+        let Some(doc) = self.lsp.docs.values().find(|d| d.path == path && !d.closed) else { return };
         let Some(client) = self.lsp.clients.get(&doc.server) else { return };
         let Some(include_text) = sync_caps(client, doc.doc_ref()).and_then(|c| c.save) else { return };
         let mut params = json!({"textDocument": {"uri": doc.uri}});
@@ -1011,13 +1012,28 @@ pub(crate) mod tests {
         act(&mut app, EditorAction::InsertChar('z'));
         app.lsp_sync();
         assert!(server.drain().iter().all(|m| m["method"] != "textDocument/didChange"));
+        act(&mut app, EditorAction::Save);
         server.request(5, "client/registerCapability", json!({"registrations": [reg("o", "textDocument/didOpen", json!({}))]}));
         handle_next(&mut app, is_lsp).await;
-        assert_eq!(server.response(5).await["result"], Value::Null);
+        // The pipe keeps order and the save came first: a `didSave` would precede the response.
+        let mut seen = Vec::new();
+        loop {
+            let msg = server.next().await;
+            if msg.get("method").is_none() && msg["id"] == 5 {
+                assert_eq!(msg["result"], Value::Null);
+                break;
+            }
+            seen.push(msg);
+        }
+        assert!(seen.iter().all(|m| m["method"] != "textDocument/didSave"), "{seen:?}");
         app.lsp_sync();
         let open = server.recv("textDocument/didOpen").await;
         assert_eq!(open["params"]["textDocument"]["text"], app.editor.active_buffer().unwrap().text());
         assert_eq!(open["params"]["textDocument"]["text"], "xyzab\n");
+        // Opened again: saves are sent again.
+        act(&mut app, EditorAction::InsertChar('w'));
+        act(&mut app, EditorAction::Save);
+        assert_eq!(server.recv("textDocument/didSave").await["params"]["text"], app.editor.active_buffer().unwrap().text());
         app.editor.force_close(app.editor.active().unwrap());
         app.lsp_sync();
         assert!(server.drain().iter().all(|m| m["method"] != "textDocument/didClose"));
