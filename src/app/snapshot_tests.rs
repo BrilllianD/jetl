@@ -1376,6 +1376,54 @@ async fn git_log_tab() {
 }
 
 #[tokio::test]
+async fn git_log_multi_select() {
+    use crate::git::model::{CommitDetails, CommitFile};
+    let mut fx = stable_app("git-log-multi");
+    let app = &mut fx.app;
+    app.toggle_tool_window(ToolWindowId::Git);
+    app.perform(Action::Git(crate::actions::GitAction::TabLog));
+    // The first page, with dates as `git log` formats them (relative to
+    // when it ran), so the frame does not depend on the clock: a merge of
+    // a two-commit branch.
+    let commits = vec![
+        commit('a', &['b', 'd'], "Ann", "2 hours ago", "HEAD -> main", "Merge branch 'parser'"),
+        commit('d', &['e'], "Bob", "3 days ago", "parser", "Parse nested lists"),
+        commit('b', &['c'], "Ann", "4 days ago", "", "Fix the status bar width"),
+        commit('e', &['c'], "Bob", "5 days ago", "", "Add a parser"),
+        commit('c', &[], "Ann", "2 weeks ago", "tag: v0.1.0", "Initial commit"),
+    ];
+    let g = app.git.generation;
+    let filter = app.git_panel.log_filter().clone();
+    app.handle_msg(AppMsg::Git(GitMsg::Log { generation: g, skip: 0, filter, result: Ok(commits) }));
+    let details = CommitDetails {
+        sha: sha('a'),
+        body: "Merge branch 'parser'\n\nBrings in nested list parsing.".into(),
+        files: vec![
+            CommitFile { status: 'A', path: "src/parser.rs".into(), old: None },
+            CommitFile { status: 'M', path: "src/main.rs".into(), old: None },
+            CommitFile { status: 'R', path: "docs/syntax.md".into(), old: Some("docs/grammar.md".into()) },
+        ],
+    };
+    app.handle_msg(AppMsg::Git(GitMsg::CommitDetails { generation: g, sha: sha('a'), result: Ok(details) }));
+    // The cursor moves from the merge to the next row; both are selected.
+    app.perform(Action::Git(crate::actions::GitAction::ExtendDown));
+    let details = CommitDetails {
+        sha: sha('d'),
+        body: "Parse nested lists".into(),
+        files: vec![CommitFile { status: 'M', path: "src/parser.rs".into(), old: None }],
+    };
+    app.handle_msg(AppMsg::Git(GitMsg::CommitDetails { generation: g, sha: sha('d'), result: Ok(details) }));
+    let term = draw_app(app, 120, 30);
+    assert_ne!(app.theme.list_selected.bg, app.theme.list_selected_unfocused.bg);
+    let marks = [
+        Mark::bg('L', "selected", app.theme.list_selected.bg.unwrap()),
+        Mark::bg('U', "also selected", app.theme.list_selected_unfocused.bg.unwrap()),
+    ];
+    let bottom = app.layout.rects.bottom;
+    assert_snapshot!("git_log_multi_select", snapshot(&term, &marks, Some(bottom)));
+}
+
+#[tokio::test]
 async fn git_log_context_menu() {
     use crate::git::BranchInfo;
     let mut fx = stable_app("git-log-menu");

@@ -2652,6 +2652,76 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn log_multi_select_combines_a_first_parent_range() {
+        use crate::actions::GitAction;
+        use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+        let (mut app, dir) = test_app("log-multi-select");
+        init_repo(&app, &[("x.txt", "x=1\n")]);
+        let root = app.workspace.root.clone();
+        for v in ["x=2", "x=3"] {
+            std::fs::write(root.join("x.txt"), format!("{v}\n")).unwrap();
+            git(&app, &["commit", "-qam", v]);
+        }
+        feed_status(&mut app, 1);
+        app.toggle_tool_window(ToolWindowId::Git);
+        app.perform(Action::Git(GitAction::TabLog));
+        let filter = app.git_panel.log_filter().clone();
+        let out =
+            std::process::Command::new("git").args(crate::git::cli::log_args(0, 100, true, &filter)).current_dir(&root).output().unwrap();
+        let rows = crate::git::cli::parse_log(&String::from_utf8_lossy(&out.stdout));
+        assert_eq!(rows.len(), 3);
+        let (c8, a8) = (rows[0].sha[..8].to_string(), rows[2].sha[..8].to_string());
+        let g = app.git.generation;
+        app.handle_msg(AppMsg::Git(GitMsg::Log { generation: g, skip: 0, filter, result: Ok(rows) }));
+        app.perform(Action::Git(GitAction::ExtendDown));
+        app.perform(Action::Git(GitAction::ExtendDown));
+        assert_eq!(app.git_panel.log_selection(), [0, 1, 2]);
+        // At the last row the range stays.
+        app.perform(Action::Git(GitAction::ExtendDown));
+        assert_eq!(app.git_panel.log_selection(), [0, 1, 2]);
+        app.perform(Action::Git(GitAction::LogShowDiff));
+        let is_diff = |m: &AppMsg| matches!(m, AppMsg::Git(GitMsg::CommitsDiff { .. }));
+        handle_next(&mut app, is_diff).await;
+        let b = app.editor.active_buffer().expect("patch tab");
+        assert_eq!(b.name, format!("Diff {a8}..{c8}"));
+        let text = b.text();
+        assert!(text.contains("+x=3") && !text.lines().any(|l| l.contains("x=2")), "{text}");
+        assert_eq!(text.lines().filter(|l| l.starts_with("== ")).count(), 1, "{text}");
+        app.perform(Action::Git(GitAction::Down));
+        assert_eq!(app.git_panel.log_selection(), [2]);
+        app.perform(Action::Git(GitAction::Up));
+        app.perform(Action::Git(GitAction::Up));
+        app.perform(Action::Git(GitAction::Up));
+        assert_eq!(app.git_panel.log_selection(), [0]);
+        // Mouse: one draw lays the rows out.
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 30)).unwrap();
+        term.draw(|f| crate::ui::render(&mut app, f)).unwrap();
+        let r = app.git_panel.log_rect();
+        let press = |app: &mut App, row: u16, button, modifiers| {
+            let (column, row) = (r.x + 3, r.y + row);
+            app.handle_mouse(MouseEvent { kind: MouseEventKind::Down(button), column, row, modifiers });
+            app.handle_mouse(MouseEvent { kind: MouseEventKind::Up(button), column, row, modifiers });
+        };
+        press(&mut app, 0, MouseButton::Left, KeyModifiers::NONE);
+        press(&mut app, 2, MouseButton::Left, KeyModifiers::CONTROL);
+        assert_eq!(app.git_panel.log_selection(), [0, 2]);
+        press(&mut app, 2, MouseButton::Left, KeyModifiers::CONTROL);
+        assert_eq!(app.git_panel.log_selection(), [0]);
+        press(&mut app, 0, MouseButton::Left, KeyModifiers::NONE);
+        press(&mut app, 2, MouseButton::Left, KeyModifiers::SHIFT);
+        assert_eq!(app.git_panel.log_selection(), [0, 1, 2]);
+        press(&mut app, 1, MouseButton::Right, KeyModifiers::NONE);
+        assert_eq!(app.git_panel.log_selection(), [0, 1, 2]);
+        assert!(app.menu.is_some());
+        app.menu = None;
+        // Outside the selection a right press selects that row alone.
+        press(&mut app, 0, MouseButton::Left, KeyModifiers::NONE);
+        press(&mut app, 2, MouseButton::Right, KeyModifiers::NONE);
+        assert_eq!(app.git_panel.log_selection(), [2]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
     async fn event_log_lists_follows_clears_and_opens_from_the_status_bar() {
         use crossterm::event::{KeyModifiers, MouseEvent, MouseEventKind};
         let (mut app, dir) = test_app("event-log");

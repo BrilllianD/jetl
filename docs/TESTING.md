@@ -57,7 +57,7 @@ split panes, carets, occurrences, folding, soft wrap, bookmarks, the
 numbered bookmark chooser and the bookmarks list with closed files, the
 editor's find/replace bar, the project tree and its context menu, the Git
 window's Commit tab (also at 80 columns, its diff header cut before the
-toggles), its Log (and the Log's commit context menu), Stash and Console tabs, the Find and Problems windows
+toggles), its Log (also with two commits selected, and the Log's commit context menu), Stash and Console tabs, the Find and Problems windows
 (diagnostic underlines in the editor too), the lightbulb in the gutter, the main menu bar, confirm,
 input and choice dialogs, the hover and completion popups, toasts, the
 palettes (Scratch Files and Recent Projects included), the conflict resolver (filler rows included), the patch tab, the crash
@@ -817,8 +817,14 @@ git -C $T log --oneline -1             # unchanged
 # select "dev change", then Ctrl+D: an editor tab "Diff <sha8>" with a green and a red row (capture-pane -e: different
 # backgrounds); F7 moves the caret to the first change (status bar Ln), Shift+F7 there says "No more changes above";
 # typing changes nothing; Ctrl+D again on the same row adds no tab
+# multi-select, in a scratch repo with three commits on the current branch: Shift+Down twice: three highlighted rows,
+# the details start with "3 commits selected"; Ctrl+D: one tab "Diff <oldest8>..<newest8>" with one "==" header;
+# Down: one row again. Ctrl+click on rows 1 and 3 (SGR button 16: press 16 <col> <row>; release 16 <col> <row>),
+# then Ctrl+D: a tab "Diff of 2 commits" with two "==" sections.
 /tmp/tm.sh kill-server
 ```
+
+Real terminals often keep Shift+click for their own text selection, so Shift+Up/Down is the dependable route to a range.
 
 ### Scenario: palette on a huge tree
 

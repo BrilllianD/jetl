@@ -337,6 +337,8 @@
 [git]
 "up" = "git.up"
 "down" = "git.down"
+"shift-up" = "git.extend_selection_up"
+"shift-down" = "git.extend_selection_down"
 "left" = "git.left"
 "right" = "git.right"
 "pageup" = "git.page_up"

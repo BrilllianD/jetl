@@ -127,6 +127,10 @@ pub struct GitPanel {
     /// Lanes after the last listed commit, for the next page.
     log_graph: crate::git::graph::LogGraph,
     log_list: ListState,
+    /// Selected Log rows besides the cursor row; empty means only the cursor.
+    log_sel: std::collections::BTreeSet<usize>,
+    /// The row a Shift range starts from.
+    log_anchor: usize,
     log_loaded: bool,
     /// The filter of the log request in flight.
     log_loading: Option<LogFilter>,
@@ -189,6 +193,8 @@ impl GitPanel {
             log: Vec::new(),
             log_graph: Default::default(),
             log_list: ListState::default(),
+            log_sel: Default::default(),
+            log_anchor: 0,
             log_loaded: false,
             log_loading: None,
             log_filter: LogFilter::default(),
@@ -414,6 +420,15 @@ impl GitPanel {
             }
             G::Up => self.move_by(-1, cx),
             G::Down => self.move_by(1, cx),
+            G::ExtendUp | G::ExtendDown => {
+                let delta: isize = if *a == G::ExtendUp { -1 } else { 1 };
+                if self.area == Area::Log && self.tab == GitTab::Log {
+                    let to = self.log_list.selected.saturating_add_signed(delta).min(self.log.len().saturating_sub(1));
+                    self.extend_log_selection(to, cx);
+                } else {
+                    self.move_by(delta, cx);
+                }
+            }
             G::PageUp => self.move_by(-(self.page() as isize), cx),
             G::PageDown => self.move_by(self.page() as isize, cx),
             G::Left => match self.area {
@@ -500,6 +515,8 @@ impl GitPanel {
             Area::LogDiff => self.log_diff.scroll_by(delta),
             Area::Log => {
                 step(&mut self.log_list);
+                self.log_sel.clear();
+                self.log_anchor = self.log_list.selected;
                 self.sync_details(cx);
                 self.maybe_page_log(cx);
             }

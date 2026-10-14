@@ -292,6 +292,8 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Delete` | `git.stash_drop` | Git: drop the selected stash |
 | `Up` | `git.up` | Git: up |
 | `Down` | `git.down` | Git: down |
+| `Shift+Up` | `git.extend_selection_up` | Git: in the Log, select the commit above too (elsewhere: up) |
+| `Shift+Down` | `git.extend_selection_down` | Git: in the Log, select the commit below too (elsewhere: down) |
 | `PageUp` | `git.page_up` | Git: page up |
 | `PageDown` | `git.page_down` | Git: page down |
 | `Left` | `git.left` | Git: left |

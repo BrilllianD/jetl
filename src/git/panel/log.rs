@@ -64,6 +64,7 @@ impl GitPanel {
             self.log_list.set_len(self.log.len());
             let again = prev.and_then(|sha| self.log.iter().position(|r| r.commit.sha == sha));
             self.log_list.select(again.unwrap_or(0));
+            self.reset_log_sel();
         } else if skip == self.log.len() {
             let more = self.graph_rows(rows);
             self.log.extend(more);
@@ -127,6 +128,7 @@ impl GitPanel {
         self.log_filter = filter;
         self.log.clear();
         self.log_list = ListState::default();
+        self.reset_log_sel();
         self.log_loaded = false;
         self.details = None;
         self.details_error = None;
@@ -150,6 +152,7 @@ impl GitPanel {
         match self.log.iter().position(|r| r.commit.sha == sha) {
             Some(i) => {
                 self.log_list.select(i);
+                self.reset_log_sel();
                 self.sync_details(cx);
             }
             None => self.set_log_filter(LogFilter { rev: LogRev::Rev(sha.to_string()), ..Default::default() }, cx),
@@ -270,9 +273,49 @@ impl GitPanel {
         }
     }
 
-    /// The rows commit actions apply to, ascending: the cursor row.
-    pub(super) fn log_selection(&self) -> Vec<usize> {
-        if self.log_list.selected < self.log.len() { vec![self.log_list.selected] } else { Vec::new() }
+    /// The selected rows, ascending: the multi-selection, else the cursor row.
+    pub(crate) fn log_selection(&self) -> Vec<usize> {
+        if self.log_sel.is_empty() {
+            if self.log_list.selected < self.log.len() { vec![self.log_list.selected] } else { Vec::new() }
+        } else {
+            self.log_sel.iter().copied().filter(|&i| i < self.log.len()).collect()
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn log_rect(&self) -> Rect {
+        self.log_rect
+    }
+
+    /// Select only the cursor row.
+    fn reset_log_sel(&mut self) {
+        self.log_sel.clear();
+        self.log_anchor = self.log_list.selected;
+    }
+
+    /// Move the cursor to `to` and select the rows from the anchor to it.
+    pub(super) fn extend_log_selection(&mut self, to: usize, cx: &mut Ctx) {
+        if self.log.is_empty() {
+            return;
+        }
+        self.log_list.select(to);
+        let (lo, hi) = (self.log_anchor.min(to), self.log_anchor.max(to));
+        self.log_sel = (lo..=hi.min(self.log.len() - 1)).collect();
+        self.sync_details(cx);
+        self.maybe_page_log(cx);
+    }
+
+    /// Toggle row `i` in the selection; it becomes the cursor and the anchor.
+    fn toggle_log_row(&mut self, i: usize, cx: &mut Ctx) {
+        if self.log_sel.is_empty() && self.log_list.selected < self.log.len() {
+            self.log_sel.insert(self.log_list.selected);
+        }
+        if !self.log_sel.remove(&i) {
+            self.log_sel.insert(i);
+        }
+        self.log_list.select(i);
+        self.log_anchor = i;
+        self.sync_details(cx);
     }
 
     /// Open the combined diff of the selected commits in an editor tab.
@@ -348,11 +391,26 @@ impl GitPanel {
             return;
         }
         if let Some(i) = self.log_list.hit(self.log_rect, m.x, m.y) {
+            use crossterm::event::{KeyModifiers as K, MouseButton, MouseEventKind};
             self.area = Area::Log;
-            self.log_list.select(i);
+            let right = m.kind == MouseEventKind::Down(MouseButton::Right);
+            if !right && m.mods.contains(K::SHIFT) {
+                self.extend_log_selection(i, cx);
+                return;
+            }
+            if !right && m.mods.contains(K::CONTROL) {
+                self.toggle_log_row(i, cx);
+                return;
+            }
+            if right && !self.log_sel.is_empty() && self.log_selection().contains(&i) {
+                self.log_list.select(i);
+            } else {
+                self.log_list.select(i);
+                self.reset_log_sel();
+            }
             self.sync_details(cx);
             self.maybe_page_log(cx);
-            if m.kind == crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Right) {
+            if right {
                 self.log_context_menu(Some((m.x, m.y)), cx);
             }
         } else if let Some(i) = self.files_list.hit(self.files_rect, m.x, m.y) {
@@ -440,9 +498,13 @@ impl GitPanel {
         for (vi, i) in self.log_list.visible().enumerate() {
             let row = &self.log[i];
             let y = r.y + vi as u16;
-            let selected = i == self.log_list.selected;
-            let base = if selected {
+            let cursor = i == self.log_list.selected;
+            let marked = self.log_sel.contains(&i);
+            let selected = cursor || marked;
+            let base = if cursor {
                 if active { theme.list_selected } else { theme.list_selected_unfocused }
+            } else if marked {
+                theme.list_selected_unfocused
             } else {
                 Style::default().fg(theme.fg)
             };
@@ -504,6 +566,11 @@ impl GitPanel {
             return;
         };
         let mut y = r.y;
+        let n = self.log_selection().len();
+        if n > 1 {
+            buf.set_stringn(x0, y, format!("{n} commits selected"), w, theme.dim);
+            y += 1;
+        }
         let commit = self.log.get(self.log_list.selected).map(|row| &row.commit);
         if let Some(c) = commit {
             buf.set_stringn(x0, y, format!("{}  {}, {}", c.short, c.author, c.date), w, theme.title);

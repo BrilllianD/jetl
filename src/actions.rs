@@ -314,6 +314,8 @@ pub enum GitAction {
     StashDrop,
     Up,
     Down,
+    ExtendUp,
+    ExtendDown,
     PageUp,
     PageDown,
     Left,
@@ -757,6 +759,8 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "git.stash_drop" => "Git: drop the selected stash", Git(GitAction::StashDrop);
         "git.up" => "Git: up", Git(GitAction::Up);
         "git.down" => "Git: down", Git(GitAction::Down);
+        "git.extend_selection_up" => "Git: in the Log, select the commit above too (elsewhere: up)", Git(GitAction::ExtendUp);
+        "git.extend_selection_down" => "Git: in the Log, select the commit below too (elsewhere: down)", Git(GitAction::ExtendDown);
         "git.page_up" => "Git: page up", Git(GitAction::PageUp);
         "git.page_down" => "Git: page down", Git(GitAction::PageDown);
         "git.left" => "Git: left", Git(GitAction::Left);

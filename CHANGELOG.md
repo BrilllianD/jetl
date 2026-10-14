@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Git Log: Ctrl+D (or Show Diff in the commit menu) opens the diff of the selected commit in a read-only editor tab with green and red lines; F7 / Shift+F7 step through the changes. The tab can be saved as a file.
+- Git Log: Shift+Up / Shift+Down select a range of commits, Shift+click extends it and Ctrl+click toggles a row. Show Diff on several commits opens one tab: each run of commits that follow one another by first parent is one diff from its oldest commit's parent to its newest commit, the runs one after another under `==` headers.
 - The Git Log commit menu has a `Branch '<name>' ▸` row for each branch at the commit; it opens that branch's operations. The Branches popup (Alt+`) gained Compare with the current branch (the Log of `HEAD..<branch>`) and Push, and Merge asks first.
 
 ### Changed
