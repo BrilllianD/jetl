@@ -2089,6 +2089,37 @@ mod tests {
         assert_eq!(sel_texts(&ed), ["tw", "th"]);
     }
 
+    /// A drawn editor of the column-block text; returns the text area origin.
+    fn drawn_block_text() -> (Editor, u16, u16) {
+        let mut ed = editor_with("a.cfg", "\tab日本語x\n\tab日本語x\nab\n\tab日本語x\n");
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 8)).unwrap();
+        let theme = Theme::default();
+        term.draw(|f| ed.render(f, Rect::new(0, 0, 40, 1), Rect::new(0, 1, 40, 7), true, &theme)).unwrap();
+        let (x0, y0) = (ed.text_area().x, ed.text_area().y);
+        (ed, x0, y0)
+    }
+
+    #[test]
+    fn alt_shift_drag_right_to_left_past_line_ends_adds_to_plain_carets() {
+        let (mut ed, x0, y0) = drawn_block_text();
+        mouse_path(&mut ed, KeyModifiers::ALT, &[(x0 + 5, y0), (x0 + 6, y0 + 2), (x0 + 7, y0 + 3)]);
+        act(&mut ed, EditorAction::InsertChar('Q'));
+        act(&mut ed, EditorAction::Undo);
+        assert_eq!(ed.active_buffer().unwrap().view.block, None);
+        assert_eq!(sel_texts(&ed), ["b日", "b日", "", "b日"]);
+        mouse_path(&mut ed, KeyModifiers::ALT | KeyModifiers::SHIFT, &[(x0 + 30, y0 + 1), (x0 + 12, y0)]);
+        assert_eq!(sel_texts(&ed), ["b日", "x", "b日", "x", "", "b日"]);
+    }
+
+    #[test]
+    fn alt_shift_drag_right_to_left_past_line_ends_after_a_click() {
+        let (mut ed, x0, y0) = drawn_block_text();
+        mouse_path(&mut ed, KeyModifiers::NONE, &[(x0 + 1, y0 + 2)]);
+        mouse_path(&mut ed, KeyModifiers::ALT | KeyModifiers::SHIFT, &[(x0 + 30, y0 + 1), (x0 + 12, y0)]);
+        assert_eq!(sel_texts(&ed), ["x", "x", ""]);
+        assert_eq!(ed.active_buffer().unwrap().view.sels.heads().collect::<Vec<_>>(), [6, 14, 17]);
+    }
+
     #[test]
     fn moving_resets_add_next_occurrence() {
         let mut ed = editor_with("a.cfg", "foo foo_x foo\n");

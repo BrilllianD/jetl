@@ -237,37 +237,41 @@ line that does not soft-wrap (`.log`: column selection refuses soft wrap,
 which `.md` files get; `printf '\tab日本語x\n\tab日本語x\nab\n\tab日本語x\n' > $T/docs/notes.log`,
 opened as `jetl $T/docs/notes.log`; the Project window starts focused, so
 hide it with Alt+1 twice).
-`X` is the 1-based screen column of the text's first cell (`X=10` past the
-tool strip and the gutter; check with `display -p '#{cursor_x}'` plus one
-while the caret is at a line start); the first line is on row 2:
+`X` is the 1-based screen column of the text's first cell (`X=11` past the
+3-column tool strip and the 7-column gutter; check with
+`display -p '#{cursor_x}'` plus one while the caret is at a line start), so
+`$((X+k))` is the cell at visual column k (0-based; the status bar's `Col`
+is 1-based). The first line is on row 2. Toasts take the right half of the
+top rows (from screen column 40 at 80x24) and a press on one only closes
+it, so keep presses left of that or wait until `capture-pane` shows no toast:
 
 ```sh
 press 8 $((X+5)) 2; press 40 $((X+6)) 4; press 40 $((X+7)) 5; release 8 $((X+7)) 5
 /tmp/tm.sh capture-pane -t jetl -p | tail -1     # Ln 4, Col 9 (4 carets, 6 chars)
 /tmp/tm.sh send-keys -t jetl -l 'Q'              # b日 becomes Q on the long lines, Q after "ab"
 /tmp/tm.sh send-keys -t jetl C-z                 # the block again
-press 12 $((X+30)) 3; press 44 $((X+12)) 2; release 12 $((X+12)) 2   # Alt+Shift, right to left: x, x
+press 12 $((X+20)) 3; press 44 $((X+12)) 2; release 12 $((X+12)) 2   # Alt+Shift, right to left from past the line ends: x, x added (6 carets)
 /tmp/tm.sh send-keys -t jetl Escape; sleep 0.6; /tmp/tm.sh send-keys -t jetl Escape
 /tmp/tm.sh send-keys -t jetl C-Home Right        # after the tab of line 1
 /tmp/tm.sh send-keys -t jetl M-S-IC              # Alt+Shift+Insert: status ends in " Column"
-for i in 1 2 3; do /tmp/tm.sh send-keys -t jetl S-Down; done   # Ln 4, Col 5 (4 carets) Column
+for i in 1 2 3; do /tmp/tm.sh send-keys -t jetl S-Down; done   # status "Ln 4, Col 5 (4 carets) Column": column 4, after the tab
 /tmp/tm.sh send-keys -t jetl -l '#'              # a # on all four lines, at the end of "ab"
 /tmp/tm.sh send-keys -t jetl C-z
 # Virtual space: a zero-width block passing the short line, then typing
-press 8 $((X+5)) 2; press 40 $((X+5)) 4; release 8 $((X+5)) 4   # Alt+drag down at column 4
+press 8 $((X+4)) 2; press 40 $((X+4)) 4; release 8 $((X+4)) 4   # a zero-width block at column 4, after the tab
 /tmp/tm.sh send-keys -t jetl -l 'V'              # "ab" is padded with spaces to the column, V in line
 /tmp/tm.sh send-keys -t jetl C-z                 # pad and V gone in one step
-press 8 $((X+6)) 2; press 40 $((X+6)) 4; release 8 $((X+6)) 4   # a zero-width block at column 5, after `a`
+press 8 $((X+5)) 2; press 40 $((X+5)) 4; release 8 $((X+5)) 4   # a zero-width block at column 5, after `a`
 /tmp/tm.sh send-keys -t jetl BSpace              # `a` gone on lines 1-2; "ab" kept, its caret one cell left
 /tmp/tm.sh send-keys -t jetl DC                  # `b` gone on lines 1-2; "ab" not joined with line 4
 /tmp/tm.sh send-keys -t jetl C-z                 # both lines back
-press 8 $((X+5)) 2; press 40 $((X+5)) 4; release 8 $((X+5)) 4   # a zero-width block at column 4 again
-/tmp/tm.sh send-keys -t jetl Tab                 # every caret at the next stop (col 8), "ab" padded
+press 8 $((X+4)) 2; press 40 $((X+4)) 4; release 8 $((X+4)) 4   # a zero-width block at column 4 again
+/tmp/tm.sh send-keys -t jetl Tab                 # every caret at the next stop (column 8), "ab" padded
 /tmp/tm.sh send-keys -t jetl C-z
-press 8 $((X+6)) 2; press 40 $((X+6)) 4; release 8 $((X+6)) 4   # column 5 again
+press 8 $((X+5)) 2; press 40 $((X+5)) 4; release 8 $((X+5)) 4   # column 5 again
 /tmp/tm.sh send-keys -t jetl Enter               # lines 1-2 split before `b`; "ab" breaks at its end, no spaces
 /tmp/tm.sh send-keys -t jetl C-z
-press 8 $((X+5)) 2; press 40 $((X+14)) 4; release 8 $((X+14)) 4   # a block from col 5 to past "x": cells past the ends selected
+press 8 $((X+5)) 2; press 40 $((X+14)) 4; release 8 $((X+14)) 4   # a block from column 5 to past "x": cells past the ends selected
 /tmp/tm.sh send-keys -t jetl Escape
 /tmp/tm.sh send-keys -t jetl C-Home Right Right  # before `b` of line 1; column mode still on from above
 for i in 1 2; do /tmp/tm.sh send-keys -t jetl S-Down; done
