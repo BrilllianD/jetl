@@ -67,8 +67,8 @@ own directory, which must exist.
 Ctrl+Alt+S or File > Settings… opens the Settings window (in the Git window
 Ctrl+Alt+S stashes, so use the menu there). A page tree on the left
 (Appearance, Editor with General, Soft Wraps, Saving and Formatting,
-Keymap, Version Control, Files, Tools, Language Servers) and the page's rows on the right, each with its key, value and a tag for when a
-change applies. A row with no tag applies at once. The tags are:
+Keymap, Version Control, Files, Tools, Language Servers) and the page's rows on the right, each with its value and a tag for when a
+change applies; the selected row's help line ends with its dotted key (`Key: ui.left_width`). A row with no tag applies at once. The tags are:
 
 - `new tabs`: applies to files opened afterwards;
 - `next shell`: applies when the Terminal window starts its next shell;
@@ -78,12 +78,12 @@ change applies. A row with no tag applies at once. The tags are:
 Keys: Up/Down move in the tree or the rows, Tab and Enter/Right on a page
 switch between them, Left goes back to the tree; Enter or Space
 changes the row (flips a Bool, opens a value dialog for a number or text,
-cycles or picks a choice); Left/Right step a choice or number; Delete resets
+cycles or picks a choice); Left/Right step a choice and turn a checkbox off/on; Delete resets
 the row to its default (removes the key from the file). A changed row shows
 `*` and its new value in the modified colour until it is applied. Ctrl+S or
 the Apply button writes the pending changes to `config.toml` and applies
 them through the same reload as a saved file; OK applies and closes; Cancel
-closes; Esc with pending changes asks Discard / Keep Editing before
+and Esc close, and with pending changes ask Discard / Keep Editing before
 dropping them. The Apply button is dim with nothing pending. A mouse click
 selects a tree row or a row, a click on a Bool value flips it, and a double
 click acts as Enter.

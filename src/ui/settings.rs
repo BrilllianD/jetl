@@ -450,17 +450,25 @@ impl SettingsWindow {
 
         match &self.config {
             Err(msg) => {
-                let lines = wrap(msg, pw, 6);
-                for l in &lines {
-                    buf.set_string(px, top, l, base.patch(theme.error));
+                // The "Open config.toml" row has priority over message lines.
+                let free = bottom.saturating_sub(top) as usize;
+                let msg_rows = free.saturating_sub(2).min(6);
+                if msg_rows > 0 {
+                    for l in wrap(msg, pw, msg_rows) {
+                        buf.set_string(px, top, l, base.patch(theme.error));
+                        top += 1;
+                    }
+                }
+                if msg_rows > 0 {
                     top += 1;
                 }
-                top += 1;
-                self.rows.fit(1, 1);
-                self.rows_rect = Rect::new(px, top, pw as u16, 1);
-                let style = if self.pane == Pane::Page { theme.list_selected } else { theme.list_selected_unfocused };
-                buf.set_style(self.rows_rect, style);
-                buf.set_string(px, top, OPEN_FILE_ROW, style);
+                if top < bottom {
+                    self.rows.fit(1, 1);
+                    self.rows_rect = Rect::new(px, top, pw as u16, 1);
+                    let style = if self.pane == Pane::Page { theme.list_selected } else { theme.list_selected_unfocused };
+                    buf.set_style(self.rows_rect, style);
+                    buf.set_string(px, top, OPEN_FILE_ROW, style);
+                }
             }
             Ok(_) if page.keys.is_empty() => {
                 let kids: Vec<&str> = PAGES.iter().filter(|p| p.parent == Some(self.page())).map(|p| p.title).collect();
@@ -481,7 +489,9 @@ impl SettingsWindow {
                     if st.kind != Kind::External {
                         help.push("Delete resets to the default.".into());
                     }
-                    help.truncate(MAX_HELP_ROWS);
+                    help.push(format!("Key: {}", st.key));
+                    // Keep at least one row for the list itself.
+                    help.truncate(MAX_HELP_ROWS.min(bottom.saturating_sub(top).saturating_sub(2) as usize));
                 }
                 let help_h = help.len() as u16;
                 let sep = u16::from(help_h > 0);
@@ -519,7 +529,7 @@ impl SettingsWindow {
                         let used = text.width().min(avail);
                         buf.set_string(self.value_col + used as u16, ry, fit(" (default)", avail - used), style.patch(theme.dim));
                     }
-                    if tag_w > 0 {
+                    if tag_w > 0 && label_w + tag.width() < pw {
                         let tstyle = if class_of(st.key) == Some(crate::config::reload::ReloadClass::Restart) {
                             style.patch(theme.warn)
                         } else {

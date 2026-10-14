@@ -18,10 +18,10 @@ expression: "snapshot(&term, &[l, u, m], None)"
 12  ⚑│Tools                   │                                                 │
 13  9│  Terminal              │                                                 │
 14  ⎇│  Run                   │                                                 │
-15   │  Clipboard             │                                                 │
-16  ❯│  Local History         │On save, end a non-empty file with a line break. │
-17  6│Language Servers        │Applies at once.                                 │
-18  ⚠│                        │Delete resets to the default.                    │
+15   │  Clipboard             │On save, end a non-empty file with a line break. │
+16  ❯│  Local History         │Applies at once.                                 │
+17  6│Language Servers        │Delete resets to the default.                    │
+18  ⚠│                        │Key: editor.final_newline                        │
 19  4│                                                                          │
 20  ►│                                            [ OK ]  [ Cancel ]  [ Apply ] │
 21  3└──────────────────────────────────────────────────────────────────────────┘

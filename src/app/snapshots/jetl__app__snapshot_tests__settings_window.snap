@@ -18,10 +18,10 @@ expression: "snapshot(&term, &settings_marks(&app.theme), None)"
 12  ⚑│Tools                   │                                                 │
 13  9│  Terminal              │                                                 │
 14  ⎇│  Run                   │                                                 │
-15   │  Clipboard             │                                                 │
-16  ❯│  Local History         │Lines kept visible above and below the caret.    │
-17  6│Language Servers        │Applies at once.                                 │
-18  ⚠│                        │Delete resets to the default.                    │
+15   │  Clipboard             │Lines kept visible above and below the caret.    │
+16  ❯│  Local History         │Applies at once.                                 │
+17  6│Language Servers        │Delete resets to the default.                    │
+18  ⚠│                        │Key: editor.scrolloff                            │
 19  4│                                                                          │
 20  ►│                                            [ OK ]  [ Cancel ]  [ Apply ] │
 21  3└──────────────────────────────────────────────────────────────────────────┘

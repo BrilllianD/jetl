@@ -1857,3 +1857,45 @@ async fn settings_window_pending() {
     let m = Mark::style('M', "pending", app.theme.git_modified);
     assert_snapshot!("settings_window_pending", snapshot(&term, &[l, u, m], None));
 }
+
+#[tokio::test]
+async fn settings_window_narrow_appearance_does_not_panic() {
+    let mut fx = stable_app("settings-narrow");
+    let app = &mut fx.app;
+    app.perform(Action::App(AppAction::Settings));
+    for w in 26..=40u16 {
+        for h in [9u16, 10, 14, 24] {
+            let term = draw_app(app, w, h);
+            let buf = term.backend().buffer();
+            for y in 0..h {
+                let line = crate::ui::snapshot::row_text(buf, y, w);
+                if let (Some(tag), Some(bar)) = (line.find("restart"), line.find('│')) {
+                    assert!(tag > bar, "tag over the tree at {w}x{h}: {line}");
+                }
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn settings_window_long_error_fits_short_terminals() {
+    let mut fx = stable_app("settings-error-short");
+    let app = &mut fx.app;
+    std::fs::create_dir_all(&app.paths.config_dir).unwrap();
+    std::fs::write(
+        app.paths.config_file(),
+        "[editor\nscrolloff = aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n",
+    )
+    .unwrap();
+    app.perform(Action::App(AppAction::Settings));
+    for w in [40u16, 80] {
+        for h in 6..=12u16 {
+            let term = draw_app(app, w, h);
+            let buf = term.backend().buffer();
+            let text: String = (0..h).map(|y| crate::ui::snapshot::row_text(buf, y, w)).collect::<Vec<_>>().join("\n");
+            if h >= 9 {
+                assert!(text.contains("Open config"), "no open row at {w}x{h}:\n{text}");
+            }
+        }
+    }
+}
