@@ -516,6 +516,7 @@ Reachable from Find Action (F1) or by binding them in `keymap.toml`.
 | `git.continue_operation` | Git: continue the rebase, merge, cherry-pick or revert in progress |
 | `git.skip_operation` | Git: skip the commit the rebase, cherry-pick or revert stopped on |
 | `git.abort_operation` | Git: abort the rebase, merge, cherry-pick or revert in progress |
+| `git.log_reset` | Git: reset the current branch to the selected commit (soft, mixed or hard) |
 | `git.commit_and_push` | Git: commit and push |
 | `git.fetch` | Git: fetch |
 | `git.focus_message` | Git: focus commit message |

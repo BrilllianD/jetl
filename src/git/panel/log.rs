@@ -14,7 +14,7 @@ use crate::config::theme::Theme;
 use crate::event::{Effect, Level, Mouse};
 use crate::git::GitRequest;
 use crate::git::graph::LogGraph;
-use crate::git::model::{CommitDetails, DiffKey, LogCommit, LogFilter, LogRev, LogRow};
+use crate::git::model::{CommitDetails, DiffKey, LogCommit, LogFilter, LogRev, LogRow, ResetMode};
 use crate::ui::dialog::{Dialog, DialogId};
 use crate::ui::menu::{ContextMenu, MenuItem};
 
@@ -35,6 +35,7 @@ pub(super) enum CommitAction {
     NewBranch,
     CherryPick,
     Revert,
+    Reset,
     NewTag,
     DeleteTag,
 }
@@ -275,6 +276,13 @@ impl GitPanel {
                     &["Revert", "Cancel"],
                 )));
             }
+            CommitAction::Reset => {
+                let subject = self.log.get(self.log_list.selected).map(|r| r.commit.subject.clone()).unwrap_or_default();
+                let branch = self.branch_label().unwrap_or_else(|| "HEAD".into());
+                let msg = format!("Reset '{branch}' to {short} {subject}.\nThe commits after it leave the branch (the reflog keeps them).");
+                let items = ResetMode::ALL.iter().map(|m| m.choice_label().to_string()).collect();
+                cx.effects.push(Effect::Dialog(Dialog::choice(DialogId::ResetMode { sha }, "Reset Current Branch", &msg, items)));
+            }
         }
     }
 
@@ -372,6 +380,7 @@ impl GitPanel {
             MenuItem::new("New Branch…", g(GitAction::LogNewBranch)).enabled(!busy),
             MenuItem::new("Cherry-Pick", g(GitAction::LogCherryPick)).enabled(!busy),
             MenuItem::new("Revert Commit…", g(GitAction::LogRevert)).enabled(!busy),
+            MenuItem::new("Reset Current Branch to Here…", g(GitAction::LogReset)),
             MenuItem::new("New Tag…", g(GitAction::LogNewTag)),
             MenuItem::new("Delete Tag…", g(GitAction::LogDeleteTag)),
             MenuItem::new("Filter Log…", g(GitAction::LogFilter)),

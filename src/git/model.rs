@@ -180,6 +180,42 @@ impl InProgressKind {
     }
 }
 
+/// `git reset` modes, in the dialog's order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ResetMode {
+    Soft,
+    Mixed,
+    Hard,
+}
+
+impl ResetMode {
+    pub const ALL: [ResetMode; 3] = [ResetMode::Soft, ResetMode::Mixed, ResetMode::Hard];
+
+    pub fn flag(self) -> &'static str {
+        match self {
+            ResetMode::Soft => "--soft",
+            ResetMode::Mixed => "--mixed",
+            ResetMode::Hard => "--hard",
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            ResetMode::Soft => "soft",
+            ResetMode::Mixed => "mixed",
+            ResetMode::Hard => "hard",
+        }
+    }
+
+    pub fn choice_label(self) -> &'static str {
+        match self {
+            ResetMode::Soft => "Soft: keep the changes staged",
+            ResetMode::Mixed => "Mixed: keep the changes in the files, unstaged",
+            ResetMode::Hard => "Hard: discard all uncommitted changes",
+        }
+    }
+}
+
 /// What to do with an operation in progress.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ProgressAction {

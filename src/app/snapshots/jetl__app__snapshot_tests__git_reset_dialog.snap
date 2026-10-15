@@ -1,0 +1,32 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &marks, None)"
+---
+80x24 cursor=(9,5)
+00  ≣ ┌ Project: root ───────────────┐│
+01    │                              ││
+02  1 │   ┌ Reset Current Branch ──────────────────────────────────────────┐
+03  ⌂ │   │ Reset 'main' to dddddddd Parse nested lists.                   │
+04  2 │   │ The commits after it leave the branch (the reflog keeps them). │
+05  ◫ │   │ type to filter                                                 │
+06  7 │   │  Soft: keep the changes staged                                 │
+07  ⊢ └───│  Mixed: keep the changes in the files, unstaged                │
+08    ────│  Hard: discard all uncommitted changes                         │───────
+09    ┌ Gi│                                                                │──────┐
+10  ⟲ │ Co│                                                                │Push  │
+11    │[Br│                                                                │      │
+12  ⚑ │●─┐│                                                                │      │
+13  9 ││ ●│                                                                │      │
+14  ⎇ │● ││                                                                │      │
+15    │├─●│                                                                │      │
+16  ❯ │● c│                                                                │      │
+17  6 │   │                                                                │      │
+18  ⚠ │   └────────────────────────────────────────────────────────────────┘      │
+19  4 │                                             │                             │
+20  ► │                                             │                             │
+21  3 │                                             │                             │
+22  ⌕ └───────────────────────────────────────────────────────────────────────────┘
+23  root   main
+-- marks: L=selected
+06          LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL
+13     LLL

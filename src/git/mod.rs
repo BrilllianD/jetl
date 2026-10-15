@@ -53,6 +53,10 @@ pub enum GitOp {
     Checkout(String),
     CherryPick(String),
     Revert(String),
+    Reset {
+        sha: String,
+        mode: model::ResetMode,
+    },
     Merge(String),
     Rebase(String),
     RenameBranch(String),
@@ -95,6 +99,7 @@ impl GitOp {
                 | GitOp::Checkout(_)
                 | GitOp::CherryPick(_)
                 | GitOp::Revert(_)
+                | GitOp::Reset { mode: model::ResetMode::Hard, .. }
                 | GitOp::Merge(_)
                 | GitOp::Rebase(_)
                 | GitOp::Resolve(_)
@@ -253,6 +258,11 @@ pub enum GitRequest {
     CherryPick(String),
     /// Confirmed already (`DialogId::RevertCommit`).
     Revert(String),
+    /// `git reset <mode> <sha>`. Confirmed already when hard.
+    Reset {
+        sha: String,
+        mode: model::ResetMode,
+    },
     NewBranchAt {
         name: String,
         rev: String,

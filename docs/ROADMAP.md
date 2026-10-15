@@ -122,6 +122,7 @@ All of section D shipped in Phase 8; the conflict resolver came after split pane
 | Conflict resolver (3-pane merge) | L | Done: a temporary layout of split panes over scratch buffers (`editor/merge.rs`) |
 | Operation in progress (header, status bar, refused actions) | S-M | `repo.state()` in `StatusSnapshot`; done (yman 247) |
 | Continue / Skip / Abort a rebase, merge, cherry-pick or revert | M | git CLI with GIT_EDITOR=true; done (yman 248) |
+| Reset current branch to a commit (soft, mixed, hard) | S-M | git CLI; hard confirms and snapshots; done (yman 249) |
 
 ### E. Shell, terminal, run
 

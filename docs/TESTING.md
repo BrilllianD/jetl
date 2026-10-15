@@ -904,6 +904,13 @@ git -C $T log --oneline -1             # unchanged
 # select "dev change", then Ctrl+D: an editor tab "Diff <sha8>" with a green and a red row (capture-pane -e: different
 # backgrounds); F7 moves the caret to the first change (status bar Ln), Shift+F7 there says "No more changes above";
 # typing changes nothing; Ctrl+D again on the same row adds no tab
+# reset: add a second commit, edit README.md without committing it
+git -C $T switch -q - ; echo x >> $T/README.md; git -C $T -c user.name=t -c user.email=t@t commit -qam two; echo edit >> $T/README.md
+# in the Log select `init`, S-F10, "Reset Current Branch to Here…": a choice (Soft, Mixed, Hard); pick Hard: a confirm
+# (Reset / Cancel) naming Local History; Reset: the toast "Reset to <sha8> (hard)"
+git -C $T log --oneline                # only `init`
+# Local History on README.md lists "Before git reset --hard <sha>" with the edit
+# repeat with a new second commit and Soft: `git -C $T status --short` shows `M  README.md`
 # multi-select, in a scratch repo with three commits on the current branch: Shift+Down twice: three highlighted rows,
 # the details start with "3 commits selected"; Ctrl+D: one tab "Diff <oldest8>..<newest8>" with one "==" header;
 # Down: one row again. Ctrl+click on rows 1 and 3 (SGR button 16: press 16 <col> <row>; release 16 <col> <row>),

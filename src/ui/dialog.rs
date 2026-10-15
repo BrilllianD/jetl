@@ -93,6 +93,14 @@ pub enum DialogId {
     RevertCommit {
         sha: String,
     },
+    /// Which `git reset` mode to use on the current branch for this commit.
+    ResetMode {
+        sha: String,
+    },
+    /// Confirm `git reset --hard` to this commit: Reset / Cancel.
+    ResetHard {
+        sha: String,
+    },
     /// Message for a new stash.
     StashMessage,
     /// Drop the stash with this commit id.

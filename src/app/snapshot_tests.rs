@@ -1522,6 +1522,32 @@ async fn git_log_context_menu() {
 }
 
 #[tokio::test]
+async fn git_reset_dialog() {
+    use crate::git::model::StatusSnapshot;
+    let mut fx = stable_app("git-reset");
+    let app = &mut fx.app;
+    app.toggle_tool_window(ToolWindowId::Git);
+    app.perform(Action::Git(crate::actions::GitAction::TabLog));
+    let commits = vec![
+        commit('a', &['b', 'd'], "Ann", "2 hours ago", "HEAD -> main", "Merge branch 'parser'"),
+        commit('d', &['e'], "Bob", "3 days ago", "parser", "Parse nested lists"),
+        commit('b', &['c'], "Ann", "4 days ago", "", "Fix the status bar width"),
+        commit('e', &['c'], "Bob", "5 days ago", "", "Add a parser"),
+        commit('c', &[], "Ann", "2 weeks ago", "tag: v0.1.0", "Initial commit"),
+    ];
+    let g = app.git.generation;
+    let filter = app.git_panel.log_filter().clone();
+    app.handle_msg(AppMsg::Git(GitMsg::Log { generation: g, skip: 0, filter, result: Ok(commits) }));
+    let snap = StatusSnapshot { branch: Some("main".into()), head: Some(sha('a')), ..Default::default() };
+    app.handle_msg(AppMsg::Git(GitMsg::Status { generation: g, seq: 1, result: Ok(snap) }));
+    app.perform(Action::Git(crate::actions::GitAction::Down));
+    app.perform(Action::Git(crate::actions::GitAction::LogReset));
+    let term = draw_app(app, 80, 24);
+    let marks = [Mark::bg('L', "selected", app.theme.list_selected.bg.unwrap())];
+    assert_snapshot!("git_reset_dialog", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
 async fn git_stash_tab() {
     use crate::git::model::{CommitDetails, CommitFile, StashEntry};
     let mut fx = stable_app("git-stash");

@@ -297,6 +297,7 @@ pub enum GitAction {
     LogNewBranch,
     LogCherryPick,
     LogRevert,
+    LogReset,
     LogNewTag,
     LogDeleteTag,
     /// The branch operations of a branch at the selected commit (a context menu row; not in the keymap).
@@ -748,6 +749,7 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "git.log_new_branch" => "Git: new branch at the selected commit", Git(GitAction::LogNewBranch);
         "git.log_cherry_pick" => "Git: cherry-pick the selected commit", Git(GitAction::LogCherryPick);
         "git.log_revert" => "Git: revert the selected commit", Git(GitAction::LogRevert);
+        "git.log_reset" => "Git: reset the current branch to the selected commit (soft, mixed or hard)", Git(GitAction::LogReset);
         "git.log_new_tag" => "Git: tag the selected commit", Git(GitAction::LogNewTag);
         "git.log_delete_tag" => "Git: delete a tag of the selected commit", Git(GitAction::LogDeleteTag);
         "git.commit" => "Git: commit", Git(GitAction::Commit);

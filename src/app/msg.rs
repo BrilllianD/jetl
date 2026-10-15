@@ -254,6 +254,7 @@ impl App {
                 GitOp::Checkout(sha) => self.notify(Level::Info, format!("Checked out {} (detached HEAD)", short(sha))),
                 GitOp::CherryPick(sha) => self.notify(Level::Info, format!("Cherry-picked {}", short(sha))),
                 GitOp::Revert(sha) => self.notify(Level::Info, format!("Reverted {}", short(sha))),
+                GitOp::Reset { sha, mode } => self.notify(Level::Info, format!("Reset to {} ({})", short(sha), mode.name())),
                 GitOp::Merge(b) => self.notify(Level::Info, format!("Merged {b}")),
                 GitOp::Rebase(b) => self.notify(Level::Info, format!("Rebased onto {b}")),
                 GitOp::Progress { kind, action } => self.notify(Level::Info, action.done(*kind)),

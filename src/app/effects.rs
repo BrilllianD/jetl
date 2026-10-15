@@ -166,6 +166,9 @@ impl App {
             GitRequest::CherryPick(sha) => {
                 self.git.run_cli(GitOp::CherryPick(sha.clone()), vec!["cherry-pick".into(), sha]);
             }
+            GitRequest::Reset { sha, mode } => {
+                self.git.run_cli(GitOp::Reset { sha: sha.clone(), mode }, vec!["reset".into(), mode.flag().into(), sha]);
+            }
             GitRequest::Revert(sha) => {
                 self.git.run_cli(GitOp::Revert(sha.clone()), vec!["revert".into(), "--no-edit".into(), sha]);
             }

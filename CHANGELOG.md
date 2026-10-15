@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Git Log: Reset Current Branch to Here… in the commit menu (Soft, Mixed or Hard; Hard asks first and Local History keeps a copy of the changed files).
 - Column selection: Alt+click past a line end puts a caret on that cell (virtual space), and typing there pads the line with spaces. In column selection mode a click past a line end does too. Right and Left step through the space past a line end, and Up/Down keep each caret's column over short lines. Backspace, Ctrl+Backspace, Delete and Ctrl+Delete there move the caret without changing the text.
 - Settings window (Ctrl+Alt+S, File > Settings…): a page tree of the `config.toml` keys, each row tagged with when a change applies (new tabs, next shell, restart servers, restart jetl). Edits keep the file's comments and order; Live keys apply on Apply, Ctrl+S or OK.
 - Git Log: Ctrl+D (or Show Diff in the commit menu) opens the diff of the selected commit in a read-only editor tab with green and red lines; F7 / Shift+F7 step through the changes. The tab can be saved as a file.

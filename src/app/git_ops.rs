@@ -3,8 +3,8 @@
 use super::App;
 use crate::actions::{Action, GitAction};
 use crate::event::Level;
-use crate::git::GitOp;
-use crate::git::model::ProgressAction;
+use crate::git::model::{ProgressAction, ResetMode};
+use crate::git::{GitOp, GitRequest};
 use crate::ui::dialog::{Dialog, DialogId, DialogResult};
 
 impl App {
@@ -75,7 +75,27 @@ impl App {
                     self.git.run_cli_steps(GitOp::Progress { kind: *kind, action: ProgressAction::Abort }, vec![args]);
                 }
             }
-            (DialogId::ContinueWithConflicts { .. } | DialogId::AbortOperation(_), _) => {}
+            (DialogId::ResetMode { sha }, DialogResult::Choice(i)) => match ResetMode::ALL.get(*i) {
+                Some(ResetMode::Hard) => {
+                    let msg = format!(
+                        "Reset hard to {}?\nUncommitted changes in tracked files are discarded; Local History keeps a copy of the changed files.",
+                        &sha[..sha.len().min(8)]
+                    );
+                    self.dialog = Some(Dialog::confirm(DialogId::ResetHard { sha: sha.clone() }, "Reset Hard", &msg, &["Reset", "Cancel"]));
+                }
+                Some(&mode) => self.git_request(GitRequest::Reset { sha: sha.clone(), mode }),
+                None => {}
+            },
+            (DialogId::ResetHard { sha }, DialogResult::Button(0)) => {
+                self.git_request(GitRequest::Reset { sha: sha.clone(), mode: ResetMode::Hard });
+            }
+            (
+                DialogId::ContinueWithConflicts { .. }
+                | DialogId::AbortOperation(_)
+                | DialogId::ResetMode { .. }
+                | DialogId::ResetHard { .. },
+                _,
+            ) => {}
             _ => return false,
         }
         true
@@ -234,6 +254,81 @@ mod tests {
         assert!(app.git.busy.is_empty());
         assert!(has(&app, "git.continue_operation") && has(&app, "git.abort_operation"));
         assert!(!has(&app, "git.skip_operation"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `a.txt` is `b\n` after a second commit; returns the first commit.
+    fn two_commits(app: &App) -> String {
+        init_repo(app, &[("a.txt", "a\n")]);
+        let root = app.workspace.root.clone();
+        git(&root, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(root.join("a.txt"), "b\n").unwrap();
+        git(&root, &["commit", "-qam", "second"]);
+        git_out(&root, &["rev-parse", "HEAD~1"])
+    }
+
+    #[tokio::test]
+    async fn reset_soft_from_the_log_menu_keeps_changes_staged() {
+        let (mut app, dir) = test_app("reset-soft");
+        let first = two_commits(&app);
+        let root = app.workspace.root.clone();
+        feed_status(&mut app, 1);
+        app.perform(Action::Git(GitAction::TabLog));
+        let filter = app.git_panel.log_filter().clone();
+        let out =
+            std::process::Command::new("git").args(crate::git::cli::log_args(0, 100, true, &filter)).current_dir(&root).output().unwrap();
+        let rows = crate::git::cli::parse_log(&String::from_utf8_lossy(&out.stdout));
+        let g = app.git.generation;
+        app.handle_msg(AppMsg::Git(GitMsg::Log { generation: g, skip: 0, filter, result: Ok(rows) }));
+        app.perform(Action::Git(GitAction::Down));
+        assert_eq!(app.git_panel.log_cursor(), 1);
+        app.perform(Action::Git(GitAction::LogReset));
+        let d = app.dialog.take().expect("reset dialog");
+        assert!(matches!(&d.id, DialogId::ResetMode { sha } if *sha == first), "{:?}", d.id);
+        assert!(d.message.contains("init") && d.message.contains("reflog"), "{}", d.message);
+        app.finish_dialog(d.id, DialogResult::Choice(0));
+        handle_next(&mut app, op_done).await;
+        assert_eq!(last_note(&app), format!("Reset to {} (soft)", &first[..8]));
+        assert_eq!(git_out(&root, &["rev-parse", "HEAD"]), first);
+        assert_eq!(git_out(&root, &["diff", "--cached", "--name-only"]), "a.txt");
+        assert_eq!(std::fs::read_to_string(root.join("a.txt")).unwrap(), "b\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn reset_mixed_keeps_changes_unstaged() {
+        let (mut app, dir) = test_app("reset-mixed");
+        let first = two_commits(&app);
+        let root = app.workspace.root.clone();
+        app.finish_dialog(DialogId::ResetMode { sha: first.clone() }, DialogResult::Choice(1));
+        handle_next(&mut app, op_done).await;
+        assert_eq!(last_note(&app), format!("Reset to {} (mixed)", &first[..8]));
+        assert_eq!(git_out(&root, &["rev-parse", "HEAD"]), first);
+        assert_eq!(git_out(&root, &["diff", "--cached", "--name-only"]), "");
+        assert_eq!(git_out(&root, &["diff", "--name-only"]), "a.txt");
+        assert_eq!(std::fs::read_to_string(root.join("a.txt")).unwrap(), "b\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn reset_hard_asks_and_snapshots_first() {
+        use crate::ui::dialog::DialogKind;
+        let (mut app, dir) = test_app("reset-hard");
+        with_history(&mut app);
+        let first = two_commits(&app);
+        let root = app.workspace.root.clone();
+        std::fs::write(root.join("a.txt"), "dirty\n").unwrap();
+        app.finish_dialog(DialogId::ResetMode { sha: first.clone() }, DialogResult::Choice(2));
+        let d = app.dialog.take().expect("hard confirm");
+        assert_eq!(d.id, DialogId::ResetHard { sha: first.clone() });
+        assert!(matches!(&d.kind, DialogKind::Confirm { buttons, .. } if buttons == &["Reset", "Cancel"]), "{:?}", d.kind);
+        assert!(d.message.contains("Local History"), "{}", d.message);
+        app.finish_dialog(d.id, DialogResult::Button(0));
+        handle_next(&mut app, op_done).await;
+        assert_eq!(git_out(&root, &["rev-parse", "HEAD"]), first);
+        assert_eq!(std::fs::read_to_string(root.join("a.txt")).unwrap(), "a\n");
+        let rows = crate::app::history::tests::snapshots(&app, &root.join("a.txt"));
+        assert!(rows.contains(&(format!("Before git reset --hard {first}"), "dirty\n".to_string())), "{rows:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
