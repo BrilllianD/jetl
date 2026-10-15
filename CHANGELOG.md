@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Column selection: Alt+click past a line end puts a caret on that cell (virtual space), and typing there pads the line with spaces. In column selection mode a click past a line end does too. Right and Left step through the space past a line end, and Up/Down keep each caret's column over short lines. Backspace, Ctrl+Backspace, Delete and Ctrl+Delete there move the caret without changing the text.
 - Settings window (Ctrl+Alt+S, File > Settings…): a page tree of the `config.toml` keys, each row tagged with when a change applies (new tabs, next shell, restart servers, restart jetl). Edits keep the file's comments and order; Live keys apply on Apply, Ctrl+S or OK.
 - Git Log: Ctrl+D (or Show Diff in the commit menu) opens the diff of the selected commit in a read-only editor tab with green and red lines; F7 / Shift+F7 step through the changes. The tab can be saved as a file.
 - Git Log: Shift+Up / Shift+Down select a range of commits, Shift+click extends it and Ctrl+click toggles a row. Show Diff on several commits opens one tab: each run of commits that follow one another by first parent is one diff from its oldest commit's parent to its newest commit, the runs one after another under `==` headers.
@@ -19,6 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The Git Log lists all branches by default (`[git] log_all = true`); stash commits are left out of it. Set `log_all = false` for HEAD only.
 
 ### Fixed
+
+- Typing right after turning soft wrap on with a column block no longer pads short lines with spaces.
 
 - Git Log: a Ctrl+click on the last loaded row fetches the next page, like the other ways to move there. Patch tabs no longer show indentation fold markers.
 - Dialogs no longer panic on a terminal smaller than the dialog's minimum size.

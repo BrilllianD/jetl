@@ -299,6 +299,22 @@ press 8 $((X+5)) 2; press 40 $((X+14)) 4; release 8 $((X+14)) 4   # a block from
 /tmp/tm.sh send-keys -t jetl C-Home Right Right  # before `b` of line 1; column mode still on from above
 for i in 1 2; do /tmp/tm.sh send-keys -t jetl S-Down; done
 for i in $(seq 70); do /tmp/tm.sh send-keys -t jetl S-Right; done   # past the widest line; carets on one column
+/tmp/tm.sh send-keys -t jetl M-S-IC              # column mode off again (status without " Column")
+press 0 $((X+1)) 5; release 0 $((X+1)) 5         # a plain click on line 4
+press 8 $((X+8)) 4; release 8 $((X+8)) 4         # Alt+click past the end of "ab": a caret drawn on column 8
+press 8 $((X+16)) 2; release 8 $((X+16)) 2       # Alt+click past "x" on line 1: "Ln 1, Col 17 (3 carets)"
+/tmp/tm.sh send-keys -t jetl -l 'Z'              # "ab" padded to column 8, line 1 to 16, then Z; Z on line 4
+/tmp/tm.sh send-keys -t jetl C-z                 # pads and Z gone in one step, the carets back past the ends
+press 8 $((X+8)) 4; release 8 $((X+8)) 4         # the same cell again removes that caret (2 carets)
+/tmp/tm.sh send-keys -t jetl Escape
+/tmp/tm.sh send-keys -t jetl M-S-IC              # column mode on
+press 0 $((X+8)) 4; release 0 $((X+8)) 4         # a click past "ab": "Ln 3, Col 9 Column"
+/tmp/tm.sh send-keys -t jetl -H 1b 5b 31 32 37 3b 35 75   # Ctrl+Backspace: the caret to the end of "ab" (Col 3), nothing deleted
+/tmp/tm.sh send-keys -t jetl Right Right Right   # past the end again: Col 6
+/tmp/tm.sh send-keys -t jetl Up Down             # line 2 at Col 6, then back on "ab" at Col 6
+/tmp/tm.sh send-keys -t jetl -H 1b 5b 33 3b 35 7e         # Ctrl+Delete: nothing changes, "ab" not joined
+/tmp/tm.sh send-keys -t jetl BSpace -l 'V'       # Col 5, then "ab  V"
+/tmp/tm.sh send-keys -t jetl C-z
 ```
 
 `capture-pane -e` shows the selected cells in the selection background
@@ -306,7 +322,10 @@ for i in $(seq 70); do /tmp/tm.sh send-keys -t jetl S-Right; done   # past the w
 in the same background, every caret on the block's head column (reverse
 video, also after "ab") and, at 80x24, the view scrolled sideways to keep
 the last Shift+Right in sight (at 120x40 the 70 steps fit without scrolling). Alt+click without moving (`press 8`, `release
-8` on one cell) still adds a caret.
+8` on one cell) still adds a caret. `capture-pane -e` shows the Alt+clicked carets in
+reverse video on their cells past the line ends. tmux does not send Ctrl+Backspace
+for `C-BSpace` (it types the name as text): the scenario sends the escapes `ESC [ 127;5 u` and
+`ESC [ 3;5 ~` with `-H`. `-H 08` is not Ctrl+Backspace for jetl (the status column stays).
 
 ### Scenario: code folding
 
