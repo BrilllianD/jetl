@@ -15,7 +15,7 @@ use unicode_width::UnicodeWidthStr;
 use super::buffer::Buffer;
 use super::fold::Fold;
 use super::rows::{Row, Rows};
-use super::selection::{MAX_CARETS, Selection, Selections, line_len_no_eol, pos_to_line_col};
+use super::selection::{MAX_CARETS, Selection, Selections, Virt, line_len_no_eol, pos_to_line_col};
 use crate::config::theme::Theme;
 
 /// One rendered unit: a grapheme (or the expansion of a tab, a control char
@@ -244,9 +244,9 @@ pub fn row_x_to_char(rope: &Rope, rows: &Rows, row: Row, x: usize, tab_width: us
 /// The carets of a column block from `anchor` to `head`, each a (line,
 /// visual column). Every line between gets the cells between the two
 /// columns, a grapheme cut by either edge included; a line too short to
-/// reach the block gets a caret at its end (`render` draws it at the block
-/// column, see `Buffer::block_pads`), and
-/// a zero-width block is a caret on every line. Each selection points the
+/// reach an edge gets that end at its line end with the edge's column as
+/// its virtual column (`Selection::virt`; typing pads to it, `render` draws
+/// there), and a zero-width block is a caret on every line. Each selection points the
 /// way the block does and the head's line holds the primary. At most
 /// [`MAX_CARETS`] lines, the ones nearest the head. Lines a fold hides
 /// get none (but the head's line always has one).
@@ -266,11 +266,15 @@ pub fn block_selections(rope: &Rope, rows: &Rows, anchor: (usize, usize), head: 
         .into_iter()
         .map(|line| {
             let start = col_to_char(rope, line, lo, tab_width);
+            let w = visual_col(rope, rope.line_to_char(line) + line_len_no_eol(rope, line), tab_width);
             if lo == hi {
-                return Selection::point(start);
+                return if lo > w { Selection::virtual_point(start, lo) } else { Selection::point(start) };
             }
             let end = col_to_char_ceil(rope, line, hi, tab_width).max(start);
-            if forward { Selection::new(start, end) } else { Selection::new(end, start) }
+            let mut sel = if forward { Selection::new(start, end) } else { Selection::new(end, start) };
+            let (l, r) = ((lo > w).then_some(lo), (hi > w).then_some(hi));
+            sel.virt = if forward { Virt { anchor: l, head: r } } else { Virt { anchor: r, head: l } };
+            sel
         })
         .collect();
     Selections::new(ranges, primary)

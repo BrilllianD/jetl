@@ -4,7 +4,7 @@
 
 use super::buffer::{Buffer, CaretEdit};
 use super::rows::{Row, Rows};
-use super::selection::{indent_of, line_len_no_eol, next_word_boundary, prev_word_boundary, vertical_target};
+use super::selection::{Selection, indent_of, line_len_no_eol, next_word_boundary, prev_word_boundary, vertical_target};
 use super::view::{block_selections, col_to_char, layout_line, visual_col};
 use super::view_state::Block;
 use crate::actions::Motion;
@@ -36,47 +36,73 @@ impl Buffer {
         (block_selections(&self.rope, &rows, b.anchor, b.head, tab_width) == self.view.sels).then_some(b)
     }
 
-    /// Per selection of a live block, the spaces its line lacks to reach
-    /// the block's left column (an empty selection on a shorter line), else
-    /// 0. Empty without a live block. Typing pads by these ("virtual space").
-    pub fn block_pads(&self, tab_width: usize) -> Vec<usize> {
-        let Some(b) = self.live_block(tab_width) else { return Vec::new() };
-        let lo = b.anchor.1.min(b.head.1);
+    /// Per caret, the spaces its line lacks to reach the left column of its
+    /// virtual cells (an empty caret in virtual space), else 0. Empty while
+    /// no caret is in virtual space or the view soft-wraps. Typing pads by
+    /// these.
+    pub fn virtual_pads(&self, tab_width: usize) -> Vec<usize> {
+        if !self.blocks_supported() || !self.view.sels.iter().any(Selection::is_virtual) {
+            return Vec::new();
+        }
         self.view
             .sels
             .iter()
             .map(|s| {
-                let line = self.rope.char_to_line(s.head);
-                let w = line_width(self, line, tab_width);
-                if s.is_empty() && w < lo { lo - w } else { 0 }
+                if s.is_empty() {
+                    let lo = s.anchor_col(&self.rope, tab_width).min(s.head_col(&self.rope, tab_width));
+                    lo.saturating_sub(visual_col(&self.rope, s.head, tab_width))
+                } else {
+                    0
+                }
             })
             .collect()
     }
 
-    /// Backspace (`back`) or Delete at every caret of a live block, with
-    /// virtual space: a caret past its line's end (`block_pads`), and every
-    /// empty caret of a block with width, changes no text; the others edit
-    /// as usual. The block stays live at its new column: one left after
-    /// Backspace in a zero-width block, else its left column. False without
-    /// a live block.
-    pub fn block_delete(&mut self, back: bool, pairs: &[(char, char)], tab_width: usize) -> bool {
-        let Some(b) = self.live_block(tab_width) else { return false };
-        let pads = self.block_pads(tab_width);
-        let (lo, hi) = (b.anchor.1.min(b.head.1), b.anchor.1.max(b.head.1));
-        let mut i = 0;
+    /// Backspace (`back`) or Delete, by char or by `word`, at every caret.
+    /// A caret that is empty in chars but has virtual cells changes no text.
+    /// If its cells have width, it goes to their left column. Delete and
+    /// Ctrl+Delete leave it where it is. Backspace moves it one column left.
+    /// Ctrl+Backspace moves it to the line end. Every other caret edits as
+    /// usual, all in one transaction. With a live block it is made live
+    /// again at its new column, as Backspace and Delete always did. False
+    /// when nothing here is virtual (no virtual caret and no live block, or
+    /// a word delete without a virtual caret) or the view soft-wraps.
+    pub fn virtual_delete(&mut self, back: bool, word: bool, pairs: &[(char, char)], tab_width: usize) -> bool {
+        if !self.blocks_supported() {
+            return false;
+        }
+        let block = self.live_block(tab_width);
+        let any = self.view.sels.iter().any(Selection::is_virtual);
+        if !any && (word || block.is_none()) {
+            return false;
+        }
         self.edit_carets(|buf, sel| {
-            let pad = pads.get(i).copied().unwrap_or(0);
-            i += 1;
-            if sel.is_empty() && (lo < hi || pad > 0) {
-                CaretEdit::keep(sel)
-            } else if back {
-                buf.backspace_edit(sel, pairs)
-            } else {
-                buf.delete_edit(sel)
+            let w = visual_col(&buf.rope, sel.head, tab_width);
+            let (a, h) = (sel.anchor_col(&buf.rope, tab_width), sel.head_col(&buf.rope, tab_width));
+            if sel.is_empty() && a.max(h) > w {
+                let (lo, hi) = (a.min(h), a.max(h));
+                let col = if lo < hi || !back {
+                    lo
+                } else if word {
+                    w
+                } else {
+                    lo - 1
+                };
+                return CaretEdit::keep(sel).virtual_at((col > w).then_some(col));
+            }
+            match (back, word) {
+                (true, false) => buf.backspace_edit(sel, pairs),
+                (false, false) => buf.delete_edit(sel),
+                (true, true) => buf.word_back_edit(sel),
+                (false, true) => buf.word_forward_edit(sel),
             }
         });
-        let col = if back && lo == hi { lo.saturating_sub(1) } else { lo };
-        self.keep_block(Block { anchor: (b.anchor.0, col), head: (b.head.0, col) }, tab_width);
+        if !word && let Some(b) = block {
+            let (lo, hi) = (b.anchor.1.min(b.head.1), b.anchor.1.max(b.head.1));
+            let col = if back && lo == hi { lo.saturating_sub(1) } else { lo };
+            self.keep_block(Block { anchor: (b.anchor.0, col), head: (b.head.0, col) }, tab_width);
+        }
+        self.view.follow_key = None;
         true
     }
 
@@ -106,8 +132,12 @@ impl Buffer {
         }
         let sels = self.view.sels.as_slice();
         let far = if self.view.sels.primary_index() == 0 { sels[sels.len() - 1] } else { sels[0] };
-        let cell = |p: usize| (self.rope.char_to_line(p), visual_col(&self.rope, p, tab_width));
-        Block { anchor: cell(far.anchor), head: cell(self.view.sel().head) }
+        let line = |p: usize| self.rope.char_to_line(p);
+        let head = self.view.sel();
+        Block {
+            anchor: (line(far.anchor), far.anchor_col(&self.rope, tab_width)),
+            head: (line(head.head), head.head_col(&self.rope, tab_width)),
+        }
     }
 
     /// Shift+motion in column selection mode: move the block's head. Left
@@ -182,7 +212,7 @@ fn step_col(buf: &Buffer, line: usize, col: usize, tab_width: usize, forward: bo
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::editor::selection::Selection;
+    use crate::editor::selection::{Selections, Virt};
     use crate::editor::undo::TxKind;
     use crate::editor::view::col_to_char_ceil;
     use ropey::Rope;
@@ -205,7 +235,11 @@ mod tests {
         // 日 is cut by the right edge, so it is in; "ab" is too short.
         assert_eq!(texts(&buf), ["b日", "b日", "", "b日"]);
         let sels = buf.view.sels.as_slice();
-        assert_eq!(sels[2], Selection::point(buf.rope.line_to_char(2) + 2), "the short line: a caret at its end");
+        assert_eq!(
+            sels[2],
+            Selection { virt: Virt { anchor: Some(5), head: Some(7) }, ..Selection::point(buf.rope.line_to_char(2) + 2) },
+            "the short line: a caret at its end with the edges as virtual columns"
+        );
         assert_eq!(buf.view.sels.primary_index(), 3, "the head's line holds the primary");
         assert!(sels[0].anchor < sels[0].head);
         // Dragged right to left and bottom to top: the carets at the left
@@ -220,7 +254,11 @@ mod tests {
         assert_eq!(buf.view.sels.heads().collect::<Vec<_>>(), [4, 12, 18, 23]);
         // Past every line end: carets at the line ends.
         buf.set_block(Block { anchor: (1, 40), head: (2, 50) }, 4);
-        assert_eq!(buf.view.sels.as_slice(), [Selection::point(15), Selection::point(18)]);
+        let v = Virt { anchor: Some(40), head: Some(50) };
+        assert_eq!(
+            buf.view.sels.as_slice(),
+            [Selection { virt: v, ..Selection::point(15) }, Selection { virt: v, ..Selection::point(18) }]
+        );
     }
 
     #[test]
@@ -337,16 +375,16 @@ mod tests {
     }
 
     #[test]
-    fn typing_in_a_block_pads_short_lines() {
+    fn typing_in_a_virtual_pads_short_lines() {
         let make = || {
             let mut buf = b("abcdef\nab\nabcdef\n");
             buf.set_block(Block { anchor: (0, 4), head: (2, 4) }, 4);
             buf
         };
         let buf = make();
-        assert_eq!(buf.block_pads(4), [0, 2, 0]);
+        assert_eq!(buf.virtual_pads(4), [0, 2, 0]);
         let mut buf = make();
-        buf.virtual_pad = buf.block_pads(4);
+        buf.virtual_pad = buf.virtual_pads(4);
         buf.insert("X", TxKind::Typing);
         assert_eq!(buf.rope.to_string(), "abcdXef\nab  X\nabcdXef\n");
         let heads: Vec<usize> = buf.view.sels.iter().map(|s| s.head).collect();
@@ -354,7 +392,7 @@ mod tests {
         buf.undo();
         assert_eq!(buf.rope.to_string(), "abcdef\nab\nabcdef\n", "one undo takes pad and text");
         let mut buf = make();
-        buf.virtual_pad = buf.block_pads(4);
+        buf.virtual_pad = buf.virtual_pads(4);
         buf.insert_char('X', &[]);
         assert_eq!(buf.rope.to_string(), "abcdXef\nab  X\nabcdXef\n");
         assert!(buf.virtual_pad.is_empty(), "the pad is used up");
@@ -364,12 +402,12 @@ mod tests {
     }
 
     #[test]
-    fn no_pads_without_a_live_block() {
+    fn no_pads_without_virtual_space() {
         let mut buf = b("abcdef\nab\n");
-        assert!(buf.block_pads(4).is_empty());
+        assert!(buf.virtual_pads(4).is_empty());
         buf.set_block(Block { anchor: (0, 4), head: (1, 4) }, 4);
         buf.view.set_sel(Selection::point(0));
-        assert!(buf.block_pads(4).is_empty());
+        assert!(buf.virtual_pads(4).is_empty());
     }
 
     #[test]
@@ -380,44 +418,95 @@ mod tests {
             buf
         };
         let mut buf = make("abcdef\nab\nabcdef\n", (0, 4), (2, 4));
-        assert!(buf.block_delete(true, &[], 4));
+        assert!(buf.virtual_delete(true, false, &[], 4));
         assert_eq!(buf.rope.to_string(), "abcef\nab\nabcef\n");
         assert_eq!(buf.view.block, Some(Block { anchor: (0, 3), head: (2, 3) }));
-        assert_eq!(buf.block_pads(4), [0, 1, 0]);
-        assert!(buf.block_delete(true, &[], 4));
+        assert_eq!(buf.virtual_pads(4), [0, 1, 0]);
+        assert!(buf.virtual_delete(true, false, &[], 4));
         assert_eq!(buf.rope.to_string(), "abef\nab\nabef\n");
         assert_eq!(buf.view.block, Some(Block { anchor: (0, 2), head: (2, 2) }));
-        assert_eq!(buf.block_pads(4), [0, 0, 0]);
-        assert!(buf.block_delete(true, &[], 4));
+        assert!(buf.virtual_pads(4).is_empty());
+        assert!(buf.virtual_delete(true, false, &[], 4));
         assert_eq!(buf.rope.to_string(), "aef\na\naef\n");
         assert!(buf.undo());
         assert_eq!(buf.rope.to_string(), "abcdef\nab\nabcdef\n");
 
         let mut buf = make("abcdef\nab\nabcdef\n", (0, 4), (2, 4));
-        assert!(buf.block_delete(false, &[], 4));
+        assert!(buf.virtual_delete(false, false, &[], 4));
         assert_eq!(buf.rope.to_string(), "abcdf\nab\nabcdf\n");
         assert_eq!(buf.view.block, Some(Block { anchor: (0, 4), head: (2, 4) }));
 
         for back in [true, false] {
             let mut buf = make("abcdef\nab\nabcdef\nabc\n", (0, 2), (3, 4));
-            assert!(buf.block_delete(back, &[], 4));
+            assert!(buf.virtual_delete(back, false, &[], 4));
             assert_eq!(buf.rope.to_string(), "abef\nab\nabef\nab\n");
             assert_eq!(buf.view.block, Some(Block { anchor: (0, 2), head: (3, 2) }));
         }
 
         let mut buf = make("ab\nab\n", (0, 5), (1, 5));
-        assert!(buf.block_delete(true, &[], 4));
+        assert!(buf.virtual_delete(true, false, &[], 4));
         assert_eq!(buf.rope.to_string(), "ab\nab\n");
         assert!(!buf.undo());
         assert_eq!(buf.view.block, Some(Block { anchor: (0, 4), head: (1, 4) }));
 
         let mut buf = make(TEXT, (0, 4), (1, 4));
-        assert!(buf.block_delete(true, &[], 4));
+        assert!(buf.virtual_delete(true, false, &[], 4));
         assert_eq!(buf.rope.to_string(), "ab日本語x\nab日本語x\nab\n\tab日本語x\n");
         assert!(buf.view.block.is_none());
 
         let mut buf = b("ab\n");
-        assert!(!buf.block_delete(true, &[], 4));
+        assert!(!buf.virtual_delete(true, false, &[], 4));
         assert_eq!(buf.rope.to_string(), "ab\n");
+    }
+
+    #[test]
+    fn ctrl_backspace_and_ctrl_delete_in_virtual_space() {
+        let mut buf = b("foo bar\nab\nfoo bar\n");
+        buf.set_block(Block { anchor: (0, 7), head: (2, 7) }, 4);
+        assert!(buf.virtual_delete(true, true, &[], 4));
+        assert_eq!(buf.text(), "foo \nab\nfoo \n");
+        assert!(buf.view.sels.iter().all(|s| !s.is_virtual()));
+        assert_eq!(buf.view.sels.as_slice()[1].head, 7);
+        assert!(buf.undo());
+        assert_eq!(buf.text(), "foo bar\nab\nfoo bar\n");
+        assert_eq!(buf.view.sels.as_slice()[1].virt.head, Some(7));
+        buf.set_block(Block { anchor: (0, 3), head: (2, 3) }, 4);
+        assert!(buf.virtual_delete(false, true, &[], 4));
+        assert_eq!(buf.text(), "foobar\nab\nfoobar\n");
+        assert_eq!(buf.view.sels.as_slice()[1].virt.head, Some(3));
+    }
+
+    #[test]
+    fn virtual_delete_without_a_block() {
+        let mut buf = b("abcdef\nab\n");
+        buf.view.sels = Selections::new(vec![Selection::point(3), Selection::virtual_point(9, 5)], 1);
+        assert!(buf.virtual_delete(true, false, &[], 4));
+        assert_eq!(buf.text(), "abdef\nab\n");
+        assert_eq!(buf.view.sels.as_slice()[1].virt.head, Some(4));
+        // 4 -> 3 -> 2: the second Backspace lands on the line end.
+        for _ in 0..2 {
+            assert!(buf.virtual_delete(true, false, &[], 4));
+        }
+        let s = buf.view.sels.as_slice()[1];
+        assert_eq!(visual_col(&buf.rope, s.head, 4), 2);
+        assert_eq!(s.virt, Virt::default());
+        assert_eq!(buf.text(), "def\nab\n", "only line 0 lost chars");
+    }
+
+    #[test]
+    fn no_virtual_space_under_soft_wrap() {
+        let mut buf = b("abcdef\nab\nabcdef\n");
+        buf.set_block(Block { anchor: (0, 4), head: (2, 4) }, 4);
+        buf.view.wrap.on = true;
+        assert!(buf.virtual_pads(4).is_empty());
+        assert!(!buf.virtual_delete(true, false, &[], 4));
+    }
+
+    #[test]
+    fn current_block_starts_at_virtual_columns() {
+        let mut buf = b("abcdefgh\nab\nabcdefgh\n");
+        buf.view.set_sel(Selection::virtual_point(11, 6));
+        assert!(buf.extend_block(Motion::Down, 10, 4));
+        assert_eq!(buf.current_block(4), Block { anchor: (1, 6), head: (2, 6) });
     }
 }

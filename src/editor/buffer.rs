@@ -149,8 +149,8 @@ pub struct Buffer {
     pub disk_mtime: Option<std::time::SystemTime>,
     /// Version the editor's idle autosave timer last saw.
     pub autosave_seen: u64,
-    /// Spaces each caret's next insert first adds, set from a live column
-    /// block's short lines (`Buffer::block_pads`) and taken by
+    /// Spaces each caret's next insert first adds, set from the carets in
+    /// virtual space (`Buffer::virtual_pads`) and taken by
     /// [`Buffer::edit_carets`].
     pub(crate) virtual_pad: Vec<usize>,
     /// Version of the last snapshot of unsaved edits taken
@@ -746,19 +746,25 @@ impl Buffer {
     }
 
     pub fn delete_word_back(&mut self) {
-        self.edit_carets(|b, sel| {
-            let p = sel.head;
-            let r = if sel.is_empty() { selection::prev_word_boundary(&b.rope, p)..p } else { sel.range() };
-            if r.is_empty() { CaretEdit::keep(sel) } else { CaretEdit::replace(r, "", TxKind::Other) }
-        });
+        self.edit_carets(|b, sel| b.word_back_edit(sel));
+    }
+
+    /// Ctrl+Backspace at one caret: a selection goes, else the word before.
+    pub(super) fn word_back_edit(&self, sel: Selection) -> CaretEdit {
+        let p = sel.head;
+        let r = if sel.is_empty() { selection::prev_word_boundary(&self.rope, p)..p } else { sel.range() };
+        if r.is_empty() { CaretEdit::keep(sel) } else { CaretEdit::replace(r, "", TxKind::Other) }
     }
 
     pub fn delete_word_forward(&mut self) {
-        self.edit_carets(|b, sel| {
-            let p = sel.head;
-            let r = if sel.is_empty() { p..selection::next_word_boundary(&b.rope, p) } else { sel.range() };
-            if r.is_empty() { CaretEdit::keep(sel) } else { CaretEdit::replace(r, "", TxKind::Other) }
-        });
+        self.edit_carets(|b, sel| b.word_forward_edit(sel));
+    }
+
+    /// Ctrl+Delete at one caret: a selection goes, else the word after.
+    pub(super) fn word_forward_edit(&self, sel: Selection) -> CaretEdit {
+        let p = sel.head;
+        let r = if sel.is_empty() { p..selection::next_word_boundary(&self.rope, p) } else { sel.range() };
+        if r.is_empty() { CaretEdit::keep(sel) } else { CaretEdit::replace(r, "", TxKind::Other) }
     }
 
     /// Newline at every caret, keeping the line's indentation, one level
@@ -840,9 +846,9 @@ impl Buffer {
     }
 
     /// A tab at every caret with hard tabs, else spaces up to the next
-    /// indent stop of the caret's visual column. A caret in a column
-    /// block's virtual space (`virtual_pad`, which `edit_carets` prepends)
-    /// counts from the block's column.
+    /// indent stop of the caret's visual column. A caret in virtual space
+    /// (`virtual_pad` from `Buffer::virtual_pads`, which `edit_carets`
+    /// prepends) counts from its virtual column.
     pub fn insert_tab(&mut self, tab_width: usize) {
         let (hard, w) = (self.indent.hard_tabs, self.indent.width.max(1));
         let pads = if self.virtual_pad.len() == self.view.sels.len() { self.virtual_pad.clone() } else { Vec::new() };

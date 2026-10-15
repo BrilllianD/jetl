@@ -975,6 +975,9 @@ impl Editor {
                 let Some(b) = self.active_buffer_mut() else { return true };
                 let v = &mut b.view;
                 v.wrap.on ^= true;
+                // Virtual space is off under soft wrap; a block would pad again once it is off.
+                v.sels.clear_virt();
+                v.block = None;
                 // Desired columns change meaning (chars or row x).
                 for (_, d) in v.sels.iter_mut_desired() {
                     *d = None;
@@ -1004,7 +1007,8 @@ impl Editor {
         if !matches!(a, E::ExpandSelection | E::ShrinkSelection | E::Copy | E::ScrollUp(_) | E::ScrollDown(_)) {
             b.view.expand_stack.clear();
         }
-        b.virtual_pad = if matches!(a, E::InsertChar(_) | E::InsertText(_) | E::InsertTab) { b.block_pads(tab_width) } else { Vec::new() };
+        b.virtual_pad =
+            if matches!(a, E::InsertChar(_) | E::InsertText(_) | E::InsertTab) { b.virtual_pads(tab_width) } else { Vec::new() };
         let pairs = || if auto_close { brackets::pairs(b.language().map(|d| d.name)) } else { &[] };
         match a {
             E::InsertChar(c) => b.insert_char(*c, pairs()),
@@ -1038,17 +1042,25 @@ impl Editor {
             E::ToggleCase => b.toggle_case(),
             E::Backspace => {
                 let p = pairs();
-                if !b.block_delete(true, p, tab_width) {
+                if !b.virtual_delete(true, false, p, tab_width) {
                     b.backspace_pairs(p);
                 }
             }
             E::Delete => {
-                if !b.block_delete(false, &[], tab_width) {
+                if !b.virtual_delete(false, false, &[], tab_width) {
                     b.delete_forward();
                 }
             }
-            E::DeleteWordBack => b.delete_word_back(),
-            E::DeleteWordForward => b.delete_word_forward(),
+            E::DeleteWordBack => {
+                if !b.virtual_delete(true, true, &[], tab_width) {
+                    b.delete_word_back();
+                }
+            }
+            E::DeleteWordForward => {
+                if !b.virtual_delete(false, true, &[], tab_width) {
+                    b.delete_word_forward();
+                }
+            }
             E::Move(m, extend) => {
                 let page = rows.saturating_sub(1).max(1);
                 // In column selection mode Shift+arrows, Home and End move
@@ -3248,7 +3260,7 @@ mod tests {
 
     #[test]
     fn paste_into_a_block_pads_short_lines() {
-        let mut ed = editor_with("virtual.txt", "abcdef\nab\nabcdef\n");
+        let mut ed = editor_with("virtual.log", "abcdef\nab\nabcdef\n");
         let tw = ed.tab_display(&ed.buffers[0]);
         ed.buffers[0].set_block(view_state::Block { anchor: (0, 4), head: (2, 4) }, tw);
         act(&mut ed, EditorAction::InsertText("1\n2\n3".into()));
@@ -3259,7 +3271,7 @@ mod tests {
 
     #[test]
     fn tab_in_a_block_pads_short_lines() {
-        let mut ed = editor_with("virtual-tab.txt", "abcdef\nab\nabcdef\n");
+        let mut ed = editor_with("virtual-tab.log", "abcdef\nab\nabcdef\n");
         let tw = ed.tab_display(&ed.buffers[0]);
         ed.buffers[0].indent = indent::IndentStyle::spaces(4);
         ed.buffers[0].set_block(view_state::Block { anchor: (0, 5), head: (2, 5) }, tw);
@@ -3272,7 +3284,7 @@ mod tests {
 
     #[test]
     fn tab_in_a_wide_block_aligns_every_caret() {
-        let mut ed = editor_with("virtual-tab-wide.txt", "abcdefgh\nabcdefgh\nab\n");
+        let mut ed = editor_with("virtual-tab-wide.log", "abcdefgh\nabcdefgh\nab\n");
         let tw = ed.tab_display(&ed.buffers[0]);
         ed.buffers[0].indent = indent::IndentStyle::spaces(4);
         ed.buffers[0].set_block(view_state::Block { anchor: (0, 5), head: (2, 6) }, tw);
@@ -3283,7 +3295,7 @@ mod tests {
 
     #[test]
     fn hard_tab_in_a_block_pads_short_lines() {
-        let mut ed = editor_with("virtual-tab-hard.txt", "abcdef\nab\nabcdef\n");
+        let mut ed = editor_with("virtual-tab-hard.log", "abcdef\nab\nabcdef\n");
         let tw = ed.tab_display(&ed.buffers[0]);
         ed.buffers[0].indent = indent::IndentStyle::tabs(4);
         ed.buffers[0].set_block(view_state::Block { anchor: (0, 5), head: (2, 5) }, tw);
@@ -3295,7 +3307,7 @@ mod tests {
 
     #[test]
     fn enter_in_a_block_does_not_pad() {
-        let mut ed = editor_with("virtual-enter.txt", "abcdef\nab\nabcdef\n");
+        let mut ed = editor_with("virtual-enter.log", "abcdef\nab\nabcdef\n");
         let tw = ed.tab_display(&ed.buffers[0]);
         ed.buffers[0].set_block(view_state::Block { anchor: (0, 4), head: (2, 4) }, tw);
         act(&mut ed, EditorAction::InsertNewline);
@@ -3304,7 +3316,7 @@ mod tests {
 
     #[test]
     fn backspace_in_a_block_keeps_short_lines() {
-        let mut ed = editor_with("virtual-bs.txt", "abcdef\nab\nabcdef\n");
+        let mut ed = editor_with("virtual-bs.log", "abcdef\nab\nabcdef\n");
         let tw = ed.tab_display(&ed.buffers[0]);
         ed.buffers[0].set_block(view_state::Block { anchor: (0, 4), head: (2, 4) }, tw);
         act(&mut ed, EditorAction::Backspace);
@@ -3312,5 +3324,17 @@ mod tests {
         assert_eq!(ed.buffers[0].rope.to_string(), "abcf\nab\nabcf\n");
         act(&mut ed, EditorAction::InsertChar('X'));
         assert_eq!(ed.buffers[0].rope.to_string(), "abcXf\nab X\nabcXf\n");
+    }
+
+    #[test]
+    fn turning_soft_wrap_on_ends_virtual_space() {
+        let mut ed = editor_with("wrap-gap.log", "abcdef\nab\nabcdef\n");
+        let tw = ed.tab_display(&ed.buffers[0]);
+        ed.buffers[0].set_block(view_state::Block { anchor: (0, 4), head: (2, 4) }, tw);
+        act(&mut ed, EditorAction::ToggleSoftWrap);
+        assert!(ed.buffers[0].view.block.is_none());
+        assert!(ed.buffers[0].view.sels.iter().all(|s| !s.is_virtual()));
+        act(&mut ed, EditorAction::InsertChar('X'));
+        assert_eq!(ed.buffers[0].rope.to_string(), "abcdXef\nabX\nabcdXef\n");
     }
 }
