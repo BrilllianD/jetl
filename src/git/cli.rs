@@ -212,7 +212,9 @@ pub fn apply_args(cached: bool, reverse: bool) -> Vec<String> {
 /// leaves out, and `--date-order` lists no parent before its children.
 /// A branch filter of `All` (or the default with `all`) walks branches,
 /// remote branches, tags and HEAD, not `--all`: that would add `refs/stash`
-/// and other refs such as yman's `refs/yman/*`.
+/// and other refs such as yman's `refs/yman/*`. `--ignore-missing` lets an
+/// unborn HEAD (fresh `git init`, `checkout --orphan`) drop out instead of
+/// failing the whole log with `bad revision 'HEAD'`.
 pub fn log_args(skip: usize, count: usize, all: bool, filter: &LogFilter) -> Vec<String> {
     let mut v = args(&["log", "--parents", "--date-order", "--no-color"]);
     v.push(format!("-n{count}"));
@@ -230,10 +232,11 @@ pub fn log_args(skip: usize, count: usize, all: bool, filter: &LogFilter) -> Vec
         v.push(format!("--author={}", filter.author));
     }
     v.push("--format=%H%x1f%P%x1f%h%x1f%an%x1f%ar%x1f%D%x1f%s".into());
+    const REFS: [&str; 5] = ["--ignore-missing", "--branches", "--remotes", "--tags", "HEAD"];
     match &filter.rev {
         LogRev::Rev(rev) => v.push(rev.clone()),
-        LogRev::All => v.extend(args(&["--branches", "--remotes", "--tags", "HEAD"])),
-        LogRev::Default if all => v.extend(args(&["--branches", "--remotes", "--tags", "HEAD"])),
+        LogRev::All => v.extend(args(&REFS)),
+        LogRev::Default if all => v.extend(args(&REFS)),
         LogRev::Default | LogRev::Head => {}
     }
     v.push("--".into());
@@ -379,7 +382,8 @@ mod tests {
 
     #[test]
     fn log_args_page() {
-        let has_all = |a: &[String]| ["--branches", "--remotes", "--tags", "HEAD"].iter().all(|w| a.contains(&w.to_string()));
+        let has_all =
+            |a: &[String]| ["--ignore-missing", "--branches", "--remotes", "--tags", "HEAD"].iter().all(|w| a.contains(&w.to_string()));
         let a = log_args(500, 500, false, &LogFilter::default());
         assert!(a.contains(&"--skip=500".to_string()));
         assert!(a.contains(&"-n500".to_string()));
@@ -465,6 +469,33 @@ mod tests {
             assert!(subjects.contains(&want), "{want} in {subjects:?}");
         }
         assert!(!subjects.contains(&"yman"), "{subjects:?}");
+    }
+
+    #[tokio::test]
+    async fn log_all_survives_an_unborn_head() {
+        let dir = std::env::temp_dir().join(format!("jetl-log-unborn-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let run = |a: &[&str]| {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&dir)
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(a)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {a:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        run(&["init", "-q"]);
+        std::fs::write(dir.join("f.txt"), "one").unwrap();
+        run(&["add", "f.txt"]);
+        run(&["commit", "-qm", "one"]);
+        run(&["checkout", "-q", "--orphan", "other"]);
+        let out = git(&dir, &log_args(0, 100, true, &LogFilter::default())).await.unwrap();
+        let log = parse_log(&out.stdout_text());
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(log.len(), 1, "{log:?}");
+        assert_eq!(log[0].subject, "one");
     }
 
     #[tokio::test]
