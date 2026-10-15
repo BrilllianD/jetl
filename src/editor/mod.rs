@@ -1065,9 +1065,12 @@ impl Editor {
             E::Move(m, extend) => {
                 let page = rows.saturating_sub(1).max(1);
                 // In column selection mode Shift+arrows, Home and End move
-                // the block's corner instead.
+                // the block's corner instead, and plain arrows step through
+                // virtual space.
                 let block = self.column_mode && *extend && b.blocks_supported() && b.extend_block(*m, page, tab_width);
-                if !block {
+                if !block && self.column_mode && !*extend && b.blocks_supported() {
+                    b.move_virtual(*m, page, tab_width);
+                } else if !block {
                     let rows = Rows::view(&b.view.folds, &b.view.wrap, &b.view.fillers, &b.rope, b.version);
                     apply_motion_all(&b.rope, &rows, &mut b.view.sels, *m, *extend, page, tab_width);
                 }
@@ -1382,7 +1385,13 @@ impl Editor {
                     }
                     // Past a wrapped row's end `p` is the next row's first
                     // char: only a caret drawn on the clicked row is there.
-                    let hit = if up {
+                    // Past a line's end (soft wrap off) the caret goes on the
+                    // clicked cell, in virtual space.
+                    let virt = b.virtual_caret(cell_at(b, m.x, m.y), tab_width);
+                    let hit = if let Some(v) = &virt {
+                        let vc = v.head_col(&b.rope, tab_width);
+                        b.view.sels.iter().position(|s| s.is_empty() && s.head == v.head && s.head_col(&b.rope, tab_width) == vc)
+                    } else if up {
                         b.view
                             .sels
                             .iter()
@@ -1393,9 +1402,7 @@ impl Editor {
                     match hit.filter(|_| b.view.sels.is_multi()) {
                         Some(i) => b.view.sels.remove(i),
                         None => {
-                            let mut s = Selection::point(p);
-                            s.upstream = up;
-                            b.view.sels.push(s, true);
+                            b.view.sels.push(virt.unwrap_or(Selection { upstream: up, ..Selection::point(p) }), true);
                         }
                     }
                     b.undo.break_group = true;
@@ -1437,7 +1444,7 @@ impl Editor {
                         if extend {
                             b.set_block(view_state::Block { anchor, head }, tab_width);
                         } else {
-                            b.view.set_sel(Selection::point(p));
+                            b.view.set_sel(b.virtual_caret(head, tab_width).filter(|_| m.x >= text_area.x).unwrap_or(Selection::point(p)));
                         }
                         self.drag = Some((g, DragMode::Column(anchor)));
                     }
@@ -2214,6 +2221,84 @@ mod tests {
         act(&mut ed, EditorAction::Move(Motion::Down, true));
         assert_eq!(ed.active_buffer().unwrap().view.sels.len(), 1);
         assert_eq!(ed.status_position().as_deref(), Some("Ln 5, Col 1 (3 chars)"));
+    }
+
+    const VIRT_TEXT: &str = "abcdefgh\nab\nabcdefgh\n";
+
+    fn head_virt(ed: &Editor) -> (usize, Option<usize>) {
+        let s = ed.active_buffer().unwrap().view.sel();
+        (s.head, s.virt.head)
+    }
+
+    #[test]
+    fn alt_click_past_a_line_end_adds_a_virtual_caret() {
+        let (mut ed, x0, y0) = drawn(VIRT_TEXT);
+        let click = |ed: &mut Editor| mouse_path(ed, KeyModifiers::ALT, &[(x0 + 6, y0 + 1)]);
+        click(&mut ed);
+        assert_eq!(ed.active_buffer().unwrap().view.sels.len(), 2);
+        assert_eq!(head_virt(&ed), (11, Some(6)));
+        assert_eq!(ed.status_position().as_deref(), Some("Ln 2, Col 7 (2 carets)"));
+        act(&mut ed, EditorAction::InsertChar('X'));
+        assert_eq!(ed.active_buffer().unwrap().text(), "Xabcdefgh\nab    X\nabcdefgh\n");
+        act(&mut ed, EditorAction::Undo);
+        assert_eq!(ed.active_buffer().unwrap().text(), VIRT_TEXT);
+        assert_eq!(head_virt(&ed), (11, Some(6)));
+        click(&mut ed);
+        assert_eq!(ed.active_buffer().unwrap().view.sels.len(), 1);
+        click(&mut ed);
+        act(&mut ed, EditorAction::DeleteWordBack);
+        assert_eq!(ed.active_buffer().unwrap().text(), VIRT_TEXT);
+        assert_eq!(head_virt(&ed), (11, None));
+    }
+
+    #[test]
+    fn column_mode_click_and_arrows_use_virtual_space() {
+        let (mut ed, x0, y0) = drawn(VIRT_TEXT);
+        act(&mut ed, EditorAction::ToggleColumnMode);
+        mouse_path(&mut ed, KeyModifiers::NONE, &[(x0 + 6, y0 + 1)]);
+        let status = |ed: &Editor| ed.status_position().unwrap();
+        assert_eq!(status(&ed), "Ln 2, Col 7 Column");
+        assert_eq!(ed.active_buffer().unwrap().view.sels.len(), 1);
+        let mv = |ed: &mut Editor, m| {
+            act(ed, EditorAction::Move(m, false));
+        };
+        mv(&mut ed, Motion::Right);
+        assert_eq!(status(&ed), "Ln 2, Col 8 Column");
+        for _ in 0..5 {
+            mv(&mut ed, Motion::Left);
+        }
+        assert_eq!(status(&ed), "Ln 2, Col 3 Column");
+        assert_eq!(head_virt(&ed), (11, None));
+        mv(&mut ed, Motion::Left);
+        assert_eq!(status(&ed), "Ln 2, Col 2 Column");
+        mv(&mut ed, Motion::Right);
+        mv(&mut ed, Motion::Right);
+        assert_eq!(status(&ed), "Ln 2, Col 4 Column");
+        assert_eq!(head_virt(&ed), (11, Some(3)));
+        mv(&mut ed, Motion::Up);
+        assert_eq!(status(&ed), "Ln 1, Col 4 Column");
+        assert_eq!(head_virt(&ed), (3, None));
+        mv(&mut ed, Motion::Down);
+        assert_eq!(status(&ed), "Ln 2, Col 4 Column");
+        assert_eq!(head_virt(&ed), (11, Some(3)));
+        mv(&mut ed, Motion::Down);
+        assert_eq!(status(&ed), "Ln 3, Col 4 Column");
+        assert_eq!(head_virt(&ed), (15, None));
+        mv(&mut ed, Motion::Up);
+        act(&mut ed, EditorAction::InsertChar('Y'));
+        assert_eq!(ed.active_buffer().unwrap().text(), "abcdefgh\nab Y\nabcdefgh\n");
+    }
+
+    #[test]
+    fn up_down_from_a_virtual_caret_outside_column_mode() {
+        let (mut ed, x0, y0) = drawn(VIRT_TEXT);
+        mouse_path(&mut ed, KeyModifiers::ALT, &[(x0 + 6, y0 + 1)]);
+        act(&mut ed, EditorAction::Escape);
+        assert_eq!(head_virt(&ed), (11, Some(6)));
+        act(&mut ed, EditorAction::Move(Motion::Down, false));
+        assert_eq!(head_virt(&ed), (18, None));
+        act(&mut ed, EditorAction::Move(Motion::Up, false));
+        assert_eq!(head_virt(&ed), (11, None));
     }
 
     #[test]

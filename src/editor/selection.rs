@@ -560,7 +560,7 @@ pub fn apply_motion(
                 }
                 None => {
                     let (line, _) = pos_to_line_col(rope, head);
-                    let col = desired_col.unwrap_or_else(|| visual_col(rope, head, tab_width));
+                    let col = desired_col.unwrap_or_else(|| sel.head_col(rope, tab_width));
                     *desired_col = Some(col);
                     match vertical_target(rows, Row::line(line), m, page) {
                         Some(target) => col_to_char(rope, target.line, col, tab_width),

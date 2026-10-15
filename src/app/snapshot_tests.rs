@@ -309,6 +309,25 @@ async fn editor_carets_column_past_widest() {
 }
 
 #[tokio::test]
+async fn editor_carets_column_virtual_arrows() {
+    let mut fx = stable_app("carets-column-virtual-arrows");
+    let app = &mut fx.app;
+    load(app, "cols.log", "abcdefgh\nab\nab\nabcdefgh\n");
+    editor(app, EditorAction::ToggleColumnMode);
+    moves(app, Motion::Right, 6);
+    editor(app, EditorAction::Move(Motion::Down, true));
+    moves(app, Motion::Down, 2);
+    moves(app, Motion::Right, 3);
+    let term = draw_editor(app, 40, 8);
+    let marks = editor_marks(&app.theme);
+    assert_snapshot!("editor_carets_column_virtual_arrows", snapshot(&term, &marks, None));
+    editor(app, EditorAction::InsertChar('X'));
+    let term = draw_editor(app, 40, 8);
+    let marks = editor_marks(&app.theme);
+    assert_snapshot!("editor_carets_column_virtual_arrows_typed", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
 async fn editor_occurrences() {
     let mut fx = stable_app("occurrences");
     let app = &mut fx.app;

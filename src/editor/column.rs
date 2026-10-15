@@ -4,7 +4,7 @@
 
 use super::buffer::{Buffer, CaretEdit};
 use super::rows::{Row, Rows};
-use super::selection::{Selection, indent_of, line_len_no_eol, next_word_boundary, prev_word_boundary, vertical_target};
+use super::selection::{Selection, apply_motion, indent_of, line_len_no_eol, next_word_boundary, prev_word_boundary, vertical_target};
 use super::view::{block_selections, col_to_char, layout_line, visual_col};
 use super::view_state::Block;
 use crate::actions::Motion;
@@ -34,6 +34,53 @@ impl Buffer {
         let b = self.view.block?;
         let rows = Rows::new(&self.view.folds, self.rope.len_lines());
         (block_selections(&self.rope, &rows, b.anchor, b.head, tab_width) == self.view.sels).then_some(b)
+    }
+
+    /// The caret a click on cell (line, visual column) puts in virtual
+    /// space: at its line's end on that column, when the cell is past the
+    /// end (soft wrap off).
+    pub fn virtual_caret(&self, (line, col): (usize, usize), tab_width: usize) -> Option<Selection> {
+        if !self.blocks_supported() || line >= self.rope.len_lines() {
+            return None;
+        }
+        let end = self.rope.line_to_char(line) + line_len_no_eol(&self.rope, line);
+        (col > visual_col(&self.rope, end, tab_width)).then(|| Selection::virtual_point(end, col))
+    }
+
+    /// A motion in column selection mode (without Shift). Right at or past
+    /// a line end steps one column into virtual space, Left in virtual space
+    /// one column back down to the line end, and Up/Down/PageUp/PageDown
+    /// keep each caret's column on lines too short for it. Other motions
+    /// act as usual.
+    pub fn move_virtual(&mut self, m: Motion, page: usize, tab_width: usize) {
+        let rows = Rows::view(&self.view.folds, &self.view.wrap, &self.view.fillers, &self.rope, self.version);
+        let rope = &self.rope;
+        for (s, d) in self.view.sels.iter_mut_desired() {
+            let line = rope.char_to_line(s.head.min(rope.len_chars()));
+            let end = rope.line_to_char(line) + line_len_no_eol(rope, line);
+            let w = visual_col(rope, end, tab_width);
+            let col = s.head_col(rope, tab_width);
+            if m == Motion::Left && s.is_empty() && col > w {
+                *s = if col - 1 > w { Selection::virtual_point(end, col - 1) } else { Selection::point(end) };
+                *d = None;
+            } else if m == Motion::Right && s.is_empty() && s.head == end {
+                *s = Selection::virtual_point(end, col + 1);
+                *d = None;
+            } else {
+                apply_motion(rope, &rows, s, m, false, d, page, tab_width);
+                if matches!(m, Motion::Up | Motion::Down | Motion::PageUp | Motion::PageDown)
+                    && let Some(c) = *d
+                {
+                    let head = s.head.min(rope.len_chars());
+                    let hl = rope.char_to_line(head);
+                    if hl != line && head == rope.line_to_char(hl) + line_len_no_eol(rope, hl) && c > visual_col(rope, head, tab_width) {
+                        *s = Selection::virtual_point(head, c);
+                    }
+                }
+            }
+        }
+        self.view.sels.normalize();
+        self.view.follow_key = None;
     }
 
     /// Per caret, the spaces its line lacks to reach the left column of its
