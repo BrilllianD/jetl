@@ -881,6 +881,12 @@ git -C $T log --oneline -1             # unchanged
 # then Ctrl+D: a tab "Diff of 2 commits (<top8>…)" with two "==" sections.
 # with `[git] log_page = 2` in $C/config.toml (plus `[lsp] enabled = false`) and three commits, a Ctrl+click on the second
 # (last loaded) row loads the third commit.
+# fold sub-scenario: a commit that changes two files (a.txt at lines 2 and 25, b.txt at line 5), Ctrl+D on it: in the
+# "Diff <sha8>" tab a ▾ marks the "==" line, each "diff --git" line and each "@@" line and nothing else;
+# Alt+, on a hunk header collapses it ("@@ … @@…", ▸, the next row is the next hunk); Alt+, again collapses
+# the file; Alt+. opens the file with the hunk still collapsed; Alt+> expands all, Alt+< collapses all (only
+# the "== <sha8> <subject>…" row and the empty last line); a click on the ▸ opens it to the file rows.
+# With two Ctrl+clicked commits, Alt+< leaves two "==" rows with the empty separator row between them.
 /tmp/tm.sh kill-server
 ```
 

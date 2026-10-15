@@ -1,6 +1,6 @@
 //! Code folding: the collapsed regions of a view ([`Folds`], one per
 //! `ViewState`, so split panes fold independently) and the regions that can
-//! fold (`fold_candidates`, from the syntax tree or, without one, from the
+//! fold (`fold_candidates`, from the syntax tree, in patch tabs from the diff's sections, or else from the
 //! indentation).
 //!
 //! A fold is two char anchors mapped through every edit like carets. Its
@@ -421,15 +421,18 @@ impl Buffer {
         folds
     }
 
-    /// Patch tabs get no indent folds: their `+`/`-`/space prefixes make
-    /// indentation meaningless.
+    /// Patch tabs fold by `== ` commit, `diff ` file and `@@` hunk sections
+    /// (`Patch::folds`); their `+`/`-`/space prefixes make indent folds
+    /// meaningless.
     fn find_candidates(&mut self, lines: &Range<usize>) -> Vec<Fold> {
+        if let Some(p) = &self.patch {
+            return per_header(p.folds(&self.rope), &self.rope, lines);
+        }
         match self.fold_tree() {
             Some(tree) => {
                 let all = tree_folds(&tree, &self.rope, |first, last| last >= lines.start && first <= lines.end);
                 per_header(all, &self.rope, lines)
             }
-            None if self.patch.is_some() => Vec::new(),
             None => lines.clone().filter_map(|l| indent_fold(&self.rope, l)).collect(),
         }
     }
@@ -496,13 +499,13 @@ impl Buffer {
     /// The regions that can fold holding `line` (as header or hidden
     /// line), innermost first.
     pub fn fold_chain(&mut self, line: usize) -> Vec<Fold> {
-        let tree = self.fold_tree();
-        let patch = self.patch.is_some();
+        let patch = self.patch.as_ref().map(|p| p.folds(&self.rope));
+        let tree = if patch.is_some() { None } else { self.fold_tree() };
         let rope = &self.rope;
-        let mut folds = match tree {
-            Some(tree) => tree_folds(&tree, rope, |first, last| last >= line && first <= line + 1),
-            None if patch => Vec::new(),
-            None => {
+        let mut folds = match (patch, tree) {
+            (Some(folds), _) => folds,
+            (None, Some(tree)) => tree_folds(&tree, rope, |first, last| last >= line && first <= line + 1),
+            (None, None) => {
                 // Headers above, each indented less than the one below it.
                 let mut out = Vec::new();
                 let mut indent = usize::MAX;
@@ -815,16 +818,45 @@ class A:
         assert_eq!(chain, [(3, 4), (0, 4)]);
     }
 
+    const PATCH_TEXT: &str = "== a1 one\ndiff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n-old\n+new\n same\n@@ -9 +9 @@\n+more\ndiff --git a/y b/y\n@@ -1 +1 @@\n-y\n+y2\n\n== b2 two\n(no changes)\n";
+
+    fn patch_buf() -> Buffer {
+        let mut b = buf("a.txt", PATCH_TEXT);
+        b.patch = Some(crate::editor::patch::Patch::parse(PATCH_TEXT));
+        b.fold_cache = None;
+        b
+    }
+
+    #[test]
+    fn patch_buffers_fold_by_section() {
+        let mut b = patch_buf();
+        assert_eq!(cands(&mut b), [(0, 13), (1, 9), (4, 7), (8, 9), (10, 13), (11, 13), (15, 16)]);
+        let rope = b.rope.clone();
+        let chain: Vec<_> = b.fold_chain(6).iter().map(|f| f.lines(&rope).unwrap()).collect();
+        assert_eq!(chain, [(4, 7), (1, 9), (0, 13)]);
+        assert!(b.fold_chain(14).is_empty());
+    }
+
+    #[test]
+    fn patch_buffers_fold_recursively_and_all() {
+        let mut b = patch_buf();
+        b.view.set_sel(Selection::point(b.rope.line_to_char(1)));
+        b.fold_collapse(true);
+        assert_eq!(spans(&b.view.folds), [(2, 10)]);
+        b.fold_expand(false);
+        assert_eq!(spans(&b.view.folds), [(5, 8), (9, 10)]);
+        b.view.folds.clear();
+        b.fold_collapse_all();
+        assert_eq!(spans(&b.view.folds), [(1, 14), (16, 17)]);
+    }
+
     #[test]
     fn patch_buffers_get_no_indent_folds() {
         let text = "@@ -1,2 +1,2 @@\n-old\n+new\n same\n+more\n  deeper\n";
         let mut b = buf("a.txt", text);
-        assert!(b.syntax.is_none());
-        assert!(!cands(&mut b).is_empty());
         b.patch = Some(crate::editor::patch::Patch::parse(text));
         b.fold_cache = None;
-        assert!(cands(&mut b).is_empty());
-        assert!(b.fold_chain(3).is_empty());
+        assert_eq!(cands(&mut b), [(0, 5)]);
     }
 
     /// Editor-level tests: rendering, motions, mouse and actions over folds.

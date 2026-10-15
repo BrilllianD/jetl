@@ -3,6 +3,10 @@
 
 use std::ops::Range;
 
+use ropey::Rope;
+
+use super::fold::Fold;
+use super::selection::line_len_no_eol;
 use super::view::{DecorLine, LineDecor};
 use crate::config::theme::Theme;
 use crate::util::text::lines_inclusive;
@@ -13,6 +17,18 @@ pub enum PatchLine {
     Removed,
 }
 
+/// A foldable part of a patch text, outer to inner (the derive order is the
+/// nesting order).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Section {
+    /// A `== ` line.
+    Commit,
+    /// A `diff ` line.
+    File,
+    /// An `@@` line.
+    Hunk,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Patch {
     /// Runs of consecutive added or removed lines, sorted.
@@ -21,11 +37,14 @@ pub struct Patch {
     starts: Vec<usize>,
     /// The diff spans the text was built from: the identity of the tab.
     pub spans: Vec<crate::git::model::DiffSpan>,
+    /// Header lines of the text's sections, sorted by line.
+    sections: Vec<(usize, Section)>,
 }
 
 impl Patch {
     /// Lines inside a hunk (after `@@`, until the next `diff ` or `== `
-    /// line) starting with `+` or `-` are changes.
+    /// line) starting with `+` or `-` are changes. The `== `, `diff ` and
+    /// `@@` lines are also recorded as section headers for [`Patch::folds`].
     pub fn parse(text: &str) -> Patch {
         let mut p = Patch::default();
         let mut in_hunk = false;
@@ -33,8 +52,13 @@ impl Patch {
         for (i, line) in lines_inclusive(text).enumerate() {
             if line.starts_with("@@") {
                 in_hunk = true;
-            } else if line.starts_with("diff ") || line.starts_with("== ") {
+                p.sections.push((i, Section::Hunk));
+            } else if line.starts_with("diff ") {
                 in_hunk = false;
+                p.sections.push((i, Section::File));
+            } else if line.starts_with("== ") {
+                in_hunk = false;
+                p.sections.push((i, Section::Commit));
             }
             let kind = match line.as_bytes().first() {
                 Some(b'+') if in_hunk => Some(PatchLine::Added),
@@ -55,6 +79,39 @@ impl Patch {
             }
         }
         p
+    }
+
+    /// The foldable sections, sorted by start: each from its header line to
+    /// the line before the next header of its level or an outer one, trailing
+    /// empty lines left out, ending at the start of the line after its last.
+    pub fn folds(&self, rope: &Rope) -> Vec<Fold> {
+        let n = rope.len_lines();
+        let mut out = Vec::new();
+        let mut open: Vec<(usize, Section)> = Vec::new();
+        let close = |out: &mut Vec<Fold>, h: usize, b: usize| {
+            let mut last = b - 1;
+            while last > h && line_len_no_eol(rope, last) == 0 {
+                last -= 1;
+            }
+            if last > h {
+                out.push(Fold { start: rope.line_to_char(h), end: rope.line_to_char(last + 1) });
+            }
+        };
+        for &(h, s) in self.sections.iter().take_while(|(h, _)| *h < n) {
+            while let Some(&(oh, os)) = open.last() {
+                if os < s {
+                    break;
+                }
+                close(&mut out, oh, h);
+                open.pop();
+            }
+            open.push((h, s));
+        }
+        while let Some((oh, _)) = open.pop() {
+            close(&mut out, oh, n);
+        }
+        out.sort_by_key(|f| f.start);
+        out
     }
 
     pub fn change_starts(&self) -> &[usize] {
@@ -120,5 +177,30 @@ mod tests {
     fn a_new_section_ends_the_hunk() {
         let p = Patch::parse("@@ -1 +1 @@\n+a\n\n== b\n--- not a change\n");
         assert_eq!(p.change_starts(), [1]);
+    }
+
+    fn fold_lines(text: &str) -> Vec<(usize, usize)> {
+        let rope = Rope::from_str(text);
+        Patch::parse(text).folds(&rope).iter().map(|f| f.lines(&rope).unwrap()).collect()
+    }
+
+    #[test]
+    fn sections_nest_commit_file_hunk() {
+        let text = "== a1 one\ndiff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n-old\n+new\n same\n@@ -9 +9 @@\n+more\ndiff --git a/y b/y\n@@ -1 +1 @@\n-y\n+y2\n\n== b2 two\n(no changes)\n";
+        assert_eq!(fold_lines(text), [(0, 13), (1, 9), (4, 7), (8, 9), (10, 13), (11, 13), (15, 16)]);
+    }
+
+    #[test]
+    fn a_hunk_fold_shows_a_plain_placeholder() {
+        let rope = Rope::from_str("@@ -1 +1 @@\n x\n }\n");
+        let folds = Patch::parse(&rope.to_string()).folds(&rope);
+        assert_eq!(folds.len(), 1);
+        assert_eq!(folds[0].lines(&rope), Some((0, 2)));
+        assert_eq!(crate::editor::view::placeholder(&rope, folds[0], 2), "…");
+    }
+
+    #[test]
+    fn a_header_with_nothing_under_it_does_not_fold() {
+        assert_eq!(fold_lines("== a\n\n== b\n x\n"), [(2, 3)]);
     }
 }

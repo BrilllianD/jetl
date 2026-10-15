@@ -141,6 +141,21 @@ async fn editor_patch_tab() {
 }
 
 #[tokio::test]
+async fn editor_patch_tab_folded() {
+    let mut fx = stable_app("patch-tab-folded");
+    let app = &mut fx.app;
+    app.editor.open_patch(
+        "Diff of 2 commits",
+        Vec::new(),
+        "== 1a2b3c4d Fix\ndiff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1,2 +1,2 @@\n-old\n+new\n same\ndiff --git a/b.txt b/b.txt\n--- a/b.txt\n+++ b/b.txt\n@@ -1 +1 @@\n-b\n+b2\n\n== 5e6f7a8b Two\n(no changes)\n",
+    );
+    app.editor.active_buffer_mut().unwrap().toggle_fold(1);
+    let term = draw_editor(app, 60, 16);
+    let marks = [Mark::bg('+', "added", app.theme.diff_add_bg), Mark::bg('-', "removed", app.theme.diff_del_bg)];
+    assert_snapshot!("editor_patch_tab_folded", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
 async fn editor_tab_drag_hint() {
     let mut fx = stable_app("tab-drag-hint");
     let app = &mut fx.app;
