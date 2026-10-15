@@ -83,6 +83,11 @@ impl App {
     /// Run a request a panel made through `Effect::Git`.
     pub(super) fn git_request(&mut self, req: GitRequest) {
         use crate::git::repo;
+        if let Some(ip) = self.in_progress()
+            && req.refused_mid_operation(ip.kind)
+        {
+            return self.notify(Level::Warn, ip.refusal());
+        }
         match req {
             GitRequest::Refresh => self.apply_effects(vec![Effect::GitRefresh]),
             GitRequest::Stage(rels) => {
@@ -163,9 +168,16 @@ impl App {
             }
             GitRequest::BranchOps(b) => {
                 let ops = crate::git::model::BranchOp::for_branch(&b, self.git_panel.snapshot().and_then(|s| s.branch.as_deref()));
+                let mut ops = ops;
+                let mut message = String::new();
+                if let Some(ip) = self.in_progress().filter(|ip| ip.kind.blocks_switching()) {
+                    ops.retain(|(op, _)| !op.refused_mid_operation());
+                    message =
+                        format!("A {} is in progress: checkout, new branch, merge and rebase are hidden until it ends.", ip.kind.name());
+                }
                 let (ops, items): (Vec<_>, Vec<_>) = ops.into_iter().unzip();
                 let title = format!("Branch '{}'", b.name);
-                self.dialog = Some(Dialog::choice(DialogId::BranchOps { branch: b, ops }, &title, "", items));
+                self.dialog = Some(Dialog::choice(DialogId::BranchOps { branch: b, ops }, &title, &message, items));
             }
             GitRequest::Merge(b) => {
                 self.git.run_cli(GitOp::Merge(b.clone()), vec!["merge".into(), "--no-edit".into(), b]);
@@ -235,6 +247,9 @@ impl App {
     }
 
     pub(super) fn switch_branch(&mut self, name: String) {
+        if let Some(ip) = self.in_progress().filter(|ip| ip.kind.blocks_switching()) {
+            return self.notify(Level::Warn, ip.refusal());
+        }
         if self.branch_label().as_deref() == Some(name.as_str()) {
             self.notify(Level::Info, format!("Already on {name}"));
         } else {

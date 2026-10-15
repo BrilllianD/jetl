@@ -8,7 +8,9 @@ use anyhow::{Context, Result, anyhow, bail};
 use git2::{BranchType, IndexAddOption, ObjectType, Repository, Status, StatusOptions};
 
 use super::merge::{ConflictSides, Special};
-use super::model::{Blame, BlameCommit, BranchInfo, ChangeEntry, FileStatus, Section, StashEntry, StatusSnapshot, tree_status};
+use super::model::{
+    Blame, BlameCommit, BranchInfo, ChangeEntry, FileStatus, InProgress, InProgressKind, Section, StashEntry, StatusSnapshot, tree_status,
+};
 
 /// Open the repository containing `root` and return it with its canonical
 /// work tree.
@@ -167,7 +169,34 @@ pub fn status(root: &Path) -> Result<StatusSnapshot> {
     entries.sort_by(|a, b| a.section.cmp(&b.section).then_with(|| a.rel.cmp(&b.rel)));
     let tree = tree_status(&workdir, files);
     let (branch, head) = head_info(&repo);
-    Ok(StatusSnapshot { workdir, entries, tree, branch, head })
+    let in_progress = in_progress(&repo);
+    Ok(StatusSnapshot { workdir, entries, tree, branch, head, in_progress })
+}
+
+/// The operation `repo.state()` reports, with the rebase step.
+fn in_progress(repo: &Repository) -> Option<InProgress> {
+    use git2::RepositoryState as S;
+    let kind = match repo.state() {
+        S::Clean => return None,
+        S::Merge => InProgressKind::Merge,
+        S::Revert | S::RevertSequence => InProgressKind::Revert,
+        S::CherryPick | S::CherryPickSequence => InProgressKind::CherryPick,
+        S::Bisect => InProgressKind::Bisect,
+        S::Rebase | S::RebaseInteractive | S::RebaseMerge | S::ApplyMailboxOrRebase => InProgressKind::Rebase,
+        S::ApplyMailbox => InProgressKind::Am,
+    };
+    let step = if kind == InProgressKind::Rebase { rebase_step(repo.path()) } else { None };
+    Some(InProgress { kind, step })
+}
+
+/// The commit being applied and the total, from git's rebase state files.
+fn rebase_step(gitdir: &Path) -> Option<(usize, usize)> {
+    let read = |rel: &str| -> Option<usize> { std::fs::read_to_string(gitdir.join(rel)).ok()?.trim().parse().ok() };
+    let (n, total) = match (read("rebase-merge/msgnum"), read("rebase-merge/end")) {
+        (Some(n), Some(t)) => (n, t),
+        _ => (read("rebase-apply/next")?, read("rebase-apply/last")?),
+    };
+    (total > 0).then_some((n, total))
 }
 
 /// Current branch name (also for an unborn branch) and HEAD commit sha.
@@ -793,6 +822,44 @@ pub(crate) mod tests {
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();
             std::fs::write(p, text).unwrap();
         }
+    }
+
+    fn marker_status(name: &str, files: &[(&str, &str)]) -> Option<InProgress> {
+        let r = TempRepo::new(name);
+        for (rel, text) in files {
+            r.write(&format!(".git/{rel}"), text);
+        }
+        status(&r.dir).unwrap().in_progress
+    }
+
+    #[test]
+    fn in_progress_is_none_when_clean() {
+        assert_eq!(marker_status("ip-clean", &[]), None);
+    }
+
+    #[test]
+    fn in_progress_reads_merge_head() {
+        let ip = marker_status("ip-merge", &[("MERGE_HEAD", "0123456789012345678901234567890123456789\n")]);
+        assert_eq!(ip, Some(InProgress { kind: InProgressKind::Merge, step: None }));
+    }
+
+    #[test]
+    fn in_progress_reads_rebase_merge_step() {
+        let ip = marker_status("ip-rebase-merge", &[("rebase-merge/msgnum", "2\n"), ("rebase-merge/end", "5\n")]);
+        assert_eq!(ip, Some(InProgress { kind: InProgressKind::Rebase, step: Some((2, 5)) }));
+    }
+
+    #[test]
+    fn in_progress_reads_rebase_apply_step() {
+        let ip =
+            marker_status("ip-rebase-apply", &[("rebase-apply/rebasing", ""), ("rebase-apply/next", "3\n"), ("rebase-apply/last", "4\n")]);
+        assert_eq!(ip, Some(InProgress { kind: InProgressKind::Rebase, step: Some((3, 4)) }));
+    }
+
+    #[test]
+    fn in_progress_reads_cherry_pick_head() {
+        let ip = marker_status("ip-cherry", &[("CHERRY_PICK_HEAD", "0123456789012345678901234567890123456789\n")]);
+        assert_eq!(ip, Some(InProgress { kind: InProgressKind::CherryPick, step: None }));
     }
 
     impl Drop for TempRepo {

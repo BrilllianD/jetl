@@ -232,6 +232,11 @@ impl GitPanel {
     pub(super) fn commit_action(&mut self, action: CommitAction, cx: &mut Ctx) {
         let Some(sha) = self.action_commit(cx) else { return };
         let short = sha[..sha.len().min(8)].to_string();
+        if matches!(action, CommitAction::Checkout | CommitAction::NewBranch | CommitAction::CherryPick | CommitAction::Revert)
+            && let Some(ip) = self.in_progress().filter(|ip| ip.kind.blocks_switching())
+        {
+            return cx.notify(Level::Warn, ip.refusal());
+        }
         match action {
             CommitAction::CopySha => {
                 cx.notify(Level::Info, format!("Copied {sha}"));
@@ -359,13 +364,14 @@ impl GitPanel {
             (self.log_rect.x + 4, self.log_rect.y + row + 1)
         });
         let g = |a| Action::Git(a);
+        let busy = self.in_progress().is_some_and(|ip| ip.kind.blocks_switching());
         let mut items = vec![
             MenuItem::new("Copy Revision Number", g(GitAction::CopySha)),
             MenuItem::new("Show Diff", g(GitAction::LogShowDiff)),
-            MenuItem::new("Checkout Revision", g(GitAction::LogCheckout)),
-            MenuItem::new("New Branch…", g(GitAction::LogNewBranch)),
-            MenuItem::new("Cherry-Pick", g(GitAction::LogCherryPick)),
-            MenuItem::new("Revert Commit…", g(GitAction::LogRevert)),
+            MenuItem::new("Checkout Revision", g(GitAction::LogCheckout)).enabled(!busy),
+            MenuItem::new("New Branch…", g(GitAction::LogNewBranch)).enabled(!busy),
+            MenuItem::new("Cherry-Pick", g(GitAction::LogCherryPick)).enabled(!busy),
+            MenuItem::new("Revert Commit…", g(GitAction::LogRevert)).enabled(!busy),
             MenuItem::new("New Tag…", g(GitAction::LogNewTag)),
             MenuItem::new("Delete Tag…", g(GitAction::LogDeleteTag)),
             MenuItem::new("Filter Log…", g(GitAction::LogFilter)),

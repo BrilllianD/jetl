@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Patch tabs (Git Log Show Diff) fold by commit, file and hunk: each `==`, `diff --git` and `@@` line has a fold marker, and Collapse All leaves one row per commit.
 - Git Log: Shift+Up / Shift+Down select a range of commits, Shift+click extends it and Ctrl+click toggles a row. Show Diff on several commits opens one tab: each run of commits that follow one another by first parent is one diff from its oldest commit's parent to its newest commit, the runs one after another under `==` headers.
 - The Git Log commit menu has a `Branch '<name>' ▸` row for each branch at the commit; it opens that branch's operations. The Branches popup (Alt+`) gained Compare with the current branch (the Log of `HEAD..<branch>`) and Push, and Merge asks first.
+- The Git window header and the status bar show a merge, rebase (with its step, `Rebasing 2/5`), cherry-pick, revert or bisect in progress; while one runs, the Log commit menu greys out Checkout, New Branch, Cherry-Pick and Revert, and the branches popup hides checkout, merge and rebase.
 
 ### Changed
 

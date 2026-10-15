@@ -47,6 +47,13 @@ pub fn render(app: &mut App, frame: &mut Frame, area: Rect) {
         x += w + 2;
     }
 
+    if let Some(ip) = app.in_progress() {
+        let s = ip.label();
+        let w = (s.width() as u16).min(area.right().saturating_sub(x));
+        buf.set_stringn(x, area.y, &s, w as usize, theme.warn.bg(theme.status_bg));
+        x += w + 2;
+    }
+
     // Running git operations.
     if let Some(busy) = app.busy_label() {
         let w = (busy.width() as u16).min(area.width / 3);

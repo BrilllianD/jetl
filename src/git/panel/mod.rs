@@ -22,7 +22,7 @@ use unicode_width::UnicodeWidthStr;
 
 use super::GitRequest;
 use super::diff::DiffDoc;
-use super::model::{BranchInfo, CommitDetails, DiffKey, LogFilter, LogRow, Section, StashEntry, StatusSnapshot};
+use super::model::{BranchInfo, CommitDetails, DiffKey, InProgress, LogFilter, LogRow, Section, StashEntry, StatusSnapshot};
 use crate::actions::GitAction;
 use crate::app::Ctx;
 use crate::config::theme::Theme;
@@ -250,6 +250,11 @@ impl GitPanel {
 
     pub fn branch_label(&self) -> Option<String> {
         self.snapshot.as_ref().and_then(|s| s.label())
+    }
+
+    /// The git operation in progress, from the last status.
+    pub fn in_progress(&self) -> Option<InProgress> {
+        self.snapshot.as_ref().and_then(|s| s.in_progress)
     }
 
     pub fn log_loaded(&self) -> bool {
@@ -687,6 +692,11 @@ impl GitPanel {
             let st = if self.tab == tab { theme.tab_active } else { theme.tab };
             let rect = put(buf, &mut x, r.y, r.right(), label, st);
             self.hits.push((Btn::Tab(tab), rect));
+            x += 1;
+        }
+        if let Some(ip) = self.in_progress() {
+            let label = format!(" {} ", ip.label());
+            put(buf, &mut x, r.y, r.right(), &label, theme.warn.bg(theme.panel_bg));
             x += 1;
         }
         // As many tools as fit, Refresh (F5) dropped first.

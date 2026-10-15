@@ -22,7 +22,9 @@ use anyhow::Result;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::event::AppMsg;
-pub use model::{Blame, BranchInfo, CommitDetails, DiffKey, LogFilter, LogRev, Section, StashEntry, StatusSnapshot};
+pub use model::{
+    Blame, BranchInfo, CommitDetails, DiffKey, InProgress, InProgressKind, LogFilter, LogRev, Section, StashEntry, StatusSnapshot,
+};
 pub use panel::GitPanel;
 pub use repo::BlobWhich;
 
@@ -306,6 +308,24 @@ pub enum GitRequest {
     },
     /// Stage a conflicted path the resolver just wrote (relative to the work tree); runs as GitOp::Resolve.
     StageResolved(String),
+}
+
+impl GitRequest {
+    /// Whether git refuses this request while a `kind` operation is in progress.
+    pub fn refused_mid_operation(&self, kind: model::InProgressKind) -> bool {
+        kind.blocks_switching()
+            && matches!(
+                self,
+                GitRequest::CheckoutCommit(_)
+                    | GitRequest::CherryPick(_)
+                    | GitRequest::Revert(_)
+                    | GitRequest::NewBranchAt { .. }
+                    | GitRequest::NewBranch
+                    | GitRequest::Merge(_)
+                    | GitRequest::Rebase(_)
+                    | GitRequest::CheckoutTracking(_)
+            )
+    }
 }
 
 pub struct GitService {

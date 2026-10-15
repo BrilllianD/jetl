@@ -441,6 +441,27 @@ back with nothing written (`UU a.rs`). With nothing typed, the header's
 yours or theirs changes nothing; Alt+\ and a file picked in Ctrl+N answer "Finish or cancel
 the merge first".
 
+### Scenario: rebase in progress
+
+At 80x24 and at 120x40, in a repository stopped on a rebase conflict:
+
+```sh
+T=/tmp/jt-rebase; rm -rf $T; mkdir -p $T && cd $T && git init -q
+git config user.name t; git config user.email t@t
+echo base > a.txt; echo readme > README.md; git add . && git commit -qm init; main=$(git branch --show-current)
+git switch -qc dev; echo dev > a.txt; git commit -qam 'dev 1'; echo two > b.txt; git add b.txt; git commit -qm 'dev 2'
+git switch -q $main; echo main > a.txt; git commit -qam main; git switch -q dev
+git rebase $main; cd -                          # CONFLICT (content): a.txt
+```
+
+Start jetl on `$T`. Alt+9 opens the Git window. Check:
+
+- The header shows `Rebasing 1/2` after the tabs.
+- The status bar shows it after the short sha.
+- In the Log (Alt+L), Shift+F10 shows Checkout Revision, New Branch…, Cherry-Pick and Revert Commit… greyed.
+- Alt+` then Enter on the main branch lists no Checkout, Merge or Rebase.
+- `git -C $T rebase --abort` (the watcher refreshes) removes the label.
+
 ### Scenario: crash recovery
 
 At 80x24 and at 120x40. The debug build is needed: `app.debug_panic`

@@ -633,6 +633,7 @@ async fn app_project_tree() {
         .collect(),
         branch: Some("main".into()),
         head: None,
+        in_progress: None,
     };
     app.handle_msg(AppMsg::Git(GitMsg::Status { generation: app.git.generation, seq: 1, result: Ok(status) }));
     app.focus.set(PanelId::Project);
@@ -690,6 +691,28 @@ async fn app_git_commit_tab() {
     let marks = diff_marks(&app.theme);
     let bottom = app.layout.rects.bottom;
     assert_snapshot!("app_git_commit_tab", snapshot(&term, &marks, Some(bottom)));
+}
+
+/// A rebase stopped at step 2 of 5: the Git window header and the status
+/// bar both carry the label.
+#[tokio::test]
+async fn git_window_rebasing() {
+    use crate::git::model::{InProgress, InProgressKind};
+    let mut fx = stable_app("git-rebasing");
+    let app = &mut fx.app;
+    git_commit_fixture(app);
+    let mut status = crate::git::repo::status(&app.workspace.root).unwrap();
+    status.branch = None;
+    status.head = Some(sha('a'));
+    status.in_progress = Some(InProgress { kind: InProgressKind::Rebase, step: Some((2, 5)) });
+    app.handle_msg(AppMsg::Git(GitMsg::Status { generation: app.git.generation, seq: 2, result: Ok(status) }));
+    app.dialog = None;
+    let term = draw_app(app, 80, 24);
+    let marks = [
+        Mark::style('w', "in progress (Git window)", app.theme.warn.bg(app.theme.panel_bg)),
+        Mark::style('s', "in progress (status bar)", app.theme.warn.bg(app.theme.status_bg)),
+    ];
+    assert_snapshot!("git_window_rebasing", snapshot(&term, &marks, None));
 }
 
 /// At 80 columns the diff header is cut before the layout toggles instead

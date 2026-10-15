@@ -119,6 +119,62 @@ pub struct StatusSnapshot {
     pub branch: Option<String>,
     /// Full sha of the HEAD commit; `None` on an unborn branch.
     pub head: Option<String>,
+    /// The git operation that stopped halfway, if any.
+    pub in_progress: Option<InProgress>,
+}
+
+/// A git operation that stopped halfway (`git2::RepositoryState`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InProgressKind {
+    Merge,
+    Rebase,
+    CherryPick,
+    Revert,
+    Bisect,
+    Am,
+}
+
+impl InProgressKind {
+    pub fn name(self) -> &'static str {
+        match self {
+            InProgressKind::Merge => "merge",
+            InProgressKind::Rebase => "rebase",
+            InProgressKind::CherryPick => "cherry-pick",
+            InProgressKind::Revert => "revert",
+            InProgressKind::Bisect => "bisect",
+            InProgressKind::Am => "patch application",
+        }
+    }
+
+    /// Bisect checks out commits itself, so git allows switching during it.
+    pub fn blocks_switching(self) -> bool {
+        self != InProgressKind::Bisect
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InProgress {
+    pub kind: InProgressKind,
+    /// Rebase only: the commit being applied and the total (1-based).
+    pub step: Option<(usize, usize)>,
+}
+
+impl InProgress {
+    pub fn label(&self) -> String {
+        match (self.kind, self.step) {
+            (InProgressKind::Rebase, Some((n, total))) => format!("Rebasing {n}/{total}"),
+            (InProgressKind::Rebase, None) => "Rebasing".to_string(),
+            (InProgressKind::Merge, _) => "Merging".to_string(),
+            (InProgressKind::CherryPick, _) => "Cherry-picking".to_string(),
+            (InProgressKind::Revert, _) => "Reverting".to_string(),
+            (InProgressKind::Bisect, _) => "Bisecting".to_string(),
+            (InProgressKind::Am, _) => "Applying patches".to_string(),
+        }
+    }
+
+    pub fn refusal(&self) -> String {
+        format!("A {} is in progress: finish or abort it first", self.kind.name())
+    }
 }
 
 impl StatusSnapshot {
@@ -186,6 +242,11 @@ pub enum BranchOp {
 }
 
 impl BranchOp {
+    /// Whether git refuses this while an operation is in progress.
+    pub fn refused_mid_operation(self) -> bool {
+        matches!(self, BranchOp::Checkout | BranchOp::CheckoutTracking | BranchOp::NewFrom | BranchOp::Merge | BranchOp::Rebase)
+    }
+
     /// The operations for `b`, and their labels (`current` is the branch
     /// checked out now, if any).
     pub fn for_branch(b: &BranchInfo, current: Option<&str>) -> Vec<(BranchOp, String)> {
@@ -402,6 +463,17 @@ impl DiffKey {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn in_progress_labels() {
+        let rb = |step| InProgress { kind: InProgressKind::Rebase, step };
+        assert_eq!(rb(Some((2, 5))).label(), "Rebasing 2/5");
+        assert_eq!(rb(None).label(), "Rebasing");
+        let m = InProgress { kind: InProgressKind::Merge, step: None };
+        assert_eq!(m.label(), "Merging");
+        assert_eq!(m.refusal(), "A merge is in progress: finish or abort it first");
+        assert_eq!(InProgress { kind: InProgressKind::CherryPick, step: None }.label(), "Cherry-picking");
+    }
 
     #[test]
     fn directories_inherit_worst_child() {

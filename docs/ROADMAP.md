@@ -120,6 +120,7 @@ All of section D shipped in Phase 8; the conflict resolver came after split pane
 | Log filters, file history, commit actions | M | Extend `cli::log`; actions through `GitOp` |
 | Branch delete/rename/remote/merge/rebase, tags | M | CLI for merge/rebase |
 | Conflict resolver (3-pane merge) | L | Done: a temporary layout of split panes over scratch buffers (`editor/merge.rs`) |
+| Operation in progress (header, status bar, refused actions) | S-M | `repo.state()` in `StatusSnapshot`; done (yman 247) |
 
 ### E. Shell, terminal, run
 

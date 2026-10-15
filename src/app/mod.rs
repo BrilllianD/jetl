@@ -453,6 +453,11 @@ impl App {
         self.git_panel.branch_label()
     }
 
+    /// The git operation in progress, from the last status.
+    pub fn in_progress(&self) -> Option<crate::git::model::InProgress> {
+        self.git_panel.in_progress()
+    }
+
     /// The busy spinner's current frame.
     pub fn spinner(&self) -> &'static str {
         const FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -2577,6 +2582,64 @@ pub(crate) mod tests {
         assert!(app.notifications.iter().any(|n| n.text.starts_with("Merge stopped on conflicts")), "{:?}", app.notifications);
         let snap = crate::git::repo::status(&app.workspace.root).unwrap();
         assert_eq!(snap.entries[0].status, crate::git::model::FileStatus::Conflicted);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn in_progress_merge_greys_and_refuses_switching() {
+        use crate::actions::GitAction;
+        use crate::git::model::{BranchOp, InProgress, InProgressKind};
+        let (mut app, dir) = test_app("in-progress");
+        init_repo(&app, &[("a.txt", "a\n")]);
+        let root = app.workspace.root.clone();
+        let main = crate::git::repo::status(&root).unwrap().branch.unwrap();
+        git(&app, &["switch", "-qc", "dev"]);
+        std::fs::write(root.join("a.txt"), "dev\n").unwrap();
+        git(&app, &["commit", "-qam", "dev change"]);
+        git(&app, &["switch", "-q", &main]);
+        std::fs::write(root.join("a.txt"), "main\n").unwrap();
+        git(&app, &["commit", "-qam", "main change"]);
+        app.git_request(crate::git::GitRequest::Merge("dev".into()));
+        handle_next(&mut app, git_op_done).await;
+        feed_status(&mut app, 2);
+        app.dialog = None;
+        assert_eq!(app.in_progress(), Some(InProgress { kind: InProgressKind::Merge, step: None }));
+        // The Log menu greys out the switching rows.
+        app.git_panel.branches = crate::git::repo::branches(&root).unwrap();
+        app.perform(Action::Git(GitAction::TabLog));
+        let filter = app.git_panel.log_filter().clone();
+        let out =
+            std::process::Command::new("git").args(crate::git::cli::log_args(0, 100, true, &filter)).current_dir(&root).output().unwrap();
+        let rows = crate::git::cli::parse_log(&String::from_utf8_lossy(&out.stdout));
+        let g = app.git.generation;
+        app.handle_msg(AppMsg::Git(GitMsg::Log { generation: g, skip: 0, filter, result: Ok(rows) }));
+        app.perform(Action::Git(GitAction::ContextMenu));
+        let menu = app.menu.as_ref().expect("context menu");
+        let enabled = |label: &str| menu.items.iter().find(|i| i.label == label).unwrap_or_else(|| panic!("{label}")).enabled;
+        for label in ["Checkout Revision", "New Branch…", "Cherry-Pick", "Revert Commit…"] {
+            assert!(!enabled(label), "{label}");
+        }
+        assert!(enabled("Copy Revision Number") && enabled("Show Diff"));
+        app.menu = None;
+        // The action itself refuses.
+        let refusal = "A merge is in progress: finish or abort it first";
+        app.perform(Action::Git(GitAction::LogCherryPick));
+        assert_eq!(app.notifications.last().unwrap().text, refusal);
+        assert!(app.git.busy.is_empty());
+        // The branches popup leaves out the switching operations.
+        let dev = crate::git::repo::branches(&root).unwrap().into_iter().find(|b| b.name == "dev").unwrap();
+        app.git_request(crate::git::GitRequest::BranchOps(dev));
+        let d = app.dialog.take().expect("branch operations");
+        let DialogId::BranchOps { ops, .. } = &d.id else { panic!("{:?}", d.id) };
+        for op in [BranchOp::Merge, BranchOp::Rebase, BranchOp::Checkout, BranchOp::NewFrom] {
+            assert!(!ops.contains(&op), "{op:?}");
+        }
+        assert!(ops.contains(&BranchOp::Delete));
+        assert!(d.message.contains("in progress"), "{}", d.message);
+        // Switching refuses.
+        app.switch_branch("dev".into());
+        assert_eq!(app.notifications.last().unwrap().text, refusal);
+        assert!(app.git.busy.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
