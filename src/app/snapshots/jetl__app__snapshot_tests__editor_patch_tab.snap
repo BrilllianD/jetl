@@ -10,7 +10,7 @@ expression: "snapshot(&term, &marks, None)"
 04   4    +++ b/a.txt
 05   5    @@ -1,2 +1,2 @@
 06   6    -old
-07   7  ▾ +new
+07   7    +new
 08   8     same
 09   9
 10

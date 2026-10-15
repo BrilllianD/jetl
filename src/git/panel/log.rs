@@ -292,6 +292,11 @@ impl GitPanel {
         self.log_list.selected
     }
 
+    #[cfg(test)]
+    pub(crate) fn log_loading(&self) -> bool {
+        self.log_loading.is_some()
+    }
+
     /// Select only the cursor row.
     fn reset_log_sel(&mut self) {
         self.log_sel.clear();
@@ -330,6 +335,7 @@ impl GitPanel {
         self.log_list.select(to);
         self.log_anchor = to;
         self.sync_details(cx);
+        self.maybe_page_log(cx);
     }
 
     /// Open the combined diff of the selected commits in an editor tab.

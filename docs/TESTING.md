@@ -855,6 +855,8 @@ git -C $T log --oneline -1             # unchanged
 # the details start with "3 commits selected"; Ctrl+D: one tab "Diff <oldest8>..<newest8>" with one "==" header;
 # Down: one row again. Ctrl+click on rows 1 and 3 (SGR button 16: press 16 <col> <row>; release 16 <col> <row>),
 # then Ctrl+D: a tab "Diff of 2 commits (<top8>…)" with two "==" sections.
+# with `[git] log_page = 2` in $C/config.toml (plus `[lsp] enabled = false`) and three commits, a Ctrl+click on the second
+# (last loaded) row loads the third commit.
 /tmp/tm.sh kill-server
 ```
 

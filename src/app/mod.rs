@@ -2671,6 +2671,42 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn log_ctrl_click_on_the_last_row_fetches_the_next_page() {
+        use crate::actions::GitAction;
+        use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+        let (mut app, dir) = test_app("log-ctrl-page");
+        init_repo(&app, &[("x.txt", "x=1\n")]);
+        let root = app.workspace.root.clone();
+        for v in ["x=2", "x=3"] {
+            std::fs::write(root.join("x.txt"), format!("{v}\n")).unwrap();
+            git(&app, &["commit", "-qam", v]);
+        }
+        feed_status(&mut app, 1);
+        app.toggle_tool_window(ToolWindowId::Git);
+        app.perform(Action::Git(GitAction::TabLog));
+        let filter = app.git_panel.log_filter().clone();
+        let out =
+            std::process::Command::new("git").args(crate::git::cli::log_args(0, 100, true, &filter)).current_dir(&root).output().unwrap();
+        let rows = crate::git::cli::parse_log(&String::from_utf8_lossy(&out.stdout));
+        assert_eq!(rows.len(), 3);
+        let g = app.git.generation;
+        // A full first page does not mark the log as ended.
+        app.git_panel.set_log_page(3);
+        app.handle_msg(AppMsg::Git(GitMsg::Log { generation: g, skip: 0, filter, result: Ok(rows) }));
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 30)).unwrap();
+        term.draw(|f| crate::ui::render(&mut app, f)).unwrap();
+        assert!(!app.git_panel.log_loading());
+        let r = app.git_panel.log_rect();
+        let (column, row) = (r.x + 3, r.y + 2);
+        let modifiers = KeyModifiers::CONTROL;
+        app.handle_mouse(MouseEvent { kind: MouseEventKind::Down(MouseButton::Left), column, row, modifiers });
+        app.handle_mouse(MouseEvent { kind: MouseEventKind::Up(MouseButton::Left), column, row, modifiers });
+        assert_eq!(app.git_panel.log_selection(), [0, 2]);
+        assert!(app.git_panel.log_loading());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
     async fn log_multi_select_combines_a_first_parent_range() {
         use crate::actions::GitAction;
         use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};

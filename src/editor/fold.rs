@@ -421,12 +421,15 @@ impl Buffer {
         folds
     }
 
+    /// Patch tabs get no indent folds: their `+`/`-`/space prefixes make
+    /// indentation meaningless.
     fn find_candidates(&mut self, lines: &Range<usize>) -> Vec<Fold> {
         match self.fold_tree() {
             Some(tree) => {
                 let all = tree_folds(&tree, &self.rope, |first, last| last >= lines.start && first <= lines.end);
                 per_header(all, &self.rope, lines)
             }
+            None if self.patch.is_some() => Vec::new(),
             None => lines.clone().filter_map(|l| indent_fold(&self.rope, l)).collect(),
         }
     }
@@ -494,9 +497,11 @@ impl Buffer {
     /// line), innermost first.
     pub fn fold_chain(&mut self, line: usize) -> Vec<Fold> {
         let tree = self.fold_tree();
+        let patch = self.patch.is_some();
         let rope = &self.rope;
         let mut folds = match tree {
             Some(tree) => tree_folds(&tree, rope, |first, last| last >= line && first <= line + 1),
+            None if patch => Vec::new(),
             None => {
                 // Headers above, each indented less than the one below it.
                 let mut out = Vec::new();
@@ -808,6 +813,18 @@ class A:
         let rope = b.rope.clone();
         let chain: Vec<_> = b.fold_chain(4).iter().map(|f| f.lines(&rope).unwrap()).collect();
         assert_eq!(chain, [(3, 4), (0, 4)]);
+    }
+
+    #[test]
+    fn patch_buffers_get_no_indent_folds() {
+        let text = "@@ -1,2 +1,2 @@\n-old\n+new\n same\n+more\n  deeper\n";
+        let mut b = buf("a.txt", text);
+        assert!(b.syntax.is_none());
+        assert!(!cands(&mut b).is_empty());
+        b.patch = Some(crate::editor::patch::Patch::parse(text));
+        b.fold_cache = None;
+        assert!(cands(&mut b).is_empty());
+        assert!(b.fold_chain(3).is_empty());
     }
 
     /// Editor-level tests: rendering, motions, mouse and actions over folds.
