@@ -881,12 +881,30 @@ git -C $T log --oneline -1             # unchanged
 # then Ctrl+D: a tab "Diff of 2 commits (<top8>…)" with two "==" sections.
 # with `[git] log_page = 2` in $C/config.toml (plus `[lsp] enabled = false`) and three commits, a Ctrl+click on the second
 # (last loaded) row loads the third commit.
-# fold sub-scenario: a commit that changes two files (a.txt at lines 2 and 25, b.txt at line 5), Ctrl+D on it: in the
-# "Diff <sha8>" tab a ▾ marks the "==" line, each "diff --git" line and each "@@" line and nothing else;
-# Alt+, on a hunk header collapses it ("@@ … @@…", ▸, the next row is the next hunk); Alt+, again collapses
-# the file; Alt+. opens the file with the hunk still collapsed; Alt+> expands all, Alt+< collapses all (only
-# the "== <sha8> <subject>…" row and the empty last line); a click on the ▸ opens it to the file rows.
-# With two Ctrl+clicked commits, Alt+< leaves two "==" rows with the empty separator row between them.
+# fold sub-scenario, in a fresh scratch repo $T (tmux session started on it as above): a commit that changes two
+# files (a.txt at lines 2 and 25, b.txt at line 5)
+seq 1 30 > $T/a.txt; seq 1 30 > $T/b.txt
+git -C $T add . && git -C $T -c user.name=t -c user.email=t@t commit -qm 'two files'
+sed -i -e 's/^2$/two/' -e 's/^25$/twenty-five/' $T/a.txt; sed -i 's/^5$/five/' $T/b.txt
+git -C $T -c user.name=t -c user.email=t@t commit -qam 'fold me'
+/tmp/tm.sh send-keys -t jetl M-9; /tmp/tm.sh send-keys -t jetl M-l   # Log tab, "fold me" on top
+/tmp/tm.sh send-keys -t jetl C-d; sleep 1   # Show Diff: tab "Diff <sha8>"
+# at 80x24 the Git window leaves 7 editor rows (and a warning toast covers some): Alt+9 twice (the first moves the focus
+# to the editor, the second hides the window), wait for the toast to go; Alt+9 shows the window again
+/tmp/tm.sh send-keys -t jetl M-9; /tmp/tm.sh send-keys -t jetl M-9
+# ▾ on line 1 (==), lines 2 and 22 (diff --git) and lines 6, 13 and 26 (@@), and on no other line
+/tmp/tm.sh send-keys -t jetl C-g; /tmp/tm.sh send-keys -t jetl -l '8'; /tmp/tm.sh send-keys -t jetl Enter   # a line of hunk 1
+/tmp/tm.sh send-keys -t jetl M-,           # hunk 1 collapsed: line 6 "@@ -1,5 +1,5 @@…" with ▸, the next row is line 13
+/tmp/tm.sh send-keys -t jetl M-,           # a.txt collapsed: line 2 "diff --git a/a.txt b/a.txt…" ▸, the next row is line 22
+/tmp/tm.sh send-keys -t jetl M-.           # a.txt open again, hunk 1 still collapsed
+/tmp/tm.sh send-keys -t jetl 'M->'         # expand all (Alt+Shift+.)
+/tmp/tm.sh send-keys -t jetl 'M-<'         # collapse all: only line 1 "== <sha8> fold me…" (▸) and the empty last line 35
+# click the ▸ of line 1 (the first ▸ after the "││" of the second screen row; column 42 at 80x24 and 120x40):
+# lines 1, 2 (▸) and 22 (▸) are shown, the files still collapsed
+press 0 42 2; release 0 42 2
+/tmp/tm.sh send-keys -t jetl 'M->'         # everything open again
+# With the Git window shown again (Alt+9), two Ctrl+clicked commits that are not neighbours (here "fold me" and "init"; SGR button 16: press 16 <col> <row>;
+# release 16 <col> <row>), Ctrl+D, Alt+<: two "==" rows with the empty separator row between them.
 /tmp/tm.sh kill-server
 ```
 

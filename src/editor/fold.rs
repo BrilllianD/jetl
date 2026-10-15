@@ -1,7 +1,7 @@
 //! Code folding: the collapsed regions of a view ([`Folds`], one per
 //! `ViewState`, so split panes fold independently) and the regions that can
-//! fold (`fold_candidates`, from the syntax tree, in patch tabs from the diff's sections, or else from the
-//! indentation).
+//! fold (`fold_candidates`, from the syntax tree, in patch tabs from the
+//! diff's sections, or else from the indentation).
 //!
 //! A fold is two char anchors mapped through every edit like carets. Its
 //! header line (the one holding `start`) stays visible; the lines after it
