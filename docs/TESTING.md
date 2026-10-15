@@ -946,6 +946,27 @@ press 0 42 2; release 0 42 2
 
 Real terminals often keep Shift+click for their own text selection, so Shift+Up/Down is the dependable route to a range.
 
+### Scenario: push options and stash untracked
+
+Setup:
+
+```sh
+T=/tmp/jt-push; R=/tmp/jt-push.git; rm -rf $T $R; git init -q --bare $R; mkdir -p $T && cd $T && git init -q
+git config user.name t; git config user.email t@t
+echo a > a.txt; git add . && git commit -qm init; git remote add origin $R; git push -qu origin HEAD; git tag v1; cd -
+```
+
+In jetl, Git > Push…:
+
+- T toggles Tags (`[x]`, the `Runs:` line updates); Push.
+- `git -C $T ls-remote --tags origin` lists v1.
+- Run `git -C $T commit -q --amend -m two`.
+- Git > Push (plain) fails with `failed to push`.
+- Git > Push…, F, Push succeeds.
+- Stash tab (Alt+T): with `new.txt` untracked, click `[ ] Untracked`, then `[Stash…]`, Enter.
+- `new.txt` is gone and `git -C $T stash show --include-untracked --name-only` lists it.
+- `[Pop]` brings it back.
+
 ### Scenario: palette on a huge tree
 
 200000 files (exactly the file index cap), language servers off, a

@@ -268,8 +268,8 @@ impl App {
                 }
             }
             (DialogId::RevertCommit { sha }, DialogResult::Button(0)) => self.git_request(crate::git::GitRequest::Revert(sha)),
-            (DialogId::StashMessage, DialogResult::Text(message)) => {
-                self.git_request(crate::git::GitRequest::Stash(crate::git::repo::StashOp::Push { message }))
+            (DialogId::StashMessage { untracked }, DialogResult::Text(message)) => {
+                self.git_request(crate::git::GitRequest::Stash(crate::git::repo::StashOp::Push { message, untracked }))
             }
             (DialogId::StashDrop { oid }, DialogResult::Button(0)) => {
                 self.git_request(crate::git::GitRequest::Stash(crate::git::repo::StashOp::Drop { oid }))

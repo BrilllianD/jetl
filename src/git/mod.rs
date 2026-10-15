@@ -297,6 +297,12 @@ pub enum GitRequest {
         op: GitOp,
     },
     Push,
+    /// Git > Push…: the dialog with tags and force with lease.
+    PushDialog,
+    PushWith {
+        tags: bool,
+        force_lease: bool,
+    },
     Pull,
     Fetch,
     BranchesPopup,

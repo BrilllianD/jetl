@@ -2345,7 +2345,7 @@ pub(crate) mod tests {
         app.perform(Action::Git(GitAction::TabStash));
         app.perform(Action::Git(GitAction::StashPush));
         let d = app.dialog.take().expect("asks for a message");
-        assert_eq!(d.id, DialogId::StashMessage);
+        assert_eq!(d.id, DialogId::StashMessage { untracked: false });
         app.finish_dialog(d.id, DialogResult::Text("wip".into()));
         handle_next(&mut app, git_op_done).await;
         assert_eq!(std::fs::read_to_string(&a).unwrap(), "a\n");
@@ -2372,7 +2372,7 @@ pub(crate) mod tests {
         init_repo(&app, &[("a.txt", "a\n")]);
         let root = app.workspace.root.clone();
         std::fs::write(root.join("a.txt"), "mine\n").unwrap();
-        repo::stash(&root, &repo::StashOp::Push { message: "wip".into() }).unwrap();
+        repo::stash(&root, &repo::StashOp::Push { message: "wip".into(), untracked: false }).unwrap();
         std::fs::write(root.join("a.txt"), "head\n").unwrap();
         repo::stage_all(&root).unwrap();
         repo::commit(&root, "second").unwrap();

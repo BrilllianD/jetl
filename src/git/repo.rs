@@ -677,8 +677,11 @@ pub fn stashes(root: &Path) -> Result<Vec<StashEntry>> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StashOp {
     /// Stash tracked changes; an empty message lets git write "WIP on …".
+    /// `untracked` stashes untracked files too; that runs through the CLI
+    /// (`cli::stash_push_args`), not here.
     Push {
         message: String,
+        untracked: bool,
     },
     /// The stash is named by its commit, so a list that changed since it was
     /// shown cannot hit the wrong entry.
@@ -708,7 +711,10 @@ pub fn stash(root: &Path, op: &StashOp) -> Result<String> {
         found.ok_or_else(|| anyhow!("That stash no longer exists; the list changed"))
     };
     Ok(match op {
-        StashOp::Push { message } => {
+        StashOp::Push { message, untracked } => {
+            if *untracked {
+                bail!("stash push with untracked files runs through the git command line (cli::stash_push_args)")
+            }
             let sig = signature(&repo)?;
             let msg = Some(message.trim()).filter(|m| !m.is_empty());
             match repo.stash_save2(&sig, msg, None) {
@@ -1049,7 +1055,7 @@ pub(crate) mod tests {
         r.write("a.txt", "a\n");
         stage_all(&r.dir).unwrap();
         commit(&r.dir, "first").unwrap();
-        let push = |m: &str| stash(&r.dir, &StashOp::Push { message: m.into() });
+        let push = |m: &str| stash(&r.dir, &StashOp::Push { message: m.into(), untracked: false });
         assert!(push("x").unwrap_err().to_string().contains("No local changes"));
         r.write("a.txt", "one\n");
         push("first change").unwrap();
@@ -1090,7 +1096,7 @@ pub(crate) mod tests {
         stage_all(&r.dir).unwrap();
         commit(&r.dir, "first").unwrap();
         r.write("a.txt", "mine\n");
-        stash(&r.dir, &StashOp::Push { message: "wip".into() }).unwrap();
+        stash(&r.dir, &StashOp::Push { message: "wip".into(), untracked: false }).unwrap();
         r.write("a.txt", "head\n");
         stage_all(&r.dir).unwrap();
         commit(&r.dir, "second").unwrap();

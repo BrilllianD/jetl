@@ -193,6 +193,32 @@ pub fn args(a: &[&str]) -> Vec<String> {
     a.iter().map(|s| s.to_string()).collect()
 }
 
+/// `git push` with the options of the Push dialog: the branch first
+/// (with `--force-with-lease` when asked; never a plain force), then all
+/// tags (`git push --tags` alone pushes only tags).
+pub fn push_steps(force_lease: bool, tags: bool) -> Vec<Vec<String>> {
+    let mut first = args(&["push"]);
+    if force_lease {
+        first.push("--force-with-lease".into());
+    }
+    let mut steps = vec![first];
+    if tags {
+        steps.push(args(&["push", "--tags"]));
+    }
+    steps
+}
+
+/// `git stash push --include-untracked`, with `-m <message>` when the trimmed message is not empty.
+pub fn stash_push_args(message: &str) -> Vec<String> {
+    let mut v = args(&["stash", "push", "--include-untracked"]);
+    let m = message.trim();
+    if !m.is_empty() {
+        v.push("-m".into());
+        v.push(m.into());
+    }
+    v
+}
+
 /// `git apply` of a patch on stdin: to the index (`cached`) or the work
 /// tree, forwards or reversed.
 pub fn apply_args(cached: bool, reverse: bool) -> Vec<String> {
@@ -324,6 +350,26 @@ pub async fn commits_diff(root: &Path, spans: &[super::model::DiffSpan]) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn push_steps_lease_only() {
+        assert_eq!(push_steps(false, false), vec![args(&["push"])]);
+        assert_eq!(push_steps(true, false), vec![args(&["push", "--force-with-lease"])]);
+        assert_eq!(push_steps(true, true), vec![args(&["push", "--force-with-lease"]), args(&["push", "--tags"])]);
+        for lease in [false, true] {
+            for tags in [false, true] {
+                for a in push_steps(lease, tags).iter().flatten() {
+                    assert!(a != "--force" && a != "-f" && !a.starts_with('+'), "{a}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn stash_push_args_with_and_without_message() {
+        assert_eq!(stash_push_args("  "), args(&["stash", "push", "--include-untracked"]));
+        assert_eq!(stash_push_args(" wip "), args(&["stash", "push", "--include-untracked", "-m", "wip"]));
+    }
 
     #[tokio::test]
     async fn git_runs_in_the_c_locale() {

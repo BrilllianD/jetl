@@ -518,7 +518,9 @@ Reachable from Find Action (F1) or by binding them in `keymap.toml`.
 | `git.abort_operation` | Git: abort the rebase, merge, cherry-pick or revert in progress |
 | `git.log_reset` | Git: reset the current branch to the selected commit (soft, mixed or hard) |
 | `git.commit_and_push` | Git: commit and push |
+| `git.push_options` | Git: push with options (tags, force with lease) |
 | `git.fetch` | Git: fetch |
+| `git.stash_include_untracked` | Git: include untracked files in the next stash (toggle) |
 | `git.focus_message` | Git: focus commit message |
 | `merge.accept_all_left` | Merge: take yours for the whole file |
 | `merge.accept_all_right` | Merge: take theirs for the whole file |

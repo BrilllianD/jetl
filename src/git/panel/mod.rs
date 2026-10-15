@@ -85,6 +85,7 @@ enum Btn {
     CommitPush,
     Back,
     StashPush,
+    StashUntracked,
     StashPop,
     StashApply,
     StashDrop,
@@ -147,6 +148,8 @@ pub struct GitPanel {
     files_list: ListState,
     log_diff: DiffPane,
     stashes: Vec<StashEntry>,
+    /// Stash push includes untracked files (Stash tab toggle).
+    stash_untracked: bool,
     stash_error: Option<String>,
     stash_list: ListState,
     stash_details: Option<CommitDetails>,
@@ -209,6 +212,7 @@ impl GitPanel {
             files_list: ListState::default(),
             log_diff: DiffPane::new(true),
             stashes: Vec::new(),
+            stash_untracked: false,
             stash_error: None,
             stash_list: ListState::default(),
             stash_details: None,
@@ -406,6 +410,7 @@ impl GitPanel {
                 cx.focus(PanelId::Git);
             }
             G::Push => cx.effects.push(Effect::Git(GitRequest::Push)),
+            G::PushOptions => cx.effects.push(Effect::Git(GitRequest::PushDialog)),
             G::Pull => cx.effects.push(Effect::Git(GitRequest::Pull)),
             G::Fetch => cx.effects.push(Effect::Git(GitRequest::Fetch)),
             G::Branches => cx.effects.push(Effect::Git(GitRequest::BranchesPopup)),
@@ -415,6 +420,7 @@ impl GitPanel {
             G::TabConsole => self.set_tab(GitTab::Console, cx),
             G::TabStash => self.set_tab(GitTab::Stash, cx),
             G::StashPush => self.stash_push(cx),
+            G::StashIncludeUntracked => self.stash_untracked = !self.stash_untracked,
             G::StashPop | G::StashApply | G::StashDrop => {
                 if self.tab != GitTab::Stash {
                     // Pick a stash first; Delete elsewhere does nothing.
@@ -633,6 +639,10 @@ impl GitPanel {
             Btn::Back if self.tab == GitTab::Stash => return self.close_stash_diff(),
             Btn::Back => return self.close_log_diff(),
             Btn::StashPush => return self.stash_push(cx),
+            Btn::StashUntracked => {
+                self.stash_untracked = !self.stash_untracked;
+                return;
+            }
             Btn::StashPop => return self.stash_action(StashAction::Pop, cx),
             Btn::StashApply => return self.stash_action(StashAction::Apply, cx),
             Btn::StashDrop => return self.stash_action(StashAction::Drop, cx),

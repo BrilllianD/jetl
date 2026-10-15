@@ -139,9 +139,13 @@ impl App {
             }
             GitRequest::LoadHeadMessage => self.git.load_head_message(),
             GitRequest::Stash(op) => {
+                if let repo::StashOp::Push { message, untracked: true } = &op {
+                    self.git.run_cli(GitOp::Stash, crate::git::cli::stash_push_args(message));
+                    return;
+                }
                 let label = match &op {
-                    repo::StashOp::Push { message } if message.trim().is_empty() => "stash push".to_string(),
-                    repo::StashOp::Push { message } => format!("stash push: {}", message.trim()),
+                    repo::StashOp::Push { message, .. } if message.trim().is_empty() => "stash push".to_string(),
+                    repo::StashOp::Push { message, .. } => format!("stash push: {}", message.trim()),
                     repo::StashOp::Pop { oid } => format!("stash pop {}", &oid[..oid.len().min(8)]),
                     repo::StashOp::Apply { oid } => format!("stash apply {}", &oid[..oid.len().min(8)]),
                     repo::StashOp::Drop { oid } => format!("stash drop {}", &oid[..oid.len().min(8)]),
@@ -224,6 +228,10 @@ impl App {
             }
             GitRequest::Push => {
                 self.git.run_cli(GitOp::Push, vec!["push".into()]);
+            }
+            GitRequest::PushDialog => self.push_dialog(false, false, 0),
+            GitRequest::PushWith { tags, force_lease } => {
+                self.git.run_cli_steps(GitOp::Push, crate::git::cli::push_steps(force_lease, tags));
             }
             GitRequest::Pull => {
                 let mode = match self.config.git.pull_mode.as_str() {

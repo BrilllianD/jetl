@@ -1548,6 +1548,23 @@ async fn git_reset_dialog() {
 }
 
 #[tokio::test]
+async fn git_push_dialog() {
+    use crate::git::model::StatusSnapshot;
+    use crate::ui::dialog::DialogResult;
+    let mut fx = stable_app("git-push-dialog");
+    let app = &mut fx.app;
+    let g = app.git.generation;
+    let snap = StatusSnapshot { branch: Some("main".into()), ..Default::default() };
+    app.handle_msg(AppMsg::Git(GitMsg::Status { generation: g, seq: 1, result: Ok(snap) }));
+    app.perform(Action::Git(crate::actions::GitAction::PushOptions));
+    let d = app.dialog.take().unwrap();
+    app.finish_dialog(d.id, DialogResult::Button(1));
+    let term = draw_app(app, 80, 24);
+    let marks = [Mark::style('B', "selected button", app.theme.list_selected)];
+    assert_snapshot!("git_push_dialog", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
 async fn git_stash_tab() {
     use crate::git::model::{CommitDetails, CommitFile, StashEntry};
     let mut fx = stable_app("git-stash");

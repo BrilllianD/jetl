@@ -84,8 +84,13 @@ impl GitPanel {
 
     /// Ask for a message, then stash tracked changes.
     pub(super) fn stash_push(&mut self, cx: &mut Ctx) {
-        let msg = "Stash local changes to tracked files (untracked files stay).\nMessage (optional):";
-        cx.effects.push(Effect::Dialog(Dialog::input(DialogId::StashMessage, "Stash", msg, "", "Stash")));
+        let msg = if self.stash_untracked {
+            "Stash local changes, untracked files included.\nMessage (optional):"
+        } else {
+            "Stash local changes to tracked files (untracked files stay).\nMessage (optional):"
+        };
+        let id = DialogId::StashMessage { untracked: self.stash_untracked };
+        cx.effects.push(Effect::Dialog(Dialog::input(id, "Stash", msg, "", "Stash")));
     }
 
     /// Pop, apply or drop (after a confirmation) the selected stash.
@@ -161,8 +166,15 @@ impl GitPanel {
         }
         // Toolbar, then the list on the left and the files on the right.
         let mut x = body.x;
-        for (b, label) in [(Btn::StashPush, "[Stash…]"), (Btn::StashPop, "[Pop]"), (Btn::StashApply, "[Apply]"), (Btn::StashDrop, "[Drop]")]
-        {
+        let untracked = if self.stash_untracked { "[x] Untracked" } else { "[ ] Untracked" };
+        let toolbar = [
+            (Btn::StashPush, "[Stash…]"),
+            (Btn::StashUntracked, untracked),
+            (Btn::StashPop, "[Pop]"),
+            (Btn::StashApply, "[Apply]"),
+            (Btn::StashDrop, "[Drop]"),
+        ];
+        for (b, label) in toolbar {
             let r = put(buf, &mut x, body.y, body.right(), label, theme.title);
             self.hits.push((b, r));
             x += 1;

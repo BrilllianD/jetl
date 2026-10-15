@@ -309,6 +309,7 @@ pub enum GitAction {
     MessageOlder,
     MessageNewer,
     Push,
+    PushOptions,
     Pull,
     Fetch,
     Branches,
@@ -318,6 +319,7 @@ pub enum GitAction {
     TabConsole,
     TabStash,
     StashPush,
+    StashIncludeUntracked,
     StashPop,
     StashApply,
     StashDrop,
@@ -759,6 +761,7 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "git.message_older" => "Git: previous commit message from history", Git(GitAction::MessageOlder);
         "git.message_newer" => "Git: next commit message from history", Git(GitAction::MessageNewer);
         "git.push" => "Git: push", Git(GitAction::Push);
+        "git.push_options" => "Git: push with options (tags, force with lease)", Git(GitAction::PushOptions);
         "git.pull" => "Git: pull (update project)", Git(GitAction::Pull);
         "git.fetch" => "Git: fetch", Git(GitAction::Fetch);
         "git.branches_popup" => "Git: branches", Git(GitAction::Branches);
@@ -768,6 +771,7 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "git.tab_console" => "Git: Console tab", Git(GitAction::TabConsole);
         "git.tab_stash" => "Git: Stash tab", Git(GitAction::TabStash);
         "git.stash_push" => "Git: stash local changes", Git(GitAction::StashPush);
+        "git.stash_include_untracked" => "Git: include untracked files in the next stash (toggle)", Git(GitAction::StashIncludeUntracked);
         "git.stash_pop" => "Git: pop the selected stash", Git(GitAction::StashPop);
         "git.stash_apply" => "Git: apply the selected stash", Git(GitAction::StashApply);
         "git.stash_drop" => "Git: drop the selected stash", Git(GitAction::StashDrop);

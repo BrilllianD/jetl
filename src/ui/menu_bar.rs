@@ -166,6 +166,7 @@ pub const MAIN_MENU: &[(&str, char, &[Row])] = &[
             Item("Commit…", "git.commit_box"),
             Item("Commit and Push", "git.commit_and_push"),
             Item("Push", "git.push"),
+            Item("Push…", "git.push_options"),
             Item("Pull", "git.pull"),
             Item("Fetch", "git.fetch"),
             Sep,

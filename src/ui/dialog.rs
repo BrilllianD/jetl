@@ -101,8 +101,15 @@ pub enum DialogId {
     ResetHard {
         sha: String,
     },
-    /// Message for a new stash.
-    StashMessage,
+    /// Message for a new stash; `untracked` stashes untracked files too.
+    StashMessage {
+        untracked: bool,
+    },
+    /// Push options. Button 0 pushes, 1 and 2 toggle.
+    PushOptions {
+        tags: bool,
+        force_lease: bool,
+    },
     /// Drop the stash with this commit id.
     StashDrop {
         oid: String,
