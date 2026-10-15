@@ -9,6 +9,15 @@ use super::rows::{Row, Rows};
 use super::view::{char_to_row_x, col_to_char, row_x_to_char, visual_col};
 use crate::actions::Motion;
 
+/// Virtual space: the visual columns past their line's end that the anchor and
+/// the head stand on. Each is set only while that end is at its line's end;
+/// range logic never reads them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Virt {
+    pub anchor: Option<usize>,
+    pub head: Option<usize>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Selection {
     pub anchor: usize,
@@ -16,14 +25,33 @@ pub struct Selection {
     /// Soft wrap: the head is at the first char of a continuation row and is
     /// drawn at the end of the row above. Meaningless anywhere else.
     pub upstream: bool,
+    /// Virtual columns of the anchor and the head (column selection mode).
+    pub virt: Virt,
 }
 
 impl Selection {
     pub fn point(p: usize) -> Self {
-        Self { anchor: p, head: p, upstream: false }
+        Self { anchor: p, head: p, upstream: false, virt: Virt::default() }
     }
     pub fn new(anchor: usize, head: usize) -> Self {
-        Self { anchor, head, upstream: false }
+        Self { anchor, head, upstream: false, virt: Virt::default() }
+    }
+    /// A caret at `p` (a line end) standing on virtual column `col`.
+    pub fn virtual_point(p: usize, col: usize) -> Self {
+        Self { virt: Virt { anchor: Some(col), head: Some(col) }, ..Self::point(p) }
+    }
+    /// Visual column of the head, virtual space included.
+    pub fn head_col(&self, rope: &Rope, tab_width: usize) -> usize {
+        let c = visual_col(rope, self.head.min(rope.len_chars()), tab_width);
+        self.virt.head.map_or(c, |v| v.max(c))
+    }
+    /// Visual column of the anchor, virtual space included.
+    pub fn anchor_col(&self, rope: &Rope, tab_width: usize) -> usize {
+        let c = visual_col(rope, self.anchor.min(rope.len_chars()), tab_width);
+        self.virt.anchor.map_or(c, |v| v.max(c))
+    }
+    pub fn is_virtual(&self) -> bool {
+        self.virt != Virt::default()
     }
     pub fn range(&self) -> Range<usize> {
         self.anchor.min(self.head)..self.anchor.max(self.head)
@@ -33,10 +61,12 @@ impl Selection {
     }
     pub fn collapse(&mut self) {
         self.anchor = self.head;
+        self.virt.anchor = self.virt.head;
     }
     pub fn set_head(&mut self, head: usize, extend: bool) {
         self.head = head;
         self.upstream = false;
+        self.virt = Virt::default();
         if !extend {
             self.anchor = head;
         }
@@ -189,7 +219,8 @@ impl Selections {
     /// where one side is a bare caret). A merged selection keeps the
     /// direction of the member holding the primary (else of its first
     /// non-empty member), and the primary follows into it. Two carets at one
-    /// place merge into a caret with the primary member's upstream flag.
+    /// place merge into a caret with the primary member's upstream flag and the
+    /// primary member's virtual columns (else the first member's that has any).
     pub fn normalize(&mut self) {
         if self.ranges.len() == 1 {
             return;
@@ -206,7 +237,10 @@ impl Selections {
                     // Direction: the primary member's, else the first non-empty one's.
                     let lead = if (p && !s.is_empty()) || last.0.is_empty() { s } else { last.0 };
                     let d = if p { d } else { last.1 };
-                    let mut merged = lead.with_range(r);
+                    let mut merged = lead.with_range(r.clone());
+                    if lead.range() == r {
+                        merged.virt = lead.virt;
+                    }
                     if merged.is_empty() {
                         merged.upstream = if p {
                             s.upstream
@@ -214,6 +248,13 @@ impl Selections {
                             last.0.upstream
                         } else {
                             last.0.upstream || s.upstream
+                        };
+                        merged.virt = if p {
+                            s.virt
+                        } else if last.2 || last.0.is_virtual() {
+                            last.0.virt
+                        } else {
+                            s.virt
                         };
                     }
                     *last = (merged, d, last.2 || p);
@@ -256,6 +297,31 @@ impl Selections {
             s.clamp(len);
         }
         self.normalize();
+    }
+
+    /// Drop every caret's virtual columns.
+    pub fn clear_virt(&mut self) {
+        for s in &mut self.ranges {
+            s.virt = Virt::default();
+        }
+    }
+
+    /// An edit elsewhere moved the text under a kept caret: its virtual
+    /// columns go unless it is still at its line's end.
+    pub fn drop_stale_virt(&mut self, rope: &Rope) {
+        let at_end = |pos: usize| {
+            let pos = pos.min(rope.len_chars());
+            let l = rope.char_to_line(pos);
+            pos == rope.line_to_char(l) + line_len_no_eol(rope, l)
+        };
+        for s in &mut self.ranges {
+            if s.virt.anchor.is_some() && !at_end(s.anchor) {
+                s.virt.anchor = None;
+            }
+            if s.virt.head.is_some() && !at_end(s.head) {
+                s.virt.head = None;
+            }
+        }
     }
 
     pub fn reset_desired(&mut self) {
@@ -581,6 +647,52 @@ mod tests {
         assert_eq!((s.len(), s.iter().next().unwrap().head, s.iter().next().unwrap().upstream), (1, 10, true));
         let s = Selections::new(vec![Selection::point(10), up], 0);
         assert_eq!((s.len(), s.iter().next().unwrap().upstream), (1, false));
+    }
+
+    #[test]
+    fn virtual_columns_follow_set_head_collapse_and_new() {
+        let r = Rope::from_str("abcde\nxy");
+        let mut s = Selection::virtual_point(5, 9);
+        assert_eq!(s.head_col(&r, 4), 9);
+        assert_eq!(s.anchor_col(&r, 4), 9);
+        assert!(s.is_virtual());
+        s.set_head(5, true);
+        assert!(!s.is_virtual());
+        let mut s = Selection { virt: Virt { anchor: Some(3), head: Some(7) }, ..Selection::point(5) };
+        s.collapse();
+        assert_eq!(s.virt, Virt { anchor: Some(7), head: Some(7) });
+        assert!(!Selection::new(1, 2).is_virtual());
+        assert!(!s.with_range(1..2).is_virtual());
+        let mut ss = Selections::single(Selection::virtual_point(5, 9));
+        ss.map(|p| p);
+        assert!(!ss.primary().is_virtual());
+    }
+
+    #[test]
+    fn merged_carets_keep_the_primary_virtual_columns() {
+        let v = Selection::virtual_point(2, 6);
+        let s = Selections::new(vec![v, Selection::point(2)], 1);
+        assert_eq!((s.len(), s.primary().is_virtual()), (1, false));
+        let s = Selections::new(vec![v, Selection::point(2)], 0);
+        assert_eq!((s.len(), s.primary().virt.head), (1, Some(6)));
+        let s = Selections::new(vec![Selection::point(2), v, Selection::point(9)], 2);
+        assert_eq!(s.iter().next().unwrap().virt.head, Some(6));
+        let r = Selection { virt: Virt { anchor: None, head: Some(8) }, ..Selection::new(0, 4) };
+        let s = Selections::new(vec![r, Selection::point(4)], 0);
+        assert_eq!((s.len(), s.primary().virt.head), (1, Some(8)));
+    }
+
+    #[test]
+    fn drop_stale_virt_keeps_line_ends_only() {
+        let r = Rope::from_str("ab\ncd");
+        let at = |p: usize| {
+            let mut s = Selections::single(Selection::virtual_point(p, 5));
+            s.drop_stale_virt(&r);
+            s.primary().virt.head
+        };
+        assert_eq!(at(2), Some(5));
+        assert_eq!(at(1), None);
+        assert_eq!(at(5), Some(5));
     }
 
     #[test]

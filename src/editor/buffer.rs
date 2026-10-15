@@ -10,7 +10,7 @@ use ropey::Rope;
 
 use super::fold::Fold;
 use super::indent::{FileSettings, IndentStyle};
-use super::selection::{self, Selection, Selections, line_len_no_eol, line_range};
+use super::selection::{self, Selection, Selections, Virt, line_len_no_eol, line_range};
 use super::undo::{Change, Transaction, TxKind, UndoStack};
 use super::view_state::{EditLog, LogEdit, ViewState};
 use crate::workspace::SessionFold;
@@ -62,6 +62,9 @@ pub enum After {
     Keep,
     /// Anchor and head as offsets from `range.start` in the edited text.
     At { anchor: usize, head: usize },
+    /// An empty caret stays on its position (its line's end) and stands on
+    /// this virtual column, or on the line end with `None`.
+    Virtual(Option<usize>),
 }
 
 impl CaretEdit {
@@ -80,6 +83,11 @@ impl CaretEdit {
     /// The caret `off` chars after the start of the range instead.
     pub fn caret_at(self, off: usize) -> Self {
         Self { after: After::At { anchor: off, head: off }, ..self }
+    }
+
+    /// Land in virtual space instead (see `After::Virtual`); only for an empty caret.
+    pub fn virtual_at(self, col: Option<usize>) -> Self {
+        Self { after: After::Virtual(col), ..self }
     }
 
     /// Changes no text (it may still move the caret).
@@ -516,7 +524,7 @@ impl Buffer {
                 primary = sels.len();
             }
             match e.after {
-                After::Keep => {
+                After::Keep | After::Virtual(_) => {
                     let map = |x: usize| {
                         if x < r.start {
                             shift(x)
@@ -529,7 +537,13 @@ impl Buffer {
                     if *p {
                         primary = sels.len() + members.iter().position(|s| self.view.sels.primary() == *s).unwrap_or(0);
                     }
-                    sels.extend(members.iter().map(|s| Selection::new(map(s.anchor), map(s.head))));
+                    sels.extend(members.iter().map(|s| {
+                        let virt = match e.after {
+                            After::Virtual(v) => Virt { anchor: v, head: v },
+                            _ => s.virt,
+                        };
+                        Selection { virt, ..Selection::new(map(s.anchor), map(s.head)) }
+                    }));
                 }
                 After::At { anchor, head } => {
                     sels.push(Selection::new(shift(r.start + anchor), shift(r.start + head)));
@@ -558,7 +572,11 @@ impl Buffer {
             .flat_map(|(e, ..)| minimal_changes(e.range.start, &self.rope.slice(e.range.clone()).to_string(), &e.text))
             .collect();
         let sels = Selections::new(sels, primary);
-        self.apply(changes, sels, kind.unwrap_or(TxKind::Other));
+        self.apply_then(changes, kind.unwrap_or(TxKind::Other), move |rope| {
+            let mut sels = sels;
+            sels.drop_stale_virt(rope);
+            sels
+        });
     }
 
     /// Replace each selection (or insert at each caret) with `s`.
@@ -1659,6 +1677,33 @@ mod tests {
         assert!(buf.edit_log.since(0).is_some_and(|mut e| e.next().is_none()), "nothing for the parked views");
         buf.select_all();
         assert_eq!(buf.view.sel().range(), 0..8);
+    }
+
+    #[test]
+    fn kept_carets_keep_virtual_columns() {
+        let mut buf = b("ab\ncd\n");
+        let first = Selection::virtual_point(2, 6);
+        buf.view.sels = Selections::new(vec![first, Selection::point(4)], 1);
+        let edit = |b: &Buffer, s: Selection| if s.is_virtual() { CaretEdit::keep(s) } else { b.backspace_edit(s, &[]) };
+        buf.edit_carets(edit);
+        assert_eq!(buf.text(), "ab\nd\n");
+        assert_eq!(buf.view.sels.iter().next().unwrap().virt.head, Some(6));
+        assert!(buf.undo());
+        assert_eq!(buf.view.sels.iter().next().copied(), Some(first));
+        buf.view.sels = Selections::single(first);
+        let n = buf.undo.len();
+        buf.edit_carets(|_, s| CaretEdit::keep(s).virtual_at(Some(4)));
+        assert_eq!(buf.view.sels.primary().virt.head, Some(4));
+        assert_eq!(buf.undo.len(), n);
+    }
+
+    #[test]
+    fn a_join_drops_stale_virtual_columns() {
+        let mut buf = b("ab\ncd\n");
+        buf.view.sels = Selections::new(vec![Selection::virtual_point(2, 6), Selection::point(3)], 1);
+        buf.edit_carets(|b, s| if s.is_virtual() { CaretEdit::keep(s) } else { b.backspace_edit(s, &[]) });
+        assert_eq!(buf.text(), "abcd\n");
+        assert!(buf.view.sels.iter().all(|s| !s.is_virtual()));
     }
 
     #[test]
