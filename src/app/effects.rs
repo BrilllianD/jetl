@@ -86,9 +86,15 @@ impl App {
         if let Some(ip) = self.in_progress()
             && req.refused_mid_operation(ip.kind)
         {
-            return self.notify(Level::Warn, ip.refusal());
+            let text = if matches!(req, GitRequest::Commit { .. }) {
+                format!("A {} is in progress: Git > Continue Operation commits it", ip.kind.name())
+            } else {
+                ip.refusal()
+            };
+            return self.notify(Level::Warn, text);
         }
         match req {
+            GitRequest::Progress(a) => self.progress_request(a),
             GitRequest::Refresh => self.apply_effects(vec![Effect::GitRefresh]),
             GitRequest::Stage(rels) => {
                 let label = format!("stage {}", rels.join(" "));

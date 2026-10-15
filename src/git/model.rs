@@ -146,9 +146,67 @@ impl InProgressKind {
         }
     }
 
+    /// The git subcommand that continues, skips or aborts this operation.
+    pub fn command(self) -> &'static str {
+        match self {
+            InProgressKind::Merge => "merge",
+            InProgressKind::Rebase => "rebase",
+            InProgressKind::CherryPick => "cherry-pick",
+            InProgressKind::Revert => "revert",
+            InProgressKind::Bisect => "bisect",
+            InProgressKind::Am => "am",
+        }
+    }
+
+    /// The `git` arguments for `action`; `None` when git has no such step
+    /// (`merge --skip`) or jetl does not drive it (bisect, patch application).
+    pub fn args(self, action: ProgressAction) -> Option<Vec<String>> {
+        use InProgressKind::*;
+        match (self, action) {
+            (Bisect | Am, _) | (Merge, ProgressAction::Skip) => return None,
+            _ => {}
+        }
+        let flag = match action {
+            ProgressAction::Continue => "--continue",
+            ProgressAction::Skip => "--skip",
+            ProgressAction::Abort => "--abort",
+        };
+        Some(vec![self.command().to_string(), flag.to_string()])
+    }
+
     /// Bisect checks out commits itself, so git allows switching during it.
     pub fn blocks_switching(self) -> bool {
         self != InProgressKind::Bisect
+    }
+}
+
+/// What to do with an operation in progress.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ProgressAction {
+    Continue,
+    Skip,
+    Abort,
+}
+
+impl ProgressAction {
+    /// The notification after `git <kind> --<action>` succeeded.
+    pub fn done(self, kind: InProgressKind) -> String {
+        match self {
+            ProgressAction::Continue => match kind {
+                InProgressKind::Rebase => "Rebase finished".to_string(),
+                InProgressKind::Merge => "Merge committed".to_string(),
+                InProgressKind::CherryPick => "Cherry-pick committed".to_string(),
+                InProgressKind::Revert => "Revert committed".to_string(),
+                _ => "Continued".to_string(),
+            },
+            ProgressAction::Skip => "Skipped the commit".to_string(),
+            ProgressAction::Abort => {
+                let name = kind.name();
+                let mut c = name.chars();
+                let first = c.next().map(|f| f.to_uppercase().collect::<String>()).unwrap_or_default();
+                format!("{first}{} aborted", c.as_str())
+            }
+        }
     }
 }
 
@@ -463,6 +521,21 @@ impl DiffKey {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn progress_args_per_kind() {
+        use InProgressKind::*;
+        use ProgressAction::*;
+        let v = |a: &[&str]| Some(a.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        assert_eq!(Rebase.args(Continue), v(&["rebase", "--continue"]));
+        assert_eq!(Merge.args(Skip), None);
+        assert_eq!(Merge.args(Abort), v(&["merge", "--abort"]));
+        assert_eq!(CherryPick.args(Skip), v(&["cherry-pick", "--skip"]));
+        assert_eq!(Revert.args(Continue), v(&["revert", "--continue"]));
+        assert_eq!(Bisect.args(Continue), None);
+        assert_eq!(Am.args(Abort), None);
+        assert_eq!(Abort.done(CherryPick), "Cherry-pick aborted");
+    }
 
     #[test]
     fn in_progress_labels() {

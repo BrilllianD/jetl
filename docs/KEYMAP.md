@@ -513,6 +513,9 @@ Reachable from Find Action (F1) or by binding them in `keymap.toml`.
 | `tree.toggle_ignored` | Tree: show or hide ignored files |
 | `git.unstage_all` | Git: unstage all |
 | `git.resolve_conflicts` | Git: resolve conflicts (three-pane merge or take one side) |
+| `git.continue_operation` | Git: continue the rebase, merge, cherry-pick or revert in progress |
+| `git.skip_operation` | Git: skip the commit the rebase, cherry-pick or revert stopped on |
+| `git.abort_operation` | Git: abort the rebase, merge, cherry-pick or revert in progress |
 | `git.commit_and_push` | Git: commit and push |
 | `git.fetch` | Git: fetch |
 | `git.focus_message` | Git: focus commit message |

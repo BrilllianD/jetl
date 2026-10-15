@@ -22,7 +22,9 @@ use unicode_width::UnicodeWidthStr;
 
 use super::GitRequest;
 use super::diff::DiffDoc;
-use super::model::{BranchInfo, CommitDetails, DiffKey, InProgress, LogFilter, LogRow, Section, StashEntry, StatusSnapshot};
+use super::model::{
+    BranchInfo, CommitDetails, DiffKey, InProgress, LogFilter, LogRow, ProgressAction, Section, StashEntry, StatusSnapshot,
+};
 use crate::actions::GitAction;
 use crate::app::Ctx;
 use crate::config::theme::Theme;
@@ -71,6 +73,7 @@ enum Area {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Btn {
     Tab(GitTab),
+    Progress(ProgressAction),
     Amend,
     Refresh,
     Fetch,
@@ -357,6 +360,9 @@ impl GitPanel {
                 )));
             }
             G::FileHistory | G::ResolveConflicts => {}
+            G::ContinueOperation => cx.effects.push(Effect::Git(GitRequest::Progress(ProgressAction::Continue))),
+            G::SkipOperation => cx.effects.push(Effect::Git(GitRequest::Progress(ProgressAction::Skip))),
+            G::AbortOperation => cx.effects.push(Effect::Git(GitRequest::Progress(ProgressAction::Abort))),
             G::ContextMenu => self.log_context_menu(None, cx),
             G::LogBranch(name) => match self.branches.iter().find(|b| b.name == *name) {
                 Some(b) => cx.effects.push(Effect::Git(GitRequest::BranchOps(b.clone()))),
@@ -637,6 +643,7 @@ impl GitPanel {
             Btn::Fetch => GitRequest::Fetch,
             Btn::Pull => GitRequest::Pull,
             Btn::Push => GitRequest::Push,
+            Btn::Progress(a) => GitRequest::Progress(a),
             Btn::StageAll => GitRequest::StageAll,
             Btn::UnstageAll => GitRequest::UnstageAll,
         };
@@ -700,8 +707,18 @@ impl GitPanel {
             x += 1;
         }
         // As many tools as fit, Refresh (F5) dropped first.
-        let mut tools: &[(Btn, &str)] =
-            &[(Btn::Refresh, " Refresh "), (Btn::Fetch, " Fetch "), (Btn::Pull, " Pull "), (Btn::Push, " Push ")];
+        let all: Vec<(Btn, &str)> = match self.in_progress().filter(|ip| ip.kind.args(ProgressAction::Continue).is_some()) {
+            Some(ip) => {
+                let mut v = vec![(Btn::Progress(ProgressAction::Continue), " Continue ")];
+                if ip.kind.args(ProgressAction::Skip).is_some() {
+                    v.push((Btn::Progress(ProgressAction::Skip), " Skip "));
+                }
+                v.push((Btn::Progress(ProgressAction::Abort), " Abort "));
+                v
+            }
+            None => vec![(Btn::Refresh, " Refresh "), (Btn::Fetch, " Fetch "), (Btn::Pull, " Pull "), (Btn::Push, " Push ")],
+        };
+        let mut tools: &[(Btn, &str)] = &all;
         let width = |tools: &[(Btn, &str)]| -> u16 { tools.iter().map(|(_, l)| l.width() as u16 + 1).sum() };
         while !tools.is_empty() && r.right() <= x + width(tools) {
             tools = &tools[1..];

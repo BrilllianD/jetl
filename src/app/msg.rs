@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use super::{App, Ctx};
 use crate::event::{AppMsg, Level};
 use crate::files::ops::FsOp;
+use crate::git::model::{InProgressKind, ProgressAction};
 use crate::git::{BlobWhich, GitMsg, GitOp, GitRequest};
 use crate::ui::dialog::{Dialog, DialogId};
 use crate::ui::focus::PanelId;
@@ -255,6 +256,7 @@ impl App {
                 GitOp::Revert(sha) => self.notify(Level::Info, format!("Reverted {}", short(sha))),
                 GitOp::Merge(b) => self.notify(Level::Info, format!("Merged {b}")),
                 GitOp::Rebase(b) => self.notify(Level::Info, format!("Rebased onto {b}")),
+                GitOp::Progress { kind, action } => self.notify(Level::Info, action.done(*kind)),
                 GitOp::RenameBranch(b) => self.notify(Level::Info, format!("Renamed the branch to {b}")),
                 GitOp::DeleteBranch { name, .. } => self.notify(Level::Info, format!("Deleted branch {name}")),
                 GitOp::Tag(t) => self.notify(Level::Info, format!("Created tag {t}")),
@@ -289,22 +291,31 @@ impl App {
             let msg = format!("Branch '{name}' is not fully merged.\nDelete it anyway? Commits only it has may be lost.");
             let id = DialogId::DeleteBranch { name: name.clone(), force: true };
             self.dialog = Some(Dialog::confirm(id, "Delete Branch", &msg, &["Force Delete", "Cancel"]));
-        } else if matches!(op, GitOp::Merge(_) | GitOp::Rebase(_) | GitOp::CherryPick(_) | GitOp::Revert(_) | GitOp::Stash)
-            && output.contains("CONFLICT")
+        } else if matches!(
+            op,
+            GitOp::Merge(_)
+                | GitOp::Rebase(_)
+                | GitOp::CherryPick(_)
+                | GitOp::Revert(_)
+                | GitOp::Stash
+                | GitOp::Progress { action: ProgressAction::Continue | ProgressAction::Skip, .. }
+        ) && output.contains("CONFLICT")
         {
             // Conflicted files show as U in the Commit tab; the next status
             // opens Resolve Conflicts.
             let what = match &op {
-                GitOp::Rebase(_) => {
-                    "Rebase stopped on conflicts: resolve the U files (Git > Resolve Conflicts), then run `git rebase --continue` (or `--abort`)"
+                GitOp::Rebase(_) | GitOp::Progress { kind: InProgressKind::Rebase, .. } => {
+                    "Rebase stopped on conflicts: resolve the U files (Git > Resolve Conflicts), then Git > Continue Operation (or Abort Operation)"
                 }
                 GitOp::Merge(_) => {
-                    "Merge stopped on conflicts: resolve the U files (Git > Resolve Conflicts) and commit (or run `git merge --abort`)"
+                    "Merge stopped on conflicts: resolve the U files (Git > Resolve Conflicts), then Git > Continue Operation (or Abort Operation)"
                 }
                 GitOp::Stash => {
                     "The stash conflicts with your files: resolve the U files (Git > Resolve Conflicts); the stash entry is kept, drop it when done"
                 }
-                _ => "Stopped on conflicts: resolve the U files (Git > Resolve Conflicts) and commit",
+                _ => {
+                    "Stopped on conflicts: resolve the U files (Git > Resolve Conflicts), then Git > Continue Operation (or Abort Operation)"
+                }
             };
             self.notify(Level::Warn, what);
             self.pending_conflicts = true;

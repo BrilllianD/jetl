@@ -48,6 +48,7 @@ mod effects;
 mod files;
 mod find;
 mod format;
+mod git_ops;
 mod history;
 mod lightbulb;
 mod lsp;

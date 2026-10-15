@@ -283,6 +283,12 @@ pub enum GitAction {
     FileHistory,
     /// Pick a conflicted file, then merge it or take one side.
     ResolveConflicts,
+    /// Continue the rebase, merge, cherry-pick or revert in progress.
+    ContinueOperation,
+    /// Skip the commit the rebase, cherry-pick or revert stopped on.
+    SkipOperation,
+    /// Abort the operation in progress.
+    AbortOperation,
     LogFilter,
     ContextMenu,
     CopySha,
@@ -731,6 +737,9 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "git.toggle_diff_collapse" => "Git: fold or show unchanged lines in the diff", Git(GitAction::ToggleDiffCollapse);
         "git.file_history" => "Git: show history for the file (editor) or the selected entry (Project tree)", Git(GitAction::FileHistory);
         "git.resolve_conflicts" => "Git: resolve conflicts (three-pane merge or take one side)", Git(GitAction::ResolveConflicts);
+        "git.continue_operation" => "Git: continue the rebase, merge, cherry-pick or revert in progress", Git(GitAction::ContinueOperation);
+        "git.skip_operation" => "Git: skip the commit the rebase, cherry-pick or revert stopped on", Git(GitAction::SkipOperation);
+        "git.abort_operation" => "Git: abort the rebase, merge, cherry-pick or revert in progress", Git(GitAction::AbortOperation);
         "git.log_filter" => "Git: filter the log (branch, text, author, path)", Git(GitAction::LogFilter);
         "git.context_menu" => "Git: commit actions for the selected commit", Git(GitAction::ContextMenu);
         "git.copy_sha" => "Git: copy the selected commit's revision number", Git(GitAction::CopySha);

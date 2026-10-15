@@ -74,6 +74,7 @@ impl App {
             .filter(|a| !matches!(a.action, Action::Palette(_)))
             .filter(|a| self.dispatcher.modal || !matches!(a.action, Action::Mode(_)))
             .filter(|a| cfg!(debug_assertions) || a.action != Action::App(AppAction::DebugPanic))
+            .filter(|a| self.git_action_available(&a.action))
             .map(|a| ActionEntry {
                 id: a.id,
                 desc: a.desc,

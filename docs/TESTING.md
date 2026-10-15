@@ -460,7 +460,15 @@ Start jetl on `$T`. Alt+9 opens the Git window. Check:
 - The status bar shows it after the short sha.
 - In the Log (Alt+L), Shift+F10 shows Checkout Revision, New Branch…, Cherry-Pick and Revert Commit… greyed.
 - Alt+` then Enter on the main branch lists no Checkout, Merge or Rebase.
-- `git -C $T rebase --abort` (the watcher refreshes) removes the label.
+- F10, G: Continue Operation, Skip Commit and Abort Operation are enabled. The header shows ` Continue  Skip  Abort `.
+- Click Continue with `a.txt` still `U`: the dialog asks. Resolve… opens Resolve Conflicts; accept theirs.
+- Continue again (the file is staged now): the rebase applies `dev 2` and ends with `Rebase finished`.
+  `git -C $T log --oneline` shows `dev 2`, `dev 1`, `main`.
+- Then `git -C $T reset -q --hard ORIG_HEAD && git -C $T rebase $main`.
+- Abort from the palette (F1, `abort operation`), then confirm: the branch is back
+  (`git -C $T log --oneline -1` is `dev 2`).
+- Local History (Alt+Shift+H on `a.txt`) has a `Before git rebase --abort` row.
+- With a clean repository the palette does not list `continue operation` and the menu rows are greyed.
 
 ### Scenario: crash recovery
 

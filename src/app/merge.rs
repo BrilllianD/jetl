@@ -18,7 +18,7 @@ use crate::ui::focus::PanelId;
 
 impl App {
     /// The conflicted paths of the last status (relative to the work tree).
-    fn conflicted(&self) -> Vec<String> {
+    pub(super) fn conflicted(&self) -> Vec<String> {
         let Some(s) = self.git_panel.snapshot() else { return Vec::new() };
         s.entries.iter().filter(|e| e.section == Section::Unstaged && e.status == FileStatus::Conflicted).map(|e| e.rel.clone()).collect()
     }

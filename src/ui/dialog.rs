@@ -138,6 +138,13 @@ pub enum DialogId {
     /// Git > Resolve Conflicts: item `i` is conflicted path `rels[i]`
     /// (relative to the work tree).
     ResolveConflictPick(Vec<String>),
+    /// Continue with these conflicted paths: Resolve… / Stage and Continue / Cancel.
+    ContinueWithConflicts {
+        kind: crate::git::model::InProgressKind,
+        rels: Vec<String>,
+    },
+    /// Abort the operation in progress: Abort / Cancel.
+    AbortOperation(crate::git::model::InProgressKind),
     /// What to do with conflicted `abs` (`rel` in the work tree): Merge…,
     /// Accept Yours, Accept Theirs, Cancel; without `merge` (no line merge
     /// possible) the first button is left out.

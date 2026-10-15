@@ -75,6 +75,11 @@ pub enum GitOp {
     /// A conflicted path resolved by taking one side whole; carries the
     /// console line's path.
     Resolve(String),
+    /// `git <op> --continue|--skip|--abort`.
+    Progress {
+        kind: model::InProgressKind,
+        action: model::ProgressAction,
+    },
 }
 
 impl GitOp {
@@ -93,6 +98,7 @@ impl GitOp {
                 | GitOp::Merge(_)
                 | GitOp::Rebase(_)
                 | GitOp::Resolve(_)
+                | GitOp::Progress { .. }
         )
     }
 }
@@ -308,23 +314,27 @@ pub enum GitRequest {
     },
     /// Stage a conflicted path the resolver just wrote (relative to the work tree); runs as GitOp::Resolve.
     StageResolved(String),
+    /// Continue, skip or abort the operation in progress.
+    Progress(model::ProgressAction),
 }
 
 impl GitRequest {
     /// Whether git refuses this request while a `kind` operation is in progress.
     pub fn refused_mid_operation(&self, kind: model::InProgressKind) -> bool {
-        kind.blocks_switching()
-            && matches!(
-                self,
-                GitRequest::CheckoutCommit(_)
-                    | GitRequest::CherryPick(_)
-                    | GitRequest::Revert(_)
-                    | GitRequest::NewBranchAt { .. }
-                    | GitRequest::NewBranch
-                    | GitRequest::Merge(_)
-                    | GitRequest::Rebase(_)
-                    | GitRequest::CheckoutTracking(_)
-            )
+        use model::InProgressKind as K;
+        (matches!(kind, K::Merge | K::Rebase | K::CherryPick | K::Revert | K::Am) && matches!(self, GitRequest::Commit { .. }))
+            || kind.blocks_switching()
+                && matches!(
+                    self,
+                    GitRequest::CheckoutCommit(_)
+                        | GitRequest::CherryPick(_)
+                        | GitRequest::Revert(_)
+                        | GitRequest::NewBranchAt { .. }
+                        | GitRequest::NewBranch
+                        | GitRequest::Merge(_)
+                        | GitRequest::Rebase(_)
+                        | GitRequest::CheckoutTracking(_)
+                )
     }
 }
 
@@ -600,7 +610,17 @@ impl GitService {
 
     /// [`GitService::run_cli`] with `input` on stdin.
     pub fn run_cli_input(&mut self, op: GitOp, args: Vec<String>, input: Option<Vec<u8>>) -> u64 {
-        let label = format!("git {}", args.join(" "));
+        self.spawn_cli(op, vec![args], input)
+    }
+
+    /// Run several `git <args>` as one operation, in order, stopping at the
+    /// first failure; the label joins them with " && ", the output too.
+    pub fn run_cli_steps(&mut self, op: GitOp, steps: Vec<Vec<String>>) -> u64 {
+        self.spawn_cli(op, steps, None)
+    }
+
+    fn spawn_cli(&mut self, op: GitOp, steps: Vec<Vec<String>>, mut input: Option<Vec<u8>>) -> u64 {
+        let label = steps.iter().map(|a| format!("git {}", a.join(" "))).collect::<Vec<_>>().join(" && ");
         let id = self.start(&label);
         let pre = self.before(&op, &label);
         let track = op.touches_worktree() && self.history.enabled();
@@ -610,10 +630,22 @@ impl GitService {
                 let _ = tokio::task::spawn_blocking(move || ack.wait()).await;
             }
             let base = base_of(root.clone(), track).await;
-            let (ok, output) = match cli::git_with_input(&root, &args, input).await {
-                Ok(o) => (o.ok, o.combined()),
-                Err(e) => (false, format!("{e:#}")),
-            };
+            let mut ok = true;
+            let mut output = String::new();
+            for args in &steps {
+                let (step_ok, text) = match cli::git_with_input(&root, args, input.take()).await {
+                    Ok(o) => (o.ok, o.combined()),
+                    Err(e) => (false, format!("{e:#}")),
+                };
+                if !output.is_empty() && !text.is_empty() {
+                    output.push('\n');
+                }
+                output.push_str(&text);
+                if !step_ok {
+                    ok = false;
+                    break;
+                }
+            }
             let renames = renames_after(root, base).await;
             let _ = tx.send(AppMsg::Git(GitMsg::OpDone { generation, id, op, label, ok, output, renames }));
         });

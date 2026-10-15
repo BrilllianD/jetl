@@ -33,7 +33,7 @@ impl App {
                         Row::Sep => Some(MenuItem::separator()),
                         Row::Item(label, id) => {
                             let action = Action::from_id(id)?;
-                            let enabled = has_buffer || !needs_buffer(&action);
+                            let enabled = (has_buffer || !needs_buffer(&action)) && self.git_action_available(&action);
                             Some(MenuItem::new(*label, action).enabled(enabled))
                         }
                     })
