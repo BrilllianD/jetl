@@ -86,7 +86,9 @@ impl App {
         if let Some(ip) = self.in_progress()
             && req.refused_mid_operation(ip.kind)
         {
-            let text = if matches!(req, GitRequest::Commit { .. }) {
+            let text = if matches!(req, GitRequest::Commit { .. }) && ip.kind == crate::git::model::InProgressKind::Am {
+                "A patch application (git am) is in progress; finish it with git am --continue or --abort in the Terminal".to_string()
+            } else if matches!(req, GitRequest::Commit { .. }) {
                 format!("A {} is in progress: Git > Continue Operation commits it", ip.kind.name())
             } else {
                 ip.refusal()

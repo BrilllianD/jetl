@@ -85,7 +85,11 @@ impl App {
             (DialogId::ContinueWithConflicts { .. }, DialogResult::Button(0)) => self.resolve_conflicts(),
             (DialogId::ContinueWithConflicts { kind, rels }, DialogResult::Button(1)) => {
                 if let Some(args) = kind.args(ProgressAction::Continue) {
-                    let add = ["add".to_string(), "--".to_string()].into_iter().chain(rels.iter().cloned()).collect();
+                    // `rels` are relative to the work tree, the command runs in the project root.
+                    let add = ["add".to_string(), "--".to_string()]
+                        .into_iter()
+                        .chain(rels.iter().map(|r| format!(":(top,literal){r}")))
+                        .collect();
                     self.git.run_cli_steps(GitOp::Progress { kind: *kind, action: ProgressAction::Continue }, vec![add, args]);
                 }
             }
@@ -210,6 +214,43 @@ mod tests {
         assert_eq!(git_out(&root, &["log", "-1", "--format=%s"]), "dev change");
         assert_eq!(git_out(&root, &["log", "-1", "--format=%s", "HEAD~1"]), "main change");
         assert_eq!(std::fs::read_to_string(root.join("a.txt")).unwrap(), "both\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn rebase_stage_and_continue_from_a_subdirectory_project() {
+        let (mut app, dir) = test_app("rebase-subdir");
+        init_repo(&app, &[("top.txt", "t\n")]);
+        let top = app.workspace.root.clone();
+        git(&top, &["config", "commit.gpgsign", "false"]);
+        let main = crate::git::repo::status(&top).unwrap().branch.unwrap();
+        let sub = top.join("sub");
+        std::fs::create_dir(&sub).unwrap();
+        std::fs::write(sub.join("a.txt"), "a\n").unwrap();
+        git(&top, &["add", "."]);
+        git(&top, &["commit", "-qm", "sub"]);
+        git(&top, &["switch", "-qc", "dev"]);
+        std::fs::write(sub.join("a.txt"), "dev\n").unwrap();
+        git(&top, &["commit", "-qam", "dev change"]);
+        git(&top, &["switch", "-q", &main]);
+        std::fs::write(sub.join("a.txt"), "main\n").unwrap();
+        git(&top, &["commit", "-qam", "main change"]);
+        git(&top, &["switch", "-q", "dev"]);
+        app.workspace.root = sub.clone();
+        app.git.root = sub.clone();
+        app.git_request(GitRequest::Rebase(main));
+        handle_next(&mut app, op_done).await;
+        feed_status(&mut app, 1);
+        app.dialog.take();
+        std::fs::write(sub.join("a.txt"), "both\n").unwrap();
+        app.perform(Action::Git(GitAction::ContinueOperation));
+        let d = app.dialog.take().expect("continue dialog");
+        assert_eq!(d.id, DialogId::ContinueWithConflicts { kind: InProgressKind::Rebase, rels: vec!["sub/a.txt".into()] });
+        app.finish_dialog(d.id, DialogResult::Button(1));
+        handle_next(&mut app, op_done).await;
+        assert_eq!(last_note(&app), "Rebase finished");
+        assert_eq!(crate::git::repo::status(&top).unwrap().in_progress, None);
+        assert_eq!(git_out(&top, &["log", "-1", "--format=%s"]), "dev change");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
