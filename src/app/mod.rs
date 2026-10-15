@@ -935,6 +935,15 @@ impl App {
                 drop(cx);
                 match a {
                     crate::actions::LspAction::GotoDefinition => self.lsp_goto_definition(),
+                    crate::actions::LspAction::GotoTypeDefinition => {
+                        self.lsp_goto(crate::lsp::caps::TYPE_DEFINITION, crate::lsp::PendingTag::TypeDefinition)
+                    }
+                    crate::actions::LspAction::GotoImplementation => {
+                        self.lsp_goto(crate::lsp::caps::IMPLEMENTATION, crate::lsp::PendingTag::Implementation)
+                    }
+                    crate::actions::LspAction::GotoDeclaration => {
+                        self.lsp_goto(crate::lsp::caps::DECLARATION, crate::lsp::PendingTag::Declaration)
+                    }
                     crate::actions::LspAction::FindUsages => self.lsp_find_usages(),
                     crate::actions::LspAction::QuickDoc => self.lsp_quick_doc(),
                     crate::actions::LspAction::Complete => self.lsp_complete(),

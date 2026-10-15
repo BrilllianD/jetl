@@ -570,6 +570,7 @@ mod tests {
         ("editor.fold_expand_recursive", &["editor"]),
         ("editor.save_all", &["global"]),
         ("git.push", &["global"]),
+        ("lsp.goto_type_definition", &["editor"]),
         ("tool_window.hide_focused", &["global"]),
     ];
 

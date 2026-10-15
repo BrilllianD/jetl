@@ -488,6 +488,12 @@ pub enum LspAction {
     /// Ctrl+B: go to the definition at the caret; on the definition
     /// itself, its usages.
     GotoDefinition,
+    /// Ctrl+Shift+B: go to the type declaration of the symbol at the caret.
+    GotoTypeDefinition,
+    /// Ctrl+Alt+B: go to the implementations of the symbol at the caret.
+    GotoImplementation,
+    /// Go to the declaration (not the definition) of the symbol at the caret.
+    GotoDeclaration,
     /// Alt+F7: the usages of what is at the caret.
     FindUsages,
     /// Alt+Q: the hover documentation at the caret in a popup.
@@ -859,6 +865,9 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "lsp.next_problem" => "Next problem (diagnostic) in the file", Lsp(LspAction::NextProblem);
         "lsp.prev_problem" => "Previous problem (diagnostic) in the file", Lsp(LspAction::PrevProblem);
         "lsp.goto_definition" => "Go to declaration (on a declaration: its usages)", Lsp(LspAction::GotoDefinition);
+        "lsp.goto_type_definition" => "Go to the type declaration of the symbol at the caret", Lsp(LspAction::GotoTypeDefinition);
+        "lsp.goto_implementation" => "Go to the implementations of the symbol at the caret", Lsp(LspAction::GotoImplementation);
+        "lsp.goto_declaration" => "Go to the declaration (not the definition) of the symbol at the caret", Lsp(LspAction::GotoDeclaration);
         "lsp.find_usages" => "Find usages of the symbol at the caret", Lsp(LspAction::FindUsages);
         "lsp.quick_doc" => "Quick documentation for the symbol at the caret", Lsp(LspAction::QuickDoc);
         "lsp.complete" => "Code completion at the caret", Lsp(LspAction::Complete);

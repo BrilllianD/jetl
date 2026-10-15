@@ -241,7 +241,7 @@
 "shift-f11" = "editor.show_bookmarks"
 "ctrl-f11" = "editor.toggle_numbered_bookmark"
 "ctrl-alt-z" = "editor.revert_change"
-"ctrl-alt-b" = "editor.toggle_blame"
+# Git blame is View > Git Blame (Ctrl+Alt+B is Implementation(s), as in JetBrains).
 # Reformat Code runs the [format] command for the file's language, else asks
 # its language server.
 "ctrl-alt-l" = "editor.format"
@@ -257,6 +257,11 @@
 # Ctrl+click goes to a definition too. Quick Documentation is Ctrl+Q in
 # JetBrains, which stays quit here.
 "ctrl-b" = "lsp.goto_definition"
+# Type Declaration and Implementation(s) as in JetBrains. Ctrl+Shift+B needs
+# the kitty protocol (legacy terminals send Ctrl+B); Alt+Shift+B works anywhere.
+"ctrl-shift-b" = "lsp.goto_type_definition"
+"alt-shift-b" = "lsp.goto_type_definition"
+"ctrl-alt-b" = "lsp.goto_implementation"
 "alt-f7" = "lsp.find_usages"
 "alt-q" = "lsp.quick_doc"
 # Code completion. Legacy terminals send Ctrl+Space and Ctrl+` both as NUL,

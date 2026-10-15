@@ -29,12 +29,15 @@ pub(super) use crate::lsp::caps::{
     CODE_ACTION, CODE_ACTION_RESOLVE, COMPLETION, DOCUMENT_SYMBOL, EXECUTE_COMMAND, FORMATTING, PREPARE_RENAME, RANGE_FORMATTING, RENAME,
     RESOLVE,
 };
-use crate::lsp::caps::{Caps, DEFINITION, HOVER, REFERENCES};
+use crate::lsp::caps::{Caps, DECLARATION, DEFINITION, HOVER, IMPLEMENTATION, REFERENCES, TYPE_DEFINITION};
 
 /// The method a tag was sent with.
 fn method_of(tag: &PendingTag) -> &'static str {
     match tag {
         PendingTag::Definition(_) => DEFINITION,
+        PendingTag::TypeDefinition(_) => TYPE_DEFINITION,
+        PendingTag::Implementation(_) => IMPLEMENTATION,
+        PendingTag::Declaration(_) => DECLARATION,
         PendingTag::References(_) => REFERENCES,
         PendingTag::Hover(_) => HOVER,
         PendingTag::Completion(_) => COMPLETION,
@@ -63,6 +66,9 @@ fn about_document(method: &str) -> bool {
 fn what(method: &str) -> &'static str {
     match method {
         DEFINITION => "go to definition",
+        TYPE_DEFINITION => "go to type declaration",
+        IMPLEMENTATION => "go to implementation",
+        DECLARATION => "go to declaration",
         REFERENCES => "find usages",
         HOVER => "documentation",
         COMPLETION => "code completion",
@@ -224,6 +230,17 @@ impl App {
         }
     }
 
+    /// `lsp.goto_type_definition` (Ctrl+Shift+B), `lsp.goto_implementation`
+    /// (Ctrl+Alt+B), `lsp.goto_declaration`: `method` at the caret.
+    pub(super) fn lsp_goto(&mut self, method: &'static str, tag: fn(DocTag) -> PendingTag) {
+        let Some((id, pos)) = self.caret_position() else { return };
+        match self.lsp_doc_request(id, pos, method, json!({}), tag) {
+            Ok(seq) => self.lsp.nav_seq = seq,
+            Err(why) if !why.is_empty() => self.lsp_hint(why),
+            Err(_) => {}
+        }
+    }
+
     /// `lsp.find_usages` (Alt+F7).
     pub(super) fn lsp_find_usages(&mut self) {
         let Some((id, pos)) = self.caret_position() else { return };
@@ -303,6 +320,9 @@ impl App {
         self.dirty_frame = true;
         match tag {
             PendingTag::Definition(t) => self.lsp_definition_answer(t, value),
+            PendingTag::TypeDefinition(t) => self.lsp_goto_answer(t, value, TYPE_DEFINITION),
+            PendingTag::Implementation(t) => self.lsp_goto_answer(t, value, IMPLEMENTATION),
+            PendingTag::Declaration(t) => self.lsp_goto_answer(t, value, DECLARATION),
             PendingTag::References(t) => self.lsp_usages_answer(t, value),
             PendingTag::Hover(t) => self.lsp_hover_answer(t, value),
             PendingTag::PrepareRename(t) => self.lsp_prepare_rename_answer(t, value),
@@ -334,6 +354,33 @@ impl App {
                 self.open_file_at_utf16(one.path.clone(), one.range.start);
             }
             _ => self.show_location_targets("Choose Declaration".into(), t.seq, targets),
+        }
+    }
+
+    /// The answer to `lsp_goto`: one target is jumped to, several are listed.
+    fn lsp_goto_answer(&mut self, t: DocTag, value: Value, method: &'static str) {
+        let targets = locations::parse(value);
+        match targets.as_slice() {
+            [] => self.lsp_hint(match method {
+                TYPE_DEFINITION => "Cannot find type declaration",
+                IMPLEMENTATION => "No implementations found",
+                _ => "Cannot find declaration to go to",
+            }),
+            [one] => {
+                self.editor.push_nav_here();
+                self.open_file_at_utf16(one.path.clone(), one.range.start);
+            }
+            _ => {
+                let title = match method {
+                    TYPE_DEFINITION => "Choose Type Declaration".to_string(),
+                    IMPLEMENTATION => {
+                        let word = self.editor.active_buffer().map(|b| word_at(b, b.view.sel().head)).unwrap_or_default();
+                        if word.is_empty() { "Implementations".to_string() } else { format!("Implementations of {word}") }
+                    }
+                    _ => "Choose Declaration".to_string(),
+                };
+                self.show_location_targets(title, t.seq, targets);
+            }
         }
     }
 
@@ -474,6 +521,9 @@ mod tests {
         c["definitionProvider"] = json!(true);
         c["referencesProvider"] = json!(true);
         c["hoverProvider"] = json!(true);
+        c["typeDefinitionProvider"] = json!(true);
+        c["implementationProvider"] = json!(true);
+        c["declarationProvider"] = json!(true);
         c
     }
 
@@ -586,6 +636,96 @@ mod tests {
         app.perform(Action::Editor(EditorAction::Move(Motion::Left, false)));
         answer(&mut app, &mut server, "textDocument/definition", loc(&b, range(1, 16, 1, 22))).await;
         assert_eq!(app.editor.active_path(), Some(a.as_path()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn type_definition_jumps_and_none_says_so() {
+        let (mut app, dir) = test_app("lsp-typedef");
+        let mut servers = with_fake_servers(&mut app, caps());
+        let mut server = open_on_server(&mut app, &mut servers, "a.rs", A).await;
+        let b = app.workspace.root.join("b.rs");
+        std::fs::write(&b, B).unwrap();
+        goto(&mut app, 1, 21);
+        app.handle_key(KeyEvent::new(KeyCode::Char('B'), KeyModifiers::CONTROL | KeyModifiers::SHIFT));
+        let req = answer(&mut app, &mut server, "textDocument/typeDefinition", loc(&b, range(1, 16, 1, 22))).await;
+        assert_eq!(req["params"]["position"], json!({"line": 1, "character": 22}));
+        handle_next(&mut app, |m| matches!(m, AppMsg::FileLoaded { .. })).await;
+        assert_eq!((app.editor.active_path(), caret(&app)), (Some(b.as_path()), (1, 15)));
+        app.perform(Action::Editor(EditorAction::NavBack));
+        assert_eq!((app.editor.active_buffer().unwrap().name.as_str(), caret(&app)), ("a.rs", (1, 21)));
+        act(&mut app, LspAction::GotoTypeDefinition);
+        answer(&mut app, &mut server, "textDocument/typeDefinition", Value::Null).await;
+        assert!(toasts(&app).contains(&"Cannot find type declaration".to_string()), "{:?}", toasts(&app));
+        // Alt+Shift+B asks the same.
+        app.handle_key(KeyEvent::new(KeyCode::Char('B'), KeyModifiers::ALT | KeyModifiers::SHIFT));
+        answer(&mut app, &mut server, "textDocument/typeDefinition", Value::Null).await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn implementations_list_in_the_palette() {
+        let (mut app, dir) = test_app("lsp-impls");
+        let mut servers = with_fake_servers(&mut app, caps());
+        let mut server = open_on_server(&mut app, &mut servers, "a.rs", A).await;
+        let a = app.workspace.root.join("a.rs");
+        let b = app.workspace.root.join("b.rs");
+        std::fs::write(&b, B).unwrap();
+        goto(&mut app, 1, 21);
+        app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL | KeyModifiers::ALT));
+        answer(&mut app, &mut server, "textDocument/implementation", json!([loc(&a, range(0, 3, 0, 7)), loc(&b, range(1, 16, 1, 22))]))
+            .await;
+        handle_next(&mut app, |m| matches!(m, AppMsg::Locations { .. })).await;
+        assert_eq!(app.palette.as_ref().expect("the Locations palette").kind, PaletteKind::Locations);
+        let buf = draw(&mut app, 100, 30);
+        let rows: Vec<String> = (0..30).map(|y| row(&buf, y)).collect();
+        assert!(rows.iter().any(|r| r.contains("Implementations of helper")), "{rows:#?}");
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        // Empty: a toast.
+        act(&mut app, LspAction::GotoImplementation);
+        answer(&mut app, &mut server, "textDocument/implementation", json!([])).await;
+        assert!(app.palette.is_none());
+        assert!(toasts(&app).contains(&"No implementations found".to_string()), "{:?}", toasts(&app));
+        // A superseded answer is dropped.
+        act(&mut app, LspAction::GotoImplementation);
+        let first = server.recv("textDocument/implementation").await["id"].as_i64().unwrap();
+        act(&mut app, LspAction::GotoImplementation);
+        assert_eq!(server.recv("$/cancelRequest").await["params"]["id"], first);
+        let second = server.recv("textDocument/implementation").await["id"].as_i64().unwrap();
+        server.respond(first, json!([loc(&b, range(1, 16, 1, 22))]));
+        handle_next(&mut app, is_lsp).await;
+        assert_eq!(app.editor.active_path(), Some(a.as_path()));
+        server.respond(second, Value::Null);
+        handle_next(&mut app, is_lsp).await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn declaration_and_missing_capabilities() {
+        let (mut app, dir) = test_app("lsp-decl");
+        let mut servers = with_fake_servers(&mut app, caps());
+        let mut server = open_on_server(&mut app, &mut servers, "a.rs", A).await;
+        let b = app.workspace.root.join("b.rs");
+        std::fs::write(&b, B).unwrap();
+        goto(&mut app, 1, 21);
+        act(&mut app, LspAction::GotoDeclaration);
+        answer(&mut app, &mut server, "textDocument/declaration", loc(&b, range(1, 16, 1, 22))).await;
+        handle_next(&mut app, |m| matches!(m, AppMsg::FileLoaded { .. })).await;
+        assert_eq!((app.editor.active_path(), caret(&app)), (Some(b.as_path()), (1, 15)));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let (mut app, dir) = test_app("lsp-no-goto");
+        let mut servers = with_fake_servers(&mut app, incremental());
+        let _server = open_on_server(&mut app, &mut servers, "a.rs", A).await;
+        goto(&mut app, 1, 21);
+        for (a, what) in [
+            (LspAction::GotoTypeDefinition, "go to type declaration"),
+            (LspAction::GotoImplementation, "go to implementation"),
+            (LspAction::GotoDeclaration, "go to declaration"),
+        ] {
+            act(&mut app, a);
+            assert!(toasts(&app).contains(&format!("rust-analyzer does not support {what}")), "{what}: {:?}", toasts(&app));
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

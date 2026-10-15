@@ -44,6 +44,12 @@ pub enum PendingTag {
     Shutdown,
     /// `textDocument/definition`.
     Definition(DocTag),
+    /// `textDocument/typeDefinition`.
+    TypeDefinition(DocTag),
+    /// `textDocument/implementation`.
+    Implementation(DocTag),
+    /// `textDocument/declaration`.
+    Declaration(DocTag),
     /// `textDocument/references`.
     References(DocTag),
     /// `textDocument/hover`.
@@ -82,6 +88,9 @@ impl PendingTag {
         match self {
             PendingTag::Initialize | PendingTag::Shutdown | PendingTag::WillFileOp(_) => None,
             PendingTag::Definition(t)
+            | PendingTag::TypeDefinition(t)
+            | PendingTag::Implementation(t)
+            | PendingTag::Declaration(t)
             | PendingTag::References(t)
             | PendingTag::Hover(t)
             | PendingTag::Completion(t)

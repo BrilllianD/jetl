@@ -197,11 +197,13 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `F7` | `editor.next_change` | Go to the next change |
 | `Ctrl+Alt+Shift+Up` | `editor.prev_change` | Go to the previous change |
 | `Shift+F7` | `editor.prev_change` | Go to the previous change |
-| `Ctrl+Alt+B` | `editor.toggle_blame` | Annotate with git blame (show or hide) |
 | `Ctrl+Alt+L` | `editor.format` | Reformat code or the selection ([format] command, else the language server) |
 | `F2` | `lsp.next_problem` | Next problem (diagnostic) in the file |
 | `Shift+F2` | `lsp.prev_problem` | Previous problem (diagnostic) in the file |
 | `Ctrl+B` | `lsp.goto_definition` | Go to declaration (on a declaration: its usages) |
+| `Alt+Shift+B` | `lsp.goto_type_definition` | Go to the type declaration of the symbol at the caret |
+| `Ctrl+Shift+B` * | `lsp.goto_type_definition` | Go to the type declaration of the symbol at the caret |
+| `Ctrl+Alt+B` | `lsp.goto_implementation` | Go to the implementations of the symbol at the caret |
 | `Alt+F7` | `lsp.find_usages` | Find usages of the symbol at the caret |
 | `Alt+Q` | `lsp.quick_doc` | Quick documentation for the symbol at the caret |
 | `Ctrl+Space` | `lsp.complete` | Code completion at the caret |
@@ -507,6 +509,7 @@ Reachable from Find Action (F1) or by binding them in `keymap.toml`.
 | `editor.line_ending_lf` | Convert line endings to LF |
 | `editor.line_ending_crlf` | Convert line endings to CRLF |
 | `editor.set_language` | Set the file's language (highlighting) |
+| `editor.toggle_blame` | Annotate with git blame (show or hide) |
 | `tree.new_file` | Tree: new file |
 | `tree.new_dir` | Tree: new directory |
 | `tree.toggle_hidden` | Tree: show or hide hidden files |
@@ -525,3 +528,4 @@ Reachable from Find Action (F1) or by binding them in `keymap.toml`.
 | `merge.accept_all_left` | Merge: take yours for the whole file |
 | `merge.accept_all_right` | Merge: take theirs for the whole file |
 | `lsp.restart` | Restart language servers |
+| `lsp.goto_declaration` | Go to the declaration (not the definition) of the symbol at the caret |

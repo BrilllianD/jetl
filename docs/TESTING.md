@@ -946,6 +946,29 @@ press 0 42 2; release 0 42 2
 
 Real terminals often keep Shift+click for their own text selection, so Shift+Up/Down is the dependable route to a range.
 
+### Scenario: LSP navigation (rust-analyzer)
+
+Setup:
+
+```sh
+R=/tmp/jt-ra; rm -rf $R; mkdir -p $R
+rsync -a --exclude target --exclude .git --exclude .yman /pro/tools/jetl/ $R/
+mkdir -p /tmp/jt-home/config/jetl
+printf '[lsp.servers.rust-analyzer]\ninit_options = { workspace = { symbol = { search = { scope = "workspace_and_dependencies", kind = "all_symbols" } } } }\n' > /tmp/jt-home/config/jetl/config.toml
+cargo build --no-default-features --features lang-rust
+/tmp/tm.sh -f /dev/null new-session -d -s jetl -x 120 -y 40 \
+  "XDG_CONFIG_HOME=/tmp/jt-home/config XDG_STATE_HOME=/tmp/jt-home/state RUST_LOG=jetl=debug $PWD/target/debug/jetl $R 2>/tmp/jetl-stderr.txt"
+```
+
+rust-analyzer needs up to a minute to index; wait until the status bar spinner stops. Repeat with `-x 80 -y 24`.
+
+- Ctrl+Shift+N, `index.rs`, Enter; put the caret on the field `symbol` in `pub symbol: Symbol`.
+- Send Ctrl+Shift+B as CSI u (`/tmp/tm.sh send-keys -t jetl -H 1b 5b 39 38 3b 36 75`): `src/symbols/mod.rs` opens at `pub struct Symbol`; Back returns. `M-B` (Alt+Shift+B) does the same.
+- Caret on `Default` in an `impl Default for` line, `C-M-b`: the Locations palette titled `Implementations of Default`.
+- Caret on a trait method name inside a `trait` block, `C-M-b`: lists its impls (or jumps when there is one).
+- Navigate > Declaration on a name with one declaration jumps; with none, the toast `Cannot find declaration to go to`.
+- Kill the server with `/tmp/tm.sh kill-server` afterwards.
+
 ### Scenario: push options and stash untracked
 
 Setup:

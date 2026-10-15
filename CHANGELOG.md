@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Navigate > Type Declaration (Ctrl+Shift+B, Alt+Shift+B), Implementation(s) (Ctrl+Alt+B) and Declaration through the language server; several results open the Locations palette.
 - Git > Push… opens a Push dialog with Tags and Force with lease toggles (a force push is always `--force-with-lease`, never a plain force). The Stash tab has an Untracked toggle that stashes untracked files too.
 - Git Log: Reset Current Branch to Here… in the commit menu (Soft, Mixed or Hard; Hard asks first and Local History keeps a copy of the changed files).
 - Column selection: Alt+click past a line end puts a caret on that cell (virtual space), and typing there pads the line with spaces. In column selection mode a click past a line end does too. Right and Left step through the space past a line end, and Up/Down keep each caret's column over short lines. Backspace, Ctrl+Backspace, Delete and Ctrl+Delete there move the caret without changing the text.
@@ -22,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Ctrl+Alt+B is now Implementation(s), as in JetBrains; Git blame stays in View > Git Blame and the actions palette.
 - Committing from the Commit tab is refused during a merge, rebase, cherry-pick or revert; use Continue Operation, which makes the right commit.
 - The Git Log lists all branches by default (`[git] log_all = true`); stash commits are left out of it. Set `log_all = false` for HEAD only.
 

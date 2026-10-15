@@ -9,8 +9,9 @@
 use std::path::Path;
 
 use lsp_types::{
-    CodeActionProviderCapability, FileOperationFilter, FileOperationPatternKind, FileOperationRegistrationOptions, HoverProviderCapability,
-    OneOf, ServerCapabilities, TextDocumentSyncKind,
+    CodeActionProviderCapability, DeclarationCapability, FileOperationFilter, FileOperationPatternKind, FileOperationRegistrationOptions,
+    HoverProviderCapability, ImplementationProviderCapability, OneOf, ServerCapabilities, TextDocumentSyncKind,
+    TypeDefinitionProviderCapability,
 };
 use serde_json::Value;
 
@@ -18,6 +19,9 @@ use super::registry::{DocRef, Glob, Registry};
 use super::sync::SyncCaps;
 
 pub const DEFINITION: &str = "textDocument/definition";
+pub const TYPE_DEFINITION: &str = "textDocument/typeDefinition";
+pub const IMPLEMENTATION: &str = "textDocument/implementation";
+pub const DECLARATION: &str = "textDocument/declaration";
 pub const REFERENCES: &str = "textDocument/references";
 pub const HOVER: &str = "textDocument/hover";
 pub const COMPLETION: &str = "textDocument/completion";
@@ -88,6 +92,28 @@ impl<'a> Caps<'a> {
         let fixed = self.fixed;
         match method {
             DEFINITION => on(&fixed.definition_provider) || self.any(DEFINITION),
+            TYPE_DEFINITION => {
+                matches!(
+                    fixed.type_definition_provider,
+                    Some(TypeDefinitionProviderCapability::Simple(true) | TypeDefinitionProviderCapability::Options(_))
+                ) || self.any(TYPE_DEFINITION)
+            }
+            IMPLEMENTATION => {
+                matches!(
+                    fixed.implementation_provider,
+                    Some(ImplementationProviderCapability::Simple(true) | ImplementationProviderCapability::Options(_))
+                ) || self.any(IMPLEMENTATION)
+            }
+            DECLARATION => {
+                matches!(
+                    fixed.declaration_provider,
+                    Some(
+                        DeclarationCapability::Simple(true)
+                            | DeclarationCapability::RegistrationOptions(_)
+                            | DeclarationCapability::Options(_)
+                    )
+                ) || self.any(DECLARATION)
+            }
             REFERENCES => on(&fixed.references_provider) || self.any(REFERENCES),
             HOVER => {
                 matches!(fixed.hover_provider, Some(HoverProviderCapability::Simple(true) | HoverProviderCapability::Options(_)))
@@ -265,6 +291,19 @@ mod tests {
     }
 
     #[test]
+    fn goto_variants_are_static_or_registered() {
+        let f = fixed(json!({"typeDefinitionProvider": true, "implementationProvider": {}}));
+        let mut r = Registry::default();
+        let c = caps(&f, &r, rust());
+        assert!(c.has(TYPE_DEFINITION) && c.has(IMPLEMENTATION) && !c.has(DECLARATION));
+        register(&mut r, "d", DECLARATION, json!({"documentSelector": [{"language": "rust"}]}));
+        assert!(caps(&f, &r, rust()).has(DECLARATION));
+        assert!(!caps(&f, &r, python()).has(DECLARATION));
+        let f = fixed(json!({"typeDefinitionProvider": false}));
+        assert!(!caps(&f, &Registry::default(), rust()).has(TYPE_DEFINITION));
+    }
+
+    #[test]
     fn registration_options_add_triggers_resolve_and_commands() {
         let f = fixed(
             json!({"completionProvider": {"triggerCharacters": [".", ":"], "allCommitCharacters": ["("]}, "executeCommandProvider": {"commands": ["a"]}}),
@@ -317,9 +356,20 @@ mod tests {
     #[test]
     fn dynamic_registration_is_advertised_where_honoured() {
         let c = serde_json::to_value(client_capabilities(true)).unwrap();
-        for k in
-            ["definition", "references", "hover", "completion", "rename", "codeAction", "documentSymbol", "formatting", "rangeFormatting"]
-        {
+        for k in [
+            "definition",
+            "typeDefinition",
+            "implementation",
+            "declaration",
+            "references",
+            "hover",
+            "completion",
+            "rename",
+            "codeAction",
+            "documentSymbol",
+            "formatting",
+            "rangeFormatting",
+        ] {
             assert_eq!(c["textDocument"][k]["dynamicRegistration"], true, "{k}");
         }
         assert_eq!(c["workspace"]["executeCommand"]["dynamicRegistration"], true);

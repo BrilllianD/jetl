@@ -224,6 +224,9 @@ pub fn client_capabilities(watch_files: bool) -> ClientCapabilities {
                 ..Default::default()
             }),
             definition: Some(GotoCapability { dynamic_registration: Some(true), link_support: Some(true) }),
+            type_definition: Some(GotoCapability { dynamic_registration: Some(true), link_support: Some(true) }),
+            implementation: Some(GotoCapability { dynamic_registration: Some(true), link_support: Some(true) }),
+            declaration: Some(GotoCapability { dynamic_registration: Some(true), link_support: Some(true) }),
             references: Some(ReferenceClientCapabilities { dynamic_registration: Some(true) }),
             hover: Some(HoverClientCapabilities {
                 dynamic_registration: Some(true),
