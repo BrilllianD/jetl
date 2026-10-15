@@ -72,23 +72,23 @@ Effort: S = hours to a day, M = 1-3 days, L = about a week, XL = multiple weeks.
 | Block comment toggle (Ctrl+Shift+/) | S | `block_comment` on `LanguageDef` |
 | Strip trailing whitespace and ensure final newline on save | S | In `save()`, as an undoable transaction |
 | Hard tabs, indent auto-detection, `.editorconfig` | M | Per-buffer indent settings |
-| Word wrap | M | Done: `editor/wrap.rs` on the shared `layout_line()` walk, segments in `Rows`; extra continuation indent done (`editor.soft_wrap_extra_indent`); follow-up: per-file persistence |
+| Word wrap | M | Done: `editor/wrap.rs` on the shared `layout_line()` walk, segments in `Rows`; extra continuation indent done (`editor.soft_wrap_extra_indent`); per-file toggle persists in the session (`SessionView::wrap`) |
 | Column (block) selection | M | Done: `view::block_selections`, `DragMode::Column`; wrap must go through `Buffer::blocks_supported` |
 | Multiple carets | L | Done: `Selections`, `Buffer::edit_carets` |
 | Code folding by tree-sitter node | M | Done: `editor/fold.rs` (`Folds` per view), visible rows through `editor/rows.rs`; wrap extends `Rows` with segments |
 | Back/forward caret navigation, bookmarks | S-M | Position ring in `Editor`; bookmarks persisted in session |
 | Numbered bookmarks (Ctrl+F11, Ctrl+0..9) | S | Done: `editor/bookmarks.rs`, a digit per `Buffer::bookmarks` entry, unique per session; closed files keep theirs; legacy fallback Alt+B then the digit |
 | Line-ending conversion, BOM preservation, language override from the status bar | S | Status bar gains language/indent/encoding segments |
-| Redo caret mismatch after delete_line/duplicate_line/toggle_comment | S | Bug: `sel` is set after `apply` |
+| Redo caret mismatch after delete_line/duplicate_line/toggle_comment | S | Done: fixed in yman 54 |
 | Autosave on focus loss / idle | S | `editor.autosave = "off" \| "focus" \| "idle"` |
 
 ### B. Languages
 
 | Feature | Effort | Notes |
 |---|---|---|
-| Grammars: C#, YAML, HTML, CSS, SCSS, XML, then Go, C, C++, Java, PHP, Lua, Dockerfile, Vue | S each | One `LanguageDef` + `lang-*` feature each |
+| Grammars: C#, YAML, HTML, CSS, SCSS, XML, then Go, C, C++, Java, PHP, Lua, Dockerfile, Vue | S each | One `LanguageDef` + `lang-*` feature each; Vue uses the HTML grammar until injections exist |
 | Injections (Markdown code blocks, `<script>`/`<style>` in Vue/HTML) | M | Second parser per injection range |
-| Shebang / modeline detection | S | `detect()` is extension-only today |
+| Shebang / modeline detection | S | Done: `detect_text()` falls back to the shebang, then a vim or emacs modeline |
 
 ### C. Project-wide navigation and files
 
@@ -166,7 +166,7 @@ All of section E shipped in Phase 9 except split editor panes, which shipped in 
 | Render snapshot tests (`TestBackend` + `insta`) | M | `test_app()` harness exists |
 | CI, release binaries, AUR | S | CI done (GitHub Actions, Bitbucket Pipelines); local release via `scripts/package.sh` (tarball + Arch package); remote releases and AUR open |
 | Crash recovery of dirty buffers | S | Done: the panic hook writes the dirty buffers to `state/recovery/<pid>-<secs>/` (bounded `try_lock`, never blocks); the next session load of that root offers Restore all / Discard / Review…; restored text opens unsaved and undoable, no autosave until an explicit save; Save As (Alt+Shift+S) saves the untitled ones |
-| Palette filter off the main thread | S | Done: Files and Symbols of 10000 candidates and up rank in `spawn_blocking` under an app-wide cancel seq; the shown rows stay until the result, Enter ranks the typed query at once; follow-up: incremental narrowing |
+| Palette filter off the main thread | S | Done: Files and Symbols of 10000 candidates and up rank in `spawn_blocking` under an app-wide cancel seq; the shown rows stay until the result, Enter ranks the typed query at once; a longer query narrows the previous result (`narrow_rows`) |
 
 ## Order
 
