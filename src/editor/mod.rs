@@ -603,7 +603,8 @@ impl Editor {
     pub fn status_position(&self) -> Option<String> {
         let b = self.active_buffer()?;
         let (line, _) = b.cursor_line_col();
-        let col = view::visual_col(&b.rope, b.view.sel().head, self.tab_display(b));
+        let tab = self.tab_display(b);
+        let col = if b.view.wrap.on { view::visual_col(&b.rope, b.view.sel().head, tab) } else { b.view.sel().head_col(&b.rope, tab) };
         let chars: usize = b.view.sels.iter().map(|s| s.range().len()).sum();
         let carets = b.view.sels.len();
         let mut s = match (carets, chars) {
@@ -1884,6 +1885,13 @@ mod tests {
         let mut ed = Editor::new(&Config::default());
         ed.open_text(PathBuf::from(format!("/tmp/{name}")), text, false, &Theme::default());
         ed
+    }
+
+    #[test]
+    fn status_reports_a_virtual_column() {
+        let mut ed = editor_with("s.log", "abcdefgh\nab\n");
+        ed.buffers[0].view.set_sel(Selection::virtual_point(11, 6));
+        assert_eq!(ed.status_position().as_deref(), Some("Ln 2, Col 7"));
     }
 
     fn key(code: KeyCode, mods: KeyModifiers) -> KeyEvent {

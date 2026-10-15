@@ -271,6 +271,19 @@ async fn editor_carets_column_virtual_rect() {
 }
 
 #[tokio::test]
+async fn editor_carets_virtual_without_block() {
+    use crate::editor::selection::{Selection, Selections};
+    let mut fx = stable_app("carets-virtual-without-block");
+    let app = &mut fx.app;
+    load(app, "cols.log", "abcdefgh\nab\nabcdefgh\nabc\n");
+    let b = app.editor.active_buffer_mut().unwrap();
+    b.view.sels = Selections::new(vec![Selection::virtual_point(11, 6), Selection::point(15), Selection::virtual_point(24, 10)], 2);
+    let term = draw_editor(app, 40, 8);
+    let marks = editor_marks(&app.theme);
+    assert_snapshot!("editor_carets_virtual_without_block", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
 async fn editor_carets_column_past_widest() {
     let mut fx = stable_app("carets-column-past-widest");
     let app = &mut fx.app;
