@@ -72,7 +72,7 @@ pub static SETTINGS: &[Setting] = &[
     row!(
         "ui.theme",
         "Theme",
-        "A built-in theme, \"auto\" (the Omarchy palette when there is one) or a theme file: a path ending in .toml.",
+        "A built-in theme, \"auto\" (Omarchy's palette if any) or a .toml theme file. Colors: theme.toml.",
         Kind::Choice { options: THEMES, custom: true },
         |c| s(&c.ui.theme)
     ),
@@ -204,7 +204,7 @@ pub static SETTINGS: &[Setting] = &[
     row!(
         "keymap.mode",
         "Keymap mode",
-        "\"vim\" turns on the [mode.*] keymap tables (reserved, minimal).",
+        "\"vim\" turns on the [mode.*] keymap tables (reserved, minimal). Bindings: keymap.toml.",
         Kind::Choice { options: &["default", "vim"], custom: false },
         |c| s(&c.keymap.mode)
     ),
@@ -406,6 +406,15 @@ mod tests {
     use crate::config::edit::{Edit, apply_edits};
     use crate::config::reload::KEYS;
     use crate::config::theme;
+
+    #[test]
+    fn help_names_keymap_and_theme_files() {
+        for (key, file) in [("ui.theme", "theme.toml"), ("keymap.mode", "keymap.toml")] {
+            let help = setting(key).unwrap().help;
+            assert!(help.contains(file), "{key}: {help}");
+            assert!(crate::ui::toasts::wrap(help, 49, usize::MAX).len() <= 2, "{key} wraps to more than two rows");
+        }
+    }
 
     #[test]
     fn catalog_covers_every_key_once() {

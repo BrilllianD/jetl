@@ -1858,19 +1858,48 @@ async fn settings_window_pending() {
     assert_snapshot!("settings_window_pending", snapshot(&term, &[l, u, m], None));
 }
 
+/// Nothing drew over the window's right border and every rect lies inside it.
+fn assert_settings_inside(app: &App, term: &Terminal<TestBackend>, w: u16, h: u16) {
+    let s = app.settings.as_ref().unwrap();
+    let r = s.rect();
+    if r.width < 3 || r.height < 3 {
+        return;
+    }
+    let buf = term.backend().buffer();
+    for y in r.y + 1..r.bottom() - 1 {
+        assert_eq!(buf[(r.right() - 1, y)].symbol(), "│", "right border overdrawn at {w}x{h}, row {y}");
+    }
+    for b in s.button_rects() {
+        assert!(
+            b.x >= r.x && b.right() < r.right() && b.y > r.y && b.bottom() < r.bottom(),
+            "button {b:?} outside window {r:?} at {w}x{h}"
+        );
+    }
+    let rr = s.rows_rect();
+    assert!(rr.width == 0 || rr.right() < r.right(), "rows {rr:?} outside window {r:?} at {w}x{h}");
+}
+
 #[tokio::test]
 async fn settings_window_narrow_appearance_does_not_panic() {
     let mut fx = stable_app("settings-narrow");
     let app = &mut fx.app;
     app.perform(Action::App(AppAction::Settings));
-    for w in 26..=40u16 {
+    for w in 26..=60u16 {
         for h in [9u16, 10, 14, 24] {
             let term = draw_app(app, w, h);
+            assert_settings_inside(app, &term, w, h);
+            let tree = app.settings.as_ref().unwrap().tree_rect();
+            if tree.width == 0 {
+                continue;
+            }
+            let sep = tree.right();
             let buf = term.backend().buffer();
-            for y in 0..h {
+            for y in tree.y..tree.bottom() {
+                assert_eq!(buf[(sep, y)].symbol(), "│", "no separator at {w}x{h}, row {y}");
                 let line = crate::ui::snapshot::row_text(buf, y, w);
-                if let (Some(tag), Some(bar)) = (line.find("restart"), line.find('│')) {
-                    assert!(tag > bar, "tag over the tree at {w}x{h}: {line}");
+                if let Some(byte) = line.find("restart") {
+                    let col = line[..byte].chars().count() as u16;
+                    assert!(col > sep, "tag over the tree at {w}x{h}: {line}");
                 }
             }
         }
@@ -1888,9 +1917,10 @@ async fn settings_window_long_error_fits_short_terminals() {
     )
     .unwrap();
     app.perform(Action::App(AppAction::Settings));
-    for w in [40u16, 80] {
+    for w in [36u16, 40, 80] {
         for h in 6..=12u16 {
             let term = draw_app(app, w, h);
+            assert_settings_inside(app, &term, w, h);
             let buf = term.backend().buffer();
             let text: String = (0..h).map(|y| crate::ui::snapshot::row_text(buf, y, w)).collect::<Vec<_>>().join("\n");
             if h >= 9 {

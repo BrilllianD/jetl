@@ -584,6 +584,7 @@ sleep 2; /tmp/tm.sh send-keys -t jetl C-M-s; sleep 0.3; /tmp/tm.sh capture-pane 
   click on `[ Apply ]`: a Warning "Reloaded config.toml; restart jetl to
   apply ui.left_width"; the file gains `[ui]` `left_width = 40` after a blank
   line, the other lines unchanged.
+- Narrow: `/tmp/tm.sh resize-window -t jetl -x 34 -y 20` with the window open shows only the frame with ` Settings `; `-x 40` keeps the buttons and the help lines inside the right border; Esc with a pending change at 40x12 shows the discard confirm inside the screen; `-x 8 -y 4` with the confirm open does not crash (`/tmp/jetl-stderr.txt` has no panic).
 - Esc closes the window; F10 > File > Settings… (click the row) opens it.
   `touch $C/config.toml`: no new notification.
 - `/tmp/tm.sh kill-server`.

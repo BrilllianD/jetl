@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Git Log: a Ctrl+click on the last loaded row fetches the next page, like the other ways to move there. Patch tabs no longer show indentation fold markers.
+- Dialogs no longer panic on a terminal smaller than the dialog's minimum size.
 - A document that a language server closed through a `didOpen` unregistration no longer gets `didSave` until it is opened again.
 - Switching the project root while a Revert to Label still waits for closed files to open now names each file that was not reverted instead of dropping it silently.
 

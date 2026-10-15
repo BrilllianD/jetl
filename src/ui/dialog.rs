@@ -508,7 +508,7 @@ impl Dialog {
         };
         // Wide enough for the title (" title " plus the corners).
         let w = w.max(self.title.width() + 4);
-        let w = (w as u16).min(area.width.saturating_sub(2)).max(10);
+        let w = (w as u16).min(area.width.saturating_sub(2)).max(10).min(area.width);
         // Message lines wider than the text area wrap onto more rows.
         let msg_rows = message_rows(&self.message, (w as usize).saturating_sub(4));
         let mut h = match &self.kind {
@@ -528,7 +528,7 @@ impl Dialog {
             None => vec![],
         };
         h += hints.len();
-        let h = (h as u16).min(area.height.saturating_sub(1)).max(5);
+        let h = (h as u16).min(area.height.saturating_sub(1)).max(5).min(area.height);
         let x = area.x + (area.width.saturating_sub(w)) / 2;
         let y = area.y + (area.height.saturating_sub(h)) / 3;
         let rect = Rect::new(x, y, w, h);
@@ -542,6 +542,18 @@ impl Dialog {
             .style(Style::default().bg(theme.popup_bg).fg(theme.fg));
         let inner = block.inner(rect);
         frame.render_widget(block, rect);
+        // A frame too small for the controls stays empty.
+        let min_inner_h = match &self.kind {
+            DialogKind::Confirm { .. } => 1,
+            DialogKind::Input { .. } => 3,
+            DialogKind::Choice { .. } => 2,
+        };
+        if inner.height < min_inner_h || inner.width < 2 {
+            self.button_rects.clear();
+            self.input_rect = Rect::default();
+            self.list_rect = Rect::default();
+            return;
+        }
         // On a short screen the message gives way to the controls below it.
         let reserve = match &self.kind {
             DialogKind::Confirm { .. } => 2,
@@ -573,8 +585,9 @@ impl Dialog {
                     } else {
                         Style::default().fg(theme.fg).bg(theme.popup_bg)
                     };
-                    buf.set_stringn(bx, by, &label, bw as usize, st);
-                    self.button_rects.push(Rect::new(bx, by, bw, 1));
+                    let r = Rect::new(bx, by, bw, 1).intersection(inner);
+                    buf.set_stringn(r.x, by, &label, r.width as usize, st);
+                    self.button_rects.push(r);
                     bx += bw + 1;
                 }
             }
@@ -588,8 +601,9 @@ impl Dialog {
                 let mut bx = inner.x + inner.width.saturating_sub(total) / 2;
                 for l in &labels {
                     let bw = l.width() as u16;
-                    buf.set_stringn(bx, by, l, bw as usize, Style::default().fg(theme.fg).bg(theme.popup_bg));
-                    self.button_rects.push(Rect::new(bx, by, bw, 1));
+                    let r = Rect::new(bx, by, bw, 1).intersection(inner);
+                    buf.set_stringn(r.x, by, l, r.width as usize, Style::default().fg(theme.fg).bg(theme.popup_bg));
+                    self.button_rects.push(r);
                     bx += bw + 1;
                 }
                 let hint_w = inner.width.saturating_sub(2);
@@ -744,6 +758,49 @@ mod tests {
         assert!(by < d.rect().bottom() - 1);
         let above = row_text(&term, by - 2);
         assert!(above.trim_end().trim_end_matches('│').trim_end().ends_with('…'), "{above:?}");
+    }
+
+    #[test]
+    fn settings_dialogs_fit_tiny_screens() {
+        let theme = Theme::default();
+        let inside = |r: Rect, outer: Rect| {
+            r.width == 0
+                || r.height == 0
+                || (r.x >= outer.x && r.y >= outer.y && r.right() <= outer.right() && r.bottom() <= outer.bottom())
+        };
+        let mut bad = Vec::new();
+        for w in 1..=60u16 {
+            for h in 1..=14u16 {
+                let area = Rect::new(0, 0, w, h);
+                let dialogs = [
+                    Dialog::confirm(DialogId::SettingsDiscard, "Settings", "Discard 2 changed settings?", &["Discard", "Keep Editing"]),
+                    Dialog::input(
+                        DialogId::SettingValue("editor.scrolloff"),
+                        "Lines kept above and below the caret",
+                        "A whole number, 0 or more:",
+                        "5",
+                        "OK",
+                    ),
+                    Dialog::choice(DialogId::SettingValue("ui.theme"), "Theme", "", vec!["auto".into(), "darcula".into(), "Other…".into()]),
+                ];
+                for (n, mut d) in dialogs.into_iter().enumerate() {
+                    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, h)).unwrap();
+                        term.draw(|f| d.render(f, area, &theme)).unwrap();
+                    }));
+                    if r.is_err() {
+                        bad.push(format!("{w}x{h} dialog {n}: panic"));
+                        continue;
+                    }
+                    let rect = d.rect();
+                    let rects = d.button_rects.iter().copied().chain([d.input_rect, d.list_rect]);
+                    if !inside(rect, area) || !rects.into_iter().all(|r| inside(r, rect)) {
+                        bad.push(format!("{w}x{h} dialog {n}: outside {rect:?}"));
+                    }
+                }
+            }
+        }
+        assert!(bad.is_empty(), "{} bad sizes, first: {:?}", bad.len(), &bad[..bad.len().min(12)]);
     }
 
     fn texts(lines: &[(String, bool)]) -> Vec<&str> {

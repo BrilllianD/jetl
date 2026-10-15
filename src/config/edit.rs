@@ -52,10 +52,10 @@ pub fn apply_edits(text: &str, edits: &[(&str, Edit)]) -> Result<String, String>
             Edit::Set(v) => {
                 if doc.get(section).is_none() {
                     let mut t = toml_edit::table();
-                    // A document of only comments keeps them in `trailing`, which
-                    // renders after every table: move them before the new one.
-                    let comments =
-                        if doc.as_table().is_empty() { doc.trailing().as_str().unwrap_or("").to_string() } else { String::new() };
+                    // The trailing comments of any document render after every
+                    // table: move them before the new one.
+                    let trailing = doc.trailing().as_str().unwrap_or("").to_string();
+                    let comments = if doc.as_table().is_empty() || !trailing.trim().is_empty() { trailing } else { String::new() };
                     if !comments.is_empty() {
                         doc.set_trailing("");
                     }
@@ -138,6 +138,21 @@ mod tests {
         let out = set("[editor]\ntab_width = 4\n", "ui.icons", Value::Str("emoji".into())).unwrap();
         assert_eq!(out, "[editor]\ntab_width = 4\n\n[ui]\nicons = \"emoji\"\n");
         assert_eq!(set("", "ui.icons", Value::Str("emoji".into())).unwrap(), "[ui]\nicons = \"emoji\"\n");
+    }
+
+    #[test]
+    fn new_section_goes_after_trailing_comments() {
+        let input = "[editor]\ntab_width = 4\n\n# [git]\n# log_all = false\n";
+        let out = set(input, "ui.icons", Value::Str("emoji".into())).unwrap();
+        assert_eq!(out, "[editor]\ntab_width = 4\n\n# [git]\n# log_all = false\n\n[ui]\nicons = \"emoji\"\n");
+        assert!(Config::parse(&out).is_ok());
+    }
+
+    #[test]
+    fn new_key_keeps_trailing_comments_last() {
+        let input = "[editor]\ntab_width = 4\n\n# [git]\n# log_all = false\n";
+        let out = set(input, "editor.scrolloff", Value::Int(2)).unwrap();
+        assert_eq!(out, "[editor]\ntab_width = 4\nscrolloff = 2\n\n# [git]\n# log_all = false\n");
     }
 
     #[test]

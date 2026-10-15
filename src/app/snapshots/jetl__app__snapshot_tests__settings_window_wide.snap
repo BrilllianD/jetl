@@ -29,8 +29,8 @@ expression: "snapshot(&term, &settings_marks(&app.theme), None)"
 23  ⚑ │ │                          │                                                                                 │
 24    │ │                          │                                                                                 │
 25  9 │ │                          │                                                                                 │
-26  ⎇ │ │                          │A built-in theme, "auto" (the Omarchy palette when there is one) or a theme file:│
-27    │ │                          │a path ending in .toml.                                                          │
+26  ⎇ │ │                          │A built-in theme, "auto" (Omarchy's palette if any) or a .toml theme file.       │
+27    │ │                          │Colors: theme.toml.                                                              │
 28    │ │                          │Applies at once.                                                                 │
 29  ❯ │ │                          │Delete resets to the default.                                                    │
 30    │ │                          │Key: ui.theme                                                                    │

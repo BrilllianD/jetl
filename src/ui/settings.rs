@@ -144,6 +144,21 @@ impl SettingsWindow {
         self.rect
     }
 
+    #[cfg(test)]
+    pub fn tree_rect(&self) -> Rect {
+        self.tree_rect
+    }
+
+    #[cfg(test)]
+    pub fn rows_rect(&self) -> Rect {
+        self.rows_rect
+    }
+
+    #[cfg(test)]
+    pub fn button_rects(&self) -> &[Rect] {
+        &self.button_rects
+    }
+
     pub fn contains(&self, x: u16, y: u16) -> bool {
         self.rect.contains((x, y).into())
     }
@@ -389,7 +404,12 @@ impl SettingsWindow {
             .style(Style::default().bg(theme.popup_bg).fg(theme.fg));
         let inner = block.inner(self.rect);
         frame.render_widget(block, self.rect);
-        if inner.height < 5 || inner.width < 20 {
+        let total: u16 = BUTTONS.iter().map(|b| b.width() as u16).sum::<u16>() + 2 * (BUTTONS.len() as u16 - 1);
+        if inner.height < 5 || inner.width < total + 1 {
+            // Only the frame fits; drop the rects so a click after a resize cannot hit the old layout.
+            self.button_rects.clear();
+            self.tree_rect = Rect::default();
+            self.rows_rect = Rect::default();
             return;
         }
         let base = Style::default().bg(theme.popup_bg).fg(theme.fg);
@@ -397,7 +417,6 @@ impl SettingsWindow {
 
         // Buttons on the last row, right-aligned.
         let by = inner.bottom() - 1;
-        let total: u16 = BUTTONS.iter().map(|b| b.width() as u16).sum::<u16>() + 2 * (BUTTONS.len() as u16 - 1);
         let mut bx = inner.right().saturating_sub(1 + total).max(inner.x);
         self.button_rects.clear();
         for (i, b) in BUTTONS.iter().enumerate() {
@@ -458,8 +477,6 @@ impl SettingsWindow {
                         buf.set_string(px, top, l, base.patch(theme.error));
                         top += 1;
                     }
-                }
-                if msg_rows > 0 {
                     top += 1;
                 }
                 if top < bottom {
@@ -467,7 +484,7 @@ impl SettingsWindow {
                     self.rows_rect = Rect::new(px, top, pw as u16, 1);
                     let style = if self.pane == Pane::Page { theme.list_selected } else { theme.list_selected_unfocused };
                     buf.set_style(self.rows_rect, style);
-                    buf.set_string(px, top, OPEN_FILE_ROW, style);
+                    buf.set_string(px, top, fit(OPEN_FILE_ROW, pw), style);
                 }
             }
             Ok(_) if page.keys.is_empty() => {
@@ -539,7 +556,7 @@ impl SettingsWindow {
                     }
                 }
                 for (i, l) in help.iter().enumerate() {
-                    buf.set_string(px, bottom - help_h + i as u16, l, base.patch(theme.dim));
+                    buf.set_string(px, bottom - help_h + i as u16, fit(l, pw), base.patch(theme.dim));
                 }
             }
         }
@@ -559,4 +576,82 @@ fn move_list(list: &mut ListState, code: KeyCode) -> bool {
         _ => return false,
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    fn window() -> SettingsWindow {
+        let mut w =
+            SettingsWindow::new(&FileText::Text("[lsp]\nenabled = false\n".into()), Path::new("/tmp/jetl-test-settings/config.toml"));
+        assert_eq!(PAGES[2].title, "General");
+        draw(&mut w); // sizes the tree list
+        w.select_page(2);
+        draw(&mut w);
+        w
+    }
+
+    fn draw(w: &mut SettingsWindow) {
+        let theme = Theme::default();
+        let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        term.draw(|f| w.render(f, f.area(), &theme)).unwrap();
+    }
+
+    fn click(w: &mut SettingsWindow, x: u16, y: u16, clicks: u8) -> Option<SettingsResult> {
+        w.handle_mouse(&Mouse { kind: MouseEventKind::Down(MouseButton::Left), x, y, clicks, mods: KeyModifiers::NONE })
+    }
+
+    fn row_y(w: &SettingsWindow, key: &str) -> u16 {
+        w.rows_rect.y + PAGES[2].keys.iter().position(|k| *k == key).unwrap() as u16
+    }
+
+    #[test]
+    fn bool_cell_click_toggles_and_a_double_click_does_not_undo_it() {
+        let mut w = window();
+        let y = row_y(&w, "editor.auto_close");
+        let vc = w.value_col;
+        let before = w.value("editor.auto_close");
+        assert_eq!(click(&mut w, vc, y, 1), None);
+        assert_ne!(w.value("editor.auto_close"), before);
+        assert_eq!(w.pending().len(), 1);
+        assert_eq!(click(&mut w, vc, y, 2), None);
+        assert_ne!(w.value("editor.auto_close"), before);
+        assert_eq!(w.pending().len(), 1);
+        assert_eq!(click(&mut w, vc, y, 1), None);
+        assert_eq!(w.value("editor.auto_close"), before);
+        assert!(w.pending().is_empty());
+    }
+
+    #[test]
+    fn double_click_on_a_row_acts_as_enter() {
+        let mut w = window();
+        let y_int = row_y(&w, "editor.scrolloff");
+        let x = w.rows_rect.x + 2;
+        assert_eq!(click(&mut w, x, y_int, 1), None);
+        assert_eq!(w.selected_key(), Some("editor.scrolloff"));
+        assert_eq!(w.pane, Pane::Page);
+        assert_eq!(click(&mut w, x, y_int, 2), Some(SettingsResult::EditValue("editor.scrolloff")));
+
+        let y_bool = row_y(&w, "editor.auto_close");
+        let before = w.value("editor.auto_close");
+        assert!(x < w.value_col);
+        assert_eq!(click(&mut w, x, y_bool, 1), None);
+        assert_eq!(w.value("editor.auto_close"), before);
+        assert_eq!(click(&mut w, x, y_bool, 2), None);
+        assert_ne!(w.value("editor.auto_close"), before);
+        assert_eq!(w.pending().len(), 1);
+    }
+
+    #[test]
+    fn a_tree_click_selects_the_page() {
+        let mut w = window();
+        assert_eq!(PAGES[6].title, "Keymap");
+        let (x, y) = (w.tree_rect.x + 1, w.tree_rect.y + 6);
+        assert_eq!(click(&mut w, x, y, 1), None);
+        assert_eq!(w.page(), 6);
+        assert_eq!(w.pane, Pane::Tree);
+    }
 }
