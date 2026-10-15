@@ -522,9 +522,10 @@ into block changes (Shift+click moves the head corner).
 
 Virtual space is the empty cells past a line end where a caret can stand.
 `Selection::virt` (`Virt { anchor, head }`, two optional columns) holds it per
-caret: `Some(c)` only while that end is at its line's end and `c` is greater than
-the line's width; every reader clamps with `.max(width)`, so a stale value never
-moves anything left of the line end. `head_col` / `anchor_col` give the visual
+caret: `Some(c)` is set only on an end at its line's end, with `c` greater than the
+line's width; every reader (`head_col` / `anchor_col`, and the caret and
+selection drawing in `render`) takes the larger of `c` and that end's own
+visual column, so a stale value never moves anything left of the line end. `head_col` / `anchor_col` give the visual
 column of an end (`virt` or the real column, whichever is larger), and
 `render`, `ensure_visible`, the terminal cursor and the status bar's `Col` all
 read `head_col`. `Selection::new`, `point`, `set_head`, `with_range`,
@@ -534,8 +535,10 @@ land with `After::Keep` keep it; `After::Virtual`, `block_selections`,
 `Buffer::virtual_caret` and `Buffer::move_virtual` set it. When `normalize`
 merges two empty carets, the primary member's `virt` wins, else the first one's;
 a merged range keeps its lead member's only when that range is the whole
-merged range. `drop_stale_virt` removes a column from a caret that is no longer
-at a line end or no longer past it. Undo and redo restore the columns recorded in
+merged range. `drop_stale_virt` (run by `edit_carets` on the carets it keeps) removes the
+column of an end that is no longer at its line's end; it does not check that the
+column is still past the line's width (`Buffer` has no tab width there), which
+the readers' clamp makes harmless. Undo and redo restore the columns recorded in
 `sel_before` / `sel_after` (the text is identical) but drop `view.block`; a
 parked view that catches up on edits loses its columns, like its block.
 

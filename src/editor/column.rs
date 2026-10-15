@@ -422,7 +422,7 @@ mod tests {
     }
 
     #[test]
-    fn typing_in_a_virtual_pads_short_lines() {
+    fn typing_in_a_block_pads_short_lines() {
         let make = || {
             let mut buf = b("abcdef\nab\nabcdef\n");
             buf.set_block(Block { anchor: (0, 4), head: (2, 4) }, 4);

@@ -315,6 +315,10 @@ press 0 $((X+8)) 4; release 0 $((X+8)) 4         # a click past "ab": "Ln 3, Col
 /tmp/tm.sh send-keys -t jetl -H 1b 5b 33 3b 35 7e         # Ctrl+Delete: nothing changes, "ab" not joined
 /tmp/tm.sh send-keys -t jetl BSpace -l 'V'       # Col 5, then "ab  V"
 /tmp/tm.sh send-keys -t jetl C-z
+/tmp/tm.sh send-keys -t jetl M-S-IC              # column mode off (status without " Column")
+/tmp/tm.sh send-keys -t jetl Home                # line 3, before "ab": "Ln 3, Col 1"
+/tmp/tm.sh send-keys -t jetl -H 1b 5b 33 3b 35 7e         # Ctrl+Delete deletes the word: line 3 is empty
+/tmp/tm.sh send-keys -t jetl C-z                 # "ab" back
 ```
 
 `capture-pane -e` shows the selected cells in the selection background
@@ -325,7 +329,7 @@ the last Shift+Right in sight (at 120x40 the 70 steps fit without scrolling). Al
 8` on one cell) still adds a caret. `capture-pane -e` shows the Alt+clicked carets in
 reverse video on their cells past the line ends. tmux does not send Ctrl+Backspace
 for `C-BSpace` (it types the name as text): the scenario sends the escapes `ESC [ 127;5 u` and
-`ESC [ 3;5 ~` with `-H`. `-H 08` is not Ctrl+Backspace for jetl (the status column stays).
+`ESC [ 3;5 ~` with `-H`. The Ctrl+Delete in virtual space changes nothing, so the probe on line 3 (an empty line after it, "ab" back after Ctrl+Z) is what shows the escape reaches jetl. `-H 08` is not Ctrl+Backspace for jetl (the status column stays).
 
 ### Scenario: code folding
 
@@ -603,7 +607,7 @@ sleep 2; /tmp/tm.sh send-keys -t jetl C-M-s; sleep 0.3; /tmp/tm.sh capture-pane 
   click on `[ Apply ]`: a Warning "Reloaded config.toml; restart jetl to
   apply ui.left_width"; the file gains `[ui]` `left_width = 40` after a blank
   line, the other lines unchanged.
-- Narrow: `/tmp/tm.sh resize-window -t jetl -x 34 -y 20` with the window open shows only the frame with ` Settings `; `-x 40` keeps the buttons and the help lines inside the right border; Esc with a pending change at 40x12 shows the discard confirm inside the screen; `-x 8 -y 4` with the confirm open does not crash (`/tmp/jetl-stderr.txt` has no panic).
+- Narrow: `/tmp/tm.sh resize-window -t jetl -x 34 -y 20` with the window open shows only the frame with ` Settings `; `-x 40` keeps the buttons and the help lines inside the right border; Esc with a pending change at 40x12 shows the discard confirm inside the screen; `-x 8 -y 4` with the confirm open does not crash (`/tmp/jetl-stderr.txt` has no panic). Opened at 80x24, note the row and column of `[ OK ]`, then `resize-window -x 30 -y 24` (frame only) and click that cell (`press 0 <col> <row>; release 0 <col> <row>`): the window stays open with only its frame.
 - Esc closes the window; F10 > File > Settings… (click the row) opens it.
   `touch $C/config.toml`: no new notification.
 - `/tmp/tm.sh kill-server`.

@@ -595,8 +595,12 @@ mod tests {
     }
 
     fn draw(w: &mut SettingsWindow) {
+        draw_at(w, 80, 24);
+    }
+
+    fn draw_at(w: &mut SettingsWindow, width: u16, height: u16) {
         let theme = Theme::default();
-        let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let mut term = Terminal::new(TestBackend::new(width, height)).unwrap();
         term.draw(|f| w.render(f, f.area(), &theme)).unwrap();
     }
 
@@ -606,6 +610,26 @@ mod tests {
 
     fn row_y(w: &SettingsWindow, key: &str) -> u16 {
         w.rows_rect.y + PAGES[2].keys.iter().position(|k| *k == key).unwrap() as u16
+    }
+
+    #[test]
+    fn a_frame_only_redraw_drops_the_old_click_targets() {
+        let mut w = window();
+        assert!(!w.button_rects.is_empty());
+        assert!(w.tree_rect.width > 0);
+        assert!(w.rows_rect.width > 0);
+        let ok = w.button_rects[0];
+        let tree_pt = (w.tree_rect.x + 1, w.tree_rect.y + 6);
+        let row_pt = (w.rows_rect.x + 2, w.rows_rect.y);
+        let (page, pane) = (w.page(), w.pane);
+        draw_at(&mut w, 30, 24);
+        assert!(w.button_rects.is_empty());
+        assert_eq!(w.tree_rect, Rect::default());
+        assert_eq!(w.rows_rect, Rect::default());
+        assert_eq!(click(&mut w, ok.x, ok.y, 1), None);
+        assert_eq!(click(&mut w, tree_pt.0, tree_pt.1, 1), None);
+        assert_eq!(click(&mut w, row_pt.0, row_pt.1, 2), None);
+        assert_eq!((w.page(), w.pane), (page, pane));
     }
 
     #[test]
