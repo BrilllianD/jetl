@@ -210,8 +210,9 @@ pub fn apply_args(cached: bool, reverse: bool) -> Vec<String> {
 /// Arguments for one page of the log. The graph is drawn from the parents
 /// (`git::graph`); `--parents` rewrites them past commits a path filter
 /// leaves out, and `--date-order` lists no parent before its children.
-/// `--all` (a branch filter of `All`, or the default with `all`) comes after
-/// `--exclude=refs/stash`, so stash commits stay out of the list.
+/// A branch filter of `All` (or the default with `all`) walks branches,
+/// remote branches, tags and HEAD, not `--all`: that would add `refs/stash`
+/// and other refs such as yman's `refs/yman/*`.
 pub fn log_args(skip: usize, count: usize, all: bool, filter: &LogFilter) -> Vec<String> {
     let mut v = args(&["log", "--parents", "--date-order", "--no-color"]);
     v.push(format!("-n{count}"));
@@ -231,8 +232,8 @@ pub fn log_args(skip: usize, count: usize, all: bool, filter: &LogFilter) -> Vec
     v.push("--format=%H%x1f%P%x1f%h%x1f%an%x1f%ar%x1f%D%x1f%s".into());
     match &filter.rev {
         LogRev::Rev(rev) => v.push(rev.clone()),
-        LogRev::All => v.extend(args(&["--exclude=refs/stash", "--all"])),
-        LogRev::Default if all => v.extend(args(&["--exclude=refs/stash", "--all"])),
+        LogRev::All => v.extend(args(&["--branches", "--remotes", "--tags", "HEAD"])),
+        LogRev::Default if all => v.extend(args(&["--branches", "--remotes", "--tags", "HEAD"])),
         LogRev::Default | LogRev::Head => {}
     }
     v.push("--".into());
@@ -378,22 +379,25 @@ mod tests {
 
     #[test]
     fn log_args_page() {
+        let has_all = |a: &[String]| ["--branches", "--remotes", "--tags", "HEAD"].iter().all(|w| a.contains(&w.to_string()));
         let a = log_args(500, 500, false, &LogFilter::default());
         assert!(a.contains(&"--skip=500".to_string()));
         assert!(a.contains(&"-n500".to_string()));
-        assert!(!a.contains(&"--all".to_string()));
+        assert!(!has_all(&a));
         assert_eq!(a.last().map(String::as_str), Some("--"));
         let f = LogFilter { rev: LogRev::Rev("dev".into()), text: "fix".into(), author: "ann".into(), path: "src/a.rs".into() };
         let a = log_args(0, 10, true, &f);
-        assert!(!a.contains(&"--all".to_string()), "a branch replaces --all");
+        assert!(!has_all(&a) && !a.contains(&"--branches".to_string()), "a branch replaces the ref set");
         for want in ["--grep=fix", "--author=ann", "--fixed-strings", "dev"] {
             assert!(a.contains(&want.to_string()), "{want} in {a:?}");
         }
         assert_eq!(&a[a.len() - 2..], ["--", "src/a.rs"]);
-        let followed = |a: &[String]| a.windows(2).any(|w| w[0] == "--exclude=refs/stash" && w[1] == "--all");
-        assert!(followed(&log_args(0, 10, true, &LogFilter::default())));
+        assert!(has_all(&log_args(0, 10, true, &LogFilter::default())));
         let all = LogFilter { rev: LogRev::All, ..Default::default() };
-        assert!(followed(&log_args(0, 10, false, &all)));
+        assert!(has_all(&log_args(0, 10, false, &all)));
+        let head = LogFilter { rev: LogRev::Head, ..Default::default() };
+        assert!(!has_all(&log_args(0, 10, true, &head)));
+        assert!(!a.contains(&"--all".to_string()));
     }
 
     #[tokio::test]
@@ -424,6 +428,43 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(log.len(), 2, "{log:?}");
         assert!(log.iter().all(|c| !c.subject.starts_with("WIP on") && !c.subject.starts_with("index on")), "{log:?}");
+    }
+
+    #[tokio::test]
+    async fn log_all_leaves_out_other_refs() {
+        let dir = std::env::temp_dir().join(format!("jetl-log-refs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let run = |a: &[&str]| {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&dir)
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(a)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {a:?}: {}", String::from_utf8_lossy(&out.stderr));
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        run(&["init", "-q"]);
+        for n in ["one", "two"] {
+            std::fs::write(dir.join("f.txt"), n).unwrap();
+            run(&["add", "f.txt"]);
+            run(&["commit", "-qm", n]);
+        }
+        let tree = run(&["rev-parse", "HEAD^{tree}"]);
+        let oid = run(&["commit-tree", &tree, "-m", "yman"]);
+        run(&["update-ref", "refs/yman/local", &oid]);
+        let oid = run(&["commit-tree", &tree, "-m", "tagged"]);
+        run(&["tag", "t", &oid]);
+        let out = git(&dir, &log_args(0, 100, true, &LogFilter::default())).await.unwrap();
+        let log = parse_log(&out.stdout_text());
+        let _ = std::fs::remove_dir_all(&dir);
+        let subjects: Vec<&str> = log.iter().map(|c| c.subject.as_str()).collect();
+        for want in ["one", "two", "tagged"] {
+            assert!(subjects.contains(&want), "{want} in {subjects:?}");
+        }
+        assert!(!subjects.contains(&"yman"), "{subjects:?}");
     }
 
     #[tokio::test]

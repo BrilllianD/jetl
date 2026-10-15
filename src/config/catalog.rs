@@ -218,7 +218,7 @@ pub static SETTINGS: &[Setting] = &[
     row!(
         "git.log_all",
         "Log shows all branches",
-        "The Log tab shows all branches (git log --all, stashes left out); off: HEAD only.",
+        "The Log tab shows all branches (branches, remote branches, tags and HEAD); off: HEAD only.",
         Kind::Bool,
         |c| Value::Bool(c.git.log_all)
     ),
