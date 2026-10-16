@@ -29,7 +29,9 @@ pub(super) use crate::lsp::caps::{
     CODE_ACTION, CODE_ACTION_RESOLVE, COMPLETION, DOCUMENT_SYMBOL, EXECUTE_COMMAND, FORMATTING, PREPARE_RENAME, RANGE_FORMATTING, RENAME,
     RESOLVE,
 };
-use crate::lsp::caps::{Caps, DECLARATION, DEFINITION, HOVER, IMPLEMENTATION, REFERENCES, SIGNATURE_HELP, TYPE_DEFINITION};
+use crate::lsp::caps::{
+    Caps, DECLARATION, DEFINITION, HOVER, IMPLEMENTATION, REFERENCES, SIGNATURE_HELP, TYPE_DEFINITION, WORKSPACE_SYMBOL,
+};
 
 /// The method a tag was sent with.
 fn method_of(tag: &PendingTag) -> &'static str {
@@ -54,6 +56,7 @@ fn method_of(tag: &PendingTag) -> &'static str {
         PendingTag::Initialize => "initialize",
         PendingTag::Shutdown => "shutdown",
         PendingTag::WillFileOp(_) => "workspace/will*Files",
+        PendingTag::WorkspaceSymbols(_) => WORKSPACE_SYMBOL,
     }
 }
 
@@ -73,6 +76,7 @@ fn what(method: &str) -> &'static str {
         REFERENCES => "find usages",
         HOVER => "documentation",
         SIGNATURE_HELP => "parameter info",
+        WORKSPACE_SYMBOL => "workspace symbols",
         COMPLETION => "code completion",
         RESOLVE => "resolving completions",
         PREPARE_RENAME => "checking renames",
@@ -277,6 +281,9 @@ impl App {
         if let PendingTag::WillFileOp(seq) = tag {
             return self.will_file_op_answer(name, seq, result);
         }
+        if let PendingTag::WorkspaceSymbols(seq) = tag {
+            return self.workspace_symbols_answer(name, seq, result);
+        }
         let Some(t) = tag.doc().cloned() else { return };
         // Formatting is checked against its buffer's format job.
         if let PendingTag::Formatting(t) = tag {
@@ -340,6 +347,7 @@ impl App {
             | PendingTag::Formatting(_)
             | PendingTag::Lightbulb(_)
             | PendingTag::WillFileOp(_)
+            | PendingTag::WorkspaceSymbols(_)
             | PendingTag::Initialize
             | PendingTag::Shutdown => {}
         }

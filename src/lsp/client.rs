@@ -23,11 +23,11 @@ use lsp_types::{
     CompletionItemCapability, CompletionItemCapabilityResolveSupport, CompletionItemKind, CompletionItemKindCapability, DiagnosticTag,
     DidChangeWatchedFilesClientCapabilities, DocumentFormattingClientCapabilities, DocumentRangeFormattingClientCapabilities,
     DocumentSymbolClientCapabilities, ExecuteCommandClientCapabilities, FailureHandlingKind, GeneralClientCapabilities, GotoCapability,
-    HoverClientCapabilities, InitializeParams, InitializeResult, MarkupKind, ParameterInformationSettings, PositionEncodingKind,
-    PublishDiagnosticsClientCapabilities, ReferenceClientCapabilities, RenameClientCapabilities, ResourceOperationKind,
-    ShowMessageRequestClientCapabilities, SignatureHelpClientCapabilities, SignatureInformationSettings, TagSupport,
+    HoverClientCapabilities, InitializeParams, InitializeResult, MarkupKind, MessageActionItemCapabilities, ParameterInformationSettings,
+    PositionEncodingKind, PublishDiagnosticsClientCapabilities, ReferenceClientCapabilities, RenameClientCapabilities,
+    ResourceOperationKind, ShowMessageRequestClientCapabilities, SignatureHelpClientCapabilities, SignatureInformationSettings, TagSupport,
     TextDocumentClientCapabilities, TextDocumentSyncClientCapabilities, WindowClientCapabilities, WorkspaceClientCapabilities,
-    WorkspaceEditClientCapabilities, WorkspaceFileOperationsClientCapabilities, WorkspaceFolder,
+    WorkspaceEditClientCapabilities, WorkspaceFileOperationsClientCapabilities, WorkspaceFolder, WorkspaceSymbolClientCapabilities,
 };
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, BufReader};
@@ -261,7 +261,9 @@ pub fn client_capabilities(watch_files: bool) -> ClientCapabilities {
         }),
         window: Some(WindowClientCapabilities {
             work_done_progress: Some(true),
-            show_message: Some(ShowMessageRequestClientCapabilities::default()),
+            show_message: Some(ShowMessageRequestClientCapabilities {
+                message_action_item: Some(MessageActionItemCapabilities { additional_properties_support: Some(true) }),
+            }),
             ..Default::default()
         }),
         workspace: Some(WorkspaceClientCapabilities {
@@ -281,6 +283,7 @@ pub fn client_capabilities(watch_files: bool) -> ClientCapabilities {
                 change_annotation_support: Some(ChangeAnnotationWorkspaceEditClientCapabilities { groups_on_label: Some(false) }),
                 ..Default::default()
             }),
+            symbol: Some(WorkspaceSymbolClientCapabilities { dynamic_registration: Some(true), ..Default::default() }),
             execute_command: Some(ExecuteCommandClientCapabilities { dynamic_registration: Some(true) }),
             did_change_watched_files: watch_files.then_some(DidChangeWatchedFilesClientCapabilities {
                 dynamic_registration: Some(true),

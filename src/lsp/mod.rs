@@ -80,6 +80,8 @@ pub enum PendingTag {
     /// `textDocument/codeAction` for the lightbulb; checked against
     /// `LspService::lightbulb` (`app/lightbulb.rs`), not `inflight`.
     Lightbulb(DocTag),
+    /// workspace/symbol for the palette query with this seq.
+    WorkspaceSymbols(u64),
     /// `workspace/will*Files` of a tree file operation; the seq of its `PendingFileOp`.
     WillFileOp(u64),
 }
@@ -88,7 +90,7 @@ impl PendingTag {
     /// The document request's tag, for the requests the app makes.
     pub fn doc(&self) -> Option<&DocTag> {
         match self {
-            PendingTag::Initialize | PendingTag::Shutdown | PendingTag::WillFileOp(_) => None,
+            PendingTag::Initialize | PendingTag::Shutdown | PendingTag::WillFileOp(_) | PendingTag::WorkspaceSymbols(_) => None,
             PendingTag::Definition(t)
             | PendingTag::TypeDefinition(t)
             | PendingTag::Implementation(t)

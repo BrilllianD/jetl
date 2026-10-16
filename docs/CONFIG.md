@@ -206,6 +206,7 @@ scratches = false              # language servers for scratch files too (own cli
 # languages = ["rust"]           # language ids, as the status bar shows them
 # init_options = {}              # sent as initializationOptions
 # settings = { rust-analyzer = { check = { command = "clippy" } } }  # answers workspace/configuration
+# init_options = { workspace = { symbol = { search = { kind = "all_symbols" } } } }  # rust-analyzer lists only types in Go to Symbol by default
 
 [local_history]
 enabled = true                 # snapshot files on save and before they are overwritten or deleted

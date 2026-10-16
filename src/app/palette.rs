@@ -34,7 +34,10 @@ impl App {
             p.set_actions(self.palette_actions());
         }
         if p.wants(Source::Symbols) {
-            p.set_symbols(self.symbols.entries(), self.symbols.indexing());
+            self.cancel_workspace_symbols();
+            let seq = self.lsp.ws_symbols.seq;
+            self.lsp.ws_symbols = crate::app::symbols::WsSymbols { seq, ..Default::default() };
+            p.set_symbols(self.palette_symbols(), self.symbols.indexing());
             self.symbols_fed = Some(std::time::Instant::now());
             // Catches files added or changed while nothing was watching.
             if !p.wants(Source::Files) {
@@ -64,6 +67,7 @@ impl App {
         }
         self.palette = Some(p);
         self.dispatcher.reset();
+        self.workspace_symbols_sync();
     }
 
     /// Find Action rows: every registry entry except the palette's own
@@ -228,6 +232,7 @@ impl App {
         if let Some(res) = res {
             self.finish_palette(res);
         }
+        self.workspace_symbols_sync();
     }
 
     pub(super) fn finish_palette(&mut self, res: PaletteResult) {
@@ -247,6 +252,10 @@ impl App {
             PaletteResult::Accept(Accept::DeleteScratch(path)) => self.ask_delete_scratch(path),
             PaletteResult::Accept(Accept::ForgetProject(root)) => self.forget_recent_project(root),
             // A symbol or location: back returns here even after a short jump.
+            PaletteResult::Accept(Accept::OpenFileAtUtf16 { path, pos }) => {
+                self.editor.push_nav_here();
+                self.apply_effects(vec![Effect::OpenFileAtUtf16 { path, pos }])
+            }
             PaletteResult::Accept(Accept::OpenFileAt { path, line, col }) => {
                 self.editor.push_nav_here();
                 self.apply_effects(vec![Effect::OpenFileAt { path, line, col }])

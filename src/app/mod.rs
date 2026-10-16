@@ -646,6 +646,7 @@ impl App {
         }
         if let Some(p) = &mut self.palette {
             p.paste(&text);
+            self.workspace_symbols_sync();
             return;
         }
         if self.focus.is(PanelId::Terminal) {

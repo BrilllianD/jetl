@@ -149,6 +149,11 @@ pub enum Accept {
         line: usize,
         col: usize,
     },
+    /// Open a file at a language server position (UTF-16 column).
+    OpenFileAtUtf16 {
+        path: PathBuf,
+        pos: lsp_types::Position,
+    },
     RunTask(Box<crate::run::RunTask>),
     /// Shift+Delete on a scratch file: the app asks first.
     DeleteScratch(PathBuf),
@@ -677,7 +682,12 @@ impl Palette {
             Source::Projects => Accept::SwitchRoot(self.projects.get(i)?.clone()),
             Source::Symbols => {
                 let e = self.shown.symbols.get(i)?;
-                Accept::OpenFileAt { path: self.root.join(&*e.path), line: e.symbol.line, col: e.symbol.col }
+                let path = self.root.join(&*e.path);
+                if e.utf16 {
+                    Accept::OpenFileAtUtf16 { path, pos: lsp_types::Position::new(e.symbol.line as u32, e.symbol.col as u32) }
+                } else {
+                    Accept::OpenFileAt { path, line: e.symbol.line, col: e.symbol.col }
+                }
             }
             Source::Actions => Accept::Action(self.actions.get(i)?.action.clone()),
             Source::Tasks => Accept::RunTask(Box::new(self.tasks.get(i)?.clone())),
@@ -1476,6 +1486,7 @@ mod tests {
                 end_line: line,
                 depth: 0,
             },
+            utf16: false,
         }
     }
 
@@ -1666,6 +1677,7 @@ mod tests {
                 end_line: line,
                 depth: 0,
             },
+            utf16: false,
         };
         let names = |p: &Palette| -> Vec<String> { p.rows.iter().map(|&i| p.shown.symbols[i].symbol.name.to_string()).collect() };
         let selected = |p: &Palette| names(p)[p.list.selected].clone();

@@ -968,6 +968,7 @@ rust-analyzer needs up to a minute to index; wait until the status bar spinner s
 - Caret on a trait method name inside a `trait` block, `C-M-b`: lists its impls (or jumps when there is one).
 - Navigate > Declaration on a name with one declaration jumps; with none, the toast `Cannot find declaration to go to`.
 - Parameter Info: open `$R/src/app/symbols.rs`, put the caret inside `self.symbols.on_batch(seq, batch)` after `seq, ` and send `C-p`: a popup above the line shows the signature with `batch` bold (check with `capture-pane -e`). `Escape` closes it. On an empty line type `-l 'self.request_symbols('`: the popup opens by itself; `-l ')'` closes it. Undo with `C-z` and never save.
+- Workspace symbols: with a `.rs` file open and indexing finished, `M-N` (Alt+Shift+N), `-l 'HashMap'`: rows with absolute paths under `~/.rustup` or `~/.cargo` appear next to the project's rows; Enter on one opens it at the struct. `grep 'workspace/symbol' /tmp/jt-home/state/jetl/jetl.log` shows one request per typed prefix. Check at 120x40 and 80x24. `window/showMessageRequest` has no rust-analyzer trigger; the integration test `show_message_request_opens_a_choice_and_answers_the_pick` covers it.
 - Kill the server with `/tmp/tm.sh kill-server` afterwards.
 
 ### Scenario: push options and stash untracked

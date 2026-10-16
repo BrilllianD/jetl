@@ -18,6 +18,13 @@ use crate::ui::widgets::text_input::TextInput;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DialogId {
     QuitDirty,
+    /// A server's window/showMessageRequest: answered with the picked action (its JSON) or null.
+    LspMessageRequest {
+        server: crate::lsp::ServerId,
+        name: String,
+        id: crate::lsp::transport::RequestId,
+        actions: Vec<String>,
+    },
     /// Keyed by buffer, not tab index: tabs can open while the dialog is up.
     CloseTabDirty(crate::editor::buffer::BufferId),
     CloseAllDirty,

@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Go to Symbol also lists the language servers' workspace symbols (merged with the built-in index) and opens them at the right column.
+- A language server's question with buttons (`window/showMessageRequest`) opens a choice dialog; the pick goes back to the server.
 - View > Parameter Info (Ctrl+P): the signatures of the call at the caret with the current parameter bold; it opens by itself after `(` or `,` when the language server supports it and follows the caret while open.
 - Navigate > Type Declaration (Ctrl+Shift+B, Alt+Shift+B), Implementation(s) (Ctrl+Alt+B) and Declaration through the language server; several results open the Locations palette.
 - Git > Push… opens a Push dialog with Tags and Force with lease toggles (a force push is always `--force-with-lease`, never a plain force). The Stash tab has an Untracked toggle that stashes untracked files too.

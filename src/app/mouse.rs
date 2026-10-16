@@ -110,6 +110,7 @@ impl App {
             if let Some(res) = self.palette.as_mut().and_then(|p| p.handle_mouse(&mouse)) {
                 self.finish_palette(res);
             }
+            self.workspace_symbols_sync();
             return;
         }
         if let Some(d) = &mut self.dialog {

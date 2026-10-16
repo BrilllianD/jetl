@@ -25,6 +25,7 @@ use crate::lsp::registry::DocRef;
 use crate::lsp::sync::{self, DocEdit, SyncCaps};
 use crate::lsp::transport::{RequestId, ResponseError};
 use crate::lsp::{LspConfig, LspMsg, LspRequest, ServerConfig, ServerId};
+use crate::ui::dialog::{Dialog, DialogId, DialogResult};
 
 /// How servers are reached: processes, or in-process fakes in tests.
 #[derive(Default)]
@@ -65,6 +66,8 @@ pub struct LspService {
     pub(super) inflight: HashMap<&'static str, Inflight>,
     /// The last seq handed to a request (`DocTag::seq`).
     pub(super) last_seq: u64,
+    /// `workspace/symbol` requests of the Symbols palette (`app/symbols.rs`).
+    pub(super) ws_symbols: super::symbols::WsSymbols,
     /// The seq of the newest definition or usages request: the one whose
     /// locations may still open the palette.
     pub(super) nav_seq: u64,
@@ -189,6 +192,7 @@ impl LspService {
         self.progress.clear();
         self.diagnostics.clear();
         self.inflight.clear();
+        self.ws_symbols = Default::default();
         self.signature_explicit = false;
         self.completion.request = None;
         self.completion.accepting = None;
@@ -572,7 +576,7 @@ impl App {
                 );
             }
             LspMsg::Notification { method, params, .. } => self.lsp_notification(&name, server, &method, params),
-            LspMsg::ServerRequest { id, method, params, .. } => self.lsp_server_request(&name, id, &method, params),
+            LspMsg::ServerRequest { id, method, params, .. } => self.lsp_server_request(&name, server, id, &method, params),
             LspMsg::Response { tag, result, .. } => self.lsp_response(&name, tag, result),
         }
     }
@@ -648,7 +652,7 @@ impl App {
         }
     }
 
-    fn lsp_server_request(&mut self, name: &str, id: RequestId, method: &str, params: Value) {
+    fn lsp_server_request(&mut self, name: &str, server: ServerId, id: RequestId, method: &str, params: Value) {
         let result = match method {
             // Answered once applied (`App::edits_applied`).
             "workspace/applyEdit" => match serde_json::from_value::<lsp_types::ApplyWorkspaceEditParams>(params.clone()).map(|mut p| {
@@ -695,8 +699,22 @@ impl App {
                 Ok(sync::uri(root).map_or(Value::Null, |uri| json!([{"uri": uri, "name": name}])))
             }
             "window/showMessageRequest" => {
-                if let Ok(p) = serde_json::from_value::<ShowMessageParams>(params) {
-                    self.notify(Level::Info, format!("{name}: {}", p.message));
+                if let Ok(p) = serde_json::from_value::<lsp_types::ShowMessageRequestParams>(params) {
+                    let actions = p.actions.clone().filter(|a| !a.is_empty());
+                    if let Some(actions) = actions.filter(|_| self.dialog.is_none()) {
+                        let titles = actions.iter().map(|a| a.title.clone()).collect();
+                        let json = actions.iter().filter_map(|a| serde_json::to_string(a).ok()).collect();
+                        let did = DialogId::LspMessageRequest { server, name: name.into(), id, actions: json };
+                        self.dialog = Some(Dialog::choice(did, name, &p.message, titles));
+                        self.dirty_frame = true;
+                        return;
+                    }
+                    let level = match p.typ {
+                        lsp_types::MessageType::ERROR => Level::Error,
+                        lsp_types::MessageType::WARNING => Level::Warn,
+                        _ => Level::Info,
+                    };
+                    self.notify(level, format!("{name}: {}", p.message));
                 }
                 Ok(Value::Null)
             }
@@ -707,6 +725,18 @@ impl App {
         };
         if let Some(c) = self.lsp.clients.get(name) {
             c.respond(id, result);
+        }
+    }
+
+    /// The answer to a `window/showMessageRequest` dialog: the picked
+    /// action, else null. A server restarted meanwhile gets nothing.
+    pub(super) fn finish_lsp_message(&mut self, server: ServerId, name: &str, id: RequestId, actions: &[String], res: &DialogResult) {
+        let picked = match res {
+            DialogResult::Choice(i) => actions.get(*i).and_then(|a| serde_json::from_str::<Value>(a).ok()),
+            _ => None,
+        };
+        if let Some(c) = self.lsp.clients.get(name).filter(|c| c.id == server) {
+            c.respond(id, Ok(picked.unwrap_or(Value::Null)));
         }
     }
 
@@ -1279,6 +1309,38 @@ pub(crate) mod tests {
         mirror = apply_changes(&mirror, &changes);
         assert_eq!(mirror, app.editor.active_buffer().unwrap().text());
         assert_eq!(mirror, "c\u{2028}dx\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn show_message_request_opens_a_choice_and_answers_the_pick() {
+        let (mut app, dir) = test_app("lsp-msg-request");
+        let mut servers = with_fake_servers(&mut app, incremental());
+        let mut server = open_on_server(&mut app, &mut servers, "a.rs", "fn main() {}\n").await;
+        let actions = json!([{"title": "Yes", "extra": 1}, {"title": "No"}]);
+        server.request(7, "window/showMessageRequest", json!({"type": 3, "message": "Reload?", "actions": actions}));
+        handle_next(&mut app, is_lsp).await;
+        let d = app.dialog.take().expect("a dialog");
+        assert_eq!((d.title.as_str(), d.message.as_str()), ("rust-analyzer", "Reload?"));
+        match &d.kind {
+            crate::ui::dialog::DialogKind::Choice { items, .. } => assert_eq!(items, &["Yes", "No"]),
+            k => panic!("{k:?}"),
+        }
+        app.finish_dialog(d.id, DialogResult::Choice(0));
+        assert_eq!(server.response(7).await["result"], json!({"title": "Yes", "extra": 1}));
+
+        server.request(8, "window/showMessageRequest", json!({"type": 3, "message": "Again?", "actions": actions}));
+        handle_next(&mut app, is_lsp).await;
+        let d = app.dialog.take().expect("a dialog");
+        app.finish_dialog(d.id, DialogResult::Cancel);
+        assert_eq!(server.response(8).await["result"], Value::Null);
+
+        // Without actions: a notification and a null answer.
+        server.request(9, "window/showMessageRequest", json!({"type": 2, "message": "Heads up"}));
+        handle_next(&mut app, is_lsp).await;
+        assert!(app.dialog.is_none());
+        assert_eq!(server.response(9).await["result"], Value::Null);
+        assert!(app.notifications.iter().any(|n| n.text == "rust-analyzer: Heads up"), "{:?}", app.notifications);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

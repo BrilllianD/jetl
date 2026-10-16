@@ -45,6 +45,8 @@ pub struct SymbolBatch {
 pub struct SymbolEntry {
     pub path: Arc<str>,
     pub symbol: Symbol,
+    /// `symbol.col` is a UTF-16 column from a language server (converted once the file is loaded).
+    pub utf16: bool,
 }
 
 #[derive(Debug, Default)]
@@ -207,7 +209,7 @@ impl SymbolIndex {
         for p in paths {
             let path: Arc<str> = p.as_str().into();
             for s in self.files[p].symbols.iter().filter(|s| s.kind != "impl") {
-                out.push(SymbolEntry { path: path.clone(), symbol: s.clone() });
+                out.push(SymbolEntry { path: path.clone(), symbol: s.clone(), utf16: false });
             }
         }
         let e = Arc::new(out);

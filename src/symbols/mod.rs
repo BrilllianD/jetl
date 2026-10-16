@@ -123,7 +123,7 @@ fn kind_label(capture: &'static str, node: &str) -> &'static str {
 }
 
 /// One line, single spaces, at most `MAX_NAME` chars.
-fn clean_name(s: &str) -> String {
+pub(crate) fn clean_name(s: &str) -> String {
     let mut out = s.split_whitespace().collect::<Vec<_>>().join(" ");
     if let Some((i, _)) = out.char_indices().nth(MAX_NAME) {
         out.truncate(i);

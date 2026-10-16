@@ -22,6 +22,7 @@ pub const DEFINITION: &str = "textDocument/definition";
 pub const TYPE_DEFINITION: &str = "textDocument/typeDefinition";
 pub const IMPLEMENTATION: &str = "textDocument/implementation";
 pub const DECLARATION: &str = "textDocument/declaration";
+pub const WORKSPACE_SYMBOL: &str = "workspace/symbol";
 pub const REFERENCES: &str = "textDocument/references";
 pub const HOVER: &str = "textDocument/hover";
 pub const SIGNATURE_HELP: &str = "textDocument/signatureHelp";
@@ -126,6 +127,7 @@ impl<'a> Caps<'a> {
                     )
                 ) || self.any(DECLARATION)
             }
+            WORKSPACE_SYMBOL => on(&fixed.workspace_symbol_provider) || self.any(WORKSPACE_SYMBOL),
             REFERENCES => on(&fixed.references_provider) || self.any(REFERENCES),
             HOVER => {
                 matches!(fixed.hover_provider, Some(HoverProviderCapability::Simple(true) | HoverProviderCapability::Options(_)))
@@ -318,6 +320,21 @@ mod tests {
     }
 
     #[test]
+    fn workspace_symbol_is_static_or_registered() {
+        let none = Registry::default();
+        for v in [json!({"workspaceSymbolProvider": true}), json!({"workspaceSymbolProvider": {}})] {
+            let f = fixed(v);
+            let c = Caps { fixed: &f, registry: &none, doc: None };
+            assert!(c.has(WORKSPACE_SYMBOL));
+        }
+        let f = fixed(json!({}));
+        assert!(!Caps { fixed: &f, registry: &none, doc: None }.has(WORKSPACE_SYMBOL));
+        let mut r = Registry::default();
+        register(&mut r, "w", WORKSPACE_SYMBOL, json!({}));
+        assert!(Caps { fixed: &f, registry: &r, doc: None }.has(WORKSPACE_SYMBOL));
+    }
+
+    #[test]
     fn goto_variants_are_static_or_registered() {
         let f = fixed(json!({"typeDefinitionProvider": true, "implementationProvider": {}}));
         let mut r = Registry::default();
@@ -414,6 +431,8 @@ mod tests {
             assert_eq!(c["textDocument"][k]["dynamicRegistration"], true, "{k}");
         }
         assert_eq!(c["workspace"]["executeCommand"]["dynamicRegistration"], true);
+        assert_eq!(c["workspace"]["symbol"]["dynamicRegistration"], true);
+        assert_eq!(c["window"]["showMessage"]["messageActionItem"]["additionalPropertiesSupport"], true);
         assert_eq!(c["textDocument"]["synchronization"]["dynamicRegistration"], true);
         assert_eq!(c["workspace"]["fileOperations"]["dynamicRegistration"], true);
         assert_eq!(c["workspace"]["fileOperations"]["willRename"], true);
