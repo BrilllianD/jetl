@@ -13,7 +13,7 @@ use crate::ui::settings::{SettingsResult, SettingsWindow};
 
 impl App {
     pub(super) fn open_settings_window(&mut self) {
-        self.palette = None;
+        self.close_palette();
         self.menu = None;
         self.menu_bar = None;
         self.hover = None;

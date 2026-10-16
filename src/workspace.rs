@@ -289,7 +289,7 @@ impl App {
         self.git.load_worktrees();
         self.project.reroot(root.clone());
         // The palette lists the old root; close it and re-index.
-        self.palette = None;
+        self.close_palette();
         self.refresh_file_index();
         crate::tui::set_title(&root);
         self.editor.clear_nav();

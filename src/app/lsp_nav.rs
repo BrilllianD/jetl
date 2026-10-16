@@ -706,6 +706,7 @@ mod tests {
         server.respond(first, json!([loc(&b, range(1, 16, 1, 22))]));
         handle_next(&mut app, is_lsp).await;
         assert_eq!(app.editor.active_path(), Some(a.as_path()));
+        assert!(app.pending_goto.is_none(), "the superseded answer is not followed");
         server.respond(second, Value::Null);
         handle_next(&mut app, is_lsp).await;
         let _ = std::fs::remove_dir_all(&dir);

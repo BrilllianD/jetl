@@ -44,6 +44,20 @@ impl App {
         }
     }
 
+    /// Cancel the requests and forget the rows and the query, under a fresh
+    /// seq that no earlier request carries, so no late answer is kept.
+    pub(super) fn reset_workspace_symbols(&mut self) {
+        self.cancel_workspace_symbols();
+        self.lsp.last_seq += 1;
+        self.lsp.ws_symbols = WsSymbols { seq: self.lsp.last_seq, ..Default::default() };
+    }
+
+    /// Close the palette, ending its workspace symbol requests.
+    pub(crate) fn close_palette(&mut self) {
+        self.palette = None;
+        self.reset_workspace_symbols();
+    }
+
     /// Ask the servers for the symbols matching the Symbols palette's query
     /// when it changed; each query cancels the previous one's requests.
     pub(super) fn workspace_symbols_sync(&mut self) {
@@ -52,15 +66,14 @@ impl App {
         if query == self.lsp.ws_symbols.query {
             return;
         }
-        self.cancel_workspace_symbols();
+        // A new seq even when nothing is asked: answers to the old query
+        // must not refill the rows.
+        self.reset_workspace_symbols();
         self.lsp.ws_symbols.query = query.clone();
         if query.is_empty() || !self.config.lsp.enabled {
-            self.lsp.ws_symbols.entries.clear();
             return self.feed_palette_symbols();
         }
-        self.lsp.last_seq += 1;
-        let seq = self.lsp.last_seq;
-        self.lsp.ws_symbols.seq = seq;
+        let seq = self.lsp.ws_symbols.seq;
         let mut names: Vec<String> = self.lsp.clients.keys().filter(|n| !n.ends_with(SCRATCH_SUFFIX)).cloned().collect();
         names.sort();
         for name in names {
@@ -96,7 +109,11 @@ impl App {
                     }
                 }
             }
-            Err(e) => tracing::debug!("{name}: workspace/symbol failed: {e:?}"),
+            Err(e) => {
+                tracing::debug!("{name}: workspace/symbol failed: {e:?}");
+                // The next key asks again (a server still indexing times out).
+                ws.query.clear();
+            }
         }
         self.feed_palette_symbols();
     }
@@ -229,7 +246,8 @@ mod tests {
         let b = app.workspace.root.join("b.rs");
         std::fs::write(&b, "pub fn helper() {}\n").unwrap();
         app.open_palette(PaletteKind::Symbols);
-        assert!(server.drain().iter().all(|m| m["method"] != "workspace/symbol"), "an empty query sends nothing");
+        let sent = server.sent_so_far(&app.lsp.clients["rust-analyzer"]).await;
+        assert!(sent.iter().all(|m| m["method"] != "workspace/symbol"), "an empty query sends nothing: {sent:?}");
         type_str(&mut app, "hel");
         let mut ids = Vec::new();
         for (i, q) in ["h", "he", "hel"].iter().enumerate() {
@@ -273,7 +291,120 @@ mod tests {
         type_str(&mut app, "ma");
         app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
         app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
-        assert!(server.drain().iter().all(|m| m["method"] != "workspace/symbol"));
+        let sent = server.sent_so_far(&app.lsp.clients["rust-analyzer"]).await;
+        assert!(sent.iter().all(|m| m["method"] != "workspace/symbol"), "{sent:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn ws_caps() -> serde_json::Value {
+        let mut c = incremental();
+        c["workspaceSymbolProvider"] = json!(true);
+        c
+    }
+
+    fn late_answer() -> serde_json::Value {
+        json!([symbol_info("hello", "file:///tmp/late/l.rs", 0, 0)])
+    }
+
+    #[tokio::test]
+    async fn an_answer_to_an_erased_query_is_dropped() {
+        let (mut app, dir) = test_app("ws-symbols-erased");
+        let mut servers = with_fake_servers(&mut app, ws_caps());
+        let mut server = open_on_server(&mut app, &mut servers, "a.rs", "fn main() {}\n").await;
+        app.open_palette(PaletteKind::Symbols);
+        type_str(&mut app, "h");
+        let id = server.recv("workspace/symbol").await["id"].as_i64().unwrap();
+        app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+        server.respond(id, late_answer());
+        handle_next(&mut app, is_lsp).await;
+        assert!(app.lsp.ws_symbols.entries.is_empty(), "the query is empty now");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn an_answer_with_lsp_off_is_dropped() {
+        let (mut app, dir) = test_app("ws-symbols-off");
+        let mut servers = with_fake_servers(&mut app, ws_caps());
+        let mut server = open_on_server(&mut app, &mut servers, "a.rs", "fn main() {}\n").await;
+        app.open_palette(PaletteKind::Symbols);
+        type_str(&mut app, "h");
+        let id = server.recv("workspace/symbol").await["id"].as_i64().unwrap();
+        app.config.lsp.enabled = false;
+        type_str(&mut app, "e");
+        server.respond(id, late_answer());
+        handle_next(&mut app, is_lsp).await;
+        assert!(app.lsp.ws_symbols.entries.is_empty(), "LSP is off");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn an_answer_of_the_previous_palette_is_dropped() {
+        let (mut app, dir) = test_app("ws-symbols-reopen");
+        let mut servers = with_fake_servers(&mut app, ws_caps());
+        let mut server = open_on_server(&mut app, &mut servers, "a.rs", "fn main() {}\n").await;
+        app.open_palette(PaletteKind::Symbols);
+        type_str(&mut app, "h");
+        let id = server.recv("workspace/symbol").await["id"].as_i64().unwrap();
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(app.palette.is_none());
+        server.respond(id, late_answer());
+        handle_next(&mut app, is_lsp).await;
+        assert!(app.lsp.ws_symbols.entries.is_empty(), "the palette is closed");
+        assert!(app.lsp.ws_symbols.pending.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn closing_the_palette_cancels_the_request() {
+        let (mut app, dir) = test_app("ws-symbols-close");
+        let mut servers = with_fake_servers(&mut app, ws_caps());
+        let mut server = open_on_server(&mut app, &mut servers, "a.rs", "fn main() {}\n").await;
+        app.open_palette(PaletteKind::Symbols);
+        type_str(&mut app, "h");
+        let id = server.recv("workspace/symbol").await["id"].clone();
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(server.recv("$/cancelRequest").await["params"]["id"], id);
+        assert!(app.lsp.ws_symbols.pending.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_reopened_palette_drops_the_old_sessions_answer() {
+        let (mut app, dir) = test_app("ws-symbols-reopened");
+        let mut servers = with_fake_servers(&mut app, ws_caps());
+        let mut server = open_on_server(&mut app, &mut servers, "a.rs", "fn main() {}\n").await;
+        app.open_palette(PaletteKind::Symbols);
+        type_str(&mut app, "h");
+        let id = server.recv("workspace/symbol").await["id"].as_i64().unwrap();
+        // The answer lands for the first time, then the palette is reopened.
+        server.respond(id, late_answer());
+        handle_next(&mut app, is_lsp).await;
+        assert_eq!(app.lsp.ws_symbols.entries.len(), 1);
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        app.open_palette(PaletteKind::Symbols);
+        assert!(app.lsp.ws_symbols.entries.is_empty(), "a fresh palette starts without rows");
+        // The same answer, late, is for no request of this palette.
+        let seq = app.lsp.ws_symbols.seq;
+        app.workspace_symbols_answer("rust-analyzer", seq - 1, Ok(late_answer()));
+        assert!(app.lsp.ws_symbols.entries.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_failed_query_is_asked_again_on_the_next_key() {
+        let (mut app, dir) = test_app("ws-symbols-retry");
+        let mut servers = with_fake_servers(&mut app, ws_caps());
+        let mut server = open_on_server(&mut app, &mut servers, "a.rs", "fn main() {}\n").await;
+        app.open_palette(PaletteKind::Symbols);
+        type_str(&mut app, "h");
+        let id = server.recv("workspace/symbol").await["id"].as_i64().unwrap();
+        server.respond_error(id, -32803, "timed out");
+        handle_next(&mut app, is_lsp).await;
+        assert!(app.lsp.ws_symbols.query.is_empty(), "the failed query is forgotten");
+        // The same text asked again by the next palette key (a no-op edit).
+        app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        let again = server.recv("workspace/symbol").await;
+        assert_eq!(again["params"], json!({"query": "h"}));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

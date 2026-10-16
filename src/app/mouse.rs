@@ -87,6 +87,10 @@ impl App {
                 _ => {}
             }
         }
+        // A click on the Parameter Info popup does nothing (not the editor below it).
+        if matches!(m.kind, MouseEventKind::Down(_)) && self.signature.as_ref().is_some_and(|s| s.contains(m.column, m.row)) {
+            return;
+        }
         // The hover popup scrolls under the wheel; a click anywhere closes
         // it (and does what it does there, unless it was on the popup).
         if let Some(h) = &mut self.hover {

@@ -64,6 +64,21 @@ impl FakeServer {
             .expect("the client is connected")
     }
 
+    /// Everything the client sent so far: a `test/ping` notification goes
+    /// through the connection behind it, so unlike `drain` this cannot miss
+    /// a message still on its way.
+    pub async fn sent_so_far(&mut self, client: &crate::lsp::client::Client) -> Vec<Value> {
+        client.notify("test/ping", json!({}));
+        let mut out = Vec::new();
+        loop {
+            let msg = self.next().await;
+            if msg["method"] == "test/ping" {
+                return out;
+            }
+            out.push(msg);
+        }
+    }
+
     /// The next message with `method`, skipping others.
     pub async fn recv(&mut self, method: &str) -> Value {
         loop {

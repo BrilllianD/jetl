@@ -700,7 +700,7 @@ impl App {
             }
             "window/showMessageRequest" => {
                 if let Ok(p) = serde_json::from_value::<lsp_types::ShowMessageRequestParams>(params) {
-                    let actions = p.actions.clone().filter(|a| !a.is_empty());
+                    let actions = p.actions.filter(|a| !a.is_empty());
                     if let Some(actions) = actions.filter(|_| self.dialog.is_none()) {
                         let titles = actions.iter().map(|a| a.title.clone()).collect();
                         let json = actions.iter().filter_map(|a| serde_json::to_string(a).ok()).collect();

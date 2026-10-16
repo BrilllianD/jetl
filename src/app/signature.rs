@@ -276,7 +276,31 @@ mod tests {
         typ(&mut app, "f(");
         ctrl_p(&mut app);
         assert!(toasts(&app).contains(&"rust-analyzer does not support parameter info".to_string()), "{:?}", toasts(&app));
-        assert!(server.drain().iter().all(|m| m["method"] != METHOD));
+        let sent = server.sent_so_far(&app.lsp.clients["rust-analyzer"]).await;
+        assert!(sent.iter().all(|m| m["method"] != METHOD), "{sent:?}");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn a_click_on_the_popup_is_swallowed() {
+        use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+        let (mut app, mut server, dir) = setup("sig-click", true).await;
+        for _ in 0..4 {
+            key(&mut app, KeyCode::Enter);
+        }
+        open(&mut app, &mut server).await;
+        app.toasts = Default::default();
+        draw(&mut app, 80, 24);
+        let (cx, cy) = app.editor.caret_cell().unwrap();
+        let head = app.editor.active_buffer().unwrap().view.sel().head;
+        // Row cy - 2 is the signature's text; a click on another cell of
+        // the editor would move the caret there.
+        let click =
+            MouseEvent { kind: MouseEventKind::Down(MouseButton::Left), column: cx + 2, row: cy - 2, modifiers: KeyModifiers::NONE };
+        assert!(app.signature.as_ref().unwrap().contains(click.column, click.row));
+        app.handle_mouse(click);
+        assert_eq!(app.editor.active_buffer().unwrap().view.sel().head, head);
+        assert!(app.signature.is_some(), "the popup stays");
         std::fs::remove_dir_all(dir).ok();
     }
 

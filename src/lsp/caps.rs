@@ -170,14 +170,8 @@ impl<'a> Caps<'a> {
     /// Completion trigger characters: static ones, then registered ones, deduplicated in order.
     pub fn completion_triggers(&self) -> Vec<String> {
         let fixed = self.fixed.completion_provider.as_ref().and_then(|c| c.trigger_characters.as_ref()).into_iter().flatten();
-        let mut out: Vec<String> = Vec::new();
         let registered = self.dynamic(COMPLETION).flat_map(|o| strings(o, "triggerCharacters"));
-        for t in fixed.map(String::as_str).chain(registered) {
-            if !out.iter().any(|o| o == t) {
-                out.push(t.to_string());
-            }
-        }
-        out
+        dedup(fixed.map(String::as_str).chain(registered))
     }
 
     /// Signature help trigger characters: static ones, then registered ones, deduplicated in order.
@@ -197,14 +191,8 @@ impl<'a> Caps<'a> {
     /// Completion commit characters: static `allCommitCharacters`, then registered ones, deduplicated in order.
     pub fn completion_commit_chars(&self) -> Vec<String> {
         let fixed = self.fixed.completion_provider.as_ref().and_then(|c| c.all_commit_characters.as_ref()).into_iter().flatten();
-        let mut out: Vec<String> = Vec::new();
         let registered = self.dynamic(COMPLETION).flat_map(|o| strings(o, "allCommitCharacters"));
-        for t in fixed.map(String::as_str).chain(registered) {
-            if !out.iter().any(|o| o == t) {
-                out.push(t.to_string());
-            }
-        }
-        out
+        dedup(fixed.map(String::as_str).chain(registered))
     }
 
     /// Code action kinds the server says it returns: `None` means any kind (static

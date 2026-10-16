@@ -14,7 +14,7 @@ impl App {
     /// index, branch list); fresh ones are requested and fed in as they load.
     pub fn open_palette(&mut self, kind: PaletteKind) {
         if kind == PaletteKind::GotoLine {
-            self.palette = None;
+            self.close_palette();
             self.perform(Action::Editor(EditorAction::GotoLine));
             return;
         }
@@ -23,6 +23,7 @@ impl App {
         }
         // Switching kinds keeps the typed query.
         let query = self.palette.take().map(|mut p| std::mem::take(&mut p.input.text)).unwrap_or_default();
+        self.reset_workspace_symbols();
         let mut p = Palette::new(kind, self.workspace.root.clone());
         p.set_background(FilterBus { tx: self.bus_tx.clone(), generation: self.workspace.generation, seq: self.palette_seq.clone() });
         p.set_recent(self.editor.recent_paths());
@@ -34,9 +35,6 @@ impl App {
             p.set_actions(self.palette_actions());
         }
         if p.wants(Source::Symbols) {
-            self.cancel_workspace_symbols();
-            let seq = self.lsp.ws_symbols.seq;
-            self.lsp.ws_symbols = crate::app::symbols::WsSymbols { seq, ..Default::default() };
             p.set_symbols(self.palette_symbols(), self.symbols.indexing());
             self.symbols_fed = Some(std::time::Instant::now());
             // Catches files added or changed while nothing was watching.
@@ -219,7 +217,7 @@ impl App {
                 None
             }
             Dispatch::Action(a) => {
-                self.palette = None;
+                self.close_palette();
                 self.perform(a);
                 None
             }
@@ -238,7 +236,7 @@ impl App {
     pub(super) fn finish_palette(&mut self, res: PaletteResult) {
         // Forgetting a recent project keeps the palette open, without the row.
         if !matches!(res, PaletteResult::Accept(Accept::ForgetProject(_))) {
-            self.palette = None;
+            self.close_palette();
         }
         self.dirty_frame = true;
         match res {
