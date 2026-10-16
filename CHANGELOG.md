@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Markdown code fences are highlighted as their language, and HTML and Vue `<script>` / `<style>` blocks as JavaScript (or TypeScript with `lang="ts"`) and CSS (or SCSS); folding, bracket matching and Extend Selection follow the embedded language.
 - Go to Symbol also lists the language servers' workspace symbols (merged with the built-in index) and opens them at the right column.
 - A language server's question with buttons (`window/showMessageRequest`) opens a choice dialog; the pick goes back to the server.
 - View > Parameter Info (Ctrl+P): the signatures of the call at the caret with the current parameter bold; it opens by itself after `(` or `,` when the language server supports it and follows the caret while open.

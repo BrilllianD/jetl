@@ -663,7 +663,7 @@ impl Buffer {
             s.reparse(&self.rope);
         }
         self.edit_carets(|b, sel| {
-            let tree = b.syntax.as_ref().and_then(|s| s.tree());
+            let tree = b.syntax.as_ref().and_then(|s| s.tree_at_char(&b.rope, sel.head));
             let p = sel.head;
             let may_pair = !tree.is_some_and(|t| super::brackets::in_literal_at(&b.rope, t, p));
             // A closer that auto-close steps over keeps the line as is.
@@ -1017,9 +1017,26 @@ impl Buffer {
         if self.view.expand_stack.last().is_some_and(|(_, after)| *after != self.view.sels) {
             self.view.expand_stack.clear();
         }
-        let tree = self.syntax.as_ref().and_then(|s| s.tree());
-        let grown: Vec<Option<std::ops::Range<usize>>> =
-            self.view.sels.iter().map(|s| super::expand::expand_range(&self.rope, tree, s.range())).collect();
+        let host = self.syntax.as_ref().and_then(|s| s.tree());
+        let grown: Vec<Option<std::ops::Range<usize>>> = self
+            .view
+            .sels
+            .iter()
+            .map(|s| {
+                let r = s.range();
+                let inner = self.syntax.as_ref().and_then(|syn| syn.tree_at_char(&self.rope, r.start));
+                match (inner, host) {
+                    // Inside an injection the inner nodes come first, then
+                    // the host's around the block.
+                    (Some(inner), Some(host)) if !std::ptr::eq(inner, host) => {
+                        super::expand::expand_range(&self.rope, Some(inner), r.clone())
+                            .filter(|g| *g != (0..self.rope.len_chars()))
+                            .or_else(|| super::expand::expand_range(&self.rope, Some(host), r))
+                    }
+                    _ => super::expand::expand_range(&self.rope, host.or(inner), r),
+                }
+            })
+            .collect();
         if grown.iter().all(Option::is_none) {
             return;
         }
@@ -2510,6 +2527,26 @@ g()
     fn grow(buf: &mut Buffer) -> String {
         buf.expand_selection();
         buf.selected_text()
+    }
+
+    #[cfg(all(feature = "lang-md", feature = "lang-rust"))]
+    #[test]
+    fn extend_selection_inside_a_fence() {
+        let src = "```rust\nfn f() { g(1) }\n```\n";
+        let mut buf = b(src);
+        let def = super::super::syntax::language_for_name("markdown").unwrap();
+        buf.syntax = super::super::syntax::Syntax::new(def, &crate::config::theme::Theme::default());
+        buf.view.set_sel(Selection::point(src.find("g(").unwrap()));
+        assert_eq!(grow(&mut buf), "g", "the inner tree selects the identifier first");
+        let mut seen = vec!["g".to_string()];
+        for _ in 0..20 {
+            seen.push(grow(&mut buf));
+            if buf.view.sel().range() == (0..buf.rope.len_chars()) {
+                break;
+            }
+        }
+        assert!(seen.iter().any(|t| t == "g(1)"), "{seen:?}");
+        assert_eq!(buf.view.sel().range(), 0..buf.rope.len_chars(), "reaches the whole text: {seen:?}");
     }
 
     #[cfg(feature = "lang-rust")]

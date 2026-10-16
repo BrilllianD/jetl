@@ -1018,6 +1018,23 @@ one Enter took. Each filter takes about 15-80 ms in release at this size;
 the keystrokes echo at once, and the previous rows stay on screen (with
 their count) until the new ones arrive.
 
+### Scenario: injections
+
+Setup as above (default features). Create the fixtures first:
+
+    printf '# Fence\n\n```rust\nfn main() {\n    let s = "hi";\n}\n```\n\n```toml\n[a]\nb = 1\n```\n' > $R/fence.md
+    printf '<template>\n  <div>{{ msg }}</div>\n</template>\n<script lang="ts">\nconst msg: string = "hi";\nexport default { data() { return { msg } } }\n</script>\n<style>\n.a { color: red; }\n</style>\n' > $R/App.vue
+
+1. Open `fence.md` (Ctrl+N). `capture-pane -p -e` shows `fn` and `let` in the keyword
+   colour, `"hi"` as a string and `b = 1` in the TOML key colour; the prose and the heading
+   text are not code coloured.
+2. Put the caret on the `{` after `main()`: both braces of the pair are highlighted.
+3. Type `-l 'let t = 1; '` inside the first fence: both fences stay highlighted correctly;
+   Ctrl+Z restores the text.
+4. Open `App.vue`: `const` and `string` are coloured as TypeScript, `color` as a CSS property.
+5. Open `docs/CONFIG.md` and scroll through its `toml` fences.
+6. Repeat at 120x40 and 80x24.
+
 ### Limits under tmux
 
 - No kitty keyboard protocol: Ctrl+Shift+letter, Ctrl+Tab, Ctrl+Enter,

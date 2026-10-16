@@ -357,6 +357,19 @@ async fn editor_occurrences() {
     assert_snapshot!("editor_occurrences", snapshot(&term, &marks, None));
 }
 
+#[cfg(all(feature = "lang-md", feature = "lang-rust"))]
+#[tokio::test]
+async fn editor_markdown_fence() {
+    let mut fx = stable_app("markdown-fence");
+    let app = &mut fx.app;
+    load(app, "notes.md", "# Title\n\nSome prose.\n\n```rust\nfn main() {\n    let s = \"hi\";\n}\n```\n");
+    let term = draw_editor(app, 50, 12);
+    let mut marks = editor_marks(&app.theme);
+    marks.push(Mark::style('K', "keyword", app.theme.capture_style("keyword").unwrap()));
+    marks.push(Mark::style('S', "string", app.theme.capture_style("string").unwrap()));
+    assert_snapshot!("editor_markdown_fence", snapshot(&term, &marks, None));
+}
+
 #[tokio::test]
 async fn editor_unusual_line_breaks() {
     let mut fx = stable_app("unusual-breaks");

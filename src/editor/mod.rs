@@ -1168,9 +1168,9 @@ impl Editor {
                 if let Some(s) = &mut b.syntax {
                     s.reparse(&b.rope);
                 }
-                let tree = b.syntax.as_ref().and_then(|s| s.tree());
                 let mut moved = false;
                 for (s, d) in b.view.sels.iter_mut_desired() {
+                    let tree = b.syntax.as_ref().and_then(|syn| syn.tree_at_char(&b.rope, s.head));
                     if let Some((_, other)) = brackets::pair_at(&b.rope, tree, s.head) {
                         s.set_head(other, false);
                         *d = None;

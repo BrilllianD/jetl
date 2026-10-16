@@ -86,8 +86,8 @@ Effort: S = hours to a day, M = 1-3 days, L = about a week, XL = multiple weeks.
 
 | Feature | Effort | Notes |
 |---|---|---|
-| Grammars: C#, YAML, HTML, CSS, SCSS, XML, then Go, C, C++, Java, PHP, Lua, Dockerfile, Vue | S each | One `LanguageDef` + `lang-*` feature each; Vue uses the HTML grammar until injections exist |
-| Injections (Markdown code blocks, `<script>`/`<style>` in Vue/HTML) | M | Second parser per injection range |
+| Grammars: C#, YAML, HTML, CSS, SCSS, XML, then Go, C, C++, Java, PHP, Lua, Dockerfile, Vue | S each | One `LanguageDef` + `lang-*` feature each; Vue uses the HTML grammar with injections (`<script>`, `<style>`, `lang` attribute) |
+| Injections (Markdown code blocks, `<script>`/`<style>` in Vue/HTML) | M | Done: `editor/syntax.rs` injections, a second parser over included ranges; folds and brackets from the inner tree; only edited blocks re-parse |
 | Shebang / modeline detection | S | Done: `detect_text()` falls back to the shebang, then a vim or emacs modeline |
 
 ### C. Project-wide navigation and files

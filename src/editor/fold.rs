@@ -1,7 +1,8 @@
 //! Code folding: the collapsed regions of a view ([`Folds`], one per
 //! `ViewState`, so split panes fold independently) and the regions that can
-//! fold (`fold_candidates`, from the syntax tree, in patch tabs from the
-//! diff's sections, or else from the indentation).
+//! fold (`fold_candidates`, from the syntax tree and the trees of embedded
+//! languages, in patch tabs from the diff's sections, or else from the
+//! indentation).
 //!
 //! A fold is two char anchors mapped through every edit like carets. Its
 //! header line (the one holding `start`) stays visible; the lines after it
@@ -428,9 +429,10 @@ impl Buffer {
         if let Some(p) = &self.patch {
             return per_header(p.folds(&self.rope), &self.rope, lines);
         }
-        match self.fold_tree() {
-            Some(tree) => {
-                let all = tree_folds(&tree, &self.rope, |first, last| last >= lines.start && first <= lines.end);
+        match self.fold_trees() {
+            Some(trees) => {
+                let visit = |first: usize, last: usize| last >= lines.start && first <= lines.end;
+                let all = trees.iter().flat_map(|t| tree_folds(t, &self.rope, visit)).collect();
                 per_header(all, &self.rope, lines)
             }
             None => lines.clone().filter_map(|l| indent_fold(&self.rope, l)).collect(),
@@ -500,11 +502,14 @@ impl Buffer {
     /// line), innermost first.
     pub fn fold_chain(&mut self, line: usize) -> Vec<Fold> {
         let patch = self.patch.as_ref().map(|p| p.folds(&self.rope));
-        let tree = if patch.is_some() { None } else { self.fold_tree() };
+        let trees = if patch.is_some() { None } else { self.fold_trees() };
         let rope = &self.rope;
-        let mut folds = match (patch, tree) {
+        let mut folds = match (patch, trees) {
             (Some(folds), _) => folds,
-            (None, Some(tree)) => tree_folds(&tree, rope, |first, last| last >= line && first <= line + 1),
+            (None, Some(trees)) => {
+                let visit = |first: usize, last: usize| last >= line && first <= line + 1;
+                trees.iter().flat_map(|t| tree_folds(t, rope, visit)).collect()
+            }
             (None, None) => {
                 // Headers above, each indented less than the one below it.
                 let mut out = Vec::new();
@@ -579,11 +584,13 @@ impl Buffer {
         self.view.folds.reveal(&self.rope, &self.view.sels)
     }
 
-    /// The syntax tree, parsed up to date; `None` without a syntax.
-    fn fold_tree(&mut self) -> Option<Tree> {
+    /// The syntax trees (host first, then injections), parsed up to date;
+    /// `None` without a syntax or a host tree.
+    fn fold_trees(&mut self) -> Option<Vec<Tree>> {
         let s = self.syntax.as_mut()?;
         s.reparse(&self.rope);
-        s.tree().cloned()
+        s.tree()?;
+        Some(s.trees().cloned().collect())
     }
 }
 
@@ -729,6 +736,13 @@ pub(crate) mod tests {
         let n = b.rope.len_lines();
         let rope = b.rope.clone();
         b.fold_candidates(0..n).iter().map(|f| f.lines(&rope).unwrap()).collect()
+    }
+
+    #[cfg(all(feature = "lang-md", feature = "lang-rust"))]
+    #[test]
+    fn injected_code_folds() {
+        let mut b = buf("a.md", "# T\n\n```rust\nfn a() {\n    x();\n}\n```\n");
+        assert!(cands(&mut b).iter().any(|(header, _)| *header == 3), "fold of `fn a() {{` from the inner tree");
     }
 
     #[cfg(feature = "lang-rust")]

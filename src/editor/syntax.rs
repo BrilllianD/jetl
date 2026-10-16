@@ -29,6 +29,12 @@ pub struct LanguageDef {
     pub tags: Option<&'static str>,
     /// `tags` compiled on first use.
     tags_query: OnceLock<Option<Query>>,
+    /// Injection query (`@injection.content` with `@injection.language` or
+    /// `#set! injection.language`): languages embedded in this one
+    /// (Markdown fences, HTML `<script>` and `<style>`).
+    pub injections: Option<&'static str>,
+    /// `injections` compiled on first use.
+    injections_query: OnceLock<Option<Query>>,
     /// Whether every query part compiled (no fallback to a partial set).
     #[cfg(test)]
     full_query: bool,
@@ -65,6 +71,8 @@ fn make(
                     indent_after_colon: matches!(name, "python" | "yaml"),
                     tags: None,
                     tags_query: OnceLock::new(),
+                    injections: None,
+                    injections_query: OnceLock::new(),
                     #[cfg(test)]
                     full_query: n == queries.len(),
                 });
@@ -91,6 +99,23 @@ impl LanguageDef {
             })
             .as_ref()
     }
+
+    #[allow(dead_code)]
+    fn with_injections(mut self, q: &'static str) -> Self {
+        self.injections = Some(q);
+        self
+    }
+
+    /// The compiled injections query; `None` without one or when it does
+    /// not compile (logged once).
+    pub fn injections_query(&self) -> Option<&Query> {
+        self.injections_query
+            .get_or_init(|| {
+                let src = self.injections?;
+                Query::new(&self.language, src).map_err(|e| tracing::warn!("injections query for {}: {e}", self.name)).ok()
+            })
+            .as_ref()
+    }
 }
 
 /// Query parts joined into one static string (built once per language).
@@ -103,6 +128,12 @@ fn join_static(parts: &[&str]) -> &'static str {
 /// only, so methods would have no parent in the Structure window.
 #[cfg(feature = "lang-rust")]
 const RUST_TAGS_EXTRA: &str = "(impl_item trait: (_) @trait type: (_) @name) @definition.impl (impl_item type: (_) @name !trait) @definition.impl (const_item name: (identifier) @name) @definition.constant (static_item name: (identifier) @name) @definition.constant";
+
+/// Prepended to the HTML injections: `<script lang="ts">` and
+/// `<style lang="scss">` (Vue) name their language; the first pattern
+/// whose language is compiled in wins for a content node.
+#[cfg(feature = "lang-html")]
+const HTML_INJECTIONS_LANG: &str = "((script_element (start_tag (attribute (attribute_name) @_attr (quoted_attribute_value (attribute_value) @injection.language))) (raw_text) @injection.content) (#eq? @_attr \"lang\")) ((style_element (start_tag (attribute (attribute_name) @_attr (quoted_attribute_value (attribute_value) @injection.language))) (raw_text) @injection.content) (#eq? @_attr \"lang\"))";
 
 fn block_comment(name: &str) -> Option<(&'static str, &'static str)> {
     match name {
@@ -219,7 +250,10 @@ pub static LANGUAGES: LazyLock<Vec<LanguageDef>> = LazyLock::new(|| {
         Some("#"),
     ));
     #[cfg(feature = "lang-md")]
-    v.extend(make("markdown", &["md", "markdown"], &[], tree_sitter_md::LANGUAGE.into(), &[tree_sitter_md::HIGHLIGHT_QUERY_BLOCK], None));
+    v.extend(
+        make("markdown", &["md", "markdown"], &[], tree_sitter_md::LANGUAGE.into(), &[tree_sitter_md::HIGHLIGHT_QUERY_BLOCK], None)
+            .map(|d| d.with_injections(tree_sitter_md::INJECTION_QUERY_BLOCK)),
+    );
     #[cfg(feature = "lang-csharp")]
     v.extend(make(
         "csharp",
@@ -233,17 +267,14 @@ pub static LANGUAGES: LazyLock<Vec<LanguageDef>> = LazyLock::new(|| {
     // Upstream captures mapping keys as `@string` before `@property`, and
     // the first pattern for a node wins; lift the key patterns to the front.
     v.extend(make("yaml", &["yml", "yaml"], &[], tree_sitter_yaml::LANGUAGE.into(), &["(_ key: (flow_node [(double_quote_scalar) (single_quote_scalar)] @property)) (_ key: (flow_node (plain_scalar (string_scalar) @property)))", tree_sitter_yaml::HIGHLIGHTS_QUERY], Some("#")));
-    // Vue single-file components get HTML highlighting until injections
-    // exist; the Vue grammar crate is unmaintained.
+    // Vue single-file components use the HTML grammar; their `<script>` and
+    // `<style>` blocks are injections (`lang` picks TypeScript or SCSS). The
+    // Vue grammar crate is unmaintained.
     #[cfg(feature = "lang-html")]
-    v.extend(make(
-        "html",
-        &["html", "htm", "xhtml", "vue"],
-        &[],
-        tree_sitter_html::LANGUAGE.into(),
-        &[tree_sitter_html::HIGHLIGHTS_QUERY],
-        None,
-    ));
+    v.extend(
+        make("html", &["html", "htm", "xhtml", "vue"], &[], tree_sitter_html::LANGUAGE.into(), &[tree_sitter_html::HIGHLIGHTS_QUERY], None)
+            .map(|d| d.with_injections(join_static(&[HTML_INJECTIONS_LANG, tree_sitter_html::INJECTIONS_QUERY]))),
+    );
     #[cfg(feature = "lang-css")]
     v.extend(make("css", &["css"], &[], tree_sitter_css::LANGUAGE.into(), &[tree_sitter_css::HIGHLIGHTS_QUERY], None));
     #[cfg(feature = "lang-scss")]
@@ -511,6 +542,206 @@ fn styles_for(def: &LanguageDef, theme: &Theme) -> Vec<Option<Style>> {
     def.query.capture_names().iter().map(|n| theme.capture_style(n)).collect()
 }
 
+/// Most injections one buffer keeps; further embedded blocks keep the
+/// host's highlighting.
+const MAX_INJECTIONS: usize = 1000;
+
+/// A language embedded in the host text, with its own tree. Its nodes
+/// carry document byte offsets (parsed with included ranges).
+struct Injection {
+    /// Index into `LANGUAGES`.
+    lang: usize,
+    /// The document bytes the inner parser read: the content node
+    /// minus its children, sorted, non-empty.
+    bytes: Vec<Range<usize>>,
+    tree: Tree,
+    /// An edit touched it since its last parse.
+    dirty: bool,
+}
+
+/// An `@injection.content` match found in the host tree.
+struct Candidate {
+    lang: usize,
+    bytes: Vec<Range<usize>>,
+    ranges: Vec<tree_sitter::Range>,
+}
+
+/// First start .. last end of sorted ranges.
+fn span(bytes: &[Range<usize>]) -> Range<usize> {
+    match (bytes.first(), bytes.last()) {
+        (Some(a), Some(b)) => a.start..b.end,
+        _ => 0..0,
+    }
+}
+
+/// Whether the ranges meet or overlap (an edit at a block's edge counts).
+fn touches(a: &Range<usize>, b: &Range<usize>) -> bool {
+    a.start <= b.end && b.start <= a.end
+}
+
+fn overlaps(a: &Range<usize>, b: &Range<usize>) -> bool {
+    a.start < b.end && b.start < a.end
+}
+
+/// Where byte `p` lands after `start..old_end` was replaced by `start..new_end`.
+fn map_byte(p: usize, start: usize, old_end: usize, new_end: usize) -> usize {
+    if p <= start {
+        p
+    } else if p >= old_end {
+        p - old_end + new_end
+    } else {
+        new_end
+    }
+}
+
+/// The node's range with each named child's range cut out (anonymous
+/// tokens such as the `(` in fenced code are text; the Markdown
+/// `block_continuation` children are the container prefixes); built from node
+/// fields only (the rope's line count differs from tree-sitter's for lone
+/// `\r` and U+2028). Empty pieces are dropped.
+fn content_ranges(node: Node) -> Vec<tree_sitter::Range> {
+    let mut out = Vec::new();
+    let mut cursor = node.walk();
+    let (mut from_byte, mut from_point) = (node.start_byte(), node.start_position());
+    for child in node.named_children(&mut cursor) {
+        if child.start_byte() > from_byte {
+            out.push(tree_sitter::Range {
+                start_byte: from_byte,
+                end_byte: child.start_byte(),
+                start_point: from_point,
+                end_point: child.start_position(),
+            });
+        }
+        if child.end_byte() > from_byte {
+            from_byte = child.end_byte();
+            from_point = child.end_position();
+        }
+    }
+    if node.end_byte() > from_byte {
+        out.push(tree_sitter::Range {
+            start_byte: from_byte,
+            end_byte: node.end_byte(),
+            start_point: from_point,
+            end_point: node.end_position(),
+        });
+    }
+    out
+}
+
+/// Index into `LANGUAGES` of the language an injection names (a fence info
+/// string such as `rust {.numberLines}`, or `ts`).
+fn language_index(name: &str) -> Option<usize> {
+    let word = name.trim().split(|c: char| c.is_whitespace() || c == ',' || c == '{').next()?;
+    let def = language_for_alias(word)?;
+    LANGUAGES.iter().position(|l| std::ptr::eq(l, def))
+}
+
+/// The injections whose content node meets `region`: one per content byte
+/// range (the lowest pattern wins), sorted by start. Unknown languages and
+/// empty content are skipped.
+fn collect_injections(query: &Query, tree: &Tree, rope: &Rope, region: Range<usize>) -> Vec<Candidate> {
+    let Some(content_ix) = query.capture_index_for_name("injection.content") else { return Vec::new() };
+    let lang_ix = query.capture_index_for_name("injection.language");
+    let mut cursor = QueryCursor::new();
+    cursor.set_byte_range(region);
+    let mut found: Vec<(Range<usize>, usize, Candidate)> = Vec::new();
+    let mut it = cursor.matches(query, tree.root_node(), RopeProvider(rope));
+    while let Some(m) = it.next() {
+        let Some(content) = m.captures().iter().find(|c| c.index == content_ix) else { continue };
+        let name = lang_ix
+            .and_then(|ix| m.captures().iter().find(|c| c.index == ix))
+            .map(|c| {
+                let r = c.node.byte_range();
+                let end = r.end.min(rope.len_bytes());
+                rope.byte_slice(r.start.min(end)..end).to_string()
+            })
+            .or_else(|| {
+                query
+                    .property_settings(m.pattern_index)
+                    .iter()
+                    .find(|p| &*p.key == "injection.language")
+                    .and_then(|p| p.value.as_deref().map(str::to_owned))
+            });
+        let Some(lang) = name.as_deref().and_then(language_index) else { continue };
+        let ranges = content_ranges(content.node);
+        if ranges.is_empty() {
+            continue;
+        }
+        let bytes = ranges.iter().map(|r| r.start_byte..r.end_byte).collect();
+        found.push((content.node.byte_range(), m.pattern_index, Candidate { lang, bytes, ranges }));
+    }
+    found.sort_by(|a, b| a.0.start.cmp(&b.0.start).then(a.0.end.cmp(&b.0.end)).then(a.1.cmp(&b.1)));
+    found.dedup_by(|b, a| a.0 == b.0);
+    found.into_iter().map(|(_, _, c)| c).collect()
+}
+
+/// Styled char ranges of `query` over `bytes` in `tree`. The first styled
+/// pattern matching a node wins (tree-sitter-highlight semantics). With
+/// `clip`, node ranges are cut to those byte ranges (an injection's
+/// included ranges).
+fn query_spans(
+    query: &Query,
+    styles: &[Option<Style>],
+    tree: &Tree,
+    rope: &Rope,
+    bytes: Range<usize>,
+    clip: Option<&[Range<usize>]>,
+) -> Vec<(Range<usize>, Style)> {
+    let mut cursor = QueryCursor::new();
+    cursor.set_byte_range(bytes);
+    let mut raw = Vec::new();
+    let mut it = cursor.captures(query, tree.root_node(), RopeProvider(rope));
+    while let Some((m, idx)) = it.next() {
+        let cap = m.captures()[*idx];
+        let r = cap.node.byte_range();
+        if r.start >= rope.len_bytes() {
+            continue;
+        }
+        // Captures the theme does not style never block other captures.
+        let Some(style) = styles.get(cap.index as usize).copied().flatten() else { continue };
+        raw.push((r, m.pattern_index, style));
+    }
+    raw.sort_by(|a, b| a.0.start.cmp(&b.0.start).then(b.0.end.cmp(&a.0.end)).then(a.1.cmp(&b.1)));
+    raw.dedup_by(|b, a| a.0 == b.0);
+    let mut spans = Vec::with_capacity(raw.len());
+    for (r, _, style) in raw {
+        let mut push = |r: Range<usize>| {
+            let s = rope.byte_to_char(r.start);
+            let e = rope.byte_to_char(r.end.min(rope.len_bytes()));
+            if e > s {
+                spans.push((s..e, style));
+            }
+        };
+        match clip {
+            None => push(r),
+            Some(clip) => {
+                for c in clip {
+                    let piece = r.start.max(c.start)..r.end.min(c.end);
+                    if piece.start < piece.end {
+                        push(piece);
+                    }
+                }
+            }
+        }
+    }
+    spans
+}
+
+/// The rope's bytes from `byte` on, as the parser input callback wants them.
+fn read_chunk(rope: &Rope, byte: usize) -> &[u8] {
+    if byte >= rope.len_bytes() {
+        return &[];
+    }
+    let (chunk, start, _, _) = rope.chunk_at_byte(byte);
+    &chunk.as_bytes()[byte - start..]
+}
+
+/// `styles_for` of every language in `LANGUAGES`; empty when `def` has no
+/// injection query.
+fn inner_styles_for(def: &LanguageDef, theme: &Theme) -> Vec<Vec<Option<Style>>> {
+    if def.injections.is_some() { LANGUAGES.iter().map(|d| styles_for(d, theme)).collect() } else { Vec::new() }
+}
+
 pub struct Syntax {
     pub def: &'static LanguageDef,
     parser: Parser,
@@ -519,11 +750,26 @@ pub struct Syntax {
     dirty: bool,
     /// Highlights of the last queried window, keyed by first line and rows.
     cache: Option<(u64, Highlights)>,
+    /// Parses the injections (its language and included ranges are set per parse).
+    inner: Parser,
+    /// Sorted by start, disjoint.
+    injections: Vec<Injection>,
+    /// `styles_for` of every language in `LANGUAGES`, by index; empty when
+    /// the language has no injection query.
+    inner_styles: Vec<Vec<Option<Style>>>,
+    /// Bytes edited since the last reparse, in the current text.
+    edited: Option<Range<usize>>,
+    #[cfg(test)]
+    inner_parses: usize,
 }
 
 impl std::fmt::Debug for Syntax {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Syntax").field("language", &self.def.name).field("parsed", &self.tree.is_some()).finish()
+        f.debug_struct("Syntax")
+            .field("language", &self.def.name)
+            .field("parsed", &self.tree.is_some())
+            .field("injections", &self.injections.len())
+            .finish()
     }
 }
 
@@ -531,13 +777,27 @@ impl Syntax {
     pub fn new(def: &'static LanguageDef, theme: &Theme) -> Option<Self> {
         let mut parser = Parser::new();
         parser.set_language(&def.language).map_err(|e| tracing::error!("set_language {}: {e}", def.name)).ok()?;
-        Some(Self { def, parser, tree: None, styles: styles_for(def, theme), dirty: true, cache: None })
+        Some(Self {
+            def,
+            parser,
+            tree: None,
+            styles: styles_for(def, theme),
+            dirty: true,
+            cache: None,
+            inner: Parser::new(),
+            injections: Vec::new(),
+            inner_styles: inner_styles_for(def, theme),
+            edited: None,
+            #[cfg(test)]
+            inner_parses: 0,
+        })
     }
 
     /// Take the capture styles from `theme` again (hot reload); the parse
     /// tree stays.
     pub fn restyle(&mut self, theme: &Theme) {
         self.styles = styles_for(self.def, theme);
+        self.inner_styles = inner_styles_for(self.def, theme);
         self.cache = None;
     }
 
@@ -550,7 +810,6 @@ impl Syntax {
     pub fn note_change(&mut self, rope: &Rope, at: usize, _old_len: usize, new_len: usize, old: &str, new: &str) {
         self.dirty = true;
         self.cache = None;
-        let Some(tree) = &mut self.tree else { return };
         let start_byte = rope.char_to_byte(at.min(rope.len_chars()));
         let start_row = rope.byte_to_line(start_byte);
         let start_col = start_byte - rope.line_to_byte(start_row);
@@ -564,39 +823,159 @@ impl Syntax {
         let new_end_byte_r = rope.char_to_byte(new_end_char);
         let new_row = rope.byte_to_line(new_end_byte_r);
         let new_end_position = Point::new(new_row, new_end_byte_r - rope.line_to_byte(new_row));
-        tree.edit(&InputEdit {
+        let edit = InputEdit {
             start_byte,
             old_end_byte,
             new_end_byte,
             start_position: Point::new(start_row, start_col),
             old_end_position,
             new_end_position,
-        });
+        };
+        if self.def.injections.is_some() {
+            self.edited = Some(match self.edited.take() {
+                Some(r) => {
+                    start_byte.min(map_byte(r.start, start_byte, old_end_byte, new_end_byte))
+                        ..map_byte(r.end, start_byte, old_end_byte, new_end_byte).max(new_end_byte)
+                }
+                None => start_byte..new_end_byte,
+            });
+            let changed = start_byte..old_end_byte;
+            for inj in &mut self.injections {
+                inj.dirty |= touches(&span(&inj.bytes), &changed);
+                for b in &mut inj.bytes {
+                    *b = map_byte(b.start, start_byte, old_end_byte, new_end_byte)..map_byte(b.end, start_byte, old_end_byte, new_end_byte);
+                }
+                inj.tree.edit(&edit);
+            }
+        }
+        if let Some(tree) = &mut self.tree {
+            tree.edit(&edit);
+        }
     }
 
     pub fn reparse(&mut self, rope: &Rope) {
         if !self.dirty && self.tree.is_some() {
             return;
         }
-        let tree = self.parser.parse_with_options(
-            &mut |byte, _| {
-                if byte >= rope.len_bytes() {
-                    return &[][..];
-                }
-                let (chunk, start, _, _) = rope.chunk_at_byte(byte);
-                &chunk.as_bytes()[byte - start..]
-            },
-            self.tree.as_ref(),
-            None,
-        );
+        let old = self.tree.clone();
+        let tree = self.parser.parse_with_options(&mut |byte, _| read_chunk(rope, byte), self.tree.as_ref(), None);
         if tree.is_some() {
             self.tree = tree;
             self.dirty = false;
+            self.update_injections(rope, old.as_ref());
         }
     }
 
+    /// Bring the injections up to date with the new host tree: only the
+    /// region that changed is queried, and an inner tree is parsed again
+    /// only when an edit touched it or its ranges changed.
+    fn update_injections(&mut self, rope: &Rope, old: Option<&Tree>) {
+        let def = self.def;
+        let Some(query) = def.injections_query() else { return };
+        let edited = self.edited.take();
+        let Some(new) = self.tree.as_ref() else { return };
+        let len = rope.len_bytes();
+        let region = match old {
+            None => 0..len,
+            Some(old) => {
+                let (mut lo, mut hi) = (usize::MAX, 0usize);
+                let mut add = |r: Range<usize>| {
+                    lo = lo.min(r.start);
+                    hi = hi.max(r.end);
+                };
+                if let Some(e) = edited {
+                    add(e);
+                }
+                for r in old.changed_ranges(new) {
+                    add(r.start_byte..r.end_byte);
+                }
+                if lo > hi {
+                    return;
+                }
+                lo.saturating_sub(1).min(len)..(hi + 1).min(len)
+            }
+        };
+        let found = collect_injections(query, new, rope, region.clone());
+        let (mut kept, mut pool): (Vec<Injection>, Vec<Injection>) = std::mem::take(&mut self.injections).into_iter().partition(|inj| {
+            let s = span(&inj.bytes);
+            s.start < s.end && !touches(&s, &region) && !found.iter().any(|c| overlaps(&s, &span(&c.bytes)))
+        });
+        let mut fresh: Vec<Injection> = Vec::new();
+        for c in found {
+            if kept.len() + fresh.len() >= MAX_INJECTIONS {
+                tracing::debug!("more than {MAX_INJECTIONS} injections; the rest keep the host highlighting");
+                break;
+            }
+            let cs = span(&c.bytes);
+            let reused = pool.iter().position(|p| p.lang == c.lang && overlaps(&span(&p.bytes), &cs)).map(|i| pool.remove(i));
+            if let Some(p) = &reused
+                && !p.dirty
+                && p.bytes == c.bytes
+            {
+                fresh.push(reused.unwrap());
+                continue;
+            }
+            if let Err(e) = self.inner.set_language(&LANGUAGES[c.lang].language) {
+                tracing::debug!("injection set_language: {e}");
+                continue;
+            }
+            if let Err(e) = self.inner.set_included_ranges(&c.ranges) {
+                tracing::debug!("injection included ranges: {e}");
+                continue;
+            }
+            #[cfg(test)]
+            {
+                self.inner_parses += 1;
+            }
+            let old_tree = reused.as_ref().map(|p| &p.tree);
+            let Some(tree) = self.inner.parse_with_options(&mut |byte, _| read_chunk(rope, byte), old_tree, None) else { continue };
+            fresh.push(Injection { lang: c.lang, bytes: c.bytes, tree, dirty: false });
+        }
+        kept.append(&mut fresh);
+        kept.sort_by_key(|inj| span(&inj.bytes).start);
+        for inj in &mut kept {
+            inj.dirty = false;
+        }
+        self.injections = kept;
+    }
+
+    /// The host tree.
     pub fn tree(&self) -> Option<&Tree> {
         self.tree.as_ref()
+    }
+
+    /// The tree that owns byte `byte`: the injection whose ranges hold it
+    /// (`start <= byte < end`), else the host tree.
+    pub fn tree_at(&self, byte: usize) -> Option<&Tree> {
+        let i = self.injections.partition_point(|inj| span(&inj.bytes).start <= byte);
+        if let Some(inj) = i.checked_sub(1).map(|i| &self.injections[i])
+            && inj.bytes.iter().any(|r| r.contains(&byte))
+        {
+            return Some(&inj.tree);
+        }
+        self.tree.as_ref()
+    }
+
+    /// `tree_at` for a char position (clamped to the text).
+    pub fn tree_at_char(&self, rope: &Rope, pos: usize) -> Option<&Tree> {
+        self.tree_at(rope.char_to_byte(pos.min(rope.len_chars())))
+    }
+
+    /// The host tree, then every injection's.
+    pub fn trees(&self) -> impl Iterator<Item = &Tree> {
+        self.tree.iter().chain(self.injections.iter().map(|inj| &inj.tree))
+    }
+
+    /// Language names of the injections, in text order.
+    #[cfg(test)]
+    pub fn injection_langs(&self) -> Vec<&'static str> {
+        self.injections.iter().map(|inj| LANGUAGES[inj.lang].name).collect()
+    }
+
+    /// How many inner parses ran so far.
+    #[cfg(test)]
+    pub fn inner_parses(&self) -> usize {
+        self.inner_parses
     }
 
     /// Highlights for `rows` lines starting at `first_line`.
@@ -613,32 +992,22 @@ impl Syntax {
         let last_line = (first_line + rows).min(rope.len_lines());
         let start_byte = rope.line_to_byte(first_line.min(rope.len_lines()));
         let end_byte = if last_line >= rope.len_lines() { rope.len_bytes() } else { rope.line_to_byte(last_line) };
-        let mut cursor = QueryCursor::new();
-        cursor.set_byte_range(start_byte..end_byte);
-        let mut raw = Vec::new();
-        let mut it = cursor.captures(&self.def.query, tree.root_node(), RopeProvider(rope));
-        while let Some((m, idx)) = it.next() {
-            let cap = m.captures()[*idx];
-            let r = cap.node.byte_range();
-            if r.start >= rope.len_bytes() {
+        let mut spans = query_spans(&self.def.query, &self.styles, tree, rope, start_byte..end_byte, None);
+        for inj in &self.injections {
+            let s = span(&inj.bytes);
+            if s.end <= start_byte || s.start >= end_byte {
                 continue;
             }
-            // Captures the theme does not style never block other captures.
-            let Some(style) = self.styles.get(cap.index as usize).copied().flatten() else { continue };
-            raw.push((r, m.pattern_index, style));
+            let Some(styles) = self.inner_styles.get(inj.lang) else { continue };
+            spans.extend(query_spans(
+                &LANGUAGES[inj.lang].query,
+                styles,
+                &inj.tree,
+                rope,
+                s.start.max(start_byte)..s.end.min(end_byte),
+                Some(&inj.bytes),
+            ));
         }
-        // The first styled pattern matching a node wins (tree-sitter-highlight
-        // semantics); keep only that capture per node range.
-        raw.sort_by(|a, b| a.0.start.cmp(&b.0.start).then(b.0.end.cmp(&a.0.end)).then(a.1.cmp(&b.1)));
-        raw.dedup_by(|b, a| a.0 == b.0);
-        let spans = raw
-            .into_iter()
-            .filter_map(|(r, _, style)| {
-                let s = rope.byte_to_char(r.start);
-                let e = rope.byte_to_char(r.end.min(rope.len_bytes()));
-                (e > s).then_some((s..e, style))
-            })
-            .collect();
         let h = Highlights::flatten(spans);
         self.cache = Some((key, h.clone()));
         h
@@ -753,6 +1122,14 @@ mod tests {
         for name in ["rust", "javascript", "typescript", "tsx", "python", "go", "c", "cpp", "java"] {
             assert_eq!(tagged.contains(&name), names.contains(&name), "{name} has tags when enabled");
         }
+        let injecting: Vec<&str> = LANGUAGES.iter().filter(|l| l.injections.is_some()).map(|l| l.name).collect();
+        let broken: Vec<&str> =
+            LANGUAGES.iter().filter(|l| l.injections.is_some() && l.injections_query().is_none()).map(|l| l.name).collect();
+        assert!(broken.is_empty(), "injections query does not compile for {broken:?}");
+        for name in ["markdown", "html"] {
+            assert_eq!(injecting.contains(&name), names.contains(&name), "{name} has injections when enabled");
+        }
+        assert!(injecting.iter().all(|n| ["markdown", "html"].contains(n)), "no other language injects: {injecting:?}");
     }
 
     #[cfg(feature = "lang-json")]
@@ -1021,5 +1398,138 @@ mod tests {
         assert_eq!(lang("/tmp/main.rs", "#!/usr/bin/env python3\n"), Some("rust"));
         assert_eq!(lang("/tmp/main.rs", "// vim: ft=python\n"), Some("rust"));
         assert_eq!(lang("/tmp/notes.txt", "plain\n"), None);
+    }
+
+    /// Style at byte `at` of `src`, highlighted as `file`.
+    #[allow(dead_code)]
+    fn style_at(file: &str, src: &str, at: usize) -> Option<Style> {
+        let theme = Theme::default();
+        let mut syn = Syntax::for_path(Path::new(file), &theme).unwrap_or_else(|| panic!("grammar for {file}"));
+        let rope = Rope::from_str(src);
+        let h = syn.highlights(&rope, 0, rope.len_lines());
+        h.style_at(rope.byte_to_char(at))
+    }
+
+    /// A Markdown `Syntax` for `src`, highlighted once.
+    #[cfg(all(feature = "lang-md", feature = "lang-rust"))]
+    fn md_syntax(src: &str) -> (Syntax, Rope) {
+        let mut syn = Syntax::for_path(Path::new("a.md"), &Theme::default()).expect("markdown grammar");
+        let rope = Rope::from_str(src);
+        syn.highlights(&rope, 0, rope.len_lines());
+        (syn, rope)
+    }
+
+    /// Insert `text` at byte `at` of `rope` and tell `syn`.
+    #[cfg(all(feature = "lang-md", feature = "lang-rust"))]
+    fn insert_at(syn: &mut Syntax, rope: &mut Rope, at: usize, text: &str) {
+        let c = rope.byte_to_char(at);
+        rope.insert(c, text);
+        syn.note_change(rope, c, 0, text.chars().count(), "", text);
+    }
+
+    #[cfg(all(feature = "lang-md", feature = "lang-rust"))]
+    #[test]
+    fn markdown_fence_is_highlighted_as_its_language() {
+        let src = "# T\n\n```rust\nfn main() { let s = \"hi\"; }\n```\n\nprose fn here\n";
+        assert_eq!(style_of("a.md", src, "fn main"), cap("keyword"));
+        assert_eq!(style_of("a.md", src, "let"), cap("keyword"));
+        assert_eq!(style_of("a.md", src, "\"hi"), cap("string"));
+        assert_ne!(style_at("a.md", src, src.rfind("fn").unwrap()), cap("keyword"), "prose is not code");
+    }
+
+    #[cfg(feature = "lang-md")]
+    #[test]
+    fn unknown_fence_language_keeps_host_highlighting() {
+        let src = "```nosuchlang\nfn x\n```\n";
+        assert_eq!(style_of("a.md", src, "fn x"), cap("none"));
+        let mut syn = Syntax::for_path(Path::new("a.md"), &Theme::default()).unwrap();
+        let rope = Rope::from_str(src);
+        syn.highlights(&rope, 0, rope.len_lines());
+        assert!(syn.injection_langs().is_empty());
+    }
+
+    #[cfg(all(feature = "lang-html", feature = "lang-js", feature = "lang-css"))]
+    #[test]
+    fn html_script_style_and_vue_lang() {
+        let src = "<script>let x = 1;</script>\n<style>a { color: red; }</style>\n";
+        assert_eq!(style_of("a.html", src, "let"), cap("keyword"));
+        assert_eq!(style_of("a.html", src, "color"), cap("property"));
+        #[cfg(feature = "lang-ts")]
+        {
+            let vue = "<script lang=\"ts\">let n: number = 1;</script>\n";
+            assert_eq!(style_of("a.vue", vue, "number"), cap("type.builtin"));
+            let mut syn = Syntax::for_path(Path::new("a.vue"), &Theme::default()).unwrap();
+            let rope = Rope::from_str(vue);
+            syn.highlights(&rope, 0, rope.len_lines());
+            assert_eq!(syn.injection_langs(), ["typescript"]);
+        }
+    }
+
+    #[cfg(all(feature = "lang-md", feature = "lang-rust"))]
+    #[test]
+    fn editing_one_fence_reparses_only_that_fence() {
+        let src = "```rust\nfn a() {}\n```\n\nprose\n\n```rust\nfn b() {}\n```\n";
+        let (mut syn, mut rope) = md_syntax(src);
+        let rows = rope.len_lines();
+        assert_eq!(syn.inner_parses(), 2);
+        let kw = cap("keyword");
+        let at = src.find("{}").unwrap() + 1;
+        insert_at(&mut syn, &mut rope, at, "let y = 2; ");
+        let h = syn.highlights(&rope, 0, rows);
+        assert_eq!(syn.inner_parses(), 3, "only the edited fence parses again");
+        assert_eq!(h.style_at(rope.byte_to_char(at)), kw, "inserted let");
+        let b_at = rope.to_string().find("fn b").unwrap();
+        assert_eq!(h.style_at(rope.byte_to_char(b_at)), kw);
+        let prose = rope.to_string().find("prose").unwrap();
+        insert_at(&mut syn, &mut rope, prose, "more ");
+        let h = syn.highlights(&rope, 0, rows);
+        assert_eq!(syn.inner_parses(), 3, "prose edit parses no fence");
+        let text = rope.to_string();
+        assert_eq!(h.style_at(rope.byte_to_char(text.find("let y").unwrap())), kw);
+        assert_eq!(h.style_at(rope.byte_to_char(text.find("fn b").unwrap())), kw, "shifted fence keeps its styles");
+        assert_ne!(h.style_at(rope.byte_to_char(text.find("more").unwrap())), kw);
+    }
+
+    #[cfg(all(feature = "lang-md", feature = "lang-rust", feature = "lang-python"))]
+    #[test]
+    fn changing_the_fence_language_replaces_the_injection() {
+        let src = "```rust\ndef f(): pass\n```\n";
+        let (mut syn, mut rope) = md_syntax(src);
+        assert_eq!(syn.injection_langs(), ["rust"]);
+        let h = syn.highlights(&rope, 0, rope.len_lines());
+        assert_ne!(h.style_at(rope.byte_to_char(src.find("def").unwrap())), cap("keyword"));
+        let c = rope.byte_to_char(3);
+        rope.remove(c..c + 4);
+        syn.note_change(&rope, c, 4, 0, "rust", "");
+        rope.insert(c, "python");
+        syn.note_change(&rope, c, 0, 6, "", "python");
+        let h = syn.highlights(&rope, 0, rope.len_lines());
+        assert_eq!(syn.injection_langs(), ["python"]);
+        assert_eq!(h.style_at(rope.byte_to_char(rope.to_string().find("def").unwrap())), cap("keyword"));
+    }
+
+    #[cfg(all(feature = "lang-md", feature = "lang-rust"))]
+    #[test]
+    fn deleting_a_fence_drops_its_injection() {
+        let src = "```rust\nfn a() {}\n```\n";
+        let (mut syn, mut rope) = md_syntax(src);
+        assert_eq!(syn.injection_langs(), ["rust"]);
+        let n = rope.len_chars();
+        rope.remove(0..n);
+        syn.note_change(&rope, 0, n, 0, src, "");
+        let h = syn.highlights(&rope, 0, 1);
+        assert!(syn.injection_langs().is_empty());
+        assert!(h.spans.is_empty(), "{:?}", h.spans);
+    }
+
+    #[test]
+    fn map_byte_follows_an_edit() {
+        // Replace bytes 4..6 by 3 bytes.
+        assert_eq!(map_byte(2, 4, 6, 7), 2, "before");
+        assert_eq!(map_byte(5, 4, 6, 7), 7, "inside");
+        assert_eq!(map_byte(9, 4, 6, 7), 10, "after");
+        // Insertion at 4: start == old_end.
+        assert_eq!(map_byte(4, 4, 4, 7), 4);
+        assert_eq!(map_byte(5, 4, 4, 7), 8);
     }
 }

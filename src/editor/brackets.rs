@@ -221,4 +221,20 @@ mod tests {
         assert!(in_literal_at(&r, tree.unwrap(), in_string), "inside the string");
         assert!(!in_literal_at(&r, tree.unwrap(), open), "plain code");
     }
+
+    #[cfg(all(feature = "lang-md", feature = "lang-rust"))]
+    #[test]
+    fn injected_brackets_use_the_inner_tree() {
+        let def = super::super::syntax::language_for_name("markdown").expect("markdown grammar");
+        let mut syn = super::super::syntax::Syntax::new(def, &crate::config::theme::Theme::default()).unwrap();
+        let src = "```rust\nfn f() { g(\"(\", 1) }\n```\n";
+        let r = Rope::from_str(src);
+        syn.reparse(&r);
+        let in_string = src.find("\"(").unwrap() + 1;
+        assert!(pair_at(&r, syn.tree(), in_string).is_some(), "host tree: plain scan pairs it");
+        assert_eq!(pair_at(&r, syn.tree_at_char(&r, in_string), in_string), None, "inner tree: inside a string literal");
+        let open = src.find("g(").unwrap() + 1;
+        let close = src.find(") }").unwrap();
+        assert_eq!(pair_at(&r, syn.tree_at_char(&r, open), open), Some((open, close)));
+    }
 }

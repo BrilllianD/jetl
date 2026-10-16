@@ -1,0 +1,21 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &marks, None)"
+---
+50x12 cursor=(7,1)
+00   notes.md ×
+01   1  ▾ # Title
+02   2
+03   3    Some prose.
+04   4
+05   5    ```rust
+06   6  ▾ fn main() {
+07   7        let s = "hi";
+08   8    }
+09   9    ```
+10  10
+11
+-- marks: C=caret S=selection F=fold O=occurrence K=keyword S=string
+01        K
+06        KK
+07            KKK     SSSS

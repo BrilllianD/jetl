@@ -440,7 +440,8 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
     }
     let hl = buf.syntax.as_mut().map(|s| s.highlights(rope, window.start, window.len())).unwrap_or_default();
     let search = buf.view.search.as_ref();
-    let pair = super::brackets::pair_at(rope, buf.syntax.as_ref().and_then(|s| s.tree()), buf.view.sel().head);
+    let pair =
+        super::brackets::pair_at(rope, buf.syntax.as_ref().and_then(|s| s.tree_at_char(rope, buf.view.sel().head)), buf.view.sel().head);
     // Occurrences of the word or selection at the caret, visible lines only.
     // An open find bar owns the match highlighting, so they step aside.
     let occ = match (o.occurrences && search.is_none()).then(|| super::search::occurrence_target(rope, &buf.view.sel())).flatten() {
