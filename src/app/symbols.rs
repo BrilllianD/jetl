@@ -67,13 +67,17 @@ impl App {
             return;
         }
         // A new seq even when nothing is asked: answers to the old query
-        // must not refill the rows.
-        self.reset_workspace_symbols();
+        // must not refill the rows. The old rows stay until the new
+        // query's first answer replaces them (`entries_seq`).
+        self.cancel_workspace_symbols();
+        self.lsp.last_seq += 1;
+        let seq = self.lsp.last_seq;
+        self.lsp.ws_symbols.seq = seq;
         self.lsp.ws_symbols.query = query.clone();
         if query.is_empty() || !self.config.lsp.enabled {
+            self.lsp.ws_symbols.entries.clear();
             return self.feed_palette_symbols();
         }
-        let seq = self.lsp.ws_symbols.seq;
         let mut names: Vec<String> = self.lsp.clients.keys().filter(|n| !n.ends_with(SCRATCH_SUFFIX)).cloned().collect();
         names.sort();
         for name in names {
@@ -304,6 +308,27 @@ mod tests {
 
     fn late_answer() -> serde_json::Value {
         json!([symbol_info("hello", "file:///tmp/late/l.rs", 0, 0)])
+    }
+
+    #[tokio::test]
+    async fn rows_stay_until_the_next_queries_answer() {
+        let (mut app, dir) = test_app("ws-symbols-keep");
+        let mut servers = with_fake_servers(&mut app, ws_caps());
+        let mut server = open_on_server(&mut app, &mut servers, "a.rs", "fn main() {}\n").await;
+        app.open_palette(PaletteKind::Symbols);
+        type_str(&mut app, "h");
+        let id = server.recv("workspace/symbol").await["id"].as_i64().unwrap();
+        server.respond(id, late_answer());
+        handle_next(&mut app, is_lsp).await;
+        assert_eq!(app.lsp.ws_symbols.entries.len(), 1);
+        type_str(&mut app, "e");
+        let id = server.recv("workspace/symbol").await["id"].as_i64().unwrap();
+        assert_eq!(app.lsp.ws_symbols.entries.len(), 1, "the old row stays until the new answer");
+        server.respond(id, json!([symbol_info("hex", "file:///tmp/late/x.rs", 0, 0)]));
+        handle_next(&mut app, is_lsp).await;
+        let names: Vec<_> = app.lsp.ws_symbols.entries.iter().map(|e| e.symbol.name.to_string()).collect();
+        assert_eq!(names, ["hex"]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
