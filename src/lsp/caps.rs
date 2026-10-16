@@ -24,6 +24,7 @@ pub const IMPLEMENTATION: &str = "textDocument/implementation";
 pub const DECLARATION: &str = "textDocument/declaration";
 pub const REFERENCES: &str = "textDocument/references";
 pub const HOVER: &str = "textDocument/hover";
+pub const SIGNATURE_HELP: &str = "textDocument/signatureHelp";
 pub const COMPLETION: &str = "textDocument/completion";
 pub const RESOLVE: &str = "completionItem/resolve";
 pub const PREPARE_RENAME: &str = "textDocument/prepareRename";
@@ -81,6 +82,17 @@ fn strings<'v>(o: &'v Value, key: &str) -> impl Iterator<Item = &'v str> + use<'
     o.get(key).and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str)
 }
 
+/// `items` without repeats, in order.
+fn dedup<'v>(items: impl Iterator<Item = &'v str>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for t in items {
+        if !out.iter().any(|o| o == t) {
+            out.push(t.to_string());
+        }
+    }
+    out
+}
+
 impl<'a> Caps<'a> {
     /// `registerOptions` of `method`'s registrations that apply to the document.
     pub fn dynamic(&self, method: &'a str) -> impl Iterator<Item = &'a Value> + use<'a> {
@@ -119,6 +131,7 @@ impl<'a> Caps<'a> {
                 matches!(fixed.hover_provider, Some(HoverProviderCapability::Simple(true) | HoverProviderCapability::Options(_)))
                     || self.any(HOVER)
             }
+            SIGNATURE_HELP => fixed.signature_help_provider.is_some() || self.any(SIGNATURE_HELP),
             COMPLETION => fixed.completion_provider.is_some() || self.any(COMPLETION),
             RESOLVE => {
                 fixed.completion_provider.as_ref().and_then(|c| c.resolve_provider) == Some(true)
@@ -163,6 +176,20 @@ impl<'a> Caps<'a> {
             }
         }
         out
+    }
+
+    /// Signature help trigger characters: static ones, then registered ones, deduplicated in order.
+    pub fn signature_triggers(&self) -> Vec<String> {
+        let fixed = self.fixed.signature_help_provider.as_ref().and_then(|c| c.trigger_characters.as_ref()).into_iter().flatten();
+        let registered = self.dynamic(SIGNATURE_HELP).flat_map(|o| strings(o, "triggerCharacters"));
+        dedup(fixed.map(String::as_str).chain(registered))
+    }
+
+    /// Signature help retrigger characters: static ones, then registered ones, deduplicated in order.
+    pub fn signature_retriggers(&self) -> Vec<String> {
+        let fixed = self.fixed.signature_help_provider.as_ref().and_then(|c| c.retrigger_characters.as_ref()).into_iter().flatten();
+        let registered = self.dynamic(SIGNATURE_HELP).flat_map(|o| strings(o, "retriggerCharacters"));
+        dedup(fixed.map(String::as_str).chain(registered))
     }
 
     /// Completion commit characters: static `allCommitCharacters`, then registered ones, deduplicated in order.
@@ -326,6 +353,19 @@ mod tests {
     }
 
     #[test]
+    fn signature_help_triggers_combine() {
+        let f = fixed(json!({"signatureHelpProvider": {"triggerCharacters": ["(", ","], "retriggerCharacters": [")"]}}));
+        let mut r = Registry::default();
+        register(&mut r, "s", SIGNATURE_HELP, json!({"triggerCharacters": ["<", "("]}));
+        let c = caps(&f, &r, rust());
+        assert!(c.has(SIGNATURE_HELP));
+        assert_eq!(c.signature_triggers(), ["(", ",", "<"]);
+        assert_eq!(c.signature_retriggers(), [")"]);
+        let f = fixed(json!({}));
+        assert!(!caps(&f, &Registry::default(), rust()).has(SIGNATURE_HELP));
+    }
+
+    #[test]
     fn range_formatting_is_static_or_registered() {
         let f = fixed(json!({"documentRangeFormattingProvider": true}));
         let r = Registry::default();
@@ -363,6 +403,7 @@ mod tests {
             "declaration",
             "references",
             "hover",
+            "signatureHelp",
             "completion",
             "rename",
             "codeAction",

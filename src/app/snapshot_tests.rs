@@ -1747,6 +1747,44 @@ async fn hover_popup() {
 }
 
 #[tokio::test]
+async fn signature_popup() {
+    use lsp_types::{ParameterInformation, ParameterLabel, SignatureHelp, SignatureInformation};
+    let mut fx = stable_app("signature");
+    let app = &mut fx.app;
+    load(app, "main.log", "fn main() {\n\n\n\n\n    let n = add(1, 2);\n}\n");
+    moves(app, Motion::Down, 5);
+    moves(app, Motion::Right, 19);
+    app.focus.set(PanelId::Editor);
+    let param = |a, b| ParameterInformation { label: ParameterLabel::LabelOffsets([a, b]), documentation: None };
+    let sig = |label: &str, parameters| SignatureInformation {
+        label: label.into(),
+        documentation: None,
+        parameters: Some(parameters),
+        active_parameter: None,
+    };
+    let help = SignatureHelp {
+        signatures: vec![
+            sig("fn add(a: u32, b: u32) -> u32", vec![param(7, 13), param(15, 21)]),
+            sig(
+                "fn add(a: u64) -> u64",
+                vec![ParameterInformation { label: ParameterLabel::Simple("a: u64".into()), documentation: None }],
+            ),
+        ],
+        active_signature: Some(0),
+        active_parameter: Some(1),
+    };
+    let b = app.editor.active_buffer().unwrap();
+    app.signature = crate::ui::signature::SignaturePopup::new(app.editor.focused_group().id, b.id, help);
+    assert!(app.signature.is_some());
+    let term = draw_app(app, 80, 20);
+    // Bold first: it wins over the popup background; the area leaves out the bold chrome.
+    let marks = [Mark::modifier('B', "bold", Modifier::BOLD), Mark::bg('P', "popup", app.theme.popup_bg)];
+    let area = ratatui::layout::Rect::new(36, 0, 44, 18);
+    assert_snapshot!("signature_popup", snapshot(&term, &marks, Some(area)));
+    assert!(app.signature.is_some(), "the popup still applies");
+}
+
+#[tokio::test]
 async fn completion_popup() {
     use crate::lsp::completion::{CompletionState, Origin};
     let mut fx = stable_app("completion");

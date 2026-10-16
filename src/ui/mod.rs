@@ -8,6 +8,7 @@ pub mod menu;
 pub mod menu_bar;
 pub mod palette;
 pub mod settings;
+pub mod signature;
 pub mod status_bar;
 pub mod tabs;
 pub mod toasts;
@@ -106,6 +107,12 @@ pub fn render(app: &mut App, frame: &mut Frame) {
         let above_status = ratatui::layout::Rect { height: rects.status.y.saturating_sub(area.y), ..area };
         let word = unicode_width::UnicodeWidthStr::width(c.state.prefix.as_str()) as u16;
         c.render(frame, above_status, anchor, word, &theme);
+    }
+    // The Parameter Info popup, above the caret line.
+    app.signature_check();
+    if let (Some(s), Some(anchor)) = (&mut app.signature, app.editor.caret_cell()) {
+        let above_status = ratatui::layout::Rect { height: rects.status.y.saturating_sub(area.y), ..area };
+        s.render(frame, above_status, anchor, &theme);
     }
     tool_strip::render_tooltip(app, frame, area);
 

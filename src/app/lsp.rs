@@ -68,6 +68,9 @@ pub struct LspService {
     /// The seq of the newest definition or usages request: the one whose
     /// locations may still open the palette.
     pub(super) nav_seq: u64,
+    /// Whether the newest signature help request came from Ctrl+P: only
+    /// then an empty answer or a failure is told to the user.
+    pub(super) signature_explicit: bool,
     /// Completion requests and the item being accepted
     /// (`app/completion.rs`).
     pub(super) completion: super::completion::CompletionReqs,
@@ -186,6 +189,7 @@ impl LspService {
         self.progress.clear();
         self.diagnostics.clear();
         self.inflight.clear();
+        self.signature_explicit = false;
         self.completion.request = None;
         self.completion.accepting = None;
         self.completion.docs = None;

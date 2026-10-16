@@ -205,6 +205,7 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Ctrl+Shift+B` * | `lsp.goto_type_definition` | Go to the type declaration of the symbol at the caret |
 | `Ctrl+Alt+B` | `lsp.goto_implementation` | Go to the implementations of the symbol at the caret |
 | `Alt+F7` | `lsp.find_usages` | Find usages of the symbol at the caret |
+| `Ctrl+P` | `lsp.parameter_info` | Parameter info: the signature of the call at the caret |
 | `Alt+Q` | `lsp.quick_doc` | Quick documentation for the symbol at the caret |
 | `Ctrl+Space` | `lsp.complete` | Code completion at the caret |
 | `Shift+F6` | `lsp.rename` | Rename the symbol at the caret and its usages |

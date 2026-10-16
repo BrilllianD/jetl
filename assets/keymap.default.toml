@@ -264,6 +264,8 @@
 "ctrl-alt-b" = "lsp.goto_implementation"
 "alt-f7" = "lsp.find_usages"
 "alt-q" = "lsp.quick_doc"
+# Parameter Info, as in JetBrains.
+"ctrl-p" = "lsp.parameter_info"
 # Code completion. Legacy terminals send Ctrl+Space and Ctrl+` both as NUL,
 # so in the editor the branches popup is on Ctrl+` only with the kitty
 # protocol (or from Git > Branches…).

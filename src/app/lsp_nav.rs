@@ -29,7 +29,7 @@ pub(super) use crate::lsp::caps::{
     CODE_ACTION, CODE_ACTION_RESOLVE, COMPLETION, DOCUMENT_SYMBOL, EXECUTE_COMMAND, FORMATTING, PREPARE_RENAME, RANGE_FORMATTING, RENAME,
     RESOLVE,
 };
-use crate::lsp::caps::{Caps, DECLARATION, DEFINITION, HOVER, IMPLEMENTATION, REFERENCES, TYPE_DEFINITION};
+use crate::lsp::caps::{Caps, DECLARATION, DEFINITION, HOVER, IMPLEMENTATION, REFERENCES, SIGNATURE_HELP, TYPE_DEFINITION};
 
 /// The method a tag was sent with.
 fn method_of(tag: &PendingTag) -> &'static str {
@@ -40,6 +40,7 @@ fn method_of(tag: &PendingTag) -> &'static str {
         PendingTag::Declaration(_) => DECLARATION,
         PendingTag::References(_) => REFERENCES,
         PendingTag::Hover(_) => HOVER,
+        PendingTag::SignatureHelp(_) => SIGNATURE_HELP,
         PendingTag::Completion(_) => COMPLETION,
         PendingTag::CompletionResolve(_) | PendingTag::CompletionDocs(_) => RESOLVE,
         PendingTag::PrepareRename(_) => PREPARE_RENAME,
@@ -71,6 +72,7 @@ fn what(method: &str) -> &'static str {
         DECLARATION => "go to declaration",
         REFERENCES => "find usages",
         HOVER => "documentation",
+        SIGNATURE_HELP => "parameter info",
         COMPLETION => "code completion",
         RESOLVE => "resolving completions",
         PREPARE_RENAME => "checking renames",
@@ -325,6 +327,7 @@ impl App {
             PendingTag::Declaration(t) => self.lsp_goto_answer(t, value, DECLARATION),
             PendingTag::References(t) => self.lsp_usages_answer(t, value),
             PendingTag::Hover(t) => self.lsp_hover_answer(t, value),
+            PendingTag::SignatureHelp(t) => self.signature_answer(t, value),
             PendingTag::PrepareRename(t) => self.lsp_prepare_rename_answer(t, value),
             PendingTag::Rename(t) => self.lsp_rename_answer(t, value),
             PendingTag::CodeAction(t) => self.lsp_code_actions_answer(t, value),

@@ -54,6 +54,8 @@ pub enum PendingTag {
     References(DocTag),
     /// `textDocument/hover`.
     Hover(DocTag),
+    /// `textDocument/signatureHelp`.
+    SignatureHelp(DocTag),
     /// `textDocument/completion`.
     Completion(DocTag),
     /// `completionItem/resolve` of the item being accepted.
@@ -93,6 +95,7 @@ impl PendingTag {
             | PendingTag::Declaration(t)
             | PendingTag::References(t)
             | PendingTag::Hover(t)
+            | PendingTag::SignatureHelp(t)
             | PendingTag::Completion(t)
             | PendingTag::CompletionResolve(t)
             | PendingTag::CompletionDocs(t)

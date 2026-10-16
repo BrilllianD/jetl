@@ -498,6 +498,8 @@ pub enum LspAction {
     FindUsages,
     /// Alt+Q: the hover documentation at the caret in a popup.
     QuickDoc,
+    /// Ctrl+P: the signatures of the call at the caret, its active parameter bold.
+    ParameterInfo,
     /// Ctrl+Space: code completion at the caret.
     Complete,
     /// Shift+F6: rename the symbol at the caret and its usages.
@@ -869,6 +871,7 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "lsp.goto_implementation" => "Go to the implementations of the symbol at the caret", Lsp(LspAction::GotoImplementation);
         "lsp.goto_declaration" => "Go to the declaration (not the definition) of the symbol at the caret", Lsp(LspAction::GotoDeclaration);
         "lsp.find_usages" => "Find usages of the symbol at the caret", Lsp(LspAction::FindUsages);
+        "lsp.parameter_info" => "Parameter info: the signature of the call at the caret", Lsp(LspAction::ParameterInfo);
         "lsp.quick_doc" => "Quick documentation for the symbol at the caret", Lsp(LspAction::QuickDoc);
         "lsp.complete" => "Code completion at the caret", Lsp(LspAction::Complete);
         "lsp.rename" => "Rename the symbol at the caret and its usages", Lsp(LspAction::Rename);

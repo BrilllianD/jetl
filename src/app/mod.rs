@@ -64,6 +64,7 @@ mod recovery;
 mod run;
 mod save_as;
 mod settings;
+mod signature;
 mod symbols;
 mod terminal;
 mod watch;
@@ -257,6 +258,8 @@ pub struct App {
     pub hover: Option<crate::ui::hover::HoverPopup>,
     /// The code completion popup at the caret (`app/completion.rs`).
     pub completion: Option<crate::ui::completion::CompletionPopup>,
+    /// The Parameter Info popup at the caret (`app/signature.rs`).
+    pub signature: Option<crate::ui::signature::SignaturePopup>,
     /// The dirty buffers the panic hook writes (`recovery.rs`), refreshed
     /// by the run loop.
     pub(crate) recorder: crate::recovery::Recorder,
@@ -371,6 +374,7 @@ impl App {
             lsp: Default::default(),
             hover: None,
             completion: None,
+            signature: None,
             recorder,
             unsaved_due,
             prune_due: Some(Instant::now() + crate::history::PRUNE_EVERY),
@@ -743,6 +747,10 @@ impl App {
         if self.completion.is_some() && self.completion_key(key) {
             return;
         }
+        // Parameter Info takes Esc; other keys go on.
+        if self.signature_key(key) {
+            return;
+        }
         // The terminal takes every key but a few (`[terminal]`, Esc Esc).
         if self.focus.is(PanelId::Terminal) && self.layout.is_visible(ToolWindowId::Terminal) {
             self.dispatcher.reset();
@@ -946,6 +954,7 @@ impl App {
                     }
                     crate::actions::LspAction::FindUsages => self.lsp_find_usages(),
                     crate::actions::LspAction::QuickDoc => self.lsp_quick_doc(),
+                    crate::actions::LspAction::ParameterInfo => self.lsp_parameter_info(),
                     crate::actions::LspAction::Complete => self.lsp_complete(),
                     crate::actions::LspAction::Rename => self.lsp_rename(),
                     crate::actions::LspAction::ContextActions => self.lsp_context_actions(),
@@ -980,6 +989,7 @@ impl App {
         if let Action::Editor(a) = &action {
             let typed = if let EditorAction::InsertChar(c) = a { Some(*c) } else { None };
             self.completion_after_edit(typed);
+            self.signature_after_edit(typed);
         }
     }
 

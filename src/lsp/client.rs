@@ -23,8 +23,9 @@ use lsp_types::{
     CompletionItemCapability, CompletionItemCapabilityResolveSupport, CompletionItemKind, CompletionItemKindCapability, DiagnosticTag,
     DidChangeWatchedFilesClientCapabilities, DocumentFormattingClientCapabilities, DocumentRangeFormattingClientCapabilities,
     DocumentSymbolClientCapabilities, ExecuteCommandClientCapabilities, FailureHandlingKind, GeneralClientCapabilities, GotoCapability,
-    HoverClientCapabilities, InitializeParams, InitializeResult, MarkupKind, PositionEncodingKind, PublishDiagnosticsClientCapabilities,
-    ReferenceClientCapabilities, RenameClientCapabilities, ResourceOperationKind, ShowMessageRequestClientCapabilities, TagSupport,
+    HoverClientCapabilities, InitializeParams, InitializeResult, MarkupKind, ParameterInformationSettings, PositionEncodingKind,
+    PublishDiagnosticsClientCapabilities, ReferenceClientCapabilities, RenameClientCapabilities, ResourceOperationKind,
+    ShowMessageRequestClientCapabilities, SignatureHelpClientCapabilities, SignatureInformationSettings, TagSupport,
     TextDocumentClientCapabilities, TextDocumentSyncClientCapabilities, WindowClientCapabilities, WorkspaceClientCapabilities,
     WorkspaceEditClientCapabilities, WorkspaceFileOperationsClientCapabilities, WorkspaceFolder,
 };
@@ -231,6 +232,15 @@ pub fn client_capabilities(watch_files: bool) -> ClientCapabilities {
             hover: Some(HoverClientCapabilities {
                 dynamic_registration: Some(true),
                 content_format: Some(vec![MarkupKind::Markdown, MarkupKind::PlainText]),
+            }),
+            signature_help: Some(SignatureHelpClientCapabilities {
+                dynamic_registration: Some(true),
+                signature_information: Some(SignatureInformationSettings {
+                    documentation_format: Some(vec![MarkupKind::Markdown, MarkupKind::PlainText]),
+                    parameter_information: Some(ParameterInformationSettings { label_offset_support: Some(true) }),
+                    active_parameter_support: Some(true),
+                }),
+                context_support: Some(true),
             }),
             completion: Some(completion_capabilities()),
             rename: Some(RenameClientCapabilities {
