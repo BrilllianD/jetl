@@ -424,7 +424,12 @@ impl RunPanel {
             RunAction::NextProblem => self.step(true, cx),
             RunAction::PrevProblem => self.step(false, cx),
             // They start and stop processes; `App::perform` runs them.
-            RunAction::Rerun | RunAction::RerunFailed | RunAction::Stop | RunAction::RunSelected | RunAction::EditConfigs => return false,
+            RunAction::Rerun
+            | RunAction::RerunFailed
+            | RunAction::TestAtCaret
+            | RunAction::Stop
+            | RunAction::RunSelected
+            | RunAction::EditConfigs => return false,
             RunAction::ToggleView | RunAction::Expand | RunAction::Collapse => {}
         }
         true

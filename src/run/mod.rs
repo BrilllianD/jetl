@@ -4,6 +4,7 @@
 //! stderr merged (`process`); its output is matched for file locations
 //! (`matcher`) and shown in the Run tool window (`panel`).
 
+pub mod caret;
 pub mod edit;
 pub mod matcher;
 pub mod panel;

@@ -33,6 +33,8 @@
 "alt-shift-f10" = "run.pick"
 "shift-f10" = "run.run_selected"
 "ctrl-f5" = "run.rerun"
+# Ctrl+Shift+F10 runs the test at the caret (Run menu and F1 where the terminal keeps the key).
+"ctrl-shift-f10" = "run.test_at_caret"
 "ctrl-f2" = "run.stop"
 "f4" = "run.next_problem"
 "shift-f4" = "run.prev_problem"

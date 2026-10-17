@@ -387,6 +387,26 @@ test -- --exact <test names>`, pytest with the failed node ids, vitest with
 the failed files and `-t` over their names. Not shown: per-test timing, a
 running state per test, filters; results are not saved.
 
+Run Test at Caret (Ctrl+Shift+F10, Run > Run Test at Caret, the action
+`run.test_at_caret`) runs the test around the caret of the active editor
+through the Run window, in a task named `Test <path>` that does not change
+the selected configuration. Rust: the innermost `#[test]` function (also
+`#[tokio::test]`, and with the caret on its attribute line), else the
+innermost inline `mod`; `cargo test <module path>::<fn> -- --exact` (a module:
+`cargo test <module path>::`) in the directory of the nearest `Cargo.toml`;
+`tests/x.rs` adds `--test x`, `src/bin/x.rs` adds `--bin x`. Python: the
+innermost `test*` function with its classes, else the innermost `Test*`
+class; `pytest -v <file>::<Class>::<test>` in the project root. JavaScript,
+TypeScript and TSX: the enclosing `it(...)` / `test(...)` (also `.only`,
+`.skip`, `.concurrent`) with a plain string title and the titles of its
+`describe(...)` calls; `npx vitest run <file> -t <pattern>` when the nearest
+`package.json` lists vitest (the tests view), else `npx jest <file> -t
+<pattern>` for jest (problem links, no tree), else a note. Anything else, a
+file without a syntax tree, an unsaved new file or a caret outside any test
+gives an info note; a file with unsaved changes runs from disk and says so.
+Ctrl+Shift+F10 reaches jetl in xterm-compatible terminals and tmux without the
+kitty protocol; the Run menu and F1 work everywhere.
+
 One task runs at a time: starting another kills the running one first, as
 do quitting jetl and switching projects. A stop sends SIGKILL to the task's
 whole process group, so the processes it started (cargo's rustc, npm's node)

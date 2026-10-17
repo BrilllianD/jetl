@@ -962,6 +962,11 @@ impl App {
                 self.rerun_failed_run();
                 return;
             }
+            Action::Run(RunAction::TestAtCaret) => {
+                drop(cx);
+                self.run_test_at_caret();
+                return;
+            }
             Action::Run(RunAction::Stop) => {
                 drop(cx);
                 self.stop_run();

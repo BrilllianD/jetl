@@ -201,6 +201,7 @@ pub const MAIN_MENU: &[(&str, char, &[Row])] = &[
         &[
             Item("Run…", "run.pick"),
             Item("Run Selected", "run.run_selected"),
+            Item("Run Test at Caret", "run.test_at_caret"),
             Item("Rerun", "run.rerun"),
             Item("Rerun Failed Tests", "run.rerun_failed"),
             Item("Stop", "run.stop"),

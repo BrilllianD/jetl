@@ -1159,6 +1159,20 @@ Setup as for the other scenarios (fresh `$H`, LSP off) with the scratch crate `/
 7. Repeat at 120x40 and 80x24: the tabs show at 120 and go first at 80; the tree rows stay inside
    the window.
 
+### Scenario: run test at caret
+
+Same setup as the test runner tree (`/tmp/jt-crate`).
+
+1. Open `src/lib.rs` (Ctrl+N), Ctrl+G to the line of `fails`' assert, `send-keys C-S-F10`: the Run
+   header reads `cargo test tests::fails -- --exact` and the tree has only `fails`.
+2. Caret on the `#[test]` line above `adds`: only `adds` runs. Caret in `pub fn add`: the note
+   `No test at the caret`, nothing starts.
+3. Open `tests/cli.rs`, caret in `outside`: `cargo test --test cli outside -- --exact`.
+4. Run > Run Test at Caret (or F1, `Run: run the test at the caret`) does the same. A modified,
+   unsaved buffer runs and says `Running the saved version of lib.rs`. A `.txt` file says
+   `Run Test at Caret supports Rust, Python, JavaScript and TypeScript`.
+5. Repeat at 120x40 and 80x24.
+
 ### Limits under tmux
 
 - No kitty keyboard protocol: Ctrl+Shift+letter, Ctrl+Tab, Ctrl+Enter,
