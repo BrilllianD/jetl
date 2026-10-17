@@ -259,6 +259,8 @@ pub struct App {
     pub hover: Option<crate::ui::hover::HoverPopup>,
     /// The code completion popup at the caret (`app/completion.rs`).
     pub completion: Option<crate::ui::completion::CompletionPopup>,
+    /// Live templates: built-in and user snippets (`config::snippets`).
+    pub snippets: crate::config::snippets::SnippetSet,
     /// The Parameter Info popup at the caret (`app/signature.rs`).
     pub signature: Option<crate::ui::signature::SignaturePopup>,
     /// The dirty buffers the panic hook writes (`recovery.rs`), refreshed
@@ -291,6 +293,8 @@ impl App {
         let (keymap, keymap_errors) = Keymap::load_text(&keymap_text, &paths.keymap_file());
         let colorterm = crate::config::color::colorterm_env();
         let (theme, theme_errors) = Theme::load(&config, &paths.config_dir, paths.omarchy_dir.as_deref(), colorterm.as_deref());
+        let snippet_inputs = crate::config::snippets::SnippetSet::read(&paths.snippets_dir());
+        let (snippets, snippet_errors) = crate::config::snippets::SnippetSet::build(&snippet_inputs);
         let theme_truecolor = config.ui.colors.truecolor(colorterm.as_deref());
         let modal = config.keymap.mode == "vim";
         let mut dispatcher = Dispatcher::new(modal);
@@ -375,6 +379,7 @@ impl App {
             lsp: lsp::LspService::with_inlays(config.lsp.inlay_hints),
             hover: None,
             completion: None,
+            snippets,
             signature: None,
             recorder,
             unsaved_due,
@@ -394,7 +399,7 @@ impl App {
                 "Terminal lacks the kitty keyboard protocol: Ctrl+Shift shortcuts, Ctrl+Tab and Shift Shift are unavailable",
             );
         }
-        for e in keymap_errors.into_iter().chain(theme_errors) {
+        for e in keymap_errors.into_iter().chain(theme_errors).chain(snippet_errors.into_iter().map(|(_, e)| e)) {
             app.notify(Level::Error, e);
         }
         app.start_config_reload(keymap_text);

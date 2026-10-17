@@ -1,0 +1,11 @@
+# [[snippet]] prefix, body (LSP snippet syntax), description
+
+[[snippet]]
+prefix = "fn"
+description = "Function"
+body = "function ${1:name}(${2}) {\n\t$0\n}"
+
+[[snippet]]
+prefix = "log"
+description = "console.log"
+body = "console.log(${1});$0"

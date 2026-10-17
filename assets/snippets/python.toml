@@ -1,0 +1,16 @@
+# [[snippet]] prefix, body (LSP snippet syntax), description
+
+[[snippet]]
+prefix = "def"
+description = "Function"
+body = "def ${1:name}(${2}):\n\t${0:pass}"
+
+[[snippet]]
+prefix = "class"
+description = "Class"
+body = "class ${1:Name}:\n\tdef __init__(self${2}):\n\t\t${0:pass}"
+
+[[snippet]]
+prefix = "ifmain"
+description = "if __name__ == \"__main__\""
+body = "if __name__ == \"__main__\":\n\t${0:main()}"

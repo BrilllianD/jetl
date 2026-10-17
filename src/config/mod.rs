@@ -6,6 +6,7 @@ pub mod edit;
 pub mod keymap;
 pub mod omarchy;
 pub mod reload;
+pub mod snippets;
 pub mod theme;
 pub mod watch;
 
@@ -46,6 +47,10 @@ impl Paths {
     }
     pub fn theme_file(&self) -> PathBuf {
         self.config_dir.join("theme.toml")
+    }
+    /// User snippet files (`config/snippets.rs`).
+    pub fn snippets_dir(&self) -> PathBuf {
+        self.config_dir.join(snippets::SNIPPETS_DIR)
     }
     pub fn sessions_dir(&self) -> PathBuf {
         self.state_dir.join("sessions")
