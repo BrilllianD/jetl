@@ -712,7 +712,9 @@ mod tests {
         effects(|cx| ed.reload_from_disk(id, cx));
         assert_eq!(ed.buffers[0].text(), "\u{feff}three\r\n");
         assert_eq!(ed.buffers[0].line_ending, LineEnding::CrLf);
+        ed.buffers[0].view.set_sel(Selection::point(1));
+        ed.buffers[0].insert("x", TxKind::Typing);
         effects(|cx| assert!(ed.save(0, cx)));
-        assert_eq!(std::fs::read(&a).unwrap(), b"\xEF\xBB\xBFthree\r\n");
+        assert_eq!(std::fs::read(&a).unwrap(), b"\xEF\xBB\xBFxthree\r\n");
     }
 }

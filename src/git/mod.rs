@@ -725,10 +725,16 @@ mod tests {
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     }
 
-    /// A repository with one commit (signing off).
+    /// A repository with one commit. Its own config shields the tests from the
+    /// user's global git config: no signing, no pruning on fetch, no hooks.
     fn repo(name: &str) -> TempRepo {
         let r = TempRepo::new(name);
+        let hooks = r.dir.join(".git/no-hooks");
+        std::fs::create_dir_all(&hooks).unwrap();
         git(&r.dir, &["config", "commit.gpgsign", "false"]);
+        git(&r.dir, &["config", "tag.gpgSign", "false"]);
+        git(&r.dir, &["config", "fetch.prune", "false"]);
+        git(&r.dir, &["config", "core.hooksPath", hooks.to_str().unwrap()]);
         r.write("a.txt", "a\n");
         git(&r.dir, &["add", "-A"]);
         git(&r.dir, &["commit", "-qm", "first"]);
@@ -830,11 +836,8 @@ mod tests {
                 other => panic!("expected Status, got {other:?}"),
             }
         }
-        let mut generations: Vec<u64> = got.iter().map(|g| g.0).collect();
-        let mut seqs: Vec<u64> = got.iter().map(|g| g.1).collect();
-        generations.sort();
-        seqs.sort();
-        assert_eq!((generations, seqs), (vec![1, 2], vec![3, 4]));
+        got.sort();
+        assert_eq!(got, vec![(1, 3), (2, 4)]);
     }
 
     #[tokio::test]

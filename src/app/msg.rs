@@ -630,7 +630,9 @@ mod tests {
         ];
         for (op, prefix) in table {
             app.pending_conflicts = false;
+            let before = app.notifications.len();
             done(&mut app, op.clone(), "git", false, out);
+            assert_eq!(app.notifications.len(), before + 1, "{op:?}");
             let (level, text) = last(&app);
             assert_eq!(level, Level::Warn, "{op:?}");
             assert!(text.starts_with(prefix), "{op:?}: {text}");
@@ -650,7 +652,9 @@ mod tests {
         let out = "hint: a\nerror: nothing added\nfatal: later";
         let bare = [GitOp::Commit { push: false, amend: false }, GitOp::Stage, GitOp::Unstage, GitOp::Discard];
         for op in bare {
+            let before = app.notifications.len();
             done(&mut app, op.clone(), "git x", false, out);
+            assert_eq!(app.notifications.len(), before + 1, "{op:?}");
             assert_eq!(last(&app), (Level::Error, "error: nothing added".to_string()), "{op:?}");
         }
         done(&mut app, GitOp::Pull, "git pull", false, out);

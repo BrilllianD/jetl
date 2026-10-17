@@ -579,7 +579,7 @@ mod tests {
         /// Answer `initialize` (the next frame) with empty capabilities.
         async fn answer_initialize(&mut self) {
             let init = self.read().await.expect("initialize");
-            assert_eq!(init["method"], "initialize");
+            assert_eq!((init["method"].as_str(), &init["id"]), (Some("initialize"), &json!(0)));
             self.write(json!({"jsonrpc": "2.0", "id": 0, "result": {"capabilities": {}}})).await;
         }
     }
@@ -637,9 +637,7 @@ mod tests {
         for i in 0..64 {
             client.notify("test/n", json!({"i": i}));
         }
-        let init = server.read().await.expect("initialize");
-        assert_eq!((init["method"].as_str(), &init["id"]), (Some("initialize"), &json!(0)));
-        server.write(json!({"jsonrpc": "2.0", "id": 0, "result": {"capabilities": {}}})).await;
+        server.answer_initialize().await;
         assert_eq!(server.read().await.expect("initialized")["method"], "initialized");
         for i in 0..64 {
             let msg = server.read().await.expect("a held notification");
