@@ -146,6 +146,7 @@ pub struct Editor {
     hscrolloff: usize,
     auto_close: bool,
     highlight_occurrences: bool,
+    indent_guides: bool,
     trim_trailing_whitespace: bool,
     final_newline: bool,
     autosave: Autosave,
@@ -228,6 +229,7 @@ impl Editor {
             hscrolloff: 0,
             auto_close: false,
             highlight_occurrences: false,
+            indent_guides: false,
             trim_trailing_whitespace: false,
             final_newline: false,
             autosave: Autosave::Off,
@@ -267,6 +269,7 @@ impl Editor {
             hscrolloff,
             auto_close,
             highlight_occurrences,
+            indent_guides,
             trim_trailing_whitespace,
             final_newline,
             autosave,
@@ -282,6 +285,7 @@ impl Editor {
         self.hscrolloff = *hscrolloff;
         self.auto_close = *auto_close;
         self.highlight_occurrences = *highlight_occurrences;
+        self.indent_guides = *indent_guides;
         self.trim_trailing_whitespace = *trim_trailing_whitespace;
         self.final_newline = *final_newline;
         if self.autosave != *autosave {
@@ -448,6 +452,12 @@ impl Editor {
                 Some(suffix) => name.len() > suffix.len() && name.ends_with(suffix),
                 None => *m == name,
             })
+    }
+
+    /// `editor.indent_guides` as applied.
+    #[cfg(test)]
+    pub fn indent_guides(&self) -> bool {
+        self.indent_guides
     }
 
     /// `editor.scrolloff` as applied.
@@ -1696,6 +1706,7 @@ impl Editor {
             scrolloff: self.scrolloff,
             hscrolloff: self.hscrolloff,
             occurrences: self.highlight_occurrences,
+            indent_guides: self.indent_guides,
             theme,
             follow,
             decor,

@@ -132,6 +132,13 @@ pub static SETTINGS: &[Setting] = &[
         |c| Value::Bool(c.editor.highlight_occurrences)
     ),
     row!(
+        "editor.indent_guides",
+        "Show indent guides",
+        "Vertical lines at the indent stops in each line's leading whitespace.",
+        Kind::Bool,
+        |c| Value::Bool(c.editor.indent_guides)
+    ),
+    row!(
         "editor.max_tabs",
         "Tab limit",
         "Open tabs beyond this close the least recently used clean, unpinned tab. 0 means no limit.",
@@ -357,6 +364,7 @@ pub static PAGES: &[Page] = &[
             "editor.hscrolloff",
             "editor.auto_close",
             "editor.highlight_occurrences",
+            "editor.indent_guides",
             "editor.max_tabs",
             "editor.max_highlight_bytes"
         ]

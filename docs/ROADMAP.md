@@ -69,6 +69,7 @@ Effort: S = hours to a day, M = 1-3 days, L = about a week, XL = multiple weeks.
 | Move line/selection up/down, join lines, toggle case, delete word forward | S | One transaction each; Sort Lines, Reverse Lines, To Upper/Lower Case (Edit menu, unbound) done |
 | Expand/shrink selection by syntax node (Ctrl+Alt+W / Ctrl+Alt+Shift+W) | S | tree-sitter node ancestors; Ctrl+W is close tab here |
 | Highlight other occurrences of the word under the caret | S | Reuse `search.rs` matcher on the visible range only |
+| Indent guides | S-M | Done: │ at indent stops in leading whitespace (editor/view.rs render callback), continued through blank lines (min of the neighbours' indent, 100-line scan), theme style indent_guide, editor.indent_guides (Live) |
 | Block comment toggle (Ctrl+Shift+/) | S | `block_comment` on `LanguageDef` |
 | Strip trailing whitespace and ensure final newline on save | S | In `save()`, as an undoable transaction |
 | Hard tabs, indent auto-detection, `.editorconfig` | M | Per-buffer indent settings |

@@ -1,12 +1,11 @@
 ---
 source: src/app/snapshot_tests.rs
-assertion_line: 1199
 expression: "snapshot(&term, &marks, None)"
 ---
 80x20 cursor=(57,2)
 00  ≣ ┌ Project: root ───────────────┐│  main.log ×
 01    │                              ││  1  ▾ fn main() {
-02  1 │                              ││  2        let n = add_one(1);
+02  1 │                              ││  2    │   let n = add_one(1);
 03  ⌂ │             ┌─────────────────────────────────────────────────────────────┐
 04  2 │             │ fn add_one(x: u32) -> u32                                   │
 05  ◫ │             │─────────────────────────────────────────────────────────────│

@@ -251,6 +251,8 @@ theme_fields! {
         /// Gutter glyph (✱) on the caret line when the language server has
         /// quick fixes there.
         lightbulb,
+        /// Indent guides (│ in leading whitespace): only the foreground is used.
+        indent_guide,
         splitter,
     ],
 }
@@ -854,6 +856,32 @@ mod tests {
             for ansi256 in [false, true] {
                 assert_highlights_apart(b.name, &Theme::builtin(b, ansi256), ansi256);
             }
+        }
+    }
+
+    #[test]
+    fn indent_guide_differs_from_the_backgrounds() {
+        use crate::config::omarchy::fixtures;
+        let mut themes = Vec::new();
+        for b in BUILTIN_THEMES {
+            for ansi256 in [false, true] {
+                themes.push((b.name, ansi256, Theme::builtin(b, ansi256)));
+            }
+        }
+        for (name, text) in [("omarchy dark", fixtures::DARK), ("omarchy light", fixtures::LIGHT)] {
+            let palette = Palette::parse(text, false).unwrap();
+            for ansi256 in [false, true] {
+                let mut t = Theme::from_palette(&palette, ansi256).unwrap();
+                if ansi256 {
+                    t.map_colors(color::to_ansi256);
+                }
+                themes.push((name, ansi256, t));
+            }
+        }
+        for (name, ansi256, t) in themes {
+            let fg = t.indent_guide.fg.unwrap_or_else(|| panic!("{name} ansi256={ansi256}: no indent_guide fg"));
+            assert_ne!(fg, t.bg, "{name} ansi256={ansi256}");
+            assert_ne!(fg, t.current_line_bg, "{name} ansi256={ansi256}");
         }
     }
 

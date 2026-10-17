@@ -364,11 +364,63 @@ pub struct RenderOpts<'a> {
     pub hscrolloff: usize,
     /// Highlight occurrences of the word or selected text at the caret.
     pub occurrences: bool,
+    /// Draw indent guides (`editor.indent_guides`).
+    pub indent_guides: bool,
     pub theme: &'a Theme,
     /// Scroll to the caret when it moved (else the scroll stays, as the
     /// resolver's linked panes set it).
     pub follow: bool,
     pub decor: Option<&'a LineDecor>,
+}
+
+/// How far a blank line looks up and down for the non-blank lines that set
+/// its indent guides.
+const GUIDE_SCAN: usize = 100;
+
+/// The indent of `line` in display columns (tabs to the next multiple of
+/// `tab`); `None` when the line is blank (empty or whitespace only).
+fn indent_cols(rope: &Rope, line: usize, tab: usize) -> Option<usize> {
+    let tab = tab.max(1);
+    let n = line_len_no_eol(rope, line);
+    let mut cols = 0;
+    for c in rope.line(line).chars().take(n) {
+        match c {
+            ' ' => cols += 1,
+            '\t' => cols = (cols / tab + 1) * tab,
+            _ => return Some(cols),
+        }
+    }
+    None
+}
+
+/// One entry per line of `window` (clamped to the rope): `None` for a
+/// non-blank line, and for a blank one without non-blank neighbours within
+/// `GUIDE_SCAN` lines both ways; else `Some(min(previous, next indent))`.
+fn blank_guide_levels(rope: &Rope, window: Range<usize>, tab: usize) -> Vec<Option<usize>> {
+    let end = window.end.min(rope.len_lines());
+    let start = window.start.min(end);
+    // The nearest non-blank line above the window, within the scan.
+    let mut prev = (start.saturating_sub(GUIDE_SCAN)..start).rev().find_map(|l| indent_cols(rope, l, tab).map(|c| (l, c)));
+    let mut out = vec![None; end - start];
+    let mut cols = vec![None; end - start];
+    for (i, line) in (start..end).enumerate() {
+        match indent_cols(rope, line, tab) {
+            Some(c) => prev = Some((line, c)),
+            None => cols[i] = prev.filter(|&(l, _)| line - l <= GUIDE_SCAN).map(|(_, c)| c),
+        }
+    }
+    // The nearest non-blank line below the window, within the scan.
+    let mut next = (end..(end + GUIDE_SCAN).min(rope.len_lines())).find_map(|l| indent_cols(rope, l, tab).map(|c| (l, c)));
+    for (i, line) in (start..end).enumerate().rev() {
+        match indent_cols(rope, line, tab) {
+            Some(c) => next = Some((line, c)),
+            None => {
+                let below = next.filter(|&(l, _)| l - line <= GUIDE_SCAN).map(|(_, c)| c);
+                out[i] = cols[i].zip(below).map(|(a, b)| a.min(b));
+            }
+        }
+    }
+    out
 }
 
 /// Scroll so that the caret is visible, then render.
@@ -457,6 +509,9 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
     let scroll_col = if rows.wraps() { 0 } else { buf.view.scroll_col };
     let right = text_area.right();
     let mut cursor = None;
+    let guide_step = if buf.indent.hard_tabs { o.tab_width } else { buf.indent.width }.max(1);
+    let guide_fg = theme.indent_guide.fg.unwrap_or(theme.fg);
+    let levels = if o.indent_guides { blank_guide_levels(rope, window.clone(), o.tab_width) } else { Vec::new() };
 
     for (row_i, &row) in shown.iter().enumerate() {
         let line = row.line;
@@ -470,6 +525,13 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
         }
         let line_start = rope.line_to_char(line);
         let line_end = line_start + line_len_no_eol(rope, line);
+        // Blank lines get their guides after the walk, from `levels`.
+        let blank_level = levels.get(line - window.start).copied().flatten();
+        let lead_end = if o.indent_guides && row.seg == 0 && blank_level.is_none() {
+            line_start + super::selection::indent_of(rope, line)
+        } else {
+            line_start
+        };
         let seg = rows.seg_range(rope, row);
         let last_seg = seg.end == line_end;
         let in_line = &drawn[drawn.partition_point(|&h| h < line_start)..drawn.partition_point(|&h| h <= line_end)];
@@ -585,14 +647,19 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
             if c.width == 0 {
                 return true;
             }
+            let guide = c.char_idx < lead_end && c.col % guide_step == 0;
             if g.is_empty() {
-                // Tab: fill with spaces.
+                // Tab: fill with spaces, a guide in the first cell.
                 for i in 0..c.width {
                     let xi = x + i as u16;
                     if xi >= right {
                         break;
                     }
-                    screen[(xi, y)].set_symbol(" ").set_style(style);
+                    if i == 0 && guide {
+                        screen[(xi, y)].set_symbol("│").set_style(style.fg(guide_fg));
+                    } else {
+                        screen[(xi, y)].set_symbol(" ").set_style(style);
+                    }
                 }
             } else if crate::util::text::shown_escaped(rope.char(c.char_idx)) {
                 screen.set_stringn(x, y, g, (right - x) as usize, style.add_modifier(Modifier::DIM));
@@ -600,13 +667,28 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
                 if x + c.width as u16 > right {
                     return false;
                 }
-                screen[(x, y)].set_symbol(g).set_style(style);
+                if guide && g == " " {
+                    screen[(x, y)].set_symbol("│").set_style(style.fg(guide_fg));
+                } else {
+                    screen[(x, y)].set_symbol(g).set_style(style);
+                }
                 for i in 1..c.width as u16 {
                     screen[(x + i, y)].reset();
                 }
             }
             true
         });
+        // Guides of a blank line, in its real and virtual cells; pure paint,
+        // under the selection and caret styles below.
+        if let Some(l) = blank_level.filter(|_| o.indent_guides && row.seg == 0) {
+            for c in (0..l).step_by(guide_step).filter(|&c| c >= scroll_col) {
+                let x = text_area.x as usize + c - scroll_col;
+                if x >= right as usize {
+                    break;
+                }
+                screen[(x as u16, y)].set_symbol("│").set_fg(guide_fg);
+            }
+        }
         // Selection that spans the line break: mark one cell past the text;
         // a caret at the line end is drawn there too. Both on the line's
         // last row, as is a fold's placeholder.
@@ -794,6 +876,7 @@ pub fn ensure_visible(buf: &mut Buffer, text_area: Rect, o: &RenderOpts) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::editor::indent::IndentStyle;
 
     #[test]
     fn click_mapping_with_tabs_and_wide_chars() {
@@ -827,6 +910,7 @@ mod tests {
             scrolloff: 0,
             hscrolloff: 0,
             occurrences: false,
+            indent_guides: false,
             theme: &theme,
             follow: true,
             decor: Some(&decor),
@@ -889,6 +973,7 @@ mod tests {
             scrolloff: 0,
             hscrolloff: 0,
             occurrences: false,
+            indent_guides: false,
             theme: &theme,
             follow: true,
             decor: None,
@@ -929,6 +1014,7 @@ mod tests {
             scrolloff: 0,
             hscrolloff: 0,
             occurrences: false,
+            indent_guides: false,
             theme,
             follow: true,
             decor: None,
@@ -1024,5 +1110,100 @@ mod tests {
         let g = row_geom(&rope, &rows, Row { line: 0, seg: 2 });
         assert_eq!((g.start, g.end), (2, 2));
         assert_eq!(row_x_to_char(&rope, &rows, Row::line(1), 0, 4), (3, false), "text rows are unchanged");
+    }
+
+    fn guide_opts(theme: &Theme, on: bool) -> RenderOpts<'_> {
+        RenderOpts { indent_guides: on, ..resize_opts(theme) }
+    }
+
+    /// Render `buf` at `w` x `h`; the screen and the text column.
+    fn draw_guides(buf: &mut Buffer, theme: &Theme, on: bool, w: u16, h: u16) -> (Screen, u16) {
+        let area = Rect::new(0, 0, w, h);
+        let mut screen = Screen::empty(area);
+        let out = render(buf, &mut screen, area, &guide_opts(theme, on));
+        (screen, out.text_area.x)
+    }
+
+    fn bars(screen: &Screen, y: u16, w: u16) -> Vec<u16> {
+        (0..w).filter(|&x| screen[(x, y)].symbol() == "│").collect()
+    }
+
+    #[test]
+    fn indent_guides_only_in_leading_whitespace() {
+        let theme = Theme::default();
+        let text = "fn a() {\n    if x {\n        y();\n    }\n\n}\n";
+        let mut buf = Buffer::from_text(1, None, text, false);
+        buf.indent = IndentStyle::spaces(4);
+        let (screen, x0) = draw_guides(&mut buf, &theme, true, 40, 8);
+        assert!(bars(&screen, 0, 40).is_empty());
+        assert_eq!(bars(&screen, 1, 40), [x0], "the space at column 8 of `if x {{` stays a space");
+        assert_eq!(bars(&screen, 2, 40), [x0, x0 + 4]);
+        assert_eq!(screen[(x0 + 8, 2)].symbol(), "y");
+        assert_eq!(bars(&screen, 3, 40), [x0]);
+        assert!(bars(&screen, 4, 40).is_empty(), "min(4, 0) = 0");
+        assert_eq!(screen[(x0, 2)].fg, theme.indent_guide.fg.unwrap());
+        // A selection keeps its background under the guides.
+        let (a, b) = (buf.rope.line_to_char(2), buf.rope.line_to_char(3));
+        buf.view.sels = Selections::single(Selection::new(a, b));
+        let (screen, x0) = draw_guides(&mut buf, &theme, true, 40, 8);
+        assert_eq!(bars(&screen, 2, 40), [x0, x0 + 4]);
+        assert_eq!(screen[(x0, 2)].bg, theme.selection_bg);
+        assert_eq!(screen[(x0 + 4, 2)].bg, theme.selection_bg);
+        // Off: none.
+        let (screen, _) = draw_guides(&mut buf, &theme, false, 40, 8);
+        assert!((0..8).all(|y| bars(&screen, y, 40).is_empty()));
+        // Hard tabs: a guide in the first cell of each tab.
+        let mut buf = Buffer::from_text(1, None, "a\n\t\tb\n", false);
+        buf.indent = IndentStyle::tabs(4);
+        let (screen, x0) = draw_guides(&mut buf, &theme, true, 40, 4);
+        assert_eq!(bars(&screen, 1, 40), [x0, x0 + 4]);
+        assert_eq!(screen[(x0 + 1, 1)].symbol(), " ");
+        assert_eq!(screen[(x0 + 8, 1)].symbol(), "b");
+    }
+
+    #[test]
+    fn indent_guides_continue_through_blank_lines() {
+        let theme = Theme::default();
+        let text = "fn a() {\n    if x {\n        y();\n\n  \n        z();\n    }\n}\n";
+        let mut buf = Buffer::from_text(1, None, text, false);
+        buf.indent = IndentStyle::spaces(4);
+        buf.view.sels = Selections::point(buf.rope.line_to_char(3));
+        let (screen, x0) = draw_guides(&mut buf, &theme, true, 40, 10);
+        assert_eq!(bars(&screen, 3, 40), [x0, x0 + 4], "virtual cells of an empty line");
+        assert_eq!(bars(&screen, 4, 40), [x0, x0 + 4]);
+        assert_eq!(screen[(x0 + 1, 4)].symbol(), " ");
+        for x in [x0, x0 + 4] {
+            assert_eq!(screen[(x, 3)].bg, theme.current_line_bg);
+        }
+        // Lines 2-4 selected whole.
+        let (a, b) = (buf.rope.line_to_char(2), buf.rope.line_to_char(5));
+        buf.view.sels = Selections::single(Selection::new(a, b));
+        let (screen, x0) = draw_guides(&mut buf, &theme, true, 40, 10);
+        for y in [3, 4] {
+            assert_eq!(bars(&screen, y, 40), [x0, x0 + 4]);
+            // The line end and the real spaces are selected; the cells past
+            // them are not, whatever the guide does there.
+            assert_eq!(screen[(x0, y)].bg, theme.selection_bg, "row {y}");
+            assert_ne!(screen[(x0 + 4, y)].bg, theme.selection_bg, "row {y}");
+        }
+        let (screen, _) = draw_guides(&mut buf, &theme, false, 40, 10);
+        assert!(bars(&screen, 3, 40).is_empty() && bars(&screen, 4, 40).is_empty());
+    }
+
+    #[test]
+    fn blank_guide_levels_scan_is_bounded() {
+        let text = format!("        a\n{}        b\n", "\n".repeat(150));
+        let rope = Rope::from_str(&text);
+        let all = blank_guide_levels(&rope, 0..152, 4);
+        assert_eq!(all.len(), 152);
+        assert_eq!(all[0], None);
+        assert_eq!(all[50], None, "101 lines down");
+        assert_eq!(all[51], Some(8));
+        assert_eq!(all[100], Some(8));
+        assert_eq!(all[101], None, "101 lines up");
+        assert_eq!(all[151], None);
+        assert_eq!(blank_guide_levels(&rope, 60..70, 4), all[60..70]);
+        let blanks = Rope::from_str("\n  \n\n");
+        assert!(blank_guide_levels(&blanks, 0..4, 4).iter().all(Option::is_none));
     }
 }

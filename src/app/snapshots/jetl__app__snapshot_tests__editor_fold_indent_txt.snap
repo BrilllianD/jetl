@@ -5,11 +5,11 @@ expression: "snapshot(&term, &marks, None)"
 50x10 cursor=(7,4)
 00   list.txt ×
 01   1  ▾ Groceries:
-02   2      milk
-03   3  ▸   eggs…
+02   2    │ milk
+03   3  ▸ │ eggs…
 04   5  ▾ Chores:
-05   6      dishes
-06   7      laundry
+05   6    │ dishes
+06   7    │ laundry
 07   8    Done
 08   9
 09

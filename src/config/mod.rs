@@ -112,6 +112,8 @@ pub struct EditorConfig {
     pub hscrolloff: usize,
     pub auto_close: bool,
     pub highlight_occurrences: bool,
+    /// Draw a vertical guide at each indent stop of a line's leading whitespace.
+    pub indent_guides: bool,
     pub trim_trailing_whitespace: bool,
     pub final_newline: bool,
     pub autosave: Autosave,
@@ -262,6 +264,7 @@ impl Default for EditorConfig {
             hscrolloff: 5,
             auto_close: true,
             highlight_occurrences: true,
+            indent_guides: true,
             trim_trailing_whitespace: true,
             final_newline: true,
             autosave: Autosave::Off,

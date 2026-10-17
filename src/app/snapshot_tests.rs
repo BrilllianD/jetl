@@ -371,6 +371,22 @@ async fn editor_markdown_fence() {
 }
 
 #[tokio::test]
+async fn editor_indent_guides() {
+    let mut fx = stable_app("indent-guides");
+    let app = &mut fx.app;
+    load(app, "guides.log", "fn a() {\n    if x {\n        y();\n\n        z();\n    }\n\n}\n");
+    let term = draw_editor(app, 40, 10);
+    let mut marks = vec![Mark::style('G', "guide", app.theme.indent_guide)];
+    marks.extend(editor_marks(&app.theme));
+    assert_snapshot!("editor_indent_guides", snapshot(&term, &marks, None));
+    let mut c = app.config.clone();
+    c.editor.indent_guides = false;
+    app.editor.apply_config(&c);
+    let term = draw_editor(app, 40, 10);
+    assert_snapshot!("editor_indent_guides_off", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
 async fn editor_unusual_line_breaks() {
     let mut fx = stable_app("unusual-breaks");
     let app = &mut fx.app;

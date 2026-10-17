@@ -58,6 +58,7 @@ diag_warn = { fg = "#d29922", underline = true }
 diag_info = { fg = "#2f81f7", underline = true }
 diag_hint = "#8b949e"
 lightbulb = "#d29922"
+indent_guide = "#21262d"
 splitter = { fg = "#30363d", bg = "#0d1117" }
 
 [syntax]

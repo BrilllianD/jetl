@@ -1050,6 +1050,24 @@ Setup as above. Create the fixture first:
    Sort Lines and Reverse Lines are listed; at 80x24 the menu scrolls.
 5. Repeat at 120x40 and 80x24.
 
+### Scenario: indent guides
+
+Setup as above.
+
+1. Open `src/app/mod.rs` (Ctrl+N). At 80x24 and 120x40 `capture-pane -p` shows `│` at columns
+   0, 4, 8 of nested bodies (text column) and none inside code or after the first non-blank char.
+2. A blank line inside a function body shows the guides of the shallower of its neighbours; a
+   blank line between two top-level items shows none. `capture-pane -e` shows the guide colour.
+3. Put the caret on a blank line inside a body: the current-line background stays under its
+   guides. Click on a guide cell of a blank line: the caret goes to that line (its end, or that
+   virtual column with soft wrap off), as before.
+4. Scroll sideways in a long line (soft wrap off): the guides, those on blank lines too, stay on
+   their columns.
+5. Append `[editor]\nindent_guides = false\n` to `/tmp/jt-home/config/jetl/config.toml`: the
+   guides disappear without a restart; remove it: they come back.
+6. Open `fence.md` (the injections fixture): guides inside the fence's indented line.
+7. Repeat at 120x40 and 80x24.
+
 ### Limits under tmux
 
 - No kitty keyboard protocol: Ctrl+Shift+letter, Ctrl+Tab, Ctrl+Enter,

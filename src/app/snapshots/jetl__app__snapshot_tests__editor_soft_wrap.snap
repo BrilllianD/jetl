@@ -8,7 +8,7 @@ expression: "snapshot(&term, &marks, None)"
 02   2  ▾ the quick brown fox jumps over
 03      ↪ the lazy dog héllo 世界 again
 04      ↪ and again
-05   3        tabbed line that wraps after
+05   3    │   tabbed line that wraps after
 06      ↪     the tab and more words
 07   4    end
 08   5

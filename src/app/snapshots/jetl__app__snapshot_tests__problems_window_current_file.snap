@@ -5,8 +5,8 @@ expression: "snapshot(&term, &problems_marks(&app.theme), None)"
 80x24 cursor=hidden
 00  ≣ ┌ Project: root ───────────────┐│  main.log ×
 01    │                              ││  1  ▾ fn main() {
-02  1 │                              ││  2 ✖      let x: u8 = "one";
-03  ⌂ │                              ││  3 ⚠      unused();
+02  1 │                              ││  2 ✖  │   let x: u8 = "one";
+03  ⌂ │                              ││  3 ⚠  │   unused();
 04  2 │                              ││  4    }
 05  ◫ │                              ││  5
 06  7 │                              ││

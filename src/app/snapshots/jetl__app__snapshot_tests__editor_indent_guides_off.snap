@@ -1,0 +1,17 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &marks, None)"
+---
+40x10 cursor=(7,1)
+00   guides.log ×
+01   1  ▾ fn a() {
+02   2  ▾     if x {
+03   3            y();
+04   4
+05   5            z();
+06   6        }
+07   7
+08   8    }
+09   9
+-- marks: G=guide C=caret S=selection F=fold O=occurrence
+01        OO

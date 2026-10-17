@@ -5,8 +5,8 @@ expression: "snapshot(&term, &marks, None)"
 80x24 cursor=(43,4)
 00  ≣ ┌ Project: root ───────────────┐│  notes.log ×
 01    │                              ││  1  ▾ alpha beta gamma
-02  1 │                              ││  2      two indented
-03  ⌂ │                              ││  31     three indented
+02  1 │                              ││  2    │ two indented
+03  ⌂ │                              ││  31   │ three indented
 04  2 │                              ││  4    four
 05  ◫ │                              ││  5
 06  7 │   ┌ Numbered Bookmark ────────────────────────────────────────────┐e

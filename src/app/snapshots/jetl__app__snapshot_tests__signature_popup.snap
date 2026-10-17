@@ -9,7 +9,7 @@ expression: "snapshot(&term, &marks, Some(area))"
 03  ⌂ │                              ││  3        │ fn add(a: u32, b: u32) -> u32 │
 04  2 │                              ││  4        │ fn add(a: u64) -> u64         │
 05  ◫ │                              ││  5        └────────────────────────── 1/2 ┘
-06  7 │                              ││  6        let n = add(1, 2);
+06  7 │                              ││  6    │   let n = add(1, 2);
 07  ⊢ │                              ││  7    }
 08    │                              ││  8
 09  9 │                              ││

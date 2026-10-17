@@ -6,11 +6,11 @@ expression: "snapshot(&term, &marks, None)"
 00  main.log  All changes resolved                 [Accept Yours] [Accept Theirs] [Apply Non-Conflicting] [Apply] [Cancel]
 01   Yours: main ×                        │ *Result: main.log ×                   │  Theirs: dev ×
 02     1  ▾ fn main() {                   │     1  ▾ fn main() {                  │    1  ▾ fn main() {
-03     2        ONE();                    │     2        ONE();                   │    2        uno();
-04                                        │     3        uno();                   │    3        dos();
-05                                        │     4        dos();                   │    4        tres();
-06                                        │     5        tres();                  │
-07     3        two();                    │     6        two();                   │    5        two();
+03     2    │   ONE();                    │     2    │   ONE();                   │    2    │   uno();
+04                                        │     3    │   uno();                   │    3    │   dos();
+05                                        │     4    │   dos();                   │    4    │   tres();
+06                                        │     5    │   tres();                  │
+07     3    │   two();                    │     6    │   two();                   │    5    │   two();
 08     4    }                             │     7    }                            │    6    }
 09     5                                  │     8                                 │    7
 10                                        │                                       │

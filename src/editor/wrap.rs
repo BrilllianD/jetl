@@ -315,23 +315,23 @@ mod editor_tests {
         let rows = draw(&mut ed, 20, 7);
         assert_eq!(
             trimmed(&rows[1..7]),
-            ["  1        aaaa", "     ↪     bbbb", "     ↪     cccc", "     ↪     dddd", "  2    next", "  3"]
+            ["  1    │   aaaa", "     ↪     bbbb", "     ↪     cccc", "     ↪     dddd", "  2    next", "  3"]
         );
         // Off: one row, cut at the edge.
         ed.active_buffer_mut().unwrap().view.wrap.on = false;
         let rows = draw(&mut ed, 20, 7);
-        assert_eq!(trimmed(&rows[1..3]), ["  1        aaaa bbbb", "  2    next"]);
+        assert_eq!(trimmed(&rows[1..3]), ["  1    │   aaaa bbbb", "  2    next"]);
     }
 
     #[test]
     fn extra_indent_shifts_continuation_rows_and_applies_live() {
         let mut ed = wrapped("    aaaa bbbb cccc dddd\nnext\n");
         let rows = draw(&mut ed, 20, 7);
-        assert_eq!(trimmed(&rows[1..3]), ["  1        aaaa", "     ↪     bbbb"]);
+        assert_eq!(trimmed(&rows[1..3]), ["  1    │   aaaa", "     ↪     bbbb"]);
         let config = Config::parse("[editor]\nsoft_wrap_extra_indent = 2\n").unwrap();
         ed.apply_config(&config);
         let rows = draw(&mut ed, 20, 7);
-        assert_eq!(trimmed(&rows[1..3]), ["  1        aaaa", "     ↪       bbbb"], "first row unchanged, continuation 2 further right");
+        assert_eq!(trimmed(&rows[1..3]), ["  1    │   aaaa", "     ↪       bbbb"], "first row unchanged, continuation 2 further right");
     }
 
     #[test]

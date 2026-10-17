@@ -5,8 +5,8 @@ expression: "snapshot(&term, &marks, None)"
 80x14 cursor=(51,6)
 00   notes.log ×                          │  notes.log ×
 01   1  ▾ alpha beta gamma                │  1  ▾ alpha beta gamma
-02   2      two indented                  │  2      two indented
-03   3      three indented                │  3      three indented
+02   2    │ two indented                  │  2    │ two indented
+03   3    │ three indented                │  3    │ three indented
 04   4    four                            │  4    four
 05   5                                    │  5
 06   6    six: the last line of the file  │  6    six: the last line of the file

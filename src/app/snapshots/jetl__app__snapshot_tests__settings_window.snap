@@ -11,9 +11,9 @@ expression: "snapshot(&term, &settings_marks(&app.theme), None)"
 05  ◫│  Saving                │  Columns kept left a…  5                        │
 06  7│  Formatting            │  Close brackets and …  [x]                      │
 07  ⊢│Keymap                  │  Highlight the word …  [x]                      │
-08   │Version Control         │  Tab limit             0                        │
-09   │  Git                   │  Largest file with s…  2097152          new tabs│
-10  ⟲│  Worktrees             │                                                 │
+08   │Version Control         │  Show indent guides    [x]                      │
+09   │  Git                   │  Tab limit             0                        │
+10  ⟲│  Worktrees             │  Largest file with s…  2097152          new tabs│
 11   │Files                   │                                                 │
 12  ⚑│Tools                   │                                                 │
 13  9│  Terminal              │                                                 │

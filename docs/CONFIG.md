@@ -113,6 +113,7 @@ scrolloff = 3                  # lines kept visible above and below the caret
 hscrolloff = 5                 # columns kept visible left and right of the caret
 auto_close = true              # type brackets and quotes in pairs, step over closers, wrap selections
 highlight_occurrences = true   # highlight the word at the caret (or the selected text) elsewhere on screen
+indent_guides = true           # a │ at each indent stop in a line's leading whitespace (theme style indent_guide)
 trim_trailing_whitespace = true # on save, strip trailing spaces and tabs (not on the caret line, never in Markdown)
 final_newline = true           # on save, end a non-empty file with a line break
 autosave = "off"               # "off", "focus" (save when the terminal loses focus) or "idle" (save after a pause in editing)
@@ -722,7 +723,9 @@ Style fields: `border border_focused title title_focused strip_item
 strip_item_active status_accent tab tab_active tab_dirty line_number
 line_number_current bracket_match secondary_caret bookmark fold_placeholder git_added git_modified git_deleted git_untracked
 git_conflicted git_ignored popup_border list_selected list_selected_unfocused
-dim error warn info diag_error diag_warn diag_info diag_hint lightbulb splitter`.
+dim error warn info diag_error diag_warn diag_info diag_hint lightbulb indent_guide splitter`.
+`indent_guide` colours the indent guides (`editor.indent_guides`); only its
+foreground is used.
 `secondary_caret` is the cell of every caret but the primary one (which is
 the terminal cursor; in a split pane without focus every caret of a
 multi-caret view gets it): reverse video by default, which an override keeps

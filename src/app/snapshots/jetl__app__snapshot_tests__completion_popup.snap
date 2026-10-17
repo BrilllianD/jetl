@@ -5,7 +5,7 @@ expression: "snapshot(&term, &marks, None)"
 80x20 cursor=(50,2)
 00  ≣ ┌ Project: root ───────────────┐│  main.log ×
 01    │                              ││  1  ▾ fn main() {
-02  1 │                              ││  2        pri
+02  1 │                              ││  2    │   pri
 03  ⌂ │                              ││  3 ┌──────────────────────────────────────┐
 04  2 │                              ││  4 │v primary_color                 Color │
 05  ◫ │                              ││    │f print!(…)        macro_rules! print │

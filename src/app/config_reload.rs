@@ -435,6 +435,20 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn indent_guides_reload_live() {
+        let (mut app, dir) = test_app("reload-guides");
+        write(&app, "config.toml", &format!("[editor]\nindent_guides = false\n{NO_LSP}"));
+        reload(&mut app, &[ConfigFile::Config]);
+        assert!(!app.config.editor.indent_guides);
+        assert!(!app.editor.indent_guides(), "the editor took it");
+        write(&app, "config.toml", &format!("[editor]\nindent_guides = true\n{NO_LSP}"));
+        reload(&mut app, &[ConfigFile::Config]);
+        assert!(app.config.editor.indent_guides);
+        assert!(app.editor.indent_guides());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
     async fn restart_keys_are_named_once() {
         let (mut app, dir) = test_app("reload-restart");
         let base = "[ui]\nleft_width = 50\n[lsp]\nenabled = false\nstartup_timeout_ms = 1\n";

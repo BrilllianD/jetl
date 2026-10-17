@@ -5,9 +5,9 @@ expression: "snapshot(&term, &marks, None)"
 40x10 cursor=(35,3)
 00   notes.txt ×
 01   1  ▾ Notes:
-02   2  ▸   a long indented line that has
+02   2  ▸ │ a long indented line that has
 03      ↪   to wrap at least once here…
-04   4      another long one that wraps
+04   4    │ another long one that wraps
 05      ↪   across the edge of the pane
 06   5    After the fold: one more long
 07      ↪ line that wraps too
