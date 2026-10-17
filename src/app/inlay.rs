@@ -11,8 +11,10 @@
 //! for its seq and the buffer version it was sent at. Until a newer answer
 //! arrives the old hints stay, shifted by the edits (no flicker). An error
 //! answer is logged; a timeout or content-modified answer for the current key
-//! makes the next ticks ask again (a server still loading answers that way). `workspace/inlayHint/refresh` forgets what was
-//! fetched, so the next ticks ask again. Nothing is asked while
+//! makes the next ticks ask again (a server still loading answers that way),
+//! and so does the end of the server's last `$/progress`.
+//! `workspace/inlayHint/refresh` forgets what was fetched, so the next ticks
+//! ask again. Nothing is asked while
 //! `LspService::inlays_shown` is off (`[lsp] inlay_hints`, the View menu).
 
 use std::ops::Range;
