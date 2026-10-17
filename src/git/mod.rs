@@ -709,3 +709,305 @@ impl GitService {
         id
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::git::cli::args;
+    use crate::git::model::{ProgressAction, ResetMode};
+    use crate::git::repo::tests::TempRepo;
+    use tokio::sync::mpsc::UnboundedReceiver;
+
+    /// Run git in `dir`, asserting success; returns trimmed stdout.
+    fn git(dir: &Path, args: &[&str]) -> String {
+        let out = std::process::Command::new("git").args(args).current_dir(dir).output().unwrap();
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// A repository with one commit (signing off).
+    fn repo(name: &str) -> TempRepo {
+        let r = TempRepo::new(name);
+        git(&r.dir, &["config", "commit.gpgsign", "false"]);
+        r.write("a.txt", "a\n");
+        git(&r.dir, &["add", "-A"]);
+        git(&r.dir, &["commit", "-qm", "first"]);
+        r
+    }
+
+    fn service(root: &Path, generation: u64) -> (GitService, UnboundedReceiver<AppMsg>) {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        (GitService::new(root.to_path_buf(), generation, tx), rx)
+    }
+
+    /// The next git message (10 s at most).
+    async fn next_git(rx: &mut UnboundedReceiver<AppMsg>) -> GitMsg {
+        match tokio::time::timeout(std::time::Duration::from_secs(10), rx.recv()).await {
+            Ok(Some(AppMsg::Git(m))) => m,
+            Ok(Some(_)) => panic!("expected a git message"),
+            Ok(None) => panic!("channel closed"),
+            Err(_) => panic!("no git message within 10 s"),
+        }
+    }
+
+    /// Removes its directory on drop.
+    struct TmpDir(PathBuf);
+
+    impl Drop for TmpDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[tokio::test]
+    async fn op_results_keep_the_generation_they_started_in() {
+        let r = repo("gen");
+        let (mut svc, mut rx) = service(&r.dir, 1);
+        let (go, wait) = std::sync::mpsc::channel::<()>();
+        let a = svc.run_repo(GitOp::Stage, "stage".into(), move |_| {
+            wait.recv().unwrap();
+            Ok("staged".into())
+        });
+        assert_eq!(svc.busy, vec![(a, "stage".to_string())]);
+        assert!(svc.is_busy());
+        svc.set_root(r.dir.clone(), 2);
+        assert!(svc.busy.is_empty());
+        go.send(()).unwrap();
+        let msg = next_git(&mut rx).await;
+        assert_eq!(msg.generation(), 1);
+        match msg {
+            GitMsg::OpDone { generation, id, op, label, ok, output, renames } => {
+                assert_eq!((generation, id, op, label.as_str(), ok, output.as_str()), (1, a, GitOp::Stage, "stage", true, "staged"));
+                assert!(renames.is_empty());
+            }
+            other => panic!("expected OpDone, got {other:?}"),
+        }
+
+        let b = svc.run_repo(GitOp::Unstage, "u".into(), |_| Ok(String::new()));
+        assert_eq!(b, a + 1);
+        match next_git(&mut rx).await {
+            GitMsg::OpDone { generation, id, .. } => assert_eq!((generation, id), (2, b)),
+            other => panic!("expected OpDone, got {other:?}"),
+        }
+        svc.finish(b);
+        assert!(!svc.busy.iter().any(|(i, _)| *i == b));
+
+        svc.load_branches();
+        match next_git(&mut rx).await {
+            GitMsg::Branches { generation, .. } => assert_eq!(generation, 2),
+            other => panic!("expected Branches, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn set_root_lets_a_new_status_walk_start() {
+        let r = repo("status");
+        let (mut svc, mut rx) = service(&r.dir, 1);
+        svc.refresh_status();
+        svc.refresh_status();
+        match next_git(&mut rx).await {
+            GitMsg::Status { generation, seq, result } => {
+                assert_eq!((generation, seq), (1, 1));
+                assert!(result.is_ok());
+            }
+            other => panic!("expected Status, got {other:?}"),
+        }
+        assert_eq!(svc.status_requests(), 2);
+        svc.status_done();
+        match next_git(&mut rx).await {
+            GitMsg::Status { generation, seq, .. } => assert_eq!((generation, seq), (1, 2)),
+            other => panic!("expected Status, got {other:?}"),
+        }
+        // The walk of seq 2 finished: the next request runs at once.
+        svc.status_done();
+        svc.refresh_status();
+        svc.set_root(r.dir.clone(), 2);
+        svc.refresh_status();
+        let mut got = Vec::new();
+        for _ in 0..2 {
+            match next_git(&mut rx).await {
+                GitMsg::Status { generation, seq, .. } => got.push((generation, seq)),
+                other => panic!("expected Status, got {other:?}"),
+            }
+        }
+        let mut generations: Vec<u64> = got.iter().map(|g| g.0).collect();
+        let mut seqs: Vec<u64> = got.iter().map(|g| g.1).collect();
+        generations.sort();
+        seqs.sort();
+        assert_eq!((generations, seqs), (vec![1, 2], vec![3, 4]));
+    }
+
+    #[tokio::test]
+    async fn cli_steps_stop_at_the_first_failure() {
+        let r = repo("steps");
+        let (mut svc, mut rx) = service(&r.dir, 1);
+        svc.run_cli_steps(GitOp::Tag("t".into()), vec![args(&["tag", "t1"]), args(&["tag", "--no-such-flag"]), args(&["tag", "t3"])]);
+        match next_git(&mut rx).await {
+            GitMsg::OpDone { ok, label, output, .. } => {
+                assert!(!ok);
+                assert_eq!(label, "git tag t1 && git tag --no-such-flag && git tag t3");
+                assert!(output.contains("no-such-flag"), "{output}");
+            }
+            other => panic!("expected OpDone, got {other:?}"),
+        }
+        let tags = git(&r.dir, &["tag", "-l"]);
+        assert!(tags.lines().any(|t| t == "t1"), "{tags}");
+        assert!(!tags.lines().any(|t| t == "t3"), "{tags}");
+    }
+
+    #[tokio::test]
+    async fn cli_input_goes_to_stdin() {
+        let r = repo("stdin");
+        let (mut svc, mut rx) = service(&r.dir, 1);
+        svc.run_cli_input(GitOp::Stage, args(&["hash-object", "--stdin"]), Some(b"hello\n".to_vec()));
+        match next_git(&mut rx).await {
+            GitMsg::OpDone { ok, output, .. } => {
+                assert!(ok, "{output}");
+                assert_eq!(output, "ce013625030ba8dba906f756967f9e9ca394464a");
+            }
+            other => panic!("expected OpDone, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn repo_errors_carry_their_chain() {
+        let r = repo("chain");
+        let (mut svc, mut rx) = service(&r.dir, 1);
+        svc.run_repo(GitOp::Commit { push: false, amend: false }, "commit".into(), |_| Err(anyhow::anyhow!("inner").context("outer")));
+        match next_git(&mut rx).await {
+            GitMsg::OpDone { ok, output, .. } => {
+                assert!(!ok);
+                assert_eq!(output, "outer: inner");
+            }
+            other => panic!("expected OpDone, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn fetch_without_a_remote_fails_early() {
+        let r = repo("fetch-none");
+        let (mut svc, mut rx) = service(&r.dir, 1);
+        let id = svc.fetch();
+        assert_eq!(svc.busy, vec![(id, "git fetch --prune".to_string())]);
+        match next_git(&mut rx).await {
+            GitMsg::OpDone { op, label, ok, output, .. } => {
+                assert_eq!(op, GitOp::Fetch);
+                assert_eq!(label, "git fetch --prune");
+                assert!(!ok);
+                assert_eq!(output, "No remote configured; nothing to fetch. Add one with `git remote add origin <url>`.");
+            }
+            other => panic!("expected OpDone, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn fetch_prunes_deleted_remote_branches() {
+        let r = repo("fetch-prune");
+        let remote = TmpDir(std::env::temp_dir().join(format!("jetl-test-git-fetch-remote-{}", std::process::id())));
+        let _ = std::fs::remove_dir_all(&remote.0);
+        std::fs::create_dir_all(&remote.0).unwrap();
+        git(&remote.0, &["init", "-q", "--bare"]);
+        let url = remote.0.to_str().unwrap();
+        git(&r.dir, &["remote", "add", "origin", url]);
+        git(&r.dir, &["push", "-q", "origin", "HEAD:refs/heads/gone"]);
+        git(&r.dir, &["fetch", "-q", "origin"]);
+        let tracking = |dir: &Path| {
+            std::process::Command::new("git")
+                .args(["rev-parse", "--verify", "-q", "refs/remotes/origin/gone"])
+                .current_dir(dir)
+                .output()
+                .unwrap()
+                .status
+                .success()
+        };
+        assert!(tracking(&r.dir));
+        // Delete on the remote side only; a push --delete would drop the local ref too.
+        git(&r.dir, &["--git-dir", url, "update-ref", "-d", "refs/heads/gone"]);
+
+        let (mut svc, mut rx) = service(&r.dir, 1);
+        svc.fetch();
+        match next_git(&mut rx).await {
+            GitMsg::OpDone { ok, op, output, .. } => {
+                assert!(ok, "{output}");
+                assert_eq!(op, GitOp::Fetch);
+            }
+            other => panic!("expected OpDone, got {other:?}"),
+        }
+        assert!(!tracking(&r.dir));
+    }
+
+    #[test]
+    fn touches_worktree_lists_the_ops_that_rewrite_files() {
+        let reset = |mode| GitOp::Reset { sha: "x".into(), mode };
+        let yes = [
+            GitOp::Pull,
+            GitOp::Switch("b".into()),
+            GitOp::NewBranch("b".into()),
+            GitOp::Discard,
+            GitOp::Stash,
+            GitOp::Checkout("x".into()),
+            GitOp::CherryPick("x".into()),
+            GitOp::Revert("x".into()),
+            reset(ResetMode::Hard),
+            GitOp::Merge("b".into()),
+            GitOp::Rebase("b".into()),
+            GitOp::Resolve("a".into()),
+            GitOp::Progress { kind: InProgressKind::Merge, action: ProgressAction::Abort },
+        ];
+        for op in yes {
+            assert!(op.touches_worktree(), "{op:?}");
+        }
+        let no = [
+            GitOp::Stage,
+            GitOp::Unstage,
+            GitOp::Commit { push: false, amend: false },
+            GitOp::Push,
+            GitOp::PushUpstream("b".into()),
+            GitOp::Fetch,
+            reset(ResetMode::Soft),
+            reset(ResetMode::Mixed),
+            GitOp::RenameBranch("b".into()),
+            GitOp::DeleteBranch { name: "b".into(), force: false },
+            GitOp::Tag("t".into()),
+            GitOp::DeleteTag("t".into()),
+            GitOp::WorktreeAdd { path: PathBuf::from("w") },
+            GitOp::WorktreeRemove { path: PathBuf::from("w"), force: false },
+            GitOp::WorktreePrune,
+        ];
+        for op in no {
+            assert!(!op.touches_worktree(), "{op:?}");
+        }
+    }
+
+    #[test]
+    fn requests_refused_while_an_operation_is_in_progress() {
+        let commit = GitRequest::Commit { message: "m".into(), push: false, amend: false };
+        let switching = [
+            GitRequest::CheckoutCommit("x".into()),
+            GitRequest::CherryPick("x".into()),
+            GitRequest::Revert("x".into()),
+            GitRequest::NewBranchAt { name: "n".into(), rev: "x".into() },
+            GitRequest::NewBranch,
+            GitRequest::Merge("b".into()),
+            GitRequest::Rebase("b".into()),
+            GitRequest::CheckoutTracking("o/b".into()),
+        ];
+        let never = [GitRequest::Refresh, GitRequest::Stage(vec![]), GitRequest::Fetch, GitRequest::Progress(ProgressAction::Abort)];
+        for kind in [
+            InProgressKind::Merge,
+            InProgressKind::Rebase,
+            InProgressKind::CherryPick,
+            InProgressKind::Revert,
+            InProgressKind::Bisect,
+            InProgressKind::Am,
+        ] {
+            assert_eq!(commit.refused_mid_operation(kind), kind != InProgressKind::Bisect, "commit during {kind:?}");
+            for req in &switching {
+                assert_eq!(req.refused_mid_operation(kind), kind.blocks_switching(), "{req:?} during {kind:?}");
+            }
+            for req in &never {
+                assert!(!req.refused_mid_operation(kind), "{req:?} during {kind:?}");
+            }
+        }
+    }
+}
