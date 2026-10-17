@@ -1035,6 +1035,21 @@ Setup as above (default features). Create the fixtures first:
 5. Open `docs/CONFIG.md` and scroll through its `toml` fences.
 6. Repeat at 120x40 and 80x24.
 
+### Scenario: sort lines and case
+
+Setup as above. Create the fixture first:
+
+    printf 'pear\nApple\nfig\n' > $R/fruit.txt
+
+1. Open `fruit.txt` (Ctrl+N). F1, `-l 'Sort lines'`, Enter: the lines read `Apple`, `fig`,
+   `pear` (uppercase first). Ctrl+Z restores the order.
+2. Select the first two lines (`S-Down` twice from the start), F1, `Reverse lines`: lines one
+   and two swap, `pear` stays last.
+3. Put the caret in `pear`, F1, `To upper case`: `PEAR`. Ctrl+Z once undoes it.
+4. Open the Edit menu (F10 or a click on `Edit`): Toggle Case, To Upper Case, To Lower Case,
+   Sort Lines and Reverse Lines are listed; at 80x24 the menu scrolls.
+5. Repeat at 120x40 and 80x24.
+
 ### Limits under tmux
 
 - No kitty keyboard protocol: Ctrl+Shift+letter, Ctrl+Tab, Ctrl+Enter,

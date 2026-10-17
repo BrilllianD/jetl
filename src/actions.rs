@@ -173,6 +173,14 @@ pub enum EditorAction {
     MoveLineDown,
     JoinLines,
     ToggleCase,
+    /// Uppercase the selections, or the word at each caret.
+    ToUpperCase,
+    /// Lowercase the selections, or the word at each caret.
+    ToLowerCase,
+    /// Sort the selected lines, else the whole file.
+    SortLines,
+    /// Reverse the selected lines, else the whole file.
+    ReverseLines,
     GotoBracket,
     ExpandSelection,
     ShrinkSelection,
@@ -670,6 +678,10 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "editor.move_line_down" => "Move line down", Editor(E::MoveLineDown);
         "editor.join_lines" => "Join lines", Editor(E::JoinLines);
         "editor.toggle_case" => "Toggle case", Editor(E::ToggleCase);
+        "editor.to_upper_case" => "To upper case (selection or word at the caret)", Editor(E::ToUpperCase);
+        "editor.to_lower_case" => "To lower case (selection or word at the caret)", Editor(E::ToLowerCase);
+        "editor.sort_lines" => "Sort lines (selected lines, else the whole file)", Editor(E::SortLines);
+        "editor.reverse_lines" => "Reverse lines (selected lines, else the whole file)", Editor(E::ReverseLines);
         "editor.goto_bracket" => "Move caret to matching bracket", Editor(E::GotoBracket);
         "editor.expand_selection" => "Extend selection to the enclosing syntax node", Editor(E::ExpandSelection);
         "editor.shrink_selection" => "Shrink selection back one step", Editor(E::ShrinkSelection);

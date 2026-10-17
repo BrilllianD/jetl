@@ -504,6 +504,10 @@ Reachable from Find Action (F1) or by binding them in `keymap.toml`.
 | `editor.unsplit` | Unsplit (merge the group into the one beside it) |
 | `editor.unsplit_all` | Unsplit all (one group) |
 | `editor.move_tab_to_opposite_group` | Move the active tab to the opposite group |
+| `editor.to_upper_case` | To upper case (selection or word at the caret) |
+| `editor.to_lower_case` | To lower case (selection or word at the caret) |
+| `editor.sort_lines` | Sort lines (selected lines, else the whole file) |
+| `editor.reverse_lines` | Reverse lines (selected lines, else the whole file) |
 | `editor.clone_caret_above` | Clone caret above |
 | `editor.clone_caret_below` | Clone caret below |
 | `editor.toggle_soft_wrap` | Soft-wrap the active editor (on or off) |

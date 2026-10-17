@@ -66,7 +66,7 @@ Effort: S = hours to a day, M = 1-3 days, L = about a week, XL = multiple weeks.
 | Auto-close brackets/quotes, skip-over on closing char, delete pair on Backspace | S | Pure `Buffer` transaction, config `editor.auto_close` |
 | Language-aware indent on Enter (after `{`, `:`, `(`; dedent on `}`) | M | tree-sitter node kinds per `LanguageDef`; copy-indent stays as fallback |
 | Tab / Shift+Tab indent and dedent a multi-line selection | S | Today Tab replaces the selection |
-| Move line/selection up/down, join lines, toggle case, delete word forward | S | One transaction each |
+| Move line/selection up/down, join lines, toggle case, delete word forward | S | One transaction each; Sort Lines, Reverse Lines, To Upper/Lower Case (Edit menu, unbound) done |
 | Expand/shrink selection by syntax node (Ctrl+Alt+W / Ctrl+Alt+Shift+W) | S | tree-sitter node ancestors; Ctrl+W is close tab here |
 | Highlight other occurrences of the word under the caret | S | Reuse `search.rs` matcher on the visible range only |
 | Block comment toggle (Ctrl+Shift+/) | S | `block_comment` on `LanguageDef` |

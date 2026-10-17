@@ -55,6 +55,21 @@ pub struct CaretEdit {
 /// (and primary flag) of each further member planning the very same edit.
 type CaretGroup = (CaretEdit, Vec<Selection>, bool, Vec<(After, bool)>);
 
+/// How [`Buffer::reorder_lines`] orders a block of lines.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LineOrder {
+    Sort,
+    Reverse,
+}
+
+/// How [`Buffer::change_case`] maps a text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CaseChange {
+    Toggle,
+    Upper,
+    Lower,
+}
+
 /// Where a caret lands after its [`CaretEdit`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum After {
@@ -1378,10 +1393,20 @@ impl Buffer {
     /// Uppercase each selection (or the word at each caret) if it has any
     /// lowercase char, otherwise lowercase it.
     pub fn toggle_case(&mut self) {
+        self.change_case(CaseChange::Toggle);
+    }
+
+    /// Change the case of each selection, or of the word at an empty caret.
+    /// A text already in the target case changes nothing.
+    pub fn change_case(&mut self, how: CaseChange) {
         self.edit_carets(|b, sel| {
             let r = if sel.is_empty() { selection::word_at(&b.rope, sel.head) } else { sel.range() };
             let old = b.rope.slice(r.clone()).to_string();
-            let new = if old.chars().any(char::is_lowercase) { old.to_uppercase() } else { old.to_lowercase() };
+            let new = match how {
+                CaseChange::Toggle if old.chars().any(char::is_lowercase) => old.to_uppercase(),
+                CaseChange::Toggle | CaseChange::Lower => old.to_lowercase(),
+                CaseChange::Upper => old.to_uppercase(),
+            };
             if r.is_empty() || new == old {
                 return CaretEdit::keep(sel);
             }
@@ -1394,6 +1419,43 @@ impl Buffer {
             };
             CaretEdit { range: r, text: new, after, kind: TxKind::Other }
         });
+    }
+
+    /// Sort (`str::cmp`, stable, case-sensitive) or reverse the whole lines of
+    /// every non-empty selection; adjacent or overlapping blocks merge and each
+    /// block is ordered on its own. With no non-empty selection the whole text
+    /// is the block (up to `last_line()`, so the final line break stays). A
+    /// block already in order changes nothing; with no change there is no undo
+    /// step. One undo step otherwise; the selections stay where they are.
+    pub fn reorder_lines(&mut self, order: LineOrder) {
+        let mut blocks: Vec<(usize, usize)> = Vec::new();
+        for s in self.view.sels.iter().filter(|s| !s.is_empty()) {
+            let (l0, l1) = selected_lines(&self.rope, *s);
+            match blocks.last_mut() {
+                Some(b) if l0 <= b.1 + 1 => b.1 = b.1.max(l1),
+                _ => blocks.push((l0, l1)),
+            }
+        }
+        if blocks.is_empty() {
+            blocks.push((0, self.last_line()));
+        }
+        let eol = self.line_ending.as_str();
+        let mut changes = Vec::new();
+        for &(l0, l1) in blocks.iter().rev().filter(|b| b.1 > b.0) {
+            let mut lines: Vec<String> = (l0..=l1).map(|l| self.line_text(l)).collect();
+            match order {
+                LineOrder::Sort => lines.sort(),
+                LineOrder::Reverse => lines.reverse(),
+            }
+            let new = lines.join(eol);
+            let start = line_range(&self.rope, l0).start;
+            let end = self.rope.line_to_char(l1) + line_len_no_eol(&self.rope, l1);
+            let old = self.rope.slice(start..end).to_string();
+            if new != old {
+                changes.push(Change::replace(start, old, new));
+            }
+        }
+        self.apply(changes, self.view.sels.clone(), TxKind::Other);
     }
 
     /// Swap the selected lines (or the caret line) of every caret with the
@@ -2315,6 +2377,90 @@ g()
         buf.toggle_case();
         assert_eq!(buf.text(), "STRASSE");
         assert_eq!(buf.view.sel().range(), 0..7, "selection covers the longer text");
+    }
+
+    #[test]
+    fn sort_and_reverse_selected_lines() {
+        let mut buf = b("c\na\nb\nz\n");
+        let sel = Selection::new(0, buf.rope.line_to_char(3));
+        buf.view.set_sel(sel);
+        let n = buf.undo.len();
+        buf.reorder_lines(LineOrder::Sort);
+        assert_eq!(buf.text(), "a\nb\nc\nz\n");
+        assert_eq!(buf.undo.len(), n + 1);
+        assert_eq!(buf.view.sel(), sel);
+        buf.undo();
+        assert_eq!(buf.text(), "c\na\nb\nz\n");
+        buf.reorder_lines(LineOrder::Reverse);
+        assert_eq!(buf.text(), "b\na\nc\nz\n");
+    }
+
+    #[test]
+    fn sort_without_selection_sorts_the_whole_text() {
+        let mut buf = b("b\nC\na\n");
+        buf.goto_line(0, 0);
+        buf.reorder_lines(LineOrder::Sort);
+        assert_eq!(buf.text(), "C\na\nb\n");
+        let n = buf.undo.len();
+        buf.reorder_lines(LineOrder::Sort);
+        assert_eq!(buf.text(), "C\na\nb\n");
+        assert_eq!(buf.undo.len(), n, "already sorted adds no undo step");
+    }
+
+    #[test]
+    fn sort_each_selected_block_in_one_step() {
+        let mut buf = b("d\nc\nx\nb\na\n");
+        let r = &buf.rope;
+        let sels = vec![Selection::new(0, r.line_to_char(2)), Selection::new(r.line_to_char(3), r.line_to_char(5))];
+        buf.view.sels = Selections::new(sels, 0);
+        let n = buf.undo.len();
+        buf.reorder_lines(LineOrder::Sort);
+        assert_eq!(buf.text(), "c\nd\nx\na\nb\n");
+        assert_eq!(buf.undo.len(), n + 1);
+        buf.undo();
+        assert_eq!(buf.text(), "d\nc\nx\nb\na\n");
+    }
+
+    #[test]
+    fn sort_keeps_crlf_line_endings() {
+        let mut buf = b("b\r\na\r\n");
+        assert_eq!(buf.line_ending, LineEnding::CrLf);
+        buf.reorder_lines(LineOrder::Sort);
+        assert_eq!(buf.text(), "a\r\nb\r\n");
+    }
+
+    #[test]
+    fn upper_and_lower_case() {
+        let mut buf = b("helloWorld foo");
+        buf.goto_line(0, 2);
+        buf.change_case(CaseChange::Upper);
+        assert_eq!(buf.text(), "HELLOWORLD foo");
+        assert_eq!(buf.view.sel().head, 2);
+        let n = buf.undo.len();
+        buf.change_case(CaseChange::Upper);
+        assert_eq!(buf.undo.len(), n, "already upper adds no undo step");
+        buf.change_case(CaseChange::Lower);
+        assert_eq!(buf.text(), "helloworld foo");
+        buf.view.sels = Selections::new(vec![Selection::point(2), Selection::point(12)], 0);
+        let n = buf.undo.len();
+        buf.change_case(CaseChange::Upper);
+        assert_eq!(buf.text(), "HELLOWORLD FOO");
+        assert_eq!(buf.undo.len(), n + 1);
+        let mut buf = b("straße");
+        buf.select_all();
+        buf.change_case(CaseChange::Upper);
+        assert_eq!(buf.text(), "STRASSE");
+        assert_eq!(buf.view.sel().range(), 0..7);
+    }
+
+    #[test]
+    fn reorder_and_case_leave_read_only_text() {
+        let mut buf = b("b\na\n");
+        buf.read_only = true;
+        buf.reorder_lines(LineOrder::Sort);
+        buf.select_all();
+        buf.change_case(CaseChange::Upper);
+        assert_eq!(buf.text(), "b\na\n");
     }
 
     #[test]

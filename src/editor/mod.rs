@@ -45,7 +45,7 @@ use crate::config::theme::Theme;
 use crate::config::{Autosave, Config};
 use crate::event::{Effect, Level, Mouse};
 use crate::ui::dialog::{Dialog, DialogId};
-use buffer::{Buffer, BufferId};
+use buffer::{Buffer, BufferId, CaseChange, LineOrder};
 use find::{LastSearch, refresh_search, render_find_bar};
 use groups::{GroupId, TabGroup};
 use nav::{NavPos, NavRing};
@@ -1041,6 +1041,10 @@ impl Editor {
             E::MoveLineDown => b.move_lines(false),
             E::JoinLines => b.join_lines(),
             E::ToggleCase => b.toggle_case(),
+            E::ToUpperCase => b.change_case(CaseChange::Upper),
+            E::ToLowerCase => b.change_case(CaseChange::Lower),
+            E::SortLines => b.reorder_lines(LineOrder::Sort),
+            E::ReverseLines => b.reorder_lines(LineOrder::Reverse),
             E::Backspace => {
                 let p = pairs();
                 if !b.virtual_delete(true, false, p, tab_width) {
@@ -1892,6 +1896,13 @@ mod tests {
         let mut ed = Editor::new(&Config::default());
         ed.open_text(PathBuf::from(format!("/tmp/{name}")), text, false, &Theme::default());
         ed
+    }
+
+    #[test]
+    fn sort_lines_action_dispatches() {
+        let mut ed = editor_with("sort.txt", "b\na\n");
+        act(&mut ed, EditorAction::SortLines);
+        assert_eq!(ed.buffers[0].text(), "a\nb\n");
     }
 
     #[test]
