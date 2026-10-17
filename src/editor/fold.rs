@@ -18,6 +18,7 @@ use tree_sitter::{Node, Tree};
 use super::buffer::{Buffer, map_one};
 use super::rows::Rows;
 use super::selection::{Selections, indent_of, line_len_no_eol};
+use super::syntax::Syntax;
 use crate::workspace::SessionFold;
 
 /// A region of the text, in chars: a collapsed fold or one that can fold.
@@ -406,6 +407,15 @@ fn per_header(folds: Vec<Fold>, rope: &Rope, lines: &Range<usize>) -> Vec<Fold> 
     out
 }
 
+/// The syntax, parsed up to date, to read the trees of (host first, then
+/// injections); `None` without a syntax or a host tree.
+fn fold_syntax<'a>(syntax: &'a mut Option<Syntax>, rope: &Rope) -> Option<&'a Syntax> {
+    let s = syntax.as_mut()?;
+    s.reparse(rope);
+    s.tree()?;
+    Some(&*s)
+}
+
 impl Buffer {
     /// The regions that can fold with their header on `lines`, one per
     /// header line (the largest), sorted. From the syntax tree when there
@@ -429,10 +439,10 @@ impl Buffer {
         if let Some(p) = &self.patch {
             return per_header(p.folds(&self.rope), &self.rope, lines);
         }
-        match self.fold_trees() {
-            Some(trees) => {
+        match fold_syntax(&mut self.syntax, &self.rope) {
+            Some(syn) => {
                 let visit = |first: usize, last: usize| last >= lines.start && first <= lines.end;
-                let all = trees.iter().flat_map(|t| tree_folds(t, &self.rope, visit)).collect();
+                let all = syn.trees().flat_map(|t| tree_folds(t, &self.rope, visit)).collect();
                 per_header(all, &self.rope, lines)
             }
             None => lines.clone().filter_map(|l| indent_fold(&self.rope, l)).collect(),
@@ -502,13 +512,13 @@ impl Buffer {
     /// line), innermost first.
     pub fn fold_chain(&mut self, line: usize) -> Vec<Fold> {
         let patch = self.patch.as_ref().map(|p| p.folds(&self.rope));
-        let trees = if patch.is_some() { None } else { self.fold_trees() };
+        let syn = if patch.is_some() { None } else { fold_syntax(&mut self.syntax, &self.rope) };
         let rope = &self.rope;
-        let mut folds = match (patch, trees) {
+        let mut folds = match (patch, syn) {
             (Some(folds), _) => folds,
-            (None, Some(trees)) => {
+            (None, Some(syn)) => {
                 let visit = |first: usize, last: usize| last >= line && first <= line + 1;
-                trees.iter().flat_map(|t| tree_folds(t, rope, visit)).collect()
+                syn.trees().flat_map(|t| tree_folds(t, rope, visit)).collect()
             }
             (None, None) => {
                 // Headers above, each indented less than the one below it.
@@ -582,15 +592,6 @@ impl Buffer {
     /// Expand the folds of the live view that hide one of its carets.
     pub fn reveal_carets(&mut self) -> bool {
         self.view.folds.reveal(&self.rope, &self.view.sels)
-    }
-
-    /// The syntax trees (host first, then injections), parsed up to date;
-    /// `None` without a syntax or a host tree.
-    fn fold_trees(&mut self) -> Option<Vec<Tree>> {
-        let s = self.syntax.as_mut()?;
-        s.reparse(&self.rope);
-        s.tree()?;
-        Some(s.trees().cloned().collect())
     }
 }
 

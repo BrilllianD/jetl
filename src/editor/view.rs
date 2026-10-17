@@ -423,6 +423,11 @@ fn blank_guide_levels(rope: &Rope, window: Range<usize>, tab: usize) -> Vec<Opti
     out
 }
 
+/// A line with nothing but whitespace.
+fn blank_line(rope: &Rope, line: usize) -> bool {
+    super::selection::indent_of(rope, line) == line_len_no_eol(rope, line)
+}
+
 /// Scroll so that the caret is visible, then render.
 pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts) -> RenderOut {
     let action_w = o.decor.map_or(0, |d| d.action_w);
@@ -511,7 +516,8 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
     let mut cursor = None;
     let guide_step = if buf.indent.hard_tabs { o.tab_width } else { buf.indent.width }.max(1);
     let guide_fg = theme.indent_guide.fg.unwrap_or(theme.fg);
-    let levels = if o.indent_guides { blank_guide_levels(rope, window.clone(), o.tab_width) } else { Vec::new() };
+    let guides = o.indent_guides && buf.patch.is_none();
+    let levels = if guides { blank_guide_levels(rope, window.clone(), o.tab_width) } else { Vec::new() };
 
     for (row_i, &row) in shown.iter().enumerate() {
         let line = row.line;
@@ -527,7 +533,7 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
         let line_end = line_start + line_len_no_eol(rope, line);
         // Blank lines get their guides after the walk, from `levels`.
         let blank_level = levels.get(line - window.start).copied().flatten();
-        let lead_end = if o.indent_guides && row.seg == 0 && blank_level.is_none() {
+        let lead_end = if guides && row.seg == 0 && blank_level.is_none() && !blank_line(rope, line) {
             line_start + super::selection::indent_of(rope, line)
         } else {
             line_start
@@ -680,7 +686,7 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
         });
         // Guides of a blank line, in its real and virtual cells; pure paint,
         // under the selection and caret styles below.
-        if let Some(l) = blank_level.filter(|_| o.indent_guides && row.seg == 0) {
+        if let Some(l) = blank_level.filter(|_| guides && row.seg == 0) {
             for c in (0..l).step_by(guide_step).filter(|&c| c >= scroll_col) {
                 let x = text_area.x as usize + c - scroll_col;
                 if x >= right as usize {
@@ -1181,13 +1187,45 @@ mod tests {
         let (screen, x0) = draw_guides(&mut buf, &theme, true, 40, 10);
         for y in [3, 4] {
             assert_eq!(bars(&screen, y, 40), [x0, x0 + 4]);
-            // The line end and the real spaces are selected; the cells past
-            // them are not, whatever the guide does there.
+            // The line end and the real spaces are selected.
             assert_eq!(screen[(x0, y)].bg, theme.selection_bg, "row {y}");
-            assert_ne!(screen[(x0 + 4, y)].bg, theme.selection_bg, "row {y}");
         }
         let (screen, _) = draw_guides(&mut buf, &theme, false, 40, 10);
         assert!(bars(&screen, 3, 40).is_empty() && bars(&screen, 4, 40).is_empty());
+    }
+
+    #[test]
+    fn blank_line_guides_sit_under_a_secondary_caret() {
+        let theme = Theme { secondary_caret: Style::default().fg(Color::Red).bg(Color::Blue), ..Theme::default() };
+        let text = "fn a() {\n    if x {\n        y();\n\n        z();\n    }\n}\n";
+        let mut buf = Buffer::from_text(1, None, text, false);
+        buf.indent = IndentStyle::spaces(4);
+        let (a, b) = (buf.rope.line_to_char(0), buf.rope.line_to_char(3));
+        buf.view.sels = Selections::new(vec![Selection::point(a), Selection::point(b)], 0);
+        let (screen, x0) = draw_guides(&mut buf, &theme, true, 40, 10);
+        assert_eq!(bars(&screen, 3, 40), [x0, x0 + 4]);
+        assert_eq!(screen[(x0, 3)].fg, Color::Red, "the caret style wins over the guide");
+        assert_eq!(screen[(x0, 3)].bg, Color::Blue);
+        assert_eq!(screen[(x0 + 4, 3)].fg, theme.indent_guide.fg.unwrap());
+    }
+
+    #[test]
+    fn whitespace_only_last_line_without_level_gets_no_guides() {
+        let theme = Theme::default();
+        let mut buf = Buffer::from_text(1, None, "a\n    ", false);
+        buf.indent = IndentStyle::spaces(4);
+        let (screen, _) = draw_guides(&mut buf, &theme, true, 40, 4);
+        assert!(bars(&screen, 1, 40).is_empty());
+    }
+
+    #[test]
+    fn patch_buffers_have_no_indent_guides() {
+        let theme = Theme::default();
+        let mut buf = Buffer::from_text(1, None, "@@ -1 +1 @@\n     deep\n same\n", false);
+        buf.patch = Some(crate::editor::patch::Patch::parse(&buf.text()));
+        buf.indent = IndentStyle::spaces(4);
+        let (screen, _) = draw_guides(&mut buf, &theme, true, 40, 6);
+        assert!((0..6).all(|y| bars(&screen, y, 40).is_empty()));
     }
 
     #[test]

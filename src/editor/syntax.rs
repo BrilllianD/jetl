@@ -100,7 +100,7 @@ impl LanguageDef {
             .as_ref()
     }
 
-    #[allow(dead_code)]
+    #[cfg(any(feature = "lang-md", feature = "lang-html"))]
     fn with_injections(mut self, q: &'static str) -> Self {
         self.injections = Some(q);
         self
@@ -628,6 +628,23 @@ fn content_ranges(node: Node) -> Vec<tree_sitter::Range> {
     out
 }
 
+/// The front matter node without its delimiter lines (`+++`, `---`): the
+/// upstream query has no `#offset!`, and `+++` is not TOML. Empty without a
+/// body.
+fn metadata_body(node: Node, rope: &Rope) -> Vec<tree_sitter::Range> {
+    let (start, end) = (node.start_byte(), node.end_byte().min(rope.len_bytes()));
+    let text = rope.byte_slice(start..end).to_string();
+    let Some(first) = text.find('\n').map(|i| i + 1) else { return Vec::new() };
+    let trimmed = text.trim_end_matches(['\n', '\r']);
+    let Some(last) = trimmed.rfind('\n').map(|i| i + 1) else { return Vec::new() };
+    if last <= first {
+        return Vec::new();
+    }
+    let row = node.start_position().row;
+    let point = |at: usize| tree_sitter::Point { row: row + text[..at].matches('\n').count(), column: 0 };
+    vec![tree_sitter::Range { start_byte: start + first, end_byte: start + last, start_point: point(first), end_point: point(last) }]
+}
+
 /// Index into `LANGUAGES` of the language an injection names (a fence info
 /// string such as `rust {.numberLines}`, or `ts`).
 fn language_index(name: &str) -> Option<usize> {
@@ -663,7 +680,10 @@ fn collect_injections(query: &Query, tree: &Tree, rope: &Rope, region: Range<usi
                     .and_then(|p| p.value.as_deref().map(str::to_owned))
             });
         let Some(lang) = name.as_deref().and_then(language_index) else { continue };
-        let ranges = content_ranges(content.node);
+        let ranges = match content.node.kind() {
+            "plus_metadata" | "minus_metadata" => metadata_body(content.node, rope),
+            _ => content_ranges(content.node),
+        };
         if ranges.is_empty() {
             continue;
         }
@@ -671,8 +691,21 @@ fn collect_injections(query: &Query, tree: &Tree, rope: &Rope, region: Range<usi
         found.push((content.node.byte_range(), m.pattern_index, Candidate { lang, bytes, ranges }));
     }
     found.sort_by(|a, b| a.0.start.cmp(&b.0.start).then(a.0.end.cmp(&b.0.end)).then(a.1.cmp(&b.1)));
-    found.dedup_by(|b, a| a.0 == b.0);
+    keep_disjoint(&mut found);
     found.into_iter().map(|(_, _, c)| c).collect()
+}
+
+/// Drop the entries (sorted by start) that overlap an earlier kept one,
+/// identical or nested: `tree_at` binary-searches disjoint spans.
+fn keep_disjoint<T>(found: &mut Vec<(Range<usize>, usize, T)>) {
+    let mut kept_end = 0;
+    found.retain(|(r, _, _)| {
+        let keep = r.start >= kept_end;
+        if keep {
+            kept_end = r.end;
+        }
+        keep
+    });
 }
 
 /// Styled char ranges of `query` over `bytes` in `tree`. The first styled
@@ -857,7 +890,7 @@ impl Syntax {
         if !self.dirty && self.tree.is_some() {
             return;
         }
-        let old = self.tree.clone();
+        let old = if self.def.injections.is_some() { self.tree.clone() } else { None };
         let tree = self.parser.parse_with_options(&mut |byte, _| read_chunk(rope, byte), self.tree.as_ref(), None);
         if tree.is_some() {
             self.tree = tree;
@@ -1401,7 +1434,7 @@ mod tests {
     }
 
     /// Style at byte `at` of `src`, highlighted as `file`.
-    #[allow(dead_code)]
+    #[cfg(all(feature = "lang-md", feature = "lang-rust"))]
     fn style_at(file: &str, src: &str, at: usize) -> Option<Style> {
         let theme = Theme::default();
         let mut syn = Syntax::for_path(Path::new(file), &theme).unwrap_or_else(|| panic!("grammar for {file}"));
@@ -1531,5 +1564,28 @@ mod tests {
         // Insertion at 4: start == old_end.
         assert_eq!(map_byte(4, 4, 4, 7), 4);
         assert_eq!(map_byte(5, 4, 4, 7), 8);
+    }
+
+    #[cfg(all(feature = "lang-md", feature = "lang-toml", feature = "lang-yaml"))]
+    #[test]
+    fn front_matter_delimiters_stay_out_of_the_inner_parser() {
+        let toml = "+++\ntitle = \"x\"\n+++\n\n# H\n";
+        let (syn, _) = md_syntax(toml);
+        assert_eq!(syn.injection_langs(), ["toml"]);
+        let inner = syn.trees().nth(1).unwrap();
+        assert!(!inner.root_node().has_error(), "{}", inner.root_node().to_sexp());
+        assert_eq!(style_of("a.md", toml, "title"), cap("property"));
+        let yaml = "---\ntitle: x\n---\n\n# H\n";
+        let (syn, _) = md_syntax(yaml);
+        assert_eq!(syn.injection_langs(), ["yaml"]);
+        assert!(!syn.trees().nth(1).unwrap().root_node().has_error());
+        assert_eq!(style_of("a.md", yaml, "title"), cap("property"));
+    }
+
+    #[test]
+    fn nested_injection_candidates_stay_disjoint() {
+        let mut found = vec![(0..10, 0, 'a'), (0..10, 1, 'b'), (2..5, 0, 'c'), (10..12, 0, 'd'), (11..20, 0, 'e'), (20..30, 0, 'f')];
+        keep_disjoint(&mut found);
+        assert_eq!(found.iter().map(|f| f.2).collect::<String>(), "adf");
     }
 }
