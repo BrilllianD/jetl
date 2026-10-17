@@ -10,7 +10,8 @@
 //! `newest = false`); a change of the key cancels it. An answer counts only
 //! for its seq and the buffer version it was sent at. Until a newer answer
 //! arrives the old hints stay, shifted by the edits (no flicker). An error
-//! answer is only logged. `workspace/inlayHint/refresh` forgets what was
+//! answer is logged; a timeout or content-modified answer for the current key
+//! makes the next ticks ask again (a server still loading answers that way). `workspace/inlayHint/refresh` forgets what was
 //! fetched, so the next ticks ask again. Nothing is asked while
 //! `LspService::inlays_shown` is off (`[lsp] inlay_hints`, the View menu).
 
@@ -32,6 +33,10 @@ use crate::lsp::{DocTag, PendingTag, pos};
 /// How long the buffer, version and visible lines must stay put before the
 /// server is asked.
 pub(super) const INLAY_DELAY: Duration = Duration::from_millis(300);
+
+/// The error code jetl gives a request that got no answer in time
+/// (`lsp::client`).
+const TIMED_OUT: i64 = -32803;
 
 /// The hints' debounce and its request in flight (in `LspService`).
 #[derive(Debug, Default)]
@@ -117,7 +122,18 @@ impl App {
         }
         let value = match result {
             Ok(v) => v,
-            Err(e) => return tracing::debug!("inlay hints: {}", e.message),
+            Err(e) => {
+                tracing::debug!("inlay hints: {e}");
+                // Still the current key and the server only was not ready (timeout,
+                // content modified): ask again once the delay has passed.
+                let state = &mut self.lsp.inlay;
+                let retry = [TIMED_OUT, ResponseError::CONTENT_MODIFIED].contains(&e.code);
+                if retry && state.key.as_ref().is_some_and(|(id, v, _)| *id == t.buffer && *v == t.version) {
+                    state.done = false;
+                    state.since = Some(Instant::now());
+                }
+                return;
+            }
         };
         // Switched off while the request was in flight.
         if !shown {
@@ -378,6 +394,77 @@ mod tests {
 
     fn toasts(app: &App) -> Vec<String> {
         app.toasts.items().iter().map(|t| t.text.clone()).collect()
+    }
+
+    /// Settle, take the request and answer it with an error.
+    async fn ask_and_fail(app: &mut App, server: &mut FakeServer, code: i64) {
+        settle(app);
+        let req = server.recv("textDocument/inlayHint").await;
+        server.respond_error(req["id"].as_i64().unwrap(), code, "no");
+        handle_next(app, is_lsp).await;
+    }
+
+    async fn inlay_requests(app: &App, server: &mut FakeServer) -> usize {
+        let client = app.lsp.clients.get("rust-analyzer").unwrap();
+        server.sent_so_far(client).await.iter().filter(|m| m["method"] == "textDocument/inlayHint").count()
+    }
+
+    #[tokio::test]
+    async fn timeout_answer_asks_again_on_the_next_settle() {
+        let (mut app, mut server, dir) = setup("inlay-timeout", true).await;
+        ask_and_fail(&mut app, &mut server, TIMED_OUT).await;
+        ask_and_answer(&mut app, &mut server, json!([hint(1, 9, json!(": i32"), 1)])).await;
+        assert_eq!(all(&app).len(), 1);
+        app.inlay_refresh();
+        ask_and_fail(&mut app, &mut server, ResponseError::CONTENT_MODIFIED).await;
+        settle(&mut app);
+        server.recv("textDocument/inlayHint").await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn other_error_does_not_retry() {
+        let (mut app, mut server, dir) = setup("inlay-error", true).await;
+        ask_and_fail(&mut app, &mut server, -32603).await;
+        settle(&mut app);
+        settle(&mut app);
+        assert_eq!(inlay_requests(&app, &mut server).await, 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn stale_key_error_does_not_retry() {
+        let (mut app, mut server, dir) = setup("inlay-error-stale", true).await;
+        settle(&mut app);
+        let req = server.recv("textDocument/inlayHint").await;
+        // The key moves on (an edit) before the timeout answer arrives.
+        app.editor.active_buffer_mut().unwrap().goto_line(5, 0);
+        app.perform(Action::Editor(EditorAction::InsertChar('x')));
+        app.lsp_sync();
+        let t0 = Instant::now();
+        app.inlay_tick(t0);
+        server.respond_error(req["id"].as_i64().unwrap(), TIMED_OUT, "late");
+        handle_next(&mut app, is_lsp).await;
+        // The new key still waits for its delay: nothing extra goes out.
+        app.inlay_tick(t0 + INLAY_DELAY / 2);
+        assert_eq!(inlay_requests(&app, &mut server).await, 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn progress_end_refreshes_hints() {
+        let (mut app, mut server, dir) = setup("inlay-progress", true).await;
+        ask_and_answer(&mut app, &mut server, json!([hint(1, 9, json!(": i32"), 1)])).await;
+        let progress = |value: Value| json!({"token": "rustAnalyzer/Indexing", "value": value});
+        server.notify("$/progress", progress(json!({"kind": "begin", "title": "Indexing"})));
+        handle_next(&mut app, is_lsp).await;
+        settle(&mut app);
+        assert_eq!(inlay_requests(&app, &mut server).await, 0, "covered, nothing asked");
+        server.notify("$/progress", progress(json!({"kind": "end"})));
+        handle_next(&mut app, is_lsp).await;
+        settle(&mut app);
+        server.recv("textDocument/inlayHint").await;
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]

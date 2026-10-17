@@ -635,6 +635,10 @@ impl App {
                     }
                     (WorkDoneProgress::End(_), Some(i)) => {
                         self.lsp.progress.remove(i);
+                        // Hints asked while the server loaded were empty or failed.
+                        if !self.lsp.progress.iter().any(|p| p.0 == server) {
+                            self.inlay_refresh();
+                        }
                     }
                     _ => {}
                 }

@@ -912,6 +912,21 @@ mod tests {
             let bg = t.inlay_hint.bg.unwrap_or_else(|| panic!("{name} ansi256={ansi256}: no inlay_hint bg"));
             assert_ne!(fg, bg, "{name} ansi256={ansi256}");
             assert_ne!(fg, t.bg, "{name} ansi256={ansi256}");
+            // Column mode makes every caret line a current line, and a hint
+            // can sit in a selection: the box must stand out from both.
+            for (what, other) in [("current_line_bg", t.current_line_bg), ("selection_bg", t.selection_bg)] {
+                assert!(visibly_apart(bg, other), "{name} ansi256={ansi256}: inlay_hint.bg {bg:?} is too near {what} {other:?}");
+            }
+        }
+    }
+
+    /// Different palette entries, or truecolor ones a few steps apart.
+    fn visibly_apart(a: Color, b: Color) -> bool {
+        match (a, b) {
+            (Color::Rgb(r1, g1, b1), Color::Rgb(r2, g2, b2)) => {
+                r1.abs_diff(r2) as u16 + g1.abs_diff(g2) as u16 + b1.abs_diff(b2) as u16 >= 16
+            }
+            _ => a != b,
         }
     }
 

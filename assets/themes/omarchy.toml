@@ -63,7 +63,7 @@ diag_info = { fg = "{{blue}}", underline = true }
 diag_hint = "{{muted}}"
 lightbulb = "{{yellow}}"
 indent_guide = "{{mix background foreground 20}}"
-inlay_hint = { fg = "{{mix foreground background 45}}", bg = "{{mix background foreground 8}}" }
+inlay_hint = { fg = "{{mix foreground background 45}}", bg = "{{mix background foreground 12}}" }
 splitter = { fg = "{{muted}}", bg = "{{background}}" }
 
 [syntax]

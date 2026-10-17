@@ -1071,7 +1071,8 @@ Setup as above.
 ### Scenario: inlay hints
 
 Setup as above, but rust-analyzer on: no `[lsp] enabled = false`. Wait for indexing (the status
-bar spinner stops); the server refreshes the hints by itself.
+bar spinner stops). jetl asks again after a request timed out and when the server's progress
+ends, so hints appear without scrolling or editing once rust-analyzer has loaded.
 
 1. Open `src/app/lightbulb.rs`. Type hints (`: Option<…>`, `: &mut App`) and parameter-name hints
    (`range:`, `params:` before call arguments) are visible, in the `inlay_hint` colours
@@ -1083,12 +1084,13 @@ bar spinner stops); the server refreshes the hints by itself.
    end): it wraps, the hints are still shown, a hint never splits from the char after it, and
    clicks on continuation rows land right. Undo.
 4. F1, `Show or hide inlay hints`: the hints disappear and the toast says `Inlay hints: off`.
-   Wait a second: no `textDocument/inlayHint` in the log. Run it again: the toast says on, and
-   the hints reappear after about 300 ms.
+   Scroll a page down and back: no hint shows. Run it again: the toast says on, and the hints
+   reappear after about 300 ms.
 5. View menu (F10): `Inlay Hints` is listed after `Soft-Wrap` and runs the same toggle.
 6. Column mode (Alt+Shift+Insert or the menu): Alt+Shift+drag over a hinted line. The block is
    selected by text columns: on hinted lines it is shifted on screen, but the right chars are
-   selected. Escape.
+   selected. Escape. In `github-dark` (`[ui] theme = "github-dark"`) the hint keeps
+   a visible box (lighter than the current-line background) on the caret lines.
 7. Undo every edit; do not save. Repeat at 120x40 and 80x24.
 
 ### Limits under tmux

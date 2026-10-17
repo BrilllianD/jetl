@@ -313,12 +313,12 @@ pub fn row_x_to_char(rope: &Rope, rows: &Rows, row: Row, x: usize, tab_width: us
 }
 
 /// The column (row x on an unwrapped line) the caret `sel` stands at: hints
-/// before it included, and past the line end the virtual column plus the
-/// line's hints.
+/// before it included, and past the line end the cells the virtual column
+/// goes beyond the line's text, after its last cell.
 pub fn caret_col(rope: &Rope, rows: &Rows, sel: &Selection, tab_width: usize) -> usize {
     let x = char_to_row_x(rope, rows, sel.head, sel.upstream, tab_width).1;
     match sel.virt.head {
-        Some(c) if !rows.wraps() => x.max(c + rows.inlay_width(rope, rope.char_to_line(sel.head.min(rope.len_chars())))),
+        Some(c) if !rows.wraps() => x + c.saturating_sub(visual_col(rope, sel.head, tab_width)),
         _ => x,
     }
 }
@@ -822,8 +822,8 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
         let vspan = end_x.filter(|_| virt_on).and_then(|w| {
             let all = sels.as_slice();
             let s = all.get(all.partition_point(|s| s.range().end < line_end)).filter(|s| s.range().start <= line_end)?;
-            let iw = rows.inlay_width(rope, line);
-            let col = |p: usize, v: Option<usize>| if p == line_end { v.map_or(w, |c| (c + iw).max(w)) } else { w };
+            let end_col = visual_col(rope, line_end, o.tab_width);
+            let col = |p: usize, v: Option<usize>| if p == line_end { v.map_or(w, |c| w + c.saturating_sub(end_col)) } else { w };
             Some((s.head == line_end, col(s.anchor, s.virt.anchor), col(s.head, s.virt.head)))
         });
         // Its virtual cells past the line end.
@@ -1446,6 +1446,22 @@ mod tests {
         assert_eq!(text_col_at(&rope, &rows, 0, 10, 4), 5, "the char after the first hint");
         assert_eq!(text_col_at(&rope, &rows, 0, 20, 4), 12);
         assert_eq!(text_col_at(&rope, &rows, 0, 32 + 4, 4), 18 + 4, "past the end");
+    }
+
+    #[test]
+    fn virtual_col_past_hinted_tab_line_round_trips() {
+        let rope = Rope::from_str("a\tb\n");
+        let mut h = InlayHints::new();
+        h.set(vec![Inlay::new(1, "xyz", false, false, false).unwrap()], 0, 0..1);
+        let folds = Folds::default();
+        let rows = Rows::new(&folds, rope.len_lines()).with_inlays(&h);
+        // `a`, 3 hint cells, the tab from column 4 to 8, `b`: the end is at x 9.
+        assert_eq!(char_to_row_x(&rope, &rows, 3, false, 4).1, 9);
+        for click in 9..14 {
+            let col = text_col_at(&rope, &rows, 0, click, 4);
+            let sel = Selection::virtual_point(3, col);
+            assert_eq!(caret_col(&rope, &rows, &sel, 4), click, "click {click} is virtual column {col}");
+        }
     }
 
     #[test]
