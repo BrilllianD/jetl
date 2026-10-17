@@ -526,3 +526,201 @@ fn error_line(output: &str) -> String {
     let lines = || output.lines().map(str::trim).filter(|l| !l.is_empty());
     lines().find(|l| l.starts_with("fatal:") || l.starts_with("error:")).or_else(|| lines().next()).unwrap_or("failed").to_string()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::tests::{load, test_app};
+    use crate::editor::undo::TxKind;
+    use crate::git::model::ResetMode;
+
+    /// Feed `OpDone` for `op` (current generation, id 1, no renames).
+    fn done(app: &mut App, op: GitOp, label: &str, ok: bool, output: &str) {
+        let generation = app.workspace.generation;
+        app.handle_msg(AppMsg::Git(GitMsg::OpDone {
+            generation,
+            id: 1,
+            op,
+            label: label.into(),
+            ok,
+            output: output.into(),
+            renames: Vec::new(),
+        }));
+    }
+
+    /// The newest notification as (level, text).
+    fn last(app: &App) -> (Level, String) {
+        let n = app.notifications.last().expect("a notification");
+        (n.level, n.text.clone())
+    }
+
+    #[tokio::test]
+    async fn stale_op_results_only_finish_the_op() {
+        let (mut app, dir) = test_app("msg-stale");
+        app.git.busy.push((1, "git pull".into()));
+        let before = app.notifications.len();
+        let generation = app.workspace.generation + 1;
+        app.handle_msg(AppMsg::Git(GitMsg::OpDone {
+            generation,
+            id: 1,
+            op: GitOp::Pull,
+            label: "git pull".into(),
+            ok: false,
+            output: "fatal: boom".into(),
+            renames: Vec::new(),
+        }));
+        assert!(app.git.busy.is_empty());
+        assert_eq!(app.notifications.len(), before);
+        assert!(!app.pending_conflicts);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn successful_ops_toast_what_happened() {
+        let (mut app, dir) = test_app("msg-success");
+        let progress = |kind, action| GitOp::Progress { kind, action };
+        let table = [
+            (GitOp::Fetch, "", "Fetched"),
+            (GitOp::Pull, "", "Pulled"),
+            (GitOp::Push, "", "Pushed"),
+            (GitOp::Switch("dev".into()), "", "Switched to dev"),
+            (GitOp::Checkout("0123456789abcdef".into()), "", "Checked out 01234567 (detached HEAD)"),
+            (GitOp::Reset { sha: "0123456789abcdef".into(), mode: ResetMode::Hard }, "", "Reset to 01234567 (hard)"),
+            (GitOp::Rebase("main".into()), "", "Rebased onto main"),
+            (GitOp::Commit { push: false, amend: true }, "abc1234 msg", "Amended abc1234 msg"),
+            (progress(InProgressKind::Rebase, ProgressAction::Continue), "", "Rebase finished"),
+            (GitOp::Stash, "Saved working directory", "Saved working directory"),
+        ];
+        for (op, output, expected) in table {
+            done(&mut app, op.clone(), "git", true, output);
+            assert_eq!(last(&app), (Level::Info, expected.to_string()), "{op:?}");
+        }
+
+        let abort = ProgressAction::Abort.done(InProgressKind::Rebase);
+        assert!(!abort.is_empty());
+        done(&mut app, progress(InProgressKind::Rebase, ProgressAction::Abort), "git rebase --abort", true, "");
+        assert_eq!(last(&app), (Level::Info, abort));
+
+        let before = app.notifications.len();
+        done(&mut app, GitOp::Resolve("a.txt".into()), "git checkout --ours", true, "");
+        assert_eq!(app.notifications.len(), before);
+        assert_eq!(app.resolved_conflict.as_deref(), Some("a.txt"));
+
+        done(&mut app, GitOp::WorktreePrune, "git worktree prune", true, "");
+        assert_eq!(last(&app), (Level::Info, "Nothing to prune".to_string()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn conflicts_warn_and_wait_for_the_status() {
+        let (mut app, dir) = test_app("msg-conflicts");
+        let out = "CONFLICT (content): Merge conflict in a.txt\nerror: could not apply 1234567";
+        let progress = |kind, action| GitOp::Progress { kind, action };
+        let rebase = "Rebase stopped on conflicts";
+        let stopped = "Stopped on conflicts";
+        let table = [
+            (GitOp::Rebase("main".into()), rebase),
+            (progress(InProgressKind::Rebase, ProgressAction::Continue), rebase),
+            (progress(InProgressKind::Rebase, ProgressAction::Skip), rebase),
+            (GitOp::Merge("dev".into()), "Merge stopped on conflicts"),
+            (GitOp::Stash, "The stash conflicts with your files"),
+            (GitOp::CherryPick("0123".into()), stopped),
+            (GitOp::Revert("0123".into()), stopped),
+            (progress(InProgressKind::Merge, ProgressAction::Continue), stopped),
+        ];
+        for (op, prefix) in table {
+            app.pending_conflicts = false;
+            done(&mut app, op.clone(), "git", false, out);
+            let (level, text) = last(&app);
+            assert_eq!(level, Level::Warn, "{op:?}");
+            assert!(text.starts_with(prefix), "{op:?}: {text}");
+            assert!(app.pending_conflicts, "{op:?}");
+        }
+
+        app.pending_conflicts = false;
+        done(&mut app, progress(InProgressKind::Rebase, ProgressAction::Abort), "git rebase --abort", false, out);
+        assert!(!app.pending_conflicts);
+        assert_eq!(last(&app), (Level::Error, "git rebase --abort: error: could not apply 1234567".to_string()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn failures_toast_the_telling_line() {
+        let (mut app, dir) = test_app("msg-failures");
+        let out = "hint: a\nerror: nothing added\nfatal: later";
+        let bare = [GitOp::Commit { push: false, amend: false }, GitOp::Stage, GitOp::Unstage, GitOp::Discard];
+        for op in bare {
+            done(&mut app, op.clone(), "git x", false, out);
+            assert_eq!(last(&app), (Level::Error, "error: nothing added".to_string()), "{op:?}");
+        }
+        done(&mut app, GitOp::Pull, "git pull", false, out);
+        assert_eq!(last(&app), (Level::Error, "git pull: error: nothing added".to_string()));
+        done(&mut app, GitOp::Fetch, "git fetch --prune", false, "");
+        assert_eq!(last(&app), (Level::Error, "git fetch --prune: failed".to_string()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn push_without_upstream_asks_for_the_remote() {
+        let (mut app, dir) = test_app("msg-push");
+        let before = app.notifications.len();
+        for out in ["fatal: The current branch dev has no upstream branch.", "fatal: No configured push destination."] {
+            done(&mut app, GitOp::Push, "git push", false, out);
+            assert_eq!(app.notifications.len(), before, "{out}");
+            assert!(app.dialog.is_none(), "{out}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn deleting_an_unmerged_branch_offers_force() {
+        let (mut app, dir) = test_app("msg-delete-branch");
+        let before = app.notifications.len();
+        let out = "error: The branch 'dev' is not fully merged.";
+        done(&mut app, GitOp::DeleteBranch { name: "dev".into(), force: false }, "git branch -d dev", false, out);
+        let id = app.dialog.as_ref().map(|d| d.id.clone());
+        assert_eq!(id, Some(DialogId::DeleteBranch { name: "dev".into(), force: true }));
+        assert_eq!(app.notifications.len(), before);
+
+        app.dialog = None;
+        done(&mut app, GitOp::DeleteBranch { name: "dev".into(), force: true }, "git branch -D dev", false, out);
+        assert!(app.dialog.is_none());
+        let (level, text) = last(&app);
+        assert_eq!(level, Level::Error);
+        assert!(text.starts_with("git branch -D dev"), "{text}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn clean_tabs_reload_only_after_worktree_ops_that_succeeded() {
+        let (mut app, dir) = test_app("msg-reload");
+        let path = load(&mut app, "a.txt", "one\n");
+        let text = |app: &App| app.editor.buffers[app.editor.index_of(&path).unwrap()].rope.to_string();
+        std::fs::write(&path, "two\n").unwrap();
+
+        done(&mut app, GitOp::Fetch, "git fetch", true, "");
+        assert_eq!(text(&app), "one\n");
+        done(&mut app, GitOp::Pull, "git pull", false, "fatal: boom");
+        assert_eq!(text(&app), "one\n");
+        done(&mut app, GitOp::Pull, "git pull", true, "");
+        assert_eq!(text(&app), "two\n");
+        let i = app.editor.index_of(&path).unwrap();
+        assert!(!app.editor.buffers[i].dirty());
+
+        app.editor.buffers[i].insert("x", TxKind::Typing);
+        std::fs::write(&path, "three\n").unwrap();
+        done(&mut app, GitOp::Pull, "git pull", true, "");
+        assert_eq!(text(&app), "xtwo\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn error_line_prefers_fatal_and_error_lines() {
+        assert_eq!(error_line("  \nhint: x\nfatal: y\nerror: z"), "fatal: y");
+        assert_eq!(error_line("a\n\n b "), "a");
+        assert_eq!(error_line(""), "failed");
+        assert_eq!(error_line("   \n\t"), "failed");
+        assert_eq!(short("0123456789"), "01234567");
+        assert_eq!(short("abc"), "abc");
+    }
+}
