@@ -224,6 +224,10 @@ pub enum DialogId {
     SettingValue(&'static str),
     /// Close the Settings window, dropping its changes: Discard / Keep Editing.
     SettingsDiscard,
+    /// A new value for this field of the selected run configuration.
+    RunConfigField(crate::ui::run_configs::Field),
+    /// Close the Run Configurations window, dropping its changes: Discard / Keep Editing.
+    RunConfigsDiscard,
 }
 
 #[derive(Debug, Clone)]

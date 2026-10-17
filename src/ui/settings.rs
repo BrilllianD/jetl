@@ -570,7 +570,7 @@ impl SettingsWindow {
 }
 
 /// Up/Down/Home/End/PageUp/PageDown on a list; whether the key was one.
-fn move_list(list: &mut ListState, code: KeyCode) -> bool {
+pub(crate) fn move_list(list: &mut ListState, code: KeyCode) -> bool {
     let page = list.viewport.max(1);
     match code {
         KeyCode::Up => list.up(1),

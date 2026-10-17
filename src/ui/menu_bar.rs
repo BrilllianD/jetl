@@ -204,6 +204,8 @@ pub const MAIN_MENU: &[(&str, char, &[Row])] = &[
             Item("Rerun", "run.rerun"),
             Item("Stop", "run.stop"),
             Sep,
+            Item("Edit Configurations…", "run.edit_configs"),
+            Sep,
             Item("Next Problem", "run.next_problem"),
             Item("Previous Problem", "run.prev_problem"),
         ],

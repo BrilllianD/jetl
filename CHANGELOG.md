@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Run > Edit Configurations… (also in the Run window's toolbar): a form for the project's run configurations, saved to `.jetl/run.toml` with its comments kept; config.toml and detected ones can be copied into the project.
 - The Run window has a toolbar with a configuration picker, Run, Rerun and Stop; Shift+F10 runs the selected configuration (the last one picked, remembered per project), Ctrl+F5 reruns the last run.
 - Run configurations: `[[run.configs]]` in config.toml and `[[configs]]` in `.jetl/run.toml` take `args` and `matcher` (`problems`, `none`) besides name, command, cwd and env; edits to either file apply at once.
 - Live templates: Tab right after a snippet's prefix expands it (tabstops walked with Tab, as for completion snippets), and matching snippets are listed in the completion popup after the language server's items (Ctrl+Space lists them even without a server). Built-ins for Rust (`fn`, `test`, `impl`, `match`), Python (`def`, `class`, `ifmain`) and TypeScript (`fn`, `log`); your own in `~/.config/jetl/snippets/<language>.toml` and `all.toml`; edits to the snippet files apply at once; `[editor] snippets = false` turns live templates off.

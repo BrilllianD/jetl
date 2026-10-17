@@ -33,7 +33,7 @@ impl App {
         // Motion matters to drags and to the menus' hover highlight; other
         // motion only moves the strip tooltip, redrawn when it changes.
         if m.kind == MouseEventKind::Moved && self.drag.is_none() && self.menu.is_none() && self.menu_bar.is_none() {
-            let hover = if self.palette.is_none() && self.dialog.is_none() && self.settings.is_none() {
+            let hover = if self.palette.is_none() && self.dialog.is_none() && self.settings.is_none() && self.run_configs.is_none() {
                 self.layout.strip_hit(m.column, m.row)
             } else {
                 None
@@ -54,6 +54,7 @@ impl App {
         let over_overlay = self.palette.as_ref().is_some_and(|p| p.contains(m.column, m.row))
             || self.dialog.as_ref().is_some_and(|d| d.contains(m.column, m.row))
             || self.settings.as_ref().is_some_and(|s| s.contains(m.column, m.row))
+            || self.run_configs.as_ref().is_some_and(|s| s.contains(m.column, m.row))
             || self.menu.as_ref().is_some_and(|c| c.contains(m.column, m.row))
             || self.menu_bar.as_ref().is_some_and(|b| b.contains(m.column, m.row));
         if matches!(m.kind, MouseEventKind::Down(_)) && !over_overlay && self.toasts.dismiss_at(m.column, m.row) {
@@ -134,6 +135,13 @@ impl App {
                 self.drag = None;
             }
             self.settings_mouse(&mouse);
+            return;
+        }
+        if self.run_configs.is_some() {
+            if matches!(m.kind, MouseEventKind::Up(_)) {
+                self.drag = None;
+            }
+            self.run_configs_mouse(&mouse);
             return;
         }
         if self.menu_bar.is_some() {

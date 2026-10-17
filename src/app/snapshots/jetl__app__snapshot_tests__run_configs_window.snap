@@ -1,0 +1,33 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &run_configs_marks(&app.theme), None)"
+---
+80x24 cursor=hidden
+00  ≣┌ Run Configurations ──────────────────────────────────────────────────────┐
+01   │  global ch… config.toml│ where                                           │
+02  1│* where   .jetl/run.toml│                                                 │
+03  ⌂│                        │   Name               where                      │
+04  2│                        │   Command            sh -c pwd                  │
+05  ◫│                        │   Arguments          x                          │
+06  7│                        │ * Working directory  web                        │
+07  ⊢│                        │   Environment        FOO=bar                    │
+08   │                        │   Output             auto (problems)            │
+09   │                        │                                                 │
+10  ⟲│                        │                                                 │
+11   │                        │                                                 │
+12  ⚑│                        │                                                 │
+13  9│                        │                                                 │
+14  ⎇│                        │                                                 │
+15   │                        │                                                 │
+16  ❯│                        │ Appended to the command, as shell words:        │
+17  6│                        │ --release 'a b'.                                │
+18  ⚠│                        │ Saved to .jetl/run.toml                         │
+19  4│                                                                          │
+20  ►│[+] [−] [Copy]                              [ OK ]  [ Cancel ]  [ Apply ] │
+21  3└──────────────────────────────────────────────────────────────────────────┘
+22  ⌕ └──────────────────────────────┘│
+23  root
+-- marks: L=selected U=unfocused M=modified
+02    UUUUUUUUUUUUUUUUUUUUUUUU
+05                              LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL
+06                              M                    MMM

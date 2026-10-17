@@ -133,6 +133,7 @@ impl App {
         if self.finish_merge_dialog(&id, &res)
             || self.finish_recovery_dialog(&id, &res)
             || self.finish_settings_dialog(&id, &res)
+            || self.finish_run_configs_dialog(&id, &res)
             || self.finish_git_ops_dialog(&id, &res)
         {
             return;

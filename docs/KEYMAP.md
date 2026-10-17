@@ -538,6 +538,7 @@ Reachable from Find Action (F1) or by binding them in `keymap.toml`.
 | `git.focus_message` | Git: focus commit message |
 | `merge.accept_all_left` | Merge: take yours for the whole file |
 | `merge.accept_all_right` | Merge: take theirs for the whole file |
+| `run.edit_configs` | Run: edit run configurations |
 | `lsp.restart` | Restart language servers |
 | `lsp.goto_declaration` | Go to the declaration (not the definition) of the symbol at the caret |
 | `lsp.toggle_inlay_hints` | Show or hide inlay hints |

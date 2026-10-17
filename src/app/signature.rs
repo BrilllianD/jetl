@@ -97,8 +97,12 @@ impl App {
     /// the focused group or active buffer is not the popup's.
     pub(crate) fn signature_check(&mut self) {
         let Some(s) = &self.signature else { return };
-        let overlay =
-            self.palette.is_some() || self.dialog.is_some() || self.menu.is_some() || self.menu_bar.is_some() || self.settings.is_some();
+        let overlay = self.palette.is_some()
+            || self.dialog.is_some()
+            || self.menu.is_some()
+            || self.menu_bar.is_some()
+            || self.settings.is_some()
+            || self.run_configs.is_some();
         let same = self.editor.focused_group().id == s.group && self.editor.active_buffer().is_some_and(|b| b.id == s.buffer);
         if overlay || !same || !self.focus.is(PanelId::Editor) {
             self.signature_close();

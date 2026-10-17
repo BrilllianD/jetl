@@ -53,6 +53,7 @@ impl App {
         let run_file = crate::run::edit::project_file(&self.workspace.root);
         if changes.paths.iter().any(|p| *p == run_file || Some(p.as_path()) == run_file.parent()) {
             self.load_run_tasks();
+            self.run_configs_file_changed();
         }
         for path in changes.paths {
             match self.editor.on_disk_change(&path) {

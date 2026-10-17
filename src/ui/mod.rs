@@ -7,6 +7,7 @@ pub mod layout;
 pub mod menu;
 pub mod menu_bar;
 pub mod palette;
+pub mod run_configs;
 pub mod settings;
 pub mod signature;
 pub mod status_bar;
@@ -128,6 +129,9 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     if let Some(s) = &mut app.settings {
         s.render(frame, area, &theme);
     }
+    if let Some(s) = &mut app.run_configs {
+        s.render(frame, area, &theme);
+    }
     if let Some(d) = &mut app.dialog {
         d.render(frame, area, &theme);
     }
@@ -138,6 +142,7 @@ pub fn render(app: &mut App, frame: &mut Frame) {
         app.menu.as_ref().map(|m| m.rect()),
         app.menu_bar.as_ref().map(|b| b.dropdown().rect()),
         app.settings.as_ref().map(|s| s.rect()),
+        app.run_configs.as_ref().map(|s| s.rect()),
         app.dialog.as_ref().map(|d| d.rect()),
     ]
     .into_iter()

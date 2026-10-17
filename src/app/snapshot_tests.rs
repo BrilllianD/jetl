@@ -2268,3 +2268,59 @@ async fn run_window_toolbar_wide() {
     let term = draw_app(app, 120, 40);
     assert_snapshot!("run_window_toolbar_wide", snapshot(&term, &run_marks(&app.theme), None));
 }
+
+fn run_configs_marks(theme: &Theme) -> [Mark; 3] {
+    [
+        Mark::bg('L', "selected", theme.list_selected.bg.unwrap()),
+        Mark::bg('U', "unfocused", theme.list_selected_unfocused.bg.unwrap()),
+        Mark::style('M', "modified", theme.git_modified),
+    ]
+}
+
+/// The Run Configurations window over one config.toml and one project
+/// configuration (`where`, selected, form focused on Arguments), with
+/// `Cwd` changed to `web` and not saved.
+fn run_configs_fixture(app: &mut App) {
+    std::fs::create_dir_all(&app.paths.config_dir).unwrap();
+    std::fs::write(
+        app.paths.config_file(),
+        "[lsp]\nenabled = false\n[[run.configs]]\nname = \"global check\"\ncommand = \"cargo check\"\n",
+    )
+    .unwrap();
+    app.config_changed(vec![crate::config::watch::ConfigFile::Config]);
+    app.notifications.clear();
+    app.toasts = Default::default();
+    let file = app.workspace.root.join(".jetl/run.toml");
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(
+        &file,
+        "[[configs]]\nname = \"where\"\ncommand = [\"sh\", \"-c\", \"pwd\"]\nargs = [\"x\"]\ncwd = \"src\"\nenv = { FOO = \"bar\" }\n",
+    )
+    .unwrap();
+    app.perform(Action::Run(crate::actions::RunAction::EditConfigs));
+    press(app, KeyCode::Down, 1);
+    press(app, KeyCode::Enter, 1);
+    press(app, KeyCode::Down, 3);
+    press(app, KeyCode::Enter, 1);
+    let d = app.dialog.take().unwrap();
+    app.finish_dialog(d.id, crate::ui::dialog::DialogResult::Text("web".into()));
+    press(app, KeyCode::Up, 1);
+}
+
+#[tokio::test]
+async fn run_configs_window() {
+    let mut fx = stable_app("run-configs");
+    let app = &mut fx.app;
+    run_configs_fixture(app);
+    let term = draw_app(app, 80, 24);
+    assert_snapshot!("run_configs_window", snapshot(&term, &run_configs_marks(&app.theme), None));
+}
+
+#[tokio::test]
+async fn run_configs_window_wide() {
+    let mut fx = stable_app("run-configs-wide");
+    let app = &mut fx.app;
+    run_configs_fixture(app);
+    let term = draw_app(app, 120, 40);
+    assert_snapshot!("run_configs_window_wide", snapshot(&term, &run_configs_marks(&app.theme), None));
+}

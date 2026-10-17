@@ -934,7 +934,7 @@ impl Palette {
                 Source::Symbols if loading => "Indexing symbols…",
                 Source::Tasks if loading => "Loading tasks…",
                 Source::Tasks if self.input.text.trim().is_empty() => {
-                    "No run configurations: add [[run.configs]] to config.toml or .jetl/run.toml"
+                    "No run configurations: Run > Edit Configurations… or [[run.configs]] in config.toml"
                 }
                 Source::Scratches if self.input.text.trim().is_empty() => "No scratch files: File > New Scratch File…",
                 _ => "Nothing found",

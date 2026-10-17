@@ -63,6 +63,7 @@ mod msg;
 mod palette;
 mod recovery;
 mod run;
+mod run_configs;
 mod save_as;
 mod settings;
 mod signature;
@@ -178,6 +179,7 @@ pub struct App {
     pub menu_bar: Option<crate::ui::menu_bar::MenuBar>,
     /// The Settings window, over the menus and under dialogs.
     pub settings: Option<crate::ui::settings::SettingsWindow>,
+    pub run_configs: Option<crate::ui::run_configs::RunConfigsWindow>,
     /// Tool strip button under the pointer, with its rect; it shows a
     /// tooltip.
     pub strip_hover: Option<(crate::ui::layout::StripButton, Rect)>,
@@ -340,6 +342,7 @@ impl App {
             menu: None,
             menu_bar: None,
             settings: None,
+            run_configs: None,
             strip_hover: None,
             file_index: FileIndex::default(),
             recent_projects: Vec::new(),
@@ -652,7 +655,7 @@ impl App {
             }
             return;
         }
-        if self.settings.is_some() {
+        if self.settings.is_some() || self.run_configs.is_some() {
             return;
         }
         if let Some(p) = &mut self.palette {
@@ -723,6 +726,12 @@ impl App {
         if self.settings.is_some() {
             if key.kind != crossterm::event::KeyEventKind::Release && !matches!(key.code, KeyCode::Modifier(_)) {
                 self.settings_key(key);
+            }
+            return;
+        }
+        if self.run_configs.is_some() {
+            if key.kind != crossterm::event::KeyEventKind::Release && !matches!(key.code, KeyCode::Modifier(_)) {
+                self.run_configs_key(key);
             }
             return;
         }
@@ -936,6 +945,11 @@ impl App {
             Action::Run(RunAction::RunSelected) => {
                 drop(cx);
                 self.run_selected();
+                return;
+            }
+            Action::Run(RunAction::EditConfigs) => {
+                drop(cx);
+                self.open_run_configs();
                 return;
             }
             Action::Run(RunAction::Rerun) => {

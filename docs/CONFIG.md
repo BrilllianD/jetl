@@ -319,13 +319,31 @@ command's words; to a string command they are passed as `"$@"`, so they
 reach the shell command unsplit. `matcher` is `"problems"` (file locations
 in the output become links; the default) or `"none"` (plain output).
 
+Run > Edit Configurations… (also the Run window's toolbar button and the
+action `run.edit_configs`) opens the Run Configurations window: the list of
+what the picker offers (config.toml, project and detected ones, each with its
+origin) on the left, the selected one's fields (Name, Command, Arguments,
+Working directory, Environment, Output) on the right. Enter or a double click
+on a field asks for its value (Arguments and Environment as shell words,
+`KEY=value` for Environment; Output is a choice). Insert or `[+]` adds a
+configuration, Delete or `[−]` removes a project one, Ctrl+D or `[Copy]`
+copies any configuration into a new project one, Ctrl+S or Apply saves, OK
+saves and closes, Esc asks before dropping changes. Saving writes only
+`.jetl/run.toml` (created with its folder when missing): comments and the
+entries you did not change are kept, and nothing runs, neither on opening nor
+on saving. Entries from config.toml and the detected defaults are read-only:
+copy one to change it in the project. A file that changed on disk since the
+window loaded it is not overwritten; reopen the window. An invalid
+`.jetl/run.toml` is shown as an error and makes the window read-only.
+
 A task runs without a terminal: stdin is closed and stdout and stderr share
 one pipe, so their lines interleave as written, but programs that color or
 animate only on a terminal print plain output (escape codes that still come
 through are stripped). The Run window (Alt+4) has a toolbar on its first row:
 the configuration picker (click it for the Alt+Shift+F10 picker), ▶ Run,
-↻ Rerun and ■ Stop (dim and inert when nothing ran or runs; a narrow window
-drops the buttons that do not fit, never the picker). Below it come the
+↻ Rerun, ■ Stop (dim and inert when nothing ran or runs) and Edit
+Configurations… (a narrow window drops the buttons that do not fit, never the
+picker). Below it come the
 status, elapsed time and the last 10 000 lines, following new output unless
 you scroll up.
 File locations in the output become links (rustc and cargo, tsc, pytest and

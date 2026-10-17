@@ -1125,6 +1125,16 @@ two `[[configs]]` entries, `where` (`command = "pwd"`) and `hello` (`command = "
    (`C-q`), start again: ` hello ▾ ` is back and nothing ran; `S-F10` runs `hello`.
 4. Record whether `S-F10` and `M-S-F10` arrive under tmux (they must). Repeat at 120x40 and
    80x24: the picker is kept, the status line stays on the second row.
+5. Add a `[[run.configs]]` `global check` to `$H/config/jetl/config.toml`. F1, `Run: edit run
+   configurations` (or the toolbar button, or Run > Edit Configurations…): both project entries
+   and `global check` (origin `config.toml`) are listed. Enter, Enter on the latter's `Command`:
+   the toast `Defined in config.toml: Copy makes an editable project copy`.
+6. Ctrl+D copies it; rename the copy `check2` (Enter on `Name`), set `Environment` to
+   `A=1 B='x y'` and `Working directory` to `src`, Ctrl+S: `cat $R/.jetl/run.toml` keeps the
+   comment and both entries and has the new `[[configs]]`; `M-S-F10` lists `check2`.
+7. Edit again, Esc: `Discard changes to run configurations?`. Insert, Tab to the buttons, OK with
+   no command: an error toast, nothing written. Repeat at 120x40 and 80x24: all six field rows,
+   the help and the three buttons are visible.
 
 ### Limits under tmux
 

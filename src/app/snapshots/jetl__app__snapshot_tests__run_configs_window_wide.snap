@@ -1,0 +1,49 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &run_configs_marks(&app.theme), None)"
+---
+120x40 cursor=hidden
+00  ≣ ┌ Project: root ───────────────┐│
+01    │                              ││
+02  1 │ ┌ Run Configurations ────────────────────────────────────────────────────────────────────────────────────────┐
+03  ⌂ │ │  global check     config.toml│ where                                                                       │
+04    │ │* where         .jetl/run.toml│                                                                             │
+05  2 │ │                              │   Name               where                                                  │
+06  ◫ │ │                              │   Command            sh -c pwd                                              │
+07    │ │                              │   Arguments          x                                                      │
+08  7 │ │                              │ * Working directory  web                                                    │
+09  ⊢ │ │                              │   Environment        FOO=bar                                                │
+10    │ │                              │   Output             auto (problems)                                        │
+11    │ │                              │                                                                             │
+12    │ │                              │                                                                             │
+13    │ │                              │                                                                             │
+14    │ │                              │                                                                             │
+15    │ │                              │                                                                             │
+16    │ │                              │                                                                             │
+17    │ │                              │                                                                             │
+18    │ │                              │                                                                             │
+19    │ │                              │                                                                             │
+20  ⟲ │ │                              │                                                                             │
+21    │ │                              │                                                                             │
+22    │ │                              │                                                                             │
+23  ⚑ │ │                              │                                                                             │
+24    │ │                              │                                                                             │
+25  9 │ │                              │                                                                             │
+26  ⎇ │ │                              │                                                                             │
+27    │ │                              │                                                                             │
+28    │ │                              │                                                                             │
+29  ❯ │ │                              │ Appended to the command, as shell words: --release 'a b'.                   │
+30    │ │                              │ Saved to .jetl/run.toml                                                     │
+31  6 │ │                                                                                                            │
+32  ⚠ │ │[+] [−] [Copy]                                                                [ OK ]  [ Cancel ]  [ Apply ] │
+33    │ └────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+34  4 │                              ││
+35  ► │                              ││
+36    │                              ││
+37  3 │                              ││
+38  ⌕ └──────────────────────────────┘│
+39  root
+-- marks: L=selected U=unfocused M=modified
+04       UUUUUUUUUUUUUUUUUUUUUUUUUUUUUU
+07                                       LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL
+08                                       M                    MMM

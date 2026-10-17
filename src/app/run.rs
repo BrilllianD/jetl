@@ -246,6 +246,7 @@ impl App {
         self.run.selected = None;
         self.run.tasks_loaded = false;
         self.run.run_selected_pending = false;
+        self.run_configs = None;
         self.run_panel.clear();
     }
 }

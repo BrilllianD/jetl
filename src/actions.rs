@@ -409,6 +409,8 @@ pub enum EventLogAction {
 pub enum RunAction {
     /// Run the selected configuration; the picker when none.
     RunSelected,
+    /// Open the Run Configurations window.
+    EditConfigs,
     Rerun,
     Stop,
     Up,
@@ -871,6 +873,7 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
 
         "run.pick" => "Run: choose a configuration and run it", App(AppAction::OpenPalette(PaletteKind::RunTasks));
         "run.run_selected" => "Run: run the selected configuration", Run(RunAction::RunSelected);
+        "run.edit_configs" => "Run: edit run configurations", Run(RunAction::EditConfigs);
         "run.rerun" => "Run: run the last run again", Run(RunAction::Rerun);
         "run.stop" => "Run: stop the running task", Run(RunAction::Stop);
         "run.up" => "Run: up", Run(RunAction::Up);

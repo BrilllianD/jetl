@@ -49,6 +49,7 @@ enum Btn {
     Run,
     Rerun,
     Stop,
+    EditConfigs,
 }
 
 impl Btn {
@@ -59,6 +60,7 @@ impl Btn {
             Btn::Run => "▶ Run",
             Btn::Rerun => "↻ Rerun",
             Btn::Stop => "■ Stop",
+            Btn::EditConfigs => "Edit Configurations…",
         }
     }
 }
@@ -194,7 +196,7 @@ impl RunPanel {
             RunAction::NextProblem => self.step(true, cx),
             RunAction::PrevProblem => self.step(false, cx),
             // They start and stop processes; `App::perform` runs them.
-            RunAction::Rerun | RunAction::Stop | RunAction::RunSelected => return false,
+            RunAction::Rerun | RunAction::Stop | RunAction::RunSelected | RunAction::EditConfigs => return false,
         }
         true
     }
@@ -208,6 +210,7 @@ impl RunPanel {
                     Some(Btn::Run) => Some(Action::Run(RunAction::RunSelected)),
                     Some(Btn::Rerun) if self.header.is_some() => Some(Action::Run(RunAction::Rerun)),
                     Some(Btn::Stop) if self.running() => Some(Action::Run(RunAction::Stop)),
+                    Some(Btn::EditConfigs) => Some(Action::Run(RunAction::EditConfigs)),
                     _ => None,
                 };
                 if let Some(a) = action {
@@ -224,6 +227,7 @@ impl RunPanel {
                         MenuItem::new("Run Selected", Action::Run(RunAction::RunSelected)),
                         MenuItem::new("Rerun", Action::Run(RunAction::Rerun)),
                         MenuItem::new("Stop", Action::Run(RunAction::Stop)).enabled(self.running()),
+                        MenuItem::new("Edit Configurations…", Action::Run(RunAction::EditConfigs)),
                     ];
                     cx.effects.push(Effect::ContextMenu(ContextMenu::new(items, m.x, m.y)));
                 } else if m.clicks == 2 || self.link_rects.iter().any(|(r, _)| r.contains((m.x, m.y).into())) {
@@ -268,7 +272,7 @@ impl RunPanel {
         self.hits.push((Btn::Picker, rect));
         let running = self.running();
         let ran = self.header.is_some();
-        for btn in [Btn::Run, Btn::Rerun, Btn::Stop] {
+        for btn in [Btn::Run, Btn::Rerun, Btn::Stop, Btn::EditConfigs] {
             let text = format!(" {} ", btn.label());
             if x + 1 + text.width() as u16 > right {
                 break;
@@ -474,11 +478,24 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[tokio::test]
+    async fn edit_configurations_button_opens_the_window() {
+        let (mut app, dir) = test_app("run-toolbar-edit");
+        draw(&mut app.run_panel, 100, 8);
+        assert!(app.run_configs.is_none());
+        click(&mut app, "Edit Configurations");
+        assert!(app.run_configs.is_some());
+        assert!(!app.run.running());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn narrow_toolbar_keeps_the_picker() {
         let mut p = RunPanel::default();
         draw(&mut p, 80, 6);
-        assert_eq!(p.hits.len(), 4);
+        assert_eq!(p.hits.len(), 5);
+        draw(&mut p, 60, 6);
+        assert!(p.hit_rect("Edit").is_none() && p.hits.len() == 4, "{:?}", p.hits);
         let term = draw(&mut p, 20, 6);
         assert!(p.hit_rect("▾").is_some());
         assert!(p.hit_rect("Run").is_none() && p.hits.len() == 1, "{:?}", p.hits);
