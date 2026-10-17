@@ -8,6 +8,7 @@ pub mod edit;
 pub mod matcher;
 pub mod panel;
 pub mod process;
+pub mod testing;
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -56,6 +57,8 @@ pub struct RunTask {
 pub enum MatcherKind {
     /// File locations become links (`matcher.rs`).
     Problems,
+    /// Test results as a tree (`testing.rs`), file locations linked too.
+    Tests,
     /// Plain text, no links.
     #[serde(rename = "none")]
     Plain,
@@ -63,12 +66,13 @@ pub enum MatcherKind {
 
 impl MatcherKind {
     /// Every kind, in the order the Edit Configurations dialog lists them.
-    pub const ALL: &'static [MatcherKind] = &[MatcherKind::Problems, MatcherKind::Plain];
+    pub const ALL: &'static [MatcherKind] = &[MatcherKind::Problems, MatcherKind::Tests, MatcherKind::Plain];
 
-    /// The TOML spelling: "problems", "none".
+    /// The TOML spelling: "problems", "tests", "none".
     pub fn label(self) -> &'static str {
         match self {
             MatcherKind::Problems => "problems",
+            MatcherKind::Tests => "tests",
             MatcherKind::Plain => "none",
         }
     }
@@ -211,10 +215,10 @@ impl RunTask {
         s
     }
 
-    /// The explicit matcher, else `Problems` (a later change detects one
-    /// from the command).
+    /// The explicit matcher, else `Tests` for a cargo test, pytest or vitest
+    /// command, else `Problems`.
     pub fn matcher_kind(&self) -> MatcherKind {
-        self.matcher.unwrap_or(MatcherKind::Problems)
+        self.matcher.unwrap_or_else(|| if testing::Runner::detect(self).is_some() { MatcherKind::Tests } else { MatcherKind::Problems })
     }
 
     fn detected(name: &str, argv: &[&str]) -> Self {
@@ -308,6 +312,29 @@ mod tests {
         assert_eq!(all[1].display(), "cargo test --release 'a b'");
         assert_eq!(all[1].argv(), ["cargo", "test", "--release", "a b"]);
         assert!(crate::config::Config::parse("[[run.configs]]\nname = \"x\"\ncommand = \"y\"\nmatcher = \"nope\"\n").is_err());
+    }
+
+    #[test]
+    fn auto_matcher_follows_the_command() {
+        let argv = |w: &[&str]| RunTask::detected("t", w);
+        let shell = |s: &str| RunTask { command: TaskCommand::Shell(s.into()), ..argv(&[]) };
+        for t in [
+            argv(&["cargo", "test"]),
+            shell("cargo test 2>&1"),
+            argv(&["cargo", "+nightly", "test", "--lib"]),
+            argv(&["python3", "-m", "pytest", "-q"]),
+            argv(&["pytest"]),
+            argv(&["npx", "vitest", "run"]),
+        ] {
+            assert_eq!(t.matcher_kind(), MatcherKind::Tests, "{}", t.display());
+        }
+        for t in [argv(&["cargo", "build"]), argv(&["npm", "test"]), argv(&["npx", "jest"])] {
+            assert_eq!(t.matcher_kind(), MatcherKind::Problems, "{}", t.display());
+        }
+        let explicit = RunTask { matcher: Some(MatcherKind::Problems), ..argv(&["cargo", "test"]) };
+        assert_eq!(explicit.matcher_kind(), MatcherKind::Problems);
+        let text = "[[run.configs]]\nname = \"t\"\ncommand = \"x\"\nmatcher = \"tests\"\n";
+        assert_eq!(crate::config::Config::parse(text).unwrap().run.configs[0].matcher, Some(MatcherKind::Tests));
     }
 
     #[test]

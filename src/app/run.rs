@@ -12,9 +12,26 @@ use crate::event::{AppMsg, Level};
 use crate::run::matcher::{Matcher, RunLine};
 use crate::run::panel::Status;
 use crate::run::process::{self, RunEnd, Spec};
-use crate::run::{MatcherKind, RunTask};
+use crate::run::testing::Runner;
+use crate::run::{MatcherKind, RunTask, TaskCommand, quote_word};
 use crate::ui::focus::{PanelId, ToolWindowId};
 use crate::ui::palette::Source;
+
+/// The process words to start and the command shown in the Run window. A
+/// word-list command whose output is read as tests gets the flag its runner
+/// needs (`-v`, `--reporter=tap-flat`); a shell string is never rewritten.
+fn spawn_argv(task: &RunTask) -> (Vec<String>, String) {
+    let argv = task.argv();
+    if task.matcher_kind() == MatcherKind::Tests
+        && matches!(task.command, TaskCommand::Argv(_))
+        && let Some(r) = Runner::detect(task)
+    {
+        let argv = r.prepare(argv);
+        let shown = argv.iter().map(|w| quote_word(w)).collect::<Vec<_>>().join(" ");
+        return (argv, shown);
+    }
+    (argv, task.display())
+}
 
 #[derive(Debug, Default)]
 pub struct RunState {
@@ -89,10 +106,10 @@ impl App {
             Some(d) if !d.is_empty() => root.join(d),
             _ => root.clone(),
         };
-        self.run_panel.start(&task.name, &task.display());
+        let (argv, shown) = spawn_argv(&task);
+        self.run_panel.start(&task.name, &shown);
         self.show_run_window();
         self.run.last = Some(task.clone());
-        let argv = task.argv();
         let matcher_kind = task.matcher_kind();
         let spec = Spec { argv, cwd: cwd.clone(), env: task.env.into_iter().collect() };
         tracing::debug!("running {:?} in {}", spec.argv, cwd.display());
@@ -293,6 +310,18 @@ mod tests {
             assert!(std::time::Instant::now() < deadline, "no pid in {}", file.display());
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
+    }
+
+    #[test]
+    fn prepared_command_shows_in_the_header() {
+        let argv = |w: &[&str]| RunTask { command: TaskCommand::Argv(w.iter().map(|s| s.to_string()).collect()), ..shell("t", "x") };
+        let (words, shown) = spawn_argv(&argv(&["pytest"]));
+        assert_eq!((words, shown.as_str()), (vec!["pytest".to_string(), "-v".into()], "pytest -v"));
+        assert_eq!(spawn_argv(&argv(&["npx", "vitest", "run"])).1, "npx vitest run --reporter=tap-flat");
+        assert_eq!(spawn_argv(&argv(&["pytest", "-vv"])).1, "pytest -vv");
+        assert_eq!(spawn_argv(&RunTask { matcher: Some(MatcherKind::Problems), ..argv(&["pytest"]) }).1, "pytest");
+        assert_eq!(spawn_argv(&shell("t", "pytest tests")).1, "pytest tests");
+        assert_eq!(spawn_argv(&argv(&["cargo", "test"])).1, "cargo test");
     }
 
     #[tokio::test]

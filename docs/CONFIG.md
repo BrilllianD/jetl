@@ -188,7 +188,7 @@ timeout_ms = 5000              # a formatter still running after this is killed
 # args = ["--watch=false"]       # appended to the command
 # cwd = "web"                    # relative to the project root; default the root
 # env = { CI = "1" }             # added to jetl's environment
-# matcher = "problems"           # "problems" (links, default), "none"
+# matcher = "problems"           # "problems" (links), "tests" (test results), "none"; unset: tests for cargo test / pytest / vitest
 
 [terminal]
 shell = ""                     # the Terminal window's shell; "" = $SHELL, else /bin/sh
@@ -317,7 +317,16 @@ Each entry has `name`, `command` (a string for `sh -c`, or a list of words),
 and optionally `args`, `cwd`, `env` and `matcher`. `args` are appended to the
 command's words; to a string command they are passed as `"$@"`, so they
 reach the shell command unsplit. `matcher` is `"problems"` (file locations
-in the output become links; the default) or `"none"` (plain output).
+in the output become links), `"tests"` (test results are parsed from
+`cargo test`, `pytest -v` and `vitest --reporter=tap-flat` output, with the
+failures' file locations linked too) or `"none"` (plain output). Unset, it is
+`"tests"` for a command that runs `cargo test`, `pytest` (or `python -m
+pytest`) or `vitest`, else `"problems"`. For a command given as a list of
+words and read as tests, jetl adds `-v` to a pytest command and
+`--reporter=tap-flat` to a vitest command when they are missing (the Run
+window header shows the command as started); a string command is never
+rewritten, so give it those flags yourself. Jest output is not parsed:
+`npx jest` keeps the problems matcher.
 
 Run > Edit Configurations… (also the Run window's toolbar button and the
 action `run.edit_configs`) opens the Run Configurations window: the list of

@@ -1,0 +1,23 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-8.2.0, pluggy-1.5.0 -- /usr/bin/python3
+rootdir: /tmp/p
+collecting ... collected 4 items
+
+tests/test_a.py::test_ok PASSED                                          [ 25%]
+tests/test_a.py::TestMath::test_fail FAILED                              [ 50%]
+tests/test_a.py::test_skip SKIPPED (no reason)                           [ 75%]
+tests/test_a.py::test_param[1-2] PASSED                                  [100%]
+
+=================================== FAILURES ===================================
+______________________________ TestMath.test_fail ______________________________
+
+self = <test_a.TestMath object at 0x7f>
+
+    def test_fail(self):
+>       assert 1 == 2
+E       assert 1 == 2
+
+tests/test_a.py:7: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_a.py::TestMath::test_fail - assert 1 == 2
+==================== 1 failed, 2 passed, 1 skipped in 0.02s ====================

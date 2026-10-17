@@ -244,13 +244,13 @@ mod tests {
         let d = app.dialog.as_ref().expect("asked again");
         assert!(d.message.starts_with("Not KEY=value: oops. "), "{}", d.message);
         assert!(!app.run_configs.as_ref().unwrap().dirty());
-        // Output is a choice: auto, problems, none.
+        // Output is a choice: auto, problems, tests, none.
         answer(&mut app, DialogResult::Cancel);
         key(&mut app, KeyCode::Down);
         key(&mut app, KeyCode::Enter);
         let DialogKind::Choice { items, .. } = &app.dialog.as_ref().unwrap().kind else { panic!("a choice") };
-        assert_eq!(items, &["auto", "problems", "none"]);
-        answer(&mut app, DialogResult::Choice(2));
+        assert_eq!(items, &["auto", "problems", "tests", "none"]);
+        answer(&mut app, DialogResult::Choice(3));
         ctrl(&mut app, 's');
         assert!(std::fs::read_to_string(file(&app)).unwrap().contains("matcher = \"none\""));
         let _ = std::fs::remove_dir_all(dir);

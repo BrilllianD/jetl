@@ -1,0 +1,34 @@
+   Compiling jtc v0.1.0 (/tmp/p)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.50s
+     Running unittests src/lib.rs (target/debug/deps/jtc-0123456789abcdef)
+
+running 1 test
+test tests::adds ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/cli.rs (target/debug/deps/cli-0123)
+
+running 1 test
+test outside ... FAILED
+
+failures:
+
+---- outside stdout ----
+
+thread 'outside' panicked at tests/cli.rs:2:16:
+assertion failed: jtc::add(2, 2) == 5
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    outside
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests jtc
+
+running 1 test
+test src/lib.rs - add (line 3) ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s

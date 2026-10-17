@@ -1,0 +1,14 @@
+TAP version 13
+1..4
+ok 1 - src/math.test.ts > math > adds # time=1.20ms
+not ok 2 - src/math.test.ts > math > nested > fails # time=2.10ms
+    ---
+    error:
+        name: "AssertionError"
+        message: "expected 2 to be 3 // Object.is equality"
+    at: "src/math.test.ts:9:17"
+    actual: "2"
+    expected: "3"
+    ...
+ok 3 - src/math.test.ts > math > skipped # SKIP
+ok 4 - src/other.test.ts > top level # time=0.30ms
