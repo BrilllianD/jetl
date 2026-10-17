@@ -27,6 +27,13 @@ pub struct RunState {
     pub(crate) tasks: Vec<RunTask>,
     tasks_requested: u64,
     tasks_seq: u64,
+    /// The Run window's selected configuration, by name: the last one
+    /// picked, kept in the session.
+    pub(crate) selected: Option<String>,
+    /// A task list has arrived for this root.
+    tasks_loaded: bool,
+    /// `run.run_selected` waits for the list.
+    run_selected_pending: bool,
 }
 
 #[derive(Debug)]
@@ -181,7 +188,7 @@ impl App {
     }
 
     /// Load the picker's tasks off the main thread (they read project files).
-    pub(super) fn load_run_tasks(&mut self) {
+    pub(crate) fn load_run_tasks(&mut self) {
         self.run.tasks_requested += 1;
         let seq = self.run.tasks_requested;
         let (root, generation, tx) = (self.workspace.root.clone(), self.workspace.generation, self.bus_tx.clone());
@@ -198,6 +205,7 @@ impl App {
             return;
         }
         self.run.tasks_seq = seq;
+        self.run.tasks_loaded = true;
         self.run.tasks = tasks;
         if let Some(e) = error {
             self.notify(Level::Warn, e);
@@ -206,6 +214,28 @@ impl App {
         if let Some(p) = self.palette.as_mut().filter(|p| p.wants(Source::Tasks)) {
             p.set_tasks(self.run.tasks.clone(), loading);
         }
+        if seq == self.run.tasks_requested && std::mem::take(&mut self.run.run_selected_pending) {
+            self.run_selected();
+        }
+    }
+
+    /// `run.run_selected`: the selected configuration; the picker when none
+    /// is selected or it no longer exists. Waits for the list when it has
+    /// not loaded yet.
+    pub(super) fn run_selected(&mut self) {
+        let Some(name) = self.run.selected.clone() else { return self.open_palette(PaletteKind::RunTasks) };
+        if !self.run.tasks_loaded {
+            self.run.run_selected_pending = true;
+            self.load_run_tasks();
+            return;
+        }
+        match self.run.tasks.iter().find(|t| t.name == name).cloned() {
+            Some(t) => self.run_task(t),
+            None => {
+                self.notify(Level::Warn, format!("Run configuration '{name}' no longer exists"));
+                self.open_palette(PaletteKind::RunTasks);
+            }
+        }
     }
 
     /// A root switch: the task belongs to the old root.
@@ -213,6 +243,9 @@ impl App {
         self.run.kill();
         self.run.last = None;
         self.run.tasks.clear();
+        self.run.selected = None;
+        self.run.tasks_loaded = false;
+        self.run.run_selected_pending = false;
         self.run_panel.clear();
     }
 }
@@ -220,6 +253,8 @@ impl App {
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
+
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     use super::*;
     use crate::actions::{Action, PaletteAction, RunAction};
@@ -422,6 +457,81 @@ mod tests {
         let requested = app.run.tasks_requested;
         app.handle_msg(AppMsg::FsChanged { generation, changes: Changes { paths: vec![root.join("src/other.rs")], ..Default::default() } });
         assert_eq!(app.run.tasks_requested, requested, "an unrelated path reloads nothing");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn two_configs(app: &mut App) {
+        app.config.run.tasks = vec![shell("a", "echo a"), shell("b", "echo b")];
+    }
+
+    fn texts(app: &App) -> Vec<String> {
+        app.run_panel.lines.iter().map(|l| l.text.clone()).collect()
+    }
+
+    #[tokio::test]
+    async fn shift_f10_runs_the_selected_configuration() {
+        let (mut app, dir) = test_app("run-shift-f10");
+        two_configs(&mut app);
+        app.perform(Action::App(crate::actions::AppAction::OpenPalette(PaletteKind::RunTasks)));
+        handle_next(&mut app, |m| matches!(m, AppMsg::RunTasks { .. })).await;
+        app.palette.as_mut().unwrap().set_query("b");
+        let res = app.palette.as_mut().unwrap().handle_action(&PaletteAction::Accept).unwrap();
+        app.finish_palette(res);
+        assert_eq!(app.run.selected.as_deref(), Some("b"));
+        until_exit(&mut app).await;
+        app.run.last = Some(shell("other", "echo other"));
+        app.handle_key(KeyEvent::new(KeyCode::F(10), KeyModifiers::SHIFT));
+        until_exit(&mut app).await;
+        assert_eq!(texts(&app), ["b"], "Shift+F10 runs the selected configuration, not the last run");
+        app.run.last = Some(shell("other", "echo other"));
+        app.handle_key(KeyEvent::new(KeyCode::F(5), KeyModifiers::CONTROL));
+        until_exit(&mut app).await;
+        assert_eq!(texts(&app), ["other"], "Ctrl+F5 reruns the last run");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn run_selected_waits_for_the_list_and_handles_a_missing_name() {
+        let (mut app, dir) = test_app("run-selected-wait");
+        two_configs(&mut app);
+        app.run.selected = Some("b".into());
+        assert!(!app.run.tasks_loaded);
+        app.perform(Action::Run(RunAction::RunSelected));
+        assert!(!app.run.running(), "nothing runs before the list is there");
+        handle_next(&mut app, |m| matches!(m, AppMsg::RunTasks { .. })).await;
+        assert!(app.run.running());
+        until_exit(&mut app).await;
+        assert_eq!(texts(&app), ["b"]);
+        // The name is gone: a warning and the picker.
+        app.run.selected = Some("gone".into());
+        app.perform(Action::Run(RunAction::RunSelected));
+        assert!(app.notifications.iter().any(|n| n.level == Level::Warn && n.text == "Run configuration 'gone' no longer exists"));
+        assert!(app.palette.is_some());
+        assert!(!app.run.running());
+        // Nothing selected: the picker, nothing runs.
+        app.palette = None;
+        app.run.selected = None;
+        app.perform(Action::Run(RunAction::RunSelected));
+        assert_eq!(app.palette.as_ref().map(|p| p.kind), Some(PaletteKind::RunTasks));
+        assert!(!app.run.running());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn selection_survives_through_the_session() {
+        let (mut app, dir) = test_app("run-selected-session");
+        two_configs(&mut app);
+        app.run.selected = Some("b".into());
+        let session = app.session();
+        assert_eq!(session.run_config.as_deref(), Some("b"));
+        app.run_root_changed();
+        assert_eq!(app.run.selected, None, "a root switch clears it");
+        let generation = app.workspace.generation;
+        app.session_loaded(generation, session, vec![]);
+        assert_eq!(app.run.selected.as_deref(), Some("b"));
+        handle_next(&mut app, |m| matches!(m, AppMsg::RunTasks { .. })).await;
+        assert!(!app.run.running(), "restoring runs nothing");
+        assert!(app.run_panel.status().is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -407,6 +407,8 @@ pub enum EventLogAction {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum RunAction {
+    /// Run the selected configuration; the picker when none.
+    RunSelected,
     Rerun,
     Stop,
     Up,
@@ -867,8 +869,9 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "event_log.copy" => "Event Log: copy the selected entry", EventLog(EventLogAction::Copy);
         "event_log.clear" => "Event Log: clear", EventLog(EventLogAction::Clear);
 
-        "run.pick" => "Run: choose a task and run it", App(AppAction::OpenPalette(PaletteKind::RunTasks));
-        "run.rerun" => "Run: run the last task again", Run(RunAction::Rerun);
+        "run.pick" => "Run: choose a configuration and run it", App(AppAction::OpenPalette(PaletteKind::RunTasks));
+        "run.run_selected" => "Run: run the selected configuration", Run(RunAction::RunSelected);
+        "run.rerun" => "Run: run the last run again", Run(RunAction::Rerun);
         "run.stop" => "Run: stop the running task", Run(RunAction::Stop);
         "run.up" => "Run: up", Run(RunAction::Up);
         "run.down" => "Run: down", Run(RunAction::Down);

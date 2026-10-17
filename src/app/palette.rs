@@ -246,7 +246,10 @@ impl App {
             PaletteResult::Accept(Accept::Branch(b)) => self.git_request(GitRequest::BranchOps(b)),
             PaletteResult::Accept(Accept::NewBranch) => self.git_request(GitRequest::NewBranch),
             PaletteResult::Accept(Accept::SwitchRoot(root)) => self.apply_effects(vec![Effect::SwitchRoot(root)]),
-            PaletteResult::Accept(Accept::RunTask(task)) => self.run_task(*task),
+            PaletteResult::Accept(Accept::RunTask(task)) => {
+                self.run.selected = Some(task.name.clone());
+                self.run_task(*task)
+            }
             PaletteResult::Accept(Accept::DeleteScratch(path)) => self.ask_delete_scratch(path),
             PaletteResult::Accept(Accept::ForgetProject(root)) => self.forget_recent_project(root),
             // A symbol or location: back returns here even after a short jump.

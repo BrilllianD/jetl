@@ -1,5 +1,6 @@
-//! Run tool window: the last task's status line (name, spinner or exit
-//! status, elapsed time, command) above its output, at most `MAX_LINES`
+//! Run tool window: a toolbar (configuration picker, Run, Rerun, Stop), the
+//! last run's status line (name, spinner or exit status, elapsed time,
+//! command) and its output, at most `MAX_LINES`
 //! lines (the oldest are dropped). Matched locations are underlined and
 //! colored by severity; a click on one, Enter or a double click opens it.
 //! The selection follows new output while it sits on the last line and that
@@ -12,9 +13,10 @@ use crossterm::event::{MouseButton, MouseEventKind};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
+use unicode_width::UnicodeWidthStr;
 
 use super::matcher::{Link, RunLine, Severity};
-use crate::actions::{Action, RunAction};
+use crate::actions::{Action, AppAction, PaletteKind, RunAction};
 use crate::app::Ctx;
 use crate::config::theme::Theme;
 use crate::event::{Effect, Level, Mouse};
@@ -40,6 +42,27 @@ pub enum Status {
     Failed(String),
 }
 
+/// A toolbar button.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Btn {
+    Picker,
+    Run,
+    Rerun,
+    Stop,
+}
+
+impl Btn {
+    /// The text between the padding spaces; the picker's is its arrow.
+    fn label(self) -> &'static str {
+        match self {
+            Btn::Picker => "▾",
+            Btn::Run => "▶ Run",
+            Btn::Rerun => "↻ Rerun",
+            Btn::Stop => "■ Stop",
+        }
+    }
+}
+
 #[derive(Debug)]
 struct Header {
     name: String,
@@ -57,6 +80,8 @@ pub struct RunPanel {
     list_rect: Rect,
     /// Screen cells of the visible links and their line.
     link_rects: Vec<(Rect, usize)>,
+    /// Screen cells of the drawn toolbar buttons.
+    hits: Vec<(Btn, Rect)>,
 }
 
 impl RunPanel {
@@ -100,6 +125,20 @@ impl RunPanel {
 
     pub fn running(&self) -> bool {
         self.status() == Some(&Status::Running)
+    }
+
+    /// Stop the clock of the header, so a snapshot shows a fixed time.
+    #[cfg(test)]
+    pub fn freeze_elapsed(&mut self) {
+        if let Some(h) = &mut self.header {
+            h.ended = Some(h.started);
+        }
+    }
+
+    /// The cells of the toolbar button whose label contains `label`.
+    #[cfg(test)]
+    pub fn hit_rect(&self, label: &str) -> Option<Rect> {
+        self.hits.iter().find(|(b, _)| b.label().contains(label)).map(|(_, r)| *r)
     }
 
     /// Where line `i` leads: its own location, or for a header line
@@ -155,19 +194,34 @@ impl RunPanel {
             RunAction::NextProblem => self.step(true, cx),
             RunAction::PrevProblem => self.step(false, cx),
             // They start and stop processes; `App::perform` runs them.
-            RunAction::Rerun | RunAction::Stop => return false,
+            RunAction::Rerun | RunAction::Stop | RunAction::RunSelected => return false,
         }
         true
     }
 
     pub fn handle_mouse(&mut self, m: &Mouse, cx: &mut Ctx) -> bool {
         match m.kind {
+            MouseEventKind::Down(MouseButton::Left) if self.hits.iter().any(|(_, r)| r.contains((m.x, m.y).into())) => {
+                let btn = self.hits.iter().find(|(_, r)| r.contains((m.x, m.y).into())).map(|(b, _)| *b);
+                let action = match btn {
+                    Some(Btn::Picker) => Some(Action::App(AppAction::OpenPalette(PaletteKind::RunTasks))),
+                    Some(Btn::Run) => Some(Action::Run(RunAction::RunSelected)),
+                    Some(Btn::Rerun) if self.header.is_some() => Some(Action::Run(RunAction::Rerun)),
+                    Some(Btn::Stop) if self.running() => Some(Action::Run(RunAction::Stop)),
+                    _ => None,
+                };
+                if let Some(a) = action {
+                    cx.effects.push(Effect::Perform(a));
+                }
+                true
+            }
             MouseEventKind::Down(button @ (MouseButton::Left | MouseButton::Right)) => {
                 let Some(i) = self.state.hit(self.list_rect, m.x, m.y) else { return false };
                 self.state.select(i);
                 if button == MouseButton::Right {
                     let items = vec![
                         MenuItem::new("Jump to Source", Action::Run(RunAction::Open)).enabled(self.target(i).is_some()),
+                        MenuItem::new("Run Selected", Action::Run(RunAction::RunSelected)),
                         MenuItem::new("Rerun", Action::Run(RunAction::Rerun)),
                         MenuItem::new("Stop", Action::Run(RunAction::Stop)).enabled(self.running()),
                     ];
@@ -189,7 +243,7 @@ impl RunPanel {
         }
     }
 
-    pub fn render(&mut self, frame: &mut Frame, area: Rect, focused: bool, theme: &Theme) {
+    pub fn render(&mut self, frame: &mut Frame, area: Rect, focused: bool, theme: &Theme, selected: Option<&str>) {
         let title = match &self.header {
             Some(h) => format!(" Run: {} ", h.name),
             None => " Run ".to_string(),
@@ -198,21 +252,48 @@ impl RunPanel {
         let r = block.inner(area);
         frame.render_widget(block, area);
         self.link_rects.clear();
+        self.hits.clear();
+        self.list_rect = Rect::default();
         if r.height == 0 || r.width < 4 {
-            self.list_rect = Rect::default();
             return;
         }
         let buf = frame.buffer_mut();
         let right = r.right();
+        // Toolbar: the picker always, then as many whole buttons as fit.
+        let bar = Style::default().bg(theme.panel_bg);
+        buf.set_style(Rect::new(r.x, r.y, r.width, 1), bar);
+        let mut x = r.x;
+        let picker = format!(" {} ▾ ", selected.unwrap_or("Select Configuration"));
+        let rect = put(buf, &mut x, r.y, right, &picker, theme.tab_active);
+        self.hits.push((Btn::Picker, rect));
+        let running = self.running();
+        let ran = self.header.is_some();
+        for btn in [Btn::Run, Btn::Rerun, Btn::Stop] {
+            let text = format!(" {} ", btn.label());
+            if x + 1 + text.width() as u16 > right {
+                break;
+            }
+            let enabled = match btn {
+                Btn::Rerun => ran,
+                Btn::Stop => running,
+                _ => true,
+            };
+            let style = if enabled { theme.title.bg(theme.panel_bg) } else { theme.dim.bg(theme.panel_bg) };
+            x += 1;
+            let rect = put(buf, &mut x, r.y, right, &text, style);
+            self.hits.push((btn, rect));
+        }
+        if r.height < 2 {
+            return;
+        }
         let Some(h) = &self.header else {
-            self.list_rect = Rect::default();
-            let hint = "No task has run yet: Alt+Shift+F10 picks one";
-            buf.set_stringn(r.x + 1, r.y, hint, r.width.saturating_sub(1) as usize, theme.dim);
+            let hint = "No configuration has run yet: Alt+Shift+F10 picks one, Shift+F10 runs the selected one";
+            buf.set_stringn(r.x + 1, r.y + 1, hint, r.width.saturating_sub(1) as usize, theme.dim);
             return;
         };
         // Status line.
         let (glyph, text, style) = status_text(h, theme);
-        let (x, _) = buf.set_stringn(r.x + 1, r.y, glyph, (right - r.x - 1) as usize, style.add_modifier(Modifier::BOLD));
+        let (x, _) = buf.set_stringn(r.x + 1, r.y + 1, glyph, (right - r.x - 1) as usize, style.add_modifier(Modifier::BOLD));
         let elapsed = format_elapsed(h.ended.unwrap_or_else(Instant::now) - h.started);
         let rest = [(format!(" {text}"), style), (format!("  {elapsed}"), theme.dim), (format!("  $ {}", h.command), theme.dim)];
         let mut x = x;
@@ -220,10 +301,13 @@ impl RunPanel {
             if x >= right {
                 break;
             }
-            x = buf.set_stringn(x, r.y, &s, (right - x) as usize, st).0;
+            x = buf.set_stringn(x, r.y + 1, &s, (right - x) as usize, st).0;
+        }
+        if r.height < 3 {
+            return;
         }
         // Output.
-        let list = Rect::new(r.x, r.y + 1, r.width, r.height - 1);
+        let list = Rect::new(r.x, r.y + 2, r.width, r.height - 2);
         self.list_rect = list;
         self.state.fit(self.lines.len(), list.height as usize);
         for (vi, i) in self.state.visible().enumerate() {
@@ -266,6 +350,17 @@ impl RunPanel {
             buf.set_stringn(list.x + 1, list.y, "No output yet", list.width.saturating_sub(1) as usize, theme.dim);
         }
     }
+}
+
+/// Write `text` at `*x` clipped to `right`, advance `*x`, return its rect.
+fn put(buf: &mut ratatui::buffer::Buffer, x: &mut u16, y: u16, right: u16, text: &str, style: Style) -> Rect {
+    let w = (text.width() as u16).min(right.saturating_sub(*x));
+    if w > 0 {
+        buf.set_stringn(*x, y, text, w as usize, style);
+    }
+    let r = Rect::new(*x, y, w, 1);
+    *x += w;
+    r
 }
 
 fn status_text(h: &Header, theme: &Theme) -> (&'static str, String, Style) {
@@ -318,5 +413,93 @@ mod tests {
         p.state.up(3);
         p.push(vec![RunLine::plain("x"), RunLine::plain("y")]);
         assert_eq!(p.lines[p.state.selected].text, (MAX_LINES + 1).to_string(), "scrolled up: stays on its line");
+    }
+
+    use crate::app::tests::test_app;
+    use crate::event::AppMsg;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    fn draw(p: &mut RunPanel, w: u16, h: u16) -> Terminal<TestBackend> {
+        let theme = Theme::default();
+        let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+        term.draw(|f| p.render(f, f.area(), true, &theme, None)).unwrap();
+        term
+    }
+
+    fn click(app: &mut crate::app::App, label: &str) {
+        let r = app.run_panel.hit_rect(label).unwrap();
+        let m =
+            Mouse { kind: MouseEventKind::Down(MouseButton::Left), x: r.x, y: r.y, clicks: 1, mods: crossterm::event::KeyModifiers::NONE };
+        app.forward_mouse(crate::ui::focus::PanelId::Run, Rect::default(), &m);
+    }
+
+    #[tokio::test]
+    async fn toolbar_buttons_perform_their_actions() {
+        let (mut app, dir) = test_app("run-toolbar");
+        draw(&mut app.run_panel, 80, 8);
+        // Picker: the Run picker opens.
+        assert!(app.palette.is_none());
+        click(&mut app, "▾");
+        assert_eq!(app.palette.as_ref().map(|p| p.kind), Some(PaletteKind::RunTasks));
+        app.palette = None;
+        // Run asks for the selected configuration (it waits for the list, no
+        // picker); Rerun without a last run opens the picker.
+        app.run.selected = Some("x".into());
+        click(&mut app, "Run");
+        assert!(app.palette.is_none(), "Run is not Rerun");
+        app.run.selected = None;
+        click(&mut app, "Run");
+        assert_eq!(app.palette.as_ref().map(|p| p.kind), Some(PaletteKind::RunTasks), "nothing selected: the picker");
+        app.palette = None;
+        // Stop: inert while nothing runs.
+        let toasts = app.notifications.len();
+        click(&mut app, "Stop");
+        assert_eq!(app.notifications.len(), toasts, "no 'No task is running' toast: the button is inert");
+        // After a run starts the button stops it.
+        let text = "[[run.tasks]]\nname = \"wait\"\ncommand = \"sleep 30\"\n";
+        app.run_task(crate::config::Config::parse(text).unwrap().run.tasks.remove(0));
+        assert!(app.run.running());
+        draw(&mut app.run_panel, 80, 8);
+        click(&mut app, "Stop");
+        while app.run.running() {
+            crate::app::tests::handle_next(&mut app, |m| matches!(m, AppMsg::RunOutput { .. } | AppMsg::RunExited { .. })).await;
+        }
+        assert_eq!(app.run_panel.status(), Some(&Status::Stopped), "Stop killed the run");
+        // Rerun starts the last run again.
+        let seq = app.run.seq;
+        click(&mut app, "Rerun");
+        assert_eq!(app.run.seq, seq + 1);
+        app.run.kill();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn narrow_toolbar_keeps_the_picker() {
+        let mut p = RunPanel::default();
+        draw(&mut p, 80, 6);
+        assert_eq!(p.hits.len(), 4);
+        let term = draw(&mut p, 20, 6);
+        assert!(p.hit_rect("▾").is_some());
+        assert!(p.hit_rect("Run").is_none() && p.hits.len() == 1, "{:?}", p.hits);
+        let row: String = (0..20).map(|x| term.backend().buffer()[(x, 1)].symbol().to_string()).collect();
+        assert!(row.contains("Select"), "{row}");
+        draw(&mut p, 5, 2);
+        draw(&mut p, 4, 1);
+    }
+
+    #[test]
+    fn output_starts_on_the_third_row() {
+        let mut p = RunPanel::default();
+        p.start("t", "t");
+        p.push(vec![RunLine::plain("a")]);
+        draw(&mut p, 40, 8);
+        // Border, toolbar, status.
+        assert_eq!(p.list_rect.y, 3);
+        let term = draw(&mut p, 40, 8);
+        let row: String = (0..40).map(|x| term.backend().buffer()[(x, 3)].symbol().to_string()).collect();
+        assert!(row.contains('a'), "{row}");
+        draw(&mut p, 40, 3);
+        assert_eq!(p.list_rect, Rect::default(), "no room for a list");
     }
 }

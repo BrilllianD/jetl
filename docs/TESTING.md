@@ -1112,6 +1112,20 @@ Setup as for the other scenarios with a fresh `$H` and LSP off; `S=$H/config/jet
    `Language servers are off ...`. Flip it back on.
 5. Undo every edit; do not save. Repeat at 120x40 and 80x24.
 
+### Scenario: run configurations
+
+Setup as for the other scenarios with a fresh `$H` and LSP off; write `$R/.jetl/run.toml` with
+two `[[configs]]` entries, `where` (`command = "pwd"`) and `hello` (`command = "echo hello"`).
+
+1. Alt+4: the toolbar reads ` Select Configuration ▾ `, ` ▶ Run `, ` ↻ Rerun ` (dim), ` ■ Stop `
+   (dim); the second row is the hint `No configuration has run yet: ...`.
+2. `send-keys M-S-F10`, pick `hello`: the picker shows ` hello ▾ `, the output is `hello`, the
+   status line is on the second row. F1, `Run: choose`, pick `where`: it runs.
+3. `send-keys S-F10`: `where` runs again (the last pick is the selected one). Pick `hello`, quit
+   (`C-q`), start again: ` hello ▾ ` is back and nothing ran; `S-F10` runs `hello`.
+4. Record whether `S-F10` and `M-S-F10` arrive under tmux (they must). Repeat at 120x40 and
+   80x24: the picker is kept, the status line stays on the second row.
+
 ### Limits under tmux
 
 - No kitty keyboard protocol: Ctrl+Shift+letter, Ctrl+Tab, Ctrl+Enter,

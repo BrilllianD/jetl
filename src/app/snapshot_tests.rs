@@ -2226,3 +2226,45 @@ async fn editor_inlay_hints_rust() {
     marks.extend(editor_marks(&app.theme));
     assert_snapshot!("editor_inlay_hints_rust", snapshot(&term, &marks, None));
 }
+
+fn run_marks(theme: &Theme) -> [Mark; 4] {
+    [
+        Mark::bg('L', "selected", theme.list_selected_unfocused.bg.unwrap()),
+        Mark::style('T', "picker", theme.tab_active),
+        Mark::style('D', "dim button", theme.dim.bg(theme.panel_bg)),
+        Mark::modifier('U', "link", Modifier::UNDERLINED),
+    ]
+}
+
+/// The Run window after a failed `check` with one linked error.
+fn run_fixture(app: &mut App) {
+    let root = app.workspace.root.clone();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("src/a.rs"), "fn main() {\n    let x = 1;\n}\n").unwrap();
+    app.run.selected = Some("check".into());
+    app.toggle_tool_window(ToolWindowId::Run);
+    app.run_panel.start("check", "cargo check");
+    let mut matcher = crate::run::matcher::Matcher::new(&root, &root);
+    let lines = ["error: x", " --> src/a.rs:2:3", "   Compiling jtc v0.1.0", "    Finished"].map(|t| matcher.line(t.to_string()));
+    app.run_panel.push(lines.to_vec());
+    app.run_panel.finish(crate::run::panel::Status::Exited(101));
+    app.run_panel.freeze_elapsed();
+}
+
+#[tokio::test]
+async fn run_window_toolbar() {
+    let mut fx = stable_app("run-toolbar");
+    let app = &mut fx.app;
+    run_fixture(app);
+    let term = draw_app(app, 80, 24);
+    assert_snapshot!("run_window_toolbar", snapshot(&term, &run_marks(&app.theme), None));
+}
+
+#[tokio::test]
+async fn run_window_toolbar_wide() {
+    let mut fx = stable_app("run-toolbar-wide");
+    let app = &mut fx.app;
+    run_fixture(app);
+    let term = draw_app(app, 120, 40);
+    assert_snapshot!("run_window_toolbar_wide", snapshot(&term, &run_marks(&app.theme), None));
+}

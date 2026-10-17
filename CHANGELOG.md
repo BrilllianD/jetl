@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The Run window has a toolbar with a configuration picker, Run, Rerun and Stop; Shift+F10 runs the selected configuration (the last one picked, remembered per project), Ctrl+F5 reruns the last run.
 - Run configurations: `[[run.configs]]` in config.toml and `[[configs]]` in `.jetl/run.toml` take `args` and `matcher` (`problems`, `none`) besides name, command, cwd and env; edits to either file apply at once.
 - Live templates: Tab right after a snippet's prefix expands it (tabstops walked with Tab, as for completion snippets), and matching snippets are listed in the completion popup after the language server's items (Ctrl+Space lists them even without a server). Built-ins for Rust (`fn`, `test`, `impl`, `match`), Python (`def`, `class`, `ifmain`) and TypeScript (`fn`, `log`); your own in `~/.config/jetl/snippets/<language>.toml` and `all.toml`; edits to the snippet files apply at once; `[editor] snippets = false` turns live templates off.
 - Inlay hints from the language server (types, parameter names) drawn in the text for the visible lines; soft wrap counts them and a click on one puts the caret at its place. They are asked for again after a request timed out and when the server finishes loading. `[lsp] inlay_hints` turns them off. View > Inlay Hints shows or hides them for the session.

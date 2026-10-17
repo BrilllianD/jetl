@@ -14,6 +14,7 @@ impl App {
         for e in effects {
             match e {
                 Effect::Notify(level, text) => self.notify(level, text),
+                Effect::Perform(a) => self.perform(a),
                 Effect::Focus(p) => {
                     if let Some(tw) = p.tool_window() {
                         self.layout.show(tw);

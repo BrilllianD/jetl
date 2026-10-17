@@ -1,0 +1,49 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &run_marks(&app.theme), None)"
+---
+80x24 cursor=hidden
+00  ≣ ┌ Project: root ───────────────┐│
+01    │                              ││
+02  1 │                              ││
+03  ⌂ │                              ││               No files open.
+04  2 │                              ││       Alt+1 opens the Project view;
+05  ◫ │                              ││         Ctrl+Shift+N finds a file.
+06  7 │                              ││
+07  ⊢ └──────────────────────────────┘│
+08    ─────────────────────────────────────────────────────────────────────────────
+09    ┌ Run: check ───────────────────────────────────────────────────────────────┐
+10  ⟲ │ check ▾   ▶ Run   ↻ Rerun   ■ Stop                                        │
+11    │ ✗ exit code 101  0.0s  $ cargo check                                      │
+12  ⚑ │ error: x                                                                  │
+13  9 │  --> src/a.rs:2:3                                                         │
+14  ⎇ │    Compiling jtc v0.1.0                                                   │
+15    │     Finished                                                              │
+16  ❯ │                                                                           │
+17  6 │                                                                           │
+18  ⚠ │                                                                           │
+19  4 │                                                                           │
+20  ► │                                                                           │
+21  3 │                                                                           │
+22  ⌕ └───────────────────────────────────────────────────────────────────────────┘
+23  root
+-- marks: L=selected T=picker D=dim button U=link
+00 DDD                                 DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD
+04 DDD
+05 DDD
+06 DDD
+07 DDD
+09 DDD TTTTTTTTTTTT
+10 DDD TTTTTTTTT                   DDDDDDDD
+11 DDD
+12 DDD
+13 DDD       UUUUUUUUUUUU
+14 DDD
+15 DDD
+16 DDD
+17 DDD
+18 DDD
+19 UUU
+20 UUU
+21 DDD
+22 DDD

@@ -73,6 +73,9 @@ pub struct Session {
     /// sessions stay readable by builds that know only numbered ones).
     #[serde(default)]
     pub closed_plain_bookmarks: Vec<SessionClosedFile>,
+    /// The Run window's selected configuration, by name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_config: Option<String>,
 }
 
 /// The plain bookmarks of a file without a tab.
@@ -364,7 +367,18 @@ impl App {
                 _ => closed_plain_bookmarks.push(SessionClosedFile { path, lines: vec![line] }),
             }
         }
-        Session { root, files, active, recent, layout, expanded, splits, closed_bookmarks, closed_plain_bookmarks }
+        Session {
+            root,
+            files,
+            active,
+            recent,
+            layout,
+            expanded,
+            splits,
+            closed_bookmarks,
+            closed_plain_bookmarks,
+            run_config: self.run.selected.clone(),
+        }
     }
 
     /// The editor's groups as a session, `None` with one group.
@@ -481,6 +495,9 @@ impl App {
             self.set_git_tab(l.git_tab);
             self.project.set_visibility(l.show_hidden, l.show_ignored);
         }
+        self.run.selected = session.run_config.clone();
+        // Reads project files only; nothing starts.
+        self.load_run_tasks();
         let expanded: Vec<PathBuf> = session.expanded.iter().map(|d| session.root.join(d)).collect();
         self.project.expand_paths(&expanded);
         if let Some((path, line, col)) = self.pending_open.take() {
@@ -578,6 +595,7 @@ mod tests {
             }),
             closed_bookmarks: vec![SessionBookmark { digit: 2, path: root.join("src/lib.rs"), line: 12 }],
             closed_plain_bookmarks: vec![SessionClosedFile { path: root.join("src/lib.rs"), lines: vec![3, 40] }],
+            run_config: Some("cargo test".into()),
         };
         s.save(&dir).unwrap();
         assert_eq!(Session::load(&dir, &root), Some(s.clone()));
@@ -590,6 +608,7 @@ mod tests {
         assert_eq!((old.files[0].line, old.active, old.recent.len(), old.files[0].bookmarks.len()), (0, None, 0, 0));
         assert_eq!((old.layout, old.expanded.len(), old.files[0].pinned, old.splits), (None, 0, false, None));
         assert!(old.files[0].folds.is_empty());
+        assert_eq!(old.run_config, None, "sessions without the field still load");
         assert!(old.files[0].bookmark_digits.is_empty() && old.closed_bookmarks.is_empty() && old.closed_plain_bookmarks.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }

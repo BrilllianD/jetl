@@ -248,6 +248,8 @@ pub enum Effect {
     Format(crate::editor::format::FormatRequest),
     /// Open a context menu (`App.menu`).
     ContextMenu(crate::ui::menu::ContextMenu),
+    /// Run an action after the panel's input was handled (toolbar buttons).
+    Perform(crate::actions::Action),
     /// Ask the language servers (`app/lsp.rs`).
     Lsp(crate::lsp::LspRequest),
     /// Take a snapshot, list a file's snapshots, diff or revert to one,

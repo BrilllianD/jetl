@@ -283,7 +283,7 @@ impl App {
         }
     }
 
-    pub(super) fn forward_mouse(&mut self, p: PanelId, area: Rect, m: &Mouse) {
+    pub(crate) fn forward_mouse(&mut self, p: PanelId, area: Rect, m: &Mouse) {
         let mut cx = ctx!(self);
         let _ = match p {
             PanelId::Editor => self.editor.handle_mouse(m, area, &mut cx),

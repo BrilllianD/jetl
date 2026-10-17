@@ -322,16 +322,24 @@ in the output become links; the default) or `"none"` (plain output).
 A task runs without a terminal: stdin is closed and stdout and stderr share
 one pipe, so their lines interleave as written, but programs that color or
 animate only on a terminal print plain output (escape codes that still come
-through are stripped). The Run window (Alt+4) shows its status, elapsed time
-and the last 10 000 lines, following new output unless you scroll up.
+through are stripped). The Run window (Alt+4) has a toolbar on its first row:
+the configuration picker (click it for the Alt+Shift+F10 picker), ▶ Run,
+↻ Rerun and ■ Stop (dim and inert when nothing ran or runs; a narrow window
+drops the buttons that do not fit, never the picker). Below it come the
+status, elapsed time and the last 10 000 lines, following new output unless
+you scroll up.
 File locations in the output become links (rustc and cargo, tsc, pytest and
 Python tracebacks, and any `path:line:col`), resolved against the task's
 directory and its parents up to the project root; only files that exist are
 linked. Errors are red, warnings yellow. A click on a link, Enter or a double
 click opens it; F4 and Shift+F4 (Ctrl+Alt+Down/Up in the Run window) step
-through them from anywhere. Shift+F10 or Ctrl+F5 runs the last task again
-(in the Project and Git windows Shift+F10 opens the context menu instead),
-and Ctrl+F2 stops it.
+through them from anywhere. Every pick selects its configuration (the toolbar
+shows it, and the session keeps it per project). Shift+F10 runs the selected
+configuration (the picker when none is selected or it no longer exists; in
+the Project, Git and Local History windows Shift+F10 opens the context menu
+instead), Ctrl+F5 runs the last run again, and Ctrl+F2 stops it. Restoring
+the session only selects; nothing runs until you do. GNOME Terminal keeps
+Shift+F10 for itself: use the Run menu there.
 
 One task runs at a time: starting another kills the running one first, as
 do quitting jetl and switching projects. A stop sends SIGKILL to the task's

@@ -933,6 +933,11 @@ impl App {
                 return;
             }
             Action::EventLog(a) => self.event_log.handle_action(a, &self.notifications, &mut cx),
+            Action::Run(RunAction::RunSelected) => {
+                drop(cx);
+                self.run_selected();
+                return;
+            }
             Action::Run(RunAction::Rerun) => {
                 drop(cx);
                 self.rerun();

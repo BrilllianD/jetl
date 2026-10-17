@@ -101,9 +101,9 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Ctrl+Shift+R` * | `find.replace_in_files` | Replace in files |
 | `Ctrl+Alt+Down` | `find.next_result` | Find: next result (opens it) |
 | `Ctrl+Alt+Up` | `find.prev_result` | Find: previous result (opens it) |
-| `Alt+Shift+F10` | `run.pick` | Run: choose a task and run it |
-| `Ctrl+F5` | `run.rerun` | Run: run the last task again |
-| `Shift+F10` | `run.rerun` | Run: run the last task again |
+| `Alt+Shift+F10` | `run.pick` | Run: choose a configuration and run it |
+| `Shift+F10` | `run.run_selected` | Run: run the selected configuration |
+| `Ctrl+F5` | `run.rerun` | Run: run the last run again |
 | `Ctrl+F2` | `run.stop` | Run: stop the running task |
 | `F4` | `run.next_problem` | Run: next problem (opens it) |
 | `Shift+F4` | `run.prev_problem` | Run: previous problem (opens it) |

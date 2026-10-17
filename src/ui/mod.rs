@@ -62,7 +62,7 @@ pub fn render(app: &mut App, frame: &mut Frame) {
             PanelId::Git => app.git_panel.render(frame, r, focused, &theme),
             PanelId::Find => app.find.render(frame, r, focused, &theme),
             PanelId::EventLog => app.event_log.render(frame, r, focused, &theme, &app.notifications),
-            PanelId::Run => app.run_panel.render(frame, r, focused, &theme),
+            PanelId::Run => app.run_panel.render(frame, r, focused, &theme, app.run.selected.as_deref()),
             PanelId::Terminal => app.render_terminal(frame, r, focused, &theme),
             PanelId::Problems => {
                 let hint = if app.config.lsp.enabled {
