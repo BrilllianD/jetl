@@ -214,12 +214,15 @@ pub struct Buffer {
     pub recovered: bool,
     /// The path whose HEAD version is this buffer's git base after a rename not yet committed.
     pub base_path: Option<PathBuf>,
+    /// LSP inlay hints, in this buffer's current coordinates (shifted by every
+    /// change until the next answer).
+    pub inlays: super::inlay::InlayHints,
 }
 
 impl Buffer {
     /// The live view's rows: its folds and its wrap.
     pub fn rows(&self) -> super::rows::Rows<'_> {
-        super::rows::Rows::view(&self.view.folds, &self.view.wrap, &self.view.fillers, &self.rope, self.version)
+        super::rows::Rows::view(&self.view.folds, &self.view.wrap, &self.view.fillers, &self.rope, self.version).with_inlays(&self.inlays)
     }
 
     pub fn from_text(id: BufferId, path: Option<PathBuf>, text: &str, lossy: bool) -> Self {
@@ -265,6 +268,7 @@ impl Buffer {
             read_only: false,
             recovered: false,
             base_path: None,
+            inlays: Default::default(),
         }
     }
 
@@ -388,11 +392,13 @@ impl Buffer {
         if let Some(s) = &mut self.syntax {
             s.note_change(&self.rope, at, old_len, new_len, &c.old, &c.new);
         }
-        // The live view's folds follow like its carets; a reload drops them.
+        // The live view's folds and the hints follow like its carets; a reload drops them.
         if whole {
             self.view.folds.clear();
+            self.inlays.clear();
         } else {
             self.view.folds.map_edit(at, old_len, new_len);
+            self.inlays.map_edit(at, end - at, new_len);
         }
         self.view.folds.rebuild(&self.rope);
         if whole {
@@ -1789,6 +1795,27 @@ mod tests {
         buf.edit_carets(|b, s| if s.is_virtual() { CaretEdit::keep(s) } else { b.backspace_edit(s, &[]) });
         assert_eq!(buf.text(), "abcd\n");
         assert!(buf.view.sels.iter().all(|s| !s.is_virtual()));
+    }
+
+    #[test]
+    fn edits_and_undo_move_hints() {
+        use crate::editor::inlay::Inlay;
+        let mut buf = b("let x = foo(1, 2);");
+        let at = |buf: &Buffer| buf.inlays.all().iter().map(|h| h.at).collect::<Vec<_>>();
+        buf.inlays.set(
+            vec![Inlay::new(5, ": i32", false, false, false).unwrap(), Inlay::new(12, "a:", false, true, true).unwrap()],
+            0,
+            0..1,
+        );
+        buf.apply(vec![Change::insert(5, "y")], Selection::point(6), TxKind::Other);
+        assert_eq!(at(&buf), [6, 13], "the type hint moves after the text typed at its anchor");
+        assert!(buf.undo());
+        assert_eq!(at(&buf), [5, 12], "undo moves them back");
+        buf.apply(vec![Change::delete(12, "1")], Selection::point(12), TxKind::Other);
+        assert_eq!(at(&buf), [5, 12], "a parameter hint stays where its argument was deleted");
+        let text = buf.text();
+        buf.apply(vec![Change::replace(0, text, "new text")], Selection::point(8), TxKind::Other);
+        assert!(buf.inlays.is_empty(), "a whole-text replacement drops the hints");
     }
 
     #[test]

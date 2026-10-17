@@ -1067,6 +1067,31 @@ class A:
             assert_eq!((folded(&ed), head(&ed)), (true, (0, 3)));
         }
 
+        #[test]
+        fn hints_on_a_folded_header_come_before_the_placeholder() {
+            use crate::editor::inlay::Inlay;
+            let mut ed = editor(TEXT);
+            // Line 0 is `fn main() {` (11 chars); line 1 is hidden by the fold.
+            let hint = |at: usize, l: &str| Inlay::new(at, l, false, false, false).unwrap();
+            let line1_end = TEXT.find('\n').unwrap() + 1 + "    let a = 1;".len();
+            ed.active_buffer_mut().unwrap().inlays.set(vec![hint(11, "-> T"), hint(line1_end, "HIDDEN")], 0, 0..8);
+            collapse(&mut ed, 1);
+            let rows = draw(&mut ed, 40, 6);
+            assert_eq!(rows[1].trim_end(), "  1  ▸ fn main() {-> T…}");
+            assert!(rows.iter().all(|r| !r.contains("HIDDEN")), "{rows:?}");
+            // A click on the placeholder (after the hint) still expands.
+            let (x0, y0) = (ed.text_area().x, ed.text_area().y);
+            mouse(&mut ed, MouseEventKind::Down(MouseButton::Left), (x0 + 11 + 4, y0), KeyModifiers::NONE);
+            assert!(!folded(&ed));
+            assert_eq!(head(&ed), (0, 11));
+            // A click on the hint itself does not.
+            collapse(&mut ed, 1);
+            draw(&mut ed, 40, 6);
+            mouse(&mut ed, MouseEventKind::Down(MouseButton::Left), (x0 + 12, y0), KeyModifiers::NONE);
+            assert!(folded(&ed));
+            assert_eq!(head(&ed), (0, 11));
+        }
+
         fn hidden(ed: &Editor) -> Vec<(usize, usize)> {
             ed.active_buffer().unwrap().view.folds.hidden().iter().map(|r| (r.start, r.end)).collect()
         }

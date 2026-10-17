@@ -2109,3 +2109,49 @@ async fn settings_window_long_error_fits_short_terminals() {
         }
     }
 }
+
+/// Hints of the two inlay snapshots: line 0 `let v = vec(1, 2);`, line 1
+/// `let n = add(v, 3);`.
+fn set_hints(app: &mut App) {
+    use crate::editor::inlay::Inlay;
+    let hint = |at, label, param| Inlay::new(at, label, false, param, param).unwrap();
+    let hints = vec![hint(5, ": Vec", false), hint(12, "a:", true), hint(15, "b:", true), hint(24, ": u8", false), hint(31, "x:", true)];
+    app.editor.active_buffer_mut().unwrap().inlays.set(hints, 0, 0..3);
+}
+
+#[tokio::test]
+async fn editor_inlay_hints() {
+    let mut fx = stable_app("inlay-hints");
+    let app = &mut fx.app;
+    load(app, "hints.log", "let v = vec(1, 2);\nlet n = add(v, 3);\n");
+    set_hints(app);
+    // The caret on a type hint's anchor is drawn after the hint.
+    app.editor.active_buffer_mut().unwrap().view.set_sel(Selection::point(5));
+    let term = draw_editor(app, 50, 6);
+    let mut marks = vec![Mark::style('H', "inlay", app.theme.inlay_hint)];
+    marks.extend(editor_marks(&app.theme));
+    assert_snapshot!("editor_inlay_hints", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
+async fn editor_inlay_hints_wrapped() {
+    let mut fx = stable_app("inlay-hints-wrapped");
+    let app = &mut fx.app;
+    let third = "see the docs for details on how this works\n";
+    load(app, "hints.log", &format!("let v = vec(1, 2);\nlet n = add(v, 3);\n{third}"));
+    editor(app, EditorAction::ToggleSoftWrap);
+    set_hints(app);
+    // Text rows are 16 cells (24 wide, 7 of gutter, one kept free). Line 2's
+    // first row is `see the docs for` (16 cells), so `details` starts the
+    // second row, and its hint `why:` goes with it to the start of that row.
+    let at = 19 + 19 + third.find("details").unwrap();
+    let b = app.editor.active_buffer_mut().unwrap();
+    let mut hints = b.inlays.all().to_vec();
+    hints.push(crate::editor::inlay::Inlay::new(at, "why:", false, true, true).unwrap());
+    b.inlays.set(hints, 0, 0..4);
+    b.view.set_sel(Selection::point(12));
+    let term = draw_editor(app, 24, 10);
+    let mut marks = vec![Mark::style('H', "inlay", app.theme.inlay_hint)];
+    marks.extend(editor_marks(&app.theme));
+    assert_snapshot!("editor_inlay_hints_wrapped", snapshot(&term, &marks, None));
+}

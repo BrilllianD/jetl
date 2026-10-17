@@ -1,0 +1,21 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &marks, None)"
+---
+24x10 cursor=(14,2)
+00   hints.log ×
+01   1    let v: Vec =
+02      ↪ vec(a: 1, b: 2);
+03   2    let n: u8 =
+04      ↪ add(x: v, 3);
+05   3    see the docs for
+06      ↪ why: details on
+07      ↪ how this works
+08   4
+09
+-- marks: H=inlay C=caret S=selection F=fold O=occurrence
+01             HHHHH
+02            HH O  HH
+03             HHHH
+04            HH
+06        HHHH

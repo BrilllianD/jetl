@@ -253,6 +253,9 @@ theme_fields! {
         lightbulb,
         /// Indent guides (│ in leading whitespace): only the foreground is used.
         indent_guide,
+        /// Inlay hints (virtual text from the language server): foreground and
+        /// background are used.
+        inlay_hint,
         splitter,
     ],
 }
@@ -882,6 +885,33 @@ mod tests {
             let fg = t.indent_guide.fg.unwrap_or_else(|| panic!("{name} ansi256={ansi256}: no indent_guide fg"));
             assert_ne!(fg, t.bg, "{name} ansi256={ansi256}");
             assert_ne!(fg, t.current_line_bg, "{name} ansi256={ansi256}");
+        }
+    }
+
+    #[test]
+    fn inlay_hint_is_readable() {
+        use crate::config::omarchy::fixtures;
+        let mut themes = Vec::new();
+        for b in BUILTIN_THEMES {
+            for ansi256 in [false, true] {
+                themes.push((b.name, ansi256, Theme::builtin(b, ansi256)));
+            }
+        }
+        for (name, text) in [("omarchy dark", fixtures::DARK), ("omarchy light", fixtures::LIGHT)] {
+            let palette = Palette::parse(text, false).unwrap();
+            for ansi256 in [false, true] {
+                let mut t = Theme::from_palette(&palette, ansi256).unwrap();
+                if ansi256 {
+                    t.map_colors(color::to_ansi256);
+                }
+                themes.push((name, ansi256, t));
+            }
+        }
+        for (name, ansi256, t) in themes {
+            let fg = t.inlay_hint.fg.unwrap_or_else(|| panic!("{name} ansi256={ansi256}: no inlay_hint fg"));
+            let bg = t.inlay_hint.bg.unwrap_or_else(|| panic!("{name} ansi256={ansi256}: no inlay_hint bg"));
+            assert_ne!(fg, bg, "{name} ansi256={ansi256}");
+            assert_ne!(fg, t.bg, "{name} ansi256={ansi256}");
         }
     }
 

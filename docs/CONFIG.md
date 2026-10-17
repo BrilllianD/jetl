@@ -723,9 +723,11 @@ Style fields: `border border_focused title title_focused strip_item
 strip_item_active status_accent tab tab_active tab_dirty line_number
 line_number_current bracket_match secondary_caret bookmark fold_placeholder git_added git_modified git_deleted git_untracked
 git_conflicted git_ignored popup_border list_selected list_selected_unfocused
-dim error warn info diag_error diag_warn diag_info diag_hint lightbulb indent_guide splitter`.
+dim error warn info diag_error diag_warn diag_info diag_hint lightbulb indent_guide inlay_hint splitter`.
 `indent_guide` colours the indent guides (`editor.indent_guides`); only its
 foreground is used.
+`inlay_hint` draws the language server's inlay hints (`[lsp] inlay_hints`); fg and
+bg are used.
 `secondary_caret` is the cell of every caret but the primary one (which is
 the terminal cursor; in a split pane without focus every caret of a
 multi-caret view gets it): reverse video by default, which an override keeps

@@ -14,22 +14,59 @@ use unicode_width::UnicodeWidthStr;
 
 use super::buffer::Buffer;
 use super::fold::Fold;
+use super::inlay::Inlay;
 use super::rows::{Row, Rows};
 use super::selection::{MAX_CARETS, Selection, Selections, Virt, line_len_no_eol, pos_to_line_col};
 use crate::config::theme::Theme;
 
+/// What a [`Cell`] is: text of the buffer, or an inlay hint's virtual text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CellKind {
+    #[default]
+    Text,
+    /// A space around a hint's label, drawn as plain background.
+    InlayPad,
+    /// A hint's label.
+    InlayLabel,
+}
+
 /// One rendered unit: a grapheme (or the expansion of a tab, a control char
-/// or a U+2028/U+2029 separator, drawn as an escape).
-#[derive(Debug, Clone, Copy)]
+/// or a U+2028/U+2029 separator, drawn as an escape), or a piece of an
+/// inlay hint, whose `char_idx` is its anchor.
+#[derive(Debug, Clone, Copy, Default)]
 pub struct Cell {
     pub char_idx: usize,
     pub col: usize,
     pub width: usize,
+    pub kind: CellKind,
 }
 
-/// Walk the graphemes of `line` (without its line break). The callback gets
-/// the text to draw and the cell geometry; return `false` to stop early.
+impl Cell {
+    /// A piece of an inlay hint, not a char of the buffer.
+    pub fn is_inlay(&self) -> bool {
+        self.kind != CellKind::Text
+    }
+}
+
+/// Walk the graphemes of `line` (without its line break) as text columns,
+/// without inlay hints. The callback gets the text to draw and the cell
+/// geometry; return `false` to stop early.
 pub fn layout_line(rope: &Rope, line: usize, tab_width: usize, max_chars: usize, f: &mut dyn FnMut(&str, Cell) -> bool) {
+    layout_line_inlays(rope, line, tab_width, max_chars, &[], f);
+}
+
+/// [`layout_line`] with the hints `inlays` (the line's, sorted) drawn before
+/// the grapheme at their anchor, and after the last one when anchored at the
+/// line end (only when the walk reaches it). Cells carry their kind; a hint's
+/// cells (left pad, label, right pad) have the anchor as `char_idx`.
+pub fn layout_line_inlays(
+    rope: &Rope,
+    line: usize,
+    tab_width: usize,
+    max_chars: usize,
+    inlays: &[Inlay],
+    f: &mut dyn FnMut(&str, Cell) -> bool,
+) {
     if line >= rope.len_lines() {
         return;
     }
@@ -40,31 +77,63 @@ pub fn layout_line(rope: &Rope, line: usize, tab_width: usize, max_chars: usize,
     let text: Cow<str> = slice.into();
     let mut col = 0usize;
     let mut idx = start;
+    let mut k = 0usize;
     let tab_width = tab_width.max(1);
     for g in text.graphemes(true) {
         let nchars = g.chars().count();
+        while k < inlays.len() && inlays[k].at < idx + nchars {
+            if !emit_inlay(&inlays[k], idx, &mut col, f) {
+                return;
+            }
+            k += 1;
+        }
         if g == "\t" {
             let w = tab_width - (col % tab_width);
-            if !f("", Cell { char_idx: idx, col, width: w }) {
+            if !f("", Cell { char_idx: idx, col, width: w, kind: CellKind::Text }) {
                 return;
             }
             col += w;
         } else if let Some(c) = g.chars().next().filter(|&c| crate::util::text::shown_escaped(c)) {
             let shown = control_repr(c);
             let w = shown.len();
-            if !f(&shown, Cell { char_idx: idx, col, width: w }) {
+            if !f(&shown, Cell { char_idx: idx, col, width: w, kind: CellKind::Text }) {
                 return;
             }
             col += w;
         } else {
             let w = g.width();
-            if !f(g, Cell { char_idx: idx, col, width: w }) {
+            if !f(g, Cell { char_idx: idx, col, width: w, kind: CellKind::Text }) {
                 return;
             }
             col += w;
         }
         idx += nchars;
     }
+    if take == n {
+        for h in &inlays[k..] {
+            if !emit_inlay(h, idx, &mut col, f) {
+                return;
+            }
+        }
+    }
+}
+
+/// The cells of one hint at `col`; false when `f` stopped the walk.
+fn emit_inlay(h: &Inlay, idx: usize, col: &mut usize, f: &mut dyn FnMut(&str, Cell) -> bool) -> bool {
+    let pad = |col: &mut usize, f: &mut dyn FnMut(&str, Cell) -> bool| {
+        let ok = f(" ", Cell { char_idx: idx, col: *col, width: 1, kind: CellKind::InlayPad });
+        *col += 1;
+        ok
+    };
+    if h.pad_left && !pad(col, f) {
+        return false;
+    }
+    let ok = f(&h.label, Cell { char_idx: idx, col: *col, width: h.width, kind: CellKind::InlayLabel });
+    *col += h.width;
+    if !ok {
+        return false;
+    }
+    !h.pad_right || pad(col, f)
 }
 
 /// The escape drawn for a char `shown_escaped` picks: `^X` for C0 controls
@@ -162,8 +231,8 @@ pub fn row_geom(rope: &Rope, rows: &Rows, row: Row) -> RowGeom {
     }
 }
 
-/// [`layout_line`] for one screen row: the callback also gets each cell's
-/// row x. Without wrap the row is the whole line, walked up to about
+/// [`layout_line_inlays`] for one screen row: the callback also gets each
+/// cell's row x. Without wrap the row is the whole line, walked up to about
 /// `cols` cells.
 pub fn layout_row(rope: &Rope, rows: &Rows, row: Row, tab_width: usize, cols: usize, f: &mut dyn FnMut(&str, Cell, usize) -> bool) {
     if rows.is_filler(row) {
@@ -172,11 +241,12 @@ pub fn layout_row(rope: &Rope, rows: &Rows, row: Row, tab_width: usize, cols: us
     let g = row_geom(rope, rows, row);
     let max_chars =
         if rows.wraps() && row.line < rope.len_lines() { g.end - rope.line_to_char(row.line) } else { cols.saturating_add(256) };
-    layout_line(rope, row.line, tab_width, max_chars, &mut |s, c| {
+    layout_line_inlays(rope, row.line, tab_width, max_chars, rows.inlays_on(rope, row.line), &mut |s, c| {
         if c.char_idx < g.start {
             return true;
         }
-        if c.char_idx >= g.end {
+        // Hints at the line end belong to the last row.
+        if c.char_idx >= g.end && !(c.is_inlay() && g.last && c.char_idx == g.end) {
             return false;
         }
         f(s, c, g.indent + c.col - g.origin)
@@ -201,7 +271,8 @@ pub fn char_to_row_x(rope: &Rope, rows: &Rows, pos: usize, upstream: bool, tab_w
     }
     let mut x = row_geom(rope, rows, row).indent;
     layout_row(rope, rows, row, tab_width, usize::MAX, &mut |_, c, rx| {
-        if c.char_idx >= pos {
+        // A caret at a hint's anchor stands after the hint.
+        if !c.is_inlay() && c.char_idx >= pos {
             x = rx;
             return false;
         }
@@ -215,7 +286,7 @@ pub fn char_to_row_x(rope: &Rope, rows: &Rows, pos: usize, upstream: bool, tab_w
 /// `row`: the grapheme there (its right half too); left of a continuation
 /// row's text, the row's first char; past the text, the line end on the
 /// line's last row, else the row's end with the upstream affinity (the
-/// caret stays on the row).
+/// caret stays on the row). A cell of an inlay hint is its anchor's.
 pub fn row_x_to_char(rope: &Rope, rows: &Rows, row: Row, x: usize, tab_width: usize) -> (usize, bool) {
     if row.line >= rope.len_lines() {
         return (rope.len_chars(), false);
@@ -239,6 +310,32 @@ pub fn row_x_to_char(rope: &Rope, rows: &Rows, row: Row, x: usize, tab_width: us
         Some(i) => (i, false),
         None => (g.end, !g.last),
     }
+}
+
+/// The column (row x on an unwrapped line) the caret `sel` stands at: hints
+/// before it included, and past the line end the virtual column plus the
+/// line's hints.
+pub fn caret_col(rope: &Rope, rows: &Rows, sel: &Selection, tab_width: usize) -> usize {
+    let x = char_to_row_x(rope, rows, sel.head, sel.upstream, tab_width).1;
+    match sel.virt.head {
+        Some(c) if !rows.wraps() => x.max(c + rows.inlay_width(rope, rope.char_to_line(sel.head.min(rope.len_chars())))),
+        _ => x,
+    }
+}
+
+/// The text column under row x `rx` of `line` (soft wrap off): screen
+/// columns count the line's hints, text columns (column blocks, virtual
+/// space) do not. Past the line end the extra cells carry over.
+pub fn text_col_at(rope: &Rope, rows: &Rows, line: usize, rx: usize, tab_width: usize) -> usize {
+    if rows.wraps() || line >= rope.len_lines() || rows.inlays_on(rope, line).is_empty() {
+        return rx;
+    }
+    let end = rope.line_to_char(line) + line_len_no_eol(rope, line);
+    let ex = char_to_row_x(rope, rows, end, false, tab_width).1;
+    if rx >= ex {
+        return visual_col(rope, end, tab_width) + (rx - ex);
+    }
+    visual_col(rope, row_x_to_char(rope, rows, Row::line(line), rx, tab_width).0, tab_width)
 }
 
 /// The carets of a column block from `anchor` to `head`, each a (line,
@@ -447,7 +544,7 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
     let was_visible = buf.view.follow_key != Some(follow_key) && buf.view.follow_key.is_some_and(|k| caret_on_screen(buf, k.2, k.3, o));
     let v = &mut buf.view;
     v.wrap.set_geometry(text_area.width, o.tab_width, o.wrap_extra_indent);
-    let top = Rows::view(&v.folds, &v.wrap, &v.fillers, &buf.rope, buf.version).clamp(v.top());
+    let top = Rows::view(&v.folds, &v.wrap, &v.fillers, &buf.rope, buf.version).with_inlays(&buf.inlays).clamp(v.top());
     v.set_top(top);
     if buf.view.follow_key != Some(follow_key) {
         // A resize alone re-scrolls only a caret that was on screen and is
@@ -466,7 +563,7 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
 
     let theme = o.theme;
     let rope = &buf.rope;
-    let rows = Rows::view(&buf.view.folds, &buf.view.wrap, &buf.view.fillers, rope, buf.version);
+    let rows = Rows::view(&buf.view.folds, &buf.view.wrap, &buf.view.fillers, rope, buf.version).with_inlays(&buf.inlays);
     let sels = &buf.view.sels;
     let (cur_line, _) = pos_to_line_col(rope, buf.view.sel().head);
     // The carets drawn as cells: the others, and the primary too in a view
@@ -488,13 +585,11 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
         |s: &Selection| s.upstream && rows.wraps() && char_to_row_x(rope, &rows, s.head, true, o.tab_width).0 != rows.row_of(rope, s.head);
     let drawn_up: Vec<usize> = visible.iter().filter(|s| is_up(s)).map(|s| s.head).collect();
     let drawn: Vec<usize> = visible.iter().filter(|s| !is_up(s)).map(|s| s.head).collect();
-    let (cur_row, mut cur_x) = char_to_row_x(rope, &rows, buf.view.sel().head, buf.view.sel().upstream, o.tab_width);
+    let cur_row = char_to_row_x(rope, &rows, buf.view.sel().head, buf.view.sel().upstream, o.tab_width).0;
     // Virtual space (soft wrap off): selections reach past their line ends to their
     // virtual columns, and carets stand there.
     let virt_on = !rows.wraps();
-    if virt_on && let Some(c) = buf.view.sel().virt.head {
-        cur_x = cur_x.max(c);
-    }
+    let cur_x = caret_col(rope, &rows, &buf.view.sel(), o.tab_width);
     let hl = buf.syntax.as_mut().map(|s| s.highlights(rope, window.start, window.len())).unwrap_or_default();
     let search = buf.view.search.as_ref();
     let pair =
@@ -611,6 +706,28 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
             screen.set_stringn(area.x, y, g, action_w as usize, style);
         }
         layout_row(rope, &rows, row, o.tab_width, scroll_col + text_area.width as usize, &mut |g, c, rx| {
+            if c.is_inlay() {
+                // Hint cells are plain virtual text: no highlight, selection,
+                // search or caret styling. Pads keep the row background.
+                if c.kind == CellKind::InlayLabel {
+                    let mut gx = rx;
+                    for gr in g.graphemes(true) {
+                        let gw = gr.width();
+                        let sx = text_area.x as usize + gx.saturating_sub(scroll_col);
+                        if gw > 0 && gx >= scroll_col {
+                            if sx + gw > right as usize {
+                                return false;
+                            }
+                            screen[(sx as u16, y)].set_symbol(gr).set_style(theme.inlay_hint);
+                            for i in 1..gw as u16 {
+                                screen[(sx as u16 + i, y)].reset();
+                            }
+                        }
+                        gx += gw;
+                    }
+                }
+                return text_area.x as usize + rx.saturating_sub(scroll_col) < right as usize;
+            }
             if rx + c.width <= scroll_col {
                 return true;
             }
@@ -705,7 +822,8 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
         let vspan = end_x.filter(|_| virt_on).and_then(|w| {
             let all = sels.as_slice();
             let s = all.get(all.partition_point(|s| s.range().end < line_end)).filter(|s| s.range().start <= line_end)?;
-            let col = |p: usize, v: Option<usize>| if p == line_end { v.map_or(w, |c| c.max(w)) } else { w };
+            let iw = rows.inlay_width(rope, line);
+            let col = |p: usize, v: Option<usize>| if p == line_end { v.map_or(w, |c| (c + iw).max(w)) } else { w };
             Some((s.head == line_end, col(s.anchor, s.virt.anchor), col(s.head, s.virt.head)))
         });
         // Its virtual cells past the line end.
@@ -839,7 +957,7 @@ fn caret_on_screen(buf: &Buffer, w: u16, h: u16, o: &RenderOpts) -> bool {
     if r.wraps() {
         return true;
     }
-    let vcol = sel.head_col(&buf.rope, o.tab_width);
+    let vcol = caret_col(&buf.rope, &r, &sel, o.tab_width);
     (buf.view.scroll_col..buf.view.scroll_col + w as usize).contains(&vcol)
 }
 
@@ -864,13 +982,13 @@ pub fn ensure_visible(buf: &mut Buffer, text_area: Rect, o: &RenderOpts) {
         top
     };
     let wraps = r.wraps();
+    let vcol = caret_col(&buf.rope, &r, &buf.view.sel(), o.tab_width);
     buf.view.set_top(top);
     if wraps {
         buf.view.scroll_col = 0;
         return;
     }
 
-    let vcol = buf.view.sel().head_col(&buf.rope, o.tab_width);
     let ho = o.hscrolloff.min(cols.saturating_sub(1) / 2);
     if vcol < buf.view.scroll_col + ho {
         buf.view.scroll_col = vcol.saturating_sub(ho);
@@ -1243,5 +1361,154 @@ mod tests {
         assert_eq!(blank_guide_levels(&rope, 60..70, 4), all[60..70]);
         let blanks = Rope::from_str("\n  \n\n");
         assert!(blank_guide_levels(&blanks, 0..4, 4).iter().all(Option::is_none));
+    }
+
+    use crate::editor::fold::Folds;
+    use crate::editor::inlay::{Inlay, InlayHints};
+
+    const HINTED: &str = "let x = foo(1, 2);";
+
+    fn hinted_line() -> InlayHints {
+        let mut h = InlayHints::new();
+        h.set(
+            vec![
+                Inlay::new(5, ": i32", false, false, false).unwrap(),
+                Inlay::new(12, "a:", false, true, true).unwrap(),
+                Inlay::new(18, "-> u8", true, false, false).unwrap(),
+            ],
+            0,
+            0..1,
+        );
+        h
+    }
+
+    #[test]
+    fn layout_walk_puts_hints_before_their_char() {
+        let rope = Rope::from_str(HINTED);
+        let h = hinted_line();
+        let mut cells = Vec::new();
+        layout_line_inlays(&rope, 0, 4, usize::MAX, h.all(), &mut |g, c| {
+            cells.push((g.to_string(), c.char_idx, c.col, c.width, c.kind));
+            true
+        });
+        let at = |i: usize| cells.iter().position(|c| c.1 == i && c.4 == CellKind::Text).unwrap();
+        let k = at(5);
+        assert_eq!(cells[k - 1], (": i32".into(), 5, 5, 5, CellKind::InlayLabel));
+        assert_eq!(cells[k], (" ".into(), 5, 10, 1, CellKind::Text));
+        let k = at(12);
+        assert_eq!(cells[k - 2], ("a:".into(), 12, 17, 2, CellKind::InlayLabel));
+        assert_eq!(cells[k - 1], (" ".into(), 12, 19, 1, CellKind::InlayPad));
+        assert_eq!(cells[k], ("1".into(), 12, 20, 1, CellKind::Text));
+        let n = cells.len();
+        assert_eq!(cells[n - 2], (" ".into(), 18, 26, 1, CellKind::InlayPad));
+        assert_eq!(cells[n - 1], ("-> u8".into(), 18, 27, 5, CellKind::InlayLabel));
+        let last = &cells[n - 1];
+        assert_eq!(last.2 + last.3, 18 + 5 + 3 + 6);
+        // Without hints the walk is today's: columns 0..18.
+        let mut plain = Vec::new();
+        layout_line(&rope, 0, 4, usize::MAX, &mut |_, c| {
+            plain.push((c.char_idx, c.col, c.kind));
+            true
+        });
+        assert_eq!(plain.len(), 18);
+        assert!(plain.iter().enumerate().all(|(i, &(idx, col, kind))| (idx, col, kind) == (i, i, CellKind::Text)));
+        // A walk cut short never reaches the line-end hint.
+        let mut cut = 0;
+        layout_line_inlays(&rope, 0, 4, 10, h.all(), &mut |_, c| {
+            cut += usize::from(c.char_idx == 18);
+            true
+        });
+        assert_eq!(cut, 0);
+    }
+
+    #[test]
+    fn hint_cells_map_clicks_to_anchor_and_caret_after() {
+        let rope = Rope::from_str(HINTED);
+        let h = hinted_line();
+        let folds = Folds::default();
+        let rows = Rows::new(&folds, rope.len_lines()).with_inlays(&h);
+        let row = Row::line(0);
+        for x in 5..10 {
+            assert_eq!(row_x_to_char(&rope, &rows, row, x, 4), (5, false), "x {x}");
+        }
+        assert_eq!(row_x_to_char(&rope, &rows, row, 10, 4), (5, false));
+        assert_eq!(char_to_row_x(&rope, &rows, 5, false, 4).1, 10, "after the hint");
+        assert_eq!(char_to_row_x(&rope, &rows, 12, false, 4).1, 20, "after `a: `");
+        assert_eq!(char_to_row_x(&rope, &rows, 18, false, 4).1, 18 + 5 + 3 + 6, "line end after the hint");
+        for i in 0..18 {
+            let (_, x) = char_to_row_x(&rope, &rows, i, false, 4);
+            assert_eq!(row_x_to_char(&rope, &rows, row, x, 4).0, i, "round trip of char {i}");
+        }
+        // Past the end, the line end.
+        assert_eq!(row_x_to_char(&rope, &rows, row, 60, 4), (18, false));
+        // Text columns under row x.
+        assert_eq!(text_col_at(&rope, &rows, 0, 3, 4), 3);
+        assert_eq!(text_col_at(&rope, &rows, 0, 10, 4), 5, "the char after the first hint");
+        assert_eq!(text_col_at(&rope, &rows, 0, 20, 4), 12);
+        assert_eq!(text_col_at(&rope, &rows, 0, 32 + 4, 4), 18 + 4, "past the end");
+    }
+
+    #[test]
+    fn no_hints_no_change() {
+        let rope = Rope::from_str("\ta\tb日本x\u{1}y\n  tail 😀\nlast");
+        let folds = Folds::default();
+        let none = InlayHints::default();
+        let plain = Rows::new(&folds, rope.len_lines());
+        let with = Rows::new(&folds, rope.len_lines()).with_inlays(&none);
+        for line in 0..rope.len_lines() {
+            let walk = |rows: &Rows| {
+                let mut out = Vec::new();
+                layout_row(&rope, rows, Row::line(line), 4, 80, &mut |g, c, rx| {
+                    out.push((g.to_string(), c.char_idx, c.col, c.width, c.kind, rx));
+                    true
+                });
+                out
+            };
+            assert_eq!(walk(&plain), walk(&with), "line {line}");
+            for x in 0..30 {
+                assert_eq!(row_x_to_char(&rope, &plain, Row::line(line), x, 4), row_x_to_char(&rope, &with, Row::line(line), x, 4));
+                assert_eq!(text_col_at(&rope, &with, line, x, 4), x);
+            }
+        }
+    }
+
+    #[test]
+    fn render_draws_hints_in_their_style() {
+        let theme = Theme::default();
+        let mut buf = Buffer::from_text(1, None, HINTED, false);
+        buf.inlays = hinted_line();
+        buf.view.set_sel(Selection::new(18, 5));
+        let area = Rect::new(0, 0, 60, 3);
+        let mut screen = Screen::empty(area);
+        let out = render(&mut buf, &mut screen, area, &resize_opts(&theme));
+        let x0 = out.text_area.x;
+        let row: String = (x0..x0 + 32).map(|x| screen[(x, 0)].symbol().to_string()).collect();
+        assert_eq!(row, "let x: i32 = foo(a: 1, 2); -> u8");
+        let hint = theme.inlay_hint;
+        for x in (x0 + 5..x0 + 10).chain(x0 + 17..x0 + 19).chain(x0 + 27..x0 + 32) {
+            assert_eq!((screen[(x, 0)].fg, screen[(x, 0)].bg), (hint.fg.unwrap(), hint.bg.unwrap()), "x {x}");
+        }
+        assert_eq!(screen[(x0 + 10, 0)].bg, theme.selection_bg, "the char after the hint is selected");
+        assert_eq!(screen[(x0 + 19, 0)].bg, theme.current_line_bg, "the pad is plain background");
+        assert_eq!(screen[(x0 + 26, 0)].bg, theme.current_line_bg, "so is the left pad of the line-end hint");
+        assert_eq!(out.cursor, Some((x0 + 10, 0)), "the caret at an anchor stands after the hint");
+    }
+
+    #[test]
+    fn horizontal_scroll_counts_hints() {
+        let theme = Theme::default();
+        let mut buf = Buffer::from_text(1, None, "0123456789abcde", false);
+        buf.inlays.set(vec![Inlay::new(2, "123456789a", false, false, false).unwrap()], 0, 0..1);
+        buf.view.set_sel(Selection::point(15));
+        let o = resize_opts(&theme);
+        let area = Rect::new(0, 0, 27, 3);
+        let out = render(&mut buf, &mut Screen::empty(area), area, &o);
+        assert_eq!(out.text_area.width, 20);
+        let rows = buf.rows();
+        let col = caret_col(&buf.rope, &rows, &buf.view.sel(), 4);
+        assert_eq!(col, 25);
+        assert!(buf.view.scroll_col > 0, "15 chars fit, 25 cells do not");
+        assert!((buf.view.scroll_col..buf.view.scroll_col + 20).contains(&col));
+        assert_eq!(out.cursor.map(|c| c.0), Some(out.text_area.x + (col - buf.view.scroll_col) as u16));
     }
 }

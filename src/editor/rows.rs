@@ -17,6 +17,7 @@ use ratatui::style::Color;
 use ropey::Rope;
 
 use super::fold::Folds;
+use super::inlay::{Inlay, InlayHints, NO_INLAYS};
 use super::selection::line_len_no_eol;
 use super::wrap::{LineWrap, Wrap};
 
@@ -65,12 +66,14 @@ pub struct Rows<'a> {
     wrap: Option<(&'a Wrap, &'a Rope, u64)>,
     /// Sorted by line, the `top` ones first, stable within one.
     fill: &'a [Filler],
+    /// The hints drawn in the lines.
+    inlays: &'a InlayHints,
 }
 
 impl<'a> Rows<'a> {
     /// One row per visible line, whatever the wrap.
     pub fn new(folds: &'a Folds, len_lines: usize) -> Self {
-        Self { hidden: folds.hidden(), last: len_lines.saturating_sub(1), wrap: None, fill: &[] }
+        Self { hidden: folds.hidden(), last: len_lines.saturating_sub(1), wrap: None, fill: &[], inlays: &NO_INLAYS }
     }
 
     /// The rows of a view: its folds and its wrap over `rope` at buffer
@@ -79,6 +82,22 @@ impl<'a> Rows<'a> {
     pub fn view(folds: &'a Folds, wrap: &'a Wrap, fill: &'a [Filler], rope: &'a Rope, version: u64) -> Self {
         let wrap = wrap.active().then_some((wrap, rope, version));
         Self { wrap, fill, ..Self::new(folds, rope.len_lines()) }
+    }
+
+    /// The same rows with `inlays` drawn in the lines (their width breaks
+    /// wrapped lines and moves the cells).
+    pub fn with_inlays(self, inlays: &'a InlayHints) -> Self {
+        Self { inlays, ..self }
+    }
+
+    /// The hints anchored on `line` (its end too).
+    pub fn inlays_on(&self, rope: &Rope, line: usize) -> &'a [Inlay] {
+        self.inlays.on_line(rope, line)
+    }
+
+    /// Cells the hints of `line` take.
+    pub fn inlay_width(&self, rope: &Rope, line: usize) -> usize {
+        self.inlays.width_on_line(rope, line)
     }
 
     /// Whether lines wrap.
@@ -93,7 +112,7 @@ impl<'a> Rows<'a> {
 
     /// How `line` wraps; `None` when lines do not.
     pub fn line_wrap(&self, line: usize) -> Option<Rc<LineWrap>> {
-        self.wrap.map(|(w, rope, version)| w.line(rope, version, line))
+        self.wrap.map(|(w, rope, version)| w.line(rope, version, self.inlays, line))
     }
 
     /// The hidden range holding `line`.

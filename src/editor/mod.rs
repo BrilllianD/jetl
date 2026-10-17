@@ -14,6 +14,7 @@ pub mod format;
 pub mod groups;
 pub mod gutter;
 pub mod indent;
+pub mod inlay;
 mod io;
 pub use io::DiskChange;
 pub mod merge;
@@ -1085,7 +1086,7 @@ impl Editor {
                 if !block && self.column_mode && !*extend && b.blocks_supported() {
                     b.move_virtual(*m, page, tab_width);
                 } else if !block {
-                    let rows = Rows::view(&b.view.folds, &b.view.wrap, &b.view.fillers, &b.rope, b.version);
+                    let rows = Rows::view(&b.view.folds, &b.view.wrap, &b.view.fillers, &b.rope, b.version).with_inlays(&b.inlays);
                     apply_motion_all(&b.rope, &rows, &mut b.view.sels, *m, *extend, page, tab_width);
                 }
                 // A moved caret ends an Add Next Occurrence run.
@@ -1330,8 +1331,12 @@ impl Editor {
         };
         // The (line, visual column) under the pointer for column blocks;
         // the column is not clamped to the line.
-        let cell_at =
-            |b: &Buffer, x: u16, y: u16| -> (usize, usize) { (line_at(b, y), x.saturating_sub(text_area.x) as usize + b.view.scroll_col) };
+        // Text columns: hints on the line are taken out of the screen column.
+        let cell_at = |b: &Buffer, x: u16, y: u16| -> (usize, usize) {
+            let line = line_at(b, y);
+            let rx = x.saturating_sub(text_area.x) as usize + b.view.scroll_col;
+            (line, view::text_col_at(&b.rope, &b.rows(), line, rx, tab_width))
+        };
         // A click in the blame column shows that line's commit (on its
         // first row: the others show none).
         if m.kind == MouseEventKind::Down(MouseButton::Left)
@@ -2271,6 +2276,34 @@ mod tests {
         act(&mut ed, EditorAction::DeleteWordBack);
         assert_eq!(ed.active_buffer().unwrap().text(), VIRT_TEXT);
         assert_eq!(head_virt(&ed), (11, None));
+    }
+
+    #[test]
+    fn alt_click_past_a_hinted_line_end_keeps_text_columns() {
+        let (mut ed, x0, y0) = drawn(VIRT_TEXT);
+        let hint = inlay::Inlay::new(11, ": u", false, false, false).unwrap();
+        ed.active_buffer_mut().unwrap().inlays.set(vec![hint], 0, 0..3);
+        let theme = Theme::default();
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 8)).unwrap();
+        term.draw(|f| ed.render(f, Rect::new(0, 0, 40, 1), Rect::new(0, 1, 40, 7), true, &theme)).unwrap();
+        // "ab" and the 3-cell hint end at screen column 5; column 8 is 3 cells past.
+        mouse_path(&mut ed, KeyModifiers::ALT, &[(x0 + 8, y0 + 1)]);
+        assert_eq!(ed.active_buffer().unwrap().view.sels.len(), 2);
+        assert_eq!(head_virt(&ed), (11, Some(5)), "a text column (2 + 3), not the screen column");
+        act(&mut ed, EditorAction::InsertChar('X'));
+        let b = ed.active_buffer().unwrap();
+        assert_eq!(b.text(), "Xabcdefgh\nab   X\nabcdefgh\n");
+        assert_eq!(b.inlays.all()[0].at, 16, "the hint stays at the line end, after the first X and the padding");
+    }
+
+    #[test]
+    fn column_mode_ignores_hints() {
+        let (mut ed, _, _) = drawn("abcdefgh\nabcdefgh\n");
+        ed.active_buffer_mut().unwrap().inlays.set(vec![inlay::Inlay::new(2, "<hint>", false, false, false).unwrap()], 0, 0..2);
+        ed.active_buffer_mut().unwrap().view.set_sel(Selection::point(4));
+        act(&mut ed, EditorAction::ToggleColumnMode);
+        act(&mut ed, EditorAction::Move(Motion::Down, true));
+        assert_eq!(ed.active_buffer().unwrap().view.sels.heads().collect::<Vec<_>>(), [4, 13]);
     }
 
     #[test]

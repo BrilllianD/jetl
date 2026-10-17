@@ -10,8 +10,9 @@ use std::rc::Rc;
 
 use ropey::Rope;
 
+use super::inlay::{Inlay, InlayHints};
 use super::selection::line_len_no_eol;
-use super::view::layout_line;
+use super::view::layout_line_inlays;
 
 /// Lines longer than this (in chars) are not wrapped.
 pub const MAX_WRAP_CHARS: usize = 100_000;
@@ -23,7 +24,7 @@ const CACHE_LINES: usize = 50_000;
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct LineWrap {
     /// Where each row after the first starts: its first char (counted from
-    /// the line start) and that char's visual column in the unwrapped line.
+    /// the line start) and that char's visual column in the unwrapped line, hints included.
     pub starts: Vec<(u32, u32)>,
     /// Cells the rows after the first are shifted right by: the line's
     /// leading indent, at most half the view.
@@ -65,7 +66,11 @@ impl LineWrap {
 /// one wider than the row still gets a row of its own. Continuation rows
 /// start at the line's own indent plus `extra_indent`, together at most
 /// half the width.
-pub fn wrap_line(rope: &Rope, line: usize, tab_width: usize, text_w: u16, extra_indent: usize) -> LineWrap {
+///
+/// Inlay hints take their cells and stay on the row of the char after them
+/// (a break goes before the hints, with the char); hints at the line end
+/// hang like trailing whitespace.
+pub fn wrap_line(rope: &Rope, line: usize, tab_width: usize, text_w: u16, extra_indent: usize, inlays: &[Inlay]) -> LineWrap {
     if text_w < 2 || line >= rope.len_lines() || line_len_no_eol(rope, line) > MAX_WRAP_CHARS {
         return LineWrap::default();
     }
@@ -74,7 +79,10 @@ pub fn wrap_line(rope: &Rope, line: usize, tab_width: usize, text_w: u16, extra_
     let mut out = LineWrap::default();
     // The leading indent: the column of the first non-blank grapheme.
     let mut lead = None;
-    layout_line(rope, line, tab_width, MAX_WRAP_CHARS, &mut |g, c| {
+    layout_line_inlays(rope, line, tab_width, MAX_WRAP_CHARS, inlays, &mut |g, c| {
+        if c.is_inlay() {
+            return true;
+        }
         if !is_blank(g) {
             lead = Some(c.col);
             return false;
@@ -90,16 +98,23 @@ pub fn wrap_line(rope: &Rope, line: usize, tab_width: usize, text_w: u16, extra_
     // (The leading indent is no break: it would leave a blank first row.)
     let mut cand: Option<(usize, usize)> = None;
     let (mut prev_blank, mut text_seen) = (false, false);
-    layout_line(rope, line, tab_width, MAX_WRAP_CHARS, &mut |g, c| {
+    // The column where the hints before the next text cell start.
+    let mut unit: Option<usize> = None;
+    layout_line_inlays(rope, line, tab_width, MAX_WRAP_CHARS, inlays, &mut |g, c| {
+        if c.is_inlay() {
+            unit.get_or_insert(c.col);
+            return true;
+        }
+        let ucol = unit.take().unwrap_or(c.col);
         let blank = is_blank(g);
         if !blank && prev_blank && text_seen && c.char_idx > seg_start {
-            cand = Some((c.char_idx, c.col));
+            cand = Some((c.char_idx, ucol));
         }
         prev_blank = blank;
         text_seen |= !blank;
         // Whitespace never breaks: it hangs past the row's end.
         while !blank && c.char_idx > seg_start && c.col + c.width - seg_col > seg_w {
-            let (at, col) = cand.filter(|&(at, _)| at > seg_start).unwrap_or((c.char_idx, c.col));
+            let (at, col) = cand.filter(|&(at, _)| at > seg_start).unwrap_or((c.char_idx, ucol));
             out.starts.push(((at - line_start) as u32, col as u32));
             (seg_start, seg_col, seg_w) = (at, col, cont);
             cand = None;
@@ -128,8 +143,8 @@ pub struct Wrap {
 
 #[derive(Debug, Default)]
 struct WrapCache {
-    /// Buffer version, width, tab width and extra indent the lines were broken for.
-    key: (u64, u16, usize, usize),
+    /// Buffer version, width, tab width, extra indent and hints generation the lines were broken for.
+    key: (u64, u16, usize, usize, u64),
     lines: HashMap<usize, Rc<LineWrap>>,
 }
 
@@ -154,25 +169,29 @@ impl Wrap {
     }
 
     /// How `line` of `rope` (at buffer `version`) wraps.
-    pub fn line(&self, rope: &Rope, version: u64, line: usize) -> Rc<LineWrap> {
-        let key = (version, self.width, self.tab, self.extra_indent);
+    pub fn line(&self, rope: &Rope, version: u64, inlays: &InlayHints, line: usize) -> Rc<LineWrap> {
+        let key = (version, self.width, self.tab, self.extra_indent, inlays.generation());
         let mut c = self.cache.borrow_mut();
         if c.key != key || c.lines.len() > CACHE_LINES {
             c.lines.clear();
             c.key = key;
         }
-        c.lines.entry(line).or_insert_with(|| Rc::new(wrap_line(rope, line, self.tab, self.width, self.extra_indent))).clone()
+        c.lines
+            .entry(line)
+            .or_insert_with(|| Rc::new(wrap_line(rope, line, self.tab, self.width, self.extra_indent, inlays.on_line(rope, line))))
+            .clone()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::editor::inlay::NO_INLAYS;
 
     /// The rows of the first line of `text` at `w` cells, as strings.
     fn rows(text: &str, w: u16) -> Vec<String> {
         let rope = Rope::from_str(text);
-        let lw = wrap_line(&rope, 0, 4, w, 0);
+        let lw = wrap_line(&rope, 0, 4, w, 0, &[]);
         let line: Vec<char> = rope.line(0).chars().filter(|c| *c != '\n').collect();
         let mut bounds: Vec<usize> = vec![0];
         bounds.extend(lw.starts.iter().map(|&(c, _)| c as usize));
@@ -200,7 +219,7 @@ mod tests {
         // a(0) tab(1-3) b(4) tab(5-7) c(8): c is past 8 cells of text.
         assert_eq!(rows("a\tb\tc\td", 9), ["a\tb\t", "c\td"]);
         let rope = Rope::from_str("a\tb\tc\td");
-        let lw = wrap_line(&rope, 0, 4, 9, 0);
+        let lw = wrap_line(&rope, 0, 4, 9, 0, &[]);
         assert_eq!(lw.starts, [(4, 8)], "the column is the unwrapped one");
     }
 
@@ -217,20 +236,20 @@ mod tests {
     #[test]
     fn continuation_rows_take_the_indent_capped_at_half() {
         let rope = Rope::from_str("    aaa bbb ccc ddd");
-        let lw = wrap_line(&rope, 0, 4, 13, 0);
+        let lw = wrap_line(&rope, 0, 4, 13, 0, &[]);
         assert_eq!(lw.indent, 4);
         // 12 cells: the first row fits "    aaa bbb ", the rest 8 each.
         assert_eq!(rows("    aaa bbb ccc ddd", 13), ["    aaa bbb ", "ccc ddd"]);
         assert_eq!(rows("    aaaaaaaaaaaaaaaaaaaa", 13), ["    aaaaaaaa", "aaaaaaaa", "aaaa"]);
         let deep = format!("{}x y", " ".repeat(30));
-        let lw = wrap_line(&Rope::from_str(&deep), 0, 4, 11, 0);
+        let lw = wrap_line(&Rope::from_str(&deep), 0, 4, 11, 0, &[]);
         assert_eq!(lw.indent, 5, "half of 10");
     }
 
     #[test]
     fn continuation_rows_take_the_extra_indent_capped_at_half() {
         let rope = Rope::from_str("    aaa bbb ccc ddd eee fff");
-        let indent = |extra| wrap_line(&rope, 0, 4, 21, extra).indent;
+        let indent = |extra| wrap_line(&rope, 0, 4, 21, extra, &[]).indent;
         assert_eq!(indent(0), 4);
         assert_eq!(indent(2), 6);
         assert_eq!(indent(20), 10, "half of 20");
@@ -246,19 +265,43 @@ mod tests {
     }
 
     #[test]
+    fn hints_count_in_wrap_and_stay_with_their_char() {
+        let rope = Rope::from_str("aaaa bbbb cccc");
+        let hint = |at: usize, label: &str| Inlay::new(at, label, false, false, false).unwrap();
+        // 10 cells of text.
+        let plain = wrap_line(&rope, 0, 4, 11, 0, &[]);
+        assert_eq!(plain.starts, [(10, 10)]);
+        // A hint before `cccc` breaks with it: the row starts at the hint.
+        let lw = wrap_line(&rope, 0, 4, 11, 0, &[hint(10, "wxyz")]);
+        assert_eq!(lw.starts, [(10, 10)], "the break is at the hint's column, not its char's");
+        let lw = wrap_line(&rope, 0, 4, 11, 0, &[hint(5, "123456")]);
+        assert_eq!(lw.starts[0], (5, 5), "`bbbb` no longer fits after the hint: both go to row 2");
+        // A hint at the start shifts the later columns.
+        let lw = wrap_line(&rope, 0, 4, 11, 0, &[hint(0, "x")]);
+        assert_eq!(lw.starts, [(10, 11)]);
+    }
+
+    #[test]
+    fn trailing_hint_hangs_without_a_break() {
+        let rope = Rope::from_str("aaaa bbbb");
+        let lw = wrap_line(&rope, 0, 4, 11, 0, &[Inlay::new(9, "123456", false, false, false).unwrap()]);
+        assert!(lw.starts.is_empty());
+    }
+
+    #[test]
     fn segments_and_cache() {
         let rope = Rope::from_str("aaa bbb ccc\nabc");
-        let lw = wrap_line(&rope, 0, 4, 5, 0);
+        let lw = wrap_line(&rope, 0, 4, 5, 0, &[]);
         assert_eq!((lw.segs(), lw.start(1), lw.start(2)), (3, (4, 4), (8, 8)));
         assert_eq!((lw.seg_of(0), lw.seg_of(3), lw.seg_of(4), lw.seg_of(11)), (0, 0, 1, 2));
         let mut w = Wrap::new(true);
         assert!(!w.active(), "not drawn yet");
         w.set_geometry(5, 4, 0);
         assert!(w.active());
-        assert_eq!(w.line(&rope, 0, 0).segs(), 3);
-        assert_eq!(w.line(&rope, 0, 1).segs(), 1);
+        assert_eq!(w.line(&rope, 0, &NO_INLAYS, 0).segs(), 3);
+        assert_eq!(w.line(&rope, 0, &NO_INLAYS, 1).segs(), 1);
         w.set_geometry(40, 4, 0);
-        assert_eq!(w.line(&rope, 0, 0).segs(), 1, "a new width breaks again");
+        assert_eq!(w.line(&rope, 0, &NO_INLAYS, 0).segs(), 1, "a new width breaks again");
     }
 }
 
@@ -406,6 +449,78 @@ mod editor_tests {
                 }
             }
         }
+    }
+
+    fn hint(at: usize, label: &str) -> crate::editor::inlay::Inlay {
+        crate::editor::inlay::Inlay::new(at, label, false, false, false).unwrap()
+    }
+
+    #[test]
+    fn clicks_round_trip_with_hints() {
+        // Rows of 11 cells: "aaaa ", "[Ty]bbbb ", "[Tx]cccc ", "dddd eeee".
+        // Both hints open a continuation row, with the char after them.
+        let text = "aaaa bbbb cccc dddd eeee\nnext\n";
+        let (w, h) = (18u16, 12u16);
+        let theme = Theme::default();
+        let hint_bg = theme.inlay_hint.bg.unwrap();
+        let mut ed = wrapped(text);
+        ed.active_buffer_mut().unwrap().inlays.set(vec![hint(5, "[Ty]"), hint(10, "[Tx]")], 0, 0..2);
+        draw(&mut ed, w, h);
+        let ta = ed.text_area();
+        assert_eq!(ta.width, 11);
+        let used = ed.active_buffer().unwrap().rows().iter_from(Row::line(0)).count() as u16;
+        let mut hint_clicks = 0;
+        for y in ta.y..ta.y + used {
+            for x in ta.x..ta.right() {
+                let before = screen(&mut ed, w, h);
+                click(&mut ed, x, y);
+                let after = screen(&mut ed, w, h);
+                let p = head(&ed);
+                let (cx, cy) = ed.focused_group().caret_cell.unwrap();
+                assert_eq!(cy, y, "cell ({x}, {y}): caret {p} drawn on another row");
+                if before[(x, y)].bg == hint_bg {
+                    // The run of hint cells holds one label; the caret is its anchor, drawn after the run.
+                    let (mut lo, mut hi) = (x, x);
+                    while lo > ta.x && before[(lo - 1, y)].bg == hint_bg {
+                        lo -= 1;
+                    }
+                    while hi + 1 < ta.right() && before[(hi + 1, y)].bg == hint_bg {
+                        hi += 1;
+                    }
+                    let run: String = (lo..=hi).map(|x| before[(x, y)].symbol()).collect();
+                    let anchor = match run.as_str() {
+                        "[Ty]" => 5,
+                        "[Tx]" => 10,
+                        other => panic!("unexpected hint run {other:?}"),
+                    };
+                    assert_eq!(p, anchor, "a click on a hint cell ({x}, {y}) lands on its anchor");
+                    assert_eq!((cx, cy), (hi + 1, y), "drawn right after the hint");
+                    hint_clicks += 1;
+                } else {
+                    // Blank cells may be past the row's text: only letters are exact.
+                    let sym = before[(x, y)].symbol();
+                    if sym != " " {
+                        assert_eq!((cx, cy), (x, y), "a click on the text cell {sym:?}");
+                        assert_eq!(ed.active_buffer().unwrap().rope.char(p).to_string(), sym, "cell ({x}, {y}) is char {p}");
+                    }
+                }
+                assert_eq!(after[(cx, cy)].symbol(), before[(cx, cy)].symbol());
+            }
+        }
+        assert_eq!(hint_clicks, 8);
+    }
+
+    #[test]
+    fn setting_hints_rebreaks_wrapped_lines() {
+        let mut ed = wrapped("aaaa bbbb cccc\n");
+        draw(&mut ed, 18, 6);
+        let segs = |ed: &Editor| ed.active_buffer().unwrap().rows().text_segs(0);
+        assert_eq!(segs(&ed), 2);
+        let b = ed.active_buffer_mut().unwrap();
+        let v = b.version;
+        b.inlays.set(vec![hint(0, &"w".repeat(30))], v, 0..1);
+        draw(&mut ed, 18, 6);
+        assert!(segs(&ed) > 2, "the wide hint takes cells: {} rows", segs(&ed));
     }
 
     /// A press with `clicks` clicks, like a double click.
