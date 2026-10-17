@@ -305,6 +305,15 @@ impl Editor {
     pub fn active_buffer(&self) -> Option<&Buffer> {
         self.active().and_then(|i| self.buffers.get(i))
     }
+    /// The lines the focused group's active buffer shows (hidden ones
+    /// between included), as last drawn; empty before the first draw.
+    pub fn visible_lines(&self) -> std::ops::Range<usize> {
+        let h = self.text_area().height as usize;
+        let Some(b) = self.active_buffer().filter(|_| h > 0) else { return 0..0 };
+        let rows = b.rows();
+        let last = rows.iter_from(b.view.top()).take(h).last();
+        b.view.scroll_line..last.map_or(b.view.scroll_line, |r| r.line + 1)
+    }
     pub fn active_buffer_mut(&mut self) -> Option<&mut Buffer> {
         self.active().and_then(move |i| self.buffers.get_mut(i))
     }

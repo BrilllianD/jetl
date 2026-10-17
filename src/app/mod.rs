@@ -50,6 +50,7 @@ mod find;
 mod format;
 mod git_ops;
 mod history;
+mod inlay;
 mod lightbulb;
 mod lsp;
 mod lsp_edit;
@@ -371,7 +372,7 @@ impl App {
             problems: crate::lsp::panel::ProblemsPanel::excluding(paths.scratches_dir()),
             history_panel: Default::default(),
             terminal: crate::terminal::panel::TerminalPanel::new(config.terminal.scrollback),
-            lsp: Default::default(),
+            lsp: lsp::LspService::with_inlays(config.lsp.inlay_hints),
             hover: None,
             completion: None,
             signature: None,
@@ -582,6 +583,7 @@ impl App {
         self.completion_docs_tick(Instant::now());
         self.format_timeout(Instant::now());
         self.lightbulb_tick(Instant::now());
+        self.inlay_tick(Instant::now());
         if self.editor.autosave_due(Instant::now()) {
             self.autosave();
         }

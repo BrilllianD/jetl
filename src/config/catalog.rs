@@ -325,6 +325,13 @@ pub static SETTINGS: &[Setting] = &[
         ANY,
         |c| n(c.lsp.completion_min_chars)
     ),
+    row!(
+        "lsp.inlay_hints",
+        "Inlay hints",
+        "Show the language server's inlay hints (types, parameter names) in the text.",
+        Kind::Bool,
+        |c| Value::Bool(c.lsp.inlay_hints)
+    ),
     row!("lsp.max_diagnostics_per_file", "Problems kept per file", "Problems kept per file, the most severe first.", ANY, |c| n(c
         .lsp
         .max_diagnostics_per_file)),
@@ -399,6 +406,7 @@ pub static PAGES: &[Page] = &[
             "lsp.enabled",
             "lsp.completion_auto",
             "lsp.completion_min_chars",
+            "lsp.inlay_hints",
             "lsp.max_diagnostics_per_file",
             "lsp.scratches",
             "lsp.startup_timeout_ms",

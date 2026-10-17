@@ -80,6 +80,9 @@ pub enum PendingTag {
     /// `textDocument/codeAction` for the lightbulb; checked against
     /// `LspService::lightbulb` (`app/lightbulb.rs`), not `inflight`.
     Lightbulb(DocTag),
+    /// `textDocument/inlayHint` for the visible lines; checked against
+    /// `LspService::inlay` (`app/inlay.rs`), not `inflight`.
+    InlayHints(DocTag),
     /// workspace/symbol for the palette query with this seq.
     WorkspaceSymbols(u64),
     /// `workspace/will*Files` of a tree file operation; the seq of its `PendingFileOp`.
@@ -108,7 +111,8 @@ impl PendingTag {
             | PendingTag::ExecuteCommand(t)
             | PendingTag::DocumentSymbols(t)
             | PendingTag::Formatting(t)
-            | PendingTag::Lightbulb(t) => Some(t),
+            | PendingTag::Lightbulb(t)
+            | PendingTag::InlayHints(t) => Some(t),
         }
     }
 }
@@ -242,6 +246,8 @@ pub struct LspConfig {
     /// Identifier chars typed before the popup opens by itself (a server's
     /// trigger character such as `.` opens it at once).
     pub completion_min_chars: usize,
+    /// Show the server's inlay hints.
+    pub inlay_hints: bool,
     /// Start language servers for scratch files too: separate clients rooted
     /// at the scratches directory (rust-analyzer gets them as
     /// `detachedFiles`).
@@ -259,6 +265,7 @@ impl Default for LspConfig {
             max_diagnostics_per_file: 1000,
             completion_auto: true,
             completion_min_chars: 1,
+            inlay_hints: true,
             scratches: false,
             servers: BTreeMap::new(),
         }

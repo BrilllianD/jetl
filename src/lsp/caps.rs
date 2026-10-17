@@ -32,6 +32,7 @@ pub const PREPARE_RENAME: &str = "textDocument/prepareRename";
 pub const RENAME: &str = "textDocument/rename";
 pub const CODE_ACTION: &str = "textDocument/codeAction";
 pub const CODE_ACTION_RESOLVE: &str = "codeAction/resolve";
+pub const INLAY_HINT: &str = "textDocument/inlayHint";
 pub const EXECUTE_COMMAND: &str = "workspace/executeCommand";
 pub const DOCUMENT_SYMBOL: &str = "textDocument/documentSymbol";
 pub const FORMATTING: &str = "textDocument/formatting";
@@ -158,6 +159,7 @@ impl<'a> Caps<'a> {
             DOCUMENT_SYMBOL => on(&fixed.document_symbol_provider) || self.any(DOCUMENT_SYMBOL),
             FORMATTING => on(&fixed.document_formatting_provider) || self.any(FORMATTING),
             RANGE_FORMATTING => on(&fixed.document_range_formatting_provider) || self.any(RANGE_FORMATTING),
+            INLAY_HINT => on(&fixed.inlay_hint_provider) || self.any(INLAY_HINT),
             _ => false,
         }
     }
@@ -336,6 +338,24 @@ mod tests {
     }
 
     #[test]
+    fn inlay_hint_from_static_or_registered_capability() {
+        let r = Registry::default();
+        for (v, want) in [
+            (json!({"inlayHintProvider": true}), true),
+            (json!({"inlayHintProvider": {"resolveProvider": false}}), true),
+            (json!({}), false),
+            (json!({"inlayHintProvider": false}), false),
+        ] {
+            let f = fixed(v.clone());
+            assert_eq!(caps(&f, &r, rust()).has(INLAY_HINT), want, "{v}");
+        }
+        let f = fixed(json!({}));
+        let mut r = Registry::default();
+        register(&mut r, "i", INLAY_HINT, json!({}));
+        assert!(caps(&f, &r, rust()).has(INLAY_HINT));
+    }
+
+    #[test]
     fn registration_options_add_triggers_resolve_and_commands() {
         let f = fixed(
             json!({"completionProvider": {"triggerCharacters": [".", ":"], "allCommitCharacters": ["("]}, "executeCommandProvider": {"commands": ["a"]}}),
@@ -415,6 +435,7 @@ mod tests {
             "documentSymbol",
             "formatting",
             "rangeFormatting",
+            "inlayHint",
         ] {
             assert_eq!(c["textDocument"][k]["dynamicRegistration"], true, "{k}");
         }

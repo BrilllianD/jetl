@@ -257,6 +257,9 @@ impl App {
         if diff.has("lsp.enabled") || diff.has("lsp.scratches") {
             self.lsp_restart();
         }
+        if diff.has("lsp.inlay_hints") {
+            self.set_inlays_shown(self.config.lsp.inlay_hints);
+        }
         if diff.has_section("local_history") {
             self.history.set_settings(self.config.local_history.clone());
             if diff.has("local_history.keep_days") || diff.has("local_history.max_total_mb") {
@@ -445,6 +448,24 @@ mod tests {
         reload(&mut app, &[ConfigFile::Config]);
         assert!(app.config.editor.indent_guides);
         assert!(app.editor.indent_guides());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn inlay_hints_reload_live() {
+        let (mut app, dir) = test_app("reload-inlay");
+        assert!(app.lsp.inlays_shown);
+        crate::app::tests::load(&mut app, "a.rs", "fn main() {}\n");
+        let hint = crate::editor::inlay::Inlay::new(3, ": T", false, false, false).unwrap();
+        app.editor.active_buffer_mut().unwrap().inlays.set(vec![hint], 0, 0..1);
+        write(&app, "config.toml", "[lsp]\nenabled = false\ninlay_hints = false\n");
+        reload(&mut app, &[ConfigFile::Config]);
+        assert!(!app.config.lsp.inlay_hints);
+        assert!(!app.lsp.inlays_shown);
+        assert!(app.editor.active_buffer().unwrap().inlays.is_empty(), "the hints went");
+        write(&app, "config.toml", "[lsp]\nenabled = false\ninlay_hints = true\n");
+        reload(&mut app, &[ConfigFile::Config]);
+        assert!(app.lsp.inlays_shown);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -26,8 +26,8 @@ use crate::ui::hover::HoverPopup;
 use crate::ui::palette::Palette;
 
 pub(super) use crate::lsp::caps::{
-    CODE_ACTION, CODE_ACTION_RESOLVE, COMPLETION, DOCUMENT_SYMBOL, EXECUTE_COMMAND, FORMATTING, PREPARE_RENAME, RANGE_FORMATTING, RENAME,
-    RESOLVE,
+    CODE_ACTION, CODE_ACTION_RESOLVE, COMPLETION, DOCUMENT_SYMBOL, EXECUTE_COMMAND, FORMATTING, INLAY_HINT, PREPARE_RENAME,
+    RANGE_FORMATTING, RENAME, RESOLVE,
 };
 use crate::lsp::caps::{
     Caps, DECLARATION, DEFINITION, HOVER, IMPLEMENTATION, REFERENCES, SIGNATURE_HELP, TYPE_DEFINITION, WORKSPACE_SYMBOL,
@@ -53,6 +53,7 @@ fn method_of(tag: &PendingTag) -> &'static str {
         PendingTag::DocumentSymbols(_) => DOCUMENT_SYMBOL,
         PendingTag::Formatting(_) => FORMATTING,
         PendingTag::Lightbulb(_) => CODE_ACTION,
+        PendingTag::InlayHints(_) => INLAY_HINT,
         PendingTag::Initialize => "initialize",
         PendingTag::Shutdown => "shutdown",
         PendingTag::WillFileOp(_) => "workspace/will*Files",
@@ -86,6 +87,7 @@ fn what(method: &str) -> &'static str {
         EXECUTE_COMMAND => "commands",
         DOCUMENT_SYMBOL => "file structure",
         FORMATTING => "formatting",
+        INLAY_HINT => "inlay hints",
         RANGE_FORMATTING => "formatting a selection",
         _ => "this request",
     }
@@ -293,6 +295,10 @@ impl App {
         if let PendingTag::Lightbulb(t) = tag {
             return self.lightbulb_answer(t, result);
         }
+        // And the inlay hints.
+        if let PendingTag::InlayHints(t) = tag {
+            return self.inlay_answer(t, result);
+        }
         let method = method_of(&tag);
         match self.lsp.inflight.get(method) {
             Some(f) if f.seq == t.seq => {
@@ -346,6 +352,7 @@ impl App {
             | PendingTag::ExecuteCommand(_)
             | PendingTag::Formatting(_)
             | PendingTag::Lightbulb(_)
+            | PendingTag::InlayHints(_)
             | PendingTag::WillFileOp(_)
             | PendingTag::WorkspaceSymbols(_)
             | PendingTag::Initialize

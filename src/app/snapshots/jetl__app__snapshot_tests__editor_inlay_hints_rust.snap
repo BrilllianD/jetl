@@ -1,0 +1,18 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &marks, None)"
+---
+60x8 cursor=(7,1)
+00   a.rs ×
+01   1  ▾ fn main() {
+02   2    │   let v: Vec<i32> = vec![1, 2];
+03   3    │   let n: usize = add(a: v.len(), b: 3);
+04   4    }
+05   5    fn add(a: usize, b: usize) -> usize { a + b }
+06   6
+07
+-- marks: H=inlay C=caret S=selection F=fold O=occurrence
+01        OO
+02                 HHHHHHHHHH
+03                 HHHHHHH       HH          HH
+05        OO

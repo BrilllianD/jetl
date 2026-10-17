@@ -23,11 +23,12 @@ use lsp_types::{
     CompletionItemCapability, CompletionItemCapabilityResolveSupport, CompletionItemKind, CompletionItemKindCapability, DiagnosticTag,
     DidChangeWatchedFilesClientCapabilities, DocumentFormattingClientCapabilities, DocumentRangeFormattingClientCapabilities,
     DocumentSymbolClientCapabilities, ExecuteCommandClientCapabilities, FailureHandlingKind, GeneralClientCapabilities, GotoCapability,
-    HoverClientCapabilities, InitializeParams, InitializeResult, MarkupKind, MessageActionItemCapabilities, ParameterInformationSettings,
-    PositionEncodingKind, PublishDiagnosticsClientCapabilities, ReferenceClientCapabilities, RenameClientCapabilities,
-    ResourceOperationKind, ShowMessageRequestClientCapabilities, SignatureHelpClientCapabilities, SignatureInformationSettings, TagSupport,
-    TextDocumentClientCapabilities, TextDocumentSyncClientCapabilities, WindowClientCapabilities, WorkspaceClientCapabilities,
-    WorkspaceEditClientCapabilities, WorkspaceFileOperationsClientCapabilities, WorkspaceFolder, WorkspaceSymbolClientCapabilities,
+    HoverClientCapabilities, InitializeParams, InitializeResult, InlayHintClientCapabilities, InlayHintWorkspaceClientCapabilities,
+    MarkupKind, MessageActionItemCapabilities, ParameterInformationSettings, PositionEncodingKind, PublishDiagnosticsClientCapabilities,
+    ReferenceClientCapabilities, RenameClientCapabilities, ResourceOperationKind, ShowMessageRequestClientCapabilities,
+    SignatureHelpClientCapabilities, SignatureInformationSettings, TagSupport, TextDocumentClientCapabilities,
+    TextDocumentSyncClientCapabilities, WindowClientCapabilities, WorkspaceClientCapabilities, WorkspaceEditClientCapabilities,
+    WorkspaceFileOperationsClientCapabilities, WorkspaceFolder, WorkspaceSymbolClientCapabilities,
 };
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, BufReader};
@@ -257,6 +258,7 @@ pub fn client_capabilities(watch_files: bool) -> ClientCapabilities {
             }),
             formatting: Some(DocumentFormattingClientCapabilities { dynamic_registration: Some(true) }),
             range_formatting: Some(DocumentRangeFormattingClientCapabilities { dynamic_registration: Some(true) }),
+            inlay_hint: Some(InlayHintClientCapabilities { dynamic_registration: Some(true), resolve_support: None }),
             ..Default::default()
         }),
         window: Some(WindowClientCapabilities {
@@ -285,6 +287,7 @@ pub fn client_capabilities(watch_files: bool) -> ClientCapabilities {
             }),
             symbol: Some(WorkspaceSymbolClientCapabilities { dynamic_registration: Some(true), ..Default::default() }),
             execute_command: Some(ExecuteCommandClientCapabilities { dynamic_registration: Some(true) }),
+            inlay_hint: Some(InlayHintWorkspaceClientCapabilities { refresh_support: Some(true) }),
             did_change_watched_files: watch_files.then_some(DidChangeWatchedFilesClientCapabilities {
                 dynamic_registration: Some(true),
                 relative_pattern_support: Some(true),
@@ -600,6 +603,8 @@ mod tests {
         assert_eq!(info["documentationFormat"], json!(["markdown", "plaintext"]));
         assert_eq!(help["contextSupport"], json!(true));
         assert_eq!(c["workspace"]["symbol"]["dynamicRegistration"], json!(true));
+        assert_eq!(c["textDocument"]["inlayHint"]["dynamicRegistration"], json!(true));
+        assert_eq!(c["workspace"]["inlayHint"]["refreshSupport"], json!(true));
         assert_eq!(c["window"]["showMessage"]["messageActionItem"]["additionalPropertiesSupport"], json!(true));
         assert!(c["workspace"]["didChangeWatchedFiles"].is_null());
         let watching = serde_json::to_value(client_capabilities(true)).unwrap();

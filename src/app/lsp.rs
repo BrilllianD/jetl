@@ -81,6 +81,11 @@ pub struct LspService {
     pub(super) edit: super::lsp_edit::EditReqs,
     /// The lightbulb's request and debounce (`app/lightbulb.rs`).
     pub(super) lightbulb: super::lightbulb::Lightbulb,
+    /// The inlay hints' request and debounce (`app/inlay.rs`).
+    pub(super) inlay: super::inlay::InlayReqs,
+    /// Whether inlay hints are asked for and drawn: `[lsp] inlay_hints`,
+    /// switched for the session by the View menu.
+    pub(super) inlays_shown: bool,
     /// Tree file operations waiting for `will*Files` answers (`app/files.rs`).
     pub(super) file_ops: Vec<super::files::PendingFileOp>,
     /// Offer servers `didChangeWatchedFiles` (the root watcher runs).
@@ -199,9 +204,15 @@ impl LspService {
         self.completion.docs = None;
         self.edit = Default::default();
         self.lightbulb = Default::default();
+        self.inlay = Default::default();
         self.file_ops.clear();
         self.outside.clear();
         self.outside_watcher = None;
+    }
+
+    /// A service with nothing running and the inlay hints switched `shown`.
+    pub(super) fn with_inlays(shown: bool) -> Self {
+        Self { inlays_shown: shown, ..Default::default() }
     }
 
     /// Whether a spinner is shown (a server starting or busy).
@@ -332,6 +343,7 @@ fn untrack(b: &mut Buffer) {
     b.lsp_tracked = false;
     b.lsp_pending.clear();
     b.lsp_full_resync = false;
+    b.inlays.clear();
 }
 
 impl App {
@@ -692,6 +704,10 @@ impl App {
                 done
             }
             "window/workDoneProgress/create" => Ok(Value::Null),
+            "workspace/inlayHint/refresh" => {
+                self.inlay_refresh();
+                Ok(Value::Null)
+            }
             "workspace/workspaceFolders" => {
                 let scratches = self.paths.scratches_dir();
                 let root = if name.ends_with(crate::lsp::SCRATCH_SUFFIX) { &scratches } else { &self.workspace.root };

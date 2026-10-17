@@ -2155,3 +2155,40 @@ async fn editor_inlay_hints_wrapped() {
     marks.extend(editor_marks(&app.theme));
     assert_snapshot!("editor_inlay_hints_wrapped", snapshot(&term, &marks, None));
 }
+
+#[cfg(feature = "lang-rust")]
+#[tokio::test]
+async fn editor_inlay_hints_rust() {
+    use std::time::Instant;
+
+    use super::inlay::INLAY_DELAY;
+    use super::lsp::tests::{incremental, is_lsp, open_on_server, with_fake_servers};
+    use super::tests::handle_next;
+
+    const SRC: &str =
+        "fn main() {\n    let v = vec![1, 2];\n    let n = add(v.len(), 3);\n}\nfn add(a: usize, b: usize) -> usize { a + b }\n";
+    let mut fx = stable_app("inlay-hints-rust");
+    let app = &mut fx.app;
+    let mut caps = incremental();
+    caps["inlayHintProvider"] = serde_json::json!(true);
+    let mut servers = with_fake_servers(app, caps);
+    let mut server = open_on_server(app, &mut servers, "a.rs", SRC).await;
+    draw_editor(app, 60, 8);
+    let t0 = Instant::now();
+    app.inlay_tick(t0);
+    app.inlay_tick(t0 + INLAY_DELAY);
+    let req = server.recv("textDocument/inlayHint").await;
+    let hint = |l: u32, c: u32, label: &str, kind: u8, pad: bool| serde_json::json!({"position": {"line": l, "character": c}, "label": label, "kind": kind, "paddingRight": pad});
+    let hints = serde_json::json!([
+        hint(1, 9, ": Vec<i32>", 1, false),
+        hint(2, 9, ": usize", 1, false),
+        hint(2, 16, "a:", 2, true),
+        hint(2, 25, "b:", 2, true),
+    ]);
+    server.respond(req["id"].as_i64().unwrap(), hints);
+    handle_next(app, is_lsp).await;
+    let term = draw_editor(app, 60, 8);
+    let mut marks = vec![Mark::style('H', "inlay", app.theme.inlay_hint)];
+    marks.extend(editor_marks(&app.theme));
+    assert_snapshot!("editor_inlay_hints_rust", snapshot(&term, &marks, None));
+}
