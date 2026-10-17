@@ -389,7 +389,7 @@ impl App {
             local_diff_next: None,
             local_diff_follow: None,
             recovery_offer: None,
-            config_reload: Default::default(),
+            config_reload: config_reload::ConfigReload::new(snippet_inputs),
             started: Instant::now(),
             config,
             paths,

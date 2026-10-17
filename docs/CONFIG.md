@@ -114,6 +114,7 @@ hscrolloff = 5                 # columns kept visible left and right of the care
 auto_close = true              # type brackets and quotes in pairs, step over closers, wrap selections
 highlight_occurrences = true   # highlight the word at the caret (or the selected text) elsewhere on screen
 indent_guides = true           # a │ at each indent stop in a line's leading whitespace (theme style indent_guide)
+snippets = true               # live templates: Tab after a snippet's prefix expands it, snippets listed in completion (see "Live templates")
 trim_trailing_whitespace = true # on save, strip trailing spaces and tabs (not on the caret line, never in Markdown)
 final_newline = true           # on save, end a non-empty file with a line break
 autosave = "off"               # "off", "focus" (save when the terminal loses focus) or "idle" (save after a pause in editing)
@@ -602,6 +603,69 @@ Keys `.editorconfig` leaves unset are filled from the next source, so
 Without `tab_width` (or `indent_size` with tabs) in `.editorconfig`, tabs are
 drawn `editor.tab_width` columns wide. Changing `.editorconfig` applies to
 files opened after the change.
+
+## Live templates (snippets)
+
+A snippet is a short prefix that Tab expands into a larger piece of text with
+places to fill in. jetl ships a few (Rust `fn`, `test`, `impl`, `match`;
+Python `def`, `class`, `ifmain`; TypeScript `fn`, `log`); you add your own as
+TOML files in `snippets/` next to `config.toml` (`~/.config/jetl/snippets/`).
+`editor.snippets = false` turns the feature off: no snippet rows in
+completion, Tab never expands, and Edit > Expand Live Template says so.
+
+Files are named after the language as the status bar shows it
+(`LanguageDef::name`: `rust.toml`, `python.toml`, `typescript.toml`,
+`tsx.toml`, `javascript.toml`, `go.toml`, ...). `all.toml` applies to every
+buffer, plain text included. A `tsx` buffer also reads `typescript.toml`.
+Only the folder itself is read, not subfolders, and only `*.toml` files.
+
+    # ~/.config/jetl/snippets/rust.toml
+    [[snippet]]
+    prefix = "pp"                      # required: letters, digits and _
+    description = "debug print"        # optional, shown in the popup
+    body = 'println!("{:?}", ${1:x});$0'   # required
+
+Each `[[snippet]]` has `prefix`, `body` and an optional `description`;
+other keys are ignored.
+
+The body uses the language server snippet syntax: `$1`, `$2` are tabstops
+walked with Tab (Shift+Tab back), `${1:placeholder}` has a default text,
+`${1|a,b|}` offers a choice (the first is inserted), a repeated number is a
+mirror edited together with the first, and `$0` is where the caret ends. `\t`
+is one indent level of the buffer (tab or spaces as the file uses); the
+following lines get the indent of the line the caret is on. Variables such as
+`$TM_FILENAME` resolve to their default text. In a TOML basic string
+(`"..."`) write `\\$` for a literal `$`; a literal string (`'...'` or
+`'''...'''`) needs no escapes and is the easy way to write bodies with `$`
+and `\`.
+
+For a buffer of language `L` the lookup order is `L.toml` (your file merged
+over the built-ins: a snippet with the prefix of a built-in replaces it, and
+within one file a later duplicate prefix replaces an earlier one), then
+`typescript.toml` for `tsx`, then `all.toml`; the first snippet with a given
+prefix wins. So a prefix in `all.toml` does not override a built-in of the
+language: put the override in `<language>.toml`.
+
+Tab expands when the editor has the focus, the find bar and the merge view
+are not in use, the mode is Insert, there is one caret with no selection, the
+buffer is writable, the word before the caret equals a prefix (case
+sensitive) and no word character follows the caret. Strings and comments are
+not excluded. The expansion is one undo step. Tab order: an open completion
+popup accepts first, then an active snippet walks to its next tabstop, then a
+prefix expands, then `editor.tab` indents. The binding is the `tab` entry of
+the `editor.snippet_prefix` context (action `editor.expand_snippet`); unbind
+it there to keep Tab for indentation.
+
+Snippets also appear as rows in the completion popup, after the language
+server's rows, for the words whose start matches the prefix (not fuzzy).
+Ctrl+Space lists them when no server runs.
+
+The folder is watched: creating, editing or deleting a file in it, or
+creating the folder, applies at once and shows `Reloaded snippets`. A file
+that cannot be parsed or read, or a snippet with a bad prefix, is reported
+once per change of its text (`snippets/rust.toml is invalid: ...; its
+snippets are ignored`) and contributes nothing; the built-ins and the other
+files stay. A reload where no text changed says nothing.
 
 ## keymap.toml
 

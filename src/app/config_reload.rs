@@ -1,4 +1,5 @@
-//! Hot reload of `config.toml`, `keymap.toml` and the theme files.
+//! Hot reload of `config.toml`, `keymap.toml`, the theme files and the
+//! snippet files.
 //!
 //! The config watcher (`config::watch`) sends `AppMsg::ConfigChanged` with
 //! the kinds of files that changed. Each file reloads on its own: its text
@@ -7,7 +8,9 @@
 //! keeps the current value and reports the error, and a valid one replaces
 //! it. `apply_config` swaps `App::config` and applies the keys that take
 //! effect at once (`config::reload` classes); keys that need a restart are
-//! named in the notification.
+//! named in the notification. The snippet files reload like the others,
+//! compared as a set: a bad file's error is reported once per change of its
+//! text, and the built-ins and the other files stay.
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -15,6 +18,7 @@ use std::time::{Duration, Instant};
 use super::{App, Ctx};
 use crate::config::edit::Edit;
 use crate::config::reload::{self, ConfigDiff, ReloadClass};
+use crate::config::snippets::{SnippetInputs, SnippetSet};
 use crate::config::theme::{OnBadFile, Theme};
 use crate::config::watch::{self, ConfigFile, ConfigWatcher};
 use crate::config::{ColorMode, Config, FileText, Paths};
@@ -48,6 +52,15 @@ pub(crate) struct ConfigReload {
     config_text: FileText,
     keymap_text: FileText,
     theme_inputs: Option<ThemeInputs>,
+    /// The snippet files as last read.
+    pub(super) snippet_inputs: SnippetInputs,
+}
+
+impl ConfigReload {
+    /// Nothing watched yet; the snippet files as `App::new` read them.
+    pub(super) fn new(snippet_inputs: SnippetInputs) -> Self {
+        Self { snippet_inputs, ..Self::default() }
+    }
 }
 
 /// What one batch reloaded and the problems it found.
@@ -122,6 +135,9 @@ impl App {
         }
         if files.contains(&ConfigFile::Theme) || force_theme {
             self.reload_theme(force_theme, &mut report);
+        }
+        if files.contains(&ConfigFile::Snippets) {
+            self.reload_snippets(&mut report);
         }
         if !report.reloaded.is_empty() {
             let (level, text) = reload_message(&report.reloaded, &diff);
@@ -215,6 +231,27 @@ impl App {
             self.history_panel.theme_changed();
         }
         report.reloaded.extend(names);
+    }
+
+    /// The snippet files, when their texts changed. Only errors of files
+    /// whose text changed are reported.
+    fn reload_snippets(&mut self, report: &mut Report) {
+        // The folder may have just appeared.
+        self.retarget_config_watch();
+        let inputs = SnippetSet::read(&self.paths.snippets_dir());
+        if inputs == self.config_reload.snippet_inputs {
+            return;
+        }
+        let old = std::mem::replace(&mut self.config_reload.snippet_inputs, inputs.clone());
+        let (set, errors) = SnippetSet::build(&inputs);
+        self.snippets = set;
+        for (path, e) in errors {
+            let unchanged = inputs.iter().find(|(p, _)| *p == path).is_some_and(|entry| old.contains(entry));
+            if !unchanged {
+                report.errors.push(e);
+            }
+        }
+        report.reloaded.push("snippets".into());
     }
 
     /// Swap in `new` and apply what changed at once (the table in
@@ -706,6 +743,62 @@ mod tests {
         let count = app.notifications.len();
         reload(&mut app, &[ConfigFile::Config]);
         assert_eq!(app.notifications.len(), count);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn snippet_errors(app: &App) -> usize {
+        app.notifications.iter().filter(|n| n.level == Level::Error && n.text.starts_with("snippets/")).count()
+    }
+
+    #[tokio::test]
+    async fn snippet_files_reload_and_report_once() {
+        let (mut app, dir) = test_app("reload-snippets");
+        let snippets = app.paths.snippets_dir();
+        std::fs::create_dir_all(&snippets).unwrap();
+        let file = |name: &str, text: &str| std::fs::write(snippets.join(name), text).unwrap();
+        let good = "[[snippet]]\nprefix = \"pp\"\nbody = \"PP\"\n";
+        file("rust.toml", good);
+        reload(&mut app, &[ConfigFile::Snippets]);
+        assert!(app.snippets.exact(Some("rust"), "pp").is_some());
+        assert_eq!(last(&app), (Level::Info, "Reloaded snippets".into()));
+        file("rust.toml", "[[snippet]\n");
+        reload(&mut app, &[ConfigFile::Snippets]);
+        let (level, text) = last(&app);
+        assert_eq!(level, Level::Error);
+        assert!(text.starts_with("snippets/rust.toml is invalid"), "{text}");
+        assert!(app.snippets.exact(Some("rust"), "pp").is_none());
+        assert!(app.snippets.exact(Some("rust"), "fn").is_some(), "built-ins stay");
+        let count = app.notifications.len();
+        reload(&mut app, &[ConfigFile::Snippets]);
+        assert_eq!(app.notifications.len(), count, "unchanged inputs are silent");
+        file("all.toml", "[[snippet]]\nprefix = \"aa\"\nbody = \"AA\"\n");
+        reload(&mut app, &[ConfigFile::Snippets]);
+        assert_eq!(app.notifications.len(), count + 1, "one Info, the bad text did not change");
+        assert_eq!(last(&app), (Level::Info, "Reloaded snippets".into()));
+        assert_eq!(snippet_errors(&app), 1);
+        file("rust.toml", good);
+        reload(&mut app, &[ConfigFile::Snippets]);
+        assert_eq!(last(&app), (Level::Info, "Reloaded snippets".into()));
+        assert!(app.snippets.exact(Some("rust"), "pp").is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[tokio::test]
+    async fn snippet_reload_reaches_tab() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let (mut app, dir) = test_app("reload-snippets-tab");
+        std::fs::create_dir_all(app.paths.snippets_dir()).unwrap();
+        std::fs::write(app.paths.snippets_dir().join("rust.toml"), "[[snippet]]\nprefix = \"pp\"\nbody = \"PP\"\n").unwrap();
+        reload(&mut app, &[ConfigFile::Snippets]);
+        let path = app.workspace.root.join("a.rs");
+        app.editor.open_text(path, "", false, &app.theme);
+        app.focus.set(crate::ui::focus::PanelId::Editor);
+        for c in ['p', 'p'] {
+            app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(app.editor.active_buffer().unwrap().text(), "PP");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -1093,6 +1093,25 @@ ends, so hints appear without scrolling or editing once rust-analyzer has loaded
    a visible box (lighter than the current-line background) on the caret lines.
 7. Undo every edit; do not save. Repeat at 120x40 and 80x24.
 
+### Scenario: live templates
+
+Setup as for the other scenarios with a fresh `$H` and LSP off; `S=$H/config/jetl/snippets`.
+
+1. Open `src/lib.rs`, Ctrl+End, Enter, type `fn`, Tab: `fn name() {` with `name` selected; type
+   `go`, Tab, Tab: the tabstops cycle (parens, then the indented body line). Ctrl+Z once. Edit
+   menu: `Expand Live Template` is listed with its Tab hint.
+2. `mkdir -p $S`, then write `$S/rust.toml` with a heredoc (`[[snippet]]`, `prefix = "pp"`,
+   `description = "debug print"`, `body = 'println!("{:?}", ${1:x});$0'`). Within a second the toast
+   `Reloaded snippets` shows. Type `pp`, Tab: `println!("{:?}", x);` with `x` selected. Undo. Type
+   `p`, Ctrl+Space: the popup lists `pp` with `debug print`. Esc, undo.
+3. `printf '[[snippet]\n' > $S/rust.toml`: an error toast `snippets/rust.toml is invalid: ...`;
+   `fn` Tab still expands; `pp` Tab inserts an indent instead. Undo. Restore the good file: toast
+   `Reloaded snippets`, `pp` Tab works again.
+4. File > Settings…, Editor > General, select `Live templates (snippets)`: the help shows
+   `Folder: $H/config/jetl/snippets`. Flip it off, OK: `fn` Tab indents, Ctrl+Space after `ma` shows
+   `Language servers are off ...`. Flip it back on.
+5. Undo every edit; do not save. Repeat at 120x40 and 80x24.
+
 ### Limits under tmux
 
 - No kitty keyboard protocol: Ctrl+Shift+letter, Ctrl+Tab, Ctrl+Enter,

@@ -271,6 +271,8 @@ impl Editor {
             auto_close,
             highlight_occurrences,
             indent_guides,
+            // Read by the app where used (`app/snippets.rs`).
+            snippets: _,
             trim_trailing_whitespace,
             final_newline,
             autosave,

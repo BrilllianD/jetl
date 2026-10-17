@@ -23,6 +23,8 @@ pub enum ConfigFile {
     Config,
     Keymap,
     Theme,
+    /// A file in the snippets folder, or the folder itself.
+    Snippets,
 }
 
 /// The files to react to, each with its kind.
@@ -30,10 +32,12 @@ pub type Targets = Vec<(PathBuf, ConfigFile)>;
 
 /// `config.toml`, `keymap.toml` and the theme's files ([`Theme::sources`]).
 /// A target that is a symlink adds its resolved path with the same kind, so
-/// editing the file a dotfile manager links to is noticed too.
+/// editing the file a dotfile manager links to is noticed too. The snippets
+/// folder is a target of kind `Snippets` (its `*.toml` files match too).
 pub fn targets(paths: &Paths, config: &Config) -> Targets {
     let mut out = vec![(paths.config_file(), ConfigFile::Config), (paths.keymap_file(), ConfigFile::Keymap)];
     out.extend(Theme::sources(config, &paths.config_dir, paths.omarchy_dir.as_deref()).into_iter().map(|p| (p, ConfigFile::Theme)));
+    out.push((paths.snippets_dir(), ConfigFile::Snippets));
     let links: Vec<(PathBuf, ConfigFile)> = out
         .iter()
         .filter(|(p, _)| std::fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_symlink()))
@@ -47,10 +51,14 @@ pub fn targets(paths: &Paths, config: &Config) -> Targets {
     out
 }
 
-/// The kinds of the targets among `changed` (exact path match), sorted and
-/// deduplicated.
+/// The kinds of the targets among `changed` (exact path match; a `*.toml`
+/// directly in a `Snippets` target matches it too), sorted and deduplicated.
 pub fn matches<'a>(targets: &Targets, changed: impl Iterator<Item = &'a PathBuf>) -> Vec<ConfigFile> {
-    let mut out: Vec<ConfigFile> = changed.flat_map(|p| targets.iter().filter(move |(t, _)| t == p).map(|(_, kind)| *kind)).collect();
+    let hit = |t: &PathBuf, kind: ConfigFile, p: &PathBuf| {
+        t == p || (kind == ConfigFile::Snippets && p.parent() == Some(t.as_path()) && p.extension().is_some_and(|x| x == "toml"))
+    };
+    let mut out: Vec<ConfigFile> =
+        changed.flat_map(|p| targets.iter().filter(move |(t, kind)| hit(t, *kind, p)).map(|(_, kind)| *kind)).collect();
     out.sort_unstable();
     out.dedup();
     out
@@ -102,9 +110,12 @@ impl ConfigWatcher {
     /// needed, watch new ones, and retry those that failed before.
     pub fn set_targets(&mut self, targets: Targets) {
         let mut wanted: Vec<PathBuf> = Vec::new();
-        for dir in targets.iter().filter_map(|(p, _)| p.parent()) {
-            if !wanted.iter().any(|d| d == dir) {
-                wanted.push(dir.to_path_buf());
+        for (path, kind) in &targets {
+            let folder = (*kind == ConfigFile::Snippets && path.is_dir()).then_some(path.as_path());
+            for dir in path.parent().into_iter().chain(folder) {
+                if !wanted.iter().any(|d| d == dir) {
+                    wanted.push(dir.to_path_buf());
+                }
             }
         }
         for dir in std::mem::take(&mut self.dirs) {
@@ -167,9 +178,10 @@ mod tests {
                 (cfg.join("keymap.toml"), ConfigFile::Keymap),
                 (PathBuf::from("/abs/other/mine.toml"), ConfigFile::Theme),
                 (cfg.join("theme.toml"), ConfigFile::Theme),
+                (cfg.join("snippets"), ConfigFile::Snippets),
             ]
         );
-        assert_eq!(targets(&paths(cfg), &Config::default()).len(), 3);
+        assert_eq!(targets(&paths(cfg), &Config::default()).len(), 4);
     }
 
     #[cfg(unix)]
@@ -184,7 +196,7 @@ mod tests {
         let t = targets(&paths(&cfg), &Config::default());
         assert!(t.contains(&(cfg.join("config.toml"), ConfigFile::Config)));
         assert!(t.contains(&(dir.join("dots/config.toml"), ConfigFile::Config)));
-        assert_eq!(t.len(), 4);
+        assert_eq!(t.len(), 5);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -196,6 +208,18 @@ mod tests {
             ["config.toml", "config.toml", ".config.toml.jetl-tmp", "theme.toml"].iter().map(|n| cfg.join(n)).collect();
         assert_eq!(matches(&t, changed.iter()), [ConfigFile::Config, ConfigFile::Theme]);
         assert!(matches(&t, [cfg.join("theme.toml.swp")].iter()).is_empty());
+    }
+
+    #[test]
+    fn matches_snippet_files_in_the_folder() {
+        let cfg = Path::new("/c");
+        let t = targets(&paths(cfg), &Config::default());
+        let m = |p: &str| matches(&t, [cfg.join(p)].iter());
+        assert_eq!(m("snippets/rust.toml"), [ConfigFile::Snippets]);
+        assert_eq!(m("snippets"), [ConfigFile::Snippets]);
+        assert!(m("snippets/rust.toml.swp").is_empty());
+        assert!(m("snippets/sub/rust.toml").is_empty());
+        assert!(m("other/rust.toml").is_empty());
     }
 
     /// Waits for a `ConfigChanged` that names `want`.
@@ -230,6 +254,31 @@ mod tests {
         // Back to the built-in theme: the other directory is dropped.
         w.set_targets(targets(&paths(&cfg), &Config::default()));
         assert_eq!(w.dirs(), std::slice::from_ref(&cfg));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn watcher_reports_snippet_files() {
+        let dir = test_dir("snippets");
+        let cfg = dir.join("config");
+        let snippets = cfg.join("snippets");
+        std::fs::create_dir_all(&snippets).unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let w = ConfigWatcher::start(targets(&paths(&cfg), &Config::default()), tx).unwrap();
+        assert!(w.dirs().contains(&snippets), "{:?}", w.dirs());
+        std::fs::write(snippets.join("go.toml"), "").unwrap();
+        wait_for(&mut rx, ConfigFile::Snippets).await;
+        drop(w);
+        // The folder is created later: its parent reports it, then it is watched.
+        let cfg2 = dir.join("config2");
+        std::fs::create_dir_all(&cfg2).unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut w = ConfigWatcher::start(targets(&paths(&cfg2), &Config::default()), tx).unwrap();
+        assert_eq!(w.dirs(), std::slice::from_ref(&cfg2));
+        std::fs::create_dir(cfg2.join("snippets")).unwrap();
+        wait_for(&mut rx, ConfigFile::Snippets).await;
+        w.set_targets(targets(&paths(&cfg2), &Config::default()));
+        assert!(w.dirs().contains(&cfg2.join("snippets")), "{:?}", w.dirs());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

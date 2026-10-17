@@ -64,6 +64,9 @@ impl App {
     /// The snippet rows for buffer `id` at char `at`, indented like the line
     /// holding `at`.
     pub(super) fn snippet_items(&self, id: crate::editor::buffer::BufferId, at: usize) -> Vec<CompletionItem> {
+        if !self.config.editor.snippets {
+            return Vec::new();
+        }
         let Some(b) = self.editor.index_of_id(id).map(|i| &self.editor.buffers[i]) else { return Vec::new() };
         let lang = b.language().map(|d| d.name);
         let at = at.min(b.rope.len_chars());
@@ -76,6 +79,9 @@ impl App {
     /// Whether Tab would expand a snippet here (`editor.snippet_prefix`).
     /// Runs on every key: one word scan and a lookup.
     pub(super) fn snippet_prefix_here(&self) -> bool {
+        if !self.config.editor.snippets {
+            return false;
+        }
         if !(self.focus.is(PanelId::Editor) && !self.editor.find_focused() && !self.editor.merge_active() && self.mode == Mode::Insert) {
             return false;
         }
@@ -87,6 +93,10 @@ impl App {
     /// `editor.expand_snippet`: insert the snippet whose prefix is the word
     /// before the caret.
     pub(super) fn expand_snippet(&mut self) {
+        if !self.config.editor.snippets {
+            self.lsp_hint("Live templates are off ([editor] snippets = false)");
+            return;
+        }
         let found = (|| {
             if !self.focus.is(PanelId::Editor) || self.editor.find_focused() || self.editor.merge_active() {
                 return None;
@@ -372,6 +382,36 @@ mod tests {
         typ(&mut app, "fn");
         key(&mut app, KeyCode::Tab);
         assert!(text(&app).contains("fn name() {\r\n        \r\n    }"), "{:?}", text(&app));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[tokio::test]
+    async fn snippets_key_turns_live_templates_off() {
+        use crate::config::watch::ConfigFile;
+        use crate::event::AppMsg;
+        let (mut app, dir) = rust_app("snip-key-off");
+        let set = |app: &mut App, on: bool| {
+            std::fs::write(app.paths.config_file(), format!("[editor]\nsnippets = {on}\n[lsp]\nenabled = false\n")).unwrap();
+            app.handle_msg(AppMsg::ConfigChanged { files: vec![ConfigFile::Config] });
+        };
+        set(&mut app, false);
+        typ(&mut app, "fn");
+        assert!(!app.contexts().contains(&"editor.snippet_prefix"));
+        ctrl_space(&mut app);
+        assert!(app.completion.is_none());
+        let before = text(&app).len();
+        key(&mut app, KeyCode::Tab);
+        assert!(!text(&app).contains("name") && text(&app).len() > before, "Tab indents: {:?}", text(&app));
+        assert!(toasts(&app).iter().all(|t| !t.starts_with("Live templates")), "Tab did not try to expand");
+        undo(&mut app);
+        app.perform(Action::Editor(EditorAction::ExpandSnippet));
+        assert!(toasts(&app).contains(&"Live templates are off ([editor] snippets = false)".to_string()), "{:?}", toasts(&app));
+        set(&mut app, true);
+        undo(&mut app);
+        typ(&mut app, "fn");
+        key(&mut app, KeyCode::Tab);
+        assert!(text(&app).contains("fn name()"), "{:?}", text(&app));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -1,7 +1,7 @@
 //! The Settings window: a modal page tree over `config.toml`'s keys
 //! (`config::catalog`). Edits are staged in `pending` until Apply or OK.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind};
 use ratatui::Frame;
@@ -43,7 +43,7 @@ pub enum SettingsResult {
 
 const BUTTONS: [&str; 3] = ["[ OK ]", "[ Cancel ]", "[ Apply ]"];
 const OPEN_FILE_ROW: &str = "Open config.toml";
-const MAX_HELP_ROWS: usize = 5;
+const MAX_HELP_ROWS: usize = 7;
 /// Cells before a label: the pending marker and a space.
 const MARK_W: usize = 2;
 
@@ -63,6 +63,8 @@ pub struct SettingsWindow {
     rows_rect: Rect,
     value_col: u16,
     button_rects: Vec<Rect>,
+    /// The live templates folder, named in the help of `editor.snippets`.
+    snippets_dir: PathBuf,
 }
 
 fn load(file: &FileText, path: &Path) -> Result<Config, String> {
@@ -89,6 +91,7 @@ impl SettingsWindow {
             rows_rect: Rect::default(),
             value_col: 0,
             button_rects: Vec::new(),
+            snippets_dir: path.parent().map(|d| d.join(crate::config::snippets::SNIPPETS_DIR)).unwrap_or_default(),
         }
     }
 
@@ -500,6 +503,9 @@ impl SettingsWindow {
                 let mut help: Vec<String> = Vec::new();
                 if let Some(st) = sel {
                     help.extend(wrap(st.help, pw, 2));
+                    if st.key == "editor.snippets" {
+                        help.extend(wrap(&format!("Folder: {}", self.snippets_dir.display()), pw, 2));
+                    }
                     if let Some(c) = class_of(st.key) {
                         help.extend(wrap(c.describe(), pw, 1));
                     }
@@ -610,6 +616,19 @@ mod tests {
 
     fn row_y(w: &SettingsWindow, key: &str) -> u16 {
         w.rows_rect.y + PAGES[2].keys.iter().position(|k| *k == key).unwrap() as u16
+    }
+
+    #[test]
+    fn snippets_row_names_the_folder() {
+        let mut w = window();
+        w.rows.selected = PAGES[2].keys.iter().position(|k| *k == "editor.snippets").unwrap();
+        let theme = Theme::default();
+        let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        term.draw(|f| w.render(f, f.area(), &theme)).unwrap();
+        let buf = term.backend().buffer();
+        let lines: Vec<String> = (0..30).map(|y| (0..100).map(|x| buf[(x, y)].symbol()).collect()).collect();
+        assert!(lines.iter().any(|l| l.contains("Folder: /tmp/jetl-test-settings/snippets")), "{lines:#?}");
+        assert!(lines.iter().any(|l| l.contains("Key: editor.snippets")), "{lines:#?}");
     }
 
     #[test]

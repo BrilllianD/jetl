@@ -119,6 +119,9 @@ pub struct EditorConfig {
     pub highlight_occurrences: bool,
     /// Draw a vertical guide at each indent stop of a line's leading whitespace.
     pub indent_guides: bool,
+    /// Live templates: Tab after a snippet prefix, snippet rows in completion (config/snippets.rs).
+    /// Read where used (`app/snippets.rs`), so `apply_config` has nothing to do.
+    pub snippets: bool,
     pub trim_trailing_whitespace: bool,
     pub final_newline: bool,
     pub autosave: Autosave,
@@ -270,6 +273,7 @@ impl Default for EditorConfig {
             auto_close: true,
             highlight_occurrences: true,
             indent_guides: true,
+            snippets: true,
             trim_trailing_whitespace: true,
             final_newline: true,
             autosave: Autosave::Off,
