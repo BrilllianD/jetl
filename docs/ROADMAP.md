@@ -152,6 +152,7 @@ All of section E shipped in Phase 9 except split editor panes, which shipped in 
 | Go to definition, references, hover | M | Done: Ctrl+B and Ctrl+click, Alt+F7 usages with previews, Alt+Q hover popup, Ctrl+Shift+B type declaration, Ctrl+Alt+B implementations, Navigate > Declaration, workspace symbols in Go to Symbol, showMessageRequest buttons |
 | Completion popup | L | Done: auto-trigger and Ctrl+Space, fuzzy filter, snippet tabstops (Tab/Shift+Tab), additional edits, resolve, documentation panel, matched chars, labelDetails, commit characters |
 | Rename, code actions, formatting, document symbols | M | Done: Shift+F6 rename across files, Alt+Enter context actions with resolve and `workspace/applyEdit`, Ctrl+F12 file structure, formatting through the server when `[format]` has no command (the selection only when the server formats ranges); a lightbulb for quick fixes, preferred actions first; workspace edits create, rename and delete files |
+| Inlay hints | M | Done: `textDocument/inlayHint` for the visible lines plus a screen each way, refetched after edits and scrolling settle, kept and shifted until the new answer; drawn as virtual text in the layout walk (soft wrap counts them, a click lands on the anchor, column mode ignores them); `[lsp] inlay_hints`, View > Inlay Hints |
 
 ### G. Themes, vim, config
 

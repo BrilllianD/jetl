@@ -1068,6 +1068,29 @@ Setup as above.
 6. Open `fence.md` (the injections fixture): guides inside the fence's indented line.
 7. Repeat at 120x40 and 80x24.
 
+### Scenario: inlay hints
+
+Setup as above, but rust-analyzer on: no `[lsp] enabled = false`. Wait for indexing (the status
+bar spinner stops); the server refreshes the hints by itself.
+
+1. Open `src/app/lightbulb.rs`. Type hints (`: Option<…>`, `: &mut App`) and parameter-name hints
+   (`range:`, `params:` before call arguments) are visible, in the `inlay_hint` colours
+   (`capture-pane -e`).
+2. Click on a hint's label cell: the caret (terminal cursor) is right after the hint, and the
+   status bar column is the anchor's text column. Click on the char after a parameter hint: the
+   same position.
+3. Toggle soft wrap (View > Soft-Wrap). Make a hinted line longer than the view (type at its
+   end): it wraps, the hints are still shown, a hint never splits from the char after it, and
+   clicks on continuation rows land right. Undo.
+4. F1, `Show or hide inlay hints`: the hints disappear and the toast says `Inlay hints: off`.
+   Wait a second: no `textDocument/inlayHint` in the log. Run it again: the toast says on, and
+   the hints reappear after about 300 ms.
+5. View menu (F10): `Inlay Hints` is listed after `Soft-Wrap` and runs the same toggle.
+6. Column mode (Alt+Shift+Insert or the menu): Alt+Shift+drag over a hinted line. The block is
+   selected by text columns: on hinted lines it is shifted on screen, but the right chars are
+   selected. Escape.
+7. Undo every edit; do not save. Repeat at 120x40 and 80x24.
+
 ### Limits under tmux
 
 - No kitty keyboard protocol: Ctrl+Shift+letter, Ctrl+Tab, Ctrl+Enter,

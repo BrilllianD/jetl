@@ -516,6 +516,8 @@ pub enum LspAction {
     ContextActions,
     /// Ctrl+F12: the file's symbols in a palette.
     FileStructure,
+    /// View > Inlay Hints: show or hide the server's inlay hints for this session.
+    ToggleInlayHints,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -889,6 +891,7 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "lsp.rename" => "Rename the symbol at the caret and its usages", Lsp(LspAction::Rename);
         "lsp.context_actions" => "Show context actions (quick fixes, refactorings) at the caret", Lsp(LspAction::ContextActions);
         "lsp.file_structure" => "File structure: the file's symbols from its language server", Lsp(LspAction::FileStructure);
+        "lsp.toggle_inlay_hints" => "Show or hide inlay hints", Lsp(LspAction::ToggleInlayHints);
 
         "problems.up" => "Problems: up", Problems(ProblemsAction::Up);
         "problems.down" => "Problems: down", Problems(ProblemsAction::Down);

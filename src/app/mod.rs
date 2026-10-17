@@ -962,6 +962,7 @@ impl App {
                     crate::actions::LspAction::Rename => self.lsp_rename(),
                     crate::actions::LspAction::ContextActions => self.lsp_context_actions(),
                     crate::actions::LspAction::FileStructure => self.lsp_file_structure(),
+                    crate::actions::LspAction::ToggleInlayHints => self.toggle_inlay_hints(),
                     _ => {}
                 }
                 return;

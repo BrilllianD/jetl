@@ -470,6 +470,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn toggle_survives_an_unrelated_reload() {
+        let (mut app, dir) = test_app("reload-inlay-toggle");
+        app.perform(crate::actions::Action::Lsp(crate::actions::LspAction::ToggleInlayHints));
+        assert!(!app.lsp.inlays_shown);
+        write(&app, "config.toml", &format!("{NO_LSP}[editor]\nindent_guides = false\n"));
+        reload(&mut app, &[ConfigFile::Config]);
+        assert!(!app.lsp.inlays_shown, "an unrelated key keeps the toggle");
+        write(&app, "config.toml", "[lsp]\nenabled = false\ninlay_hints = false\n");
+        reload(&mut app, &[ConfigFile::Config]);
+        write(&app, "config.toml", "[lsp]\nenabled = false\ninlay_hints = true\n");
+        reload(&mut app, &[ConfigFile::Config]);
+        assert!(app.lsp.inlays_shown);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
     async fn restart_keys_are_named_once() {
         let (mut app, dir) = test_app("reload-restart");
         let base = "[ui]\nleft_width = 50\n[lsp]\nenabled = false\nstartup_timeout_ms = 1\n";

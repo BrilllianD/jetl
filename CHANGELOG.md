@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Inlay hints from the language server (types, parameter names) drawn in the text for the visible lines; soft wrap counts them and a click on one puts the caret at its place. `[lsp] inlay_hints` turns them off.
+- Inlay hints from the language server (types, parameter names) drawn in the text for the visible lines; soft wrap counts them and a click on one puts the caret at its place. `[lsp] inlay_hints` turns them off. View > Inlay Hints shows or hides them for the session.
 - Indent guides: a thin line at each indent level in the leading whitespace, continued through blank lines inside a block (`editor.indent_guides`, on by default; theme style `indent_guide`).
 - Edit > Sort Lines, Reverse Lines, To Upper Case and To Lower Case (also in the actions palette): on the selected lines, or the whole file when nothing is selected; one undo step.
 - Markdown code fences are highlighted as their language, and HTML and Vue `<script>` / `<style>` blocks as JavaScript (or TypeScript with `lang="ts"`) and CSS (or SCSS); folding, bracket matching and Extend Selection follow the embedded language.

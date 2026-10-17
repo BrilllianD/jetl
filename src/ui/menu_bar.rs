@@ -135,6 +135,7 @@ pub const MAIN_MENU: &[(&str, char, &[Row])] = &[
             Item("Parameter Info", "lsp.parameter_info"),
             Item("Git Blame", "editor.toggle_blame"),
             Item("Soft-Wrap", "editor.toggle_soft_wrap"),
+            Item("Inlay Hints", "lsp.toggle_inlay_hints"),
         ],
     ),
     (

@@ -141,6 +141,13 @@ impl App {
         }
     }
 
+    /// View > Inlay Hints: flip the session state and say which way.
+    pub(super) fn toggle_inlay_hints(&mut self) {
+        let on = !self.lsp.inlays_shown;
+        self.set_inlays_shown(on);
+        self.lsp_hint(if on { "Inlay hints: on" } else { "Inlay hints: off" });
+    }
+
     /// `workspace/inlayHint/refresh`: ask again for what is on screen. The
     /// old hints stay until the new answer.
     pub(super) fn inlay_refresh(&mut self) {
@@ -366,6 +373,29 @@ mod tests {
         assert_eq!(all(&app).len(), 1, "the old hints stay");
         settle(&mut app);
         server.recv("textDocument/inlayHint").await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn toasts(app: &App) -> Vec<String> {
+        app.toasts.items().iter().map(|t| t.text.clone()).collect()
+    }
+
+    #[tokio::test]
+    async fn toggle_action_hides_and_brings_back_hints() {
+        let (mut app, mut server, dir) = setup("inlay-toggle", true).await;
+        ask_and_answer(&mut app, &mut server, json!([hint(1, 9, json!(": i32"), 1)])).await;
+        assert_eq!(all(&app).len(), 1);
+        app.perform(Action::Lsp(LspAction::ToggleInlayHints));
+        assert!(all(&app).is_empty());
+        assert!(!app.lsp.inlays_shown);
+        assert!(toasts(&app).iter().any(|t| t == "Inlay hints: off"), "{:?}", toasts(&app));
+        settle(&mut app);
+        let client = app.lsp.clients.get("rust-analyzer").unwrap();
+        assert!(server.sent_so_far(client).await.iter().all(|m| m["method"] != "textDocument/inlayHint"));
+        app.perform(Action::Lsp(LspAction::ToggleInlayHints));
+        assert!(toasts(&app).iter().any(|t| t == "Inlay hints: on"), "{:?}", toasts(&app));
+        ask_and_answer(&mut app, &mut server, json!([hint(1, 9, json!(": i32"), 1)])).await;
+        assert_eq!(all(&app).len(), 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
