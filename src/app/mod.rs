@@ -957,6 +957,11 @@ impl App {
                 self.rerun();
                 return;
             }
+            Action::Run(RunAction::RerunFailed) => {
+                drop(cx);
+                self.rerun_failed_run();
+                return;
+            }
             Action::Run(RunAction::Stop) => {
                 drop(cx);
                 self.stop_run();

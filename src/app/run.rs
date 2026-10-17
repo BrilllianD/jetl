@@ -12,7 +12,7 @@ use crate::event::{AppMsg, Level};
 use crate::run::matcher::{Matcher, RunLine};
 use crate::run::panel::Status;
 use crate::run::process::{self, RunEnd, Spec};
-use crate::run::testing::Runner;
+use crate::run::testing::{Runner, rerun_failed};
 use crate::run::{MatcherKind, RunTask, TaskCommand, quote_word};
 use crate::ui::focus::{PanelId, ToolWindowId};
 use crate::ui::palette::Source;
@@ -107,7 +107,7 @@ impl App {
             _ => root.clone(),
         };
         let (argv, shown) = spawn_argv(&task);
-        self.run_panel.start(&task.name, &shown);
+        self.run_panel.start(&task.name, &shown, task.matcher_kind() == MatcherKind::Tests);
         self.show_run_window();
         self.run.last = Some(task.clone());
         let matcher_kind = task.matcher_kind();
@@ -155,6 +155,16 @@ impl App {
         match self.run.last.clone() {
             Some(task) => self.run_task(task),
             None => self.open_palette(PaletteKind::RunTasks),
+        }
+    }
+
+    /// `run.rerun_failed`: the last task again, for its failed tests only.
+    pub(super) fn rerun_failed_run(&mut self) {
+        let Some(task) = self.run.last.clone() else { return self.notify(Level::Info, "Nothing has run yet") };
+        let Some(tests) = self.run_panel.tests() else { return self.notify(Level::Info, "The last run has no test results") };
+        match rerun_failed(&task, tests) {
+            Ok(t) => self.run_task(t),
+            Err(e) => self.notify(Level::Info, e),
         }
     }
 
@@ -562,6 +572,48 @@ mod tests {
         handle_next(&mut app, |m| matches!(m, AppMsg::RunTasks { .. })).await;
         assert!(!app.run.running(), "restoring runs nothing");
         assert!(app.run_panel.status().is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn rerun_failed_runs_only_the_failed_test() {
+        use crate::run::panel::View;
+        use std::os::unix::fs::PermissionsExt;
+
+        let (mut app, dir) = test_app("run-rerun-failed");
+        std::fs::create_dir_all(dir.join("bin")).unwrap();
+        std::fs::write(dir.join("libtest.txt"), include_str!("../run/fixtures/libtest.txt")).unwrap();
+        let script = format!(
+            "#!/bin/sh\necho \"$*\" >> '{d}/args.txt'\ncase \" $* \" in\n*' --exact '*) printf 'running 1 test\\ntest tests::nested::fails ... ok\\n\\ntest result: ok. 1 passed; 0 failed\\n';;\n*) cat '{d}/libtest.txt';;\nesac\n",
+            d = dir.display()
+        );
+        let bin = dir.join("bin/cargo");
+        std::fs::write(&bin, script).unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let path = format!("{}:{}", dir.join("bin").display(), std::env::var("PATH").unwrap_or_default());
+        let text = format!("[[run.configs]]\nname = \"unit\"\ncommand = [\"cargo\", \"test\"]\nenv = {{ PATH = {path:?} }}\n");
+        let task = crate::config::Config::parse(&text).unwrap().run.configs.remove(0);
+        app.run_task(task);
+        until_exit(&mut app).await;
+        assert_eq!(app.run_panel.view(), View::Tests);
+        let failed: Vec<String> = app.run_panel.tests().unwrap().failed().map(|c| c.id.clone()).collect();
+        assert_eq!(failed, ["tests::nested::fails"]);
+        let seq = app.run.seq;
+        app.perform(Action::Run(RunAction::RerunFailed));
+        assert_eq!(app.run.seq, seq + 1);
+        until_exit(&mut app).await;
+        let args = std::fs::read_to_string(dir.join("args.txt")).unwrap();
+        assert_eq!(args.lines().collect::<Vec<_>>(), ["test", "test -- --exact tests::nested::fails"]);
+        let t = app.run_panel.tests().unwrap();
+        assert_eq!((t.cases().len(), t.counts().passed), (1, 1));
+        assert_eq!(app.run.last.as_ref().map(|t| t.name.as_str()), Some("unit (failed)"));
+        // Nothing failed now: a note, no process.
+        let seq = app.run.seq;
+        app.perform(Action::Run(RunAction::RerunFailed));
+        assert_eq!(app.run.seq, seq);
+        assert!(!app.run.running());
+        assert_eq!(app.notifications.last().map(|n| n.text.as_str()), Some("No failed tests"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -2243,7 +2243,7 @@ fn run_fixture(app: &mut App) {
     std::fs::write(root.join("src/a.rs"), "fn main() {\n    let x = 1;\n}\n").unwrap();
     app.run.selected = Some("check".into());
     app.toggle_tool_window(ToolWindowId::Run);
-    app.run_panel.start("check", "cargo check");
+    app.run_panel.start("check", "cargo check", false);
     let mut matcher = crate::run::matcher::Matcher::new(&root, &root);
     let lines = ["error: x", " --> src/a.rs:2:3", "   Compiling jtc v0.1.0", "    Finished"].map(|t| matcher.line(t.to_string()));
     app.run_panel.push(lines.to_vec());
@@ -2267,6 +2267,50 @@ async fn run_window_toolbar_wide() {
     run_fixture(app);
     let term = draw_app(app, 120, 40);
     assert_snapshot!("run_window_toolbar_wide", snapshot(&term, &run_marks(&app.theme), None));
+}
+
+fn run_tests_marks(theme: &Theme) -> [Mark; 4] {
+    [
+        Mark::style('E', "error", theme.error),
+        Mark::style('P', "passed", theme.git_added),
+        Mark::modifier('U', "link", Modifier::UNDERLINED),
+        Mark::bg('L', "selected", theme.list_selected.bg.unwrap()),
+    ]
+}
+
+/// The Run window after a failed `cargo test` (the libtest fixture: two
+/// passed, one failed with its output, one ignored), focused, on `fails`.
+fn run_tests_fixture(app: &mut App) {
+    let root = app.workspace.root.clone();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("src/lib.rs"), "fn x() {}\n".repeat(14)).unwrap();
+    app.toggle_tool_window(ToolWindowId::Run);
+    app.run_panel.start("cargo test", "cargo test", true);
+    let mut matcher = crate::run::matcher::Matcher::new(&root, &root);
+    let lines = include_str!("../run/fixtures/libtest.txt").lines().map(|t| matcher.line(t.to_string())).collect();
+    app.run_panel.push(lines);
+    app.run_panel.finish(crate::run::panel::Status::Exited(101));
+    app.run_panel.freeze_elapsed();
+    app.focus.set(crate::ui::focus::PanelId::Run);
+    app.run_panel.select_test("fails");
+}
+
+#[tokio::test]
+async fn run_window_tests() {
+    let mut fx = stable_app("run-tests");
+    let app = &mut fx.app;
+    run_tests_fixture(app);
+    let term = draw_app(app, 80, 24);
+    assert_snapshot!("run_window_tests", snapshot(&term, &run_tests_marks(&app.theme), None));
+}
+
+#[tokio::test]
+async fn run_window_tests_wide() {
+    let mut fx = stable_app("run-tests-wide");
+    let app = &mut fx.app;
+    run_tests_fixture(app);
+    let term = draw_app(app, 120, 40);
+    assert_snapshot!("run_window_tests_wide", snapshot(&term, &run_tests_marks(&app.theme), None));
 }
 
 fn run_configs_marks(theme: &Theme) -> [Mark; 3] {

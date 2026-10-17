@@ -1136,6 +1136,29 @@ two `[[configs]]` entries, `where` (`command = "pwd"`) and `hello` (`command = "
    no command: an error toast, nothing written. Repeat at 120x40 and 80x24: all six field rows,
    the help and the three buttons are visible.
 
+### Scenario: test runner tree
+
+Setup as for the other scenarios (fresh `$H`, LSP off) with the scratch crate `/tmp/jt-crate`
+(`adds`, `fails`, ignored `slow`, `tests/cli.rs`); open jetl on it instead of `$R`.
+
+1. `send-keys M-S-F10`, pick the `cargo test` configuration (or F1, `Run: choose`): the Run window
+   opens in the Tests view: suites `src/lib.rs`, `tests/cli.rs`, `Doc-tests jtc`; under
+   `src/lib.rs` the group `tests` with `adds` `✓` and `slow` `○`, `fails` `✗` expanded with
+   `panicked at src/lib.rs:...` underlined. The status line reads
+   `Tests: 2 passed, 1 failed, 1 ignored`.
+2. Select `fails`, Enter: `src/lib.rs` opens at the assert. Click the underlined link: the same.
+   F4 from another window steps to the failure.
+3. Left on `fails` hides its output, Right shows it; Left on a suite hides its tests.
+4. ` Rerun Failed ` (toolbar, or F1 `Run: rerun the failed tests`): the header shows
+   `cargo test -- --exact tests::fails`; the tree has only `fails`. With no failure the button is
+   dim and F1 says `No failed tests`.
+5. `t` (Run window focused) shows the raw output, `t` again the tree; the ` Output ` / ` Tests `
+   tabs switch the same way.
+6. `printf 'x' >> /tmp/jt-crate/src/lib.rs`, run `cargo test`: the window ends in the Output view
+   with the rustc error linked. Restore the file.
+7. Repeat at 120x40 and 80x24: the tabs show at 120 and go first at 80; the tree rows stay inside
+   the window.
+
 ### Limits under tmux
 
 - No kitty keyboard protocol: Ctrl+Shift+letter, Ctrl+Tab, Ctrl+Enter,

@@ -451,6 +451,9 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | Keys | Action | Description |
 |---|---|---|
 | `Esc` | `app.focus_editor` | Focus editor |
+| `T` | `run.toggle_view` | Run: switch between output and the test tree |
+| `Right` | `run.expand` | Run: expand the selected tree row |
+| `Left` | `run.collapse` | Run: collapse the selected tree row |
 | `Up` | `run.up` | Run: up |
 | `Down` | `run.down` | Run: down |
 | `PageUp` | `run.page_up` | Run: page up |
@@ -539,6 +542,7 @@ Reachable from Find Action (F1) or by binding them in `keymap.toml`.
 | `merge.accept_all_left` | Merge: take yours for the whole file |
 | `merge.accept_all_right` | Merge: take theirs for the whole file |
 | `run.edit_configs` | Run: edit run configurations |
+| `run.rerun_failed` | Run: rerun the failed tests |
 | `lsp.restart` | Restart language servers |
 | `lsp.goto_declaration` | Go to the declaration (not the definition) of the symbol at the caret |
 | `lsp.toggle_inlay_hints` | Show or hide inlay hints |

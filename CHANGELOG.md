@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Test runner tree: `cargo test`, `pytest` and `vitest` runs show a Tests view in the Run window (suites, modules or classes, tests; passed, failed and ignored counts), failed tests expanded with their output and a link to the assert; Rerun Failed reruns only those.
 - Run > Edit Configurations… (also in the Run window's toolbar): a form for the project's run configurations, saved to `.jetl/run.toml` with its comments kept; config.toml and detected ones can be copied into the project.
 - The Run window has a toolbar with a configuration picker, Run, Rerun and Stop; Shift+F10 runs the selected configuration (the last one picked, remembered per project), Ctrl+F5 reruns the last run.
 - Run configurations: `[[run.configs]]` in config.toml and `[[configs]]` in `.jetl/run.toml` take `args` and `matcher` (`problems`, `none`) besides name, command, cwd and env; edits to either file apply at once.

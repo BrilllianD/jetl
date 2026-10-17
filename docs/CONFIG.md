@@ -350,9 +350,9 @@ one pipe, so their lines interleave as written, but programs that color or
 animate only on a terminal print plain output (escape codes that still come
 through are stripped). The Run window (Alt+4) has a toolbar on its first row:
 the configuration picker (click it for the Alt+Shift+F10 picker), ▶ Run,
-↻ Rerun, ■ Stop (dim and inert when nothing ran or runs) and Edit
-Configurations… (a narrow window drops the buttons that do not fit, never the
-picker). Below it come the
+↻ Rerun, ■ Stop (dim and inert when nothing ran or runs), Rerun Failed (only
+for runs read as tests) and Edit Configurations… (a narrow window drops the
+buttons that do not fit, never the picker). Below it come the
 status, elapsed time and the last 10 000 lines, following new output unless
 you scroll up.
 File locations in the output become links (rustc and cargo, tsc, pytest and
@@ -367,6 +367,25 @@ the Project, Git and Local History windows Shift+F10 opens the context menu
 instead), Ctrl+F5 runs the last run again, and Ctrl+F2 stops it. Restoring
 the session only selects; nothing runs until you do. GNOME Terminal keeps
 Shift+F10 for itself: use the Run menu there.
+
+A run read as tests (matcher `tests`) opens the Run window in the Tests view:
+the status line adds `Tests: N passed, N failed, N ignored`, and the list is a
+tree of suites (the libtest binary, the pytest or vitest file), groups (the
+module path, classes or describe blocks) and tests, sorted by group and name,
+each with `✓` (passed), `✗` (failed) or `○` (ignored). A failed test is
+expanded with its output below it, the location of the assert underlined as a
+link. Enter or a double click on a test opens its failure location, on an
+output line that line's link; F4 and Shift+F4 step through the failed tests.
+Right and Left expand and collapse the selected suite, group or failed test
+(a collapse stays while the run goes on). The ` Output ` and ` Tests ` tabs on
+the right of the toolbar, or `t`, switch to the raw output and back; the tabs
+are the first thing a narrow window drops. A Tests run that ends with no
+parsed test (a compile error) switches to the Output view by itself. Rerun
+Failed (the toolbar button, Run > Rerun Failed Tests, the action
+`run.rerun_failed`) runs the same command for the failed tests only: `cargo
+test -- --exact <test names>`, pytest with the failed node ids, vitest with
+the failed files and `-t` over their names. Not shown: per-test timing, a
+running state per test, filters; results are not saved.
 
 One task runs at a time: starting another kills the running one first, as
 do quitting jetl and switching projects. A stop sends SIGKILL to the task's

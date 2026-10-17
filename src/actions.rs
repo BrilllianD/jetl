@@ -412,6 +412,8 @@ pub enum RunAction {
     /// Open the Run Configurations window.
     EditConfigs,
     Rerun,
+    /// Rerun only the failed tests of the last run.
+    RerunFailed,
     Stop,
     Up,
     Down,
@@ -419,6 +421,11 @@ pub enum RunAction {
     PageDown,
     Home,
     End,
+    /// Switch between the output and the test tree.
+    ToggleView,
+    /// Expand / collapse the selected tree row.
+    Expand,
+    Collapse,
     /// Open the selected line's location.
     Open,
     NextProblem,
@@ -875,7 +882,11 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "run.run_selected" => "Run: run the selected configuration", Run(RunAction::RunSelected);
         "run.edit_configs" => "Run: edit run configurations", Run(RunAction::EditConfigs);
         "run.rerun" => "Run: run the last run again", Run(RunAction::Rerun);
+        "run.rerun_failed" => "Run: rerun the failed tests", Run(RunAction::RerunFailed);
         "run.stop" => "Run: stop the running task", Run(RunAction::Stop);
+        "run.toggle_view" => "Run: switch between output and the test tree", Run(RunAction::ToggleView);
+        "run.expand" => "Run: expand the selected tree row", Run(RunAction::Expand);
+        "run.collapse" => "Run: collapse the selected tree row", Run(RunAction::Collapse);
         "run.up" => "Run: up", Run(RunAction::Up);
         "run.down" => "Run: down", Run(RunAction::Down);
         "run.page_up" => "Run: page up", Run(RunAction::PageUp);
