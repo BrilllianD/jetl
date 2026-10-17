@@ -359,12 +359,13 @@ impl Keymap {
 
 /// Context order in the generated key reference; other contexts follow
 /// alphabetically.
-const DOC_CONTEXTS: [&str; 12] = [
+const DOC_CONTEXTS: [&str; 13] = [
     "global",
     "editor",
     "editor.find",
     "editor.merge",
     "editor.snippet",
+    "editor.snippet_prefix",
     "tree",
     "git",
     "worktrees",

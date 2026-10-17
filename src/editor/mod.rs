@@ -1286,7 +1286,8 @@ impl Editor {
             | E::ToggleSoftWrap
             | E::Merge(_)
             | E::NextTabstop
-            | E::PrevTabstop => {}
+            | E::PrevTabstop
+            | E::ExpandSnippet => {}
         }
         // A motion or edit that put a caret into a fold unfolds it.
         if let Some(b) = self.active_buffer_mut() {

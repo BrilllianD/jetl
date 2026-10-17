@@ -126,8 +126,28 @@ pub fn filter(items: &[CompletionItem], prefix: &str, matcher: &mut Matcher) -> 
     scored.into_iter().map(|(_, _, i)| i).collect()
 }
 
+/// Snippet rows (live templates) matching `prefix`, in item order. They
+/// match by prefix only (no fuzzy matching, case ignored) and need at least
+/// one typed char.
+pub fn filter_snippets(items: &[CompletionItem], prefix: &str) -> Vec<usize> {
+    if prefix.is_empty() {
+        return Vec::new();
+    }
+    let lower = prefix.to_lowercase();
+    (0..items.len()).filter(|&i| filter_text(&items[i]).to_lowercase().starts_with(&lower)).collect()
+}
+
+/// The order of `items`: fuzzy matches among `items[..from]`, then the
+/// snippet rows `items[from..]` that match by prefix.
+fn order_of(items: &[CompletionItem], from: usize, prefix: &str, matcher: &mut Matcher) -> Vec<usize> {
+    let mut order = filter(&items[..from], prefix, matcher);
+    order.extend(filter_snippets(&items[from..], prefix).into_iter().map(|i| i + from));
+    order
+}
+
 /// A completion list: the items of the answer for `origin`, filtered by
-/// the word typed so far, and the selected row.
+/// the word typed so far, and the selected row. The snippets (live
+/// templates) always follow the server's rows.
 #[derive(Debug, Clone)]
 pub struct CompletionState {
     pub origin: Origin,
@@ -141,13 +161,31 @@ pub struct CompletionState {
     pub order: Vec<usize>,
     /// Index into `order`.
     pub selected: usize,
+    /// Index of the first snippet item in `items` (`items.len()` without any).
+    pub snippets_from: usize,
 }
 
 impl CompletionState {
     pub fn new(origin: Origin, items: Vec<CompletionItem>, incomplete: bool, prefix: &str, matcher: &mut Matcher) -> Self {
-        let order = filter(&items, prefix, matcher);
+        let snippets_from = items.len();
+        let order = order_of(&items, snippets_from, prefix, matcher);
         let selected = order.iter().position(|&i| items[i].preselect == Some(true)).unwrap_or(0);
-        Self { origin, items, incomplete, prefix: prefix.to_string(), order, selected }
+        Self { origin, items, incomplete, prefix: prefix.to_string(), order, selected, snippets_from }
+    }
+
+    /// Replace the snippet rows (after the server's) with `snippets`,
+    /// keeping the selected item when it is still listed.
+    pub fn add_snippets(&mut self, snippets: Vec<CompletionItem>, matcher: &mut Matcher) {
+        let was = self.order.get(self.selected).copied();
+        self.items.truncate(self.snippets_from);
+        self.items.extend(snippets);
+        self.order = order_of(&self.items, self.snippets_from, &self.prefix, matcher);
+        self.selected = was.and_then(|w| self.order.iter().position(|&i| i == w)).unwrap_or(0);
+    }
+
+    /// Whether `items[i]` is a snippet row.
+    pub fn is_snippet(&self, i: usize) -> bool {
+        i >= self.snippets_from
     }
 
     /// Filter by a new prefix, keeping the selected item when it still
@@ -155,7 +193,7 @@ impl CompletionState {
     pub fn refilter(&mut self, prefix: &str, matcher: &mut Matcher) {
         let was = self.order.get(self.selected).copied();
         self.prefix = prefix.to_string();
-        self.order = filter(&self.items, prefix, matcher);
+        self.order = order_of(&self.items, self.snippets_from, prefix, matcher);
         self.selected = was.and_then(|w| self.order.iter().position(|&i| i == w)).unwrap_or(0);
     }
 
@@ -849,5 +887,35 @@ mod tests {
         st.step(-5, true);
         st.step(100, false);
         assert_eq!(st.selected, st.order.len() - 1);
+    }
+
+    #[test]
+    fn snippets_follow_the_server_items_and_need_a_prefix() {
+        let mut m = Matcher::default();
+        let mut st = CompletionState::new(Origin::new(1, &Rope::from_str("fn"), 2), vec![item("fnord"), item("xfn")], false, "fn", &mut m);
+        st.add_snippets(vec![item("fn"), item("fnx"), item("zz")], &mut m);
+        let mut first = st.order[..2].to_vec();
+        first.sort();
+        assert_eq!(first, [0, 1]);
+        assert_eq!(st.order[2..], [2, 3]);
+        assert!(st.is_snippet(2) && st.is_snippet(3));
+        assert!(!st.is_snippet(1));
+        st.refilter("", &mut m);
+        assert_eq!(st.order, [0, 1]);
+        st.refilter("FN", &mut m);
+        let labels: Vec<&str> = st.order.iter().map(|&i| st.items[i].label.as_str()).collect();
+        assert_eq!(labels[2..], ["fn", "fnx"]);
+    }
+
+    #[test]
+    fn add_snippets_keeps_the_selection_and_replaces_older_snippets() {
+        let mut m = Matcher::default();
+        let mut st = CompletionState::new(Origin::new(1, &Rope::from_str("fn"), 2), vec![item("fnord"), item("xfn")], false, "fn", &mut m);
+        let at = st.order.iter().position(|&i| st.items[i].label == "xfn").unwrap();
+        st.selected = at;
+        st.add_snippets(vec![item("fn")], &mut m);
+        st.add_snippets(vec![item("fn")], &mut m);
+        assert_eq!(st.items.len(), 3);
+        assert_eq!(st.selected_item().unwrap().label, "xfn");
     }
 }

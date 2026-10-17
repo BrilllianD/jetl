@@ -167,6 +167,8 @@ pub enum EditorAction {
     NextTabstop,
     /// Select a completion snippet's previous tabstop.
     PrevTabstop,
+    /// Expand the live template whose prefix is the word before the caret (`editor.snippet_prefix`).
+    ExpandSnippet,
     ToggleComment,
     ToggleBlockComment,
     MoveLineUp,
@@ -674,6 +676,7 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "editor.escape" => "Escape (close find, clear selection)", Editor(E::Escape);
         "editor.next_tabstop" => "Snippet: select the next tabstop (the last one ends the snippet)", Editor(E::NextTabstop);
         "editor.prev_tabstop" => "Snippet: select the previous tabstop", Editor(E::PrevTabstop);
+        "editor.expand_snippet" => "Expand the live template (snippet) whose prefix is the word before the caret", Editor(E::ExpandSnippet);
         "editor.toggle_comment" => "Comment with line comment", Editor(E::ToggleComment);
         "editor.toggle_block_comment" => "Comment with block comment", Editor(E::ToggleBlockComment);
         "editor.move_line_up" => "Move line up", Editor(E::MoveLineUp);
@@ -967,6 +970,7 @@ impl Action {
             Action::App(_) => &["global"],
             Action::Editor(EditorAction::Merge(_)) => &["editor.merge"],
             Action::Editor(EditorAction::NextTabstop | EditorAction::PrevTabstop) => &["editor.snippet"],
+            Action::Editor(EditorAction::ExpandSnippet) => &["editor.snippet_prefix"],
             Action::Editor(_) => &["editor", "global"],
             Action::Tree(_) => &["tree", "global"],
             Action::Git(_) => &["git", "global"],

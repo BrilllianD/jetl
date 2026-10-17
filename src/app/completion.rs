@@ -32,6 +32,9 @@
 //! as extra carets); Tab and Shift+Tab then walk the tabstops
 //! (`editor.snippet`, see `editor::snippet`) until the last one, Esc, or
 //! the caret leaving them.
+//!
+//! Live templates (`app::snippets`) follow the server's rows, are never
+//! resolved, and Ctrl+Space without a server lists them alone.
 
 use std::time::{Duration, Instant};
 
@@ -105,8 +108,14 @@ impl App {
         }
         match self.lsp_doc_request(origin.buffer, origin.pos, COMPLETION, json!({"context": context}), PendingTag::Completion) {
             Ok(seq) => self.lsp.completion.request = Some((seq, origin, explicit)),
-            Err(why) if explicit && !why.is_empty() => self.lsp_hint(why),
-            Err(_) => {}
+            Err(why) => {
+                if explicit && self.snippet_popup(origin) {
+                    return;
+                }
+                if explicit && !why.is_empty() {
+                    self.lsp_hint(why);
+                }
+            }
         }
     }
 
@@ -217,7 +226,7 @@ impl App {
     fn completion_docs_fetch(&mut self, i: usize) {
         let Some(p) = &self.completion else { return };
         let origin = p.state.origin.clone();
-        if !p.resolved.contains(&i) && self.lsp_caps(origin.buffer).is_some_and(|c| c.has(RESOLVE)) {
+        if !p.resolved.contains(&i) && !p.state.is_snippet(i) && self.lsp_caps(origin.buffer).is_some_and(|c| c.has(RESOLVE)) {
             let params = serde_json::to_value(&p.state.items[i]).unwrap_or(Value::Null);
             if let Ok(seq) = self.lsp_tagged_request(origin.buffer, origin.pos, RESOLVE, params, PendingTag::CompletionDocs) {
                 self.lsp.completion.docs = Some((seq, origin, i));
@@ -328,7 +337,8 @@ impl App {
         let Some(b) = self.editor.active_buffer() else { return };
         let pos = crate::lsp::pos::position(&b.rope, b.view.sel().head);
         let params = serde_json::to_value(&item).unwrap_or(Value::Null);
-        let resolvable = !resolved && self.lsp_caps(origin.buffer).is_some_and(|c| c.has(RESOLVE));
+        let snippet = p.state.order.get(p.state.selected).is_some_and(|&i| p.state.is_snippet(i));
+        let resolvable = !resolved && !snippet && self.lsp_caps(origin.buffer).is_some_and(|c| c.has(RESOLVE));
         if resolvable && let Ok(seq) = self.lsp_tagged_request(origin.buffer, pos, RESOLVE, params, PendingTag::CompletionResolve) {
             self.lsp.completion.accepting = Some(Accepting { seq, item, origin, deadline: Instant::now() + RESOLVE_WAIT });
             return;
@@ -357,7 +367,7 @@ impl App {
 
     /// Make the edit of `item` as one transaction, if the caret is still
     /// in the word the list was for.
-    fn completion_apply(&mut self, origin: &Origin, item: &CompletionItem) {
+    pub(super) fn completion_apply(&mut self, origin: &Origin, item: &CompletionItem) {
         let group = self.editor.focused_group().id;
         let Some(b) = self.editor.active_buffer_mut() else { return };
         if b.id != origin.buffer || !b.view.sel().is_empty() || origin.prefix(&b.rope, b.view.sel().head).is_none() {
@@ -469,7 +479,9 @@ impl App {
         let Some(prefix) = prefix else { return tracing::debug!("dropping a stale completion answer") };
         let armed = explicit || self.completion.as_ref().is_some_and(|p| p.armed);
         let (items, incomplete) = completion::parse(value);
-        let state = CompletionState::new(origin, items, incomplete, &prefix, &mut self.lsp.completion.matcher);
+        let mut state = CompletionState::new(origin, items, incomplete, &prefix, &mut self.lsp.completion.matcher);
+        let snippets = self.snippet_items(state.origin.buffer, state.origin.start);
+        state.add_snippets(snippets, &mut self.lsp.completion.matcher);
         self.dirty_frame = true;
         if state.order.is_empty() && !state.incomplete {
             self.completion = None;
@@ -1001,9 +1013,58 @@ mod tests {
         typ(&mut app, "f");
         let req = completion_req(&mut server).await;
         reply(&mut app, &mut server, &req, json!([{"label": "foo"}])).await;
+        // (The built-in `fn` snippet follows `foo`: down and back up.)
         key(&mut app, KeyCode::Down);
+        key(&mut app, KeyCode::Up);
         typ(&mut app, "(");
         assert_eq!(caret_line(&app), "    foo(|)");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn server_items_come_before_snippets() {
+        let (mut app, mut server, dir) = setup("compl-snippets-after", false).await;
+        typ(&mut app, "f");
+        let req = completion_req(&mut server).await;
+        reply(&mut app, &mut server, &req, json!([{"label": "fnord"}, {"label": "fold"}])).await;
+        let l = labels(&app);
+        assert_eq!(l.len(), 3, "{l:?}");
+        assert_eq!(l.last().unwrap(), "fn");
+        assert!(l[..2].contains(&"fnord".to_string()) && l[..2].contains(&"fold".to_string()), "{l:?}");
+        key(&mut app, KeyCode::Down);
+        key(&mut app, KeyCode::Down);
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(text(&app), "fn main() {\n    fn name() {\n        \n    }\n}\n");
+        assert_eq!(selected(&app), "name");
+        app.perform(Action::Editor(EditorAction::Undo));
+        app.perform(Action::Editor(EditorAction::Undo));
+        while text(&app) != MAIN {
+            app.perform(Action::Editor(EditorAction::Undo));
+        }
+        app.editor.active_buffer_mut().unwrap().goto_line(1, 4);
+        typ(&mut app, "f");
+        let req = completion_req(&mut server).await;
+        reply(&mut app, &mut server, &req, json!([])).await;
+        assert_eq!(labels(&app), ["fn"], "an empty answer still lists the snippet");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn snippet_rows_are_never_resolved() {
+        let (mut app, mut server, dir) = setup("compl-snippets-resolve", true).await;
+        typ(&mut app, "f");
+        let req = completion_req(&mut server).await;
+        reply(&mut app, &mut server, &req, json!([{"label": "fnord"}])).await;
+        key(&mut app, KeyCode::Down);
+        let now = Instant::now();
+        app.completion_docs_tick(now);
+        app.completion_docs_tick(now + DOCS_DELAY);
+        let docs = app.completion.as_ref().unwrap().docs.as_ref().expect("the docs panel");
+        assert!(docs.lines[0].text.contains("fn name() {"), "{:?}", docs.lines[0].text);
+        key(&mut app, KeyCode::Enter);
+        assert!(text(&app).contains("fn name()"), "accepted at once: {}", text(&app));
+        let sent = server.sent_so_far(&app.lsp.clients["rust-analyzer"]).await;
+        assert!(sent.iter().all(|m| m["method"] != "completionItem/resolve"), "{sent:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

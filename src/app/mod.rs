@@ -66,6 +66,7 @@ mod run;
 mod save_as;
 mod settings;
 mod signature;
+mod snippets;
 mod symbols;
 mod terminal;
 mod watch;
@@ -497,6 +498,9 @@ impl App {
             if self.focus.is(PanelId::Editor) && self.editor.snippet_active() {
                 v.push("editor.snippet");
             }
+            if self.snippet_prefix_here() {
+                v.push("editor.snippet_prefix");
+            }
             if self.focus.is(PanelId::Editor) && self.editor.merge_active() {
                 v.push("editor.merge");
             }
@@ -854,6 +858,11 @@ impl App {
             Action::Editor(EditorAction::Paste) => {
                 drop(cx);
                 self.paste();
+                return;
+            }
+            Action::Editor(EditorAction::ExpandSnippet) => {
+                drop(cx);
+                self.expand_snippet();
                 return;
             }
             // Group commands take the keyboard to the editor, as in JetBrains.

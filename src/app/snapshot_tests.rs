@@ -1845,6 +1845,40 @@ async fn completion_popup() {
     assert!(app.completion.is_some(), "the popup still applies");
 }
 
+#[cfg(feature = "lang-rust")]
+#[tokio::test]
+async fn completion_popup_snippets() {
+    use crate::lsp::completion::{CompletionState, Origin};
+    let mut fx = stable_app("completion-snippets");
+    let app = &mut fx.app;
+    load(app, "main.rs", "fn main() {\n    fn\n}\n");
+    moves(app, Motion::Down, 1);
+    editor(app, EditorAction::Move(Motion::LineEnd, false));
+    app.focus.set(PanelId::Editor);
+    let b = app.editor.active_buffer().unwrap();
+    let id = b.id;
+    let origin = Origin::new(id, &b.rope, b.view.sel().head);
+    let at = origin.start;
+    let (items, incomplete) = crate::lsp::completion::parse(serde_json::json!([
+        {"label": "fn_ptr", "kind": 3, "detail": "fn()"},
+        {"label": "FnMut", "kind": 8, "detail": "trait"},
+    ]));
+    let mut state = CompletionState::new(origin, items, incomplete, "fn", &mut app.lsp.completion.matcher);
+    let snippets = app.snippet_items(id, at);
+    state.add_snippets(snippets, &mut app.lsp.completion.matcher);
+    let names: Vec<&str> = state.order.iter().map(|&i| state.items[i].label.as_str()).collect();
+    assert_eq!(names, ["fn_ptr", "FnMut", "fn"]);
+    app.completion = Some(crate::ui::completion::CompletionPopup::new(state, app.editor.focused_group().id));
+    let term = draw_app(app, 80, 20);
+    let marks = [
+        Mark::modifier('U', "underlined", Modifier::UNDERLINED),
+        Mark::style('M', "matched", ratatui::style::Style::default().fg(app.theme.status_accent.fg.unwrap()).add_modifier(Modifier::BOLD)),
+        Mark::bg('L', "selected", app.theme.list_selected.bg.unwrap()),
+        Mark::modifier('X', "deprecated", Modifier::CROSSED_OUT),
+    ];
+    assert_snapshot!("completion_popup_snippets", snapshot(&term, &marks, None));
+}
+
 /// A popup over `pri` with documentation on its items, drawn at `w`x`h`
 /// after the panel's delay (no server: the item's own docs are used).
 /// `wide` adds an item that makes the list too wide for a panel beside it.

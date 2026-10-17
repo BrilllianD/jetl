@@ -304,6 +304,12 @@
 "tab" = "editor.next_tabstop"
 "shift-tab" = "editor.prev_tabstop"
 
+# Live templates (snippets): Tab right after a snippet's prefix (the whole
+# word before the caret, nothing selected) expands it. An open completion
+# popup and a snippet's tabstops (above) take Tab first.
+[editor.snippet_prefix]
+"tab" = "editor.expand_snippet"
+
 [find]
 "up" = "find.up"
 "down" = "find.down"

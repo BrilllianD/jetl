@@ -233,6 +233,12 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Tab` | `editor.next_tabstop` | Snippet: select the next tabstop (the last one ends the snippet) |
 | `Shift+Tab` | `editor.prev_tabstop` | Snippet: select the previous tabstop |
 
+## editor.snippet_prefix
+
+| Keys | Action | Description |
+|---|---|---|
+| `Tab` | `editor.expand_snippet` | Expand the live template (snippet) whose prefix is the word before the caret |
+
 ## tree
 
 | Keys | Action | Description |
