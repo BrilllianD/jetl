@@ -448,3 +448,271 @@ pub(super) fn replace_with_disk_text(b: &mut Buffer, text: String, path: &Path) 
 pub(super) fn idle_autosave_due(mode: Autosave, last_edit: Instant, now: Instant, idle: Duration, any_dirty: bool) -> bool {
     mode == Autosave::Idle && any_dirty && now.saturating_duration_since(last_edit) >= idle
 }
+
+#[cfg(test)]
+mod tests {
+    use std::path::{Path, PathBuf};
+    use std::time::UNIX_EPOCH;
+
+    use super::*;
+    use crate::config::Config;
+    use crate::config::theme::Theme;
+    use crate::editor::buffer::LineEnding;
+    use crate::history::{CaptureText, Request};
+    use crate::workspace::Workspace;
+
+    /// A temp dir removed on drop, so a failing test cleans up too.
+    struct TmpDir(PathBuf);
+    impl TmpDir {
+        fn new(name: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!("jetl-test-io-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            Self(dir)
+        }
+    }
+    impl Drop for TmpDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// Run `f` with a throwaway `Ctx`; returns every effect it produced.
+    fn effects(f: impl FnOnce(&mut Ctx)) -> Vec<Effect> {
+        let config = Config::default();
+        let theme = Theme::default();
+        let workspace = Workspace::new(PathBuf::from("/tmp"));
+        let (bus, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut cx = Ctx { effects: Vec::new(), config: &config, theme: &theme, workspace: &workspace, bus };
+        f(&mut cx);
+        cx.effects
+    }
+
+    /// The notifications among `fx`.
+    fn notes(fx: &[Effect]) -> Vec<(Level, String)> {
+        fx.iter().filter_map(|e| if let Effect::Notify(l, t) = e { Some((*l, t.clone())) } else { None }).collect()
+    }
+
+    /// An editor with `path` (written with `text` first) open.
+    fn open(path: &Path, text: &str) -> Editor {
+        std::fs::write(path, text).unwrap();
+        let mut ed = Editor::new(&Config::default());
+        ed.open_text(path.to_path_buf(), text, false, &Theme::default());
+        ed
+    }
+
+    #[test]
+    fn save_writes_through_a_renamed_temp_file() {
+        let dir = TmpDir::new("atomic");
+        let a = dir.0.join("a.txt");
+        std::fs::write(&a, "one\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&a, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let link = dir.0.join("link.txt");
+        std::fs::hard_link(&a, &link).unwrap();
+        let mut ed = open(&a, "one\n");
+        ed.buffers[0].view.set_sel(Selection::point(0));
+        ed.buffers[0].insert("x", TxKind::Typing);
+        effects(|cx| assert!(ed.save(0, cx)));
+        assert_eq!(std::fs::read_to_string(&a).unwrap(), "xone\n");
+        assert_eq!(std::fs::read_to_string(&link).unwrap(), "one\n", "the old inode was replaced, not rewritten");
+        let left: Vec<_> = std::fs::read_dir(&dir.0)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.ends_with(".jetl-tmp"))
+            .collect();
+        assert!(left.is_empty(), "temp file left: {left:?}");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&a).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+    }
+
+    #[test]
+    fn save_reports_the_text_written_and_marks_the_buffer_clean() {
+        let dir = TmpDir::new("effects");
+        let path = dir.0.join("a.txt");
+        let mut ed = open(&path, "one\n");
+        ed.buffers[0].view.set_sel(Selection::point(0));
+        ed.buffers[0].insert("x", TxKind::Typing);
+        let fx = effects(|cx| assert!(ed.save(0, cx)));
+        match fx.as_slice() {
+            [
+                Effect::History(Request::Capture(Capture { path: p, text: CaptureText::Text(t), kind: Kind::Save, detail: None })),
+                Effect::FileSaved { path: q, quiet: false },
+            ] => {
+                assert_eq!(p, &path);
+                assert_eq!(q, &path);
+                assert_eq!(t, "xone\n");
+            }
+            other => panic!("unexpected effects: {other:?}"),
+        }
+        let b = &ed.buffers[0];
+        assert!(!b.dirty());
+        assert_eq!(b.disk_mtime, buffer::file_mtime(&path));
+        assert!(!b.recovered);
+        assert_eq!(b.autosave_failed, None);
+    }
+
+    #[test]
+    fn save_of_a_clean_buffer_writes_nothing() {
+        let dir = TmpDir::new("clean");
+        let path = dir.0.join("a.txt");
+        let mut ed = open(&path, "one\n");
+        std::fs::write(&path, "theirs\n").unwrap();
+        let fx = effects(|cx| assert!(ed.save(0, cx)));
+        assert!(fx.is_empty(), "{fx:?}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "theirs\n");
+    }
+
+    #[test]
+    fn failed_write_keeps_the_edits_and_reports_the_error() {
+        let dir = TmpDir::new("fail");
+        let path = dir.0.join("missing").join("a.txt");
+        let mut ed = Editor::new(&Config::default());
+        ed.open_text(path, "one\n", false, &Theme::default());
+        ed.buffers[0].view.set_sel(Selection::point(0));
+        ed.buffers[0].insert("x", TxKind::Typing);
+        let fx = effects(|cx| assert!(!ed.save(0, cx)));
+        let n = notes(&fx);
+        assert_eq!(n.len(), 1, "{n:?}");
+        assert_eq!(n[0].0, Level::Error);
+        assert!(n[0].1.starts_with("save "), "{}", n[0].1);
+        assert!(n[0].1.contains("missing"), "{}", n[0].1);
+        assert!(!fx.iter().any(|e| matches!(e, Effect::FileSaved { .. })));
+        assert!(ed.buffers[0].dirty());
+    }
+
+    #[test]
+    fn save_all_writes_dirty_titled_buffers_only() {
+        let dir = TmpDir::new("all");
+        let (a, b) = (dir.0.join("a.txt"), dir.0.join("b.txt"));
+        let mut ed = open(&a, "a\n");
+        std::fs::write(&b, "b\n").unwrap();
+        ed.open_text(b.clone(), "b\n", false, &Theme::default());
+        let u = ed.open_untitled("untitled");
+        ed.buffers[u].insert("u", TxKind::Typing);
+        ed.buffers[0].view.set_sel(Selection::point(0));
+        ed.buffers[0].insert("x", TxKind::Typing);
+        let fx = effects(|cx| assert!(ed.save_all(cx)));
+        assert_eq!(std::fs::read_to_string(&a).unwrap(), "xa\n");
+        assert_eq!(std::fs::read_to_string(&b).unwrap(), "b\n");
+        let saved: Vec<_> =
+            fx.iter().filter_map(|e| if let Effect::FileSaved { path, .. } = e { Some(path.clone()) } else { None }).collect();
+        assert_eq!(saved, vec![a]);
+        assert!(notes(&fx).is_empty(), "{:?}", notes(&fx));
+        assert!(ed.buffers[u].dirty());
+    }
+
+    #[test]
+    fn autosave_skips_recovered_and_lossy_buffers() {
+        let dir = TmpDir::new("auto-skip");
+        let (a, b) = (dir.0.join("a.txt"), dir.0.join("b.txt"));
+        let mut ed = open(&a, "disk a\n");
+        std::fs::write(&b, "disk b\n").unwrap();
+        ed.open_text(b.clone(), "disk b\n", true, &Theme::default());
+        assert!(ed.recover_text(0, "recovered\n"));
+        ed.buffers[1].view.set_sel(Selection::point(0));
+        ed.buffers[1].insert("x", TxKind::Typing);
+        let fx = effects(|cx| ed.autosave(cx));
+        assert_eq!(std::fs::read_to_string(&a).unwrap(), "disk a\n");
+        assert_eq!(std::fs::read_to_string(&b).unwrap(), "disk b\n");
+        assert!(fx.is_empty(), "{fx:?}");
+
+        effects(|cx| assert!(ed.save(0, cx)));
+        assert_eq!(std::fs::read_to_string(&a).unwrap(), "recovered\n");
+        assert!(!ed.buffers[0].recovered);
+        let fx = effects(|cx| assert!(ed.save(1, cx)));
+        assert!(
+            notes(&fx).contains(&(Level::Warn, "b.txt was not valid UTF-8; saved re-encoded as UTF-8".to_string())),
+            "{:?}",
+            notes(&fx)
+        );
+        assert!(!ed.buffers[1].lossy);
+    }
+
+    #[test]
+    fn disk_changes_reload_clean_tabs_and_ask_once_for_dirty_ones() {
+        let dir = TmpDir::new("disk");
+        let a = dir.0.join("a.txt");
+        let mut ed = open(&a, "a\n");
+        assert_eq!(ed.on_disk_change(&dir.0.join("other.txt")), DiskChange::None);
+        assert_eq!(ed.on_disk_change(&a), DiskChange::None);
+        // The seam for "changed on disk", no sleep.
+        ed.buffers[0].disk_mtime = Some(UNIX_EPOCH);
+        assert_eq!(ed.on_disk_change(&a), DiskChange::Reload);
+        ed.buffers[0].insert("x", TxKind::Typing);
+        assert_eq!(ed.on_disk_change(&a), DiskChange::Conflict(0));
+        assert!(ed.buffers[0].autosave_conflict);
+        assert_eq!(ed.on_disk_change(&a), DiskChange::None, "asked once");
+        let id = ed.buffers[0].id;
+        effects(|cx| assert!(ed.overwrite(id, cx)));
+        assert!(!ed.buffers[0].autosave_conflict);
+
+        ed.buffers[0].insert("y", TxKind::Typing);
+        std::fs::remove_file(&a).unwrap();
+        ed.buffers[0].disk_mtime = Some(UNIX_EPOCH);
+        assert_eq!(ed.on_disk_change(&a), DiskChange::None, "a vanished file is not a conflict");
+    }
+
+    #[test]
+    fn reload_from_disk_refuses_invalid_utf8_and_reports_a_missing_file() {
+        let dir = TmpDir::new("reload-err");
+        let a = dir.0.join("a.txt");
+        let mut ed = open(&a, "a\n");
+        ed.buffers[0].view.set_sel(Selection::point(0));
+        ed.buffers[0].insert("x", TxKind::Typing);
+        let id = ed.buffers[0].id;
+        std::fs::write(&a, [0xff, b'\n']).unwrap();
+        let fx = effects(|cx| ed.reload_from_disk(id, cx));
+        assert_eq!(notes(&fx), vec![(Level::Error, "a.txt is not valid UTF-8; not reloaded".to_string())]);
+        assert_eq!(ed.buffers[0].text(), "xa\n");
+        assert!(ed.buffers[0].dirty());
+
+        std::fs::remove_file(&a).unwrap();
+        let fx = effects(|cx| ed.reload_from_disk(id, cx));
+        let n = notes(&fx);
+        assert_eq!(n.len(), 1, "{n:?}");
+        assert_eq!(n[0].0, Level::Error);
+        assert!(n[0].1.starts_with("reload "), "{}", n[0].1);
+        assert!(n[0].1.contains("a.txt"), "{}", n[0].1);
+
+        std::fs::write(&a, "xa\n").unwrap();
+        let fx = effects(|cx| ed.reload_from_disk(id, cx));
+        assert!(notes(&fx).is_empty());
+        assert!(!fx.iter().any(|e| matches!(e, Effect::History(_))), "same text, nothing captured");
+        assert!(!ed.buffers[0].dirty());
+    }
+
+    #[test]
+    fn crlf_and_bom_survive_open_edit_save_and_reload() {
+        let dir = TmpDir::new("crlf-bom");
+        let a = dir.0.join("a.txt");
+        let bytes: &[u8] = b"\xEF\xBB\xBFone\r\ntwo";
+        std::fs::write(&a, bytes).unwrap();
+        let mut ed = Editor::new(&Config::default());
+        ed.open_text(a.clone(), std::str::from_utf8(bytes).unwrap(), false, &Theme::default());
+        assert_eq!(ed.buffers[0].line_ending, LineEnding::CrLf);
+        assert_eq!(ed.buffers[0].text().chars().next(), Some('\u{feff}'));
+        let end = ed.buffers[0].len_chars();
+        ed.buffers[0].view.set_sel(Selection::point(end));
+        ed.buffers[0].insert("!", TxKind::Typing);
+        effects(|cx| assert!(ed.save(0, cx)));
+        // `.editorconfig` may override the final newline; the default is the
+        // reference, as in `save_keeps_unicode_separators_byte_for_byte`.
+        let want: &[u8] = if Config::default().editor.final_newline { b"\xEF\xBB\xBFone\r\ntwo!\r\n" } else { b"\xEF\xBB\xBFone\r\ntwo!" };
+        assert_eq!(std::fs::read(&a).unwrap(), want);
+
+        std::fs::write(&a, b"\xEF\xBB\xBFthree\r\n").unwrap();
+        let id = ed.buffers[0].id;
+        effects(|cx| ed.reload_from_disk(id, cx));
+        assert_eq!(ed.buffers[0].text(), "\u{feff}three\r\n");
+        assert_eq!(ed.buffers[0].line_ending, LineEnding::CrLf);
+        effects(|cx| assert!(ed.save(0, cx)));
+        assert_eq!(std::fs::read(&a).unwrap(), b"\xEF\xBB\xBFthree\r\n");
+    }
+}
