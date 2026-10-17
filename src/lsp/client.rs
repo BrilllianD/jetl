@@ -510,3 +510,285 @@ async fn drive(spec: StartSpec, conn: Conn, mut cmds: UnboundedReceiver<Command>
         let _ = done.send(());
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lsp::fake;
+    use crate::lsp::transport::{read_frame, write_frame};
+    use tokio::io::{BufReader, DuplexStream};
+
+    const GEN: u64 = 3;
+    const SERVER: ServerId = 7;
+
+    fn spec() -> StartSpec {
+        StartSpec {
+            id: SERVER,
+            name: "fake".into(),
+            root: PathBuf::from("/tmp/jetl-client-test"),
+            generation: GEN,
+            init_options: Some(json!({"k": 1})),
+            startup_timeout: Duration::from_secs(5),
+            request_timeout: Duration::from_secs(60),
+            watch_files: false,
+        }
+    }
+
+    /// The next `LspMsg` on the bus (5 s at most); checks generation and server.
+    async fn next_lsp(rx: &mut UnboundedReceiver<AppMsg>) -> LspMsg {
+        let msg = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await.expect("an LspMsg in time").expect("the bus is open");
+        let AppMsg::Lsp(msg) = msg else { panic!("not an LspMsg") };
+        let (generation, server) = match &msg {
+            LspMsg::Started { generation, server, .. }
+            | LspMsg::Failed { generation, server, .. }
+            | LspMsg::Exited { generation, server, .. }
+            | LspMsg::Notification { generation, server, .. }
+            | LspMsg::ServerRequest { generation, server, .. }
+            | LspMsg::Response { generation, server, .. } => (*generation, *server),
+        };
+        assert_eq!((generation, server), (GEN, SERVER), "{msg:?}");
+        msg
+    }
+
+    /// A server the test drives frame by frame (the fake answers
+    /// `initialize` by itself; this one does not).
+    struct Manual {
+        io: BufReader<DuplexStream>,
+    }
+
+    fn manual() -> (Conn, Manual) {
+        let (client_end, server_end) = tokio::io::duplex(64 * 1024);
+        let (reader, writer) = tokio::io::split(client_end);
+        (Conn { reader: Box::new(reader), writer: Box::new(writer), child: None }, Manual { io: BufReader::new(server_end) })
+    }
+
+    impl Manual {
+        /// The next frame as JSON, `None` at end of stream (5 s at most).
+        async fn read(&mut self) -> Option<Value> {
+            let frame = tokio::time::timeout(Duration::from_secs(5), read_frame(&mut self.io))
+                .await
+                .expect("a frame or the end of the stream in time")
+                .expect("readable frame");
+            frame.map(|body| serde_json::from_slice(&body).expect("client sent JSON"))
+        }
+
+        async fn write(&mut self, v: Value) {
+            write_frame(self.io.get_mut(), &v).await.expect("writable");
+        }
+
+        /// Answer `initialize` (the next frame) with empty capabilities.
+        async fn answer_initialize(&mut self) {
+            let init = self.read().await.expect("initialize");
+            assert_eq!(init["method"], "initialize");
+            self.write(json!({"jsonrpc": "2.0", "id": 0, "result": {"capabilities": {}}})).await;
+        }
+    }
+
+    #[test]
+    fn client_capabilities_offer_the_navigation_extras() {
+        let c = serde_json::to_value(client_capabilities(false)).unwrap();
+        assert_eq!(c["general"]["positionEncodings"], json!(["utf-16"]));
+        for kind in ["definition", "typeDefinition", "implementation", "declaration"] {
+            let cap = &c["textDocument"][kind];
+            assert_eq!(cap["linkSupport"], json!(true), "{kind}");
+            assert_eq!(cap["dynamicRegistration"], json!(true), "{kind}");
+        }
+        let help = &c["textDocument"]["signatureHelp"];
+        let info = &help["signatureInformation"];
+        assert_eq!(info["parameterInformation"]["labelOffsetSupport"], json!(true));
+        assert_eq!(info["activeParameterSupport"], json!(true));
+        assert_eq!(info["documentationFormat"], json!(["markdown", "plaintext"]));
+        assert_eq!(help["contextSupport"], json!(true));
+        assert_eq!(c["workspace"]["symbol"]["dynamicRegistration"], json!(true));
+        assert_eq!(c["window"]["showMessage"]["messageActionItem"]["additionalPropertiesSupport"], json!(true));
+        assert!(c["workspace"]["didChangeWatchedFiles"].is_null());
+        let watching = serde_json::to_value(client_capabilities(true)).unwrap();
+        assert_eq!(watching["workspace"]["didChangeWatchedFiles"]["relativePatternSupport"], json!(true));
+    }
+
+    #[tokio::test]
+    async fn initialize_carries_root_options_and_client_info_then_initialized() {
+        let (conn, mut server) = fake::connect(json!({}));
+        let (bus, mut rx) = mpsc::unbounded_channel();
+        let _client = Client::start(spec(), conn, bus);
+        let init = server.recv("initialize").await;
+        assert_eq!(init["id"], 0);
+        let p = &init["params"];
+        let root = serde_json::to_value(sync::uri(&spec().root)).unwrap();
+        assert_eq!(p["processId"], json!(std::process::id()));
+        assert_eq!(p["rootUri"], root);
+        assert_eq!(p["workspaceFolders"], json!([{"uri": root, "name": "jetl-client-test"}]));
+        assert_eq!(p["initializationOptions"], json!({"k": 1}));
+        assert_eq!(p["clientInfo"], json!({"name": "jetl", "version": env!("CARGO_PKG_VERSION")}));
+        assert_eq!(p["capabilities"], serde_json::to_value(client_capabilities(false)).unwrap());
+        let next = server.next().await;
+        assert_eq!(next["method"], "initialized");
+        assert_eq!(next["params"], json!({}));
+        assert!(matches!(next_lsp(&mut rx).await, LspMsg::Started { .. }));
+    }
+
+    #[tokio::test]
+    async fn messages_wait_for_initialize_and_the_oldest_are_dropped_past_the_limit() {
+        let (conn, mut server) = manual();
+        let (bus, _rx) = mpsc::unbounded_channel();
+        let mut client = Client::start(spec(), conn, bus);
+        let id = client.request("test/held", json!({}), PendingTag::Initialize);
+        assert_eq!(id, 1);
+        for i in 0..64 {
+            client.notify("test/n", json!({"i": i}));
+        }
+        let init = server.read().await.expect("initialize");
+        assert_eq!((init["method"].as_str(), &init["id"]), (Some("initialize"), &json!(0)));
+        server.write(json!({"jsonrpc": "2.0", "id": 0, "result": {"capabilities": {}}})).await;
+        assert_eq!(server.read().await.expect("initialized")["method"], "initialized");
+        for i in 0..64 {
+            let msg = server.read().await.expect("a held notification");
+            assert_eq!(msg["method"], "test/n", "frame {i}");
+            assert_eq!(msg["params"]["i"], json!(i), "frame {i}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_held_request_is_answered_with_its_tag() {
+        let (conn, mut server) = manual();
+        let (bus, mut rx) = mpsc::unbounded_channel();
+        let mut client = Client::start(spec(), conn, bus);
+        let id = client.request("test/held", json!({}), PendingTag::Initialize);
+        server.answer_initialize().await;
+        assert_eq!(server.read().await.expect("initialized")["method"], "initialized");
+        let req = server.read().await.expect("the held request");
+        assert_eq!((req["id"].as_i64(), req["method"].as_str()), (Some(id), Some("test/held")));
+        assert_eq!(id, 1);
+        server.write(json!({"jsonrpc": "2.0", "id": 1, "result": 42})).await;
+        assert!(matches!(next_lsp(&mut rx).await, LspMsg::Started { .. }));
+        match next_lsp(&mut rx).await {
+            LspMsg::Response { tag: PendingTag::Initialize, result, .. } => assert_eq!(result.unwrap(), json!(42)),
+            other => panic!("expected the tagged response, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn requests_count_from_one_and_cancel_sends_cancel_request() {
+        let (conn, mut server) = fake::connect(json!({}));
+        let (bus, mut rx) = mpsc::unbounded_channel();
+        let mut client = Client::start(spec(), conn, bus);
+        assert!(matches!(next_lsp(&mut rx).await, LspMsg::Started { .. }));
+        let a = client.request("textDocument/hover", json!({}), PendingTag::Initialize);
+        let b = client.request("textDocument/hover", json!({}), PendingTag::Initialize);
+        assert_eq!((a, b), (1, 2));
+        client.cancel(a);
+        assert_eq!(server.recv("$/cancelRequest").await["params"], json!({"id": 1}));
+        server.respond_error(1, ResponseError::REQUEST_CANCELLED, "cancelled");
+        server.respond(2, json!("ok"));
+        match next_lsp(&mut rx).await {
+            LspMsg::Response { result: Err(e), .. } => assert_eq!(e.code, -32800),
+            other => panic!("expected the cancelled error, got {other:?}"),
+        }
+        match next_lsp(&mut rx).await {
+            LspMsg::Response { result: Ok(v), .. } => assert_eq!(v, json!("ok")),
+            other => panic!("expected the answer, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn answers_to_unknown_ids_are_dropped_and_server_messages_forwarded() {
+        let (conn, mut server) = fake::connect(json!({}));
+        let (bus, mut rx) = mpsc::unbounded_channel();
+        let client = Client::start(spec(), conn, bus);
+        assert!(matches!(next_lsp(&mut rx).await, LspMsg::Started { .. }));
+        server.respond(99, json!(1));
+        server.notify("window/logMessage", json!({"type": 3, "message": "m"}));
+        match next_lsp(&mut rx).await {
+            LspMsg::Notification { method, .. } => assert_eq!(method, "window/logMessage"),
+            other => panic!("expected the notification, got {other:?}"),
+        }
+        server.request(5, "workspace/configuration", json!({"items": []}));
+        match next_lsp(&mut rx).await {
+            LspMsg::ServerRequest { id, method, .. } => {
+                assert_eq!(id, RequestId::Num(5));
+                assert_eq!(method, "workspace/configuration");
+            }
+            other => panic!("expected the server request, got {other:?}"),
+        }
+        client.respond(RequestId::Num(5), Ok(json!([])));
+        assert_eq!(server.response(5).await["result"], json!([]));
+        client.respond(RequestId::Str("s".into()), Err(ResponseError::new(-32601, "nope")));
+        let answer = server.next().await;
+        assert_eq!(answer["id"], json!("s"));
+        assert_eq!(answer["error"], json!({"code": -32601, "message": "nope"}));
+    }
+
+    #[tokio::test]
+    async fn a_request_without_an_answer_times_out() {
+        let (conn, _server) = fake::connect(json!({}));
+        let (bus, mut rx) = mpsc::unbounded_channel();
+        let mut client = Client::start(StartSpec { request_timeout: Duration::ZERO, ..spec() }, conn, bus);
+        assert!(matches!(next_lsp(&mut rx).await, LspMsg::Started { .. }));
+        client.request("test/slow", json!({}), PendingTag::Initialize);
+        match next_lsp(&mut rx).await {
+            LspMsg::Response { result: Err(e), .. } => {
+                assert_eq!(e.code, -32803);
+                assert_eq!(e.message, "no answer in 0 s");
+            }
+            other => panic!("expected the timeout error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn initialize_errors_and_silence_fail_the_server() {
+        let (conn, mut server) = manual();
+        let (bus, mut rx) = mpsc::unbounded_channel();
+        let _client = Client::start(spec(), conn, bus);
+        assert_eq!(server.read().await.expect("initialize")["method"], "initialize");
+        server.write(json!({"jsonrpc": "2.0", "id": 0, "error": {"code": -32603, "message": "boom"}})).await;
+        match next_lsp(&mut rx).await {
+            LspMsg::Failed { error, .. } => assert_eq!(error, "initialize: boom (-32603)"),
+            other => panic!("expected Failed, got {other:?}"),
+        }
+
+        let (conn, _silent) = manual();
+        let (bus, mut rx) = mpsc::unbounded_channel();
+        let _client = Client::start(StartSpec { startup_timeout: Duration::from_millis(20), ..spec() }, conn, bus);
+        match next_lsp(&mut rx).await {
+            LspMsg::Failed { error, .. } => assert_eq!(error, "no answer to initialize in 0.02 s"),
+            other => panic!("expected Failed, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn closed_output_reports_exited() {
+        let (conn, mut server) = manual();
+        let (bus, mut rx) = mpsc::unbounded_channel();
+        let _client = Client::start(spec(), conn, bus);
+        server.answer_initialize().await;
+        assert!(matches!(next_lsp(&mut rx).await, LspMsg::Started { .. }));
+        drop(server);
+        match next_lsp(&mut rx).await {
+            LspMsg::Exited { status, .. } => assert_eq!(status, "output closed"),
+            other => panic!("expected Exited, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn shutdown_asks_then_exits() {
+        let (conn, mut server) = fake::connect(json!({}));
+        let (bus, mut rx) = mpsc::unbounded_channel();
+        let client = Client::start(spec(), conn, bus);
+        assert!(matches!(next_lsp(&mut rx).await, LspMsg::Started { .. }));
+        // Ends because the driver stopped, not through the 2 s SHUTDOWN_TIMEOUT.
+        tokio::time::timeout(Duration::from_millis(1500), client.shutdown()).await.expect("shutdown ends before its timeout");
+        assert_eq!(server.recv("shutdown").await["id"], json!(-1));
+        server.recv("exit").await;
+    }
+
+    #[tokio::test]
+    async fn shutdown_while_starting_sends_nothing_more() {
+        let (conn, mut server) = manual();
+        let (bus, _rx) = mpsc::unbounded_channel();
+        let client = Client::start(spec(), conn, bus);
+        client.notify("test/n", json!({}));
+        assert_eq!(server.read().await.expect("initialize")["method"], "initialize");
+        tokio::time::timeout(Duration::from_millis(1500), client.shutdown()).await.expect("shutdown ends before its timeout");
+        assert_eq!(server.read().await, None, "no held notification and no shutdown request");
+    }
+}

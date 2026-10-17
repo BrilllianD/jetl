@@ -138,4 +138,29 @@ mod tests {
         assert_eq!(char_index(&r, p(0, 99)), 6, "the \\n");
         assert_eq!(position(&r, r.len_chars()), p(1, 1));
     }
+
+    #[test]
+    fn utf16_edge_cases_on_empty_text_lone_cr_and_crlf_after_an_emoji() {
+        let r = Rope::from_str("");
+        assert_eq!(position(&r, 0), Position::new(0, 0));
+        assert_eq!(position(&r, 5), Position::new(0, 0));
+        assert_eq!(char_index(&r, Position::new(0, 5)), 0);
+        assert_eq!(char_index(&r, Position::new(3, 0)), 0);
+        assert_eq!(line_char_col("", 4), 0);
+        assert!(!inside_crlf(&r, 0));
+
+        // A lone CR breaks the line.
+        let r = Rope::from_str("a\rb");
+        assert_eq!(position(&r, 2), Position::new(1, 0));
+        assert_eq!(char_index(&r, Position::new(0, 9)), 1, "before the \\r");
+        assert_eq!(char_index(&r, Position::new(1, 1)), 3);
+
+        let r = Rope::from_str("x😀\r\ny");
+        assert_eq!(position(&r, 2), Position::new(0, 3));
+        assert_eq!(position(&r, 4), Position::new(1, 0));
+        assert_eq!(char_index(&r, Position::new(0, 2)), 1, "inside the pair: the emoji");
+        assert_eq!(char_index(&r, Position::new(0, 3)), 2);
+        assert_eq!(char_index(&r, Position::new(0, 9)), 2, "end of line, before the \\r");
+        assert!(inside_crlf(&r, 3) && !inside_crlf(&r, 2));
+    }
 }
