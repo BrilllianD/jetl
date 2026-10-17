@@ -325,8 +325,17 @@ pytest`) or `vitest`, else `"problems"`. For a command given as a list of
 words and read as tests, jetl adds `-v` to a pytest command and
 `--reporter=tap-flat` to a vitest command when they are missing (the Run
 window header shows the command as started); a string command is never
-rewritten, so give it those flags yourself. Jest output is not parsed:
+rewritten, so give it those flags yourself. (For a list command jetl also
+drops pytest's `-q`, which would cancel the `-v`.) Jest output is not parsed:
 `npx jest` keeps the problems matcher.
+
+Things to know about arguments and test runs: with `command = ["sh", "-c",
+script]` the first of `args` becomes `$0` of the script, not `$1`. A compound
+string such as `cd web && cargo test` passes `args` to its last command only.
+Rerun Failed adds its words to `args`, after yours: cargo flags such as
+`--release` go before a `--`, libtest flags after it. And `cargo test` stops
+at the first failing test binary, so the tree lacks the later ones; add
+`--no-fail-fast` to see them all.
 
 Run > Edit Configurations… (also the Run window's toolbar button and the
 action `run.edit_configs`) opens the Run Configurations window: the list of

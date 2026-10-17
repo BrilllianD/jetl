@@ -133,6 +133,39 @@ fn update_table(table: &mut Table, old: &RunTask, new: &RunTask) {
     }
 }
 
+/// The position in the file of the first table of either array.
+fn first_position(doc: &DocumentMut) -> Option<isize> {
+    [Array::Tasks, Array::Configs]
+        .into_iter()
+        .filter_map(|a| doc.get(a.key()).and_then(Item::as_array_of_tables))
+        .flat_map(|a| a.iter().filter_map(Table::position))
+        .min()
+}
+
+/// The comments and blank lines in front of the table at `slot`.
+fn prefix_of(doc: &DocumentMut, slot: &Slot) -> String {
+    let table = doc.get(slot.array.key()).and_then(Item::as_array_of_tables).and_then(|a| a.get(slot.index));
+    table.and_then(|t| t.decor().prefix()).and_then(|p| p.as_str()).unwrap_or_default().to_string()
+}
+
+/// The first table of the file was removed: its leading text (the file's
+/// header comments) goes to the table now first, or to the end of the file.
+fn hand_on_header(doc: &mut DocumentMut, lead: &str) {
+    let first = first_position(doc);
+    for a in [Array::Tasks, Array::Configs] {
+        let Some(tables) = doc.get_mut(a.key()).and_then(Item::as_array_of_tables_mut) else { continue };
+        let Some(i) = (0..tables.len()).find(|&i| tables.get(i).and_then(Table::position) == first) else { continue };
+        let Some(table) = tables.get_mut(i) else { continue };
+        let own = table.decor().prefix().and_then(|p| p.as_str()).unwrap_or_default().trim_start_matches('\n').to_string();
+        table.decor_mut().set_prefix(format!("{lead}{own}"));
+        return;
+    }
+    if first.is_none() {
+        let rest = doc.trailing().as_str().unwrap_or_default().to_string();
+        doc.set_trailing(format!("{lead}{rest}"));
+    }
+}
+
 fn new_table(t: &RunTask) -> Table {
     let mut table = Table::new();
     for field in FIELDS {
@@ -174,7 +207,15 @@ pub fn apply_config_edits(text: &str, edits: &[ConfigEdit]) -> Result<String, St
         if slot.index >= array.len() {
             return Err(missing(&slot));
         }
+        let first = array.get(slot.index).and_then(Table::position) == first_position(&doc);
+        let lead = if first { prefix_of(&doc, &slot) } else { String::new() };
+        let Some(array) = doc.get_mut(slot.array.key()).and_then(Item::as_array_of_tables_mut) else {
+            return Err(missing(&slot));
+        };
         array.remove(slot.index);
+        if first {
+            hand_on_header(&mut doc, &lead);
+        }
     }
     for e in edits {
         if let ConfigEdit::Add(t) = e {
@@ -273,7 +314,7 @@ mod tests {
         let out = apply_config_edits(text, &[ConfigEdit::Remove(slot(Array::Tasks, 0))]).unwrap();
         assert_eq!(
             out,
-            "\n[[tasks]]\nname = \"b\"\ncommand = \"make b\"\n\n[[configs]]\nname = \"c\"\ncommand = \"x\"\nenv = { A = \"1\" }\nmatcher = \"none\"\n"
+            "[[tasks]]\nname = \"b\"\ncommand = \"make b\"\n\n[[configs]]\nname = \"c\"\ncommand = \"x\"\nenv = { A = \"1\" }\nmatcher = \"none\"\n"
         );
         let mut c = load_project(text).unwrap()[2].1.clone();
         c.env.clear();
@@ -283,6 +324,20 @@ mod tests {
             out,
             "[[tasks]]\nname = \"a\"\ncommand = \"make\"\n\n[[tasks]]\nname = \"b\"\ncommand = \"make b\"\n\n[[configs]]\nname = \"c\"\ncommand = \"x\"\n"
         );
+    }
+
+    #[test]
+    fn removing_the_first_table_keeps_the_header() {
+        let text = "# header\n\n[[tasks]]\nname = \"a\"\ncommand = \"make\"\n\n[[configs]]\n# c\nname = \"c\"\ncommand = \"x\"\n";
+        let out = apply_config_edits(text, &[ConfigEdit::Remove(slot(Array::Tasks, 0))]).unwrap();
+        assert_eq!(out, "# header\n\n[[configs]]\n# c\nname = \"c\"\ncommand = \"x\"\n");
+        let out =
+            apply_config_edits(text, &[ConfigEdit::Remove(slot(Array::Tasks, 0)), ConfigEdit::Remove(slot(Array::Configs, 0))]).unwrap();
+        assert_eq!(out, "# header\n\n");
+        // The stub of a file jetl created survives removing its only entry.
+        let made = apply_config_edits("", &[ConfigEdit::Add(task("a", TaskCommand::Shell("make".into())))]).unwrap();
+        let out = apply_config_edits(&made, &[ConfigEdit::Remove(slot(Array::Configs, 0))]).unwrap();
+        assert!(out.starts_with(RUN_STUB), "{out}");
     }
 
     #[test]

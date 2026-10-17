@@ -376,11 +376,13 @@ mod tests {
     #[tokio::test]
     async fn modal_takes_keys_and_paste() {
         let (mut app, dir) = test_app("rc-modal");
+        crate::app::tests::load(&mut app, "a.txt", "hello\n");
         let before = app.editor.active_buffer().map(|b| b.rope.to_string());
         open(&mut app);
         key(&mut app, KeyCode::Char('x'));
         app.handle_paste("pasted".into());
         assert!(app.run_configs.is_some());
+        assert_eq!(before.as_deref(), Some("hello\n"));
         assert_eq!(app.editor.active_buffer().map(|b| b.rope.to_string()), before);
         assert!(!app.run.running());
         let _ = std::fs::remove_dir_all(dir);

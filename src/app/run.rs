@@ -715,4 +715,30 @@ mod tests {
         assert_eq!(app.test_at_caret_task().unwrap_err(), "Run Test at Caret supports Rust, Python, JavaScript and TypeScript");
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[cfg(feature = "lang-rust")]
+    #[tokio::test]
+    async fn test_at_caret_of_a_dirty_buffer_says_it_runs_the_saved_file() {
+        let (mut app, dir) = test_app("run-test-at-caret-dirty");
+        let root = app.workspace.root.clone();
+        // An unusable manifest: cargo fails at once, no build.
+        std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"x\"\n").unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let src = "#[cfg(test)]\nmod tests {\n    #[test]\n    fn top() { assert!(true); }\n}\n";
+        crate::app::tests::load(&mut app, "src/lib.rs", src);
+        let at = src.find("assert!").unwrap();
+        let sel = app.editor.active_buffer_mut().unwrap().view.sels.primary_mut();
+        (sel.anchor, sel.head) = (at, at);
+        let toast = |app: &App| app.notifications.iter().any(|n| n.text == "Running the saved version of lib.rs");
+        app.run_test_at_caret();
+        assert!(!toast(&app), "a clean buffer needs no note");
+        assert!(app.run.running());
+        until_exit(&mut app).await;
+        app.perform(Action::Editor(crate::actions::EditorAction::InsertText(" ".into())));
+        assert!(app.editor.active_buffer().unwrap().dirty());
+        app.run_test_at_caret();
+        assert!(toast(&app));
+        until_exit(&mut app).await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

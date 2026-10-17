@@ -229,11 +229,13 @@ mod tests {
     #[tokio::test]
     async fn typing_while_open_leaves_the_buffer_alone() {
         let (mut app, dir) = test_app("settings-typing");
+        crate::app::tests::load(&mut app, "a.txt", "hello\n");
         let before = app.editor.active_buffer().map(|b| b.rope.to_string());
         app.perform(Action::App(AppAction::Settings));
         key(&mut app, KeyCode::Char('x'));
         app.handle_paste("pasted".into());
         assert!(app.settings.is_some());
+        assert_eq!(before.as_deref(), Some("hello\n"));
         assert_eq!(app.editor.active_buffer().map(|b| b.rope.to_string()), before);
         let _ = std::fs::remove_dir_all(dir);
     }

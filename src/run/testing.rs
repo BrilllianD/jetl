@@ -13,7 +13,7 @@ use std::sync::LazyLock;
 use regex::Regex;
 
 use super::matcher::{Link, RunLine, Severity};
-use super::{MatcherKind, RunTask, TaskCommand, quote_word};
+use super::{MatcherKind, RunTask, TaskCommand};
 
 /// Most output lines kept per case.
 pub const MAX_CASE_LINES: usize = 200;
@@ -24,7 +24,7 @@ macro_rules! re {
     };
 }
 
-re!(LT_RUNNING, r"^\s*Running (?:unittests )?(\S+)");
+re!(LT_RUNNING, r"^\s*Running (?:unittests )?(\S+) \(");
 re!(LT_DOC, r"^\s*Doc-tests (\S+)");
 re!(LT_RESULT, r"^test (.+?) \.\.\. (ok|FAILED|ignored)(?:, .*)?$");
 re!(LT_SECTION, r"^---- (.+?) stdout ----$");
@@ -397,6 +397,8 @@ impl Runner {
         match self {
             Runner::Cargo => {}
             Runner::Pytest => {
+                // -q cancels -v, and no PASSED lines would be printed.
+                argv.retain(|w| !matches!(w.as_str(), "-q" | "-qq" | "-qqq" | "--quiet"));
                 let verbose = argv.iter().any(|w| matches!(w.as_str(), "-v" | "-vv" | "-vvv" | "--verbose"));
                 if !verbose && let Some(i) = pytest_word(&argv) {
                     argv.insert(i + 1, "-v".into());
@@ -457,15 +459,9 @@ pub fn rerun_failed(task: &RunTask, run: &TestRun) -> Result<RunTask, String> {
             e
         }
     };
-    match &mut out.command {
-        TaskCommand::Argv(_) => out.args.extend(extra),
-        TaskCommand::Shell(s) => {
-            for w in &extra {
-                s.push(' ');
-                s.push_str(&quote_word(w));
-            }
-        }
-    }
+    // A string command runs as `<string> "$@"`, so the words go after the
+    // user's args for both kinds of command.
+    out.args.extend(extra);
     Ok(out)
 }
 
@@ -678,9 +674,17 @@ mod tests {
         let r = rerun_failed(&task(argv(&["cargo", "test"]), &["--", "--nocapture"]), &lt).unwrap();
         assert_eq!(r.args, ["--", "--nocapture", "--exact", "tests::nested::fails"]);
         let r = rerun_failed(&task(TaskCommand::Shell("cargo test".into()), &[]), &lt).unwrap();
-        assert_eq!(r.command, TaskCommand::Shell("cargo test -- --exact tests::nested::fails".into()));
+        assert_eq!(r.command, TaskCommand::Shell("cargo test".into()));
+        assert_eq!(r.args, ["--", "--exact", "tests::nested::fails"]);
         let r = rerun_failed(&task(TaskCommand::Shell("cargo test -- --nocapture".into()), &[]), &lt).unwrap();
-        assert_eq!(r.command, TaskCommand::Shell("cargo test -- --nocapture --exact tests::nested::fails".into()));
+        assert_eq!(r.command, TaskCommand::Shell("cargo test -- --nocapture".into()));
+        assert_eq!(r.args, ["--exact", "tests::nested::fails"]);
+        // User args come after the string: cargo flags stay before `--`, libtest flags after.
+        let r = rerun_failed(&task(TaskCommand::Shell("cargo test".into()), &["--release"]), &lt).unwrap();
+        assert_eq!(r.argv()[3..], ["sh", "--release", "--", "--exact", "tests::nested::fails"]);
+        assert_eq!(r.argv()[2], "cargo test \"$@\"");
+        let r = rerun_failed(&task(TaskCommand::Shell("cargo test".into()), &["--", "--nocapture"]), &lt).unwrap();
+        assert_eq!(r.args, ["--", "--nocapture", "--exact", "tests::nested::fails"]);
 
         let py = parse(&root, PYTEST);
         let r = rerun_failed(&task(argv(&["python3", "-m", "pytest", "tests/"]), &["-x"]), &py).unwrap();
@@ -693,7 +697,8 @@ mod tests {
         let r = rerun_failed(&task(argv(&["npx", "vitest", "run"]), &[]), &tap).unwrap();
         assert_eq!(r.args, strs(&["src/math.test.ts", "-t", "^(?:math nested fails)$"]));
         let r = rerun_failed(&task(TaskCommand::Shell("npx vitest run".into()), &[]), &tap).unwrap();
-        assert_eq!(r.command, TaskCommand::Shell("npx vitest run src/math.test.ts -t '^(?:math nested fails)$'".into()));
+        assert_eq!(r.command, TaskCommand::Shell("npx vitest run".into()));
+        assert_eq!(r.args, strs(&["src/math.test.ts", "-t", "^(?:math nested fails)$"]));
 
         let ok = parse(&root, "     Running unittests src/lib.rs (x)\ntest a ... ok");
         assert_eq!(rerun_failed(&task(argv(&["cargo", "test"]), &[]), &ok).unwrap_err(), "No failed tests");
@@ -701,6 +706,17 @@ mod tests {
             rerun_failed(&task(argv(&["make", "test"]), &[]), &lt).unwrap_err(),
             "Rerun Failed needs a cargo test, pytest or vitest command"
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn captured_running_line_keeps_the_suite() {
+        let root = project("running");
+        let text = "     Running unittests src/lib.rs (target/debug/deps/jtc-01)\nrunning 1 test\ntest a::fails ... FAILED\n\nfailures:\n\n---- a::fails stdout ----\n    Running foo\nafter\n\nfailures:\n    a::fails\n\ntest result: FAILED. 0 passed; 1 failed";
+        let run = parse(&root, text);
+        assert_eq!(run.cases().len(), 1);
+        assert_eq!(run.cases()[0].suite, "src/lib.rs");
+        assert!(run.cases()[0].output.iter().any(|l| l.text == "after"), "capture goes on past 'Running foo'");
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -727,7 +743,8 @@ mod tests {
     fn prepare_adds_missing_flags_once() {
         let v = |w: &[&str]| w.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         assert_eq!(Runner::Pytest.prepare(v(&["pytest", "tests"])), v(&["pytest", "-v", "tests"]));
-        assert_eq!(Runner::Pytest.prepare(v(&["python3", "-m", "pytest", "-q"])), v(&["python3", "-m", "pytest", "-v", "-q"]));
+        assert_eq!(Runner::Pytest.prepare(v(&["python3", "-m", "pytest", "-q"])), v(&["python3", "-m", "pytest", "-v"]));
+        assert_eq!(Runner::Pytest.prepare(v(&["pytest", "-qq", "-v"])), v(&["pytest", "-v"]));
         let once = Runner::Pytest.prepare(v(&["pytest"]));
         assert_eq!(Runner::Pytest.prepare(once.clone()), once);
         assert_eq!(Runner::Pytest.prepare(v(&["pytest", "-vv"])), v(&["pytest", "-vv"]));

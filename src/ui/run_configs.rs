@@ -54,7 +54,9 @@ impl Field {
             Field::Args => "Appended to the command, as shell words: --release 'a b'.",
             Field::Cwd => "Relative to the project root; empty means the root.",
             Field::Env => "Added to jetl's environment, as KEY=value words.",
-            Field::Matcher => "How the output is read: auto picks from the command; problems links file locations; none shows plain text.",
+            Field::Matcher => {
+                "How the output is read: auto picks from the command; problems links file locations; tests shows a test tree; none shows plain text."
+            }
         }
     }
 }
@@ -289,8 +291,10 @@ impl RunConfigsWindow {
                 return Err(format!("Configuration '{}' has no command", e.task.name));
             }
         }
-        for (i, e) in self.entries.iter().enumerate() {
-            if self.entries[..i].iter().any(|o| o.task.name == e.task.name) {
+        // A config.toml entry may share a name with a project one; only the file we write must be unique.
+        let editable: Vec<&Entry> = self.entries.iter().filter(|e| e.editable()).collect();
+        for (i, e) in editable.iter().enumerate() {
+            if editable[..i].iter().any(|o| o.task.name == e.task.name) {
                 return Err(format!("Two configurations are named '{}'", e.task.name));
             }
         }
@@ -690,6 +694,10 @@ impl RunConfigsWindow {
                 top += 1;
             }
         }
+        if top + 1 >= bottom {
+            // The error took the room (a short window); nothing fits below it.
+            return;
+        }
         let Some(e) = self.entries.get(self.list.selected) else {
             buf.set_string(px, top, fit("No run configurations: [+] adds one.", pw), base.patch(theme.dim));
             return;
@@ -708,7 +716,7 @@ impl RunConfigsWindow {
         help.truncate(MAX_HELP_ROWS.min(room));
         let help_h = help.len() as u16;
         let sep = u16::from(help_h > 0);
-        let rows_h = (bottom - top).saturating_sub(help_h + sep);
+        let rows_h = bottom.saturating_sub(top).saturating_sub(help_h + sep);
         self.rows.fit(Field::ALL.len(), rows_h as usize);
         self.rows_rect = Rect::new(px, top, pw as u16, rows_h);
         let label_w = Field::ALL.iter().map(|f| f.label().width()).max().unwrap_or(0) + 2 + MARK_W;
@@ -915,7 +923,7 @@ mod tests {
         w.set_field(Field::Name, text("b")).unwrap();
         assert_eq!(w.validate(), Err("Two configurations are named 'b'".into()));
         w.set_field(Field::Name, text("global")).unwrap();
-        assert_eq!(w.validate(), Err("Two configurations are named 'global'".into()), "read-only entries count");
+        assert_eq!(w.validate(), Ok(()), "a config.toml entry may share a name with a project one");
         w.set_field(Field::Name, text("a")).unwrap();
         assert_eq!(w.validate(), Ok(()));
         key(&mut w, KeyCode::Insert);
@@ -947,6 +955,21 @@ mod tests {
         // The buttons are as inert.
         let apply = w.button_rects()[2];
         assert_eq!(click(&mut w, apply.x, apply.y, 1), None);
+    }
+
+    #[test]
+    fn invalid_project_file_renders_in_a_small_terminal() {
+        let msg = ".jetl/run.toml: TOML parse error at line 3, column 9, expected an equals sign after the key name here";
+        for height in 6..=14 {
+            for width in [40, 50, 60, 80] {
+                let mut w = RunConfigsWindow::new(
+                    String::new(),
+                    Err(msg.into()),
+                    vec![task("global", TaskCommand::Shell("x".into()), Origin::Config)],
+                );
+                draw_at(&mut w, width, height);
+            }
+        }
     }
 
     #[test]

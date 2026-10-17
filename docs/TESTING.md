@@ -1141,7 +1141,9 @@ two `[[configs]]` entries, `where` (`command = "pwd"`) and `hello` (`command = "
 Setup as for the other scenarios (fresh `$H`, LSP off) with the scratch crate `/tmp/jt-crate`
 (`adds`, `fails`, ignored `slow`, `tests/cli.rs`); open jetl on it instead of `$R`.
 
-1. `send-keys M-S-F10`, pick the `cargo test` configuration (or F1, `Run: choose`): the Run window
+1. Make a configuration `cargo test --no-fail-fast` (Edit Configurations, or `[[configs]]` in
+   `.jetl/run.toml`): plain `cargo test` stops at the first failing binary, so `tests/cli.rs` and
+   `Doc-tests` would not run. `send-keys M-S-F10`, pick it (or F1, `Run: choose`): the Run window
    opens in the Tests view: suites `src/lib.rs`, `tests/cli.rs`, `Doc-tests jtc`; under
    `src/lib.rs` the group `tests` with `adds` `✓` and `slow` `○`, `fails` `✗` expanded with
    `panicked at src/lib.rs:...` underlined. The status line reads
@@ -1150,7 +1152,7 @@ Setup as for the other scenarios (fresh `$H`, LSP off) with the scratch crate `/
    F4 from another window steps to the failure.
 3. Left on `fails` hides its output, Right shows it; Left on a suite hides its tests.
 4. ` Rerun Failed ` (toolbar, or F1 `Run: rerun the failed tests`): the header shows
-   `cargo test -- --exact tests::fails`; the tree has only `fails`. With no failure the button is
+   `cargo test --no-fail-fast -- --exact tests::fails`; the tree has only `fails`. With no failure the button is
    dim and F1 says `No failed tests`.
 5. `t` (Run window focused) shows the raw output, `t` again the tree; the ` Output ` / ` Tests `
    tabs switch the same way.
