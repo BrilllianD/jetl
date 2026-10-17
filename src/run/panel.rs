@@ -92,6 +92,12 @@ impl RunPanel {
         self.header.as_ref().map(|h| &h.status)
     }
 
+    /// The command line shown in the header.
+    #[cfg(test)]
+    pub fn command(&self) -> Option<&str> {
+        self.header.as_ref().map(|h| h.command.as_str())
+    }
+
     pub fn running(&self) -> bool {
         self.status() == Some(&Status::Running)
     }

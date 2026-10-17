@@ -569,7 +569,7 @@ impl Palette {
                 if q.is_empty() {
                     (0..self.tasks.len()).collect()
                 } else {
-                    let commands: Vec<String> = self.tasks.iter().map(|t| t.command.display()).collect();
+                    let commands: Vec<String> = self.tasks.iter().map(|t| t.display()).collect();
                     let texts = self.tasks.iter().zip(&commands).map(|(t, c)| [t.name.as_str(), c.as_str()]);
                     rank_texts(q, texts, &mut self.matcher)
                 }
@@ -933,7 +933,9 @@ impl Palette {
                 Source::Files if loading => "Indexing files…",
                 Source::Symbols if loading => "Indexing symbols…",
                 Source::Tasks if loading => "Loading tasks…",
-                Source::Tasks if self.input.text.trim().is_empty() => "No tasks: add [[run.tasks]] to config.toml or .jetl/run.toml",
+                Source::Tasks if self.input.text.trim().is_empty() => {
+                    "No run configurations: add [[run.configs]] to config.toml or .jetl/run.toml"
+                }
                 Source::Scratches if self.input.text.trim().is_empty() => "No scratch files: File > New Scratch File…",
                 _ => "Nothing found",
             };
@@ -996,7 +998,7 @@ impl Palette {
                     let t = &self.tasks[i];
                     let marks = match_indices(&pattern, &t.name, &mut self.matcher);
                     let mut v = highlight(&t.name, |ci| marks.contains(&(ci as u32)), base, hl);
-                    let command = t.command.display();
+                    let command = t.display();
                     if command != t.name {
                         v.push((format!("  {command}"), dim));
                     }

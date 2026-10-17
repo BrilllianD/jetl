@@ -306,6 +306,9 @@ impl App {
                 self.unsaved_due = self.config.local_history.unsaved_every().map(|d| Instant::now() + d);
             }
         }
+        if diff.has_section("run") {
+            self.load_run_tasks();
+        }
         tracing::info!("config reloaded: {:?}", diff.changed);
         diff
     }

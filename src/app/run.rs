@@ -9,10 +9,10 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use super::App;
 use crate::actions::PaletteKind;
 use crate::event::{AppMsg, Level};
-use crate::run::RunTask;
 use crate::run::matcher::{Matcher, RunLine};
 use crate::run::panel::Status;
 use crate::run::process::{self, RunEnd, Spec};
+use crate::run::{MatcherKind, RunTask};
 use crate::ui::focus::{PanelId, ToolWindowId};
 use crate::ui::palette::Source;
 
@@ -82,10 +82,12 @@ impl App {
             Some(d) if !d.is_empty() => root.join(d),
             _ => root.clone(),
         };
-        self.run_panel.start(&task.name, &task.command.display());
+        self.run_panel.start(&task.name, &task.display());
         self.show_run_window();
         self.run.last = Some(task.clone());
-        let spec = Spec { argv: task.command.argv(), cwd: cwd.clone(), env: task.env.into_iter().collect() };
+        let argv = task.argv();
+        let matcher_kind = task.matcher_kind();
+        let spec = Spec { argv, cwd: cwd.clone(), env: task.env.into_iter().collect() };
         tracing::debug!("running {:?} in {}", spec.argv, cwd.display());
         let started = if cwd.is_dir() {
             process::spawn(&spec).map_err(|e| format!("cannot run {}: {e}", spec.argv.first().map_or("", |s| s.as_str())))
@@ -103,7 +105,10 @@ impl App {
         self.run.seq += 1;
         let run = self.run.seq;
         let pid = Arc::new(AtomicU32::new(spawned.pid));
-        let matcher = Matcher::new(&cwd, &root);
+        let matcher = match matcher_kind {
+            MatcherKind::Plain => None,
+            _ => Some(Matcher::new(&cwd, &root)),
+        };
         let (generation, tx) = (self.workspace.generation, self.bus_tx.clone());
         let handle = tokio::spawn(process::drive(spawned, matcher, generation, run, tx, pid.clone()));
         self.run.job = Some(Job { run, name: task.name, pid, task: handle.abort_handle(), stopped: false });
@@ -180,7 +185,7 @@ impl App {
         self.run.tasks_requested += 1;
         let seq = self.run.tasks_requested;
         let (root, generation, tx) = (self.workspace.root.clone(), self.workspace.generation, self.bus_tx.clone());
-        let configured = self.config.run.tasks.clone();
+        let configured = self.config.run.all();
         tokio::task::spawn_blocking(move || {
             let (tasks, error) = crate::run::load_tasks(&root, &configured);
             let _ = tx.send(AppMsg::RunTasks { generation, seq, tasks, error });
@@ -219,6 +224,7 @@ mod tests {
     use super::*;
     use crate::actions::{Action, PaletteAction, RunAction};
     use crate::app::tests::{handle_next, test_app};
+    use crate::files::watch::Changes;
     use crate::run::matcher::Severity;
     #[cfg(target_os = "linux")]
     use crate::util::process_gone;
@@ -352,6 +358,70 @@ mod tests {
         #[cfg(target_os = "linux")]
         assert!(process_gone(child).await, "sleep {child} survived the root switch");
         let _ = child;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn config_with_args_env_and_cwd_runs_there() {
+        let (mut app, dir) = test_app("run-config");
+        let root = app.workspace.root.clone();
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        let command = vec!["sh", "-c", "pwd -P; printf '%s\\n' \"$FOO\" \"$@\"", "sh"];
+        let text = format!(
+            "[[run.configs]]\nname = \"where\"\ncommand = {command:?}\nargs = [\"a b\", \"c\"]\ncwd = \"sub\"\nenv = {{ FOO = \"bar\" }}\n"
+        );
+        let task = crate::config::Config::parse(&text).unwrap().run.configs.remove(0);
+        let shown = task.display();
+        app.run_task(task);
+        until_exit(&mut app).await;
+        let texts: Vec<String> = app.run_panel.lines.iter().map(|l| l.text.clone()).collect();
+        let sub = std::fs::canonicalize(root.join("sub")).unwrap();
+        assert_eq!(texts, [sub.display().to_string(), "bar".into(), "a b".into(), "c".into()]);
+        assert_eq!(app.run_panel.command(), Some(shown.as_str()));
+        assert!(shown.ends_with("sh 'a b' c"), "{shown}");
+        assert_eq!(app.run_panel.status(), Some(&Status::Exited(0)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn matcher_none_shows_plain_lines() {
+        let (mut app, dir) = test_app("run-plain");
+        let root = app.workspace.root.clone();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/a.rs"), "fn main() {}\n").unwrap();
+        let script = "printf 'error: x\\n --> src/a.rs:1:1\\n'";
+        let plain = RunTask { matcher: Some(crate::run::MatcherKind::Plain), ..shell("plain", script) };
+        app.run_task(plain);
+        until_exit(&mut app).await;
+        assert_eq!(app.run_panel.lines.len(), 2);
+        assert!(app.run_panel.lines.iter().all(|l| l.link.is_none() && l.severity.is_none()));
+        app.run_task(shell("linked", script));
+        until_exit(&mut app).await;
+        assert!(app.run_panel.lines.iter().any(|l| l.link.is_some()), "the default matcher links the location");
+        assert_eq!(app.run_panel.lines[0].severity, Some(Severity::Error));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn project_file_and_config_changes_reload_the_list() {
+        let (mut app, dir) = test_app("run-reload");
+        let root = app.workspace.root.clone();
+        std::fs::create_dir_all(root.join(".jetl")).unwrap();
+        let file = crate::run::edit::project_file(&root);
+        std::fs::write(&file, "[[configs]]\nname = \"x\"\ncommand = \"true\"\n").unwrap();
+        let generation = app.workspace.generation;
+        app.handle_msg(AppMsg::FsChanged { generation, changes: Changes { paths: vec![file], ..Default::default() } });
+        handle_next(&mut app, |m| matches!(m, AppMsg::RunTasks { .. })).await;
+        let names = |app: &App| app.run.tasks.iter().map(|t| t.name.clone()).collect::<Vec<_>>();
+        assert_eq!(names(&app), ["x"]);
+        std::fs::create_dir_all(&app.paths.config_dir).unwrap();
+        std::fs::write(app.paths.config_file(), "[lsp]\nenabled = false\n[[run.configs]]\nname = \"c\"\ncommand = \"true\"\n").unwrap();
+        app.config_changed(vec![crate::config::watch::ConfigFile::Config]);
+        handle_next(&mut app, |m| matches!(m, AppMsg::RunTasks { .. })).await;
+        assert_eq!(names(&app), ["c", "x"]);
+        let requested = app.run.tasks_requested;
+        app.handle_msg(AppMsg::FsChanged { generation, changes: Changes { paths: vec![root.join("src/other.rs")], ..Default::default() } });
+        assert_eq!(app.run.tasks_requested, requested, "an unrelated path reloads nothing");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

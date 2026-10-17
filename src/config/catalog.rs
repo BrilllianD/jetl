@@ -277,7 +277,14 @@ pub static SETTINGS: &[Setting] = &[
         c.terminal.args.clone()
     )),
     row!("terminal.scrollback", "Scrollback lines", "Lines kept above the screen for the mouse wheel.", ANY, |c| n(c.terminal.scrollback)),
-    row!("run.tasks", "Run tasks", "Named commands for the Run window (Alt+Shift+F10). Edit them in config.toml.", Kind::External, none),
+    row!("run.tasks", "Run tasks", "Older name of run.configs; still read. Edit them in config.toml.", Kind::External, none),
+    row!(
+        "run.configs",
+        "Run configurations",
+        "Named commands with arguments, directory, environment and output matcher (Alt+Shift+F10 picks one). Edit them in config.toml, or per project with Run > Edit Configurations….",
+        Kind::External,
+        none
+    ),
     row!(
         "clipboard.paste_command",
         "Paste command",
@@ -394,7 +401,7 @@ pub static PAGES: &[Page] = &[
     page!("Files", None, ["files.show_hidden", "files.show_ignored", "files.watch"]),
     page!("Tools", None, []),
     page!("Terminal", Some(11), ["terminal.shell", "terminal.args", "terminal.scrollback"]),
-    page!("Run", Some(11), ["run.tasks"]),
+    page!("Run", Some(11), ["run.tasks", "run.configs"]),
     page!("Clipboard", Some(11), ["clipboard.paste_command", "clipboard.copy_command"]),
     page!(
         "Local History",

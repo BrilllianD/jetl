@@ -50,6 +50,10 @@ impl App {
             self.refresh_tree();
         }
         self.symbols_changed(&changes.paths);
+        let run_file = crate::run::edit::project_file(&self.workspace.root);
+        if changes.paths.iter().any(|p| *p == run_file || Some(p.as_path()) == run_file.parent()) {
+            self.load_run_tasks();
+        }
         for path in changes.paths {
             match self.editor.on_disk_change(&path) {
                 DiskChange::None => {}

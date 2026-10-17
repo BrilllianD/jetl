@@ -96,7 +96,14 @@ pub fn kill_group(pid: u32) {
 /// `generation` and `run`, then send `AppMsg::RunExited`. `pid` holds the
 /// group id while the leader is unreaped and is cleared when it is, so a
 /// later stop cannot signal a reused id.
-pub async fn drive(task: Spawned, mut matcher: Matcher, generation: u64, run: u64, tx: UnboundedSender<AppMsg>, pid: Arc<AtomicU32>) {
+pub async fn drive(
+    task: Spawned,
+    mut matcher: Option<Matcher>,
+    generation: u64,
+    run: u64,
+    tx: UnboundedSender<AppMsg>,
+    pid: Arc<AtomicU32>,
+) {
     let Spawned { mut child, mut output, .. } = task;
     let (line_tx, mut lines) = tokio::sync::mpsc::unbounded_channel::<Vec<RunLine>>();
     // A thread, not `spawn_blocking`: a background child that keeps the pipe
@@ -109,13 +116,23 @@ pub async fn drive(task: Spawned, mut matcher: Matcher, generation: u64, run: u6
                 Ok(0) | Err(_) => break,
                 Ok(n) => n,
             };
-            let batch: Vec<RunLine> = split.push(&buf[..n]).into_iter().map(|l| matcher.line(l)).collect();
+            let batch: Vec<RunLine> = split
+                .push(&buf[..n])
+                .into_iter()
+                .map(|l| match matcher.as_mut() {
+                    Some(m) => m.line(l),
+                    None => RunLine::plain(l),
+                })
+                .collect();
             if !batch.is_empty() && line_tx.send(batch).is_err() {
                 return;
             }
         }
         if let Some(last) = split.finish() {
-            let _ = line_tx.send(vec![matcher.line(last)]);
+            let _ = line_tx.send(vec![match matcher.as_mut() {
+                Some(m) => m.line(last),
+                None => RunLine::plain(last),
+            }]);
         }
     });
     let mut pending: Vec<RunLine> = Vec::new();

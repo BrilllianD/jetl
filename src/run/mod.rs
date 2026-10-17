@@ -4,6 +4,7 @@
 //! stderr merged (`process`); its output is matched for file locations
 //! (`matcher`) and shown in the Run tool window (`panel`).
 
+pub mod edit;
 pub mod matcher;
 pub mod panel;
 pub mod process;
@@ -18,6 +19,15 @@ use serde::Deserialize;
 #[serde(default)]
 pub struct RunConfig {
     pub tasks: Vec<RunTask>,
+    /// `[[run.configs]]` / `[[configs]]`: the documented name; `tasks` is the older one. Both are read.
+    pub configs: Vec<RunTask>,
+}
+
+impl RunConfig {
+    /// `tasks` then `configs`.
+    pub fn all(&self) -> Vec<RunTask> {
+        self.tasks.iter().chain(&self.configs).cloned().collect()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -30,8 +40,38 @@ pub struct RunTask {
     /// Added to jetl's environment.
     #[serde(default)]
     pub env: BTreeMap<String, String>,
+    /// Appended to the command's words (to a string command as `"$@"`).
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// How the output is read; unset picks one from the command.
+    #[serde(default)]
+    pub matcher: Option<MatcherKind>,
     #[serde(skip)]
     pub origin: Origin,
+}
+
+/// How a run's output is read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MatcherKind {
+    /// File locations become links (`matcher.rs`).
+    Problems,
+    /// Plain text, no links.
+    #[serde(rename = "none")]
+    Plain,
+}
+
+impl MatcherKind {
+    /// Every kind, in the order the Edit Configurations dialog lists them.
+    pub const ALL: &'static [MatcherKind] = &[MatcherKind::Problems, MatcherKind::Plain];
+
+    /// The TOML spelling: "problems", "none".
+    pub fn label(self) -> &'static str {
+        match self {
+            MatcherKind::Problems => "problems",
+            MatcherKind::Plain => "none",
+        }
+    }
 }
 
 /// A string runs through `sh -c`; a list of words runs directly.
@@ -73,25 +113,118 @@ impl TaskCommand {
     pub fn display(&self) -> String {
         match self {
             TaskCommand::Shell(s) => s.clone(),
-            TaskCommand::Argv(v) => v
-                .iter()
-                .map(|w| {
-                    let plain = !w.is_empty() && w.chars().all(|c| c.is_ascii_alphanumeric() || "-_./=:+,@%".contains(c));
-                    if plain { w.clone() } else { format!("'{}'", w.replace('\'', r"'\''")) }
-                })
-                .collect::<Vec<_>>()
-                .join(" "),
+            TaskCommand::Argv(v) => v.iter().map(|w| quote_word(w)).collect::<Vec<_>>().join(" "),
         }
     }
 }
 
+/// `w` as one shell word: bare when it is plain, else single-quoted.
+pub fn quote_word(w: &str) -> String {
+    let plain = !w.is_empty() && w.chars().all(|c| c.is_ascii_alphanumeric() || "-_./=:+,@%".contains(c));
+    if plain { w.to_string() } else { format!("'{}'", w.replace('\'', r"'\''")) }
+}
+
+/// Split `s` into words like a POSIX shell: whitespace separates, `'..'` is
+/// literal, `".."` honours `\"` and `\\`, a backslash outside quotes escapes
+/// the next character, `''` and `""` give an empty word.
+pub fn split_words(s: &str) -> Result<Vec<String>, String> {
+    let mut words = Vec::new();
+    let mut cur = String::new();
+    let mut started = false;
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            c if c.is_whitespace() => {
+                if started {
+                    words.push(std::mem::take(&mut cur));
+                    started = false;
+                }
+            }
+            '\'' => {
+                started = true;
+                loop {
+                    match chars.next() {
+                        Some('\'') => break,
+                        Some(c) => cur.push(c),
+                        None => return Err("unclosed quote".into()),
+                    }
+                }
+            }
+            '"' => {
+                started = true;
+                loop {
+                    match chars.next() {
+                        Some('"') => break,
+                        Some('\\') => match chars.next() {
+                            Some(e @ ('"' | '\\')) => cur.push(e),
+                            Some(e) => {
+                                cur.push('\\');
+                                cur.push(e);
+                            }
+                            None => return Err("unclosed quote".into()),
+                        },
+                        Some(c) => cur.push(c),
+                        None => return Err("unclosed quote".into()),
+                    }
+                }
+            }
+            '\\' => {
+                started = true;
+                if let Some(e) = chars.next() {
+                    cur.push(e);
+                }
+            }
+            c => {
+                started = true;
+                cur.push(c);
+            }
+        }
+    }
+    if started {
+        words.push(cur);
+    }
+    Ok(words)
+}
+
 impl RunTask {
+    /// The process to start: the command's words, then `args`. A string
+    /// command gets them as positional parameters (`"$@"`), unsplit.
+    pub fn argv(&self) -> Vec<String> {
+        match &self.command {
+            TaskCommand::Argv(v) => v.iter().chain(&self.args).cloned().collect(),
+            TaskCommand::Shell(s) if self.args.is_empty() => vec!["sh".into(), "-c".into(), s.clone()],
+            TaskCommand::Shell(s) => {
+                let mut v = vec!["sh".into(), "-c".into(), format!("{s} \"$@\""), "sh".into()];
+                v.extend(self.args.iter().cloned());
+                v
+            }
+        }
+    }
+
+    /// The command as typed in a shell.
+    pub fn display(&self) -> String {
+        let mut s = self.command.display();
+        for a in &self.args {
+            s.push(' ');
+            s.push_str(&quote_word(a));
+        }
+        s
+    }
+
+    /// The explicit matcher, else `Problems` (a later change detects one
+    /// from the command).
+    pub fn matcher_kind(&self) -> MatcherKind {
+        self.matcher.unwrap_or(MatcherKind::Problems)
+    }
+
     fn detected(name: &str, argv: &[&str]) -> Self {
         Self {
             name: name.into(),
             command: TaskCommand::Argv(argv.iter().map(|s| s.to_string()).collect()),
             cwd: None,
             env: BTreeMap::new(),
+            args: Vec::new(),
+            matcher: None,
             origin: Origin::Detected,
         }
     }
@@ -107,7 +240,7 @@ pub fn load_tasks(root: &Path, configured: &[RunTask]) -> (Vec<RunTask>, Option<
     let mut error = None;
     match std::fs::read_to_string(&file) {
         Ok(text) => match toml::from_str::<RunConfig>(&text) {
-            Ok(c) => tasks.extend(c.tasks.into_iter().map(|t| RunTask { origin: Origin::Project, ..t })),
+            Ok(c) => tasks.extend(c.tasks.into_iter().chain(c.configs).map(|t| RunTask { origin: Origin::Project, ..t })),
             Err(e) => error = Some(format!(".jetl/run.toml: {}", crate::config::theme::error_summary(&e.to_string()))),
         },
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -163,6 +296,35 @@ mod tests {
         assert_eq!(cfg.tasks[1].cwd.as_deref(), Some("web"));
         assert_eq!(cfg.tasks[1].env["PORT"], "8080");
         assert!(crate::config::Config::parse("[[run.tasks]]\nname = \"x\"\n").is_err(), "a command is required");
+        let text = "[[run.tasks]]\nname = \"old\"\ncommand = \"make\"\n\
+                    [[run.configs]]\nname = \"t\"\ncommand = [\"cargo\", \"test\"]\nargs = [\"--release\", \"a b\"]\nmatcher = \"none\"\n";
+        let cfg = crate::config::Config::parse(text).unwrap().run;
+        let all = cfg.all();
+        assert_eq!(all.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(), ["old", "t"]);
+        assert_eq!(all[1].args, ["--release", "a b"]);
+        assert_eq!(all[1].matcher, Some(MatcherKind::Plain));
+        assert_eq!(all[1].matcher_kind(), MatcherKind::Plain);
+        assert_eq!(all[0].matcher_kind(), MatcherKind::Problems);
+        assert_eq!(all[1].display(), "cargo test --release 'a b'");
+        assert_eq!(all[1].argv(), ["cargo", "test", "--release", "a b"]);
+        assert!(crate::config::Config::parse("[[run.configs]]\nname = \"x\"\ncommand = \"y\"\nmatcher = \"nope\"\n").is_err());
+    }
+
+    #[test]
+    fn shell_args_are_positional_parameters() {
+        let t = RunTask { args: vec!["a b".into(), "c".into()], ..RunTask::detected("e", &[]) };
+        let t = RunTask { command: TaskCommand::Shell("echo".into()), ..t };
+        assert_eq!(t.argv(), ["sh", "-c", "echo \"$@\"", "sh", "a b", "c"]);
+        let none = RunTask { args: Vec::new(), ..t };
+        assert_eq!(none.argv(), ["sh", "-c", "echo"]);
+    }
+
+    #[test]
+    fn split_words_quotes_and_escapes() {
+        assert_eq!(split_words(r#"a 'b c' "d \"e\"" f\ g """#).unwrap(), ["a", "b c", "d \"e\"", "f g", ""]);
+        assert_eq!(split_words("  ").unwrap(), Vec::<String>::new());
+        assert_eq!(split_words("\"x").unwrap_err(), "unclosed quote");
+        assert!(split_words("'x").is_err());
     }
 
     #[test]
@@ -183,6 +345,16 @@ mod tests {
         let configured = crate::config::Config::parse("[[run.tasks]]\nname = \"b\"\ncommand = \"make b\"\n").unwrap().run.tasks;
         let (tasks, _) = load_tasks(&dir, &configured);
         assert_eq!(names(&tasks), ["b", "lint"]);
+        std::fs::write(
+            dir.join(".jetl/run.toml"),
+            "[[configs]]\nname = \"c\"\ncommand = \"x\"\n[[tasks]]\nname = \"t\"\ncommand = \"y\"\n",
+        )
+        .unwrap();
+        let (tasks, _) = load_tasks(&dir, &configured);
+        assert_eq!(names(&tasks), ["b", "t", "c"]);
+        assert!(tasks[1..].iter().all(|t| t.origin == Origin::Project));
+        std::fs::write(dir.join(".jetl/run.toml"), "[[tasks]]\nname = \"lint\"\ncommand = [\"cargo\", \"clippy\"]\n").unwrap();
+        let (tasks, _) = load_tasks(&dir, &configured);
         assert_eq!((tasks[0].origin, tasks[1].origin), (Origin::Config, Origin::Project));
         std::fs::write(dir.join(".jetl/run.toml"), "[[tasks]]\nname = 3\n").unwrap();
         let (tasks, error) = load_tasks(&dir, &configured);

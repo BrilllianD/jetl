@@ -178,15 +178,17 @@ timeout_ms = 5000              # a formatter still running after this is killed
 # csharp = ["csharpier", "format", "--write-stdout"]
 # go = ["gofmt"]
 
-# Run tasks (Alt+Shift+F10 picks one). None by default; examples:
-# [[run.tasks]]
+# Run configurations (Alt+Shift+F10 picks one). None by default; examples:
+# [[run.configs]]
 # name = "build"                 # shown in the picker and the Run window
 # command = "cargo build 2>&1"   # a string runs through `sh -c`
-# [[run.tasks]]
+# [[run.configs]]
 # name = "web tests"
-# command = ["npm", "test", "--", "--watch=false"]  # a list of words runs directly, no shell
+# command = ["npm", "test", "--"]  # a list of words runs directly, no shell
+# args = ["--watch=false"]       # appended to the command
 # cwd = "web"                    # relative to the project root; default the root
 # env = { CI = "1" }             # added to jetl's environment
+# matcher = "problems"           # "problems" (links, default), "none"
 
 [terminal]
 shell = ""                     # the Terminal window's shell; "" = $SHELL, else /bin/sh
@@ -298,15 +300,24 @@ switching projects with unsaved changes ("Save all and exit", including the
 Save As prompts they bring up) write at once without the formatter, so they
 never wait on it.
 
-Run tasks (`[[run.tasks]]`) are listed by `run.pick` (Alt+Shift+F10), then
-the project's own `.jetl/run.toml`, which holds the same entries as
-`[[tasks]]` tables and is read each time the picker opens. When neither has
-any, the picker offers defaults found in the project root: `cargo build`,
+Run configurations (`[[run.configs]]`) are listed by `run.pick`
+(Alt+Shift+F10), then those of the project's own `.jetl/run.toml`, which
+holds the same entries as `[[configs]]` tables. The older `[[run.tasks]]` and
+`[[tasks]]` are still read and listed before the configurations of the same
+file. A change to `.jetl/run.toml` or to the `[run]` section of config.toml
+is picked up at once (Live), and nothing runs by itself. When there are none,
+the picker offers defaults found in the project root: `cargo build`,
 `cargo test` and `cargo run` for a `Cargo.toml`, `npm run <script>` for each
 of the first 20 `package.json` scripts, `make` for a Makefile, and
-`go build ./...` and `go test ./...` for a `go.mod`. A task runs only when
-you pick it (or rerun it), so a project file cannot start anything by
+`go build ./...` and `go test ./...` for a `go.mod`. A configuration runs only
+when you pick it (or rerun it), so a project file cannot start anything by
 itself.
+
+Each entry has `name`, `command` (a string for `sh -c`, or a list of words),
+and optionally `args`, `cwd`, `env` and `matcher`. `args` are appended to the
+command's words; to a string command they are passed as `"$@"`, so they
+reach the shell command unsplit. `matcher` is `"problems"` (file locations
+in the output become links; the default) or `"none"` (plain output).
 
 A task runs without a terminal: stdin is closed and stdout and stderr share
 one pipe, so their lines interleave as written, but programs that color or
