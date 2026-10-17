@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-17
+
 ### Added
 
 - Run > Run Test at Caret (Ctrl+Shift+F10) runs the Rust, Python or JavaScript/TypeScript test around the caret (cargo test, pytest, vitest or jest). Shift+F10 now runs the selected configuration; Ctrl+F5 still reruns the last run.
@@ -609,7 +611,8 @@ First release.
   for Phase 11).
 - No 3-pane conflict resolver; conflicted files show as `U` and are resolved in the editor.
 
-[Unreleased]: https://bitbucket.org/BrilllianD/jetl-ide/branches/compare/HEAD..v0.3.0
+[Unreleased]: https://bitbucket.org/BrilllianD/jetl-ide/branches/compare/HEAD..v0.4.0
+[0.4.0]: https://bitbucket.org/BrilllianD/jetl-ide/src/v0.4.0/
 [0.3.0]: https://bitbucket.org/BrilllianD/jetl-ide/src/v0.3.0/
 [0.2.0]: https://bitbucket.org/BrilllianD/jetl-ide/src/v0.2.0/
 [0.1.0]: https://bitbucket.org/BrilllianD/jetl-ide/src/v0.1.0/
