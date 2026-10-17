@@ -1050,6 +1050,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn snippet_rows_have_no_commit_characters() {
+        let (mut app, dir) = test_app("compl-snippets-commit");
+        let mut c = incremental();
+        c["completionProvider"] = json!({"allCommitCharacters": ["("], "triggerCharacters": ["."]});
+        let mut servers = with_fake_servers(&mut app, c);
+        let mut server = open_on_server(&mut app, &mut servers, "a.rs", MAIN).await;
+        app.editor.active_buffer_mut().unwrap().goto_line(1, 4);
+        typ(&mut app, "f");
+        let req = completion_req(&mut server).await;
+        reply(&mut app, &mut server, &req, json!([])).await;
+        assert_eq!(labels(&app), ["fn"]);
+        key(&mut app, KeyCode::Down);
+        typ(&mut app, "(");
+        assert_eq!(text(&app), "fn main() {\n    f()\n}\n", "typed, not expanded");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
     async fn snippet_rows_are_never_resolved() {
         let (mut app, mut server, dir) = setup("compl-snippets-resolve", true).await;
         typ(&mut app, "f");

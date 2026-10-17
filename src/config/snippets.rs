@@ -181,7 +181,7 @@ impl SnippetSet {
 
     /// The snippet whose prefix is exactly `prefix` (case-sensitive).
     pub fn exact(&self, lang: Option<&str>, prefix: &str) -> Option<&Snippet> {
-        self.for_language(lang).into_iter().find(|s| s.prefix == prefix)
+        stems(lang).into_iter().find_map(|stem| self.files.get(stem)?.iter().find(|s| s.prefix == prefix))
     }
 }
 

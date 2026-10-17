@@ -98,7 +98,7 @@ impl App {
             return;
         }
         let found = (|| {
-            if !self.focus.is(PanelId::Editor) || self.editor.find_focused() || self.editor.merge_active() {
+            if !self.focus.is(PanelId::Editor) || self.editor.find_focused() || self.editor.merge_active() || self.mode != Mode::Insert {
                 return None;
             }
             let b = self.editor.active_buffer().filter(|b| !b.read_only)?;
@@ -387,6 +387,18 @@ mod tests {
 
     #[cfg(feature = "lang-rust")]
     #[tokio::test]
+    async fn expand_snippet_needs_insert_mode() {
+        let (mut app, dir) = rust_app("snip-normal");
+        typ(&mut app, "fn");
+        app.mode = Mode::Normal;
+        app.perform(Action::Editor(EditorAction::ExpandSnippet));
+        assert_eq!(text(&app), "fn main() {\n    fn\n}\n");
+        assert!(toasts(&app).contains(&"No snippet for the word before the caret".to_string()), "{:?}", toasts(&app));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[tokio::test]
     async fn snippets_key_turns_live_templates_off() {
         use crate::config::watch::ConfigFile;
         use crate::event::AppMsg;
@@ -395,6 +407,7 @@ mod tests {
             std::fs::write(app.paths.config_file(), format!("[editor]\nsnippets = {on}\n[lsp]\nenabled = false\n")).unwrap();
             app.handle_msg(AppMsg::ConfigChanged { files: vec![ConfigFile::Config] });
         };
+        assert_eq!(crate::config::reload::class_of("editor.snippets"), Some(crate::config::reload::ReloadClass::Live));
         set(&mut app, false);
         typ(&mut app, "fn");
         assert!(!app.contexts().contains(&"editor.snippet_prefix"));

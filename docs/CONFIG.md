@@ -631,9 +631,10 @@ other keys are ignored.
 The body uses the language server snippet syntax: `$1`, `$2` are tabstops
 walked with Tab (Shift+Tab back), `${1:placeholder}` has a default text,
 `${1|a,b|}` offers a choice (the first is inserted), a repeated number is a
-mirror edited together with the first, and `$0` is where the caret ends. `\t`
-is one indent level of the buffer (tab or spaces as the file uses); the
-following lines get the indent of the line the caret is on. Variables such as
+mirror edited together with the first, and `$0` is where the caret ends. A tab
+character (`\t` in a basic string; a literal string needs a real tab) is one
+indent level of the buffer (tab or spaces as the file uses); the following
+lines get the indent of the line the caret is on. Variables such as
 `$TM_FILENAME` resolve to their default text. In a TOML basic string
 (`"..."`) write `\\$` for a literal `$`; a literal string (`'...'` or
 `'''...'''`) needs no escapes and is the easy way to write bodies with `$`
