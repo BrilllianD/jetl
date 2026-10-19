@@ -375,6 +375,11 @@ pub struct GitService {
     pub history: crate::history::Handle,
 }
 
+/// Each step as `git <args>`, joined with " && ".
+fn steps_label(steps: &[Vec<String>]) -> String {
+    steps.iter().map(|a| format!("git {}", a.join(" "))).collect::<Vec<_>>().join(" && ")
+}
+
 impl GitService {
     pub fn new(root: PathBuf, generation: u64, tx: UnboundedSender<AppMsg>) -> Self {
         Self {
@@ -626,17 +631,24 @@ impl GitService {
 
     /// [`GitService::run_cli`] with `input` on stdin.
     pub fn run_cli_input(&mut self, op: GitOp, args: Vec<String>, input: Option<Vec<u8>>) -> u64 {
-        self.spawn_cli(op, vec![args], input)
+        let label = steps_label(std::slice::from_ref(&args));
+        self.spawn_cli(op, vec![args], input, label)
     }
 
     /// Run several `git <args>` as one operation, in order, stopping at the
     /// first failure; the label joins them with " && ", the output too.
     pub fn run_cli_steps(&mut self, op: GitOp, steps: Vec<Vec<String>>) -> u64 {
-        self.spawn_cli(op, steps, None)
+        let label = steps_label(&steps);
+        self.spawn_cli(op, steps, None, label)
     }
 
-    fn spawn_cli(&mut self, op: GitOp, steps: Vec<Vec<String>>, mut input: Option<Vec<u8>>) -> u64 {
-        let label = steps.iter().map(|a| format!("git {}", a.join(" "))).collect::<Vec<_>>().join(" && ");
+    /// [`GitService::run_cli_steps`] shown as `label` (status bar, Git console,
+    /// Local History) instead of the commands it runs.
+    pub fn run_cli_steps_as(&mut self, op: GitOp, steps: Vec<Vec<String>>, label: String) -> u64 {
+        self.spawn_cli(op, steps, None, label)
+    }
+
+    fn spawn_cli(&mut self, op: GitOp, steps: Vec<Vec<String>>, mut input: Option<Vec<u8>>, label: String) -> u64 {
         let id = self.start(&label);
         let pre = self.before(&op, &label);
         let track = op.touches_worktree() && self.history.enabled();

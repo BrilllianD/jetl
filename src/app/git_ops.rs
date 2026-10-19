@@ -7,6 +7,18 @@ use crate::git::model::{ProgressAction, ResetMode};
 use crate::git::{GitOp, GitRequest};
 use crate::ui::dialog::{Dialog, DialogId, DialogKind, DialogResult};
 
+/// What Stage and Continue shows: `git add <rels> && git <continue args>`,
+/// each word shell-quoted, `--` only when a path starts with `-`.
+fn stage_and_continue_label(rels: &[String], args: &[String]) -> String {
+    let dashes = if rels.iter().any(|r| r.starts_with('-')) { " --" } else { "" };
+    let word = |w: &String| crate::run::quote_word(w);
+    format!(
+        "git add{dashes} {} && git {}",
+        rels.iter().map(word).collect::<Vec<_>>().join(" "),
+        args.iter().map(word).collect::<Vec<_>>().join(" ")
+    )
+}
+
 impl App {
     /// Git > Continue / Skip / Abort Operation.
     pub(super) fn progress_request(&mut self, action: ProgressAction) {
@@ -86,11 +98,13 @@ impl App {
             (DialogId::ContinueWithConflicts { kind, rels }, DialogResult::Button(1)) => {
                 if let Some(args) = kind.args(ProgressAction::Continue) {
                     // `rels` are relative to the work tree, the command runs in the project root.
+                    // The label shows the plain paths, not the pathspec magic.
+                    let label = stage_and_continue_label(rels, &args);
                     let add = ["add".to_string(), "--".to_string()]
                         .into_iter()
                         .chain(rels.iter().map(|r| format!(":(top,literal){r}")))
                         .collect();
-                    self.git.run_cli_steps(GitOp::Progress { kind: *kind, action: ProgressAction::Continue }, vec![add, args]);
+                    self.git.run_cli_steps_as(GitOp::Progress { kind: *kind, action: ProgressAction::Continue }, vec![add, args], label);
                 }
             }
             (DialogId::AbortOperation(kind), DialogResult::Button(0)) => {
@@ -184,6 +198,7 @@ mod tests {
     #[tokio::test]
     async fn rebase_conflict_stage_and_continue() {
         let (mut app, dir) = test_app("rebase-continue");
+        with_history(&mut app);
         let main = diverged(&app);
         let root = app.workspace.root.clone();
         git(&root, &["switch", "-q", "dev"]);
@@ -213,7 +228,19 @@ mod tests {
         assert_eq!(git_out(&root, &["log", "-1", "--format=%s"]), "dev change");
         assert_eq!(git_out(&root, &["log", "-1", "--format=%s", "HEAD~1"]), "main change");
         assert_eq!(std::fs::read_to_string(root.join("a.txt")).unwrap(), "both\n");
+        let rows = crate::app::history::tests::snapshots(&app, &root.join("a.txt"));
+        assert!(rows.iter().any(|(label, text)| label == "Before git add a.txt && git rebase --continue" && text == "both\n"), "{rows:?}");
+        assert!(rows.iter().all(|(label, _)| !label.contains(":(top")), "{rows:?}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stage_and_continue_label_is_the_plain_command() {
+        let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        let cont = s(&["rebase", "--continue"]);
+        assert_eq!(super::stage_and_continue_label(&s(&["a.txt"]), &cont), "git add a.txt && git rebase --continue");
+        assert_eq!(super::stage_and_continue_label(&s(&["a.txt", "sub/c.txt"]), &cont), "git add a.txt sub/c.txt && git rebase --continue");
+        assert_eq!(super::stage_and_continue_label(&s(&["a b.txt", "-x"]), &cont), "git add -- 'a b.txt' -x && git rebase --continue");
     }
 
     #[tokio::test]
