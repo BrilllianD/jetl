@@ -167,7 +167,6 @@ mod tests {
     fn diverged(app: &App) -> String {
         init_repo(app, &[("a.txt", "a\n")]);
         let root = app.workspace.root.clone();
-        git(&root, &["config", "commit.gpgsign", "false"]);
         let main = crate::git::repo::status(&root).unwrap().branch.unwrap();
         git(&root, &["switch", "-qc", "dev"]);
         std::fs::write(root.join("a.txt"), "dev\n").unwrap();
@@ -222,7 +221,6 @@ mod tests {
         let (mut app, dir) = test_app("rebase-subdir");
         init_repo(&app, &[("top.txt", "t\n")]);
         let top = app.workspace.root.clone();
-        git(&top, &["config", "commit.gpgsign", "false"]);
         let main = crate::git::repo::status(&top).unwrap().branch.unwrap();
         let sub = top.join("sub");
         std::fs::create_dir(&sub).unwrap();
@@ -327,7 +325,6 @@ mod tests {
     fn two_commits(app: &App) -> String {
         init_repo(app, &[("a.txt", "a\n")]);
         let root = app.workspace.root.clone();
-        git(&root, &["config", "commit.gpgsign", "false"]);
         std::fs::write(root.join("a.txt"), "b\n").unwrap();
         git(&root, &["commit", "-qam", "second"]);
         git_out(&root, &["rev-parse", "HEAD~1"])
@@ -403,10 +400,10 @@ mod tests {
         let (mut app, dir) = test_app("push-options");
         init_repo(&app, &[("a.txt", "a\n")]);
         let root = app.workspace.root.clone();
-        git(&root, &["config", "commit.gpgsign", "false"]);
         let main = crate::git::repo::status(&root).unwrap().branch.unwrap();
         let remote = dir.join("remote.git");
         git(&dir, &["init", "-q", "--bare", remote.to_str().unwrap()]);
+        crate::git::repo::tests::isolate(&remote);
         git(&root, &["remote", "add", "origin", remote.to_str().unwrap()]);
         git(&root, &["push", "-q", "-u", "origin", &main]);
         git(&root, &["tag", "v1"]);
@@ -433,7 +430,8 @@ mod tests {
         assert_eq!(git_out(&root, &["ls-remote", "origin", &head_ref]).split_whitespace().next(), Some(head.as_str()));
 
         let other = dir.join("other");
-        git(&dir, &["clone", "-q", remote.to_str().unwrap(), other.to_str().unwrap()]);
+        git(&dir, &["clone", "-q", "-b", &main, remote.to_str().unwrap(), other.to_str().unwrap()]);
+        crate::git::repo::tests::isolate(&other);
         std::fs::write(other.join("b.txt"), "b\n").unwrap();
         git(&other, &["add", "b.txt"]);
         git(&other, &["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "commit", "-qm", "other"]);

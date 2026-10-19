@@ -466,6 +466,7 @@ mod tests {
             assert!(out.status.success(), "git {a:?}: {}", String::from_utf8_lossy(&out.stderr));
         };
         run(&["init", "-q"]);
+        crate::git::repo::tests::isolate(&dir);
         for n in ["one", "two"] {
             std::fs::write(dir.join("f.txt"), n).unwrap();
             run(&["add", "f.txt"]);
@@ -497,6 +498,7 @@ mod tests {
             String::from_utf8_lossy(&out.stdout).trim().to_string()
         };
         run(&["init", "-q"]);
+        crate::git::repo::tests::isolate(&dir);
         for n in ["one", "two"] {
             std::fs::write(dir.join("f.txt"), n).unwrap();
             run(&["add", "f.txt"]);
@@ -533,6 +535,7 @@ mod tests {
             assert!(out.status.success(), "git {a:?}: {}", String::from_utf8_lossy(&out.stderr));
         };
         run(&["init", "-q"]);
+        crate::git::repo::tests::isolate(&dir);
         std::fs::write(dir.join("f.txt"), "one").unwrap();
         run(&["add", "f.txt"]);
         run(&["commit", "-qm", "one"]);
@@ -562,6 +565,7 @@ mod tests {
             String::from_utf8_lossy(&out.stdout).trim().to_string()
         };
         run(&["init", "-q"]);
+        crate::git::repo::tests::isolate(&dir);
         let mut shas = Vec::new();
         for n in ["a\n", "b\n"] {
             std::fs::write(dir.join("a.txt"), n).unwrap();

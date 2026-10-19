@@ -2182,6 +2182,7 @@ pub(crate) mod tests {
         let mut cfg = git2::Config::open(&root.join(".git/config")).unwrap();
         cfg.set_str("user.name", "Test").unwrap();
         cfg.set_str("user.email", "test@example.com").unwrap();
+        crate::git::repo::tests::isolate(root);
         for (name, text) in files {
             std::fs::write(root.join(name), text).unwrap();
         }

@@ -820,6 +820,7 @@ pub(crate) mod tests {
             let mut cfg = git2::Config::open(&dir.join(".git/config")).unwrap();
             cfg.set_str("user.name", "Test").unwrap();
             cfg.set_str("user.email", "test@example.com").unwrap();
+            isolate(&dir);
             let dir = std::fs::canonicalize(&dir).unwrap();
             Self { dir }
         }
@@ -828,6 +829,22 @@ pub(crate) mod tests {
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();
             std::fs::write(p, text).unwrap();
         }
+    }
+
+    /// Shield the repository at `dir` (a work tree or a bare repository) from
+    /// the user's global and system git config: no commit or tag signing, no
+    /// pruning on fetch, no hooks, merge on pull. Writes the repository's own
+    /// config only (local beats global and system); linked worktrees share it.
+    pub(crate) fn isolate(dir: &Path) {
+        let git_dir = Repository::open(dir).unwrap().path().to_path_buf();
+        let hooks = git_dir.join("no-hooks");
+        std::fs::create_dir_all(&hooks).unwrap();
+        let mut cfg = git2::Config::open(&git_dir.join("config")).unwrap();
+        cfg.set_bool("commit.gpgSign", false).unwrap();
+        cfg.set_bool("tag.gpgSign", false).unwrap();
+        cfg.set_bool("fetch.prune", false).unwrap();
+        cfg.set_bool("pull.rebase", false).unwrap();
+        cfg.set_str("core.hooksPath", hooks.to_str().unwrap()).unwrap();
     }
 
     fn marker_status(name: &str, files: &[(&str, &str)]) -> Option<InProgress> {

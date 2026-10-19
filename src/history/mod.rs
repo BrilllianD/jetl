@@ -839,6 +839,7 @@ mod tests {
         let mut cfg = repo.config().unwrap();
         cfg.set_str("user.name", "Test").unwrap();
         cfg.set_str("user.email", "test@example.com").unwrap();
+        crate::git::repo::tests::isolate(&root);
         std::fs::write(root.join("a.txt"), "a\n").unwrap();
         std::fs::write(root.join("clean.txt"), "c\n").unwrap();
         crate::git::repo::stage_all(&root).unwrap();

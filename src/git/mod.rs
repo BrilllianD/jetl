@@ -725,16 +725,9 @@ mod tests {
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     }
 
-    /// A repository with one commit. Its own config shields the tests from the
-    /// user's global git config: no signing, no pruning on fetch, no hooks.
+    /// A repository with one commit (its config is isolated by TempRepo::new).
     fn repo(name: &str) -> TempRepo {
         let r = TempRepo::new(name);
-        let hooks = r.dir.join(".git/no-hooks");
-        std::fs::create_dir_all(&hooks).unwrap();
-        git(&r.dir, &["config", "commit.gpgsign", "false"]);
-        git(&r.dir, &["config", "tag.gpgSign", "false"]);
-        git(&r.dir, &["config", "fetch.prune", "false"]);
-        git(&r.dir, &["config", "core.hooksPath", hooks.to_str().unwrap()]);
         r.write("a.txt", "a\n");
         git(&r.dir, &["add", "-A"]);
         git(&r.dir, &["commit", "-qm", "first"]);
@@ -910,6 +903,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&remote.0);
         std::fs::create_dir_all(&remote.0).unwrap();
         git(&remote.0, &["init", "-q", "--bare"]);
+        crate::git::repo::tests::isolate(&remote.0);
         let url = remote.0.to_str().unwrap();
         git(&r.dir, &["remote", "add", "origin", url]);
         git(&r.dir, &["push", "-q", "origin", "HEAD:refs/heads/gone"]);
