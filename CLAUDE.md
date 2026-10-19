@@ -2,6 +2,8 @@
 
 Terminal IDE in Rust (ratatui + crossterm) with JetBrains-like UX: project tree, tabbed editor with tree-sitter highlighting, Git tool window, worktree panel. Feature backlog and phase order: `docs/ROADMAP.md`. Architecture (module map, event flow, stale-result rules, extension points): `docs/ARCHITECTURE.md`. Manual tmux test harness: `docs/TESTING.md`.
 
+Knowledge base: ~/mem/projects/jetl/README.md (search: qmd search "<terms>" -c mem -n 8). Read it before non-trivial work; record decisions there.
+
 ## Build and run
 
     cargo run -- .                                   # open current dir
