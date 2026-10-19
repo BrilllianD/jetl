@@ -433,7 +433,7 @@ mod tests {
 
     mod lsp {
         use super::*;
-        use crate::app::lsp::tests::{incremental, is_lsp, open_on_server, with_fake_servers};
+        use crate::app::lsp::tests::{incremental, is_lsp, open_on_server, sent, with_fake_servers};
         use crate::editor::selection::{Selection, Selections};
         use crate::lsp::fake::FakeServer;
         use serde_json::json;
@@ -500,7 +500,7 @@ mod tests {
             handle_next(&mut app, formatted).await;
             assert_eq!(text(&app), PRETTY.to_uppercase());
             app.lsp_sync();
-            assert!(server.drain().iter().all(|m| m["method"] != "textDocument/formatting"));
+            assert!(sent(&app, &mut server).await.iter().all(|m| m["method"] != "textDocument/formatting"));
             let _ = std::fs::remove_dir_all(&dir);
         }
 
@@ -564,7 +564,7 @@ mod tests {
             );
             assert!(app.format.jobs.is_empty());
             app.lsp_sync();
-            assert!(server.drain().iter().all(|m| m["method"] != "textDocument/formatting"));
+            assert!(sent(&app, &mut server).await.iter().all(|m| m["method"] != "textDocument/formatting"));
             let _ = std::fs::remove_dir_all(&dir);
         }
 
@@ -604,7 +604,7 @@ mod tests {
             act(&mut app, EditorAction::Format);
             assert!(warnings(&app).iter().any(|w| w.starts_with("No formatter for rust files")), "{:?}", warnings(&app));
             app.lsp_sync();
-            assert!(server.drain().iter().all(|m| m["method"] != "textDocument/formatting"));
+            assert!(sent(&app, &mut server).await.iter().all(|m| m["method"] != "textDocument/formatting"));
             let _ = std::fs::remove_dir_all(&dir);
         }
 
@@ -663,7 +663,7 @@ mod tests {
             handle_next(&mut app, is_lsp).await;
             assert_eq!(text(&app), PRETTY);
             app.lsp_sync();
-            assert!(server.drain().iter().all(|m| m["method"] != "textDocument/rangeFormatting"));
+            assert!(sent(&app, &mut server).await.iter().all(|m| m["method"] != "textDocument/rangeFormatting"));
             let _ = std::fs::remove_dir_all(&dir);
         }
 
@@ -683,7 +683,7 @@ mod tests {
             assert_eq!(text(&app), PRETTY);
             assert_eq!(std::fs::read_to_string(&path).unwrap(), PRETTY);
             app.lsp_sync();
-            assert!(server.drain().iter().all(|m| m["method"] != "textDocument/rangeFormatting"));
+            assert!(sent(&app, &mut server).await.iter().all(|m| m["method"] != "textDocument/rangeFormatting"));
             let _ = std::fs::remove_dir_all(&dir);
         }
 

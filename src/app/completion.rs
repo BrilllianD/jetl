@@ -531,7 +531,7 @@ fn merge_resolved(orig: CompletionItem, mut r: CompletionItem) -> CompletionItem
 mod tests {
     use super::*;
     use crate::actions::{Action, EditorAction, Motion};
-    use crate::app::lsp::tests::{incremental, is_lsp, open_on_server, with_fake_servers};
+    use crate::app::lsp::tests::{incremental, is_lsp, open_on_server, sent, with_fake_servers};
     use crate::app::tests::{handle_next, test_app};
     use crate::lsp::fake::FakeServer;
     use crossterm::event::KeyModifiers;
@@ -749,7 +749,7 @@ mod tests {
         assert_eq!(text(&app), "fn main() {p\n    p\n}\n");
         app.lsp_sync();
         server.recv("textDocument/didChange").await;
-        assert!(server.drain().iter().all(|m| m["method"] != "textDocument/completion"), "no asking by itself");
+        assert!(sent(&app, &mut server).await.iter().all(|m| m["method"] != "textDocument/completion"), "no asking by itself");
         app.handle_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::CONTROL));
         let req = completion_req(&mut server).await;
         assert_eq!(req["params"]["position"], json!({"line": 1, "character": 5}), "about the primary caret");
@@ -831,7 +831,7 @@ mod tests {
         typ(&mut app, "v");
         app.lsp_sync();
         server.recv("textDocument/didChange").await;
-        assert!(server.drain().iter().all(|m| m["method"] != "textDocument/completion"));
+        assert!(sent(&app, &mut server).await.iter().all(|m| m["method"] != "textDocument/completion"));
         typ(&mut app, ".");
         let req = completion_req(&mut server).await;
         assert_eq!(req["params"]["context"], json!({"triggerKind": 2, "triggerCharacter": "."}));
@@ -851,7 +851,7 @@ mod tests {
         assert_eq!(labels(&app), ["lines"]);
         app.lsp_sync();
         server.recv("textDocument/didChange").await;
-        assert!(server.drain().iter().all(|m| m["method"] != "textDocument/completion"));
+        assert!(sent(&app, &mut server).await.iter().all(|m| m["method"] != "textDocument/completion"));
         // Tab accepts too; without a text edit the label replaces the word.
         key(&mut app, KeyCode::Tab);
         assert_eq!(caret_line(&app), "    v.lines|");
@@ -860,7 +860,7 @@ mod tests {
         typ(&mut app, ":");
         app.lsp_sync();
         server.recv("textDocument/didChange").await;
-        assert!(server.drain().iter().all(|m| m["method"] != "textDocument/completion"));
+        assert!(sent(&app, &mut server).await.iter().all(|m| m["method"] != "textDocument/completion"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -960,10 +960,10 @@ mod tests {
         assert_eq!(d.lines[0].text, "Docs here");
         assert_eq!(d.lines[0].kind, crate::ui::hover::Kind::Text);
         // Accepting reuses the resolved item: no second resolve.
-        server.drain();
+        sent(&app, &mut server).await;
         key(&mut app, KeyCode::Enter);
         assert_eq!(text(&app), "use a::pb;\nfn main() {\n    pb\n}\n");
-        assert!(server.drain().iter().all(|m| m["method"] != "completionItem/resolve"));
+        assert!(sent(&app, &mut server).await.iter().all(|m| m["method"] != "completionItem/resolve"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -982,7 +982,7 @@ mod tests {
         handle_next(&mut app, is_lsp).await;
         assert!(app.completion.as_ref().unwrap().resolved.is_empty());
         // Accepting resolves on its own and applies the auto-import.
-        server.drain();
+        sent(&app, &mut server).await;
         key(&mut app, KeyCode::Enter);
         let res = server.recv("completionItem/resolve").await;
         let mut resolved = json!({"label": "pa"});

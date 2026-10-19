@@ -650,7 +650,7 @@ fn describe_ops(ops: &[FsOp], root: &Path) -> Option<String> {
 mod tests {
     use super::*;
     use crate::actions::{Action, EditorAction, LspAction, PaletteKind};
-    use crate::app::lsp::tests::{incremental, is_lsp, open_on_server, with_fake_servers};
+    use crate::app::lsp::tests::{incremental, is_lsp, open_on_server, sent, with_fake_servers};
     use crate::app::tests::{handle_next, load, test_app};
     use crate::lsp::fake::FakeServer;
     use crate::lsp::sync;
@@ -1189,7 +1189,7 @@ mod tests {
         assert!(matches!(d.id, DialogId::LspConfirmEdit(_)));
         assert!(d.message.contains("* Risky") && d.message.contains("1 change in all"), "{}", d.message);
         assert_eq!(text(&app), "fn a() {}\n");
-        assert!(server.drain().iter().all(|m| m["id"] != 7 || m.get("method").is_some()));
+        assert!(sent(&app, &mut server).await.iter().all(|m| m["id"] != 7 || m.get("method").is_some()));
         app.finish_dialog(d.id, DialogResult::Button(0));
         assert_eq!(text(&app), "fn b() {}\n");
         assert_eq!(server.response(7).await["result"]["applied"], true);

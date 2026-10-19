@@ -251,7 +251,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::lsp::tests::{incremental, is_lsp, open_on_server, with_fake_servers};
+    use crate::app::lsp::tests::{incremental, is_lsp, open_on_server, sent, with_fake_servers};
     use crate::app::tests::{handle_next, test_app};
     use crate::lsp::LspMsg;
 
@@ -316,10 +316,11 @@ mod tests {
         let b = root.join("b.rs");
         app.run_fs_op(FsOp::Create { path: b.clone(), is_dir: false, overwrite: false });
         handle_next(&mut app, fs_op_done).await;
-        let created = server.recv("workspace/didCreateFiles").await;
+        let sent = sent(&app, &mut server).await;
+        let created = sent.iter().find(|m| m["method"] == "workspace/didCreateFiles").expect("didCreateFiles");
         assert_eq!(created["params"]["files"], json!([{"uri": sync::uri(&b).unwrap().to_string()}]));
-        let methods: Vec<String> = server.drain().iter().filter_map(|m| m["method"].as_str().map(String::from)).collect();
-        assert!(!methods.iter().any(|m| m.starts_with("workspace/will") || m == "workspace/didRenameFiles"), "{methods:?}");
+        let methods: Vec<&str> = sent.iter().filter_map(|m| m["method"].as_str()).collect();
+        assert!(!methods.iter().any(|m| m.starts_with("workspace/will") || *m == "workspace/didRenameFiles"), "{methods:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

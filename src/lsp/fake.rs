@@ -65,7 +65,7 @@ impl FakeServer {
     }
 
     /// Everything the client sent so far: a `test/ping` notification goes
-    /// through the connection behind it, so unlike `drain` this cannot miss
+    /// through the connection behind it, so unlike a `try_recv` loop this cannot miss
     /// a message still on its way.
     pub async fn sent_so_far(&mut self, client: &crate::lsp::client::Client) -> Vec<Value> {
         client.notify("test/ping", json!({}));
@@ -97,11 +97,6 @@ impl FakeServer {
                 return msg;
             }
         }
-    }
-
-    /// Whatever arrived and was not taken yet, without waiting.
-    pub fn drain(&mut self) -> Vec<Value> {
-        std::iter::from_fn(|| self.from_client.try_recv().ok()).collect()
     }
 
     pub fn notify(&self, method: &str, params: Value) {

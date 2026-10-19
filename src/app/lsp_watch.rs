@@ -143,7 +143,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::lsp::tests::{incremental, open_on_server, with_fake_servers};
+    use crate::app::lsp::tests::{incremental, open_on_server, sent, with_fake_servers};
     use crate::app::tests::{handle_next, test_app};
     use crate::event::AppMsg;
     use serde_json::{Value, json};
@@ -191,7 +191,7 @@ mod tests {
         registered(&mut app, &mut server, 2, unreg, "client/unregisterCapability").await;
         inject(&mut app, vec![(x, FileChange::Changed)]);
         app.lsp_sync();
-        assert!(server.drain().iter().all(|m| m["method"] != "workspace/didChangeWatchedFiles"));
+        assert!(sent(&app, &mut server).await.iter().all(|m| m["method"] != "workspace/didChangeWatchedFiles"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

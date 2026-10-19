@@ -907,6 +907,13 @@ pub(crate) mod tests {
         matches!(m, AppMsg::Lsp(_))
     }
 
+    /// Everything rust-analyzer's client sent so far, through a `test/ping`
+    /// round trip (`FakeServer::sent_so_far`): unlike a `try_recv` loop it
+    /// cannot miss a message still on its way.
+    pub(crate) async fn sent(app: &App, server: &mut FakeServer) -> Vec<Value> {
+        server.sent_so_far(&app.lsp.clients["rust-analyzer"]).await
+    }
+
     /// Open `name` with `text` in `app` (fake servers installed) and wait
     /// until its server runs and has the document.
     pub(crate) async fn open_on_server(app: &mut App, servers: &mut UnboundedReceiver<FakeServer>, name: &str, text: &str) -> FakeServer {
@@ -965,7 +972,7 @@ pub(crate) mod tests {
         assert_eq!(change["params"]["contentChanges"], json!([{"range": range(0, 3, 0, 4), "text": ""}]));
         // Nothing changed, nothing sent.
         app.lsp_sync();
-        assert!(server.drain().is_empty());
+        assert!(sent(&app, &mut server).await.is_empty());
 
         // A rename closes the old document and opens the new one.
         let moved = app.workspace.root.join("b.rs");
@@ -985,7 +992,7 @@ pub(crate) mod tests {
         // Plain text has no server.
         load(&mut app, "notes.txt", "x");
         act(&mut app, EditorAction::InsertChar('y'));
-        assert!(server.drain().is_empty());
+        assert!(sent(&app, &mut server).await.is_empty());
         assert_eq!(app.lsp_status(), None);
 
         // Quitting asks the server to shut down and exit.
@@ -1004,7 +1011,7 @@ pub(crate) mod tests {
         let mut server = servers.try_recv().expect("started");
         handle_next(&mut app, |m| matches!(m, AppMsg::Lsp(LspMsg::Started { .. }))).await;
         app.lsp_sync();
-        assert!(server.drain().iter().all(|m| m["method"] != "textDocument/didOpen"));
+        assert!(sent(&app, &mut server).await.iter().all(|m| m["method"] != "textDocument/didOpen"));
 
         let sel = json!([{"language": "rust"}]);
         let reg = |id: &str, method: &str, mut options: Value| {
@@ -1040,7 +1047,7 @@ pub(crate) mod tests {
         assert_eq!(server.response(2).await["result"], Value::Null);
         act(&mut app, EditorAction::InsertChar('y'));
         app.lsp_sync();
-        assert!(server.drain().iter().all(|m| m["method"] != "textDocument/didChange"));
+        assert!(sent(&app, &mut server).await.iter().all(|m| m["method"] != "textDocument/didChange"));
         // Back on as Full: the whole text goes.
         server.request(
             3,
@@ -1065,7 +1072,7 @@ pub(crate) mod tests {
         // Closed on the server: no changes until it is opened again.
         act(&mut app, EditorAction::InsertChar('z'));
         app.lsp_sync();
-        assert!(server.drain().iter().all(|m| m["method"] != "textDocument/didChange"));
+        assert!(sent(&app, &mut server).await.iter().all(|m| m["method"] != "textDocument/didChange"));
         act(&mut app, EditorAction::Save);
         server.request(5, "client/registerCapability", json!({"registrations": [reg("o", "textDocument/didOpen", json!({}))]}));
         handle_next(&mut app, is_lsp).await;
@@ -1090,7 +1097,8 @@ pub(crate) mod tests {
         assert_eq!(server.recv("textDocument/didSave").await["params"]["text"], app.editor.active_buffer().unwrap().text());
         app.editor.force_close(app.editor.active().unwrap());
         app.lsp_sync();
-        assert!(server.drain().iter().all(|m| m["method"] != "textDocument/didClose"));
+        let sent = sent(&app, &mut server).await;
+        assert_eq!(sent.iter().filter(|m| m["method"] == "textDocument/didClose").count(), 1, "{sent:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1141,7 +1149,7 @@ pub(crate) mod tests {
         let mut server = open_on_server(&mut app, &mut servers, "a.rs", "fn a() {}\n").await;
         let notes = load(&mut app, "notes.txt", "fn b() {}\n");
         app.lsp_sync();
-        assert!(server.drain().is_empty(), "plain text has no server");
+        assert!(sent(&app, &mut server).await.is_empty(), "plain text has no server");
         // Renamed to Rust: opened as Rust.
         let rs = app.workspace.root.join("notes.rs");
         app.editor.retarget(&notes, &rs, &app.theme);
@@ -1154,7 +1162,7 @@ pub(crate) mod tests {
         app.lsp_sync();
         assert_eq!(server.recv("textDocument/didClose").await["params"]["textDocument"]["uri"], uri.as_str());
         app.lsp_sync();
-        assert!(server.drain().iter().all(|m| m["method"] != "textDocument/didOpen"));
+        assert!(sent(&app, &mut server).await.iter().all(|m| m["method"] != "textDocument/didOpen"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1178,7 +1186,7 @@ pub(crate) mod tests {
         app.lsp_sync();
         assert_eq!(server.recv("textDocument/didClose").await["params"]["textDocument"]["uri"], uri.as_str());
         app.lsp_sync();
-        assert!(server.drain().iter().all(|m| m["method"] != "textDocument/didOpen"));
+        assert!(sent(&app, &mut server).await.iter().all(|m| m["method"] != "textDocument/didOpen"));
         assert!(app.lsp.docs.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
