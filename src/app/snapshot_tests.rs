@@ -1750,6 +1750,7 @@ async fn main_menu_bar() {
     assert_snapshot!("main_menu_bar", snapshot(&term, &marks, None));
 }
 
+#[cfg(feature = "lang-rust")]
 #[tokio::test]
 async fn hover_popup() {
     let mut fx = stable_app("hover");

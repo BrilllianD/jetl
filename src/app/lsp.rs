@@ -33,6 +33,7 @@ enum Connector {
     #[default]
     Process,
     #[cfg(test)]
+    #[cfg_attr(not(feature = "lang-rust"), allow(dead_code))]
     Fake(Box<FakeConnect>),
 }
 
@@ -873,7 +874,8 @@ fn section(settings: Option<&Value>, section: Option<&str>) -> Value {
     v.clone()
 }
 
-#[cfg(test)]
+// Every test here opens a Rust file (a language server needs a language).
+#[cfg(all(test, feature = "lang-rust"))]
 pub(crate) mod tests {
     use super::*;
     use crate::actions::{Action, EditorAction, LspAction, Motion};

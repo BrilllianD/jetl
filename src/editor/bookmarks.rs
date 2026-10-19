@@ -410,6 +410,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[cfg(feature = "lang-rust")]
     #[tokio::test]
     async fn ctrl_7_comments_in_legacy_terminals_and_jumps_with_kitty() {
         let (mut app, dir) = test_app("bookmark-ctrl-7");

@@ -646,7 +646,8 @@ fn describe_ops(ops: &[FsOp], root: &Path) -> Option<String> {
     Some(text)
 }
 
-#[cfg(test)]
+// Every test here opens a Rust file (a language server needs a language).
+#[cfg(all(test, feature = "lang-rust"))]
 mod tests {
     use super::*;
     use crate::actions::{Action, EditorAction, LspAction, PaletteKind};

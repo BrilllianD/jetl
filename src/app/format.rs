@@ -56,6 +56,7 @@ enum Run {
 
 impl FormatState {
     /// Whether buffer `id` (any buffer: `None`) has a run in flight.
+    #[cfg_attr(not(feature = "lang-rust"), allow(dead_code))]
     #[cfg(test)]
     pub(super) fn running(&self, id: Option<BufferId>) -> bool {
         id.map_or(!self.jobs.is_empty(), |id| self.jobs.contains_key(&id))
@@ -275,7 +276,8 @@ impl App {
     }
 }
 
-#[cfg(test)]
+// Every test here opens a Rust file (a language server needs a language).
+#[cfg(all(test, feature = "lang-rust"))]
 mod tests {
     use super::*;
     use crate::actions::{Action, EditorAction};

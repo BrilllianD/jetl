@@ -1302,6 +1302,7 @@ pub(crate) mod tests {
         matches!(m, AppMsg::FsOpDone { .. })
     }
 
+    #[cfg(feature = "lang-rust")]
     #[tokio::test]
     async fn language_server_renames_and_deletes_carry_local_history() {
         use crate::app::lsp::tests::{incremental, is_lsp, open_on_server, with_fake_servers};

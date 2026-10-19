@@ -133,7 +133,8 @@ impl App {
     }
 }
 
-#[cfg(test)]
+// Every test here opens a Rust file (a language server needs a language).
+#[cfg(all(test, feature = "lang-rust"))]
 mod tests {
     use std::path::Path;
 

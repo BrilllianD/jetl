@@ -528,7 +528,8 @@ pub(super) fn word_at(b: &crate::editor::buffer::Buffer, at: usize) -> String {
     if w.chars().all(|c| c.is_alphanumeric() || c == '_') { w } else { String::new() }
 }
 
-#[cfg(test)]
+// Every test here opens a Rust file (a language server needs a language).
+#[cfg(all(test, feature = "lang-rust"))]
 mod tests {
     use super::*;
     use crate::actions::{Action, EditorAction, LspAction, Motion};

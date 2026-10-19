@@ -476,6 +476,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[cfg(feature = "lang-rust")]
     #[tokio::test]
     async fn save_as_moves_the_document_on_the_language_server() {
         use crate::app::lsp::tests::{incremental, open_on_server, with_fake_servers};

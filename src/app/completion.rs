@@ -527,7 +527,8 @@ fn merge_resolved(orig: CompletionItem, mut r: CompletionItem) -> CompletionItem
     r
 }
 
-#[cfg(test)]
+// Every test here opens a Rust file (a language server needs a language).
+#[cfg(all(test, feature = "lang-rust"))]
 mod tests {
     use super::*;
     use crate::actions::{Action, EditorAction, Motion};

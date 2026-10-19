@@ -434,6 +434,7 @@ pub(crate) mod tests {
     /// A run loop error writes the dump, then cleans up as a quit does:
     /// session saved, the Run task and the Terminal shell killed, language
     /// servers shut down. The dump stays.
+    #[cfg(feature = "lang-rust")]
     #[tokio::test]
     async fn run_error_cleans_up_like_a_quit() {
         use crate::app::lsp::tests::{incremental, open_on_server, with_fake_servers};

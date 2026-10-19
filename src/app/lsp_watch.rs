@@ -140,7 +140,8 @@ impl App {
     }
 }
 
-#[cfg(test)]
+// Every test here opens a Rust file (a language server needs a language).
+#[cfg(all(test, feature = "lang-rust"))]
 mod tests {
     use super::*;
     use crate::app::lsp::tests::{incremental, open_on_server, sent, with_fake_servers};

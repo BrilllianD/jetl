@@ -84,6 +84,19 @@ fn make(
 }
 
 impl LanguageDef {
+    #[cfg_attr(
+        not(any(
+            feature = "lang-rust",
+            feature = "lang-js",
+            feature = "lang-ts",
+            feature = "lang-python",
+            feature = "lang-go",
+            feature = "lang-c",
+            feature = "lang-cpp",
+            feature = "lang-java"
+        )),
+        allow(dead_code)
+    )]
     fn with_tags(mut self, tags: &'static str) -> Self {
         self.tags = Some(tags);
         self
@@ -1371,6 +1384,7 @@ mod tests {
         assert_eq!(style_of("Dockerfile", src, "\"jetl"), cap("string"));
     }
 
+    #[cfg_attr(not(feature = "lang-rust"), allow(dead_code))]
     fn lang(path: &str, text: &str) -> Option<&'static str> {
         detect_text(Path::new(path), text).map(|l| l.name)
     }
