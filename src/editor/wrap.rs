@@ -479,7 +479,7 @@ mod editor_tests {
                 let (cx, cy) = ed.focused_group().caret_cell.unwrap();
                 assert_eq!(cy, y, "cell ({x}, {y}): caret {p} drawn on another row");
                 if before[(x, y)].bg == hint_bg {
-                    // The run of hint cells holds one label; the caret is its anchor, drawn after the run.
+                    // The run of hint cells holds one label; the caret is its anchor, drawn before the run.
                     let (mut lo, mut hi) = (x, x);
                     while lo > ta.x && before[(lo - 1, y)].bg == hint_bg {
                         lo -= 1;
@@ -494,13 +494,15 @@ mod editor_tests {
                         other => panic!("unexpected hint run {other:?}"),
                     };
                     assert_eq!(p, anchor, "a click on a hint cell ({x}, {y}) lands on its anchor");
-                    assert_eq!((cx, cy), (hi + 1, y), "drawn right after the hint");
+                    assert_eq!((cx, cy), (lo, y), "drawn before the hint");
                     hint_clicks += 1;
                 } else {
                     // Blank cells may be past the row's text: only letters are exact.
                     let sym = before[(x, y)].symbol();
                     if sym != " " {
-                        assert_eq!((cx, cy), (x, y), "a click on the text cell {sym:?}");
+                        // The char after a hint has its caret drawn before the 4-cell hint.
+                        let drawn = if p == 5 || p == 10 { x - 4 } else { x };
+                        assert_eq!((cx, cy), (drawn, y), "a click on the text cell {sym:?}");
                         assert_eq!(ed.active_buffer().unwrap().rope.char(p).to_string(), sym, "cell ({x}, {y}) is char {p}");
                     }
                 }

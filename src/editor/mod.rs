@@ -1397,7 +1397,8 @@ impl Editor {
             let end = b.rope.line_to_char(line) + selection::line_len_no_eol(&b.rope, line);
             let rows = b.rows();
             let scroll_col = if rows.wraps() { 0 } else { b.view.scroll_col };
-            let (end_row, end_x) = view::char_to_row_x(&b.rope, &rows, end, false, tab_width);
+            let end_row = view::char_to_row_x(&b.rope, &rows, end, false, tab_width).0;
+            let end_x = view::text_end_x(&b.rope, &rows, line, tab_width);
             let past_end = m.x >= text_area.x && end_row == row && (m.x - text_area.x) as usize + scroll_col >= end_x;
             if past_end && b.view.folds.expand_at(line, &b.rope, false) {
                 b.view.set_sel(Selection::point(end));

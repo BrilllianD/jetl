@@ -2160,12 +2160,36 @@ async fn editor_inlay_hints() {
     let app = &mut fx.app;
     load(app, "hints.log", "let v = vec(1, 2);\nlet n = add(v, 3);\n");
     set_hints(app);
-    // The caret on a type hint's anchor is drawn after the hint.
+    // The caret on a type hint's anchor is drawn before the hint.
     app.editor.active_buffer_mut().unwrap().view.set_sel(Selection::point(5));
     let term = draw_editor(app, 50, 6);
     let mut marks = vec![Mark::style('H', "inlay", app.theme.inlay_hint)];
     marks.extend(editor_marks(&app.theme));
     assert_snapshot!("editor_inlay_hints", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
+async fn editor_inlay_hints_carets() {
+    let mut fx = stable_app("inlay-hints-carets");
+    let app = &mut fx.app;
+    load(app, "hints.log", "let v = vec(1, 2);\nlet n = add(v, 3);\n");
+    set_hints(app);
+    // Carets at a type hint's anchor (primary and secondary) stand before the
+    // hint, at a parameter hint's anchor after it, at the line end before the
+    // line-end hint.
+    let b = app.editor.active_buffer_mut().unwrap();
+    let mut hints = b.inlays.all().to_vec();
+    hints.push(crate::editor::inlay::Inlay::new(18, "-> X", true, false, false).unwrap());
+    b.inlays.set(hints, 0, 0..4);
+    b.view.sels = crate::editor::selection::Selections::new(
+        vec![Selection::point(5), Selection::point(12), Selection::point(18), Selection::point(24)],
+        3,
+    );
+    let term = draw_editor(app, 50, 6);
+    // The caret mark comes first, so that a caret on a hint's label shows.
+    let mut marks = editor_marks(&app.theme);
+    marks.insert(1, Mark::style('H', "inlay", app.theme.inlay_hint));
+    assert_snapshot!("editor_inlay_hints_carets", snapshot(&term, &marks, None));
 }
 
 #[tokio::test]

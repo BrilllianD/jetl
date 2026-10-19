@@ -39,6 +39,9 @@ pub struct Cell {
     pub col: usize,
     pub width: usize,
     pub kind: CellKind,
+    /// A piece of a parameter-name hint: a caret at its anchor stands after it
+    /// (before any other hint).
+    pub param: bool,
 }
 
 impl Cell {
@@ -89,20 +92,20 @@ pub fn layout_line_inlays(
         }
         if g == "\t" {
             let w = tab_width - (col % tab_width);
-            if !f("", Cell { char_idx: idx, col, width: w, kind: CellKind::Text }) {
+            if !f("", Cell { char_idx: idx, col, width: w, kind: CellKind::Text, param: false }) {
                 return;
             }
             col += w;
         } else if let Some(c) = g.chars().next().filter(|&c| crate::util::text::shown_escaped(c)) {
             let shown = control_repr(c);
             let w = shown.len();
-            if !f(&shown, Cell { char_idx: idx, col, width: w, kind: CellKind::Text }) {
+            if !f(&shown, Cell { char_idx: idx, col, width: w, kind: CellKind::Text, param: false }) {
                 return;
             }
             col += w;
         } else {
             let w = g.width();
-            if !f(g, Cell { char_idx: idx, col, width: w, kind: CellKind::Text }) {
+            if !f(g, Cell { char_idx: idx, col, width: w, kind: CellKind::Text, param: false }) {
                 return;
             }
             col += w;
@@ -121,14 +124,14 @@ pub fn layout_line_inlays(
 /// The cells of one hint at `col`; false when `f` stopped the walk.
 fn emit_inlay(h: &Inlay, idx: usize, col: &mut usize, f: &mut dyn FnMut(&str, Cell) -> bool) -> bool {
     let pad = |col: &mut usize, f: &mut dyn FnMut(&str, Cell) -> bool| {
-        let ok = f(" ", Cell { char_idx: idx, col: *col, width: 1, kind: CellKind::InlayPad });
+        let ok = f(" ", Cell { char_idx: idx, col: *col, width: 1, kind: CellKind::InlayPad, param: h.param });
         *col += 1;
         ok
     };
     if h.pad_left && !pad(col, f) {
         return false;
     }
-    let ok = f(&h.label, Cell { char_idx: idx, col: *col, width: h.width, kind: CellKind::InlayLabel });
+    let ok = f(&h.label, Cell { char_idx: idx, col: *col, width: h.width, kind: CellKind::InlayLabel, param: h.param });
     *col += h.width;
     if !ok {
         return false;
@@ -271,8 +274,9 @@ pub fn char_to_row_x(rope: &Rope, rows: &Rows, pos: usize, upstream: bool, tab_w
     }
     let mut x = row_geom(rope, rows, row).indent;
     layout_row(rope, rows, row, tab_width, usize::MAX, &mut |_, c, rx| {
-        // A caret at a hint's anchor stands after the hint.
-        if !c.is_inlay() && c.char_idx >= pos {
+        // A caret at an anchor stands before its hints, parameter hints
+        // excepted (they belong to the char after them).
+        if c.char_idx >= pos && !c.param {
             x = rx;
             return false;
         }
@@ -280,6 +284,20 @@ pub fn char_to_row_x(rope: &Rope, rows: &Rows, pos: usize, upstream: bool, tab_w
         true
     });
     (row, x)
+}
+
+/// Row x after the last cell of `line`'s last row, its line-end hints included:
+/// where the line-break selection cell, virtual space and a fold placeholder start.
+pub fn text_end_x(rope: &Rope, rows: &Rows, line: usize, tab_width: usize) -> usize {
+    let line = line.min(rope.len_lines().saturating_sub(1));
+    let end = rope.line_to_char(line) + line_len_no_eol(rope, line);
+    let row = rows.row_of(rope, end);
+    let mut x = row_geom(rope, rows, row).indent;
+    layout_row(rope, rows, row, tab_width, usize::MAX, &mut |_, c, rx| {
+        x = rx + c.width;
+        true
+    });
+    x
 }
 
 /// Char position and affinity for a click at row x `x` on screen row
@@ -314,11 +332,13 @@ pub fn row_x_to_char(rope: &Rope, rows: &Rows, row: Row, x: usize, tab_width: us
 
 /// The column (row x on an unwrapped line) the caret `sel` stands at: hints
 /// before it included, and past the line end the cells the virtual column
-/// goes beyond the line's text, after its last cell.
+/// goes beyond the line's text: the x after the line's hints plus those cells.
 pub fn caret_col(rope: &Rope, rows: &Rows, sel: &Selection, tab_width: usize) -> usize {
     let x = char_to_row_x(rope, rows, sel.head, sel.upstream, tab_width).1;
     match sel.virt.head {
-        Some(c) if !rows.wraps() => x + c.saturating_sub(visual_col(rope, sel.head, tab_width)),
+        Some(c) if !rows.wraps() && c > visual_col(rope, sel.head, tab_width) => {
+            text_end_x(rope, rows, rope.char_to_line(sel.head), tab_width) + (c - visual_col(rope, sel.head, tab_width))
+        }
         _ => x,
     }
 }
@@ -331,7 +351,7 @@ pub fn text_col_at(rope: &Rope, rows: &Rows, line: usize, rx: usize, tab_width: 
         return rx;
     }
     let end = rope.line_to_char(line) + line_len_no_eol(rope, line);
-    let ex = char_to_row_x(rope, rows, end, false, tab_width).1;
+    let ex = text_end_x(rope, rows, line, tab_width);
     if rx >= ex {
         return visual_col(rope, end, tab_width) + (rx - ex);
     }
@@ -705,11 +725,28 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
             let style = Style::default().fg(theme.fg).add_modifier(Modifier::BOLD);
             screen.set_stringn(area.x, y, g, action_w as usize, style);
         }
+        // The caret of a type hint's anchor is drawn on the hint's first cell.
+        let virt_end = virt_on && sels.as_slice().iter().any(|s| s.head == line_end && s.virt.head.is_some());
+        let mut hint_caret: Option<usize> = None;
         layout_row(rope, &rows, row, o.tab_width, scroll_col + text_area.width as usize, &mut |g, c, rx| {
             if c.is_inlay() {
-                // Hint cells are plain virtual text: no highlight, selection,
-                // search or caret styling. Pads keep the row background.
-                if c.kind == CellKind::InlayLabel {
+                // Hint cells get no highlight, selection or search styling,
+                // only the secondary caret of their anchor. Pads keep the row
+                // background.
+                let first = !c.param
+                    && here.binary_search(&c.char_idx).is_ok()
+                    && hint_caret != Some(c.char_idx)
+                    && !(virt_end && c.char_idx == line_end);
+                if first {
+                    hint_caret = Some(c.char_idx);
+                }
+                let mut caret = first;
+                if c.kind == CellKind::InlayPad {
+                    let sx = text_area.x as usize + rx.saturating_sub(scroll_col);
+                    if caret && rx >= scroll_col && sx < right as usize {
+                        screen[(sx as u16, y)].set_style(theme.secondary_caret);
+                    }
+                } else if c.kind == CellKind::InlayLabel {
                     let mut gx = rx;
                     for gr in g.graphemes(true) {
                         let gw = gr.width();
@@ -719,6 +756,9 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
                                 return false;
                             }
                             screen[(sx as u16, y)].set_symbol(gr).set_style(theme.inlay_hint);
+                            if std::mem::take(&mut caret) {
+                                screen[(sx as u16, y)].set_style(theme.secondary_caret);
+                            }
                             for i in 1..gw as u16 {
                                 screen[(sx as u16 + i, y)].reset();
                             }
@@ -764,7 +804,7 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
             if let Some(bg) = row_bg.filter(|_| style.bg.is_none()) {
                 style = style.bg(bg);
             }
-            if here.binary_search(&c.char_idx).is_ok() {
+            if here.binary_search(&c.char_idx).is_ok() && hint_caret != Some(c.char_idx) {
                 style = style.patch(theme.secondary_caret);
             }
             if c.width == 0 {
@@ -815,7 +855,7 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
         // Selection that spans the line break: mark one cell past the text;
         // a caret at the line end is drawn there too. Both on the line's
         // last row, as is a fold's placeholder.
-        let end_x = last_seg.then(|| char_to_row_x(rope, &rows, line_end, false, o.tab_width).1);
+        let end_x = last_seg.then(|| text_end_x(rope, &rows, line, o.tab_width));
         let at_end = here.last() == Some(&line_end);
         // The one selection touching the line end, and the columns of its two
         // ends there (virtual space included).
@@ -854,7 +894,7 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
                 if sels.contains(line_end) && line + 1 < rope.len_lines() {
                     screen[(x, y)].set_style(Style::default().bg(theme.selection_bg));
                 }
-                if at_end {
+                if at_end && (hint_caret != Some(line_end) || virt_end) {
                     screen[(x, y)].set_style(theme.secondary_caret);
                 }
             }
@@ -1422,7 +1462,7 @@ mod tests {
     }
 
     #[test]
-    fn hint_cells_map_clicks_to_anchor_and_caret_after() {
+    fn hint_cells_map_clicks_to_anchor_and_caret_before_type_hints() {
         let rope = Rope::from_str(HINTED);
         let h = hinted_line();
         let folds = Folds::default();
@@ -1432,9 +1472,10 @@ mod tests {
             assert_eq!(row_x_to_char(&rope, &rows, row, x, 4), (5, false), "x {x}");
         }
         assert_eq!(row_x_to_char(&rope, &rows, row, 10, 4), (5, false));
-        assert_eq!(char_to_row_x(&rope, &rows, 5, false, 4).1, 10, "after the hint");
+        assert_eq!(char_to_row_x(&rope, &rows, 5, false, 4).1, 5, "before the type hint");
         assert_eq!(char_to_row_x(&rope, &rows, 12, false, 4).1, 20, "after `a: `");
-        assert_eq!(char_to_row_x(&rope, &rows, 18, false, 4).1, 18 + 5 + 3 + 6, "line end after the hint");
+        assert_eq!(char_to_row_x(&rope, &rows, 18, false, 4).1, 26, "line end before the line-end hint's pad");
+        assert_eq!(text_end_x(&rope, &rows, 0, 4), 32);
         for i in 0..18 {
             let (_, x) = char_to_row_x(&rope, &rows, i, false, 4);
             assert_eq!(row_x_to_char(&rope, &rows, row, x, 4).0, i, "round trip of char {i}");
@@ -1446,6 +1487,50 @@ mod tests {
         assert_eq!(text_col_at(&rope, &rows, 0, 10, 4), 5, "the char after the first hint");
         assert_eq!(text_col_at(&rope, &rows, 0, 20, 4), 12);
         assert_eq!(text_col_at(&rope, &rows, 0, 32 + 4, 4), 18 + 4, "past the end");
+    }
+
+    #[test]
+    fn virtual_caret_past_a_line_end_hint() {
+        let rope = Rope::from_str(HINTED);
+        let h = hinted_line();
+        let folds = Folds::default();
+        let rows = Rows::new(&folds, rope.len_lines()).with_inlays(&h);
+        assert_eq!(caret_col(&rope, &rows, &Selection::point(18), 4), 26);
+        assert_eq!(caret_col(&rope, &rows, &Selection::virtual_point(18, 22), 4), 36);
+        assert_eq!(text_col_at(&rope, &rows, 0, 36, 4), 22);
+    }
+
+    #[test]
+    fn typing_at_a_type_hint_anchor_keeps_the_caret_before_it() {
+        let theme = Theme::default();
+        let mut buf = Buffer::from_text(1, None, HINTED, false);
+        buf.inlays = hinted_line();
+        buf.view.set_sel(Selection::point(5));
+        buf.insert_char('y', &[]);
+        assert_eq!(buf.inlays.all()[0].at, 6, "the type hint moved after the typed char");
+        let head = buf.view.sel().head;
+        assert_eq!(head, 6);
+        assert_eq!(char_to_row_x(&buf.rope, &buf.rows(), head, false, 4).1, 6);
+        let area = Rect::new(0, 0, 60, 3);
+        let mut screen = Screen::empty(area);
+        let out = render(&mut buf, &mut screen, area, &resize_opts(&theme));
+        let x0 = out.text_area.x;
+        let row: String = (x0..x0 + 12).map(|x| screen[(x, 0)].symbol().to_string()).collect();
+        assert_eq!(row, "let xy: i32 ");
+        assert_eq!(out.cursor, Some((x0 + 6, 0)));
+        buf.view.set_sel(Selection::point(5));
+        assert_eq!(char_to_row_x(&buf.rope, &buf.rows(), 5, false, 4).1, 5);
+
+        // A parameter hint stays put: the typed char goes after it.
+        let mut buf = Buffer::from_text(1, None, HINTED, false);
+        buf.inlays = hinted_line();
+        buf.view.set_sel(Selection::point(12));
+        buf.insert_char('z', &[]);
+        assert_eq!(buf.inlays.all()[1].at, 12);
+        let head = buf.view.sel().head;
+        assert_eq!(head, 13);
+        // `let x` + `: i32`, 7 chars to the argument, `a: `, then `z`.
+        assert_eq!(char_to_row_x(&buf.rope, &buf.rows(), head, false, 4).1, 12 + 5 + 3 + 1);
     }
 
     #[test]
@@ -1507,7 +1592,7 @@ mod tests {
         assert_eq!(screen[(x0 + 10, 0)].bg, theme.selection_bg, "the char after the hint is selected");
         assert_eq!(screen[(x0 + 19, 0)].bg, theme.current_line_bg, "the pad is plain background");
         assert_eq!(screen[(x0 + 26, 0)].bg, theme.current_line_bg, "so is the left pad of the line-end hint");
-        assert_eq!(out.cursor, Some((x0 + 10, 0)), "the caret at an anchor stands after the hint");
+        assert_eq!(out.cursor, Some((x0 + 5, 0)), "the caret at a type hint's anchor stands before the hint");
     }
 
     #[test]

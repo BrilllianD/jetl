@@ -2,7 +2,7 @@
 source: src/app/snapshot_tests.rs
 expression: "snapshot(&term, &marks, None)"
 ---
-50x6 cursor=(17,1)
+50x6 cursor=(12,1)
 00   hints.log ×
 01   1    let v: Vec = vec(a: 1, b: 2);
 02   2    let n: u8 = add(x: v, 3);

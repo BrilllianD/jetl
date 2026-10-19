@@ -1078,9 +1078,12 @@ ends, so hints appear without scrolling or editing once rust-analyzer has loaded
 1. Open `src/app/lightbulb.rs`. Type hints (`: Option<…>`, `: &mut App`) and parameter-name hints
    (`range:`, `params:` before call arguments) are visible, in the `inlay_hint` colours
    (`capture-pane -e`).
-2. Click on a hint's label cell: the caret (terminal cursor) is right after the hint, and the
-   status bar column is the anchor's text column. Click on the char after a parameter hint: the
-   same position.
+2. Click on a type hint's label cell: the caret (terminal cursor) is right before the hint, and
+   the status bar column is the anchor's text column. Click on a parameter hint: the caret is
+   after it, on the char it names.
+   On a `let` line with a type hint, click right after the variable name and type `x`. The char
+   goes left of the hint and the caret stays between them. Left moves one char, Backspace
+   removes it. Undo.
 3. Toggle soft wrap (View > Soft-Wrap). Make a hinted line longer than the view (type at its
    end): it wraps, the hints are still shown, a hint never splits from the char after it, and
    clicks on continuation rows land right. Undo.

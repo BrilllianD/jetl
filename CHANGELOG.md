@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Stage and Continue shows the plain command (`git add a.txt && git rebase --continue`) in the status bar, the Git console and Local History instead of git's pathspec syntax.
+- Inlay hints: the caret at a type hint's place is drawn before the hint, so typing there no longer shows the caret on the far side of the hint (parameter name hints keep the caret after them).
 
 ## [0.4.0] - 2026-10-17
 
