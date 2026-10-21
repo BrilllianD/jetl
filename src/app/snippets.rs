@@ -5,8 +5,9 @@
 //! session walks to its next tabstop, then an exact prefix expands
 //! (`editor.snippet_prefix`), else `editor.tab` indents. Expansion needs the
 //! editor focused, no find bar or merge view, Insert mode, one empty
-//! selection, a writable buffer, and the word before the caret (nothing
-//! word-like right after it) equal to a prefix.
+//! selection, a writable buffer, the word before the caret (nothing
+//! word-like right after it) equal to a prefix, and the prefix not inside a
+//! string or comment (tree-sitter; plain text has none).
 //!
 //! A snippet becomes a [`CompletionItem`] with its `\t` turned into the
 //! buffer's indent unit and later lines indented like the caret line, so
@@ -18,11 +19,18 @@ use lsp_types::{CompletionItem, CompletionItemKind, CompletionItemLabelDetails, 
 use super::App;
 use crate::config::snippets::Snippet;
 use crate::dispatch::Mode;
+use crate::editor::brackets::in_literal_at;
 use crate::editor::buffer::Buffer;
 use crate::editor::selection::is_word_char;
 use crate::lsp::completion::{CompletionState, Origin, parse_snippet, word_start};
 use crate::ui::completion::CompletionPopup;
 use crate::ui::focus::PanelId;
+
+/// Whether `pos` of `b` lies in a string or comment by its parse; false
+/// without a grammar or a tree.
+fn in_string_or_comment(b: &Buffer, pos: usize) -> bool {
+    b.syntax.as_ref().and_then(|s| s.tree_at_char(&b.rope, pos)).is_some_and(|t| in_literal_at(&b.rope, t, pos))
+}
 
 /// `body` with each `\t` as `unit` and each later line indented by `indent`.
 pub(super) fn adjust_body(body: &str, indent: &str, unit: &str) -> String {
@@ -76,18 +84,41 @@ impl App {
         self.snippets.for_language(lang).into_iter().map(|s| snippet_item(s, &indent, &unit)).collect()
     }
 
-    /// Whether Tab would expand a snippet here (`editor.snippet_prefix`).
-    /// Runs on every key: one word scan and a lookup.
-    pub(super) fn snippet_prefix_here(&self) -> bool {
+    /// The start of the exact snippet prefix before the caret of the active
+    /// buffer when Tab could expand it (every gate but the string/comment one).
+    fn snippet_prefix_start(&self) -> Option<usize> {
         if !self.config.editor.snippets {
-            return false;
+            return None;
         }
         if !(self.focus.is(PanelId::Editor) && !self.editor.find_focused() && !self.editor.merge_active() && self.mode == Mode::Insert) {
-            return false;
+            return None;
         }
-        let Some(b) = self.editor.active_buffer().filter(|b| !b.read_only) else { return false };
-        let Some((_, p)) = prefix_before_caret(b) else { return false };
-        self.snippets.exact(b.language().map(|d| d.name), &p).is_some()
+        let b = self.editor.active_buffer().filter(|b| !b.read_only)?;
+        let (start, p) = prefix_before_caret(b)?;
+        self.snippets.exact(b.language().map(|d| d.name), &p).map(|_| start)
+    }
+
+    /// Bring the active buffer's parse up to date when an exact prefix sits
+    /// before the caret, so `contexts()` (`&self`) sees a fresh tree. Cheap: a
+    /// no-op on a clean tree, else one incremental parse, and only right after
+    /// a prefix; the next draw runs the same parse.
+    pub(super) fn snippet_parse(&mut self) {
+        if self.snippet_prefix_start().is_none() {
+            return;
+        }
+        if let Some(b) = self.editor.active_buffer_mut()
+            && let Some(s) = b.syntax.as_mut()
+        {
+            s.reparse(&b.rope);
+        }
+    }
+
+    /// Whether Tab would expand a snippet here (`editor.snippet_prefix`): an
+    /// exact prefix whose first char is not in a string or comment. Reads the
+    /// cached tree, which `snippet_parse` refreshed for this key. Runs on
+    /// every key: one word scan and a lookup.
+    pub(super) fn snippet_prefix_here(&self) -> bool {
+        self.snippet_prefix_start().is_some_and(|start| self.editor.active_buffer().is_some_and(|b| !in_string_or_comment(b, start)))
     }
 
     /// `editor.expand_snippet`: insert the snippet whose prefix is the word
@@ -370,6 +401,55 @@ mod tests {
         typ(&mut app, "sig");
         key(&mut app, KeyCode::Tab);
         assert_eq!(text(&app), "fn main() {\n    SIG\n}\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    const LITERALS: &str = "fn main() {\n    let s = \"\";\n    // \n    \n}\n";
+
+    fn literals_app(name: &str) -> (App, PathBuf) {
+        let (mut app, dir) = test_app(name);
+        load(&mut app, "a.rs", LITERALS);
+        app.focus.set(PanelId::Editor);
+        (app, dir)
+    }
+
+    #[tokio::test]
+    async fn tab_does_not_expand_in_strings_or_comments() {
+        let (mut app, dir) = literals_app("snip-literals");
+        // (a) inside a string: indents.
+        app.editor.active_buffer_mut().unwrap().goto_line(1, 13);
+        typ(&mut app, "fn");
+        assert!(!app.contexts().contains(&"editor.snippet_prefix"));
+        let before = text(&app).len();
+        key(&mut app, KeyCode::Tab);
+        assert!(!text(&app).contains("fn name"), "{:?}", text(&app));
+        assert!(text(&app).lines().nth(1).unwrap().starts_with("    let s = \"fn"));
+        assert!(text(&app).len() > before, "editor.tab inserted indentation");
+        // (b) inside a comment.
+        app.editor.active_buffer_mut().unwrap().goto_line(2, 7);
+        typ(&mut app, "fn");
+        key(&mut app, KeyCode::Tab);
+        assert!(!text(&app).contains("fn name"), "{:?}", text(&app));
+        // (c) plain code expands.
+        app.editor.active_buffer_mut().unwrap().goto_line(3, 4);
+        typ(&mut app, "fn");
+        key(&mut app, KeyCode::Tab);
+        assert!(text(&app).contains("    fn name() {"), "{:?}", text(&app));
+        assert_eq!(selected(&app), "name");
+        let _ = std::fs::remove_dir_all(&dir);
+        // (d) Ctrl+Space still lists the snippet inside a string.
+        let (mut app, dir) = literals_app("snip-literals-popup");
+        app.editor.active_buffer_mut().unwrap().goto_line(1, 13);
+        typ(&mut app, "fn");
+        ctrl_space(&mut app);
+        assert!(labels(&app).contains(&"fn".to_string()), "{:?}", labels(&app));
+        let _ = std::fs::remove_dir_all(&dir);
+        // (e) the explicit action still expands there.
+        let (mut app, dir) = literals_app("snip-literals-action");
+        app.editor.active_buffer_mut().unwrap().goto_line(1, 13);
+        typ(&mut app, "fn");
+        app.perform(Action::Editor(EditorAction::ExpandSnippet));
+        assert!(text(&app).contains("fn name()"), "{:?}", text(&app));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

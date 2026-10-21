@@ -829,6 +829,7 @@ impl App {
             }
         }
         self.snippet_check();
+        self.snippet_parse();
         let contexts = self.contexts();
         let r = self.dispatcher.dispatch(key, &contexts, Some(self.mode), &self.keymap);
         match r {

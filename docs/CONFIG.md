@@ -744,8 +744,10 @@ language: put the override in `<language>.toml`.
 Tab expands when the editor has the focus, the find bar and the merge view
 are not in use, the mode is Insert, there is one caret with no selection, the
 buffer is writable, the word before the caret equals a prefix (case
-sensitive) and no word character follows the caret. Strings and comments are
-not excluded. The expansion is one undo step. Tab order: an open completion
+sensitive) and no word character follows the caret, and the prefix is not inside a string
+or comment (by the file's syntax tree; plain text files have none, so they
+always qualify). Ctrl+Space and Edit > Expand Live Template still work there.
+The expansion is one undo step. Tab order: an open completion
 popup accepts first, then an active snippet walks to its next tabstop, then a
 prefix expands, then `editor.tab` indents. The binding is the `tab` entry of
 the `editor.snippet_prefix` context (action `editor.expand_snippet`); unbind

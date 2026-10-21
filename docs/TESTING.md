@@ -1114,7 +1114,8 @@ Setup as for the other scenarios with a fresh `$H` and LSP off; `S=$H/config/jet
 4. File > Settings…, Editor > General, select `Live templates (snippets)`: the help shows
    `Folder: $H/config/jetl/snippets`. Flip it off, OK: `fn` Tab indents, Ctrl+Space after `ma` shows
    `Language servers are off ...`. Flip it back on.
-5. Undo every edit; do not save. Repeat at 120x40 and 80x24.
+5. In `src/lib.rs` type `"fn"` (inside quotes) and Tab: an indent, no `fn name`. Same for `// fn` and Tab. Ctrl+Space after `fn` inside the string still lists `fn`. Undo.
+6. Undo every edit; do not save. Repeat at 120x40 and 80x24.
 
 ### Scenario: run configurations
 
