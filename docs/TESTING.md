@@ -1117,9 +1117,9 @@ Setup as for the other scenarios with a fresh `$H` and LSP off; `S=$H/config/jet
    `Language servers are off ...`. Flip it back on.
 5. In `src/lib.rs` type `"fn"` (inside quotes) and Tab: an indent, no `fn name`. Same for `// fn` and Tab. Ctrl+Space after `fn` inside the string still lists `fn`. Undo.
 6. Variables: write `$S/rust.toml` with a `hdr` snippet (`body = '// $TM_FILENAME ($CURRENT_YEAR-$CURRENT_MONTH-$CURRENT_DATE) ${NOPE:x}$0'`)
-   and wait for `Reloaded snippets`. In `src/lib.rs`, `hdr` Tab gives `// lib.rs (<today>) x`. For an
-   untitled buffer copy the same snippet to `$S/all.toml` (`rust.toml` does not apply to it): `hdr`
-   from Ctrl+Space gives `//  (<today>) x`. Undo.
+   and wait for `Reloaded snippets`. In `src/lib.rs`, `hdr` Tab gives `// lib.rs (<today>) x`. For a
+   file without a language copy the same snippet to `$S/all.toml` (`rust.toml` does not apply to it),
+   then File > New Scratch File: `hdr` from Ctrl+Space gives `// scratch_1.txt (<today>) x`. Undo.
 7. Surround With: in `src/lib.rs`, select two whole lines (Shift+Down twice from a line start) and
    press Ctrl+Alt+T: the `Surround With` dialog lists `if  if block` and `while  while loop`.
    Choose `if`: the lines are wrapped and indented, `condition` is selected. Ctrl+Z restores them.
@@ -1193,10 +1193,36 @@ Same setup as the test runner tree (`/tmp/jt-crate`).
 
 ### Scenario: jest tests tree
 
-Setup: a scratch project `/tmp/jt-jest` with the three test files and `package.json` from the jest
-fixture recipe (`src/math.test.js`, `src/broken.test.js`, `src/other.test.js`), then
-`npm install --ignore-scripts --no-audit --no-fund` (needs the npm registry). Open jetl on it with
-the usual fresh `$H` and LSP off.
+Setup: a scratch project `/tmp/jt-jest` (needs the npm registry). `package.json`:
+`{"name":"jestprobe","version":"1.0.0","devDependencies":{"jest":"^29"}}`, then
+`npm install --ignore-scripts --no-audit --no-fund`. `src/math.test.js`:
+
+    describe('math', () => {
+      test('adds', () => {
+        expect(1 + 1).toBe(2);
+      });
+      describe('nested', () => {
+        test('fails', () => {
+          expect(1 + 1).toBe(3);
+        });
+      });
+      test.skip('skipped', () => {});
+      test.todo('later');
+      test('f(x) [1] b.c', () => {
+        console.log('hello from test');
+        expect([1]).toEqual([2]);
+      });
+    });
+    test('top level', () => {});
+
+`src/other.test.js`:
+
+    test('other ok', () => {});
+    describe('deep', () => { describe('er', () => { test('leaf', () => {}); }); });
+
+`src/broken.test.js`: `throw new Error('boom');` then `test('never', () => {});`. Check that
+`npx jest --verbose` runs in that directory, then open jetl on it with the usual fresh `$H` and LSP
+off.
 
 1. A configuration `command = ["npx", "jest"]`, run it: the header reads `npx jest --verbose`, the
    Tests view has suites `src/math.test.js`, `src/broken.test.js`, `src/other.test.js`, group
@@ -1204,9 +1230,11 @@ the usual fresh `$H` and LSP off.
    line `Tests: 4 passed, 3 failed, 2 ignored`.
 2. Enter on `fails` opens `src/math.test.js` at line 7.
 3. Rerun Failed: the header shows the escaped files and `-t`, the tree has `fails`, `f(x) [1] b.c` and
-   the broken file.
+   the broken file. The other tests of `math.test.js` show as `○` (jest prints the filtered-out
+   tests as skipped): status `0 passed, 3 failed, 4 ignored`.
 4. Caret inside `test('adds'` in `src/math.test.js`, `send-keys C-S-F10`:
-   `npx jest src/math.test.js -t '^math adds$' --verbose`, one passed test.
+   `npx jest src/math.test.js -t '^math adds$' --verbose`, one passed test (the other tests of the
+   file show as `○`). Rerun Failed after it keeps a single `-t`.
 5. Repeat at 120x40 and 80x24.
 
 ### Limits under tmux

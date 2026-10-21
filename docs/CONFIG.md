@@ -395,7 +395,8 @@ Failed (the toolbar button, Run > Rerun Failed Tests, the action
 `run.rerun_failed`) runs the same command for the failed tests only: `cargo
 test -- --exact <test names>`, pytest with the failed node ids, vitest with
 the failed files and `-t` over their names, jest with the failed files and `-t`
-over their names (a file that failed to load reruns as a whole). Not shown: per-test timing, a
+over their names (a file that failed to load reruns as a whole; the other tests of those files
+show as ignored, which is jest's own reporting). A `-t` already in the command is replaced. Not shown: per-test timing, a
 running state per test, filters; results are not saved.
 
 Run Test at Caret (Ctrl+Shift+F10, Run > Run Test at Caret, the action

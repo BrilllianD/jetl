@@ -507,6 +507,21 @@ impl Runner {
     }
 }
 
+/// Removes `-t X`, `--testNamePattern X` and `--testNamePattern=X` from jest words.
+fn drop_jest_name_pattern(words: &mut Vec<String>) {
+    let mut i = 0;
+    while i < words.len() {
+        let w = words[i].as_str();
+        if w == "-t" || w == "--testNamePattern" {
+            words.drain(i..(i + 2).min(words.len()));
+        } else if w.starts_with("--testNamePattern=") {
+            words.remove(i);
+        } else {
+            i += 1;
+        }
+    }
+}
+
 /// `task` rerun for its failed tests only.
 pub fn rerun_failed(task: &RunTask, run: &TestRun) -> Result<RunTask, String> {
     let failed: Vec<&TestCase> = run.failed().collect();
@@ -552,6 +567,12 @@ pub fn rerun_failed(task: &RunTask, run: &TestRun) -> Result<RunTask, String> {
             e
         }
         Runner::Jest => {
+            // Two `-t` options make jest match their patterns joined with a comma, which
+            // matches nothing; the one added below replaces any already in the command.
+            drop_jest_name_pattern(&mut out.args);
+            if let TaskCommand::Argv(w) = &mut out.command {
+                drop_jest_name_pattern(w);
+            }
             // jest reads file arguments and `-t` as regular expressions; a file that
             // failed to load has no name to filter, so it reruns as a whole.
             let mut e: Vec<String> = unique(failed.iter().map(|c| regex::escape(&c.suite)).collect());
@@ -813,6 +834,11 @@ mod tests {
         let r = rerun_failed(&task(TaskCommand::Shell("npx jest".into()), &[]), &jest).unwrap();
         assert_eq!(r.command, TaskCommand::Shell("npx jest".into()));
         assert_eq!(r.args, jest_args);
+        // A caret-run `-t` is replaced, not repeated: two `-t` make jest join the patterns.
+        let r = rerun_failed(&task(argv(&["npx", "jest", "src/math.test.js", "-t", "^math adds$", "--verbose"]), &[]), &jest).unwrap();
+        assert_eq!(r.command, argv(&["npx", "jest", "src/math.test.js", "--verbose"]));
+        let r = rerun_failed(&task(argv(&["npx", "jest"]), &["--testNamePattern=x", "-t", "y", "--testNamePattern", "z"]), &jest).unwrap();
+        assert_eq!(r.args, jest_args);
         let mut broken = TestRun::default();
         broken.feed(&[
             RunLine::plain("FAIL src/broken.test.js"),
@@ -923,14 +949,23 @@ mod tests {
         assert_eq!(broken.id, "");
         assert_eq!(broken.link().map(at), Some(("broken.test.js".into(), 0, 23)));
         assert!(run.cases().iter().filter(|c| c.status != TestStatus::Failed).all(|c| c.output.is_empty()));
-        let headers: Vec<String> =
-            JEST.lines().filter_map(|l| JEST_HEADER.captures(l).map(|c| c[2].to_string())).fold(Vec::new(), |mut v, s| {
-                if !v.contains(&s) {
-                    v.push(s);
-                }
-                v
-            });
-        assert_eq!(run.suites(), headers.as_slice());
+        assert_eq!(run.suites(), ["src/math.test.js", "src/broken.test.js", "src/other.test.js"]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn jest_console_block_ends_the_failure_before_it() {
+        // Hand-written input: a console block printed right after a file's failure
+        // sections, before the next file's header.
+        let root = project("jest-console");
+        let run = parse(
+            &root,
+            "FAIL src/math.test.js\n  math\n    \u{2715} fails (4 ms)\n\n  \u{25cf} math \u{203a} fails\n\n    expect(received).toBe(expected)\n\n      at Object.toBe (src/math.test.js:7:21)\n\n  console.log\n    hello from test\n\n      at Object.log (src/other.test.js:2:9)\n\nPASS src/other.test.js\n  \u{2713} ok (1 ms)\n",
+        );
+        let fails = case(&run, "fails");
+        assert_eq!(fails.output.last().unwrap().text, "      at Object.toBe (src/math.test.js:7:21)");
+        assert!(fails.output.iter().all(|l| !l.text.contains("console.log") && !l.text.contains("hello from test")));
+        assert_eq!(case(&run, "ok").status, TestStatus::Passed);
         let _ = std::fs::remove_dir_all(&root);
     }
 
