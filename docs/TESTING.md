@@ -462,10 +462,11 @@ Start jetl on `$T`. Alt+9 opens the Git window. Check:
 - Alt+` then Enter on the main branch lists no Checkout, Merge or Rebase.
 - F10, G: Continue Operation, Skip Commit and Abort Operation are enabled. The header shows ` Continue  Skip  Abort `.
 - Click Continue with `a.txt` still `U`: the dialog asks. Resolve… opens Resolve Conflicts; accept theirs.
-- Reset with `git -C $T reset -q --hard ORIG_HEAD && git -C $T rebase $main`, Continue, choose Stage and Continue. While it runs the status bar reads `git add a.txt && git rebase --continue`. The Git console shows the same. Local History on `a.txt` has a `Before git add a.txt && git rebase --continue` row.
-- Continue again (the file is staged now): the rebase applies `dev 2` and ends with `Rebase finished`.
-  `git -C $T log --oneline` shows `dev 2`, `dev 1`, `main`.
-- Then `git -C $T reset -q --hard ORIG_HEAD && git -C $T rebase $main`.
+- Click Continue, choose Stage and Continue: the rebase applies `dev 2` and ends with `Rebase finished`.
+  `git -C $T log --oneline` shows `dev 2`, `dev 1`, `main`. The Git console shows
+  `git add a.txt && git rebase --continue`. Local History on `a.txt` has a
+  `Before git add a.txt && git rebase --continue` row.
+- Then `git -C $T reset -q --hard ORIG_HEAD && git -C $T rebase $main` stops on the conflict again.
 - Abort from the palette (F1, `abort operation`), then confirm: the branch is back
   (`git -C $T log --oneline -1` is `dev 2`).
 - Local History (Alt+Shift+H on `a.txt`) has a `Before git rebase --abort` row.

@@ -726,7 +726,8 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
             screen.set_stringn(area.x, y, g, action_w as usize, style);
         }
         // The caret of a type hint's anchor is drawn on the hint's first cell.
-        let virt_end = virt_on && sels.as_slice().iter().any(|s| s.head == line_end && s.virt.head.is_some());
+        let virt_end = virt_on
+            && sels.as_slice().iter().any(|s| s.head == line_end && s.virt.head.is_some_and(|c| c > visual_col(rope, s.head, o.tab_width)));
         let mut hint_caret: Option<usize> = None;
         layout_row(rope, &rows, row, o.tab_width, scroll_col + text_area.width as usize, &mut |g, c, rx| {
             if c.is_inlay() {
@@ -751,12 +752,13 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
                     for gr in g.graphemes(true) {
                         let gw = gr.width();
                         let sx = text_area.x as usize + gx.saturating_sub(scroll_col);
+                        let first_gr = gw > 0 && std::mem::take(&mut caret);
                         if gw > 0 && gx >= scroll_col {
                             if sx + gw > right as usize {
                                 return false;
                             }
                             screen[(sx as u16, y)].set_symbol(gr).set_style(theme.inlay_hint);
-                            if std::mem::take(&mut caret) {
+                            if first_gr {
                                 screen[(sx as u16, y)].set_style(theme.secondary_caret);
                             }
                             for i in 1..gw as u16 {
@@ -1611,5 +1613,36 @@ mod tests {
         assert!(buf.view.scroll_col > 0, "15 chars fit, 25 cells do not");
         assert!((buf.view.scroll_col..buf.view.scroll_col + 20).contains(&col));
         assert_eq!(out.cursor.map(|c| c.0), Some(out.text_area.x + (col - buf.view.scroll_col) as u16));
+    }
+
+    #[test]
+    fn virtual_head_on_the_end_column_draws_one_caret() {
+        let theme = Theme { secondary_caret: Style::default().bg(Color::Blue), ..Theme::default() };
+        let mut buf = Buffer::from_text(1, None, HINTED, false);
+        buf.inlays = hinted_line();
+        buf.view.sels = Selections::new(vec![Selection::point(0), Selection::virtual_point(18, 18)], 0);
+        let area = Rect::new(0, 0, 60, 3);
+        let mut screen = Screen::empty(area);
+        let out = render(&mut buf, &mut screen, area, &resize_opts(&theme));
+        let x0 = out.text_area.x;
+        let blue: Vec<u16> = (x0..x0 + 40).filter(|&x| screen[(x, 0)].bg == Color::Blue).map(|x| x - x0).collect();
+        assert_eq!(blue, [26], "the cell before the line-end hint, as caret_col puts it");
+    }
+
+    #[test]
+    fn scrolled_off_label_start_leaves_no_caret_mid_label() {
+        let theme = Theme { secondary_caret: Style::default().bg(Color::Blue), ..Theme::default() };
+        let mut buf = Buffer::from_text(1, None, HINTED, false);
+        buf.inlays = hinted_line();
+        buf.view.sels = Selections::new(vec![Selection::point(5), Selection::point(12)], 1);
+        buf.view.scroll_col = 7;
+        let area = Rect::new(0, 0, 60, 3);
+        let mut screen = Screen::empty(area);
+        let out = render(&mut buf, &mut screen, area, &resize_opts(&theme));
+        assert_eq!(buf.view.scroll_col, 7);
+        let x0 = out.text_area.x;
+        let row: String = (x0..x0 + 5).map(|x| screen[(x, 0)].symbol().to_string()).collect();
+        assert_eq!(row, "i32 =", "the label's `: ` is scrolled off");
+        assert!((x0..x0 + 20).all(|x| screen[(x, 0)].bg != Color::Blue), "no secondary caret on the visible rest of the label");
     }
 }

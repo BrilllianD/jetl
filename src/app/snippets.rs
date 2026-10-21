@@ -453,6 +453,21 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[cfg(feature = "lang-md")]
+    #[tokio::test]
+    async fn tab_expands_in_markdown_prose() {
+        let (mut app, dir) = test_app("snip-md-prose");
+        app.snippets = user_snippets("/u/all.toml", "[[snippet]]\nprefix = \"sig\"\nbody = \"SIG\"\n");
+        load(&mut app, "a.md", "# Title\n\nsome words \n");
+        app.focus.set(PanelId::Editor);
+        assert!(app.editor.active_buffer().unwrap().syntax.is_some(), "markdown has a grammar");
+        app.editor.active_buffer_mut().unwrap().goto_line(2, 11);
+        typ(&mut app, "sig");
+        key(&mut app, KeyCode::Tab);
+        assert_eq!(text(&app), "# Title\n\nsome words SIG\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[tokio::test]
     async fn crlf_buffer_gets_crlf_breaks() {
         let (mut app, dir) = test_app("snip-crlf");
