@@ -660,8 +660,8 @@ fn metadata_body(node: Node, rope: &Rope) -> Vec<tree_sitter::Range> {
 
 /// The included range a Markdown host parse restarts with when the
 /// document's front matter block is not front matter: a line in it opens a
-/// code fence (```` ``` ```` or `~~~` at column 0, never valid YAML or TOML
-/// there). It starts at the opening line's line break, so the parser sees a
+/// code fence (```` ``` ```` or `~~~` at column 0, never valid YAML, and valid
+/// TOML only inside a `'''` or `"""` multi-line string). It starts at the opening line's line break, so the parser sees a
 /// blank first line and no front matter. `None` for real front matter and
 /// every other tree.
 fn rejected_front_matter(tree: &Tree, rope: &Rope) -> Option<tree_sitter::Range> {
@@ -680,12 +680,13 @@ fn rejected_front_matter(tree: &Tree, rope: &Rope) -> Option<tree_sitter::Range>
         offset += if text[offset..].starts_with("\r\n") { 2 } else { 1 };
         let line = &text[offset..];
         if line.starts_with("```") || line.starts_with("~~~") {
-            // A TOML multi-line string may hold a column-0 fence.
+            // A TOML multi-line string may hold a column-0 fence; a later
+            // fence outside the string still counts.
             let before = &text[..offset];
             if !(plus && (before.matches("'''").count() % 2 == 1 || before.matches("\"\"\"").count() % 2 == 1)) {
                 fenced = true;
+                break;
             }
-            break;
         }
         match line.find(['\r', '\n']) {
             Some(i) => offset += i,
@@ -1709,6 +1710,15 @@ mod tests {
         let src = "+++\ndesc = '''\n```\nx\n```\n'''\n+++\n\n# H\n";
         let (syn, _) = md_syntax(src);
         assert_eq!(syn.tree().unwrap().root_node().named_child(0).unwrap().kind(), "plus_metadata");
+    }
+
+    #[cfg(feature = "lang-md")]
+    #[test]
+    fn a_fence_after_a_closed_toml_string_still_rejects() {
+        let src = "+++\nd = '''\n```\n'''\n```\n+++\n\n# H\n";
+        let (syn, _) = md_syntax(src);
+        let sexp = syn.tree().unwrap().root_node().to_sexp();
+        assert!(!sexp.contains("plus_metadata") && sexp.contains("fenced_code_block"), "{sexp}");
     }
 
     #[cfg(feature = "lang-md")]
