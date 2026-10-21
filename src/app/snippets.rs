@@ -13,17 +13,35 @@
 //! buffer's indent unit and later lines indented like the caret line, so
 //! `completion_apply` accepts it like a server snippet: one undo step, and a
 //! body with tabstops starts the snippet session.
+//!
+//! Surround With (`editor.surround_with`) lists the snippets whose body uses
+//! `$TM_SELECTED_TEXT` or `$SELECTION` in a Choice dialog. The chosen one
+//! replaces each selection's [`surround_range`] (an empty selection: the
+//! caret line from its first non-blank char; whole lines: line-wise; else
+//! the selection exactly) with the expanded body, the range's text
+//! dedented by its line's indentation and re-indented by the template. It
+//! is one transaction, so one undo step. One range starts the tabstop
+//! session; several put a caret at each copy's `$0` and start none.
+
+use std::cell::Cell;
+use std::ops::Range;
 
 use lsp_types::{CompletionItem, CompletionItemKind, CompletionItemLabelDetails, InsertTextFormat};
+use ropey::Rope;
 
 use super::App;
 use crate::config::snippets::Snippet;
 use crate::dispatch::Mode;
 use crate::editor::brackets::in_literal_at;
-use crate::editor::buffer::Buffer;
-use crate::editor::selection::is_word_char;
-use crate::lsp::completion::{CompletionState, Origin, parse_snippet, word_start};
+use crate::editor::buffer::{Buffer, BufferId, LineEnding};
+use crate::editor::selection::{Selection, Selections, indent_of, is_word_char, line_len_no_eol};
+use crate::editor::snippet::{SnippetSession, Tabstop};
+use crate::editor::snippet_vars::SnippetVars;
+use crate::editor::undo::TxKind;
+use crate::lsp::completion::{CompletionState, Origin, parse_snippet, parse_snippet_with, snippet_text, word_start};
+use crate::lsp::edits::{self, CharEdit};
 use crate::ui::completion::CompletionPopup;
+use crate::ui::dialog::{Dialog, DialogId};
 use crate::ui::focus::PanelId;
 
 /// Unix seconds now and the local offset east of UTC at that time.
@@ -41,6 +59,55 @@ fn in_string_or_comment(b: &Buffer, pos: usize) -> bool {
 /// `body` with each `\t` as `unit` and each later line indented by `indent`.
 pub(super) fn adjust_body(body: &str, indent: &str, unit: &str) -> String {
     body.replace('\t', unit).replace('\n', &format!("\n{indent}"))
+}
+
+/// Whether `body` references `$TM_SELECTED_TEXT` or `$SELECTION` (by parsing, so `\$TM_SELECTED_TEXT` does not count).
+pub(super) fn uses_selection(body: &str) -> bool {
+    let seen = Cell::new(false);
+    parse_snippet_with(
+        body,
+        &|n| {
+            if n == "TM_SELECTED_TEXT" || n == "SELECTION" {
+                seen.set(true);
+            }
+            None
+        },
+        "",
+    );
+    seen.get()
+}
+
+/// The text Surround With replaces for `sel`: no selection, the caret line
+/// from its first non-blank char; a selection covering whole lines (from at
+/// or before the first non-blank char of its first line to the end of its
+/// last, which may be shown as column 0 of the next), those lines; else the
+/// selection. May be empty.
+pub(super) fn surround_range(rope: &Rope, sel: &Selection) -> Range<usize> {
+    let first = |l: usize| rope.line_to_char(l) + indent_of(rope, l);
+    let end = |l: usize| rope.line_to_char(l) + line_len_no_eol(rope, l);
+    let r = sel.range();
+    let l0 = rope.char_to_line(r.start);
+    if r.is_empty() {
+        return first(l0)..end(l0);
+    }
+    let mut l1 = rope.char_to_line(r.end);
+    if l1 > l0 && r.end == rope.line_to_char(l1) {
+        l1 -= 1;
+    }
+    if r.start <= first(l0) && r.end >= end(l1) { first(l0)..end(l1) } else { r }
+}
+
+/// `text` (line breaks normalised to `\n`) with each line after the first losing the leading chars it shares with `indent`.
+pub(super) fn dedent(text: &str, indent: &str) -> String {
+    let text = text.replace("\r\n", "\n");
+    let mut lines = text.split('\n');
+    let mut out = lines.next().unwrap_or_default().to_string();
+    for l in lines {
+        let k = l.chars().zip(indent.chars()).take_while(|(a, b)| a == b).count();
+        out.push('\n');
+        out.extend(l.chars().skip(k));
+    }
+    out
 }
 
 /// The completion row of snippet `s`.
@@ -151,6 +218,115 @@ impl App {
         self.completion_apply(&origin, &item);
     }
 
+    /// `editor.surround_with`: ask which live template wraps the selection.
+    pub(super) fn surround_with(&mut self) {
+        self.hover = None;
+        self.completion_close();
+        if !self.config.editor.snippets {
+            return self.lsp_hint("Live templates are off ([editor] snippets = false)");
+        }
+        let ready =
+            self.focus.is(PanelId::Editor) && !self.editor.find_focused() && !self.editor.merge_active() && self.mode == Mode::Insert;
+        let Some(b) = self.editor.active_buffer().filter(|b| ready && !b.read_only) else {
+            return self.lsp_hint("Surround With needs a writable editor");
+        };
+        let found: Vec<&Snippet> =
+            self.snippets.for_language(b.language().map(|d| d.name)).into_iter().filter(|s| uses_selection(&s.body)).collect();
+        if found.is_empty() {
+            return self.lsp_hint("No live template uses $TM_SELECTED_TEXT here");
+        }
+        if b.view.sels.iter().all(|s| surround_range(&b.rope, s).is_empty()) {
+            return self.lsp_hint("Nothing to surround");
+        }
+        let rows = found
+            .iter()
+            .map(|s| if s.description.is_empty() { s.prefix.clone() } else { format!("{}  {}", s.prefix, s.description) })
+            .collect();
+        let prefixes = found.iter().map(|s| s.prefix.clone()).collect();
+        self.dialog =
+            Some(Dialog::choice(DialogId::SurroundWith { buffer: b.id, version: b.version, prefixes }, "Surround With", "", rows));
+        self.dispatcher.reset();
+    }
+
+    /// The Surround With dialog chose snippet `prefix`: wrap, unless the
+    /// buffer changed since the dialog opened.
+    pub(super) fn surround_chosen(&mut self, buffer: BufferId, version: u64, prefix: Option<String>) {
+        let Some(prefix) = prefix else { return };
+        let Some(b) = self.editor.active_buffer().filter(|b| b.id == buffer && b.version == version) else { return };
+        let Some(s) = self.snippets.exact(b.language().map(|d| d.name), &prefix).cloned() else { return };
+        self.surround_apply(&s);
+    }
+
+    /// Replace each selection's surround range with the expansion of `s`, in
+    /// one transaction.
+    fn surround_apply(&mut self, s: &Snippet) {
+        let group = self.editor.focused_group().id;
+        let (now, offset) = snippet_clock();
+        let root = self.workspace.root.clone();
+        let Some(b) = self.editor.active_buffer() else { return };
+        let crlf = b.line_ending == LineEnding::CrLf;
+        let unit = b.indent.unit();
+        let mut kept: Vec<(usize, Range<usize>)> = Vec::new();
+        for (i, sel) in b.view.sels.iter().enumerate() {
+            let r = surround_range(&b.rope, sel);
+            if !r.is_empty() && kept.last().is_none_or(|(_, p)| *p != r) {
+                kept.push((i, r));
+            }
+        }
+        let mut edits: Vec<CharEdit> = Vec::new();
+        let mut stops_at: Vec<(usize, Vec<Tabstop>)> = Vec::new();
+        for (k, (_, r)) in kept.iter().enumerate() {
+            let line = b.rope.char_to_line(r.start);
+            let indent: String = b.rope.line(line).chars().take_while(|&c| c == ' ' || c == '\t').collect();
+            let selected = dedent(&b.rope.slice(r.clone()).to_string(), &indent);
+            let body = adjust_body(&s.body, &indent, &unit);
+            let vars = SnippetVars { selected, cursor: k, ..SnippetVars::new(b, &root, r.clone(), now, offset) };
+            let (text, at, stops) = snippet_text(&body, &|n| vars.get(n), &indent, crlf);
+            edits.push(CharEdit::new(r.start, r.end, text));
+            stops_at.push((at, stops));
+        }
+        let Ok(plan) = edits::plan(&b.rope, &edits) else {
+            return self.lsp_hint("Surround With: the selections overlap");
+        };
+        let mut session = None;
+        let sels = if kept.len() == 1 && !b.view.sels.is_multi() {
+            let (at, stops) = stops_at.remove(0);
+            let shift = plan.starts[0];
+            let stops: Vec<Tabstop> =
+                stops.into_iter().map(|t| Tabstop { range: t.range.start + shift..t.range.end + shift, ..t }).collect();
+            session = SnippetSession::new(b.id, group, stops);
+            match &session {
+                Some(s) => s.selections(),
+                None => Selections::point(shift + at),
+            }
+        } else {
+            let mut ranges: Vec<Selection> = Vec::new();
+            let mut primary = None;
+            let mut next = 0;
+            for (i, sel) in b.view.sels.iter().enumerate() {
+                if kept.get(next).is_some_and(|(j, _)| *j == i) {
+                    ranges.push(Selection::point(plan.starts[next] + stops_at[next].0));
+                    next += 1;
+                } else {
+                    ranges.push(Selection::new(edits::map_pos(&plan.changes, sel.anchor), edits::map_pos(&plan.changes, sel.head)));
+                }
+                if i == b.view.sels.primary_index() {
+                    primary = Some(ranges.len() - 1);
+                }
+            }
+            // A selection without a copy of its own (a blank line, or a second caret on a line) maps through the edits.
+            Selections::new(ranges, primary.unwrap_or(0))
+        };
+        let Some(b) = self.editor.active_buffer_mut() else { return };
+        let before = b.version;
+        b.apply(plan.changes, sels, TxKind::Other);
+        if let Some(mut s) = session.filter(|_| b.version != before) {
+            s.attach(b);
+            self.editor.set_snippet(Some(s));
+        }
+        self.dirty_frame = true;
+    }
+
     /// Open a popup of the snippets matching the word at the caret, for
     /// Ctrl+Space without a server. False when none matches.
     pub(super) fn snippet_popup(&mut self, origin: Origin) -> bool {
@@ -171,6 +347,45 @@ impl App {
     }
 }
 
+#[cfg(test)]
+mod surround_tests {
+    use super::*;
+    use crate::editor::selection::line_col_to_pos;
+
+    const BODY: &str = "fn main() {\n    a();\n    b();\n}\n";
+
+    fn range(text: &str, from: (usize, usize), to: (usize, usize)) -> String {
+        let rope = Rope::from_str(text);
+        let sel = Selection::new(line_col_to_pos(&rope, from.0, from.1), line_col_to_pos(&rope, to.0, to.1));
+        rope.slice(surround_range(&rope, &sel)).to_string()
+    }
+
+    #[test]
+    fn surround_range_rules() {
+        assert_eq!(range(BODY, (1, 6), (1, 6)), "a();", "a caret takes its line");
+        assert_eq!(range(BODY, (1, 0), (3, 0)), "a();\n    b();", "whole lines, end at column 0");
+        assert_eq!(range(BODY, (1, 4), (2, 10)), "a();\n    b();", "whole lines, end at the line end");
+        assert_eq!(range(BODY, (1, 4), (1, 7)), "a()", "an inline selection is exact");
+        assert_eq!(range(BODY, (1, 6), (2, 5)), ");\n    b", "a partial multi-line selection is exact");
+        assert_eq!(range("x\n\n", (1, 0), (1, 0)), "", "a blank line has nothing");
+    }
+
+    #[test]
+    fn dedent_drops_the_shared_indent() {
+        assert_eq!(dedent("a();\n    b();\n  c\r\nd", "    "), "a();\nb();\nc\nd");
+    }
+
+    #[test]
+    fn uses_selection_by_parsing() {
+        for yes in ["x$TM_SELECTED_TEXT", "${SELECTION:d}", "${1:$TM_SELECTED_TEXT}"] {
+            assert!(uses_selection(yes), "{yes}");
+        }
+        for no in ["\\$TM_SELECTED_TEXT", "$TM_SELECTED_TEXTX", "$0"] {
+            assert!(!uses_selection(no), "{no}");
+        }
+    }
+}
+
 #[cfg(all(test, feature = "lang-rust"))]
 mod tests {
     use std::path::PathBuf;
@@ -182,7 +397,8 @@ mod tests {
     use crate::app::tests::{load, test_app};
     use crate::config::FileText;
     use crate::config::snippets::SnippetSet;
-    use crate::editor::selection::pos_to_line_col;
+    use crate::editor::selection::{line_col_to_pos, pos_to_line_col};
+    use crate::ui::dialog::DialogResult;
 
     const MAIN: &str = "fn main() {\n    \n}\n";
 
@@ -544,6 +760,139 @@ mod tests {
         typ(&mut app, "fn");
         key(&mut app, KeyCode::Tab);
         assert!(text(&app).contains("fn name()"), "{:?}", text(&app));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    const TWO: &str = "fn main() {\n    a();\n    b();\n}\n";
+
+    fn load_two(app: &mut App) {
+        load(app, "a.rs", TWO);
+        app.focus.set(PanelId::Editor);
+    }
+
+    fn select(app: &mut App, from: (usize, usize), to: (usize, usize)) {
+        let b = app.editor.active_buffer_mut().unwrap();
+        let (a, h) = (line_col_to_pos(&b.rope, from.0, from.1), line_col_to_pos(&b.rope, to.0, to.1));
+        b.view.set_sel(Selection::new(a, h));
+    }
+
+    /// Run Surround With and choose `prefix`; the offered prefixes.
+    fn surround(app: &mut App, prefix: &str) -> Vec<String> {
+        app.perform(Action::Editor(EditorAction::SurroundWith));
+        let d = app.dialog.take().expect("the dialog");
+        let DialogId::SurroundWith { ref prefixes, .. } = d.id else { panic!("{:?}", d.id) };
+        let prefixes = prefixes.clone();
+        let i = prefixes.iter().position(|p| p == prefix).expect("the prefix");
+        app.finish_dialog(d.id, DialogResult::Choice(i));
+        prefixes
+    }
+
+    const SM: &str = "[[snippet]]\nprefix = \"sm\"\nbody = 'Some($TM_SELECTED_TEXT)'\n";
+
+    #[tokio::test]
+    async fn surround_wraps_selected_lines_in_one_undo_step() {
+        let (mut app, dir) = test_app("surround-lines");
+        load_two(&mut app);
+        select(&mut app, (1, 0), (3, 0));
+        assert_eq!(surround(&mut app, "if"), ["if", "while"]);
+        assert_eq!(text(&app), "fn main() {\n    if condition {\n        a();\n        b();\n    }\n}\n");
+        assert_eq!(selected(&app), "condition");
+        assert!(app.editor.snippet.is_some());
+        key(&mut app, KeyCode::Tab);
+        assert_eq!(caret_line(&app), "        b();|");
+        undo(&mut app);
+        assert_eq!(text(&app), TWO);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn surround_wraps_an_inline_selection_exactly() {
+        let (mut app, dir) = test_app("surround-inline");
+        app.snippets = user_snippets("rust.toml", SM);
+        load(&mut app, "a.rs", "fn main() {\n    let x = foo;\n}\n");
+        app.focus.set(PanelId::Editor);
+        select(&mut app, (1, 12), (1, 15));
+        surround(&mut app, "sm");
+        assert_eq!(text(&app), "fn main() {\n    let x = Some(foo);\n}\n");
+        assert_eq!(caret_line(&app), "    let x = Some(foo)|;");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn surround_without_a_selection_takes_the_caret_line() {
+        let (mut app, dir) = test_app("surround-caret");
+        load_two(&mut app);
+        app.editor.active_buffer_mut().unwrap().goto_line(1, 6);
+        surround(&mut app, "if");
+        assert_eq!(text(&app), "fn main() {\n    if condition {\n        a();\n    }\n    b();\n}\n");
+        let _ = std::fs::remove_dir_all(&dir);
+        let (mut app, dir) = rust_app("surround-blank");
+        let before = text(&app);
+        app.perform(Action::Editor(EditorAction::SurroundWith));
+        assert!(app.dialog.is_none());
+        assert_eq!(text(&app), before);
+        assert!(toasts(&app).contains(&"Nothing to surround".to_string()), "{:?}", toasts(&app));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn surround_at_several_carets() {
+        let (mut app, dir) = test_app("surround-multi");
+        app.snippets = user_snippets("rust.toml", SM);
+        load_two(&mut app);
+        app.editor.active_buffer_mut().unwrap().goto_line(1, 4);
+        app.perform(Action::Editor(EditorAction::CloneCaretBelow));
+        surround(&mut app, "sm");
+        assert_eq!(text(&app), "fn main() {\n    Some(a();)\n    Some(b();)\n}\n");
+        let b = app.editor.active_buffer().unwrap();
+        let heads: Vec<usize> = b.view.sels.iter().map(|s| s.head).collect();
+        assert_eq!(heads.len(), 2);
+        assert!(b.view.sels.iter().all(|s| s.is_empty()));
+        assert_eq!(heads, [b.rope.line_to_char(1) + 14, b.rope.line_to_char(2) + 14]);
+        assert!(app.editor.snippet.is_none());
+        undo(&mut app);
+        assert_eq!(text(&app), TWO);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn surround_hints_without_a_template() {
+        let (mut app, dir) = test_app("surround-none");
+        load(&mut app, "a.txt", "abc\n");
+        app.focus.set(PanelId::Editor);
+        app.perform(Action::Editor(EditorAction::SurroundWith));
+        assert!(app.dialog.is_none());
+        assert!(toasts(&app).contains(&"No live template uses $TM_SELECTED_TEXT here".to_string()), "{:?}", toasts(&app));
+        app.config.editor.snippets = false;
+        app.perform(Action::Editor(EditorAction::SurroundWith));
+        assert!(toasts(&app).contains(&"Live templates are off ([editor] snippets = false)".to_string()), "{:?}", toasts(&app));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn surround_dialog_goes_stale_after_an_edit() {
+        let (mut app, dir) = test_app("surround-stale");
+        load_two(&mut app);
+        select(&mut app, (1, 0), (3, 0));
+        app.perform(Action::Editor(EditorAction::SurroundWith));
+        let d = app.dialog.take().expect("the dialog");
+        let b = app.editor.active_buffer_mut().unwrap();
+        b.goto_line(0, 0);
+        b.insert("z", TxKind::Typing);
+        app.finish_dialog(d.id, DialogResult::Choice(0));
+        assert_eq!(text(&app), format!("z{TWO}"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn tab_expands_a_surround_template_without_a_selection() {
+        let (mut app, dir) = rust_app("surround-tab");
+        typ(&mut app, "if");
+        key(&mut app, KeyCode::Tab);
+        assert_eq!(text(&app), "fn main() {\n    if condition {\n        \n    }\n}\n");
+        assert_eq!(selected(&app), "condition");
+        key(&mut app, KeyCode::Tab);
+        assert_eq!(caret_line(&app), "        |");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

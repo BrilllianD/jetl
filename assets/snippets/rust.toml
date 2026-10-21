@@ -19,3 +19,13 @@ body = "impl ${1:Type} {\n\t$0\n}"
 prefix = "match"
 description = "match expression"
 body = "match ${1:value} {\n\t${2:_} => $0,\n}"
+
+[[snippet]]
+prefix = "if"
+description = "if block"
+body = "if ${1:condition} {\n\t${TM_SELECTED_TEXT}$0\n}"
+
+[[snippet]]
+prefix = "while"
+description = "while loop"
+body = "while ${1:condition} {\n\t${TM_SELECTED_TEXT}$0\n}"

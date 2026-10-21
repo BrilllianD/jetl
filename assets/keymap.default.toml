@@ -249,6 +249,8 @@
 # Reformat Code runs the [format] command for the file's language, else asks
 # its language server.
 "ctrl-alt-l" = "editor.format"
+# Surround With (JetBrains)
+"ctrl-alt-t" = "editor.surround_with"
 "ctrl-alt-shift-down" = "editor.next_change"
 "ctrl-alt-shift-up" = "editor.prev_change"
 # Ctrl+Alt+Shift+Up/Down need modifier-aware arrows; F7/Shift+F7 work anywhere.

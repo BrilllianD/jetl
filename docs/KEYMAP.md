@@ -158,6 +158,7 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Ctrl+C` | `editor.copy` | Copy |
 | `Ctrl+X` | `editor.cut` | Cut |
 | `Esc` | `editor.escape` | Escape (close find, clear selection) |
+| `Ctrl+Alt+T` | `editor.surround_with` | Surround the selection with a live template that uses $TM_SELECTED_TEXT |
 | `Ctrl+/` | `editor.toggle_comment` | Comment with line comment |
 | `Ctrl+?` * | `editor.toggle_block_comment` | Comment with block comment |
 | `Alt+Shift+Up` | `editor.move_line_up` | Move line up |

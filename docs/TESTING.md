@@ -1120,7 +1120,13 @@ Setup as for the other scenarios with a fresh `$H` and LSP off; `S=$H/config/jet
    and wait for `Reloaded snippets`. In `src/lib.rs`, `hdr` Tab gives `// lib.rs (<today>) x`. For an
    untitled buffer copy the same snippet to `$S/all.toml` (`rust.toml` does not apply to it): `hdr`
    from Ctrl+Space gives `//  (<today>) x`. Undo.
-7. Undo every edit; do not save. Repeat at 120x40 and 80x24.
+7. Surround With: in `src/lib.rs`, select two whole lines (Shift+Down twice from a line start) and
+   press Ctrl+Alt+T: the `Surround With` dialog lists `if  if block` and `while  while loop`.
+   Choose `if`: the lines are wrapped and indented, `condition` is selected. Ctrl+Z restores them.
+   With no selection on a code line, Ctrl+Alt+T and `while` wrap that line. The Edit menu lists
+   `Surround With…` with `Ctrl+Alt+T`. If the terminal swallows Ctrl+Alt+T (some desktops bind
+   it), use Edit > Surround With….
+8. Undo every edit; do not save. Repeat at 120x40 and 80x24.
 
 ### Scenario: run configurations
 

@@ -875,6 +875,11 @@ impl App {
                 self.expand_snippet();
                 return;
             }
+            Action::Editor(EditorAction::SurroundWith) => {
+                drop(cx);
+                self.surround_with();
+                return;
+            }
             // Group commands take the keyboard to the editor, as in JetBrains.
             Action::Editor(
                 a @ (EditorAction::SplitRight

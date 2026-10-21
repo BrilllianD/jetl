@@ -96,6 +96,7 @@ pub const MAIN_MENU: &[(&str, char, &[Row])] = &[
             Item("Reformat Code", "editor.format"),
             Item("Code Completion", "lsp.complete"),
             Item("Expand Live Template", "editor.expand_snippet"),
+            Item("Surround With…", "editor.surround_with"),
             Sep,
             Item("Rename…", "lsp.rename"),
             Item("Show Context Actions", "lsp.context_actions"),

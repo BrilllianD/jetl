@@ -169,6 +169,8 @@ pub enum EditorAction {
     PrevTabstop,
     /// Expand the live template whose prefix is the word before the caret (`editor.snippet_prefix`).
     ExpandSnippet,
+    /// Wrap the selection (else the caret line) with a live template that uses `$TM_SELECTED_TEXT`, picked from a dialog.
+    SurroundWith,
     ToggleComment,
     ToggleBlockComment,
     MoveLineUp,
@@ -690,6 +692,7 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "editor.next_tabstop" => "Snippet: select the next tabstop (the last one ends the snippet)", Editor(E::NextTabstop);
         "editor.prev_tabstop" => "Snippet: select the previous tabstop", Editor(E::PrevTabstop);
         "editor.expand_snippet" => "Expand the live template (snippet) whose prefix is the word before the caret", Editor(E::ExpandSnippet);
+        "editor.surround_with" => "Surround the selection with a live template that uses $TM_SELECTED_TEXT", Editor(E::SurroundWith);
         "editor.toggle_comment" => "Comment with line comment", Editor(E::ToggleComment);
         "editor.toggle_block_comment" => "Comment with block comment", Editor(E::ToggleBlockComment);
         "editor.move_line_up" => "Move line up", Editor(E::MoveLineUp);

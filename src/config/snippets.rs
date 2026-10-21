@@ -242,9 +242,9 @@ mod tests {
         }
         let (set, errors) = SnippetSet::build(&[]);
         assert!(errors.is_empty());
-        assert_eq!(prefixes(&set, Some("rust")), ["fn", "impl", "match", "test"]);
-        assert_eq!(prefixes(&set, Some("python")), ["class", "def", "ifmain"]);
-        assert_eq!(prefixes(&set, Some("typescript")), ["fn", "log"]);
+        assert_eq!(prefixes(&set, Some("rust")), ["fn", "if", "impl", "match", "test", "while"]);
+        assert_eq!(prefixes(&set, Some("python")), ["class", "def", "if", "ifmain", "try"]);
+        assert_eq!(prefixes(&set, Some("typescript")), ["fn", "if", "log", "try"]);
         for (stem, _) in BUILTIN {
             for s in set.for_language(Some(stem)) {
                 let (_, stops) = crate::lsp::completion::parse_snippet(&s.body);
@@ -260,8 +260,8 @@ mod tests {
         assert!(errors.is_empty());
         assert_eq!(body(&set, Some("rust"), "fn"), "FN");
         assert_eq!(body(&set, Some("rust"), "pf"), "PF");
-        assert_eq!(prefixes(&set, Some("rust")), ["fn", "impl", "match", "pf", "test"]);
-        assert_eq!(prefixes(&set, Some("python")), ["class", "def", "ifmain"]);
+        assert_eq!(prefixes(&set, Some("rust")), ["fn", "if", "impl", "match", "pf", "test", "while"]);
+        assert_eq!(prefixes(&set, Some("python")), ["class", "def", "if", "ifmain", "try"]);
     }
 
     #[test]
@@ -298,7 +298,7 @@ mod tests {
         assert!(errors[0].0.ends_with("rust.toml"));
         assert!(errors[0].1.starts_with("snippets/rust.toml is invalid: "), "{}", errors[0].1);
         assert!(errors[0].1.ends_with("; its snippets are ignored"));
-        assert_eq!(prefixes(&set, Some("rust")), ["fn", "impl", "match", "test", "todo"]);
+        assert_eq!(prefixes(&set, Some("rust")), ["fn", "if", "impl", "match", "test", "todo", "while"]);
     }
 
     #[test]
@@ -318,7 +318,7 @@ mod tests {
         assert!(SnippetSet::read(&missing).is_empty());
         let (set, errors) = SnippetSet::build(&[]);
         assert!(errors.is_empty());
-        assert_eq!(set.for_language(Some("rust")).len(), 4);
+        assert_eq!(set.for_language(Some("rust")).len(), 6);
     }
 
     #[test]

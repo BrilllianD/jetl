@@ -14,3 +14,13 @@ body = "class ${1:Name}:\n\tdef __init__(self${2}):\n\t\t${0:pass}"
 prefix = "ifmain"
 description = "if __name__ == \"__main__\""
 body = "if __name__ == \"__main__\":\n\t${0:main()}"
+
+[[snippet]]
+prefix = "if"
+description = "if block"
+body = "if ${1:condition}:\n\t${TM_SELECTED_TEXT:pass}$0"
+
+[[snippet]]
+prefix = "try"
+description = "try/except"
+body = "try:\n\t${TM_SELECTED_TEXT:pass}$0\nexcept ${1:Exception} as ${2:e}:\n\t${3:raise}"

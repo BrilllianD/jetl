@@ -28,6 +28,12 @@ pub enum DialogId {
     /// Keyed by buffer, not tab index: tabs can open while the dialog is up.
     CloseTabDirty(crate::editor::buffer::BufferId),
     CloseAllDirty,
+    /// Surround With: item `i` is the snippet `prefixes[i]` of the buffer's language; stale once the buffer's version moved.
+    SurroundWith {
+        buffer: crate::editor::buffer::BufferId,
+        version: u64,
+        prefixes: Vec<String>,
+    },
     /// Close others or close all but pinned with unsaved tabs among them.
     CloseTabsDirty(Vec<crate::editor::buffer::BufferId>),
     /// Tree: File or Directory, then a name, created in the directory.

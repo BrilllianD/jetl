@@ -701,8 +701,9 @@ files opened after the change.
 ## Live templates (snippets)
 
 A snippet is a short prefix that Tab expands into a larger piece of text with
-places to fill in. jetl ships a few (Rust `fn`, `test`, `impl`, `match`;
-Python `def`, `class`, `ifmain`; TypeScript `fn`, `log`); you add your own as
+places to fill in. jetl ships a few (Rust `fn`, `test`, `impl`, `match`, `if`,
+`while`; Python `def`, `class`, `ifmain`, `if`, `try`; TypeScript `fn`, `log`,
+`if`, `try`); you add your own as
 TOML files in `snippets/` next to `config.toml` (`~/.config/jetl/snippets/`).
 `editor.snippets = false` turns the feature off: no snippet rows in
 completion, Tab never expands, and Edit > Expand Live Template says so.
@@ -753,6 +754,25 @@ in language server snippets. Not supported: `$CLIPBOARD`, and transforms
   `CURRENT_TIMEZONE_OFFSET`.
 - Random: `RANDOM`, `RANDOM_HEX`, `UUID`.
 - Language comments: `LINE_COMMENT`, `BLOCK_COMMENT_START`, `BLOCK_COMMENT_END`.
+
+Surround With: Ctrl+Alt+T (Edit > Surround With…) lists the snippets whose
+body uses `$TM_SELECTED_TEXT` (or `$SELECTION`) and wraps the selection with
+the chosen one. With no selection it wraps the caret line (from its first
+non-blank character); a selection that covers whole lines is taken line-wise;
+any other selection is wrapped exactly. The selected text keeps its own
+indentation relative to the template's line. It is one undo step. Each caret
+or selection is wrapped; the tabstops are walked only for a single selection
+(with several, each caret lands at its copy's `$0`). The built-in `if`,
+`while` and `try` are such templates; a user one:
+
+    [[snippet]]
+    prefix = "iflet"
+    description = "if let Some"
+    body = 'if let Some(${1:x}) = ${2:opt} {\n\t${TM_SELECTED_TEXT}$0\n}'
+
+(`\n` and `\t` in a basic string `"..."` mean the same.) Used with Tab and no
+selection, `$TM_SELECTED_TEXT` is its default, else nothing. Not available in
+Vim's Visual mode yet.
 
 For a buffer of language `L` the lookup order is `L.toml` (your file merged
 over the built-ins: a snippet with the prefix of a built-in replaces it, and

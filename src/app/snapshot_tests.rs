@@ -1738,6 +1738,22 @@ async fn choice_dialog() {
     assert_snapshot!("choice_dialog", snapshot(&term, &marks, None));
 }
 
+#[cfg(feature = "lang-rust")]
+#[tokio::test]
+async fn surround_with_dialog() {
+    let mut fx = stable_app("surround-with");
+    let app = &mut fx.app;
+    load(app, "main.rs", "fn main() {\n    a();\n    b();\n}\n");
+    app.focus.set(PanelId::Editor);
+    let b = app.editor.active_buffer_mut().unwrap();
+    let (a, h) = (b.rope.line_to_char(1), b.rope.line_to_char(3));
+    b.view.set_sel(Selection::new(a, h));
+    app.perform(Action::Editor(EditorAction::SurroundWith));
+    let term = draw_app(app, 80, 24);
+    let marks = [Mark::bg('L', "selected", app.theme.list_selected.bg.unwrap())];
+    assert_snapshot!("surround_with_dialog", snapshot(&term, &marks, None));
+}
+
 #[tokio::test]
 async fn main_menu_bar() {
     let mut fx = stable_app("main-menu");

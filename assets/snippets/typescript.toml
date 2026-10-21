@@ -9,3 +9,13 @@ body = "function ${1:name}(${2}) {\n\t$0\n}"
 prefix = "log"
 description = "console.log"
 body = "console.log(${1});$0"
+
+[[snippet]]
+prefix = "if"
+description = "if block"
+body = "if (${1:condition}) {\n\t${TM_SELECTED_TEXT}$0\n}"
+
+[[snippet]]
+prefix = "try"
+description = "try/catch"
+body = "try {\n\t${TM_SELECTED_TEXT}$0\n} catch (${1:e}) {\n\t$2\n}"
