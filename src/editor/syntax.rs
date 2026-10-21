@@ -672,7 +672,27 @@ fn rejected_front_matter(tree: &Tree, rope: &Rope) -> Option<tree_sitter::Range>
     let (start, end) = (node.start_byte(), node.end_byte().min(rope.len_bytes()));
     let text = rope.byte_slice(start..end).to_string();
     let first = text.find(['\r', '\n'])?;
-    if !text.lines().skip(1).any(|l| l.starts_with("```") || l.starts_with("~~~")) {
+    let plus = node.kind() == "plus_metadata";
+    let mut offset = first;
+    let mut fenced = false;
+    while offset < text.len() {
+        // Skip the line break: `\r\n`, `\n` or a lone `\r`, as tree-sitter-md ends lines.
+        offset += if text[offset..].starts_with("\r\n") { 2 } else { 1 };
+        let line = &text[offset..];
+        if line.starts_with("```") || line.starts_with("~~~") {
+            // A TOML multi-line string may hold a column-0 fence.
+            let before = &text[..offset];
+            if !(plus && (before.matches("'''").count() % 2 == 1 || before.matches("\"\"\"").count() % 2 == 1)) {
+                fenced = true;
+            }
+            break;
+        }
+        match line.find(['\r', '\n']) {
+            Some(i) => offset += i,
+            None => break,
+        }
+    }
+    if !fenced {
         return None;
     }
     Some(tree_sitter::Range {
@@ -1681,6 +1701,42 @@ mod tests {
         assert_eq!(first(&syn), "minus_metadata");
         #[cfg(feature = "lang-yaml")]
         assert_eq!(syn.injection_langs(), ["yaml"]);
+    }
+
+    #[cfg(feature = "lang-md")]
+    #[test]
+    fn a_toml_multiline_string_may_hold_a_fence() {
+        let src = "+++\ndesc = '''\n```\nx\n```\n'''\n+++\n\n# H\n";
+        let (syn, _) = md_syntax(src);
+        assert_eq!(syn.tree().unwrap().root_node().named_child(0).unwrap().kind(), "plus_metadata");
+    }
+
+    #[cfg(feature = "lang-md")]
+    #[test]
+    fn a_lone_cr_line_break_ends_a_line_for_the_fence_check() {
+        let src = "---\rintro\r```\rx\r```\r---\r\r# H\r";
+        let (syn, _) = md_syntax(src);
+        let sexp = syn.tree().unwrap().root_node().to_sexp();
+        assert!(!sexp.contains("minus_metadata") && sexp.contains("fenced_code_block"), "{sexp}");
+    }
+
+    #[cfg(feature = "lang-md")]
+    #[test]
+    fn the_closing_rule_toggles_a_rejected_block() {
+        let src = "---\nintro\n```\nx\n```\n---\n\n# H\n";
+        let (mut syn, mut rope) = md_syntax(src);
+        let sexp = |syn: &Syntax| syn.tree().unwrap().root_node().to_sexp();
+        let state = |syn: &Syntax| (sexp(syn).starts_with("(document (section (thematic_break)"), sexp(syn).contains("metadata"));
+        assert_eq!(state(&syn), (false, false), "{}", sexp(&syn));
+        let at = src.rfind("---\n").unwrap();
+        let c = rope.byte_to_char(at);
+        rope.remove(c..c + 4);
+        syn.note_change(&rope, c, 4, 0, "---\n", "");
+        syn.highlights(&rope, 0, rope.len_lines());
+        assert_eq!(state(&syn), (true, false), "{}", sexp(&syn));
+        insert_at(&mut syn, &mut rope, at, "---\n");
+        syn.highlights(&rope, 0, rope.len_lines());
+        assert_eq!(state(&syn), (false, false), "{}", sexp(&syn));
     }
 
     #[test]
