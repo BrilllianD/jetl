@@ -371,7 +371,8 @@ impl App {
     }
 
     /// Make the edit of `item` as one transaction, if the caret is still
-    /// in the word the list was for.
+    /// in the word the list was for. The copies at the other carets get the
+    /// primary's resolved text (variables are resolved once, for the primary).
     pub(super) fn completion_apply(&mut self, origin: &Origin, item: &CompletionItem) {
         let group = self.editor.focused_group().id;
         let Some(b) = self.editor.active_buffer() else { return };

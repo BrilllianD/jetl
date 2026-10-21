@@ -307,6 +307,8 @@ impl App {
                 if kept.get(next).is_some_and(|(j, _)| *j == i) {
                     ranges.push(Selection::point(plan.starts[next] + stops_at[next].0));
                     next += 1;
+                } else if let Some(k) = kept.iter().position(|(_, r)| r.start <= sel.head && sel.head <= r.end) {
+                    ranges.push(Selection::point(plan.starts[k] + stops_at[k].0));
                 } else {
                     ranges.push(Selection::new(edits::map_pos(&plan.changes, sel.anchor), edits::map_pos(&plan.changes, sel.head)));
                 }
@@ -314,7 +316,7 @@ impl App {
                     primary = Some(ranges.len() - 1);
                 }
             }
-            // A selection without a copy of its own (a blank line, or a second caret on a line) maps through the edits.
+            // A selection without a copy of its own (a blank line) maps through the edits; one inside a kept range goes to that copy's caret.
             Selections::new(ranges, primary.unwrap_or(0))
         };
         let Some(b) = self.editor.active_buffer_mut() else { return };
@@ -852,6 +854,23 @@ mod tests {
         assert!(app.editor.snippet.is_none());
         undo(&mut app);
         assert_eq!(text(&app), TWO);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn surround_two_carets_on_one_line_share_one_copy() {
+        let (mut app, dir) = test_app("surround-same-line");
+        app.snippets = user_snippets("rust.toml", SM);
+        load_two(&mut app);
+        let b = app.editor.active_buffer_mut().unwrap();
+        let l = b.rope.line_to_char(1);
+        b.view.sels = Selections::new(vec![Selection::point(l + 5), Selection::point(l + 6)], 0);
+        surround(&mut app, "sm");
+        assert_eq!(text(&app), "fn main() {\n    Some(a();)\n    b();\n}\n");
+        let b = app.editor.active_buffer().unwrap();
+        let heads: Vec<usize> = b.view.sels.iter().map(|s| s.head).collect();
+        let at = b.rope.line_to_char(1) + 14;
+        assert!(heads.iter().all(|&h| h == at), "{heads:?} want {at}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
