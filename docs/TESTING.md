@@ -1222,7 +1222,10 @@ Setup: a scratch project `/tmp/jt-jest` (needs the npm registry). `package.json`
 
 `src/broken.test.js`: `throw new Error('boom');` then `test('never', () => {});`. Check that
 `npx jest --verbose` runs in that directory, then open jetl on it with the usual fresh `$H` and LSP
-off.
+off. The parser fixtures `src/run/fixtures/jest_verbose.txt` and `jest_default.txt` were captured
+from this project with jest 29.7.0 by `npx jest --verbose </dev/null > verbose.txt 2>&1` and
+`npx jest </dev/null > nonverbose.txt 2>&1`; jest runs files in parallel, so the order of the file
+blocks can differ between runs (the parser does not depend on it).
 
 1. A configuration `command = ["npx", "jest"]`, run it: the header reads `npx jest --verbose`, the
    Tests view has suites `src/math.test.js`, `src/broken.test.js`, `src/other.test.js`, group
@@ -1234,7 +1237,9 @@ off.
    tests as skipped): status `0 passed, 3 failed, 4 ignored`.
 4. Caret inside `test('adds'` in `src/math.test.js`, `send-keys C-S-F10`:
    `npx jest src/math.test.js -t '^math adds$' --verbose`, one passed test (the other tests of the
-   file show as `○`). Rerun Failed after it keeps a single `-t`.
+   file show as `○`). Then caret inside `test('fails'`, C-S-F10:
+   `npx jest src/math.test.js -t '^math nested fails$' --verbose`, one failed test. Rerun Failed
+   after it: the header has exactly one `-t`, `^(?:math nested fails)$`, and `fails` fails again.
 5. Repeat at 120x40 and 80x24.
 
 ### Limits under tmux
