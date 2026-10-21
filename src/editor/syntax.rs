@@ -658,6 +658,31 @@ fn metadata_body(node: Node, rope: &Rope) -> Vec<tree_sitter::Range> {
     vec![tree_sitter::Range { start_byte: start + first, end_byte: start + last, start_point: point(first), end_point: point(last) }]
 }
 
+/// The included range a Markdown host parse restarts with when the
+/// document's front matter block is not front matter: a line in it opens a
+/// code fence (```` ``` ```` or `~~~` at column 0, never valid YAML or TOML
+/// there). It starts at the opening line's line break, so the parser sees a
+/// blank first line and no front matter. `None` for real front matter and
+/// every other tree.
+fn rejected_front_matter(tree: &Tree, rope: &Rope) -> Option<tree_sitter::Range> {
+    let node = tree.root_node().named_child(0)?;
+    if !matches!(node.kind(), "minus_metadata" | "plus_metadata") {
+        return None;
+    }
+    let (start, end) = (node.start_byte(), node.end_byte().min(rope.len_bytes()));
+    let text = rope.byte_slice(start..end).to_string();
+    let first = text.find(['\r', '\n'])?;
+    if !text.lines().skip(1).any(|l| l.starts_with("```") || l.starts_with("~~~")) {
+        return None;
+    }
+    Some(tree_sitter::Range {
+        start_byte: start + first,
+        end_byte: usize::MAX,
+        start_point: Point::new(node.start_position().row, node.start_position().column + first),
+        end_point: Point::new(usize::MAX, usize::MAX),
+    })
+}
+
 /// Index into `LANGUAGES` of the language an injection names (a fence info
 /// string such as `rust {.numberLines}`, or `ts`).
 fn language_index(name: &str) -> Option<usize> {
@@ -904,7 +929,17 @@ impl Syntax {
             return;
         }
         let old = if self.def.injections.is_some() { self.tree.clone() } else { None };
-        let tree = self.parser.parse_with_options(&mut |byte, _| read_chunk(rope, byte), self.tree.as_ref(), None);
+        let mut tree = self.parser.parse_with_options(&mut |byte, _| read_chunk(rope, byte), self.tree.as_ref(), None);
+        if self.def.name == "markdown"
+            && let Some(range) = tree.as_ref().and_then(|t| rejected_front_matter(t, rope))
+            && self.parser.set_included_ranges(&[range]).is_ok()
+        {
+            let again = self.parser.parse_with_options(&mut |byte, _| read_chunk(rope, byte), tree.as_ref(), None);
+            let _ = self.parser.set_included_ranges(&[]);
+            if again.is_some() {
+                tree = again;
+            }
+        }
         if tree.is_some() {
             self.tree = tree;
             self.dirty = false;
@@ -1458,7 +1493,7 @@ mod tests {
     }
 
     /// A Markdown `Syntax` for `src`, highlighted once.
-    #[cfg(all(feature = "lang-md", feature = "lang-rust"))]
+    #[cfg(feature = "lang-md")]
     fn md_syntax(src: &str) -> (Syntax, Rope) {
         let mut syn = Syntax::for_path(Path::new("a.md"), &Theme::default()).expect("markdown grammar");
         let rope = Rope::from_str(src);
@@ -1467,7 +1502,7 @@ mod tests {
     }
 
     /// Insert `text` at byte `at` of `rope` and tell `syn`.
-    #[cfg(all(feature = "lang-md", feature = "lang-rust"))]
+    #[cfg(feature = "lang-md")]
     fn insert_at(syn: &mut Syntax, rope: &mut Rope, at: usize, text: &str) {
         let c = rope.byte_to_char(at);
         rope.insert(c, text);
@@ -1594,6 +1629,58 @@ mod tests {
         assert_eq!(syn.injection_langs(), ["yaml"]);
         assert!(!syn.trees().nth(1).unwrap().root_node().has_error());
         assert_eq!(style_of("a.md", yaml, "title"), cap("property"));
+    }
+
+    #[cfg(feature = "lang-md")]
+    #[test]
+    fn a_fence_in_front_matter_makes_it_markdown() {
+        let src = "---\nintro\n\n```rust\nfn main() {}\n```\n\n---\n\n# H\n";
+        let (syn, _) = md_syntax(src);
+        let sexp = syn.tree().unwrap().root_node().to_sexp();
+        assert!(sexp.contains("fenced_code_block") && sexp.contains("thematic_break"), "{sexp}");
+        assert!(!sexp.contains("minus_metadata"), "{sexp}");
+        assert!(cap("punctuation.delimiter").is_some());
+        assert_eq!(style_of("a.md", src, "```rust"), cap("punctuation.delimiter"));
+        assert_eq!(style_of("a.md", src, "# H"), cap("punctuation.special"));
+        #[cfg(feature = "lang-rust")]
+        {
+            assert_eq!(syn.injection_langs(), ["rust"]);
+            assert_eq!(style_of("a.md", src, "fn main"), cap("keyword"));
+        }
+        let toml = "+++\ntitle = \"x\"\n~~~\ny\n~~~\n+++\n";
+        let (syn, _) = md_syntax(toml);
+        let sexp = syn.tree().unwrap().root_node().to_sexp();
+        assert!(!sexp.contains("plus_metadata") && sexp.contains("fenced_code_block"), "{sexp}");
+    }
+
+    #[cfg(all(feature = "lang-md", feature = "lang-yaml"))]
+    #[test]
+    fn front_matter_with_an_indented_fence_stays_front_matter() {
+        let src = "---\nd: |\n  ```rust\n  x\n  ```\n---\n\n# H\n";
+        let (syn, _) = md_syntax(src);
+        assert_eq!(syn.tree().unwrap().root_node().named_child(0).unwrap().kind(), "minus_metadata");
+        assert_eq!(syn.injection_langs(), ["yaml"]);
+    }
+
+    #[cfg(feature = "lang-md")]
+    #[test]
+    fn typing_a_fence_into_front_matter_reparses_it() {
+        let src = "---\ntitle: x\n---\n\n# H\n";
+        let (mut syn, mut rope) = md_syntax(src);
+        let first = |syn: &Syntax| syn.tree().unwrap().root_node().named_child(0).unwrap().kind().to_string();
+        assert_eq!(first(&syn), "minus_metadata");
+        let at = src.find("---\n\n").unwrap();
+        insert_at(&mut syn, &mut rope, at, "```\n");
+        syn.highlights(&rope, 0, rope.len_lines());
+        assert_eq!(first(&syn), "section");
+        assert!(syn.tree().unwrap().root_node().to_sexp().contains("fenced_code_block"));
+        let c = rope.byte_to_char(at);
+        rope.remove(c..c + 4);
+        syn.note_change(&rope, c, 4, 0, "```\n", "");
+        syn.highlights(&rope, 0, rope.len_lines());
+        assert_eq!(first(&syn), "minus_metadata");
+        #[cfg(feature = "lang-yaml")]
+        assert_eq!(syn.injection_langs(), ["yaml"]);
     }
 
     #[test]
