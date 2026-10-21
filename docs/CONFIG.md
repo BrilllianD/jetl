@@ -188,7 +188,7 @@ timeout_ms = 5000              # a formatter still running after this is killed
 # args = ["--watch=false"]       # appended to the command
 # cwd = "web"                    # relative to the project root; default the root
 # env = { CI = "1" }             # added to jetl's environment
-# matcher = "problems"           # "problems" (links), "tests" (test results), "none"; unset: tests for cargo test / pytest / vitest
+# matcher = "problems"           # "problems" (links), "tests" (test results), "none"; unset: tests for cargo test / pytest / vitest / jest
 
 [terminal]
 shell = ""                     # the Terminal window's shell; "" = $SHELL, else /bin/sh
@@ -318,16 +318,17 @@ and optionally `args`, `cwd`, `env` and `matcher`. `args` are appended to the
 command's words; to a string command they are passed as `"$@"`, so they
 reach the shell command unsplit. `matcher` is `"problems"` (file locations
 in the output become links), `"tests"` (test results are parsed from
-`cargo test`, `pytest -v` and `vitest --reporter=tap-flat` output, with the
+`cargo test`, `pytest -v`, `vitest --reporter=tap-flat` and `jest --verbose` output, with the
 failures' file locations linked too) or `"none"` (plain output). Unset, it is
 `"tests"` for a command that runs `cargo test`, `pytest` (or `python -m
-pytest`) or `vitest`, else `"problems"`. For a command given as a list of
-words and read as tests, jetl adds `-v` to a pytest command and
-`--reporter=tap-flat` to a vitest command when they are missing (the Run
+pytest`), `vitest` or `jest`, else `"problems"`. For a command given as a list of
+words and read as tests, jetl adds `-v` to a pytest command,
+`--reporter=tap-flat` to a vitest command and `--verbose` to a jest command
+when they are missing (the Run
 window header shows the command as started); a string command is never
 rewritten, so give it those flags yourself. (For a list command jetl also
-drops pytest's `-q`, which would cancel the `-v`.) Jest output is not parsed:
-`npx jest` keeps the problems matcher.
+drops pytest's `-q`, which would cancel the `-v`.) Jest without `--verbose` (a
+string command) still lists its failed tests, but not the passed ones.
 
 Things to know about arguments and test runs: with `command = ["sh", "-c",
 script]` the first of `args` becomes `$0` of the script, not `$1`. A compound
@@ -379,7 +380,7 @@ Shift+F10 for itself: use the Run menu there.
 
 A run read as tests (matcher `tests`) opens the Run window in the Tests view:
 the status line adds `Tests: N passed, N failed, N ignored`, and the list is a
-tree of suites (the libtest binary, the pytest or vitest file), groups (the
+tree of suites (the libtest binary, the pytest, vitest or jest file), groups (the
 module path, classes or describe blocks) and tests, sorted by group and name,
 each with `✓` (passed), `✗` (failed) or `○` (ignored). A failed test is
 expanded with its output below it, the location of the assert underlined as a
@@ -393,7 +394,8 @@ parsed test (a compile error) switches to the Output view by itself. Rerun
 Failed (the toolbar button, Run > Rerun Failed Tests, the action
 `run.rerun_failed`) runs the same command for the failed tests only: `cargo
 test -- --exact <test names>`, pytest with the failed node ids, vitest with
-the failed files and `-t` over their names. Not shown: per-test timing, a
+the failed files and `-t` over their names, jest with the failed files and `-t`
+over their names (a file that failed to load reruns as a whole). Not shown: per-test timing, a
 running state per test, filters; results are not saved.
 
 Run Test at Caret (Ctrl+Shift+F10, Run > Run Test at Caret, the action
@@ -410,7 +412,7 @@ TypeScript and TSX: the enclosing `it(...)` / `test(...)` (also `.only`,
 `.skip`, `.concurrent`) with a plain string title and the titles of its
 `describe(...)` calls; `npx vitest run <file> -t <pattern>` when the nearest
 `package.json` lists vitest (the tests view), else `npx jest <file> -t
-<pattern>` for jest (problem links, no tree), else a note. Anything else, a
+<pattern>` for jest (the tests view too), else a note. Anything else, a
 file without a syntax tree, an unsaved new file or a caret outside any test
 gives an info note; a file with unsaved changes runs from disk and says so.
 Ctrl+Shift+F10 reaches jetl in xterm-compatible terminals and tmux without the

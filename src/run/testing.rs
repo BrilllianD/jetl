@@ -428,6 +428,7 @@ pub enum Runner {
     Cargo,
     Pytest,
     Vitest,
+    Jest,
 }
 
 /// The words of the command, then `args`; a string command is split on whitespace.
@@ -460,7 +461,7 @@ fn pytest_word(words: &[String]) -> Option<usize> {
 }
 
 impl Runner {
-    /// The runner a task's command is, first match in the order cargo, pytest, vitest.
+    /// The runner a task's command is, first match in the order cargo, pytest, vitest, jest.
     pub fn detect(task: &RunTask) -> Option<Runner> {
         let w = words(task);
         let cargo = w.iter().enumerate().any(|(i, x)| {
@@ -472,6 +473,8 @@ impl Runner {
             Some(Runner::Pytest)
         } else if w.iter().any(|x| file_name(x) == "vitest") {
             Some(Runner::Vitest)
+        } else if w.iter().any(|x| file_name(x) == "jest") {
+            Some(Runner::Jest)
         } else {
             None
         }
@@ -494,6 +497,11 @@ impl Runner {
                     argv.push("--reporter=tap-flat".into());
                 }
             }
+            Runner::Jest => {
+                if !argv.iter().any(|w| w == "--verbose" || w.starts_with("--verbose=")) {
+                    argv.push("--verbose".into());
+                }
+            }
         }
         argv
     }
@@ -505,7 +513,7 @@ pub fn rerun_failed(task: &RunTask, run: &TestRun) -> Result<RunTask, String> {
     if failed.is_empty() {
         return Err("No failed tests".into());
     }
-    let runner = Runner::detect(task).ok_or("Rerun Failed needs a cargo test, pytest or vitest command")?;
+    let runner = Runner::detect(task).ok_or("Rerun Failed needs a cargo test, pytest, vitest or jest command")?;
     let unique = |items: Vec<String>| {
         let mut seen: Vec<String> = Vec::new();
         for s in items {
@@ -541,6 +549,17 @@ pub fn rerun_failed(task: &RunTask, run: &TestRun) -> Result<RunTask, String> {
             let alts = unique(failed.iter().map(|c| regex::escape(&c.id.replace(" > ", " "))).collect());
             e.push("-t".into());
             e.push(format!("^(?:{})$", alts.join("|")));
+            e
+        }
+        Runner::Jest => {
+            // jest reads file arguments and `-t` as regular expressions; a file that
+            // failed to load has no name to filter, so it reruns as a whole.
+            let mut e: Vec<String> = unique(failed.iter().map(|c| regex::escape(&c.suite)).collect());
+            let alts = unique(failed.iter().filter(|c| !c.id.is_empty()).map(|c| regex::escape(&c.id.replace(" › ", " "))).collect());
+            if !alts.is_empty() {
+                e.push("-t".into());
+                e.push(format!("^(?:{})$", alts.join("|")));
+            }
             e
         }
     };
@@ -787,11 +806,27 @@ mod tests {
         assert_eq!(r.command, TaskCommand::Shell("npx vitest run".into()));
         assert_eq!(r.args, strs(&["src/math.test.ts", "-t", "^(?:math nested fails)$"]));
 
+        let jest = parse(&root, JEST);
+        let jest_args = strs(&[r"src/math\.test\.js", r"src/broken\.test\.js", "-t", r"^(?:math f\(x\) \[1\] b\.c|math nested fails)$"]);
+        let r = rerun_failed(&task(argv(&["npx", "jest"]), &[]), &jest).unwrap();
+        assert_eq!(r.args, jest_args);
+        let r = rerun_failed(&task(TaskCommand::Shell("npx jest".into()), &[]), &jest).unwrap();
+        assert_eq!(r.command, TaskCommand::Shell("npx jest".into()));
+        assert_eq!(r.args, jest_args);
+        let mut broken = TestRun::default();
+        broken.feed(&[
+            RunLine::plain("FAIL src/broken.test.js"),
+            RunLine::plain("  ● Test suite failed to run"),
+            RunLine::plain("    boom"),
+        ]);
+        let r = rerun_failed(&task(argv(&["npx", "jest"]), &[]), &broken).unwrap();
+        assert_eq!(r.args, strs(&[r"src/broken\.test\.js"]));
+
         let ok = parse(&root, "     Running unittests src/lib.rs (x)\ntest a ... ok");
         assert_eq!(rerun_failed(&task(argv(&["cargo", "test"]), &[]), &ok).unwrap_err(), "No failed tests");
         assert_eq!(
             rerun_failed(&task(argv(&["make", "test"]), &[]), &lt).unwrap_err(),
-            "Rerun Failed needs a cargo test, pytest or vitest command"
+            "Rerun Failed needs a cargo test, pytest, vitest or jest command"
         );
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -824,6 +859,11 @@ mod tests {
         assert_eq!(d(argv(&["py.test"]), &[]), Some(Runner::Pytest));
         assert_eq!(d(argv(&["python", "-m", "unittest"]), &[]), None);
         assert_eq!(d(TaskCommand::Shell("npx vitest".into()), &[]), Some(Runner::Vitest));
+        assert_eq!(d(argv(&["npx", "jest"]), &[]), Some(Runner::Jest));
+        assert_eq!(d(argv(&["node_modules/.bin/jest"]), &[]), Some(Runner::Jest));
+        assert_eq!(d(TaskCommand::Shell("yarn jest --ci".into()), &[]), Some(Runner::Jest));
+        assert_eq!(d(argv(&["npx", "vitest"]), &[]), Some(Runner::Vitest));
+        assert_eq!(d(argv(&["jest.config.js"]), &[]), None);
     }
 
     #[test]
@@ -839,6 +879,10 @@ mod tests {
         assert_eq!(Runner::Vitest.prepare(v(&["vitest", "run"])), v(&["vitest", "run", "--reporter=tap-flat"]));
         assert_eq!(Runner::Vitest.prepare(v(&["vitest", "--reporter=verbose"])), v(&["vitest", "--reporter=verbose"]));
         assert_eq!(Runner::Vitest.prepare(v(&["vitest", "--reporter", "tap-flat"])), v(&["vitest", "--reporter", "tap-flat"]));
+        assert_eq!(Runner::Jest.prepare(v(&["npx", "jest"])), v(&["npx", "jest", "--verbose"]));
+        let once = Runner::Jest.prepare(v(&["npx", "jest"]));
+        assert_eq!(Runner::Jest.prepare(once.clone()), once);
+        assert_eq!(Runner::Jest.prepare(v(&["jest", "--verbose=false"])), v(&["jest", "--verbose=false"]));
         assert_eq!(Runner::Cargo.prepare(v(&["cargo", "test"])), v(&["cargo", "test"]));
     }
 

@@ -398,6 +398,7 @@ mod tests {
         let (words, shown) = spawn_argv(&argv(&["pytest"]));
         assert_eq!((words, shown.as_str()), (vec!["pytest".to_string(), "-v".into()], "pytest -v"));
         assert_eq!(spawn_argv(&argv(&["npx", "vitest", "run"])).1, "npx vitest run --reporter=tap-flat");
+        assert_eq!(spawn_argv(&argv(&["npx", "jest"])).1, "npx jest --verbose");
         assert_eq!(spawn_argv(&argv(&["pytest", "-vv"])).1, "pytest -vv");
         assert_eq!(spawn_argv(&RunTask { matcher: Some(MatcherKind::Problems), ..argv(&["pytest"]) }).1, "pytest");
         assert_eq!(spawn_argv(&shell("t", "pytest tests")).1, "pytest tests");
@@ -684,6 +685,42 @@ mod tests {
         assert_eq!(app.run.seq, seq);
         assert!(!app.run.running());
         assert_eq!(app.notifications.last().map(|n| n.text.as_str()), Some("No failed tests"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn jest_run_shows_the_tree_and_reruns_the_failed_tests() {
+        use crate::run::panel::View;
+        use std::os::unix::fs::PermissionsExt;
+
+        let (mut app, dir) = test_app("run-jest");
+        std::fs::create_dir_all(dir.join("bin")).unwrap();
+        std::fs::write(dir.join("jest.txt"), include_str!("../run/fixtures/jest_verbose.txt")).unwrap();
+        let script = format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{d}/args.txt'\ncase \" $* \" in\n*' -t '*) printf 'PASS src/math.test.js\\n  math\\n    ✓ f(x) [1] b.c (1 ms)\\n    nested\\n      ✓ fails (1 ms)\\n';;\n*) cat '{d}/jest.txt';;\nesac\n",
+            d = dir.display()
+        );
+        let bin = dir.join("bin/jest");
+        std::fs::write(&bin, script).unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let path = format!("{}:{}", dir.join("bin").display(), std::env::var("PATH").unwrap_or_default());
+        let text = format!("[[run.configs]]\nname = \"jest\"\ncommand = [\"jest\"]\nenv = {{ PATH = {path:?} }}\n");
+        let task = crate::config::Config::parse(&text).unwrap().run.configs.remove(0);
+        app.run_task(task);
+        until_exit(&mut app).await;
+        assert_eq!(app.run_panel.view(), View::Tests);
+        let failed: Vec<String> = app.run_panel.tests().unwrap().failed().map(|c| c.id.clone()).collect();
+        assert_eq!(failed, ["math › f(x) [1] b.c", "math › nested › fails", ""]);
+        app.perform(Action::Run(RunAction::RerunFailed));
+        until_exit(&mut app).await;
+        let args = std::fs::read_to_string(dir.join("args.txt")).unwrap();
+        assert_eq!(
+            args.lines().collect::<Vec<_>>(),
+            ["--verbose", r"src/math\.test\.js src/broken\.test\.js -t ^(?:math f\(x\) \[1\] b\.c|math nested fails)$ --verbose"]
+        );
+        let t = app.run_panel.tests().unwrap();
+        assert_eq!((t.cases().len(), t.counts().passed), (2, 2));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

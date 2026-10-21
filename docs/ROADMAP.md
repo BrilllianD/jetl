@@ -136,7 +136,7 @@ All of section E shipped in Phase 9 except split editor panes, which shipped in 
 | Built-in terminal tool window | L | `portable-pty` + `vt100` (or `tui-term`) |
 | Run/task window with problem matchers | M | tokio process + line parser |
 | Run configurations | M | Done: [[run.configs]] / .jetl/run.toml with args, cwd, env, matcher; toolbar picker, Shift+F10 runs the selected one (kept in the session), Edit Configurations window writing .jetl/run.toml through toml_edit |
-| Test runner tree | M | Done: tests matcher for libtest, pytest -v and flat TAP (vitest), Tests view with counts, failed tests expanded and linked, Rerun Failed per runner, Ctrl+Shift+F10 runs the test at the caret (Rust, Python, JS/TS) |
+| Test runner tree | M | Done: tests matcher for libtest, pytest -v, flat TAP (vitest) and jest --verbose, Tests view with counts, failed tests expanded and linked, Rerun Failed per runner, Ctrl+Shift+F10 runs the test at the caret (Rust, Python, JS/TS) |
 | Format on save via external formatter | S-M | `[format]` config per language |
 | Split editor panes | L | Done (Phase 11): tab groups with independent views over shared buffers |
 | Zen / maximize editor | S | |

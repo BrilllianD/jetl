@@ -455,7 +455,7 @@ mod tests {
             origin: Default::default(),
         };
         assert_eq!(crate::run::testing::Runner::detect(&task(v)), Some(crate::run::testing::Runner::Vitest));
-        assert_eq!(crate::run::testing::Runner::detect(&task(j)), None);
+        assert_eq!(crate::run::testing::Runner::detect(&task(j)), Some(crate::run::testing::Runner::Jest));
         let _ = std::fs::remove_dir_all(&root);
     }
 }

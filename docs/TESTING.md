@@ -1191,6 +1191,24 @@ Same setup as the test runner tree (`/tmp/jt-crate`).
    `Run Test at Caret supports Rust, Python, JavaScript and TypeScript`.
 5. Repeat at 120x40 and 80x24.
 
+### Scenario: jest tests tree
+
+Setup: a scratch project `/tmp/jt-jest` with the three test files and `package.json` from the jest
+fixture recipe (`src/math.test.js`, `src/broken.test.js`, `src/other.test.js`), then
+`npm install --ignore-scripts --no-audit --no-fund` (needs the npm registry). Open jetl on it with
+the usual fresh `$H` and LSP off.
+
+1. A configuration `command = ["npx", "jest"]`, run it: the header reads `npx jest --verbose`, the
+   Tests view has suites `src/math.test.js`, `src/broken.test.js`, `src/other.test.js`, group
+   `math › nested` with `fails` `✗` expanded, `Test suite failed to run` under the broken file, status
+   line `Tests: 4 passed, 3 failed, 2 ignored`.
+2. Enter on `fails` opens `src/math.test.js` at line 7.
+3. Rerun Failed: the header shows the escaped files and `-t`, the tree has `fails`, `f(x) [1] b.c` and
+   the broken file.
+4. Caret inside `test('adds'` in `src/math.test.js`, `send-keys C-S-F10`:
+   `npx jest src/math.test.js -t '^math adds$' --verbose`, one passed test.
+5. Repeat at 120x40 and 80x24.
+
 ### Limits under tmux
 
 - No kitty keyboard protocol: Ctrl+Shift+letter, Ctrl+Tab, Ctrl+Enter,

@@ -216,8 +216,8 @@ impl RunTask {
         s
     }
 
-    /// The explicit matcher, else `Tests` for a cargo test, pytest or vitest
-    /// command, else `Problems`.
+    /// The explicit matcher, else `Tests` for a cargo test, pytest, vitest or
+    /// jest command, else `Problems`.
     pub fn matcher_kind(&self) -> MatcherKind {
         self.matcher.unwrap_or_else(|| if testing::Runner::detect(self).is_some() { MatcherKind::Tests } else { MatcherKind::Problems })
     }
@@ -326,10 +326,12 @@ mod tests {
             argv(&["python3", "-m", "pytest", "-q"]),
             argv(&["pytest"]),
             argv(&["npx", "vitest", "run"]),
+            argv(&["npx", "jest"]),
+            shell("yarn jest --ci"),
         ] {
             assert_eq!(t.matcher_kind(), MatcherKind::Tests, "{}", t.display());
         }
-        for t in [argv(&["cargo", "build"]), argv(&["npm", "test"]), argv(&["npx", "jest"])] {
+        for t in [argv(&["cargo", "build"]), argv(&["npm", "test"])] {
             assert_eq!(t.matcher_kind(), MatcherKind::Problems, "{}", t.display());
         }
         let explicit = RunTask { matcher: Some(MatcherKind::Problems), ..argv(&["cargo", "test"]) };
