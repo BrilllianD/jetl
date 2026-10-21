@@ -24,6 +24,7 @@ pub mod rows;
 pub mod search;
 pub mod selection;
 pub mod snippet;
+pub mod snippet_vars;
 pub mod split;
 pub mod syntax;
 pub mod undo;

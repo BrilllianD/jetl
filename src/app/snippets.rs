@@ -26,6 +26,12 @@ use crate::lsp::completion::{CompletionState, Origin, parse_snippet, word_start}
 use crate::ui::completion::CompletionPopup;
 use crate::ui::focus::PanelId;
 
+/// Unix seconds now and the local offset east of UTC at that time.
+pub(super) fn snippet_clock() -> (i64, i64) {
+    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+    (secs, crate::ui::event_log::local_offset(secs))
+}
+
 /// Whether `pos` of `b` lies in a string or comment by its parse; false
 /// without a grammar or a tree.
 fn in_string_or_comment(b: &Buffer, pos: usize) -> bool {
@@ -261,6 +267,24 @@ mod tests {
         assert_eq!(text(&app), "fn main() {\n    fn name() {\n        \n    }\n}\n", "typing over `name` is its own step");
         undo(&mut app);
         assert_eq!(text(&app), "fn main() {\n    fn\n}\n", "the expansion is one undo step");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn tab_expansion_resolves_variables() {
+        let (mut app, dir) = rust_app("snip-vars");
+        app.snippets = user_snippets(
+            "rust.toml",
+            "[[snippet]]\nprefix = \"hdr\"\nbody = '// $TM_FILENAME_BASE:$TM_LINE_NUMBER ${NOPE:dflt} $CURRENT_YEAR$0'\n",
+        );
+        typ(&mut app, "hdr");
+        key(&mut app, KeyCode::Tab);
+        let t = text(&app);
+        let line = t.lines().nth(1).unwrap();
+        let year = line.strip_prefix("    // a:2 dflt ").unwrap_or_else(|| panic!("{line:?}"));
+        assert!(year.len() == 4 && year.bytes().all(|c| c.is_ascii_digit()), "{line:?}");
+        undo(&mut app);
+        assert_eq!(text(&app), MAIN.replace("    \n", "    hdr\n"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

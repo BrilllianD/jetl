@@ -271,12 +271,21 @@ pub fn kind_glyph(kind: Option<CompletionItemKind>) -> &'static str {
 /// [`Tabstop`] over its text, in chars of the returned text, in the order
 /// they appear.
 pub fn parse_snippet(s: &str) -> (String, Vec<Tabstop>) {
-    let mut p = Snippet { c: s.chars().collect(), i: 0, out: String::new(), n: 0, stops: Vec::new(), open: Vec::new() };
+    parse_snippet_with(s, &|_| None, "")
+}
+
+/// [`parse_snippet`] with variables: `vars(name)` is a variable's value,
+/// inserted as literal text (never parsed as snippet syntax); `None` or an
+/// empty value keeps the default (else nothing). `indent`: the whitespace
+/// the result's first line continues in the buffer, for re-indenting
+/// multi-line values (later lines take the indentation of their output line).
+pub fn parse_snippet_with(s: &str, vars: &dyn Fn(&str) -> Option<String>, indent: &str) -> (String, Vec<Tabstop>) {
+    let mut p = Snippet { c: s.chars().collect(), i: 0, out: String::new(), n: 0, stops: Vec::new(), open: Vec::new(), vars, indent };
     p.body(false);
     (p.out, p.stops)
 }
 
-struct Snippet {
+struct Snippet<'a> {
     c: Vec<char>,
     i: usize,
     out: String,
@@ -285,9 +294,11 @@ struct Snippet {
     stops: Vec<Tabstop>,
     /// Indices into `stops` of the placeholders being parsed, innermost last.
     open: Vec<usize>,
+    vars: &'a dyn Fn(&str) -> Option<String>,
+    indent: &'a str,
 }
 
-impl Snippet {
+impl Snippet<'_> {
     fn peek(&self) -> Option<char> {
         self.c.get(self.i).copied()
     }
@@ -305,14 +316,39 @@ impl Snippet {
         (self.i > from).then(|| self.c[from..self.i].iter().collect::<String>().parse().unwrap_or(u32::MAX))
     }
 
-    fn name(&mut self) -> bool {
+    fn name(&mut self) -> Option<String> {
         if !self.peek().is_some_and(|c| c.is_ascii_alphabetic() || c == '_') {
-            return false;
+            return None;
         }
+        let from = self.i;
         while self.peek().is_some_and(|c| c.is_ascii_alphanumeric() || c == '_') {
             self.i += 1;
         }
-        true
+        Some(self.c[from..self.i].iter().collect())
+    }
+
+    /// The value of variable `name`; `None` when unknown or empty.
+    fn lookup(&self, name: &str) -> Option<String> {
+        (self.vars)(name).filter(|v| !v.is_empty())
+    }
+
+    /// Insert a variable's value as literal text; each later non-empty line
+    /// gets the indentation of the output line the value sits on.
+    fn value(&mut self, v: &str) {
+        let v = v.replace("\r\n", "\n");
+        let line = self.out.rsplit('\n').next().unwrap_or("");
+        let blank: String = line.chars().take_while(|&c| c == ' ' || c == '\t').collect();
+        let mut prefix = if self.out.contains('\n') { String::new() } else { self.indent.to_string() };
+        prefix.push_str(&blank);
+        let chars: Vec<char> = v.chars().collect();
+        for (k, &ch) in chars.iter().enumerate() {
+            self.push(ch);
+            if ch == '\n' && chars.get(k + 1).is_some_and(|&n| n != '\n') {
+                for p in prefix.chars() {
+                    self.push(p);
+                }
+            }
+        }
     }
 
     /// Record an empty tabstop `n` here; returns its index.
@@ -349,7 +385,10 @@ impl Snippet {
             self.tabstop(n);
             return;
         }
-        if self.name() {
+        if let Some(name) = self.name() {
+            if let Some(v) = self.lookup(&name) {
+                self.value(&v);
+            }
             return;
         }
         if self.peek() != Some('{') {
@@ -385,16 +424,29 @@ impl Snippet {
                 }
                 _ => self.literal(at),
             }
-        } else if self.name() {
+        } else if let Some(name) = self.name() {
             match self.peek() {
-                Some('}') => self.i += 1,
+                Some('}') => {
+                    self.i += 1;
+                    if let Some(v) = self.lookup(&name) {
+                        self.value(&v);
+                    }
+                }
                 Some(':') => {
                     self.i += 1;
+                    let mark = Mark { at: self.i, len: self.out.len(), n: self.n, stops: self.stops.len(), open: self.open.len() };
                     self.body(true);
                     if self.peek() != Some('}') {
                         return self.literal(at);
                     }
                     self.i += 1;
+                    if let Some(v) = self.lookup(&name) {
+                        self.out.truncate(mark.len);
+                        self.n = mark.n;
+                        self.stops.truncate(mark.stops);
+                        self.open.truncate(mark.open);
+                        self.value(&v);
+                    }
                 }
                 Some('/') => {
                     // A transform: nothing to insert for an unknown variable.
@@ -480,6 +532,29 @@ pub struct Accept {
     pub carets: Vec<Option<usize>>,
 }
 
+/// A snippet body as the text to insert: (text with the buffer's line
+/// breaks, the caret offset in chars at `$0`, the tabstops relative to the
+/// text's start, an implicit `$0` at the end when it has none). `vars` and
+/// `indent` as in [`parse_snippet_with`].
+pub fn snippet_text(body: &str, vars: &dyn Fn(&str) -> Option<String>, indent: &str, crlf: bool) -> (String, usize, Vec<Tabstop>) {
+    let (t, mut stops) = parse_snippet_with(&body.replace("\r\n", "\n"), vars, indent);
+    if !stops.iter().any(|s| s.n == 0) {
+        let len = t.chars().count();
+        stops.push(Tabstop { n: 0, range: len..len, parent: None });
+    }
+    let at = stops.iter().find(|s| s.n == 0).map_or(0, |s| s.range.start);
+    if crlf {
+        // Each '\n' before a bound becomes "\r\n": one char more.
+        let breaks: Vec<usize> = t.chars().enumerate().filter(|&(_, c)| c == '\n').map(|(i, _)| i).collect();
+        let shift = |p: usize| p + breaks.partition_point(|&b| b < p);
+        for s in &mut stops {
+            s.range = shift(s.range.start)..shift(s.range.end);
+        }
+    }
+    let (text, at) = edits::line_breaks(&t, at, crlf);
+    (text, at, stops)
+}
+
 /// The edit accepting `item` makes: its `textEdit` (else its `insertText`,
 /// else its label, replacing the word typed so far), snippets flattened
 /// (their tabstops in [`Accept::stops`]), with its `additionalTextEdits` (an import, say) in the same
@@ -492,7 +567,15 @@ pub struct Accept {
 /// prefix (`rope[main.start..caret]`) gets the same edit, replacing as many
 /// word chars after it as the main edit replaces after the caret. `crlf`:
 /// the buffer's line breaks.
-pub fn edit_for(item: &CompletionItem, origin: &Origin, rope: &Rope, caret: usize, others: &[usize], crlf: bool) -> Accept {
+pub fn edit_for(
+    item: &CompletionItem,
+    origin: &Origin,
+    rope: &Rope,
+    caret: usize,
+    others: &[usize],
+    crlf: bool,
+    vars: &dyn Fn(&str) -> Option<String>,
+) -> Accept {
     let map = |p: Position, end: bool| map_position(origin, rope, caret, p, end);
     let (start, end, text) = match &item.text_edit {
         Some(CompletionTextEdit::Edit(e)) => (map(e.range.start, false), map(e.range.end, true), e.new_text.as_str()),
@@ -501,25 +584,16 @@ pub fn edit_for(item: &CompletionItem, origin: &Origin, rope: &Rope, caret: usiz
     };
     let (text, at, mut stops) = match item.insert_text_format {
         Some(InsertTextFormat::SNIPPET) => {
-            let (t, mut stops) = parse_snippet(&text.replace("\r\n", "\n"));
-            if !stops.iter().any(|s| s.n == 0) {
-                let len = t.chars().count();
-                stops.push(Tabstop { n: 0, range: len..len, parent: None });
-            }
-            let at = stops.iter().find(|s| s.n == 0).map_or(0, |s| s.range.start);
-            (t, at, stops)
+            let line = rope.char_to_line(start.min(rope.len_chars()));
+            let before = start - rope.line_to_char(line);
+            let indent: String = rope.line(line).chars().take(before).take_while(|&c| c == ' ' || c == '\t').collect();
+            snippet_text(text, vars, &indent, crlf)
         }
-        _ => (text.to_string(), text.chars().count(), Vec::new()),
+        _ => {
+            let (t, at) = edits::line_breaks(text, text.chars().count(), crlf);
+            (t, at, Vec::new())
+        }
     };
-    if crlf {
-        // Each '\n' before a bound becomes "\r\n": one char more.
-        let breaks: Vec<usize> = text.chars().enumerate().filter(|&(_, c)| c == '\n').map(|(i, _)| i).collect();
-        let shift = |p: usize| p + breaks.partition_point(|&b| b < p);
-        for s in &mut stops {
-            s.range = shift(s.range.start)..shift(s.range.end);
-        }
-    }
-    let (text, at) = edits::line_breaks(&text, at, crlf);
     let main = CharEdit::new(start, end, text);
     let mut all = vec![main.clone()];
     let k = caret - main.start.min(caret);
@@ -635,7 +709,7 @@ mod tests {
         }
         let caret = b.view.sel().head;
         assert!(origin.prefix(&b.rope, caret).is_some(), "the list applies");
-        let acc = edit_for(item, &origin, &b.rope, caret, &[], b.line_ending == crate::editor::buffer::LineEnding::CrLf);
+        let acc = edit_for(item, &origin, &b.rope, caret, &[], b.line_ending == crate::editor::buffer::LineEnding::CrLf, &|_| None);
         let before = b.text();
         b.apply(acc.changes, Selection::point(acc.caret), TxKind::Other);
         let mut out = b.text();
@@ -734,13 +808,43 @@ mod tests {
         assert_eq!(accept("x|", "", &it), "$x|");
     }
 
+    #[test]
+    fn snippet_variables_resolve() {
+        let v = |n: &str| match n {
+            "A" => Some("x".to_string()),
+            "E" => Some(String::new()),
+            "M" => Some("l1\n\nl3".into()),
+            "D" => Some("$1 ${2:y}".into()),
+            _ => None,
+        };
+        let with = |s: &str| parse_snippet_with(s, &v, "  ");
+        assert_eq!(with("$A ${A} ${A:d}").0, "x x x");
+        assert_eq!(with("${E:dflt} $E ${U:u} $U").0, "dflt  u ");
+        assert_eq!(with("$D"), ("$1 ${2:y}".into(), vec![]));
+        let (t, stops) = with("${1:$A} $0");
+        assert_eq!(t, "x ");
+        assert_eq!((stops[0].n, stops[0].range.clone(), stops[1].n), (1, 0..1, 0));
+        assert_eq!(with("${A:${1:z}}"), ("x".into(), vec![]));
+        assert_eq!(with("f($M)").0, "f(l1\n\n  l3)");
+        assert_eq!(with("a\n\t$M").0, "a\n\tl1\n\n\tl3");
+        assert_eq!(with("${A/x/y/}").0, "");
+    }
+
+    #[test]
+    fn snippet_text_shifts_for_crlf() {
+        let (t, at, stops) = snippet_text("a\n${1:b}$0", &|_| None, "", true);
+        assert_eq!((t.as_str(), at), ("a\r\nb", 4));
+        let one = stops.iter().find(|s| s.n == 1).unwrap();
+        assert_eq!(one.range, 3..4);
+    }
+
     /// Accept `item` at the `|` in `text`: each stop's number, start and
     /// the text it covers in the buffer after the accept.
     fn accept_stops(text: &str, item: &CompletionItem) -> Vec<(u32, usize, String)> {
         let at = text.chars().position(|c| c == '|').unwrap();
         let mut b = Buffer::from_text(1, None, &text.replacen('|', "", 1), false);
         let origin = Origin::new(1, &b.rope, at);
-        let acc = edit_for(item, &origin, &b.rope, at, &[], b.line_ending == crate::editor::buffer::LineEnding::CrLf);
+        let acc = edit_for(item, &origin, &b.rope, at, &[], b.line_ending == crate::editor::buffer::LineEnding::CrLf, &|_| None);
         b.apply(acc.changes, Selection::point(acc.caret), TxKind::Other);
         acc.stops.into_iter().map(|s| (s.n, s.range.start, b.rope.slice(s.range).to_string())).collect()
     }
@@ -804,7 +908,7 @@ mod tests {
         let rope = Rope::from_str("pr\n        pr\n        xr\n");
         let origin = Origin::new(1, &rope, 2);
         let item = CompletionItem { label: "print".into(), ..Default::default() };
-        let acc = edit_for(&item, &origin, &rope, 2, &[13, 24], false);
+        let acc = edit_for(&item, &origin, &rope, 2, &[13, 24], false, &|_| None);
         assert_eq!(acc.carets, [Some(19), None]);
         assert_eq!(acc.caret, 5);
         let mut r = rope.clone();
@@ -824,7 +928,7 @@ mod tests {
             additional_text_edits: Some(vec![TextEdit::new(range(0, 0, 0, 0), "use x;\n".into())]),
             ..item("abc")
         };
-        let acc = edit_for(&it, &origin, &rope, 4, &[6], false);
+        let acc = edit_for(&it, &origin, &rope, 4, &[6], false, &|_| None);
         let mut r = rope.clone();
         for c in &acc.changes {
             r.remove(c.at..c.at + c.old.chars().count());

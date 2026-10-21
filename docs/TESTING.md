@@ -1116,7 +1116,11 @@ Setup as for the other scenarios with a fresh `$H` and LSP off; `S=$H/config/jet
    `Folder: $H/config/jetl/snippets`. Flip it off, OK: `fn` Tab indents, Ctrl+Space after `ma` shows
    `Language servers are off ...`. Flip it back on.
 5. In `src/lib.rs` type `"fn"` (inside quotes) and Tab: an indent, no `fn name`. Same for `// fn` and Tab. Ctrl+Space after `fn` inside the string still lists `fn`. Undo.
-6. Undo every edit; do not save. Repeat at 120x40 and 80x24.
+6. Variables: write `$S/rust.toml` with a `hdr` snippet (`body = '// $TM_FILENAME ($CURRENT_YEAR-$CURRENT_MONTH-$CURRENT_DATE) ${NOPE:x}$0'`)
+   and wait for `Reloaded snippets`. In `src/lib.rs`, `hdr` Tab gives `// lib.rs (<today>) x`. For an
+   untitled buffer copy the same snippet to `$S/all.toml` (`rust.toml` does not apply to it): `hdr`
+   from Ctrl+Space gives `//  (<today>) x`. Undo.
+7. Undo every edit; do not save. Repeat at 120x40 and 80x24.
 
 ### Scenario: run configurations
 

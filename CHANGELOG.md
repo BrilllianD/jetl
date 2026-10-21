@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Live templates and language server snippets fill in variables: `$TM_FILENAME`, `$TM_LINE_NUMBER`, `$CURRENT_YEAR`, `$CURRENT_DATE`, `$UUID` and the rest of the VS Code set except `$CLIPBOARD`; unknown ones still insert their default.
+
 ### Fixed
 
 - Stage and Continue shows the plain command (`git add a.txt && git rebase --continue`) in the status bar, the Git console and Local History instead of git's pathspec syntax.

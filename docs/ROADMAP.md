@@ -82,7 +82,7 @@ Effort: S = hours to a day, M = 1-3 days, L = about a week, XL = multiple weeks.
 | Line-ending conversion, BOM preservation, language override from the status bar | S | Status bar gains language/indent/encoding segments |
 | Redo caret mismatch after delete_line/duplicate_line/toggle_comment | S | Done: fixed in yman 54 |
 | Autosave on focus loss / idle | S | `editor.autosave = "off" \| "focus" \| "idle"` |
-| Live templates (snippets) | M | Done: `config/snippets.rs` (built-ins in `assets/snippets/`, user `snippets/<language>.toml` and `all.toml`), completion rows after the server's, Tab after an exact prefix (`editor.snippet_prefix`), not in strings or comments, through the LSP snippet path; hot reload of the folder, `editor.snippets` (Live), Settings row with the folder |
+| Live templates (snippets) | M | Done: `config/snippets.rs` (built-ins in `assets/snippets/`, user `snippets/<language>.toml` and `all.toml`), completion rows after the server's, Tab after an exact prefix (`editor.snippet_prefix`), not in strings or comments, through the LSP snippet path; hot reload of the folder, `editor.snippets` (Live), Settings row with the folder, snippet variables (`TM_*`, `CURRENT_*`, `UUID`, ...) |
 
 ### B. Languages
 

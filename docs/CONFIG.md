@@ -728,11 +728,31 @@ walked with Tab (Shift+Tab back), `${1:placeholder}` has a default text,
 mirror edited together with the first, and `$0` is where the caret ends. A tab
 character (`\t` in a basic string; a literal string needs a real tab) is one
 indent level of the buffer (tab or spaces as the file uses); the following
-lines get the indent of the line the caret is on. Variables such as
-`$TM_FILENAME` resolve to their default text. In a TOML basic string
+lines get the indent of the line the caret is on. In a TOML basic string
 (`"..."`) write `\\$` for a literal `$`; a literal string (`'...'` or
 `'''...'''`) needs no escapes and is the easy way to write bodies with `$`
 and `\`.
+
+Variables are filled in when the snippet is accepted, as in VS Code. A value
+goes in as plain text (never read as snippet syntax); a multi-line value takes
+the indentation of its line. An unknown name, or one with an empty value,
+inserts its default (`${NAME:default}`), else nothing. The same variables work
+in language server snippets. Not supported: `$CLIPBOARD`, and transforms
+(`${NAME/re/fmt/}`), which insert nothing.
+
+- File: `TM_FILENAME`, `TM_FILENAME_BASE`, `TM_DIRECTORY`, `TM_FILEPATH`,
+  `RELATIVE_FILEPATH` (to the project root); an untitled file has none of them.
+- Project: `WORKSPACE_NAME`, `WORKSPACE_FOLDER`.
+- Text: `TM_SELECTED_TEXT` and `SELECTION` (empty for a plain expansion),
+  `TM_CURRENT_LINE`, `TM_CURRENT_WORD` (the word the prefix is in),
+  `TM_LINE_INDEX`, `TM_LINE_NUMBER`, `CURSOR_INDEX`, `CURSOR_NUMBER`.
+- Local date and time: `CURRENT_YEAR`, `CURRENT_YEAR_SHORT`, `CURRENT_MONTH`,
+  `CURRENT_MONTH_NAME`, `CURRENT_MONTH_NAME_SHORT`, `CURRENT_DATE`,
+  `CURRENT_DAY_NAME`, `CURRENT_DAY_NAME_SHORT`, `CURRENT_HOUR`,
+  `CURRENT_MINUTE`, `CURRENT_SECOND`, `CURRENT_SECONDS_UNIX`,
+  `CURRENT_TIMEZONE_OFFSET`.
+- Random: `RANDOM`, `RANDOM_HEX`, `UUID`.
+- Language comments: `LINE_COMMENT`, `BLOCK_COMMENT_START`, `BLOCK_COMMENT_END`.
 
 For a buffer of language `L` the lookup order is `L.toml` (your file merged
 over the built-ins: a snippet with the prefix of a built-in replaces it, and

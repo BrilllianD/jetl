@@ -48,6 +48,7 @@ use super::lsp_nav::{COMPLETION, RESOLVE};
 use crate::dispatch::Mode;
 use crate::editor::selection::{Selection, is_word_char};
 use crate::editor::snippet::SnippetSession;
+use crate::editor::snippet_vars::SnippetVars;
 use crate::editor::undo::TxKind;
 use crate::lsp::completion::{self, CompletionState, Origin};
 use crate::lsp::transport::ResponseError;
@@ -373,6 +374,9 @@ impl App {
     /// in the word the list was for.
     pub(super) fn completion_apply(&mut self, origin: &Origin, item: &CompletionItem) {
         let group = self.editor.focused_group().id;
+        let Some(b) = self.editor.active_buffer() else { return };
+        let (now, offset) = super::snippets::snippet_clock();
+        let vars = SnippetVars::new(b, &self.workspace.root, origin.start..b.view.sel().head.max(origin.start), now, offset);
         let Some(b) = self.editor.active_buffer_mut() else { return };
         if b.id != origin.buffer || !b.view.sel().is_empty() || origin.prefix(&b.rope, b.view.sel().head).is_none() {
             return tracing::debug!("completion: the caret left the word; not accepted");
@@ -383,7 +387,7 @@ impl App {
         let others: Vec<(usize, usize)> =
             b.view.sels.iter().enumerate().filter(|&(i, s)| i != primary && s.is_empty()).map(|(i, s)| (i, s.head)).collect();
         let heads: Vec<usize> = others.iter().map(|o| o.1).collect();
-        let acc = completion::edit_for(item, origin, &b.rope, b.view.sel().head, &heads, crlf);
+        let acc = completion::edit_for(item, origin, &b.rope, b.view.sel().head, &heads, crlf, &|n| vars.get(n));
         // A snippet's tabstops are walked only from a single caret.
         let session = if b.view.sels.is_multi() { None } else { SnippetSession::new(b.id, group, acc.stops.clone()) };
         let sels = match &session {
@@ -689,6 +693,18 @@ mod tests {
         key(&mut app, KeyCode::Tab);
         let line = caret_line(&app);
         assert!(line.starts_with("    foo(x1, b)") && line.len() > "    foo(x1, b)|".len(), "{line}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn server_snippets_resolve_variables() {
+        let (mut app, mut server, dir) = setup("compl-vars", false).await;
+        typ(&mut app, "f");
+        let req = completion_req(&mut server).await;
+        let item = snippet_item(1, 4, 5, "file", "$TM_FILENAME ${TM_LINE_NUMBER} ${X:keep}$0");
+        reply(&mut app, &mut server, &req, item).await;
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(text(&app), "fn main() {\n    a.rs 2 keep\n}\n");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
