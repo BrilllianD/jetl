@@ -1,6 +1,7 @@
 //! Test results from a run's output: a parser sniffing each line for
 //! libtest (`cargo test`), `pytest -v` (also the xdist form) and flat TAP
-//! (`vitest --reporter=tap-flat`), the runners that need a flag for it, and
+//! (`vitest --reporter=tap-flat`), `jest --verbose` (and the failure sections
+//! of plain jest), the runners that need a flag for it, and
 //! the arguments that rerun only the failed tests.
 //!
 //! The parser is incremental and order-independent: a result line and a
@@ -34,6 +35,11 @@ re!(PY_XDIST, r"^\[gw\d+\] \[\s*\d+%\] (PASSED|FAILED|ERROR|SKIPPED|XFAIL|XPASS)
 re!(PY_SECTION, r"^_{3,} (.+?) _{3,}$");
 re!(PY_RULE, r"^={3,}");
 re!(TAP_RESULT, r"^(not ok|ok) \d+ - (.*)$");
+re!(JEST_HEADER, r"^ ?(PASS|FAIL) +(\S.*?)(?: \(\d[^()]*\))?$");
+re!(JEST_RESULT, r"^( +)(✓|✕|○|✎|√|×) (.+?)(?: \(\d+(?:\.\d+)? m?s\))?$");
+re!(JEST_FAILURE, r"^\s*● (.+?)\s*$");
+re!(JEST_CONSOLE, r"^\s+console\.[a-z]+$");
+re!(JEST_END, r"^(?:Test Suites:|Summary of all failing tests)");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TestStatus {
@@ -47,17 +53,19 @@ pub enum Format {
     Libtest,
     Pytest,
     Tap,
+    Jest,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TestCase {
-    /// libtest: the binary ("src/lib.rs", "tests/cli.rs", "Doc-tests jtc"); pytest and TAP: the file.
+    /// libtest: the binary ("src/lib.rs", "tests/cli.rs", "Doc-tests jtc"); pytest, TAP and jest: the file.
     pub suite: String,
     /// Module path / classes / describe blocks between suite and test ("" when none).
     pub group: String,
     /// The leaf name.
     pub name: String,
-    /// What the runner's filter takes: libtest's full name, pytest's node id, TAP's name after the file.
+    /// What the runner's filter takes: libtest's full name, pytest's node id, TAP's name after the file,
+    /// jest's describe titles and name joined by ` › ` (empty for a file that failed to load).
     pub id: String,
     pub status: TestStatus,
     pub format: Format,
@@ -88,6 +96,8 @@ enum Capture {
     Libtest(usize),
     Pytest(usize),
     Tap(usize),
+    /// A jest `●` section; `None` swallows one that has its output already, or `● Console`.
+    Jest(Option<usize>),
 }
 
 #[derive(Debug, Default)]
@@ -97,6 +107,10 @@ pub struct TestRun {
     suites: Vec<String>,
     /// The libtest binary being read ("tests" before any `Running` line).
     lt_suite: Option<String>,
+    /// The jest file of the last `PASS`/`FAIL` header, until the summary.
+    jest_suite: Option<String>,
+    /// Indent and title of the open jest describe lines, indents strictly increasing.
+    jest_groups: Vec<(usize, String)>,
     capture: Capture,
     /// Blank lines read in the capture, kept only when more text follows.
     blanks: usize,
@@ -155,6 +169,17 @@ impl TestRun {
                 }
                 self.stop();
             }
+            Capture::Jest(i) => {
+                let ends =
+                    (!t.trim().is_empty() && !t.starts_with(char::is_whitespace)) || JEST_FAILURE.is_match(t) || JEST_CONSOLE.is_match(t);
+                if !ends {
+                    if let Some(i) = i {
+                        self.push(i, l);
+                    }
+                    return;
+                }
+                self.stop();
+            }
             Capture::None => {}
         }
         if let Some(c) = LT_RUNNING.captures(t) {
@@ -188,6 +213,66 @@ impl TestRun {
             if self.cases[i].status == TestStatus::Failed {
                 self.start(Capture::Tap(i));
             }
+        } else if let Some(c) = JEST_HEADER.captures(t) {
+            self.jest_suite = Some(c[2].to_string());
+            self.jest_groups.clear();
+        } else if JEST_END.is_match(t) {
+            self.jest_suite = None;
+            self.jest_groups.clear();
+        } else if let Some(suite) = self.jest_suite.clone() {
+            self.jest_line(suite, t);
+        }
+    }
+
+    fn jest_line(&mut self, suite: String, t: &str) {
+        if let Some(c) = JEST_FAILURE.captures(t) {
+            let title = &c[1];
+            if title == "Console" {
+                return self.start(Capture::Jest(None));
+            }
+            let case = if title == "Test suite failed to run" {
+                TestCase {
+                    suite,
+                    group: String::new(),
+                    name: title.to_string(),
+                    id: String::new(),
+                    status: TestStatus::Failed,
+                    format: Format::Jest,
+                    output: Vec::new(),
+                }
+            } else {
+                let (group, name) = title.rsplit_once(" › ").unwrap_or(("", title));
+                TestCase {
+                    suite,
+                    group: group.to_string(),
+                    name: name.to_string(),
+                    id: title.to_string(),
+                    status: TestStatus::Failed,
+                    format: Format::Jest,
+                    output: Vec::new(),
+                }
+            };
+            let i = self.upsert(case, None);
+            let capture = if self.cases[i].output.is_empty() { Some(i) } else { None };
+            self.start(Capture::Jest(capture));
+        } else if let Some(c) = JEST_RESULT.captures(t) {
+            let indent = c[1].len();
+            self.jest_groups.retain(|(n, _)| *n < indent);
+            let rest = &c[3];
+            let (status, name) = match &c[2] {
+                "✓" | "√" => (TestStatus::Passed, rest),
+                "✕" | "×" => (TestStatus::Failed, rest),
+                "○" => (TestStatus::Ignored, rest.strip_prefix("skipped ").unwrap_or(rest)),
+                _ => (TestStatus::Ignored, rest.strip_prefix("todo ").unwrap_or(rest)),
+            };
+            let group = self.jest_groups.iter().map(|(_, g)| g.as_str()).collect::<Vec<_>>().join(" › ");
+            let id = if group.is_empty() { name.to_string() } else { format!("{group} › {name}") };
+            let case = TestCase { suite, group, name: name.to_string(), id, status, format: Format::Jest, output: Vec::new() };
+            self.upsert(case, Some(status));
+        } else if t.starts_with(' ') && !t.trim().is_empty() {
+            let indent = t.len() - t.trim_start_matches(' ').len();
+            self.jest_groups.retain(|(n, _)| *n < indent);
+            self.jest_groups.push((indent, t.trim().to_string()));
         }
     }
 
@@ -477,12 +562,14 @@ mod tests {
     const PYTEST: &str = include_str!("fixtures/pytest.txt");
     const XDIST: &str = include_str!("fixtures/pytest_xdist.txt");
     const TAP: &str = include_str!("fixtures/vitest_tap_flat.txt");
+    const JEST: &str = include_str!("fixtures/jest_verbose.txt");
+    const JEST_DEFAULT: &str = include_str!("fixtures/jest_default.txt");
 
     /// A project holding the files the fixtures mention.
     fn project(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("jetl-test-testing-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        for f in ["src/lib.rs", "tests/cli.rs", "tests/test_a.py", "src/math.test.ts"] {
+        for f in ["src/lib.rs", "tests/cli.rs", "tests/test_a.py", "src/math.test.ts", "src/math.test.js", "src/broken.test.js"] {
             let p = dir.join(f);
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();
             std::fs::write(p, "").unwrap();
@@ -753,5 +840,91 @@ mod tests {
         assert_eq!(Runner::Vitest.prepare(v(&["vitest", "--reporter=verbose"])), v(&["vitest", "--reporter=verbose"]));
         assert_eq!(Runner::Vitest.prepare(v(&["vitest", "--reporter", "tap-flat"])), v(&["vitest", "--reporter", "tap-flat"]));
         assert_eq!(Runner::Cargo.prepare(v(&["cargo", "test"])), v(&["cargo", "test"]));
+    }
+
+    const JEST_FAILED_ROWS: [&str; 3] = [
+        "src/broken.test.js//Test suite failed to run=Failed",
+        "src/math.test.js/math › nested/fails=Failed",
+        "src/math.test.js/math/f(x) [1] b.c=Failed",
+    ];
+
+    #[test]
+    fn jest_verbose() {
+        let root = project("jest");
+        let run = parse(&root, JEST);
+        assert_eq!(
+            tree(&run),
+            [
+                "src/broken.test.js//Test suite failed to run=Failed",
+                "src/math.test.js//top level=Passed",
+                "src/math.test.js/math › nested/fails=Failed",
+                "src/math.test.js/math/adds=Passed",
+                "src/math.test.js/math/f(x) [1] b.c=Failed",
+                "src/math.test.js/math/later=Ignored",
+                "src/math.test.js/math/skipped=Ignored",
+                "src/other.test.js//other ok=Passed",
+                "src/other.test.js/deep › er/leaf=Passed",
+            ]
+        );
+        assert_eq!(run.counts(), Counts { passed: 4, failed: 3, ignored: 2 });
+        let fails = case(&run, "fails");
+        assert_eq!(fails.id, "math › nested › fails");
+        assert_eq!(fails.output[0].text, "    expect(received).toBe(expected) // Object.is equality");
+        assert_eq!(fails.output.last().unwrap().text, "      at Object.toBe (src/math.test.js:7:21)");
+        assert_eq!(fails.link().map(at), Some(("math.test.js".into(), 6, 20)));
+        let f = case(&run, "f(x) [1] b.c");
+        assert_eq!(f.link().map(at), Some(("math.test.js".into(), 13, 16)));
+        assert!(f.output.iter().all(|l| l.text.trim() != "hello from test"));
+        let broken = case(&run, "Test suite failed to run");
+        assert_eq!(broken.id, "");
+        assert_eq!(broken.link().map(at), Some(("broken.test.js".into(), 0, 23)));
+        assert!(run.cases().iter().filter(|c| c.status != TestStatus::Failed).all(|c| c.output.is_empty()));
+        let headers: Vec<String> =
+            JEST.lines().filter_map(|l| JEST_HEADER.captures(l).map(|c| c[2].to_string())).fold(Vec::new(), |mut v, s| {
+                if !v.contains(&s) {
+                    v.push(s);
+                }
+                v
+            });
+        assert_eq!(run.suites(), headers.as_slice());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn jest_default_output_has_the_failures() {
+        let root = project("jest-default");
+        let run = parse(&root, JEST_DEFAULT);
+        assert_eq!(tree(&run), JEST_FAILED_ROWS);
+        assert!(run.cases().iter().all(|c| c.name != "Console"));
+        assert_eq!(case(&run, "fails").link().map(at), Some(("math.test.js".into(), 6, 20)));
+        assert!(run.cases().iter().all(|c| c.output.iter().all(|l| l.text.trim() != "hello from test")));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn jest_order_does_not_matter() {
+        let root = project("jest-order");
+        let base = parse(&root, JEST);
+        let all = lines(&root, JEST);
+        let split = all.iter().position(|l| l.text == "  ● math › nested › fails").unwrap() + 1;
+        let mut run = TestRun::default();
+        run.feed(&all[..split]);
+        run.feed(&all[split..]);
+        assert_eq!(tree(&run), tree(&base));
+        assert_eq!(case(&run, "fails").output, case(&base, "fails").output);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn jest_colour_header_and_prefixes() {
+        let mut run = TestRun::default();
+        let input = [" PASS  a.test.js (5.2 s)", "  ✓ ok (3 ms)", "  ○ skipped s", "  ✎ todo t", "  d", "    ✕ f"];
+        run.feed(&input.map(RunLine::plain));
+        assert_eq!(run.suites(), ["a.test.js"]);
+        assert_eq!(case(&run, "ok").status, TestStatus::Passed);
+        assert_eq!(case(&run, "s").status, TestStatus::Ignored);
+        assert_eq!(case(&run, "t").status, TestStatus::Ignored);
+        let f = case(&run, "f");
+        assert_eq!((f.status, f.group.as_str(), f.id.as_str()), (TestStatus::Failed, "d", "d › f"));
     }
 }
