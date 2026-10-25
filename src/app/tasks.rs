@@ -104,7 +104,7 @@ impl App {
         self.dialog = Some(Dialog::new_task(NewTaskForm::new(self.known_tags())));
     }
 
-    /// Fresh `yman tags` for an open New Task form.
+    /// Push the known tags (`yman tags`, else counted from the snapshot) to an open New Task form.
     pub(super) fn refresh_new_task_tags(&mut self) {
         if !matches!(self.dialog.as_ref().map(|d| &d.kind), Some(DialogKind::NewTask(_))) {
             return;
