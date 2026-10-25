@@ -155,5 +155,11 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     .into_iter()
     .flatten()
     .collect();
-    app.toasts.render(frame, area, &theme, &avoid);
+    // Toasts keep left of the right strip so its buttons stay visible and clickable.
+    let strip = app.layout.rects.strip_right;
+    let mut toast_area = area;
+    if !strip.is_empty() && strip.x > area.x {
+        toast_area.width = strip.x - area.x;
+    }
+    app.toasts.render(frame, toast_area, &theme, &avoid);
 }

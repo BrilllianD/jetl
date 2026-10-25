@@ -3841,19 +3841,23 @@ mod strip_tests {
         assert_eq!(strip, Rect::new(97, 0, 3, 23));
         let (_, r) = *app.layout.strip_hits.iter().find(|(b, _)| *b == StripButton::Tool(ToolWindowId::Git)).unwrap();
         assert!(strip.contains(r.as_position()));
-        // A toast in the top-right corner would take the click.
-        app.toasts = Default::default();
+        // A toast in the top-right corner stays left of the strip and does not take the click.
+        app.notify(crate::event::Level::Info, "toast");
         draw(&mut app);
+        assert!(!app.toasts.is_empty());
         app.handle_mouse(ev(MouseEventKind::Down(MouseButton::Left), r.x + 1, r.y));
         assert_eq!(app.layout.right, Some(ToolWindowId::Git));
         assert!(app.focus.is(PanelId::Git));
         let (_, p) = *app.layout.strip_hits.iter().find(|(b, _)| *b == StripButton::Tool(ToolWindowId::Project)).unwrap();
         app.handle_mouse(ev(MouseEventKind::Down(MouseButton::Left), p.x + 1, p.y));
-        assert!(!app.layout.is_visible(ToolWindowId::Project) || app.focus.is(PanelId::Project));
+        assert!(app.layout.is_visible(ToolWindowId::Project));
+        assert!(app.focus.is(PanelId::Project));
+        // Toasts are drawn over the tooltip row; clear them to read it.
+        app.toasts = Default::default();
         app.handle_mouse(ev(MouseEventKind::Moved, r.x, r.y));
         let buf = draw(&mut app);
         let row: String = (0..97).map(|x| buf[(x, r.y)].symbol().to_string()).collect();
-        assert!(row.contains(" Git "), "{row}");
+        assert!(row.trim_end().ends_with(" Git  Alt+9"), "{row}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
