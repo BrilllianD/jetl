@@ -180,6 +180,9 @@ mod tests {
         // A setext heading before any ATX heading is top level; a bare `#` has no name.
         let got = names("b.md", "Title\n=====\n\n#\n\ntext\n").unwrap();
         assert_eq!(got, [("Title".to_string(), "heading", 0)]);
+        // Headings inside a block quote or list item are no symbols (setext).
+        let got = names("c.md", "> T\n> ===\n\n- U\n  ---\n").unwrap();
+        assert!(got.is_empty(), "{got:?}");
     }
 
     #[test]

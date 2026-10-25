@@ -146,9 +146,10 @@ const RUST_TAGS_EXTRA: &str = "(impl_item trait: (_) @trait type: (_) @name) @de
 /// Markdown headings. ATX headings own a `section` (their heading plus
 /// everything up to the next heading of the same or a higher level), so
 /// they nest by level; setext headings open no section in this grammar
-/// and sit at the depth of the enclosing one.
+/// and sit at the depth of the enclosing one. Both only directly in a
+/// section, never in a block quote or list item.
 #[cfg(feature = "lang-md")]
-const MD_TAGS: &str = "(section (atx_heading heading_content: (inline) @name)) @definition.heading (setext_heading heading_content: (paragraph) @name) @definition.heading";
+const MD_TAGS: &str = "(section (atx_heading heading_content: (inline) @name)) @definition.heading (section (setext_heading heading_content: (paragraph) @name) @definition.heading)";
 
 /// Prepended to the HTML injections: `<script lang="ts">` and
 /// `<style lang="scss">` (Vue) name their language; the first pattern

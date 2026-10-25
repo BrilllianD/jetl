@@ -523,10 +523,11 @@ fn drop_jest_name_pattern(words: &mut Vec<String>) {
 }
 
 /// `s` without jest's name filter after its `jest` word, split and rejoined on whitespace;
-/// `None` when nothing changes or the string has quotes, a backslash or a line break, which
-/// a whitespace split cannot keep intact.
+/// `None` when nothing changes or the string has quotes, a backslash, a line break, a shell
+/// operator (`;`, `&`, `|`, `<`, `>`, a backtick, `$(`), which a whitespace split cannot keep
+/// intact.
 fn drop_jest_name_pattern_in_shell(s: &str) -> Option<String> {
-    if s.contains(['"', '\'', '\\', '\n', '\r']) {
+    if s.contains(['"', '\'', '\\', '\n', '\r', ';', '&', '|', '<', '>', '`']) || s.contains("$(") {
         return None;
     }
     let mut words: Vec<String> = s.split_whitespace().map(String::from).collect();
@@ -869,6 +870,9 @@ mod tests {
             ("npx jest -t 'math adds'", "npx jest -t 'math adds'"),
             // The `-t` belongs to docker, before the `jest` word.
             ("docker run -t img && npx jest", "docker run -t img && npx jest"),
+            // A separator glued to the pattern would be dropped with it and change the command.
+            ("npx jest -t foo; echo hi", "npx jest -t foo; echo hi"),
+            ("npx jest -t foo|cat", "npx jest -t foo|cat"),
         ] {
             let r = rerun_failed(&task(TaskCommand::Shell(from.into()), &[]), &jest).unwrap();
             assert_eq!(r.command, TaskCommand::Shell(to.into()), "{from}");

@@ -9,6 +9,7 @@ use super::App;
 use crate::event::Level;
 use crate::recovery::{Found, FoundEntry, RecoverySnapshot, SnapBuffer};
 use crate::ui::dialog::{Dialog, DialogId, DialogResult};
+use crate::ui::focus::PanelId;
 
 /// Crash dumps of the current root offered in the open recovery dialogs.
 pub(crate) struct RecoveryOffer {
@@ -213,6 +214,8 @@ impl App {
         self.editor.clear_nav();
         let n = offer.restored;
         if !discarded && n > 0 {
+            // An empty session leaves focus on the tree; the recovered tabs take it.
+            self.focus.set(PanelId::Editor);
             self.notify(Level::Info, format!("Restored unsaved changes of {n} {}; save to keep them", files(n)));
         }
         self.dirty_frame = true;
@@ -254,6 +257,7 @@ pub(crate) mod tests {
     use crate::event::AppMsg;
     use crate::recovery::{RecoverySnapshot, SnapBuffer};
     use crate::ui::dialog::{DialogId, DialogResult};
+    use crate::ui::focus::PanelId;
     use crate::workspace::{Session, SessionFile};
 
     /// Above any Linux `pid_max`, so never a live process.
@@ -329,6 +333,18 @@ pub(crate) mod tests {
         assert!(!root.join("gone.txt").exists());
         assert!(!dump.exists());
         assert!(app.dialog.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn restore_into_empty_session_focuses_editor() {
+        let (mut app, dir) = test_app("recovery-focus");
+        seed_dump(&app, 100, &[(None, "scratch", "note\n")]);
+        app.handle_msg(session_with(&app, &[]));
+        assert!(app.focus.is(PanelId::Project), "empty session focuses the tree");
+        answer(&mut app, DialogId::Recover, DialogResult::Button(0));
+        assert_eq!(app.editor.buffers.len(), 1);
+        assert!(app.focus.is(PanelId::Editor));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
