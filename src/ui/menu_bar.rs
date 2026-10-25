@@ -34,6 +34,7 @@ pub const MAIN_MENU: &[(&str, char, &[Row])] = &[
             Item("Recent Files…", "palette.recent_files"),
             Item("Recent Projects…", "palette.recent_projects"),
             Item("New Scratch File…", "editor.new_scratch"),
+            Item("New Task…", "tasks.new_task"),
             Item("Scratch Files…", "editor.scratch_files"),
             Item("Local History…", "editor.local_history"),
             Item("Local History: Put Label…", "editor.put_label"),

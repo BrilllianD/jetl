@@ -56,7 +56,8 @@ impl App {
 
     pub(super) fn paste_target(&self) -> Option<PasteTarget> {
         if let Some(d) = &self.dialog {
-            return matches!(d.kind, crate::ui::dialog::DialogKind::Input { .. }).then_some(PasteTarget::Dialog);
+            return matches!(d.kind, crate::ui::dialog::DialogKind::Input { .. } | crate::ui::dialog::DialogKind::NewTask(_))
+                .then_some(PasteTarget::Dialog);
         }
         if self.palette.is_some() {
             return Some(PasteTarget::Palette);

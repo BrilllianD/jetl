@@ -1,4 +1,5 @@
-//! Modal dialogs: confirmation with buttons, text input, and a choice list.
+//! Modal dialogs: confirmation with buttons, text input, a choice list, and the New Task form
+//! (`ui::new_task`).
 
 use std::path::PathBuf;
 
@@ -252,6 +253,8 @@ pub enum DialogId {
     TasksTags(String, Vec<String>),
     /// Tasks window: a comment on task `.0`.
     TasksComment(String),
+    /// Tasks window: the New Task form; answered with `DialogResult::NewTask`.
+    TasksNew,
     /// A new value for this field of the selected run configuration.
     RunConfigField(crate::ui::run_configs::Field),
     /// Close the Run Configurations window, dropping its changes: Discard / Keep Editing.
@@ -263,6 +266,7 @@ pub enum DialogKind {
     Confirm { buttons: Vec<String>, selected: usize },
     Input { input: TextInput, ok: String },
     Choice { items: Vec<String>, list: ListState, filter: TextInput },
+    NewTask(Box<crate::ui::new_task::NewTaskForm>),
 }
 
 /// Tab completion of a typed path in an input dialog
@@ -295,6 +299,7 @@ pub enum DialogResult {
     Button(usize),
     Text(String),
     Choice(usize),
+    NewTask(crate::yman::cli::NewTask),
     Cancel,
 }
 
@@ -359,6 +364,21 @@ impl Dialog {
         }
     }
 
+    /// The New Task form of the Tasks window.
+    pub fn new_task(form: crate::ui::new_task::NewTaskForm) -> Self {
+        Self {
+            id: DialogId::TasksNew,
+            title: "New Task".into(),
+            message: String::new(),
+            kind: DialogKind::NewTask(Box::new(form)),
+            paths: None,
+            button_rects: vec![],
+            body_rect: Rect::default(),
+            input_rect: Rect::default(),
+            list_rect: Rect::default(),
+        }
+    }
+
     /// Tab completes the typed path, relative paths starting at `base`
     /// (an input dialog; `App::complete_dialog_path`).
     pub fn with_path_completion(self, base: PathBuf) -> Self {
@@ -399,6 +419,9 @@ impl Dialog {
         // first in dialogs with `paths` (`App::complete_dialog_path`), so
         // routing Tab through here would clear the hint it just set.
         self.clear_path_hint();
+        if let DialogKind::NewTask(f) = &mut self.kind {
+            return f.handle_key(key);
+        }
         match &mut self.kind {
             DialogKind::Confirm { buttons, selected } => match key.code {
                 KeyCode::Esc => Some(DialogResult::Cancel),
@@ -455,6 +478,7 @@ impl Dialog {
                 }
                 _ => None,
             },
+            DialogKind::NewTask(_) => None,
             DialogKind::Choice { .. } => {
                 if key.code == KeyCode::Esc {
                     return Some(DialogResult::Cancel);
@@ -489,6 +513,9 @@ impl Dialog {
 
     pub fn handle_mouse(&mut self, m: &Mouse) -> Option<DialogResult> {
         use crossterm::event::{MouseButton, MouseEventKind};
+        if let DialogKind::NewTask(f) = &mut self.kind {
+            return f.handle_mouse(m);
+        }
         match m.kind {
             MouseEventKind::Down(MouseButton::Left) => {
                 let p = ratatui::layout::Position::new(m.x, m.y);
@@ -502,7 +529,7 @@ impl Dialog {
                                 Some(DialogResult::Cancel)
                             }
                         }
-                        DialogKind::Choice { .. } => Some(DialogResult::Cancel),
+                        DialogKind::Choice { .. } | DialogKind::NewTask(_) => Some(DialogResult::Cancel),
                     };
                 }
                 if let DialogKind::Choice { list, .. } = &mut self.kind
@@ -557,6 +584,10 @@ impl Dialog {
     }
 
     pub fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        if let DialogKind::NewTask(f) = &mut self.kind {
+            self.body_rect = f.render(frame, area, theme, &self.title);
+            return;
+        }
         let msg_lines: Vec<&str> = self.message.lines().collect();
         let msg_w = msg_lines.iter().map(|l| l.width()).max().unwrap_or(0);
         let w = match &self.kind {
@@ -565,7 +596,7 @@ impl Dialog {
                 let bw: usize = buttons.iter().map(|b| b.width() + 4).sum::<usize>() + buttons.len().saturating_sub(1) + 2;
                 (msg_w.max(bw) + 4).max(30)
             }
-            DialogKind::Input { .. } | DialogKind::Choice { .. } => (msg_w + 4).max(50),
+            DialogKind::Input { .. } | DialogKind::Choice { .. } | DialogKind::NewTask(_) => (msg_w + 4).max(50),
         };
         // Wide enough for the title (" title " plus the corners).
         let w = w.max(self.title.width() + 4);
@@ -574,7 +605,7 @@ impl Dialog {
         let msg_rows = message_rows(&self.message, (w as usize).saturating_sub(4));
         let mut h = match &self.kind {
             DialogKind::Confirm { .. } => msg_rows.len() + 4,
-            DialogKind::Input { .. } => msg_rows.len() + 5,
+            DialogKind::Input { .. } | DialogKind::NewTask(_) => msg_rows.len() + 5,
             DialogKind::Choice { .. } => (msg_rows.len() + 3 + 12).min(area.height as usize),
         };
         // A path hint goes between the input and the buttons, as many rows
@@ -606,7 +637,7 @@ impl Dialog {
         // A frame too small for the controls stays empty.
         let min_inner_h = match &self.kind {
             DialogKind::Confirm { .. } => 1,
-            DialogKind::Input { .. } => 3,
+            DialogKind::Input { .. } | DialogKind::NewTask(_) => 3,
             DialogKind::Choice { .. } => 2,
         };
         if inner.height < min_inner_h || inner.width < 2 {
@@ -618,7 +649,7 @@ impl Dialog {
         // On a short screen the message gives way to the controls below it.
         let reserve = match &self.kind {
             DialogKind::Confirm { .. } => 2,
-            DialogKind::Input { .. } => 3 + hints.len(),
+            DialogKind::Input { .. } | DialogKind::NewTask(_) => 3 + hints.len(),
             DialogKind::Choice { .. } => 2,
         };
         let mut msg_rows = msg_rows;
@@ -694,6 +725,8 @@ impl Dialog {
                 }
                 filter.render(frame, frect, Style::default().bg(theme.bg).fg(theme.fg), "type to filter", theme.dim, true);
             }
+            // Drawn by the early return at the top.
+            DialogKind::NewTask(_) => {}
         }
     }
 }

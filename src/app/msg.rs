@@ -36,6 +36,7 @@ impl App {
                 if let Some(done) = self.yman.on_msg(m) {
                     self.finish_yman_mutation(done);
                 }
+                self.refresh_new_task_tags();
             }
             AppMsg::Worktrees { generation, result } => {
                 if generation == self.workspace.generation {

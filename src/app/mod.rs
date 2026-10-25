@@ -680,6 +680,8 @@ impl App {
             if let crate::ui::dialog::DialogKind::Input { input, .. } = &mut d.kind {
                 input.insert_str(&text.replace(['\n', '\r'], " "));
                 d.clear_path_hint();
+            } else if let crate::ui::dialog::DialogKind::NewTask(f) = &mut d.kind {
+                f.paste(&text);
             }
             return;
         }

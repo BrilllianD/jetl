@@ -567,6 +567,7 @@
 "alt-shift-a" = "tasks.assign"
 "alt-shift-t" = "tasks.edit_tags"
 "alt-n" = "tasks.comment"
+"alt-insert" = "tasks.new_task"
 "f5" = "tasks.refresh"
 "ctrl-alt-y" = "tasks.sync"
 "shift-f10" = "tasks.context_menu"

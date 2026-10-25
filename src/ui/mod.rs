@@ -6,6 +6,7 @@ pub mod hover;
 pub mod layout;
 pub mod menu;
 pub mod menu_bar;
+pub mod new_task;
 pub mod palette;
 pub mod run_configs;
 pub mod settings;

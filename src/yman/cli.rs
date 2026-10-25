@@ -271,6 +271,59 @@ pub fn comment_args(id: &str) -> Vec<String> {
     strings(&["comment", id])
 }
 
+/// The answers of the New Task dialog, validated (`ui::new_task`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NewTask {
+    pub title: String,
+    pub tags: Vec<String>,
+    /// `None`: yman's configured default.
+    pub priority: Option<u8>,
+    pub assignee: Option<String>,
+    /// Task ids, without `#`.
+    pub related: Vec<String>,
+    /// Markdown; blank means no body.
+    pub body: String,
+}
+
+/// `add [--priority=N] [--tag=T]... [--assignee=W] [--relate=ID]... [--body-file=-] -- TITLE`.
+pub fn add_args(t: &NewTask) -> Vec<String> {
+    let mut a = vec!["add".to_string()];
+    if let Some(p) = t.priority {
+        a.push(format!("--priority={p}"));
+    }
+    a.extend(t.tags.iter().map(|g| format!("--tag={g}")));
+    if let Some(w) = &t.assignee {
+        a.push(format!("--assignee={w}"));
+    }
+    a.extend(t.related.iter().map(|r| format!("--relate={r}")));
+    if add_input(t).is_some() {
+        a.push("--body-file=-".to_string());
+    }
+    a.push("--".to_string());
+    a.push(t.title.clone());
+    a
+}
+
+/// The body for `add_args`' `--body-file=-`: `None` when blank, else the body with trailing
+/// whitespace trimmed plus one `\n`.
+pub fn add_input(t: &NewTask) -> Option<Vec<u8>> {
+    let b = t.body.trim_end();
+    if b.trim().is_empty() {
+        return None;
+    }
+    Some(format!("{b}\n").into_bytes())
+}
+
+/// The id from `yman add`'s stdout line `added <id>  <folder>`.
+pub fn added_id(stdout: &[u8]) -> Option<String> {
+    String::from_utf8_lossy(stdout)
+        .lines()
+        .map(str::trim)
+        .find(|l| l.starts_with("added "))
+        .and_then(|l| l.split_whitespace().nth(1))
+        .map(str::to_string)
+}
+
 /// Test skip check: whether `yman` can be started. Spawns the binary like the
 /// service does, so the two cannot disagree.
 #[cfg(test)]
@@ -324,6 +377,32 @@ mod tests {
         assert_eq!(assign_args("7", Some("-bob")), args(&["set", "--assignee=-bob", "7"]));
         assert_eq!(tag_change_args("7", &["a".into()], &["b".into()]), args(&["set", "--tag=a", "--untag=b", "7"]));
         assert_eq!(comment_args("7"), args(&["comment", "7"]));
+    }
+
+    #[test]
+    fn add_args_and_id() {
+        let t = NewTask { title: "-x".into(), ..Default::default() };
+        assert_eq!(add_args(&t), args(&["add", "--", "-x"]));
+        assert_eq!(add_input(&t), None);
+        let t = NewTask {
+            title: "T".into(),
+            tags: vec!["a".into(), "b".into()],
+            priority: Some(0),
+            assignee: Some("bob".into()),
+            related: vec!["2".into(), "10".into()],
+            body: "l1\nl2\n\n".into(),
+        };
+        assert_eq!(
+            add_args(&t),
+            args(&["add", "--priority=0", "--tag=a", "--tag=b", "--assignee=bob", "--relate=2", "--relate=10", "--body-file=-", "--", "T"])
+        );
+        assert_eq!(add_input(&t), Some(b"l1\nl2\n".to_vec()));
+        let t = NewTask { title: "T".into(), body: "  \n".into(), ..Default::default() };
+        assert_eq!(add_args(&t), args(&["add", "--", "T"]));
+        assert_eq!(add_input(&t), None);
+        assert_eq!(added_id(b"added 12  .yman/5.12.fix-it\n"), Some("12".into()));
+        assert_eq!(added_id(b""), None);
+        assert_eq!(added_id(b"nothing\n"), None);
     }
 
     #[tokio::test]

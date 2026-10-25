@@ -2,8 +2,8 @@
 //! the tracker off the main loop. Results come back as `AppMsg::Yman` tagged
 //! with the service generation, and `on_msg` drops stale ones. Writes run one
 //! at a time through `mutate`; the result comes back from `on_msg` for the App
-//! to report, after a refresh. `yman sync` is one of those writes
-//! (`MutationKind::Sync`).
+//! to report, after a refresh. `yman sync` and `yman add` are among those
+//! writes (`MutationKind::Sync`, `MutationKind::Add`).
 
 pub mod cli;
 pub mod model;
@@ -63,6 +63,8 @@ pub enum MutationKind {
     Task(String),
     /// `yman sync`: fetch, merge and push the task history.
     Sync,
+    /// `yman add` from the New Task dialog; the App selects the new task.
+    Add,
 }
 
 /// One yman write command.
@@ -608,6 +610,37 @@ mod tests {
         let texts: Vec<&str> = t.discussion.iter().map(|c| c.text.as_str()).collect();
         assert!(texts.iter().any(|c| c.contains("-dash comment")), "{texts:?}");
         assert!(texts.iter().any(|c| c.contains("-shipped")), "{texts:?}");
+    }
+
+    #[tokio::test]
+    async fn add_creates_a_task_in_a_temp_tracker() {
+        if !yman_available() {
+            eprintln!("skipping: yman not on PATH");
+            return;
+        }
+        let guard = temp_tracker("add").await;
+        let dir = guard.0.clone();
+        let t = cli::NewTask {
+            title: "-dash title".into(),
+            tags: vec!["x".into()],
+            priority: Some(3),
+            assignee: Some("bob".into()),
+            related: vec![],
+            body: "multi\nline".into(),
+        };
+        let (tx, mut rx) = unbounded_channel();
+        let mut s = YmanService::new(dir.clone(), 1, tx);
+        let m = Mutation { kind: MutationKind::Add, label: "New task".into(), args: cli::add_args(&t), input: cli::add_input(&t) };
+        assert!(s.mutate(m));
+        let done = next_mutation(&mut s, &mut rx).await;
+        let out = done.result.unwrap_or_else(|e| panic!("add: {e}"));
+        let id = cli::added_id(&out.stdout).expect("added id");
+        let d = cli::json::<TaskDetails>(OsStr::new(PROGRAM), &dir, &show_args(&id)).await.unwrap();
+        assert_eq!(d.title, "-dash title");
+        assert_eq!(d.priority, 3);
+        assert_eq!(d.tags, ["x"]);
+        assert_eq!(d.assignee.as_deref(), Some("bob"));
+        assert!(d.body.contains("multi\nline"), "{:?}", d.body);
     }
 
     #[tokio::test]

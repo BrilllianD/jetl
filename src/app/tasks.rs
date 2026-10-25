@@ -1,13 +1,15 @@
 //! The Tasks window in the app: the tracker is wanted the first time the
 //! window renders, the panel's rows follow the service, and the selected
 //! task's details are loaded when the selection changes
-//! (`yman/panel.rs` holds the view, `yman/mod.rs` the data).
+//! (`yman/panel.rs` holds the view, `yman/mod.rs` the data). The New Task dialog
+//! (`ui::new_task`) runs `yman add` and selects the new task once the reload lists it.
 
 use super::{App, Ctx};
 use crate::actions::TasksAction;
 use crate::event::Level;
-use crate::ui::dialog::{Dialog, DialogId, DialogResult};
+use crate::ui::dialog::{Dialog, DialogId, DialogKind, DialogResult};
 use crate::ui::focus::{PanelId, ToolWindowId};
+use crate::ui::new_task::NewTaskForm;
 use crate::yman::cli::{self, StatusChange};
 use crate::yman::panel::parse_tags;
 use crate::yman::{Mutation, MutationDone, MutationKind, TrackerState};
@@ -45,6 +47,10 @@ impl App {
             self.run_tracker_sync();
             return;
         }
+        if a == TasksAction::NewTask {
+            self.open_new_task();
+            return;
+        }
         if a == TasksAction::Refresh {
             if !self.yman.is_wanted() {
                 self.yman.want();
@@ -59,6 +65,65 @@ impl App {
         if self.layout.is_visible(ToolWindowId::Tasks) {
             self.sync_tasks();
         }
+    }
+
+    /// The tags to complete in the New Task form, most used first: from `yman tags` when loaded,
+    /// else counted over the snapshot.
+    fn known_tags(&self) -> Vec<String> {
+        let mut counts: Vec<(String, usize)> = match (&self.yman.tags, &self.yman.state) {
+            (Some(Ok(v)), _) => v.iter().map(|t| (t.tag.clone(), t.tasks)).collect(),
+            (_, TrackerState::Ready(s)) => {
+                let mut m: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+                for t in s.tasks.iter().flat_map(|t| &t.tags) {
+                    *m.entry(t.to_lowercase()).or_default() += 1;
+                }
+                m.into_iter().collect()
+            }
+            _ => Vec::new(),
+        };
+        counts.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        counts.into_iter().map(|(t, _)| t).collect()
+    }
+
+    /// Open the New Task dialog; refused while a write runs or the tracker is unusable.
+    pub(super) fn open_new_task(&mut self) {
+        if let TrackerState::Unavailable(e) = &self.yman.state {
+            let msg = format!("New task: {}", e.message());
+            self.notify(Level::Info, msg);
+            return;
+        }
+        if let Some(b) = self.yman.busy() {
+            let msg = format!("Wait for {b} to finish");
+            self.notify(Level::Info, msg);
+            return;
+        }
+        if !self.yman.is_wanted() {
+            self.yman.want();
+        }
+        self.yman.load_tags();
+        self.dialog = Some(Dialog::new_task(NewTaskForm::new(self.known_tags())));
+    }
+
+    /// Fresh `yman tags` for an open New Task form.
+    pub(super) fn refresh_new_task_tags(&mut self) {
+        if !matches!(self.dialog.as_ref().map(|d| &d.kind), Some(DialogKind::NewTask(_))) || !matches!(self.yman.tags, Some(Ok(_))) {
+            return;
+        }
+        let tags = self.known_tags();
+        if let Some(Dialog { kind: DialogKind::NewTask(f), .. }) = &mut self.dialog {
+            f.set_known_tags(tags);
+        }
+    }
+
+    /// Show and focus the Tasks window and select the task `yman add` created.
+    fn reveal_new_task(&mut self, id: String) {
+        if !self.layout.is_visible(ToolWindowId::Tasks) {
+            self.layout.show(ToolWindowId::Tasks);
+        }
+        self.focus.set(PanelId::Tasks);
+        self.tasks.select_new(id);
+        self.sync_tasks();
+        self.dirty_frame = true;
     }
 
     /// Start a yman write; tells the user when another one still runs.
@@ -93,9 +158,15 @@ impl App {
                     l.starts_with("warning:") || l.starts_with("error:")
                 });
                 match done.kind {
-                    MutationKind::Task(_) => {
+                    MutationKind::Task(_) | MutationKind::Add => {
                         if !err.is_empty() {
                             self.notify(if warn { Level::Warn } else { Level::Info }, format!("{}: {err}", done.label));
+                        }
+                        if done.kind == MutationKind::Add {
+                            match cli::added_id(&out.stdout) {
+                                Some(id) => self.reveal_new_task(id),
+                                None => self.notify(Level::Info, format!("{}: created", done.label)),
+                            }
                         }
                     }
                     // One toast: the summary, raised to a warning when yman
@@ -237,6 +308,16 @@ impl App {
                     } else {
                         self.task_mutation(task, format!("Comment #{task}"), cli::comment_args(task), Some(text.as_bytes().to_vec()));
                     }
+                }
+            }
+            DialogId::TasksNew => {
+                if let DialogResult::NewTask(t) = res {
+                    self.run_yman_mutation(Mutation {
+                        kind: MutationKind::Add,
+                        label: "New task".into(),
+                        args: cli::add_args(t),
+                        input: cli::add_input(t),
+                    });
                 }
             }
             _ => return false,
@@ -604,6 +685,104 @@ mod tests {
         let n = app.notifications.last().unwrap();
         assert_eq!(n.level, Level::Warn);
         assert_eq!(n.text, "Sync tasks: synced pulled 0, pushed 1 (warning: slow remote)");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn new_task_dialog_runs_yman_add() {
+        let (mut app, dir) = tasks_app("tasks-new");
+        app.perform(Action::Tasks(TasksAction::NewTask));
+        {
+            let d = app.dialog.as_mut().expect("dialog");
+            assert_eq!(d.id, DialogId::TasksNew);
+            let DialogKind::NewTask(f) = &mut d.kind else { panic!("not the form") };
+            f.handle_key(key(KeyCode::Tab));
+            assert_eq!(f.suggestions(), ["ui", "bug"]);
+        }
+        let typed = |app: &mut App, s: &str| s.chars().for_each(|c| app.handle_key(key(KeyCode::Char(c))));
+        app.dialog = None;
+        app.perform(Action::Tasks(TasksAction::NewTask));
+        typed(&mut app, "Fix it");
+        app.handle_key(key(KeyCode::Tab));
+        typed(&mut app, "b");
+        app.handle_key(key(KeyCode::Tab));
+        app.handle_key(key(KeyCode::Tab));
+        typed(&mut app, "1");
+        app.handle_key(key(KeyCode::Tab));
+        typed(&mut app, "bob");
+        app.handle_key(key(KeyCode::Tab));
+        typed(&mut app, "#2 10");
+        app.handle_key(key(KeyCode::Tab));
+        typed(&mut app, "l1");
+        app.handle_key(key(KeyCode::Enter));
+        typed(&mut app, "l2");
+        assert!(app.dialog.is_some());
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT));
+        assert!(app.dialog.is_none());
+        assert_eq!(
+            running_args(&app),
+            strs(&["add", "--priority=1", "--tag=bug", "--assignee=bob", "--relate=2", "--relate=10", "--body-file=-", "--", "Fix it"])
+        );
+        assert_eq!(app.yman.running.as_ref().unwrap().input, Some(b"l1\nl2\n".to_vec()));
+        assert_eq!(app.yman.busy(), Some("New task"));
+        assert!(draw(&mut app, 120, 30).contains("· New task…"));
+        handle_next(&mut app, |m| matches!(m, crate::event::AppMsg::Yman(YmanMsg::Mutation { .. }))).await;
+        let n = app.notifications.last().unwrap();
+        assert_eq!(n.level, Level::Error);
+        assert!(n.text.starts_with("New task: yman is not installed"), "{}", n.text);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn new_task_selects_the_created_task() {
+        use crate::yman::cli::YmanOutput;
+        let (mut app, dir) = tasks_app("tasks-new-select");
+        app.toggle_tool_window(ToolWindowId::Tasks);
+        assert!(!app.layout.is_visible(ToolWindowId::Tasks));
+        let stdout = b"added 11  .yman/2.11.fix-it\n".to_vec();
+        let result = Ok(YmanOutput { code: Some(0), stdout, stderr: String::new() });
+        app.finish_yman_mutation(MutationDone { kind: MutationKind::Add, label: "New task".into(), result });
+        assert!(app.layout.is_visible(ToolWindowId::Tasks) && app.focus.is(PanelId::Tasks));
+        let mut s = sample();
+        s.tasks.push(crate::yman::panel::tests::row("11", "todo", "Fix it", &["x"], None));
+        s.open.insert("11".into());
+        set_snapshot(&mut app.yman, s);
+        draw(&mut app, 120, 30);
+        assert_eq!(app.tasks.selected_id(), Some("11"));
+
+        let result = Ok(YmanOutput { code: Some(0), stdout: b"what\n".to_vec(), stderr: "warning: no task 99\n".into() });
+        app.finish_yman_mutation(MutationDone { kind: MutationKind::Add, label: "New task".into(), result });
+        let texts: Vec<_> = app.notifications.iter().rev().take(2).map(|n| (n.level, n.text.clone())).collect();
+        assert_eq!(texts[0], (Level::Info, "New task: created".to_string()));
+        assert_eq!(texts[1], (Level::Warn, "New task: warning: no task 99".to_string()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn new_task_refusals() {
+        let (mut app, dir) = tasks_app("tasks-new-refuse");
+        app.yman.running = Some(Mutation { kind: MutationKind::Sync, label: "Sync tasks".into(), args: vec![], input: None });
+        app.perform(Action::Tasks(TasksAction::NewTask));
+        assert!(app.dialog.is_none());
+        assert_eq!(app.notifications.last().map(|n| n.text.as_str()), Some("Wait for Sync tasks to finish"));
+        app.yman.running = None;
+        app.yman.state = TrackerState::Unavailable(YmanError::NotInitialized);
+        app.perform(Action::Tasks(TasksAction::NewTask));
+        assert!(app.dialog.is_none());
+        assert!(app.notifications.last().unwrap().text.starts_with("New task: "));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn new_task_tags_follow_yman_tags() {
+        use crate::yman::TagCount;
+        let (mut app, dir) = tasks_app("tasks-new-tags");
+        app.perform(Action::Tasks(TasksAction::NewTask));
+        app.yman.tags = Some(Ok(vec![TagCount { tag: "zeta".into(), tasks: 9 }, TagCount { tag: "ui".into(), tasks: 1 }]));
+        app.refresh_new_task_tags();
+        let DialogKind::NewTask(f) = &mut app.dialog.as_mut().unwrap().kind else { panic!("not the form") };
+        f.handle_key(key(KeyCode::Tab));
+        assert_eq!(f.suggestions(), ["zeta", "ui"]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -2544,6 +2544,24 @@ async fn tasks_window_narrow() {
 }
 
 #[tokio::test]
+async fn tasks_new_task_dialog() {
+    use crate::actions::TasksAction;
+    let mut fx = stable_app("tasks-new");
+    let app = &mut fx.app;
+    tasks_setup(app);
+    app.perform(Action::Tasks(TasksAction::NewTask));
+    let key = |c: KeyCode| KeyEvent::new(c, KeyModifiers::NONE);
+    for c in "Parser crash".chars() {
+        app.handle_key(key(KeyCode::Char(c)));
+    }
+    app.handle_key(key(KeyCode::Tab));
+    app.handle_key(key(KeyCode::Char('u')));
+    let term = draw_app(app, 80, 24);
+    let marks = [Mark::bg('L', "selected", app.theme.list_selected.bg.unwrap())];
+    assert_snapshot!("tasks_new_task_dialog", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
 async fn tasks_window_unavailable() {
     let mut fx = stable_app("tasks-unavailable");
     let app = &mut fx.app;

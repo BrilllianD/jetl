@@ -5,9 +5,9 @@
 //! Tab or Enter moves to the details, which scroll; Alt+J (or a click on a
 //! related id) jumps to a related task. Alt+M changes the status, Alt+P the
 //! priority, Alt+Shift+A the assignee, Alt+Shift+T the tags and Alt+N adds a
-//! comment (all through dialogs, also in the context menu). The title shows
-//! the tracker against its remote (`↑` to push, `↓` to pull, local only);
-//! Ctrl+Alt+Y runs `yman sync`.
+//! comment (all through dialogs, also in the context menu). Alt+Insert opens the New Task
+//! dialog. The title shows the tracker against its remote (`↑` to push, `↓` to pull, local
+//! only); Ctrl+Alt+Y runs `yman sync`.
 //!
 //! The panel holds view state only: the data stays in `YmanService`. Rows
 //! are rebuilt when its `revision` moved, keeping the selection by task id.
@@ -83,6 +83,8 @@ pub struct TasksPanel {
     area: Area,
     /// The selected task's id, updated on every selection change.
     keep: Option<String>,
+    /// A new task to select once a snapshot lists it (`select_new`).
+    pending: Option<String>,
     /// The id last passed to `YmanService::load_task`.
     pub(crate) requested: Option<String>,
     /// The details' first line.
@@ -243,6 +245,17 @@ impl TasksPanel {
             self.list.set_len(0);
             return;
         };
+        if let Some(id) = self.pending.clone()
+            && let Some(t) = snap.tasks.iter().find(|t| t.id == id)
+        {
+            self.pending = None;
+            let open = snap.open.contains(&t.id);
+            if !self.passes(t, open) {
+                self.reveal(open);
+            }
+            self.set_keep(Some(id));
+            self.area = Area::List;
+        }
         self.rows = snap.tasks.iter().enumerate().filter(|(_, t)| self.passes(t, snap.open.contains(&t.id))).map(|(i, _)| i).collect();
         self.list.set_len(self.rows.len());
         if let Some(k) = &self.keep
@@ -288,6 +301,23 @@ impl TasksPanel {
         self.refilter(yman);
     }
 
+    /// Select the task `id` created just now, as soon as a snapshot lists it (the reload that
+    /// shows it may still be running), clearing the filters when they would hide it.
+    pub fn select_new(&mut self, id: String) {
+        self.pending = Some(id);
+        self.built = None;
+    }
+
+    /// Clear the filters, and show closed tasks when the task is not open.
+    fn reveal(&mut self, open: bool) {
+        self.filter.clear();
+        self.tag = None;
+        self.assignee = None;
+        if !open {
+            self.show_closed = true;
+        }
+    }
+
     /// Select `id`, clearing the filters and showing closed tasks when that
     /// is needed to list it.
     pub fn jump(&mut self, id: &str, yman: &YmanService, cx: &mut Ctx) -> bool {
@@ -298,12 +328,7 @@ impl TasksPanel {
             return false;
         };
         if !self.passes(task, open) {
-            self.filter.clear();
-            self.tag = None;
-            self.assignee = None;
-            if !open {
-                self.show_closed = true;
-            }
+            self.reveal(open);
         }
         self.set_keep(Some(id.to_string()));
         self.area = Area::List;
@@ -480,6 +505,8 @@ impl TasksPanel {
         let change = selected && !busy;
         let closed = if self.show_closed { "Hide Closed Tasks" } else { "Show Closed Tasks" };
         let items = vec![
+            MenuItem::new("New Task…", Action::Tasks(TasksAction::NewTask)).enabled(!busy),
+            MenuItem::separator(),
             MenuItem::new("Show Details", Action::Tasks(TasksAction::Details)).enabled(selected),
             MenuItem::new("Jump to Related Task…", Action::Tasks(TasksAction::JumpRelated)),
             MenuItem::separator(),
@@ -557,7 +584,7 @@ impl TasksPanel {
                 }
             }
             // The App runs these.
-            T::Refresh | T::SyncTracker => {}
+            T::Refresh | T::SyncTracker | T::NewTask => {}
         }
         if !in_details {
             self.remember(yman);
@@ -1195,6 +1222,27 @@ pub(crate) mod tests {
         assert_eq!(short_time("2026-10-25T16:06:18Z"), "2026-10-25 16:06");
         assert_eq!(short_time("yesterday"), "yesterday");
         assert_eq!(short_time(""), "");
+    }
+
+    #[test]
+    fn new_task_is_selected_once_listed() {
+        let (mut y, _rx) = service();
+        set_snapshot(&mut y, sample());
+        let mut p = TasksPanel::default();
+        p.sync(&y);
+        p.set_tag(Some("bug".into()), &y);
+        p.select_new("11".into());
+        p.sync(&y);
+        assert_ne!(p.selected_id(), Some("11"));
+        assert!(p.pending.is_some());
+        let mut s = sample();
+        s.tasks.push(row("11", "todo", "New", &["x"], None));
+        s.open.insert("11".into());
+        set_snapshot(&mut y, s);
+        p.sync(&y);
+        assert_eq!(p.selected_id(), Some("11"));
+        assert_eq!(p.tag, None);
+        assert!(p.pending.is_none());
     }
 
     #[test]
