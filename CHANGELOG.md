@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The open tabs, splits and active tab follow the git branch: switching branches (in jetl or with `git switch`, also while jetl is closed) saves the branch's set, closes the clean tabs and opens the other branch's saved ones; dirty tabs stay open, a branch not used before keeps the current tabs, a detached HEAD changes nothing.
 - The session (open tabs, carets, layout) is saved every few seconds while jetl runs, so a crash no longer loses the tabs opened since the start.
 - Test runner tree: jest runs (npx jest, yarn jest) show the Tests view too, with Rerun Failed and Run Test at Caret; jetl adds --verbose to a jest command given as a list of words.
 - Live templates and language server snippets fill in variables: `$TM_FILENAME`, `$TM_LINE_NUMBER`, `$CURRENT_YEAR`, `$CURRENT_DATE`, `$UUID` and the rest of the VS Code set except `$CLIPBOARD`; unknown ones still insert their default.

@@ -218,6 +218,17 @@ fn head_info(repo: &Repository) -> (Option<String>, Option<String>) {
     }
 }
 
+/// The checked-out branch (`None` when HEAD is detached; named also when
+/// unborn) and the local branch names, for the per-branch editor sets.
+/// `None` outside a repository.
+pub fn branch_names(root: &Path) -> Option<(Option<String>, Vec<String>)> {
+    let (repo, _) = open(root).ok()?;
+    let (current, _) = head_info(&repo);
+    let local =
+        repo.branches(Some(BranchType::Local)).ok()?.flatten().filter_map(|(b, _)| b.name().ok().flatten().map(str::to_string)).collect();
+    Some((current, local))
+}
+
 /// Which stored version of a file to read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlobWhich {
@@ -1188,6 +1199,28 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn branch_names_reports_current_and_local() {
+        let r = TempRepo::new("branch-names");
+        r.write("a.txt", "one\n");
+        stage_all(&r.dir).unwrap();
+        commit(&r.dir, "first").unwrap();
+        let main = status(&r.dir).unwrap().branch.unwrap();
+        assert_eq!(branch_names(&r.dir), Some((Some(main.clone()), vec![main.clone()])));
+        git_cli(&r.dir, &["switch", "-qc", "dev"], true);
+        let (cur, mut local) = branch_names(&r.dir).unwrap();
+        local.sort();
+        let mut want = vec![main, "dev".to_string()];
+        want.sort();
+        assert_eq!((cur.as_deref(), local), (Some("dev"), want));
+        git_cli(&r.dir, &["switch", "-q", "--detach"], true);
+        assert_eq!(branch_names(&r.dir).unwrap().0, None);
+        let plain = std::env::temp_dir().join(format!("jetl-test-not-a-repo-{}", std::process::id()));
+        std::fs::create_dir_all(&plain).unwrap();
+        assert_eq!(branch_names(&plain), None);
+        let _ = std::fs::remove_dir_all(&plain);
+    }
+
+    #[test]
     fn renames_since_ignores_renames_staged_before() {
         let r = TempRepo::new("renames-staged");
         r.write("a.txt", "one\ntwo\nthree\nfour\n");
@@ -1229,7 +1262,7 @@ pub(crate) mod tests {
 
     /// Run the git command line in `dir`; `ok` false allows a failure
     /// (a merge stopping on conflicts).
-    fn git_cli(dir: &Path, args: &[&str], ok: bool) {
+    pub(crate) fn git_cli(dir: &Path, args: &[&str], ok: bool) {
         let out = std::process::Command::new("git").args(args).current_dir(dir).output().unwrap();
         assert!(!ok || out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
     }

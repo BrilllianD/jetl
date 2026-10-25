@@ -40,6 +40,7 @@ impl App {
                 }
             }
             AppMsg::SessionLoaded { generation, session, files } => self.session_loaded(generation, session, files),
+            AppMsg::BranchSetLoaded { generation, seq, set, files } => self.branch_set_loaded(generation, seq, set, files),
             AppMsg::TreeLoaded { generation, seq, dirs } => {
                 if generation == self.workspace.generation {
                     if let Some(req) = self.project.finish_refresh(seq, dirs) {
@@ -141,6 +142,8 @@ impl App {
                         self.git.load_blame(p, base);
                     }
                 }
+                // The editor set follows the branch (also a new branch on the same commit).
+                self.sync_branch_set();
             }
             GitMsg::Blob { seq, path, which: BlobWhich::Head, text, .. } => {
                 self.editor.set_diff_base(&path, seq, text);

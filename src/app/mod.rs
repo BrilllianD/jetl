@@ -241,6 +241,8 @@ pub struct App {
     pub(crate) session_branch: Option<String>,
     /// The periodic session save.
     pub(crate) session_save: crate::workspace::SessionSave,
+    /// The branch swap whose files are being read.
+    pub(crate) branch_swap: crate::workspace::BranchSwap,
     pub git: GitService,
     /// Local history's worker (`history/`); `GitService` holds a clone.
     pub history: crate::history::Handle,
@@ -378,6 +380,7 @@ impl App {
             branch_sets: Default::default(),
             session_branch: None,
             session_save: Default::default(),
+            branch_swap: Default::default(),
             git,
             history,
             pending_revert: std::collections::HashMap::new(),
@@ -2212,6 +2215,82 @@ pub(crate) mod tests {
     pub(crate) fn feed_status(app: &mut App, seq: u64) {
         let result = crate::git::repo::status(&app.workspace.root);
         app.handle_msg(AppMsg::Git(GitMsg::Status { generation: app.git.generation, seq, result }));
+    }
+
+    fn open_names(app: &App) -> Vec<String> {
+        let mut names = app.editor.tab_names();
+        names.sort();
+        names
+    }
+
+    fn set_names(app: &App, branch: &str) -> Vec<String> {
+        app.branch_sets[branch].files.iter().map(|f| f.path.file_name().unwrap().to_string_lossy().into_owned()).collect()
+    }
+
+    fn branch_set_loaded(m: &AppMsg) -> bool {
+        matches!(m, AppMsg::BranchSetLoaded { .. })
+    }
+
+    #[tokio::test]
+    async fn branch_switch_swaps_the_editor_set() {
+        use crate::git::repo::tests::git_cli;
+        let (mut app, dir) = test_app("branch-swap");
+        init_repo(&app, &[("a.txt", "a\n"), ("b.txt", "b\n"), ("c.txt", "c\n")]);
+        let root = app.workspace.root.clone();
+        let main = crate::git::repo::status(&root).unwrap().branch.unwrap();
+        let generation = app.workspace.generation;
+        app.session_loaded(generation, crate::workspace::Session { root: root.clone(), ..Default::default() }, vec![]);
+        load(&mut app, "a.txt", "a\n");
+        load(&mut app, "b.txt", "b\n");
+        feed_status(&mut app, 1);
+        assert_eq!(app.session_branch.as_deref(), Some(main.as_str()));
+        assert_eq!(open_names(&app), ["a.txt", "b.txt"]);
+
+        // A branch never used keeps the set, which becomes main's.
+        git_cli(&root, &["switch", "-qc", "dev"], true);
+        feed_status(&mut app, 2);
+        assert_eq!(open_names(&app), ["a.txt", "b.txt"]);
+        assert_eq!(app.session_branch.as_deref(), Some("dev"));
+        assert_eq!(set_names(&app, &main), ["a.txt", "b.txt"]);
+
+        // On dev: close b, open c and edit it.
+        let b = app.editor.index_of(&root.join("b.txt")).unwrap();
+        app.editor.force_close(b);
+        load(&mut app, "c.txt", "c\n");
+        type_text(&mut app, "edit");
+
+        git_cli(&root, &["switch", "-q", &main], true);
+        feed_status(&mut app, 3);
+        assert_eq!(open_names(&app), ["a.txt", "c.txt"], "the dirty tab stays, b waits for its read");
+        handle_next(&mut app, branch_set_loaded).await;
+        assert_eq!(open_names(&app), ["a.txt", "b.txt", "c.txt"]);
+        let c = app.editor.index_of(&root.join("c.txt")).unwrap();
+        assert!(app.editor.buffers[c].dirty());
+        assert_eq!(set_names(&app, "dev"), ["a.txt", "c.txt"]);
+        assert!(!app.branch_sets.contains_key(&main));
+        let session = app.session();
+        assert_eq!(session.branch.as_deref(), Some(main.as_str()));
+        assert_eq!(session.branches.keys().collect::<Vec<_>>(), ["dev"]);
+
+        // Rapid switches: only the last swap applies, dev's set stays whole.
+        git_cli(&root, &["switch", "-q", "dev"], true);
+        feed_status(&mut app, 4);
+        git_cli(&root, &["switch", "-q", &main], true);
+        feed_status(&mut app, 5);
+        handle_next(&mut app, branch_set_loaded).await;
+        handle_next(&mut app, branch_set_loaded).await;
+        assert_eq!(open_names(&app), ["a.txt", "b.txt", "c.txt"]);
+        assert_eq!(set_names(&app, "dev"), ["a.txt", "c.txt"]);
+        assert_eq!(app.session_branch.as_deref(), Some(main.as_str()));
+        assert!(app.branch_swap.pending.is_none());
+
+        // Detached HEAD changes nothing.
+        git_cli(&root, &["switch", "-q", "--detach"], true);
+        feed_status(&mut app, 6);
+        assert_eq!(open_names(&app), ["a.txt", "b.txt", "c.txt"]);
+        assert_eq!(app.session_branch.as_deref(), Some(main.as_str()));
+        assert!(app.branch_swap.pending.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn git_op_done(m: &AppMsg) -> bool {

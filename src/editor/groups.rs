@@ -754,6 +754,23 @@ impl Editor {
         self.force_close_ids(&ids);
     }
 
+    /// A branch swap: close the clean tabs of files not in `keep` (dirty,
+    /// untitled and resolver buffers stay), then merge the groups left
+    /// into one so the incoming set's splits can be laid out
+    /// (`restore_splits` only replaces a single group). Returns how many
+    /// closed.
+    pub fn close_for_branch_swap(&mut self, keep: &[std::path::PathBuf]) -> usize {
+        let ids: Vec<BufferId> = self
+            .buffers
+            .iter()
+            .filter(|b| !b.dirty() && !self.is_merge_buffer(b.id) && b.path.as_ref().is_some_and(|p| !keep.contains(p)))
+            .map(|b| b.id)
+            .collect();
+        self.force_close_ids(&ids);
+        self.unsplit_all();
+        ids.len()
+    }
+
     /// Close the buffers `ids` that are still open, unsaved edits included.
     pub fn force_close_ids(&mut self, ids: &[BufferId]) {
         for id in ids {
@@ -1050,6 +1067,25 @@ mod tests {
 
     fn lines(n: usize) -> String {
         (0..n).map(|i| format!("line {i}\n")).collect()
+    }
+
+    #[test]
+    fn close_for_branch_swap_keeps_dirty_and_kept_tabs() {
+        let mut ed = Editor::new(&Config::default());
+        for n in ["a.txt", "b.txt", "c.txt"] {
+            open(&mut ed, n, "x\n");
+        }
+        let b = ed.index_of(std::path::Path::new("/tmp/b.txt")).unwrap();
+        ed.activate_index(b);
+        act(&mut ed, EditorAction::InsertText("!".into()));
+        act(&mut ed, EditorAction::SplitRight);
+        let closed = ed.close_for_branch_swap(&[PathBuf::from("/tmp/a.txt")]);
+        assert_eq!(closed, 1);
+        let mut names = ed.tab_names();
+        names.sort();
+        assert_eq!(names, ["a.txt", "b.txt"]);
+        assert_eq!(ed.group_ids().len(), 1);
+        ed.check_invariants();
     }
 
     #[test]

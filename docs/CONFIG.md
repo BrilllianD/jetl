@@ -25,7 +25,9 @@ each other.
 
 The log is at `$XDG_STATE_HOME/jetl/jetl.log` (usually
 `~/.local/state/jetl/jetl.log`). Sessions (per project root: open tabs, tool
-window layout, expanded Project tree folders and its hidden/ignored toggles)
+window layout, expanded Project tree folders and its hidden/ignored toggles; the open tabs, splits and
+active tab are kept per git branch: switching branches closes the clean tabs and opens the other
+branch's saved ones, dirty tabs stay, a branch not used before keeps the current tabs)
 live in `$XDG_STATE_HOME/jetl/sessions/`; recently opened project roots (the
 Recent Projects palette, Alt+Shift+E; Shift+Delete forgets one) in `$XDG_STATE_HOME/jetl/recent_projects.json`;
 scratch files (File > New Scratch File…, shared by every project) in

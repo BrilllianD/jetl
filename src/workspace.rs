@@ -4,7 +4,8 @@
 //! folders, stored as JSON in `paths.sessions_dir()/<fnv hash of root>.json`.
 //! The editor sets of other git branches live in the same file (`BranchSet`),
 //! and the running app rewrites the file every few seconds when it changed
-//! (`App::session_tick`).
+//! (`App::session_tick`). The editor set follows the checked-out branch:
+//! `Session::follow_branch` at load, `App::sync_branch_set` while running.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -142,6 +143,17 @@ pub(crate) struct SessionSave {
     writer: SessionWriter,
 }
 
+/// The branch swap in flight (`App::sync_branch_set`).
+#[derive(Debug, Default)]
+pub(crate) struct BranchSwap {
+    /// The last swap number handed out.
+    seq: u64,
+    /// The swap whose files are being read and the set it opens. Until it
+    /// lands this set counts as the current one: the session saves it and a
+    /// further switch stores it for the branch left.
+    pub(crate) pending: Option<(u64, BranchSet)>,
+}
+
 /// The plain bookmarks of a file without a tab.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -270,6 +282,35 @@ impl Session {
         BranchSet { files: self.files.clone(), active: self.active, recent: self.recent.clone(), splits: self.splits.clone() }
     }
 
+    /// Replace the top-level editor fields by `set`.
+    pub fn set_editor_set(&mut self, set: BranchSet) {
+        let BranchSet { files, active, recent, splits } = set;
+        (self.files, self.active, self.recent, self.splits) = (files, active, recent, splits);
+    }
+
+    /// Make the top-level editor set the one of `current`, the branch
+    /// checked out now (`None`, detached HEAD: the set stays and so does
+    /// `branch`). The set of the recorded branch moves into `branches`; a
+    /// branch without a stored set keeps the current one; a session without
+    /// a recorded branch adopts `current`. Then stored sets of branches not
+    /// in `local` are dropped.
+    pub fn follow_branch(&mut self, current: Option<String>, local: &[String]) {
+        if let Some(now) = current
+            && let Some(old) = self.branch.replace(now.clone())
+            && old != now
+        {
+            let outgoing = self.editor_set();
+            self.branches.insert(old, outgoing);
+            if let Some(set) = self.branches.remove(&now) {
+                self.set_editor_set(set);
+            }
+        }
+        self.branches.retain(|k, _| local.contains(k));
+        if let Some(b) = &self.branch {
+            self.branches.remove(b);
+        }
+    }
+
     pub fn file_for(sessions_dir: &Path, root: &Path) -> PathBuf {
         sessions_dir.join(format!("{:016x}.json", fnv1a64(root.as_os_str().as_encoded_bytes())))
     }
@@ -336,6 +377,8 @@ impl App {
     /// restore its session and record it as a recent project.
     pub fn do_switch_root(&mut self, root: PathBuf) {
         self.save_session();
+        // The old root's swap must not be saved as the new root's set.
+        self.branch_swap.pending = None;
         // The resolver's work is not kept across roots.
         self.editor.merge_close();
         self.format.abort_all();
@@ -418,7 +461,9 @@ impl App {
     /// The open tabs of the current root as a session, in tab order.
     pub fn session(&self) -> Session {
         let root = self.workspace.root.clone();
-        let BranchSet { files, active, recent, splits } = self.editor_set();
+        // A swap in flight: its set is the current one.
+        let BranchSet { files, active, recent, splits } =
+            self.branch_swap.pending.as_ref().map_or_else(|| self.editor_set(), |(_, s)| s.clone());
         let (show_hidden, show_ignored) = self.project.visibility();
         // Zen mode is not saved: the windows it hides are.
         let (left, bottom) = self.layout.saved_windows();
@@ -512,9 +557,7 @@ impl App {
         }
     }
 
-    /// The next tick saves the session (when loaded and changed). Used by
-    /// the branch swap (yman 299 part b).
-    #[allow(dead_code)]
+    /// The next tick saves the session (when loaded and changed).
     pub(crate) fn request_session_save(&mut self) {
         self.session_save.due = Some(Instant::now());
     }
@@ -544,15 +587,76 @@ impl App {
 
     /// Load the current root's session and its files off the main loop; the
     /// tabs open in [`App::session_loaded`]. No session arrives as an empty
-    /// one, so a pending command line file still opens.
+    /// one, so a pending command line file still opens. The session follows
+    /// the checked-out branch before its files are read.
     pub fn restore_session(&self) {
         let (dir, root, generation, tx) =
             (self.paths.sessions_dir(), self.workspace.root.clone(), self.workspace.generation, self.bus_tx.clone());
         tokio::task::spawn_blocking(move || {
-            let session = Session::load(&dir, &root).unwrap_or_else(|| Session { root, ..Default::default() });
+            let names = crate::git::repo::branch_names(&root);
+            let mut session = Session::load(&dir, &root).unwrap_or_else(|| Session { root, ..Default::default() });
+            // The branch may have changed since the session was saved.
+            if let Some((current, local)) = names {
+                session.follow_branch(current, &local);
+            }
             let files = session.files.iter().map(|f| std::fs::read(&f.path)).collect();
             let _ = tx.send(AppMsg::SessionLoaded { generation, session, files });
         });
+    }
+
+    /// Follow the checked-out branch once this root's session is loaded:
+    /// store the outgoing branch's editor set; when the new branch has one,
+    /// close the clean tabs it lacks and read its files off the main loop
+    /// (`branch_set_loaded` opens them). A branch without a stored set keeps
+    /// the current set; detached HEAD, no git and an open conflict resolver
+    /// change nothing.
+    pub(crate) fn sync_branch_set(&mut self) {
+        if self.session_save.loaded != Some(self.workspace.generation) || self.editor.merge_active() {
+            return;
+        }
+        let Some(branch) = self.git_panel.snapshot().and_then(|s| s.branch.clone()) else { return };
+        let old = match self.session_branch.replace(branch.clone()) {
+            Some(old) if old == branch => return,
+            Some(old) => old,
+            // The first branch seen: the current set is its set.
+            None => {
+                self.request_session_save();
+                return;
+            }
+        };
+        tracing::info!("branch {old} -> {branch}: switching the editor set");
+        let outgoing = match &self.branch_swap.pending {
+            Some((_, set)) => set.clone(),
+            None => self.editor_set(),
+        };
+        self.branch_sets.insert(old, outgoing);
+        self.request_session_save();
+        // Never used: keep the current set (and a read still in flight).
+        let Some(incoming) = self.branch_sets.remove(&branch) else { return };
+        let keep: Vec<PathBuf> = incoming.files.iter().map(|f| f.path.clone()).collect();
+        self.editor.close_for_branch_swap(&keep);
+        self.branch_swap.seq += 1;
+        let seq = self.branch_swap.seq;
+        self.branch_swap.pending = Some((seq, incoming.clone()));
+        let (generation, tx) = (self.workspace.generation, self.bus_tx.clone());
+        tokio::task::spawn_blocking(move || {
+            let files = incoming.files.iter().map(|f| std::fs::read(&f.path)).collect();
+            let _ = tx.send(AppMsg::BranchSetLoaded { generation, seq, set: incoming, files });
+        });
+        self.dirty_frame = true;
+    }
+
+    /// The files of a branch swap's set arrived: open them unless the root
+    /// changed or a later swap superseded this one.
+    pub(crate) fn branch_set_loaded(&mut self, generation: u64, seq: u64, set: BranchSet, files: Vec<std::io::Result<Vec<u8>>>) {
+        if generation != self.workspace.generation || self.branch_swap.pending.as_ref().map(|(s, _)| *s) != Some(seq) {
+            tracing::debug!("dropping a superseded branch set");
+            return;
+        }
+        self.branch_swap.pending = None;
+        self.open_editor_set(&set, files);
+        self.request_session_save();
+        self.dirty_frame = true;
     }
 
     /// Open a set's files that are not open yet (`files[i]` read from
@@ -631,6 +735,9 @@ impl App {
         self.session_save.loaded = Some(generation);
         self.session_save.due = Some(Instant::now() + SESSION_SAVE_EVERY);
         self.session_save.last = None;
+        // A status that arrived before the session may name another branch.
+        self.branch_swap.pending = None;
+        self.sync_branch_set();
         let pending = self.pending_open.take();
         let opening = pending.is_some();
         if let Some((path, line, col)) = pending {
@@ -801,6 +908,105 @@ mod tests {
         let set = app.editor_set();
         assert_eq!(set.files.len(), 2);
         assert_eq!(set, app.session().editor_set());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn set_of(root: &Path, names: &[&str]) -> BranchSet {
+        BranchSet { files: names.iter().map(|n| SessionFile { path: root.join(n), ..Default::default() }).collect(), ..Default::default() }
+    }
+
+    fn file_names(set: &BranchSet) -> Vec<String> {
+        set.files.iter().map(|f| f.path.file_name().unwrap().to_string_lossy().into_owned()).collect()
+    }
+
+    #[test]
+    fn follow_branch_cases() {
+        let root = PathBuf::from("/r");
+        let both = ["main".to_string(), "dev".to_string()];
+        let mut s = Session { root: root.clone(), branch: Some("main".into()), ..Default::default() };
+        s.set_editor_set(set_of(&root, &["a"]));
+        s.branches = BTreeMap::from([("dev".to_string(), set_of(&root, &["b"])), ("gone".to_string(), set_of(&root, &["c"]))]);
+        // Same branch: nothing moves, deleted branches are dropped.
+        s.follow_branch(Some("main".into()), &both);
+        assert_eq!(file_names(&s.editor_set()), ["a"]);
+        assert_eq!(s.branches.keys().collect::<Vec<_>>(), ["dev"]);
+        // Another branch with a stored set.
+        s.follow_branch(Some("dev".into()), &both);
+        assert_eq!((file_names(&s.editor_set()), s.branch.as_deref()), (vec!["b".to_string()], Some("dev")));
+        assert_eq!(s.branches.keys().collect::<Vec<_>>(), ["main"]);
+        assert_eq!(file_names(&s.branches["main"]), ["a"]);
+        // Detached HEAD changes nothing.
+        let before = s.clone();
+        s.follow_branch(None, &both);
+        assert_eq!(s, before);
+        // A branch never used keeps the set.
+        let all = ["main".to_string(), "dev".to_string(), "new".to_string()];
+        s.follow_branch(Some("new".into()), &all);
+        assert_eq!((file_names(&s.editor_set()), s.branch.as_deref()), (vec!["b".to_string()], Some("new")));
+        assert_eq!(s.branches.keys().collect::<Vec<_>>(), ["dev", "main"]);
+        assert_eq!(file_names(&s.branches["dev"]), ["b"]);
+        assert_eq!(file_names(&s.branches["main"]), ["a"]);
+        // A session without a branch adopts the current one.
+        let mut old = Session { root: root.clone(), ..Default::default() };
+        old.set_editor_set(set_of(&root, &["a"]));
+        old.follow_branch(Some("main".into()), &["main".to_string()]);
+        assert_eq!((old.branch.as_deref(), file_names(&old.editor_set())), (Some("main"), vec!["a".to_string()]));
+        assert!(old.branches.is_empty());
+    }
+
+    #[tokio::test]
+    async fn restore_follows_a_branch_changed_while_closed() {
+        use crate::app::tests::{handle_next, init_repo, test_app};
+        use crate::git::repo::tests::git_cli;
+        let (mut app, dir) = test_app("restore-branch");
+        // `App::new` started a restore of its own.
+        handle_next(&mut app, |m| matches!(m, AppMsg::SessionLoaded { .. })).await;
+        init_repo(&app, &[("a.txt", "a\n"), ("b.txt", "b\n")]);
+        let root = app.workspace.root.clone();
+        let (main, _) = crate::git::repo::branch_names(&root).unwrap();
+        let main = main.unwrap();
+        let mut s = Session { root: root.clone(), branch: Some("dev".into()), ..Default::default() };
+        s.set_editor_set(set_of(&root, &["a.txt"]));
+        s.branches.insert(main.clone(), set_of(&root, &["b.txt"]));
+        s.save(&app.paths.sessions_dir()).unwrap();
+        git_cli(&root, &["branch", "dev"], true);
+        app.restore_session();
+        handle_next(&mut app, |m| matches!(m, AppMsg::SessionLoaded { .. })).await;
+        assert_eq!(app.editor.tab_names(), ["b.txt"]);
+        assert_eq!(app.session_branch.as_deref(), Some(main.as_str()));
+        assert_eq!(app.branch_sets.keys().collect::<Vec<_>>(), ["dev"]);
+        assert_eq!(file_names(&app.branch_sets["dev"]), ["a.txt"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn superseded_branch_set_is_dropped() {
+        let (mut app, dir) = crate::app::tests::test_app("superseded-set");
+        let root = app.workspace.root.clone();
+        let generation = app.workspace.generation;
+        app.session_loaded(generation, Session { root: root.clone(), ..Default::default() }, vec![]);
+        for n in ["a.txt", "b.txt", "c.txt"] {
+            std::fs::write(root.join(n), "x\n").unwrap();
+        }
+        let set_a = set_of(&root, &["a.txt"]);
+        let mut set_b = set_of(&root, &["b.txt", "c.txt"]);
+        let leaf =
+            |file: usize| SessionNode::Leaf(SessionGroup { views: vec![SessionView { file, ..Default::default() }], active: Some(0) });
+        set_b.splits = Some(SessionSplits {
+            tree: SessionNode::Split { axis: Axis::Horizontal, ratio: 500, a: Box::new(leaf(0)), b: Box::new(leaf(1)) },
+            focused: 0,
+        });
+        let ok = || vec![Ok(b"x\n".to_vec())];
+        app.branch_swap.pending = Some((2, set_b.clone()));
+        app.branch_set_loaded(generation, 1, set_a, ok());
+        assert!(app.editor.buffers.is_empty() && app.branch_swap.pending.is_some());
+        app.branch_set_loaded(generation - 1, 2, set_b.clone(), vec![Ok(b"x\n".to_vec()), Ok(b"x\n".to_vec())]);
+        assert!(app.editor.buffers.is_empty());
+        // The second group's only file is unreadable: its group collapses.
+        app.branch_set_loaded(generation, 2, set_b, vec![Ok(b"x\n".to_vec()), Err(std::io::Error::other("gone"))]);
+        assert_eq!(app.editor.tab_names(), ["b.txt"]);
+        assert!(app.branch_swap.pending.is_none());
+        assert_eq!(app.editor.group_ids().len(), 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

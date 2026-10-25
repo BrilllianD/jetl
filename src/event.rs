@@ -34,6 +34,15 @@ pub enum AppMsg {
         session: crate::workspace::Session,
         files: Vec<std::io::Result<Vec<u8>>>,
     },
+    /// The files of a branch's editor set (`files[i]` belongs to
+    /// `set.files[i]`), read for branch swap `seq` (`App::sync_branch_set`),
+    /// tagged with the workspace generation.
+    BranchSetLoaded {
+        generation: u64,
+        seq: u64,
+        set: crate::workspace::BranchSet,
+        files: Vec<std::io::Result<Vec<u8>>>,
+    },
     /// Config files changed (`config::watch::ConfigWatcher`): which kinds,
     /// sorted. No generation: not tied to the root, and the reload reads
     /// the files when it runs.
