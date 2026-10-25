@@ -13,7 +13,7 @@ expression: "snapshot(&term, &marks, None)"
 07  ⊢│ Split down (the tab in a new group below)  editor.split_down       Alt+- │
 08   │ Local History: back to the snapshot list  local_history.left        Left │
 09   │ Unsplit (merge the group into the one beside it)  editor.unsplit         │
-10  ⟲│ Unsplit all (one group)  editor.unsplit_all                              │
+10  ⟲│ Unsplit all (one group)  editor.unsplit_all                Alt+W Shift+U │
 11   │ Local history of the file (editor) or the selected entry (Project tree;  │
 12  ⚑│ Run: previous problem (opens it)  run.prev_problem                       │
 13  9│ Previous problem (diagnostic) in the file  lsp.prev_problem     Shift+F2 │

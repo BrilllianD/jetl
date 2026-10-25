@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Alt+W then an arrow focuses the tab group on that side of the focused one (View > Focus Left Group and the others); Alt+W M moves the tab to the opposite group, Alt+W U / Shift+U unsplit and unsplit all, Alt+W O / A / P close other, all and unpinned tabs. The find bar and the Find window keep Alt+W for Whole Words.
 - Switcher popup (Ctrl+Tab, Ctrl+Shift+Tab, Navigate > Switcher…): recent tabs and the tool windows in two columns; Tab or the arrows move the selection, releasing Ctrl, Enter or a click opens it, Esc cancels. Releasing Ctrl needs a terminal with the kitty keyboard protocol, as Ctrl+Tab itself does.
 - The open tabs, splits and active tab follow the git branch: switching branches (in jetl or with `git switch`, also while jetl is closed) saves the branch's set, closes the clean tabs and opens the other branch's saved ones; dirty tabs stay open, a branch not used before keeps the current tabs, a detached HEAD changes nothing.
 - The session (open tabs, carets, layout) is saved every few seconds while jetl runs, so a crash no longer loses the tabs opened since the start.

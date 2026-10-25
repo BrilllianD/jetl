@@ -903,6 +903,12 @@ impl Editor {
                 self.cycle_group(*a == E::NextGroup);
                 return true;
             }
+            E::FocusGroupLeft | E::FocusGroupRight | E::FocusGroupUp | E::FocusGroupDown => {
+                let axis =
+                    if matches!(a, E::FocusGroupLeft | E::FocusGroupRight) { split::Axis::Horizontal } else { split::Axis::Vertical };
+                self.focus_group_toward(axis, matches!(a, E::FocusGroupRight | E::FocusGroupDown));
+                return true;
+            }
             E::Unsplit => {
                 self.unsplit(self.focused);
                 return true;
@@ -1273,6 +1279,10 @@ impl Editor {
             | E::SplitDown
             | E::NextGroup
             | E::PrevGroup
+            | E::FocusGroupLeft
+            | E::FocusGroupRight
+            | E::FocusGroupUp
+            | E::FocusGroupDown
             | E::Unsplit
             | E::UnsplitAll
             | E::MoveTabToOppositeGroup

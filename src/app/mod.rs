@@ -919,6 +919,10 @@ impl App {
                 | EditorAction::SplitDown
                 | EditorAction::NextGroup
                 | EditorAction::PrevGroup
+                | EditorAction::FocusGroupLeft
+                | EditorAction::FocusGroupRight
+                | EditorAction::FocusGroupUp
+                | EditorAction::FocusGroupDown
                 | EditorAction::Unsplit
                 | EditorAction::UnsplitAll
                 | EditorAction::MoveTabToOppositeGroup),
@@ -3205,6 +3209,28 @@ pub(crate) mod tests {
         app.session_loaded(generation, session, (0..3).map(|_| Ok(b"x\n".to_vec())).collect());
         assert_eq!(names(&app), ["x.txt", "y.txt"]);
         assert_eq!(app.editor.active_buffer().unwrap().name, "x.txt");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn alt_w_chords_drive_groups() {
+        use crossterm::event::KeyModifiers;
+        let (mut app, dir) = test_app("alt-w-groups");
+        load(&mut app, "a.txt", "a\n");
+        load(&mut app, "b.txt", "b\n");
+        app.perform(Action::Editor(EditorAction::SplitRight));
+        let ids = app.editor.group_ids();
+        app.focus.set(PanelId::Project);
+        app.handle_key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::ALT));
+        app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        assert_eq!(app.focus.current, PanelId::Editor);
+        assert_eq!(app.editor.focused_group().id, ids[0]);
+        app.handle_key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::ALT));
+        app.handle_key(KeyEvent::new(KeyCode::Char('U'), KeyModifiers::SHIFT));
+        assert_eq!(app.editor.group_ids().len(), 1);
+        let find = app.keymap.table("find").unwrap();
+        let w = crate::config::keymap::parse_chord("alt-w").unwrap();
+        assert_eq!(find.bindings.get(&w), Some(&Action::Find(crate::actions::FindAction::ToggleWord)));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

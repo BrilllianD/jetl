@@ -67,7 +67,8 @@
 "ctrl-w" = "editor.close_tab"
 # JetBrains has no default keys for these; Alt+Shift+Left/Right mirror
 # Alt+Shift+Up/Down (move line) and work in legacy terminals too. Close
-# others and close all but pinned are in the tab bar's right-click menu.
+# others and close all but pinned are in the tab bar's right-click menu and
+# on Alt+W O / Alt+W P.
 "alt-shift-left" = "editor.move_tab_left"
 "alt-shift-right" = "editor.move_tab_right"
 "alt-shift-p" = "editor.toggle_pin_tab"
@@ -79,6 +80,18 @@
 "alt-minus" = "editor.split_down"
 "alt-tab" = "editor.next_group"
 "alt-shift-tab" = "editor.prev_group"
+# Alt+W ("window") chords for tab groups and tabs; work in legacy terminals and tmux.
+# The editor find bar and the Find window keep Alt+W alone for Whole Words.
+"alt-w left" = "editor.focus_group_left"
+"alt-w right" = "editor.focus_group_right"
+"alt-w up" = "editor.focus_group_up"
+"alt-w down" = "editor.focus_group_down"
+"alt-w m" = "editor.move_tab_to_opposite_group"
+"alt-w u" = "editor.unsplit"
+"alt-w shift-u" = "editor.unsplit_all"
+"alt-w o" = "editor.close_other_tabs"
+"alt-w a" = "editor.close_all_tabs"
+"alt-w p" = "editor.close_unpinned_tabs"
 "ctrl-shift-f12" = "tool_window.hide_all"
 "shift-esc" = "tool_window.hide_focused"
 # Shift+Esc needs the kitty protocol; Alt+Shift+Q works in legacy terminals and tmux.

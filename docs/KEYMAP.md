@@ -60,6 +60,9 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Alt+Left` | `editor.prev_tab` | Previous tab |
 | `Ctrl+F4` | `editor.close_tab` | Close tab |
 | `Ctrl+W` | `editor.close_tab` | Close tab |
+| `Alt+W A` | `editor.close_all_tabs` | Close all tabs, pinned ones too |
+| `Alt+W O` | `editor.close_other_tabs` | Close other tabs (keeps pinned ones) |
+| `Alt+W P` | `editor.close_unpinned_tabs` | Close all tabs but pinned |
 | `Alt+Shift+P` | `editor.toggle_pin_tab` | Pin or unpin the active tab |
 | `Alt+Shift+Left` | `editor.move_tab_left` | Move the active tab left |
 | `Alt+Shift+Right` | `editor.move_tab_right` | Move the active tab right |
@@ -69,6 +72,13 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Alt+-` | `editor.split_down` | Split down (the tab in a new group below) |
 | `Alt+Tab` | `editor.next_group` | Next tab group |
 | `Alt+Shift+Tab` * | `editor.prev_group` | Previous tab group |
+| `Alt+W Left` | `editor.focus_group_left` | Focus the tab group to the left |
+| `Alt+W Right` | `editor.focus_group_right` | Focus the tab group to the right |
+| `Alt+W Up` | `editor.focus_group_up` | Focus the tab group above |
+| `Alt+W Down` | `editor.focus_group_down` | Focus the tab group below |
+| `Alt+W U` | `editor.unsplit` | Unsplit (merge the group into the one beside it) |
+| `Alt+W Shift+U` | `editor.unsplit_all` | Unsplit all (one group) |
+| `Alt+W M` | `editor.move_tab_to_opposite_group` | Move the active tab to the opposite group |
 | `Ctrl+0` * | `editor.goto_bookmark_0` | Go to bookmark 0 |
 | `Alt+B 0` | `editor.goto_bookmark_0` | Go to bookmark 0 |
 | `Ctrl+1` * | `editor.goto_bookmark_1` | Go to bookmark 1 |
@@ -510,12 +520,6 @@ Reachable from Find Action (F1) or by binding them in `keymap.toml`.
 | `editor.find_regex` | Find: toggle regex |
 | `editor.find_field` | Find: switch between find and replace fields |
 | `editor.select_line` | Select line |
-| `editor.close_all_tabs` | Close all tabs, pinned ones too |
-| `editor.close_other_tabs` | Close other tabs (keeps pinned ones) |
-| `editor.close_unpinned_tabs` | Close all tabs but pinned |
-| `editor.unsplit` | Unsplit (merge the group into the one beside it) |
-| `editor.unsplit_all` | Unsplit all (one group) |
-| `editor.move_tab_to_opposite_group` | Move the active tab to the opposite group |
 | `editor.to_upper_case` | To upper case (selection or word at the caret) |
 | `editor.to_lower_case` | To lower case (selection or word at the caret) |
 | `editor.sort_lines` | Sort lines (selected lines, else the whole file) |

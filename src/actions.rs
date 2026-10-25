@@ -157,6 +157,12 @@ pub enum EditorAction {
     /// Focus the next (previous) tab group.
     NextGroup,
     PrevGroup,
+    /// Focus the tab group left of (right of, above, below) the focused
+    /// one; nothing when there is none.
+    FocusGroupLeft,
+    FocusGroupRight,
+    FocusGroupUp,
+    FocusGroupDown,
     /// Merge the focused group's tabs into the group beside it.
     Unsplit,
     UnsplitAll,
@@ -688,6 +694,10 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "editor.split_down" => "Split down (the tab in a new group below)", Editor(E::SplitDown);
         "editor.next_group" => "Next tab group", Editor(E::NextGroup);
         "editor.prev_group" => "Previous tab group", Editor(E::PrevGroup);
+        "editor.focus_group_left" => "Focus the tab group to the left", Editor(E::FocusGroupLeft);
+        "editor.focus_group_right" => "Focus the tab group to the right", Editor(E::FocusGroupRight);
+        "editor.focus_group_up" => "Focus the tab group above", Editor(E::FocusGroupUp);
+        "editor.focus_group_down" => "Focus the tab group below", Editor(E::FocusGroupDown);
         "editor.unsplit" => "Unsplit (merge the group into the one beside it)", Editor(E::Unsplit);
         "editor.unsplit_all" => "Unsplit all (one group)", Editor(E::UnsplitAll);
         "editor.move_tab_to_opposite_group" => "Move the active tab to the opposite group", Editor(E::MoveTabToOppositeGroup);

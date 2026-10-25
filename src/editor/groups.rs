@@ -396,6 +396,51 @@ impl Editor {
         self.focus_group(ids[if forward { (i + 1) % n } else { (i + n - 1) % n }]);
     }
 
+    /// Alt+W and an arrow: focus the nearest group on that side of the
+    /// focused one, by the last layout; the caret row (column) picks among
+    /// neighbours. No wrap-around.
+    pub(super) fn focus_group_toward(&mut self, axis: Axis, forward: bool) {
+        let drawn = !self.center.is_empty();
+        let area = if drawn { self.center } else { Rect::new(0, 0, 400, 200) };
+        let mut leaves = Vec::new();
+        self.tree.layout(area, &mut leaves, &mut Vec::new());
+        leaves.retain(|(_, r)| r.width > 0 && r.height > 0);
+        let Some(c) = leaves.iter().find(|(g, _)| *g == self.focused).map(|(_, r)| *r) else { return };
+        // (start, end) on the main axis and on the perpendicular one.
+        let main = |r: Rect| match axis {
+            Axis::Horizontal => (i32::from(r.x), i32::from(r.x) + i32::from(r.width)),
+            Axis::Vertical => (i32::from(r.y), i32::from(r.y) + i32::from(r.height)),
+        };
+        let perp = |r: Rect| match axis {
+            Axis::Horizontal => (i32::from(r.y), i32::from(r.y) + i32::from(r.height)),
+            Axis::Vertical => (i32::from(r.x), i32::from(r.x) + i32::from(r.width)),
+        };
+        let (cm, cp) = (main(c), perp(c));
+        let caret = self.focused_group().caret_cell.filter(|_| drawn);
+        let reference = match (axis, caret) {
+            (Axis::Horizontal, Some((_, y))) => i32::from(y),
+            (Axis::Vertical, Some((x, _))) => i32::from(x),
+            _ => (cp.0 + cp.1) / 2,
+        };
+        let best = leaves
+            .iter()
+            .filter(|(g, _)| *g != self.focused)
+            .filter_map(|(g, r)| {
+                let (m, p) = (main(*r), perp(*r));
+                let distance = if forward { m.0 - cm.1 } else { cm.0 - m.1 };
+                let overlap = p.1.min(cp.1) - p.0.max(cp.0);
+                (distance >= 0 && overlap > 0).then(|| {
+                    let holds_reference = p.0 <= reference && reference < p.1;
+                    ((distance, !holds_reference, std::cmp::Reverse(overlap), p.0), *g)
+                })
+            })
+            .min_by_key(|(key, _)| *key)
+            .map(|(_, g)| g);
+        if let Some(g) = best {
+            self.focus_group(g);
+        }
+    }
+
     /// Split the focused group along `axis`: a new group to the right or
     /// below shows the same tab, with its caret and scroll, and takes focus.
     /// Refused when the group is too small to halve.
@@ -1067,6 +1112,43 @@ mod tests {
 
     fn lines(n: usize) -> String {
         (0..n).map(|i| format!("line {i}\n")).collect()
+    }
+
+    #[test]
+    fn focus_moves_by_direction() {
+        use EditorAction::{FocusGroupDown, FocusGroupLeft, FocusGroupRight, FocusGroupUp};
+        let mut ed = Editor::new(&Config::default());
+        open(&mut ed, "a.txt", &lines(40));
+        act(&mut ed, EditorAction::SplitRight);
+        let r = ed.focused;
+        act(&mut ed, EditorAction::SplitDown);
+        let br = ed.focused;
+        let l = ed.group_ids()[0];
+        assert!(l != r && r != br);
+        // Undrawn: the virtual area gives the same geometry.
+        act(&mut ed, FocusGroupUp);
+        assert_eq!(ed.focused, r);
+        act(&mut ed, FocusGroupLeft);
+        assert_eq!(ed.focused, l);
+        for a in [FocusGroupUp, FocusGroupDown, FocusGroupLeft] {
+            act(&mut ed, a);
+            assert_eq!(ed.focused, l, "nothing on that side of the left group");
+        }
+        ed.focus_group(r);
+        act(&mut ed, FocusGroupDown);
+        assert_eq!(ed.focused, br);
+        act(&mut ed, FocusGroupRight);
+        assert_eq!(ed.focused, br, "no wrap-around");
+        // Drawn: the caret row picks between the two right groups.
+        draw(&mut ed, 100, 30, false);
+        for (line, want) in [(0, r), (25, br)] {
+            ed.focus_group(l);
+            let i = ed.active().unwrap();
+            ed.buffers[i].goto_line(line, 0);
+            draw(&mut ed, 100, 30, false);
+            act(&mut ed, FocusGroupRight);
+            assert_eq!(ed.focused, want, "caret on line {line}");
+        }
     }
 
     #[test]
