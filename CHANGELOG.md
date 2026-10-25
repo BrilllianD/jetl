@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Starting jetl, or switching root, with no tab open and no file on the command line shows the Project window and focuses it instead of leaving focus on an empty editor.
 - Rerun Failed on a jest run configuration whose command is one string drops the string's own `-t`/`--testNamePattern` (after the `jest` word), so the rerun has one `-t`; a string with quotes, a backslash or a line break keeps it.
 - Markdown: a document that starts with `---` (or `+++`) and has a code fence before the next `---` line is no longer taken as YAML (or TOML) front matter; the fence and the rest are highlighted as Markdown.
 - Stage and Continue shows the plain command (`git add a.txt && git rebase --continue`) in the status bar, the Git console and Local History instead of git's pathspec syntax.

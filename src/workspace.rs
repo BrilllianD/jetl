@@ -443,7 +443,8 @@ impl App {
     /// Open the tabs of a loaded session (dropped when the root changed
     /// since), restore its layout and tree folders, then open the pending
     /// command line file and offer the root's crash dumps. Missing files and
-    /// folders, and files already open, are skipped.
+    /// folders, and files already open, are skipped. With no tab open and no
+    /// pending file, the Project window is shown and focused.
     pub fn session_loaded(&mut self, generation: u64, session: Session, files: Vec<std::io::Result<Vec<u8>>>) {
         if generation != self.workspace.generation {
             tracing::debug!("dropping stale session for {}", session.root.display());
@@ -500,8 +501,16 @@ impl App {
         self.load_run_tasks();
         let expanded: Vec<PathBuf> = session.expanded.iter().map(|d| session.root.join(d)).collect();
         self.project.expand_paths(&expanded);
-        if let Some((path, line, col)) = self.pending_open.take() {
+        let pending = self.pending_open.take();
+        let opening = pending.is_some();
+        if let Some((path, line, col)) = pending {
             self.open_file_at(path, line.saturating_sub(1), col.saturating_sub(1));
+        }
+        // Nothing to edit: start in the tree. A pending file is still loading
+        // (`buffers` is empty until `file_loaded`), and zen mode is the user's.
+        if !opening && self.editor.buffers.is_empty() && self.layout.zen.is_none() {
+            self.layout.show(ToolWindowId::Project);
+            self.focus.set(PanelId::Project);
         }
         self.offer_recovery();
         self.dirty_frame = true;
@@ -851,6 +860,7 @@ mod tests {
         app.project.reroot(root.clone());
         assert!(app.project.row_names().contains(&".hidden".to_string()), "the default config shows hidden files");
         app.focus.set(PanelId::Project);
+        app.editor.open_text(root.join("a/deep/x.txt"), "", false, &app.theme);
         let layout = SessionLayout {
             left: None,
             left_w: 0,
@@ -874,6 +884,66 @@ mod tests {
         let saved = app.session();
         assert_eq!(saved.layout, Some(SessionLayout { left_w: crate::ui::layout::MIN_LEFT_W, ..layout }));
         assert_eq!(saved.expanded, [PathBuf::from("a"), PathBuf::from("a/deep")]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn empty_session(root: &Path) -> Session {
+        let layout = SessionLayout {
+            left: None,
+            left_w: 30,
+            bottom: None,
+            bottom_h: 10,
+            git_tab: GitTab::Commit,
+            show_hidden: true,
+            show_ignored: false,
+        };
+        Session { root: root.to_path_buf(), layout: Some(layout), ..Default::default() }
+    }
+
+    #[tokio::test]
+    async fn empty_session_focuses_the_project_tree() {
+        let (mut app, dir) = crate::app::tests::test_app("session-empty-focus");
+        let session = empty_session(&app.workspace.root);
+        let generation = app.workspace.generation;
+        app.session_loaded(generation, session, vec![]);
+        assert!(app.focus.is(PanelId::Project));
+        assert_eq!(app.layout.left, Some(ToolWindowId::Project));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn session_with_a_tab_keeps_the_editor_focused() {
+        let (mut app, dir) = crate::app::tests::test_app("session-tab-focus");
+        let root = app.workspace.root.clone();
+        let path = root.join("a.txt");
+        std::fs::write(&path, "x\n").unwrap();
+        let session = Session { files: vec![SessionFile { path, ..Default::default() }], ..empty_session(&root) };
+        let generation = app.workspace.generation;
+        app.session_loaded(generation, session, vec![Ok(b"x\n".to_vec())]);
+        assert_eq!(app.editor.buffers.len(), 1);
+        assert!(app.focus.is(PanelId::Editor));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn pending_file_or_zen_keeps_the_focus() {
+        let (mut app, dir) = crate::app::tests::test_app("session-pending-focus");
+        let root = app.workspace.root.clone();
+        std::fs::write(root.join("b.txt"), "b\n").unwrap();
+        app.pending_open = Some((root.join("b.txt"), 1, 1));
+        let generation = app.workspace.generation;
+        app.session_loaded(generation, empty_session(&root), vec![]);
+        assert!(app.focus.is(PanelId::Editor));
+        assert!(app.pending_open.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let (mut app, dir) = crate::app::tests::test_app("session-zen-focus");
+        let root = app.workspace.root.clone();
+        app.layout.enter_zen(PanelId::Editor);
+        let generation = app.workspace.generation;
+        app.session_loaded(generation, empty_session(&root), vec![]);
+        assert!(app.layout.zen.is_some());
+        assert!(app.focus.is(PanelId::Editor));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
