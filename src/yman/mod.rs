@@ -147,9 +147,8 @@ impl YmanService {
         if self.snapshot.request() {
             self.spawn_snapshot();
         }
-        if let Some(t) = &self.task {
-            let id = t.id.clone();
-            self.load_task(&id);
+        if self.task_want.is_some() && self.task_load.request() {
+            self.spawn_task();
         }
         if self.tags.is_some() {
             self.load_tags();
@@ -334,6 +333,26 @@ mod tests {
         s.on_msg(second);
         assert_eq!(s.task.as_ref().map(|t| t.id.as_str()), Some("2"));
         assert!(tokio::time::timeout(Duration::from_millis(300), rx.recv()).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn refresh_keeps_the_wanted_task() {
+        let (mut s, mut rx) = service();
+        s.want();
+        s.load_task("1");
+        // The snapshot and the task result, in either order.
+        for _ in 0..2 {
+            let m = next(&mut rx).await;
+            s.on_msg(m);
+        }
+        s.load_task("2");
+        s.refresh();
+        // Task 2, the snapshot, then the held-back task reload.
+        for _ in 0..3 {
+            let m = next(&mut rx).await;
+            s.on_msg(m);
+        }
+        assert_eq!(s.task.as_ref().map(|t| t.id.as_str()), Some("2"));
     }
 
     #[tokio::test]
