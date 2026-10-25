@@ -1,5 +1,6 @@
 //! Filesystem watcher: one debounced, recursive watch on the project root
-//! (plus the git directory of a linked worktree, which lives outside it).
+//! (plus a linked worktree's git directory and the common git directory's
+//! `HEAD`, `refs/` and `worktrees/`, which live outside it).
 //! Each batch becomes an `AppMsg::FsChanged` tagged with the workspace
 //! generation; the app refreshes the tree, git state and open buffers.
 
@@ -76,9 +77,11 @@ pub fn start(root: &Path, generation: u64, tx: UnboundedSender<AppMsg>) -> anyho
         }
     })?;
     debouncer.watch(root, RecursiveMode::Recursive)?;
-    // A linked worktree's HEAD and index live in the main repository.
-    for d in git_dirs.iter().filter(|d| !d.starts_with(root)) {
-        if let Err(e) = debouncer.watch(d, RecursiveMode::NonRecursive) {
+    // A linked worktree's HEAD and index live in the main repository, its
+    // refs (yman's `refs/yman/local` included) and the other worktrees in
+    // the common git directory.
+    for (d, mode) in outside_watches(root, &git_dirs) {
+        if let Err(e) = debouncer.watch(&d, mode) {
             tracing::warn!("watcher: cannot watch {}: {e}", d.display());
         }
     }
@@ -212,8 +215,45 @@ fn renames_of<'a>(
         .collect()
 }
 
-/// Git directories whose changes mean a git refresh: `root/.git`, or the
-/// directory a `.git` file points to (linked worktree).
+/// The common git directory of a linked worktree's git dir, from its
+/// `commondir` file (relative to `git_dir`, or absolute).
+fn common_dir(git_dir: &Path) -> Option<PathBuf> {
+    let text = std::fs::read_to_string(git_dir.join("commondir")).ok()?;
+    let rel = text.trim();
+    if rel.is_empty() {
+        return None;
+    }
+    let p = git_dir.join(rel);
+    Some(std::fs::canonicalize(&p).unwrap_or(p))
+}
+
+/// What `start` watches besides the root: git dirs outside it
+/// non-recursively, and a linked worktree's common `refs/` and
+/// `worktrees/` recursively (never `objects/`).
+fn outside_watches(root: &Path, git_dirs: &[PathBuf]) -> Vec<(PathBuf, RecursiveMode)> {
+    let outside: Vec<&PathBuf> = git_dirs.iter().filter(|d| !d.starts_with(root)).collect();
+    let mut recursive: Vec<PathBuf> = Vec::new();
+    for d in &outside {
+        if let Some(c) = common_dir(d) {
+            for sub in [c.join("refs"), c.join("worktrees")] {
+                if !recursive.contains(&sub) {
+                    recursive.push(sub);
+                }
+            }
+        }
+    }
+    let mut out: Vec<(PathBuf, RecursiveMode)> = outside
+        .into_iter()
+        .filter(|d| !recursive.iter().any(|r| d.starts_with(r)))
+        .map(|d| (d.clone(), RecursiveMode::NonRecursive))
+        .collect();
+    out.extend(recursive.into_iter().map(|r| (r, RecursiveMode::Recursive)));
+    out
+}
+
+/// Git directories whose changes mean a git refresh: `root/.git`, or for a
+/// linked worktree the directory its `.git` file points to and the common git
+/// directory named by that directory's `commondir`.
 fn git_dirs(root: &Path) -> Vec<PathBuf> {
     let dot = root.join(".git");
     let mut dirs = vec![dot.clone()];
@@ -221,7 +261,13 @@ fn git_dirs(root: &Path) -> Vec<PathBuf> {
         && let Some(target) = text.trim().strip_prefix("gitdir:")
     {
         let target = root.join(target.trim());
-        dirs.push(std::fs::canonicalize(&target).unwrap_or(target));
+        let linked = std::fs::canonicalize(&target).unwrap_or(target);
+        dirs.push(linked.clone());
+        if let Some(common) = common_dir(&linked)
+            && !dirs.contains(&common)
+        {
+            dirs.push(common);
+        }
     }
     dirs
 }
@@ -256,7 +302,7 @@ mod tests {
     #[test]
     fn git_metadata_is_filtered_and_paths_deduplicated() {
         let root = Path::new("/p");
-        let dirs = [root.join(".git"), PathBuf::from("/main/.git/worktrees/p")];
+        let dirs = [root.join(".git"), PathBuf::from("/main/.git/worktrees/p"), PathBuf::from("/main/.git")];
         let c = |v: &[&str]| {
             let paths: Vec<PathBuf> = v.iter().map(PathBuf::from).collect();
             classify(root, &dirs, paths.iter())
@@ -268,6 +314,15 @@ mod tests {
         assert_eq!(c(&["/p/.git/worktrees/-yman/index", "/p/.git/worktrees/-yman/index.lock"]), Changes::default(), "yman reads");
         assert!(c(&["/p/.git/refs/yman/local"]).git, "yman writes");
         assert!(c(&["/p/.git/worktrees/-yman/HEAD"]).git);
+        assert!(c(&["/main/.git/refs/yman/local"]).git, "common dir yman writes");
+        assert!(c(&["/main/.git/worktrees/-yman/HEAD"]).git);
+        assert!(c(&["/main/.git/packed-refs"]).git);
+        assert_eq!(
+            c(&["/main/.git/worktrees/-yman/index", "/main/.git/worktrees/-yman/index.lock"]),
+            Changes::default(),
+            "common dir yman reads"
+        );
+        assert_eq!(c(&["/main/.git/objects/ab/cdef", "/main/.git/logs/refs/heads/main"]), Changes::default());
         let both = c(&["/p/src/a.rs", "/p/src/a.rs", "/p/.git/HEAD", "/elsewhere/x"]);
         assert_eq!(both, Changes { paths: vec![PathBuf::from("/p/src/a.rs")], git: true, ..Default::default() });
     }
@@ -413,11 +468,61 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("jetl-test-gitdirs-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("main/.git/worktrees/wt")).unwrap();
+        std::fs::create_dir_all(dir.join("main/.git/refs")).unwrap();
         std::fs::create_dir_all(dir.join("wt")).unwrap();
         std::fs::write(dir.join("wt/.git"), format!("gitdir: {}\n", dir.join("main/.git/worktrees/wt").display())).unwrap();
+        std::fs::write(dir.join("main/.git/worktrees/wt/commondir"), "../..\n").unwrap();
         let dirs = git_dirs(&dir.join("wt"));
         assert_eq!(dirs[1], std::fs::canonicalize(dir.join("main/.git/worktrees/wt")).unwrap());
+        assert_eq!(dirs.len(), 3);
+        assert_eq!(dirs[2], std::fs::canonicalize(dir.join("main/.git")).unwrap());
         assert_eq!(git_dirs(&dir.join("main")).len(), 1);
+        let wt = std::fs::canonicalize(dir.join("wt")).unwrap();
+        let common = dirs[2].clone();
+        assert_eq!(
+            outside_watches(&wt, &dirs),
+            vec![
+                (common.clone(), RecursiveMode::NonRecursive),
+                (common.join("refs"), RecursiveMode::Recursive),
+                (common.join("worktrees"), RecursiveMode::Recursive),
+            ]
+        );
+        let main = std::fs::canonicalize(dir.join("main")).unwrap();
+        assert!(outside_watches(&main, &git_dirs(&main)).is_empty());
+        std::fs::remove_file(dir.join("main/.git/worktrees/wt/commondir")).unwrap();
+        assert_eq!(git_dirs(&dir.join("wt")).len(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn reports_a_common_dir_change_from_a_linked_worktree() {
+        let dir = std::env::temp_dir().join(format!("jetl-test-watch-wt-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("main/.git/refs/yman")).unwrap();
+        std::fs::create_dir_all(dir.join("main/.git/worktrees/wt")).unwrap();
+        std::fs::create_dir_all(dir.join("main/.git/worktrees/-yman")).unwrap();
+        std::fs::create_dir_all(dir.join("wt")).unwrap();
+        let dir = std::fs::canonicalize(&dir).unwrap();
+        let wt = dir.join("wt");
+        std::fs::write(wt.join(".git"), format!("gitdir: {}\n", dir.join("main/.git/worktrees/wt").display())).unwrap();
+        std::fs::write(dir.join("main/.git/worktrees/wt/commondir"), "../..\n").unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let _w = tokio::task::spawn_blocking({
+            let wt = wt.clone();
+            move || start(&wt, 7, tx)
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        std::fs::write(dir.join("main/.git/worktrees/-yman/index"), "i").unwrap();
+        std::fs::write(dir.join("main/.git/refs/yman/local"), "0000").unwrap();
+        loop {
+            match tokio::time::timeout(Duration::from_secs(5), rx.recv()).await {
+                Ok(Some(AppMsg::FsChanged { generation: 7, changes })) if changes.git => break,
+                Ok(Some(_)) => {}
+                other => panic!("expected a git FsChanged, got {other:?}"),
+            }
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
