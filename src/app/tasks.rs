@@ -106,7 +106,7 @@ impl App {
 
     /// Fresh `yman tags` for an open New Task form.
     pub(super) fn refresh_new_task_tags(&mut self) {
-        if !matches!(self.dialog.as_ref().map(|d| &d.kind), Some(DialogKind::NewTask(_))) || !matches!(self.yman.tags, Some(Ok(_))) {
+        if !matches!(self.dialog.as_ref().map(|d| &d.kind), Some(DialogKind::NewTask(_))) {
             return;
         }
         let tags = self.known_tags();
@@ -783,6 +783,25 @@ mod tests {
         let DialogKind::NewTask(f) = &mut app.dialog.as_mut().unwrap().kind else { panic!("not the form") };
         f.handle_key(key(KeyCode::Tab));
         assert_eq!(f.suggestions(), ["zeta", "ui"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn new_task_tags_fall_back_to_snapshot_when_yman_tags_fails() {
+        let (mut app, dir) = tasks_app("tasks-new-tags-fail");
+        app.perform(Action::Tasks(TasksAction::NewTask));
+        {
+            let DialogKind::NewTask(f) = &mut app.dialog.as_mut().unwrap().kind else { panic!("not the form") };
+            f.set_known_tags(vec![]);
+        }
+        app.yman.tags = Some(Err(YmanError::NotInitialized));
+        set_snapshot(&mut app.yman, sample());
+        app.refresh_new_task_tags();
+        let expected = app.known_tags();
+        assert!(!expected.is_empty());
+        let DialogKind::NewTask(f) = &mut app.dialog.as_mut().unwrap().kind else { panic!("not the form") };
+        f.handle_key(key(KeyCode::Tab));
+        assert_eq!(f.suggestions(), expected);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

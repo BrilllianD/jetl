@@ -185,19 +185,30 @@ impl NewTaskForm {
         &self.inputs[Field::Tags as usize].text
     }
 
-    /// The text after the last whitespace or comma of the Tags input.
-    fn current_word(&self) -> &str {
-        let t = self.tags_text();
-        t.rsplit(|c: char| c.is_whitespace() || c == ',').next().unwrap_or("")
+    /// Byte range of the Tags word under the cursor; empty when the cursor sits between words.
+    fn word_span(&self) -> (usize, usize) {
+        let input = &self.inputs[Field::Tags as usize];
+        let t = input.text.as_str();
+        let sep = |c: char| c.is_whitespace() || c == ',';
+        let at = t.char_indices().nth(input.cursor).map_or(t.len(), |(b, _)| b);
+        let start = t[..at].char_indices().rev().find(|&(_, c)| sep(c)).map_or(0, |(i, c)| i + c.len_utf8());
+        let end = t[at..].find(sep).map_or(t.len(), |i| at + i);
+        (start, end)
     }
 
-    /// Known tags that are not entered yet and complete the word being typed; all unentered ones
-    /// while no word is being typed.
+    fn current_word(&self) -> &str {
+        let (s, e) = self.word_span();
+        &self.tags_text()[s..e]
+    }
+
+    /// Known tags that are not entered yet and complete the word under the cursor; all unentered
+    /// ones while the cursor is between words.
     pub fn suggestions(&self) -> Vec<String> {
-        let word = self.current_word();
-        let head = &self.tags_text()[..self.tags_text().len() - word.len()];
-        let typed: Vec<String> = parse_tags(head).iter().map(|t| t.to_lowercase()).collect();
-        let w = word.to_lowercase();
+        let (s, e) = self.word_span();
+        let t = self.tags_text();
+        let others = format!("{} {}", &t[..s], &t[e..]);
+        let typed: Vec<String> = parse_tags(&others).iter().map(|t| t.to_lowercase()).collect();
+        let w = t[s..e].to_lowercase();
         self.known
             .iter()
             .filter(|k| {
@@ -208,7 +219,7 @@ impl NewTaskForm {
             .collect()
     }
 
-    /// Replaces the word being typed with the first suggestion; whether it did.
+    /// Replaces the word under the cursor with the first suggestion; whether it did.
     fn complete(&mut self) -> bool {
         if self.current_word().is_empty() {
             return false;
@@ -222,18 +233,25 @@ impl NewTaskForm {
         }
     }
 
-    /// The word being typed becomes `tag` and a space; with no word, `tag` is appended.
+    /// The word under the cursor becomes `tag` and a separator; with no word, `tag` is inserted.
     fn apply_suggestion(&mut self, tag: &str) {
-        let word_len = self.current_word().len();
+        let (start, end) = self.word_span();
+        let sep = |c: char| c.is_whitespace() || c == ',';
         let input = &mut self.inputs[Field::Tags as usize];
-        let keep = input.text.len() - word_len;
-        input.text.truncate(keep);
-        if word_len == 0 && !input.text.is_empty() && !input.text.ends_with(|c: char| c.is_whitespace() || c == ',') {
-            input.text.push(' ');
+        let mut head = input.text[..start].to_string();
+        if !head.is_empty() && !head.ends_with(sep) {
+            head.push(' ');
         }
-        input.text.push_str(tag);
-        input.text.push(' ');
-        input.cursor = input.text.chars().count();
+        head.push_str(tag);
+        let tail = &input.text[end..];
+        let cursor = head.chars().count() + 1;
+        let mut text = head;
+        if !tail.starts_with(sep) {
+            text.push(' ');
+        }
+        text.push_str(tail);
+        input.text = text;
+        input.cursor = cursor.min(input.text.chars().count());
     }
 
     pub fn validate(&self) -> Result<NewTask, (Field, String)> {
@@ -345,9 +363,12 @@ impl NewTaskForm {
             let end = input_x + input_w;
             let prefix = "Tab: ";
             let mut cx = input_x;
-            frame.buffer_mut().set_stringn(cx, row, prefix, (end - cx) as usize, base.patch(theme.dim));
-            cx += prefix.width() as u16;
-            for (i, tag) in self.suggestions().into_iter().enumerate() {
+            let suggestions = self.suggestions();
+            if !suggestions.is_empty() {
+                frame.buffer_mut().set_stringn(cx, row, prefix, (end - cx) as usize, base.patch(theme.dim));
+                cx += prefix.width() as u16;
+            }
+            for (i, tag) in suggestions.into_iter().enumerate() {
                 if cx >= end {
                     break;
                 }
@@ -440,6 +461,40 @@ mod tests {
         assert_eq!(f.suggestions(), ["ui", "build"]);
         f.handle_key(key(KeyCode::Tab));
         assert_eq!(f.focus(), Field::Priority);
+    }
+
+    #[test]
+    fn tab_completes_the_word_under_the_cursor() {
+        let mut f = form();
+        f.handle_key(key(KeyCode::Tab));
+        f.input_mut(Field::Tags).set_text("bu x");
+        for _ in 0..2 {
+            f.handle_key(key(KeyCode::Left));
+        }
+        f.handle_key(key(KeyCode::Left));
+        assert_eq!(f.suggestions(), ["bug", "build"]);
+        f.handle_key(key(KeyCode::Tab));
+        assert_eq!(f.input_mut(Field::Tags).text, "bug x");
+        assert_eq!(f.input_mut(Field::Tags).cursor, 4);
+        assert_eq!(f.focus(), Field::Tags);
+    }
+
+    #[test]
+    fn no_suggestion_row_without_matches() {
+        let mut f = form();
+        f.handle_key(key(KeyCode::Tab));
+        type_str(&mut f, "zzz");
+        assert!(f.suggestions().is_empty());
+        let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let theme = Theme::default();
+        term.draw(|fr| {
+            f.render(fr, fr.area(), &theme, "New Task");
+        })
+        .unwrap();
+        let buf = term.backend().buffer();
+        let row = f.field_rects[Field::Tags as usize].y + 1;
+        let line: String = (0..buf.area.width).map(|x| buf[(x, row)].symbol()).collect();
+        assert!(!line.contains("Tab: ") && line.trim_matches(|c: char| c == ' ' || c == '│').is_empty(), "{line}");
     }
 
     #[test]
