@@ -286,6 +286,8 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 
 | Keys | Action | Description |
 |---|---|---|
+| `Alt+Right` | `tool_window.next_tab` | Next tab of the tool window |
+| `Alt+Left` | `tool_window.prev_tab` | Previous tab of the tool window |
 | `F5` | `git.refresh` | Git: refresh |
 | `Space` | `git.toggle_stage` | Git: stage/unstage selected (in the diff: the current change) |
 | `Ctrl+Alt+A` | `git.stage_all` | Git: stage all |
@@ -469,6 +471,8 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | Keys | Action | Description |
 |---|---|---|
 | `Esc` | `app.focus_editor` | Focus editor |
+| `Alt+Right` | `tool_window.next_tab` | Next tab of the tool window |
+| `Alt+Left` | `tool_window.prev_tab` | Previous tab of the tool window |
 | `T` | `run.toggle_view` | Run: switch between output and the test tree |
 | `Right` | `run.expand` | Run: expand the selected tree row |
 | `Left` | `run.collapse` | Run: collapse the selected tree row |

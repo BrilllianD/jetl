@@ -120,6 +120,8 @@ pub const MAIN_MENU: &[(&str, char, &[Row])] = &[
             Item("Hide All Tool Windows", "tool_window.hide_all"),
             Item("Maximize Tool Window", "tool_window.maximize"),
             Item("Jump to Last Tool Window", "tool_window.last"),
+            Item("Next Tool Window Tab", "tool_window.next_tab"),
+            Item("Previous Tool Window Tab", "tool_window.prev_tab"),
             Item("Zen Mode", "app.zen"),
             Sep,
             Item("Split Right", "editor.split_right"),

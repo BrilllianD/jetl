@@ -33,6 +33,10 @@ pub enum AppAction {
     HideFocusedToolWindow,
     /// Move the focused tool window's free edge (Ctrl+Shift+arrows).
     ResizeToolWindow(Dir),
+    /// The focused tool window's next inner tab (Git, Run), wrapping.
+    NextToolWindowTab,
+    /// The focused tool window's previous inner tab, wrapping.
+    PrevToolWindowTab,
     /// Make the focused tool window fill the content area, or restore it.
     MaximizeToolWindow,
     /// Focus the tool window that last had focus, showing it first (F12).
@@ -614,6 +618,8 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "tool_window.stretch_right" => "Stretch tool window to the right", App(AppAction::ResizeToolWindow(Dir::Right));
         "tool_window.stretch_up" => "Stretch tool window up", App(AppAction::ResizeToolWindow(Dir::Up));
         "tool_window.stretch_down" => "Stretch tool window down", App(AppAction::ResizeToolWindow(Dir::Down));
+        "tool_window.next_tab" => "Next tab of the tool window", App(AppAction::NextToolWindowTab);
+        "tool_window.prev_tab" => "Previous tab of the tool window", App(AppAction::PrevToolWindowTab);
         "tool_window.maximize" => "Maximize or restore the active tool window", App(AppAction::MaximizeToolWindow);
         "tool_window.last" => "Jump to the last active tool window", App(AppAction::LastToolWindow);
         "app.zen" => "Toggle Zen mode (editor text only)", App(AppAction::ToggleZen);
@@ -1009,6 +1015,8 @@ impl Action {
     /// first; used to look up the shortcut shown next to it.
     pub fn contexts(&self) -> &'static [&'static str] {
         match self {
+            // Bound only in the windows that have inner tabs.
+            Action::App(AppAction::NextToolWindowTab | AppAction::PrevToolWindowTab) => &["git", "run"],
             Action::App(_) => &["global"],
             Action::Editor(EditorAction::Merge(_)) => &["editor.merge"],
             Action::Editor(EditorAction::NextTabstop | EditorAction::PrevTabstop) => &["editor.snippet"],

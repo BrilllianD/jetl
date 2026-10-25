@@ -625,7 +625,10 @@ in `ui::render` on its side; route its mouse in `App::forward_mouse`; send
 its actions from `App::perform`; add an `[<context>]` table to the default
 keymap and a `tool_window.<name>` registry entry
 (`AppAction::ToggleToolWindow`) bound to its Alt+number key (or another
-key; `number` is then `None`).
+key; `number` is then `None`). A window with inner tabs also adds an arm to
+`App::cycle_tool_window_tab`, binds `alt-right` / `alt-left` to
+`tool_window.next_tab` / `tool_window.prev_tab` in its table, and adds the
+table to those actions' arm in `Action::contexts`.
 
 **A new dialog.** Add a `DialogId` variant (carry a `BufferId` or path,
 never a tab index), open it with `Effect::Dialog(Dialog::confirm|input|choice

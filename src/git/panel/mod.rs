@@ -55,6 +55,19 @@ pub enum GitTab {
     Stash,
 }
 
+impl GitTab {
+    /// The tabs in on-screen order (`render_header`), which is not the
+    /// variant order: variants are stored in sessions.
+    pub const ORDER: [GitTab; 4] = [GitTab::Commit, GitTab::Log, GitTab::Stash, GitTab::Console];
+
+    /// The next tab to the right, or to the left, wrapping around.
+    pub fn step(self, forward: bool) -> GitTab {
+        let n = Self::ORDER.len();
+        let i = Self::ORDER.iter().position(|t| *t == self).unwrap_or(0);
+        Self::ORDER[if forward { (i + 1) % n } else { (i + n - 1) % n }]
+    }
+}
+
 /// Which part of the window has keyboard focus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Area {
@@ -776,4 +789,21 @@ fn put(buf: &mut Screen, x: &mut u16, y: u16, right: u16, text: &str, style: Sty
     let r = Rect::new(*x, y, w, 1);
     *x += w;
     r
+}
+
+#[cfg(test)]
+mod step_tests {
+    use super::GitTab;
+
+    #[test]
+    fn git_tab_step_wraps_in_screen_order() {
+        let mut t = GitTab::Commit;
+        let mut seen = vec![];
+        for _ in 0..4 {
+            t = t.step(true);
+            seen.push(t);
+        }
+        assert_eq!(seen, [GitTab::Log, GitTab::Stash, GitTab::Console, GitTab::Commit]);
+        assert_eq!(GitTab::Commit.step(false), GitTab::Console);
+    }
 }

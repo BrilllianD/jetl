@@ -1110,6 +1110,8 @@ impl App {
                 }
             }
             AppAction::ResizeToolWindow(dir) => self.resize_tool_window(dir),
+            AppAction::NextToolWindowTab => self.cycle_tool_window_tab(true),
+            AppAction::PrevToolWindowTab => self.cycle_tool_window_tab(false),
             AppAction::MaximizeToolWindow => {
                 if let Some(tw) = self.focus.current.tool_window() {
                     self.layout.toggle_maximize(tw);
@@ -1213,6 +1215,21 @@ impl App {
     /// along the other axis do nothing. With the editor focused the arrow's
     /// axis picks the window, and the editor keeps Ctrl+Shift+Left/Right for
     /// word selection.
+    /// Alt+Right / Alt+Left in a tool window with inner tabs: the next or
+    /// previous tab, wrapping. The focused panel decides; one without tabs
+    /// (and the editor) ignores it.
+    fn cycle_tool_window_tab(&mut self, forward: bool) {
+        match self.focus.current {
+            PanelId::Git => {
+                let tab = self.git_panel.tab.step(forward);
+                self.set_git_tab(tab);
+            }
+            // Two views: either direction flips them; no-op without tests.
+            PanelId::Run => self.perform(Action::Run(RunAction::ToggleView)),
+            _ => {}
+        }
+    }
+
     fn resize_tool_window(&mut self, dir: Dir) {
         const STEP_W: i16 = 2;
         const STEP_H: i16 = 1;
@@ -2418,6 +2435,81 @@ pub(crate) mod tests {
         assert_eq!(app.layout.bottom_h, h + 1);
         app.perform(Action::App(AppAction::ResizeToolWindow(Dir::Right)));
         assert_eq!(app.layout.left_w, w + 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn alt(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::ALT)
+    }
+
+    #[tokio::test]
+    async fn alt_arrows_cycle_the_git_window_tabs() {
+        use crate::actions::GitAction;
+        use crate::git::panel::GitTab;
+        let (mut app, dir) = test_app("alt-arrows-git");
+        app.layout.compute(Rect::new(0, 0, 120, 30));
+        app.toggle_tool_window(ToolWindowId::Git);
+        assert!(app.focus.is(PanelId::Git));
+        assert_eq!(app.git_panel.tab, GitTab::Commit);
+        for want in [GitTab::Log, GitTab::Stash, GitTab::Console, GitTab::Commit] {
+            app.handle_key(alt(KeyCode::Right));
+            assert_eq!(app.git_panel.tab, want);
+        }
+        app.handle_key(alt(KeyCode::Left));
+        assert_eq!(app.git_panel.tab, GitTab::Console);
+        app.perform(Action::Git(GitAction::TabCommit));
+        app.perform(Action::Git(GitAction::FocusMessage));
+        assert!(app.git_panel.message_focused());
+        app.handle_key(alt(KeyCode::Right));
+        assert_eq!(app.git_panel.tab, GitTab::Commit, "the message box keeps the key");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn alt_arrows_flip_the_run_views() {
+        use crate::run::panel::View;
+        let (mut app, dir) = test_app("alt-arrows-run");
+        app.layout.compute(Rect::new(0, 0, 120, 30));
+        app.toggle_tool_window(ToolWindowId::Run);
+        assert!(app.focus.is(PanelId::Run));
+        app.run_panel.start("t", "cargo test", true);
+        assert_eq!(app.run_panel.view(), View::Tests);
+        app.handle_key(alt(KeyCode::Right));
+        assert_eq!(app.run_panel.view(), View::Output);
+        app.handle_key(alt(KeyCode::Left));
+        assert_eq!(app.run_panel.view(), View::Tests);
+        app.run_panel.start("o", "echo", false);
+        app.handle_key(alt(KeyCode::Right));
+        assert_eq!(app.run_panel.view(), View::Output);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn alt_arrows_elsewhere_still_switch_editor_tabs() {
+        let (mut app, dir) = test_app("alt-arrows-editor");
+        load(&mut app, "a.txt", "a\n");
+        let b = load(&mut app, "b.txt", "b\n");
+        app.focus.set(PanelId::Editor);
+        assert_eq!(app.editor.active_path(), Some(b.as_path()));
+        app.handle_key(alt(KeyCode::Right));
+        let after_key = app.editor.active_path().map(|p| p.to_path_buf());
+        app.handle_key(alt(KeyCode::Left));
+        assert_eq!(app.editor.active_path(), Some(b.as_path()));
+        app.perform(Action::Editor(EditorAction::NextTab));
+        assert_eq!(app.editor.active_path().map(|p| p.to_path_buf()), after_key);
+        assert_ne!(after_key.as_deref(), Some(b.as_path()));
+        app.focus.set(PanelId::Project);
+        let before = app.editor.active_path().map(|p| p.to_path_buf());
+        app.perform(Action::App(AppAction::NextToolWindowTab));
+        assert_eq!(app.editor.active_path().map(|p| p.to_path_buf()), before);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn tool_window_tab_shortcut_is_shown() {
+        let (app, dir) = test_app("tool-window-tab-shortcut");
+        assert_eq!(app.shortcut(&Action::App(AppAction::NextToolWindowTab)).as_deref(), Some("Alt+Right"));
+        assert_eq!(app.shortcut(&Action::App(AppAction::PrevToolWindowTab)).as_deref(), Some("Alt+Left"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

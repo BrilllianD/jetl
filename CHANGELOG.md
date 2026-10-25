@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Alt+Right / Alt+Left switch the tabs inside the focused Git window (Commit, Log, Stash, Console, wrapping) and flip the Run window's Output and Tests views (View > Next / Previous Tool Window Tab). In these windows they no longer switch editor tabs; the commit message box and the Terminal keep them for the caret and the shell.
 - Tool windows: Alt+Shift+M (Ctrl+Shift+' with the kitty protocol, View > Maximize Tool Window, or a double-click on the window's top border) makes the focused tool window fill the area right of the strip; focusing anything else restores the layout. F12 jumps to the last active tool window (View > Jump to Last Tool Window), showing it if hidden. Alt+5 toggles the Event Log and Alt+8 Local History, and the tool strip shows their numbers. With the editor focused, Ctrl+Shift+Up/Down resize the bottom tool window.
 - Alt+W then an arrow focuses the tab group on that side of the focused one (View > Focus Left Group and the others); Alt+W M moves the tab to the opposite group, Alt+W U / Shift+U unsplit and unsplit all, Alt+W O / A / P close other, all and unpinned tabs. The find bar and the Find window keep Alt+W for Whole Words.
 - Switcher popup (Ctrl+Tab, Ctrl+Shift+Tab, Navigate > Switcher…): recent tabs and the tool windows in two columns; Tab or the arrows move the selection, releasing Ctrl, Enter or a click opens it, Esc cancels. Releasing Ctrl needs a terminal with the kitty keyboard protocol, as Ctrl+Tab itself does.

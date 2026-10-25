@@ -419,6 +419,10 @@
 "alt-l" = "git.tab_log"
 "alt-o" = "git.tab_console"
 "alt-t" = "git.tab_stash"
+# Next and previous tab, wrapping (Commit, Log, Stash, Console); the
+# commit message box keeps Alt+Left/Right for its caret.
+"alt-right" = "tool_window.next_tab"
+"alt-left" = "tool_window.prev_tab"
 "ctrl-alt-s" = "git.stash_push"
 # Stash tab: pop, apply and drop the selected stash.
 "alt-p" = "git.stash_pop"
@@ -480,6 +484,9 @@
 "end" = "run.end"
 "enter" = "run.open"
 "t" = "run.toggle_view"
+# Output and Tests views, like T.
+"alt-right" = "tool_window.next_tab"
+"alt-left" = "tool_window.prev_tab"
 "right" = "run.expand"
 "left" = "run.collapse"
 "ctrl-alt-down" = "run.next_problem"
