@@ -23,6 +23,33 @@ impl App {
         self.dirty_frame = true;
     }
 
+    /// Run `doctor::probe` off the main thread for the Settings window's
+    /// Dependencies page; the answer comes back as `AppMsg::Dependencies`.
+    pub(super) fn check_dependencies(&mut self) {
+        // Process-wide, so an answer meant for a window closed since cannot match a new one.
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let Some(w) = &mut self.settings else { return };
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        w.probe_started(seq);
+        let (cfg, root, generation, tx) =
+            (self.config.clone(), self.workspace.root.clone(), self.workspace.generation, self.bus_tx.clone());
+        let term = crate::doctor::TermCaps::running();
+        tokio::task::spawn_blocking(move || {
+            let report = crate::doctor::probe(&cfg, &root, &term);
+            let _ = tx.send(crate::event::AppMsg::Dependencies { generation, seq, report });
+        });
+    }
+
+    pub(super) fn dependencies_checked(&mut self, generation: u64, seq: u64, report: crate::doctor::Report) {
+        if generation != self.workspace.generation {
+            tracing::debug!("dropping stale dependency check");
+            return;
+        }
+        if let Some(w) = &mut self.settings {
+            w.dependencies_loaded(seq, report);
+        }
+    }
+
     pub(super) fn settings_key(&mut self, key: KeyEvent) {
         self.dirty_frame = true;
         if let Some(res) = self.settings.as_mut().and_then(|s| s.handle_key(key)) {
@@ -47,6 +74,7 @@ impl App {
                 self.settings = None;
                 self.open_settings();
             }
+            SettingsResult::CheckDependencies => self.check_dependencies(),
             SettingsResult::EditValue(key) => self.dialog = self.value_dialog(key, None, ""),
             SettingsResult::Apply { close } => self.apply_settings(close),
             SettingsResult::ConfirmDiscard => {
@@ -188,6 +216,37 @@ mod tests {
 
     fn ctrl_alt_s() -> KeyEvent {
         KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL | KeyModifiers::ALT)
+    }
+
+    #[tokio::test]
+    async fn dependencies_page_runs_the_probe() {
+        use crate::doctor::{Group, Status};
+        use crate::event::AppMsg;
+        let (mut app, dir) = test_app("settings-deps");
+        setup(&mut app, NO_LSP);
+        key(&mut app, KeyCode::End);
+        crate::app::tests::handle_next(&mut app, |m| matches!(m, AppMsg::Dependencies { .. })).await;
+        let r = app.settings.as_ref().unwrap().dependencies().expect("report shown");
+        assert!(r.checks.iter().filter(|c| c.group == Group::Lsp).all(|c| c.status == Status::Off), "{r:?}");
+        assert!(r.checks.iter().any(|c| c.group == Group::Grammar));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn stale_dependency_answers_are_dropped() {
+        use crate::doctor::Report;
+        use crate::event::AppMsg;
+        let (mut app, dir) = test_app("settings-deps-stale");
+        setup(&mut app, NO_LSP);
+        app.check_dependencies();
+        let generation = app.workspace.generation;
+        app.handle_msg(AppMsg::Dependencies { generation: generation + 1, seq: u64::MAX, report: Report::default() });
+        assert!(app.settings.as_ref().unwrap().dependencies().is_none());
+        key(&mut app, KeyCode::Esc);
+        assert!(app.settings.is_none());
+        app.handle_msg(AppMsg::Dependencies { generation, seq: 1, report: Report::default() });
+        assert!(app.settings.is_none());
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[tokio::test]

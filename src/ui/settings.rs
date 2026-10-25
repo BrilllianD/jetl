@@ -10,11 +10,12 @@ use ratatui::style::Style;
 use ratatui::widgets::{Block, Borders, Clear};
 use unicode_width::UnicodeWidthStr;
 
-use crate::config::catalog::{Kind, PAGES, Setting, setting};
+use crate::config::catalog::{DEPENDENCIES, Kind, PAGES, Setting, setting};
 use crate::config::edit::{Edit, Value};
 use crate::config::reload::class_of;
 use crate::config::theme::{self, Theme};
 use crate::config::{Config, FileText};
+use crate::doctor::{Check, Group, Report, Status};
 use crate::event::Mouse;
 use crate::ui::toasts::wrap;
 use crate::ui::widgets::list::ListState;
@@ -39,6 +40,8 @@ pub enum SettingsResult {
     },
     /// Esc / Cancel with pending edits: ask before closing.
     ConfirmDiscard,
+    /// Run the dependency probe (`App::check_dependencies`).
+    CheckDependencies,
 }
 
 const BUTTONS: [&str; 3] = ["[ OK ]", "[ Cancel ]", "[ Apply ]"];
@@ -65,6 +68,31 @@ pub struct SettingsWindow {
     button_rects: Vec<Rect>,
     /// The live templates folder, named in the help of `editor.snippets`.
     snippets_dir: PathBuf,
+    /// The last dependency report (Dependencies page).
+    deps: Option<Report>,
+    /// The probe whose answer is awaited; 0 = none started.
+    deps_seq: u64,
+    /// A probe is running.
+    deps_running: bool,
+}
+
+enum DepLine<'a> {
+    Group(Group),
+    Check(&'a Check),
+}
+
+/// Group headings and checks, a heading before each run of one group.
+fn dep_lines(r: &Report) -> Vec<DepLine<'_>> {
+    let mut out = Vec::new();
+    let mut last = None;
+    for c in &r.checks {
+        if last != Some(c.group) {
+            out.push(DepLine::Group(c.group));
+            last = Some(c.group);
+        }
+        out.push(DepLine::Check(c));
+    }
+    out
 }
 
 fn load(file: &FileText, path: &Path) -> Result<Config, String> {
@@ -92,7 +120,36 @@ impl SettingsWindow {
             value_col: 0,
             button_rects: Vec::new(),
             snippets_dir: path.parent().map(|d| d.join(crate::config::snippets::SNIPPETS_DIR)).unwrap_or_default(),
+            deps: None,
+            deps_seq: 0,
+            deps_running: false,
         }
+    }
+
+    /// A probe with this seq was started; its answer is the one to show.
+    pub fn probe_started(&mut self, seq: u64) {
+        self.deps_seq = seq;
+        self.deps_running = true;
+    }
+
+    /// The answer of probe `seq`; false (and ignored) unless it is the latest started.
+    pub fn dependencies_loaded(&mut self, seq: u64, report: Report) -> bool {
+        if seq != self.deps_seq {
+            return false;
+        }
+        self.deps = Some(report);
+        self.deps_running = false;
+        self.rows.set_len(self.row_count());
+        true
+    }
+
+    /// The last report shown, if any.
+    pub fn dependencies(&self) -> Option<&Report> {
+        self.deps.as_ref()
+    }
+
+    fn on_deps(&self) -> bool {
+        PAGES[self.page()].title == DEPENDENCIES
     }
 
     /// The file changed: show its values, keeping the page and selections.
@@ -171,6 +228,9 @@ impl SettingsWindow {
     }
 
     fn row_count(&self) -> usize {
+        if self.on_deps() {
+            return self.deps.as_ref().map_or(0, |r| dep_lines(r).len());
+        }
         match self.config {
             Ok(_) => PAGES[self.page()].keys.len(),
             Err(_) => 1,
@@ -193,6 +253,9 @@ impl SettingsWindow {
     }
 
     fn selected_row_opens_file(&self) -> bool {
+        if self.on_deps() {
+            return false;
+        }
         match &self.config {
             Err(_) => self.row_count() > 0,
             Ok(_) => self.selected_key().and_then(setting).is_some_and(|s| s.kind == Kind::External),
@@ -205,6 +268,9 @@ impl SettingsWindow {
 
     /// Enter, Space or a double click on the selected row.
     fn activate(&mut self) -> Option<SettingsResult> {
+        if self.on_deps() {
+            return Some(SettingsResult::CheckDependencies);
+        }
         if self.selected_row_opens_file() {
             return Some(SettingsResult::OpenConfigFile);
         }
@@ -284,6 +350,9 @@ impl SettingsWindow {
                         self.rows = ListState::default();
                     }
                     self.rows.set_len(self.row_count());
+                    if self.page() != before && self.on_deps() {
+                        return Some(SettingsResult::CheckDependencies);
+                    }
                 } else if matches!(key.code, KeyCode::Right | KeyCode::Enter) {
                     if PAGES[before].keys.is_empty()
                         && let Some(child) = PAGES.iter().position(|p| p.parent == Some(before))
@@ -347,7 +416,11 @@ impl SettingsWindow {
                 }
                 if let Some(i) = self.tree.hit(self.tree_rect, m.x, m.y) {
                     self.pane = Pane::Tree;
+                    let before = self.page();
                     self.select_page(i);
+                    if self.page() != before && self.on_deps() {
+                        return Some(SettingsResult::CheckDependencies);
+                    }
                 } else if let Some(i) = self.rows.hit(self.rows_rect, m.x, m.y) {
                     self.pane = Pane::Page;
                     self.rows.select(i);
@@ -462,6 +535,7 @@ impl SettingsWindow {
         let page = &PAGES[self.page()];
         let crumb = match page.parent {
             Some(p) => format!("{} › {}", PAGES[p].title, page.title),
+            None if self.on_deps() && self.deps_running => format!("{} (checking…)", page.title),
             None => page.title.to_string(),
         };
         buf.set_string(px, body_y, fit(&crumb, pw), theme.title_focused);
@@ -470,6 +544,10 @@ impl SettingsWindow {
         self.rows_rect = Rect::default();
         self.value_col = px;
 
+        if self.on_deps() {
+            self.render_dependencies(buf, px, pw, top, bottom, base, theme);
+            return;
+        }
         match &self.config {
             Err(msg) => {
                 // The "Open config.toml" row has priority over message lines.
@@ -565,6 +643,76 @@ impl SettingsWindow {
                     buf.set_string(px, bottom - help_h + i as u16, fit(l, pw), base.patch(theme.dim));
                 }
             }
+        }
+    }
+}
+
+impl SettingsWindow {
+    #[allow(clippy::too_many_arguments)]
+    fn render_dependencies(
+        &mut self,
+        buf: &mut ratatui::buffer::Buffer,
+        px: u16,
+        pw: usize,
+        top: u16,
+        bottom: u16,
+        base: Style,
+        theme: &Theme,
+    ) {
+        let Some(report) = &self.deps else {
+            buf.set_string(px, top, "Checking…", base.patch(theme.dim));
+            self.rows.fit(0, 0);
+            return;
+        };
+        let lines = dep_lines(report);
+        let mut help: Vec<String> = Vec::new();
+        if let Some(DepLine::Check(c)) = lines.get(self.rows.selected) {
+            help.extend(wrap(&format!("{}: {}", c.name, c.detail), pw, 3));
+        }
+        help.push(if self.deps_running {
+            "Checking…".into()
+        } else if report.missing() == 0 {
+            "Everything found. Enter checks again.".into()
+        } else {
+            format!("{} missing. Enter checks again.", report.missing())
+        });
+        help.truncate(MAX_HELP_ROWS.min(bottom.saturating_sub(top).saturating_sub(2) as usize));
+        let help_h = help.len() as u16;
+        let sep = u16::from(help_h > 0);
+        let rows_h = (bottom - top).saturating_sub(help_h + sep);
+        self.rows.fit(lines.len(), rows_h as usize);
+        self.rows_rect = Rect::new(px, top, pw as u16, rows_h);
+
+        let status_w = 8;
+        let name_w = report.checks.iter().map(|c| c.name.width()).max().unwrap_or(0).min(pw / 3);
+        let detail_off = 2 + status_w + name_w + 2;
+        let sel_style = if self.pane == Pane::Page { theme.list_selected } else { theme.list_selected_unfocused };
+        for (row, i) in self.rows.visible().enumerate() {
+            let ry = top + row as u16;
+            let style = if i == self.rows.selected { sel_style } else { base };
+            buf.set_style(Rect::new(px, ry, pw as u16, 1), style);
+            match &lines[i] {
+                DepLine::Group(g) => buf.set_string(px, ry, fit(g.label(), pw), style.patch(theme.title)),
+                DepLine::Check(c) => {
+                    let s = match c.status {
+                        Status::Ok => theme.git_added,
+                        Status::Missing => theme.warn,
+                        Status::Off | Status::Unknown => theme.dim,
+                    };
+                    if pw > 2 {
+                        buf.set_string(px + 2, ry, fit(c.status.label(), (pw - 2).min(status_w)), style.patch(s));
+                    }
+                    if pw > 2 + status_w {
+                        buf.set_string(px + 2 + status_w as u16, ry, fit(&c.name, name_w.min(pw - 2 - status_w)), style);
+                    }
+                    if pw > detail_off {
+                        buf.set_string(px + detail_off as u16, ry, fit(&c.detail, pw - detail_off), style);
+                    }
+                }
+            }
+        }
+        for (i, l) in help.iter().enumerate() {
+            buf.set_string(px, bottom - help_h + i as u16, fit(l, pw), base.patch(theme.dim));
         }
     }
 }
@@ -686,6 +834,93 @@ mod tests {
         assert_eq!(click(&mut w, x, y_bool, 2), None);
         assert_ne!(w.value("editor.auto_close"), before);
         assert_eq!(w.pending().len(), 1);
+    }
+
+    fn report() -> Report {
+        let c = |group, name: &str, status, detail: &str| Check { group, name: name.into(), status, detail: detail.into() };
+        Report {
+            checks: vec![
+                c(Group::Lsp, "rust-analyzer", Status::Ok, "/usr/bin/rust-analyzer (rust)"),
+                c(Group::Lsp, "gopls", Status::Missing, "gopls not found (go)"),
+                c(Group::Tool, "git", Status::Ok, "/usr/bin/git"),
+            ],
+        }
+    }
+
+    fn lines(w: &mut SettingsWindow, width: u16, height: u16) -> Vec<String> {
+        let theme = Theme::default();
+        let mut term = Terminal::new(TestBackend::new(width, height)).unwrap();
+        term.draw(|f| w.render(f, f.area(), &theme)).unwrap();
+        let buf = term.backend().buffer();
+        (0..height).map(|y| (0..width).map(|x| buf[(x, y)].symbol()).collect()).collect()
+    }
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn entering_the_dependencies_page_asks_for_a_probe() {
+        let mut w = window();
+        assert_eq!(w.handle_key(key(KeyCode::End)), Some(SettingsResult::CheckDependencies));
+        assert_eq!(PAGES[w.page()].title, DEPENDENCIES);
+        assert_eq!(w.handle_key(key(KeyCode::End)), None);
+        assert_eq!(w.handle_key(key(KeyCode::Up)), None);
+        assert_eq!(w.handle_key(key(KeyCode::Down)), Some(SettingsResult::CheckDependencies));
+        assert_eq!(w.handle_key(key(KeyCode::Enter)), None);
+        assert_eq!(w.pane, Pane::Page);
+        assert_eq!(w.handle_key(key(KeyCode::Enter)), Some(SettingsResult::CheckDependencies));
+        assert_eq!(w.handle_key(key(KeyCode::Char(' '))), Some(SettingsResult::CheckDependencies));
+    }
+
+    #[test]
+    fn a_tree_click_on_dependencies_asks_for_a_probe() {
+        let mut w = window();
+        let (x, y) = (w.tree_rect.x + 1, w.tree_rect.y + (PAGES.len() - 1) as u16);
+        assert_eq!(click(&mut w, x, y, 1), Some(SettingsResult::CheckDependencies));
+        assert_eq!(click(&mut w, x, y, 1), None);
+    }
+
+    #[test]
+    fn only_the_latest_probe_answer_is_shown() {
+        let mut w = window();
+        w.probe_started(1);
+        w.probe_started(2);
+        assert!(!w.dependencies_loaded(1, report()));
+        assert!(w.dependencies().is_none());
+        assert!(w.dependencies_loaded(2, report()));
+        assert!(w.dependencies().is_some());
+    }
+
+    #[test]
+    fn dependencies_page_renders_checking_then_the_report() {
+        let mut w = window();
+        w.handle_key(key(KeyCode::End));
+        let l = lines(&mut w, 80, 24);
+        assert!(l.iter().any(|l| l.contains("Checking…")), "{l:#?}");
+        assert!(!l.iter().any(|l| l.contains("(checking…)")), "{l:#?}");
+        w.probe_started(1);
+        assert!(lines(&mut w, 80, 24).iter().any(|l| l.contains("Dependencies (checking…)")));
+        w.dependencies_loaded(1, report());
+        let l = lines(&mut w, 80, 24);
+        for want in ["Language servers", "Tools", "missing", "gopls not found (go)", "1 missing. Enter checks again."] {
+            assert!(l.iter().any(|l| l.contains(want)), "{want}: {l:#?}");
+        }
+        assert!(!l.iter().any(|l| l.contains("(checking…)")), "{l:#?}");
+    }
+
+    #[test]
+    fn invalid_config_keeps_the_dependencies_page() {
+        let mut w = SettingsWindow::new(&FileText::Text("[editor\n".into()), Path::new("/tmp/jetl-test-settings/config.toml"));
+        lines(&mut w, 80, 24);
+        w.handle_key(key(KeyCode::End));
+        w.probe_started(1);
+        w.dependencies_loaded(1, report());
+        let l = lines(&mut w, 80, 24);
+        assert!(l.iter().any(|l| l.contains("Language servers")), "{l:#?}");
+        assert!(!l.iter().any(|l| l.contains("Open config.toml")), "{l:#?}");
+        assert_eq!(w.handle_key(key(KeyCode::Enter)), None);
+        assert_eq!(w.handle_key(key(KeyCode::Enter)), Some(SettingsResult::CheckDependencies));
     }
 
     #[test]

@@ -367,6 +367,9 @@ pub static SETTINGS: &[Setting] = &[
     ),
 ];
 
+/// Title of the keyless page that shows `doctor::probe`'s report (`ui::settings`).
+pub const DEPENDENCIES: &str = "Dependencies";
+
 macro_rules! page {
     ($title:literal, $parent:expr, [$($key:literal),* $(,)?]) => {
         Page { title: $title, parent: $parent, keys: &[$($key),*] }
@@ -429,6 +432,7 @@ pub static PAGES: &[Page] = &[
             "lsp.servers"
         ]
     ),
+    page!("Dependencies", None, []),
 ];
 
 #[cfg(test)]
@@ -437,6 +441,15 @@ mod tests {
     use crate::config::edit::{Edit, apply_edits};
     use crate::config::reload::KEYS;
     use crate::config::theme;
+
+    #[test]
+    fn dependencies_page_is_last_and_keyless() {
+        let last = PAGES.len() - 1;
+        let p = &PAGES[last];
+        assert_eq!(p.title, DEPENDENCIES);
+        assert!(p.keys.is_empty() && p.parent.is_none());
+        assert!(!PAGES.iter().any(|q| q.parent == Some(last)), "no children");
+    }
 
     #[test]
     fn help_names_keymap_and_theme_files() {

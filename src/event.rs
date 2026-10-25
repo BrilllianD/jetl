@@ -210,6 +210,14 @@ pub enum AppMsg {
     /// A local history list, stored snapshot, diff or label change
     /// (`history::HistoryMsg`); no generation: the store is global.
     LocalHistory(crate::history::HistoryMsg),
+    /// `doctor::probe`'s report for the Settings window's Dependencies page,
+    /// tagged with the workspace generation (relative commands resolve against
+    /// the root) and the request's seq.
+    Dependencies {
+        generation: u64,
+        seq: u64,
+        report: crate::doctor::Report,
+    },
 }
 
 pub use crate::lsp::LspMsg;

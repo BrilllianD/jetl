@@ -2089,6 +2089,66 @@ async fn settings_window_pending() {
     assert_snapshot!("settings_window_pending", snapshot(&term, &[l, u, m], None));
 }
 
+fn fixed_report() -> crate::doctor::Report {
+    use crate::doctor::{Check, Group, Report, Status};
+    let c = |group, name: &str, status, detail: &str| Check { group, name: name.into(), status, detail: detail.into() };
+    Report {
+        checks: vec![
+            c(Group::Lsp, "rust-analyzer", Status::Ok, "/usr/bin/rust-analyzer (rust)"),
+            c(Group::Lsp, "gopls", Status::Missing, "gopls not found (go)"),
+            c(Group::Formatter, "none", Status::Off, "no formatter commands in [format]"),
+            c(
+                Group::Clipboard,
+                "paste",
+                Status::Missing,
+                "no wl-paste, xclip, xsel or pbpaste for this session: paste uses jetl's last copy",
+            ),
+            c(Group::Grammar, "rust", Status::Ok, "compiled"),
+            c(Group::Terminal, "kitty keyboard", Status::Unknown, "could not ask the terminal"),
+            c(Group::Tool, "git", Status::Ok, "/usr/bin/git"),
+        ],
+    }
+}
+
+/// Open the Settings window on Dependencies with `fixed_report()` shown;
+/// the real probe the page starts is answered with a seq nobody awaits.
+fn open_dependencies(app: &mut App) {
+    std::fs::create_dir_all(&app.paths.config_dir).unwrap();
+    std::fs::write(app.paths.config_file(), "[lsp]\nenabled = false\n").unwrap();
+    app.perform(Action::App(AppAction::Settings));
+    press(app, KeyCode::End, 1);
+    let w = app.settings.as_mut().unwrap();
+    w.probe_started(u64::MAX);
+    w.dependencies_loaded(u64::MAX, fixed_report());
+}
+
+#[tokio::test]
+async fn settings_window_dependencies() {
+    let mut fx = stable_app("settings-window-deps");
+    let app = &mut fx.app;
+    open_dependencies(app);
+    press(app, KeyCode::Enter, 1);
+    press(app, KeyCode::Down, 2);
+    drain(app);
+    let term = draw_app(app, 80, 24);
+    let [l, u] = settings_marks(&app.theme);
+    let w = Mark::style('W', "missing", app.theme.warn);
+    assert_snapshot!("settings_window_dependencies", snapshot(&term, &[l, u, w], None));
+}
+
+#[tokio::test]
+async fn settings_window_dependencies_narrow_does_not_panic() {
+    let mut fx = stable_app("settings-deps-narrow");
+    let app = &mut fx.app;
+    open_dependencies(app);
+    for w in 26..=60u16 {
+        for h in [9u16, 10, 14, 24] {
+            let term = draw_app(app, w, h);
+            assert_settings_inside(app, &term, w, h);
+        }
+    }
+}
+
 /// Nothing drew over the window's right border and every rect lies inside it.
 fn assert_settings_inside(app: &App, term: &Terminal<TestBackend>, w: u16, h: u16) {
     let s = app.settings.as_ref().unwrap();
