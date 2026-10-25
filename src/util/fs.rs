@@ -35,3 +35,36 @@ pub fn normalize(p: &Path) -> PathBuf {
     }
     out
 }
+
+/// A regular file with an execute bit (unix); a regular file elsewhere.
+pub fn is_executable(path: &Path) -> bool {
+    let Ok(meta) = std::fs::metadata(path) else { return false };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        meta.is_file() && meta.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    meta.is_file()
+}
+
+/// The first executable file named `name` in a `PATH` directory.
+pub fn which(name: &str) -> Option<PathBuf> {
+    if name.is_empty() {
+        return None;
+    }
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path).map(|dir| dir.join(name)).find(|p| is_executable(p))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn which_finds_sh() {
+        assert!(which("sh").is_some());
+        assert!(which("jetl-no-such-tool-xyz").is_none());
+    }
+}

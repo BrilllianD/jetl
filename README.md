@@ -135,6 +135,7 @@ Options:
   -h, --help         Show this help
   -V, --version      Show the version
       --dump-keymap  Print the default key bindings as Markdown (docs/KEYMAP.md)
+      --doctor       Check the optional tools jetl uses (language servers, formatters, clipboard, grammars, terminal)
 
 Config: $XDG_CONFIG_HOME/jetl/{config,keymap,theme}.toml (see docs/CONFIG.md)
 Log:    $XDG_STATE_HOME/jetl/jetl.log

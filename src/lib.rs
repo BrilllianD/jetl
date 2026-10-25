@@ -2,6 +2,7 @@ pub mod actions;
 pub mod app;
 pub mod config;
 pub mod dispatch;
+pub mod doctor;
 pub mod editor;
 pub mod event;
 pub mod files;

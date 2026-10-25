@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Surround With (Ctrl+Alt+T, Edit > Surround With…): wrap the selection, or the caret line, with a live template that uses `$TM_SELECTED_TEXT`; built-in `if`/`while` for Rust and `if`/`try` for Python and TypeScript.
 - Snippet variable transforms: `${TM_FILENAME/(.*)\..+$/$1/}` rewrites a variable with a regex and a format (`$1`, `${1:/upcase}`, `${1:+if}`, `${1:?if:else}`; options `g`, `i`, `m`, `s`) as in VS Code.
 - Structure window (Alt+7) lists Markdown headings: ATX headings nest by level, setext headings sit at the depth of their enclosing section.
+- `jetl --doctor` lists the optional tools jetl uses and whether they were found: language servers, formatters, clipboard tools, compiled grammars, kitty keyboard protocol and true color support, git and yman.
 
 ### Changed
 

@@ -75,17 +75,7 @@ fn split(cmd: &str) -> Vec<String> {
 
 /// An executable file named `name` in a `PATH` directory.
 fn on_path(name: &str) -> bool {
-    let Some(path) = std::env::var_os("PATH") else { return false };
-    std::env::split_paths(&path).any(|dir| {
-        let Ok(meta) = std::fs::metadata(dir.join(name)) else { return false };
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            meta.is_file() && meta.permissions().mode() & 0o111 != 0
-        }
-        #[cfg(not(unix))]
-        meta.is_file()
-    })
+    crate::util::fs::which(name).is_some()
 }
 
 /// Run the paste tool and return its output. The child is killed when it

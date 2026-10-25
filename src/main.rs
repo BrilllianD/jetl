@@ -8,13 +8,23 @@ async fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--help" || a == "-h") {
         println!(
-            "jetl {}\n\nUsage: jetl [PATH[:LINE[:COL]]]\n\nOpens a terminal IDE rooted at PATH (default: current directory). A file\nopens at LINE and COL, rooted at its git repository (else its directory).\nStarted without PATH outside a git repository, it offers the recent projects.\n\nOptions:\n  -h, --help         Show this help\n  -V, --version      Show the version\n      --dump-keymap  Print the default key bindings as Markdown (docs/KEYMAP.md)\n\nConfig: $XDG_CONFIG_HOME/jetl/{{config,keymap,theme}}.toml (see docs/CONFIG.md)\nLog:    $XDG_STATE_HOME/jetl/jetl.log",
+            "jetl {}\n\nUsage: jetl [PATH[:LINE[:COL]]]\n\nOpens a terminal IDE rooted at PATH (default: current directory). A file\nopens at LINE and COL, rooted at its git repository (else its directory).\nStarted without PATH outside a git repository, it offers the recent projects.\n\nOptions:\n  -h, --help         Show this help\n  -V, --version      Show the version\n      --dump-keymap  Print the default key bindings as Markdown (docs/KEYMAP.md)\n      --doctor       Check the optional tools jetl uses (language servers, formatters, clipboard, grammars, terminal)\n\nConfig: $XDG_CONFIG_HOME/jetl/{{config,keymap,theme}}.toml (see docs/CONFIG.md)\nLog:    $XDG_STATE_HOME/jetl/jetl.log",
             env!("CARGO_PKG_VERSION")
         );
         return Ok(());
     }
     if args.iter().any(|a| a == "--dump-keymap") {
         print!("{}", config::keymap::default_keymap().markdown());
+        return Ok(());
+    }
+    if args.iter().any(|a| a == "--doctor") {
+        let paths = config::Paths::new()?;
+        let (cfg, cfg_error) = config::Config::load(&paths);
+        if let Some(e) = cfg_error {
+            eprintln!("config: {e}");
+        }
+        let root = std::env::current_dir()?;
+        print!("{}", jetl::doctor::probe(&cfg, &root, &jetl::doctor::TermCaps::query()).table());
         return Ok(());
     }
     if args.iter().any(|a| a == "--version" || a == "-V") {
