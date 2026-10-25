@@ -33,7 +33,8 @@ pub struct Symbol {
 
 /// The definitions in `tree` (parsed from `rope`) found by the language's
 /// tags query, in document order with their nesting depth. References are
-/// skipped; a node matched by several patterns keeps the first.
+/// skipped; a node matched by several patterns keeps the first. Markdown
+/// headings inside a block quote or list item are skipped.
 pub fn extract(def: &'static LanguageDef, tree: &Tree, rope: &Rope) -> Vec<Symbol> {
     let Some(query) = def.tags_query() else { return Vec::new() };
     let names = query.capture_names();
@@ -55,6 +56,9 @@ pub fn extract(def: &'static LanguageDef, tree: &Tree, rope: &Rope) -> Vec<Symbo
             }
         }
         let (Some(node), Some(name)) = (node, name) else { continue };
+        if def.name == "markdown" && in_md_container(node) {
+            continue;
+        }
         let text = |n: tree_sitter::Node| {
             let r = n.byte_range();
             let end = r.end.min(rope.len_bytes());
@@ -122,6 +126,19 @@ fn kind_label(capture: &'static str, node: &str) -> &'static str {
     }
 }
 
+/// A Markdown heading nested in a block quote or list item: the grammar
+/// gives those their own sections, but they are no document structure.
+fn in_md_container(node: tree_sitter::Node) -> bool {
+    let mut cur = node.parent();
+    while let Some(n) = cur {
+        if matches!(n.kind(), "block_quote" | "list_item") {
+            return true;
+        }
+        cur = n.parent();
+    }
+    false
+}
+
 /// One line, single spaces, at most `MAX_NAME` chars.
 pub(crate) fn clean_name(s: &str) -> String {
     let mut out = s.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -183,6 +200,17 @@ mod tests {
         // Headings inside a block quote or list item are no symbols (setext).
         let got = names("c.md", "> T\n> ===\n\n- U\n  ---\n").unwrap();
         assert!(got.is_empty(), "{got:?}");
+    }
+
+    #[test]
+    fn markdown_headings_in_quotes_and_lists_are_skipped() {
+        for src in ["> # Q\n", "> # Q\n>\n> T\n> ===\n", "- # Item\n", "- a\n\n  ## Sub\n"] {
+            let Some(got) = names("a.md", src) else { return };
+            assert!(got.is_empty(), "{src:?}: {got:?}");
+        }
+        // A heading after the quote, outside it, is still a top-level symbol.
+        let got = names("b.md", "> # Q\n\n# Real\n\n## Sub\n").unwrap();
+        assert_eq!(got, [("Real".to_string(), "heading", 0), ("Sub".to_string(), "heading", 1)]);
     }
 
     #[test]

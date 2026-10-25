@@ -40,6 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Stage and Continue shows the plain command (`git add a.txt && git rebase --continue`) in the status bar, the Git console and Local History instead of git's pathspec syntax.
 - Inlay hints: the caret at a type hint's place is drawn before the hint, so typing there no longer shows the caret on the far side of the hint (parameter name hints keep the caret after them).
 - Live templates: Tab no longer expands a snippet prefix inside a string or a comment (Ctrl+Space and Edit > Expand Live Template still do).
+- Structure window and symbol search: Markdown headings inside a block quote or a list item (`> # Q`, `- # Item`) are no longer listed as symbols.
 
 ## [0.4.0] - 2026-10-17
 
