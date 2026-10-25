@@ -2137,6 +2137,21 @@ async fn settings_window_dependencies() {
 }
 
 #[tokio::test]
+async fn settings_window_dependencies_not_checked() {
+    let mut fx = stable_app("settings-window-deps-not-checked");
+    let app = &mut fx.app;
+    std::fs::create_dir_all(&app.paths.config_dir).unwrap();
+    std::fs::write(app.paths.config_file(), "[lsp]\nenabled = false\n").unwrap();
+    app.perform(Action::App(AppAction::Settings));
+    press(app, KeyCode::End, 1);
+    let w = app.settings.as_mut().unwrap();
+    let (_, seq) = w.awaited_probe();
+    w.probe_dropped(seq);
+    let term = draw_app(app, 80, 24);
+    assert_snapshot!("settings_window_dependencies_not_checked", snapshot(&term, &settings_marks(&app.theme), None));
+}
+
+#[tokio::test]
 async fn settings_window_dependencies_narrow_does_not_panic() {
     let mut fx = stable_app("settings-deps-narrow");
     let app = &mut fx.app;

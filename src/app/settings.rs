@@ -235,19 +235,36 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    fn body(app: &mut App) -> Vec<String> {
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+        let buf = term.draw(|f| crate::ui::render(app, f)).unwrap().buffer.clone();
+        (0..buf.area.height).map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect()).collect()
+    }
+
     #[tokio::test]
     async fn stale_dependency_answers_are_dropped() {
         use crate::doctor::Report;
         use crate::event::AppMsg;
         let (mut app, dir) = test_app("settings-deps-stale");
         setup(&mut app, NO_LSP);
-        app.check_dependencies();
+        key(&mut app, KeyCode::End);
         let generation = app.workspace.generation;
         let (running, seq) = app.settings.as_ref().unwrap().awaited_probe();
         assert!(running);
+        assert!(body(&mut app).iter().any(|l| l.contains("Checking…")));
         app.handle_msg(AppMsg::Dependencies { generation: generation + 1, seq, report: Report::default() });
         assert!(app.settings.as_ref().unwrap().dependencies().is_none());
         assert!(!app.settings.as_ref().unwrap().awaited_probe().0);
+        let l = body(&mut app);
+        assert!(l.iter().any(|l| l.contains("Not checked. Enter checks.")), "{l:#?}");
+        assert!(!l.iter().any(|l| l.contains("Checking…")), "{l:#?}");
+        assert!(!l.iter().any(|l| l.contains("(checking…)")), "{l:#?}");
+        key(&mut app, KeyCode::Enter);
+        key(&mut app, KeyCode::Enter);
+        let (running, s2) = app.settings.as_ref().unwrap().awaited_probe();
+        assert!(running);
+        assert_ne!(s2, seq);
+        assert!(body(&mut app).iter().any(|l| l.contains("Checking…")));
         key(&mut app, KeyCode::Esc);
         assert!(app.settings.is_none());
         app.handle_msg(AppMsg::Dependencies { generation, seq, report: Report::default() });

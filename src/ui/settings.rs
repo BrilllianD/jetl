@@ -673,7 +673,8 @@ impl SettingsWindow {
         theme: &Theme,
     ) {
         let Some(report) = &self.deps else {
-            buf.set_string(px, top, "Checking…", base.patch(theme.dim));
+            let msg = if self.deps_running { "Checking…" } else { "Not checked. Enter checks." };
+            buf.set_string(px, top, fit(msg, pw), base.patch(theme.dim));
             self.rows.fit(0, 0);
             return;
         };
@@ -930,15 +931,24 @@ mod tests {
     }
 
     #[test]
-    fn dependencies_page_renders_checking_then_the_report() {
+    fn dependencies_page_renders_not_checked_checking_then_the_report() {
         let mut w = window();
         w.handle_key(key(KeyCode::End));
         let l = lines(&mut w, 80, 24);
-        assert!(l.iter().any(|l| l.contains("Checking…")), "{l:#?}");
+        assert!(l.iter().any(|l| l.contains("Not checked. Enter checks.")), "{l:#?}");
+        assert!(!l.iter().any(|l| l.contains("Checking…")), "{l:#?}");
         assert!(!l.iter().any(|l| l.contains("(checking…)")), "{l:#?}");
         w.probe_started(1);
-        assert!(lines(&mut w, 80, 24).iter().any(|l| l.contains("Dependencies (checking…)")));
-        w.dependencies_loaded(1, report());
+        let l = lines(&mut w, 80, 24);
+        assert!(l.iter().any(|l| l.contains("Dependencies (checking…)")), "{l:#?}");
+        assert!(l.iter().any(|l| l.contains("Checking…")), "{l:#?}");
+        w.probe_dropped(1);
+        let l = lines(&mut w, 80, 24);
+        assert!(l.iter().any(|l| l.contains("Not checked. Enter checks.")), "{l:#?}");
+        assert!(!l.iter().any(|l| l.contains("Checking…")), "{l:#?}");
+        assert!(!l.iter().any(|l| l.contains("(checking…)")), "{l:#?}");
+        w.probe_started(2);
+        w.dependencies_loaded(2, report());
         let l = lines(&mut w, 80, 24);
         for want in ["Language servers", "Tools", "missing", "gopls not found (go)", "1 missing. Enter checks again."] {
             assert!(l.iter().any(|l| l.contains(want)), "{want}: {l:#?}");

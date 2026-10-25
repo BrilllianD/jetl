@@ -42,6 +42,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Live templates: Tab no longer expands a snippet prefix inside a string or a comment (Ctrl+Space and Edit > Expand Live Template still do).
 - Structure window and symbol search: Markdown headings inside a block quote or a list item (`> # Q`, `- # Item`) are no longer listed as symbols.
 - In a linked git worktree, jetl now sees changes to the main repository's refs, `packed-refs` and other worktrees (yman's tracker writes included), so git status and the Tasks window refresh after them.
+- Settings > Dependencies no longer says Checking… when a check started before a root switch is dropped; the page says "Not checked. Enter checks." until Enter runs the check again.
 
 ## [0.4.0] - 2026-10-17
 
