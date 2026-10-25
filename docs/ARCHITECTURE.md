@@ -182,7 +182,7 @@ Render order (`ui::render`): tool strip, left and bottom tool windows,
 splitters, editor, status bar, hover popup, completion popup, strip tooltip (hidden while an overlay is
 open), palette, Switcher, context menu, main menu bar (over the top row, in zen
 mode too), Settings window, dialog, toasts (laid out below any open overlay they would cover, never over one). Mouse events go to the topmost open overlay (dialog, Settings window, main
-menu bar, context menu, Switcher, palette) before anything below (the completion
+menu bar, context menu, palette, Switcher) before anything below (the completion
 popup takes the wheel over it and accepts a clicked row, other clicks close
 it; the hover popup takes the wheel over it, and any click closes it); the menus also get
 motion, for hover. Other motion only updates the strip hover and redraws when

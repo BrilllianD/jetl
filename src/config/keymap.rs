@@ -443,7 +443,7 @@ impl Keymap {
 /// `+`, `_` or `.`, Ctrl with a digit other than 4-6 (legacy terminals send
 /// those as Ctrl+\, Ctrl+] and Ctrl+^; Ctrl+7 is Ctrl+/ there, which jetl
 /// reads as Ctrl+/: [`KeyCombo::legacy_input`]), Ctrl+Tab, Ctrl+Enter,
-/// Shift+Enter, Shift+F3, Shift+Esc, Alt+Shift+Tab and Shift Shift.
+/// Shift+Enter, Shift+F3, Shift+Esc, Alt+Shift+Tab, Ctrl+Shift+Tab and Shift Shift.
 fn needs_kitty(keys: &str) -> bool {
     keys.split(' ').any(|k| {
         let key = k.rsplit('+').next().unwrap_or("");
@@ -452,6 +452,7 @@ fn needs_kitty(keys: &str) -> bool {
         let punct = matches!(key, "-" | "=" | "_" | ".") || k.ends_with("++");
         (k.starts_with("Ctrl+") && k.contains("Shift+") && letter)
             || (k.starts_with("Ctrl+") && punct)
+            || k == "Ctrl+Shift+Tab"
             || matches!(k, "Ctrl+0" | "Ctrl+1" | "Ctrl+2" | "Ctrl+3" | "Ctrl+7" | "Ctrl+8" | "Ctrl+9")
             || k == "Ctrl+?"
             || k == "Ctrl+Tab"

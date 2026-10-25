@@ -373,7 +373,9 @@ mod tests {
         assert_eq!(s.handle_mouse(&at(MouseEventKind::Down(MouseButton::Left), r.x + 1, r.y)), Some(SwitcherResult::Open(pick)));
         let (r, pick) = *s.hits.iter().find(|(_, p)| *p == Pick::Tool(ToolWindowId::Find)).unwrap();
         assert_eq!(s.handle_mouse(&at(MouseEventKind::Down(MouseButton::Left), r.x, r.y)), Some(SwitcherResult::Open(pick)));
+        let before = s.selected();
         assert_eq!(s.handle_mouse(&at(MouseEventKind::ScrollDown, r.x, r.y)), None);
+        assert_ne!(s.selected(), before, "the wheel moves the selection");
         assert_eq!(s.handle_mouse(&at(MouseEventKind::Down(MouseButton::Left), 0, 0)), Some(SwitcherResult::Cancel));
     }
 }
