@@ -1,6 +1,8 @@
 //! The yman task tracker: CLI runner, JSON types and the service that loads
 //! the tracker off the main loop. Results come back as `AppMsg::Yman` tagged
-//! with the service generation, and `on_msg` drops stale ones.
+//! with the service generation, and `on_msg` drops stale ones. Writes run one
+//! at a time through `mutate`; the result comes back from `on_msg` for the App
+//! to report, after a refresh.
 
 pub mod cli;
 pub mod model;
@@ -22,12 +24,16 @@ pub enum YmanMsg {
     Snapshot { generation: u64, seq: u64, result: Result<Snapshot, YmanError> },
     Task { generation: u64, seq: u64, id: String, result: Result<TaskDetails, YmanError> },
     Tags { generation: u64, seq: u64, result: Result<Vec<TagCount>, YmanError> },
+    Mutation { generation: u64, done: MutationDone },
 }
 
 impl YmanMsg {
     pub fn generation(&self) -> u64 {
         match self {
-            YmanMsg::Snapshot { generation, .. } | YmanMsg::Task { generation, .. } | YmanMsg::Tags { generation, .. } => *generation,
+            YmanMsg::Snapshot { generation, .. }
+            | YmanMsg::Task { generation, .. }
+            | YmanMsg::Tags { generation, .. }
+            | YmanMsg::Mutation { generation, .. } => *generation,
         }
     }
 }
@@ -47,6 +53,36 @@ pub enum TrackerState {
 pub struct LoadedTask {
     pub id: String,
     pub result: Result<TaskDetails, YmanError>,
+}
+
+/// What the App does after a mutation; 310 adds `Sync`, E4 adds `Add`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MutationKind {
+    /// A change of this task (status, priority, assignee, tags, comment).
+    Task(String),
+}
+
+/// One yman write command.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Mutation {
+    pub kind: MutationKind,
+    /// Short human text, e.g. `Done #12`: shown while it runs (`Tasks` title
+    /// `· <label>…`) and as the prefix of its notifications.
+    pub label: String,
+    /// yman's arguments, without the program (`cli::*_args` builders).
+    pub args: Vec<String>,
+    /// Written to yman's stdin, which is then closed; `None` = stdin is /dev/null.
+    pub input: Option<Vec<u8>>,
+}
+
+/// The result `on_msg` hands back to the App.
+#[derive(Debug)]
+pub struct MutationDone {
+    pub kind: MutationKind,
+    pub label: String,
+    /// `Ok` only for exit code 0; `stdout` holds yman's data output (for
+    /// example the new id of `yman add`), `stderr` its notes and warnings.
+    pub result: Result<cli::YmanOutput, YmanError>,
 }
 
 pub struct YmanService {
@@ -70,6 +106,8 @@ pub struct YmanService {
     pub tags: Option<Result<Vec<TagCount>, YmanError>>,
     /// Bumped every time `state`, `task` or `tags` changes.
     pub revision: u64,
+    /// The mutation in flight; one at a time.
+    pub(crate) running: Option<Mutation>,
 }
 
 /// `yman ls -a`, `yman ls` (the open ids) then `yman status`; a status error is logged and leaves
@@ -115,6 +153,7 @@ impl YmanService {
             task: None,
             tags: None,
             revision: 0,
+            running: None,
         }
     }
 
@@ -125,6 +164,7 @@ impl YmanService {
         self.task_load.reset();
         self.tags_load.reset();
         self.task_want = None;
+        self.running = None;
         self.task = None;
         self.tags = None;
         self.state = if self.wanted { TrackerState::Loading } else { TrackerState::Idle };
@@ -211,11 +251,34 @@ impl YmanService {
         });
     }
 
-    /// Apply a result; results of another generation are dropped.
-    pub fn on_msg(&mut self, msg: YmanMsg) {
+    /// Start a write command. `false`, with nothing started, while another
+    /// one runs. Does not need [`Self::want`].
+    pub fn mutate(&mut self, m: Mutation) -> bool {
+        if self.running.is_some() {
+            return false;
+        }
+        let (program, root, generation, tx) = (self.program.clone(), self.root.clone(), self.generation, self.tx.clone());
+        let (kind, label, args, input) = (m.kind.clone(), m.label.clone(), m.args.clone(), m.input.clone());
+        self.running = Some(m);
+        self.revision += 1;
+        tokio::spawn(async move {
+            let result = cli::run_ok(&program, &root, &args, input).await;
+            let _ = tx.send(AppMsg::Yman(YmanMsg::Mutation { generation, done: MutationDone { kind, label, result } }));
+        });
+        true
+    }
+
+    /// The label of the running mutation.
+    pub fn busy(&self) -> Option<&str> {
+        self.running.as_ref().map(|m| m.label.as_str())
+    }
+
+    /// Apply a result; results of another generation are dropped. A finished
+    /// mutation is returned for the App to report, after a refresh.
+    pub fn on_msg(&mut self, msg: YmanMsg) -> Option<MutationDone> {
         if msg.generation() != self.generation {
             tracing::debug!("dropping stale yman result");
-            return;
+            return None;
         }
         match msg {
             YmanMsg::Snapshot { seq, result, .. } => {
@@ -231,6 +294,7 @@ impl YmanService {
                 if again {
                     self.spawn_snapshot();
                 }
+                None
             }
             YmanMsg::Task { seq, id, result, .. } => {
                 let again = self.task_load.done();
@@ -242,6 +306,7 @@ impl YmanService {
                 if again {
                     self.spawn_task();
                 }
+                None
             }
             YmanMsg::Tags { seq, result, .. } => {
                 let again = self.tags_load.done();
@@ -253,6 +318,13 @@ impl YmanService {
                 if again {
                     self.spawn_tags();
                 }
+                None
+            }
+            YmanMsg::Mutation { done, .. } => {
+                self.running = None;
+                self.revision += 1;
+                self.refresh();
+                Some(done)
             }
         }
     }
@@ -404,6 +476,121 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    fn mutation(label: &str, args: &[&str], input: Option<Vec<u8>>) -> Mutation {
+        Mutation { kind: MutationKind::Task("1".into()), label: label.into(), args: args.iter().map(|a| a.to_string()).collect(), input }
+    }
+
+    async fn next_mutation(s: &mut YmanService, rx: &mut UnboundedReceiver<AppMsg>) -> MutationDone {
+        loop {
+            let m = next(rx).await;
+            let is_mutation = matches!(m, YmanMsg::Mutation { .. });
+            let done = s.on_msg(m);
+            if is_mutation {
+                return done.expect("a current mutation result");
+            }
+            assert!(done.is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn mutations_run_one_at_a_time_and_refresh() {
+        let (mut s, mut rx) = service();
+        s.want();
+        let first = next(&mut rx).await;
+        s.on_msg(first);
+        let before = s.snapshot_requests();
+        s.program = "sh".into();
+        assert!(s.mutate(mutation("Test #1", &["-c", "echo 'note: hi' >&2"], None)));
+        assert_eq!(s.busy(), Some("Test #1"));
+        assert!(!s.mutate(mutation("Other #1", &["-c", "true"], None)));
+        assert_eq!(s.busy(), Some("Test #1"));
+        let done = next_mutation(&mut s, &mut rx).await;
+        assert_eq!(done.label, "Test #1");
+        assert_eq!(done.result.unwrap().stderr.trim(), "note: hi");
+        assert_eq!(s.busy(), None);
+        assert!(s.snapshot_requests() > before);
+    }
+
+    #[tokio::test]
+    async fn mutation_failure_maps_the_exit() {
+        let (mut s, mut rx) = service();
+        s.program = "sh".into();
+        assert!(s.mutate(mutation("Test #9", &["-c", "echo 'error: task 9 not found' >&2; exit 4"], None)));
+        let done = next_mutation(&mut s, &mut rx).await;
+        assert_eq!(done.result.unwrap_err(), YmanError::NoSuchTask("task 9 not found".into()));
+        assert_eq!(s.snapshot_requests(), 0);
+        assert_eq!(s.busy(), None);
+    }
+
+    #[tokio::test]
+    async fn stale_mutation_is_dropped() {
+        let (mut s, mut rx) = service();
+        s.program = "sh".into();
+        assert!(s.mutate(mutation("Test #1", &["-c", "true"], None)));
+        s.set_root(std::env::temp_dir(), 2);
+        assert_eq!(s.busy(), None);
+        let old = next(&mut rx).await;
+        assert!(matches!(old, YmanMsg::Mutation { generation: 1, .. }));
+        assert!(s.on_msg(old).is_none());
+    }
+
+    /// A git repository with an offline yman tracker, removed with the guard.
+    async fn temp_tracker(tag: &str) -> TempDir {
+        let guard = TempDir(std::env::temp_dir().join(format!("jetl-yman-{tag}-{}", std::process::id())));
+        let dir = guard.0.clone();
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        git(&dir, &["init", "-q"]);
+        crate::git::repo::tests::isolate(&dir);
+        git(&dir, &["config", "user.name", "t"]);
+        git(&dir, &["config", "user.email", "t@t"]);
+        let out = isolated(PROGRAM, &dir).args(["init", "--offline"]).output().unwrap();
+        assert!(out.status.success(), "yman init: {}", String::from_utf8_lossy(&out.stderr));
+        guard
+    }
+
+    #[tokio::test]
+    async fn mutations_change_a_temp_tracker() {
+        use cli::StatusChange::{Done, Start};
+        if !yman_available() {
+            eprintln!("skipping: yman not on PATH");
+            return;
+        }
+        let guard = temp_tracker("mut").await;
+        let dir = guard.0.clone();
+        let out = isolated(PROGRAM, &dir).args(["add", "First", "-t", "alpha"]).output().unwrap();
+        assert!(out.status.success(), "yman add: {}", String::from_utf8_lossy(&out.stderr));
+        let p = OsStr::new(PROGRAM);
+        let id = load_snapshot(p, &dir).await.unwrap().tasks[0].id.clone();
+        let (tx, mut rx) = unbounded_channel();
+        let mut s = YmanService::new(dir.clone(), 1, tx);
+        let steps = [
+            cli::status_change_args(&id, &Start, None),
+            cli::priority_args(&id, 3),
+            cli::assign_args(&id, Some("bob")),
+            cli::tag_change_args(&id, &["x".to_string()], &["alpha".to_string()]),
+            cli::comment_args(&id),
+            cli::status_change_args(&id, &Done, Some("-shipped")),
+        ];
+        for (i, args) in steps.into_iter().enumerate() {
+            let input = (i == 4).then(|| b"-dash comment".to_vec());
+            let m = Mutation { kind: MutationKind::Task(id.clone()), label: format!("Step {i}"), args, input };
+            assert!(s.mutate(m));
+            let done = next_mutation(&mut s, &mut rx).await;
+            if let Err(e) = &done.result {
+                panic!("step {i}: {e}");
+            }
+        }
+        let t = cli::json::<TaskDetails>(p, &dir, &show_args(&id)).await.unwrap();
+        assert_eq!(t.status, "done");
+        assert_eq!(t.priority, 3);
+        assert_eq!(t.assignee.as_deref(), Some("bob"));
+        assert_eq!(t.tags, ["x"]);
+        let texts: Vec<&str> = t.discussion.iter().map(|c| c.text.as_str()).collect();
+        assert!(texts.iter().any(|c| c.contains("-dash comment")), "{texts:?}");
+        assert!(texts.iter().any(|c| c.contains("-shipped")), "{texts:?}");
     }
 
     #[tokio::test]

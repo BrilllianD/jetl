@@ -515,6 +515,11 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Alt+T` | `tasks.filter_tag` | Tasks: filter by tag… |
 | `Alt+A` | `tasks.filter_assignee` | Tasks: filter by assignee… |
 | `Alt+J` | `tasks.jump_related` | Tasks: jump to a related task… |
+| `Alt+M` | `tasks.change_status` | Tasks: change the selected task's status… |
+| `Alt+P` | `tasks.change_priority` | Tasks: change the selected task's priority… |
+| `Alt+Shift+A` | `tasks.assign` | Tasks: assign the selected task… |
+| `Alt+Shift+T` | `tasks.edit_tags` | Tasks: edit the selected task's tags… |
+| `Alt+N` | `tasks.comment` | Tasks: comment on the selected task… |
 | `F5` | `tasks.refresh` | Tasks: reload the tracker |
 | `Shift+F10` | `tasks.context_menu` | Tasks: actions for the selected task |
 | `Esc` | `tasks.escape` | Tasks: clear the filter, back to the list, or focus the editor |

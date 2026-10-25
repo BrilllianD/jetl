@@ -237,6 +237,21 @@ pub enum DialogId {
     TasksAssignee(Vec<String>),
     /// Tasks window: jump to a related task. Item `i` is the id `values[i]`.
     TasksJump(Vec<String>),
+    /// Tasks window: change the status of task `.0`. Item `i` is `.1[i]`; `None` asks for a
+    /// status name.
+    TasksStatus(String, Vec<Option<crate::yman::cli::StatusChange>>),
+    /// Tasks window: the status name to move task `.0` to.
+    TasksMoveTo(String),
+    /// Tasks window: the optional note of a status change of task `.0`.
+    TasksNote(String, crate::yman::cli::StatusChange),
+    /// Tasks window: the priority of task `.0`. Item `i` is priority `i`.
+    TasksPriority(String),
+    /// Tasks window: the assignee of task `.0`.
+    TasksAssign(String),
+    /// Tasks window: the tags of task `.0`; `.1` are the tags when the dialog opened.
+    TasksTags(String, Vec<String>),
+    /// Tasks window: a comment on task `.0`.
+    TasksComment(String),
     /// A new value for this field of the selected run configuration.
     RunConfigField(crate::ui::run_configs::Field),
     /// Close the Run Configurations window, dropping its changes: Discard / Keep Editing.

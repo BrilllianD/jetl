@@ -494,6 +494,16 @@ pub enum TasksAction {
     FilterAssignee,
     /// Choose a related task of the selected one.
     JumpRelated,
+    /// Change the selected task's status (start, done, cancel, reopen, move), with an optional note.
+    ChangeStatus,
+    /// Set the selected task's priority (0-9).
+    ChangePriority,
+    /// Set or clear the selected task's assignee.
+    Assign,
+    /// Edit the selected task's tags.
+    EditTags,
+    /// Add a comment to the selected task.
+    Comment,
     Refresh,
     ContextMenu,
     /// Clear the typed filter, leave the details, or focus the editor.
@@ -1031,6 +1041,11 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "tasks.filter_tag" => "Tasks: filter by tag…", Tasks(TasksAction::FilterTag);
         "tasks.filter_assignee" => "Tasks: filter by assignee…", Tasks(TasksAction::FilterAssignee);
         "tasks.jump_related" => "Tasks: jump to a related task…", Tasks(TasksAction::JumpRelated);
+        "tasks.change_status" => "Tasks: change the selected task's status…", Tasks(TasksAction::ChangeStatus);
+        "tasks.change_priority" => "Tasks: change the selected task's priority…", Tasks(TasksAction::ChangePriority);
+        "tasks.assign" => "Tasks: assign the selected task…", Tasks(TasksAction::Assign);
+        "tasks.edit_tags" => "Tasks: edit the selected task's tags…", Tasks(TasksAction::EditTags);
+        "tasks.comment" => "Tasks: comment on the selected task…", Tasks(TasksAction::Comment);
         "tasks.refresh" => "Tasks: reload the tracker", Tasks(TasksAction::Refresh);
         "tasks.context_menu" => "Tasks: actions for the selected task", Tasks(TasksAction::ContextMenu);
         "tasks.escape" => "Tasks: clear the filter, back to the list, or focus the editor", Tasks(TasksAction::Escape);

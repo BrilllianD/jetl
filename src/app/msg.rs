@@ -32,7 +32,11 @@ impl App {
                 }
             }
             AppMsg::Git(m) => self.on_git_msg(m),
-            AppMsg::Yman(m) => self.yman.on_msg(m),
+            AppMsg::Yman(m) => {
+                if let Some(done) = self.yman.on_msg(m) {
+                    self.finish_yman_mutation(done);
+                }
+            }
             AppMsg::Worktrees { generation, result } => {
                 if generation == self.workspace.generation {
                     self.worktrees.set_list(result, &self.workspace.root);

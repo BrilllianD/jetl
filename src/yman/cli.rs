@@ -212,6 +212,65 @@ pub fn status_args() -> Vec<String> {
     strings(&["status", "--json"])
 }
 
+/// A status change of one task.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StatusChange {
+    Start,
+    Done,
+    Cancel,
+    Reopen,
+    /// `yman move` to this status.
+    Move(String),
+}
+
+/// `start|done|cancel|reopen [--message=NOTE] ID` or `move [--message=NOTE] ID STATUS`; a blank
+/// note is left out.
+pub fn status_change_args(id: &str, change: &StatusChange, note: Option<&str>) -> Vec<String> {
+    let verb = match change {
+        StatusChange::Start => "start",
+        StatusChange::Done => "done",
+        StatusChange::Cancel => "cancel",
+        StatusChange::Reopen => "reopen",
+        StatusChange::Move(_) => "move",
+    };
+    let mut a = vec![verb.to_string()];
+    if let Some(n) = note.map(str::trim).filter(|n| !n.is_empty()) {
+        a.push(format!("--message={n}"));
+    }
+    a.push(id.to_string());
+    if let StatusChange::Move(s) = change {
+        a.push(s.clone());
+    }
+    a
+}
+
+/// `prio ID N`.
+pub fn priority_args(id: &str, priority: u8) -> Vec<String> {
+    vec!["prio".to_string(), id.to_string(), priority.to_string()]
+}
+
+/// `set --assignee=WHO ID`, or `set --no-assignee ID` for `None`.
+pub fn assign_args(id: &str, who: Option<&str>) -> Vec<String> {
+    match who {
+        Some(w) => vec!["set".to_string(), format!("--assignee={w}"), id.to_string()],
+        None => strings(&["set", "--no-assignee", id]),
+    }
+}
+
+/// `set --tag=A... --untag=R... ID`.
+pub fn tag_change_args(id: &str, add: &[String], remove: &[String]) -> Vec<String> {
+    let mut a = vec!["set".to_string()];
+    a.extend(add.iter().map(|t| format!("--tag={t}")));
+    a.extend(remove.iter().map(|t| format!("--untag={t}")));
+    a.push(id.to_string());
+    a
+}
+
+/// `comment ID`; the text goes on stdin.
+pub fn comment_args(id: &str) -> Vec<String> {
+    strings(&["comment", id])
+}
+
 /// Test skip check: whether `yman` can be started. Spawns the binary like the
 /// service does, so the two cannot disagree.
 #[cfg(test)]
@@ -249,6 +308,22 @@ mod tests {
         assert_eq!(show_args("7"), args(&["show", "7", "--json"]));
         assert_eq!(tags_args(), args(&["tags", "--json"]));
         assert_eq!(status_args(), args(&["status", "--json"]));
+    }
+
+    #[test]
+    fn mutation_args() {
+        use StatusChange::*;
+        assert_eq!(status_change_args("7", &Done, Some("-x shipped")), args(&["done", "--message=-x shipped", "7"]));
+        assert_eq!(status_change_args("7", &Move("blocked".into()), None), args(&["move", "7", "blocked"]));
+        assert_eq!(status_change_args("7", &Move("blocked".into()), Some(" n ")), args(&["move", "--message=n", "7", "blocked"]));
+        assert_eq!(status_change_args("7", &Start, Some("  ")), args(&["start", "7"]));
+        assert_eq!(status_change_args("7", &Reopen, None), args(&["reopen", "7"]));
+        assert_eq!(status_change_args("7", &Cancel, None), args(&["cancel", "7"]));
+        assert_eq!(priority_args("7", 3), args(&["prio", "7", "3"]));
+        assert_eq!(assign_args("7", None), args(&["set", "--no-assignee", "7"]));
+        assert_eq!(assign_args("7", Some("-bob")), args(&["set", "--assignee=-bob", "7"]));
+        assert_eq!(tag_change_args("7", &["a".into()], &["b".into()]), args(&["set", "--tag=a", "--untag=b", "7"]));
+        assert_eq!(comment_args("7"), args(&["comment", "7"]));
     }
 
     #[tokio::test]

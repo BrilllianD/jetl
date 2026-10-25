@@ -3,7 +3,9 @@
 //! are listed by default (Alt+C shows closed ones, dim); typing filters by
 //! id, title, tags and assignee, Alt+T picks a tag, Alt+A an assignee.
 //! Tab or Enter moves to the details, which scroll; Alt+J (or a click on a
-//! related id) jumps to a related task.
+//! related id) jumps to a related task. Alt+M changes the status, Alt+P the
+//! priority, Alt+Shift+A the assignee, Alt+Shift+T the tags and Alt+N adds a
+//! comment (all through dialogs, also in the context menu).
 //!
 //! The panel holds view state only: the data stays in `YmanService`. Rows
 //! are rebuilt when its `revision` moved, keeping the selection by task id.
@@ -17,12 +19,13 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use unicode_width::UnicodeWidthStr;
 
+use super::cli::StatusChange;
 use super::{LoadedTask, Snapshot, TaskRow, TrackerState, YmanService};
 use crate::actions::{Action, TasksAction};
 use crate::app::Ctx;
 use crate::config::theme::Theme;
 use crate::event::{Effect, Level, Mouse};
-use crate::ui::dialog::{Dialog, DialogId};
+use crate::ui::dialog::{Dialog, DialogId, DialogKind};
 use crate::ui::focus::PanelId;
 use crate::ui::hover::{self, Highlight, Kind};
 use crate::ui::menu::{ContextMenu, MenuItem};
@@ -110,6 +113,17 @@ fn snapshot(yman: &YmanService) -> Option<&Snapshot> {
         TrackerState::Ready(s) => Some(s),
         _ => None,
     }
+}
+
+/// Tags from text: split on whitespace and commas, without empty parts and duplicates.
+pub(crate) fn parse_tags(s: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for t in s.split(|c: char| c.is_whitespace() || c == ',').filter(|t| !t.is_empty()) {
+        if !out.iter().any(|o| o == t) {
+            out.push(t.to_string());
+        }
+    }
+    out
 }
 
 /// `2026-10-25T16:06:18Z` as `2026-10-25 16:06`; any other shape as it is.
@@ -326,12 +340,123 @@ impl TasksPanel {
         self.dialog(cx, DialogId::TasksJump(values), "Jump to Related Task", labels);
     }
 
-    fn context_menu(&self, x: u16, y: u16, cx: &mut Ctx) {
+    /// The selected task for a change, and whether it is open; tells the user why when there is
+    /// none or another change still runs.
+    fn target<'a>(&self, yman: &'a YmanService, cx: &mut Ctx) -> Option<(&'a TaskRow, bool)> {
+        if let Some(l) = yman.busy() {
+            cx.notify(Level::Info, format!("Wait for {l} to finish"));
+            return None;
+        }
+        let found = self.selected_id().and_then(|id| {
+            let snap = snapshot(yman)?;
+            Some((snap.tasks.iter().find(|t| t.id == id)?, snap.open.contains(id)))
+        });
+        if found.is_none() {
+            cx.notify(Level::Info, "No task selected");
+        }
+        found
+    }
+
+    fn change_status(&self, yman: &YmanService, cx: &mut Ctx) {
+        let Some((row, open)) = self.target(yman, cx) else { return };
+        let mut values: Vec<Option<StatusChange>> = Vec::new();
+        let mut labels: Vec<String> = Vec::new();
+        let mut add = |v: Option<StatusChange>, l: String| {
+            values.push(v);
+            labels.push(l);
+        };
+        if open {
+            add(Some(StatusChange::Start), "Start".into());
+            add(Some(StatusChange::Done), "Done".into());
+            add(Some(StatusChange::Cancel), "Cancel".into());
+        } else {
+            add(Some(StatusChange::Reopen), "Reopen".into());
+        }
+        if let Some(snap) = snapshot(yman) {
+            let seen: std::collections::BTreeSet<&str> = snap.tasks.iter().map(|t| t.status.as_str()).collect();
+            for st in seen.into_iter().filter(|st| *st != row.status) {
+                add(Some(StatusChange::Move(st.to_string())), format!("Move to {st}"));
+            }
+        }
+        add(None, "Move to Status…".into());
+        let id = row.id.clone();
+        self.dialog(cx, DialogId::TasksStatus(id.clone(), values), &format!("Status of #{id}"), labels);
+    }
+
+    fn change_priority(&self, yman: &YmanService, cx: &mut Ctx) {
+        let Some((row, _)) = self.target(yman, cx) else { return };
+        let labels = (0..=9u8)
+            .map(|p| {
+                let mut l = match p {
+                    0 => "0 (highest)".to_string(),
+                    9 => "9 (lowest)".to_string(),
+                    _ => p.to_string(),
+                };
+                if p == row.priority {
+                    l.push_str(" · current");
+                }
+                l
+            })
+            .collect();
+        let mut d = Dialog::choice(DialogId::TasksPriority(row.id.clone()), &format!("Priority of #{}", row.id), "", labels);
+        if row.priority <= 9
+            && let DialogKind::Choice { list, .. } = &mut d.kind
+        {
+            list.select(row.priority as usize);
+        }
+        cx.effects.push(Effect::Dialog(d));
+    }
+
+    fn assign(&self, yman: &YmanService, cx: &mut Ctx) {
+        let Some((row, _)) = self.target(yman, cx) else { return };
+        let who = row.assignee.as_deref().unwrap_or("");
+        let d = Dialog::input(
+            DialogId::TasksAssign(row.id.clone()),
+            &format!("Assign #{}", row.id),
+            "Empty clears the assignee",
+            who,
+            "Assign",
+        );
+        cx.effects.push(Effect::Dialog(d));
+    }
+
+    fn edit_tags(&self, yman: &YmanService, cx: &mut Ctx) {
+        let Some((row, _)) = self.target(yman, cx) else { return };
+        let d = Dialog::input(
+            DialogId::TasksTags(row.id.clone(), row.tags.clone()),
+            &format!("Tags of #{}", row.id),
+            "Separate tags with spaces or commas",
+            &row.tags.join(" "),
+            "Save",
+        );
+        cx.effects.push(Effect::Dialog(d));
+    }
+
+    fn comment(&self, yman: &YmanService, cx: &mut Ctx) {
+        let Some((row, _)) = self.target(yman, cx) else { return };
+        let d = Dialog::input(
+            DialogId::TasksComment(row.id.clone()),
+            &format!("Comment on #{}", row.id),
+            "Added to the task's discussion",
+            "",
+            "Comment",
+        );
+        cx.effects.push(Effect::Dialog(d));
+    }
+
+    fn context_menu(&self, x: u16, y: u16, busy: bool, cx: &mut Ctx) {
         let selected = self.selected_id().is_some();
+        let change = selected && !busy;
         let closed = if self.show_closed { "Hide Closed Tasks" } else { "Show Closed Tasks" };
         let items = vec![
             MenuItem::new("Show Details", Action::Tasks(TasksAction::Details)).enabled(selected),
             MenuItem::new("Jump to Related Task…", Action::Tasks(TasksAction::JumpRelated)),
+            MenuItem::separator(),
+            MenuItem::new("Change Status…", Action::Tasks(TasksAction::ChangeStatus)).enabled(change),
+            MenuItem::new("Change Priority…", Action::Tasks(TasksAction::ChangePriority)).enabled(change),
+            MenuItem::new("Assign…", Action::Tasks(TasksAction::Assign)).enabled(change),
+            MenuItem::new("Edit Tags…", Action::Tasks(TasksAction::EditTags)).enabled(change),
+            MenuItem::new("Add Comment…", Action::Tasks(TasksAction::Comment)).enabled(change),
             MenuItem::separator(),
             MenuItem::new(closed, Action::Tasks(TasksAction::ToggleClosed)),
             MenuItem::new("Filter by Tag…", Action::Tasks(TasksAction::FilterTag)),
@@ -380,9 +505,14 @@ impl TasksPanel {
             T::FilterTag => self.filter_tag(yman, cx),
             T::FilterAssignee => self.filter_assignee(yman, cx),
             T::JumpRelated => self.jump_related(yman, cx),
+            T::ChangeStatus => self.change_status(yman, cx),
+            T::ChangePriority => self.change_priority(yman, cx),
+            T::Assign => self.assign(yman, cx),
+            T::EditTags => self.edit_tags(yman, cx),
+            T::Comment => self.comment(yman, cx),
             T::ContextMenu => {
                 let row = self.list.selected.saturating_sub(self.list.offset) as u16;
-                self.context_menu(self.list_rect.x + 2, self.list_rect.y + row, cx);
+                self.context_menu(self.list_rect.x + 2, self.list_rect.y + row, yman.busy().is_some(), cx);
             }
             T::Escape => {
                 if !self.filter.is_empty() {
@@ -425,7 +555,7 @@ impl TasksPanel {
                     self.remember(yman);
                     self.area = Area::List;
                     if button == MouseButton::Right {
-                        self.context_menu(m.x, m.y, cx);
+                        self.context_menu(m.x, m.y, yman.busy().is_some(), cx);
                     } else if m.clicks >= 2 {
                         self.area = Area::Details;
                     }
@@ -457,6 +587,14 @@ impl TasksPanel {
     }
 
     fn title(&self, yman: &YmanService) -> String {
+        let mut t = self.list_title(yman);
+        if let Some(l) = yman.busy() {
+            t.push_str(&format!("· {l}… "));
+        }
+        t
+    }
+
+    fn list_title(&self, yman: &YmanService) -> String {
         let Some(snap) = snapshot(yman) else { return " Tasks ".to_string() };
         let total = if self.show_closed { snap.tasks.len() } else { snap.tasks.iter().filter(|t| snap.open.contains(&t.id)).count() };
         if self.rows.len() != total {
@@ -1022,5 +1160,23 @@ pub(crate) mod tests {
         assert_eq!(short_time("2026-10-25T16:06:18Z"), "2026-10-25 16:06");
         assert_eq!(short_time("yesterday"), "yesterday");
         assert_eq!(short_time(""), "");
+    }
+
+    #[test]
+    fn parse_tags_splits_and_dedups() {
+        assert_eq!(parse_tags("a, b  a,c"), ["a", "b", "c"]);
+        assert!(parse_tags(" , ").is_empty());
+    }
+
+    #[test]
+    fn title_shows_the_running_mutation() {
+        use crate::yman::{Mutation, MutationKind};
+        let (mut y, _rx) = service();
+        let p = TasksPanel::default();
+        let m = Mutation { kind: MutationKind::Task("1".into()), label: "Done #1".into(), args: vec![], input: None };
+        y.running = Some(m);
+        assert_eq!(p.title(&y), " Tasks · Done #1… ");
+        set_snapshot(&mut y, sample());
+        assert!(p.title(&y).ends_with("· Done #1… "), "{}", p.title(&y));
     }
 }
