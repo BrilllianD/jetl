@@ -523,7 +523,8 @@ impl TasksPanel {
         ];
         // The typed filter wins over trailing buttons: they drop from the right to make room.
         let typed = (!self.filter.is_empty()).then(|| format!("filter: {} ", self.filter));
-        let reserved = typed.as_ref().map_or(0, |t| (t.width() as u16).min(r.width));
+        // The text plus the gap cell after the last button.
+        let reserved = typed.as_ref().map_or(0, |t| (t.width() as u16 + 1).min(r.width));
         let limit = r.right() - reserved;
         let mut x = r.x;
         for (b, label, on) in buttons {
@@ -941,6 +942,20 @@ pub(crate) mod tests {
         assert!(lines[1].contains("filter: parser"), "{:?}", lines[1]);
         assert!(lines[1].contains("[Closed: hidden]"), "{:?}", lines[1]);
         assert!(!lines[1].contains("[Refresh]"), "trailing buttons drop first: {:?}", lines[1]);
+    }
+
+    #[test]
+    fn typed_filter_shows_whatever_button_ends_at_the_limit() {
+        let (mut y, _rx) = service();
+        set_snapshot(&mut y, sample());
+        let mut p = TasksPanel::default();
+        let mut typed = String::new();
+        for c in "abcdefghijklmnopqrstuvwxyz".chars() {
+            p.handle_key(key(KeyCode::Char(c)), &y);
+            typed.push(c);
+            let lines = draw(&mut p, &y, 80, 12);
+            assert!(lines[1].contains(&format!(" filter: {typed}")), "{:?}", lines[1]);
+        }
     }
 
     #[test]
