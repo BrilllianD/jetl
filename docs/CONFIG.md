@@ -396,7 +396,7 @@ Failed (the toolbar button, Run > Rerun Failed Tests, the action
 test -- --exact <test names>`, pytest with the failed node ids, vitest with
 the failed files and `-t` over their names, jest with the failed files and `-t`
 over their names (a file that failed to load reruns as a whole; the other tests of those files
-show as ignored, which is jest's own reporting). A `-t` already in a list command or in `args` is replaced (not one inside a string command). Not shown: per-test timing, a
+show as ignored, which is jest's own reporting). A `-t` already in the command or in `args` is replaced; a string command is split on whitespace for this, so one holding quotes, a backslash or a line break keeps its `-t`. Not shown: per-test timing, a
 running state per test, filters; results are not saved.
 
 Run Test at Caret (Ctrl+Shift+F10, Run > Run Test at Caret, the action

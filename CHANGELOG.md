@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Rerun Failed on a jest run configuration whose command is one string drops the string's own `-t`/`--testNamePattern` (after the `jest` word), so the rerun has one `-t`; a string with quotes, a backslash or a line break keeps it.
 - Markdown: a document that starts with `---` (or `+++`) and has a code fence before the next `---` line is no longer taken as YAML (or TOML) front matter; the fence and the rest are highlighted as Markdown.
 - Stage and Continue shows the plain command (`git add a.txt && git rebase --continue`) in the status bar, the Git console and Local History instead of git's pathspec syntax.
 - Inlay hints: the caret at a type hint's place is drawn before the hint, so typing there no longer shows the caret on the far side of the hint (parameter name hints keep the caret after them).

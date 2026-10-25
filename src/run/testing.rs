@@ -522,6 +522,25 @@ fn drop_jest_name_pattern(words: &mut Vec<String>) {
     }
 }
 
+/// `s` without jest's name filter after its `jest` word, split and rejoined on whitespace;
+/// `None` when nothing changes or the string has quotes, a backslash or a line break, which
+/// a whitespace split cannot keep intact.
+fn drop_jest_name_pattern_in_shell(s: &str) -> Option<String> {
+    if s.contains(['"', '\'', '\\', '\n', '\r']) {
+        return None;
+    }
+    let mut words: Vec<String> = s.split_whitespace().map(String::from).collect();
+    let start = words.iter().position(|w| file_name(w) == "jest")? + 1;
+    let mut tail = words.split_off(start);
+    let before = tail.len();
+    drop_jest_name_pattern(&mut tail);
+    if tail.len() == before {
+        return None;
+    }
+    words.extend(tail);
+    Some(words.join(" "))
+}
+
 /// `task` rerun for its failed tests only.
 pub fn rerun_failed(task: &RunTask, run: &TestRun) -> Result<RunTask, String> {
     let failed: Vec<&TestCase> = run.failed().collect();
@@ -568,10 +587,16 @@ pub fn rerun_failed(task: &RunTask, run: &TestRun) -> Result<RunTask, String> {
         }
         Runner::Jest => {
             // Two `-t` options make jest match their patterns joined with a comma, which
-            // matches nothing; the one added below replaces any already in the command.
+            // matches nothing; the one added below replaces any already in `args`, a list
+            // command or a plain string command.
             drop_jest_name_pattern(&mut out.args);
-            if let TaskCommand::Argv(w) = &mut out.command {
-                drop_jest_name_pattern(w);
+            match &mut out.command {
+                TaskCommand::Argv(w) => drop_jest_name_pattern(w),
+                TaskCommand::Shell(s) => {
+                    if let Some(t) = drop_jest_name_pattern_in_shell(s) {
+                        *s = t;
+                    }
+                }
             }
             // jest reads file arguments and `-t` as regular expressions; a file that
             // failed to load has no name to filter, so it reruns as a whole.
@@ -834,6 +859,21 @@ mod tests {
         let r = rerun_failed(&task(TaskCommand::Shell("npx jest".into()), &[]), &jest).unwrap();
         assert_eq!(r.command, TaskCommand::Shell("npx jest".into()));
         assert_eq!(r.args, jest_args);
+        // A string command loses its own name filter after the `jest` word.
+        for (from, to) in [
+            ("npx jest -t foo", "npx jest"),
+            ("npx  jest src/math.test.js --testNamePattern=x --verbose", "npx jest src/math.test.js --verbose"),
+            ("npx jest --testNamePattern x", "npx jest"),
+            ("npx jest -t", "npx jest"),
+            // Quoted: a whitespace split cannot tell where the pattern ends, so the `-t` stays.
+            ("npx jest -t 'math adds'", "npx jest -t 'math adds'"),
+            // The `-t` belongs to docker, before the `jest` word.
+            ("docker run -t img && npx jest", "docker run -t img && npx jest"),
+        ] {
+            let r = rerun_failed(&task(TaskCommand::Shell(from.into()), &[]), &jest).unwrap();
+            assert_eq!(r.command, TaskCommand::Shell(to.into()), "{from}");
+            assert_eq!(r.args, jest_args, "{from}");
+        }
         // A caret-run `-t` is replaced, not repeated: two `-t` make jest join the patterns.
         let r = rerun_failed(&task(argv(&["npx", "jest", "src/math.test.js", "-t", "^math adds$", "--verbose"]), &[]), &jest).unwrap();
         assert_eq!(r.command, argv(&["npx", "jest", "src/math.test.js", "--verbose"]));
