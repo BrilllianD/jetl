@@ -4,14 +4,14 @@ expression: "snapshot(&term, &marks, None)"
 ---
 80x24 cursor=(11,5)
 00  ≣ ┌ Project: root ───────────────┐│
-01    │                              ││
-02  1 │                              ││
-03  ⌂ │                              ││
-04  2┌ Find Action ─────────────────────────────────────────────────────────────┐
-05  ◫│ › split                                                               14 │
-06  7│ Split right (the tab in a new group beside)  editor.split_right    Alt+\ │
-07  ⊢│ Split down (the tab in a new group below)  editor.split_down       Alt+- │
-08   │ Local History: back to the snapshot list  local_history.left        Left │
+01  1 │                              ││
+02  ⌂ │                              ││
+03  2 │                              ││
+04  ◫┌ Find Action ─────────────────────────────────────────────────────────────┐
+05  7│ › split                                                               14 │
+06  ⊢│ Split right (the tab in a new group beside)  editor.split_right    Alt+\ │
+07   │ Split down (the tab in a new group below)  editor.split_down       Alt+- │
+08  ✓│ Local History: back to the snapshot list  local_history.left        Left │
 09  8│ Unsplit (merge the group into the one beside it)  editor.unsplit         │
 10  ⟲│ Unsplit all (one group)  editor.unsplit_all                Alt+W Shift+U │
 11  5│ Local history of the file (editor) or the selected entry (Project tree;  │

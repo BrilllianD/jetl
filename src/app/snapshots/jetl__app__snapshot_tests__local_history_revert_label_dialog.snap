@@ -4,14 +4,14 @@ expression: "snapshot(&term, &marks, None)"
 ---
 80x24 cursor=hidden
 00  ≣ ┌ Project: root ───────────────┐│
-01    │                              ││
-02  1 │                              ││
-03  ⌂ │                              ││               No files open.
-04  2 │                              ││       Alt+1 opens the Project view;
-05  ◫ │                              ││         Ctrl+Shift+N finds a file.
-06  7 │               ┌ Revert to Label ───────────────────────┐
-07  ⊢ └───────────────│ Revert 2 files to label "release 1.2"? │
-08    ────────────────│ The edits stay unsaved in their tabs.  │───────────────────
+01  1 │                              ││
+02  ⌂ │                              ││
+03  2 │                              ││               No files open.
+04  ◫ │                              ││       Alt+1 opens the Project view;
+05  7 │                              ││         Ctrl+Shift+N finds a file.
+06  ⊢ │               ┌ Revert to Label ───────────────────────┐
+07    └───────────────│ Revert 2 files to label "release 1.2"? │
+08  ✓ ────────────────│ The edits stay unsaved in their tabs.  │───────────────────
 09  8 ┌ Local History:│                                        │──────────────────┐
 10  ⟲ │[Show History] │         [ Revert ] [ Cancel ]          │   type to filter │
 11  5 │ notes.txt  Uns└────────────────────────────────────────┘" on 2 files: Ente│

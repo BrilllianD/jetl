@@ -4,14 +4,14 @@ expression: "snapshot(&term, &settings_marks(&app.theme), None)"
 ---
 80x24 cursor=hidden
 00  ≣┌ Settings ────────────────────────────────────────────────────────────────┐
-01   │Appearance              │Editor › General                                 │
-02  1│Editor                  │                                                 │
-03  ⌂│  General               │  Tab width             4                new tabs│
-04  2│  Soft Wraps            │  Lines kept above an…  5                        │
-05  ◫│  Saving                │  Columns kept left a…  5                        │
-06  7│  Formatting            │  Close brackets and …  [x]                      │
-07  ⊢│Keymap                  │  Highlight the word …  [x]                      │
-08   │Version Control         │  Show indent guides    [x]                      │
+01  1│Appearance              │Editor › General                                 │
+02  ⌂│Editor                  │                                                 │
+03  2│  General               │  Tab width             4                new tabs│
+04  ◫│  Soft Wraps            │  Lines kept above an…  5                        │
+05  7│  Saving                │  Columns kept left a…  5                        │
+06  ⊢│  Formatting            │  Close brackets and …  [x]                      │
+07   │Keymap                  │  Highlight the word …  [x]                      │
+08  ✓│Version Control         │  Show indent guides    [x]                      │
 09  8│  Git                   │  Live templates (sni…  [x]                      │
 10  ⟲│  Worktrees             │  Tab limit             0                        │
 11  5│Files                   │  Largest file with s…  2097152          new tabs│

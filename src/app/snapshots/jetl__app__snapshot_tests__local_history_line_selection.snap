@@ -4,14 +4,14 @@ expression: "snapshot(&term, &marks, Some(bottom))"
 ---
 80x24 cursor=hidden
 00  ≣ ┌ Project: root ───────────────┐│
-01    │                              ││
-02  1 │                              ││
-03  ⌂ │                              ││               No files open.
-04  2 │                              ││       Alt+1 opens the Project view;
-05  ◫ │                              ││         Ctrl+Shift+N finds a file.
-06  7 │                              ││
-07  ⊢ └──────────────────────────────┘│
-08    ─────────────────────────────────────────────────────────────────────────────
+01  1 │                              ││
+02  ⌂ │                              ││
+03  2 │                              ││               No files open.
+04  ◫ │                              ││       Alt+1 opens the Project view;
+05  7 │                              ││         Ctrl+Shift+N finds a file.
+06  ⊢ │                              ││
+07    └──────────────────────────────┘│
+08  ✓ ─────────────────────────────────────────────────────────────────────────────
 09  8 ┌ Local History: notes.txt ─────────────────────────────────────────────────┐
 10  ⟲ │[All Files] [Revert] [Revert 2 Lines] [Put Label…] [Remove Label]          │
 11  5 │ 10-05 12:00  Unsaved changes │ Saved  2024-10-04 1… [Unified] [x] Collapse│

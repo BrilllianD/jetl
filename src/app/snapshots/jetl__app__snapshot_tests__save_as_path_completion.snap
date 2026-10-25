@@ -4,14 +4,14 @@ expression: "snapshot(&term, &marks, Some(area))"
 ---
 80x24 cursor=(16,7)
 00  ≣ ┌ Project: root ───────────────┐│ *draft ×
-01    │                              ││  1    text
-02  1 │                              ││  2
-03  ⌂ │         ┌ Save As ───────────────────────────────────────────┐
-04  2 │         │ Where to save draft?                               │
-05  ◫ │         │ Path relative to the project root (Tab completes): │
-06  7 │         │                                                    │
-07  ⊢ │         │ f                                                  │
-08    │         │ f00.txt  f01.txt  f02.txt  f03.txt  f04.txt        │
+01  1 │                              ││  1    text
+02  ⌂ │                              ││  2
+03  2 │         ┌ Save As ───────────────────────────────────────────┐
+04  ◫ │         │ Where to save draft?                               │
+05  7 │         │ Path relative to the project root (Tab completes): │
+06  ⊢ │         │                                                    │
+07    │         │ f                                                  │
+08  ✓ │         │ f00.txt  f01.txt  f02.txt  f03.txt  f04.txt        │
 09  8 │         │ f05.txt  f06.txt  f07.txt  f08.txt  f09.txt        │
 10  ⟲ │         │ f0dir/   f10.txt  f11.txt  f12.txt  f13.txt        │
 11  5 │         │ f14.txt  f15.txt  f16.txt  f17.txt  f18.txt        │

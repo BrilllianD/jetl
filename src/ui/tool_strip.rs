@@ -39,7 +39,11 @@ pub fn render(app: &mut App, frame: &mut Frame, area: Rect, right: Rect) {
     // fit are skipped. Left-side windows stack from the top under the menu
     // button, bottom-side windows from the bottom.
     let gap = u16::from(area.height > ToolWindowId::ALL.len() as u16 * (BUTTON_H + 1));
-    let mut top = area.y + 2;
+    // The blank row under the menu button goes when the left strip's
+    // buttons would not fit with it (24-row terminals).
+    let main_buttons = ToolWindowId::ALL.iter().filter(|tw| app.layout.side_of(**tw) != Side::Right).count() as u16;
+    let menu_gap = u16::from(area.height >= 2 + main_buttons * BUTTON_H);
+    let mut top = area.y + 1 + menu_gap;
     let mut bottom = area.bottom();
     let mut rtop = right.y + 2;
     let rbottom = right.bottom();

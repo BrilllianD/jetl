@@ -499,6 +499,26 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `End` | `structure.end` | Structure: last symbol |
 | `Enter` | `structure.open` | Structure: jump to the selected symbol |
 
+## tasks
+
+| Keys | Action | Description |
+|---|---|---|
+| `Up` | `tasks.up` | Tasks: up (in the details: scroll up) |
+| `Down` | `tasks.down` | Tasks: down (in the details: scroll down) |
+| `PageUp` | `tasks.page_up` | Tasks: page up |
+| `PageDown` | `tasks.page_down` | Tasks: page down |
+| `Home` | `tasks.home` | Tasks: first row (in the details: top) |
+| `End` | `tasks.end` | Tasks: last row (in the details: bottom) |
+| `Tab` | `tasks.next_section` | Tasks: switch between the list and the details |
+| `Enter` | `tasks.details` | Tasks: focus the details |
+| `Alt+C` | `tasks.toggle_closed` | Tasks: show or hide closed tasks |
+| `Alt+T` | `tasks.filter_tag` | Tasks: filter by tag… |
+| `Alt+A` | `tasks.filter_assignee` | Tasks: filter by assignee… |
+| `Alt+J` | `tasks.jump_related` | Tasks: jump to a related task… |
+| `F5` | `tasks.refresh` | Tasks: reload the tracker |
+| `Shift+F10` | `tasks.context_menu` | Tasks: actions for the selected task |
+| `Esc` | `tasks.escape` | Tasks: clear the filter, back to the list, or focus the editor |
+
 ## terminal
 
 | Keys | Action | Description |
@@ -526,6 +546,7 @@ Reachable from Find Action (F1) or by binding them in `keymap.toml`.
 | `palette.goto_line` | Go to line |
 | `editor.scratch_files` | Scratch files |
 | `editor.put_label` | Local history: put label… |
+| `tool_window.tasks` | Tasks tool window (yman) |
 | `editor.replace_one` | Replace current match |
 | `editor.replace_all` | Replace all matches |
 | `editor.find_case` | Find: toggle match case |

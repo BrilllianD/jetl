@@ -18,6 +18,7 @@ pub enum Action {
     Run(RunAction),
     Problems(ProblemsAction),
     History(HistoryAction),
+    Tasks(TasksAction),
     Lsp(LspAction),
     Palette(PaletteAction),
     Mode(ModeAction),
@@ -475,6 +476,30 @@ pub enum ProblemsAction {
     ToggleCurrentFile,
 }
 
+/// The Tasks tool window (`yman/panel.rs`).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum TasksAction {
+    Up,
+    Down,
+    PageUp,
+    PageDown,
+    Home,
+    End,
+    /// Switch between the list and the details.
+    NextSection,
+    /// Focus the details.
+    Details,
+    ToggleClosed,
+    FilterTag,
+    FilterAssignee,
+    /// Choose a related task of the selected one.
+    JumpRelated,
+    Refresh,
+    ContextMenu,
+    /// Clear the typed filter, leave the details, or focus the editor.
+    Escape,
+}
+
 /// The Local History tool window (`history/panel.rs`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum HistoryAction {
@@ -682,6 +707,7 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "editor.put_label" => "Local history: put label…", App(AppAction::PutLabel);
         // After the two above, so "local history" in Find Action picks them first.
         "tool_window.local_history" => "Local History tool window", App(AppAction::ToggleToolWindow(ToolWindowId::LocalHistory));
+        "tool_window.tasks" => "Tasks tool window (yman)", App(AppAction::ToggleToolWindow(ToolWindowId::Tasks));
         "editor.find" => "Find", Editor(E::Find);
         "editor.replace" => "Replace", Editor(E::Replace);
         "editor.find_next" => "Find next", Editor(E::FindNext);
@@ -993,6 +1019,22 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "local_history.context_menu" => "Local History: actions for the selected snapshot", History(HistoryAction::ContextMenu);
         "local_history.escape" => "Local History: clear the filter, back to the list, or focus the editor", History(HistoryAction::Escape);
 
+        "tasks.up" => "Tasks: up (in the details: scroll up)", Tasks(TasksAction::Up);
+        "tasks.down" => "Tasks: down (in the details: scroll down)", Tasks(TasksAction::Down);
+        "tasks.page_up" => "Tasks: page up", Tasks(TasksAction::PageUp);
+        "tasks.page_down" => "Tasks: page down", Tasks(TasksAction::PageDown);
+        "tasks.home" => "Tasks: first row (in the details: top)", Tasks(TasksAction::Home);
+        "tasks.end" => "Tasks: last row (in the details: bottom)", Tasks(TasksAction::End);
+        "tasks.next_section" => "Tasks: switch between the list and the details", Tasks(TasksAction::NextSection);
+        "tasks.details" => "Tasks: focus the details", Tasks(TasksAction::Details);
+        "tasks.toggle_closed" => "Tasks: show or hide closed tasks", Tasks(TasksAction::ToggleClosed);
+        "tasks.filter_tag" => "Tasks: filter by tag…", Tasks(TasksAction::FilterTag);
+        "tasks.filter_assignee" => "Tasks: filter by assignee…", Tasks(TasksAction::FilterAssignee);
+        "tasks.jump_related" => "Tasks: jump to a related task…", Tasks(TasksAction::JumpRelated);
+        "tasks.refresh" => "Tasks: reload the tracker", Tasks(TasksAction::Refresh);
+        "tasks.context_menu" => "Tasks: actions for the selected task", Tasks(TasksAction::ContextMenu);
+        "tasks.escape" => "Tasks: clear the filter, back to the list, or focus the editor", Tasks(TasksAction::Escape);
+
         "palette.up" => "Palette: up", Palette(PaletteAction::Up);
         "palette.down" => "Palette: down", Palette(PaletteAction::Down);
         "palette.page_up" => "Palette: page up", Palette(PaletteAction::PageUp);
@@ -1040,6 +1082,7 @@ impl Action {
             Action::Run(_) => &["run", "global"],
             Action::Problems(_) => &["problems", "global"],
             Action::History(_) => &["local_history", "global"],
+            Action::Tasks(_) => &["tasks", "global"],
             Action::Lsp(_) => &["editor", "global"],
             Action::Palette(_) => &["palette"],
             Action::Mode(_) => &["mode.normal", "mode.insert", "mode.visual"],

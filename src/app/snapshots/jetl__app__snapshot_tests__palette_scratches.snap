@@ -4,14 +4,14 @@ expression: "snapshot(&term, &marks, None)"
 ---
 80x24 cursor=(6,5)
 00  ≣ ┌ Project: root ───────────────┐│
-01    │                              ││
-02  1 │                              ││
-03  ⌂ │                              ││
-04  2┌ Scratch Files ───────────────────────────────────────────────────────────┐
-05  ◫│ › type a scratch name · Shift+Del deletes                              3 │
-06  7│ scratch_2.txt                                     Plain text  2024-10-04 │
-07  ⊢│ notes.log                                         Plain text  2024-05-07 │
-08   │ scratch_1.txt                                     Plain text  2022-01-08 │
+01  1 │                              ││
+02  ⌂ │                              ││
+03  2 │                              ││
+04  ◫┌ Scratch Files ───────────────────────────────────────────────────────────┐
+05  7│ › type a scratch name · Shift+Del deletes                              3 │
+06  ⊢│ scratch_2.txt                                     Plain text  2024-10-04 │
+07   │ notes.log                                         Plain text  2024-05-07 │
+08  ✓│ scratch_1.txt                                     Plain text  2022-01-08 │
 09  8│                                                                          │
 10  ⟲│                                                                          │
 11  5│                                                                          │

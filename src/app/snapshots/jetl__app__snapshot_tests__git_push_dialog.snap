@@ -4,14 +4,14 @@ expression: "snapshot(&term, &marks, None)"
 ---
 80x24 cursor=hidden
 00  ≣ ┌ Project: root ───────────────┐│
-01    │                              ││
-02  1 │                              ││
-03  ⌂ │                              ││               No files open.
-04  2 │                              ││       Alt+1 opens the Project view;
-05  ◫ │    ┌ Push ───────────────────────────────────────────────────────┐
-06  7 │    │ Push 'main' to its upstream.                                │
-07  ⊢ └────│ Tags: also push every local tag.                            │
-08    ─────│ Force with lease: overwrite the remote branch only          │─────────
+01  1 │                              ││
+02  ⌂ │                              ││
+03  2 │                              ││               No files open.
+04  ◫ │                              ││       Alt+1 opens the Project view;
+05  7 │    ┌ Push ───────────────────────────────────────────────────────┐
+06  ⊢ │    │ Push 'main' to its upstream.                                │
+07    └────│ Tags: also push every local tag.                            │
+08  ✓ ─────│ Force with lease: overwrite the remote branch only          │─────────
 09  8 ┌ Git│ if it is still where it was last fetched.                   │────────┐
 10  ⟲ │ Com│ Runs: git push && git push --tags                           │  Push  │
 11  5 │No c│                                                             │        │

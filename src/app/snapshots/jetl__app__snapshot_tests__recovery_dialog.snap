@@ -4,14 +4,14 @@ expression: "snapshot(&term, &marks, None)"
 ---
 80x24 cursor=hidden
 00  ≣ ┌ Project: root ───────────────┐│
-01    │                              ││
-02  1 │                              ││
-03  ⌂ │                              ││
-04  2 │  ┌ Recover Unsaved Changes ─────────────────────────────────────────┐
-05  ◫ │  │ jetl did not exit cleanly. Unsaved changes of 2 files were kept: │
-06  7 │  │                                                                  │
-07  ⊢ │  │   src/main.rs                                                    │
-08    │  │   scratch (untitled)                                             │
+01  1 │                              ││
+02  ⌂ │                              ││
+03  2 │                              ││
+04  ◫ │  ┌ Recover Unsaved Changes ─────────────────────────────────────────┐
+05  7 │  │ jetl did not exit cleanly. Unsaved changes of 2 files were kept: │
+06  ⊢ │  │                                                                  │
+07    │  │   src/main.rs                                                    │
+08  ✓ │  │   scratch (untitled)                                             │
 09  8 │  │                                                                  │
 10  ⟲ │  │ Restored files open unsaved; the files on disk do not change.    │
 11  5 │  │                                                                  │

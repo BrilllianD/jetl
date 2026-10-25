@@ -4,14 +4,14 @@ expression: "snapshot(&term, &marks, None)"
 ---
 80x24 cursor=(20,9)
 00  ≣ ┌ Project: root ───────────────┐│ *notes (recovered) ×
-01    │                              ││  1    rescued text
-02  1 │                              ││  2
-03  ⌂ │                              ││
-04  2 │                              ││
-05  ◫ │         ┌ Save As ───────────────────────────────────────────┐
-06  7 │         │ Where to save notes (recovered)?                   │
-07  ⊢ │         │ Path relative to the project root (Tab completes): │
-08    │         │                                                    │
+01  1 │                              ││  1    rescued text
+02  ⌂ │                              ││  2
+03  2 │                              ││
+04  ◫ │                              ││
+05  7 │         ┌ Save As ───────────────────────────────────────────┐
+06  ⊢ │         │ Where to save notes (recovered)?                   │
+07    │         │ Path relative to the project root (Tab completes): │
+08  ✓ │         │                                                    │
 09  8 │         │ notes                                              │
 10  ⟲ │         │                [ Save ] [ Cancel ]                 │
 11  5 │         └────────────────────────────────────────────────────┘

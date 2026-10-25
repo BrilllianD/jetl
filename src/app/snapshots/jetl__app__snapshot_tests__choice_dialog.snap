@@ -4,14 +4,14 @@ expression: "snapshot(&term, &marks, None)"
 ---
 80x24 cursor=(17,4)
 00  ≣ ┌ Project: root ───────────────┐│
-01    │▾ src                         ││
-02  1 │    lib.rs                    ││
-03  ⌂ │    main.rs┌ New ───────────────────────────────────────────┐
-04  2 │  README.md│ type to filter                                 │
-05  ◫ │           │  File                                          │
-06  7 │           │  Directory                                     │
-07  ⊢ │           │                                                │
-08    │           │                                                │
+01  1 │▾ src                         ││
+02  ⌂ │    lib.rs                    ││
+03  2 │    main.rs┌ New ───────────────────────────────────────────┐
+04  ◫ │  README.md│ type to filter                                 │
+05  7 │           │  File                                          │
+06  ⊢ │           │  Directory                                     │
+07    │           │                                                │
+08  ✓ │           │                                                │
 09  8 │           │                                                │
 10  ⟲ │           │                                                │
 11  5 │           │                                                │

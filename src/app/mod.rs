@@ -70,6 +70,7 @@ mod signature;
 mod snippets;
 mod switcher;
 mod symbols;
+mod tasks;
 mod terminal;
 mod watch;
 
@@ -269,6 +270,8 @@ pub struct App {
     pub problems: crate::lsp::panel::ProblemsPanel,
     /// The Local History window (`history/panel.rs`).
     pub history_panel: crate::history::panel::LocalHistoryPanel,
+    /// The Tasks window over `yman` (`yman/panel.rs`).
+    pub tasks: crate::yman::panel::TasksPanel,
     /// The Terminal window and its shell.
     pub terminal: crate::terminal::panel::TerminalPanel,
     /// Language servers and the documents open on them.
@@ -401,6 +404,7 @@ impl App {
             run_panel: Default::default(),
             problems: crate::lsp::panel::ProblemsPanel::excluding(paths.scratches_dir()),
             history_panel: Default::default(),
+            tasks: Default::default(),
             terminal: crate::terminal::panel::TerminalPanel::new(config.terminal.scrollback),
             lsp: lsp::LspService::with_inlays(config.lsp.inlay_hints),
             hover: None,
@@ -857,6 +861,11 @@ impl App {
                 return;
             }
         }
+        // And for the Tasks window's filter.
+        if self.focus.is(PanelId::Tasks) && key.kind != crossterm::event::KeyEventKind::Release && self.tasks.handle_key(key, &self.yman) {
+            self.dispatcher.reset();
+            return;
+        }
         self.snippet_check();
         self.snippet_parse();
         let contexts = self.contexts();
@@ -1023,6 +1032,11 @@ impl App {
             Action::Run(a) => self.run_panel.handle_action(a, &mut cx),
             Action::Problems(a) => self.problems.handle_action(a, &self.lsp.diagnostics, self.editor.active_path(), &mut cx),
             Action::History(a) => self.history_panel.handle_action(a, &mut cx),
+            Action::Tasks(a) => {
+                drop(cx);
+                self.perform_tasks(a.clone());
+                return;
+            }
             Action::Lsp(crate::actions::LspAction::Restart) => {
                 drop(cx);
                 self.lsp_restart();

@@ -230,6 +230,13 @@ pub enum DialogId {
     SettingValue(&'static str),
     /// Close the Settings window, dropping its changes: Discard / Keep Editing.
     SettingsDiscard,
+    /// Tasks window: filter by tag. Item `i` is `values[i]`; `""` is any tag.
+    TasksTag(Vec<String>),
+    /// Tasks window: filter by assignee. Item `i` is `values[i]`; `""` is
+    /// anyone, `"-"` unassigned.
+    TasksAssignee(Vec<String>),
+    /// Tasks window: jump to a related task. Item `i` is the id `values[i]`.
+    TasksJump(Vec<String>),
     /// A new value for this field of the selected run configuration.
     RunConfigField(crate::ui::run_configs::Field),
     /// Close the Run Configurations window, dropping its changes: Discard / Keep Editing.

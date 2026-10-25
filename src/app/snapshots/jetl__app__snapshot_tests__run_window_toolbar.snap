@@ -4,14 +4,14 @@ expression: "snapshot(&term, &run_marks(&app.theme), None)"
 ---
 80x24 cursor=hidden
 00  ≣ ┌ Project: root ───────────────┐│
-01    │                              ││
-02  1 │                              ││
-03  ⌂ │                              ││               No files open.
-04  2 │                              ││       Alt+1 opens the Project view;
-05  ◫ │                              ││         Ctrl+Shift+N finds a file.
-06  7 │                              ││
-07  ⊢ └──────────────────────────────┘│
-08    ─────────────────────────────────────────────────────────────────────────────
+01  1 │                              ││
+02  ⌂ │                              ││
+03  2 │                              ││               No files open.
+04  ◫ │                              ││       Alt+1 opens the Project view;
+05  7 │                              ││         Ctrl+Shift+N finds a file.
+06  ⊢ │                              ││
+07    └──────────────────────────────┘│
+08  ✓ ─────────────────────────────────────────────────────────────────────────────
 09  8 ┌ Run: check ───────────────────────────────────────────────────────────────┐
 10  ⟲ │ check ▾   ▶ Run   ↻ Rerun   ■ Stop   Edit Configurations…                 │
 11  5 │ ✗ exit code 101  0.0s  $ cargo check                                      │
@@ -29,10 +29,12 @@ expression: "snapshot(&term, &run_marks(&app.theme), None)"
 23  root
 -- marks: L=selected T=picker D=dim button U=link
 00 DDD                                 DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD
+03 DDD
 04 DDD
 05 DDD
 06 DDD
 07 DDD
+08 DDD
 09 DDD TTTTTTTTTTTT
 10 DDD TTTTTTTTT                   DDDDDDDD
 11 DDD

@@ -4,14 +4,14 @@ expression: "snapshot(&term, &[l, u, m], None)"
 ---
 80x24 cursor=hidden
 00  ≣┌ Settings ────────────────────────────────────────────────────────────────┐
-01   │Appearance              │Editor › Saving                                  │
-02  1│Editor                  │                                                 │
-03  ⌂│  General               │* Autosave              idle ▾                   │
-04  2│  Soft Wraps            │  Autosave pause (ms)   1500                     │
-05  ◫│  Saving                │  Strip trailing whit…  [x]                      │
-06  7│  Formatting            │* End files with a li…  [ ]                      │
-07  ⊢│Keymap                  │                                                 │
-08   │Version Control         │                                                 │
+01  1│Appearance              │Editor › Saving                                  │
+02  ⌂│Editor                  │                                                 │
+03  2│  General               │* Autosave              idle ▾                   │
+04  ◫│  Soft Wraps            │  Autosave pause (ms)   1500                     │
+05  7│  Saving                │  Strip trailing whit…  [x]                      │
+06  ⊢│  Formatting            │* End files with a li…  [ ]                      │
+07   │Keymap                  │                                                 │
+08  ✓│Version Control         │                                                 │
 09  8│  Git                   │                                                 │
 10  ⟲│  Worktrees             │                                                 │
 11  5│Files                   │                                                 │

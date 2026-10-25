@@ -4,10 +4,10 @@ expression: "snapshot(&term, &marks, None)"
 ---
 80x24 cursor=hidden
 00  ≣ ┌ Project: root ───────────────┐│
-01    │▾ src                         ││
-02  1 │    lib.rs                    ││
-03  ⌂ │    main.rs                   ││
-04  2 │  README.md                   ││
+01  1 │▾ src                         ││
+02  ⌂ │    lib.rs                    ││
+03  2 │    main.rs                   ││
+04  ◫ │  README.md                   ││
 05  ┌ Delete ────────────────────────────────────────────────────────────────────┐
 06  │ Delete the file src/main.rs?                                               │
 07  │ This cannot be undone. Open tabs of it close; unsaved edits there are      │

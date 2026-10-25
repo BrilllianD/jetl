@@ -4,14 +4,14 @@ expression: "snapshot(&term, &[l, u, w], None)"
 ---
 80x24 cursor=hidden
 00  ≣┌ Settings ────────────────────────────────────────────────────────────────┐
-01   │Appearance              │Dependencies                                     │
-02  1│Editor                  │                                                 │
-03  ⌂│  General               │Language servers                                 │
-04  2│  Soft Wraps            │  ok      rust-analyzer   /usr/bin/rust-analyzer…│
-05  ◫│  Saving                │  missing gopls           gopls not found (go)   │
-06  7│  Formatting            │Formatters                                       │
-07  ⊢│Keymap                  │  off     none            no formatter commands …│
-08   │Version Control         │Clipboard                                        │
+01  1│Appearance              │Dependencies                                     │
+02  ⌂│Editor                  │                                                 │
+03  2│  General               │Language servers                                 │
+04  ◫│  Soft Wraps            │  ok      rust-analyzer   /usr/bin/rust-analyzer…│
+05  7│  Saving                │  missing gopls           gopls not found (go)   │
+06  ⊢│  Formatting            │Formatters                                       │
+07   │Keymap                  │  off     none            no formatter commands …│
+08  ✓│Version Control         │Clipboard                                        │
 09  8│  Git                   │  missing paste           no wl-paste, xclip, xs…│
 10  ⟲│  Worktrees             │Grammars                                         │
 11  5│Files                   │  ok      rust            compiled               │

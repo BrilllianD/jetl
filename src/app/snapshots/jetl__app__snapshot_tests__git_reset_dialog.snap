@@ -4,14 +4,14 @@ expression: "snapshot(&term, &marks, None)"
 ---
 80x24 cursor=(9,5)
 00  ≣ ┌ Project: root ───────────────┐│
-01    │                              ││
-02  1 │   ┌ Reset Current Branch ──────────────────────────────────────────┐
-03  ⌂ │   │ Reset 'main' to dddddddd Parse nested lists.                   │
-04  2 │   │ The commits after it leave the branch (the reflog keeps them). │
-05  ◫ │   │ type to filter                                                 │
-06  7 │   │  Soft: keep the changes staged                                 │
-07  ⊢ └───│  Mixed: keep the changes in the files, unstaged                │
-08    ────│  Hard: discard all uncommitted changes                         │───────
+01  1 │                              ││
+02  ⌂ │   ┌ Reset Current Branch ──────────────────────────────────────────┐
+03  2 │   │ Reset 'main' to dddddddd Parse nested lists.                   │
+04  ◫ │   │ The commits after it leave the branch (the reflog keeps them). │
+05  7 │   │ type to filter                                                 │
+06  ⊢ │   │  Soft: keep the changes staged                                 │
+07    └───│  Mixed: keep the changes in the files, unstaged                │
+08  ✓ ────│  Hard: discard all uncommitted changes                         │───────
 09  8 ┌ Gi│                                                                │──────┐
 10  ⟲ │ Co│                                                                │Push  │
 11  5 │[Br│                                                                │      │

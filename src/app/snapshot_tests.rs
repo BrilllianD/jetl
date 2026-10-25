@@ -2483,3 +2483,74 @@ async fn switcher_popup() {
     let marks = menu_marks(&app.theme);
     assert_snapshot!("switcher_popup", snapshot(&term, &marks, None));
 }
+
+/// The four sample tasks, task 1 selected with details (related ids, an
+/// attachment, two of three comments) loaded; no yman process runs.
+fn tasks_setup(app: &mut App) {
+    use crate::yman::panel::tests::{sample, set_snapshot};
+    use crate::yman::{Attachment, Comment, LoadedTask, TaskDetails};
+    app.yman.program = "jetl-no-such-yman-xyz".into();
+    app.toggle_tool_window(ToolWindowId::Tasks);
+    set_snapshot(&mut app.yman, sample());
+    app.sync_tasks();
+    let details = TaskDetails {
+        id: "1".into(),
+        priority: 2,
+        status: "todo".into(),
+        title: "Fix the parser".into(),
+        tags: vec!["ui".into()],
+        assignee: Some("claude".into()),
+        links: vec![],
+        related: vec!["2".into()],
+        related_by: vec!["10".into()],
+        created: "2026-10-25T16:06:18Z".into(),
+        updated: "2026-10-25T17:30:00Z".into(),
+        dir: String::new(),
+        body: "First line\n\n## Notes\n- item".into(),
+        attachments: vec![Attachment {
+            name: "trace.txt".into(),
+            added: "2026-10-25T16:10:00Z".into(),
+            by: Some("claude".into()),
+            missing: false,
+        }],
+        discussion: vec![
+            Comment { ts: "2026-10-25T16:20:00Z".into(), author: Some("claude".into()), text: "Looks like the lexer.".into() },
+            Comment { ts: "2026-10-25T16:40:00Z".into(), author: None, text: "Confirmed.\nSecond line.".into() },
+        ],
+        discussion_total: 3,
+    };
+    app.yman.task = Some(LoadedTask { id: "1".into(), result: Ok(details) });
+    app.yman.revision += 1;
+}
+
+#[tokio::test]
+async fn tasks_window() {
+    let mut fx = stable_app("tasks");
+    let app = &mut fx.app;
+    tasks_setup(app);
+    let term = draw_app(app, 120, 30);
+    let marks = [Mark::bg('L', "selected", app.theme.list_selected.bg.unwrap())];
+    assert_snapshot!("tasks_window", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
+async fn tasks_window_narrow() {
+    let mut fx = stable_app("tasks-narrow");
+    let app = &mut fx.app;
+    tasks_setup(app);
+    let term = draw_app(app, 80, 24);
+    let marks = [Mark::bg('L', "selected", app.theme.list_selected.bg.unwrap())];
+    assert_snapshot!("tasks_window_narrow", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
+async fn tasks_window_unavailable() {
+    let mut fx = stable_app("tasks-unavailable");
+    let app = &mut fx.app;
+    app.yman.program = "jetl-no-such-yman-xyz".into();
+    app.toggle_tool_window(ToolWindowId::Tasks);
+    app.yman.state = crate::yman::TrackerState::Unavailable(crate::yman::YmanError::NotInitialized);
+    app.yman.revision += 1;
+    let term = draw_app(app, 80, 14);
+    assert_snapshot!("tasks_window_unavailable", snapshot(&term, &[], None));
+}

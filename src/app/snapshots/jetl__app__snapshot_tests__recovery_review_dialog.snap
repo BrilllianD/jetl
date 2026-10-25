@@ -4,14 +4,14 @@ expression: "snapshot(&term, &marks, None)"
 ---
 80x24 cursor=hidden
 00  ≣ ┌ Project: root ───────────────┐│
-01    │                              ││
-02  1 │                              ││
-03  ⌂ │                              ││
-04  2 │                              ││
-05  ◫ │                  ┌ Recover Unsaved Changes (1 of 2) ┐
-06  7 │                  │ Restore the unsaved changes of   │
-07  ⊢ │                  │                                  │
-08    │                  │   src/main.rs                    │
+01  1 │                              ││
+02  ⌂ │                              ││
+03  2 │                              ││
+04  ◫ │                              ││
+05  7 │                  ┌ Recover Unsaved Changes (1 of 2) ┐
+06  ⊢ │                  │ Restore the unsaved changes of   │
+07    │                  │                                  │
+08  ✓ │                  │   src/main.rs                    │
 09  8 │                  │                                  │
 10  ⟲ │                  │       [ Restore ] [ Skip ]       │
 11  5 │                  └──────────────────────────────────┘s open.

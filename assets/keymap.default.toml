@@ -546,6 +546,26 @@
 "shift-f10" = "local_history.context_menu"
 "esc" = "local_history.escape"
 
+# The Tasks window (View > Tasks): typing filters the list, Esc clears the
+# filter first. Keys here must carry Ctrl or Alt, or be function keys: plain
+# printable keys are the filter text.
+[tasks]
+"up" = "tasks.up"
+"down" = "tasks.down"
+"pageup" = "tasks.page_up"
+"pagedown" = "tasks.page_down"
+"home" = "tasks.home"
+"end" = "tasks.end"
+"tab" = "tasks.next_section"
+"enter" = "tasks.details"
+"alt-c" = "tasks.toggle_closed"
+"alt-t" = "tasks.filter_tag"
+"alt-a" = "tasks.filter_assignee"
+"alt-j" = "tasks.jump_related"
+"f5" = "tasks.refresh"
+"shift-f10" = "tasks.context_menu"
+"esc" = "tasks.escape"
+
 [palette]
 "up" = "palette.up"
 "down" = "palette.down"

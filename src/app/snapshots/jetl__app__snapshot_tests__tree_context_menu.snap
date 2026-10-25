@@ -4,14 +4,14 @@ expression: "snapshot(&term, &marks, None)"
 ---
 80x24 cursor=hidden
 00  ≣ ┌ Project: root ───────────────┐│
-01    │▾ src                         ││
-02  1 │    lib.rs                    ││
-03  ⌂ │    main.rs                   ││
-04  2 │  RE╭──────────────────────────────────────────────╮
-05  ◫ │    │ New File…                                    │
-06  7 │    │ New Directory…                               │
-07  ⊢ │    │ Rename…                             Shift+F6 │
-08    │    │ Delete…                               Delete │
+01  1 │▾ src                         ││
+02  ⌂ │    lib.rs                    ││
+03  2 │    main.rs                   ││
+04  ◫ │  RE╭──────────────────────────────────────────────╮
+05  7 │    │ New File…                                    │
+06  ⊢ │    │ New Directory…                               │
+07    │    │ Rename…                             Shift+F6 │
+08  ✓ │    │ Delete…                               Delete │
 09  8 │    │ Copy Path                             Ctrl+C │
 10  ⟲ │    │ Copy Relative Path          Ctrl+Alt+Shift+C │
 11  5 │    │ Show History                           Alt+H │les open.

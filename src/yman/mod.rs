@@ -4,6 +4,7 @@
 
 pub mod cli;
 pub mod model;
+pub mod panel;
 
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
@@ -14,7 +15,7 @@ use crate::event::AppMsg;
 use crate::util::coalesce::Coalesce;
 
 pub use cli::YmanError;
-pub use model::{Snapshot, TagCount, TaskDetails, TaskRow, TrackerStatus};
+pub use model::{Attachment, Comment, Snapshot, TagCount, TaskDetails, TaskRow, TrackerStatus};
 
 #[derive(Debug)]
 pub enum YmanMsg {
@@ -71,10 +72,17 @@ pub struct YmanService {
     pub revision: u64,
 }
 
-/// `yman ls` then `yman status`; a status error is logged and leaves
+/// `yman ls -a`, `yman ls` (the open ids) then `yman status`; a status error is logged and leaves
 /// `status` empty (the list still counts).
 pub async fn load_snapshot(program: &OsStr, root: &Path) -> Result<Snapshot, YmanError> {
     let tasks = cli::json::<Vec<TaskRow>>(program, root, &cli::list_args()).await?;
+    let open = match cli::json::<Vec<TaskRow>>(program, root, &cli::open_args()).await {
+        Ok(rows) => rows.into_iter().map(|t| t.id).collect(),
+        Err(e) => {
+            tracing::warn!("yman ls: {e}");
+            tasks.iter().filter(|t| !matches!(t.status.as_str(), "done" | "cancelled")).map(|t| t.id.clone()).collect()
+        }
+    };
     let status = match cli::json::<TrackerStatus>(program, root, &cli::status_args()).await {
         Ok(s) => Some(s),
         Err(e) => {
@@ -82,7 +90,7 @@ pub async fn load_snapshot(program: &OsStr, root: &Path) -> Result<Snapshot, Yma
             None
         }
     };
-    Ok(Snapshot { tasks, status })
+    Ok(Snapshot { tasks, open, status })
 }
 
 impl YmanService {
@@ -420,12 +428,18 @@ mod tests {
         };
         yman(&["init", "--offline"]);
         yman(&["add", "First", "-t", "alpha", "-m", "body text"]);
+        yman(&["add", "Second"]);
+        let first = load_snapshot(p, &dir).await.unwrap();
+        let id2 = first.tasks.iter().find(|t| t.title == "Second").unwrap().id.clone();
+        yman(&["done", &id2]);
         let snap = load_snapshot(p, &dir).await.unwrap();
-        assert_eq!(snap.tasks.len(), 1);
-        assert_eq!(snap.tasks[0].title, "First");
-        assert_eq!(snap.tasks[0].tags, ["alpha"]);
+        assert_eq!(snap.tasks.len(), 2);
+        let row = snap.tasks.iter().find(|t| t.title == "First").unwrap();
+        assert_eq!(row.tags, ["alpha"]);
+        assert!(snap.open.contains(&row.id));
+        assert!(!snap.open.contains(&id2), "a done task is closed");
         assert!(!snap.status.expect("status").remote.origin);
-        let id = snap.tasks[0].id.clone();
+        let id = row.id.clone();
         let t = cli::json::<TaskDetails>(p, &dir, &show_args(&id)).await.unwrap();
         assert_eq!(t.body.trim_end(), "body text");
         let err = cli::json::<TaskDetails>(p, &dir, &show_args("999")).await.unwrap_err();

@@ -4,14 +4,14 @@ expression: "snapshot(&term, &marks, None)"
 ---
 80x24 cursor=(6,5)
 00  ≣ ┌ Project: root ───────────────┐│
-01    │                              ││
-02  1 │                              ││
-03  ⌂ │                              ││
-04  2┌ Recent Projects ─────────────────────────────────────────────────────────┐
-05  ◫│ › type a project name · Shift+Del forgets                              3 │
-06  7│ alpha  /work/                                                            │
-07  ⊢│ beta  /work/                                                             │
-08   │ gamma  /srv/                                                             │
+01  1 │                              ││
+02  ⌂ │                              ││
+03  2 │                              ││
+04  ◫┌ Recent Projects ─────────────────────────────────────────────────────────┐
+05  7│ › type a project name · Shift+Del forgets                              3 │
+06  ⊢│ alpha  /work/                                                            │
+07   │ beta  /work/                                                             │
+08  ✓│ gamma  /srv/                                                             │
 09  8│                                                                          │
 10  ⟲│                                                                          │
 11  5│                                                                          │

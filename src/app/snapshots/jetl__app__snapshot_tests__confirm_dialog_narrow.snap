@@ -4,9 +4,9 @@ expression: "snapshot(&term, &marks, None)"
 ---
 50x20 cursor=hidden
 00  ≣ ┌ Project: root┐│
-01    │▾ src         ││
-02  1 │    lib.rs    ││
-03  ⌂ │    main.rs   ││
+01  1 │▾ src         ││
+02  ⌂ │    lib.rs    ││
+03  2 │    main.rs   ││
 04  ┌ Delete ──────────────────────────────────────┐
 05  │ Delete the file src/main.rs?                 │
 06  │ This cannot be undone. Open tabs of it       │

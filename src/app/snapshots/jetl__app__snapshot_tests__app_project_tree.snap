@@ -4,14 +4,14 @@ expression: "snapshot(&term, &marks, Some(left))"
 ---
 80x24 cursor=hidden
 00  ≣ ┌ Project: root ───────────────┐│
-01    │▾ src                         ││
-02  1 │    lib.rs                    ││
-03  ⌂ │    main.rs                   ││
-04  2 │  Cargo.toml                  ││
-05  ◫ │  notes.txt                   ││
-06  7 │  README.md                   ││
-07  ⊢ │                              ││
-08    │                              ││
+01  1 │▾ src                         ││
+02  ⌂ │    lib.rs                    ││
+03  2 │    main.rs                   ││
+04  ◫ │  Cargo.toml                  ││
+05  7 │  notes.txt                   ││
+06  ⊢ │  README.md                   ││
+07    │                              ││
+08  ✓ │                              ││
 09  8 │                              ││
 10  ⟲ │                              ││
 11  5 │                              ││               No files open.

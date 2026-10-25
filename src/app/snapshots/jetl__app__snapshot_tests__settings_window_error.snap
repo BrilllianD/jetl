@@ -4,14 +4,14 @@ expression: "snapshot(&term, &settings_marks(&app.theme), None)"
 ---
 80x24 cursor=hidden
 00  ≣┌ Settings ────────────────────────────────────────────────────────────────┐
-01   │Appearance              │Appearance                                       │
-02  1│Editor                  │                                                 │
-03  ⌂│  General               │config.toml is invalid: line 1, column 8:        │
-04  2│  Soft Wraps            │unclosed table, expected `]`                     │
-05  ◫│  Saving                │                                                 │
-06  7│  Formatting            │Open config.toml                                 │
-07  ⊢│Keymap                  │                                                 │
-08   │Version Control         │                                                 │
+01  1│Appearance              │Appearance                                       │
+02  ⌂│Editor                  │                                                 │
+03  2│  General               │config.toml is invalid: line 1, column 8:        │
+04  ◫│  Soft Wraps            │unclosed table, expected `]`                     │
+05  7│  Saving                │                                                 │
+06  ⊢│  Formatting            │Open config.toml                                 │
+07   │Keymap                  │                                                 │
+08  ✓│Version Control         │                                                 │
 09  8│  Git                   │                                                 │
 10  ⟲│  Worktrees             │                                                 │
 11  5│Files                   │                                                 │

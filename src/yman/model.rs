@@ -158,10 +158,13 @@ pub struct TaskCounts {
     pub broken: usize,
 }
 
-/// Every task (closed ones too, in yman's `ls` order) and the tracker status.
+/// Every task (closed ones too, in yman's `ls` order), which of them are
+/// open, and the tracker status.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Snapshot {
     pub tasks: Vec<TaskRow>,
+    /// Ids of the open tasks (yman's default `ls`); the others are closed.
+    pub open: std::collections::BTreeSet<String>,
     pub status: Option<TrackerStatus>,
 }
 

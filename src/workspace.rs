@@ -248,6 +248,29 @@ pub struct SessionLayout {
     /// Windows moved off their default side, in strip order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sides: Vec<(ToolWindowId, Side)>,
+    /// The Tasks window (none before it existed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tasks: Option<SessionTasks>,
+}
+
+/// The Tasks window: where it sits, whether it is shown, its filters and
+/// selected task. Kept out of `left`, `bottom`, `right` and `sides` so
+/// builds without the Tasks window still read the layout.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SessionTasks {
+    pub shown: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub side: Option<Side>,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub filter: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tag: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub assignee: Option<String>,
+    pub show_closed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selected: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -425,6 +448,7 @@ impl App {
         // and requests status and branches.
         self.git_root_changed(root.clone());
         self.yman.set_root(root.clone(), self.workspace.generation);
+        self.tasks.reset();
         self.start_watcher();
         self.find.reset();
         self.symbols.reset();
@@ -495,17 +519,25 @@ impl App {
         let (show_hidden, show_ignored) = self.project.visibility();
         // Zen mode is not saved: the windows it hides are.
         let (left, bottom, right) = self.layout.saved_windows();
+        // The Tasks window has its own field: builds without it read the rest.
+        let shown = [left, bottom, right].contains(&Some(ToolWindowId::Tasks));
+        let not_tasks = |tw: Option<ToolWindowId>| tw.filter(|t| *t != ToolWindowId::Tasks);
+        let mut sides = self.layout.side_overrides();
+        let side = sides.iter().find(|(tw, _)| *tw == ToolWindowId::Tasks).map(|(_, s)| *s);
+        sides.retain(|(tw, _)| *tw != ToolWindowId::Tasks);
+        let tasks = SessionTasks { shown, side, ..self.tasks.session_state() };
         let layout = Some(SessionLayout {
-            left,
+            left: not_tasks(left),
             left_w: self.layout.left_w,
-            bottom,
+            bottom: not_tasks(bottom),
             bottom_h: self.layout.bottom_h,
             git_tab: self.git_panel.tab,
             show_hidden,
             show_ignored,
-            right,
+            right: not_tasks(right),
             right_w: Some(self.layout.right_w),
-            sides: self.layout.side_overrides(),
+            sides,
+            tasks: Some(tasks),
         });
         let expanded = self.project.expanded_dirs().iter().filter_map(|d| d.strip_prefix(&root).ok()).map(Path::to_path_buf).collect();
         let closed_bookmarks =
@@ -754,8 +786,22 @@ impl App {
         let closed: Vec<_> = numbered.chain(plain).collect();
         self.editor.restore_closed_bookmarks(&closed);
         if let Some(l) = &session.layout {
-            self.layout.set_sides(&l.sides);
-            self.layout.restore(l.left, l.left_w, l.bottom, l.bottom_h, l.right, l.right_w);
+            let tasks = l.tasks.clone().unwrap_or_default();
+            let mut sides = l.sides.clone();
+            sides.extend(tasks.side.map(|s| (ToolWindowId::Tasks, s)));
+            self.layout.set_sides(&sides);
+            let tasks_side = self.layout.side_of(ToolWindowId::Tasks);
+            let slot =
+                |tw: Option<ToolWindowId>, side: Side| if tasks.shown && tasks_side == side { Some(ToolWindowId::Tasks) } else { tw };
+            self.layout.restore(
+                slot(l.left, Side::Left),
+                l.left_w,
+                slot(l.bottom, Side::Bottom),
+                l.bottom_h,
+                slot(l.right, Side::Right),
+                l.right_w,
+            );
+            self.tasks.restore(&tasks);
             if let Some(tw) = self.focus.current.tool_window()
                 && !self.layout.is_visible(tw)
             {
@@ -856,6 +902,7 @@ mod tests {
                 right: None,
                 right_w: None,
                 sides: vec![],
+                tasks: None,
             }),
             expanded: vec![PathBuf::from("src"), PathBuf::from("src/app")],
             splits: Some(SessionSplits {
@@ -1392,6 +1439,7 @@ mod tests {
             right: None,
             right_w: None,
             sides: vec![],
+            tasks: None,
         };
         // A folder deleted since is skipped.
         let expanded = vec![PathBuf::from("a"), PathBuf::from("a/deep"), PathBuf::from("gone")];
@@ -1407,7 +1455,12 @@ mod tests {
         let saved = app.session();
         assert_eq!(
             saved.layout,
-            Some(SessionLayout { left_w: crate::ui::layout::MIN_LEFT_W, right_w: Some(app.layout.right_w), ..layout })
+            Some(SessionLayout {
+                left_w: crate::ui::layout::MIN_LEFT_W,
+                right_w: Some(app.layout.right_w),
+                tasks: Some(SessionTasks::default()),
+                ..layout
+            })
         );
         assert_eq!(saved.expanded, [PathBuf::from("a"), PathBuf::from("a/deep")]);
         let _ = std::fs::remove_dir_all(&dir);
@@ -1425,6 +1478,7 @@ mod tests {
             right: None,
             right_w: None,
             sides: vec![],
+            tasks: None,
         };
         Session { root: root.to_path_buf(), layout: Some(layout), ..Default::default() }
     }
@@ -1532,12 +1586,46 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[tokio::test]
+    async fn session_keeps_the_tasks_window_in_its_own_field() {
+        let (mut app, dir) = crate::app::tests::test_app("session-tasks");
+        app.layout.move_to(ToolWindowId::Tasks, Side::Right);
+        app.layout.show(ToolWindowId::Tasks);
+        app.tasks.restore(&SessionTasks { filter: "ui".into(), show_closed: true, selected: Some("3".into()), ..Default::default() });
+        let session = app.session();
+        let layout = session.layout.clone().unwrap();
+        assert_eq!(layout.right, None);
+        assert!(layout.sides.iter().all(|(tw, _)| *tw != ToolWindowId::Tasks));
+        let want = SessionTasks {
+            shown: true,
+            side: Some(Side::Right),
+            filter: "ui".into(),
+            show_closed: true,
+            selected: Some("3".into()),
+            ..Default::default()
+        };
+        assert_eq!(layout.tasks, Some(want));
+        // Builds without the window read the layout: no Tasks anywhere else.
+        let json = serde_json::to_string(&SessionLayout { tasks: None, ..layout }).unwrap();
+        assert!(!json.contains("\"Tasks\""), "{json}");
+        app.layout.set_sides(&[]);
+        app.layout.hide_all();
+        app.tasks.reset();
+        let generation = app.workspace.generation;
+        app.session_loaded(generation, session, vec![]);
+        assert_eq!(app.layout.right, Some(ToolWindowId::Tasks));
+        assert_eq!(app.layout.side_of(ToolWindowId::Tasks), Side::Right);
+        assert_eq!(app.tasks.session_state().filter, "ui");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn old_session_layout_loads_with_default_sides() {
         let old =
             r#"{"left":"Project","left_w":30,"bottom":null,"bottom_h":10,"git_tab":"Commit","show_hidden":false,"show_ignored":false}"#;
         let l: SessionLayout = serde_json::from_str(old).unwrap();
         assert_eq!((l.right, l.right_w, l.sides.is_empty()), (None, None, true));
+        assert!(l.tasks.is_none());
         let new = SessionLayout { right: Some(ToolWindowId::Git), right_w: Some(20), sides: vec![(ToolWindowId::Git, Side::Right)], ..l };
         let json = serde_json::to_string(&new).unwrap();
         assert_eq!(serde_json::from_str::<SessionLayout>(&json).unwrap(), new);

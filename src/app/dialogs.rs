@@ -135,6 +135,7 @@ impl App {
             || self.finish_settings_dialog(&id, &res)
             || self.finish_run_configs_dialog(&id, &res)
             || self.finish_git_ops_dialog(&id, &res)
+            || self.finish_tasks_dialog(&id, &res)
         {
             return;
         }

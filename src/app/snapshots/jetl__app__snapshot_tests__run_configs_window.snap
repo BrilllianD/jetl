@@ -4,14 +4,14 @@ expression: "snapshot(&term, &run_configs_marks(&app.theme), None)"
 ---
 80x24 cursor=hidden
 00  ≣┌ Run Configurations ──────────────────────────────────────────────────────┐
-01   │  global ch… config.toml│ where                                           │
-02  1│* where   .jetl/run.toml│                                                 │
-03  ⌂│                        │   Name               where                      │
-04  2│                        │   Command            sh -c pwd                  │
-05  ◫│                        │   Arguments          x                          │
-06  7│                        │ * Working directory  web                        │
-07  ⊢│                        │   Environment        FOO=bar                    │
-08   │                        │   Output             auto (problems)            │
+01  1│  global ch… config.toml│ where                                           │
+02  ⌂│* where   .jetl/run.toml│                                                 │
+03  2│                        │   Name               where                      │
+04  ◫│                        │   Command            sh -c pwd                  │
+05  7│                        │   Arguments          x                          │
+06  ⊢│                        │ * Working directory  web                        │
+07   │                        │   Environment        FOO=bar                    │
+08  ✓│                        │   Output             auto (problems)            │
 09  8│                        │                                                 │
 10  ⟲│                        │                                                 │
 11  5│                        │                                                 │

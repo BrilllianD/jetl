@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A Tasks tool window (View > Tasks) lists the project's yman tasks: open ones by default (Alt+C shows closed), filter by typing, by tag (Alt+T) or assignee (Alt+A); the selected task's body, related tasks (Alt+J or a click jumps), attachments and discussion show beside the list. Filters and the selection are saved per project.
 - Tool windows can sit on the left, the bottom or a new right side: right-click a tool strip button, or View > Move Tool Window to Left / Bottom / Right (also in the action palette). A second strip on the right edge appears while a window is on the right; the choice is saved per project.
 - Alt+Right / Alt+Left switch the tabs inside the focused Git window (Commit, Log, Stash, Console, wrapping) and flip the Run window's Output and Tests views (View > Next / Previous Tool Window Tab). In these windows they no longer switch editor tabs; the commit message box and the Terminal keep them for the caret and the shell.
 - Tool windows: Alt+Shift+M (Ctrl+Shift+' with the kitty protocol, View > Maximize Tool Window, or a double-click on the window's top border) makes the focused tool window fill the area right of the strip; focusing anything else restores the layout. F12 jumps to the last active tool window (View > Jump to Last Tool Window), showing it if hidden. Alt+5 toggles the Event Log and Alt+8 Local History, and the tool strip shows their numbers. With the editor focused, Ctrl+Shift+Up/Down resize the bottom tool window.

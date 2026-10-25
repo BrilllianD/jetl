@@ -58,6 +58,10 @@ pub fn render_tool_window(app: &mut App, frame: &mut Frame, tw: ToolWindowId, r:
             app.problems.render(frame, r, focused, theme, &app.lsp.diagnostics, &app.workspace.root, active, hint);
         }
         ToolWindowId::LocalHistory => app.history_panel.render(frame, r, focused, theme),
+        ToolWindowId::Tasks => {
+            app.sync_tasks();
+            app.tasks.render(frame, r, focused, theme, &app.yman);
+        }
     }
 }
 

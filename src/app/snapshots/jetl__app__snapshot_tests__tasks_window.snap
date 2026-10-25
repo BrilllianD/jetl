@@ -1,0 +1,37 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &marks, None)"
+---
+120x30 cursor=hidden
+00  ≣ ┌ Project: root ───────────────┐│
+01    │                              ││
+02  1 │                              ││
+03  ⌂ │                              ││
+04  2 │                              ││
+05  ◫ │                              ││
+06  7 │                              ││
+07  ⊢ │                              ││      No files open. Alt+1 opens the Project view; Ctrl+Shift+N finds a file.
+08    │                              ││
+09    │                              ││
+10    │                              ││
+11    │                              ││
+12    │                              ││
+13    └──────────────────────────────┘│
+14  ✓ ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+15  8 ┌ Tasks: 3 open ────────────────────────────────────────────────────────────────────────────────────────────────────┐
+16  ⟲ │[Closed: hidden] [Tag: any] [Assignee: any] [Related…] [Refresh]                                    type to filter │
+17  5 │ P ID Status Title                                          Assignee │ #1 Fix the parser                           │
+18  ⚑ │ 2 1  todo   Fix the parser                                 claude   │ todo · P2 · claude · ui                     │
+19  9 │ 2 2  doing  Crash on save                                           │ Related: 2                                  │
+20  ⎇ │ 2 10 todo   Polish the toolbar                             bob      │ Related by: 10                              │
+21    │                                                                     │ Created 2026-10-25 16:06 · Updated          │
+22  ❯ │                                                                     │ 2026-10-25 17:30                            │
+23  6 │                                                                     │                                             │
+24  ⚠ │                                                                     │ First line                                  │
+25  4 │                                                                     │                                             │
+26  ► │                                                                     │ Notes                                       │
+27  3 │                                                                     │ - item                                      │
+28  ⌕ └───────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+29  root
+-- marks: L=selected
+18     LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL

@@ -195,6 +195,11 @@ pub fn list_args() -> Vec<String> {
     strings(&["ls", "--json", "-a"])
 }
 
+/// The default `ls`: yman hides the closed tasks itself.
+pub fn open_args() -> Vec<String> {
+    strings(&["ls", "--json"])
+}
+
 pub fn show_args(id: &str) -> Vec<String> {
     strings(&["show", id, "--json"])
 }
@@ -240,6 +245,7 @@ mod tests {
     #[test]
     fn args_are_json_reads() {
         assert_eq!(list_args(), args(&["ls", "--json", "-a"]));
+        assert_eq!(open_args(), args(&["ls", "--json"]));
         assert_eq!(show_args("7"), args(&["show", "7", "--json"]));
         assert_eq!(tags_args(), args(&["tags", "--json"]));
         assert_eq!(status_args(), args(&["status", "--json"]));
