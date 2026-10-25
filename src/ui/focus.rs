@@ -125,8 +125,7 @@ impl ToolWindowId {
             ToolWindowId::LocalHistory => "⟲",
         }
     }
-    /// The Alt+number key shown on the tool strip; windows opened by other
-    /// keys have none.
+    /// The Alt+number key shown on the tool strip; Terminal (Alt+F12) has none.
     pub fn number(self) -> Option<u8> {
         match self {
             ToolWindowId::Project => Some(1),
@@ -134,11 +133,11 @@ impl ToolWindowId {
             ToolWindowId::Git => Some(9),
             ToolWindowId::Find => Some(3),
             ToolWindowId::Structure => Some(7),
-            ToolWindowId::EventLog => None,
+            ToolWindowId::EventLog => Some(5),
             ToolWindowId::Run => Some(4),
             ToolWindowId::Terminal => None,
             ToolWindowId::Problems => Some(6),
-            ToolWindowId::LocalHistory => None,
+            ToolWindowId::LocalHistory => Some(8),
         }
     }
 }
@@ -181,13 +180,18 @@ impl PanelId {
 pub struct Focus {
     pub current: PanelId,
     pub prev: PanelId,
+    /// The tool window that last had focus (F12 goes back to it).
+    pub last_tool: Option<ToolWindowId>,
 }
 
 impl Focus {
     pub fn new() -> Self {
-        Self { current: PanelId::Editor, prev: PanelId::Editor }
+        Self { current: PanelId::Editor, prev: PanelId::Editor, last_tool: None }
     }
     pub fn set(&mut self, p: PanelId) {
+        if let Some(tw) = p.tool_window() {
+            self.last_tool = Some(tw);
+        }
         if p != self.current {
             self.prev = self.current;
             self.current = p;
@@ -221,5 +225,28 @@ mod tests {
             icons.dedup();
             assert_eq!(icons.len(), ToolWindowId::ALL.len(), "{set:?}");
         }
+    }
+
+    #[test]
+    fn numbers_are_distinct() {
+        let mut nums: Vec<u8> = ToolWindowId::ALL.iter().filter_map(|tw| tw.number()).collect();
+        let n = nums.len();
+        nums.sort();
+        nums.dedup();
+        assert_eq!(nums.len(), n);
+        assert_eq!(ToolWindowId::EventLog.number(), Some(5));
+        assert_eq!(ToolWindowId::LocalHistory.number(), Some(8));
+        assert_eq!(ToolWindowId::Terminal.number(), None);
+    }
+
+    #[test]
+    fn set_records_the_last_tool_window() {
+        let mut f = Focus::new();
+        assert_eq!(f.last_tool, None);
+        f.set(PanelId::Git);
+        f.set(PanelId::Editor);
+        assert_eq!(f.last_tool, Some(ToolWindowId::Git));
+        f.set(PanelId::Project);
+        assert_eq!(f.last_tool, Some(ToolWindowId::Project));
     }
 }

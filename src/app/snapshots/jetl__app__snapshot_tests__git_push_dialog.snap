@@ -12,9 +12,9 @@ expression: "snapshot(&term, &marks, None)"
 06  7 │    │ Push 'main' to its upstream.                                │
 07  ⊢ └────│ Tags: also push every local tag.                            │
 08    ─────│ Force with lease: overwrite the remote branch only          │─────────
-09    ┌ Git│ if it is still where it was last fetched.                   │────────┐
+09  8 ┌ Git│ if it is still where it was last fetched.                   │────────┐
 10  ⟲ │ Com│ Runs: git push && git push --tags                           │  Push  │
-11    │No c│                                                             │        │
+11  5 │No c│                                                             │        │
 12  ⚑ │    │  [ Push ] [ Tags [x] ] [ Force with lease [ ] ] [ Cancel ]  │        │
 13  9 │    └─────────────────────────────────────────────────────────────┘        │
 14  ⎇ │                              │                                            │

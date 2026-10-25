@@ -18,7 +18,7 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 |---|---|---|
 | `Ctrl+Q` | `app.quit` | Exit jetl |
 | `F5` | `app.refresh` | Refresh project and git state |
-| `F12` | `app.debug_panic` | Debug: trigger a panic |
+| `Ctrl+Alt+Shift+F12` | `app.debug_panic` | Debug: trigger a panic |
 | `F10` | `app.main_menu` | Main menu |
 | `Ctrl+Alt+S` | `app.settings` | Settings… |
 | `Alt+1` | `tool_window.project` | Project tool window |
@@ -26,6 +26,7 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Alt+9` | `tool_window.git` | Git tool window |
 | `Alt+3` | `tool_window.find` | Find tool window |
 | `Alt+7` | `tool_window.structure` | Structure tool window |
+| `Alt+5` | `tool_window.event_log` | Event Log tool window |
 | `Alt+Shift+L` | `tool_window.event_log` | Event Log tool window |
 | `Alt+4` | `tool_window.run` | Run tool window |
 | `Alt+F12` | `tool_window.terminal` | Terminal tool window |
@@ -37,6 +38,9 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Ctrl+Shift+Right` | `tool_window.stretch_right` | Stretch tool window to the right |
 | `Ctrl+Shift+Up` | `tool_window.stretch_up` | Stretch tool window up |
 | `Ctrl+Shift+Down` | `tool_window.stretch_down` | Stretch tool window down |
+| `Alt+Shift+M` | `tool_window.maximize` | Maximize or restore the active tool window |
+| `Ctrl+"` | `tool_window.maximize` | Maximize or restore the active tool window |
+| `F12` | `tool_window.last` | Jump to the last active tool window |
 | `Alt+Shift+Z` | `app.zen` | Toggle Zen mode (editor text only) |
 | `Ctrl+N` | `palette.files` | Go to file |
 | `Ctrl+Shift+N` * | `palette.files` | Go to file |
@@ -55,6 +59,7 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Ctrl+Shift+S` * | `editor.save_all` | Save all |
 | `Ctrl+Alt+Shift+Insert` | `editor.new_scratch` | New scratch file… |
 | `Alt+Shift+H` | `editor.local_history` | Local history of the file (editor) or the selected entry (Project tree; a folder lists its files), in its tool window |
+| `Alt+8` | `tool_window.local_history` | Local History tool window |
 | `Ctrl+V` | `editor.paste` | Paste |
 | `Alt+Right` | `editor.next_tab` | Next tab |
 | `Alt+Left` | `editor.prev_tab` | Previous tab |
@@ -497,6 +502,8 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Alt+F12` | `tool_window.terminal` | Terminal tool window |
 | `Ctrl+Shift+Up` | `tool_window.stretch_up` | Stretch tool window up |
 | `Ctrl+Shift+Down` | `tool_window.stretch_down` | Stretch tool window down |
+| `Alt+Shift+M` | `tool_window.maximize` | Maximize or restore the active tool window |
+| `Ctrl+"` | `tool_window.maximize` | Maximize or restore the active tool window |
 | `Ctrl+V` | `editor.paste` | Paste |
 
 ## Without a default binding
@@ -512,7 +519,6 @@ Reachable from Find Action (F1) or by binding them in `keymap.toml`.
 | `palette.goto_line` | Go to line |
 | `editor.scratch_files` | Scratch files |
 | `editor.put_label` | Local history: put label… |
-| `tool_window.local_history` | Local History tool window |
 | `editor.replace_one` | Replace current match |
 | `editor.replace_all` | Replace all matches |
 | `editor.find_case` | Find: toggle match case |

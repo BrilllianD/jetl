@@ -18,9 +18,9 @@ expression: "snapshot(&term, &marks, None)"
 12    │                              ││
 13    │                              ││
 14    │                              ││          No files open. Alt+1 opens the Project view;
-15    │                              ││                   Ctrl+Shift+N finds a file.
+15  8 │                              ││                   Ctrl+Shift+N finds a file.
 16  ⟲ │                              ││
-17    │                              ││
+17  5 │                              ││
 18  ⚑ │                              ││
 19  9 │                              ││
 20  ⎇ │                              ││

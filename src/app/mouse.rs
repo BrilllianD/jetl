@@ -226,6 +226,17 @@ impl App {
                 Hit::Status => self.click_status(&mouse),
                 Hit::Tabs(_) => self.focus.set(PanelId::Editor),
                 Hit::Panel(p, area) => {
+                    // A double-click on a tool window's top border, JetBrains'
+                    // header, maximizes or restores it.
+                    if button == MouseButton::Left
+                        && mouse.clicks == 2
+                        && m.row == area.y
+                        && let Some(tw) = p.tool_window()
+                    {
+                        self.focus.set(p);
+                        self.layout.toggle_maximize(tw);
+                        return;
+                    }
                     self.focus.set(p);
                     if button == MouseButton::Left {
                         self.drag = Some(Drag::Panel(p, area));

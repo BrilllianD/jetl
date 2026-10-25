@@ -12,9 +12,9 @@ expression: "snapshot(&term, &marks, None)"
 06  7 │           │  Directory                                     │
 07  ⊢ │           │                                                │
 08    │           │                                                │
-09    │           │                                                │
+09  8 │           │                                                │
 10  ⟲ │           │                                                │
-11    │           │                                                │
+11  5 │           │                                                │
 12  ⚑ │           │                                                │t view;
 13  9 │           │                                                │ file.
 14  ⎇ │           │                                                │

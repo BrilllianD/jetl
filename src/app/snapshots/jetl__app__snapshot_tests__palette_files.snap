@@ -12,9 +12,9 @@ expression: "snapshot(&term, &marks, None)"
 06  7│ Makefile                                                                 │
 07  ⊢│ map.rs  src/                                                             │
 08   │ main.rs  src/                                                            │
-09   │ manual.md  docs/                                                         │
+09  8│ manual.md  docs/                                                         │
 10  ⟲│                                                                          │
-11   │                                                                          │
+11  5│                                                                          │
 12  ⚑└──────────────────────────────────────────────────────────────────────────┘
 13  9 │                              ││         Ctrl+Shift+N finds a file.
 14  ⎇ │                              ││

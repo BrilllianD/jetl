@@ -18,9 +18,9 @@ expression: "snapshot(&term, &marks, None)"
 12    │     │ Add Selection for Next Occurrence              Alt+J │
 13    │     │ Unselect Occurrence                      Alt+Shift+J │
 14    │     │ Select All Occurrences                    Ctrl+Alt+J │1 opens the Project view;
-15    │     │ Clone Caret Above                                    │+N finds a file.
+15  8 │     │ Clone Caret Above                                    │+N finds a file.
 16  ⟲ │     │ Clone Caret Below                                    │
-17    │     │ Column Selection Mode               Alt+Shift+Insert │
+17  5 │     │ Column Selection Mode               Alt+Shift+Insert │
 18  ⚑ │     ├──────────────────────────────────────────────────────┤
 19  9 │     │ Find…                                         Ctrl+F │
 20  ⎇ │     │ Replace…                                      Ctrl+R │

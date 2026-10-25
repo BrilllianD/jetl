@@ -12,9 +12,9 @@ expression: "snapshot(&term, &docs_marks(app), None)"
 06  7 │    │f println!                                             fn println!(…) │
 07  ⊢ │    └──────────────────────────────────────────────────────────────────────┘
 08    │    ┌──────────────────────────────────────────────────────────────────────┐
-09    │    │ fn print!(…)                                                         │
+09  8 │    │ fn print!(…)                                                         │
 10  ⟲ │    │──────────────────────────────────────────────────────────────────────│
-11    │    │ Prints to the standard output, with a newline.                       │
+11  5 │    │ Prints to the standard output, with a newline.                       │
 12  ⚑ │    │                                                                      │
 13  9 │    │ println!("{}", 1);                                                   │
 14  ⎇ │    │                                                                      │

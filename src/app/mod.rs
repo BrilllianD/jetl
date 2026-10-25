@@ -1110,6 +1110,12 @@ impl App {
                 }
             }
             AppAction::ResizeToolWindow(dir) => self.resize_tool_window(dir),
+            AppAction::MaximizeToolWindow => {
+                if let Some(tw) = self.focus.current.tool_window() {
+                    self.layout.toggle_maximize(tw);
+                }
+            }
+            AppAction::LastToolWindow => self.last_tool_window(),
             AppAction::ToggleZen => self.toggle_zen(),
             AppAction::Escape => self.focus.set(PanelId::Editor),
             AppAction::OpenPalette(kind) => self.open_palette(kind),
@@ -1176,6 +1182,17 @@ impl App {
         }
     }
 
+    /// F12, JetBrains-style: focus the tool window that last had focus,
+    /// showing it first; before any had focus, a visible one or Project.
+    fn last_tool_window(&mut self) {
+        let tw = self.focus.last_tool.or(self.layout.left).or(self.layout.bottom).unwrap_or(ToolWindowId::Project);
+        if !self.layout.is_visible(tw) {
+            self.toggle_tool_window(tw);
+        } else {
+            self.focus.set(tw.panel());
+        }
+    }
+
     /// Zen mode: hide the tool windows, tabs, strip and status bar, and focus
     /// the editor; leaving puts back the windows and the focus. Opening a
     /// tool window meanwhile also leaves (`LayoutState::show`), and the
@@ -1193,11 +1210,23 @@ impl App {
 
     /// Ctrl+Shift+arrows, JetBrains-style: move the free edge of the focused
     /// tool window (width for a left window, height for a bottom one). Keys
-    /// along the other axis, and any with the editor focused, do nothing.
+    /// along the other axis do nothing. With the editor focused the arrow's
+    /// axis picks the window, and the editor keeps Ctrl+Shift+Left/Right for
+    /// word selection.
     fn resize_tool_window(&mut self, dir: Dir) {
         const STEP_W: i16 = 2;
         const STEP_H: i16 = 1;
-        let Some(tw) = self.focus.current.tool_window().filter(|tw| self.layout.is_visible(*tw)) else { return };
+        if self.layout.maximized_window().is_some() {
+            return;
+        }
+        let tw = match self.focus.current.tool_window() {
+            Some(tw) => Some(tw).filter(|tw| self.layout.is_visible(*tw)),
+            None => match dir {
+                Dir::Up | Dir::Down => self.layout.bottom,
+                Dir::Left | Dir::Right => self.layout.left,
+            },
+        };
+        let Some(tw) = tw else { return };
         let (id, delta) = match (tw.side(), dir) {
             (Side::Left, Dir::Right) => (SplitterId::Left, STEP_W),
             (Side::Left, Dir::Left) => (SplitterId::Left, -STEP_W),
@@ -2377,14 +2406,107 @@ pub(crate) mod tests {
             app.handle_key(key(KeyCode::Left));
         }
         assert_eq!(app.layout.left_w, crate::ui::layout::MIN_LEFT_W);
-        // In the editor the chord keeps its meaning: Left/Right select by
-        // word, Up/Down do nothing.
+        // In the editor Left/Right keep selecting by word, Up/Down resize the
+        // bottom window, and the action resizes the left one.
         app.focus.set(PanelId::Editor);
+        assert!(app.layout.is_visible(ToolWindowId::Git));
         let (w, h) = (app.layout.left_w, app.layout.bottom_h);
-        for code in [KeyCode::Left, KeyCode::Right, KeyCode::Up, KeyCode::Down] {
-            app.handle_key(key(code));
-        }
+        app.handle_key(key(KeyCode::Left));
+        app.handle_key(key(KeyCode::Right));
         assert_eq!((app.layout.left_w, app.layout.bottom_h), (w, h));
+        app.handle_key(key(KeyCode::Up));
+        assert_eq!(app.layout.bottom_h, h + 1);
+        app.perform(Action::App(AppAction::ResizeToolWindow(Dir::Right)));
+        assert_eq!(app.layout.left_w, w + 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn draw_frame(app: &mut App) {
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+        term.draw(|f| crate::ui::render(app, f)).unwrap();
+    }
+
+    #[tokio::test]
+    async fn maximize_fills_the_screen_and_focus_change_restores() {
+        use crossterm::event::KeyModifiers;
+        let (mut app, dir) = test_app("maximize");
+        let max = || KeyEvent::new(KeyCode::Char('M'), KeyModifiers::ALT | KeyModifiers::SHIFT);
+        // With the editor focused the key does nothing.
+        app.handle_key(max());
+        assert_eq!(app.layout.maximized, None);
+        app.toggle_tool_window(ToolWindowId::Git);
+        draw_frame(&mut app);
+        let old_h = app.layout.rects.bottom.height;
+        app.handle_key(max());
+        draw_frame(&mut app);
+        assert_eq!(app.layout.maximized_window(), Some(ToolWindowId::Git));
+        assert_eq!(app.layout.rects.bottom.height, 29);
+        assert!(app.layout.rects.editor.is_empty());
+        app.handle_key(max());
+        draw_frame(&mut app);
+        assert_eq!(app.layout.rects.bottom.height, old_h);
+        app.handle_key(max());
+        app.perform(Action::App(AppAction::FocusEditor));
+        draw_frame(&mut app);
+        assert_eq!(app.layout.maximized, None);
+        assert!(!app.layout.rects.editor.is_empty());
+        // The kitty spelling of Ctrl+Shift+'.
+        app.focus.set(PanelId::Git);
+        app.handle_key(KeyEvent::new(KeyCode::Char('"'), KeyModifiers::CONTROL));
+        assert_eq!(app.layout.maximized, Some(ToolWindowId::Git));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn f12_jumps_to_the_last_tool_window() {
+        let (mut app, dir) = test_app("f12-last");
+        let f12 = || KeyEvent::new(KeyCode::F(12), crossterm::event::KeyModifiers::NONE);
+        app.handle_key(f12());
+        assert!(app.focus.is(PanelId::Project));
+        app.toggle_tool_window(ToolWindowId::Git);
+        app.perform(Action::App(AppAction::FocusEditor));
+        app.handle_key(f12());
+        assert!(app.focus.is(PanelId::Git));
+        app.toggle_tool_window(ToolWindowId::Git);
+        assert!(!app.layout.is_visible(ToolWindowId::Git));
+        app.handle_key(f12());
+        assert!(app.layout.is_visible(ToolWindowId::Git) && app.focus.is(PanelId::Git));
+        app.handle_key(f12());
+        assert!(app.layout.is_visible(ToolWindowId::Git) && app.focus.is(PanelId::Git));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn alt_5_and_alt_8_open_event_log_and_local_history() {
+        use crossterm::event::KeyModifiers;
+        let (mut app, dir) = test_app("alt-5-8");
+        app.handle_key(KeyEvent::new(KeyCode::Char('5'), KeyModifiers::ALT));
+        assert!(app.layout.is_visible(ToolWindowId::EventLog) && app.focus.is(PanelId::EventLog));
+        app.handle_key(KeyEvent::new(KeyCode::Char('8'), KeyModifiers::ALT));
+        assert!(app.layout.is_visible(ToolWindowId::LocalHistory) && app.focus.is(PanelId::LocalHistory));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn double_click_on_a_tool_window_border_maximizes() {
+        use crossterm::event::{KeyModifiers, MouseEvent, MouseEventKind};
+        let (mut app, dir) = test_app("dbl-border");
+        app.toggle_tool_window(ToolWindowId::Git);
+        draw_frame(&mut app);
+        let double = |app: &mut App| {
+            let r = app.layout.rects.bottom;
+            for _ in 0..2 {
+                for kind in [MouseEventKind::Down(MouseButton::Left), MouseEventKind::Up(MouseButton::Left)] {
+                    app.handle_mouse(MouseEvent { kind, column: r.x + 5, row: r.y, modifiers: KeyModifiers::NONE });
+                }
+            }
+        };
+        double(&mut app);
+        draw_frame(&mut app);
+        assert_eq!(app.layout.maximized_window(), Some(ToolWindowId::Git));
+        double(&mut app);
+        draw_frame(&mut app);
+        assert_eq!(app.layout.maximized, None);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -12,9 +12,9 @@ expression: "snapshot(&term, &marks, None)"
 06  7 │  │                                                                  │
 07  ⊢ │  │   src/main.rs                                                    │
 08    │  │   scratch (untitled)                                             │
-09    │  │                                                                  │
+09  8 │  │                                                                  │
 10  ⟲ │  │ Restored files open unsaved; the files on disk do not change.    │
-11    │  │                                                                  │
+11  5 │  │                                                                  │
 12  ⚑ │  │             [ Restore all ] [ Discard ] [ Review… ]              │
 13  9 │  └──────────────────────────────────────────────────────────────────┘
 14  ⎇ │                              ││

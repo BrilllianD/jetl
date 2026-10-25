@@ -12,9 +12,9 @@ expression: "snapshot(&term, &marks, None)"
 06  7│ alpha  /work/                                                            │
 07  ⊢│ beta  /work/                                                             │
 08   │ gamma  /srv/                                                             │
-09   │                                                                          │
+09  8│                                                                          │
 10  ⟲│                                                                          │
-11   │                                                                          │
+11  5│                                                                          │
 12  ⚑└──────────────────────────────────────────────────────────────────────────┘
 13  9 │                              ││         Ctrl+Shift+N finds a file.
 14  ⎇ │                              ││

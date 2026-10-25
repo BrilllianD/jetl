@@ -12,9 +12,9 @@ expression: "snapshot(&term, &marks, None)"
 06  7 │                  │ Restore the unsaved changes of   │
 07  ⊢ │                  │                                  │
 08    │                  │   src/main.rs                    │
-09    │                  │                                  │
+09  8 │                  │                                  │
 10  ⟲ │                  │       [ Restore ] [ Skip ]       │
-11    │                  └──────────────────────────────────┘s open.
+11  5 │                  └──────────────────────────────────┘s open.
 12  ⚑ │                              ││       Alt+1 opens the Project view;
 13  9 │                              ││         Ctrl+Shift+N finds a file.
 14  ⎇ │                              ││

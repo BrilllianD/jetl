@@ -1,7 +1,8 @@
 //! Fixed JetBrains-style layout: tool strip on the left, optional left tool
 //! window, editor (tabs + text) in the centre, optional bottom tool window
 //! spanning the full width, status bar at the bottom. Zen mode drops all
-//! of it but the editor text.
+//! of it but the editor text. A maximized tool window takes the whole area
+//! between the strip and the right edge instead of the editor.
 
 use ratatui::layout::Rect;
 
@@ -72,6 +73,9 @@ pub struct LayoutState {
     pub strip_hits: Vec<(StripButton, Rect)>,
     /// Set while in zen mode: the editor text fills the screen.
     pub zen: Option<ZenSaved>,
+    /// A tool window filling the content area; cleared when it loses focus
+    /// (`keep_maximized`), is hidden, or zen starts. Not saved in sessions.
+    pub maximized: Option<ToolWindowId>,
 }
 
 impl LayoutState {
@@ -84,11 +88,34 @@ impl LayoutState {
             rects: Rects::default(),
             strip_hits: Vec::new(),
             zen: None,
+            maximized: None,
         }
     }
 
     pub fn is_visible(&self, tw: ToolWindowId) -> bool {
         self.left == Some(tw) || self.bottom == Some(tw)
+    }
+
+    /// The maximized window, if it is still shown.
+    pub fn maximized_window(&self) -> Option<ToolWindowId> {
+        self.maximized.filter(|tw| self.is_visible(*tw))
+    }
+
+    /// Maximize `tw`, or restore when it already is. Does nothing for a
+    /// hidden window or in zen mode.
+    pub fn toggle_maximize(&mut self, tw: ToolWindowId) {
+        if self.maximized == Some(tw) {
+            self.maximized = None;
+        } else if self.zen.is_none() && self.is_visible(tw) {
+            self.maximized = Some(tw);
+        }
+    }
+
+    /// Restore the layout once focus has left the maximized window.
+    pub fn keep_maximized(&mut self, focus: PanelId) {
+        if self.maximized.is_some_and(|tw| focus != tw.panel() || !self.is_visible(tw)) {
+            self.maximized = None;
+        }
     }
 
     /// Showing a tool window ends zen mode first, so the window comes back
@@ -107,6 +134,9 @@ impl LayoutState {
             Side::Bottom if self.bottom == Some(tw) => self.bottom = None,
             _ => {}
         }
+        if self.maximized == Some(tw) {
+            self.maximized = None;
+        }
     }
 
     /// Apply saved tool windows and sizes (session restore). A window saved
@@ -115,6 +145,7 @@ impl LayoutState {
     pub fn restore(&mut self, left: Option<ToolWindowId>, left_w: u16, bottom: Option<ToolWindowId>, bottom_h: u16) {
         let left = left.filter(|tw| tw.side() == Side::Left);
         let bottom = bottom.filter(|tw| tw.side() == Side::Bottom);
+        self.maximized = None;
         match &mut self.zen {
             Some(z) => (z.left, z.bottom) = (left, bottom),
             None => (self.left, self.bottom) = (left, bottom),
@@ -126,6 +157,7 @@ impl LayoutState {
     pub fn hide_all(&mut self) {
         self.left = None;
         self.bottom = None;
+        self.maximized = None;
     }
 
     /// Hide everything but the editor text, remembering the tool windows
@@ -172,6 +204,18 @@ impl LayoutState {
         let body = Rect::new(area.x, area.y, area.width, area.height - 1);
         r.strip = Rect::new(body.x, body.y, STRIP_W, body.height);
         let content = Rect::new(body.x + STRIP_W, body.y, body.width - STRIP_W, body.height);
+
+        if let Some(tw) = self.maximized_window() {
+            // The window takes the whole content area; sizes stay for the restore.
+            match tw.side() {
+                Side::Left => r.left = content,
+                Side::Bottom => r.bottom = content,
+            }
+            r.tabs = Rect::new(content.x, content.y, 0, 0);
+            r.editor = Rect::new(content.x, content.y, 0, 0);
+            self.rects = r;
+            return;
+        }
 
         // Bottom tool window across the full content width.
         let mut upper = content;
@@ -359,5 +403,61 @@ mod tests {
         assert_eq!(l.left_w, 100 - STRIP_W - MIN_CENTER_W - 1);
         assert_eq!(l.bottom_h, 30 - 1 - MIN_CENTER_H - 1);
         assert_eq!(l.rects.left.width, l.left_w, "rects follow at once");
+    }
+
+    #[test]
+    fn maximize_fills_the_content_and_restores() {
+        let mut l = LayoutState::new(30, 10);
+        l.show(ToolWindowId::Git);
+        l.compute(Rect::new(0, 0, 100, 30));
+        let (strip, status) = (l.rects.strip, l.rects.status);
+        l.toggle_maximize(ToolWindowId::Git);
+        l.compute(Rect::new(0, 0, 100, 30));
+        let r = l.rects.clone();
+        assert_eq!(r.bottom, Rect::new(STRIP_W, 0, 100 - STRIP_W, 29));
+        assert!(r.left.is_empty() && r.editor.is_empty() && r.tabs.is_empty() && r.splitters.is_empty());
+        assert_eq!((r.strip, r.status), (strip, status));
+        assert_eq!(l.hit_test(50, 5), Hit::Panel(PanelId::Git, r.bottom));
+        assert_eq!((l.left_w, l.bottom_h), (30, 10));
+        l.toggle_maximize(ToolWindowId::Git);
+        l.compute(Rect::new(0, 0, 100, 30));
+        assert_eq!((l.rects.left.width, l.rects.bottom.height), (30, 10));
+
+        l.toggle_maximize(ToolWindowId::Project);
+        l.compute(Rect::new(0, 0, 100, 30));
+        assert_eq!(l.rects.left, Rect::new(STRIP_W, 0, 97, 29));
+        assert!(l.rects.bottom.is_empty());
+
+        let mut l = LayoutState::new(30, 10);
+        l.toggle_maximize(ToolWindowId::Find);
+        assert_eq!(l.maximized, None);
+    }
+
+    #[test]
+    fn maximize_ends_on_focus_change_hide_and_zen() {
+        let mut l = LayoutState::new(30, 10);
+        l.show(ToolWindowId::Git);
+        l.toggle_maximize(ToolWindowId::Git);
+        l.keep_maximized(PanelId::Git);
+        assert_eq!(l.maximized, Some(ToolWindowId::Git));
+        l.keep_maximized(PanelId::Editor);
+        assert_eq!(l.maximized, None);
+
+        l.toggle_maximize(ToolWindowId::Git);
+        l.hide(ToolWindowId::Git);
+        assert_eq!(l.maximized, None);
+
+        l.show(ToolWindowId::Git);
+        l.toggle_maximize(ToolWindowId::Git);
+        l.hide(ToolWindowId::Project);
+        assert_eq!(l.maximized, Some(ToolWindowId::Git));
+        l.enter_zen(PanelId::Git);
+        assert_eq!(l.maximized, None);
+
+        let mut l = LayoutState::new(30, 10);
+        l.show(ToolWindowId::Git);
+        l.toggle_maximize(ToolWindowId::Git);
+        l.show(ToolWindowId::Find);
+        assert_eq!(l.maximized_window(), None);
     }
 }

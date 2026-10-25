@@ -12,9 +12,9 @@ expression: "snapshot(&term, &[], None)"
 06  7 │           ┌ Rename ────────────────────────────────────────┐
 07  ⊢ │           │ Rename src/main.rs:                            │
 08    │           │                                                │
-09    │           │ main.rs                                        │
+09  8 │           │ main.rs                                        │
 10  ⟲ │           │             [ Rename ] [ Cancel ]              │
-11    │           └────────────────────────────────────────────────┘
+11  5 │           └────────────────────────────────────────────────┘
 12  ⚑ │                              ││       Alt+1 opens the Project view;
 13  9 │                              ││         Ctrl+Shift+N finds a file.
 14  ⎇ │                              ││

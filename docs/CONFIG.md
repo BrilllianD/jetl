@@ -439,7 +439,7 @@ work, at the window's size, which follows Ctrl+Shift+Up/Down and the
 terminal's own resizes. While it has focus every key goes to the shell,
 global shortcuts such as Ctrl+Q and Ctrl+S included, except the keys in the
 `[terminal]` table of `keymap.toml` (by default Alt+F12 to hide it,
-Ctrl+Shift+Up/Down to resize it and Ctrl+V to paste the system clipboard)
+Alt+Shift+M to maximize it, Ctrl+Shift+Up/Down to resize it and Ctrl+V to paste the system clipboard)
 and Esc Esc at the shell prompt, which focuses the editor. There a lone Esc
 reaches the shell after the double click interval or with the next key;
 full-screen programs get every Esc at once and never lose focus to it. The

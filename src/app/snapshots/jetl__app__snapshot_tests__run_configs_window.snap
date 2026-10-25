@@ -12,9 +12,9 @@ expression: "snapshot(&term, &run_configs_marks(&app.theme), None)"
 06  7│                        │ * Working directory  web                        │
 07  ⊢│                        │   Environment        FOO=bar                    │
 08   │                        │   Output             auto (problems)            │
-09   │                        │                                                 │
+09  8│                        │                                                 │
 10  ⟲│                        │                                                 │
-11   │                        │                                                 │
+11  5│                        │                                                 │
 12  ⚑│                        │                                                 │
 13  9│                        │                                                 │
 14  ⎇│                        │                                                 │

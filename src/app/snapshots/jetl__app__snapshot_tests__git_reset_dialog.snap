@@ -12,9 +12,9 @@ expression: "snapshot(&term, &marks, None)"
 06  7 │   │  Soft: keep the changes staged                                 │
 07  ⊢ └───│  Mixed: keep the changes in the files, unstaged                │
 08    ────│  Hard: discard all uncommitted changes                         │───────
-09    ┌ Gi│                                                                │──────┐
+09  8 ┌ Gi│                                                                │──────┐
 10  ⟲ │ Co│                                                                │Push  │
-11    │[Br│                                                                │      │
+11  5 │[Br│                                                                │      │
 12  ⚑ │●─┐│                                                                │      │
 13  9 ││ ●│                                                                │      │
 14  ⎇ │● ││                                                                │      │

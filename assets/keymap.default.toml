@@ -14,8 +14,9 @@
 "alt-4" = "tool_window.run"
 "alt-6" = "tool_window.problems"
 "alt-f12" = "tool_window.terminal"
-# JetBrains has no default key for the Event Log; Alt+Shift+L works in
-# legacy terminals too.
+# JetBrains has no default key for the Event Log; Alt+5 is free here and
+# Alt+Shift+L works in legacy terminals too.
+"alt-5" = "tool_window.event_log"
 "alt-shift-l" = "tool_window.event_log"
 "ctrl-shift-f" = "find.in_files"
 "ctrl-shift-r" = "find.replace_in_files"
@@ -97,12 +98,19 @@
 # Shift+Esc needs the kitty protocol; Alt+Shift+Q works in legacy terminals and tmux.
 "alt-shift-q" = "tool_window.hide_focused"
 # Resize the focused tool window: Left/Right move a left window's edge,
-# Up/Down a bottom window's. The editor keeps Ctrl+Shift+Left/Right for word
-# selection (its table wins), and Up/Down do nothing while it has focus.
+# Up/Down a bottom window's. With the editor focused Up/Down resize the bottom
+# window; Left/Right stay word selection there (the editor table wins).
 "ctrl-shift-left" = "tool_window.stretch_left"
 "ctrl-shift-right" = "tool_window.stretch_right"
 "ctrl-shift-up" = "tool_window.stretch_up"
 "ctrl-shift-down" = "tool_window.stretch_down"
+# Maximize or restore the focused tool window (JetBrains Ctrl+Shift+'). With the
+# kitty protocol Ctrl+Shift+' arrives as Ctrl+" (US layout); Alt+Shift+M works
+# in legacy terminals and tmux. Focusing anything else restores the layout.
+'ctrl-"' = "tool_window.maximize"
+"alt-shift-m" = "tool_window.maximize"
+# Jump to the last active tool window, as in JetBrains.
+"f12" = "tool_window.last"
 # The main menu bar, as F10 in JetBrains on Linux; F10 again closes it.
 "f10" = "app.main_menu"
 # JetBrains has no default key for Zen mode; Alt+Shift+Z works in legacy
@@ -116,6 +124,8 @@
 # Local History of the file (the selected tree entry when the tree has focus)
 # in its tool window; JetBrains has no default key.
 "alt-shift-h" = "editor.local_history"
+# Alt+8 toggles the Local History window itself.
+"alt-8" = "tool_window.local_history"
 "ctrl-q" = "app.quit"
 "f5" = "app.refresh"
 "ctrl-s" = "editor.save"
@@ -133,7 +143,7 @@
 # New Scratch File, as in JetBrains. Legacy terminals and tmux send the
 # modified Insert key too. Scratch Files has no key (File menu, Find Action).
 "ctrl-alt-shift-insert" = "editor.new_scratch"
-"f12" = "app.debug_panic"
+"ctrl-alt-shift-f12" = "app.debug_panic"
 # Numbered bookmarks (Ctrl+F11 sets one), JetBrains-style. Ctrl+digit needs
 # the kitty protocol for 0-3, 8 and 9: legacy terminals send Ctrl+0, 1 and 9
 # as plain digits, Ctrl+2 as Ctrl+Space, Ctrl+3 as Esc and Ctrl+8 as
@@ -485,6 +495,8 @@
 "alt-f12" = "tool_window.terminal"
 "ctrl-shift-up" = "tool_window.stretch_up"
 "ctrl-shift-down" = "tool_window.stretch_down"
+"alt-shift-m" = "tool_window.maximize"
+'ctrl-"' = "tool_window.maximize"
 "ctrl-v" = "editor.paste"
 
 # The Local History window (Alt+Shift+H): typing filters the snapshot list,

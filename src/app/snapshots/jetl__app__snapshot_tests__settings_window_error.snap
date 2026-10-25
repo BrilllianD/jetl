@@ -12,9 +12,9 @@ expression: "snapshot(&term, &settings_marks(&app.theme), None)"
 06  7│  Formatting            │Open config.toml                                 │
 07  ⊢│Keymap                  │                                                 │
 08   │Version Control         │                                                 │
-09   │  Git                   │                                                 │
+09  8│  Git                   │                                                 │
 10  ⟲│  Worktrees             │                                                 │
-11   │Files                   │                                                 │
+11  5│Files                   │                                                 │
 12  ⚑│Tools                   │                                                 │
 13  9│  Terminal              │                                                 │
 14  ⎇│  Run                   │                                                 │

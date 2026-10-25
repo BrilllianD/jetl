@@ -22,10 +22,10 @@ expression: "snapshot(&term, &settings_marks(&app.theme), None)"
 16    │ │  Run                     │                                                                                 │
 17    │ │  Clipboard               │                                                                                 │
 18    │ │  Local History           │                                                                                 │
-19    │ │Language Servers          │                                                                                 │
+19  8 │ │Language Servers          │                                                                                 │
 20  ⟲ │ │                          │                                                                                 │
 21    │ │                          │                                                                                 │
-22    │ │                          │                                                                                 │
+22  5 │ │                          │                                                                                 │
 23  ⚑ │ │                          │                                                                                 │
 24    │ │                          │                                                                                 │
 25  9 │ │                          │                                                                                 │

@@ -12,9 +12,9 @@ expression: "snapshot(&term, &marks, Some(left))"
 06  7 │  README.md                   ││
 07  ⊢ │                              ││
 08    │                              ││
-09    │                              ││
+09  8 │                              ││
 10  ⟲ │                              ││
-11    │                              ││               No files open.
+11  5 │                              ││               No files open.
 12  ⚑ │                              ││       Alt+1 opens the Project view;
 13  9 │                              ││         Ctrl+Shift+N finds a file.
 14  ⎇ │                              ││

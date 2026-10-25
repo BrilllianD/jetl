@@ -12,9 +12,9 @@ expression: "snapshot(&term, &marks, None)"
 06  7 │         │ Where to save notes (recovered)?                   │
 07  ⊢ │         │ Path relative to the project root (Tab completes): │
 08    │         │                                                    │
-09    │         │ notes                                              │
+09  8 │         │ notes                                              │
 10  ⟲ │         │                [ Save ] [ Cancel ]                 │
-11    │         └────────────────────────────────────────────────────┘
+11  5 │         └────────────────────────────────────────────────────┘
 12  ⚑ │                              ││
 13  9 │                              ││
 14  ⎇ │                              ││

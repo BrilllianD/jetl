@@ -12,9 +12,9 @@ expression: "snapshot(&term, &marks, None)"
 06  7 │           │  ◆ notes.log:1 (closed)                        │the file
 07  ⊢ │           │  3 notes.log:4 (closed)                        │
 08    │           │                                                │
-09    │           │                                                │
+09  8 │           │                                                │
 10  ⟲ │           │                                                │
-11    │           │                                                │
+11  5 │           │                                                │
 12  ⚑ │           │                                                │
 13  9 │           │                                                │
 14  ⎇ │           │                                                │

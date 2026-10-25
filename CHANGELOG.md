@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Tool windows: Alt+Shift+M (Ctrl+Shift+' with the kitty protocol, View > Maximize Tool Window, or a double-click on the window's top border) makes the focused tool window fill the area right of the strip; focusing anything else restores the layout. F12 jumps to the last active tool window (View > Jump to Last Tool Window), showing it if hidden. Alt+5 toggles the Event Log and Alt+8 Local History, and the tool strip shows their numbers. With the editor focused, Ctrl+Shift+Up/Down resize the bottom tool window.
 - Alt+W then an arrow focuses the tab group on that side of the focused one (View > Focus Left Group and the others); Alt+W M moves the tab to the opposite group, Alt+W U / Shift+U unsplit and unsplit all, Alt+W O / A / P close other, all and unpinned tabs. The find bar and the Find window keep Alt+W for Whole Words.
 - Switcher popup (Ctrl+Tab, Ctrl+Shift+Tab, Navigate > Switcher…): recent tabs and the tool windows in two columns; Tab or the arrows move the selection, releasing Ctrl, Enter or a click opens it, Esc cancels. Releasing Ctrl needs a terminal with the kitty keyboard protocol, as Ctrl+Tab itself does.
 - The open tabs, splits and active tab follow the git branch: switching branches (in jetl or with `git switch`, also while jetl is closed) saves the branch's set, closes the clean tabs and opens the other branch's saved ones; dirty tabs stay open, a branch not used before keeps the current tabs, a detached HEAD changes nothing.
@@ -18,6 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Surround With (Ctrl+Alt+T, Edit > Surround With…): wrap the selection, or the caret line, with a live template that uses `$TM_SELECTED_TEXT`; built-in `if`/`while` for Rust and `if`/`try` for Python and TypeScript.
 - Snippet variable transforms: `${TM_FILENAME/(.*)\..+$/$1/}` rewrites a variable with a regex and a format (`$1`, `${1:/upcase}`, `${1:+if}`, `${1:?if:else}`; options `g`, `i`, `m`, `s`) as in VS Code.
 - Structure window (Alt+7) lists Markdown headings: ATX headings nest by level, setext headings sit at the depth of their enclosing section.
+
+### Changed
+
+- Debug: Trigger a Panic moved from F12 to Ctrl+Alt+Shift+F12; F12 now jumps to the last active tool window.
 
 ### Fixed
 

@@ -12,9 +12,9 @@ expression: "snapshot(&term, &run_tests_marks(&app.theme), None)"
 06  7 │                              ││
 07  ⊢ └──────────────────────────────┘│
 08    ─────────────────────────────────────────────────────────────────────────────
-09    ┌ Run: cargo test ──────────────────────────────────────────────────────────┐
+09  8 ┌ Run: cargo test ──────────────────────────────────────────────────────────┐
 10  ⟲ │ Select Configuration ▾   ▶ Run   ↻ Rerun   ■ Stop   Rerun Failed          │
-11    │ ✗ exit code 101  0.0s  Tests: 2 passed, 1 failed, 1 ignored  $ cargo test │
+11  5 │ ✗ exit code 101  0.0s  Tests: 2 passed, 1 failed, 1 ignored  $ cargo test │
 12  ⚑ │ ▾ src/lib.rs                                                              │
 13  9 │  ▾ tests                                                                  │
 14  ⎇ │     ✓ adds                                                                │

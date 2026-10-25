@@ -12,9 +12,9 @@ expression: "snapshot(&term, &marks, None)"
 06  7 │               ┌ Revert to Label ───────────────────────┐
 07  ⊢ └───────────────│ Revert 2 files to label "release 1.2"? │
 08    ────────────────│ The edits stay unsaved in their tabs.  │───────────────────
-09    ┌ Local History:│                                        │──────────────────┐
+09  8 ┌ Local History:│                                        │──────────────────┐
 10  ⟲ │[Show History] │         [ Revert ] [ Cancel ]          │   type to filter │
-11    │ notes.txt  Uns└────────────────────────────────────────┘" on 2 files: Ente│
+11  5 │ notes.txt  Uns└────────────────────────────────────────┘" on 2 files: Ente│
 12  ⚑ │ guide.md  do…  deleted  10-04 12:00 │                                     │
 13  9 │ ▾ Label: release 1.2    10-03 12:00 │                                     │
 14  ⎇ │     guide.md  docs/         deleted │                                     │
