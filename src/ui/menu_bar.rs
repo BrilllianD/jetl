@@ -119,6 +119,9 @@ pub const MAIN_MENU: &[(&str, char, &[Row])] = &[
             Sep,
             Item("Hide All Tool Windows", "tool_window.hide_all"),
             Item("Maximize Tool Window", "tool_window.maximize"),
+            Item("Move Tool Window to Left", "tool_window.move_left"),
+            Item("Move Tool Window to Bottom", "tool_window.move_bottom"),
+            Item("Move Tool Window to Right", "tool_window.move_right"),
             Item("Jump to Last Tool Window", "tool_window.last"),
             Item("Next Tool Window Tab", "tool_window.next_tab"),
             Item("Previous Tool Window Tab", "tool_window.prev_tab"),
@@ -285,6 +288,11 @@ pub struct MenuBar {
 }
 
 impl MenuBar {
+    #[cfg(test)]
+    pub fn menus(&self) -> &[Menu] {
+        &self.menus
+    }
+
     /// A bar with the first menu open. `menus` must not be empty.
     pub fn new(menus: Vec<Menu>, icons: Icons) -> Self {
         let dropdown = ContextMenu::new(menus[0].items.clone(), 0, 0).shifted();

@@ -3,7 +3,7 @@
 
 use std::sync::LazyLock;
 
-use crate::ui::focus::{PanelId, ToolWindowId};
+use crate::ui::focus::{PanelId, Side, ToolWindowId};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Action {
@@ -41,6 +41,12 @@ pub enum AppAction {
     MaximizeToolWindow,
     /// Focus the tool window that last had focus, showing it first (F12).
     LastToolWindow,
+    /// Put a tool window on a side: the given one, or with `None` the
+    /// focused one (View menu, palette).
+    MoveToolWindow {
+        tw: Option<ToolWindowId>,
+        side: Side,
+    },
     /// Show only the editor text; again to put the layout back.
     ToggleZen,
     Escape,
@@ -622,6 +628,9 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "tool_window.prev_tab" => "Previous tab of the tool window", App(AppAction::PrevToolWindowTab);
         "tool_window.maximize" => "Maximize or restore the active tool window", App(AppAction::MaximizeToolWindow);
         "tool_window.last" => "Jump to the last active tool window", App(AppAction::LastToolWindow);
+        "tool_window.move_left" => "Move the active tool window to the left side", App(AppAction::MoveToolWindow { tw: None, side: Side::Left });
+        "tool_window.move_bottom" => "Move the active tool window to the bottom", App(AppAction::MoveToolWindow { tw: None, side: Side::Bottom });
+        "tool_window.move_right" => "Move the active tool window to the right side", App(AppAction::MoveToolWindow { tw: None, side: Side::Right });
         "app.zen" => "Toggle Zen mode (editor text only)", App(AppAction::ToggleZen);
         "palette.files" => "Go to file", App(AppAction::OpenPalette(PaletteKind::Files));
         "palette.actions" => "Find action", App(AppAction::OpenPalette(PaletteKind::Actions));

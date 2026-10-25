@@ -1,6 +1,7 @@
 //! The vertical strip on the left edge: the main menu button on top, then a
 //! button per tool window (its Alt-number over its icon), and the tooltip of
-//! the hovered button.
+//! the hovered button. A second strip on the right edge holds the Right-side
+//! windows.
 
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
@@ -17,11 +18,14 @@ use crate::ui::menu_bar::menu_glyph;
 /// Rows of a tool button: the Alt-number, then the icon.
 const BUTTON_H: u16 = 2;
 
-pub fn render(app: &mut App, frame: &mut Frame, area: Rect) {
+pub fn render(app: &mut App, frame: &mut Frame, area: Rect, right: Rect) {
     let theme = &app.theme;
     let icons = app.config.ui.icons;
     let buf = frame.buffer_mut();
     buf.set_style(area, Style::default().bg(theme.strip_bg));
+    if !right.is_empty() {
+        buf.set_style(right, Style::default().bg(theme.strip_bg));
+    }
     app.layout.strip_hits.clear();
     if area.height < 1 || area.width < 2 {
         return;
@@ -37,8 +41,10 @@ pub fn render(app: &mut App, frame: &mut Frame, area: Rect) {
     let gap = u16::from(area.height > ToolWindowId::ALL.len() as u16 * (BUTTON_H + 1));
     let mut top = area.y + 2;
     let mut bottom = area.bottom();
+    let mut rtop = right.y + 2;
+    let rbottom = right.bottom();
     for tw in ToolWindowId::ALL {
-        let rect = match tw.side() {
+        let rect = match app.layout.side_of(tw) {
             Side::Left => {
                 if top + BUTTON_H > bottom {
                     continue;
@@ -54,6 +60,14 @@ pub fn render(app: &mut App, frame: &mut Frame, area: Rect) {
                 bottom -= BUTTON_H;
                 let r = Rect::new(area.x, bottom, area.width, BUTTON_H);
                 bottom = bottom.saturating_sub(gap);
+                r
+            }
+            Side::Right => {
+                if right.width < 2 || rtop + BUTTON_H > rbottom {
+                    continue;
+                }
+                let r = Rect::new(right.x, rtop, right.width, BUTTON_H);
+                rtop += BUTTON_H + gap;
                 r
             }
         };
@@ -100,16 +114,22 @@ pub fn render_tooltip(app: &App, frame: &mut Frame, area: Rect) {
         StripButton::Tool(tw) => (tw.title(), AppAction::ToggleToolWindow(tw)),
     };
     let key = app.shortcut(&Action::App(action)).map(|k| format!(" {k} ")).unwrap_or_default();
-    let x = rect.right();
-    if x >= area.right() {
-        return;
-    }
     let theme = &app.theme;
     let base = Style::default().bg(theme.popup_bg).fg(theme.fg);
     let name = format!(" {name} ");
     let w = (name.width() + key.width()) as u16;
+    // A right-strip button's tooltip goes to its left.
+    let (x, room) = if app.layout.rects.strip_right.contains(rect.as_position()) {
+        let x = rect.x.saturating_sub(w).max(area.x);
+        (x, rect.x - x)
+    } else {
+        (rect.right(), area.right().saturating_sub(rect.right()))
+    };
+    if room == 0 {
+        return;
+    }
     let buf = frame.buffer_mut();
-    buf.set_style(Rect::new(x, rect.y, w.min(area.right() - x), 1), base);
-    let (end, _) = buf.set_stringn(x, rect.y, &name, (area.right() - x) as usize, base);
-    buf.set_stringn(end, rect.y, &key, area.right().saturating_sub(end) as usize, base.patch(theme.dim));
+    buf.set_style(Rect::new(x, rect.y, w.min(room), 1), base);
+    let (end, _) = buf.set_stringn(x, rect.y, &name, room as usize, base);
+    buf.set_stringn(end, rect.y, &key, (x + room).saturating_sub(end) as usize, base.patch(theme.dim));
 }

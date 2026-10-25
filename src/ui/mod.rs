@@ -21,17 +21,44 @@ pub mod widgets;
 pub(crate) mod snapshot;
 
 use ratatui::Frame;
+use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::widgets::{Block, BorderType, Borders};
 
 use crate::app::App;
 use crate::config::theme::Theme;
-use crate::ui::focus::PanelId;
+use crate::ui::focus::{PanelId, ToolWindowId};
 
 /// A bordered tool window frame. Returns the inner area.
 pub fn tool_window_block<'a>(title: &'a str, focused: bool, theme: &Theme) -> Block<'a> {
     let (border, title_style) = if focused { (theme.border_focused, theme.title_focused) } else { (theme.border, theme.title) };
     Block::default().borders(Borders::ALL).border_type(BorderType::Plain).border_style(border).title(title).title_style(title_style)
+}
+
+/// The one place that maps a tool window to its panel's render call, so any
+/// window renders on any side.
+pub fn render_tool_window(app: &mut App, frame: &mut Frame, tw: ToolWindowId, r: Rect, theme: &Theme) {
+    let focused = app.focus.is(tw.panel());
+    match tw {
+        ToolWindowId::Project => app.project.render(frame, r, focused, theme),
+        ToolWindowId::Worktrees => app.worktrees.render(frame, r, focused, theme),
+        ToolWindowId::Structure => app.structure.render(frame, r, focused, theme),
+        ToolWindowId::Git => app.git_panel.render(frame, r, focused, theme),
+        ToolWindowId::Find => app.find.render(frame, r, focused, theme),
+        ToolWindowId::EventLog => app.event_log.render(frame, r, focused, theme, &app.notifications),
+        ToolWindowId::Run => app.run_panel.render(frame, r, focused, theme, app.run.selected.as_deref()),
+        ToolWindowId::Terminal => app.render_terminal(frame, r, focused, theme),
+        ToolWindowId::Problems => {
+            let hint = if app.config.lsp.enabled {
+                "No problems reported by the language servers"
+            } else {
+                "Language servers are off ([lsp] enabled = false in config.toml)"
+            };
+            let active = app.editor.active_path();
+            app.problems.render(frame, r, focused, theme, &app.lsp.diagnostics, &app.workspace.root, active, hint);
+        }
+        ToolWindowId::LocalHistory => app.history_panel.render(frame, r, focused, theme),
+    }
 }
 
 pub fn render(app: &mut App, frame: &mut Frame) {
@@ -42,42 +69,16 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     app.layout.compute(area);
     let rects = app.layout.rects.clone();
 
-    tool_strip::render(app, frame, rects.strip);
+    tool_strip::render(app, frame, rects.strip, rects.strip_right);
     app.sync_structure();
     app.sync_diag_marks();
 
-    if let (Some(tw), r) = (app.layout.left, rects.left)
-        && r.width > 0
-    {
-        let focused = app.focus.is(tw.panel());
-        match tw.panel() {
-            PanelId::Project => app.project.render(frame, r, focused, &theme),
-            PanelId::Worktrees => app.worktrees.render(frame, r, focused, &theme),
-            PanelId::Structure => app.structure.render(frame, r, focused, &theme),
-            _ => {}
-        }
-    }
-    if let (Some(tw), r) = (app.layout.bottom, rects.bottom)
-        && r.height > 0
-    {
-        let focused = app.focus.is(tw.panel());
-        match tw.panel() {
-            PanelId::Git => app.git_panel.render(frame, r, focused, &theme),
-            PanelId::Find => app.find.render(frame, r, focused, &theme),
-            PanelId::EventLog => app.event_log.render(frame, r, focused, &theme, &app.notifications),
-            PanelId::Run => app.run_panel.render(frame, r, focused, &theme, app.run.selected.as_deref()),
-            PanelId::Terminal => app.render_terminal(frame, r, focused, &theme),
-            PanelId::Problems => {
-                let hint = if app.config.lsp.enabled {
-                    "No problems reported by the language servers"
-                } else {
-                    "Language servers are off ([lsp] enabled = false in config.toml)"
-                };
-                let active = app.editor.active_path();
-                app.problems.render(frame, r, focused, &theme, &app.lsp.diagnostics, &app.workspace.root, active, hint);
-            }
-            PanelId::LocalHistory => app.history_panel.render(frame, r, focused, &theme),
-            _ => {}
+    for (tw, r) in [(app.layout.left, rects.left), (app.layout.bottom, rects.bottom), (app.layout.right, rects.right)] {
+        if let Some(tw) = tw
+            && r.width > 0
+            && r.height > 0
+        {
+            render_tool_window(app, frame, tw, r, &theme);
         }
     }
 

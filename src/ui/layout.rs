@@ -1,6 +1,9 @@
 //! Fixed JetBrains-style layout: tool strip on the left, optional left tool
-//! window, editor (tabs + text) in the centre, optional bottom tool window
-//! spanning the full width, status bar at the bottom. Zen mode drops all
+//! window, editor (tabs + text) in the centre, optional right tool window,
+//! optional bottom tool window spanning the full width, status bar at the
+//! bottom. Each tool window has a side (its default, or one the user chose);
+//! a second strip on the right edge exists while some window sits on the
+//! right. Zen mode drops all
 //! of it but the editor text. A maximized tool window takes the whole area
 //! between the strip and the right edge instead of the editor.
 
@@ -9,6 +12,7 @@ use ratatui::layout::Rect;
 use crate::ui::focus::{PanelId, Side, ToolWindowId};
 
 pub const STRIP_W: u16 = 3;
+/// Minimum width of a side (left or right) tool window.
 pub const MIN_LEFT_W: u16 = 12;
 pub const MIN_BOTTOM_H: u16 = 4;
 pub const MIN_CENTER_W: u16 = 30;
@@ -21,16 +25,20 @@ pub const MAX_RESTORED: u16 = 500;
 pub enum SplitterId {
     Left,
     Bottom,
+    Right,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct Rects {
     pub area: Rect,
     pub strip: Rect,
+    /// Empty unless a window's side is Right.
+    pub strip_right: Rect,
     pub left: Rect,
     pub tabs: Rect,
     pub editor: Rect,
     pub bottom: Rect,
+    pub right: Rect,
     pub status: Rect,
     pub splitters: Vec<(SplitterId, Rect)>,
 }
@@ -51,6 +59,7 @@ pub enum Hit {
 pub struct ZenSaved {
     pub left: Option<ToolWindowId>,
     pub bottom: Option<ToolWindowId>,
+    pub right: Option<ToolWindowId>,
     pub focus: PanelId,
 }
 
@@ -68,6 +77,10 @@ pub struct LayoutState {
     pub left_w: u16,
     pub bottom: Option<ToolWindowId>,
     pub bottom_h: u16,
+    pub right: Option<ToolWindowId>,
+    pub right_w: u16,
+    /// Windows moved off their default side.
+    sides: std::collections::HashMap<ToolWindowId, Side>,
     pub rects: Rects,
     /// Clickable areas of the tool strip, filled by the strip renderer.
     pub strip_hits: Vec<(StripButton, Rect)>,
@@ -85,6 +98,9 @@ impl LayoutState {
             left_w,
             bottom: None,
             bottom_h,
+            right: None,
+            right_w: left_w,
+            sides: std::collections::HashMap::new(),
             rects: Rects::default(),
             strip_hits: Vec::new(),
             zen: None,
@@ -93,7 +109,63 @@ impl LayoutState {
     }
 
     pub fn is_visible(&self, tw: ToolWindowId) -> bool {
-        self.left == Some(tw) || self.bottom == Some(tw)
+        self.left == Some(tw) || self.bottom == Some(tw) || self.right == Some(tw)
+    }
+
+    /// The side `tw` sits on now.
+    pub fn side_of(&self, tw: ToolWindowId) -> Side {
+        self.sides.get(&tw).copied().unwrap_or(tw.default_side())
+    }
+
+    /// Windows off their default side, in strip order.
+    pub fn side_overrides(&self) -> Vec<(ToolWindowId, Side)> {
+        ToolWindowId::ALL.into_iter().filter_map(|tw| self.sides.get(&tw).map(|s| (tw, *s))).collect()
+    }
+
+    /// Replace all side overrides; entries equal to the default are dropped.
+    /// Call before [`LayoutState::restore`].
+    pub fn set_sides(&mut self, sides: &[(ToolWindowId, Side)]) {
+        self.sides = sides.iter().copied().filter(|(tw, s)| *s != tw.default_side()).collect();
+    }
+
+    /// Whether some window's side is Right, which shows the right strip.
+    pub fn has_right_strip(&self) -> bool {
+        self.sides.values().any(|s| *s == Side::Right)
+    }
+
+    /// The slot of a side; while zen is on, the one zen puts back.
+    fn slot_mut(&mut self, side: Side) -> &mut Option<ToolWindowId> {
+        match (&mut self.zen, side) {
+            (Some(z), Side::Left) => &mut z.left,
+            (Some(z), Side::Bottom) => &mut z.bottom,
+            (Some(z), Side::Right) => &mut z.right,
+            (None, Side::Left) => &mut self.left,
+            (None, Side::Bottom) => &mut self.bottom,
+            (None, Side::Right) => &mut self.right,
+        }
+    }
+
+    /// Put `tw` on `side`. A shown window stays shown there and hides the
+    /// window that side showed; a hidden one only changes side. In zen mode
+    /// the windows zen puts back are moved.
+    pub fn move_to(&mut self, tw: ToolWindowId, side: Side) {
+        let from = self.side_of(tw);
+        if from == side {
+            return;
+        }
+        let slot = self.slot_mut(from);
+        let shown = *slot == Some(tw);
+        if shown {
+            *slot = None;
+        }
+        if side == tw.default_side() {
+            self.sides.remove(&tw);
+        } else {
+            self.sides.insert(tw, side);
+        }
+        if shown {
+            *self.slot_mut(side) = Some(tw);
+        }
     }
 
     /// The maximized window, if it is still shown.
@@ -122,16 +194,18 @@ impl LayoutState {
     /// with the rest of the pre-zen layout.
     pub fn show(&mut self, tw: ToolWindowId) {
         self.leave_zen();
-        match tw.side() {
+        match self.side_of(tw) {
             Side::Left => self.left = Some(tw),
             Side::Bottom => self.bottom = Some(tw),
+            Side::Right => self.right = Some(tw),
         }
     }
 
     pub fn hide(&mut self, tw: ToolWindowId) {
-        match tw.side() {
+        match self.side_of(tw) {
             Side::Left if self.left == Some(tw) => self.left = None,
             Side::Bottom if self.bottom == Some(tw) => self.bottom = None,
+            Side::Right if self.right == Some(tw) => self.right = None,
             _ => {}
         }
         if self.maximized == Some(tw) {
@@ -142,13 +216,25 @@ impl LayoutState {
     /// Apply saved tool windows and sizes (session restore). A window saved
     /// on the wrong side is dropped and sizes are clamped to sane bounds.
     /// In zen mode the windows become the ones zen puts back.
-    pub fn restore(&mut self, left: Option<ToolWindowId>, left_w: u16, bottom: Option<ToolWindowId>, bottom_h: u16) {
-        let left = left.filter(|tw| tw.side() == Side::Left);
-        let bottom = bottom.filter(|tw| tw.side() == Side::Bottom);
+    pub fn restore(
+        &mut self,
+        left: Option<ToolWindowId>,
+        left_w: u16,
+        bottom: Option<ToolWindowId>,
+        bottom_h: u16,
+        right: Option<ToolWindowId>,
+        right_w: Option<u16>,
+    ) {
+        let left = left.filter(|tw| self.side_of(*tw) == Side::Left);
+        let bottom = bottom.filter(|tw| self.side_of(*tw) == Side::Bottom);
+        let right = right.filter(|tw| self.side_of(*tw) == Side::Right);
         self.maximized = None;
         match &mut self.zen {
-            Some(z) => (z.left, z.bottom) = (left, bottom),
-            None => (self.left, self.bottom) = (left, bottom),
+            Some(z) => (z.left, z.bottom, z.right) = (left, bottom, right),
+            None => (self.left, self.bottom, self.right) = (left, bottom, right),
+        }
+        if let Some(w) = right_w {
+            self.right_w = w.clamp(MIN_LEFT_W, MAX_RESTORED);
         }
         self.left_w = left_w.clamp(MIN_LEFT_W, MAX_RESTORED);
         self.bottom_h = bottom_h.clamp(MIN_BOTTOM_H, MAX_RESTORED);
@@ -157,6 +243,7 @@ impl LayoutState {
     pub fn hide_all(&mut self) {
         self.left = None;
         self.bottom = None;
+        self.right = None;
         self.maximized = None;
     }
 
@@ -164,7 +251,7 @@ impl LayoutState {
     /// and `focus` for [`LayoutState::leave_zen`].
     pub fn enter_zen(&mut self, focus: PanelId) {
         if self.zen.is_none() {
-            self.zen = Some(ZenSaved { left: self.left, bottom: self.bottom, focus });
+            self.zen = Some(ZenSaved { left: self.left, bottom: self.bottom, right: self.right, focus });
             self.hide_all();
         }
     }
@@ -173,16 +260,16 @@ impl LayoutState {
     /// `None` when not in zen mode.
     pub fn leave_zen(&mut self) -> Option<PanelId> {
         let z = self.zen.take()?;
-        (self.left, self.bottom) = (z.left, z.bottom);
+        (self.left, self.bottom, self.right) = (z.left, z.bottom, z.right);
         Some(z.focus)
     }
 
     /// The tool windows a session saves: the pre-zen ones while in zen mode,
     /// which is not saved itself.
-    pub fn saved_windows(&self) -> (Option<ToolWindowId>, Option<ToolWindowId>) {
+    pub fn saved_windows(&self) -> (Option<ToolWindowId>, Option<ToolWindowId>, Option<ToolWindowId>) {
         match self.zen {
-            Some(z) => (z.left, z.bottom),
-            None => (self.left, self.bottom),
+            Some(z) => (z.left, z.bottom, z.right),
+            None => (self.left, self.bottom, self.right),
         }
     }
 
@@ -196,20 +283,25 @@ impl LayoutState {
             self.rects = r;
             return;
         }
-        if area.height < 2 || area.width < STRIP_W + 2 {
+        let rs_w = if self.has_right_strip() { STRIP_W } else { 0 };
+        if area.height < 2 || area.width < STRIP_W + rs_w + 2 {
             self.rects = r;
             return;
         }
         r.status = Rect::new(area.x, area.bottom() - 1, area.width, 1);
         let body = Rect::new(area.x, area.y, area.width, area.height - 1);
         r.strip = Rect::new(body.x, body.y, STRIP_W, body.height);
-        let content = Rect::new(body.x + STRIP_W, body.y, body.width - STRIP_W, body.height);
+        if rs_w > 0 {
+            r.strip_right = Rect::new(body.right() - STRIP_W, body.y, STRIP_W, body.height);
+        }
+        let content = Rect::new(body.x + STRIP_W, body.y, body.width - STRIP_W - rs_w, body.height);
 
         if let Some(tw) = self.maximized_window() {
             // The window takes the whole content area; sizes stay for the restore.
-            match tw.side() {
+            match self.side_of(tw) {
                 Side::Left => r.left = content,
                 Side::Bottom => r.bottom = content,
+                Side::Right => r.right = content,
             }
             r.tabs = Rect::new(content.x, content.y, 0, 0);
             r.editor = Rect::new(content.x, content.y, 0, 0);
@@ -241,6 +333,19 @@ impl LayoutState {
                 center = Rect::new(split.x + 1, upper.y, upper.width - self.left_w - 1, upper.height);
             }
         }
+        if self.right.is_some() {
+            // No room beside the left window and the editor's minimum: not drawn.
+            let max_w = center.width.saturating_sub(MIN_CENTER_W + 1);
+            if max_w > 0 {
+                self.right_w = self.right_w.clamp(MIN_LEFT_W.min(max_w), max_w);
+            }
+            if max_w > 0 && center.width > self.right_w + 1 {
+                r.right = Rect::new(center.right() - self.right_w, center.y, self.right_w, center.height);
+                let split = Rect::new(r.right.x - 1, center.y, 1, center.height);
+                r.splitters.push((SplitterId::Right, split));
+                center = Rect::new(center.x, center.y, center.width - self.right_w - 1, center.height);
+            }
+        }
         r.tabs = Rect::new(center.x, center.y, center.width, 1.min(center.height));
         r.editor = Rect::new(center.x, center.y + r.tabs.height, center.width, center.height.saturating_sub(r.tabs.height));
         self.rects = r;
@@ -253,7 +358,7 @@ impl LayoutState {
                 return Hit::Splitter(*id);
             }
         }
-        if self.rects.strip.contains(p) {
+        if self.rects.strip.contains(p) || self.rects.strip_right.contains(p) {
             return Hit::Strip;
         }
         if self.rects.status.contains(p) {
@@ -268,6 +373,11 @@ impl LayoutState {
             && self.rects.bottom.contains(p)
         {
             return Hit::Panel(tw.panel(), self.rects.bottom);
+        }
+        if let Some(tw) = self.right
+            && self.rects.right.contains(p)
+        {
+            return Hit::Panel(tw.panel(), self.rects.right);
         }
         if self.rects.tabs.contains(p) {
             return Hit::Tabs(self.rects.tabs);
@@ -289,6 +399,10 @@ impl LayoutState {
                 let bottom = self.rects.status.y;
                 self.bottom_h = bottom.saturating_sub(y + 1).max(MIN_BOTTOM_H);
             }
+            SplitterId::Right => {
+                let edge = if self.rects.strip_right.is_empty() { self.rects.area.right() } else { self.rects.strip_right.x };
+                self.right_w = edge.saturating_sub(x + 1).max(MIN_LEFT_W);
+            }
         }
     }
 
@@ -298,6 +412,7 @@ impl LayoutState {
         match id {
             SplitterId::Left => self.left_w = self.left_w.saturating_add_signed(delta).max(MIN_LEFT_W),
             SplitterId::Bottom => self.bottom_h = self.bottom_h.saturating_add_signed(delta).max(MIN_BOTTOM_H),
+            SplitterId::Right => self.right_w = self.right_w.saturating_add_signed(delta).max(MIN_LEFT_W),
         }
         if !self.rects.area.is_empty() {
             self.compute(self.rects.area);
@@ -335,6 +450,7 @@ mod tests {
         l.compute(Rect::new(0, 0, 120, 40));
         let r = l.rects.clone();
         assert_eq!(r.status, Rect::new(0, 39, 120, 1));
+        assert!(r.strip_right.is_empty() && r.right.is_empty());
         assert_eq!(r.left.width, 30);
         assert_eq!(r.bottom.height, 10);
         assert_eq!(l.hit_test(1, 5), Hit::Strip);
@@ -372,9 +488,9 @@ mod tests {
         assert!(r.strip.is_empty() && r.status.is_empty() && r.tabs.is_empty() && r.splitters.is_empty());
         assert_eq!(l.hit_test(0, 0), Hit::Panel(PanelId::Editor, r.editor));
         assert_eq!(l.hit_test(99, 29), Hit::Panel(PanelId::Editor, r.editor));
-        assert_eq!(l.saved_windows(), (Some(ToolWindowId::Project), Some(ToolWindowId::Git)));
+        assert_eq!(l.saved_windows(), (Some(ToolWindowId::Project), Some(ToolWindowId::Git), None));
         // A restored session while in zen replaces what zen puts back.
-        l.restore(None, 40, Some(ToolWindowId::Find), 8);
+        l.restore(None, 40, Some(ToolWindowId::Find), 8, None, None);
         assert_eq!((l.left, l.bottom), (None, None));
         assert_eq!(l.leave_zen(), Some(PanelId::Git));
         assert_eq!((l.left, l.bottom, l.left_w, l.bottom_h), (None, Some(ToolWindowId::Find), 40, 8));
@@ -459,5 +575,91 @@ mod tests {
         l.toggle_maximize(ToolWindowId::Git);
         l.show(ToolWindowId::Find);
         assert_eq!(l.maximized_window(), None);
+    }
+
+    use ToolWindowId::{Find, Git, Project};
+
+    #[test]
+    fn move_to_changes_side_and_slot() {
+        let mut l = LayoutState::new(30, 10);
+        l.show(Git);
+        l.move_to(Git, Side::Right);
+        assert_eq!((l.bottom, l.right), (None, Some(Git)));
+        assert_eq!(l.side_of(Git), Side::Right);
+        assert_eq!(l.side_overrides(), vec![(Git, Side::Right)]);
+        assert!(l.has_right_strip());
+        l.move_to(Find, Side::Right);
+        assert_eq!(l.right, Some(Git));
+        assert_eq!(l.side_overrides(), vec![(Find, Side::Right), (Git, Side::Right)]);
+        l.move_to(Git, Side::Bottom);
+        assert_eq!(l.bottom, Some(Git));
+        assert_eq!(l.side_overrides(), vec![(Find, Side::Right)]);
+        l.move_to(Find, Side::Left);
+        assert_eq!(l.left, Some(Project));
+        l.show(Find);
+        assert_eq!(l.left, Some(Find));
+        l.move_to(Project, Side::Left);
+        l.set_sides(&[(Project, Side::Left), (Git, Side::Right)]);
+        assert_eq!(l.side_overrides(), vec![(Git, Side::Right)]);
+    }
+
+    #[test]
+    fn right_window_compute_hit_and_drag() {
+        let mut l = LayoutState::new(30, 10);
+        l.hide_all();
+        l.move_to(Git, Side::Right);
+        l.show(Git);
+        l.compute(Rect::new(0, 0, 120, 40));
+        let r = l.rects.clone();
+        assert_eq!(r.strip_right, Rect::new(117, 0, 3, 39));
+        assert_eq!(r.right, Rect::new(117 - 30, 0, 30, 39));
+        let split = r.splitters.iter().find(|(id, _)| *id == SplitterId::Right).unwrap().1;
+        assert_eq!(split.x, r.right.x - 1);
+        assert_eq!(l.hit_test(118, 5), Hit::Strip);
+        assert_eq!(l.hit_test(split.x, 5), Hit::Splitter(SplitterId::Right));
+        assert_eq!(l.hit_test(r.right.x + 2, 5), Hit::Panel(PanelId::Git, r.right));
+        assert_eq!(r.editor.right(), r.right.x - 1);
+        l.drag_splitter(SplitterId::Right, 80, 0);
+        assert_eq!(l.right_w, 117 - 81);
+        l.resize(SplitterId::Right, 2);
+        assert_eq!(l.right_w, 117 - 81 + 2);
+        l.resize(SplitterId::Right, -500);
+        assert_eq!(l.right_w, MIN_LEFT_W);
+        l.show(Project);
+        l.resize(SplitterId::Left, 500);
+        l.resize(SplitterId::Right, 500);
+        assert!(l.rects.editor.width >= MIN_CENTER_W);
+
+        let mut l = LayoutState::new(30, 10);
+        l.move_to(Git, Side::Right);
+        l.show(Git);
+        l.show(Find);
+        l.compute(Rect::new(0, 0, 120, 40));
+        assert!(l.rects.right.bottom() < l.rects.bottom.y);
+    }
+
+    #[test]
+    fn maximize_and_zen_on_the_right() {
+        let mut l = LayoutState::new(30, 10);
+        l.move_to(Git, Side::Right);
+        l.show(Git);
+        l.toggle_maximize(Git);
+        l.compute(Rect::new(0, 0, 100, 30));
+        assert_eq!(l.rects.right, Rect::new(STRIP_W, 0, 100 - 2 * STRIP_W, 29));
+        assert!(l.rects.left.is_empty() && l.rects.bottom.is_empty() && l.rects.editor.is_empty());
+        l.toggle_maximize(Git);
+        l.enter_zen(PanelId::Git);
+        assert_eq!(l.saved_windows(), (Some(Project), None, Some(Git)));
+        l.move_to(Git, Side::Bottom);
+        assert_eq!(l.saved_windows(), (Some(Project), Some(Git), None));
+        l.leave_zen();
+        assert_eq!((l.bottom, l.right), (Some(Git), None));
+
+        l.move_to(Git, Side::Right);
+        l.hide(Git);
+        l.set_sides(&[]);
+        l.restore(None, 30, None, 10, Some(Git), Some(5));
+        assert_eq!(l.right, None);
+        assert_eq!(l.right_w, MIN_LEFT_W);
     }
 }

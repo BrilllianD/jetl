@@ -22,7 +22,7 @@ impl App {
 
     /// The menus with shortcuts from the keymap; rows that act on the
     /// active tab are disabled while none is open.
-    fn build_main_menu(&self) -> MenuBar {
+    pub(super) fn build_main_menu(&self) -> MenuBar {
         let has_buffer = self.editor.active_buffer().is_some();
         let menus = MAIN_MENU
             .iter()
@@ -33,7 +33,13 @@ impl App {
                         Row::Sep => Some(MenuItem::separator()),
                         Row::Item(label, id) => {
                             let action = Action::from_id(id)?;
-                            let enabled = (has_buffer || !needs_buffer(&action)) && self.git_action_available(&action);
+                            let movable = match &action {
+                                Action::App(AppAction::MoveToolWindow { tw: None, side }) => {
+                                    self.focus.current.tool_window().is_some_and(|tw| self.layout.side_of(tw) != *side)
+                                }
+                                _ => true,
+                            };
+                            let enabled = movable && (has_buffer || !needs_buffer(&action)) && self.git_action_available(&action);
                             Some(MenuItem::new(*label, action).enabled(enabled))
                         }
                     })

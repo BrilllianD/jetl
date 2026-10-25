@@ -34,10 +34,12 @@ pub enum ToolWindowId {
     LocalHistory,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Saved in sessions: new variants go last.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Side {
     Left,
     Bottom,
+    Right,
 }
 
 impl ToolWindowId {
@@ -69,7 +71,9 @@ impl ToolWindowId {
             ToolWindowId::LocalHistory => PanelId::LocalHistory,
         }
     }
-    pub fn side(self) -> Side {
+    /// The side before the user moves it; `LayoutState::side_of` is the
+    /// effective one.
+    pub fn default_side(self) -> Side {
         match self {
             ToolWindowId::Project | ToolWindowId::Worktrees | ToolWindowId::Structure => Side::Left,
             ToolWindowId::Git

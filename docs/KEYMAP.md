@@ -520,6 +520,9 @@ Reachable from Find Action (F1) or by binding them in `keymap.toml`.
 | `app.about` | About jetl |
 | `app.open_settings` | Open settings file (config.toml) |
 | `app.keymap_reference` | Keymap reference |
+| `tool_window.move_left` | Move the active tool window to the left side |
+| `tool_window.move_bottom` | Move the active tool window to the bottom |
+| `tool_window.move_right` | Move the active tool window to the right side |
 | `palette.goto_line` | Go to line |
 | `editor.scratch_files` | Scratch files |
 | `editor.put_label` | Local history: put label… |

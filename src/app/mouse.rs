@@ -220,6 +220,7 @@ impl App {
                 Hit::Splitter(_) => {}
                 Hit::Strip => match self.layout.strip_hit(m.column, m.row) {
                     Some((StripButton::Menu, _)) => self.toggle_main_menu(),
+                    Some((StripButton::Tool(tw), _)) if button == MouseButton::Right => self.tool_window_side_menu(tw, m.column, m.row),
                     Some((StripButton::Tool(tw), _)) => self.toggle_tool_window(tw),
                     None => {}
                 },

@@ -21,7 +21,7 @@ use crate::editor::split::{Axis, SplitNode};
 use crate::event::{AppMsg, Level};
 use crate::git::panel::GitTab;
 use crate::ui::dialog::{Dialog, DialogId};
-use crate::ui::focus::{PanelId, ToolWindowId};
+use crate::ui::focus::{PanelId, Side, ToolWindowId};
 
 #[derive(Debug, Clone)]
 pub struct Workspace {
@@ -239,6 +239,15 @@ pub struct SessionLayout {
     pub git_tab: GitTab,
     pub show_hidden: bool,
     pub show_ignored: bool,
+    /// Right-side window (none before side choice).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub right: Option<ToolWindowId>,
+    /// Its width; missing keeps the current one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub right_w: Option<u16>,
+    /// Windows moved off their default side, in strip order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sides: Vec<(ToolWindowId, Side)>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -484,7 +493,7 @@ impl App {
             self.branch_swap.pending.as_ref().map_or_else(|| self.editor_set(), |(_, s)| s.clone());
         let (show_hidden, show_ignored) = self.project.visibility();
         // Zen mode is not saved: the windows it hides are.
-        let (left, bottom) = self.layout.saved_windows();
+        let (left, bottom, right) = self.layout.saved_windows();
         let layout = Some(SessionLayout {
             left,
             left_w: self.layout.left_w,
@@ -493,6 +502,9 @@ impl App {
             git_tab: self.git_panel.tab,
             show_hidden,
             show_ignored,
+            right,
+            right_w: Some(self.layout.right_w),
+            sides: self.layout.side_overrides(),
         });
         let expanded = self.project.expanded_dirs().iter().filter_map(|d| d.strip_prefix(&root).ok()).map(Path::to_path_buf).collect();
         let closed_bookmarks =
@@ -741,7 +753,8 @@ impl App {
         let closed: Vec<_> = numbered.chain(plain).collect();
         self.editor.restore_closed_bookmarks(&closed);
         if let Some(l) = &session.layout {
-            self.layout.restore(l.left, l.left_w, l.bottom, l.bottom_h);
+            self.layout.set_sides(&l.sides);
+            self.layout.restore(l.left, l.left_w, l.bottom, l.bottom_h, l.right, l.right_w);
             if let Some(tw) = self.focus.current.tool_window()
                 && !self.layout.is_visible(tw)
             {
@@ -839,6 +852,9 @@ mod tests {
                 git_tab: GitTab::Log,
                 show_hidden: false,
                 show_ignored: true,
+                right: None,
+                right_w: None,
+                sides: vec![],
             }),
             expanded: vec![PathBuf::from("src"), PathBuf::from("src/app")],
             splits: Some(SessionSplits {
@@ -1372,6 +1388,9 @@ mod tests {
             git_tab: GitTab::Console,
             show_hidden: false,
             show_ignored: false,
+            right: None,
+            right_w: None,
+            sides: vec![],
         };
         // A folder deleted since is skipped.
         let expanded = vec![PathBuf::from("a"), PathBuf::from("a/deep"), PathBuf::from("gone")];
@@ -1385,7 +1404,10 @@ mod tests {
         assert_eq!(app.project.row_names(), ["a", "deep", "x.txt", "b"]);
         // Saving gives the same state back.
         let saved = app.session();
-        assert_eq!(saved.layout, Some(SessionLayout { left_w: crate::ui::layout::MIN_LEFT_W, ..layout }));
+        assert_eq!(
+            saved.layout,
+            Some(SessionLayout { left_w: crate::ui::layout::MIN_LEFT_W, right_w: Some(app.layout.right_w), ..layout })
+        );
         assert_eq!(saved.expanded, [PathBuf::from("a"), PathBuf::from("a/deep")]);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1399,6 +1421,9 @@ mod tests {
             git_tab: GitTab::Commit,
             show_hidden: true,
             show_ignored: false,
+            right: None,
+            right_w: None,
+            sides: vec![],
         };
         Session { root: root.to_path_buf(), layout: Some(layout), ..Default::default() }
     }
@@ -1485,5 +1510,35 @@ mod tests {
         assert_eq!(fresh.layout.bottom, Some(ToolWindowId::LocalHistory));
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&fresh_dir);
+    }
+
+    #[tokio::test]
+    async fn session_saves_and_restores_sides() {
+        let (mut app, dir) = crate::app::tests::test_app("session-sides");
+        app.layout.move_to(ToolWindowId::Structure, Side::Bottom);
+        app.layout.move_to(ToolWindowId::Git, Side::Right);
+        app.layout.show(ToolWindowId::Git);
+        let session = app.session();
+        let l = session.layout.clone().unwrap();
+        assert_eq!(l.right, Some(ToolWindowId::Git));
+        assert_eq!(l.sides, vec![(ToolWindowId::Structure, Side::Bottom), (ToolWindowId::Git, Side::Right)]);
+        app.layout.set_sides(&[]);
+        app.layout.hide_all();
+        let generation = app.workspace.generation;
+        app.session_loaded(generation, session, vec![]);
+        assert_eq!(app.layout.right, Some(ToolWindowId::Git));
+        assert_eq!(app.layout.side_of(ToolWindowId::Structure), Side::Bottom);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn old_session_layout_loads_with_default_sides() {
+        let old =
+            r#"{"left":"Project","left_w":30,"bottom":null,"bottom_h":10,"git_tab":"Commit","show_hidden":false,"show_ignored":false}"#;
+        let l: SessionLayout = serde_json::from_str(old).unwrap();
+        assert_eq!((l.right, l.right_w, l.sides.is_empty()), (None, None, true));
+        let new = SessionLayout { right: Some(ToolWindowId::Git), right_w: Some(20), sides: vec![(ToolWindowId::Git, Side::Right)], ..l };
+        let json = serde_json::to_string(&new).unwrap();
+        assert_eq!(serde_json::from_str::<SessionLayout>(&json).unwrap(), new);
     }
 }
