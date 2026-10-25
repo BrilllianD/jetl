@@ -43,6 +43,9 @@ impl App {
     pub(super) fn dependencies_checked(&mut self, generation: u64, seq: u64, report: crate::doctor::Report) {
         if generation != self.workspace.generation {
             tracing::debug!("dropping stale dependency check");
+            if let Some(w) = &mut self.settings {
+                w.probe_dropped(seq);
+            }
             return;
         }
         if let Some(w) = &mut self.settings {
@@ -240,11 +243,14 @@ mod tests {
         setup(&mut app, NO_LSP);
         app.check_dependencies();
         let generation = app.workspace.generation;
-        app.handle_msg(AppMsg::Dependencies { generation: generation + 1, seq: u64::MAX, report: Report::default() });
+        let (running, seq) = app.settings.as_ref().unwrap().awaited_probe();
+        assert!(running);
+        app.handle_msg(AppMsg::Dependencies { generation: generation + 1, seq, report: Report::default() });
         assert!(app.settings.as_ref().unwrap().dependencies().is_none());
+        assert!(!app.settings.as_ref().unwrap().awaited_probe().0);
         key(&mut app, KeyCode::Esc);
         assert!(app.settings.is_none());
-        app.handle_msg(AppMsg::Dependencies { generation, seq: 1, report: Report::default() });
+        app.handle_msg(AppMsg::Dependencies { generation, seq, report: Report::default() });
         assert!(app.settings.is_none());
         let _ = std::fs::remove_dir_all(dir);
     }

@@ -132,6 +132,19 @@ impl SettingsWindow {
         self.deps_running = true;
     }
 
+    /// The answer of probe `seq` was dropped as stale: stop showing it as running.
+    pub fn probe_dropped(&mut self, seq: u64) {
+        if seq == self.deps_seq {
+            self.deps_running = false;
+        }
+    }
+
+    /// Whether a probe is awaited, and its seq.
+    #[cfg(test)]
+    pub fn awaited_probe(&self) -> (bool, u64) {
+        (self.deps_running, self.deps_seq)
+    }
+
     /// The answer of probe `seq`; false (and ignored) unless it is the latest started.
     pub fn dependencies_loaded(&mut self, seq: u64, report: Report) -> bool {
         if seq != self.deps_seq {
@@ -680,7 +693,13 @@ impl SettingsWindow {
         let help_h = help.len() as u16;
         let sep = u16::from(help_h > 0);
         let rows_h = (bottom - top).saturating_sub(help_h + sep);
+        // The help height follows the selection, so the viewport can shrink under
+        // it; keep the selected row in view then (wheel scrolling leaves it alone).
+        let resized = self.rows.viewport != rows_h as usize;
         self.rows.fit(lines.len(), rows_h as usize);
+        if resized {
+            self.rows.clamp();
+        }
         self.rows_rect = Rect::new(px, top, pw as u16, rows_h);
 
         let status_w = 8;
@@ -890,6 +909,24 @@ mod tests {
         assert!(w.dependencies().is_none());
         assert!(w.dependencies_loaded(2, report()));
         assert!(w.dependencies().is_some());
+    }
+
+    #[test]
+    fn selected_dependency_row_stays_in_view_when_help_grows() {
+        let c = |i: usize, detail: String| Check { group: Group::Tool, name: format!("c{i}"), status: Status::Ok, detail };
+        let checks = (0..30).map(|i| c(i, if i % 3 == 0 { "long detail words ".repeat(12) } else { "ok".into() })).collect();
+        let mut w = window();
+        w.handle_key(key(KeyCode::End));
+        w.probe_started(1);
+        w.dependencies_loaded(1, Report { checks });
+        lines(&mut w, 50, 14);
+        w.handle_key(key(KeyCode::Enter));
+        w.handle_key(key(KeyCode::Enter));
+        for _ in 0..34 {
+            w.handle_key(key(KeyCode::Down));
+            lines(&mut w, 50, 14);
+            assert!(w.rows.visible().any(|i| i == w.rows.selected), "sel {} not in {:?}", w.rows.selected, w.rows.visible());
+        }
     }
 
     #[test]
