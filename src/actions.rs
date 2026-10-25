@@ -148,6 +148,8 @@ pub enum EditorAction {
     MoveTabLeft,
     MoveTabRight,
     Switcher,
+    /// The Switcher with the selection starting on the least recent file.
+    SwitcherBack,
     /// Split the focused tab group: a new group to the right or below
     /// shows the same tab.
     SplitRight,
@@ -680,7 +682,8 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "editor.toggle_pin_tab" => "Pin or unpin the active tab", Editor(E::TogglePinTab);
         "editor.move_tab_left" => "Move the active tab left", Editor(E::MoveTabLeft);
         "editor.move_tab_right" => "Move the active tab right", Editor(E::MoveTabRight);
-        "editor.switcher" => "Switcher (recent tabs)", Editor(E::Switcher);
+        "editor.switcher" => "Switcher (recent tabs and tool windows)", Editor(E::Switcher);
+        "editor.switcher_back" => "Switcher, selecting backwards (recent tabs and tool windows)", Editor(E::SwitcherBack);
         "editor.split_right" => "Split right (the tab in a new group beside)", Editor(E::SplitRight);
         "editor.split_down" => "Split down (the tab in a new group below)", Editor(E::SplitDown);
         "editor.next_group" => "Next tab group", Editor(E::NextGroup);

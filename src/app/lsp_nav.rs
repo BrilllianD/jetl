@@ -483,6 +483,7 @@ impl App {
     pub(crate) fn hover_check(&mut self) {
         let Some(h) = &self.hover else { return };
         let overlay = self.palette.is_some()
+            || self.switcher.is_some()
             || self.dialog.is_some()
             || self.menu.is_some()
             || self.menu_bar.is_some()

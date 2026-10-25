@@ -60,6 +60,7 @@
 # Ctrl+Alt+N); Alt+Shift+N is the legacy fallback.
 "alt-shift-n" = "palette.symbols"
 "ctrl-tab" = "editor.switcher"
+"ctrl-shift-tab" = "editor.switcher_back"
 "alt-right" = "editor.next_tab"
 "alt-left" = "editor.prev_tab"
 "ctrl-f4" = "editor.close_tab"

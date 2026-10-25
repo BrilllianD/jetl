@@ -339,6 +339,10 @@ impl Editor {
     pub fn open_bases(&self) -> Vec<(PathBuf, Option<PathBuf>)> {
         self.buffers.iter().filter_map(|b| Some((b.path.clone()?, b.base_path.clone()))).collect()
     }
+    /// Buffer ids, most recently active first (all groups).
+    pub fn mru_ids(&self) -> &[BufferId] {
+        &self.mru
+    }
     pub fn recent_paths(&self) -> Vec<PathBuf> {
         self.mru.iter().filter_map(|id| self.buffers.iter().find(|b| b.id == *id)).filter_map(|b| b.path.clone()).collect()
     }
@@ -911,7 +915,7 @@ impl Editor {
                 self.move_to_opposite(cx);
                 return true;
             }
-            E::Switcher => {
+            E::Switcher | E::SwitcherBack => {
                 if let Some(id) = self.mru.get(1).copied()
                     && let Some(i) = self.buffers.iter().position(|b| b.id == id)
                 {
@@ -1264,6 +1268,7 @@ impl Editor {
             | E::MoveTabLeft
             | E::MoveTabRight
             | E::Switcher
+            | E::SwitcherBack
             | E::SplitRight
             | E::SplitDown
             | E::NextGroup

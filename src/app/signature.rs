@@ -98,6 +98,7 @@ impl App {
     pub(crate) fn signature_check(&mut self) {
         let Some(s) = &self.signature else { return };
         let overlay = self.palette.is_some()
+            || self.switcher.is_some()
             || self.dialog.is_some()
             || self.menu.is_some()
             || self.menu_bar.is_some()

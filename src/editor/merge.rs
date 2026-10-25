@@ -956,6 +956,7 @@ impl Editor {
             | E::MoveTabRight
             | E::TogglePinTab
             | E::Switcher
+            | E::SwitcherBack
             | E::CloseAllTabs
             | E::CloseOtherTabs
             | E::CloseUnpinnedTabs

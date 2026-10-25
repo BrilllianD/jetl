@@ -68,6 +68,7 @@ mod save_as;
 mod settings;
 mod signature;
 mod snippets;
+mod switcher;
 mod symbols;
 mod terminal;
 mod watch;
@@ -169,6 +170,9 @@ pub struct App {
     pub dialog: Option<Dialog>,
     /// Command palette overlay; captures input like a dialog.
     pub palette: Option<Palette>,
+    /// Switcher popup (Ctrl+Tab); takes input like the palette, below the
+    /// dialogs and menus.
+    pub switcher: Option<crate::ui::switcher::Switcher>,
     /// App-wide palette filter seq, see `FilterBus`.
     palette_seq: std::sync::Arc<std::sync::atomic::AtomicU64>,
     /// Context menu overlay (right click, Shift+F10); takes input like a
@@ -347,6 +351,7 @@ impl App {
             toasts: Default::default(),
             dialog: None,
             palette: None,
+            switcher: None,
             palette_seq: Default::default(),
             menu: None,
             menu_bar: None,
@@ -669,7 +674,7 @@ impl App {
             }
             return;
         }
-        if self.settings.is_some() || self.run_configs.is_some() {
+        if self.settings.is_some() || self.run_configs.is_some() || self.switcher.is_some() {
             return;
         }
         if let Some(p) = &mut self.palette {
@@ -773,6 +778,11 @@ impl App {
             self.palette_key(key);
             return;
         }
+        // Release events and bare modifiers reach it: Ctrl released opens.
+        if self.switcher.is_some() {
+            self.switcher_key(key);
+            return;
+        }
         // The hover popup takes Esc and its scroll keys; other keys close
         // it and go on.
         if self.hover.is_some() && self.hover_key(key) {
@@ -847,6 +857,9 @@ impl App {
         let contexts = self.contexts();
         let r = self.dispatcher.dispatch(key, &contexts, Some(self.mode), &self.keymap);
         match r {
+            Dispatch::Action(Action::Editor(a @ (EditorAction::Switcher | EditorAction::SwitcherBack))) => {
+                self.open_switcher(a == EditorAction::SwitcherBack, key.modifiers.contains(KeyModifiers::CONTROL))
+            }
             Dispatch::Action(a) => self.perform(a),
             Dispatch::Pending | Dispatch::Ignore => {}
             Dispatch::Unmapped(k) => {
@@ -887,6 +900,12 @@ impl App {
             Action::Editor(EditorAction::ExpandSnippet) => {
                 drop(cx);
                 self.expand_snippet();
+                return;
+            }
+            Action::Editor(a @ (EditorAction::Switcher | EditorAction::SwitcherBack)) => {
+                let back = *a == EditorAction::SwitcherBack;
+                drop(cx);
+                self.open_switcher(back, false);
                 return;
             }
             Action::Editor(EditorAction::SurroundWith) => {
@@ -3220,6 +3239,7 @@ pub(crate) mod tests {
         // the left group and puts its caret on the clicked cell.
         app.perform(Action::Editor(EditorAction::NextGroup));
         app.perform(Action::Editor(EditorAction::Switcher));
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert_eq!(app.editor.active_buffer().unwrap().name, "a.txt");
         draw(&mut app);
         let ta = app.editor.group(left).unwrap().text_area;

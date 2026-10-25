@@ -32,7 +32,12 @@ impl App {
     pub(super) fn handle_mouse(&mut self, m: MouseEvent) {
         // Motion matters to drags and to the menus' hover highlight; other
         // motion only moves the strip tooltip, redrawn when it changes.
-        if m.kind == MouseEventKind::Moved && self.drag.is_none() && self.menu.is_none() && self.menu_bar.is_none() {
+        if m.kind == MouseEventKind::Moved
+            && self.drag.is_none()
+            && self.menu.is_none()
+            && self.menu_bar.is_none()
+            && self.switcher.is_none()
+        {
             let hover = if self.palette.is_none() && self.dialog.is_none() && self.settings.is_none() && self.run_configs.is_none() {
                 self.layout.strip_hit(m.column, m.row)
             } else {
@@ -52,6 +57,7 @@ impl App {
         // the guard keeps a click on an overlay with its overlay in case a
         // rect is stale.
         let over_overlay = self.palette.as_ref().is_some_and(|p| p.contains(m.column, m.row))
+            || self.switcher.as_ref().is_some_and(|s| s.contains(m.column, m.row))
             || self.dialog.as_ref().is_some_and(|d| d.contains(m.column, m.row))
             || self.settings.as_ref().is_some_and(|s| s.contains(m.column, m.row))
             || self.run_configs.as_ref().is_some_and(|s| s.contains(m.column, m.row))
@@ -116,6 +122,13 @@ impl App {
                 self.finish_palette(res);
             }
             self.workspace_symbols_sync();
+            return;
+        }
+        if self.switcher.is_some() && self.dialog.is_none() && self.menu.is_none() && self.menu_bar.is_none() {
+            if matches!(m.kind, MouseEventKind::Up(_)) {
+                self.drag = None;
+            }
+            self.switcher_mouse(&mouse);
             return;
         }
         if let Some(d) = &mut self.dialog {

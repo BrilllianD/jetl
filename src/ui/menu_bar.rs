@@ -150,6 +150,7 @@ pub const MAIN_MENU: &[(&str, char, &[Row])] = &[
             Item("File Structure…", "lsp.file_structure"),
             Item("Line…", "editor.goto_line"),
             Item("Recent Files…", "palette.recent_files"),
+            Item("Switcher…", "editor.switcher"),
             Sep,
             Item("Declaration or Usages", "lsp.goto_definition"),
             Item("Implementation(s)", "lsp.goto_implementation"),
@@ -233,7 +234,9 @@ pub const MAIN_MENU: &[(&str, char, &[Row])] = &[
 /// while no tab is open.
 pub fn needs_buffer(action: &Action) -> bool {
     match action {
-        Action::Editor(a) => !matches!(a, EditorAction::NavBack | EditorAction::NavForward),
+        Action::Editor(a) => {
+            !matches!(a, EditorAction::NavBack | EditorAction::NavForward | EditorAction::Switcher | EditorAction::SwitcherBack)
+        }
         Action::Lsp(a) => !matches!(a, LspAction::Restart),
         Action::Git(GitAction::FileHistory)
         | Action::Tree(TreeAction::SelectInProject)

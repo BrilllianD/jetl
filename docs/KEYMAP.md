@@ -63,7 +63,8 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Alt+Shift+P` | `editor.toggle_pin_tab` | Pin or unpin the active tab |
 | `Alt+Shift+Left` | `editor.move_tab_left` | Move the active tab left |
 | `Alt+Shift+Right` | `editor.move_tab_right` | Move the active tab right |
-| `Ctrl+Tab` * | `editor.switcher` | Switcher (recent tabs) |
+| `Ctrl+Tab` * | `editor.switcher` | Switcher (recent tabs and tool windows) |
+| `Ctrl+Shift+Tab` | `editor.switcher_back` | Switcher, selecting backwards (recent tabs and tool windows) |
 | `Alt+\` | `editor.split_right` | Split right (the tab in a new group beside) |
 | `Alt+-` | `editor.split_down` | Split down (the tab in a new group below) |
 | `Alt+Tab` | `editor.next_group` | Next tab group |

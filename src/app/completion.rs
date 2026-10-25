@@ -167,6 +167,7 @@ impl App {
     fn completion_refilter(&mut self) -> bool {
         let Some(p) = &mut self.completion else { return false };
         let overlay = self.palette.is_some()
+            || self.switcher.is_some()
             || self.dialog.is_some()
             || self.menu.is_some()
             || self.menu_bar.is_some()
@@ -428,6 +429,7 @@ impl App {
             return;
         }
         let overlay = self.palette.is_some()
+            || self.switcher.is_some()
             || self.dialog.is_some()
             || self.menu.is_some()
             || self.menu_bar.is_some()
@@ -482,6 +484,7 @@ impl App {
             Err(e) => return tracing::debug!("{name}: completion failed: {}", e.message),
         };
         let overlay = self.palette.is_some()
+            || self.switcher.is_some()
             || self.dialog.is_some()
             || self.menu.is_some()
             || self.menu_bar.is_some()

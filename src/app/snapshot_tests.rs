@@ -2409,3 +2409,17 @@ async fn run_configs_window_wide() {
     let term = draw_app(app, 120, 40);
     assert_snapshot!("run_configs_window_wide", snapshot(&term, &run_configs_marks(&app.theme), None));
 }
+
+#[tokio::test]
+async fn switcher_popup() {
+    let mut fx = stable_app("switcher-popup");
+    let app = &mut fx.app;
+    load(app, "alpha.txt", "one\n");
+    load(app, "beta.txt", "two\n");
+    app.perform(Action::Editor(EditorAction::InsertText("x".into())));
+    load(app, "gamma.txt", "three\n");
+    app.perform(Action::Editor(EditorAction::Switcher));
+    let term = draw_app(app, 80, 24);
+    let marks = menu_marks(&app.theme);
+    assert_snapshot!("switcher_popup", snapshot(&term, &marks, None));
+}

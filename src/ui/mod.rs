@@ -11,6 +11,7 @@ pub mod run_configs;
 pub mod settings;
 pub mod signature;
 pub mod status_bar;
+pub mod switcher;
 pub mod tabs;
 pub mod toasts;
 pub mod tool_strip;
@@ -120,6 +121,9 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     if let Some(p) = &mut app.palette {
         p.render(frame, area, &theme);
     }
+    if let Some(s) = &mut app.switcher {
+        s.render(frame, area, &theme);
+    }
     if let Some(m) = &mut app.menu {
         m.render(frame, area, &theme);
     }
@@ -139,6 +143,7 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     // always clickable. The menu bar's own row is row 0, which toasts never use.
     let avoid: Vec<ratatui::layout::Rect> = [
         app.palette.as_ref().map(|p| p.rect()),
+        app.switcher.as_ref().map(|s| s.rect()),
         app.menu.as_ref().map(|m| m.rect()),
         app.menu_bar.as_ref().map(|b| b.dropdown().rect()),
         app.settings.as_ref().map(|s| s.rect()),
