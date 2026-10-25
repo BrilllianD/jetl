@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The session (open tabs, carets, layout) is saved every few seconds while jetl runs, so a crash no longer loses the tabs opened since the start.
 - Test runner tree: jest runs (npx jest, yarn jest) show the Tests view too, with Rerun Failed and Run Test at Caret; jetl adds --verbose to a jest command given as a list of words.
 - Live templates and language server snippets fill in variables: `$TM_FILENAME`, `$TM_LINE_NUMBER`, `$CURRENT_YEAR`, `$CURRENT_DATE`, `$UUID` and the rest of the VS Code set except `$CLIPBOARD`; unknown ones still insert their default.
 - Surround With (Ctrl+Alt+T, Edit > Surround With…): wrap the selection, or the caret line, with a live template that uses `$TM_SELECTED_TEXT`; built-in `if`/`while` for Rust and `if`/`try` for Python and TypeScript.

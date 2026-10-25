@@ -234,6 +234,13 @@ pub struct App {
     /// File from the command line (1-based line and column), opened once
     /// the session is restored so it ends up the active tab.
     pub(crate) pending_open: Option<(PathBuf, usize, usize)>,
+    /// Editor sets of the root's other branches, from the session
+    /// (`workspace::BranchSet`).
+    pub(crate) branch_sets: std::collections::BTreeMap<String, crate::workspace::BranchSet>,
+    /// The branch whose editor set is open, as the session recorded it.
+    pub(crate) session_branch: Option<String>,
+    /// The periodic session save.
+    pub(crate) session_save: crate::workspace::SessionSave,
     pub git: GitService,
     /// Local history's worker (`history/`); `GitService` holds a clone.
     pub history: crate::history::Handle,
@@ -368,6 +375,9 @@ impl App {
             pending_conflicts: false,
             resolved_conflict: None,
             pending_open: open,
+            branch_sets: Default::default(),
+            session_branch: None,
+            session_save: Default::default(),
             git,
             history,
             pending_revert: std::collections::HashMap::new(),
@@ -599,6 +609,7 @@ impl App {
         if self.editor.autosave_due(Instant::now()) {
             self.autosave();
         }
+        self.session_tick(Instant::now());
         self.unsaved_snapshots(Instant::now());
         self.history_prune_tick(Instant::now());
         self.history_diff_follow(Instant::now());

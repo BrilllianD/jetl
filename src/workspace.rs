@@ -2,8 +2,14 @@
 //! and per-root sessions: open tabs in order with their pins, caret and
 //! scroll, the split editor's groups, tool window layout and expanded tree
 //! folders, stored as JSON in `paths.sessions_dir()/<fnv hash of root>.json`.
+//! The editor sets of other git branches live in the same file (`BranchSet`),
+//! and the running app rewrites the file every few seconds when it changed
+//! (`App::session_tick`).
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -76,6 +82,64 @@ pub struct Session {
     /// The Run window's selected configuration, by name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_config: Option<String>,
+    /// The branch whose editor set the top-level `files`, `active`, `recent`
+    /// and `splits` hold; `None` before git reported one or outside git.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    /// The editor sets of the other branches, by short branch name.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub branches: BTreeMap<String, BranchSet>,
+}
+
+/// One branch's editor set: the tabs with their state, the active and
+/// recent ones, and the split groups. Layout, tree and bookmarks of
+/// closed files stay per root.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BranchSet {
+    pub files: Vec<SessionFile>,
+    pub active: Option<usize>,
+    pub recent: Vec<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub splits: Option<SessionSplits>,
+}
+
+/// How often the running app saves the session when it changed.
+pub(crate) const SESSION_SAVE_EVERY: Duration = Duration::from_secs(5);
+
+/// Orders session writes: background saves and the synchronous one on
+/// quit and root switch. Holds the sequence number of the last write; an
+/// older one arriving late is dropped.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct SessionWriter(Arc<Mutex<u64>>);
+
+impl SessionWriter {
+    /// Write `session` unless a save with a higher `seq` already landed;
+    /// true when it wrote.
+    pub(crate) fn write(&self, seq: u64, session: &Session, dir: &Path) -> Result<bool> {
+        let mut last = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        if seq <= *last {
+            return Ok(false);
+        }
+        session.save(dir)?;
+        *last = seq;
+        Ok(true)
+    }
+}
+
+/// The periodic session save (`App::session_tick`).
+#[derive(Debug, Default)]
+pub(crate) struct SessionSave {
+    /// The generation whose session `session_loaded` applied; saving
+    /// waits for it so an empty editor never overwrites the file.
+    loaded: Option<u64>,
+    /// When the next check is due.
+    due: Option<Instant>,
+    /// The last session handed to the writer.
+    last: Option<Session>,
+    /// Sequence numbers for `SessionWriter`.
+    seq: u64,
+    writer: SessionWriter,
 }
 
 /// The plain bookmarks of a file without a tab.
@@ -201,6 +265,11 @@ pub fn fnv1a64(bytes: &[u8]) -> u64 {
 }
 
 impl Session {
+    /// The top-level editor fields as a set.
+    pub fn editor_set(&self) -> BranchSet {
+        BranchSet { files: self.files.clone(), active: self.active, recent: self.recent.clone(), splits: self.splits.clone() }
+    }
+
     pub fn file_for(sessions_dir: &Path, root: &Path) -> PathBuf {
         sessions_dir.join(format!("{:016x}.json", fnv1a64(root.as_os_str().as_encoded_bytes())))
     }
@@ -315,9 +384,8 @@ impl App {
         }
     }
 
-    /// The open tabs of the current root as a session, in tab order.
-    pub fn session(&self) -> Session {
-        let root = self.workspace.root.clone();
+    /// The open tabs of the current editor as a set, in tab order.
+    pub(crate) fn editor_set(&self) -> BranchSet {
         let mut files = Vec::new();
         let mut active = None;
         let pinned = self.editor.pinned_ids();
@@ -343,6 +411,14 @@ impl App {
             });
         }
         let recent = self.editor.recent_paths().iter().filter_map(|p| files.iter().position(|f| &f.path == p)).collect();
+        let splits = self.session_splits(&files);
+        BranchSet { files, active, recent, splits }
+    }
+
+    /// The open tabs of the current root as a session, in tab order.
+    pub fn session(&self) -> Session {
+        let root = self.workspace.root.clone();
+        let BranchSet { files, active, recent, splits } = self.editor_set();
         let (show_hidden, show_ignored) = self.project.visibility();
         // Zen mode is not saved: the windows it hides are.
         let (left, bottom) = self.layout.saved_windows();
@@ -356,7 +432,6 @@ impl App {
             show_ignored,
         });
         let expanded = self.project.expanded_dirs().iter().filter_map(|d| d.strip_prefix(&root).ok()).map(Path::to_path_buf).collect();
-        let splits = self.session_splits(&files);
         let closed_bookmarks =
             self.editor.closed_digits().into_iter().map(|(digit, path, line)| SessionBookmark { digit, path, line }).collect();
         let mut closed_plain_bookmarks: Vec<SessionClosedFile> = Vec::new();
@@ -378,6 +453,13 @@ impl App {
             closed_bookmarks,
             closed_plain_bookmarks,
             run_config: self.run.selected.clone(),
+            branch: self.session_branch.clone(),
+            branches: self
+                .branch_sets
+                .iter()
+                .filter(|(k, _)| Some(*k) != self.session_branch.as_ref())
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
         }
     }
 
@@ -419,12 +501,45 @@ impl App {
         Some(SessionSplits { tree: node(tree, &leaf)?, focused })
     }
 
-    /// Save the current root's session (on switch and quit). Failures are
-    /// logged only.
-    pub fn save_session(&self) {
-        if let Err(e) = self.session().save(&self.paths.sessions_dir()) {
-            tracing::warn!("saving session: {e:#}");
+    /// Save the current root's session now (on switch and quit; ordered
+    /// after any background save). Failures are logged only.
+    pub fn save_session(&mut self) {
+        let session = self.session();
+        self.session_save.seq += 1;
+        match self.session_save.writer.write(self.session_save.seq, &session, &self.paths.sessions_dir()) {
+            Ok(_) => self.session_save.last = Some(session),
+            Err(e) => tracing::warn!("saving session: {e:#}"),
         }
+    }
+
+    /// The next tick saves the session (when loaded and changed). Used by
+    /// the branch swap (yman 299 part b).
+    #[allow(dead_code)]
+    pub(crate) fn request_session_save(&mut self) {
+        self.session_save.due = Some(Instant::now());
+    }
+
+    /// Every `SESSION_SAVE_EVERY` once the current root's session is
+    /// loaded: build it here, write it off the main loop when it changed
+    /// since the last write. True when a write started.
+    pub(crate) fn session_tick(&mut self, now: Instant) -> bool {
+        if self.session_save.loaded != Some(self.workspace.generation) || self.session_save.due.is_none_or(|d| now < d) {
+            return false;
+        }
+        self.session_save.due = Some(now + SESSION_SAVE_EVERY);
+        let session = self.session();
+        if self.session_save.last.as_ref() == Some(&session) {
+            return false;
+        }
+        self.session_save.seq += 1;
+        let (seq, writer, dir) = (self.session_save.seq, self.session_save.writer.clone(), self.paths.sessions_dir());
+        self.session_save.last = Some(session.clone());
+        tokio::task::spawn_blocking(move || {
+            if let Err(e) = writer.write(seq, &session, &dir) {
+                tracing::warn!("saving session: {e:#}");
+            }
+        });
+        true
     }
 
     /// Load the current root's session and its files off the main loop; the
@@ -440,17 +555,12 @@ impl App {
         });
     }
 
-    /// Open the tabs of a loaded session (dropped when the root changed
-    /// since), restore its layout and tree folders, then open the pending
-    /// command line file and offer the root's crash dumps. Missing files and
-    /// folders, and files already open, are skipped. With no tab open and no
-    /// pending file, the Project window is shown and focused.
-    pub fn session_loaded(&mut self, generation: u64, session: Session, files: Vec<std::io::Result<Vec<u8>>>) {
-        if generation != self.workspace.generation {
-            tracing::debug!("dropping stale session for {}", session.root.display());
-            return;
-        }
-        for (f, result) in session.files.iter().zip(files) {
+    /// Open a set's files that are not open yet (`files[i]` read from
+    /// `set.files[i]`), lay them out in its groups and restore recency and
+    /// the active tab. Open tabs stay; missing and unreadable files are
+    /// skipped.
+    pub(crate) fn open_editor_set(&mut self, set: &BranchSet, files: Vec<std::io::Result<Vec<u8>>>) {
+        for (f, result) in set.files.iter().zip(files) {
             if self.editor.index_of(&f.path).is_some() {
                 continue;
             }
@@ -471,17 +581,31 @@ impl App {
             }
             self.git.load_blob(f.path.clone(), crate::git::BlobWhich::Head, None);
         }
-        if let Some(splits) = &session.splits {
-            let buffers: Vec<Option<usize>> = session.files.iter().map(|f| self.editor.index_of(&f.path)).collect();
+        if let Some(splits) = &set.splits {
+            let buffers: Vec<Option<usize>> = set.files.iter().map(|f| self.editor.index_of(&f.path)).collect();
             self.editor.restore_splits(splits, &buffers);
         }
-        let recent: Vec<PathBuf> = session.recent.iter().filter_map(|i| session.files.get(*i)).map(|f| f.path.clone()).collect();
-        let active = session.active.and_then(|i| session.files.get(i)).map(|f| f.path.as_path());
+        let recent: Vec<PathBuf> = set.recent.iter().filter_map(|i| set.files.get(*i)).map(|f| f.path.clone()).collect();
+        let active = set.active.and_then(|i| set.files.get(i)).map(|f| f.path.as_path());
         self.editor.restore_recent(&recent, active);
         // Applied once recency is known, so the limit keeps the recent tabs.
         self.editor.enforce_tab_limit();
         // Opening the tabs is not navigation.
         self.editor.clear_nav();
+    }
+
+    /// Open the tabs of a loaded session (dropped when the root changed
+    /// since), restore its layout and tree folders, then open the pending
+    /// command line file and offer the root's crash dumps. Missing files and
+    /// folders, and files already open, are skipped. It also takes the
+    /// per-branch sets and starts the periodic save. With no tab open and no
+    /// pending file, the Project window is shown and focused.
+    pub fn session_loaded(&mut self, generation: u64, session: Session, files: Vec<std::io::Result<Vec<u8>>>) {
+        if generation != self.workspace.generation {
+            tracing::debug!("dropping stale session for {}", session.root.display());
+            return;
+        }
+        self.open_editor_set(&session.editor_set(), files);
         let numbered = session.closed_bookmarks.iter().map(|b| (b.path.clone(), b.line, Some(b.digit)));
         let plain = session.closed_plain_bookmarks.iter().flat_map(|f| f.lines.iter().map(|&l| (f.path.clone(), l, None)));
         let closed: Vec<_> = numbered.chain(plain).collect();
@@ -501,6 +625,12 @@ impl App {
         self.load_run_tasks();
         let expanded: Vec<PathBuf> = session.expanded.iter().map(|d| session.root.join(d)).collect();
         self.project.expand_paths(&expanded);
+        self.branch_sets = session.branches.clone();
+        self.session_branch = session.branch.clone();
+        // From now on the editor shows this root's session: the tick may save it.
+        self.session_save.loaded = Some(generation);
+        self.session_save.due = Some(Instant::now() + SESSION_SAVE_EVERY);
+        self.session_save.last = None;
         let pending = self.pending_open.take();
         let opening = pending.is_some();
         if let Some((path, line, col)) = pending {
@@ -605,6 +735,16 @@ mod tests {
             closed_bookmarks: vec![SessionBookmark { digit: 2, path: root.join("src/lib.rs"), line: 12 }],
             closed_plain_bookmarks: vec![SessionClosedFile { path: root.join("src/lib.rs"), lines: vec![3, 40] }],
             run_config: Some("cargo test".into()),
+            branch: Some("main".into()),
+            branches: BTreeMap::from([(
+                "feature".to_string(),
+                BranchSet {
+                    files: vec![SessionFile { path: root.join("f.rs"), line: 7, ..Default::default() }],
+                    active: Some(0),
+                    recent: vec![0],
+                    splits: None,
+                },
+            )]),
         };
         s.save(&dir).unwrap();
         assert_eq!(Session::load(&dir, &root), Some(s.clone()));
@@ -618,7 +758,94 @@ mod tests {
         assert_eq!((old.layout, old.expanded.len(), old.files[0].pinned, old.splits), (None, 0, false, None));
         assert!(old.files[0].folds.is_empty());
         assert_eq!(old.run_config, None, "sessions without the field still load");
+        assert!(old.branch.is_none() && old.branches.is_empty());
+        let json = serde_json::to_value(Session { root: root.clone(), ..Default::default() }).unwrap();
+        assert!(json.get("branch").is_none() && json.get("branches").is_none(), "no branch data, no keys");
         assert!(old.files[0].bookmark_digits.is_empty() && old.closed_bookmarks.is_empty() && old.closed_plain_bookmarks.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn branch_sets_survive_the_app_round_trip() {
+        let (mut app, dir) = crate::app::tests::test_app("session-branches");
+        let set = |name: &str| BranchSet {
+            files: vec![SessionFile { path: app.workspace.root.join(name), ..Default::default() }],
+            ..Default::default()
+        };
+        let (feature, main) = (set("f.rs"), set("m.rs"));
+        app.session_branch = Some("main".into());
+        app.branch_sets.insert("feature".into(), feature);
+        app.branch_sets.insert("main".into(), main);
+        let s = app.session();
+        assert_eq!(s.branch.as_deref(), Some("main"));
+        assert_eq!(s.branches.keys().collect::<Vec<_>>(), ["feature"], "the current branch is filtered");
+
+        let (mut fresh, fresh_dir) = crate::app::tests::test_app("session-branches-2");
+        fresh.workspace.root = app.workspace.root.clone();
+        let generation = fresh.workspace.generation;
+        fresh.session_loaded(generation, s.clone(), vec![]);
+        assert_eq!(fresh.branch_sets, s.branches);
+        assert_eq!(fresh.session_branch.as_deref(), Some("main"));
+        for d in [dir, fresh_dir] {
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
+
+    #[tokio::test]
+    async fn editor_set_is_the_session_editor_part() {
+        let (mut app, dir) = crate::app::tests::test_app("session-editor-set");
+        for n in ["a.txt", "b.txt"] {
+            let path = app.workspace.root.join(n);
+            app.editor.open_text(path, "x\n", false, &app.theme);
+        }
+        let set = app.editor_set();
+        assert_eq!(set.files.len(), 2);
+        assert_eq!(set, app.session().editor_set());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn session_writer_drops_an_older_save() {
+        let dir = temp_dir("writer");
+        let root = PathBuf::from("/tmp/writer/project");
+        let a = Session { root: root.clone(), run_config: Some("a".into()), ..Default::default() };
+        let b = Session { root: root.clone(), run_config: Some("b".into()), ..Default::default() };
+        let writer = SessionWriter::default();
+        assert!(writer.write(2, &b, &dir).unwrap());
+        assert!(!writer.write(1, &a, &dir).unwrap());
+        assert_eq!(Session::load(&dir, &root), Some(b));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn periodic_save_waits_for_the_session() {
+        let (mut app, dir) = crate::app::tests::test_app("session-periodic");
+        let root = app.workspace.root.clone();
+        let path = root.join("a.txt");
+        std::fs::write(&path, "x\n").unwrap();
+        app.editor.open_text(path.clone(), "x\n", false, &app.theme);
+        let file = Session::file_for(&app.paths.sessions_dir(), &root);
+        assert!(!app.session_tick(Instant::now() + SESSION_SAVE_EVERY * 2), "not loaded yet");
+        assert!(!file.exists());
+        let generation = app.workspace.generation;
+        app.session_loaded(generation, Session { root: root.clone(), ..Default::default() }, vec![]);
+        assert!(!app.session_tick(Instant::now()), "not due");
+        let later = Instant::now() + SESSION_SAVE_EVERY * 2;
+        assert!(app.session_tick(later));
+        let mut saved = None;
+        for _ in 0..500 {
+            saved = Session::load(&app.paths.sessions_dir(), &root);
+            if saved.is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(saved.expect("the background write landed").files[0].path, path);
+        assert!(!app.session_tick(later + SESSION_SAVE_EVERY * 2), "unchanged");
+        app.request_session_save();
+        assert!(!app.session_tick(Instant::now()), "a request does not force a write of an unchanged session");
+        app.workspace.generation += 1;
+        assert!(!app.session_tick(later + SESSION_SAVE_EVERY * 4), "stale generation");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
