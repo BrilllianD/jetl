@@ -439,8 +439,8 @@ impl Keymap {
 }
 
 /// Whether a displayed binding only arrives with the kitty keyboard
-/// protocol: Ctrl+Shift+letter, Ctrl+? (Ctrl+Shift+/), Ctrl with `-`, `=`,
-/// `+`, `_` or `.`, Ctrl with a digit other than 4-6 (legacy terminals send
+/// protocol: Ctrl+Shift+letter, Ctrl+? (Ctrl+Shift+/), Ctrl+" (Ctrl+Shift+'),
+/// Ctrl with `-`, `=`, `+`, `_` or `.`, Ctrl with a digit other than 4-6 (legacy terminals send
 /// those as Ctrl+\, Ctrl+] and Ctrl+^; Ctrl+7 is Ctrl+/ there, which jetl
 /// reads as Ctrl+/: [`KeyCombo::legacy_input`]), Ctrl+Tab, Ctrl+Enter,
 /// Shift+Enter, Shift+F3, Shift+Esc, Alt+Shift+Tab, Ctrl+Shift+Tab and Shift Shift.
@@ -454,7 +454,7 @@ fn needs_kitty(keys: &str) -> bool {
             || (k.starts_with("Ctrl+") && punct)
             || k == "Ctrl+Shift+Tab"
             || matches!(k, "Ctrl+0" | "Ctrl+1" | "Ctrl+2" | "Ctrl+3" | "Ctrl+7" | "Ctrl+8" | "Ctrl+9")
-            || k == "Ctrl+?"
+            || matches!(k, "Ctrl+?" | "Ctrl+\"")
             || k == "Ctrl+Tab"
             || k == "Ctrl+Enter"
             || k == "Shift+Enter"

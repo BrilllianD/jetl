@@ -39,7 +39,7 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Ctrl+Shift+Up` | `tool_window.stretch_up` | Stretch tool window up |
 | `Ctrl+Shift+Down` | `tool_window.stretch_down` | Stretch tool window down |
 | `Alt+Shift+M` | `tool_window.maximize` | Maximize or restore the active tool window |
-| `Ctrl+"` | `tool_window.maximize` | Maximize or restore the active tool window |
+| `Ctrl+"` * | `tool_window.maximize` | Maximize or restore the active tool window |
 | `F12` | `tool_window.last` | Jump to the last active tool window |
 | `Alt+Shift+Z` | `app.zen` | Toggle Zen mode (editor text only) |
 | `Ctrl+N` | `palette.files` | Go to file |
@@ -507,7 +507,7 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Ctrl+Shift+Up` | `tool_window.stretch_up` | Stretch tool window up |
 | `Ctrl+Shift+Down` | `tool_window.stretch_down` | Stretch tool window down |
 | `Alt+Shift+M` | `tool_window.maximize` | Maximize or restore the active tool window |
-| `Ctrl+"` | `tool_window.maximize` | Maximize or restore the active tool window |
+| `Ctrl+"` * | `tool_window.maximize` | Maximize or restore the active tool window |
 | `Ctrl+V` | `editor.paste` | Paste |
 
 ## Without a default binding

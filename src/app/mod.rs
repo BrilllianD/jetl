@@ -1210,11 +1210,6 @@ impl App {
         }
     }
 
-    /// Ctrl+Shift+arrows, JetBrains-style: move the free edge of the focused
-    /// tool window (width for a left window, height for a bottom one). Keys
-    /// along the other axis do nothing. With the editor focused the arrow's
-    /// axis picks the window, and the editor keeps Ctrl+Shift+Left/Right for
-    /// word selection.
     /// Alt+Right / Alt+Left in a tool window with inner tabs: the next or
     /// previous tab, wrapping. The focused panel decides; one without tabs
     /// (and the editor) ignores it.
@@ -1230,6 +1225,11 @@ impl App {
         }
     }
 
+    /// Ctrl+Shift+arrows, JetBrains-style: move the free edge of the focused
+    /// tool window (width for a left window, height for a bottom one). Keys
+    /// along the other axis do nothing. With the editor focused the arrow's
+    /// axis picks the window, and the editor keeps Ctrl+Shift+Left/Right for
+    /// word selection.
     fn resize_tool_window(&mut self, dir: Dir) {
         const STEP_W: i16 = 2;
         const STEP_H: i16 = 1;
@@ -2502,6 +2502,9 @@ pub(crate) mod tests {
         let before = app.editor.active_path().map(|p| p.to_path_buf());
         app.perform(Action::App(AppAction::NextToolWindowTab));
         assert_eq!(app.editor.active_path().map(|p| p.to_path_buf()), before);
+        // A window without inner tabs leaves Alt+Right to the editor.
+        app.handle_key(alt(KeyCode::Right));
+        assert_ne!(app.editor.active_path().map(|p| p.to_path_buf()), before);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
