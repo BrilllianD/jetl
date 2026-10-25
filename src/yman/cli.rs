@@ -62,9 +62,9 @@ impl YmanError {
             YmanError::NotGitRepo => "The project is not inside a git repository, which yman needs".to_string(),
             YmanError::NotInitialized => "This project has no yman tracker; run yman init in a terminal to create one".to_string(),
             YmanError::Usage(m) => format!("yman rejected the arguments: {m}"),
-            YmanError::MergeUnresolved(m) => format!(
-                "yman: {m}. A sync merge is unresolved: fix the files yman status lists, then run yman sync --continue (or --abort) in a terminal"
-            ),
+            // Short enough for a one-line toast; yman's own line (a conflict
+            // count, or "fix the files yman status lists") stays out of it.
+            YmanError::MergeUnresolved(_) => "Sync merge unresolved: run yman sync --continue or --abort".to_string(),
             YmanError::NoSuchTask(m) | YmanError::Failed(m) => format!("yman: {m}"),
             YmanError::Timeout(cmd) => format!("{cmd} timed out after {} s", TIMEOUT.as_secs()),
             YmanError::Io(m) => format!("Cannot run yman: {m}"),

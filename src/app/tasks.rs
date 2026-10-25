@@ -88,23 +88,31 @@ impl App {
             Err(e) => self.notify(Level::Error, format!("{}: {}", done.label, e.message())),
             Ok(out) => {
                 let err = out.stderr.trim();
-                if !err.is_empty() {
-                    let warn = err.lines().any(|l| {
-                        let l = l.trim_start();
-                        l.starts_with("warning:") || l.starts_with("error:")
-                    });
-                    self.notify(if warn { Level::Warn } else { Level::Info }, format!("{}: {err}", done.label));
-                }
-            }
-        }
-        match done.kind {
-            MutationKind::Task(_) => {}
-            MutationKind::Sync => {
-                if let Ok(out) = &done.result {
-                    let text = String::from_utf8_lossy(&out.stdout);
-                    let line = text.lines().rev().map(str::trim).find(|l| !l.is_empty());
-                    let summary = line.map_or_else(|| "done".to_string(), |l| l.split_whitespace().collect::<Vec<_>>().join(" "));
-                    self.notify(Level::Info, format!("{}: {summary}", done.label));
+                let warn = err.lines().any(|l| {
+                    let l = l.trim_start();
+                    l.starts_with("warning:") || l.starts_with("error:")
+                });
+                match done.kind {
+                    MutationKind::Task(_) => {
+                        if !err.is_empty() {
+                            self.notify(if warn { Level::Warn } else { Level::Info }, format!("{}: {err}", done.label));
+                        }
+                    }
+                    // One toast: the summary, raised to a warning when yman
+                    // warned; its plain notes are dropped.
+                    MutationKind::Sync => {
+                        let text = String::from_utf8_lossy(&out.stdout);
+                        let line = text.lines().rev().map(str::trim).find(|l| !l.is_empty());
+                        let summary = line.map_or_else(|| "done".to_string(), |l| l.split_whitespace().collect::<Vec<_>>().join(" "));
+                        if warn {
+                            self.notify(
+                                Level::Warn,
+                                format!("{}: {summary} ({})", done.label, err.split_whitespace().collect::<Vec<_>>().join(" ")),
+                            );
+                        } else {
+                            self.notify(Level::Info, format!("{}: {summary}", done.label));
+                        }
+                    }
                 }
             }
         }
@@ -582,7 +590,20 @@ mod tests {
         app.finish_yman_mutation(MutationDone { kind: MutationKind::Sync, label: "Sync tasks".into(), result });
         let n = app.notifications.last().unwrap();
         assert_eq!(n.level, Level::Error);
-        assert!(n.text.contains("A sync merge is unresolved") && n.text.contains("sync --continue"), "{}", n.text);
+        assert_eq!(n.text, "Sync tasks: Sync merge unresolved: run yman sync --continue or --abort");
+        assert!(n.text.len() <= 80, "{}", n.text);
+        let base = app.notifications.len();
+        let stdout = b"synced  pulled 0, pushed 1\n".to_vec();
+        let result = Ok(YmanOutput { code: Some(0), stdout: stdout.clone(), stderr: "note: fetched\n".into() });
+        app.finish_yman_mutation(MutationDone { kind: MutationKind::Sync, label: "Sync tasks".into(), result });
+        assert_eq!(app.notifications.len(), base + 1);
+        assert_eq!(app.notifications.last().unwrap().text, "Sync tasks: synced pulled 0, pushed 1");
+        let result = Ok(YmanOutput { code: Some(0), stdout, stderr: "warning: slow remote\n".into() });
+        app.finish_yman_mutation(MutationDone { kind: MutationKind::Sync, label: "Sync tasks".into(), result });
+        assert_eq!(app.notifications.len(), base + 2);
+        let n = app.notifications.last().unwrap();
+        assert_eq!(n.level, Level::Warn);
+        assert_eq!(n.text, "Sync tasks: synced pulled 0, pushed 1 (warning: slow remote)");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
