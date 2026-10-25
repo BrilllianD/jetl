@@ -171,6 +171,18 @@ mod tests {
     }
 
     #[test]
+    fn markdown_headings_nest_by_level() {
+        let src = "intro\n\n# Top\n\ntext\n\n## Sub\n\n### Deep\n\nbody\n\n## Sub2\n\nSetext two\n----------\n\n# Other\n";
+        let Some(got) = names("a.md", src) else { return };
+        let want = [("Top", 0), ("Sub", 1), ("Deep", 2), ("Sub2", 1), ("Setext two", 2), ("Other", 0)];
+        let want: Vec<(String, &str, usize)> = want.iter().map(|(n, d)| (n.to_string(), "heading", *d)).collect();
+        assert_eq!(got, want);
+        // A setext heading before any ATX heading is top level; a bare `#` has no name.
+        let got = names("b.md", "Title\n=====\n\n#\n\ntext\n").unwrap();
+        assert_eq!(got, [("Title".to_string(), "heading", 0)]);
+    }
+
+    #[test]
     fn other_languages_find_their_definitions() {
         type Want = &'static [(&'static str, &'static str, usize)];
         let cases: [(&str, &str, Want); 8] = [

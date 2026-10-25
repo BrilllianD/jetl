@@ -93,7 +93,8 @@ impl LanguageDef {
             feature = "lang-go",
             feature = "lang-c",
             feature = "lang-cpp",
-            feature = "lang-java"
+            feature = "lang-java",
+            feature = "lang-md"
         )),
         allow(dead_code)
     )]
@@ -141,6 +142,13 @@ fn join_static(parts: &[&str]) -> &'static str {
 /// only, so methods would have no parent in the Structure window.
 #[cfg(feature = "lang-rust")]
 const RUST_TAGS_EXTRA: &str = "(impl_item trait: (_) @trait type: (_) @name) @definition.impl (impl_item type: (_) @name !trait) @definition.impl (const_item name: (identifier) @name) @definition.constant (static_item name: (identifier) @name) @definition.constant";
+
+/// Markdown headings. ATX headings own a `section` (their heading plus
+/// everything up to the next heading of the same or a higher level), so
+/// they nest by level; setext headings open no section in this grammar
+/// and sit at the depth of the enclosing one.
+#[cfg(feature = "lang-md")]
+const MD_TAGS: &str = "(section (atx_heading heading_content: (inline) @name)) @definition.heading (setext_heading heading_content: (paragraph) @name) @definition.heading";
 
 /// Prepended to the HTML injections: `<script lang="ts">` and
 /// `<style lang="scss">` (Vue) name their language; the first pattern
@@ -265,7 +273,7 @@ pub static LANGUAGES: LazyLock<Vec<LanguageDef>> = LazyLock::new(|| {
     #[cfg(feature = "lang-md")]
     v.extend(
         make("markdown", &["md", "markdown"], &[], tree_sitter_md::LANGUAGE.into(), &[tree_sitter_md::HIGHLIGHT_QUERY_BLOCK], None)
-            .map(|d| d.with_injections(tree_sitter_md::INJECTION_QUERY_BLOCK)),
+            .map(|d| d.with_injections(tree_sitter_md::INJECTION_QUERY_BLOCK).with_tags(MD_TAGS)),
     );
     #[cfg(feature = "lang-csharp")]
     v.extend(make(
