@@ -568,6 +568,7 @@
 "alt-shift-t" = "tasks.edit_tags"
 "alt-n" = "tasks.comment"
 "f5" = "tasks.refresh"
+"ctrl-alt-y" = "tasks.sync"
 "shift-f10" = "tasks.context_menu"
 "esc" = "tasks.escape"
 

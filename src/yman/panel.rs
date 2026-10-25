@@ -5,7 +5,9 @@
 //! Tab or Enter moves to the details, which scroll; Alt+J (or a click on a
 //! related id) jumps to a related task. Alt+M changes the status, Alt+P the
 //! priority, Alt+Shift+A the assignee, Alt+Shift+T the tags and Alt+N adds a
-//! comment (all through dialogs, also in the context menu).
+//! comment (all through dialogs, also in the context menu). The title shows
+//! the tracker against its remote (`↑` to push, `↓` to pull, local only);
+//! Ctrl+Alt+Y runs `yman sync`.
 //!
 //! The panel holds view state only: the data stays in `YmanService`. Rows
 //! are rebuilt when its `revision` moved, keeping the selection by task id.
@@ -20,7 +22,7 @@ use ratatui::style::{Modifier, Style};
 use unicode_width::UnicodeWidthStr;
 
 use super::cli::StatusChange;
-use super::{LoadedTask, Snapshot, TaskRow, TrackerState, YmanService};
+use super::{LoadedTask, Snapshot, TaskRow, TrackerState, TrackerStatus, YmanService};
 use crate::actions::{Action, TasksAction};
 use crate::app::Ctx;
 use crate::config::theme::Theme;
@@ -130,6 +132,34 @@ pub(crate) fn parse_tags(s: &str) -> Vec<String> {
 fn short_time(s: &str) -> String {
     let b = s.as_bytes();
     if b.len() >= 16 && b[10] == b'T' && s.is_char_boundary(16) { format!("{} {}", &s[..10], &s[11..16]) } else { s.to_string() }
+}
+
+/// The tracker against its remote, for the title; the first matching rule wins.
+fn tracker_summary(st: &TrackerStatus) -> String {
+    if st.merge.in_progress {
+        return match st.merge.unmerged.len() {
+            0 => "sync merge unresolved".to_string(),
+            1 => "sync merge unresolved (1 file)".to_string(),
+            n => format!("sync merge unresolved ({n} files)"),
+        };
+    }
+    let r = &st.remote;
+    if !r.origin {
+        "local only".to_string()
+    } else if !r.fetched {
+        "not fetched yet".to_string()
+    } else if r.ahead == 0 && r.behind == 0 {
+        "in sync".to_string()
+    } else {
+        let mut parts = Vec::new();
+        if r.ahead > 0 {
+            parts.push(format!("↑{}", r.ahead));
+        }
+        if r.behind > 0 {
+            parts.push(format!("↓{}", r.behind));
+        }
+        parts.join(" ")
+    }
 }
 
 impl TasksPanel {
@@ -444,7 +474,8 @@ impl TasksPanel {
         cx.effects.push(Effect::Dialog(d));
     }
 
-    fn context_menu(&self, x: u16, y: u16, busy: bool, cx: &mut Ctx) {
+    fn context_menu(&self, x: u16, y: u16, yman: &YmanService, cx: &mut Ctx) {
+        let busy = yman.busy().is_some();
         let selected = self.selected_id().is_some();
         let change = selected && !busy;
         let closed = if self.show_closed { "Hide Closed Tasks" } else { "Show Closed Tasks" };
@@ -463,6 +494,7 @@ impl TasksPanel {
             MenuItem::new("Filter by Assignee…", Action::Tasks(TasksAction::FilterAssignee)),
             MenuItem::separator(),
             MenuItem::new("Refresh", Action::Tasks(TasksAction::Refresh)),
+            MenuItem::new("Sync Tasks", Action::Tasks(TasksAction::SyncTracker)).enabled(!busy && !yman.local_only()),
         ];
         cx.effects.push(Effect::ContextMenu(ContextMenu::new(items, x, y)));
     }
@@ -512,7 +544,7 @@ impl TasksPanel {
             T::Comment => self.comment(yman, cx),
             T::ContextMenu => {
                 let row = self.list.selected.saturating_sub(self.list.offset) as u16;
-                self.context_menu(self.list_rect.x + 2, self.list_rect.y + row, yman.busy().is_some(), cx);
+                self.context_menu(self.list_rect.x + 2, self.list_rect.y + row, yman, cx);
             }
             T::Escape => {
                 if !self.filter.is_empty() {
@@ -524,8 +556,8 @@ impl TasksPanel {
                     cx.focus(PanelId::Editor);
                 }
             }
-            // The App reloads the tracker.
-            T::Refresh => {}
+            // The App runs these.
+            T::Refresh | T::SyncTracker => {}
         }
         if !in_details {
             self.remember(yman);
@@ -555,7 +587,7 @@ impl TasksPanel {
                     self.remember(yman);
                     self.area = Area::List;
                     if button == MouseButton::Right {
-                        self.context_menu(m.x, m.y, yman.busy().is_some(), cx);
+                        self.context_menu(m.x, m.y, yman, cx);
                     } else if m.clicks >= 2 {
                         self.area = Area::Details;
                     }
@@ -588,6 +620,9 @@ impl TasksPanel {
 
     fn title(&self, yman: &YmanService) -> String {
         let mut t = self.list_title(yman);
+        if let Some(st) = yman.tracker_status() {
+            t.push_str(&format!("· {} ", tracker_summary(st)));
+        }
         if let Some(l) = yman.busy() {
             t.push_str(&format!("· {l}… "));
         }
@@ -1178,5 +1213,41 @@ pub(crate) mod tests {
         assert_eq!(p.title(&y), " Tasks · Done #1… ");
         set_snapshot(&mut y, sample());
         assert!(p.title(&y).ends_with("· Done #1… "), "{}", p.title(&y));
+    }
+
+    fn status(json: &str) -> TrackerStatus {
+        serde_json::from_str(json).unwrap()
+    }
+
+    #[test]
+    fn tracker_summary_rules() {
+        let sum = |j: &str| tracker_summary(&status(j));
+        assert_eq!(sum(r#"{"remote":{"origin":false}}"#), "local only");
+        assert_eq!(sum(r#"{"remote":{"origin":true}}"#), "not fetched yet");
+        assert_eq!(sum(r#"{"remote":{"origin":true,"fetched":true}}"#), "in sync");
+        assert_eq!(sum(r#"{"remote":{"origin":true,"fetched":true,"ahead":2}}"#), "↑2");
+        assert_eq!(sum(r#"{"remote":{"origin":true,"fetched":true,"behind":3}}"#), "↓3");
+        assert_eq!(sum(r#"{"remote":{"origin":true,"fetched":true,"ahead":2,"behind":1}}"#), "↑2 ↓1");
+        let merge = |u: &str| format!(r#"{{"remote":{{"origin":true,"fetched":true}},"merge":{{"in_progress":true,"unmerged":{u}}}}}"#);
+        assert_eq!(sum(&merge(r#"["a","b"]"#)), "sync merge unresolved (2 files)");
+        assert_eq!(sum(&merge(r#"["a"]"#)), "sync merge unresolved (1 file)");
+        assert_eq!(sum(&merge("[]")), "sync merge unresolved");
+    }
+
+    #[test]
+    fn title_shows_the_tracker_state() {
+        use crate::yman::{Mutation, MutationKind};
+        let (mut y, _rx) = service();
+        let mut p = TasksPanel::default();
+        set_snapshot(&mut y, sample());
+        p.sync(&y);
+        assert_eq!(p.title(&y), " Tasks: 3 open ");
+        let mut s = sample();
+        s.status = Some(status(r#"{"remote":{"origin":false}}"#));
+        set_snapshot(&mut y, s);
+        p.sync(&y);
+        assert_eq!(p.title(&y), " Tasks: 3 open · local only ");
+        y.running = Some(Mutation { kind: MutationKind::Sync, label: "Sync tasks".into(), args: vec![], input: None });
+        assert_eq!(p.title(&y), " Tasks: 3 open · local only · Sync tasks… ");
     }
 }

@@ -521,6 +521,7 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Alt+Shift+T` | `tasks.edit_tags` | Tasks: edit the selected task's tags… |
 | `Alt+N` | `tasks.comment` | Tasks: comment on the selected task… |
 | `F5` | `tasks.refresh` | Tasks: reload the tracker |
+| `Ctrl+Alt+Y` | `tasks.sync` | Tasks: sync the tracker with its remote (yman sync) |
 | `Shift+F10` | `tasks.context_menu` | Tasks: actions for the selected task |
 | `Esc` | `tasks.escape` | Tasks: clear the filter, back to the list, or focus the editor |
 

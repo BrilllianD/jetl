@@ -505,6 +505,8 @@ pub enum TasksAction {
     /// Add a comment to the selected task.
     Comment,
     Refresh,
+    /// Run `yman sync`: fetch, merge and push the task history.
+    SyncTracker,
     ContextMenu,
     /// Clear the typed filter, leave the details, or focus the editor.
     Escape,
@@ -1047,6 +1049,7 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "tasks.edit_tags" => "Tasks: edit the selected task's tags…", Tasks(TasksAction::EditTags);
         "tasks.comment" => "Tasks: comment on the selected task…", Tasks(TasksAction::Comment);
         "tasks.refresh" => "Tasks: reload the tracker", Tasks(TasksAction::Refresh);
+        "tasks.sync" => "Tasks: sync the tracker with its remote (yman sync)", Tasks(TasksAction::SyncTracker);
         "tasks.context_menu" => "Tasks: actions for the selected task", Tasks(TasksAction::ContextMenu);
         "tasks.escape" => "Tasks: clear the filter, back to the list, or focus the editor", Tasks(TasksAction::Escape);
 

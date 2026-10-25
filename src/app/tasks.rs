@@ -41,6 +41,10 @@ impl App {
     }
 
     pub(super) fn perform_tasks(&mut self, a: TasksAction) {
+        if a == TasksAction::SyncTracker {
+            self.run_tracker_sync();
+            return;
+        }
         if a == TasksAction::Refresh {
             if !self.yman.is_wanted() {
                 self.yman.want();
@@ -65,6 +69,19 @@ impl App {
         }
     }
 
+    /// `yman sync` through the mutation runner; refused when the loaded
+    /// status says the tracker has no remote.
+    pub(super) fn run_tracker_sync(&mut self) {
+        if self.yman.local_only() {
+            self.notify(
+                Level::Info,
+                "Tasks are local only (no \"origin\" remote); connect one with yman init --remote <url> in a terminal",
+            );
+            return;
+        }
+        self.run_yman_mutation(Mutation { kind: MutationKind::Sync, label: "Sync tasks".into(), args: vec!["sync".into()], input: None });
+    }
+
     /// Report a finished yman write: an error, or yman's notes and warnings.
     pub(super) fn finish_yman_mutation(&mut self, done: MutationDone) {
         match &done.result {
@@ -82,6 +99,14 @@ impl App {
         }
         match done.kind {
             MutationKind::Task(_) => {}
+            MutationKind::Sync => {
+                if let Ok(out) = &done.result {
+                    let text = String::from_utf8_lossy(&out.stdout);
+                    let line = text.lines().rev().map(str::trim).find(|l| !l.is_empty());
+                    let summary = line.map_or_else(|| "done".to_string(), |l| l.split_whitespace().collect::<Vec<_>>().join(" "));
+                    self.notify(Level::Info, format!("{}: {summary}", done.label));
+                }
+            }
         }
     }
 
@@ -510,6 +535,54 @@ mod tests {
         app.perform(Action::Tasks(TasksAction::ChangeStatus));
         assert!(app.dialog.is_none());
         assert_eq!(app.notifications.last().map(|n| n.text.as_str()), Some("No task selected"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn sync_runs_through_the_runner() {
+        let (mut app, dir) = tasks_app("tasks-sync");
+        app.perform(Action::Tasks(TasksAction::SyncTracker));
+        assert_eq!(running_args(&app), strs(&["sync"]));
+        assert_eq!(app.yman.busy(), Some("Sync tasks"));
+        assert!(draw(&mut app, 120, 30).contains("· Sync tasks…"));
+        handle_next(&mut app, |m| matches!(m, crate::event::AppMsg::Yman(YmanMsg::Mutation { .. }))).await;
+        assert_eq!(app.yman.busy(), None);
+        let n = app.notifications.last().unwrap();
+        assert_eq!(n.level, Level::Error);
+        assert!(n.text.starts_with("Sync tasks: yman is not installed"), "{}", n.text);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn sync_refuses_without_a_remote() {
+        let (mut app, dir) = tasks_app("tasks-sync-local");
+        let mut s = sample();
+        s.status = Some(serde_json::from_str(r#"{"remote":{"origin":false}}"#).unwrap());
+        set_snapshot(&mut app.yman, s);
+        app.perform(Action::Tasks(TasksAction::SyncTracker));
+        assert!(app.yman.running.is_none());
+        let n = app.notifications.last().unwrap();
+        assert!(n.text.contains("local only") && n.text.contains("yman init --remote"), "{}", n.text);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn sync_reports_the_summary_and_merge_conflicts() {
+        use crate::yman::MutationDone;
+        use crate::yman::cli::YmanOutput;
+        let (mut app, dir) = tasks_app("tasks-sync-done");
+        let stdout = b"synced  pulled 1, pushed 0, renumbered 0  refs/yman/local @ abc1234\n".to_vec();
+        let result = Ok(YmanOutput { code: Some(0), stdout, stderr: String::new() });
+        app.finish_yman_mutation(MutationDone { kind: MutationKind::Sync, label: "Sync tasks".into(), result });
+        let n = app.notifications.last().unwrap();
+        assert_eq!(n.level, Level::Info);
+        assert_eq!(n.text, "Sync tasks: synced pulled 1, pushed 0, renumbered 0 refs/yman/local @ abc1234");
+        let line = "conflicts in 1 file(s); edit them, remove markers, then: yman sync --continue  (or: yman sync --abort)";
+        let result = Err(YmanError::MergeUnresolved(line.into()));
+        app.finish_yman_mutation(MutationDone { kind: MutationKind::Sync, label: "Sync tasks".into(), result });
+        let n = app.notifications.last().unwrap();
+        assert_eq!(n.level, Level::Error);
+        assert!(n.text.contains("A sync merge is unresolved") && n.text.contains("sync --continue"), "{}", n.text);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

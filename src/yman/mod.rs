@@ -2,7 +2,8 @@
 //! the tracker off the main loop. Results come back as `AppMsg::Yman` tagged
 //! with the service generation, and `on_msg` drops stale ones. Writes run one
 //! at a time through `mutate`; the result comes back from `on_msg` for the App
-//! to report, after a refresh.
+//! to report, after a refresh. `yman sync` is one of those writes
+//! (`MutationKind::Sync`).
 
 pub mod cli;
 pub mod model;
@@ -60,6 +61,8 @@ pub struct LoadedTask {
 pub enum MutationKind {
     /// A change of this task (status, priority, assignee, tags, comment).
     Task(String),
+    /// `yman sync`: fetch, merge and push the task history.
+    Sync,
 }
 
 /// One yman write command.
@@ -271,6 +274,20 @@ impl YmanService {
     /// The label of the running mutation.
     pub fn busy(&self) -> Option<&str> {
         self.running.as_ref().map(|m| m.label.as_str())
+    }
+
+    /// The tracker status of the loaded snapshot; `None` before it loaded or
+    /// when `yman status` failed.
+    pub fn tracker_status(&self) -> Option<&TrackerStatus> {
+        match &self.state {
+            TrackerState::Ready(s) => s.status.as_ref(),
+            _ => None,
+        }
+    }
+
+    /// The loaded status says there is no `origin`, so `yman sync` cannot run.
+    pub fn local_only(&self) -> bool {
+        self.tracker_status().is_some_and(|s| !s.remote.origin)
     }
 
     /// Apply a result; results of another generation are dropped. A finished
@@ -634,5 +651,58 @@ mod tests {
         assert!(matches!(err, YmanError::NoSuchTask(_)), "{err:?}");
         let tags = cli::json::<Vec<TagCount>>(p, &dir, &tags_args()).await.unwrap();
         assert!(tags.iter().any(|t| t.tag == "alpha"));
+    }
+
+    #[tokio::test]
+    async fn sync_reaches_a_local_bare_remote() {
+        if !yman_available() {
+            eprintln!("skipping: yman not on PATH");
+            return;
+        }
+        let guard = TempDir(std::env::temp_dir().join(format!("jetl-yman-sync-{}", std::process::id())));
+        let base = guard.0.clone();
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let remote = base.join("remote.git");
+        git(&base, &["init", "-q", "--bare", remote.to_str().unwrap()]);
+        let work = base.join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        git(&work, &["init", "-q"]);
+        crate::git::repo::tests::isolate(&work);
+        git(&work, &["config", "user.name", "t"]);
+        git(&work, &["config", "user.email", "t@t"]);
+        git(&work, &["remote", "add", "origin", remote.to_str().unwrap()]);
+        for args in [&["init"][..], &["add", "First"][..]] {
+            let out = isolated(PROGRAM, &work).args(args).output().unwrap();
+            assert!(out.status.success(), "yman {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        }
+        let p = OsStr::new(PROGRAM);
+        let st = cli::json::<TrackerStatus>(p, &work, &cli::status_args()).await.unwrap();
+        assert!(st.remote.origin && st.remote.ahead >= 1, "{st:?}");
+        let sync = || Mutation { kind: MutationKind::Sync, label: "Sync tasks".into(), args: vec!["sync".into()], input: None };
+        let (tx, mut rx) = unbounded_channel();
+        let mut s = YmanService::new(work.clone(), 1, tx);
+        assert!(s.mutate(sync()));
+        let done = next_mutation(&mut s, &mut rx).await;
+        assert_eq!(done.kind, MutationKind::Sync);
+        let out = done.result.unwrap();
+        assert!(String::from_utf8_lossy(&out.stdout).contains("synced"), "{out:?}");
+        let st = cli::json::<TrackerStatus>(p, &work, &cli::status_args()).await.unwrap();
+        assert!(st.remote.fetched && st.remote.ahead == 0 && st.remote.behind == 0, "{st:?}");
+
+        let solo = base.join("solo");
+        std::fs::create_dir_all(&solo).unwrap();
+        git(&solo, &["init", "-q"]);
+        crate::git::repo::tests::isolate(&solo);
+        git(&solo, &["config", "user.name", "t"]);
+        git(&solo, &["config", "user.email", "t@t"]);
+        let out = isolated(PROGRAM, &solo).args(["init", "--offline"]).output().unwrap();
+        assert!(out.status.success(), "yman init: {}", String::from_utf8_lossy(&out.stderr));
+        let (tx, mut rx) = unbounded_channel();
+        let mut s = YmanService::new(solo.clone(), 1, tx);
+        assert!(s.mutate(sync()));
+        let done = next_mutation(&mut s, &mut rx).await;
+        let e = done.result.unwrap_err();
+        assert!(e.message().contains("no \"origin\" remote"), "{}", e.message());
     }
 }
