@@ -455,6 +455,9 @@ pub(crate) mod tests {
     async fn run_error_cleans_up_like_a_quit() {
         use crate::app::lsp::tests::{incremental, open_on_server, with_fake_servers};
         let (mut app, dir) = test_app("recovery-error-cleanup");
+        // Quitting saves the session only once it is loaded.
+        let (root, generation) = (app.workspace.root.clone(), app.workspace.generation);
+        app.session_loaded(generation, Session { root, ..Default::default() }, vec![]);
         let mut servers = with_fake_servers(&mut app, incremental());
         let mut server = open_on_server(&mut app, &mut servers, "a.rs", "fn a() {}\n").await;
         app.perform(Action::Editor(EditorAction::InsertText("// x\n".into())));

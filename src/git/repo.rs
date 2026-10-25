@@ -220,12 +220,15 @@ fn head_info(repo: &Repository) -> (Option<String>, Option<String>) {
 
 /// The checked-out branch (`None` when HEAD is detached; named also when
 /// unborn) and the local branch names, for the per-branch editor sets.
-/// `None` outside a repository.
-pub fn branch_names(root: &Path) -> Option<(Option<String>, Vec<String>)> {
+/// `None` outside a repository; the list is `None` when any entry failed to
+/// read, so a caller never prunes against a partial list.
+pub fn branch_names(root: &Path) -> Option<(Option<String>, Option<Vec<String>>)> {
     let (repo, _) = open(root).ok()?;
     let (current, _) = head_info(&repo);
-    let local =
-        repo.branches(Some(BranchType::Local)).ok()?.flatten().filter_map(|(b, _)| b.name().ok().flatten().map(str::to_string)).collect();
+    let local = repo
+        .branches(Some(BranchType::Local))
+        .ok()
+        .and_then(|it| it.map(|b| b.ok().and_then(|(b, _)| b.name().ok().flatten().map(str::to_string))).collect::<Option<Vec<String>>>());
     Some((current, local))
 }
 
@@ -1205,9 +1208,10 @@ pub(crate) mod tests {
         stage_all(&r.dir).unwrap();
         commit(&r.dir, "first").unwrap();
         let main = status(&r.dir).unwrap().branch.unwrap();
-        assert_eq!(branch_names(&r.dir), Some((Some(main.clone()), vec![main.clone()])));
+        assert_eq!(branch_names(&r.dir), Some((Some(main.clone()), Some(vec![main.clone()]))));
         git_cli(&r.dir, &["switch", "-qc", "dev"], true);
-        let (cur, mut local) = branch_names(&r.dir).unwrap();
+        let (cur, local) = branch_names(&r.dir).unwrap();
+        let mut local = local.unwrap();
         local.sort();
         let mut want = vec![main, "dev".to_string()];
         want.sort();

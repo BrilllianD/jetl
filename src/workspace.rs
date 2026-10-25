@@ -9,6 +9,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -112,19 +113,31 @@ pub(crate) const SESSION_SAVE_EVERY: Duration = Duration::from_secs(5);
 /// quit and root switch. Holds the sequence number of the last write; an
 /// older one arriving late is dropped.
 #[derive(Debug, Clone, Default)]
-pub(crate) struct SessionWriter(Arc<Mutex<u64>>);
+pub(crate) struct SessionWriter {
+    last: Arc<Mutex<u64>>,
+    /// Set when a write failed; the next tick writes again.
+    failed: Arc<AtomicBool>,
+}
 
 impl SessionWriter {
     /// Write `session` unless a save with a higher `seq` already landed;
     /// true when it wrote.
     pub(crate) fn write(&self, seq: u64, session: &Session, dir: &Path) -> Result<bool> {
-        let mut last = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut last = self.last.lock().unwrap_or_else(PoisonError::into_inner);
         if seq <= *last {
             return Ok(false);
         }
-        session.save(dir)?;
+        if let Err(e) = session.save(dir) {
+            self.failed.store(true, Ordering::Relaxed);
+            return Err(e);
+        }
         *last = seq;
         Ok(true)
+    }
+
+    /// True once after a failed write.
+    fn take_failed(&self) -> bool {
+        self.failed.swap(false, Ordering::Relaxed)
     }
 }
 
@@ -293,8 +306,8 @@ impl Session {
     /// `branch`). The set of the recorded branch moves into `branches`; a
     /// branch without a stored set keeps the current one; a session without
     /// a recorded branch adopts `current`. Then stored sets of branches not
-    /// in `local` are dropped.
-    pub fn follow_branch(&mut self, current: Option<String>, local: &[String]) {
+    /// in `local` are dropped (`None`: the listing failed, nothing is dropped).
+    pub fn follow_branch(&mut self, current: Option<String>, local: Option<&[String]>) {
         if let Some(now) = current
             && let Some(old) = self.branch.replace(now.clone())
             && old != now
@@ -305,7 +318,9 @@ impl Session {
                 self.set_editor_set(set);
             }
         }
-        self.branches.retain(|k, _| local.contains(k));
+        if let Some(local) = local {
+            self.branches.retain(|k, _| local.contains(k));
+        }
         if let Some(b) = &self.branch {
             self.branches.remove(b);
         }
@@ -379,6 +394,9 @@ impl App {
         self.save_session();
         // The old root's swap must not be saved as the new root's set.
         self.branch_swap.pending = None;
+        // Nor are its branch sets.
+        self.branch_sets.clear();
+        self.session_branch = None;
         // The resolver's work is not kept across roots.
         self.editor.merge_close();
         self.format.abort_all();
@@ -549,6 +567,11 @@ impl App {
     /// Save the current root's session now (on switch and quit; ordered
     /// after any background save). Failures are logged only.
     pub fn save_session(&mut self) {
+        // Before the session loads the editor is empty and holds no branch
+        // sets (or those of the previous root): the file stays as it is.
+        if self.session_save.loaded != Some(self.workspace.generation) {
+            return;
+        }
         let session = self.session();
         self.session_save.seq += 1;
         match self.session_save.writer.write(self.session_save.seq, &session, &self.paths.sessions_dir()) {
@@ -570,6 +593,9 @@ impl App {
             return false;
         }
         self.session_save.due = Some(now + SESSION_SAVE_EVERY);
+        if self.session_save.writer.take_failed() {
+            self.session_save.last = None;
+        }
         let session = self.session();
         if self.session_save.last.as_ref() == Some(&session) {
             return false;
@@ -597,7 +623,7 @@ impl App {
             let mut session = Session::load(&dir, &root).unwrap_or_else(|| Session { root, ..Default::default() });
             // The branch may have changed since the session was saved.
             if let Some((current, local)) = names {
-                session.follow_branch(current, &local);
+                session.follow_branch(current, local.as_deref());
             }
             let files = session.files.iter().map(|f| std::fs::read(&f.path)).collect();
             let _ = tx.send(AppMsg::SessionLoaded { generation, session, files });
@@ -927,29 +953,32 @@ mod tests {
         s.set_editor_set(set_of(&root, &["a"]));
         s.branches = BTreeMap::from([("dev".to_string(), set_of(&root, &["b"])), ("gone".to_string(), set_of(&root, &["c"]))]);
         // Same branch: nothing moves, deleted branches are dropped.
-        s.follow_branch(Some("main".into()), &both);
+        s.follow_branch(Some("main".into()), Some(&both));
         assert_eq!(file_names(&s.editor_set()), ["a"]);
         assert_eq!(s.branches.keys().collect::<Vec<_>>(), ["dev"]);
         // Another branch with a stored set.
-        s.follow_branch(Some("dev".into()), &both);
+        s.follow_branch(Some("dev".into()), Some(&both));
         assert_eq!((file_names(&s.editor_set()), s.branch.as_deref()), (vec!["b".to_string()], Some("dev")));
         assert_eq!(s.branches.keys().collect::<Vec<_>>(), ["main"]);
         assert_eq!(file_names(&s.branches["main"]), ["a"]);
         // Detached HEAD changes nothing.
         let before = s.clone();
-        s.follow_branch(None, &both);
+        s.follow_branch(None, Some(&both));
         assert_eq!(s, before);
         // A branch never used keeps the set.
         let all = ["main".to_string(), "dev".to_string(), "new".to_string()];
-        s.follow_branch(Some("new".into()), &all);
+        s.follow_branch(Some("new".into()), Some(&all));
         assert_eq!((file_names(&s.editor_set()), s.branch.as_deref()), (vec!["b".to_string()], Some("new")));
         assert_eq!(s.branches.keys().collect::<Vec<_>>(), ["dev", "main"]);
         assert_eq!(file_names(&s.branches["dev"]), ["b"]);
         assert_eq!(file_names(&s.branches["main"]), ["a"]);
+        // A failed branch listing prunes nothing.
+        s.follow_branch(Some("new".into()), None);
+        assert_eq!(s.branches.keys().collect::<Vec<_>>(), ["dev", "main"]);
         // A session without a branch adopts the current one.
         let mut old = Session { root: root.clone(), ..Default::default() };
         old.set_editor_set(set_of(&root, &["a"]));
-        old.follow_branch(Some("main".into()), &["main".to_string()]);
+        old.follow_branch(Some("main".into()), Some(&["main".to_string()]));
         assert_eq!((old.branch.as_deref(), file_names(&old.editor_set())), (Some("main"), vec!["a".to_string()]));
         assert!(old.branches.is_empty());
     }
@@ -1052,6 +1081,47 @@ mod tests {
         assert!(!app.session_tick(Instant::now()), "a request does not force a write of an unchanged session");
         app.workspace.generation += 1;
         assert!(!app.session_tick(later + SESSION_SAVE_EVERY * 4), "stale generation");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn save_before_load_leaves_the_file_alone() {
+        let (mut app, dir) = crate::app::tests::test_app("save-before-load");
+        let root = app.workspace.root.clone();
+        let mut stored = Session { root: root.clone(), branch: Some("main".into()), ..Default::default() };
+        stored.branches.insert("dev".into(), set_of(&root, &["a.txt"]));
+        stored.save(&app.paths.sessions_dir()).unwrap();
+        app.save_session();
+        assert_eq!(Session::load(&app.paths.sessions_dir(), &root), Some(stored));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn root_switch_drops_branch_sets() {
+        let (mut app, dir) = crate::app::tests::test_app("switch-drops-sets");
+        let other = dir.join("other");
+        std::fs::create_dir_all(&other).unwrap();
+        let root = app.workspace.root.clone();
+        let generation = app.workspace.generation;
+        app.session_loaded(generation, Session { root: root.clone(), ..Default::default() }, vec![]);
+        app.session_branch = Some("main".into());
+        app.branch_sets.insert("dev".into(), set_of(&root, &["a.txt"]));
+        app.do_switch_root(std::fs::canonicalize(&other).unwrap());
+        assert!(app.session_branch.is_none() && app.branch_sets.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_failed_write_is_retried() {
+        let dir = temp_dir("write-fails");
+        std::fs::create_dir_all(&dir).unwrap();
+        let root = PathBuf::from("/tmp/write-fails/project");
+        let s = Session { root: root.clone(), ..Default::default() };
+        // A directory where the temp file goes makes the write fail.
+        std::fs::create_dir_all(Session::file_for(&dir, &root).with_extension("json.tmp")).unwrap();
+        let writer = SessionWriter::default();
+        assert!(writer.write(1, &s, &dir).is_err());
+        assert!(writer.take_failed() && !writer.take_failed());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
