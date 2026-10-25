@@ -11,9 +11,9 @@ expression: "snapshot(&term, &[], None)"
 05  7 ─────────────────────────────────────────────────────────────────────────────
 06  ⊢ ┌ Tasks ────────────────────────────────────────────────────────────────────┐
 07  6 │[Closed: hidden] [Tag: any] [Assignee: any] [Related…] [Refresh]           │
-08  ⚠ │ This project has no yman tracker; run yman init in a terminal to create o…│
-09  4 │ F5 retries                                                                │
-10  ► │                                                                           │
+08  ⚠ │ This project has no yman tracker; run yman init in a terminal to create   │
+09  4 │ one                                                                       │
+10  ► │ F5 retries                                                                │
 11  3 │                                                                           │
 12  ⌕ └───────────────────────────────────────────────────────────────────────────┘
 13  root

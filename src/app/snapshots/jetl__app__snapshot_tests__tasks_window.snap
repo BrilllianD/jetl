@@ -20,10 +20,10 @@ expression: "snapshot(&term, &marks, None)"
 14  ✓ ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 15  8 ┌ Tasks: 3 open ────────────────────────────────────────────────────────────────────────────────────────────────────┐
 16  ⟲ │[Closed: hidden] [Tag: any] [Assignee: any] [Related…] [Refresh]                                    type to filter │
-17  5 │ P ID Status Title                                          Assignee │ #1 Fix the parser                           │
-18  ⚑ │ 2 1  todo   Fix the parser                                 claude   │ todo · P2 · claude · ui                     │
-19  9 │ 2 2  doing  Crash on save                                           │ Related: 2                                  │
-20  ⎇ │ 2 10 todo   Polish the toolbar                             bob      │ Related by: 10                              │
+17  5 │ P ID Status Title                                  Tags    Assignee │ #1 Fix the parser                           │
+18  ⚑ │ 2 1  todo   Fix the parser                         ui      claude   │ todo · P2 · claude · ui                     │
+19  9 │ 2 2  doing  Crash on save                          bug              │ Related: 2                                  │
+20  ⎇ │ 2 10 todo   Polish the toolbar                     ui, bug bob      │ Related by: 10                              │
 21    │                                                                     │ Created 2026-10-25 16:06 · Updated          │
 22  ❯ │                                                                     │ 2026-10-25 17:30                            │
 23  6 │                                                                     │                                             │

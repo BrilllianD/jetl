@@ -90,6 +90,21 @@ pub struct TasksPanel {
     related_hits: Vec<(Rect, String)>,
 }
 
+/// Break `text` at spaces into lines at most `width` cells wide (a longer word is left to `fit`).
+fn wrap(text: &str, width: usize) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    for word in text.split_whitespace() {
+        match lines.last_mut() {
+            Some(l) if l.width() + 1 + word.width() <= width => {
+                l.push(' ');
+                l.push_str(word);
+            }
+            _ => lines.push(word.to_string()),
+        }
+    }
+    lines
+}
+
 fn snapshot(yman: &YmanService) -> Option<&Snapshot> {
     match &yman.state {
         TrackerState::Ready(s) => Some(s),
@@ -167,7 +182,7 @@ impl TasksPanel {
     /// The selected row's id as the snapshot has it.
     fn remember(&mut self, yman: &YmanService) {
         let id = snapshot(yman).and_then(|s| self.rows.get(self.list.selected).map(|&i| s.tasks[i].id.clone()));
-        if id.is_some() || self.rows.is_empty() {
+        if id.is_some() {
             self.set_keep(id);
         }
     }
@@ -506,10 +521,14 @@ impl TasksPanel {
             (Btn::Related, "[Related…]".to_string(), details_loaded),
             (Btn::Refresh, "[Refresh]".to_string(), true),
         ];
+        // The typed filter wins over trailing buttons: they drop from the right to make room.
+        let typed = (!self.filter.is_empty()).then(|| format!("filter: {} ", self.filter));
+        let reserved = typed.as_ref().map_or(0, |t| (t.width() as u16).min(r.width));
+        let limit = r.right() - reserved;
         let mut x = r.x;
         for (b, label, on) in buttons {
             // Whole buttons only; the keys and the menu still work.
-            if x + label.width() as u16 > r.right() {
+            if x + label.width() as u16 > limit {
                 break;
             }
             let style = if on { theme.title } else { theme.dim }.bg(theme.panel_bg);
@@ -518,14 +537,14 @@ impl TasksPanel {
             self.hits.push((b, Rect::new(x, r.y, w, 1)));
             x += w + 1;
         }
-        let (text, style) = if !self.filter.is_empty() {
-            (format!("filter: {} ", self.filter), theme.status_accent)
+        let (text, style) = if let Some(t) = typed {
+            (t, theme.status_accent)
         } else if focused && self.area == Area::List && !self.rows.is_empty() {
             ("type to filter ".to_string(), theme.dim)
         } else {
             return;
         };
-        let w = text.width() as u16;
+        let w = (text.width() as u16).min(r.width);
         if r.right() >= x + w {
             buf.set_stringn(r.right() - w, r.y, &text, w as usize, style.bg(theme.panel_bg));
         }
@@ -540,7 +559,16 @@ impl TasksPanel {
                 if !self.filters_active() && !self.show_closed && s.open.is_empty() {
                     vec!["No open tasks (Alt+C shows closed ones)".into()]
                 } else {
-                    vec!["No task matches the filter (Esc clears it)".into()]
+                    let hint = if !self.filter.is_empty() {
+                        "Esc clears the typed text"
+                    } else if self.tag.is_some() && self.assignee.is_some() {
+                        "Alt+T and Alt+A change the tag and assignee filters"
+                    } else if self.tag.is_some() {
+                        "Alt+T changes the tag filter"
+                    } else {
+                        "Alt+A changes the assignee filter"
+                    };
+                    vec![format!("No task matches the filter ({hint})")]
                 }
             }
         }
@@ -551,8 +579,9 @@ impl TasksPanel {
             return;
         }
         let Some(snap) = snapshot(yman).filter(|_| !self.rows.is_empty()) else {
-            for (i, line) in self.empty_text(yman).iter().take(r.height as usize).enumerate() {
-                let room = r.width.saturating_sub(1) as usize;
+            let room = r.width.saturating_sub(1) as usize;
+            let lines = self.empty_text(yman).iter().flat_map(|l| wrap(l, room)).collect::<Vec<_>>();
+            for (i, line) in lines.iter().take(r.height as usize).enumerate() {
                 buf.set_stringn(r.x + 1, r.y + i as u16, fit(line, room), room, theme.dim);
             }
             return;
@@ -563,7 +592,7 @@ impl TasksPanel {
         let wide = |f: fn(&TaskRow) -> usize, min: usize, max: usize| shown.iter().map(|(_, t)| f(t)).max().unwrap_or(0).clamp(min, max);
         let idw = wide(|t| t.id.width(), 2, 8);
         let stw = wide(|t| t.status.width(), 6, 10);
-        let show_tags = r.width >= 70;
+        let show_tags = r.width >= 68;
         let show_who = r.width >= 50;
         let tagw = if show_tags { wide(|t| t.tags.join(", ").width(), 4, 24) } else { 0 };
         let whow = if show_who { wide(|t| t.assignee.as_deref().unwrap_or("").width(), 8, 12) } else { 0 };
@@ -876,6 +905,68 @@ pub(crate) mod tests {
         assert!(!p.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::ALT), &y));
         p.area = Area::Details;
         assert!(!p.handle_key(key(KeyCode::Char('x')), &y), "keys in the details are not the filter");
+    }
+
+    #[test]
+    fn empty_rows_keep_the_restored_selection() {
+        let (mut y, _rx) = service();
+        let mut p = TasksPanel { keep: Some("2".into()), ..Default::default() };
+        p.sync(&y);
+        assert!(p.rows.is_empty());
+        p.handle_key(key(KeyCode::Down), &y);
+        p.handle_key(key(KeyCode::Home), &y);
+        assert_eq!(p.keep.as_deref(), Some("2"));
+        set_snapshot(&mut y, sample());
+        p.sync(&y);
+        assert_eq!(p.selected_id(), Some("2"));
+    }
+
+    fn draw(p: &mut TasksPanel, y: &YmanService, w: u16, h: u16) -> Vec<String> {
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, h)).unwrap();
+        let theme = Theme::default();
+        term.draw(|f| p.render(f, f.area(), true, &theme, y)).unwrap();
+        let buf = term.backend().buffer().clone();
+        (0..h).map(|row| (0..w).map(|col| buf[(col, row)].symbol().to_string()).collect::<String>()).collect()
+    }
+
+    #[test]
+    fn typed_filter_stays_visible_when_the_toolbar_is_narrow() {
+        let (mut y, _rx) = service();
+        set_snapshot(&mut y, sample());
+        let mut p = TasksPanel::default();
+        for c in "parser".chars() {
+            p.handle_key(key(KeyCode::Char(c)), &y);
+        }
+        let lines = draw(&mut p, &y, 80, 12);
+        assert!(lines[1].contains("filter: parser"), "{:?}", lines[1]);
+        assert!(lines[1].contains("[Closed: hidden]"), "{:?}", lines[1]);
+        assert!(!lines[1].contains("[Refresh]"), "trailing buttons drop first: {:?}", lines[1]);
+    }
+
+    #[test]
+    fn empty_state_wraps_and_names_the_active_filter() {
+        let (mut y, _rx) = service();
+        y.state = TrackerState::Unavailable(crate::yman::YmanError::NotInitialized);
+        y.revision += 1;
+        let mut p = TasksPanel::default();
+        let lines = draw(&mut p, &y, 40, 10);
+        let text = lines.join(" ");
+        assert!(text.contains("create one"), "{lines:?}");
+        set_snapshot(&mut y, sample());
+        p.set_tag(Some("nope".into()), &y);
+        let text = draw(&mut p, &y, 120, 10).join("\n");
+        assert!(text.contains("Alt+T changes the tag filter"), "{text}");
+        assert!(!text.contains("Esc clears"), "{text}");
+        p.filter = "zzz".into();
+        p.refilter(&y);
+        assert!(draw(&mut p, &y, 120, 10).join("\n").contains("Esc clears the typed text"));
+    }
+
+    #[test]
+    fn wrap_breaks_at_spaces() {
+        assert_eq!(wrap("aa bb cc", 5), ["aa bb", "cc"]);
+        assert_eq!(wrap("toolongword x", 4), ["toolongword", "x"]);
+        assert!(wrap("", 4).is_empty());
     }
 
     #[test]

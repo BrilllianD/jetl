@@ -76,13 +76,14 @@ pub struct YmanService {
 /// `status` empty (the list still counts).
 pub async fn load_snapshot(program: &OsStr, root: &Path) -> Result<Snapshot, YmanError> {
     let tasks = cli::json::<Vec<TaskRow>>(program, root, &cli::list_args()).await?;
-    let open = match cli::json::<Vec<TaskRow>>(program, root, &cli::open_args()).await {
-        Ok(rows) => rows.into_iter().map(|t| t.id).collect(),
+    let open_listing = match cli::json::<Vec<TaskRow>>(program, root, &cli::open_args()).await {
+        Ok(rows) => Some(rows),
         Err(e) => {
             tracing::warn!("yman ls: {e}");
-            tasks.iter().filter(|t| !matches!(t.status.as_str(), "done" | "cancelled")).map(|t| t.id.clone()).collect()
+            None
         }
     };
+    let open = Snapshot::open_ids(&tasks, open_listing);
     let status = match cli::json::<TrackerStatus>(program, root, &cli::status_args()).await {
         Ok(s) => Some(s),
         Err(e) => {

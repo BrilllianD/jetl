@@ -66,7 +66,6 @@ impl App {
                     let fx = cx.effects;
                     self.apply_effects(fx);
                     self.focus.set(PanelId::Tasks);
-                    self.sync_tasks();
                 }
             }
             _ => return false,

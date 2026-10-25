@@ -168,6 +168,17 @@ pub struct Snapshot {
     pub status: Option<TrackerStatus>,
 }
 
+impl Snapshot {
+    /// Ids of the open tasks: the rows of yman's default `ls`, or, when that listing failed,
+    /// every task that is neither done nor cancelled.
+    pub fn open_ids(tasks: &[TaskRow], open_listing: Option<Vec<TaskRow>>) -> std::collections::BTreeSet<String> {
+        match open_listing {
+            Some(rows) => rows.into_iter().map(|t| t.id).collect(),
+            None => tasks.iter().filter(|t| !matches!(t.status.as_str(), "done" | "cancelled")).map(|t| t.id.clone()).collect(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -197,6 +208,17 @@ mod tests {
         assert_eq!(rows[1].assignee.as_deref(), Some("claude"));
         assert_eq!((rows[1].priority, rows[1].attachments), (2, 1));
         assert!(serde_json::from_str::<Vec<TaskRow>>("[]").unwrap().is_empty());
+    }
+
+    #[test]
+    fn open_ids_come_from_the_default_listing_or_the_status() {
+        let rows: Vec<TaskRow> = serde_json::from_str(LS).unwrap();
+        let open_only: Vec<TaskRow> = vec![rows[1].clone()];
+        let open = Snapshot::open_ids(&rows, Some(open_only));
+        assert_eq!(open.iter().map(String::as_str).collect::<Vec<_>>(), ["2"]);
+        let guessed = Snapshot::open_ids(&rows, None);
+        assert_eq!(guessed.iter().map(String::as_str).collect::<Vec<_>>(), ["2"], "done is closed");
+        assert!(Snapshot::open_ids(&rows, Some(vec![])).is_empty());
     }
 
     #[test]
