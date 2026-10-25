@@ -115,17 +115,60 @@ pub async fn run(program: &OsStr, root: &Path, args: &[String], input: Option<Ve
         std::io::ErrorKind::NotFound => YmanError::NoBinary,
         _ => YmanError::Io(e.to_string()),
     })?;
-    if let (Some(input), Some(mut stdin)) = (input, child.stdin.take()) {
-        // Closing stdin (the drop) ends the input.
-        stdin.write_all(&input).await.map_err(|e| YmanError::Io(e.to_string()))?;
-    }
-    // Dropping the future on timeout drops the child, which kills it.
-    match tokio::time::timeout(TIMEOUT, child.wait_with_output()).await {
+    let group = Group(child.id());
+    let stdin = child.stdin.take();
+    // The input is written while the output is read: a child that stops
+    // reading cannot stall the task, and one that exits early only breaks
+    // the pipe, which its exit code and stderr then explain. Dropping the
+    // future on timeout drops the child, which kills it, and `group` kills
+    // the git processes it started.
+    let work = async {
+        let write = async {
+            match (input, stdin) {
+                (Some(input), Some(mut stdin)) => match stdin.write_all(&input).await {
+                    Err(e) if e.kind() != std::io::ErrorKind::BrokenPipe => Err(e),
+                    _ => Ok(()),
+                },
+                _ => Ok(()),
+            }
+            // Closing stdin (the drop) ends the input.
+        };
+        let (written, out) = tokio::join!(write, child.wait_with_output());
+        let out = out?;
+        written?;
+        Ok::<_, std::io::Error>(out)
+    };
+    match tokio::time::timeout(TIMEOUT, work).await {
         Ok(out) => {
+            group.disarm();
             let out = out.map_err(|e| YmanError::Io(e.to_string()))?;
             Ok(YmanOutput { code: out.status.code(), stdout: out.stdout, stderr: String::from_utf8_lossy(&out.stderr).into_owned() })
         }
         Err(_) => Err(YmanError::Timeout(format!("yman {}", args.join(" ")))),
+    }
+}
+
+/// Kills yman's process group when dropped before [`Group::disarm`]: on a
+/// timeout, and when the task running [`run`] is aborted.
+struct Group(Option<u32>);
+
+impl Group {
+    fn disarm(mut self) {
+        self.0 = None;
+    }
+}
+
+impl Drop for Group {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        if let Some(pid) = self.0.and_then(|p| libc::pid_t::try_from(p).ok()) {
+            // SAFETY: killpg takes plain integers. The group leader is not
+            // reaped yet (its `Child` is dropped before this guard and only
+            // a finished wait disarms it), so the id is still the group's.
+            unsafe {
+                libc::killpg(pid, libc::SIGKILL);
+            }
+        }
     }
 }
 
@@ -209,6 +252,29 @@ mod tests {
     async fn missing_root_is_not_no_binary() {
         let r = run(OsStr::new("sh"), Path::new("/nonexistent-jetl-dir"), &[], None).await;
         assert!(matches!(r, Err(YmanError::Failed(_))));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn early_exit_with_large_stdin_reports_the_exit() {
+        let big = vec![b'x'; 4 << 20];
+        let err = run_ok(
+            OsStr::new("sh"),
+            &std::env::temp_dir(),
+            &args(&["-c", "echo 'error: .yman is not initialized' >&2; exit 1"]),
+            Some(big),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err, YmanError::NotInitialized);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn large_stdin_to_a_reader_does_not_deadlock() {
+        let big = vec![b'x'; 4 << 20];
+        let out = run(OsStr::new("sh"), &std::env::temp_dir(), &args(&["-c", "cat"]), Some(big.clone())).await.unwrap();
+        assert_eq!(out.stdout, big);
     }
 
     #[cfg(unix)]

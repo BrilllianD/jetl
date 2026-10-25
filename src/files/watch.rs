@@ -237,7 +237,11 @@ fn classify<'a>(root: &Path, git_dirs: &[PathBuf], paths: impl Iterator<Item = &
             let interesting = matches!(s.as_ref(), "HEAD" | "index" | "MERGE_HEAD" | "packed-refs" | "FETCH_HEAD")
                 || s.starts_with("refs/")
                 || s.starts_with("worktrees/");
-            out.git |= interesting && !s.ends_with(".lock");
+            // yman's read-only commands rewrite its worktree index; counting
+            // that would make every tracker load trigger the next. Its
+            // mutations also move `refs/yman/local`, which does count.
+            let yman_index = s == "worktrees/-yman/index";
+            out.git |= interesting && !yman_index && !s.ends_with(".lock");
         } else if p.starts_with(root) && !out.paths.contains(p) {
             out.paths.push(p.clone());
         }
@@ -261,6 +265,9 @@ mod tests {
         assert!(c(&["/p/.git/index"]).git);
         assert!(c(&["/p/.git/refs/heads/main"]).git);
         assert!(c(&["/main/.git/worktrees/p/HEAD"]).git, "linked worktree git dir");
+        assert_eq!(c(&["/p/.git/worktrees/-yman/index", "/p/.git/worktrees/-yman/index.lock"]), Changes::default(), "yman reads");
+        assert!(c(&["/p/.git/refs/yman/local"]).git, "yman writes");
+        assert!(c(&["/p/.git/worktrees/-yman/HEAD"]).git);
         let both = c(&["/p/src/a.rs", "/p/src/a.rs", "/p/.git/HEAD", "/elsewhere/x"]);
         assert_eq!(both, Changes { paths: vec![PathBuf::from("/p/src/a.rs")], git: true, ..Default::default() });
     }

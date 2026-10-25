@@ -20,7 +20,7 @@ pub use model::{Snapshot, TagCount, TaskDetails, TaskRow, TrackerStatus};
 pub enum YmanMsg {
     Snapshot { generation: u64, seq: u64, result: Result<Snapshot, YmanError> },
     Task { generation: u64, seq: u64, id: String, result: Result<TaskDetails, YmanError> },
-    Tags { generation: u64, result: Result<Vec<TagCount>, YmanError> },
+    Tags { generation: u64, seq: u64, result: Result<Vec<TagCount>, YmanError> },
 }
 
 impl YmanMsg {
@@ -57,7 +57,13 @@ pub struct YmanService {
     snapshot: Coalesce,
     snapshot_seq: u64,
     applied_snapshot: u64,
+    task_load: Coalesce,
     task_seq: u64,
+    /// The task the newest `load_task` asked for.
+    task_want: Option<String>,
+    tags_load: Coalesce,
+    tags_seq: u64,
+    applied_tags: u64,
     pub state: TrackerState,
     pub task: Option<LoadedTask>,
     pub tags: Option<Result<Vec<TagCount>, YmanError>>,
@@ -90,7 +96,12 @@ impl YmanService {
             snapshot: Coalesce::default(),
             snapshot_seq: 0,
             applied_snapshot: 0,
+            task_load: Coalesce::default(),
             task_seq: 0,
+            task_want: None,
+            tags_load: Coalesce::default(),
+            tags_seq: 0,
+            applied_tags: 0,
             state: TrackerState::Idle,
             task: None,
             tags: None,
@@ -102,6 +113,9 @@ impl YmanService {
         self.root = root;
         self.generation = generation;
         self.snapshot.reset();
+        self.task_load.reset();
+        self.tags_load.reset();
+        self.task_want = None;
         self.task = None;
         self.tags = None;
         self.state = if self.wanted { TrackerState::Loading } else { TrackerState::Idle };
@@ -152,21 +166,40 @@ impl YmanService {
         });
     }
 
+    /// Load a task's details; one load runs at a time and the newest id
+    /// asked for is loaded after it.
     pub fn load_task(&mut self, id: &str) {
+        self.task_want = Some(id.to_string());
+        if self.task_load.request() {
+            self.spawn_task();
+        }
+    }
+
+    fn spawn_task(&mut self) {
+        let Some(id) = self.task_want.clone() else { return };
         self.task_seq += 1;
-        let (program, root, generation, seq, tx, id) =
-            (self.program.clone(), self.root.clone(), self.generation, self.task_seq, self.tx.clone(), id.to_string());
+        let (program, root, generation, seq, tx) =
+            (self.program.clone(), self.root.clone(), self.generation, self.task_seq, self.tx.clone());
         tokio::spawn(async move {
             let result = cli::json::<TaskDetails>(&program, &root, &cli::show_args(&id)).await;
             let _ = tx.send(AppMsg::Yman(YmanMsg::Task { generation, seq, id, result }));
         });
     }
 
+    /// Load the tags; coalesced like [`Self::load_task`].
     pub fn load_tags(&mut self) {
-        let (program, root, generation, tx) = (self.program.clone(), self.root.clone(), self.generation, self.tx.clone());
+        if self.tags_load.request() {
+            self.spawn_tags();
+        }
+    }
+
+    fn spawn_tags(&mut self) {
+        self.tags_seq += 1;
+        let (program, root, generation, seq, tx) =
+            (self.program.clone(), self.root.clone(), self.generation, self.tags_seq, self.tx.clone());
         tokio::spawn(async move {
             let result = cli::json::<Vec<TagCount>>(&program, &root, &cli::tags_args()).await;
-            let _ = tx.send(AppMsg::Yman(YmanMsg::Tags { generation, result }));
+            let _ = tx.send(AppMsg::Yman(YmanMsg::Tags { generation, seq, result }));
         });
     }
 
@@ -192,14 +225,26 @@ impl YmanService {
                 }
             }
             YmanMsg::Task { seq, id, result, .. } => {
-                if seq == self.task_seq {
+                let again = self.task_load.done();
+                // Only the newest load of the id still wanted counts.
+                if seq == self.task_seq && self.task_want.as_deref() == Some(id.as_str()) {
                     self.task = Some(LoadedTask { id, result });
                     self.revision += 1;
                 }
+                if again {
+                    self.spawn_task();
+                }
             }
-            YmanMsg::Tags { result, .. } => {
-                self.tags = Some(result);
-                self.revision += 1;
+            YmanMsg::Tags { seq, result, .. } => {
+                let again = self.tags_load.done();
+                if seq > self.applied_tags {
+                    self.applied_tags = seq;
+                    self.tags = Some(result);
+                    self.revision += 1;
+                }
+                if again {
+                    self.spawn_tags();
+                }
             }
         }
     }
@@ -280,20 +325,57 @@ mod tests {
         let (mut s, mut rx) = service();
         s.load_task("1");
         s.load_task("2");
-        let (a, b) = (next(&mut rx).await, next(&mut rx).await);
-        let id = |m: &YmanMsg| match m {
-            YmanMsg::Task { id, .. } => id.clone(),
-            _ => panic!("not a task"),
-        };
-        let (first, second) = if id(&a) == "2" { (a, b) } else { (b, a) };
+        let first = next(&mut rx).await;
+        assert!(matches!(&first, YmanMsg::Task { id, .. } if id == "1"));
         s.on_msg(first);
+        assert!(s.task.is_none(), "the older id is not wanted any more");
+        let second = next(&mut rx).await;
+        assert!(matches!(&second, YmanMsg::Task { id, .. } if id == "2"));
         s.on_msg(second);
         assert_eq!(s.task.as_ref().map(|t| t.id.as_str()), Some("2"));
+        assert!(tokio::time::timeout(Duration::from_millis(300), rx.recv()).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn tag_loads_coalesce_and_old_results_lose() {
+        let (mut s, mut rx) = service();
+        s.load_tags();
+        s.load_tags();
+        s.load_tags();
+        let first = next(&mut rx).await;
+        s.on_msg(first);
+        let second = next(&mut rx).await;
+        let seq = |m: &YmanMsg| match m {
+            YmanMsg::Tags { seq, .. } => *seq,
+            _ => panic!("not tags"),
+        };
+        assert_eq!((s.tags_seq, seq(&second)), (2, 2));
+        s.on_msg(second);
+        assert!(tokio::time::timeout(Duration::from_millis(300), rx.recv()).await.is_err());
+        let rev = s.revision;
+        s.on_msg(YmanMsg::Tags { generation: 1, seq: 1, result: Ok(Vec::new()) });
+        assert_eq!(s.revision, rev, "an older tag list is dropped");
+    }
+
+    /// A command that cannot reach any repository but the one in `dir`.
+    fn isolated(program: &str, dir: &Path) -> std::process::Command {
+        let mut c = std::process::Command::new(program);
+        c.current_dir(dir).env_remove("GIT_DIR").env_remove("GIT_WORK_TREE").env_remove("GIT_INDEX_FILE");
+        c
     }
 
     fn git(dir: &Path, args: &[&str]) {
-        let ok = std::process::Command::new("git").arg("-C").arg(dir).args(args).status().unwrap().success();
+        let ok = isolated("git", dir).args(args).status().unwrap().success();
         assert!(ok, "git {args:?}");
+    }
+
+    /// A temp directory removed on drop, also when the test fails.
+    struct TempDir(PathBuf);
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
     }
 
     #[tokio::test]
@@ -302,7 +384,8 @@ mod tests {
             eprintln!("skipping: yman not on PATH");
             return;
         }
-        let dir = std::env::temp_dir().join(format!("jetl-yman-{}", std::process::id()));
+        let guard = TempDir(std::env::temp_dir().join(format!("jetl-yman-{}", std::process::id())));
+        let dir = guard.0.clone();
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let p = OsStr::new(PROGRAM);
@@ -313,7 +396,7 @@ mod tests {
         git(&dir, &["config", "user.email", "t@t"]);
         assert_eq!(cli::json::<Vec<TaskRow>>(p, &dir, &list_args()).await.unwrap_err(), YmanError::NotInitialized);
         let yman = |args: &[&str]| {
-            let out = std::process::Command::new(PROGRAM).args(args).current_dir(&dir).output().unwrap();
+            let out = isolated(PROGRAM, &dir).args(args).output().unwrap();
             assert!(out.status.success(), "yman {args:?}: {}", String::from_utf8_lossy(&out.stderr));
         };
         yman(&["init", "--offline"]);
@@ -330,6 +413,5 @@ mod tests {
         assert!(matches!(err, YmanError::NoSuchTask(_)), "{err:?}");
         let tags = cli::json::<Vec<TagCount>>(p, &dir, &tags_args()).await.unwrap();
         assert!(tags.iter().any(|t| t.tag == "alpha"));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

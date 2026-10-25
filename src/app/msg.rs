@@ -534,43 +534,6 @@ fn error_line(output: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-
-    #[tokio::test]
-    async fn yman_reloads_on_watcher_and_focus() {
-        use crate::yman::{TrackerState, YmanMsg, cli::yman_available};
-        if !yman_available() {
-            eprintln!("skipping: yman not on PATH");
-            return;
-        }
-        let (mut app, dir) = test_app("yman-reload");
-        let root = app.workspace.root.clone();
-        let run = |cmd: &str, args: &[&str]| {
-            let out = std::process::Command::new(cmd).args(args).current_dir(&root).output().unwrap();
-            assert!(out.status.success(), "{cmd} {args:?}: {}", String::from_utf8_lossy(&out.stderr));
-        };
-        run("git", &["init", "-q"]);
-        crate::git::repo::tests::isolate(&root);
-        run("git", &["config", "user.name", "t"]);
-        run("git", &["config", "user.email", "t@t"]);
-        run("yman", &["init", "--offline"]);
-        let is_snapshot = |m: &AppMsg| matches!(m, AppMsg::Yman(YmanMsg::Snapshot { .. }));
-        let count = |app: &App| match &app.yman.state {
-            TrackerState::Ready(s) => s.tasks.len(),
-            other => panic!("not ready: {other:?}"),
-        };
-        app.yman.want();
-        crate::app::tests::handle_next(&mut app, is_snapshot).await;
-        assert_eq!(count(&app), 0);
-        run("yman", &["add", "Second"]);
-        app.fs_changed(crate::files::watch::Changes { git: true, ..Default::default() });
-        crate::app::tests::handle_next(&mut app, is_snapshot).await;
-        assert_eq!(count(&app), 1);
-        run("yman", &["add", "Third"]);
-        app.handle_term_event(crossterm::event::Event::FocusGained);
-        crate::app::tests::handle_next(&mut app, is_snapshot).await;
-        assert_eq!(count(&app), 2);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
     use super::*;
     use crate::app::tests::{load, test_app};
     use crate::editor::undo::TxKind;
@@ -594,6 +557,57 @@ mod tests {
     fn last(app: &App) -> (Level, String) {
         let n = app.notifications.last().expect("a notification");
         (n.level, n.text.clone())
+    }
+
+    #[tokio::test]
+    async fn yman_reloads_on_watcher_and_focus() {
+        use crate::yman::{TrackerState, YmanMsg, cli::yman_available};
+        if !yman_available() {
+            eprintln!("skipping: yman not on PATH");
+            return;
+        }
+        // Removes the temp dir also when an assertion fails.
+        struct Cleanup(std::path::PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let (mut app, dir) = test_app("yman-reload");
+        let _cleanup = Cleanup(dir);
+        let root = app.workspace.root.clone();
+        let run = |cmd: &str, args: &[&str]| {
+            let out = std::process::Command::new(cmd)
+                .args(args)
+                .current_dir(&root)
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_WORK_TREE")
+                .env_remove("GIT_INDEX_FILE")
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{cmd} {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        run("git", &["init", "-q"]);
+        crate::git::repo::tests::isolate(&root);
+        run("git", &["config", "user.name", "t"]);
+        run("git", &["config", "user.email", "t@t"]);
+        run("yman", &["init", "--offline"]);
+        let is_snapshot = |m: &AppMsg| matches!(m, AppMsg::Yman(YmanMsg::Snapshot { .. }));
+        let count = |app: &App| match &app.yman.state {
+            TrackerState::Ready(s) => s.tasks.len(),
+            other => panic!("not ready: {other:?}"),
+        };
+        app.yman.want();
+        crate::app::tests::handle_next(&mut app, is_snapshot).await;
+        assert_eq!(count(&app), 0);
+        run("yman", &["add", "Second"]);
+        app.fs_changed(crate::files::watch::Changes { git: true, ..Default::default() });
+        crate::app::tests::handle_next(&mut app, is_snapshot).await;
+        assert_eq!(count(&app), 1);
+        run("yman", &["add", "Third"]);
+        app.handle_term_event(crossterm::event::Event::FocusGained);
+        crate::app::tests::handle_next(&mut app, is_snapshot).await;
+        assert_eq!(count(&app), 2);
     }
 
     #[tokio::test]
