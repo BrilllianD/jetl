@@ -741,8 +741,14 @@ Variables are filled in when the snippet is accepted, as in VS Code. A value
 goes in as plain text (never read as snippet syntax); a multi-line value takes
 the indentation of its line. An unknown name, or one with an empty value,
 inserts its default (`${NAME:default}`), else nothing. The same variables work
-in language server snippets. Not supported: `$CLIPBOARD`, and transforms
-(`${NAME/re/fmt/}`), which insert nothing.
+in language server snippets. A transform `${NAME/regex/format/options}` works
+as in VS Code: the format has `$1`, `${1:/upcase}`, `${1:/downcase}`,
+`${1:/capitalize}`, `${1:/camelcase}`, `${1:/pascalcase}`, `${1:+if}`,
+`${1:-else}` and `${1:?if:else}`; options are `g` (all matches), `i`, `m` and
+`s`. For example `${TM_FILENAME/(.*)\..+$/$1/}` is the file name without its
+last extension. The regex is Rust `regex` syntax (no lookaround); an invalid
+one inserts nothing. In a TOML basic string every `\` doubles, so use a
+literal string. Not supported: `$CLIPBOARD` and tabstop transforms (`${1/re/fmt/}`).
 
 - File: `TM_FILENAME`, `TM_FILENAME_BASE`, `TM_DIRECTORY`, `TM_FILEPATH`,
   `RELATIVE_FILEPATH` (to the project root); an untitled file has none of them.

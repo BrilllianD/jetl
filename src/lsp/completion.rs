@@ -17,6 +17,7 @@ use std::cmp::Reverse;
 use lsp_types::{CompletionItem, CompletionItemKind, CompletionResponse, CompletionTextEdit, InsertTextFormat, Position};
 use nucleo_matcher::pattern::{AtomKind, CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Matcher, Utf32Str};
+use regex::{Captures, Regex, RegexBuilder};
 use ropey::Rope;
 use serde_json::Value;
 
@@ -269,7 +270,7 @@ pub fn kind_glyph(kind: Option<CompletionItemKind>) -> &'static str {
 /// nothing), escapes resolved; text that is not snippet syntax stays as it
 /// is. Each `$n`, `${n}`, `${n:placeholder}` and `${n|choice|}` is a
 /// [`Tabstop`] over its text, in chars of the returned text, in the order
-/// they appear.
+/// they appear. Variable transforms need values: see [`parse_snippet_with`].
 pub fn parse_snippet(s: &str) -> (String, Vec<Tabstop>) {
     parse_snippet_with(s, &|_| None, "")
 }
@@ -279,6 +280,8 @@ pub fn parse_snippet(s: &str) -> (String, Vec<Tabstop>) {
 /// empty value keeps the default (else nothing). `indent`: the whitespace
 /// the result's first line continues in the buffer, for re-indenting
 /// multi-line values (later lines take the indentation of their output line).
+/// A variable transform `${name/re/fmt/opts}` inserts the value rewritten by
+/// the regex and format as in VS Code (options `g`, `i`, `m`, `s`).
 pub fn parse_snippet_with(s: &str, vars: &dyn Fn(&str) -> Option<String>, indent: &str) -> (String, Vec<Tabstop>) {
     let mut p = Snippet { c: s.chars().collect(), i: 0, out: String::new(), n: 0, stops: Vec::new(), open: Vec::new(), vars, indent };
     p.body(false);
@@ -449,20 +452,186 @@ impl Snippet<'_> {
                     }
                 }
                 Some('/') => {
-                    // A transform: nothing to insert for an unknown variable.
-                    while let Some(ch) = self.peek() {
-                        self.i += if ch == '\\' { 2 } else { 1 };
-                        if ch == '}' {
-                            return;
+                    // A transform. An unknown variable, an invalid regex or an
+                    // empty result insert nothing.
+                    self.i += 1;
+                    let Some(re) = self.transform_regex() else { return self.literal(at) };
+                    let Some(fmt) = self.transform_format() else { return self.literal(at) };
+                    let Some(opts) = self.transform_options() else { return self.literal(at) };
+                    let re = RegexBuilder::new(&re)
+                        .case_insensitive(opts.contains('i'))
+                        .multi_line(opts.contains('m'))
+                        .dot_matches_new_line(opts.contains('s'))
+                        .build();
+                    if let (Ok(re), Some(v)) = (re, (self.vars)(&name)) {
+                        let out = apply_transform(&v, &re, opts.contains('g'), &fmt);
+                        if !out.is_empty() {
+                            self.value(&out);
                         }
                     }
-                    self.literal(at);
                 }
                 _ => self.literal(at),
             }
         } else {
             self.literal(at);
         }
+    }
+
+    /// After `${NAME/`: the regex text up to the unescaped `/` (consumed);
+    /// `\/` is `/`, any other escape stays as it is. `None` at the end.
+    fn transform_regex(&mut self) -> Option<String> {
+        let mut re = String::new();
+        while let Some(ch) = self.peek() {
+            self.i += 1;
+            match ch {
+                '/' => return Some(re),
+                '\\' => {
+                    let next = self.peek()?;
+                    self.i += 1;
+                    if next != '/' {
+                        re.push('\\');
+                    }
+                    re.push(next);
+                }
+                _ => re.push(ch),
+            }
+        }
+        None
+    }
+
+    /// The format up to the unescaped `/` (consumed). `None` at the end.
+    fn transform_format(&mut self) -> Option<Vec<Fmt>> {
+        let mut pieces = Vec::new();
+        let mut text = String::new();
+        while let Some(ch) = self.peek() {
+            self.i += 1;
+            match ch {
+                '/' => {
+                    if !text.is_empty() {
+                        pieces.push(Fmt::Text(text));
+                    }
+                    return Some(pieces);
+                }
+                '\\' => match self.peek() {
+                    Some(n) if matches!(n, '/' | '$' | '\\' | '}') => {
+                        text.push(n);
+                        self.i += 1;
+                    }
+                    _ => text.push('\\'),
+                },
+                '$' => {
+                    let after = self.i;
+                    match self.format_group() {
+                        Some(piece) => {
+                            if !text.is_empty() {
+                                pieces.push(Fmt::Text(std::mem::take(&mut text)));
+                            }
+                            pieces.push(piece);
+                        }
+                        None => {
+                            self.i = after;
+                            text.push('$');
+                        }
+                    }
+                }
+                _ => text.push(ch),
+            }
+        }
+        None
+    }
+
+    /// After a `$` in a format: `n`, `{n}`, `{n:/case}`, `{n:+if}`,
+    /// `{n:-else}`, `{n:else}`, `{n:?if:else}`. `None` when it is none of them.
+    fn format_group(&mut self) -> Option<Fmt> {
+        if let Some(n) = self.number() {
+            return Some(Fmt::Group { n: n as usize, case: None });
+        }
+        if self.peek() != Some('{') {
+            return None;
+        }
+        self.i += 1;
+        let n = self.number()? as usize;
+        match self.peek()? {
+            '}' => {
+                self.i += 1;
+                Some(Fmt::Group { n, case: None })
+            }
+            ':' => {
+                self.i += 1;
+                match self.peek()? {
+                    '/' => {
+                        self.i += 1;
+                        let from = self.i;
+                        while self.peek().is_some_and(|c| c.is_ascii_alphabetic()) {
+                            self.i += 1;
+                        }
+                        let word: String = self.c[from..self.i].iter().collect();
+                        let case = match word.as_str() {
+                            "upcase" => Case::Up,
+                            "downcase" => Case::Down,
+                            "capitalize" => Case::Capitalize,
+                            "camelcase" => Case::Camel,
+                            "pascalcase" => Case::Pascal,
+                            _ => return None,
+                        };
+                        if self.peek() != Some('}') {
+                            return None;
+                        }
+                        self.i += 1;
+                        Some(Fmt::Group { n, case: Some(case) })
+                    }
+                    '+' => {
+                        self.i += 1;
+                        let then = self.format_text('}')?;
+                        Some(Fmt::Cond { n, then: Some(then), otherwise: None })
+                    }
+                    '?' => {
+                        self.i += 1;
+                        let then = self.format_text(':')?;
+                        let otherwise = self.format_text('}')?;
+                        Some(Fmt::Cond { n, then: Some(then), otherwise: Some(otherwise) })
+                    }
+                    c => {
+                        if c == '-' {
+                            self.i += 1;
+                        }
+                        let otherwise = self.format_text('}')?;
+                        Some(Fmt::Cond { n, then: None, otherwise: Some(otherwise) })
+                    }
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// Text of a conditional format up to the unescaped `end` (consumed);
+    /// `\` takes the next char as it is. `None` at the end.
+    fn format_text(&mut self, end: char) -> Option<String> {
+        let mut text = String::new();
+        loop {
+            let ch = self.peek()?;
+            self.i += 1;
+            if ch == end {
+                return Some(text);
+            }
+            if ch == '\\' {
+                text.push(self.peek()?);
+                self.i += 1;
+            } else {
+                text.push(ch);
+            }
+        }
+    }
+
+    /// The option letters up to `}` (consumed). `None` at the end.
+    fn transform_options(&mut self) -> Option<String> {
+        let from = self.i;
+        while self.peek()? != '}' {
+            self.i += 1;
+        }
+        let opts = self.c[from..self.i].iter().collect();
+        self.i += 1;
+        Some(opts)
     }
 
     /// `a,b|}` after `${1|`: the first option. False when malformed.
@@ -515,6 +684,89 @@ struct Mark {
     n: usize,
     stops: usize,
     open: usize,
+}
+
+/// One piece of a transform's format.
+enum Fmt {
+    Text(String),
+    /// `$n`, `${n}`, `${n:/upcase}` and the like.
+    Group {
+        n: usize,
+        case: Option<Case>,
+    },
+    /// `${n:+if}`, `${n:-else}`, `${n:else}`, `${n:?if:else}`.
+    Cond {
+        n: usize,
+        then: Option<String>,
+        otherwise: Option<String>,
+    },
+}
+
+#[derive(Clone, Copy)]
+enum Case {
+    Up,
+    Down,
+    Capitalize,
+    Camel,
+    Pascal,
+}
+
+impl Case {
+    fn apply(self, t: &str) -> String {
+        fn upper_first(w: &str) -> String {
+            let mut cs = w.chars();
+            cs.next().map(|f| f.to_uppercase().chain(cs).collect()).unwrap_or_default()
+        }
+        match self {
+            Case::Up => t.to_uppercase(),
+            Case::Down => t.to_lowercase(),
+            Case::Capitalize => upper_first(t),
+            Case::Camel | Case::Pascal => {
+                let runs: Vec<&str> = t.split(|c: char| !c.is_ascii_alphanumeric()).filter(|r| !r.is_empty()).collect();
+                if runs.is_empty() {
+                    return t.to_string();
+                }
+                let mut out = String::new();
+                for (k, r) in runs.iter().enumerate() {
+                    if k == 0 && matches!(self, Case::Camel) {
+                        let mut cs = r.chars();
+                        out.extend(cs.next().map(|f| f.to_lowercase().chain(cs).collect::<String>()));
+                    } else {
+                        out.push_str(&upper_first(r));
+                    }
+                }
+                out
+            }
+        }
+    }
+}
+
+/// `value` with `re` applied (to all matches when `global`, else the first),
+/// each match replaced by `fmt`.
+fn apply_transform(value: &str, re: &Regex, global: bool, fmt: &[Fmt]) -> String {
+    let render = |caps: &Captures| {
+        let group = |n: usize| caps.get(n).map_or("", |m| m.as_str());
+        let mut out = String::new();
+        for piece in fmt {
+            match piece {
+                Fmt::Text(t) => out.push_str(t),
+                Fmt::Group { n, case } => match case {
+                    Some(c) => out.push_str(&c.apply(group(*n))),
+                    None => out.push_str(group(*n)),
+                },
+                Fmt::Cond { n, then, otherwise } => {
+                    let g = group(*n);
+                    if g.is_empty() {
+                        out.push_str(otherwise.as_deref().unwrap_or(""));
+                    } else {
+                        out.push_str(then.as_deref().unwrap_or(g));
+                    }
+                }
+            }
+        }
+        out
+    };
+    if global { re.replace_all(value, render).into_owned() } else { re.replace(value, render).into_owned() }
 }
 
 /// What accepting an item does: the changes of one transaction (sorted for
@@ -827,7 +1079,58 @@ mod tests {
         assert_eq!(with("${A:${1:z}}"), ("x".into(), vec![]));
         assert_eq!(with("f($M)").0, "f(l1\n\n  l3)");
         assert_eq!(with("a\n\t$M").0, "a\n\tl1\n\n\tl3");
-        assert_eq!(with("${A/x/y/}").0, "");
+        assert_eq!(with("${A/x/y/}").0, "y");
+    }
+
+    #[test]
+    fn snippet_variable_transforms() {
+        let v = |n: &str| match n {
+            "F" => Some("main.test.rs".to_string()),
+            "N" => Some("hello world".into()),
+            "P" => Some("a/b".into()),
+            "E" => Some(String::new()),
+            "M" => Some("a\nb".into()),
+            _ => None,
+        };
+        let t = |s: &str| parse_snippet_with(s, &v, "").0;
+        for (body, want) in [
+            (r"${F/(.*)\..+$/$1/}", "main.test"),
+            (r"${N/(\w+) (\w+)/$2 ${1}/}", "world hello"),
+            (r"${N/o/0/}", "hell0 world"),
+            (r"${N/o/0/g}", "hell0 w0rld"),
+            (r"${N/H/J/}", "hello world"),
+            (r"${N/H/J/i}", "Jello world"),
+            (r"${N/(\w+)/[$1]/g}", "[hello] [world]"),
+            (r"${N/(\w+)/${1:/upcase}/}", "HELLO world"),
+            (r"${N/(\w+)/${1:/capitalize}/g}", "Hello World"),
+            (r"${N/.*/${0:/pascalcase}/}", "HelloWorld"),
+            (r"${N/.*/${0:/camelcase}/}", "helloWorld"),
+            (r"${F/.*/${0:/upcase}/}", "MAIN.TEST.RS"),
+            (r"${F/.*/${0:/downcase}/}", "main.test.rs"),
+            (r"${N/(h)?.*/${1:?Y:N}/}", "Y"),
+            (r"${N/(z)?.*/${1:?Y:N}/}", "N"),
+            (r"${N/(z)?.*/${1:+yes}${1:-no}/}", "no"),
+            (r"${N/(z)?.*/${1:other}/}", "other"),
+            (r"${N/(h).*/${1:+a\}b}/}", "a}b"),
+            (r"${P/\//-/}", "a-b"),
+            (r"${N/ /\//}", "hello/world"),
+            (r"${N/ /\$1/}", "hello$1world"),
+            (r"${N/ /$x/}", "hello$xworld"),
+            (r"${N/ /${x}/}", "hello${x}world"),
+            (r"${E/^$/none/}", "none"),
+            (r"${U/x/y/}", ""),
+            (r"${N/(/x/}", ""),
+            (r"${N/x/y}", "${N/x/y}"),
+            (r"${N/x", "${N/x"),
+            (r"<${F/\..*//}>", "<main>"),
+        ] {
+            assert_eq!(t(body), want, "{body}");
+        }
+        assert_eq!(parse_snippet_with("  ${M/b/c/}", &v, "").0, "  a\n  c");
+        let (text, stops) = parse_snippet_with(r"${1:${F/\..*//}}$0", &v, "");
+        assert_eq!(text, "main");
+        let got: Vec<_> = stops.iter().map(|s| (s.n, s.range.clone())).collect();
+        assert_eq!(got, vec![(1, 0..4), (0, 4..4)]);
     }
 
     #[test]
