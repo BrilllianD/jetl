@@ -248,6 +248,8 @@ pub struct App {
     /// The branch swap whose files are being read.
     pub(crate) branch_swap: crate::workspace::BranchSwap,
     pub git: GitService,
+    /// The yman task tracker of the root; loads nothing until `want()`.
+    pub yman: crate::yman::YmanService,
     /// Local history's worker (`history/`); `GitService` holds a clone.
     pub history: crate::history::Handle,
     /// A snapshot, or changes of one, to put into a file once its tab opens
@@ -320,6 +322,7 @@ impl App {
         let root_for_panels = root.clone();
         let workspace = Workspace::new(root.clone());
         let mut git = GitService::new(root.clone(), workspace.generation, bus_tx.clone());
+        let yman = crate::yman::YmanService::new(root.clone(), workspace.generation, bus_tx.clone());
         git.tab_width = config.editor.tab_width;
         git.messages_dir = paths.state_dir.join("commit_messages");
         let mut git_panel = GitPanel::new();
@@ -387,6 +390,7 @@ impl App {
             session_save: Default::default(),
             branch_swap: Default::default(),
             git,
+            yman,
             history,
             pending_revert: std::collections::HashMap::new(),
             editor: Editor::new(&config),
@@ -649,6 +653,7 @@ impl App {
                 self.needs_clear = true;
             }
             Event::FocusGained => {
+                self.yman.refresh();
                 // The watcher reports outside changes as they happen.
                 if self.watcher.is_none() {
                     self.dirty_frame = true;

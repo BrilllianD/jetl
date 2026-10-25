@@ -20,3 +20,4 @@ pub mod ui;
 pub mod util;
 pub mod workspace;
 pub mod worktree;
+pub mod yman;

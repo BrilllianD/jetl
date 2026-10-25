@@ -46,6 +46,10 @@ impl App {
             self.git.load_branches();
             self.git.load_worktrees();
         }
+        let yman_dir = self.workspace.root.join(".yman");
+        if changes.git || changes.paths.iter().any(|p| p.starts_with(&yman_dir)) {
+            self.yman.refresh();
+        }
         if changes.paths.iter().any(|p| p.parent().is_some_and(|d| self.project.lists(d))) {
             self.refresh_tree();
         }

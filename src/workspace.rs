@@ -424,6 +424,7 @@ impl App {
         // Points git at the new root and generation, resets the Git panel,
         // and requests status and branches.
         self.git_root_changed(root.clone());
+        self.yman.set_root(root.clone(), self.workspace.generation);
         self.start_watcher();
         self.find.reset();
         self.symbols.reset();

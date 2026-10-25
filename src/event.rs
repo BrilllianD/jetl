@@ -22,6 +22,8 @@ pub enum AppMsg {
         focus: bool,
     },
     Git(crate::git::GitMsg),
+    /// yman results (`yman::YmanService`), tagged with the workspace generation.
+    Yman(crate::yman::YmanMsg),
     /// `git worktree list`, tagged with the workspace generation like `GitMsg`.
     Worktrees {
         generation: u64,
