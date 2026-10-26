@@ -30,7 +30,7 @@ built-in terminal and a Run window, all driven by JetBrains-style key bindings a
 - Project tree with new, rename, delete and copy path, a right-click context menu, speed search,
   and toggles for hidden and ignored files.
 - A filesystem watcher refreshes the tree, the Git window and open files after outside changes.
-- Palette with Files, Symbols, Actions, Search Everywhere, Recent Files, Branches and Recent
+- Palette with Files, Symbols, Actions, Search Everywhere, Recent Files, Recent Locations, Branches and Recent
   Projects modes.
 - Symbol search and a Structure tool window based on tree-sitter tags.
 - Find and replace in files in a bottom tool window.

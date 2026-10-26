@@ -1147,6 +1147,7 @@ impl App {
             AppAction::ToggleZen => self.toggle_zen(),
             AppAction::Escape => self.focus.set(PanelId::Editor),
             AppAction::OpenPalette(kind) => self.open_palette(kind),
+            AppAction::RecentLocations => self.show_recent_locations(),
             AppAction::DebugPanic => {
                 if cfg!(debug_assertions) {
                     panic!("debug panic requested via keymap");

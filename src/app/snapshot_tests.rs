@@ -842,6 +842,24 @@ async fn palette_locations_grouped() {
     assert_snapshot!("palette_locations_grouped", snapshot(&term, &marks, None));
 }
 
+#[tokio::test]
+async fn palette_recent_locations() {
+    use crate::lsp::locations::LocationItem;
+    let mut fx = stable_app("palette-recent-locations");
+    let app = &mut fx.app;
+    let root = app.workspace.root.clone();
+    let item = |file: &str, line, text: &str| LocationItem::at_line(root.join(file), line, 4, text);
+    let items = vec![
+        item("src/a.rs", 9, "    helper(total);"),
+        item("src/b.rs", 4, "    println!(\"{}\", helper(2));"),
+        item("src/a.rs", 2, "    let total = helper(1);"),
+    ];
+    app.open_locations("Recent Locations".into(), items, true);
+    let term = draw_app(app, 100, 30);
+    let marks = palette_marks(&app.theme);
+    assert_snapshot!("palette_recent_locations", snapshot(&term, &marks, None));
+}
+
 /// The Local History window on `notes.txt` (a plain `.txt`: no grammar,
 /// so the frame is the same with any set of language features): seven
 /// snapshots at noon UTC on seven days, shown at UTC, the `row`th row

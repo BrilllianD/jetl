@@ -86,6 +86,15 @@ impl LocationItem {
     }
 }
 
+impl LocationItem {
+    /// The row for the char column `col` of line `line` in `path`, whose
+    /// text is `line_text` (without its break); no mark.
+    pub fn at_line(path: PathBuf, line: usize, col: usize, line_text: &str) -> Self {
+        let text = line_text.trim().chars().take(PREVIEW_MAX).collect();
+        Self { path, line, col, text, mark: None }
+    }
+}
+
 /// Rows for targets in files that are not open: each file read once (in
 /// `spawn_blocking`). An unreadable file still gets rows, without text.
 pub fn read_items(targets: Vec<Target>) -> Vec<LocationItem> {
@@ -107,6 +116,12 @@ pub fn read_items(targets: Vec<Target>) -> Vec<LocationItem> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn at_line_trims_and_keeps_the_column() {
+        let item = LocationItem::at_line(PathBuf::from("/w/a.rs"), 3, 6, "    let x;  ");
+        assert_eq!(item, LocationItem { path: PathBuf::from("/w/a.rs"), line: 3, col: 6, text: "let x;".into(), mark: None });
+    }
     use serde_json::json;
 
     fn range(l0: u32, c0: u32, l1: u32, c1: u32) -> Value {

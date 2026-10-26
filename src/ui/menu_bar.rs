@@ -32,6 +32,7 @@ pub const MAIN_MENU: &[(&str, char, &[Row])] = &[
         &[
             Item("Go to File…", "palette.files"),
             Item("Recent Files…", "palette.recent_files"),
+            Item("Recent Locations…", "palette.recent_locations"),
             Item("Recent Projects…", "palette.recent_projects"),
             Item("New Scratch File…", "editor.new_scratch"),
             Item("New Task…", "tasks.new_task"),
@@ -163,6 +164,7 @@ pub const MAIN_MENU: &[(&str, char, &[Row])] = &[
             Item("File Structure…", "lsp.file_structure"),
             Item("Line…", "editor.goto_line"),
             Item("Recent Files…", "palette.recent_files"),
+            Item("Recent Locations…", "palette.recent_locations"),
             Item("Switcher…", "editor.switcher"),
             Sep,
             Item("Declaration or Usages", "lsp.goto_definition"),

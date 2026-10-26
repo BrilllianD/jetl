@@ -55,6 +55,7 @@
 # Ctrl+Shift+A/P need the kitty protocol; F1 is the legacy fallback.
 "f1" = "palette.actions"
 "ctrl-e" = "palette.recent_files"
+"ctrl-shift-e" = "palette.recent_locations"
 "alt-shift-e" = "palette.recent_projects"
 "ctrl-alt-shift-n" = "palette.symbols"
 # Ctrl+Alt+Shift+N needs the kitty protocol (legacy terminals send

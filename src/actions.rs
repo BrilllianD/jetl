@@ -52,6 +52,8 @@ pub enum AppAction {
     ToggleZen,
     Escape,
     OpenPalette(PaletteKind),
+    /// Recent Locations: the caret history in the Locations palette, newest first.
+    RecentLocations,
     DebugPanic,
     Refresh,
     /// Open the main menu bar, or close it when open.
@@ -675,6 +677,7 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "palette.actions" => "Find action", App(AppAction::OpenPalette(PaletteKind::Actions));
         "palette.search_everywhere" => "Search everywhere", App(AppAction::OpenPalette(PaletteKind::Everywhere));
         "palette.recent_files" => "Recent files", App(AppAction::OpenPalette(PaletteKind::RecentFiles));
+        "palette.recent_locations" => "Recent locations", App(AppAction::RecentLocations);
         "palette.goto_line" => "Go to line", App(AppAction::OpenPalette(PaletteKind::GotoLine));
         "palette.recent_projects" => "Recent projects", App(AppAction::OpenPalette(PaletteKind::RecentProjects));
         "palette.symbols" => "Go to symbol", App(AppAction::OpenPalette(PaletteKind::Symbols));

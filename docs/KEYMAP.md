@@ -50,6 +50,7 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Alt+S` | `palette.search_everywhere` | Search everywhere |
 | `Shift Shift` * | `palette.search_everywhere` | Search everywhere |
 | `Ctrl+E` | `palette.recent_files` | Recent files |
+| `Ctrl+Shift+E` * | `palette.recent_locations` | Recent locations |
 | `Alt+Shift+E` | `palette.recent_projects` | Recent projects |
 | `Alt+Shift+N` | `palette.symbols` | Go to symbol |
 | `Ctrl+Alt+Shift+N` * | `palette.symbols` | Go to symbol |

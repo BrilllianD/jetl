@@ -1,0 +1,37 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &marks, None)"
+---
+100x30 cursor=(6,5)
+00  ≣ ┌ Project: root ───────────────┐│
+01    │                              ││
+02  1 │                              ││
+03  ⌂ │                              ││
+04  2┌ Recent Locations ────────────────────────────────────────────────────────────────────────────┐
+05  ◫│ › type to filter                                                                           3 │
+06  7│ helper(total);                                                                   src/a.rs:10 │
+07  ⊢│ println!("{}", helper(2));                                                        src/b.rs:5 │
+08   │ let total = helper(1);                                                            src/a.rs:3 │
+09   │                                                                                              │
+10   │                                                                                              │
+11   │                                                                                              │
+12   └──────────────────────────────────────────────────────────────────────────────────────────────┘
+13    │                              ││
+14  ✓ │                              ││          No files open. Alt+1 opens the Project view;
+15  8 │                              ││                   Ctrl+Shift+N finds a file.
+16  ⟲ │                              ││
+17  5 │                              ││
+18  ⚑ │                              ││
+19  9 │                              ││
+20  ⎇ │                              ││
+21    │                              ││
+22  ❯ │                              ││
+23  6 │                              ││
+24  ⚠ │                              ││
+25  4 │                              ││
+26  ► │                              ││
+27  3 │                              ││
+28  ⌕ └──────────────────────────────┘│
+29  root
+-- marks: L=selected
+06    LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL

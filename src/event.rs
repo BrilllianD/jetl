@@ -196,6 +196,12 @@ pub enum AppMsg {
         title: String,
         items: Vec<crate::lsp::locations::LocationItem>,
     },
+    /// The caret history's rows with their line text, the ones in files that
+    /// are not open read from disk (`App::show_recent_locations`).
+    RecentLocations {
+        generation: u64,
+        items: Vec<crate::lsp::locations::LocationItem>,
+    },
     /// A workspace edit's disk steps (files that were not open edited,
     /// file operations) were made in order (`App::apply_workspace_edit`):
     /// how many changed, what failed, with what was done in the open

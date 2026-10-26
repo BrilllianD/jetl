@@ -199,6 +199,8 @@ pub struct Palette {
     /// Locations and the title they are shown under.
     locations: Vec<LocationItem>,
     locations_title: String,
+    /// The locations are shown in the order given, without file headers.
+    locations_flat: bool,
     /// The Locations rows shown: file headers (when the items span several
     /// files) and items, both indexing `locations`. `rows` index into this.
     loc_rows: Vec<LocRow>,
@@ -259,6 +261,7 @@ impl Palette {
             tasks_loading: false,
             locations: Vec::new(),
             locations_title: String::new(),
+            locations_flat: false,
             loc_rows: Vec::new(),
             scratches: Vec::new(),
             scratch_names: Vec::new(),
@@ -371,6 +374,25 @@ impl Palette {
         }
     }
 
+    /// Like [`Palette::set_locations`], but the rows keep the order given and
+    /// get no file headers (a history, not usages).
+    pub fn set_locations_in_order(&mut self, title: String, items: Vec<LocationItem>) {
+        self.locations_flat = true;
+        self.set_locations(title, items);
+    }
+
+    /// The Locations item rows in display order, as `(path, line)`.
+    #[cfg(test)]
+    pub(crate) fn shown_locations(&self) -> Vec<(std::path::PathBuf, usize)> {
+        self.loc_rows
+            .iter()
+            .filter_map(|r| match r {
+                LocRow::Item(i) => Some((self.locations[*i].path.clone(), self.locations[*i].line)),
+                LocRow::File { .. } => None,
+            })
+            .collect()
+    }
+
     /// The scratch files, newest first (`scratch::list`).
     pub fn set_scratches(&mut self, files: Vec<ScratchFile>) {
         self.scratch_names = files.iter().map(|f| f.name.clone()).collect();
@@ -465,10 +487,12 @@ impl Palette {
     }
 
     /// Build `loc_rows` from the matched item indices: flat when the items
-    /// span fewer than two files, else in file order under a header per file.
+    /// span fewer than two files or were set in order
+    /// ([`Palette::set_locations_in_order`]), else in file order under a
+    /// header per file.
     fn group_locations(&mut self, mut matched: Vec<usize>) {
         let first = self.locations.first().map(|l| &l.path);
-        let grouped = first.is_some_and(|f| self.locations.iter().any(|l| &l.path != f));
+        let grouped = !self.locations_flat && first.is_some_and(|f| self.locations.iter().any(|l| &l.path != f));
         if !grouped {
             self.loc_rows = matched.into_iter().map(LocRow::Item).collect();
             return;
@@ -1279,6 +1303,21 @@ pub fn walk_files(root: &Path, show_hidden: bool, show_ignored: bool) -> Vec<Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn locations_in_order_keep_the_order_without_headers() {
+        let item = |f: &str, line| LocationItem::at_line(PathBuf::from(format!("/w/{f}")), line, 0, "x");
+        let items = || vec![item("a.rs", 1), item("b.rs", 2), item("a.rs", 3)];
+        let mut p = Palette::new(PaletteKind::Locations, PathBuf::from("/w"));
+        p.set_locations_in_order("Recent".into(), items());
+        let want = vec![(PathBuf::from("/w/a.rs"), 1), (PathBuf::from("/w/b.rs"), 2), (PathBuf::from("/w/a.rs"), 3)];
+        assert_eq!(p.shown_locations(), want);
+        assert_eq!(p.loc_rows.len(), 3, "no file headers");
+        let mut g = Palette::new(PaletteKind::Locations, PathBuf::from("/w"));
+        // Grouping assumes items sorted by path (`App::show_locations`).
+        g.set_locations("Usages".into(), vec![item("a.rs", 1), item("a.rs", 3), item("b.rs", 2)]);
+        assert_eq!(g.loc_rows.iter().filter(|r| matches!(r, LocRow::File { .. })).count(), 2);
+    }
 
     fn fixture() -> Vec<String> {
         [

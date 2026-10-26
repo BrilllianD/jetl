@@ -465,12 +465,23 @@ impl App {
     /// Open the Locations palette on `items` (sorted by file and position).
     /// A dialog that came up meanwhile keeps the input; nothing opens.
     pub(crate) fn show_locations(&mut self, title: String, mut items: Vec<LocationItem>) {
+        items.sort_by(|a, b| (&a.path, a.line, a.col).cmp(&(&b.path, b.line, b.col)));
+        self.open_locations(title, items, false);
+    }
+
+    /// Open the Locations palette on `items` as given: with `in_order` flat
+    /// in that order, else grouped by file. A dialog that came up meanwhile
+    /// keeps the input; nothing opens.
+    pub(crate) fn open_locations(&mut self, title: String, items: Vec<LocationItem>, in_order: bool) {
         if self.dialog.is_some() {
             return;
         }
-        items.sort_by(|a, b| (&a.path, a.line, a.col).cmp(&(&b.path, b.line, b.col)));
         let mut p = Palette::new(PaletteKind::Locations, self.workspace.root.clone());
-        p.set_locations(title, items);
+        if in_order {
+            p.set_locations_in_order(title, items);
+        } else {
+            p.set_locations(title, items);
+        }
         self.palette = Some(p);
         self.hover = None;
         self.dispatcher.reset();

@@ -76,6 +76,11 @@ impl NavRing {
         }
     }
 
+    /// Newest back position first, then the forward ones, nearest first.
+    pub fn recent(&self) -> impl Iterator<Item = &NavPos> + '_ {
+        self.back.iter().rev().chain(self.forward.iter().rev())
+    }
+
     pub fn sizes(&self) -> (usize, usize) {
         (self.back.len(), self.forward.len())
     }
@@ -106,6 +111,18 @@ mod tests {
 
     fn at(pos: usize) -> NavPos {
         NavPos { id: 1, path: None, pos }
+    }
+
+    #[test]
+    fn recent_lists_back_newest_first_then_forward() {
+        let mut r = NavRing::default();
+        for n in 1..=3 {
+            r.push(at(n));
+        }
+        assert_eq!(r.back(Some(at(4)), |_| true), Some(at(3)));
+        assert_eq!(r.back(Some(at(3)), |_| true), Some(at(2)));
+        let got: Vec<usize> = r.recent().map(|p| p.pos).collect();
+        assert_eq!(got, vec![1, 3, 4]);
     }
 
     #[test]

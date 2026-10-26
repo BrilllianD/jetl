@@ -1,12 +1,16 @@
 //! The command palette: opening, keys, file index, accepted rows.
 
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
+
 use crossterm::event::KeyEvent;
 
 use super::{App, FileIndex};
 use crate::actions::{Action, AppAction, EditorAction, PaletteKind};
 use crate::dispatch::Dispatch;
-use crate::event::{AppMsg, Effect};
+use crate::event::{AppMsg, Effect, Level};
 use crate::git::GitRequest;
+use crate::lsp::locations::LocationItem;
 use crate::ui::palette::{Accept, ActionEntry, FilterBus, Palette, PaletteResult, Source};
 
 impl App {
@@ -265,6 +269,90 @@ impl App {
     }
 }
 
+/// The title of the Recent Locations palette.
+const RECENT_LOCATIONS: &str = "Recent Locations";
+
+/// A Recent Locations row, or the closed file and char offset it is read from.
+enum RecentSlot {
+    Item(LocationItem),
+    Disk { path: PathBuf, pos: usize },
+}
+
+/// The row for char offset `pos` (clamped) of `rope`, a file at `path`.
+fn item_at(path: PathBuf, rope: &ropey::Rope, pos: usize) -> LocationItem {
+    let p = pos.min(rope.len_chars());
+    let line = rope.char_to_line(p);
+    let col = p - rope.line_to_char(line);
+    let text = rope.line(line).to_string();
+    LocationItem::at_line(path, line, col, crate::git::diff::strip_eol(&text))
+}
+
+/// The rows of `slots` in order: closed files read once each (an unreadable
+/// one drops its rows), then one row per path and line, the first kept.
+fn recent_items(slots: Vec<RecentSlot>) -> Vec<LocationItem> {
+    let mut files: HashMap<PathBuf, Option<ropey::Rope>> = HashMap::new();
+    let mut seen: HashSet<(PathBuf, usize)> = HashSet::new();
+    slots
+        .into_iter()
+        .filter_map(|slot| match slot {
+            RecentSlot::Item(item) => Some(item),
+            RecentSlot::Disk { path, pos } => {
+                let rope = files
+                    .entry(path.clone())
+                    .or_insert_with(|| std::fs::read(&path).ok().map(|b| ropey::Rope::from_str(&String::from_utf8_lossy(&b))))
+                    .as_ref()?;
+                Some(item_at(path, rope, pos))
+            }
+        })
+        .filter(|item| seen.insert((item.path.clone(), item.line)))
+        .collect()
+}
+
+impl App {
+    /// Recent Locations: the caret history as rows with their line text,
+    /// open buffers' lines now, closed files read off the main thread
+    /// (`AppMsg::RecentLocations`).
+    pub(super) fn show_recent_locations(&mut self) {
+        let mut slots = Vec::new();
+        for p in self.editor.recent_positions() {
+            let found = self.editor.index_of_id(p.id).or_else(|| p.path.as_deref().and_then(|path| self.editor.index_of(path)));
+            match (found, p.path) {
+                (Some(i), _) => {
+                    let b = &self.editor.buffers[i];
+                    if let Some(path) = b.path.clone() {
+                        slots.push(RecentSlot::Item(item_at(path, &b.rope, p.pos)));
+                    }
+                }
+                (None, Some(path)) => slots.push(RecentSlot::Disk { path, pos: p.pos }),
+                (None, None) => {}
+            }
+        }
+        if !slots.iter().any(|s| matches!(s, RecentSlot::Disk { .. })) {
+            return self.finish_recent(recent_items(slots));
+        }
+        let (tx, generation) = (self.bus_tx.clone(), self.workspace.generation);
+        tokio::task::spawn_blocking(move || {
+            let _ = tx.send(AppMsg::RecentLocations { generation, items: recent_items(slots) });
+        });
+    }
+
+    /// `AppMsg::RecentLocations`: shown unless the root changed meanwhile.
+    pub(super) fn recent_locations_loaded(&mut self, generation: u64, items: Vec<LocationItem>) {
+        if generation != self.workspace.generation {
+            return tracing::debug!("dropping stale recent locations");
+        }
+        self.finish_recent(items);
+    }
+
+    fn finish_recent(&mut self, items: Vec<LocationItem>) {
+        if items.is_empty() {
+            self.notify(Level::Info, "No recent locations");
+        } else {
+            self.open_locations(RECENT_LOCATIONS.into(), items, true);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::Ordering;
@@ -373,6 +461,67 @@ mod tests {
         p.handle_action(&PaletteAction::Down);
         let second = p.handle_action(&PaletteAction::Accept);
         assert_eq!(second, Some(PaletteResult::Accept(Accept::Action(Action::App(AppAction::PutLabel)))));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn recent_items_dedup_and_read_closed_files() {
+        let dir = std::env::temp_dir().join(format!("jetl-recent-items-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (open, closed, missing) = (dir.join("open.txt"), dir.join("closed.txt"), dir.join("missing.txt"));
+        std::fs::write(&closed, "one\n  two\nthree\n").unwrap();
+        let rope = ropey::Rope::from_str("zero\nfirst\n");
+        let slots = vec![
+            RecentSlot::Item(item_at(open.clone(), &rope, 6)),
+            RecentSlot::Disk { path: missing, pos: 0 },
+            RecentSlot::Disk { path: closed.clone(), pos: 6 },
+            RecentSlot::Item(item_at(open.clone(), &rope, 8)),
+        ];
+        let items = recent_items(slots);
+        let want = vec![LocationItem::at_line(open, 1, 1, "first"), LocationItem::at_line(closed, 1, 2, "two")];
+        assert_eq!(items, want);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn recent_locations_lists_open_and_closed_files() {
+        use crate::actions::{Action, AppAction, PaletteAction};
+        let (mut app, dir) = test_app("palette-recent-locations");
+        let text = "x\n".repeat(30);
+        let (a, b) = (app.workspace.root.join("a.txt"), app.workspace.root.join("b.txt"));
+        std::fs::write(&a, &text).unwrap();
+        std::fs::write(&b, &text).unwrap();
+        let theme = app.theme.clone();
+        app.editor.open_text(a.clone(), &text, false, &theme);
+        app.editor.goto_line(21, 1);
+        app.editor.open_text(b.clone(), &text, false, &theme);
+        let ia = app.editor.index_of(&a).unwrap();
+        app.editor.force_close(ia);
+        let ring: Vec<(Option<PathBuf>, usize)> = app.editor.recent_positions().into_iter().map(|p| (p.path, p.pos)).collect();
+        assert_eq!(ring, vec![(Some(b.clone()), 0), (Some(a.clone()), 40), (Some(a.clone()), 0)]);
+
+        app.perform(Action::App(AppAction::RecentLocations));
+        handle_next(&mut app, |m| matches!(m, AppMsg::RecentLocations { .. })).await;
+        let p = app.palette.as_mut().expect("palette");
+        assert_eq!(p.kind, PaletteKind::Locations);
+        assert_eq!(p.shown_locations(), vec![(b, 0), (a.clone(), 20), (a.clone(), 0)]);
+        p.handle_action(&PaletteAction::Down);
+        let res = p.handle_action(&PaletteAction::Accept);
+        assert_eq!(res, Some(PaletteResult::Accept(Accept::OpenFileAt { path: a, line: 20, col: 0 })));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn recent_locations_with_no_history_notifies() {
+        use crate::actions::{Action, AppAction};
+        let (mut app, dir) = test_app("palette-recent-none");
+        while app.editor.active_buffer().is_some() {
+            app.editor.force_close(0);
+        }
+        app.perform(Action::App(AppAction::RecentLocations));
+        assert!(app.palette.is_none());
+        assert!(app.notifications.iter().any(|n| n.text.contains("No recent locations")));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

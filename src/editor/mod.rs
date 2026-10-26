@@ -545,6 +545,12 @@ impl Editor {
         }
     }
 
+    /// Where the caret is and has been: the active caret first, then the
+    /// back/forward history ([`NavRing::recent`]).
+    pub fn recent_positions(&self) -> Vec<NavPos> {
+        self.active_buffer().map(nav_pos).into_iter().chain(self.nav.recent().cloned()).collect()
+    }
+
     /// Remember the active buffer's caret when `from` (taken before an
     /// action) is more than [`NAV_JUMP_LINES`] lines from it.
     fn note_jump(&mut self, from: Option<NavPos>) {
@@ -2764,6 +2770,18 @@ mod tests {
             assert_eq!(caret(&ed), ("b.txt".into(), 0));
         });
         assert_eq!(notes, vec!["No earlier position".to_string()]);
+    }
+
+    #[test]
+    fn recent_positions_start_at_the_caret() {
+        let text = "x\n".repeat(100);
+        let mut ed = editor_with("a.txt", &text);
+        ed.goto_line(60, 1);
+        ed.open_text(PathBuf::from("/tmp/b.txt"), &text, false, &Theme::default());
+        let got: Vec<(Option<PathBuf>, usize)> = ed.recent_positions().into_iter().map(|p| (p.path, p.pos)).collect();
+        assert_eq!(got[0], (Some(PathBuf::from("/tmp/b.txt")), 0));
+        assert_eq!(got[1].1, 118, "a.txt at line 60");
+        assert_eq!(got[1].0.as_deref().and_then(Path::file_name), Some(std::ffi::OsStr::new("a.txt")));
     }
 
     #[test]
