@@ -10,7 +10,7 @@ use std::sync::Arc;
 use ropey::Rope;
 use tree_sitter::{QueryCursor, StreamingIterator, Tree};
 
-use crate::editor::syntax::{LanguageDef, RopeProvider};
+use crate::editor::syntax::{LanguageDef, RopeProvider, Syntax};
 
 /// Names longer than this (in chars) are cut.
 const MAX_NAME: usize = 120;
@@ -101,6 +101,55 @@ pub fn extract(def: &'static LanguageDef, tree: &Tree, rope: &Rope) -> Vec<Symbo
         .collect()
 }
 
+/// The symbols whose `start_line..=end_line` contains `line`, outermost
+/// first and strictly nested (each next one lies inside the previous), at
+/// most one per depth; when two siblings both span `line` the later one in
+/// document order wins. `symbols` is in `extract`'s order. Pure.
+pub fn enclosing(symbols: &[Symbol], line: usize) -> Vec<&Symbol> {
+    let mut out: Vec<&Symbol> = Vec::new();
+    for s in symbols {
+        if s.start_line <= line && line <= s.end_line {
+            let keep = out.iter().position(|o| o.depth >= s.depth).unwrap_or(out.len());
+            out.truncate(keep);
+            out.push(s);
+        }
+    }
+    out
+}
+
+/// A buffer's symbols, extracted again only when the buffer version or the
+/// language changes (`Buffer::scopes`).
+#[derive(Debug, Default)]
+pub struct ScopeCache {
+    /// Buffer version and language name the symbols were extracted for.
+    key: Option<(u64, &'static str)>,
+    symbols: Vec<Symbol>,
+}
+
+impl ScopeCache {
+    /// The symbols for `rope` at `version`. Cheap per frame unless the
+    /// version or language changed, then the tree is reparsed and walked.
+    /// No syntax, or a language without a tags query, gives an empty slice.
+    pub fn symbols(&mut self, syntax: Option<&mut Syntax>, rope: &Rope, version: u64) -> &[Symbol] {
+        let Some(syn) = syntax else {
+            self.key = None;
+            self.symbols.clear();
+            return &self.symbols;
+        };
+        let key = (version, syn.def.name);
+        if self.key != Some(key) {
+            self.symbols = if syn.def.tags_query().is_some() {
+                syn.reparse(rope);
+                syn.tree().map(|t| extract(syn.def, t, rope)).unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            self.key = Some(key);
+        }
+        &self.symbols
+    }
+}
+
 /// Parse `text` with `def`'s grammar and extract its symbols (off the main
 /// thread; the parser is reused across files of one language).
 pub fn extract_text(def: &'static LanguageDef, parser: &mut tree_sitter::Parser, text: &str) -> Vec<Symbol> {
@@ -178,6 +227,57 @@ mod tests {
         assert_eq!((syms[1].start_line, syms[1].end_line), (4, 9));
         // References (`App::new()`, `helper_len()`) are not symbols.
         assert!(!syms.iter().any(|s| &*s.name == "helper_len"));
+    }
+
+    fn sym(name: &str, start: usize, end: usize, depth: usize) -> Symbol {
+        Symbol { name: name.into(), kind: "function", line: start, col: 0, start_line: start, end_line: end, depth }
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[test]
+    fn enclosing_nests_outermost_first() {
+        let src = "struct App {\n    x: u32,\n}\n\nimpl App {\n    pub fn new() -> Self {\n        fn helper() {}\n        App { x: helper_len() }\n    }\n}\n\nimpl Default for App {\n    fn default() -> Self { App::new() }\n}\n\nfn main() {\n    App::new();\n}\nmod inner {\n    pub const N: usize = 3;\n}\n";
+        let def = crate::editor::syntax::language_for_name("rust").unwrap();
+        let syms = extract_text(def, &mut tree_sitter::Parser::new(), src);
+        let at = |l| enclosing(&syms, l).iter().map(|s| (s.kind, &*s.name)).collect::<Vec<_>>();
+        assert_eq!(at(6), [("impl", "App"), ("method", "new"), ("function", "helper")]);
+        assert_eq!(at(7), [("impl", "App"), ("method", "new")]);
+        for blank in [3, 10, 14] {
+            assert!(at(blank).is_empty(), "line {blank}");
+        }
+        assert_eq!(at(19), [("mod", "inner"), ("constant", "N")]);
+    }
+
+    #[test]
+    fn enclosing_prefers_the_later_sibling() {
+        let syms = [sym("a", 0, 5, 0), sym("a1", 4, 5, 1), sym("b", 5, 9, 0), sym("b1", 5, 6, 1)];
+        let at = |l| enclosing(&syms, l).iter().map(|s| &*s.name).collect::<Vec<_>>();
+        assert_eq!(at(5), ["b", "b1"]);
+        assert_eq!(at(4), ["a", "a1"]);
+        assert!(at(20).is_empty());
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[test]
+    fn scope_cache_extracts_once_per_version() {
+        let def = crate::editor::syntax::language_for_name("rust").unwrap();
+        let theme = crate::config::theme::Theme::default();
+        let mut syn = Syntax::new(def, &theme).unwrap();
+        let mut cache = ScopeCache::default();
+        let names = |s: &[Symbol]| s.iter().map(|s| s.name.to_string()).collect::<Vec<_>>();
+        let one = Rope::from_str("fn a() {}\n");
+        assert_eq!(names(cache.symbols(Some(&mut syn), &one, 1)), ["a"]);
+        // Same version: cached, even for another syntax and text.
+        let mut other = Syntax::new(def, &theme).unwrap();
+        let two = Rope::from_str("fn a() {}\nfn b() {}\n");
+        assert_eq!(names(cache.symbols(Some(&mut other), &two, 1)), ["a"]);
+        assert_eq!(names(cache.symbols(Some(&mut other), &two, 2)), ["a", "b"]);
+        assert!(cache.symbols(None, &two, 2).is_empty());
+        // A language without a tags query has no symbols.
+        if let Some(plain) = crate::editor::syntax::language_for_name("toml").filter(|d| d.tags_query().is_none()) {
+            let mut syn = Syntax::new(plain, &theme).unwrap();
+            assert!(cache.symbols(Some(&mut syn), &two, 3).is_empty());
+        }
     }
 
     /// Names and depths of `src` parsed as `file`'s language, when enabled.

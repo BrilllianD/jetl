@@ -217,6 +217,8 @@ pub struct Buffer {
     /// LSP inlay hints, in this buffer's current coordinates (shifted by every
     /// change until the next answer).
     pub inlays: super::inlay::InlayHints,
+    /// Symbols for breadcrumbs and sticky scroll, extracted while a pane needs them.
+    pub scopes: crate::symbols::ScopeCache,
 }
 
 impl Buffer {
@@ -269,6 +271,7 @@ impl Buffer {
             recovered: false,
             base_path: None,
             inlays: Default::default(),
+            scopes: Default::default(),
         }
     }
 

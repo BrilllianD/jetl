@@ -13,10 +13,10 @@ expression: "snapshot(&term, &settings_marks(&app.theme), None)"
 07   │Keymap                  │  Highlight the word …  [x]                      │
 08  ✓│Version Control         │  Show indent guides    [x]                      │
 09  8│  Git                   │  Inline blame on the…  [ ]                      │
-10  ⟲│  Worktrees             │  Live templates (sni…  [x]                      │
-11  5│Files                   │  Tab limit             0                        │
-12  ⚑│Tools                   │  Largest file with s…  2097152          new tabs│
-13  9│  Terminal              │                                                 │
+10  ⟲│  Worktrees             │  Show breadcrumbs      [ ]                      │
+11  5│Files                   │  Live templates (sni…  [x]                      │
+12  ⚑│Tools                   │  Tab limit             0                        │
+13  9│  Terminal              │  Largest file with s…  2097152          new tabs│
 14  ⎇│  Run                   │                                                 │
 15   │  Clipboard             │Lines kept visible above and below the caret.    │
 16  ❯│  Local History         │Applies at once.                                 │

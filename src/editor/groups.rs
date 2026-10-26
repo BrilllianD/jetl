@@ -54,6 +54,8 @@ pub struct TabGroup {
     /// The whole group (tab bar, find bar and text view) as last drawn.
     pub last_area: Rect,
     pub find_area: Rect,
+    /// The breadcrumb row as last drawn (`Rect::default()` when none); never part of `text_area`.
+    pub crumbs_area: Rect,
     pub(super) find_hits: Vec<(FindHit, Rect)>,
     /// The screen cell of the caret as last drawn (`None` when it is
     /// scrolled out of view); popups at the caret anchor there.
@@ -73,6 +75,7 @@ impl TabGroup {
             text_area: Rect::default(),
             last_area: Rect::default(),
             find_area: Rect::default(),
+            crumbs_area: Rect::default(),
             find_hits: Vec::new(),
             caret_cell: None,
         }

@@ -4,6 +4,7 @@ pub mod blame;
 mod bookmarks;
 pub use bookmarks::BookmarkTarget;
 pub mod brackets;
+mod breadcrumbs;
 pub mod buffer;
 mod carets;
 mod column;
@@ -151,6 +152,7 @@ pub struct Editor {
     indent_guides: bool,
     /// `editor.inline_blame` as applied.
     inline_blame: bool,
+    breadcrumbs: bool,
     trim_trailing_whitespace: bool,
     final_newline: bool,
     autosave: Autosave,
@@ -235,6 +237,7 @@ impl Editor {
             highlight_occurrences: false,
             indent_guides: false,
             inline_blame: false,
+            breadcrumbs: false,
             trim_trailing_whitespace: false,
             final_newline: false,
             autosave: Autosave::Off,
@@ -276,6 +279,7 @@ impl Editor {
             highlight_occurrences,
             indent_guides,
             inline_blame,
+            breadcrumbs,
             // Read by the app where used (`app/snippets.rs`).
             snippets: _,
             trim_trailing_whitespace,
@@ -302,6 +306,7 @@ impl Editor {
                 }
             }
         }
+        self.breadcrumbs = *breadcrumbs;
         self.trim_trailing_whitespace = *trim_trailing_whitespace;
         self.final_newline = *final_newline;
         if self.autosave != *autosave {
@@ -1393,6 +1398,11 @@ impl Editor {
                 self.click_find_bar(m, cx);
                 return true;
             }
+            // The breadcrumb row: clicks are not handled yet, and the text
+            // row under it is out of view.
+            if self.focused_group().crumbs_area.contains(ratatui::layout::Position::new(m.x, m.y)) {
+                return true;
+            }
             // A click in the text hands keyboard focus back to the text.
             if let Some(s) = self.active_buffer_mut().and_then(|b| b.view.search.as_mut()) {
                 s.focused = false;
@@ -1769,6 +1779,7 @@ impl Editor {
         group.caret_cell = None;
         group.find_hits.clear();
         group.find_area = Rect::default();
+        group.crumbs_area = Rect::default();
         let screen = frame.buffer_mut();
         screen.set_style(area, Style::default().bg(theme.bg));
         let Some(i) = group.active_id().and_then(|id| self.buffers.iter().position(|b| b.id == id)) else {
@@ -1808,6 +1819,7 @@ impl Editor {
         };
         // The find bar takes the top rows; the text view gets the rest so
         // `text_area` (and with it mouse mapping) stays exact.
+        let crumbs_on = self.breadcrumbs && self.merge.is_none();
         let group = &mut self.groups[gi];
         let b = &mut self.buffers[i];
         let mut text_rect = area;
@@ -1821,9 +1833,23 @@ impl Editor {
             bar_focused = focused && s.focused;
             group.find_hits = render_find_bar(frame, group.find_area, s, bar_focused, theme);
         }
+        // The breadcrumb row takes the bottom row; `view::render` scrolls the
+        // caret into what is left, so `text_area` stays exact.
+        let mut crumbs = None;
+        if crumbs_on && text_rect.height >= 2 && breadcrumbs::has_scopes(b) {
+            let line = b.cursor_line_col().0;
+            let syms = b.scopes.symbols(b.syntax.as_mut(), &b.rope, b.version);
+            let path = breadcrumbs::crumbs(&crate::symbols::enclosing(syms, line));
+            text_rect.height -= 1;
+            crumbs = Some((Rect::new(text_rect.x, text_rect.bottom(), text_rect.width, 1), path));
+        }
         let out = view::render(b, frame.buffer_mut(), text_rect, &opts);
         group.text_area = out.text_area;
         group.caret_cell = out.cursor;
+        if let Some((row, path)) = crumbs {
+            breadcrumbs::paint(frame.buffer_mut(), row, &path, theme);
+            group.crumbs_area = row;
+        }
         if focused
             && !bar_focused
             && let Some((x, y)) = out.cursor
@@ -1996,6 +2022,64 @@ mod tests {
         let mut cx = Ctx { effects: Vec::new(), config: &config, theme: &theme, workspace: &workspace, bus };
         f(&mut cx);
         cx.effects.into_iter().filter_map(|e| if let Effect::Notify(_, t) = e { Some(t) } else { None }).collect()
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[test]
+    fn breadcrumbs_row_under_the_text() {
+        let mut c = Config::default();
+        c.editor.breadcrumbs = true;
+        let mut ed = Editor::new(&c);
+        let theme = Theme::default();
+        let src = "impl A {\n    fn b() {\n        x();\n    }\n}\n\nfn c() {}\n";
+        ed.open_text(PathBuf::from("/tmp/crumbs.rs"), src, false, &theme);
+        let at = |ed: &Editor, line: usize, col: usize| ed.active_buffer().unwrap().rope.line_to_char(line) + col;
+        let p = at(&ed, 2, 8);
+        ed.active_buffer_mut().unwrap().view.set_sel(Selection::point(p));
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 6)).unwrap();
+        let mut draw = |ed: &mut Editor| {
+            term.draw(|f| ed.render(f, Rect::new(0, 0, 40, 1), Rect::new(0, 1, 40, 5), true, &theme)).unwrap().buffer.clone()
+        };
+        let screen = draw(&mut ed);
+        assert_eq!(ed.text_area().height, 4);
+        assert_eq!(ed.focused_group().crumbs_area, Rect::new(0, 5, 40, 1));
+        let row: String = (0..40).map(|x| screen[(x, 5)].symbol()).collect();
+        assert_eq!(row.trim(), "impl A › method b");
+        let sep = row.chars().position(|c| c == '›').unwrap() as u16;
+        assert_eq!(screen[(sep, 5)].fg, theme.dim.fg.unwrap());
+        assert_eq!(screen[(sep, 5)].bg, theme.breadcrumbs.bg.unwrap());
+        let (_, cy) = ed.focused_group().caret_cell.unwrap();
+        assert!((1..5).contains(&cy));
+        let x0 = ed.text_area().x;
+        let press = |ed: &mut Editor, x: u16, y: u16| {
+            let m = Mouse { kind: MouseEventKind::Down(MouseButton::Left), x, y, clicks: 1, mods: KeyModifiers::NONE };
+            with_cx(|cx| {
+                ed.handle_mouse(&m, Rect::default(), cx);
+                let up = Mouse { kind: MouseEventKind::Up(MouseButton::Left), ..m };
+                ed.handle_mouse(&up, Rect::default(), cx);
+            });
+        };
+        press(&mut ed, x0 + 4, 2);
+        assert_eq!(ed.active_buffer().unwrap().cursor_line_col(), (1, 4));
+        let before = ed.active_buffer().unwrap().view.sels.as_slice().to_vec();
+        press(&mut ed, x0 + 2, 5);
+        assert_eq!(ed.active_buffer().unwrap().view.sels.as_slice(), before);
+        // Outside every definition the row stays, blank.
+        let p = at(&ed, 5, 0);
+        ed.active_buffer_mut().unwrap().view.set_sel(Selection::point(p));
+        let screen = draw(&mut ed);
+        let row: String = (0..40).map(|x| screen[(x, 5)].symbol()).collect();
+        assert_eq!(row.trim(), "");
+        assert_eq!((ed.focused_group().crumbs_area.height, ed.text_area().height), (1, 4));
+        ed.apply_config(&Config::default());
+        draw(&mut ed);
+        assert_eq!(ed.text_area().height, 5);
+        assert_eq!(ed.focused_group().crumbs_area, Rect::default());
+        // Plain text gets no row.
+        ed.apply_config(&c);
+        ed.open_text(PathBuf::from("/tmp/notes.txt"), "a\nb\n", false, &theme);
+        draw(&mut ed);
+        assert_eq!(ed.text_area().height, 5);
     }
 
     fn editor_with(name: &str, text: &str) -> Editor {

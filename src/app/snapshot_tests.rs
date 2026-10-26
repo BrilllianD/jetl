@@ -492,6 +492,48 @@ fn main() {
 
 #[cfg(feature = "lang-rust")]
 #[tokio::test]
+async fn editor_breadcrumbs() {
+    let mut fx = stable_app("breadcrumbs");
+    let app = &mut fx.app;
+    load(app, "point.rs", RUST);
+    // Into `fn new`'s body.
+    moves(app, Motion::Down, 7);
+    let mut c = app.config.clone();
+    c.editor.breadcrumbs = true;
+    app.editor.apply_config(&c);
+    let term = draw_editor(app, 60, 12);
+    let mut marks = vec![
+        Mark::style('D', "breadcrumbs separator", app.theme.breadcrumbs.patch(app.theme.dim)),
+        Mark::style('B', "breadcrumbs", app.theme.breadcrumbs),
+    ];
+    marks.extend(editor_marks(&app.theme));
+    assert_snapshot!("editor_breadcrumbs", snapshot(&term, &marks, None));
+}
+
+#[cfg(feature = "lang-rust")]
+#[tokio::test]
+async fn editor_breadcrumbs_split() {
+    let mut fx = stable_app("breadcrumbs-split");
+    let app = &mut fx.app;
+    load(app, "point.rs", RUST);
+    moves(app, Motion::Down, 7);
+    let mut c = app.config.clone();
+    c.editor.breadcrumbs = true;
+    app.editor.apply_config(&c);
+    editor(app, EditorAction::SplitRight);
+    // The new group's caret into `fn main`.
+    moves(app, Motion::Down, 9);
+    let term = draw_editor(app, 80, 12);
+    let mut marks = vec![
+        Mark::style('D', "breadcrumbs separator", app.theme.breadcrumbs.patch(app.theme.dim)),
+        Mark::style('B', "breadcrumbs", app.theme.breadcrumbs),
+    ];
+    marks.extend(editor_marks(&app.theme));
+    assert_snapshot!("editor_breadcrumbs_split", snapshot(&term, &marks, None));
+}
+
+#[cfg(feature = "lang-rust")]
+#[tokio::test]
 async fn editor_fold_rust() {
     let mut fx = stable_app("fold-rust");
     let app = &mut fx.app;

@@ -146,6 +146,13 @@ pub static SETTINGS: &[Setting] = &[
         |c| Value::Bool(c.editor.inline_blame)
     ),
     row!(
+        "editor.breadcrumbs",
+        "Show breadcrumbs",
+        "A row at the bottom of each editor pane with the definitions around the caret (impl, function, class, heading), from the language's tags query.",
+        Kind::Bool,
+        |c| Value::Bool(c.editor.breadcrumbs)
+    ),
+    row!(
         "editor.snippets",
         "Live templates (snippets)",
         "Tab after a snippet's prefix expands it; snippets are listed in completion. Files: snippets/<language>.toml and all.toml.",
@@ -397,6 +404,7 @@ pub static PAGES: &[Page] = &[
             "editor.highlight_occurrences",
             "editor.indent_guides",
             "editor.inline_blame",
+            "editor.breadcrumbs",
             "editor.snippets",
             "editor.max_tabs",
             "editor.max_highlight_bytes"

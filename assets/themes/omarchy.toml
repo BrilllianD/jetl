@@ -65,6 +65,7 @@ lightbulb = "{{yellow}}"
 indent_guide = "{{mix background foreground 20}}"
 inlay_hint = { fg = "{{mix foreground background 45}}", bg = "{{mix background foreground 12}}" }
 inline_blame = { fg = "{{mix foreground background 45}}" }
+breadcrumbs = { fg = "{{mix foreground background 25}}", bg = "{{dark_background}}" }
 splitter = { fg = "{{muted}}", bg = "{{background}}" }
 
 [syntax]

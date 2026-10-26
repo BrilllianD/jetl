@@ -121,6 +121,8 @@ pub struct EditorConfig {
     pub indent_guides: bool,
     /// Show the caret line's blame (author, date, summary) after its text in the focused pane.
     pub inline_blame: bool,
+    /// A row at the bottom of each editor pane naming the definitions around the caret.
+    pub breadcrumbs: bool,
     /// Live templates: Tab after a snippet prefix, snippet rows in completion (config/snippets.rs).
     /// Read where used (`app/snippets.rs`), so `apply_config` has nothing to do.
     pub snippets: bool,
@@ -276,6 +278,7 @@ impl Default for EditorConfig {
             highlight_occurrences: true,
             indent_guides: true,
             inline_blame: false,
+            breadcrumbs: false,
             snippets: true,
             trim_trailing_whitespace: true,
             final_newline: true,

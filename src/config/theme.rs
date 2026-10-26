@@ -258,6 +258,9 @@ theme_fields! {
         inlay_hint,
         /// Inline blame after the caret line's text (`editor.inline_blame`): only the foreground is used.
         inline_blame,
+        /// The breadcrumb row under each editor pane (`editor.breadcrumbs`):
+        /// foreground and background; the separators take `dim`'s foreground.
+        breadcrumbs,
         splitter,
     ],
 }
