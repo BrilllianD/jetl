@@ -2064,7 +2064,7 @@ mod tests {
         assert_eq!(ed.text_area().height, 4);
         assert_eq!(ed.focused_group().crumbs_area, Rect::new(0, 5, 40, 1));
         let row: String = (0..40).map(|x| screen[(x, 5)].symbol()).collect();
-        assert_eq!(row.trim(), "impl A › method b");
+        assert_eq!(row.trim(), "impl A › fn b");
         let sep = row.chars().position(|c| c == '›').unwrap() as u16;
         assert_eq!(screen[(sep, 5)].fg, theme.dim.fg.unwrap());
         assert_eq!(screen[(sep, 5)].bg, theme.breadcrumbs.bg.unwrap());

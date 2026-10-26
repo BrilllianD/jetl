@@ -14,6 +14,6 @@ expression: "snapshot(&term, &marks, None)"
 08   9    │   }                           │ 18    │   println!("{}", p.sum());
 09  10    │                               │ 19    }
 10  11  ▾ │   fn sum(&self) -> i32 {      │ 20
-11  impl Point › method new               │ function main
+11  impl Point › fn new                   │ fn main
 -- marks: D=breadcrumbs separator B=breadcrumbs C=caret S=selection F=fold O=occurrence
 11 BBBBBBBBBBBDDDBBBBBBBBBBBBBBBBBBBBBBBBB BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB

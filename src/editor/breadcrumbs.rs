@@ -1,6 +1,7 @@
 //! The breadcrumb row (`editor.breadcrumbs`): one row at the bottom of each
 //! editor pane whose buffer has scopes (a tags query), showing the caret's
-//! enclosing definitions as `{kind} {name}` crumbs joined by ` › `, cut from
+//! enclosing definitions as `{label} {name}` crumbs (short kind labels such as
+//! `fn`, `impl`, `class`; Markdown headings bare) joined by ` › `, cut from
 //! the left with `…`. An empty path leaves the row blank, so the row height
 //! never jumps with the caret. `Editor::render_group` takes the bottom row of
 //! the text rect before `view::render`, so `text_area` excludes it.
@@ -21,9 +22,26 @@ pub(crate) fn has_scopes(b: &Buffer) -> bool {
     b.syntax.as_ref().is_some_and(|s| s.def.tags_query().is_some())
 }
 
-/// The crumb texts of an `enclosing` path.
+/// The short label shown before a crumb's name; `None` shows the name alone.
+pub(super) fn short_kind(kind: &'static str) -> Option<&'static str> {
+    match kind {
+        "function" | "method" => Some("fn"),
+        "mod" | "module" => Some("mod"),
+        "constant" => Some("const"),
+        "heading" => None,
+        // impl, struct, enum, union, trait, macro, type, class, interface, and any other kind
+        other => Some(other),
+    }
+}
+
+/// The crumb texts of an `enclosing` path, one per symbol, same order.
 pub(super) fn crumbs(path: &[&Symbol]) -> Vec<String> {
-    path.iter().map(|s| format!("{} {}", s.kind, s.name)).collect()
+    path.iter()
+        .map(|s| match short_kind(s.kind) {
+            Some(k) => format!("{k} {}", s.name),
+            None => s.name.to_string(),
+        })
+        .collect()
 }
 
 fn width(c: char) -> usize {
@@ -88,6 +106,38 @@ pub(super) fn paint(screen: &mut ratatui::buffer::Buffer, row: Rect, crumbs: &[S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sym(name: &str, kind: &'static str) -> Symbol {
+        Symbol { name: name.into(), kind, line: 0, col: 0, start_line: 0, end_line: 0, depth: 0 }
+    }
+
+    #[test]
+    fn short_kind_maps_every_listed_kind() {
+        assert_eq!(short_kind("function"), Some("fn"));
+        assert_eq!(short_kind("method"), Some("fn"));
+        assert_eq!(short_kind("impl"), Some("impl"));
+        for k in ["struct", "enum", "union", "trait", "macro", "type", "class", "interface"] {
+            assert_eq!(short_kind(k), Some(k));
+        }
+        assert_eq!(short_kind("mod"), Some("mod"));
+        assert_eq!(short_kind("module"), Some("mod"));
+        assert_eq!(short_kind("constant"), Some("const"));
+        assert_eq!(short_kind("heading"), None);
+        assert_eq!(short_kind("field"), Some("field"));
+    }
+
+    #[test]
+    fn crumbs_use_short_labels() {
+        let (a, b) = (sym("Point", "impl"), sym("new", "method"));
+        assert_eq!(crumbs(&[&a, &b]), ["impl Point", "fn new"]);
+        let (a, b) = (sym("A", "class"), sym("m", "method"));
+        assert_eq!(crumbs(&[&a, &b]), ["class A", "fn m"]);
+        let (a, b) = (sym("Top", "heading"), sym("Sub", "heading"));
+        assert_eq!(crumbs(&[&a, &b]), ["Top", "Sub"]);
+        let a = sym("x", "field");
+        assert_eq!(crumbs(&[&a]), ["field x"]);
+        assert!(crumbs(&[]).is_empty());
+    }
 
     fn joined(runs: &[(String, bool)]) -> String {
         runs.iter().map(|(t, _)| t.as_str()).collect()
