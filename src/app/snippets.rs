@@ -80,15 +80,20 @@ pub(super) fn uses_selection(body: &str) -> bool {
 /// The text Surround With replaces for `sel`: no selection, the caret line
 /// from its first non-blank char; a selection covering whole lines (from at
 /// or before the first non-blank char of its first line to the end of its
-/// last, which may be shown as column 0 of the next), those lines; else the
+/// last, which may be shown as column 0 of the next, or inside the leading
+/// whitespace of the next, which counts as column 0), those lines; else the
 /// selection. May be empty.
 pub(super) fn surround_range(rope: &Rope, sel: &Selection) -> Range<usize> {
     let first = |l: usize| rope.line_to_char(l) + indent_of(rope, l);
     let end = |l: usize| rope.line_to_char(l) + line_len_no_eol(rope, l);
-    let r = sel.range();
+    let mut r = sel.range();
     let l0 = rope.char_to_line(r.start);
     if r.is_empty() {
         return first(l0)..end(l0);
+    }
+    let le = rope.char_to_line(r.end);
+    if le > l0 && r.end > rope.line_to_char(le) && r.end <= first(le) {
+        r.end = rope.line_to_char(le);
     }
     let mut l1 = rope.char_to_line(r.end);
     if l1 > l0 && r.end == rope.line_to_char(l1) {
@@ -370,6 +375,11 @@ mod surround_tests {
         assert_eq!(range(BODY, (1, 4), (1, 7)), "a()", "an inline selection is exact");
         assert_eq!(range(BODY, (1, 6), (2, 5)), ");\n    b", "a partial multi-line selection is exact");
         assert_eq!(range("x\n\n", (1, 0), (1, 0)), "", "a blank line has nothing");
+        assert_eq!(range(BODY, (1, 4), (2, 1)), "a();", "whole lines, end at column 1 of the next line's indent");
+        assert_eq!(range(BODY, (1, 4), (2, 4)), "a();", "whole lines, end at the next line's first non-blank");
+        assert_eq!(range(BODY, (1, 0), (2, 2)), "a();", "from column 0, end inside the next line's indent");
+        assert_eq!(range(BODY, (1, 6), (2, 2)), ");\n", "a mid-line start ends at the next line's start");
+        assert_eq!(range(BODY, (1, 1), (1, 3)), "  ", "a selection inside one line's indent is exact");
     }
 
     #[test]
@@ -804,6 +814,24 @@ mod tests {
         assert_eq!(caret_line(&app), "        b();|");
         undo(&mut app);
         assert_eq!(text(&app), TWO);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn surround_selection_ending_in_the_next_indent_keeps_the_level() {
+        if crate::editor::syntax::language_for_name("go").is_none() {
+            return;
+        }
+        let (mut app, dir) = test_app("surround-indent-end");
+        let src = "func main() {\n\ta()\n\tb()\n}\n";
+        load(&mut app, "a.go", src);
+        app.focus.set(PanelId::Editor);
+        select(&mut app, (1, 1), (2, 1));
+        surround(&mut app, "if");
+        assert_eq!(text(&app), "func main() {\n\tif condition {\n\t\ta()\n\t}\n\tb()\n}\n");
+        app.editor.set_snippet(None);
+        undo(&mut app);
+        assert_eq!(text(&app), src);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -31,7 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The session (open tabs, carets, layout) is saved every few seconds while jetl runs, so a crash no longer loses the tabs opened since the start.
 - Test runner tree: jest runs (npx jest, yarn jest) show the Tests view too, with Rerun Failed and Run Test at Caret; jetl adds --verbose to a jest command given as a list of words.
 - Live templates and language server snippets fill in variables: `$TM_FILENAME`, `$TM_LINE_NUMBER`, `$CURRENT_YEAR`, `$CURRENT_DATE`, `$UUID` and the rest of the VS Code set except `$CLIPBOARD`; unknown ones still insert their default.
-- Surround With (Ctrl+Alt+T, Edit > Surround With…): wrap the selection, or the caret line, with a live template that uses `$TM_SELECTED_TEXT`.
+- Surround With (Ctrl+Alt+T, Edit > Surround With…): wrap the selection, or the caret line, with a live template that uses `$TM_SELECTED_TEXT`; a selection that covers whole lines (it may end at or inside the leading indent of the next line) wraps those lines.
 - More built-in live templates for Surround With: `for`, `ifelse` and the other block forms for Rust (`loop`, `unsafe`), Python (`while`, `with`) and TypeScript (`while`), and new built-in JavaScript and Go snippets (Go: `func`, `iferr`, `if`, `ifelse`, `for`, `forr`).
 - Snippet variable transforms: `${TM_FILENAME/(.*)\..+$/$1/}` rewrites a variable with a regex and a format (`$1`, `${1:/upcase}`, `${1:+if}`, `${1:?if:else}`; options `g`, `i`, `m`, `s`) as in VS Code.
 - Structure window (Alt+7) lists Markdown headings: ATX headings nest by level, setext headings sit at the depth of their enclosing section.
