@@ -27,6 +27,9 @@ Set `YMAN_ACTOR=claude` so comments are attributed. Phase tasks are ids 1-6; sub
 Start the subtask before working on it, `done` it after its verification steps pass.
 Current work is the Stage D epic: `yman plan 107 -n 3` picks the next step (priority is the
 order), and `yman show 107 -n 0` holds the working mode. Design docs are `yman attach`ed to their task.
+Implementer subagents run one at a time across the whole run, in the main checkout: no parallel
+worktree slots, even for slices with `Depends on: none` (overrides the global slot rule). Designers
+and reviewers may overlap a running implementer.
 
 ## Conventions
 
