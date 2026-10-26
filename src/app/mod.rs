@@ -2957,8 +2957,13 @@ pub(crate) mod tests {
         let (path, _) = app.editor.want_inline_blame().expect("asks for b.txt");
         assert_eq!(path, b);
         app.notifications.clear();
-        let note = app.editor.set_blame(&b, u64::MAX / 2, Err(anyhow::anyhow!("untracked")));
-        assert!(note.is_none());
+        let g = app.git.generation;
+        app.handle_msg(AppMsg::Git(GitMsg::Blame {
+            generation: g,
+            seq: u64::MAX / 2,
+            path: b.clone(),
+            result: Err(anyhow::anyhow!("untracked")),
+        }));
         let state = app.editor.buffers.iter().find(|x| x.path.as_deref() == Some(b.as_path())).unwrap().blame.as_ref().unwrap();
         assert!(state.data.is_none());
         assert!(app.notifications.is_empty(), "{:?}", app.notifications);

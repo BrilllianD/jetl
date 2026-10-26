@@ -933,7 +933,8 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
                 let x = text_area.x as usize + gc - scroll_col;
                 if x < right as usize && right as usize - x >= 10 {
                     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
-                    screen.set_stringn(x as u16, y, super::blame::inline_text(c, now), right as usize - x, theme.inline_blame);
+                    let text = super::blame::fit_inline(&super::blame::inline_text(c, now), right as usize - x);
+                    screen.set_stringn(x as u16, y, text, right as usize - x, theme.inline_blame);
                 }
             }
         }
@@ -1214,6 +1215,66 @@ mod tests {
             follow: true,
             decor: None,
         }
+    }
+
+    fn blamed(text: &str) -> Buffer {
+        use crate::editor::blame::BlameState;
+        use crate::git::model::{Blame, BlameCommit};
+        let mut buf = Buffer::from_text(1, None, text, false);
+        let commit = BlameCommit { sha: "s".into(), author: "Ann".into(), time: 0, offset_minutes: 0, summary: "msg".into() };
+        let data = Blame { commits: vec![commit], lines: vec![0; 8] };
+        buf.blame = Some(BlameState { data: Some(data), ..BlameState::new() });
+        buf
+    }
+
+    /// Chars of row 0 and the screen column where the blame text starts.
+    fn blame_col(buf: &mut Buffer, theme: &Theme, w: u16, follow: bool) -> (Vec<String>, Option<usize>, u16) {
+        let area = Rect::new(0, 0, w, 3);
+        let mut screen = Screen::empty(area);
+        let o = RenderOpts { inline_blame: true, follow, ..resize_opts(theme) };
+        let out = render(buf, &mut screen, area, &o);
+        let row: Vec<String> = (0..w).map(|x| screen[(x, 0)].symbol().to_string()).collect();
+        let at = row.iter().position(|c| c == "A").filter(|&i| row[i..].concat().starts_with("Ann,"));
+        (row, at, out.text_area.x)
+    }
+
+    #[test]
+    fn inline_blame_follows_the_fold_placeholder() {
+        let theme = Theme::default();
+        let mut buf = blamed("fn x() {\n    a;\n}\nz\n");
+        buf.fold_collapse(false);
+        let (f, last) = buf.view.folds.header_at(0).expect("folded");
+        let ph = placeholder(&buf.rope, f, last).width();
+        let (_, at, tx) = blame_col(&mut buf, &theme, 60, true);
+        assert_eq!(at, Some(tx as usize + 8 + ph + 4));
+    }
+
+    #[test]
+    fn inline_blame_starts_after_a_virtual_caret() {
+        let theme = Theme::default();
+        let mut buf = blamed("ab\n");
+        buf.view.sels = Selections::single(Selection::virtual_point(2, 20));
+        let (_, at, tx) = blame_col(&mut buf, &theme, 80, true);
+        assert_eq!(at, Some(tx as usize + 20 + 4));
+    }
+
+    #[test]
+    fn inline_blame_follows_and_hides_under_horizontal_scroll() {
+        let theme = Theme::default();
+        let mut buf = blamed(&format!("{}\n", "x".repeat(60)));
+        buf.view.sels = Selections::single(Selection::point(60));
+        let (_, at, _) = blame_col(&mut buf, &theme, 50, true);
+        assert!(buf.view.scroll_col > 0);
+        assert_eq!(at, None, "fewer than 10 cells left after the scrolled text");
+        // A short line scrolled out of view leaves the blame left of the viewport.
+        let mut short = blamed("ab\n");
+        short.view.scroll_col = 50;
+        assert_eq!(blame_col(&mut short, &theme, 80, false).1, None);
+        // Partly scrolled: the text starts `gc - scroll_col` cells in.
+        let mut mid = blamed("ab\n");
+        mid.view.scroll_col = 3;
+        let (_, at, tx) = blame_col(&mut mid, &theme, 80, false);
+        assert_eq!(at, Some(tx as usize + 2 + 4 - 3));
     }
 
     fn render_at(buf: &mut Buffer, theme: &Theme, w: u16, h: u16) {

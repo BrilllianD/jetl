@@ -406,6 +406,8 @@ async fn editor_inline_blame() {
     };
     app.editor.set_blame(&path, 1, Ok(Blame { commits: vec![commit], lines: vec![0; 4] }));
     moves(app, Motion::Down, 1);
+    // A style of its own, so the tab-bar filler (dim) is not marked too.
+    app.theme.inline_blame = app.theme.inline_blame.fg(ratatui::style::Color::Magenta).add_modifier(Modifier::ITALIC);
     let term = draw_editor(app, 70, 8);
     let mut marks = vec![Mark::style('B', "inline blame", app.theme.inline_blame)];
     marks.extend(editor_marks(&app.theme));

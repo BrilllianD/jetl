@@ -109,6 +109,25 @@ pub fn inline_text(c: &BlameCommit, now: i64) -> String {
     if c.summary.is_empty() { head } else { format!("{head} · {}", c.summary) }
 }
 
+/// `text` cut to `width` cells; a cut that leaves a dangling ` ·` separator drops it.
+pub fn fit_inline(text: &str, width: usize) -> String {
+    use unicode_width::UnicodeWidthChar;
+    let mut used = 0;
+    let mut end = text.len();
+    for (i, ch) in text.char_indices() {
+        used += ch.width().unwrap_or(0);
+        if used > width {
+            end = i;
+            break;
+        }
+    }
+    if end == text.len() {
+        return text.to_string();
+    }
+    let cut = text[..end].trim_end();
+    cut.strip_suffix('·').unwrap_or(cut).trim_end().to_string()
+}
+
 /// `YYYY-MM-DD` of a git time in its own time zone.
 pub fn date(secs: i64, offset_minutes: i32) -> String {
     let (year, month, day) = civil((secs + i64::from(offset_minutes) * 60).div_euclid(86_400));
@@ -132,6 +151,17 @@ pub fn civil(days: i64) -> (i64, i64, i64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fit_inline_drops_a_dangling_separator() {
+        let t = "Alice, just now · Fix it";
+        assert_eq!(fit_inline(t, 80), t);
+        assert_eq!(fit_inline(t, 17), "Alice, just now");
+        assert_eq!(fit_inline(t, 16), "Alice, just now");
+        assert_eq!(fit_inline(t, 15), "Alice, just now");
+        assert_eq!(fit_inline(t, 19), "Alice, just now · F");
+        assert_eq!(fit_inline(t, 8), "Alice, j");
+    }
 
     #[test]
     fn edits_shift_lines_and_changed_lines_have_no_commit() {

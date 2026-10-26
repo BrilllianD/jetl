@@ -12,5 +12,4 @@ expression: "snapshot(&term, &marks, None)"
 06   6    six: the last line of the file
 07   7
 -- marks: B=inline blame C=caret S=selection F=fold O=occurrence
-00               BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB
 02                          BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB
