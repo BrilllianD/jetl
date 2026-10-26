@@ -267,29 +267,10 @@ impl GitPanel {
             cx.notify(Level::Info, "No change selected in the diff");
             return;
         };
-        let req = match (section, discard) {
-            (Section::Staged, false) => GitRequest::ApplyPatch { patch, cached: true, reverse: true, op: GitOp::Unstage },
-            (_, false) => GitRequest::ApplyPatch { patch, cached: true, reverse: false, op: GitOp::Stage },
-            (Section::Staged, true) => {
-                cx.notify(Level::Warn, "Unstage the change first (Space), then discard it");
-                return;
-            }
-            (_, true) => {
-                let msg = format!("Discard this change in {rel}?\nThis cannot be undone.");
-                cx.effects.push(Effect::Dialog(Dialog::confirm(
-                    DialogId::DiscardHunk { patch },
-                    "Discard Change",
-                    &msg,
-                    &["Discard", "Cancel"],
-                )));
-                self.diff.line = None;
-                self.diff.line_anchor = None;
-                return;
-            }
-        };
-        cx.effects.push(Effect::Git(req));
-        self.diff.line = None;
-        self.diff.line_anchor = None;
+        if self.send_patch(section, discard, patch, &rel, cx) {
+            self.diff.line = None;
+            self.diff.line_anchor = None;
+        }
     }
 
     /// Stage or unstage (`discard`: throw away, after a confirmation) the
@@ -309,12 +290,18 @@ impl GitPanel {
             cx.notify(Level::Info, "No change selected in the diff");
             return;
         };
+        self.send_patch(section, discard, patch, &rel, cx);
+    }
+
+    /// Stage, unstage or (after a confirmation) discard `patch` of `rel`.
+    /// False when only a warning was shown.
+    fn send_patch(&mut self, section: Section, discard: bool, patch: String, rel: &str, cx: &mut Ctx) -> bool {
         let req = match (section, discard) {
             (Section::Staged, false) => GitRequest::ApplyPatch { patch, cached: true, reverse: true, op: GitOp::Unstage },
             (_, false) => GitRequest::ApplyPatch { patch, cached: true, reverse: false, op: GitOp::Stage },
             (Section::Staged, true) => {
                 cx.notify(Level::Warn, "Unstage the change first (Space), then discard it");
-                return;
+                return false;
             }
             (_, true) => {
                 let msg = format!("Discard this change in {rel}?\nThis cannot be undone.");
@@ -324,10 +311,11 @@ impl GitPanel {
                     &msg,
                     &["Discard", "Cancel"],
                 )));
-                return;
+                return true;
             }
         };
         cx.effects.push(Effect::Git(req));
+        true
     }
 
     /// Ask to discard the selected entry, or a whole section on its header.
