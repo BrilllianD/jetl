@@ -277,7 +277,7 @@ pub struct App {
     /// The TODO window (`files/todo.rs`).
     pub todo: crate::files::todo::TodoPanel,
     /// The Terminal window and its shell.
-    pub terminal: crate::terminal::panel::TerminalPanel,
+    pub terminal: crate::terminal::tabs::TerminalTabs,
     /// Language servers and the documents open on them.
     pub(crate) lsp: lsp::LspService,
     /// The Quick Documentation popup at the caret (`app/lsp_nav.rs`).
@@ -410,7 +410,7 @@ impl App {
             history_panel: Default::default(),
             tasks: Default::default(),
             todo: Default::default(),
-            terminal: crate::terminal::panel::TerminalPanel::new(config.terminal.scrollback),
+            terminal: crate::terminal::tabs::TerminalTabs::new(config.terminal.scrollback),
             lsp: lsp::LspService::with_inlays(config.lsp.inlay_hints),
             hover: None,
             completion: None,
@@ -1184,6 +1184,8 @@ impl App {
             AppAction::NewScratch => self.new_scratch(),
             AppAction::LocalHistory => self.local_history(),
             AppAction::PutLabel => self.put_label(),
+            AppAction::NewTerminalTab => self.new_terminal_tab(),
+            AppAction::CloseTerminalTab => self.close_terminal_tab(),
         }
     }
 
@@ -1280,7 +1282,7 @@ impl App {
         }
     }
 
-    /// Alt+Right / Alt+Left in a tool window with inner tabs: the next or
+    /// Alt+Right / Alt+Left in a tool window with inner tabs (Git, Run, Terminal): the next or
     /// previous tab, wrapping. The focused panel decides; one without tabs
     /// (and the editor) ignores it.
     fn cycle_tool_window_tab(&mut self, forward: bool) {
@@ -1291,6 +1293,7 @@ impl App {
             }
             // Two views: either direction flips them; no-op without tests.
             PanelId::Run => self.perform(Action::Run(RunAction::ToggleView)),
+            PanelId::Terminal => self.terminal.step(forward),
             _ => {}
         }
     }

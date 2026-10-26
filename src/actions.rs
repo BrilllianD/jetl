@@ -35,7 +35,7 @@ pub enum AppAction {
     HideFocusedToolWindow,
     /// Move the focused tool window's free edge (Ctrl+Shift+arrows).
     ResizeToolWindow(Dir),
-    /// The focused tool window's next inner tab (Git, Run), wrapping.
+    /// The focused tool window's next inner tab (Git, Run, Terminal), wrapping.
     NextToolWindowTab,
     /// The focused tool window's previous inner tab, wrapping.
     PrevToolWindowTab,
@@ -74,6 +74,10 @@ pub enum AppAction {
     LocalHistory,
     /// Put a local history label on the active file or the selected tree entry.
     PutLabel,
+    /// Terminal window: a new tab with another shell (`terminal.new_tab`).
+    NewTerminalTab,
+    /// Terminal window: end the active tab's shell and close the tab (`terminal.close_tab`).
+    CloseTerminalTab,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -684,6 +688,8 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "tool_window.event_log" => "Event Log tool window", App(AppAction::ToggleToolWindow(ToolWindowId::EventLog));
         "tool_window.run" => "Run tool window", App(AppAction::ToggleToolWindow(ToolWindowId::Run));
         "tool_window.terminal" => "Terminal tool window", App(AppAction::ToggleToolWindow(ToolWindowId::Terminal));
+        "terminal.new_tab" => "Terminal: new tab (another shell)", App(AppAction::NewTerminalTab);
+        "terminal.close_tab" => "Terminal: close the active tab (ends its shell)", App(AppAction::CloseTerminalTab);
         "tool_window.problems" => "Problems tool window", App(AppAction::ToggleToolWindow(ToolWindowId::Problems));
         "tool_window.hide_all" => "Hide all tool windows", App(AppAction::HideAllToolWindows);
         "tool_window.hide_focused" => "Hide active tool window", App(AppAction::HideFocusedToolWindow);
@@ -1131,7 +1137,8 @@ impl Action {
     pub fn contexts(&self) -> &'static [&'static str] {
         match self {
             // Bound only in the windows that have inner tabs.
-            Action::App(AppAction::NextToolWindowTab | AppAction::PrevToolWindowTab) => &["git", "run"],
+            Action::App(AppAction::NextToolWindowTab | AppAction::PrevToolWindowTab) => &["git", "run", "terminal"],
+            Action::App(AppAction::NewTerminalTab | AppAction::CloseTerminalTab) => &["terminal"],
             Action::App(_) => &["global"],
             Action::Editor(EditorAction::Merge(_)) => &["editor.merge"],
             Action::Editor(EditorAction::NextTabstop | EditorAction::PrevTabstop) => &["editor.snippet"],

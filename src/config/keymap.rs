@@ -574,6 +574,7 @@ mod tests {
         ("git.push", &["global"]),
         ("lsp.goto_type_definition", &["editor"]),
         ("tool_window.hide_focused", &["global"]),
+        ("terminal.new_tab", &["terminal"]),
     ];
 
     #[test]

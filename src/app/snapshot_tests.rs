@@ -2778,3 +2778,22 @@ async fn tasks_window_unavailable() {
     let term = draw_app(app, 80, 14);
     assert_snapshot!("tasks_window_unavailable", snapshot(&term, &[], None));
 }
+
+#[tokio::test]
+async fn terminal_tabs() {
+    let mut fx = stable_app("terminal-tabs");
+    let app = &mut fx.app;
+    app.terminal.push();
+    app.terminal.push();
+    app.terminal.activate(1);
+    for i in 1..=3 {
+        app.terminal.tabs[i - 1].panel.feed(format!("$ echo tab {i}\r\ntab {i}\r\n$ ").as_bytes());
+    }
+    // A style of its own, so the mark isolates the active tab.
+    app.theme.tab_active = ratatui::style::Style::default().fg(ratatui::style::Color::Magenta).add_modifier(Modifier::BOLD);
+    let theme = app.theme.clone();
+    let mut term = Terminal::new(TestBackend::new(60, 8)).unwrap();
+    term.draw(|f| app.terminal.render(f, f.area(), true, &theme, true)).unwrap();
+    let marks = [Mark::style('A', "active tab", app.theme.tab_active)];
+    assert_snapshot!("terminal_tabs", snapshot(&term, &marks, None));
+}

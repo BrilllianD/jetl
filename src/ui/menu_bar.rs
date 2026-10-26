@@ -117,6 +117,7 @@ pub const MAIN_MENU: &[(&str, char, &[Row])] = &[
             Item("Run", "tool_window.run"),
             Item("Problems", "tool_window.problems"),
             Item("Terminal", "tool_window.terminal"),
+            Item("New Terminal Tab", "terminal.new_tab"),
             Item("Git", "tool_window.git"),
             Item("Local History", "tool_window.local_history"),
             Item("Event Log", "tool_window.event_log"),

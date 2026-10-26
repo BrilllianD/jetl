@@ -527,6 +527,13 @@
 "alt-shift-m" = "tool_window.maximize"
 'ctrl-"' = "tool_window.maximize"
 "ctrl-v" = "editor.paste"
+# Tabs: another shell, close the active one, switch (Alt+Left/Right no longer reach the shell;
+# map them to "none" in your keymap.toml to give them back).
+"ctrl-shift-t" = "terminal.new_tab"
+"alt-shift-t" = "terminal.new_tab"
+"ctrl-f4" = "terminal.close_tab"
+"alt-right" = "tool_window.next_tab"
+"alt-left" = "tool_window.prev_tab"
 
 # The Local History window (Alt+Shift+H): typing filters the snapshot list,
 # Esc clears the filter first.

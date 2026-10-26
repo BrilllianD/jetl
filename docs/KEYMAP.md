@@ -537,8 +537,13 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | Keys | Action | Description |
 |---|---|---|
 | `Alt+F12` | `tool_window.terminal` | Terminal tool window |
+| `Alt+Shift+T` | `terminal.new_tab` | Terminal: new tab (another shell) |
+| `Ctrl+Shift+T` * | `terminal.new_tab` | Terminal: new tab (another shell) |
+| `Ctrl+F4` | `terminal.close_tab` | Terminal: close the active tab (ends its shell) |
 | `Ctrl+Shift+Up` | `tool_window.stretch_up` | Stretch tool window up |
 | `Ctrl+Shift+Down` | `tool_window.stretch_down` | Stretch tool window down |
+| `Alt+Right` | `tool_window.next_tab` | Next tab of the tool window |
+| `Alt+Left` | `tool_window.prev_tab` | Previous tab of the tool window |
 | `Alt+Shift+M` | `tool_window.maximize` | Maximize or restore the active tool window |
 | `Ctrl+"` * | `tool_window.maximize` | Maximize or restore the active tool window |
 | `Ctrl+V` | `editor.paste` | Paste |

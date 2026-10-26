@@ -468,7 +468,7 @@ pub(crate) mod tests {
         let task_pid = app.run.pid().unwrap();
         app.toggle_tool_window(crate::ui::focus::ToolWindowId::Terminal);
         app.start_terminal(10, 60);
-        let shell = app.terminal.pid().unwrap();
+        let shell = app.terminal.active().pid().unwrap();
 
         let (dump, n) = app.finish_after_error().await.expect("a dump");
         assert_eq!(n, 1);
@@ -476,7 +476,7 @@ pub(crate) mod tests {
         assert_eq!(std::fs::read_to_string(dump.join(&m.buffers[0].file)).unwrap(), "// x\nfn a() {}\n");
         let session = Session::load(&app.paths.sessions_dir(), &app.workspace.root).expect("session saved");
         assert_eq!(session.files.iter().map(|f| f.path.clone()).collect::<Vec<_>>(), [app.workspace.root.join("a.rs")]);
-        assert!(!app.run.running() && !app.terminal.running());
+        assert!(!app.run.running() && !app.terminal.active().running());
         server.recv("shutdown").await;
         server.recv("exit").await;
         #[cfg(target_os = "linux")]

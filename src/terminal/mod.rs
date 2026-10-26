@@ -1,10 +1,11 @@
-//! The Terminal tool window (Alt+F12): one shell on a pseudo terminal
-//! (`pty`), its output parsed by `vt100` and drawn cell by cell (`panel`),
-//! keys, mouse and paste encoded the way xterm sends them (`keys`).
+//! The Terminal tool window (Alt+F12): one shell per tab (`tabs`) on a
+//! pseudo terminal (`pty`), its output parsed by `vt100` and drawn cell by
+//! cell (`panel`), keys, mouse and paste encoded the way xterm sends them (`keys`).
 
 pub mod keys;
 pub mod panel;
 pub mod pty;
+pub mod tabs;
 
 use serde::Deserialize;
 

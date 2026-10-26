@@ -63,8 +63,6 @@ pub struct TerminalPanel {
     parser: vt100::Parser<Replies>,
     pub(crate) session: Option<Session>,
     pub status: Status,
-    /// Shells started so far; the current one's id.
-    pub(crate) seq: u64,
     /// Scrollback lines of new screens.
     scrollback: usize,
     /// The text area at the last frame.
@@ -86,16 +84,22 @@ impl TerminalPanel {
             parser: vt100::Parser::new_with_callbacks(24, 80, scrollback, Replies::default()),
             session: None,
             status: Status::Idle,
-            seq: 0,
             scrollback,
             area: Rect::default(),
             pending_esc: None,
         }
     }
 
-    /// The text area inside the window's border.
-    pub fn inner(area: Rect) -> Rect {
-        Rect::new(area.x + 1, area.y + 1, area.width.saturating_sub(2), area.height.saturating_sub(2))
+    /// The text area inside the window's border, below the tab row when `tab_row`.
+    pub fn text_area(area: Rect, tab_row: bool) -> Rect {
+        let top = u16::from(tab_row);
+        Rect::new(area.x + 1, area.y + 1 + top, area.width.saturating_sub(2), area.height.saturating_sub(2).saturating_sub(top))
+    }
+
+    /// Parse `bytes` as shell output, for tests.
+    #[cfg(test)]
+    pub(crate) fn feed(&mut self, bytes: &[u8]) {
+        self.parser.process(bytes);
     }
 
     pub fn running(&self) -> bool {
@@ -269,8 +273,8 @@ impl TerminalPanel {
 
     /// Draw the screen; without `truecolor` the cells' RGB colors become
     /// their nearest 256-color palette entries, like the theme's.
-    pub fn render(&mut self, frame: &mut Frame, area: Rect, focused: bool, theme: &Theme, truecolor: bool) {
-        let inner = Self::inner(area);
+    pub fn render(&mut self, frame: &mut Frame, area: Rect, tab_row: bool, focused: bool, theme: &Theme, truecolor: bool) {
+        let inner = Self::text_area(area, tab_row);
         self.area = inner;
         self.resize(inner.height, inner.width);
         let screen = self.parser.screen();
@@ -369,7 +373,7 @@ mod tests {
         let mut p = TerminalPanel::new(100);
         p.parser.process(b"\x1b[1;31mred\x1b[0m \x1b[38;5;200mx\x1b[48;2;1;2;3my\x1b[0m \x1b[7;4mi\x1b[0m\r\n\xe4\xb8\x96z");
         let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(20, 5)).unwrap();
-        term.draw(|f| p.render(f, f.area(), true, &theme, true)).unwrap();
+        term.draw(|f| p.render(f, f.area(), false, true, &theme, true)).unwrap();
         assert_eq!(p.size(), (3, 18), "the screen takes the text area's size");
         let buf = term.backend().buffer();
         let at = |x: u16, y: u16| &buf[(x + 1, y + 1)];
@@ -392,7 +396,7 @@ mod tests {
         let mut p = TerminalPanel::new(100);
         p.parser.process(b"\x1b[38;2;255;0;0;48;2;128;128;128mx\x1b[0m\x1b[38;5;200my\x1b[0m\x1b[31mz\x1b[0m");
         let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(10, 3)).unwrap();
-        term.draw(|f| p.render(f, f.area(), true, &theme, false)).unwrap();
+        term.draw(|f| p.render(f, f.area(), false, true, &theme, false)).unwrap();
         let buf = term.backend().buffer();
         let at = |x: u16| &buf[(x + 1, 1)];
         assert_eq!((at(0).fg, at(0).bg), (Color::Indexed(196), Color::Indexed(244)));
