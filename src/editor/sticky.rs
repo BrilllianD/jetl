@@ -48,6 +48,11 @@ impl Sticky {
         self.rows.iter().find(|(r, _)| r.contains(at)).map(|(_, p)| *p)
     }
 
+    /// Keep the cached colours of the lines in `pins` only.
+    fn keep_only(&mut self, pins: &[Pin]) {
+        self.hl.retain(|(l, _)| pins.iter().any(|p| p.line == *l));
+    }
+
     /// Drop the cached colours (the theme changed).
     pub(crate) fn forget_styles(&mut self) {
         self.hl_key = None;
@@ -107,6 +112,7 @@ pub(super) fn draw(
     let syms = b.scopes.symbols(b.syntax.as_mut(), &b.rope, b.version);
     let rows = Rows::view(&b.view.folds, &b.view.wrap, &b.view.fillers, &b.rope, b.version).with_inlays(&b.inlays);
     let pins = pins(syms, &rows, top, caret, text_area.height);
+    st.keep_only(&pins);
     if pins.is_empty() {
         return;
     }
@@ -248,6 +254,16 @@ mod tests {
         let rows = Rows::new(&folds, rope.len_lines());
         assert_eq!(rows.next(2), Some(11));
         assert_eq!(lines(&pins(&scopes(), &rows, Row::line(1), None, 12)), [0]);
+    }
+
+    #[test]
+    fn sticky_colours_are_kept_for_the_drawn_pins_only() {
+        let pin = |line| Pin { line, name_line: line, name_col: 0 };
+        let mut st = Sticky { hl: (0..4).map(|l| (l, Highlights::default())).collect(), ..Default::default() };
+        st.keep_only(&[pin(1), pin(3)]);
+        assert_eq!(st.hl.iter().map(|(l, _)| *l).collect::<Vec<_>>(), [1, 3]);
+        st.keep_only(&[]);
+        assert!(st.hl.is_empty());
     }
 
     #[test]

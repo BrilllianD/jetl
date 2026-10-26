@@ -2174,6 +2174,64 @@ mod tests {
 
     #[cfg(feature = "lang-rust")]
     #[test]
+    fn sticky_scroll_shares_the_pane_with_the_find_bar_and_breadcrumbs() {
+        let c = Config::parse("[editor]\nsticky_scroll = true\nbreadcrumbs = true\nscrolloff = 0\n").unwrap();
+        let mut ed = Editor::new(&c);
+        let theme = Theme::default();
+        let src = "impl A {\n    fn b() {\n        x();\n        x();\n        x();\n        x();\n        x();\n    }\n}\n";
+        ed.open_text(PathBuf::from("/tmp/sticky_all.rs"), src, false, &theme);
+        let b = ed.active_buffer_mut().unwrap();
+        let p = b.rope.line_to_char(5) + 8;
+        b.view.set_sel(Selection::point(p));
+        b.view.set_top(Row::line(3));
+        with_cx(|cx| {
+            ed.handle_action(&EditorAction::Find, cx);
+        });
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 12)).unwrap();
+        let screen = term.draw(|f| ed.render(f, Rect::new(0, 0, 40, 1), Rect::new(0, 1, 40, 11), true, &theme)).unwrap().buffer.clone();
+        let g = ed.focused_group();
+        let (find, text, crumbs) = (g.find_area, ed.text_area(), g.crumbs_area);
+        assert_eq!((find.y, find.height), (1, 1));
+        assert_eq!(text.y, 2);
+        assert_eq!(crumbs.y, text.bottom());
+        assert_eq!(crumbs.y, 11);
+        let rows: Vec<Rect> = g.sticky.rows.iter().map(|(r, _)| *r).collect();
+        assert_eq!(rows, [Rect::new(0, 2, 40, 1), Rect::new(0, 3, 40, 1)]);
+        let x0 = text.x;
+        assert!(row_text(&screen, x0, 2).starts_with("impl A {"));
+        assert!(row_text(&screen, x0, 3).starts_with("    fn b() {"));
+        assert_eq!(screen[(x0, 2)].bg, theme.sticky_scroll.bg.unwrap());
+        // The find bar is untouched and the crumbs row keeps its background.
+        assert!(!row_text(&screen, x0, 1).starts_with("impl A {"));
+        assert_eq!(screen[(x0 + 1, 11)].bg, theme.breadcrumbs.bg.unwrap());
+        assert_eq!(ed.focused_group().caret_cell.unwrap().1, 4);
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[test]
+    fn sticky_scroll_pin_follows_the_horizontal_scroll() {
+        let c = Config::parse("[editor]\nsticky_scroll = true\nscrolloff = 0\n").unwrap();
+        let mut ed = Editor::new(&c);
+        let theme = Theme::default();
+        let src = "impl Alpha {\n    fn b() {\n        x();\n        x();\n        x();\n        x();\n    }\n}\n";
+        ed.open_text(PathBuf::from("/tmp/sticky_hscroll.rs"), src, false, &theme);
+        let b = ed.active_buffer_mut().unwrap();
+        let p = b.rope.line_to_char(4) + 10;
+        b.view.set_sel(Selection::point(p));
+        b.view.set_top(Row::line(2));
+        b.view.scroll_col = 3;
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 10)).unwrap();
+        let screen = term.draw(|f| ed.render(f, Rect::new(0, 0, 40, 1), Rect::new(0, 1, 40, 9), true, &theme)).unwrap().buffer.clone();
+        assert_eq!(ed.active_buffer().unwrap().view.scroll_col, 3);
+        let x0 = ed.text_area().x;
+        assert_eq!(ed.focused_group().sticky.rows.len(), 2);
+        assert!(row_text(&screen, x0, 1).starts_with("l Alpha {"));
+        assert!(row_text(&screen, x0, 2).starts_with(" fn b() {"));
+        assert_eq!(screen[(x0, 1)].bg, theme.sticky_scroll.bg.unwrap());
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[test]
     fn sticky_scroll_pins_the_first_row_of_a_wrapped_header() {
         let c = Config::parse("[editor]\nsoft_wrap = true\nsoft_wrap_files = []\nsticky_scroll = true\nscrolloff = 0\n").unwrap();
         let mut ed = Editor::new(&c);
