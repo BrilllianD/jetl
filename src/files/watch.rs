@@ -227,6 +227,20 @@ fn common_dir(git_dir: &Path) -> Option<PathBuf> {
     Some(std::fs::canonicalize(&p).unwrap_or(p))
 }
 
+/// The main worktree of a linked worktree `root`: the parent of its common
+/// git dir, when that dir is named `.git`. `None` for a plain repository, a
+/// bare common dir or a non-git root.
+pub fn main_worktree(root: &Path) -> Option<PathBuf> {
+    let text = std::fs::read_to_string(root.join(".git")).ok()?;
+    let target = root.join(text.trim().strip_prefix("gitdir:")?.trim());
+    let linked = std::fs::canonicalize(&target).unwrap_or(target);
+    let common = common_dir(&linked)?;
+    if common.file_name() != Some(std::ffi::OsStr::new(".git")) {
+        return None;
+    }
+    common.parent().map(Path::to_path_buf)
+}
+
 /// What `start` watches besides the root: git dirs outside it
 /// non-recursively, and a linked worktree's common `refs/` and
 /// `worktrees/` recursively (never `objects/`).
@@ -491,6 +505,29 @@ mod tests {
         assert!(outside_watches(&main, &git_dirs(&main)).is_empty());
         std::fs::remove_file(dir.join("main/.git/worktrees/wt/commondir")).unwrap();
         assert_eq!(git_dirs(&dir.join("wt")).len(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn main_worktree_of_a_linked_worktree() {
+        let dir = std::env::temp_dir().join(format!("jetl-test-mainwt-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("main/.git/worktrees/wt")).unwrap();
+        std::fs::create_dir_all(dir.join("wt")).unwrap();
+        std::fs::create_dir_all(dir.join("plain")).unwrap();
+        let wt_git = format!("gitdir: {}\n", dir.join("main/.git/worktrees/wt").display());
+        std::fs::write(dir.join("wt/.git"), &wt_git).unwrap();
+        std::fs::write(dir.join("main/.git/worktrees/wt/commondir"), "../..\n").unwrap();
+        assert_eq!(main_worktree(&dir.join("wt")), Some(std::fs::canonicalize(dir.join("main")).unwrap()));
+        assert_eq!(main_worktree(&dir.join("main")), None);
+        assert_eq!(main_worktree(&dir.join("plain")), None);
+        std::fs::create_dir_all(dir.join("bare.git/worktrees/b")).unwrap();
+        std::fs::write(dir.join("bare.git/worktrees/b/commondir"), "../..\n").unwrap();
+        std::fs::write(dir.join("wt/.git"), format!("gitdir: {}\n", dir.join("bare.git/worktrees/b").display())).unwrap();
+        assert_eq!(main_worktree(&dir.join("wt")), None);
+        std::fs::write(dir.join("wt/.git"), &wt_git).unwrap();
+        std::fs::remove_file(dir.join("main/.git/worktrees/wt/commondir")).unwrap();
+        assert_eq!(main_worktree(&dir.join("wt")), None);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

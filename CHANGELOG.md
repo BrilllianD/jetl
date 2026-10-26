@@ -34,6 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The Tasks window opened on a linked git worktree lists the repository's yman tasks: yman runs in the main checkout, where the tracker lives, instead of reporting that the project has no tracker.
 - Starting jetl, or switching root, with no tab open and no file on the command line shows the Project window and focuses it instead of leaving focus on an empty editor.
 - Rerun Failed on a jest run configuration whose command is one string drops the string's own `-t`/`--testNamePattern` (after the `jest` word), so the rerun has one `-t`; a string with quotes, a backslash, a line break or a shell operator keeps it.
 - Markdown: a document that starts with `---` (or `+++`) and has a code fence before the next `---` line is no longer taken as YAML (or TOML) front matter; the fence and the rest are highlighted as Markdown.

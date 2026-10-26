@@ -91,6 +91,8 @@ pub struct MutationDone {
 }
 
 pub struct YmanService {
+    /// The directory yman runs in: the workspace root or, for a linked
+    /// worktree, its main worktree (where the tracker lives).
     pub root: PathBuf,
     pub generation: u64,
     tx: UnboundedSender<AppMsg>,
@@ -139,6 +141,7 @@ pub async fn load_snapshot(program: &OsStr, root: &Path) -> Result<Snapshot, Yma
 
 impl YmanService {
     pub fn new(root: PathBuf, generation: u64, tx: UnboundedSender<AppMsg>) -> Self {
+        let root = crate::files::watch::main_worktree(&root).unwrap_or(root);
         Self {
             root,
             generation,
@@ -163,7 +166,7 @@ impl YmanService {
     }
 
     pub fn set_root(&mut self, root: PathBuf, generation: u64) {
-        self.root = root;
+        self.root = crate::files::watch::main_worktree(&root).unwrap_or(root);
         self.generation = generation;
         self.snapshot.reset();
         self.task_load.reset();

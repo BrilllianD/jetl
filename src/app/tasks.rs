@@ -501,6 +501,60 @@ mod tests {
         assert!(text.contains("Tasks: 2 "), "{text}");
     }
 
+    #[tokio::test]
+    async fn linked_worktree_lists_the_main_trackers_tasks() {
+        use crate::files::watch::Changes;
+        use crate::yman::cli::{PROGRAM, yman_available};
+        if !yman_available() {
+            eprintln!("skipping: yman not on PATH");
+            return;
+        }
+        struct Cleanup(std::path::PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let (mut app, dir) = test_app("tasks-linked");
+        let _cleanup = Cleanup(dir.clone());
+        let root = app.workspace.root.clone();
+        let run = |cmd: &str, args: &[&str]| {
+            let out = std::process::Command::new(cmd)
+                .args(args)
+                .current_dir(&root)
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_WORK_TREE")
+                .env_remove("GIT_INDEX_FILE")
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{cmd} {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        run("git", &["init", "-q"]);
+        crate::git::repo::tests::isolate(&root);
+        run("git", &["config", "user.name", "t"]);
+        run("git", &["config", "user.email", "t@t"]);
+        run("git", &["commit", "-q", "--allow-empty", "-m", "init"]);
+        run(PROGRAM, &["init", "--offline"]);
+        run(PROGRAM, &["add", "A"]);
+        // Outside the app root, or the main repo would see it as untracked.
+        let wt = std::fs::canonicalize(&dir).unwrap().join("wt");
+        run("git", &["worktree", "add", "-q", &wt.to_string_lossy()]);
+        // Before the fix `yman ls` in the linked worktree exits 1 with
+        // ".yman is not initialized" and the window says there is no tracker.
+        app.yman.set_root(wt, app.workspace.generation);
+        assert_eq!(app.yman.root, std::fs::canonicalize(&root).unwrap());
+        app.toggle_tool_window(ToolWindowId::Tasks);
+        draw(&mut app, 100, 30);
+        let snapshot = |m: &crate::event::AppMsg| matches!(m, crate::event::AppMsg::Yman(YmanMsg::Snapshot { .. }));
+        handle_next(&mut app, snapshot).await;
+        app.tasks.sync(&app.yman);
+        let text = draw(&mut app, 100, 30);
+        assert!(text.contains("Tasks: 1 open"), "{text}");
+        let yman_file = app.yman.root.join(".yman/x");
+        app.fs_changed(Changes { paths: vec![yman_file], ..Default::default() });
+        handle_next(&mut app, snapshot).await;
+    }
+
     use crate::event::Level;
     use crate::ui::dialog::DialogKind;
     use crate::yman::cli::StatusChange;
