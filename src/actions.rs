@@ -100,6 +100,8 @@ pub enum PaletteKind {
     Locations,
     /// The scratch files (`scratch.rs`), newest first.
     Scratches,
+    /// Go to File's list; the accepted file is compared with the active tab (`editor.compare_with_file`).
+    CompareWith,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -196,6 +198,10 @@ pub enum EditorAction {
     ExpandSnippet,
     /// Wrap the selection (else the caret line) with a live template that uses `$TM_SELECTED_TEXT`, picked from a dialog.
     SurroundWith,
+    /// Diff the clipboard against the active tab (or its selection) in a patch tab.
+    CompareWithClipboard,
+    /// Pick a file (Compare With palette) and diff it against the active tab.
+    CompareWithFile,
     ToggleComment,
     ToggleBlockComment,
     MoveLineUp,
@@ -776,6 +782,8 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "editor.prev_tabstop" => "Snippet: select the previous tabstop", Editor(E::PrevTabstop);
         "editor.expand_snippet" => "Expand the live template (snippet) whose prefix is the word before the caret", Editor(E::ExpandSnippet);
         "editor.surround_with" => "Surround the selection with a live template that uses $TM_SELECTED_TEXT", Editor(E::SurroundWith);
+        "editor.compare_with_clipboard" => "Compare the file (or the selection) with the clipboard", Editor(E::CompareWithClipboard);
+        "editor.compare_with_file" => "Compare the file with another file…", Editor(E::CompareWithFile);
         "editor.toggle_comment" => "Comment with line comment", Editor(E::ToggleComment);
         "editor.toggle_block_comment" => "Comment with block comment", Editor(E::ToggleBlockComment);
         "editor.move_line_up" => "Move line up", Editor(E::MoveLineUp);

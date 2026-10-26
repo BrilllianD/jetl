@@ -238,6 +238,7 @@ impl App {
     }
 
     pub(super) fn finish_palette(&mut self, res: PaletteResult) {
+        let compare = self.palette.as_ref().is_some_and(|p| p.kind == PaletteKind::CompareWith);
         // Forgetting a recent project keeps the palette open, without the row.
         if !matches!(res, PaletteResult::Accept(Accept::ForgetProject(_))) {
             self.close_palette();
@@ -245,6 +246,7 @@ impl App {
         self.dirty_frame = true;
         match res {
             PaletteResult::Cancel => {}
+            PaletteResult::Accept(Accept::OpenFile(p)) if compare => self.compare_with_file(p),
             PaletteResult::Accept(Accept::OpenFile(p)) => self.open_file(p, true),
             PaletteResult::Accept(Accept::Action(a)) => self.perform(a),
             PaletteResult::Accept(Accept::Branch(b)) => self.git_request(GitRequest::BranchOps(b)),

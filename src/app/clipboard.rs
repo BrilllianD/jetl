@@ -38,7 +38,7 @@ pub(super) enum PasteTarget {
 }
 
 impl App {
-    fn clipboard_tools(&mut self) -> &Tools {
+    pub(super) fn clipboard_tools(&mut self) -> &Tools {
         self.clipboard.tools.get_or_insert_with(|| {
             let tools = clipboard::detect(&self.config.clipboard);
             tracing::info!("clipboard tools: {tools:?}");

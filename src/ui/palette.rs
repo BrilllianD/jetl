@@ -236,6 +236,7 @@ impl Palette {
             PaletteKind::RunTasks => vec![Source::Tasks],
             PaletteKind::Locations => vec![Source::Locations],
             PaletteKind::Scratches => vec![Source::Scratches],
+            PaletteKind::CompareWith => vec![Source::Files],
             // Go to Line stays a dialog and never opens a palette.
             PaletteKind::Branches | PaletteKind::GotoLine => vec![Source::Branches],
         };
@@ -866,6 +867,7 @@ impl Palette {
             PaletteKind::Symbols => "Go to Symbol",
             PaletteKind::RunTasks => "Run",
             PaletteKind::Scratches => "Scratch Files",
+            PaletteKind::CompareWith => "Compare With",
             PaletteKind::Branches | PaletteKind::GotoLine => "Git Branches",
         }
     }
@@ -1882,5 +1884,15 @@ mod tests {
         let files = walk_files(&dir, true, false);
         assert_eq!(files, vec![".gitignore", "b.md", "src/a.rs"]);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn compare_with_lists_files_under_its_own_title() {
+        let mut p = Palette::new(PaletteKind::CompareWith, PathBuf::from("/w"));
+        assert_eq!(p.title(), "Compare With");
+        assert!(p.wants(Source::Files));
+        p.set_files(Arc::new(vec!["a.txt".to_string()]), false);
+        let res = p.handle_action(&PaletteAction::Accept);
+        assert_eq!(res, Some(PaletteResult::Accept(Accept::OpenFile(PathBuf::from("/w/a.txt")))));
     }
 }

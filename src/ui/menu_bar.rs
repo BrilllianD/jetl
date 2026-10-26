@@ -155,6 +155,9 @@ pub const MAIN_MENU: &[(&str, char, &[Row])] = &[
             Item("Git Blame", "editor.toggle_blame"),
             Item("Soft-Wrap", "editor.toggle_soft_wrap"),
             Item("Inlay Hints", "lsp.toggle_inlay_hints"),
+            Sep,
+            Item("Compare with Clipboard", "editor.compare_with_clipboard"),
+            Item("Compare with File…", "editor.compare_with_file"),
         ],
     ),
     (

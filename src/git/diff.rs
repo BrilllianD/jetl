@@ -256,15 +256,22 @@ impl DiffDoc {
         while end < rows.len() && end - b.end < context && equal(end) {
             end += 1;
         }
-        let count = |range: std::ops::Range<usize>, left: bool| {
-            rows[range].iter().filter(|r| if left { r.left.is_some() } else { r.right.is_some() }).count()
-        };
+        let mut out = format!("diff --git a/{old_path} b/{new_path}\n--- a/{old_path}\n+++ b/{new_path}\n");
+        self.write_hunk(&mut out, start..end);
+        Some(out)
+    }
+
+    /// One `@@` hunk (header and lines) of side-by-side rows `rows`: equal
+    /// rows as context, each run of changed rows as its `-` then its `+` lines.
+    fn write_hunk(&self, out: &mut String, rows: Range<usize>) {
+        let all = &self.rows;
+        let count =
+            |range: Range<usize>, left: bool| all[range].iter().filter(|r| if left { r.left.is_some() } else { r.right.is_some() }).count();
         // A side without lines starts at the line before (git's convention).
         let header = |left: bool| {
-            let (before, n) = (count(0..start, left), count(start..end, left));
+            let (before, n) = (count(0..rows.start, left), count(rows.clone(), left));
             format!("{},{n}", if n == 0 { before } else { before + 1 })
         };
-        let mut out = format!("diff --git a/{old_path} b/{new_path}\n--- a/{old_path}\n+++ b/{new_path}\n");
         out.push_str(&format!("@@ -{} +{} @@\n", header(true), header(false)));
         let mut line = |sign: char, text: &str| {
             out.push(sign);
@@ -273,23 +280,44 @@ impl DiffDoc {
                 out.push_str("\n\\ No newline at end of file\n");
             }
         };
-        for r in &rows[start..b.start] {
-            line(' ', &self.old[r.left?]);
-        }
-        for r in &rows[b.clone()] {
-            if let Some(l) = r.left {
+        let mut i = rows.start;
+        while i < rows.end {
+            if all[i].kind == RowKind::Equal {
+                if let Some(l) = all[i].left {
+                    line(' ', &self.old[l]);
+                }
+                i += 1;
+                continue;
+            }
+            let run_end = (i..rows.end).find(|&j| all[j].kind == RowKind::Equal).unwrap_or(rows.end);
+            for l in all[i..run_end].iter().filter_map(|r| r.left) {
                 line('-', &self.old[l]);
             }
+            for n in all[i..run_end].iter().filter_map(|r| r.right) {
+                line('+', &self.new[n]);
+            }
+            i = run_end;
         }
-        for r in &rows[b.clone()] {
-            if let Some(l) = r.right {
-                line('+', &self.new[l]);
+    }
+
+    /// A whole-file unified patch (`old_name` to `new_name`, no git
+    /// prefixes) with `context` equal lines around each change; hunks that
+    /// touch are merged. The header alone when nothing changed.
+    pub fn patch(&self, old_name: &str, new_name: &str, context: usize) -> String {
+        let mut out = format!("diff -u {old_name} {new_name}\n--- {old_name}\n+++ {new_name}\n");
+        let mut groups: Vec<Range<usize>> = Vec::new();
+        for b in blocks(&self.rows) {
+            let s = b.start.saturating_sub(context);
+            let e = (b.end + context).min(self.rows.len());
+            match groups.last_mut() {
+                Some(last) if s <= last.end => last.end = e,
+                _ => groups.push(s..e),
             }
         }
-        for r in &rows[b.end..end] {
-            line(' ', &self.old[r.left?]);
+        for g in groups {
+            self.write_hunk(&mut out, g);
         }
-        Some(out)
+        out
     }
 
     /// Index of the first changed row (side-by-side or unified).
@@ -300,6 +328,32 @@ impl DiffDoc {
 
     pub fn is_identical(&self) -> bool {
         !self.binary && self.rows.iter().all(|r| r.kind == RowKind::Equal)
+    }
+}
+
+/// Context lines around each change of a whole-file compare patch.
+pub const COMPARE_CONTEXT: usize = 3;
+
+/// The result of comparing two whole texts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Compared {
+    /// A unified patch of all changes (old = `-`, new = `+`).
+    Patch(String),
+    Identical,
+    /// A side looks binary (`is_binary`).
+    Binary,
+}
+
+/// Compare `old` with `new` as whole files named `old_name` and `new_name`
+/// (shown in the header only).
+pub fn compare(old: &[u8], new: &[u8], old_name: &str, new_name: &str) -> Compared {
+    let d = DiffDoc::build(old, new, 4);
+    if d.binary {
+        Compared::Binary
+    } else if d.is_identical() {
+        Compared::Identical
+    } else {
+        Compared::Patch(d.patch(old_name, new_name, COMPARE_CONTEXT))
     }
 }
 
@@ -450,5 +504,31 @@ mod tests {
         // Insertion at the very top: the old side starts at line 0.
         let d = DiffDoc::build(b"a\n", b"new\na\n", 4);
         assert!(d.block_patch(0, "f", "f", 0).unwrap().contains("@@ -0,0 +1,1 @@\n+new\n"));
+    }
+
+    #[test]
+    fn compare_patches_whole_files() {
+        const P: &str = "diff -u o n\n--- o\n+++ n\n";
+        let c = |o: &[u8], n: &[u8]| compare(o, n, "o", "n");
+        let lines = |n: usize| (1..=n).map(|i| format!("{i}\n")).collect::<String>();
+        let far_new = lines(20).replace("\n2\n", "\ntwo\n").replace("\n19\n", "\nnineteen\n");
+        assert_eq!(
+            c(lines(20).as_bytes(), far_new.as_bytes()),
+            Compared::Patch(format!(
+                "{P}@@ -1,5 +1,5 @@\n 1\n-2\n+two\n 3\n 4\n 5\n@@ -16,5 +16,5 @@\n 16\n 17\n 18\n-19\n+nineteen\n 20\n"
+            ))
+        );
+        let near_new = lines(10).replace("\n2\n", "\ntwo\n").replace("\n8\n", "\neight\n");
+        let Compared::Patch(p) = c(lines(10).as_bytes(), near_new.as_bytes()) else { panic!("patch") };
+        assert_eq!(p.matches("@@ -").count(), 1);
+        assert!(p.contains("@@ -1,10 +1,10 @@"));
+        assert_eq!(c(b"a\n", b"new\na\n"), Compared::Patch(format!("{P}@@ -1,1 +1,2 @@\n+new\n a\n")));
+        assert_eq!(c(b"", b"x\n"), Compared::Patch(format!("{P}@@ -0,0 +1,1 @@\n+x\n")));
+        assert_eq!(c(b"a\nb\n", b"a\nb\nc"), Compared::Patch(format!("{P}@@ -1,2 +1,3 @@\n a\n b\n+c\n\\ No newline at end of file\n")));
+        assert_eq!(c(b"a\nb", b"a\nb\n"), Compared::Patch(format!("{P}@@ -1,2 +1,2 @@\n a\n-b\n\\ No newline at end of file\n+b\n")));
+        assert_eq!(c(b"a\r\nb\r\n", b"a\r\nB\r\n"), Compared::Patch(format!("{P}@@ -1,2 +1,2 @@\n a\r\n-b\r\n+B\r\n")));
+        assert_eq!(c(b"x\n", b"x\n"), Compared::Identical);
+        assert_eq!(c(b"a\0b", b"a"), Compared::Binary);
+        assert_eq!(c(b"", b""), Compared::Identical);
     }
 }

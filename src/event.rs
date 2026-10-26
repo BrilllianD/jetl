@@ -147,6 +147,13 @@ pub enum AppMsg {
         seq: u64,
         result: Result<String, String>,
     },
+    /// A compare (`App::compare_with_clipboard`, `App::compare_with_file`)
+    /// computed off the main thread, tagged with the workspace generation.
+    Compared {
+        generation: u64,
+        title: String,
+        result: Result<crate::git::diff::Compared, String>,
+    },
     /// A formatter run for buffer `id` (`App::start_format`), tagged with
     /// the workspace generation and the request's seq.
     Formatted {

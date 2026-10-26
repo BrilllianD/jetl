@@ -90,6 +90,7 @@ impl App {
             AppMsg::FsOpDone { op: FsOp::Rename { from, to, .. }, result: Ok(()), .. } => self.history_renamed(&from, &to),
             AppMsg::FsOpDone { op, .. } => tracing::debug!("dropping file operation result of a previous root: {op:?}"),
             AppMsg::Paste { generation, seq, result } => self.paste_done(generation, seq, result),
+            AppMsg::Compared { generation, title, result } => self.compared(generation, title, result),
             AppMsg::Formatted { generation, id, seq, result } => self.format_done(generation, id, seq, result),
             AppMsg::RunOutput { generation, run, lines } => self.run_output(generation, run, lines),
             AppMsg::RunExited { generation, run, end } => self.run_exited(generation, run, end),

@@ -567,6 +567,8 @@ Reachable from Find Action (F1) or by binding them in `keymap.toml`.
 | `editor.find_regex` | Find: toggle regex |
 | `editor.find_field` | Find: switch between find and replace fields |
 | `editor.select_line` | Select line |
+| `editor.compare_with_clipboard` | Compare the file (or the selection) with the clipboard |
+| `editor.compare_with_file` | Compare the file with another file… |
 | `editor.to_upper_case` | To upper case (selection or word at the caret) |
 | `editor.to_lower_case` | To lower case (selection or word at the caret) |
 | `editor.sort_lines` | Sort lines (selected lines, else the whole file) |

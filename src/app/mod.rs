@@ -41,6 +41,7 @@ pub use save_as::AfterSave;
 
 // Declared after `ctx!` so the submodules can use it.
 mod clipboard;
+mod compare;
 mod completion;
 mod config_reload;
 mod dialogs;
@@ -930,6 +931,16 @@ impl App {
             Action::Editor(EditorAction::SurroundWith) => {
                 drop(cx);
                 self.surround_with();
+                return;
+            }
+            Action::Editor(EditorAction::CompareWithClipboard) => {
+                drop(cx);
+                self.compare_with_clipboard();
+                return;
+            }
+            Action::Editor(EditorAction::CompareWithFile) => {
+                drop(cx);
+                self.compare_with_file_pick();
                 return;
             }
             // Group commands take the keyboard to the editor, as in JetBrains.
