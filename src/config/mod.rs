@@ -123,6 +123,8 @@ pub struct EditorConfig {
     pub inline_blame: bool,
     /// A row at the bottom of each editor pane naming the definitions around the caret.
     pub breadcrumbs: bool,
+    /// Pin the header lines of the definitions scrolled past at the top of each editor pane.
+    pub sticky_scroll: bool,
     /// Live templates: Tab after a snippet prefix, snippet rows in completion (config/snippets.rs).
     /// Read where used (`app/snippets.rs`), so `apply_config` has nothing to do.
     pub snippets: bool,
@@ -279,6 +281,7 @@ impl Default for EditorConfig {
             indent_guides: true,
             inline_blame: false,
             breadcrumbs: false,
+            sticky_scroll: false,
             snippets: true,
             trim_trailing_whitespace: true,
             final_newline: true,

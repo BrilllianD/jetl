@@ -118,7 +118,8 @@ highlight_occurrences = true   # highlight the word at the caret (or the selecte
 indent_guides = true           # a │ at each indent stop in a line's leading whitespace (theme style indent_guide)
 inline_blame = false           # author, date and summary of the caret line's commit after its text (theme style inline_blame)
 breadcrumbs = false            # a row at the bottom of each editor pane naming the definitions around the caret, e.g. "impl Point › method new" (theme style breadcrumbs)
-snippets = true               # live templates: Tab after a snippet's prefix expands it, snippets listed in completion (see "Live templates")
+sticky_scroll = false         # pin the header lines of the definitions scrolled past at the top of each pane; click one to go there (theme style sticky_scroll)
+snippets = true                # live templates: Tab after a snippet's prefix expands it, snippets listed in completion (see "Live templates")
 trim_trailing_whitespace = true # on save, strip trailing spaces and tabs (not on the caret line, never in Markdown)
 final_newline = true           # on save, end a non-empty file with a line break
 autosave = "off"               # "off", "focus" (save when the terminal loses focus) or "idle" (save after a pause in editing)
@@ -938,7 +939,7 @@ Style fields: `border border_focused title title_focused strip_item
 strip_item_active status_accent tab tab_active tab_dirty line_number
 line_number_current bracket_match secondary_caret bookmark fold_placeholder git_added git_modified git_deleted git_untracked
 git_conflicted git_ignored popup_border list_selected list_selected_unfocused
-dim error warn info diag_error diag_warn diag_info diag_hint lightbulb indent_guide inlay_hint inline_blame breadcrumbs splitter`.
+dim error warn info diag_error diag_warn diag_info diag_hint lightbulb indent_guide inlay_hint inline_blame breadcrumbs sticky_scroll splitter`.
 `indent_guide` colours the indent guides (`editor.indent_guides`); only its
 foreground is used.
 `inlay_hint` draws the language server's inlay hints (`[lsp] inlay_hints`); fg and
@@ -946,6 +947,7 @@ bg are used.
 `inline_blame` colours the inline blame after the caret line (`editor.inline_blame`); only its foreground is used.
 `breadcrumbs` is the breadcrumb row under each editor pane (`editor.breadcrumbs`); fg and bg are used,
 and the ` › ` separators take the foreground of `dim`.
+`sticky_scroll` is the background of sticky scroll's pinned header rows (`editor.sticky_scroll`); only bg is used, the header text keeps its syntax colours.
 `secondary_caret` is the cell of every caret but the primary one (which is
 the terminal cursor; in a split pane without focus every caret of a
 multi-caret view gets it): reverse video by default, which an override keeps

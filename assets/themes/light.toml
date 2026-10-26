@@ -61,6 +61,7 @@ indent_guide = "#e4e6eb"
 inlay_hint = { fg = "#6c707e", bg = "#e2e5ec" }
 inline_blame = { fg = "#818594" }
 breadcrumbs = { fg = "#494b57", bg = "#f7f8fa" }
+sticky_scroll = { bg = "#eceef2" }
 splitter = { fg = "#c9ccd6", bg = "#ffffff" }
 
 [syntax]

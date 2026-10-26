@@ -1,0 +1,20 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &marks, None)"
+---
+80x12 cursor=(47,6)
+00   point.rs ×                           │  point.rs ×
+01   6    impl Point {                    │  6    impl Point {
+02   9    │   }                           │  7        fn new(x: i32, y: i32) -> Sel
+03  10    │                               │  9    │   }
+04  11  ▾ │   fn sum(&self) -> i32 {      │ 10    │
+05  12    │   │   self.x + self.y         │ 11  ▾ │   fn sum(&self) -> i32 {
+06  13    │   }                           │ 12    │   │   self.x + self.y
+07  14    }                               │ 13    │   }
+08  15                                    │ 14    }
+09  16  ▾ fn main() {                     │ 15
+10  17    │   let p = Point::new(1, 2);   │ 16  ▾ fn main() {
+11  18    │   println!("{}", p.sum());    │ 17    │   let p = Point::new(1, 2);
+-- marks: P=sticky scroll C=caret S=selection F=fold O=occurrence
+01 PPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPP PPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPP
+02                                         PPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPP

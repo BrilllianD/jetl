@@ -153,6 +153,13 @@ pub static SETTINGS: &[Setting] = &[
         |c| Value::Bool(c.editor.breadcrumbs)
     ),
     row!(
+        "editor.sticky_scroll",
+        "Sticky scroll",
+        "Pin the header lines of the definitions scrolled past (impl, function, class, heading) at the top of each editor pane; click one to go to it.",
+        Kind::Bool,
+        |c| Value::Bool(c.editor.sticky_scroll)
+    ),
+    row!(
         "editor.snippets",
         "Live templates (snippets)",
         "Tab after a snippet's prefix expands it; snippets are listed in completion. Files: snippets/<language>.toml and all.toml.",
@@ -405,6 +412,7 @@ pub static PAGES: &[Page] = &[
             "editor.indent_guides",
             "editor.inline_blame",
             "editor.breadcrumbs",
+            "editor.sticky_scroll",
             "editor.snippets",
             "editor.max_tabs",
             "editor.max_highlight_bytes"

@@ -27,6 +27,7 @@ pub mod selection;
 pub mod snippet;
 pub mod snippet_vars;
 pub mod split;
+mod sticky;
 pub mod syntax;
 pub mod undo;
 pub mod view;
@@ -153,6 +154,7 @@ pub struct Editor {
     /// `editor.inline_blame` as applied.
     inline_blame: bool,
     breadcrumbs: bool,
+    sticky_scroll: bool,
     trim_trailing_whitespace: bool,
     final_newline: bool,
     autosave: Autosave,
@@ -238,6 +240,7 @@ impl Editor {
             indent_guides: false,
             inline_blame: false,
             breadcrumbs: false,
+            sticky_scroll: false,
             trim_trailing_whitespace: false,
             final_newline: false,
             autosave: Autosave::Off,
@@ -280,6 +283,7 @@ impl Editor {
             indent_guides,
             inline_blame,
             breadcrumbs,
+            sticky_scroll,
             // Read by the app where used (`app/snippets.rs`).
             snippets: _,
             trim_trailing_whitespace,
@@ -307,6 +311,7 @@ impl Editor {
             }
         }
         self.breadcrumbs = *breadcrumbs;
+        self.sticky_scroll = *sticky_scroll;
         self.trim_trailing_whitespace = *trim_trailing_whitespace;
         self.final_newline = *final_newline;
         if self.autosave != *autosave {
@@ -507,6 +512,9 @@ impl Editor {
             if let Some(s) = b.syntax.as_mut() {
                 s.restyle(theme);
             }
+        }
+        for g in &mut self.groups {
+            g.sticky.forget_styles();
         }
     }
 
@@ -1403,6 +1411,11 @@ impl Editor {
             if self.focused_group().crumbs_area.contains(ratatui::layout::Position::new(m.x, m.y)) {
                 return true;
             }
+            // A pinned sticky scroll row goes to its definition's name.
+            if let Some(p) = self.focused_group().sticky.hit(m.x, m.y) {
+                self.goto_line(p.name_line + 1, p.name_col + 1);
+                return true;
+            }
             // A click in the text hands keyboard focus back to the text.
             if let Some(s) = self.active_buffer_mut().and_then(|b| b.view.search.as_mut()) {
                 s.focused = false;
@@ -1780,6 +1793,7 @@ impl Editor {
         group.find_hits.clear();
         group.find_area = Rect::default();
         group.crumbs_area = Rect::default();
+        group.sticky.rows.clear();
         let screen = frame.buffer_mut();
         screen.set_style(area, Style::default().bg(theme.bg));
         let Some(i) = group.active_id().and_then(|id| self.buffers.iter().position(|b| b.id == id)) else {
@@ -1818,6 +1832,7 @@ impl Editor {
             decor,
         };
         let crumbs_on = self.breadcrumbs && self.merge.is_none();
+        let sticky_on = self.sticky_scroll && self.merge.is_none();
         // The find bar takes the top rows; the text view gets the rest so
         // `text_area` (and with it mouse mapping) stays exact.
         let group = &mut self.groups[gi];
@@ -1849,6 +1864,11 @@ impl Editor {
         if let Some((row, path)) = crumbs {
             breadcrumbs::paint(frame.buffer_mut(), row, &path, theme);
             group.crumbs_area = row;
+        }
+        // Sticky scroll paints over the top text rows; `text_area` stays the
+        // whole view, and the pinned rects take the click (`mouse`).
+        if sticky_on && breadcrumbs::has_scopes(b) {
+            sticky::draw(frame.buffer_mut(), b, text_rect, out.text_area, opts.tab_width, theme, &mut group.sticky);
         }
         if focused
             && !bar_focused
@@ -2080,6 +2100,118 @@ mod tests {
         ed.open_text(PathBuf::from("/tmp/notes.txt"), "a\nb\n", false, &theme);
         draw(&mut ed);
         assert_eq!(ed.text_area().height, 5);
+    }
+
+    fn row_text(screen: &ratatui::buffer::Buffer, x0: u16, y: u16) -> String {
+        row_text_to(screen, x0, y, 40)
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[test]
+    fn sticky_scroll_pins_headers_and_a_click_jumps() {
+        let c = Config::parse("[editor]\nsticky_scroll = true\nscrolloff = 0\n").unwrap();
+        let mut ed = Editor::new(&c);
+        let theme = Theme::default();
+        let src = "impl A {\n    fn b() {\n        x();\n        x();\n        x();\n        x();\n        x();\n    }\n}\n";
+        ed.open_text(PathBuf::from("/tmp/sticky.rs"), src, false, &theme);
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 10)).unwrap();
+        let mut draw = |ed: &mut Editor| {
+            term.draw(|f| ed.render(f, Rect::new(0, 0, 40, 1), Rect::new(0, 1, 40, 9), true, &theme)).unwrap().buffer.clone()
+        };
+        let place = |ed: &mut Editor, line: usize, col: usize, top: usize| {
+            let b = ed.active_buffer_mut().unwrap();
+            let p = b.rope.line_to_char(line) + col;
+            b.view.set_sel(Selection::point(p));
+            b.view.set_top(Row::line(top));
+        };
+        let press = |ed: &mut Editor, x: u16, y: u16| {
+            let m = Mouse { kind: MouseEventKind::Down(MouseButton::Left), x, y, clicks: 1, mods: KeyModifiers::NONE };
+            with_cx(|cx| {
+                ed.handle_mouse(&m, Rect::default(), cx);
+                let up = Mouse { kind: MouseEventKind::Up(MouseButton::Left), ..m };
+                ed.handle_mouse(&up, Rect::default(), cx);
+            });
+        };
+        // (a) one pin.
+        place(&mut ed, 4, 8, 3);
+        let screen = draw(&mut ed);
+        let x0 = ed.text_area().x;
+        assert_eq!(ed.focused_group().sticky.rows.len(), 1);
+        assert!(row_text(&screen, x0, 1).starts_with("impl A {"));
+        assert_eq!(screen[(x0, 1)].bg, theme.sticky_scroll.bg.unwrap());
+        assert_eq!(screen[(x0 - 5, 1)].symbol(), "1");
+        assert_eq!(ed.focused_group().caret_cell.unwrap().1, 2);
+        // (b) two pins; the caret row stays uncovered and the text area whole.
+        place(&mut ed, 5, 8, 3);
+        let screen = draw(&mut ed);
+        assert_eq!(ed.focused_group().sticky.rows.len(), 2);
+        assert!(row_text(&screen, x0, 1).starts_with("impl A {"));
+        assert!(row_text(&screen, x0, 2).starts_with("    fn b() {"));
+        assert_eq!(ed.focused_group().caret_cell.unwrap().1, 3);
+        assert_eq!(ed.text_area().height, 9);
+        // (c) a click below the pins lands on the char under it (line 6).
+        press(&mut ed, x0 + 8, 4);
+        assert_eq!(ed.active_buffer().unwrap().cursor_line_col(), (6, 8));
+        draw(&mut ed);
+        // (d) a click on a pin goes to the definition's name.
+        place(&mut ed, 5, 8, 3);
+        draw(&mut ed);
+        press(&mut ed, x0 + 4, 2);
+        assert_eq!(ed.active_buffer().unwrap().cursor_line_col(), (1, 7));
+        let screen = draw(&mut ed);
+        assert_eq!(ed.active_buffer().unwrap().view.top(), Row::line(1));
+        assert!(ed.focused_group().sticky.rows.is_empty());
+        // Indent guides replace the first blanks of an unpinned row.
+        assert!(row_text(&screen, x0, 1).contains("  fn b() {"));
+        assert_ne!(screen[(x0, 1)].bg, theme.sticky_scroll.bg.unwrap());
+        // (e) off again.
+        ed.apply_config(&Config::default());
+        place(&mut ed, 5, 8, 3);
+        let screen = draw(&mut ed);
+        assert!(ed.focused_group().sticky.rows.is_empty());
+        assert!(row_text(&screen, x0, 1).contains("x();"));
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[test]
+    fn sticky_scroll_pins_the_first_row_of_a_wrapped_header() {
+        let c = Config::parse("[editor]\nsoft_wrap = true\nsoft_wrap_files = []\nsticky_scroll = true\nscrolloff = 0\n").unwrap();
+        let mut ed = Editor::new(&c);
+        let theme = Theme::default();
+        let src = "fn alpha(first: i32, second: i32, third: i32) {\n    x();\n    x();\n    x();\n    x();\n    x();\n}\n";
+        ed.open_text(PathBuf::from("/tmp/sticky_wrap.rs"), src, false, &theme);
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(30, 10)).unwrap();
+        let mut draw = |ed: &mut Editor| {
+            term.draw(|f| ed.render(f, Rect::new(0, 0, 30, 1), Rect::new(0, 1, 30, 9), true, &theme)).unwrap().buffer.clone()
+        };
+        draw(&mut ed);
+        assert!(ed.active_buffer().unwrap().rows().text_segs(0) >= 2);
+        let set = |ed: &mut Editor| {
+            let b = ed.active_buffer_mut().unwrap();
+            let p = b.rope.line_to_char(4) + 4;
+            b.view.set_sel(Selection::point(p));
+            b.view.set_top(Row { line: 0, seg: 1 });
+        };
+        set(&mut ed);
+        let screen = draw(&mut ed);
+        let x0 = ed.text_area().x;
+        assert_eq!(ed.focused_group().sticky.rows.len(), 1);
+        assert!(row_text_to(&screen, x0, 1, 30).starts_with("fn alpha("));
+        assert_eq!(screen[(x0, 1)].bg, theme.sticky_scroll.bg.unwrap());
+        let row2: Vec<String> = (0..2).map(|k| row_text_to(&screen, x0, 2 + k, 30)).collect();
+        // Same top with the key off: row 2 and the one after are unchanged.
+        let mut off = Config::parse("[editor]\nsoft_wrap = true\nsoft_wrap_files = []\nscrolloff = 0\n").unwrap();
+        off.editor.sticky_scroll = false;
+        ed.apply_config(&off);
+        set(&mut ed);
+        let screen = draw(&mut ed);
+        assert!(ed.focused_group().sticky.rows.is_empty());
+        let plain: Vec<String> = (0..2).map(|k| row_text_to(&screen, x0, 2 + k, 30)).collect();
+        assert_eq!(row2, plain);
+    }
+
+    fn row_text_to(screen: &ratatui::buffer::Buffer, x0: u16, y: u16, w: u16) -> String {
+        (x0..w).map(|x| screen[(x, y)].symbol()).collect()
     }
 
     fn editor_with(name: &str, text: &str) -> Editor {

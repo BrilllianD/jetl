@@ -261,6 +261,9 @@ theme_fields! {
         /// The breadcrumb row under each editor pane (`editor.breadcrumbs`):
         /// foreground and background; the separators take `dim`'s foreground.
         breadcrumbs,
+        /// Sticky scroll's pinned header rows (`editor.sticky_scroll`): only the
+        /// background is used; the header text keeps its syntax colours.
+        sticky_scroll,
         splitter,
     ],
 }
@@ -922,6 +925,31 @@ mod tests {
             for (what, other) in [("current_line_bg", t.current_line_bg), ("selection_bg", t.selection_bg)] {
                 assert!(visibly_apart(bg, other), "{name} ansi256={ansi256}: inlay_hint.bg {bg:?} is too near {what} {other:?}");
             }
+        }
+    }
+
+    #[test]
+    fn sticky_scroll_has_its_own_background() {
+        use crate::config::omarchy::fixtures;
+        let mut themes = Vec::new();
+        for b in BUILTIN_THEMES {
+            for ansi256 in [false, true] {
+                themes.push((b.name, ansi256, Theme::builtin(b, ansi256)));
+            }
+        }
+        for (name, text) in [("omarchy dark", fixtures::DARK), ("omarchy light", fixtures::LIGHT)] {
+            let palette = Palette::parse(text, false).unwrap();
+            for ansi256 in [false, true] {
+                let mut t = Theme::from_palette(&palette, ansi256).unwrap();
+                if ansi256 {
+                    t.map_colors(color::to_ansi256);
+                }
+                themes.push((name, ansi256, t));
+            }
+        }
+        for (name, ansi256, t) in themes {
+            let bg = t.sticky_scroll.bg.unwrap_or_else(|| panic!("{name} ansi256={ansi256}: no sticky_scroll bg"));
+            assert_ne!(bg, t.bg, "{name} ansi256={ansi256}");
         }
     }
 

@@ -14,9 +14,9 @@ expression: "snapshot(&term, &settings_marks(&app.theme), None)"
 08  ✓│Version Control         │  Show indent guides    [x]                      │
 09  8│  Git                   │  Inline blame on the…  [ ]                      │
 10  ⟲│  Worktrees             │  Show breadcrumbs      [ ]                      │
-11  5│Files                   │  Live templates (sni…  [x]                      │
-12  ⚑│Tools                   │  Tab limit             0                        │
-13  9│  Terminal              │  Largest file with s…  2097152          new tabs│
+11  5│Files                   │  Sticky scroll         [ ]                      │
+12  ⚑│Tools                   │  Live templates (sni…  [x]                      │
+13  9│  Terminal              │  Tab limit             0                        │
 14  ⎇│  Run                   │                                                 │
 15   │  Clipboard             │Lines kept visible above and below the caret.    │
 16  ❯│  Local History         │Applies at once.                                 │

@@ -538,6 +538,43 @@ async fn editor_breadcrumbs_split() {
 
 #[cfg(feature = "lang-rust")]
 #[tokio::test]
+async fn editor_sticky_scroll() {
+    let mut fx = stable_app("sticky-scroll");
+    let app = &mut fx.app;
+    load(app, "point.rs", RUST);
+    // Into `fn sum`'s body, scrolled past `impl Point {`.
+    moves(app, Motion::Down, 11);
+    let mut c = app.config.clone();
+    c.editor.sticky_scroll = true;
+    app.editor.apply_config(&c);
+    app.editor.active_buffer_mut().unwrap().view.set_top(crate::editor::rows::Row::line(7));
+    let term = draw_editor(app, 60, 12);
+    let mut marks = vec![Mark::bg('P', "sticky scroll", app.theme.sticky_scroll.bg.unwrap())];
+    marks.extend(editor_marks(&app.theme));
+    assert_snapshot!("editor_sticky_scroll", snapshot(&term, &marks, None));
+}
+
+#[cfg(feature = "lang-rust")]
+#[tokio::test]
+async fn editor_sticky_scroll_split() {
+    let mut fx = stable_app("sticky-scroll-split");
+    let app = &mut fx.app;
+    load(app, "point.rs", RUST);
+    moves(app, Motion::Down, 11);
+    let mut c = app.config.clone();
+    c.editor.sticky_scroll = true;
+    app.editor.apply_config(&c);
+    app.editor.active_buffer_mut().unwrap().view.set_top(crate::editor::rows::Row::line(7));
+    editor(app, EditorAction::SplitRight);
+    app.editor.active_buffer_mut().unwrap().view.set_top(crate::editor::rows::Row::line(6));
+    let term = draw_editor(app, 80, 12);
+    let mut marks = vec![Mark::bg('P', "sticky scroll", app.theme.sticky_scroll.bg.unwrap())];
+    marks.extend(editor_marks(&app.theme));
+    assert_snapshot!("editor_sticky_scroll_split", snapshot(&term, &marks, None));
+}
+
+#[cfg(feature = "lang-rust")]
+#[tokio::test]
 async fn editor_fold_rust() {
     let mut fx = stable_app("fold-rust");
     let app = &mut fx.app;

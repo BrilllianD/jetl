@@ -56,6 +56,8 @@ pub struct TabGroup {
     pub find_area: Rect,
     /// The breadcrumb row as last drawn (`Rect::default()` when none); never part of `text_area`.
     pub crumbs_area: Rect,
+    /// Sticky scroll's pinned rows as last drawn (`editor.sticky_scroll`).
+    pub(crate) sticky: super::sticky::Sticky,
     pub(super) find_hits: Vec<(FindHit, Rect)>,
     /// The screen cell of the caret as last drawn (`None` when it is
     /// scrolled out of view); popups at the caret anchor there.
@@ -76,6 +78,7 @@ impl TabGroup {
             last_area: Rect::default(),
             find_area: Rect::default(),
             crumbs_area: Rect::default(),
+            sticky: Default::default(),
             find_hits: Vec::new(),
             caret_cell: None,
         }
