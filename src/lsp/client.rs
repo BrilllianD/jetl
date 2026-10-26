@@ -18,17 +18,18 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use lsp_types::{
-    ChangeAnnotationWorkspaceEditClientCapabilities, ClientCapabilities, ClientInfo, CodeActionCapabilityResolveSupport,
-    CodeActionClientCapabilities, CodeActionKindLiteralSupport, CodeActionLiteralSupport, CompletionClientCapabilities,
-    CompletionItemCapability, CompletionItemCapabilityResolveSupport, CompletionItemKind, CompletionItemKindCapability, DiagnosticTag,
-    DidChangeWatchedFilesClientCapabilities, DocumentFormattingClientCapabilities, DocumentRangeFormattingClientCapabilities,
-    DocumentSymbolClientCapabilities, ExecuteCommandClientCapabilities, FailureHandlingKind, GeneralClientCapabilities, GotoCapability,
-    HoverClientCapabilities, InitializeParams, InitializeResult, InlayHintClientCapabilities, InlayHintWorkspaceClientCapabilities,
-    MarkupKind, MessageActionItemCapabilities, ParameterInformationSettings, PositionEncodingKind, PublishDiagnosticsClientCapabilities,
-    ReferenceClientCapabilities, RenameClientCapabilities, ResourceOperationKind, ShowMessageRequestClientCapabilities,
-    SignatureHelpClientCapabilities, SignatureInformationSettings, TagSupport, TextDocumentClientCapabilities,
-    TextDocumentSyncClientCapabilities, WindowClientCapabilities, WorkspaceClientCapabilities, WorkspaceEditClientCapabilities,
-    WorkspaceFileOperationsClientCapabilities, WorkspaceFolder, WorkspaceSymbolClientCapabilities,
+    CallHierarchyClientCapabilities, ChangeAnnotationWorkspaceEditClientCapabilities, ClientCapabilities, ClientInfo,
+    CodeActionCapabilityResolveSupport, CodeActionClientCapabilities, CodeActionKindLiteralSupport, CodeActionLiteralSupport,
+    CompletionClientCapabilities, CompletionItemCapability, CompletionItemCapabilityResolveSupport, CompletionItemKind,
+    CompletionItemKindCapability, DiagnosticTag, DidChangeWatchedFilesClientCapabilities, DocumentFormattingClientCapabilities,
+    DocumentRangeFormattingClientCapabilities, DocumentSymbolClientCapabilities, ExecuteCommandClientCapabilities, FailureHandlingKind,
+    GeneralClientCapabilities, GotoCapability, HoverClientCapabilities, InitializeParams, InitializeResult, InlayHintClientCapabilities,
+    InlayHintWorkspaceClientCapabilities, MarkupKind, MessageActionItemCapabilities, ParameterInformationSettings, PositionEncodingKind,
+    PublishDiagnosticsClientCapabilities, ReferenceClientCapabilities, RenameClientCapabilities, ResourceOperationKind,
+    ShowMessageRequestClientCapabilities, SignatureHelpClientCapabilities, SignatureInformationSettings, TagSupport,
+    TextDocumentClientCapabilities, TextDocumentSyncClientCapabilities, TypeHierarchyClientCapabilities, WindowClientCapabilities,
+    WorkspaceClientCapabilities, WorkspaceEditClientCapabilities, WorkspaceFileOperationsClientCapabilities, WorkspaceFolder,
+    WorkspaceSymbolClientCapabilities,
 };
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, BufReader};
@@ -259,6 +260,8 @@ pub fn client_capabilities(watch_files: bool) -> ClientCapabilities {
             formatting: Some(DocumentFormattingClientCapabilities { dynamic_registration: Some(true) }),
             range_formatting: Some(DocumentRangeFormattingClientCapabilities { dynamic_registration: Some(true) }),
             inlay_hint: Some(InlayHintClientCapabilities { dynamic_registration: Some(true), resolve_support: None }),
+            call_hierarchy: Some(CallHierarchyClientCapabilities { dynamic_registration: Some(true) }),
+            type_hierarchy: Some(TypeHierarchyClientCapabilities { dynamic_registration: Some(true) }),
             ..Default::default()
         }),
         window: Some(WindowClientCapabilities {
@@ -602,6 +605,9 @@ mod tests {
         assert_eq!(info["activeParameterSupport"], json!(true));
         assert_eq!(info["documentationFormat"], json!(["markdown", "plaintext"]));
         assert_eq!(help["contextSupport"], json!(true));
+        for kind in ["callHierarchy", "typeHierarchy"] {
+            assert_eq!(c["textDocument"][kind]["dynamicRegistration"], json!(true), "{kind}");
+        }
         assert_eq!(c["workspace"]["symbol"]["dynamicRegistration"], json!(true));
         assert_eq!(c["textDocument"]["inlayHint"]["dynamicRegistration"], json!(true));
         assert_eq!(c["workspace"]["inlayHint"]["refreshSupport"], json!(true));

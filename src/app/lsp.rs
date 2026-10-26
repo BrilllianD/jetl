@@ -557,6 +557,7 @@ impl App {
             self.notify(Level::Warn, format!("Cannot {what}: the project root changed"));
         }
         self.lsp.reset();
+        self.hierarchy = None;
         self.lsp.outside_failed = false;
         self.lsp_retarget_watch();
         self.editor.buffers.iter_mut().for_each(untrack);

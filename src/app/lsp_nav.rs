@@ -33,7 +33,8 @@ pub(super) use crate::lsp::caps::{
     RANGE_FORMATTING, RENAME, RESOLVE,
 };
 use crate::lsp::caps::{
-    Caps, DECLARATION, DEFINITION, HOVER, IMPLEMENTATION, REFERENCES, SIGNATURE_HELP, TYPE_DEFINITION, WORKSPACE_SYMBOL,
+    Caps, DECLARATION, DEFINITION, HOVER, IMPLEMENTATION, PREPARE_CALL_HIERARCHY, PREPARE_TYPE_HIERARCHY, REFERENCES, SIGNATURE_HELP,
+    TYPE_DEFINITION, WORKSPACE_SYMBOL,
 };
 
 /// The method a tag was sent with.
@@ -62,6 +63,10 @@ fn method_of(tag: &PendingTag) -> &'static str {
         PendingTag::Shutdown => "shutdown",
         PendingTag::WillFileOp(_) => "workspace/will*Files",
         PendingTag::WorkspaceSymbols(_) => WORKSPACE_SYMBOL,
+        PendingTag::CallHierarchy(_) => PREPARE_CALL_HIERARCHY,
+        PendingTag::TypeHierarchy(_) => PREPARE_TYPE_HIERARCHY,
+        // Never looked up: routed before `method_of`.
+        PendingTag::HierarchyChildren { .. } => "hierarchy children",
     }
 }
 
@@ -93,6 +98,8 @@ fn what(method: &str) -> &'static str {
         FORMATTING => "formatting",
         INLAY_HINT => "inlay hints",
         RANGE_FORMATTING => "formatting a selection",
+        PREPARE_CALL_HIERARCHY => "call hierarchy",
+        PREPARE_TYPE_HIERARCHY => "type hierarchy",
         _ => "this request",
     }
 }
@@ -302,6 +309,9 @@ impl App {
         if let PendingTag::WorkspaceSymbols(seq) = tag {
             return self.workspace_symbols_answer(name, seq, result);
         }
+        if let PendingTag::HierarchyChildren { tree, node } = tag {
+            return self.hierarchy_children_answer(name, tree, node, result);
+        }
         let Some(t) = tag.doc().cloned() else { return };
         // Formatting is checked against its buffer's format job.
         if let PendingTag::Formatting(t) = tag {
@@ -346,6 +356,9 @@ impl App {
         let value = match result {
             Ok(v) => v,
             Err(e) if [ResponseError::REQUEST_CANCELLED, ResponseError::CONTENT_MODIFIED].contains(&e.code) => return,
+            Err(e) if e.code == ResponseError::METHOD_NOT_FOUND && matches!(tag, PendingTag::TypeHierarchy(_)) => {
+                return self.lsp_hint(format!("{name} has no type hierarchy"));
+            }
             Err(e) => return self.lsp_hint(format!("{name}: {}", e.message)),
         };
         self.dirty_frame = true;
@@ -365,6 +378,8 @@ impl App {
             PendingTag::OrganizeImports(t) => self.lsp_code_actions_answer(t, value, ActionsFor::OrganizeImports),
             PendingTag::CodeActionResolve(t) => self.lsp_code_action_resolved(t, value),
             PendingTag::DocumentSymbols(t) => self.lsp_document_symbols_answer(t, value),
+            PendingTag::CallHierarchy(_) => self.hierarchy_prepared(name, true, value),
+            PendingTag::TypeHierarchy(_) => self.hierarchy_prepared(name, false, value),
             PendingTag::Completion(_)
             | PendingTag::CompletionResolve(_)
             | PendingTag::CompletionDocs(_)
@@ -374,6 +389,7 @@ impl App {
             | PendingTag::InlayHints(_)
             | PendingTag::WillFileOp(_)
             | PendingTag::WorkspaceSymbols(_)
+            | PendingTag::HierarchyChildren { .. }
             | PendingTag::Initialize
             | PendingTag::Shutdown => {}
         }

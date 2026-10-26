@@ -9,9 +9,9 @@
 use std::path::Path;
 
 use lsp_types::{
-    CodeActionProviderCapability, DeclarationCapability, FileOperationFilter, FileOperationPatternKind, FileOperationRegistrationOptions,
-    HoverProviderCapability, ImplementationProviderCapability, OneOf, ServerCapabilities, TextDocumentSyncKind,
-    TypeDefinitionProviderCapability,
+    CallHierarchyServerCapability, CodeActionProviderCapability, DeclarationCapability, FileOperationFilter, FileOperationPatternKind,
+    FileOperationRegistrationOptions, HoverProviderCapability, ImplementationProviderCapability, OneOf, ServerCapabilities,
+    TextDocumentSyncKind, TypeDefinitionProviderCapability,
 };
 use serde_json::Value;
 
@@ -35,6 +35,12 @@ pub const CODE_ACTION_RESOLVE: &str = "codeAction/resolve";
 pub const INLAY_HINT: &str = "textDocument/inlayHint";
 pub const EXECUTE_COMMAND: &str = "workspace/executeCommand";
 pub const DOCUMENT_SYMBOL: &str = "textDocument/documentSymbol";
+pub const PREPARE_CALL_HIERARCHY: &str = "textDocument/prepareCallHierarchy";
+pub const INCOMING_CALLS: &str = "callHierarchy/incomingCalls";
+pub const OUTGOING_CALLS: &str = "callHierarchy/outgoingCalls";
+pub const PREPARE_TYPE_HIERARCHY: &str = "textDocument/prepareTypeHierarchy";
+pub const SUPERTYPES: &str = "typeHierarchy/supertypes";
+pub const SUBTYPES: &str = "typeHierarchy/subtypes";
 pub const FORMATTING: &str = "textDocument/formatting";
 pub const RANGE_FORMATTING: &str = "textDocument/rangeFormatting";
 pub const WILL_CREATE_FILES: &str = "workspace/willCreateFiles";
@@ -160,6 +166,14 @@ impl<'a> Caps<'a> {
             FORMATTING => on(&fixed.document_formatting_provider) || self.any(FORMATTING),
             RANGE_FORMATTING => on(&fixed.document_range_formatting_provider) || self.any(RANGE_FORMATTING),
             INLAY_HINT => on(&fixed.inlay_hint_provider) || self.any(INLAY_HINT),
+            PREPARE_CALL_HIERARCHY => {
+                matches!(
+                    fixed.call_hierarchy_provider,
+                    Some(CallHierarchyServerCapability::Simple(true) | CallHierarchyServerCapability::Options(_))
+                ) || self.any(PREPARE_CALL_HIERARCHY)
+            }
+            // lsp-types 0.97 drops typeHierarchyProvider: any running server is asked, a -32601 answer says it has none.
+            PREPARE_TYPE_HIERARCHY => true,
             _ => false,
         }
     }
@@ -335,6 +349,26 @@ mod tests {
         assert!(!caps(&f, &r, python()).has(DECLARATION));
         let f = fixed(json!({"typeDefinitionProvider": false}));
         assert!(!caps(&f, &Registry::default(), rust()).has(TYPE_DEFINITION));
+    }
+
+    #[test]
+    fn call_hierarchy_is_static_or_registered_and_type_hierarchy_is_always_asked() {
+        let r = Registry::default();
+        for (v, want) in [
+            (json!({"callHierarchyProvider": true}), true),
+            (json!({"callHierarchyProvider": {}}), true),
+            (json!({}), false),
+            (json!({"callHierarchyProvider": false}), false),
+        ] {
+            let f = fixed(v.clone());
+            assert_eq!(caps(&f, &r, rust()).has(PREPARE_CALL_HIERARCHY), want, "{v}");
+        }
+        let f = fixed(json!({}));
+        let mut r = Registry::default();
+        register(&mut r, "c", PREPARE_CALL_HIERARCHY, json!({"documentSelector": [{"language": "rust"}]}));
+        assert!(caps(&f, &r, rust()).has(PREPARE_CALL_HIERARCHY));
+        assert!(!caps(&f, &r, python()).has(PREPARE_CALL_HIERARCHY));
+        assert!(caps(&f, &Registry::default(), rust()).has(PREPARE_TYPE_HIERARCHY));
     }
 
     #[test]

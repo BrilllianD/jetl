@@ -50,6 +50,7 @@ mod files;
 mod find;
 mod format;
 mod git_ops;
+mod hierarchy;
 mod history;
 mod inlay;
 mod lightbulb;
@@ -276,6 +277,8 @@ pub struct App {
     pub tasks: crate::yman::panel::TasksPanel,
     /// The TODO window (`files/todo.rs`).
     pub todo: crate::files::todo::TodoPanel,
+    /// The call or type hierarchy shown in the Hierarchy window (`app/hierarchy.rs`).
+    pub hierarchy: Option<crate::lsp::hierarchy::HierarchyTree>,
     /// The Terminal window and its shell.
     pub terminal: crate::terminal::tabs::TerminalTabs,
     /// Language servers and the documents open on them.
@@ -410,6 +413,7 @@ impl App {
             history_panel: Default::default(),
             tasks: Default::default(),
             todo: Default::default(),
+            hierarchy: None,
             terminal: crate::terminal::tabs::TerminalTabs::new(config.terminal.scrollback),
             lsp: lsp::LspService::with_inlays(config.lsp.inlay_hints),
             hover: None,

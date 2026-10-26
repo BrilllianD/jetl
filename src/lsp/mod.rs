@@ -14,6 +14,7 @@ pub mod diagnostics;
 pub mod edits;
 #[cfg(test)]
 pub mod fake;
+pub mod hierarchy;
 pub mod locations;
 pub mod panel;
 pub mod pos;
@@ -91,6 +92,12 @@ pub enum PendingTag {
     InlayHints(DocTag),
     /// workspace/symbol for the palette query with this seq.
     WorkspaceSymbols(u64),
+    /// textDocument/prepareCallHierarchy at the caret.
+    CallHierarchy(DocTag),
+    /// textDocument/prepareTypeHierarchy at the caret.
+    TypeHierarchy(DocTag),
+    /// The children of node `node` of the hierarchy tree `tree` (`App::hierarchy`); checked against the tree's id, not the caret.
+    HierarchyChildren { tree: u64, node: usize },
     /// `workspace/will*Files` of a tree file operation; the seq of its `PendingFileOp`.
     WillFileOp(u64),
 }
@@ -99,7 +106,11 @@ impl PendingTag {
     /// The document request's tag, for the requests the app makes.
     pub fn doc(&self) -> Option<&DocTag> {
         match self {
-            PendingTag::Initialize | PendingTag::Shutdown | PendingTag::WillFileOp(_) | PendingTag::WorkspaceSymbols(_) => None,
+            PendingTag::Initialize
+            | PendingTag::Shutdown
+            | PendingTag::WillFileOp(_)
+            | PendingTag::WorkspaceSymbols(_)
+            | PendingTag::HierarchyChildren { .. } => None,
             PendingTag::Definition(t)
             | PendingTag::TypeDefinition(t)
             | PendingTag::Implementation(t)
@@ -121,7 +132,9 @@ impl PendingTag {
             | PendingTag::DocumentSymbols(t)
             | PendingTag::Formatting(t)
             | PendingTag::Lightbulb(t)
-            | PendingTag::InlayHints(t) => Some(t),
+            | PendingTag::InlayHints(t)
+            | PendingTag::CallHierarchy(t)
+            | PendingTag::TypeHierarchy(t) => Some(t),
         }
     }
 }
