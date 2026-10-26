@@ -796,7 +796,7 @@ mod tests {
         let (mut app, dir) = test_app("surround-lines");
         load_two(&mut app);
         select(&mut app, (1, 0), (3, 0));
-        assert_eq!(surround(&mut app, "if"), ["if", "while"]);
+        assert_eq!(surround(&mut app, "if"), ["for", "if", "ifelse", "loop", "unsafe", "while"]);
         assert_eq!(text(&app), "fn main() {\n    if condition {\n        a();\n        b();\n    }\n}\n");
         assert_eq!(selected(&app), "condition");
         assert!(app.editor.snippet.is_some());
@@ -805,6 +805,86 @@ mod tests {
         undo(&mut app);
         assert_eq!(text(&app), TWO);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// (stem, file, text before, indent, first line, second line, text after)
+    type Sample = (&'static str, &'static str, &'static str, &'static str, &'static str, &'static str, &'static str);
+    /// (prefix, head line, tail after the body)
+    type Case = (&'static str, &'static str, &'static str);
+
+    const TS_CASES: &[Case] = &[
+        ("for", "for (const item of items) {", "}"),
+        ("if", "if (condition) {", "}"),
+        ("ifelse", "if (condition) {", "} else {\n        \n    }"),
+        ("try", "try {", "} catch (e) {\n        \n    }"),
+        ("while", "while (condition) {", "}"),
+    ];
+
+    #[tokio::test]
+    async fn every_builtin_surround_template_wraps_a_selection() {
+        let ts: Sample = ("typescript", "a.ts", "function main() {\n", "    ", "a();", "b();", "}\n");
+        let samples: [(Sample, &[Case]); 5] = [
+            (
+                ("rust", "a.rs", "fn main() {\n", "    ", "a();", "b();", "}\n"),
+                &[
+                    ("for", "for item in iter {", "}"),
+                    ("if", "if condition {", "}"),
+                    ("ifelse", "if condition {", "} else {\n        \n    }"),
+                    ("loop", "loop {", "}"),
+                    ("unsafe", "unsafe {", "}"),
+                    ("while", "while condition {", "}"),
+                ],
+            ),
+            (
+                ("python", "a.py", "def main():\n", "    ", "a()", "b()", "\nmain()\n"),
+                &[
+                    ("for", "for item in items:", ""),
+                    ("if", "if condition:", ""),
+                    ("ifelse", "if condition:", "else:\n        pass"),
+                    ("try", "try:", "except Exception as e:\n        raise"),
+                    ("while", "while condition:", ""),
+                    ("with", "with expr as name:", ""),
+                ],
+            ),
+            (ts, TS_CASES),
+            (("javascript", "a.js", ts.2, ts.3, ts.4, ts.5, ts.6), TS_CASES),
+            (
+                ("go", "a.go", "func main() {\n", "\t", "a()", "b()", "}\n"),
+                &[
+                    ("for", "for condition {", "}"),
+                    ("forr", "for _, v := range items {", "}"),
+                    ("if", "if condition {", "}"),
+                    ("ifelse", "if condition {", "} else {\n\t\t\n\t}"),
+                ],
+            ),
+        ];
+        for ((stem, file, pre, ind, a, b, post), cases) in samples {
+            if crate::editor::syntax::language_for_name(stem).is_none() {
+                continue;
+            }
+            let (mut app, dir) = test_app(&format!("surround-builtin-{stem}"));
+            let original = format!("{pre}{ind}{a}\n{ind}{b}\n{post}");
+            load(&mut app, file, &original);
+            app.focus.set(PanelId::Editor);
+            let mut want: Vec<&str> = cases.iter().map(|c| c.0).collect();
+            want.sort_unstable();
+            let mut have: Vec<String> =
+                app.snippets.for_language(Some(stem)).iter().filter(|s| uses_selection(&s.body)).map(|s| s.prefix.clone()).collect();
+            have.sort();
+            assert_eq!(have, want, "{stem}: built-in surround templates without a table row");
+            for (prefix, head, tail) in cases {
+                select(&mut app, (1, 0), (3, 0));
+                let offered = surround(&mut app, prefix);
+                assert_eq!(offered, want, "{stem} {prefix}: offered");
+                let tail = if tail.is_empty() { String::new() } else { format!("{ind}{tail}\n") };
+                let expected = format!("{pre}{ind}{head}\n{ind}{ind}{a}\n{ind}{ind}{b}\n{tail}{post}");
+                assert_eq!(text(&app), expected, "{stem} {prefix}");
+                app.editor.set_snippet(None);
+                undo(&mut app);
+                assert_eq!(text(&app), original, "{stem} {prefix}: one undo");
+            }
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 
     #[tokio::test]

@@ -19,3 +19,18 @@ body = "if (${1:condition}) {\n\t${TM_SELECTED_TEXT}$0\n}"
 prefix = "try"
 description = "try/catch"
 body = "try {\n\t${TM_SELECTED_TEXT}$0\n} catch (${1:e}) {\n\t$2\n}"
+
+[[snippet]]
+prefix = "ifelse"
+description = "if/else"
+body = "if (${1:condition}) {\n\t${TM_SELECTED_TEXT}$0\n} else {\n\t$2\n}"
+
+[[snippet]]
+prefix = "for"
+description = "for...of loop"
+body = "for (const ${1:item} of ${2:items}) {\n\t${TM_SELECTED_TEXT}$0\n}"
+
+[[snippet]]
+prefix = "while"
+description = "while loop"
+body = "while (${1:condition}) {\n\t${TM_SELECTED_TEXT}$0\n}"

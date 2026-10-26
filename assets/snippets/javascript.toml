@@ -1,0 +1,36 @@
+# [[snippet]] prefix, body (LSP snippet syntax), description
+
+[[snippet]]
+prefix = "fn"
+description = "Function"
+body = "function ${1:name}(${2}) {\n\t$0\n}"
+
+[[snippet]]
+prefix = "log"
+description = "console.log"
+body = "console.log(${1});$0"
+
+[[snippet]]
+prefix = "if"
+description = "if block"
+body = "if (${1:condition}) {\n\t${TM_SELECTED_TEXT}$0\n}"
+
+[[snippet]]
+prefix = "try"
+description = "try/catch"
+body = "try {\n\t${TM_SELECTED_TEXT}$0\n} catch (${1:e}) {\n\t$2\n}"
+
+[[snippet]]
+prefix = "ifelse"
+description = "if/else"
+body = "if (${1:condition}) {\n\t${TM_SELECTED_TEXT}$0\n} else {\n\t$2\n}"
+
+[[snippet]]
+prefix = "for"
+description = "for...of loop"
+body = "for (const ${1:item} of ${2:items}) {\n\t${TM_SELECTED_TEXT}$0\n}"
+
+[[snippet]]
+prefix = "while"
+description = "while loop"
+body = "while (${1:condition}) {\n\t${TM_SELECTED_TEXT}$0\n}"

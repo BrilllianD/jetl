@@ -8,12 +8,12 @@ expression: "snapshot(&term, &marks, None)"
 02  ⌂ │                              ││  2    │   a();
 03  2 │           ┌ Surround With ─────────────────────────────────┐
 04  ◫ │           │ type to filter                                 │
-05  7 │           │  if  if block                                  │
-06  ⊢ │           │  while  while loop                             │
-07    │           │                                                │
-08  ✓ │           │                                                │
-09  8 │           │                                                │
-10  ⟲ │           │                                                │
+05  7 │           │  for  for loop                                 │
+06  ⊢ │           │  if  if block                                  │
+07    │           │  ifelse  if/else                               │
+08  ✓ │           │  loop  infinite loop                           │
+09  8 │           │  unsafe  unsafe block                          │
+10  ⟲ │           │  while  while loop                             │
 11  5 │           │                                                │
 12  ⚑ │           │                                                │
 13  9 │           │                                                │

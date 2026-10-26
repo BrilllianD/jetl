@@ -24,3 +24,23 @@ body = "if ${1:condition}:\n\t${TM_SELECTED_TEXT:pass}$0"
 prefix = "try"
 description = "try/except"
 body = "try:\n\t${TM_SELECTED_TEXT:pass}$0\nexcept ${1:Exception} as ${2:e}:\n\t${3:raise}"
+
+[[snippet]]
+prefix = "ifelse"
+description = "if/else"
+body = "if ${1:condition}:\n\t${TM_SELECTED_TEXT:pass}$0\nelse:\n\t${2:pass}"
+
+[[snippet]]
+prefix = "for"
+description = "for loop"
+body = "for ${1:item} in ${2:items}:\n\t${TM_SELECTED_TEXT:pass}$0"
+
+[[snippet]]
+prefix = "while"
+description = "while loop"
+body = "while ${1:condition}:\n\t${TM_SELECTED_TEXT:pass}$0"
+
+[[snippet]]
+prefix = "with"
+description = "with block"
+body = "with ${1:expr} as ${2:name}:\n\t${TM_SELECTED_TEXT:pass}$0"

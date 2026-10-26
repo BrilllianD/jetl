@@ -34,6 +34,8 @@ pub const BUILTIN: &[(&str, &str)] = &[
     ("rust", include_str!("../../assets/snippets/rust.toml")),
     ("python", include_str!("../../assets/snippets/python.toml")),
     ("typescript", include_str!("../../assets/snippets/typescript.toml")),
+    ("javascript", include_str!("../../assets/snippets/javascript.toml")),
+    ("go", include_str!("../../assets/snippets/go.toml")),
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -242,9 +244,11 @@ mod tests {
         }
         let (set, errors) = SnippetSet::build(&[]);
         assert!(errors.is_empty());
-        assert_eq!(prefixes(&set, Some("rust")), ["fn", "if", "impl", "match", "test", "while"]);
-        assert_eq!(prefixes(&set, Some("python")), ["class", "def", "if", "ifmain", "try"]);
-        assert_eq!(prefixes(&set, Some("typescript")), ["fn", "if", "log", "try"]);
+        assert_eq!(prefixes(&set, Some("rust")), ["fn", "for", "if", "ifelse", "impl", "loop", "match", "test", "unsafe", "while"]);
+        assert_eq!(prefixes(&set, Some("python")), ["class", "def", "for", "if", "ifelse", "ifmain", "try", "while", "with"]);
+        assert_eq!(prefixes(&set, Some("typescript")), ["fn", "for", "if", "ifelse", "log", "try", "while"]);
+        assert_eq!(prefixes(&set, Some("javascript")), ["fn", "for", "if", "ifelse", "log", "try", "while"]);
+        assert_eq!(prefixes(&set, Some("go")), ["for", "forr", "func", "if", "ifelse", "iferr"]);
         for (stem, _) in BUILTIN {
             for s in set.for_language(Some(stem)) {
                 let (_, stops) = crate::lsp::completion::parse_snippet(&s.body);
@@ -260,8 +264,8 @@ mod tests {
         assert!(errors.is_empty());
         assert_eq!(body(&set, Some("rust"), "fn"), "FN");
         assert_eq!(body(&set, Some("rust"), "pf"), "PF");
-        assert_eq!(prefixes(&set, Some("rust")), ["fn", "if", "impl", "match", "pf", "test", "while"]);
-        assert_eq!(prefixes(&set, Some("python")), ["class", "def", "if", "ifmain", "try"]);
+        assert_eq!(prefixes(&set, Some("rust")), ["fn", "for", "if", "ifelse", "impl", "loop", "match", "pf", "test", "unsafe", "while"]);
+        assert_eq!(prefixes(&set, Some("python")), ["class", "def", "for", "if", "ifelse", "ifmain", "try", "while", "with"]);
     }
 
     #[test]
@@ -271,7 +275,7 @@ mod tests {
         assert!(errors.is_empty());
         assert!(body(&set, Some("rust"), "fn").starts_with("fn ${1:name}"));
         assert!(prefixes(&set, Some("rust")).contains(&"todo".to_string()));
-        for lang in [None, Some("go")] {
+        for lang in [None, Some("lua")] {
             assert_eq!(prefixes(&set, lang), ["fn", "todo"]);
             assert_eq!(body(&set, lang, "fn"), "ALL");
         }
@@ -298,7 +302,7 @@ mod tests {
         assert!(errors[0].0.ends_with("rust.toml"));
         assert!(errors[0].1.starts_with("snippets/rust.toml is invalid: "), "{}", errors[0].1);
         assert!(errors[0].1.ends_with("; its snippets are ignored"));
-        assert_eq!(prefixes(&set, Some("rust")), ["fn", "if", "impl", "match", "test", "todo", "while"]);
+        assert_eq!(prefixes(&set, Some("rust")), ["fn", "for", "if", "ifelse", "impl", "loop", "match", "test", "todo", "unsafe", "while"]);
     }
 
     #[test]
@@ -318,7 +322,7 @@ mod tests {
         assert!(SnippetSet::read(&missing).is_empty());
         let (set, errors) = SnippetSet::build(&[]);
         assert!(errors.is_empty());
-        assert_eq!(set.for_language(Some("rust")).len(), 6);
+        assert_eq!(set.for_language(Some("rust")).len(), 10);
     }
 
     #[test]

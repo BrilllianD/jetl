@@ -709,9 +709,11 @@ files opened after the change.
 ## Live templates (snippets)
 
 A snippet is a short prefix that Tab expands into a larger piece of text with
-places to fill in. jetl ships a few (Rust `fn`, `test`, `impl`, `match`, `if`,
-`while`; Python `def`, `class`, `ifmain`, `if`, `try`; TypeScript `fn`, `log`,
-`if`, `try`); you add your own as
+places to fill in. jetl ships a few (Rust `fn`, `test`, `impl`, `match`, `if`, `ifelse`,
+`while`, `for`, `loop`, `unsafe`; Python `def`, `class`, `ifmain`, `if`, `ifelse`,
+`try`, `while`, `for`, `with`; TypeScript and JavaScript `fn`, `log`, `if`,
+`ifelse`, `try`, `while`, `for`; Go `func`, `iferr`, `if`, `ifelse`, `for`,
+`forr`); you add your own as
 TOML files in `snippets/` next to `config.toml` (`~/.config/jetl/snippets/`).
 `editor.snippets = false` turns the feature off: no snippet rows in
 completion, Tab never expands, and Edit > Expand Live Template says so.
@@ -776,8 +778,10 @@ non-blank character); a selection that covers whole lines is taken line-wise;
 any other selection is wrapped exactly. The selected text keeps its own
 indentation relative to the template's line. It is one undo step. Each caret
 or selection is wrapped; the tabstops are walked only for a single selection
-(with several, each caret lands at its copy's `$0`). The built-in `if`,
-`while` and `try` are such templates; a user one:
+(with several, each caret lands at its copy's `$0`). The built-in surround
+templates are Rust `if`, `ifelse`, `while`, `for`, `loop`, `unsafe`; Python `if`,
+`ifelse`, `while`, `for`, `with`, `try`; TypeScript and JavaScript `if`, `ifelse`,
+`while`, `for`, `try`; Go `if`, `ifelse`, `for`, `forr`. A user one:
 
     [[snippet]]
     prefix = "iflet"

@@ -864,9 +864,9 @@ mod tests {
         typ(&mut app, "l");
         let req = completion_req(&mut server).await;
         assert_eq!(req["params"]["context"], json!({"triggerKind": 3}));
-        assert_eq!(labels(&app), ["last", "len"]);
+        assert_eq!(labels(&app), ["last", "len", "loop"]);
         reply(&mut app, &mut server, &req, json!({"isIncomplete": false, "items": [{"label": "len"}, {"label": "lines"}]})).await;
-        assert_eq!(labels(&app), ["len", "lines"]);
+        assert_eq!(labels(&app), ["len", "lines", "loop"]);
         // Complete now: more typing filters without asking.
         typ(&mut app, "i");
         assert_eq!(labels(&app), ["lines"]);
@@ -1061,8 +1061,8 @@ mod tests {
         let req = completion_req(&mut server).await;
         reply(&mut app, &mut server, &req, json!([{"label": "fnord"}, {"label": "fold"}])).await;
         let l = labels(&app);
-        assert_eq!(l.len(), 3, "{l:?}");
-        assert_eq!(l.last().unwrap(), "fn");
+        assert_eq!(l.len(), 4, "{l:?}");
+        assert_eq!(l[2..], ["fn", "for"]);
         assert!(l[..2].contains(&"fnord".to_string()) && l[..2].contains(&"fold".to_string()), "{l:?}");
         key(&mut app, KeyCode::Down);
         key(&mut app, KeyCode::Down);
@@ -1078,7 +1078,7 @@ mod tests {
         typ(&mut app, "f");
         let req = completion_req(&mut server).await;
         reply(&mut app, &mut server, &req, json!([])).await;
-        assert_eq!(labels(&app), ["fn"], "an empty answer still lists the snippet");
+        assert_eq!(labels(&app), ["fn", "for"], "an empty answer still lists the snippet");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1093,7 +1093,7 @@ mod tests {
         typ(&mut app, "f");
         let req = completion_req(&mut server).await;
         reply(&mut app, &mut server, &req, json!([])).await;
-        assert_eq!(labels(&app), ["fn"]);
+        assert_eq!(labels(&app), ["fn", "for"]);
         key(&mut app, KeyCode::Down);
         typ(&mut app, "(");
         assert_eq!(text(&app), "fn main() {\n    f()\n}\n", "typed, not expanded");

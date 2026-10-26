@@ -29,3 +29,23 @@ body = "if ${1:condition} {\n\t${TM_SELECTED_TEXT}$0\n}"
 prefix = "while"
 description = "while loop"
 body = "while ${1:condition} {\n\t${TM_SELECTED_TEXT}$0\n}"
+
+[[snippet]]
+prefix = "ifelse"
+description = "if/else"
+body = "if ${1:condition} {\n\t${TM_SELECTED_TEXT}$0\n} else {\n\t$2\n}"
+
+[[snippet]]
+prefix = "for"
+description = "for loop"
+body = "for ${1:item} in ${2:iter} {\n\t${TM_SELECTED_TEXT}$0\n}"
+
+[[snippet]]
+prefix = "loop"
+description = "infinite loop"
+body = "loop {\n\t${TM_SELECTED_TEXT}$0\n}"
+
+[[snippet]]
+prefix = "unsafe"
+description = "unsafe block"
+body = "unsafe {\n\t${TM_SELECTED_TEXT}$0\n}"
