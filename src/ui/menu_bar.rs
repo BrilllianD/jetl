@@ -102,6 +102,8 @@ pub const MAIN_MENU: &[(&str, char, &[Row])] = &[
             Sep,
             Item("Rename…", "lsp.rename"),
             Item("Show Context Actions", "lsp.context_actions"),
+            Item("Refactor This…", "lsp.refactor_this"),
+            Item("Optimize Imports", "lsp.optimize_imports"),
         ],
     ),
     (

@@ -307,6 +307,11 @@
 "shift-f6" = "lsp.rename"
 "alt-enter" = "lsp.context_actions"
 "ctrl-f12" = "lsp.file_structure"
+# Refactor This and Optimize Imports, as in JetBrains: the server's refactorings, or its organize
+# imports action. Ctrl+Alt+Shift+T needs the kitty protocol; Alt+Shift+T works anywhere.
+"ctrl-alt-shift-t" = "lsp.refactor_this"
+"alt-shift-t" = "lsp.refactor_this"
+"ctrl-alt-o" = "lsp.optimize_imports"
 "esc" = "editor.escape"
 
 # The conflict resolver (Git > Resolve Conflicts) while it is open.

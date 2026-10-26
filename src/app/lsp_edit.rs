@@ -1,5 +1,6 @@
 //! Language server edits and structure: rename (Shift+F6), context actions
-//! (Alt+Enter), File Structure (Ctrl+F12), and applying workspace edits,
+//! (Alt+Enter), Refactor This (Alt+Shift+T) and Optimize Imports (Ctrl+Alt+O), the same request
+//! limited to a kind, File Structure (Ctrl+F12), and applying workspace edits,
 //! the servers' answers and their `workspace/applyEdit` requests alike.
 //! Formatting through a server is in `app/format.rs`; the lightbulb (quick
 //! fixes on the caret line) in `app/lightbulb.rs`. Context actions list the
@@ -59,6 +60,62 @@ fn confirm_message(title: &str, rows: &[edits::AnnotationRow], total: usize) -> 
 /// Put the server's preferred code actions first, keeping the order otherwise.
 fn preferred_first(items: &mut [CodeActionOrCommand]) {
     items.sort_by_key(|a| !matches!(a, CodeActionOrCommand::CodeAction(c) if c.is_preferred == Some(true)));
+}
+
+/// Which code-action request an answer belongs to: Alt+Enter's (everything),
+/// Refactor This's or Optimize Imports'.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ActionsFor {
+    Context,
+    Refactor,
+    OrganizeImports,
+}
+
+impl ActionsFor {
+    /// The kind sent as `context.only` and kept from the answer; `None`: all.
+    fn only(self) -> Option<&'static str> {
+        match self {
+            ActionsFor::Context => None,
+            ActionsFor::Refactor => Some("refactor"),
+            ActionsFor::OrganizeImports => Some("source.organizeImports"),
+        }
+    }
+
+    fn title(self) -> &'static str {
+        match self {
+            ActionsFor::Context => "Context Actions",
+            ActionsFor::Refactor => "Refactor This",
+            ActionsFor::OrganizeImports => "Optimize Imports",
+        }
+    }
+
+    fn none_hint(self) -> &'static str {
+        match self {
+            ActionsFor::Context => "No context actions here",
+            ActionsFor::Refactor => "No refactorings here",
+            ActionsFor::OrganizeImports => "Nothing to optimize",
+        }
+    }
+
+    fn tag(self) -> fn(DocTag) -> PendingTag {
+        match self {
+            ActionsFor::Context => PendingTag::CodeAction,
+            ActionsFor::Refactor => PendingTag::Refactor,
+            ActionsFor::OrganizeImports => PendingTag::OrganizeImports,
+        }
+    }
+
+    /// Whether `item` is of this request's kind: always for `Context`; else a
+    /// `CodeAction` whose `kind` equals `only` or starts with `only` + "."
+    /// (a bare `Command` has no kind and is dropped).
+    fn keeps(self, item: &CodeActionOrCommand) -> bool {
+        let Some(only) = self.only() else { return true };
+        let CodeActionOrCommand::CodeAction(a) = item else { return false };
+        a.kind.as_ref().is_some_and(|k| {
+            let k = k.as_str();
+            k == only || k.strip_prefix(only).is_some_and(|rest| rest.starts_with('.'))
+        })
+    }
 }
 
 /// Rename and context action requests (in `LspService`).
@@ -163,17 +220,27 @@ impl App {
 
     /// `lsp.context_actions` (Alt+Enter): the server's quick fixes and
     /// refactorings for the selection (or the caret), with the diagnostics
-    /// there.
-    pub(super) fn lsp_context_actions(&mut self) {
+    /// there. `lsp.refactor_this` and `lsp.optimize_imports` send the same
+    /// request with `context.only` (the latter over the whole document).
+    pub(super) fn lsp_code_actions(&mut self, what: ActionsFor) {
         self.hover = None;
         self.completion_close();
         let Some(b) = self.editor.active_buffer() else { return };
         let r = b.view.sel().range();
-        let range = lsp_types::Range::new(pos::position(&b.rope, r.start), pos::position(&b.rope, r.end));
+        let range = match what {
+            ActionsFor::OrganizeImports => {
+                lsp_types::Range::new(lsp_types::Position::new(0, 0), pos::position(&b.rope, b.rope.len_chars()))
+            }
+            _ => lsp_types::Range::new(pos::position(&b.rope, r.start), pos::position(&b.rope, r.end)),
+        };
         let (id, head) = (b.id, pos::position(&b.rope, b.view.sel().head));
         let diagnostics = self.diagnostics_overlapping(b, range);
-        let params = json!({"range": range, "context": {"diagnostics": diagnostics, "triggerKind": 1}});
-        if let Err(why) = self.lsp_tagged_request(id, head, CODE_ACTION, params, PendingTag::CodeAction)
+        let mut context = json!({"diagnostics": diagnostics, "triggerKind": 1});
+        if let Some(k) = what.only() {
+            context["only"] = json!([k]);
+        }
+        let params = json!({"range": range, "context": context});
+        if let Err(why) = self.lsp_tagged_request(id, head, CODE_ACTION, params, what.tag())
             && !why.is_empty()
         {
             self.lsp_hint(why);
@@ -193,7 +260,7 @@ impl App {
             .collect()
     }
 
-    pub(super) fn lsp_code_actions_answer(&mut self, t: DocTag, value: Value) {
+    pub(super) fn lsp_code_actions_answer(&mut self, t: DocTag, value: Value, what: ActionsFor) {
         let mut items: Vec<CodeActionOrCommand> = serde_json::from_value::<Option<Vec<Value>>>(value)
             .ok()
             .flatten()
@@ -209,10 +276,11 @@ impl App {
                 Some(item)
             })
             .filter(|a| !matches!(a, CodeActionOrCommand::CodeAction(c) if c.disabled.is_some()))
+            .filter(|a| what.keeps(a))
             .collect();
         preferred_first(&mut items);
         if items.is_empty() {
-            return self.lsp_hint("No context actions here");
+            return self.lsp_hint(what.none_hint());
         }
         if self.dialog.is_some() {
             return;
@@ -224,8 +292,12 @@ impl App {
                 CodeActionOrCommand::CodeAction(a) => a.title.clone(),
             })
             .collect();
+        let single = what == ActionsFor::OrganizeImports && items.len() == 1;
         self.lsp.edit.actions = Some((t.seq, items));
-        self.dialog = Some(Dialog::choice(DialogId::LspCodeAction(t), "Context Actions", "", titles));
+        if single {
+            return self.lsp_code_action_chosen(t, 0);
+        }
+        self.dialog = Some(Dialog::choice(DialogId::LspCodeAction(t), what.title(), "", titles));
         self.dispatcher.reset();
     }
 
@@ -892,6 +964,7 @@ mod tests {
         let sent = &req["params"]["context"]["diagnostics"];
         assert_eq!(sent.as_array().unwrap().len(), 1, "only the one at the caret: {sent}");
         assert_eq!((sent[0]["code"].clone(), sent[0]["data"].clone()), (json!(425), json!({"fix": 1})));
+        assert!(req["params"]["context"].get("only").is_none(), "Alt+Enter asks for every kind");
         let d = app.dialog.take().expect("the actions");
         match &d.kind {
             DialogKind::Choice { items, .. } => assert_eq!(items, &["Import old", "Inline", "Fix all"]),
@@ -960,6 +1033,106 @@ mod tests {
         answer(&mut app, &mut server, "textDocument/codeAction", json!([])).await;
         assert!(app.dialog.is_none());
         assert!(toasts(&app).contains(&"No context actions here".to_string()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn refactor_this_lists_only_refactorings() {
+        let (mut app, dir) = test_app("lsp-refactor");
+        let mut servers = with_fake_servers(&mut app, caps());
+        let mut server = open_on_server(&mut app, &mut servers, "a.rs", A).await;
+        let a = app.workspace.root.join("a.rs");
+        let diag = |l: u32, c0: u32, c1: u32, code: Value| json!({"range": range(l, c0, l, c1), "severity": 1, "message": "unresolved", "code": code});
+        server.notify(
+            "textDocument/publishDiagnostics",
+            json!({"uri": uri(&a), "diagnostics": [diag(1, 18, 21, json!(425)), diag(0, 3, 7, json!("x"))]}),
+        );
+        handle_next(&mut app, is_lsp).await;
+        app.editor.active_buffer_mut().unwrap().goto_line(1, 19);
+        app.perform(Action::Lsp(LspAction::RefactorThis));
+        let one_edit = json!({"changes": {uri(&a): [edit(0, 0, 0, 0, "use m::old;\n")]}});
+        let fix = json!({"title": "Import old", "kind": "quickfix", "edit": one_edit});
+        let extract = json!({"title": "Extract variable", "kind": "refactor.extract", "edit": one_edit});
+        let plain = json!({"title": "Rewrite", "kind": "refactor", "isPreferred": true, "edit": one_edit});
+        let cmd = json!({"title": "Fix all", "command": "fix.all"});
+        let organize = json!({"title": "Organize", "kind": "source.organizeImports", "edit": one_edit});
+        let off = json!({"title": "Inline", "kind": "refactor.inline", "disabled": {"reason": "no"}});
+        let lookalike = json!({"title": "Refactoring-ish", "kind": "refactoring", "edit": one_edit});
+        let req =
+            answer(&mut app, &mut server, "textDocument/codeAction", json!([fix, extract, plain, cmd, organize, off, lookalike])).await;
+        assert_eq!(req["params"]["context"]["only"], json!(["refactor"]));
+        assert_eq!(req["params"]["range"], range(1, 20, 1, 20));
+        let sent = &req["params"]["context"]["diagnostics"];
+        assert_eq!(sent.as_array().unwrap().len(), 1, "only the one at the caret: {sent}");
+        let d = app.dialog.take().expect("the refactorings");
+        match &d.kind {
+            DialogKind::Choice { items, .. } => {
+                assert_eq!(d.title, "Refactor This");
+                assert_eq!(items, &["Rewrite", "Extract variable"]);
+            }
+            k => panic!("{k:?}"),
+        }
+        app.finish_dialog(d.id, DialogResult::Choice(1));
+        assert_eq!(text(&app), format!("use m::old;\n{A}"));
+        app.perform(Action::Editor(EditorAction::Undo));
+        app.perform(Action::Lsp(LspAction::RefactorThis));
+        answer(&mut app, &mut server, "textDocument/codeAction", json!([fix])).await;
+        assert!(app.dialog.is_none());
+        assert!(toasts(&app).contains(&"No refactorings here".to_string()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn optimize_imports_runs_a_single_action_at_once() {
+        let (mut app, dir) = test_app("lsp-organize");
+        let mut servers = with_fake_servers(&mut app, caps());
+        let mut server = open_on_server(&mut app, &mut servers, "a.rs", A).await;
+        let a = app.workspace.root.join("a.rs");
+        app.editor.active_buffer_mut().unwrap().goto_line(1, 19);
+        app.perform(Action::Lsp(LspAction::OptimizeImports));
+        let edit_of = || json!({"changes": {uri(&a): [edit(0, 0, 0, 0, "use m::old;\n")]}});
+        let organize = json!({"title": "Organize", "kind": "source.organizeImports", "edit": edit_of()});
+        let fix = json!({"title": "Import old", "kind": "quickfix", "edit": edit_of()});
+        let req = answer(&mut app, &mut server, "textDocument/codeAction", json!([organize, fix])).await;
+        assert_eq!(req["params"]["context"]["only"], json!(["source.organizeImports"]));
+        assert_eq!(req["params"]["range"], range(0, 0, 3, 0));
+        assert!(app.dialog.is_none());
+        assert_eq!(text(&app), format!("use m::old;\n{A}"));
+        app.perform(Action::Editor(EditorAction::Undo));
+        assert_eq!(text(&app), A);
+
+        // One without its edit is resolved first.
+        app.perform(Action::Lsp(LspAction::OptimizeImports));
+        let lazy = json!({"title": "Organize", "kind": "source.organizeImports.rust", "data": {"id": 7}});
+        answer(&mut app, &mut server, "textDocument/codeAction", json!([lazy])).await;
+        assert!(app.dialog.is_none());
+        let mut resolved = lazy.clone();
+        resolved["edit"] = edit_of();
+        let req = answer(&mut app, &mut server, "codeAction/resolve", resolved).await;
+        assert_eq!(req["params"]["data"], json!({"id": 7}));
+        assert_eq!(text(&app), format!("use m::old;\n{A}"));
+        app.perform(Action::Editor(EditorAction::Undo));
+
+        // Several: the choice.
+        app.perform(Action::Lsp(LspAction::OptimizeImports));
+        let second = json!({"title": "Organize (rust)", "kind": "source.organizeImports.rust", "edit": edit_of()});
+        answer(&mut app, &mut server, "textDocument/codeAction", json!([organize, second])).await;
+        let d = app.dialog.take().expect("the choice");
+        match &d.kind {
+            DialogKind::Choice { items, .. } => {
+                assert_eq!(d.title, "Optimize Imports");
+                assert_eq!(items, &["Organize", "Organize (rust)"]);
+            }
+            k => panic!("{k:?}"),
+        }
+        app.finish_dialog(d.id, DialogResult::Cancel);
+        assert_eq!(text(&app), A);
+
+        // None of its kind: a toast.
+        app.perform(Action::Lsp(LspAction::OptimizeImports));
+        answer(&mut app, &mut server, "textDocument/codeAction", json!([fix])).await;
+        assert!(app.dialog.is_none());
+        assert!(toasts(&app).contains(&"Nothing to optimize".to_string()));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

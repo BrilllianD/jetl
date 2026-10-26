@@ -230,6 +230,9 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Shift+F6` | `lsp.rename` | Rename the symbol at the caret and its usages |
 | `Alt+Enter` | `lsp.context_actions` | Show context actions (quick fixes, refactorings) at the caret |
 | `Ctrl+F12` | `lsp.file_structure` | File structure: the file's symbols from its language server |
+| `Alt+Shift+T` | `lsp.refactor_this` | Refactor This: the server's refactorings at the caret or selection |
+| `Ctrl+Alt+Shift+T` * | `lsp.refactor_this` | Refactor This: the server's refactorings at the caret or selection |
+| `Ctrl+Alt+O` | `lsp.optimize_imports` | Optimize imports (the server's organize imports action) |
 
 ## editor.merge
 

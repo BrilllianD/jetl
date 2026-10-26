@@ -70,6 +70,10 @@ pub enum PendingTag {
     CodeAction(DocTag),
     /// `codeAction/resolve` of the chosen action.
     CodeActionResolve(DocTag),
+    /// `textDocument/codeAction` limited to refactorings (Refactor This).
+    Refactor(DocTag),
+    /// `textDocument/codeAction` limited to organize imports (Optimize Imports).
+    OrganizeImports(DocTag),
     /// `workspace/executeCommand` of a chosen action.
     ExecuteCommand(DocTag),
     /// `textDocument/documentSymbol`.
@@ -108,6 +112,8 @@ impl PendingTag {
             | PendingTag::Rename(t)
             | PendingTag::CodeAction(t)
             | PendingTag::CodeActionResolve(t)
+            | PendingTag::Refactor(t)
+            | PendingTag::OrganizeImports(t)
             | PendingTag::ExecuteCommand(t)
             | PendingTag::DocumentSymbols(t)
             | PendingTag::Formatting(t)

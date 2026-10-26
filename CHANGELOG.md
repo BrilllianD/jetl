@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Refactor This (Alt+Shift+T, Ctrl+Alt+Shift+T with the kitty protocol, Edit > Refactor This…) lists the language server's refactorings at the caret or selection; Optimize Imports (Ctrl+Alt+O, Edit > Optimize Imports) runs the server's organize imports action for the file, or lets you choose when it offers several.
 - Sticky scroll (`[editor] sticky_scroll = true`, or Settings > Editor > General): the header lines of the definitions you scrolled into (impl, function, class, heading) stay pinned at the top of each editor pane; click one to go to it; theme style `sticky_scroll`.
 - Recent Locations (Ctrl+Shift+E, Navigate > Recent Locations…): the places the caret recently was, from the back/forward history, newest first, with each line's code; type to filter, Enter jumps (a closed file reopens there).
 - Inline blame (`[editor] inline_blame = true`, also in Settings > Editor > General): the caret line shows its author, relative date and commit summary after the text, in the focused pane, for lines unchanged since HEAD.

@@ -15,6 +15,7 @@ use lsp_types::{Position, Uri};
 use serde_json::{Value, json};
 
 use super::App;
+use super::lsp_edit::ActionsFor;
 use crate::actions::PaletteKind;
 use crate::editor::buffer::BufferId;
 use crate::event::{AppMsg, Level};
@@ -47,7 +48,7 @@ fn method_of(tag: &PendingTag) -> &'static str {
         PendingTag::CompletionResolve(_) | PendingTag::CompletionDocs(_) => RESOLVE,
         PendingTag::PrepareRename(_) => PREPARE_RENAME,
         PendingTag::Rename(_) => RENAME,
-        PendingTag::CodeAction(_) => CODE_ACTION,
+        PendingTag::CodeAction(_) | PendingTag::Refactor(_) | PendingTag::OrganizeImports(_) => CODE_ACTION,
         PendingTag::CodeActionResolve(_) => CODE_ACTION_RESOLVE,
         PendingTag::ExecuteCommand(_) => EXECUTE_COMMAND,
         PendingTag::DocumentSymbols(_) => DOCUMENT_SYMBOL,
@@ -343,7 +344,9 @@ impl App {
             PendingTag::SignatureHelp(t) => self.signature_answer(t, value),
             PendingTag::PrepareRename(t) => self.lsp_prepare_rename_answer(t, value),
             PendingTag::Rename(t) => self.lsp_rename_answer(t, value),
-            PendingTag::CodeAction(t) => self.lsp_code_actions_answer(t, value),
+            PendingTag::CodeAction(t) => self.lsp_code_actions_answer(t, value, ActionsFor::Context),
+            PendingTag::Refactor(t) => self.lsp_code_actions_answer(t, value, ActionsFor::Refactor),
+            PendingTag::OrganizeImports(t) => self.lsp_code_actions_answer(t, value, ActionsFor::OrganizeImports),
             PendingTag::CodeActionResolve(t) => self.lsp_code_action_resolved(t, value),
             PendingTag::DocumentSymbols(t) => self.lsp_document_symbols_answer(t, value),
             PendingTag::Completion(_)
