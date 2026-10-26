@@ -1507,6 +1507,46 @@ async fn todo_window() {
     assert_snapshot!("todo_window", snapshot(&term, &marks, Some(bottom)));
 }
 
+#[tokio::test]
+async fn hierarchy_window() {
+    use crate::actions::HierarchyAction;
+    use crate::lsp::hierarchy::{Direction, HierarchyTree, parse_items};
+    let mut fx = stable_app("hierarchy");
+    let app = &mut fx.app;
+    let root = app.workspace.root.clone();
+    let item = |name: &str, file: &str, line: u32, detail: Option<&str>| {
+        let range = serde_json::json!({"start": {"line": line, "character": 0}, "end": {"line": line, "character": 4}});
+        serde_json::json!({
+            "name": name, "kind": 12, "detail": detail, "uri": crate::lsp::sync::uri(&root.join(file)).unwrap().as_str(),
+            "range": range, "selectionRange": range,
+        })
+    };
+    let mut tree = HierarchyTree::new(
+        1,
+        "rust-analyzer".into(),
+        Direction::Callers,
+        parse_items(serde_json::json!([item("helper", "src/b.rs", 1, Some("fn helper(s: &str)"))])),
+    );
+    tree.set_children(
+        0,
+        parse_items(serde_json::json!([
+            item("main", "src/a.rs", 0, None),
+            item("run", "src/run.rs", 41, None),
+            item("check", "src/a.rs", 9, None),
+        ])),
+    );
+    tree.nodes[2].loading = true;
+    tree.set_children(3, Vec::new());
+    app.hierarchy = Some(tree);
+    app.toggle_tool_window(ToolWindowId::Hierarchy);
+    app.perform(Action::Hierarchy(HierarchyAction::Down));
+    app.theme.dim = app.theme.dim.fg(ratatui::style::Color::Magenta);
+    let term = draw_app(app, 80, 24);
+    let marks = [Mark::bg('L', "selected", app.theme.list_selected.bg.unwrap()), Mark::style('D', "dim", app.theme.dim)];
+    let bottom = app.layout.rects.bottom;
+    assert_snapshot!("hierarchy_window", snapshot(&term, &marks, Some(bottom)));
+}
+
 /// Diagnostics in two files, the first error with related locations in
 /// its own file and in the other; `main.log` active.
 fn problems_setup(app: &mut App) {

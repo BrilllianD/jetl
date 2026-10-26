@@ -235,6 +235,8 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Ctrl+Alt+O` | `lsp.optimize_imports` | Optimize imports (the server's organize imports action) |
 | `Alt+Shift+I` | `lsp.quick_definition` | Quick definition: the definition of the symbol at the caret in a popup |
 | `Ctrl+Shift+I` * | `lsp.quick_definition` | Quick definition: the definition of the symbol at the caret in a popup |
+| `Ctrl+Alt+H` | `lsp.call_hierarchy` | Call hierarchy: the callers and callees of the function at the caret |
+| `Ctrl+Alt+Shift+H` * | `lsp.type_hierarchy` | Type hierarchy: the supertypes and subtypes of the type at the caret |
 
 ## editor.merge
 
@@ -423,6 +425,23 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Alt+A` | `find.replace_all` | Find: replace all results |
 | `Esc` | `find.escape` | Find: back to the editor |
 
+## hierarchy
+
+| Keys | Action | Description |
+|---|---|---|
+| `Esc` | `app.focus_editor` | Focus editor |
+| `Up` | `hierarchy.up` | Hierarchy: up |
+| `Down` | `hierarchy.down` | Hierarchy: down |
+| `PageUp` | `hierarchy.page_up` | Hierarchy: page up |
+| `PageDown` | `hierarchy.page_down` | Hierarchy: page down |
+| `Home` | `hierarchy.home` | Hierarchy: first row |
+| `End` | `hierarchy.end` | Hierarchy: last row |
+| `Right` | `hierarchy.expand` | Hierarchy: expand the selected row (loads its children) |
+| `Left` | `hierarchy.collapse` | Hierarchy: collapse the selected row, or go to its parent |
+| `Enter` | `hierarchy.open` | Hierarchy: open the selected function or type |
+| `Tab` | `hierarchy.toggle_direction` | Hierarchy: switch callers and callees, or supertypes and subtypes |
+| `F5` | `hierarchy.refresh` | Hierarchy: ask the server again |
+
 ## local_history
 
 | Keys | Action | Description |
@@ -580,6 +599,7 @@ Reachable from Find Action (F1) or by binding them in `keymap.toml`.
 | `editor.put_label` | Local history: put label… |
 | `tool_window.tasks` | Tasks tool window (yman) |
 | `tool_window.todo` | TODO tool window |
+| `tool_window.hierarchy` | Hierarchy tool window (call and type hierarchy) |
 | `editor.replace_one` | Replace current match |
 | `editor.replace_all` | Replace all matches |
 | `editor.find_case` | Find: toggle match case |

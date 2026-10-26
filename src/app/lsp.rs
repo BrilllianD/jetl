@@ -536,6 +536,9 @@ impl App {
     pub(super) fn lsp_restart(&mut self) {
         // The servers are going away; the user's operations still happen.
         let writing = self.file_ops_for_restart();
+        if let Some(s) = self.hierarchy.as_ref().map(|t| t.server.clone()) {
+            self.hierarchy_server_gone(&s);
+        }
         self.lsp.reset();
         self.lsp.file_ops = writing;
         self.lsp_retarget_watch();
@@ -604,6 +607,7 @@ impl App {
         self.lsp.server_gone(name, server, &mut self.editor.buffers);
         self.format_server_gone(name);
         self.file_ops_server_gone(name);
+        self.hierarchy_server_gone(name);
     }
 
     fn lsp_notification(&mut self, name: &str, server: ServerId, method: &str, params: Value) {

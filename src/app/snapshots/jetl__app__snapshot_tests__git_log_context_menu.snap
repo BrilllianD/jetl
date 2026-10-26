@@ -13,7 +13,7 @@ expression: "snapshot(&term, &marks, Some(bottom))"
 07  ⊢ ││ New Branch…                     Alt+Shift+B │open. Alt+1 opens the Project view; Ctrl+Shift+N finds a file.
 08    ││ Cherry-Pick                     Alt+Shift+P │
 09    ││ Revert Commit…                  Alt+Shift+R │
-10    ││ Reset Current Branch to Here…               │
+10  ⋔ ││ Reset Current Branch to Here…               │
 11    ││ New Tag…                        Alt+Shift+T │
 12  ✎ ││ Delete Tag…                     Alt+Shift+D │
 13    └│ Filter Log…                          Ctrl+F │

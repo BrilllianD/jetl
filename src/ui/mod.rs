@@ -2,6 +2,7 @@ pub mod completion;
 pub mod dialog;
 pub mod event_log;
 pub mod focus;
+pub mod hierarchy;
 pub mod hover;
 pub mod layout;
 pub mod menu;
@@ -67,6 +68,7 @@ pub fn render_tool_window(app: &mut App, frame: &mut Frame, tw: ToolWindowId, r:
             app.sync_todo();
             app.todo.render(frame, r, focused, theme);
         }
+        ToolWindowId::Hierarchy => app.hierarchy_panel.render(frame, r, focused, theme, app.hierarchy.as_ref()),
     }
 }
 

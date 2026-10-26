@@ -279,6 +279,8 @@ pub struct App {
     pub todo: crate::files::todo::TodoPanel,
     /// The call or type hierarchy shown in the Hierarchy window (`app/hierarchy.rs`).
     pub hierarchy: Option<crate::lsp::hierarchy::HierarchyTree>,
+    /// The Hierarchy window's view state (`ui/hierarchy.rs`).
+    pub hierarchy_panel: crate::ui::hierarchy::HierarchyPanel,
     /// The Terminal window and its shell.
     pub terminal: crate::terminal::tabs::TerminalTabs,
     /// Language servers and the documents open on them.
@@ -414,6 +416,7 @@ impl App {
             tasks: Default::default(),
             todo: Default::default(),
             hierarchy: None,
+            hierarchy_panel: Default::default(),
             terminal: crate::terminal::tabs::TerminalTabs::new(config.terminal.scrollback),
             lsp: lsp::LspService::with_inlays(config.lsp.inlay_hints),
             hover: None,
@@ -1062,6 +1065,11 @@ impl App {
                 return;
             }
             Action::Todo(a) => self.todo.handle_action(a, &mut cx),
+            Action::Hierarchy(a) => {
+                drop(cx);
+                self.perform_hierarchy(a.clone());
+                return;
+            }
             Action::Lsp(crate::actions::LspAction::Restart) => {
                 drop(cx);
                 self.lsp_restart();
@@ -1088,6 +1096,8 @@ impl App {
                     crate::actions::LspAction::FindUsages => self.lsp_find_usages(),
                     crate::actions::LspAction::QuickDoc => self.lsp_quick_doc(),
                     crate::actions::LspAction::QuickDefinition => self.lsp_quick_definition(),
+                    crate::actions::LspAction::CallHierarchy => self.hierarchy_start(true),
+                    crate::actions::LspAction::TypeHierarchy => self.hierarchy_start(false),
                     crate::actions::LspAction::ParameterInfo => self.lsp_parameter_info(),
                     crate::actions::LspAction::Complete => self.lsp_complete(),
                     crate::actions::LspAction::Rename => self.lsp_rename(),
@@ -3876,9 +3886,10 @@ mod strip_tests {
         draw(&mut app);
         assert_eq!(app.layout.rects.strip.height, 23);
         let hits = app.layout.strip_hits.clone();
-        // The last window (TODO) does not fit a 24-row strip; View > TODO reaches it.
-        assert_eq!(hits.len(), ToolWindowId::ALL.len(), "{hits:?}");
+        // The last two windows (TODO, Hierarchy) do not fit a 24-row strip; the View menu reaches them.
+        assert_eq!(hits.len(), ToolWindowId::ALL.len() - 1, "{hits:?}");
         assert!(!hits.iter().any(|(b, _)| *b == StripButton::Tool(ToolWindowId::Todo)));
+        assert!(!hits.iter().any(|(b, _)| *b == StripButton::Tool(ToolWindowId::Hierarchy)));
         assert_eq!(hits[0], (StripButton::Menu, ratatui::layout::Rect::new(0, 0, 3, 1)));
         for (i, (_, a)) in hits.iter().enumerate() {
             assert!(app.layout.rects.strip.contains(a.as_position()) && a.bottom() <= app.layout.rects.strip.bottom());

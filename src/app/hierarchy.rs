@@ -5,13 +5,13 @@
 use serde_json::{Value, json};
 
 use super::App;
+use crate::actions::HierarchyAction;
 use crate::lsp::PendingTag;
 use crate::lsp::caps::{PREPARE_CALL_HIERARCHY, PREPARE_TYPE_HIERARCHY};
 use crate::lsp::hierarchy::{Direction, HierarchyTree, parse_calls, parse_items, parse_types};
 use crate::lsp::transport::ResponseError;
+use crate::ui::focus::{PanelId, ToolWindowId};
 
-// Used by the Hierarchy window (Slice 3).
-#[cfg_attr(not(test), allow(dead_code))]
 impl App {
     /// Ask the server for the call (`call`) or type hierarchy of the symbol at the caret.
     pub(crate) fn hierarchy_start(&mut self, call: bool) {
@@ -36,6 +36,55 @@ impl App {
         let id = self.hierarchy_next_id();
         self.hierarchy = Some(HierarchyTree::new(id, name.to_string(), direction, items));
         self.hierarchy_ask(0);
+        self.layout.show(ToolWindowId::Hierarchy);
+        self.focus.set(PanelId::Hierarchy);
+        self.dirty_frame = true;
+    }
+
+    /// A key of the Hierarchy window; moves are the panel's, the rest needs the server.
+    pub(crate) fn perform_hierarchy(&mut self, a: HierarchyAction) {
+        self.dirty_frame = true;
+        if self.hierarchy_panel.step(&a, self.hierarchy.as_ref()) {
+            return;
+        }
+        let Some(node) = self.hierarchy_panel.selected(self.hierarchy.as_ref()) else { return };
+        match a {
+            HierarchyAction::Expand => {
+                let Some(n) = self.hierarchy.as_ref().and_then(|t| t.nodes.get(node)) else { return };
+                match n.children.as_ref().filter(|c| n.expanded && !c.is_empty()) {
+                    Some(children) => {
+                        let first = children[0];
+                        if let Some(t) = &self.hierarchy {
+                            self.hierarchy_panel.select_node(t, first);
+                        }
+                    }
+                    None => self.hierarchy_expand(node),
+                }
+            }
+            HierarchyAction::Collapse => {
+                let Some(n) = self.hierarchy.as_ref().and_then(|t| t.nodes.get(node)) else { return };
+                if n.expanded && n.children.as_ref().is_some_and(|c| !c.is_empty()) {
+                    self.hierarchy_collapse(node);
+                } else if let (Some(parent), Some(t)) = (n.parent, &self.hierarchy) {
+                    self.hierarchy_panel.select_node(t, parent);
+                }
+            }
+            HierarchyAction::Open => self.hierarchy_open(node),
+            HierarchyAction::ToggleDirection => self.hierarchy_flip(),
+            HierarchyAction::Refresh => self.hierarchy_refresh(),
+            HierarchyAction::Up
+            | HierarchyAction::Down
+            | HierarchyAction::PageUp
+            | HierarchyAction::PageDown
+            | HierarchyAction::Home
+            | HierarchyAction::End => {}
+        }
+    }
+
+    /// The server `name` is gone: its answers will not come, so nothing keeps loading.
+    pub(super) fn hierarchy_server_gone(&mut self, name: &str) {
+        let Some(t) = self.hierarchy.as_mut().filter(|t| t.server == name) else { return };
+        t.nodes.iter_mut().for_each(|n| n.loading = false);
         self.dirty_frame = true;
     }
 
@@ -135,11 +184,16 @@ impl App {
 #[cfg(all(test, feature = "lang-rust"))]
 mod tests {
     use super::*;
-    use crate::actions::{Action, EditorAction};
+    use crate::actions::{Action, EditorAction, LspAction};
     use crate::app::lsp::tests::{incremental, is_lsp, open_on_server, with_fake_servers};
     use crate::app::tests::{handle_next, test_app};
-    use crate::event::AppMsg;
+    use crate::event::{AppMsg, Mouse};
+    use crate::lsp::LspMsg;
     use crate::lsp::fake::FakeServer;
+    use crate::ui::focus::{PanelId, ToolWindowId};
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
 
     const A: &str = "fn main() {\n    let s = \"日本😀\"; helper(s);\n}\n";
     const B: &str = "// b\n/* 😀 */ pub fn helper(s: &str) {}\n";
@@ -408,6 +462,149 @@ mod tests {
         handle_next(&mut s.app, is_lsp).await;
         assert!(toasts(&s.app).contains(&"rust-analyzer: boom".to_string()), "{:?}", toasts(&s.app));
         assert!(s.app.hierarchy.as_ref().unwrap().nodes[0].children.is_none());
+        let _ = std::fs::remove_dir_all(&s.dir);
+    }
+
+    fn key(app: &mut App, code: KeyCode) {
+        app.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
+    }
+
+    fn ctrl_alt_h(app: &mut App) {
+        app.handle_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL | KeyModifiers::ALT));
+    }
+
+    fn selected(app: &mut App) -> Option<usize> {
+        app.hierarchy_panel.selected(app.hierarchy.as_ref())
+    }
+
+    fn by_hand(s: &mut Setup) {
+        s.app.hierarchy =
+            Some(HierarchyTree::new(1, "rust-analyzer".into(), Direction::Callers, crate::lsp::hierarchy::parse_items(json!([helper(s)]))));
+    }
+
+    #[tokio::test]
+    async fn ctrl_alt_h_shows_the_callers_and_keys_walk_the_tree() {
+        let (mut s, _servers) = setup("hier-window", call_caps()).await;
+        assert!(s.app.focus.is(PanelId::Editor));
+        ctrl_alt_h(&mut s.app);
+        assert!(!s.app.layout.is_visible(ToolWindowId::Hierarchy));
+        let root = helper(&s);
+        answer(&mut s.app, &mut s.server, PREPARE_CALL_HIERARCHY, json!([root])).await;
+        assert!(s.app.layout.is_visible(ToolWindowId::Hierarchy));
+        assert!(s.app.focus.is(PanelId::Hierarchy));
+        let req = s.server.recv("callHierarchy/incomingCalls").await;
+        let main = item(&s.a, "main", 0, 3, 7);
+        s.server.respond(req["id"].as_i64().unwrap(), json!([{"from": main, "fromRanges": []}]));
+        handle_next(&mut s.app, is_lsp).await;
+        assert_eq!(s.app.hierarchy.as_ref().unwrap().rows(), [0, 1]);
+        assert_eq!(selected(&mut s.app), Some(0));
+        key(&mut s.app, KeyCode::Down);
+        assert_eq!(selected(&mut s.app), Some(1));
+        key(&mut s.app, KeyCode::Right);
+        let req = s.server.recv("callHierarchy/incomingCalls").await;
+        assert_eq!(req["params"]["item"], main);
+        s.server.respond(req["id"].as_i64().unwrap(), json!([]));
+        handle_next(&mut s.app, is_lsp).await;
+        key(&mut s.app, KeyCode::Left);
+        assert_eq!(selected(&mut s.app), Some(0));
+        key(&mut s.app, KeyCode::Left);
+        assert_eq!(s.app.hierarchy.as_ref().unwrap().rows(), [0]);
+        key(&mut s.app, KeyCode::Right);
+        assert_eq!(s.app.hierarchy.as_ref().unwrap().rows(), [0, 1]);
+        key(&mut s.app, KeyCode::Right);
+        assert_eq!(selected(&mut s.app), Some(1));
+        assert!(!sent(&s.app, &mut s.server).await.contains(&"callHierarchy/incomingCalls".to_string()));
+        key(&mut s.app, KeyCode::Tab);
+        s.server.recv("callHierarchy/outgoingCalls").await;
+        assert_eq!(s.app.hierarchy.as_ref().unwrap().title(), "Callees of helper");
+        assert_eq!(selected(&mut s.app), Some(0));
+        key(&mut s.app, KeyCode::F(5));
+        s.server.recv("callHierarchy/outgoingCalls").await;
+        key(&mut s.app, KeyCode::Esc);
+        assert!(s.app.focus.is(PanelId::Editor));
+        let _ = std::fs::remove_dir_all(&s.dir);
+    }
+
+    #[tokio::test]
+    async fn enter_opens_the_selected_function() {
+        let (mut s, _servers) = setup("hier-enter", call_caps()).await;
+        by_hand(&mut s);
+        s.app.toggle_tool_window(ToolWindowId::Hierarchy);
+        assert!(s.app.focus.is(PanelId::Hierarchy));
+        key(&mut s.app, KeyCode::Enter);
+        handle_next(&mut s.app, |m| matches!(m, AppMsg::FileLoaded { .. })).await;
+        assert_eq!(s.app.editor.active_path(), Some(s.b.as_path()));
+        assert_eq!(caret(&s.app), (1, 15));
+        let _ = std::fs::remove_dir_all(&s.dir);
+    }
+
+    #[tokio::test]
+    async fn type_hierarchy_action_shows_the_subtypes() {
+        let (mut s, _servers) = setup("hier-type-window", incremental()).await;
+        s.app.perform(Action::Lsp(LspAction::TypeHierarchy));
+        let root = helper(&s);
+        answer(&mut s.app, &mut s.server, PREPARE_TYPE_HIERARCHY, json!([root])).await;
+        assert!(s.app.layout.is_visible(ToolWindowId::Hierarchy));
+        assert!(s.app.focus.is(PanelId::Hierarchy));
+        assert_eq!(s.app.hierarchy.as_ref().unwrap().title(), "Subtypes of helper");
+        let _ = std::fs::remove_dir_all(&s.dir);
+    }
+
+    #[tokio::test]
+    async fn an_empty_prepare_leaves_the_layout_alone() {
+        let (mut s, _servers) = setup("hier-empty-window", call_caps()).await;
+        ctrl_alt_h(&mut s.app);
+        answer(&mut s.app, &mut s.server, PREPARE_CALL_HIERARCHY, json!([])).await;
+        assert!(toasts(&s.app).contains(&"No call hierarchy here".to_string()), "{:?}", toasts(&s.app));
+        assert!(!s.app.layout.is_visible(ToolWindowId::Hierarchy));
+        assert!(s.app.focus.is(PanelId::Editor));
+        let _ = std::fs::remove_dir_all(&s.dir);
+    }
+
+    #[tokio::test]
+    async fn clicks_select_open_and_toggle() {
+        let (mut s, _servers) = setup("hier-clicks", call_caps()).await;
+        by_hand(&mut s);
+        let main = crate::lsp::hierarchy::parse_items(json!([item(&s.a, "main", 0, 3, 7)]));
+        s.app.hierarchy.as_mut().unwrap().set_children(0, main);
+        s.app.toggle_tool_window(ToolWindowId::Hierarchy);
+        let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        term.draw(|f| crate::ui::render(&mut s.app, f)).unwrap();
+        let r = s.app.hierarchy_panel.list_rect();
+        let click =
+            |x: u16, y: u16, clicks: u8| Mouse { kind: MouseEventKind::Down(MouseButton::Left), x, y, clicks, mods: KeyModifiers::NONE };
+        s.app.forward_mouse(PanelId::Hierarchy, r, &click(r.x + 10, r.y + 1, 1));
+        assert_eq!(selected(&mut s.app), Some(1));
+        assert_eq!(s.app.editor.active_path(), Some(s.a.as_path()));
+        s.app.forward_mouse(PanelId::Hierarchy, r, &click(r.x + 1, r.y, 1));
+        assert_eq!(s.app.hierarchy.as_ref().unwrap().rows(), [0]);
+        s.app.forward_mouse(PanelId::Hierarchy, r, &click(r.x + 1, r.y, 1));
+        assert_eq!(s.app.hierarchy.as_ref().unwrap().rows(), [0, 1]);
+        s.app.forward_mouse(PanelId::Hierarchy, r, &click(r.x + 10, r.y, 2));
+        handle_next(&mut s.app, |m| matches!(m, AppMsg::FileLoaded { .. })).await;
+        assert_eq!(s.app.editor.active_path(), Some(s.b.as_path()));
+        let _ = std::fs::remove_dir_all(&s.dir);
+    }
+
+    #[tokio::test]
+    async fn a_server_exit_stops_the_loading() {
+        let (mut s, _servers) = setup("hier-exit", call_caps()).await;
+        started(&mut s).await;
+        assert!(s.app.hierarchy.as_ref().unwrap().nodes[0].loading);
+        let (generation, id) = (s.app.workspace.generation, s.app.lsp.clients["rust-analyzer"].id);
+        s.app.handle_msg(AppMsg::Lsp(LspMsg::Exited { generation, server: id, status: "test".into() }));
+        assert!(!s.app.hierarchy.as_ref().unwrap().nodes[0].loading);
+        s.app.hierarchy_expand(0);
+        assert!(toasts(&s.app).contains(&"rust-analyzer is not running".to_string()), "{:?}", toasts(&s.app));
+        let _ = std::fs::remove_dir_all(&s.dir);
+    }
+
+    #[tokio::test]
+    async fn a_restart_stops_the_loading() {
+        let (mut s, _servers) = setup("hier-restart", call_caps()).await;
+        started(&mut s).await;
+        s.app.perform(Action::Lsp(LspAction::Restart));
+        assert!(!s.app.hierarchy.as_ref().unwrap().nodes[0].loading);
         let _ = std::fs::remove_dir_all(&s.dir);
     }
 

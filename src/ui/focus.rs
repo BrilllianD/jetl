@@ -19,6 +19,7 @@ pub enum PanelId {
     LocalHistory,
     Tasks,
     Todo,
+    Hierarchy,
 }
 
 /// Saved in sessions: new variants go last.
@@ -36,6 +37,7 @@ pub enum ToolWindowId {
     LocalHistory,
     Tasks,
     Todo,
+    Hierarchy,
 }
 
 /// Saved in sessions: new variants go last.
@@ -48,7 +50,7 @@ pub enum Side {
 
 impl ToolWindowId {
     /// Strip order: left windows from the top, bottom ones from the bottom.
-    pub const ALL: [ToolWindowId; 12] = [
+    pub const ALL: [ToolWindowId; 13] = [
         ToolWindowId::Project,
         ToolWindowId::Worktrees,
         ToolWindowId::Structure,
@@ -61,6 +63,7 @@ impl ToolWindowId {
         ToolWindowId::LocalHistory,
         ToolWindowId::Tasks,
         ToolWindowId::Todo,
+        ToolWindowId::Hierarchy,
     ];
 
     pub fn panel(self) -> PanelId {
@@ -77,6 +80,7 @@ impl ToolWindowId {
             ToolWindowId::LocalHistory => PanelId::LocalHistory,
             ToolWindowId::Tasks => PanelId::Tasks,
             ToolWindowId::Todo => PanelId::Todo,
+            ToolWindowId::Hierarchy => PanelId::Hierarchy,
         }
     }
     /// The side before the user moves it; `LayoutState::side_of` is the
@@ -92,7 +96,8 @@ impl ToolWindowId {
             | ToolWindowId::Problems
             | ToolWindowId::LocalHistory
             | ToolWindowId::Tasks
-            | ToolWindowId::Todo => Side::Bottom,
+            | ToolWindowId::Todo
+            | ToolWindowId::Hierarchy => Side::Bottom,
         }
     }
     pub fn title(self) -> &'static str {
@@ -109,6 +114,7 @@ impl ToolWindowId {
             ToolWindowId::LocalHistory => "Local History",
             ToolWindowId::Tasks => "Tasks",
             ToolWindowId::Todo => "TODO",
+            ToolWindowId::Hierarchy => "Hierarchy",
         }
     }
     /// The tool strip glyph: a two-cell emoji, or a symbol one cell wide
@@ -128,6 +134,7 @@ impl ToolWindowId {
                 ToolWindowId::LocalHistory => "🕘",
                 ToolWindowId::Tasks => "📋",
                 ToolWindowId::Todo => "📝",
+                ToolWindowId::Hierarchy => "🌳",
             };
         }
         match self {
@@ -143,9 +150,10 @@ impl ToolWindowId {
             ToolWindowId::LocalHistory => "⟲",
             ToolWindowId::Tasks => "✓",
             ToolWindowId::Todo => "✎",
+            ToolWindowId::Hierarchy => "⋔",
         }
     }
-    /// The Alt+number key shown on the tool strip; Terminal (Alt+F12), Tasks and TODO have none.
+    /// The Alt+number key shown on the tool strip; Terminal (Alt+F12), Tasks, TODO and Hierarchy have none.
     pub fn number(self) -> Option<u8> {
         match self {
             ToolWindowId::Project => Some(1),
@@ -158,7 +166,7 @@ impl ToolWindowId {
             ToolWindowId::Terminal => None,
             ToolWindowId::Problems => Some(6),
             ToolWindowId::LocalHistory => Some(8),
-            ToolWindowId::Tasks | ToolWindowId::Todo => None,
+            ToolWindowId::Tasks | ToolWindowId::Todo | ToolWindowId::Hierarchy => None,
         }
     }
 }
@@ -178,6 +186,7 @@ impl PanelId {
             PanelId::LocalHistory => Some(ToolWindowId::LocalHistory),
             PanelId::Tasks => Some(ToolWindowId::Tasks),
             PanelId::Todo => Some(ToolWindowId::Todo),
+            PanelId::Hierarchy => Some(ToolWindowId::Hierarchy),
             PanelId::Editor => None,
         }
     }
@@ -197,6 +206,7 @@ impl PanelId {
             PanelId::LocalHistory => "local_history",
             PanelId::Tasks => "tasks",
             PanelId::Todo => "todo",
+            PanelId::Hierarchy => "hierarchy",
         }
     }
 }

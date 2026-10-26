@@ -7,39 +7,39 @@ expression: "snapshot(&term, &marks, Some(bottom))"
 01    │                              ││
 02  1 │                              ││
 03  ⌂ │                              ││
-04    │                              ││
-05  2 │                              ││
-06  ◫ │                              ││
-07    │                              ││
-08  7 │                              ││
-09  ⊢ │                              ││
+04  2 │                              ││
+05  ◫ │                              ││
+06  7 │                              ││
+07  ⊢ │                              ││
+08    │                              ││
+09    │                              ││
 10    │                              ││
 11    │                              ││
 12    │                              ││      No files open. Alt+1 opens the Project view; Ctrl+Shift+N finds a file.
 13    │                              ││
-14  ✎ │                              ││
+14    │                              ││
 15    │                              ││
 16    │                              ││
-17  ✓ │                              ││
+17    │                              ││
 18    │                              ││
-19  8 │                              ││
-20  ⟲ │                              ││
+19    │                              ││
+20  ⋔ │                              ││
 21    │                              ││
-22  5 │                              ││
-23  ⚑ └──────────────────────────────┘│
-24    ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-25  9 ┌ Local History: root/ ─────────────────────────────────────────────────────────────────────────────────────────────┐
-26  ⎇ │[Show History] [Revert] [Revert Change] [Remove Label]                                                 filter: txt │
-27    │ notes.txt                  Unsaved changes  10-05 12:00 │ Unsaved changes  2024-10-05 12:0… [Unified] [x] Collapse│
-28    │ ▾ Label: release 1.2               2 files  10-03 12:00 │  1   1  alpha                                           │
-29  ❯ │     guide.md  docs/                             deleted │  2     -beta                                            │
-30    │     notes.txt                                           │      2 +beta two                                        │
-31  6 │ todo.txt         Renamed from old/todo.txt  10-02 12:00 │                                                         │
-32  ⚠ │ ▸ Label: before refactor            1 file  10-01 12:00 │                                                         │
-33    │ todo.txt  old/         renamed to todo.txt  09-30 12:00 │                                                         │
-34  4 │ module_name.txt  src/very/deep…  Autosaved  09-24 12:00 │                                                         │
-35  ► │                                                         │                                                         │
-36    │                                                         │                                                         │
+22  ✎ │                              ││
+23    └──────────────────────────────┘│
+24  ✓ ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+25  8 ┌ Local History: root/ ─────────────────────────────────────────────────────────────────────────────────────────────┐
+26  ⟲ │[Show History] [Revert] [Revert Change] [Remove Label]                                                 filter: txt │
+27  5 │ notes.txt                  Unsaved changes  10-05 12:00 │ Unsaved changes  2024-10-05 12:0… [Unified] [x] Collapse│
+28  ⚑ │ ▾ Label: release 1.2               2 files  10-03 12:00 │  1   1  alpha                                           │
+29  9 │     guide.md  docs/                             deleted │  2     -beta                                            │
+30  ⎇ │     notes.txt                                           │      2 +beta two                                        │
+31    │ todo.txt         Renamed from old/todo.txt  10-02 12:00 │                                                         │
+32  ❯ │ ▸ Label: before refactor            1 file  10-01 12:00 │                                                         │
+33  6 │ todo.txt  old/         renamed to todo.txt  09-30 12:00 │                                                         │
+34  ⚠ │ module_name.txt  src/very/deep…  Autosaved  09-24 12:00 │                                                         │
+35  4 │                                                         │                                                         │
+36  ► │                                                         │                                                         │
 37  3 │                                                         │                                                         │
 38  ⌕ └───────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 39  root

@@ -7,39 +7,39 @@ expression: "snapshot(&term, &settings_marks(&app.theme), None)"
 01    │                              ││
 02  1 │ ┌ Settings ──────────────────────────────────────────────────────────────────────────────────────────────────┐
 03  ⌂ │ │Appearance                │Appearance                                                                       │
-04    │ │Editor                    │                                                                                 │
-05  2 │ │  General                 │  Theme                       auto ▾                                             │
-06  ◫ │ │  Soft Wraps              │  Color depth                 auto ▾                                             │
-07    │ │  Saving                  │  Icons                       unicode ▾                                          │
-08  7 │ │  Formatting              │  Double click interval (ms)  400                                                │
-09  ⊢ │ │Keymap                    │  Left tool window width      32                                     restart jetl│
+04  2 │ │Editor                    │                                                                                 │
+05  ◫ │ │  General                 │  Theme                       auto ▾                                             │
+06  7 │ │  Soft Wraps              │  Color depth                 auto ▾                                             │
+07  ⊢ │ │  Saving                  │  Icons                       unicode ▾                                          │
+08    │ │  Formatting              │  Double click interval (ms)  400                                                │
+09    │ │Keymap                    │  Left tool window width      32                                     restart jetl│
 10    │ │Version Control           │  Bottom tool window height   14                                     restart jetl│
 11    │ │  Git                     │                                                                                 │
 12    │ │  Worktrees               │                                                                                 │
 13    │ │Files                     │                                                                                 │
-14  ✎ │ │Tools                     │                                                                                 │
+14    │ │Tools                     │                                                                                 │
 15    │ │  Terminal                │                                                                                 │
 16    │ │  Run                     │                                                                                 │
-17  ✓ │ │  Clipboard               │                                                                                 │
+17    │ │  Clipboard               │                                                                                 │
 18    │ │  Local History           │                                                                                 │
-19  8 │ │Language Servers          │                                                                                 │
-20  ⟲ │ │Dependencies              │                                                                                 │
+19    │ │Language Servers          │                                                                                 │
+20  ⋔ │ │Dependencies              │                                                                                 │
 21    │ │                          │                                                                                 │
-22  5 │ │                          │                                                                                 │
-23  ⚑ │ │                          │                                                                                 │
-24    │ │                          │                                                                                 │
-25  9 │ │                          │                                                                                 │
-26  ⎇ │ │                          │A built-in theme, "auto" (Omarchy's palette if any) or a .toml theme file.       │
-27    │ │                          │Colors: theme.toml.                                                              │
-28    │ │                          │Applies at once.                                                                 │
-29  ❯ │ │                          │Delete resets to the default.                                                    │
-30    │ │                          │Key: ui.theme                                                                    │
-31  6 │ │                                                                                                            │
-32  ⚠ │ │                                                                              [ OK ]  [ Cancel ]  [ Apply ] │
-33    │ └────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
-34  4 │                              ││
-35  ► │                              ││
-36    │                              ││
+22  ✎ │ │                          │                                                                                 │
+23    │ │                          │                                                                                 │
+24  ✓ │ │                          │                                                                                 │
+25  8 │ │                          │                                                                                 │
+26  ⟲ │ │                          │A built-in theme, "auto" (Omarchy's palette if any) or a .toml theme file.       │
+27  5 │ │                          │Colors: theme.toml.                                                              │
+28  ⚑ │ │                          │Applies at once.                                                                 │
+29  9 │ │                          │Delete resets to the default.                                                    │
+30  ⎇ │ │                          │Key: ui.theme                                                                    │
+31    │ │                                                                                                            │
+32  ❯ │ │                                                                              [ OK ]  [ Cancel ]  [ Apply ] │
+33  6 │ └────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+34  ⚠ │                              ││
+35  4 │                              ││
+36  ► │                              ││
 37  3 │                              ││
 38  ⌕ └──────────────────────────────┘│
 39  root

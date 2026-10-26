@@ -6,21 +6,21 @@ expression: "snapshot(&term, &marks, None)"
 00  ≣ ┌ Project: root ───────────────┐│  alpha.txt ×  *beta.txt ×   gamma.txt ×
 01  1 │                              ││  1    three
 02  ⌂ │                              ││  2
-03  2 │                              ││
-04  ◫ │           ╭ Switcher ─────────────────────────────────────╮
-05  7 │           │ Tool Windows         │ Recent Files           │
-06  ⊢ │           │ Project        Alt+1 │ gamma.txt              │
-07    │           │ Worktrees      Alt+2 │ beta.txt *             │
-08  ✓ │           │ Structure      Alt+7 │ alpha.txt              │
-09  8 │           │ Find           Alt+3 │                        │
-10  ⟲ │           │ Run            Alt+4 │                        │
-11  5 │           │ Problems       Alt+6 │                        │
-12  ⚑ │           │ Terminal     Alt+F12 │                        │
-13  9 │           │ Git            Alt+9 │                        │
-14  ⎇ │           │ Event Log      Alt+5 │                        │
-15    │           │ Local History  Alt+8 │                        │
-16  ❯ │           │ Tasks                │                        │
-17  6 │           │ TODO                 │                        │
+03  2 │           ╭ Switcher ─────────────────────────────────────╮
+04  ◫ │           │ Tool Windows         │ Recent Files           │
+05  7 │           │ Project        Alt+1 │ gamma.txt              │
+06  ⊢ │           │ Worktrees      Alt+2 │ beta.txt *             │
+07    │           │ Structure      Alt+7 │ alpha.txt              │
+08  ✓ │           │ Find           Alt+3 │                        │
+09  8 │           │ Run            Alt+4 │                        │
+10  ⟲ │           │ Problems       Alt+6 │                        │
+11  5 │           │ Terminal     Alt+F12 │                        │
+12  ⚑ │           │ Git            Alt+9 │                        │
+13  9 │           │ Event Log      Alt+5 │                        │
+14  ⎇ │           │ Local History  Alt+8 │                        │
+15    │           │ Tasks                │                        │
+16  ❯ │           │ TODO                 │                        │
+17  6 │           │ Hierarchy            │                        │
 18  ⚠ │           │ beta.txt                                      │
 19  4 │           ╰───────────────────────────────────────────────╯
 20  ► │                              ││
@@ -28,15 +28,15 @@ expression: "snapshot(&term, &marks, None)"
 22  ⌕ └──────────────────────────────┘│
 23  root                              Ln 1, Col 1  LF  UTF-8  4 spaces  Plain text
 -- marks: L=selected d=dim
-05                  dddddddddddd           dddddddddddd
-06                                 ddddd
-07                                 ddddd  LLLLLLLLLLLLLLLLLLLLLLLL
+04                  dddddddddddd           dddddddddddd
+05                                 ddddd
+06                                 ddddd  LLLLLLLLLLLLLLLLLLLLLLLL
+07                                 ddddd
 08                                 ddddd
 09                                 ddddd
 10                                 ddddd
-11                                 ddddd
-12                               ddddddd
+11                               ddddddd
+12                                 ddddd
 13                                 ddddd
 14                                 ddddd
-15                                 ddddd
 18                  dddddddd

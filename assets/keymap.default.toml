@@ -316,6 +316,10 @@
 # send Ctrl+I, which is Tab); Alt+Shift+I works anywhere.
 "ctrl-shift-i" = "lsp.quick_definition"
 "alt-shift-i" = "lsp.quick_definition"
+# Call and Type Hierarchy, as in JetBrains (Ctrl+Alt+Shift+H needs the kitty protocol; Navigate > Type
+# Hierarchy works anywhere).
+"ctrl-alt-h" = "lsp.call_hierarchy"
+"ctrl-alt-shift-h" = "lsp.type_hierarchy"
 "esc" = "editor.escape"
 
 # The conflict resolver (Git > Resolve Conflicts) while it is open.
@@ -495,6 +499,21 @@
 "end" = "todo.end"
 "enter" = "todo.open"
 "f5" = "todo.refresh"
+"esc" = "app.focus_editor"
+
+# The Hierarchy window (Navigate > Call Hierarchy): callers and callees or supertypes and subtypes, Tab switches, F5 asks again.
+[hierarchy]
+"up" = "hierarchy.up"
+"down" = "hierarchy.down"
+"pageup" = "hierarchy.page_up"
+"pagedown" = "hierarchy.page_down"
+"home" = "hierarchy.home"
+"end" = "hierarchy.end"
+"right" = "hierarchy.expand"
+"left" = "hierarchy.collapse"
+"enter" = "hierarchy.open"
+"tab" = "hierarchy.toggle_direction"
+"f5" = "hierarchy.refresh"
 "esc" = "app.focus_editor"
 
 [run]

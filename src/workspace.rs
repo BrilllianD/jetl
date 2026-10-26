@@ -522,11 +522,12 @@ impl App {
         let (left, bottom, right) = self.layout.saved_windows();
         // The Tasks window has its own field: builds without it read the rest.
         let shown = [left, bottom, right].contains(&Some(ToolWindowId::Tasks));
-        // The TODO window is not saved: its list is rescanned on the next show.
-        let saved = |tw: Option<ToolWindowId>| tw.filter(|t| !matches!(t, ToolWindowId::Tasks | ToolWindowId::Todo));
+        // The TODO and Hierarchy windows are not saved: the list is rescanned, the tree asked again, on demand.
+        let saved =
+            |tw: Option<ToolWindowId>| tw.filter(|t| !matches!(t, ToolWindowId::Tasks | ToolWindowId::Todo | ToolWindowId::Hierarchy));
         let mut sides = self.layout.side_overrides();
         let side = sides.iter().find(|(tw, _)| *tw == ToolWindowId::Tasks).map(|(_, s)| *s);
-        sides.retain(|(tw, _)| !matches!(tw, ToolWindowId::Tasks | ToolWindowId::Todo));
+        sides.retain(|(tw, _)| !matches!(tw, ToolWindowId::Tasks | ToolWindowId::Todo | ToolWindowId::Hierarchy));
         let tasks = SessionTasks { shown, side, ..self.tasks.session_state() };
         let layout = Some(SessionLayout {
             left: saved(left),
@@ -1596,6 +1597,17 @@ mod tests {
         let layout = app.session().layout.unwrap();
         let json = serde_json::to_string(&layout).unwrap();
         assert!(!json.contains("\"Todo\""), "{json}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn session_never_saves_the_hierarchy_window() {
+        let (mut app, dir) = crate::app::tests::test_app("session-hierarchy");
+        app.layout.move_to(ToolWindowId::Hierarchy, Side::Right);
+        app.layout.show(ToolWindowId::Hierarchy);
+        let layout = app.session().layout.unwrap();
+        let json = serde_json::to_string(&layout).unwrap();
+        assert!(!json.contains("\"Hierarchy\""), "{json}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

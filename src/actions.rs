@@ -20,6 +20,7 @@ pub enum Action {
     History(HistoryAction),
     Tasks(TasksAction),
     Todo(TodoAction),
+    Hierarchy(HierarchyAction),
     Lsp(LspAction),
     Palette(PaletteAction),
     Mode(ModeAction),
@@ -502,6 +503,22 @@ pub enum TodoAction {
     Refresh,
 }
 
+/// The Hierarchy tool window (`ui/hierarchy.rs`, `app/hierarchy.rs`).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum HierarchyAction {
+    Up,
+    Down,
+    PageUp,
+    PageDown,
+    Home,
+    End,
+    Expand,
+    Collapse,
+    Open,
+    ToggleDirection,
+    Refresh,
+}
+
 /// The Tasks tool window (`yman/panel.rs`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum TasksAction {
@@ -612,6 +629,10 @@ pub enum LspAction {
     QuickDoc,
     /// Ctrl+Shift+I / Alt+Shift+I: the definition at the caret in a popup.
     QuickDefinition,
+    /// Ctrl+Alt+H: the callers and callees of the function at the caret in the Hierarchy window.
+    CallHierarchy,
+    /// Ctrl+Alt+Shift+H: the supertypes and subtypes of the type at the caret in the Hierarchy window.
+    TypeHierarchy,
     /// Ctrl+P: the signatures of the call at the caret, its active parameter bold.
     ParameterInfo,
     /// Ctrl+Space: code completion at the caret.
@@ -758,6 +779,7 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "tool_window.local_history" => "Local History tool window", App(AppAction::ToggleToolWindow(ToolWindowId::LocalHistory));
         "tool_window.tasks" => "Tasks tool window (yman)", App(AppAction::ToggleToolWindow(ToolWindowId::Tasks));
         "tool_window.todo" => "TODO tool window", App(AppAction::ToggleToolWindow(ToolWindowId::Todo));
+        "tool_window.hierarchy" => "Hierarchy tool window (call and type hierarchy)", App(AppAction::ToggleToolWindow(ToolWindowId::Hierarchy));
         "editor.find" => "Find", Editor(E::Find);
         "editor.replace" => "Replace", Editor(E::Replace);
         "editor.find_next" => "Find next", Editor(E::FindNext);
@@ -1032,6 +1054,8 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "lsp.refactor_this" => "Refactor This: the server's refactorings at the caret or selection", Lsp(LspAction::RefactorThis);
         "lsp.optimize_imports" => "Optimize imports (the server's organize imports action)", Lsp(LspAction::OptimizeImports);
         "lsp.quick_definition" => "Quick definition: the definition of the symbol at the caret in a popup", Lsp(LspAction::QuickDefinition);
+        "lsp.call_hierarchy" => "Call hierarchy: the callers and callees of the function at the caret", Lsp(LspAction::CallHierarchy);
+        "lsp.type_hierarchy" => "Type hierarchy: the supertypes and subtypes of the type at the caret", Lsp(LspAction::TypeHierarchy);
         "lsp.toggle_inlay_hints" => "Show or hide inlay hints", Lsp(LspAction::ToggleInlayHints);
 
         "problems.up" => "Problems: up", Problems(ProblemsAction::Up);
@@ -1051,6 +1075,17 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "todo.end" => "TODO: last row", Todo(TodoAction::End);
         "todo.open" => "TODO: open the selected match", Todo(TodoAction::Open);
         "todo.refresh" => "TODO: scan the project again", Todo(TodoAction::Refresh);
+        "hierarchy.up" => "Hierarchy: up", Hierarchy(HierarchyAction::Up);
+        "hierarchy.down" => "Hierarchy: down", Hierarchy(HierarchyAction::Down);
+        "hierarchy.page_up" => "Hierarchy: page up", Hierarchy(HierarchyAction::PageUp);
+        "hierarchy.page_down" => "Hierarchy: page down", Hierarchy(HierarchyAction::PageDown);
+        "hierarchy.home" => "Hierarchy: first row", Hierarchy(HierarchyAction::Home);
+        "hierarchy.end" => "Hierarchy: last row", Hierarchy(HierarchyAction::End);
+        "hierarchy.expand" => "Hierarchy: expand the selected row (loads its children)", Hierarchy(HierarchyAction::Expand);
+        "hierarchy.collapse" => "Hierarchy: collapse the selected row, or go to its parent", Hierarchy(HierarchyAction::Collapse);
+        "hierarchy.open" => "Hierarchy: open the selected function or type", Hierarchy(HierarchyAction::Open);
+        "hierarchy.toggle_direction" => "Hierarchy: switch callers and callees, or supertypes and subtypes", Hierarchy(HierarchyAction::ToggleDirection);
+        "hierarchy.refresh" => "Hierarchy: ask the server again", Hierarchy(HierarchyAction::Refresh);
 
         "local_history.up" => "Local History: up", History(HistoryAction::Up);
         "local_history.down" => "Local History: down", History(HistoryAction::Down);
@@ -1155,6 +1190,7 @@ impl Action {
             Action::History(_) => &["local_history", "global"],
             Action::Tasks(_) => &["tasks", "global"],
             Action::Todo(_) => &["todo", "global"],
+            Action::Hierarchy(_) => &["hierarchy", "global"],
             Action::Lsp(_) => &["editor", "global"],
             Action::Palette(_) => &["palette"],
             Action::Mode(_) => &["mode.normal", "mode.insert", "mode.visual"],

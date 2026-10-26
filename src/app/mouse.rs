@@ -332,6 +332,7 @@ impl App {
             PanelId::LocalHistory => self.history_panel.handle_mouse(m, &mut cx),
             PanelId::Tasks => self.tasks.handle_mouse(m, &self.yman, &mut cx),
             PanelId::Todo => self.todo.handle_mouse(m, &mut cx),
+            PanelId::Hierarchy => self.hierarchy_panel.handle_mouse(m, self.hierarchy.as_ref(), &mut cx),
         };
         let fx = cx.effects;
         self.apply_effects(fx);
