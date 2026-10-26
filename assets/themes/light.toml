@@ -59,6 +59,7 @@ diag_hint = "#9a9da6"
 lightbulb = "#a85f00"
 indent_guide = "#e4e6eb"
 inlay_hint = { fg = "#6c707e", bg = "#e2e5ec" }
+inline_blame = { fg = "#818594" }
 splitter = { fg = "#c9ccd6", bg = "#ffffff" }
 
 [syntax]

@@ -1,0 +1,16 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &marks, None)"
+---
+70x8 cursor=(7,2)
+00   notes.log ×
+01   1  ▾ alpha beta gamma
+02   2    │ two indented    Ann, 3 days ago · Fix the status bar width
+03   3    │ three indented
+04   4    four
+05   5
+06   6    six: the last line of the file
+07   7
+-- marks: B=inline blame C=caret S=selection F=fold O=occurrence
+00               BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB
+02                          BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB

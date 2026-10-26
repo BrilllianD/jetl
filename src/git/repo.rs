@@ -665,7 +665,18 @@ pub fn blame(root: &Path, abs: &Path, fallback: Option<&Path>) -> Result<Blame> 
                 Some(s) => (String::from_utf8_lossy(s.name_bytes()).into_owned(), s.when()),
                 None => (String::new(), git2::Time::new(0, 0)),
             };
-            out.commits.push(BlameCommit { sha: id.to_string(), author, time: when.seconds(), offset_minutes: when.offset_minutes() });
+            let summary = repo
+                .find_commit(id)
+                .ok()
+                .and_then(|c| c.summary_bytes().map(|b| String::from_utf8_lossy(b).into_owned()))
+                .unwrap_or_default();
+            out.commits.push(BlameCommit {
+                sha: id.to_string(),
+                author,
+                time: when.seconds(),
+                offset_minutes: when.offset_minutes(),
+                summary,
+            });
             (out.commits.len() - 1) as u32
         });
         // Hunks come in line order (1-based start lines).
@@ -1156,6 +1167,8 @@ pub(crate) mod tests {
         assert_ne!(b.lines[0], b.lines[1]);
         assert_eq!(b.lines[1], b.lines[2]);
         assert_eq!(b.commits[0].author, "Test");
+        assert_eq!(b.commits[b.lines[0] as usize].summary, "first");
+        assert_eq!(b.commits[b.lines[1] as usize].summary, "second");
         r.write("new.txt", "x\n");
         assert!(blame(&r.dir, &r.dir.join("new.txt"), None).is_err(), "untracked");
     }

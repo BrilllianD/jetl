@@ -402,7 +402,7 @@ pub fn block_selections(rope: &Rope, rows: &Rows, anchor: (usize, usize), head: 
 /// `action_w` cells of [`LineDecor`] glyphs.
 pub fn gutter_width(buf: &Buffer, action_w: u16) -> u16 {
     let digits = buf.rope.len_lines().max(1).to_string().len().max(3) as u16;
-    let blame = if buf.blame.is_some() { super::blame::WIDTH } else { 0 };
+    let blame = if buf.blame.as_ref().is_some_and(|b| b.column) { super::blame::WIDTH } else { 0 };
     action_w + blame + digits + 4
 }
 
@@ -483,6 +483,8 @@ pub struct RenderOpts<'a> {
     pub occurrences: bool,
     /// Draw indent guides (`editor.indent_guides`).
     pub indent_guides: bool,
+    /// Paint the caret line's blame after its text (`editor.inline_blame`).
+    pub inline_blame: bool,
     pub theme: &'a Theme,
     /// Scroll to the caret when it moved (else the scroll stays, as the
     /// resolver's linked panes set it).
@@ -549,7 +551,7 @@ fn blank_line(rope: &Rope, line: usize) -> bool {
 pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts) -> RenderOut {
     let action_w = o.decor.map_or(0, |d| d.action_w);
     let gutter_w = gutter_width(buf, action_w);
-    let blame_w = if buf.blame.is_some() { super::blame::WIDTH } else { 0 };
+    let blame_w = if buf.blame.as_ref().is_some_and(|b| b.column) { super::blame::WIDTH } else { 0 };
     let text_area = Rect::new(area.x + gutter_w, area.y, area.width.saturating_sub(gutter_w), area.height);
     if text_area.width == 0 || area.height == 0 {
         return RenderOut { cursor: None, text_area };
@@ -668,7 +670,7 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
         let folded = buf.view.folds.header_at(line);
         let span = line..=folded.map_or(line, |(_, last)| last);
         let num_style = if is_cur { theme.line_number_current } else { theme.line_number };
-        if let Some(b) = &buf.blame {
+        if let Some(b) = buf.blame.as_ref().filter(|b| b.column) {
             let label = match b.commit_at(line) {
                 Some(c) if row.seg == 0 => Some(super::blame::label(c)),
                 None if b.data.is_none() && row_i == 0 => Some("blame…".to_string()),
@@ -911,6 +913,30 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
         if let (Some((f, last)), Some(vc)) = (folded, end_x) {
             draw_placeholder(screen, buf, (f, line, last), (text_area, y), vc, scroll_col, theme);
         }
+        // Inline blame: the primary caret's line, four cells after its text.
+        if o.inline_blame
+            && o.focused
+            && line == cur_line
+            && let Some(vc) = end_x
+            && buf.view.sel().is_empty()
+            && let Some(c) = buf.blame.as_ref().and_then(|b| b.commit_at(line))
+        {
+            let mut end = vc;
+            if let Some((f, last)) = folded {
+                end += placeholder(rope, f, last).width();
+            }
+            if virt_on {
+                end = end.max(cur_x);
+            }
+            let gc = end + 4;
+            if gc >= scroll_col {
+                let x = text_area.x as usize + gc - scroll_col;
+                if x < right as usize && right as usize - x >= 10 {
+                    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+                    screen.set_stringn(x as u16, y, super::blame::inline_text(c, now), right as usize - x, theme.inline_blame);
+                }
+            }
+        }
         if row == cur_row && cur_x >= scroll_col {
             let x = text_area.x as usize + cur_x - scroll_col;
             if x < right as usize {
@@ -1077,6 +1103,7 @@ mod tests {
             hscrolloff: 0,
             occurrences: false,
             indent_guides: false,
+            inline_blame: false,
             theme: &theme,
             follow: true,
             decor: Some(&decor),
@@ -1140,6 +1167,7 @@ mod tests {
             hscrolloff: 0,
             occurrences: false,
             indent_guides: false,
+            inline_blame: false,
             theme: &theme,
             follow: true,
             decor: None,
@@ -1181,6 +1209,7 @@ mod tests {
             hscrolloff: 0,
             occurrences: false,
             indent_guides: false,
+            inline_blame: false,
             theme,
             follow: true,
             decor: None,

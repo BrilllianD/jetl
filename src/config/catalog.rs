@@ -139,6 +139,13 @@ pub static SETTINGS: &[Setting] = &[
         |c| Value::Bool(c.editor.indent_guides)
     ),
     row!(
+        "editor.inline_blame",
+        "Inline blame on the caret line",
+        "Author, date and summary of the commit that last changed the caret line, shown after its text (files in a git repository).",
+        Kind::Bool,
+        |c| Value::Bool(c.editor.inline_blame)
+    ),
+    row!(
         "editor.snippets",
         "Live templates (snippets)",
         "Tab after a snippet's prefix expands it; snippets are listed in completion. Files: snippets/<language>.toml and all.toml.",
@@ -389,6 +396,7 @@ pub static PAGES: &[Page] = &[
             "editor.auto_close",
             "editor.highlight_occurrences",
             "editor.indent_guides",
+            "editor.inline_blame",
             "editor.snippets",
             "editor.max_tabs",
             "editor.max_highlight_bytes"

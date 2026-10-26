@@ -149,6 +149,8 @@ pub struct Editor {
     auto_close: bool,
     highlight_occurrences: bool,
     indent_guides: bool,
+    /// `editor.inline_blame` as applied.
+    inline_blame: bool,
     trim_trailing_whitespace: bool,
     final_newline: bool,
     autosave: Autosave,
@@ -232,6 +234,7 @@ impl Editor {
             auto_close: false,
             highlight_occurrences: false,
             indent_guides: false,
+            inline_blame: false,
             trim_trailing_whitespace: false,
             final_newline: false,
             autosave: Autosave::Off,
@@ -272,6 +275,7 @@ impl Editor {
             auto_close,
             highlight_occurrences,
             indent_guides,
+            inline_blame,
             // Read by the app where used (`app/snippets.rs`).
             snippets: _,
             trim_trailing_whitespace,
@@ -290,6 +294,14 @@ impl Editor {
         self.auto_close = *auto_close;
         self.highlight_occurrences = *highlight_occurrences;
         self.indent_guides = *indent_guides;
+        self.inline_blame = *inline_blame;
+        if !self.inline_blame {
+            for b in &mut self.buffers {
+                if b.blame.as_ref().is_some_and(|s| !s.column) {
+                    b.blame = None;
+                }
+            }
+        }
         self.trim_trailing_whitespace = *trim_trailing_whitespace;
         self.final_newline = *final_newline;
         if self.autosave != *autosave {
@@ -741,17 +753,53 @@ impl Editor {
     /// Show or hide the blame column of the active buffer; showing it asks
     /// for the blame (`GitRequest::LoadBlame`).
     pub fn toggle_blame(&mut self, cx: &mut Ctx) {
+        let inline = self.inline_blame;
         let Some(b) = self.active_buffer_mut() else { return };
-        if b.blame.take().is_some() {
-            return;
+        match b.blame.as_mut() {
+            // Inline blame keeps using the data the column hid.
+            Some(s) if s.column => {
+                if inline {
+                    s.column = false;
+                } else {
+                    b.blame = None;
+                }
+                return;
+            }
+            Some(s) => {
+                s.column = true;
+                if s.data.is_some() {
+                    return;
+                }
+            }
+            None => {}
         }
         let Some(path) = b.path.clone() else {
             cx.notify(Level::Info, "Blame needs a file");
             return;
         };
-        b.blame = Some(blame::BlameState::new());
+        if b.blame.is_none() {
+            b.blame = Some(blame::BlameState { column: true, ..blame::BlameState::new() });
+        }
         let fallback = b.base_path.clone();
         cx.effects.push(Effect::Git(crate::git::GitRequest::LoadBlame(path, fallback)));
+    }
+
+    /// The active buffer's path (and rename fallback) when inline blame
+    /// wants its data and nothing asked yet. Called at tick rate; asks once
+    /// per buffer (a state without data keeps a failed request quiet).
+    pub fn want_inline_blame(&mut self) -> Option<(PathBuf, Option<PathBuf>)> {
+        if !self.inline_blame {
+            return None;
+        }
+        let i = self.active()?;
+        let b = &self.buffers[i];
+        if b.blame.is_some() || b.patch.is_some() || self.is_merge_buffer(b.id) {
+            return None;
+        }
+        let path = b.path.clone()?;
+        let b = &mut self.buffers[i];
+        b.blame = Some(blame::BlameState::new());
+        Some((path, b.base_path.clone()))
     }
 
     /// Paths of buffers showing blame (reloaded when HEAD moves).
@@ -761,7 +809,7 @@ impl Editor {
 
     /// A blame result for `path` from request `seq`; an older request that
     /// finishes after a newer one is ignored. An error hides the column and
-    /// comes back for a notification.
+    /// comes back for a notification; inline-only blame fails quietly.
     pub fn set_blame(&mut self, path: &Path, seq: u64, result: anyhow::Result<crate::git::Blame>) -> Option<String> {
         let i = self.index_of(path)?;
         let b = &mut self.buffers[i];
@@ -777,9 +825,14 @@ impl Editor {
                 b.gutter_version = u64::MAX;
                 None
             }
-            Err(e) => {
+            Err(e) if state.column => {
                 b.blame = None;
                 Some(format!("Blame: {e:#}"))
+            }
+            Err(_) => {
+                // Inline only: keep the state so it is not asked again until HEAD moves.
+                state.data = None;
+                None
             }
         }
     }
@@ -1375,7 +1428,7 @@ impl Editor {
         // A click in the blame column shows that line's commit (on its
         // first row: the others show none).
         if m.kind == MouseEventKind::Down(MouseButton::Left)
-            && let Some(blame) = &b.blame
+            && let Some(blame) = b.blame.as_ref().filter(|s| s.column)
             && m.x < text_area.x.saturating_sub(view::gutter_width(b, 0)) + blame::WIDTH
             && m.y >= text_area.y
             && m.y < text_area.bottom()
@@ -1748,6 +1801,7 @@ impl Editor {
             hscrolloff: self.hscrolloff,
             occurrences: self.highlight_occurrences,
             indent_guides: self.indent_guides,
+            inline_blame: self.inline_blame,
             theme,
             follow,
             decor,

@@ -64,6 +64,7 @@ diag_hint = "{{muted}}"
 lightbulb = "{{yellow}}"
 indent_guide = "{{mix background foreground 20}}"
 inlay_hint = { fg = "{{mix foreground background 45}}", bg = "{{mix background foreground 12}}" }
+inline_blame = { fg = "{{mix foreground background 45}}" }
 splitter = { fg = "{{muted}}", bg = "{{background}}" }
 
 [syntax]

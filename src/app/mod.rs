@@ -613,6 +613,9 @@ impl App {
         if self.editor.update_gutters() {
             self.dirty_frame = true;
         }
+        if let Some((path, base)) = self.editor.want_inline_blame() {
+            self.git.load_blame(path, base);
+        }
         // The spinners and the elapsed time of a running task.
         if self.git.is_busy() || self.lsp.busy() || (self.run.running() && self.layout.is_visible(ToolWindowId::Run)) {
             self.dirty_frame = true;
@@ -2910,6 +2913,56 @@ pub(crate) mod tests {
         let blame = crate::git::repo::blame(&app.workspace.root, &a, None);
         app.handle_msg(AppMsg::Git(GitMsg::Blame { generation: g, seq: 3, path: a, result: blame }));
         assert!(app.editor.buffers[0].blame.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn inline_blame_loads_quietly_without_the_column() {
+        use crate::editor::view::gutter_width;
+        let (mut app, dir) = test_app("inline-blame");
+        init_repo(&app, &[("a.txt", "one\ntwo\n")]);
+        let a = load(&mut app, "a.txt", "one\ntwo\n");
+        assert!(app.editor.want_inline_blame().is_none(), "off by default");
+        let plain = gutter_width(&app.editor.buffers[0], 0);
+        assert_eq!(plain, 7);
+        let mut c = app.config.clone();
+        c.editor.inline_blame = true;
+        app.editor.apply_config(&c);
+        app.on_tick();
+        let state = app.editor.buffers[0].blame.as_ref().expect("asked");
+        assert!(!state.column);
+        assert_eq!(gutter_width(&app.editor.buffers[0], 0), plain);
+        assert!(app.editor.want_inline_blame().is_none(), "asks once");
+        let g = app.git.generation;
+        let blame = crate::git::repo::blame(&app.workspace.root, &a, None);
+        app.handle_msg(AppMsg::Git(GitMsg::Blame { generation: g, seq: u64::MAX / 2, path: a.clone(), result: blame }));
+        let state = app.editor.buffers[0].blame.as_ref().unwrap();
+        assert_eq!(state.commit_at(0).map(|c| c.summary.as_str()), Some("init"));
+        // The column shows and hides without dropping the data.
+        app.perform(Action::Editor(EditorAction::ToggleBlame));
+        let state = app.editor.buffers[0].blame.as_ref().unwrap();
+        assert!(state.column && state.data.is_some());
+        assert_eq!(gutter_width(&app.editor.buffers[0], 0), plain + crate::editor::blame::WIDTH);
+        app.perform(Action::Editor(EditorAction::ToggleBlame));
+        let state = app.editor.buffers[0].blame.as_ref().unwrap();
+        assert!(!state.column && state.data.is_some());
+        // Turning the key off drops the inline-only state.
+        c.editor.inline_blame = false;
+        app.editor.apply_config(&c);
+        assert!(app.editor.buffers[0].blame.is_none());
+        // An untracked file fails quietly and is not asked again.
+        c.editor.inline_blame = true;
+        app.editor.apply_config(&c);
+        let b = load(&mut app, "b.txt", "x\n");
+        let (path, _) = app.editor.want_inline_blame().expect("asks for b.txt");
+        assert_eq!(path, b);
+        app.notifications.clear();
+        let note = app.editor.set_blame(&b, u64::MAX / 2, Err(anyhow::anyhow!("untracked")));
+        assert!(note.is_none());
+        let state = app.editor.buffers.iter().find(|x| x.path.as_deref() == Some(b.as_path())).unwrap().blame.as_ref().unwrap();
+        assert!(state.data.is_none());
+        assert!(app.notifications.is_empty(), "{:?}", app.notifications);
+        assert!(app.editor.want_inline_blame().is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

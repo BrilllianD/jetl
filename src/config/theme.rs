@@ -256,6 +256,8 @@ theme_fields! {
         /// Inlay hints (virtual text from the language server): foreground and
         /// background are used.
         inlay_hint,
+        /// Inline blame after the caret line's text (`editor.inline_blame`): only the foreground is used.
+        inline_blame,
         splitter,
     ],
 }

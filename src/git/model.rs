@@ -386,6 +386,8 @@ pub struct BlameCommit {
     /// Author time: seconds since the epoch and the author's UTC offset.
     pub time: i64,
     pub offset_minutes: i32,
+    /// The commit message's first line, empty when unreadable.
+    pub summary: String,
 }
 
 /// One entry of the stash list.

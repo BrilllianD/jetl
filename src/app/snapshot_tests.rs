@@ -387,6 +387,49 @@ async fn editor_indent_guides() {
 }
 
 #[tokio::test]
+async fn editor_inline_blame() {
+    use crate::git::model::{Blame, BlameCommit};
+    let mut fx = stable_app("inline-blame");
+    let app = &mut fx.app;
+    let path = load(app, "notes.log", PLAIN);
+    let mut c = app.config.clone();
+    c.editor.inline_blame = true;
+    app.editor.apply_config(&c);
+    assert_eq!(app.editor.want_inline_blame().map(|(p, _)| p), Some(path.clone()));
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+    let commit = BlameCommit {
+        sha: "s".into(),
+        author: "Ann".into(),
+        time: now - 3 * 86_400 - 100,
+        offset_minutes: 0,
+        summary: "Fix the status bar width".into(),
+    };
+    app.editor.set_blame(&path, 1, Ok(Blame { commits: vec![commit], lines: vec![0; 4] }));
+    moves(app, Motion::Down, 1);
+    let term = draw_editor(app, 70, 8);
+    let mut marks = vec![Mark::style('B', "inline blame", app.theme.inline_blame)];
+    marks.extend(editor_marks(&app.theme));
+    assert_snapshot!("editor_inline_blame", snapshot(&term, &marks, None));
+    let shown = |term: &Terminal<TestBackend>, w: u16| {
+        (0..8).filter(|&y| crate::ui::snapshot::row_text(term.backend().buffer(), y, w).contains("Ann,")).count()
+    };
+    assert_eq!(shown(&term, 70), 1);
+    // A selection hides it.
+    editor(app, EditorAction::Move(Motion::Right, true));
+    assert_eq!(shown(&draw_editor(app, 70, 8), 70), 0);
+    // Lines past the blamed ones have none.
+    moves(app, Motion::Down, 3);
+    assert_eq!(shown(&draw_editor(app, 70, 8), 70), 0);
+    // Fewer than 10 cells left.
+    moves(app, Motion::Up, 3);
+    assert_eq!(shown(&draw_editor(app, 26, 8), 26), 0);
+    // Only the focused group paints it.
+    draw_editor(app, 140, 8);
+    editor(app, EditorAction::SplitRight);
+    assert_eq!(shown(&draw_editor(app, 140, 8), 140), 1);
+}
+
+#[tokio::test]
 async fn editor_unusual_line_breaks() {
     let mut fx = stable_app("unusual-breaks");
     let app = &mut fx.app;
