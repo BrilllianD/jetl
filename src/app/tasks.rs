@@ -541,6 +541,9 @@ mod tests {
         run("git", &["worktree", "add", "-q", &wt.to_string_lossy()]);
         // Before the fix `yman ls` in the linked worktree exits 1 with
         // ".yman is not initialized" and the window says there is no tracker.
+        // The app root is the linked worktree, so `workspace.root` and
+        // `yman.root` differ and `fs_changed` must use the latter.
+        app.workspace.root = wt.clone();
         app.yman.set_root(wt, app.workspace.generation);
         assert_eq!(app.yman.root, std::fs::canonicalize(&root).unwrap());
         app.toggle_tool_window(ToolWindowId::Tasks);
