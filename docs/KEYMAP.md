@@ -233,6 +233,8 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Alt+Shift+T` | `lsp.refactor_this` | Refactor This: the server's refactorings at the caret or selection |
 | `Ctrl+Alt+Shift+T` * | `lsp.refactor_this` | Refactor This: the server's refactorings at the caret or selection |
 | `Ctrl+Alt+O` | `lsp.optimize_imports` | Optimize imports (the server's organize imports action) |
+| `Alt+Shift+I` | `lsp.quick_definition` | Quick definition: the definition of the symbol at the caret in a popup |
+| `Ctrl+Shift+I` * | `lsp.quick_definition` | Quick definition: the definition of the symbol at the caret in a popup |
 
 ## editor.merge
 

@@ -1938,6 +1938,27 @@ async fn hover_popup() {
     assert!(app.hover.is_some(), "the popup still applies");
 }
 
+#[cfg(feature = "lang-rust")]
+#[tokio::test]
+async fn quick_definition_popup() {
+    let mut fx = stable_app("quick-def");
+    let app = &mut fx.app;
+    load(app, "main.log", "fn main() {\n    let n = add_one(1);\n}\n");
+    moves(app, Motion::Down, 1);
+    moves(app, Motion::Right, 14);
+    app.focus.set(PanelId::Editor);
+    let b = app.editor.active_buffer().unwrap();
+    let (group, id, version, head) = (app.editor.focused_group().id, b.id, b.version, b.view.sel().head);
+    let code = "pub fn add_one(x: u32) -> u32 {\n    x.wrapping_add(1)\n}";
+    let lines = super::lsp_nav::definition_lines("src/math.rs:12", code, crate::editor::syntax::language_for_name("rust"), &app.theme);
+    app.hover = crate::ui::hover::HoverPopup::from_lines(group, id, version, head, lines);
+    let term = draw_app(app, 80, 20);
+    let kw = app.theme.capture_style("keyword").unwrap();
+    let marks = [Mark::bg('P', "popup", app.theme.popup_bg), Mark::style('K', "keyword", kw.bg(app.theme.bg))];
+    assert_snapshot!("quick_definition_popup", snapshot(&term, &marks, None));
+    assert!(app.hover.is_some(), "the popup still applies");
+}
+
 #[tokio::test]
 async fn signature_popup() {
     use lsp_types::{ParameterInformation, ParameterLabel, SignatureHelp, SignatureInformation};

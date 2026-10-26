@@ -1067,6 +1067,7 @@ impl App {
                     }
                     crate::actions::LspAction::FindUsages => self.lsp_find_usages(),
                     crate::actions::LspAction::QuickDoc => self.lsp_quick_doc(),
+                    crate::actions::LspAction::QuickDefinition => self.lsp_quick_definition(),
                     crate::actions::LspAction::ParameterInfo => self.lsp_parameter_info(),
                     crate::actions::LspAction::Complete => self.lsp_complete(),
                     crate::actions::LspAction::Rename => self.lsp_rename(),

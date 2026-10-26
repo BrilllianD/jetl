@@ -312,6 +312,10 @@
 "ctrl-alt-shift-t" = "lsp.refactor_this"
 "alt-shift-t" = "lsp.refactor_this"
 "ctrl-alt-o" = "lsp.optimize_imports"
+# Quick Definition, as in JetBrains: Ctrl+Shift+I needs the kitty protocol (legacy terminals
+# send Ctrl+I, which is Tab); Alt+Shift+I works anywhere.
+"ctrl-shift-i" = "lsp.quick_definition"
+"alt-shift-i" = "lsp.quick_definition"
 "esc" = "editor.escape"
 
 # The conflict resolver (Git > Resolve Conflicts) while it is open.

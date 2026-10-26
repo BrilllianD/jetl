@@ -196,6 +196,17 @@ pub enum AppMsg {
         title: String,
         items: Vec<crate::lsp::locations::LocationItem>,
     },
+    /// The Quick Definition popup's heading and code, the target file's text
+    /// read off the main thread (an open buffer's, else the file's); shown
+    /// unless the root, the newest definition request (`tag.seq`) or the
+    /// caret, version or group changed.
+    QuickDefinition {
+        generation: u64,
+        tag: crate::lsp::DocTag,
+        heading: String,
+        code: Result<String, String>,
+        lang: Option<&'static str>,
+    },
     /// The caret history's rows with their line text, the ones in files that
     /// are not open read from disk (`App::show_recent_locations`).
     RecentLocations {

@@ -1,6 +1,6 @@
 //! Language server navigation: go to definition (Ctrl+B, Ctrl+click), find
-//! usages (Alt+F7) and quick documentation (Alt+Q), all about the active
-//! buffer's caret.
+//! usages (Alt+F7), quick documentation (Alt+Q) and quick definition
+//! (Ctrl+Shift+I), all about the active buffer's caret.
 //!
 //! A request is sent after a sync, so the server has the text it refers
 //! to, and carries a [`DocTag`]: its answer is used only while the buffer,
@@ -17,13 +17,15 @@ use serde_json::{Value, json};
 use super::App;
 use super::lsp_edit::ActionsFor;
 use crate::actions::PaletteKind;
+use crate::config::theme::Theme;
 use crate::editor::buffer::BufferId;
+use crate::editor::syntax::{self, LanguageDef};
 use crate::event::{AppMsg, Level};
 use crate::lsp::locations::{self, LocationItem, Target};
 use crate::lsp::transport::ResponseError;
 use crate::lsp::{DocTag, PendingTag, pos};
 use crate::ui::focus::PanelId;
-use crate::ui::hover::HoverPopup;
+use crate::ui::hover::{DocLine, HoverPopup, Kind, code_lines};
 use crate::ui::palette::Palette;
 
 pub(super) use crate::lsp::caps::{
@@ -43,6 +45,7 @@ fn method_of(tag: &PendingTag) -> &'static str {
         PendingTag::Declaration(_) => DECLARATION,
         PendingTag::References(_) => REFERENCES,
         PendingTag::Hover(_) => HOVER,
+        PendingTag::QuickDefinition(_) => DEFINITION,
         PendingTag::SignatureHelp(_) => SIGNATURE_HELP,
         PendingTag::Completion(_) => COMPLETION,
         PendingTag::CompletionResolve(_) | PendingTag::CompletionDocs(_) => RESOLVE,
@@ -277,6 +280,18 @@ impl App {
         }
     }
 
+    /// `lsp.quick_definition` (Ctrl+Shift+I, Alt+Shift+I).
+    pub(super) fn lsp_quick_definition(&mut self) {
+        self.hover = None;
+        self.completion_close();
+        let Some((id, pos)) = self.caret_position() else { return };
+        match self.lsp_doc_request(id, pos, DEFINITION, json!({}), PendingTag::QuickDefinition) {
+            Ok(seq) => self.lsp.nav_seq = seq,
+            Err(why) if !why.is_empty() => self.lsp_hint(why),
+            Err(_) => {}
+        }
+    }
+
     /// The answer to one of the requests above: dropped unless it is the
     /// newest of its method and the buffer, its version and the caret are
     /// as they were when it was sent.
@@ -341,6 +356,7 @@ impl App {
             PendingTag::Declaration(t) => self.lsp_goto_answer(t, value, DECLARATION),
             PendingTag::References(t) => self.lsp_usages_answer(t, value),
             PendingTag::Hover(t) => self.lsp_hover_answer(t, value),
+            PendingTag::QuickDefinition(t) => self.lsp_quick_definition_answer(t, value),
             PendingTag::SignatureHelp(t) => self.signature_answer(t, value),
             PendingTag::PrepareRename(t) => self.lsp_prepare_rename_answer(t, value),
             PendingTag::Rename(t) => self.lsp_rename_answer(t, value),
@@ -429,6 +445,64 @@ impl App {
             Some(popup) => self.hover = Some(popup),
             None => self.lsp_hint("No documentation found"),
         }
+    }
+
+    /// The first target's text (the open buffer's, else the file's) is cut
+    /// off the main thread and comes back as `AppMsg::QuickDefinition`.
+    fn lsp_quick_definition_answer(&mut self, t: DocTag, value: Value) {
+        let Some(target) = locations::parse(value).into_iter().next() else { return self.lsp_hint("No definition found") };
+        let line = target.range.start.line as usize;
+        let shown = target.path.strip_prefix(&self.workspace.root).unwrap_or(&target.path).display().to_string();
+        let heading = format!("{shown}:{}", line + 1);
+        let (rope, def) = match self.editor.index_of(&target.path).map(|i| &self.editor.buffers[i]) {
+            Some(b) => (Some(b.rope.clone()), b.language()),
+            None => (None, None),
+        };
+        let (tx, generation) = (self.bus_tx.clone(), self.workspace.generation);
+        tokio::task::spawn_blocking(move || {
+            let text = match rope {
+                Some(r) => Ok(r.to_string()),
+                None => std::fs::read_to_string(&target.path).map_err(|e| format!("Cannot read {shown}: {e}")),
+            };
+            let (code, lang) = match text {
+                Ok(text) => {
+                    let def = def.or_else(|| syntax::detect_text(&target.path, &text));
+                    (Ok(definition_snippet(&text, def, line)), def.map(|d| d.name))
+                }
+                Err(e) => (Err(e), None),
+            };
+            let _ = tx.send(AppMsg::QuickDefinition { generation, tag: t, heading, code, lang });
+        });
+    }
+
+    /// `AppMsg::QuickDefinition`: shown unless the root, the newest
+    /// definition request or the caret, version or group changed.
+    pub(super) fn quick_definition_loaded(
+        &mut self,
+        generation: u64,
+        tag: DocTag,
+        heading: String,
+        code: Result<String, String>,
+        lang: Option<&'static str>,
+    ) {
+        if generation != self.workspace.generation
+            || tag.seq != self.lsp.nav_seq
+            || self.caret_position() != Some((tag.buffer, tag.pos))
+            || self.editor.active_buffer().is_none_or(|b| b.version != tag.version)
+            || self.editor.focused_group().id != tag.group
+            || self.dialog.is_some()
+            || self.palette.is_some()
+        {
+            return tracing::debug!("dropping a stale quick definition");
+        }
+        let code = match code {
+            Ok(c) => c,
+            Err(why) => return self.lsp_hint(why),
+        };
+        let Some(head) = self.editor.active_buffer().map(|b| b.view.sel().head) else { return };
+        let lines = definition_lines(&heading, &code, lang.and_then(syntax::language_for_name), &self.theme);
+        self.hover = HoverPopup::from_lines(tag.group, tag.buffer, tag.version, head, lines);
+        self.dirty_frame = true;
     }
 
     /// Rows for `targets` with their line text: open buffers' lines now,
@@ -543,6 +617,25 @@ pub(super) fn word_at(b: &crate::editor::buffer::Buffer, at: usize) -> String {
     if w.chars().all(|c| c.is_alphanumeric() || c == '_') { w } else { String::new() }
 }
 
+/// The popup's rows: a heading with the target's place, then its code.
+pub(super) fn definition_lines(heading: &str, code: &str, def: Option<&'static LanguageDef>, theme: &Theme) -> Vec<DocLine> {
+    let mut lines = vec![DocLine { kind: Kind::Heading, text: heading.to_string(), spans: Vec::new() }];
+    lines.extend(code_lines(code, def, theme));
+    lines
+}
+
+/// The lines of `text` from `line` to the end of the definition named there
+/// (its tags symbol's last line), else 15 lines; at most 200.
+fn definition_snippet(text: &str, def: Option<&'static LanguageDef>, line: usize) -> String {
+    let symbols = match def {
+        Some(def) => crate::symbols::extract_text(def, &mut tree_sitter::Parser::new(), text),
+        None => Vec::new(),
+    };
+    let symbol = symbols.iter().find(|s| s.line == line).or_else(|| symbols.iter().find(|s| s.start_line == line));
+    let end = symbol.map_or(line + 14, |s| s.end_line).max(line).min(line + 199);
+    text.lines().skip(line).take(end - line + 1).collect::<Vec<_>>().join("\n")
+}
+
 // Every test here opens a Rust file (a language server needs a language).
 #[cfg(all(test, feature = "lang-rust"))]
 mod tests {
@@ -588,6 +681,10 @@ mod tests {
 
     fn toasts(app: &App) -> Vec<String> {
         app.toasts.items().iter().map(|t| t.text.clone()).collect()
+    }
+
+    fn popup(app: &App) -> Vec<String> {
+        app.hover.as_ref().unwrap().lines().iter().map(|l| format!("{:?}:{}", l.kind, l.text)).collect()
     }
 
     /// Put the caret at 0-based `line`, char `col`.
@@ -1010,5 +1107,106 @@ mod tests {
         answer(&mut app, &mut server, "textDocument/hover", hover("doc")).await;
         assert!(app.hover.is_none());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn quick_definition_shows_an_open_buffer_target() {
+        let (mut app, dir) = test_app("lsp-quickdef");
+        let mut servers = with_fake_servers(&mut app, caps());
+        let mut server = open_on_server(&mut app, &mut servers, "a.rs", A).await;
+        let a = app.workspace.root.join("a.rs");
+        app.perform(Action::Editor(EditorAction::Move(Motion::DocEnd, false)));
+        app.perform(Action::Editor(EditorAction::InsertText("fn helper(s: &str) {\n    s.len();\n}\n// after\n".into())));
+        app.lsp_sync();
+        goto(&mut app, 1, 21);
+        app.handle_key(KeyEvent::new(KeyCode::Char('I'), KeyModifiers::ALT | KeyModifiers::SHIFT));
+        let req = answer(&mut app, &mut server, "textDocument/definition", loc(&a, range(3, 3, 3, 9))).await;
+        assert_eq!(req["params"]["position"], json!({"line": 1, "character": 22}));
+        handle_next(&mut app, |m| matches!(m, AppMsg::QuickDefinition { .. })).await;
+        assert_eq!(popup(&app), ["Heading:a.rs:4", "Code:fn helper(s: &str) {", "Code:    s.len();", "Code:}"]);
+        assert!(app.hover.as_ref().unwrap().lines().iter().any(|l| !l.spans.is_empty()));
+        assert_eq!(caret(&app), (1, 21));
+        assert_eq!(app.editor.buffers.len(), 1);
+        key(&mut app, KeyCode::Esc);
+        assert!(app.hover.is_none());
+        assert_eq!(caret(&app), (1, 21));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn quick_definition_reads_a_closed_file_from_disk() {
+        let (mut app, dir) = test_app("lsp-quickdef-disk");
+        let mut servers = with_fake_servers(&mut app, caps());
+        let mut server = open_on_server(&mut app, &mut servers, "a.rs", A).await;
+        let a = app.workspace.root.join("a.rs");
+        let b = app.workspace.root.join("b.rs");
+        std::fs::write(&b, B).unwrap();
+        let notes = app.workspace.root.join("notes.txt");
+        std::fs::write(&notes, (0..40).map(|i| format!("line {i}\n")).collect::<String>()).unwrap();
+        goto(&mut app, 1, 21);
+        act(&mut app, LspAction::QuickDefinition);
+        let links = json!([
+            {"targetUri": crate::lsp::sync::uri(&b).unwrap().as_str(), "targetRange": range(1, 0, 1, 37), "targetSelectionRange": range(1, 16, 1, 22)},
+            {"targetUri": crate::lsp::sync::uri(&a).unwrap().as_str(), "targetRange": range(0, 0, 2, 1), "targetSelectionRange": range(0, 3, 0, 7)},
+        ]);
+        answer(&mut app, &mut server, "textDocument/definition", links).await;
+        handle_next(&mut app, |m| matches!(m, AppMsg::QuickDefinition { .. })).await;
+        assert_eq!(popup(&app), ["Heading:b.rs:2", "Code:/* 😀 */ pub fn helper(s: &str) {}"]);
+        assert_eq!(app.editor.buffers.len(), 1);
+        assert_eq!(app.editor.active_path(), Some(a.as_path()));
+
+        key(&mut app, KeyCode::Esc);
+        act(&mut app, LspAction::QuickDefinition);
+        answer(&mut app, &mut server, "textDocument/definition", loc(&notes, range(2, 0, 2, 4))).await;
+        handle_next(&mut app, |m| matches!(m, AppMsg::QuickDefinition { .. })).await;
+        let rows = popup(&app);
+        assert_eq!(rows.len(), 16, "{rows:?}");
+        assert_eq!((rows[0].as_str(), rows[1].as_str(), rows[15].as_str()), ("Heading:notes.txt:3", "Code:line 2", "Code:line 16"));
+        assert!(app.hover.as_ref().unwrap().lines().iter().all(|l| l.spans.is_empty()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn quick_definition_without_a_location_says_so_and_stale_ones_are_dropped() {
+        let (mut app, dir) = test_app("lsp-quickdef-stale");
+        let mut servers = with_fake_servers(&mut app, caps());
+        let mut server = open_on_server(&mut app, &mut servers, "a.rs", A).await;
+        let b = app.workspace.root.join("b.rs");
+        std::fs::write(&b, B).unwrap();
+        goto(&mut app, 1, 21);
+        for none in [Value::Null, json!([])] {
+            app.toasts = Default::default();
+            act(&mut app, LspAction::QuickDefinition);
+            answer(&mut app, &mut server, "textDocument/definition", none).await;
+            assert!(toasts(&app).contains(&"No definition found".to_string()), "{:?}", toasts(&app));
+            assert!(app.hover.is_none());
+        }
+        act(&mut app, LspAction::QuickDefinition);
+        answer(&mut app, &mut server, "textDocument/definition", loc(&b, range(1, 16, 1, 22))).await;
+        app.perform(Action::Editor(EditorAction::Move(Motion::Left, false)));
+        handle_next(&mut app, |m| matches!(m, AppMsg::QuickDefinition { .. })).await;
+        assert!(app.hover.is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let (mut app, dir) = test_app("lsp-quickdef-nocap");
+        let mut servers = with_fake_servers(&mut app, incremental());
+        let _server = open_on_server(&mut app, &mut servers, "a.rs", A).await;
+        app.toasts = Default::default();
+        act(&mut app, LspAction::QuickDefinition);
+        assert!(toasts(&app).contains(&"rust-analyzer does not support go to definition".to_string()), "{:?}", toasts(&app));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn definition_snippet_cuts_at_the_symbol_end_or_15_lines_capped_at_200() {
+        let rust = syntax::language_for_name("rust");
+        let text = "// c\nfn a() {\n    1;\n}\nfn b() {}\n";
+        assert_eq!(definition_snippet(text, rust, 1), "fn a() {\n    1;\n}");
+        assert_eq!(definition_snippet(text, None, 0).lines().count(), 5);
+        let long = format!("fn big() {{\n{}}}\n", "    1;\n".repeat(300));
+        assert_eq!(definition_snippet(&long, rust, 0).lines().count(), 200);
+        assert_eq!(definition_snippet("a\nb\nc\nd\ne\n", None, 99), "");
+        assert_eq!(definition_snippet(text, rust, 2), "    1;\n}\nfn b() {}");
     }
 }

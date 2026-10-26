@@ -586,6 +586,8 @@ pub enum LspAction {
     FindUsages,
     /// Alt+Q: the hover documentation at the caret in a popup.
     QuickDoc,
+    /// Ctrl+Shift+I / Alt+Shift+I: the definition at the caret in a popup.
+    QuickDefinition,
     /// Ctrl+P: the signatures of the call at the caret, its active parameter bold.
     ParameterInfo,
     /// Ctrl+Space: code completion at the caret.
@@ -1000,6 +1002,7 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "lsp.file_structure" => "File structure: the file's symbols from its language server", Lsp(LspAction::FileStructure);
         "lsp.refactor_this" => "Refactor This: the server's refactorings at the caret or selection", Lsp(LspAction::RefactorThis);
         "lsp.optimize_imports" => "Optimize imports (the server's organize imports action)", Lsp(LspAction::OptimizeImports);
+        "lsp.quick_definition" => "Quick definition: the definition of the symbol at the caret in a popup", Lsp(LspAction::QuickDefinition);
         "lsp.toggle_inlay_hints" => "Show or hide inlay hints", Lsp(LspAction::ToggleInlayHints);
 
         "problems.up" => "Problems: up", Problems(ProblemsAction::Up);

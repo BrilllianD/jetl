@@ -10,6 +10,8 @@
 //! the request's. While it is up, Up/Down/PgUp/PgDn scroll it and Esc closes
 //! it; any other key closes it and goes on to the editor
 //! (`App::hover_key`), the pattern the completion popup follows too.
+//! Quick Definition (`lsp.quick_definition`) shows a heading and code lines
+//! through [`HoverPopup::from_lines`].
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use lsp_types::{HoverContents, MarkedString, MarkupKind};
@@ -79,7 +81,11 @@ pub struct HoverPopup {
 impl HoverPopup {
     /// The popup for a hover answer; `None` when it has no text.
     pub fn new(group: GroupId, buffer: BufferId, version: u64, head: usize, contents: HoverContents, hl: Highlight<'_>) -> Option<Self> {
-        let lines = contents_lines(contents, hl);
+        Self::from_lines(group, buffer, version, head, contents_lines(contents, hl))
+    }
+
+    /// The popup for ready lines; `None` when there are none.
+    pub fn from_lines(group: GroupId, buffer: BufferId, version: u64, head: usize, lines: Vec<DocLine>) -> Option<Self> {
         (!lines.is_empty()).then_some(Self { group, buffer, version, head, lines, scroll: 0, page: 1, rect: Rect::default() })
     }
 

@@ -150,6 +150,7 @@ pub const MAIN_MENU: &[(&str, char, &[Row])] = &[
             Item("Fold Selection", "editor.fold_selection"),
             Sep,
             Item("Quick Documentation", "lsp.quick_doc"),
+            Item("Quick Definition", "lsp.quick_definition"),
             Item("Parameter Info", "lsp.parameter_info"),
             Item("Git Blame", "editor.toggle_blame"),
             Item("Soft-Wrap", "editor.toggle_soft_wrap"),
