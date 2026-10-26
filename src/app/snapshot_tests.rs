@@ -850,6 +850,27 @@ async fn app_git_commit_tab() {
     assert_snapshot!("app_git_commit_tab", snapshot(&term, &marks, Some(bottom)));
 }
 
+/// The Commit tab's diff focused with a line cursor on the removed and the
+/// added println line: only those line numbers are reversed.
+#[tokio::test]
+async fn git_commit_line_selection() {
+    use crate::actions::GitAction;
+    let mut fx = stable_app("git-commit-line-selection");
+    let app = &mut fx.app;
+    git_commit_fixture(app);
+    // (Drawn once first: the rows follow the layout the frame chose.)
+    draw_app(app, 120, 30);
+    app.focus.set(PanelId::Git);
+    app.perform(Action::Git(GitAction::Right));
+    app.perform(Action::Git(GitAction::LineDown));
+    app.perform(Action::Git(GitAction::LineExtendDown));
+    let term = draw_app(app, 120, 30);
+    let mut marks = diff_marks(&app.theme);
+    marks.push(Mark::style('W', "selected line", app.theme.warn.add_modifier(Modifier::REVERSED)));
+    let bottom = app.layout.rects.bottom;
+    assert_snapshot!("git_commit_line_selection", snapshot(&term, &marks, Some(bottom)));
+}
+
 /// A rebase stopped at step 2 of 5: the Git window header and the status
 /// bar both carry the label.
 #[tokio::test]

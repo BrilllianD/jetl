@@ -425,9 +425,15 @@
 "alt-u" = "git.toggle_diff_layout"
 "alt-f" = "git.toggle_diff_collapse"
 "alt-m" = "git.toggle_amend"
-# In the commit message box: recall earlier messages.
-"alt-up" = "git.message_older"
-"alt-down" = "git.message_newer"
+# In the Commit tab's diff, a line cursor: Alt+Up/Down moves it over the
+# changed rows, with Shift it grows the selected lines; Space then stages
+# (or unstages) and Ctrl+Alt+Z discards only those lines. A double click on
+# a changed row sets it; Esc leaves line mode. Elsewhere Alt+Up/Down recall
+# earlier commit messages.
+"alt-up" = "git.line_up"
+"alt-down" = "git.line_down"
+"alt-shift-up" = "git.line_extend_up"
+"alt-shift-down" = "git.line_extend_down"
 "f5" = "git.refresh"
 "alt-c" = "git.tab_commit"
 "alt-l" = "git.tab_log"

@@ -242,10 +242,63 @@ impl GitPanel {
         cx.effects.push(Effect::Git(req));
     }
 
+    /// `hunk_op` with a line cursor in the diff: stage, unstage or discard
+    /// only the selected lines.
+    pub(super) fn line_op(&mut self, discard: bool, cx: &mut Ctx) {
+        const HINT: &str = "Only lines of a modified text file can be staged one by one";
+        let Some(e) = self.selected_entry() else { return };
+        if e.status != FileStatus::Modified || e.section == Section::Untracked || e.old_rel.is_some() {
+            cx.notify(Level::Info, HINT);
+            return;
+        }
+        let (section, rel) = (e.section, e.rel.clone());
+        let Some(doc) = &self.diff.doc else { return };
+        if doc.binary || doc.lossy {
+            cx.notify(Level::Info, HINT);
+            return;
+        }
+        let Some(rows) = self.diff.selected_lines() else { return };
+        if rows.end > if self.diff.unified { doc.unified.len() } else { doc.rows.len() } {
+            return;
+        }
+        let (o, n) = doc.row_lines(self.diff.unified, rows);
+        let reverse = discard || section == Section::Staged;
+        let Some(patch) = doc.lines_patch(o, n, &rel, &rel, 3, reverse) else {
+            cx.notify(Level::Info, "No change selected in the diff");
+            return;
+        };
+        let req = match (section, discard) {
+            (Section::Staged, false) => GitRequest::ApplyPatch { patch, cached: true, reverse: true, op: GitOp::Unstage },
+            (_, false) => GitRequest::ApplyPatch { patch, cached: true, reverse: false, op: GitOp::Stage },
+            (Section::Staged, true) => {
+                cx.notify(Level::Warn, "Unstage the change first (Space), then discard it");
+                return;
+            }
+            (_, true) => {
+                let msg = format!("Discard this change in {rel}?\nThis cannot be undone.");
+                cx.effects.push(Effect::Dialog(Dialog::confirm(
+                    DialogId::DiscardHunk { patch },
+                    "Discard Change",
+                    &msg,
+                    &["Discard", "Cancel"],
+                )));
+                self.diff.line = None;
+                self.diff.line_anchor = None;
+                return;
+            }
+        };
+        cx.effects.push(Effect::Git(req));
+        self.diff.line = None;
+        self.diff.line_anchor = None;
+    }
+
     /// Stage or unstage (`discard`: throw away, after a confirmation) the
     /// current block of the diff. Only plain modifications have hunks to
     /// pick; anything else falls back to the whole file.
     pub(super) fn hunk_op(&mut self, discard: bool, cx: &mut Ctx) {
+        if self.diff.line.is_some() {
+            return self.line_op(discard, cx);
+        }
         let Some(e) = self.selected_entry() else { return };
         if e.status != FileStatus::Modified || e.section == Section::Untracked {
             return if discard { self.discard_selected(cx) } else { self.toggle_selected(cx) };
@@ -322,7 +375,11 @@ impl GitPanel {
             self.message.click(self.message_rect, m.x, m.y);
         } else if self.diff_rect.contains(p) {
             self.area = Area::Diff;
-            self.diff.click(m.y, false);
+            if m.clicks >= 2 {
+                self.diff.click_line(m.y);
+            } else {
+                self.diff.click(m.y, false);
+            }
         } else if let Some(i) = self.list.hit(self.changes_rect, m.x, m.y) {
             self.area = Area::Changes;
             self.list.select(i);

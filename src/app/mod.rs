@@ -2926,6 +2926,85 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn alt_arrows_stage_unstage_and_discard_single_lines() {
+        use crate::actions::GitAction;
+        use crate::git::{BlobWhich, Section};
+        let (mut app, dir) = test_app("line-stage");
+        let base: String = (1..=12).map(|i| format!("{i}\n")).collect();
+        init_repo(&app, &[("f.txt", &base)]);
+        let f = app.workspace.root.join("f.txt");
+        let with = |extra: &str| base.replacen("5\n", &format!("5\n{extra}"), 1);
+        std::fs::write(&f, with("a\nb\nc\n")).unwrap();
+        feed_status(&mut app, 1);
+        feed_change_diff(&mut app, Section::Unstaged, "f.txt");
+        app.focus.set(PanelId::Git);
+        app.perform(Action::Git(GitAction::NextSection));
+        app.perform(Action::Git(GitAction::LineDown));
+        app.perform(Action::Git(GitAction::LineExtendDown));
+        app.perform(Action::Git(GitAction::ToggleStage));
+        handle_next(&mut app, git_op_done).await;
+        let index = crate::git::repo::blob_text(&app.workspace.root, &f, BlobWhich::Index, None).unwrap();
+        assert_eq!(index, with("a\nb\n"));
+        let cached = std::process::Command::new("git").args(["diff", "--cached"]).current_dir(&app.workspace.root).output().unwrap();
+        let cached = String::from_utf8_lossy(&cached.stdout).into_owned();
+        assert!(cached.contains("+a") && cached.contains("+b") && !cached.contains("+c"), "{cached}");
+        // Unstage `b` from the Staged diff.
+        feed_status(&mut app, 2);
+        app.perform(Action::Git(GitAction::Escape));
+        app.perform(Action::Git(GitAction::Up));
+        app.perform(Action::Git(GitAction::Up));
+        feed_change_diff(&mut app, Section::Staged, "f.txt");
+        app.perform(Action::Git(GitAction::NextSection));
+        app.perform(Action::Git(GitAction::LineDown));
+        app.perform(Action::Git(GitAction::LineDown));
+        app.perform(Action::Git(GitAction::ToggleStage));
+        handle_next(&mut app, git_op_done).await;
+        let index = crate::git::repo::blob_text(&app.workspace.root, &f, BlobWhich::Index, None).unwrap();
+        assert_eq!(index, with("a\n"));
+        // Discard `c` from the work tree.
+        feed_status(&mut app, 3);
+        app.perform(Action::Git(GitAction::Escape));
+        app.perform(Action::Git(GitAction::Down));
+        app.perform(Action::Git(GitAction::Down));
+        feed_change_diff(&mut app, Section::Unstaged, "f.txt");
+        app.perform(Action::Git(GitAction::NextSection));
+        app.perform(Action::Git(GitAction::LineDown));
+        app.perform(Action::Git(GitAction::LineDown));
+        app.perform(Action::Git(GitAction::Discard));
+        let d = app.dialog.take().expect("asks first");
+        assert!(matches!(d.id, DialogId::DiscardHunk { .. }));
+        app.finish_dialog(d.id, DialogResult::Button(0));
+        handle_next(&mut app, git_op_done).await;
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), with("a\nb\n"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn line_staging_hint_on_an_added_file() {
+        use crate::actions::GitAction;
+        use crate::git::Section;
+        let (mut app, dir) = test_app("line-stage-added");
+        init_repo(&app, &[("f.txt", "1\n")]);
+        std::fs::write(app.workspace.root.join("n.txt"), "x\ny\n").unwrap();
+        let root = app.workspace.root.clone();
+        let git = |args: &[&str]| {
+            let o = std::process::Command::new("git").args(args).current_dir(&root).output().unwrap();
+            String::from_utf8_lossy(&o.stdout).into_owned()
+        };
+        git(&["add", "n.txt"]);
+        feed_status(&mut app, 1);
+        feed_change_diff(&mut app, Section::Staged, "n.txt");
+        app.focus.set(PanelId::Git);
+        app.perform(Action::Git(GitAction::NextSection));
+        app.perform(Action::Git(GitAction::LineDown));
+        app.perform(Action::Git(GitAction::ToggleStage));
+        let last = app.notifications.last().map(|n| n.text.clone());
+        assert_eq!(last.as_deref(), Some("Only lines of a modified text file can be staged one by one"));
+        assert!(git(&["diff", "--cached", "--name-only"]).contains("n.txt"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
     async fn blame_column_keeps_the_newest_result_and_opens_the_commit() {
         let (mut app, dir) = test_app("blame");
         init_repo(&app, &[("a.txt", "one\ntwo\n")]);

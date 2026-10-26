@@ -128,6 +128,16 @@ pub fn blocks(rows: &[DiffRow]) -> Vec<std::ops::Range<usize>> {
     out
 }
 
+/// One patch line: `sign`, the text, and the no-newline marker when the text
+/// has no terminator.
+fn push_line(out: &mut String, sign: char, text: &str) {
+    out.push(sign);
+    out.push_str(text);
+    if !text.ends_with('\n') {
+        out.push_str("\n\\ No newline at end of file\n");
+    }
+}
+
 /// Number of lines the way imara-diff tokenizes them (a trailing newline
 /// does not start a new line).
 fn line_count(s: &str) -> usize {
@@ -261,6 +271,83 @@ impl DiffDoc {
         Some(out)
     }
 
+    /// A unified patch of the selected lines for `git apply`: one hunk over
+    /// the changed blocks the selection touches. `old_sel` / `new_sel` are
+    /// old and new line indices (as `row_lines` returns them); a selected old
+    /// line is `-`, a selected new line `+`. Unselected lines of the side the
+    /// patch applies to (old, or new when `reverse`) stay as context, the
+    /// other side's are left out. A touched block with an unterminated last
+    /// line is taken whole.
+    pub fn lines_patch(
+        &self,
+        old_sel: Range<usize>,
+        new_sel: Range<usize>,
+        old_path: &str,
+        new_path: &str,
+        context: usize,
+        reverse: bool,
+    ) -> Option<String> {
+        let rows = &self.rows;
+        let hit = |r: &DiffRow| {
+            r.kind != RowKind::Equal && (r.left.is_some_and(|l| old_sel.contains(&l)) || r.right.is_some_and(|n| new_sel.contains(&n)))
+        };
+        let touched: Vec<Range<usize>> = blocks(rows).into_iter().filter(|b| rows[b.clone()].iter().any(hit)).collect();
+        let (first, last) = (touched.first()?, touched.last()?);
+        let unterminated =
+            |r: &DiffRow| r.left.is_some_and(|l| !self.old[l].ends_with('\n')) || r.right.is_some_and(|n| !self.new[n].ends_with('\n'));
+        let whole: Vec<bool> = touched.iter().map(|b| rows[b.clone()].iter().any(unterminated)).collect();
+        let is_whole = |i: usize| touched.iter().zip(&whole).any(|(b, &w)| w && b.contains(&i));
+        let equal = |i: usize| rows[i].kind == RowKind::Equal;
+        let mut start = first.start;
+        while start > 0 && first.start - start < context && equal(start - 1) {
+            start -= 1;
+        }
+        let mut end = last.end;
+        while end < rows.len() && end - last.end < context && equal(end) {
+            end += 1;
+        }
+        let pos = rows[..start].iter().filter(|r| if reverse { r.right.is_some() } else { r.left.is_some() }).count();
+        let mut body = String::new();
+        let (mut n_old, mut n_new) = (0, 0);
+        for (i, r) in rows.iter().enumerate().take(end).skip(start) {
+            if r.kind == RowKind::Equal {
+                if let Some(l) = r.left {
+                    push_line(&mut body, ' ', &self.old[l]);
+                    n_old += 1;
+                    n_new += 1;
+                }
+                continue;
+            }
+            let whole = is_whole(i);
+            if let Some(l) = r.left {
+                if whole || old_sel.contains(&l) {
+                    push_line(&mut body, '-', &self.old[l]);
+                    n_old += 1;
+                } else if !reverse {
+                    push_line(&mut body, ' ', &self.old[l]);
+                    n_old += 1;
+                    n_new += 1;
+                }
+            }
+            if let Some(n) = r.right {
+                if whole || new_sel.contains(&n) {
+                    push_line(&mut body, '+', &self.new[n]);
+                    n_new += 1;
+                } else if reverse {
+                    push_line(&mut body, ' ', &self.new[n]);
+                    n_old += 1;
+                    n_new += 1;
+                }
+            }
+        }
+        let from = |n: usize| if n == 0 { pos } else { pos + 1 };
+        Some(format!(
+            "diff --git a/{old_path} b/{new_path}\n--- a/{old_path}\n+++ b/{new_path}\n@@ -{},{n_old} +{},{n_new} @@\n{body}",
+            from(n_old),
+            from(n_new)
+        ))
+    }
+
     /// One `@@` hunk (header and lines) of side-by-side rows `rows`: equal
     /// rows as context, each run of changed rows as its `-` then its `+` lines.
     fn write_hunk(&self, out: &mut String, rows: Range<usize>) {
@@ -273,13 +360,7 @@ impl DiffDoc {
             format!("{},{n}", if n == 0 { before } else { before + 1 })
         };
         out.push_str(&format!("@@ -{} +{} @@\n", header(true), header(false)));
-        let mut line = |sign: char, text: &str| {
-            out.push(sign);
-            out.push_str(text);
-            if !text.ends_with('\n') {
-                out.push_str("\n\\ No newline at end of file\n");
-            }
-        };
+        let mut line = |sign: char, text: &str| push_line(out, sign, text);
         let mut i = rows.start;
         while i < rows.end {
             if all[i].kind == RowKind::Equal {
@@ -367,6 +448,75 @@ mod tests {
     }
 
     use super::*;
+
+    /// Builds the patch of `rows` (of the unified or side-by-side mode), applies it
+    /// with real `git apply` to `old` (or `new` when `reverse`), returns the
+    /// resulting file text and the patch.
+    fn apply(case: &str, old: &str, new: &str, unified: bool, rows: Range<usize>, reverse: bool) -> (String, String) {
+        use std::io::Write;
+        let d = DiffDoc::build(old.as_bytes(), new.as_bytes(), 4);
+        let (o, n) = d.row_lines(unified, rows);
+        let patch = d.lines_patch(o, n, "f.txt", "f.txt", 3, reverse).unwrap();
+        let dir = std::env::temp_dir().join(format!("jetl-lines-patch-{case}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("f.txt"), if reverse { new } else { old }).unwrap();
+        let mut cmd = std::process::Command::new("git");
+        cmd.args(["apply", "--whitespace=nowarn"]);
+        if reverse {
+            cmd.arg("--reverse");
+        }
+        let mut child = cmd
+            .arg("-")
+            .current_dir(&dir)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(patch.as_bytes()).unwrap();
+        let out = child.wait_with_output().unwrap();
+        assert!(out.status.success(), "git apply failed: {}\npatch:\n{patch}", String::from_utf8_lossy(&out.stderr));
+        let text = std::fs::read_to_string(dir.join("f.txt")).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        (text, patch)
+    }
+
+    #[test]
+    fn lines_patches_apply_for_real() {
+        let hunk = |p: &str| p[p.find("@@").unwrap()..].to_string();
+        // Two of three added lines.
+        let (old, new) = ("1\n2\n3\n4\n5\n6\n", "1\n2\n3\na\nb\nc\n4\n5\n6\n");
+        let (text, patch) = apply("two-of-three", old, new, false, 3..5, false);
+        assert_eq!(text, "1\n2\n3\na\nb\n4\n5\n6\n");
+        assert_eq!(hunk(&patch), "@@ -1,6 +1,8 @@\n 1\n 2\n 3\n+a\n+b\n 4\n 5\n 6\n");
+        assert_eq!(apply("two-of-three-b", old, new, false, 4..6, false).0, "1\n2\n3\nb\nc\n4\n5\n6\n");
+        // One of two removed lines.
+        let (text, patch) = apply("removed", "1\nx\ny\n2\n", "1\n2\n", false, 2..3, false);
+        assert_eq!(text, "1\nx\n2\n");
+        assert_eq!(hunk(&patch), "@@ -1,4 +1,3 @@\n 1\n x\n-y\n 2\n");
+        // Half of a modified pair, unified.
+        assert_eq!(apply("half-new", "a\nb\nc\n", "a\nB\nc\n", true, 2..3, false).0, "a\nb\nB\nc\n");
+        assert_eq!(apply("half-old", "a\nb\nc\n", "a\nB\nc\n", true, 1..2, false).0, "a\nc\n");
+        // Across two blocks.
+        let (old, new) = ("a\n1\n2\nb\n", "A\n1\n2\nB\n");
+        assert_eq!(apply("across-u", old, new, true, 1..5, false).0, "a\nA\n1\n2\n");
+        assert_eq!(apply("across-s", old, new, false, 0..4, false).0, "A\n1\n2\nB\n");
+        // Reverse (unstage).
+        let (text, patch) = apply("rev-add", "1\n2\n3\n4\n", "1\n2\na\nb\n3\n4\n", false, 3..4, true);
+        assert_eq!(text, "1\n2\na\n3\n4\n");
+        assert_eq!(hunk(&patch), "@@ -1,5 +1,6 @@\n 1\n 2\n a\n+b\n 3\n 4\n");
+        assert_eq!(apply("rev-rm", "1\nx\ny\n2\n", "1\n2\n", false, 2..3, true).0, "1\ny\n2\n");
+        let (text, patch) = apply("rev-start", "1\n2\n3\n4\n", "0\n1\n2\nX\n3\n4\n", false, 3..4, true);
+        assert_eq!(text, "0\n1\n2\n3\n4\n");
+        assert!(hunk(&patch).starts_with("@@ -2,") && hunk(&patch).contains(" +2,"), "{patch}");
+        // A last line without a newline: the block is taken whole.
+        let (text, patch) = apply("no-eol", "a\nb", "a\nb\nc", false, 2..3, false);
+        assert_eq!(text, "a\nb\nc");
+        assert_eq!(hunk(&patch), "@@ -1,2 +1,3 @@\n a\n-b\n\\ No newline at end of file\n+b\n+c\n\\ No newline at end of file\n");
+        // Only an equal row selected.
+        let d = DiffDoc::build(b"a\nb\n", b"a\nB\n", 4);
+        assert!(d.lines_patch(0..1, 0..1, "f", "f", 3, false).is_none());
+    }
 
     fn kinds(rows: &[DiffRow]) -> Vec<(RowKind, Option<usize>, Option<usize>)> {
         rows.iter().map(|r| (r.kind, r.left, r.right)).collect()

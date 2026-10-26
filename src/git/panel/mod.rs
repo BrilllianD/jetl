@@ -417,6 +417,19 @@ impl GitPanel {
                 self.area = Area::Message;
                 self.recall(*a == G::MessageOlder);
             }
+            G::LineUp | G::LineDown | G::LineExtendUp | G::LineExtendDown if self.tab == GitTab::Commit && self.area == Area::Diff => {
+                let forward = matches!(a, G::LineDown | G::LineExtendDown);
+                let extend = matches!(a, G::LineExtendUp | G::LineExtendDown);
+                if !self.diff.step_line(forward, extend) {
+                    cx.notify(Level::Info, if forward { "No more changed lines below" } else { "No more changed lines above" });
+                }
+            }
+            G::LineUp | G::LineDown => {
+                self.tab = GitTab::Commit;
+                self.area = Area::Message;
+                self.recall(*a == G::LineUp);
+            }
+            G::LineExtendUp | G::LineExtendDown => {}
             G::CommitBox | G::FocusMessage => {
                 self.tab = GitTab::Commit;
                 self.area = Area::Message;
@@ -507,6 +520,10 @@ impl GitPanel {
                 }
             }
             G::Escape => match self.area {
+                Area::Diff if self.diff.line.is_some() => {
+                    self.diff.line = None;
+                    self.diff.line_anchor = None;
+                }
                 Area::LogDiff => self.close_log_diff(),
                 Area::StashDiff => self.close_stash_diff(),
                 Area::Message | Area::Diff => self.area = Area::Changes,

@@ -115,7 +115,7 @@ All of section D shipped in Phase 8; the conflict resolver came after split pane
 |---|---|---|
 | Discard changes for a file / selection | S | git2 `checkout_head` with path |
 | Amend and commit message history | S | git2 amend |
-| Hunk stage/unstage, gutter revert, next/prev change | M | Patch from `DiffDoc` rows through `git apply --cached` |
+| Hunk stage/unstage, gutter revert, next/prev change | M | Patch from `DiffDoc` rows through `git apply --cached`; single lines too (`lines_patch`, run 13) |
 | Intra-line diff, syntax in diff, layout toggle, collapse unchanged | M | Second imara-diff pass on chars |
 | Stash list/push/pop/apply/drop | M | git2 stash API |
 | Blame gutter | M | git2 blame in `spawn_blocking` |

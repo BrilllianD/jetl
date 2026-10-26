@@ -357,6 +357,10 @@ pub enum GitAction {
     ToggleAmend,
     MessageOlder,
     MessageNewer,
+    LineUp,
+    LineDown,
+    LineExtendUp,
+    LineExtendDown,
     Push,
     PushOptions,
     Pull,
@@ -935,6 +939,10 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "git.toggle_amend" => "Git: amend the last commit (toggle)", Git(GitAction::ToggleAmend);
         "git.message_older" => "Git: previous commit message from history", Git(GitAction::MessageOlder);
         "git.message_newer" => "Git: next commit message from history", Git(GitAction::MessageNewer);
+        "git.line_up" => "Git: in the Commit tab diff, the line cursor to the changed line above (elsewhere: the previous commit message)", Git(GitAction::LineUp);
+        "git.line_down" => "Git: in the Commit tab diff, the line cursor to the changed line below (elsewhere: the next commit message)", Git(GitAction::LineDown);
+        "git.line_extend_up" => "Git: in the Commit tab diff, select the changed line above too", Git(GitAction::LineExtendUp);
+        "git.line_extend_down" => "Git: in the Commit tab diff, select the changed line below too", Git(GitAction::LineExtendDown);
         "git.push" => "Git: push", Git(GitAction::Push);
         "git.push_options" => "Git: push with options (tags, force with lease)", Git(GitAction::PushOptions);
         "git.pull" => "Git: pull (update project)", Git(GitAction::Pull);

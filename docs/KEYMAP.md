@@ -317,8 +317,10 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Alt+Enter` | `git.commit` | Git: commit |
 | `Ctrl+Enter` * | `git.commit` | Git: commit |
 | `Alt+M` | `git.toggle_amend` | Git: amend the last commit (toggle) |
-| `Alt+Up` | `git.message_older` | Git: previous commit message from history |
-| `Alt+Down` | `git.message_newer` | Git: next commit message from history |
+| `Alt+Up` | `git.line_up` | Git: in the Commit tab diff, the line cursor to the changed line above (elsewhere: the previous commit message) |
+| `Alt+Down` | `git.line_down` | Git: in the Commit tab diff, the line cursor to the changed line below (elsewhere: the next commit message) |
+| `Alt+Shift+Up` | `git.line_extend_up` | Git: in the Commit tab diff, select the changed line above too |
+| `Alt+Shift+Down` | `git.line_extend_down` | Git: in the Commit tab diff, select the changed line below too |
 | `Ctrl+Alt+N` | `git.new_branch` | Git: new branch |
 | `Alt+C` | `git.tab_commit` | Git: Commit tab |
 | `Alt+L` | `git.tab_log` | Git: Log tab |
@@ -631,6 +633,8 @@ Reachable from Find Action (F1) or by binding them in `keymap.toml`.
 | `git.abort_operation` | Git: abort the rebase, merge, cherry-pick or revert in progress |
 | `git.log_reset` | Git: reset the current branch to the selected commit (soft, mixed or hard) |
 | `git.commit_and_push` | Git: commit and push |
+| `git.message_older` | Git: previous commit message from history |
+| `git.message_newer` | Git: next commit message from history |
 | `git.push_options` | Git: push with options (tags, force with lease) |
 | `git.fetch` | Git: fetch |
 | `git.stash_include_untracked` | Git: include untracked files in the next stash (toggle) |
