@@ -501,6 +501,8 @@ async fn editor_breadcrumbs() {
     let mut c = app.config.clone();
     c.editor.breadcrumbs = true;
     app.editor.apply_config(&c);
+    // A style of its own, so the tab-bar filler (dim) is not marked too.
+    app.theme.breadcrumbs = app.theme.breadcrumbs.fg(ratatui::style::Color::Magenta).add_modifier(Modifier::ITALIC);
     let term = draw_editor(app, 60, 12);
     let mut marks = vec![
         Mark::style('D', "breadcrumbs separator", app.theme.breadcrumbs.patch(app.theme.dim)),
@@ -523,6 +525,8 @@ async fn editor_breadcrumbs_split() {
     editor(app, EditorAction::SplitRight);
     // The new group's caret into `fn main`.
     moves(app, Motion::Down, 9);
+    // A style of its own, so the tab-bar filler (dim) is not marked too.
+    app.theme.breadcrumbs = app.theme.breadcrumbs.fg(ratatui::style::Color::Magenta).add_modifier(Modifier::ITALIC);
     let term = draw_editor(app, 80, 12);
     let mut marks = vec![
         Mark::style('D', "breadcrumbs separator", app.theme.breadcrumbs.patch(app.theme.dim)),

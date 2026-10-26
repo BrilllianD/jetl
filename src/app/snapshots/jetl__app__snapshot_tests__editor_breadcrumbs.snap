@@ -16,5 +16,4 @@ expression: "snapshot(&term, &marks, None)"
 10  11  ▾ │   fn sum(&self) -> i32 {
 11  impl Point › method new
 -- marks: D=breadcrumbs separator B=breadcrumbs C=caret S=selection F=fold O=occurrence
-00              DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD
 11 BBBBBBBBBBBDDDBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB

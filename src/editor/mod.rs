@@ -1817,9 +1817,9 @@ impl Editor {
             follow,
             decor,
         };
+        let crumbs_on = self.breadcrumbs && self.merge.is_none();
         // The find bar takes the top rows; the text view gets the rest so
         // `text_area` (and with it mouse mapping) stays exact.
-        let crumbs_on = self.breadcrumbs && self.merge.is_none();
         let group = &mut self.groups[gi];
         let b = &mut self.buffers[i];
         let mut text_rect = area;
