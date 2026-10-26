@@ -485,6 +485,18 @@
 "alt-c" = "problems.toggle_current_file"
 "esc" = "app.focus_editor"
 
+# The TODO window (View > TODO): TODO and FIXME lines of the project, F5 scans again.
+[todo]
+"up" = "todo.up"
+"down" = "todo.down"
+"pageup" = "todo.page_up"
+"pagedown" = "todo.page_down"
+"home" = "todo.home"
+"end" = "todo.end"
+"enter" = "todo.open"
+"f5" = "todo.refresh"
+"esc" = "app.focus_editor"
+
 [run]
 "up" = "run.up"
 "down" = "run.down"

@@ -62,10 +62,12 @@ impl App {
             AppMsg::Dependencies { generation, seq, report } => self.dependencies_checked(generation, seq, report),
             AppMsg::RecentProjects { seq, version, roots, error } => self.recent_projects_loaded(seq, version, roots, error),
             AppMsg::Find { generation, batch } if generation == self.workspace.generation => self.find.on_batch(batch),
+            AppMsg::Todo { generation, batch } if generation == self.workspace.generation => self.todo.on_batch(batch),
             AppMsg::ReplaceDone { generation, files, matches, errors } if generation == self.workspace.generation => {
                 self.replace_done(files, matches, errors)
             }
             AppMsg::Find { .. } | AppMsg::ReplaceDone { .. } => tracing::debug!("dropping stale find result"),
+            AppMsg::Todo { .. } => tracing::debug!("dropping stale TODO batch"),
             // Messages of a previous root are dropped; a stale watcher stops
             // when its message is dropped.
             AppMsg::FsChanged { generation, changes } if generation == self.workspace.generation => self.fs_changed(changes),

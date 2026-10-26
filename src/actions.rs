@@ -19,6 +19,7 @@ pub enum Action {
     Problems(ProblemsAction),
     History(HistoryAction),
     Tasks(TasksAction),
+    Todo(TodoAction),
     Lsp(LspAction),
     Palette(PaletteAction),
     Mode(ModeAction),
@@ -484,6 +485,19 @@ pub enum ProblemsAction {
     ToggleCurrentFile,
 }
 
+/// The TODO tool window (`files/todo.rs`).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum TodoAction {
+    Up,
+    Down,
+    PageUp,
+    PageDown,
+    Home,
+    End,
+    Open,
+    Refresh,
+}
+
 /// The Tasks tool window (`yman/panel.rs`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum TasksAction {
@@ -737,6 +751,7 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         // After the two above, so "local history" in Find Action picks them first.
         "tool_window.local_history" => "Local History tool window", App(AppAction::ToggleToolWindow(ToolWindowId::LocalHistory));
         "tool_window.tasks" => "Tasks tool window (yman)", App(AppAction::ToggleToolWindow(ToolWindowId::Tasks));
+        "tool_window.todo" => "TODO tool window", App(AppAction::ToggleToolWindow(ToolWindowId::Todo));
         "editor.find" => "Find", Editor(E::Find);
         "editor.replace" => "Replace", Editor(E::Replace);
         "editor.find_next" => "Find next", Editor(E::FindNext);
@@ -1022,6 +1037,14 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "problems.open" => "Problems: jump to the selected problem", Problems(ProblemsAction::Open);
         "problems.copy" => "Problems: copy the selected message", Problems(ProblemsAction::Copy);
         "problems.toggle_current_file" => "Problems: show only the current file", Problems(ProblemsAction::ToggleCurrentFile);
+        "todo.up" => "TODO: up", Todo(TodoAction::Up);
+        "todo.down" => "TODO: down", Todo(TodoAction::Down);
+        "todo.page_up" => "TODO: page up", Todo(TodoAction::PageUp);
+        "todo.page_down" => "TODO: page down", Todo(TodoAction::PageDown);
+        "todo.home" => "TODO: first row", Todo(TodoAction::Home);
+        "todo.end" => "TODO: last row", Todo(TodoAction::End);
+        "todo.open" => "TODO: open the selected match", Todo(TodoAction::Open);
+        "todo.refresh" => "TODO: scan the project again", Todo(TodoAction::Refresh);
 
         "local_history.up" => "Local History: up", History(HistoryAction::Up);
         "local_history.down" => "Local History: down", History(HistoryAction::Down);
@@ -1124,6 +1147,7 @@ impl Action {
             Action::Problems(_) => &["problems", "global"],
             Action::History(_) => &["local_history", "global"],
             Action::Tasks(_) => &["tasks", "global"],
+            Action::Todo(_) => &["todo", "global"],
             Action::Lsp(_) => &["editor", "global"],
             Action::Palette(_) => &["palette"],
             Action::Mode(_) => &["mode.normal", "mode.insert", "mode.visual"],

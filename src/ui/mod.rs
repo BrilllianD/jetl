@@ -63,6 +63,10 @@ pub fn render_tool_window(app: &mut App, frame: &mut Frame, tw: ToolWindowId, r:
             app.sync_tasks();
             app.tasks.render(frame, r, focused, theme, &app.yman);
         }
+        ToolWindowId::Todo => {
+            app.sync_todo();
+            app.todo.render(frame, r, focused, theme);
+        }
     }
 }
 

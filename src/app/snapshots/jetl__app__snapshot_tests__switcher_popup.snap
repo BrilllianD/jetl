@@ -20,9 +20,9 @@ expression: "snapshot(&term, &marks, None)"
 14  ⎇ │           │ Event Log      Alt+5 │                        │
 15    │           │ Local History  Alt+8 │                        │
 16  ❯ │           │ Tasks                │                        │
-17  6 │           │ beta.txt                                      │
-18  ⚠ │           ╰───────────────────────────────────────────────╯
-19  4 │                              ││
+17  6 │           │ TODO                 │                        │
+18  ⚠ │           │ beta.txt                                      │
+19  4 │           ╰───────────────────────────────────────────────╯
 20  ► │                              ││
 21  3 │                              ││
 22  ⌕ └──────────────────────────────┘│
@@ -39,4 +39,4 @@ expression: "snapshot(&term, &marks, None)"
 13                                 ddddd
 14                                 ddddd
 15                                 ddddd
-17                  dddddddd
+18                  dddddddd

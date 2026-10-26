@@ -451,6 +451,7 @@ impl App {
         self.tasks.reset();
         self.start_watcher();
         self.find.reset();
+        self.todo.reset();
         self.symbols.reset();
         self.worktrees.reset();
         self.git.load_worktrees();
@@ -521,20 +522,21 @@ impl App {
         let (left, bottom, right) = self.layout.saved_windows();
         // The Tasks window has its own field: builds without it read the rest.
         let shown = [left, bottom, right].contains(&Some(ToolWindowId::Tasks));
-        let not_tasks = |tw: Option<ToolWindowId>| tw.filter(|t| *t != ToolWindowId::Tasks);
+        // The TODO window is not saved: its list is rescanned on the next show.
+        let saved = |tw: Option<ToolWindowId>| tw.filter(|t| !matches!(t, ToolWindowId::Tasks | ToolWindowId::Todo));
         let mut sides = self.layout.side_overrides();
         let side = sides.iter().find(|(tw, _)| *tw == ToolWindowId::Tasks).map(|(_, s)| *s);
-        sides.retain(|(tw, _)| *tw != ToolWindowId::Tasks);
+        sides.retain(|(tw, _)| !matches!(tw, ToolWindowId::Tasks | ToolWindowId::Todo));
         let tasks = SessionTasks { shown, side, ..self.tasks.session_state() };
         let layout = Some(SessionLayout {
-            left: not_tasks(left),
+            left: saved(left),
             left_w: self.layout.left_w,
-            bottom: not_tasks(bottom),
+            bottom: saved(bottom),
             bottom_h: self.layout.bottom_h,
             git_tab: self.git_panel.tab,
             show_hidden,
             show_ignored,
-            right: not_tasks(right),
+            right: saved(right),
             right_w: Some(self.layout.right_w),
             sides,
             tasks: Some(tasks),
@@ -1583,6 +1585,17 @@ mod tests {
         app.session_loaded(generation, session, vec![]);
         assert_eq!(app.layout.right, Some(ToolWindowId::Git));
         assert_eq!(app.layout.side_of(ToolWindowId::Structure), Side::Bottom);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn session_never_saves_the_todo_window() {
+        let (mut app, dir) = crate::app::tests::test_app("session-todo");
+        app.layout.move_to(ToolWindowId::Todo, Side::Right);
+        app.layout.show(ToolWindowId::Todo);
+        let layout = app.session().layout.unwrap();
+        let json = serde_json::to_string(&layout).unwrap();
+        assert!(!json.contains("\"Todo\""), "{json}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

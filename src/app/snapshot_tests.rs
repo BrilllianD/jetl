@@ -1483,6 +1483,30 @@ async fn find_in_files_window() {
     assert_snapshot!("find_in_files_window", snapshot(&term, &marks, Some(bottom)));
 }
 
+#[tokio::test]
+async fn todo_window() {
+    let mut fx = stable_app("todo");
+    let app = &mut fx.app;
+    let root = app.workspace.root.clone();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("src/parse.log"), "fn parse() {\n    // TODO: handle errors\n}\n").unwrap();
+    std::fs::write(root.join("notes.txt"), "FIXME: wording\nnothing\n// TODO and FIXME on one line\n").unwrap();
+    std::fs::write(root.join("other.txt"), "no hits here\n").unwrap();
+    app.toggle_tool_window(ToolWindowId::Todo);
+    // The scan runs here, so the render arm finds it started.
+    let search = app.todo.search(&root, false, false);
+    let mut batches = Vec::new();
+    search.run(|b| batches.push(b));
+    let generation = app.workspace.generation;
+    for batch in batches {
+        app.handle_msg(AppMsg::Todo { generation, batch });
+    }
+    let term = draw_app(app, 80, 24);
+    let marks = find_marks(&app.theme);
+    let bottom = app.layout.rects.bottom;
+    assert_snapshot!("todo_window", snapshot(&term, &marks, Some(bottom)));
+}
+
 /// Diagnostics in two files, the first error with related locations in
 /// its own file and in the other; `main.log` active.
 fn problems_setup(app: &mut App) {

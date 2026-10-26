@@ -17,7 +17,7 @@ expression: "snapshot(&term, &settings_marks(&app.theme), None)"
 11    │ │  Git                     │                                                                                 │
 12    │ │  Worktrees               │                                                                                 │
 13    │ │Files                     │                                                                                 │
-14    │ │Tools                     │                                                                                 │
+14  ✎ │ │Tools                     │                                                                                 │
 15    │ │  Terminal                │                                                                                 │
 16    │ │  Run                     │                                                                                 │
 17  ✓ │ │  Clipboard               │                                                                                 │

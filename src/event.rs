@@ -84,6 +84,11 @@ pub enum AppMsg {
         generation: u64,
         batch: crate::files::find::Batch,
     },
+    /// TODO window scan results (`TodoPanel::scan`).
+    Todo {
+        generation: u64,
+        batch: crate::files::find::Batch,
+    },
     /// Replace in files finished writing the files that were not open.
     ReplaceDone {
         generation: u64,

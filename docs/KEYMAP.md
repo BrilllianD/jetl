@@ -543,6 +543,20 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Ctrl+"` * | `tool_window.maximize` | Maximize or restore the active tool window |
 | `Ctrl+V` | `editor.paste` | Paste |
 
+## todo
+
+| Keys | Action | Description |
+|---|---|---|
+| `Esc` | `app.focus_editor` | Focus editor |
+| `Up` | `todo.up` | TODO: up |
+| `Down` | `todo.down` | TODO: down |
+| `PageUp` | `todo.page_up` | TODO: page up |
+| `PageDown` | `todo.page_down` | TODO: page down |
+| `Home` | `todo.home` | TODO: first row |
+| `End` | `todo.end` | TODO: last row |
+| `Enter` | `todo.open` | TODO: open the selected match |
+| `F5` | `todo.refresh` | TODO: scan the project again |
+
 ## Without a default binding
 
 Reachable from Find Action (F1) or by binding them in `keymap.toml`.
@@ -560,6 +574,7 @@ Reachable from Find Action (F1) or by binding them in `keymap.toml`.
 | `editor.scratch_files` | Scratch files |
 | `editor.put_label` | Local history: put label… |
 | `tool_window.tasks` | Tasks tool window (yman) |
+| `tool_window.todo` | TODO tool window |
 | `editor.replace_one` | Replace current match |
 | `editor.replace_all` | Replace all matches |
 | `editor.find_case` | Find: toggle match case |

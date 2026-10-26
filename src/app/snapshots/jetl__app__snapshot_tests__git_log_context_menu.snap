@@ -15,7 +15,7 @@ expression: "snapshot(&term, &marks, Some(bottom))"
 09    ││ Revert Commit…                  Alt+Shift+R │
 10    ││ Reset Current Branch to Here…               │
 11    ││ New Tag…                        Alt+Shift+T │
-12    ││ Delete Tag…                     Alt+Shift+D │
+12  ✎ ││ Delete Tag…                     Alt+Shift+D │
 13    └│ Filter Log…                          Ctrl+F │
 14  ✓ ─├─────────────────────────────────────────────┤─────────────────────────────────────────────────────────────────────
 15  8 ┌│ Branch 'parser' ▸                           │────────────────────────────────────────────────────────────────────┐

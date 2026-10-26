@@ -73,6 +73,7 @@ mod switcher;
 mod symbols;
 mod tasks;
 mod terminal;
+mod todo;
 mod watch;
 
 #[cfg(test)]
@@ -273,6 +274,8 @@ pub struct App {
     pub history_panel: crate::history::panel::LocalHistoryPanel,
     /// The Tasks window over `yman` (`yman/panel.rs`).
     pub tasks: crate::yman::panel::TasksPanel,
+    /// The TODO window (`files/todo.rs`).
+    pub todo: crate::files::todo::TodoPanel,
     /// The Terminal window and its shell.
     pub terminal: crate::terminal::panel::TerminalPanel,
     /// Language servers and the documents open on them.
@@ -406,6 +409,7 @@ impl App {
             problems: crate::lsp::panel::ProblemsPanel::excluding(paths.scratches_dir()),
             history_panel: Default::default(),
             tasks: Default::default(),
+            todo: Default::default(),
             terminal: crate::terminal::panel::TerminalPanel::new(config.terminal.scrollback),
             lsp: lsp::LspService::with_inlays(config.lsp.inlay_hints),
             hover: None,
@@ -1053,6 +1057,7 @@ impl App {
                 self.perform_tasks(a.clone());
                 return;
             }
+            Action::Todo(a) => self.todo.handle_action(a, &mut cx),
             Action::Lsp(crate::actions::LspAction::Restart) => {
                 drop(cx);
                 self.lsp_restart();
@@ -3864,7 +3869,9 @@ mod strip_tests {
         draw(&mut app);
         assert_eq!(app.layout.rects.strip.height, 23);
         let hits = app.layout.strip_hits.clone();
-        assert_eq!(hits.len(), 1 + ToolWindowId::ALL.len(), "{hits:?}");
+        // The last window (TODO) does not fit a 24-row strip; View > TODO reaches it.
+        assert_eq!(hits.len(), ToolWindowId::ALL.len(), "{hits:?}");
+        assert!(!hits.iter().any(|(b, _)| *b == StripButton::Tool(ToolWindowId::Todo)));
         assert_eq!(hits[0], (StripButton::Menu, ratatui::layout::Rect::new(0, 0, 3, 1)));
         for (i, (_, a)) in hits.iter().enumerate() {
             assert!(app.layout.rects.strip.contains(a.as_position()) && a.bottom() <= app.layout.rects.strip.bottom());

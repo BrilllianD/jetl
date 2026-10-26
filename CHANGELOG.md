@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A TODO tool window (View > TODO) lists the lines of the project's files that hold the word TODO or FIXME (case-sensitive), grouped by file, with the count in its title; Enter or a click opens the line, F5 scans again. The scan skips hidden and ignored files as Find in Files does and runs when the window is first shown.
 - Compare with Clipboard and Compare with File… (View menu, also in Find Action): the unified diff of the active file, or of its selection, against the clipboard or another project file opens in a read-only diff tab (F7 steps through the changes); identical contents give a hint instead.
 - Quick Definition (Ctrl+Shift+I, or Alt+Shift+I in terminals without the kitty protocol; View > Quick Definition): the definition of the symbol at the caret, its file and line and its code, in a popup without leaving the file; Esc closes it.
 - Refactor This (Alt+Shift+T, Ctrl+Alt+Shift+T with the kitty protocol, Edit > Refactor This…) lists the language server's refactorings at the caret or selection; Optimize Imports (Ctrl+Alt+O, Edit > Optimize Imports) runs the server's organize imports action for the file, or lets you choose when it offers several.

@@ -1,0 +1,33 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &marks, Some(bottom))"
+---
+80x24 cursor=hidden
+00  ≣ ┌ Project: root ───────────────┐│
+01  1 │                              ││
+02  ⌂ │                              ││
+03  2 │                              ││               No files open.
+04  ◫ │                              ││       Alt+1 opens the Project view;
+05  7 │                              ││         Ctrl+Shift+N finds a file.
+06  ⊢ │                              ││
+07    └──────────────────────────────┘│
+08  ✓ ─────────────────────────────────────────────────────────────────────────────
+09  8 ┌ TODO (3) ─────────────────────────────────────────────────────────────────┐
+10  ⟲ │ notes.txt    2                                                            │
+11  5 │     1: FIXME: wording                                                     │
+12  ⚑ │     3: // TODO and FIXME on one line                                      │
+13  9 │ parse.log  src/  1                                                        │
+14  ⎇ │     2: // TODO: handle errors                                             │
+15    │                                                                           │
+16  ❯ │                                                                           │
+17  6 │                                                                           │
+18  ⚠ │                                                                           │
+19  4 │                                                                           │
+20  ► │                                                                           │
+21  3 │                                                                           │
+22  ⌕ └───────────────────────────────────────────────────────────────────────────┘
+23  root
+-- marks: L=selected H=match
+11     LLLLLLLLHHHHHLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL
+12                HHHH
+14                HHHH

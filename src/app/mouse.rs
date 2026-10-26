@@ -331,6 +331,7 @@ impl App {
             PanelId::Problems => self.problems.handle_mouse(m, &self.lsp.diagnostics, self.editor.active_path(), &mut cx),
             PanelId::LocalHistory => self.history_panel.handle_mouse(m, &mut cx),
             PanelId::Tasks => self.tasks.handle_mouse(m, &self.yman, &mut cx),
+            PanelId::Todo => self.todo.handle_mouse(m, &mut cx),
         };
         let fx = cx.effects;
         self.apply_effects(fx);
