@@ -56,6 +56,8 @@ pub struct TabGroup {
     pub find_area: Rect,
     /// The breadcrumb row as last drawn (`Rect::default()` when none); never part of `text_area`.
     pub crumbs_area: Rect,
+    /// The crumbs' cells in the breadcrumb row as last drawn, with their symbols' names (a press goes there).
+    pub(super) crumb_hits: Vec<super::breadcrumbs::CrumbHit>,
     /// Sticky scroll's pinned rows as last drawn (`editor.sticky_scroll`).
     pub(crate) sticky: super::sticky::Sticky,
     pub(super) find_hits: Vec<(FindHit, Rect)>,
@@ -78,6 +80,7 @@ impl TabGroup {
             last_area: Rect::default(),
             find_area: Rect::default(),
             crumbs_area: Rect::default(),
+            crumb_hits: Vec::new(),
             sticky: Default::default(),
             find_hits: Vec::new(),
             caret_cell: None,

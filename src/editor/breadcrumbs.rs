@@ -4,7 +4,9 @@
 //! `fn`, `impl`, `class`; Markdown headings bare) joined by ` › `, cut from
 //! the left with `…`. An empty path leaves the row blank, so the row height
 //! never jumps with the caret. `Editor::render_group` takes the bottom row of
-//! the text rect before `view::render`, so `text_area` excludes it.
+//! the text rect before `view::render`, so `text_area` excludes it. A left press
+//! on a crumb's cells (`CrumbHit`, returned by `paint` and kept in
+//! `TabGroup::crumb_hits`) goes to its symbol's name, as a sticky pin does.
 
 use ratatui::layout::Rect;
 use unicode_width::UnicodeWidthChar;
@@ -48,15 +50,36 @@ fn width(c: char) -> usize {
     c.width().unwrap_or(0)
 }
 
-/// `crumbs` joined by the separator as runs of `(text, is_separator)`; when
-/// wider than `max` cells, cut from the left with a leading `…`.
-pub(super) fn fit_tail(crumbs: &[String], max: usize) -> Vec<(String, bool)> {
-    let mut chars: Vec<(char, bool)> = Vec::new();
+/// What a run of `fit_tail` is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Part {
+    /// Text of crumb `i` (its index in `crumbs`).
+    Crumb(usize),
+    /// A ` › ` separator (or what is left of it after a cut).
+    Sep,
+    /// The leading `…` of a cut row.
+    Ellipsis,
+}
+
+/// One crumb's cells in the row as last drawn (`x0..x1`, `y` is the row's) and
+/// where its symbol's name is (0-based line, char column).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct CrumbHit {
+    pub(super) x0: u16,
+    pub(super) x1: u16,
+    pub(super) line: usize,
+    pub(super) col: usize,
+}
+
+/// `crumbs` joined by the separator as runs of `(text, part)`; when wider
+/// than `max` cells, cut from the left with a leading `…`.
+pub(super) fn fit_tail(crumbs: &[String], max: usize) -> Vec<(String, Part)> {
+    let mut chars: Vec<(char, Part)> = Vec::new();
     for (i, c) in crumbs.iter().enumerate() {
         if i > 0 {
-            chars.extend(SEP.chars().map(|ch| (ch, true)));
+            chars.extend(SEP.chars().map(|ch| (ch, Part::Sep)));
         }
-        chars.extend(c.chars().map(|ch| (ch, false)));
+        chars.extend(c.chars().map(|ch| (ch, Part::Crumb(i))));
     }
     if max == 0 {
         return Vec::new();
@@ -74,33 +97,52 @@ pub(super) fn fit_tail(crumbs: &[String], max: usize) -> Vec<(String, bool)> {
             from -= 1;
         }
         chars.drain(..from);
-        chars.insert(0, ('…', false));
+        chars.insert(0, ('…', Part::Ellipsis));
     }
-    let mut runs: Vec<(String, bool)> = Vec::new();
-    for (c, sep) in chars {
+    let mut runs: Vec<(String, Part)> = Vec::new();
+    for (c, part) in chars {
         match runs.last_mut() {
-            Some((t, s)) if *s == sep => t.push(c),
-            _ => runs.push((c.to_string(), sep)),
+            Some((t, p)) if *p == part => t.push(c),
+            _ => runs.push((c.to_string(), part)),
         }
     }
     runs
 }
 
-/// Paint the row: the style over all of `row`, one blank cell, then the crumbs
-/// (separators in `dim`'s foreground).
-pub(super) fn paint(screen: &mut ratatui::buffer::Buffer, row: Rect, crumbs: &[String], theme: &Theme) {
+/// Paint the row (the style over all of `row`, one blank cell, then the crumbs,
+/// separators in `dim`'s foreground) and return the cells of each drawn crumb;
+/// `targets[i]` is crumb `i`'s `(line, col)`.
+pub(super) fn paint(
+    screen: &mut ratatui::buffer::Buffer,
+    row: Rect,
+    crumbs: &[String],
+    targets: &[(usize, usize)],
+    theme: &Theme,
+) -> Vec<CrumbHit> {
+    debug_assert_eq!(crumbs.len(), targets.len());
     screen.set_style(row, theme.breadcrumbs);
+    let mut hits = Vec::new();
     if row.width < 2 {
-        return;
+        return hits;
     }
     let sep = theme.breadcrumbs.patch(theme.dim);
     let mut x = row.x + 1;
     let end = row.right();
-    for (text, is_sep) in fit_tail(crumbs, row.width as usize - 1) {
-        let style = if is_sep { sep } else { theme.breadcrumbs };
+    for (text, part) in fit_tail(crumbs, row.width as usize - 1) {
+        let style = if part == Part::Sep { sep } else { theme.breadcrumbs };
         screen.set_stringn(x, row.y, &text, (end - x) as usize, style);
-        x += text.chars().map(width).sum::<usize>() as u16;
+        let w = text.chars().map(width).sum::<usize>() as u16;
+        if let Part::Crumb(i) = part
+            && let Some(&(line, col)) = targets.get(i)
+        {
+            let x1 = (x + w).min(end);
+            if x < x1 {
+                hits.push(CrumbHit { x0: x, x1, line, col });
+            }
+        }
+        x += w;
     }
+    hits
 }
 
 #[cfg(test)]
@@ -139,11 +181,11 @@ mod tests {
         assert!(crumbs(&[]).is_empty());
     }
 
-    fn joined(runs: &[(String, bool)]) -> String {
+    fn joined(runs: &[(String, Part)]) -> String {
         runs.iter().map(|(t, _)| t.as_str()).collect()
     }
 
-    fn cells(runs: &[(String, bool)]) -> usize {
+    fn cells(runs: &[(String, Part)]) -> usize {
         joined(runs).chars().map(width).sum()
     }
 
@@ -152,9 +194,13 @@ mod tests {
         let c = ["impl Foo".to_string(), "method bar".to_string()];
         let runs = fit_tail(&c, 40);
         assert_eq!(joined(&runs), "impl Foo › method bar");
-        assert_eq!(runs, [("impl Foo".to_string(), false), (" › ".to_string(), true), ("method bar".to_string(), false)]);
+        assert_eq!(
+            runs,
+            [("impl Foo".to_string(), Part::Crumb(0)), (" › ".to_string(), Part::Sep), ("method bar".to_string(), Part::Crumb(1))]
+        );
         let runs = fit_tail(&c, 12);
         assert_eq!(joined(&runs), "… method bar");
+        assert_eq!(runs, [("…".to_string(), Part::Ellipsis), (" ".to_string(), Part::Sep), ("method bar".to_string(), Part::Crumb(1))]);
         assert_eq!(cells(&runs), 12);
         assert!(fit_tail(&c, 0).is_empty());
         assert!(fit_tail(&[], 10).is_empty());
@@ -166,5 +212,33 @@ mod tests {
         for max in 1..30 {
             assert!(cells(&fit_tail(&c, max)) <= max, "max {max}");
         }
+    }
+
+    fn row_text(screen: &ratatui::buffer::Buffer, w: u16) -> String {
+        (0..w).map(|x| screen[(x, 0)].symbol().to_string()).collect()
+    }
+
+    #[test]
+    fn paint_records_crumb_cells() {
+        let theme = Theme::default();
+        let c = ["impl A".to_string(), "fn b".to_string()];
+        let t = [(0, 5), (1, 7)];
+        let mut screen = ratatui::buffer::Buffer::empty(Rect::new(0, 0, 30, 1));
+        let hits = paint(&mut screen, Rect::new(0, 0, 30, 1), &c, &t, &theme);
+        assert_eq!(hits, [CrumbHit { x0: 1, x1: 7, line: 0, col: 5 }, CrumbHit { x0: 10, x1: 14, line: 1, col: 7 }]);
+        let mut screen = ratatui::buffer::Buffer::empty(Rect::new(0, 0, 1, 1));
+        assert!(paint(&mut screen, Rect::new(0, 0, 1, 1), &c, &t, &theme).is_empty());
+    }
+
+    #[test]
+    fn paint_cut_crumb_keeps_its_visible_cells() {
+        let theme = Theme::default();
+        let c = ["impl A".to_string(), "fn b".to_string()];
+        let t = [(0, 5), (1, 7)];
+        let mut screen = ratatui::buffer::Buffer::empty(Rect::new(0, 0, 10, 1));
+        let hits = paint(&mut screen, Rect::new(0, 0, 10, 1), &c, &t, &theme);
+        assert_eq!(row_text(&screen, 10), " …A › fn b");
+        assert_eq!(hits, [CrumbHit { x0: 2, x1: 3, line: 0, col: 5 }, CrumbHit { x0: 6, x1: 10, line: 1, col: 7 }]);
+        assert!(hits.iter().all(|h| !(h.x0 <= 1 && 1 < h.x1)));
     }
 }

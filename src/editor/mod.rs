@@ -1406,9 +1406,13 @@ impl Editor {
                 self.click_find_bar(m, cx);
                 return true;
             }
-            // The breadcrumb row: clicks are not handled yet, and the text
-            // row under it is out of view.
+            // The breadcrumb row: a crumb goes to its definition's name; the rest
+            // of the row does nothing (the text row under it is out of view).
             if self.focused_group().crumbs_area.contains(ratatui::layout::Position::new(m.x, m.y)) {
+                let hit = self.focused_group().crumb_hits.iter().find(|h| h.x0 <= m.x && m.x < h.x1).copied();
+                if let Some(h) = hit {
+                    self.goto_line(h.line + 1, h.col + 1);
+                }
                 return true;
             }
             // A pinned sticky scroll row goes to its definition's name.
@@ -1793,6 +1797,7 @@ impl Editor {
         group.find_hits.clear();
         group.find_area = Rect::default();
         group.crumbs_area = Rect::default();
+        group.crumb_hits.clear();
         group.sticky.rows.clear();
         let screen = frame.buffer_mut();
         screen.set_style(area, Style::default().bg(theme.bg));
@@ -1854,15 +1859,17 @@ impl Editor {
         if crumbs_on && text_rect.height >= 2 && breadcrumbs::has_scopes(b) {
             let line = b.cursor_line_col().0;
             let syms = b.scopes.symbols(b.syntax.as_mut(), &b.rope, b.version);
-            let path = breadcrumbs::crumbs(&crate::symbols::enclosing(syms, line));
+            let path = crate::symbols::enclosing(syms, line);
+            let texts = breadcrumbs::crumbs(&path);
+            let targets: Vec<(usize, usize)> = path.iter().map(|s| (s.line, s.col)).collect();
             text_rect.height -= 1;
-            crumbs = Some((Rect::new(text_rect.x, text_rect.bottom(), text_rect.width, 1), path));
+            crumbs = Some((Rect::new(text_rect.x, text_rect.bottom(), text_rect.width, 1), texts, targets));
         }
         let out = view::render(b, frame.buffer_mut(), text_rect, &opts);
         group.text_area = out.text_area;
         group.caret_cell = out.cursor;
-        if let Some((row, path)) = crumbs {
-            breadcrumbs::paint(frame.buffer_mut(), row, &path, theme);
+        if let Some((row, texts, targets)) = crumbs {
+            group.crumb_hits = breadcrumbs::paint(frame.buffer_mut(), row, &texts, &targets, theme);
             group.crumbs_area = row;
         }
         // Sticky scroll paints over the top text rows; `text_area` stays the
@@ -2082,8 +2089,19 @@ mod tests {
         press(&mut ed, x0 + 4, 2);
         assert_eq!(ed.active_buffer().unwrap().cursor_line_col(), (1, 4));
         let before = ed.active_buffer().unwrap().view.sels.as_slice().to_vec();
-        press(&mut ed, x0 + 2, 5);
-        assert_eq!(ed.active_buffer().unwrap().view.sels.as_slice(), before);
+        let cell = |c: char| row.chars().position(|r| r == c).unwrap() as u16;
+        let sep = cell('›');
+        for x in [0, sep - 1, sep, sep + 1, 39] {
+            press(&mut ed, x, 5);
+            assert_eq!(ed.active_buffer().unwrap().view.sels.as_slice(), before, "x {x}");
+        }
+        press(&mut ed, cell('b'), 5);
+        assert_eq!(ed.active_buffer().unwrap().cursor_line_col(), (1, 7));
+        let p = at(&ed, 2, 8);
+        ed.active_buffer_mut().unwrap().view.set_sel(Selection::point(p));
+        draw(&mut ed);
+        press(&mut ed, cell('i'), 5);
+        assert_eq!(ed.active_buffer().unwrap().cursor_line_col(), (0, 5));
         // Outside every definition the row stays, blank.
         let p = at(&ed, 5, 0);
         ed.active_buffer_mut().unwrap().view.set_sel(Selection::point(p));
@@ -2100,6 +2118,63 @@ mod tests {
         ed.open_text(PathBuf::from("/tmp/notes.txt"), "a\nb\n", false, &theme);
         draw(&mut ed);
         assert_eq!(ed.text_area().height, 5);
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[test]
+    fn breadcrumbs_click_in_a_cut_row_and_a_split_pane() {
+        let mut c = Config::default();
+        c.editor.breadcrumbs = true;
+        let theme = Theme::default();
+        let src = "impl A {\n    fn b() {\n        x();\n    }\n}\n\nfn c() {}\n";
+        let fresh = || {
+            let mut ed = Editor::new(&c);
+            ed.open_text(PathBuf::from("/tmp/crumbs.rs"), src, false, &theme);
+            let p = ed.active_buffer().unwrap().rope.line_to_char(2) + 8;
+            ed.active_buffer_mut().unwrap().view.set_sel(Selection::point(p));
+            ed
+        };
+        let draw = |ed: &mut Editor, w: u16, h: u16| {
+            let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, h)).unwrap();
+            term.draw(|f| ed.render(f, Rect::new(0, 0, w, 1), Rect::new(0, 1, w, h - 1), true, &theme)).unwrap().buffer.clone()
+        };
+        let press = |ed: &mut Editor, x: u16, y: u16| {
+            let m = Mouse { kind: MouseEventKind::Down(MouseButton::Left), x, y, clicks: 1, mods: KeyModifiers::NONE };
+            with_cx(|cx| {
+                ed.handle_mouse(&m, Rect::default(), cx);
+                let up = Mouse { kind: MouseEventKind::Up(MouseButton::Left), ..m };
+                ed.handle_mouse(&up, Rect::default(), cx);
+            });
+        };
+        // (a) A cut row: the `…` does nothing, the visible rest of the crumb goes.
+        let mut ed = fresh();
+        let screen = draw(&mut ed, 12, 6);
+        let row: Vec<&str> = (0..12).map(|x| screen[(x, 5)].symbol()).collect();
+        assert_eq!(&row[..2], [" ", "…"]);
+        let before = ed.active_buffer().unwrap().view.sels.as_slice().to_vec();
+        press(&mut ed, 1, 5);
+        assert_eq!(ed.active_buffer().unwrap().view.sels.as_slice(), before);
+        let x0 = ed.focused_group().crumb_hits[0].x0;
+        press(&mut ed, x0, 5);
+        assert_eq!(ed.active_buffer().unwrap().cursor_line_col(), (0, 5));
+        // (b) Split panes: each press goes to its own pane's crumb.
+        let mut ed = fresh();
+        with_cx(|cx| {
+            ed.handle_action(&EditorAction::SplitRight, cx);
+        });
+        draw(&mut ed, 80, 12);
+        let g = ed.focused_group();
+        assert_eq!(g.crumb_hits.len(), 2);
+        assert!(g.crumb_hits.iter().all(|h| h.x0 >= g.last_area.x));
+        let (y, hit) = (g.crumbs_area.y, g.crumb_hits[1]);
+        press(&mut ed, hit.x0, y);
+        assert_eq!(ed.active_buffer().unwrap().cursor_line_col(), (1, 7));
+        ed.focus_group(ed.group_ids()[0]);
+        draw(&mut ed, 80, 12);
+        let g = ed.focused_group();
+        let (y, hit) = (g.crumbs_area.y, g.crumb_hits[0]);
+        press(&mut ed, hit.x0, y);
+        assert_eq!(ed.active_buffer().unwrap().cursor_line_col(), (0, 5));
     }
 
     fn row_text(screen: &ratatui::buffer::Buffer, x0: u16, y: u16) -> String {
