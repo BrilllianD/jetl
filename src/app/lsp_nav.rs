@@ -1167,6 +1167,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn quick_definition_of_an_unreadable_file_says_why() {
+        let (mut app, dir) = test_app("lsp-quickdef-unreadable");
+        let mut servers = with_fake_servers(&mut app, caps());
+        let mut server = open_on_server(&mut app, &mut servers, "a.rs", A).await;
+        let gone = app.workspace.root.join("gone.rs");
+        let bad = app.workspace.root.join("bad.rs");
+        std::fs::write(&bad, b"fn \xff() {}\n").unwrap();
+        goto(&mut app, 1, 21);
+        for (target, shown) in [(&gone, "gone.rs"), (&bad, "bad.rs")] {
+            app.toasts = Default::default();
+            act(&mut app, LspAction::QuickDefinition);
+            answer(&mut app, &mut server, "textDocument/definition", loc(target, range(0, 0, 0, 1))).await;
+            handle_next(&mut app, |m| matches!(m, AppMsg::QuickDefinition { .. })).await;
+            let prefix = format!("Cannot read {shown}: ");
+            assert!(toasts(&app).iter().any(|t| t.starts_with(&prefix)), "{:?}", toasts(&app));
+            assert!(app.hover.is_none());
+            assert_eq!(app.editor.buffers.len(), 1);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
     async fn quick_definition_without_a_location_says_so_and_stale_ones_are_dropped() {
         let (mut app, dir) = test_app("lsp-quickdef-stale");
         let mut servers = with_fake_servers(&mut app, caps());

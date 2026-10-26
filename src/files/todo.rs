@@ -43,6 +43,8 @@ pub struct TodoPanel {
     cancel: Arc<AtomicU64>,
     started: bool,
     scanning: bool,
+    /// A batch of the current scan has arrived: the title shows the count from then on.
+    batched: bool,
     capped: bool,
     root: PathBuf,
     list_rect: Rect,
@@ -67,6 +69,7 @@ impl TodoPanel {
         self.list = ListState::default();
         self.started = false;
         self.scanning = false;
+        self.batched = false;
         self.capped = false;
     }
 
@@ -80,6 +83,7 @@ impl TodoPanel {
         self.list = ListState::default();
         self.capped = false;
         self.scanning = true;
+        self.batched = false;
         self.started = true;
         self.root = root.to_path_buf();
         Search {
@@ -104,6 +108,7 @@ impl TodoPanel {
         if batch.seq != self.seq {
             return;
         }
+        self.batched = true;
         self.scanning = !batch.done;
         self.capped |= batch.capped;
         for hit in batch.hits {
@@ -189,11 +194,7 @@ impl TodoPanel {
     }
 
     fn title(&self) -> String {
-        if !self.started || (self.scanning && self.hits.is_empty()) {
-            " TODO ".into()
-        } else {
-            format!(" TODO ({}{}) ", self.hits.len(), if self.capped { "+" } else { "" })
-        }
+        if !self.batched { " TODO ".into() } else { format!(" TODO ({}{}) ", self.hits.len(), if self.capped { "+" } else { "" }) }
     }
 
     pub fn render(&mut self, frame: &mut Frame, area: Rect, focused: bool, theme: &Theme) {
@@ -263,6 +264,33 @@ mod tests {
 
     fn batch(seq: u64, hits: Vec<Hit>, done: bool) -> Batch {
         Batch { seq, hits, files_searched: 1, done, capped: false }
+    }
+
+    #[test]
+    fn title_counts_from_the_first_batch() {
+        let re = Regex::new(PATTERN).unwrap();
+        let mut p = TodoPanel::default();
+        assert_eq!(p.title(), " TODO ");
+        p.search(Path::new("/r"), false, false);
+        assert_eq!(p.title(), " TODO ");
+        let old = p.seq;
+        p.search(Path::new("/r"), false, false);
+        p.on_batch(batch(old, Vec::new(), false));
+        assert_eq!(p.title(), " TODO ");
+        p.on_batch(batch(p.seq, Vec::new(), false));
+        assert!(p.scanning());
+        assert_eq!(p.title(), " TODO (0) ");
+        p.on_batch(batch(p.seq, search_text(Path::new("/r/a.txt"), b"TODO\n", &re, 10), false));
+        assert_eq!(p.title(), " TODO (1) ");
+        p.on_batch(Batch { seq: p.seq, hits: Vec::new(), files_searched: 1, done: true, capped: true });
+        assert_eq!(p.title(), " TODO (1+) ");
+        assert!(!p.scanning());
+        p.search(Path::new("/r"), false, false);
+        assert_eq!(p.title(), " TODO ");
+        p.on_batch(batch(p.seq, Vec::new(), true));
+        assert_eq!(p.title(), " TODO (0) ");
+        p.reset();
+        assert_eq!(p.title(), " TODO ");
     }
 
     #[test]

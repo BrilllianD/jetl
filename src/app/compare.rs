@@ -230,6 +230,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn compare_without_a_tab_says_so() {
+        let (mut app, dir) = test_app("cmp-no-tab");
+        let count = app.editor.buffers.len();
+        let b = app.workspace.root.join("b.txt");
+        std::fs::write(&b, "x\n").unwrap();
+        app.clipboard.register = "x\n".into();
+        let tab = "Compare needs an open tab".to_string();
+        app.perform(Action::Editor(EditorAction::CompareWithClipboard));
+        assert!(toasts(&app).contains(&tab), "{:?}", toasts(&app));
+        app.toasts = Default::default();
+        app.perform(Action::Editor(EditorAction::CompareWithFile));
+        assert!(toasts(&app).contains(&tab), "{:?}", toasts(&app));
+        assert!(app.palette.is_none());
+        app.toasts = Default::default();
+        app.compare_with_file(b);
+        assert!(toasts(&app).contains(&tab), "{:?}", toasts(&app));
+        assert_eq!(app.editor.buffers.len(), count);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn compare_with_clipboard_reports_a_failing_tool() {
+        let (mut app, dir) = test_app("cmp-tool-fails");
+        load(&mut app, "a.txt", "one\n");
+        app.clipboard.tools =
+            Some(Tools { paste: Paste::Command(vec!["sh".into(), "-c".into(), "echo nope >&2; exit 1".into()]), copy: None });
+        compare_clip(&mut app).await;
+        assert!(toasts(&app).contains(&"System clipboard unavailable (sh: nope)".to_string()), "{:?}", toasts(&app));
+        assert_eq!(app.editor.buffers.len(), 1);
+        app.clipboard.register = "one\n".into();
+        app.toasts = Default::default();
+        compare_clip(&mut app).await;
+        assert!(toasts(&app).contains(&"Contents are identical".to_string()), "{:?}", toasts(&app));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn compare_while_merging_is_refused() {
+        let (mut app, dir) = test_app("cmp-merge");
+        let a = load(&mut app, "a.txt", "one\n");
+        app.clipboard.register = "two\n".into();
+        let texts = crate::git::merge::MergeTexts { base: "x\n".into(), ours: "y\n".into(), theirs: "z\n".into() };
+        app.editor.open_merge(a.clone(), "a.txt".into(), texts, ["main".into(), "dev".into()], "x\n".into(), &app.theme);
+        assert!(app.editor.merge_active());
+        let count = app.editor.buffers.len();
+        let busy = |app: &App| app.notifications.last().map(|n| n.text.clone());
+        for action in [EditorAction::CompareWithClipboard, EditorAction::CompareWithFile] {
+            app.notifications.clear();
+            app.perform(Action::Editor(action));
+            assert_eq!(busy(&app).as_deref(), Some(crate::editor::merge::BUSY));
+            assert!(app.palette.is_none());
+            assert_eq!(app.editor.buffers.len(), count);
+        }
+        app.notifications.clear();
+        app.compare_with_file(a);
+        assert_eq!(busy(&app).as_deref(), Some(crate::editor::merge::BUSY));
+        assert_eq!(app.editor.buffers.len(), count);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
     async fn compare_with_clipboard_reads_the_tool() {
         let (mut app, dir) = test_app("cmp-tool");
         app.clipboard.tools = Some(Tools { paste: Paste::Command(vec!["sh".into(), "-c".into(), "printf 'one\\n'".into()]), copy: None });
