@@ -90,6 +90,10 @@ operator = "#ff7b72"
 punctuation = "#e6edf3"
 "punctuation.special" = "#ff7b72"
 "variable.builtin" = "#79c0ff"
+"variable.parameter" = "#ffa657"
+"variable.mutable" = { fg = "#e6edf3", underline = true }
+"type.parameter" = "#7ee787"
+module = "#79c0ff"
 tag = "#7ee787"
 embedded = "#e6edf3"
 "text.title" = { fg = "#1f6feb", bold = true }

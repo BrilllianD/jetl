@@ -615,10 +615,17 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
     // virtual columns, and carets stand there.
     let virt_on = !rows.wraps();
     let cur_x = caret_col(rope, &rows, &buf.view.sel(), o.tab_width);
-    let hl = match &buf.preview {
+    let mut hl = match &buf.preview {
         Some(p) => p.highlights(rope, window.clone()),
         None => buf.syntax.as_mut().map(|s| s.highlights(rope, window.start, window.len())).unwrap_or_default(),
     };
+    // LSP semantic tokens over tree-sitter's (or no) styles; a capture the
+    // theme does not style keeps what is there.
+    if !buf.semantic.is_empty() {
+        let last = window.end.min(rope.len_lines());
+        let chars = rope.line_to_char(window.start.min(last))..rope.line_to_char(last);
+        hl.overlay(buf.semantic.in_range(chars).filter_map(|(r, name)| theme.capture_style(name).map(|s| (r, s))));
+    }
     let search = buf.view.search.as_ref();
     let pair =
         super::brackets::pair_at(rope, buf.syntax.as_ref().and_then(|s| s.tree_at_char(rope, buf.view.sel().head)), buf.view.sel().head);
@@ -1694,6 +1701,80 @@ mod tests {
         assert_eq!(screen[(x0 + 19, 0)].bg, theme.current_line_bg, "the pad is plain background");
         assert_eq!(screen[(x0 + 26, 0)].bg, theme.current_line_bg, "so is the left pad of the line-end hint");
         assert_eq!(out.cursor, Some((x0 + 5, 0)), "the caret at a type hint's anchor stands before the hint");
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[test]
+    fn semantic_tokens_draw_over_tree_sitter() {
+        use ratatui::style::{Color, Modifier};
+        let mut theme = Theme::default();
+        let sem = Style::default().fg(Color::Magenta).add_modifier(Modifier::UNDERLINED);
+        theme.syntax.insert("test.semantic".into(), sem);
+        let path = std::path::PathBuf::from("/tmp/sem.rs");
+        let mut buf = Buffer::from_text(1, Some(path.clone()), "fn main() {}\n", false);
+        buf.syntax = crate::editor::syntax::Syntax::for_path(&path, &theme);
+        buf.view.set_sel(Selection::point(13));
+        let area = Rect::new(0, 0, 40, 3);
+        let o = resize_opts(&theme);
+        let mut screen = Screen::empty(area);
+        let out = render(&mut buf, &mut screen, area, &o);
+        let x0 = out.text_area.x;
+        assert_eq!(screen[(x0 + 3, 0)].fg, theme.capture_style("function").unwrap().fg.unwrap(), "tree-sitter styles main");
+        buf.semantic.set(vec![(3..7, "test.semantic".into()), (0..2, "nothing.known".into())]);
+        let mut screen = Screen::empty(area);
+        render(&mut buf, &mut screen, area, &o);
+        for x in x0 + 3..x0 + 7 {
+            assert_eq!(screen[(x, 0)].fg, Color::Magenta, "x {x}");
+            assert!(screen[(x, 0)].modifier.contains(Modifier::UNDERLINED), "x {x}");
+        }
+        assert_eq!(
+            screen[(x0, 0)].fg,
+            theme.capture_style("keyword").unwrap().fg.unwrap(),
+            "an unresolved capture keeps tree-sitter's style"
+        );
+        assert_ne!(screen[(x0 + 7, 0)].fg, Color::Magenta);
+    }
+
+    #[test]
+    fn semantic_tokens_colour_a_buffer_without_a_grammar() {
+        use ratatui::style::{Color, Modifier};
+        let mut theme = Theme::default();
+        let sem = Style::default().fg(Color::Magenta).add_modifier(Modifier::UNDERLINED);
+        theme.syntax.insert("test.semantic".into(), sem);
+        let mut buf = Buffer::from_text(1, None, "alpha beta\n", false);
+        buf.semantic.set(vec![(6..10, "test.semantic".into())]);
+        buf.view.set_sel(Selection::point(11));
+        let area = Rect::new(0, 0, 40, 3);
+        let mut screen = Screen::empty(area);
+        let out = render(&mut buf, &mut screen, area, &resize_opts(&theme));
+        let x0 = out.text_area.x;
+        for x in x0 + 6..x0 + 10 {
+            assert_eq!(screen[(x, 0)].fg, Color::Magenta, "x {x}");
+            assert!(screen[(x, 0)].modifier.contains(Modifier::UNDERLINED), "x {x}");
+        }
+        for x in x0..x0 + 5 {
+            assert_eq!(screen[(x, 0)].fg, theme.fg, "x {x}");
+        }
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[test]
+    fn doc_comment_tokens_keep_the_doc_comment_colour() {
+        let theme = Theme::default();
+        let path = std::path::PathBuf::from("/tmp/doc.rs");
+        let mut buf = Buffer::from_text(1, Some(path.clone()), "/// doc\nfn main() {}\n", false);
+        buf.syntax = crate::editor::syntax::Syntax::for_path(&path, &theme);
+        buf.view.set_sel(Selection::point(21));
+        buf.semantic.set(vec![(0..7, crate::lsp::semantic::capture_for("comment", &["documentation"]).unwrap())]);
+        let area = Rect::new(0, 0, 40, 4);
+        let mut screen = Screen::empty(area);
+        let out = render(&mut buf, &mut screen, area, &resize_opts(&theme));
+        let x0 = out.text_area.x;
+        let doc = theme.capture_style("comment.documentation").unwrap().fg.unwrap();
+        assert_ne!(doc, theme.capture_style("comment").unwrap().fg.unwrap(), "the test can fail");
+        for x in x0..x0 + 7 {
+            assert_eq!(screen[(x, 0)].fg, doc, "x {x}");
+        }
     }
 
     #[test]

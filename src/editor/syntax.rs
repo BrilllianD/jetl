@@ -527,6 +527,54 @@ impl Highlights {
         r.contains(&char_idx).then_some(*s)
     }
 
+    /// Draw `spans` over these: each non-empty span replaces the style over its
+    /// range; spans outside them keep theirs. Input is sorted here; a span that
+    /// starts inside the previous one is dropped.
+    pub fn overlay(&mut self, spans: impl IntoIterator<Item = (Range<usize>, Style)>) {
+        let mut over: Vec<(Range<usize>, Style)> = spans.into_iter().filter(|(r, _)| r.start < r.end).collect();
+        if over.is_empty() {
+            return;
+        }
+        over.sort_by_key(|(r, _)| r.start);
+        let mut end = 0;
+        over.retain(|(r, _)| {
+            let keep = r.start >= end;
+            if keep {
+                end = r.end;
+            }
+            keep
+        });
+        let base = std::mem::take(&mut self.spans);
+        let mut out = Vec::with_capacity(base.len() + 2 * over.len());
+        // Chars before `lo` are emitted; `base[b]` is the next base span.
+        let (mut lo, mut b) = (0usize, 0usize);
+        for (o, st) in over {
+            while b < base.len() && base[b].0.start < o.start {
+                let (r, s) = &base[b];
+                let piece = r.start.max(lo)..r.end.min(o.start);
+                if piece.start < piece.end {
+                    out.push((piece, *s));
+                }
+                if r.end > o.start {
+                    break; // continues under or past `o`
+                }
+                b += 1;
+            }
+            lo = o.end;
+            out.push((o, st));
+            while b < base.len() && base[b].0.end <= lo {
+                b += 1;
+            }
+        }
+        for (r, s) in &base[b..] {
+            let piece = r.start.max(lo)..r.end;
+            if piece.start < piece.end {
+                out.push((piece, *s));
+            }
+        }
+        self.spans = out;
+    }
+
     /// Flatten possibly nested/overlapping spans; later (inner) spans win.
     fn flatten(mut raw: Vec<(Range<usize>, Style)>) -> Self {
         // Stable sort: outer spans first, ties keep their incoming order.
@@ -1144,6 +1192,75 @@ mod tests {
         assert_eq!(h.style_at(7), Some(b));
         assert_eq!(h.style_at(9), Some(a));
         assert_eq!(h.style_at(10), None);
+    }
+
+    fn sorted_disjoint(h: &Highlights) -> bool {
+        h.spans.iter().all(|(r, _)| r.start < r.end) && h.spans.windows(2).all(|w| w[0].0.end <= w[1].0.start)
+    }
+
+    fn overlay_styles() -> (Style, Style, Style, Style) {
+        use ratatui::style::Color;
+        (
+            Style::default().fg(Color::Red),
+            Style::default().fg(Color::Blue),
+            Style::default().fg(Color::Green),
+            Style::default().fg(Color::Yellow),
+        )
+    }
+
+    #[test]
+    fn overlay_inside_a_span_splits_it() {
+        let (a, _, s, _) = overlay_styles();
+        let mut h = Highlights { spans: vec![(0..10, a)] };
+        h.overlay([(3..5, s)]);
+        assert_eq!(h.spans, vec![(0..3, a), (3..5, s), (5..10, a)]);
+        assert!(sorted_disjoint(&h));
+    }
+
+    #[test]
+    fn overlay_across_spans_and_gaps() {
+        let (a, b, s, _) = overlay_styles();
+        let mut h = Highlights { spans: vec![(0..4, a), (6..10, b)] };
+        h.overlay([(2..8, s)]);
+        assert_eq!(h.spans, vec![(0..2, a), (2..8, s), (8..10, b)]);
+        assert!(sorted_disjoint(&h));
+        let mut h = Highlights { spans: vec![(0..4, a), (6..10, b)] };
+        h.overlay([(6..10, s)]);
+        assert_eq!(h.spans, vec![(0..4, a), (6..10, s)]);
+        assert!(sorted_disjoint(&h));
+    }
+
+    #[test]
+    fn overlay_adjacent_spans_and_gaps() {
+        let (a, b, s, t) = overlay_styles();
+        let mut h = Highlights { spans: vec![(0..4, a), (8..10, b)] };
+        h.overlay([(4..6, s), (10..12, t)]);
+        assert_eq!(h.spans, vec![(0..4, a), (4..6, s), (8..10, b), (10..12, t)]);
+        assert!(sorted_disjoint(&h));
+    }
+
+    #[test]
+    fn overlay_empty_input_changes_nothing() {
+        let (a, _, s, _) = overlay_styles();
+        let mut h = Highlights { spans: vec![(0..10, a)] };
+        h.overlay([]);
+        assert_eq!(h.spans, vec![(0..10, a)]);
+        h.overlay([(5..5, s)]);
+        assert_eq!(h.spans, vec![(0..10, a)]);
+        assert!(sorted_disjoint(&h));
+        let mut e = Highlights::default();
+        e.overlay([(2..4, s)]);
+        assert_eq!(e.spans, vec![(2..4, s)]);
+        assert!(sorted_disjoint(&e));
+    }
+
+    #[test]
+    fn overlay_sorts_and_drops_overlapping_input() {
+        let (a, _, s, t) = overlay_styles();
+        let mut h = Highlights { spans: vec![(0..10, a)] };
+        h.overlay([(6..8, t), (2..4, s), (3..7, s)]);
+        assert_eq!(h.spans, vec![(0..2, a), (2..4, s), (4..6, a), (6..8, t), (8..10, a)]);
+        assert!(sorted_disjoint(&h));
     }
 
     #[cfg(feature = "lang-rust")]

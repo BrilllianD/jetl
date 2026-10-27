@@ -156,6 +156,7 @@ All of section E shipped in Phase 9 except split editor panes, which shipped in 
 | Completion popup | L | Done: auto-trigger and Ctrl+Space, fuzzy filter, snippet tabstops (Tab/Shift+Tab), additional edits, resolve, documentation panel, matched chars, labelDetails, commit characters |
 | Rename, code actions, formatting, document symbols | M | Done: Shift+F6 rename across files, Alt+Enter context actions with resolve and `workspace/applyEdit`, Ctrl+F12 file structure, formatting through the server when `[format]` has no command (the selection only when the server formats ranges); a lightbulb for quick fixes, preferred actions first; workspace edits create, rename and delete files |
 | Inlay hints | M | Done: `textDocument/inlayHint` for the visible lines plus a screen each way, refetched after edits and scrolling settle, kept and shifted until the new answer; drawn as virtual text in the layout walk (soft wrap counts them, a click lands on the anchor, the caret stands before a type hint and after a parameter hint, column mode ignores them); `[lsp] inlay_hints`, View > Inlay Hints |
+| Semantic highlighting | M | Done: `textDocument/semanticTokens/full` (`/range` for servers without it), asked again after edits settle and on refresh, kept and shifted until the next answer; drawn over tree-sitter through `[syntax]` capture names; `[lsp] semantic_tokens` |
 
 ### G. Themes, vim, config
 

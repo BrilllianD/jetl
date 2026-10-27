@@ -98,6 +98,10 @@ pub const BUILTIN_CAPTURES: &[&str] = &[
     "punctuation",
     "punctuation.special",
     "variable.builtin",
+    "variable.parameter",
+    "variable.mutable",
+    "type.parameter",
+    "module",
     "tag",
     "embedded",
     "text.title",
@@ -795,6 +799,24 @@ mod tests {
     fn builtin_themes_set_every_key() {
         for b in BUILTIN_THEMES {
             assert_sets_every_key(b.name, b.toml);
+        }
+    }
+
+    #[test]
+    fn builtin_themes_style_the_semantic_captures() {
+        let mut themes: Vec<(&str, Theme)> = BUILTIN_THEMES.iter().map(|b| (b.name, Theme::builtin(b, false))).collect();
+        for (name, text) in omarchy_renders() {
+            let mut t = Theme::blank();
+            t.apply_toml(&text, false).unwrap();
+            themes.push((name, t));
+        }
+        for (name, t) in &themes {
+            for c in ["variable.parameter", "variable.mutable", "type.parameter", "module"] {
+                assert!(t.capture_style(c).is_some(), "{name}: {c}");
+            }
+            let m = t.capture_style("variable.mutable").unwrap();
+            assert!(m.add_modifier.contains(Modifier::UNDERLINED), "{name}: mutable is underlined");
+            assert_eq!(m.fg, Some(t.fg), "{name}: mutable keeps the default text colour");
         }
     }
 

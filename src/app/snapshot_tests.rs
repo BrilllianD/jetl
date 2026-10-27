@@ -392,6 +392,42 @@ async fn markdown_preview() {
     assert_snapshot!("markdown_preview", snapshot(&term, &marks, None));
 }
 
+#[cfg(feature = "lang-rust")]
+#[tokio::test]
+async fn editor_semantic_tokens() {
+    use ratatui::style::Color;
+    let mut fx = stable_app("semantic-tokens");
+    let app = &mut fx.app;
+    // Test-only styles, so the marks show the semantic tokens and nothing tree-sitter drew.
+    let param = Style::default().fg(Color::Magenta);
+    let mutable = Style::default().fg(Color::Cyan).add_modifier(Modifier::UNDERLINED);
+    app.theme.syntax.insert("variable.parameter".into(), param);
+    app.theme.syntax.insert("variable.mutable".into(), mutable);
+    let src = "fn add(step: u32) -> u32 {\n    let mut total = 0;\n    total += step;\n    total\n}\n";
+    load(app, "main.rs", src);
+    let tok = |needle: &str, nth: usize, name: &str| {
+        let at = src.match_indices(needle).nth(nth).unwrap().0;
+        (at..at + needle.len(), name.to_string())
+    };
+    let b = app.editor.active_buffer_mut().unwrap();
+    b.semantic.set(vec![
+        tok("step", 0, "variable.parameter"),
+        tok("total", 0, "variable.mutable"),
+        tok("total", 1, "variable.mutable"),
+        tok("step", 1, "variable.parameter"),
+        tok("total", 2, "variable.mutable"),
+        tok("u32", 0, "no.such.capture"),
+    ]);
+    // The caret on the empty last line: no occurrence highlight over the tokens.
+    b.view.sels = Selection::point(b.rope.len_chars()).into();
+    let term = draw_editor(app, 50, 12);
+    let mut marks = editor_marks(&app.theme);
+    marks.push(Mark::style('P', "parameter", param));
+    marks.push(Mark::style('M', "mutable", mutable));
+    marks.push(Mark::style('K', "keyword", app.theme.capture_style("keyword").unwrap()));
+    assert_snapshot!("editor_semantic_tokens", snapshot(&term, &marks, None));
+}
+
 #[tokio::test]
 async fn editor_indent_guides() {
     let mut fx = stable_app("indent-guides");

@@ -94,6 +94,10 @@ operator = "{{cyan}}"
 punctuation = "{{foreground}}"
 "punctuation.special" = "{{cyan}}"
 "variable.builtin" = "{{red}}"
+"variable.parameter" = "{{cyan}}"
+"variable.mutable" = { fg = "{{foreground}}", underline = true }
+"type.parameter" = "{{red}}"
+module = "{{yellow}}"
 tag = "{{blue}}"
 embedded = "{{foreground}}"
 "text.title" = { fg = "{{accent}}", bold = true }

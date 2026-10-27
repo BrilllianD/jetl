@@ -13,6 +13,7 @@ use super::pos;
 
 /// The theme capture for a token type and its modifiers, or `None` for a
 /// kind that gets no colour of its own (punctuation, unresolved names, ...).
+/// A `comment` with the `documentation` modifier is `comment.documentation`.
 pub fn capture_for(token_type: &str, modifiers: &[&str]) -> Option<String> {
     let base = match token_type {
         "function" => "function",
@@ -40,6 +41,10 @@ pub fn capture_for(token_type: &str, modifiers: &[&str]) -> Option<String> {
         "escapeSequence" | "formatSpecifier" => "string.escape",
         _ => return None,
     };
+    // Doc comments keep the doc-comment colour tree-sitter gives them.
+    if base == "comment" && modifiers.contains(&"documentation") {
+        return Some("comment.documentation".into());
+    }
     let suffix = [("mutable", ".mutable"), ("defaultLibrary", ".builtin"), ("readonly", ".readonly")]
         .into_iter()
         .find(|(m, _)| modifiers.contains(m))
@@ -157,6 +162,19 @@ mod tests {
             ("variable", &["readonly", "mutable"], Some("variable.mutable")),
             ("variable", &["declaration"], Some("variable")),
             ("generic", &["mutable"], None),
+        ];
+        for (ty, mods, want) in rows {
+            assert_eq!(capture_for(ty, mods).as_deref(), want, "{ty} {mods:?}");
+        }
+    }
+
+    #[test]
+    fn doc_comments_keep_their_capture() {
+        let rows: [(&str, &[&str], Option<&str>); 4] = [
+            ("comment", &["documentation"], Some("comment.documentation")),
+            ("comment", &[], Some("comment")),
+            ("comment", &["documentation", "readonly"], Some("comment.documentation")),
+            ("function", &["documentation"], Some("function")),
         ];
         for (ty, mods, want) in rows {
             assert_eq!(capture_for(ty, mods).as_deref(), want, "{ty} {mods:?}");

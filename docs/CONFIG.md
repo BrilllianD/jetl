@@ -971,11 +971,21 @@ keyword.directive string string.special string.special.key string.escape
 escape comment comment.documentation number boolean constant
 constant.builtin function function.builtin function.macro type.builtin
 property attribute label operator punctuation punctuation.special
-variable.builtin tag embedded text.title text.literal text.reference
-text.uri none`, plus the CSS/SCSS at-rule captures `media import keyframes
+variable.builtin variable.parameter variable.mutable type.parameter
+module tag embedded text.title text.literal text.reference text.uri
+none`, plus the CSS/SCSS at-rule captures `media import keyframes
 charset namespace supports at use forward include mixin extend each for
 while return debug warn` and the Lua captures `conditional repeat method
 preproc`. New names (for example `type` or `variable`) can be added;
 note that the default theme leaves `type` and `variable` unstyled on
 purpose, because highlight queries list them before more specific captures
-of the same node.
+of the same node. Semantic tokens from a language server (`[lsp]
+semantic_tokens`) are drawn over tree-sitter's colours under the capture
+names `function`, `function.method`, `function.macro`,
+`variable.parameter`, `variable`, `property`, `constant`, `module`,
+`type`, `type.interface`, `type.parameter`, `keyword`, `comment`,
+`string`, `number`, `string.regexp`, `operator`, `attribute`, `label`,
+`variable.builtin`, `type.builtin`, `boolean` and `string.escape`, with at
+most one suffix `.mutable`, `.builtin` or `.readonly` (so a mutable
+variable is `variable.mutable`); a token whose name the theme does not
+style keeps tree-sitter's colour. A doc comment is `comment.documentation`.

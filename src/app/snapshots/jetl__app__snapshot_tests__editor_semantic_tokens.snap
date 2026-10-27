@@ -1,0 +1,22 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &marks, None)"
+---
+50x12 cursor=(7,6)
+00   main.rs ×
+01   1  ▾ fn add(step: u32) -> u32 {
+02   2    │   let mut total = 0;
+03   3    │   total += step;
+04   4    │   total
+05   5    }
+06   6
+07
+08
+09
+10
+11
+-- marks: C=caret S=selection F=fold O=occurrence P=parameter M=mutable K=keyword
+01        KK     PPPP  KKK     KKK
+02            KKK KKK MMMMM
+03            MMMMM    PPPP
+04            MMMMM
