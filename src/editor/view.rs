@@ -483,6 +483,8 @@ pub struct RenderOpts<'a> {
     pub occurrences: bool,
     /// Draw indent guides (`editor.indent_guides`).
     pub indent_guides: bool,
+    /// Draw the fold arrows in the gutter.
+    pub fold_marks: bool,
     /// Paint the caret line's blame after its text (`editor.inline_blame`).
     pub inline_blame: bool,
     pub theme: &'a Theme,
@@ -581,7 +583,8 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
     // The lines from the top to the bottom row, hidden ones included.
     let window = buf.view.scroll_line..shown.last().map_or(buf.view.scroll_line, |r| r.line + 1);
     // Headers that can fold get a marker.
-    let foldable: Vec<usize> = buf.fold_candidates(window.clone()).iter().map(|f| buf.rope.char_to_line(f.start)).collect();
+    let foldable: Vec<usize> =
+        buf.fold_candidates(window.clone()).iter().filter(|_| o.fold_marks).map(|f| buf.rope.char_to_line(f.start)).collect();
 
     let theme = o.theme;
     let rope = &buf.rope;
@@ -1107,6 +1110,7 @@ mod tests {
             hscrolloff: 0,
             occurrences: false,
             indent_guides: false,
+            fold_marks: true,
             inline_blame: false,
             theme: &theme,
             follow: true,
@@ -1171,6 +1175,7 @@ mod tests {
             hscrolloff: 0,
             occurrences: false,
             indent_guides: false,
+            fold_marks: true,
             inline_blame: false,
             theme: &theme,
             follow: true,
@@ -1213,6 +1218,7 @@ mod tests {
             hscrolloff: 0,
             occurrences: false,
             indent_guides: false,
+            fold_marks: true,
             inline_blame: false,
             theme,
             follow: true,

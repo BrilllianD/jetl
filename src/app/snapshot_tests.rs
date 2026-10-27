@@ -385,7 +385,7 @@ async fn markdown_preview() {
     let b = app.editor.active_buffer_mut().unwrap();
     let at = b.rope.line_to_char(2);
     b.view.sels = Selection::point(at).into();
-    let term = draw_editor(app, 50, 24);
+    let term = draw_editor(app, 80, 24);
     let mut marks = editor_marks(&app.theme);
     marks.push(Mark::style('H', "title", title));
     marks.push(Mark::style('K', "keyword", app.theme.capture_style("keyword").unwrap()));

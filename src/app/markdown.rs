@@ -134,7 +134,7 @@ mod tests {
         assert!(!b.dirty());
         assert!(!b.undo(), "undo must not reach the render");
         let v = b.version;
-        app.markdown_preview_tick();
+        assert!(!app.editor.refresh_markdown_previews(&app.theme), "nothing is due on the second tick");
         assert_eq!(app.editor.buffers[i].version, v);
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -177,11 +177,51 @@ mod tests {
         load(&mut app, "README.md", "# Title\n");
         let source = app.editor.active_buffer().unwrap().version;
         preview(&mut app);
-        let theme = app.theme.clone();
+        let mut theme = app.theme.clone();
+        let marked = ratatui::style::Color::Rgb(1, 2, 3);
+        theme.syntax.insert("text.title".into(), ratatui::style::Style::default().fg(marked));
         app.editor.restyle(&theme);
         assert_eq!(app.editor.active_buffer().unwrap().preview.as_ref().unwrap().version, u64::MAX);
+        app.theme = theme;
         app.markdown_preview_tick();
-        assert_eq!(app.editor.active_buffer().unwrap().preview.as_ref().unwrap().version, source);
+        let p = app.editor.active_buffer().unwrap().preview.as_ref().unwrap();
+        assert_eq!(p.version, source);
+        assert!(!p.spans.is_empty());
+        assert!(p.spans.iter().any(|(_, s)| s.fg == Some(marked)), "spans carry the new theme's heading style");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn save_as_turns_a_preview_into_a_plain_file() {
+        let (mut app, dir) = test_app("md-save-as");
+        let path = load(&mut app, "README.md", "# Title\n");
+        let source = active_id(&app);
+        preview(&mut app);
+        let pid = active_id(&app);
+        let to = dir.join("copy.txt");
+        app.perform(Action::Editor(EditorAction::SaveAs));
+        let d = app.dialog.take().expect("Save As prompt");
+        app.finish_dialog(d.id, crate::ui::dialog::DialogResult::Text(to.to_string_lossy().into_owned()));
+        let i = app.editor.index_of_id(pid).unwrap();
+        assert!(app.editor.buffers[i].preview.is_none(), "the copy stops following its source");
+        app.perform(Action::Editor(EditorAction::InsertText("mine ".into())));
+        app.open_file(path, true);
+        assert_eq!(active_id(&app), source);
+        app.perform(Action::Editor(EditorAction::InsertText("new ".into())));
+        app.markdown_preview_tick();
+        let b = &app.editor.buffers[app.editor.index_of_id(pid).unwrap()];
+        assert!(b.text().starts_with("mine "), "{:?}", b.text());
+        assert!(b.dirty() && !b.read_only);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn a_preview_is_not_in_the_session() {
+        let (mut app, dir) = test_app("md-session");
+        let path = load(&mut app, "README.md", "# Title\n");
+        preview(&mut app);
+        let files = app.session().files;
+        assert_eq!(files.iter().map(|f| f.path.clone()).collect::<Vec<_>>(), vec![path]);
         let _ = std::fs::remove_dir_all(dir);
     }
 }
