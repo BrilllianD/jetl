@@ -1,6 +1,6 @@
 //! The `git` command line, for network, branch switching, log/show and
 //! worktree operations. Never prompts: no controlling terminal, ssh in batch
-//! mode, no editor, stdin closed, killed after a timeout. Git's messages are
+//! mode, no editor (and no sequence editor of the user's), stdin closed, killed after a timeout. Git's messages are
 //! in the C locale (`LC_MESSAGES=C`), so they are the English ones jetl
 //! parses; the charset of hooks and helpers stays the user's.
 
@@ -52,16 +52,28 @@ pub async fn git(root: &Path, args: &[String]) -> Result<CliOutput> {
 
 /// [`git`] with `input` on stdin (a patch for `git apply`).
 pub async fn git_with_input(root: &Path, args: &[String], input: Option<Vec<u8>>) -> Result<CliOutput> {
-    use tokio::io::AsyncWriteExt;
     let ssh = if is_network(args) { ssh_command(root).await } else { None };
     let mut cmd = tokio::process::Command::new("git");
+    prepare_command(&mut cmd, root, args, input.is_some());
+    if let Some(ssh) = ssh {
+        cmd.env("GIT_SSH_COMMAND", ssh);
+    }
+    run_command(cmd, args, input).await
+}
+
+/// Arguments, working directory, environment and stdio of every git child
+/// (see the module doc). `piped_stdin` is true when the caller writes input.
+pub(crate) fn prepare_command(cmd: &mut tokio::process::Command, root: &Path, args: &[String], piped_stdin: bool) {
     cmd.args(["-c", "core.quotepath=off", "-c", "color.ui=never"])
         .args(args)
         .current_dir(root)
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_EDITOR", "true")
+        // A sequence editor of the user's beats `-c sequence.editor`, and the
+        // interactive rebase needs its own.
+        .env_remove("GIT_SEQUENCE_EDITOR")
         .env("GIT_PAGER", "cat")
-        .stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() })
+        .stdin(if piped_stdin { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
@@ -76,9 +88,6 @@ pub async fn git_with_input(root: &Path, args: &[String], input: Option<Vec<u8>>
     if remove_lc_all {
         cmd.env_remove("LC_ALL");
     }
-    if let Some(ssh) = ssh {
-        cmd.env("GIT_SSH_COMMAND", ssh);
-    }
     // A new session has no controlling terminal, so nothing git or ssh runs
     // can open /dev/tty to prompt over the TUI or wait for an answer.
     #[cfg(unix)]
@@ -89,6 +98,11 @@ pub async fn git_with_input(root: &Path, args: &[String], input: Option<Vec<u8>>
             Ok(())
         });
     }
+}
+
+/// Spawn a command made by [`prepare_command`], write `input`, wait with the timeout.
+pub(crate) async fn run_command(mut cmd: tokio::process::Command, args: &[String], input: Option<Vec<u8>>) -> Result<CliOutput> {
+    use tokio::io::AsyncWriteExt;
     let mut child = cmd.spawn().map_err(|e| anyhow!("cannot run git: {e}"))?;
     if let (Some(input), Some(mut stdin)) = (input, child.stdin.take()) {
         // Small inputs (patches); closing stdin ends the input.
@@ -369,6 +383,18 @@ mod tests {
     fn stash_push_args_with_and_without_message() {
         assert_eq!(stash_push_args("  "), args(&["stash", "push", "--include-untracked"]));
         assert_eq!(stash_push_args(" wip "), args(&["stash", "push", "--include-untracked", "-m", "wip"]));
+    }
+
+    #[tokio::test]
+    async fn sequence_editor_is_never_inherited() {
+        let mut cmd = tokio::process::Command::new("git");
+        cmd.env("GIT_SEQUENCE_EDITOR", "false");
+        let a = args(&["-c", "alias.se=!printf '%s' \"${GIT_SEQUENCE_EDITOR-unset}\"", "se"]);
+        prepare_command(&mut cmd, &std::env::temp_dir(), &a, false);
+        assert!(cmd.as_std().get_envs().any(|(k, v)| k == "GIT_SEQUENCE_EDITOR" && v.is_none()));
+        let out = run_command(cmd, &a, None).await.unwrap();
+        assert!(out.ok, "{}", out.stderr);
+        assert_eq!(out.stdout_text(), "unset");
     }
 
     #[tokio::test]

@@ -13,6 +13,7 @@ pub mod merge;
 pub mod messages;
 pub mod model;
 pub mod panel;
+pub mod rebase;
 pub mod repo;
 
 use std::path::{Path, PathBuf};
@@ -59,6 +60,8 @@ pub enum GitOp {
     },
     Merge(String),
     Rebase(String),
+    /// `git rebase -i` of a jetl todo; carries the base's short sha or "root".
+    InteractiveRebase(String),
     RenameBranch(String),
     DeleteBranch {
         name: String,
@@ -102,6 +105,7 @@ impl GitOp {
                 | GitOp::Reset { mode: model::ResetMode::Hard, .. }
                 | GitOp::Merge(_)
                 | GitOp::Rebase(_)
+                | GitOp::InteractiveRebase(_)
                 | GitOp::Resolve(_)
                 | GitOp::Progress { .. }
         )
@@ -272,6 +276,7 @@ pub enum GitRequest {
     Merge(String),
     /// Confirmed already (`DialogId::RebaseOnto`).
     Rebase(String),
+    InteractiveRebase(rebase::RebasePlan),
     CheckoutTracking(String),
     RenameBranch {
         from: String,
@@ -349,6 +354,7 @@ impl GitRequest {
                         | GitRequest::NewBranch
                         | GitRequest::Merge(_)
                         | GitRequest::Rebase(_)
+                        | GitRequest::InteractiveRebase(_)
                         | GitRequest::CheckoutTracking(_)
                 )
     }
@@ -699,6 +705,34 @@ impl GitService {
         id
     }
 
+    /// `git rebase -i` with jetl's todo (see [`rebase::prepare`]); answers as a
+    /// [`GitOp::InteractiveRebase`] result.
+    pub fn interactive_rebase(&mut self, plan: rebase::RebasePlan) -> u64 {
+        let base = plan.base.as_deref().map(|b| b[..b.len().min(8)].to_string());
+        let label = format!("git rebase -i {}", base.as_deref().unwrap_or("--root"));
+        let op = GitOp::InteractiveRebase(base.unwrap_or_else(|| "root".into()));
+        let id = self.start(&label);
+        let pre = self.before(&op, &label);
+        let track = op.touches_worktree() && self.history.enabled();
+        let (root, generation, tx) = (self.root.clone(), self.generation, self.tx.clone());
+        tokio::spawn(async move {
+            if let Some(ack) = pre {
+                let _ = tokio::task::spawn_blocking(move || ack.wait()).await;
+            }
+            let base = base_of(root.clone(), track).await;
+            let (ok, output) = match rebase::prepare(&root, &plan).await {
+                Ok(args) => match cli::git(&root, &args).await {
+                    Ok(o) => (o.ok, o.combined()),
+                    Err(e) => (false, format!("{e:#}")),
+                },
+                Err(e) => (false, e),
+            };
+            let renames = renames_after(root, base).await;
+            let _ = tx.send(AppMsg::Git(GitMsg::OpDone { generation, id, op, label, ok, output, renames }));
+        });
+        id
+    }
+
     /// `git fetch --prune`, failing early when no remote is configured
     /// (plain `git fetch` silently succeeds then).
     pub fn fetch(&mut self) -> u64 {
@@ -960,6 +994,7 @@ mod tests {
             reset(ResetMode::Hard),
             GitOp::Merge("b".into()),
             GitOp::Rebase("b".into()),
+            GitOp::InteractiveRebase("x".into()),
             GitOp::Resolve("a".into()),
             GitOp::Progress { kind: InProgressKind::Merge, action: ProgressAction::Abort },
         ];
@@ -999,6 +1034,7 @@ mod tests {
             GitRequest::NewBranch,
             GitRequest::Merge("b".into()),
             GitRequest::Rebase("b".into()),
+            GitRequest::InteractiveRebase(rebase::RebasePlan { base: None, head: "h".into(), entries: Vec::new() }),
             GitRequest::CheckoutTracking("o/b".into()),
         ];
         let never = [GitRequest::Refresh, GitRequest::Stage(vec![]), GitRequest::Fetch, GitRequest::Progress(ProgressAction::Abort)];

@@ -274,6 +274,7 @@ impl App {
                 GitOp::Reset { sha, mode } => self.notify(Level::Info, format!("Reset to {} ({})", short(sha), mode.name())),
                 GitOp::Merge(b) => self.notify(Level::Info, format!("Merged {b}")),
                 GitOp::Rebase(b) => self.notify(Level::Info, format!("Rebased onto {b}")),
+                GitOp::InteractiveRebase(_) => self.notify(Level::Info, "Interactive rebase done"),
                 GitOp::Progress { kind, action } => self.notify(Level::Info, action.done(*kind)),
                 GitOp::RenameBranch(b) => self.notify(Level::Info, format!("Renamed the branch to {b}")),
                 GitOp::DeleteBranch { name, .. } => self.notify(Level::Info, format!("Deleted branch {name}")),
@@ -313,6 +314,7 @@ impl App {
             op,
             GitOp::Merge(_)
                 | GitOp::Rebase(_)
+                | GitOp::InteractiveRebase(_)
                 | GitOp::CherryPick(_)
                 | GitOp::Revert(_)
                 | GitOp::Stash
@@ -322,7 +324,7 @@ impl App {
             // Conflicted files show as U in the Commit tab; the next status
             // opens Resolve Conflicts.
             let what = match &op {
-                GitOp::Rebase(_) | GitOp::Progress { kind: InProgressKind::Rebase, .. } => {
+                GitOp::Rebase(_) | GitOp::InteractiveRebase(_) | GitOp::Progress { kind: InProgressKind::Rebase, .. } => {
                     "Rebase stopped on conflicts: resolve the U files (Git > Resolve Conflicts), then Git > Continue Operation (or Abort Operation)"
                 }
                 GitOp::Merge(_) => {
@@ -655,6 +657,7 @@ mod tests {
             (GitOp::Checkout("0123456789abcdef".into()), "", "Checked out 01234567 (detached HEAD)"),
             (GitOp::Reset { sha: "0123456789abcdef".into(), mode: ResetMode::Hard }, "", "Reset to 01234567 (hard)"),
             (GitOp::Rebase("main".into()), "", "Rebased onto main"),
+            (GitOp::InteractiveRebase("01234567".into()), "", "Interactive rebase done"),
             (GitOp::Commit { push: false, amend: true }, "abc1234 msg", "Amended abc1234 msg"),
             (progress(InProgressKind::Rebase, ProgressAction::Continue), "", "Rebase finished"),
             (GitOp::Stash, "Saved working directory", "Saved working directory"),
@@ -688,6 +691,7 @@ mod tests {
         let stopped = "Stopped on conflicts";
         let table = [
             (GitOp::Rebase("main".into()), rebase),
+            (GitOp::InteractiveRebase("0123".into()), rebase),
             (progress(InProgressKind::Rebase, ProgressAction::Continue), rebase),
             (progress(InProgressKind::Rebase, ProgressAction::Skip), rebase),
             (GitOp::Merge("dev".into()), "Merge stopped on conflicts"),

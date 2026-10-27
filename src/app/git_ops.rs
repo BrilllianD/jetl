@@ -503,4 +503,144 @@ mod tests {
         assert_eq!(app.dialog.take().unwrap().id, DialogId::StashMessage { untracked: false });
         std::fs::remove_dir_all(dir).ok();
     }
+
+    /// `init` (base.txt) then `one`..`four`, each adding `<n>.txt`; shas oldest first.
+    fn four_commits(app: &App) -> Vec<String> {
+        init_repo(app, &[("base.txt", "b\n")]);
+        let root = app.workspace.root.clone();
+        let mut shas = vec![git_out(&root, &["rev-parse", "HEAD"])];
+        for n in ["one", "two", "three", "four"] {
+            std::fs::write(root.join(format!("{n}.txt")), format!("body {n}\n")).unwrap();
+            git(&root, &["add", "."]);
+            git(&root, &["commit", "-q", "-m", n, "-m", &format!("body {n}")]);
+            shas.push(git_out(&root, &["rev-parse", "HEAD"]));
+        }
+        shas
+    }
+
+    /// Run an interactive rebase from `shas[from]` after `edit` changed the plan;
+    /// returns the one-line-per-field log, oldest at the bottom.
+    async fn rebase_with(name: &str, from: usize, edit: impl FnOnce(&mut crate::git::rebase::RebasePlan)) -> String {
+        use crate::git::rebase::load_plan;
+        let (mut app, dir) = test_app(name);
+        let shas = four_commits(&app);
+        let root = app.workspace.root.clone();
+        let mut plan = load_plan(&root, &shas[from]).await.unwrap();
+        edit(&mut plan);
+        app.git_request(GitRequest::InteractiveRebase(plan));
+        handle_next(&mut app, op_done).await;
+        assert_eq!(app.notifications.last().unwrap().level, Level::Info);
+        assert_eq!(last_note(&app), "Interactive rebase done");
+        assert_eq!(crate::git::repo::status(&root).unwrap().in_progress, None);
+        let log = git_out(&root, &["log", "--format=%s%n%b"]);
+        let _ = std::fs::remove_dir_all(&dir);
+        log
+    }
+
+    #[tokio::test]
+    async fn interactive_rebase_reorders() {
+        let log = rebase_with("irb-reorder", 1, |p| p.entries.swap(0, 1)).await;
+        assert_eq!(log, "four\nbody four\n\nthree\nbody three\n\none\nbody one\n\ntwo\nbody two\n\ninit");
+    }
+
+    #[tokio::test]
+    async fn interactive_rebase_squashes_two() {
+        use crate::git::rebase::TodoAction;
+        let log = rebase_with("irb-squash", 1, |p| p.entries[1].action = TodoAction::Squash).await;
+        assert_eq!(log, "four\nbody four\n\nthree\nbody three\n\none\nbody one\n\ntwo\n\nbody two\n\ninit");
+    }
+
+    #[tokio::test]
+    async fn interactive_rebase_fixes_up() {
+        use crate::git::rebase::TodoAction;
+        let log = rebase_with("irb-fixup", 1, |p| p.entries[1].action = TodoAction::Fixup).await;
+        assert_eq!(log, "four\nbody four\n\nthree\nbody three\n\none\nbody one\n\ninit");
+    }
+
+    #[tokio::test]
+    async fn interactive_rebase_rewords_with_a_multiline_message() {
+        use crate::git::rebase::TodoAction;
+        let log = rebase_with("irb-reword", 1, |p| {
+            p.entries[1].action = TodoAction::Reword;
+            p.entries[1].new_message = Some("Two \"quoted\" it's\n\nsecond line\nthird line\n".into());
+        })
+        .await;
+        assert_eq!(log, "four\nbody four\n\nthree\nbody three\n\nTwo \"quoted\" it's\nsecond line\nthird line\n\none\nbody one\n\ninit");
+    }
+
+    #[tokio::test]
+    async fn interactive_rebase_drops_one() {
+        use crate::git::rebase::TodoAction;
+        let log = rebase_with("irb-drop", 1, |p| p.entries[2].action = TodoAction::Drop).await;
+        assert_eq!(log, "four\nbody four\n\ntwo\nbody two\n\none\nbody one\n\ninit");
+    }
+
+    #[tokio::test]
+    async fn interactive_rebase_from_the_root_commit() {
+        use crate::git::rebase::TodoAction;
+        let log = rebase_with("irb-root", 0, |p| {
+            assert_eq!(p.base, None);
+            p.entries[0].action = TodoAction::Reword;
+            p.entries[0].new_message = Some("start".into());
+            p.entries[4].action = TodoAction::Drop;
+        })
+        .await;
+        assert_eq!(log, "three\nbody three\n\ntwo\nbody two\n\none\nbody one\n\nstart");
+    }
+
+    #[tokio::test]
+    async fn interactive_rebase_conflict_takes_the_rebase_path() {
+        let (mut app, dir) = test_app("irb-conflict");
+        init_repo(&app, &[("a.txt", "a\n")]);
+        let root = app.workspace.root.clone();
+        let mut shas = Vec::new();
+        for (n, text) in [("one", "1\n"), ("two", "2\n")] {
+            std::fs::write(root.join("a.txt"), text).unwrap();
+            git(&root, &["commit", "-qam", n]);
+            shas.push(git_out(&root, &["rev-parse", "HEAD"]));
+        }
+        let mut plan = crate::git::rebase::load_plan(&root, &shas[0]).await.unwrap();
+        plan.entries.reverse();
+        app.git_request(GitRequest::InteractiveRebase(plan));
+        handle_next(&mut app, op_done).await;
+        assert!(last_note(&app).starts_with("Rebase stopped on conflicts"), "{}", last_note(&app));
+        assert!(app.pending_conflicts);
+        feed_status(&mut app, 1);
+        assert_eq!(app.in_progress().map(|i| i.kind), Some(InProgressKind::Rebase));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn interactive_rebase_refuses_when_head_moved() {
+        let (mut app, dir) = test_app("irb-moved");
+        let shas = four_commits(&app);
+        let root = app.workspace.root.clone();
+        let plan = crate::git::rebase::load_plan(&root, &shas[1]).await.unwrap();
+        std::fs::write(root.join("five.txt"), "5\n").unwrap();
+        git(&root, &["add", "."]);
+        git(&root, &["commit", "-q", "-m", "five"]);
+        let five = git_out(&root, &["rev-parse", "HEAD"]);
+        app.git_request(GitRequest::InteractiveRebase(plan));
+        handle_next(&mut app, op_done).await;
+        let note = app.notifications.last().unwrap();
+        assert_eq!(note.level, Level::Error);
+        assert!(note.text.ends_with("HEAD moved since the rebase was planned; start it again"), "{}", note.text);
+        assert_eq!(git_out(&root, &["rev-parse", "HEAD"]), five);
+        assert!(!root.join(".git/rebase-merge").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn interactive_rebase_refused_mid_operation() {
+        let (mut app, dir) = test_app("irb-mid-op");
+        let shas = four_commits(&app);
+        let root = app.workspace.root.clone();
+        let plan = crate::git::rebase::load_plan(&root, &shas[1]).await.unwrap();
+        std::fs::write(root.join(".git/MERGE_HEAD"), format!("{}\n", shas[4])).unwrap();
+        feed_status(&mut app, 1);
+        app.git_request(GitRequest::InteractiveRebase(plan));
+        assert_eq!(app.notifications.last().unwrap().level, Level::Warn);
+        assert!(app.git.busy.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

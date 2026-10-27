@@ -201,6 +201,9 @@ impl App {
             GitRequest::Rebase(onto) => {
                 self.git.run_cli(GitOp::Rebase(onto.clone()), vec!["rebase".into(), onto]);
             }
+            GitRequest::InteractiveRebase(plan) => {
+                self.git.interactive_rebase(plan);
+            }
             GitRequest::CheckoutTracking(remote) => {
                 let local = remote.split_once('/').map_or(remote.as_str(), |(_, l)| l).to_string();
                 self.git.run_cli(GitOp::NewBranch(local), vec!["switch".into(), "--track".into(), remote]);
