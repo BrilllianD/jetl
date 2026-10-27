@@ -613,6 +613,9 @@ impl App {
         self.save_session();
         self.format.abort_all();
         self.run.kill();
+        if let Some(body) = self.http_body.take() {
+            let _ = std::fs::remove_file(body);
+        }
         self.terminal.reset();
         self.lsp.shutdown_all().await;
     }

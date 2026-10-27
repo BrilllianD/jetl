@@ -1,5 +1,5 @@
 //! Parses `.http` request files for the curl runner: blocks, headers, body, the `dev` environment and curl's
-//! argument list. Pure apart from reading one environment file.
+//! argument list. Pure apart from reading one environment file. `HEAD` goes to curl as `--head`, not `-X HEAD`.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -53,11 +53,12 @@ fn is_token(name: &str) -> bool {
 
 /// The words of a request line; spaces inside `{{ ... }}` do not split.
 fn words(line: &str) -> Vec<&str> {
+    let closed = line.matches("{{").count() <= line.matches("}}").count();
     let mut out = Vec::new();
     let (mut start, mut depth) = (None, 0usize);
     let mut chars = line.char_indices().peekable();
     while let Some((i, c)) = chars.next() {
-        if c.is_whitespace() && depth == 0 {
+        if c.is_whitespace() && (depth == 0 || !closed) {
             if let Some(s) = start.take() {
                 out.push(&line[s..i]);
             }
@@ -223,11 +224,17 @@ pub fn substitute(req: &HttpRequest, vars: &BTreeMap<String, String>) -> Result<
 pub fn curl_argv(req: &HttpRequest, body_file: Option<&Path>) -> Vec<String> {
     let mut argv: Vec<String> = ["curl", "-sS", "-i", "--max-time"].map(String::from).into();
     argv.push(MAX_TIME_SECS.to_string());
-    argv.push("-X".into());
-    argv.push(req.method.clone());
+    if req.method == "HEAD" {
+        // `-X HEAD` makes curl wait for a body the server never sends.
+        argv.push("--head".into());
+    } else {
+        argv.push("-X".into());
+        argv.push(req.method.clone());
+    }
     for (n, v) in &req.headers {
         argv.push("-H".into());
-        argv.push(format!("{n}: {v}"));
+        // `Name;` is curl's form for sending an empty header.
+        argv.push(if v.is_empty() { format!("{n};") } else { format!("{n}: {v}") });
     }
     if let Some(p) = body_file {
         argv.push("--data-binary".into());
@@ -438,6 +445,35 @@ mod tests {
         let want: Vec<String> =
             ["curl", "-sS", "-i", "--max-time", "30", "-X", "GET", "-H", "A: 1", "http://x/y"].map(String::from).to_vec();
         assert_eq!(curl_argv(&r, None), want);
+    }
+
+    #[test]
+    fn curl_argv_head_uses_the_head_flag() {
+        let r = req("HEAD", "http://x/y");
+        let want: Vec<String> = ["curl", "-sS", "-i", "--max-time", "30", "--head", "http://x/y"].map(String::from).to_vec();
+        assert_eq!(curl_argv(&r, None), want);
+    }
+
+    #[test]
+    fn curl_argv_empty_header_value_uses_the_semicolon_form() {
+        let mut r = req("GET", "http://x/y");
+        r.headers = vec![("X-Empty".into(), "".into()), ("A".into(), "1".into())];
+        let got = curl_argv(&r, None);
+        assert_eq!(got[got.len() - 5..], ["-H", "X-Empty;", "-H", "A: 1", "http://x/y"].map(String::from));
+    }
+
+    #[test]
+    fn unclosed_braces_split_like_plain_text() {
+        let got = parse("GET http://x/{{oops HTTP/1.1\n");
+        assert_eq!(got[0].url, "http://x/{{oops");
+    }
+
+    #[test]
+    fn env_dev_not_an_object_is_error() {
+        let d = tmp("dev-array");
+        std::fs::write(d.join("http-client.env.json"), r#"{"dev": [1]}"#).unwrap();
+        assert_eq!(load_env(&[d.as_path()]), Err("http-client.env.json: \"dev\" is not an object".to_string()));
+        std::fs::remove_dir_all(&d).unwrap();
     }
 
     #[test]

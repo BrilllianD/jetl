@@ -4,12 +4,16 @@
 //! file kept in `App::http_body`, so Rerun finds it again.
 
 use std::collections::BTreeMap;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::App;
 use crate::event::Level;
 use crate::run::{MatcherKind, Origin, RunTask, TaskCommand};
+
+/// Names tried for a body file before giving up.
+const BODY_TRIES: u32 = 8;
 
 /// Makes the body file names unique within the process.
 static NEXT_BODY: AtomicU64 = AtomicU64::new(0);
@@ -55,26 +59,60 @@ impl App {
 
     /// Replaces the previous body file by a new one (none for a request without body).
     fn write_body(&mut self, body: Option<&str>) -> Result<Option<PathBuf>, String> {
-        if let Some(old) = self.http_body.take() {
-            let _ = std::fs::remove_file(old);
-        }
-        let Some(body) = body else { return Ok(None) };
-        let n = NEXT_BODY.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!("jetl-http-{}-{n}.body", std::process::id()));
-        std::fs::write(&path, body).map_err(|e| format!("Cannot write the request body: {e}"))?;
-        self.http_body = Some(path.clone());
-        Ok(Some(path))
+        self.write_body_in(&std::env::temp_dir(), body)
     }
+
+    /// `write_body` in `dir`. The new file is created private and never over an
+    /// existing path; the old one goes only after the new write worked.
+    fn write_body_in(&mut self, dir: &Path, body: Option<&str>) -> Result<Option<PathBuf>, String> {
+        let Some(body) = body else {
+            if let Some(old) = self.http_body.take() {
+                let _ = std::fs::remove_file(old);
+            }
+            return Ok(None);
+        };
+        let mut last = None;
+        for _ in 0..BODY_TRIES {
+            let n = NEXT_BODY.fetch_add(1, Ordering::Relaxed);
+            let path = dir.join(format!("jetl-http-{}-{n}.body", std::process::id()));
+            match create_private(&path).and_then(|mut f| f.write_all(body.as_bytes())) {
+                Ok(()) => {
+                    if let Some(old) = self.http_body.replace(path.clone()) {
+                        let _ = std::fs::remove_file(old);
+                    }
+                    return Ok(Some(path));
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => last = Some(e),
+                Err(e) => {
+                    let _ = std::fs::remove_file(&path);
+                    return Err(format!("Cannot write the request body: {e}"));
+                }
+            }
+        }
+        Err(format!("Cannot write the request body: {}", last.map(|e| e.to_string()).unwrap_or_default()))
+    }
+}
+
+/// Creates `path` for writing, owner-only, failing when it exists (a symlink included).
+fn create_private(path: &Path) -> std::io::Result<std::fs::File> {
+    let mut o = std::fs::OpenOptions::new();
+    o.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        o.mode(0o600);
+    }
+    o.open(path)
 }
 
 #[cfg(test)]
 mod tests {
-    use std::io::{Read, Write};
+    use std::io::Read;
     use std::net::TcpListener;
     use std::time::Duration;
 
     use super::*;
-    use crate::actions::{Action, RunAction};
+    use crate::actions::{Action, EditorAction, RunAction};
     use crate::app::tests::{handle_next, load, test_app};
     use crate::event::{AppMsg, Level};
     use crate::run::panel::Status;
@@ -168,9 +206,14 @@ mod tests {
         }
         let (port, rx) = serve(2, "hello");
         let (mut app, dir) = test_app("http-get");
-        let text = format!("### Ping\nGET http://127.0.0.1:{port}/typed\nAccept: text/plain\n");
+        let text = format!("### Ping\nGET http://127.0.0.1:{port}/\nAccept: text/plain\n");
         let path = load(&mut app, "api.http", &text);
-        std::fs::write(&path, text.replace("/typed", "/on-disk")).unwrap();
+        let b = app.editor.active_buffer_mut().unwrap();
+        let at = b.rope.line_to_char(2) - 1;
+        b.view.sels.primary_mut().anchor = at;
+        b.view.sels.primary_mut().head = at;
+        app.perform(Action::Editor(EditorAction::InsertText("typed".into())));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
         goto_line(&mut app, 1);
         send(&mut app);
         assert!(app.run.running());
@@ -194,6 +237,7 @@ mod tests {
         until_exit(&mut app).await;
         let again = rx.recv_timeout(Duration::from_secs(5)).unwrap();
         assert!(again.starts_with("GET /typed HTTP/1.1"), "{again}");
+        assert!(app.editor.active_buffer().unwrap().dirty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -237,6 +281,48 @@ mod tests {
         rx.recv_timeout(Duration::from_secs(5)).unwrap();
         assert!(!body.exists());
         assert!(app.http_body.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn body_file_is_private_and_never_overwrites() {
+        use std::os::unix::fs::PermissionsExt;
+        let (mut app, dir) = test_app("http-body-private");
+        let first = app.write_body_in(&dir, Some("one")).unwrap().unwrap();
+        assert_eq!(std::fs::metadata(&first).unwrap().permissions().mode() & 0o777, 0o600);
+        // Occupy the next paths with a file and a symlink.
+        let name = first.file_name().unwrap().to_string_lossy().into_owned();
+        let n: u64 = name.trim_end_matches(".body").rsplit('-').next().unwrap().parse().unwrap();
+        let victim = dir.join("victim");
+        std::fs::write(&victim, "keep").unwrap();
+        let taken = first.with_file_name(format!("jetl-http-{}-{}.body", std::process::id(), n + 1));
+        let linked = first.with_file_name(format!("jetl-http-{}-{}.body", std::process::id(), n + 2));
+        std::fs::write(&taken, "other").unwrap();
+        std::os::unix::fs::symlink(&victim, &linked).unwrap();
+        let second = app.write_body_in(&dir, Some("two")).unwrap().unwrap();
+        assert_ne!(second, taken);
+        assert_ne!(second, linked);
+        assert_eq!(std::fs::read_to_string(&second).unwrap(), "two");
+        assert_eq!(std::fs::read_to_string(&taken).unwrap(), "other");
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "keep");
+        assert!(!first.exists());
+        app.shutdown().await;
+        assert!(!second.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn failed_write_keeps_the_old_body() {
+        let (mut app, dir) = test_app("http-body-keep");
+        let old = app.write_body_in(&dir, Some("one")).unwrap().unwrap();
+        // The directory is gone, so the write fails.
+        let err = app.write_body_in(&dir.join("missing"), Some("two"));
+        assert!(err.unwrap_err().starts_with("Cannot write the request body"));
+        assert_eq!(app.http_body.as_ref(), Some(&old));
+        assert_eq!(std::fs::read_to_string(&old).unwrap(), "one");
+        app.shutdown().await;
+        assert!(!old.exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
