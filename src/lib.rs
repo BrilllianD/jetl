@@ -8,6 +8,7 @@ pub mod event;
 pub mod files;
 pub mod git;
 pub mod history;
+pub mod http;
 pub mod lsp;
 pub mod recent_projects;
 pub mod recovery;
