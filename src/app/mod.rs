@@ -2950,7 +2950,9 @@ pub(crate) mod tests {
         app.perform(Action::Git(GitAction::NextSection));
         app.perform(Action::Git(GitAction::LineDown));
         app.perform(Action::Git(GitAction::LineExtendDown));
+        assert!(app.git_panel.diff_line_cursor().1.is_some());
         app.perform(Action::Git(GitAction::ToggleStage));
+        assert_eq!(app.git_panel.diff_line_cursor(), (None, None));
         handle_next(&mut app, git_op_done).await;
         let index = crate::git::repo::blob_text(&app.workspace.root, &f, BlobWhich::Index, None).unwrap();
         assert_eq!(index, with("a\nb\n"));
@@ -2966,7 +2968,9 @@ pub(crate) mod tests {
         app.perform(Action::Git(GitAction::NextSection));
         app.perform(Action::Git(GitAction::LineDown));
         app.perform(Action::Git(GitAction::LineDown));
+        assert!(app.git_panel.diff_line_cursor().0.is_some());
         app.perform(Action::Git(GitAction::ToggleStage));
+        assert_eq!(app.git_panel.diff_line_cursor(), (None, None));
         handle_next(&mut app, git_op_done).await;
         let index = crate::git::repo::blob_text(&app.workspace.root, &f, BlobWhich::Index, None).unwrap();
         assert_eq!(index, with("a\n"));

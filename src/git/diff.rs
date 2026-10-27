@@ -481,6 +481,40 @@ mod tests {
         (text, patch)
     }
 
+    /// `lines_patch` with `reverse` applied to the index of a real repository
+    /// (`git apply --cached --reverse`, the unstage path); returns the index text.
+    fn apply_cached(case: &str, old: &str, new: &str, unified: bool, rows: Range<usize>) -> String {
+        use std::io::Write;
+        let d = DiffDoc::build(old.as_bytes(), new.as_bytes(), 4);
+        let (o, n) = d.row_lines(unified, rows);
+        let patch = d.lines_patch(o, n, "f.txt", "f.txt", 3, true).unwrap();
+        let dir = std::env::temp_dir().join(format!("jetl-lines-cached-{case}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let git = |args: &[&str]| -> std::process::Output {
+            let out = std::process::Command::new("git").args(args).current_dir(&dir).output().unwrap();
+            assert!(out.status.success(), "git {args:?} failed: {}", String::from_utf8_lossy(&out.stderr));
+            out
+        };
+        git(&["init", "-q"]);
+        std::fs::write(dir.join("f.txt"), new).unwrap();
+        git(&["add", "f.txt"]);
+        let mut child = std::process::Command::new("git")
+            .args(["apply", "--cached", "--reverse", "--whitespace=nowarn", "-"])
+            .current_dir(&dir)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(patch.as_bytes()).unwrap();
+        let out = child.wait_with_output().unwrap();
+        assert!(out.status.success(), "git apply --cached failed: {}\npatch:\n{patch}", String::from_utf8_lossy(&out.stderr));
+        let index = String::from_utf8(git(&["show", ":f.txt"]).stdout).unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join("f.txt")).unwrap(), new, "the work tree must stay untouched");
+        std::fs::remove_dir_all(&dir).unwrap();
+        index
+    }
+
     #[test]
     fn lines_patches_apply_for_real() {
         let hunk = |p: &str| p[p.find("@@").unwrap()..].to_string();
@@ -497,6 +531,13 @@ mod tests {
         // Half of a modified pair, unified.
         assert_eq!(apply("half-new", "a\nb\nc\n", "a\nB\nc\n", true, 2..3, false).0, "a\nb\nB\nc\n");
         assert_eq!(apply("half-old", "a\nb\nc\n", "a\nB\nc\n", true, 1..2, false).0, "a\nc\n");
+        // Half of a modified pair, unified, reversed: discard (work tree) and unstage (index).
+        let (text, patch) = apply("rev-half-old", "a\nb\nc\n", "a\nB\nc\n", true, 1..2, true);
+        assert_eq!(text, "a\nb\nB\nc\n");
+        assert_eq!(hunk(&patch), "@@ -1,4 +1,3 @@\n a\n-b\n B\n c\n");
+        assert_eq!(apply_cached("rev-half-old", "a\nb\nc\n", "a\nB\nc\n", true, 1..2), "a\nb\nB\nc\n");
+        assert_eq!(apply("rev-half-new", "a\nb\nc\n", "a\nB\nc\n", true, 2..3, true).0, "a\nc\n");
+        assert_eq!(apply_cached("rev-half-new", "a\nb\nc\n", "a\nB\nc\n", true, 2..3), "a\nc\n");
         // Across two blocks.
         let (old, new) = ("a\n1\n2\nb\n", "A\n1\n2\nB\n");
         assert_eq!(apply("across-u", old, new, true, 1..5, false).0, "a\nA\n1\n2\n");

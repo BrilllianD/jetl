@@ -110,6 +110,12 @@ impl GitPanel {
         self.tab == GitTab::Commit && self.area == Area::Message
     }
 
+    #[cfg(test)]
+    /// The Commit tab diff's line cursor: `(line, line_anchor)`.
+    pub fn diff_line_cursor(&self) -> (Option<usize>, Option<usize>) {
+        (self.diff.line, self.diff.line_anchor)
+    }
+
     /// Keys while the commit message has focus. Returns false for keys it
     /// does not use so global shortcuts still work.
     pub fn handle_message_key(&mut self, key: KeyEvent, cx: &mut Ctx) -> bool {

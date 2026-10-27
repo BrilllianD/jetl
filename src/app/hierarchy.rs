@@ -575,7 +575,7 @@ mod tests {
             |x: u16, y: u16, clicks: u8| Mouse { kind: MouseEventKind::Down(MouseButton::Left), x, y, clicks, mods: KeyModifiers::NONE };
         s.app.forward_mouse(PanelId::Hierarchy, r, &click(r.x + 10, r.y + 1, 1));
         assert_eq!(selected(&mut s.app), Some(1));
-        assert_eq!(s.app.editor.active_path(), Some(s.a.as_path()));
+        assert_eq!(caret(&s.app), (1, 21));
         s.app.forward_mouse(PanelId::Hierarchy, r, &click(r.x + 1, r.y, 1));
         assert_eq!(s.app.hierarchy.as_ref().unwrap().rows(), [0]);
         s.app.forward_mouse(PanelId::Hierarchy, r, &click(r.x + 1, r.y, 1));
