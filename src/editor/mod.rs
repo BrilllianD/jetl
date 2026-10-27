@@ -21,6 +21,7 @@ pub use io::DiskChange;
 pub mod merge;
 pub mod nav;
 pub mod patch;
+pub mod preview;
 pub mod rows;
 pub mod search;
 pub mod selection;
@@ -528,6 +529,11 @@ impl Editor {
         for b in &mut self.buffers {
             if let Some(s) = b.syntax.as_mut() {
                 s.restyle(theme);
+            }
+        }
+        for b in &mut self.buffers {
+            if let Some(p) = b.preview.as_mut() {
+                p.version = u64::MAX;
             }
         }
         for g in &mut self.groups {
@@ -1397,7 +1403,8 @@ impl Editor {
             | E::ExpandSnippet
             | E::SurroundWith
             | E::CompareWithClipboard
-            | E::CompareWithFile => {}
+            | E::CompareWithFile
+            | E::MarkdownPreview => {}
         }
         // A motion or edit that put a caret into a fold unfolds it.
         if let Some(b) = self.active_buffer_mut() {

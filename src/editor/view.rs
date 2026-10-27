@@ -612,7 +612,10 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
     // virtual columns, and carets stand there.
     let virt_on = !rows.wraps();
     let cur_x = caret_col(rope, &rows, &buf.view.sel(), o.tab_width);
-    let hl = buf.syntax.as_mut().map(|s| s.highlights(rope, window.start, window.len())).unwrap_or_default();
+    let hl = match &buf.preview {
+        Some(p) => p.highlights(rope, window.clone()),
+        None => buf.syntax.as_mut().map(|s| s.highlights(rope, window.start, window.len())).unwrap_or_default(),
+    };
     let search = buf.view.search.as_ref();
     let pair =
         super::brackets::pair_at(rope, buf.syntax.as_ref().and_then(|s| s.tree_at_char(rope, buf.view.sel().head)), buf.view.sel().head);

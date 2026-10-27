@@ -1,0 +1,32 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &marks, None)"
+---
+50x24 cursor=(7,3)
+00   README.md ×   Preview README.md ×
+01   1    jetl
+02   2    A terminal IDE.
+03   3
+04   4  ▾ • one
+05   5    │ ☑ done
+06   6    • two
+07   7
+08   8  ▾ │ a quote
+09   9
+10  10    │ fn main() { let s = "hi"; }
+11  11
+12  12    name │ n  │ note
+13  13    ─────┼────┼───────
+14  14    a    │ 1  │ first
+15  15    bb   │ 22 │ second
+16
+17
+18
+19
+20
+21
+22
+23
+-- marks: C=caret S=selection F=fold O=occurrence H=title K=keyword
+01        HHHH
+10          KK          KKK

@@ -59,6 +59,7 @@ mod lsp_edit;
 mod lsp_nav;
 mod lsp_watch;
 mod main_menu;
+mod markdown;
 mod merge;
 mod mouse;
 mod msg;
@@ -637,6 +638,7 @@ impl App {
         self.format_timeout(Instant::now());
         self.lightbulb_tick(Instant::now());
         self.inlay_tick(Instant::now());
+        self.markdown_preview_tick();
         if self.editor.autosave_due(Instant::now()) {
             self.autosave();
         }
@@ -952,6 +954,11 @@ impl App {
             Action::Editor(EditorAction::CompareWithFile) => {
                 drop(cx);
                 self.compare_with_file_pick();
+                return;
+            }
+            Action::Editor(EditorAction::MarkdownPreview) => {
+                drop(cx);
+                self.markdown_preview();
                 return;
             }
             // Group commands take the keyboard to the editor, as in JetBrains.

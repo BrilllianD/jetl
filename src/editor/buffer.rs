@@ -209,6 +209,8 @@ pub struct Buffer {
     pub read_only: bool,
     /// A patch tab (Git Log Show Diff): its added and removed lines; read-only and pathless.
     pub patch: Option<super::patch::Patch>,
+    /// A Markdown preview tab: its source and the styles of its rendered text; read-only and pathless.
+    pub preview: Option<super::preview::MarkdownPreview>,
     /// Text restored after a crash (`Editor::recover_text`): no autosave
     /// until an explicit save writes it.
     pub recovered: bool,
@@ -250,6 +252,7 @@ impl Buffer {
             gutter_version: u64::MAX,
             diff_base: None,
             patch: None,
+            preview: None,
             diff_base_seq: 0,
             blame: None,
             disk_mtime: None,

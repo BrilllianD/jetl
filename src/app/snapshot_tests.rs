@@ -15,7 +15,7 @@ use insta::assert_snapshot;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::layout::Rect;
-use ratatui::style::Modifier;
+use ratatui::style::{Modifier, Style};
 
 use super::tests::{load, test_app};
 use super::{App, Ctx};
@@ -368,6 +368,28 @@ async fn editor_markdown_fence() {
     marks.push(Mark::style('K', "keyword", app.theme.capture_style("keyword").unwrap()));
     marks.push(Mark::style('S', "string", app.theme.capture_style("string").unwrap()));
     assert_snapshot!("editor_markdown_fence", snapshot(&term, &marks, None));
+}
+
+#[cfg(feature = "lang-rust")]
+#[tokio::test]
+async fn markdown_preview() {
+    use ratatui::style::Color;
+    let mut fx = stable_app("markdown-preview");
+    let app = &mut fx.app;
+    let title = Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD);
+    app.theme.syntax.insert("text.title".into(), title);
+    let src = "# jetl\nA terminal IDE.\n\n- one\n  - [x] done\n- two\n\n> a quote\n\n```rust\nfn main() { let s = \"hi\"; }\n```\n\n| name | n | note |\n|------|:-:|------|\n| a | 1 | first |\n| bb | 22 | second |\n";
+    load(app, "README.md", src);
+    editor(app, EditorAction::MarkdownPreview);
+    // The caret on a blank line, so no occurrence highlight covers the heading.
+    let b = app.editor.active_buffer_mut().unwrap();
+    let at = b.rope.line_to_char(2);
+    b.view.sels = Selection::point(at).into();
+    let term = draw_editor(app, 50, 24);
+    let mut marks = editor_marks(&app.theme);
+    marks.push(Mark::style('H', "title", title));
+    marks.push(Mark::style('K', "keyword", app.theme.capture_style("keyword").unwrap()));
+    assert_snapshot!("markdown_preview", snapshot(&term, &marks, None));
 }
 
 #[tokio::test]

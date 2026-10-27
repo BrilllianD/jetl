@@ -321,6 +321,8 @@
 "ctrl-alt-h" = "lsp.call_hierarchy"
 "ctrl-alt-shift-h" = "lsp.type_hierarchy"
 "esc" = "editor.escape"
+# Markdown preview of the active .md file.
+"alt-shift-v" = "markdown.preview"
 
 # The conflict resolver (Git > Resolve Conflicts) while it is open.
 # JetBrains: F7/Shift+F7 step through the changes; Alt+Shift+Left/Right take
