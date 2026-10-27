@@ -5,6 +5,7 @@ pub mod focus;
 pub mod hierarchy;
 pub mod hover;
 pub mod layout;
+pub mod markdown;
 pub mod menu;
 pub mod menu_bar;
 pub mod new_task;

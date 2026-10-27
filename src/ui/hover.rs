@@ -265,7 +265,7 @@ pub fn code_lines(code: &str, def: Option<&'static LanguageDef>, theme: &Theme) 
 
 /// The language of a fence's info string: its first word (ends at whitespace, `,`
 /// or `{`) by name, the buffer's language for no word, none for an unknown one.
-fn fence_language(info: &str, fallback: Option<&'static LanguageDef>) -> Option<&'static LanguageDef> {
+pub(crate) fn fence_language(info: &str, fallback: Option<&'static LanguageDef>) -> Option<&'static LanguageDef> {
     let word = info.trim().split(|c: char| c.is_whitespace() || c == ',' || c == '{').next().unwrap_or("");
     if word.is_empty() { fallback } else { syntax::language_for_alias(word) }
 }
@@ -360,7 +360,7 @@ fn inline(s: &str) -> String {
 }
 
 /// `[text](url)` starting at `open`: indexes of `]` and `)`.
-fn link_span(chars: &[char], open: usize) -> Option<(usize, usize)> {
+pub(crate) fn link_span(chars: &[char], open: usize) -> Option<(usize, usize)> {
     let close = chars[open + 1..].iter().position(|&c| c == ']')? + open + 1;
     if chars.get(close + 1) != Some(&'(') {
         return None;
