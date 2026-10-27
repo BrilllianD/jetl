@@ -30,7 +30,7 @@ use crate::ui::palette::Palette;
 
 pub(super) use crate::lsp::caps::{
     CODE_ACTION, CODE_ACTION_RESOLVE, COMPLETION, DOCUMENT_SYMBOL, EXECUTE_COMMAND, FORMATTING, INLAY_HINT, PREPARE_RENAME,
-    RANGE_FORMATTING, RENAME, RESOLVE,
+    RANGE_FORMATTING, RENAME, RESOLVE, SEMANTIC_TOKENS_FULL, SEMANTIC_TOKENS_RANGE,
 };
 use crate::lsp::caps::{
     Caps, DECLARATION, DEFINITION, HOVER, IMPLEMENTATION, PREPARE_CALL_HIERARCHY, PREPARE_TYPE_HIERARCHY, REFERENCES, SIGNATURE_HELP,
@@ -59,6 +59,8 @@ fn method_of(tag: &PendingTag) -> &'static str {
         PendingTag::Formatting(_) => FORMATTING,
         PendingTag::Lightbulb(_) => CODE_ACTION,
         PendingTag::InlayHints(_) => INLAY_HINT,
+        // Never looked up: routed before the inflight check.
+        PendingTag::SemanticTokens(_) => SEMANTIC_TOKENS_FULL,
         PendingTag::Initialize => "initialize",
         PendingTag::Shutdown => "shutdown",
         PendingTag::WillFileOp(_) => "workspace/will*Files",
@@ -97,6 +99,7 @@ fn what(method: &str) -> &'static str {
         DOCUMENT_SYMBOL => "file structure",
         FORMATTING => "formatting",
         INLAY_HINT => "inlay hints",
+        SEMANTIC_TOKENS_FULL | SEMANTIC_TOKENS_RANGE => "semantic highlighting",
         RANGE_FORMATTING => "formatting a selection",
         PREPARE_CALL_HIERARCHY => "call hierarchy",
         PREPARE_TYPE_HIERARCHY => "type hierarchy",
@@ -325,6 +328,10 @@ impl App {
         if let PendingTag::InlayHints(t) = tag {
             return self.inlay_answer(t, result);
         }
+        // And the semantic tokens.
+        if let PendingTag::SemanticTokens(t) = tag {
+            return self.semantic_answer(t, result);
+        }
         let method = method_of(&tag);
         match self.lsp.inflight.get(method) {
             Some(f) if f.seq == t.seq => {
@@ -387,6 +394,7 @@ impl App {
             | PendingTag::Formatting(_)
             | PendingTag::Lightbulb(_)
             | PendingTag::InlayHints(_)
+            | PendingTag::SemanticTokens(_)
             | PendingTag::WillFileOp(_)
             | PendingTag::WorkspaceSymbols(_)
             | PendingTag::HierarchyChildren { .. }

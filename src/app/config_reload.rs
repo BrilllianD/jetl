@@ -297,6 +297,9 @@ impl App {
         if diff.has("lsp.inlay_hints") {
             self.set_inlays_shown(self.config.lsp.inlay_hints);
         }
+        if diff.has("lsp.semantic_tokens") {
+            self.set_semantic_tokens(self.config.lsp.semantic_tokens);
+        }
         if diff.has_section("local_history") {
             self.history.set_settings(self.config.local_history.clone());
             if diff.has("local_history.keep_days") || diff.has("local_history.max_total_mb") {
@@ -488,6 +491,21 @@ mod tests {
         reload(&mut app, &[ConfigFile::Config]);
         assert!(app.config.editor.indent_guides);
         assert!(app.editor.indent_guides());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn semantic_tokens_reload_live() {
+        let (mut app, dir) = test_app("reload-semantic");
+        crate::app::tests::load(&mut app, "a.rs", "fn main() {}\n");
+        app.editor.active_buffer_mut().unwrap().semantic.set(vec![(3..7, "function".into())]);
+        write(&app, "config.toml", "[lsp]\nenabled = false\nsemantic_tokens = false\n");
+        reload(&mut app, &[ConfigFile::Config]);
+        assert!(!app.config.lsp.semantic_tokens);
+        assert!(app.editor.active_buffer().unwrap().semantic.is_empty(), "the tokens went");
+        write(&app, "config.toml", "[lsp]\nenabled = false\nsemantic_tokens = true\n");
+        reload(&mut app, &[ConfigFile::Config]);
+        assert!(app.config.lsp.semantic_tokens);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

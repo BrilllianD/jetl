@@ -367,6 +367,13 @@ pub static SETTINGS: &[Setting] = &[
         Kind::Bool,
         |c| Value::Bool(c.lsp.inlay_hints)
     ),
+    row!(
+        "lsp.semantic_tokens",
+        "Semantic highlighting",
+        "Colour code by the language server's semantic tokens (parameters, mutable variables, macros) on top of tree-sitter.",
+        Kind::Bool,
+        |c| Value::Bool(c.lsp.semantic_tokens)
+    ),
     row!("lsp.max_diagnostics_per_file", "Problems kept per file", "Problems kept per file, the most severe first.", ANY, |c| n(c
         .lsp
         .max_diagnostics_per_file)),
@@ -449,6 +456,7 @@ pub static PAGES: &[Page] = &[
             "lsp.completion_auto",
             "lsp.completion_min_chars",
             "lsp.inlay_hints",
+            "lsp.semantic_tokens",
             "lsp.max_diagnostics_per_file",
             "lsp.scratches",
             "lsp.startup_timeout_ms",

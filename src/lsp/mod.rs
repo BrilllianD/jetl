@@ -19,6 +19,7 @@ pub mod locations;
 pub mod panel;
 pub mod pos;
 pub mod registry;
+pub mod semantic;
 pub mod symbols;
 pub mod sync;
 pub mod transport;
@@ -90,6 +91,8 @@ pub enum PendingTag {
     /// `textDocument/inlayHint` for the visible lines; checked against
     /// `LspService::inlay` (`app/inlay.rs`), not `inflight`.
     InlayHints(DocTag),
+    /// `textDocument/semanticTokens/full` or `/range`; checked against `LspService::semantic` (`app/semantic.rs`), not `inflight`.
+    SemanticTokens(DocTag),
     /// workspace/symbol for the palette query with this seq.
     WorkspaceSymbols(u64),
     /// textDocument/prepareCallHierarchy at the caret.
@@ -133,6 +136,7 @@ impl PendingTag {
             | PendingTag::Formatting(t)
             | PendingTag::Lightbulb(t)
             | PendingTag::InlayHints(t)
+            | PendingTag::SemanticTokens(t)
             | PendingTag::CallHierarchy(t)
             | PendingTag::TypeHierarchy(t) => Some(t),
         }
@@ -270,6 +274,8 @@ pub struct LspConfig {
     pub completion_min_chars: usize,
     /// Show the server's inlay hints.
     pub inlay_hints: bool,
+    /// Colour code by the server's semantic tokens.
+    pub semantic_tokens: bool,
     /// Start language servers for scratch files too: separate clients rooted
     /// at the scratches directory (rust-analyzer gets them as
     /// `detachedFiles`).
@@ -288,6 +294,7 @@ impl Default for LspConfig {
             completion_auto: true,
             completion_min_chars: 1,
             inlay_hints: true,
+            semantic_tokens: true,
             scratches: false,
             servers: BTreeMap::new(),
         }

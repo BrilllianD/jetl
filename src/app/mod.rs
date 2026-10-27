@@ -68,6 +68,7 @@ mod recovery;
 mod run;
 mod run_configs;
 mod save_as;
+mod semantic;
 mod settings;
 mod signature;
 mod snippets;
@@ -638,6 +639,7 @@ impl App {
         self.format_timeout(Instant::now());
         self.lightbulb_tick(Instant::now());
         self.inlay_tick(Instant::now());
+        self.semantic_tick(Instant::now());
         self.markdown_preview_tick();
         if self.editor.autosave_due(Instant::now()) {
             self.autosave();

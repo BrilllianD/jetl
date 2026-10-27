@@ -38,7 +38,7 @@ pub(super) const INLAY_DELAY: Duration = Duration::from_millis(300);
 
 /// The error code jetl gives a request that got no answer in time
 /// (`lsp::client`).
-const TIMED_OUT: i64 = -32803;
+pub(super) const TIMED_OUT: i64 = -32803;
 
 /// The hints' debounce and its request in flight (in `LspService`).
 #[derive(Debug, Default)]

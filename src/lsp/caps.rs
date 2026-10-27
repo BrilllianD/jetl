@@ -10,8 +10,9 @@ use std::path::Path;
 
 use lsp_types::{
     CallHierarchyServerCapability, CodeActionProviderCapability, DeclarationCapability, FileOperationFilter, FileOperationPatternKind,
-    FileOperationRegistrationOptions, HoverProviderCapability, ImplementationProviderCapability, OneOf, ServerCapabilities,
-    TextDocumentSyncKind, TypeDefinitionProviderCapability,
+    FileOperationRegistrationOptions, HoverProviderCapability, ImplementationProviderCapability, OneOf, SemanticTokensFullOptions,
+    SemanticTokensLegend, SemanticTokensOptions, SemanticTokensServerCapabilities, ServerCapabilities, TextDocumentSyncKind,
+    TypeDefinitionProviderCapability,
 };
 use serde_json::Value;
 
@@ -33,6 +34,10 @@ pub const RENAME: &str = "textDocument/rename";
 pub const CODE_ACTION: &str = "textDocument/codeAction";
 pub const CODE_ACTION_RESOLVE: &str = "codeAction/resolve";
 pub const INLAY_HINT: &str = "textDocument/inlayHint";
+/// The dynamic-registration method of semantic tokens; never sent as a request.
+pub const SEMANTIC_TOKENS: &str = "textDocument/semanticTokens";
+pub const SEMANTIC_TOKENS_FULL: &str = "textDocument/semanticTokens/full";
+pub const SEMANTIC_TOKENS_RANGE: &str = "textDocument/semanticTokens/range";
 pub const EXECUTE_COMMAND: &str = "workspace/executeCommand";
 pub const DOCUMENT_SYMBOL: &str = "textDocument/documentSymbol";
 pub const PREPARE_CALL_HIERARCHY: &str = "textDocument/prepareCallHierarchy";
@@ -166,6 +171,15 @@ impl<'a> Caps<'a> {
             FORMATTING => on(&fixed.document_formatting_provider) || self.any(FORMATTING),
             RANGE_FORMATTING => on(&fixed.document_range_formatting_provider) || self.any(RANGE_FORMATTING),
             INLAY_HINT => on(&fixed.inlay_hint_provider) || self.any(INLAY_HINT),
+            SEMANTIC_TOKENS_FULL => {
+                matches!(
+                    self.semantic_options().and_then(|o| o.full.as_ref()),
+                    Some(SemanticTokensFullOptions::Bool(true) | SemanticTokensFullOptions::Delta { .. })
+                ) || self.dynamic(SEMANTIC_TOKENS).any(|o| flag(o, "full") || o.get("full").is_some_and(Value::is_object))
+            }
+            SEMANTIC_TOKENS_RANGE => {
+                self.semantic_options().is_some_and(|o| o.range == Some(true)) || self.dynamic(SEMANTIC_TOKENS).any(|o| flag(o, "range"))
+            }
             PREPARE_CALL_HIERARCHY => {
                 matches!(
                     fixed.call_hierarchy_provider,
@@ -176,6 +190,23 @@ impl<'a> Caps<'a> {
             PREPARE_TYPE_HIERARCHY => true,
             _ => false,
         }
+    }
+
+    /// The static semantic tokens options, whichever variant carries them.
+    fn semantic_options(&self) -> Option<&'a SemanticTokensOptions> {
+        match self.fixed.semantic_tokens_provider.as_ref()? {
+            SemanticTokensServerCapabilities::SemanticTokensOptions(o) => Some(o),
+            SemanticTokensServerCapabilities::SemanticTokensRegistrationOptions(r) => Some(&r.semantic_tokens_options),
+        }
+    }
+
+    /// The semantic tokens legend: the static one, else the first applicable
+    /// registration's. `None` when neither has a readable legend.
+    pub fn semantic_legend(&self) -> Option<SemanticTokensLegend> {
+        if let Some(o) = self.semantic_options() {
+            return Some(o.legend.clone());
+        }
+        self.dynamic(SEMANTIC_TOKENS).next().and_then(|o| serde_json::from_value(o.get("legend")?.clone()).ok())
     }
 
     /// Whether any registration of `method` applies.
@@ -470,6 +501,7 @@ mod tests {
             "formatting",
             "rangeFormatting",
             "inlayHint",
+            "semanticTokens",
         ] {
             assert_eq!(c["textDocument"][k]["dynamicRegistration"], true, "{k}");
         }
@@ -485,6 +517,57 @@ mod tests {
         assert_eq!(c["workspace"]["workspaceEdit"]["changeAnnotationSupport"]["groupsOnLabel"], false);
         assert_eq!(c["textDocument"]["rename"]["honorsChangeAnnotations"], true);
         assert_eq!(c["textDocument"]["codeAction"]["honorsChangeAnnotations"], true);
+    }
+
+    const LEGEND: &str = r#"{"tokenTypes": ["variable"], "tokenModifiers": []}"#;
+
+    fn legend() -> Value {
+        serde_json::from_str(LEGEND).unwrap()
+    }
+
+    #[test]
+    fn semantic_tokens_full_and_range_from_static_or_registered() {
+        let r = Registry::default();
+        let l = legend();
+        let both = |v: Value| {
+            let f = fixed(json!({ "semanticTokensProvider": v }));
+            let c = caps(&f, &r, rust());
+            (c.has(SEMANTIC_TOKENS_FULL), c.has(SEMANTIC_TOKENS_RANGE))
+        };
+        assert_eq!(both(json!({"legend": l, "full": true})), (true, false));
+        assert_eq!(both(json!({"legend": l, "full": {"delta": true}})), (true, false));
+        assert_eq!(both(json!({"legend": l, "range": true})), (false, true));
+        assert_eq!(both(json!({"legend": l, "full": false, "range": false})), (false, false));
+        let f = fixed(json!({}));
+        assert!(!caps(&f, &r, rust()).has(SEMANTIC_TOKENS_FULL) && !caps(&f, &r, rust()).has(SEMANTIC_TOKENS_RANGE));
+        let mut r = Registry::default();
+        register(
+            &mut r,
+            "s",
+            SEMANTIC_TOKENS,
+            json!({"documentSelector": [{"language": "rust"}], "legend": l, "full": {"delta": false}, "range": true}),
+        );
+        let c = caps(&f, &r, rust());
+        assert!(c.has(SEMANTIC_TOKENS_FULL) && c.has(SEMANTIC_TOKENS_RANGE));
+        let c = caps(&f, &r, python());
+        assert!(!c.has(SEMANTIC_TOKENS_FULL) && !c.has(SEMANTIC_TOKENS_RANGE));
+    }
+
+    #[test]
+    fn semantic_legend_from_static_or_registration() {
+        let mut r = Registry::default();
+        let f = fixed(json!({}));
+        assert!(caps(&f, &r, rust()).semantic_legend().is_none());
+        register(&mut r, "n", SEMANTIC_TOKENS, json!({"documentSelector": [{"language": "rust"}], "full": true}));
+        assert!(caps(&f, &r, rust()).semantic_legend().is_none(), "a registration without a legend");
+        let mut r = Registry::default();
+        let l = json!({"tokenTypes": ["function"], "tokenModifiers": ["mutable"]});
+        register(&mut r, "s", SEMANTIC_TOKENS, json!({"documentSelector": [{"language": "rust"}], "legend": l, "full": true}));
+        let got = caps(&f, &r, rust()).semantic_legend().unwrap();
+        assert_eq!((got.token_types[0].as_str(), got.token_modifiers[0].as_str()), ("function", "mutable"));
+        let f = fixed(json!({"semanticTokensProvider": {"legend": legend(), "full": true}}));
+        let got = caps(&f, &r, rust()).semantic_legend().unwrap();
+        assert_eq!((got.token_types.len(), got.token_types[0].as_str(), got.token_modifiers.len()), (1, "variable", 0));
     }
 
     #[test]

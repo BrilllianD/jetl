@@ -208,6 +208,7 @@ max_diagnostics_per_file = 1000  # problems kept per file, the most severe first
 completion_auto = true         # open the completion popup while typing (else Ctrl+Space only)
 completion_min_chars = 1       # identifier chars typed before it opens by itself
 inlay_hints = true             # show the server's inlay hints (types, parameter names)
+semantic_tokens = true         # colour code by the server's semantic tokens on top of tree-sitter
 scratches = false              # language servers for scratch files too (own clients)
 # Built-in servers (table below) take changes here; a table with a new
 # name adds a server. Omitted keys keep the built-in values.

@@ -87,6 +87,8 @@ pub struct LspService {
     /// Whether inlay hints are asked for and drawn: `[lsp] inlay_hints`,
     /// switched for the session by the View menu.
     pub(super) inlays_shown: bool,
+    /// The semantic tokens' request and debounce (`app/semantic.rs`).
+    pub(super) semantic: super::semantic::SemanticReqs,
     /// Tree file operations waiting for `will*Files` answers (`app/files.rs`).
     pub(super) file_ops: Vec<super::files::PendingFileOp>,
     /// Offer servers `didChangeWatchedFiles` (the root watcher runs).
@@ -206,6 +208,7 @@ impl LspService {
         self.edit = Default::default();
         self.lightbulb = Default::default();
         self.inlay = Default::default();
+        self.semantic = Default::default();
         self.file_ops.clear();
         self.outside.clear();
         self.outside_watcher = None;
@@ -345,6 +348,7 @@ fn untrack(b: &mut Buffer) {
     b.lsp_pending.clear();
     b.lsp_full_resync = false;
     b.inlays.clear();
+    b.semantic.clear();
 }
 
 impl App {
@@ -641,9 +645,10 @@ impl App {
                     }
                     (WorkDoneProgress::End(_), Some(i)) => {
                         self.lsp.progress.remove(i);
-                        // Hints asked while the server loaded were empty or failed.
+                        // Hints and semantic tokens asked while the server loaded were empty or failed.
                         if !self.lsp.progress.iter().any(|p| p.0 == server) {
                             self.inlay_refresh();
+                            self.semantic_refresh();
                         }
                     }
                     _ => {}
@@ -716,6 +721,10 @@ impl App {
             "window/workDoneProgress/create" => Ok(Value::Null),
             "workspace/inlayHint/refresh" => {
                 self.inlay_refresh();
+                Ok(Value::Null)
+            }
+            "workspace/semanticTokens/refresh" => {
+                self.semantic_refresh();
                 Ok(Value::Null)
             }
             "workspace/workspaceFolders" => {

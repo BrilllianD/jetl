@@ -26,8 +26,10 @@ use lsp_types::{
     GeneralClientCapabilities, GotoCapability, HoverClientCapabilities, InitializeParams, InitializeResult, InlayHintClientCapabilities,
     InlayHintWorkspaceClientCapabilities, MarkupKind, MessageActionItemCapabilities, ParameterInformationSettings, PositionEncodingKind,
     PublishDiagnosticsClientCapabilities, ReferenceClientCapabilities, RenameClientCapabilities, ResourceOperationKind,
-    ShowMessageRequestClientCapabilities, SignatureHelpClientCapabilities, SignatureInformationSettings, TagSupport,
-    TextDocumentClientCapabilities, TextDocumentSyncClientCapabilities, TypeHierarchyClientCapabilities, WindowClientCapabilities,
+    SemanticTokenModifier, SemanticTokenType, SemanticTokensClientCapabilities, SemanticTokensClientCapabilitiesRequests,
+    SemanticTokensFullOptions, SemanticTokensWorkspaceClientCapabilities, ShowMessageRequestClientCapabilities,
+    SignatureHelpClientCapabilities, SignatureInformationSettings, TagSupport, TextDocumentClientCapabilities,
+    TextDocumentSyncClientCapabilities, TokenFormat, TypeHierarchyClientCapabilities, WindowClientCapabilities,
     WorkspaceClientCapabilities, WorkspaceEditClientCapabilities, WorkspaceFileOperationsClientCapabilities, WorkspaceFolder,
     WorkspaceSymbolClientCapabilities,
 };
@@ -207,6 +209,62 @@ impl Drop for Client {
     }
 }
 
+/// Semantic tokens: `/full` without delta and `/range`, relative data, every
+/// standard type and modifier, no overlapping or multi-line tokens.
+fn semantic_tokens_capabilities() -> SemanticTokensClientCapabilities {
+    let types = [
+        SemanticTokenType::NAMESPACE,
+        SemanticTokenType::TYPE,
+        SemanticTokenType::CLASS,
+        SemanticTokenType::ENUM,
+        SemanticTokenType::INTERFACE,
+        SemanticTokenType::STRUCT,
+        SemanticTokenType::TYPE_PARAMETER,
+        SemanticTokenType::PARAMETER,
+        SemanticTokenType::VARIABLE,
+        SemanticTokenType::PROPERTY,
+        SemanticTokenType::ENUM_MEMBER,
+        SemanticTokenType::EVENT,
+        SemanticTokenType::FUNCTION,
+        SemanticTokenType::METHOD,
+        SemanticTokenType::MACRO,
+        SemanticTokenType::KEYWORD,
+        SemanticTokenType::MODIFIER,
+        SemanticTokenType::COMMENT,
+        SemanticTokenType::STRING,
+        SemanticTokenType::NUMBER,
+        SemanticTokenType::REGEXP,
+        SemanticTokenType::OPERATOR,
+        SemanticTokenType::DECORATOR,
+    ];
+    let modifiers = [
+        SemanticTokenModifier::DECLARATION,
+        SemanticTokenModifier::DEFINITION,
+        SemanticTokenModifier::READONLY,
+        SemanticTokenModifier::STATIC,
+        SemanticTokenModifier::DEPRECATED,
+        SemanticTokenModifier::ABSTRACT,
+        SemanticTokenModifier::ASYNC,
+        SemanticTokenModifier::MODIFICATION,
+        SemanticTokenModifier::DOCUMENTATION,
+        SemanticTokenModifier::DEFAULT_LIBRARY,
+    ];
+    SemanticTokensClientCapabilities {
+        dynamic_registration: Some(true),
+        requests: SemanticTokensClientCapabilitiesRequests {
+            range: Some(true),
+            full: Some(SemanticTokensFullOptions::Delta { delta: Some(false) }),
+        },
+        token_types: types.to_vec(),
+        token_modifiers: modifiers.to_vec(),
+        formats: vec![TokenFormat::RELATIVE],
+        overlapping_token_support: Some(false),
+        multiline_token_support: Some(false),
+        server_cancel_support: None,
+        augments_syntax_tokens: None,
+    }
+}
+
 /// What jetl supports, sent with `initialize`. Positions are UTF-16 only;
 /// dynamic registration where `Caps::has` honours it (`lsp::caps`); file
 /// operations (`will*Files`, `did*Files`) from the Project tree;
@@ -262,6 +320,7 @@ pub fn client_capabilities(watch_files: bool) -> ClientCapabilities {
             inlay_hint: Some(InlayHintClientCapabilities { dynamic_registration: Some(true), resolve_support: None }),
             call_hierarchy: Some(CallHierarchyClientCapabilities { dynamic_registration: Some(true) }),
             type_hierarchy: Some(TypeHierarchyClientCapabilities { dynamic_registration: Some(true) }),
+            semantic_tokens: Some(semantic_tokens_capabilities()),
             ..Default::default()
         }),
         window: Some(WindowClientCapabilities {
@@ -291,6 +350,7 @@ pub fn client_capabilities(watch_files: bool) -> ClientCapabilities {
             symbol: Some(WorkspaceSymbolClientCapabilities { dynamic_registration: Some(true), ..Default::default() }),
             execute_command: Some(ExecuteCommandClientCapabilities { dynamic_registration: Some(true) }),
             inlay_hint: Some(InlayHintWorkspaceClientCapabilities { refresh_support: Some(true) }),
+            semantic_tokens: Some(SemanticTokensWorkspaceClientCapabilities { refresh_support: Some(true) }),
             did_change_watched_files: watch_files.then_some(DidChangeWatchedFilesClientCapabilities {
                 dynamic_registration: Some(true),
                 relative_pattern_support: Some(true),
@@ -611,6 +671,16 @@ mod tests {
         assert_eq!(c["workspace"]["symbol"]["dynamicRegistration"], json!(true));
         assert_eq!(c["textDocument"]["inlayHint"]["dynamicRegistration"], json!(true));
         assert_eq!(c["workspace"]["inlayHint"]["refreshSupport"], json!(true));
+        let sem = &c["textDocument"]["semanticTokens"];
+        assert_eq!(sem["requests"], json!({"full": {"delta": false}, "range": true}));
+        assert_eq!(sem["dynamicRegistration"], json!(true));
+        assert_eq!(sem["formats"], json!(["relative"]));
+        assert_eq!((&sem["overlappingTokenSupport"], &sem["multilineTokenSupport"]), (&json!(false), &json!(false)));
+        let types = sem["tokenTypes"].as_array().unwrap();
+        assert!(types.len() == 23 && types.contains(&json!("parameter")) && types.contains(&json!("decorator")), "{types:?}");
+        let mods = sem["tokenModifiers"].as_array().unwrap();
+        assert!(mods.len() == 10 && mods.contains(&json!("defaultLibrary")), "{mods:?}");
+        assert_eq!(c["workspace"]["semanticTokens"]["refreshSupport"], json!(true));
         assert_eq!(c["window"]["showMessage"]["messageActionItem"]["additionalPropertiesSupport"], json!(true));
         assert!(c["workspace"]["didChangeWatchedFiles"].is_null());
         let watching = serde_json::to_value(client_capabilities(true)).unwrap();

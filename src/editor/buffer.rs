@@ -219,6 +219,9 @@ pub struct Buffer {
     /// LSP inlay hints, in this buffer's current coordinates (shifted by every
     /// change until the next answer).
     pub inlays: super::inlay::InlayHints,
+    /// LSP semantic tokens, in this buffer's current coordinates (shifted by
+    /// every change until the next answer).
+    pub semantic: super::semantic::SemanticTokens,
     /// Symbols for breadcrumbs and sticky scroll, extracted while a pane needs them.
     pub scopes: crate::symbols::ScopeCache,
 }
@@ -274,6 +277,7 @@ impl Buffer {
             recovered: false,
             base_path: None,
             inlays: Default::default(),
+            semantic: Default::default(),
             scopes: Default::default(),
         }
     }
@@ -398,13 +402,15 @@ impl Buffer {
         if let Some(s) = &mut self.syntax {
             s.note_change(&self.rope, at, old_len, new_len, &c.old, &c.new);
         }
-        // The live view's folds and the hints follow like its carets; a reload drops them.
+        // The live view's folds, the hints and semantic tokens follow like its carets; a reload drops them.
         if whole {
             self.view.folds.clear();
             self.inlays.clear();
+            self.semantic.clear();
         } else {
             self.view.folds.map_edit(at, old_len, new_len);
             self.inlays.map_edit(at, end - at, new_len);
+            self.semantic.map_edit(at, end - at, new_len);
         }
         self.view.folds.rebuild(&self.rope);
         if whole {
@@ -1822,6 +1828,20 @@ mod tests {
         let text = buf.text();
         buf.apply(vec![Change::replace(0, text, "new text")], Selection::point(8), TxKind::Other);
         assert!(buf.inlays.is_empty(), "a whole-text replacement drops the hints");
+    }
+
+    #[test]
+    fn edits_and_undo_move_semantic_tokens() {
+        let mut buf = b("let x = foo(1, 2);");
+        let all = |buf: &Buffer| buf.semantic.in_range(0..usize::MAX).map(|(r, _)| r).collect::<Vec<_>>();
+        buf.semantic.set(vec![(4..5, "variable".into()), (8..11, "function".into())]);
+        buf.apply(vec![Change::insert(5, "y")], Selection::point(6), TxKind::Other);
+        assert_eq!(all(&buf), [4..6, 9..12], "typing at the end of a token grows it");
+        assert!(buf.undo());
+        assert_eq!(all(&buf), [4..5, 8..11], "undo moves them back");
+        let text = buf.text();
+        buf.apply(vec![Change::replace(0, text, "new text")], Selection::point(8), TxKind::Other);
+        assert!(buf.semantic.is_empty(), "a whole-text replacement drops the tokens");
     }
 
     #[test]
