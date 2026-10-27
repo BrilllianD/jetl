@@ -51,9 +51,36 @@ fn is_token(name: &str) -> bool {
     !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || "!#$%&'*+-.^_`|~".contains(c))
 }
 
+/// The words of a request line; spaces inside `{{ ... }}` do not split.
+fn words(line: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let (mut start, mut depth) = (None, 0usize);
+    let mut chars = line.char_indices().peekable();
+    while let Some((i, c)) = chars.next() {
+        if c.is_whitespace() && depth == 0 {
+            if let Some(s) = start.take() {
+                out.push(&line[s..i]);
+            }
+            continue;
+        }
+        start.get_or_insert(i);
+        if c == '{' && chars.peek().is_some_and(|&(_, n)| n == '{') {
+            chars.next();
+            depth += 1;
+        } else if c == '}' && depth > 0 && chars.peek().is_some_and(|&(_, n)| n == '}') {
+            chars.next();
+            depth -= 1;
+        }
+    }
+    if let Some(s) = start {
+        out.push(&line[s..]);
+    }
+    out
+}
+
 /// Method and url of a request line.
 fn request_line(line: &str) -> Option<(String, String)> {
-    let mut words = line.split_whitespace();
+    let mut words = words(line).into_iter();
     let first = words.next()?;
     if first.chars().all(|c| c.is_ascii_uppercase()) {
         return Some((first.to_string(), words.next()?.to_string()));
@@ -226,6 +253,12 @@ mod tests {
     }
 
     const FULL: &str = "POST {{host}}/items HTTP/1.1\nContent-Type: application/json\nX-Time: 12:30\n\n{\n  \"a\": 1\n}\n\n\n";
+
+    #[test]
+    fn spaces_inside_variable_braces_stay_in_the_url() {
+        let got = parse("POST http://{{ host }}/items/{{id}} HTTP/1.1\n");
+        assert_eq!(got[0].url, "http://{{ host }}/items/{{id}}");
+    }
 
     #[test]
     fn parses_two_named_blocks() {

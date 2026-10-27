@@ -463,6 +463,8 @@ pub enum RunAction {
     RerunFailed,
     /// Run the test around the caret.
     TestAtCaret,
+    /// Send the HTTP request around the caret with curl.
+    HttpRequestAtCaret,
     Stop,
     Up,
     Down,
@@ -1037,6 +1039,7 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "run.rerun" => "Run: run the last run again", Run(RunAction::Rerun);
         "run.rerun_failed" => "Run: rerun the failed tests", Run(RunAction::RerunFailed);
         "run.test_at_caret" => "Run: run the test at the caret", Run(RunAction::TestAtCaret);
+        "run.http_request_at_caret" => "Run: send the HTTP request at the caret of a .http file with curl", Run(RunAction::HttpRequestAtCaret);
         "run.stop" => "Run: stop the running task", Run(RunAction::Stop);
         "run.toggle_view" => "Run: switch between output and the test tree", Run(RunAction::ToggleView);
         "run.expand" => "Run: expand the selected tree row", Run(RunAction::Expand);

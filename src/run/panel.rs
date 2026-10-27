@@ -427,6 +427,7 @@ impl RunPanel {
             RunAction::Rerun
             | RunAction::RerunFailed
             | RunAction::TestAtCaret
+            | RunAction::HttpRequestAtCaret
             | RunAction::Stop
             | RunAction::RunSelected
             | RunAction::EditConfigs => return false,

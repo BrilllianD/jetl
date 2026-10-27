@@ -1214,6 +1214,22 @@ Same setup as the test runner tree (`/tmp/jt-crate`).
    `Run Test at Caret supports Rust, Python, JavaScript and TypeScript`.
 5. Repeat at 120x40 and 80x24.
 
+### Scenario: HTTP request at caret
+
+Setup: `T=/tmp/jt-http; mkdir -p $T; python3 -m http.server 8765 -d $T &` (or any local echo server),
+`$T/api.http` with a `GET http://127.0.0.1:8765/` block, a `### Post` block `POST http://{{host}}/x`
+with `Content-Type: application/json` and a JSON body, and `$T/http-client.env.json`
+`{"dev": {"host": "127.0.0.1:8765"}}`.
+
+1. Caret in the GET block, `send-keys C-M-r`: the Run tab is named `GET http://127.0.0.1:8765/`,
+   shows `HTTP/1.0 200 OK`, the headers and the listing, no `^M`.
+2. Caret in the POST block: the request goes out (python's server answers 501, which is still shown).
+   Ctrl+F5 reruns it.
+3. Run > Send HTTP Request at Caret and F1 do the same. A `.txt` file says
+   `Send HTTP Request needs a .http file`.
+4. Start jetl with `env PATH=/nonexistent` via the absolute binary path: `curl not found in PATH`.
+5. Repeat at 120x40 and 80x24.
+
 ### Scenario: jest tests tree
 
 Setup: a scratch project `/tmp/jt-jest` (needs the npm registry). `package.json`:

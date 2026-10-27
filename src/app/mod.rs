@@ -52,6 +52,7 @@ mod format;
 mod git_ops;
 mod hierarchy;
 mod history;
+mod http;
 mod inlay;
 mod lightbulb;
 mod lsp;
@@ -271,6 +272,8 @@ pub struct App {
     /// The running task, the last one and the picker's tasks.
     pub(crate) run: run::RunState,
     pub run_panel: crate::run::panel::RunPanel,
+    /// The temp file holding the body of the last HTTP request sent (Rerun reads it again).
+    pub(crate) http_body: Option<std::path::PathBuf>,
     /// The Problems window over `lsp.diagnostics`.
     pub problems: crate::lsp::panel::ProblemsPanel,
     /// The Local History window (`history/panel.rs`).
@@ -413,6 +416,7 @@ impl App {
             format: Default::default(),
             run: Default::default(),
             run_panel: Default::default(),
+            http_body: None,
             problems: crate::lsp::panel::ProblemsPanel::excluding(paths.scratches_dir()),
             history_panel: Default::default(),
             tasks: Default::default(),
@@ -1060,6 +1064,11 @@ impl App {
             Action::Run(RunAction::TestAtCaret) => {
                 drop(cx);
                 self.run_test_at_caret();
+                return;
+            }
+            Action::Run(RunAction::HttpRequestAtCaret) => {
+                drop(cx);
+                self.http_request_at_caret();
                 return;
             }
             Action::Run(RunAction::Stop) => {
