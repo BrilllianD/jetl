@@ -76,7 +76,7 @@ pub struct NewTaskForm {
 }
 
 /// The plain editing keys of a single input; whether the key was used.
-fn edit(input: &mut TextInput, key: KeyEvent) -> bool {
+pub(crate) fn edit(input: &mut TextInput, key: KeyEvent) -> bool {
     match key.code {
         KeyCode::Backspace if key.modifiers.contains(KeyModifiers::CONTROL) => input.delete_word_back(),
         KeyCode::Backspace => input.backspace(),

@@ -458,7 +458,7 @@ Start jetl on `$T`. Alt+9 opens the Git window. Check:
 
 - The header shows `Rebasing 1/2` after the tabs.
 - The status bar shows it after the short sha.
-- In the Log (Alt+L), Shift+F10 shows Checkout Revision, New Branch…, Cherry-Pick and Revert Commit… greyed.
+- In the Log (Alt+L), Shift+F10 shows Checkout Revision, New Branch…, Cherry-Pick, Revert Commit… and Interactively Rebase from Here… greyed.
 - Alt+` then Enter on the main branch lists no Checkout, Merge or Rebase.
 - F10, G: Continue Operation, Skip Commit and Abort Operation are enabled. The header shows ` Continue  Skip  Abort `.
 - Click Continue with `a.txt` still `U`: the dialog asks. Resolve… opens Resolve Conflicts; accept theirs.
@@ -471,6 +471,29 @@ Start jetl on `$T`. Alt+9 opens the Git window. Check:
   (`git -C $T log --oneline -1` is `dev 2`).
 - Local History (Alt+Shift+H on `a.txt`) has a `Before git rebase --abort` row.
 - With a clean repository the palette does not list `continue operation` and the menu rows are greyed.
+
+### Scenario: interactive rebase
+
+At 80x24:
+
+```sh
+T=/tmp/jt-irb; rm -rf $T; mkdir -p $T && cd $T && git init -q
+git config user.name t; git config user.email t@t
+echo base > base.txt; git add . && git commit -qm init
+for n in one two three four; do echo "body $n" > $n.txt; git add . && git commit -q -m $n -m "body $n"; done; cd -
+```
+
+Start jetl on `$T`. Alt+9 opens the Git window, Alt+L the Log. Check:
+
+- Select `one`, press Alt+Shift+I: the dialog `Interactive Rebase from <sha>` lists `one`, `two`, `three`, `four`
+  as `pick` rows, oldest first.
+- `r` on `two` (the message box takes the focus and holds `two` and `body two`): replace it with a new subject,
+  Tab back to the list, `s` on `three`, `d` on `four`, Enter. The status bar shows `Interactive rebase done`;
+  `git -C $T log --oneline` shows the new subject over `one` and `init`, and `four.txt` is gone.
+- Edit a tracked file and press Alt+Shift+I again: the warning `Commit or stash your changes before an
+  interactive rebase`, no dialog.
+- Restore the file, open the dialog again, `s` on the first row, Enter: `The first commit cannot be squashed or
+  fixed up` shows in the dialog, which stays open; any key clears it; Esc cancels.
 
 ### Scenario: crash recovery
 

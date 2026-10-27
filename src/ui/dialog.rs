@@ -1,5 +1,5 @@
-//! Modal dialogs: confirmation with buttons, text input, a choice list, and the New Task form
-//! (`ui::new_task`).
+//! Modal dialogs: confirmation with buttons, text input, a choice list, the New Task form
+//! (`ui::new_task`) and the Interactive Rebase form (`ui::rebase`).
 
 use std::path::PathBuf;
 
@@ -94,6 +94,8 @@ pub enum DialogId {
     RebaseOnto {
         onto: String,
     },
+    /// The interactive rebase todo form; answered with `DialogResult::Rebase`.
+    InteractiveRebase,
     MergeBranch {
         name: String,
     },
@@ -267,6 +269,7 @@ pub enum DialogKind {
     Input { input: TextInput, ok: String },
     Choice { items: Vec<String>, list: ListState, filter: TextInput },
     NewTask(Box<crate::ui::new_task::NewTaskForm>),
+    Rebase(Box<crate::ui::rebase::RebaseForm>),
 }
 
 /// Tab completion of a typed path in an input dialog
@@ -300,6 +303,7 @@ pub enum DialogResult {
     Text(String),
     Choice(usize),
     NewTask(crate::yman::cli::NewTask),
+    Rebase(crate::git::rebase::RebasePlan),
     Cancel,
 }
 
@@ -379,6 +383,23 @@ impl Dialog {
         }
     }
 
+    /// The Interactive Rebase form of the Git window's Log tab.
+    pub fn rebase(form: crate::ui::rebase::RebaseForm) -> Self {
+        let first = form.entries().first().map_or("", |e| e.sha.as_str());
+        let title = format!("Interactive Rebase from {}", &first[..first.len().min(8)]);
+        Self {
+            id: DialogId::InteractiveRebase,
+            title,
+            message: String::new(),
+            kind: DialogKind::Rebase(Box::new(form)),
+            paths: None,
+            button_rects: vec![],
+            body_rect: Rect::default(),
+            input_rect: Rect::default(),
+            list_rect: Rect::default(),
+        }
+    }
+
     /// Tab completes the typed path, relative paths starting at `base`
     /// (an input dialog; `App::complete_dialog_path`).
     pub fn with_path_completion(self, base: PathBuf) -> Self {
@@ -420,6 +441,9 @@ impl Dialog {
         // routing Tab through here would clear the hint it just set.
         self.clear_path_hint();
         if let DialogKind::NewTask(f) = &mut self.kind {
+            return f.handle_key(key);
+        }
+        if let DialogKind::Rebase(f) = &mut self.kind {
             return f.handle_key(key);
         }
         match &mut self.kind {
@@ -478,7 +502,7 @@ impl Dialog {
                 }
                 _ => None,
             },
-            DialogKind::NewTask(_) => None,
+            DialogKind::NewTask(_) | DialogKind::Rebase(_) => None,
             DialogKind::Choice { .. } => {
                 if key.code == KeyCode::Esc {
                     return Some(DialogResult::Cancel);
@@ -516,6 +540,9 @@ impl Dialog {
         if let DialogKind::NewTask(f) = &mut self.kind {
             return f.handle_mouse(m);
         }
+        if let DialogKind::Rebase(f) = &mut self.kind {
+            return f.handle_mouse(m);
+        }
         match m.kind {
             MouseEventKind::Down(MouseButton::Left) => {
                 let p = ratatui::layout::Position::new(m.x, m.y);
@@ -529,7 +556,7 @@ impl Dialog {
                                 Some(DialogResult::Cancel)
                             }
                         }
-                        DialogKind::Choice { .. } | DialogKind::NewTask(_) => Some(DialogResult::Cancel),
+                        DialogKind::Choice { .. } | DialogKind::NewTask(_) | DialogKind::Rebase(_) => Some(DialogResult::Cancel),
                     };
                 }
                 if let DialogKind::Choice { list, .. } = &mut self.kind
@@ -588,6 +615,10 @@ impl Dialog {
             self.body_rect = f.render(frame, area, theme, &self.title);
             return;
         }
+        if let DialogKind::Rebase(f) = &mut self.kind {
+            self.body_rect = f.render(frame, area, theme, &self.title);
+            return;
+        }
         let msg_lines: Vec<&str> = self.message.lines().collect();
         let msg_w = msg_lines.iter().map(|l| l.width()).max().unwrap_or(0);
         let w = match &self.kind {
@@ -596,7 +627,7 @@ impl Dialog {
                 let bw: usize = buttons.iter().map(|b| b.width() + 4).sum::<usize>() + buttons.len().saturating_sub(1) + 2;
                 (msg_w.max(bw) + 4).max(30)
             }
-            DialogKind::Input { .. } | DialogKind::Choice { .. } | DialogKind::NewTask(_) => (msg_w + 4).max(50),
+            DialogKind::Input { .. } | DialogKind::Choice { .. } | DialogKind::NewTask(_) | DialogKind::Rebase(_) => (msg_w + 4).max(50),
         };
         // Wide enough for the title (" title " plus the corners).
         let w = w.max(self.title.width() + 4);
@@ -605,7 +636,7 @@ impl Dialog {
         let msg_rows = message_rows(&self.message, (w as usize).saturating_sub(4));
         let mut h = match &self.kind {
             DialogKind::Confirm { .. } => msg_rows.len() + 4,
-            DialogKind::Input { .. } | DialogKind::NewTask(_) => msg_rows.len() + 5,
+            DialogKind::Input { .. } | DialogKind::NewTask(_) | DialogKind::Rebase(_) => msg_rows.len() + 5,
             DialogKind::Choice { .. } => (msg_rows.len() + 3 + 12).min(area.height as usize),
         };
         // A path hint goes between the input and the buttons, as many rows
@@ -637,7 +668,7 @@ impl Dialog {
         // A frame too small for the controls stays empty.
         let min_inner_h = match &self.kind {
             DialogKind::Confirm { .. } => 1,
-            DialogKind::Input { .. } | DialogKind::NewTask(_) => 3,
+            DialogKind::Input { .. } | DialogKind::NewTask(_) | DialogKind::Rebase(_) => 3,
             DialogKind::Choice { .. } => 2,
         };
         if inner.height < min_inner_h || inner.width < 2 {
@@ -649,7 +680,7 @@ impl Dialog {
         // On a short screen the message gives way to the controls below it.
         let reserve = match &self.kind {
             DialogKind::Confirm { .. } => 2,
-            DialogKind::Input { .. } | DialogKind::NewTask(_) => 3 + hints.len(),
+            DialogKind::Input { .. } | DialogKind::NewTask(_) | DialogKind::Rebase(_) => 3 + hints.len(),
             DialogKind::Choice { .. } => 2,
         };
         let mut msg_rows = msg_rows;
@@ -726,7 +757,7 @@ impl Dialog {
                 filter.render(frame, frect, Style::default().bg(theme.bg).fg(theme.fg), "type to filter", theme.dim, true);
             }
             // Drawn by the early return at the top.
-            DialogKind::NewTask(_) => {}
+            DialogKind::NewTask(_) | DialogKind::Rebase(_) => {}
         }
     }
 }
@@ -933,5 +964,27 @@ mod tests {
     fn a_wide_name_gets_one_column() {
         let lines = hint_lines(&list(&["a-very-long-name.txt", "b"]), 10, 8);
         assert_eq!(texts(&lines), ["a-very-long-name.txt", "b"]);
+    }
+
+    #[test]
+    fn the_rebase_form_is_hosted() {
+        use crate::git::rebase::{RebasePlan, TodoAction, TodoEntry};
+        let entry = |c: char| TodoEntry {
+            sha: c.to_string().repeat(40),
+            subject: "s".into(),
+            message: "s".into(),
+            action: TodoAction::Pick,
+            new_message: None,
+        };
+        let plan = RebasePlan { base: None, head: "h".into(), entries: vec![entry('a'), entry('b')] };
+        let mut d = Dialog::rebase(crate::ui::rebase::RebaseForm::new(plan));
+        assert_eq!(d.id, DialogId::InteractiveRebase);
+        assert_eq!(d.title, "Interactive Rebase from aaaaaaaa");
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+        let theme = Theme::default();
+        term.draw(|f| d.render(f, f.area(), &theme)).unwrap();
+        assert!(!d.rect().is_empty());
+        assert!(matches!(d.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)), Some(DialogResult::Rebase(_))));
+        assert!(matches!(d.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)), Some(DialogResult::Cancel)));
     }
 }

@@ -260,6 +260,7 @@ impl App {
             (DialogId::DeleteBranch { name, force }, DialogResult::Button(0)) => self.git_request(GitRequest::DeleteBranch { name, force }),
             (DialogId::MergeBranch { name }, DialogResult::Button(0)) => self.git_request(GitRequest::Merge(name)),
             (DialogId::RebaseOnto { onto }, DialogResult::Button(0)) => self.git_request(GitRequest::Rebase(onto)),
+            (DialogId::InteractiveRebase, DialogResult::Rebase(plan)) => self.git_request(GitRequest::InteractiveRebase(plan)),
             (DialogId::NewTag { sha }, DialogResult::Text(t)) => {
                 if let Some(name) = self.ref_name(&t, "tag") {
                     self.git_request(GitRequest::NewTag { name, sha });

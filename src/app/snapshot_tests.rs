@@ -1866,6 +1866,53 @@ async fn git_reset_dialog() {
 }
 
 #[tokio::test]
+async fn git_interactive_rebase_dialog() {
+    use crate::git::rebase::{RebasePlan, TodoAction, TodoEntry};
+    let mut fx = stable_app("git-irb");
+    let app = &mut fx.app;
+    app.toggle_tool_window(ToolWindowId::Git);
+    app.perform(Action::Git(crate::actions::GitAction::TabLog));
+    let commits = vec![
+        commit('a', &['b', 'd'], "Ann", "2 hours ago", "HEAD -> main", "Merge branch 'parser'"),
+        commit('d', &['e'], "Bob", "3 days ago", "parser", "Parse nested lists"),
+        commit('b', &['c'], "Ann", "4 days ago", "", "Fix the status bar width"),
+        commit('e', &['c'], "Bob", "5 days ago", "", "Add a parser"),
+        commit('c', &[], "Ann", "2 weeks ago", "tag: v0.1.0", "Initial commit"),
+    ];
+    let g = app.git.generation;
+    let filter = app.git_panel.log_filter().clone();
+    app.handle_msg(AppMsg::Git(GitMsg::Log { generation: g, skip: 0, filter, result: Ok(commits) }));
+    let entry = |c: char, subject: &str, message: &str| TodoEntry {
+        sha: sha(c),
+        subject: subject.into(),
+        message: message.into(),
+        action: TodoAction::Pick,
+        new_message: None,
+    };
+    let plan = RebasePlan {
+        base: Some(sha('c')),
+        head: sha('a'),
+        entries: vec![
+            entry('e', "Add a parser", "Add a parser\n\nA recursive descent parser."),
+            entry('b', "Fix the status bar width", "Fix the status bar width\n\nWide chars counted as one cell."),
+            entry('d', "Parse nested lists", "Parse nested lists"),
+            entry('f', "Update the changelog", "Update the changelog"),
+        ],
+    };
+    app.handle_msg(AppMsg::Git(GitMsg::RebasePlan { generation: g, result: Ok(plan) }));
+    for code in [KeyCode::Down, KeyCode::Down, KeyCode::Char('s'), KeyCode::Up, KeyCode::Char('r')] {
+        app.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
+    }
+    let term = draw_app(app, 80, 24);
+    let marks = [
+        Mark::bg('L', "selected", app.theme.list_selected.bg.unwrap()),
+        Mark::bg('U', "selected, list unfocused", app.theme.list_selected_unfocused.bg.unwrap()),
+        Mark::style('d', "dim", app.theme.dim.bg(app.theme.popup_bg)),
+    ];
+    assert_snapshot!("git_interactive_rebase_dialog", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
 async fn git_push_dialog() {
     use crate::git::model::StatusSnapshot;
     use crate::ui::dialog::DialogResult;

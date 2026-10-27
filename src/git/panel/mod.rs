@@ -392,6 +392,7 @@ impl GitPanel {
             G::LogCherryPick => self.commit_action(CommitAction::CherryPick, cx),
             G::LogRevert => self.commit_action(CommitAction::Revert, cx),
             G::LogReset => self.commit_action(CommitAction::Reset, cx),
+            G::LogInteractiveRebase => self.commit_action(CommitAction::InteractiveRebase, cx),
             G::LogNewTag => self.commit_action(CommitAction::NewTag, cx),
             G::LogDeleteTag => self.commit_action(CommitAction::DeleteTag, cx),
             G::ToggleDiffLayout => self.toggle_diff_layout(),

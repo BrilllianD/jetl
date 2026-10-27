@@ -38,6 +38,7 @@ pub(super) enum CommitAction {
     Reset,
     NewTag,
     DeleteTag,
+    InteractiveRebase,
 }
 use crate::ui::widgets::list::ListState;
 
@@ -233,8 +234,14 @@ impl GitPanel {
     pub(super) fn commit_action(&mut self, action: CommitAction, cx: &mut Ctx) {
         let Some(sha) = self.action_commit(cx) else { return };
         let short = sha[..sha.len().min(8)].to_string();
-        if matches!(action, CommitAction::Checkout | CommitAction::NewBranch | CommitAction::CherryPick | CommitAction::Revert)
-            && let Some(ip) = self.in_progress().filter(|ip| ip.kind.blocks_switching())
+        if matches!(
+            action,
+            CommitAction::Checkout
+                | CommitAction::NewBranch
+                | CommitAction::CherryPick
+                | CommitAction::Revert
+                | CommitAction::InteractiveRebase
+        ) && let Some(ip) = self.in_progress().filter(|ip| ip.kind.blocks_switching())
         {
             return cx.notify(Level::Warn, ip.refusal());
         }
@@ -276,6 +283,7 @@ impl GitPanel {
                     &["Revert", "Cancel"],
                 )));
             }
+            CommitAction::InteractiveRebase => cx.effects.push(Effect::Git(GitRequest::LoadRebasePlan(sha))),
             CommitAction::Reset => {
                 let subject = self.log.get(self.log_list.selected).map(|r| r.commit.subject.clone()).unwrap_or_default();
                 let branch = self.branch_label().unwrap_or_else(|| "HEAD".into());
@@ -381,6 +389,7 @@ impl GitPanel {
             MenuItem::new("Cherry-Pick", g(GitAction::LogCherryPick)).enabled(!busy),
             MenuItem::new("Revert Commit…", g(GitAction::LogRevert)).enabled(!busy),
             MenuItem::new("Reset Current Branch to Here…", g(GitAction::LogReset)),
+            MenuItem::new("Interactively Rebase from Here…", g(GitAction::LogInteractiveRebase)).enabled(!busy),
             MenuItem::new("New Tag…", g(GitAction::LogNewTag)),
             MenuItem::new("Delete Tag…", g(GitAction::LogDeleteTag)),
             MenuItem::new("Filter Log…", g(GitAction::LogFilter)),

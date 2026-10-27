@@ -313,6 +313,7 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Alt+Shift+B` | `git.log_new_branch` | Git: new branch at the selected commit |
 | `Alt+Shift+P` | `git.log_cherry_pick` | Git: cherry-pick the selected commit |
 | `Alt+Shift+R` | `git.log_revert` | Git: revert the selected commit |
+| `Alt+Shift+I` | `git.log_interactive_rebase` | Git: interactively rebase from the selected commit (pick, reword, squash, fixup, drop, reorder) |
 | `Alt+Shift+T` | `git.log_new_tag` | Git: tag the selected commit |
 | `Alt+Shift+D` | `git.log_delete_tag` | Git: delete a tag of the selected commit |
 | `Alt+Enter` | `git.commit` | Git: commit |

@@ -200,6 +200,7 @@ impl App {
             },
             GitMsg::CommitDetails { sha, result, .. } => self.git_panel.set_details(&sha, result),
             GitMsg::PushRemote { branch, result, .. } => self.push_remote_known(branch, result),
+            GitMsg::RebasePlan { result, .. } => self.rebase_plan_loaded(result),
             GitMsg::HeadMessage { result, .. } => {
                 if let Err(e) = self.git_panel.set_head_message(result) {
                     self.notify(Level::Warn, e);

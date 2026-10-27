@@ -3,7 +3,7 @@
 use super::App;
 use crate::actions::{Action, GitAction};
 use crate::event::Level;
-use crate::git::model::{ProgressAction, ResetMode};
+use crate::git::model::{InProgressKind, ProgressAction, ResetMode};
 use crate::git::{GitOp, GitRequest};
 use crate::ui::dialog::{Dialog, DialogId, DialogKind, DialogResult};
 
@@ -17,6 +17,17 @@ fn stage_and_continue_label(rels: &[String], args: &[String]) -> String {
         rels.iter().map(word).collect::<Vec<_>>().join(" "),
         args.iter().map(word).collect::<Vec<_>>().join(" ")
     )
+}
+
+/// The arguments a progress step runs with. A rebase Continue strips the `#` lines of the
+/// commit message whatever the user's `commit.cleanup` says (git would keep them without an
+/// editor session); the label keeps the plain command.
+fn progress_steps(kind: InProgressKind, action: ProgressAction, args: Vec<String>) -> Vec<String> {
+    if kind == InProgressKind::Rebase && action == ProgressAction::Continue {
+        ["-c", "commit.cleanup=strip"].into_iter().map(String::from).chain(args).collect()
+    } else {
+        args
+    }
 }
 
 impl App {
@@ -58,7 +69,17 @@ impl App {
             self.dialog = Some(Dialog::confirm(DialogId::AbortOperation(kind), "Abort", &msg, &["Abort", "Cancel"]));
             return;
         }
-        self.git.run_cli_steps(GitOp::Progress { kind, action }, vec![args]);
+        let label = format!("git {}", args.join(" "));
+        self.git.run_cli_steps_as(GitOp::Progress { kind, action }, vec![progress_steps(kind, action, args)], label);
+    }
+
+    /// The interactive rebase plan arrived: its refusal as a warning, else the todo dialog.
+    pub(super) fn rebase_plan_loaded(&mut self, result: Result<crate::git::rebase::RebasePlan, String>) {
+        match result {
+            Err(e) => self.notify(Level::Warn, e),
+            Ok(plan) if plan.entries.is_empty() => self.notify(Level::Warn, "Nothing to rebase"),
+            Ok(plan) => self.dialog = Some(Dialog::rebase(crate::ui::rebase::RebaseForm::new(plan))),
+        }
     }
 
     /// Whether `action` makes sense now: the operation actions need one in progress.
@@ -104,7 +125,11 @@ impl App {
                         .into_iter()
                         .chain(rels.iter().map(|r| format!(":(top,literal){r}")))
                         .collect();
-                    self.git.run_cli_steps_as(GitOp::Progress { kind: *kind, action: ProgressAction::Continue }, vec![add, args], label);
+                    self.git.run_cli_steps_as(
+                        GitOp::Progress { kind: *kind, action: ProgressAction::Continue },
+                        vec![add, progress_steps(*kind, ProgressAction::Continue, args)],
+                        label,
+                    );
                 }
             }
             (DialogId::AbortOperation(kind), DialogResult::Button(0)) => {
@@ -155,7 +180,7 @@ mod tests {
     use crate::event::{AppMsg, Level};
     use crate::git::model::{InProgress, InProgressKind};
     use crate::git::{GitMsg, GitRequest};
-    use crate::ui::dialog::{DialogId, DialogResult};
+    use crate::ui::dialog::{DialogId, DialogKind, DialogResult};
 
     fn git(root: &Path, args: &[&str]) {
         let out = std::process::Command::new("git").args(args).current_dir(root).output().unwrap();
@@ -641,6 +666,183 @@ mod tests {
         app.git_request(GitRequest::InteractiveRebase(plan));
         assert_eq!(app.notifications.last().unwrap().level, Level::Warn);
         assert!(app.git.busy.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Fills the Log tab from real git (newest first).
+    fn load_log(app: &mut App) {
+        let root = app.workspace.root.clone();
+        feed_status(app, 1);
+        app.perform(Action::Git(GitAction::TabLog));
+        let filter = app.git_panel.log_filter().clone();
+        let out =
+            std::process::Command::new("git").args(crate::git::cli::log_args(0, 100, true, &filter)).current_dir(&root).output().unwrap();
+        let rows = crate::git::cli::parse_log(&String::from_utf8_lossy(&out.stdout));
+        let g = app.git.generation;
+        app.handle_msg(AppMsg::Git(GitMsg::Log { generation: g, skip: 0, filter, result: Ok(rows) }));
+    }
+
+    fn plan_loaded(m: &AppMsg) -> bool {
+        matches!(m, AppMsg::Git(GitMsg::RebasePlan { .. }))
+    }
+
+    /// The Log cursor on `one` (row 3 after `four_commits`).
+    fn select_one(app: &mut App) {
+        for _ in 0..3 {
+            app.perform(Action::Git(GitAction::Down));
+        }
+        assert_eq!(app.git_panel.log_cursor(), 3);
+    }
+
+    fn rebase_form(app: &App) -> &crate::ui::rebase::RebaseForm {
+        let Some(DialogKind::Rebase(f)) = app.dialog.as_ref().map(|d| &d.kind) else { panic!("no rebase dialog") };
+        f
+    }
+
+    #[tokio::test]
+    async fn log_menu_row_opens_the_rebase_dialog() {
+        let (mut app, dir) = test_app("irb-menu");
+        let shas = four_commits(&app);
+        load_log(&mut app);
+        select_one(&mut app);
+        app.perform(Action::Git(GitAction::ContextMenu));
+        let menu = app.menu.as_ref().expect("context menu");
+        let at = menu.items.iter().position(|i| i.label == "Reset Current Branch to Here…").unwrap();
+        let row = &menu.items[at + 1];
+        assert_eq!(row.label, "Interactively Rebase from Here…");
+        assert!(row.enabled);
+        assert_eq!(row.action, Some(Action::Git(GitAction::LogInteractiveRebase)));
+        app.menu = None;
+        app.perform(Action::Git(GitAction::LogInteractiveRebase));
+        handle_next(&mut app, plan_loaded).await;
+        let d = app.dialog.as_ref().expect("dialog");
+        assert_eq!(d.id, DialogId::InteractiveRebase);
+        assert_eq!(d.title, format!("Interactive Rebase from {}", &shas[1][..8]));
+        let subjects: Vec<_> = rebase_form(&app).entries().iter().map(|e| e.subject.as_str()).collect();
+        assert_eq!(subjects, ["one", "two", "three", "four"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn alt_shift_i_opens_the_rebase_dialog() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let (mut app, dir) = test_app("irb-key");
+        let shas = four_commits(&app);
+        load_log(&mut app);
+        select_one(&mut app);
+        app.focus.set(crate::ui::focus::PanelId::Git);
+        app.handle_key(KeyEvent::new(KeyCode::Char('I'), KeyModifiers::ALT | KeyModifiers::SHIFT));
+        handle_next(&mut app, plan_loaded).await;
+        assert_eq!(app.dialog.as_ref().expect("dialog").title, format!("Interactive Rebase from {}", &shas[1][..8]));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_refused_plan_warns_and_opens_nothing() {
+        let (mut app, dir) = test_app("irb-dirty");
+        let _ = four_commits(&app);
+        let root = app.workspace.root.clone();
+        load_log(&mut app);
+        std::fs::write(root.join("one.txt"), "changed\n").unwrap();
+        select_one(&mut app);
+        app.perform(Action::Git(GitAction::LogInteractiveRebase));
+        handle_next(&mut app, plan_loaded).await;
+        assert!(app.dialog.is_none());
+        let note = app.notifications.last().unwrap();
+        assert_eq!(note.level, Level::Warn);
+        assert_eq!(note.text, "Commit or stash your changes before an interactive rebase");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn the_menu_row_is_disabled_mid_operation() {
+        let (mut app, dir) = test_app("irb-mid-menu");
+        let shas = four_commits(&app);
+        let root = app.workspace.root.clone();
+        std::fs::write(root.join(".git/MERGE_HEAD"), format!("{}\n", shas[4])).unwrap();
+        load_log(&mut app);
+        app.perform(Action::Git(GitAction::Down));
+        app.perform(Action::Git(GitAction::ContextMenu));
+        let menu = app.menu.as_ref().expect("context menu");
+        let row = menu.items.iter().find(|i| i.label == "Interactively Rebase from Here…").expect("row");
+        assert!(!row.enabled);
+        app.menu = None;
+        app.perform(Action::Git(GitAction::LogInteractiveRebase));
+        let note = app.notifications.last().unwrap();
+        assert_eq!(note.level, Level::Warn);
+        assert_eq!(note.text, app.in_progress().unwrap().refusal());
+        assert!(app.dialog.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn the_dialog_runs_reword_squash_and_drop() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let (mut app, dir) = test_app("irb-dialog");
+        let _ = four_commits(&app);
+        let root = app.workspace.root.clone();
+        load_log(&mut app);
+        select_one(&mut app);
+        app.perform(Action::Git(GitAction::LogInteractiveRebase));
+        handle_next(&mut app, plan_loaded).await;
+        let mut press = |code: KeyCode| app.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
+        press(KeyCode::Down);
+        press(KeyCode::Char('r'));
+        for _ in 0..13 {
+            press(KeyCode::Backspace);
+        }
+        for c in "Two again".chars() {
+            press(KeyCode::Char(c));
+        }
+        press(KeyCode::Tab);
+        press(KeyCode::Down);
+        press(KeyCode::Char('s'));
+        press(KeyCode::Down);
+        press(KeyCode::Char('d'));
+        press(KeyCode::Enter);
+        handle_next(&mut app, op_done).await;
+        assert_eq!(last_note(&app), "Interactive rebase done");
+        assert_eq!(git_out(&root, &["log", "--format=%s%n%b"]), "Two again\nthree\n\nbody three\n\none\nbody one\n\ninit");
+        assert!(!root.join("four.txt").exists());
+        assert!(root.join("three.txt").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn interactive_rebase_continue_keeps_the_cleanup() {
+        use crate::git::rebase::TodoAction::*;
+        let (mut app, dir) = test_app("irb-continue");
+        init_repo(&app, &[("a.txt", "a\n")]);
+        let root = app.workspace.root.clone();
+        git(&root, &["config", "commit.cleanup", "verbatim"]);
+        let mut shas = Vec::new();
+        for (n, text) in [("one", "1\n"), ("two", "2\n")] {
+            std::fs::write(root.join("a.txt"), text).unwrap();
+            git(&root, &["commit", "-qam", n]);
+            shas.push(git_out(&root, &["rev-parse", "HEAD"]));
+        }
+        std::fs::write(root.join("three.txt"), "3\n").unwrap();
+        git(&root, &["add", "."]);
+        git(&root, &["commit", "-q", "-m", "three", "-m", "body three"]);
+        let mut plan = crate::git::rebase::load_plan(&root, &shas[0]).await.unwrap();
+        plan.entries.swap(0, 1);
+        plan.entries[0].action = Pick;
+        plan.entries[1].action = Drop;
+        plan.entries[2].action = Squash;
+        app.git_request(GitRequest::InteractiveRebase(plan));
+        handle_next(&mut app, op_done).await;
+        assert!(last_note(&app).starts_with("Rebase stopped on conflicts"), "{}", last_note(&app));
+        std::fs::write(root.join("a.txt"), "2\n").unwrap();
+        feed_status(&mut app, 1);
+        app.dialog.take();
+        app.perform(Action::Git(GitAction::ContinueOperation));
+        let d = app.dialog.take().expect("continue dialog");
+        assert!(matches!(d.id, DialogId::ContinueWithConflicts { .. }), "{:?}", d.id);
+        app.finish_dialog(d.id, DialogResult::Button(1));
+        handle_next(&mut app, op_done).await;
+        let msg = git_out(&root, &["log", "-1", "--format=%B"]);
+        assert!(msg.starts_with("two") && msg.lines().all(|l| !l.starts_with('#')), "{msg}");
+        assert!(root.join("three.txt").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

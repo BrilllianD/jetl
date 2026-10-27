@@ -193,6 +193,7 @@ pub async fn prepare(root: &Path, plan: &RebasePlan) -> Result<Vec<String>, Stri
 /// The private directory of the todo and message files. Its name is
 /// predictable in a shared temp dir and its todo is executed (`exec` lines), so
 /// a directory planted by another user is never used.
+#[cfg(unix)]
 fn work_dir() -> Result<PathBuf, String> {
     use std::os::unix::fs::{DirBuilderExt, MetadataExt};
     let path = std::env::temp_dir().join(format!("jetl-rebase-{}", std::process::id()));
@@ -207,6 +208,14 @@ fn work_dir() -> Result<PathBuf, String> {
         }
         Err(e) => Err(format!("{}: {e}", path.display())),
     }
+}
+
+/// Without unix permissions there is no mode to check: the directory is created if missing.
+#[cfg(not(unix))]
+fn work_dir() -> Result<PathBuf, String> {
+    let path = std::env::temp_dir().join(format!("jetl-rebase-{}", std::process::id()));
+    std::fs::create_dir_all(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(path)
 }
 
 static RUN: AtomicU64 = AtomicU64::new(0);
@@ -352,9 +361,11 @@ mod tests {
         assert_eq!(load_plan(&r.dir, &shas[1]).await, Err(REFUSE_MERGES.to_string()));
     }
 
-    fn msg_path(args: &[String]) -> PathBuf {
+    /// The todo file named by the `sequence.editor=cp <path>` argument (unquoted).
+    fn todo_path(args: &[String]) -> PathBuf {
         let arg = args.iter().find(|a| a.starts_with("sequence.editor=cp ")).unwrap();
-        PathBuf::from(arg.strip_prefix("sequence.editor=cp ").unwrap())
+        let p = arg.strip_prefix("sequence.editor=cp ").unwrap();
+        PathBuf::from(p.strip_prefix('\'').and_then(|p| p.strip_suffix('\'')).unwrap_or(p))
     }
 
     #[tokio::test]
@@ -370,20 +381,23 @@ mod tests {
 
     #[tokio::test]
     async fn prepare_writes_the_todo_and_messages() {
-        use std::os::unix::fs::PermissionsExt;
         let (r, shas) = four("rb-prepare");
         let mut plan = load_plan(&r.dir, &shas[1]).await.unwrap();
         plan.entries[1].action = TodoAction::Reword;
         plan.entries[1].new_message = Some("New\n\nbody".into());
         let args = prepare(&r.dir, &plan).await.unwrap();
         assert_eq!(args[args.len() - 3..], ["rebase", "-i", shas[0].as_str()]);
-        let todo = msg_path(&args);
+        let todo = todo_path(&args);
         let text = std::fs::read_to_string(&todo).unwrap();
         let exec = text.lines().find(|l| l.starts_with("exec ")).unwrap();
         let msg = exec.rsplit(" -F ").next().unwrap();
         assert_eq!(std::fs::read_to_string(msg).unwrap(), "New\n\nbody");
-        let mode = std::fs::metadata(todo.parent().unwrap()).unwrap().permissions().mode();
-        assert_eq!(mode & 0o777, 0o700);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(todo.parent().unwrap()).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o700);
+        }
     }
 
     #[tokio::test]

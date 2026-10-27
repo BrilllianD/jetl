@@ -182,6 +182,11 @@ pub enum GitMsg {
         branch: String,
         result: Result<repo::PushRemote>,
     },
+    /// The interactive rebase plan from the commit asked for, or why not.
+    RebasePlan {
+        generation: u64,
+        result: Result<rebase::RebasePlan, String>,
+    },
     /// The stages and work file of a conflicted path, for the resolver.
     Conflict {
         generation: u64,
@@ -227,6 +232,7 @@ impl GitMsg {
             | GitMsg::CommitDetails { generation, .. }
             | GitMsg::CommitsDiff { generation, .. }
             | GitMsg::PushRemote { generation, .. }
+            | GitMsg::RebasePlan { generation, .. }
             | GitMsg::HeadMessage { generation, .. }
             | GitMsg::Stashes { generation, .. }
             | GitMsg::Blame { generation, .. }
@@ -277,6 +283,8 @@ pub enum GitRequest {
     /// Confirmed already (`DialogId::RebaseOnto`).
     Rebase(String),
     InteractiveRebase(rebase::RebasePlan),
+    /// Load the interactive rebase plan from this commit; answered by `GitMsg::RebasePlan`.
+    LoadRebasePlan(String),
     CheckoutTracking(String),
     RenameBranch {
         from: String,
@@ -355,6 +363,7 @@ impl GitRequest {
                         | GitRequest::Merge(_)
                         | GitRequest::Rebase(_)
                         | GitRequest::InteractiveRebase(_)
+                        | GitRequest::LoadRebasePlan(_)
                         | GitRequest::CheckoutTracking(_)
                 )
     }
@@ -502,6 +511,14 @@ impl GitService {
     pub fn load_push_remote(&self, branch: String) {
         let b = branch.clone();
         self.blocking(move |root| repo::push_remote(root, &b), move |generation, result| GitMsg::PushRemote { generation, branch, result });
+    }
+
+    pub fn load_rebase_plan(&self, sha: String) {
+        let (root, generation, tx) = (self.root.clone(), self.generation, self.tx.clone());
+        tokio::spawn(async move {
+            let result = rebase::load_plan(&root, &sha).await;
+            let _ = tx.send(AppMsg::Git(GitMsg::RebasePlan { generation, result }));
+        });
     }
 
     pub fn load_diff(&self, key: DiffKey) {
@@ -1035,6 +1052,7 @@ mod tests {
             GitRequest::Merge("b".into()),
             GitRequest::Rebase("b".into()),
             GitRequest::InteractiveRebase(rebase::RebasePlan { base: None, head: "h".into(), entries: Vec::new() }),
+            GitRequest::LoadRebasePlan("x".into()),
             GitRequest::CheckoutTracking("o/b".into()),
         ];
         let never = [GitRequest::Refresh, GitRequest::Stage(vec![]), GitRequest::Fetch, GitRequest::Progress(ProgressAction::Abort)];

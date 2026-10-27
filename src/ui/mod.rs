@@ -10,6 +10,7 @@ pub mod menu;
 pub mod menu_bar;
 pub mod new_task;
 pub mod palette;
+pub mod rebase;
 pub mod run_configs;
 pub mod settings;
 pub mod signature;

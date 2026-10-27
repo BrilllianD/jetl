@@ -424,6 +424,7 @@
 "alt-shift-r" = "git.log_revert"
 "alt-shift-t" = "git.log_new_tag"
 "alt-shift-d" = "git.log_delete_tag"
+"alt-shift-i" = "git.log_interactive_rebase"
 "alt-u" = "git.toggle_diff_layout"
 "alt-f" = "git.toggle_diff_collapse"
 "alt-m" = "git.toggle_amend"

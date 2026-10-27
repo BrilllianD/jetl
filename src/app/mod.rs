@@ -701,6 +701,8 @@ impl App {
                 d.clear_path_hint();
             } else if let crate::ui::dialog::DialogKind::NewTask(f) = &mut d.kind {
                 f.paste(&text);
+            } else if let crate::ui::dialog::DialogKind::Rebase(f) = &mut d.kind {
+                f.paste(&text);
             }
             return;
         }
