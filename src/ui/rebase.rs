@@ -17,7 +17,7 @@ use crate::ui::widgets::list::ListState;
 use crate::ui::widgets::text_input::TextInput;
 use crate::util::text::fit;
 
-const LIST_HINT: &str = "↑↓ select · Alt+↑↓ move · p r s f d: action · Tab: message · Enter: start · Esc: cancel";
+const LIST_HINT: &str = "↑↓ select · Alt+↑↓ move · p/r/s/f/d · Tab msg · Enter start · Esc cancel";
 const MESSAGE_HINT: &str = "Tab: list · Enter: new line (reword) · Alt+Enter: start · Esc: cancel";
 const READ_ONLY: &str = "  read-only: r rewords it";
 
@@ -486,7 +486,7 @@ mod tests {
         f.handle_key(key(KeyCode::Down));
         let rows = screen(&mut f, 80, 24);
         assert!(!rows.iter().any(|r| r.contains("cannot be squashed")), "{rows:#?}");
-        assert!(rows.iter().any(|r| r.contains("p r s f d: action")), "{rows:#?}");
+        assert!(rows.iter().any(|r| r.contains("p/r/s/f/d")), "{rows:#?}");
 
         let mut f = form();
         press(&mut f, "r");
@@ -551,6 +551,14 @@ mod tests {
         assert!(matches!(f.handle_mouse(&click(cancel.x, cancel.y)), Some(DialogResult::Cancel)));
         assert!(matches!(f.handle_mouse(&click(start.x, start.y)), Some(DialogResult::Rebase(_))));
         assert!(f.handle_mouse(&click(0, 0)).is_none());
+    }
+
+    #[test]
+    fn hints_fit_the_form_text_width() {
+        // The form is at most 76 wide; text width is the inner width minus 2.
+        for hint in [LIST_HINT, MESSAGE_HINT] {
+            assert!(hint.width() <= 72, "{hint:?} is {} cells", hint.width());
+        }
     }
 
     #[test]

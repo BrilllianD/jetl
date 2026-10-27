@@ -1,0 +1,33 @@
+---
+source: src/app/snapshot_tests.rs
+expression: interactive_rebase_snapshot(&keys).await
+---
+80x24 cursor=hidden
+00  ≣ ┌ Project: root ───────────────┐│
+01  1┌ Interactive Rebase from eeeeeeee ────────────────────────────────────────┐
+02  ⌂│ pick   eeeeeeee Add a parser                                             │
+03  2│ pick   bbbbbbbb Fix the status bar width                                 │
+04  ◫│ squash dddddddd Parse nested lists                                       │
+05  7│ pick   ffffffff Update the changelog                                     │
+06  ⊢│ Message  read-only: r rewords it                                         │
+07   │ Fix the status bar width                                                 │
+08  ✓│                                                                          │──
+09  8│ Wide chars counted as one cell.                                          │─┐
+10  ⟲│                                                                          │ │
+11  5│                                                                          │ │
+12  ⚑│                                                                          │ │
+13  9│                                                                          │ │
+14  ⎇│                                                                          │ │
+15   │                                                                          │ │
+16  ❯│                                                                          │ │
+17  6│                                                                          │ │
+18  ⚠│ ↑↓ select · Alt+↑↓ move · p/r/s/f/d · Tab msg · Enter start · Esc cancel │ │
+19  4│                      [ Start Rebasing ] [ Cancel ]                       │ │
+20  ►└──────────────────────────────────────────────────────────────────────────┘ │
+21  3 │                                             │                             │
+22  ⌕ └───────────────────────────────────────────────────────────────────────────┘
+23  root
+-- marks: L=selected U=selected, list unfocused d=dim
+03    LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL
+06            ddddddddddddddddddddddddd
+18     dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd

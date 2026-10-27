@@ -1865,8 +1865,7 @@ async fn git_reset_dialog() {
     assert_snapshot!("git_reset_dialog", snapshot(&term, &marks, None));
 }
 
-#[tokio::test]
-async fn git_interactive_rebase_dialog() {
+async fn interactive_rebase_snapshot(keys: &[KeyCode]) -> String {
     use crate::git::rebase::{RebasePlan, TodoAction, TodoEntry};
     let mut fx = stable_app("git-irb");
     let app = &mut fx.app;
@@ -1900,8 +1899,8 @@ async fn git_interactive_rebase_dialog() {
         ],
     };
     app.handle_msg(AppMsg::Git(GitMsg::RebasePlan { generation: g, result: Ok(plan) }));
-    for code in [KeyCode::Down, KeyCode::Down, KeyCode::Char('s'), KeyCode::Up, KeyCode::Char('r')] {
-        app.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
+    for code in keys {
+        app.handle_key(KeyEvent::new(*code, KeyModifiers::NONE));
     }
     let term = draw_app(app, 80, 24);
     let marks = [
@@ -1909,7 +1908,19 @@ async fn git_interactive_rebase_dialog() {
         Mark::bg('U', "selected, list unfocused", app.theme.list_selected_unfocused.bg.unwrap()),
         Mark::style('d', "dim", app.theme.dim.bg(app.theme.popup_bg)),
     ];
-    assert_snapshot!("git_interactive_rebase_dialog", snapshot(&term, &marks, None));
+    snapshot(&term, &marks, None)
+}
+
+#[tokio::test]
+async fn git_interactive_rebase_dialog() {
+    let keys = [KeyCode::Down, KeyCode::Down, KeyCode::Char('s'), KeyCode::Up, KeyCode::Char('r')];
+    assert_snapshot!("git_interactive_rebase_dialog", interactive_rebase_snapshot(&keys).await);
+}
+
+#[tokio::test]
+async fn git_interactive_rebase_dialog_list_focused() {
+    let keys = [KeyCode::Down, KeyCode::Down, KeyCode::Char('s'), KeyCode::Up];
+    assert_snapshot!("git_interactive_rebase_dialog_list_focused", interactive_rebase_snapshot(&keys).await);
 }
 
 #[tokio::test]
