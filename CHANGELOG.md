@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-27
+
 ### Added
 
 - HTTP requests from .http files: Ctrl+Alt+R (Run > Send HTTP Request at Caret) sends the request at the caret with curl and shows the status line, headers and body in the Run window under the request's name; requests are separated by ###, named by # @name, and {{variables}} come from the dev environment of http-client.env.json. Rerun sends it again; without curl in PATH you get a note.
@@ -665,7 +667,8 @@ First release.
   for Phase 11).
 - No 3-pane conflict resolver; conflicted files show as `U` and are resolved in the editor.
 
-[Unreleased]: https://bitbucket.org/BrilllianD/jetl-ide/branches/compare/HEAD..v0.4.0
+[Unreleased]: https://bitbucket.org/BrilllianD/jetl-ide/branches/compare/HEAD..v0.5.0
+[0.5.0]: https://bitbucket.org/BrilllianD/jetl-ide/src/v0.5.0/
 [0.4.0]: https://bitbucket.org/BrilllianD/jetl-ide/src/v0.4.0/
 [0.3.0]: https://bitbucket.org/BrilllianD/jetl-ide/src/v0.3.0/
 [0.2.0]: https://bitbucket.org/BrilllianD/jetl-ide/src/v0.2.0/
