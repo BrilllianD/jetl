@@ -13,18 +13,18 @@ expression: "snapshot(&term, &settings_marks(&app.theme), None)"
 07  ⊢ │ │  Saving                  │  Icons                       unicode ▾                                          │
 08    │ │  Formatting              │  File icons                  nerd ▾                                             │
 09    │ │Keymap                    │  Double click interval (ms)  400                                                │
-10    │ │Version Control           │  Left tool window width      32                                     restart jetl│
-11    │ │  Git                     │  Bottom tool window height   14                                     restart jetl│
-12    │ │  Worktrees               │                                                                                 │
-13    │ │Files                     │                                                                                 │
-14    │ │Tools                     │                                                                                 │
-15    │ │  Terminal                │                                                                                 │
-16    │ │  Run                     │                                                                                 │
-17    │ │  Clipboard               │                                                                                 │
-18    │ │  Local History           │                                                                                 │
-19    │ │Language Servers          │                                                                                 │
-20  ⋔ │ │Dependencies              │                                                                                 │
-21    │ │                          │                                                                                 │
+10    │ │  Mode                    │  Left tool window width      32                                     restart jetl│
+11    │ │Version Control           │  Bottom tool window height   14                                     restart jetl│
+12    │ │  Git                     │                                                                                 │
+13    │ │  Worktrees               │                                                                                 │
+14    │ │Files                     │                                                                                 │
+15    │ │Tools                     │                                                                                 │
+16    │ │  Terminal                │                                                                                 │
+17    │ │  Run                     │                                                                                 │
+18    │ │  Clipboard               │                                                                                 │
+19    │ │  Local History           │                                                                                 │
+20  ⋔ │ │Language Servers          │                                                                                 │
+21    │ │Dependencies              │                                                                                 │
 22  ✎ │ │                          │                                                                                 │
 23    │ │                          │                                                                                 │
 24  ✓ │ │                          │                                                                                 │

@@ -11,17 +11,17 @@ expression: "snapshot(&term, &settings_marks(&app.theme), None)"
 05  7│  Saving                │                                                 │
 06  ⊢│  Formatting            │Open config.toml                                 │
 07   │Keymap                  │                                                 │
-08  ✓│Version Control         │                                                 │
-09  8│  Git                   │                                                 │
-10  ⟲│  Worktrees             │                                                 │
-11  5│Files                   │                                                 │
-12  ⚑│Tools                   │                                                 │
-13  9│  Terminal              │                                                 │
-14  ⎇│  Run                   │                                                 │
-15   │  Clipboard             │                                                 │
-16  ❯│  Local History         │                                                 │
-17  6│Language Servers        │                                                 │
-18  ⚠│Dependencies            │                                                 │
+08  ✓│  Mode                  │                                                 │
+09  8│Version Control         │                                                 │
+10  ⟲│  Git                   │                                                 │
+11  5│  Worktrees             │                                                 │
+12  ⚑│Files                   │                                                 │
+13  9│Tools                   │                                                 │
+14  ⎇│  Terminal              │                                                 │
+15   │  Run                   │                                                 │
+16  ❯│  Clipboard             │                                                 │
+17  6│  Local History         │                                                 │
+18  ⚠│Language Servers        │                                                 │
 19  4│                                                                          │
 20  ►│                                            [ OK ]  [ Cancel ]  [ Apply ] │
 21  3└──────────────────────────────────────────────────────────────────────────┘

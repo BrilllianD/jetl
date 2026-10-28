@@ -11,17 +11,17 @@ expression: "snapshot(&term, &settings_marks(&app.theme), None)"
 05  7│  Saving                │  Columns kept left a…  5                        │
 06  ⊢│  Formatting            │  Close brackets and …  [x]                      │
 07   │Keymap                  │  Highlight the word …  [x]                      │
-08  ✓│Version Control         │  Show indent guides    [x]                      │
-09  8│  Git                   │  Inline blame on the…  [ ]                      │
-10  ⟲│  Worktrees             │  Show breadcrumbs      [ ]                      │
-11  5│Files                   │  Sticky scroll         [ ]                      │
-12  ⚑│Tools                   │  Live templates (sni…  [x]                      │
-13  9│  Terminal              │  Tab limit             0                        │
-14  ⎇│  Run                   │                                                 │
-15   │  Clipboard             │Lines kept visible above and below the caret.    │
-16  ❯│  Local History         │Applies at once.                                 │
-17  6│Language Servers        │Delete resets to the default.                    │
-18  ⚠│Dependencies            │Key: editor.scrolloff                            │
+08  ✓│  Mode                  │  Show indent guides    [x]                      │
+09  8│Version Control         │  Inline blame on the…  [ ]                      │
+10  ⟲│  Git                   │  Show breadcrumbs      [ ]                      │
+11  5│  Worktrees             │  Sticky scroll         [ ]                      │
+12  ⚑│Files                   │  Live templates (sni…  [x]                      │
+13  9│Tools                   │  Tab limit             0                        │
+14  ⎇│  Terminal              │                                                 │
+15   │  Run                   │Lines kept visible above and below the caret.    │
+16  ❯│  Clipboard             │Applies at once.                                 │
+17  6│  Local History         │Delete resets to the default.                    │
+18  ⚠│Language Servers        │Key: editor.scrolloff                            │
 19  4│                                                                          │
 20  ►│                                            [ OK ]  [ Cancel ]  [ Apply ] │
 21  3└──────────────────────────────────────────────────────────────────────────┘

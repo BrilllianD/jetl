@@ -409,6 +409,9 @@ pub static SETTINGS: &[Setting] = &[
 /// Title of the keyless page that shows `doctor::probe`'s report (`ui::settings`).
 pub const DEPENDENCIES: &str = "Dependencies";
 
+/// Title of the keyless page that shows the key bindings (`ui::settings_keymap`).
+pub const KEYMAP: &str = "Keymap";
+
 macro_rules! page {
     ($title:literal, $parent:expr, [$($key:literal),* $(,)?]) => {
         Page { title: $title, parent: $parent, keys: &[$($key),*] }
@@ -443,18 +446,19 @@ pub static PAGES: &[Page] = &[
     page!("Soft Wraps", Some(1), ["editor.soft_wrap", "editor.soft_wrap_files", "editor.soft_wrap_extra_indent"]),
     page!("Saving", Some(1), ["editor.autosave", "editor.autosave_idle_ms", "editor.trim_trailing_whitespace", "editor.final_newline"]),
     page!("Formatting", Some(1), ["format.on_save", "format.timeout_ms", "format.commands"]),
-    page!("Keymap", None, ["keymap.mode"]),
+    page!("Keymap", None, []),
+    page!("Mode", Some(6), ["keymap.mode"]),
     page!("Version Control", None, []),
-    page!("Git", Some(7), ["git.pull_mode", "git.log_all", "git.log_page"]),
-    page!("Worktrees", Some(7), ["worktree.default_dir", "worktree.switch_closes_tabs"]),
+    page!("Git", Some(8), ["git.pull_mode", "git.log_all", "git.log_page"]),
+    page!("Worktrees", Some(8), ["worktree.default_dir", "worktree.switch_closes_tabs"]),
     page!("Files", None, ["files.show_hidden", "files.show_ignored", "files.watch"]),
     page!("Tools", None, []),
-    page!("Terminal", Some(11), ["terminal.shell", "terminal.args", "terminal.scrollback"]),
-    page!("Run", Some(11), ["run.tasks", "run.configs"]),
-    page!("Clipboard", Some(11), ["clipboard.paste_command", "clipboard.copy_command"]),
+    page!("Terminal", Some(12), ["terminal.shell", "terminal.args", "terminal.scrollback"]),
+    page!("Run", Some(12), ["run.tasks", "run.configs"]),
+    page!("Clipboard", Some(12), ["clipboard.paste_command", "clipboard.copy_command"]),
     page!(
         "Local History",
-        Some(11),
+        Some(12),
         [
             "local_history.enabled",
             "local_history.keep_days",
@@ -488,6 +492,26 @@ mod tests {
     use crate::config::edit::{Edit, apply_edits};
     use crate::config::reload::KEYS;
     use crate::config::theme;
+
+    #[test]
+    fn keymap_page_is_keyless_with_a_mode_child() {
+        let at = |t: &str| PAGES.iter().position(|p| p.title == t).unwrap();
+        let km = at(KEYMAP);
+        assert!(PAGES[km].keys.is_empty() && PAGES[km].parent.is_none());
+        assert_eq!(PAGES[km + 1].title, "Mode");
+        assert_eq!(PAGES[km + 1].parent, Some(km));
+        assert_eq!(PAGES[km + 1].keys, ["keymap.mode"]);
+        for (child, parent) in [
+            ("Git", "Version Control"),
+            ("Worktrees", "Version Control"),
+            ("Terminal", "Tools"),
+            ("Run", "Tools"),
+            ("Clipboard", "Tools"),
+            ("Local History", "Tools"),
+        ] {
+            assert_eq!(PAGES[at(child)].parent, Some(at(parent)), "{child}");
+        }
+    }
 
     #[test]
     fn dependencies_page_is_last_and_keyless() {

@@ -19,7 +19,9 @@ impl App {
         self.hover = None;
         self.completion_close();
         let path = self.paths.config_file();
-        self.settings = Some(SettingsWindow::new(&FileText::read(&path), &path));
+        let mut w = SettingsWindow::new(&FileText::read(&path), &path);
+        w.set_keymap(&self.keymap);
+        self.settings = Some(w);
         self.dirty_frame = true;
     }
 
@@ -296,8 +298,8 @@ mod tests {
     async fn external_row_opens_config_toml() {
         let (mut app, dir) = test_app("settings-external");
         app.perform(Action::App(AppAction::Settings));
-        // Tools > Run is page 13: Tools (11) is a parent, Terminal 12, Run 13.
-        for _ in 0..13 {
+        // Tools > Run is page 14: Tools (12) is a parent, Terminal 13, Run 14.
+        for _ in 0..14 {
             key(&mut app, KeyCode::Down);
         }
         key(&mut app, KeyCode::Enter);
@@ -305,6 +307,24 @@ mod tests {
         key(&mut app, KeyCode::Enter);
         assert!(app.settings.is_none());
         assert_eq!(std::fs::read_to_string(app.paths.config_file()).unwrap(), SETTINGS_STUB);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn keymap_page_follows_a_keymap_reload() {
+        let (mut app, dir) = test_app("settings-keymap-reload");
+        setup(&mut app, NO_LSP);
+        let chord = crate::config::keymap::parse_chord("ctrl-alt-y").unwrap();
+        let quit = Action::App(AppAction::Quit);
+        let bound = |app: &App| app.settings.as_ref().unwrap().keymap_page().keymap().tables["global"].bindings.get(&chord) == Some(&quit);
+        assert!(!bound(&app));
+        std::fs::write(app.paths.keymap_file(), "[global]\n\"ctrl-alt-y\" = \"app.quit\"\n").unwrap();
+        app.config_changed(vec![crate::config::watch::ConfigFile::Keymap]);
+        assert!(bound(&app), "an open window follows the reload");
+        key(&mut app, KeyCode::Esc);
+        assert!(app.settings.is_none());
+        app.perform(Action::App(AppAction::Settings));
+        assert!(bound(&app), "a new window gets app.keymap");
         let _ = std::fs::remove_dir_all(dir);
     }
 

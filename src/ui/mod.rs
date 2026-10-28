@@ -14,6 +14,7 @@ pub mod palette;
 pub mod rebase;
 pub mod run_configs;
 pub mod settings;
+pub mod settings_keymap;
 pub mod signature;
 pub mod status_bar;
 pub mod switcher;

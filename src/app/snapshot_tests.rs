@@ -2651,6 +2651,20 @@ async fn settings_window_wide() {
 }
 
 #[tokio::test]
+async fn settings_window_keymap() {
+    let mut fx = stable_app("settings-window-keymap");
+    let app = &mut fx.app;
+    app.perform(Action::App(AppAction::Settings));
+    press(app, KeyCode::Down, 6);
+    press(app, KeyCode::Enter, 1);
+    for c in "save".chars() {
+        press(app, KeyCode::Char(c), 1);
+    }
+    let term = draw_app(app, 120, 40);
+    assert_snapshot!("settings_window_keymap", snapshot(&term, &settings_marks(&app.theme), None));
+}
+
+#[tokio::test]
 async fn settings_window_error() {
     let mut fx = stable_app("settings-window-error");
     let app = &mut fx.app;

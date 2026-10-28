@@ -357,6 +357,12 @@ impl Keymap {
     }
 }
 
+/// Key text of a chord (rows, written TOML keys, input prefill): the
+/// [`KeyCombo::display`] of each step joined by spaces.
+pub fn chord_text(chord: &[KeyCombo]) -> String {
+    chord.iter().map(KeyCombo::display).collect::<Vec<_>>().join(" ")
+}
+
 /// Context order in the generated key reference; other contexts follow
 /// alphabetically.
 const DOC_CONTEXTS: [&str; 13] = [
@@ -376,6 +382,23 @@ const DOC_CONTEXTS: [&str; 13] = [
 ];
 
 impl Keymap {
+    /// Contexts with at least one binding in the order of the key reference:
+    /// [`DOC_CONTEXTS`] first, then the others alphabetically. Shared by
+    /// [`Keymap::markdown`] and the Settings Keymap page.
+    pub fn context_order(&self) -> Vec<&str> {
+        let mut contexts: Vec<&str> =
+            DOC_CONTEXTS.iter().copied().filter(|c| self.tables.get(*c).is_some_and(|t| !t.bindings.is_empty())).collect();
+        let mut rest: Vec<&str> = self
+            .tables
+            .iter()
+            .filter(|(k, t)| !DOC_CONTEXTS.contains(&k.as_str()) && !t.bindings.is_empty())
+            .map(|(k, _)| k.as_str())
+            .collect();
+        rest.sort();
+        contexts.extend(rest);
+        contexts
+    }
+
     /// Markdown reference of every binding, grouped by context, plus the
     /// actions without one. `docs/KEYMAP.md` is this output for the default
     /// keymap (`jetl --dump-keymap`); a test keeps it current.
@@ -396,17 +419,7 @@ impl Keymap {
         out.push_str("Override any of them in `~/.config/jetl/keymap.toml` (see [CONFIG.md](CONFIG.md)).\n");
         out.push_str("While the Terminal window has focus only its `terminal` table is searched: every other\n");
         out.push_str("key goes to the shell, and Esc Esc at the shell prompt focuses the editor.\n");
-        let mut contexts: Vec<&str> =
-            DOC_CONTEXTS.iter().copied().filter(|c| self.tables.get(*c).is_some_and(|t| !t.bindings.is_empty())).collect();
-        let mut rest: Vec<&str> = self
-            .tables
-            .iter()
-            .filter(|(k, t)| !DOC_CONTEXTS.contains(&k.as_str()) && !t.bindings.is_empty())
-            .map(|(k, _)| k.as_str())
-            .collect();
-        rest.sort();
-        contexts.extend(rest);
-        for ctx in contexts {
+        for ctx in self.context_order() {
             let t = &self.tables[ctx];
             let mut rows: Vec<(usize, usize, String, &Action)> = t
                 .bindings
@@ -481,6 +494,24 @@ pub fn default_keymap() -> Keymap {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn context_order_lists_doc_contexts_first() {
+        let km = default_keymap();
+        let order = km.context_order();
+        assert_eq!(order[0], "global");
+        let mut seen = std::collections::HashSet::new();
+        for c in &order {
+            assert!(!km.tables[*c].bindings.is_empty(), "{c}");
+            assert!(seen.insert(*c), "{c} repeats");
+        }
+        let last_doc = order.iter().rposition(|c| DOC_CONTEXTS.contains(c)).unwrap();
+        let rest = &order[last_doc + 1..];
+        assert!(rest.iter().all(|c| !DOC_CONTEXTS.contains(c)));
+        let mut sorted = rest.to_vec();
+        sorted.sort();
+        assert_eq!(rest, sorted);
+    }
 
     #[test]
     fn parses_modifiers_and_keys() {

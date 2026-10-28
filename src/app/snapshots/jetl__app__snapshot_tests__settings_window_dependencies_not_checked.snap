@@ -4,13 +4,13 @@ expression: "snapshot(&term, &settings_marks(&app.theme), None)"
 ---
 80x24 cursor=hidden
 00  ≣┌ Settings ────────────────────────────────────────────────────────────────┐
-01  1│Appearance              │Dependencies                                     │
-02  ⌂│Editor                  │                                                 │
-03  2│  General               │Not checked. Enter checks.                       │
-04  ◫│  Soft Wraps            │                                                 │
-05  7│  Saving                │                                                 │
-06  ⊢│  Formatting            │                                                 │
-07   │Keymap                  │                                                 │
+01  1│Editor                  │Dependencies                                     │
+02  ⌂│  General               │                                                 │
+03  2│  Soft Wraps            │Not checked. Enter checks.                       │
+04  ◫│  Saving                │                                                 │
+05  7│  Formatting            │                                                 │
+06  ⊢│Keymap                  │                                                 │
+07   │  Mode                  │                                                 │
 08  ✓│Version Control         │                                                 │
 09  8│  Git                   │                                                 │
 10  ⟲│  Worktrees             │                                                 │

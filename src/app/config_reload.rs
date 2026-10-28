@@ -183,6 +183,9 @@ impl App {
         match loaded {
             Ok((keymap, errors)) => {
                 self.keymap = keymap;
+                if let Some(w) = &mut self.settings {
+                    w.set_keymap(&self.keymap);
+                }
                 self.dispatcher.reset();
                 report.errors.extend(errors);
                 report.reloaded.push("keymap.toml".into());

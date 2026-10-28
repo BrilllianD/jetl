@@ -10,13 +10,15 @@ use ratatui::style::Style;
 use ratatui::widgets::{Block, Borders, Clear};
 use unicode_width::UnicodeWidthStr;
 
-use crate::config::catalog::{DEPENDENCIES, Kind, PAGES, Setting, setting};
+use crate::config::catalog::{DEPENDENCIES, KEYMAP, Kind, PAGES, Setting, setting};
 use crate::config::edit::{Edit, Value};
+use crate::config::keymap::Keymap;
 use crate::config::reload::class_of;
 use crate::config::theme::{self, Theme};
 use crate::config::{Config, FileText};
 use crate::doctor::{Check, Group, Report, Status};
 use crate::event::Mouse;
+use crate::ui::settings_keymap::KeymapPage;
 use crate::ui::toasts::wrap;
 use crate::ui::widgets::list::ListState;
 use crate::util::text::fit;
@@ -46,9 +48,9 @@ pub enum SettingsResult {
 
 const BUTTONS: [&str; 3] = ["[ OK ]", "[ Cancel ]", "[ Apply ]"];
 const OPEN_FILE_ROW: &str = "Open config.toml";
-const MAX_HELP_ROWS: usize = 7;
+pub(crate) const MAX_HELP_ROWS: usize = 7;
 /// Cells before a label: the pending marker and a space.
-const MARK_W: usize = 2;
+pub(crate) const MARK_W: usize = 2;
 
 pub struct SettingsWindow {
     config: Result<Config, String>,
@@ -74,6 +76,8 @@ pub struct SettingsWindow {
     deps_seq: u64,
     /// A probe is running.
     deps_running: bool,
+    /// The Keymap page's tree, search and selection.
+    keymap_page: KeymapPage,
 }
 
 enum DepLine<'a> {
@@ -123,6 +127,7 @@ impl SettingsWindow {
             deps: None,
             deps_seq: 0,
             deps_running: false,
+            keymap_page: KeymapPage::default(),
         }
     }
 
@@ -163,6 +168,20 @@ impl SettingsWindow {
 
     fn on_deps(&self) -> bool {
         PAGES[self.page()].title == DEPENDENCIES
+    }
+
+    fn on_keymap(&self) -> bool {
+        PAGES[self.page()].title == KEYMAP
+    }
+
+    /// Show `km` on the Keymap page; called on open and after every keymap reload.
+    pub fn set_keymap(&mut self, km: &Keymap) {
+        self.keymap_page.set_keymap(km);
+    }
+
+    #[cfg(test)]
+    pub fn keymap_page(&self) -> &KeymapPage {
+        &self.keymap_page
     }
 
     /// The file changed: show its values, keeping the page and selections.
@@ -241,6 +260,9 @@ impl SettingsWindow {
     }
 
     fn row_count(&self) -> usize {
+        if self.on_keymap() {
+            return 0;
+        }
         if self.on_deps() {
             return self.deps.as_ref().map_or(0, |r| dep_lines(r).len());
         }
@@ -333,6 +355,7 @@ impl SettingsWindow {
         self.tree.len = PAGES.len();
         self.rows.set_len(self.row_count());
         match key.code {
+            KeyCode::Esc if self.pane == Pane::Page && self.on_keymap() && self.keymap_page.clear_query() => return None,
             KeyCode::Esc => return Some(self.escape()),
             KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) && !key.modifiers.contains(KeyModifiers::ALT) => {
                 return (!self.pending.is_empty()).then_some(SettingsResult::Apply { close: false });
@@ -368,6 +391,7 @@ impl SettingsWindow {
                     }
                 } else if matches!(key.code, KeyCode::Right | KeyCode::Enter) {
                     if PAGES[before].keys.is_empty()
+                        && PAGES[before].title != KEYMAP
                         && let Some(child) = PAGES.iter().position(|p| p.parent == Some(before))
                     {
                         self.select_page(child);
@@ -377,6 +401,12 @@ impl SettingsWindow {
                 None
             }
             Pane::Page => {
+                if self.on_keymap() {
+                    if !self.keymap_page.handle_key(key) && key.code == KeyCode::Left {
+                        self.pane = Pane::Tree;
+                    }
+                    return None;
+                }
                 if move_list(&mut self.rows, key.code) {
                     return None;
                 }
@@ -434,6 +464,10 @@ impl SettingsWindow {
                     if self.page() != before && self.on_deps() {
                         return Some(SettingsResult::CheckDependencies);
                     }
+                } else if self.on_keymap() {
+                    if self.keymap_page.click(m.x, m.y, m.clicks) {
+                        self.pane = Pane::Page;
+                    }
                 } else if let Some(i) = self.rows.hit(self.rows_rect, m.x, m.y) {
                     self.pane = Pane::Page;
                     self.rows.select(i);
@@ -453,7 +487,11 @@ impl SettingsWindow {
                 if self.tree_rect.contains(p) {
                     self.tree.scroll(delta);
                 } else if self.rows_rect.contains(p) {
-                    self.rows.scroll(delta);
+                    if self.on_keymap() {
+                        self.keymap_page.scroll(delta);
+                    } else {
+                        self.rows.scroll(delta);
+                    }
                 }
                 None
             }
@@ -559,6 +597,12 @@ impl SettingsWindow {
 
         if self.on_deps() {
             self.render_dependencies(buf, px, pw, top, bottom, base, theme);
+            return;
+        }
+        if self.on_keymap() {
+            let area = Rect::new(px, top, pw as u16, bottom.saturating_sub(top));
+            self.keymap_page.render(frame, area, base, self.pane == Pane::Page, theme);
+            self.rows_rect = self.keymap_page.rows_rect();
             return;
         }
         match &self.config {
@@ -875,6 +919,62 @@ mod tests {
         (0..height).map(|y| (0..width).map(|x| buf[(x, y)].symbol()).collect()).collect()
     }
 
+    fn keymap_window() -> SettingsWindow {
+        let mut w = window();
+        w.set_keymap(&crate::config::keymap::default_keymap());
+        w.select_page(PAGES.iter().position(|p| p.title == KEYMAP).unwrap());
+        w.pane = Pane::Tree;
+        draw_at(&mut w, 100, 30);
+        w
+    }
+
+    #[test]
+    fn keymap_page_shows_contexts_and_types_into_search() {
+        let mut w = keymap_window();
+        assert_eq!(w.handle_key(key(KeyCode::Enter)), None);
+        assert_eq!(w.pane, Pane::Page);
+        assert_eq!(PAGES[w.page()].title, KEYMAP);
+        let l = lines(&mut w, 100, 30).join("\n");
+        assert!(l.contains("Search:") && l.contains("▸ Global ("), "{l}");
+        for c in "quit".chars() {
+            w.handle_key(key(KeyCode::Char(c)));
+        }
+        assert_eq!(w.keymap_page().query(), "quit");
+        let l = lines(&mut w, 100, 30).join("\n");
+        assert!(l.contains("Exit jetl") && l.contains("Ctrl+Q"), "{l}");
+        assert_eq!(w.handle_key(key(KeyCode::Esc)), None);
+        assert_eq!(w.keymap_page().query(), "");
+        assert_eq!(w.handle_key(key(KeyCode::Esc)), Some(SettingsResult::Close));
+    }
+
+    #[test]
+    fn left_on_a_collapsed_context_returns_to_the_tree() {
+        let mut w = keymap_window();
+        w.handle_key(key(KeyCode::Enter));
+        assert_eq!(w.pane, Pane::Page);
+        w.handle_key(key(KeyCode::Left));
+        assert_eq!(w.pane, Pane::Tree);
+    }
+
+    #[test]
+    fn mode_page_holds_keymap_mode() {
+        let mut w = window();
+        w.select_page(PAGES.iter().position(|p| p.title == "Mode").unwrap());
+        assert_eq!(w.selected_key(), Some("keymap.mode"));
+    }
+
+    #[test]
+    fn keymap_rows_click_selects_and_marker_click_toggles() {
+        use crate::ui::settings_keymap::KeymapRow;
+        let mut w = keymap_window();
+        let r = w.keymap_page().rows_rect();
+        click(&mut w, r.x + 5, r.y + 1, 1);
+        assert_eq!(w.pane, Pane::Page);
+        assert_eq!(w.keymap_page().selected_row(), Some(&w.keymap_page().rows()[1]));
+        click(&mut w, r.x + MARK_W as u16, r.y, 1);
+        assert!(matches!(w.keymap_page().rows()[0], KeymapRow::Context { expanded: true, .. }));
+    }
+
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
     }
@@ -896,6 +996,7 @@ mod tests {
     #[test]
     fn a_tree_click_on_dependencies_asks_for_a_probe() {
         let mut w = window();
+        draw_at(&mut w, 80, 26);
         let (x, y) = (w.tree_rect.x + 1, w.tree_rect.y + (PAGES.len() - 1) as u16);
         assert_eq!(click(&mut w, x, y, 1), Some(SettingsResult::CheckDependencies));
         assert_eq!(click(&mut w, x, y, 1), None);

@@ -11,17 +11,17 @@ expression: "snapshot(&term, &[l, u, m], None)"
 05  7│  Saving                │  Strip trailing whit…  [x]                      │
 06  ⊢│  Formatting            │* End files with a li…  [ ]                      │
 07   │Keymap                  │                                                 │
-08  ✓│Version Control         │                                                 │
-09  8│  Git                   │                                                 │
-10  ⟲│  Worktrees             │                                                 │
-11  5│Files                   │                                                 │
-12  ⚑│Tools                   │                                                 │
-13  9│  Terminal              │                                                 │
-14  ⎇│  Run                   │                                                 │
-15   │  Clipboard             │On save, end a non-empty file with a line break. │
-16  ❯│  Local History         │Applies at once.                                 │
-17  6│Language Servers        │Delete resets to the default.                    │
-18  ⚠│Dependencies            │Key: editor.final_newline                        │
+08  ✓│  Mode                  │                                                 │
+09  8│Version Control         │                                                 │
+10  ⟲│  Git                   │                                                 │
+11  5│  Worktrees             │                                                 │
+12  ⚑│Files                   │                                                 │
+13  9│Tools                   │                                                 │
+14  ⎇│  Terminal              │                                                 │
+15   │  Run                   │On save, end a non-empty file with a line break. │
+16  ❯│  Clipboard             │Applies at once.                                 │
+17  6│  Local History         │Delete resets to the default.                    │
+18  ⚠│Language Servers        │Key: editor.final_newline                        │
 19  4│                                                                          │
 20  ►│                                            [ OK ]  [ Cancel ]  [ Apply ] │
 21  3└──────────────────────────────────────────────────────────────────────────┘
