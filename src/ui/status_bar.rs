@@ -1,7 +1,7 @@
-//! Bottom status bar: project name, branch, notifications (else the
-//! diagnostic at the caret), the active file's problem counts, cursor
+//! Bottom status bar: project name, notifications (else the diagnostic at
+//! the caret), then on the right the active file's problem counts, cursor
 //! position, line ending, encoding, indent and language of the active
-//! buffer, and its language server.
+//! buffer, its language server, and the current branch at the right edge.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -38,15 +38,6 @@ pub fn render(app: &mut App, frame: &mut Frame, area: Rect) {
     buf.set_stringn(x, area.y, &name, area.width as usize, base.add_modifier(ratatui::style::Modifier::BOLD));
     x += name.width() as u16 + 2;
 
-    if let Some(branch) = app.branch_label() {
-        let s = format!(" {branch}");
-        let w = s.width() as u16;
-        let r = Rect::new(x, area.y, w.min(area.right().saturating_sub(x)), 1);
-        buf.set_stringn(x, area.y, &s, r.width as usize, theme.status_accent.bg(theme.status_bg));
-        app.status_hits.push((StatusHit::Branch, r));
-        x += w + 2;
-    }
-
     if let Some(ip) = app.in_progress() {
         let s = ip.label();
         let w = (s.width() as u16).min(area.right().saturating_sub(x));
@@ -62,8 +53,8 @@ pub fn render(app: &mut App, frame: &mut Frame, area: Rect) {
     }
 
     // Right side, JetBrains order: position, line ending, encoding, indent,
-    // language; then the mode (modal only) and keyboard mode. Each part has
-    // a drop rank: on narrow widths the highest ranks go first.
+    // language; then the mode (modal only) and keyboard mode; the branch
+    // comes last, so it sits at the right edge. Each part has a drop rank: on narrow widths the highest ranks go first.
     let mut right_parts: Vec<(String, Style, Option<StatusHit>, u8)> = Vec::new();
     if let Some(c) = app.problem_counts() {
         let style = if c.errors > 0 {
@@ -103,6 +94,10 @@ pub fn render(app: &mut App, frame: &mut Frame, area: Rect) {
     }
     if !app.keyboard_enhanced {
         right_parts.push(("legacy keys".into(), theme.dim.bg(theme.status_bg), None, 4));
+    }
+    // The branch sits at the right edge; a click opens the branches popup.
+    if let Some(branch) = app.branch_label() {
+        right_parts.push((branch, theme.status_accent.bg(theme.status_bg), Some(StatusHit::Branch), 1));
     }
     let room = area.right().saturating_sub(x);
     while right_parts.iter().map(|p| p.0.width() as u16 + 2).sum::<u16>() > room {

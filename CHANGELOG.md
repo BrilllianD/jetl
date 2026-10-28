@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The current branch moved to the right end of the status bar; a click on it still opens the branches popup.
+
 ### Fixed
 
 - A click in the fold column of a Markdown preview tab no longer folds the rendered text.

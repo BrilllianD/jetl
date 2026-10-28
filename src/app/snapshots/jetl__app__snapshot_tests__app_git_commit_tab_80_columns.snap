@@ -26,7 +26,7 @@ expression: "snapshot(&term, &marks, Some(bottom))"
 20  ► │                              │                                            │
 21  3 │ Commit   Commit and Push     │                                            │
 22  ⌕ └───────────────────────────────────────────────────────────────────────────┘
-23  root   main
+23  root                                                                      main
 -- marks: A=added D=deleted ~=modified +=added word -=deleted word L=selected
 12     LLLLLLLLLLLLLLLLLLLLLLLLLLLLLL
 13                                            DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD

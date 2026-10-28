@@ -2751,6 +2751,46 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn branch_sits_at_the_right_end_and_opens_branches() {
+        use crate::ui::status_bar::StatusHit;
+        use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+        use unicode_width::UnicodeWidthStr;
+        let (mut app, dir) = test_app("status-branch-right");
+        app.handle_msg(AppMsg::Git(GitMsg::Status {
+            generation: app.git.generation,
+            seq: 1,
+            result: Ok(crate::git::model::StatusSnapshot {
+                workdir: app.workspace.root.clone(),
+                branch: Some("feature/x".into()),
+                ..Default::default()
+            }),
+        }));
+        assert_eq!(app.branch_label().as_deref(), Some("feature/x"));
+        load(&mut app, "a.txt", "x\n");
+
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+        let frame = term.draw(|f| crate::ui::render(&mut app, f)).unwrap();
+        let row: String = (0..100u16).map(|x| frame.buffer[(x, 29)].symbol()).collect();
+        assert!(row.trim_end().ends_with("feature/x"), "{row:?}");
+        assert!(row.find("Ln 1, Col 1") < row.find("feature/x") && row.contains("Ln 1, Col 1"), "{row:?}");
+        let (_, r) = *app.status_hits.iter().find(|(h, _)| *h == StatusHit::Branch).unwrap();
+        assert_eq!(r.right(), 100);
+        assert_eq!(r.width, "feature/x".width() as u16 + 2);
+
+        let click = |kind| MouseEvent { kind, column: r.x + 1, row: r.y, modifiers: KeyModifiers::NONE };
+        app.handle_mouse(click(MouseEventKind::Down(MouseButton::Left)));
+        app.handle_mouse(click(MouseEventKind::Up(MouseButton::Left)));
+        assert_eq!(app.palette.as_ref().map(|p| p.kind), Some(crate::actions::PaletteKind::Branches));
+
+        // Narrow line: position fits, position plus branch does not.
+        let frame = term.draw(|f| crate::ui::status_bar::render(&mut app, f, Rect::new(0, 0, 24, 1))).unwrap();
+        let row: String = (0..24u16).map(|x| frame.buffer[(x, 0)].symbol()).collect();
+        assert!(row.contains("Ln 1, Col 1") && !row.contains("feature/x"), "{row:?}");
+        assert!(!app.status_hits.iter().any(|(h, _)| *h == StatusHit::Branch));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
     async fn zen_mode_shows_only_text_and_puts_the_layout_back() {
         use crossterm::event::{KeyModifiers, MouseEvent, MouseEventKind};
         let (mut app, dir) = test_app("zen");

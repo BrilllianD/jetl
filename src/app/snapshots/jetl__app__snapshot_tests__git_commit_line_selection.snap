@@ -32,7 +32,7 @@ expression: "snapshot(&term, &marks, Some(bottom))"
 26  ► │                                              │                                                                    │
 27  3 │ Commit   Commit and Push                     │                                                                    │
 28  ⌕ └───────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
-29  root   main
+29  root                                                                                                              main
 -- marks: A=added D=deleted ~=modified +=added word -=deleted word L=selected W=selected line
 19                                                    WWW     DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD
 20                                                        WWW AAAAAAAAAAAAAAAAAAAA+++++++AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
