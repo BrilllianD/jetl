@@ -10,6 +10,7 @@ use ratatui::style::{Modifier, Style};
 
 use crate::actions::{Action, TreeAction};
 use crate::app::Ctx;
+use crate::config::FileIcons;
 use crate::config::theme::Theme;
 use crate::event::{Effect, Level, Mouse};
 use crate::git::model::FileStatus;
@@ -72,6 +73,8 @@ pub struct ProjectPanel {
     /// Last refresh requested and last one applied.
     refresh_seq: u64,
     applied_seq: u64,
+    /// `ui.file_icons`, set by `App::sync_file_icons`.
+    pub file_icons: FileIcons,
 }
 
 fn read_children(dir: &Path, show_hidden: bool, show_ignored: bool) -> Vec<Node> {
@@ -104,6 +107,7 @@ impl ProjectPanel {
             refresh: Default::default(),
             refresh_seq: 0,
             applied_seq: 0,
+            file_icons: FileIcons::None,
         };
         p.reroot(root);
         p
@@ -666,6 +670,12 @@ impl ProjectPanel {
             let glyph = if r.is_dir { if r.expanded { "▾ " } else { "▸ " } } else { "  " };
             screen.set_stringn(x, y, glyph, (inner.right() - x) as usize, base.add_modifier(Modifier::DIM));
             x += 2;
+            if x < inner.right()
+                && let Some((icon, style)) = crate::ui::file_icons::span(&r.name, r.is_dir, self.file_icons, base, theme)
+            {
+                screen.set_stringn(x, y, &icon, (inner.right() - x) as usize, style);
+                x += 2;
+            }
             let mut name_style = base;
             if let Some(st) = self.status.get(&r.path) {
                 let s = st.style(theme);
@@ -708,6 +718,32 @@ mod tests {
 
     fn names(p: &ProjectPanel) -> Vec<String> {
         p.rows.iter().map(|r| format!("{}{}", "  ".repeat(r.depth), r.name)).collect()
+    }
+
+    #[test]
+    fn render_draws_file_icons() {
+        let root = tmp_tree("icons");
+        let mut p = ProjectPanel::new(root.clone(), false, false);
+        let theme = Theme::default();
+        let row = |buf: &ratatui::buffer::Buffer, y: u16| -> String {
+            (1..23).map(|x| buf[(x, y)].symbol()).collect::<String>().trim_end().to_string()
+        };
+        for (mode, dir_row, file_row) in [
+            (FileIcons::None, "▸ a", "  z.txt"),
+            (FileIcons::Ascii, "▸ / a", "  - z.txt"),
+            (FileIcons::Nerd, "▸ \u{f07b} a", "  \u{f15b} z.txt"),
+        ] {
+            p.file_icons = mode;
+            let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(24, 8)).unwrap();
+            let buf = term.draw(|f| p.render(f, Rect::new(0, 0, 24, 8), true, &theme)).unwrap().buffer.clone();
+            assert_eq!(row(&buf, 1), dir_row, "{mode:?}");
+            assert_eq!(row(&buf, 4), file_row, "{mode:?}");
+            if mode == FileIcons::Ascii {
+                assert_eq!(buf[(3, 1)].symbol(), "/");
+                assert_eq!(buf[(3, 1)].fg, theme.capture_style("module").unwrap().fg.unwrap());
+            }
+        }
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

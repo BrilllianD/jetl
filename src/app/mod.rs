@@ -460,6 +460,7 @@ impl App {
         app.start_watcher();
         // The symbol index follows the file index.
         app.refresh_file_index();
+        app.sync_file_icons();
         app
     }
 
@@ -1449,6 +1450,8 @@ pub(crate) mod tests {
         // (`lsp::tests::with_fake_servers`).
         let mut config = Config::default();
         config.lsp.enabled = false;
+        // No file icons unless a test sets them: tree and tab text stays as before.
+        config.ui.file_icons = crate::config::FileIcons::None;
         let mut app = App::new(root.clone(), config, paths, open);
         // `App::new`'s worker queued a prune of this test's store: let it run
         // (on no store yet) before that worker is dropped, or it may run late

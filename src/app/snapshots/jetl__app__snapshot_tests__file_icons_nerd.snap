@@ -1,0 +1,29 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &[], None)"
+---
+80x24 cursor=hidden
+00  ≣ ┌ Project: root ───────────────┐│   main.rs ×    Cargo.toml ×
+01  1 │▾  src                       ││  1
+02  ⌂ │     lib.rs                  ││
+03  2 │     main.rs                 ││
+04  ◫ │   Cargo.toml                ││
+05  7 │   Makefile                  ││
+06  ⊢ │   notes.txt                 ││
+07    │   README.md                 ││
+08  ✓ │                              ││
+09  8 │                              ││
+10  ⟲ │                              ││
+11  5 │                              ││
+12  ⚑ │                              ││
+13  9 │                              ││
+14  ⎇ │                              ││
+15    │                              ││
+16  ❯ │                              ││
+17  6 │                              ││
+18  ⚠ │                              ││
+19  4 │                              ││
+20  ► │                              ││
+21  3 │                              ││
+22  ⌕ └──────────────────────────────┘│
+23  Cargo.toml                              Ln 1, Col 1  LF  UTF-8  4 spaces  toml

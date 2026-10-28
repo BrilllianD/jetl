@@ -2,7 +2,7 @@
 //! [`super::reload::KEYS`] (a test checks it), grouped into pages.
 
 use super::edit::Value;
-use super::{Autosave, ColorMode, Config, Icons};
+use super::{Autosave, ColorMode, Config, FileIcons, Icons};
 
 /// How a key is shown and edited.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,6 +95,17 @@ pub static SETTINGS: &[Setting] = &[
         |c| s(match c.ui.icons {
             Icons::Unicode => "unicode",
             Icons::Emoji => "emoji",
+        })
+    ),
+    row!(
+        "ui.file_icons",
+        "File icons",
+        "File-type icons before file names: Nerd Font glyphs (needs a Nerd Font), one ASCII character, or none.",
+        Kind::Choice { options: &["nerd", "ascii", "none"], custom: false },
+        |c| s(match c.ui.file_icons {
+            FileIcons::Nerd => "nerd",
+            FileIcons::Ascii => "ascii",
+            FileIcons::None => "none",
         })
     ),
     row!("ui.double_click_ms", "Double click interval (ms)", "Double click and Shift Shift interval.", ANY, |c| n(c.ui.double_click_ms)),
@@ -405,7 +416,11 @@ macro_rules! page {
 }
 
 pub static PAGES: &[Page] = &[
-    page!("Appearance", None, ["ui.theme", "ui.colors", "ui.icons", "ui.double_click_ms", "ui.left_width", "ui.bottom_height"]),
+    page!(
+        "Appearance",
+        None,
+        ["ui.theme", "ui.colors", "ui.icons", "ui.file_icons", "ui.double_click_ms", "ui.left_width", "ui.bottom_height"]
+    ),
     page!("Editor", None, []),
     page!(
         "General",

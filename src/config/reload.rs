@@ -135,6 +135,7 @@ sections! {
         bottom_height => Restart,
         double_click_ms => Live,
         icons => Live,
+        file_icons => Live,
         colors => Live,
     }
     git: GitConfig {
@@ -248,8 +249,8 @@ mod tests {
         names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), KEYS.len());
-        // 19 editor, 6 ui, 3 git, 2 worktree, 1 keymap, 3 files, 2 clipboard,
+        // 19 editor, 7 ui, 3 git, 2 worktree, 1 keymap, 3 files, 2 clipboard,
         // 3 format, 2 run, 3 terminal, 10 lsp, 5 local_history.
-        assert_eq!(KEYS.len(), 59);
+        assert_eq!(KEYS.len(), 60);
     }
 }

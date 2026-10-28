@@ -1,6 +1,7 @@
 pub mod completion;
 pub mod dialog;
 pub mod event_log;
+pub mod file_icons;
 pub mod focus;
 pub mod hierarchy;
 pub mod hover;

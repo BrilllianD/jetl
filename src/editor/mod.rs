@@ -48,7 +48,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::actions::EditorAction;
 use crate::app::{AfterSave, Ctx};
 use crate::config::theme::Theme;
-use crate::config::{Autosave, Config};
+use crate::config::{Autosave, Config, FileIcons};
 use crate::event::{Effect, Level, Mouse};
 use crate::ui::dialog::{Dialog, DialogId};
 use buffer::{Buffer, BufferId, CaseChange, LineOrder};
@@ -202,6 +202,8 @@ pub struct Editor {
     /// The groups' area as last drawn (the resolver picks two or three
     /// panes by its width).
     center: Rect,
+    /// `ui.file_icons`, set by `App::sync_file_icons` (not by `apply_config`).
+    pub file_icons: FileIcons,
 }
 
 /// Shown in a group without tabs, as phrases that wrap as a whole.
@@ -234,6 +236,7 @@ impl Editor {
             mru: Vec::new(),
             next_id: 1,
             // The config fields are set by `apply_config` below.
+            file_icons: FileIcons::None,
             tab_width: 0,
             scrolloff: 0,
             hscrolloff: 0,
@@ -1817,8 +1820,9 @@ impl Editor {
     ) {
         // The dragged tab is the shown one of the focused group it came from.
         let ghost = (self.tab_drop == Some(self.groups[gi].id)).then(|| self.active_buffer().map(|b| b.name.to_string())).flatten();
+        let icons = self.file_icons;
         let group = &mut self.groups[gi];
-        render_tabs(group, &self.buffers, ghost.as_deref(), frame, tabs, theme);
+        render_tabs(group, &self.buffers, ghost.as_deref(), icons, frame, tabs, theme);
         group.tab_area = tabs;
         group.last_area = Rect::new(area.x, tabs.y, area.width, tabs.height + area.height);
         group.caret_cell = None;
@@ -1990,7 +1994,15 @@ fn wheel(b: &mut Buffer, kind: MouseEventKind) -> bool {
 }
 
 /// Draw `group`'s tab bar into `area` and record its hit rects by slot.
-fn render_tabs(group: &mut TabGroup, buffers: &[Buffer], ghost: Option<&str>, frame: &mut Frame, area: Rect, theme: &Theme) {
+fn render_tabs(
+    group: &mut TabGroup,
+    buffers: &[Buffer],
+    ghost: Option<&str>,
+    icons: FileIcons,
+    frame: &mut Frame,
+    area: Rect,
+    theme: &Theme,
+) {
     let screen = frame.buffer_mut();
     screen.set_style(area, theme.tab);
     group.tab_hits.clear();
@@ -2003,7 +2015,8 @@ fn render_tabs(group: &mut TabGroup, buffers: &[Buffer], ghost: Option<&str>, fr
         return;
     }
     // Keep the active tab visible by advancing the scroll offset.
-    let widths: Vec<u16> = tabs.iter().map(|(_, b)| b.name.width() as u16 + 5).collect();
+    let icon_w: u16 = if icons == FileIcons::None { 0 } else { 2 };
+    let widths: Vec<u16> = tabs.iter().map(|(_, b)| b.name.width() as u16 + 5 + icon_w).collect();
     group.tab_scroll = group.tab_scroll.min(tabs.len() - 1);
     if let Some(a) = group.active {
         if a < group.tab_scroll {
@@ -2041,6 +2054,10 @@ fn render_tabs(group: &mut TabGroup, buffers: &[Buffer], ghost: Option<&str>, fr
             screen.set_string(cx, area.y, " ", style);
         }
         cx += 1;
+        if let Some((icon, st)) = crate::ui::file_icons::span(&b.name, false, icons, style, theme) {
+            screen.set_string(cx, area.y, &icon, st);
+            cx += 2;
+        }
         screen.set_stringn(cx, area.y, &b.name, (area.right() - cx) as usize, style);
         cx += b.name.width() as u16 + 1;
         let close_style = if active { style } else { theme.dim.bg(theme.panel_bg) };
@@ -2098,6 +2115,31 @@ mod tests {
     }
 
     #[cfg(feature = "lang-rust")]
+    #[test]
+    fn tab_icons_widen_the_tab() {
+        use crate::ui::tabs::TabHit;
+        let mut ed = Editor::new(&Config::default());
+        let theme = Theme::default();
+        ed.open_text(PathBuf::from("/tmp/main.rs"), "", false, &theme);
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 6)).unwrap();
+        let mut draw = |ed: &mut Editor| {
+            term.draw(|f| ed.render(f, Rect::new(0, 0, 40, 1), Rect::new(0, 1, 40, 5), true, &theme)).unwrap().buffer.clone()
+        };
+        let row =
+            |b: &ratatui::buffer::Buffer| -> String { (0..40).map(|x| b[(x, 0)].symbol()).collect::<String>().trim_end().to_string() };
+        let id = ed.focused_group().id;
+        let screen = draw(&mut ed);
+        assert_eq!(row(&screen), "  main.rs ×");
+        assert_eq!(ed.hit_test(10, 0), Some(groups::EditorHit::Tab(id, TabHit::Close(0))));
+        ed.file_icons = FileIcons::Ascii;
+        let screen = draw(&mut ed);
+        assert_eq!(row(&screen), "  R main.rs ×");
+        assert_eq!(ed.hit_test(12, 0), Some(groups::EditorHit::Tab(id, TabHit::Close(0))));
+        assert_eq!(ed.hit_test(10, 0), Some(groups::EditorHit::Tab(id, TabHit::Tab(0))));
+        assert_eq!(screen[(2, 0)].fg, theme.capture_style("keyword").unwrap().fg.unwrap());
+        assert_eq!(Some(screen[(2, 0)].bg), theme.tab_active.bg);
+    }
+
     #[test]
     fn breadcrumbs_row_under_the_text() {
         let mut c = Config::default();

@@ -254,6 +254,13 @@ impl App {
         report.reloaded.push("snippets".into());
     }
 
+    /// Copy `ui.file_icons` into every component that draws file names.
+    pub(crate) fn sync_file_icons(&mut self) {
+        let mode = self.config.ui.file_icons;
+        self.project.file_icons = mode;
+        self.editor.file_icons = mode;
+    }
+
     /// Swap in `new` and apply what changed at once (the table in
     /// docs/CONFIG.md); returns what changed. Keys of other classes are
     /// stored and used when they are next read.
@@ -264,6 +271,7 @@ impl App {
             return diff;
         }
         self.editor.apply_config(&self.config);
+        self.sync_file_icons();
         self.git.tab_width = self.config.editor.tab_width;
         self.git_panel.set_log_page(self.config.git.log_page);
         self.git_panel.set_log_all(self.config.git.log_all);
@@ -385,6 +393,22 @@ mod tests {
     fn last(app: &App) -> (Level, String) {
         let n = app.notifications.last().expect("a notification");
         (n.level, n.text.clone())
+    }
+
+    #[tokio::test]
+    async fn file_icons_apply_live() {
+        use crate::config::FileIcons;
+        let (mut app, dir) = test_app("file-icons-live");
+        assert_eq!(app.project.file_icons, FileIcons::None, "the test_app pin");
+        write(&app, "config.toml", &format!("{NO_LSP}[ui]\nfile_icons = \"ascii\"\n"));
+        reload(&mut app, &[ConfigFile::Config]);
+        assert_eq!(app.project.file_icons, FileIcons::Ascii);
+        assert_eq!(app.editor.file_icons, FileIcons::Ascii);
+        write(&app, "config.toml", NO_LSP);
+        reload(&mut app, &[ConfigFile::Config]);
+        assert_eq!(app.project.file_icons, FileIcons::Nerd);
+        assert_eq!(app.editor.file_icons, FileIcons::Nerd);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]

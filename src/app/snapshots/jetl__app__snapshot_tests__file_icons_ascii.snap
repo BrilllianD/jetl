@@ -1,0 +1,54 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &marks, None)"
+---
+80x24 cursor=hidden
+00  ≣ ┌ Project: root ───────────────┐│  R main.rs ×   R Cargo.toml ×
+01  1 │▾ / src                       ││  1
+02  ⌂ │    R lib.rs                  ││
+03  2 │    R main.rs                 ││
+04  ◫ │  R Cargo.toml                ││
+05  7 │  M Makefile                  ││
+06  ⊢ │  - notes.txt                 ││
+07    │  # README.md                 ││
+08  ✓ │                              ││
+09  8 │                              ││
+10  ⟲ │                              ││
+11  5 │                              ││
+12  ⚑ │                              ││
+13  9 │                              ││
+14  ⎇ │                              ││
+15    │                              ││
+16  ❯ │                              ││
+17  6 │                              ││
+18  ⚠ │                              ││
+19  4 │                              ││
+20  ► │                              ││
+21  3 │                              ││
+22  ⌕ └──────────────────────────────┘│
+23  Cargo.toml                              Ln 1, Col 1  LF  UTF-8  4 spaces  toml
+-- marks: d=module and attribute (folder, Make) k=keyword (Rust) t=text.title (Markdown) c=comment (other file)
+00    t               tttttttttttttttt   kk            kk
+01    t  dd                          t
+02    t    kk                        t
+03    t    kk                        t
+04    t  kk                          t
+05    t  dd                          t
+06    t  cc                          t
+07    t  tt                          t
+08    t                              t
+09    t                              t
+10    t                              t
+11    t                              t
+12    t                              t
+13    t                              t
+14    t                              t
+15    t                              t
+16    t                              t
+17    t                              t
+18    t                              t
+19    t                              t
+20    t                              t
+21    t                              t
+22    tttttttttttttttttttttttttttttttt
+23 cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc

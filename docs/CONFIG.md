@@ -140,6 +140,7 @@ left_width = 32                # initial width of the left tool window (Project,
 bottom_height = 14             # initial height of the bottom tool window (Git)
 double_click_ms = 400          # double click and Shift Shift interval
 icons = "unicode"              # tool strip and menu icons: "unicode" (one-cell symbols) or "emoji" (needs a color emoji font)
+file_icons = "nerd"            # file-type icons in the project tree and tabs: "nerd" (Nerd Font glyphs, needs a Nerd Font), "ascii" (one character per file kind) or "none"
 colors = "auto"                # "auto" (true color when $COLORTERM is truecolor or 24bit, else
                                # the 256-color palette), "truecolor" or "256"
 

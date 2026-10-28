@@ -861,6 +861,49 @@ async fn app_project_tree() {
     assert_snapshot!("app_project_tree", snapshot(&term, &marks, Some(left)));
 }
 
+/// The tree with a folder and several file kinds, two tabs open, and
+/// file icons in `mode`.
+fn file_icons_fixture(app: &mut App, mode: crate::config::FileIcons) {
+    let root = app.workspace.root.clone();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    for name in ["src/main.rs", "src/lib.rs", "Cargo.toml", "Makefile", "README.md", "notes.txt"] {
+        std::fs::write(root.join(name), "").unwrap();
+    }
+    load_tree(app);
+    assert!(app.project.select_path(&root.join("src/main.rs")));
+    super::tests::load(app, "src/main.rs", "");
+    super::tests::load(app, "Cargo.toml", "");
+    app.config.ui.file_icons = mode;
+    app.sync_file_icons();
+    app.focus.set(PanelId::Project);
+}
+
+#[tokio::test]
+async fn file_icons_ascii() {
+    let mut fx = stable_app("file-icons-ascii");
+    let app = &mut fx.app;
+    file_icons_fixture(app, crate::config::FileIcons::Ascii);
+    let term = draw_app(app, 80, 24);
+    let fg = |c: &str| Style::default().fg(app.theme.capture_style(c).unwrap().fg.unwrap());
+    let marks = vec![
+        Mark::style('d', "module and attribute (folder, Make)", fg("module")),
+        Mark::style('k', "keyword (Rust)", fg("keyword")),
+        Mark::style('t', "text.title (Markdown)", fg("text.title")),
+        // "attribute" (Make) shares the folder colour in Darcula: one mark for both.
+        Mark::style('c', "comment (other file)", fg("comment")),
+    ];
+    assert_snapshot!("file_icons_ascii", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
+async fn file_icons_nerd() {
+    let mut fx = stable_app("file-icons-nerd");
+    let app = &mut fx.app;
+    file_icons_fixture(app, crate::config::FileIcons::Nerd);
+    let term = draw_app(app, 80, 24);
+    assert_snapshot!("file_icons_nerd", snapshot(&term, &[], None));
+}
+
 /// Changed lines of the Git window's diff.
 fn diff_marks(theme: &Theme) -> Vec<Mark> {
     vec![

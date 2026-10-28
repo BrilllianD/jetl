@@ -166,6 +166,8 @@ pub struct UiConfig {
     pub bottom_height: u16,
     pub double_click_ms: u64,
     pub icons: Icons,
+    /// File-type icons before file names (project tree, tabs, file lists).
+    pub file_icons: FileIcons,
     /// Color depth: true color or the 256-color palette.
     pub colors: ColorMode,
 }
@@ -204,6 +206,19 @@ pub enum Icons {
     /// One-cell symbols that any monospace font has.
     #[default]
     Unicode,
+}
+
+/// File-type icons before file names (`ui.file_icons`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FileIcons {
+    /// No icon; what a component draws until the app sets its mode.
+    #[default]
+    None,
+    /// One ASCII character per file kind.
+    Ascii,
+    /// Nerd Font glyphs (needs a Nerd Font).
+    Nerd,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -302,6 +317,7 @@ impl Default for UiConfig {
             bottom_height: 14,
             double_click_ms: 400,
             icons: Icons::Unicode,
+            file_icons: FileIcons::Nerd,
             colors: ColorMode::Auto,
         }
     }
@@ -396,6 +412,8 @@ mod tests {
         assert!(Config::parse("[editor]\nautosave = \"Idle\"\n").is_err());
         assert_eq!(cfg.ui.icons, Icons::Unicode);
         assert_eq!(Config::parse("[ui]\nicons = \"emoji\"\n").unwrap().ui.icons, Icons::Emoji);
+        assert_eq!(cfg.ui.file_icons, FileIcons::Nerd);
+        assert_eq!(Config::parse("[ui]\nfile_icons = \"ascii\"\n").unwrap().ui.file_icons, FileIcons::Ascii);
     }
 
     #[test]
