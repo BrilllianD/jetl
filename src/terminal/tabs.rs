@@ -1,5 +1,6 @@
 //! The Terminal window's tabs: one `TerminalPanel` and shell each, the active
-//! one drawn; with two or more a tab row under the top border.
+//! one drawn under a tab row with the labels on the left and New / Close
+//! buttons on the right.
 
 use crossterm::event::{MouseButton, MouseEventKind};
 use ratatui::Frame;
@@ -9,8 +10,10 @@ use ratatui::style::Style;
 use unicode_width::UnicodeWidthStr;
 
 use super::panel::TerminalPanel;
+use crate::actions::{Action, AppAction};
+use crate::app::Ctx;
 use crate::config::theme::Theme;
-use crate::event::Mouse;
+use crate::event::{Effect, Mouse};
 
 pub struct TerminalTab {
     /// 1 for the first tab; shown as `Local`, else `Local (n)`.
@@ -30,6 +33,19 @@ impl std::fmt::Debug for TerminalTab {
     }
 }
 
+/// What a cell of the tab row is: a label, or a button.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RowHit {
+    Tab(usize),
+    New,
+    Close,
+}
+
+/// The tab row shows whenever the window has room for it, at any tab count.
+fn has_row(area: Rect) -> bool {
+    area.height >= 3
+}
+
 #[derive(Debug)]
 pub struct TerminalTabs {
     /// Never empty.
@@ -38,9 +54,9 @@ pub struct TerminalTabs {
     /// Shells started so far in any tab; the newest one's session id. Never reset.
     pub(crate) seq: u64,
     scrollback: usize,
-    /// The tab row at the last frame (zero height without one) and each label's rect.
+    /// The tab row at the last frame (zero height without one) and each label's and button's rect.
     row: Rect,
-    hits: Vec<(usize, Rect)>,
+    hits: Vec<(RowHit, Rect)>,
 }
 
 impl TerminalTabs {
@@ -134,35 +150,50 @@ impl TerminalTabs {
 
     /// The shell's text area inside `area`, the window's rect.
     pub fn text_area(&self, area: Rect) -> Rect {
-        TerminalPanel::text_area(area, self.len() > 1)
+        TerminalPanel::text_area(area, has_row(area))
     }
 
-    /// Mouse on the tab row: consumed, a left press on a label activates it.
-    /// Elsewhere: the active panel's.
-    pub fn handle_mouse(&mut self, m: &Mouse) -> bool {
+    /// Mouse on the tab row: consumed; a left press on a label activates it, a
+    /// middle press closes it, a left press on New or Close performs that
+    /// action. Elsewhere: the active panel's.
+    pub fn handle_mouse(&mut self, m: &Mouse, cx: &mut Ctx) -> bool {
         let pos = Position::new(m.x, m.y);
         if self.row.height > 0 && self.row.contains(pos) {
-            if m.kind == MouseEventKind::Down(MouseButton::Left)
-                && let Some(i) = self.hits.iter().find(|(_, r)| r.contains(pos)).map(|(i, _)| *i)
-            {
-                self.activate(i);
+            let hit = self.hits.iter().find(|(_, r)| r.contains(pos)).map(|(h, _)| *h);
+            let close = || Effect::Perform(Action::App(AppAction::CloseTerminalTab));
+            match (m.kind, hit) {
+                (MouseEventKind::Down(MouseButton::Left), Some(RowHit::Tab(i))) => self.activate(i),
+                (MouseEventKind::Down(MouseButton::Middle), Some(RowHit::Tab(i))) => {
+                    self.activate(i);
+                    cx.effects.push(close());
+                }
+                (MouseEventKind::Down(MouseButton::Left), Some(RowHit::New)) => {
+                    cx.effects.push(Effect::Perform(Action::App(AppAction::NewTerminalTab)))
+                }
+                (MouseEventKind::Down(MouseButton::Left), Some(RowHit::Close)) => cx.effects.push(close()),
+                _ => {}
             }
             return true;
         }
         self.active_mut().handle_mouse(m)
     }
 
-    /// Draw the active panel (leaving the tab row when there are two or
-    /// more tabs), the tab row, and resize every tab to the text area.
+    /// The rect of `h` in the last frame's hits.
+    #[cfg(test)]
+    pub(crate) fn hit_rect(&self, h: RowHit) -> Option<Rect> {
+        self.hits.iter().find(|(x, _)| *x == h).map(|(_, r)| *r)
+    }
+
+    /// Draw the active panel (below the tab row), the tab row, and resize every tab to the text area.
     pub fn render(&mut self, frame: &mut Frame, area: Rect, focused: bool, theme: &Theme, truecolor: bool) {
-        let tab_row = self.len() > 1;
+        let tab_row = has_row(area);
         self.active_mut().render(frame, area, tab_row, focused, theme, truecolor);
         let text = TerminalPanel::text_area(area, tab_row);
         for t in &mut self.tabs {
             t.panel.resize(text.height, text.width);
         }
         self.hits.clear();
-        if !(tab_row && area.height >= 3) {
+        if !tab_row {
             self.row = Rect::default();
             return;
         }
@@ -175,12 +206,25 @@ impl TerminalTabs {
             let style = if i == self.active { theme.tab_active } else { theme.tab };
             let rect = put(buf, &mut x, row.y, row.right(), &format!(" {} ", self.label(i)), style);
             if rect.width > 0 {
-                self.hits.push((i, rect));
+                self.hits.push((RowHit::Tab(i), rect));
             }
             x += 1;
             if x >= row.right() {
                 break;
             }
+        }
+        // As many buttons as fit right of the labels, Close dropped first.
+        let all = [(RowHit::New, " New "), (RowHit::Close, " Close ")];
+        let width = |b: &[(RowHit, &str)]| -> u16 { b.iter().map(|(_, l)| l.width() as u16 + 1).sum() };
+        let mut buttons: &[(RowHit, &str)] = &all;
+        while !buttons.is_empty() && row.right() <= x + width(buttons) {
+            buttons = &buttons[..buttons.len() - 1];
+        }
+        let mut bx = row.right() - width(buttons);
+        for &(h, label) in buttons {
+            let rect = put(buf, &mut bx, row.y, row.right(), label, theme.title.bg(theme.panel_bg));
+            self.hits.push((h, rect));
+            bx += 1;
         }
     }
 }
@@ -203,6 +247,9 @@ mod tests {
     use ratatui::backend::TestBackend;
 
     use super::*;
+    use crate::config::Config;
+    use crate::workspace::Workspace;
+    use std::path::PathBuf;
 
     fn labels(t: &TerminalTabs) -> Vec<String> {
         (0..t.len()).map(|i| t.label(i)).collect()
@@ -251,20 +298,46 @@ mod tests {
         assert_eq!(t.active, 2);
     }
 
+    /// Run `f` with a throwaway `Ctx`; returns the effects it pushed.
+    fn with_cx(f: impl FnOnce(&mut Ctx)) -> Vec<Effect> {
+        let config = Config::default();
+        let theme = Theme::default();
+        let workspace = Workspace::new(PathBuf::from("/tmp"));
+        let (bus, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut cx = Ctx { effects: Vec::new(), config: &config, theme: &theme, workspace: &workspace, bus };
+        f(&mut cx);
+        cx.effects
+    }
+
+    fn is_new(e: &Effect) -> bool {
+        matches!(e, Effect::Perform(Action::App(AppAction::NewTerminalTab)))
+    }
+
+    fn is_close(e: &Effect) -> bool {
+        matches!(e, Effect::Perform(Action::App(AppAction::CloseTerminalTab)))
+    }
+
+    fn draw(t: &mut TerminalTabs, w: u16) -> Terminal<TestBackend> {
+        let theme = Theme::darcula();
+        let mut term = Terminal::new(TestBackend::new(w, 8)).unwrap();
+        term.draw(|f| t.render(f, f.area(), true, &theme, true)).unwrap();
+        term
+    }
+
     fn drawn_two() -> (TerminalTabs, Terminal<TestBackend>, Theme) {
         let theme = Theme::darcula();
         let mut t = TerminalTabs::new(0);
         let mut term = Terminal::new(TestBackend::new(40, 8)).unwrap();
         term.draw(|f| t.render(f, f.area(), true, &theme, true)).unwrap();
-        assert_eq!(t.text_area(Rect::new(0, 0, 40, 8)), Rect::new(1, 1, 38, 6));
-        assert_eq!(t.active().size(), (6, 38));
+        assert_eq!(t.text_area(Rect::new(0, 0, 40, 8)), Rect::new(1, 2, 38, 5));
+        assert_eq!(t.active().size(), (5, 38));
         t.push();
         term.draw(|f| t.render(f, f.area(), true, &theme, true)).unwrap();
         (t, term, theme)
     }
 
     #[test]
-    fn one_tab_draws_no_tab_row_and_two_do() {
+    fn tab_row_shows_labels_and_buttons() {
         let (t, term, theme) = drawn_two();
         assert_eq!((t.tabs[0].panel.size(), t.tabs[1].panel.size()), ((5, 38), (5, 38)));
         let buf = term.backend().buffer();
@@ -272,17 +345,89 @@ mod tests {
         assert_eq!(row, " Local   Local (2) ");
         assert_eq!(buf[(10, 1)].fg, theme.tab_active.fg.unwrap());
         assert_eq!(buf[(2, 1)].fg, theme.tab.fg.unwrap());
+        let buttons: String = (25..39).map(|x| buf[(x, 1)].symbol()).collect();
+        assert_eq!(buttons, " New   Close  ");
+        // The blanks 30 and 38 only carry the row's background.
+        for x in (25..30).chain(31..38) {
+            assert_eq!(buf[(x, 1)].fg, theme.title.fg.unwrap());
+            assert_eq!(buf[(x, 1)].bg, theme.panel_bg);
+        }
+    }
+
+    #[test]
+    fn one_tab_has_the_row_too() {
+        let theme = Theme::darcula();
+        let mut t = TerminalTabs::new(0);
+        let term = draw(&mut t, 40);
+        let buf = term.backend().buffer();
+        let row: String = (1..8).map(|x| buf[(x, 1)].symbol()).collect();
+        assert_eq!(row, " Local ");
+        assert_eq!(buf[(3, 1)].fg, theme.tab_active.fg.unwrap());
+        assert_eq!(t.hit_rect(RowHit::New), Some(Rect::new(25, 1, 5, 1)));
+        assert_eq!(t.hit_rect(RowHit::Close), Some(Rect::new(31, 1, 7, 1)));
+
+        let mut short = TerminalTabs::new(0);
+        let mut term = Terminal::new(TestBackend::new(40, 2)).unwrap();
+        term.draw(|f| short.render(f, f.area(), true, &theme, true)).unwrap();
+        assert_eq!(short.hit_rect(RowHit::New), None);
+        assert_eq!(short.text_area(Rect::new(0, 0, 40, 2)).height, 0);
+    }
+
+    #[test]
+    fn buttons_drop_close_first_and_never_cut_labels() {
+        let mut t = TerminalTabs::new(0);
+        t.push();
+        t.push();
+        draw(&mut t, 49);
+        assert!(t.hit_rect(RowHit::New).is_some() && t.hit_rect(RowHit::Close).is_some());
+        draw(&mut t, 48);
+        assert_eq!(t.hit_rect(RowHit::Close), None);
+        assert_eq!(t.hit_rect(RowHit::New), Some(Rect::new(41, 1, 5, 1)));
+        draw(&mut t, 40);
+        assert_eq!((t.hit_rect(RowHit::New), t.hit_rect(RowHit::Close)), (None, None));
+        assert_eq!(t.hit_rect(RowHit::Tab(2)).unwrap().width, 11);
     }
 
     #[test]
     fn click_on_the_tab_row_switches_and_is_consumed() {
         let (mut t, _term, _) = drawn_two();
         assert_eq!(t.active, 1);
-        assert!(t.handle_mouse(&mouse(MouseEventKind::Down(MouseButton::Left), 3, 1)));
+        let fx = with_cx(|cx| {
+            assert!(t.handle_mouse(&mouse(MouseEventKind::Down(MouseButton::Left), 3, 1), cx));
+            assert_eq!(t.active, 0);
+            assert!(t.handle_mouse(&mouse(MouseEventKind::Down(MouseButton::Left), 22, 1), cx));
+            assert_eq!(t.active, 0);
+            assert!(t.handle_mouse(&mouse(MouseEventKind::ScrollUp, 5, 3), cx));
+            assert_eq!(t.active, 0);
+        });
+        assert!(fx.is_empty());
+    }
+
+    #[test]
+    fn buttons_and_middle_press_perform_tab_actions() {
+        let (mut t, _term, _) = drawn_two();
+        let center = |r: Rect| (r.x + 1, r.y);
+        let (nx, ny) = center(t.hit_rect(RowHit::New).unwrap());
+        let (cx_, cy) = center(t.hit_rect(RowHit::Close).unwrap());
+        let (lx, ly) = center(t.hit_rect(RowHit::Tab(0)).unwrap());
+        let down = |b| MouseEventKind::Down(b);
+
+        let fx = with_cx(|cx| assert!(t.handle_mouse(&mouse(down(MouseButton::Left), nx, ny), cx)));
+        assert!(matches!(fx.as_slice(), [e] if is_new(e)));
+        assert_eq!(t.len(), 2);
+
+        let fx = with_cx(|cx| assert!(t.handle_mouse(&mouse(down(MouseButton::Left), cx_, cy), cx)));
+        assert!(matches!(fx.as_slice(), [e] if is_close(e)));
+
+        assert_eq!(t.active, 1);
+        let fx = with_cx(|cx| assert!(t.handle_mouse(&mouse(down(MouseButton::Middle), lx, ly), cx)));
         assert_eq!(t.active, 0);
-        assert!(t.handle_mouse(&mouse(MouseEventKind::Down(MouseButton::Left), 30, 1)));
-        assert_eq!(t.active, 0);
-        assert!(t.handle_mouse(&mouse(MouseEventKind::ScrollUp, 5, 3)));
-        assert_eq!(t.active, 0);
+        assert!(matches!(fx.as_slice(), [e] if is_close(e)));
+
+        let fx = with_cx(|cx| {
+            t.handle_mouse(&mouse(down(MouseButton::Right), lx, ly), cx);
+            t.handle_mouse(&mouse(down(MouseButton::Middle), nx, ny), cx);
+        });
+        assert!(fx.is_empty());
     }
 }

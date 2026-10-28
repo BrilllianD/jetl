@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- The Terminal window always shows its tab row, also with a single tab, with New and Close buttons on the right; a middle click on a tab label closes that tab.
+
 ### Changed
 
 - A new Terminal tab takes the lowest number no open tab uses, so after closing Local (2) the next new tab is Local (2) again; it is still added at the end of the tab row.

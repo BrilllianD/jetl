@@ -164,6 +164,8 @@ impl App {
 mod tests {
     use std::time::Duration;
 
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+
     use super::*;
     use crate::actions::{Action, AppAction};
     use crate::app::tests::{handle_next, test_app};
@@ -215,6 +217,43 @@ mod tests {
         // The next key restarts it at the next frame.
         press(&mut app, KeyCode::Char('x'));
         assert_eq!(app.terminal.active().status, Status::Idle);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn draw_ui(app: &mut App) {
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+        term.draw(|f| crate::ui::render(app, f)).unwrap();
+    }
+
+    fn click(app: &mut App, button: MouseButton, r: ratatui::layout::Rect) {
+        app.handle_mouse(MouseEvent { kind: MouseEventKind::Down(button), column: r.x + 1, row: r.y, modifiers: KeyModifiers::NONE });
+    }
+
+    #[tokio::test]
+    async fn tab_row_buttons_and_middle_press_manage_tabs() {
+        use crate::terminal::tabs::RowHit;
+        let (mut app, dir) = test_app("term-row-buttons");
+        open(&mut app);
+
+        draw_ui(&mut app);
+        let new = app.terminal.hit_rect(RowHit::New).expect("New button drawn with one tab");
+        click(&mut app, MouseButton::Left, new);
+        assert_eq!((app.terminal.len(), app.terminal.active), (2, 1));
+        assert!(app.focus.is(PanelId::Terminal));
+
+        draw_ui(&mut app);
+        let first = app.terminal.hit_rect(RowHit::Tab(0)).unwrap();
+        click(&mut app, MouseButton::Middle, first);
+        assert_eq!(app.terminal.len(), 1);
+        assert_eq!(app.terminal.label(0), "Local (2)");
+        assert!(app.layout.is_visible(ToolWindowId::Terminal));
+
+        draw_ui(&mut app);
+        let close = app.terminal.hit_rect(RowHit::Close).unwrap();
+        click(&mut app, MouseButton::Left, close);
+        assert!(!app.layout.is_visible(ToolWindowId::Terminal));
+        assert!(app.focus.is(PanelId::Editor));
+        assert_eq!(app.terminal.len(), 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

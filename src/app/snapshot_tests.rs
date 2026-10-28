@@ -2974,3 +2974,15 @@ async fn terminal_tabs() {
     let marks = [Mark::style('A', "active tab", app.theme.tab_active)];
     assert_snapshot!("terminal_tabs", snapshot(&term, &marks, None));
 }
+
+#[tokio::test]
+async fn terminal_one_tab() {
+    let mut fx = stable_app("terminal-one-tab");
+    let app = &mut fx.app;
+    app.terminal.tabs[0].panel.feed(b"$ echo tab 1\r\ntab 1\r\n$ ");
+    let theme = app.theme.clone();
+    let mut term = Terminal::new(TestBackend::new(60, 8)).unwrap();
+    term.draw(|f| app.terminal.render(f, f.area(), true, &theme, true)).unwrap();
+    let marks = [Mark::style('B', "button", theme.title.bg(theme.panel_bg))];
+    assert_snapshot!("terminal_one_tab", snapshot(&term, &marks, None));
+}
