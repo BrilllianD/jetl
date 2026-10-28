@@ -973,6 +973,31 @@ mod tests {
         assert_eq!(w.keymap_page().selected_row(), Some(&w.keymap_page().rows()[1]));
         click(&mut w, r.x + MARK_W as u16, r.y, 1);
         assert!(matches!(w.keymap_page().rows()[0], KeymapRow::Context { expanded: true, .. }));
+        // The second click of a double click on the marker must not undo the first.
+        click(&mut w, r.x + MARK_W as u16, r.y, 2);
+        assert!(matches!(w.keymap_page().rows()[0], KeymapRow::Context { expanded: true, .. }));
+    }
+
+    #[test]
+    fn keymap_double_click_on_context_text_toggles() {
+        use crate::ui::settings_keymap::KeymapRow;
+        let mut w = keymap_window();
+        let r = w.keymap_page().rows_rect();
+        click(&mut w, r.x + 5, r.y, 1);
+        assert!(matches!(w.keymap_page().rows()[0], KeymapRow::Context { expanded: false, .. }));
+        click(&mut w, r.x + 5, r.y, 2);
+        assert!(matches!(w.keymap_page().rows()[0], KeymapRow::Context { expanded: true, .. }));
+    }
+
+    #[test]
+    fn keymap_click_on_search_line_or_empty_area_focuses_the_page() {
+        let mut w = keymap_window();
+        let r = w.keymap_page().rows_rect();
+        click(&mut w, r.x + 10, r.y - 2, 1);
+        assert_eq!(w.pane, Pane::Page);
+        w.pane = Pane::Tree;
+        click(&mut w, r.x + 10, r.y + r.height, 1);
+        assert_eq!(w.pane, Pane::Page);
     }
 
     fn key(code: KeyCode) -> KeyEvent {

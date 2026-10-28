@@ -55,6 +55,8 @@ pub struct KeymapPage {
     rows: Vec<KeymapRow>,
     list: ListState,
     rows_rect: Rect,
+    /// The whole page body from the last draw: the search line, the rows and the help.
+    area: Rect,
 }
 
 /// `git.changes` becomes `Git › Changes`, `local_history` `Local History`.
@@ -284,7 +286,10 @@ impl KeymapPage {
     /// Select the row at the cell; whether one was hit. The marker cell or a
     /// double click toggles a context.
     pub fn click(&mut self, x: u16, y: u16, clicks: u8) -> bool {
-        let Some(i) = self.list.hit(self.rows_rect, x, y) else { return false };
+        if !self.area.contains((x, y).into()) {
+            return false;
+        }
+        let Some(i) = self.list.hit(self.rows_rect, x, y) else { return true };
         self.list.select(i);
         if let Some(KeymapRow::Context { ctx, expanded, .. }) = self.rows.get(i) {
             let (ctx, open) = (ctx.clone(), *expanded);
@@ -310,8 +315,10 @@ impl KeymapPage {
         let bottom = area.bottom();
         if area.height == 0 || w == 0 {
             self.rows_rect = Rect::default();
+            self.area = Rect::default();
             return;
         }
+        self.area = area;
         let dim = base.patch(theme.dim);
         {
             let buf = frame.buffer_mut();
