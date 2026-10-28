@@ -2,8 +2,9 @@
 //! everything but dialogs. It takes keys and mouse like a dialog: Up/Down
 //! (skipping disabled rows and separators), Enter, Esc, a click on a row,
 //! or a click outside to close. Rows that do not fit scroll, with `▲`/`▼`
-//! on the border. The main menu's dropdowns are the same widget
-//! (`ui::menu_bar`).
+//! on the border. A row can open a submenu (Right, Enter, Space or the
+//! pointer resting on it; Left or Esc close it). The main menu's dropdowns
+//! are the same widget (`ui::menu_bar`).
 
 use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEventKind};
 use ratatui::Frame;
@@ -24,19 +25,32 @@ pub struct MenuItem {
     pub enabled: bool,
     /// Filled in by the app from the keymap.
     pub shortcut: String,
+    /// Rows of the submenu this row opens; empty for a plain row.
+    pub children: Vec<MenuItem>,
 }
 
 impl MenuItem {
     pub fn new(label: impl Into<String>, action: Action) -> Self {
-        Self { label: label.into(), action: Some(action), enabled: true, shortcut: String::new() }
+        Self { label: label.into(), action: Some(action), enabled: true, shortcut: String::new(), children: Vec::new() }
     }
 
     pub fn separator() -> Self {
-        Self { label: String::new(), action: None, enabled: true, shortcut: String::new() }
+        Self { label: String::new(), action: None, enabled: true, shortcut: String::new(), children: Vec::new() }
+    }
+
+    /// A row that opens a submenu of `children` (Right, Enter, Space or hover).
+    pub fn submenu(label: impl Into<String>, children: Vec<MenuItem>) -> Self {
+        let enabled = children.iter().any(MenuItem::selectable);
+        Self { label: label.into(), action: None, enabled, shortcut: String::new(), children }
     }
 
     pub fn is_separator(&self) -> bool {
-        self.action.is_none()
+        self.action.is_none() && self.children.is_empty()
+    }
+
+    /// What the right edge shows: `▸` for a parent row, else the shortcut.
+    fn trailing(&self) -> &str {
+        if self.children.is_empty() { &self.shortcut } else { "▸" }
     }
 
     /// Whether keys and the pointer can select this row.
@@ -68,12 +82,14 @@ pub struct ContextMenu {
     scroll: usize,
     /// Shift left to fit instead of flipping (a menu bar dropdown).
     shift: bool,
+    /// The open submenu, always the selected row's.
+    sub: Option<Box<ContextMenu>>,
 }
 
 impl ContextMenu {
     pub fn new(items: Vec<MenuItem>, x: u16, y: u16) -> Self {
         let selected = items.iter().position(MenuItem::selectable).unwrap_or(0);
-        Self { items, selected, x, y, rect: Rect::default(), scroll: 0, shift: false }
+        Self { items, selected, x, y, rect: Rect::default(), scroll: 0, shift: false, sub: None }
     }
 
     fn step(&mut self, forward: bool) {
@@ -88,12 +104,31 @@ impl ContextMenu {
         }
     }
 
+    /// Open the selected row's submenu. Returns whether that row is a parent
+    /// (so the caller does not run it).
+    fn open_sub(&mut self) -> bool {
+        let Some(item) = self.items.get(self.selected).filter(|it| it.selectable() && !it.children.is_empty()) else {
+            return false;
+        };
+        if self.sub.is_none() {
+            self.sub = Some(Box::new(ContextMenu::new(item.children.clone(), 0, 0)));
+        }
+        true
+    }
+
     fn run(&self, i: usize) -> Option<MenuResult> {
         let item = self.items.get(i).filter(|it| it.selectable())?;
         item.action.clone().map(MenuResult::Run)
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Option<MenuResult> {
+        if let Some(sub) = &mut self.sub {
+            if sub.sub.is_none() && matches!(key.code, KeyCode::Left | KeyCode::Esc) {
+                self.sub = None;
+                return None;
+            }
+            return sub.handle_key(key);
+        }
         match key.code {
             KeyCode::Esc => Some(MenuResult::Cancel),
             KeyCode::Up | KeyCode::BackTab => {
@@ -104,7 +139,17 @@ impl ContextMenu {
                 self.step(true);
                 None
             }
-            KeyCode::Enter | KeyCode::Char(' ') => self.run(self.selected),
+            KeyCode::Right => {
+                self.open_sub();
+                None
+            }
+            KeyCode::Enter | KeyCode::Char(' ') => {
+                if self.open_sub() {
+                    None
+                } else {
+                    self.run(self.selected)
+                }
+            }
             _ => None,
         }
     }
@@ -132,8 +177,17 @@ impl ContextMenu {
         self.rect
     }
 
+    /// The menu's rect, then each open submenu's, outermost first.
+    pub fn rects(&self) -> Vec<Rect> {
+        let mut rects = vec![self.rect];
+        if let Some(sub) = &self.sub {
+            rects.extend(sub.rects());
+        }
+        rects
+    }
+
     pub fn contains(&self, x: u16, y: u16) -> bool {
-        self.rect.contains((x, y).into())
+        self.rect.contains((x, y).into()) || self.sub.as_ref().is_some_and(|s| s.contains(x, y))
     }
 
     fn row_at(&self, x: u16, y: u16) -> Option<usize> {
@@ -142,15 +196,35 @@ impl ContextMenu {
     }
 
     pub fn handle_mouse(&mut self, m: &Mouse) -> Option<MenuResult> {
+        if let Some(sub) = &mut self.sub
+            && sub.contains(m.x, m.y)
+        {
+            return sub.handle_mouse(m);
+        }
         match m.kind {
-            MouseEventKind::Down(_) if !self.contains(m.x, m.y) => Some(MenuResult::Cancel),
+            MouseEventKind::Down(_) if !self.rect.contains((m.x, m.y).into()) => Some(MenuResult::Cancel),
             MouseEventKind::Down(MouseButton::Left) | MouseEventKind::Up(MouseButton::Right) => {
                 // Up(Right): press, drag to an item, release (as in GUIs).
-                self.row_at(m.x, m.y).and_then(|i| self.run(i))
+                let i = self.row_at(m.x, m.y)?;
+                if self.items[i].selectable() && !self.items[i].children.is_empty() {
+                    if i != self.selected {
+                        self.sub = None;
+                    }
+                    self.selected = i;
+                    self.open_sub();
+                    return None;
+                }
+                self.run(i)
             }
             MouseEventKind::Moved | MouseEventKind::Drag(_) => {
-                if let Some(i) = self.row_at(m.x, m.y).filter(|&i| self.items[i].selectable()) {
-                    self.selected = i;
+                if let Some(i) = self.row_at(m.x, m.y) {
+                    if i != self.selected {
+                        self.sub = None;
+                    }
+                    if self.items[i].selectable() {
+                        self.selected = i;
+                        self.open_sub();
+                    }
                 }
                 None
             }
@@ -158,11 +232,16 @@ impl ContextMenu {
         }
     }
 
-    pub fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
+    fn size(&self, area: Rect) -> (u16, u16) {
         let label_w = self.items.iter().map(|i| i.label.width()).max().unwrap_or(0) as u16;
-        let key_w = self.items.iter().map(|i| i.shortcut.width()).max().unwrap_or(0) as u16;
+        let key_w = self.items.iter().map(|i| i.trailing().width()).max().unwrap_or(0) as u16;
         let w = (label_w + if key_w > 0 { key_w + 3 } else { 0 } + 4).min(area.width);
         let h = (self.items.len() as u16 + 2).min(area.height);
+        (w, h)
+    }
+
+    pub fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        let (w, h) = self.size(area);
         // Open down-right of the pointer, flipping when it would not fit
         // (shifting left when the flip would not fit either).
         let shifted = area.right().saturating_sub(w).max(area.x);
@@ -175,6 +254,11 @@ impl ContextMenu {
         };
         let y = if self.y + 1 + h <= area.bottom() { self.y + 1 } else { self.y.saturating_sub(h).max(area.y) };
         self.rect = Rect::new(x, y, w, h);
+        self.draw(frame, area, theme);
+    }
+
+    /// Draw the menu at `self.rect`, then its open submenu beside the selected row.
+    fn draw(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
         frame.render_widget(Clear, self.rect);
         let block = Block::default()
             .borders(Borders::ALL)
@@ -219,10 +303,26 @@ impl ContextMenu {
             };
             buf.set_style(Rect::new(inner.x, y, inner.width, 1), base);
             buf.set_stringn(inner.x + 1, y, &item.label, inner.width.saturating_sub(2) as usize, base);
-            if !item.shortcut.is_empty() {
-                let kx = inner.right().saturating_sub(item.shortcut.width() as u16 + 1);
-                buf.set_stringn(kx, y, &item.shortcut, (inner.right() - kx) as usize, base.patch(theme.dim));
+            let trailing = item.trailing();
+            if !trailing.is_empty() {
+                let kx = inner.right().saturating_sub(trailing.width() as u16 + 1);
+                buf.set_stringn(kx, y, trailing, (inner.right() - kx) as usize, base.patch(theme.dim));
             }
+        }
+        let (parent, selected, scroll) = (self.rect, self.selected, self.scroll);
+        if let Some(sub) = &mut self.sub {
+            let row_y = inner.y + (selected - scroll) as u16;
+            let (w, h) = sub.size(area);
+            let x = if parent.right() + w <= area.right() {
+                parent.right()
+            } else if parent.x >= area.x + w {
+                parent.x - w
+            } else {
+                area.right().saturating_sub(w).max(area.x)
+            };
+            let y = row_y.saturating_sub(1).min(area.bottom().saturating_sub(h)).max(area.y);
+            sub.rect = Rect::new(x, y, w, h);
+            sub.draw(frame, area, theme);
         }
     }
 }
@@ -351,5 +451,125 @@ mod tests {
             Some(MenuResult::Run(Action::App(AppAction::Quit)))
         );
         assert_eq!(m.handle_mouse(&at(MouseEventKind::Down(MouseButton::Left), 0, 0)), Some(MenuResult::Cancel));
+    }
+
+    fn nested() -> ContextMenu {
+        ContextMenu::new(
+            vec![
+                MenuItem::new("New", Action::Tree(TreeAction::New)),
+                MenuItem::submenu(
+                    "More",
+                    vec![
+                        MenuItem::new("Off", Action::Tree(TreeAction::Refresh)).enabled(false),
+                        MenuItem::new("About", Action::App(AppAction::About)),
+                        MenuItem::new("Quit", Action::App(AppAction::Quit)),
+                    ],
+                ),
+            ],
+            2,
+            2,
+        )
+    }
+
+    fn draw(m: &mut ContextMenu) -> ratatui::buffer::Buffer {
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(60, 20)).unwrap();
+        term.draw(|f| m.render(f, f.area(), &Theme::default())).unwrap().buffer.clone()
+    }
+
+    fn at(kind: MouseEventKind, x: u16, y: u16) -> Mouse {
+        Mouse { kind, x, y, clicks: 1, mods: KeyModifiers::NONE }
+    }
+
+    #[test]
+    fn submenu_keys_open_and_close_only_the_child() {
+        let mut m = nested();
+        let key = |c| KeyEvent::new(c, KeyModifiers::NONE);
+        m.handle_key(key(KeyCode::Down));
+        assert_eq!(m.selected, 1);
+        assert_eq!(m.handle_key(key(KeyCode::Right)), None);
+        assert_eq!(m.sub.as_ref().map(|s| s.selected), Some(1), "first enabled child");
+        m.handle_key(key(KeyCode::Down));
+        assert_eq!(m.sub.as_ref().unwrap().selected, 2);
+        assert_eq!(m.handle_key(key(KeyCode::Left)), None);
+        assert!(m.sub.is_none());
+        assert_eq!(m.selected, 1);
+        assert_eq!(m.handle_key(key(KeyCode::Enter)), None);
+        assert!(m.sub.is_some());
+        assert_eq!(m.handle_key(key(KeyCode::Esc)), None);
+        assert!(m.sub.is_none());
+        assert_eq!(m.handle_key(key(KeyCode::Char(' '))), None);
+        assert!(m.sub.is_some());
+        assert_eq!(m.handle_key(key(KeyCode::Enter)), Some(MenuResult::Run(Action::App(AppAction::About))));
+        m.handle_key(key(KeyCode::Esc));
+        assert_eq!(m.handle_key(key(KeyCode::Esc)), Some(MenuResult::Cancel));
+    }
+
+    #[test]
+    fn submenu_parent_rules() {
+        let off = || MenuItem::new("Off", Action::Tree(TreeAction::Refresh)).enabled(false);
+        assert!(!MenuItem::submenu("x", vec![]).enabled);
+        assert!(!MenuItem::submenu("x", vec![off()]).enabled);
+        assert!(!MenuItem::submenu("x", vec![off()]).is_separator());
+        let mut m = ContextMenu::new(vec![MenuItem::new("New", Action::Tree(TreeAction::New)), MenuItem::submenu("x", vec![off()])], 0, 0);
+        m.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        m.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        assert!(m.sub.is_none());
+    }
+
+    #[test]
+    fn hover_opens_and_closes_the_submenu() {
+        let mut m = nested();
+        draw(&mut m);
+        let row = m.rect.y + 2;
+        m.handle_mouse(&at(MouseEventKind::Moved, m.rect.x + 2, row));
+        assert!(m.sub.is_some());
+        draw(&mut m);
+        let sub = m.sub.as_ref().unwrap().rect;
+        m.handle_mouse(&at(MouseEventKind::Moved, sub.x + 2, sub.y + 3));
+        assert_eq!(m.sub.as_ref().unwrap().selected, 2);
+        assert_eq!(
+            m.handle_mouse(&at(MouseEventKind::Down(MouseButton::Left), sub.x + 2, sub.y + 3)),
+            Some(MenuResult::Run(Action::App(AppAction::Quit)))
+        );
+        m.handle_mouse(&at(MouseEventKind::Moved, m.rect.x + 2, m.rect.y + 1));
+        assert!(m.sub.is_none());
+        assert_eq!(m.selected, 0);
+    }
+
+    #[test]
+    fn click_outside_menu_and_submenu_cancels() {
+        let mut m = nested();
+        m.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        m.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        draw(&mut m);
+        let sub = m.sub.as_ref().unwrap().rect;
+        assert!(m.contains(sub.x + 1, sub.y + 1));
+        assert!(!m.contains(59, 19));
+        assert_eq!(m.rects().len(), 2);
+        assert_eq!(m.handle_mouse(&at(MouseEventKind::Down(MouseButton::Left), sub.x + 2, sub.y + 1)), None, "disabled child");
+        assert!(m.sub.is_some());
+        assert_eq!(m.handle_mouse(&at(MouseEventKind::Down(MouseButton::Left), 59, 19)), Some(MenuResult::Cancel));
+    }
+
+    #[test]
+    fn submenu_opens_beside_the_parent_row() {
+        let mut m = nested();
+        m.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        m.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        draw(&mut m);
+        let sub = m.sub.as_ref().unwrap().rect;
+        assert_eq!(sub.x, m.rect.right());
+        assert_eq!(sub.y + 1, m.rect.y + 2);
+        m.move_to(40, 2);
+        draw(&mut m);
+        let sub = m.sub.as_ref().unwrap().rect;
+        assert_eq!(sub.right(), m.rect.x, "flipped to the left");
+    }
+
+    #[test]
+    fn parent_row_draws_an_arrow() {
+        let mut m = nested();
+        let buf = draw(&mut m);
+        assert_eq!(buf[(m.rect.right() - 3, m.rect.y + 2)].symbol(), "▸");
     }
 }

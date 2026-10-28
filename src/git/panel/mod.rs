@@ -23,14 +23,15 @@ use unicode_width::UnicodeWidthStr;
 use super::GitRequest;
 use super::diff::DiffDoc;
 use super::model::{
-    BranchInfo, CommitDetails, DiffKey, InProgress, LogFilter, LogRow, ProgressAction, Section, StashEntry, StatusSnapshot,
+    BranchInfo, BranchOp, CommitDetails, DiffKey, InProgress, LogFilter, LogRow, ProgressAction, Section, StashEntry, StatusSnapshot,
 };
-use crate::actions::GitAction;
+use crate::actions::{Action, GitAction};
 use crate::app::Ctx;
 use crate::config::FileIcons;
 use crate::config::theme::Theme;
 use crate::event::{Effect, Level, Mouse};
 use crate::ui::focus::PanelId;
+use crate::ui::menu::MenuItem;
 use crate::ui::tool_window_block;
 use crate::ui::widgets::list::ListState;
 use crate::ui::widgets::text_input::TextInput;
@@ -281,6 +282,20 @@ impl GitPanel {
         self.snapshot.as_ref().and_then(|s| s.in_progress)
     }
 
+    /// The operations of branch `b` as menu rows: the Log menu's `Branch '<name>'` submenu and the
+    /// branches pane's menu. Ops git refuses mid-operation are disabled while one blocks switching.
+    pub(super) fn branch_op_items(&self, b: &BranchInfo) -> Vec<MenuItem> {
+        let current = self.snapshot().and_then(|s| s.branch.as_deref());
+        let busy = self.in_progress().is_some_and(|ip| ip.kind.blocks_switching());
+        BranchOp::for_branch(b, current)
+            .into_iter()
+            .map(|(op, label)| {
+                let action = Action::Git(GitAction::BranchOp { branch: b.name.clone(), op });
+                MenuItem::new(label, action).enabled(!(busy && op.refused_mid_operation()))
+            })
+            .collect()
+    }
+
     pub fn log_loaded(&self) -> bool {
         self.log_loaded
     }
@@ -385,9 +400,9 @@ impl GitPanel {
             G::SkipOperation => cx.effects.push(Effect::Git(GitRequest::Progress(ProgressAction::Skip))),
             G::AbortOperation => cx.effects.push(Effect::Git(GitRequest::Progress(ProgressAction::Abort))),
             G::ContextMenu => self.log_context_menu(None, cx),
-            G::LogBranch(name) => match self.branches.iter().find(|b| b.name == *name) {
-                Some(b) => cx.effects.push(Effect::Git(GitRequest::BranchOps(b.clone()))),
-                None => cx.notify(Level::Info, format!("Branch '{name}' no longer exists")),
+            G::BranchOp { branch, op } => match self.branches.iter().find(|b| b.name == *branch) {
+                Some(b) => cx.effects.push(Effect::Git(GitRequest::BranchOp { branch: b.clone(), op: *op })),
+                None => cx.notify(Level::Info, format!("Branch '{branch}' no longer exists")),
             },
             G::LogShowDiff => self.show_commits_diff(cx),
             G::CopySha => self.commit_action(CommitAction::CopySha, cx),

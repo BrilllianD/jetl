@@ -19,7 +19,7 @@ expression: "snapshot(&term, &marks, Some(bottom))"
 13    └│ Delete Tag…                       Alt+Shift+D │
 14  ✓ ─│ Filter Log…                            Ctrl+F │───────────────────────────────────────────────────────────────────
 15  8 ┌├───────────────────────────────────────────────┤──────────────────────────────────────────────────────────────────┐
-16  ⟲ ││ Branch 'parser' ▸                             │                                   Refresh   Fetch   Pull   Push  │
+16  ⟲ ││ Branch 'parser'                             ▸ │                                   Refresh   Fetch   Pull   Push  │
 17  5 │╰───────────────────────────────────────────────╯y]                                                                │
 18  ⚑ │●─┐ aaaaaaa (HEAD -> main) Merge branch 'parser'     Ann, 2 hours ago│ Loading…                                    │
 19  9 ││ ● ddddddd (parser) Parse nested lists               Bob, 3 days ago│                                             │
@@ -34,4 +34,5 @@ expression: "snapshot(&term, &marks, Some(bottom))"
 28  ⌕ └───────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 29
 -- marks: L=selected d=dim
+16                                                   d
 19     LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL

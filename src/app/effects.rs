@@ -189,6 +189,14 @@ impl App {
             GitRequest::NewBranchAt { name, rev } => {
                 self.git.run_cli(GitOp::NewBranch(name.clone()), vec!["switch".into(), "-c".into(), name, rev]);
             }
+            GitRequest::BranchOp { branch, op } => {
+                if op.refused_mid_operation()
+                    && let Some(ip) = self.in_progress().filter(|ip| ip.kind.blocks_switching())
+                {
+                    return self.notify(Level::Warn, ip.refusal());
+                }
+                self.branch_op(branch, op);
+            }
             GitRequest::BranchOps(b) => {
                 let ops = crate::git::model::BranchOp::for_branch(&b, self.git_panel.snapshot().and_then(|s| s.branch.as_deref()));
                 let mut ops = ops;

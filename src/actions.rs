@@ -353,8 +353,11 @@ pub enum GitAction {
     LogInteractiveRebase,
     LogNewTag,
     LogDeleteTag,
-    /// The branch operations of a branch at the selected commit (a context menu row; not in the keymap).
-    LogBranch(String),
+    /// One operation of a branch (a context menu row; not in the keymap).
+    BranchOp {
+        branch: String,
+        op: crate::git::model::BranchOp,
+    },
     Commit,
     CommitAndPush,
     CommitBox,

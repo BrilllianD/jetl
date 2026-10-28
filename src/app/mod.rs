@@ -490,6 +490,7 @@ impl App {
             if let Some(action) = &item.action {
                 item.shortcut = self.shortcut(action).unwrap_or_default();
             }
+            self.fill_shortcuts(&mut item.children);
         }
     }
 
@@ -3342,7 +3343,16 @@ pub(crate) mod tests {
             assert!(!enabled(label), "{label}");
         }
         assert!(enabled("Copy Revision Number") && enabled("Show Diff"));
+        let branch_row = menu.items.iter().find(|i| i.label.starts_with("Branch '")).expect("branch row");
+        let shown = branch_row.label.trim_start_matches("Branch '").trim_end_matches('\'').to_string();
+        let child_enabled =
+            |label: &str| branch_row.children.iter().find(|c| c.label == label).unwrap_or_else(|| panic!("{label}")).enabled;
+        assert!(!child_enabled(&format!("New Branch from '{shown}'…")));
+        assert!(child_enabled("Rename…"), "ops git allows mid-merge stay enabled");
         app.menu = None;
+        app.perform(Action::Git(GitAction::BranchOp { branch: "dev".into(), op: BranchOp::Merge }));
+        assert_eq!(app.notifications.last().unwrap().text, "A merge is in progress: finish or abort it first");
+        assert!(app.dialog.is_none());
         // The action itself refuses.
         let refusal = "A merge is in progress: finish or abort it first";
         app.perform(Action::Git(GitAction::LogCherryPick));
@@ -3366,7 +3376,7 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn log_menu_branch_rows_open_the_branch_operations() {
+    async fn log_menu_branch_submenu_runs_branch_operations() {
         use crate::actions::GitAction;
         use crate::git::model::BranchOp;
         use crate::git::{LogFilter, LogRev};
@@ -3388,25 +3398,28 @@ pub(crate) mod tests {
         let menu = app.menu.as_ref().expect("context menu");
         let labels: Vec<&str> = menu.items.iter().map(|i| i.label.as_str()).collect();
         assert!(menu.items.iter().any(|i| i.is_separator()), "separator: {labels:?}");
-        assert!(labels.contains(&format!("Branch '{main}' ▸").as_str()) && labels.contains(&"Branch 'dev' ▸"), "{labels:?}");
-        let row = menu.items.iter().find(|i| i.label == "Branch 'dev' ▸").unwrap();
-        let action = row.action.clone().unwrap();
-        app.menu = None;
-        app.perform(action);
-        let apply = |app: &mut App, op: BranchOp| {
-            let d = app.dialog.take().expect("branch operations");
-            let DialogId::BranchOps { branch, ops } = &d.id else { panic!("{:?}", d.id) };
-            assert_eq!(branch.name, "dev");
-            let i = ops.iter().position(|o| *o == op).unwrap();
-            app.finish_dialog(d.id.clone(), DialogResult::Choice(i));
+        assert!(labels.contains(&format!("Branch '{main}'").as_str()) && labels.contains(&"Branch 'dev'"), "{labels:?}");
+        let row = menu.items.iter().find(|i| i.label == "Branch 'dev'").unwrap();
+        assert!(row.action.is_none() && row.enabled);
+        let dev_info = app.git_panel.branches.iter().find(|b| b.name == "dev").unwrap();
+        let want: Vec<String> = BranchOp::for_branch(dev_info, Some(&main)).into_iter().map(|(_, l)| l).collect();
+        let got: Vec<String> = row.children.iter().map(|c| c.label.clone()).collect();
+        assert_eq!(got, want);
+        let child = |op| {
+            let a = Action::Git(GitAction::BranchOp { branch: "dev".into(), op });
+            row.children.iter().find(|c| c.action.as_ref() == Some(&a)).unwrap_or_else(|| panic!("{op:?}")).action.clone().unwrap()
         };
-        apply(&mut app, BranchOp::Merge);
+        let (merge, compare) = (child(BranchOp::Merge), child(BranchOp::Compare));
+        app.menu = None;
+        app.perform(merge);
         let d = app.dialog.take().expect("merge confirm");
         assert_eq!(d.id, DialogId::MergeBranch { name: "dev".into() });
-        app.git_request(crate::git::GitRequest::BranchOps(app.git_panel.branches.iter().find(|b| b.name == "dev").unwrap().clone()));
-        apply(&mut app, BranchOp::Compare);
+        app.perform(compare);
         let want = LogFilter { rev: LogRev::Rev("HEAD..dev".into()), ..Default::default() };
         assert_eq!(app.git_panel.log_filter(), &want);
+        app.perform(Action::Git(GitAction::BranchOp { branch: "gone".into(), op: BranchOp::Merge }));
+        let n = app.notifications.last().unwrap();
+        assert_eq!((n.level, n.text.as_str()), (crate::event::Level::Info, "Branch 'gone' no longer exists"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

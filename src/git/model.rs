@@ -319,7 +319,7 @@ pub struct BranchInfo {
 }
 
 /// What the branches popup offers for a branch.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BranchOp {
     Checkout,
     /// A remote branch: a local branch of the same name tracking it.

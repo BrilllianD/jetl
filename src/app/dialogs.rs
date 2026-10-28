@@ -38,8 +38,8 @@ impl App {
         Some(name)
     }
 
-    /// Run a choice from the branches popup.
-    fn branch_op(&mut self, b: BranchInfo, op: BranchOp) {
+    /// Run one branch operation (the branches popup, a branch submenu).
+    pub(super) fn branch_op(&mut self, b: BranchInfo, op: BranchOp) {
         let name = b.name.clone();
         let current = self.branch_label().unwrap_or_else(|| "HEAD".into());
         match op {

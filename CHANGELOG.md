@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The Git Log context menu's `Branch '<name>'` rows open a submenu with every operation for that branch (checkout, new branch, compare, merge, rebase, push, rename, delete); it opens on Right, Enter or mouse hover and closes on Left or Esc. Operations git refuses during a merge or rebase are shown disabled.
 - File-type icons before file names in the Project tree, on editor tabs, in Go to File, Recent Files and Search Everywhere file rows, in the Find, Problems, TODO and Locations file headers and in the Git Commit and Log file lists, coloured per file kind from the theme's syntax colours. The new `ui.file_icons` setting (Settings > Appearance > File icons) picks Nerd Font glyphs ("nerd", the default, needs a Nerd Font), one ASCII character per file kind ("ascii") or none ("none"), and applies at once.
 - The Terminal window always shows its tab row, also with a single tab, with New and Close buttons on the right; a middle click on a tab label closes that tab.
 - Syntax highlighting for Makefiles (`Makefile`, `GNUmakefile`, `*.mk`) and INI-style config files (`.ini`, `.cfg`, `.conf`, `.gitconfig`, `.editorconfig`, systemd units and more); `.env` and `.env.*` files highlight as shell, and more file names use the JSON, TOML, YAML, XML and shell grammars. An exact file name now always wins over another language's extension.

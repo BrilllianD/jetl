@@ -395,10 +395,14 @@ impl GitPanel {
             MenuItem::new("Filter Log…", g(GitAction::LogFilter)),
         ];
         let at = self.log.get(self.log_list.selected).map(|r| branches_at(&r.commit.refs)).unwrap_or_default();
-        let at: Vec<String> = at.into_iter().filter(|n| self.branches.iter().any(|b| b.name == *n)).collect();
-        if !at.is_empty() {
+        let rows: Vec<MenuItem> = at
+            .iter()
+            .filter_map(|name| self.branches.iter().find(|b| b.name == *name))
+            .map(|b| MenuItem::submenu(format!("Branch '{}'", b.name), self.branch_op_items(b)))
+            .collect();
+        if !rows.is_empty() {
             items.push(MenuItem::separator());
-            items.extend(at.into_iter().map(|name| MenuItem::new(format!("Branch '{name}' ▸"), g(GitAction::LogBranch(name)))));
+            items.extend(rows);
         }
         cx.effects.push(Effect::ContextMenu(ContextMenu::new(items, x, y)));
     }

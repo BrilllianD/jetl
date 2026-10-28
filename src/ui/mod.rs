@@ -157,10 +157,9 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     }
     // Toasts are drawn last but never over an overlay, so a visible toast is
     // always clickable. The menu bar's own row is row 0, which toasts never use.
-    let avoid: Vec<ratatui::layout::Rect> = [
+    let mut avoid: Vec<ratatui::layout::Rect> = [
         app.palette.as_ref().map(|p| p.rect()),
         app.switcher.as_ref().map(|s| s.rect()),
-        app.menu.as_ref().map(|m| m.rect()),
         app.menu_bar.as_ref().map(|b| b.dropdown().rect()),
         app.settings.as_ref().map(|s| s.rect()),
         app.run_configs.as_ref().map(|s| s.rect()),
@@ -169,6 +168,9 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     .into_iter()
     .flatten()
     .collect();
+    if let Some(m) = &app.menu {
+        avoid.extend(m.rects());
+    }
     // Toasts keep left of the right strip so its buttons stay visible and clickable.
     let strip = app.layout.rects.strip_right;
     let mut toast_area = area;

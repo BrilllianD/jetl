@@ -279,6 +279,11 @@ pub enum GitRequest {
     },
     /// The branches popup's operations for this branch.
     BranchOps(BranchInfo),
+    /// Run one of the branches popup's operations (`App::branch_op`).
+    BranchOp {
+        branch: BranchInfo,
+        op: model::BranchOp,
+    },
     Merge(String),
     /// Confirmed already (`DialogId::RebaseOnto`).
     Rebase(String),

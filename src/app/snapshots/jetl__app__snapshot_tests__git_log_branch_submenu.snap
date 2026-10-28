@@ -1,0 +1,38 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &marks, Some(bottom))"
+---
+120x30 cursor=hidden
+00  ≣ ┌ Project: root ───────────────┐│
+01    │                              ││
+02  1 │                              ││
+03  ⌂ │╭───────────────────────────────────────────────╮
+04  2 ││ Copy Revision Number                   Ctrl+C │
+05  ◫ ││ Show Diff                              Ctrl+D │
+06  7 ││ Checkout Revision                 Alt+Shift+C │
+07  ⊢ ││ New Branch…                       Alt+Shift+B │en. Alt+1 opens the Project view; Ctrl+Shift+N finds a file.
+08    ││ Cherry-Pick                       Alt+Shift+P │
+09    ││ Revert Commit…                    Alt+Shift+R │
+10  ⋔ ││ Reset Current Branch to Here…                 │
+11    ││ Interactively Rebase from Here…   Alt+Shift+I │
+12  ✎ ││ New Tag…                          Alt+Shift+T │
+13    └│ Delete Tag…                       Alt+Shift+D │
+14  ✓ ─│ Filter Log…                            Ctrl+F │───────────────────────────────────────────────────────────────────
+15  8 ┌├───────────────────────────────────────────────┤╭──────────────────────────────╮──────────────────────────────────┐
+16  ⟲ ││ Branch 'parser'                             ▸ ││ Checkout                     │   Refresh   Fetch   Pull   Push  │
+17  5 │╰───────────────────────────────────────────────╯│ New Branch from 'parser'…    │                                  │
+18  ⚑ │●─┐ aaaaaaa (HEAD -> main) Merge branch 'parser' │ Compare with 'HEAD'          │                                  │
+19  9 ││ ● ddddddd (parser) Parse nested lists          │ Merge 'parser' into 'HEAD'…  │                                  │
+20  ⎇ │● │ bbbbbbb Fix the status bar width             │ Rebase 'HEAD' onto 'parser'… │                                  │
+21    │├─● eeeeeee Add a parser                         │ Rename…                      │                                  │
+22  ❯ │● ccccccc (tag: v0.1.0) Initial commit           │ Delete…                      │                                  │
+23  6 │                                                 ╰──────────────────────────────╯                                  │
+24  ⚠ │                                                                     │                                             │
+25  4 │                                                                     │                                             │
+26  ► │                                                                     │                                             │
+27  3 │                                                                     │                                             │
+28  ⌕ └───────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+29
+-- marks: L=selected d=dim
+16      LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL  LLLLLLLLLLLLLLLLLLLLLLLLLLLLLL
+19     LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL
