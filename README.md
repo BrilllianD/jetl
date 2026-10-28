@@ -14,7 +14,7 @@ built-in terminal and a Run window, all driven by JetBrains-style key bindings a
 - Syntax highlighting with incremental tree-sitter reparsing for Rust, JavaScript, TypeScript,
   TSX, Python, JSON, TOML, Bash, Markdown, C#, YAML, HTML, CSS, SCSS, XML, Go, C, C++, Java, PHP,
   Lua, Dockerfile, Make, INI (also `.conf`, `.cfg` and systemd units), CMake, diff and patch files,
-  Java properties, pip requirements, nginx configs and Git commit messages. Language detection by
+  Java properties, pip requirements, nginx configs, Git commit messages, SQL, Ruby, Kotlin, Swift and Zig. Language detection by
   extension, file name, shebang and modeline.
 - Bracket matching and jump, auto-closed brackets and quotes, language-aware indent on Enter,
   indent and unindent of a selection, line and block comment toggle, expand and shrink selection
@@ -117,7 +117,8 @@ Each grammar is a cargo feature, and all of them are on by default:
 `lang-md`, `lang-csharp`, `lang-yaml`, `lang-html`, `lang-css`, `lang-scss`, `lang-xml`,
 `lang-go`, `lang-c`, `lang-cpp` (pulls in `lang-c`), `lang-java`, `lang-php`, `lang-lua`,
 `lang-dockerfile`, `lang-make`, `lang-ini`, `lang-cmake`,
-`lang-diff`, `lang-properties`, `lang-requirements`, `lang-nginx`, `lang-gitcommit`.
+`lang-diff`, `lang-properties`, `lang-requirements`, `lang-nginx`, `lang-gitcommit`,
+`lang-sql`, `lang-ruby`, `lang-kotlin`, `lang-swift`, `lang-zig`.
 
 To build faster or smaller with only the grammars you need, turn off the defaults:
 

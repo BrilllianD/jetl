@@ -159,9 +159,8 @@ const HTML_INJECTIONS_LANG: &str = "((script_element (start_tag (attribute (attr
 
 fn block_comment(name: &str) -> Option<(&'static str, &'static str)> {
     match name {
-        "rust" | "javascript" | "typescript" | "tsx" | "csharp" | "css" | "scss" | "go" | "c" | "cpp" | "java" | "php" => {
-            Some(("/*", "*/"))
-        }
+        "rust" | "javascript" | "typescript" | "tsx" | "csharp" | "css" | "scss" | "go" | "c" | "cpp" | "java" | "php" | "sql"
+        | "kotlin" | "swift" => Some(("/*", "*/")),
         "lua" => Some(("--[[", "]]")),
         "html" | "xml" | "markdown" => Some(("<!--", "-->")),
         _ => None,
@@ -492,6 +491,32 @@ pub static LANGUAGES: LazyLock<Vec<LanguageDef>> = LazyLock::new(|| {
         &[GITCOMMIT_QUERY_FIXES, tree_sitter_gitcommit::HIGHLIGHTS_QUERY],
         Some("#"),
     ));
+    #[cfg(feature = "lang-sql")]
+    v.extend(make("sql", &["sql"], &[], tree_sitter_sequel::LANGUAGE.into(), &[tree_sitter_sequel::HIGHLIGHTS_QUERY], Some("--")));
+    #[cfg(feature = "lang-ruby")]
+    v.extend(make(
+        "ruby",
+        &["rb", "rake", "gemspec", "ru"],
+        &["Gemfile", "Rakefile", "Vagrantfile"],
+        tree_sitter_ruby::LANGUAGE.into(),
+        &[tree_sitter_ruby::HIGHLIGHTS_QUERY],
+        Some("#"),
+    ));
+    // tree-sitter-kotlin-sg is ast-grep's maintained fork of the fwcd
+    // grammar; tree-sitter-kotlin-ng ships no highlight query.
+    #[cfg(feature = "lang-kotlin")]
+    v.extend(make(
+        "kotlin",
+        &["kt", "kts"],
+        &[],
+        tree_sitter_kotlin_sg::LANGUAGE.into(),
+        &[tree_sitter_kotlin_sg::HIGHLIGHTS_QUERY],
+        Some("//"),
+    ));
+    #[cfg(feature = "lang-swift")]
+    v.extend(make("swift", &["swift"], &[], tree_sitter_swift::LANGUAGE.into(), &[tree_sitter_swift::HIGHLIGHTS_QUERY], Some("//")));
+    #[cfg(feature = "lang-zig")]
+    v.extend(make("zig", &["zig", "zon"], &[], tree_sitter_zig::LANGUAGE.into(), &[tree_sitter_zig::HIGHLIGHTS_QUERY], Some("//")));
     v
 });
 
@@ -571,6 +596,7 @@ fn shebang(line: &str) -> Option<&'static LanguageDef> {
         "ts-node" => "typescript",
         "lua" | "luajit" => "lua",
         "php" => "php",
+        "ruby" => "ruby",
         _ => return None,
     };
     language_for_name(lang)
@@ -629,6 +655,8 @@ pub fn language_for_alias(name: &str) -> Option<&'static LanguageDef> {
         "jproperties" => "properties",
         "pip-requirements" => "requirements",
         "git-commit" => "gitcommit",
+        "rb" => "ruby",
+        "kt" => "kotlin",
         n => n,
     };
     language_for_name(name)
@@ -1514,6 +1542,11 @@ mod tests {
             cfg!(feature = "lang-requirements"),
             cfg!(feature = "lang-nginx"),
             cfg!(feature = "lang-gitcommit"),
+            cfg!(feature = "lang-sql"),
+            cfg!(feature = "lang-ruby"),
+            cfg!(feature = "lang-kotlin"),
+            cfg!(feature = "lang-swift"),
+            cfg!(feature = "lang-zig"),
         ];
         let names: Vec<&str> = LANGUAGES.iter().map(|l| l.name).collect();
         assert_eq!(names.len(), enabled.iter().filter(|e| **e).count(), "loaded: {names:?}");
@@ -2067,6 +2100,130 @@ mod tests {
         assert_eq!(lang("/tmp/msg", "x\n# vim: ft=gitcommit\n"), Some("gitcommit"));
     }
 
+    #[cfg(feature = "lang-sql")]
+    #[test]
+    fn sql_highlighted() {
+        let src = "-- c\nSELECT name FROM users WHERE id = 'hello';\n/* b */\n";
+        for file in ["a.sql", "/p/db/B.SQL"] {
+            assert_eq!(lang(file, ""), Some("sql"), "{file}");
+        }
+        let def = language_for_name("sql").unwrap();
+        assert_eq!((def.line_comment, def.block_comment), (Some("--"), Some(("/*", "*/"))));
+        assert_eq!(style_of("a.sql", src, "-- c"), cap("comment"));
+        assert_eq!(style_of("a.sql", src, "/* b"), cap("comment"));
+        assert_eq!(style_of("a.sql", src, "SELECT"), cap("keyword"));
+        assert_eq!(style_of("a.sql", src, "FROM"), cap("keyword"));
+        assert_eq!(style_of("a.sql", src, "'hello"), cap("string"));
+        assert_eq!(
+            unstyled_captures("sql"),
+            ["field", "float", "parameter", "spell", "storageclass", "type", "type.qualifier", "variable"],
+            "captures Darcula leaves unstyled"
+        );
+    }
+
+    #[cfg(feature = "lang-ruby")]
+    #[test]
+    fn ruby_highlighted() {
+        let src = "# c\nclass A\n  def run\n    puts \"hello\"\n  end\nend\n";
+        for file in ["a.rb", "lib/tasks/a.rake", "a.gemspec", "config.ru", "Gemfile", "Rakefile", "Vagrantfile", "/p/Gemfile", "B.RB"] {
+            assert_eq!(lang(file, ""), Some("ruby"), "{file}");
+        }
+        let def = language_for_name("ruby").unwrap();
+        assert_eq!((def.line_comment, def.block_comment), (Some("#"), None));
+        assert_eq!(style_of("a.rb", src, "# c"), cap("comment"));
+        assert_eq!(style_of("a.rb", src, "class"), cap("keyword"));
+        assert_eq!(style_of("a.rb", src, "def"), cap("keyword"));
+        assert_eq!(style_of("a.rb", src, "hello"), cap("string"));
+        assert_eq!(unstyled_captures("ruby"), ["constructor", "variable"], "captures Darcula leaves unstyled");
+    }
+
+    #[cfg(feature = "lang-kotlin")]
+    #[test]
+    fn kotlin_highlighted() {
+        let src = "// c\nfun main() {\n    val s = \"hello\"\n}\n";
+        for file in ["a.kt", "build.gradle.kts", "B.KT"] {
+            assert_eq!(lang(file, ""), Some("kotlin"), "{file}");
+        }
+        let def = language_for_name("kotlin").unwrap();
+        assert_eq!((def.line_comment, def.block_comment), (Some("//"), Some(("/*", "*/"))));
+        assert_eq!(style_of("a.kt", src, "// c"), cap("comment"));
+        assert_eq!(style_of("a.kt", src, "fun"), cap("keyword.function"));
+        assert_eq!(style_of("a.kt", src, "val"), cap("keyword"));
+        assert_eq!(style_of("a.kt", src, "hello"), cap("string"));
+        assert_eq!(
+            unstyled_captures("kotlin"),
+            ["character", "constructor", "exception", "float", "parameter", "type", "variable"],
+            "captures Darcula leaves unstyled"
+        );
+    }
+
+    #[cfg(feature = "lang-swift")]
+    #[test]
+    fn swift_highlighted() {
+        let src = "// c\nfunc greet() -> String {\n    let s = \"hello\"\n    return s\n}\n";
+        for file in ["a.swift", "/p/Sources/App/B.SWIFT"] {
+            assert_eq!(lang(file, ""), Some("swift"), "{file}");
+        }
+        let def = language_for_name("swift").unwrap();
+        assert_eq!((def.line_comment, def.block_comment), (Some("//"), Some(("/*", "*/"))));
+        assert_eq!(style_of("a.swift", src, "// c"), cap("comment"));
+        assert_eq!(style_of("a.swift", src, "func"), cap("keyword.function"));
+        assert_eq!(style_of("a.swift", src, "let"), cap("keyword"));
+        assert_eq!(style_of("a.swift", src, "hello"), cap("string"));
+        assert_eq!(
+            unstyled_captures("swift"),
+            ["character.special", "constructor", "spell", "type", "variable", "variable.member"],
+            "captures Darcula leaves unstyled"
+        );
+    }
+
+    #[cfg(feature = "lang-zig")]
+    #[test]
+    fn zig_highlighted() {
+        let src = "// c\nconst msg = \"hello\";\nfn main() void {}\n";
+        for file in ["a.zig", "build.zig", "build.zig.zon", "B.ZIG"] {
+            assert_eq!(lang(file, ""), Some("zig"), "{file}");
+        }
+        let def = language_for_name("zig").unwrap();
+        assert_eq!((def.line_comment, def.block_comment), (Some("//"), None));
+        assert_eq!(style_of("a.zig", src, "// c"), cap("comment"));
+        assert_eq!(style_of("a.zig", src, "const"), cap("keyword"));
+        assert_eq!(style_of("a.zig", src, "fn"), cap("keyword.function"));
+        assert_eq!(style_of("a.zig", src, "hello"), cap("string"));
+        assert_eq!(
+            unstyled_captures("zig"),
+            ["character", "spell", "type", "variable", "variable.member"],
+            "captures Darcula leaves unstyled"
+        );
+    }
+
+    #[cfg(all(feature = "lang-sql", feature = "lang-ruby", feature = "lang-kotlin", feature = "lang-swift", feature = "lang-zig"))]
+    #[test]
+    fn programming_language_aliases() {
+        let cases: [(&str, &[&str]); 5] = [
+            ("sql", &["sql", "sql-mode"]),
+            ("ruby", &["ruby", "ruby-mode", "rb"]),
+            ("kotlin", &["kotlin", "kotlin-mode", "kt"]),
+            ("swift", &["swift", "swift-mode"]),
+            ("zig", &["zig", "zig-mode"]),
+        ];
+        for (want, names) in cases {
+            for n in names {
+                assert_eq!(language_for_alias(n).map(|l| l.name), Some(want), "{n}");
+            }
+        }
+        assert_eq!(lang("/tmp/notes", "x\n# vim: ft=ruby\n"), Some("ruby"));
+        assert_eq!(lang("/tmp/notes", "// -*- mode: kotlin -*-\n"), Some("kotlin"));
+    }
+
+    #[cfg(feature = "lang-ruby")]
+    #[test]
+    fn ruby_shebang() {
+        assert_eq!(lang("/tmp/run", "#!/usr/bin/env ruby\nputs 1\n"), Some("ruby"));
+        assert_eq!(lang("/tmp/run", "#!/usr/bin/ruby3.2 -w\n"), Some("ruby"));
+        assert_eq!(lang("/tmp/run", "#!/usr/bin/env -S RUBYOPT=-W0 ruby\n"), Some("ruby"));
+    }
+
     #[test]
     fn vendored_queries_name_their_source() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/queries");
@@ -2110,7 +2267,7 @@ mod tests {
         assert_eq!(lang("/tmp/run", "#!/usr/bin/env ts-node\n"), Some("typescript"));
         assert_eq!(lang("/tmp/run", "#!/usr/bin/env lua5.4\n"), Some("lua"));
         assert_eq!(lang("/tmp/run", "#!/usr/bin/php\n<?php\n"), Some("php"));
-        assert_eq!(lang("/tmp/run", "#!/usr/bin/env ruby\n"), None);
+        assert_eq!(lang("/tmp/run", "#!/usr/bin/env perl\n"), None);
         assert_eq!(lang("/tmp/run", "#!/usr/bin/env\n"), None);
         assert_eq!(lang("/tmp/run", "\n#!/bin/bash\n"), None, "only on the first line");
     }

@@ -138,7 +138,7 @@ impl TermCaps {
 }
 
 /// Every `lang-*` cargo feature and whether this build has it.
-const GRAMMARS: [(&str, bool); 29] = [
+const GRAMMARS: [(&str, bool); 34] = [
     ("rust", cfg!(feature = "lang-rust")),
     ("js", cfg!(feature = "lang-js")),
     ("ts", cfg!(feature = "lang-ts")),
@@ -168,6 +168,11 @@ const GRAMMARS: [(&str, bool); 29] = [
     ("requirements", cfg!(feature = "lang-requirements")),
     ("nginx", cfg!(feature = "lang-nginx")),
     ("gitcommit", cfg!(feature = "lang-gitcommit")),
+    ("sql", cfg!(feature = "lang-sql")),
+    ("ruby", cfg!(feature = "lang-ruby")),
+    ("kotlin", cfg!(feature = "lang-kotlin")),
+    ("swift", cfg!(feature = "lang-swift")),
+    ("zig", cfg!(feature = "lang-zig")),
 ];
 
 type Find<'a> = &'a dyn Fn(&str) -> Option<PathBuf>;

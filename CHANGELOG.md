@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The Terminal window always shows its tab row, also with a single tab, with New and Close buttons on the right; a middle click on a tab label closes that tab.
 - Syntax highlighting for Makefiles (`Makefile`, `GNUmakefile`, `*.mk`) and INI-style config files (`.ini`, `.cfg`, `.conf`, `.gitconfig`, `.editorconfig`, systemd units and more); `.env` and `.env.*` files highlight as shell, and more file names use the JSON, TOML, YAML, XML and shell grammars. An exact file name now always wins over another language's extension.
 - Syntax highlighting for CMake (`CMakeLists.txt`, `*.cmake`), diff and patch files, Java `.properties`, pip requirements files (`requirements*.txt`), nginx configs (`nginx.conf` and everything under `/etc/nginx/`) and Git commit messages (`COMMIT_EDITMSG`).
+- Syntax highlighting for SQL (`*.sql`), Ruby (`*.rb`, `Gemfile`, `Rakefile`, `Vagrantfile` and `#!/usr/bin/env ruby` scripts), Kotlin (`*.kt`, `*.kts`), Swift (`*.swift`) and Zig (`*.zig`, `*.zon`).
 
 ### Changed
 
