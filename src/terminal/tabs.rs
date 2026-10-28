@@ -35,8 +35,6 @@ pub struct TerminalTabs {
     /// Never empty.
     pub(crate) tabs: Vec<TerminalTab>,
     pub(crate) active: usize,
-    /// Number of the next new tab.
-    next_number: u32,
     /// Shells started so far in any tab; the newest one's session id. Never reset.
     pub(crate) seq: u64,
     scrollback: usize,
@@ -47,15 +45,7 @@ pub struct TerminalTabs {
 
 impl TerminalTabs {
     pub fn new(scrollback: usize) -> Self {
-        Self {
-            tabs: vec![TerminalTab::new(1, scrollback)],
-            active: 0,
-            next_number: 2,
-            seq: 0,
-            scrollback,
-            row: Rect::default(),
-            hits: Vec::new(),
-        }
+        Self { tabs: vec![TerminalTab::new(1, scrollback)], active: 0, seq: 0, scrollback, row: Rect::default(), hits: Vec::new() }
     }
 
     pub fn active(&self) -> &TerminalPanel {
@@ -80,10 +70,11 @@ impl TerminalTabs {
         }
     }
 
-    /// A new idle tab at the end, made active (its shell starts on the next frame).
+    /// A new idle tab at the end, made active (its shell starts on the next
+    /// frame), numbered with the lowest number no open tab holds.
     pub fn push(&mut self) {
-        self.tabs.push(TerminalTab::new(self.next_number, self.scrollback));
-        self.next_number += 1;
+        let number = (1u32..).find(|n| self.tabs.iter().all(|t| t.number != *n)).unwrap_or(1);
+        self.tabs.push(TerminalTab::new(number, self.scrollback));
         self.activate(self.tabs.len() - 1);
     }
 
@@ -121,7 +112,6 @@ impl TerminalTabs {
     pub fn reset(&mut self) {
         self.tabs = vec![TerminalTab::new(1, self.scrollback)];
         self.active = 0;
-        self.next_number = 2;
     }
 
     /// `TerminalPanel::restart` on the active tab.
@@ -223,7 +213,7 @@ mod tests {
     }
 
     #[test]
-    fn labels_number_up_and_are_not_reused() {
+    fn new_tab_takes_the_lowest_free_number() {
         let mut t = TerminalTabs::new(0);
         t.push();
         t.push();
@@ -234,10 +224,14 @@ mod tests {
         assert_eq!((t.len(), t.active), (2, 0));
         assert_eq!(labels(&t), ["Local", "Local (3)"]);
         t.push();
-        assert_eq!(t.label(2), "Local (4)");
+        assert_eq!(labels(&t), ["Local", "Local (3)", "Local (2)"]);
+        assert_eq!(t.active, 2);
         t.activate(0);
         t.close_active();
         assert_eq!(t.active, 0, "the first tab has no left neighbour");
+        assert_eq!(labels(&t), ["Local (3)", "Local (2)"]);
+        t.push();
+        assert_eq!(labels(&t), ["Local (3)", "Local (2)", "Local"]);
         t.reset();
         assert_eq!(labels(&t), ["Local"]);
         t.push();
