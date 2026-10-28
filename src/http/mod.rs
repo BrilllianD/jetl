@@ -51,14 +51,40 @@ fn is_token(name: &str) -> bool {
     !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || "!#$%&'*+-.^_`|~".contains(c))
 }
 
-/// The words of a request line; spaces inside `{{ ... }}` do not split.
+/// Byte offsets of the `{{` that a later `}}` closes. Braces pair like
+/// brackets, innermost first; an unpaired `{{` or `}}` is plain text.
+fn brace_openers(line: &str) -> Vec<usize> {
+    let b = line.as_bytes();
+    let mut marks = Vec::new();
+    let mut i = 0;
+    while i + 1 < b.len() {
+        if (b[i] == b'{' || b[i] == b'}') && b[i + 1] == b[i] {
+            marks.push((i, b[i] == b'{'));
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+    let (mut out, mut pending) = (Vec::new(), 0usize);
+    for &(at, open) in marks.iter().rev() {
+        if !open {
+            pending += 1;
+        } else if pending > 0 {
+            pending -= 1;
+            out.push(at);
+        }
+    }
+    out
+}
+
+/// The words of a request line; spaces inside a paired `{{ ... }}` do not split.
 fn words(line: &str) -> Vec<&str> {
-    let closed = line.matches("{{").count() <= line.matches("}}").count();
+    let openers = brace_openers(line);
     let mut out = Vec::new();
     let (mut start, mut depth) = (None, 0usize);
     let mut chars = line.char_indices().peekable();
     while let Some((i, c)) = chars.next() {
-        if c.is_whitespace() && (depth == 0 || !closed) {
+        if c.is_whitespace() && depth == 0 {
             if let Some(s) = start.take() {
                 out.push(&line[s..i]);
             }
@@ -67,10 +93,12 @@ fn words(line: &str) -> Vec<&str> {
         start.get_or_insert(i);
         if c == '{' && chars.peek().is_some_and(|&(_, n)| n == '{') {
             chars.next();
-            depth += 1;
-        } else if c == '}' && depth > 0 && chars.peek().is_some_and(|&(_, n)| n == '}') {
+            if openers.contains(&i) {
+                depth += 1;
+            }
+        } else if c == '}' && chars.peek().is_some_and(|&(_, n)| n == '}') {
             chars.next();
-            depth -= 1;
+            depth = depth.saturating_sub(1);
         }
     }
     if let Some(s) = start {
@@ -222,7 +250,8 @@ pub fn substitute(req: &HttpRequest, vars: &BTreeMap<String, String>) -> Result<
 
 /// curl's arguments for `req`; the caller writes the body to `body_file`.
 pub fn curl_argv(req: &HttpRequest, body_file: Option<&Path>) -> Vec<String> {
-    let mut argv: Vec<String> = ["curl", "-sS", "-i", "--max-time"].map(String::from).into();
+    // -q must come first: curl then skips ~/.curlrc.
+    let mut argv: Vec<String> = ["curl", "-q", "-sS", "-i", "--max-time"].map(String::from).into();
     argv.push(MAX_TIME_SECS.to_string());
     if req.method == "HEAD" {
         // `-X HEAD` makes curl wait for a body the server never sends.
@@ -443,14 +472,14 @@ mod tests {
         let mut r = req("GET", "http://x/y");
         r.headers = vec![("A".into(), "1".into())];
         let want: Vec<String> =
-            ["curl", "-sS", "-i", "--max-time", "30", "-X", "GET", "-H", "A: 1", "http://x/y"].map(String::from).to_vec();
+            ["curl", "-q", "-sS", "-i", "--max-time", "30", "-X", "GET", "-H", "A: 1", "http://x/y"].map(String::from).to_vec();
         assert_eq!(curl_argv(&r, None), want);
     }
 
     #[test]
     fn curl_argv_head_uses_the_head_flag() {
         let r = req("HEAD", "http://x/y");
-        let want: Vec<String> = ["curl", "-sS", "-i", "--max-time", "30", "--head", "http://x/y"].map(String::from).to_vec();
+        let want: Vec<String> = ["curl", "-q", "-sS", "-i", "--max-time", "30", "--head", "http://x/y"].map(String::from).to_vec();
         assert_eq!(curl_argv(&r, None), want);
     }
 
@@ -460,6 +489,14 @@ mod tests {
         r.headers = vec![("X-Empty".into(), "".into()), ("A".into(), "1".into())];
         let got = curl_argv(&r, None);
         assert_eq!(got[got.len() - 5..], ["-H", "X-Empty;", "-H", "A: 1", "http://x/y"].map(String::from));
+    }
+
+    #[test]
+    fn braces_pair_by_order_not_by_count() {
+        assert_eq!(words("GET http://x/}} {{oops HTTP/1.1"), ["GET", "http://x/}}", "{{oops", "HTTP/1.1"]);
+        assert_eq!(words("GET http://x/{{ a }} {{b HTTP/1.1"), ["GET", "http://x/{{ a }}", "{{b", "HTTP/1.1"]);
+        assert_eq!(words("{{a {{b}} c"), ["{{a", "{{b}}", "c"]);
+        assert_eq!(parse("GET http://x/{{ a }} {{b HTTP/1.1\n")[0].url, "http://x/{{ a }}");
     }
 
     #[test]
@@ -480,7 +517,7 @@ mod tests {
     fn curl_argv_with_body() {
         let r = req("POST", "http://x/y");
         let want: Vec<String> =
-            ["curl", "-sS", "-i", "--max-time", "30", "-X", "POST", "--data-binary", "@/tmp/jetl-test.body", "http://x/y"]
+            ["curl", "-q", "-sS", "-i", "--max-time", "30", "-X", "POST", "--data-binary", "@/tmp/jetl-test.body", "http://x/y"]
                 .map(String::from)
                 .to_vec();
         assert_eq!(curl_argv(&r, Some(Path::new("/tmp/jetl-test.body"))), want);

@@ -65,6 +65,16 @@ impl App {
     /// `write_body` in `dir`. The new file is created private and never over an
     /// existing path; the old one goes only after the new write worked.
     fn write_body_in(&mut self, dir: &Path, body: Option<&str>) -> Result<Option<PathBuf>, String> {
+        self.write_body_with(dir, body, create_private)
+    }
+
+    /// `write_body_in` with the file opened by `create` (tests simulate failures).
+    fn write_body_with(
+        &mut self,
+        dir: &Path,
+        body: Option<&str>,
+        create: impl Fn(&Path) -> std::io::Result<std::fs::File>,
+    ) -> Result<Option<PathBuf>, String> {
         let Some(body) = body else {
             if let Some(old) = self.http_body.take() {
                 let _ = std::fs::remove_file(old);
@@ -75,19 +85,24 @@ impl App {
         for _ in 0..BODY_TRIES {
             let n = NEXT_BODY.fetch_add(1, Ordering::Relaxed);
             let path = dir.join(format!("jetl-http-{}-{n}.body", std::process::id()));
-            match create_private(&path).and_then(|mut f| f.write_all(body.as_bytes())) {
-                Ok(()) => {
-                    if let Some(old) = self.http_body.replace(path.clone()) {
-                        let _ = std::fs::remove_file(old);
-                    }
-                    return Ok(Some(path));
+            let mut f = match create(&path) {
+                Ok(f) => f,
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    last = Some(e);
+                    continue;
                 }
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => last = Some(e),
-                Err(e) => {
-                    let _ = std::fs::remove_file(&path);
-                    return Err(format!("Cannot write the request body: {e}"));
-                }
+                // Not ours: the path may belong to someone else, leave it alone.
+                Err(e) => return Err(format!("Cannot write the request body: {e}")),
+            };
+            if let Err(e) = f.write_all(body.as_bytes()) {
+                drop(f);
+                let _ = std::fs::remove_file(&path);
+                return Err(format!("Cannot write the request body: {e}"));
             }
+            if let Some(old) = self.http_body.replace(path.clone()) {
+                let _ = std::fs::remove_file(old);
+            }
+            return Ok(Some(path));
         }
         Err(format!("Cannot write the request body: {}", last.map(|e| e.to_string()).unwrap_or_default()))
     }
@@ -226,7 +241,7 @@ mod tests {
         assert_eq!(last.name, "Ping");
         assert_eq!(last.matcher, Some(MatcherKind::Plain));
         assert_eq!((last.cwd.as_deref(), last.origin), (None, Origin::Detected));
-        assert!(app.run_panel.command().unwrap().starts_with("curl -sS -i --max-time 30 -X GET"));
+        assert!(app.run_panel.command().unwrap().starts_with("curl -q -sS -i --max-time 30 -X GET"));
         let lines = texts(&app);
         assert!(lines.iter().any(|l| l == "HTTP/1.1 200 OK"), "{lines:?}");
         assert!(lines.iter().any(|l| l == "hello"), "{lines:?}");
@@ -351,6 +366,42 @@ mod tests {
         assert!(!app.run.running());
         assert!(app.run.last.is_none());
         assert!(!app.layout.is_visible(ToolWindowId::Run));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn failed_open_leaves_a_foreign_file_alone() {
+        let (mut app, dir) = test_app("http-body-foreign");
+        // Another process creates the path, then our open fails with an error other than AlreadyExists.
+        let err = app.write_body_with(&dir, Some("two"), |p| {
+            std::fs::write(p, "theirs").unwrap();
+            Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+        });
+        assert!(err.unwrap_err().starts_with("Cannot write the request body"));
+        let left: Vec<_> =
+            std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).filter(|p| p.extension().is_some_and(|e| e == "body")).collect();
+        assert_eq!(left.len(), 1, "{left:?}");
+        assert_eq!(std::fs::read_to_string(&left[0]).unwrap(), "theirs");
+        assert!(app.http_body.is_none());
+        app.shutdown().await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn failed_write_removes_the_file_it_created() {
+        let (mut app, dir) = test_app("http-body-write-fails");
+        let old = app.write_body_in(&dir, Some("one")).unwrap().unwrap();
+        // A file opened read-only: created by us, but the write fails.
+        let err = app.write_body_with(&dir, Some("two"), |p| {
+            create_private(p)?;
+            std::fs::File::open(p)
+        });
+        assert!(err.unwrap_err().starts_with("Cannot write the request body"));
+        let left: Vec<_> =
+            std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).filter(|p| p.extension().is_some_and(|e| e == "body")).collect();
+        assert_eq!(left, std::slice::from_ref(&old));
+        assert_eq!(app.http_body.as_ref(), Some(&old));
+        app.shutdown().await;
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
