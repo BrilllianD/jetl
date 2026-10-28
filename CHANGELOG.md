@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A click in the fold column of a Markdown preview tab no longer folds the rendered text.
+
 ## [0.5.0] - 2026-10-27
 
 ### Added

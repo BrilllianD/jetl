@@ -1510,7 +1510,8 @@ impl Editor {
             }
         }
         // The fold marker column collapses or expands there (on a line's
-        // first row); a click on a fold's placeholder (after the header's
+        // first row, not on a Markdown preview, whose text does not fold);
+        // a click on a fold's placeholder (after the header's
         // last row) expands it, the caret at the header's end.
         let row_here = |b: &Buffer| (m.y >= text_area.y).then(|| b.rows().at_offset(b.view.top(), (m.y - text_area.y) as usize)).flatten();
         if m.kind == MouseEventKind::Down(MouseButton::Left)
@@ -1519,7 +1520,7 @@ impl Editor {
         {
             let line = row.line;
             if m.x + 2 == text_area.x {
-                if row.seg == 0 {
+                if row.seg == 0 && b.preview.is_none() {
                     b.toggle_fold(line);
                 }
                 return true;

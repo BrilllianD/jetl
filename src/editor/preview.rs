@@ -164,6 +164,10 @@ mod tests {
         assert!(is_markdown(&buf(Some("a.md"))));
         assert!(is_markdown(&buf(Some("b.markdown"))));
         assert!(is_markdown(&buf(Some("C.MD"))));
+        // With language detection off, only the extension decides.
+        let mut plain = buf(Some("C.MD"));
+        plain.language_choice = crate::editor::buffer::LanguageChoice::Plain;
+        assert!(is_markdown(&plain));
         assert!(!is_markdown(&buf(Some("a.rs"))));
         assert!(!is_markdown(&buf(None)));
     }

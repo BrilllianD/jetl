@@ -1068,6 +1068,21 @@ class A:
         }
 
         #[test]
+        fn preview_tabs_do_not_fold_on_a_marker_click() {
+            let mut ed = editor(TEXT);
+            let source = ed.active_buffer().unwrap().id;
+            let rendered = crate::ui::markdown::Rendered { text: "Head\n  body one\n  body two\nTail".into(), spans: Vec::new() };
+            ed.open_markdown_preview(source, rendered, &Theme::default());
+            assert!(ed.active_buffer().unwrap().preview.is_some());
+            assert!(ed.active_buffer_mut().unwrap().fold_at_header(0).is_some(), "the text has a foldable block");
+            draw(&mut ed, 40, 8);
+            let (x0, y0) = (ed.text_area().x, ed.text_area().y);
+            let before = head(&ed);
+            mouse(&mut ed, MouseEventKind::Down(MouseButton::Left), (x0 - 2, y0), KeyModifiers::NONE);
+            assert_eq!((folded(&ed), head(&ed)), (false, before));
+        }
+
+        #[test]
         fn hints_on_a_folded_header_come_before_the_placeholder() {
             use crate::editor::inlay::Inlay;
             let mut ed = editor(TEXT);
