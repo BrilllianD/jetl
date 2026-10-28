@@ -391,6 +391,86 @@ impl Keymap {
     }
 }
 
+/// How a binding conflicts with another one; see [`Keymap::conflicts`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConflictKind {
+    /// The chord is bound to a different action in an ancestor context.
+    Shadows,
+    /// The chord is a proper prefix of a longer chord bound in the same
+    /// context, which therefore never fires.
+    Prefix,
+}
+
+/// One conflict of a binding (`ctx`, `chord`) with `other` in `other_ctx`.
+/// For `Prefix`, `chord` is the shorter chord, `other_ctx == ctx` and
+/// `other` the longer chord's action.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Conflict {
+    pub ctx: String,
+    pub chord: Vec<KeyCombo>,
+    pub other_ctx: String,
+    pub other: Action,
+    pub kind: ConflictKind,
+}
+
+/// Contexts whose bindings `ctx` overrides: dotted prefixes from the
+/// longest, then `global`; `terminal` and `mode.*` only `global`.
+fn ancestors(ctx: &str) -> Vec<&str> {
+    if ctx == "global" {
+        return Vec::new();
+    }
+    let mut out: Vec<&str> = Vec::new();
+    if ctx != "terminal" && !ctx.starts_with("mode.") {
+        out.extend(ctx.rmatch_indices('.').map(|(i, _)| &ctx[..i]));
+    }
+    out.push("global");
+    out
+}
+
+impl Keymap {
+    /// Bindings that hide or are hidden by another one, computed from
+    /// `bindings` only, never from `Table::prefixes`, which may be stale
+    /// after `Table::unbind`. Contexts sorted by name, chords by
+    /// `(len, text)`; per chord its `Shadows` (nearest ancestor first), then
+    /// its `Prefix` entries.
+    pub fn conflicts(&self) -> Vec<Conflict> {
+        let mut ctxs: Vec<&String> = self.tables.keys().collect();
+        ctxs.sort();
+        let mut out = Vec::new();
+        for ctx in ctxs {
+            let mut list: Vec<(&Vec<KeyCombo>, &Action)> = self.tables[ctx].bindings.iter().collect();
+            list.sort_by_cached_key(|(c, _)| (c.len(), chord_text(c)));
+            for (chord, action) in &list {
+                for anc in ancestors(ctx) {
+                    if let Some(o) = self.table(anc).and_then(|t| t.bindings.get(*chord))
+                        && o != *action
+                    {
+                        out.push(Conflict {
+                            ctx: ctx.clone(),
+                            chord: (*chord).clone(),
+                            other_ctx: anc.to_string(),
+                            other: o.clone(),
+                            kind: ConflictKind::Shadows,
+                        });
+                    }
+                }
+                for (long, la) in &list {
+                    if long.len() > chord.len() && long.starts_with(chord) {
+                        out.push(Conflict {
+                            ctx: ctx.clone(),
+                            chord: (*chord).clone(),
+                            other_ctx: ctx.clone(),
+                            other: (*la).clone(),
+                            kind: ConflictKind::Prefix,
+                        });
+                    }
+                }
+            }
+        }
+        out
+    }
+}
+
 /// Key text of a chord (rows, written TOML keys, input prefill): the
 /// [`KeyCombo::display`] of each step joined by spaces.
 pub fn chord_text(chord: &[KeyCombo]) -> String {
@@ -543,6 +623,69 @@ pub fn default_keymap() -> Keymap {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn conflicts_shadowing_prefix_and_ancestors() {
+        let ch = |s: &str| parse_chord(s).unwrap();
+        let a = |id: &str| Action::from_id(id).unwrap();
+        let mut km = Keymap::from_triples([
+            ("global", "f5", "app.refresh"),
+            ("global", "ctrl-k", "app.quit"),
+            ("global", "ctrl-k ctrl-c", "app.settings"),
+            ("global", "f6", "app.about"),
+            ("tree", "f5", "tree.refresh"),
+            ("tree", "f6", "app.about"),
+            ("git", "f5", "git.refresh"),
+            ("git.changes", "f5", "git.refresh"),
+            ("mode", "f7", "app.about"),
+            ("mode.normal", "f7", "app.quit"),
+        ]);
+        let c = |ctx: &str, chord: &str, other_ctx: &str, id: &str, kind| Conflict {
+            ctx: ctx.into(),
+            chord: ch(chord),
+            other_ctx: other_ctx.into(),
+            other: a(id),
+            kind,
+        };
+        let want = vec![
+            c("git", "f5", "global", "app.refresh", ConflictKind::Shadows),
+            c("git.changes", "f5", "global", "app.refresh", ConflictKind::Shadows),
+            c("global", "ctrl-k", "global", "app.settings", ConflictKind::Prefix),
+            c("tree", "f5", "global", "app.refresh", ConflictKind::Shadows),
+        ];
+        assert_eq!(km.conflicts(), want);
+
+        km.bind_str("global", "f7", "app.settings").unwrap();
+        let all = km.conflicts();
+        let normal: Vec<_> = all.iter().filter(|c| c.ctx == "mode.normal").collect();
+        assert_eq!(normal.len(), 1);
+        assert_eq!((normal[0].other_ctx.as_str(), normal[0].kind), ("global", ConflictKind::Shadows));
+        let mode: Vec<_> = all.iter().filter(|c| c.ctx == "mode").collect();
+        assert_eq!(mode.len(), 1);
+        assert_eq!(mode[0].other_ctx, "global");
+    }
+
+    #[test]
+    fn conflicts_ignore_stale_prefixes() {
+        let ch = |s: &str| parse_chord(s).unwrap();
+        let mut km = Keymap::from_triples([("global", "ctrl-k", "app.quit"), ("global", "ctrl-k ctrl-c", "app.settings")]);
+        assert_eq!(km.conflicts().len(), 1);
+        km.tables.get_mut("global").unwrap().unbind(&ch("ctrl-k ctrl-c"));
+        assert!(km.conflicts().is_empty());
+    }
+
+    #[test]
+    fn default_keymap_has_no_prefix_conflicts() {
+        let ch = |s: &str| parse_chord(s).unwrap();
+        let all = default_keymap().conflicts();
+        assert!(all.iter().all(|c| c.kind != ConflictKind::Prefix));
+        assert!(
+            all.iter().any(|c| c.kind == ConflictKind::Shadows
+                && c.ctx == "editor.merge"
+                && c.chord == ch("alt-enter")
+                && c.other_ctx == "editor")
+        );
+    }
 
     #[test]
     fn context_order_lists_doc_contexts_first() {

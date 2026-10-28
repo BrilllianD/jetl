@@ -1,7 +1,8 @@
 //! The Settings Keymap page: a tree of context > action > keys over the keymap
 //! given by [`KeymapPage::set_staged`] (the base with the staged edits
 //! applied), with a search over action descriptions, ids and key text.
-//! Changed rows carry the pending marker.
+//! Changed rows carry the pending marker. Key rows that conflict with another
+//! binding carry a mark ([`Keymap::conflicts`]).
 
 use std::collections::{HashMap, HashSet};
 
@@ -13,7 +14,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::actions::{Action, REGISTRY};
 use crate::config::edit::KeymapEdit;
-use crate::config::keymap::{KeyCombo, Keymap, chord_text};
+use crate::config::keymap::{Conflict, ConflictKind, KeyCombo, Keymap, chord_text};
 use crate::config::theme::Theme;
 use crate::ui::settings::{MARK_W, MAX_HELP_ROWS, move_list};
 use crate::ui::toasts::wrap;
@@ -53,6 +54,8 @@ pub struct KeymapPage {
     base: Keymap,
     /// The keymap the page shows.
     shown: Keymap,
+    /// Conflicts of the shown keymap, refreshed by [`Self::restage`].
+    conflicts: Vec<Conflict>,
     /// Contexts the user expanded; `None` is the Unbound group.
     expanded: HashSet<Option<String>>,
     query: TextInput,
@@ -61,6 +64,11 @@ pub struct KeymapPage {
     rows_rect: Rect,
     /// The whole page body from the last draw: the search line, the rows and the help.
     area: Rect,
+}
+
+/// Registry id and description of an action (`"?"` when missing).
+fn action_info(a: &Action) -> (&'static str, &'static str) {
+    REGISTRY.iter().find(|r| &r.action == a).map_or(("?", "?"), |r| (r.id, r.desc))
 }
 
 /// The non-empty bindings of context `ctx`.
@@ -192,6 +200,7 @@ impl KeymapPage {
             self.shown.apply_edit(e);
         }
         self.rebuild(true);
+        self.conflicts = self.shown.conflicts();
     }
 
     /// The keymap before the staged edits.
@@ -202,6 +211,39 @@ impl KeymapPage {
     /// Whether the shown keymap binds exactly what the base binds.
     pub fn is_unchanged(&self) -> bool {
         self.base.tables.keys().chain(self.shown.tables.keys()).all(|c| bindings(&self.base, c) == bindings(&self.shown, c))
+    }
+
+    /// The conflict a key row is part of, and whether the row is the longer
+    /// key a `Prefix` conflict blocks. A `Prefix` conflict wins over `Shadows`.
+    fn row_conflict(&self, row: &KeymapRow) -> Option<(&Conflict, bool)> {
+        let KeymapRow::Key { ctx, action, chord } = row else { return None };
+        self.conflicts
+            .iter()
+            .filter_map(|c| {
+                if c.ctx != *ctx {
+                    return None;
+                }
+                if c.chord == *chord {
+                    Some((c, false))
+                } else if c.kind == ConflictKind::Prefix && chord.len() > c.chord.len() && chord.starts_with(&c.chord) && c.other == *action
+                {
+                    Some((c, true))
+                } else {
+                    None
+                }
+            })
+            .min_by_key(|(c, _)| c.kind != ConflictKind::Prefix)
+    }
+
+    /// The help line naming the binding a key row conflicts with.
+    fn conflict_line(&self, row: &KeymapRow) -> Option<String> {
+        let (c, longer) = self.row_conflict(row)?;
+        let (id, desc) = action_info(&c.other);
+        Some(match (c.kind, longer) {
+            (ConflictKind::Shadows, _) => format!("Conflict: overrides {desc} ({id}) in {}.", context_label(&c.other_ctx)),
+            (ConflictKind::Prefix, false) => format!("Conflict: also starts a key of {id} in this context, which never fires."),
+            (ConflictKind::Prefix, true) => format!("Conflict: never fires; {} is bound in this context.", chord_text(&c.chord)),
+        })
     }
 
     /// Whether the row differs from the base (drawn with the pending marker).
@@ -352,6 +394,11 @@ impl KeymapPage {
         self.list.scroll(delta);
     }
 
+    /// Whether the cell is on a row (not on the blank space below the last one).
+    pub fn hits_row(&self, x: u16, y: u16) -> bool {
+        self.list.hit(self.rows_rect, x, y).is_some()
+    }
+
     pub fn rows_rect(&self) -> Rect {
         self.rows_rect
     }
@@ -386,10 +433,12 @@ impl KeymapPage {
                 help.extend(wrap(&format!("Action: {id}"), w, 2));
                 help.extend(wrap(&format!("Context: {ctx}"), w, 2));
             }
-            Some(KeymapRow::Key { ctx, action, .. }) => {
-                let id = REGISTRY.iter().find(|r| &r.action == action).map_or("?", |r| r.id);
-                help.extend(wrap(&format!("Action: {id}"), w, 2));
+            Some(row @ KeymapRow::Key { ctx, action, .. }) => {
+                help.extend(wrap(&format!("Action: {}", action_info(action).0), w, 2));
                 help.extend(wrap(&format!("Context: {ctx}"), w, 2));
+                if let Some(l) = self.conflict_line(row) {
+                    help.extend(wrap(&l, w, 2));
+                }
             }
             None => {}
         }
@@ -413,6 +462,7 @@ impl KeymapPage {
         self.rows_rect = Rect::new(area.x, top, area.width, rows_h);
 
         let changed: Vec<bool> = self.list.visible().map(|i| self.row_changed(&self.rows[i])).collect();
+        let marks: Vec<Option<ConflictKind>> = self.list.visible().map(|i| self.row_conflict(&self.rows[i]).map(|(c, _)| c.kind)).collect();
         let buf = frame.buffer_mut();
         if self.rows.is_empty() {
             if rows_h > 0 {
@@ -429,6 +479,10 @@ impl KeymapPage {
                 buf.set_style(Rect::new(area.x, ry, area.width, 1), style);
                 if changed[row] {
                     buf.set_string(area.x, ry, "*", style.patch(theme.git_modified));
+                }
+                if let Some(kind) = marks[row].filter(|_| w >= 2) {
+                    let (glyph, mark) = if kind == ConflictKind::Prefix { ("!", theme.warn) } else { ("^", theme.info) };
+                    buf.set_string(area.x + 1, ry, glyph, style.patch(mark));
                 }
                 if text_w == 0 {
                     continue;
@@ -636,5 +690,49 @@ mod tests {
         let bound = |k: &str| p.keymap().table("global").unwrap().bindings.contains_key(&parse_chord(k).unwrap());
         assert!(bound("f2") && bound("ctrl-alt-y"));
         assert!(!p.base().table("global").unwrap().bindings.contains_key(&parse_chord("f2").unwrap()));
+    }
+
+    #[test]
+    fn staged_edit_shows_its_conflict() {
+        let ch = |s: &str| parse_chord(s).unwrap();
+        let base = Keymap::from_triples([("global", "f5", "app.refresh"), ("tree", "f6", "tree.refresh")]);
+        let mut p = KeymapPage::default();
+        p.set_keymap(&base);
+        assert!(p.conflicts.is_empty());
+        p.restage(&[bind("tree", "f5", "tree.refresh")]);
+        assert_eq!(
+            p.conflicts,
+            vec![Conflict {
+                ctx: "tree".into(),
+                chord: ch("f5"),
+                other_ctx: "global".into(),
+                other: Action::from_id("app.refresh").unwrap(),
+                kind: ConflictKind::Shadows,
+            }]
+        );
+        let row = KeymapRow::Key { ctx: "tree".into(), action: Action::from_id("tree.refresh").unwrap(), chord: ch("f5") };
+        assert!(matches!(p.row_conflict(&row), Some((_, false))));
+        let line = p.conflict_line(&row).unwrap();
+        assert!(line.contains("overrides") && line.contains("app.refresh") && line.contains("Global"), "{line}");
+        p.restage(&[]);
+        assert!(p.conflicts.is_empty());
+    }
+
+    #[test]
+    fn prefix_conflict_marks_both_keys() {
+        let ch = |s: &str| parse_chord(s).unwrap();
+        let a = |id: &str| Action::from_id(id).unwrap();
+        let mut p = KeymapPage::default();
+        p.set_keymap(&Keymap::from_triples([("global", "ctrl-k", "app.quit"), ("global", "ctrl-k ctrl-c", "app.settings")]));
+        let key = |chord: &str, id: &str| KeymapRow::Key { ctx: "global".into(), action: a(id), chord: ch(chord) };
+        let (c, longer) = p.row_conflict(&key("ctrl-k", "app.quit")).unwrap();
+        assert!(!longer && c.kind == ConflictKind::Prefix);
+        let long = key("ctrl-k ctrl-c", "app.settings");
+        assert!(matches!(p.row_conflict(&long), Some((_, true))));
+        let line = p.conflict_line(&long).unwrap();
+        assert!(line.contains("never fires") && line.contains("Ctrl+K"), "{line}");
+        assert!(p.row_conflict(&key("f9", "app.about")).is_none());
+        let action = KeymapRow::Action { ctx: "global".into(), action: a("app.quit"), id: "app.quit", desc: "x" };
+        assert!(p.row_conflict(&action).is_none());
     }
 }

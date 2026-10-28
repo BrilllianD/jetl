@@ -20,7 +20,7 @@ expression: "snapshot(&term, &settings_marks(&app.theme), None)"
 14    │ │Files                     │        Ctrl+Shift+S                                                             │
 15    │ │Tools                     │  ▾ Editor › Merge (1)                                                           │
 16    │ │  Terminal                │    Merge: save the result, stage it and close the resolver           merge.apply│
-17    │ │  Run                     │        Alt+Enter                                                                │
+17    │ │  Run                     │ ^      Alt+Enter                                                                │
 18    │ │  Clipboard               │        Ctrl+Enter                                                               │
 19    │ │  Local History           │                                                                                 │
 20  ⋔ │ │Language Servers          │                                                                                 │

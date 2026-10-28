@@ -2665,6 +2665,24 @@ async fn settings_window_keymap() {
 }
 
 #[tokio::test]
+async fn settings_window_keymap_conflict() {
+    let mut fx = stable_app("settings-window-keymap-conflict");
+    let app = &mut fx.app;
+    app.perform(Action::App(AppAction::Settings));
+    press(app, KeyCode::Down, 6);
+    press(app, KeyCode::Enter, 1);
+    for c in "alt+enter".chars() {
+        press(app, KeyCode::Char(c), 1);
+    }
+    press(app, KeyCode::Down, 4);
+    let sel = app.settings.as_ref().unwrap().keymap_page().selection().unwrap();
+    assert_eq!(sel.ctx, "editor.merge");
+    assert_eq!(sel.chord, Some(crate::config::keymap::parse_chord("alt-enter").unwrap()));
+    let term = draw_app(app, 120, 40);
+    assert_snapshot!("settings_window_keymap_conflict", snapshot(&term, &settings_marks(&app.theme), None));
+}
+
+#[tokio::test]
 async fn settings_window_error() {
     let mut fx = stable_app("settings-window-error");
     let app = &mut fx.app;

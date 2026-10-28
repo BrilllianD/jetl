@@ -519,7 +519,7 @@ impl SettingsWindow {
                     if self.keymap_page.click(m.x, m.y, m.clicks) {
                         self.pane = Pane::Page;
                         if m.clicks >= 2
-                            && self.keymap_page.rows_rect().contains(p)
+                            && self.keymap_page.hits_row(m.x, m.y)
                             && let Some(s) = self.keymap_page.selection()
                         {
                             return Some(SettingsResult::EditBinding { add: s.chord.is_none() });
@@ -1131,6 +1131,16 @@ mod tests {
         let y = r.y + key_row as u16;
         assert_eq!(click(&mut w, r.x + 8, y, 1), None);
         assert_eq!(click(&mut w, r.x + 8, y, 2), Some(SettingsResult::EditBinding { add: false }));
+    }
+
+    #[test]
+    fn keymap_double_click_on_blank_space_below_the_rows_does_nothing() {
+        let mut w = on_ctrl_q_key();
+        draw_at(&mut w, 100, 60);
+        let r = w.keymap_page().rows_rect();
+        let n = w.keymap_page().rows().len() as u16;
+        assert!(n < r.height, "need blank space below the rows");
+        assert_eq!(click(&mut w, r.x + 8, r.y + n, 2), None);
     }
 
     fn key(code: KeyCode) -> KeyEvent {
