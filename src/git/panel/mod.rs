@@ -2,7 +2,7 @@
 //!
 //! Commit: change list grouped Staged / Unstaged / Untracked with stage
 //! checkboxes, the diff of the selected entry, and the commit message box.
-//! Log: `git log --graph` rows, details of the selected commit, and a diff
+//! Log: a branch tree (HEAD, Local, Remote), `git log --graph` rows, details of the selected commit, and a diff
 //! of a file in it. Stash: the stash list, files of a stash and their diff.
 //! Console: output of CLI operations.
 //!
@@ -36,6 +36,7 @@ use crate::ui::tool_window_block;
 use crate::ui::widgets::list::ListState;
 use crate::ui::widgets::text_input::TextInput;
 
+mod branches;
 mod commit;
 mod diff_view;
 mod log;
@@ -77,6 +78,8 @@ enum Area {
     Diff,
     Message,
     Log,
+    /// The Log tab's branch tree.
+    Branches,
     Files,
     LogDiff,
     Stashes,
@@ -177,6 +180,9 @@ pub struct GitPanel {
     /// Lines scrolled up from the bottom of the console.
     console_scroll: usize,
     pub branches: Vec<BranchInfo>,
+    branch_list: ListState,
+    /// Collapsed header rows of the branch tree.
+    branch_collapsed: std::collections::HashSet<branches::BranchRow>,
     /// `ui.file_icons`, set by `App::sync_file_icons`.
     pub file_icons: FileIcons,
     hits: Vec<(Btn, Rect)>,
@@ -184,6 +190,7 @@ pub struct GitPanel {
     message_rect: Rect,
     diff_rect: Rect,
     log_rect: Rect,
+    branches_rect: Rect,
     files_rect: Rect,
     stash_rect: Rect,
     stash_files_rect: Rect,
@@ -240,12 +247,15 @@ impl GitPanel {
             console: Vec::new(),
             console_scroll: 0,
             branches: Vec::new(),
+            branch_list: ListState::default(),
+            branch_collapsed: Default::default(),
             file_icons: FileIcons::None,
             hits: Vec::new(),
             changes_rect: Rect::default(),
             message_rect: Rect::default(),
             diff_rect: Rect::default(),
             log_rect: Rect::default(),
+            branches_rect: Rect::default(),
             files_rect: Rect::default(),
             stash_rect: Rect::default(),
             stash_files_rect: Rect::default(),
@@ -380,6 +390,7 @@ impl GitPanel {
             G::Refresh => cx.effects.push(Effect::Git(GitRequest::Refresh)),
             G::ToggleStage => match (self.tab, self.area) {
                 (GitTab::Commit, Area::Diff) => self.hunk_op(false, cx),
+                (GitTab::Log, Area::Branches) => self.activate_branch_row(cx),
                 (GitTab::Commit, _) => self.toggle_selected(cx),
                 _ => {}
             },
@@ -399,7 +410,13 @@ impl GitPanel {
             G::ContinueOperation => cx.effects.push(Effect::Git(GitRequest::Progress(ProgressAction::Continue))),
             G::SkipOperation => cx.effects.push(Effect::Git(GitRequest::Progress(ProgressAction::Skip))),
             G::AbortOperation => cx.effects.push(Effect::Git(GitRequest::Progress(ProgressAction::Abort))),
-            G::ContextMenu => self.log_context_menu(None, cx),
+            G::ContextMenu => {
+                if self.tab == GitTab::Log && self.area == Area::Branches {
+                    self.branch_menu(None, cx)
+                } else {
+                    self.log_context_menu(None, cx)
+                }
+            }
             G::BranchOp { branch, op } => match self.branches.iter().find(|b| b.name == *branch) {
                 Some(b) => cx.effects.push(Effect::Git(GitRequest::BranchOp { branch: b.clone(), op: *op })),
                 None => cx.notify(Level::Info, format!("Branch '{branch}' no longer exists")),
@@ -501,10 +518,12 @@ impl GitPanel {
                 Area::LogDiff => self.close_log_diff(),
                 Area::StashFiles => self.area = Area::Stashes,
                 Area::StashDiff => self.close_stash_diff(),
-                Area::Changes | Area::Message | Area::Log | Area::Stashes | Area::Console => {}
+                Area::Log if self.branches_rect.width > 0 => self.area = Area::Branches,
+                Area::Changes | Area::Message | Area::Branches | Area::Log | Area::Stashes | Area::Console => {}
             },
             G::Right => match self.area {
                 Area::Changes if self.diff.key.is_some() => self.area = Area::Diff,
+                Area::Branches => self.area = Area::Log,
                 Area::Log if self.details.is_some() => self.area = Area::Files,
                 Area::Files => self.open_commit_file(cx),
                 Area::Stashes if self.stash_details.is_some() => self.area = Area::StashFiles,
@@ -518,6 +537,7 @@ impl GitPanel {
                         self.area = Area::Files;
                     }
                 }
+                Area::Branches => self.open_branch_row(cx),
                 Area::Files => self.open_commit_file(cx),
                 Area::Stashes => {
                     if self.stash_details.as_ref().is_some_and(|d| !d.files.is_empty()) {
@@ -533,7 +553,9 @@ impl GitPanel {
                     Area::Diff => Area::Message,
                     Area::Message => Area::Changes,
                     Area::Log => Area::Files,
+                    Area::Files if self.branches_rect.width > 0 => Area::Branches,
                     Area::Files => Area::Log,
+                    Area::Branches => Area::Log,
                     Area::Stashes => Area::StashFiles,
                     Area::StashFiles => Area::Stashes,
                     a => a,
@@ -547,7 +569,7 @@ impl GitPanel {
                 Area::LogDiff => self.close_log_diff(),
                 Area::StashDiff => self.close_stash_diff(),
                 Area::Message | Area::Diff => self.area = Area::Changes,
-                Area::Files => self.area = Area::Log,
+                Area::Files | Area::Branches => self.area = Area::Log,
                 Area::StashFiles => self.area = Area::Stashes,
                 _ => cx.focus(PanelId::Editor),
             },
@@ -561,6 +583,7 @@ impl GitPanel {
             Area::Diff => self.diff.page,
             Area::LogDiff => self.log_diff.page,
             Area::Log => self.log_list.viewport,
+            Area::Branches => self.branch_list.viewport,
             Area::Files => self.files_list.viewport,
             Area::Stashes => self.stash_list.viewport,
             Area::StashFiles => self.stash_files.viewport,
@@ -587,6 +610,10 @@ impl GitPanel {
                 self.log_anchor = self.log_list.selected;
                 self.sync_details(cx);
                 self.maybe_page_log(cx);
+            }
+            Area::Branches => {
+                self.branch_list.fit(self.branch_rows().len(), self.branch_list.viewport);
+                step(&mut self.branch_list)
             }
             Area::Files => step(&mut self.files_list),
             Area::Stashes => {
@@ -627,6 +654,8 @@ impl GitPanel {
                     self.stash_list.scroll(d as i32);
                 } else if self.stash_files_rect.contains(p) {
                     self.stash_files.scroll(d as i32);
+                } else if self.branches_rect.contains(p) {
+                    self.branch_list.scroll(d as i32);
                 } else if self.log_rect.contains(p) {
                     self.log_list.scroll(d as i32);
                     self.maybe_page_log(cx);
@@ -727,6 +756,7 @@ impl GitPanel {
             &mut self.message_rect,
             &mut self.diff_rect,
             &mut self.log_rect,
+            &mut self.branches_rect,
             &mut self.files_rect,
             &mut self.stash_rect,
             &mut self.stash_files_rect,

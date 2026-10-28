@@ -1856,6 +1856,71 @@ async fn git_log_tab() {
     assert_snapshot!("git_log_tab", snapshot(&term, &marks, Some(bottom)));
 }
 
+fn branches_pane_fixture(name: &str, width: u16) -> (Fixture, ratatui::Terminal<ratatui::backend::TestBackend>) {
+    use crate::git::BranchInfo;
+    use crate::git::model::{CommitDetails, CommitFile};
+    let mut fx = stable_app(name);
+    let app = &mut fx.app;
+    app.toggle_tool_window(ToolWindowId::Git);
+    app.perform(Action::Git(crate::actions::GitAction::TabLog));
+    let commits = vec![
+        commit('a', &['b', 'd'], "Ann", "2 hours ago", "HEAD -> main", "Merge branch 'parser'"),
+        commit('d', &['e'], "Bob", "3 days ago", "parser", "Parse nested lists"),
+        commit('b', &['c'], "Ann", "4 days ago", "", "Fix the status bar width"),
+        commit('e', &['c'], "Bob", "5 days ago", "", "Add a parser"),
+        commit('c', &[], "Ann", "2 weeks ago", "tag: v0.1.0", "Initial commit"),
+    ];
+    let g = app.git.generation;
+    let filter = app.git_panel.log_filter().clone();
+    app.handle_msg(AppMsg::Git(GitMsg::Log { generation: g, skip: 0, filter, result: Ok(commits) }));
+    let details = CommitDetails {
+        sha: sha('a'),
+        body: "Merge branch 'parser'\n\nBrings in nested list parsing.".into(),
+        files: vec![CommitFile { status: 'A', path: "src/parser.rs".into(), old: None }],
+    };
+    app.handle_msg(AppMsg::Git(GitMsg::CommitDetails { generation: g, sha: sha('a'), result: Ok(details) }));
+    let b = |name: &str, current, remote, ahead| BranchInfo {
+        name: name.into(),
+        upstream: if current { Some("origin/main".into()) } else { None },
+        ahead,
+        behind: 0,
+        current,
+        remote,
+    };
+    app.git_panel.branches = vec![
+        b("main", true, false, 1),
+        b("parser", false, false, 0),
+        b("origin/main", false, true, 0),
+        b("origin/parser", false, true, 0),
+        b("upstream/main", false, true, 0),
+    ];
+    let term = draw_app(app, width, 30);
+    (fx, term)
+}
+
+#[tokio::test]
+async fn git_log_branches_pane() {
+    let (mut fx, _) = branches_pane_fixture("git-log-branches-pane", 120);
+    let app = &mut fx.app;
+    app.perform(Action::Git(crate::actions::GitAction::Left));
+    for _ in 0..3 {
+        app.perform(Action::Git(crate::actions::GitAction::Down));
+    }
+    let term = draw_app(app, 120, 30);
+    let marks = [Mark::bg('L', "selected", app.theme.list_selected.bg.unwrap())];
+    let bottom = app.layout.rects.bottom;
+    assert_snapshot!("git_log_branches_pane", snapshot(&term, &marks, Some(bottom)));
+}
+
+#[tokio::test]
+async fn git_log_branches_narrow() {
+    let (mut fx, term) = branches_pane_fixture("git-log-branches-narrow", 90);
+    let app = &mut fx.app;
+    let marks = [Mark::bg('L', "selected", app.theme.list_selected.bg.unwrap())];
+    let bottom = app.layout.rects.bottom;
+    assert_snapshot!("git_log_branches_narrow", snapshot(&term, &marks, Some(bottom)));
+}
+
 #[tokio::test]
 async fn git_lists_draw_file_icons() {
     use crate::git::model::{CommitDetails, CommitFile};

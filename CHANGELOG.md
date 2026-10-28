@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Syntax highlighting for CMake (`CMakeLists.txt`, `*.cmake`), diff and patch files, Java `.properties`, pip requirements files (`requirements*.txt`), nginx configs (`nginx.conf` and everything under `/etc/nginx/`) and Git commit messages (`COMMIT_EDITMSG`).
 - Syntax highlighting for SQL (`*.sql`), Ruby (`*.rb`, `Gemfile`, `Rakefile`, `Vagrantfile` and `#!/usr/bin/env ruby` scripts), Kotlin (`*.kt`, `*.kts`), Swift (`*.swift`) and Zig (`*.zig`, `*.zon`).
 - Syntax highlighting for HCL and Terraform (`*.tf`, `*.tfvars`, `*.hcl`), Nix, Protocol Buffers (`*.proto`) and GraphQL (`*.graphql`, `*.graphqls`, `*.gql`).
+- The Git Log shows a branch tree on its left (HEAD, Local and Remote by remote, with collapsible groups). Clicking a branch, or Space on it, lists that branch's history; Enter, Shift+F10 or a right click opens its operations menu. Left and Right move between the tree and the commit list. The tree hides when the Git window is narrower than 100 columns.
 
 ### Changed
 

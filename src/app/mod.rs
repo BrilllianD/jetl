@@ -3350,6 +3350,28 @@ pub(crate) mod tests {
         assert!(!child_enabled(&format!("New Branch from '{shown}'…")));
         assert!(child_enabled("Rename…"), "ops git allows mid-merge stay enabled");
         app.menu = None;
+        // The branches pane's menu greys out the same rows.
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 30)).unwrap();
+        term.draw(|f| crate::ui::render(&mut app, f)).unwrap();
+        app.perform(Action::Git(GitAction::Left));
+        for _ in 0..3 {
+            app.perform(Action::Git(GitAction::Down));
+        }
+        app.perform(Action::Git(GitAction::OpenFile));
+        let menu = app.menu.as_ref().expect("branch menu");
+        let enabled = |label: &str| menu.items.iter().find(|i| i.label == label).unwrap_or_else(|| panic!("{label}")).enabled;
+        for label in [
+            "Checkout".to_string(),
+            "New Branch from 'dev'…".to_string(),
+            format!("Merge 'dev' into '{main}'…"),
+            format!("Rebase '{main}' onto 'dev'…"),
+        ] {
+            assert!(!enabled(&label), "{label}");
+        }
+        for label in [format!("Compare with '{main}'"), "Rename…".to_string(), "Delete…".to_string()] {
+            assert!(enabled(&label), "{label}");
+        }
+        app.menu = None;
         app.perform(Action::Git(GitAction::BranchOp { branch: "dev".into(), op: BranchOp::Merge }));
         assert_eq!(app.notifications.last().unwrap().text, "A merge is in progress: finish or abort it first");
         assert!(app.dialog.is_none());
@@ -3420,6 +3442,72 @@ pub(crate) mod tests {
         app.perform(Action::Git(GitAction::BranchOp { branch: "gone".into(), op: BranchOp::Merge }));
         let n = app.notifications.last().unwrap();
         assert_eq!((n.level, n.text.as_str()), (crate::event::Level::Info, "Branch 'gone' no longer exists"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn branches_pane_filters_log_and_opens_branch_menu() {
+        use crate::actions::GitAction;
+        use crate::git::LogRev;
+        use crate::git::model::BranchOp;
+        use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+        let (mut app, dir) = test_app("branches-pane");
+        init_repo(&app, &[("a.txt", "a\n")]);
+        let root = app.workspace.root.clone();
+        let main = crate::git::repo::status(&root).unwrap().branch.unwrap();
+        git(&app, &["branch", "dev"]);
+        feed_status(&mut app, 1);
+        app.git_panel.branches = crate::git::repo::branches(&root).unwrap();
+        app.toggle_tool_window(ToolWindowId::Git);
+        app.perform(Action::Git(GitAction::TabLog));
+        let filter = app.git_panel.log_filter().clone();
+        let out =
+            std::process::Command::new("git").args(crate::git::cli::log_args(0, 100, true, &filter)).current_dir(&root).output().unwrap();
+        let rows = crate::git::cli::parse_log(&String::from_utf8_lossy(&out.stdout));
+        let g = app.git.generation;
+        app.handle_msg(AppMsg::Git(GitMsg::Log { generation: g, skip: 0, filter, result: Ok(rows) }));
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 30)).unwrap();
+        term.draw(|f| crate::ui::render(&mut app, f)).unwrap();
+        assert!(app.git_panel.branches_rect().width > 0);
+        app.perform(Action::Git(GitAction::Left));
+        for _ in 0..3 {
+            app.perform(Action::Git(GitAction::Down));
+        }
+        app.perform(Action::Git(GitAction::ToggleStage));
+        assert_eq!(app.git_panel.log_filter().rev, LogRev::Rev("dev".into()));
+        app.perform(Action::Git(GitAction::OpenFile));
+        let menu = app.menu.as_ref().expect("branch menu");
+        let dev_info = app.git_panel.branches.iter().find(|b| b.name == "dev").unwrap();
+        let want: Vec<String> = BranchOp::for_branch(dev_info, Some(&main)).into_iter().map(|(_, l)| l).collect();
+        let got: Vec<String> = menu.items.iter().map(|i| i.label.clone()).collect();
+        assert_eq!(got, want);
+        assert!(menu.items.iter().all(|i| !i.is_separator()));
+        app.menu = None;
+        term.draw(|f| crate::ui::render(&mut app, f)).unwrap();
+        let r = app.git_panel.branches_rect();
+        let modifiers = KeyModifiers::NONE;
+        let click = |app: &mut App, button, row| {
+            let column = r.x + 3;
+            app.handle_mouse(MouseEvent { kind: MouseEventKind::Down(button), column, row, modifiers });
+            app.handle_mouse(MouseEvent { kind: MouseEventKind::Up(button), column, row, modifiers });
+        };
+        click(&mut app, MouseButton::Left, r.y);
+        assert_eq!(app.git_panel.log_filter().rev, LogRev::Head);
+        assert!(app.menu.is_none());
+        click(&mut app, MouseButton::Right, r.y + 3);
+        assert!(app.menu.is_some());
+        app.menu = None;
+        // Esc returns focus to the list, so the context menu is the commit menu.
+        app.perform(Action::Git(GitAction::Escape));
+        let filter = app.git_panel.log_filter().clone();
+        let out =
+            std::process::Command::new("git").args(crate::git::cli::log_args(0, 100, true, &filter)).current_dir(&root).output().unwrap();
+        let rows = crate::git::cli::parse_log(&String::from_utf8_lossy(&out.stdout));
+        let g = app.git.generation;
+        app.handle_msg(AppMsg::Git(GitMsg::Log { generation: g, skip: 0, filter, result: Ok(rows) }));
+        app.perform(Action::Git(GitAction::ContextMenu));
+        let menu = app.menu.as_ref().expect("commit menu");
+        assert!(menu.items.iter().any(|i| i.label == "Copy Revision Number"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

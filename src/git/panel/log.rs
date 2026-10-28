@@ -304,6 +304,11 @@ impl GitPanel {
     }
 
     #[cfg(test)]
+    pub(crate) fn branches_rect(&self) -> Rect {
+        self.branches_rect
+    }
+
+    #[cfg(test)]
     pub(crate) fn log_rect(&self) -> Rect {
         self.log_rect
     }
@@ -438,6 +443,9 @@ impl GitPanel {
             }
             return;
         }
+        if self.click_branches(m, cx) {
+            return;
+        }
         if let Some(i) = self.log_list.hit(self.log_rect, m.x, m.y) {
             use crossterm::event::{KeyModifiers as K, MouseButton, MouseEventKind};
             self.area = Area::Log;
@@ -513,6 +521,20 @@ impl GitPanel {
             self.hits.push((Btn::LogClearFilter, r));
         }
         let body = Rect::new(body.x, body.y + 1, body.width, body.height.saturating_sub(1));
+        let pw = super::branches::pane_width(body.width, !self.branches.is_empty());
+        let body = if pw > 0 {
+            self.render_branches(buf, Rect::new(body.x, body.y, pw, body.height), focused && self.area == Area::Branches, theme);
+            for y in body.y..body.bottom() {
+                buf[(body.x + pw, y)].set_symbol("│").set_style(theme.splitter);
+            }
+            Rect::new(body.x + pw + 1, body.y, body.width - pw - 1, body.height)
+        } else {
+            self.branches_rect = Rect::default();
+            if self.area == Area::Branches {
+                self.area = Area::Log;
+            }
+            body
+        };
         let left_w = if body.width >= 70 { body.width * 3 / 5 } else { body.width };
         self.log_rect = Rect::new(body.x, body.y, left_w, body.height);
         self.render_log_list(buf, self.log_rect, focused && self.area == Area::Log, theme);
