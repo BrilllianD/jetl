@@ -7,9 +7,8 @@
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use std::path::{Component, Path};
-
 use ratatui::style::{Modifier, Style};
+use std::path::{Component, Path};
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::App;
@@ -79,7 +78,8 @@ pub fn render(app: &mut App, frame: &mut Frame, area: Rect) {
 
     // Right side, JetBrains order: position, line ending, encoding, indent,
     // language; then the mode (modal only) and keyboard mode; the branch
-    // comes last, so it sits at the right edge. Each part has a drop rank: on narrow widths the highest ranks go first.
+    // comes last, so it sits at the right edge. Each part has a drop rank:
+    // on narrow widths the highest ranks go first.
     let mut right_parts: Vec<(String, Style, Option<StatusHit>, u8)> = Vec::new();
     if let Some(c) = app.problem_counts() {
         let style = if c.errors > 0 {
@@ -257,6 +257,8 @@ mod tests {
         // The startup note may fill the middle; no cell carries the bold file name.
         assert!((0..90).all(|x| !buf[(x, 0)].modifier.contains(Modifier::BOLD)), "{row:?}");
         assert!(!row.contains("root"), "{row:?}");
+        // No crumbs: the startup note starts right after the one-cell margin, no 2-blank gap.
+        assert!(row.starts_with(" Terminal lacks"), "{row:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

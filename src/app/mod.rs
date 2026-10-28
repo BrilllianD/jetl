@@ -2787,6 +2787,31 @@ pub(crate) mod tests {
         let row: String = (0..24u16).map(|x| frame.buffer[(x, 0)].symbol()).collect();
         assert!(row.contains("Ln 1, Col 1") && !row.contains("feature/x"), "{row:?}");
         assert!(!app.status_hits.iter().any(|(h, _)| *h == StatusHit::Branch));
+
+        // Rank-1 tie: the branch drops before the modal mode, which drops before the problems.
+        let path = app.workspace.root.join("a.txt");
+        let lsp_diag = lsp_types::Diagnostic {
+            range: lsp_types::Range::default(),
+            severity: Some(lsp_types::DiagnosticSeverity::ERROR),
+            message: "boom".into(),
+            ..Default::default()
+        };
+        let per_file = app.config.lsp.max_diagnostics_per_file;
+        app.lsp.diagnostics.publish("fake", path, vec![crate::lsp::diagnostics::Diagnostic::from_lsp(lsp_diag)], per_file);
+        app.dispatcher.modal = true;
+        let mode = app.mode.label().to_string();
+        let mut seen = [false; 3];
+        for w in 10..100u16 {
+            let frame = term.draw(|f| crate::ui::status_bar::render(&mut app, f, Rect::new(0, 0, w, 1))).unwrap();
+            let row: String = (0..w).map(|x| frame.buffer[(x, 0)].symbol()).collect();
+            let (problems, modal, branch) = (row.contains("✖ 1"), row.contains(&mode), row.contains("feature/x"));
+            assert!(!branch || modal, "branch kept over modal at {w}: {row:?}");
+            assert!(!modal || problems, "modal kept over problems at {w}: {row:?}");
+            seen[0] |= problems && !modal;
+            seen[1] |= modal && !branch;
+            seen[2] |= branch;
+        }
+        assert_eq!(seen, [true; 3], "every tie step is reached");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
