@@ -138,7 +138,7 @@ impl TermCaps {
 }
 
 /// Every `lang-*` cargo feature and whether this build has it.
-const GRAMMARS: [(&str, bool); 21] = [
+const GRAMMARS: [(&str, bool); 23] = [
     ("rust", cfg!(feature = "lang-rust")),
     ("js", cfg!(feature = "lang-js")),
     ("ts", cfg!(feature = "lang-ts")),
@@ -160,6 +160,8 @@ const GRAMMARS: [(&str, bool); 21] = [
     ("php", cfg!(feature = "lang-php")),
     ("lua", cfg!(feature = "lang-lua")),
     ("dockerfile", cfg!(feature = "lang-dockerfile")),
+    ("make", cfg!(feature = "lang-make")),
+    ("ini", cfg!(feature = "lang-ini")),
 ];
 
 type Find<'a> = &'a dyn Fn(&str) -> Option<PathBuf>;

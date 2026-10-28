@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - The Terminal window always shows its tab row, also with a single tab, with New and Close buttons on the right; a middle click on a tab label closes that tab.
+- Syntax highlighting for Makefiles (`Makefile`, `GNUmakefile`, `*.mk`) and INI-style config files (`.ini`, `.cfg`, `.conf`, `.gitconfig`, `.editorconfig`, systemd units and more); `.env` and `.env.*` files highlight as shell, and more file names use the JSON, TOML, YAML, XML and shell grammars. An exact file name now always wins over another language's extension.
 
 ### Changed
 

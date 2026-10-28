@@ -179,6 +179,11 @@ const C_QUERY_FIXES: &str = "(call_expression function: (field_expression field:
 #[cfg(feature = "lang-cpp")]
 const CPP_QUERY_FIXES: &str = "(function_declarator declarator: (qualified_identifier name: (qualified_identifier name: (identifier) @function))) (call_expression function: (qualified_identifier name: (qualified_identifier name: (identifier) @function))) (auto) @type.builtin";
 
+/// Prepended to the INI query: upstream captures section names as
+/// `@type`, which Darcula leaves unstyled.
+#[cfg(feature = "lang-ini")]
+const INI_QUERY_FIXES: &str = "(section_name (text) @keyword)";
+
 pub static LANGUAGES: LazyLock<Vec<LanguageDef>> = LazyLock::new(|| {
     let mut v = Vec::new();
     #[cfg(feature = "lang-rust")]
@@ -247,8 +252,8 @@ pub static LANGUAGES: LazyLock<Vec<LanguageDef>> = LazyLock::new(|| {
     #[cfg(feature = "lang-json")]
     v.extend(make(
         "json",
-        &["json", "jsonc", "json5"],
-        &[],
+        &["json", "jsonc", "json5", "jsonl", "code-workspace"],
+        &[".babelrc", ".eslintrc", "flake.lock", "composer.lock"],
         tree_sitter_json::LANGUAGE.into(),
         &[tree_sitter_json::HIGHLIGHTS_QUERY],
         None,
@@ -257,7 +262,7 @@ pub static LANGUAGES: LazyLock<Vec<LanguageDef>> = LazyLock::new(|| {
     v.extend(make(
         "toml",
         &["toml"],
-        &["Cargo.lock"],
+        &["Cargo.lock", "Pipfile", "poetry.lock", "uv.lock"],
         tree_sitter_toml_ng::LANGUAGE.into(),
         &[tree_sitter_toml_ng::HIGHLIGHTS_QUERY],
         Some("#"),
@@ -265,8 +270,23 @@ pub static LANGUAGES: LazyLock<Vec<LanguageDef>> = LazyLock::new(|| {
     #[cfg(feature = "lang-bash")]
     v.extend(make(
         "bash",
-        &["sh", "bash", "zsh"],
-        &[".bashrc", ".zshrc", ".profile", ".bash_profile", "PKGBUILD"],
+        &["sh", "bash", "zsh", "ebuild"],
+        &[
+            ".bashrc",
+            ".zshrc",
+            ".profile",
+            ".bash_profile",
+            "PKGBUILD",
+            ".env",
+            ".envrc",
+            ".bash_aliases",
+            ".bash_logout",
+            ".zprofile",
+            ".zshenv",
+            ".zlogin",
+            ".xinitrc",
+            "APKBUILD",
+        ],
         tree_sitter_bash::LANGUAGE.into(),
         &[tree_sitter_bash::HIGHLIGHT_QUERY],
         Some("#"),
@@ -288,7 +308,7 @@ pub static LANGUAGES: LazyLock<Vec<LanguageDef>> = LazyLock::new(|| {
     #[cfg(feature = "lang-yaml")]
     // Upstream captures mapping keys as `@string` before `@property`, and
     // the first pattern for a node wins; lift the key patterns to the front.
-    v.extend(make("yaml", &["yml", "yaml"], &[], tree_sitter_yaml::LANGUAGE.into(), &["(_ key: (flow_node [(double_quote_scalar) (single_quote_scalar)] @property)) (_ key: (flow_node (plain_scalar (string_scalar) @property)))", tree_sitter_yaml::HIGHLIGHTS_QUERY], Some("#")));
+    v.extend(make("yaml", &["yml", "yaml"], &[".clang-format", ".clangd", ".yamllint"], tree_sitter_yaml::LANGUAGE.into(), &["(_ key: (flow_node [(double_quote_scalar) (single_quote_scalar)] @property)) (_ key: (flow_node (plain_scalar (string_scalar) @property)))", tree_sitter_yaml::HIGHLIGHTS_QUERY], Some("#")));
     // Vue single-file components use the HTML grammar; their `<script>` and
     // `<style>` blocks are injections (`lang` picks TypeScript or SCSS). The
     // Vue grammar crate is unmaintained.
@@ -312,7 +332,10 @@ pub static LANGUAGES: LazyLock<Vec<LanguageDef>> = LazyLock::new(|| {
     #[cfg(feature = "lang-xml")]
     v.extend(make(
         "xml",
-        &["xml", "xsd", "xsl", "xslt", "svg", "csproj", "fsproj", "vbproj", "props", "targets", "plist", "resx", "xaml"],
+        &[
+            "xml", "xsd", "xsl", "xslt", "svg", "csproj", "fsproj", "vbproj", "props", "targets", "plist", "resx", "xaml", "iml", "wsdl",
+            "kml",
+        ],
         &[],
         tree_sitter_xml::LANGUAGE_XML.into(),
         &[tree_sitter_xml::XML_HIGHLIGHT_QUERY],
@@ -361,13 +384,82 @@ pub static LANGUAGES: LazyLock<Vec<LanguageDef>> = LazyLock::new(|| {
         &[tree_sitter_containerfile::HIGHLIGHTS_QUERY],
         Some("#"),
     ));
+    #[cfg(feature = "lang-make")]
+    v.extend(make(
+        "make",
+        &["mk", "mak"],
+        &["Makefile", "makefile", "GNUmakefile"],
+        tree_sitter_make::LANGUAGE.into(),
+        &[tree_sitter_make::HIGHLIGHTS_QUERY],
+        Some("#"),
+    ));
+    #[cfg(feature = "lang-ini")]
+    v.extend(make(
+        "ini",
+        &[
+            "ini",
+            "cfg",
+            "conf",
+            "desktop",
+            "service",
+            "socket",
+            "timer",
+            "mount",
+            "automount",
+            "swap",
+            "target",
+            "path",
+            "slice",
+            "scope",
+            "network",
+            "netdev",
+            "link",
+        ],
+        &[
+            ".gitconfig",
+            ".editorconfig",
+            ".gitmodules",
+            ".npmrc",
+            ".pypirc",
+            ".hgrc",
+            ".pylintrc",
+            ".flake8",
+            ".coveragerc",
+            "mimeapps.list",
+        ],
+        tree_sitter_ini::LANGUAGE.into(),
+        &[INI_QUERY_FIXES, tree_sitter_ini::HIGHLIGHTS_QUERY],
+        Some("#"),
+    ));
     v
 });
 
+/// File name patterns for names no fixed list can hold: (prefix, suffix, language name).
+const NAME_PATTERNS: &[(&str, &str, &str)] = &[(".env.", "", "bash")];
+
 pub fn detect(path: &Path) -> Option<&'static LanguageDef> {
+    detect_in(&LANGUAGES, path)
+}
+
+/// The language for `path` among `langs`, in this order, each step over
+/// all of `langs` in table order: exact file name, [`NAME_PATTERNS`],
+/// lowercased extension. Split from [`detect`] so tests can pass their
+/// own table.
+fn detect_in<'a>(langs: &'a [LanguageDef], path: &Path) -> Option<&'a LanguageDef> {
     let name = path.file_name()?.to_str()?;
-    let ext = path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase());
-    LANGUAGES.iter().find(|l| l.filenames.contains(&name) || ext.as_deref().map(|e| l.extensions.contains(&e)).unwrap_or(false))
+    let by_name = |lang: &str| langs.iter().find(|l| l.name == lang);
+    if let Some(l) = langs.iter().find(|l| l.filenames.contains(&name)) {
+        return Some(l);
+    }
+    let pattern = NAME_PATTERNS
+        .iter()
+        .filter(|(prefix, suffix, _)| name.len() > prefix.len() + suffix.len() && name.starts_with(prefix) && name.ends_with(suffix))
+        .find_map(|(_, _, lang)| by_name(lang));
+    if pattern.is_some() {
+        return pattern;
+    }
+    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
+    langs.iter().find(|l| l.extensions.contains(&ext.as_str()))
 }
 
 pub fn language_for_name(name: &str) -> Option<&'static LanguageDef> {
@@ -461,6 +553,8 @@ pub fn language_for_alias(name: &str) -> Option<&'static LanguageDef> {
         "golang" => "go",
         "docker" | "containerfile" => "dockerfile",
         "htm" | "xhtml" => "html",
+        "makefile" | "gmake" => "make",
+        "dosini" | "confini" | "systemd" | "gitconfig" | "editorconfig" => "ini",
         n => n,
     };
     language_for_name(name)
@@ -1338,6 +1432,8 @@ mod tests {
             cfg!(feature = "lang-php"),
             cfg!(feature = "lang-lua"),
             cfg!(feature = "lang-dockerfile"),
+            cfg!(feature = "lang-make"),
+            cfg!(feature = "lang-ini"),
         ];
         let names: Vec<&str> = LANGUAGES.iter().map(|l| l.name).collect();
         assert_eq!(names.len(), enabled.iter().filter(|e| **e).count(), "loaded: {names:?}");
@@ -1398,6 +1494,24 @@ mod tests {
     #[allow(dead_code)]
     fn cap(name: &str) -> Option<Style> {
         Theme::default().capture_style(name)
+    }
+
+    /// Capture names of `name`'s compiled highlight query that Darcula leaves
+    /// unstyled, sorted, without `_`-prefixed helper captures.
+    #[allow(dead_code)]
+    fn unstyled_captures(name: &str) -> Vec<String> {
+        let theme = Theme::default();
+        let def = language_for_name(name).unwrap_or_else(|| panic!("grammar {name}"));
+        let mut v: Vec<String> = def
+            .query
+            .capture_names()
+            .iter()
+            .filter(|n| !n.starts_with('_') && theme.capture_style(n).is_none())
+            .map(|n| n.to_string())
+            .collect();
+        v.sort();
+        v.dedup();
+        v
     }
 
     #[cfg(feature = "lang-csharp")]
@@ -1564,6 +1678,187 @@ mod tests {
         assert_eq!(style_of("Dockerfile", src, "A=b"), cap("property"));
         assert_eq!(style_of("Dockerfile", src, "8080"), cap("number"));
         assert_eq!(style_of("Dockerfile", src, "\"jetl"), cap("string"));
+    }
+
+    #[cfg(feature = "lang-make")]
+    #[test]
+    fn make_highlighted() {
+        let src = "# c\ninclude config.mk\nCC := gcc\nifeq ($(CC),gcc)\nX = 1\nendif\nall: main.o\n\tgcc -o app main.o\n";
+        for file in ["Makefile", "makefile", "GNUmakefile", "a.mk", "a.mak", "B.MK"] {
+            assert_eq!(detect(Path::new(file)).map(|l| l.name), Some("make"), "{file}");
+        }
+        assert_eq!(style_of("Makefile", src, "# c"), cap("comment"));
+        assert_eq!(style_of("Makefile", src, "include"), cap("include"));
+        assert_eq!(style_of("Makefile", src, "ifeq"), cap("conditional"));
+        assert_eq!(
+            unstyled_captures("make"),
+            ["clean", "error", "exception", "text.danger", "text.note", "text.warning"],
+            "captures Darcula leaves unstyled"
+        );
+    }
+
+    #[cfg(feature = "lang-ini")]
+    #[test]
+    fn ini_highlighted() {
+        let src = "; c\n# d\n[core]\nbare = true\n";
+        let names = [
+            ".gitconfig",
+            ".editorconfig",
+            ".gitmodules",
+            ".npmrc",
+            ".pypirc",
+            ".hgrc",
+            ".pylintrc",
+            ".flake8",
+            ".coveragerc",
+            "mimeapps.list",
+        ];
+        let exts = [
+            "ini",
+            "cfg",
+            "conf",
+            "desktop",
+            "service",
+            "socket",
+            "timer",
+            "mount",
+            "automount",
+            "swap",
+            "target",
+            "path",
+            "slice",
+            "scope",
+            "network",
+            "netdev",
+            "link",
+        ];
+        let files = names
+            .iter()
+            .map(|n| n.to_string())
+            .chain(exts.iter().map(|e| format!("a.{e}")))
+            .chain(["/etc/systemd/system/x.service".into(), "A.INI".into()]);
+        for file in files {
+            assert_eq!(detect(Path::new(&file)).map(|l| l.name), Some("ini"), "{file}");
+        }
+        assert_eq!(style_of("a.ini", src, "; c"), cap("comment"));
+        assert_eq!(style_of("a.ini", src, "# d"), cap("comment"));
+        assert_eq!(style_of("a.ini", src, "core"), cap("keyword"));
+        assert_eq!(style_of("a.ini", src, "bare"), cap("property"));
+        assert_eq!(unstyled_captures("ini"), ["spell", "type"], "captures Darcula leaves unstyled");
+    }
+
+    #[cfg(feature = "lang-bash")]
+    #[test]
+    fn env_files_are_bash() {
+        for file in [".env", ".env.local", ".env.production", "/p/app/.env.test", ".envrc"] {
+            assert_eq!(detect(Path::new(file)).map(|l| l.name), Some("bash"), "{file}");
+        }
+        for file in [".env.", "x.env"] {
+            assert_eq!(detect(Path::new(file)).map(|l| l.name), None, "{file}");
+        }
+        assert_eq!(style_of(".env.local", "# c\nA=1\n", "# c"), cap("comment"));
+    }
+
+    #[cfg(all(feature = "lang-bash", feature = "lang-json", feature = "lang-toml", feature = "lang-yaml", feature = "lang-xml"))]
+    #[test]
+    fn zero_cost_names_detect() {
+        let table = [
+            (".bash_aliases", "bash"),
+            (".bash_logout", "bash"),
+            (".zprofile", "bash"),
+            (".zshenv", "bash"),
+            (".zlogin", "bash"),
+            (".xinitrc", "bash"),
+            ("APKBUILD", "bash"),
+            ("x.ebuild", "bash"),
+            ("x.jsonl", "json"),
+            ("a.code-workspace", "json"),
+            (".babelrc", "json"),
+            (".eslintrc", "json"),
+            ("flake.lock", "json"),
+            ("composer.lock", "json"),
+            ("Pipfile", "toml"),
+            ("poetry.lock", "toml"),
+            ("uv.lock", "toml"),
+            (".clang-format", "yaml"),
+            (".clangd", "yaml"),
+            (".yamllint", "yaml"),
+            ("a.iml", "xml"),
+            ("a.wsdl", "xml"),
+            ("a.kml", "xml"),
+        ];
+        for (file, want) in table {
+            assert_eq!(detect(Path::new(file)).map(|l| l.name), Some(want), "{file}");
+        }
+    }
+
+    #[cfg(all(
+        feature = "lang-rust",
+        feature = "lang-js",
+        feature = "lang-ts",
+        feature = "lang-python",
+        feature = "lang-json",
+        feature = "lang-toml",
+        feature = "lang-bash",
+        feature = "lang-md",
+        feature = "lang-html",
+        feature = "lang-xml",
+        feature = "lang-c",
+        feature = "lang-cpp",
+        feature = "lang-dockerfile"
+    ))]
+    #[test]
+    fn existing_detection_is_unchanged() {
+        let table = [
+            ("src/main.rs", Some("rust")),
+            ("a.MJS", Some("javascript")),
+            ("a.d.ts", Some("typescript")),
+            ("App.tsx", Some("tsx")),
+            ("x.pyi", Some("python")),
+            ("package.json", Some("json")),
+            ("Cargo.toml", Some("toml")),
+            ("Cargo.lock", Some("toml")),
+            (".bashrc", Some("bash")),
+            ("PKGBUILD", Some("bash")),
+            ("run.zsh", Some("bash")),
+            ("README.md", Some("markdown")),
+            ("App.vue", Some("html")),
+            ("a.csproj", Some("xml")),
+            ("a.h", Some("c")),
+            ("a.hpp", Some("cpp")),
+            ("Dockerfile", Some("dockerfile")),
+            ("dev.Dockerfile", Some("dockerfile")),
+            ("notes.txt", None),
+            ("LICENSE", None),
+            (".gitignore", None),
+        ];
+        for (file, want) in table {
+            assert_eq!(detect(Path::new(file)).map(|l| l.name), want, "{file}");
+        }
+    }
+
+    #[cfg(feature = "lang-bash")]
+    #[test]
+    fn exact_filename_beats_an_earlier_extension() {
+        let lang = || -> Language { tree_sitter_bash::LANGUAGE.into() };
+        let langs = [
+            make("first", &["conf"], &[], lang(), &["(comment) @comment"], None).unwrap(),
+            make("second", &[], &["nginx.conf"], lang(), &["(comment) @comment"], None).unwrap(),
+        ];
+        assert_eq!(detect_in(&langs, Path::new("/x/nginx.conf")).map(|l| l.name), Some("second"));
+        assert_eq!(detect_in(&langs, Path::new("/x/other.conf")).map(|l| l.name), Some("first"));
+    }
+
+    #[cfg(all(feature = "lang-make", feature = "lang-ini"))]
+    #[test]
+    fn make_and_ini_aliases() {
+        for n in ["make", "makefile", "Makefile-mode", "gmake"] {
+            assert_eq!(language_for_alias(n).map(|l| l.name), Some("make"), "{n}");
+        }
+        for n in ["ini", "dosini", "confini", "systemd", "gitconfig", "editorconfig"] {
+            assert_eq!(language_for_alias(n).map(|l| l.name), Some("ini"), "{n}");
+        }
+        assert_eq!(lang("/tmp/notes", "# vim: set ft=dosini:\n"), Some("ini"));
     }
 
     #[cfg_attr(not(feature = "lang-rust"), allow(dead_code))]
