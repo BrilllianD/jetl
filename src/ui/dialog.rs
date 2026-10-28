@@ -233,6 +233,20 @@ pub enum DialogId {
     SettingValue(&'static str),
     /// Close the Settings window, dropping its changes: Discard / Keep Editing.
     SettingsDiscard,
+    /// Settings › Keymap: the key for `action` in context `ctx`; `old` is the key being edited
+    /// (`None` adds one).
+    KeymapBinding {
+        ctx: String,
+        action: crate::actions::Action,
+        old: Option<Vec<crate::config::keymap::KeyCombo>>,
+    },
+    /// Settings › Keymap: `chord` is bound to another action in `ctx`: Replace / Cancel.
+    KeymapReplace {
+        ctx: String,
+        action: crate::actions::Action,
+        old: Option<Vec<crate::config::keymap::KeyCombo>>,
+        chord: Vec<crate::config::keymap::KeyCombo>,
+    },
     /// Tasks window: filter by tag. Item `i` is `values[i]`; `""` is any tag.
     TasksTag(Vec<String>),
     /// Tasks window: filter by assignee. Item `i` is `values[i]`; `""` is

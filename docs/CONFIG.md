@@ -846,6 +846,9 @@ contexts, keys are key strings, values are action ids:
   delete insert up down left right home end pageup pagedown`, plus the names
   `backtick minus plus slash backslash`. `"shift shift"` is a double tap of
   Shift.
+- Keys may also be written as KEYMAP.md and Settings show them
+  (`Ctrl+Shift+F`, `Ctrl+K Ctrl+C`); in that spelling the letter's case does
+  not mean Shift. A bare capital letter (`"G"`) means Shift+G.
 - `"none"` (or an empty string) unbinds the key in that context.
 - Contexts, innermost first: `editor.find` (find bar focused), `editor`,
   `tree`, `git`, `worktrees`, `palette` (command palette open), `dialog`,
@@ -856,6 +859,11 @@ contexts, keys are key strings, values are action ids:
   Ctrl+Shift+letter, Ctrl+Tab, Ctrl+Enter, Shift Shift and most Ctrl+digit
   keys never arrive; the default keymap carries fallbacks for them (Ctrl+N,
   Alt+S, F1, Alt+Enter, Alt+Left/Right, Alt+B then a digit for Ctrl+0..9). The status bar shows `legacy keys` in that case.
+
+Settings › Keymap edits this file: Enter or Insert on an action adds a key,
+Enter on a key changes it, Delete removes it. Changes are marked `*` and
+written on OK or Apply; other entries and comments are kept, a removed
+default binding is written as `"none"`, and Cancel discards them.
 
 To regenerate KEYMAP.md after changing the defaults or the action registry:
 

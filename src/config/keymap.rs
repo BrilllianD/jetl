@@ -1,6 +1,7 @@
 //! Key combination parsing and the keymap tables.
 //!
-//! Key string grammar: `[ctrl-][alt-][shift-]<key>` where `<key>` is a single
+//! Key string grammar: `[ctrl-][alt-][shift-]<key>` (also `Ctrl+Shift+N`, as
+//! keys are displayed; there the case of a letter does not imply Shift) where `<key>` is a single
 //! character, `f1`..`f12`, or one of `enter tab esc space backspace delete
 //! insert up down left right home end pageup pagedown`. Space-separated
 //! combos form a chord. The special token `shift shift` binds a double tap
@@ -14,6 +15,7 @@ use crossterm::event::{KeyCode, KeyModifiers, MediaKeyCode, ModifierKeyCode};
 
 use crate::actions::Action;
 use crate::config::FileText;
+use crate::config::edit::KeymapEdit;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct KeyCombo {
@@ -111,7 +113,29 @@ impl KeyCombo {
     }
 }
 
-/// Parse one combo like `ctrl-shift-n`.
+/// Modifier prefixes of a key string, dash spelling and displayed `+` spelling.
+const MODIFIER_PREFIXES: [(&str, KeyModifiers); 17] = [
+    ("ctrl-", KeyModifiers::CONTROL),
+    ("control-", KeyModifiers::CONTROL),
+    ("c-", KeyModifiers::CONTROL),
+    ("alt-", KeyModifiers::ALT),
+    ("meta-", KeyModifiers::ALT),
+    ("a-", KeyModifiers::ALT),
+    ("shift-", KeyModifiers::SHIFT),
+    ("s-", KeyModifiers::SHIFT),
+    ("super-", KeyModifiers::SUPER),
+    ("cmd-", KeyModifiers::SUPER),
+    ("ctrl+", KeyModifiers::CONTROL),
+    ("control+", KeyModifiers::CONTROL),
+    ("alt+", KeyModifiers::ALT),
+    ("meta+", KeyModifiers::ALT),
+    ("shift+", KeyModifiers::SHIFT),
+    ("super+", KeyModifiers::SUPER),
+    ("cmd+", KeyModifiers::SUPER),
+];
+
+/// Parse one combo like `ctrl-shift-n` or, as keys are displayed, `Ctrl+Shift+N`
+/// (there the letter's case does not imply Shift).
 pub fn parse_combo(s: &str) -> Result<KeyCombo> {
     let s = s.trim();
     if s.is_empty() {
@@ -119,23 +143,15 @@ pub fn parse_combo(s: &str) -> Result<KeyCombo> {
     }
     let mut mods = KeyModifiers::NONE;
     let mut rest = s;
+    // A `+` prefix is the displayed spelling (`Ctrl+Shift+N`): there the case of
+    // the letter does not imply Shift.
+    let mut plus = false;
     loop {
         let lower = rest.to_ascii_lowercase();
-        if let Some(r) = lower.strip_prefix("ctrl-").or_else(|| lower.strip_prefix("control-")).or_else(|| lower.strip_prefix("c-")) {
-            mods |= KeyModifiers::CONTROL;
-            rest = &rest[rest.len() - r.len()..];
-        } else if let Some(r) = lower.strip_prefix("alt-").or_else(|| lower.strip_prefix("meta-")).or_else(|| lower.strip_prefix("a-")) {
-            mods |= KeyModifiers::ALT;
-            rest = &rest[rest.len() - r.len()..];
-        } else if let Some(r) = lower.strip_prefix("shift-").or_else(|| lower.strip_prefix("s-")) {
-            mods |= KeyModifiers::SHIFT;
-            rest = &rest[rest.len() - r.len()..];
-        } else if let Some(r) = lower.strip_prefix("super-").or_else(|| lower.strip_prefix("cmd-")) {
-            mods |= KeyModifiers::SUPER;
-            rest = &rest[rest.len() - r.len()..];
-        } else {
-            break;
-        }
+        let Some(&(prefix, m)) = MODIFIER_PREFIXES.iter().find(|(p, _)| lower.starts_with(p)) else { break };
+        mods |= m;
+        plus |= prefix.ends_with('+');
+        rest = &rest[prefix.len()..];
         if rest.is_empty() {
             bail!("missing key after modifier in {s:?}");
         }
@@ -177,7 +193,9 @@ pub fn parse_combo(s: &str) -> Result<KeyCombo> {
                 bail!("unknown key {k:?}");
             }
             if c.is_uppercase() {
-                mods |= KeyModifiers::SHIFT;
+                if !plus {
+                    mods |= KeyModifiers::SHIFT;
+                }
                 KeyCode::Char(c.to_lowercase().next().unwrap_or(c))
             } else {
                 KeyCode::Char(c)
@@ -256,6 +274,22 @@ impl Keymap {
                 Ok(())
             }
             None => Err(format!("[{ctx}] {keys:?}: unknown action {id:?}")),
+        }
+    }
+
+    /// The in-memory twin of `config::edit::apply_keymap_edits` for one edit.
+    pub fn apply_edit(&mut self, e: &KeymapEdit) {
+        match e {
+            KeymapEdit::Bind { ctx, chord, id } => {
+                if let Some(a) = Action::from_id(id) {
+                    self.tables.entry(ctx.clone()).or_default().bind(chord.clone(), a);
+                }
+            }
+            KeymapEdit::Unbind { ctx, chord } => {
+                if let Some(t) = self.tables.get_mut(ctx) {
+                    t.unbind(chord);
+                }
+            }
         }
     }
 
@@ -361,6 +395,21 @@ impl Keymap {
 /// [`KeyCombo::display`] of each step joined by spaces.
 pub fn chord_text(chord: &[KeyCombo]) -> String {
     chord.iter().map(KeyCombo::display).collect::<Vec<_>>().join(" ")
+}
+
+/// The spelling written to `keymap.toml` and prefilled in the key input:
+/// [`chord_text`], except that a letter without modifiers stays lower-case
+/// (a bare capital letter would read back as Shift+letter). Always parses back
+/// with [`parse_chord`].
+pub fn chord_key(chord: &[KeyCombo]) -> String {
+    chord
+        .iter()
+        .map(|c| match c.code {
+            KeyCode::Char(ch) if c.mods.is_empty() && ch.is_alphabetic() => ch.to_string(),
+            _ => c.display(),
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Context order in the generated key reference; other contexts follow
@@ -701,5 +750,53 @@ mod tests {
         assert!(msgs[0].contains("using the default keymap"));
         assert!(km.table("global").unwrap().bindings.contains_key(&parse_chord("ctrl-q").unwrap()));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn display_spelling_parses_back() {
+        for (shown, dash) in [
+            ("Ctrl+Q", "ctrl-q"),
+            ("ctrl+q", "ctrl-q"),
+            ("Ctrl+Shift+F", "ctrl-shift-f"),
+            ("Ctrl++", "ctrl-plus"),
+            ("Alt+Shift+Tab", "alt-shift-tab"),
+            ("Ctrl+Space", "ctrl-space"),
+            ("Ctrl+Alt+-", "ctrl-alt-minus"),
+        ] {
+            assert_eq!(parse_combo(shown).unwrap(), parse_combo(dash).unwrap(), "{shown}");
+        }
+        assert!(parse_combo("Q").unwrap().mods.contains(KeyModifiers::SHIFT));
+        assert!(parse_combo("ctrl-Q").unwrap().mods.contains(KeyModifiers::SHIFT));
+        assert_eq!(parse_chord("Shift Shift").unwrap(), vec![KeyCombo::double_shift()]);
+        assert!(parse_combo("Ctrl+").is_err());
+    }
+
+    #[test]
+    fn chord_key_round_trips_every_default_binding() {
+        let bare_letter = |c: &KeyCombo| c.mods.is_empty() && matches!(c.code, KeyCode::Char(ch) if ch.is_alphabetic());
+        for (ctx, table) in &default_keymap().tables {
+            for chord in table.bindings.keys() {
+                assert_eq!(&parse_chord(&chord_key(chord)).unwrap(), chord, "[{ctx}] {}", chord_key(chord));
+                if !chord.iter().any(bare_letter) {
+                    assert_eq!(&parse_chord(&chord_text(chord)).unwrap(), chord, "[{ctx}] {}", chord_text(chord));
+                }
+            }
+        }
+        assert_eq!(chord_key(&parse_chord("g g").unwrap()), "g g");
+        assert_eq!(chord_key(&parse_chord("ctrl-k ctrl-c").unwrap()), "Ctrl+K Ctrl+C");
+    }
+
+    #[test]
+    fn apply_edit_binds_and_unbinds() {
+        let ch = |s| parse_chord(s).unwrap();
+        let mut km = Keymap::from_triples([("global", "ctrl-q", "app.quit")]);
+        km.apply_edit(&KeymapEdit::Bind { ctx: "git.changes".into(), chord: ch("f2"), id: "app.about" });
+        assert_eq!(km.table("git.changes").unwrap().bindings.get(&ch("f2")), Action::from_id("app.about").as_ref());
+        km.apply_edit(&KeymapEdit::Unbind { ctx: "global".into(), chord: ch("ctrl-q") });
+        assert!(km.table("global").unwrap().bindings.is_empty());
+        km.apply_edit(&KeymapEdit::Unbind { ctx: "nowhere".into(), chord: ch("f2") });
+        km.apply_edit(&KeymapEdit::Bind { ctx: "global".into(), chord: ch("f3"), id: "no.such" });
+        assert!(km.table("nowhere").is_none());
+        assert!(km.table("global").unwrap().bindings.is_empty());
     }
 }

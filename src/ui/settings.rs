@@ -11,14 +11,14 @@ use ratatui::widgets::{Block, Borders, Clear};
 use unicode_width::UnicodeWidthStr;
 
 use crate::config::catalog::{DEPENDENCIES, KEYMAP, Kind, PAGES, Setting, setting};
-use crate::config::edit::{Edit, Value};
+use crate::config::edit::{Edit, KeymapEdit, Value};
 use crate::config::keymap::Keymap;
 use crate::config::reload::class_of;
 use crate::config::theme::{self, Theme};
 use crate::config::{Config, FileText};
 use crate::doctor::{Check, Group, Report, Status};
 use crate::event::Mouse;
-use crate::ui::settings_keymap::KeymapPage;
+use crate::ui::settings_keymap::{KeymapPage, KeymapSelection};
 use crate::ui::toasts::wrap;
 use crate::ui::widgets::list::ListState;
 use crate::util::text::fit;
@@ -42,6 +42,11 @@ pub enum SettingsResult {
     },
     /// Esc / Cancel with pending edits: ask before closing.
     ConfirmDiscard,
+    /// Settings › Keymap: ask for a key for the selected action (`add`) or a
+    /// new key for the selected key row.
+    EditBinding {
+        add: bool,
+    },
     /// Run the dependency probe (`App::check_dependencies`).
     CheckDependencies,
 }
@@ -57,6 +62,8 @@ pub struct SettingsWindow {
     defaults: Config,
     /// Staged edits, one per key, in the order they were made.
     pending: Vec<(&'static str, Edit)>,
+    /// Staged keymap edits, in order; written to `keymap.toml` by Apply/OK.
+    keymap_pending: Vec<KeymapEdit>,
     /// Rows of the tree: every page of `PAGES`, so the selection is the page.
     tree: ListState,
     rows: ListState,
@@ -114,6 +121,7 @@ impl SettingsWindow {
             config: load(file, path),
             defaults: Config::default(),
             pending: Vec::new(),
+            keymap_pending: Vec::new(),
             tree: ListState::default(),
             rows: ListState::default(),
             pane: Pane::Tree,
@@ -174,9 +182,43 @@ impl SettingsWindow {
         PAGES[self.page()].title == KEYMAP
     }
 
-    /// Show `km` on the Keymap page; called on open and after every keymap reload.
+    /// Show `km` on the Keymap page; called on open and after every keymap
+    /// reload. It becomes the base: the staged edits are applied on top again.
     pub fn set_keymap(&mut self, km: &Keymap) {
-        self.keymap_page.set_keymap(km);
+        self.keymap_page.set_staged(km, &self.keymap_pending);
+    }
+
+    pub fn keymap_pending(&self) -> &[KeymapEdit] {
+        &self.keymap_pending
+    }
+
+    pub fn clear_keymap_pending(&mut self) {
+        self.keymap_pending.clear();
+        self.keymap_page.restage(&[]);
+    }
+
+    /// Whether Apply has anything to write: staged settings or keymap edits.
+    pub fn has_pending(&self) -> bool {
+        !self.pending.is_empty() || !self.keymap_pending.is_empty()
+    }
+
+    /// Stage keymap edits; when the shown keymap is back to the base, nothing stays staged.
+    pub fn stage_keymap(&mut self, edits: Vec<KeymapEdit>) {
+        self.keymap_pending.extend(edits);
+        self.keymap_page.restage(&self.keymap_pending);
+        if self.keymap_page.is_unchanged() {
+            self.keymap_pending.clear();
+        }
+    }
+
+    /// The selected action or key row of the Keymap page.
+    pub fn keymap_selection(&self) -> Option<KeymapSelection> {
+        self.keymap_page.selection()
+    }
+
+    /// The Keymap page's keymap with the staged edits applied.
+    pub fn shown_keymap(&self) -> &Keymap {
+        self.keymap_page.keymap()
     }
 
     #[cfg(test)]
@@ -345,7 +387,7 @@ impl SettingsWindow {
     }
 
     fn escape(&self) -> SettingsResult {
-        if self.pending.is_empty() { SettingsResult::Close } else { SettingsResult::ConfirmDiscard }
+        if self.has_pending() { SettingsResult::ConfirmDiscard } else { SettingsResult::Close }
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Option<SettingsResult> {
@@ -358,7 +400,7 @@ impl SettingsWindow {
             KeyCode::Esc if self.pane == Pane::Page && self.on_keymap() && self.keymap_page.clear_query() => return None,
             KeyCode::Esc => return Some(self.escape()),
             KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) && !key.modifiers.contains(KeyModifiers::ALT) => {
-                return (!self.pending.is_empty()).then_some(SettingsResult::Apply { close: false });
+                return self.has_pending().then_some(SettingsResult::Apply { close: false });
             }
             KeyCode::Tab => {
                 self.pane = match self.pane {
@@ -402,6 +444,15 @@ impl SettingsWindow {
             }
             Pane::Page => {
                 if self.on_keymap() {
+                    match (key.code, self.keymap_page.selection()) {
+                        (KeyCode::Enter, Some(s)) => return Some(SettingsResult::EditBinding { add: s.chord.is_none() }),
+                        (KeyCode::Insert, Some(_)) => return Some(SettingsResult::EditBinding { add: true }),
+                        (KeyCode::Delete, Some(KeymapSelection { ctx, chord: Some(chord), .. })) => {
+                            self.stage_keymap(vec![KeymapEdit::Unbind { ctx, chord }]);
+                            return None;
+                        }
+                        _ => {}
+                    }
                     if !self.keymap_page.handle_key(key) && key.code == KeyCode::Left {
                         self.pane = Pane::Tree;
                     }
@@ -441,10 +492,10 @@ impl SettingsWindow {
 
     fn press(&mut self, button: usize) -> Option<SettingsResult> {
         match button {
-            0 if self.pending.is_empty() => Some(SettingsResult::Close),
+            0 if !self.has_pending() => Some(SettingsResult::Close),
             0 => Some(SettingsResult::Apply { close: true }),
             1 => Some(self.escape()),
-            _ => (!self.pending.is_empty()).then_some(SettingsResult::Apply { close: false }),
+            _ => self.has_pending().then_some(SettingsResult::Apply { close: false }),
         }
     }
 
@@ -467,6 +518,12 @@ impl SettingsWindow {
                 } else if self.on_keymap() {
                     if self.keymap_page.click(m.x, m.y, m.clicks) {
                         self.pane = Pane::Page;
+                        if m.clicks >= 2
+                            && self.keymap_page.rows_rect().contains(p)
+                            && let Some(s) = self.keymap_page.selection()
+                        {
+                            return Some(SettingsResult::EditBinding { add: s.chord.is_none() });
+                        }
                     }
                 } else if let Some(i) = self.rows.hit(self.rows_rect, m.x, m.y) {
                     self.pane = Pane::Page;
@@ -550,7 +607,7 @@ impl SettingsWindow {
             let bw = b.width() as u16;
             let style = if self.pane == Pane::Buttons && self.button == i {
                 theme.list_selected
-            } else if i == 2 && self.pending.is_empty() {
+            } else if i == 2 && !self.has_pending() {
                 base.patch(theme.dim)
             } else {
                 base
@@ -998,6 +1055,82 @@ mod tests {
         w.pane = Pane::Tree;
         click(&mut w, r.x + 10, r.y + r.height, 1);
         assert_eq!(w.pane, Pane::Page);
+    }
+
+    fn bind_edit(key: &str) -> KeymapEdit {
+        KeymapEdit::Bind { ctx: "global".into(), chord: crate::config::keymap::parse_chord(key).unwrap(), id: "app.quit" }
+    }
+
+    fn unbind_edit(key: &str) -> KeymapEdit {
+        KeymapEdit::Unbind { ctx: "global".into(), chord: crate::config::keymap::parse_chord(key).unwrap() }
+    }
+
+    /// The Keymap page with the `Ctrl+Q` key row selected (via the search).
+    fn on_ctrl_q_key() -> SettingsWindow {
+        let mut w = keymap_window();
+        w.handle_key(key(KeyCode::Enter));
+        for c in "ctrl+q".chars() {
+            w.handle_key(key(KeyCode::Char(c)));
+        }
+        assert!(w.keymap_selection().is_some_and(|s| s.chord.is_none()));
+        w.handle_key(key(KeyCode::Down));
+        assert!(w.keymap_selection().is_some_and(|s| s.chord.is_some()));
+        w
+    }
+
+    #[test]
+    fn keymap_delete_stages_and_enables_apply() {
+        let mut w = on_ctrl_q_key();
+        assert_eq!(w.press(2), None);
+        assert_eq!(w.handle_key(key(KeyCode::Delete)), None);
+        assert_eq!(w.keymap_pending(), [unbind_edit("ctrl-q")]);
+        assert!(w.pending().is_empty());
+        assert_eq!(w.press(2), Some(SettingsResult::Apply { close: false }));
+        assert_eq!(w.press(0), Some(SettingsResult::Apply { close: true }));
+        assert_eq!(w.handle_key(key(KeyCode::Esc)), None);
+        assert_eq!(w.handle_key(key(KeyCode::Esc)), Some(SettingsResult::ConfirmDiscard));
+        let ctrl_s = KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL);
+        assert_eq!(w.handle_key(ctrl_s), Some(SettingsResult::Apply { close: false }));
+    }
+
+    #[test]
+    fn keymap_enter_and_insert_ask_for_a_key() {
+        let mut w = on_ctrl_q_key();
+        assert_eq!(w.handle_key(key(KeyCode::Enter)), Some(SettingsResult::EditBinding { add: false }));
+        assert_eq!(w.handle_key(key(KeyCode::Insert)), Some(SettingsResult::EditBinding { add: true }));
+        w.handle_key(key(KeyCode::Up));
+        assert_eq!(w.handle_key(key(KeyCode::Enter)), Some(SettingsResult::EditBinding { add: true }));
+    }
+
+    #[test]
+    fn undoing_a_staged_edit_clears_it() {
+        let mut w = keymap_window();
+        w.stage_keymap(vec![bind_edit("ctrl-alt-y")]);
+        assert!(w.has_pending());
+        w.stage_keymap(vec![unbind_edit("ctrl-alt-y")]);
+        assert!(w.keymap_pending().is_empty());
+        assert!(!w.has_pending());
+    }
+
+    #[test]
+    fn set_keymap_keeps_staged_edits() {
+        let mut w = keymap_window();
+        w.stage_keymap(vec![unbind_edit("ctrl-q")]);
+        w.set_keymap(&crate::config::keymap::default_keymap());
+        assert_eq!(w.keymap_pending().len(), 1);
+        let ctrl_q = crate::config::keymap::parse_chord("ctrl-q").unwrap();
+        assert!(!w.shown_keymap().table("global").unwrap().bindings.contains_key(&ctrl_q));
+    }
+
+    #[test]
+    fn keymap_double_click_on_a_row_asks_for_a_key() {
+        let mut w = on_ctrl_q_key();
+        draw_at(&mut w, 100, 30);
+        let r = w.keymap_page().rows_rect();
+        let key_row = w.keymap_page().rows().iter().position(|r| matches!(r, crate::ui::settings_keymap::KeymapRow::Key { .. })).unwrap();
+        let y = r.y + key_row as u16;
+        assert_eq!(click(&mut w, r.x + 8, y, 1), None);
+        assert_eq!(click(&mut w, r.x + 8, y, 2), Some(SettingsResult::EditBinding { add: false }));
     }
 
     fn key(code: KeyCode) -> KeyEvent {

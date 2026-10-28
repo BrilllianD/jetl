@@ -1,6 +1,7 @@
-//! The Settings Keymap page: a read-only tree of context > action > keys over
-//! the keymap given by [`KeymapPage::set_keymap`], with a search over action
-//! descriptions, ids and key text.
+//! The Settings Keymap page: a tree of context > action > keys over the keymap
+//! given by [`KeymapPage::set_staged`] (the base with the staged edits
+//! applied), with a search over action descriptions, ids and key text.
+//! Changed rows carry the pending marker.
 
 use std::collections::{HashMap, HashSet};
 
@@ -11,6 +12,7 @@ use ratatui::style::Style;
 use unicode_width::UnicodeWidthStr;
 
 use crate::actions::{Action, REGISTRY};
+use crate::config::edit::KeymapEdit;
 use crate::config::keymap::{KeyCombo, Keymap, chord_text};
 use crate::config::theme::Theme;
 use crate::ui::settings::{MARK_W, MAX_HELP_ROWS, move_list};
@@ -47,6 +49,8 @@ pub struct KeymapSelection {
 
 #[derive(Default)]
 pub struct KeymapPage {
+    /// The keymap before the staged edits; `shown` is it with them applied.
+    base: Keymap,
     /// The keymap the page shows.
     shown: Keymap,
     /// Contexts the user expanded; `None` is the Unbound group.
@@ -57,6 +61,11 @@ pub struct KeymapPage {
     rows_rect: Rect,
     /// The whole page body from the last draw: the search line, the rows and the help.
     area: Rect,
+}
+
+/// The non-empty bindings of context `ctx`.
+fn bindings<'a>(km: &'a Keymap, ctx: &str) -> Option<&'a HashMap<Vec<KeyCombo>, Action>> {
+    km.table(ctx).map(|t| &t.bindings).filter(|b| !b.is_empty())
 }
 
 /// `git.changes` becomes `Git › Changes`, `local_history` `Local History`.
@@ -165,10 +174,47 @@ impl KeymapPage {
         }
     }
 
-    /// Show `km`, keeping the selected row when it still exists.
+    /// Show `km` with nothing staged, keeping the selected row when it still exists.
     pub fn set_keymap(&mut self, km: &Keymap) {
-        self.shown = km.clone();
+        self.set_staged(km, &[]);
+    }
+
+    /// Show `base` with `edits` applied, keeping the selected row when it still exists.
+    pub fn set_staged(&mut self, base: &Keymap, edits: &[KeymapEdit]) {
+        self.base = base.clone();
+        self.restage(edits);
+    }
+
+    /// Show the base with `edits` applied in order. The only place `shown` changes.
+    pub fn restage(&mut self, edits: &[KeymapEdit]) {
+        self.shown = self.base.clone();
+        for e in edits {
+            self.shown.apply_edit(e);
+        }
         self.rebuild(true);
+    }
+
+    /// The keymap before the staged edits.
+    pub fn base(&self) -> &Keymap {
+        &self.base
+    }
+
+    /// Whether the shown keymap binds exactly what the base binds.
+    pub fn is_unchanged(&self) -> bool {
+        self.base.tables.keys().chain(self.shown.tables.keys()).all(|c| bindings(&self.base, c) == bindings(&self.shown, c))
+    }
+
+    /// Whether the row differs from the base (drawn with the pending marker).
+    pub fn row_changed(&self, row: &KeymapRow) -> bool {
+        let chords = |km: &Keymap, ctx: &str, action: &Action| -> HashSet<Vec<KeyCombo>> {
+            km.table(ctx).map(|t| t.bindings.iter().filter(|(_, a)| *a == action).map(|(c, _)| c.clone()).collect()).unwrap_or_default()
+        };
+        match row {
+            KeymapRow::Context { ctx: Some(c), .. } => bindings(&self.base, c) != bindings(&self.shown, c),
+            KeymapRow::Context { ctx: None, .. } => false,
+            KeymapRow::Action { ctx, action, .. } => chords(&self.base, ctx, action) != chords(&self.shown, ctx, action),
+            KeymapRow::Key { ctx, action, chord } => self.base.table(ctx).and_then(|t| t.bindings.get(chord)) != Some(action),
+        }
     }
 
     pub fn keymap(&self) -> &Keymap {
@@ -283,7 +329,8 @@ impl KeymapPage {
         }
     }
 
-    /// Select the row at the cell; whether one was hit. The marker cell or a
+    /// Select the row at the cell; whether the cell is inside the page body
+    /// (a click outside the rows focuses the page). The marker cell or a
     /// double click toggles a context.
     pub fn click(&mut self, x: u16, y: u16, clicks: u8) -> bool {
         if !self.area.contains((x, y).into()) {
@@ -346,7 +393,12 @@ impl KeymapPage {
             }
             None => {}
         }
-        help.extend(wrap("Type to search. Enter, Right or Left expands or collapses a context.", w, 2));
+        let tip = match self.selected_row() {
+            Some(KeymapRow::Action { .. }) => "Type to search. Enter or Insert adds a key.",
+            Some(KeymapRow::Key { .. }) => "Type to search. Enter edits the key, Insert adds one, Delete removes it.",
+            _ => "Type to search. Enter, Right or Left expands or collapses a context.",
+        };
+        help.extend(wrap(tip, w, 2));
         help.truncate(MAX_HELP_ROWS.min(free.saturating_sub(2)));
         let help_h = help.len() as u16;
         let sep = u16::from(help_h > 0);
@@ -360,6 +412,7 @@ impl KeymapPage {
         }
         self.rows_rect = Rect::new(area.x, top, area.width, rows_h);
 
+        let changed: Vec<bool> = self.list.visible().map(|i| self.row_changed(&self.rows[i])).collect();
         let buf = frame.buffer_mut();
         if self.rows.is_empty() {
             if rows_h > 0 {
@@ -374,6 +427,9 @@ impl KeymapPage {
                 let ry = top + row as u16;
                 let style = if i == self.list.selected { sel } else { base };
                 buf.set_style(Rect::new(area.x, ry, area.width, 1), style);
+                if changed[row] {
+                    buf.set_string(area.x, ry, "*", style.patch(theme.git_modified));
+                }
                 if text_w == 0 {
                     continue;
                 }
@@ -534,5 +590,51 @@ mod tests {
         assert!(press(&mut p, KeyCode::Left));
         assert!(matches!(p.rows()[0], KeymapRow::Context { expanded: false, .. }));
         assert!(!press(&mut p, KeyCode::Left));
+    }
+
+    fn bind(ctx: &str, key: &str, id: &'static str) -> KeymapEdit {
+        KeymapEdit::Bind { ctx: ctx.into(), chord: parse_chord(key).unwrap(), id }
+    }
+
+    fn unbind(ctx: &str, key: &str) -> KeymapEdit {
+        KeymapEdit::Unbind { ctx: ctx.into(), chord: parse_chord(key).unwrap() }
+    }
+
+    #[test]
+    fn staged_rows_are_marked() {
+        let base = Keymap::from_triples([("global", "ctrl-q", "app.quit"), ("global", "ctrl-s", "editor.save")]);
+        let mut p = KeymapPage::default();
+        p.set_keymap(&base);
+        p.toggle(Some("global".into()), true);
+        p.restage(&[unbind("global", "ctrl-q"), bind("global", "f2", "app.quit")]);
+        let changed = |p: &KeymapPage| -> Vec<String> {
+            p.rows()
+                .iter()
+                .filter(|r| p.row_changed(r))
+                .map(|r| match r {
+                    KeymapRow::Context { label, .. } => label.clone(),
+                    KeymapRow::Action { id, .. } => id.to_string(),
+                    KeymapRow::Key { chord, .. } => chord_text(chord),
+                })
+                .collect()
+        };
+        assert_eq!(changed(&p), ["Global", "app.quit", "F2"]);
+        assert!(!p.is_unchanged());
+        p.restage(&[]);
+        assert!(p.is_unchanged());
+        assert!(changed(&p).is_empty());
+    }
+
+    #[test]
+    fn set_staged_reapplies_edits_on_a_new_base() {
+        let base1 = Keymap::from_triples([("global", "ctrl-q", "app.quit")]);
+        let base2 = Keymap::from_triples([("global", "ctrl-q", "app.quit"), ("global", "ctrl-alt-y", "app.about")]);
+        let edits = [bind("global", "f2", "app.quit")];
+        let mut p = KeymapPage::default();
+        p.set_staged(&base1, &edits);
+        p.set_staged(&base2, &edits);
+        let bound = |k: &str| p.keymap().table("global").unwrap().bindings.contains_key(&parse_chord(k).unwrap());
+        assert!(bound("f2") && bound("ctrl-alt-y"));
+        assert!(!p.base().table("global").unwrap().bindings.contains_key(&parse_chord("f2").unwrap()));
     }
 }

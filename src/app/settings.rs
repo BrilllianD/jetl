@@ -3,13 +3,16 @@
 use crossterm::event::KeyEvent;
 
 use super::App;
+use crate::actions::{Action, REGISTRY};
 use crate::config::FileText;
 use crate::config::catalog::{Kind, setting};
-use crate::config::edit::{Edit, Value};
+use crate::config::edit::{Edit, KeymapEdit, Value};
+use crate::config::keymap::{KeyCombo, chord_key, chord_text, parse_chord};
 use crate::event::Level;
 use crate::event::Mouse;
 use crate::ui::dialog::{Dialog, DialogId, DialogResult};
 use crate::ui::settings::{SettingsResult, SettingsWindow};
+use crate::ui::settings_keymap::context_label;
 
 impl App {
     pub(super) fn open_settings_window(&mut self) {
@@ -72,7 +75,7 @@ impl App {
         self.dirty_frame = true;
         match res {
             SettingsResult::Close => self.settings = None,
-            SettingsResult::OpenConfigFile if self.settings.as_ref().is_some_and(|w| !w.pending().is_empty()) => {
+            SettingsResult::OpenConfigFile if self.settings.as_ref().is_some_and(|w| w.has_pending()) => {
                 self.notify(Level::Warn, "Apply or discard the changed settings first");
             }
             SettingsResult::OpenConfigFile => {
@@ -82,8 +85,9 @@ impl App {
             SettingsResult::CheckDependencies => self.check_dependencies(),
             SettingsResult::EditValue(key) => self.dialog = self.value_dialog(key, None, ""),
             SettingsResult::Apply { close } => self.apply_settings(close),
+            SettingsResult::EditBinding { add } => self.dialog = self.binding_dialog(add),
             SettingsResult::ConfirmDiscard => {
-                let n = self.settings.as_ref().map_or(0, |w| w.pending().len());
+                let n = self.settings.as_ref().map_or(0, |w| w.pending().len() + w.keymap_pending().len());
                 let noun = if n == 1 { "setting" } else { "settings" };
                 self.dialog = Some(Dialog::confirm(
                     DialogId::SettingsDiscard,
@@ -95,20 +99,84 @@ impl App {
         }
     }
 
+    /// Write the staged settings to `config.toml`, then the staged keys to
+    /// `keymap.toml`. A failure notifies and keeps what was not written staged.
     fn apply_settings(&mut self, close: bool) {
-        let Some(edits) = self.settings.as_ref().map(|w| w.pending().to_vec()) else { return };
-        match self.write_settings(&edits) {
-            Ok(()) => {
-                let path = self.paths.config_file();
-                if close {
-                    self.settings = None;
-                } else if let Some(w) = &mut self.settings {
-                    w.clear_pending();
-                    w.file_changed(&FileText::read(&path), &path);
-                }
+        let Some(w) = &self.settings else { return };
+        let (edits, keys) = (w.pending().to_vec(), w.keymap_pending().to_vec());
+        if !edits.is_empty() {
+            if let Err(e) = self.write_settings(&edits) {
+                self.notify(Level::Error, e);
+                return;
             }
-            Err(e) => self.notify(Level::Error, e),
+            let path = self.paths.config_file();
+            if let Some(w) = &mut self.settings {
+                w.clear_pending();
+                w.file_changed(&FileText::read(&path), &path);
+            }
         }
+        if !keys.is_empty() {
+            if let Err(e) = crate::config::edit::write_keymap(&self.paths.keymap_file(), &keys) {
+                self.notify(Level::Error, e);
+                return;
+            }
+            // Cleared before the reload, which hands the new keymap to the window as its base.
+            if let Some(w) = &mut self.settings {
+                w.clear_keymap_pending();
+            }
+            self.config_changed(vec![crate::config::watch::ConfigFile::Keymap]);
+        }
+        if close {
+            self.settings = None;
+        }
+    }
+
+    /// The key input for the selected action (`add`) or key row of the Keymap page.
+    fn binding_dialog(&self, add: bool) -> Option<Dialog> {
+        let s = self.settings.as_ref()?.keymap_selection()?;
+        let old = if add { None } else { s.chord.clone() };
+        Some(key_dialog(s.ctx, s.action, old, None, ""))
+    }
+
+    /// The answer of the key input: stage it, or ask again / ask to replace.
+    fn finish_binding(&mut self, ctx: &str, action: &Action, old: &Option<Vec<KeyCombo>>, res: &DialogResult) {
+        let DialogResult::Text(t) = res else { return };
+        let reopen = |note: &str| Some(key_dialog(ctx.to_string(), action.clone(), old.clone(), Some(t), note));
+        let chord = match parse_chord(t) {
+            Ok(c) => c,
+            Err(e) => {
+                self.dialog = reopen(&format!("Not a key ({e}). "));
+                return;
+            }
+        };
+        if parse_chord(&chord_key(&chord)).ok().as_ref() != Some(&chord) {
+            self.dialog = reopen("This key cannot be written to keymap.toml. ");
+            return;
+        }
+        if old.as_ref() == Some(&chord) {
+            return;
+        }
+        let taken = self.settings.as_ref().and_then(|w| w.shown_keymap().table(ctx)).and_then(|t| t.bindings.get(&chord)).cloned();
+        match taken {
+            Some(other) if &other != action => {
+                let desc = REGISTRY.iter().find(|r| r.action == other).map_or("?", |r| r.desc);
+                self.dialog = Some(Dialog::confirm(
+                    DialogId::KeymapReplace { ctx: ctx.to_string(), action: action.clone(), old: old.clone(), chord: chord.clone() },
+                    "Keymap",
+                    &format!("{} is bound to \"{desc}\" in {}. Replace it?", chord_text(&chord), context_label(ctx)),
+                    &["Replace", "Cancel"],
+                ));
+            }
+            _ => self.stage_binding(ctx, action, old, chord),
+        }
+    }
+
+    /// Stage `chord` for `action` in `ctx`, replacing the key `old` when editing.
+    fn stage_binding(&mut self, ctx: &str, action: &Action, old: &Option<Vec<KeyCombo>>, chord: Vec<KeyCombo>) {
+        let (Some(id), Some(w)) = (action.id(), &mut self.settings) else { return };
+        let mut edits: Vec<KeymapEdit> = old.iter().map(|c| KeymapEdit::Unbind { ctx: ctx.to_string(), chord: c.clone() }).collect();
+        edits.push(KeymapEdit::Bind { ctx: ctx.to_string(), chord, id });
+        w.stage_keymap(edits);
     }
 
     /// The dialog that asks for a new value of `key`: `typed` is what to
@@ -145,6 +213,16 @@ impl App {
             DialogId::SettingsDiscard => {
                 if matches!(res, DialogResult::Button(0)) {
                     self.settings = None;
+                }
+            }
+            DialogId::KeymapBinding { ctx, action, old } => {
+                if self.settings.is_some() {
+                    self.finish_binding(ctx, action, old, res);
+                }
+            }
+            DialogId::KeymapReplace { ctx, action, old, chord } => {
+                if matches!(res, DialogResult::Button(0)) {
+                    self.stage_binding(ctx, action, old, chord.clone());
                 }
             }
             DialogId::SettingValue(key) => {
@@ -194,6 +272,16 @@ fn int_min(kind: Kind) -> i64 {
         Kind::Int { min, .. } => min,
         _ => 0,
     }
+}
+
+/// The key input for `action` in `ctx`: `old` is the key being edited
+/// (`None` adds one), `typed` what to prefill instead, `note` leads the message.
+fn key_dialog(ctx: String, action: Action, old: Option<Vec<KeyCombo>>, typed: Option<&str>, note: &str) -> Dialog {
+    let title = if old.is_some() { "Edit Key" } else { "Add Key" };
+    let desc = REGISTRY.iter().find(|r| r.action == action).map_or("?", |r| r.desc);
+    let message = format!("{note}{desc} in {}. Keys as in ctrl-shift-f, Ctrl+K Ctrl+C or g g:", context_label(&ctx));
+    let initial = typed.map_or_else(|| old.as_deref().map(chord_key).unwrap_or_default(), str::to_string);
+    Dialog::input(DialogId::KeymapBinding { ctx, action, old }, title, &message, &initial, "OK")
 }
 
 fn text_of(v: &Value) -> String {
@@ -325,6 +413,148 @@ mod tests {
         assert!(app.settings.is_none());
         app.perform(Action::App(AppAction::Settings));
         assert!(bound(&app), "a new window gets app.keymap");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn kp(app: &App) -> usize {
+        app.settings.as_ref().unwrap().keymap_pending().len()
+    }
+
+    /// Open Settings on the Keymap page (page 6) with the page focused.
+    fn keymap_page(app: &mut App) {
+        for _ in 0..6 {
+            key(app, KeyCode::Down);
+        }
+        key(app, KeyCode::Enter);
+    }
+
+    /// Search `query`, then select the first Action row of the first context.
+    fn search(app: &mut App, query: &str) {
+        type_text(app, query);
+        assert!(app.settings.as_ref().unwrap().keymap_selection().is_some_and(|s| s.chord.is_none()));
+    }
+
+    fn global_binds(app: &App, key: &str) -> Option<Action> {
+        app.keymap.table("global").and_then(|t| t.bindings.get(&parse_chord(key).unwrap())).cloned()
+    }
+
+    fn dialog_input(app: &App) -> String {
+        let Some(crate::ui::dialog::DialogKind::Input { input, .. }) = app.dialog.as_ref().map(|d| &d.kind) else { panic!("no input") };
+        input.text.clone()
+    }
+
+    const MINE: &str = "# mine\n[global]\n\"f2\" = \"app.about\"\n";
+
+    #[tokio::test]
+    async fn keymap_edit_then_ok_rebinds_after_the_reload() {
+        let (mut app, dir) = test_app("settings-keymap-ok");
+        setup(&mut app, NO_LSP);
+        keymap_page(&mut app);
+        search(&mut app, "app.quit");
+        let s = app.settings.as_ref().unwrap().keymap_selection().unwrap();
+        assert_eq!((s.ctx.as_str(), s.action.clone()), ("global", Action::App(AppAction::Quit)));
+        key(&mut app, KeyCode::Insert);
+        assert!(matches!(app.dialog.as_ref().unwrap().id, DialogId::KeymapBinding { old: None, .. }));
+        type_text(&mut app, "ctrl-alt-y");
+        key(&mut app, KeyCode::Enter);
+        assert!(app.dialog.is_none());
+        assert_eq!(kp(&app), 1);
+        assert_eq!(global_binds(&app, "ctrl-alt-y"), None);
+        key(&mut app, KeyCode::Tab);
+        key(&mut app, KeyCode::Enter);
+        assert!(app.settings.is_none());
+        assert_eq!(global_binds(&app, "ctrl-alt-y"), Some(Action::App(AppAction::Quit)));
+        let file = std::fs::read_to_string(app.paths.keymap_file()).unwrap();
+        assert!(file.contains("\"Ctrl+Alt+Y\" = \"app.quit\""), "{file}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn write_mine(app: &mut App) {
+        std::fs::create_dir_all(&app.paths.config_dir).unwrap();
+        std::fs::write(app.paths.keymap_file(), MINE).unwrap();
+        app.config_changed(vec![crate::config::watch::ConfigFile::Keymap]);
+    }
+
+    /// Settings on the Keymap page with the `Ctrl+Q` key row selected.
+    fn on_ctrl_q(app: &mut App) {
+        keymap_page(app);
+        search(app, "ctrl+q");
+        key(app, KeyCode::Down);
+        let s = app.settings.as_ref().unwrap().keymap_selection().unwrap();
+        assert_eq!(s.chord, Some(parse_chord("ctrl-q").unwrap()));
+    }
+
+    #[tokio::test]
+    async fn keymap_apply_keeps_the_window_open_with_nothing_pending() {
+        let (mut app, dir) = test_app("settings-keymap-apply");
+        write_mine(&mut app);
+        setup(&mut app, NO_LSP);
+        on_ctrl_q(&mut app);
+        key(&mut app, KeyCode::Delete);
+        assert_eq!(kp(&app), 1);
+        ctrl_s(&mut app);
+        let w = app.settings.as_ref().expect("window stays open");
+        assert!(w.keymap_pending().is_empty() && !w.has_pending());
+        assert_eq!(global_binds(&app, "ctrl-q"), None);
+        let file = std::fs::read_to_string(app.paths.keymap_file()).unwrap();
+        assert!(file.starts_with(MINE), "{file}");
+        assert!(file.contains("\"Ctrl+Q\" = \"none\""), "{file}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn keymap_cancel_then_discard_leaves_keymap_toml_untouched() {
+        let (mut app, dir) = test_app("settings-keymap-discard");
+        write_mine(&mut app);
+        setup(&mut app, NO_LSP);
+        on_ctrl_q(&mut app);
+        key(&mut app, KeyCode::Delete);
+        key(&mut app, KeyCode::Tab);
+        key(&mut app, KeyCode::Right);
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(app.dialog.as_ref().unwrap().id, DialogId::SettingsDiscard);
+        key(&mut app, KeyCode::Enter);
+        assert!(app.settings.is_none());
+        assert_eq!(std::fs::read_to_string(app.paths.keymap_file()).unwrap(), MINE);
+        assert!(global_binds(&app, "ctrl-q").is_some());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn a_taken_key_asks_before_replacing_and_bad_keys_reopen() {
+        let (mut app, dir) = test_app("settings-keymap-replace");
+        setup(&mut app, NO_LSP);
+        keymap_page(&mut app);
+        search(&mut app, "app.quit");
+        key(&mut app, KeyCode::Insert);
+        type_text(&mut app, "ctrl-");
+        key(&mut app, KeyCode::Enter);
+        let d = app.dialog.as_ref().unwrap();
+        assert!(matches!(d.id, DialogId::KeymapBinding { .. }));
+        assert!(d.message.starts_with("Not a key ("), "{}", d.message);
+        for _ in 0..6 {
+            key(&mut app, KeyCode::Backspace);
+        }
+        type_text(&mut app, "Ctrl+S");
+        key(&mut app, KeyCode::Enter);
+        assert!(matches!(app.dialog.as_ref().unwrap().id, DialogId::KeymapReplace { .. }));
+        key(&mut app, KeyCode::Enter);
+        assert!(app.dialog.is_none());
+        let w = app.settings.as_ref().unwrap();
+        let quit = Action::App(AppAction::Quit);
+        assert_eq!(w.shown_keymap().table("global").unwrap().bindings.get(&parse_chord("ctrl-s").unwrap()), Some(&quit));
+        assert_eq!(kp(&app), 1);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn edit_prefills_the_key_and_keeps_case() {
+        let (mut app, dir) = test_app("settings-keymap-prefill");
+        setup(&mut app, NO_LSP);
+        on_ctrl_q(&mut app);
+        key(&mut app, KeyCode::Enter);
+        assert!(matches!(app.dialog.as_ref().unwrap().id, DialogId::KeymapBinding { old: Some(_), .. }));
+        assert_eq!(dialog_input(&app), "Ctrl+Q");
         let _ = std::fs::remove_dir_all(dir);
     }
 
