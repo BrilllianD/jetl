@@ -27,7 +27,7 @@ expression: "snapshot(&term, &marks, None)"
 21  3 │                              ││
 22  ⌕ └──────────────────────────────┘│
 23  Cargo.toml                              Ln 1, Col 1  LF  UTF-8  4 spaces  toml
--- marks: d=module and attribute (folder, Make) k=keyword (Rust) t=text.title (Markdown) c=comment (other file)
+-- marks: d=module and attribute (folder, Make) k=keyword (Rust) t=text.title (Markdown icon; also the focused tree border and title) c=comment (other file icon; also the status bar)
 00    t               tttttttttttttttt   kk            kk
 01    t  dd                          t
 02    t    kk                        t

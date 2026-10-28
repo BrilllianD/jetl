@@ -599,6 +599,7 @@ impl GitPanel {
         }
         let x0 = r.x + 1;
         let w = r.width.saturating_sub(1) as usize;
+        let icons = self.file_icons;
         if let Some(e) = &self.details_error {
             buf.set_stringn(x0, r.y, crate::util::text::fit(e, w), w, theme.error);
             return;
@@ -653,6 +654,10 @@ impl GitPanel {
             let mut x = x0;
             put(buf, &mut x, fy, r.right(), &f.status.to_string(), if selected { base } else { st_style });
             x += 1;
+            let file = f.path.rsplit('/').next().unwrap_or(&f.path);
+            if let Some((icon, st)) = crate::ui::file_icons::span(file, false, icons, base, theme) {
+                put(buf, &mut x, fy, r.right(), &icon, st);
+            }
             let path = match &f.old {
                 Some(old) => format!("{old} -> {}", f.path),
                 None => f.path.clone(),

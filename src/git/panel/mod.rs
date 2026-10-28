@@ -27,6 +27,7 @@ use super::model::{
 };
 use crate::actions::GitAction;
 use crate::app::Ctx;
+use crate::config::FileIcons;
 use crate::config::theme::Theme;
 use crate::event::{Effect, Level, Mouse};
 use crate::ui::focus::PanelId;
@@ -175,6 +176,8 @@ pub struct GitPanel {
     /// Lines scrolled up from the bottom of the console.
     console_scroll: usize,
     pub branches: Vec<BranchInfo>,
+    /// `ui.file_icons`, set by `App::sync_file_icons`.
+    pub file_icons: FileIcons,
     hits: Vec<(Btn, Rect)>,
     changes_rect: Rect,
     message_rect: Rect,
@@ -236,6 +239,7 @@ impl GitPanel {
             console: Vec::new(),
             console_scroll: 0,
             branches: Vec::new(),
+            file_icons: FileIcons::None,
             hits: Vec::new(),
             changes_rect: Rect::default(),
             message_rect: Rect::default(),

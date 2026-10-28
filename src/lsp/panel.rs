@@ -17,6 +17,7 @@ use ratatui::style::Style;
 use super::diagnostics::{Counts, Diagnostic, DiagnosticStore, Related, display_pos};
 use crate::actions::{Action, ProblemsAction};
 use crate::app::Ctx;
+use crate::config::FileIcons;
 use crate::config::theme::Theme;
 use crate::event::{Effect, Level, Mouse};
 use crate::ui::menu::{ContextMenu, MenuItem};
@@ -56,6 +57,8 @@ struct Sel<'s> {
 
 #[derive(Debug, Default)]
 pub struct ProblemsPanel {
+    /// `ui.file_icons`, set by `App::sync_file_icons`.
+    pub file_icons: FileIcons,
     files: Vec<PathBuf>,
     rows: Vec<Row>,
     pub list: ListState,
@@ -317,7 +320,7 @@ impl ProblemsPanel {
                 Row::File(fi) => {
                     let path = &self.files[fi];
                     let count = summary(store.counts(path));
-                    file_rows::file_header(buf, row, root, path, &count, base, theme);
+                    file_rows::file_header(buf, row, root, path, &count, base, theme, self.file_icons);
                 }
                 Row::Item(fi, k) => {
                     let Some(d) = store.get(&self.files[fi]).get(k) else { continue };

@@ -26,6 +26,7 @@ use ratatui::widgets::{Block, Borders, Clear};
 use unicode_width::UnicodeWidthStr;
 
 use crate::actions::{Action, PaletteAction, PaletteKind};
+use crate::config::FileIcons;
 use crate::config::theme::Theme;
 use crate::event::Mouse;
 use crate::git::BranchInfo;
@@ -172,6 +173,8 @@ const NEW_BRANCH: &str = "+ New Branch…";
 
 pub struct Palette {
     pub kind: PaletteKind,
+    /// `ui.file_icons`, copied by the app when the palette opens.
+    pub file_icons: FileIcons,
     tabs: Vec<Source>,
     tab: usize,
     pub input: TextInput,
@@ -243,6 +246,7 @@ impl Palette {
         let first = tabs[0];
         Self {
             kind,
+            file_icons: FileIcons::None,
             tabs,
             tab: 0,
             input: TextInput::new(false),
@@ -970,6 +974,7 @@ impl Palette {
         }
         // The query the rows on screen were ranked for.
         let pattern = Pattern::parse(&self.shown.query, CaseMatching::Smart, Normalization::Smart);
+        let icons = self.file_icons;
         for vi in self.list.visible() {
             let ry = lrect.y + (vi - self.list.offset) as u16;
             let selected = vi == self.list.selected;
@@ -994,6 +999,11 @@ impl Palette {
                     let marks = match_indices(&pattern, &path, &mut self.matcher);
                     let name_off = dir.chars().count();
                     let mut v = highlight(&name, |ci| marks.contains(&((ci + name_off) as u32)), base, hl);
+                    if self.source() != Source::Projects
+                        && let Some(icon) = crate::ui::file_icons::span(&name, false, icons, base, theme)
+                    {
+                        v.insert(0, icon);
+                    }
                     v.push(("  ".into(), base));
                     v.extend(highlight(&dir, |ci| marks.contains(&(ci as u32)), dim, hl));
                     v
@@ -1061,6 +1071,7 @@ impl Palette {
                                 &count.to_string(),
                                 base,
                                 theme,
+                                icons,
                             );
                             continue;
                         }

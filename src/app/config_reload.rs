@@ -259,6 +259,10 @@ impl App {
         let mode = self.config.ui.file_icons;
         self.project.file_icons = mode;
         self.editor.file_icons = mode;
+        self.git_panel.file_icons = mode;
+        self.find.file_icons = mode;
+        self.problems.file_icons = mode;
+        self.todo.file_icons = mode;
     }
 
     /// Swap in `new` and apply what changed at once (the table in
@@ -404,10 +408,18 @@ mod tests {
         reload(&mut app, &[ConfigFile::Config]);
         assert_eq!(app.project.file_icons, FileIcons::Ascii);
         assert_eq!(app.editor.file_icons, FileIcons::Ascii);
+        assert_eq!(app.git_panel.file_icons, FileIcons::Ascii);
+        assert_eq!(app.find.file_icons, FileIcons::Ascii);
+        assert_eq!(app.problems.file_icons, FileIcons::Ascii);
+        assert_eq!(app.todo.file_icons, FileIcons::Ascii);
         write(&app, "config.toml", NO_LSP);
         reload(&mut app, &[ConfigFile::Config]);
         assert_eq!(app.project.file_icons, FileIcons::Nerd);
         assert_eq!(app.editor.file_icons, FileIcons::Nerd);
+        assert_eq!(app.git_panel.file_icons, FileIcons::Nerd);
+        assert_eq!(app.find.file_icons, FileIcons::Nerd);
+        assert_eq!(app.problems.file_icons, FileIcons::Nerd);
+        assert_eq!(app.todo.file_icons, FileIcons::Nerd);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

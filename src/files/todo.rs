@@ -16,6 +16,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::actions::TodoAction;
 use crate::app::Ctx;
+use crate::config::FileIcons;
 use crate::config::theme::Theme;
 use crate::event::{AppMsg, Effect, Mouse};
 use crate::files::find::{Batch, Hit, Search};
@@ -48,6 +49,8 @@ pub struct TodoPanel {
     capped: bool,
     root: PathBuf,
     list_rect: Rect,
+    /// `ui.file_icons`, set by `App::sync_file_icons`.
+    pub file_icons: FileIcons,
 }
 
 impl TodoPanel {
@@ -229,7 +232,7 @@ impl TodoPanel {
             match self.rows[i] {
                 Row::File { first, count } => {
                     let row = Rect::new(lr.x, y, lr.width, 1);
-                    file_rows::file_header(buf, row, &self.root, &self.hits[first].path, &count.to_string(), base, theme);
+                    file_rows::file_header(buf, row, &self.root, &self.hits[first].path, &count.to_string(), base, theme, self.file_icons);
                 }
                 Row::Hit(h) => {
                     let hit = &self.hits[h];

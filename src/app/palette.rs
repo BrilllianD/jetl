@@ -29,6 +29,7 @@ impl App {
         let query = self.palette.take().map(|mut p| std::mem::take(&mut p.input.text)).unwrap_or_default();
         self.reset_workspace_symbols();
         let mut p = Palette::new(kind, self.workspace.root.clone());
+        p.file_icons = self.config.ui.file_icons;
         p.set_background(FilterBus { tx: self.bus_tx.clone(), generation: self.workspace.generation, seq: self.palette_seq.clone() });
         p.set_recent(self.editor.recent_paths());
         if p.wants(Source::Files) {

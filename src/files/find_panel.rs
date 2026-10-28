@@ -16,6 +16,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::actions::FindAction;
 use crate::app::Ctx;
+use crate::config::FileIcons;
 use crate::config::theme::Theme;
 use crate::editor::search::build_pattern;
 use crate::event::{AppMsg, Effect, Level, Mouse};
@@ -51,6 +52,8 @@ enum Btn {
 }
 
 pub struct FindPanel {
+    /// `ui.file_icons`, set by `App::sync_file_icons`.
+    pub file_icons: FileIcons,
     pub query: TextInput,
     pub replace: TextInput,
     pub show_replace: bool,
@@ -82,6 +85,7 @@ impl Default for FindPanel {
 impl FindPanel {
     pub fn new() -> Self {
         Self {
+            file_icons: FileIcons::None,
             query: TextInput::new(false),
             replace: TextInput::new(false),
             show_replace: false,
@@ -486,7 +490,7 @@ impl FindPanel {
             match self.rows[i] {
                 Row::File { first, count } => {
                     let row = Rect::new(lr.x, y, lr.width, 1);
-                    file_rows::file_header(buf, row, &self.root, &self.hits[first].path, &count.to_string(), base, theme);
+                    file_rows::file_header(buf, row, &self.root, &self.hits[first].path, &count.to_string(), base, theme, self.file_icons);
                 }
                 Row::Hit(h) => {
                     let hit = &self.hits[h];

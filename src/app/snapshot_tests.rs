@@ -888,9 +888,11 @@ async fn file_icons_ascii() {
     let marks = vec![
         Mark::style('d', "module and attribute (folder, Make)", fg("module")),
         Mark::style('k', "keyword (Rust)", fg("keyword")),
-        Mark::style('t', "text.title (Markdown)", fg("text.title")),
+        // Also marks the focused tree's border and title: same colour.
+        Mark::style('t', "text.title (Markdown icon; also the focused tree border and title)", fg("text.title")),
         // "attribute" (Make) shares the folder colour in Darcula: one mark for both.
-        Mark::style('c', "comment (other file)", fg("comment")),
+        // Also marks the whole status bar row: same colour.
+        Mark::style('c', "comment (other file icon; also the status bar)", fg("comment")),
     ];
     assert_snapshot!("file_icons_ascii", snapshot(&term, &marks, None));
 }
@@ -1055,6 +1057,53 @@ async fn palette_scratches() {
     let term = draw_app(app, 80, 24);
     let marks = palette_marks(&app.theme);
     assert_snapshot!("palette_scratches", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
+async fn palette_files_ascii() {
+    let mut fx = stable_app("palette-files-ascii");
+    let app = &mut fx.app;
+    app.config.ui.file_icons = crate::config::FileIcons::Ascii;
+    app.open_palette(PaletteKind::Files);
+    let files = ["src/main.rs", "src/map.rs", "docs/manual.md", "Makefile", "README.md", "tests/smoke.rs"];
+    let (generation, seq) = (app.workspace.generation, app.file_index.requested);
+    app.handle_msg(AppMsg::FileIndex { generation, seq, files: files.map(String::from).to_vec() });
+    app.palette.as_mut().unwrap().set_query("ma");
+    let term = draw_app(app, 80, 24);
+    let fg = |c: &str| Style::default().fg(app.theme.capture_style(c).unwrap().fg.unwrap());
+    let mut marks = palette_marks(&app.theme);
+    marks.push(Mark::style('k', "keyword (Rust)", fg("keyword")));
+    marks.push(Mark::style('t', "text.title (Markdown)", fg("text.title")));
+    marks.push(Mark::style('d', "attribute (Make)", fg("attribute")));
+    assert_snapshot!("palette_files_ascii", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
+async fn palette_icons_skip_projects() {
+    use crate::lsp::locations::LocationItem;
+    use lsp_types::{Position, Range};
+    let mut fx = stable_app("palette-icons-projects");
+    let app = &mut fx.app;
+    app.config.ui.file_icons = crate::config::FileIcons::Ascii;
+    app.open_palette(PaletteKind::RecentProjects);
+    let roots: Vec<std::path::PathBuf> = ["/work/alpha", "/work/beta", "/srv/gamma"].iter().map(Into::into).collect();
+    app.palette.as_mut().unwrap().set_projects(&roots);
+    let buf = draw_app(app, 80, 24);
+    let row = crate::ui::snapshot::row_text(buf.backend().buffer(), 6, 80);
+    assert!(row.contains("\u{2502} alpha  /work/"), "{row}");
+    let root = app.workspace.root.clone();
+    let r = |l, c0, c1| Range::new(Position::new(l, c0), Position::new(l, c1));
+    let item = |file: &str, range, text: &str| LocationItem::at(root.join(file), range, Some(text));
+    let items = vec![
+        item("src/a.rs", r(2, 16, 22), "    let total = helper(1);"),
+        item("src/a.rs", r(9, 4, 10), "    helper(total);"),
+        item("src/b.rs", r(4, 19, 25), "    println!(\"{}\", helper(2));"),
+        item("src/b.rs", r(7, 8, 14), "        helper(3)"),
+    ];
+    app.show_locations("Usages of helper".into(), items);
+    let buf = draw_app(app, 100, 30);
+    let row = crate::ui::snapshot::row_text(buf.backend().buffer(), 6, 100);
+    assert!(row.contains("\u{2502} R a.rs  src/  2"), "{row}");
 }
 
 #[tokio::test]
@@ -1805,6 +1854,44 @@ async fn git_log_tab() {
     let marks = [Mark::bg('L', "selected", app.theme.list_selected.bg.unwrap())];
     let bottom = app.layout.rects.bottom;
     assert_snapshot!("git_log_tab", snapshot(&term, &marks, Some(bottom)));
+}
+
+#[tokio::test]
+async fn git_lists_draw_file_icons() {
+    use crate::git::model::{CommitDetails, CommitFile};
+    let mut fx = stable_app("git-lists-icons");
+    let app = &mut fx.app;
+    git_commit_fixture(app);
+    app.config.ui.file_icons = crate::config::FileIcons::Ascii;
+    app.sync_file_icons();
+    let buf = draw_app(app, 120, 30);
+    let rows: Vec<String> = (0..30).map(|y| crate::ui::snapshot::row_text(buf.backend().buffer(), y, 120)).collect();
+    assert!(rows.iter().any(|r| r.contains("M R main.rs")), "{rows:#?}");
+    assert!(rows.iter().any(|r| r.contains("- notes.txt")), "{rows:#?}");
+
+    let mut fx = stable_app("git-lists-icons-log");
+    let app = &mut fx.app;
+    app.config.ui.file_icons = crate::config::FileIcons::Ascii;
+    app.sync_file_icons();
+    app.toggle_tool_window(ToolWindowId::Git);
+    app.perform(Action::Git(crate::actions::GitAction::TabLog));
+    let g = app.git.generation;
+    let filter = app.git_panel.log_filter().clone();
+    let commits = vec![commit('a', &[], "Ann", "2 hours ago", "HEAD -> main", "Add the parser")];
+    app.handle_msg(AppMsg::Git(GitMsg::Log { generation: g, skip: 0, filter, result: Ok(commits) }));
+    let details = CommitDetails {
+        sha: sha('a'),
+        body: "Add the parser".into(),
+        files: vec![
+            CommitFile { status: 'A', path: "src/parser.rs".into(), old: None },
+            CommitFile { status: 'R', path: "docs/syntax.md".into(), old: Some("docs/grammar.md".into()) },
+        ],
+    };
+    app.handle_msg(AppMsg::Git(GitMsg::CommitDetails { generation: g, sha: sha('a'), result: Ok(details) }));
+    let buf = draw_app(app, 120, 30);
+    let rows: Vec<String> = (0..30).map(|y| crate::ui::snapshot::row_text(buf.backend().buffer(), y, 120)).collect();
+    assert!(rows.iter().any(|r| r.contains("A R src/parser.rs")), "{rows:#?}");
+    assert!(rows.iter().any(|r| r.contains("R # docs/grammar.md -> docs/syntax.md")), "{rows:#?}");
 }
 
 #[tokio::test]

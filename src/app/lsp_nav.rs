@@ -578,6 +578,7 @@ impl App {
             return;
         }
         let mut p = Palette::new(PaletteKind::Locations, self.workspace.root.clone());
+        p.file_icons = self.config.ui.file_icons;
         if in_order {
             p.set_locations_in_order(title, items);
         } else {

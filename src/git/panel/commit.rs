@@ -498,6 +498,7 @@ impl GitPanel {
             return;
         }
         let active = focused && self.area == Area::Changes;
+        let icons = self.file_icons;
         for (vi, i) in self.list.visible().enumerate() {
             let y = r.y + vi as u16;
             let selected = i == self.list.selected;
@@ -529,6 +530,9 @@ impl GitPanel {
                         Some((d, n)) => (d, n),
                         None => ("", e.rel.as_str()),
                     };
+                    if let Some((icon, st)) = crate::ui::file_icons::span(name, false, icons, base, theme) {
+                        put(buf, &mut x, y, r.right(), &icon, st);
+                    }
                     let name_style = if selected { base } else { Style::default().fg(st_style.fg.unwrap_or(theme.fg)) };
                     if let Some(old) = &e.old_rel {
                         // A rename shows both paths in full.
