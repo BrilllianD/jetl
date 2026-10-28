@@ -26,7 +26,7 @@ expression: "snapshot(&term, &marks, Some(bottom))"
 20  ► │                                     │                                     │
 21  3 │                                     │                                     │
 22  ⌕ └───────────────────────────────────────────────────────────────────────────┘
-23  root
+23
 -- marks: X=crossed out A=added D=deleted ~=modified +=added word -=deleted word L=selected B=bold W=warn
 09     BBBBBBBBBBBBBBBBBBBBBB
 11     LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL

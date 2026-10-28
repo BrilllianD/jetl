@@ -32,6 +32,6 @@ expression: "snapshot(&term, &marks, None)"
 26  ► │                              ││
 27  3 │                              ││
 28  ⌕ └──────────────────────────────┘│
-29  root
+29
 -- marks: L=selected
 06    LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL

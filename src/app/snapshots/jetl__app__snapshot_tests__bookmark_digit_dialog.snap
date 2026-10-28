@@ -26,6 +26,6 @@ expression: "snapshot(&term, &marks, None)"
 20  ► │                              ││
 21  3 │                              ││
 22  ⌕ └──────────────────────────────┘│
-23  root                              Ln 4, Col 1  LF  UTF-8  4 spaces  Plain text
+23  notes.log                         Ln 4, Col 1  LF  UTF-8  4 spaces  Plain text
 -- marks: B=selected button
 10                       BBBBB

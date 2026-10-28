@@ -42,7 +42,7 @@ expression: "snapshot(&term, &run_marks(&app.theme), None)"
 36  ► │                                                                                                                   │
 37  3 │                                                                                                                   │
 38  ⌕ └───────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
-39  root
+39
 -- marks: L=selected T=picker D=dim button U=link
 00 DDD                                 DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD
 04 DDD

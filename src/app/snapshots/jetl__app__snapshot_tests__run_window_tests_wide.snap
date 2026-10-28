@@ -42,7 +42,7 @@ expression: "snapshot(&term, &run_tests_marks(&app.theme), None)"
 36  ► │     assertion `left == right` failed                                                                              │
 37  3 │       left: 2                                                                                                     │
 38  ⌕ └───────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
-39  root
+39
 -- marks: E=error P=passed U=link L=selected
 27      EEEEEEEEEEEEEEE                         EEEEEEEE
 30          P

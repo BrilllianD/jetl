@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - The current branch moved to the right end of the status bar; a click on it still opens the branches popup.
+- The status bar shows the active file's path relative to the project, such as src › app › mod.rs, in place of the project name; a long path is cut from the start.
 
 ### Fixed
 

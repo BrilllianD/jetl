@@ -52,7 +52,7 @@ fn width(c: char) -> usize {
 
 /// What a run of `fit_tail` is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Part {
+pub(crate) enum Part {
     /// Text of crumb `i` (its index in `crumbs`).
     Crumb(usize),
     /// A ` › ` separator (or what is left of it after a cut).
@@ -72,8 +72,9 @@ pub(super) struct CrumbHit {
 }
 
 /// `crumbs` joined by the separator as runs of `(text, part)`; when wider
-/// than `max` cells, cut from the left with a leading `…`.
-pub(super) fn fit_tail(crumbs: &[String], max: usize) -> Vec<(String, Part)> {
+/// than `max` cells, cut from the left with a leading `…`. The status bar's
+/// path crumbs use it too.
+pub(crate) fn fit_tail(crumbs: &[String], max: usize) -> Vec<(String, Part)> {
     let mut chars: Vec<(char, Part)> = Vec::new();
     for (i, c) in crumbs.iter().enumerate() {
         if i > 0 {

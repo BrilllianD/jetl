@@ -26,6 +26,6 @@ expression: "snapshot(&term, &marks, None)"
 20  ► │                              ││
 21  3 │                              ││
 22  ⌕ └──────────────────────────────┘│
-23  root               Ln 4, Col 1 (18 chars)  LF  UTF-8  4 spaces  rust  LSP: off
+23  main.rs            Ln 4, Col 1 (18 chars)  LF  UTF-8  4 spaces  rust  LSP: off
 -- marks: L=selected
 05                  LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL

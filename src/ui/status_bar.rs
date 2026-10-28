@@ -1,14 +1,19 @@
-//! Bottom status bar: project name, notifications (else the diagnostic at
-//! the caret), then on the right the active file's problem counts, cursor
+//! Bottom status bar: the active file's path as crumbs (relative to the
+//! project root, cut from the start), the git operation in progress and
+//! running git operations, notifications (else the diagnostic at the
+//! caret), then on the right the active file's problem counts, cursor
 //! position, line ending, encoding, indent and language of the active
 //! buffer, its language server, and the current branch at the right edge.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::Style;
+use std::path::{Component, Path};
+
+use ratatui::style::{Modifier, Style};
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::App;
+use crate::editor::breadcrumbs::{Part, fit_tail};
 use crate::event::Level;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,10 +38,30 @@ pub fn render(app: &mut App, frame: &mut Frame, area: Rect) {
     if area.width < 10 {
         return;
     }
+    // Left: the active file's path as crumbs, cut from the start.
     let mut x = area.x + 1;
-    let name = app.workspace.name();
-    buf.set_stringn(x, area.y, &name, area.width as usize, base.add_modifier(ratatui::style::Modifier::BOLD));
-    x += name.width() as u16 + 2;
+    let crumbs = app
+        .editor
+        .active_path()
+        .map(|p| {
+            let root = &app.workspace.root;
+            let home = if p.starts_with(root) { None } else { directories::BaseDirs::new().map(|d| d.home_dir().to_path_buf()) };
+            path_crumbs(p, root, home.as_deref())
+        })
+        .unwrap_or_default();
+    if let Some(last) = crumbs.len().checked_sub(1) {
+        let dim = theme.dim.bg(theme.status_bg);
+        for (text, part) in fit_tail(&crumbs, (area.width / 3) as usize) {
+            let style = match part {
+                Part::Crumb(i) if i == last => base.add_modifier(Modifier::BOLD),
+                Part::Crumb(_) => base,
+                Part::Sep | Part::Ellipsis => dim,
+            };
+            buf.set_stringn(x, area.y, &text, area.right().saturating_sub(x) as usize, style);
+            x += text.width() as u16;
+        }
+        x += 2;
+    }
 
     if let Some(ip) = app.in_progress() {
         let s = ip.label();
@@ -134,5 +159,104 @@ pub fn render(app: &mut App, frame: &mut Frame, area: Rect) {
             let text = crate::util::text::fit(&format!("{} {message}", sev.glyph()), middle_w);
             buf.set_stringn(x, area.y, &text, middle_w, st);
         }
+    }
+}
+
+/// The crumbs of the status bar's path: relative to `root` when inside it,
+/// else relative to `home` with a first crumb `~`, else absolute with the
+/// leading `/` glued to the first component. Only normal components count.
+fn path_crumbs(path: &Path, root: &Path, home: Option<&Path>) -> Vec<String> {
+    let names = |p: &Path| -> Vec<String> {
+        p.components()
+            .filter_map(|c| match c {
+                Component::Normal(s) => Some(s.to_string_lossy().into_owned()),
+                _ => None,
+            })
+            .collect()
+    };
+    if let Ok(rel) = path.strip_prefix(root) {
+        return names(rel);
+    }
+    if let Some(rel) = home.and_then(|h| path.strip_prefix(h).ok()) {
+        let mut crumbs = vec!["~".to_string()];
+        crumbs.extend(names(rel));
+        return crumbs;
+    }
+    let mut crumbs = names(path);
+    if path.has_root()
+        && let Some(first) = crumbs.first_mut()
+    {
+        first.insert(0, '/');
+    }
+    crumbs
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn v(a: &[&str]) -> Vec<String> {
+        a.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn path_crumbs_inside_root_under_home_and_absolute() {
+        let root = Path::new("/p/r");
+        let home = Some(Path::new("/h"));
+        assert_eq!(path_crumbs(Path::new("/p/r/src/app/mod.rs"), root, home), v(&["src", "app", "mod.rs"]));
+        assert_eq!(path_crumbs(Path::new("/p/r/a.txt"), root, home), v(&["a.txt"]));
+        assert_eq!(
+            path_crumbs(Path::new("/h/.local/state/jetl/scratches/scratch_1.rs"), root, home),
+            v(&["~", ".local", "state", "jetl", "scratches", "scratch_1.rs"])
+        );
+        assert_eq!(path_crumbs(Path::new("/h/x.rs"), root, home), v(&["~", "x.rs"]));
+        assert_eq!(path_crumbs(Path::new("/etc/hosts"), root, home), v(&["/etc", "hosts"]));
+        assert_eq!(path_crumbs(Path::new("/etc/hosts"), root, None), v(&["/etc", "hosts"]));
+    }
+
+    fn status_row(app: &mut App, w: u16) -> (String, ratatui::buffer::Buffer) {
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, 1)).unwrap();
+        let frame = term.draw(|f| render(app, f, Rect::new(0, 0, w, 1))).unwrap();
+        (crate::ui::snapshot::row_text(frame.buffer, 0, w), frame.buffer.clone())
+    }
+
+    #[tokio::test]
+    async fn status_bar_draws_path_crumbs_in_place_of_the_name() {
+        let (mut app, dir) = crate::app::tests::test_app("status-crumbs");
+        let path = app.workspace.root.join("src/app/mod.rs");
+        app.editor.open_text(path, "x\n", false, &app.theme);
+        let (row, buf) = status_row(&mut app, 90);
+        assert!(row.starts_with(" src › app › mod.rs  "), "{row:?}");
+        assert!(!row.contains("root"), "{row:?}");
+        assert!(buf[(13, 0)].modifier.contains(Modifier::BOLD));
+        assert!(!buf[(1, 0)].modifier.contains(Modifier::BOLD));
+        assert_eq!(buf[(5, 0)].fg, app.theme.dim.fg.unwrap_or(app.theme.status_fg));
+        app.editor.open_text(PathBuf::from("/etc/hosts"), "x\n", false, &app.theme);
+        let (row, _) = status_row(&mut app, 90);
+        assert!(row.starts_with(" /etc › hosts  "), "{row:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn status_bar_cuts_a_long_path_from_the_start() {
+        let (mut app, dir) = crate::app::tests::test_app("status-crumbs-cut");
+        let path = app.workspace.root.join("very/deep/nested/dir/file.rs");
+        app.editor.open_text(path, "x\n", false, &app.theme);
+        let (row, buf) = status_row(&mut app, 30);
+        assert!(row.starts_with(" …› file.rs  "), "{row:?}");
+        assert!(!row.contains("very"), "{row:?}");
+        assert_eq!(buf[(1, 0)].fg, app.theme.dim.fg.unwrap_or(app.theme.status_fg));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn status_bar_left_is_blank_without_a_file() {
+        let (mut app, dir) = crate::app::tests::test_app("status-crumbs-blank");
+        let (row, buf) = status_row(&mut app, 90);
+        // The startup note may fill the middle; no cell carries the bold file name.
+        assert!((0..90).all(|x| !buf[(x, 0)].modifier.contains(Modifier::BOLD)), "{row:?}");
+        assert!(!row.contains("root"), "{row:?}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

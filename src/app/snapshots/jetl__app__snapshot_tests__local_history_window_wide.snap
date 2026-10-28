@@ -42,7 +42,7 @@ expression: "snapshot(&term, &marks, Some(bottom))"
 36  ► │                                                │                                                                                      │
 37  3 │                                                │                                                                                      │
 38  ⌕ └───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
-39  root
+39
 -- marks: A=added D=deleted ~=modified +=added word -=deleted word L=selected B=bold
 25     BBBBBBBBBBBBBBBBBBBBBBBBBB
 28     LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL

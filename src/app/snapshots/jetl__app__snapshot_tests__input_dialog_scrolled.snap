@@ -18,4 +18,4 @@ expression: "snapshot(&term, &[], Some(area))"
 12  ► │                        ││
 13  3 │                        ││
 14  ⌕ └────────────────────────┘│
-15  root          Ln 2, Col 1  LF  UTF-8  4 spaces  Plain text
+15                Ln 2, Col 1  LF  UTF-8  4 spaces  Plain text

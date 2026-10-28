@@ -4,7 +4,7 @@ pub mod blame;
 mod bookmarks;
 pub use bookmarks::BookmarkTarget;
 pub mod brackets;
-mod breadcrumbs;
+pub(crate) mod breadcrumbs;
 pub mod buffer;
 mod carets;
 mod column;

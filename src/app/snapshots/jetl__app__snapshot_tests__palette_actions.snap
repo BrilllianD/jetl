@@ -26,6 +26,6 @@ expression: "snapshot(&term, &marks, None)"
 20  ►│ Escape (close find, clear selection)  editor.escape                  Esc │
 21  3└──────────────────────────────────────────────────────────────────────────┘
 22  ⌕ └──────────────────────────────┘│
-23  root
+23
 -- marks: L=selected
 06    LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL
