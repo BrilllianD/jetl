@@ -18,7 +18,8 @@
 //! `/range` answer replaces all stored tokens. An error answer is logged; a
 //! timeout or content-modified answer for the current key makes the next
 //! ticks ask again, and so does the end of the server's last `$/progress`.
-//! `workspace/semanticTokens/refresh` forgets what was fetched. Nothing is
+//! `workspace/semanticTokens/refresh` forgets what was fetched. So does a
+//! `client/registerCapability` of `textDocument/semanticTokens`. Nothing is
 //! asked while `[lsp] semantic_tokens` is off, and turning it off clears
 //! every buffer's tokens.
 
@@ -452,6 +453,43 @@ mod tests {
         assert!(!tokens(&app).is_empty());
         app.perform(Action::Lsp(LspAction::Restart));
         assert!(tokens(&app).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn dynamic_registration_asks_without_an_edit() {
+        let (mut app, mut server, dir) = setup("sem-dynreg", Value::Null).await;
+        settle(&mut app);
+        assert!(app.lsp.semantic.done, "the tick looked and found no capability");
+        assert_eq!(requests(&app, &mut server, FULL).await, 0);
+        server.request(
+            9,
+            "client/registerCapability",
+            json!({"registrations": [{"id": "s", "method": "textDocument/semanticTokens",
+                "registerOptions": {"documentSelector": [{"language": "rust"}], "legend": legend(), "full": true}}]}),
+        );
+        handle_next(&mut app, is_lsp).await;
+        assert_eq!(server.response(9).await["result"], Value::Null);
+        settle(&mut app);
+        assert_eq!(requests(&app, &mut server, FULL).await, 1, "asked right after the registration");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn unrelated_registration_asks_nothing() {
+        let (mut app, mut server, dir) = setup_full("sem-otherreg").await;
+        ask_and_answer(&mut app, &mut server, data()).await;
+        server.request(
+            9,
+            "client/registerCapability",
+            json!({"registrations": [{"id": "h", "method": "textDocument/hover",
+                "registerOptions": {"documentSelector": [{"language": "rust"}]}}]}),
+        );
+        handle_next(&mut app, is_lsp).await;
+        assert_eq!(server.response(9).await["result"], Value::Null);
+        settle(&mut app);
+        settle(&mut app);
+        assert_eq!(requests(&app, &mut server, FULL).await, 0, "tokens already fetched");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

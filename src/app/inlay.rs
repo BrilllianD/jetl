@@ -14,7 +14,8 @@
 //! makes the next ticks ask again (a server still loading answers that way),
 //! and so does the end of the server's last `$/progress`.
 //! `workspace/inlayHint/refresh` forgets what was fetched, so the next ticks
-//! ask again. Nothing is asked while
+//! ask again. So does a `client/registerCapability` of `textDocument/inlayHint`.
+//! Nothing is asked while
 //! `LspService::inlays_shown` is off (`[lsp] inlay_hints`, the View menu).
 
 use std::ops::Range;
@@ -515,5 +516,24 @@ mod tests {
         assert_eq!((got[2].at, got[2].label.as_str()), (2, "ok"));
         assert!(parse_hints(&rope, json!({"not": "an array"})).is_empty());
         assert!(parse_hints(&rope, Value::Null).is_empty());
+    }
+
+    #[tokio::test]
+    async fn dynamic_registration_asks_without_an_edit() {
+        let (mut app, mut server, dir) = setup("inlay-dynreg", false).await;
+        settle(&mut app);
+        assert!(app.lsp.inlay.done, "the tick looked and found no capability");
+        assert_eq!(inlay_requests(&app, &mut server).await, 0);
+        server.request(
+            9,
+            "client/registerCapability",
+            json!({"registrations": [{"id": "i", "method": "textDocument/inlayHint",
+                "registerOptions": {"documentSelector": [{"language": "rust"}]}}]}),
+        );
+        handle_next(&mut app, is_lsp).await;
+        assert_eq!(server.response(9).await["result"], Value::Null);
+        settle(&mut app);
+        assert_eq!(inlay_requests(&app, &mut server).await, 1, "asked right after the registration");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

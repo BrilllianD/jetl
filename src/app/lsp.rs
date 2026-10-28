@@ -18,7 +18,7 @@ use serde_json::{Value, json};
 use super::App;
 use crate::editor::buffer::{Buffer, BufferId};
 use crate::event::Level;
-use crate::lsp::caps::Caps;
+use crate::lsp::caps::{Caps, INLAY_HINT, SEMANTIC_TOKENS};
 use crate::lsp::client::{Client, StartSpec, State};
 use crate::lsp::diagnostics::{Counts, Diagnostic, DiagnosticStore, MAX_TOTAL, Severity};
 use crate::lsp::registry::DocRef;
@@ -715,6 +715,21 @@ impl App {
                     .map_err(|e| ResponseError::new(ResponseError::INVALID_PARAMS, format!("invalid params: {e}")));
                 if done.is_ok() {
                     self.lsp_retarget_watch();
+                    // A feature registered after the tick looked: forget what was decided so the next ticks ask.
+                    if method == "client/registerCapability" {
+                        let registers = |m: &str| {
+                            params
+                                .get("registrations")
+                                .and_then(Value::as_array)
+                                .is_some_and(|a| a.iter().any(|r| r.get("method").and_then(Value::as_str) == Some(m)))
+                        };
+                        if registers(SEMANTIC_TOKENS) {
+                            self.semantic_refresh();
+                        }
+                        if registers(INLAY_HINT) {
+                            self.inlay_refresh();
+                        }
+                    }
                 }
                 done
             }

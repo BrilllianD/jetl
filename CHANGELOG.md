@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - A click in the fold column of a Markdown preview tab no longer folds the rendered text.
+- Semantic highlighting and inlay hints now appear as soon as a language server turns them on after startup, without an edit or a tab switch first.
 
 ## [0.5.0] - 2026-10-27
 

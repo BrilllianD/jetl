@@ -631,4 +631,17 @@ mod tests {
         assert_eq!(i["labelDetailsSupport"], true);
         assert_eq!(i["commitCharactersSupport"], true);
     }
+
+    #[test]
+    fn malformed_legend_is_no_legend() {
+        let f = fixed(json!({}));
+        let mut r = Registry::default();
+        register(&mut r, "s", SEMANTIC_TOKENS, json!({"documentSelector": [{"language": "rust"}], "legend": 5, "full": true}));
+        let c = caps(&f, &r, rust());
+        assert!(c.semantic_legend().is_none());
+        assert!(c.has(SEMANTIC_TOKENS_FULL), "the capability stays; the tick finds no legend and asks nothing");
+        // A static one never reaches `Caps`: the initialize answer does not parse, so the server fails to start.
+        let init = json!({"capabilities": {"semanticTokensProvider": {"legend": 5, "full": true}}});
+        assert!(serde_json::from_value::<lsp_types::InitializeResult>(init).is_err());
+    }
 }
