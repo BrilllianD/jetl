@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A click in the fold column of a Markdown preview tab no longer folds the rendered text.
 - Semantic highlighting and inlay hints now appear as soon as a language server turns them on after startup, without an edit or a tab switch first.
 - Send HTTP Request no longer reads ~/.curlrc, so a proxy or other options set there do not change the request; a stray }} before a {{ on the request line no longer joins the rest of the line into one word; and when the request body file cannot be created, jetl no longer deletes a file of the same name it did not create.
+- Refresh in the Git window (F5 or the Refresh button) and the app-wide Refresh now reload a shown Log, so commits made outside jetl, for example from a shell, appear without switching tabs.
 
 ## [0.5.0] - 2026-10-27
 

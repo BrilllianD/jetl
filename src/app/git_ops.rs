@@ -197,6 +197,10 @@ mod tests {
         matches!(m, AppMsg::Git(GitMsg::OpDone { .. }))
     }
 
+    fn log_page(m: &AppMsg) -> bool {
+        matches!(m, AppMsg::Git(GitMsg::Log { .. }))
+    }
+
     fn last_note(app: &App) -> String {
         app.notifications.last().unwrap().text.clone()
     }
@@ -843,6 +847,37 @@ mod tests {
         let msg = git_out(&root, &["log", "-1", "--format=%B"]);
         assert!(msg.starts_with("two") && msg.lines().all(|l| !l.starts_with('#')), "{msg}");
         assert!(root.join("three.txt").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn refresh_reloads_a_shown_log() {
+        let (mut app, dir) = test_app("log-refresh");
+        init_repo(&app, &[("a.txt", "a\n")]);
+        let root = app.workspace.root.clone();
+        feed_status(&mut app, 1);
+        // A Log never shown stays unloaded.
+        app.perform(Action::Git(GitAction::Refresh));
+        assert!(!app.git_panel.log_loading());
+        assert!(!app.git_panel.log_loaded());
+        app.perform(Action::Git(GitAction::TabLog));
+        handle_next(&mut app, log_page).await;
+        assert!(app.git_panel.log_loaded());
+        assert_eq!(app.git_panel.log_cursor(), 0);
+        // A commit made outside jetl.
+        std::fs::write(root.join("b.txt"), "b\n").unwrap();
+        git(&root, &["add", "."]);
+        git(&root, &["commit", "-q", "-m", "outside"]);
+        // F5 in the Git window.
+        app.perform(Action::Git(GitAction::Refresh));
+        assert!(app.git_panel.log_loading(), "F5 asks for the log again");
+        handle_next(&mut app, log_page).await;
+        // The new commit is row 0; the selected `init` moved down to row 1.
+        assert_eq!(app.git_panel.log_cursor(), 1);
+        // The app-wide Refresh reloads it too.
+        app.perform(Action::App(crate::actions::AppAction::Refresh));
+        assert!(app.git_panel.log_loading(), "app.refresh asks for the log again");
+        handle_next(&mut app, log_page).await;
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

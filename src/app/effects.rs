@@ -10,7 +10,7 @@ impl App {
     /// Apply effects in order. Refreshes are collected and run once after the
     /// batch, so saving N files re-reads the tree and git status once.
     pub fn apply_effects(&mut self, effects: Vec<Effect>) {
-        let (mut tree, mut status, mut lists) = (false, false, false);
+        let (mut tree, mut status, mut lists, mut log) = (false, false, false, false);
         for e in effects {
             match e {
                 Effect::Notify(level, text) => self.notify(level, text),
@@ -47,7 +47,7 @@ impl App {
                 Effect::History(req) => self.history_request(req),
                 Effect::SwitchRoot(p) => self.switch_root(p),
                 Effect::RefreshTree => tree = true,
-                Effect::GitRefresh => (tree, status, lists) = (true, true, true),
+                Effect::GitRefresh => (tree, status, lists, log) = (true, true, true, true),
                 Effect::Git(req) => self.git_request(req),
                 Effect::Quit => self.request_quit(),
             }
@@ -62,6 +62,13 @@ impl App {
             self.git.load_branches();
             self.git.load_stashes();
             self.git.load_worktrees();
+        }
+        // F5 and Refresh also list commits made outside jetl in a shown Log.
+        if log && self.git_panel.log_loaded() {
+            let mut cx = ctx!(self);
+            self.git_panel.request_log(&mut cx);
+            let fx = cx.effects;
+            self.apply_effects(fx);
         }
     }
 
