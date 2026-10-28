@@ -58,6 +58,10 @@ tree-sitter-ruby = { version = "0.23", optional = true }
 tree-sitter-kotlin-sg = { version = "0.4", optional = true }
 tree-sitter-swift = { version = "0.7", optional = true }
 tree-sitter-zig = { version = "1.1", optional = true }
+tree-sitter-hcl = { version = "1.1", optional = true }
+tree-sitter-nix = { version = "0.3", optional = true }
+tree-sitter-proto = { version = "0.6", optional = true }
+tree-sitter-graphql = { version = "0.3", optional = true }
 git2 = { version = "0.21", default-features = false }
 imara-diff = "0.2"
 miniz_oxide = { version = "0.9", default-features = false, features = ["with-alloc"] }
@@ -90,7 +94,7 @@ libc = "0.2"
 insta = "1.43"
 
 [features]
-default = ["lang-rust", "lang-js", "lang-ts", "lang-python", "lang-json", "lang-toml", "lang-bash", "lang-md", "lang-csharp", "lang-yaml", "lang-html", "lang-css", "lang-scss", "lang-xml", "lang-go", "lang-c", "lang-cpp", "lang-java", "lang-php", "lang-lua", "lang-dockerfile", "lang-make", "lang-ini", "lang-cmake", "lang-diff", "lang-properties", "lang-requirements", "lang-nginx", "lang-gitcommit", "lang-sql", "lang-ruby", "lang-kotlin", "lang-swift", "lang-zig"]
+default = ["lang-rust", "lang-js", "lang-ts", "lang-python", "lang-json", "lang-toml", "lang-bash", "lang-md", "lang-csharp", "lang-yaml", "lang-html", "lang-css", "lang-scss", "lang-xml", "lang-go", "lang-c", "lang-cpp", "lang-java", "lang-php", "lang-lua", "lang-dockerfile", "lang-make", "lang-ini", "lang-cmake", "lang-diff", "lang-properties", "lang-requirements", "lang-nginx", "lang-gitcommit", "lang-sql", "lang-ruby", "lang-kotlin", "lang-swift", "lang-zig", "lang-hcl", "lang-nix", "lang-proto", "lang-graphql"]
 lang-rust = ["dep:tree-sitter-rust"]
 lang-js = ["dep:tree-sitter-javascript"]
 lang-ts = ["dep:tree-sitter-typescript"]
@@ -126,6 +130,10 @@ lang-ruby = ["dep:tree-sitter-ruby"]
 lang-kotlin = ["dep:tree-sitter-kotlin-sg"]
 lang-swift = ["dep:tree-sitter-swift"]
 lang-zig = ["dep:tree-sitter-zig"]
+lang-hcl = ["dep:tree-sitter-hcl"]
+lang-nix = ["dep:tree-sitter-nix"]
+lang-proto = ["dep:tree-sitter-proto"]
+lang-graphql = ["dep:tree-sitter-graphql"]
 
 [profile.dev]
 debug = "line-tables-only"

@@ -160,7 +160,7 @@ const HTML_INJECTIONS_LANG: &str = "((script_element (start_tag (attribute (attr
 fn block_comment(name: &str) -> Option<(&'static str, &'static str)> {
     match name {
         "rust" | "javascript" | "typescript" | "tsx" | "csharp" | "css" | "scss" | "go" | "c" | "cpp" | "java" | "php" | "sql"
-        | "kotlin" | "swift" => Some(("/*", "*/")),
+        | "kotlin" | "swift" | "hcl" | "nix" | "proto" => Some(("/*", "*/")),
         "lua" => Some(("--[[", "]]")),
         "html" | "xml" | "markdown" => Some(("<!--", "-->")),
         _ => None,
@@ -194,6 +194,11 @@ const CMAKE_QUERY_FIXES: &str =
 /// only as `@markup.heading`, which no built-in theme styles.
 #[cfg(feature = "lang-gitcommit")]
 const GITCOMMIT_QUERY_FIXES: &str = "(subject) @text.title";
+
+/// Prepended to the HCL query: upstream captures attribute and object
+/// keys as `@variable.member`, which Darcula leaves unstyled.
+#[cfg(feature = "lang-hcl")]
+const HCL_QUERY_FIXES: &str = "(attribute (identifier) @property) (object_elem key: (expression (variable_expr (identifier) @property)))";
 
 pub static LANGUAGES: LazyLock<Vec<LanguageDef>> = LazyLock::new(|| {
     let mut v = Vec::new();
@@ -517,6 +522,41 @@ pub static LANGUAGES: LazyLock<Vec<LanguageDef>> = LazyLock::new(|| {
     v.extend(make("swift", &["swift"], &[], tree_sitter_swift::LANGUAGE.into(), &[tree_sitter_swift::HIGHLIGHTS_QUERY], Some("//")));
     #[cfg(feature = "lang-zig")]
     v.extend(make("zig", &["zig", "zon"], &[], tree_sitter_zig::LANGUAGE.into(), &[tree_sitter_zig::HIGHLIGHTS_QUERY], Some("//")));
+    // tree-sitter-hcl ships no highlight query; the copy from
+    // nvim-treesitter is in assets/queries/hcl/.
+    #[cfg(feature = "lang-hcl")]
+    v.extend(make(
+        "hcl",
+        &["tf", "tfvars", "hcl"],
+        &[],
+        tree_sitter_hcl::LANGUAGE.into(),
+        &[HCL_QUERY_FIXES, include_str!("../../assets/queries/hcl/highlights.scm")],
+        Some("#"),
+    ));
+    #[cfg(feature = "lang-nix")]
+    v.extend(make("nix", &["nix"], &[], tree_sitter_nix::LANGUAGE.into(), &[tree_sitter_nix::HIGHLIGHTS_QUERY], Some("#")));
+    // tree-sitter-proto ships its highlight query without exporting it;
+    // the copy is in assets/queries/proto/.
+    #[cfg(feature = "lang-proto")]
+    v.extend(make(
+        "proto",
+        &["proto"],
+        &[],
+        tree_sitter_proto::LANGUAGE.into(),
+        &[include_str!("../../assets/queries/proto/highlights.scm")],
+        Some("//"),
+    ));
+    // tree-sitter-graphql ships no highlight query; the copy from
+    // nvim-treesitter is in assets/queries/graphql/.
+    #[cfg(feature = "lang-graphql")]
+    v.extend(make(
+        "graphql",
+        &["graphql", "graphqls", "gql"],
+        &[],
+        tree_sitter_graphql::LANGUAGE.into(),
+        &[include_str!("../../assets/queries/graphql/highlights.scm")],
+        Some("#"),
+    ));
     v
 });
 
@@ -657,6 +697,9 @@ pub fn language_for_alias(name: &str) -> Option<&'static LanguageDef> {
         "git-commit" => "gitcommit",
         "rb" => "ruby",
         "kt" => "kotlin",
+        "terraform" | "tf" => "hcl",
+        "protobuf" => "proto",
+        "gql" => "graphql",
         n => n,
     };
     language_for_name(name)
@@ -1547,6 +1590,10 @@ mod tests {
             cfg!(feature = "lang-kotlin"),
             cfg!(feature = "lang-swift"),
             cfg!(feature = "lang-zig"),
+            cfg!(feature = "lang-hcl"),
+            cfg!(feature = "lang-nix"),
+            cfg!(feature = "lang-proto"),
+            cfg!(feature = "lang-graphql"),
         ];
         let names: Vec<&str> = LANGUAGES.iter().map(|l| l.name).collect();
         assert_eq!(names.len(), enabled.iter().filter(|e| **e).count(), "loaded: {names:?}");
@@ -2216,6 +2263,92 @@ mod tests {
         assert_eq!(lang("/tmp/notes", "// -*- mode: kotlin -*-\n"), Some("kotlin"));
     }
 
+    #[cfg(feature = "lang-hcl")]
+    #[test]
+    fn hcl_highlighted() {
+        let src = "# c\nresource \"aws_instance\" \"web\" {\n  ami = upper(\"x\")\n  on = true\n}\n";
+        for file in ["main.tf", "/p/x.tfvars", "a.hcl", ".terraform.lock.hcl", "A.TF"] {
+            assert_eq!(lang(file, ""), Some("hcl"), "{file}");
+        }
+        let def = language_for_name("hcl").unwrap();
+        assert_eq!((def.line_comment, def.block_comment), (Some("#"), Some(("/*", "*/"))));
+        assert_eq!(style_of("a.tf", src, "# c"), cap("comment"));
+        assert_eq!(style_of("a.tf", src, "resource"), cap("keyword"));
+        assert_eq!(style_of("a.tf", src, "ami"), cap("property"));
+        assert_eq!(style_of("a.tf", src, "upper"), cap("function"));
+        assert_eq!(style_of("a.tf", src, "true"), cap("boolean"));
+        assert_eq!(style_of("a.tf", src, "\"aws"), cap("string"));
+        assert_eq!(unstyled_captures("hcl"), ["spell", "type", "variable", "variable.member"], "captures Darcula leaves unstyled");
+    }
+
+    #[cfg(feature = "lang-nix")]
+    #[test]
+    fn nix_highlighted() {
+        let src = "# c\nlet\n  a = \"s\";\nin { b = 1; }\n";
+        for file in ["default.nix", "/p/flake.nix", "A.NIX"] {
+            assert_eq!(lang(file, ""), Some("nix"), "{file}");
+        }
+        let def = language_for_name("nix").unwrap();
+        assert_eq!((def.line_comment, def.block_comment), (Some("#"), Some(("/*", "*/"))));
+        assert_eq!(style_of("a.nix", src, "# c"), cap("comment"));
+        assert_eq!(style_of("a.nix", src, "let"), cap("keyword"));
+        assert_eq!(style_of("a.nix", src, "\"s"), cap("string"));
+        assert_eq!(style_of("a.nix", src, "1"), cap("number"));
+        assert_eq!(unstyled_captures("nix"), ["variable"], "captures Darcula leaves unstyled");
+    }
+
+    #[cfg(feature = "lang-proto")]
+    #[test]
+    fn proto_highlighted() {
+        let src = "syntax = \"proto3\";\n// c\npackage a.b;\nmessage M {\n  int32 id = 1;\n}\nservice S {\n  rpc Get(M) returns (M);\n}\n";
+        for file in ["api.proto", "A.PROTO"] {
+            assert_eq!(lang(file, ""), Some("proto"), "{file}");
+        }
+        let def = language_for_name("proto").unwrap();
+        assert_eq!((def.line_comment, def.block_comment), (Some("//"), Some(("/*", "*/"))));
+        assert_eq!(style_of("a.proto", src, "// c"), cap("comment"));
+        assert_eq!(style_of("a.proto", src, "syntax"), cap("keyword.directive"));
+        assert_eq!(style_of("a.proto", src, "message"), cap("keyword.type"));
+        assert_eq!(style_of("a.proto", src, "int32"), cap("type.builtin"));
+        assert_eq!(style_of("a.proto", src, "id"), cap("property"));
+        assert_eq!(style_of("a.proto", src, "rpc"), cap("keyword.function"));
+        assert_eq!(unstyled_captures("proto"), ["spell", "type", "variable", "variable.member"], "captures Darcula leaves unstyled");
+    }
+
+    #[cfg(feature = "lang-graphql")]
+    #[test]
+    fn graphql_highlighted() {
+        let src = "# c\nquery Q($id: ID!) {\n  user(id: $id) { name }\n}\ntype User @key {\n  name: String\n}\n";
+        for file in ["schema.graphql", "x.graphqls", "q.gql", "A.GQL"] {
+            assert_eq!(lang(file, ""), Some("graphql"), "{file}");
+        }
+        let def = language_for_name("graphql").unwrap();
+        assert_eq!((def.line_comment, def.block_comment), (Some("#"), None));
+        assert_eq!(style_of("a.graphql", src, "# c"), cap("comment"));
+        assert_eq!(style_of("a.graphql", src, "query"), cap("keyword"));
+        assert_eq!(style_of("a.graphql", src, "type"), cap("keyword.type"));
+        assert_eq!(style_of("a.graphql", src, "name }"), cap("property"));
+        assert_eq!(style_of("a.graphql", src, "@key"), cap("attribute"));
+        assert_eq!(unstyled_captures("graphql"), ["spell", "type", "variable"], "captures Darcula leaves unstyled");
+    }
+
+    #[cfg(all(feature = "lang-hcl", feature = "lang-nix", feature = "lang-proto", feature = "lang-graphql"))]
+    #[test]
+    fn language_aliases_hcl_nix_proto_graphql() {
+        let cases: [(&str, &[&str]); 4] = [
+            ("hcl", &["hcl", "terraform", "tf", "terraform-mode", "hcl-mode"]),
+            ("nix", &["nix", "nix-mode"]),
+            ("proto", &["proto", "protobuf", "protobuf-mode"]),
+            ("graphql", &["graphql", "gql", "graphql-mode"]),
+        ];
+        for (want, names) in cases {
+            for n in names {
+                assert_eq!(language_for_alias(n).map(|l| l.name), Some(want), "{n}");
+            }
+        }
+        assert_eq!(lang("/tmp/x", "# vim: ft=terraform\n"), Some("hcl"));
+    }
+
     #[cfg(feature = "lang-ruby")]
     #[test]
     fn ruby_shebang() {
@@ -2238,7 +2371,9 @@ mod tests {
             assert!(!licence.trim().is_empty(), "{name}: empty LICENSE");
             seen.push(name);
         }
-        assert!(seen.iter().any(|n| n == "nginx"), "{seen:?}");
+        for want in ["nginx", "hcl", "proto", "graphql"] {
+            assert!(seen.iter().any(|n| n == want), "{want} missing: {seen:?}");
+        }
     }
 
     #[cfg_attr(not(feature = "lang-rust"), allow(dead_code))]
