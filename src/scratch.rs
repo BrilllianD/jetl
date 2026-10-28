@@ -77,9 +77,14 @@ pub fn list(dir: &Path) -> Vec<ScratchFile> {
     out
 }
 
-/// New Scratch File: plain text, then every language built in.
+/// The languages a scratch file can be: those with an extension to name it by.
+fn scratch_languages() -> impl Iterator<Item = &'static syntax::LanguageDef> {
+    LANGUAGES.iter().filter(|l| !l.extensions.is_empty())
+}
+
+/// New Scratch File: plain text, then every built-in language with an extension.
 pub fn language_dialog() -> Dialog {
-    let items = std::iter::once(PLAIN_TEXT.to_string()).chain(LANGUAGES.iter().map(|l| l.name.to_string())).collect();
+    let items = std::iter::once(PLAIN_TEXT.to_string()).chain(scratch_languages().map(|l| l.name.to_string())).collect();
     Dialog::choice(DialogId::NewScratch, "New Scratch File", "Language:", items)
 }
 
@@ -88,7 +93,7 @@ pub fn language_dialog() -> Dialog {
 pub fn extension(i: usize) -> Option<&'static str> {
     match i.checked_sub(1) {
         None => Some("txt"),
-        Some(i) => LANGUAGES.get(i)?.extensions.first().copied(),
+        Some(i) => scratch_languages().nth(i)?.extensions.first().copied(),
     }
 }
 
@@ -205,14 +210,15 @@ mod tests {
     fn every_language_choice_names_a_file_of_that_language() {
         assert_eq!(extension(0), Some("txt"));
         assert_eq!(syntax::detect(Path::new("scratch_1.txt")).map(|l| l.name), None);
-        for (i, l) in LANGUAGES.iter().enumerate() {
+        for (i, l) in scratch_languages().enumerate() {
             let ext = extension(i + 1).unwrap_or_else(|| panic!("{} has no extension", l.name));
             let path = PathBuf::from(format!("scratch_1.{ext}"));
             assert_eq!(syntax::detect(&path).map(|d| d.name), Some(l.name), "{}", path.display());
         }
-        assert_eq!(extension(LANGUAGES.len() + 1), None);
+        let n = scratch_languages().count();
+        assert_eq!(extension(n + 1), None);
         let DialogKind::Choice { items, .. } = language_dialog().kind else { panic!("a choice") };
-        assert_eq!(items.len(), LANGUAGES.len() + 1);
+        assert_eq!(items.len(), n + 1);
         assert_eq!(items[0], PLAIN_TEXT);
     }
 

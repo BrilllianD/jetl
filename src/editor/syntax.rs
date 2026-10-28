@@ -184,6 +184,18 @@ const CPP_QUERY_FIXES: &str = "(function_declarator declarator: (qualified_ident
 #[cfg(feature = "lang-ini")]
 const INI_QUERY_FIXES: &str = "(section_name (text) @keyword)";
 
+/// Prepended to the CMake query: upstream makes every unquoted command
+/// argument `@constant` behind a `#lua-match?` for upper-case names, a
+/// predicate jetl does not evaluate; the other arguments stay plain.
+#[cfg(feature = "lang-cmake")]
+const CMAKE_QUERY_FIXES: &str =
+    "((normal_command (identifier) (argument_list (argument (unquoted_argument)) @none)) (#not-match? @none \"^[A-Z@][A-Z0-9_]+$\"))";
+
+/// Prepended to the gitcommit query: upstream captures the subject line
+/// only as `@markup.heading`, which no built-in theme styles.
+#[cfg(feature = "lang-gitcommit")]
+const GITCOMMIT_QUERY_FIXES: &str = "(subject) @text.title";
+
 pub static LANGUAGES: LazyLock<Vec<LanguageDef>> = LazyLock::new(|| {
     let mut v = Vec::new();
     #[cfg(feature = "lang-rust")]
@@ -431,11 +443,64 @@ pub static LANGUAGES: LazyLock<Vec<LanguageDef>> = LazyLock::new(|| {
         &[INI_QUERY_FIXES, tree_sitter_ini::HIGHLIGHTS_QUERY],
         Some("#"),
     ));
+    #[cfg(feature = "lang-cmake")]
+    v.extend(make(
+        "cmake",
+        &["cmake"],
+        &["CMakeLists.txt"],
+        tree_sitter_cmake::LANGUAGE.into(),
+        &[CMAKE_QUERY_FIXES, tree_sitter_cmake::HIGHLIGHTS_QUERY],
+        Some("#"),
+    ));
+    #[cfg(feature = "lang-diff")]
+    v.extend(make("diff", &["diff", "patch"], &[], tree_sitter_diff::LANGUAGE.into(), &[tree_sitter_diff::HIGHLIGHTS_QUERY], None));
+    #[cfg(feature = "lang-properties")]
+    v.extend(make(
+        "properties",
+        &["properties"],
+        &[],
+        tree_sitter_properties::LANGUAGE.into(),
+        &[tree_sitter_properties::HIGHLIGHTS_QUERY],
+        Some("#"),
+    ));
+    #[cfg(feature = "lang-requirements")]
+    v.extend(make(
+        "requirements",
+        &["pip"],
+        &["requirements.txt"],
+        tree_sitter_requirements::LANGUAGE.into(),
+        &[tree_sitter_requirements::HIGHLIGHTS_QUERY],
+        Some("#"),
+    ));
+    // tree-sitter-nginx ships its highlight query without exporting it;
+    // the copy is in assets/queries/nginx/.
+    #[cfg(feature = "lang-nginx")]
+    v.extend(make(
+        "nginx",
+        &["nginx"],
+        &["nginx.conf"],
+        tree_sitter_nginx::LANGUAGE.into(),
+        &[include_str!("../../assets/queries/nginx/highlights.scm")],
+        Some("#"),
+    ));
+    #[cfg(feature = "lang-gitcommit")]
+    v.extend(make(
+        "gitcommit",
+        &[],
+        &["COMMIT_EDITMSG", "MERGE_MSG", "TAG_EDITMSG"],
+        tree_sitter_gitcommit::LANGUAGE.into(),
+        &[GITCOMMIT_QUERY_FIXES, tree_sitter_gitcommit::HIGHLIGHTS_QUERY],
+        Some("#"),
+    ));
     v
 });
 
 /// File name patterns for names no fixed list can hold: (prefix, suffix, language name).
-const NAME_PATTERNS: &[(&str, &str, &str)] = &[(".env.", "", "bash")];
+const NAME_PATTERNS: &[(&str, &str, &str)] = &[(".env.", "", "bash"), ("requirements", ".txt", "requirements")];
+
+/// Path fragments for files whose name and extension say nothing or the
+/// wrong thing: (fragment of the `/`-separated path, language name).
+const PATH_RULES: &[(&str, &str)] = &[("/etc/nginx/", "nginx")];
 
 pub fn detect(path: &Path) -> Option<&'static LanguageDef> {
     detect_in(&LANGUAGES, path)
@@ -443,7 +508,7 @@ pub fn detect(path: &Path) -> Option<&'static LanguageDef> {
 
 /// The language for `path` among `langs`, in this order, each step over
 /// all of `langs` in table order: exact file name, [`NAME_PATTERNS`],
-/// lowercased extension. Split from [`detect`] so tests can pass their
+/// [`PATH_RULES`], lowercased extension. Split from [`detect`] so tests can pass their
 /// own table.
 fn detect_in<'a>(langs: &'a [LanguageDef], path: &Path) -> Option<&'a LanguageDef> {
     let name = path.file_name()?.to_str()?;
@@ -457,6 +522,11 @@ fn detect_in<'a>(langs: &'a [LanguageDef], path: &Path) -> Option<&'a LanguageDe
         .find_map(|(_, _, lang)| by_name(lang));
     if pattern.is_some() {
         return pattern;
+    }
+    let full = path.to_string_lossy().replace(std::path::MAIN_SEPARATOR, "/");
+    let by_path = PATH_RULES.iter().filter(|(frag, _)| full.contains(frag)).find_map(|(_, lang)| by_name(lang));
+    if by_path.is_some() {
+        return by_path;
     }
     let ext = path.extension()?.to_str()?.to_ascii_lowercase();
     langs.iter().find(|l| l.extensions.contains(&ext.as_str()))
@@ -555,6 +625,10 @@ pub fn language_for_alias(name: &str) -> Option<&'static LanguageDef> {
         "htm" | "xhtml" => "html",
         "makefile" | "gmake" => "make",
         "dosini" | "confini" | "systemd" | "gitconfig" | "editorconfig" => "ini",
+        "patch" | "udiff" => "diff",
+        "jproperties" => "properties",
+        "pip-requirements" => "requirements",
+        "git-commit" => "gitcommit",
         n => n,
     };
     language_for_name(name)
@@ -1434,6 +1508,12 @@ mod tests {
             cfg!(feature = "lang-dockerfile"),
             cfg!(feature = "lang-make"),
             cfg!(feature = "lang-ini"),
+            cfg!(feature = "lang-cmake"),
+            cfg!(feature = "lang-diff"),
+            cfg!(feature = "lang-properties"),
+            cfg!(feature = "lang-requirements"),
+            cfg!(feature = "lang-nginx"),
+            cfg!(feature = "lang-gitcommit"),
         ];
         let names: Vec<&str> = LANGUAGES.iter().map(|l| l.name).collect();
         assert_eq!(names.len(), enabled.iter().filter(|e| **e).count(), "loaded: {names:?}");
@@ -1859,6 +1939,149 @@ mod tests {
             assert_eq!(language_for_alias(n).map(|l| l.name), Some("ini"), "{n}");
         }
         assert_eq!(lang("/tmp/notes", "# vim: set ft=dosini:\n"), Some("ini"));
+    }
+
+    #[cfg(feature = "lang-cmake")]
+    #[test]
+    fn cmake_highlighted() {
+        let src = "# c\ncmake_minimum_required(VERSION 3.20)\nadd_executable(app main.c)\nif(WIN32)\nendif()\nset(NAME \"s\")\n";
+        for file in ["CMakeLists.txt", "/p/sub/CMakeLists.txt", "a.cmake", "A.CMAKE"] {
+            assert_eq!(lang(file, ""), Some("cmake"), "{file}");
+        }
+        assert_eq!(style_of("CMakeLists.txt", src, "# c"), cap("comment"));
+        assert_eq!(style_of("CMakeLists.txt", src, "add_executable"), cap("function"));
+        assert_eq!(style_of("CMakeLists.txt", src, "VERSION"), cap("constant"));
+        assert_eq!(style_of("CMakeLists.txt", src, "app"), cap("none"), "lower-case argument is plain");
+        assert_eq!(style_of("CMakeLists.txt", src, "if("), cap("keyword"));
+        assert_eq!(style_of("CMakeLists.txt", src, "\"s"), cap("string"));
+        assert_eq!(unstyled_captures("cmake"), ["nospell", "spell", "type", "variable"], "captures Darcula leaves unstyled");
+    }
+
+    #[cfg(feature = "lang-diff")]
+    #[test]
+    fn diff_highlighted() {
+        let src = "diff --git a/x b/x\nindex abc1234..def5678 100644\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n";
+        for file in ["a.diff", "a.patch", "A.PATCH"] {
+            assert_eq!(lang(file, ""), Some("diff"), "{file}");
+        }
+        assert_eq!(style_of("a.diff", src, "+new"), cap("string"));
+        assert_eq!(style_of("a.diff", src, "-old"), cap("keyword"));
+        assert_eq!(style_of("a.diff", src, "@@"), cap("attribute"));
+        assert_eq!(unstyled_captures("diff"), Vec::<String>::new(), "captures Darcula leaves unstyled");
+    }
+
+    #[cfg(feature = "lang-properties")]
+    #[test]
+    fn properties_highlighted() {
+        let src = "# c\napp.name = demo\nport: 8080\n";
+        for file in ["a.properties", "A.PROPERTIES"] {
+            assert_eq!(lang(file, ""), Some("properties"), "{file}");
+        }
+        assert_eq!(style_of("a.properties", src, "# c"), cap("comment"));
+        assert_eq!(style_of("a.properties", src, "app.name"), cap("property"));
+        assert_eq!(style_of("a.properties", src, "demo"), cap("string"));
+        assert_eq!(unstyled_captures("properties"), Vec::<String>::new(), "captures Darcula leaves unstyled");
+    }
+
+    #[cfg(feature = "lang-requirements")]
+    #[test]
+    fn requirements_highlighted() {
+        let src = "# c\nrequests>=2.31\n";
+        for file in ["requirements.txt", "/p/requirements.txt", "requirements-dev.txt", "requirements_test.txt", "a.pip"] {
+            assert_eq!(lang(file, ""), Some("requirements"), "{file}");
+        }
+        for file in ["requirements", "requirements.in", "requirements.txt.bak"] {
+            assert_ne!(lang(file, ""), Some("requirements"), "{file}");
+        }
+        assert_eq!(style_of("requirements.txt", src, "# c"), cap("comment"));
+        assert_eq!(style_of("requirements.txt", src, ">="), cap("operator"));
+        assert_eq!(style_of("requirements.txt", src, "2.31"), cap("number"));
+        assert_eq!(unstyled_captures("requirements"), ["markup.link", "markup.link.url", "variable"], "captures Darcula leaves unstyled");
+    }
+
+    #[cfg(feature = "lang-nginx")]
+    #[test]
+    fn nginx_highlighted() {
+        let src = "# c\nworker_processes 4;\nhttp {\n    server {\n        listen 80;\n        root \"/var/www\";\n    }\n}\n";
+        for file in ["nginx.conf", "/p/nginx.conf", "a.nginx", "/etc/nginx/sites-enabled/default", "/etc/nginx/mime.types"] {
+            assert_eq!(lang(file, ""), Some("nginx"), "{file}");
+        }
+        assert_eq!(style_of("nginx.conf", src, "# c"), cap("comment"));
+        assert_eq!(style_of("nginx.conf", src, "worker_processes"), cap("keyword"));
+        assert_eq!(style_of("nginx.conf", src, "listen"), cap("attribute"));
+        assert_eq!(style_of("nginx.conf", src, "\"/var"), cap("string"));
+        assert_eq!(unstyled_captures("nginx"), ["spell", "variable"], "captures Darcula leaves unstyled");
+    }
+
+    #[cfg(feature = "lang-gitcommit")]
+    #[test]
+    fn gitcommit_highlighted() {
+        let src = "feat(ui): add x\n\nBody line.\n\n# Please enter the commit message.\n";
+        for file in ["COMMIT_EDITMSG", "/p/.git/COMMIT_EDITMSG", "MERGE_MSG", "TAG_EDITMSG"] {
+            assert_eq!(lang(file, ""), Some("gitcommit"), "{file}");
+        }
+        assert_eq!(style_of("COMMIT_EDITMSG", src, "feat"), cap("keyword"));
+        assert_eq!(style_of("COMMIT_EDITMSG", src, "add x"), cap("text.title"));
+        assert_eq!(style_of("COMMIT_EDITMSG", src, "# Please"), cap("comment"));
+        assert_eq!(
+            unstyled_captures("gitcommit"),
+            ["markup.heading", "markup.link", "nospell", "spell"],
+            "captures Darcula leaves unstyled"
+        );
+    }
+
+    #[cfg(all(feature = "lang-nginx", feature = "lang-ini"))]
+    #[test]
+    fn nginx_paths_win_over_the_conf_extension() {
+        for file in ["/etc/nginx/conf.d/x.conf", "/etc/nginx/nginx.conf"] {
+            assert_eq!(lang(file, ""), Some("nginx"), "{file}");
+        }
+        for file in ["/home/u/x.conf", "x.conf", "/etc/nginx-old.conf", "/etc/nginx/.editorconfig"] {
+            assert_eq!(lang(file, ""), Some("ini"), "{file}");
+        }
+    }
+
+    #[cfg(all(
+        feature = "lang-cmake",
+        feature = "lang-diff",
+        feature = "lang-properties",
+        feature = "lang-requirements",
+        feature = "lang-nginx",
+        feature = "lang-gitcommit"
+    ))]
+    #[test]
+    fn config_format_aliases() {
+        let cases: [(&str, &[&str]); 6] = [
+            ("cmake", &["cmake", "cmake-mode"]),
+            ("diff", &["diff", "diff-mode", "patch", "udiff"]),
+            ("properties", &["properties", "jproperties"]),
+            ("requirements", &["requirements", "pip-requirements"]),
+            ("nginx", &["nginx", "nginx-mode"]),
+            ("gitcommit", &["gitcommit", "git-commit", "git-commit-mode"]),
+        ];
+        for (want, names) in cases {
+            for n in names {
+                assert_eq!(language_for_alias(n).map(|l| l.name), Some(want), "{n}");
+            }
+        }
+        assert_eq!(lang("/tmp/msg", "x\n# vim: ft=gitcommit\n"), Some("gitcommit"));
+    }
+
+    #[test]
+    fn vendored_queries_name_their_source() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/queries");
+        let mut seen = Vec::new();
+        for entry in std::fs::read_dir(&root).unwrap() {
+            let dir = entry.unwrap().path();
+            let name = dir.file_name().unwrap().to_string_lossy().into_owned();
+            let scm = std::fs::read_to_string(dir.join("highlights.scm")).unwrap_or_else(|e| panic!("{name}: {e}"));
+            let first = scm.lines().next().unwrap_or("");
+            assert!(first.starts_with("; From https://") && first.ends_with("; see LICENSE."), "{name}: {first:?}");
+            let licence = std::fs::read_to_string(dir.join("LICENSE")).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert!(!licence.trim().is_empty(), "{name}: empty LICENSE");
+            seen.push(name);
+        }
+        assert!(seen.iter().any(|n| n == "nginx"), "{seen:?}");
     }
 
     #[cfg_attr(not(feature = "lang-rust"), allow(dead_code))]
