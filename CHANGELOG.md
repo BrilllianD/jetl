@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-29
+
 ### Added
 
 - Settings › Keymap lists every key binding as a tree of contexts, actions and keys, with a search over action names, ids and keys; the Vim keymap mode setting moved to Settings › Keymap › Mode.
@@ -694,7 +696,8 @@ First release.
   for Phase 11).
 - No 3-pane conflict resolver; conflicted files show as `U` and are resolved in the editor.
 
-[Unreleased]: https://bitbucket.org/BrilllianD/jetl-ide/branches/compare/HEAD..v0.5.0
+[Unreleased]: https://bitbucket.org/BrilllianD/jetl-ide/branches/compare/HEAD..v0.6.0
+[0.6.0]: https://bitbucket.org/BrilllianD/jetl-ide/src/v0.6.0/
 [0.5.0]: https://bitbucket.org/BrilllianD/jetl-ide/src/v0.5.0/
 [0.4.0]: https://bitbucket.org/BrilllianD/jetl-ide/src/v0.4.0/
 [0.3.0]: https://bitbucket.org/BrilllianD/jetl-ide/src/v0.3.0/
