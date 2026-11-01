@@ -6,7 +6,7 @@
 
 use std::path::Path;
 
-use toml_edit::{Array, DocumentMut, Item, TableLike};
+use toml_edit::{Array, DocumentMut, Item, Key, TableLike};
 
 use super::keymap::{KeyCombo, Keymap, chord_key, default_keymap, parse_chord};
 use super::theme::error_summary;
@@ -217,12 +217,60 @@ fn put_chord(t: &mut dyn TableLike, chord: &[KeyCombo], value: &str) -> Result<(
         }
         return Ok(());
     }
+    let key = writable_key(chord)?;
+    t.insert(&key, toml_edit::value(value));
+    Ok(())
+}
+
+/// [`chord_key`] of `chord`, or why it would not read back as `chord`.
+fn writable_key(chord: &[KeyCombo]) -> Result<String, String> {
     let key = chord_key(chord);
     if parse_chord(&key).ok().as_deref() != Some(chord) {
         return Err(format!("{key} cannot be written to keymap.toml"));
     }
-    t.insert(&key, toml_edit::value(value));
-    Ok(())
+    Ok(key)
+}
+
+/// Rewrite the entry for `old` as `new` = `value` where it stands, keeping its
+/// comments; `Ok(false)` when `t` has no entry for `old` or already has one for `new`.
+fn rename_chord(t: &mut dyn TableLike, old: &[KeyCombo], new: &[KeyCombo], value: &str) -> Result<bool, String> {
+    let keys = matching_keys(t, old);
+    let Some((first, others)) = keys.split_first() else {
+        return Ok(false);
+    };
+    if !matching_keys(t, new).is_empty() {
+        return Ok(false);
+    }
+    let name = writable_key(new)?;
+    for k in others {
+        t.remove(k);
+    }
+    let tail_names: Vec<String> = t.iter().map(|(k, _)| k.to_string()).skip_while(|k| k != first).skip(1).collect();
+    let mut tail: Vec<(Key, Item)> = Vec::new();
+    for n in &tail_names {
+        let k = t.key(n).cloned();
+        let item = t.remove(n);
+        if let (Some(k), Some(item)) = (k, item) {
+            tail.push((k, item));
+        }
+    }
+    let (Some(old_key), Some(old_item)) = (t.key(first).cloned(), t.remove(first)) else {
+        return Ok(false);
+    };
+    let new_key = Key::new(name).with_leaf_decor(old_key.leaf_decor().clone()).with_dotted_decor(old_key.dotted_decor().clone());
+    let mut item = toml_edit::value(value);
+    if let (Some(o), Some(nv)) = (old_item.as_value(), item.as_value_mut()) {
+        *nv.decor_mut() = o.decor().clone();
+    }
+    if let toml_edit::Entry::Vacant(e) = t.entry_format(&new_key) {
+        e.insert(item);
+    }
+    for (k, item) in tail {
+        if let toml_edit::Entry::Vacant(e) = t.entry_format(&k) {
+            e.insert(item);
+        }
+    }
+    Ok(true)
 }
 
 fn remove_chord(t: &mut dyn TableLike, chord: &[KeyCombo]) {
@@ -238,8 +286,25 @@ pub fn apply_keymap_edits(text: &str, edits: &[KeymapEdit]) -> Result<String, St
     let mut doc: DocumentMut =
         text.parse().map_err(|e: toml_edit::TomlError| format!("keymap.toml is not valid TOML: {}", error_summary(&e.to_string())))?;
     let defaults = default_keymap();
-    for edit in edits {
-        match edit {
+    let mut i = 0;
+    while i < edits.len() {
+        if let (KeymapEdit::Unbind { ctx, chord: old }, Some(KeymapEdit::Bind { ctx: c2, chord: new, id })) = (&edits[i], edits.get(i + 1))
+            && c2 == ctx
+            && !defaults.table(ctx).is_some_and(|t| t.bindings.contains_key(old))
+            && let Some(t) = ctx_table(&mut doc, ctx, false)?
+        {
+            let done = if old == new {
+                put_chord(t, new, id)?;
+                true
+            } else {
+                rename_chord(t, old, new, id)?
+            };
+            if done {
+                i += 2;
+                continue;
+            }
+        }
+        match &edits[i] {
             KeymapEdit::Bind { ctx, chord, id } => {
                 let t = ctx_table(&mut doc, ctx, true)?.ok_or_else(|| format!("[{ctx}] in keymap.toml is not a table"))?;
                 put_chord(t, chord, id)?;
@@ -253,6 +318,7 @@ pub fn apply_keymap_edits(text: &str, edits: &[KeymapEdit]) -> Result<String, St
                 }
             }
         }
+        i += 1;
     }
     let out = doc.to_string();
     let before = Keymap::default().merge_toml(text).unwrap_or_default();
@@ -462,9 +528,46 @@ mod tests {
 
     #[test]
     fn keymap_edit_is_unbind_then_bind() {
-        let input = "[global]\n\"f2\" = \"app.about\"\n";
+        let input = "[global]\n# about\n\"f2\" = \"app.about\"   # keep me\n\"f3\" = \"app.quit\"\n";
         let out = apply_keymap_edits(input, &[unbind("global", "f2"), bind("global", "f4", "app.about")]).unwrap();
-        assert_eq!(out, "[global]\nF4 = \"app.about\"\n");
+        assert_eq!(out, "[global]\n# about\nF4 = \"app.about\"   # keep me\n\"f3\" = \"app.quit\"\n");
+        let input = "[git.changes]\n\"f5\" = \"app.about\" # x\n\"f6\" = \"app.quit\"\n";
+        let out = apply_keymap_edits(input, &[unbind("git.changes", "f5"), bind("git.changes", "f7", "app.about")]).unwrap();
+        assert_eq!(out, "[git.changes]\nF7 = \"app.about\" # x\n\"f6\" = \"app.quit\"\n");
+    }
+
+    #[test]
+    fn keymap_edit_of_a_default_key_writes_none() {
+        assert!(default_keymap().table("global").unwrap().bindings.contains_key(&ch("ctrl-q")));
+        let input = "[global]\n\"ctrl-q\" = \"app.about\" # x\n";
+        let out = apply_keymap_edits(input, &[unbind("global", "ctrl-q"), bind("global", "ctrl-alt-y", "app.about")]).unwrap();
+        assert_eq!(out, "[global]\n\"ctrl-q\" = \"none\" # x\n\"Ctrl+Alt+Y\" = \"app.about\"\n");
+    }
+
+    #[test]
+    fn keymap_edit_onto_an_existing_key_updates_that_key() {
+        let input = "[global]\n\"f2\" = \"app.about\"\n\"f4\" = \"app.quit\" # mine\n";
+        let out = apply_keymap_edits(input, &[unbind("global", "f2"), bind("global", "f4", "app.about")]).unwrap();
+        assert_eq!(out, "[global]\n\"f4\" = \"app.about\" # mine\n");
+    }
+
+    #[test]
+    fn keymap_edit_same_key_keeps_spelling() {
+        let input = "[global]\n\"f2\" = \"app.about\" # k\n\"f3\" = \"app.quit\"\n";
+        let out = apply_keymap_edits(input, &[unbind("global", "f2"), bind("global", "f2", "app.quit")]).unwrap();
+        assert_eq!(out, "[global]\n\"f2\" = \"app.quit\" # k\n\"f3\" = \"app.quit\"\n");
+    }
+
+    #[test]
+    fn keymap_edit_in_an_inline_table() {
+        let input = "global = { \"f2\" = \"app.about\", \"f3\" = \"app.quit\" }\n";
+        let out = apply_keymap_edits(input, &[unbind("global", "f2"), bind("global", "f4", "app.about")]).unwrap();
+        let mut k = Keymap::default();
+        k.merge_toml(&out).unwrap();
+        let g = &k.table("global").unwrap().bindings;
+        assert_eq!(g.get(&ch("f4")).and_then(|b| b.id()), Some("app.about"));
+        assert!(!g.contains_key(&ch("f2")));
+        assert_eq!(g.get(&ch("f3")).and_then(|b| b.id()), Some("app.quit"));
     }
 
     #[test]
@@ -481,13 +584,15 @@ mod tests {
 
     #[test]
     fn apply_edit_matches_a_reload_of_the_written_text() {
-        let base = "# mine\n[global]\n\"f2\" = \"app.about\"\n[mode.normal]\n\"x\" = \"editor.undo\"\n";
+        let base = "# mine\n[global]\n\"f2\" = \"app.about\"\n\"f6\" = \"app.about\"\n[mode.normal]\n\"x\" = \"editor.undo\"\n";
         let edits = [
             unbind("global", "ctrl-q"),
             unbind("global", "f2"),
             bind("global", "f2", "app.quit"),
             bind("mode.normal", "g h", "editor.left"),
             unbind("mode.normal", "x"),
+            unbind("global", "f6"),
+            bind("global", "f7", "app.about"),
         ];
         let mut a = default_keymap();
         a.merge_toml(base).unwrap();
