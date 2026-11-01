@@ -595,13 +595,7 @@ impl App {
     /// changed.
     pub(crate) fn hover_check(&mut self) {
         let Some(h) = &self.hover else { return };
-        let overlay = self.palette.is_some()
-            || self.switcher.is_some()
-            || self.dialog.is_some()
-            || self.menu.is_some()
-            || self.menu_bar.is_some()
-            || self.settings.is_some()
-            || self.run_configs.is_some();
+        let overlay = self.editor_overlay_open();
         let same = self.editor.focused_group().id == h.group
             && self.editor.active_buffer().is_some_and(|b| b.id == h.buffer && b.version == h.version && b.view.sel().head == h.head);
         if overlay || !same || !self.focus.is(PanelId::Editor) {

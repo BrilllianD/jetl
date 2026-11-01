@@ -1921,6 +1921,24 @@ mod tests {
     }
 
     #[test]
+    fn overwrite_replaces_and_neighbours_wide_chars() {
+        let mut buf = b("中文x\n");
+        buf.view.set_sel(Selection::point(0));
+        buf.overwrite_char('a', &[]);
+        assert_eq!((buf.text().as_str(), buf.view.sel().head), ("a文x\n", 1));
+        buf.overwrite_char('字', &[]);
+        assert_eq!((buf.text().as_str(), buf.view.sel().head), ("a字x\n", 2));
+        let mut buf = b("ab\n");
+        buf.view.set_sel(Selection::point(0));
+        buf.overwrite_char('中', &[]);
+        assert_eq!((buf.text().as_str(), buf.view.sel().head), ("中b\n", 1));
+        buf.overwrite_char('Z', &[]);
+        assert_eq!((buf.text().as_str(), buf.view.sel().head), ("中Z\n", 2));
+        buf.overwrite_char('!', &[]);
+        assert_eq!(buf.text(), "中Z!\n");
+    }
+
+    #[test]
     fn overwrite_with_a_selection_types_as_insert() {
         let mut buf = b("abcd\n");
         buf.view.set_sel(Selection::new(1, 3));

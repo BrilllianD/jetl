@@ -165,14 +165,8 @@ impl App {
     /// the caret left that word or the editor is not where the list is.
     /// Returns whether the word changed (the list stays open).
     fn completion_refilter(&mut self) -> bool {
+        let overlay = self.editor_overlay_open();
         let Some(p) = &mut self.completion else { return false };
-        let overlay = self.palette.is_some()
-            || self.switcher.is_some()
-            || self.dialog.is_some()
-            || self.menu.is_some()
-            || self.menu_bar.is_some()
-            || self.settings.is_some()
-            || self.run_configs.is_some();
         let here = !overlay
             && self.focus.is(PanelId::Editor)
             && p.group == self.editor.focused_group().id
@@ -428,13 +422,7 @@ impl App {
         if !self.editor.snippet_active() {
             return;
         }
-        let overlay = self.palette.is_some()
-            || self.switcher.is_some()
-            || self.dialog.is_some()
-            || self.menu.is_some()
-            || self.menu_bar.is_some()
-            || self.settings.is_some()
-            || self.run_configs.is_some();
+        let overlay = self.editor_overlay_open();
         let here = !overlay && self.focus.is(PanelId::Editor) && !self.editor.find_focused() && self.mode == Mode::Insert;
         self.editor.snippet_check(here);
     }
@@ -483,13 +471,7 @@ impl App {
             Err(e) if explicit => return self.lsp_hint(format!("{name}: {}", e.message)),
             Err(e) => return tracing::debug!("{name}: completion failed: {}", e.message),
         };
-        let overlay = self.palette.is_some()
-            || self.switcher.is_some()
-            || self.dialog.is_some()
-            || self.menu.is_some()
-            || self.menu_bar.is_some()
-            || self.settings.is_some()
-            || self.run_configs.is_some();
+        let overlay = self.editor_overlay_open();
         let here = !overlay && self.focus.is(PanelId::Editor) && !self.editor.find_focused() && self.mode == Mode::Insert;
         let prefix = self
             .editor

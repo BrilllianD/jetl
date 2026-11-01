@@ -757,20 +757,31 @@ impl App {
         self.lsp_confirm_orphaned();
     }
 
+    /// An overlay is open over the editor: completion, hover, signature
+    /// help and snippets stand down while it is. A new overlay over the
+    /// editor adds itself here, or in `caret_overlay_open` when it draws
+    /// its own caret or hides the editor's.
+    pub(crate) fn editor_overlay_open(&self) -> bool {
+        self.menu.is_some() || self.menu_bar.is_some() || self.caret_overlay_open()
+    }
+
+    /// The overlays that take the terminal caret from the editor. A menu
+    /// or the menu bar does not: the editor still places its caret under it.
+    fn caret_overlay_open(&self) -> bool {
+        self.palette.is_some() || self.switcher.is_some() || self.dialog.is_some() || self.settings.is_some() || self.run_configs.is_some()
+    }
+
     /// The caret shape the terminal should show after the last draw: a
     /// steady block in overwrite mode while the editor caret is the one
-    /// drawn (editor focused, no overlay, find bar not focused, caret on
-    /// screen), else the user's own shape. Reads the caret cell of the last
-    /// draw, so call it after `term.draw`. A new overlay adds itself here.
+    /// drawn (editor focused, no overlay that takes the caret, find bar not
+    /// focused, caret on screen), else the user's own shape. An open menu or
+    /// menu bar keeps the block: the editor caret stays under it. Reads the
+    /// caret cell of the last draw, so call it after `term.draw`.
     pub(crate) fn caret_style(&self) -> SetCursorStyle {
-        let overlay = self.palette.is_some()
-            || self.switcher.is_some()
-            || self.dialog.is_some()
-            || self.menu.is_some()
-            || self.menu_bar.is_some()
-            || self.settings.is_some()
-            || self.run_configs.is_some();
-        let shown = self.focus.is(PanelId::Editor) && !overlay && !self.editor.find_focused() && self.editor.caret_cell().is_some();
+        let shown = self.focus.is(PanelId::Editor)
+            && !self.caret_overlay_open()
+            && !self.editor.find_focused()
+            && self.editor.caret_cell().is_some();
         if self.editor.overwrite() && shown { SetCursorStyle::SteadyBlock } else { SetCursorStyle::DefaultUserShape }
     }
 
@@ -1536,6 +1547,18 @@ pub(crate) mod tests {
         assert!(app.palette.is_some());
         assert_eq!(shape!(), DefaultUserShape, "palette open");
         app.palette = None;
+        app.menu = Some(crate::ui::menu::ContextMenu::new(Vec::new(), 0, 0));
+        assert_eq!(shape!(), SteadyBlock, "context menu open");
+        app.perform(Action::App(AppAction::OpenPalette(PaletteKind::Actions)));
+        app.menu = Some(crate::ui::menu::ContextMenu::new(Vec::new(), 0, 0));
+        assert!(app.palette.is_some() && app.menu.is_some());
+        assert_eq!(shape!(), DefaultUserShape, "palette under a menu");
+        app.palette = None;
+        app.menu = None;
+        app.toggle_main_menu();
+        assert!(app.menu_bar.is_some());
+        assert_eq!(shape!(), SteadyBlock, "menu bar open");
+        app.menu_bar = None;
         toggle(&mut app);
         assert_eq!(shape!(), DefaultUserShape, "overwrite off again");
         let _ = std::fs::remove_dir_all(&dir);
