@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-01
+
 ### Added
 
 - Overwrite mode in the editor: Insert toggles it, and typed characters replace the character under the caret instead of being inserted (at a line end and over a selection they are inserted as usual). It is off on every start. While it is on, the status bar shows OVR and the caret is a block in terminals that support caret shapes; your own caret shape comes back when overwrite is off, when the editor loses focus and when jetl exits.
@@ -706,7 +708,8 @@ First release.
   for Phase 11).
 - No 3-pane conflict resolver; conflicted files show as `U` and are resolved in the editor.
 
-[Unreleased]: https://bitbucket.org/BrilllianD/jetl-ide/branches/compare/HEAD..v0.6.0
+[Unreleased]: https://bitbucket.org/BrilllianD/jetl-ide/branches/compare/HEAD..v0.7.0
+[0.7.0]: https://bitbucket.org/BrilllianD/jetl-ide/src/v0.7.0/
 [0.6.0]: https://bitbucket.org/BrilllianD/jetl-ide/src/v0.6.0/
 [0.5.0]: https://bitbucket.org/BrilllianD/jetl-ide/src/v0.5.0/
 [0.4.0]: https://bitbucket.org/BrilllianD/jetl-ide/src/v0.4.0/
