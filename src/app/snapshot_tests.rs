@@ -2665,6 +2665,22 @@ async fn settings_window_keymap() {
 }
 
 #[tokio::test]
+async fn settings_window_keymap_add_key() {
+    let mut fx = stable_app("settings-window-keymap-add-key");
+    let app = &mut fx.app;
+    app.perform(Action::App(AppAction::Settings));
+    press(app, KeyCode::Down, 6);
+    press(app, KeyCode::Enter, 1);
+    for c in "app.quit".chars() {
+        press(app, KeyCode::Char(c), 1);
+    }
+    press(app, KeyCode::Insert, 1);
+    app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL | KeyModifiers::ALT));
+    let term = draw_app(app, 80, 24);
+    assert_snapshot!("settings_window_keymap_add_key", snapshot(&term, &settings_marks(&app.theme), None));
+}
+
+#[tokio::test]
 async fn settings_window_keymap_conflict() {
     let mut fx = stable_app("settings-window-keymap-conflict");
     let app = &mut fx.app;

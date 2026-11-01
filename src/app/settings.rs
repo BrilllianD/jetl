@@ -274,14 +274,14 @@ fn int_min(kind: Kind) -> i64 {
     }
 }
 
-/// The key input for `action` in `ctx`: `old` is the key being edited
+/// The key-capture dialog for `action` in `ctx`: `old` is the key being edited
 /// (`None` adds one), `typed` what to prefill instead, `note` leads the message.
 fn key_dialog(ctx: String, action: Action, old: Option<Vec<KeyCombo>>, typed: Option<&str>, note: &str) -> Dialog {
     let title = if old.is_some() { "Edit Key" } else { "Add Key" };
     let desc = REGISTRY.iter().find(|r| r.action == action).map_or("?", |r| r.desc);
-    let message = format!("{note}{desc} in {}. Keys as in ctrl-shift-f, Ctrl+K Ctrl+C or g g:", context_label(&ctx));
+    let message = format!("{note}{desc} in {}. Press the key, or type it as in ctrl-shift-f, Ctrl+K Ctrl+C or g g:", context_label(&ctx));
     let initial = typed.map_or_else(|| old.as_deref().map(chord_key).unwrap_or_default(), str::to_string);
-    Dialog::input(DialogId::KeymapBinding { ctx, action, old }, title, &message, &initial, "OK")
+    Dialog::key_capture(DialogId::KeymapBinding { ctx, action, old }, title, &message, &initial)
 }
 
 fn text_of(v: &Value) -> String {
@@ -295,7 +295,7 @@ fn text_of(v: &Value) -> String {
 
 #[cfg(test)]
 mod tests {
-    use crossterm::event::{KeyCode, KeyModifiers};
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     use super::*;
     use crate::actions::{Action, AppAction};
@@ -438,9 +438,19 @@ mod tests {
         app.keymap.table("global").and_then(|t| t.bindings.get(&parse_chord(key).unwrap())).cloned()
     }
 
+    fn capture(app: &App) -> &crate::ui::key_capture::KeyCaptureForm {
+        let Some(crate::ui::dialog::DialogKind::KeyCapture(f)) = app.dialog.as_ref().map(|d| &d.kind) else {
+            panic!("no key capture dialog")
+        };
+        f
+    }
+
     fn dialog_input(app: &App) -> String {
-        let Some(crate::ui::dialog::DialogKind::Input { input, .. }) = app.dialog.as_ref().map(|d| &d.kind) else { panic!("no input") };
-        input.text.clone()
+        capture(app).text().to_string()
+    }
+
+    fn press(app: &mut App, code: KeyCode, mods: KeyModifiers) {
+        app.handle_key(KeyEvent::new(code, mods));
     }
 
     const MINE: &str = "# mine\n[global]\n\"f2\" = \"app.about\"\n";
@@ -455,7 +465,8 @@ mod tests {
         assert_eq!((s.ctx.as_str(), s.action.clone()), ("global", Action::App(AppAction::Quit)));
         key(&mut app, KeyCode::Insert);
         assert!(matches!(app.dialog.as_ref().unwrap().id, DialogId::KeymapBinding { old: None, .. }));
-        type_text(&mut app, "ctrl-alt-y");
+        press(&mut app, KeyCode::Char('y'), KeyModifiers::CONTROL | KeyModifiers::ALT);
+        assert_eq!(dialog_input(&app), "Ctrl+Alt+Y");
         key(&mut app, KeyCode::Enter);
         assert!(app.dialog.is_none());
         assert_eq!(kp(&app), 1);
@@ -527,15 +538,15 @@ mod tests {
         keymap_page(&mut app);
         search(&mut app, "app.quit");
         key(&mut app, KeyCode::Insert);
-        type_text(&mut app, "ctrl-");
+        app.handle_paste("ctrl-".into());
         key(&mut app, KeyCode::Enter);
         let d = app.dialog.as_ref().unwrap();
         assert!(matches!(d.id, DialogId::KeymapBinding { .. }));
         assert!(d.message.starts_with("Not a key ("), "{}", d.message);
-        for _ in 0..6 {
-            key(&mut app, KeyCode::Backspace);
-        }
-        type_text(&mut app, "Ctrl+S");
+        assert_eq!(dialog_input(&app), "ctrl-");
+        assert!(capture(&app).capturing());
+        press(&mut app, KeyCode::Char('s'), KeyModifiers::CONTROL);
+        assert_eq!(dialog_input(&app), "Ctrl+S");
         key(&mut app, KeyCode::Enter);
         assert!(matches!(app.dialog.as_ref().unwrap().id, DialogId::KeymapReplace { .. }));
         key(&mut app, KeyCode::Enter);
@@ -555,6 +566,92 @@ mod tests {
         key(&mut app, KeyCode::Enter);
         assert!(matches!(app.dialog.as_ref().unwrap().id, DialogId::KeymapBinding { old: Some(_), .. }));
         assert_eq!(dialog_input(&app), "Ctrl+Q");
+        assert!(capture(&app).capturing());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn open_add_quit(app: &mut App) {
+        setup(app, NO_LSP);
+        keymap_page(app);
+        search(app, "app.quit");
+        key(app, KeyCode::Insert);
+    }
+
+    #[tokio::test]
+    async fn add_key_captures_a_two_stroke_chord() {
+        use crate::ui::key_capture::Part;
+        let (mut app, dir) = test_app("settings-keymap-two-stroke");
+        open_add_quit(&mut app);
+        press(&mut app, KeyCode::Char('k'), KeyModifiers::ALT);
+        assert_eq!(dialog_input(&app), "Alt+K");
+        assert_eq!(capture(&app).focus(), Part::Ok);
+        key(&mut app, KeyCode::BackTab);
+        key(&mut app, KeyCode::BackTab);
+        assert_eq!(capture(&app).focus(), Part::Toggle);
+        key(&mut app, KeyCode::Char(' '));
+        assert_eq!(dialog_input(&app), "Alt+K");
+        key(&mut app, KeyCode::Tab);
+        assert_eq!(capture(&app).focus(), Part::Second);
+        assert!(capture(&app).capturing());
+        press(&mut app, KeyCode::Char('c'), KeyModifiers::ALT);
+        assert_eq!(dialog_input(&app), "Alt+K Alt+C");
+        assert_eq!(capture(&app).focus(), Part::Ok);
+        key(&mut app, KeyCode::Enter);
+        assert!(app.dialog.is_none());
+        assert_eq!(kp(&app), 1);
+        let w = app.settings.as_ref().unwrap();
+        let got = w.shown_keymap().table("global").unwrap().bindings.get(&parse_chord("alt-k alt-c").unwrap());
+        assert_eq!(got, Some(&Action::App(AppAction::Quit)));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn add_key_text_fallback_and_esc() {
+        use crate::ui::key_capture::Part;
+        let (mut app, dir) = test_app("settings-keymap-fallback");
+        open_add_quit(&mut app);
+        key(&mut app, KeyCode::Esc);
+        assert!(app.dialog.is_none());
+        assert!(app.settings.is_some());
+        assert_eq!(kp(&app), 0);
+        key(&mut app, KeyCode::Insert);
+        key(&mut app, KeyCode::Char('a'));
+        assert_eq!(dialog_input(&app), "a");
+        assert_eq!(capture(&app).focus(), Part::Ok);
+        key(&mut app, KeyCode::BackTab);
+        assert_eq!(capture(&app).focus(), Part::Text);
+        key(&mut app, KeyCode::Backspace);
+        type_text(&mut app, "f13");
+        assert_eq!(dialog_input(&app), "f13");
+        key(&mut app, KeyCode::Enter);
+        assert!(app.dialog.is_none());
+        assert_eq!(kp(&app), 1);
+        let w = app.settings.as_ref().unwrap();
+        let got = w.shown_keymap().table("global").unwrap().bindings.get(&parse_chord("f13").unwrap());
+        assert_eq!(got, Some(&Action::App(AppAction::Quit)));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn capture_records_the_paste_key_and_tab() {
+        use crate::ui::key_capture::Part;
+        let (mut app, dir) = test_app("settings-keymap-paste-key");
+        open_add_quit(&mut app);
+        press(&mut app, KeyCode::Char('v'), KeyModifiers::CONTROL);
+        assert!(app.dialog.is_some());
+        assert_eq!(dialog_input(&app), "Ctrl+V");
+        for _ in 0..3 {
+            key(&mut app, KeyCode::BackTab);
+        }
+        assert_eq!(capture(&app).focus(), Part::First);
+        assert!(capture(&app).capturing());
+        key(&mut app, KeyCode::Tab);
+        assert_eq!(dialog_input(&app), "Tab");
+        assert_eq!(capture(&app).focus(), Part::Ok);
+        key(&mut app, KeyCode::BackTab);
+        assert_eq!(capture(&app).focus(), Part::Text);
+        assert!(!capture(&app).capturing());
+        assert_eq!(app.paste_target(), Some(crate::app::clipboard::PasteTarget::Dialog));
         let _ = std::fs::remove_dir_all(dir);
     }
 

@@ -712,6 +712,8 @@ impl App {
                 f.paste(&text);
             } else if let crate::ui::dialog::DialogKind::Rebase(f) = &mut d.kind {
                 f.paste(&text);
+            } else if let crate::ui::dialog::DialogKind::KeyCapture(f) = &mut d.kind {
+                f.paste(&text);
             }
             return;
         }
@@ -753,6 +755,11 @@ impl App {
         self.lsp_confirm_orphaned();
     }
 
+    /// An armed key-capture field has focus: the paste key and Tab are keys to record.
+    fn dialog_capturing(&self) -> bool {
+        matches!(&self.dialog, Some(d) if matches!(&d.kind, crate::ui::dialog::DialogKind::KeyCapture(f) if f.capturing()))
+    }
+
     fn handle_key_inner(&mut self, key: KeyEvent) {
         let key = crate::config::keymap::KeyCombo::legacy_input(key, self.keyboard_enhanced);
         // An accepted completion waiting for its resolve goes in first.
@@ -766,13 +773,18 @@ impl App {
             if let KeyCode::Modifier(_) = key.code {
                 return;
             }
-            // Dialogs take every key, except that the paste key pastes.
-            if self.is_paste_key(key) {
+            // Dialogs take every key, except that the paste key pastes; an
+            // armed key-capture field records it instead.
+            if self.is_paste_key(key) && !self.dialog_capturing() {
                 self.paste();
                 return;
             }
             // Tab completes a typed path (Save As); other dialogs keep their Tab.
-            if key.code == KeyCode::Tab && key.modifiers == KeyModifiers::NONE && self.dialog.as_ref().is_some_and(|d| d.paths.is_some()) {
+            if key.code == KeyCode::Tab
+                && key.modifiers == KeyModifiers::NONE
+                && self.dialog.as_ref().is_some_and(|d| d.paths.is_some())
+                && !self.dialog_capturing()
+            {
                 self.complete_dialog_path();
                 return;
             }

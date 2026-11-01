@@ -61,6 +61,7 @@ impl App {
                 crate::ui::dialog::DialogKind::Input { .. }
                     | crate::ui::dialog::DialogKind::NewTask(_)
                     | crate::ui::dialog::DialogKind::Rebase(_)
+                    | crate::ui::dialog::DialogKind::KeyCapture(_)
             )
             .then_some(PasteTarget::Dialog);
         }
