@@ -68,6 +68,8 @@ pub struct SettingsWindow {
     tree: ListState,
     rows: ListState,
     pane: Pane,
+    /// A dialog is drawn over the window: it places no hardware cursor.
+    pub covered: bool,
     /// 0 OK, 1 Cancel, 2 Apply.
     button: usize,
     rect: Rect,
@@ -125,6 +127,7 @@ impl SettingsWindow {
             tree: ListState::default(),
             rows: ListState::default(),
             pane: Pane::Tree,
+            covered: false,
             button: 0,
             rect: Rect::default(),
             tree_rect: Rect::default(),
@@ -658,7 +661,7 @@ impl SettingsWindow {
         }
         if self.on_keymap() {
             let area = Rect::new(px, top, pw as u16, bottom.saturating_sub(top));
-            self.keymap_page.render(frame, area, base, self.pane == Pane::Page, theme);
+            self.keymap_page.render(frame, area, base, self.pane == Pane::Page, !self.covered, theme);
             self.rows_rect = self.keymap_page.rows_rect();
             return;
         }

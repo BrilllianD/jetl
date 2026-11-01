@@ -633,7 +633,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn capture_records_the_paste_key_and_tab() {
+    async fn capture_records_the_paste_key_and_tab_moves_focus() {
         use crate::ui::key_capture::Part;
         let (mut app, dir) = test_app("settings-keymap-paste-key");
         open_add_quit(&mut app);
@@ -646,9 +646,9 @@ mod tests {
         assert_eq!(capture(&app).focus(), Part::First);
         assert!(capture(&app).capturing());
         key(&mut app, KeyCode::Tab);
-        assert_eq!(dialog_input(&app), "Tab");
-        assert_eq!(capture(&app).focus(), Part::Ok);
-        key(&mut app, KeyCode::BackTab);
+        assert_eq!(dialog_input(&app), "Ctrl+V");
+        assert_eq!(capture(&app).focus(), Part::Toggle);
+        key(&mut app, KeyCode::Tab);
         assert_eq!(capture(&app).focus(), Part::Text);
         assert!(!capture(&app).capturing());
         assert_eq!(app.paste_target(), Some(crate::app::clipboard::PasteTarget::Dialog));

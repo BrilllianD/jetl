@@ -404,7 +404,7 @@ impl KeymapPage {
     }
 
     /// Draw into `area`, the page body below the crumb.
-    pub fn render(&mut self, frame: &mut Frame, area: Rect, base: Style, focused: bool, theme: &Theme) {
+    pub fn render(&mut self, frame: &mut Frame, area: Rect, base: Style, focused: bool, cursor: bool, theme: &Theme) {
         let w = area.width as usize;
         let bottom = area.bottom();
         if area.height == 0 || w == 0 {
@@ -420,7 +420,7 @@ impl KeymapPage {
         }
         if w > SEARCH_LABEL.len() {
             let input = Rect::new(area.x + SEARCH_LABEL.len() as u16, area.y, (w - SEARCH_LABEL.len()) as u16, 1);
-            self.query.render(frame, input, base, "action, id or key", dim, focused);
+            self.query.render(frame, input, base, "action, id or key", dim, focused && cursor);
         }
 
         let top = area.y + 2;

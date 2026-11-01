@@ -28,7 +28,7 @@ pub enum Part {
     Cancel,
 }
 
-const HINT_CAPTURING: &str = "Press a key to record it · Esc: cancel";
+const HINT_CAPTURING: &str = "Press a key to record it · Tab: next · Esc: cancel";
 const HINT_IDLE: &str = "Tab: next · Space: toggle · Enter: OK · Esc: cancel";
 
 #[derive(Debug, Clone)]
@@ -104,7 +104,10 @@ impl KeyCaptureForm {
 
     fn sync_from_text(&mut self) {
         match parse_chord(&self.text.text) {
-            Ok(c) if c.len() == 1 => self.strokes = [Some(c[0]), None],
+            Ok(c) if c.len() == 1 => {
+                self.strokes = [Some(c[0]), None];
+                self.second = false;
+            }
             Ok(c) if c.len() == 2 => {
                 self.strokes = [Some(c[0]), Some(c[1])];
                 self.second = true;
@@ -137,7 +140,9 @@ impl KeyCaptureForm {
         if key.kind == KeyEventKind::Release || matches!(key.code, KeyCode::Modifier(_)) {
             return None;
         }
-        if self.capturing() {
+        let plain_tab = key.code == KeyCode::BackTab
+            || key.code == KeyCode::Tab && !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
+        if self.capturing() && !plain_tab {
             self.capture(KeyCombo::normalize(key.code, key.modifiers));
             return None;
         }
@@ -413,14 +418,56 @@ mod tests {
     }
 
     #[test]
-    fn tab_and_enter_are_captured_while_armed() {
+    fn tab_moves_focus_while_armed_but_enter_and_ctrl_tab_are_captured() {
         let mut f = KeyCaptureForm::new("");
         assert!(f.handle_key(plain(KeyCode::Tab)).is_none());
-        assert_eq!(f.text(), "Tab");
-        back(&mut f, 3);
+        assert_eq!(f.text(), "");
+        assert_eq!(f.focus(), Part::Toggle);
+        back(&mut f, 1);
+        assert_eq!(f.focus(), Part::First);
+        f.handle_key(plain(KeyCode::BackTab));
+        assert_eq!(f.focus(), Part::Cancel);
+        assert_eq!(f.text(), "");
+        f.handle_key(plain(KeyCode::Tab));
         assert_eq!(f.focus(), Part::First);
         assert!(f.handle_key(plain(KeyCode::Enter)).is_none());
         assert_eq!(f.text(), "Enter");
+        back(&mut f, 3);
+        assert_eq!(f.focus(), Part::First);
+        f.handle_key(key(KeyCode::Tab, KeyModifiers::CONTROL));
+        assert_eq!(f.text(), "Ctrl+Tab");
+        assert_eq!(f.focus(), Part::Ok);
+    }
+
+    #[test]
+    fn the_keyboard_reaches_the_toggle_when_it_is_on() {
+        let mut f = KeyCaptureForm::new("ctrl-k ctrl-c");
+        f.handle_key(plain(KeyCode::Tab));
+        assert_eq!(f.focus(), Part::Toggle);
+        f.handle_key(plain(KeyCode::Tab));
+        assert_eq!(f.focus(), Part::Second);
+        assert!(f.capturing());
+        back(&mut f, 1);
+        assert_eq!(f.focus(), Part::Toggle);
+        f.handle_key(plain(KeyCode::Char(' ')));
+        assert!(!f.second);
+        assert_eq!(f.text(), "Ctrl+K");
+    }
+
+    #[test]
+    fn a_single_stroke_typed_turns_the_toggle_off() {
+        let mut f = KeyCaptureForm::new("ctrl-k ctrl-c");
+        assert!(f.second);
+        f.handle_key(plain(KeyCode::Tab));
+        f.handle_key(plain(KeyCode::Tab));
+        f.handle_key(plain(KeyCode::Tab));
+        assert_eq!(f.focus(), Part::Text);
+        for _ in 0..7 {
+            f.handle_key(plain(KeyCode::Backspace));
+        }
+        assert_eq!(f.text(), "ctrl-k");
+        assert!(!f.second);
+        assert_eq!(f.strokes[1], None);
     }
 
     #[test]
@@ -458,11 +505,9 @@ mod tests {
         assert_eq!(f.text(), "Ctrl+K Ctrl+C");
         assert_eq!(f.focus(), Part::Ok);
         assert!(matches!(f.handle_key(plain(KeyCode::Enter)), Some(DialogResult::Text(t)) if t == "Ctrl+K Ctrl+C"));
-        // BackTab would land in the armed second field and be captured: click the toggle.
-        screen(&mut f, 80, 24);
-        let (x, y) = center(f.toggle_rect);
-        f.handle_mouse(&click(x, y));
+        back(&mut f, 3);
         assert_eq!(f.focus(), Part::Toggle);
+        f.handle_key(plain(KeyCode::Char(' ')));
         assert_eq!(f.text(), "Ctrl+K");
     }
 

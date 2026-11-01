@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Settings › Keymap's Add Key and Edit Key dialogs record the key as you press it, Ctrl+V and Tab included; a Second stroke toggle records a two-key chord such as Ctrl+K Ctrl+C. Keys the terminal cannot deliver can still be typed in the text field below, as before.
+- Settings › Keymap's Add Key and Edit Key dialogs record the key as you press it (Ctrl+V is recorded, while Tab and Shift+Tab move between the dialog's parts and are typed in the text field like Esc); a Second stroke toggle records a two-key chord such as Ctrl+K Ctrl+C. Keys the terminal cannot deliver can still be typed in the text field below, as before.
 
 ### Fixed
 

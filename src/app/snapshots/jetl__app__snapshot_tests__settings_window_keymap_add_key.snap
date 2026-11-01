@@ -2,7 +2,7 @@
 source: src/app/snapshot_tests.rs
 expression: "snapshot(&term, &settings_marks(&app.theme), None)"
 ---
-80x24 cursor=(44,3)
+80x24 cursor=hidden
 00  ≣┌ Settings ────────────────────────────────────────────────────────────────┐
 01  1│Appearance              │Keymap                                           │
 02  ⌂│Editor                  │                                                 │

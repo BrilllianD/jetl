@@ -780,11 +780,7 @@ impl App {
                 return;
             }
             // Tab completes a typed path (Save As); other dialogs keep their Tab.
-            if key.code == KeyCode::Tab
-                && key.modifiers == KeyModifiers::NONE
-                && self.dialog.as_ref().is_some_and(|d| d.paths.is_some())
-                && !self.dialog_capturing()
-            {
+            if key.code == KeyCode::Tab && key.modifiers == KeyModifiers::NONE && self.dialog.as_ref().is_some_and(|d| d.paths.is_some()) {
                 self.complete_dialog_path();
                 return;
             }

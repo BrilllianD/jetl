@@ -149,6 +149,7 @@ pub fn render(app: &mut App, frame: &mut Frame) {
         m.render(frame, area, &theme);
     }
     if let Some(s) = &mut app.settings {
+        s.covered = app.dialog.is_some();
         s.render(frame, area, &theme);
     }
     if let Some(s) = &mut app.run_configs {
