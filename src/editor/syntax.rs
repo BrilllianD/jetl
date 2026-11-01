@@ -564,8 +564,13 @@ pub static LANGUAGES: LazyLock<Vec<LanguageDef>> = LazyLock::new(|| {
 const NAME_PATTERNS: &[(&str, &str, &str)] = &[(".env.", "", "bash"), ("requirements", ".txt", "requirements")];
 
 /// Path fragments for files whose name and extension say nothing or the
-/// wrong thing: (fragment of the `/`-separated path, language name).
-const PATH_RULES: &[(&str, &str)] = &[("/etc/nginx/", "nginx")];
+/// wrong thing: (fragment of the `/`-separated path, extensions the rule
+/// claims even though another language lists them, language name). A rule
+/// claims a file whose path contains the fragment unless the file's
+/// lowercased extension is listed by a language in the table and is not in
+/// the rule's own list, so `x.lua` under `/etc/nginx/` stays Lua while
+/// `default`, `mime.types` and `x.conf` are nginx.
+const PATH_RULES: &[(&str, &[&str], &str)] = &[("/etc/nginx/", &["conf"], "nginx")];
 
 pub fn detect(path: &Path) -> Option<&'static LanguageDef> {
     detect_in(&LANGUAGES, path)
@@ -573,8 +578,8 @@ pub fn detect(path: &Path) -> Option<&'static LanguageDef> {
 
 /// The language for `path` among `langs`, in this order, each step over
 /// all of `langs` in table order: exact file name, [`NAME_PATTERNS`],
-/// [`PATH_RULES`], lowercased extension. Split from [`detect`] so tests can pass their
-/// own table.
+/// [`PATH_RULES`] (which yield to another language's extension), lowercased
+/// extension. Split from [`detect`] so tests can pass their own table.
 fn detect_in<'a>(langs: &'a [LanguageDef], path: &Path) -> Option<&'a LanguageDef> {
     let name = path.file_name()?.to_str()?;
     let by_name = |lang: &str| langs.iter().find(|l| l.name == lang);
@@ -589,11 +594,21 @@ fn detect_in<'a>(langs: &'a [LanguageDef], path: &Path) -> Option<&'a LanguageDe
         return pattern;
     }
     let full = path.to_string_lossy().replace(std::path::MAIN_SEPARATOR, "/");
-    let by_path = PATH_RULES.iter().filter(|(frag, _)| full.contains(frag)).find_map(|(_, lang)| by_name(lang));
+    let ext = path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase);
+    let by_path = PATH_RULES
+        .iter()
+        .filter(|(frag, own, _)| {
+            full.contains(frag)
+                && match ext.as_deref() {
+                    None => true,
+                    Some(e) => own.contains(&e) || !langs.iter().any(|l| l.extensions.contains(&e)),
+                }
+        })
+        .find_map(|(_, _, lang)| by_name(lang));
     if by_path.is_some() {
         return by_path;
     }
-    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
+    let ext = ext?;
     langs.iter().find(|l| l.extensions.contains(&ext.as_str()))
 }
 
@@ -2009,6 +2024,31 @@ mod tests {
         assert_eq!(detect_in(&langs, Path::new("/x/other.conf")).map(|l| l.name), Some("first"));
     }
 
+    #[cfg(feature = "lang-bash")]
+    #[test]
+    fn path_rules_yield_to_another_languages_extension() {
+        let lang = || -> Language { tree_sitter_bash::LANGUAGE.into() };
+        let q = &["(comment) @comment"];
+        let langs = [
+            make("nginx", &[], &[], lang(), q, None).unwrap(),
+            make("ini", &["conf"], &[], lang(), q, None).unwrap(),
+            make("lua", &["lua"], &[], lang(), q, None).unwrap(),
+        ];
+        let table = [
+            ("/etc/nginx/x.lua", "lua"),
+            ("/srv/docker/etc/nginx/x.lua", "lua"),
+            ("/etc/nginx/x.conf", "nginx"),
+            ("/etc/nginx/default", "nginx"),
+            ("/etc/nginx/mime.types", "nginx"),
+            ("/etc/nginx/sites-available/example.com", "nginx"),
+            ("/etc/nginx/X.CONF", "nginx"),
+            ("/home/u/x.conf", "ini"),
+        ];
+        for (file, want) in table {
+            assert_eq!(detect_in(&langs, Path::new(file)).map(|l| l.name), Some(want), "{file}");
+        }
+    }
+
     #[cfg(all(feature = "lang-make", feature = "lang-ini"))]
     #[test]
     fn make_and_ini_aliases() {
@@ -2118,6 +2158,21 @@ mod tests {
         }
         for file in ["/home/u/x.conf", "x.conf", "/etc/nginx-old.conf", "/etc/nginx/.editorconfig"] {
             assert_eq!(lang(file, ""), Some("ini"), "{file}");
+        }
+    }
+
+    #[cfg(all(feature = "lang-nginx", feature = "lang-lua", feature = "lang-json", feature = "lang-bash"))]
+    #[test]
+    fn nginx_paths_keep_other_languages() {
+        let table = [
+            ("/etc/nginx/lua/x.lua", "lua"),
+            ("/etc/nginx/x.json", "json"),
+            ("/srv/docker/etc/nginx/hook.sh", "bash"),
+            ("/etc/nginx/sites-available/example.com", "nginx"),
+            ("docker/etc/nginx/conf.d/app.conf", "nginx"),
+        ];
+        for (file, want) in table {
+            assert_eq!(lang(file, ""), Some(want), "{file}");
         }
     }
 

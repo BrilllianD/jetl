@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Files under `/etc/nginx/` whose extension belongs to another language, such as `.lua`, `.json` or `.sh`, are highlighted as that language instead of nginx; extensionless files, `.conf` files and files such as `mime.types` stay nginx.
+
 ## [0.6.0] - 2026-10-29
 
 ### Added
