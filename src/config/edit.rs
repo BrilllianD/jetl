@@ -233,6 +233,7 @@ fn writable_key(chord: &[KeyCombo]) -> Result<String, String> {
 
 /// Rewrite the entry for `old` as `new` = `value` where it stands, keeping its
 /// comments; `Ok(false)` when `t` has no entry for `old` or already has one for `new`.
+/// The table is untouched when it returns `Ok(false)` or an error.
 fn rename_chord(t: &mut dyn TableLike, old: &[KeyCombo], new: &[KeyCombo], value: &str) -> Result<bool, String> {
     let keys = matching_keys(t, old);
     let Some((first, others)) = keys.split_first() else {
@@ -242,6 +243,9 @@ fn rename_chord(t: &mut dyn TableLike, old: &[KeyCombo], new: &[KeyCombo], value
         return Ok(false);
     }
     let name = writable_key(new)?;
+    let Some(old_key) = t.key(first).cloned() else {
+        return Ok(false);
+    };
     for k in others {
         t.remove(k);
     }
@@ -254,9 +258,7 @@ fn rename_chord(t: &mut dyn TableLike, old: &[KeyCombo], new: &[KeyCombo], value
             tail.push((k, item));
         }
     }
-    let (Some(old_key), Some(old_item)) = (t.key(first).cloned(), t.remove(first)) else {
-        return Ok(false);
-    };
+    let old_item = t.remove(first).expect("`first` was looked up above and only other keys were removed since");
     let new_key = Key::new(name).with_leaf_decor(old_key.leaf_decor().clone()).with_dotted_decor(old_key.dotted_decor().clone());
     let mut item = toml_edit::value(value);
     if let (Some(o), Some(nv)) = (old_item.as_value(), item.as_value_mut()) {
@@ -534,6 +536,19 @@ mod tests {
         let input = "[git.changes]\n\"f5\" = \"app.about\" # x\n\"f6\" = \"app.quit\"\n";
         let out = apply_keymap_edits(input, &[unbind("git.changes", "f5"), bind("git.changes", "f7", "app.about")]).unwrap();
         assert_eq!(out, "[git.changes]\nF7 = \"app.about\" # x\n\"f6\" = \"app.quit\"\n");
+    }
+
+    #[test]
+    fn keymap_edit_in_a_table_followed_by_a_sub_table() {
+        for k in ["f2", "f3", "f4", "f6"] {
+            assert!(!default_keymap().table("git").unwrap().bindings.contains_key(&ch(k)), "{k}");
+        }
+        let input = "[git]\n# about\n\"f2\" = \"app.about\" # keep\n\"f3\" = \"app.quit\"\n\n# changes view\n[git.changes]\n\"f6\" = \"app.quit\"\n";
+        let out = apply_keymap_edits(input, &[unbind("git", "f2"), bind("git", "f4", "app.about")]).unwrap();
+        assert_eq!(
+            out,
+            "[git]\n# about\nF4 = \"app.about\" # keep\n\"f3\" = \"app.quit\"\n\n# changes view\n[git.changes]\n\"f6\" = \"app.quit\"\n"
+        );
     }
 
     #[test]
