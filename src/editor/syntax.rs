@@ -46,6 +46,8 @@ impl std::fmt::Debug for LanguageDef {
     }
 }
 
+// Unused only in a build with no `lang-*` feature.
+#[allow(dead_code)]
 fn make(
     name: &'static str,
     extensions: &'static [&'static str],
@@ -201,6 +203,7 @@ const GITCOMMIT_QUERY_FIXES: &str = "(subject) @text.title";
 const HCL_QUERY_FIXES: &str = "(attribute (identifier) @property) (object_elem key: (expression (variable_expr (identifier) @property)))";
 
 pub static LANGUAGES: LazyLock<Vec<LanguageDef>> = LazyLock::new(|| {
+    #[allow(unused_mut)]
     let mut v = Vec::new();
     #[cfg(feature = "lang-rust")]
     // Upstream captures numbers as `constant.builtin` (like `true`); Darcula
