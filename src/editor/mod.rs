@@ -2265,6 +2265,7 @@ mod tests {
         assert_eq!(ed.active_buffer().unwrap().cursor_line_col(), (0, 5));
     }
 
+    #[cfg(feature = "lang-rust")]
     fn row_text(screen: &ratatui::buffer::Buffer, x0: u16, y: u16) -> String {
         row_text_to(screen, x0, y, 40)
     }
@@ -2431,6 +2432,7 @@ mod tests {
         assert_eq!(row2, plain);
     }
 
+    #[cfg(feature = "lang-rust")]
     fn row_text_to(screen: &ratatui::buffer::Buffer, x0: u16, y: u16, w: u16) -> String {
         (x0..w).map(|x| screen[(x, y)].symbol()).collect()
     }
