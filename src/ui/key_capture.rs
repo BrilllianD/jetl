@@ -140,8 +140,8 @@ impl KeyCaptureForm {
         if key.kind == KeyEventKind::Release || matches!(key.code, KeyCode::Modifier(_)) {
             return None;
         }
-        let plain_tab = key.code == KeyCode::BackTab
-            || key.code == KeyCode::Tab && !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
+        let plain_tab =
+            matches!(key.code, KeyCode::Tab | KeyCode::BackTab) && !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
         if self.capturing() && !plain_tab {
             self.capture(KeyCombo::normalize(key.code, key.modifiers));
             return None;
@@ -437,6 +437,10 @@ mod tests {
         f.handle_key(key(KeyCode::Tab, KeyModifiers::CONTROL));
         assert_eq!(f.text(), "Ctrl+Tab");
         assert_eq!(f.focus(), Part::Ok);
+        let mut g = KeyCaptureForm::new("");
+        g.handle_key(key(KeyCode::BackTab, KeyModifiers::CONTROL | KeyModifiers::SHIFT));
+        assert_eq!(g.text(), "Ctrl+Shift+Tab");
+        assert_eq!(g.focus(), Part::Ok);
     }
 
     #[test]

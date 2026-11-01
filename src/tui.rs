@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::Result;
 use crossterm::{
-    cursor::Show,
+    cursor::{SetCursorStyle, Show},
     event::{
         DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste, EnableFocusChange, EnableMouseCapture,
         KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
@@ -23,6 +23,8 @@ pub type Term = Terminal<CrosstermBackend<Stdout>>;
 
 static ENHANCED: AtomicBool = AtomicBool::new(false);
 static ACTIVE: AtomicBool = AtomicBool::new(false);
+/// Whether the last caret shape written is the overwrite block.
+static CARET_BLOCK: AtomicBool = AtomicBool::new(false);
 
 /// Whether the terminal accepted the kitty keyboard protocol flags.
 pub fn keyboard_enhanced() -> bool {
@@ -65,16 +67,39 @@ pub fn set_title(root: &Path) {
     }
 }
 
+/// Set the caret shape: `SteadyBlock` for overwrite mode, anything else
+/// means the user's own shape. Writes DECSCUSR only when the shape
+/// differs from the last one written, and only while the terminal is ours.
+pub fn set_caret_style(style: SetCursorStyle) {
+    if !ACTIVE.load(Ordering::Relaxed) {
+        return;
+    }
+    let block = style == SetCursorStyle::SteadyBlock;
+    if CARET_BLOCK.swap(block, Ordering::Relaxed) != block {
+        let shape = if block { SetCursorStyle::SteadyBlock } else { SetCursorStyle::DefaultUserShape };
+        let _ = execute!(stdout(), shape);
+    }
+}
+
 /// Restore the terminal. Safe to call more than once and from the panic hook.
 pub fn restore() {
     if !ACTIVE.swap(false, Ordering::Relaxed) {
         return;
     }
+    CARET_BLOCK.store(false, Ordering::Relaxed);
     let mut out = stdout();
     if ENHANCED.swap(false, Ordering::Relaxed) {
         let _ = execute!(out, PopKeyboardEnhancementFlags);
     }
-    let _ = execute!(out, DisableMouseCapture, DisableBracketedPaste, DisableFocusChange, LeaveAlternateScreen, Show);
+    let _ = execute!(
+        out,
+        DisableMouseCapture,
+        DisableBracketedPaste,
+        DisableFocusChange,
+        LeaveAlternateScreen,
+        SetCursorStyle::DefaultUserShape,
+        Show
+    );
     let _ = disable_raw_mode();
 }
 

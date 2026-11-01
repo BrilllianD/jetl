@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::Result;
+use crossterm::cursor::SetCursorStyle;
 use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyModifiers, MouseButton};
 use futures::StreamExt;
 use ratatui::layout::Rect;
@@ -599,6 +600,7 @@ impl App {
             }
             if self.dirty_frame {
                 term.draw(|f| crate::ui::render(self, f))?;
+                crate::tui::set_caret_style(self.caret_style());
                 self.dirty_frame = false;
             }
         }
@@ -755,7 +757,24 @@ impl App {
         self.lsp_confirm_orphaned();
     }
 
-    /// An armed key-capture field has focus: the paste key and Tab are keys to record.
+    /// The caret shape the terminal should show after the last draw: a
+    /// steady block in overwrite mode while the editor caret is the one
+    /// drawn (editor focused, no overlay, find bar not focused, caret on
+    /// screen), else the user's own shape. Reads the caret cell of the last
+    /// draw, so call it after `term.draw`. A new overlay adds itself here.
+    pub(crate) fn caret_style(&self) -> SetCursorStyle {
+        let overlay = self.palette.is_some()
+            || self.switcher.is_some()
+            || self.dialog.is_some()
+            || self.menu.is_some()
+            || self.menu_bar.is_some()
+            || self.settings.is_some()
+            || self.run_configs.is_some();
+        let shown = self.focus.is(PanelId::Editor) && !overlay && !self.editor.find_focused() && self.editor.caret_cell().is_some();
+        if self.editor.overwrite() && shown { SetCursorStyle::SteadyBlock } else { SetCursorStyle::DefaultUserShape }
+    }
+
+    /// An armed key-capture field has focus: the paste key is a key to record.
     fn dialog_capturing(&self) -> bool {
         matches!(&self.dialog, Some(d) if matches!(&d.kind, crate::ui::dialog::DialogKind::KeyCapture(f) if f.capturing()))
     }
@@ -1480,6 +1499,46 @@ pub(crate) mod tests {
     pub(crate) fn with_history(app: &mut App) {
         app.history = crate::history::Handle::spawn(app.paths.history_dir(), app.config.local_history.clone(), app.bus_tx.clone());
         app.git.history = app.history.clone();
+    }
+
+    #[tokio::test]
+    async fn caret_is_a_block_only_in_overwrite_at_the_editor_caret() {
+        use crate::actions::PaletteKind;
+        use crossterm::cursor::SetCursorStyle::{DefaultUserShape, SteadyBlock};
+        let (mut app, dir) = test_app("caret-style");
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+        let toggle = |app: &mut App| app.perform(Action::Editor(EditorAction::ToggleOverwrite));
+        macro_rules! shape {
+            () => {{
+                term.draw(|f| crate::ui::render(&mut app, f)).unwrap();
+                app.caret_style()
+            }};
+        }
+        toggle(&mut app);
+        assert_eq!(shape!(), DefaultUserShape, "no caret cell");
+        toggle(&mut app);
+        let path = app.workspace.root.join("a.txt");
+        app.editor.open_text(path, "abc\n", false, &app.theme);
+        assert_eq!(shape!(), DefaultUserShape, "overwrite off");
+        toggle(&mut app);
+        assert_eq!(shape!(), SteadyBlock);
+        app.focus.set(PanelId::Project);
+        assert_eq!(shape!(), DefaultUserShape, "editor not focused");
+        app.focus.set(PanelId::Editor);
+        assert_eq!(shape!(), SteadyBlock);
+        app.perform(Action::Editor(EditorAction::Find));
+        assert!(app.editor.find_focused());
+        assert_eq!(shape!(), DefaultUserShape, "find bar focused");
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(!app.editor.find_focused());
+        assert_eq!(shape!(), SteadyBlock);
+        app.perform(Action::App(AppAction::OpenPalette(PaletteKind::Actions)));
+        assert!(app.palette.is_some());
+        assert_eq!(shape!(), DefaultUserShape, "palette open");
+        app.palette = None;
+        toggle(&mut app);
+        assert_eq!(shape!(), DefaultUserShape, "overwrite off again");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]

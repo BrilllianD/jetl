@@ -2,7 +2,7 @@
 //! project root, cut from the start), the git operation in progress and
 //! running git operations, notifications (else the diagnostic at the
 //! caret), then on the right the active file's problem counts, cursor
-//! position, line ending, encoding, indent and language of the active
+//! position and `OVR` in overwrite mode, line ending, encoding, indent and language of the active
 //! buffer, its language server, and the current branch at the right edge.
 
 use ratatui::Frame;
@@ -93,6 +93,9 @@ pub fn render(app: &mut App, frame: &mut Frame, area: Rect) {
     }
     if let Some(pos) = app.editor.status_position() {
         right_parts.push((pos, base, Some(StatusHit::Position), 0));
+    }
+    if app.editor.overwrite() {
+        right_parts.push(("OVR".into(), theme.status_accent.bg(theme.status_bg), None, 1));
     }
     if let Some(le) = app.editor.status_line_ending() {
         right_parts.push((le, base, Some(StatusHit::LineEnding), 2));
@@ -219,6 +222,25 @@ mod tests {
         let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, 1)).unwrap();
         let frame = term.draw(|f| render(app, f, Rect::new(0, 0, w, 1))).unwrap();
         (crate::ui::snapshot::row_text(frame.buffer, 0, w), frame.buffer.clone())
+    }
+
+    #[tokio::test]
+    async fn status_bar_marks_overwrite_mode() {
+        use crate::actions::{Action, EditorAction};
+        let (mut app, dir) = crate::app::tests::test_app("status-ovr");
+        let path = app.workspace.root.join("a.txt");
+        app.editor.open_text(path, "abc\n", false, &app.theme);
+        let (row, _) = status_row(&mut app, 120);
+        assert!(!row.contains("OVR"), "{row:?}");
+        app.perform(Action::Editor(EditorAction::ToggleOverwrite));
+        let (row, buf) = status_row(&mut app, 120);
+        let at = row.find("Ln 1, Col 1  OVR").unwrap_or_else(|| panic!("{row:?}"));
+        let x = row[..at].chars().count() + "Ln 1, Col 1  ".chars().count();
+        assert_eq!(buf[(x as u16, 0)].fg, app.theme.status_accent.fg.unwrap_or(app.theme.status_fg));
+        app.perform(Action::Editor(EditorAction::ToggleOverwrite));
+        let (row, _) = status_row(&mut app, 120);
+        assert!(!row.contains("OVR"), "{row:?}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
