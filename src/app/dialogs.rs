@@ -173,7 +173,7 @@ impl App {
                     self.capture_disk(&path, crate::history::Kind::BeforeOverwrite);
                 }
                 let mut cx = ctx!(self);
-                self.editor.overwrite(id, &mut cx);
+                self.editor.overwrite_file(id, &mut cx);
                 let fx = cx.effects;
                 self.apply_effects(fx);
             }

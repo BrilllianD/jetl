@@ -243,6 +243,8 @@
 # Column selection: Alt+drag makes a block; in column selection mode a plain
 # drag and Shift+arrows, Home and End do too.
 "alt-shift-insert" = "editor.toggle_column_mode"
+# Insert toggles overwrite mode: typing replaces the char under the caret.
+"insert" = "editor.toggle_overwrite"
 # Code folding. Ctrl+Alt+Minus/Equals act recursively; Ctrl+Shift+Minus
 # (collapse all) arrives as Ctrl+_ with the kitty protocol. Legacy terminals
 # send Ctrl+- as 0x1F (Ctrl+7, toggle comment) and Ctrl+= and Ctrl+. as

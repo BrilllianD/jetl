@@ -160,7 +160,7 @@ impl Editor {
     }
 
     /// Save buffer `id` even though the file changed on disk.
-    pub fn overwrite(&mut self, id: BufferId, cx: &mut Ctx) -> bool {
+    pub fn overwrite_file(&mut self, id: BufferId, cx: &mut Ctx) -> bool {
         let Some(i) = self.index_of_id(id) else { return false };
         self.write(i, cx, false)
     }
@@ -651,7 +651,7 @@ mod tests {
         assert!(ed.buffers[0].autosave_conflict);
         assert_eq!(ed.on_disk_change(&a), DiskChange::None, "asked once");
         let id = ed.buffers[0].id;
-        effects(|cx| assert!(ed.overwrite(id, cx)));
+        effects(|cx| assert!(ed.overwrite_file(id, cx)));
         assert!(!ed.buffers[0].autosave_conflict);
 
         ed.buffers[0].insert("y", TxKind::Typing);

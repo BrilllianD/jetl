@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use ropey::Rope;
+use unicode_segmentation::UnicodeSegmentation;
 
 use super::fold::Fold;
 use super::indent::{FileSettings, IndentStyle};
@@ -692,10 +693,25 @@ impl Buffer {
     /// never inside a string or comment) and a closer on a blank line
     /// dedented to its opener's line ([`Buffer::closer_indent_at`]).
     pub fn insert_char(&mut self, c: char, pairs: &[(char, char)]) {
+        self.type_char_at_carets(c, pairs, false);
+    }
+
+    /// Overwrite mode: `c` replaces the grapheme under each empty caret not at
+    /// its line end ([`Buffer::overwrite_range`]); other carets type as
+    /// [`Buffer::insert_char`].
+    pub fn overwrite_char(&mut self, c: char, pairs: &[(char, char)]) {
+        self.type_char_at_carets(c, pairs, true);
+    }
+
+    fn type_char_at_carets(&mut self, c: char, pairs: &[(char, char)], overwrite: bool) {
         if let Some(s) = &mut self.syntax {
             s.reparse(&self.rope);
         }
         self.edit_carets(|b, sel| {
+            if overwrite && let Some(r) = b.overwrite_range(sel) {
+                let kind = if c.is_whitespace() { TxKind::Other } else { TxKind::Typing };
+                return CaretEdit::replace(r, c.to_string(), kind);
+            }
             let tree = b.syntax.as_ref().and_then(|s| s.tree_at_char(&b.rope, sel.head));
             let p = sel.head;
             let may_pair = !tree.is_some_and(|t| super::brackets::in_literal_at(&b.rope, t, p));
@@ -706,6 +722,23 @@ impl Buffer {
                 None => b.char_edit(sel, c, pairs, may_pair),
             }
         });
+    }
+
+    /// The grapheme under an empty caret that overwrite typing replaces;
+    /// `None` for a selection or a caret at its line end.
+    fn overwrite_range(&self, sel: Selection) -> Option<Range<usize>> {
+        if !sel.is_empty() {
+            return None;
+        }
+        let p = sel.head;
+        let line = self.rope.char_to_line(p);
+        let end = self.rope.line_to_char(line) + line_len_no_eol(&self.rope, line);
+        if p >= end {
+            return None;
+        }
+        let text = self.rope.slice(p..end.min(p + 64)).to_string();
+        let n = text.graphemes(true).next().map_or(1, |g| g.chars().count());
+        Some(p..p + n.max(1))
     }
 
     /// Type `c` at every caret with auto-close ([`Buffer::char_edit`]).
@@ -1857,6 +1890,76 @@ mod tests {
         assert!(buf.redo());
         assert_eq!(buf.text(), "hello");
         assert_eq!(buf.view.sel().head, 5);
+    }
+
+    #[test]
+    fn overwrite_replaces_the_char_under_the_caret() {
+        let mut buf = b("abc\n");
+        buf.view.set_sel(Selection::point(1));
+        buf.overwrite_char('X', &[]);
+        assert_eq!((buf.text().as_str(), buf.view.sel().head), ("aXc\n", 2));
+        buf.overwrite_char('Y', &[]);
+        assert_eq!((buf.text().as_str(), buf.view.sel().head), ("aXY\n", 3));
+        buf.overwrite_char('Z', &[]);
+        assert_eq!(buf.text(), "aXYZ\n");
+    }
+
+    #[test]
+    fn overwrite_takes_whole_graphemes_and_tabs() {
+        let mut buf = b("e\u{301}x\n");
+        buf.view.set_sel(Selection::point(0));
+        buf.overwrite_char('a', &[]);
+        assert_eq!(buf.text(), "ax\n");
+        let mut buf = b("\tx\n");
+        buf.view.set_sel(Selection::point(0));
+        buf.overwrite_char('a', &[]);
+        assert_eq!(buf.text(), "ax\n");
+        let mut buf = b("ab\r\n");
+        buf.view.set_sel(Selection::point(2));
+        buf.overwrite_char('Q', &[]);
+        assert_eq!(buf.text(), "abQ\r\n");
+    }
+
+    #[test]
+    fn overwrite_with_a_selection_types_as_insert() {
+        let mut buf = b("abcd\n");
+        buf.view.set_sel(Selection::new(1, 3));
+        buf.overwrite_char('X', &[]);
+        assert_eq!(buf.text(), "aXd\n");
+        let mut buf = b("abcd\n");
+        buf.view.set_sel(Selection::new(1, 3));
+        buf.overwrite_char('(', &[('(', ')')]);
+        assert_eq!(buf.text(), "a(bc)d\n");
+    }
+
+    #[test]
+    fn overwrite_skips_auto_close() {
+        let mut buf = b("ab\n");
+        buf.view.set_sel(Selection::point(0));
+        buf.overwrite_char('(', &[('(', ')')]);
+        assert_eq!(buf.text(), "(b\n");
+    }
+
+    #[test]
+    fn overwrite_typing_undoes_as_one_step() {
+        let mut buf = b("abc\n");
+        buf.view.set_sel(Selection::point(0));
+        for c in "xyz".chars() {
+            buf.overwrite_char(c, &[]);
+        }
+        assert_eq!(buf.text(), "xyz\n");
+        assert_eq!(buf.undo.len(), 1);
+        assert!(buf.undo());
+        assert_eq!((buf.text().as_str(), buf.view.sel().head), ("abc\n", 0));
+    }
+
+    #[test]
+    fn overwrite_at_several_carets() {
+        let mut buf = b("ab\ncd\ne\n");
+        buf.view.sels = Selections::new(vec![Selection::point(0), Selection::point(3), Selection::point(7)], 0);
+        buf.overwrite_char('X', &[]);
+        assert_eq!(buf.text(), "Xb\nXd\neX\n");
+        assert_eq!(buf.undo.len(), 1);
     }
 
     #[test]

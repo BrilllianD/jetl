@@ -192,6 +192,7 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Ctrl+Alt+J` | `editor.select_all_occurrences` | Select all occurrences (a caret at each) |
 | `Ctrl+Alt+Shift+J` * | `editor.select_all_occurrences` | Select all occurrences (a caret at each) |
 | `Alt+Shift+Insert` | `editor.toggle_column_mode` | Toggle column selection mode |
+| `Insert` | `editor.toggle_overwrite` | Toggle insert/overwrite mode |
 | `Alt+,` | `editor.fold_collapse` | Collapse the code region at the caret |
 | `Ctrl+-` * | `editor.fold_collapse` | Collapse the code region at the caret |
 | `Alt+.` | `editor.fold_expand` | Expand the folded region at the caret |

@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Overwrite mode in the editor: Insert toggles it, and typed characters replace the character under the caret instead of being inserted (at a line end and over a selection they are inserted as usual). It is off on every start.
 - Settings › Keymap's Add Key and Edit Key dialogs record the key as you press it (Ctrl+V is recorded, while Tab and Shift+Tab move between the dialog's parts and are typed in the text field like Esc); a Second stroke toggle records a two-key chord such as Ctrl+K Ctrl+C. Keys the terminal cannot deliver can still be typed in the text field below, as before.
 
 ### Fixed

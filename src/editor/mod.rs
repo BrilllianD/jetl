@@ -195,6 +195,9 @@ pub struct Editor {
     /// Column selection mode: a plain drag and Shift+arrows make blocks.
     /// Not saved with the session.
     column_mode: bool,
+    /// Overwrite mode (Insert): typing replaces the char under the caret.
+    /// One for every buffer; not saved with the session.
+    overwrite: bool,
     /// The conflict resolver, while open (its panes are the groups then).
     merge: Option<merge::MergeSession>,
     /// A completion snippet's tabstops while Tab walks them.
@@ -265,6 +268,7 @@ impl Editor {
             closed_bookmarks: Default::default(),
             multi_clip: None,
             column_mode: false,
+            overwrite: false,
             merge: None,
             snippet: None,
             center: Rect::default(),
@@ -683,6 +687,11 @@ impl Editor {
             b.goto_line(line.saturating_sub(1), col.saturating_sub(1));
         }
         self.note_jump(from);
+    }
+
+    /// Overwrite mode is on (Insert toggles it).
+    pub fn overwrite(&self) -> bool {
+        self.overwrite
     }
 
     pub fn status_position(&self) -> Option<String> {
@@ -1104,6 +1113,10 @@ impl Editor {
                 }
                 return true;
             }
+            E::ToggleOverwrite => {
+                self.overwrite ^= true;
+                return true;
+            }
             E::ToggleSoftWrap => {
                 let Some(b) = self.active_buffer_mut() else { return true };
                 let v = &mut b.view;
@@ -1132,6 +1145,7 @@ impl Editor {
         };
         let rows = self.text_area().height as usize;
         let auto_close = self.auto_close;
+        let overwrite = self.overwrite;
         let Some(ai) = self.active() else { return false };
         let tab_width = self.tab_display(&self.buffers[ai]);
         let b = &mut self.buffers[ai];
@@ -1144,6 +1158,7 @@ impl Editor {
             if matches!(a, E::InsertChar(_) | E::InsertText(_) | E::InsertTab) { b.virtual_pads(tab_width) } else { Vec::new() };
         let pairs = || if auto_close { brackets::pairs(b.language().map(|d| d.name)) } else { &[] };
         match a {
+            E::InsertChar(c) if overwrite => b.overwrite_char(*c, pairs()),
             E::InsertChar(c) => b.insert_char(*c, pairs()),
             E::InsertText(s) => {
                 let s = if b.line_ending == buffer::LineEnding::CrLf {
@@ -1400,6 +1415,7 @@ impl Editor {
             | E::SetLanguage
             | E::ToggleBlame
             | E::ToggleColumnMode
+            | E::ToggleOverwrite
             | E::ToggleSoftWrap
             | E::Merge(_)
             | E::NextTabstop
@@ -2444,6 +2460,27 @@ mod tests {
     }
 
     #[test]
+    fn insert_toggles_overwrite_for_every_buffer() {
+        let mut ed = editor_with("a.txt", "abc\n");
+        assert!(!ed.overwrite());
+        act(&mut ed, EditorAction::ToggleOverwrite);
+        assert!(ed.overwrite());
+        act(&mut ed, EditorAction::InsertChar('X'));
+        assert_eq!(ed.buffers[0].text(), "Xbc\n");
+        act(&mut ed, EditorAction::InsertText("YZ".into()));
+        assert_eq!(ed.buffers[0].text(), "XYZbc\n");
+        act(&mut ed, EditorAction::InsertNewline);
+        assert_eq!(ed.buffers[0].text(), "XYZ\nbc\n");
+        ed.open_text(PathBuf::from("/tmp/b.txt"), "def\n", false, &Theme::default());
+        assert!(ed.overwrite());
+        act(&mut ed, EditorAction::ToggleOverwrite);
+        assert!(!ed.overwrite());
+        let i = ed.buffers.len() - 1;
+        act(&mut ed, EditorAction::InsertChar('Q'));
+        assert!(ed.buffers[i].text().contains('Q') && ed.buffers[i].text().len() == 5, "{:?}", ed.buffers[i].text());
+    }
+
+    #[test]
     fn sort_lines_action_dispatches() {
         let mut ed = editor_with("sort.txt", "b\na\n");
         act(&mut ed, EditorAction::SortLines);
@@ -3146,7 +3183,7 @@ mod tests {
         let id = ed.buffers[0].id;
         assert!(matches!(cx.effects.as_slice(), [Effect::Dialog(d)] if d.id == DialogId::OverwriteExternal(id)));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "theirs\n");
-        assert!(ed.overwrite(id, &mut cx));
+        assert!(ed.overwrite_file(id, &mut cx));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "xyone\n");
         assert!(!ed.buffers[0].autosave_conflict);
 
