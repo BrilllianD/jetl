@@ -284,6 +284,7 @@ pub enum DialogKind {
     Choice { items: Vec<String>, list: ListState, filter: TextInput },
     NewTask(Box<crate::ui::new_task::NewTaskForm>),
     Rebase(Box<crate::ui::rebase::RebaseForm>),
+    KeyCapture(Box<crate::ui::key_capture::KeyCaptureForm>),
 }
 
 /// Tab completion of a typed path in an input dialog
@@ -414,6 +415,21 @@ impl Dialog {
         }
     }
 
+    /// The Add/Edit Key form of the Settings Keymap page: records key presses, `initial` prefills the text.
+    pub fn key_capture(id: DialogId, title: &str, message: &str, initial: &str) -> Self {
+        Self {
+            id,
+            title: title.into(),
+            message: message.into(),
+            kind: DialogKind::KeyCapture(Box::new(crate::ui::key_capture::KeyCaptureForm::new(initial))),
+            paths: None,
+            button_rects: vec![],
+            body_rect: Rect::default(),
+            input_rect: Rect::default(),
+            list_rect: Rect::default(),
+        }
+    }
+
     /// Tab completes the typed path, relative paths starting at `base`
     /// (an input dialog; `App::complete_dialog_path`).
     pub fn with_path_completion(self, base: PathBuf) -> Self {
@@ -458,6 +474,9 @@ impl Dialog {
             return f.handle_key(key);
         }
         if let DialogKind::Rebase(f) = &mut self.kind {
+            return f.handle_key(key);
+        }
+        if let DialogKind::KeyCapture(f) = &mut self.kind {
             return f.handle_key(key);
         }
         match &mut self.kind {
@@ -516,7 +535,7 @@ impl Dialog {
                 }
                 _ => None,
             },
-            DialogKind::NewTask(_) | DialogKind::Rebase(_) => None,
+            DialogKind::NewTask(_) | DialogKind::Rebase(_) | DialogKind::KeyCapture(_) => None,
             DialogKind::Choice { .. } => {
                 if key.code == KeyCode::Esc {
                     return Some(DialogResult::Cancel);
@@ -557,6 +576,9 @@ impl Dialog {
         if let DialogKind::Rebase(f) = &mut self.kind {
             return f.handle_mouse(m);
         }
+        if let DialogKind::KeyCapture(f) = &mut self.kind {
+            return f.handle_mouse(m);
+        }
         match m.kind {
             MouseEventKind::Down(MouseButton::Left) => {
                 let p = ratatui::layout::Position::new(m.x, m.y);
@@ -570,7 +592,9 @@ impl Dialog {
                                 Some(DialogResult::Cancel)
                             }
                         }
-                        DialogKind::Choice { .. } | DialogKind::NewTask(_) | DialogKind::Rebase(_) => Some(DialogResult::Cancel),
+                        DialogKind::Choice { .. } | DialogKind::NewTask(_) | DialogKind::Rebase(_) | DialogKind::KeyCapture(_) => {
+                            Some(DialogResult::Cancel)
+                        }
                     };
                 }
                 if let DialogKind::Choice { list, .. } = &mut self.kind
@@ -633,6 +657,10 @@ impl Dialog {
             self.body_rect = f.render(frame, area, theme, &self.title);
             return;
         }
+        if let DialogKind::KeyCapture(f) = &mut self.kind {
+            self.body_rect = f.render(frame, area, theme, &self.title, &self.message);
+            return;
+        }
         let msg_lines: Vec<&str> = self.message.lines().collect();
         let msg_w = msg_lines.iter().map(|l| l.width()).max().unwrap_or(0);
         let w = match &self.kind {
@@ -641,7 +669,11 @@ impl Dialog {
                 let bw: usize = buttons.iter().map(|b| b.width() + 4).sum::<usize>() + buttons.len().saturating_sub(1) + 2;
                 (msg_w.max(bw) + 4).max(30)
             }
-            DialogKind::Input { .. } | DialogKind::Choice { .. } | DialogKind::NewTask(_) | DialogKind::Rebase(_) => (msg_w + 4).max(50),
+            DialogKind::Input { .. }
+            | DialogKind::Choice { .. }
+            | DialogKind::NewTask(_)
+            | DialogKind::Rebase(_)
+            | DialogKind::KeyCapture(_) => (msg_w + 4).max(50),
         };
         // Wide enough for the title (" title " plus the corners).
         let w = w.max(self.title.width() + 4);
@@ -650,7 +682,7 @@ impl Dialog {
         let msg_rows = message_rows(&self.message, (w as usize).saturating_sub(4));
         let mut h = match &self.kind {
             DialogKind::Confirm { .. } => msg_rows.len() + 4,
-            DialogKind::Input { .. } | DialogKind::NewTask(_) | DialogKind::Rebase(_) => msg_rows.len() + 5,
+            DialogKind::Input { .. } | DialogKind::NewTask(_) | DialogKind::Rebase(_) | DialogKind::KeyCapture(_) => msg_rows.len() + 5,
             DialogKind::Choice { .. } => (msg_rows.len() + 3 + 12).min(area.height as usize),
         };
         // A path hint goes between the input and the buttons, as many rows
@@ -682,7 +714,7 @@ impl Dialog {
         // A frame too small for the controls stays empty.
         let min_inner_h = match &self.kind {
             DialogKind::Confirm { .. } => 1,
-            DialogKind::Input { .. } | DialogKind::NewTask(_) | DialogKind::Rebase(_) => 3,
+            DialogKind::Input { .. } | DialogKind::NewTask(_) | DialogKind::Rebase(_) | DialogKind::KeyCapture(_) => 3,
             DialogKind::Choice { .. } => 2,
         };
         if inner.height < min_inner_h || inner.width < 2 {
@@ -694,7 +726,7 @@ impl Dialog {
         // On a short screen the message gives way to the controls below it.
         let reserve = match &self.kind {
             DialogKind::Confirm { .. } => 2,
-            DialogKind::Input { .. } | DialogKind::NewTask(_) | DialogKind::Rebase(_) => 3 + hints.len(),
+            DialogKind::Input { .. } | DialogKind::NewTask(_) | DialogKind::Rebase(_) | DialogKind::KeyCapture(_) => 3 + hints.len(),
             DialogKind::Choice { .. } => 2,
         };
         let mut msg_rows = msg_rows;
@@ -771,13 +803,13 @@ impl Dialog {
                 filter.render(frame, frect, Style::default().bg(theme.bg).fg(theme.fg), "type to filter", theme.dim, true);
             }
             // Drawn by the early return at the top.
-            DialogKind::NewTask(_) | DialogKind::Rebase(_) => {}
+            DialogKind::NewTask(_) | DialogKind::Rebase(_) | DialogKind::KeyCapture(_) => {}
         }
     }
 }
 
 /// Keep the first `max` rows, the last of them cut with `…`.
-fn cut_rows(rows: &mut Vec<String>, max: usize, width: usize) {
+pub(crate) fn cut_rows(rows: &mut Vec<String>, max: usize, width: usize) {
     rows.truncate(max);
     if let Some(last) = rows.last_mut() {
         *last = crate::util::text::fit(&format!("{last} …"), width);
@@ -790,7 +822,7 @@ fn cut_rows(rows: &mut Vec<String>, max: usize, width: usize) {
 /// The message as rows at most `width` cells wide: a line that fits stays as
 /// it is (an empty line stays an empty row), a wider one wraps at spaces; a
 /// wrapped line keeps its leading indent on every row.
-fn message_rows(message: &str, width: usize) -> Vec<String> {
+pub(crate) fn message_rows(message: &str, width: usize) -> Vec<String> {
     let mut rows = Vec::new();
     for line in message.lines() {
         let rest = line.trim_start_matches(' ');
@@ -921,6 +953,7 @@ mod tests {
                         "OK",
                     ),
                     Dialog::choice(DialogId::SettingValue("ui.theme"), "Theme", "", vec!["auto".into(), "darcula".into(), "Other…".into()]),
+                    Dialog::key_capture(DialogId::Info, "Add Key", "Run in editor. Keys as in ctrl-shift-f:", ""),
                 ];
                 for (n, mut d) in dialogs.into_iter().enumerate() {
                     let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -999,6 +1032,20 @@ mod tests {
         term.draw(|f| d.render(f, f.area(), &theme)).unwrap();
         assert!(!d.rect().is_empty());
         assert!(matches!(d.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)), Some(DialogResult::Rebase(_))));
+        assert!(matches!(d.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)), Some(DialogResult::Cancel)));
+    }
+
+    #[test]
+    fn the_key_capture_form_is_hosted() {
+        let mut d = Dialog::key_capture(DialogId::Info, "Add Key", "Run in editor. Keys as in ctrl-shift-f:", "");
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+        let theme = Theme::default();
+        term.draw(|f| d.render(f, f.area(), &theme)).unwrap();
+        assert!(!d.rect().is_empty());
+        assert!(d.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL | KeyModifiers::ALT)).is_none());
+        assert!(
+            matches!(d.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)), Some(DialogResult::Text(t)) if t == "Ctrl+Alt+J")
+        );
         assert!(matches!(d.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)), Some(DialogResult::Cancel)));
     }
 }

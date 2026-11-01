@@ -5,6 +5,7 @@ pub mod file_icons;
 pub mod focus;
 pub mod hierarchy;
 pub mod hover;
+pub mod key_capture;
 pub mod layout;
 pub mod markdown;
 pub mod menu;
