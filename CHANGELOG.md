@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A conflicted file opened from the project tree or the Commit tab's Changes opens the three-pane conflict resolver; selecting it in Changes shows a hint instead of a diff of its conflict markers.
 - Closing the last editor tab moves focus to the project tree and shows the Project tool window, so the arrow keys move the tree selection at once. Closing a tab while others stay open keeps focus in the editor, and closing the conflict resolver does not move focus.
-- Saving a file no longer shows a "Saved" toast; the save is still listed in the Event Log (Alt+Shift+L).
+- Saving a file shows no toast and no status bar message; the save is only listed in the Event Log (Alt+Shift+L).
 - `editor.autosave` defaults to `"focus"`: modified files are saved when the terminal loses focus. Set `autosave = "off"` to save only with Ctrl+S.
 
 ## [0.7.0] - 2026-11-01

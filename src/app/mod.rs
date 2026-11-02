@@ -117,6 +117,8 @@ pub struct Notification {
     pub at: Instant,
     /// Wall clock time, shown in the Event Log.
     pub wall: SystemTime,
+    /// Logged only: never offered to the status bar.
+    pub quiet: bool,
 }
 
 /// The palette's cached file list of the current root.
@@ -468,19 +470,23 @@ impl App {
     pub fn notify(&mut self, level: Level, text: impl Into<String>) {
         let text = text.into();
         self.toasts.push(level, &text, Instant::now());
-        self.log_only(level, text);
+        self.record(level, text, false);
     }
 
-    /// Record `text` in the Event Log (and the tracing log) without a toast.
+    /// Record `text` in the Event Log (and the tracing log) without a toast
+    /// or a status bar message.
     pub fn log_only(&mut self, level: Level, text: impl Into<String>) {
-        let text = text.into();
+        self.record(level, text.into(), true);
+    }
+
+    fn record(&mut self, level: Level, text: String, quiet: bool) {
         match level {
             Level::Error => tracing::error!("{text}"),
             Level::Warn => tracing::warn!("{text}"),
             Level::Info => tracing::info!("{text}"),
         }
         let now = Instant::now();
-        self.notifications.push(Notification { level, text, at: now, wall: SystemTime::now() });
+        self.notifications.push(Notification { level, text, at: now, wall: SystemTime::now(), quiet });
         let mut dropped = 0;
         if self.notifications.len() > NOTIFICATIONS_MAX {
             dropped = NOTIFICATIONS_MAX / 2;
@@ -507,7 +513,7 @@ impl App {
     }
 
     pub fn current_notification(&self) -> Option<&Notification> {
-        let n = self.notifications.last()?;
+        let n = self.notifications.last().filter(|n| !n.quiet)?;
         let ttl = match n.level {
             Level::Error => 15,
             Level::Warn => 10,
@@ -1557,6 +1563,32 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn clicking_the_close_buttons_of_the_last_tabs_focuses_the_project_tree() {
+        let (mut app, dir) = test_app("last-tab-click");
+        for n in ["a.txt", "b.txt"] {
+            let path = app.workspace.root.join(n);
+            app.editor.open_text(path, "x\n", false, &app.theme);
+        }
+        app.focus.set(PanelId::Editor);
+        app.layout.hide(ToolWindowId::Project);
+        for left in [1, 0] {
+            assert_eq!(app.editor.buffers.len(), left + 1);
+            draw_frame(&mut app);
+            let r = app.editor.focused_group().tab_hits.close.iter().find(|(i, _)| *i == left).expect("close button drawn").1;
+            app.handle_mouse(crossterm::event::MouseEvent {
+                kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+                column: r.x,
+                row: r.y,
+                modifiers: KeyModifiers::NONE,
+            });
+            assert_eq!(app.editor.buffers.len(), left);
+        }
+        assert!(app.focus.is(PanelId::Project));
+        assert!(app.layout.is_visible(ToolWindowId::Project));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
     async fn dont_save_on_the_last_dirty_tab_focuses_the_project_tree() {
         let (mut app, dir) = test_app("last-tab-dirty");
         let path = app.workspace.root.join("a.txt");
@@ -1720,6 +1752,7 @@ pub(crate) mod tests {
         app.perform(Action::Editor(EditorAction::Save));
         assert!(!app.editor.has_dirty());
         assert!(app.notifications.last().is_some_and(|n| n.text == "Saved a.txt"));
+        assert!(app.current_notification().is_none());
         assert!(!app.toasts.items().iter().any(|t| t.text.starts_with("Saved")));
         let _ = std::fs::remove_dir_all(dir);
     }
