@@ -281,7 +281,6 @@ mod tests {
         app.dialog = None;
         // Changes: the U entry is selected and no marker diff is requested.
         assert!(app.git_panel.diff_key().is_none());
-        // Tree: Enter on the conflicted file opens the resolver.
         let req = app.project.begin_refresh();
         match req {
             Some(req) => {
@@ -297,6 +296,7 @@ mod tests {
         assert!(app.editor.merge_active());
         assert!(app.editor.buffers.iter().all(|b| b.diff.is_none()));
         app.perform(merge(MergeAction::Cancel));
+        // Tree: Enter on the conflicted file opens the resolver.
         assert!(app.project.select_path(&root.join("a.txt")));
         app.focus.set(PanelId::Project);
         app.perform(Action::Tree(TreeAction::Open));

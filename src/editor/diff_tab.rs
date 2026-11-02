@@ -165,8 +165,6 @@ impl Editor {
                 | E::TogglePinTab
                 | E::MoveTabLeft
                 | E::MoveTabRight
-                | E::SplitRight
-                | E::SplitDown
                 | E::NextGroup
                 | E::PrevGroup
                 | E::FocusGroupLeft
@@ -201,6 +199,7 @@ impl Editor {
                     cx.notify(Level::Info, if forward { "Last file in this diff" } else { "First file in this diff" });
                 }
             }
+            E::SplitRight | E::SplitDown => cx.notify(Level::Info, "A diff tab cannot be split"),
             E::Move(Motion::Up, _) => t.pane.scroll_by(-1),
             E::Move(Motion::Down, _) => t.pane.scroll_by(1),
             E::Move(Motion::PageUp, _) => t.pane.scroll_by(-(t.pane.page.max(1) as isize)),
@@ -299,6 +298,20 @@ mod tests {
         assert_eq!((j, ed.buffers.len()), (i, 1));
         assert_eq!(loads(&fx), [key("b.rs")]);
         assert_eq!(tab(&mut ed, i).at, 1);
+    }
+
+    #[test]
+    fn split_on_a_diff_tab_does_nothing() {
+        let mut ed = Editor::new(&Config::default());
+        with_cx(|cx| {
+            ed.open_diff_tab("Diff", vec![key("a.rs")], 0, cx);
+        });
+        for a in [EditorAction::SplitRight, EditorAction::SplitDown] {
+            let fx = with_cx(|cx| assert!(ed.handle_action(&a, cx)));
+            assert_eq!(notes(&fx), 1);
+        }
+        assert_eq!(ed.groups.len(), 1);
+        assert_eq!(ed.groups[0].views.len(), 1);
     }
 
     #[test]

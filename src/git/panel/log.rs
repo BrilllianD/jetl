@@ -450,7 +450,7 @@ impl GitPanel {
         let busy = self.in_progress().is_some_and(|ip| ip.kind.blocks_switching());
         let mut items = vec![
             MenuItem::new("Copy Revision Number", g(GitAction::CopySha)),
-            MenuItem::new("Show Diff", g(GitAction::LogShowDiff)),
+            MenuItem::new("Show Diff", g(GitAction::ShowDiff)),
             MenuItem::new("Checkout Revision", g(GitAction::LogCheckout)).enabled(!busy),
             MenuItem::new("New Branch…", g(GitAction::LogNewBranch)).enabled(!busy),
             MenuItem::new("Cherry-Pick", g(GitAction::LogCherryPick)).enabled(!busy),
@@ -1092,6 +1092,53 @@ mod tests {
         assert_eq!(got[6], ("Copy Revision Number".to_string(), true));
         assert_eq!(got[7], ("Cherry-Pick".to_string(), false));
         assert!(!got[8].1 && !got[9].1);
+    }
+
+    fn sole_diff_tab(fx: &[Effect]) -> DiffKey {
+        match fx {
+            [Effect::OpenDiffTab { files, at: 0, .. }] if files.len() == 1 => files[0].clone(),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn show_diff_in_log_files_opens_the_selected_file() {
+        let mut p = panel();
+        p.area = Area::Files;
+        p.files_list.select(2);
+        let want = p.log_file_key().unwrap();
+        let fx = with_cx(|cx| p.handle_action(&GitAction::ShowDiff, cx));
+        assert_eq!(sole_diff_tab(&fx), want);
+        // The folder row has no file: a note, no tab.
+        p.files_list.select(1);
+        assert!(p.log_file_key().is_none());
+        let fx = with_cx(|cx| p.handle_action(&GitAction::ShowDiff, cx));
+        assert!(matches!(fx.as_slice(), [Effect::Notify(_, t)] if t == "Select a file to show its diff"), "{fx:?}");
+    }
+
+    #[test]
+    fn show_diff_in_stash_files_opens_the_selected_file() {
+        let mut p = GitPanel::new();
+        p.tab = GitTab::Stash;
+        p.area = Area::StashFiles;
+        let fx = with_cx(|cx| p.handle_action(&GitAction::ShowDiff, cx));
+        assert!(matches!(fx.as_slice(), [Effect::Notify(_, t)] if t == "Select a file to show its diff"), "{fx:?}");
+        p.stash_details = Some(CommitDetails { sha: "s".into(), body: String::new(), files: vec![file('M', "x.rs")] });
+        p.stash_files.set_len(1);
+        let fx = with_cx(|cx| p.handle_action(&GitAction::ShowDiff, cx));
+        assert_eq!(sole_diff_tab(&fx), DiffKey::Commit { sha: "s".into(), rel: "x.rs".into(), old: None });
+    }
+
+    #[test]
+    fn open_diff_tab_file_op_pushes_the_selected_file() {
+        let mut p = panel();
+        p.area = Area::Files;
+        p.files_list.select(2);
+        let want = p.log_file_key().unwrap();
+        let fx = with_cx(|cx| p.log_file_op(LogFileOp::OpenDiffTab, cx));
+        assert_eq!(sole_diff_tab(&fx), want);
+        p.files_list.select(1);
+        assert!(with_cx(|cx| p.log_file_op(LogFileOp::OpenDiffTab, cx)).is_empty());
     }
 
     #[test]
