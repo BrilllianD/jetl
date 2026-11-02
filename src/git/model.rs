@@ -376,6 +376,8 @@ impl BranchOp {
 pub enum LogFileOp {
     /// Show the file's diff in the Log diff pane.
     ShowDiff,
+    /// Open the file's diff in a full-size editor tab.
+    OpenDiffTab,
     /// Open the working-tree file.
     OpenInEditor,
     /// Copy the absolute path.

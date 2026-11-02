@@ -285,6 +285,9 @@
 # Ctrl+Alt+Shift+Up/Down need modifier-aware arrows; F7/Shift+F7 work anywhere.
 "f7" = "editor.next_change"
 "shift-f7" = "editor.prev_change"
+# A diff tab (Git window Ctrl+D): the next / previous file.
+"alt-n" = "editor.diff_next_file"
+"alt-p" = "editor.diff_prev_file"
 # Language server diagnostics in the file, as Next Highlighted Error.
 "f2" = "lsp.next_problem"
 "shift-f2" = "lsp.prev_problem"
@@ -421,7 +424,7 @@
 "ctrl-f" = "git.log_filter"
 "shift-f10" = "git.context_menu"
 "ctrl-c" = "git.copy_sha"
-"ctrl-d" = "git.log_show_diff"
+"ctrl-d" = "git.show_diff"
 "alt-shift-c" = "git.log_checkout"
 "alt-shift-b" = "git.log_new_branch"
 "alt-shift-p" = "git.log_cherry_pick"

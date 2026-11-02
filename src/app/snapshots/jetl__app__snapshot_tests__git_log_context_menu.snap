@@ -8,7 +8,7 @@ expression: "snapshot(&term, &marks, Some(bottom))"
 02  1 │                              ││
 03  ⌂ │╭───────────────────────────────────────────────╮
 04  2 ││ Copy Revision Number                   Ctrl+C │
-05  ◫ ││ Show Diff                              Ctrl+D │
+05  ◫ ││ Show Diff                                     │
 06  7 ││ Checkout Revision                 Alt+Shift+C │
 07  ⊢ ││ New Branch…                       Alt+Shift+B │en. Alt+1 opens the Project view; Ctrl+Shift+N finds a file.
 08    ││ Cherry-Pick                       Alt+Shift+P │

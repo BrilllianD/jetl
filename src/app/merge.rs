@@ -290,6 +290,13 @@ mod tests {
             }
             None => handle_next(&mut app, |m| matches!(m, AppMsg::TreeLoaded { .. })).await,
         }
+        // Ctrl+D on it goes to the resolver, not to a diff tab.
+        app.focus.set(PanelId::Git);
+        app.perform(Action::Git(GitAction::ShowDiff));
+        handle_next(&mut app, conflict).await;
+        assert!(app.editor.merge_active());
+        assert!(app.editor.buffers.iter().all(|b| b.diff.is_none()));
+        app.perform(merge(MergeAction::Cancel));
         assert!(app.project.select_path(&root.join("a.txt")));
         app.focus.set(PanelId::Project);
         app.perform(Action::Tree(TreeAction::Open));

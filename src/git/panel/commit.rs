@@ -92,6 +92,16 @@ impl GitPanel {
         }
     }
 
+    /// What the selected entry opens as a diff: its key, or (a conflicted
+    /// file) its absolute path, which goes to the resolver.
+    pub(super) fn change_diff_target(&self) -> Option<Result<DiffKey, std::path::PathBuf>> {
+        let e = self.selected_entry()?;
+        if e.status == FileStatus::Conflicted {
+            return Some(Err(e.abs.clone()));
+        }
+        Some(Ok(DiffKey::Change { section: e.section, rel: e.rel.clone(), old: e.old_rel.clone() }))
+    }
+
     fn staged_count(&self) -> usize {
         self.snapshot.as_ref().map(|s| s.count(Section::Staged)).unwrap_or(0)
     }
@@ -99,10 +109,11 @@ impl GitPanel {
     /// Show the diff of the selected entry. With `reload` the current one is
     /// fetched again (its content may have changed).
     pub(super) fn sync_diff(&mut self, reload: bool, cx: &mut Ctx) {
-        if self.selected_entry().is_some_and(|e| e.status == FileStatus::Conflicted) {
-            return self.diff.clear();
-        }
-        let key = self.selected_entry().map(|e| DiffKey::Change { section: e.section, rel: e.rel.clone(), old: e.old_rel.clone() });
+        let key = match self.change_diff_target() {
+            Some(Err(_)) => return self.diff.clear(),
+            Some(Ok(k)) => Some(k),
+            None => None,
+        };
         match key {
             Some(k) if reload || self.diff.key.as_ref() != Some(&k) => self.diff.request(k, cx),
             Some(_) => {}
@@ -120,6 +131,12 @@ impl GitPanel {
     /// The key of the diff the Commit tab shows or has requested.
     pub fn diff_key(&self) -> Option<&DiffKey> {
         self.diff.key.as_ref()
+    }
+
+    #[cfg(test)]
+    /// Whether the Commit tab diff has its doc.
+    pub fn diff_loaded(&self) -> bool {
+        self.diff.doc.is_some()
     }
 
     #[cfg(test)]

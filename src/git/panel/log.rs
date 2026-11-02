@@ -572,6 +572,7 @@ impl GitPanel {
                 let present = self.log_node_rel().is_some_and(|rel| self.workdir(cx).join(rel).is_file());
                 vec![
                     MenuItem::new("Show Diff", f(LogFileOp::ShowDiff)),
+                    MenuItem::new("Open Diff in Editor Tab", f(LogFileOp::OpenDiffTab)),
                     MenuItem::new("Open in Editor", f(LogFileOp::OpenInEditor)).enabled(present),
                     MenuItem::new("Copy Path", f(LogFileOp::CopyPath)),
                     MenuItem::new("Show History for File", f(LogFileOp::ShowHistory)),
@@ -601,6 +602,11 @@ impl GitPanel {
     pub(super) fn log_file_op(&mut self, op: LogFileOp, cx: &mut Ctx) {
         match op {
             LogFileOp::ShowDiff => self.open_commit_file(cx),
+            LogFileOp::OpenDiffTab => {
+                if let Some(key) = self.log_file_key() {
+                    self.push_diff_tab(key, cx)
+                }
+            }
             LogFileOp::ExpandAll | LogFileOp::CollapseAll => {
                 self.log_tree.set_all(op == LogFileOp::ExpandAll);
                 self.files_list.set_len(self.log_tree.rows().len());
@@ -1062,6 +1068,7 @@ mod tests {
             names,
             [
                 "Show Diff",
+                "Open Diff in Editor Tab",
                 "Open in Editor",
                 "Copy Path",
                 "Show History for File",
@@ -1072,18 +1079,19 @@ mod tests {
                 "Checkout Revision"
             ]
         );
-        assert_eq!(got[1], ("Open in Editor".to_string(), false));
-        assert!(got[6].1);
+        assert_eq!(got[2], ("Open in Editor".to_string(), false));
+        assert!(got[7].1);
         let Some(Effect::ContextMenu(m)) = fx.first() else { unreachable!() };
-        assert!(m.items[4].action.is_none());
+        assert!(m.items[5].action.is_none());
+        assert_eq!(m.items[1].action, Some(Action::Git(GitAction::LogFileOp(LogFileOp::OpenDiffTab))));
         assert_eq!(m.items[0].action, Some(Action::Git(GitAction::LogFileOp(LogFileOp::ShowDiff))));
 
         p.snapshot =
             Some(StatusSnapshot { in_progress: Some(InProgress { kind: InProgressKind::Merge, step: None }), ..Default::default() });
         let got = labels(&with_cx(|cx| p.log_file_menu(None, cx)));
-        assert_eq!(got[5], ("Copy Revision Number".to_string(), true));
-        assert_eq!(got[6], ("Cherry-Pick".to_string(), false));
-        assert!(!got[7].1 && !got[8].1);
+        assert_eq!(got[6], ("Copy Revision Number".to_string(), true));
+        assert_eq!(got[7], ("Cherry-Pick".to_string(), false));
+        assert!(!got[8].1 && !got[9].1);
     }
 
     #[test]
@@ -1164,7 +1172,7 @@ mod tests {
         assert_eq!(p.details.as_ref().map(|d| d.files[0].path.as_str()), Some("x.rs"));
 
         let names: Vec<String> = labels(&with_cx(|cx| p.log_file_menu(None, cx))).into_iter().map(|(l, _)| l).collect();
-        assert_eq!(names, ["Show Diff", "Open in Editor", "Copy Path", "Show History for File"]);
+        assert_eq!(names, ["Show Diff", "Open Diff in Editor Tab", "Open in Editor", "Copy Path", "Show History for File"]);
 
         p.area = Area::Log;
         let fx = with_cx(|cx| p.handle_action(&GitAction::Down, cx));

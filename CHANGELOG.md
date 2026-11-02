@@ -9,7 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Git Log: the selected commit's files are a folder tree with one root (Left/Right close and open folders) and a context menu on every node: Show Diff, Open in Editor, Copy Path, Show History, Expand/Collapse All, and the commit's Cherry-Pick, Revert, Checkout and Copy Revision Number.
+- Git window: Ctrl+D (`git.show_diff`) on a file in the Commit, Log or Stash tab opens its diff side by side in a full-size editor tab (header toggles for layout and collapse, F7 / Shift+F7 between changes, Alt+N / Alt+P between files); the Log file menu has Open Diff in Editor Tab. In the Log list Ctrl+D still opens the commits' patch.
+- Git Log: the selected commit's files are a folder tree with one root (Left/Right close and open folders) and a context menu on every node: Show Diff, Open Diff in Editor Tab, Open in Editor, Copy Path, Show History, Expand/Collapse All, and the commit's Cherry-Pick, Revert, Checkout and Copy Revision Number.
 - Git Log: with several commits selected the details list the union of their files as one tree, and a file's diff is its combined change across the selection (from the oldest selected commit's parent to the newest; a non-contiguous selection is marked in the header).
 
 ### Changed

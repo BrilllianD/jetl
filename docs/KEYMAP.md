@@ -215,6 +215,8 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Shift+F11` | `editor.show_bookmarks` | Show bookmarks |
 | `Ctrl+F11` | `editor.toggle_numbered_bookmark` | Toggle numbered bookmark (a digit) on the caret line |
 | `Ctrl+Alt+Z` | `editor.revert_change` | Revert the change at the caret to HEAD |
+| `Alt+N` | `editor.diff_next_file` | Diff tab: show the next file |
+| `Alt+P` | `editor.diff_prev_file` | Diff tab: show the previous file |
 | `Ctrl+Alt+Shift+Down` | `editor.next_change` | Go to the next change |
 | `F7` | `editor.next_change` | Go to the next change |
 | `Ctrl+Alt+Shift+Up` | `editor.prev_change` | Go to the previous change |
@@ -310,7 +312,7 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Ctrl+F` | `git.log_filter` | Git: filter the log (branch, text, author, path) |
 | `Shift+F10` | `git.context_menu` | Git: context menu of the selected commit, branch or commit file |
 | `Ctrl+C` | `git.copy_sha` | Git: copy the selected commit's revision number |
-| `Ctrl+D` | `git.log_show_diff` | Git: show the diff of the selected commits in an editor tab |
+| `Ctrl+D` | `git.show_diff` | Git: show the diff in an editor tab: the selected file, or in the Log list the selected commits |
 | `Alt+Shift+C` | `git.log_checkout` | Git: check out the selected commit (detached) |
 | `Alt+Shift+B` | `git.log_new_branch` | Git: new branch at the selected commit |
 | `Alt+Shift+P` | `git.log_cherry_pick` | Git: cherry-pick the selected commit |
@@ -635,6 +637,7 @@ Reachable from Find Action (F1) or by binding them in `keymap.toml`.
 | `git.continue_operation` | Git: continue the rebase, merge, cherry-pick or revert in progress |
 | `git.skip_operation` | Git: skip the commit the rebase, cherry-pick or revert stopped on |
 | `git.abort_operation` | Git: abort the rebase, merge, cherry-pick or revert in progress |
+| `git.log_show_diff` | Git: show the diff of the selected commits in an editor tab |
 | `git.log_reset` | Git: reset the current branch to the selected commit (soft, mixed or hard) |
 | `git.commit_and_push` | Git: commit and push |
 | `git.message_older` | Git: previous commit message from history |

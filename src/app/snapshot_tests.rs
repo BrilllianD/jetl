@@ -155,6 +155,38 @@ async fn editor_patch_tab_folded() {
     assert_snapshot!("editor_patch_tab_folded", snapshot(&term, &marks, None));
 }
 
+/// An app with a two-file diff tab on a.rs, fed a doc with a changed, an added and a removed line and a long equal run.
+fn diff_tab_app(name: &str) -> Fixture {
+    let mut fx = stable_app(name);
+    let app = &mut fx.app;
+    let key = |rel: &str| DiffKey::Commit { sha: "1a2b3c4d5e6f7a8b".into(), rel: rel.into(), old: None };
+    let mut cx = ctx!(app);
+    app.editor.open_diff_tab("Diff a.rs", vec![key("src/a.rs"), key("src/b.rs")], 0, &mut cx);
+    let old = "fn main() {\n    let a = 1;\n    let b = 2;\n    println!(\"x\");\n1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n    gone();\n}\n";
+    let new = "fn main() {\n    let a = 10;\n    let b = 2;\n    println!(\"x\");\n    added();\n1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n}\n";
+    let doc = crate::git::diff::DiffDoc::build(old.as_bytes(), new.as_bytes(), 4);
+    assert!(app.editor.set_diff(&key("src/a.rs"), &Ok(doc)));
+    fx
+}
+
+#[tokio::test]
+async fn editor_diff_tab() {
+    let mut fx = diff_tab_app("diff-tab");
+    let app = &mut fx.app;
+    let term = draw_editor(app, 120, 40);
+    let marks = [Mark::bg('+', "added", app.theme.diff_add_bg), Mark::bg('-', "removed", app.theme.diff_del_bg)];
+    assert_snapshot!("editor_diff_tab", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
+async fn editor_diff_tab_unified() {
+    let mut fx = diff_tab_app("diff-tab-unified");
+    let app = &mut fx.app;
+    let term = draw_editor(app, 80, 24);
+    let marks = [Mark::bg('+', "added", app.theme.diff_add_bg), Mark::bg('-', "removed", app.theme.diff_del_bg)];
+    assert_snapshot!("editor_diff_tab_unified", snapshot(&term, &marks, None));
+}
+
 #[tokio::test]
 async fn editor_tab_drag_hint() {
     let mut fx = stable_app("tab-drag-hint");

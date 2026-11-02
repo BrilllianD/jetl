@@ -112,10 +112,15 @@ impl GitPanel {
         cx.effects.push(Effect::Git(GitRequest::Stash(req)));
     }
 
+    /// The diff key of the selected stash file.
+    pub(super) fn stash_file_key(&self) -> Option<DiffKey> {
+        let d = self.stash_details.as_ref()?;
+        let f = d.files.get(self.stash_files.selected)?;
+        Some(DiffKey::Commit { sha: d.sha.clone(), rel: f.path.clone(), old: f.old.clone() })
+    }
+
     pub(super) fn open_stash_file(&mut self, cx: &mut Ctx) {
-        let Some(d) = &self.stash_details else { return };
-        let Some(f) = d.files.get(self.stash_files.selected) else { return };
-        let key = DiffKey::Commit { sha: d.sha.clone(), rel: f.path.clone(), old: f.old.clone() };
+        let Some(key) = self.stash_file_key() else { return };
         self.stash_diff.request(key, cx);
         self.area = Area::StashDiff;
     }

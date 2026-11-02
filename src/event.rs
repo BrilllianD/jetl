@@ -259,6 +259,12 @@ pub enum Effect {
     OpenFile(PathBuf),
     /// Open a file, or the conflict resolver when the last status lists it as conflicted (App::open_or_resolve).
     OpenOrResolve(PathBuf),
+    /// Open (or activate) a diff tab over files, showing files[at] (App::open_diff_tab).
+    OpenDiffTab {
+        title: String,
+        files: Vec<crate::git::model::DiffKey>,
+        at: usize,
+    },
     /// Open a file with the caret at a 0-based line and char column.
     OpenFileAt {
         path: PathBuf,

@@ -1,0 +1,48 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &marks, None)"
+---
+120x40 cursor=hidden
+00   Diff a.rs ×
+01  1/2  1a2b3c4d  src/a.rs                                                                     [Side-by-side] [x] Collapse
+02   1 fn main() {                                            │  1 fn main() {
+03   2     let a = 1;                                         │  2     let a = 10;
+04   3     let b = 2;                                         │  3     let b = 2;
+05   4     println!("x");                                     │  4     println!("x");
+06                                                            │  5     added();
+07   5 1                                                      │  6 1
+08   6 2                                                      │  7 2
+09   7 3                                                      │  8 3
+10     ⋯ 4 unchanged lines (click to show)
+11  12 8                                                      │ 13 8
+12  13 9                                                      │ 14 9
+13  14 10                                                     │ 15 10
+14  15     gone();                                            │
+15  16 }                                                      │ 16 }
+16
+17
+18
+19
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+30
+31
+32
+33
+34
+35
+36
+37
+38
+39
+-- marks: +=added -=removed
+06                                                                 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+14     -------------------------------------------------------

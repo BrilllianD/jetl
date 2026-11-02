@@ -164,7 +164,10 @@ impl App {
                 self.editor.update_gutters();
             }
             GitMsg::Blob { .. } => {}
-            GitMsg::Diff { key, result, .. } => self.git_panel.set_diff(&key, result),
+            GitMsg::Diff { key, result, .. } => {
+                self.editor.set_diff(&key, &result);
+                self.git_panel.set_diff(&key, result)
+            }
             GitMsg::Branches { result, .. } => {
                 let worktree = std::mem::take(&mut self.worktrees.pending_existing);
                 let palette = self.palette.as_mut().filter(|p| p.wants(Source::Branches));
@@ -445,6 +448,22 @@ impl App {
         self.focus.set(PanelId::Editor);
     }
 
+    /// Open a diff tab (Git window Ctrl+D) with the Git window's layout and focus the editor.
+    pub(super) fn open_diff_tab(&mut self, title: String, files: Vec<crate::git::model::DiffKey>, at: usize) {
+        if self.editor.merge_active() {
+            return self.notify(Level::Info, crate::editor::merge::BUSY);
+        }
+        if files.is_empty() {
+            return self.notify(Level::Info, "No changes to show");
+        }
+        self.editor.diff_opts = self.git_panel.diff_opts();
+        let mut cx = ctx!(self);
+        self.editor.open_diff_tab(&title, files, at, &mut cx);
+        let fx = cx.effects;
+        self.apply_effects(fx);
+        self.focus.set(PanelId::Editor);
+    }
+
     /// Open a file: reuse the tab when already open, otherwise read it off
     /// the main loop and finish in `file_loaded`.
     pub fn open_file(&mut self, path: PathBuf, focus: bool) {
@@ -567,6 +586,37 @@ mod tests {
             output: output.into(),
             renames: Vec::new(),
         }));
+    }
+
+    #[tokio::test]
+    async fn ctrl_d_in_changes_opens_a_diff_tab_fed_with_the_panel() {
+        use crate::actions::{Action, GitAction};
+        use crate::git::diff::DiffDoc;
+        let (mut app, dir) = test_app("diff-tab-changes");
+        let root = app.workspace.root.clone();
+        crate::app::tests::init_repo(&app, &[("a.txt", "a\n")]);
+        std::fs::write(root.join("a.txt"), "b\n").unwrap();
+        crate::app::tests::feed_status(&mut app, 1);
+        app.focus.set(PanelId::Git);
+        let want = crate::git::model::DiffKey::Change { section: crate::git::model::Section::Unstaged, rel: "a.txt".into(), old: None };
+        if app.git_panel.diff_key() != Some(&want) {
+            app.perform(Action::Git(GitAction::Down));
+        }
+        assert_eq!(app.git_panel.diff_key(), Some(&want));
+        app.perform(Action::Git(GitAction::ShowDiff));
+        assert_eq!(app.focus.current, PanelId::Editor);
+        let b = app.editor.active_buffer().unwrap();
+        assert!(b.diff.is_some());
+        assert_eq!(b.name, "Diff a.txt");
+        let n = app.editor.buffers.len();
+        let result = Ok(DiffDoc::build(b"a\n", b"b\n", 4));
+        app.handle_msg(AppMsg::Git(GitMsg::Diff { generation: app.git.generation, key: want, result }));
+        assert!(app.editor.active_buffer().unwrap().diff.as_ref().unwrap().pane.doc.is_some());
+        assert!(app.git_panel.diff_loaded());
+        app.focus.set(PanelId::Git);
+        app.perform(Action::Git(GitAction::ShowDiff));
+        assert_eq!(app.editor.buffers.len(), n);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The newest notification as (level, text).

@@ -262,6 +262,10 @@ pub enum EditorAction {
     RevertChange,
     NextChange,
     PrevChange,
+    /// Show the next file of a diff tab.
+    DiffNextFile,
+    /// Show the previous file of a diff tab.
+    DiffPrevFile,
     /// Show or hide the git blame column.
     ToggleBlame,
     /// Reformat the buffer with its language's external formatter.
@@ -345,6 +349,8 @@ pub enum GitAction {
     ContextMenu,
     CopySha,
     LogShowDiff,
+    /// The selected file's diff in an editor tab; in the Log list the selected commits.
+    ShowDiff,
     LogCheckout,
     LogNewBranch,
     LogCherryPick,
@@ -893,6 +899,8 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "editor.line_ending_crlf" => "Convert line endings to CRLF", Editor(E::LineEndingCrlf);
         "editor.set_language" => "Set the file's language (highlighting)", Editor(E::SetLanguage);
         "editor.revert_change" => "Revert the change at the caret to HEAD", Editor(E::RevertChange);
+        "editor.diff_next_file" => "Diff tab: show the next file", Editor(E::DiffNextFile);
+        "editor.diff_prev_file" => "Diff tab: show the previous file", Editor(E::DiffPrevFile);
         "editor.next_change" => "Go to the next change", Editor(E::NextChange);
         "editor.prev_change" => "Go to the previous change", Editor(E::PrevChange);
         "editor.toggle_blame" => "Annotate with git blame (show or hide)", Editor(E::ToggleBlame);
@@ -939,6 +947,7 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "git.log_filter" => "Git: filter the log (branch, text, author, path)", Git(GitAction::LogFilter);
         "git.context_menu" => "Git: context menu of the selected commit, branch or commit file", Git(GitAction::ContextMenu);
         "git.copy_sha" => "Git: copy the selected commit's revision number", Git(GitAction::CopySha);
+        "git.show_diff" => "Git: show the diff in an editor tab: the selected file, or in the Log list the selected commits", Git(GitAction::ShowDiff);
         "git.log_show_diff" => "Git: show the diff of the selected commits in an editor tab", Git(GitAction::LogShowDiff);
         "git.log_checkout" => "Git: check out the selected commit (detached)", Git(GitAction::LogCheckout);
         "git.log_new_branch" => "Git: new branch at the selected commit", Git(GitAction::LogNewBranch);

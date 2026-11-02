@@ -8,6 +8,7 @@ pub(crate) mod breadcrumbs;
 pub mod buffer;
 mod carets;
 mod column;
+pub(crate) mod diff_tab;
 pub mod expand;
 mod find;
 pub mod fold;
@@ -205,6 +206,8 @@ pub struct Editor {
     /// The groups' area as last drawn (the resolver picks two or three
     /// panes by its width).
     center: Rect,
+    /// The layout options a new diff tab starts with (the Git window's, set by `App` before opening one).
+    pub(crate) diff_opts: crate::git::panel::DiffOpts,
     /// `ui.file_icons`, set by `App::sync_file_icons` (not by `apply_config`).
     pub file_icons: FileIcons,
 }
@@ -272,6 +275,7 @@ impl Editor {
             merge: None,
             snippet: None,
             center: Rect::default(),
+            diff_opts: crate::git::panel::DiffOpts { unified: None, collapse: true },
         };
         ed.apply_config(config);
         ed
@@ -542,6 +546,11 @@ impl Editor {
         for b in &mut self.buffers {
             if let Some(p) = b.preview.as_mut() {
                 p.version = u64::MAX;
+            }
+        }
+        for b in &mut self.buffers {
+            if let Some(t) = b.diff.as_mut() {
+                t.pane.restyle();
             }
         }
         for g in &mut self.groups {
@@ -954,6 +963,9 @@ impl Editor {
             // Ends the snippet session, then does its usual step.
             E::Escape => self.snippet = None,
             _ => {}
+        }
+        if let Some(done) = self.diff_tab_action(a, cx) {
+            return done;
         }
         match a {
             E::NextTab | E::PrevTab => {
@@ -1425,6 +1437,8 @@ impl Editor {
             | E::CompareWithClipboard
             | E::CompareWithFile
             | E::MarkdownPreview => {}
+            // Only a diff tab handles these (`diff_tab_action`).
+            E::DiffNextFile | E::DiffPrevFile => return false,
         }
         // A motion or edit that put a caret into a fold unfolds it.
         if let Some(b) = self.active_buffer_mut() {
@@ -1446,6 +1460,9 @@ impl Editor {
         // The conflict resolver's glyphs left of the gutter.
         if m.kind == MouseEventKind::Down(MouseButton::Left) && self.merge_mouse(m.x, m.y, cx.theme) {
             return true;
+        }
+        if let Some(done) = self.diff_tab_mouse(m) {
+            return done;
         }
         if m.kind == MouseEventKind::Down(MouseButton::Left) {
             if self.focused_group().find_area.contains(ratatui::layout::Position::new(m.x, m.y)) {
@@ -1871,6 +1888,13 @@ impl Editor {
             }
             return;
         };
+        if self.buffers[i].diff.is_some() {
+            group.text_area = area;
+            if let Some(t) = self.buffers[i].diff.as_deref_mut() {
+                t.render(screen, area, focused, theme);
+            }
+            return;
+        }
         let opts = RenderOpts {
             focused,
             tab_width: self.tab_display(&self.buffers[i]),
@@ -1996,6 +2020,9 @@ fn click_target(b: &Buffer, p: usize, up: bool, row_start: usize) -> usize {
 /// The wheel over a view: three rows up or down, four columns sideways
 /// (none when wrapped).
 fn wheel(b: &mut Buffer, kind: MouseEventKind) -> bool {
+    if let Some(t) = b.diff.as_deref_mut() {
+        return t.wheel(kind);
+    }
     let wraps = b.rows().wraps();
     let step = |b: &Buffer, d: isize| b.rows().step_row(b.view.top(), d);
     match kind {

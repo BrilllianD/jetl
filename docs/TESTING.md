@@ -975,7 +975,7 @@ press 0 42 2; release 0 42 2
 # file tree, in a scratch repo $T with a commit that touches src/a/b/x.txt, src/y.txt and top.txt: select it in the Log, Right:
 # "▾ <repo dir>", then "▾ src", "▾ a/b", "x.txt", "y.txt", "top.txt" (folders first)
 # Down onto "a/b", Left: "▸ a/b" and its file hidden; Right opens it again
-# Enter on y.txt: the diff pane (Esc returns); Esc, right click on y.txt: the menu Show Diff, Open in Editor, Copy Path,
+# Enter on y.txt: the diff pane (Esc returns); Esc, right click on y.txt: the menu Show Diff, Open Diff in Editor Tab, Open in Editor, Copy Path,
 # Show History for File, then Copy Revision Number, Cherry-Pick, Revert Commit…, Checkout Revision; Escape
 # right click on "src": Expand All, Collapse All, Copy Path, Show History for Folder, then the same four; pick Show
 # History for Folder: the bar shows "[Path: src]"
@@ -983,6 +983,15 @@ press 0 42 2; release 0 42 2
 # "short subject" lines, the tree lists every file once; Right, Enter on a file changed in the first and last
 # commit: the diff header reads "<base8>..<top8>  <file>" and shows the combined change; Ctrl+click a
 # non-neighbour commit: "(not contiguous)" in the header
+# diff tab (Ctrl+D on a file), in a scratch repo $T with a modified tracked file (a.txt) and the merge-conflict file:
+# Alt+9, select a.txt in Changes, Ctrl+D: a full-size tab "Diff a.txt", header row "a.txt  (staged ↔ working tree)" with
+# "[Side-by-side] [x] Collapse" at the right, two panes at 120x40, one unified pane at 80x24, the editor focused;
+# F7 / Shift+F7 move the highlighted change ("No more changes below" / "above" at the ends); the wheel scrolls;
+# Up/Down/PageUp/PageDown scroll; a click on "[Side-by-side]" flips only the tab (Alt+9: the Git window diff keeps its layout);
+# typing and Ctrl+S change nothing; Ctrl+D in the Git window again on a.txt activates the same tab; Ctrl+W closes it
+# Log tab: select a commit, Tab to its files, Ctrl+D on a file: its diff tab; S-F10 on a file: "Open Diff in Editor Tab" after
+# "Show Diff"; Ctrl+D in the Log list still opens the "Diff <sha8>" patch tab. Stash tab: Ctrl+D on a stash file opens a tab.
+# Ctrl+D on the conflicted file in Changes opens the resolver, not a tab
 /tmp/tm.sh kill-server
 ```
 

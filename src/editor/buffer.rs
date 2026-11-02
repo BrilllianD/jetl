@@ -212,6 +212,8 @@ pub struct Buffer {
     pub patch: Option<super::patch::Patch>,
     /// A Markdown preview tab: its source and the styles of its rendered text; read-only and pathless.
     pub preview: Option<super::preview::MarkdownPreview>,
+    /// A diff tab (Git window Ctrl+D): its files and diff pane; read-only, pathless and empty.
+    pub(crate) diff: Option<Box<super::diff_tab::DiffTab>>,
     /// Text restored after a crash (`Editor::recover_text`): no autosave
     /// until an explicit save writes it.
     pub recovered: bool,
@@ -257,6 +259,7 @@ impl Buffer {
             diff_base: None,
             patch: None,
             preview: None,
+            diff: None,
             diff_base_seq: 0,
             blame: None,
             disk_mtime: None,

@@ -15,18 +15,18 @@ expression: "snapshot(&term, &marks, Some(bottom))"
 09    │                              ││
 10  ⋔ │                              ││
 11    │                              ││
-12  ✎ │                              ││
-13    └──────────────────────────────┘│                                        ╭─────────────────────────────────────╮
-14  ✓ ─────────────────────────────────────────────────────────────────────────│ Show Diff                           │─────
-15  8 ┌ Git ───────────────────────────────────────────────────────────────────│ Open in Editor                      │────┐
-16  ⟲ │ Commit   Log   Stash   Console                                         │ Copy Path                           │sh  │
-17  5 │[Branch: all] [Text: any] [Author: any] [Path: any]                     │ Show History for File               │    │
-18  ⚑ │● aaaaaaa (HEAD -> main) Move the panel code         Ann, 2 hours ago│ a├─────────────────────────────────────┤    │
-19  9 │                                                                     │ M│ Copy Revision Number         Ctrl+C │    │
-20  ⎇ │                                                                     │ 5│ Cherry-Pick             Alt+Shift+P │    │
-21    │                                                                     │ ▾│ Revert Commit…          Alt+Shift+R │    │
-22  ❯ │                                                                     │  │ Checkout Revision       Alt+Shift+C │    │
-23  6 │                                                                     │  ╰─────────────────────────────────────╯    │
+12  ✎ │                              ││                                        ╭───────────────────────────────────────╮
+13    └──────────────────────────────┘│                                        │ Show Diff                             │
+14  ✓ ─────────────────────────────────────────────────────────────────────────│ Open Diff in Editor Tab               │───
+15  8 ┌ Git ───────────────────────────────────────────────────────────────────│ Open in Editor                        │──┐
+16  ⟲ │ Commit   Log   Stash   Console                                         │ Copy Path                             │  │
+17  5 │[Branch: all] [Text: any] [Author: any] [Path: any]                     │ Show History for File                 │  │
+18  ⚑ │● aaaaaaa (HEAD -> main) Move the panel code         Ann, 2 hours ago│ a├───────────────────────────────────────┤  │
+19  9 │                                                                     │ M│ Copy Revision Number           Ctrl+C │  │
+20  ⎇ │                                                                     │ 5│ Cherry-Pick               Alt+Shift+P │  │
+21    │                                                                     │ ▾│ Revert Commit…            Alt+Shift+R │  │
+22  ❯ │                                                                     │  │ Checkout Revision         Alt+Shift+C │  │
+23  6 │                                                                     │  ╰───────────────────────────────────────╯  │
 24  ⚠ │                                                                     │   ▾ src                                     │
 25  4 │                                                                     │     ▾ git/panel                             │
 26  ► │                                                                     │       M log.rs                              │
@@ -34,4 +34,4 @@ expression: "snapshot(&term, &marks, Some(bottom))"
 28  ⌕ └───────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 29
 -- marks: L=selected
-23                                                                           LL                                       LLLL
+23                                                                           LL                                         LL

@@ -396,6 +396,37 @@ impl GitPanel {
         }
     }
 
+    /// The Git window's diff layout options (a new diff tab starts with them).
+    pub(crate) fn diff_opts(&self) -> DiffOpts {
+        self.diff_opts
+    }
+
+    fn push_diff_tab(&self, key: DiffKey, cx: &mut Ctx) {
+        let title = crate::editor::diff_tab::file_title(&key);
+        cx.effects.push(Effect::OpenDiffTab { title, files: vec![key], at: 0 });
+    }
+
+    /// `git.show_diff`: the selected file in a diff tab; in the Log list the selected commits.
+    fn show_diff(&mut self, cx: &mut Ctx) {
+        let key = match (self.tab, self.area) {
+            (GitTab::Commit, Area::Changes | Area::Diff) => match self.change_diff_target() {
+                Some(Ok(k)) => Some(k),
+                Some(Err(abs)) => return cx.effects.push(Effect::OpenOrResolve(abs)),
+                None => None,
+            },
+            (GitTab::Log, Area::Log | Area::Branches) => return self.show_commits_diff(cx),
+            (GitTab::Log, Area::Files) => self.log_file_key(),
+            (GitTab::Log, Area::LogDiff) => self.log_diff.key.clone(),
+            (GitTab::Stash, Area::StashFiles) => self.stash_file_key(),
+            (GitTab::Stash, Area::StashDiff) => self.stash_diff.key.clone(),
+            _ => None,
+        };
+        match key {
+            Some(k) => self.push_diff_tab(k, cx),
+            None => cx.notify(Level::Info, "Select a file to show its diff"),
+        }
+    }
+
     pub fn handle_action(&mut self, a: &GitAction, cx: &mut Ctx) -> bool {
         use GitAction as G;
         match a {
@@ -437,6 +468,7 @@ impl GitPanel {
             },
             G::LogFileOp(op) => self.log_file_op(*op, cx),
             G::LogShowDiff => self.show_commits_diff(cx),
+            G::ShowDiff => self.show_diff(cx),
             G::CopySha => self.commit_action(CommitAction::CopySha, cx),
             G::LogCheckout => self.commit_action(CommitAction::Checkout, cx),
             G::LogNewBranch => self.commit_action(CommitAction::NewBranch, cx),
