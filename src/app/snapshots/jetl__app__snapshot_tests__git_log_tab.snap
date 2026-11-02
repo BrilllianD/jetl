@@ -26,11 +26,11 @@ expression: "snapshot(&term, &marks, Some(bottom))"
 20  ⎇ │● │ bbbbbbb Fix the status bar width                  Ann, 4 days ago│                                             │
 21    │├─● eeeeeee Add a parser                              Bob, 5 days ago│ Brings in nested list parsing.              │
 22  ❯ │● ccccccc (tag: v0.1.0) Initial commit               Ann, 2 weeks ago│ 3 files changed                             │
-23  6 │                                                                     │ A src/parser.rs                             │
-24  ⚠ │                                                                     │ M src/main.rs                               │
-25  4 │                                                                     │ R docs/grammar.md -> docs/syntax.md         │
-26  ► │                                                                     │                                             │
-27  3 │                                                                     │                                             │
+23  6 │                                                                     │ ▾ root                                      │
+24  ⚠ │                                                                     │   ▾ docs                                    │
+25  4 │                                                                     │     R syntax.md ← docs/grammar.md           │
+26  ► │                                                                     │   ▾ src                                     │
+27  3 │                                                                     │     M main.rs                               │
 28  ⌕ └───────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 29
 -- marks: L=selected

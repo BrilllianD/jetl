@@ -26,9 +26,9 @@ expression: "snapshot(&term, &marks, Some(bottom))"
 20  ⎇ │  * main ↑1            │● │ bbbbbbb Fix the status bar width   Ann, 4 days ago│                                    │
 21    │    parser             │├─● eeeeeee Add a parser               Bob, 5 days ago│ Brings in nested list parsing.     │
 22  ❯ │▾ Remote               │● ccccccc (tag: v0.1.0) Initial comm… Ann, 2 weeks ago│ 1 file changed                     │
-23  6 │  ▾ origin             │                                                      │ A src/parser.rs                    │
-24  ⚠ │      main             │                                                      │                                    │
-25  4 │      parser           │                                                      │                                    │
+23  6 │  ▾ origin             │                                                      │ ▾ root                             │
+24  ⚠ │      main             │                                                      │   ▾ src                            │
+25  4 │      parser           │                                                      │     A parser.rs                    │
 26  ► │  ▾ upstream           │                                                      │                                    │
 27  3 │      main             │                                                      │                                    │
 28  ⌕ └───────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘

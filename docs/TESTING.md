@@ -972,6 +972,13 @@ press 0 42 2; release 0 42 2
 /tmp/tm.sh send-keys -t jetl 'M->'         # everything open again
 # With the Git window shown again (Alt+9), two Ctrl+clicked commits that are not neighbours (here "fold me" and "init"; SGR button 16: press 16 <col> <row>;
 # release 16 <col> <row>), Ctrl+D, Alt+<: two "==" rows with the empty separator row between them.
+# file tree, in a scratch repo $T with a commit that touches src/a/b/x.txt, src/y.txt and top.txt: select it in the Log, Right:
+# "▾ <repo dir>", then "▾ src", "▾ a/b", "x.txt", "y.txt", "top.txt" (folders first)
+# Down onto "a/b", Left: "▸ a/b" and its file hidden; Right opens it again
+# Enter on y.txt: the diff pane (Esc returns); Esc, right click on y.txt: the menu Show Diff, Open in Editor, Copy Path,
+# Show History for File, then Copy Revision Number, Cherry-Pick, Revert Commit…, Checkout Revision; Escape
+# right click on "src": Expand All, Collapse All, Copy Path, Show History for Folder, then the same four; pick Show
+# History for Folder: the bar shows "[Path: src]"
 /tmp/tm.sh kill-server
 ```
 

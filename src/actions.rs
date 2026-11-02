@@ -359,6 +359,8 @@ pub enum GitAction {
         branch: String,
         op: crate::git::model::BranchOp,
     },
+    /// One action on the selected node of the Log details' file tree (a context menu row; not in the keymap).
+    LogFileOp(crate::git::model::LogFileOp),
     Commit,
     CommitAndPush,
     CommitBox,
@@ -935,7 +937,7 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "git.skip_operation" => "Git: skip the commit the rebase, cherry-pick or revert stopped on", Git(GitAction::SkipOperation);
         "git.abort_operation" => "Git: abort the rebase, merge, cherry-pick or revert in progress", Git(GitAction::AbortOperation);
         "git.log_filter" => "Git: filter the log (branch, text, author, path)", Git(GitAction::LogFilter);
-        "git.context_menu" => "Git: commit actions for the selected commit", Git(GitAction::ContextMenu);
+        "git.context_menu" => "Git: context menu of the selected commit, branch or commit file", Git(GitAction::ContextMenu);
         "git.copy_sha" => "Git: copy the selected commit's revision number", Git(GitAction::CopySha);
         "git.log_show_diff" => "Git: show the diff of the selected commits in an editor tab", Git(GitAction::LogShowDiff);
         "git.log_checkout" => "Git: check out the selected commit (detached)", Git(GitAction::LogCheckout);
@@ -977,8 +979,8 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "git.extend_selection_down" => "Git: in the Log, select the commit below too (elsewhere: down)", Git(GitAction::ExtendDown);
         "git.page_up" => "Git: page up", Git(GitAction::PageUp);
         "git.page_down" => "Git: page down", Git(GitAction::PageDown);
-        "git.left" => "Git: left", Git(GitAction::Left);
-        "git.right" => "Git: right", Git(GitAction::Right);
+        "git.left" => "Git: left (in a commit's files: close the folder, else back to the list)", Git(GitAction::Left);
+        "git.right" => "Git: right (in a commit's files: open the folder or the file's diff)", Git(GitAction::Right);
         "git.open_file" => "Git: open selected file", Git(GitAction::OpenFile);
         "git.focus_message" => "Git: focus commit message", Git(GitAction::FocusMessage);
         "git.next_section" => "Git: next pane", Git(GitAction::NextSection);

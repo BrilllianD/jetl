@@ -371,6 +371,23 @@ impl BranchOp {
     }
 }
 
+/// One action on a node of the Log details' file tree (a context menu row).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LogFileOp {
+    /// Show the file's diff in the Log diff pane.
+    ShowDiff,
+    /// Open the working-tree file.
+    OpenInEditor,
+    /// Copy the absolute path.
+    CopyPath,
+    /// The Log filtered to the node's path.
+    ShowHistory,
+    /// Open every folder.
+    ExpandAll,
+    /// Close every folder.
+    CollapseAll,
+}
+
 /// `git blame` of a file at HEAD: the commit of every line.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Blame {

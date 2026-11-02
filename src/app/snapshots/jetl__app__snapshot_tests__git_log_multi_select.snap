@@ -25,9 +25,9 @@ expression: "snapshot(&term, &marks, Some(bottom))"
 19  9 ││ ● ddddddd (parser) Parse nested lists               Bob, 3 days ago│ ddddddd  Bob, 3 days ago                    │
 20  ⎇ │● │ bbbbbbb Fix the status bar width                  Ann, 4 days ago│ Parse nested lists                          │
 21    │├─● eeeeeee Add a parser                              Bob, 5 days ago│ 1 file changed                              │
-22  ❯ │● ccccccc (tag: v0.1.0) Initial commit               Ann, 2 weeks ago│ M src/parser.rs                             │
-23  6 │                                                                     │                                             │
-24  ⚠ │                                                                     │                                             │
+22  ❯ │● ccccccc (tag: v0.1.0) Initial commit               Ann, 2 weeks ago│ ▾ root                                      │
+23  6 │                                                                     │   ▾ src                                     │
+24  ⚠ │                                                                     │     M parser.rs                             │
 25  4 │                                                                     │                                             │
 26  ► │                                                                     │                                             │
 27  3 │                                                                     │                                             │

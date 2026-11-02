@@ -1873,6 +1873,64 @@ async fn git_log_tab() {
     assert_snapshot!("git_log_tab", snapshot(&term, &marks, Some(bottom)));
 }
 
+fn log_files_fixture(name: &str) -> Fixture {
+    use crate::git::model::{CommitDetails, CommitFile};
+    let mut fx = stable_app(name);
+    let app = &mut fx.app;
+    app.toggle_tool_window(ToolWindowId::Git);
+    app.perform(Action::Git(crate::actions::GitAction::TabLog));
+    let commits = vec![commit('a', &[], "Ann", "2 hours ago", "HEAD -> main", "Move the panel code")];
+    let g = app.git.generation;
+    let filter = app.git_panel.log_filter().clone();
+    app.handle_msg(AppMsg::Git(GitMsg::Log { generation: g, skip: 0, filter, result: Ok(commits) }));
+    let file = |status, path: &str, old: Option<&str>| CommitFile { status, path: path.into(), old: old.map(Into::into) };
+    let details = CommitDetails {
+        sha: sha('a'),
+        body: "Move the panel code".into(),
+        files: vec![
+            file('M', "src/git/panel/log.rs", None),
+            file('M', "src/git/panel/mod.rs", None),
+            file('M', "src/main.rs", None),
+            file('R', "docs/syntax.md", Some("docs/grammar.md")),
+            file('A', "README.md", None),
+        ],
+    };
+    app.handle_msg(AppMsg::Git(GitMsg::CommitDetails { generation: g, sha: sha('a'), result: Ok(details) }));
+    fx
+}
+
+#[tokio::test]
+async fn git_log_files_tree() {
+    use crate::actions::GitAction;
+    let mut fx = log_files_fixture("git-log-files-tree");
+    let app = &mut fx.app;
+    app.perform(Action::Git(GitAction::Right));
+    for _ in 0..4 {
+        app.perform(Action::Git(GitAction::Down));
+    }
+    app.perform(Action::Git(GitAction::Left));
+    let term = draw_app(app, 120, 30);
+    let marks = [Mark::bg('L', "selected", app.theme.list_selected.bg.unwrap())];
+    let bottom = app.layout.rects.bottom;
+    assert_snapshot!("git_log_files_tree", snapshot(&term, &marks, Some(bottom)));
+}
+
+#[tokio::test]
+async fn git_log_file_menu() {
+    use crate::actions::GitAction;
+    let mut fx = log_files_fixture("git-log-file-menu");
+    let app = &mut fx.app;
+    app.perform(Action::Git(GitAction::Right));
+    for _ in 0..2 {
+        app.perform(Action::Git(GitAction::Down));
+    }
+    app.perform(Action::Git(GitAction::ContextMenu));
+    let term = draw_app(app, 120, 30);
+    let marks = [Mark::bg('L', "selected", app.theme.list_selected.bg.unwrap())];
+    let bottom = app.layout.rects.bottom;
+    assert_snapshot!("git_log_file_menu", snapshot(&term, &marks, Some(bottom)));
+}
+
 fn branches_pane_fixture(name: &str, width: u16) -> (Fixture, ratatui::Terminal<ratatui::backend::TestBackend>) {
     use crate::git::BranchInfo;
     use crate::git::model::{CommitDetails, CommitFile};
@@ -1972,8 +2030,8 @@ async fn git_lists_draw_file_icons() {
     app.handle_msg(AppMsg::Git(GitMsg::CommitDetails { generation: g, sha: sha('a'), result: Ok(details) }));
     let buf = draw_app(app, 120, 30);
     let rows: Vec<String> = (0..30).map(|y| crate::ui::snapshot::row_text(buf.backend().buffer(), y, 120)).collect();
-    assert!(rows.iter().any(|r| r.contains("A R src/parser.rs")), "{rows:#?}");
-    assert!(rows.iter().any(|r| r.contains("R # docs/grammar.md -> docs/syntax.md")), "{rows:#?}");
+    assert!(rows.iter().any(|r| r.contains("A R parser.rs")), "{rows:#?}");
+    assert!(rows.iter().any(|r| r.contains("R # syntax.md ← docs/grammar.md")), "{rows:#?}");
 }
 
 #[tokio::test]

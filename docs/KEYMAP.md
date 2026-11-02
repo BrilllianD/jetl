@@ -308,7 +308,7 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Alt+U` | `git.toggle_diff_layout` | Git: diff side-by-side or unified |
 | `Alt+F` | `git.toggle_diff_collapse` | Git: fold or show unchanged lines in the diff |
 | `Ctrl+F` | `git.log_filter` | Git: filter the log (branch, text, author, path) |
-| `Shift+F10` | `git.context_menu` | Git: commit actions for the selected commit |
+| `Shift+F10` | `git.context_menu` | Git: context menu of the selected commit, branch or commit file |
 | `Ctrl+C` | `git.copy_sha` | Git: copy the selected commit's revision number |
 | `Ctrl+D` | `git.log_show_diff` | Git: show the diff of the selected commits in an editor tab |
 | `Alt+Shift+C` | `git.log_checkout` | Git: check out the selected commit (detached) |
@@ -340,8 +340,8 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Shift+Down` | `git.extend_selection_down` | Git: in the Log, select the commit below too (elsewhere: down) |
 | `PageUp` | `git.page_up` | Git: page up |
 | `PageDown` | `git.page_down` | Git: page down |
-| `Left` | `git.left` | Git: left |
-| `Right` | `git.right` | Git: right |
+| `Left` | `git.left` | Git: left (in a commit's files: close the folder, else back to the list) |
+| `Right` | `git.right` | Git: right (in a commit's files: open the folder or the file's diff) |
 | `Enter` | `git.open_file` | Git: open selected file |
 | `Tab` | `git.next_section` | Git: next pane |
 | `Esc` | `git.escape` | Git: back (close diff, leave message, return to editor) |

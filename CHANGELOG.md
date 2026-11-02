@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Git Log: the selected commit's files are a folder tree with one root (Left/Right close and open folders) and a context menu on every node: Show Diff, Open in Editor, Copy Path, Show History, Expand/Collapse All, and the commit's Cherry-Pick, Revert, Checkout and Copy Revision Number.
+
 ### Changed
 
 - A conflicted file opened from the project tree or the Commit tab's Changes opens the three-pane conflict resolver; selecting it in Changes shows a hint instead of a diff of its conflict markers.

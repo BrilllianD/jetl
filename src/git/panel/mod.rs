@@ -39,6 +39,7 @@ use crate::ui::widgets::text_input::TextInput;
 mod branches;
 mod commit;
 mod diff_view;
+mod file_tree;
 mod log;
 mod stash;
 
@@ -164,6 +165,8 @@ pub struct GitPanel {
     details: Option<CommitDetails>,
     details_error: Option<String>,
     files_list: ListState,
+    /// The details' files as a tree; `files_list` indexes its rows.
+    log_tree: file_tree::FileTree,
     log_diff: DiffPane,
     stashes: Vec<StashEntry>,
     /// Stash push includes untracked files (Stash tab toggle).
@@ -234,6 +237,7 @@ impl GitPanel {
             details: None,
             details_error: None,
             files_list: ListState::default(),
+            log_tree: Default::default(),
             log_diff: DiffPane::new(true),
             stashes: Vec::new(),
             stash_untracked: false,
@@ -348,11 +352,11 @@ impl GitPanel {
     }
 
     /// Details of a commit: the selected log commit or the selected stash.
-    pub fn set_details(&mut self, sha: &str, result: anyhow::Result<CommitDetails>) {
+    pub fn set_details(&mut self, sha: &str, result: anyhow::Result<CommitDetails>, root: &std::path::Path) {
         if self.selected_stash().is_some_and(|s| s.oid == sha) {
             self.set_stash_details(result);
         } else {
-            self.set_log_details(sha, result);
+            self.set_log_details(sha, result, root);
         }
     }
 
@@ -413,6 +417,8 @@ impl GitPanel {
             G::ContextMenu => {
                 if self.tab == GitTab::Log && self.area == Area::Branches {
                     self.branch_menu(None, cx)
+                } else if self.tab == GitTab::Log && self.area == Area::Files {
+                    self.log_file_menu(None, cx)
                 } else {
                     self.log_context_menu(None, cx)
                 }
@@ -421,6 +427,7 @@ impl GitPanel {
                 Some(b) => cx.effects.push(Effect::Git(GitRequest::BranchOp { branch: b.clone(), op: *op })),
                 None => cx.notify(Level::Info, format!("Branch '{branch}' no longer exists")),
             },
+            G::LogFileOp(op) => self.log_file_op(*op, cx),
             G::LogShowDiff => self.show_commits_diff(cx),
             G::CopySha => self.commit_action(CommitAction::CopySha, cx),
             G::LogCheckout => self.commit_action(CommitAction::Checkout, cx),
@@ -514,7 +521,7 @@ impl GitPanel {
             G::PageDown => self.move_by(self.page() as isize, cx),
             G::Left => match self.area {
                 Area::Diff => self.area = Area::Changes,
-                Area::Files => self.area = Area::Log,
+                Area::Files => self.files_left(),
                 Area::LogDiff => self.close_log_diff(),
                 Area::StashFiles => self.area = Area::Stashes,
                 Area::StashDiff => self.close_stash_diff(),
@@ -525,7 +532,7 @@ impl GitPanel {
                 Area::Changes if self.diff.key.is_some() => self.area = Area::Diff,
                 Area::Branches => self.area = Area::Log,
                 Area::Log if self.details.is_some() => self.area = Area::Files,
-                Area::Files => self.open_commit_file(cx),
+                Area::Files => self.files_right(cx),
                 Area::Stashes if self.stash_details.is_some() => self.area = Area::StashFiles,
                 Area::StashFiles => self.open_stash_file(cx),
                 _ => {}
@@ -538,7 +545,7 @@ impl GitPanel {
                     }
                 }
                 Area::Branches => self.open_branch_row(cx),
-                Area::Files => self.open_commit_file(cx),
+                Area::Files => self.files_enter(cx),
                 Area::Stashes => {
                     if self.stash_details.as_ref().is_some_and(|d| !d.files.is_empty()) {
                         self.area = Area::StashFiles;
