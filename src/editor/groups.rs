@@ -297,12 +297,28 @@ impl Editor {
     /// the focused group, else a new tab there.
     pub(super) fn set_active(&mut self, i: usize) {
         let Some(id) = self.buffers.get(i).map(|b| b.id) else { return };
+        // A diff tab has one view: the group that shows it takes focus.
+        if let Some(g) = self.diff_home(id) {
+            self.focus_group(g);
+            if let Some(s) = self.focused_group().slot_of(id) {
+                self.show(s);
+            }
+            return;
+        }
         let g = self.focused;
         let slot = match self.focused_group().slot_of(id) {
             Some(s) => s,
             None => self.add_view(g, id),
         };
         self.show(slot);
+    }
+
+    /// The group already showing buffer `id` when it is a diff buffer outside
+    /// the focused group: a diff buffer never gets a second view.
+    fn diff_home(&self, id: BufferId) -> Option<GroupId> {
+        let i = self.index_of_id(id)?;
+        self.buffers[i].diff.as_ref()?;
+        self.groups.iter().find(|g| g.id != self.focused && g.slot_of(id).is_some()).map(|g| g.id)
     }
 
     /// Add a tab of buffer `id` to group `g` right after its shown tab, as
@@ -459,6 +475,10 @@ impl Editor {
             cx.notify(Level::Info, "Nothing to split: no tab open");
             return;
         };
+        if self.index_of_id(id).is_some_and(|i| self.buffers[i].diff.is_some()) {
+            cx.notify(Level::Info, "A diff tab cannot be split");
+            return;
+        }
         let r = group.last_area;
         let fits = match axis {
             Axis::Horizontal => r.width > 2 * MIN_GROUP_W,
@@ -1381,5 +1401,35 @@ mod tests {
         act(&mut ed, EditorAction::MoveTabToOppositeGroup);
         assert_eq!(ed.groups.len(), 1);
         assert_eq!((ed.tab_names(), ed.active_buffer().unwrap().name.as_str()), (vec!["a.txt".to_string(), "b.txt".into()], "b.txt"));
+    }
+
+    #[test]
+    fn a_diff_tab_keeps_one_view_across_groups() {
+        use crate::git::model::DiffKey;
+        let mut ed = Editor::new(&Config::default());
+        let (config, theme, workspace) = (Config::default(), Theme::default(), Workspace::new(PathBuf::from("/tmp")));
+        let (bus, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut cx = Ctx { effects: Vec::new(), config: &config, theme: &theme, workspace: &workspace, bus };
+        let keys = vec![DiffKey::Commit { sha: "1a2b3c4d5e6f".into(), rel: "x.txt".into(), old: None }];
+        let di = ed.open_diff_tab("Diff", keys.clone(), 0, &mut cx);
+        let id = ed.buffers[di].id;
+        // (a) a lone diff tab is not copied by move-to-opposite.
+        act(&mut ed, EditorAction::MoveTabToOppositeGroup);
+        assert_eq!((ed.groups.len(), ed.view_count(id)), (1, 1));
+        // (b) with the diff in group A and focus in B, reopening and the switcher path focus A.
+        open(&mut ed, "a.txt", "a\n");
+        act(&mut ed, EditorAction::SplitRight);
+        let b = ed.focused;
+        let a = ed.group_ids().into_iter().find(|g| *g != b).unwrap();
+        ed.move_tab_across(b, id, a, None);
+        ed.focus_group(b);
+        assert_eq!(ed.view_count(id), 1);
+        assert_eq!(ed.focused, b);
+        let j = ed.open_diff_tab("Diff", keys, 0, &mut cx);
+        assert_eq!((j, ed.focused, ed.view_count(id)), (di, a, 1));
+        ed.focus_group(b);
+        ed.activate_index(di);
+        assert_eq!((ed.focused, ed.view_count(id)), (a, 1));
+        ed.check_invariants();
     }
 }
