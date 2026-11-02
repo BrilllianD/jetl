@@ -467,13 +467,19 @@ impl App {
 
     pub fn notify(&mut self, level: Level, text: impl Into<String>) {
         let text = text.into();
+        self.toasts.push(level, &text, Instant::now());
+        self.log_only(level, text);
+    }
+
+    /// Record `text` in the Event Log (and the tracing log) without a toast.
+    pub fn log_only(&mut self, level: Level, text: impl Into<String>) {
+        let text = text.into();
         match level {
             Level::Error => tracing::error!("{text}"),
             Level::Warn => tracing::warn!("{text}"),
             Level::Info => tracing::info!("{text}"),
         }
         let now = Instant::now();
-        self.toasts.push(level, &text, now);
         self.notifications.push(Notification { level, text, at: now, wall: SystemTime::now() });
         let mut dropped = 0;
         if self.notifications.len() > NOTIFICATIONS_MAX {
@@ -1704,6 +1710,32 @@ pub(crate) mod tests {
         assert_eq!(names(&app), ["a.txt", "c.txt"]);
         assert_eq!(std::fs::read_to_string(root.join("b.txt")).unwrap(), "dirty text\n");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn save_logs_without_a_toast() {
+        let (mut app, dir) = test_app("save-log");
+        let _path = load(&mut app, "a.txt", "x");
+        app.perform(Action::Editor(EditorAction::InsertText("y".into())));
+        app.perform(Action::Editor(EditorAction::Save));
+        assert!(!app.editor.has_dirty());
+        assert!(app.notifications.last().is_some_and(|n| n.text == "Saved a.txt"));
+        assert!(!app.toasts.items().iter().any(|t| t.text.starts_with("Saved")));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn focus_lost_autosaves_by_default() {
+        let (mut app, dir) = test_app("focus-autosave");
+        assert_eq!(app.config.editor.autosave, crate::config::Autosave::Focus);
+        let path = load(&mut app, "a.txt", "x");
+        app.perform(Action::Editor(EditorAction::InsertText("y".into())));
+        let before = app.notifications.len();
+        app.handle_term_event(crossterm::event::Event::FocusLost);
+        assert!(!app.editor.has_dirty());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "yx\n");
+        assert_eq!(app.notifications.len(), before);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[tokio::test]

@@ -149,10 +149,10 @@ pub struct EditorConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Autosave {
-    #[default]
     Off,
     /// When the terminal loses focus (needs focus reporting, which most
     /// terminals and tmux with `focus-events on` provide).
+    #[default]
     Focus,
     /// After `autosave_idle_ms` without edits.
     Idle,
@@ -300,7 +300,7 @@ impl Default for EditorConfig {
             snippets: true,
             trim_trailing_whitespace: true,
             final_newline: true,
-            autosave: Autosave::Off,
+            autosave: Autosave::Focus,
             autosave_idle_ms: 1500,
             max_tabs: 0,
             soft_wrap: false,
@@ -407,7 +407,8 @@ mod tests {
         assert_eq!(cfg.editor.scrolloff, EditorConfig::default().scrolloff);
         assert!(!cfg.worktree.switch_closes_tabs);
         assert_eq!(cfg.git.pull_mode, "ff-only");
-        assert_eq!(cfg.editor.autosave, Autosave::Off);
+        assert_eq!(cfg.editor.autosave, Autosave::Focus);
+        assert_eq!(Config::parse("[editor]\nautosave = \"off\"\n").unwrap().editor.autosave, Autosave::Off);
         assert_eq!(Config::parse("[editor]\nautosave = \"idle\"\n").unwrap().editor.autosave, Autosave::Idle);
         assert!(Config::parse("[editor]\nautosave = \"Idle\"\n").is_err());
         assert_eq!(cfg.ui.icons, Icons::Unicode);

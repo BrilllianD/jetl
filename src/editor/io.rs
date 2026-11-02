@@ -183,7 +183,7 @@ impl Editor {
         }
     }
 
-    /// [`Editor::save`]; `quiet` drops the "Saved" toast (errors still show).
+    /// [`Editor::save`]; `quiet` drops the "Saved" log entry (errors still show).
     pub(super) fn write(&mut self, i: usize, cx: &mut Ctx, quiet: bool) -> bool {
         if let Err(done) = self.prepare_write(i, cx) {
             return done;
@@ -319,7 +319,7 @@ impl Editor {
     }
 
     /// Save every buffer [`Buffer::autosave_candidate`] allows, without the
-    /// "Saved" toast. A file changed on disk since it was loaded or saved is
+    /// "Saved" log entry. A file changed on disk since it was loaded or saved is
     /// left alone (with a warning) until an explicit save; a failed write is
     /// not retried before the buffer's next edit.
     pub fn autosave(&mut self, cx: &mut Ctx) {
@@ -407,7 +407,7 @@ impl Editor {
 /// `b` was written to `path` at undo state `state`: it is clean, the
 /// file's mtime is noted, autosave may try again, the text written goes to
 /// local history (`snap`, its path set here), and `Effect::FileSaved`
-/// follows (with the "Saved" toast unless `quiet`).
+/// follows (with the "Saved" log entry unless `quiet`).
 fn mark_written(b: &mut Buffer, path: PathBuf, state: u64, perm_err: Option<std::io::Error>, cx: &mut Ctx, quiet: bool, mut snap: Capture) {
     if let Some(e) = perm_err {
         cx.notify(Level::Warn, format!("{}: file mode not kept: {e}", b.name));

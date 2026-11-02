@@ -286,7 +286,7 @@ pub enum Effect {
         id: crate::editor::buffer::BufferId,
         then: crate::app::AfterSave,
     },
-    /// `quiet` (autosave) skips the "Saved" toast.
+    /// `quiet` (autosave) skips the "Saved" log entry.
     FileSaved {
         path: PathBuf,
         quiet: bool,

@@ -122,7 +122,7 @@ sticky_scroll = false          # pin the header lines of the definitions scrolle
 snippets = true                # live templates: Tab after a snippet's prefix expands it, snippets listed in completion (see "Live templates")
 trim_trailing_whitespace = true # on save, strip trailing spaces and tabs (not on the caret line, never in Markdown)
 final_newline = true           # on save, end a non-empty file with a line break
-autosave = "off"               # "off", "focus" (save when the terminal loses focus) or "idle" (save after a pause in editing)
+autosave = "focus"             # "off", "focus" (save when the terminal loses focus) or "idle" (save after a pause in editing)
 autosave_idle_ms = 1500        # pause before an "idle" autosave
 max_tabs = 0                   # open tabs beyond this close the least recently used one that is clean
                                # and unpinned (none such: the limit is exceeded); 0 = no limit
@@ -243,7 +243,8 @@ Ctrl+S. It skips untitled tabs, files that were not valid UTF-8 (saving would
 re-encode them), and files changed on disk since they were opened or last
 saved; Ctrl+S still saves those. After a failed write it waits for the next
 edit before retrying. `"focus"` needs focus reporting from the terminal; under
-tmux that means `set -g focus-events on`.
+tmux that means `set -g focus-events on`. The default is "focus"; set "off" to
+save only with Ctrl+S.
 
 Paste (Ctrl+V, `editor.paste`) reads the system clipboard with a command,
 because terminals hand the clipboard over only on their own paste shortcut

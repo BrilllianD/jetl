@@ -2719,8 +2719,8 @@ async fn settings_window_pending() {
     app.perform(Action::App(AppAction::Settings));
     press(app, KeyCode::Down, 4);
     press(app, KeyCode::Enter, 1);
-    // Autosave: off -> focus -> idle; Final newline toggled.
-    press(app, KeyCode::Right, 2);
+    // Autosave: focus -> idle; Final newline toggled.
+    press(app, KeyCode::Right, 1);
     press(app, KeyCode::Down, 3);
     press(app, KeyCode::Enter, 1);
     let term = draw_app(app, 80, 24);

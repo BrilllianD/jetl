@@ -807,7 +807,7 @@ mod tests {
         assert_eq!(pending(&app), 0);
         key(&mut app, KeyCode::Right);
         ctrl_s(&mut app);
-        assert_eq!(app.config.editor.autosave, crate::config::Autosave::Focus);
+        assert_eq!(app.config.editor.autosave, crate::config::Autosave::Idle);
 
         key(&mut app, KeyCode::Esc);
         assert!(app.settings.is_none());

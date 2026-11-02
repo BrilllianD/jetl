@@ -37,7 +37,7 @@ impl App {
                     // text stores nothing, yet its project view row is back.
                     self.history_files_changed(&p);
                     if !quiet {
-                        self.notify(Level::Info, format!("Saved {}", p.file_name().map(|n| n.to_string_lossy()).unwrap_or_default()));
+                        self.log_only(Level::Info, format!("Saved {}", p.file_name().map(|n| n.to_string_lossy()).unwrap_or_default()));
                     }
                     (tree, status) = (true, true);
                 }
