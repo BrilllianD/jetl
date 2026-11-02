@@ -623,6 +623,21 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[tokio::test]
+    async fn a_failed_commits_files_tab_notifies_and_opens_no_tab() {
+        let (mut app, dir) = test_app("commits-files-tab-err");
+        let n = app.editor.buffers.len();
+        app.handle_msg(AppMsg::Git(GitMsg::CommitsFiles {
+            generation: app.git.generation,
+            spans: Vec::new(),
+            tab: Some("Diff abc".into()),
+            result: Err(anyhow::anyhow!("boom")),
+        }));
+        assert_eq!(last(&app), (Level::Error, "Diff: boom".to_string()));
+        assert_eq!(app.editor.buffers.len(), n);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// The newest notification as (level, text).
     fn last(app: &App) -> (Level, String) {
         let n = app.notifications.last().expect("a notification");

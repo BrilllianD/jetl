@@ -426,26 +426,29 @@ impl GitPanel {
         self.maybe_page_log(cx);
     }
 
-    /// Open the files of the selected commits side by side in one editor diff tab.
-    pub(super) fn show_commits_diff(&mut self, cx: &mut Ctx) {
+    /// Title and per-commit spans of the selected commits, or a notice when none is selected.
+    fn selected_commit_spans(&self, cx: &mut Ctx) -> Option<(String, Vec<crate::git::model::DiffSpan>)> {
         let rows = self.log_selection();
         if self.tab != GitTab::Log || rows.is_empty() {
-            return cx.notify(Level::Info, "Select a commit in the Log tab");
+            cx.notify(Level::Info, "Select a commit in the Log tab");
+            return None;
         }
         let commits: Vec<&LogCommit> = rows.iter().map(|&i| &self.log[i].commit).collect();
-        let (title, spans) = crate::git::model::commits_diff(&commits);
-        cx.effects.push(Effect::Git(GitRequest::CommitsFilesTab { title, spans }));
+        Some(crate::git::model::commits_diff(&commits))
+    }
+
+    /// Open the files of the selected commits side by side in one editor diff tab.
+    pub(super) fn show_commits_diff(&mut self, cx: &mut Ctx) {
+        if let Some((title, spans)) = self.selected_commit_spans(cx) {
+            cx.effects.push(Effect::Git(GitRequest::CommitsFilesTab { title, spans }));
+        }
     }
 
     /// Open the combined diff of the selected commits as a unified patch in an editor tab.
     pub(super) fn show_commits_patch(&mut self, cx: &mut Ctx) {
-        let rows = self.log_selection();
-        if self.tab != GitTab::Log || rows.is_empty() {
-            return cx.notify(Level::Info, "Select a commit in the Log tab");
+        if let Some((title, spans)) = self.selected_commit_spans(cx) {
+            cx.effects.push(Effect::Git(GitRequest::CommitsDiff { title: title.replacen("Diff", "Patch", 1), spans }));
         }
-        let commits: Vec<&LogCommit> = rows.iter().map(|&i| &self.log[i].commit).collect();
-        let (title, spans) = crate::git::model::commits_diff(&commits);
-        cx.effects.push(Effect::Git(GitRequest::CommitsDiff { title: title.replacen("Diff", "Patch", 1), spans }));
     }
 
     /// Commit actions for the selected commit, at the pointer or its row.

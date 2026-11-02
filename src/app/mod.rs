@@ -3888,6 +3888,8 @@ pub(crate) mod tests {
         let rows = crate::git::cli::parse_log(&String::from_utf8_lossy(&out.stdout));
         assert_eq!(rows.len(), 3);
         let (c8, a8) = (rows[0].sha[..8].to_string(), rows[2].sha[..8].to_string());
+        let oldest_parent = rows[2].parents.first().cloned();
+        assert_eq!(oldest_parent, None);
         let g = app.git.generation;
         app.handle_msg(AppMsg::Git(GitMsg::Log { generation: g, skip: 0, filter, result: Ok(rows) }));
         app.perform(Action::Git(GitAction::ExtendDown));
@@ -3903,8 +3905,9 @@ pub(crate) mod tests {
         assert_eq!(b.name, format!("Diff {a8}..{c8}"));
         let files = &b.diff.as_ref().expect("diff tab").files;
         assert_eq!(files.len(), 1);
-        let crate::git::model::DiffKey::Range { top, rel, .. } = &files[0] else { panic!("range key: {files:?}") };
+        let crate::git::model::DiffKey::Range { base, top, rel, .. } = &files[0] else { panic!("range key: {files:?}") };
         assert_eq!(rel, "x.txt");
+        assert_eq!(base, &oldest_parent);
         assert!(top.starts_with(&c8), "{top}");
         app.perform(Action::Git(GitAction::Down));
         assert_eq!(app.git_panel.log_selection(), [2]);

@@ -107,7 +107,7 @@ pub(crate) fn header(key: &DiffKey) -> String {
         DiffKey::Change { section: Section::Unstaged, .. } => format!("{label}  (staged ↔ working tree)"),
         DiffKey::Change { section: Section::Untracked, .. } => format!("{label}  (new file)"),
         DiffKey::Commit { sha, .. } => format!("{}  {label}", short(sha)),
-        DiffKey::Range { base, top, .. } => format!("{}..{}  {label}", base.as_deref().map_or("root".into(), short), short(top)),
+        DiffKey::Range { base, top, .. } => format!("{label}  {}..{}", base.as_deref().map_or("root".into(), short), short(top)),
         DiffKey::Local { .. } => label,
         DiffKey::Text { old_name, new_name, .. } => format!("{old_name} ↔ {new_name}"),
     }
@@ -458,5 +458,21 @@ mod tests {
         assert_eq!(ed.diff_tab_mouse(&m), Some(true));
         assert_eq!(tab(&mut ed, 0).opts.unified, Some(true));
         assert_eq!(ed.diff_opts, DiffOpts { unified: None, collapse: true });
+    }
+
+    #[test]
+    fn a_narrow_range_header_keeps_the_path_before_the_range() {
+        let mut ed = Editor::new(&Config::default());
+        let r = |rel: &str| DiffKey::Range { base: Some("1a2b3c4d5e6f".into()), top: "5e6f7a8b9c0d".into(), rel: rel.into(), old: None };
+        with_cx(|cx| {
+            ed.open_diff_tab("Diff", vec![r("src/a.rs"), r("src/b.rs")], 0, cx);
+        });
+        let theme = Theme::default();
+        let area = Rect::new(0, 0, 80, 5);
+        let mut screen = Screen::empty(area);
+        tab(&mut ed, 0).render(&mut screen, area, true, &theme);
+        let row: String = (0..area.width).map(|x| screen[(x, 0)].symbol().to_string()).collect();
+        assert!(row.contains("1/2  src/a.rs  1a2b3c4d..5e6f7a8b"), "{row}");
+        assert_eq!(header(&r("src/a.rs")), "src/a.rs  1a2b3c4d..5e6f7a8b");
     }
 }

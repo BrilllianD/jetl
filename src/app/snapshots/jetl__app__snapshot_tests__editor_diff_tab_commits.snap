@@ -4,7 +4,7 @@ expression: "snapshot(&term, &marks, None)"
 ---
 120x30 cursor=hidden
 00   Diff 1a2b3c4d..5e6f7a8b ×
-01  1/3  1a2b3c4d..5e6f7a8b  src/a.rs                                                           [Side-by-side] [x] Collapse
+01  1/3  src/a.rs  1a2b3c4d..5e6f7a8b                                                           [Side-by-side] [x] Collapse
 02   1 fn main() {                                            │  1 fn main() {
 03   2     let a = 1;                                         │  2     let a = 10;
 04   3     let b = 2;                                         │  3     let b = 2;
