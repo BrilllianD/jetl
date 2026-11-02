@@ -22,6 +22,7 @@ impl App {
                     self.focus.set(p);
                 }
                 Effect::OpenFile(p) => self.open_file(p, true),
+                Effect::OpenOrResolve(p) => self.open_or_resolve(p),
                 Effect::OpenFileAt { path, line, col } => self.open_file_at(path, line, col),
                 Effect::OpenFileAtUtf16 { path, pos } => self.open_file_at_utf16(path, pos),
                 Effect::Dialog(d) => self.dialog = Some(d),

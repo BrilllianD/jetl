@@ -441,6 +441,12 @@ back with nothing written (`UU a.rs`). With nothing typed, the header's
 yours or theirs changes nothing; Alt+\ and a file picked in Ctrl+N answer "Finish or cancel
 the merge first".
 
+Then `git -C $T merge --abort; git -C $T merge dev`, Alt+1 to the Project
+window, select `a.rs`, Enter: the three panes open (Esc closes). Alt+9 to the
+Git window, Commit tab: selecting `a.rs` (U) shows `Conflicted: Enter opens
+the resolver` in the diff area, Enter opens the resolver. Ctrl+N `a.rs` still
+opens the plain tab with the "has conflicts" notification.
+
 ### Scenario: rebase in progress
 
 At 80x24 and at 120x40, in a repository stopped on a rebase conflict:

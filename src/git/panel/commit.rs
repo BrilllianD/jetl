@@ -15,6 +15,9 @@ use crate::git::model::{ChangeEntry, DiffKey, FileStatus, Section, StatusSnapsho
 use crate::git::{GitOp, GitRequest};
 use crate::ui::dialog::{Dialog, DialogId};
 
+/// Shown in the Commit tab's diff area for a conflicted entry.
+pub(super) const CONFLICT_HINT: &str = "Conflicted: Enter opens the resolver";
+
 impl GitPanel {
     // ---- data from the service -------------------------------------------
 
@@ -96,6 +99,9 @@ impl GitPanel {
     /// Show the diff of the selected entry. With `reload` the current one is
     /// fetched again (its content may have changed).
     pub(super) fn sync_diff(&mut self, reload: bool, cx: &mut Ctx) {
+        if self.selected_entry().is_some_and(|e| e.status == FileStatus::Conflicted) {
+            return self.diff.clear();
+        }
         let key = self.selected_entry().map(|e| DiffKey::Change { section: e.section, rel: e.rel.clone(), old: e.old_rel.clone() });
         match key {
             Some(k) if reload || self.diff.key.as_ref() != Some(&k) => self.diff.request(k, cx),
@@ -108,6 +114,12 @@ impl GitPanel {
 
     pub fn message_focused(&self) -> bool {
         self.tab == GitTab::Commit && self.area == Area::Message
+    }
+
+    #[cfg(test)]
+    /// The key of the diff the Commit tab shows or has requested.
+    pub fn diff_key(&self) -> Option<&DiffKey> {
+        self.diff.key.as_ref()
     }
 
     #[cfg(test)]
@@ -355,7 +367,7 @@ impl GitPanel {
     pub(super) fn open_selected_file(&mut self, cx: &mut Ctx) {
         let Some(e) = self.selected_entry() else { return };
         if e.status == FileStatus::Conflicted {
-            cx.effects.push(Effect::Git(GitRequest::LoadConflict(e.abs.clone())));
+            cx.effects.push(Effect::OpenOrResolve(e.abs.clone()));
         } else if e.abs.is_file() {
             cx.open_file(e.abs.clone());
         } else {
@@ -400,6 +412,7 @@ impl GitPanel {
             }
             let right = Rect::new(sep_x + 1, body.y, body.right() - sep_x - 1, body.height);
             self.diff_rect = right;
+            let conflicted = self.selected_entry().is_some_and(|e| e.status == FileStatus::Conflicted);
             let header = self.diff.key.as_ref().map(|k| match k {
                 DiffKey::Change { section: Section::Staged, .. } => format!("{}  (HEAD ↔ staged)", k.label()),
                 DiffKey::Change { section: Section::Unstaged, .. } => format!("{}  (staged ↔ working tree)", k.label()),
@@ -412,8 +425,14 @@ impl GitPanel {
                 Some(_) => Rect::new(right.x, right.y + 1, right.width, right.height - 1),
                 None => right,
             };
-            // First: it picks the layout the toggles show.
-            render_diff(frame.buffer_mut(), rest, &mut self.diff, theme, opts);
+            if conflicted {
+                if right.height > 0 {
+                    frame.buffer_mut().set_stringn(right.x + 1, right.y, CONFLICT_HINT, right.width.saturating_sub(1) as usize, theme.dim);
+                }
+            } else {
+                // First: it picks the layout the toggles show.
+                render_diff(frame.buffer_mut(), rest, &mut self.diff, theme, opts);
+            }
             if let Some(title) = header {
                 let style = if focused && self.area == Area::Diff { theme.title_focused } else { theme.title };
                 let toggles = self.diff.doc.is_some().then_some((self.diff.unified, opts));

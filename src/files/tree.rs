@@ -526,7 +526,7 @@ impl ProjectPanel {
         if r.is_dir {
             self.set_expanded(&r.path, !r.expanded);
         } else {
-            cx.open_file(r.path);
+            cx.effects.push(Effect::OpenOrResolve(r.path));
         }
     }
 
@@ -618,7 +618,7 @@ impl ProjectPanel {
                     if r.is_dir {
                         self.set_expanded(&r.path, !r.expanded);
                     } else {
-                        cx.open_file(r.path);
+                        cx.effects.push(Effect::OpenOrResolve(r.path));
                     }
                 }
                 true

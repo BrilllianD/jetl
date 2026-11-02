@@ -1009,6 +1009,23 @@ async fn app_git_commit_tab_80_columns() {
     assert_snapshot!("app_git_commit_tab_80_columns", snapshot(&term, &marks, Some(bottom)));
 }
 
+/// A conflicted entry selected in Changes: a hint instead of a marker diff.
+#[tokio::test]
+async fn app_git_commit_conflicted() {
+    let mut fx = stable_app("git-commit-conflicted");
+    let app = &mut fx.app;
+    git_commit_fixture(app);
+    let root = app.workspace.root.clone();
+    let mut status = crate::git::repo::status(&root).unwrap();
+    status.branch = Some("main".into());
+    status.entries[0].status = FileStatus::Conflicted;
+    app.handle_msg(AppMsg::Git(GitMsg::Status { generation: app.git.generation, seq: 2, result: Ok(status) }));
+    app.dialog = None;
+    let term = draw_app(app, 80, 24);
+    let bottom = app.layout.rects.bottom;
+    assert_snapshot!("app_git_commit_conflicted", snapshot(&term, &[Mark::style('d', "dim", app.theme.dim)], Some(bottom)));
+}
+
 /// The palette's selected row.
 fn palette_marks(theme: &Theme) -> Vec<Mark> {
     vec![Mark::bg('L', "selected", theme.list_selected.bg.unwrap())]

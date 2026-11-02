@@ -257,6 +257,8 @@ pub use crate::lsp::LspMsg;
 #[derive(Debug)]
 pub enum Effect {
     OpenFile(PathBuf),
+    /// Open a file, or the conflict resolver when the last status lists it as conflicted (App::open_or_resolve).
+    OpenOrResolve(PathBuf),
     /// Open a file with the caret at a 0-based line and char column.
     OpenFileAt {
         path: PathBuf,

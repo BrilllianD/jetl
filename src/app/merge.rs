@@ -28,6 +28,17 @@ impl App {
         self.git_panel.snapshot().is_some_and(|s| s.entries.iter().any(|e| e.status == FileStatus::Conflicted && e.abs == path))
     }
 
+    /// Open `path`, or the conflict resolver when the last status lists it
+    /// as conflicted (and the resolver is not open already): the project
+    /// tree's and the Commit tab's open.
+    pub(super) fn open_or_resolve(&mut self, path: PathBuf) {
+        if self.is_conflicted(&path) && !self.editor.merge_active() {
+            self.git_request(GitRequest::LoadConflict(path));
+        } else {
+            self.open_file(path, true);
+        }
+    }
+
     /// Git > Resolve Conflicts: a choice of the conflicted files.
     pub(super) fn resolve_conflicts(&mut self) {
         if self.editor.merge_active() {
@@ -248,6 +259,55 @@ mod tests {
         handle_next(&mut app, op_done).await;
         let repo = git2::Repository::open(&root).unwrap();
         assert!(!repo.index().unwrap().has_conflicts(), "staged");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_conflicted_file_opens_the_resolver_from_the_tree_and_changes() {
+        use crate::actions::TreeAction;
+        let (mut app, dir) = test_app("merge-tree-open");
+        let root = app.workspace.root.clone();
+        init_repo(&app, &[("a.txt", "one\ntwo\n"), ("b.txt", "b\n")]);
+        let main = crate::git::repo::status(&root).unwrap().branch.unwrap();
+        git(&root, &["switch", "-qc", "dev"]);
+        std::fs::write(root.join("a.txt"), "ONE dev\ntwo\n").unwrap();
+        git(&root, &["commit", "-qam", "dev"]);
+        git(&root, &["switch", "-q", &main]);
+        std::fs::write(root.join("a.txt"), "ONE main\ntwo\n").unwrap();
+        git(&root, &["commit", "-qam", "main"]);
+        app.git_request(crate::git::GitRequest::Merge("dev".into()));
+        handle_next(&mut app, op_done).await;
+        feed_status(&mut app, 1);
+        app.dialog = None;
+        // Changes: the U entry is selected and no marker diff is requested.
+        assert!(app.git_panel.diff_key().is_none());
+        // Tree: Enter on the conflicted file opens the resolver.
+        let req = app.project.begin_refresh();
+        match req {
+            Some(req) => {
+                let generation = app.workspace.generation;
+                app.handle_msg(AppMsg::TreeLoaded { generation, seq: req.seq, dirs: req.run() });
+            }
+            None => handle_next(&mut app, |m| matches!(m, AppMsg::TreeLoaded { .. })).await,
+        }
+        assert!(app.project.select_path(&root.join("a.txt")));
+        app.focus.set(PanelId::Project);
+        app.perform(Action::Tree(TreeAction::Open));
+        handle_next(&mut app, conflict).await;
+        assert!(app.editor.merge_active());
+        assert_eq!(app.focus.current, PanelId::Editor);
+        // With the resolver open the plain open answers BUSY.
+        app.open_or_resolve(root.join("a.txt"));
+        assert_eq!(app.notifications.last().unwrap().text, crate::editor::merge::BUSY);
+        app.perform(merge(MergeAction::Cancel));
+        assert!(!app.editor.merge_active());
+        // A plain file opens as before.
+        assert!(app.project.select_path(&root.join("b.txt")));
+        app.focus.set(PanelId::Project);
+        app.perform(Action::Tree(TreeAction::Open));
+        handle_next(&mut app, |m| matches!(m, AppMsg::FileLoaded { .. })).await;
+        assert!(app.editor.index_of(&root.join("b.txt")).is_some());
+        assert!(!app.editor.merge_active());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
