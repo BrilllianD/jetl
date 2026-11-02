@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Closing the last editor tab moves focus to the project tree and shows the Project tool window, so the arrow keys move the tree selection at once. Closing a tab while others stay open keeps focus in the editor, and closing the conflict resolver does not move focus.
+
 ## [0.7.0] - 2026-11-01
 
 ### Added

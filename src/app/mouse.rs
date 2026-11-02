@@ -30,6 +30,12 @@ impl App {
     }
 
     pub(super) fn handle_mouse(&mut self, m: MouseEvent) {
+        let had_tabs = self.has_user_tabs();
+        self.handle_mouse_inner(m);
+        self.focus_tree_after_last_close(had_tabs);
+    }
+
+    fn handle_mouse_inner(&mut self, m: MouseEvent) {
         // Motion matters to drags and to the menus' hover highlight; other
         // motion only moves the strip tooltip, redrawn when it changes.
         if m.kind == MouseEventKind::Moved && self.drag.is_none() && self.menu.is_none() && self.menu_bar.is_none() {

@@ -1281,6 +1281,18 @@ blocks can differ between runs (the parser does not depend on it).
    after it: the header has exactly one `-t`, `^(?:math nested fails)$`, and `fails` fails again.
 5. Repeat at 120x40 and 80x24.
 
+### Scenario: last tab closed
+
+Setup as above.
+
+1. Open `src/main.rs` and `README.md` (Ctrl+N). Ctrl+W: `README.md` closes and the caret stays in
+   `src/main.rs`; Down moves the caret, not the tree.
+2. Ctrl+W again: the editor is empty, the Project window is shown and focused; Down moves the tree
+   selection.
+3. Hide the Project window (Alt+1), open a file, type a character, Ctrl+W, choose "Don't save": the Project
+   window comes back focused. Repeat with the tab's close button (a click on its `x`).
+4. Repeat at 120x40 and 80x24. No stderr; Ctrl+Q exits with status 0.
+
 ### Limits under tmux
 
 - No kitty keyboard protocol: Ctrl+Shift+letter, Ctrl+Tab, Ctrl+Enter,

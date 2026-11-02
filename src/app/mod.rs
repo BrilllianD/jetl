@@ -753,7 +753,9 @@ impl App {
     }
 
     pub(crate) fn handle_key(&mut self, key: KeyEvent) {
+        let had_tabs = self.has_user_tabs();
         self.handle_key_inner(key);
+        self.focus_tree_after_last_close(had_tabs);
         self.lsp_confirm_orphaned();
     }
 
@@ -1448,6 +1450,21 @@ impl App {
         self.toasts.push(Level::Info, "Copied the entry to the clipboard", Instant::now());
     }
 
+    /// Tabs the user can close, outside the conflict resolver's own panes.
+    pub(super) fn has_user_tabs(&self) -> bool {
+        !self.editor.merge_active() && !self.editor.buffers.is_empty()
+    }
+
+    /// An input that closed the last tab while the editor had focus hands
+    /// focus to the project tree. `had_tabs` is `has_user_tabs()` before the
+    /// input; the resolver's close is not a last tab (it was false then).
+    pub(super) fn focus_tree_after_last_close(&mut self, had_tabs: bool) {
+        if had_tabs && self.editor.buffers.is_empty() && !self.editor.merge_active() && self.focus.is(PanelId::Editor) {
+            self.layout.show(ToolWindowId::Project);
+            self.focus.set(PanelId::Project);
+        }
+    }
+
     fn select_in_project(&mut self) {
         let Some(p) = self.editor.active_path().map(|p| p.to_path_buf()) else {
             self.notify(Level::Info, "No file is open");
@@ -1510,6 +1527,55 @@ pub(crate) mod tests {
     pub(crate) fn with_history(app: &mut App) {
         app.history = crate::history::Handle::spawn(app.paths.history_dir(), app.config.local_history.clone(), app.bus_tx.clone());
         app.git.history = app.history.clone();
+    }
+
+    #[tokio::test]
+    async fn closing_the_last_tab_focuses_the_project_tree() {
+        let (mut app, dir) = test_app("last-tab-focus");
+        for n in ["a.txt", "b.txt"] {
+            let path = app.workspace.root.join(n);
+            app.editor.open_text(path, "x\n", false, &app.theme);
+        }
+        app.focus.set(PanelId::Editor);
+        app.layout.hide(ToolWindowId::Project);
+        let ctrl_w = KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL);
+        app.handle_key(ctrl_w);
+        assert_eq!(app.editor.buffers.len(), 1);
+        assert!(app.focus.is(PanelId::Editor));
+        assert!(!app.layout.is_visible(ToolWindowId::Project));
+        app.handle_key(ctrl_w);
+        assert!(app.editor.buffers.is_empty());
+        assert!(app.focus.is(PanelId::Project));
+        assert!(app.layout.is_visible(ToolWindowId::Project));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn dont_save_on_the_last_dirty_tab_focuses_the_project_tree() {
+        let (mut app, dir) = test_app("last-tab-dirty");
+        let path = app.workspace.root.join("a.txt");
+        app.editor.open_text(path, "x\n", false, &app.theme);
+        app.focus.set(PanelId::Editor);
+        app.layout.hide(ToolWindowId::Project);
+        app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL));
+        assert!(matches!(app.dialog.as_ref().map(|d| &d.id), Some(DialogId::CloseTabDirty(_))));
+        assert!(app.focus.is(PanelId::Editor));
+        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(app.editor.buffers.is_empty());
+        assert!(app.focus.is(PanelId::Project));
+        assert!(app.layout.is_visible(ToolWindowId::Project));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn focusing_the_empty_editor_does_not_move_focus() {
+        let (mut app, dir) = test_app("empty-editor-focus");
+        app.focus.set(PanelId::Editor);
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(app.focus.is(PanelId::Editor));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
