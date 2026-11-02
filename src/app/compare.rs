@@ -1,6 +1,6 @@
 //! Compare with Clipboard and Compare with File: the active tab's text
-//! against another text, as a unified diff in a read-only patch tab
-//! (`git::diff::compare`, `Editor::open_compare`).
+//! against another text, as a side-by-side diff tab
+//! (`git::diff::compare`, `Editor::open_doc_tab`).
 
 use std::path::{Path, PathBuf};
 
@@ -8,6 +8,7 @@ use super::App;
 use crate::actions::PaletteKind;
 use crate::event::{AppMsg, Level};
 use crate::git::diff::{Compared, compare};
+use crate::git::model::DiffKey;
 use crate::ui::focus::PanelId;
 use crate::util::clipboard::{self, Paste};
 
@@ -28,16 +29,18 @@ fn rel_name(root: &Path, path: &Path) -> String {
 }
 
 impl App {
-    /// `(title name, new side header name, new side text)` of the active tab.
-    fn compare_new_side(&self, selection: bool) -> Option<(String, String, String)> {
+    /// `(title name, rel, new side header name, new side text)` of the active
+    /// tab; `rel` is its path relative to the root, else its name.
+    fn compare_new_side(&self, selection: bool) -> Option<(String, String, String, String)> {
         let b = self.editor.active_buffer()?;
-        let mut header = b.path.as_deref().map(|p| rel_name(&self.workspace.root, p)).unwrap_or_else(|| b.name.clone());
+        let rel = b.path.as_deref().map(|p| rel_name(&self.workspace.root, p)).unwrap_or_else(|| b.name.clone());
+        let mut header = rel.clone();
         let selected = selection && !b.view.sel().range().is_empty();
         if selected {
             header.push_str(" (selection)");
         }
         let text = if selected { b.selected_text() } else { b.text() };
-        Some((b.name.clone(), header, text))
+        Some((b.name.clone(), rel, header, text))
     }
 
     fn compare_busy(&mut self) -> bool {
@@ -48,7 +51,7 @@ impl App {
         busy
     }
 
-    fn spawn_compare(&self, title: String, other: Other, old_name: String, new: String, new_name: String) {
+    fn spawn_compare(&self, title: String, key: DiffKey, other: Other, old_name: String, new: String) {
         let (generation, tx) = (self.workspace.generation, self.bus_tx.clone());
         tokio::task::spawn_blocking(move || {
             let old = match other {
@@ -56,13 +59,14 @@ impl App {
                 Other::File(p) => match std::fs::read(&p) {
                     Ok(b) => b,
                     Err(e) => {
-                        let _ = tx.send(AppMsg::Compared { generation, title, result: Err(format!("Cannot read {old_name}: {e}")) });
+                        let result = Err(format!("Cannot read {old_name}: {e}"));
+                        let _ = tx.send(AppMsg::Compared { generation, title, key, result });
                         return;
                     }
                 },
             };
-            let result = Ok(compare(&old, new.as_bytes(), &old_name, &new_name));
-            let _ = tx.send(AppMsg::Compared { generation, title, result });
+            let result = Ok(compare(&old, new.as_bytes()));
+            let _ = tx.send(AppMsg::Compared { generation, title, key, result });
         });
     }
 
@@ -73,15 +77,16 @@ impl App {
         if self.compare_busy() {
             return;
         }
-        let Some((name, new_name, new)) = self.compare_new_side(true) else { return self.lsp_hint(NEEDS_TAB) };
+        let Some((name, rel, new_name, new)) = self.compare_new_side(true) else { return self.lsp_hint(NEEDS_TAB) };
         let title = format!("{name} vs Clipboard");
+        let key = DiffKey::Text { rel, old_name: "Clipboard".into(), new_name };
         let register = self.clipboard.register.clone();
         match self.clipboard_tools().paste.clone() {
             Paste::Command(argv) => {
                 let (generation, tx) = (self.workspace.generation, self.bus_tx.clone());
                 tokio::spawn(async move {
                     let send = |result| {
-                        let _ = tx.send(AppMsg::Compared { generation, title: title.clone(), result });
+                        let _ = tx.send(AppMsg::Compared { generation, title: title.clone(), key: key.clone(), result });
                     };
                     let text = match clipboard::read(&argv).await {
                         Ok(t) => t,
@@ -91,7 +96,7 @@ impl App {
                     if text.is_empty() {
                         return send(Err(EMPTY.into()));
                     }
-                    match tokio::task::spawn_blocking(move || compare(text.as_bytes(), new.as_bytes(), "Clipboard", &new_name)).await {
+                    match tokio::task::spawn_blocking(move || compare(text.as_bytes(), new.as_bytes())).await {
                         Ok(c) => send(Ok(c)),
                         Err(e) => tracing::debug!("compare task failed: {e}"),
                     }
@@ -101,7 +106,7 @@ impl App {
                 if register.is_empty() {
                     return self.lsp_hint(EMPTY);
                 }
-                self.spawn_compare(title, Other::Text(register), "Clipboard".into(), new, new_name);
+                self.spawn_compare(title, key, Other::Text(register), "Clipboard".into(), new);
             }
         }
     }
@@ -124,19 +129,20 @@ impl App {
         if self.compare_busy() {
             return;
         }
-        let Some((name, new_name, new)) = self.compare_new_side(false) else { return self.lsp_hint(NEEDS_TAB) };
+        let Some((name, rel, new_name, new)) = self.compare_new_side(false) else { return self.lsp_hint(NEEDS_TAB) };
         let other_name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.display().to_string());
         let title = format!("{name} vs {other_name}");
         let old_name = rel_name(&self.workspace.root, &path);
+        let key = DiffKey::Text { rel, old_name: old_name.clone(), new_name };
         let other = match self.editor.index_of(&path) {
             Some(i) => Other::Text(self.editor.buffers[i].text()),
             None => Other::File(path),
         };
-        self.spawn_compare(title, other, old_name, new, new_name);
+        self.spawn_compare(title, key, other, old_name, new);
     }
 
-    /// A compare finished: open its patch tab, or give the hint.
-    pub(super) fn compared(&mut self, generation: u64, title: String, result: Result<Compared, String>) {
+    /// A compare finished: open its diff tab, or give the hint.
+    pub(super) fn compared(&mut self, generation: u64, title: String, key: DiffKey, result: Result<Compared, String>) {
         if generation != self.workspace.generation {
             tracing::debug!("dropping a compare of a previous root");
             return;
@@ -145,11 +151,12 @@ impl App {
             Err(e) => self.lsp_hint(e),
             Ok(Compared::Identical) => self.lsp_hint(IDENTICAL),
             Ok(Compared::Binary) => self.lsp_hint(BINARY),
-            Ok(Compared::Patch(text)) => {
+            Ok(Compared::Doc(doc)) => {
                 if self.compare_busy() {
                     return;
                 }
-                self.editor.open_compare(&title, &text);
+                self.editor.diff_opts = self.git_panel.diff_opts();
+                self.editor.open_doc_tab(&title, key, doc);
                 self.focus.set(PanelId::Editor);
             }
         }
@@ -162,6 +169,7 @@ mod tests {
     use crate::actions::{Action, EditorAction};
     use crate::app::tests::{handle_next, load, test_app};
     use crate::editor::selection::{Selection, Selections};
+    use crate::git::diff::{DiffDoc, RowKind};
     use crate::ui::palette::{Accept, PaletteResult};
     use crate::util::clipboard::Tools;
 
@@ -178,20 +186,27 @@ mod tests {
         handle_next(app, is_compared).await;
     }
 
-    fn active_text(app: &App) -> String {
-        app.editor.active_buffer().unwrap().text()
+    /// The diff the active diff tab shows.
+    fn tab_doc(app: &App) -> &DiffDoc {
+        app.editor.active_buffer().unwrap().diff.as_ref().unwrap().pane.doc.as_ref().expect("doc")
+    }
+
+    fn tab_key(app: &App) -> &DiffKey {
+        app.editor.active_buffer().unwrap().diff.as_ref().unwrap().pane.key.as_ref().expect("key")
     }
 
     #[tokio::test]
-    async fn compare_with_clipboard_opens_a_patch_tab() {
+    async fn compare_with_clipboard_opens_a_diff_tab() {
         let (mut app, dir) = test_app("cmp-clip");
         let path = load(&mut app, "a.txt", "one\ntwo\nthree\n");
         app.clipboard.register = "one\n2\nthree\n".into();
         compare_clip(&mut app).await;
         let b = app.editor.active_buffer().unwrap();
         assert_eq!(b.name, "a.txt vs Clipboard");
-        assert!(b.read_only && b.patch.is_some() && b.path.is_none());
-        assert_eq!(active_text(&app), "diff -u Clipboard a.txt\n--- Clipboard\n+++ a.txt\n@@ -1,3 +1,3 @@\n one\n-2\n+two\n three\n");
+        assert!(b.diff.is_some() && b.path.is_none() && b.read_only);
+        let want = DiffKey::Text { rel: "a.txt".into(), old_name: "Clipboard".into(), new_name: "a.txt".into() };
+        assert_eq!(tab_key(&app), &want);
+        assert!(tab_doc(&app).rows.iter().any(|r| r.kind != RowKind::Equal));
         assert!(app.focus.is(PanelId::Editor));
         let count = app.editor.buffers.len();
         app.open_file(path, true);
@@ -199,6 +214,11 @@ mod tests {
         compare_clip(&mut app).await;
         assert_eq!(app.editor.buffers.len(), count);
         assert_eq!(app.editor.active_buffer().unwrap().name, "a.txt vs Clipboard");
+        app.clipboard.register = "one\nTWO\nthree\n".into();
+        app.open_file(app.workspace.root.join("a.txt"), true);
+        compare_clip(&mut app).await;
+        assert_eq!(app.editor.buffers.len(), count);
+        assert!(tab_doc(&app).old.concat().contains("TWO"));
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -209,9 +229,10 @@ mod tests {
         app.editor.active_buffer_mut().unwrap().view.sels = Selections::new(vec![Selection::new(4, 7)], 0);
         app.clipboard.register = "TWO".into();
         compare_clip(&mut app).await;
-        let t = active_text(&app);
-        assert!(t.contains("--- Clipboard\n+++ a.txt (selection)\n"), "{t}");
-        assert!(t.contains("-TWO\n") && t.contains("+two\n"), "{t}");
+        let DiffKey::Text { new_name, .. } = tab_key(&app) else { panic!("text key") };
+        assert_eq!(new_name, "a.txt (selection)");
+        assert_eq!(tab_doc(&app).new.concat(), "two");
+        assert_eq!(tab_doc(&app).old.concat(), "TWO");
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -296,7 +317,8 @@ mod tests {
         app.clipboard.tools = Some(Tools { paste: Paste::Command(vec!["sh".into(), "-c".into(), "printf 'one\\n'".into()]), copy: None });
         load(&mut app, "a.txt", "one\ntwo\n");
         compare_clip(&mut app).await;
-        assert!(active_text(&app).ends_with("@@ -1,1 +1,2 @@\n one\n+two\n"), "{}", active_text(&app));
+        assert_eq!(tab_doc(&app).old.concat(), "one\n");
+        assert_eq!(tab_doc(&app).new.concat(), "one\ntwo\n");
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -312,7 +334,10 @@ mod tests {
         handle_next(&mut app, is_compared).await;
         assert!(app.palette.is_none());
         assert_eq!(app.editor.active_buffer().unwrap().name, "a.txt vs b.txt");
-        assert!(active_text(&app).starts_with("diff -u b.txt a.txt\n--- b.txt\n+++ a.txt\n@@ -1,2 +1,2 @@\n x\n-z\n+y\n"));
+        let DiffKey::Text { old_name, .. } = tab_key(&app) else { panic!("text key") };
+        assert_eq!(old_name, "b.txt");
+        assert_eq!(tab_doc(&app).old.concat(), "x\nz\n");
+        assert_eq!(tab_doc(&app).new.concat(), "x\ny\n");
 
         let count = app.editor.buffers.len();
         std::fs::write(root.join("c.bin"), b"a\0b").unwrap();
@@ -334,7 +359,7 @@ mod tests {
         app.perform(Action::Editor(EditorAction::CompareWithFile));
         app.finish_palette(PaletteResult::Accept(Accept::OpenFile(root.join("d.txt"))));
         handle_next(&mut app, is_compared).await;
-        assert!(active_text(&app).contains("-wq\n"), "{}", active_text(&app));
+        assert_eq!(tab_doc(&app).old.concat(), "wq\n");
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -346,7 +371,8 @@ mod tests {
         app.handle_msg(AppMsg::Compared {
             generation: g + 1,
             title: "x vs Clipboard".into(),
-            result: Ok(Compared::Patch("@@ -1 +1 @@\n-a\n+b\n".into())),
+            key: DiffKey::Text { rel: "a.txt".into(), old_name: "Clipboard".into(), new_name: "a.txt".into() },
+            result: Ok(Compared::Doc(DiffDoc::build(b"a\n", b"b\n", 4))),
         });
         assert_eq!(app.editor.buffers.len(), 1);
         let _ = std::fs::remove_dir_all(dir);

@@ -9,30 +9,31 @@ expression: "snapshot(&term, &marks, Some(bottom))"
 03  ⌂ │╭───────────────────────────────────────────────╮
 04  2 ││ Copy Revision Number                   Ctrl+C │
 05  ◫ ││ Show Diff                              Ctrl+D │
-06  7 ││ Checkout Revision                 Alt+Shift+C │
-07  ⊢ ││ New Branch…                       Alt+Shift+B │en. Alt+1 opens the Project view; Ctrl+Shift+N finds a file.
-08    ││ Cherry-Pick                       Alt+Shift+P │
-09    ││ Revert Commit…                    Alt+Shift+R │
-10  ⋔ ││ Reset Current Branch to Here…                 │
-11    ││ Interactively Rebase from Here…   Alt+Shift+I │
-12  ✎ ││ New Tag…                          Alt+Shift+T │
-13    └│ Delete Tag…                       Alt+Shift+D │
-14  ✓ ─│ Filter Log…                            Ctrl+F │───────────────────────────────────────────────────────────────────
-15  8 ┌├───────────────────────────────────────────────┤╭──────────────────────────────╮──────────────────────────────────┐
-16  ⟲ ││ Branch 'parser'                             ▸ ││ Checkout                     │   Refresh   Fetch   Pull   Push  │
-17  5 │╰───────────────────────────────────────────────╯│ New Branch from 'parser'…    │                                  │
-18  ⚑ │  HEAD                 │●─┐ aaaaaaa (HEAD -> main│ Compare with 'HEAD'          │oading…                           │
-19  9 │▾ Local                ││ ● ddddddd (parser) Pars│ Merge 'parser' into 'HEAD'…  │                                  │
-20  ⎇ │  * main               │● │ bbbbbbb Fix the statu│ Rebase 'HEAD' onto 'parser'… │                                  │
-21    │    parser             │├─● eeeeeee Add a parser │ Rename…                      │                                  │
-22  ❯ │                       │● ccccccc (tag: v0.1.0) I│ Delete…                      │                                  │
-23  6 │                       │                         ╰──────────────────────────────╯                                  │
-24  ⚠ │                       │                                                      │                                    │
+06  7 ││ Show Diff as Patch                            │
+07  ⊢ ││ Checkout Revision                 Alt+Shift+C │en. Alt+1 opens the Project view; Ctrl+Shift+N finds a file.
+08    ││ New Branch…                       Alt+Shift+B │
+09    ││ Cherry-Pick                       Alt+Shift+P │
+10  ⋔ ││ Revert Commit…                    Alt+Shift+R │
+11    ││ Reset Current Branch to Here…                 │
+12  ✎ ││ Interactively Rebase from Here…   Alt+Shift+I │
+13    └│ New Tag…                          Alt+Shift+T │
+14  ✓ ─│ Delete Tag…                       Alt+Shift+D │───────────────────────────────────────────────────────────────────
+15  8 ┌│ Filter Log…                            Ctrl+F │──────────────────────────────────────────────────────────────────┐
+16  ⟲ │├───────────────────────────────────────────────┤╭──────────────────────────────╮   Refresh   Fetch   Pull   Push  │
+17  5 ││ Branch 'parser'                             ▸ ││ Checkout                     │                                  │
+18  ⚑ │╰───────────────────────────────────────────────╯│ New Branch from 'parser'…    │oading…                           │
+19  9 │▾ Local                ││ ● ddddddd (parser) Pars│ Compare with 'HEAD'          │                                  │
+20  ⎇ │  * main               │● │ bbbbbbb Fix the statu│ Merge 'parser' into 'HEAD'…  │                                  │
+21    │    parser             │├─● eeeeeee Add a parser │ Rebase 'HEAD' onto 'parser'… │                                  │
+22  ❯ │                       │● ccccccc (tag: v0.1.0) I│ Rename…                      │                                  │
+23  6 │                       │                         │ Delete…                      │                                  │
+24  ⚠ │                       │                         ╰──────────────────────────────╯                                  │
 25  4 │                       │                                                      │                                    │
 26  ► │                       │                                                      │                                    │
 27  3 │                       │                                                      │                                    │
 28  ⌕ └───────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 29
 -- marks: L=selected d=dim
-16      LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL  LLLLLLLLLLLLLLLLLLLLLLLLLLLLLL
+15                                              dddddd
+17      LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL  LLLLLLLLLLLLLLLLLLLLLLLLLLLLLL
 19                             LLLLLLLLLLLLLLLLLLLLLLLLL

@@ -381,26 +381,6 @@ impl DiffDoc {
         }
     }
 
-    /// A whole-file unified patch (`old_name` to `new_name`, no git
-    /// prefixes) with `context` equal lines around each change; hunks that
-    /// touch are merged. The header alone when nothing changed.
-    pub fn patch(&self, old_name: &str, new_name: &str, context: usize) -> String {
-        let mut out = format!("diff -u {old_name} {new_name}\n--- {old_name}\n+++ {new_name}\n");
-        let mut groups: Vec<Range<usize>> = Vec::new();
-        for b in blocks(&self.rows) {
-            let s = b.start.saturating_sub(context);
-            let e = (b.end + context).min(self.rows.len());
-            match groups.last_mut() {
-                Some(last) if s <= last.end => last.end = e,
-                _ => groups.push(s..e),
-            }
-        }
-        for g in groups {
-            self.write_hunk(&mut out, g);
-        }
-        out
-    }
-
     /// Index of the first changed row (side-by-side or unified).
     pub fn first_change(&self, unified: bool) -> Option<usize> {
         let rows = if unified { &self.unified } else { &self.rows };
@@ -412,29 +392,25 @@ impl DiffDoc {
     }
 }
 
-/// Context lines around each change of a whole-file compare patch.
-pub const COMPARE_CONTEXT: usize = 3;
-
 /// The result of comparing two whole texts.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub enum Compared {
-    /// A unified patch of all changes (old = `-`, new = `+`).
-    Patch(String),
+    /// The texts differ: their side-by-side diff.
+    Doc(DiffDoc),
     Identical,
     /// A side looks binary (`is_binary`).
     Binary,
 }
 
-/// Compare `old` with `new` as whole files named `old_name` and `new_name`
-/// (shown in the header only).
-pub fn compare(old: &[u8], new: &[u8], old_name: &str, new_name: &str) -> Compared {
+/// Compare `old` with `new` as whole files.
+pub fn compare(old: &[u8], new: &[u8]) -> Compared {
     let d = DiffDoc::build(old, new, 4);
     if d.binary {
         Compared::Binary
     } else if d.is_identical() {
         Compared::Identical
     } else {
-        Compared::Patch(d.patch(old_name, new_name, COMPARE_CONTEXT))
+        Compared::Doc(d)
     }
 }
 
@@ -698,28 +674,11 @@ mod tests {
     }
 
     #[test]
-    fn compare_patches_whole_files() {
-        const P: &str = "diff -u o n\n--- o\n+++ n\n";
-        let c = |o: &[u8], n: &[u8]| compare(o, n, "o", "n");
-        let lines = |n: usize| (1..=n).map(|i| format!("{i}\n")).collect::<String>();
-        let far_new = lines(20).replace("\n2\n", "\ntwo\n").replace("\n19\n", "\nnineteen\n");
-        assert_eq!(
-            c(lines(20).as_bytes(), far_new.as_bytes()),
-            Compared::Patch(format!(
-                "{P}@@ -1,5 +1,5 @@\n 1\n-2\n+two\n 3\n 4\n 5\n@@ -16,5 +16,5 @@\n 16\n 17\n 18\n-19\n+nineteen\n 20\n"
-            ))
-        );
-        let near_new = lines(10).replace("\n2\n", "\ntwo\n").replace("\n8\n", "\neight\n");
-        let Compared::Patch(p) = c(lines(10).as_bytes(), near_new.as_bytes()) else { panic!("patch") };
-        assert_eq!(p.matches("@@ -").count(), 1);
-        assert!(p.contains("@@ -1,10 +1,10 @@"));
-        assert_eq!(c(b"a\n", b"new\na\n"), Compared::Patch(format!("{P}@@ -1,1 +1,2 @@\n+new\n a\n")));
-        assert_eq!(c(b"", b"x\n"), Compared::Patch(format!("{P}@@ -0,0 +1,1 @@\n+x\n")));
-        assert_eq!(c(b"a\nb\n", b"a\nb\nc"), Compared::Patch(format!("{P}@@ -1,2 +1,3 @@\n a\n b\n+c\n\\ No newline at end of file\n")));
-        assert_eq!(c(b"a\nb", b"a\nb\n"), Compared::Patch(format!("{P}@@ -1,2 +1,2 @@\n a\n-b\n\\ No newline at end of file\n+b\n")));
-        assert_eq!(c(b"a\r\nb\r\n", b"a\r\nB\r\n"), Compared::Patch(format!("{P}@@ -1,2 +1,2 @@\n a\r\n-b\r\n+B\r\n")));
-        assert_eq!(c(b"x\n", b"x\n"), Compared::Identical);
-        assert_eq!(c(b"a\0b", b"a"), Compared::Binary);
-        assert_eq!(c(b"", b""), Compared::Identical);
+    fn compare_classifies_two_texts() {
+        let Compared::Doc(d) = compare(b"a\nb\n", b"a\nx\n") else { panic!("doc") };
+        assert!(d.rows.iter().any(|r| r.kind != RowKind::Equal));
+        assert!(matches!(compare(b"x\n", b"x\n"), Compared::Identical));
+        assert!(matches!(compare(b"", b""), Compared::Identical));
+        assert!(matches!(compare(b"a\0b", b"a"), Compared::Binary));
     }
 }

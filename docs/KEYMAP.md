@@ -637,7 +637,8 @@ Reachable from Find Action (F1) or by binding them in `keymap.toml`.
 | `git.continue_operation` | Git: continue the rebase, merge, cherry-pick or revert in progress |
 | `git.skip_operation` | Git: skip the commit the rebase, cherry-pick or revert stopped on |
 | `git.abort_operation` | Git: abort the rebase, merge, cherry-pick or revert in progress |
-| `git.log_show_diff` | Git: show the diff of the selected commits in an editor tab |
+| `git.log_show_diff` | Git: show the selected commits' files side by side in an editor tab |
+| `git.log_show_patch` | Git: show the combined diff of the selected commits as a unified patch in an editor tab |
 | `git.log_reset` | Git: reset the current branch to the selected commit (soft, mixed or hard) |
 | `git.commit_and_push` | Git: commit and push |
 | `git.message_older` | Git: previous commit message from history |

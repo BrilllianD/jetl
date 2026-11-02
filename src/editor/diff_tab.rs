@@ -81,10 +81,21 @@ impl DiffTab {
     }
 }
 
-/// Tab title of a one-file diff: `Diff <file name>`.
+/// Tab title of a one-file diff: `Diff <file name>`, and a suffix naming the
+/// source when it is not the working tree against the index.
 pub(crate) fn file_title(key: &DiffKey) -> String {
     let rel = key.rel();
-    format!("Diff {}", rel.rsplit('/').next().unwrap_or(rel))
+    let name = rel.rsplit('/').next().unwrap_or(rel);
+    let short = |s: &str| s[..s.len().min(8)].to_string();
+    match key {
+        DiffKey::Change { section: Section::Staged, .. } => format!("Diff {name} (staged)"),
+        DiffKey::Change { section: Section::Untracked, .. } => format!("Diff {name} (new)"),
+        DiffKey::Commit { sha, .. } => format!("Diff {name} ({})", short(sha)),
+        DiffKey::Range { base, top, .. } => {
+            format!("Diff {name} ({}..{})", base.as_deref().map_or("root".into(), short), short(top))
+        }
+        DiffKey::Change { section: Section::Unstaged, .. } | DiffKey::Local { .. } | DiffKey::Text { .. } => format!("Diff {name}"),
+    }
 }
 
 /// What the header row says about `key`.
@@ -98,6 +109,7 @@ pub(crate) fn header(key: &DiffKey) -> String {
         DiffKey::Commit { sha, .. } => format!("{}  {label}", short(sha)),
         DiffKey::Range { base, top, .. } => format!("{}..{}  {label}", base.as_deref().map_or("root".into(), short), short(top)),
         DiffKey::Local { .. } => label,
+        DiffKey::Text { old_name, new_name, .. } => format!("{old_name} ↔ {new_name}"),
     }
 }
 
@@ -116,15 +128,42 @@ impl Editor {
             self.activate_index(i);
             return i;
         }
+        let mut tab = DiffTab::new(files, at, self.diff_opts);
+        let key = tab.files[at].clone();
+        tab.pane.request(key, cx);
+        self.push_diff_buffer(title, tab)
+    }
+
+    /// Open a one-file diff tab over the prepared `doc` (Compare with
+    /// Clipboard / File); `key` is never loaded. A tab already open for `key`
+    /// is activated and its diff replaced as a fresh load. Returns the
+    /// buffer index.
+    pub(crate) fn open_doc_tab(&mut self, title: &str, key: DiffKey, doc: DiffDoc) -> usize {
+        let files = vec![key.clone()];
+        if let Some(i) = self.buffers.iter().position(|b| b.diff.as_ref().is_some_and(|d| d.files == files)) {
+            if let Some(t) = self.buffers[i].diff.as_mut() {
+                t.pane.clear();
+                t.pane.begin(key.clone());
+                t.pane.set(&key, Ok(doc));
+                t.at = 0;
+            }
+            self.activate_index(i);
+            return i;
+        }
+        let mut tab = DiffTab::new(files, 0, self.diff_opts);
+        tab.pane.begin(key.clone());
+        tab.pane.set(&key, Ok(doc));
+        self.push_diff_buffer(title, tab)
+    }
+
+    /// A new pathless, read-only buffer titled `title` holding `tab`, activated.
+    fn push_diff_buffer(&mut self, title: &str, tab: DiffTab) -> usize {
         let id = self.next_id;
         self.next_id += 1;
         let mut buf = Buffer::from_text(id, None, "", false);
         buf.name = title.to_string();
         buf.read_only = true;
         buf.view.wrap.on = false;
-        let mut tab = DiffTab::new(files, at, self.diff_opts);
-        let key = tab.files[at].clone();
-        tab.pane.request(key, cx);
         buf.diff = Some(Box::new(tab));
         self.buffers.push(buf);
         let i = self.buffers.len() - 1;
@@ -173,6 +212,8 @@ impl Editor {
                 | E::FocusGroupDown
                 | E::Unsplit
                 | E::UnsplitAll
+                | E::SplitRight
+                | E::SplitDown
                 | E::MoveTabToOppositeGroup
                 | E::Switcher
                 | E::SwitcherBack
@@ -199,7 +240,6 @@ impl Editor {
                     cx.notify(Level::Info, if forward { "Last file in this diff" } else { "First file in this diff" });
                 }
             }
-            E::SplitRight | E::SplitDown => cx.notify(Level::Info, "A diff tab cannot be split"),
             E::Move(Motion::Up, _) => t.pane.scroll_by(-1),
             E::Move(Motion::Down, _) => t.pane.scroll_by(1),
             E::Move(Motion::PageUp, _) => t.pane.scroll_by(-(t.pane.page.max(1) as isize)),
@@ -298,6 +338,42 @@ mod tests {
         assert_eq!((j, ed.buffers.len()), (i, 1));
         assert_eq!(loads(&fx), [key("b.rs")]);
         assert_eq!(tab(&mut ed, i).at, 1);
+    }
+
+    #[test]
+    fn file_titles_tell_sources_apart() {
+        let rel = "src/a.rs";
+        let change = |section| DiffKey::Change { section, rel: rel.into(), old: None };
+        let sha = || "1a2b3c4d5e6f7a8b".to_string();
+        assert_eq!(file_title(&change(Section::Unstaged)), "Diff a.rs");
+        assert_eq!(file_title(&change(Section::Staged)), "Diff a.rs (staged)");
+        assert_eq!(file_title(&change(Section::Untracked)), "Diff a.rs (new)");
+        assert_eq!(file_title(&DiffKey::Commit { sha: sha(), rel: rel.into(), old: None }), "Diff a.rs (1a2b3c4d)");
+        let range = |base| DiffKey::Range { base, top: "5e6f7a8b9c0d".into(), rel: rel.into(), old: None };
+        assert_eq!(file_title(&range(Some(sha()))), "Diff a.rs (1a2b3c4d..5e6f7a8b)");
+        assert_eq!(file_title(&range(None)), "Diff a.rs (root..5e6f7a8b)");
+        let local = DiffKey::Local { path: PathBuf::from("/tmp/src/a.rs"), rel: rel.into(), id: "x".into(), at: 0 };
+        assert_eq!(file_title(&local), "Diff a.rs");
+        let text = DiffKey::Text { rel: rel.into(), old_name: "Clipboard".into(), new_name: rel.into() };
+        assert_eq!(file_title(&text), "Diff a.rs");
+    }
+
+    #[test]
+    fn open_doc_tab_shows_the_doc_and_refreshes_in_place() {
+        let text = |new: &str| DiffKey::Text { rel: "a.rs".into(), old_name: "Clipboard".into(), new_name: new.into() };
+        let mut ed = Editor::new(&Config::default());
+        let i = ed.open_doc_tab("a.rs vs Clipboard", text("a.rs"), doc().unwrap());
+        assert!(tab(&mut ed, i).pane.doc.is_some());
+        assert_eq!(ed.buffers[i].name, "a.rs vs Clipboard");
+        tab(&mut ed, i).pane.scroll = 3;
+        let other = DiffDoc::build(b"q\n", b"r\n", 4);
+        let j = ed.open_doc_tab("a.rs vs Clipboard", text("a.rs"), other);
+        assert_eq!((j, ed.buffers.len()), (i, 1));
+        let t = tab(&mut ed, i);
+        assert_eq!((t.pane.scroll, t.pane.doc.as_ref().map(|d| d.new.concat())), (0, Some("r\n".to_string())));
+        let k = ed.open_doc_tab("a.rs vs b.rs", text("b.rs"), doc().unwrap());
+        assert_eq!((k, ed.buffers.len()), (1, 2));
+        assert_eq!(header(&text("a.rs")), "Clipboard ↔ a.rs");
     }
 
     #[test]

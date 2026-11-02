@@ -932,9 +932,15 @@ git -C $T switch -qc dev && echo dev >> $T/README.md && git -C $T -c user.name=t
 # pick Compare: the bar shows "[Branch: HEAD..dev]" and only "dev change"
 # reopen the menu and the dialog, pick Merge: a confirm appears; Cancel
 git -C $T log --oneline -1             # unchanged
-# select "dev change", then Ctrl+D: an editor tab "Diff <sha8>" with a green and a red row (capture-pane -e: different
-# backgrounds); F7 moves the caret to the first change (status bar Ln), Shift+F7 there says "No more changes above";
-# typing changes nothing; Ctrl+D again on the same row adds no tab
+# select "dev change", then Ctrl+D: an editor tab "Diff <sha8>", header "1/N  <parent8>..<sha8>  <path>" (no counter for one
+# file), two panes at 120x40 (one unified pane at 80x24), the editor focused; Alt+N walks to the last file, then the
+# toast "Last file in this diff"; F7 / Shift+F7 step the changes; typing changes nothing; Ctrl+D again on the same row
+# activates the same tab (back on file 1). S-F10: "Show Diff  Ctrl+D", then "Show Diff as Patch": a tab "Patch <sha8>"
+# with the "==" header and a green and a red row (capture-pane -e: different backgrounds); F7 moves the caret to the
+# first change (status bar Ln), Shift+F7 there says "No more changes above"; Show Diff as Patch again adds no tab
+# compare, with a file open and another text in the clipboard: View > Compare with Clipboard opens a tab "<name> vs
+# Clipboard", header "Clipboard ↔ <path>", two panes at 120x40; change the clipboard and compare again: the same tab
+# shows the new diff; Compare with File on a binary file says "Binary files differ" and opens nothing
 # reset: add a second commit, edit README.md without committing it
 git -C $T switch -q - ; echo x >> $T/README.md; git -C $T -c user.name=t -c user.email=t@t commit -qam two; echo edit >> $T/README.md
 # in the Log select `init`, S-F10, "Reset Current Branch to Here…": a choice (Soft, Mixed, Hard); pick Hard: a confirm
@@ -943,9 +949,10 @@ git -C $T log --oneline                # only `init`
 # Local History on README.md lists "Before git reset --hard <sha>" with the edit
 # repeat with a new second commit and Soft: `git -C $T status --short` shows `M  README.md`
 # multi-select, in a scratch repo with three commits on the current branch: Shift+Down twice: three highlighted rows,
-# the details start with "3 commits selected"; Ctrl+D: one tab "Diff <oldest8>..<newest8>" with one "==" header;
+# the details start with "3 commits selected"; Ctrl+D: one tab "Diff <oldest8>..<newest8>" over the union of the files
+# (path order, "1/N" in the header); Show Diff as Patch from the menu: a tab "Patch <oldest8>..<newest8>" with one "==" header;
 # Down: one row again. Ctrl+click on rows 1 and 3 (SGR button 16: press 16 <col> <row>; release 16 <col> <row>),
-# then Ctrl+D: a tab "Diff of 2 commits (<top8>…)" with two "==" sections.
+# then Show Diff as Patch: a tab "Patch of 2 commits (<top8>…)" with two "==" sections; Ctrl+D: "Diff of 2 commits (<top8>…)".
 # with `[git] log_page = 2` in $C/config.toml (plus `[lsp] enabled = false`) and three commits, a Ctrl+click on the second
 # (last loaded) row loads the third commit.
 # fold sub-scenario, in a fresh scratch repo $T (tmux session started on it as above): a commit that changes two
@@ -955,7 +962,7 @@ git -C $T add . && git -C $T -c user.name=t -c user.email=t@t commit -qm 'two fi
 sed -i -e 's/^2$/two/' -e 's/^25$/twenty-five/' $T/a.txt; sed -i 's/^5$/five/' $T/b.txt
 git -C $T -c user.name=t -c user.email=t@t commit -qam 'fold me'
 /tmp/tm.sh send-keys -t jetl M-9; /tmp/tm.sh send-keys -t jetl M-l   # Log tab, "fold me" on top
-/tmp/tm.sh send-keys -t jetl C-d; sleep 1   # Show Diff: tab "Diff <sha8>"
+/tmp/tm.sh send-keys -t jetl S-F10 Down Down Enter; sleep 1   # Show Diff as Patch: tab "Patch <sha8>"
 # at 80x24 the Git window leaves 7 editor rows (and a warning toast covers some): Alt+9 twice (the first moves the focus
 # to the editor, the second hides the window), wait for the toast to go; Alt+9 shows the window again
 /tmp/tm.sh send-keys -t jetl M-9; /tmp/tm.sh send-keys -t jetl M-9
@@ -971,7 +978,7 @@ git -C $T -c user.name=t -c user.email=t@t commit -qam 'fold me'
 press 0 42 2; release 0 42 2
 /tmp/tm.sh send-keys -t jetl 'M->'         # everything open again
 # With the Git window shown again (Alt+9), two Ctrl+clicked commits that are not neighbours (here "fold me" and "init"; SGR button 16: press 16 <col> <row>;
-# release 16 <col> <row>), Ctrl+D, Alt+<: two "==" rows with the empty separator row between them.
+# release 16 <col> <row>), Show Diff as Patch from the menu, Alt+<: two "==" rows with the empty separator row between them.
 # file tree, in a scratch repo $T with a commit that touches src/a/b/x.txt, src/y.txt and top.txt: select it in the Log, Right:
 # "▾ <repo dir>", then "▾ src", "▾ a/b", "x.txt", "y.txt", "top.txt" (folders first)
 # Down onto "a/b", Left: "▸ a/b" and its file hidden; Right opens it again
@@ -990,7 +997,8 @@ press 0 42 2; release 0 42 2
 # Up/Down/PageUp/PageDown scroll; a click on "[Side-by-side]" flips only the tab (Alt+9: the Git window diff keeps its layout);
 # typing and Ctrl+S change nothing; Ctrl+D in the Git window again on a.txt activates the same tab; Ctrl+W closes it
 # Log tab: select a commit, Tab to its files, Ctrl+D on a file: its diff tab; S-F10 on a file: "Open Diff in Editor Tab" after
-# "Show Diff"; Ctrl+D in the Log list still opens the "Diff <sha8>" patch tab. Stash tab: Ctrl+D on a stash file opens a tab.
+# "Show Diff"; Ctrl+D in the Log list opens the commit's files in a "Diff <sha8>" tab. Ctrl+D on a staged file and on the same file
+# unstaged: two tabs "Diff a.txt (staged)" and "Diff a.txt". Stash tab: Ctrl+D on a stash file opens a tab.
 # Ctrl+D on the conflicted file in Changes opens the resolver, not a tab
 /tmp/tm.sh kill-server
 ```

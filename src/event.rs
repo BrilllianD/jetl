@@ -153,10 +153,12 @@ pub enum AppMsg {
         result: Result<String, String>,
     },
     /// A compare (`App::compare_with_clipboard`, `App::compare_with_file`)
-    /// computed off the main thread, tagged with the workspace generation.
+    /// computed off the main thread, tagged with the workspace generation;
+    /// it opens a diff tab titled `title` over `key`.
     Compared {
         generation: u64,
         title: String,
+        key: crate::git::model::DiffKey,
         result: Result<crate::git::diff::Compared, String>,
     },
     /// A formatter run for buffer `id` (`App::start_format`), tagged with

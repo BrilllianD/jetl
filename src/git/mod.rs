@@ -159,6 +159,7 @@ pub enum GitMsg {
     CommitsFiles {
         generation: u64,
         spans: Vec<model::DiffSpan>,
+        tab: Option<String>,
         result: Result<Vec<(model::CommitFile, DiffKey)>>,
     },
     /// Blame of an open file; the editor keeps the newest per buffer.
@@ -342,6 +343,11 @@ pub enum GitRequest {
     /// The union of the files changed by commit spans, answered with
     /// `GitMsg::CommitsFiles`.
     LoadCommitsFiles(Vec<model::DiffSpan>),
+    /// The union of the files of spans, opened as a diff tab titled title (GitMsg::CommitsFiles with tab set).
+    CommitsFilesTab {
+        title: String,
+        spans: Vec<model::DiffSpan>,
+    },
     /// The combined diff of commit spans, opened as a patch tab.
     CommitsDiff {
         title: String,
@@ -577,7 +583,9 @@ impl GitService {
                 });
             }
             // The Local History window loads these itself (`App::load_local_diff`).
-            DiffKey::Local { .. } => tracing::debug!("local history diff reached the git service: {key:?}"),
+            DiffKey::Local { .. } | DiffKey::Text { .. } => {
+                tracing::debug!("in-memory or local history diff reached the git service: {key:?}")
+            }
         }
     }
 
@@ -603,11 +611,11 @@ impl GitService {
     }
 
     /// The union of the files `spans` change, answered with `GitMsg::CommitsFiles`.
-    pub fn load_commits_files(&self, spans: Vec<model::DiffSpan>) {
+    pub fn load_commits_files(&self, spans: Vec<model::DiffSpan>, tab: Option<String>) {
         let (root, generation, tx) = (self.root.clone(), self.generation, self.tx.clone());
         tokio::spawn(async move {
             let result = cli::spans_files(&root, &spans).await;
-            let _ = tx.send(AppMsg::Git(GitMsg::CommitsFiles { generation, spans, result }));
+            let _ = tx.send(AppMsg::Git(GitMsg::CommitsFiles { generation, spans, tab, result }));
         });
     }
 

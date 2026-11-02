@@ -626,12 +626,20 @@ pub enum DiffKey {
     /// `base:old_or_rel` vs `top:rel`, `base: None` the empty tree: the
     /// combined change of several commits; see `union_files`.
     Range { base: Option<String>, top: String, rel: String, old: Option<String> },
+    /// Two texts compared in memory (Compare with Clipboard / File). `rel` names the language (the active tab's
+    /// path, relative to the root, or its name); `old_name` / `new_name` are the side names shown in the header. Never
+    /// loaded: the doc comes with the key (`Editor::open_doc_tab`).
+    Text { rel: String, old_name: String, new_name: String },
 }
 
 impl DiffKey {
     pub fn rel(&self) -> &str {
         match self {
-            DiffKey::Change { rel, .. } | DiffKey::Commit { rel, .. } | DiffKey::Local { rel, .. } | DiffKey::Range { rel, .. } => rel,
+            DiffKey::Change { rel, .. }
+            | DiffKey::Commit { rel, .. }
+            | DiffKey::Local { rel, .. }
+            | DiffKey::Range { rel, .. }
+            | DiffKey::Text { rel, .. } => rel,
         }
     }
 

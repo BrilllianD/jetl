@@ -92,7 +92,7 @@ impl App {
             AppMsg::FsOpDone { op: FsOp::Rename { from, to, .. }, result: Ok(()), .. } => self.history_renamed(&from, &to),
             AppMsg::FsOpDone { op, .. } => tracing::debug!("dropping file operation result of a previous root: {op:?}"),
             AppMsg::Paste { generation, seq, result } => self.paste_done(generation, seq, result),
-            AppMsg::Compared { generation, title, result } => self.compared(generation, title, result),
+            AppMsg::Compared { generation, title, key, result } => self.compared(generation, title, key, result),
             AppMsg::Formatted { generation, id, seq, result } => self.format_done(generation, id, seq, result),
             AppMsg::RunOutput { generation, run, lines } => self.run_output(generation, run, lines),
             AppMsg::RunExited { generation, run, end } => self.run_exited(generation, run, end),
@@ -202,7 +202,11 @@ impl App {
                 Err(e) => self.notify(Level::Error, format!("Diff: {e:#}")),
             },
             GitMsg::CommitDetails { sha, result, .. } => self.git_panel.set_details(&sha, result, &self.workspace.root),
-            GitMsg::CommitsFiles { spans, result, .. } => self.git_panel.set_log_files(&spans, result, &self.workspace.root),
+            GitMsg::CommitsFiles { tab: Some(title), result, .. } => match result {
+                Ok(rows) => self.open_diff_tab(title, rows.into_iter().map(|(_, k)| k).collect(), 0),
+                Err(e) => self.notify(Level::Error, format!("Diff: {e:#}")),
+            },
+            GitMsg::CommitsFiles { spans, tab: None, result, .. } => self.git_panel.set_log_files(&spans, result, &self.workspace.root),
             GitMsg::PushRemote { branch, result, .. } => self.push_remote_known(branch, result),
             GitMsg::RebasePlan { result, .. } => self.rebase_plan_loaded(result),
             GitMsg::HeadMessage { result, .. } => {
@@ -439,7 +443,7 @@ impl App {
         }
     }
 
-    /// Open a patch tab (Git Log Show Diff) and focus the editor.
+    /// Open a patch tab (Git Log Show Diff as Patch) and focus the editor.
     pub(super) fn open_patch(&mut self, title: String, spans: Vec<crate::git::model::DiffSpan>, text: String) {
         if self.editor.merge_active() {
             return self.notify(Level::Info, crate::editor::merge::BUSY);

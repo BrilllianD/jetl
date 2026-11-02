@@ -482,19 +482,6 @@ impl Editor {
         self.push_patch(title, spans, text)
     }
 
-    /// Show a compare's unified diff `text` in a read-only patch tab named
-    /// `title` (no diff spans). Activates an open compare tab only when its
-    /// title and text are the same, so a git Show Diff tab is never reused.
-    pub fn open_compare(&mut self, title: &str, text: &str) -> usize {
-        if let Some(at) =
-            self.buffers.iter().position(|b| b.patch.as_ref().is_some_and(|p| p.spans.is_empty()) && b.name == title && b.rope == text)
-        {
-            self.activate_index(at);
-            return at;
-        }
-        self.push_patch(title, Vec::new(), text)
-    }
-
     fn push_patch(&mut self, title: &str, spans: Vec<crate::git::model::DiffSpan>, text: &str) -> usize {
         let id = self.next_id;
         self.next_id += 1;
@@ -2138,23 +2125,6 @@ mod tests {
         let mut cx = Ctx { effects: Vec::new(), config: &config, theme: &theme, workspace: &workspace, bus };
         f(&mut cx);
         cx.effects.into_iter().filter_map(|e| if let Effect::Notify(_, t) = e { Some(t) } else { None }).collect()
-    }
-
-    #[test]
-    fn compare_tabs_never_reuse_git_patch_tabs() {
-        use crate::git::model::DiffSpan;
-        const T: &str = "@@ -1 +1 @@\n-a\n+b\n";
-        let mut ed = Editor::new(&Config::default());
-        let spans = || vec![DiffSpan { base: None, top: "1a2b".into(), header: "== 1a2b".into() }];
-        let git = ed.open_patch("Diff 1a2b", spans(), T);
-        let cmp = ed.open_compare("a vs Clipboard", T);
-        assert_ne!(cmp, git);
-        assert_eq!(ed.buffers.len(), 2);
-        assert_eq!(ed.open_compare("a vs Clipboard", T), cmp);
-        assert_eq!(ed.buffers.len(), 2);
-        let other = ed.open_compare("a vs Clipboard", "@@ -1 +1 @@\n-a\n+c\n");
-        assert_eq!((other, ed.buffers.len()), (2, 3));
-        assert_eq!(ed.open_patch("Diff 1a2b", spans(), T), git);
     }
 
     #[cfg(feature = "lang-rust")]

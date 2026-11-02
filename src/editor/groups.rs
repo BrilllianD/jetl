@@ -294,7 +294,8 @@ impl Editor {
     }
 
     /// [`Editor::activate_index`] without touching the history: its tab in
-    /// the focused group, else a new tab there.
+    /// the focused group, else a new tab there. A diff tab has one view, so
+    /// the group that shows it takes focus instead.
     pub(super) fn set_active(&mut self, i: usize) {
         let Some(id) = self.buffers.get(i).map(|b| b.id) else { return };
         // A diff tab has one view: the group that shows it takes focus.
@@ -1414,7 +1415,8 @@ mod tests {
         let di = ed.open_diff_tab("Diff", keys.clone(), 0, &mut cx);
         let id = ed.buffers[di].id;
         // (a) a lone diff tab is not copied by move-to-opposite.
-        act(&mut ed, EditorAction::MoveTabToOppositeGroup);
+        let fx = act(&mut ed, EditorAction::MoveTabToOppositeGroup);
+        assert!(fx.iter().any(|e| matches!(e, Effect::Notify(Level::Info, m) if m == "A diff tab cannot be split")));
         assert_eq!((ed.groups.len(), ed.view_count(id)), (1, 1));
         // (b) with the diff in group A and focus in B, reopening and the switcher path focus A.
         open(&mut ed, "a.txt", "a\n");

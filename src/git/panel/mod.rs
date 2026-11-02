@@ -355,7 +355,7 @@ impl GitPanel {
             DiffKey::Commit { .. } if self.stash_diff.key.as_ref() == Some(key) => self.stash_diff.set(key, result),
             DiffKey::Commit { .. } | DiffKey::Range { .. } => self.log_diff.set(key, result),
             // Local history diffs go to the Local History window.
-            DiffKey::Local { .. } => {}
+            DiffKey::Local { .. } | DiffKey::Text { .. } => {}
         }
     }
 
@@ -468,6 +468,7 @@ impl GitPanel {
             },
             G::LogFileOp(op) => self.log_file_op(*op, cx),
             G::LogShowDiff => self.show_commits_diff(cx),
+            G::LogShowPatch => self.show_commits_patch(cx),
             G::ShowDiff => self.show_diff(cx),
             G::CopySha => self.commit_action(CommitAction::CopySha, cx),
             G::LogCheckout => self.commit_action(CommitAction::Checkout, cx),

@@ -426,7 +426,7 @@ impl GitPanel {
         self.maybe_page_log(cx);
     }
 
-    /// Open the combined diff of the selected commits in an editor tab.
+    /// Open the files of the selected commits side by side in one editor diff tab.
     pub(super) fn show_commits_diff(&mut self, cx: &mut Ctx) {
         let rows = self.log_selection();
         if self.tab != GitTab::Log || rows.is_empty() {
@@ -434,7 +434,18 @@ impl GitPanel {
         }
         let commits: Vec<&LogCommit> = rows.iter().map(|&i| &self.log[i].commit).collect();
         let (title, spans) = crate::git::model::commits_diff(&commits);
-        cx.effects.push(Effect::Git(GitRequest::CommitsDiff { title, spans }));
+        cx.effects.push(Effect::Git(GitRequest::CommitsFilesTab { title, spans }));
+    }
+
+    /// Open the combined diff of the selected commits as a unified patch in an editor tab.
+    pub(super) fn show_commits_patch(&mut self, cx: &mut Ctx) {
+        let rows = self.log_selection();
+        if self.tab != GitTab::Log || rows.is_empty() {
+            return cx.notify(Level::Info, "Select a commit in the Log tab");
+        }
+        let commits: Vec<&LogCommit> = rows.iter().map(|&i| &self.log[i].commit).collect();
+        let (title, spans) = crate::git::model::commits_diff(&commits);
+        cx.effects.push(Effect::Git(GitRequest::CommitsDiff { title: title.replacen("Diff", "Patch", 1), spans }));
     }
 
     /// Commit actions for the selected commit, at the pointer or its row.
@@ -451,6 +462,7 @@ impl GitPanel {
         let mut items = vec![
             MenuItem::new("Copy Revision Number", g(GitAction::CopySha)),
             MenuItem::new("Show Diff", g(GitAction::ShowDiff)),
+            MenuItem::new("Show Diff as Patch", g(GitAction::LogShowPatch)),
             MenuItem::new("Checkout Revision", g(GitAction::LogCheckout)).enabled(!busy),
             MenuItem::new("New Branch…", g(GitAction::LogNewBranch)).enabled(!busy),
             MenuItem::new("Cherry-Pick", g(GitAction::LogCherryPick)).enabled(!busy),
@@ -702,7 +714,7 @@ impl GitPanel {
                 DiffKey::Range { base, top, .. } => {
                     format!(" {}..{}  {}", base.as_deref().map_or("root", |b| &b[..b.len().min(8)]), &top[..top.len().min(8)], key.label())
                 }
-                DiffKey::Change { .. } | DiffKey::Local { .. } => format!(" {}", key.label()),
+                DiffKey::Change { .. } | DiffKey::Local { .. } | DiffKey::Text { .. } => format!(" {}", key.label()),
             };
             let opts = self.diff_opts;
             let rest = Rect::new(body.x, body.y + 1, body.width, body.height.saturating_sub(1));

@@ -162,11 +162,14 @@ fn diff_tab_app(name: &str) -> Fixture {
     let key = |rel: &str| DiffKey::Commit { sha: "1a2b3c4d5e6f7a8b".into(), rel: rel.into(), old: None };
     let mut cx = ctx!(app);
     app.editor.open_diff_tab("Diff a.rs", vec![key("src/a.rs"), key("src/b.rs")], 0, &mut cx);
+    assert!(app.editor.set_diff(&key("src/a.rs"), &Ok(diff_tab_doc())));
+    fx
+}
+
+fn diff_tab_doc() -> crate::git::diff::DiffDoc {
     let old = "fn main() {\n    let a = 1;\n    let b = 2;\n    println!(\"x\");\n1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n    gone();\n}\n";
     let new = "fn main() {\n    let a = 10;\n    let b = 2;\n    println!(\"x\");\n    added();\n1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n}\n";
-    let doc = crate::git::diff::DiffDoc::build(old.as_bytes(), new.as_bytes(), 4);
-    assert!(app.editor.set_diff(&key("src/a.rs"), &Ok(doc)));
-    fx
+    crate::git::diff::DiffDoc::build(old.as_bytes(), new.as_bytes(), 4)
 }
 
 #[tokio::test]
@@ -185,6 +188,31 @@ async fn editor_diff_tab_unified() {
     let term = draw_editor(app, 80, 24);
     let marks = [Mark::bg('+', "added", app.theme.diff_add_bg), Mark::bg('-', "removed", app.theme.diff_del_bg)];
     assert_snapshot!("editor_diff_tab_unified", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
+async fn editor_compare_tab() {
+    let mut fx = stable_app("compare-tab");
+    let app = &mut fx.app;
+    let key = DiffKey::Text { rel: "src/a.rs".into(), old_name: "Clipboard".into(), new_name: "src/a.rs".into() };
+    app.editor.open_doc_tab("a.rs vs Clipboard", key, diff_tab_doc());
+    let term = draw_editor(app, 120, 30);
+    let marks = [Mark::bg('+', "added", app.theme.diff_add_bg), Mark::bg('-', "removed", app.theme.diff_del_bg)];
+    assert_snapshot!("editor_compare_tab", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
+async fn editor_diff_tab_commits() {
+    let mut fx = stable_app("diff-tab-commits");
+    let app = &mut fx.app;
+    let key =
+        |rel: &str| DiffKey::Range { base: Some("1a2b3c4d5e6f7a8b".into()), top: "5e6f7a8b9c0d1e2f".into(), rel: rel.into(), old: None };
+    let mut cx = ctx!(app);
+    app.editor.open_diff_tab("Diff 1a2b3c4d..5e6f7a8b", vec![key("src/a.rs"), key("src/b.rs"), key("src/c.rs")], 0, &mut cx);
+    assert!(app.editor.set_diff(&key("src/a.rs"), &Ok(diff_tab_doc())));
+    let term = draw_editor(app, 120, 30);
+    let marks = [Mark::bg('+', "added", app.theme.diff_add_bg), Mark::bg('-', "removed", app.theme.diff_del_bg)];
+    assert_snapshot!("editor_diff_tab_commits", snapshot(&term, &marks, None));
 }
 
 #[tokio::test]
@@ -2106,7 +2134,7 @@ async fn git_log_multi_select() {
         CommitFile { status: 'M', path: "stale.rs".into(), old: None },
         crate::git::model::DiffKey::Local { path: "stale.rs".into(), rel: "stale.rs".into(), id: String::new(), at: 0 },
     )];
-    app.handle_msg(AppMsg::Git(GitMsg::CommitsFiles { generation: g, spans: vec![spans[0].clone()], result: Ok(stale) }));
+    app.handle_msg(AppMsg::Git(GitMsg::CommitsFiles { generation: g, spans: vec![spans[0].clone()], tab: None, result: Ok(stale) }));
     let loading = draw_app(app, 120, 30);
     let text: String = (0..30).map(|y| crate::ui::snapshot::row_text(loading.backend().buffer(), y, 120)).collect();
     assert!(text.contains("Loading…") && !text.contains("stale.rs"), "{text}");
@@ -2121,7 +2149,7 @@ async fn git_log_multi_select() {
             vec![CommitFile { status: 'M', path: "src/parser.rs".into(), old: None }],
         ],
     );
-    app.handle_msg(AppMsg::Git(GitMsg::CommitsFiles { generation: g, spans, result: Ok(rows) }));
+    app.handle_msg(AppMsg::Git(GitMsg::CommitsFiles { generation: g, spans, tab: None, result: Ok(rows) }));
     let term = draw_app(app, 120, 30);
     assert_ne!(app.theme.list_selected.bg, app.theme.list_selected_unfocused.bg);
     let marks = [

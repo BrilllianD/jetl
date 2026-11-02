@@ -9,12 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Git window: Ctrl+D (`git.show_diff`) on a file in the Commit, Log or Stash tab opens its diff side by side in a full-size editor tab (header toggles for layout and collapse, F7 / Shift+F7 between changes, Alt+N / Alt+P between files); the Log file menu has Open Diff in Editor Tab. In the Log list Ctrl+D still opens the commits' patch.
+- Git window: Ctrl+D (`git.show_diff`) on a file in the Commit, Log or Stash tab opens its diff side by side in a full-size editor tab (header toggles for layout and collapse, F7 / Shift+F7 between changes, Alt+N / Alt+P between files); the Log file menu has Open Diff in Editor Tab. In the Log list Ctrl+D shows the selected commits' files in one such tab, file by file.
 - Git Log: the selected commit's files are a folder tree with one root (Left/Right close and open folders) and a context menu on every node: Show Diff, Open Diff in Editor Tab, Open in Editor, Copy Path, Show History, Expand/Collapse All, and the commit's Cherry-Pick, Revert, Checkout and Copy Revision Number.
 - Git Log: with several commits selected the details list the union of their files as one tree, and a file's diff is its combined change across the selection (from the oldest selected commit's parent to the newest; a non-contiguous selection is marked in the header).
 
 ### Changed
 
+- Git Log Show Diff (Ctrl+D) opens the selected commits' files side by side in one editor tab (Alt+N / Alt+P between files); the unified patch moved to Show Diff as Patch (`git.log_show_patch`, tab `Patch <sha8>`). Compare with Clipboard / File open a side-by-side diff tab instead of a patch (no longer saveable as a file). Diff tab titles name their source: `(staged)`, `(new)`, `(<sha8>)`, `(<base>..<top>)`.
 - A conflicted file opened from the project tree or the Commit tab's Changes opens the three-pane conflict resolver; selecting it in Changes shows a hint instead of a diff of its conflict markers.
 - Closing the last editor tab moves focus to the project tree and shows the Project tool window, so the arrow keys move the tree selection at once. Closing a tab while others stay open keeps focus in the editor, and closing the conflict resolver does not move focus.
 - Saving a file shows no toast and no status bar message; the save is only listed in the Event Log (Alt+Shift+L).

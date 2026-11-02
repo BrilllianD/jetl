@@ -3733,7 +3733,7 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn show_diff_opens_a_patch_tab_with_changes() {
+    async fn show_diff_as_patch_opens_a_patch_tab() {
         use crate::actions::GitAction;
         let (mut app, dir) = test_app("show-diff");
         init_repo(&app, &[("a.txt", "a\n")]);
@@ -3759,11 +3759,11 @@ pub(crate) mod tests {
             result: Ok("x\n".into()),
         }));
         assert_eq!(app.editor.buffers.len(), before);
-        app.perform(Action::Git(GitAction::LogShowDiff));
+        app.perform(Action::Git(GitAction::LogShowPatch));
         handle_next(&mut app, is_diff).await;
         let b = app.editor.active_buffer().expect("patch tab");
         assert!(b.read_only && b.path.is_none());
-        assert_eq!(b.name, format!("Diff {sha8}"));
+        assert_eq!(b.name, format!("Patch {sha8}"));
         let text = b.text();
         assert!(text.contains("-a\n") && text.contains("+b\n"), "{text}");
         assert!(app.focus.is(PanelId::Editor));
@@ -3771,9 +3771,64 @@ pub(crate) mod tests {
         let b = app.editor.active_buffer().unwrap();
         assert_eq!(b.text().lines().nth(b.cursor_line_col().0), Some("-a"));
         let count = app.editor.buffers.len();
-        app.perform(Action::Git(GitAction::LogShowDiff));
+        app.focus.set(PanelId::Git);
+        app.perform(Action::Git(GitAction::LogShowPatch));
         handle_next(&mut app, is_diff).await;
         assert_eq!(app.editor.buffers.len(), count);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn show_diff_opens_a_diff_tab_over_the_commit_files() {
+        use crate::actions::GitAction;
+        use crate::git::model::DiffKey;
+        let (mut app, dir) = test_app("show-diff-tab");
+        init_repo(&app, &[("a.txt", "a\n")]);
+        let root = app.workspace.root.clone();
+        std::fs::write(root.join("a.txt"), "b\n").unwrap();
+        std::fs::create_dir(root.join("d")).unwrap();
+        std::fs::write(root.join("d/b.txt"), "n\n").unwrap();
+        git(&app, &["add", "."]);
+        git(&app, &["commit", "-qm", "change a, add d/b"]);
+        feed_status(&mut app, 1);
+        app.perform(Action::Git(GitAction::TabLog));
+        let filter = app.git_panel.log_filter().clone();
+        let out =
+            std::process::Command::new("git").args(crate::git::cli::log_args(0, 100, true, &filter)).current_dir(&root).output().unwrap();
+        let rows = crate::git::cli::parse_log(&String::from_utf8_lossy(&out.stdout));
+        let sha8 = rows[0].sha[..8].to_string();
+        let g = app.git.generation;
+        app.handle_msg(AppMsg::Git(GitMsg::Log { generation: g, skip: 0, filter, result: Ok(rows) }));
+        let is_files = |m: &AppMsg| matches!(m, AppMsg::Git(GitMsg::CommitsFiles { tab: Some(_), .. }));
+        // A stale answer opens nothing.
+        let before = app.editor.buffers.len();
+        app.handle_msg(AppMsg::Git(GitMsg::CommitsFiles {
+            generation: g + 1,
+            spans: Vec::new(),
+            tab: Some("Diff x".into()),
+            result: Ok(Vec::new()),
+        }));
+        assert_eq!(app.editor.buffers.len(), before);
+        app.focus.set(PanelId::Git);
+        app.perform(Action::Git(GitAction::ShowDiff));
+        handle_next(&mut app, is_files).await;
+        let b = app.editor.active_buffer().expect("diff tab");
+        assert_eq!(b.name, format!("Diff {sha8}"));
+        let t = b.diff.as_ref().expect("diff tab");
+        let rels: Vec<&str> = t.files.iter().map(DiffKey::rel).collect();
+        assert_eq!(rels, ["a.txt", "d/b.txt"]);
+        assert!(t.files.iter().all(|k| matches!(k, DiffKey::Range { .. })));
+        assert!(app.focus.is(PanelId::Editor));
+        handle_next(&mut app, |m| matches!(m, AppMsg::Git(GitMsg::Diff { .. }))).await;
+        assert!(app.editor.active_buffer().unwrap().diff.as_ref().unwrap().pane.doc.is_some());
+        app.perform(Action::Editor(EditorAction::DiffNextFile));
+        assert_eq!(app.editor.active_buffer().unwrap().diff.as_ref().unwrap().at, 1);
+        let count = app.editor.buffers.len();
+        app.focus.set(PanelId::Git);
+        app.perform(Action::Git(GitAction::LogShowDiff));
+        handle_next(&mut app, is_files).await;
+        assert_eq!(app.editor.buffers.len(), count);
+        assert_eq!(app.editor.active_buffer().unwrap().diff.as_ref().unwrap().at, 0);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -3842,13 +3897,15 @@ pub(crate) mod tests {
         app.perform(Action::Git(GitAction::ExtendDown));
         assert_eq!(app.git_panel.log_selection(), [0, 1, 2]);
         app.perform(Action::Git(GitAction::LogShowDiff));
-        let is_diff = |m: &AppMsg| matches!(m, AppMsg::Git(GitMsg::CommitsDiff { .. }));
+        let is_diff = |m: &AppMsg| matches!(m, AppMsg::Git(GitMsg::CommitsFiles { tab: Some(_), .. }));
         handle_next(&mut app, is_diff).await;
-        let b = app.editor.active_buffer().expect("patch tab");
+        let b = app.editor.active_buffer().expect("diff tab");
         assert_eq!(b.name, format!("Diff {a8}..{c8}"));
-        let text = b.text();
-        assert!(text.contains("+x=3") && !text.lines().any(|l| l.contains("x=2")), "{text}");
-        assert_eq!(text.lines().filter(|l| l.starts_with("== ")).count(), 1, "{text}");
+        let files = &b.diff.as_ref().expect("diff tab").files;
+        assert_eq!(files.len(), 1);
+        let crate::git::model::DiffKey::Range { top, rel, .. } = &files[0] else { panic!("range key: {files:?}") };
+        assert_eq!(rel, "x.txt");
+        assert!(top.starts_with(&c8), "{top}");
         app.perform(Action::Git(GitAction::Down));
         assert_eq!(app.git_panel.log_selection(), [2]);
         app.perform(Action::Git(GitAction::Up));

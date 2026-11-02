@@ -349,6 +349,7 @@ pub enum GitAction {
     ContextMenu,
     CopySha,
     LogShowDiff,
+    LogShowPatch,
     /// The selected file's diff in an editor tab; in the Log list the selected commits.
     ShowDiff,
     LogCheckout,
@@ -948,7 +949,8 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "git.context_menu" => "Git: context menu of the selected commit, branch or commit file", Git(GitAction::ContextMenu);
         "git.copy_sha" => "Git: copy the selected commit's revision number", Git(GitAction::CopySha);
         "git.show_diff" => "Git: show the diff in an editor tab: the selected file, or in the Log list the selected commits", Git(GitAction::ShowDiff);
-        "git.log_show_diff" => "Git: show the diff of the selected commits in an editor tab", Git(GitAction::LogShowDiff);
+        "git.log_show_diff" => "Git: show the selected commits' files side by side in an editor tab", Git(GitAction::LogShowDiff);
+        "git.log_show_patch" => "Git: show the combined diff of the selected commits as a unified patch in an editor tab", Git(GitAction::LogShowPatch);
         "git.log_checkout" => "Git: check out the selected commit (detached)", Git(GitAction::LogCheckout);
         "git.log_new_branch" => "Git: new branch at the selected commit", Git(GitAction::LogNewBranch);
         "git.log_cherry_pick" => "Git: cherry-pick the selected commit", Git(GitAction::LogCherryPick);
