@@ -1924,6 +1924,7 @@ async fn git_log_file_menu() {
     for _ in 0..2 {
         app.perform(Action::Git(GitAction::Down));
     }
+    draw_app(app, 120, 30);
     app.perform(Action::Git(GitAction::ContextMenu));
     let term = draw_app(app, 120, 30);
     let marks = [Mark::bg('L', "selected", app.theme.list_selected.bg.unwrap())];
@@ -2053,6 +2054,7 @@ async fn git_log_multi_select() {
     ];
     let g = app.git.generation;
     let filter = app.git_panel.log_filter().clone();
+    let (merge, parse) = (commits[0].clone(), commits[1].clone());
     app.handle_msg(AppMsg::Git(GitMsg::Log { generation: g, skip: 0, filter, result: Ok(commits) }));
     let details = CommitDetails {
         sha: sha('a'),
@@ -2066,12 +2068,28 @@ async fn git_log_multi_select() {
     app.handle_msg(AppMsg::Git(GitMsg::CommitDetails { generation: g, sha: sha('a'), result: Ok(details) }));
     // The cursor moves from the merge to the next row; both are selected.
     app.perform(Action::Git(crate::actions::GitAction::ExtendDown));
-    let details = CommitDetails {
-        sha: sha('d'),
-        body: "Parse nested lists".into(),
-        files: vec![CommitFile { status: 'M', path: "src/parser.rs".into(), old: None }],
-    };
-    app.handle_msg(AppMsg::Git(GitMsg::CommitDetails { generation: g, sha: sha('d'), result: Ok(details) }));
+    let spans = crate::git::model::commits_diff(&[&merge, &parse]).1;
+    // An answer for one span only is stale: the details keep loading.
+    let stale = vec![(
+        CommitFile { status: 'M', path: "stale.rs".into(), old: None },
+        crate::git::model::DiffKey::Local { path: "stale.rs".into(), rel: "stale.rs".into(), id: String::new(), at: 0 },
+    )];
+    app.handle_msg(AppMsg::Git(GitMsg::CommitsFiles { generation: g, spans: vec![spans[0].clone()], result: Ok(stale) }));
+    let loading = draw_app(app, 120, 30);
+    let text: String = (0..30).map(|y| crate::ui::snapshot::row_text(loading.backend().buffer(), y, 120)).collect();
+    assert!(text.contains("Loading…") && !text.contains("stale.rs"), "{text}");
+    let rows = crate::git::model::union_files(
+        &spans,
+        &[
+            vec![
+                CommitFile { status: 'A', path: "src/parser.rs".into(), old: None },
+                CommitFile { status: 'M', path: "src/main.rs".into(), old: None },
+                CommitFile { status: 'R', path: "docs/syntax.md".into(), old: Some("docs/grammar.md".into()) },
+            ],
+            vec![CommitFile { status: 'M', path: "src/parser.rs".into(), old: None }],
+        ],
+    );
+    app.handle_msg(AppMsg::Git(GitMsg::CommitsFiles { generation: g, spans, result: Ok(rows) }));
     let term = draw_app(app, 120, 30);
     assert_ne!(app.theme.list_selected.bg, app.theme.list_selected_unfocused.bg);
     let marks = [

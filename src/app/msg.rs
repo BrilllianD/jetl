@@ -199,6 +199,7 @@ impl App {
                 Err(e) => self.notify(Level::Error, format!("Diff: {e:#}")),
             },
             GitMsg::CommitDetails { sha, result, .. } => self.git_panel.set_details(&sha, result, &self.workspace.root),
+            GitMsg::CommitsFiles { spans, result, .. } => self.git_panel.set_log_files(&spans, result, &self.workspace.root),
             GitMsg::PushRemote { branch, result, .. } => self.push_remote_known(branch, result),
             GitMsg::RebasePlan { result, .. } => self.rebase_plan_loaded(result),
             GitMsg::HeadMessage { result, .. } => {

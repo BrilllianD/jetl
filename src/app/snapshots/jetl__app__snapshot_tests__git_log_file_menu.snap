@@ -7,26 +7,26 @@ expression: "snapshot(&term, &marks, Some(bottom))"
 01    │                              ││
 02  1 │                              ││
 03  ⌂ │                              ││
-04  2╭─────────────────────────────────────╮
-05  ◫│ Show Diff                           │
-06  7│ Open in Editor                      │
-07  ⊢│ Copy Path                           │ No files open. Alt+1 opens the Project view; Ctrl+Shift+N finds a file.
-08   │ Show History for File               │
-09   ├─────────────────────────────────────┤
-10  ⋔│ Copy Revision Number         Ctrl+C │
-11   │ Cherry-Pick             Alt+Shift+P │
-12  ✎│ Revert Commit…          Alt+Shift+R │
-13   │ Checkout Revision       Alt+Shift+C │
-14  ✓╰─────────────────────────────────────╯───────────────────────────────────────────────────────────────────────────────
-15  8 ┌ Git ──────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-16  ⟲ │ Commit   Log   Stash   Console                                                     Refresh   Fetch   Pull   Push  │
-17  5 │[Branch: all] [Text: any] [Author: any] [Path: any]                                                                │
-18  ⚑ │● aaaaaaa (HEAD -> main) Move the panel code         Ann, 2 hours ago│ aaaaaaa  Ann, 2 hours ago                   │
-19  9 │                                                                     │ Move the panel code                         │
-20  ⎇ │                                                                     │ 5 files changed                             │
-21    │                                                                     │ ▾ root                                      │
-22  ❯ │                                                                     │   ▾ docs                                    │
-23  6 │                                                                     │     R syntax.md ← docs/grammar.md           │
+04  2 │                              ││
+05  ◫ │                              ││
+06  7 │                              ││
+07  ⊢ │                              ││      No files open. Alt+1 opens the Project view; Ctrl+Shift+N finds a file.
+08    │                              ││
+09    │                              ││
+10  ⋔ │                              ││
+11    │                              ││
+12  ✎ │                              ││
+13    └──────────────────────────────┘│                                        ╭─────────────────────────────────────╮
+14  ✓ ─────────────────────────────────────────────────────────────────────────│ Show Diff                           │─────
+15  8 ┌ Git ───────────────────────────────────────────────────────────────────│ Open in Editor                      │────┐
+16  ⟲ │ Commit   Log   Stash   Console                                         │ Copy Path                           │sh  │
+17  5 │[Branch: all] [Text: any] [Author: any] [Path: any]                     │ Show History for File               │    │
+18  ⚑ │● aaaaaaa (HEAD -> main) Move the panel code         Ann, 2 hours ago│ a├─────────────────────────────────────┤    │
+19  9 │                                                                     │ M│ Copy Revision Number         Ctrl+C │    │
+20  ⎇ │                                                                     │ 5│ Cherry-Pick             Alt+Shift+P │    │
+21    │                                                                     │ ▾│ Revert Commit…          Alt+Shift+R │    │
+22  ❯ │                                                                     │  │ Checkout Revision       Alt+Shift+C │    │
+23  6 │                                                                     │  ╰─────────────────────────────────────╯    │
 24  ⚠ │                                                                     │   ▾ src                                     │
 25  4 │                                                                     │     ▾ git/panel                             │
 26  ► │                                                                     │       M log.rs                              │
@@ -34,4 +34,4 @@ expression: "snapshot(&term, &marks, Some(bottom))"
 28  ⌕ └───────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 29
 -- marks: L=selected
-23                                                                           LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL
+23                                                                           LL                                       LLLL

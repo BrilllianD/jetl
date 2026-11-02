@@ -154,6 +154,13 @@ pub enum GitMsg {
         sha: String,
         result: Result<CommitDetails>,
     },
+    /// The union of the files of `spans`; the Log tab drops it unless the
+    /// spans are the current selection's.
+    CommitsFiles {
+        generation: u64,
+        spans: Vec<model::DiffSpan>,
+        result: Result<Vec<(model::CommitFile, DiffKey)>>,
+    },
     /// Blame of an open file; the editor keeps the newest per buffer.
     Blame {
         generation: u64,
@@ -230,6 +237,7 @@ impl GitMsg {
             | GitMsg::Branches { generation, .. }
             | GitMsg::Log { generation, .. }
             | GitMsg::CommitDetails { generation, .. }
+            | GitMsg::CommitsFiles { generation, .. }
             | GitMsg::CommitsDiff { generation, .. }
             | GitMsg::PushRemote { generation, .. }
             | GitMsg::RebasePlan { generation, .. }
@@ -331,6 +339,9 @@ pub enum GitRequest {
         filter: LogFilter,
     },
     LoadCommit(String),
+    /// The union of the files changed by commit spans, answered with
+    /// `GitMsg::CommitsFiles`.
+    LoadCommitsFiles(Vec<model::DiffSpan>),
     /// The combined diff of commit spans, opened as a patch tab.
     CommitsDiff {
         title: String,
@@ -550,6 +561,21 @@ impl GitService {
                     let _ = tx.send(AppMsg::Git(GitMsg::Diff { generation, key, result }));
                 });
             }
+            DiffKey::Range { base, top, rel, old } => {
+                let (root, generation, tx) = (self.root.clone(), self.generation, self.tx.clone());
+                tokio::spawn(async move {
+                    let result = async {
+                        let old = match &base {
+                            Some(b) => cli::show_file(&root, b, old.as_deref().unwrap_or(&rel)).await?,
+                            None => Vec::new(),
+                        };
+                        let new = cli::show_file(&root, &top, &rel).await?;
+                        tokio::task::spawn_blocking(move || diff::DiffDoc::build(&old, &new, tab_width)).await.map_err(anyhow::Error::from)
+                    }
+                    .await;
+                    let _ = tx.send(AppMsg::Git(GitMsg::Diff { generation, key, result }));
+                });
+            }
             // The Local History window loads these itself (`App::load_local_diff`).
             DiffKey::Local { .. } => tracing::debug!("local history diff reached the git service: {key:?}"),
         }
@@ -573,6 +599,15 @@ impl GitService {
         tokio::spawn(async move {
             let result = cli::commits_diff(&root, &spans).await;
             let _ = tx.send(AppMsg::Git(GitMsg::CommitsDiff { generation, title, spans, result }));
+        });
+    }
+
+    /// The union of the files `spans` change, answered with `GitMsg::CommitsFiles`.
+    pub fn load_commits_files(&self, spans: Vec<model::DiffSpan>) {
+        let (root, generation, tx) = (self.root.clone(), self.generation, self.tx.clone());
+        tokio::spawn(async move {
+            let result = cli::spans_files(&root, &spans).await;
+            let _ = tx.send(AppMsg::Git(GitMsg::CommitsFiles { generation, spans, result }));
         });
     }
 

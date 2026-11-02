@@ -17,7 +17,7 @@ use crate::config::theme::Theme;
 use crate::event::{Effect, Level, Mouse};
 use crate::git::GitRequest;
 use crate::git::graph::LogGraph;
-use crate::git::model::{CommitDetails, DiffKey, LogCommit, LogFileOp, LogFilter, LogRev, LogRow, ResetMode};
+use crate::git::model::{CommitDetails, CommitFile, DiffKey, DiffSpan, LogCommit, LogFileOp, LogFilter, LogRev, LogRow, ResetMode};
 use crate::ui::dialog::{Dialog, DialogId};
 use crate::ui::menu::{ContextMenu, MenuItem};
 
@@ -92,26 +92,72 @@ impl GitPanel {
 
     /// Load details of the selected commit when they are not shown yet.
     pub(super) fn sync_details(&mut self, cx: &mut Ctx) {
+        let rows = self.log_selection();
+        if rows.len() > 1 {
+            let commits: Vec<&LogCommit> = rows.iter().map(|&i| &self.log[i].commit).collect();
+            let spans = crate::git::model::commits_diff(&commits).1;
+            if self.log_union.as_ref() == Some(&spans) && self.details.is_some() {
+                return;
+            }
+            self.details = None;
+            self.details_error = None;
+            self.files_list = ListState::default();
+            self.log_tree = Default::default();
+            self.log_keys.clear();
+            self.log_union = Some(spans.clone());
+            cx.effects.push(Effect::Git(GitRequest::LoadCommitsFiles(spans)));
+            return;
+        }
         let Some(sha) = self.selected_commit().map(str::to_string) else { return };
-        if self.details.as_ref().is_some_and(|d| d.sha == sha) {
+        if self.log_union.is_none() && self.details.as_ref().is_some_and(|d| d.sha == sha) {
             return;
         }
         self.details = None;
         self.details_error = None;
         self.files_list = ListState::default();
         self.log_tree = Default::default();
+        self.log_union = None;
+        self.log_keys.clear();
         cx.effects.push(Effect::Git(GitRequest::LoadCommit(sha)));
     }
 
+    /// The root row's label: the work tree's directory name.
+    fn tree_root_name(&self, root: &std::path::Path) -> String {
+        let work = self.snapshot.as_ref().map(|s| s.workdir.as_path()).unwrap_or(root);
+        work.file_name().map_or_else(|| "/".to_string(), |n| n.to_string_lossy().into_owned())
+    }
+
+    /// The union of the files of the selected rows' `spans`; dropped unless
+    /// `spans` are the current selection's.
+    pub fn set_log_files(&mut self, spans: &[DiffSpan], result: anyhow::Result<Vec<(CommitFile, DiffKey)>>, root: &std::path::Path) {
+        if self.log_union.as_deref() != Some(spans) {
+            return;
+        }
+        match result {
+            Ok(rows) => {
+                let (files, keys): (Vec<CommitFile>, Vec<DiffKey>) = rows.into_iter().unzip();
+                let mut tree = FileTree::build(&self.tree_root_name(root), &files);
+                if self.details.is_some() {
+                    tree.keep_state(&self.log_tree);
+                } else {
+                    self.files_list = ListState::default();
+                }
+                self.files_list.set_len(tree.rows().len());
+                self.log_tree = tree;
+                self.log_keys = keys;
+                self.details = Some(CommitDetails { sha: String::new(), body: String::new(), files });
+            }
+            Err(e) => self.details_error = Some(format!("{e:#}")),
+        }
+    }
+
     pub(super) fn set_log_details(&mut self, sha: &str, result: anyhow::Result<CommitDetails>, root: &std::path::Path) {
-        if self.selected_commit() != Some(sha) {
+        if self.log_union.is_some() || self.selected_commit() != Some(sha) {
             return;
         }
         match result {
             Ok(d) => {
-                let work = self.snapshot.as_ref().map(|s| s.workdir.as_path()).unwrap_or(root);
-                let name = work.file_name().map_or_else(|| "/".to_string(), |n| n.to_string_lossy().into_owned());
-                let mut tree = FileTree::build(&name, &d.files);
+                let mut tree = FileTree::build(&self.tree_root_name(root), &d.files);
                 if self.details.as_ref().is_some_and(|old| old.sha == d.sha) {
                     tree.keep_state(&self.log_tree);
                 } else {
@@ -147,6 +193,8 @@ impl GitPanel {
         self.details = None;
         self.details_error = None;
         self.log_tree = Default::default();
+        self.log_union = None;
+        self.log_keys.clear();
         self.files_list = ListState::default();
         self.request_log(cx);
     }
@@ -447,6 +495,9 @@ impl GitPanel {
     pub(crate) fn log_file_key(&self) -> Option<DiffKey> {
         let d = self.details.as_ref()?;
         let Some(TreeNode::File(i)) = self.log_node() else { return None };
+        if self.log_union.is_some() {
+            return self.log_keys.get(*i).cloned();
+        }
         let f = d.files.get(*i)?;
         Some(DiffKey::Commit { sha: d.sha.clone(), rel: f.path.clone(), old: f.old.clone() })
     }
@@ -536,11 +587,14 @@ impl GitPanel {
                 vec![MenuItem::new("Expand All", f(LogFileOp::ExpandAll)), MenuItem::new("Collapse All", f(LogFileOp::CollapseAll))]
             }
         };
-        items.push(MenuItem::separator());
-        items.push(MenuItem::new("Copy Revision Number", g(GitAction::CopySha)));
-        items.push(MenuItem::new("Cherry-Pick", g(GitAction::LogCherryPick)).enabled(!busy));
-        items.push(MenuItem::new("Revert Commit…", g(GitAction::LogRevert)).enabled(!busy));
-        items.push(MenuItem::new("Checkout Revision", g(GitAction::LogCheckout)).enabled(!busy));
+        // The commit items act on the cursor commit only.
+        if self.log_union.is_none() {
+            items.push(MenuItem::separator());
+            items.push(MenuItem::new("Copy Revision Number", g(GitAction::CopySha)));
+            items.push(MenuItem::new("Cherry-Pick", g(GitAction::LogCherryPick)).enabled(!busy));
+            items.push(MenuItem::new("Revert Commit…", g(GitAction::LogRevert)).enabled(!busy));
+            items.push(MenuItem::new("Checkout Revision", g(GitAction::LogCheckout)).enabled(!busy));
+        }
         cx.effects.push(Effect::ContextMenu(ContextMenu::new(items, x, y)));
     }
 
@@ -639,6 +693,9 @@ impl GitPanel {
             self.hits.push((Btn::Back, r));
             let header = match &key {
                 DiffKey::Commit { sha, .. } => format!(" {}  {}", &sha[..sha.len().min(8)], key.label()),
+                DiffKey::Range { base, top, .. } => {
+                    format!(" {}..{}  {}", base.as_deref().map_or("root", |b| &b[..b.len().min(8)]), &top[..top.len().min(8)], key.label())
+                }
                 DiffKey::Change { .. } | DiffKey::Local { .. } => format!(" {}", key.label()),
             };
             let opts = self.diff_opts;
@@ -788,25 +845,43 @@ impl GitPanel {
             return;
         };
         let mut y = r.y;
-        let n = self.log_selection().len();
-        if n > 1 {
-            buf.set_stringn(x0, y, format!("{n} commits selected"), w, theme.dim);
-            y += 1;
-        }
-        let commit = self.log.get(self.log_list.selected).map(|row| &row.commit);
-        if let Some(c) = commit {
-            buf.set_stringn(x0, y, format!("{}  {}, {}", c.short, c.author, c.date), w, theme.title);
-            y += 1;
-        }
-        // Message up to half the height, then the file list.
-        let body_lines: Vec<&str> = d.body.lines().collect();
+        // Message (or the selected commits) up to half the height, then the file list.
         let max_body = (r.height as usize / 2).saturating_sub(1).max(1);
-        for line in body_lines.iter().take(max_body) {
-            if y >= r.bottom() {
-                return;
-            }
-            buf.set_stringn(x0, y, line, w, Style::default().fg(theme.fg));
+        if let Some(spans) = &self.log_union {
+            let rows = self.log_selection();
+            let gap = if spans.len() > 1 { " (not contiguous)" } else { "" };
+            buf.set_stringn(x0, y, format!("{} commits selected{gap}", rows.len()), w, theme.dim);
             y += 1;
+            let shown = if rows.len() > max_body { max_body.saturating_sub(1) } else { rows.len() };
+            for &i in rows.iter().take(shown) {
+                if y >= r.bottom() {
+                    return;
+                }
+                let Some(row) = self.log.get(i) else { continue };
+                let mut x = x0;
+                let end = x0 + w as u16;
+                put(buf, &mut x, y, end, &row.commit.short, theme.warn);
+                put(buf, &mut x, y, end, " ", Style::default());
+                put(buf, &mut x, y, end, &row.commit.subject, Style::default().fg(theme.fg));
+                y += 1;
+            }
+            if shown < rows.len() && y < r.bottom() {
+                buf.set_stringn(x0, y, format!("… {} more", rows.len() - shown), w, theme.dim);
+                y += 1;
+            }
+        } else {
+            let commit = self.log.get(self.log_list.selected).map(|row| &row.commit);
+            if let Some(c) = commit {
+                buf.set_stringn(x0, y, format!("{}  {}, {}", c.short, c.author, c.date), w, theme.title);
+                y += 1;
+            }
+            for line in d.body.lines().take(max_body) {
+                if y >= r.bottom() {
+                    return;
+                }
+                buf.set_stringn(x0, y, line, w, Style::default().fg(theme.fg));
+                y += 1;
+            }
         }
         if y >= r.bottom() {
             return;
@@ -1036,5 +1111,64 @@ mod tests {
         let fx = with_cx(|cx| p.log_file_op(LogFileOp::ShowHistory, cx));
         assert_eq!(p.log_filter().path, "src");
         assert!(fx.iter().any(|e| matches!(e, Effect::Git(GitRequest::LoadLog { .. }))), "{fx:?}");
+    }
+
+    fn commit(sha: &str, parent: Option<&str>) -> LogCommit {
+        LogCommit {
+            sha: sha.into(),
+            parents: parent.map(str::to_string).into_iter().collect(),
+            short: sha.into(),
+            author: "me".into(),
+            date: "now".into(),
+            refs: String::new(),
+            subject: format!("subject {sha}"),
+        }
+    }
+
+    #[test]
+    fn several_selected_rows_show_the_union_of_their_files() {
+        let mut p = GitPanel::new();
+        p.tab = GitTab::Log;
+        for c in [commit("a", Some("b")), commit("b", Some("c")), commit("c", None)] {
+            p.log.push(LogRow { graph: "●".into(), commit: c });
+        }
+        p.log_list.set_len(3);
+        p.log_sel = [0, 1].into_iter().collect();
+        let fx = with_cx(|cx| p.sync_details(cx));
+        let spans = match fx.as_slice() {
+            [Effect::Git(GitRequest::LoadCommitsFiles(spans))] => spans.clone(),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(spans.len(), 1);
+        assert_eq!((spans[0].base.as_deref(), spans[0].top.as_str()), (Some("c"), "a"));
+
+        // A result for other spans is stale.
+        let other = vec![crate::git::model::DiffSpan { base: None, top: "a".into(), header: String::new() }];
+        p.set_log_files(&other, Ok(Vec::new()), Path::new("/tmp/root"));
+        assert!(p.details.is_none());
+
+        let key = DiffKey::Range { base: Some("c".into()), top: "a".into(), rel: "x.rs".into(), old: None };
+        p.set_log_files(&spans, Ok(vec![(file('M', "x.rs"), key.clone())]), Path::new("/tmp/root"));
+        assert!(p.details.is_some());
+        p.area = Area::Files;
+        p.files_list.select(1);
+        assert_eq!(p.log_file_key(), Some(key));
+
+        // A single-commit answer for the cursor commit is ignored.
+        p.set_log_details(
+            "a",
+            Ok(CommitDetails { sha: "a".into(), body: String::new(), files: vec![file('M', "y.rs")] }),
+            Path::new("/tmp/root"),
+        );
+        assert_eq!(p.details.as_ref().map(|d| d.files.len()), Some(1));
+        assert_eq!(p.details.as_ref().map(|d| d.files[0].path.as_str()), Some("x.rs"));
+
+        let names: Vec<String> = labels(&with_cx(|cx| p.log_file_menu(None, cx))).into_iter().map(|(l, _)| l).collect();
+        assert_eq!(names, ["Show Diff", "Open in Editor", "Copy Path", "Show History for File"]);
+
+        p.area = Area::Log;
+        let fx = with_cx(|cx| p.handle_action(&GitAction::Down, cx));
+        assert!(p.log_sel.is_empty());
+        assert!(fx.iter().any(|e| matches!(e, Effect::Git(GitRequest::LoadCommit(sha)) if sha == "b")), "{fx:?}");
     }
 }

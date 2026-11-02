@@ -23,7 +23,8 @@ use unicode_width::UnicodeWidthStr;
 use super::GitRequest;
 use super::diff::DiffDoc;
 use super::model::{
-    BranchInfo, BranchOp, CommitDetails, DiffKey, InProgress, LogFilter, LogRow, ProgressAction, Section, StashEntry, StatusSnapshot,
+    BranchInfo, BranchOp, CommitDetails, DiffKey, DiffSpan, InProgress, LogFilter, LogRow, ProgressAction, Section, StashEntry,
+    StatusSnapshot,
 };
 use crate::actions::{Action, GitAction};
 use crate::app::Ctx;
@@ -167,6 +168,11 @@ pub struct GitPanel {
     files_list: ListState,
     /// The details' files as a tree; `files_list` indexes its rows.
     log_tree: file_tree::FileTree,
+    /// The spans of the several selected rows the details show or await;
+    /// `None` with one row selected. Stale-result key of `set_log_files`.
+    log_union: Option<Vec<DiffSpan>>,
+    /// The diff key of each file of the union, parallel to `details.files`.
+    log_keys: Vec<DiffKey>,
     log_diff: DiffPane,
     stashes: Vec<StashEntry>,
     /// Stash push includes untracked files (Stash tab toggle).
@@ -238,6 +244,8 @@ impl GitPanel {
             details_error: None,
             files_list: ListState::default(),
             log_tree: Default::default(),
+            log_union: None,
+            log_keys: Vec::new(),
             log_diff: DiffPane::new(true),
             stashes: Vec::new(),
             stash_untracked: false,
@@ -345,7 +353,7 @@ impl GitPanel {
             // A commit diff is shown by the Log tab or by the Stash tab
             // (stashes are commits); each pane ignores keys it does not show.
             DiffKey::Commit { .. } if self.stash_diff.key.as_ref() == Some(key) => self.stash_diff.set(key, result),
-            DiffKey::Commit { .. } => self.log_diff.set(key, result),
+            DiffKey::Commit { .. } | DiffKey::Range { .. } => self.log_diff.set(key, result),
             // Local history diffs go to the Local History window.
             DiffKey::Local { .. } => {}
         }

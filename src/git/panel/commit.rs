@@ -417,7 +417,7 @@ impl GitPanel {
                 DiffKey::Change { section: Section::Staged, .. } => format!("{}  (HEAD ↔ staged)", k.label()),
                 DiffKey::Change { section: Section::Unstaged, .. } => format!("{}  (staged ↔ working tree)", k.label()),
                 DiffKey::Change { section: Section::Untracked, .. } => format!("{}  (new file)", k.label()),
-                DiffKey::Commit { .. } | DiffKey::Local { .. } => k.label(),
+                DiffKey::Commit { .. } | DiffKey::Local { .. } | DiffKey::Range { .. } => k.label(),
             });
             let opts = self.diff_opts;
             let header = header.filter(|_| right.height > 0);

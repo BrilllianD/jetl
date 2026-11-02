@@ -417,7 +417,9 @@ impl DiffPane {
         }
         let (Some(doc), Some(key)) = (&self.doc, &self.key) else { return };
         let old_path = match key {
-            DiffKey::Change { old: Some(old), .. } | DiffKey::Commit { old: Some(old), .. } => old.as_str(),
+            DiffKey::Change { old: Some(old), .. } | DiffKey::Commit { old: Some(old), .. } | DiffKey::Range { old: Some(old), .. } => {
+                old.as_str()
+            }
             _ => key.rel(),
         };
         self.syntax = Some((side_spans(&doc.old, Path::new(old_path), theme), side_spans(&doc.new, Path::new(key.rel()), theme)));

@@ -524,6 +524,72 @@ pub fn commits_diff(commits: &[&LogCommit]) -> (String, Vec<DiffSpan>) {
     (title, spans)
 }
 
+/// Running state of one file across the spans of `union_files`.
+struct Acc {
+    first: CommitFile,
+    last: CommitFile,
+    base: Option<String>,
+    top: String,
+    base_path: String,
+    touches: usize,
+}
+
+/// The files changed by `spans` (newest first, as `commits_diff` returns
+/// them) with `per_span` their `--name-status` rows. A file is listed once,
+/// by its newest path, sorted by path. Its key spans from the base of the
+/// oldest span touching it to the top of the newest one. Status: `D` when
+/// the newest touching span deleted it, else `A` when the oldest added it,
+/// else `R` when the base path differs, else `M`; a file touched by one
+/// span keeps git's row.
+pub fn union_files(spans: &[DiffSpan], per_span: &[Vec<CommitFile>]) -> Vec<(CommitFile, DiffKey)> {
+    let mut map: std::collections::BTreeMap<String, Acc> = std::collections::BTreeMap::new();
+    for (span, files) in spans.iter().zip(per_span).rev() {
+        let mut staged = Vec::new();
+        for f in files {
+            let from = match (&f.old, f.status) {
+                (Some(old), 'R') => old.clone(),
+                _ => f.path.clone(),
+            };
+            staged.push((f, map.remove(&from), from));
+        }
+        for (f, prev, from) in staged {
+            let acc = match prev {
+                Some(mut a) => {
+                    a.last = f.clone();
+                    a.top = span.top.clone();
+                    a.touches += 1;
+                    a
+                }
+                None => {
+                    Acc { first: f.clone(), last: f.clone(), base: span.base.clone(), top: span.top.clone(), base_path: from, touches: 1 }
+                }
+            };
+            map.insert(f.path.clone(), acc);
+        }
+    }
+    map.into_iter()
+        .map(|(path, a)| {
+            let file = if a.touches == 1 {
+                a.first
+            } else {
+                let status = if a.last.status == 'D' {
+                    'D'
+                } else if a.first.status == 'A' {
+                    'A'
+                } else if a.base_path != path {
+                    'R'
+                } else {
+                    'M'
+                };
+                let old = (status != 'A' && a.base_path != path).then(|| a.base_path.clone());
+                CommitFile { status, path: path.clone(), old }
+            };
+            let key = DiffKey::Range { base: a.base, top: a.top, rel: path, old: file.old.clone() };
+            (file, key)
+        })
+        .collect()
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct CommitDetails {
     pub sha: String,
@@ -555,19 +621,24 @@ pub enum DiffKey {
     /// disk). `rel` is the path as shown: relative to the root when inside
     /// it. Loaded by `App::load_local_diff`, not the git service.
     Local { path: PathBuf, rel: String, id: String, at: u64 },
+    /// `base:old_or_rel` vs `top:rel`, `base: None` the empty tree: the
+    /// combined change of several commits; see `union_files`.
+    Range { base: Option<String>, top: String, rel: String, old: Option<String> },
 }
 
 impl DiffKey {
     pub fn rel(&self) -> &str {
         match self {
-            DiffKey::Change { rel, .. } | DiffKey::Commit { rel, .. } | DiffKey::Local { rel, .. } => rel,
+            DiffKey::Change { rel, .. } | DiffKey::Commit { rel, .. } | DiffKey::Local { rel, .. } | DiffKey::Range { rel, .. } => rel,
         }
     }
 
     /// `rel`, or `old -> new` for a rename.
     pub fn label(&self) -> String {
         match self {
-            DiffKey::Change { rel, old: Some(old), .. } | DiffKey::Commit { rel, old: Some(old), .. } => format!("{old} -> {rel}"),
+            DiffKey::Change { rel, old: Some(old), .. }
+            | DiffKey::Commit { rel, old: Some(old), .. }
+            | DiffKey::Range { rel, old: Some(old), .. } => format!("{old} -> {rel}"),
             _ => self.rel().to_string(),
         }
     }
@@ -713,5 +784,77 @@ mod tests {
         assert_eq!(title, "Diff of 2 commits (mmmmmmmm…)");
         assert_eq!(spans.len(), 2);
         assert_eq!(spans[0].base.as_deref(), Some("pppppppp2"));
+    }
+
+    fn span(base: Option<&str>, top: &str) -> DiffSpan {
+        DiffSpan { base: base.map(str::to_string), top: top.to_string(), header: String::new() }
+    }
+
+    fn cf(status: char, path: &str, old: Option<&str>) -> CommitFile {
+        CommitFile { status, path: path.to_string(), old: old.map(str::to_string) }
+    }
+
+    fn range(base: Option<&str>, top: &str, rel: &str, old: Option<&str>) -> DiffKey {
+        DiffKey::Range { base: base.map(str::to_string), top: top.to_string(), rel: rel.to_string(), old: old.map(str::to_string) }
+    }
+
+    #[test]
+    fn union_of_one_span_keeps_git_rows() {
+        let rows = vec![cf('M', "a", None), cf('C', "c", Some("a")), cf('R', "z", Some("y"))];
+        let got = union_files(&[span(Some("b"), "t")], std::slice::from_ref(&rows));
+        assert_eq!(got.iter().map(|(f, _)| f.clone()).collect::<Vec<_>>(), vec![rows[0].clone(), rows[1].clone(), rows[2].clone()]);
+        assert_eq!(got[0].1, range(Some("b"), "t", "a", None));
+        assert_eq!(got[1].1, range(Some("b"), "t", "c", Some("a")));
+        assert_eq!(got[2].1, range(Some("b"), "t", "z", Some("y")));
+    }
+
+    #[test]
+    fn union_of_two_spans_uses_the_widest_range_per_file() {
+        let spans = [span(Some("n0"), "n1"), span(Some("o0"), "o1")];
+        let per = [vec![cf('M', "both", None), cf('M', "new", None)], vec![cf('M', "both", None)]];
+        let got = union_files(&spans, &per);
+        assert_eq!(got[0].1, range(Some("o0"), "n1", "both", None));
+        assert_eq!(got[1].1, range(Some("n0"), "n1", "new", None));
+        assert_eq!(got[0].0.status, 'M');
+    }
+
+    #[test]
+    fn union_add_then_modify_is_added() {
+        let spans = [span(Some("n0"), "n1"), span(None, "o1")];
+        let per = [vec![cf('M', "f", None)], vec![cf('A', "f", None)]];
+        let got = union_files(&spans, &per);
+        assert_eq!(got[0].0, cf('A', "f", None));
+        assert_eq!(got[0].1, range(None, "n1", "f", None));
+    }
+
+    #[test]
+    fn union_modify_then_delete_is_deleted() {
+        let spans = [span(Some("n0"), "n1"), span(Some("o0"), "o1")];
+        let per = [vec![cf('D', "f", None)], vec![cf('M', "f", None)]];
+        assert_eq!(union_files(&spans, &per)[0].0, cf('D', "f", None));
+    }
+
+    #[test]
+    fn union_delete_then_readd_is_modified() {
+        let spans = [span(Some("n0"), "n1"), span(Some("o0"), "o1")];
+        let per = [vec![cf('A', "f", None)], vec![cf('D', "f", None)]];
+        assert_eq!(union_files(&spans, &per)[0].0, cf('M', "f", None));
+    }
+
+    #[test]
+    fn union_rename_then_modify_is_one_renamed_row() {
+        let spans = [span(Some("n0"), "n1"), span(Some("o0"), "o1")];
+        let per = [vec![cf('M', "b", None)], vec![cf('R', "b", Some("a"))]];
+        let got = union_files(&spans, &per);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].0, cf('R', "b", Some("a")));
+        assert_eq!(got[0].1, range(Some("o0"), "n1", "b", Some("a")));
+    }
+
+    #[test]
+    fn union_keeps_the_empty_tree_base_and_sorts_by_path() {
+        let got = union_files(&[span(None, "t")], &[vec![cf('A', "z", None), cf('A', "a/x", None), cf('A', "m", None)]]);
+        assert_eq!(got.iter().map(|(f, _)| f.path.as_str()).collect::<Vec<_>>(), ["a/x", "m", "z"]);
+        assert!(matches!(&got[0].1, DiffKey::Range { base: None, .. }));
     }
 }

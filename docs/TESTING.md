@@ -979,6 +979,10 @@ press 0 42 2; release 0 42 2
 # Show History for File, then Copy Revision Number, Cherry-Pick, Revert Commit…, Checkout Revision; Escape
 # right click on "src": Expand All, Collapse All, Copy Path, Show History for Folder, then the same four; pick Show
 # History for Folder: the bar shows "[Path: src]"
+# union, same repo $T with 3 commits on the branch: Shift+Down twice on the Log: "3 commits selected", the three
+# "short subject" lines, the tree lists every file once; Right, Enter on a file changed in the first and last
+# commit: the diff header reads "<base8>..<top8>  <file>" and shows the combined change; Ctrl+click a
+# non-neighbour commit: "(not contiguous)" in the header
 /tmp/tm.sh kill-server
 ```
 
