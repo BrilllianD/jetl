@@ -48,6 +48,26 @@ pub enum Side {
     Right,
 }
 
+/// Where a tool window docks: a side and which of its two panes. `split == false` is the
+/// first pane (Left Top, Bottom Left, Right Top). Saved in layouts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Dock {
+    pub side: Side,
+    pub split: bool,
+}
+
+impl Dock {
+    /// Menu order: Left Top, Left Bottom, Bottom Left, Bottom Right, Right Top, Right Bottom.
+    pub const ALL: [Dock; 6] = [
+        Dock { side: Side::Left, split: false },
+        Dock { side: Side::Left, split: true },
+        Dock { side: Side::Bottom, split: false },
+        Dock { side: Side::Bottom, split: true },
+        Dock { side: Side::Right, split: false },
+        Dock { side: Side::Right, split: true },
+    ];
+}
+
 impl ToolWindowId {
     /// Strip order: left windows from the top, bottom ones from the bottom.
     pub const ALL: [ToolWindowId; 13] = [
@@ -99,6 +119,10 @@ impl ToolWindowId {
             | ToolWindowId::Todo
             | ToolWindowId::Hierarchy => Side::Bottom,
         }
+    }
+    /// The dock before the user moves it: the first pane of the default side.
+    pub fn default_dock(self) -> Dock {
+        Dock { side: self.default_side(), split: false }
     }
     pub fn title(self) -> &'static str {
         match self {
@@ -295,5 +319,16 @@ mod tests {
         assert_eq!(f.last_tool, Some(ToolWindowId::Git));
         f.set(PanelId::Project);
         assert_eq!(f.last_tool, Some(ToolWindowId::Project));
+    }
+
+    #[test]
+    fn dock_all_pairs_each_side() {
+        let all = Dock::ALL;
+        for (i, d) in all.iter().enumerate() {
+            assert!(!all[..i].contains(d), "distinct");
+            assert_eq!(d.split, i % 2 == 1);
+            assert_eq!(d.side, [Side::Left, Side::Bottom, Side::Right][i / 2]);
+        }
+        assert_eq!(ToolWindowId::Git.default_dock(), Dock { side: Side::Bottom, split: false });
     }
 }

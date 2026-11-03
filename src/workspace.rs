@@ -21,7 +21,7 @@ use crate::editor::split::{Axis, SplitNode};
 use crate::event::{AppMsg, Level};
 use crate::git::panel::GitTab;
 use crate::ui::dialog::{Dialog, DialogId};
-use crate::ui::focus::{PanelId, Side, ToolWindowId};
+use crate::ui::focus::{Dock, PanelId, Side, ToolWindowId};
 
 #[derive(Debug, Clone)]
 pub struct Workspace {
@@ -257,6 +257,27 @@ pub struct SessionLayout {
     /// Unpinned tool windows (all are Pinned before 0.9).
     #[serde(default, skip_serializing_if = "Vec::is_empty", deserialize_with = "known_tool_windows")]
     pub unpinned: Vec<ToolWindowId>,
+    /// Windows in their side's second pane; older builds put them on the first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty", deserialize_with = "known_tool_windows")]
+    pub split: Vec<ToolWindowId>,
+    /// Left Bottom window.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub left2: Option<ToolWindowId>,
+    /// Bottom Right window.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bottom2: Option<ToolWindowId>,
+    /// Right Bottom window.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub right2: Option<ToolWindowId>,
+    /// Rows of the Left Bottom pane; missing: half the side.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub left2_h: Option<u16>,
+    /// Columns of the Bottom Right pane; missing: half the side.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bottom2_w: Option<u16>,
+    /// Rows of the Right Bottom pane; missing: half the side.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub right2_h: Option<u16>,
 }
 
 /// A list of tool window ids, without the ones this build does not know
@@ -275,6 +296,9 @@ pub struct SessionTasks {
     pub shown: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub side: Option<Side>,
+    /// In its side's second pane.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub split: bool,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub filter: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -534,14 +558,19 @@ impl App {
         // Zen mode is not saved: the windows it hides are.
         let (left, bottom, right) = self.layout.saved_windows();
         // The Tasks window has its own field: builds without it read the rest.
-        let shown = [left, bottom, right].contains(&Some(ToolWindowId::Tasks));
+        let (left2, bottom2, right2) = self.layout.saved_split_windows();
+        let shown = [left, bottom, right, left2, bottom2, right2].contains(&Some(ToolWindowId::Tasks));
         // The TODO and Hierarchy windows are not saved: the list is rescanned, the tree asked again, on demand.
         let saved =
             |tw: Option<ToolWindowId>| tw.filter(|t| !matches!(t, ToolWindowId::Tasks | ToolWindowId::Todo | ToolWindowId::Hierarchy));
         let mut sides = self.layout.side_overrides();
         let side = sides.iter().find(|(tw, _)| *tw == ToolWindowId::Tasks).map(|(_, s)| *s);
         sides.retain(|(tw, _)| !matches!(tw, ToolWindowId::Tasks | ToolWindowId::Todo | ToolWindowId::Hierarchy));
-        let tasks = SessionTasks { shown, side, ..self.tasks.session_state() };
+        let mut split = self.layout.split_windows();
+        let tasks_split = self.layout.dock_of(ToolWindowId::Tasks).split;
+        split.retain(|tw| !matches!(tw, ToolWindowId::Tasks | ToolWindowId::Todo | ToolWindowId::Hierarchy));
+        let tasks = SessionTasks { shown, side, split: tasks_split, ..self.tasks.session_state() };
+        let size = |v: u16| Some(v).filter(|v| *v != 0);
         let layout = Some(SessionLayout {
             left: saved(left),
             left_w: self.layout.left_w,
@@ -556,6 +585,13 @@ impl App {
             tasks: Some(tasks),
             order: self.layout.order_overrides(),
             unpinned: self.layout.unpinned(),
+            split,
+            left2: saved(left2),
+            bottom2: saved(bottom2),
+            right2: saved(right2),
+            left2_h: size(self.layout.left2_h),
+            bottom2_w: size(self.layout.bottom2_w),
+            right2_h: size(self.layout.right2_h),
         });
         let expanded = self.project.expanded_dirs().iter().filter_map(|d| d.strip_prefix(&root).ok()).map(Path::to_path_buf).collect();
         let closed_bookmarks =
@@ -808,18 +844,32 @@ impl App {
             let mut sides = l.sides.clone();
             sides.extend(tasks.side.map(|s| (ToolWindowId::Tasks, s)));
             self.layout.set_sides(&sides);
+            let mut split = l.split.clone();
+            if tasks.split {
+                split.push(ToolWindowId::Tasks);
+            }
+            self.layout.set_split(&split);
             self.layout.set_order(&l.order);
             self.layout.set_unpinned(&l.unpinned);
-            let tasks_side = self.layout.side_of(ToolWindowId::Tasks);
-            let slot =
-                |tw: Option<ToolWindowId>, side: Side| if tasks.shown && tasks_side == side { Some(ToolWindowId::Tasks) } else { tw };
+            let tasks_dock = self.layout.dock_of(ToolWindowId::Tasks);
+            let slot = |tw: Option<ToolWindowId>, side: Side, split: bool| {
+                if tasks.shown && tasks_dock == (Dock { side, split }) { Some(ToolWindowId::Tasks) } else { tw }
+            };
             self.layout.restore(
-                slot(l.left, Side::Left),
+                slot(l.left, Side::Left, false),
                 l.left_w,
-                slot(l.bottom, Side::Bottom),
+                slot(l.bottom, Side::Bottom, false),
                 l.bottom_h,
-                slot(l.right, Side::Right),
+                slot(l.right, Side::Right, false),
                 l.right_w,
+            );
+            self.layout.restore_split(
+                slot(l.left2, Side::Left, true),
+                slot(l.bottom2, Side::Bottom, true),
+                slot(l.right2, Side::Right, true),
+                l.left2_h,
+                l.bottom2_w,
+                l.right2_h,
             );
             self.tasks.restore(&tasks);
             if let Some(tw) = self.focus.current.tool_window()
@@ -925,6 +975,13 @@ mod tests {
                 tasks: None,
                 order: vec![],
                 unpinned: vec![],
+                split: vec![],
+                left2: None,
+                bottom2: None,
+                right2: None,
+                left2_h: None,
+                bottom2_w: None,
+                right2_h: None,
             }),
             expanded: vec![PathBuf::from("src"), PathBuf::from("src/app")],
             splits: Some(SessionSplits {
@@ -1464,6 +1521,13 @@ mod tests {
             tasks: None,
             order: vec![],
             unpinned: vec![],
+            split: vec![],
+            left2: None,
+            bottom2: None,
+            right2: None,
+            left2_h: None,
+            bottom2_w: None,
+            right2_h: None,
         };
         // A folder deleted since is skipped.
         let expanded = vec![PathBuf::from("a"), PathBuf::from("a/deep"), PathBuf::from("gone")];
@@ -1505,6 +1569,13 @@ mod tests {
             tasks: None,
             order: vec![],
             unpinned: vec![],
+            split: vec![],
+            left2: None,
+            bottom2: None,
+            right2: None,
+            left2_h: None,
+            bottom2_w: None,
+            right2_h: None,
         };
         Session { root: root.to_path_buf(), layout: Some(layout), ..Default::default() }
     }
@@ -1697,6 +1768,71 @@ mod tests {
         let new = SessionLayout { right: Some(ToolWindowId::Git), right_w: Some(20), sides: vec![(ToolWindowId::Git, Side::Right)], ..l };
         let json = serde_json::to_string(&new).unwrap();
         assert_eq!(serde_json::from_str::<SessionLayout>(&json).unwrap(), new);
+    }
+
+    #[test]
+    fn session_layout_split_fields_are_optional() {
+        let old =
+            r#"{"left":"Project","left_w":30,"bottom":null,"bottom_h":10,"git_tab":"Commit","show_hidden":false,"show_ignored":false}"#;
+        let l: SessionLayout = serde_json::from_str(old).unwrap();
+        assert!(l.split.is_empty());
+        assert_eq!((l.left2, l.bottom2, l.right2, l.left2_h, l.bottom2_w, l.right2_h), (None, None, None, None, None, None));
+        let json = serde_json::to_string(&l).unwrap();
+        for key in ["\"split\"", "\"left2\"", "\"bottom2_w\""] {
+            assert!(!json.contains(key), "{key} in {json}");
+        }
+        let new = SessionLayout {
+            split: vec![ToolWindowId::Structure, ToolWindowId::Find],
+            left2: Some(ToolWindowId::Structure),
+            bottom2: Some(ToolWindowId::Find),
+            right2: Some(ToolWindowId::Git),
+            left2_h: Some(7),
+            bottom2_w: Some(40),
+            right2_h: Some(9),
+            ..l
+        };
+        let json = serde_json::to_string(&new).unwrap();
+        assert_eq!(serde_json::from_str::<SessionLayout>(&json).unwrap(), new);
+        let newer = json.replace(r#""split":["Structure","#, r#""split":["Nope","Structure","#);
+        assert_eq!(serde_json::from_str::<SessionLayout>(&newer).unwrap().split, [ToolWindowId::Structure, ToolWindowId::Find]);
+    }
+
+    #[tokio::test]
+    async fn session_saves_and_restores_split_docks() {
+        use crate::ui::focus::Dock;
+        let (mut app, dir) = crate::app::tests::test_app("session-split");
+        let dock = |side, split| Dock { side, split };
+        app.layout.move_to_dock(ToolWindowId::Structure, dock(Side::Left, true));
+        app.layout.show(ToolWindowId::Structure);
+        app.layout.move_to_dock(ToolWindowId::Tasks, dock(Side::Bottom, true));
+        app.layout.show(ToolWindowId::Tasks);
+        app.layout.move_to_dock(ToolWindowId::Todo, dock(Side::Right, true));
+        app.layout.show(ToolWindowId::Todo);
+        app.layout.left2_h = 9;
+        let session = app.session();
+        let layout = session.layout.clone().unwrap();
+        assert_eq!(layout.split, [ToolWindowId::Structure]);
+        assert_eq!((layout.left2, layout.bottom2, layout.right2), (Some(ToolWindowId::Structure), None, None));
+        assert_eq!((layout.left2_h, layout.bottom2_w), (Some(9), None));
+        let tasks = layout.tasks.clone().unwrap();
+        assert!(tasks.split && tasks.shown);
+        assert!(layout.sides.is_empty(), "a split on the default side writes no side");
+        let json = serde_json::to_string(&SessionLayout { tasks: None, ..layout }).unwrap();
+        assert!(!json.contains("\"Todo\"") && !json.contains("\"Tasks\""), "{json}");
+        let (mut other, dir2) = crate::app::tests::test_app("session-split2");
+        let generation = other.workspace.generation;
+        other.session_loaded(generation, session, vec![]);
+        assert!(other.layout.dock_of(ToolWindowId::Structure).split);
+        assert_eq!(other.layout.left2, Some(ToolWindowId::Structure));
+        assert_eq!(other.layout.bottom2, Some(ToolWindowId::Tasks));
+        assert_eq!((other.layout.left2_h, other.layout.bottom2_w), (9, 0));
+        // A split on another side keeps its side entry for older builds.
+        app.layout.move_to_dock(ToolWindowId::Git, dock(Side::Right, true));
+        let layout = app.session().layout.unwrap();
+        assert_eq!(layout.sides, [(ToolWindowId::Git, Side::Right)]);
+        assert_eq!(layout.split, [ToolWindowId::Structure, ToolWindowId::Git]);
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&dir2);
     }
 
     #[tokio::test]

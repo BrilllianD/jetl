@@ -35,7 +35,7 @@ use ratatui::widgets::{Block, BorderType, Borders};
 
 use crate::app::App;
 use crate::config::theme::Theme;
-use crate::ui::focus::{PanelId, ToolWindowId};
+use crate::ui::focus::{Dock, PanelId, ToolWindowId};
 
 /// A bordered tool window frame. Returns the inner area.
 pub fn tool_window_block<'a>(title: &'a str, focused: bool, theme: &Theme) -> Block<'a> {
@@ -93,8 +93,9 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     app.sync_structure();
     app.sync_diag_marks();
 
-    for (tw, r) in [(app.layout.left, rects.left), (app.layout.bottom, rects.bottom), (app.layout.right, rects.right)] {
-        if let Some(tw) = tw
+    for dock in Dock::ALL {
+        let r = rects.of(dock);
+        if let Some(tw) = app.layout.slot(dock)
             && r.width > 0
             && r.height > 0
         {

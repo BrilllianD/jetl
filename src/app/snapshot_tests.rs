@@ -3501,6 +3501,20 @@ async fn app_strip_drag_marker() {
 }
 
 #[tokio::test]
+async fn app_split_docks() {
+    use crate::ui::focus::{Dock, Side};
+    let mut fx = stable_app("split-docks");
+    let app = &mut fx.app;
+    app.layout.move_to_dock(ToolWindowId::Structure, Dock { side: Side::Left, split: true });
+    app.layout.show(ToolWindowId::Structure);
+    app.layout.show(ToolWindowId::Find);
+    app.layout.move_to_dock(ToolWindowId::Problems, Dock { side: Side::Bottom, split: true });
+    app.layout.show(ToolWindowId::Problems);
+    let term = draw_app(app, 120, 40);
+    assert_snapshot!("app_split_docks", snapshot(&term, &[], None));
+}
+
+#[tokio::test]
 async fn app_toolbar() {
     let mut fx = stable_app("toolbar");
     let app = &mut fx.app;

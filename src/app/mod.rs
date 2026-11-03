@@ -1257,7 +1257,7 @@ impl App {
             AppAction::ToggleToolWindow(tw) => self.toggle_tool_window(tw),
             AppAction::HideAllToolWindows if self.layout.zen.is_some() => self.toggle_zen(),
             AppAction::HideAllToolWindows => {
-                if self.layout.left.is_none() && self.layout.bottom.is_none() && self.layout.right.is_none() {
+                if self.layout.shown().is_empty() {
                     self.layout.show(ToolWindowId::Project);
                 } else {
                     self.layout.hide_all();
@@ -1451,7 +1451,7 @@ impl App {
     /// F12, JetBrains-style: focus the tool window that last had focus,
     /// showing it first; before any had focus, a visible one or Project.
     fn last_tool_window(&mut self) {
-        let tw = self.focus.last_tool.or(self.layout.left).or(self.layout.bottom).or(self.layout.right).unwrap_or(ToolWindowId::Project);
+        let tw = self.focus.last_tool.or_else(|| self.layout.shown().first().copied()).unwrap_or(ToolWindowId::Project);
         if !self.layout.is_visible(tw) {
             self.toggle_tool_window(tw);
         } else {
@@ -1514,8 +1514,8 @@ impl App {
         let tw = match self.focus.current.tool_window() {
             Some(tw) => Some(tw).filter(|tw| self.layout.is_visible(*tw)),
             None => match dir {
-                Dir::Up | Dir::Down => self.layout.bottom,
-                Dir::Left | Dir::Right => self.layout.left.or(self.layout.right),
+                Dir::Up | Dir::Down => self.layout.bottom.or(self.layout.bottom2),
+                Dir::Left | Dir::Right => self.layout.left.or(self.layout.left2).or(self.layout.right).or(self.layout.right2),
             },
         };
         let Some(tw) = tw else { return };
