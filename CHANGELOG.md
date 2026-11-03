@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Rename (Shift+F6) works without a language server: it opens Find in files on the name (case sensitive, whole word) with the new name as replacement and a preview of every change; results the symbol index does not know as a use or definition of the name start excluded, and nothing changes until Replace All.
 - Call Hierarchy (Ctrl+Alt+H) works without a language server: callers and callees come from the symbol index (calls matched by name, the caller's file and its imports first), and the window title says "(approximate)".
 - Hierarchy: Navigate > File Dependencies shows the files the active file imports in the Hierarchy window (Tab: the files that import it), from the symbol index, expandable level by level and exportable as Mermaid or DOT.
 - Undocked tool windows: View Mode > Undock in a strip button's right-click menu (or View | Undock or Dock Tool Window, `tool_window.toggle_undocked`) makes a window slide over the editor at its side instead of shrinking it. It hides on Esc or when another tool window takes focus, and only one is shown at a time. The strip menu's Pin/Unpin row is now the View Mode submenu (Dock Pinned, Dock Unpinned, Undock).

@@ -161,6 +161,8 @@ pub enum DialogId {
     Indent(crate::editor::buffer::BufferId),
     /// The new name for a language server rename at this place.
     LspRename(crate::lsp::DocTag),
+    /// The new name for a rename without a language server (results open in Find).
+    TextRename(crate::lsp::DocTag),
     /// The context actions answered to this request (kept in the app).
     LspCodeAction(crate::lsp::DocTag),
     /// A workspace edit with changes that need confirmation (`EditReqs::confirm`, by seq):

@@ -305,6 +305,15 @@ impl SymbolIndex {
         out
     }
 
+    /// Every indexed definition named `name` (exact), `impl` blocks included,
+    /// by path, then line and column. A linear scan over all files.
+    pub fn defs_named(&self, name: &str) -> Vec<(&str, &Symbol)> {
+        let mut out: Vec<(&str, &Symbol)> =
+            self.files.iter().flat_map(|(p, f)| f.symbols.iter().filter(|s| &*s.name == name).map(move |s| (p.as_str(), s))).collect();
+        out.sort_by(|a, b| a.0.cmp(b.0).then(a.1.line.cmp(&b.1.line)).then(a.1.col.cmp(&b.1.col)));
+        out
+    }
+
     /// Palette rows: every symbol except `impl` blocks, by path then line.
     pub fn entries(&mut self) -> Arc<Vec<SymbolEntry>> {
         if let Some(e) = &self.entries {
@@ -434,6 +443,25 @@ mod tests {
         assert_eq!(got, [("a.rs", 2), ("a.rs", 9), ("b.rs", 3)]);
         assert!(idx.refs_named("F").is_empty());
         assert_eq!(idx.refs_named("g").len(), 1);
+    }
+
+    #[test]
+    fn defs_named_sorts_by_path_then_line() {
+        let sym =
+            |name: &str, line| Symbol { name: name.into(), kind: "function", line, col: 3, start_line: line, end_line: line, depth: 0 };
+        let f = |symbols| Some(FileSymbols { mtime: None, size: 0, symbols, refs: vec![], imports: vec![] });
+        let mut idx = SymbolIndex::default();
+        let seq = idx.start(PathBuf::from("/nonexistent")).seq;
+        let batch = SymbolBatch {
+            files: vec![("b.rs".into(), f(vec![sym("f", 3), sym("g", 1)])), ("a.rs".into(), f(vec![sym("f", 9), sym("f", 2)]))],
+            done: true,
+            changed: true,
+        };
+        assert!(idx.on_batch(seq, batch).is_some());
+        let got: Vec<(&str, usize, usize)> = idx.defs_named("f").into_iter().map(|(p, s)| (p, s.line, s.col)).collect();
+        assert_eq!(got, [("a.rs", 2, 3), ("a.rs", 9, 3), ("b.rs", 3, 3)]);
+        assert!(idx.defs_named("F").is_empty());
+        assert_eq!(idx.defs_named("g").len(), 1);
     }
 
     #[cfg(feature = "lang-rust")]

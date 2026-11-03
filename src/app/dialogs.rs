@@ -212,6 +212,7 @@ impl App {
             }
             (DialogId::Indent(id), DialogResult::Choice(i)) => self.editor.set_indent(id, i),
             (DialogId::LspRename(t), DialogResult::Text(name)) => self.lsp_rename_to(t, name),
+            (DialogId::TextRename(t), DialogResult::Text(name)) => self.text_rename_to(t, name),
             (DialogId::LspCodeAction(t), DialogResult::Choice(i)) => self.lsp_code_action_chosen(t, i),
             (DialogId::SurroundWith { buffer, version, prefixes }, DialogResult::Choice(i)) => {
                 self.surround_chosen(buffer, version, prefixes.get(i).cloned())

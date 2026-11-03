@@ -19,18 +19,25 @@
 //! fails (`AppMsg::EditsApplied`). Renamed files' tabs follow them, with
 //! their local history; created files are not opened.
 //!
+//! Without a server document for the buffer (and no server starting),
+//! rename is textual: the name goes to Find in files (case and whole word)
+//! with the new name as replacement, the uses and definitions the symbol
+//! index knows included and other results excluded; nothing changes until
+//! Replace All.
+//!
 //! Undo reverts the open buffers only: file operations and edits of files
 //! that were not open cannot be undone. Local History keeps a snapshot of
 //! deleted and replaced files, and carries a renamed file's history.
 
-use std::path::Path;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 
 use lsp_types::{CodeAction, CodeActionOrCommand, Command, PrepareRenameResponse, WorkspaceEdit};
 use serde_json::{Value, json};
 
-use super::App;
 use super::lsp_nav::{CODE_ACTION, CODE_ACTION_RESOLVE, DOCUMENT_SYMBOL, EXECUTE_COMMAND, PREPARE_RENAME, RENAME, word_at};
-use crate::editor::buffer::{Buffer, LineEnding};
+use super::{App, Ctx};
+use crate::editor::buffer::{Buffer, BufferId, LineEnding};
 use crate::editor::undo::TxKind;
 use crate::event::{AppMsg, Effect, Level};
 use crate::files::ops::FsOp;
@@ -39,6 +46,7 @@ use crate::lsp::edits::{self, DiskStep, EditCounts, OpenDoc};
 use crate::lsp::locations::LocationItem;
 use crate::lsp::{DocTag, EditOrigin, PendingTag, pos, symbols};
 use crate::ui::dialog::{Dialog, DialogId};
+use crate::ui::focus::{PanelId, ToolWindowId};
 
 /// The confirmation dialog's text: the annotations (at most 8) and the number of changes.
 fn confirm_message(title: &str, rows: &[edits::AnnotationRow], total: usize) -> String {
@@ -146,6 +154,10 @@ impl App {
         self.hover = None;
         self.completion_close();
         let Some((id, pos)) = self.caret_position() else { return };
+        self.lsp_sync();
+        if !self.lsp.docs.contains_key(&id) && !matches!(self.lsp_status(), Some(super::lsp::LspStatus::Busy(_))) {
+            return self.text_rename_dialog(id, pos);
+        }
         let result = if self.lsp_check(id, PREPARE_RENAME).is_ok() {
             self.lsp_doc_request(id, pos, PREPARE_RENAME, json!({}), PendingTag::PrepareRename).map(|_| ())
         } else {
@@ -204,6 +216,70 @@ impl App {
             Err(why) if !why.is_empty() => self.lsp_hint(why),
             Err(_) => {}
         }
+    }
+
+    /// No server document serves the buffer: ask for the new name of the
+    /// word at the caret; the answer previews the rename in Find.
+    fn text_rename_dialog(&mut self, id: BufferId, pos: lsp_types::Position) {
+        let Some(b) = self.editor.active_buffer() else { return };
+        let word = word_at(b, b.view.sel().head);
+        if b.path.is_none() || word.is_empty() {
+            return self.lsp_hint("Cannot rename this element");
+        }
+        if self.dialog.is_some() {
+            return;
+        }
+        let t = DocTag { buffer: id, version: b.version, pos, seq: 0, group: self.editor.focused_group().id };
+        let msg = format!("Rename '{word}' as text to:");
+        self.dialog = Some(Dialog::input(DialogId::TextRename(t), "Rename", &msg, &word, "Preview"));
+        self.dispatcher.reset();
+    }
+
+    /// The textual rename dialog's answer: open Find with the old name as
+    /// query and `name` as replacement, hits outside the index's uses and
+    /// definitions excluded. Nothing is written here.
+    pub(super) fn text_rename_to(&mut self, t: DocTag, name: String) {
+        let name = name.trim().to_string();
+        if name.is_empty() {
+            return;
+        }
+        let same = self.editor.active_buffer().is_some_and(|b| b.version == t.version);
+        if !same || self.caret_position() != Some((t.buffer, t.pos)) {
+            return self.lsp_hint("The file changed; rename again");
+        }
+        let Some(b) = self.editor.active_buffer() else { return };
+        let (old, path) = (word_at(b, b.view.sel().head), b.path.clone());
+        let Some(path) = path.filter(|_| !old.is_empty() && old != name) else { return };
+        let keep = self.rename_candidates(&old, &path);
+        self.layout.show(ToolWindowId::Find);
+        self.focus.set(PanelId::Find);
+        let mut cx = ctx!(self);
+        self.find.open_rename(&old, &name, keep, &mut cx);
+        self.notify(Level::Info, format!("Rename {old} to {name}: review the results, then Replace All (Alt+A)"));
+        if self.symbols.indexing() {
+            self.notify(Level::Info, "The project is still being indexed; some usages may start excluded");
+        }
+    }
+
+    /// The positions that start included in a textual rename of `name`: the
+    /// uses (`fallback_usages`), the definitions of the name in the index and
+    /// the caret's own word in `from`. Absolute paths and char columns, the
+    /// same shape `Search` gives `Hit`s (`root.join(rel)`).
+    fn rename_candidates(&mut self, name: &str, from: &Path) -> HashMap<PathBuf, HashSet<(usize, usize)>> {
+        let mut keep: HashMap<PathBuf, HashSet<(usize, usize)>> = HashMap::new();
+        for item in self.fallback_usages(name, from) {
+            keep.entry(item.path).or_default().insert((item.line, item.col));
+        }
+        let root = self.workspace.root.clone();
+        for (rel, s) in self.symbols.defs_named(name) {
+            keep.entry(root.join(rel)).or_default().insert((s.line, s.col));
+        }
+        if let Some(b) = self.editor.active_buffer() {
+            let start = crate::editor::selection::word_at(&b.rope, b.view.sel().head).start;
+            let line = b.rope.char_to_line(start);
+            keep.entry(from.to_path_buf()).or_default().insert((line, start - b.rope.line_to_char(line)));
+        }
+        keep
     }
 
     pub(super) fn lsp_rename_answer(&mut self, t: DocTag, value: Value) {
@@ -919,6 +995,73 @@ mod tests {
         answer(&mut app, &mut server, "textDocument/rename", json!({"changes": changes})).await;
         assert_eq!(text(&app), "fn main() {\n    let s = \"😀\"; x(s);\n}\n");
         assert!(toasts(&app).contains(&"Renamed to x: 1 occurrence in 1 file".to_string()), "{:?}", toasts(&app));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn rename_without_a_server_previews_in_find_with_index_candidates() {
+        use crate::ui::focus::{PanelId, ToolWindowId};
+        const MAIN: &str = "fn helper() {}\nfn main() {\n    helper(); // helper\n}\n";
+        let (mut app, dir) = test_app("rename-text");
+        let (root, g) = (app.workspace.root.clone(), app.workspace.generation);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/main.rs"), MAIN).unwrap();
+        std::fs::write(root.join("src/util.rs"), "fn f() {\n    helper();\n}\n").unwrap();
+        std::fs::write(root.join("notes.txt"), "helper here\n").unwrap();
+        let files = ["src/main.rs", "src/util.rs"];
+        app.handle_msg(AppMsg::FileIndex { generation: g, seq: 1, files: files.iter().map(|s| s.to_string()).collect() });
+        let job = app.symbols.start(root.clone());
+        let (seq, mut batches) = (job.seq, Vec::new());
+        job.run(|b| batches.push(b));
+        for batch in batches {
+            app.handle_msg(AppMsg::Symbols { generation: g, seq, batch });
+        }
+        load(&mut app, "src/main.rs", MAIN);
+        app.editor.active_buffer_mut().unwrap().goto_line(2, 6);
+        app.perform(Action::Lsp(LspAction::Rename));
+        let d = app.dialog.take().expect("asked at once");
+        assert!(matches!(d.id, DialogId::TextRename(_)));
+        assert!(matches!(&d.kind, DialogKind::Input { input, .. } if input.text == "helper"));
+        app.finish_dialog(d.id, DialogResult::Text(" assist ".into()));
+        assert!(app.layout.is_visible(ToolWindowId::Find) && app.focus.is(PanelId::Find));
+        let f = &app.find;
+        assert_eq!((f.query.text.as_str(), f.replace.text.as_str()), ("helper", "assist"));
+        assert!(f.show_replace && f.case_sensitive && f.whole_word && !f.regex);
+        let want = "Rename helper to assist: review the results, then Replace All (Alt+A)";
+        assert!(toasts(&app).contains(&want.to_string()), "{:?}", toasts(&app));
+        crate::app::tests::run_find(&mut app);
+        let got: Vec<(PathBuf, Vec<(usize, usize)>)> =
+            app.find.included_by_file().into_iter().map(|(p, h)| (p, h.iter().map(|h| (h.line, h.col)).collect())).collect();
+        assert_eq!(got, [(root.join("src/main.rs"), vec![(0, 3), (2, 4)]), (root.join("src/util.rs"), vec![(1, 4)])]);
+        assert_eq!(app.find.excluded_count(), 2, "the comment and notes.txt");
+        app.finish_dialog(DialogId::ReplaceInFiles, DialogResult::Button(0));
+        handle_next(&mut app, |m| matches!(m, AppMsg::ReplaceDone { .. })).await;
+        assert_eq!(text(&app), "fn assist() {}\nfn main() {\n    assist(); // helper\n}\n");
+        assert!(app.editor.active_buffer().unwrap().dirty());
+        assert_eq!(std::fs::read_to_string(root.join("src/util.rs")).unwrap(), "fn f() {\n    assist();\n}\n");
+        assert_eq!(std::fs::read_to_string(root.join("notes.txt")).unwrap(), "helper here\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn rename_without_a_server_on_no_word_or_unchanged_name_does_nothing() {
+        let (mut app, dir) = test_app("rename-text-noop");
+        load(&mut app, "a.rs", "fn old() {}\n");
+        app.editor.active_buffer_mut().unwrap().goto_line(0, 2);
+        app.perform(Action::Lsp(LspAction::Rename));
+        assert!(app.dialog.is_none());
+        assert!(toasts(&app).contains(&"Cannot rename this element".to_string()), "{:?}", toasts(&app));
+        app.editor.active_buffer_mut().unwrap().goto_line(0, 4);
+        app.perform(Action::Lsp(LspAction::Rename));
+        let d = app.dialog.take().expect("asked");
+        app.finish_dialog(d.id, DialogResult::Text("old".into()));
+        assert!(!app.layout.is_visible(crate::ui::focus::ToolWindowId::Find));
+        app.perform(Action::Lsp(LspAction::Rename));
+        let d = app.dialog.take().expect("asked");
+        app.perform(Action::Editor(EditorAction::InsertText("x".into())));
+        app.finish_dialog(d.id, DialogResult::Text("new".into()));
+        assert!(toasts(&app).contains(&"The file changed; rename again".to_string()), "{:?}", toasts(&app));
+        assert!(!app.layout.is_visible(crate::ui::focus::ToolWindowId::Find));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

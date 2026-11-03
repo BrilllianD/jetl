@@ -3,6 +3,7 @@
 //! file. Typing searches live; Up/Down move through the results, Enter
 //! opens one.
 
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -65,6 +66,10 @@ pub struct FindPanel {
     /// The running search's pattern, for the inline replacement preview.
     re: Option<Regex>,
     rows: Vec<Row>,
+    /// Rename without a server (`open_rename`): the positions that start
+    /// included, per absolute path; every other hit of this search starts
+    /// excluded. Dropped by `reset`.
+    keep: Option<HashMap<PathBuf, HashSet<(usize, usize)>>>,
     pub list: ListState,
     /// Seq of the newest search; a running search stops when it moves on.
     seq: u64,
@@ -98,6 +103,7 @@ impl FindPanel {
             hits: Vec::new(),
             re: None,
             rows: Vec::new(),
+            keep: None,
             list: ListState::default(),
             seq: 0,
             cancel: Arc::new(AtomicU64::new(0)),
@@ -131,9 +137,26 @@ impl FindPanel {
         self.hits.clear();
         self.re = None;
         self.rows.clear();
+        self.keep = None;
         self.list = ListState::default();
         self.searching = false;
         self.error = None;
+    }
+
+    /// Textual rename without a server: query `old` (case and whole word on,
+    /// regex off), the replace row with `new`, a fresh search. Hits outside
+    /// `keep` (absolute path, then line and char column) start excluded.
+    pub fn open_rename(&mut self, old: &str, new: &str, keep: HashMap<PathBuf, HashSet<(usize, usize)>>, cx: &mut Ctx) {
+        self.query.set_text(old);
+        self.replace.set_text(new);
+        self.show_replace = true;
+        self.field = Field::Query;
+        self.case_sensitive = true;
+        self.whole_word = true;
+        self.regex = false;
+        self.search(cx);
+        // After `search`: it calls `reset`, which drops the set. Batches arrive later.
+        self.keep = Some(keep);
     }
 
     pub fn pattern(&self) -> Result<Regex, String> {
@@ -179,7 +202,10 @@ impl FindPanel {
         self.files_searched = batch.files_searched;
         self.searching = !batch.done;
         self.capped |= batch.capped;
-        for hit in batch.hits {
+        for mut hit in batch.hits {
+            if let Some(keep) = &self.keep {
+                hit.excluded = !keep.get(&hit.path).is_some_and(|s| s.contains(&(hit.line, hit.col)));
+            }
             let i = self.hits.len();
             let same_file = self.hits.last().is_some_and(|h| h.path == hit.path);
             self.hits.push(hit);
@@ -646,6 +672,28 @@ mod tests {
         p.list.select(0);
         p.toggle_exclude();
         assert_eq!(p.included_count(), 2);
+    }
+
+    #[test]
+    fn keep_excludes_hits_outside_the_set_until_reset() {
+        let mut p = FindPanel::new();
+        p.keep = Some(HashMap::from([(PathBuf::from("a"), HashSet::from([(0, 0)]))]));
+        let at = |path, line| Hit { line, ..hit(path, 0, "x") };
+        let batch = |p: &FindPanel| Batch {
+            seq: p.current_seq(),
+            hits: vec![at("a", 0), at("a", 1), at("b", 0)],
+            files_searched: 2,
+            done: true,
+            capped: false,
+        };
+        let b = batch(&p);
+        p.on_batch(b);
+        assert_eq!((p.included_count(), p.excluded_count()), (1, 2));
+        p.reset();
+        assert!(p.keep.is_none());
+        let b = batch(&p);
+        p.on_batch(b);
+        assert_eq!(p.excluded_count(), 0);
     }
 
     #[test]

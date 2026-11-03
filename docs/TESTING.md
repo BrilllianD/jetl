@@ -285,6 +285,29 @@ cat $T/n.txt                             # unchanged
 Delete without Alt still deletes a character in the Find field. A file row
 excluded with Alt+Delete dims all its results.
 
+### Scenario: rename without a language server
+
+At 120x40 and 80x24 (yman 373), `[lsp] enabled = false`:
+
+```sh
+mkdir -p $T/src
+printf 'fn helper() {}\nfn main() {\n    helper(); // helper\n}\n' > $T/src/main.rs
+printf 'fn f() {\n    helper();\n}\n' > $T/src/util.rs
+printf 'helper here\n' > $T/notes.txt
+# start jetl on $T/src/main.rs as above; wait for indexing (~1 s)
+/tmp/tm.sh send-keys -t jetl Down Down Right Right Right Right Right   # caret in "helper" on line 3
+/tmp/tm.sh send-keys -t jetl S-F6; sleep 0.5
+/tmp/tm.sh capture-pane -p -t jetl       # dialog "Rename 'helper' as text to:", button Preview
+/tmp/tm.sh send-keys -t jetl C-a; /tmp/tm.sh send-keys -t jetl -l 'assist'; /tmp/tm.sh send-keys -t jetl Enter; sleep 1
+/tmp/tm.sh capture-pane -p -t jetl       # Find: 5 matches in 3 files; 2 excluded (the comment, notes.txt) dimmed
+/tmp/tm.sh send-keys -t jetl M-a; sleep 0.5; /tmp/tm.sh send-keys -t jetl Enter; sleep 1
+cat $T/src/util.rs; cat $T/notes.txt     # util has assist(); notes unchanged
+/tmp/tm.sh kill-server
+```
+
+The main.rs buffer holds the change unsaved (assist twice, the comment still
+says helper). Any later search in Find shows every result included again.
+
 ### Scenario: column selection
 
 At 80x24 and at 120x40, with a file of tabs, wide characters and a short
