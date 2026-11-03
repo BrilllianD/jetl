@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Hierarchy: Export Hierarchy as Mermaid and as DOT (Navigate menu, Find Action) write the loaded call or type hierarchy to a new scratch file (`.md` with a mermaid block, or `.dot`); nodes not expanded yet end with `…`.
 - Find Usages (Alt+F7) works without a language server: it lists the uses of the name at the caret found by the symbol index, the current file first, then files it imports or that import it, then its directory, marked "(unverified)" in the Locations title.
 - Toolbar: a row at the top of the window (`[ui] toolbar`, on by default, also in Settings > Appearance) holds the main menu button, which leaves the tool strip; hidden in zen mode and in terminals under 12 rows.
 - Toolbar: View | Toolbar, the action `app.toggle_toolbar` and the toolbar's right-click menu (Hide Toolbar) show or hide it; the choice is saved in `config.toml` as `[ui] toolbar`.

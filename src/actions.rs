@@ -555,6 +555,10 @@ pub enum HierarchyAction {
     Open,
     ToggleDirection,
     Refresh,
+    /// Write the loaded tree to a new scratch file as a Mermaid diagram.
+    ExportMermaid,
+    /// Write the loaded tree to a new scratch file as a DOT graph.
+    ExportDot,
 }
 
 /// The Tasks tool window (`yman/panel.rs`).
@@ -1139,6 +1143,8 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "hierarchy.open" => "Hierarchy: open the selected function or type", Hierarchy(HierarchyAction::Open);
         "hierarchy.toggle_direction" => "Hierarchy: switch callers and callees, or supertypes and subtypes", Hierarchy(HierarchyAction::ToggleDirection);
         "hierarchy.refresh" => "Hierarchy: ask the server again", Hierarchy(HierarchyAction::Refresh);
+        "hierarchy.export_mermaid" => "Hierarchy: export the loaded tree as a Mermaid diagram (scratch file)", Hierarchy(HierarchyAction::ExportMermaid);
+        "hierarchy.export_dot" => "Hierarchy: export the loaded tree as a Graphviz DOT graph (scratch file)", Hierarchy(HierarchyAction::ExportDot);
 
         "local_history.up" => "Local History: up", History(HistoryAction::Up);
         "local_history.down" => "Local History: down", History(HistoryAction::Down);

@@ -47,6 +47,9 @@ impl App {
         if self.hierarchy_panel.step(&a, self.hierarchy.as_ref()) {
             return;
         }
+        if matches!(a, HierarchyAction::ExportMermaid | HierarchyAction::ExportDot) {
+            return self.hierarchy_export(a == HierarchyAction::ExportDot);
+        }
         let Some(node) = self.hierarchy_panel.selected(self.hierarchy.as_ref()) else { return };
         match a {
             HierarchyAction::Expand => {
@@ -77,8 +80,20 @@ impl App {
             | HierarchyAction::PageUp
             | HierarchyAction::PageDown
             | HierarchyAction::Home
-            | HierarchyAction::End => {}
+            | HierarchyAction::End
+            | HierarchyAction::ExportMermaid
+            | HierarchyAction::ExportDot => {}
         }
+    }
+
+    /// Write the loaded tree to a new scratch file: Mermaid in a markdown fence, or DOT.
+    pub(crate) fn hierarchy_export(&mut self, dot: bool) {
+        let Some(t) = self.hierarchy.as_ref().filter(|t| !t.roots.is_empty()) else {
+            return self.lsp_hint("No hierarchy to export");
+        };
+        let (ext, content) =
+            if dot { ("dot", t.to_dot()) } else { ("md", format!("# {}\n\n```mermaid\n{}```\n", t.title(), t.to_mermaid())) };
+        self.open_new_scratch(ext, &content);
     }
 
     /// The server `name` is gone: its answers will not come, so nothing keeps loading.
@@ -275,6 +290,44 @@ mod tests {
         let req = s.server.recv("callHierarchy/incomingCalls").await;
         let id = req["id"].as_i64().unwrap();
         (req, id)
+    }
+
+    #[tokio::test]
+    async fn export_writes_the_loaded_tree_to_a_scratch_file() {
+        let (mut s, _servers) = setup("hier-export", call_caps()).await;
+        let (_, id) = started(&mut s).await;
+        let main = item(&s.a, "main", 0, 3, 7);
+        s.server.respond(id, json!([{"from": main, "fromRanges": []}]));
+        handle_next(&mut s.app, is_lsp).await;
+        let before = sent(&s.app, &mut s.server).await.iter().filter(|m| *m == "callHierarchy/incomingCalls").count();
+        s.app.perform(Action::Hierarchy(HierarchyAction::ExportMermaid));
+        let path = s.app.paths.scratches_dir().join("scratch_1.md");
+        assert_eq!(s.app.editor.active_path(), Some(path.as_path()));
+        let buf = s.app.editor.active_buffer().unwrap();
+        let on_disk = std::fs::read_to_string(&path).unwrap();
+        assert!(!buf.dirty());
+        assert_eq!(buf.text(), on_disk);
+        assert_eq!(
+            on_disk,
+            "# Callers of helper\n\n```mermaid\nflowchart LR\n    n0[\"helper<br/>b.rs:2\"]\n    n1[\"main<br/>a.rs:1 …\"]\n    n1 --> n0\n```\n"
+        );
+        assert!(s.app.focus.is(PanelId::Editor));
+        s.app.perform(Action::Hierarchy(HierarchyAction::ExportDot));
+        let dot = s.app.paths.scratches_dir().join("scratch_1.dot");
+        assert_eq!(s.app.editor.active_path(), Some(dot.as_path()));
+        assert!(std::fs::read_to_string(&dot).unwrap().starts_with("digraph \"Callers of helper\" {"));
+        let after = sent(&s.app, &mut s.server).await.iter().filter(|m| *m == "callHierarchy/incomingCalls").count();
+        assert_eq!(before, after);
+        let _ = std::fs::remove_dir_all(&s.dir);
+    }
+
+    #[tokio::test]
+    async fn export_without_a_tree_only_hints() {
+        let (mut app, dir) = test_app("hier-export-none");
+        app.perform(Action::Hierarchy(HierarchyAction::ExportMermaid));
+        assert!(toasts(&app).iter().any(|t| t.contains("No hierarchy to export")));
+        assert!(!app.paths.scratches_dir().exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]

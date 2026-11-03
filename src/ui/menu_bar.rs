@@ -187,6 +187,8 @@ pub const MAIN_MENU: &[(&str, char, &[Row])] = &[
             Item("Find Usages", "lsp.find_usages"),
             Item("Call Hierarchy", "lsp.call_hierarchy"),
             Item("Type Hierarchy", "lsp.type_hierarchy"),
+            Item("Export Hierarchy as Mermaid", "hierarchy.export_mermaid"),
+            Item("Export Hierarchy as DOT", "hierarchy.export_dot"),
             Sep,
             Item("Back", "editor.nav_back"),
             Item("Forward", "editor.nav_forward"),

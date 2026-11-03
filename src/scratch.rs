@@ -110,13 +110,23 @@ impl App {
     /// once, without a read).
     pub(crate) fn create_scratch(&mut self, choice: usize) {
         let Some(ext) = extension(choice) else { return };
+        self.open_new_scratch(ext, "");
+    }
+
+    /// Create `scratch_<n>.<ext>` holding `text` and open it, clean, in the editor.
+    pub(crate) fn open_new_scratch(&mut self, ext: &str, text: &str) {
         if self.editor.merge_active() {
             return self.notify(Level::Info, crate::editor::merge::BUSY);
         }
         let dir = self.paths.scratches_dir();
         match create(&dir, ext) {
             Ok(path) => {
-                self.editor.open_text(path, "", false, &self.theme);
+                if !text.is_empty()
+                    && let Err(e) = std::fs::write(&path, text)
+                {
+                    return self.notify(Level::Error, format!("Write scratch file {}: {e}", path.display()));
+                }
+                self.editor.open_text(path, text, false, &self.theme);
                 self.editor.enforce_tab_limit();
                 self.focus.set(PanelId::Editor);
             }

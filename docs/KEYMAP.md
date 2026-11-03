@@ -657,3 +657,5 @@ Reachable from Find Action (F1) or by binding them in `keymap.toml`.
 | `lsp.restart` | Restart language servers |
 | `lsp.goto_declaration` | Go to the declaration (not the definition) of the symbol at the caret |
 | `lsp.toggle_inlay_hints` | Show or hide inlay hints |
+| `hierarchy.export_mermaid` | Hierarchy: export the loaded tree as a Mermaid diagram (scratch file) |
+| `hierarchy.export_dot` | Hierarchy: export the loaded tree as a Graphviz DOT graph (scratch file) |
