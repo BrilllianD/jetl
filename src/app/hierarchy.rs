@@ -8,7 +8,9 @@
 //!
 //! Without a server for the buffer, the call hierarchy is computed from the
 //! symbol index (`symbols/graph.rs`): an index tree
-//! (`HierarchyTree::from_index`) whose children are filled synchronously.
+//! (`HierarchyTree::from_index`) whose children are filled synchronously. In
+//! files covered by a fresh SCIP index the edges follow SCIP symbols
+//! (`hierarchy_scip_callers` / `hierarchy_scip_callees`).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -26,6 +28,7 @@ use crate::lsp::hierarchy::HierarchyItem;
 use crate::lsp::hierarchy::{Direction, HierarchyTree, parse_calls, parse_items, parse_types};
 use crate::lsp::transport::ResponseError;
 use crate::symbols::graph;
+use crate::symbols::scip::{self, SymId};
 use crate::ui::focus::{PanelId, ToolWindowId};
 
 impl App {
@@ -247,16 +250,22 @@ impl App {
         };
         let items = match direction {
             Direction::Callers => {
-                let defs = graph::callers(&self.symbols, &item.name);
+                let defs = match self.hierarchy_scip_callers(&item) {
+                    Some(d) => d,
+                    None => graph::callers(&self.symbols, &item.name),
+                };
                 self.hierarchy_items(defs)
             }
             Direction::Callees => {
-                let defs = match self.rel_path(&item.path) {
-                    Some(rel) => match graph::find(&self.symbols, &rel, &item.name, item.selection.start.line as usize) {
-                        Some(sym) => graph::callees(&mut self.symbols, &rel, sym),
+                let defs = match self.hierarchy_scip_callees(&item) {
+                    Some(d) => d,
+                    None => match self.rel_path(&item.path) {
+                        Some(rel) => match graph::find(&self.symbols, &rel, &item.name, item.selection.start.line as usize) {
+                            Some(sym) => graph::callees(&mut self.symbols, &rel, sym),
+                            None => Vec::new(),
+                        },
                         None => Vec::new(),
                     },
-                    None => Vec::new(),
                 };
                 self.hierarchy_items(defs)
             }
@@ -274,6 +283,77 @@ impl App {
             t.set_children(node, items);
         }
         self.dirty_frame = true;
+    }
+
+    /// The root-relative path and SCIP symbol at `item`'s selection start, when the index has a document for the file,
+    /// the file is fresh (`scip_fresh`) and a non-local occurrence is there.
+    fn scip_symbol_of(&self, item: &HierarchyItem) -> Option<(String, SymId)> {
+        let rel = self.rel_path(&item.path)?;
+        let ix = self.scip.index.as_ref()?;
+        let doc = ix.doc(&rel)?;
+        if !self.scip_fresh(&rel) {
+            return None;
+        }
+        let line = item.selection.start.line as usize;
+        let text = self.line_of(&item.path, line, &mut HashMap::new())?;
+        let chars = scip::to_chars(&text, item.selection.start.character, scip::Encoding::Utf16);
+        let unit = scip::to_units(&text, chars, doc.encoding);
+        let occ = ix.occurrence_at(&rel, line as u32, unit)?;
+        if ix.is_local(occ.symbol) {
+            return None;
+        }
+        Some((rel, occ.symbol))
+    }
+
+    /// Callers of `item` with SCIP: exact ones from covered files plus `graph::callers(name)` from files that are not
+    /// covered, merged with `graph::sort_defs`. None when `scip_symbol_of` is None.
+    fn hierarchy_scip_callers(&self, item: &HierarchyItem) -> Option<Vec<graph::Def>> {
+        let (_, sym) = self.scip_symbol_of(item)?;
+        let ix = self.scip.index.as_ref()?;
+        let mut memo: HashMap<String, bool> = HashMap::new();
+        let mut covered = |rel: &str| *memo.entry(rel.to_string()).or_insert_with(|| ix.doc(rel).is_some() && self.scip_fresh(rel));
+        let mut defs = graph::scip_callers(&self.symbols, ix, sym, &mut covered);
+        defs.extend(graph::callers(&self.symbols, &item.name).into_iter().filter(|d| !covered(&d.path)));
+        graph::sort_defs(&mut defs);
+        Some(defs)
+    }
+
+    /// Callees of `item` with SCIP, in call order, each definition once. None when `scip_symbol_of` is None or
+    /// `graph::find` finds no tags symbol for the item.
+    fn hierarchy_scip_callees(&mut self, item: &HierarchyItem) -> Option<Vec<graph::Def>> {
+        let (rel, _) = self.scip_symbol_of(item)?;
+        let tsym = graph::find(&self.symbols, &rel, &item.name, item.selection.start.line as usize)?;
+        // Per called symbol: its fresh definitions, and the name plus uncovered files to look in by name.
+        type Step = (Vec<graph::Def>, Option<(String, Vec<String>)>);
+        let steps: Vec<Step> = {
+            let ix = self.scip.index.as_ref()?;
+            let mut memo: HashMap<String, bool> = HashMap::new();
+            let mut covered = |r: &str| *memo.entry(r.to_string()).or_insert_with(|| ix.doc(r).is_some() && self.scip_fresh(r));
+            graph::scip_calls_in(&self.symbols, ix, &rel, tsym)
+                .into_iter()
+                .map(|id| {
+                    let (defs, stale) = graph::scip_defs(&self.symbols, ix, id, &mut covered);
+                    let pending = if defs.is_empty() && !stale.is_empty() { ix.name(id).map(|n| (n, stale)) } else { None };
+                    (defs, pending)
+                })
+                .collect()
+        };
+        let mut seen: std::collections::HashSet<(std::sync::Arc<str>, usize, usize)> = std::collections::HashSet::new();
+        let mut out = Vec::new();
+        for (mut defs, pending) in steps {
+            if let Some((name, stale)) = pending {
+                defs = graph::resolve(&mut self.symbols, &name, &rel)
+                    .into_iter()
+                    .filter(|d| stale.iter().any(|p| p == &*d.path) && graph::CALLABLE.contains(&d.symbol.kind))
+                    .collect();
+            }
+            for d in defs {
+                if seen.insert((d.path.clone(), d.symbol.line, d.symbol.col)) {
+                    out.push(d);
+                }
+            }
+        }
+        Some(out)
     }
 
     /// A file of the project as a hierarchy item, at its first line.
@@ -858,6 +938,82 @@ mod tests {
     fn child_names(app: &App, node: usize) -> Vec<String> {
         let t = app.hierarchy.as_ref().unwrap();
         t.nodes[node].children.as_ref().unwrap().iter().map(|&c| t.nodes[c].item.name.clone()).collect()
+    }
+
+    fn set_mtime(p: &Path, t: std::time::SystemTime) {
+        std::fs::File::options().write(true).open(p).unwrap().set_modified(t).unwrap();
+    }
+
+    #[tokio::test]
+    async fn call_hierarchy_edges_follow_a_fresh_scip_index() {
+        use crate::symbols::scip::Encoding;
+        let (mut app, dir) = test_app("hier-scip");
+        let main = "mod a;\nmod b;\nuse b::helper;\n\nfn main() {\n    helper();\n}\n";
+        let helper = "pub fn helper() {}\n";
+        index(&mut app, &[("src/main.rs", main), ("src/a.rs", helper), ("src/b.rs", helper)]);
+        let root = app.workspace.root.clone();
+        let m: &[(&[i32], &str, bool)] = &[
+            (&[4, 3, 7], "t . . . main().", true),
+            (&[2, 7, 13], "t . . . b/helper().", false),
+            (&[5, 4, 10], "t . . . b/helper().", false),
+        ];
+        let a: &[(&[i32], &str, bool)] = &[(&[0, 7, 13], "t . . . a/helper().", true)];
+        let b: &[(&[i32], &str, bool)] = &[(&[0, 7, 13], "t . . . b/helper().", true)];
+        let file = root.join("index.scip");
+        crate::symbols::scip::write_test_index(
+            &file,
+            "",
+            &[("src/main.rs", Encoding::Utf8, m), ("src/a.rs", Encoding::Utf8, a), ("src/b.rs", Encoding::Utf8, b)],
+        );
+        let now = std::time::SystemTime::now();
+        for f in ["src/main.rs", "src/a.rs", "src/b.rs"] {
+            set_mtime(&root.join(f), now - std::time::Duration::from_secs(100));
+        }
+        set_mtime(&file, now - std::time::Duration::from_secs(50));
+        let mut c = app.config.clone();
+        c.index.scip = "index.scip".into();
+        app.apply_config(c);
+        handle_next(&mut app, |m| matches!(m, AppMsg::Scip { .. })).await;
+        assert!(app.scip.index.is_some());
+        app.toasts = Default::default();
+        // (a) Nobody calls a::helper, though the tags index would list main.
+        crate::app::tests::load(&mut app, "src/a.rs", helper);
+        set_mtime(&root.join("src/a.rs"), now - std::time::Duration::from_secs(100));
+        goto(&mut app, 0, 8);
+        app.perform(Action::Lsp(LspAction::CallHierarchy));
+        assert_eq!(app.hierarchy.as_ref().unwrap().nodes[0].item.name, "helper");
+        assert_eq!(app.hierarchy.as_ref().unwrap().nodes[0].item.path, root.join("src/a.rs"));
+        assert!(child_names(&app, 0).is_empty());
+        // (b)
+        crate::app::tests::load(&mut app, "src/b.rs", helper);
+        set_mtime(&root.join("src/b.rs"), now - std::time::Duration::from_secs(100));
+        goto(&mut app, 0, 8);
+        app.perform(Action::Lsp(LspAction::CallHierarchy));
+        assert_eq!(child_names(&app, 0), ["main"]);
+        // (c) main calls b::helper only.
+        crate::app::tests::load(&mut app, "src/main.rs", main);
+        set_mtime(&root.join("src/main.rs"), now - std::time::Duration::from_secs(100));
+        goto(&mut app, 4, 4);
+        app.perform(Action::Lsp(LspAction::CallHierarchy));
+        app.perform(Action::Hierarchy(HierarchyAction::ToggleDirection));
+        assert_eq!(child_names(&app, 0), ["helper"]);
+        let t = app.hierarchy.as_ref().unwrap();
+        assert_eq!(t.nodes[t.nodes[0].children.as_ref().unwrap()[0]].item.path, root.join("src/b.rs"));
+        assert!(toasts(&app).is_empty(), "{:?}", toasts(&app));
+        // (d) main.rs newer than the index: tags callers, tags callees.
+        set_mtime(&root.join("src/main.rs"), now);
+        crate::app::tests::load(&mut app, "src/a.rs", helper);
+        set_mtime(&root.join("src/a.rs"), now - std::time::Duration::from_secs(100));
+        goto(&mut app, 0, 8);
+        app.perform(Action::Lsp(LspAction::CallHierarchy));
+        assert_eq!(child_names(&app, 0), ["main"]);
+        crate::app::tests::load(&mut app, "src/main.rs", main);
+        set_mtime(&root.join("src/main.rs"), now);
+        goto(&mut app, 4, 4);
+        app.perform(Action::Lsp(LspAction::CallHierarchy));
+        app.perform(Action::Hierarchy(HierarchyAction::ToggleDirection));
+        assert_eq!(child_names(&app, 0).len(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]

@@ -247,6 +247,7 @@ pub const MAIN_MENU: &[(&str, char, &[Row])] = &[
             Item("Run Selected", "run.run_selected"),
             Item("Run Test at Caret", "run.test_at_caret"),
             Item("Send HTTP Request at Caret", "run.http_request_at_caret"),
+            Item("Build SCIP Index", "run.build_scip_index"),
             Item("Rerun", "run.rerun"),
             Item("Rerun Failed Tests", "run.rerun_failed"),
             Item("Stop", "run.stop"),

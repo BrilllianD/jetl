@@ -230,6 +230,7 @@ snapshot_unsaved_secs = 0      # every this many seconds, snapshot unsaved edits
 
 [index]
 scip = ""                      # SCIP index file relative to the root (e.g. "index.scip"); "" = none
+scip_command = ""              # shell command that writes the index (run.build_scip_index); "" = none
 ```
 
 SCIP index (`[index] scip`): build one with `rust-analyzer scip . --output
@@ -241,6 +242,10 @@ than the index file); other files fall back to the unverified symbol-index
 candidates. The index is read again when the key changes, at start, after a
 project switch, and on the next lookup after the file changes on disk. A file
 that cannot be read or is not a SCIP index gives one warning and no index.
+`[index] scip_command` is a shell command (for example `rust-analyzer scip .
+--output index.scip`); Run > Build SCIP Index (`run.build_scip_index`) runs
+it in the project root as a Run task named `Build SCIP index`, with its output
+in the Run window, and loads the index again when it exits 0.
 
 With `watch` on, files changed by other programs refresh the Project tree
 and the Git window, and an open tab reloads in place when it has no unsaved

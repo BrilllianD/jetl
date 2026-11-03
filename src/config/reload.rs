@@ -197,6 +197,7 @@ sections! {
     }
     index: IndexConfig {
         scip => Live,
+        scip_command => Live,
     }
 }
 
@@ -256,7 +257,7 @@ mod tests {
         names.dedup();
         assert_eq!(names.len(), KEYS.len());
         // 19 editor, 8 ui, 3 git, 2 worktree, 1 keymap, 3 files, 2 clipboard,
-        // 3 format, 2 run, 3 terminal, 10 lsp, 5 local_history, 1 index.
-        assert_eq!(KEYS.len(), 62);
+        // 3 format, 2 run, 3 terminal, 10 lsp, 5 local_history, 2 index.
+        assert_eq!(KEYS.len(), 63);
     }
 }

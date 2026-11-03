@@ -428,6 +428,7 @@ impl RunPanel {
             | RunAction::RerunFailed
             | RunAction::TestAtCaret
             | RunAction::HttpRequestAtCaret
+            | RunAction::BuildScipIndex
             | RunAction::Stop
             | RunAction::RunSelected
             | RunAction::ConfigMenu { .. }

@@ -11,6 +11,7 @@ use std::sync::Arc;
 use lsp_types::SymbolKind;
 
 use super::index::SymbolIndex;
+use super::scip::{Occ, ScipIndex, Span, SymId};
 use super::{Reference, Symbol};
 use crate::editor::syntax;
 
@@ -108,9 +109,116 @@ pub fn callers(index: &SymbolIndex, name: &str) -> Vec<Def> {
             out.push(Def { path: Arc::from(path), symbol: f.symbols[i].clone() });
         }
     }
-    out.sort_by(|a, b| a.path.cmp(&b.path).then(a.symbol.line.cmp(&b.symbol.line)).then(a.symbol.col.cmp(&b.symbol.col)));
-    out.dedup_by(|a, b| a.path == b.path && a.symbol.line == b.symbol.line && a.symbol.col == b.symbol.col);
+    sort_defs(&mut out);
     out
+}
+
+/// Sorts by path, line, col and drops repeats of the same definition (what `callers` did inline).
+pub fn sort_defs(defs: &mut Vec<Def>) {
+    defs.sort_by(|a, b| a.path.cmp(&b.path).then(a.symbol.line.cmp(&b.symbol.line)).then(a.symbol.col.cmp(&b.symbol.col)));
+    defs.dedup_by(|a, b| a.path == b.path && a.symbol.line == b.symbol.line && a.symbol.col == b.symbol.col);
+}
+
+/// The tags symbol (index into `rel`'s symbols) that SCIP definition `def` of `rel` names: the one whose
+/// `line` is the definition's line, never `impl`; when several, the one named `scip.name(def.symbol)`, else the first.
+pub fn scip_def_symbol(index: &SymbolIndex, scip: &ScipIndex, rel: &str, def: &Occ) -> Option<usize> {
+    let f = index.file(rel)?;
+    let line = def.span.line as usize;
+    let mut on_line = f.symbols.iter().enumerate().filter(|(_, s)| s.line == line && s.kind != "impl").map(|(i, _)| i);
+    let first = on_line.next()?;
+    let Some(name) = scip.name(def.symbol) else { return Some(first) };
+    if *f.symbols[first].name == *name {
+        return Some(first);
+    }
+    Some(on_line.find(|&i| *f.symbols[i].name == *name).unwrap_or(first))
+}
+
+/// `(enclosing range, tags symbol)` of every SCIP definition of `rel` that has an enclosing range and maps
+/// through `scip_def_symbol`. Computed once per document.
+fn bodies(index: &SymbolIndex, scip: &ScipIndex, rel: &str) -> Vec<(Span, usize)> {
+    let Some(doc) = scip.doc(rel) else { return Vec::new() };
+    doc.occurrences.iter().filter(|o| o.definition).filter_map(|o| Some((o.enclosing?, scip_def_symbol(index, scip, rel, o)?))).collect()
+}
+
+/// The tags symbol whose definition holds the occurrence at `span`: the innermost body (latest start; on a tie the
+/// earliest end) with `(b.line, b.start) <= (span.line, span.start) < (b.end_line, b.end)`; without one, `caller_of`
+/// on a synthetic `Reference { name: Arc::from(""), kind: "call", line: span.line as usize, col: 0, enclosing: None }`.
+fn container(bodies: &[(Span, usize)], lang: Option<&str>, symbols: &[Symbol], span: &Span) -> Option<usize> {
+    let at = (span.line, span.start);
+    let inner = bodies
+        .iter()
+        .filter(|(b, _)| (b.line, b.start) <= at && at < (b.end_line, b.end))
+        .max_by_key(|(b, _)| ((b.line, b.start), std::cmp::Reverse((b.end_line, b.end))));
+    if let Some(&(_, i)) = inner {
+        return Some(i);
+    }
+    let r = Reference { name: Arc::from(""), kind: "call", line: span.line as usize, col: 0, enclosing: None };
+    caller_of(lang, symbols, &r)
+}
+
+/// Definitions that reference SCIP symbol `sym`, from documents `covered` accepts: per non-definition occurrence its
+/// container (see below), one per definition, sorted with `sort_defs`.
+pub fn scip_callers(index: &SymbolIndex, scip: &ScipIndex, sym: SymId, covered: &mut dyn FnMut(&str) -> bool) -> Vec<Def> {
+    let mut out: Vec<Def> = Vec::new();
+    let mut cache: Option<(&str, Vec<(Span, usize)>)> = None;
+    for (rel, o) in scip.occurrences_of(sym) {
+        if o.definition || !covered(rel) {
+            continue;
+        }
+        let Some(f) = index.file(rel) else { continue };
+        if cache.as_ref().is_none_or(|(p, _)| *p != rel) {
+            cache = Some((rel, bodies(index, scip, rel)));
+        }
+        let b = &cache.as_ref().expect("set above").1;
+        if let Some(i) = container(b, language_of(rel), &f.symbols, &o.span) {
+            out.push(Def { path: Arc::from(rel), symbol: f.symbols[i].clone() });
+        }
+    }
+    sort_defs(&mut out);
+    out
+}
+
+/// The non-local SCIP symbols referenced (non-definition occurrences) inside tags symbol `sym` of `rel`, in
+/// position order, each once. The caller checks that `rel` is covered.
+pub fn scip_calls_in(index: &SymbolIndex, scip: &ScipIndex, rel: &str, sym: usize) -> Vec<SymId> {
+    let Some(f) = index.file(rel) else { return Vec::new() };
+    let b = bodies(index, scip, rel);
+    let lang = language_of(rel);
+    let mut out: Vec<SymId> = Vec::new();
+    for o in scip.doc(rel).map_or(Vec::new(), |d| d.occurrences.iter().collect()) {
+        if o.definition || scip.is_local(o.symbol) || out.contains(&o.symbol) {
+            continue;
+        }
+        if container(&b, lang, &f.symbols, &o.span) == Some(sym) {
+            out.push(o.symbol);
+        }
+    }
+    out
+}
+
+/// The callable definitions of SCIP symbol `id`: from covered documents mapped with `scip_def_symbol` and kept when
+/// the tags kind is in `CALLABLE`; and the paths (each once, in order) of definitions in documents `covered` rejects.
+pub fn scip_defs(index: &SymbolIndex, scip: &ScipIndex, id: SymId, covered: &mut dyn FnMut(&str) -> bool) -> (Vec<Def>, Vec<String>) {
+    let mut defs = Vec::new();
+    let mut stale: Vec<String> = Vec::new();
+    for (rel, o) in scip.occurrences_of(id) {
+        if !o.definition {
+            continue;
+        }
+        if !covered(rel) {
+            if !stale.iter().any(|p| p == rel) {
+                stale.push(rel.to_string());
+            }
+            continue;
+        }
+        let Some(f) = index.file(rel) else { continue };
+        if let Some(i) = scip_def_symbol(index, scip, rel, o)
+            && CALLABLE.contains(&f.symbols[i].kind)
+        {
+            defs.push(Def { path: Arc::from(rel), symbol: f.symbols[i].clone() });
+        }
+    }
+    (defs, stale)
 }
 
 /// Definitions called from symbol `sym` of file `path`, in call order, one per definition.
@@ -248,6 +356,120 @@ mod tests {
     fn calls_outside_definitions_have_no_caller() {
         let idx = indexed(&[("m.py", "def g():\n    pass\n\ndef f():\n    g()\n\ng()\n")]);
         assert_eq!(names(&callers(&idx, "g")), pairs(&[("m.py", "f")]));
+    }
+
+    /// `(range, symbol, is definition, enclosing range)` per occurrence, per document.
+    type Occs<'a> = &'a [(&'a [i32], &'a str, bool, &'a [i32])];
+
+    fn scip_of(docs: &[(&str, Occs)]) -> ScipIndex {
+        use ::scip::types::{Document, Index, Occurrence, SymbolRole};
+        let mut index = Index::new();
+        for (path, occs) in docs {
+            let mut d = Document::new();
+            d.relative_path = (*path).to_string();
+            for (range, symbol, def, enclosing) in *occs {
+                let mut o = Occurrence::new();
+                o.range = range.to_vec();
+                o.symbol = (*symbol).to_string();
+                o.symbol_roles = if *def { SymbolRole::Definition as i32 } else { 0 };
+                o.enclosing_range = enclosing.to_vec();
+                d.occurrences.push(o);
+            }
+            index.documents.push(d);
+        }
+        ScipIndex::from_proto(index, Path::new("/nonexistent"), PathBuf::from("/nonexistent/index.scip"), std::time::SystemTime::UNIX_EPOCH)
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[test]
+    fn scip_callers_follow_the_symbol_not_the_name() {
+        let main = "mod a;\nmod b;\nuse b::helper;\n\nfn main() {\n    helper();\n}\n\nfn run() {\n    other();\n}\n";
+        let idx = indexed(&[
+            ("src/main.rs", main),
+            ("src/a.rs", "pub fn helper() {}\n"),
+            ("src/b.rs", "pub fn helper() {}\npub fn other() {}\n"),
+        ]);
+        let scip = scip_of(&[
+            (
+                "src/main.rs",
+                &[
+                    (&[4, 3, 7], "t . . . main().", true, &[]),
+                    (&[8, 3, 6], "t . . . run().", true, &[]),
+                    (&[2, 7, 13], "t . . . b/helper().", false, &[]),
+                    (&[5, 4, 10], "t . . . b/helper().", false, &[]),
+                    (&[9, 4, 9], "t . . . b/other().", false, &[]),
+                ],
+            ),
+            ("src/a.rs", &[(&[0, 7, 13], "t . . . a/helper().", true, &[])]),
+            ("src/b.rs", &[(&[0, 7, 13], "t . . . b/helper().", true, &[]), (&[1, 7, 12], "t . . . b/other().", true, &[])]),
+        ]);
+        let id = |s: &str| scip.symbol_id(s).unwrap();
+        let all = &mut |_: &str| true;
+        assert_eq!(names(&scip_callers(&idx, &scip, id("t . . . b/helper()."), all)), pairs(&[("src/main.rs", "main")]));
+        assert!(scip_callers(&idx, &scip, id("t . . . a/helper()."), all).is_empty());
+        assert_eq!(names(&callers(&idx, "helper")), pairs(&[("src/main.rs", "main")]));
+        assert_eq!(names(&scip_callers(&idx, &scip, id("t . . . b/other()."), all)), pairs(&[("src/main.rs", "run")]));
+        let not_main = &mut |r: &str| r != "src/main.rs";
+        assert!(scip_callers(&idx, &scip, id("t . . . b/helper()."), not_main).is_empty());
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[test]
+    fn scip_enclosing_ranges_win_over_tags_lines() {
+        let text = "fn a() {}\nfn b() {\n    helper();\n}\nfn helper() {}\n";
+        let idx = indexed(&[("src/m.rs", text)]);
+        let docs = |a_enclosing: &'static [i32]| {
+            scip_of(&[(
+                "src/m.rs",
+                &[
+                    (&[0, 3, 4], "t . . . a().", true, a_enclosing),
+                    (&[1, 3, 4], "t . . . b().", true, &[]),
+                    (&[4, 3, 9], "t . . . helper().", true, &[]),
+                    (&[2, 4, 10], "t . . . helper().", false, &[]),
+                ],
+            )])
+        };
+        let all = &mut |_: &str| true;
+        let wide = docs(&[0, 0, 3, 1]);
+        let id = wide.symbol_id("t . . . helper().").unwrap();
+        assert_eq!(names(&scip_callers(&idx, &wide, id, all)), pairs(&[("src/m.rs", "a")]));
+        let plain = docs(&[]);
+        let id = plain.symbol_id("t . . . helper().").unwrap();
+        assert_eq!(names(&scip_callers(&idx, &plain, id, all)), pairs(&[("src/m.rs", "b")]));
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[test]
+    fn scip_calls_and_defs_keep_callables_in_order() {
+        let main = "mod b;\nstruct S;\nfn m() {\n    let x = S;\n    b::y();\n    b::z();\n    b::y();\n}\n";
+        let idx = indexed(&[("src/main.rs", main), ("src/b.rs", "pub fn y() {}\npub fn z() {}\n"), ("src/c.rs", "pub fn z() {}\n")]);
+        let scip = scip_of(&[
+            (
+                "src/main.rs",
+                &[
+                    (&[1, 7, 8], "t . . . S#", true, &[]),
+                    (&[2, 3, 4], "t . . . m().", true, &[]),
+                    (&[3, 8, 9], "local 0", true, &[]),
+                    (&[3, 12, 13], "t . . . S#", false, &[]),
+                    (&[4, 7, 8], "t . . . b/y().", false, &[]),
+                    (&[5, 7, 8], "t . . . z().", false, &[]),
+                    (&[6, 7, 8], "t . . . b/y().", false, &[]),
+                ],
+            ),
+            ("src/b.rs", &[(&[0, 7, 8], "t . . . b/y().", true, &[]), (&[1, 7, 8], "t . . . z().", true, &[])]),
+            ("src/c.rs", &[(&[0, 7, 8], "t . . . z().", true, &[])]),
+        ]);
+        let id = |s: &str| scip.symbol_id(s).unwrap();
+        let (s, y, z) = (id("t . . . S#"), id("t . . . b/y()."), id("t . . . z()."));
+        let m = find(&idx, "src/main.rs", "m", 2).unwrap();
+        assert_eq!(scip_calls_in(&idx, &scip, "src/main.rs", m), [s, y, z]);
+        let all = &mut |_: &str| true;
+        assert_eq!(scip_defs(&idx, &scip, s, all), (Vec::new(), Vec::new()));
+        let (defs, stale) = scip_defs(&idx, &scip, y, all);
+        assert_eq!((names(&defs), stale), (pairs(&[("src/b.rs", "y")]), Vec::new()));
+        let not_c = &mut |r: &str| r != "src/c.rs";
+        let (defs, stale) = scip_defs(&idx, &scip, z, not_c);
+        assert_eq!((names(&defs), stale), (pairs(&[("src/b.rs", "z")]), vec!["src/c.rs".to_string()]));
     }
 
     #[test]

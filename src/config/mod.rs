@@ -278,6 +278,8 @@ pub struct ClipboardConfig {
 pub struct IndexConfig {
     /// A SCIP index file (`index.scip`), relative to the project root; empty: none.
     pub scip: String,
+    /// A shell command that writes the SCIP index, run in the project root by `run.build_scip_index`; empty: none.
+    pub scip_command: String,
 }
 
 /// External formatters (`editor::format`): the buffer text goes in on
@@ -416,6 +418,13 @@ impl Config {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn index_scip_command_parses() {
+        assert_eq!(Config::default().index.scip_command, "");
+        let cfg = Config::parse("[index]\nscip_command = \"rust-analyzer scip .\"\n").unwrap();
+        assert_eq!(cfg.index.scip_command, "rust-analyzer scip .");
+    }
+
     use super::*;
 
     #[test]

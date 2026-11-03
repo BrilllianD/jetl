@@ -418,6 +418,13 @@ pub static SETTINGS: &[Setting] = &[
         Kind::Text,
         |c| s(&c.index.scip)
     ),
+    row!(
+        "index.scip_command",
+        "SCIP build command",
+        "A shell command run in the project root by Run > Build SCIP Index (for example rust-analyzer scip . --output index.scip); on success the index is loaded again. Empty: none.",
+        Kind::Text,
+        |c| s(&c.index.scip_command)
+    ),
 ];
 
 /// Title of the keyless page that shows `doctor::probe`'s report (`ui::settings`).
@@ -495,7 +502,8 @@ pub static PAGES: &[Page] = &[
             "lsp.startup_timeout_ms",
             "lsp.request_timeout_ms",
             "lsp.servers",
-            "index.scip"
+            "index.scip",
+            "index.scip_command"
         ]
     ),
     page!("Dependencies", None, []),

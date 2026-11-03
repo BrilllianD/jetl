@@ -372,7 +372,7 @@ impl App {
 
     /// Text of line `line` of `abs` (no line break): the open buffer's, else
     /// the file's on disk, read once per file into `disk`.
-    fn line_of(&self, abs: &Path, line: usize, disk: &mut HashMap<PathBuf, Option<String>>) -> Option<String> {
+    pub(super) fn line_of(&self, abs: &Path, line: usize, disk: &mut HashMap<PathBuf, Option<String>>) -> Option<String> {
         let open = self.editor.index_of(abs).map(|i| &self.editor.buffers[i]).filter(|b| line < b.rope.len_lines());
         if let Some(b) = open {
             return Some(b.line_text(line));

@@ -263,6 +263,20 @@ impl ScipIndex {
         &self.names[id as usize]
     }
 
+    /// Whether `id` is a document-local symbol (`local N`; its key carries the document path and a NUL).
+    pub fn is_local(&self, id: SymId) -> bool {
+        self.names[id as usize].contains('\0')
+    }
+
+    /// The name a global symbol defines: the name of its last descriptor (`helper` for
+    /// `rust-analyzer cargo demo 0.1.0 util/helper().`). None for a local symbol or one that does not parse.
+    pub fn name(&self, id: SymId) -> Option<String> {
+        if self.is_local(id) {
+            return None;
+        }
+        scip::symbol::parse_symbol(self.symbol(id)).ok()?.descriptors.last().map(|d| d.name.clone()).filter(|n| !n.is_empty())
+    }
+
     /// The id of a global symbol.
     pub fn symbol_id(&self, symbol: &str) -> Option<SymId> {
         self.ids.get(symbol).copied()
@@ -449,6 +463,24 @@ mod tests {
         std::fs::write(root.join("bad.scip"), b"not protobuf \xff").unwrap();
         let e = ScipIndex::load(&root.join("bad.scip"), &root).unwrap_err();
         assert!(e.starts_with("not a SCIP index"), "{e}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn names_are_the_last_descriptor() {
+        let root = temp("names");
+        let file = root.join("index.scip");
+        let occs: &[(&[i32], &str, bool)] = &[
+            (&[0, 0, 1], "rust-analyzer cargo demo 0.1.0 util/helper().", true),
+            (&[1, 0, 1], "t . . . A#new().", true),
+            (&[2, 0, 1], "local 0", true),
+            (&[3, 0, 1], "t util/helper().", true),
+        ];
+        write_test_index(&file, "", &[("a.rs", Encoding::Utf8, occs)]);
+        let ix = ScipIndex::load(&file, &root).unwrap();
+        let ids: Vec<SymId> = ix.doc("a.rs").unwrap().occurrences.iter().map(|o| o.symbol).collect();
+        assert_eq!(ids.iter().map(|&i| ix.name(i)).collect::<Vec<_>>(), [Some("helper".to_string()), Some("new".to_string()), None, None]);
+        assert_eq!(ids.iter().map(|&i| ix.is_local(i)).collect::<Vec<_>>(), [false, false, true, false]);
         let _ = std::fs::remove_dir_all(&root);
     }
 

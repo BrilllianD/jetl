@@ -665,6 +665,7 @@ Reachable from Find Action (F1) or by binding them in `keymap.toml`.
 | `merge.accept_all_right` | Merge: take theirs for the whole file |
 | `run.edit_configs` | Run: edit run configurations |
 | `run.rerun_failed` | Run: rerun the failed tests |
+| `run.build_scip_index` | Run: build the SCIP index with [index] scip_command, then load it |
 | `lsp.restart` | Restart language servers |
 | `lsp.goto_declaration` | Go to the declaration (not the definition) of the symbol at the caret |
 | `lsp.toggle_inlay_hints` | Show or hide inlay hints |

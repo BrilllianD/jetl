@@ -1,7 +1,7 @@
 //! The project symbol index (runs off the main thread, fed to the Go to
 //! Symbol palette) and the Structure window's sync with the active buffer.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -13,12 +13,16 @@ use crate::event::{AppMsg, Level};
 use crate::lsp::caps::{Caps, WORKSPACE_SYMBOL};
 use crate::lsp::transport::ResponseError;
 use crate::lsp::{PendingTag, SCRATCH_SUFFIX};
+use crate::run::{MatcherKind, Origin, RunTask, TaskCommand};
 use crate::symbols::index::{SymbolBatch, SymbolEntry};
 use crate::ui::focus::{PanelId, ToolWindowId};
 use crate::ui::palette::Source;
 
 /// An open palette gets the growing index at most this often.
 const SYMBOLS_FEED: Duration = Duration::from_millis(300);
+
+/// The Run task name of `run.build_scip_index`; `run_exited` reloads the index when it exits 0.
+pub(super) const SCIP_TASK: &str = "Build SCIP index";
 
 /// `workspace/symbol` requests for the Symbols palette (in `LspService`).
 #[derive(Default)]
@@ -259,6 +263,34 @@ impl App {
                 self.scip.failed_mtime = mtime;
                 self.notify(Level::Warn, format!("SCIP index {}: {e}", self.config.index.scip.trim()));
             }
+        }
+    }
+
+    /// `run.build_scip_index`: run `[index] scip_command` as a Run task.
+    pub(super) fn build_scip_index(&mut self) {
+        let cmd = self.config.index.scip_command.trim().to_string();
+        if cmd.is_empty() {
+            self.notify(Level::Info, "Set [index] scip_command to build the SCIP index");
+            return;
+        }
+        self.run_task(RunTask {
+            name: SCIP_TASK.into(),
+            command: TaskCommand::Shell(cmd),
+            cwd: None,
+            env: BTreeMap::new(),
+            args: Vec::new(),
+            matcher: Some(MatcherKind::Problems),
+            origin: Origin::Detected,
+        });
+    }
+
+    /// The build task exited 0: load the index again (or say how to use it).
+    pub(super) fn scip_built(&mut self) {
+        if self.config.index.scip.trim().is_empty() {
+            self.notify(Level::Info, "SCIP index built; set [index] scip to its file to use it");
+        } else {
+            self.notify(Level::Info, "SCIP index built; loading it");
+            self.load_scip();
         }
     }
 
@@ -541,6 +573,80 @@ mod tests {
         }
         let loaded = crate::symbols::cache::load(&file, &app.workspace.root);
         assert!(loaded.contains_key("a.rs"), "{:?}", loaded.keys().collect::<Vec<_>>());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    async fn build_until_exit(app: &mut crate::app::App) {
+        while app.run.running() {
+            handle_next(app, |m| matches!(m, AppMsg::RunOutput { .. } | AppMsg::RunExited { .. })).await;
+        }
+    }
+
+    /// An app with `src/a.rs` indexed in `index.scip`, `[index] scip` and `scip_command` set, the start load done.
+    async fn scip_app(name: &str, command: &str, scip: &str) -> (crate::app::App, std::path::PathBuf, u64) {
+        let (mut app, dir) = test_app(name);
+        let root = app.workspace.root.clone();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/a.rs"), "fn a() {}\n").unwrap();
+        let occs: &[(&[i32], &str, bool)] = &[(&[0, 3, 4], "t . . . a().", true)];
+        crate::symbols::scip::write_test_index(&root.join("index.scip"), "", &[("src/a.rs", crate::symbols::scip::Encoding::Utf8, occs)]);
+        let mut c = app.config.clone();
+        c.index.scip = scip.into();
+        c.index.scip_command = command.into();
+        app.apply_config(c);
+        if !scip.is_empty() {
+            handle_next(&mut app, |m| matches!(m, AppMsg::Scip { .. })).await;
+        }
+        let seq = app.scip.seq;
+        (app, dir, seq)
+    }
+
+    fn toasts(app: &crate::app::App, level: crate::event::Level) -> Vec<String> {
+        app.notifications.iter().filter(|n| n.level == level).map(|n| n.text.clone()).collect()
+    }
+
+    #[tokio::test]
+    async fn build_scip_index_without_a_command_hints() {
+        let (mut app, dir) = test_app("scip-build-none");
+        app.perform(crate::actions::Action::Run(crate::actions::RunAction::BuildScipIndex));
+        assert!(!app.run.running());
+        assert_eq!(toasts(&app, crate::event::Level::Info), ["Set [index] scip_command to build the SCIP index"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn build_scip_index_runs_the_command_and_reloads() {
+        let (mut app, dir, seq) = scip_app("scip-build", "touch index.scip", "index.scip").await;
+        let before = app.scip.index.as_ref().unwrap().mtime();
+        app.perform(crate::actions::Action::Run(crate::actions::RunAction::BuildScipIndex));
+        assert_eq!(app.run.running_name(), Some("Build SCIP index"));
+        build_until_exit(&mut app).await;
+        assert!(app.scip.loading);
+        assert_eq!(app.scip.seq, seq + 1);
+        assert_eq!(toasts(&app, crate::event::Level::Info), ["SCIP index built; loading it"]);
+        handle_next(&mut app, |m| matches!(m, AppMsg::Scip { .. })).await;
+        assert!(app.scip.index.as_ref().unwrap().mtime() >= before);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_failed_build_does_not_reload() {
+        let (mut app, dir, seq) = scip_app("scip-build-fail", "exit 3", "index.scip").await;
+        app.perform(crate::actions::Action::Run(crate::actions::RunAction::BuildScipIndex));
+        build_until_exit(&mut app).await;
+        assert_eq!(app.scip.seq, seq);
+        assert!(!app.scip.loading);
+        assert_eq!(toasts(&app, crate::event::Level::Error), ["Run Build SCIP index failed with exit code 3"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_build_without_scip_set_says_how_to_use_it() {
+        let (mut app, dir, _) = scip_app("scip-build-unset", "true", "").await;
+        app.perform(crate::actions::Action::Run(crate::actions::RunAction::BuildScipIndex));
+        build_until_exit(&mut app).await;
+        assert_eq!(toasts(&app, crate::event::Level::Info), ["SCIP index built; set [index] scip to its file to use it"]);
+        assert!(app.scip.index.is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

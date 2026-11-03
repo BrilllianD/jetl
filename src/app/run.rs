@@ -304,7 +304,11 @@ impl App {
             Status::Signal(s) => self.notify(Level::Error, format!("Run {name} was killed by signal {s}")),
             Status::Failed(e) => self.notify(Level::Error, format!("Run {name}: {e}")),
         }
+        let built = job.name == super::symbols::SCIP_TASK && status == Status::Exited(0);
         self.run_panel.finish(status);
+        if built {
+            self.scip_built();
+        }
     }
 
     /// Load the picker's tasks off the main thread (they read project files).

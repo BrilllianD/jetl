@@ -868,7 +868,8 @@ with the toast `Only one usage (unverified)`.
 
 ### Scenario: SCIP index without a language server
 
-With `[lsp] enabled = false` and `[index] scip = "index.scip"` in
+With `[lsp] enabled = false`, `[index] scip = "index.scip"` and `[index]
+scip_command = "rust-analyzer scip . --output index.scip"` in
 `config.toml`, at 80x24 and 120x40. Project `/tmp/scip-demo`: `Cargo.toml`
 (`[package] name = "t"`, `version = "0.1.0"`, `edition = "2021"`),
 `src/main.rs` = `mod util;`, `fn main() {`, `    let s = "日本😀"; util::helper(s);`,
@@ -888,7 +889,16 @@ then `git init -q` (the project root is the nearest git directory, else the file
 6. Settings (Ctrl+Alt+S), Language Servers page: the row "SCIP index file"
    shows `index.scip`; set it to `missing.scip` and Apply: one Warn toast
    `SCIP index missing.scip: ...`. Set it back.
-7. Ctrl+Q exits 0; stderr is empty.
+7. Run menu (Alt+R) > Build SCIP Index: the Run window shows `Build SCIP index`
+   and rust-analyzer's output, then exit 0; Info toast `SCIP index built;
+   loading it`.
+8. Caret on `helper` in `src/util.rs`, Ctrl+Alt+H: the Hierarchy window
+   `Callers of helper (approximate)` lists `main` (SCIP references in main.rs).
+9. In config set `scip_command = "exit 3"`, run the action: Error toast `Run
+   Build SCIP index failed with exit code 3`, no reload toast.
+10. Set `scip_command = ""`, run it: Info toast `Set [index] scip_command to
+    build the SCIP index`.
+11. Ctrl+Q exits 0; stderr is empty.
 
 ### Scenario: local history
 

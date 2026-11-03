@@ -1180,6 +1180,11 @@ impl App {
                 self.http_request_at_caret();
                 return;
             }
+            Action::Run(RunAction::BuildScipIndex) => {
+                drop(cx);
+                self.build_scip_index();
+                return;
+            }
             Action::Run(RunAction::Stop) => {
                 drop(cx);
                 self.stop_run();
