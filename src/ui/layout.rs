@@ -94,6 +94,12 @@ pub enum ToolbarButton {
     Stop,
     /// Opens the branches popup.
     Branch,
+    /// Opens the Recent Projects palette.
+    Project,
+    /// Opens Search Everywhere.
+    Search,
+    /// Opens the Settings window.
+    Settings,
 }
 
 /// How a tool window docks: an Unpinned one hides when focus leaves it.

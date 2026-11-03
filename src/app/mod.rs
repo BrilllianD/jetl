@@ -4969,7 +4969,7 @@ mod strip_tests {
         status(&mut app, 1, None);
         let buf = draw(&mut app);
         let (_, r) = *app.layout.toolbar_hits.iter().find(|(b, _)| *b == ToolbarButton::Branch).unwrap();
-        assert_eq!((r.x, r.y), (4, 0));
+        assert_eq!((r.x, r.y), (13, 0));
         assert!(row_text(&buf, 0, 100).contains(" ⎇ feature/x ▾ "));
         assert!(!row_text(&buf, 23, 100).contains("feature/x"));
         assert!(!app.status_hits.iter().any(|(h, _)| *h == crate::ui::status_bar::StatusHit::Branch));
@@ -5069,7 +5069,7 @@ mod strip_tests {
         app.config.ui.toolbar = true;
         draw(&mut app);
         let run = toolbar_hit(&app, B::Run);
-        assert_eq!(run.right(), 100);
+        assert_eq!(run.right(), 100 - 8);
         let cfg = toolbar_hit(&app, B::RunConfig);
         click(&mut app, cfg.x + 1, 0);
         assert!(app.palette.as_ref().unwrap().wants(Source::Tasks));
@@ -5082,7 +5082,7 @@ mod strip_tests {
         app.run.fake_running("nap");
         let buf = draw(&mut app);
         let buttons: Vec<_> = app.layout.toolbar_hits.iter().map(|(b, _)| *b).collect();
-        assert_eq!(buttons, [B::Menu, B::RunConfig, B::Rerun, B::Stop]);
+        assert_eq!(buttons, [B::Menu, B::Project, B::RunConfig, B::Rerun, B::Stop, B::Search, B::Settings]);
         assert!(row_text(&buf, 0, 100).contains("nap ▾"));
         let rerun = toolbar_hit(&app, B::Rerun);
         click(&mut app, rerun.x + 1, 0);
@@ -5092,6 +5092,72 @@ mod strip_tests {
         click(&mut app, stop.x + 1, 0);
         assert!(!app.notifications.iter().any(|n| n.text.contains("No task is running")));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn toolbar_project_search_settings() {
+        use crate::actions::PaletteKind;
+        use crate::ui::layout::ToolbarButton as B;
+        let (mut app, dir) = test_app("toolbar-pss");
+        app.config.ui.toolbar = true;
+        // A startup toast would cover the tooltip at the right edge.
+        app.toasts.expire(std::time::Instant::now() + std::time::Duration::from_secs(3600));
+        let buf = draw(&mut app);
+        let project = toolbar_hit(&app, B::Project);
+        assert_eq!(project, Rect::new(4, 0, 8, 1));
+        assert!(row_text(&buf, 0, 100).starts_with(" ≣   root ▾ "), "{:?}", row_text(&buf, 0, 100));
+        let hits = app.layout.toolbar_hits.clone();
+        let (search, settings) = (hits[hits.len() - 2], hits[hits.len() - 1]);
+        assert_eq!((search.0, settings.0), (B::Search, B::Settings));
+        assert_eq!(settings.1.right(), 100);
+        assert_eq!(search.1.right(), settings.1.x - 1);
+
+        click(&mut app, project.x + 1, 0);
+        assert_eq!(app.palette.as_ref().unwrap().kind, PaletteKind::RecentProjects);
+        app.palette = None;
+        draw(&mut app);
+        click(&mut app, search.1.x + 1, 0);
+        assert_eq!(app.palette.as_ref().unwrap().kind, PaletteKind::Everywhere);
+        app.palette = None;
+        draw(&mut app);
+        click(&mut app, settings.1.x + 1, 0);
+        assert!(app.settings.is_some());
+        app.settings = None;
+        draw(&mut app);
+
+        app.handle_mouse(ev(MouseEventKind::Moved, search.1.x + 1, 0));
+        let buf = draw(&mut app);
+        let row = row_text(&buf, 1, 100);
+        assert!(row.contains(" Search Everywhere "), "{row:?}");
+        app.handle_mouse(ev(MouseEventKind::Moved, 50, 10));
+
+        let wide = {
+            draw_at(&mut app, 200, 24);
+            app.layout.toolbar_hits.clone()
+        };
+        let left = |b: B| matches!(b, B::Menu | B::Project | B::Branch);
+        let left_end = wide.iter().filter(|(b, _)| left(*b)).map(|(_, r)| r.right()).max().unwrap();
+        let right_start = wide.iter().filter(|(b, _)| !left(*b)).map(|(_, r)| r.x).min().unwrap();
+        let needed = left_end + 1 + (200 - right_start);
+        assert!(needed <= 120, "{needed}");
+        let has = |app: &super::App, b: B| app.layout.toolbar_hits.iter().any(|(x, _)| *x == b);
+        draw_at(&mut app, needed, 24);
+        assert!(has(&app, B::Settings) && has(&app, B::Search));
+        draw_at(&mut app, needed - 1, 24);
+        assert!(!has(&app, B::Settings) && has(&app, B::Search));
+        draw_at(&mut app, needed - 5, 24);
+        assert!(!has(&app, B::Settings) && !has(&app, B::Search));
+        assert_eq!(toolbar_hit(&app, B::Project).width, toolbar_hit_in(&wide, B::Project).width);
+        draw_at(&mut app, 30, 24);
+        assert_eq!(toolbar_hit(&app, B::Menu), Rect::new(0, 0, 3, 1));
+        for (b, _) in wide.iter().filter(|(b, _)| matches!(b, B::Run | B::Rerun | B::Stop)) {
+            assert!(has(&app, *b), "{b:?}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn toolbar_hit_in(hits: &[(crate::ui::layout::ToolbarButton, Rect)], b: crate::ui::layout::ToolbarButton) -> Rect {
+        hits.iter().find(|(x, _)| *x == b).map(|(_, r)| *r).expect("toolbar button")
     }
 
     #[tokio::test]

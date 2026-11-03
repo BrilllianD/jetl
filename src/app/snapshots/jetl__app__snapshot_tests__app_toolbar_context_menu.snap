@@ -3,7 +3,7 @@ source: src/app/snapshot_tests.rs
 expression: "snapshot(&term, &marks, None)"
 ---
 80x24 cursor=hidden
-00  ≣                                                   Select Configuration ▾   ▶
+00  ≣   root ▾                                  Select Configuration ▾   ▶   ⌕   ⚙
 01  ⌂ ┌ Project: root ───────────────┐│    ╭──────────────╮
 02  ◫ │                              ││    │ Hide Toolbar │
 03  ⊢ │                              ││    ╰──────────────╯

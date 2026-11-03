@@ -9,6 +9,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::actions::{Action, AppAction, GitAction, PaletteKind, RunAction};
 use crate::app::App;
+use crate::config::Icons;
 use crate::config::theme::Theme;
 use crate::ui::focus::ToolWindowId;
 use crate::ui::layout::ToolbarButton;
@@ -164,15 +165,56 @@ pub fn branch_text(icon: &str, name: &str, tag: Option<&str>) -> String {
     format!(" {icon} {name}{tag} ▾ ")
 }
 
-/// The widgets in group order (left, then right); 353 adds its left ones after the menu.
+pub fn search_glyph(icons: Icons) -> &'static str {
+    match icons {
+        Icons::Unicode => "⌕",
+        Icons::Emoji => "🔎",
+    }
+}
+
+pub fn settings_glyph(icons: Icons) -> &'static str {
+    match icons {
+        Icons::Unicode => "⚙",
+        Icons::Emoji => "🔧",
+    }
+}
+
+fn dir_name(path: &std::path::Path) -> String {
+    path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned())
+}
+
+/// The Project widget's label: the root's directory name, with the main
+/// worktree's name (or `worktree`) after it when the root is a linked worktree.
+pub fn project_label(root: &std::path::Path, worktrees: &crate::worktree::WorktreePanel) -> String {
+    let name = dir_name(root);
+    let linked = worktrees.current.and_then(|i| worktrees.list.get(i)).is_some_and(|w| !w.is_main);
+    match worktrees.main_root() {
+        Some(main) if linked => {
+            let main = dir_name(main);
+            if main == name { format!("{name} (worktree)") } else { format!("{name} ({main})") }
+        }
+        _ => name,
+    }
+}
+
+/// The widgets in group order (left, then right).
 fn items(app: &App) -> Vec<Item> {
-    let mut items = vec![Item {
-        button: ToolbarButton::Menu,
-        group: Group::Left,
-        text: format!(" {} ", menu_glyph(app.config.ui.icons)),
-        style: app.theme.strip_item,
-        shrinks: vec![],
-    }];
+    let mut items = vec![
+        Item {
+            button: ToolbarButton::Menu,
+            group: Group::Left,
+            text: format!(" {} ", menu_glyph(app.config.ui.icons)),
+            style: app.theme.strip_item,
+            shrinks: vec![],
+        },
+        Item {
+            button: ToolbarButton::Project,
+            group: Group::Left,
+            text: format!(" {} ▾ ", project_label(&app.workspace.root, &app.worktrees)),
+            style: app.theme.strip_item,
+            shrinks: vec![(STEP_PROJECT, Shrink::Text(" ▾ ".into()))],
+        },
+    ];
     if let Some(name) = app.branch_label() {
         let icon = ToolWindowId::Git.icon(app.config.ui.icons);
         let tag = app.in_progress().map(|ip| ip.label());
@@ -189,6 +231,20 @@ fn items(app: &App) -> Vec<Item> {
         });
     }
     items.extend(run_items(app.run.selected.as_deref(), app.run.running_name(), app.spinner(), &app.theme));
+    items.push(Item {
+        button: ToolbarButton::Search,
+        group: Group::Right,
+        text: format!(" {} ", search_glyph(app.config.ui.icons)),
+        style: app.theme.strip_item,
+        shrinks: vec![(STEP_SEARCH, Shrink::Drop)],
+    });
+    items.push(Item {
+        button: ToolbarButton::Settings,
+        group: Group::Right,
+        text: format!(" {} ", settings_glyph(app.config.ui.icons)),
+        style: app.theme.strip_item,
+        shrinks: vec![(STEP_SETTINGS, Shrink::Drop)],
+    });
     items
 }
 
@@ -201,6 +257,9 @@ pub fn action(button: ToolbarButton) -> Action {
         ToolbarButton::Rerun => Action::Run(RunAction::Rerun),
         ToolbarButton::Stop => Action::Run(RunAction::Stop),
         ToolbarButton::Branch => Action::Git(GitAction::Branches),
+        ToolbarButton::Project => Action::App(AppAction::OpenPalette(PaletteKind::RecentProjects)),
+        ToolbarButton::Search => Action::App(AppAction::OpenPalette(PaletteKind::Everywhere)),
+        ToolbarButton::Settings => Action::App(AppAction::Settings),
     }
 }
 
@@ -213,6 +272,9 @@ pub fn title(button: ToolbarButton) -> &'static str {
         ToolbarButton::Rerun => "Rerun",
         ToolbarButton::Stop => "Stop",
         ToolbarButton::Branch => "Branches",
+        ToolbarButton::Project => "Recent Projects",
+        ToolbarButton::Search => "Search Everywhere",
+        ToolbarButton::Settings => "Settings",
     }
 }
 
@@ -403,6 +465,48 @@ mod tests {
         assert_eq!(kept(29)[1], " ⎇ feature/top-bar ▾ ");
         assert_eq!(kept(27)[1], " ⎇ feature/top-… ▾ ");
         assert_eq!(kept(26), [" ≣ ", "run"]);
+    }
+
+    fn wt(path: &str, is_main: bool) -> crate::worktree::Worktree {
+        crate::worktree::Worktree {
+            path: path.into(),
+            head: String::new(),
+            branch: Some("x".into()),
+            detached: false,
+            bare: false,
+            locked: None,
+            prunable: None,
+            is_main,
+        }
+    }
+
+    #[test]
+    fn project_label_names_the_root_and_a_linked_worktree() {
+        use crate::worktree::WorktreePanel;
+        use std::path::Path;
+        let label = |list: Vec<crate::worktree::Worktree>, root: &str| {
+            let mut p = WorktreePanel::new();
+            if !list.is_empty() {
+                p.set_list(Ok(list), Path::new(root));
+            }
+            project_label(Path::new(root), &p)
+        };
+        assert_eq!(label(vec![], "/w/jetl"), "jetl");
+        assert_eq!(label(vec![wt("/w/jetl", true)], "/w/jetl"), "jetl");
+        let linked = vec![wt("/src/jetl", true), wt("/src/jetl/.worktrees/feat", false)];
+        assert_eq!(label(linked, "/src/jetl/.worktrees/feat"), "feat (jetl)");
+        let same = vec![wt("/a/jetl", true), wt("/b/jetl", false)];
+        assert_eq!(label(same, "/b/jetl"), "jetl (worktree)");
+    }
+
+    #[test]
+    fn glyphs_have_one_width_per_icon_mode() {
+        for (icons, w) in [(Icons::Unicode, 1), (Icons::Emoji, 2)] {
+            for g in [search_glyph(icons), settings_glyph(icons)] {
+                assert_eq!((g.width(), g.width_cjk()), (w, w), "{g}");
+            }
+            assert_ne!(search_glyph(icons), settings_glyph(icons));
+        }
     }
 
     #[test]

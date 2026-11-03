@@ -3472,6 +3472,16 @@ async fn app_toolbar_80x24() {
 }
 
 #[tokio::test]
+async fn app_toolbar_collapsed() {
+    let mut fx = stable_app("toolbar-40");
+    let app = &mut fx.app;
+    app.config.ui.toolbar = true;
+    let term = draw_app(app, 40, 24);
+    let marks = [Mark::style('T', "toolbar", app.theme.strip_item)];
+    assert_snapshot!("app_toolbar_collapsed", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
 async fn app_toolbar_running() {
     let mut fx = stable_app("toolbar-running");
     let app = &mut fx.app;
