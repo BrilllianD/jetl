@@ -22,7 +22,7 @@ use crate::files::ProjectPanel;
 use crate::git::{GitPanel, GitService};
 use crate::tui::Term;
 use crate::ui::dialog::Dialog;
-use crate::ui::focus::{Focus, PanelId, Side, ToolWindowId};
+use crate::ui::focus::{Dock, Focus, PanelId, Side, ToolWindowId};
 use crate::ui::layout::{LayoutState, SplitterId, StripDrop, ViewMode};
 use crate::ui::palette::Palette;
 use crate::ui::status_bar::StatusHit;
@@ -1279,9 +1279,9 @@ impl App {
                 }
             }
             AppAction::LastToolWindow => self.last_tool_window(),
-            AppAction::MoveToolWindow { tw, side } => {
+            AppAction::MoveToolWindow { tw, dock } => {
                 if let Some(tw) = tw.or(self.focus.current.tool_window()) {
-                    self.move_tool_window(tw, side);
+                    self.move_tool_window(tw, dock);
                 }
             }
             AppAction::MoveToolWindowButton { tw, up } => self.layout.move_button(tw, up),
@@ -1369,9 +1369,9 @@ impl App {
         }
     }
 
-    /// Move `tw` to `side`; focus leaves a window the move hid.
-    pub(crate) fn move_tool_window(&mut self, tw: ToolWindowId, side: Side) {
-        self.layout.move_to(tw, side);
+    /// Move `tw` to `dock`; focus leaves a window the move hid.
+    pub(crate) fn move_tool_window(&mut self, tw: ToolWindowId, dock: Dock) {
+        self.layout.move_to_dock(tw, dock);
         if let Some(cur) = self.focus.current.tool_window()
             && !self.layout.is_visible(cur)
         {
@@ -1391,27 +1391,27 @@ impl App {
     }
 
     /// A strip button dropped on `drop`: reorder, and move the window to the
-    /// drop's side.
+    /// drop's dock.
     pub(crate) fn drop_strip_button(&mut self, tw: ToolWindowId, drop: StripDrop) {
-        if let Some(side) = self.layout.drop_button(tw, drop) {
-            self.move_tool_window(tw, side);
+        if let Some(dock) = self.layout.drop_button(tw, drop) {
+            self.move_tool_window(tw, dock);
         }
     }
 
-    /// Right-click on a tool strip button: the sides `tw` can move to.
+    /// Right-click on a tool strip button: the docks `tw` can move to and its
+    /// button and pin rows.
     pub(crate) fn tool_window_side_menu(&mut self, tw: ToolWindowId, x: u16, y: u16) {
         use crate::ui::menu::{ContextMenu, MenuItem};
-        let now = self.layout.side_of(tw);
-        let item = |label: &str, side: Side| {
-            MenuItem::new(label, Action::App(AppAction::MoveToolWindow { tw: Some(tw), side })).enabled(now != side)
-        };
+        let now = self.layout.dock_of(tw);
+        let moves: Vec<MenuItem> = Dock::ALL
+            .into_iter()
+            .map(|dock| MenuItem::new(dock.title(), Action::App(AppAction::MoveToolWindow { tw: Some(tw), dock })).enabled(now != dock))
+            .collect();
         let button = |label: &str, up: bool| {
             MenuItem::new(label, Action::App(AppAction::MoveToolWindowButton { tw, up })).enabled(self.layout.can_move_button(tw, up))
         };
         let items = vec![
-            item("Move to Left", Side::Left),
-            item("Move to Bottom", Side::Bottom),
-            item("Move to Right", Side::Right),
+            MenuItem::submenu("Move to", moves),
             MenuItem::separator(),
             button("Move Button Up", true),
             button("Move Button Down", false),
@@ -4603,7 +4603,7 @@ mod strip_tests {
 
     use super::tests::test_app;
     use crate::actions::{Action, AppAction, Dir};
-    use crate::ui::focus::{PanelId, Side, ToolWindowId};
+    use crate::ui::focus::{Dock, PanelId, Side, ToolWindowId};
     use crate::ui::layout::{StripButton, StripDrop};
     use crate::ui::snapshot::row_text;
     use ratatui::layout::Rect;
@@ -4722,7 +4722,7 @@ mod strip_tests {
         let tip: String = (3..30).map(|x| buf[(x, 10)].symbol().to_string()).collect();
         assert!(tip.starts_with(" More Tool Windows "), "{tip}");
 
-        app.move_tool_window(Hierarchy, Side::Right);
+        app.move_tool_window(Hierarchy, Dock { side: Side::Right, split: false });
         draw_at(&mut app, 80, 12);
         let hits = &app.layout.strip_hits;
         assert!(hits.contains(&(StripButton::Tool(Hierarchy), Rect::new(77, 2, 3, 2))), "{hits:?}");
@@ -4813,7 +4813,7 @@ mod strip_tests {
 
         // (c) Onto the right strip: a shown window stays shown.
         let (mut app, dir) = test_app("strip-drag-c");
-        app.move_tool_window(Hierarchy, Side::Right);
+        app.move_tool_window(Hierarchy, Dock { side: Side::Right, split: false });
         app.toggle_tool_window(Git);
         draw_at(&mut app, 120, 40);
         let h = button(&app, Hierarchy);
@@ -4825,13 +4825,13 @@ mod strip_tests {
         // (d) A side without a button: the bar, then the drop.
         let (mut app, dir) = test_app("strip-drag-d");
         for tw in [Project, Worktrees, Structure] {
-            app.move_tool_window(tw, Side::Bottom);
+            app.move_tool_window(tw, Dock { side: Side::Bottom, split: false });
         }
         draw_at(&mut app, 120, 40);
         let f = button(&app, Find);
         app.handle_mouse(ev(MouseEventKind::Down(MouseButton::Left), f.x + 1, f.y));
         app.handle_mouse(ev(MouseEventKind::Drag(MouseButton::Left), 1, 5));
-        assert_eq!(app.strip_drop(), Some(StripDrop::End(Side::Left)));
+        assert_eq!(app.strip_drop(), Some(StripDrop::End(Dock { side: Side::Left, split: false })));
         let buf = draw_at(&mut app, 120, 40);
         assert_eq!(row_text(&buf, 1, 3), "━━━");
         app.handle_mouse(ev(MouseEventKind::Up(MouseButton::Left), 1, 5));
@@ -4840,15 +4840,15 @@ mod strip_tests {
 
         // (d2) The Bottom and Right bars use the drop colour too.
         let (mut app, dir) = test_app("strip-drag-d2");
-        app.move_tool_window(Hierarchy, Side::Right);
+        app.move_tool_window(Hierarchy, Dock { side: Side::Right, split: false });
         for tw in [Find, Run, Problems, Terminal, Git, EventLog, LocalHistory, Tasks, Todo] {
-            app.move_tool_window(tw, Side::Left);
+            app.move_tool_window(tw, Dock { side: Side::Left, split: false });
         }
         draw_at(&mut app, 120, 40);
         let p = button(&app, Project);
         app.handle_mouse(ev(MouseEventKind::Down(MouseButton::Left), p.x + 1, p.y));
         app.handle_mouse(ev(MouseEventKind::Drag(MouseButton::Left), 1, 38));
-        assert_eq!(app.strip_drop(), Some(StripDrop::End(Side::Bottom)));
+        assert_eq!(app.strip_drop(), Some(StripDrop::End(Dock { side: Side::Bottom, split: false })));
         let buf = draw_at(&mut app, 120, 40);
         if let Some(bg) = app.theme.strip_drop.bg {
             assert!(
@@ -4871,11 +4871,57 @@ mod strip_tests {
     }
 
     #[tokio::test]
+    async fn dragging_into_the_gap_splits_and_reorders_inside_a_group() {
+        use ToolWindowId::*;
+        let (mut app, dir) = test_app("strip-drag-split");
+        draw_at(&mut app, 120, 40);
+        let s = button(&app, Structure);
+        drag_button(&mut app, Structure, 1, s.bottom() + 2);
+        assert_eq!(app.layout.dock_of(Structure), Dock { side: Side::Left, split: true });
+        let buf = draw_at(&mut app, 120, 40);
+        let (w, s) = (button(&app, Worktrees), button(&app, Structure));
+        assert!(s.y > w.bottom(), "{w:?} {s:?}");
+        assert!((w.bottom()..s.y).any(|y| row_text(&buf, y, 3) == "───"));
+        // Dropping onto a button of a split group keeps the split.
+        app.move_tool_window(Project, Dock { side: Side::Left, split: true });
+        app.toggle_tool_window(Structure);
+        draw_at(&mut app, 120, 40);
+        let before = app.layout.order().iter().position(|t| *t == Structure) < app.layout.order().iter().position(|t| *t == Project);
+        let p = button(&app, Project);
+        drag_button(&mut app, Structure, p.x + 1, p.y);
+        assert_eq!(app.layout.dock_of(Structure), Dock { side: Side::Left, split: true });
+        assert_eq!(app.layout.left2, Some(Structure));
+        let after = app.layout.order().iter().position(|t| *t == Structure) < app.layout.order().iter().position(|t| *t == Project);
+        assert_ne!(before, after, "buttons swapped");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn side_menu_move_to_submenu() {
+        let (mut app, dir) = test_app("side-menu-move-to");
+        app.toggle_tool_window(ToolWindowId::Git);
+        app.tool_window_side_menu(ToolWindowId::Git, 1, 1);
+        let menu = app.menu.take().expect("context menu");
+        assert_eq!(menu.items[0].label, "Move to");
+        let kids = &menu.items[0].children;
+        assert_eq!(
+            kids.iter().map(|i| i.label.as_str()).collect::<Vec<_>>(),
+            ["Left Top", "Left Bottom", "Bottom Left", "Bottom Right", "Right Top", "Right Bottom"]
+        );
+        assert_eq!(kids.iter().map(|i| i.enabled).collect::<Vec<_>>(), [true, true, false, true, true, true]);
+        assert_eq!(menu.items[5].label, "Restore Default Layout");
+        app.perform(kids[1].action.clone().unwrap());
+        assert_eq!(app.layout.left2, Some(ToolWindowId::Git));
+        assert_eq!(app.layout.dock_of(ToolWindowId::Git), Dock { side: Side::Left, split: true });
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
     async fn right_strip_has_one_row_buttons_and_a_more_button() {
         use ToolWindowId::*;
         let (mut app, dir) = test_app("strip-right-more");
         for tw in [Find, Run, Problems, Terminal, Git, EventLog, LocalHistory, Tasks, Todo, Hierarchy] {
-            app.move_tool_window(tw, Side::Right);
+            app.move_tool_window(tw, Dock { side: Side::Right, split: false });
         }
         draw_at(&mut app, 80, 12);
         let strip = app.layout.rects.strip_right;
@@ -5222,11 +5268,11 @@ mod strip_tests {
         let (_, r) = *app.layout.strip_hits.iter().find(|(b, _)| *b == StripButton::Tool(ToolWindowId::Git)).unwrap();
         app.handle_mouse(ev(MouseEventKind::Down(MouseButton::Right), r.x + 1, r.y));
         let menu = app.menu.take().expect("context menu");
-        assert_eq!(menu.items[9].label, "Unpin");
-        app.perform(menu.items[9].action.clone().unwrap());
+        assert_eq!(menu.items[7].label, "Unpin");
+        app.perform(menu.items[7].action.clone().unwrap());
         assert_eq!(app.layout.view_mode(ToolWindowId::Git), crate::ui::layout::ViewMode::Unpinned);
         app.handle_mouse(ev(MouseEventKind::Down(MouseButton::Right), r.x + 1, r.y));
-        assert_eq!(app.menu.as_ref().unwrap().items[9].label, "Pin");
+        assert_eq!(app.menu.as_ref().unwrap().items[7].label, "Pin");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -5238,21 +5284,21 @@ mod strip_tests {
         app.handle_mouse(ev(MouseEventKind::Down(MouseButton::Right), r.x + 1, r.y));
         let menu = app.menu.as_ref().expect("context menu");
         let labels: Vec<_> = menu.items.iter().map(|i| i.label.clone()).collect();
-        assert_eq!(labels.len(), 10);
-        assert_eq!(labels[8..], ["", "Unpin"]);
-        assert_eq!(labels[4..6], ["Move Button Up", "Move Button Down"]);
-        assert_eq!(labels[7], "Restore Default Layout");
-        assert_eq!(menu.items.iter().map(|i| i.enabled).collect::<Vec<_>>(), [true, false, true, true, true, true, true, true, true, true]);
+        assert_eq!(labels.len(), 8);
+        assert_eq!(labels[6..], ["", "Unpin"]);
+        assert_eq!(labels[2..4], ["Move Button Up", "Move Button Down"]);
+        assert_eq!(labels[5], "Restore Default Layout");
+        assert_eq!(menu.items.iter().map(|i| i.enabled).collect::<Vec<_>>(), [true, true, true, true, true, true, true, true]);
         assert!(!app.layout.is_visible(ToolWindowId::Git), "right-click does not toggle");
         let pos = |app: &super::App, tw| app.layout.order().iter().position(|t| *t == tw).unwrap();
         assert!(pos(&app, ToolWindowId::Terminal) < pos(&app, ToolWindowId::Git));
-        let a = app.menu.take().unwrap().items[5].action.clone().unwrap();
+        let a = app.menu.take().unwrap().items[3].action.clone().unwrap();
         app.perform(a);
         assert!(pos(&app, ToolWindowId::Git) < pos(&app, ToolWindowId::Terminal), "Move Button Down swapped it with the button below");
         draw(&mut app);
         let (_, r) = *app.layout.strip_hits.iter().find(|(b, _)| *b == StripButton::Tool(ToolWindowId::Git)).unwrap();
         app.handle_mouse(ev(MouseEventKind::Down(MouseButton::Right), r.x + 1, r.y));
-        let a = app.menu.take().expect("context menu").items[2].action.clone().unwrap();
+        let a = app.menu.take().expect("context menu").items[0].children[4].action.clone().unwrap();
         app.perform(a);
         draw(&mut app);
         assert_eq!(app.layout.side_of(ToolWindowId::Git), Side::Right);
@@ -5285,7 +5331,7 @@ mod strip_tests {
         let (mut app, dir) = test_app("restore-default");
         app.toggle_tool_window(ToolWindowId::Git);
         app.layout.move_button(ToolWindowId::Git, true);
-        app.move_tool_window(ToolWindowId::Git, Side::Right);
+        app.move_tool_window(ToolWindowId::Git, Dock { side: Side::Right, split: false });
         app.focus.set(PanelId::Git);
         app.perform(Action::App(AppAction::MaximizeToolWindow));
         assert!(!app.layout.order_overrides().is_empty());
@@ -5297,12 +5343,12 @@ mod strip_tests {
         assert!(app.layout.is_visible(ToolWindowId::Git));
         assert!(app.focus.is(PanelId::Git));
 
-        app.move_tool_window(ToolWindowId::Git, Side::Right);
+        app.move_tool_window(ToolWindowId::Git, Dock { side: Side::Right, split: false });
         app.perform(Action::App(AppAction::FocusPanel(PanelId::Run)));
         draw(&mut app);
         let (_, r) = *app.layout.strip_hits.iter().find(|(b, _)| *b == StripButton::Tool(ToolWindowId::Git)).unwrap();
         app.handle_mouse(ev(MouseEventKind::Down(MouseButton::Right), r.x + 1, r.y));
-        let a = app.menu.take().expect("context menu").items[7].action.clone().unwrap();
+        let a = app.menu.take().expect("context menu").items[5].action.clone().unwrap();
         app.perform(a);
         assert_eq!(app.layout.bottom, Some(ToolWindowId::Git));
         assert!(!app.layout.is_visible(ToolWindowId::Run));
@@ -5314,7 +5360,7 @@ mod strip_tests {
     async fn move_focused_window_by_action() {
         let (mut app, dir) = test_app("move-window");
         app.toggle_tool_window(ToolWindowId::Git);
-        app.perform(Action::App(AppAction::MoveToolWindow { tw: None, side: Side::Right }));
+        app.perform(Action::App(AppAction::MoveToolWindow { tw: None, dock: Dock { side: Side::Right, split: false } }));
         assert_eq!((app.layout.right, app.layout.bottom), (Some(ToolWindowId::Git), None));
         assert!(app.focus.is(PanelId::Git));
         draw(&mut app);
@@ -5325,7 +5371,7 @@ mod strip_tests {
         app.perform(Action::App(AppAction::ResizeToolWindow(Dir::Left)));
         assert_eq!(app.layout.right_w, w);
         app.focus.set(PanelId::Project);
-        app.perform(Action::App(AppAction::MoveToolWindow { tw: Some(ToolWindowId::Git), side: Side::Left }));
+        app.perform(Action::App(AppAction::MoveToolWindow { tw: Some(ToolWindowId::Git), dock: Dock { side: Side::Left, split: false } }));
         assert_eq!(app.layout.left, Some(ToolWindowId::Git));
         assert!(!app.layout.is_visible(ToolWindowId::Project));
         assert!(app.focus.is(PanelId::Editor), "the focused window was displaced");
@@ -5334,12 +5380,23 @@ mod strip_tests {
         let enabled = |app: &super::App| {
             let bar = app.build_main_menu();
             let view = bar.menus().iter().find(|m| m.title == "View").unwrap();
-            ["Move Tool Window to Left", "Move Tool Window to Bottom", "Move Tool Window to Right"]
-                .map(|l| view.items.iter().find(|i| i.label == l).unwrap().enabled)
+            [
+                "Move Tool Window to Left Top",
+                "Move Tool Window to Left Bottom",
+                "Move Tool Window to Bottom Left",
+                "Move Tool Window to Bottom Right",
+                "Move Tool Window to Right Top",
+                "Move Tool Window to Right Bottom",
+            ]
+            .map(|l| view.items.iter().find(|i| i.label == l).unwrap().enabled)
         };
-        assert_eq!(enabled(&app), [false, false, false], "editor focused");
+        assert_eq!(enabled(&app), [false; 6], "editor focused");
         app.focus.set(PanelId::Git);
-        assert_eq!(enabled(&app), [false, true, true]);
+        assert_eq!(enabled(&app), [false, true, true, true, true, true]);
+        assert_eq!(
+            Action::from_id("tool_window.move_bottom_right"),
+            Some(Action::App(AppAction::MoveToolWindow { tw: None, dock: Dock { side: Side::Bottom, split: true } }))
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

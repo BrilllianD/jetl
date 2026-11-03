@@ -1354,7 +1354,7 @@ Setup as above, `[lsp] enabled = false`.
    row 15). A click on each toggles its window; hovering shows its name and Alt key.
 3. `tmux resize-window -t jetl -x 80 -y 12`: the strip's last row is `⋯`. Hover: "More Tool Windows".
    A click opens a menu above it with Local History, Tasks, TODO and Hierarchy; Enter on TODO opens it.
-4. Move Git to the right (right-click its button, Move to Right) at 80x12: the right strip shows it; the
+4. Move Git to the right (right-click its button, Move to > Right Top) at 80x12: the right strip shows it; the
    left More menu changes: Local History gets a button and the menu lists Tasks, TODO and Hierarchy. No
    stderr; Ctrl+Q exits with status 0.
 
@@ -1368,10 +1368,27 @@ SGR `press`/`release` helpers; a drag is `press 0 c r; press 32 c2 r2; release 0
    colour; after the release Find sits where Problems was.
 3. Drag Git onto Worktrees: Git moves to the left side, its button right above Worktrees; Alt+9 opens it on
    the left.
-4. Right-click Hierarchy, Move to Right; drag Git onto Hierarchy on the right strip: Git moves right.
+4. Right-click Hierarchy, Move to > Right Top; drag Git onto Hierarchy on the right strip: Git moves right.
 5. Right-click Git: Move Button Up/Down are greyed when there is no neighbour that way; Move Button Down
    swaps it with the button below.
 6. Ctrl+Q and start again: the order and sides are back. No stderr; Ctrl+Q exits with status 0.
+
+### Scenario: strip groups and Move to
+
+Setup as above, `[lsp] enabled = false`, at 120x40 and then 80x24.
+
+1. Right-click the Structure button, Move to > Left Bottom: a `───` row appears under Worktrees with Structure
+   below it. Alt+1 and Alt+7: the left side shows Project over Structure with a splitter between them.
+2. Right-click Problems, Move to > Bottom Right: a right strip appears with Problems at its foot; Alt+6 and
+   Alt+4 (Find): the bottom shows Find and Problems side by side.
+3. Right-click Structure again: in the Move to submenu "Left Bottom" is greyed.
+4. Drag Git (bottom group) into the empty strip space just under Structure: the `━` marker shows there; on
+   release Git joins Left Bottom (Alt+9 shows it in the lower left pane, replacing Structure).
+5. Drag Structure onto Git's button: both stay in Left Bottom, their buttons swap.
+6. View menu: six Move Tool Window rows; with Git focused its own dock row is greyed.
+7. At 80x24 the one-row buttons and separators fit; a strip that runs short shows `⋯`.
+8. Shift+F12 (Restore Default Layout): separators and the right strip disappear. Ctrl+Q and restart after
+   step 5: the groups come back. No stderr; Ctrl+Q exits with status 0.
 
 ### Scenario: Toolbar
 

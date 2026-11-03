@@ -3515,6 +3515,40 @@ async fn app_split_docks() {
 }
 
 #[tokio::test]
+async fn app_strip_groups() {
+    use crate::ui::focus::{Dock, Side};
+    let mut fx = stable_app("strip-groups");
+    let app = &mut fx.app;
+    let to = |app: &mut App, tw, side, split| app.layout.move_to_dock(tw, Dock { side, split });
+    to(app, ToolWindowId::Structure, Side::Left, true);
+    to(app, ToolWindowId::Git, Side::Right, false);
+    to(app, ToolWindowId::Hierarchy, Side::Right, true);
+    to(app, ToolWindowId::Problems, Side::Bottom, true);
+    let term = draw_app(app, 120, 40);
+    assert_snapshot!("app_strip_groups", snapshot(&term, &[], None));
+}
+
+#[tokio::test]
+async fn app_strip_move_to_menu() {
+    use crate::ui::layout::StripButton;
+    use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
+    let mut fx = stable_app("strip-move-to");
+    let app = &mut fx.app;
+    draw_app(app, 80, 24);
+    let git = app.layout.strip_hits.iter().find(|(b, _)| *b == StripButton::Tool(ToolWindowId::Git)).unwrap().1;
+    app.handle_mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Right),
+        column: git.x + 1,
+        row: git.y,
+        modifiers: KeyModifiers::NONE,
+    });
+    app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+    let term = draw_app(app, 80, 24);
+    let marks = [Mark::style('S', "selected row", app.theme.list_selected)];
+    assert_snapshot!("app_strip_move_to_menu", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
 async fn app_toolbar() {
     let mut fx = stable_app("toolbar");
     let app = &mut fx.app;

@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Tool windows dock in six places: Left Top, Left Bottom, Bottom Left, Bottom Right, Right Top and Right Bottom. Two windows on one side share it, split by a draggable splitter. Use the strip button's right-click menu (Move to), View | Move Tool Window to …, the actions `tool_window.move_left_bottom`, `move_bottom_right` and `move_right_bottom`, or drag a button under its strip's top group. The strip shows each group, with a separator between a side's two groups, and Bottom Right windows at the foot of the right strip.
 - Structure window, breadcrumbs, Go to Symbol and the symbol index (Find Usages without a language server) now cover C#, Kotlin, Ruby, PHP and Swift.
 - Hierarchy: Export Hierarchy as Mermaid and as DOT (Navigate menu, Find Action) write the loaded call or type hierarchy to a new scratch file (`.md` with a mermaid block, or `.dot`); nodes not expanded yet end with `…`.
 - Find Usages (Alt+F7) works without a language server: it lists the uses of the name at the caret found by the symbol index, the current file first, then files it imports or that import it, then its directory, marked "(unverified)" in the Locations title.
@@ -25,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `tool_window.move_left`, `move_bottom` and `move_right` move to Left Top, Bottom Left and Right Top. Dropping a strip button on the empty part of a strip now puts it at the end of the nearest group (the upper half of the gap splits the side) instead of in the place of the nearest button.
 - Faster start on large projects: the symbol index (Go to Symbol, Find Usages without a server, import edges) is cached per project under the cache directory and only files whose size or modification time changed are parsed again.
 - Tool strip buttons toggle their window on mouse release instead of press.
 - Tool strip: when the two-row buttons do not fit (24-row terminals), every button is one row with only its icon, so all 13 tool windows have a button at 80x24; on a shorter strip its last row is a `⋯` More button whose menu lists the windows left without a button.

@@ -156,11 +156,11 @@ pub enum ViewMode {
 }
 
 /// Where a dragged strip button lands: in the place of a button, or at
-/// the end of a side that has no button to drop onto.
+/// the end of a group (a dock).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StripDrop {
     Onto(ToolWindowId),
-    End(Side),
+    End(Dock),
 }
 
 #[derive(Debug, Clone)]
@@ -302,11 +302,11 @@ impl LayoutState {
 
     /// The indexes in `order` of `tw` and of its visual neighbour in its group.
     fn button_neighbour(&self, tw: ToolWindowId, up: bool) -> Option<(usize, usize)> {
-        let side = self.side_of(tw);
+        let dock = self.dock_of(tw);
         let i = self.order.iter().position(|t| *t == tw)?;
-        let same = |k: &usize| self.side_of(self.order[*k]) == side;
+        let same = |k: &usize| self.dock_of(self.order[*k]) == dock;
         // Bottom buttons are drawn bottom to top, so up is the next one in `order`.
-        let k = if up == (side != Side::Bottom) { (0..i).rev().find(same) } else { (i + 1..self.order.len()).find(same) };
+        let k = if up == (dock.side != Side::Bottom) { (0..i).rev().find(same) } else { (i + 1..self.order.len()).find(same) };
         k.map(|k| (i, k))
     }
 
@@ -322,23 +322,24 @@ impl LayoutState {
         }
     }
 
-    /// Reorder for a dropped strip button and return the side `tw` must move
-    /// to (`None`: nothing to do). Dropping onto a button takes its place.
-    pub fn drop_button(&mut self, tw: ToolWindowId, drop: StripDrop) -> Option<Side> {
+    /// Reorder for a dropped strip button and return the dock `tw` must move
+    /// to (`None`: nothing to do). Dropping onto a button takes its place and
+    /// its dock, so a reorder inside a split group keeps the split.
+    pub fn drop_button(&mut self, tw: ToolWindowId, drop: StripDrop) -> Option<Dock> {
         match drop {
             StripDrop::Onto(b) if b == tw => None,
             StripDrop::Onto(b) => {
                 let pos = |t: ToolWindowId| self.order.iter().position(|x| *x == t);
-                let after = self.side_of(b) == self.side_of(tw) && pos(b) > pos(tw);
+                let after = self.dock_of(b) == self.dock_of(tw) && pos(b) > pos(tw);
                 self.put(tw, b, after);
-                Some(self.side_of(b))
+                Some(self.dock_of(b))
             }
-            StripDrop::End(side) => {
-                let last = self.order.iter().rev().copied().find(|t| *t != tw && self.side_of(*t) == side);
+            StripDrop::End(dock) => {
+                let last = self.order.iter().rev().copied().find(|t| *t != tw && self.dock_of(*t) == dock);
                 if let Some(last) = last {
                     self.put(tw, last, true);
                 }
-                Some(side)
+                Some(dock)
             }
         }
     }
@@ -356,9 +357,43 @@ impl LayoutState {
         self.sides = sides.iter().copied().filter(|(tw, s)| *s != tw.default_side()).collect();
     }
 
-    /// Whether some window's side is Right, which shows the right strip.
+    /// Whether some window's button is on the right strip (Right Top, Right
+    /// Bottom, Bottom Right).
     pub fn has_right_strip(&self) -> bool {
-        self.sides.values().any(|s| *s == Side::Right)
+        ToolWindowId::ALL.iter().any(|tw| self.on_right_strip(*tw))
+    }
+
+    /// Whether `tw`'s button sits on the right strip.
+    pub fn on_right_strip(&self, tw: ToolWindowId) -> bool {
+        let d = self.dock_of(tw);
+        d.side == Side::Right || d == (Dock { side: Side::Bottom, split: true })
+    }
+
+    /// A strip's groups: top, split and foot.
+    pub fn strip_docks(right: bool) -> [Dock; 3] {
+        let d = |side, split| Dock { side, split };
+        if right {
+            [d(Side::Right, false), d(Side::Right, true), d(Side::Bottom, true)]
+        } else {
+            [d(Side::Left, false), d(Side::Left, true), d(Side::Bottom, false)]
+        }
+    }
+
+    /// The first row below the lowest button of the strip's top and split
+    /// groups in the last frame.
+    pub fn strip_upper_end(&self, right: bool) -> Option<u16> {
+        let strip = if right { self.rects.strip_right } else { self.rects.strip };
+        let [top, split, _] = Self::strip_docks(right);
+        self.strip_hits
+            .iter()
+            .filter_map(|(b, r)| match b {
+                StripButton::Tool(t) if strip.contains(r.as_position()) => {
+                    let d = self.dock_of(*t);
+                    (d == top || d == split).then(|| r.bottom())
+                }
+                _ => None,
+            })
+            .max()
     }
 
     /// The live slot of a dock.
@@ -797,7 +832,12 @@ impl LayoutState {
     }
 
     /// What dropping a dragged strip button at a point does, over the last
-    /// frame's strip: a button, or the free rows of a group without buttons.
+    /// frame's strip: a button is `Onto`. A row among the top and split
+    /// groups' buttons drops onto the nearest of them, a row among the foot
+    /// group's buttons onto the nearest foot button. The free gap between
+    /// them is halved: its upper half is the end of the split group (of the
+    /// top group when those have no button), its lower half the end of the
+    /// foot group.
     pub fn strip_drop_at(&self, x: u16, y: u16) -> Option<StripDrop> {
         let p = ratatui::layout::Position::new(x, y);
         match self.strip_hit(x, y) {
@@ -813,6 +853,7 @@ impl LayoutState {
         } else {
             return None;
         };
+        let [top, split, foot] = Self::strip_docks(in_right);
         let tools: Vec<(ToolWindowId, Rect)> = self
             .strip_hits
             .iter()
@@ -821,21 +862,26 @@ impl LayoutState {
                 _ => None,
             })
             .collect();
-        let has = |s: Side| tools.iter().any(|(t, _)| self.side_of(*t) == s);
-        let mid = strip.y + strip.height / 2;
-        if in_right {
-            if !has(Side::Right) {
-                return Some(StripDrop::End(Side::Right));
-            }
-        } else if y < mid {
-            if !has(Side::Left) {
-                return Some(StripDrop::End(Side::Left));
-            }
-        } else if !has(Side::Bottom) {
-            return Some(StripDrop::End(Side::Bottom));
-        }
+        let upper: Vec<(ToolWindowId, Rect)> = tools.iter().copied().filter(|(t, _)| [top, split].contains(&self.dock_of(*t))).collect();
+        let lower: Vec<(ToolWindowId, Rect)> = tools.iter().copied().filter(|(t, _)| self.dock_of(*t) == foot).collect();
+        let u_end = self.strip_upper_end(in_right).unwrap_or(strip.y);
+        let f_top = lower.iter().map(|(_, r)| r.y).min().unwrap_or_else(|| strip.bottom());
         let dist = |r: &Rect| if y < r.y { r.y - y } else { y.saturating_sub(r.bottom() - 1) };
-        tools.iter().min_by_key(|(_, r)| (dist(r), r.y)).map(|(t, _)| StripDrop::Onto(*t))
+        let nearest = |list: &[(ToolWindowId, Rect)]| list.iter().min_by_key(|(_, r)| (dist(r), r.y)).map(|(t, _)| StripDrop::Onto(*t));
+        if y < u_end {
+            return nearest(&upper);
+        }
+        if y >= f_top {
+            return nearest(&lower);
+        }
+        let g_mid = u_end + (f_top - u_end) / 2;
+        Some(StripDrop::End(if y >= g_mid {
+            foot
+        } else if upper.is_empty() {
+            top
+        } else {
+            split
+        }))
     }
 
     /// The windows of the left strip (`right == false`) or the right strip
@@ -844,7 +890,7 @@ impl LayoutState {
         self.order
             .iter()
             .copied()
-            .filter(|tw| (self.side_of(*tw) == Side::Right) == right)
+            .filter(|tw| self.on_right_strip(*tw) == right)
             .filter(|tw| !self.strip_hits.iter().any(|(b, _)| *b == StripButton::Tool(*tw)))
             .collect()
     }
@@ -1246,16 +1292,16 @@ mod tests {
         use ToolWindowId::*;
         let bottom = |l: &LayoutState| l.order().iter().copied().filter(|t| l.side_of(*t) == Side::Bottom).collect::<Vec<_>>();
         let mut l = LayoutState::new(30, 10);
-        assert_eq!(l.drop_button(Find, StripDrop::Onto(Problems)), Some(Side::Bottom));
+        assert_eq!(l.drop_button(Find, StripDrop::Onto(Problems)), Some(dock(Side::Bottom, false)));
         assert_eq!(&bottom(&l)[..3], [Run, Problems, Find]);
-        assert_eq!(l.drop_button(Terminal, StripDrop::Onto(Find)), Some(Side::Bottom));
+        assert_eq!(l.drop_button(Terminal, StripDrop::Onto(Find)), Some(dock(Side::Bottom, false)));
         assert_eq!(&bottom(&l)[..4], [Run, Problems, Terminal, Find]);
-        assert_eq!(l.drop_button(Git, StripDrop::Onto(Worktrees)), Some(Side::Left));
+        assert_eq!(l.drop_button(Git, StripDrop::Onto(Worktrees)), Some(dock(Side::Left, false)));
         let o = l.order();
         assert_eq!(o.iter().position(|t| *t == Git).unwrap() + 1, o.iter().position(|t| *t == Worktrees).unwrap());
         assert_eq!(l.side_of(Git), Side::Bottom, "drop_button only reorders");
         let before = l.order().to_vec();
-        assert_eq!(l.drop_button(Run, StripDrop::End(Side::Right)), Some(Side::Right));
+        assert_eq!(l.drop_button(Run, StripDrop::End(dock(Side::Right, false))), Some(dock(Side::Right, false)));
         assert_eq!(l.order(), before);
         assert_eq!(l.drop_button(Run, StripDrop::Onto(Run)), None);
     }
@@ -1272,28 +1318,29 @@ mod tests {
         ];
         assert_eq!(l.strip_drop_at(1, 2), Some(StripDrop::Onto(Project)));
         assert_eq!(l.strip_drop_at(1, 0), None);
-        assert_eq!(l.strip_drop_at(1, 10), Some(StripDrop::Onto(Project)));
-        assert_eq!(l.strip_drop_at(1, 30), Some(StripDrop::Onto(Find)));
+        assert_eq!(l.strip_drop_at(1, 10), Some(StripDrop::End(dock(Side::Left, true))));
+        assert_eq!(l.strip_drop_at(1, 30), Some(StripDrop::End(dock(Side::Bottom, false))));
+        assert_eq!(l.strip_drop_at(1, 38), Some(StripDrop::Onto(Find)));
         assert_eq!(l.strip_drop_at(60, 10), None);
         l.strip_hits = vec![(StripButton::Menu, Rect::new(0, 0, 3, 1)), (StripButton::Tool(Find), Rect::new(0, 37, 3, 2))];
-        assert_eq!(l.strip_drop_at(1, 5), Some(StripDrop::End(Side::Left)));
-        assert_eq!(l.strip_drop_at(1, 30), Some(StripDrop::Onto(Find)));
-        // No Bottom button: a free row at or below mid is the Bottom end.
+        assert_eq!(l.strip_drop_at(1, 5), Some(StripDrop::End(dock(Side::Left, false))));
+        assert_eq!(l.strip_drop_at(1, 30), Some(StripDrop::End(dock(Side::Bottom, false))));
+        // No Bottom button: the lower half of the gap is the Bottom end.
         l.strip_hits = vec![(StripButton::Menu, Rect::new(0, 0, 3, 1)), (StripButton::Tool(Project), Rect::new(0, 2, 3, 2))];
-        assert_eq!(l.strip_drop_at(1, 30), Some(StripDrop::End(Side::Bottom)));
+        assert_eq!(l.strip_drop_at(1, 30), Some(StripDrop::End(dock(Side::Bottom, false))));
         // The right strip's free row is the Right end.
         l.move_to(Hierarchy, Side::Right);
         l.compute(Rect::new(0, 0, 120, 40));
         let sr = l.rects.strip_right;
         l.strip_hits = vec![(StripButton::Menu, Rect::new(0, 0, 3, 1))];
-        assert_eq!(l.strip_drop_at(sr.x + 1, sr.y + 5), Some(StripDrop::End(Side::Right)));
+        assert_eq!(l.strip_drop_at(sr.x + 1, sr.y + 5), Some(StripDrop::End(dock(Side::Right, false))));
         // The right strip is drawn only while a window is on the right, so a
         // hidden one never yields the Right end, whatever the point.
         let mut l = LayoutState::new(30, 10);
         l.compute(Rect::new(0, 0, 120, 40));
         l.strip_hits = vec![(StripButton::Menu, Rect::new(0, 0, 3, 1))];
         assert!(!l.has_right_strip());
-        assert!((0..120).all(|x| (0..40).all(|y| l.strip_drop_at(x, y) != Some(StripDrop::End(Side::Right)))));
+        assert!((0..120).all(|x| (0..40).all(|y| !matches!(l.strip_drop_at(x, y), Some(StripDrop::End(d)) if d.side == Side::Right))));
         // A More cell is not a drop target.
         l.strip_hits = vec![(StripButton::More, Rect::new(0, 38, 3, 1))];
         assert_eq!(l.strip_drop_at(1, 38), None);
@@ -1301,6 +1348,70 @@ mod tests {
 
     fn dock(side: Side, split: bool) -> Dock {
         Dock { side, split }
+    }
+
+    #[test]
+    fn drop_button_keeps_a_split_group() {
+        use ToolWindowId::*;
+        let mut l = LayoutState::new(30, 10);
+        l.move_to_dock(Structure, dock(Side::Left, true));
+        l.move_to_dock(Project, dock(Side::Left, true));
+        l.show(Structure);
+        assert_eq!(l.drop_button(Structure, StripDrop::Onto(Project)), Some(dock(Side::Left, true)));
+        l.move_to_dock(Structure, dock(Side::Left, true));
+        assert_eq!(l.left2, Some(Structure));
+        assert!(l.split_windows().contains(&Structure));
+        assert_eq!(l.drop_button(Worktrees, StripDrop::End(dock(Side::Left, true))), Some(dock(Side::Left, true)));
+        let pos = |t| l.order().iter().position(|x| *x == t).unwrap();
+        assert!(pos(Worktrees) > pos(Project) && pos(Worktrees) > pos(Structure));
+    }
+
+    #[test]
+    fn strip_drop_at_uses_groups() {
+        use ToolWindowId::*;
+        let mut l = LayoutState::new(30, 10);
+        l.move_to_dock(Structure, dock(Side::Left, true));
+        l.compute(Rect::new(0, 0, 120, 40));
+        l.strip_hits = vec![
+            (StripButton::Menu, Rect::new(0, 0, 3, 1)),
+            (StripButton::Tool(Project), Rect::new(0, 2, 3, 2)),
+            (StripButton::Tool(Structure), Rect::new(0, 6, 3, 2)),
+            (StripButton::Tool(Find), Rect::new(0, 37, 3, 2)),
+        ];
+        assert_eq!(l.strip_drop_at(1, 5), Some(StripDrop::Onto(Structure)));
+        assert_eq!(l.strip_drop_at(1, 9), Some(StripDrop::End(dock(Side::Left, true))));
+        assert_eq!(l.strip_drop_at(1, 30), Some(StripDrop::End(dock(Side::Bottom, false))));
+        assert_eq!(l.strip_drop_at(1, 38), Some(StripDrop::Onto(Find)));
+        l.move_to_dock(Git, dock(Side::Right, false));
+        l.move_to_dock(Problems, dock(Side::Bottom, true));
+        l.compute(Rect::new(0, 0, 120, 40));
+        let sr = l.rects.strip_right;
+        l.strip_hits = vec![
+            (StripButton::Tool(Git), Rect::new(sr.x, sr.y + 2, 3, 2)),
+            (StripButton::Tool(Problems), Rect::new(sr.x, sr.bottom() - 2, 3, 2)),
+        ];
+        assert_eq!(l.strip_drop_at(sr.x + 1, sr.y + 6), Some(StripDrop::End(dock(Side::Right, true))));
+        assert_eq!(l.strip_drop_at(sr.x + 1, sr.bottom() - 6), Some(StripDrop::End(dock(Side::Bottom, true))));
+    }
+
+    #[test]
+    fn right_strip_follows_bottom_right() {
+        use ToolWindowId::*;
+        let mut l = LayoutState::new(30, 10);
+        assert!(!l.has_right_strip());
+        l.move_to_dock(Problems, dock(Side::Bottom, true));
+        assert!(l.has_right_strip() && l.on_right_strip(Problems));
+        assert!(l.strip_overflow(true).contains(&Problems));
+        assert!(!l.strip_overflow(false).contains(&Problems));
+    }
+
+    #[test]
+    fn move_button_stays_in_its_group() {
+        use ToolWindowId::*;
+        let mut l = LayoutState::new(30, 10);
+        l.move_to_dock(Structure, dock(Side::Left, true));
+        assert!(!l.can_move_button(Structure, true));
+        assert!(!l.can_move_button(Worktrees, false));
     }
 
     /// Project/Structure left, Find/Problems bottom, Git/EventLog right.
@@ -1439,7 +1550,8 @@ mod tests {
         assert_eq!(l.bottom2, Some(Structure));
         l.toggle_maximize(Structure);
         l.compute(Rect::new(0, 0, 100, 30));
-        assert_eq!(l.rects.bottom2, Rect::new(STRIP_W, 0, 97, 29));
+        // Bottom Right puts its button on a right strip, which takes 3 columns.
+        assert_eq!(l.rects.bottom2, Rect::new(STRIP_W, 0, 94, 29));
         l.maximized = None;
         l.set_view_mode(Structure, ViewMode::Unpinned);
         let mut focus = Focus::new();

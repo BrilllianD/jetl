@@ -3,8 +3,11 @@
 //! button per tool window (its Alt-number over its icon, or only the icon in
 //! one row when they do not fit, or a More button for the rest), and the
 //! tooltip of the hovered button. A second strip on the right edge holds the Right-side
-//! windows. Buttons follow `LayoutState::order`; a left drag reorders or moves a
-//! button, and the drop target is drawn in `strip_drop`.
+//! windows and the Bottom Right ones. Each strip draws three groups: Left Top, Left
+//! Bottom (below a one-row `─` separator, drawn only when both have a button) and Bottom
+//! Left from the foot; the right strip mirrors it with Bottom Right at its foot. Buttons
+//! follow `LayoutState::order` inside a group; a left drag reorders or moves a button,
+//! and the drop target is drawn in `strip_drop`.
 
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
@@ -15,8 +18,8 @@ use unicode_width::UnicodeWidthStr;
 use crate::actions::{Action, AppAction};
 use crate::app::App;
 use crate::config::Icons;
-use crate::ui::focus::{Side, ToolWindowId};
-use crate::ui::layout::{StripButton, StripDrop};
+use crate::ui::focus::{Dock, Side, ToolWindowId};
+use crate::ui::layout::{LayoutState, StripButton, StripDrop};
 use crate::ui::menu_bar::menu_glyph;
 
 /// Rows of a tool button: the Alt-number, then the icon.
@@ -51,11 +54,16 @@ pub fn render(app: &mut App, frame: &mut Frame, area: Rect, right: Rect) {
     // on the strip's last row. Left-side windows stack from the top under the
     // menu button, bottom-side windows from the bottom.
     let n_all = ToolWindowId::ALL.len() as u16;
-    let n_main = ToolWindowId::ALL.iter().filter(|tw| app.layout.side_of(**tw) != Side::Right).count() as u16;
-    let n_right = n_all - n_main;
-    let gap2 = u16::from(area.height > n_all * (BUTTON_H + 1));
+    let n_right = ToolWindowId::ALL.iter().filter(|tw| app.layout.on_right_strip(**tw)).count() as u16;
+    let n_main = n_all - n_right;
+    let has = |d: Dock| ToolWindowId::ALL.iter().any(|t| app.layout.dock_of(*t) == d);
+    let [lt, lb, bl] = LayoutState::strip_docks(false);
+    let [rt, rb, br] = LayoutState::strip_docks(true);
+    let sep_l = u16::from(has(lt) && has(lb));
+    let sep_r = u16::from(has(rt) && has(rb));
+    let gap2 = u16::from(area.height > n_all * (BUTTON_H + 1) + 2 * sep_l.max(sep_r));
     let h = area.height;
-    let avail = h - menu_rows;
+    let avail = h.saturating_sub(menu_rows + sep_l);
     let left_mode = if avail >= 2 * n_main {
         StripMode { height: BUTTON_H, gap: gap2, cap: usize::MAX, more: false }
     } else if avail >= n_main {
@@ -68,12 +76,12 @@ pub fn render(app: &mut App, frame: &mut Frame, area: Rect, right: Rect) {
     let menu_gap = match left_mode {
         _ if menu_rows == 0 => 0,
         StripMode { more: true, .. } => 0,
-        StripMode { height: BUTTON_H, .. } => u16::from(h >= 2 + n_main * BUTTON_H),
-        _ => u16::from(h >= 2 + n_main),
+        StripMode { height: BUTTON_H, .. } => u16::from(h >= 2 + n_main * BUTTON_H + sep_l),
+        _ => u16::from(h >= 2 + n_main + sep_l),
     };
     let rh = if right.width >= 2 { right.height } else { 0 };
     let roff = 2 * menu_rows;
-    let ravail = rh.saturating_sub(roff);
+    let ravail = rh.saturating_sub(roff + sep_r);
     let right_mode = if ravail >= 2 * n_right {
         StripMode { height: BUTTON_H, gap: gap2, cap: usize::MAX, more: false }
     } else if ravail >= n_right {
@@ -86,26 +94,46 @@ pub fn render(app: &mut App, frame: &mut Frame, area: Rect, right: Rect) {
     let mut top = area.y + menu_rows + menu_gap;
     let mut bottom = area.bottom() - u16::from(left_mode.more);
     let mut rtop = right.y + roff;
-    let rbottom = right.bottom() - u16::from(right_mode.more);
-    let (mut placed_left, mut placed_right) = (0usize, 0usize);
-    for tw in order {
-        let side = app.layout.side_of(tw);
-        let is_right = side == Side::Right;
-        let (mode, placed) = if is_right { (right_mode, &mut placed_right) } else { (left_mode, &mut placed_left) };
-        if *placed >= mode.cap {
-            continue;
-        }
-        let bh = mode.height;
-        let rect = match side {
-            Side::Left => {
+    let mut rbottom = right.bottom() - u16::from(right_mode.more);
+    // Who gets a button when a strip is short: the first `cap` windows in `order`.
+    let mut seen = (0usize, 0usize);
+    let allowed: Vec<ToolWindowId> = order
+        .iter()
+        .copied()
+        .filter(|tw| {
+            let (mode, n) = if app.layout.on_right_strip(*tw) { (right_mode, &mut seen.1) } else { (left_mode, &mut seen.0) };
+            *n += 1;
+            *n <= mode.cap
+        })
+        .collect();
+    let mut seps: Vec<Rect> = Vec::new();
+    let (mut upper_l, mut upper_r) = (0usize, 0usize);
+    let (mut sep_l_drawn, mut sep_r_drawn) = (false, false);
+    for dock in [lt, lb, bl, rt, rb, br] {
+        let group: Vec<ToolWindowId> = order.iter().copied().filter(|tw| app.layout.dock_of(*tw) == dock && allowed.contains(tw)).collect();
+        for tw in group {
+            let is_right = app.layout.on_right_strip(tw);
+            let mode = if is_right { right_mode } else { left_mode };
+            let bh = mode.height;
+            let rect = if dock == lt || dock == lb {
+                if dock == lb && upper_l > 0 && !sep_l_drawn {
+                    if top + 1 + mode.gap + bh > bottom {
+                        continue;
+                    }
+                    seps.push(Rect::new(area.x, top, area.width, 1));
+                    top += 1 + mode.gap;
+                    sep_l_drawn = true;
+                }
                 if top + bh > bottom {
                     continue;
                 }
                 let r = Rect::new(area.x, top, area.width, bh);
                 top += bh + mode.gap;
+                if dock == lt {
+                    upper_l += 1;
+                }
                 r
-            }
-            Side::Bottom => {
+            } else if dock == bl {
                 if bottom < top + bh {
                     continue;
                 }
@@ -113,32 +141,58 @@ pub fn render(app: &mut App, frame: &mut Frame, area: Rect, right: Rect) {
                 let r = Rect::new(area.x, bottom, area.width, bh);
                 bottom = bottom.saturating_sub(mode.gap);
                 r
-            }
-            Side::Right => {
-                if right.width < 2 || rtop + bh > rbottom {
+            } else if dock == rt || dock == rb {
+                if right.width < 2 {
+                    continue;
+                }
+                if dock == rb && upper_r > 0 && !sep_r_drawn {
+                    if rtop + 1 + mode.gap + bh > rbottom {
+                        continue;
+                    }
+                    seps.push(Rect::new(right.x, rtop, right.width, 1));
+                    rtop += 1 + mode.gap;
+                    sep_r_drawn = true;
+                }
+                if rtop + bh > rbottom {
                     continue;
                 }
                 let r = Rect::new(right.x, rtop, right.width, bh);
                 rtop += bh + mode.gap;
+                if dock == rt {
+                    upper_r += 1;
+                }
                 r
+            } else {
+                if right.width < 2 || rbottom < rtop + bh {
+                    continue;
+                }
+                rbottom -= bh;
+                let r = Rect::new(right.x, rbottom, right.width, bh);
+                rbottom = rbottom.saturating_sub(mode.gap);
+                r
+            };
+            let active = app.layout.is_visible(tw);
+            let focused = app.focus.is(tw.panel());
+            let style = if active { theme.strip_item_active } else { theme.strip_item };
+            let style = if focused { style.add_modifier(Modifier::UNDERLINED) } else { style };
+            let style = if drop == Some(StripDrop::Onto(tw)) { style.patch(theme.strip_drop) } else { style };
+            buf.set_style(rect, style);
+            if bh == BUTTON_H {
+                if let Some(n) = tw.number() {
+                    centred(buf, rect, &n.to_string(), style.add_modifier(Modifier::BOLD));
+                }
+                centred(buf, Rect { y: rect.y + 1, ..rect }, tw.icon(icons), style);
+            } else {
+                centred(buf, rect, tw.icon(icons), style);
             }
-        };
-        *placed += 1;
-        let active = app.layout.is_visible(tw);
-        let focused = app.focus.is(tw.panel());
-        let style = if active { theme.strip_item_active } else { theme.strip_item };
-        let style = if focused { style.add_modifier(Modifier::UNDERLINED) } else { style };
-        let style = if drop == Some(StripDrop::Onto(tw)) { style.patch(theme.strip_drop) } else { style };
-        buf.set_style(rect, style);
-        if bh == BUTTON_H {
-            if let Some(n) = tw.number() {
-                centred(buf, rect, &n.to_string(), style.add_modifier(Modifier::BOLD));
-            }
-            centred(buf, Rect { y: rect.y + 1, ..rect }, tw.icon(icons), style);
-        } else {
-            centred(buf, rect, tw.icon(icons), style);
+            app.layout.strip_hits.push((StripButton::Tool(tw), rect));
         }
-        app.layout.strip_hits.push((StripButton::Tool(tw), rect));
+    }
+    for r in seps {
+        buf.set_style(r, theme.strip_item);
+        for x in r.x..r.right() {
+            buf[(x, r.y)].set_symbol("─");
+        }
     }
     for (is_right, mode, strip) in [(false, left_mode, area), (true, right_mode, right)] {
         if !mode.more {
@@ -151,18 +205,22 @@ pub fn render(app: &mut App, frame: &mut Frame, area: Rect, right: Rect) {
         centred(buf, rect, more_glyph(icons), style);
         app.layout.strip_hits.push((StripButton::More, rect));
     }
-    if let Some(StripDrop::End(side)) = drop {
-        let strip = if side == Side::Right { right } else { area };
+    if let Some(StripDrop::End(dock)) = drop {
+        let right_strip = dock.side == Side::Right || (dock.side == Side::Bottom && dock.split);
+        let (strip, start) = if right_strip { (right, right.y + roff) } else { (area, area.y + menu_rows) };
         let free = |row: u16| {
             let line = Rect::new(strip.x, row, strip.width, 1);
             !app.layout.strip_hits.iter().any(|(_, r)| r.intersects(line))
         };
-        let row = match side {
-            Side::Left => (area.y + menu_rows..area.bottom()).find(|r| free(*r)),
-            Side::Bottom => (area.y + menu_rows..area.bottom()).rev().find(|r| free(*r)),
-            // End(Right) is reachable on a very short terminal, where the right strip shows only More; the bar
-            // is then never drawn, as no free row exists at or below `right.y + roff`.
-            Side::Right => (right.y + roff..right.bottom()).find(|r| free(*r)),
+        // The right strip is reachable on a very short terminal, where it shows only More; the bar
+        // is then never drawn, as no free row exists at or below `right.y + roff`.
+        let row = if dock.side == Side::Bottom {
+            (start..strip.bottom()).rev().find(|r| free(*r))
+        } else if dock.split {
+            let from = app.layout.strip_upper_end(right_strip).unwrap_or(start).max(start);
+            (from..strip.bottom()).find(|r| free(*r))
+        } else {
+            (start..strip.bottom()).find(|r| free(*r))
         };
         if let Some(row) = row {
             let line = Rect::new(strip.x, row, strip.width, 1);

@@ -34,8 +34,8 @@ impl App {
                         Row::Item(label, id) => {
                             let action = Action::from_id(id)?;
                             let movable = match &action {
-                                Action::App(AppAction::MoveToolWindow { tw: None, side }) => {
-                                    self.focus.current.tool_window().is_some_and(|tw| self.layout.side_of(tw) != *side)
+                                Action::App(AppAction::MoveToolWindow { tw: None, dock }) => {
+                                    self.focus.current.tool_window().is_some_and(|tw| self.layout.dock_of(tw) != *dock)
                                 }
                                 Action::App(AppAction::TogglePinned { tw: None }) => self.focus.current.tool_window().is_some(),
                                 _ => true,

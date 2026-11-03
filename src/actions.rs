@@ -3,7 +3,7 @@
 
 use std::sync::LazyLock;
 
-use crate::ui::focus::{PanelId, Side, ToolWindowId};
+use crate::ui::focus::{Dock, PanelId, Side, ToolWindowId};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Action {
@@ -51,11 +51,11 @@ pub enum AppAction {
     TogglePinned {
         tw: Option<ToolWindowId>,
     },
-    /// Put a tool window on a side: the given one, or with `None` the
+    /// Put a tool window in a dock: the given one, or with `None` the
     /// focused one (View menu, palette).
     MoveToolWindow {
         tw: Option<ToolWindowId>,
-        side: Side,
+        dock: Dock,
     },
     /// Swap a tool window's strip button with its neighbour above or below
     /// (the side menu; no key).
@@ -775,9 +775,12 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "tool_window.maximize" => "Maximize or restore the active tool window", App(AppAction::MaximizeToolWindow);
         "tool_window.toggle_pinned" => "Pin or unpin the active tool window (an unpinned one hides when focus leaves it)", App(AppAction::TogglePinned { tw: None });
         "tool_window.last" => "Jump to the last active tool window", App(AppAction::LastToolWindow);
-        "tool_window.move_left" => "Move the active tool window to the left side", App(AppAction::MoveToolWindow { tw: None, side: Side::Left });
-        "tool_window.move_bottom" => "Move the active tool window to the bottom", App(AppAction::MoveToolWindow { tw: None, side: Side::Bottom });
-        "tool_window.move_right" => "Move the active tool window to the right side", App(AppAction::MoveToolWindow { tw: None, side: Side::Right });
+        "tool_window.move_left" => "Move the active tool window to Left Top", App(AppAction::MoveToolWindow { tw: None, dock: Dock { side: Side::Left, split: false } });
+        "tool_window.move_left_bottom" => "Move the active tool window to Left Bottom", App(AppAction::MoveToolWindow { tw: None, dock: Dock { side: Side::Left, split: true } });
+        "tool_window.move_bottom" => "Move the active tool window to Bottom Left", App(AppAction::MoveToolWindow { tw: None, dock: Dock { side: Side::Bottom, split: false } });
+        "tool_window.move_bottom_right" => "Move the active tool window to Bottom Right", App(AppAction::MoveToolWindow { tw: None, dock: Dock { side: Side::Bottom, split: true } });
+        "tool_window.move_right" => "Move the active tool window to Right Top", App(AppAction::MoveToolWindow { tw: None, dock: Dock { side: Side::Right, split: false } });
+        "tool_window.move_right_bottom" => "Move the active tool window to Right Bottom", App(AppAction::MoveToolWindow { tw: None, dock: Dock { side: Side::Right, split: true } });
         "app.zen" => "Toggle Zen mode (editor text only)", App(AppAction::ToggleZen);
         "app.toggle_toolbar" => "Show or hide the toolbar", App(AppAction::ToggleToolbar);
         "palette.files" => "Go to file", App(AppAction::OpenPalette(PaletteKind::Files));

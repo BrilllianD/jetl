@@ -66,6 +66,18 @@ impl Dock {
         Dock { side: Side::Right, split: false },
         Dock { side: Side::Right, split: true },
     ];
+
+    /// The menu label of the dock.
+    pub fn title(self) -> &'static str {
+        match (self.side, self.split) {
+            (Side::Left, false) => "Left Top",
+            (Side::Left, true) => "Left Bottom",
+            (Side::Bottom, false) => "Bottom Left",
+            (Side::Bottom, true) => "Bottom Right",
+            (Side::Right, false) => "Right Top",
+            (Side::Right, true) => "Right Bottom",
+        }
+    }
 }
 
 impl ToolWindowId {
@@ -329,6 +341,8 @@ mod tests {
             assert_eq!(d.split, i % 2 == 1);
             assert_eq!(d.side, [Side::Left, Side::Bottom, Side::Right][i / 2]);
         }
+        let titles: Vec<&str> = all.iter().map(|d| d.title()).collect();
+        assert_eq!(titles, ["Left Top", "Left Bottom", "Bottom Left", "Bottom Right", "Right Top", "Right Bottom"]);
         assert_eq!(ToolWindowId::Git.default_dock(), Dock { side: Side::Bottom, split: false });
     }
 }
