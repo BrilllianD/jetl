@@ -31,6 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Concurrent saves of the same file could corrupt it: every atomic write now uses its own temp file.
 - Git Log: a context menu opened from the keyboard (Shift+F10) on a commit, a file or a branch now opens directly under the selected row, or directly above it when it does not fit below, instead of one row lower or on top of the row.
 - Status bar: a quiet log entry (such as a manual save) no longer blanks a still-current error or warning message; the slot keeps the newest non-quiet message until its timeout.
 

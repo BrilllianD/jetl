@@ -205,7 +205,7 @@ mod tests {
         let cfg = Path::new("/c");
         let t = targets(&paths(cfg), &Config::default());
         let changed: Vec<PathBuf> =
-            ["config.toml", "config.toml", ".config.toml.jetl-tmp", "theme.toml"].iter().map(|n| cfg.join(n)).collect();
+            ["config.toml", "config.toml", ".config.toml.123.0.jetl-tmp", "theme.toml"].iter().map(|n| cfg.join(n)).collect();
         assert_eq!(matches(&t, changed.iter()), [ConfigFile::Config, ConfigFile::Theme]);
         assert!(matches(&t, [cfg.join("theme.toml.swp")].iter()).is_empty());
     }
