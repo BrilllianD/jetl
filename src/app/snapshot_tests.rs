@@ -1998,8 +1998,32 @@ async fn git_log_file_menu() {
     assert!(text.contains("syntax.md"), "{text}");
     let menu = app.menu.as_ref().expect("context menu");
     assert!(!(bottom.x..bottom.right()).any(|x| menu.contains(x, row)), "menu covers its anchor row: {text}");
-    assert!((bottom.x..bottom.right()).any(|x| menu.contains(x, row + 2)), "menu opens below the row");
+    assert_eq!(menu.rect().y, row + 1, "menu top border sits directly under the selected row");
     assert_snapshot!("git_log_file_menu", snapshot(&term, &marks, Some(bottom)));
+}
+
+#[tokio::test]
+async fn git_log_file_menu_flips_above_row() {
+    use crate::actions::GitAction;
+    let mut fx = log_files_fixture("git-log-file-menu-flip");
+    let app = &mut fx.app;
+    app.layout.bottom_h = 14;
+    app.perform(Action::Git(GitAction::Right));
+    for _ in 0..4 {
+        app.perform(Action::Git(GitAction::Down));
+    }
+    draw_app(app, 120, 40);
+    app.perform(Action::Git(GitAction::ContextMenu));
+    let term = draw_app(app, 120, 40);
+    let bottom = app.layout.rects.bottom;
+    let sel = app.theme.list_selected.bg.unwrap();
+    let buf = term.backend().buffer();
+    let row =
+        (bottom.y..bottom.bottom()).rev().find(|&y| (bottom.x..bottom.right()).any(|x| buf[(x, y)].bg == sel)).expect("selected row drawn");
+    let menu = app.menu.as_ref().expect("context menu");
+    let r = menu.rect();
+    assert!(!(bottom.x..bottom.right()).any(|x| menu.contains(x, row)), "flipped menu covers its anchor row");
+    assert_eq!(r.y + r.height, row, "menu bottom border sits directly above the selected row");
 }
 
 fn branches_pane_fixture(name: &str, width: u16) -> (Fixture, ratatui::Terminal<ratatui::backend::TestBackend>) {
@@ -2056,6 +2080,27 @@ async fn git_log_branches_pane() {
     let marks = [Mark::bg('L', "selected", app.theme.list_selected.bg.unwrap())];
     let bottom = app.layout.rects.bottom;
     assert_snapshot!("git_log_branches_pane", snapshot(&term, &marks, Some(bottom)));
+}
+
+#[tokio::test]
+async fn git_branch_menu_hugs_selected_row() {
+    let (mut fx, _) = branches_pane_fixture("git-branch-menu-anchor", 120);
+    let app = &mut fx.app;
+    app.perform(Action::Git(crate::actions::GitAction::Left));
+    for _ in 0..3 {
+        app.perform(Action::Git(crate::actions::GitAction::Down));
+    }
+    let term = draw_app(app, 120, 30);
+    let sel = app.theme.list_selected.bg.unwrap();
+    let buf = term.backend().buffer();
+    let pane = app.git_panel.branches_rect();
+    let row = (pane.y..pane.bottom()).find(|&y| (pane.x..pane.right()).any(|x| buf[(x, y)].bg == sel)).expect("selected row drawn");
+    app.perform(Action::Git(crate::actions::GitAction::ContextMenu));
+    draw_app(app, 120, 30);
+    let menu = app.menu.as_ref().expect("context menu");
+    let r = menu.rect();
+    // Directly below the row, or flipped directly above it; never covering it or leaving a gap.
+    assert!(r.y == row + 1 || r.y + r.height == row, "menu {r:?} not adjacent to row {row}");
 }
 
 #[tokio::test]

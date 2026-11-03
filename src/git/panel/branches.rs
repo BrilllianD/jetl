@@ -110,7 +110,7 @@ impl GitPanel {
         }
         let (x, y) = at.unwrap_or_else(|| {
             let row = self.branch_list.selected.saturating_sub(self.branch_list.offset) as u16;
-            (self.branches_rect.x + 2, self.branches_rect.y + row + 1)
+            (self.branches_rect.x + 2, self.branches_rect.y + row)
         });
         cx.effects.push(Effect::ContextMenu(ContextMenu::new(items, x, y)));
     }

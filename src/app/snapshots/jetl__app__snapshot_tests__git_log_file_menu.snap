@@ -27,22 +27,22 @@ expression: "snapshot(&term, &marks, Some(bottom))"
 21    │                                                                     │ ▾ root                                      │
 22  ✎ │                                                                     │   ▾ docs                                    │
 23    │                                                                     │     R syntax.md ← docs/grammar.md           │
-24  ✓ │                                                                     │   ▾ src                                     │
-25  8 │                                                                     │  ╭───────────────────────────────────────╮  │
-26  ⟲ │                                                                     │  │ Show Diff                             │  │
-27  5 │                                                                     │  │ Open Diff in Editor Tab               │  │
-28  ⚑ │                                                                     │  │ Open in Editor                        │  │
-29  9 │                                                                     │  │ Copy Path                             │  │
-30  ⎇ │                                                                     │  │ Show History for File                 │  │
-31    │                                                                     │  ├───────────────────────────────────────┤  │
-32  ❯ │                                                                     │  │ Copy Revision Number           Ctrl+C │  │
-33  6 │                                                                     │  │ Cherry-Pick               Alt+Shift+P │  │
-34  ⚠ │                                                                     │  │ Revert Commit…            Alt+Shift+R │  │
-35  4 │                                                                     │  │ Checkout Revision         Alt+Shift+C │  │
-36  ► │                                                                     │  ╰───────────────────────────────────────╯  │
+24  ✓ │                                                                     │  ╭───────────────────────────────────────╮  │
+25  8 │                                                                     │  │ Show Diff                             │  │
+26  ⟲ │                                                                     │  │ Open Diff in Editor Tab               │  │
+27  5 │                                                                     │  │ Open in Editor                        │  │
+28  ⚑ │                                                                     │  │ Copy Path                             │  │
+29  9 │                                                                     │  │ Show History for File                 │  │
+30  ⎇ │                                                                     │  ├───────────────────────────────────────┤  │
+31    │                                                                     │  │ Copy Revision Number           Ctrl+C │  │
+32  ❯ │                                                                     │  │ Cherry-Pick               Alt+Shift+P │  │
+33  6 │                                                                     │  │ Revert Commit…            Alt+Shift+R │  │
+34  ⚠ │                                                                     │  │ Checkout Revision         Alt+Shift+C │  │
+35  4 │                                                                     │  ╰───────────────────────────────────────╯  │
+36  ► │                                                                     │                                             │
 37  3 │                                                                     │                                             │
 38  ⌕ └───────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 39
 -- marks: L=selected
 23                                                                           LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL
-26                                                                              LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL
+25                                                                              LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL

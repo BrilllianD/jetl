@@ -458,7 +458,7 @@ impl GitPanel {
         }
         let (x, y) = at.unwrap_or_else(|| {
             let row = self.log_list.selected.saturating_sub(self.log_list.offset) as u16;
-            (self.log_rect.x + 4, self.log_rect.y + row + 1)
+            (self.log_rect.x + 4, self.log_rect.y + row)
         });
         let g = |a| Action::Git(a);
         let busy = self.in_progress().is_some_and(|ip| ip.kind.blocks_switching());
@@ -577,7 +577,7 @@ impl GitPanel {
         let Some(node) = self.log_node().cloned() else { return };
         let (x, y) = at.unwrap_or_else(|| {
             let row = self.files_list.selected.saturating_sub(self.files_list.offset) as u16;
-            (self.files_rect.x + 2, self.files_rect.y + row + 1)
+            (self.files_rect.x + 2, self.files_rect.y + row)
         });
         let busy = self.in_progress().is_some_and(|ip| ip.kind.blocks_switching());
         let f = |op| Action::Git(GitAction::LogFileOp(op));
