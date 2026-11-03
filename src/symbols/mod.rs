@@ -279,7 +279,8 @@ fn kind_label(capture: &'static str, node: &str) -> &'static str {
         "struct_item" | "struct_specifier" => "struct",
         "enum_item" | "enum_specifier" => "enum",
         "union_item" => "union",
-        "trait_item" => "trait",
+        "trait_item" | "trait_declaration" => "trait",
+        "method_declaration" => "method",
         "mod_item" => "mod",
         "macro_definition" => "macro",
         "type_item" | "type_spec" | "type_definition" => "type",
@@ -528,6 +529,169 @@ mod tests {
             let want: Vec<(String, &str, usize)> = want.iter().map(|(n, k, d)| (n.to_string(), *k, *d)).collect();
             assert_eq!(got, want, "{file}");
         }
+    }
+
+    #[cfg_attr(
+        not(any(feature = "lang-csharp", feature = "lang-php", feature = "lang-ruby", feature = "lang-kotlin", feature = "lang-swift")),
+        allow(dead_code)
+    )]
+    fn defs<'a>(got: &'a [(String, &'static str, usize)]) -> Vec<(&'a str, &'static str, usize)> {
+        got.iter().map(|(n, k, d)| (n.as_str(), *k, *d)).collect()
+    }
+
+    #[cfg(feature = "lang-csharp")]
+    #[test]
+    fn csharp_definitions_and_references() {
+        let src = "namespace App.Core {\n  public interface IRun { void Run(); }\n  public class A : Base, IRun {\n    public A() {}\n    public int Size { get; set; }\n    public void Run() { Helper(); this.Go(); var b = new B(); }\n  }\n  struct P {}\n  enum E { X }\n  record R(int X);\n}\n";
+        let got = names("a.cs", src).unwrap();
+        assert_eq!(
+            defs(&got),
+            [
+                ("App.Core", "module", 0),
+                ("IRun", "interface", 1),
+                ("Run", "method", 2),
+                ("A", "class", 1),
+                ("A", "constructor", 2),
+                ("Size", "property", 2),
+                ("Run", "method", 2),
+                ("P", "struct", 1),
+                ("E", "enum", 1),
+                ("R", "record", 1)
+            ]
+        );
+        let (_, got) = refs("a.cs", src).unwrap();
+        assert_eq!(
+            got,
+            [
+                row("Base", "class", 2, 19, Some(3)),
+                row("IRun", "class", 2, 25, Some(3)),
+                row("Helper", "call", 5, 24, Some(6)),
+                row("Go", "call", 5, 39, Some(6)),
+                row("B", "class", 5, 57, Some(6)),
+            ]
+        );
+    }
+
+    #[cfg(feature = "lang-php")]
+    #[test]
+    fn php_definitions_and_references() {
+        let src = "<?php\nnamespace App;\ninterface I {}\ntrait T {}\nenum E { case A; }\nclass K extends Base implements I {\n  const N = 1;\n  public $x;\n  public function run() { helper(); $this->go(); B::make(); return new C(); }\n}\nfunction helper() {}\n";
+        let got = names("a.php", src).unwrap();
+        assert_eq!(
+            defs(&got),
+            [
+                ("App", "module", 0),
+                ("I", "interface", 0),
+                ("T", "trait", 0),
+                ("E", "enum", 0),
+                ("A", "constant", 1),
+                ("K", "class", 0),
+                ("N", "constant", 1),
+                ("x", "field", 1),
+                ("run", "method", 1),
+                ("helper", "function", 0)
+            ]
+        );
+        let (_, got) = refs("a.php", src).unwrap();
+        assert_eq!(
+            got,
+            [
+                row("Base", "class", 5, 16, Some(5)),
+                row("I", "implementation", 5, 32, Some(5)),
+                row("helper", "call", 8, 26, Some(8)),
+                row("go", "call", 8, 43, Some(8)),
+                row("make", "call", 8, 52, Some(8)),
+                row("C", "class", 8, 71, Some(8)),
+            ]
+        );
+    }
+
+    #[cfg(feature = "lang-ruby")]
+    #[test]
+    fn ruby_definitions_and_references() {
+        let src = "module M\n  class A < Base\n    X = 1\n    def run(x)\n      y = x\n      helper(y)\n      Foo.new.go\n    end\n    def self.make; end\n  end\nend\n";
+        let got = names("a.rb", src).unwrap();
+        assert_eq!(defs(&got), [("M", "module", 0), ("A", "class", 1), ("X", "constant", 2), ("run", "method", 2), ("make", "method", 2)]);
+        // `x` and `y` are locals: upstream's bare-identifier pattern is disabled.
+        let (_, got) = refs("a.rb", src).unwrap();
+        assert_eq!(
+            got,
+            [
+                row("Base", "class", 1, 12, Some(1)),
+                row("helper", "call", 5, 6, Some(3)),
+                row("Foo", "class", 6, 6, Some(3)),
+                row("new", "call", 6, 10, Some(3)),
+                row("go", "call", 6, 14, Some(3)),
+            ]
+        );
+    }
+
+    #[cfg(feature = "lang-kotlin")]
+    #[test]
+    fn kotlin_definitions_and_references() {
+        // The interface body is multi-line: this grammar fails to parse `{ fun run() }` on one line.
+        let src = "interface Runner {\n    fun run()\n}\nenum class Color { RED }\nclass App(val n: Int) : Base(), Runner {\n    val size = 1\n    override fun run() { val local = 2; helper(); this.go() }\n    companion object Factory {}\n}\nfun helper() {}\n";
+        let got = names("a.kt", src).unwrap();
+        assert_eq!(
+            defs(&got),
+            [
+                ("Runner", "interface", 0),
+                ("run", "method", 1),
+                ("Color", "enum", 0),
+                ("RED", "constant", 1),
+                ("App", "class", 0),
+                ("size", "property", 1),
+                ("run", "method", 1),
+                ("Factory", "class", 1),
+                ("helper", "function", 0)
+            ]
+        );
+        let (_, got) = refs("a.kt", src).unwrap();
+        assert_eq!(
+            got,
+            [
+                row("Base", "class", 4, 24, Some(4)),
+                row("Runner", "implementation", 4, 32, Some(4)),
+                row("helper", "call", 6, 40, Some(6)),
+                row("go", "call", 6, 55, Some(6)),
+            ]
+        );
+    }
+
+    #[cfg(feature = "lang-swift")]
+    #[test]
+    fn swift_definitions_and_references() {
+        let src = "protocol Runner { func run() }\nstruct P { var x = 1 }\nenum E { case a }\nextension P: Runner { func run() { let local = 1; helper(); self.go() } }\nclass A: Base { init() {} }\nlet top = 1\nfunc helper() -> Base { return Base() }\n";
+        let got = names("a.swift", src).unwrap();
+        assert_eq!(
+            defs(&got),
+            [
+                ("Runner", "interface", 0),
+                ("run", "method", 1),
+                ("P", "struct", 0),
+                ("x", "property", 1),
+                ("E", "enum", 0),
+                ("a", "constant", 1),
+                ("P", "extension", 0),
+                ("run", "method", 1),
+                ("A", "class", 0),
+                ("init", "method", 1),
+                ("top", "property", 0),
+                ("helper", "function", 0)
+            ]
+        );
+        let (_, got) = refs("a.swift", src).unwrap();
+        assert_eq!(
+            got,
+            [
+                row("Runner", "type", 3, 13, Some(6)),
+                row("helper", "call", 3, 50, Some(7)),
+                row("go", "call", 3, 65, Some(7)),
+                row("Base", "type", 4, 9, Some(8)),
+                row("Base", "type", 6, 17, Some(11)),
+                row("Base", "call", 6, 31, Some(11)),
+            ]
+        );
     }
 
     #[test]

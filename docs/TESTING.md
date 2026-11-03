@@ -1428,6 +1428,10 @@ Setup as above, `[lsp] enabled = false`, at 120x40 and 80x24.
 4. Right-click Git: the row reads Pin. Ctrl+Q and restart: Git's row still reads Pin. Shift+F12, right-click
    Git: the row reads Unpin (every window Pinned again). Stderr empty, Ctrl+Q exits 0.
 
+### Scenario: Structure for C#, Kotlin, Ruby, PHP and Swift
+
+Scratch project with `a.cs`, `a.kt`, `a.rb`, `a.php`, `a.swift` (a namespace/module/protocol, a class with a method and a property, a free function, a local variable in a method). Open each file and press Alt+7: the Structure window lists the definitions with their kind and nesting (methods under their class), and no local variable. Put the caret in a method: the breadcrumb row shows the enclosing class and method. Ctrl+Q exits 0, stderr empty.
+
 ### Limits under tmux
 
 - No kitty keyboard protocol: Ctrl+Shift+letter, Ctrl+Tab, Ctrl+Enter,

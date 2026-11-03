@@ -102,7 +102,12 @@ impl LanguageDef {
             feature = "lang-c",
             feature = "lang-cpp",
             feature = "lang-java",
-            feature = "lang-md"
+            feature = "lang-md",
+            feature = "lang-csharp",
+            feature = "lang-php",
+            feature = "lang-ruby",
+            feature = "lang-kotlin",
+            feature = "lang-swift"
         )),
         allow(dead_code)
     )]
@@ -112,12 +117,20 @@ impl LanguageDef {
     }
 
     /// The compiled tags query; `None` without one or when it does not
-    /// compile (logged once).
+    /// compile (logged once). jetl runs no locals query, so a pattern with
+    /// `(#is-not? local)` would never be checked and would match every
+    /// identifier (Ruby's upstream tags); such patterns are disabled.
     pub fn tags_query(&self) -> Option<&Query> {
         self.tags_query
             .get_or_init(|| {
                 let src = self.tags?;
-                Query::new(&self.language, src).map_err(|e| tracing::warn!("tags query for {}: {e}", self.name)).ok()
+                let mut q = Query::new(&self.language, src).map_err(|e| tracing::warn!("tags query for {}: {e}", self.name)).ok()?;
+                for i in 0..q.pattern_count() {
+                    if q.property_predicates(i).iter().any(|(p, is)| !is && &*p.key == "local") {
+                        q.disable_pattern(i);
+                    }
+                }
+                Some(q)
             })
             .as_ref()
     }
@@ -189,6 +202,49 @@ const C_TAGS_EXTRA: &str = "(call_expression function: (identifier) @name) @refe
 /// level is matched.
 #[cfg(feature = "lang-cpp")]
 const CPP_TAGS_EXTRA: &str = "(call_expression function: (identifier) @name) @reference.call (call_expression function: (field_expression field: (field_identifier) @name)) @reference.call (call_expression function: (qualified_identifier name: (identifier) @name)) @reference.call (call_expression function: (template_function name: (identifier) @name)) @reference.call (type_identifier) @name @reference.type";
+
+/// C# extras, prepended: upstream lacks these definitions, misses
+/// unqualified calls and tags member calls `send`.
+#[cfg(feature = "lang-csharp")]
+const CSHARP_TAGS_EXTRA: &str = "(invocation_expression function: (member_access_expression name: (identifier) @name)) @reference.call (invocation_expression function: (identifier) @name) @reference.call (struct_declaration name: (identifier) @name) @definition.struct (enum_declaration name: (identifier) @name) @definition.enum (record_declaration name: (identifier) @name) @definition.record (constructor_declaration name: (identifier) @name) @definition.constructor (property_declaration name: (identifier) @name) @definition.property (namespace_declaration name: (qualified_name) @name) @definition.module (file_scoped_namespace_declaration name: [(identifier) (qualified_name)] @name) @definition.module";
+
+/// PHP extras, appended: plain-name calls and `new`, `extends`, enums and
+/// class constants.
+#[cfg(feature = "lang-php")]
+const PHP_TAGS_EXTRA: &str = "(function_call_expression function: (name) @name) @reference.call (object_creation_expression (name) @name) @reference.class (base_clause (name) @name) @reference.class (enum_declaration name: (name) @name) @definition.enum (enum_case name: (name) @name) @definition.constant (const_declaration (const_element . (name) @name)) @definition.constant";
+
+/// Ruby extras, appended: replace the bare identifier/constant pattern that
+/// `tags_query` disables: constant assignments and constants as class
+/// references. A bare identifier is a local variable as often as a call, so
+/// it is left out.
+#[cfg(feature = "lang-ruby")]
+const RUBY_TAGS_EXTRA: &str = "(assignment left: (constant) @name) @definition.constant (constant) @name @reference.class";
+
+/// Swift tags, jetl's own: upstream puts member definitions on the class
+/// node, lists local properties and has no references. Specific kinds come
+/// first since the first pattern for a node wins.
+#[cfg(feature = "lang-swift")]
+const SWIFT_TAGS: &str = r#"
+(class_declaration declaration_kind: "struct" name: (type_identifier) @name) @definition.struct
+(class_declaration declaration_kind: "enum" name: (type_identifier) @name) @definition.enum
+(class_declaration declaration_kind: "extension" name: (user_type (type_identifier) @name)) @definition.extension
+(class_declaration name: (type_identifier) @name) @definition.class
+(protocol_declaration name: (type_identifier) @name) @definition.interface
+(class_body (function_declaration name: (simple_identifier) @name) @definition.method)
+(enum_class_body (function_declaration name: (simple_identifier) @name) @definition.method)
+(protocol_body (protocol_function_declaration name: (simple_identifier) @name) @definition.method)
+(class_body (init_declaration "init" @name) @definition.method)
+(enum_class_body (init_declaration "init" @name) @definition.method)
+(function_declaration name: (simple_identifier) @name) @definition.function
+(source_file (property_declaration name: (pattern bound_identifier: (simple_identifier) @name)) @definition.property)
+(class_body (property_declaration name: (pattern bound_identifier: (simple_identifier) @name)) @definition.property)
+(enum_class_body (property_declaration name: (pattern bound_identifier: (simple_identifier) @name)) @definition.property)
+(enum_entry name: (simple_identifier) @name) @definition.constant
+(typealias_declaration name: (type_identifier) @name) @definition.type
+(call_expression (simple_identifier) @name) @reference.call
+(call_expression (navigation_expression suffix: (navigation_suffix suffix: (simple_identifier) @name))) @reference.call
+(user_type (type_identifier) @name) @reference.type
+"#;
 
 /// Markdown headings. ATX headings own a `section` (their heading plus
 /// everything up to the next heading of the same or a higher level), so
@@ -364,14 +420,10 @@ pub static LANGUAGES: LazyLock<Vec<LanguageDef>> = LazyLock::new(|| {
             .map(|d| d.with_injections(tree_sitter_md::INJECTION_QUERY_BLOCK).with_tags(MD_TAGS)),
     );
     #[cfg(feature = "lang-csharp")]
-    v.extend(make(
-        "csharp",
-        &["cs", "csx"],
-        &[],
-        tree_sitter_c_sharp::LANGUAGE.into(),
-        &[tree_sitter_c_sharp::HIGHLIGHTS_QUERY],
-        Some("//"),
-    ));
+    v.extend(
+        make("csharp", &["cs", "csx"], &[], tree_sitter_c_sharp::LANGUAGE.into(), &[tree_sitter_c_sharp::HIGHLIGHTS_QUERY], Some("//"))
+            .map(|d| d.with_tags(join_static(&[CSHARP_TAGS_EXTRA, tree_sitter_c_sharp::TAGS_QUERY]))),
+    );
     #[cfg(feature = "lang-yaml")]
     // Upstream captures mapping keys as `@string` before `@property`, and
     // the first pattern for a node wins; lift the key patterns to the front.
@@ -444,7 +496,10 @@ pub static LANGUAGES: LazyLock<Vec<LanguageDef>> = LazyLock::new(|| {
             .map(|d| d.with_tags(tree_sitter_java::TAGS_QUERY).with_imports(include_str!("../../assets/queries/java/imports.scm"))),
     );
     #[cfg(feature = "lang-php")]
-    v.extend(make("php", &["php"], &[], tree_sitter_php::LANGUAGE_PHP.into(), &[tree_sitter_php::HIGHLIGHTS_QUERY], Some("//")));
+    v.extend(
+        make("php", &["php"], &[], tree_sitter_php::LANGUAGE_PHP.into(), &[tree_sitter_php::HIGHLIGHTS_QUERY], Some("//"))
+            .map(|d| d.with_tags(join_static(&[tree_sitter_php::TAGS_QUERY, PHP_TAGS_EXTRA]))),
+    );
     #[cfg(feature = "lang-lua")]
     v.extend(make("lua", &["lua"], &[], tree_sitter_lua::LANGUAGE.into(), &["(function_call name: (identifier) @function.builtin (#any-of? @function.builtin \"assert\" \"collectgarbage\" \"dofile\" \"error\" \"getfenv\" \"getmetatable\" \"ipairs\" \"load\" \"loadfile\" \"loadstring\" \"module\" \"next\" \"pairs\" \"pcall\" \"print\" \"rawequal\" \"rawget\" \"rawset\" \"require\" \"select\" \"setfenv\" \"setmetatable\" \"tonumber\" \"tostring\" \"type\" \"unpack\" \"xpcall\"))", tree_sitter_lua::HIGHLIGHTS_QUERY], Some("--")));
     // tree-sitter-containerfile is the maintained fork of the Dockerfile
@@ -557,27 +612,29 @@ pub static LANGUAGES: LazyLock<Vec<LanguageDef>> = LazyLock::new(|| {
     #[cfg(feature = "lang-sql")]
     v.extend(make("sql", &["sql"], &[], tree_sitter_sequel::LANGUAGE.into(), &[tree_sitter_sequel::HIGHLIGHTS_QUERY], Some("--")));
     #[cfg(feature = "lang-ruby")]
-    v.extend(make(
-        "ruby",
-        &["rb", "rake", "gemspec", "ru"],
-        &["Gemfile", "Rakefile", "Vagrantfile"],
-        tree_sitter_ruby::LANGUAGE.into(),
-        &[tree_sitter_ruby::HIGHLIGHTS_QUERY],
-        Some("#"),
-    ));
+    v.extend(
+        make(
+            "ruby",
+            &["rb", "rake", "gemspec", "ru"],
+            &["Gemfile", "Rakefile", "Vagrantfile"],
+            tree_sitter_ruby::LANGUAGE.into(),
+            &[tree_sitter_ruby::HIGHLIGHTS_QUERY],
+            Some("#"),
+        )
+        .map(|d| d.with_tags(join_static(&[tree_sitter_ruby::TAGS_QUERY, RUBY_TAGS_EXTRA]))),
+    );
     // tree-sitter-kotlin-sg is ast-grep's maintained fork of the fwcd
     // grammar; tree-sitter-kotlin-ng ships no highlight query.
     #[cfg(feature = "lang-kotlin")]
-    v.extend(make(
-        "kotlin",
-        &["kt", "kts"],
-        &[],
-        tree_sitter_kotlin_sg::LANGUAGE.into(),
-        &[tree_sitter_kotlin_sg::HIGHLIGHTS_QUERY],
-        Some("//"),
-    ));
+    v.extend(
+        make("kotlin", &["kt", "kts"], &[], tree_sitter_kotlin_sg::LANGUAGE.into(), &[tree_sitter_kotlin_sg::HIGHLIGHTS_QUERY], Some("//"))
+            .map(|d| d.with_tags(include_str!("../../assets/queries/kotlin/tags.scm"))),
+    );
     #[cfg(feature = "lang-swift")]
-    v.extend(make("swift", &["swift"], &[], tree_sitter_swift::LANGUAGE.into(), &[tree_sitter_swift::HIGHLIGHTS_QUERY], Some("//")));
+    v.extend(
+        make("swift", &["swift"], &[], tree_sitter_swift::LANGUAGE.into(), &[tree_sitter_swift::HIGHLIGHTS_QUERY], Some("//"))
+            .map(|d| d.with_tags(SWIFT_TAGS)),
+    );
     #[cfg(feature = "lang-zig")]
     v.extend(make("zig", &["zig", "zon"], &[], tree_sitter_zig::LANGUAGE.into(), &[tree_sitter_zig::HIGHLIGHTS_QUERY], Some("//")));
     // tree-sitter-hcl ships no highlight query; the copy from
@@ -1676,7 +1733,9 @@ mod tests {
         let tagged: Vec<&str> = LANGUAGES.iter().filter(|l| l.tags.is_some()).map(|l| l.name).collect();
         let broken: Vec<&str> = LANGUAGES.iter().filter(|l| l.tags.is_some() && l.tags_query().is_none()).map(|l| l.name).collect();
         assert!(broken.is_empty(), "tags query does not compile for {broken:?}");
-        for name in ["rust", "javascript", "typescript", "tsx", "python", "go", "c", "cpp", "java"] {
+        for name in
+            ["rust", "javascript", "typescript", "tsx", "python", "go", "c", "cpp", "java", "csharp", "php", "ruby", "kotlin", "swift"]
+        {
             assert_eq!(tagged.contains(&name), names.contains(&name), "{name} has tags when enabled");
         }
         let importing: Vec<&str> = LANGUAGES.iter().filter(|l| l.imports.is_some()).map(|l| l.name).collect();
@@ -2490,7 +2549,9 @@ mod tests {
             if !names.is_empty() && names.iter().all(|n| OWN.contains(&n.as_str())) {
                 continue;
             }
-            let scm = std::fs::read_to_string(dir.join("highlights.scm")).unwrap_or_else(|e| panic!("{name}: {e}"));
+            // Kotlin vendors only a tags query.
+            let file = if dir.join("highlights.scm").exists() { "highlights.scm" } else { "tags.scm" };
+            let scm = std::fs::read_to_string(dir.join(file)).unwrap_or_else(|e| panic!("{name}: {e}"));
             let first = scm.lines().next().unwrap_or("");
             assert!(first.starts_with("; From https://") && first.ends_with("; see LICENSE."), "{name}: {first:?}");
             let licence = std::fs::read_to_string(dir.join("LICENSE")).unwrap_or_else(|e| panic!("{name}: {e}"));
