@@ -200,18 +200,21 @@ fn centred(buf: &mut Buffer, rect: Rect, text: &str, style: Style) {
     buf.set_style(Rect::new(x, rect.y, end - x, 1), under);
 }
 
-/// The hovered button's name and shortcut on one line right of it. Hidden
-/// while an overlay is open, and once the button is gone from the strip.
-pub fn render_tooltip(app: &App, frame: &mut Frame, area: Rect) {
-    let Some(hover) = app.strip_hover else { return };
-    if app.palette.is_some()
+/// An overlay is open, so a hover tooltip stays hidden.
+pub(crate) fn overlay_open(app: &App) -> bool {
+    app.palette.is_some()
         || app.dialog.is_some()
         || app.menu.is_some()
         || app.menu_bar.is_some()
         || app.settings.is_some()
         || app.run_configs.is_some()
-        || !app.layout.strip_hits.contains(&hover)
-    {
+}
+
+/// The hovered button's name and shortcut on one line right of it. Hidden
+/// while an overlay is open, and once the button is gone from the strip.
+pub fn render_tooltip(app: &App, frame: &mut Frame, area: Rect) {
+    let Some(hover) = app.strip_hover else { return };
+    if overlay_open(app) || !app.layout.strip_hits.contains(&hover) {
         return;
     }
     let (button, rect) = hover;

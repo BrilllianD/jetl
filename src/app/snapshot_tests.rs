@@ -3472,6 +3472,23 @@ async fn app_toolbar_80x24() {
 }
 
 #[tokio::test]
+async fn app_toolbar_running() {
+    let mut fx = stable_app("toolbar-running");
+    let app = &mut fx.app;
+    app.config.ui.toolbar = true;
+    app.run.selected = Some("check".into());
+    app.run.fake_running("cargo test");
+    let term = draw_app(app, 80, 24);
+    let marks = [Mark::style('A', "running", app.theme.strip_item.patch(app.theme.status_accent))];
+    // The spinner frame depends on the clock.
+    let mut snap = snapshot(&term, &marks, None);
+    for f in ["⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] {
+        snap = snap.replace(f, "⠋");
+    }
+    assert_snapshot!("app_toolbar_running", snap);
+}
+
+#[tokio::test]
 async fn app_toolbar_menu_open() {
     let mut fx = stable_app("toolbar-menu");
     let app = &mut fx.app;

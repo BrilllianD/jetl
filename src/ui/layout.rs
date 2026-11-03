@@ -84,6 +84,14 @@ pub enum StripButton {
 pub enum ToolbarButton {
     /// Opens the main menu.
     Menu,
+    /// The run configuration selector (`run.pick`).
+    RunConfig,
+    /// Runs the selected configuration (`run.run_selected`).
+    Run,
+    /// Runs the last task again (`run.rerun`).
+    Rerun,
+    /// Stops the running task (`run.stop`).
+    Stop,
 }
 
 /// How a tool window docks: an Unpinned one hides when focus leaves it.

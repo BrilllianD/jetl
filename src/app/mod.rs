@@ -667,8 +667,11 @@ impl App {
         if let Some((path, base)) = self.editor.want_inline_blame() {
             self.git.load_blame(path, base);
         }
-        // The spinners and the elapsed time of a running task.
-        if self.git.is_busy() || self.lsp.busy() || (self.run.running() && self.layout.is_visible(ToolWindowId::Run)) {
+        // The spinners (Run window, toolbar) and the elapsed time of a running task.
+        if self.git.is_busy()
+            || self.lsp.busy()
+            || (self.run.running() && (self.layout.is_visible(ToolWindowId::Run) || !self.layout.rects.toolbar.is_empty()))
+        {
             self.dirty_frame = true;
         }
         self.completion_timeout(Instant::now());
@@ -4912,7 +4915,7 @@ mod strip_tests {
         let (mut app, dir) = test_app("toolbar-menu");
         app.config.ui.toolbar = true;
         let buf = draw(&mut app);
-        assert_eq!(app.layout.toolbar_hits, vec![(ToolbarButton::Menu, Rect::new(0, 0, 3, 1))]);
+        assert_eq!(app.layout.toolbar_hits[0], (ToolbarButton::Menu, Rect::new(0, 0, 3, 1)));
         assert!(!app.layout.strip_hits.iter().any(|(b, _)| *b == StripButton::Menu));
         assert!(app.layout.strip_hits.iter().all(|(_, r)| r.y >= 1));
         for tw in ToolWindowId::ALL {
@@ -4998,6 +5001,61 @@ mod strip_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    fn toolbar_hit(app: &super::App, b: crate::ui::layout::ToolbarButton) -> Rect {
+        app.layout.toolbar_hits.iter().find(|(x, _)| *x == b).map(|(_, r)| *r).expect("toolbar button")
+    }
+
+    #[tokio::test]
+    async fn toolbar_run_widget_runs_the_run_actions() {
+        use crate::ui::layout::ToolbarButton as B;
+        use crate::ui::palette::Source;
+        let (mut app, dir) = test_app("toolbar-run");
+        app.config.ui.toolbar = true;
+        draw(&mut app);
+        let run = toolbar_hit(&app, B::Run);
+        assert_eq!(run.right(), 100);
+        let cfg = toolbar_hit(&app, B::RunConfig);
+        click(&mut app, cfg.x + 1, 0);
+        assert!(app.palette.as_ref().unwrap().wants(Source::Tasks));
+        app.palette = None;
+        assert!(app.run.selected.is_none());
+        click(&mut app, run.x + 1, 0);
+        assert!(app.palette.as_ref().unwrap().wants(Source::Tasks));
+        app.palette = None;
+
+        app.run.fake_running("nap");
+        let buf = draw(&mut app);
+        let buttons: Vec<_> = app.layout.toolbar_hits.iter().map(|(b, _)| *b).collect();
+        assert_eq!(buttons, [B::Menu, B::RunConfig, B::Rerun, B::Stop]);
+        assert!(row_text(&buf, 0, 100).contains("nap ▾"));
+        let rerun = toolbar_hit(&app, B::Rerun);
+        click(&mut app, rerun.x + 1, 0);
+        assert!(app.palette.as_ref().unwrap().wants(Source::Tasks));
+        app.palette = None;
+        let stop = toolbar_hit(&app, B::Stop);
+        click(&mut app, stop.x + 1, 0);
+        assert!(!app.notifications.iter().any(|n| n.text.contains("No task is running")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn toolbar_run_tooltip() {
+        use crate::ui::layout::ToolbarButton as B;
+        let (mut app, dir) = test_app("toolbar-run-tip");
+        app.config.ui.toolbar = true;
+        app.run.fake_running("nap");
+        // A startup toast would cover the tooltip at the right edge.
+        app.toasts.expire(std::time::Instant::now() + std::time::Duration::from_secs(3600));
+        draw(&mut app);
+        let stop = toolbar_hit(&app, B::Stop);
+        app.handle_mouse(ev(MouseEventKind::Moved, stop.x + 1, 0));
+        let buf = draw(&mut app);
+        let key = app.shortcut(&Action::Run(crate::actions::RunAction::Stop)).unwrap();
+        let row = row_text(&buf, 1, 100);
+        assert!(row.contains("Stop") && row.contains(&key), "{row:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[tokio::test]
     async fn toolbar_hides_below_12_rows_and_in_zen() {
         use crate::ui::layout::Hit;
@@ -5007,7 +5065,7 @@ mod strip_tests {
         assert!(app.layout.toolbar_hits.is_empty());
         assert_eq!(app.layout.strip_hits[0], (StripButton::Menu, Rect::new(0, 0, 3, 1)));
         draw_at(&mut app, 80, 12);
-        assert_eq!(app.layout.toolbar_hits.len(), 1);
+        assert!(app.layout.toolbar_hits.iter().any(|(b, _)| *b == crate::ui::layout::ToolbarButton::Menu));
         app.perform(Action::App(AppAction::ToggleZen));
         assert!(app.layout.zen.is_some());
         draw_at(&mut app, 80, 24);

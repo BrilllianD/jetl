@@ -1369,11 +1369,17 @@ Setup as above with the default config (`[lsp] enabled = false` only), at 120x40
    Worktrees, Structure on rows 2-4, Find on row 23 up to Hierarchy on row 14).
 2. Hover column 2, row 1: `Main Menu  F10` shows on row 2.
 3. Click column 2, row 1: the menu bar opens over row 1; a second click closes it. F10 still toggles it.
-4. `resize-window -y 11` hides the row and the strip's menu cell is back on row 1. Zen (its key from
+4. Row 1 ends with ` Select Configuration ▾ ` and ` ▶ ` flush right; hover ▶: `Run  Shift+F10` shows on row 2.
+5. With `$ROOT/.jetl/run.toml` holding `[[configs]]`, `name = "nap"`, `command = ["sh", "-c", "sleep 20"]`, click
+   the name: the Run palette opens; pick `nap`: the task starts and the widget reads ` ⠋ nap ▾ ` in the accent
+   colour with ` ↻ ` and ` ■ `. Hide the Run window (Alt+4): the spinner keeps moving.
+6. Click ■: the task stops and the widget returns to ` nap ▾ ` and ` ▶ `; click ▶: it runs again.
+7. At 80x24 with a configuration named `integration-tests`, the toolbar still shows ▶ at the right edge.
+8. `resize-window -y 11` hides the row and the strip's menu cell is back on row 1. Zen (its key from
    `docs/KEYMAP.md`) hides it too.
-5. `printf '[lsp]\nenabled = false\n[ui]\ntoolbar = false\n' > $C/config.toml` removes it at once;
+9. `printf '[lsp]\nenabled = false\n[ui]\ntoolbar = false\n' > $C/config.toml` removes it at once;
    `toolbar = true` brings it back.
-6. Default config again, 120x40: right press on column 40, row 1 opens a one-row menu "Hide Toolbar" below
+10. Default config again, 120x40: right press on column 40, row 1 opens a one-row menu "Hide Toolbar" below
    the press; Enter hides the row, the strip's menu cell is back on row 1 and `$C/config.toml` holds
    `toolbar = false` under `[ui]` with `[lsp] enabled = false` kept. F10, Right to View, the "Toolbar" row
    (just above "Zen Mode"), Enter brings the row back and the file holds `toolbar = true`. A right press on

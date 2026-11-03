@@ -7,8 +7,9 @@ use ratatui::layout::Rect;
 use ratatui::style::Style;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::actions::{Action, AppAction};
+use crate::actions::{Action, AppAction, PaletteKind, RunAction};
 use crate::app::App;
+use crate::config::theme::Theme;
 use crate::ui::layout::ToolbarButton;
 use crate::ui::menu_bar::menu_glyph;
 
@@ -93,13 +94,13 @@ pub fn place(mut items: Vec<Item>, area: Rect) -> Vec<(Item, Rect)> {
             break;
         }
         items.retain_mut(|item| {
-            for (n, shrink) in item.shrinks.clone() {
-                if n != step {
+            for (n, shrink) in item.shrinks.iter() {
+                if *n != step {
                     continue;
                 }
                 match shrink {
                     Shrink::Drop => return false,
-                    Shrink::Text(t) => item.text = t,
+                    Shrink::Text(t) => item.text = t.clone(),
                 }
             }
             true
@@ -128,21 +129,55 @@ pub fn place(mut items: Vec<Item>, area: Rect) -> Vec<(Item, Rect)> {
     out
 }
 
-/// The widgets in group order (left, then right); 351-353 add theirs here.
+/// The run widget: the configuration selector, then Run when idle or Rerun
+/// and Stop while a task runs. The selector names the running task, else the
+/// selection.
+pub fn run_items(selected: Option<&str>, running: Option<&str>, spinner: &str, theme: &Theme) -> Vec<Item> {
+    let label = |name: &str| match running {
+        Some(_) => format!(" {spinner} {name} ▾ "),
+        None => format!(" {name} ▾ "),
+    };
+    let name = running.or(selected).unwrap_or("Select Configuration");
+    let style = if running.is_some() { theme.strip_item.patch(theme.status_accent) } else { theme.strip_item };
+    let button =
+        |button, text: &str| Item { button, group: Group::Right, text: text.to_string(), style: theme.strip_item, shrinks: vec![] };
+    let mut items = vec![Item {
+        button: ToolbarButton::RunConfig,
+        group: Group::Right,
+        text: label(name),
+        style,
+        shrinks: vec![(STEP_RUN_CONFIG_CUT, Shrink::Text(label(&shorten(name, 8))))],
+    }];
+    if running.is_some() {
+        items.push(button(ToolbarButton::Rerun, " ↻ "));
+        items.push(button(ToolbarButton::Stop, " ■ "));
+    } else {
+        items.push(button(ToolbarButton::Run, " ▶ "));
+    }
+    items
+}
+
+/// The widgets in group order (left, then right); 352 and 353 add theirs here.
 fn items(app: &App) -> Vec<Item> {
-    vec![Item {
+    let mut items = vec![Item {
         button: ToolbarButton::Menu,
         group: Group::Left,
         text: format!(" {} ", menu_glyph(app.config.ui.icons)),
         style: app.theme.strip_item,
         shrinks: vec![],
-    }]
+    }];
+    items.extend(run_items(app.run.selected.as_deref(), app.run.running_name(), app.spinner(), &app.theme));
+    items
 }
 
 /// The action a press on `button` runs.
 pub fn action(button: ToolbarButton) -> Action {
     match button {
         ToolbarButton::Menu => Action::App(AppAction::MainMenu),
+        ToolbarButton::RunConfig => Action::App(AppAction::OpenPalette(PaletteKind::RunTasks)),
+        ToolbarButton::Run => Action::Run(RunAction::RunSelected),
+        ToolbarButton::Rerun => Action::Run(RunAction::Rerun),
+        ToolbarButton::Stop => Action::Run(RunAction::Stop),
     }
 }
 
@@ -150,6 +185,10 @@ pub fn action(button: ToolbarButton) -> Action {
 pub fn title(button: ToolbarButton) -> &'static str {
     match button {
         ToolbarButton::Menu => "Main Menu",
+        ToolbarButton::RunConfig => "Run Configuration",
+        ToolbarButton::Run => "Run",
+        ToolbarButton::Rerun => "Rerun",
+        ToolbarButton::Stop => "Stop",
     }
 }
 
@@ -175,14 +214,7 @@ pub fn render(app: &mut App, frame: &mut Frame, area: Rect) {
 /// an overlay is open, and once the button is gone from the row.
 pub fn render_tooltip(app: &App, frame: &mut Frame, area: Rect) {
     let Some(hover) = app.toolbar_hover else { return };
-    if app.palette.is_some()
-        || app.dialog.is_some()
-        || app.menu.is_some()
-        || app.menu_bar.is_some()
-        || app.settings.is_some()
-        || app.run_configs.is_some()
-        || !app.layout.toolbar_hits.contains(&hover)
-    {
+    if crate::ui::tool_strip::overlay_open(app) || !app.layout.toolbar_hits.contains(&hover) {
         return;
     }
     let (button, rect) = hover;
@@ -275,6 +307,52 @@ mod tests {
         assert_eq!(xs(&placed), vec![(0, 4), (5, 5), (11, 3)]);
         let placed = place(vec![it(Group::Left, "menu", vec![]), it(Group::Right, "run-config", vec![])], Rect::new(0, 0, 9, 1));
         assert_eq!(placed[0].1, Rect::new(0, 0, 4, 1));
+    }
+
+    fn texts(items: &[Item]) -> Vec<&str> {
+        items.iter().map(|i| i.text.as_str()).collect()
+    }
+
+    #[test]
+    fn run_items_idle_and_running() {
+        let t = Theme::default();
+        let idle = run_items(None, None, "⠋", &t);
+        let buttons: Vec<_> = idle.iter().map(|i| i.button).collect();
+        assert_eq!(buttons, [ToolbarButton::RunConfig, ToolbarButton::Run]);
+        assert_eq!(texts(&idle), [" Select Configuration ▾ ", " ▶ "]);
+        assert_eq!(texts(&run_items(Some("check"), None, "⠋", &t)), [" check ▾ ", " ▶ "]);
+        let run = run_items(Some("check"), Some("cargo test"), "⠋", &t);
+        let buttons: Vec<_> = run.iter().map(|i| i.button).collect();
+        assert_eq!(buttons, [ToolbarButton::RunConfig, ToolbarButton::Rerun, ToolbarButton::Stop]);
+        assert_eq!(texts(&run), [" ⠋ cargo test ▾ ", " ↻ ", " ■ "]);
+        assert_eq!(run[0].style, t.strip_item.patch(t.status_accent));
+    }
+
+    #[test]
+    fn run_config_name_is_cut_last_and_buttons_stay() {
+        let t = Theme::default();
+        let with = |running: Option<&str>| {
+            let mut items = vec![it(Group::Left, " ≣ ", vec![])];
+            items.extend(run_items(Some("integration-tests"), running, "⠋", &t));
+            items
+        };
+        let placed = place(with(None), Rect::new(0, 0, 40, 1));
+        assert_eq!(placed[1].0.text, " integration-tests ▾ ");
+        let placed = place(with(None), Rect::new(0, 0, 22, 1));
+        assert_eq!(placed[1].0.text, " integrat… ▾ ");
+        assert_eq!(placed[2].1, Rect::new(19, 0, 3, 1));
+        let placed = place(with(Some("integration-tests")), Rect::new(0, 0, 28, 1));
+        assert_eq!(placed[1].0.text, " ⠋ integrat… ▾ ");
+        assert_eq!((placed[2].1.width, placed[3].1.width), (3, 3));
+        assert_eq!(placed[3].1.right(), 28);
+    }
+
+    #[test]
+    fn run_actions_map_to_the_run_ids() {
+        assert_eq!(action(ToolbarButton::RunConfig), Action::App(AppAction::OpenPalette(PaletteKind::RunTasks)));
+        assert_eq!(action(ToolbarButton::Run), Action::Run(RunAction::RunSelected));
+        assert_eq!(action(ToolbarButton::Rerun), Action::Run(RunAction::Rerun));
+        assert_eq!(action(ToolbarButton::Stop), Action::Run(RunAction::Stop));
     }
 
     #[test]

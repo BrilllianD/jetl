@@ -76,6 +76,20 @@ impl RunState {
         self.job.is_some()
     }
 
+    /// The running task's name.
+    pub fn running_name(&self) -> Option<&str> {
+        self.job.as_ref().map(|j| j.name.as_str())
+    }
+
+    /// A running job without a process (pid 0, so kill does nothing), for
+    /// tests of the running state. Needs a tokio runtime.
+    #[cfg(test)]
+    pub(crate) fn fake_running(&mut self, name: &str) {
+        self.seq += 1;
+        let task = tokio::spawn(std::future::pending::<()>()).abort_handle();
+        self.job = Some(Job { run: self.seq, name: name.to_string(), pid: Arc::new(AtomicU32::new(0)), task, stopped: false });
+    }
+
     /// The running task's process group id, if any.
     #[cfg(test)]
     pub fn pid(&self) -> Option<u32> {
