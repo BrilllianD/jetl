@@ -2,6 +2,10 @@
 //! the tree in `App::hierarchy` and its lazily asked children
 //! (`lsp/hierarchy.rs` holds the model).
 //!
+//! File Dependencies (`hierarchy.file_dependencies`) builds an index tree of the
+//! active file with the `Imports` / `ImportedBy` directions, children from the
+//! index's import edges.
+//!
 //! Without a server for the buffer, the call hierarchy is computed from the
 //! symbol index (`symbols/graph.rs`): an index tree
 //! (`HierarchyTree::from_index`) whose children are filled synchronously.
@@ -9,7 +13,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use lsp_types::{Position, Range};
+use lsp_types::{Position, Range, SymbolKind};
 use serde_json::{Value, json};
 
 use super::App;
@@ -106,6 +110,9 @@ impl App {
         if matches!(a, HierarchyAction::ExportMermaid | HierarchyAction::ExportDot) {
             return self.hierarchy_export(a == HierarchyAction::ExportDot);
         }
+        if a == HierarchyAction::FileDependencies {
+            return self.hierarchy_files();
+        }
         let Some(node) = self.hierarchy_panel.selected(self.hierarchy.as_ref()) else { return };
         match a {
             HierarchyAction::Expand => {
@@ -138,7 +145,8 @@ impl App {
             | HierarchyAction::Home
             | HierarchyAction::End
             | HierarchyAction::ExportMermaid
-            | HierarchyAction::ExportDot => {}
+            | HierarchyAction::ExportDot
+            | HierarchyAction::FileDependencies => {}
         }
     }
 
@@ -221,7 +229,8 @@ impl App {
         if t.from_index() {
             return self.hierarchy_index_children(node);
         }
-        let (tree, server, method, raw) = (t.id, t.server.clone(), t.direction.method(), n.item.raw.clone());
+        let Some(method) = t.direction.method() else { return };
+        let (tree, server, raw) = (t.id, t.server.clone(), n.item.raw.clone());
         let client = self.lsp.clients.get_mut(&server).filter(|c| c.capabilities().is_some());
         let Some(client) = client else { return self.lsp_hint(format!("{server} is not running")) };
         client.request(method, json!({"item": raw}), PendingTag::HierarchyChildren { tree, node });
@@ -236,22 +245,71 @@ impl App {
         let Some((direction, item)) = self.hierarchy.as_ref().and_then(|t| t.nodes.get(node).map(|n| (t.direction, n.item.clone()))) else {
             return;
         };
-        let defs = match direction {
-            Direction::Callers => graph::callers(&self.symbols, &item.name),
-            Direction::Callees => match self.rel_path(&item.path) {
-                Some(rel) => match graph::find(&self.symbols, &rel, &item.name, item.selection.start.line as usize) {
-                    Some(sym) => graph::callees(&mut self.symbols, &rel, sym),
+        let items = match direction {
+            Direction::Callers => {
+                let defs = graph::callers(&self.symbols, &item.name);
+                self.hierarchy_items(defs)
+            }
+            Direction::Callees => {
+                let defs = match self.rel_path(&item.path) {
+                    Some(rel) => match graph::find(&self.symbols, &rel, &item.name, item.selection.start.line as usize) {
+                        Some(sym) => graph::callees(&mut self.symbols, &rel, sym),
+                        None => Vec::new(),
+                    },
                     None => Vec::new(),
-                },
+                };
+                self.hierarchy_items(defs)
+            }
+            Direction::Imports | Direction::ImportedBy => match self.rel_path(&item.path) {
+                Some(rel) => {
+                    let files =
+                        if direction == Direction::Imports { self.symbols.imports_of(&rel) } else { self.symbols.imported_by(&rel) };
+                    files.iter().map(|f| self.file_item(f)).collect()
+                }
                 None => Vec::new(),
             },
             Direction::Supertypes | Direction::Subtypes => Vec::new(),
         };
-        let items = self.hierarchy_items(defs);
         if let Some(t) = &mut self.hierarchy {
             t.set_children(node, items);
         }
         self.dirty_frame = true;
+    }
+
+    /// A file of the project as a hierarchy item, at its first line.
+    fn file_item(&self, rel: &str) -> HierarchyItem {
+        HierarchyItem {
+            name: rel.to_string(),
+            detail: None,
+            kind: SymbolKind::FILE,
+            path: self.workspace.root.join(rel),
+            selection: Range::default(),
+            raw: Value::Null,
+        }
+    }
+
+    /// The Hierarchy window on the active file's imports, from the symbol index;
+    /// a toast says why when there is nothing to show.
+    pub(crate) fn hierarchy_files(&mut self) {
+        let Some(path) = self.editor.active_path().map(Path::to_path_buf) else {
+            return self.lsp_hint("No file to show the dependencies of");
+        };
+        if !crate::symbols::index::indexable(&path) {
+            return self.lsp_hint("No file dependencies for this file type");
+        }
+        let Some(rel) = self.rel_path(&path) else {
+            return self.lsp_hint("No file dependencies: the file is outside the project");
+        };
+        if self.symbols.file(&rel).is_none() {
+            return self.lsp_hint(if self.symbols.indexing() {
+                "No file dependencies yet; the project is still being indexed"
+            } else {
+                "No file dependencies: the file is not indexed"
+            });
+        }
+        let id = self.hierarchy_next_id();
+        let root = self.file_item(&rel);
+        self.hierarchy_show(HierarchyTree::new(id, String::new(), Direction::Imports, vec![root]));
     }
 
     /// Index definitions as items: `raw` is null and the selection is the name
@@ -853,6 +911,85 @@ mod tests {
         app.perform(Action::Hierarchy(HierarchyAction::Open));
         assert_eq!(app.editor.active_path(), Some(dir.join("root/src/main.rs").as_path()));
         assert_eq!(caret(&app), (8, 11));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    const DEP_FILES: [(&str, &str); 3] = [
+        ("src/main.rs", "mod a;\nmod b;\nfn main() {}\n"),
+        ("src/a.rs", "use crate::b::B;\npub fn a() {}\n"),
+        ("src/b.rs", "pub struct B;\n"),
+    ];
+
+    #[tokio::test]
+    async fn file_dependencies_come_from_the_index() {
+        let (mut app, dir) = test_app("hier-files");
+        index(&mut app, &DEP_FILES);
+        crate::app::tests::load(&mut app, "src/a.rs", DEP_FILES[1].1);
+        crate::app::tests::load(&mut app, "src/main.rs", DEP_FILES[0].1);
+        app.toasts = Default::default();
+        app.perform(Action::Hierarchy(HierarchyAction::FileDependencies));
+        let t = app.hierarchy.as_ref().expect("an index tree");
+        assert!(t.from_index());
+        assert_eq!((t.direction, t.title()), (Direction::Imports, "Imports of src/main.rs (approximate)".to_string()));
+        let root = &t.nodes[0].item;
+        assert_eq!(
+            (root.name.as_str(), root.kind, root.path.clone(), root.selection, root.raw.clone()),
+            ("src/main.rs", SymbolKind::FILE, dir.join("root/src/main.rs"), Range::default(), Value::Null)
+        );
+        assert_eq!(child_names(&app, 0), ["src/a.rs", "src/b.rs"]);
+        assert!(t.nodes.iter().all(|n| !n.loading));
+        assert!(app.layout.is_visible(ToolWindowId::Hierarchy));
+        assert!(app.focus.is(PanelId::Hierarchy));
+        assert!(toasts(&app).is_empty(), "{:?}", toasts(&app));
+        let act = |app: &mut App, a| app.perform(Action::Hierarchy(a));
+        act(&mut app, HierarchyAction::Down);
+        act(&mut app, HierarchyAction::Expand);
+        let a = app.hierarchy.as_ref().unwrap().nodes[0].children.as_ref().unwrap()[0];
+        assert_eq!(child_names(&app, a), ["src/b.rs"]);
+        act(&mut app, HierarchyAction::Down);
+        act(&mut app, HierarchyAction::Expand);
+        let t = app.hierarchy.as_ref().unwrap();
+        assert_eq!(t.nodes[t.nodes[a].children.as_ref().unwrap()[0]].children, Some(vec![]));
+        act(&mut app, HierarchyAction::ToggleDirection);
+        let t = app.hierarchy.as_ref().unwrap();
+        assert_eq!((t.direction, t.title()), (Direction::ImportedBy, "Imported by src/main.rs (approximate)".to_string()));
+        assert_eq!(t.nodes[0].children, Some(vec![]));
+        act(&mut app, HierarchyAction::ToggleDirection);
+        act(&mut app, HierarchyAction::Refresh);
+        assert_eq!(child_names(&app, 0), ["src/a.rs", "src/b.rs"]);
+        act(&mut app, HierarchyAction::Down);
+        act(&mut app, HierarchyAction::Open);
+        assert_eq!(app.editor.active_path(), Some(dir.join("root/src/a.rs").as_path()));
+        assert_eq!(caret(&app), (0, 0));
+        crate::app::tests::load(&mut app, "src/b.rs", DEP_FILES[2].1);
+        act(&mut app, HierarchyAction::FileDependencies);
+        act(&mut app, HierarchyAction::ToggleDirection);
+        assert_eq!(child_names(&app, 0), ["src/a.rs", "src/main.rs"]);
+        act(&mut app, HierarchyAction::ExportMermaid);
+        let out = std::fs::read_to_string(app.paths.scratches_dir().join("scratch_1.md")).unwrap();
+        assert_eq!(
+            out,
+            "# Imported by src/b.rs (approximate)\n\n```mermaid\nflowchart LR\n    n0[\"src/b.rs<br/>b.rs:1\"]\n    n1[\"src/a.rs<br/>a.rs:1 …\"]\n    n2[\"src/main.rs<br/>main.rs:1 …\"]\n    n1 --> n0\n    n2 --> n0\n```\n"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn file_dependencies_without_an_indexed_file_hint() {
+        let (mut app, dir) = test_app("hier-files-none");
+        let hint = |app: &mut App| {
+            app.toasts = Default::default();
+            app.perform(Action::Hierarchy(HierarchyAction::FileDependencies));
+            toasts(app).join("|")
+        };
+        assert!(hint(&mut app).contains("No file to show the dependencies of"));
+        crate::app::tests::load(&mut app, "notes.txt", "x\n");
+        assert!(hint(&mut app).contains("No file dependencies for this file type"));
+        assert!(!app.symbols.indexing());
+        std::fs::create_dir_all(app.workspace.root.join("src")).unwrap();
+        crate::app::tests::load(&mut app, "src/x.rs", "fn x() {}\n");
+        assert!(hint(&mut app).contains("No file dependencies: the file is not indexed"));
+        assert!(app.hierarchy.is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

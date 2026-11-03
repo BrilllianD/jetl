@@ -1483,6 +1483,17 @@ Run with `[lsp] enabled = false`, jetl's own repo as the root, at 120x40 then 80
 4. Enter on `usage_group`: the editor opens `lsp_nav.rs` with the caret on the name `usage_group` of its definition.
 5. Caret on a word that is no definition anywhere (a local variable): Ctrl+Alt+H shows the toast `No call hierarchy here`. Stderr is empty, Ctrl+Q exits 0.
 
+### Scenario: file dependencies
+
+Run with `[lsp] enabled = false`, jetl's own repo as the root, at 120x40 then 80x24.
+
+1. Start jetl and wait a few seconds for the symbol index. Open `src/app/hierarchy.rs` (Ctrl+Shift+N).
+2. Navigate > File Dependencies: the Hierarchy window opens focused, titled `Imports of src/app/hierarchy.rs (approximate)`, root row `src/app/hierarchy.rs`, children such as `src/actions.rs` and `src/lsp/hierarchy.rs` (the files its `use crate::..` lines name), with no line label after them.
+3. Down, Right on `src/actions.rs`: its imports appear at once (no `…`).
+4. Tab: the title becomes `Imported by src/app/hierarchy.rs (approximate)` with `src/app/mod.rs` as a child (it declares `mod hierarchy;`). F5 shows the same tree. Export Hierarchy as Mermaid writes edges from the importing file to the imported one.
+5. Enter on `src/app/mod.rs`: the editor opens it with the caret at line 1.
+6. Open `README.md` and run Navigate > File Dependencies: toast `No file dependencies for this file type`, the tree is unchanged. Stderr is empty, Ctrl+Q exits 0.
+
 ### Limits under tmux
 
 - No kitty keyboard protocol: Ctrl+Shift+letter, Ctrl+Tab, Ctrl+Enter,

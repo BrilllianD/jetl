@@ -1,7 +1,8 @@
 //! The call and type hierarchy of a symbol: the items a server answers
 //! (`prepareCallHierarchy`, `incomingCalls`, `outgoingCalls`,
 //! `prepareTypeHierarchy`, `supertypes`, `subtypes`), and the tree of them
-//! the Hierarchy window shows, loaded one level at a time.
+//! the Hierarchy window shows, loaded one level at a time, and the import tree
+//! of a file (`Imports`, `ImportedBy`), which only jetl's symbol index answers.
 //!
 //! Items are read through [`Wire`], not `lsp_types::CallHierarchyItem` or
 //! `TypeHierarchyItem` (the latter declares `tags` as one tag, so a real
@@ -25,16 +26,22 @@ pub enum Direction {
     Callees,
     Supertypes,
     Subtypes,
+    /// The files the root imports (symbol index only).
+    Imports,
+    /// The files that import the root (symbol index only).
+    ImportedBy,
 }
 
 impl Direction {
-    /// The other way of the same kind: callers and callees, supertypes and subtypes.
+    /// The other way of the same kind: callers and callees, supertypes and subtypes, imports and imported by.
     pub fn flipped(self) -> Self {
         match self {
             Direction::Callers => Direction::Callees,
             Direction::Callees => Direction::Callers,
             Direction::Supertypes => Direction::Subtypes,
             Direction::Subtypes => Direction::Supertypes,
+            Direction::Imports => Direction::ImportedBy,
+            Direction::ImportedBy => Direction::Imports,
         }
     }
 
@@ -43,13 +50,15 @@ impl Direction {
         matches!(self, Direction::Callers | Direction::Callees)
     }
 
-    /// The request that asks an item's children in this direction.
-    pub fn method(self) -> &'static str {
+    /// The request that asks an item's children in this direction; `None` for the file
+    /// directions, which only the symbol index answers.
+    pub fn method(self) -> Option<&'static str> {
         match self {
-            Direction::Callers => INCOMING_CALLS,
-            Direction::Callees => OUTGOING_CALLS,
-            Direction::Supertypes => SUPERTYPES,
-            Direction::Subtypes => SUBTYPES,
+            Direction::Callers => Some(INCOMING_CALLS),
+            Direction::Callees => Some(OUTGOING_CALLS),
+            Direction::Supertypes => Some(SUPERTYPES),
+            Direction::Subtypes => Some(SUBTYPES),
+            Direction::Imports | Direction::ImportedBy => None,
         }
     }
 }
@@ -183,13 +192,15 @@ impl HierarchyTree {
     /// The window title: the direction and the first root's name.
     pub fn title(&self) -> String {
         let what = match self.direction {
-            Direction::Callers => "Callers",
-            Direction::Callees => "Callees",
-            Direction::Supertypes => "Supertypes",
-            Direction::Subtypes => "Subtypes",
+            Direction::Callers => "Callers of",
+            Direction::Callees => "Callees of",
+            Direction::Supertypes => "Supertypes of",
+            Direction::Subtypes => "Subtypes of",
+            Direction::Imports => "Imports of",
+            Direction::ImportedBy => "Imported by",
         };
         let root = self.roots.first().map(|&r| self.nodes[r].item.name.as_str()).unwrap_or_default();
-        format!("{what} of {root}{}", if self.from_index() { " (approximate)" } else { "" })
+        format!("{what} {root}{}", if self.from_index() { " (approximate)" } else { "" })
     }
 
     /// Give `node` its children (replacing an earlier list) and expand it.
@@ -238,7 +249,7 @@ impl HierarchyTree {
                 labels.len() - 1
             })
         };
-        let to_parent = matches!(self.direction, Direction::Callers | Direction::Subtypes);
+        let to_parent = matches!(self.direction, Direction::Callers | Direction::Subtypes | Direction::ImportedBy);
         let mut stack: Vec<usize> = self.roots.iter().rev().copied().collect();
         while let Some(n) = stack.pop() {
             let id = id_of(n);
@@ -261,7 +272,7 @@ impl HierarchyTree {
     }
 
     /// The loaded part of the tree as a Mermaid flowchart; edges point from caller to
-    /// callee and from subtype to supertype.
+    /// callee, from subtype to supertype and from importing to imported file.
     pub fn to_mermaid(&self) -> String {
         let (nodes, edges) = self.graph();
         let mut out = String::from("flowchart LR\n");
@@ -373,10 +384,13 @@ mod tests {
         assert_eq!((Callers.flipped(), Callees.flipped()), (Callees, Callers));
         assert_eq!((Supertypes.flipped(), Subtypes.flipped()), (Subtypes, Supertypes));
         assert!(Callers.is_call() && Callees.is_call() && !Supertypes.is_call() && !Subtypes.is_call());
-        assert_eq!(Callers.method(), crate::lsp::caps::INCOMING_CALLS);
-        assert_eq!(Callees.method(), crate::lsp::caps::OUTGOING_CALLS);
-        assert_eq!(Supertypes.method(), crate::lsp::caps::SUPERTYPES);
-        assert_eq!(Subtypes.method(), crate::lsp::caps::SUBTYPES);
+        assert_eq!(Callers.method(), Some(crate::lsp::caps::INCOMING_CALLS));
+        assert_eq!(Callees.method(), Some(crate::lsp::caps::OUTGOING_CALLS));
+        assert_eq!(Supertypes.method(), Some(crate::lsp::caps::SUPERTYPES));
+        assert_eq!(Subtypes.method(), Some(crate::lsp::caps::SUBTYPES));
+        assert_eq!((Imports.flipped(), ImportedBy.flipped()), (ImportedBy, Imports));
+        assert!(!Imports.is_call() && !ImportedBy.is_call());
+        assert_eq!((Imports.method(), ImportedBy.method()), (None, None));
     }
 
     fn tree() -> HierarchyTree {
@@ -419,12 +433,14 @@ mod tests {
     fn export_edges_point_from_caller_and_from_subtype() {
         let mut t = tree();
         t.set_children(0, vec![item("a"), item("b")]);
-        for d in [Direction::Callees, Direction::Supertypes] {
+        for d in [Direction::Callees, Direction::Supertypes, Direction::Imports] {
             t.direction = d;
             assert!(t.to_mermaid().ends_with("    n0 --> n1\n    n0 --> n2\n"));
         }
-        t.direction = Direction::Subtypes;
-        assert!(t.to_mermaid().ends_with("    n1 --> n0\n    n2 --> n0\n"));
+        for d in [Direction::Subtypes, Direction::ImportedBy] {
+            t.direction = d;
+            assert!(t.to_mermaid().ends_with("    n1 --> n0\n    n2 --> n0\n"));
+        }
     }
 
     #[test]
@@ -487,6 +503,8 @@ mod tests {
             (Direction::Callees, "Callees of main"),
             (Direction::Supertypes, "Supertypes of main"),
             (Direction::Subtypes, "Subtypes of main"),
+            (Direction::Imports, "Imports of main"),
+            (Direction::ImportedBy, "Imported by main"),
         ] {
             t.direction = d;
             assert_eq!(t.title(), want);

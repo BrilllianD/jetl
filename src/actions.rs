@@ -579,6 +579,8 @@ pub enum HierarchyAction {
     ExportMermaid,
     /// Write the loaded tree to a new scratch file as a DOT graph.
     ExportDot,
+    /// Open the Hierarchy window on the active file's imports (symbol index).
+    FileDependencies,
 }
 
 /// The Tasks tool window (`yman/panel.rs`).
@@ -1165,10 +1167,11 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "hierarchy.expand" => "Hierarchy: expand the selected row (loads its children)", Hierarchy(HierarchyAction::Expand);
         "hierarchy.collapse" => "Hierarchy: collapse the selected row, or go to its parent", Hierarchy(HierarchyAction::Collapse);
         "hierarchy.open" => "Hierarchy: open the selected function or type", Hierarchy(HierarchyAction::Open);
-        "hierarchy.toggle_direction" => "Hierarchy: switch callers and callees, or supertypes and subtypes", Hierarchy(HierarchyAction::ToggleDirection);
+        "hierarchy.toggle_direction" => "Hierarchy: switch callers and callees, supertypes and subtypes, or imports and imported by", Hierarchy(HierarchyAction::ToggleDirection);
         "hierarchy.refresh" => "Hierarchy: ask the server again", Hierarchy(HierarchyAction::Refresh);
         "hierarchy.export_mermaid" => "Hierarchy: export the loaded tree as a Mermaid diagram (scratch file)", Hierarchy(HierarchyAction::ExportMermaid);
         "hierarchy.export_dot" => "Hierarchy: export the loaded tree as a Graphviz DOT graph (scratch file)", Hierarchy(HierarchyAction::ExportDot);
+        "hierarchy.file_dependencies" => "File dependencies: the files the active file imports, and those that import it, in the Hierarchy window", Hierarchy(HierarchyAction::FileDependencies);
 
         "local_history.up" => "Local History: up", History(HistoryAction::Up);
         "local_history.down" => "Local History: down", History(HistoryAction::Down);

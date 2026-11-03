@@ -1,0 +1,31 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &marks, Some(bottom))"
+---
+80x24 cursor=hidden
+00  ≣ ┌ Project: root ───────────────┐│  main.rs ×
+01    │                              ││  1    mod a;
+02  ⌂ │                              ││  2    mod b;
+03  ◫ │                              ││  3    fn main() {}
+04  ⊢ │                              ││  4
+05    │                              ││
+06    │                              ││
+07    └──────────────────────────────┘│
+08    ─────────────────────────────────────────────────────────────────────────────
+09    ┌ Imports of src/main.rs (approximate) ─────────────────────────────────────┐
+10    │ ▾ src/main.rs                                                             │
+11    │   ▾ src/a.rs                                                              │
+12    │     ▸ src/b.rs                                                            │
+13  ⋔ │   ▸ src/b.rs                                                              │
+14  ✎ │                                                                           │
+15  ✓ │                                                                           │
+16  ⟲ │                                                                           │
+17  ⚑ │                                                                           │
+18  ⎇ │                                                                           │
+19  ❯ │                                                                           │
+20  ⚠ │                                                                           │
+21  ► │                                                                           │
+22  ⌕ └───────────────────────────────────────────────────────────────────────────┘
+23  src › main.rs                 Ln 1, Col 1  LF  UTF-8  4 spaces  rust  LSP: off
+-- marks: L=selected D=dim
+11     LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL

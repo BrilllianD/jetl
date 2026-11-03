@@ -448,7 +448,7 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Right` | `hierarchy.expand` | Hierarchy: expand the selected row (loads its children) |
 | `Left` | `hierarchy.collapse` | Hierarchy: collapse the selected row, or go to its parent |
 | `Enter` | `hierarchy.open` | Hierarchy: open the selected function or type |
-| `Tab` | `hierarchy.toggle_direction` | Hierarchy: switch callers and callees, or supertypes and subtypes |
+| `Tab` | `hierarchy.toggle_direction` | Hierarchy: switch callers and callees, supertypes and subtypes, or imports and imported by |
 | `F5` | `hierarchy.refresh` | Hierarchy: ask the server again |
 
 ## local_history
@@ -663,3 +663,4 @@ Reachable from Find Action (F1) or by binding them in `keymap.toml`.
 | `lsp.toggle_inlay_hints` | Show or hide inlay hints |
 | `hierarchy.export_mermaid` | Hierarchy: export the loaded tree as a Mermaid diagram (scratch file) |
 | `hierarchy.export_dot` | Hierarchy: export the loaded tree as a Graphviz DOT graph (scratch file) |
+| `hierarchy.file_dependencies` | File dependencies: the files the active file imports, and those that import it, in the Hierarchy window |

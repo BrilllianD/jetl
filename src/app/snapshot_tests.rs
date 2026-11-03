@@ -1831,6 +1831,40 @@ async fn hierarchy_window_from_index() {
     assert_snapshot!("hierarchy_window_from_index", snapshot(&term, &marks, Some(bottom)));
 }
 
+#[cfg(feature = "lang-rust")]
+#[tokio::test]
+async fn hierarchy_window_file_dependencies() {
+    use crate::actions::HierarchyAction;
+    let mut fx = stable_app("hierarchy-files");
+    let app = &mut fx.app;
+    let root = app.workspace.root.clone();
+    let files = [
+        ("src/main.rs", "mod a;\nmod b;\nfn main() {}\n"),
+        ("src/a.rs", "use crate::b::B;\npub fn a() {}\n"),
+        ("src/b.rs", "pub struct B;\n"),
+    ];
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    for (rel, text) in files {
+        std::fs::write(root.join(rel), text).unwrap();
+    }
+    app.symbols.set_files(&files.iter().map(|(p, _)| p.to_string()).collect::<Vec<_>>());
+    let job = app.symbols.start(root.clone());
+    let seq = job.seq;
+    let mut batches = Vec::new();
+    job.run(|b| batches.push(b));
+    for b in batches {
+        app.symbols.on_batch(seq, b);
+    }
+    load(app, "src/main.rs", files[0].1);
+    app.perform(Action::Hierarchy(HierarchyAction::FileDependencies));
+    app.perform(Action::Hierarchy(HierarchyAction::Down));
+    app.perform(Action::Hierarchy(HierarchyAction::Expand));
+    let term = draw_app(app, 80, 24);
+    let marks = [Mark::bg('L', "selected", app.theme.list_selected.bg.unwrap()), Mark::style('D', "dim", app.theme.dim)];
+    let bottom = app.layout.rects.bottom;
+    assert_snapshot!("hierarchy_window_file_dependencies", snapshot(&term, &marks, Some(bottom)));
+}
+
 /// Diagnostics in two files, the first error with related locations in
 /// its own file and in the other; `main.log` active.
 fn problems_setup(app: &mut App) {

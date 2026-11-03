@@ -3,6 +3,7 @@
 //! asks the server).
 
 use crossterm::event::{MouseButton, MouseEventKind};
+use lsp_types::SymbolKind;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
@@ -183,7 +184,12 @@ impl HierarchyPanel {
             x += 2;
             (x, _) = buf.set_stringn(x, y, &n.item.name, room(x), base);
             let file = n.item.path.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
-            let place = format!("  {file}:{}{}", n.item.selection.start.line + 1, if n.loading { " …" } else { "" });
+            let loading = if n.loading { " …" } else { "" };
+            let place = if n.item.kind == SymbolKind::FILE {
+                loading.to_string()
+            } else {
+                format!("  {file}:{}{loading}", n.item.selection.start.line + 1)
+            };
             let detail = n.item.detail.as_deref().map(|d| d.split_whitespace().collect::<Vec<_>>().join(" ")).filter(|d| !d.is_empty());
             let mut tail = String::new();
             if let Some(d) = detail {
