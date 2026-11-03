@@ -1410,6 +1410,12 @@ Setup as above with the default config (`[lsp] enabled = false` only), at 120x40
 12. In a repo stopped mid-merge (the conflict setup above), row 1 shows ` ⎇ main (Merging) ▾ ` after the project
    widget and the status bar's right end has no `main`; a click on the widget opens Git Branches. With
    `toolbar = false` written as in step 10 the status bar shows `main` again. At 50 columns the widget drops.
+13. In the test repo at 120x40, row 1 shows ` ↓ ` ` ✓ ` ` ↑ ` right after ` ⎇ main ▾ `. Hover each: `Update Project`,
+   `Commit`, `Push` with their keys from `docs/KEYMAP.md` on row 2. Click ✓: the Git window opens on the Commit
+   tab with the message focused and nothing is committed. Click ↓ (the test repo has no upstream): a git error
+   notification, no crash. `resize-window -x 99`: the three buttons are gone, the branch widget stays;
+   `resize-window -x 100` brings them back. Opened on a directory that is not a git repository, they never
+   show. Stderr empty, Ctrl+Q exits 0.
 
 ### Scenario: unpinned tool window
 

@@ -94,6 +94,12 @@ pub enum ToolbarButton {
     Stop,
     /// Opens the branches popup.
     Branch,
+    /// Pulls (`git.pull`).
+    Update,
+    /// Opens the Commit tab and focuses the message (`git.commit_box`).
+    Commit,
+    /// Pushes (`git.push`).
+    Push,
     /// Opens the Recent Projects palette.
     Project,
     /// Opens Search Everywhere.

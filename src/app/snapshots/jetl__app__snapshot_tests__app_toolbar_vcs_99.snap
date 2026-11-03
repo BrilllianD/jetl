@@ -1,0 +1,44 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &marks, None)"
+---
+99x24 cursor=hidden
+00  ≣   root ▾   ⎇ main ▾                                          Select Configuration ▾   ▶   ⌕   ⚙
+01  ⌂ ┌ Project: root ───────────────┐│
+02  ◫ │                              ││
+03  ⊢ │                              ││
+04    │                              ││
+05    │                              ││
+06    │                              ││
+07    │                              ││
+08    │                              ││
+09    │                              ││
+10    │                              ││
+11    │                              ││
+12    │                              ││         No files open. Alt+1 opens the Project view;
+13  ⋔ │                              ││                  Ctrl+Shift+N finds a file.
+14  ✎ │                              ││
+15  ✓ │                              ││
+16  ⟲ │                              ││
+17  ⚑ │                              ││
+18  ⎇ │                              ││
+19  ❯ │                              ││
+20  ⚠ │                              ││
+21  ► │                              ││
+22  ⌕ └──────────────────────────────┘│
+23
+-- marks: T=toolbar
+00 TTT TTTTTTTT TTTTTTTTTT                                        TTTTTTTTTTTTTTTTTTTTTTTT TTT TTT TTT
+01                                     TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT
+02 TTT
+03 TTT
+13 TTT
+14 TTT
+15 TTT
+16 TTT
+17 TTT
+18 TTT
+19 TTT
+20 TTT
+21 TTT
+22 TTT

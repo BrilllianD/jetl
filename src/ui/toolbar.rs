@@ -44,10 +44,15 @@ pub struct Item {
 
 pub const STEP_SETTINGS: u8 = 1;
 pub const STEP_SEARCH: u8 = 2;
-pub const STEP_PROJECT: u8 = 3;
-pub const STEP_BRANCH_CUT: u8 = 4;
-pub const STEP_BRANCH_DROP: u8 = 5;
-pub const STEP_RUN_CONFIG_CUT: u8 = 6;
+pub const STEP_VCS: u8 = 3;
+pub const STEP_PROJECT: u8 = 4;
+pub const STEP_BRANCH_CUT: u8 = 5;
+pub const STEP_BRANCH_DROP: u8 = 6;
+/// Must stay the last step: `place` loops up to it.
+pub const STEP_RUN_CONFIG_CUT: u8 = 7;
+
+/// The VCS buttons show only on a row at least this wide.
+pub const VCS_MIN_WIDTH: u16 = 100;
 
 /// `name` cut to `cols` columns, with `…` after the cut.
 pub fn shorten(name: &str, cols: usize) -> String {
@@ -87,11 +92,12 @@ fn needed(items: &[Item]) -> u16 {
     group_width(items, Group::Left).saturating_add(group_width(items, Group::Right)).saturating_add(u16::from(both))
 }
 
-/// Lays `items` out on the first row of `area`: collapse steps 1 to 6 while
+/// Lays `items` out on the first row of `area`: the collapse steps in order (`STEP_SETTINGS` to
+/// `STEP_RUN_CONFIG_CUT`) while
 /// the row is too narrow, then clip. Returns the kept items with their final
 /// text and visible cells, in input order.
 pub fn place(mut items: Vec<Item>, area: Rect) -> Vec<(Item, Rect)> {
-    for step in 1..=6u8 {
+    for step in 1..=STEP_RUN_CONFIG_CUT {
         if needed(&items) <= area.width {
             break;
         }
@@ -179,6 +185,36 @@ pub fn settings_glyph(icons: Icons) -> &'static str {
     }
 }
 
+/// The glyph of a VCS button (`""` for any other button).
+pub fn vcs_glyph(button: ToolbarButton, icons: Icons) -> &'static str {
+    match (button, icons) {
+        (ToolbarButton::Update, Icons::Unicode) => "↓",
+        (ToolbarButton::Update, Icons::Emoji) => "📥",
+        (ToolbarButton::Commit, Icons::Unicode) => "✓",
+        (ToolbarButton::Commit, Icons::Emoji) => "✅",
+        (ToolbarButton::Push, Icons::Unicode) => "↑",
+        (ToolbarButton::Push, Icons::Emoji) => "📤",
+        _ => "",
+    }
+}
+
+/// The Update, Commit and Push buttons; none on a row under `VCS_MIN_WIDTH`.
+pub fn vcs_items(icons: Icons, theme: &Theme, width: u16) -> Vec<Item> {
+    if width < VCS_MIN_WIDTH {
+        return Vec::new();
+    }
+    [ToolbarButton::Update, ToolbarButton::Commit, ToolbarButton::Push]
+        .into_iter()
+        .map(|button| Item {
+            button,
+            group: Group::Left,
+            text: format!(" {} ", vcs_glyph(button, icons)),
+            style: theme.strip_item,
+            shrinks: vec![(STEP_VCS, Shrink::Drop)],
+        })
+        .collect()
+}
+
 fn dir_name(path: &std::path::Path) -> String {
     path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned())
 }
@@ -198,7 +234,7 @@ pub fn project_label(root: &std::path::Path, worktrees: &crate::worktree::Worktr
 }
 
 /// The widgets in group order (left, then right).
-fn items(app: &App) -> Vec<Item> {
+fn items(app: &App, width: u16) -> Vec<Item> {
     let mut items = vec![
         Item {
             button: ToolbarButton::Menu,
@@ -229,6 +265,7 @@ fn items(app: &App) -> Vec<Item> {
                 (STEP_BRANCH_DROP, Shrink::Drop),
             ],
         });
+        items.extend(vcs_items(app.config.ui.icons, &app.theme, width));
     }
     items.extend(run_items(app.run.selected.as_deref(), app.run.running_name(), app.spinner(), &app.theme));
     items.push(Item {
@@ -257,6 +294,9 @@ pub fn action(button: ToolbarButton) -> Action {
         ToolbarButton::Rerun => Action::Run(RunAction::Rerun),
         ToolbarButton::Stop => Action::Run(RunAction::Stop),
         ToolbarButton::Branch => Action::Git(GitAction::Branches),
+        ToolbarButton::Update => Action::Git(GitAction::Pull),
+        ToolbarButton::Commit => Action::Git(GitAction::CommitBox),
+        ToolbarButton::Push => Action::Git(GitAction::Push),
         ToolbarButton::Project => Action::App(AppAction::OpenPalette(PaletteKind::RecentProjects)),
         ToolbarButton::Search => Action::App(AppAction::OpenPalette(PaletteKind::Everywhere)),
         ToolbarButton::Settings => Action::App(AppAction::Settings),
@@ -281,6 +321,9 @@ pub fn title(button: ToolbarButton) -> &'static str {
         ToolbarButton::Rerun => "Rerun",
         ToolbarButton::Stop => "Stop",
         ToolbarButton::Branch => "Branches",
+        ToolbarButton::Update => "Update Project",
+        ToolbarButton::Commit => "Commit",
+        ToolbarButton::Push => "Push",
         ToolbarButton::Project => "Recent Projects",
         ToolbarButton::Search => "Search Everywhere",
         ToolbarButton::Settings => "Settings",
@@ -292,7 +335,7 @@ pub fn render(app: &mut App, frame: &mut Frame, area: Rect) {
     if area.is_empty() {
         return;
     }
-    let placed = place(items(app), area);
+    let placed = place(items(app, area.width), area);
     let buf = frame.buffer_mut();
     buf.set_style(area, Style::default().bg(app.theme.strip_bg));
     for (item, rect) in placed {
@@ -516,12 +559,62 @@ mod tests {
 
     #[test]
     fn glyphs_have_one_width_per_icon_mode() {
+        let vcs = [ToolbarButton::Update, ToolbarButton::Commit, ToolbarButton::Push];
         for (icons, w) in [(Icons::Unicode, 1), (Icons::Emoji, 2)] {
             for g in [search_glyph(icons), settings_glyph(icons)] {
                 assert_eq!((g.width(), g.width_cjk()), (w, w), "{g}");
             }
             assert_ne!(search_glyph(icons), settings_glyph(icons));
+            let mut seen = vec![search_glyph(icons), settings_glyph(icons)];
+            for b in vcs {
+                let g = vcs_glyph(b, icons);
+                assert_eq!(g.width(), w, "{g}");
+                // The Unicode arrows are East Asian Ambiguous (wide under width_cjk), as in the find bar.
+                if icons == Icons::Emoji {
+                    assert_eq!(g.width_cjk(), w, "{g}");
+                }
+                assert!(!seen.contains(&g), "{g} repeats");
+                seen.push(g);
+            }
         }
+    }
+
+    #[test]
+    fn vcs_items_from_100_columns() {
+        let t = Theme::default();
+        assert!(vcs_items(Icons::Unicode, &t, VCS_MIN_WIDTH - 1).is_empty());
+        let v = vcs_items(Icons::Unicode, &t, VCS_MIN_WIDTH);
+        let buttons: Vec<_> = v.iter().map(|i| i.button).collect();
+        assert_eq!(buttons, [ToolbarButton::Update, ToolbarButton::Commit, ToolbarButton::Push]);
+        let texts: Vec<_> = v.iter().map(|i| i.text.as_str()).collect();
+        assert_eq!(texts, [" ↓ ", " ✓ ", " ↑ "]);
+        assert!(v.iter().all(|i| i.group == Group::Left && i.shrinks == vec![(STEP_VCS, Shrink::Drop)]));
+    }
+
+    #[test]
+    fn vcs_actions_map_to_the_git_ids() {
+        assert_eq!(action(ToolbarButton::Update), Action::Git(GitAction::Pull));
+        assert_eq!(action(ToolbarButton::Commit), Action::Git(GitAction::CommitBox));
+        assert_eq!(action(ToolbarButton::Push), Action::Git(GitAction::Push));
+    }
+
+    #[test]
+    fn vcs_buttons_drop_after_search_and_before_project() {
+        let items = || {
+            let mut v = vec![it(Group::Left, " ≣ ", vec![]), it(Group::Left, "project", vec![(STEP_PROJECT, Shrink::Text("▾".into()))])];
+            v.extend((0..3).map(|_| it(Group::Left, " x ", vec![(STEP_VCS, Shrink::Drop)])));
+            v.push(it(Group::Right, "sch", vec![(STEP_SEARCH, Shrink::Drop)]));
+            v.push(it(Group::Right, "set", vec![(STEP_SETTINGS, Shrink::Drop)]));
+            v
+        };
+        let kept = |w| place(items(), Rect::new(0, 0, w, 1)).into_iter().map(|(i, _)| i.text).collect::<Vec<_>>();
+        assert_eq!(kept(31).len(), 7);
+        let k = kept(27);
+        assert_eq!((k.len(), k.contains(&"set".to_string())), (6, false));
+        let k = kept(23);
+        assert_eq!((k.len(), k.contains(&"sch".to_string())), (5, false));
+        assert_eq!(kept(22), [" ≣ ", "project"]);
+        assert_eq!(kept(10), [" ≣ ", "▾"]);
     }
 
     #[test]

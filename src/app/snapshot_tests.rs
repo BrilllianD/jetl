@@ -3628,6 +3628,41 @@ async fn app_toolbar_branch() {
     assert_snapshot!("app_toolbar_branch", snapshot(&term, &marks, None));
 }
 
+fn toolbar_vcs_app(name: &str) -> Fixture {
+    let mut fx = stable_app(name);
+    let app = &mut fx.app;
+    app.config.ui.toolbar = true;
+    app.handle_msg(AppMsg::Git(GitMsg::Status {
+        generation: app.git.generation,
+        seq: 1,
+        result: Ok(StatusSnapshot { workdir: app.workspace.root.clone(), branch: Some("main".into()), ..Default::default() }),
+    }));
+    app.notifications.clear();
+    app.notification_shown = false;
+    fx
+}
+
+#[tokio::test]
+async fn app_toolbar_vcs() {
+    let mut fx = toolbar_vcs_app("toolbar-vcs");
+    let app = &mut fx.app;
+    let term = draw_app(app, 120, 40);
+    let marks = [Mark::style('T', "toolbar", app.theme.strip_item)];
+    assert_snapshot!("app_toolbar_vcs", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
+async fn app_toolbar_vcs_99() {
+    let mut fx = toolbar_vcs_app("toolbar-vcs-99");
+    let app = &mut fx.app;
+    let term = draw_app(app, 99, 24);
+    let marks = [Mark::style('T', "toolbar", app.theme.strip_item)];
+    assert_snapshot!("app_toolbar_vcs_99", snapshot(&term, &marks, None));
+    assert!(!crate::ui::snapshot::row_text(term.backend().buffer(), 0, 99).contains(" ✓ "));
+    let term = draw_app(app, 100, 24);
+    assert!(crate::ui::snapshot::row_text(term.backend().buffer(), 0, 100).contains(" ✓ "));
+}
+
 #[tokio::test]
 async fn app_toolbar_context_menu() {
     use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
