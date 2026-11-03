@@ -50,6 +50,12 @@ pub enum AppAction {
         tw: Option<ToolWindowId>,
         side: Side,
     },
+    /// Swap a tool window's strip button with its neighbour above or below
+    /// (the side menu; no key).
+    MoveToolWindowButton {
+        tw: ToolWindowId,
+        up: bool,
+    },
     /// Show only the editor text; again to put the layout back.
     ToggleZen,
     Escape,

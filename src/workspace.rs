@@ -251,6 +251,16 @@ pub struct SessionLayout {
     /// The Tasks window (none before it existed).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tasks: Option<SessionTasks>,
+    /// Tool strip order when it is not the default.
+    #[serde(default, skip_serializing_if = "Vec::is_empty", deserialize_with = "known_tool_windows")]
+    pub order: Vec<ToolWindowId>,
+}
+
+/// A list of tool window ids, without the ones this build does not know
+/// (a newer build's windows), so they do not drop the whole session.
+fn known_tool_windows<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<ToolWindowId>, D::Error> {
+    let raw = Vec::<serde_json::Value>::deserialize(d)?;
+    Ok(raw.into_iter().filter_map(|v| serde_json::from_value(v).ok()).collect())
 }
 
 /// The Tasks window: where it sits, whether it is shown, its filters and
@@ -541,6 +551,7 @@ impl App {
             right_w: Some(self.layout.right_w),
             sides,
             tasks: Some(tasks),
+            order: self.layout.order_overrides(),
         });
         let expanded = self.project.expanded_dirs().iter().filter_map(|d| d.strip_prefix(&root).ok()).map(Path::to_path_buf).collect();
         let closed_bookmarks =
@@ -793,6 +804,7 @@ impl App {
             let mut sides = l.sides.clone();
             sides.extend(tasks.side.map(|s| (ToolWindowId::Tasks, s)));
             self.layout.set_sides(&sides);
+            self.layout.set_order(&l.order);
             let tasks_side = self.layout.side_of(ToolWindowId::Tasks);
             let slot =
                 |tw: Option<ToolWindowId>, side: Side| if tasks.shown && tasks_side == side { Some(ToolWindowId::Tasks) } else { tw };
@@ -906,6 +918,7 @@ mod tests {
                 right_w: None,
                 sides: vec![],
                 tasks: None,
+                order: vec![],
             }),
             expanded: vec![PathBuf::from("src"), PathBuf::from("src/app")],
             splits: Some(SessionSplits {
@@ -1443,6 +1456,7 @@ mod tests {
             right_w: None,
             sides: vec![],
             tasks: None,
+            order: vec![],
         };
         // A folder deleted since is skipped.
         let expanded = vec![PathBuf::from("a"), PathBuf::from("a/deep"), PathBuf::from("gone")];
@@ -1482,6 +1496,7 @@ mod tests {
             right_w: None,
             sides: vec![],
             tasks: None,
+            order: vec![],
         };
         Session { root: root.to_path_buf(), layout: Some(layout), ..Default::default() }
     }
@@ -1590,6 +1605,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn session_saves_and_restores_the_strip_order() {
+        use ToolWindowId::*;
+        let (mut app, dir) = crate::app::tests::test_app("session-order");
+        app.layout.move_button(Git, true);
+        let saved = app.session();
+        assert_eq!(saved.layout.as_ref().unwrap().order, app.layout.order());
+        let (mut other, dir2) = crate::app::tests::test_app("session-order2");
+        let generation = other.workspace.generation;
+        other.session_loaded(generation, saved, vec![]);
+        assert_eq!(other.layout.order(), app.layout.order());
+        let mut plain = app.session();
+        plain.layout.as_mut().unwrap().order = vec![];
+        let generation = app.workspace.generation;
+        app.session_loaded(generation, plain, vec![]);
+        assert_eq!(app.layout.order(), ToolWindowId::ALL);
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&dir2);
+    }
+
+    #[tokio::test]
     async fn session_never_saves_the_todo_window() {
         let (mut app, dir) = crate::app::tests::test_app("session-todo");
         app.layout.move_to(ToolWindowId::Todo, Side::Right);
@@ -1654,5 +1689,23 @@ mod tests {
         let new = SessionLayout { right: Some(ToolWindowId::Git), right_w: Some(20), sides: vec![(ToolWindowId::Git, Side::Right)], ..l };
         let json = serde_json::to_string(&new).unwrap();
         assert_eq!(serde_json::from_str::<SessionLayout>(&json).unwrap(), new);
+    }
+
+    #[test]
+    fn session_layout_from_0_8_0_loads_with_default_order() {
+        // As 0.8.0 writes it.
+        let old = r#"{"left":"Project","left_w":30,"bottom":"Git","bottom_h":12,"git_tab":"Log","show_hidden":false,"show_ignored":true,"right_w":30,"sides":[["Find","Right"]],"tasks":{"shown":false,"show_closed":false}}"#;
+        let l: SessionLayout = serde_json::from_str(old).unwrap();
+        assert!(l.order.is_empty());
+        let mut state = crate::ui::layout::LayoutState::new(30, 10);
+        state.set_order(&l.order);
+        assert_eq!(state.order(), ToolWindowId::ALL);
+        assert!(!serde_json::to_string(&l).unwrap().contains("\"order\""), "the default order is not written");
+        let new = SessionLayout { order: vec![ToolWindowId::Git, ToolWindowId::Project], ..l };
+        let json = serde_json::to_string(&new).unwrap();
+        assert_eq!(serde_json::from_str::<SessionLayout>(&json).unwrap(), new);
+        // A window this build does not know is dropped, not an error.
+        let newer = json.replace(r#""order":["Git","#, r#""order":["Git","Nope","#);
+        assert_eq!(serde_json::from_str::<SessionLayout>(&newer).unwrap().order, [ToolWindowId::Git, ToolWindowId::Project]);
     }
 }

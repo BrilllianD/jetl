@@ -30,6 +30,7 @@ title = "#8b949e"
 title_focused = { fg = "#e6edf3", bold = true }
 strip_item = { fg = "#7d8590", bg = "#010409" }
 strip_item_active = { fg = "#ffffff", bg = "#1f6feb", bold = true }
+strip_drop = { fg = "#010409", bg = "#d29922" }
 status_accent = "#2f81f7"
 tab = { fg = "#7d8590", bg = "#010409" }
 tab_active = { fg = "#e6edf3", bg = "#0d1117", bold = true }

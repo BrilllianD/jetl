@@ -34,6 +34,7 @@ title = "{{foreground}}"
 title_focused = { fg = "{{bright_foreground}}", bold = true }
 strip_item = { fg = "{{mix foreground background 35}}", bg = "{{darker_background}}" }
 strip_item_active = { fg = "{{background}}", bg = "{{accent}}", bold = true }
+strip_drop = { fg = "{{background}}", bg = "{{yellow}}" }
 status_accent = "{{accent}}"
 tab = { fg = "{{mix foreground background 25}}", bg = "{{dark_background}}" }
 tab_active = { fg = "{{bright_foreground}}", bg = "{{background}}", bold = true }

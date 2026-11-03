@@ -73,6 +73,14 @@ pub enum StripButton {
     More,
 }
 
+/// Where a dragged strip button lands: in the place of a button, or at
+/// the end of a side that has no button to drop onto.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StripDrop {
+    Onto(ToolWindowId),
+    End(Side),
+}
+
 #[derive(Debug, Clone)]
 pub struct LayoutState {
     pub left: Option<ToolWindowId>,
@@ -83,6 +91,8 @@ pub struct LayoutState {
     pub right_w: u16,
     /// Windows moved off their default side.
     sides: std::collections::HashMap<ToolWindowId, Side>,
+    /// Strip order, a permutation of ToolWindowId::ALL; groups are its windows per side.
+    order: Vec<ToolWindowId>,
     pub rects: Rects,
     /// Clickable areas of the tool strip, filled by the strip renderer.
     pub strip_hits: Vec<(StripButton, Rect)>,
@@ -103,6 +113,7 @@ impl LayoutState {
             right: None,
             right_w: left_w,
             sides: std::collections::HashMap::new(),
+            order: ToolWindowId::ALL.to_vec(),
             rects: Rects::default(),
             strip_hits: Vec::new(),
             zen: None,
@@ -122,6 +133,77 @@ impl LayoutState {
     /// Windows off their default side, in strip order.
     pub fn side_overrides(&self) -> Vec<(ToolWindowId, Side)> {
         ToolWindowId::ALL.into_iter().filter_map(|tw| self.sides.get(&tw).map(|s| (tw, *s))).collect()
+    }
+
+    /// The strip order: each side's buttons follow it.
+    pub fn order(&self) -> &[ToolWindowId] {
+        &self.order
+    }
+
+    /// Session restore: duplicates keep the first, missing windows follow in `ALL` order.
+    pub fn set_order(&mut self, order: &[ToolWindowId]) {
+        let mut v: Vec<ToolWindowId> = Vec::with_capacity(ToolWindowId::ALL.len());
+        for tw in order.iter().copied().chain(ToolWindowId::ALL) {
+            if !v.contains(&tw) {
+                v.push(tw);
+            }
+        }
+        self.order = v;
+    }
+
+    /// The order to save: empty when it is the default.
+    pub fn order_overrides(&self) -> Vec<ToolWindowId> {
+        if self.order == ToolWindowId::ALL { Vec::new() } else { self.order.clone() }
+    }
+
+    /// The indexes in `order` of `tw` and of its visual neighbour in its group.
+    fn button_neighbour(&self, tw: ToolWindowId, up: bool) -> Option<(usize, usize)> {
+        let side = self.side_of(tw);
+        let i = self.order.iter().position(|t| *t == tw)?;
+        let same = |k: &usize| self.side_of(self.order[*k]) == side;
+        // Bottom buttons are drawn bottom to top, so up is the next one in `order`.
+        let k = if up == (side != Side::Bottom) { (0..i).rev().find(same) } else { (i + 1..self.order.len()).find(same) };
+        k.map(|k| (i, k))
+    }
+
+    /// Whether `tw`'s button has a neighbour above (`up`) or below it.
+    pub fn can_move_button(&self, tw: ToolWindowId, up: bool) -> bool {
+        self.button_neighbour(tw, up).is_some()
+    }
+
+    /// Swap `tw`'s button with its visual neighbour in the same group.
+    pub fn move_button(&mut self, tw: ToolWindowId, up: bool) {
+        if let Some((i, k)) = self.button_neighbour(tw, up) {
+            self.order.swap(i, k);
+        }
+    }
+
+    /// Reorder for a dropped strip button and return the side `tw` must move
+    /// to (`None`: nothing to do). Dropping onto a button takes its place.
+    pub fn drop_button(&mut self, tw: ToolWindowId, drop: StripDrop) -> Option<Side> {
+        match drop {
+            StripDrop::Onto(b) if b == tw => None,
+            StripDrop::Onto(b) => {
+                let pos = |t: ToolWindowId| self.order.iter().position(|x| *x == t);
+                let after = self.side_of(b) == self.side_of(tw) && pos(b) > pos(tw);
+                self.put(tw, b, after);
+                Some(self.side_of(b))
+            }
+            StripDrop::End(side) => {
+                let last = self.order.iter().rev().copied().find(|t| *t != tw && self.side_of(*t) == side);
+                if let Some(last) = last {
+                    self.put(tw, last, true);
+                }
+                Some(side)
+            }
+        }
+    }
+
+    /// Move `tw` right after or before `next_to` in `order`.
+    fn put(&mut self, tw: ToolWindowId, next_to: ToolWindowId, after: bool) {
+        self.order.retain(|t| *t != tw);
+        let at = self.order.iter().position(|t| *t == next_to).map_or(self.order.len(), |j| j + usize::from(after));
+        self.order.insert(at, tw);
     }
 
     /// Replace all side overrides; entries equal to the default are dropped.
@@ -427,11 +509,54 @@ impl LayoutState {
         self.strip_hits.iter().find(|(_, r)| r.contains(p)).copied()
     }
 
+    /// What dropping a dragged strip button at a point does, over the last
+    /// frame's strip: a button, or the free rows of a group without buttons.
+    pub fn strip_drop_at(&self, x: u16, y: u16) -> Option<StripDrop> {
+        let p = ratatui::layout::Position::new(x, y);
+        match self.strip_hit(x, y) {
+            Some((StripButton::Tool(b), _)) => return Some(StripDrop::Onto(b)),
+            Some(_) => return None,
+            None => {}
+        }
+        let in_right = self.rects.strip_right.contains(p);
+        let strip = if in_right {
+            self.rects.strip_right
+        } else if self.rects.strip.contains(p) {
+            self.rects.strip
+        } else {
+            return None;
+        };
+        let tools: Vec<(ToolWindowId, Rect)> = self
+            .strip_hits
+            .iter()
+            .filter_map(|(b, r)| match b {
+                StripButton::Tool(t) if strip.contains(r.as_position()) => Some((*t, *r)),
+                _ => None,
+            })
+            .collect();
+        let has = |s: Side| tools.iter().any(|(t, _)| self.side_of(*t) == s);
+        let mid = strip.y + strip.height / 2;
+        if in_right {
+            if !has(Side::Right) {
+                return Some(StripDrop::End(Side::Right));
+            }
+        } else if y < mid {
+            if !has(Side::Left) {
+                return Some(StripDrop::End(Side::Left));
+            }
+        } else if !has(Side::Bottom) {
+            return Some(StripDrop::End(Side::Bottom));
+        }
+        let dist = |r: &Rect| if y < r.y { r.y - y } else { y.saturating_sub(r.bottom() - 1) };
+        tools.iter().min_by_key(|(_, r)| (dist(r), r.y)).map(|(t, _)| StripDrop::Onto(*t))
+    }
+
     /// The windows of the left strip (`right == false`) or the right strip
     /// that got no button this frame, in strip order: the More menu's rows.
     pub fn strip_overflow(&self, right: bool) -> Vec<ToolWindowId> {
-        ToolWindowId::ALL
-            .into_iter()
+        self.order
+            .iter()
+            .copied()
             .filter(|tw| (self.side_of(*tw) == Side::Right) == right)
             .filter(|tw| !self.strip_hits.iter().any(|(b, _)| *b == StripButton::Tool(*tw)))
             .collect()
@@ -673,5 +798,78 @@ mod tests {
         l.restore(None, 30, None, 10, Some(Git), Some(5));
         assert_eq!(l.right, None);
         assert_eq!(l.right_w, MIN_LEFT_W);
+    }
+
+    #[test]
+    fn order_set_and_overrides() {
+        use ToolWindowId::*;
+        let mut l = LayoutState::new(30, 10);
+        assert_eq!(l.order(), ToolWindowId::ALL);
+        assert!(l.order_overrides().is_empty());
+        l.set_order(&[Git, Project, Git]);
+        let want = [Git, Project, Worktrees, Structure, Find, Run, Problems, Terminal, EventLog, LocalHistory, Tasks, Todo, Hierarchy];
+        assert_eq!(l.order(), want);
+        assert_eq!(l.order_overrides(), want);
+        l.set_order(&[]);
+        assert_eq!(l.order(), ToolWindowId::ALL);
+    }
+
+    #[test]
+    fn move_button_follows_the_visual_order() {
+        use ToolWindowId::*;
+        let mut l = LayoutState::new(30, 10);
+        l.move_button(Worktrees, true);
+        assert_eq!(&l.order()[..3], [Worktrees, Project, Structure]);
+        l.move_button(Project, false);
+        assert_eq!(&l.order()[..3], [Worktrees, Structure, Project]);
+        assert!(!l.can_move_button(Worktrees, true));
+        assert!(!l.can_move_button(Find, false), "Find is the lowest bottom button");
+        l.move_button(Find, true);
+        assert_eq!(&l.order()[3..5], [Run, Find]);
+        assert!(!l.can_move_button(Hierarchy, true));
+        l.move_to(Terminal, Side::Right);
+        assert!(!l.can_move_button(Terminal, true) && !l.can_move_button(Terminal, false));
+        let before = l.order().to_vec();
+        l.move_button(Terminal, true);
+        assert_eq!(l.order(), before);
+    }
+
+    #[test]
+    fn drop_button_takes_the_target_place() {
+        use ToolWindowId::*;
+        let bottom = |l: &LayoutState| l.order().iter().copied().filter(|t| l.side_of(*t) == Side::Bottom).collect::<Vec<_>>();
+        let mut l = LayoutState::new(30, 10);
+        assert_eq!(l.drop_button(Find, StripDrop::Onto(Problems)), Some(Side::Bottom));
+        assert_eq!(&bottom(&l)[..3], [Run, Problems, Find]);
+        assert_eq!(l.drop_button(Terminal, StripDrop::Onto(Find)), Some(Side::Bottom));
+        assert_eq!(&bottom(&l)[..4], [Run, Problems, Terminal, Find]);
+        assert_eq!(l.drop_button(Git, StripDrop::Onto(Worktrees)), Some(Side::Left));
+        let o = l.order();
+        assert_eq!(o.iter().position(|t| *t == Git).unwrap() + 1, o.iter().position(|t| *t == Worktrees).unwrap());
+        assert_eq!(l.side_of(Git), Side::Bottom, "drop_button only reorders");
+        let before = l.order().to_vec();
+        assert_eq!(l.drop_button(Run, StripDrop::End(Side::Right)), Some(Side::Right));
+        assert_eq!(l.order(), before);
+        assert_eq!(l.drop_button(Run, StripDrop::Onto(Run)), None);
+    }
+
+    #[test]
+    fn strip_drop_at_maps_rows() {
+        use ToolWindowId::*;
+        let mut l = LayoutState::new(30, 10);
+        l.compute(Rect::new(0, 0, 120, 40));
+        l.strip_hits = vec![
+            (StripButton::Menu, Rect::new(0, 0, 3, 1)),
+            (StripButton::Tool(Project), Rect::new(0, 2, 3, 2)),
+            (StripButton::Tool(Find), Rect::new(0, 37, 3, 2)),
+        ];
+        assert_eq!(l.strip_drop_at(1, 2), Some(StripDrop::Onto(Project)));
+        assert_eq!(l.strip_drop_at(1, 0), None);
+        assert_eq!(l.strip_drop_at(1, 10), Some(StripDrop::Onto(Project)));
+        assert_eq!(l.strip_drop_at(1, 30), Some(StripDrop::Onto(Find)));
+        assert_eq!(l.strip_drop_at(60, 10), None);
+        l.strip_hits = vec![(StripButton::Menu, Rect::new(0, 0, 3, 1)), (StripButton::Tool(Find), Rect::new(0, 37, 3, 2))];
+        assert_eq!(l.strip_drop_at(1, 5), Some(StripDrop::End(Side::Left)));
+        assert_eq!(l.strip_drop_at(1, 30), Some(StripDrop::Onto(Find)));
     }
 }

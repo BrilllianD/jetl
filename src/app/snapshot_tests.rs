@@ -3433,3 +3433,20 @@ async fn app_strip_more_menu() {
     let marks = [Mark::style('S', "selected row", app.theme.list_selected)];
     assert_snapshot!("app_strip_more_menu", snapshot(&term, &marks, None));
 }
+
+#[tokio::test]
+async fn app_strip_drag_marker() {
+    use crate::ui::layout::StripButton;
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    let mut fx = stable_app("strip-drag");
+    let app = &mut fx.app;
+    draw_app(app, 80, 24);
+    let rect = |app: &App, tw| app.layout.strip_hits.iter().find(|(b, _)| *b == StripButton::Tool(tw)).unwrap().1;
+    let (find, git) = (rect(app, ToolWindowId::Find), rect(app, ToolWindowId::Git));
+    let mouse = |kind, r: Rect| MouseEvent { kind, column: r.x + 1, row: r.y, modifiers: KeyModifiers::NONE };
+    app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), find));
+    app.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), git));
+    let term = draw_app(app, 80, 24);
+    let marks = [Mark::style('D', "drop target", app.theme.strip_item.patch(app.theme.strip_drop))];
+    assert_snapshot!("app_strip_drag_marker", snapshot(&term, &marks, None));
+}

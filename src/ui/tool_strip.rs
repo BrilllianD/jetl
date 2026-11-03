@@ -2,7 +2,8 @@
 //! button per tool window (its Alt-number over its icon, or only the icon in
 //! one row when they do not fit, or a More button for the rest), and the
 //! tooltip of the hovered button. A second strip on the right edge holds the Right-side
-//! windows.
+//! windows. Buttons follow `LayoutState::order`; a left drag reorders or moves a
+//! button, and the drop target is drawn in `strip_drop`.
 
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
@@ -14,13 +15,16 @@ use crate::actions::{Action, AppAction};
 use crate::app::App;
 use crate::config::Icons;
 use crate::ui::focus::{Side, ToolWindowId};
-use crate::ui::layout::StripButton;
+use crate::ui::layout::{StripButton, StripDrop};
 use crate::ui::menu_bar::menu_glyph;
 
 /// Rows of a tool button: the Alt-number, then the icon.
 const BUTTON_H: u16 = 2;
 
 pub fn render(app: &mut App, frame: &mut Frame, area: Rect, right: Rect) {
+    // Read before `strip_hits` is cleared: the target comes from the last frame.
+    let drop = app.strip_drop();
+    let order = app.layout.order().to_vec();
     let theme = &app.theme;
     let icons = app.config.ui.icons;
     let buf = frame.buffer_mut();
@@ -61,9 +65,9 @@ pub fn render(app: &mut App, frame: &mut Frame, area: Rect, right: Rect) {
         _ => u16::from(h >= 2 + n_main),
     };
     let rh = if right.width >= 2 { right.height } else { 0 };
-    let right_mode = if rh >= 2 + 2 * n_right && rh > 0 {
+    let right_mode = if rh >= 2 + 2 * n_right {
         StripMode { height: BUTTON_H, gap: gap2, cap: usize::MAX, more: false }
-    } else if rh >= 2 + n_right && rh > 0 {
+    } else if rh >= 2 + n_right {
         StripMode { height: 1, gap: 0, cap: usize::MAX, more: false }
     } else if rh >= 3 {
         StripMode { height: 1, gap: 0, cap: usize::from(rh - 3), more: true }
@@ -75,7 +79,7 @@ pub fn render(app: &mut App, frame: &mut Frame, area: Rect, right: Rect) {
     let mut rtop = right.y + 2;
     let rbottom = right.bottom() - u16::from(right_mode.more);
     let (mut placed_left, mut placed_right) = (0usize, 0usize);
-    for tw in ToolWindowId::ALL {
+    for tw in order {
         let side = app.layout.side_of(tw);
         let is_right = side == Side::Right;
         let (mode, placed) = if is_right { (right_mode, &mut placed_right) } else { (left_mode, &mut placed_left) };
@@ -115,6 +119,7 @@ pub fn render(app: &mut App, frame: &mut Frame, area: Rect, right: Rect) {
         let focused = app.focus.is(tw.panel());
         let style = if active { theme.strip_item_active } else { theme.strip_item };
         let style = if focused { style.add_modifier(Modifier::UNDERLINED) } else { style };
+        let style = if drop == Some(StripDrop::Onto(tw)) { style.patch(theme.strip_drop) } else { style };
         buf.set_style(rect, style);
         if bh == BUTTON_H {
             if let Some(n) = tw.number() {
@@ -136,6 +141,26 @@ pub fn render(app: &mut App, frame: &mut Frame, area: Rect, right: Rect) {
         buf.set_style(rect, style);
         centred(buf, rect, more_glyph(icons), style);
         app.layout.strip_hits.push((StripButton::More, rect));
+    }
+    if let Some(StripDrop::End(side)) = drop {
+        let strip = if side == Side::Right { right } else { area };
+        let free = |row: u16| {
+            let line = Rect::new(strip.x, row, strip.width, 1);
+            !app.layout.strip_hits.iter().any(|(_, r)| r.intersects(line))
+        };
+        let row = match side {
+            Side::Left => (area.y + 1..area.bottom()).find(|r| free(*r)),
+            Side::Bottom => (area.y + 1..area.bottom()).rev().find(|r| free(*r)),
+            Side::Right => (right.y + 2..right.bottom()).find(|r| free(*r)),
+        };
+        if let Some(row) = row {
+            let line = Rect::new(strip.x, row, strip.width, 1);
+            let style = theme.strip_item.patch(theme.strip_drop);
+            buf.set_style(line, style);
+            for x in line.x..line.right() {
+                buf[(x, row)].set_symbol("━");
+            }
+        }
     }
 }
 

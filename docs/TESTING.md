@@ -1338,7 +1338,23 @@ Setup as above, `[lsp] enabled = false`.
 3. `tmux resize-window -t jetl -x 80 -y 12`: the strip's last row is `⋯`. Hover: "More Tool Windows".
    A click opens a menu above it with Local History, Tasks, TODO and Hierarchy; Enter on TODO opens it.
 4. Move Git to the right (right-click its button, Move to Right) at 80x12: the right strip shows it; the
-   left More menu is unchanged. No stderr; Ctrl+Q exits with status 0.
+   left More menu changes: Local History gets a button and the menu lists Tasks, TODO and Hierarchy. No
+   stderr; Ctrl+Q exits with status 0.
+
+### Scenario: tool strip order and drag
+
+Setup as above, `[lsp] enabled = false`, at 120x40 (two-row buttons) and 80x24 (one-row buttons). Use the
+SGR `press`/`release` helpers; a drag is `press 0 c r; press 32 c2 r2; release 0 c2 r2`.
+
+1. Click a button (press, then release on it): its window toggles on the release, not the press.
+2. Drag Find (lowest button) onto Problems: while the pointer is over Problems its button is in the drop
+   colour; after the release Find sits where Problems was.
+3. Drag Git onto Worktrees: Git moves to the left side, its button right above Worktrees; Alt+9 opens it on
+   the left.
+4. Right-click Hierarchy, Move to Right; drag Git onto Hierarchy on the right strip: Git moves right.
+5. Right-click Git: Move Button Up/Down are greyed when there is no neighbour that way; Move Button Down
+   swaps it with the button below.
+6. Ctrl+Q and start again: the order and sides are back. No stderr; Ctrl+Q exits with status 0.
 
 ### Limits under tmux
 

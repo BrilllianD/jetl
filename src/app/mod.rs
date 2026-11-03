@@ -23,7 +23,7 @@ use crate::git::{GitPanel, GitService};
 use crate::tui::Term;
 use crate::ui::dialog::Dialog;
 use crate::ui::focus::{Focus, PanelId, Side, ToolWindowId};
-use crate::ui::layout::{LayoutState, SplitterId};
+use crate::ui::layout::{LayoutState, SplitterId, StripDrop};
 use crate::ui::palette::Palette;
 use crate::ui::status_bar::StatusHit;
 use crate::workspace::Workspace;
@@ -143,6 +143,15 @@ enum Drag {
     Tab(crate::editor::groups::GroupId, crate::editor::buffer::BufferId),
     /// The bar between two editor groups (the split's preorder index).
     GroupSplitter(usize),
+    /// A tool strip button pressed with the left button: released on it
+    /// without leaving it, it toggles its window; moved, it drops (`StripDrop`).
+    /// `x`, `y` are the last pointer cell.
+    StripButton {
+        tw: ToolWindowId,
+        x: u16,
+        y: u16,
+        moved: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1259,6 +1268,7 @@ impl App {
                     self.move_tool_window(tw, side);
                 }
             }
+            AppAction::MoveToolWindowButton { tw, up } => self.layout.move_button(tw, up),
             AppAction::ToggleZen => self.toggle_zen(),
             AppAction::Escape => self.focus.set(PanelId::Editor),
             AppAction::OpenPalette(kind) => self.open_palette(kind),
@@ -1338,6 +1348,14 @@ impl App {
         }
     }
 
+    /// A strip button dropped on `drop`: reorder, and move the window to the
+    /// drop's side.
+    pub(crate) fn drop_strip_button(&mut self, tw: ToolWindowId, drop: StripDrop) {
+        if let Some(side) = self.layout.drop_button(tw, drop) {
+            self.move_tool_window(tw, side);
+        }
+    }
+
     /// Right-click on a tool strip button: the sides `tw` can move to.
     pub(crate) fn tool_window_side_menu(&mut self, tw: ToolWindowId, x: u16, y: u16) {
         use crate::ui::menu::{ContextMenu, MenuItem};
@@ -1345,7 +1363,17 @@ impl App {
         let item = |label: &str, side: Side| {
             MenuItem::new(label, Action::App(AppAction::MoveToolWindow { tw: Some(tw), side })).enabled(now != side)
         };
-        let items = vec![item("Move to Left", Side::Left), item("Move to Bottom", Side::Bottom), item("Move to Right", Side::Right)];
+        let button = |label: &str, up: bool| {
+            MenuItem::new(label, Action::App(AppAction::MoveToolWindowButton { tw, up })).enabled(self.layout.can_move_button(tw, up))
+        };
+        let items = vec![
+            item("Move to Left", Side::Left),
+            item("Move to Bottom", Side::Bottom),
+            item("Move to Right", Side::Right),
+            MenuItem::separator(),
+            button("Move Button Up", true),
+            button("Move Button Down", false),
+        ];
         self.apply_effects(vec![Effect::ContextMenu(ContextMenu::new(items, x, y))]);
     }
 
@@ -4436,12 +4464,23 @@ mod strip_tests {
     use super::tests::test_app;
     use crate::actions::{Action, AppAction, Dir};
     use crate::ui::focus::{PanelId, Side, ToolWindowId};
-    use crate::ui::layout::StripButton;
+    use crate::ui::layout::{StripButton, StripDrop};
     use crate::ui::snapshot::row_text;
     use ratatui::layout::Rect;
 
     fn ev(kind: MouseEventKind, column: u16, row: u16) -> MouseEvent {
         MouseEvent { kind, column, row, modifiers: KeyModifiers::NONE }
+    }
+
+    /// A left click: press and release on one cell.
+    fn click(app: &mut super::App, x: u16, y: u16) {
+        app.handle_mouse(ev(MouseEventKind::Down(MouseButton::Left), x, y));
+        app.handle_mouse(ev(MouseEventKind::Up(MouseButton::Left), x, y));
+    }
+
+    /// The rect of a window's strip button in the last frame.
+    fn button(app: &super::App, tw: ToolWindowId) -> Rect {
+        app.layout.strip_hits.iter().find(|(b, _)| *b == StripButton::Tool(tw)).unwrap_or_else(|| panic!("{tw:?} has no button")).1
     }
 
     fn draw_at(app: &mut super::App, w: u16, h: u16) -> ratatui::buffer::Buffer {
@@ -4500,12 +4539,12 @@ mod strip_tests {
         app.toggle_main_menu();
         // A tool button toggles its window.
         let (_, r) = *hits.iter().find(|(b, _)| *b == StripButton::Tool(ToolWindowId::Git)).unwrap();
-        app.handle_mouse(ev(MouseEventKind::Down(MouseButton::Left), r.x + 1, r.y));
+        click(&mut app, r.x + 1, r.y);
         assert!(app.layout.is_visible(ToolWindowId::Git));
-        app.handle_mouse(ev(MouseEventKind::Down(MouseButton::Left), r.x + 1, r.y));
+        click(&mut app, r.x + 1, r.y);
         assert!(!app.layout.is_visible(ToolWindowId::Git));
         let (_, r) = *hits.iter().find(|(b, _)| *b == StripButton::Tool(ToolWindowId::Hierarchy)).unwrap();
-        app.handle_mouse(ev(MouseEventKind::Down(MouseButton::Left), r.x + 1, r.y));
+        click(&mut app, r.x + 1, r.y);
         assert!(app.layout.is_visible(ToolWindowId::Hierarchy));
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -4552,6 +4591,145 @@ mod strip_tests {
     }
 
     #[tokio::test]
+    async fn strip_button_toggles_on_release() {
+        use ToolWindowId::*;
+        let (mut app, dir) = test_app("strip-release");
+        draw_at(&mut app, 120, 40);
+        let (g, run) = (button(&app, Git), button(&app, Run));
+        app.handle_mouse(ev(MouseEventKind::Down(MouseButton::Left), g.x + 1, g.y));
+        assert!(!app.layout.is_visible(Git));
+        assert!(matches!(app.drag, Some(super::Drag::StripButton { tw: Git, moved: false, .. })));
+        app.handle_mouse(ev(MouseEventKind::Up(MouseButton::Left), g.x + 1, g.y));
+        assert!(app.layout.is_visible(Git) && app.drag.is_none());
+        app.toggle_tool_window(Git);
+
+        // Left to another button and back: a drag, so no toggle and no reorder.
+        app.handle_mouse(ev(MouseEventKind::Down(MouseButton::Left), g.x + 1, g.y));
+        app.handle_mouse(ev(MouseEventKind::Drag(MouseButton::Left), run.x + 1, run.y));
+        app.handle_mouse(ev(MouseEventKind::Drag(MouseButton::Left), g.x + 1, g.y));
+        assert_eq!(app.strip_drop(), None);
+        app.handle_mouse(ev(MouseEventKind::Up(MouseButton::Left), g.x + 1, g.y));
+        assert!(!app.layout.is_visible(Git));
+        assert_eq!(app.layout.order(), ToolWindowId::ALL);
+
+        // Released on another button without motion events: nothing.
+        app.handle_mouse(ev(MouseEventKind::Down(MouseButton::Left), g.x + 1, g.y));
+        app.handle_mouse(ev(MouseEventKind::Up(MouseButton::Left), run.x + 1, run.y));
+        assert!(!app.layout.is_visible(Git) && !app.layout.is_visible(Run));
+        assert_eq!(app.layout.order(), ToolWindowId::ALL);
+
+        // The middle button does nothing.
+        app.handle_mouse(ev(MouseEventKind::Down(MouseButton::Middle), g.x + 1, g.y));
+        app.handle_mouse(ev(MouseEventKind::Up(MouseButton::Middle), g.x + 1, g.y));
+        assert!(!app.layout.is_visible(Git) && app.drag.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Drag `tw` from its button to `(x, y)`, release there.
+    fn drag_button(app: &mut super::App, tw: ToolWindowId, x: u16, y: u16) {
+        let r = button(app, tw);
+        app.handle_mouse(ev(MouseEventKind::Down(MouseButton::Left), r.x + 1, r.y));
+        app.handle_mouse(ev(MouseEventKind::Drag(MouseButton::Left), x, y));
+        app.handle_mouse(ev(MouseEventKind::Up(MouseButton::Left), x, y));
+    }
+
+    fn group(app: &super::App, side: Side) -> Vec<ToolWindowId> {
+        app.layout.order().iter().copied().filter(|t| app.layout.side_of(*t) == side).collect()
+    }
+
+    #[tokio::test]
+    async fn dragging_a_strip_button_reorders_and_moves() {
+        use ToolWindowId::*;
+        // (a) Within a group, with the marker drawn on the target.
+        let (mut app, dir) = test_app("strip-drag-a");
+        draw_at(&mut app, 120, 40);
+        let (find, problems) = (button(&app, Find), button(&app, Problems));
+        app.handle_mouse(ev(MouseEventKind::Down(MouseButton::Left), find.x + 1, find.y));
+        app.handle_mouse(ev(MouseEventKind::Drag(MouseButton::Left), problems.x + 1, problems.y));
+        assert_eq!(app.strip_drop(), Some(StripDrop::Onto(Problems)));
+        let buf = draw_at(&mut app, 120, 40);
+        if let Some(bg) = app.theme.strip_drop.bg {
+            assert!((0..problems.width).all(|d| buf[(problems.x + d, problems.y)].bg == bg));
+            assert!((0..find.width).all(|d| buf[(find.x + d, find.y)].bg != bg));
+        }
+        app.handle_mouse(ev(MouseEventKind::Up(MouseButton::Left), problems.x + 1, problems.y));
+        assert_eq!(group(&app, Side::Bottom)[..3], [Run, Problems, Find]);
+        draw_at(&mut app, 120, 40);
+        assert_eq!(button(&app, Find), problems);
+        assert_eq!(app.strip_drop(), None);
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // (b) Onto a button of another group: the window changes side.
+        let (mut app, dir) = test_app("strip-drag-b");
+        draw_at(&mut app, 120, 40);
+        let wt = button(&app, Worktrees);
+        drag_button(&mut app, Git, wt.x + 1, wt.y);
+        assert_eq!(app.layout.side_of(Git), Side::Left);
+        draw_at(&mut app, 120, 40);
+        let (g, wt) = (button(&app, Git), button(&app, Worktrees));
+        assert!(g.y < wt.y && g.y > button(&app, Project).y, "{g:?} {wt:?}");
+        assert_eq!(group(&app, Side::Left)[..3], [Project, Git, Worktrees]);
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // (c) Onto the right strip: a shown window stays shown.
+        let (mut app, dir) = test_app("strip-drag-c");
+        app.move_tool_window(Hierarchy, Side::Right);
+        app.toggle_tool_window(Git);
+        draw_at(&mut app, 120, 40);
+        let h = button(&app, Hierarchy);
+        drag_button(&mut app, Git, h.x + 1, h.y);
+        assert_eq!(app.layout.side_of(Git), Side::Right);
+        assert_eq!(app.layout.right, Some(Git));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // (d) A side without a button: the bar, then the drop.
+        let (mut app, dir) = test_app("strip-drag-d");
+        for tw in [Project, Worktrees, Structure] {
+            app.move_tool_window(tw, Side::Bottom);
+        }
+        draw_at(&mut app, 120, 40);
+        let f = button(&app, Find);
+        app.handle_mouse(ev(MouseEventKind::Down(MouseButton::Left), f.x + 1, f.y));
+        app.handle_mouse(ev(MouseEventKind::Drag(MouseButton::Left), 1, 5));
+        assert_eq!(app.strip_drop(), Some(StripDrop::End(Side::Left)));
+        let buf = draw_at(&mut app, 120, 40);
+        assert_eq!(row_text(&buf, 1, 3), "━━━");
+        app.handle_mouse(ev(MouseEventKind::Up(MouseButton::Left), 1, 5));
+        assert_eq!(app.layout.side_of(Find), Side::Left);
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // (e) Dropped on the menu cell or outside the strip: nothing.
+        let (mut app, dir) = test_app("strip-drag-e");
+        draw_at(&mut app, 120, 40);
+        drag_button(&mut app, Find, 1, 0);
+        drag_button(&mut app, Find, 60, 10);
+        assert_eq!(app.layout.order(), ToolWindowId::ALL);
+        assert_eq!(app.layout.side_of(Find), Side::Bottom);
+        assert!(app.menu_bar.is_none() && app.drag.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn right_strip_has_one_row_buttons_and_a_more_button() {
+        use ToolWindowId::*;
+        let (mut app, dir) = test_app("strip-right-more");
+        for tw in [Find, Run, Problems, Terminal, Git, EventLog, LocalHistory, Tasks, Todo, Hierarchy] {
+            app.move_tool_window(tw, Side::Right);
+        }
+        draw_at(&mut app, 80, 12);
+        let strip = app.layout.rects.strip_right;
+        assert_eq!(strip.height, 11);
+        let more = Rect::new(strip.x, strip.bottom() - 1, strip.width, 1);
+        assert!(app.layout.strip_hits.contains(&(StripButton::More, more)), "{:?}", app.layout.strip_hits);
+        assert_eq!(button(&app, Find), Rect::new(strip.x, 2, strip.width, 1));
+        assert_eq!(app.layout.strip_overflow(true), [Todo, Hierarchy]);
+        app.handle_mouse(ev(MouseEventKind::Down(MouseButton::Left), more.x + 1, more.y));
+        let menu = app.menu.as_ref().expect("more menu");
+        assert_eq!(menu.items.iter().map(|i| i.label.as_str()).collect::<Vec<_>>(), ["TODO", "Hierarchy"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
     async fn hovering_a_strip_button_shows_its_name_and_shortcut() {
         let (mut app, dir) = test_app("strip-hover");
         draw(&mut app);
@@ -4590,10 +4768,20 @@ mod strip_tests {
         let (_, r) = *app.layout.strip_hits.iter().find(|(b, _)| *b == StripButton::Tool(ToolWindowId::Git)).unwrap();
         app.handle_mouse(ev(MouseEventKind::Down(MouseButton::Right), r.x + 1, r.y));
         let menu = app.menu.as_ref().expect("context menu");
-        assert_eq!(menu.items.len(), 3);
-        assert_eq!(menu.items.iter().map(|i| i.enabled).collect::<Vec<_>>(), [true, false, true]);
+        let labels: Vec<_> = menu.items.iter().map(|i| i.label.clone()).collect();
+        assert_eq!(labels.len(), 6);
+        assert_eq!(labels[4..], ["Move Button Up", "Move Button Down"]);
+        assert_eq!(menu.items.iter().map(|i| i.enabled).collect::<Vec<_>>(), [true, false, true, true, true, true]);
         assert!(!app.layout.is_visible(ToolWindowId::Git), "right-click does not toggle");
-        let a = app.menu.take().unwrap().items[2].action.clone().unwrap();
+        let pos = |app: &super::App, tw| app.layout.order().iter().position(|t| *t == tw).unwrap();
+        assert!(pos(&app, ToolWindowId::Terminal) < pos(&app, ToolWindowId::Git));
+        let a = app.menu.take().unwrap().items[5].action.clone().unwrap();
+        app.perform(a);
+        assert!(pos(&app, ToolWindowId::Git) < pos(&app, ToolWindowId::Terminal), "Move Button Down swapped it with the button below");
+        draw(&mut app);
+        let (_, r) = *app.layout.strip_hits.iter().find(|(b, _)| *b == StripButton::Tool(ToolWindowId::Git)).unwrap();
+        app.handle_mouse(ev(MouseEventKind::Down(MouseButton::Right), r.x + 1, r.y));
+        let a = app.menu.take().expect("context menu").items[2].action.clone().unwrap();
         app.perform(a);
         draw(&mut app);
         assert_eq!(app.layout.side_of(ToolWindowId::Git), Side::Right);
@@ -4605,11 +4793,11 @@ mod strip_tests {
         app.notify(crate::event::Level::Info, "toast");
         draw(&mut app);
         assert!(!app.toasts.is_empty());
-        app.handle_mouse(ev(MouseEventKind::Down(MouseButton::Left), r.x + 1, r.y));
+        click(&mut app, r.x + 1, r.y);
         assert_eq!(app.layout.right, Some(ToolWindowId::Git));
         assert!(app.focus.is(PanelId::Git));
         let (_, p) = *app.layout.strip_hits.iter().find(|(b, _)| *b == StripButton::Tool(ToolWindowId::Project)).unwrap();
-        app.handle_mouse(ev(MouseEventKind::Down(MouseButton::Left), p.x + 1, p.y));
+        click(&mut app, p.x + 1, p.y);
         assert!(app.layout.is_visible(ToolWindowId::Project));
         assert!(app.focus.is(PanelId::Project));
         // Toasts are drawn over the tooltip row; clear them to read it.

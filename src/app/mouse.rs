@@ -9,8 +9,8 @@ use super::{App, Ctx, Drag, LastClick};
 use crate::actions::{Action, EditorAction};
 use crate::editor::groups::{EditorHit, GroupId};
 use crate::event::Mouse;
-use crate::ui::focus::PanelId;
-use crate::ui::layout::{Hit, StripButton};
+use crate::ui::focus::{PanelId, ToolWindowId};
+use crate::ui::layout::{Hit, StripButton, StripDrop};
 use crate::ui::status_bar::StatusHit;
 use crate::ui::tabs::TabHit;
 
@@ -195,6 +195,7 @@ impl App {
                     match drag {
                         Drag::Panel(p, area) => self.forward_mouse(p, area, &mouse),
                         Drag::Tab(g, id) => self.editor.drop_tab(g, id, m.column, m.row),
+                        Drag::StripButton { tw, moved, .. } => self.release_strip_button(tw, moved, m.column, m.row),
                         _ => {}
                     }
                 }
@@ -206,6 +207,10 @@ impl App {
                         self.drag = Some(Drag::Tab(g2, id));
                     }
                     Drag::GroupSplitter(n) => self.editor.drag_splitter(n, m.column, m.row),
+                    Drag::StripButton { tw, moved, .. } => {
+                        let off = self.layout.strip_hit(m.column, m.row).map(|(b, _)| b) != Some(StripButton::Tool(tw));
+                        self.drag = Some(Drag::StripButton { tw, x: m.column, y: m.row, moved: moved || off });
+                    }
                 },
                 _ => {}
             }
@@ -227,7 +232,10 @@ impl App {
                 Hit::Strip => match self.layout.strip_hit(m.column, m.row) {
                     Some((StripButton::Menu, _)) => self.toggle_main_menu(),
                     Some((StripButton::Tool(tw), _)) if button == MouseButton::Right => self.tool_window_side_menu(tw, m.column, m.row),
-                    Some((StripButton::Tool(tw), _)) => self.toggle_tool_window(tw),
+                    Some((StripButton::Tool(tw), _)) if button == MouseButton::Left => {
+                        self.drag = Some(Drag::StripButton { tw, x: m.column, y: m.row, moved: false })
+                    }
+                    Some((StripButton::Tool(_), _)) => {}
                     Some((StripButton::More, r)) => {
                         self.strip_more_menu(self.layout.rects.strip_right.contains(r.as_position()), m.column, m.row)
                     }
@@ -323,6 +331,23 @@ impl App {
                 self.forward_mouse(PanelId::Editor, area, mouse);
             }
         }
+    }
+
+    /// The release of a strip button drag: a click toggles, a drag drops.
+    fn release_strip_button(&mut self, tw: ToolWindowId, moved: bool, x: u16, y: u16) {
+        if !moved {
+            if self.layout.strip_hit(x, y).map(|(b, _)| b) == Some(StripButton::Tool(tw)) {
+                self.toggle_tool_window(tw);
+            }
+        } else if let Some(drop) = self.layout.strip_drop_at(x, y) {
+            self.drop_strip_button(tw, drop);
+        }
+    }
+
+    /// The drop target of the strip button being dragged, for the marker.
+    pub(crate) fn strip_drop(&self) -> Option<StripDrop> {
+        let Some(Drag::StripButton { tw, x, y, moved: true }) = self.drag else { return None };
+        self.layout.strip_drop_at(x, y).filter(|d| *d != StripDrop::Onto(tw))
     }
 
     pub(crate) fn forward_mouse(&mut self, p: PanelId, area: Rect, m: &Mouse) {

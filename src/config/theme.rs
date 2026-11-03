@@ -218,6 +218,8 @@ theme_fields! {
         title_focused,
         strip_item,
         strip_item_active,
+        /// A tool strip drop target while a button is dragged (the target button, or a one-row bar).
+        strip_drop,
         status_accent,
         tab,
         tab_active,

@@ -7,8 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Tool strip: drag a button to reorder it, or onto the other strip (or the other group) to move its window there; the drop target is highlighted (theme key `strip_drop`). The button's right-click menu has Move Button Up and Move Button Down. The order is saved in the session.
+
 ### Changed
 
+- Tool strip buttons toggle their window on mouse release instead of press.
 - Tool strip: when the two-row buttons do not fit (24-row terminals), every button is one row with only its icon, so all 13 tool windows have a button at 80x24; on a shorter strip its last row is a `⋯` More button whose menu lists the windows left without a button.
 
 ### Fixed
