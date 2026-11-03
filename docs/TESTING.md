@@ -1390,6 +1390,9 @@ Setup as above with the default config (`[lsp] enabled = false` only), at 120x40
    `toolbar = false` under `[ui]` with `[lsp] enabled = false` kept. F10, Right to View, the "Toolbar" row
    (just above "Zen Mode"), Enter brings the row back and the file holds `toolbar = true`. A right press on
    the ` ≣ ` cell opens the same menu, not the main menu. Stderr empty, Ctrl+Q exits 0.
+12. In a repo stopped mid-merge (the conflict setup above), row 1 shows ` ⎇ main (Merging) ▾ ` after the project
+   widget and the status bar's right end has no `main`; a click on the widget opens Git Branches. With
+   `toolbar = false` written as in step 10 the status bar shows `main` again. At 50 columns the widget drops.
 
 ### Scenario: unpinned tool window
 
