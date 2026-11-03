@@ -92,6 +92,8 @@ pub enum ToolbarButton {
     Rerun,
     /// Stops the running task (`run.stop`).
     Stop,
+    /// Opens the branches popup.
+    Branch,
 }
 
 /// How a tool window docks: an Unpinned one hides when focus leaves it.

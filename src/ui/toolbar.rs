@@ -7,9 +7,10 @@ use ratatui::layout::Rect;
 use ratatui::style::Style;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::actions::{Action, AppAction, PaletteKind, RunAction};
+use crate::actions::{Action, AppAction, GitAction, PaletteKind, RunAction};
 use crate::app::App;
 use crate::config::theme::Theme;
+use crate::ui::focus::ToolWindowId;
 use crate::ui::layout::ToolbarButton;
 use crate::ui::menu_bar::menu_glyph;
 
@@ -157,7 +158,13 @@ pub fn run_items(selected: Option<&str>, running: Option<&str>, spinner: &str, t
     items
 }
 
-/// The widgets in group order (left, then right); 352 and 353 add theirs here.
+/// The branch widget's text: ` ⎇ main ▾ `, or ` ⎇ main (Rebasing 2/3) ▾ ` during an operation.
+pub fn branch_text(icon: &str, name: &str, tag: Option<&str>) -> String {
+    let tag = tag.map(|t| format!(" ({t})")).unwrap_or_default();
+    format!(" {icon} {name}{tag} ▾ ")
+}
+
+/// The widgets in group order (left, then right); 353 adds its left ones after the menu.
 fn items(app: &App) -> Vec<Item> {
     let mut items = vec![Item {
         button: ToolbarButton::Menu,
@@ -166,6 +173,21 @@ fn items(app: &App) -> Vec<Item> {
         style: app.theme.strip_item,
         shrinks: vec![],
     }];
+    if let Some(name) = app.branch_label() {
+        let icon = ToolWindowId::Git.icon(app.config.ui.icons);
+        let tag = app.in_progress().map(|ip| ip.label());
+        let style = if tag.is_some() { app.theme.strip_item_active } else { app.theme.strip_item };
+        items.push(Item {
+            button: ToolbarButton::Branch,
+            group: Group::Left,
+            text: branch_text(icon, &name, tag.as_deref()),
+            style,
+            shrinks: vec![
+                (STEP_BRANCH_CUT, Shrink::Text(branch_text(icon, &shorten(&name, 12), tag.as_deref()))),
+                (STEP_BRANCH_DROP, Shrink::Drop),
+            ],
+        });
+    }
     items.extend(run_items(app.run.selected.as_deref(), app.run.running_name(), app.spinner(), &app.theme));
     items
 }
@@ -178,6 +200,7 @@ pub fn action(button: ToolbarButton) -> Action {
         ToolbarButton::Run => Action::Run(RunAction::RunSelected),
         ToolbarButton::Rerun => Action::Run(RunAction::Rerun),
         ToolbarButton::Stop => Action::Run(RunAction::Stop),
+        ToolbarButton::Branch => Action::Git(GitAction::Branches),
     }
 }
 
@@ -189,6 +212,7 @@ pub fn title(button: ToolbarButton) -> &'static str {
         ToolbarButton::Run => "Run",
         ToolbarButton::Rerun => "Rerun",
         ToolbarButton::Stop => "Stop",
+        ToolbarButton::Branch => "Branches",
     }
 }
 
@@ -353,6 +377,32 @@ mod tests {
         assert_eq!(action(ToolbarButton::Run), Action::Run(RunAction::RunSelected));
         assert_eq!(action(ToolbarButton::Rerun), Action::Run(RunAction::Rerun));
         assert_eq!(action(ToolbarButton::Stop), Action::Run(RunAction::Stop));
+    }
+
+    #[test]
+    fn branch_text_has_the_tag_and_the_arrow() {
+        assert_eq!(branch_text("⎇", "main", None), " ⎇ main ▾ ");
+        assert_eq!(branch_text("⎇", "main", Some("Rebasing 2/3")), " ⎇ main (Rebasing 2/3) ▾ ");
+    }
+
+    #[test]
+    fn branch_name_is_cut_then_dropped() {
+        let items = || {
+            let mut branch = it(
+                Group::Left,
+                &branch_text("⎇", "feature/top-bar", None),
+                vec![
+                    (STEP_BRANCH_CUT, Shrink::Text(branch_text("⎇", &shorten("feature/top-bar", 12), None))),
+                    (STEP_BRANCH_DROP, Shrink::Drop),
+                ],
+            );
+            branch.button = ToolbarButton::Branch;
+            vec![it(Group::Left, " ≣ ", vec![]), branch, it(Group::Right, "run", vec![])]
+        };
+        let kept = |w| place(items(), Rect::new(0, 0, w, 1)).into_iter().map(|(i, _)| i.text).collect::<Vec<_>>();
+        assert_eq!(kept(29)[1], " ⎇ feature/top-bar ▾ ");
+        assert_eq!(kept(27)[1], " ⎇ feature/top-… ▾ ");
+        assert_eq!(kept(26), [" ≣ ", "run"]);
     }
 
     #[test]

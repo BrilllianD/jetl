@@ -3,7 +3,8 @@
 //! running git operations, notifications (else the diagnostic at the
 //! caret), then on the right the active file's problem counts, cursor
 //! position and `OVR` in overwrite mode, line ending, encoding, indent and language of the active
-//! buffer, its language server, and the current branch at the right edge.
+//! buffer, its language server, and the current branch at the right edge
+//! (unless the toolbar's branch widget shows it).
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -14,6 +15,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::app::App;
 use crate::editor::breadcrumbs::{Part, fit_tail};
 use crate::event::Level;
+use crate::ui::layout::ToolbarButton;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StatusHit {
@@ -123,8 +125,10 @@ pub fn render(app: &mut App, frame: &mut Frame, area: Rect) {
     if !app.keyboard_enhanced {
         right_parts.push(("legacy keys".into(), theme.dim.bg(theme.status_bg), None, 4));
     }
-    // The branch sits at the right edge; a click opens the branches popup.
-    if let Some(branch) = app.branch_label() {
+    // The branch sits at the right edge, unless the toolbar shows it this
+    // frame (`toolbar::render` runs first); a click opens the branches popup.
+    let on_toolbar = app.layout.toolbar_hits.iter().any(|(b, _)| *b == ToolbarButton::Branch);
+    if !on_toolbar && let Some(branch) = app.branch_label() {
         right_parts.push((branch, theme.status_accent.bg(theme.status_bg), Some(StatusHit::Branch), 1));
     }
     let room = area.right().saturating_sub(x);

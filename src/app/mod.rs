@@ -4944,6 +4944,62 @@ mod strip_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[tokio::test]
+    async fn toolbar_branch_widget_replaces_the_status_branch() {
+        use crate::actions::PaletteKind;
+        use crate::event::AppMsg;
+        use crate::git::GitMsg;
+        use crate::git::model::{InProgress, InProgressKind, StatusSnapshot};
+        use crate::ui::layout::ToolbarButton;
+        use crate::ui::status_bar::StatusHit;
+        let (mut app, dir) = test_app("toolbar-branch");
+        app.config.ui.toolbar = true;
+        let status = |app: &mut super::App, seq, in_progress| {
+            app.handle_msg(AppMsg::Git(GitMsg::Status {
+                generation: app.git.generation,
+                seq,
+                result: Ok(StatusSnapshot {
+                    workdir: app.workspace.root.clone(),
+                    branch: Some("feature/x".into()),
+                    in_progress,
+                    ..Default::default()
+                }),
+            }));
+        };
+        status(&mut app, 1, None);
+        let buf = draw(&mut app);
+        let (_, r) = *app.layout.toolbar_hits.iter().find(|(b, _)| *b == ToolbarButton::Branch).unwrap();
+        assert_eq!((r.x, r.y), (4, 0));
+        assert!(row_text(&buf, 0, 100).contains(" ⎇ feature/x ▾ "));
+        assert!(!row_text(&buf, 23, 100).contains("feature/x"));
+        assert!(!app.status_hits.iter().any(|(h, _)| *h == crate::ui::status_bar::StatusHit::Branch));
+
+        app.handle_mouse(ev(MouseEventKind::Moved, r.x + 1, 0));
+        let buf = draw(&mut app);
+        assert!(row_text(&buf, 1, 100).contains("Branches"));
+        app.handle_mouse(ev(MouseEventKind::Down(MouseButton::Left), r.x + 1, 0));
+        assert_eq!(app.palette.as_ref().map(|p| p.kind), Some(PaletteKind::Branches));
+        app.palette = None;
+
+        status(&mut app, 2, Some(InProgress { kind: InProgressKind::Rebase, step: Some((2, 3)) }));
+        let buf = draw(&mut app);
+        assert!(row_text(&buf, 0, 100).contains(" ⎇ feature/x (Rebasing 2/3) ▾ "));
+
+        app.config.ui.toolbar = false;
+        let buf = draw(&mut app);
+        assert!(row_text(&buf, 23, 100).trim_end().ends_with("feature/x"));
+        assert!(app.status_hits.iter().any(|(h, _)| *h == StatusHit::Branch));
+
+        // Widget dropped from the row (narrow step 5): the status bar shows it again.
+        app.config.ui.toolbar = true;
+        draw(&mut app);
+        app.layout.toolbar_hits.retain(|(b, _)| *b != ToolbarButton::Branch);
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 1)).unwrap();
+        let frame = term.draw(|f| crate::ui::status_bar::render(&mut app, f, Rect::new(0, 0, 100, 1))).unwrap();
+        assert!(row_text(frame.buffer, 0, 100).contains("feature/x"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     fn write_toolbar_config(app: &super::App, on: bool) {
         let file = app.paths.config_file();
         std::fs::create_dir_all(file.parent().unwrap()).unwrap();

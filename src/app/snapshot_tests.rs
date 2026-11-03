@@ -3500,6 +3500,29 @@ async fn app_toolbar_menu_open() {
 }
 
 #[tokio::test]
+async fn app_toolbar_branch() {
+    use crate::git::model::{InProgress, InProgressKind};
+    let mut fx = stable_app("toolbar-branch");
+    let app = &mut fx.app;
+    app.config.ui.toolbar = true;
+    app.handle_msg(AppMsg::Git(GitMsg::Status {
+        generation: app.git.generation,
+        seq: 1,
+        result: Ok(StatusSnapshot {
+            workdir: app.workspace.root.clone(),
+            branch: Some("main".into()),
+            in_progress: Some(InProgress { kind: InProgressKind::Rebase, step: Some((2, 3)) }),
+            ..Default::default()
+        }),
+    }));
+    app.notifications.clear();
+    app.notification_shown = false;
+    let term = draw_app(app, 80, 24);
+    let marks = [Mark::style('T', "toolbar", app.theme.strip_item), Mark::style('A', "branch in operation", app.theme.strip_item_active)];
+    assert_snapshot!("app_toolbar_branch", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
 async fn app_toolbar_context_menu() {
     use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
     let mut fx = stable_app("toolbar-context");
