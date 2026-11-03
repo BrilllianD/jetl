@@ -1269,6 +1269,7 @@ impl App {
                 }
             }
             AppAction::MoveToolWindowButton { tw, up } => self.layout.move_button(tw, up),
+            AppAction::RestoreDefaultLayout => self.restore_default_layout(),
             AppAction::ToggleZen => self.toggle_zen(),
             AppAction::Escape => self.focus.set(PanelId::Editor),
             AppAction::OpenPalette(kind) => self.open_palette(kind),
@@ -1348,6 +1349,17 @@ impl App {
         }
     }
 
+    /// Restore Default Layout; focus the editor when the focused window was
+    /// hidden by it.
+    pub(crate) fn restore_default_layout(&mut self) {
+        self.layout.restore_default();
+        if let Some(cur) = self.focus.current.tool_window()
+            && !self.layout.is_visible(cur)
+        {
+            self.focus.set(PanelId::Editor);
+        }
+    }
+
     /// A strip button dropped on `drop`: reorder, and move the window to the
     /// drop's side.
     pub(crate) fn drop_strip_button(&mut self, tw: ToolWindowId, drop: StripDrop) {
@@ -1373,6 +1385,8 @@ impl App {
             MenuItem::separator(),
             button("Move Button Up", true),
             button("Move Button Down", false),
+            MenuItem::separator(),
+            MenuItem::new("Restore Default Layout", Action::App(AppAction::RestoreDefaultLayout)),
         ];
         self.apply_effects(vec![Effect::ContextMenu(ContextMenu::new(items, x, y))]);
     }
@@ -4701,6 +4715,27 @@ mod strip_tests {
         assert_eq!(app.layout.side_of(Find), Side::Left);
         let _ = std::fs::remove_dir_all(&dir);
 
+        // (d2) The Bottom and Right bars use the drop colour too.
+        let (mut app, dir) = test_app("strip-drag-d2");
+        app.move_tool_window(Hierarchy, Side::Right);
+        for tw in [Find, Run, Problems, Terminal, Git, EventLog, LocalHistory, Tasks, Todo] {
+            app.move_tool_window(tw, Side::Left);
+        }
+        draw_at(&mut app, 120, 40);
+        let p = button(&app, Project);
+        app.handle_mouse(ev(MouseEventKind::Down(MouseButton::Left), p.x + 1, p.y));
+        app.handle_mouse(ev(MouseEventKind::Drag(MouseButton::Left), 1, 38));
+        assert_eq!(app.strip_drop(), Some(StripDrop::End(Side::Bottom)));
+        let buf = draw_at(&mut app, 120, 40);
+        if let Some(bg) = app.theme.strip_drop.bg {
+            assert!(
+                (0..app.layout.rects.strip.height)
+                    .any(|d| buf[(1, app.layout.rects.strip.y + d)].symbol() == "━" && buf[(1, app.layout.rects.strip.y + d)].bg == bg)
+            );
+        }
+        app.handle_mouse(ev(MouseEventKind::Up(MouseButton::Left), 1, 38));
+        let _ = std::fs::remove_dir_all(&dir);
+
         // (e) Dropped on the menu cell or outside the strip: nothing.
         let (mut app, dir) = test_app("strip-drag-e");
         draw_at(&mut app, 120, 40);
@@ -4772,9 +4807,10 @@ mod strip_tests {
         app.handle_mouse(ev(MouseEventKind::Down(MouseButton::Right), r.x + 1, r.y));
         let menu = app.menu.as_ref().expect("context menu");
         let labels: Vec<_> = menu.items.iter().map(|i| i.label.clone()).collect();
-        assert_eq!(labels.len(), 6);
-        assert_eq!(labels[4..], ["Move Button Up", "Move Button Down"]);
-        assert_eq!(menu.items.iter().map(|i| i.enabled).collect::<Vec<_>>(), [true, false, true, true, true, true]);
+        assert_eq!(labels.len(), 8);
+        assert_eq!(labels[4..6], ["Move Button Up", "Move Button Down"]);
+        assert_eq!(labels[7], "Restore Default Layout");
+        assert_eq!(menu.items.iter().map(|i| i.enabled).collect::<Vec<_>>(), [true, false, true, true, true, true, true, true]);
         assert!(!app.layout.is_visible(ToolWindowId::Git), "right-click does not toggle");
         let pos = |app: &super::App, tw| app.layout.order().iter().position(|t| *t == tw).unwrap();
         assert!(pos(&app, ToolWindowId::Terminal) < pos(&app, ToolWindowId::Git));
@@ -4809,6 +4845,36 @@ mod strip_tests {
         let buf = draw(&mut app);
         let row: String = (0..97).map(|x| buf[(x, r.y)].symbol().to_string()).collect();
         assert!(row.trim_end().ends_with(" Git  Alt+9"), "{row}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn restore_default_layout_from_key_menu_and_side_menu() {
+        let (mut app, dir) = test_app("restore-default");
+        app.toggle_tool_window(ToolWindowId::Git);
+        app.layout.move_button(ToolWindowId::Git, true);
+        app.move_tool_window(ToolWindowId::Git, Side::Right);
+        app.focus.set(PanelId::Git);
+        app.perform(Action::App(AppAction::MaximizeToolWindow));
+        assert!(!app.layout.order_overrides().is_empty());
+        assert!(app.layout.maximized.is_some());
+        app.handle_key(crossterm::event::KeyEvent::new(crossterm::event::KeyCode::F(12), KeyModifiers::SHIFT));
+        assert_eq!(app.layout.side_of(ToolWindowId::Git), Side::Bottom);
+        assert!(app.layout.order_overrides().is_empty());
+        assert_eq!(app.layout.maximized, None);
+        assert!(app.layout.is_visible(ToolWindowId::Git));
+        assert!(app.focus.is(PanelId::Git));
+
+        app.move_tool_window(ToolWindowId::Git, Side::Right);
+        app.perform(Action::App(AppAction::FocusPanel(PanelId::Run)));
+        draw(&mut app);
+        let (_, r) = *app.layout.strip_hits.iter().find(|(b, _)| *b == StripButton::Tool(ToolWindowId::Git)).unwrap();
+        app.handle_mouse(ev(MouseEventKind::Down(MouseButton::Right), r.x + 1, r.y));
+        let a = app.menu.take().expect("context menu").items[7].action.clone().unwrap();
+        app.perform(a);
+        assert_eq!(app.layout.bottom, Some(ToolWindowId::Git));
+        assert!(!app.layout.is_visible(ToolWindowId::Run));
+        assert!(app.focus.is(PanelId::Editor));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -97,6 +97,7 @@
 "alt-w a" = "editor.close_all_tabs"
 "alt-w p" = "editor.close_unpinned_tabs"
 "ctrl-shift-f12" = "tool_window.hide_all"
+"shift-f12" = "tool_window.restore_default_layout"
 "shift-esc" = "tool_window.hide_focused"
 # Shift+Esc needs the kitty protocol; Alt+Shift+Q works in legacy terminals and tmux.
 "alt-shift-q" = "tool_window.hide_focused"

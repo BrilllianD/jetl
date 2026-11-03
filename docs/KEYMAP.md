@@ -34,6 +34,7 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Ctrl+Shift+F12` | `tool_window.hide_all` | Hide all tool windows |
 | `Alt+Shift+Q` | `tool_window.hide_focused` | Hide active tool window |
 | `Shift+Esc` * | `tool_window.hide_focused` | Hide active tool window |
+| `Shift+F12` | `tool_window.restore_default_layout` | Restore the default tool window layout |
 | `Ctrl+Shift+Left` | `tool_window.stretch_left` | Stretch tool window to the left |
 | `Ctrl+Shift+Right` | `tool_window.stretch_right` | Stretch tool window to the right |
 | `Ctrl+Shift+Up` | `tool_window.stretch_up` | Stretch tool window up |

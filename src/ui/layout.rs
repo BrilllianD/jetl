@@ -252,6 +252,17 @@ impl LayoutState {
         }
     }
 
+    /// Restore Default Layout: every window back on its default side (a
+    /// shown one stays shown there, as `move_to`), the default strip order,
+    /// nothing maximized. Sizes and zen are kept.
+    pub fn restore_default(&mut self) {
+        for (tw, _) in self.side_overrides() {
+            self.move_to(tw, tw.default_side());
+        }
+        self.order = ToolWindowId::ALL.to_vec();
+        self.maximized = None;
+    }
+
     /// The maximized window, if it is still shown.
     pub fn maximized_window(&self) -> Option<ToolWindowId> {
         self.maximized.filter(|tw| self.is_visible(*tw))
@@ -741,6 +752,35 @@ mod tests {
     }
 
     #[test]
+    fn restore_default_clears_sides_order_and_maximized() {
+        let mut l = LayoutState::new(30, 10);
+        l.show(Git);
+        l.move_to(Git, Side::Right);
+        l.move_to(Find, Side::Left);
+        l.move_button(ToolWindowId::Worktrees, true);
+        l.toggle_maximize(Git);
+        assert!(!l.order_overrides().is_empty() && l.maximized.is_some());
+        let sizes = (l.left_w, l.bottom_h, l.right_w);
+        l.restore_default();
+        assert!(l.side_overrides().is_empty());
+        assert!(l.order_overrides().is_empty());
+        assert_eq!(l.maximized, None);
+        assert!(!l.has_right_strip());
+        assert_eq!((l.left, l.bottom, l.right), (Some(Project), Some(Git), None));
+        assert_eq!((l.left_w, l.bottom_h, l.right_w), sizes);
+
+        let mut l = LayoutState::new(30, 10);
+        l.show(Git);
+        l.move_to(Git, Side::Right);
+        l.enter_zen(PanelId::Editor);
+        l.restore_default();
+        assert!(l.zen.is_some());
+        l.leave_zen();
+        assert_eq!(l.bottom, Some(Git));
+        assert_eq!(l.right, None);
+    }
+
+    #[test]
     fn right_window_compute_hit_and_drag() {
         let mut l = LayoutState::new(30, 10);
         l.hide_all();
@@ -818,7 +858,7 @@ mod tests {
     fn move_button_follows_the_visual_order() {
         use ToolWindowId::*;
         let mut l = LayoutState::new(30, 10);
-        l.move_button(Worktrees, true);
+        l.move_button(ToolWindowId::Worktrees, true);
         assert_eq!(&l.order()[..3], [Worktrees, Project, Structure]);
         l.move_button(Project, false);
         assert_eq!(&l.order()[..3], [Worktrees, Structure, Project]);
@@ -871,5 +911,17 @@ mod tests {
         l.strip_hits = vec![(StripButton::Menu, Rect::new(0, 0, 3, 1)), (StripButton::Tool(Find), Rect::new(0, 37, 3, 2))];
         assert_eq!(l.strip_drop_at(1, 5), Some(StripDrop::End(Side::Left)));
         assert_eq!(l.strip_drop_at(1, 30), Some(StripDrop::Onto(Find)));
+        // No Bottom button: a free row at or below mid is the Bottom end.
+        l.strip_hits = vec![(StripButton::Menu, Rect::new(0, 0, 3, 1)), (StripButton::Tool(Project), Rect::new(0, 2, 3, 2))];
+        assert_eq!(l.strip_drop_at(1, 30), Some(StripDrop::End(Side::Bottom)));
+        // The right strip's free row is the Right end.
+        l.move_to(Hierarchy, Side::Right);
+        l.compute(Rect::new(0, 0, 120, 40));
+        let sr = l.rects.strip_right;
+        l.strip_hits = vec![(StripButton::Menu, Rect::new(0, 0, 3, 1))];
+        assert_eq!(l.strip_drop_at(sr.x + 1, sr.y + 5), Some(StripDrop::End(Side::Right)));
+        // A More cell is not a drop target.
+        l.strip_hits = vec![(StripButton::More, Rect::new(0, 38, 3, 1))];
+        assert_eq!(l.strip_drop_at(1, 38), None);
     }
 }

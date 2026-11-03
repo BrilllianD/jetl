@@ -34,6 +34,8 @@ pub enum AppAction {
     ToggleToolWindow(ToolWindowId),
     HideAllToolWindows,
     HideFocusedToolWindow,
+    /// Every tool window back on its default side, default strip order, nothing maximized (Shift+F12).
+    RestoreDefaultLayout,
     /// Move the focused tool window's free edge (Ctrl+Shift+arrows).
     ResizeToolWindow(Dir),
     /// The focused tool window's next inner tab (Git, Run, Terminal), wrapping.
@@ -743,6 +745,7 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "tool_window.problems" => "Problems tool window", App(AppAction::ToggleToolWindow(ToolWindowId::Problems));
         "tool_window.hide_all" => "Hide all tool windows", App(AppAction::HideAllToolWindows);
         "tool_window.hide_focused" => "Hide active tool window", App(AppAction::HideFocusedToolWindow);
+        "tool_window.restore_default_layout" => "Restore the default tool window layout", App(AppAction::RestoreDefaultLayout);
         "tool_window.stretch_left" => "Stretch tool window to the left", App(AppAction::ResizeToolWindow(Dir::Left));
         "tool_window.stretch_right" => "Stretch tool window to the right", App(AppAction::ResizeToolWindow(Dir::Right));
         "tool_window.stretch_up" => "Stretch tool window up", App(AppAction::ResizeToolWindow(Dir::Up));

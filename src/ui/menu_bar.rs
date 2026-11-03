@@ -126,6 +126,7 @@ pub const MAIN_MENU: &[(&str, char, &[Row])] = &[
             Item("Hierarchy", "tool_window.hierarchy"),
             Sep,
             Item("Hide All Tool Windows", "tool_window.hide_all"),
+            Item("Restore Default Layout", "tool_window.restore_default_layout"),
             Item("Maximize Tool Window", "tool_window.maximize"),
             Item("Move Tool Window to Left", "tool_window.move_left"),
             Item("Move Tool Window to Bottom", "tool_window.move_bottom"),
