@@ -325,6 +325,9 @@ impl App {
             }
         }
         if diff.has("index.scip") {
+            // Another file: the old one's index must not answer while it loads or if it fails.
+            self.scip.index = None;
+            self.scip.failed_mtime = None;
             self.load_scip();
         }
         if diff.has_section("run") {
