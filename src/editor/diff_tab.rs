@@ -467,12 +467,16 @@ mod tests {
         with_cx(|cx| {
             ed.open_diff_tab("Diff", vec![r("src/a.rs"), r("src/b.rs")], 0, cx);
         });
+        assert!(ed.set_diff(&r("src/a.rs"), &doc()));
         let theme = Theme::default();
-        let area = Rect::new(0, 0, 80, 5);
+        let area = Rect::new(0, 0, 50, 5);
         let mut screen = Screen::empty(area);
         tab(&mut ed, 0).render(&mut screen, area, true, &theme);
         let row: String = (0..area.width).map(|x| screen[(x, 0)].symbol().to_string()).collect();
-        assert!(row.contains("1/2  src/a.rs  1a2b3c4d..5e6f7a8b"), "{row}");
+        assert!(!tab(&mut ed, 0).hits.is_empty(), "toggles drawn: {row}");
+        assert!(row.contains("1/2  src/a.rs  "), "{row}");
+        assert!(row.contains('…'), "title cut: {row}");
+        assert!(!row.contains("5e6f7a8b"), "{row}");
         assert_eq!(header(&r("src/a.rs")), "src/a.rs  1a2b3c4d..5e6f7a8b");
     }
 }

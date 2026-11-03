@@ -2,7 +2,7 @@
 source: src/app/snapshot_tests.rs
 expression: "snapshot(&term, &marks, Some(bottom))"
 ---
-120x30 cursor=hidden
+120x40 cursor=hidden
 00  ≣ ┌ Project: root ───────────────┐│
 01    │                              ││
 02  1 │                              ││
@@ -13,25 +13,36 @@ expression: "snapshot(&term, &marks, Some(bottom))"
 07  ⊢ │                              ││      No files open. Alt+1 opens the Project view; Ctrl+Shift+N finds a file.
 08    │                              ││
 09    │                              ││
-10  ⋔ │                              ││
+10    │                              ││
 11    │                              ││
-12  ✎ │                              ││                                        ╭───────────────────────────────────────╮
-13    └──────────────────────────────┘│                                        │ Show Diff                             │
-14  ✓ ─────────────────────────────────────────────────────────────────────────│ Open Diff in Editor Tab               │───
-15  8 ┌ Git ───────────────────────────────────────────────────────────────────│ Open in Editor                        │──┐
-16  ⟲ │ Commit   Log   Stash   Console                                         │ Copy Path                             │  │
-17  5 │[Branch: all] [Text: any] [Author: any] [Path: any]                     │ Show History for File                 │  │
-18  ⚑ │● aaaaaaa (HEAD -> main) Move the panel code         Ann, 2 hours ago│ a├───────────────────────────────────────┤  │
-19  9 │                                                                     │ M│ Copy Revision Number           Ctrl+C │  │
-20  ⎇ │                                                                     │ 5│ Cherry-Pick               Alt+Shift+P │  │
-21    │                                                                     │ ▾│ Revert Commit…            Alt+Shift+R │  │
-22  ❯ │                                                                     │  │ Checkout Revision         Alt+Shift+C │  │
-23  6 │                                                                     │  ╰───────────────────────────────────────╯  │
-24  ⚠ │                                                                     │   ▾ src                                     │
-25  4 │                                                                     │     ▾ git/panel                             │
-26  ► │                                                                     │       M log.rs                              │
-27  3 │                                                                     │       M mod.rs                              │
-28  ⌕ └───────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
-29
+12    │                              ││
+13    └──────────────────────────────┘│
+14    ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+15    ┌ Git ──────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+16    │ Commit   Log   Stash   Console                                                     Refresh   Fetch   Pull   Push  │
+17    │[Branch: all] [Text: any] [Author: any] [Path: any]                                                                │
+18    │● aaaaaaa (HEAD -> main) Move the panel code         Ann, 2 hours ago│ aaaaaaa  Ann, 2 hours ago                   │
+19    │                                                                     │ Move the panel code                         │
+20  ⋔ │                                                                     │ 5 files changed                             │
+21    │                                                                     │ ▾ root                                      │
+22  ✎ │                                                                     │   ▾ docs                                    │
+23    │                                                                     │     R syntax.md ← docs/grammar.md           │
+24  ✓ │                                                                     │   ▾ src                                     │
+25  8 │                                                                     │  ╭───────────────────────────────────────╮  │
+26  ⟲ │                                                                     │  │ Show Diff                             │  │
+27  5 │                                                                     │  │ Open Diff in Editor Tab               │  │
+28  ⚑ │                                                                     │  │ Open in Editor                        │  │
+29  9 │                                                                     │  │ Copy Path                             │  │
+30  ⎇ │                                                                     │  │ Show History for File                 │  │
+31    │                                                                     │  ├───────────────────────────────────────┤  │
+32  ❯ │                                                                     │  │ Copy Revision Number           Ctrl+C │  │
+33  6 │                                                                     │  │ Cherry-Pick               Alt+Shift+P │  │
+34  ⚠ │                                                                     │  │ Revert Commit…            Alt+Shift+R │  │
+35  4 │                                                                     │  │ Checkout Revision         Alt+Shift+C │  │
+36  ► │                                                                     │  ╰───────────────────────────────────────╯  │
+37  3 │                                                                     │                                             │
+38  ⌕ └───────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+39
 -- marks: L=selected
-23                                                                           LL                                         LL
+23                                                                           LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL
+26                                                                              LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL

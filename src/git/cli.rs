@@ -639,7 +639,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn spans_files_unions_spans_and_range_diff_loads() {
+    async fn spans_files_unions_spans_into_range_keys() {
         use super::super::model::{DiffKey, DiffSpan};
         let dir = std::env::temp_dir().join(format!("jetl-spans-files-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -674,7 +674,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let paths = |v: &[(CommitFile, DiffKey)]| v.iter().map(|(f, _)| (f.path.clone(), f.status)).collect::<Vec<_>>();
         let want = vec![("a.txt".to_string(), 'A'), ("c.txt".to_string(), 'A'), ("dir/b.txt".to_string(), 'A')];
-        assert_eq!(paths(&gap), vec![("a.txt".to_string(), 'A'), ("c.txt".to_string(), 'A'), ("dir/b.txt".to_string(), 'A')]);
+        assert_eq!(paths(&gap), want);
         assert_eq!(gap[0].1, DiffKey::Range { base: None, top: shas[0].clone(), rel: "a.txt".into(), old: None });
         assert_eq!(paths(&chain), want);
     }

@@ -1980,15 +1980,25 @@ async fn git_log_file_menu() {
     use crate::actions::GitAction;
     let mut fx = log_files_fixture("git-log-file-menu");
     let app = &mut fx.app;
+    // A taller Git panel leaves room for the menu below the selected row, so the snapshot shows its anchor.
+    app.layout.bottom_h = 24;
     app.perform(Action::Git(GitAction::Right));
     for _ in 0..2 {
         app.perform(Action::Git(GitAction::Down));
     }
-    draw_app(app, 120, 30);
+    draw_app(app, 120, 40);
     app.perform(Action::Git(GitAction::ContextMenu));
-    let term = draw_app(app, 120, 30);
+    let term = draw_app(app, 120, 40);
     let marks = [Mark::bg('L', "selected", app.theme.list_selected.bg.unwrap())];
     let bottom = app.layout.rects.bottom;
+    let sel = app.theme.list_selected.bg.unwrap();
+    let buf = term.backend().buffer();
+    let row = (bottom.y..bottom.bottom()).find(|&y| (bottom.x..bottom.right()).any(|x| buf[(x, y)].bg == sel)).expect("selected row drawn");
+    let text: String = (bottom.x..bottom.right()).map(|x| buf[(x, row)].symbol().to_string()).collect();
+    assert!(text.contains("syntax.md"), "{text}");
+    let menu = app.menu.as_ref().expect("context menu");
+    assert!(!(bottom.x..bottom.right()).any(|x| menu.contains(x, row)), "menu covers its anchor row: {text}");
+    assert!((bottom.x..bottom.right()).any(|x| menu.contains(x, row + 2)), "menu opens below the row");
     assert_snapshot!("git_log_file_menu", snapshot(&term, &marks, Some(bottom)));
 }
 
