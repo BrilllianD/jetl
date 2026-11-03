@@ -170,6 +170,9 @@ pub struct UiConfig {
     pub file_icons: FileIcons,
     /// Color depth: true color or the 256-color palette.
     pub colors: ColorMode,
+    /// The top row with the main menu button and the toolbar widgets; hidden in
+    /// zen mode and below 12 rows.
+    pub toolbar: bool,
 }
 
 /// Color depth of the theme (`ui.colors`).
@@ -319,6 +322,7 @@ impl Default for UiConfig {
             icons: Icons::Unicode,
             file_icons: FileIcons::Nerd,
             colors: ColorMode::Auto,
+            toolbar: true,
         }
     }
 }

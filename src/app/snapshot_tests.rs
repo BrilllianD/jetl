@@ -3247,7 +3247,7 @@ fn run_configs_fixture(app: &mut App) {
     std::fs::create_dir_all(&app.paths.config_dir).unwrap();
     std::fs::write(
         app.paths.config_file(),
-        "[lsp]\nenabled = false\n[[run.configs]]\nname = \"global check\"\ncommand = \"cargo check\"\n",
+        "[lsp]\nenabled = false\n[ui]\ntoolbar = false\n[[run.configs]]\nname = \"global check\"\ncommand = \"cargo check\"\n",
     )
     .unwrap();
     app.config_changed(vec![crate::config::watch::ConfigFile::Config]);
@@ -3449,4 +3449,35 @@ async fn app_strip_drag_marker() {
     let term = draw_app(app, 80, 24);
     let marks = [Mark::style('D', "drop target", app.theme.strip_item.patch(app.theme.strip_drop))];
     assert_snapshot!("app_strip_drag_marker", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
+async fn app_toolbar() {
+    let mut fx = stable_app("toolbar");
+    let app = &mut fx.app;
+    app.config.ui.toolbar = true;
+    let term = draw_app(app, 120, 40);
+    let marks = [Mark::style('T', "toolbar", app.theme.strip_item)];
+    assert_snapshot!("app_toolbar", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
+async fn app_toolbar_80x24() {
+    let mut fx = stable_app("toolbar-80");
+    let app = &mut fx.app;
+    app.config.ui.toolbar = true;
+    let term = draw_app(app, 80, 24);
+    let marks = [Mark::style('T', "toolbar", app.theme.strip_item)];
+    assert_snapshot!("app_toolbar_80x24", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
+async fn app_toolbar_menu_open() {
+    let mut fx = stable_app("toolbar-menu");
+    let app = &mut fx.app;
+    app.config.ui.toolbar = true;
+    app.toggle_main_menu();
+    let term = draw_app(app, 80, 24);
+    let marks = menu_marks(&app.theme);
+    assert_snapshot!("app_toolbar_menu_open", snapshot(&term, &marks, None));
 }

@@ -178,6 +178,11 @@ press 64 10 4                                 # wheel up; 65 = wheel down
 Leave more than 400 ms between clicks on the same cell unless you want a
 double click.
 
+The toolbar (`[ui] toolbar`, on by default) takes screen row 1 and moves
+everything else one row down. The row numbers in the scenarios below were taken
+without it, so their `config.toml` gets `[ui]` / `toolbar = false` (next to
+`[lsp] enabled = false`), or add one to every row.
+
 ### Scenario: split panes
 
 At 80x24 and at 120x40, with a long file open (`docs/notes.md` with 80
@@ -1355,6 +1360,19 @@ SGR `press`/`release` helpers; a drag is `press 0 c r; press 32 c2 r2; release 0
 5. Right-click Git: Move Button Up/Down are greyed when there is no neighbour that way; Move Button Down
    swaps it with the button below.
 6. Ctrl+Q and start again: the order and sides are back. No stderr; Ctrl+Q exits with status 0.
+
+### Scenario: Toolbar
+
+Setup as above with the default config (`[lsp] enabled = false` only), at 120x40 and 80x24.
+
+1. Row 1 is ` ≣ ` on the strip colour; the strip starts on row 2 without a menu cell (at 80x24 Project,
+   Worktrees, Structure on rows 2-4, Find on row 23 up to Hierarchy on row 14).
+2. Hover column 2, row 1: `Main Menu  F10` shows on row 2.
+3. Click column 2, row 1: the menu bar opens over row 1; a second click closes it. F10 still toggles it.
+4. `resize-window -y 11` hides the row and the strip's menu cell is back on row 1. Zen (its key from
+   `docs/KEYMAP.md`) hides it too.
+5. `printf '[lsp]\nenabled = false\n[ui]\ntoolbar = false\n' > $C/config.toml` removes it at once;
+   `toolbar = true` brings it back. Stderr empty, Ctrl+Q exits 0.
 
 ### Scenario: unpinned tool window
 

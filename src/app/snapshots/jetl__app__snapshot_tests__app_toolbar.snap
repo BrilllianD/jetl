@@ -1,0 +1,72 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &marks, None)"
+---
+120x40 cursor=hidden
+00  ≣
+01  1 ┌ Project: root ───────────────┐│
+02  ⌂ │                              ││
+03  2 │                              ││
+04  ◫ │                              ││
+05  7 │                              ││
+06  ⊢ │                              ││
+07    │                              ││
+08    │                              ││
+09    │                              ││
+10    │                              ││
+11    │                              ││
+12    │                              ││
+13    │                              ││
+14    │                              ││
+15    │                              ││
+16    │                              ││
+17    │                              ││
+18    │                              ││
+19    │                              ││
+20  ⋔ │                              ││      No files open. Alt+1 opens the Project view; Ctrl+Shift+N finds a file.
+21    │                              ││
+22  ✎ │                              ││
+23    │                              ││
+24  ✓ │                              ││
+25  8 │                              ││
+26  ⟲ │                              ││
+27  5 │                              ││
+28  ⚑ │                              ││
+29  9 │                              ││
+30  ⎇ │                              ││
+31    │                              ││
+32  ❯ │                              ││
+33  6 │                              ││
+34  ⚠ │                              ││
+35  4 │                              ││
+36  ► │                              ││
+37  3 │                              ││
+38  ⌕ └──────────────────────────────┘│
+39
+-- marks: T=toolbar
+00 TTT
+01                                     TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT
+03 TTT
+04 TTT
+05 TTT
+06 TTT
+19 TTT
+20 TTT
+21 TTT
+22 TTT
+23 TTT
+24 TTT
+25 TTT
+26 TTT
+27 TTT
+28 TTT
+29 TTT
+30 TTT
+31 TTT
+32 TTT
+33 TTT
+34 TTT
+35 TTT
+36 TTT
+37 TTT
+38 TTT

@@ -39,24 +39,23 @@ impl App {
         // Motion matters to drags and to the menus' hover highlight; other
         // motion only moves the strip tooltip, redrawn when it changes.
         if m.kind == MouseEventKind::Moved && self.drag.is_none() && self.menu.is_none() && self.menu_bar.is_none() {
-            let hover = if self.palette.is_none()
+            let free = self.palette.is_none()
                 && self.switcher.is_none()
                 && self.dialog.is_none()
                 && self.settings.is_none()
-                && self.run_configs.is_none()
-            {
-                self.layout.strip_hit(m.column, m.row)
-            } else {
-                None
-            };
-            if hover != self.strip_hover {
+                && self.run_configs.is_none();
+            let hover = if free { self.layout.strip_hit(m.column, m.row) } else { None };
+            let toolbar = if free { self.layout.toolbar_hit(m.column, m.row) } else { None };
+            if hover != self.strip_hover || toolbar != self.toolbar_hover {
                 self.strip_hover = hover;
+                self.toolbar_hover = toolbar;
                 self.dirty_frame = true;
             }
             return;
         }
         self.dirty_frame = true;
         self.strip_hover = None;
+        self.toolbar_hover = None;
         let clicks = self.resolve_clicks(&m);
         let mouse = Mouse { kind: m.kind, x: m.column, y: m.row, clicks, mods: m.modifiers };
         // A click on a toast closes it. Toasts are laid out around overlays;
@@ -229,6 +228,13 @@ impl App {
             MouseEventKind::Down(button) => match hit {
                 Hit::Splitter(id) if button == MouseButton::Left => self.drag = Some(Drag::Splitter(id)),
                 Hit::Splitter(_) => {}
+                Hit::Toolbar => {
+                    if button == MouseButton::Left
+                        && let Some((b, _)) = self.layout.toolbar_hit(m.column, m.row)
+                    {
+                        self.perform(crate::ui::toolbar::action(b));
+                    }
+                }
                 Hit::Strip => match self.layout.strip_hit(m.column, m.row) {
                     Some((StripButton::Menu, _)) => self.toggle_main_menu(),
                     Some((StripButton::Tool(tw), _)) if button == MouseButton::Right => self.tool_window_side_menu(tw, m.column, m.row),

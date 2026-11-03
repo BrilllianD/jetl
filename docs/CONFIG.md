@@ -143,6 +143,7 @@ icons = "unicode"              # tool strip and menu icons: "unicode" (one-cell 
 file_icons = "nerd"            # file-type icons before file names (project tree, tabs, file palettes, Find, Problems, TODO, Git lists): "nerd" (Nerd Font glyphs, needs a Nerd Font), "ascii" (one character per file kind) or "none"
 colors = "auto"                # "auto" (true color when $COLORTERM is truecolor or 24bit, else
                                # the 256-color palette), "truecolor" or "256"
+toolbar = true                 # the top row with the main menu button; hidden in zen mode and in terminals under 12 rows
 
 [git]
 pull_mode = "ff-only"          # "ff-only" (git pull --ff-only), "rebase" (--rebase) or "merge" (--no-rebase)

@@ -22,6 +22,7 @@ pub mod switcher;
 pub mod tabs;
 pub mod toasts;
 pub mod tool_strip;
+pub mod toolbar;
 pub mod widgets;
 
 #[cfg(test)]
@@ -83,9 +84,11 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     frame.buffer_mut().set_style(area, Style::default().bg(theme.bg).fg(theme.fg));
     app.layout.keep_unpinned(&app.focus);
     app.layout.keep_maximized(app.focus.current);
+    app.layout.toolbar_enabled = app.config.ui.toolbar;
     app.layout.compute(area);
     let rects = app.layout.rects.clone();
 
+    toolbar::render(app, frame, rects.toolbar);
     tool_strip::render(app, frame, rects.strip, rects.strip_right);
     app.sync_structure();
     app.sync_diag_marks();
@@ -136,6 +139,7 @@ pub fn render(app: &mut App, frame: &mut Frame) {
         s.render(frame, above_status, anchor, &theme);
     }
     tool_strip::render_tooltip(app, frame, area);
+    toolbar::render_tooltip(app, frame, area);
 
     if let Some(p) = &mut app.palette {
         p.render(frame, area, &theme);

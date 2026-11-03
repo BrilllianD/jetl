@@ -1,4 +1,5 @@
-//! The vertical strip on the left edge: the main menu button on top, then a
+//! The vertical strip on the left edge: the main menu button on top (unless
+//! the toolbar row shows it), then a
 //! button per tool window (its Alt-number over its icon, or only the icon in
 //! one row when they do not fit, or a More button for the rest), and the
 //! tooltip of the hovered button. A second strip on the right edge holds the Right-side
@@ -36,10 +37,14 @@ pub fn render(app: &mut App, frame: &mut Frame, area: Rect, right: Rect) {
     if area.height < 1 || area.width < 2 {
         return;
     }
-    let menu = Rect::new(area.x, area.y, area.width, 1);
-    buf.set_style(menu, theme.strip_item);
-    centred(buf, menu, menu_glyph(icons), theme.strip_item);
-    app.layout.strip_hits.push((StripButton::Menu, menu));
+    // The toolbar row hosts the menu button while it shows.
+    let menu_rows = u16::from(app.layout.rects.toolbar.is_empty());
+    if menu_rows == 1 {
+        let menu = Rect::new(area.x, area.y, area.width, 1);
+        buf.set_style(menu, theme.strip_item);
+        centred(buf, menu, menu_glyph(icons), theme.strip_item);
+        app.layout.strip_hits.push((StripButton::Menu, menu));
+    }
 
     // Per strip: two-row buttons when all of them fit, else one-row icon-only
     // buttons, else one-row buttons for the first windows and a More button
@@ -50,33 +55,37 @@ pub fn render(app: &mut App, frame: &mut Frame, area: Rect, right: Rect) {
     let n_right = n_all - n_main;
     let gap2 = u16::from(area.height > n_all * (BUTTON_H + 1));
     let h = area.height;
-    let left_mode = if h > 2 * n_main {
+    let avail = h - menu_rows;
+    let left_mode = if avail >= 2 * n_main {
         StripMode { height: BUTTON_H, gap: gap2, cap: usize::MAX, more: false }
-    } else if h > n_main {
+    } else if avail >= n_main {
         StripMode { height: 1, gap: 0, cap: usize::MAX, more: false }
-    } else if h >= 2 {
-        StripMode { height: 1, gap: 0, cap: usize::from(h - 2), more: true }
+    } else if avail >= 1 {
+        StripMode { height: 1, gap: 0, cap: usize::from(avail - 1), more: true }
     } else {
         StripMode { height: 1, gap: 0, cap: 0, more: false }
     };
     let menu_gap = match left_mode {
+        _ if menu_rows == 0 => 0,
         StripMode { more: true, .. } => 0,
         StripMode { height: BUTTON_H, .. } => u16::from(h >= 2 + n_main * BUTTON_H),
         _ => u16::from(h >= 2 + n_main),
     };
     let rh = if right.width >= 2 { right.height } else { 0 };
-    let right_mode = if rh >= 2 + 2 * n_right {
+    let roff = 2 * menu_rows;
+    let ravail = rh.saturating_sub(roff);
+    let right_mode = if ravail >= 2 * n_right {
         StripMode { height: BUTTON_H, gap: gap2, cap: usize::MAX, more: false }
-    } else if rh >= 2 + n_right {
+    } else if ravail >= n_right {
         StripMode { height: 1, gap: 0, cap: usize::MAX, more: false }
-    } else if rh >= 3 {
-        StripMode { height: 1, gap: 0, cap: usize::from(rh - 3), more: true }
+    } else if ravail >= 1 {
+        StripMode { height: 1, gap: 0, cap: usize::from(ravail - 1), more: true }
     } else {
         StripMode { height: 1, gap: 0, cap: 0, more: false }
     };
-    let mut top = area.y + 1 + menu_gap;
+    let mut top = area.y + menu_rows + menu_gap;
     let mut bottom = area.bottom() - u16::from(left_mode.more);
-    let mut rtop = right.y + 2;
+    let mut rtop = right.y + roff;
     let rbottom = right.bottom() - u16::from(right_mode.more);
     let (mut placed_left, mut placed_right) = (0usize, 0usize);
     for tw in order {
@@ -149,10 +158,11 @@ pub fn render(app: &mut App, frame: &mut Frame, area: Rect, right: Rect) {
             !app.layout.strip_hits.iter().any(|(_, r)| r.intersects(line))
         };
         let row = match side {
-            Side::Left => (area.y + 1..area.bottom()).find(|r| free(*r)),
-            Side::Bottom => (area.y + 1..area.bottom()).rev().find(|r| free(*r)),
-            // Only when the right strip holds no button, which a real drag cannot reach (it is drawn only with one).
-            Side::Right => (right.y + 2..right.bottom()).find(|r| free(*r)),
+            Side::Left => (area.y + menu_rows..area.bottom()).find(|r| free(*r)),
+            Side::Bottom => (area.y + menu_rows..area.bottom()).rev().find(|r| free(*r)),
+            // End(Right) is reachable on a very short terminal, where the right strip shows only More; the bar
+            // is then never drawn, as no free row exists at or below `right.y + roff`.
+            Side::Right => (right.y + roff..right.bottom()).find(|r| free(*r)),
         };
         if let Some(row) = row {
             let line = Rect::new(strip.x, row, strip.width, 1);

@@ -427,6 +427,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn toolbar_applies_live() {
+        use crate::ui::layout::StripButton;
+        let (mut app, dir) = test_app("toolbar-live");
+        let draw = |app: &mut App| {
+            let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+            term.draw(|f| crate::ui::render(app, f)).unwrap();
+        };
+        write(&app, "config.toml", &format!("{NO_LSP}[ui]\ntoolbar = true\n"));
+        reload(&mut app, &[ConfigFile::Config]);
+        draw(&mut app);
+        assert!(!app.layout.toolbar_hits.is_empty());
+        write(&app, "config.toml", &format!("{NO_LSP}[ui]\ntoolbar = false\n"));
+        reload(&mut app, &[ConfigFile::Config]);
+        draw(&mut app);
+        assert!(app.layout.toolbar_hits.is_empty());
+        assert_eq!(app.layout.strip_hits[0].0, StripButton::Menu);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
     async fn write_settings_applies_once() {
         let (mut app, dir) = test_app("write-settings-live");
         write(&app, "config.toml", "# mine\n[lsp]\nenabled = false\n[editor]\nscrolloff = 3 # keep\n");

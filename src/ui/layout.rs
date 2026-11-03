@@ -1,7 +1,8 @@
 //! Fixed JetBrains-style layout: tool strip on the left, optional left tool
 //! window, editor (tabs + text) in the centre, optional right tool window,
 //! optional bottom tool window spanning the full width, status bar at the
-//! bottom. Each tool window has a side (its default, or one the user chose);
+//! bottom. A toolbar row above all of it (`[ui] toolbar`) holds the main menu
+//! button. Each tool window has a side (its default, or one the user chose);
 //! a second strip on the right edge exists while some window sits on the
 //! right. Zen mode drops all
 //! of it but the editor text. A maximized tool window takes the whole area
@@ -20,6 +21,8 @@ pub const MIN_CENTER_H: u16 = 5;
 /// Upper bound for a restored tool window size; `compute` then fits it to
 /// the terminal.
 pub const MAX_RESTORED: u16 = 500;
+/// Terminal rows needed to show the toolbar row.
+pub const TOOLBAR_MIN_H: u16 = 12;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SplitterId {
@@ -31,6 +34,8 @@ pub enum SplitterId {
 #[derive(Debug, Clone, Default)]
 pub struct Rects {
     pub area: Rect,
+    /// The top row; empty when hidden.
+    pub toolbar: Rect,
     pub strip: Rect,
     /// Empty unless a window's side is Right.
     pub strip_right: Rect,
@@ -49,6 +54,7 @@ pub enum Hit {
     Panel(PanelId, Rect),
     Tabs(Rect),
     Strip,
+    Toolbar,
     Status,
     None,
 }
@@ -71,6 +77,13 @@ pub enum StripButton {
     Tool(ToolWindowId),
     /// Opens a menu of the strip's windows that got no button.
     More,
+}
+
+/// A button of the toolbar row; later tasks add variants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolbarButton {
+    /// Opens the main menu.
+    Menu,
 }
 
 /// How a tool window docks: an Unpinned one hides when focus leaves it.
@@ -104,6 +117,10 @@ pub struct LayoutState {
     pub rects: Rects,
     /// Clickable areas of the tool strip, filled by the strip renderer.
     pub strip_hits: Vec<(StripButton, Rect)>,
+    /// The `[ui] toolbar` setting, copied in by `ui::render` before `compute`.
+    pub toolbar_enabled: bool,
+    /// Clickable areas of the toolbar, filled by `ui::toolbar::render`.
+    pub toolbar_hits: Vec<(ToolbarButton, Rect)>,
     /// Set while in zen mode: the editor text fills the screen.
     pub zen: Option<ZenSaved>,
     /// A tool window filling the content area; cleared when it loses focus
@@ -128,6 +145,8 @@ impl LayoutState {
             order: ToolWindowId::ALL.to_vec(),
             rects: Rects::default(),
             strip_hits: Vec::new(),
+            toolbar_enabled: false,
+            toolbar_hits: Vec::new(),
             zen: None,
             maximized: None,
             mode: std::collections::HashMap::new(),
@@ -434,8 +453,12 @@ impl LayoutState {
             self.rects = r;
             return;
         }
+        let top = u16::from(self.toolbar_enabled && area.height >= TOOLBAR_MIN_H);
+        if top == 1 {
+            r.toolbar = Rect::new(area.x, area.y, area.width, 1);
+        }
         r.status = Rect::new(area.x, area.bottom() - 1, area.width, 1);
-        let body = Rect::new(area.x, area.y, area.width, area.height - 1);
+        let body = Rect::new(area.x, area.y + top, area.width, area.height - 1 - top);
         r.strip = Rect::new(body.x, body.y, STRIP_W, body.height);
         if rs_w > 0 {
             r.strip_right = Rect::new(body.right() - STRIP_W, body.y, STRIP_W, body.height);
@@ -504,6 +527,9 @@ impl LayoutState {
                 return Hit::Splitter(*id);
             }
         }
+        if self.rects.toolbar.contains(p) {
+            return Hit::Toolbar;
+        }
         if self.rects.strip.contains(p) || self.rects.strip_right.contains(p) {
             return Hit::Strip;
         }
@@ -569,6 +595,12 @@ impl LayoutState {
     pub fn strip_hit(&self, x: u16, y: u16) -> Option<(StripButton, Rect)> {
         let p = ratatui::layout::Position::new(x, y);
         self.strip_hits.iter().find(|(_, r)| r.contains(p)).copied()
+    }
+
+    /// The toolbar button under a point, with its rect.
+    pub fn toolbar_hit(&self, x: u16, y: u16) -> Option<(ToolbarButton, Rect)> {
+        let p = ratatui::layout::Position::new(x, y);
+        self.toolbar_hits.iter().find(|(_, r)| r.contains(p)).copied()
     }
 
     /// What dropping a dragged strip button at a point does, over the last
@@ -660,6 +692,35 @@ mod tests {
         assert_eq!(l.hit_test(50, r.bottom.y), Hit::Panel(PanelId::Git, r.bottom));
         assert_eq!(l.hit_test(r.tabs.x, r.tabs.y), Hit::Tabs(r.tabs));
         assert_eq!(l.hit_test(r.editor.x, r.editor.y), Hit::Panel(PanelId::Editor, r.editor));
+    }
+
+    #[test]
+    fn toolbar_row_moves_everything_down() {
+        let mut l = LayoutState::new(30, 10);
+        l.toolbar_enabled = true;
+        l.compute(Rect::new(0, 0, 120, 40));
+        assert_eq!(l.rects.toolbar, Rect::new(0, 0, 120, 1));
+        assert_eq!(l.rects.strip, Rect::new(0, 1, 3, 38));
+        assert_eq!(l.rects.status, Rect::new(0, 39, 120, 1));
+        assert_eq!(l.rects.tabs.y, 1);
+        assert_eq!(l.hit_test(60, 0), Hit::Toolbar);
+        l.compute(Rect::new(0, 0, 80, 11));
+        assert!(l.rects.toolbar.is_empty());
+        assert_eq!(l.rects.strip.y, 0);
+        l.compute(Rect::new(0, 0, 80, 12));
+        assert_eq!(l.rects.toolbar, Rect::new(0, 0, 80, 1));
+        l.compute(Rect::new(0, 0, 120, 40));
+        l.toggle_maximize(ToolWindowId::Project);
+        l.compute(Rect::new(0, 0, 120, 40));
+        assert_eq!(l.rects.toolbar, Rect::new(0, 0, 120, 1));
+        l.toggle_maximize(ToolWindowId::Project);
+        l.enter_zen(PanelId::Editor);
+        l.compute(Rect::new(0, 0, 120, 40));
+        assert!(l.rects.toolbar.is_empty());
+        let mut l = LayoutState::new(30, 10);
+        l.compute(Rect::new(0, 0, 120, 40));
+        assert!(l.rects.toolbar.is_empty());
+        assert_eq!(l.rects.strip, Rect::new(0, 0, 3, 39));
     }
 
     #[test]

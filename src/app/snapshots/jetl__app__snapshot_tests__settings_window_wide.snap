@@ -12,10 +12,10 @@ expression: "snapshot(&term, &settings_marks(&app.theme), None)"
 06  7 │ │  Soft Wraps              │  Color depth                 auto ▾                                             │
 07  ⊢ │ │  Saving                  │  Icons                       unicode ▾                                          │
 08    │ │  Formatting              │  File icons                  nerd ▾                                             │
-09    │ │Keymap                    │  Double click interval (ms)  400                                                │
-10    │ │  Mode                    │  Left tool window width      32                                     restart jetl│
-11    │ │Version Control           │  Bottom tool window height   14                                     restart jetl│
-12    │ │  Git                     │                                                                                 │
+09    │ │Keymap                    │  Show toolbar                [x]                                                │
+10    │ │  Mode                    │  Double click interval (ms)  400                                                │
+11    │ │Version Control           │  Left tool window width      32                                     restart jetl│
+12    │ │  Git                     │  Bottom tool window height   14                                     restart jetl│
 13    │ │  Worktrees               │                                                                                 │
 14    │ │Files                     │                                                                                 │
 15    │ │Tools                     │                                                                                 │

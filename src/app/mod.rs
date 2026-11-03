@@ -206,6 +206,8 @@ pub struct App {
     /// Tool strip button under the pointer, with its rect; it shows a
     /// tooltip.
     pub strip_hover: Option<(crate::ui::layout::StripButton, Rect)>,
+    /// Toolbar button under the pointer, with its rect; it shows a tooltip.
+    pub toolbar_hover: Option<(crate::ui::layout::ToolbarButton, Rect)>,
     pub file_index: FileIndex,
     /// Recent project roots for the palette, cached from the last load.
     recent_projects: Vec<PathBuf>,
@@ -390,6 +392,7 @@ impl App {
             settings: None,
             run_configs: None,
             strip_hover: None,
+            toolbar_hover: None,
             file_index: FileIndex::default(),
             recent_projects: Vec::new(),
             recent_projects_requested: 0,
@@ -1597,6 +1600,8 @@ pub(crate) mod tests {
         config.lsp.enabled = false;
         // No file icons unless a test sets them: tree and tab text stays as before.
         config.ui.file_icons = crate::config::FileIcons::None;
+        // No toolbar unless a test sets it: rects and snapshots stay as before (yman 350).
+        config.ui.toolbar = false;
         let mut app = App::new(root.clone(), config, paths, open);
         // `App::new`'s worker queued a prune of this test's store: let it run
         // (on no store yet) before that worker is dropped, or it may run late
@@ -4880,6 +4885,59 @@ mod strip_tests {
         app.handle_mouse(ev(MouseEventKind::Moved, 1, 0));
         app.handle_mouse(ev(MouseEventKind::Down(MouseButton::Left), 50, 10));
         assert!(app.strip_hover.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn toolbar_hosts_the_menu_button() {
+        use crate::ui::layout::ToolbarButton;
+        let (mut app, dir) = test_app("toolbar-menu");
+        app.config.ui.toolbar = true;
+        let buf = draw(&mut app);
+        assert_eq!(app.layout.toolbar_hits, vec![(ToolbarButton::Menu, Rect::new(0, 0, 3, 1))]);
+        assert!(!app.layout.strip_hits.iter().any(|(b, _)| *b == StripButton::Menu));
+        assert!(app.layout.strip_hits.iter().all(|(_, r)| r.y >= 1));
+        for tw in ToolWindowId::ALL {
+            button(&app, tw);
+        }
+        assert!(row_text(&buf, 0, 100).starts_with(" ≣ "));
+        app.handle_mouse(ev(MouseEventKind::Down(MouseButton::Left), 1, 0));
+        assert!(app.menu_bar.is_some());
+        draw(&mut app);
+        app.handle_mouse(ev(MouseEventKind::Down(MouseButton::Left), 1, 0));
+        assert!(app.menu_bar.is_none());
+
+        app.handle_mouse(ev(MouseEventKind::Moved, 1, 0));
+        assert_eq!(app.toolbar_hover, Some((ToolbarButton::Menu, Rect::new(0, 0, 3, 1))));
+        let buf = draw(&mut app);
+        let key = app.shortcut(&Action::App(AppAction::MainMenu)).unwrap();
+        let row = row_text(&buf, 1, 40);
+        assert!(row.contains("Main Menu") && row.contains(&key), "{row:?}");
+        app.handle_mouse(ev(MouseEventKind::Moved, 50, 10));
+        assert!(app.toolbar_hover.is_none());
+
+        // The strip toggles still work one row lower.
+        let r = button(&app, ToolWindowId::Git);
+        click(&mut app, r.x + 1, r.y);
+        assert!(app.layout.is_visible(ToolWindowId::Git));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn toolbar_hides_below_12_rows_and_in_zen() {
+        use crate::ui::layout::Hit;
+        let (mut app, dir) = test_app("toolbar-hide");
+        app.config.ui.toolbar = true;
+        draw_at(&mut app, 80, 11);
+        assert!(app.layout.toolbar_hits.is_empty());
+        assert_eq!(app.layout.strip_hits[0], (StripButton::Menu, Rect::new(0, 0, 3, 1)));
+        draw_at(&mut app, 80, 12);
+        assert_eq!(app.layout.toolbar_hits.len(), 1);
+        app.perform(Action::App(AppAction::ToggleZen));
+        assert!(app.layout.zen.is_some());
+        draw_at(&mut app, 80, 24);
+        assert!(app.layout.toolbar_hits.is_empty());
+        assert_ne!(app.layout.hit_test(1, 0), Hit::Toolbar);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

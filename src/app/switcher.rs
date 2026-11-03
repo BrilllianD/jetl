@@ -19,6 +19,7 @@ impl App {
         self.menu_bar = None;
         self.hover = None;
         self.strip_hover = None;
+        self.toolbar_hover = None;
         self.completion_close();
         self.signature_close();
         self.dispatcher.reset();
