@@ -11,6 +11,10 @@
 //! off the main thread); a single definition is jumped to, and a definition
 //! that is where the caret already is lists the usages instead.
 
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
 use lsp_types::{Position, Uri};
 use serde_json::{Value, json};
 
@@ -263,7 +267,8 @@ impl App {
         }
     }
 
-    /// `lsp.find_usages` (Alt+F7).
+    /// `lsp.find_usages` (Alt+F7); without a server, unverified candidates
+    /// from the symbol index.
     pub(super) fn lsp_find_usages(&mut self) {
         let Some((id, pos)) = self.caret_position() else { return };
         self.lsp_request_usages(id, pos);
@@ -273,9 +278,96 @@ impl App {
         let extra = json!({"context": {"includeDeclaration": false}});
         match self.lsp_doc_request(id, pos, REFERENCES, extra, PendingTag::References) {
             Ok(seq) => self.lsp.nav_seq = seq,
-            Err(why) if !why.is_empty() => self.lsp_hint(why),
-            Err(_) => {}
+            Err(why) => {
+                if !self.lsp_usages_without_server(id) && !why.is_empty() {
+                    self.lsp_hint(why);
+                }
+            }
         }
+    }
+
+    /// Find Usages when no server document serves buffer `id` (and its
+    /// language has a tags query, and the caret is on a word): candidates from
+    /// the symbol index. True when handled.
+    fn lsp_usages_without_server(&mut self, id: BufferId) -> bool {
+        if self.lsp.docs.contains_key(&id) {
+            return false;
+        }
+        let Some(b) = self.editor.buffers.iter().find(|b| b.id == id) else { return false };
+        let (Some(path), Some(def)) = (b.path.clone(), b.language()) else { return false };
+        let word = word_at(b, b.view.sel().head);
+        if def.tags.is_none() || word.is_empty() {
+            return false;
+        }
+        let mut items = self.fallback_usages(&word, &path);
+        match items.len() {
+            0 if self.symbols.indexing() => self.lsp_hint("No usages found yet; the project is still being indexed"),
+            0 => self.lsp_hint("No usages found"),
+            1 => {
+                let one = items.remove(0);
+                self.editor.push_nav_here();
+                self.open_file_at(one.path, one.line, one.col);
+                self.lsp_hint("Only one usage (unverified)");
+            }
+            _ => self.open_locations(format!("Usages of {word} (unverified)"), items, true),
+        }
+        true
+    }
+
+    /// Uses of `name` found by the symbol index, for Find Usages without a
+    /// server. Ranked: the current file `from`, files it imports or that
+    /// import it, its directory, the rest; within a group by path, line,
+    /// column. Definitions are not listed. Dirty open buffers are parsed
+    /// live (the index knows the saved text only). No cap; opens nothing.
+    pub(crate) fn fallback_usages(&mut self, name: &str, from: &Path) -> Vec<LocationItem> {
+        let root = self.workspace.root.clone();
+        let rel_of = |p: &Path| p.strip_prefix(&root).ok().map(|r| r.to_string_lossy().replace('\\', "/"));
+        let from_rel = rel_of(from);
+        let mut near: HashSet<Arc<str>> = HashSet::new();
+        if let Some(r) = &from_rel {
+            near.extend(self.symbols.imports_of(r));
+            near.extend(self.symbols.imported_by(r));
+        }
+        let mut live: HashMap<String, Vec<(usize, usize)>> = HashMap::new();
+        let mut parser = tree_sitter::Parser::new();
+        for b in &self.editor.buffers {
+            let (Some(path), Some(def)) = (&b.path, b.language()) else { continue };
+            let Some(rel) = rel_of(path) else { continue };
+            if !b.dirty() || def.tags.is_none() || b.rope.len_bytes() as u64 > crate::symbols::index::MAX_FILE_BYTES {
+                continue;
+            }
+            let refs = crate::symbols::extract_text_all(def, &mut parser, &b.rope.to_string()).1;
+            live.insert(rel, refs.iter().filter(|r| &*r.name == name).map(|r| (r.line, r.col)).collect());
+        }
+        let mut hits: Vec<(u8, String, usize, usize)> = Vec::new();
+        for (rel, r) in self.symbols.refs_named(name) {
+            if !live.contains_key(rel) {
+                hits.push((usage_group(rel, from_rel.as_deref(), &near), rel.to_string(), r.line, r.col));
+            }
+        }
+        for (rel, at) in &live {
+            let group = usage_group(rel, from_rel.as_deref(), &near);
+            hits.extend(at.iter().map(|&(line, col)| (group, rel.clone(), line, col)));
+        }
+        hits.sort();
+        let len = name.chars().count();
+        let mut disk: HashMap<String, Option<String>> = HashMap::new();
+        let mut items = Vec::with_capacity(hits.len());
+        for (_, rel, line, col) in hits {
+            let abs: PathBuf = root.join(&rel);
+            let open = self.editor.index_of(&abs).map(|i| &self.editor.buffers[i]).filter(|b| line < b.rope.len_lines());
+            let text = match open {
+                Some(b) => Some(b.line_text(line)),
+                None => disk
+                    .entry(rel)
+                    .or_insert_with(|| std::fs::read(&abs).ok().map(|b| String::from_utf8_lossy(&b).into_owned()))
+                    .as_deref()
+                    .and_then(|s| crate::util::text::lines_inclusive(s).nth(line).map(crate::git::diff::strip_eol))
+                    .map(str::to_string),
+            };
+            items.push(LocationItem::at_name(abs, line, col, len, text.as_deref()));
+        }
+        items
     }
 
     /// `lsp.quick_doc` (Alt+Q).
@@ -626,6 +718,22 @@ impl App {
         }
         self.hover = None;
         false
+    }
+}
+
+/// Rank group of a fallback usage in `rel`: 0 the current file `from`, 1 a file
+/// `from` imports or that imports it (`near`), 2 `from`'s directory, 3 the rest.
+fn usage_group(rel: &str, from: Option<&str>, near: &HashSet<Arc<str>>) -> u8 {
+    let Some(from) = from else { return 3 };
+    let dir = |p: &str| p.rsplit_once('/').map_or("", |(d, _)| d).to_string();
+    if rel == from {
+        0
+    } else if near.contains(rel) {
+        1
+    } else if dir(rel) == dir(from) {
+        2
+    } else {
+        3
     }
 }
 
@@ -1067,6 +1175,75 @@ mod tests {
         let req = server.recv("textDocument/definition").await;
         // Char 22 is UTF-16 unit 23.
         assert_eq!(req["params"]["position"], json!({"line": 1, "character": 23}));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn usage_groups_rank_current_edges_directory_rest() {
+        let near: HashSet<Arc<str>> = ["src/util.rs", "lib/in.rs"].into_iter().map(Arc::from).collect();
+        let g = |rel, from| usage_group(rel, from, &near);
+        let from = Some("src/main.rs");
+        assert_eq!(g("src/main.rs", from), 0);
+        assert_eq!((g("src/util.rs", from), g("lib/in.rs", from)), (1, 1));
+        assert_eq!(g("src/same.rs", from), 2);
+        assert_eq!(g("lib/far.rs", from), 3);
+        assert_eq!(g("top.rs", from), 3);
+        assert_eq!(g("top.rs", Some("other.rs")), 2, "top-level directory");
+        assert_eq!(g("src/main.rs", None), 3);
+    }
+
+    #[tokio::test]
+    async fn find_usages_without_a_server_ranks_index_candidates() {
+        use crate::event::AppMsg;
+        const MAIN: &str = "mod util;\nfn helper() {}\nfn main() {\n    helper();\n}\n";
+        let (mut app, dir) = test_app("usages-fallback");
+        let (root, g) = (app.workspace.root.clone(), app.workspace.generation);
+        for d in ["src", "lib"] {
+            std::fs::create_dir_all(root.join(d)).unwrap();
+        }
+        let call = "fn f() {\n    helper();\n}\n";
+        std::fs::write(root.join("src/util.rs"), call).unwrap();
+        std::fs::write(root.join("src/same.rs"), call).unwrap();
+        std::fs::write(root.join("lib/far.rs"), call).unwrap();
+        let files = ["lib/far.rs", "src/main.rs", "src/same.rs", "src/util.rs"];
+        std::fs::write(root.join("src/main.rs"), MAIN).unwrap();
+        app.handle_msg(AppMsg::FileIndex { generation: g, seq: 1, files: files.iter().map(|s| s.to_string()).collect() });
+        let job = app.symbols.start(root.clone());
+        let (seq, mut batches) = (job.seq, Vec::new());
+        job.run(|b| batches.push(b));
+        for batch in batches {
+            app.handle_msg(AppMsg::Symbols { generation: g, seq, batch });
+        }
+        let main = crate::app::tests::load(&mut app, "src/main.rs", MAIN);
+        goto(&mut app, 3, 6);
+        act(&mut app, LspAction::FindUsages);
+        let at = |f: &str, l| (root.join(f), l);
+        let p = app.palette.as_ref().expect("Locations");
+        assert_eq!(p.kind, PaletteKind::Locations);
+        assert_eq!(p.shown_locations(), [at("src/main.rs", 3), at("src/util.rs", 1), at("src/same.rs", 1), at("lib/far.rs", 1)]);
+        let buf = draw(&mut app, 100, 30);
+        assert!((0..30).any(|y| row(&buf, y).contains("Usages of helper (unverified)")));
+        // Unsaved text is parsed live.
+        app.palette = None;
+        goto(&mut app, 4, 0);
+        app.perform(Action::Editor(EditorAction::InsertText("    helper();\n".into())));
+        goto(&mut app, 3, 6);
+        act(&mut app, LspAction::FindUsages);
+        let shown = app.palette.as_ref().unwrap().shown_locations();
+        assert_eq!(shown[..2], [(main.clone(), 3), (main, 4)]);
+        // No candidates, then one.
+        app.palette = None;
+        app.toasts = Default::default();
+        crate::app::tests::load(&mut app, "src/two.rs", "fn k() {\n    only_here();\n}\n");
+        goto(&mut app, 1, 6);
+        act(&mut app, LspAction::FindUsages);
+        assert!(toasts(&app).contains(&"No usages found".to_string()), "{:?}", toasts(&app));
+        goto(&mut app, 2, 0);
+        app.perform(Action::Editor(EditorAction::InsertText("\n".into())));
+        goto(&mut app, 1, 6);
+        app.toasts = Default::default();
+        act(&mut app, LspAction::FindUsages);
+        assert!(toasts(&app).contains(&"Only one usage (unverified)".to_string()), "{:?}", toasts(&app));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

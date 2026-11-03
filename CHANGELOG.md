@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Find Usages (Alt+F7) works without a language server: it lists the uses of the name at the caret found by the symbol index, the current file first, then files it imports or that import it, then its directory, marked "(unverified)" in the Locations title.
 - Toolbar: a row at the top of the window (`[ui] toolbar`, on by default, also in Settings > Appearance) holds the main menu button, which leaves the tool strip; hidden in zen mode and in terminals under 12 rows.
 - Toolbar: View | Toolbar, the action `app.toggle_toolbar` and the toolbar's right-click menu (Hide Toolbar) show or hide it; the choice is saved in `config.toml` as `[ui] toolbar`.
 - Toolbar: the run widget on the right shows the selected run configuration (click to pick one) and ▶ to run it; while a task runs it shows a spinner with the task's name, ↻ Rerun and ■ Stop.

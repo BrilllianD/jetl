@@ -799,6 +799,17 @@ Tab Enter (Cancel) in the delete dialog keeps the file and reopens the
 palette. Alt+F1 (Select in Project) on a scratch tab says it is a scratch
 file instead of selecting anything.
 
+### Scenario: Find Usages without a language server
+
+With `[lsp] enabled = false` in `config.toml`, on a small Rust project:
+`src/main.rs` = `mod util;`, `fn helper() {}`, `fn main() { helper(); }` on
+separate lines; `src/util.rs`, `src/same.rs` and `lib/far.rs` each call
+`helper();` inside a function. Open `src/main.rs`, put the caret on `helper()`
+in `main` and press Alt+F7: the palette title reads `Usages of helper
+(unverified)` and the rows run main.rs, util.rs, same.rs, far.rs. Enter jumps
+to the row; Esc closes the palette. A name used once only jumps straight to it
+with the toast `Only one usage (unverified)`.
+
 ### Scenario: local history
 
 At 80x24 and at 120x40 (`-x 120 -y 40`), with config and state under

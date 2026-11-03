@@ -93,6 +93,18 @@ impl LocationItem {
         let text = line_text.trim().chars().take(PREVIEW_MAX).collect();
         Self { path, line, col, text, mark: None }
     }
+
+    /// The row for a name of `len` chars at char column `col` of line `line`
+    /// in `path`, whose text is `line_text` (`None`: unknown); the name is marked.
+    pub fn at_name(path: PathBuf, line: usize, col: usize, len: usize, line_text: Option<&str>) -> Self {
+        let raw = line_text.unwrap_or("");
+        let lead = raw.chars().take_while(|c| c.is_whitespace()).count();
+        let mut item = Self::at_line(path, line, col, raw);
+        let n = item.text.chars().count();
+        let start = col.saturating_sub(lead).min(n);
+        item.mark = Some(start..(start + len).min(n)).filter(|r| !r.is_empty());
+        item
+    }
 }
 
 /// Rows for targets in files that are not open: each file read once (in
@@ -123,6 +135,14 @@ mod tests {
         assert_eq!(item, LocationItem { path: PathBuf::from("/w/a.rs"), line: 3, col: 6, text: "let x;".into(), mark: None });
     }
     use serde_json::json;
+
+    #[test]
+    fn at_name_marks_the_name() {
+        let item = LocationItem::at_name(PathBuf::from("/w/a.rs"), 2, 4, 6, Some("    helper();  "));
+        assert_eq!(item, LocationItem { path: PathBuf::from("/w/a.rs"), line: 2, col: 4, text: "helper();".into(), mark: Some(0..6) });
+        let none = LocationItem::at_name(PathBuf::from("/w/a.rs"), 2, 4, 6, None);
+        assert_eq!((none.text.as_str(), none.mark), ("", None));
+    }
 
     fn range(l0: u32, c0: u32, l1: u32, c1: u32) -> Value {
         json!({"start": {"line": l0, "character": c0}, "end": {"line": l1, "character": c1}})
