@@ -2436,6 +2436,12 @@ pub(crate) mod tests {
         app.perform(Action::Find(FindAction::ReplaceAll));
         assert!(toast(&app, "Structural search cannot replace; Alt+T turns it off"));
         assert!(app.dialog.is_none());
+        let refusals =
+            |app: &App| app.notifications.iter().filter(|n| n.text == "Structural search cannot replace; Alt+T turns it off").count();
+        let before = refusals(&app);
+        app.perform(Action::Find(FindAction::ToggleReplace));
+        assert!(!app.find.show_replace && app.find.structural);
+        assert_eq!(refusals(&app), before + 1, "Alt+R refuses with a toast: {:?}", app.notifications);
         app.perform(Action::Find(FindAction::ReplaceInFiles));
         assert!(!app.find.structural && app.find.show_replace);
         app.handle_key(KeyEvent::new(KeyCode::Char('t'), crossterm::event::KeyModifiers::ALT));

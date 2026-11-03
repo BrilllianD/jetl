@@ -797,4 +797,50 @@ mod tests {
         p.re = Some(Regex::new("(a)b").unwrap());
         assert_eq!(p.replacement_of(&h), "a!");
     }
+
+    fn test_ctx<'a>(config: &'a Config, theme: &'a Theme, workspace: &'a Workspace) -> Ctx<'a> {
+        let (bus, _rx) = tokio::sync::mpsc::unbounded_channel();
+        Ctx { effects: Vec::new(), config, theme, workspace, bus }
+    }
+
+    #[tokio::test]
+    async fn open_rename_turns_structural_off() {
+        let mut p = FindPanel::new();
+        p.structural = true;
+        let dir = std::env::temp_dir().join(format!("jetl-test-find-rename-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (config, theme, workspace) = (Config::default(), Theme::default(), Workspace::new(dir.clone()));
+        let mut cx = test_ctx(&config, &theme, &workspace);
+        p.open_rename("old", "new", HashMap::new(), &mut cx);
+        assert!(!p.structural && p.show_replace && p.replace_shown());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn text_option_buttons_are_drawn_off_while_structural() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let theme = Theme::default();
+        let (on, off) = (theme.strip_item_active, theme.dim.bg(theme.panel_bg));
+        assert_ne!(on, off);
+        let mut p = FindPanel::new();
+        (p.case_sensitive, p.whole_word, p.regex) = (true, true, true);
+        let mut term = Terminal::new(TestBackend::new(100, 10)).unwrap();
+        for (structural, want) in [(true, off), (false, on)] {
+            p.structural = structural;
+            term.draw(|f| p.render(f, f.area(), true, &theme)).unwrap();
+            let buf = term.backend().buffer();
+            for label in [" Cc ", " W ", " .* "] {
+                let r = p.btns.iter().map(|(_, r)| *r).find(|r| {
+                    r.width as usize == label.len() && { (0..r.width).map(|dx| buf[(r.x + dx, r.y)].symbol()).collect::<String>() == label }
+                });
+                let r = r.unwrap_or_else(|| panic!("{label:?} not drawn"));
+                let cell = &buf[(r.x + 1, r.y)];
+                assert_eq!(
+                    (cell.fg, cell.bg),
+                    (want.fg.unwrap_or_default(), want.bg.unwrap_or_default()),
+                    "{label:?} structural={structural}"
+                );
+            }
+        }
+    }
 }
