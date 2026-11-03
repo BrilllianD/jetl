@@ -2533,7 +2533,7 @@ pub(crate) mod tests {
         let first = app.symbols.start(root.clone()).seq;
         let second = app.symbols.start(root).seq;
         let batch = |name: &str| SymbolBatch {
-            files: vec![("a.rs".into(), Some(FileSymbols { mtime: None, symbols: vec![symbol(name, 0)] }))],
+            files: vec![("a.rs".into(), Some(FileSymbols { mtime: None, symbols: vec![symbol(name, 0)], refs: Vec::new() }))],
             done: true,
         };
         app.handle_msg(AppMsg::Symbols { generation: g, seq: first, batch: batch("older run") });

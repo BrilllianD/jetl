@@ -145,6 +145,16 @@ fn join_static(parts: &[&str]) -> &'static str {
 #[cfg(feature = "lang-rust")]
 const RUST_TAGS_EXTRA: &str = "(impl_item trait: (_) @trait type: (_) @name) @definition.impl (impl_item type: (_) @name !trait) @definition.impl (const_item name: (identifier) @name) @definition.constant (static_item name: (identifier) @name) @definition.constant";
 
+/// C has no reference patterns upstream: calls and type names, for the
+/// symbol index.
+#[cfg(feature = "lang-c")]
+const C_TAGS_EXTRA: &str = "(call_expression function: (identifier) @name) @reference.call (call_expression function: (field_expression field: (field_identifier) @name)) @reference.call (type_identifier) @name @reference.type";
+
+/// C++ has no reference patterns upstream either; one `qualified_identifier`
+/// level is matched.
+#[cfg(feature = "lang-cpp")]
+const CPP_TAGS_EXTRA: &str = "(call_expression function: (identifier) @name) @reference.call (call_expression function: (field_expression field: (field_identifier) @name)) @reference.call (call_expression function: (qualified_identifier name: (identifier) @name)) @reference.call (call_expression function: (template_function name: (identifier) @name)) @reference.call (type_identifier) @name @reference.type";
+
 /// Markdown headings. ATX headings own a `section` (their heading plus
 /// everything up to the next heading of the same or a higher level), so
 /// they nest by level; setext headings open no section in this grammar
@@ -367,7 +377,7 @@ pub static LANGUAGES: LazyLock<Vec<LanguageDef>> = LazyLock::new(|| {
     #[cfg(feature = "lang-c")]
     v.extend(
         make("c", &["c", "h"], &[], tree_sitter_c::LANGUAGE.into(), &[C_QUERY_FIXES, tree_sitter_c::HIGHLIGHT_QUERY], Some("//"))
-            .map(|d| d.with_tags(tree_sitter_c::TAGS_QUERY)),
+            .map(|d| d.with_tags(join_static(&[tree_sitter_c::TAGS_QUERY, C_TAGS_EXTRA]))),
     );
     // The C++ query only covers what C++ adds to C (no comments, numbers or
     // calls); the C query fills in the rest.
@@ -381,7 +391,7 @@ pub static LANGUAGES: LazyLock<Vec<LanguageDef>> = LazyLock::new(|| {
             &[C_QUERY_FIXES, CPP_QUERY_FIXES, tree_sitter_cpp::HIGHLIGHT_QUERY, tree_sitter_c::HIGHLIGHT_QUERY],
             Some("//"),
         )
-        .map(|d| d.with_tags(tree_sitter_cpp::TAGS_QUERY)),
+        .map(|d| d.with_tags(join_static(&[tree_sitter_cpp::TAGS_QUERY, CPP_TAGS_EXTRA]))),
     );
     #[cfg(feature = "lang-java")]
     v.extend(

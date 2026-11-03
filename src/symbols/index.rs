@@ -1,7 +1,8 @@
 //! The project symbol index behind the Go to Symbol palette. It follows the
 //! palette's file index: every file with a tags query (up to `MAX_FILES`,
 //! each at most `MAX_FILE_BYTES`) is parsed in `spawn_blocking` and comes
-//! back in `AppMsg::Symbols` batches. Later runs skip files whose mtime is
+//! back in `AppMsg::Symbols` batches. Each file also keeps its tree-sitter
+//! references (`refs_named`). Later runs skip files whose mtime is
 //! unchanged; watcher paths are dropped and parsed again. Runs go through
 //! `util::Coalesce` (one at a time) and carry a seq: a batch of an older
 //! run is dropped.
@@ -12,7 +13,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime};
 
-use super::Symbol;
+use super::{Reference, Symbol};
 use crate::editor::syntax;
 use crate::util::coalesce::Coalesce;
 
@@ -29,6 +30,8 @@ const BATCH_EVERY: Duration = Duration::from_millis(200);
 pub struct FileSymbols {
     pub mtime: Option<SystemTime>,
     pub symbols: Vec<Symbol>,
+    /// References in the file, in document order (`symbols::extract_text_all`).
+    pub refs: Vec<Reference>,
 }
 
 /// Files parsed since the previous batch; `None` drops a file (gone, too
@@ -198,6 +201,15 @@ impl SymbolIndex {
         self.files.len()
     }
 
+    /// Every indexed reference named `name` (exact), by path, then line and
+    /// column. A linear scan over all files.
+    pub fn refs_named(&self, name: &str) -> Vec<(&str, &Reference)> {
+        let mut out: Vec<(&str, &Reference)> =
+            self.files.iter().flat_map(|(p, f)| f.refs.iter().filter(|r| &*r.name == name).map(move |r| (p.as_str(), r))).collect();
+        out.sort_by(|a, b| a.0.cmp(b.0).then(a.1.line.cmp(&b.1.line)).then(a.1.col.cmp(&b.1.col)));
+        out
+    }
+
     /// Palette rows: every symbol except `impl` blocks, by path then line.
     pub fn entries(&mut self) -> Arc<Vec<SymbolEntry>> {
         if let Some(e) = &self.entries {
@@ -236,7 +248,7 @@ impl IndexJob {
             if known.is_some() && *known == mtime {
                 continue;
             }
-            let syms = meta.and_then(|_| parse(&path, &mut parser)).map(|symbols| FileSymbols { mtime, symbols });
+            let syms = meta.and_then(|_| parse(&path, &mut parser)).map(|(symbols, refs)| FileSymbols { mtime, symbols, refs });
             batch.files.push((rel.clone(), syms));
             if batch.files.len() >= BATCH_FILES || last_send.elapsed() >= BATCH_EVERY {
                 send(std::mem::take(&mut batch));
@@ -250,13 +262,61 @@ impl IndexJob {
     }
 }
 
-/// The symbols of one file; `None` for binary or unreadable files.
-fn parse(path: &Path, parser: &mut tree_sitter::Parser) -> Option<Vec<Symbol>> {
+/// The symbols and references of one file; `None` for binary or unreadable files.
+fn parse(path: &Path, parser: &mut tree_sitter::Parser) -> Option<(Vec<Symbol>, Vec<Reference>)> {
     let def = syntax::detect(path).filter(|d| d.tags.is_some())?;
     let bytes = std::fs::read(path).ok()?;
     if bytes[..bytes.len().min(8192)].contains(&0) {
         return None;
     }
     let text = String::from_utf8_lossy(&bytes);
-    Some(super::extract_text(def, parser, &text))
+    Some(super::extract_text_all(def, parser, &text))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn r(name: &str, line: usize) -> Reference {
+        Reference { name: name.into(), kind: "call", line, col: 0, enclosing: None }
+    }
+
+    fn file(refs: Vec<Reference>) -> Option<FileSymbols> {
+        Some(FileSymbols { mtime: None, symbols: vec![], refs })
+    }
+
+    #[test]
+    fn refs_named_sorts_by_path_then_line() {
+        let mut idx = SymbolIndex::default();
+        let seq = idx.start(PathBuf::from("/nonexistent")).seq;
+        let batch = SymbolBatch {
+            files: vec![("b.rs".into(), file(vec![r("f", 3), r("g", 1)])), ("a.rs".into(), file(vec![r("f", 9), r("f", 2)]))],
+            done: true,
+        };
+        assert!(idx.on_batch(seq, batch).is_some());
+        let got: Vec<(&str, usize)> = idx.refs_named("f").into_iter().map(|(p, r)| (p, r.line)).collect();
+        assert_eq!(got, [("a.rs", 2), ("a.rs", 9), ("b.rs", 3)]);
+        assert!(idx.refs_named("F").is_empty());
+        assert_eq!(idx.refs_named("g").len(), 1);
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[test]
+    fn index_run_keeps_references() {
+        let dir = std::env::temp_dir().join(format!("jetl-symrefs-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.rs"), "fn a() { b(); }\n").unwrap();
+        let mut idx = SymbolIndex::default();
+        idx.set_files(&["a.rs".to_string()]);
+        let job = idx.start(dir.clone());
+        let seq = job.seq;
+        let mut batches = Vec::new();
+        job.run(|b| batches.push(b));
+        for b in batches {
+            idx.on_batch(seq, b);
+        }
+        let want = Reference { name: "b".into(), kind: "call", line: 0, col: 9, enclosing: Some(0) };
+        assert_eq!(idx.refs_named("b"), [("a.rs", &want)]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

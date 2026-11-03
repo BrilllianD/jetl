@@ -5,6 +5,8 @@
 pub mod index;
 pub mod panel;
 
+use std::collections::HashSet;
+use std::ops::Range;
 use std::sync::Arc;
 
 use ropey::Rope;
@@ -31,21 +33,57 @@ pub struct Symbol {
     pub depth: usize,
 }
 
+/// One use of a name found by a tags query's `@reference.*` capture.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reference {
+    pub name: Arc<str>,
+    /// The capture suffix after `reference.`: `call`, `implementation`, `class`, `type`, ...
+    pub kind: &'static str,
+    /// 0-based line and char column of the name.
+    pub line: usize,
+    pub col: usize,
+    /// Index into the same file's symbols: the innermost definition containing the name.
+    pub enclosing: Option<usize>,
+}
+
+/// 0-based line and char column of `byte` (clamped to the rope).
+fn pos(rope: &Rope, byte: usize) -> (usize, usize) {
+    let at = byte.min(rope.len_bytes());
+    let line = rope.byte_to_line(at);
+    (line, rope.byte_to_char(at) - rope.line_to_char(line))
+}
+
 /// The definitions in `tree` (parsed from `rope`) found by the language's
 /// tags query, in document order with their nesting depth. References are
-/// skipped; a node matched by several patterns keeps the first. Markdown
-/// headings inside a block quote or list item are skipped.
+/// left out; see `extract_text_all`. A node matched by several patterns
+/// keeps the first. Markdown headings inside a block quote or list item are
+/// skipped.
 pub fn extract(def: &'static LanguageDef, tree: &Tree, rope: &Rope) -> Vec<Symbol> {
-    let Some(query) = def.tags_query() else { return Vec::new() };
+    collect(def, tree, rope, false).0
+}
+
+/// A reference match before sorting: name range, pattern, kind, name.
+type RawRef = (Range<usize>, usize, &'static str, String);
+
+fn collect(def: &'static LanguageDef, tree: &Tree, rope: &Rope, want_refs: bool) -> (Vec<Symbol>, Vec<Reference>) {
+    let Some(query) = def.tags_query() else { return Default::default() };
     let names = query.capture_names();
     let name_idx = query.capture_index_for_name("name");
     let trait_idx = query.capture_index_for_name("trait");
+    let text = |n: tree_sitter::Node| {
+        let r = n.byte_range();
+        let end = r.end.min(rope.len_bytes());
+        clean_name(&rope.byte_slice(r.start.min(end)..end).to_string())
+    };
     // (definition byte range, pattern, symbol)
-    let mut raw: Vec<(std::ops::Range<usize>, usize, Symbol)> = Vec::new();
+    let mut raw: Vec<(Range<usize>, usize, Symbol)> = Vec::new();
+    // Name range and final kind of every definition match.
+    let mut def_names: Vec<(Range<usize>, &'static str)> = Vec::new();
+    let mut raw_refs: Vec<RawRef> = Vec::new();
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(query, tree.root_node(), RopeProvider(rope));
     while let Some(m) = matches.next() {
-        let (mut node, mut kind, mut name, mut tr) = (None, "", None, None);
+        let (mut node, mut kind, mut name, mut tr, mut ref_kind) = (None, "", None, None, None);
         for c in m.captures() {
             if Some(c.index) == name_idx {
                 name = Some(c.node);
@@ -53,17 +91,23 @@ pub fn extract(def: &'static LanguageDef, tree: &Tree, rope: &Rope) -> Vec<Symbo
                 tr = Some(c.node);
             } else if let Some(k) = names[c.index as usize].strip_prefix("definition.") {
                 (node, kind) = (Some(c.node), k);
+            } else if let Some(k) = names[c.index as usize].strip_prefix("reference.") {
+                ref_kind = Some(k);
             }
         }
-        let (Some(node), Some(name)) = (node, name) else { continue };
+        let Some(name) = name else { continue };
+        let Some(node) = node else {
+            if let (true, Some(k)) = (want_refs, ref_kind) {
+                let t = text(name);
+                if !t.is_empty() {
+                    raw_refs.push((name.byte_range(), m.pattern_index, k, t));
+                }
+            }
+            continue;
+        };
         if def.name == "markdown" && in_md_container(node) {
             continue;
         }
-        let text = |n: tree_sitter::Node| {
-            let r = n.byte_range();
-            let end = r.end.min(rope.len_bytes());
-            clean_name(&rope.byte_slice(r.start.min(end)..end).to_string())
-        };
         let mut label = text(name);
         if let Some(t) = tr {
             label = format!("{} for {label}", text(t));
@@ -71,12 +115,14 @@ pub fn extract(def: &'static LanguageDef, tree: &Tree, rope: &Rope) -> Vec<Symbo
         if label.is_empty() {
             continue;
         }
-        let at = name.start_byte().min(rope.len_bytes());
-        let line = rope.byte_to_line(at);
-        let col = rope.byte_to_char(at) - rope.line_to_char(line);
+        let (line, col) = pos(rope, name.start_byte());
+        let kind = kind_label(kind, node.kind());
+        if want_refs {
+            def_names.push((name.byte_range(), kind));
+        }
         let sym = Symbol {
             name: label.into(),
-            kind: kind_label(kind, node.kind()),
+            kind,
             line,
             col,
             start_line: rope.byte_to_line(node.start_byte().min(rope.len_bytes())),
@@ -89,16 +135,54 @@ pub fn extract(def: &'static LanguageDef, tree: &Tree, rope: &Rope) -> Vec<Symbo
     raw.sort_by(|a, b| a.0.start.cmp(&b.0.start).then(b.0.end.cmp(&a.0.end)).then(a.1.cmp(&b.1)));
     raw.dedup_by(|b, a| a.0 == b.0);
     let mut open: Vec<usize> = Vec::new();
-    raw.into_iter()
-        .map(|(r, _, mut sym)| {
-            while open.last().is_some_and(|&end| end <= r.start) {
-                open.pop();
+    let mut symbols = Vec::with_capacity(raw.len());
+    let mut def_ranges: Vec<Range<usize>> = Vec::with_capacity(raw.len());
+    for (r, _, mut sym) in raw {
+        while open.last().is_some_and(|&end| end <= r.start) {
+            open.pop();
+        }
+        sym.depth = open.len();
+        open.push(r.end);
+        symbols.push(sym);
+        def_ranges.push(r);
+    }
+    if !want_refs {
+        return (symbols, Vec::new());
+    }
+    // A definition's own name is no reference to it (an `impl` is a use of its type).
+    raw_refs.retain(|r| !def_names.iter().any(|(range, kind)| *range == r.0 && *kind != "impl"));
+    raw_refs.sort_by(|a, b| a.0.start.cmp(&b.0.start).then(a.1.cmp(&b.1)));
+    raw_refs.dedup_by(|b, a| a.0 == b.0);
+    let mut interned: HashSet<Arc<str>> = HashSet::new();
+    let mut stack: Vec<(usize, usize)> = Vec::new();
+    let mut next = 0;
+    let refs = raw_refs
+        .into_iter()
+        .map(|(range, _, kind, name)| {
+            let b = range.start;
+            while next < def_ranges.len() && def_ranges[next].start <= b {
+                while stack.last().is_some_and(|e| e.0 <= def_ranges[next].start) {
+                    stack.pop();
+                }
+                stack.push((def_ranges[next].end, next));
+                next += 1;
             }
-            sym.depth = open.len();
-            open.push(r.end);
-            sym
+            while stack.last().is_some_and(|e| e.0 <= b) {
+                stack.pop();
+            }
+            let name = match interned.get(name.as_str()) {
+                Some(a) => a.clone(),
+                None => {
+                    let a: Arc<str> = Arc::from(name);
+                    interned.insert(a.clone());
+                    a
+                }
+            };
+            let (line, col) = pos(rope, b);
+            Reference { name, kind, line, col, enclosing: stack.last().map(|e| e.1) }
         })
-        .collect()
+        .collect();
+    (symbols, refs)
 }
 
 /// The symbols whose `start_line..=end_line` contains `line`, outermost
@@ -150,14 +234,25 @@ impl ScopeCache {
     }
 }
 
+/// Parse `text` with `def`'s grammar; `None` without a tags query, when the
+/// language cannot be set or parsing fails.
+fn parse_text(def: &'static LanguageDef, parser: &mut tree_sitter::Parser, text: &str) -> Option<(Tree, Rope)> {
+    if def.tags_query().is_none() || parser.set_language(&def.language).is_err() {
+        return None;
+    }
+    Some((parser.parse(text, None)?, Rope::from_str(text)))
+}
+
 /// Parse `text` with `def`'s grammar and extract its symbols (off the main
 /// thread; the parser is reused across files of one language).
 pub fn extract_text(def: &'static LanguageDef, parser: &mut tree_sitter::Parser, text: &str) -> Vec<Symbol> {
-    if def.tags_query().is_none() || parser.set_language(&def.language).is_err() {
-        return Vec::new();
-    }
-    let Some(tree) = parser.parse(text, None) else { return Vec::new() };
-    extract(def, &tree, &Rope::from_str(text))
+    parse_text(def, parser, text).map(|(t, r)| extract(def, &t, &r)).unwrap_or_default()
+}
+
+/// Like `extract_text`, with the references too (document order, no two on
+/// one name range). A definition's own name is never a reference to it.
+pub fn extract_text_all(def: &'static LanguageDef, parser: &mut tree_sitter::Parser, text: &str) -> (Vec<Symbol>, Vec<Reference>) {
+    parse_text(def, parser, text).map(|(t, r)| collect(def, &t, &r, true)).unwrap_or_default()
 }
 
 /// The kind shown for a definition: the capture's (`function`, `class`,
@@ -278,6 +373,79 @@ mod tests {
             let mut syn = Syntax::new(plain, &theme).unwrap();
             assert!(cache.symbols(Some(&mut syn), &two, 3).is_empty());
         }
+    }
+
+    type RefRow = (String, &'static str, usize, usize, Option<usize>);
+
+    fn refs(file: &str, src: &str) -> Option<(Vec<Symbol>, Vec<RefRow>)> {
+        let def = crate::editor::syntax::detect(std::path::Path::new(file))?;
+        let (syms, refs) = extract_text_all(def, &mut tree_sitter::Parser::new(), src);
+        Some((syms, refs.into_iter().map(|r| (r.name.to_string(), r.kind, r.line, r.col, r.enclosing)).collect()))
+    }
+
+    fn row(n: &str, k: &'static str, l: usize, c: usize, e: Option<usize>) -> RefRow {
+        (n.to_string(), k, l, c, e)
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[test]
+    fn rust_references_with_enclosing() {
+        let src = "struct App;\nimpl App {\n    fn new() -> Self { helper(); App }\n}\nfn main() {\n    let a = App::new();\n    a.run();\n    println!(\"x\");\n}\n";
+        let (syms, got) = refs("a.rs", src).unwrap();
+        let sk: Vec<(&str, &str)> = syms.iter().map(|s| (&*s.name, s.kind)).collect();
+        assert_eq!(sk, [("App", "struct"), ("App", "impl"), ("new", "method"), ("main", "function")]);
+        assert_eq!(
+            got,
+            [
+                row("App", "implementation", 1, 5, Some(1)),
+                row("helper", "call", 2, 23, Some(2)),
+                row("run", "call", 6, 6, Some(3)),
+                row("println", "call", 7, 4, Some(3))
+            ]
+        );
+        assert!(!got.iter().any(|r| r.0 == "new"));
+        let def = crate::editor::syntax::language_for_name("rust").unwrap();
+        assert_eq!(extract_text(def, &mut tree_sitter::Parser::new(), src), syms);
+    }
+
+    #[test]
+    fn python_references() {
+        let Some((_, got)) = refs("a.py", "class A:\n    def m(self):\n        f()\n\ndef f():\n    A().m()\n") else { return };
+        assert_eq!(got, [row("f", "call", 2, 8, Some(1)), row("A", "call", 5, 4, Some(2)), row("m", "call", 5, 8, Some(2))]);
+    }
+
+    #[test]
+    fn c_references_skip_definition_names() {
+        let Some((_, got)) = refs("a.c", "typedef int T;\nstruct S { T x; };\nint f(struct S *p) { return g(p->x) + p->cb(); }\n") else {
+            return;
+        };
+        assert_eq!(
+            got,
+            [
+                row("T", "type", 1, 11, Some(1)),
+                row("S", "type", 2, 13, Some(2)),
+                row("g", "call", 2, 28, None),
+                row("cb", "call", 2, 41, None)
+            ]
+        );
+    }
+
+    #[test]
+    fn cpp_references() {
+        let Some((_, got)) = refs("a.cpp", "struct P {};\nclass A { P p; void m(); };\nvoid A::m() { n::g(); this->m(); t<int>(); }\n")
+        else {
+            return;
+        };
+        let short: Vec<(&str, &str, usize, usize)> = got.iter().map(|r| (r.0.as_str(), r.1, r.2, r.3)).collect();
+        assert_eq!(short, [("P", "type", 1, 10), ("g", "call", 2, 17), ("m", "call", 2, 28), ("t", "call", 2, 33)]);
+    }
+
+    #[test]
+    fn go_type_definition_name_is_no_reference() {
+        let Some((_, got)) = refs("a.go", "package p\ntype T struct{}\nfunc F(t T) { F(t) }\n") else { return };
+        let of = |n: &str| got.iter().filter(|r| r.0 == n).map(|r| (r.1, r.2)).collect::<Vec<_>>();
+        assert_eq!(of("T"), [("type", 2)]);
+        assert_eq!(of("F"), [("call", 2)]);
     }
 
     /// Names and depths of `src` parsed as `file`'s language, when enabled.
