@@ -135,6 +135,7 @@ pub const MAIN_MENU: &[(&str, char, &[Row])] = &[
             Item("Jump to Last Tool Window", "tool_window.last"),
             Item("Next Tool Window Tab", "tool_window.next_tab"),
             Item("Previous Tool Window Tab", "tool_window.prev_tab"),
+            Item("Toolbar", "app.toggle_toolbar"),
             Item("Zen Mode", "app.zen"),
             Sep,
             Item("Split Right", "editor.split_right"),
@@ -575,6 +576,14 @@ mod tests {
         let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(60, 1)).unwrap();
         term.draw(|f| b.render(f, f.area(), &Theme::default())).unwrap();
         assert!(!b.contains(3, 0) && !b.contains(3, 2));
+    }
+
+    #[test]
+    fn view_menu_has_toolbar_before_zen() {
+        let (_, _, rows) = MAIN_MENU.iter().find(|m| m.0 == "View").unwrap();
+        let labels: Vec<&str> = rows.iter().filter_map(|r| if let Item(l, _) = r { Some(*l) } else { None }).collect();
+        let at = |l| labels.iter().position(|x| *x == l).unwrap();
+        assert_eq!(at("Toolbar") + 1, at("Zen Mode"));
     }
 
     #[test]

@@ -604,6 +604,7 @@ Reachable from Find Action (F1) or by binding them in `keymap.toml`.
 | `tool_window.move_left` | Move the active tool window to the left side |
 | `tool_window.move_bottom` | Move the active tool window to the bottom |
 | `tool_window.move_right` | Move the active tool window to the right side |
+| `app.toggle_toolbar` | Show or hide the toolbar |
 | `palette.goto_line` | Go to line |
 | `editor.scratch_files` | Scratch files |
 | `editor.put_label` | Local history: put label… |

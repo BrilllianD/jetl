@@ -1274,6 +1274,7 @@ impl App {
             AppAction::MoveToolWindowButton { tw, up } => self.layout.move_button(tw, up),
             AppAction::RestoreDefaultLayout => self.restore_default_layout(),
             AppAction::ToggleZen => self.toggle_zen(),
+            AppAction::ToggleToolbar => self.toggle_toolbar(),
             AppAction::TogglePinned { tw } => {
                 if let Some(tw) = tw.or(self.focus.current.tool_window()) {
                     let next = if self.layout.view_mode(tw) == ViewMode::Pinned { ViewMode::Unpinned } else { ViewMode::Pinned };
@@ -1412,6 +1413,13 @@ impl App {
         self.apply_effects(vec![Effect::ContextMenu(ContextMenu::new(items, x, y))]);
     }
 
+    /// A right press on the toolbar row: its context menu.
+    pub(crate) fn toolbar_menu(&mut self, x: u16, y: u16) {
+        use crate::ui::menu::{ContextMenu, MenuItem};
+        let items = vec![MenuItem::new("Hide Toolbar", Action::App(AppAction::ToggleToolbar))];
+        self.apply_effects(vec![Effect::ContextMenu(ContextMenu::new(items, x, y))]);
+    }
+
     /// A press on a strip's More button: a menu of that strip's windows
     /// without a button, in strip order; a row toggles its window.
     pub(crate) fn strip_more_menu(&mut self, right: bool, x: u16, y: u16) {
@@ -1435,6 +1443,16 @@ impl App {
             self.toggle_tool_window(tw);
         } else {
             self.focus.set(tw.panel());
+        }
+    }
+
+    /// Flip `[ui] toolbar` in `config.toml`; the reload applies it at once
+    /// and an open Settings window follows (yman 354).
+    fn toggle_toolbar(&mut self) {
+        use crate::config::edit::{Edit, Value};
+        let on = !self.config.ui.toolbar;
+        if let Err(e) = self.write_settings(&[("ui.toolbar", Edit::Set(Value::Bool(on)))]) {
+            self.notify(Level::Error, e);
         }
     }
 
@@ -4920,6 +4938,63 @@ mod strip_tests {
         let r = button(&app, ToolWindowId::Git);
         click(&mut app, r.x + 1, r.y);
         assert!(app.layout.is_visible(ToolWindowId::Git));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn write_toolbar_config(app: &super::App, on: bool) {
+        let file = app.paths.config_file();
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(file, format!("# mine\n[lsp]\nenabled = false\n[ui]\ntoolbar = {on}\n")).unwrap();
+    }
+
+    #[tokio::test]
+    async fn toggle_toolbar_writes_the_config() {
+        let (mut app, dir) = test_app("toggle-toolbar");
+        write_toolbar_config(&app, false);
+        app.config.ui.toolbar = false;
+        app.perform(Action::App(AppAction::ToggleToolbar));
+        assert!(app.config.ui.toolbar);
+        let text = std::fs::read_to_string(app.paths.config_file()).unwrap();
+        assert!(text.contains("toolbar = true") && text.contains("# mine") && text.contains("enabled = false"), "{text}");
+        assert!(!app.config.lsp.enabled);
+        draw(&mut app);
+        assert!(!app.layout.toolbar_hits.is_empty());
+        app.perform(Action::App(AppAction::ToggleToolbar));
+        assert!(!app.config.ui.toolbar);
+        let text = std::fs::read_to_string(app.paths.config_file()).unwrap();
+        assert!(text.contains("toolbar = false"), "{text}");
+        draw(&mut app);
+        assert!(app.layout.toolbar_hits.is_empty());
+        assert_eq!(app.layout.strip_hits[0].0, StripButton::Menu);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn toolbar_right_click_hides_it() {
+        use crossterm::event::{KeyCode, KeyEvent};
+        let (mut app, dir) = test_app("toolbar-right");
+        write_toolbar_config(&app, true);
+        app.config.ui.toolbar = true;
+        draw(&mut app);
+        let right = |app: &mut super::App, x| {
+            app.handle_mouse(ev(MouseEventKind::Down(MouseButton::Right), x, 0));
+            app.handle_mouse(ev(MouseEventKind::Up(MouseButton::Right), x, 0));
+        };
+        right(&mut app, 50);
+        let menu = app.menu.as_ref().expect("context menu");
+        assert_eq!(menu.items.len(), 1);
+        assert_eq!(menu.items[0].label, "Hide Toolbar");
+        assert_eq!(menu.items[0].action, Some(Action::App(AppAction::ToggleToolbar)));
+        assert!(app.menu_bar.is_none());
+        app.menu = None;
+        right(&mut app, 1);
+        assert!(app.menu.is_some());
+        assert!(app.menu_bar.is_none());
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(app.menu.is_none());
+        assert!(!app.config.ui.toolbar);
+        draw(&mut app);
+        assert!(app.layout.toolbar_hits.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

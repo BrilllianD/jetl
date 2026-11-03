@@ -65,6 +65,8 @@ pub enum AppAction {
     },
     /// Show only the editor text; again to put the layout back.
     ToggleZen,
+    /// Show or hide the toolbar row: flips `[ui] toolbar` in `config.toml`.
+    ToggleToolbar,
     Escape,
     OpenPalette(PaletteKind),
     /// Recent Locations: the caret history in the Locations palette, newest first.
@@ -764,6 +766,7 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "tool_window.move_bottom" => "Move the active tool window to the bottom", App(AppAction::MoveToolWindow { tw: None, side: Side::Bottom });
         "tool_window.move_right" => "Move the active tool window to the right side", App(AppAction::MoveToolWindow { tw: None, side: Side::Right });
         "app.zen" => "Toggle Zen mode (editor text only)", App(AppAction::ToggleZen);
+        "app.toggle_toolbar" => "Show or hide the toolbar", App(AppAction::ToggleToolbar);
         "palette.files" => "Go to file", App(AppAction::OpenPalette(PaletteKind::Files));
         "palette.actions" => "Find action", App(AppAction::OpenPalette(PaletteKind::Actions));
         "palette.search_everywhere" => "Search everywhere", App(AppAction::OpenPalette(PaletteKind::Everywhere));

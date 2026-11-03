@@ -3481,3 +3481,16 @@ async fn app_toolbar_menu_open() {
     let marks = menu_marks(&app.theme);
     assert_snapshot!("app_toolbar_menu_open", snapshot(&term, &marks, None));
 }
+
+#[tokio::test]
+async fn app_toolbar_context_menu() {
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    let mut fx = stable_app("toolbar-context");
+    let app = &mut fx.app;
+    app.config.ui.toolbar = true;
+    draw_app(app, 80, 24);
+    app.handle_mouse(MouseEvent { kind: MouseEventKind::Down(MouseButton::Right), column: 40, row: 0, modifiers: KeyModifiers::NONE });
+    let term = draw_app(app, 80, 24);
+    let marks = [Mark::style('S', "selected row", app.theme.list_selected)];
+    assert_snapshot!("app_toolbar_context_menu", snapshot(&term, &marks, None));
+}

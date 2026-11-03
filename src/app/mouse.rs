@@ -228,6 +228,7 @@ impl App {
             MouseEventKind::Down(button) => match hit {
                 Hit::Splitter(id) if button == MouseButton::Left => self.drag = Some(Drag::Splitter(id)),
                 Hit::Splitter(_) => {}
+                Hit::Toolbar if button == MouseButton::Right => self.toolbar_menu(m.column, m.row),
                 Hit::Toolbar => {
                     if button == MouseButton::Left
                         && let Some((b, _)) = self.layout.toolbar_hit(m.column, m.row)
