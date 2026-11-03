@@ -923,6 +923,8 @@ async fn app_project_tree() {
 
 /// The tree with a folder and several file kinds, two tabs open, and
 /// file icons in `mode`.
+// The active tab is Cargo.toml: the status bar names its language only with lang-toml.
+#[cfg(feature = "lang-toml")]
 fn file_icons_fixture(app: &mut App, mode: crate::config::FileIcons) {
     let root = app.workspace.root.clone();
     std::fs::create_dir_all(root.join("src")).unwrap();
@@ -938,6 +940,7 @@ fn file_icons_fixture(app: &mut App, mode: crate::config::FileIcons) {
     app.focus.set(PanelId::Project);
 }
 
+#[cfg(feature = "lang-toml")]
 #[tokio::test]
 async fn file_icons_ascii() {
     let mut fx = stable_app("file-icons-ascii");
@@ -957,6 +960,7 @@ async fn file_icons_ascii() {
     assert_snapshot!("file_icons_ascii", snapshot(&term, &marks, None));
 }
 
+#[cfg(feature = "lang-toml")]
 #[tokio::test]
 async fn file_icons_nerd() {
     let mut fx = stable_app("file-icons-nerd");

@@ -120,9 +120,10 @@ the snapshot as it is, say so in a comment at the test, and file the bug.
 Without `INSTA_UPDATE`, a local run writes `*.snap.new` next to a
 mismatching snapshot; they are git-ignored. On CI (`CI=true`, set by
 GitHub Actions and Bitbucket Pipelines) nothing is written, and a missing
-or different snapshot fails the test. Tests that need a grammar (`.rs`
-folding) are behind `#[cfg(feature = "lang-rust")]`; the rest use plain
-file types, so every feature set gives the same frames.
+or different snapshot fails the test. Tests that need a grammar are
+behind its feature (`#[cfg(feature = "lang-rust")]` for `.rs` folding,
+`lang-toml` where a `.toml` tab's language shows in the status bar); the
+rest use plain file types, so every feature set gives the same frames.
 
 ## Manual: the tmux harness
 
