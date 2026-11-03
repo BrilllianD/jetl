@@ -9,7 +9,7 @@
 # for a new release. Without JETL_VERSION the fallback below is used.
 
 pkgname=jetl-bin
-pkgver=${JETL_VERSION:-0.7.0}
+pkgver=${JETL_VERSION:-0.8.0}
 pkgrel=1
 pkgdesc="Lightweight terminal IDE with JetBrains-like UX"
 arch=(x86_64)

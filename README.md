@@ -71,20 +71,20 @@ built-in terminal and a Run window, all driven by JetBrains-style key bindings a
 
 ### Release tarball
 
-Download `jetl-0.7.0-x86_64-unknown-linux-gnu.tar.gz` (and its `.sha256`), extract it, and put
+Download `jetl-0.8.0-x86_64-unknown-linux-gnu.tar.gz` (and its `.sha256`), extract it, and put
 the `jetl` binary on your `PATH`, for example in `~/.local/bin`:
 
-    sha256sum -c jetl-0.7.0-x86_64-unknown-linux-gnu.tar.gz.sha256
-    tar xzf jetl-0.7.0-x86_64-unknown-linux-gnu.tar.gz
-    install -Dm755 jetl-0.7.0-x86_64-unknown-linux-gnu/jetl ~/.local/bin/jetl
+    sha256sum -c jetl-0.8.0-x86_64-unknown-linux-gnu.tar.gz.sha256
+    tar xzf jetl-0.8.0-x86_64-unknown-linux-gnu.tar.gz
+    install -Dm755 jetl-0.8.0-x86_64-unknown-linux-gnu/jetl ~/.local/bin/jetl
 
 Run the commands in the directory that holds both downloaded files. The archive unpacks to
-`jetl-0.7.0-x86_64-unknown-linux-gnu/`, which holds `jetl`, `README.md`, `LICENSE`,
+`jetl-0.8.0-x86_64-unknown-linux-gnu/`, which holds `jetl`, `README.md`, `LICENSE`,
 `CHANGELOG.md` and `docs/` (`CONFIG.md`, `KEYMAP.md`).
 
 ### Arch Linux
 
-    sudo pacman -U jetl-bin-0.7.0-1-x86_64.pkg.tar.zst
+    sudo pacman -U jetl-bin-0.8.0-1-x86_64.pkg.tar.zst
 
 ### From source
 

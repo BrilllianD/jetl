@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-03
+
 ### Added
 
 - Git window: Ctrl+D (`git.show_diff`) on a file in the Commit, Log or Stash tab opens its diff side by side in a full-size editor tab (header toggles for layout and collapse, F7 / Shift+F7 between changes, Alt+N / Alt+P between files); the Log file menu has Open Diff in Editor Tab. In the Log list Ctrl+D shows the selected commits' files in one such tab, file by file.
@@ -722,7 +724,8 @@ First release.
   for Phase 11).
 - No 3-pane conflict resolver; conflicted files show as `U` and are resolved in the editor.
 
-[Unreleased]: https://bitbucket.org/BrilllianD/jetl-ide/branches/compare/HEAD..v0.7.0
+[Unreleased]: https://bitbucket.org/BrilllianD/jetl-ide/branches/compare/HEAD..v0.8.0
+[0.8.0]: https://bitbucket.org/BrilllianD/jetl-ide/src/v0.8.0/
 [0.7.0]: https://bitbucket.org/BrilllianD/jetl-ide/src/v0.7.0/
 [0.6.0]: https://bitbucket.org/BrilllianD/jetl-ide/src/v0.6.0/
 [0.5.0]: https://bitbucket.org/BrilllianD/jetl-ide/src/v0.5.0/
