@@ -19,7 +19,7 @@ expression: "snapshot(&term, &marks, None)"
 13  ├────────────────────────────────────┤│ Right Top    │+N finds a file.
 14  │ Restore Default Layout   Shift+F12 ││ Right Bottom │
 15  ├────────────────────────────────────┤╰──────────────╯
-16  │ Unpin                              │
+16  │ View Mode                        ▸ │
 17  ╰────────────────────────────────────╯
 18  ⎇ │                              ││
 19  ❯ │                              ││

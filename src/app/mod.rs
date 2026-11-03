@@ -6,7 +6,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::Result;
 use crossterm::cursor::SetCursorStyle;
-use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyModifiers, MouseButton};
+use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton};
 use futures::StreamExt;
 use ratatui::layout::Rect;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
@@ -783,7 +783,18 @@ impl App {
 
     pub(crate) fn handle_key(&mut self, key: KeyEvent) {
         let had_tabs = self.has_user_tabs();
+        let undocked =
+            self.focus.current.tool_window().filter(|tw| self.layout.view_mode(*tw) == ViewMode::Undocked && self.layout.is_visible(*tw));
+        let esc = key.code == KeyCode::Esc && key.kind != KeyEventKind::Release;
         self.handle_key_inner(key);
+        // Esc that leaves an Undocked window slides it away; a panel's own Esc
+        // (find, filter) that keeps focus does not.
+        if esc
+            && let Some(tw) = undocked
+            && !self.focus.is(tw.panel())
+        {
+            self.layout.hide(tw);
+        }
         self.focus_tree_after_last_close(had_tabs);
         self.lsp_confirm_orphaned();
     }
@@ -1294,9 +1305,16 @@ impl App {
                     self.layout.set_view_mode(tw, next);
                 }
             }
+            AppAction::SetViewMode { tw, mode } => self.set_tool_window_mode(tw, mode),
+            AppAction::ToggleUndocked { tw } => {
+                if let Some(tw) = tw.or(self.focus.current.tool_window()) {
+                    let next = if self.layout.view_mode(tw) == ViewMode::Undocked { ViewMode::Pinned } else { ViewMode::Undocked };
+                    self.set_tool_window_mode(tw, next);
+                }
+            }
             AppAction::Escape => {
                 if let Some(tw) = self.focus.current.tool_window()
-                    && self.layout.view_mode(tw) == ViewMode::Unpinned
+                    && self.layout.view_mode(tw) != ViewMode::Pinned
                 {
                     self.layout.hide(tw);
                 }
@@ -1379,6 +1397,17 @@ impl App {
         }
     }
 
+    /// Set a tool window's view mode; focus the editor when the focused
+    /// window was hidden by it (undocking another window hides the shown one).
+    pub(crate) fn set_tool_window_mode(&mut self, tw: ToolWindowId, mode: ViewMode) {
+        self.layout.set_view_mode(tw, mode);
+        if let Some(cur) = self.focus.current.tool_window()
+            && !self.layout.is_visible(cur)
+        {
+            self.focus.set(PanelId::Editor);
+        }
+    }
+
     /// Restore Default Layout; focus the editor when the focused window was
     /// hidden by it.
     pub(crate) fn restore_default_layout(&mut self) {
@@ -1399,7 +1428,7 @@ impl App {
     }
 
     /// Right-click on a tool strip button: the docks `tw` can move to and its
-    /// button and pin rows.
+    /// button and view mode rows.
     pub(crate) fn tool_window_side_menu(&mut self, tw: ToolWindowId, x: u16, y: u16) {
         use crate::ui::menu::{ContextMenu, MenuItem};
         let now = self.layout.dock_of(tw);
@@ -1407,6 +1436,13 @@ impl App {
             .into_iter()
             .map(|dock| MenuItem::new(dock.title(), Action::App(AppAction::MoveToolWindow { tw: Some(tw), dock })).enabled(now != dock))
             .collect();
+        let modes: Vec<MenuItem> =
+            [("Dock Pinned", ViewMode::Pinned), ("Dock Unpinned", ViewMode::Unpinned), ("Undock", ViewMode::Undocked)]
+                .into_iter()
+                .map(|(label, mode)| {
+                    MenuItem::new(label, Action::App(AppAction::SetViewMode { tw, mode })).enabled(self.layout.view_mode(tw) != mode)
+                })
+                .collect();
         let button = |label: &str, up: bool| {
             MenuItem::new(label, Action::App(AppAction::MoveToolWindowButton { tw, up })).enabled(self.layout.can_move_button(tw, up))
         };
@@ -1418,10 +1454,7 @@ impl App {
             MenuItem::separator(),
             MenuItem::new("Restore Default Layout", Action::App(AppAction::RestoreDefaultLayout)),
             MenuItem::separator(),
-            MenuItem::new(
-                if self.layout.view_mode(tw) == ViewMode::Pinned { "Unpin" } else { "Pin" },
-                Action::App(AppAction::TogglePinned { tw: Some(tw) }),
-            ),
+            MenuItem::submenu("View Mode", modes),
         ];
         self.apply_effects(vec![Effect::ContextMenu(ContextMenu::new(items, x, y))]);
     }
@@ -3087,6 +3120,57 @@ pub(crate) mod tests {
         assert!(!enabled(&app));
         app.focus.set(PanelId::Git);
         assert!(enabled(&app));
+        app.focus.set(PanelId::Editor);
+        let undock = |app: &super::App| {
+            let bar = app.build_main_menu();
+            let view = bar.menus().iter().find(|m| m.title == "View").unwrap();
+            view.items.iter().find(|i| i.label == "Undock or Dock Tool Window").unwrap().enabled
+        };
+        assert!(!undock(&app));
+        app.focus.set(PanelId::Git);
+        assert!(undock(&app));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn toggle_undocked_is_a_registry_action() {
+        assert_eq!(Action::from_id("tool_window.toggle_undocked"), Some(Action::App(AppAction::ToggleUndocked { tw: None })));
+    }
+
+    #[tokio::test]
+    async fn undocked_window_slides_over_and_hides() {
+        use crate::ui::layout::ViewMode;
+        use crossterm::event::{MouseEvent, MouseEventKind};
+        let (mut app, dir) = test_app("undocked");
+        app.toggle_tool_window(ToolWindowId::Find);
+        app.perform(Action::from_id("tool_window.toggle_undocked").unwrap());
+        assert_eq!(app.layout.view_mode(ToolWindowId::Find), ViewMode::Undocked);
+        draw_frame(&mut app);
+        assert!(app.layout.is_visible(ToolWindowId::Find));
+        assert!(app.layout.rects.bottom.is_empty());
+        let ov = app.layout.rects.overlay;
+        assert!(!ov.is_empty());
+        app.perform(Action::App(AppAction::FocusEditor));
+        draw_frame(&mut app);
+        assert!(app.layout.is_visible(ToolWindowId::Find));
+        let click =
+            MouseEvent { kind: MouseEventKind::Down(MouseButton::Left), column: ov.x + 2, row: ov.y + 1, modifiers: KeyModifiers::NONE };
+        app.handle_mouse(click);
+        assert!(app.focus.is(PanelId::Find));
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        draw_frame(&mut app);
+        assert!(!app.layout.is_visible(ToolWindowId::Find));
+        assert!(app.focus.is(PanelId::Editor));
+
+        app.toggle_tool_window(ToolWindowId::Find);
+        app.toggle_tool_window(ToolWindowId::Project);
+        draw_frame(&mut app);
+        assert!(!app.layout.is_visible(ToolWindowId::Find));
+
+        app.layout.set_view_mode(ToolWindowId::Git, ViewMode::Undocked);
+        app.layout.show(ToolWindowId::Find);
+        app.toggle_tool_window(ToolWindowId::Git);
+        assert!(app.layout.is_visible(ToolWindowId::Git) && !app.layout.is_visible(ToolWindowId::Find));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -5262,17 +5346,24 @@ mod strip_tests {
     }
 
     #[tokio::test]
-    async fn strip_menu_pins_and_unpins() {
+    async fn strip_menu_sets_the_view_mode() {
+        use crate::ui::layout::ViewMode;
         let (mut app, dir) = test_app("strip-pin");
         draw(&mut app);
         let (_, r) = *app.layout.strip_hits.iter().find(|(b, _)| *b == StripButton::Tool(ToolWindowId::Git)).unwrap();
         app.handle_mouse(ev(MouseEventKind::Down(MouseButton::Right), r.x + 1, r.y));
         let menu = app.menu.take().expect("context menu");
-        assert_eq!(menu.items[7].label, "Unpin");
-        app.perform(menu.items[7].action.clone().unwrap());
-        assert_eq!(app.layout.view_mode(ToolWindowId::Git), crate::ui::layout::ViewMode::Unpinned);
+        assert_eq!(menu.items[7].label, "View Mode");
+        let kids = &menu.items[7].children;
+        assert_eq!(kids.iter().map(|i| i.label.as_str()).collect::<Vec<_>>(), ["Dock Pinned", "Dock Unpinned", "Undock"]);
+        assert_eq!(kids.iter().map(|i| i.enabled).collect::<Vec<_>>(), [false, true, true]);
+        app.perform(kids[1].action.clone().unwrap());
+        assert_eq!(app.layout.view_mode(ToolWindowId::Git), ViewMode::Unpinned);
         app.handle_mouse(ev(MouseEventKind::Down(MouseButton::Right), r.x + 1, r.y));
-        assert_eq!(app.menu.as_ref().unwrap().items[7].label, "Pin");
+        let menu = app.menu.take().unwrap();
+        assert_eq!(menu.items[7].children.iter().map(|i| i.enabled).collect::<Vec<_>>(), [true, false, true]);
+        app.perform(menu.items[7].children[2].action.clone().unwrap());
+        assert_eq!(app.layout.view_mode(ToolWindowId::Git), ViewMode::Undocked);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -5285,7 +5376,7 @@ mod strip_tests {
         let menu = app.menu.as_ref().expect("context menu");
         let labels: Vec<_> = menu.items.iter().map(|i| i.label.clone()).collect();
         assert_eq!(labels.len(), 8);
-        assert_eq!(labels[6..], ["", "Unpin"]);
+        assert_eq!(labels[6..], ["", "View Mode"]);
         assert_eq!(labels[2..4], ["Move Button Up", "Move Button Down"]);
         assert_eq!(labels[5], "Restore Default Layout");
         assert_eq!(menu.items.iter().map(|i| i.enabled).collect::<Vec<_>>(), [true, true, true, true, true, true, true, true]);

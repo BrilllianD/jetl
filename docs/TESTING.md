@@ -1438,12 +1438,27 @@ Setup as above with the default config (`[lsp] enabled = false` only), at 120x40
 
 Setup as above, `[lsp] enabled = false`, at 120x40 and 80x24.
 
-1. Right-click the Git button: the last row is Unpin; choose it. Alt+9 focuses Git; click in the editor: Git
+1. Right-click the Git button: the last row is View Mode; choose View Mode > Dock Unpinned. Alt+9 focuses Git; click in the editor: Git
    hides.
 2. Alt+9 again; Ctrl+Shift+A (palette) and Esc, then F10 and Esc: Git stays shown through both.
 3. In Git press Esc until focus returns to the editor: Git hides. Alt+9, then Alt+1: Git hides, Project shows.
-4. Right-click Git: the row reads Pin. Ctrl+Q and restart: Git's row still reads Pin. Shift+F12, right-click
-   Git: the row reads Unpin (every window Pinned again). Stderr empty, Ctrl+Q exits 0.
+4. Right-click Git > View Mode: Dock Unpinned is greyed. Ctrl+Q and restart: it is still greyed. Shift+F12,
+   right-click Git > View Mode: Dock Pinned is greyed (every window Pinned again). Stderr empty, Ctrl+Q exits 0.
+
+### Scenario: undocked tool window
+
+Setup as above, `[lsp] enabled = false`, at 80x24 and 120x40.
+
+1. Open a file. Right-click the Structure strip button > Move to > Right Top, then right-click again > View Mode >
+   Undock. Alt+7: Structure appears over the right part of the editor; the editor text does not reflow.
+2. Click into the editor text: the caret moves, Structure stays. Click into Structure: it takes focus. Esc:
+   Structure slides away, the editor has focus.
+3. Alt+7 again, then Alt+1: Structure hides, Project is focused.
+4. Undock Find too (right-click Find > View Mode > Undock), Alt+7 then Alt+3: only Find shows, at the bottom of
+   the editor area.
+5. View menu: "Undock or Dock Tool Window" is greyed with the editor focused, enabled with a tool window focused.
+6. Ctrl+Q, restart: Structure and Find are still Undocked (View Mode submenu shows "Undock" greyed). Shift+F12
+   (Restore Default Layout): both are Pinned again. Stderr empty, Ctrl+Q exits 0.
 
 ### Scenario: Structure for C#, Kotlin, Ruby, PHP and Swift
 

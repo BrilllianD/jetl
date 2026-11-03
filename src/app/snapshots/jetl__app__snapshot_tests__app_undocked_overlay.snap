@@ -1,0 +1,29 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &[], None)"
+---
+80x24 cursor=hidden
+00  ≣ ┌ Project: root ───────────────┐│  notes.l┌ Problems: no problems ───────┐
+01    │                              ││  1  ▾ al│ Language servers are off ([ls│
+02  ⌂ │                              ││  2    │ │                              │ 6
+03  ◫ │                              ││  3    │ │                              │ ⚠
+04  ⊢ │                              ││  4    fo│                              │
+05    │                              ││  5      │                              │
+06    │                              ││  6    si│                              │
+07    │                              ││  7      │                              │
+08    │                              ││         │                              │
+09    │                              ││         │                              │
+10    │                              ││         │                              │
+11    │                              ││         │                              │
+12    │                              ││         │                              │
+13    │                              ││         │                              │
+14  ⋔ │                              ││         │                              │
+15  ✎ │                              ││         │                              │
+16  ✓ │                              ││         │                              │
+17  ⟲ │                              ││         │                              │
+18  ⚑ │                              ││         │                              │
+19  ⎇ │                              ││         │                              │
+20  ❯ │                              ││         │                              │
+21  ► │                              ││         │                              │
+22  ⌕ └──────────────────────────────┘│         └──────────────────────────────┘
+23  notes.log                         Ln 1, Col 1  LF  UTF-8  4 spaces  Plain text

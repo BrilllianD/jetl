@@ -118,6 +118,14 @@ pub fn render(app: &mut App, frame: &mut Frame) {
 
     let editor_focused = app.focus.is(PanelId::Editor);
     app.editor.render(frame, rects.tabs, rects.editor, editor_focused, &theme);
+    // An Undocked window slides over the editor; the popups below still draw over it.
+    if let Some(tw) = app.layout.overlay_window()
+        && !rects.overlay.is_empty()
+    {
+        frame.render_widget(ratatui::widgets::Clear, rects.overlay);
+        frame.buffer_mut().set_style(rects.overlay, Style::default().bg(theme.bg).fg(theme.fg));
+        render_tool_window(app, frame, tw, rects.overlay, &theme);
+    }
 
     status_bar::render(app, frame, rects.status);
     // The hover popup sits at the caret, over everything but the overlays.

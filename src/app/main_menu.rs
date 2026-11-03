@@ -37,7 +37,9 @@ impl App {
                                 Action::App(AppAction::MoveToolWindow { tw: None, dock }) => {
                                     self.focus.current.tool_window().is_some_and(|tw| self.layout.dock_of(tw) != *dock)
                                 }
-                                Action::App(AppAction::TogglePinned { tw: None }) => self.focus.current.tool_window().is_some(),
+                                Action::App(AppAction::TogglePinned { tw: None } | AppAction::ToggleUndocked { tw: None }) => {
+                                    self.focus.current.tool_window().is_some()
+                                }
                                 _ => true,
                             };
                             let enabled = movable && (has_buffer || !needs_buffer(&action)) && self.git_action_available(&action);

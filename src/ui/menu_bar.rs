@@ -129,6 +129,7 @@ pub const MAIN_MENU: &[(&str, char, &[Row])] = &[
             Item("Restore Default Layout", "tool_window.restore_default_layout"),
             Item("Maximize Tool Window", "tool_window.maximize"),
             Item("Pin or Unpin Tool Window", "tool_window.toggle_pinned"),
+            Item("Undock or Dock Tool Window", "tool_window.toggle_undocked"),
             Item("Move Tool Window to Left Top", "tool_window.move_left"),
             Item("Move Tool Window to Left Bottom", "tool_window.move_left_bottom"),
             Item("Move Tool Window to Bottom Left", "tool_window.move_bottom"),

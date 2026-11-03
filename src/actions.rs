@@ -4,6 +4,7 @@
 use std::sync::LazyLock;
 
 use crate::ui::focus::{Dock, PanelId, Side, ToolWindowId};
+use crate::ui::layout::ViewMode;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Action {
@@ -49,6 +50,16 @@ pub enum AppAction {
     /// Toggle a tool window between Pinned and Unpinned: the given one, or
     /// with `None` the focused one (View menu, palette).
     TogglePinned {
+        tw: Option<ToolWindowId>,
+    },
+    /// Set a tool window's view mode (the side menu's View Mode rows; no key).
+    SetViewMode {
+        tw: ToolWindowId,
+        mode: ViewMode,
+    },
+    /// Toggle a tool window between Undocked and Pinned: the given one, or
+    /// with `None` the focused one (View menu, palette).
+    ToggleUndocked {
         tw: Option<ToolWindowId>,
     },
     /// Put a tool window in a dock: the given one, or with `None` the
@@ -774,6 +785,7 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "tool_window.prev_tab" => "Previous tab of the tool window", App(AppAction::PrevToolWindowTab);
         "tool_window.maximize" => "Maximize or restore the active tool window", App(AppAction::MaximizeToolWindow);
         "tool_window.toggle_pinned" => "Pin or unpin the active tool window (an unpinned one hides when focus leaves it)", App(AppAction::TogglePinned { tw: None });
+        "tool_window.toggle_undocked" => "Undock or dock the active tool window (an undocked one slides over the editor)", App(AppAction::ToggleUndocked { tw: None });
         "tool_window.last" => "Jump to the last active tool window", App(AppAction::LastToolWindow);
         "tool_window.move_left" => "Move the active tool window to Left Top", App(AppAction::MoveToolWindow { tw: None, dock: Dock { side: Side::Left, split: false } });
         "tool_window.move_left_bottom" => "Move the active tool window to Left Bottom", App(AppAction::MoveToolWindow { tw: None, dock: Dock { side: Side::Left, split: true } });

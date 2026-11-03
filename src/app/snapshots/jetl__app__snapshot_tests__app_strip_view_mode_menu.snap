@@ -1,0 +1,32 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &marks, None)"
+---
+80x24 cursor=hidden
+00  ≣ ┌ Project: root ───────────────┐│
+01    │                              ││
+02  ⌂ │                              ││
+03  ◫ │                              ││
+04  ⊢ │                              ││
+05    │                              ││
+06    │                              ││
+07    │                              ││
+08  ╭────────────────────────────────────╮
+09  │ Move to                          ▸ │
+10  ├────────────────────────────────────┤
+11  │ Move Button Up                     │            No files open.
+12  │ Move Button Down                   │    Alt+1 opens the Project view;
+13  ├────────────────────────────────────┤      Ctrl+Shift+N finds a file.
+14  │ Restore Default Layout   Shift+F12 │
+15  ├────────────────────────────────────┤╭───────────────╮
+16  │ View Mode                        ▸ ││ Dock Pinned   │
+17  ╰────────────────────────────────────╯│ Dock Unpinned │
+18  ⎇ │                              ││   │ Undock        │
+19  ❯ │                              ││   ╰───────────────╯
+20  ⚠ │                              ││
+21  ► │                              ││
+22  ⌕ └──────────────────────────────┘│
+23
+-- marks: S=selected row
+16   SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS S
+17                                         SSSSSSSSSSSSSSS

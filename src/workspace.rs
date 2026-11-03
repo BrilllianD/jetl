@@ -278,6 +278,9 @@ pub struct SessionLayout {
     /// Rows of the Right Bottom pane; missing: half the side.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub right2_h: Option<u16>,
+    /// Undocked (slide-over) tool windows; older builds dock them Pinned.
+    #[serde(default, skip_serializing_if = "Vec::is_empty", deserialize_with = "known_tool_windows")]
+    pub undocked: Vec<ToolWindowId>,
 }
 
 /// A list of tool window ids, without the ones this build does not know
@@ -592,6 +595,7 @@ impl App {
             left2_h: size(self.layout.left2_h),
             bottom2_w: size(self.layout.bottom2_w),
             right2_h: size(self.layout.right2_h),
+            undocked: self.layout.undocked(),
         });
         let expanded = self.project.expanded_dirs().iter().filter_map(|d| d.strip_prefix(&root).ok()).map(Path::to_path_buf).collect();
         let closed_bookmarks =
@@ -871,6 +875,7 @@ impl App {
                 l.bottom2_w,
                 l.right2_h,
             );
+            self.layout.set_undocked(&l.undocked);
             self.tasks.restore(&tasks);
             if let Some(tw) = self.focus.current.tool_window()
                 && !self.layout.is_visible(tw)
@@ -982,6 +987,7 @@ mod tests {
                 left2_h: None,
                 bottom2_w: None,
                 right2_h: None,
+                undocked: vec![],
             }),
             expanded: vec![PathBuf::from("src"), PathBuf::from("src/app")],
             splits: Some(SessionSplits {
@@ -1528,6 +1534,7 @@ mod tests {
             left2_h: None,
             bottom2_w: None,
             right2_h: None,
+            undocked: vec![],
         };
         // A folder deleted since is skipped.
         let expanded = vec![PathBuf::from("a"), PathBuf::from("a/deep"), PathBuf::from("gone")];
@@ -1576,6 +1583,7 @@ mod tests {
             left2_h: None,
             bottom2_w: None,
             right2_h: None,
+            undocked: vec![],
         };
         Session { root: root.to_path_buf(), layout: Some(layout), ..Default::default() }
     }
@@ -1850,12 +1858,30 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir2);
     }
 
+    #[tokio::test]
+    async fn session_keeps_undocked_windows() {
+        use crate::ui::layout::ViewMode;
+        let (mut app, dir) = crate::app::tests::test_app("session-undocked");
+        app.layout.show(ToolWindowId::Git);
+        app.layout.set_view_mode(ToolWindowId::Git, ViewMode::Undocked);
+        app.layout.set_view_mode(ToolWindowId::Find, ViewMode::Unpinned);
+        let saved = app.session();
+        let (mut other, dir2) = crate::app::tests::test_app("session-undocked2");
+        let generation = other.workspace.generation;
+        other.session_loaded(generation, saved, vec![]);
+        assert_eq!(other.layout.view_mode(ToolWindowId::Git), ViewMode::Undocked);
+        assert!(other.layout.is_visible(ToolWindowId::Git));
+        assert_eq!(other.layout.view_mode(ToolWindowId::Find), ViewMode::Unpinned);
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&dir2);
+    }
+
     #[test]
     fn session_layout_from_0_8_0_loads_with_default_order() {
         // As 0.8.0 writes it.
         let old = r#"{"left":"Project","left_w":30,"bottom":"Git","bottom_h":12,"git_tab":"Log","show_hidden":false,"show_ignored":true,"right_w":30,"sides":[["Find","Right"]],"tasks":{"shown":false,"show_closed":false}}"#;
         let l: SessionLayout = serde_json::from_str(old).unwrap();
-        assert!(l.order.is_empty() && l.unpinned.is_empty());
+        assert!(l.order.is_empty() && l.unpinned.is_empty() && l.undocked.is_empty());
         let mut state = crate::ui::layout::LayoutState::new(30, 10);
         state.set_order(&l.order);
         assert_eq!(state.order(), ToolWindowId::ALL);
@@ -1869,5 +1895,11 @@ mod tests {
         assert_eq!(serde_json::from_str::<SessionLayout>(&newer).unwrap().order, [ToolWindowId::Git, ToolWindowId::Project]);
         let newer = json.replace(r#""unpinned":["Git"#, r#""unpinned":["Nope","Git"#);
         assert_eq!(serde_json::from_str::<SessionLayout>(&newer).unwrap().unpinned, [ToolWindowId::Git]);
+        assert!(!json.contains("\"undocked\""));
+        let undocked = SessionLayout { undocked: vec![ToolWindowId::Find], ..new };
+        let json = serde_json::to_string(&undocked).unwrap();
+        assert_eq!(serde_json::from_str::<SessionLayout>(&json).unwrap(), undocked);
+        let newer = json.replace(r#""undocked":["Find"#, r#""undocked":["Nope","Find"#);
+        assert_eq!(serde_json::from_str::<SessionLayout>(&newer).unwrap().undocked, [ToolWindowId::Find]);
     }
 }

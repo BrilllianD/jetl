@@ -601,6 +601,7 @@ Reachable from Find Action (F1) or by binding them in `keymap.toml`.
 | `app.open_settings` | Open settings file (config.toml) |
 | `app.keymap_reference` | Keymap reference |
 | `tool_window.toggle_pinned` | Pin or unpin the active tool window (an unpinned one hides when focus leaves it) |
+| `tool_window.toggle_undocked` | Undock or dock the active tool window (an undocked one slides over the editor) |
 | `tool_window.move_left` | Move the active tool window to Left Top |
 | `tool_window.move_left_bottom` | Move the active tool window to Left Bottom |
 | `tool_window.move_bottom` | Move the active tool window to Bottom Left |

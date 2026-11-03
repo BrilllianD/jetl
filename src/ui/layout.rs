@@ -56,6 +56,9 @@ pub struct Rects {
     pub bottom2: Rect,
     pub right2: Rect,
     pub status: Rect,
+    /// The Undocked window's rect over the editor area; empty when none is
+    /// shown, in zen and while a window is maximized.
+    pub overlay: Rect,
     pub splitters: Vec<(SplitterId, Rect)>,
 }
 
@@ -147,12 +150,16 @@ pub enum ToolbarButton {
     Settings,
 }
 
-/// How a tool window docks: an Unpinned one hides when focus leaves it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// How a tool window docks: a Pinned one stays, an Unpinned one hides when
+/// focus leaves it, an Undocked one slides over the editor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum ViewMode {
     #[default]
     Pinned,
     Unpinned,
+    /// Draws over the editor at its side (slide-over) and hides when Esc
+    /// leaves it or another tool window takes focus.
+    Undocked,
 }
 
 /// Where a dragged strip button lands: in the place of a button, or at
@@ -481,6 +488,23 @@ impl LayoutState {
         } else {
             self.mode.insert(tw, mode);
         }
+        if mode == ViewMode::Undocked && self.is_visible(tw) {
+            self.keep_one_overlay(tw);
+        }
+    }
+
+    /// The shown Undocked window, if any (the first in `shown()` order).
+    pub fn overlay_window(&self) -> Option<ToolWindowId> {
+        self.shown().into_iter().find(|tw| self.view_mode(*tw) == ViewMode::Undocked)
+    }
+
+    /// Hide every shown Undocked window except `keep`.
+    fn keep_one_overlay(&mut self, keep: ToolWindowId) {
+        for tw in self.shown() {
+            if tw != keep && self.view_mode(tw) == ViewMode::Undocked {
+                self.hide(tw);
+            }
+        }
     }
 
     /// Unpinned windows in `ToolWindowId::ALL` order (for the session).
@@ -488,20 +512,43 @@ impl LayoutState {
         ToolWindowId::ALL.into_iter().filter(|tw| self.view_mode(*tw) == ViewMode::Unpinned).collect()
     }
 
-    /// Replace the whole mode map (session restore).
+    /// Replace the Unpinned windows (session restore); other modes stay.
     pub fn set_unpinned(&mut self, tws: &[ToolWindowId]) {
-        self.mode = tws.iter().map(|tw| (*tw, ViewMode::Unpinned)).collect();
+        self.mode.retain(|_, m| *m != ViewMode::Unpinned);
+        self.mode.extend(tws.iter().map(|tw| (*tw, ViewMode::Unpinned)));
+    }
+
+    /// Undocked windows in `ToolWindowId::ALL` order (for the session).
+    pub fn undocked(&self) -> Vec<ToolWindowId> {
+        ToolWindowId::ALL.into_iter().filter(|tw| self.view_mode(*tw) == ViewMode::Undocked).collect()
+    }
+
+    /// Replace the Undocked windows (session restore); other modes stay.
+    /// Call after `set_unpinned` and the slot restore.
+    pub fn set_undocked(&mut self, tws: &[ToolWindowId]) {
+        self.mode.retain(|_, m| *m != ViewMode::Undocked);
+        self.mode.extend(tws.iter().map(|tw| (*tw, ViewMode::Undocked)));
+        if let Some(keep) = self.overlay_window() {
+            self.keep_one_overlay(keep);
+        }
     }
 
     /// Hide the shown Unpinned windows once focus has moved since the last
-    /// frame and is not on them. Overlays do not move focus, so they keep them.
+    /// frame and is not on them, and the shown Undocked window when focus
+    /// moved to another tool window (moving to the editor keeps it). Overlays
+    /// do not move focus, so they keep them.
     pub fn keep_unpinned(&mut self, focus: &Focus) {
         if focus.moves == self.seen_moves {
             return;
         }
         self.seen_moves = focus.moves;
         for tw in self.shown() {
-            if self.view_mode(tw) == ViewMode::Unpinned && tw.panel() != focus.current {
+            let away = match self.view_mode(tw) {
+                ViewMode::Pinned => false,
+                ViewMode::Unpinned => tw.panel() != focus.current,
+                ViewMode::Undocked => focus.current.tool_window().is_some_and(|f| f != tw),
+            };
+            if away {
                 self.hide(tw);
             }
         }
@@ -534,6 +581,9 @@ impl LayoutState {
     pub fn show(&mut self, tw: ToolWindowId) {
         self.leave_zen();
         *self.field(self.dock_of(tw)) = Some(tw);
+        if self.view_mode(tw) == ViewMode::Undocked {
+            self.keep_one_overlay(tw);
+        }
     }
 
     pub fn hide(&mut self, tw: ToolWindowId) {
@@ -690,16 +740,23 @@ impl LayoutState {
             return;
         }
 
+        // The Undocked window's slot is not carved; it slides over the editor.
+        let ov = self.overlay_window();
+        let carved = |s: Option<ToolWindowId>| s.filter(|t| Some(*t) != ov);
+        let (left, left2) = (carved(self.left), carved(self.left2));
+        let (bottom, bottom2) = (carved(self.bottom), carved(self.bottom2));
+        let (right, right2) = (carved(self.right), carved(self.right2));
+
         // Bottom tool window across the full content width.
         let mut upper = content;
-        if self.bottom.is_some() || self.bottom2.is_some() {
+        if bottom.is_some() || bottom2.is_some() {
             let max_h = content.height.saturating_sub(MIN_CENTER_H + 1);
             self.bottom_h = self.bottom_h.clamp(MIN_BOTTOM_H.min(max_h.max(1)), max_h.max(1));
             if content.height > self.bottom_h + 1 {
                 r.bottom = Rect::new(content.x, content.bottom() - self.bottom_h, content.width, self.bottom_h);
                 let split = Rect::new(content.x, r.bottom.y - 1, content.width, 1);
                 r.splitters.push((SplitterId::Bottom, split));
-                let (a, b, sp) = split_side(r.bottom, self.bottom.is_some(), self.bottom2.is_some(), self.bottom2_w, true);
+                let (a, b, sp) = split_side(r.bottom, bottom.is_some(), bottom2.is_some(), self.bottom2_w, true);
                 (r.bottom, r.bottom2) = (a, b);
                 r.splitters.extend(sp.map(|sp| (SplitterId::BottomSplit, sp)));
                 upper = Rect::new(content.x, content.y, content.width, content.height - self.bottom_h - 1);
@@ -707,20 +764,20 @@ impl LayoutState {
         }
 
         let mut center = upper;
-        if self.left.is_some() || self.left2.is_some() {
+        if left.is_some() || left2.is_some() {
             let max_w = upper.width.saturating_sub(MIN_CENTER_W + 1);
             self.left_w = self.left_w.clamp(MIN_LEFT_W.min(max_w.max(1)), max_w.max(1));
             if upper.width > self.left_w + 1 {
                 r.left = Rect::new(upper.x, upper.y, self.left_w, upper.height);
                 let split = Rect::new(upper.x + self.left_w, upper.y, 1, upper.height);
                 r.splitters.push((SplitterId::Left, split));
-                let (a, b, sp) = split_side(r.left, self.left.is_some(), self.left2.is_some(), self.left2_h, false);
+                let (a, b, sp) = split_side(r.left, left.is_some(), left2.is_some(), self.left2_h, false);
                 (r.left, r.left2) = (a, b);
                 r.splitters.extend(sp.map(|sp| (SplitterId::LeftSplit, sp)));
                 center = Rect::new(split.x + 1, upper.y, upper.width - self.left_w - 1, upper.height);
             }
         }
-        if self.right.is_some() || self.right2.is_some() {
+        if right.is_some() || right2.is_some() {
             // No room beside the left window and the editor's minimum: not drawn.
             let max_w = center.width.saturating_sub(MIN_CENTER_W + 1);
             if max_w > 0 {
@@ -730,7 +787,7 @@ impl LayoutState {
                 r.right = Rect::new(center.right() - self.right_w, center.y, self.right_w, center.height);
                 let split = Rect::new(r.right.x - 1, center.y, 1, center.height);
                 r.splitters.push((SplitterId::Right, split));
-                let (a, b, sp) = split_side(r.right, self.right.is_some(), self.right2.is_some(), self.right2_h, false);
+                let (a, b, sp) = split_side(r.right, right.is_some(), right2.is_some(), self.right2_h, false);
                 (r.right, r.right2) = (a, b);
                 r.splitters.extend(sp.map(|sp| (SplitterId::RightSplit, sp)));
                 center = Rect::new(center.x, center.y, center.width - self.right_w - 1, center.height);
@@ -738,11 +795,19 @@ impl LayoutState {
         }
         r.tabs = Rect::new(center.x, center.y, center.width, 1.min(center.height));
         r.editor = Rect::new(center.x, center.y + r.tabs.height, center.width, center.height.saturating_sub(r.tabs.height));
+        if let Some(tw) = ov {
+            r.overlay = overlay_rect(self.dock_of(tw).side, center, self.left_w, self.bottom_h, self.right_w);
+        }
         self.rects = r;
     }
 
     pub fn hit_test(&self, x: u16, y: u16) -> Hit {
         let p = ratatui::layout::Position::new(x, y);
+        if self.rects.overlay.contains(p)
+            && let Some(tw) = self.overlay_window()
+        {
+            return Hit::Panel(tw.panel(), self.rects.overlay);
+        }
         for (id, r) in &self.rects.splitters {
             if r.contains(p) {
                 return Hit::Splitter(*id);
@@ -893,6 +958,22 @@ impl LayoutState {
             .filter(|tw| self.on_right_strip(*tw) == right)
             .filter(|tw| !self.strip_hits.iter().any(|(b, _)| *b == StripButton::Tool(*tw)))
             .collect()
+    }
+}
+
+/// The slide-over rect of a side inside the editor area (tabs row included);
+/// the sizes are the docked ones, cut to the area.
+fn overlay_rect(side: Side, center: Rect, left_w: u16, bottom_h: u16, right_w: u16) -> Rect {
+    match side {
+        Side::Left => Rect::new(center.x, center.y, left_w.min(center.width), center.height),
+        Side::Right => {
+            let w = right_w.min(center.width);
+            Rect::new(center.right() - w, center.y, w, center.height)
+        }
+        Side::Bottom => {
+            let h = bottom_h.min(center.height);
+            Rect::new(center.x, center.bottom() - h, center.width, h)
+        }
     }
 }
 
@@ -1107,7 +1188,7 @@ mod tests {
         assert_eq!(l.maximized_window(), None);
     }
 
-    use ToolWindowId::{Find, Git, Project};
+    use ToolWindowId::{Find, Git, Project, Structure};
 
     #[test]
     fn move_to_changes_side_and_slot() {
@@ -1585,5 +1666,119 @@ mod tests {
         assert_eq!(l.left2, Some(Structure));
         assert_eq!(l.bottom2, None);
         assert_eq!((l.left2_h, l.bottom2_w, l.right2_h), (0, MIN_LEFT_W, 0));
+    }
+
+    #[test]
+    fn undocked_window_overlays_the_editor() {
+        let area = Rect::new(0, 0, 120, 40);
+        let mut l = LayoutState::new(30, 10);
+        l.move_to(Git, Side::Right);
+        l.hide(Git);
+        l.compute(area);
+        let before = l.rects.clone();
+        assert!(before.right.is_empty());
+        l.set_view_mode(Git, ViewMode::Undocked);
+        l.show(Git);
+        l.compute(area);
+        assert_eq!((l.rects.editor, l.rects.tabs), (before.editor, before.tabs));
+        assert!(l.rects.right.is_empty());
+        assert!(l.rects.splitters.iter().all(|(id, _)| *id != SplitterId::Right));
+        let ov = Rect::new(before.tabs.right() - 30, before.tabs.y, 30, before.tabs.height + before.editor.height);
+        assert_eq!(l.rects.overlay, ov);
+        assert_eq!(l.hit_test(ov.x, ov.y + 1), Hit::Panel(PanelId::Git, ov));
+        assert!(matches!(l.hit_test(ov.x - 1, ov.y + 1), Hit::Panel(PanelId::Editor, _)));
+
+        // Bottom: the last rows of the editor area, full width.
+        let mut l = LayoutState::new(30, 10);
+        l.set_view_mode(Find, ViewMode::Undocked);
+        l.show(Find);
+        l.compute(area);
+        let ov = l.rects.overlay;
+        assert_eq!((ov.height, ov.width, ov.bottom()), (10, l.rects.editor.width, l.rects.editor.bottom()));
+        assert_eq!(ov.x, l.rects.tabs.x);
+
+        // Left: starts at the edge of the editor area.
+        let mut l = LayoutState::new(30, 10);
+        l.set_view_mode(Project, ViewMode::Undocked);
+        l.hide(Git);
+        l.compute(area);
+        assert_eq!(l.rects.overlay, Rect::new(l.rects.strip.right(), l.rects.tabs.y, 30, l.rects.tabs.height + l.rects.editor.height));
+    }
+
+    #[test]
+    fn undocked_split_window_takes_the_whole_side_overlay() {
+        let area = Rect::new(0, 0, 120, 40);
+        let mut l = LayoutState::new(30, 10);
+        l.move_to_dock(Structure, dock(Side::Left, true));
+        l.set_view_mode(Structure, ViewMode::Undocked);
+        l.show(Structure);
+        l.compute(area);
+        assert!(l.rects.left2.is_empty());
+        assert!(l.rects.splitters.iter().all(|(id, _)| *id != SplitterId::LeftSplit));
+        assert_eq!(l.rects.left.width, 30);
+        assert_eq!(l.rects.overlay.x, l.rects.strip.right() + 30 + 1);
+        assert_eq!(l.rects.overlay.width, 30);
+    }
+
+    #[test]
+    fn one_undocked_window_at_a_time() {
+        let mut l = LayoutState::new(30, 10);
+        l.move_to(Git, Side::Right);
+        l.set_view_mode(Git, ViewMode::Undocked);
+        l.set_view_mode(Find, ViewMode::Undocked);
+        l.show(Git);
+        l.show(Find);
+        assert!(!l.is_visible(Git) && l.is_visible(Find));
+        l.show(ToolWindowId::Structure);
+        l.set_view_mode(ToolWindowId::Structure, ViewMode::Undocked);
+        assert!(!l.is_visible(Find) && l.is_visible(ToolWindowId::Structure));
+    }
+
+    #[test]
+    fn undocked_hides_when_another_tool_window_takes_focus() {
+        let mut l = LayoutState::new(30, 10);
+        let mut f = Focus::new();
+        l.move_to(Git, Side::Right);
+        l.show(Git);
+        l.set_view_mode(Git, ViewMode::Undocked);
+        f.set(PanelId::Git);
+        l.keep_unpinned(&f);
+        assert!(l.is_visible(Git));
+        f.set(PanelId::Editor);
+        l.keep_unpinned(&f);
+        assert!(l.is_visible(Git));
+        f.set(PanelId::Project);
+        l.keep_unpinned(&f);
+        assert!(!l.is_visible(Git));
+    }
+
+    #[test]
+    fn maximized_undocked_window_has_no_overlay() {
+        let area = Rect::new(0, 0, 120, 40);
+        let mut l = LayoutState::new(30, 10);
+        l.move_to(Git, Side::Right);
+        l.show(Git);
+        l.set_view_mode(Git, ViewMode::Undocked);
+        l.toggle_maximize(Git);
+        l.compute(area);
+        assert!(l.rects.overlay.is_empty());
+        assert!(!l.rects.of(l.dock_of(Git)).is_empty());
+        l.toggle_maximize(Git);
+        l.enter_zen(PanelId::Editor);
+        l.compute(area);
+        assert!(l.rects.overlay.is_empty());
+    }
+
+    #[test]
+    fn undocked_and_unpinned_lists_are_separate() {
+        use ToolWindowId::Problems;
+        let mut l = LayoutState::new(30, 10);
+        l.set_unpinned(&[Find]);
+        l.set_undocked(&[Git]);
+        l.set_unpinned(&[Problems]);
+        assert_eq!(l.undocked(), vec![Git]);
+        assert_eq!(l.unpinned(), vec![Problems]);
+        l.restore_default();
+        assert!(l.undocked().is_empty() && l.unpinned().is_empty());
     }
 }

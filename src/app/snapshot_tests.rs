@@ -3549,6 +3549,41 @@ async fn app_strip_move_to_menu() {
 }
 
 #[tokio::test]
+async fn app_strip_view_mode_menu() {
+    use crate::ui::layout::StripButton;
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    let mut fx = stable_app("strip-view-mode");
+    let app = &mut fx.app;
+    draw_app(app, 80, 24);
+    let git = app.layout.strip_hits.iter().find(|(b, _)| *b == StripButton::Tool(ToolWindowId::Git)).unwrap().1;
+    app.handle_mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Right),
+        column: git.x + 1,
+        row: git.y,
+        modifiers: KeyModifiers::NONE,
+    });
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+    let term = draw_app(app, 80, 24);
+    let marks = [Mark::style('S', "selected row", app.theme.list_selected)];
+    assert_snapshot!("app_strip_view_mode_menu", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
+async fn app_undocked_overlay() {
+    use crate::ui::focus::{Dock, Side};
+    use crate::ui::layout::ViewMode;
+    let mut fx = stable_app("undocked-overlay");
+    let app = &mut fx.app;
+    load(app, "notes.log", PLAIN);
+    app.move_tool_window(ToolWindowId::Problems, Dock { side: Side::Right, split: false });
+    app.layout.set_view_mode(ToolWindowId::Problems, ViewMode::Undocked);
+    app.toggle_tool_window(ToolWindowId::Problems);
+    let term = draw_app(app, 80, 24);
+    assert_snapshot!("app_undocked_overlay", snapshot(&term, &[], None));
+}
+
+#[tokio::test]
 async fn app_toolbar() {
     let mut fx = stable_app("toolbar");
     let app = &mut fx.app;
