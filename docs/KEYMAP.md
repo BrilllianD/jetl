@@ -432,6 +432,7 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Alt+X` | `find.toggle_regex` | Find: regex |
 | `Alt+R` | `find.toggle_replace` | Find: show or hide the replacement |
 | `Alt+A` | `find.replace_all` | Find: replace all results |
+| `Alt+Delete` | `find.toggle_exclude` | Find: exclude or include the selected result |
 | `Esc` | `find.escape` | Find: back to the editor |
 
 ## hierarchy

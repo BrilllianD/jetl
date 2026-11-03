@@ -1,0 +1,36 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &marks, Some(bottom))"
+---
+80x24 cursor=(19,10)
+00  ≣ ┌ Project: root ───────────────┐│
+01    │                              ││
+02  ⌂ │                              ││
+03  ◫ │                              ││               No files open.
+04  ⊢ │                              ││       Alt+1 opens the Project view;
+05    │                              ││         Ctrl+Shift+N finds a file.
+06    │                              ││
+07    └──────────────────────────────┘│
+08    ─────────────────────────────────────────────────────────────────────────────
+09    ┌ Find ─────────────────────────────────────────────────────────────────────┐
+10    │ Find:    parse                                              Cc   W   .*   │
+11    │ Replace: read                                               Replace all   │
+12    │ notes.txt    1                                                            │
+13  ⋔ │      2  parseread later                                                   │
+14  ✎ │ parse.log  src/  2                                                        │
+15  ✓ │      2  parse(tokens)                                                     │
+16  ⟲ │      3  .map(|t| parseread_one(t))                                        │
+17  ⚑ │                                                                           │
+18  ⎇ │                                                                           │
+19  ❯ │                                                                           │
+20  ⚠ │                                                                           │
+21  ► │                                                                           │
+22  ⌕ └───────────────────────────────────────────────────────────────────────────┘
+23
+-- marks: L=selected H=match D=old A=new X=excluded
+10                                                                 XXXX XXX XXXX
+12                   X
+13              DDDDDAAAA
+14                 XXXX  X
+15              XXXXXXXXXXXXX
+16     LLLLLLLLLLLLLLLLLLDDDDDAAAALLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL

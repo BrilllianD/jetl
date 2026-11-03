@@ -259,6 +259,32 @@ cut with `…`, `[ Replace ]` and `[ Cancel ]` are whole directly above the
 bottom border, and nothing is drawn past the box's borders. Escape closes
 it and nothing is replaced.
 
+### Scenario: replace in files preview
+
+At 120x40 and 80x24 (yman 373). Ctrl+Shift+R is a legacy key under tmux, so
+open the Find window with Alt+3:
+
+```sh
+printf 'foo one\nfoo two\nfoo three\n' > $T/n.txt
+# fresh session as above, then:
+/tmp/tm.sh send-keys -t jetl M-3; /tmp/tm.sh send-keys -t jetl -l 'foo'; sleep 1
+/tmp/tm.sh send-keys -t jetl M-r; /tmp/tm.sh send-keys -t jetl -l 'bar'; sleep 0.5
+/tmp/tm.sh capture-pane -p -t jetl       # every result reads "foobar one" style
+/tmp/tm.sh send-keys -t jetl Tab Down M-DC Down M-DC   # Alt+Delete on results 2 and 3
+/tmp/tm.sh capture-pane -p -t jetl       # status ends "; 2 excluded", those rows show no "bar"
+/tmp/tm.sh send-keys -t jetl M-a; sleep 0.5; /tmp/tm.sh send-keys -t jetl Enter; sleep 1.5
+cat $T/n.txt                             # "bar one", then "foo two" and "foo three"
+# Search again, then change the file behind the app's back:
+printf 'x\nfoo one\n' > $T/n.txt
+/tmp/tm.sh send-keys -t jetl M-a; sleep 0.5; /tmp/tm.sh send-keys -t jetl Enter; sleep 1.5
+/tmp/tm.sh capture-pane -p -t jetl | tail -2   # "Replace in files: <path>: changed since the search; search again"
+cat $T/n.txt                             # unchanged
+/tmp/tm.sh kill-server
+```
+
+Delete without Alt still deletes a character in the Find field. A file row
+excluded with Alt+Delete dims all its results.
+
 ### Scenario: column selection
 
 At 80x24 and at 120x40, with a file of tabs, wide characters and a short

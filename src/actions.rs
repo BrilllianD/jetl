@@ -462,6 +462,7 @@ pub enum FindAction {
     ToggleRegex,
     ToggleReplace,
     ReplaceAll,
+    ToggleExclude,
     Escape,
 }
 
@@ -1079,6 +1080,7 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "find.toggle_regex" => "Find: regex", Find(FindAction::ToggleRegex);
         "find.toggle_replace" => "Find: show or hide the replacement", Find(FindAction::ToggleReplace);
         "find.replace_all" => "Find: replace all results", Find(FindAction::ReplaceAll);
+        "find.toggle_exclude" => "Find: exclude or include the selected result", Find(FindAction::ToggleExclude);
         "find.escape" => "Find: back to the editor", Find(FindAction::Escape);
 
         "structure.up" => "Structure: up", Structure(StructureAction::Up);

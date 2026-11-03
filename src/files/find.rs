@@ -34,6 +34,10 @@ pub struct Hit {
     /// in it.
     pub preview: String,
     pub preview_col: usize,
+    /// The whole match, not cut at the line end.
+    pub matched: String,
+    /// Left out of Replace All (Find window, Alt+Delete).
+    pub excluded: bool,
 }
 
 /// Hits found since the previous batch.
@@ -131,7 +135,7 @@ pub fn search_text(path: &Path, bytes: &[u8], re: &Regex, limit: usize) -> Vec<H
         let col = text[line_start..m.start()].chars().count();
         let len = text[m.start()..m.end().min(line_end)].chars().count().max(1);
         let (preview, preview_col) = preview(line_text, col);
-        hits.push(Hit { path: path.to_path_buf(), line, col, len, preview, preview_col });
+        hits.push(Hit { path: path.to_path_buf(), line, col, len, preview, preview_col, matched: m.as_str().to_string(), excluded: false });
     }
     hits
 }
@@ -152,16 +156,53 @@ pub struct Replacement {
     pub new: String,
 }
 
-/// Every non-empty match of `re` in `text` and its replacement: `with`
-/// literally, or with `$1`/`${name}` expanded when `expand` (regex mode).
-pub fn replacements(text: &str, re: &Regex, with: &str, expand: bool) -> Vec<Replacement> {
-    let (mut out, mut byte, mut ch) = (Vec::new(), 0usize, 0usize);
-    for caps in re.captures_iter(text) {
-        let m = caps.get(0).expect("group 0");
-        if m.start() == m.end() {
-            continue;
+/// The replacement of each of `hits` (one file's, in `(line, col)` order),
+/// located by position: `re` runs once at each hit's start and must match
+/// exactly the text found by the search. `with` is used literally, or with
+/// `$1`/`${name}` expanded when `expand` (regex mode). `None` when any hit
+/// no longer matches where it was (the text changed since the search).
+pub fn hit_replacements(text: &str, hits: &[Hit], re: &Regex, with: &str, expand: bool) -> Option<Vec<Replacement>> {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(hits.len());
+    // Current line and its start; (byte, char) pair for incremental
+    // byte-to-char conversion; end of the previous match.
+    let (mut line, mut line_start) = (0usize, 0usize);
+    let (mut conv_byte, mut conv_char, mut prev_end) = (0usize, 0usize, 0usize);
+    let mut scanned = 0usize;
+    for hit in hits {
+        while line < hit.line {
+            let mut found = false;
+            while scanned < bytes.len() {
+                let i = scanned;
+                scanned += 1;
+                if bytes[i] == b'\n' || (bytes[i] == b'\r' && bytes.get(i + 1) != Some(&b'\n')) {
+                    line += 1;
+                    line_start = i + 1;
+                    found = true;
+                    break;
+                }
+            }
+            if !found {
+                return None;
+            }
         }
-        ch += text[byte..m.start()].chars().count();
+        if line != hit.line {
+            return None;
+        }
+        let line_end = text[line_start..].find(['\n', '\r']).map_or(text.len(), |i| line_start + i);
+        let mut byte = line_start;
+        for _ in 0..hit.col {
+            let c = text[byte..line_end].chars().next()?;
+            byte += c.len_utf8();
+        }
+        if byte < prev_end {
+            return None;
+        }
+        let caps = re.captures_at(text, byte)?;
+        let m = caps.get(0)?;
+        if m.start() != byte || m.as_str() != hit.matched {
+            return None;
+        }
         let new = if expand {
             let mut s = String::new();
             caps.expand(with, &mut s);
@@ -169,11 +210,12 @@ pub fn replacements(text: &str, re: &Regex, with: &str, expand: bool) -> Vec<Rep
         } else {
             with.to_string()
         };
-        out.push(Replacement { start: ch, old: m.as_str().to_string(), new });
-        ch += m.as_str().chars().count();
-        byte = m.end();
+        conv_char += text[conv_byte..byte].chars().count();
+        conv_byte = byte;
+        out.push(Replacement { start: conv_char, old: hit.matched.clone(), new });
+        prev_end = m.end();
     }
-    out
+    Some(out)
 }
 
 /// `text` with every replacement applied.
@@ -227,14 +269,38 @@ mod tests {
     }
 
     #[test]
-    fn replacements_literal_and_with_groups() {
+    fn hit_replacements_by_position() {
         let re = build_pattern(r"(\w+)@(\w+)", true, false, false).unwrap();
-        let text = "мы a@b, c@d";
-        let reps = replacements(text, &re, "$2@$1", true);
-        assert_eq!(reps.iter().map(|r| (r.start, r.new.as_str())).collect::<Vec<_>>(), [(3, "b@a"), (8, "d@c")]);
-        assert_eq!(replace_text(text, &reps), "мы b@a, d@c");
-        let lit = replacements(text, &re, "$2", false);
-        assert_eq!(replace_text(text, &lit), "мы $2, $2");
+        let text = "мы a@b,\r\n c@d x@y";
+        let mut hits = search_text(Path::new("f"), text.as_bytes(), &re, 10);
+        assert_eq!(hits.len(), 3);
+        hits.pop();
+        let reps = hit_replacements(text, &hits, &re, "$2@$1", true).unwrap();
+        assert_eq!(reps.iter().map(|r| (r.start, r.new.as_str())).collect::<Vec<_>>(), [(3, "b@a"), (10, "d@c")]);
+        assert_eq!(replace_text(text, &reps), "мы b@a,\r\n d@c x@y");
+        let lit = hit_replacements(text, &hits, &re, "$2", false).unwrap();
+        assert_eq!(replace_text(text, &lit), "мы $2,\r\n $2 x@y");
+    }
+
+    #[test]
+    fn hit_replacements_reject_a_changed_text() {
+        let re = build_pattern("foo", false, true, false).unwrap();
+        let text = "a\nfoo bar\nfoo";
+        let hits = search_text(Path::new("f"), text.as_bytes(), &re, 10);
+        assert!(hit_replacements(text, &hits, &re, "x", false).is_some());
+        assert!(hit_replacements("new\na\nfoo bar\nfoo", &hits, &re, "x", false).is_none(), "line inserted above");
+        assert!(hit_replacements("a\nfao bar\nfoo", &hits, &re, "x", false).is_none(), "word changed");
+        assert!(hit_replacements("a\nfoo", &hits, &re, "x", false).is_none(), "text too short");
+    }
+
+    #[test]
+    fn hit_replacements_keep_whole_word_context() {
+        let re = build_pattern("foo", false, false, true).unwrap();
+        let text = "foo foobar foo";
+        let hits = search_text(Path::new("f"), text.as_bytes(), &re, 10);
+        assert_eq!(hits.len(), 2);
+        let reps = hit_replacements(text, &hits, &re, "x", false).unwrap();
+        assert_eq!(replace_text(text, &reps), "x foobar x");
     }
 
     #[test]

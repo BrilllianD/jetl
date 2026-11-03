@@ -1730,9 +1730,39 @@ async fn find_in_files_window() {
     super::tests::run_find(app);
     app.find.replace.set_text("read");
     let term = draw_app(app, 80, 24);
-    let marks = find_marks(&app.theme);
+    let mut marks = find_marks(&app.theme);
+    marks.push(Mark::bg('D', "old", app.theme.diff_del_word_bg));
+    marks.push(Mark::bg('A', "new", app.theme.diff_add_word_bg));
     let bottom = app.layout.rects.bottom;
     assert_snapshot!("find_in_files_window", snapshot(&term, &marks, Some(bottom)));
+}
+
+#[tokio::test]
+async fn find_in_files_excluded() {
+    let mut fx = stable_app("find-in-files-excluded");
+    let app = &mut fx.app;
+    let root = app.workspace.root.clone();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("src/parse.log"), "let tokens = lex(input);\nparse(tokens)\n    .map(|t| parse_one(t))\n").unwrap();
+    std::fs::write(root.join("notes.txt"), "nothing to see\nparse later\n").unwrap();
+    app.perform(Action::Find(crate::actions::FindAction::ReplaceInFiles));
+    for c in "parse".chars() {
+        app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+    super::tests::run_find(app);
+    app.find.replace.set_text("read");
+    app.find.list.select(3);
+    app.perform(Action::Find(crate::actions::FindAction::ToggleExclude));
+    assert_eq!(app.find.excluded_count(), 1);
+    // Move off the excluded row so its dimming shows.
+    app.find.list.select(4);
+    let term = draw_app(app, 80, 24);
+    let mut marks = find_marks(&app.theme);
+    marks.push(Mark::bg('D', "old", app.theme.diff_del_word_bg));
+    marks.push(Mark::bg('A', "new", app.theme.diff_add_word_bg));
+    marks.push(Mark::style('X', "excluded", Style::default().fg(app.theme.dim.fg.unwrap())));
+    let bottom = app.layout.rects.bottom;
+    assert_snapshot!("find_in_files_excluded", snapshot(&term, &marks, Some(bottom)));
 }
 
 #[tokio::test]

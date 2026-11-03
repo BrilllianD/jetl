@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Tool strip: drag a button to reorder it, or onto the other strip (or the other group) to move its window there; the drop target is highlighted (theme key `strip_drop`). The button's right-click menu has Move Button Up and Move Button Down. The order is saved in the session.
 - Restore Default Layout (Shift+F12, `tool_window.restore_default_layout`; View menu and the tool strip button's right-click menu): every tool window goes back to its default side, the strip buttons to their default order, and a maximized window is restored; shown windows stay shown and panel sizes are kept.
 - Tool windows can be unpinned (strip button right-click Unpin, View | Pin or Unpin Tool Window, `tool_window.toggle_pinned`): an unpinned window hides when focus moves to the editor or another window and on Esc; palettes, dialogs and menus over it keep it. The mode is saved in the session; Restore Default Layout pins every window.
+- Replace in files previews each change in the Find window (the matched text and its replacement side by side on every result row) and Alt+Delete (`find.toggle_exclude`) excludes or includes the selected result, or all results of a file from its header; Replace All changes only the included results at their exact positions and leaves a file that changed since the search untouched, with an error.
 
 ### Changed
 

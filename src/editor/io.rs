@@ -103,17 +103,25 @@ impl Editor {
         true
     }
 
-    /// Replace every match of `re` in tab `i` as one undoable edit; returns
-    /// the number replaced. The tab stays modified (not saved).
-    pub fn replace_in_buffer(&mut self, i: usize, re: &regex::Regex, with: &str, expand: bool) -> usize {
-        let Some(b) = self.buffers.get_mut(i) else { return 0 };
-        let reps = crate::files::find::replacements(&b.text(), re, with, expand);
+    /// Replace exactly `hits` in tab `i` as one undoable edit; returns the
+    /// number replaced, `None` (nothing changed) when the buffer no longer
+    /// matches them. The tab stays modified (not saved).
+    pub fn replace_hits(
+        &mut self,
+        i: usize,
+        hits: &[crate::files::find::Hit],
+        re: &regex::Regex,
+        with: &str,
+        expand: bool,
+    ) -> Option<usize> {
+        let b = self.buffers.get_mut(i)?;
+        let reps = crate::files::find::hit_replacements(&b.text(), hits, re, with, expand)?;
         let n = reps.len();
         // Last to first so earlier offsets stay valid.
         let changes: Vec<Change> = reps.into_iter().rev().map(|r| Change::replace(r.start, r.old, r.new)).collect();
         let caret = b.view.sel().head;
         b.apply_then(changes, TxKind::Other, |rope| Selection::point(caret.min(rope.len_chars())));
-        n
+        Some(n)
     }
 
     /// Overwrite / Reload / Cancel for tab `i`, whose file changed on disk

@@ -62,6 +62,8 @@ pub struct FindPanel {
     pub whole_word: bool,
     pub regex: bool,
     hits: Vec<Hit>,
+    /// The running search's pattern, for the inline replacement preview.
+    re: Option<Regex>,
     rows: Vec<Row>,
     pub list: ListState,
     /// Seq of the newest search; a running search stops when it moves on.
@@ -94,6 +96,7 @@ impl FindPanel {
             whole_word: false,
             regex: false,
             hits: Vec::new(),
+            re: None,
             rows: Vec::new(),
             list: ListState::default(),
             seq: 0,
@@ -126,6 +129,7 @@ impl FindPanel {
         self.seq += 1;
         self.cancel.store(self.seq, Ordering::Relaxed);
         self.hits.clear();
+        self.re = None;
         self.rows.clear();
         self.list = ListState::default();
         self.searching = false;
@@ -151,6 +155,7 @@ impl FindPanel {
                 return;
             }
         };
+        self.re = Some(re.clone());
         self.searching = true;
         self.capped = false;
         self.files_searched = 0;
@@ -214,6 +219,52 @@ impl FindPanel {
         self.rows.iter().filter_map(|r| if let Row::File { first, .. } = r { Some(self.hits[*first].path.clone()) } else { None }).collect()
     }
 
+    /// Flip the selected result between included and excluded; on a file
+    /// header, all of that file's results (all excluded already: include
+    /// them, otherwise exclude them).
+    pub fn toggle_exclude(&mut self) {
+        match self.rows.get(self.list.selected).copied() {
+            Some(Row::Hit(i)) => self.hits[i].excluded = !self.hits[i].excluded,
+            Some(Row::File { first, count }) => {
+                let all = self.hits[first..first + count].iter().all(|h| h.excluded);
+                self.hits[first..first + count].iter_mut().for_each(|h| h.excluded = !all);
+            }
+            None => {}
+        }
+    }
+
+    pub fn included_count(&self) -> usize {
+        self.hits.iter().filter(|h| !h.excluded).count()
+    }
+
+    pub fn excluded_count(&self) -> usize {
+        self.hits.iter().filter(|h| h.excluded).count()
+    }
+
+    /// The hits Replace All changes, grouped by file in result order; files
+    /// with none left out.
+    pub fn included_by_file(&self) -> Vec<(PathBuf, Vec<Hit>)> {
+        self.rows
+            .iter()
+            .filter_map(|r| {
+                let Row::File { first, count } = r else { return None };
+                let hits: Vec<Hit> = self.hits[*first..*first + *count].iter().filter(|h| !h.excluded).cloned().collect();
+                (!hits.is_empty()).then(|| (self.hits[*first].path.clone(), hits))
+            })
+            .collect()
+    }
+
+    /// What Replace All would put in place of `hit`, for display.
+    fn replacement_of(&self, hit: &Hit) -> String {
+        let with = &self.replace.text;
+        let mut s = String::new();
+        match self.re.as_ref().filter(|_| self.regex).and_then(|re| re.captures(&hit.matched)) {
+            Some(caps) => caps.expand(with, &mut s),
+            None => s.push_str(with),
+        }
+        s.chars().map(|c| if matches!(c, '\n' | '\r' | '\t') { ' ' } else { c }).collect()
+    }
+
     fn selected_hit(&self) -> Option<&Hit> {
         match self.rows.get(self.list.selected)? {
             Row::Hit(i) => self.hits.get(*i),
@@ -266,7 +317,7 @@ impl FindPanel {
             KeyCode::Left | KeyCode::Right if ctrl && shift => return false,
             KeyCode::Backspace if ctrl || alt => input.delete_word_back(),
             KeyCode::Backspace => input.backspace(),
-            KeyCode::Delete => input.delete(),
+            KeyCode::Delete if !alt => input.delete(),
             KeyCode::Left => input.left(),
             KeyCode::Right => input.right(),
             KeyCode::Home => input.home(),
@@ -307,6 +358,7 @@ impl FindPanel {
                 self.field = if self.show_replace { Field::Replace } else { Field::Query };
             }
             FindAction::ReplaceAll => self.ask_replace_all(cx),
+            FindAction::ToggleExclude => self.toggle_exclude(),
             FindAction::Escape => cx.focus(PanelId::Editor),
             // Handled by the app (they need the editor and the layout).
             FindAction::InFiles | FindAction::ReplaceInFiles | FindAction::NextResult | FindAction::PrevResult => return false,
@@ -334,11 +386,15 @@ impl FindPanel {
             self.field = Field::Replace;
             return;
         }
-        let files = self.hit_files().len();
+        let n = self.included_count();
+        if n == 0 {
+            cx.notify(Level::Info, "Every result is excluded; nothing to replace");
+            return;
+        }
+        let files = self.included_by_file().len();
         let msg = format!(
-            "Replace {} match{} in {files} file{} with \"{}\"?\nOpen files change in the editor (undoable); others are written to disk.",
-            self.hits.len(),
-            if self.hits.len() == 1 { "" } else { "es" },
+            "Replace {n} match{} in {files} file{} with \"{}\"?\nOpen files change in the editor (undoable); others are written to disk.",
+            if n == 1 { "" } else { "es" },
             if files == 1 { "" } else { "s" },
             self.replace.text
         );
@@ -400,6 +456,10 @@ impl FindPanel {
             if n == 1 { "" } else { "es" },
             if files == 1 { "" } else { "s" }
         );
+        let found = match self.excluded_count() {
+            0 => found,
+            k => format!("{found}; {k} excluded"),
+        };
         if self.searching {
             (format!("Searching… {found} ({} files)", self.files_searched), None)
         } else if n == 0 {
@@ -475,6 +535,7 @@ impl FindPanel {
         let lr = Rect::new(inner.x, inner.y + header_h, inner.width, inner.height - header_h);
         self.list_rect = lr;
         self.list.set_viewport(lr.height as usize);
+        let dimmed = |s: Style| s.fg(theme.dim.fg.unwrap_or(theme.fg));
         let buf = frame.buffer_mut();
         for (vi, i) in self.list.visible().enumerate() {
             let y = lr.y + vi as u16;
@@ -490,10 +551,13 @@ impl FindPanel {
             match self.rows[i] {
                 Row::File { first, count } => {
                     let row = Rect::new(lr.x, y, lr.width, 1);
-                    file_rows::file_header(buf, row, &self.root, &self.hits[first].path, &count.to_string(), base, theme, self.file_icons);
+                    let all_off = self.hits[first..first + count].iter().all(|h| h.excluded);
+                    let head = if all_off { dimmed(base) } else { base };
+                    file_rows::file_header(buf, row, &self.root, &self.hits[first].path, &count.to_string(), head, theme, self.file_icons);
                 }
                 Row::Hit(h) => {
                     let hit = &self.hits[h];
+                    let base = if hit.excluded { dimmed(base) } else { base };
                     let num = format!("{:>6}  ", hit.line + 1);
                     let mut x = lr.x + 1;
                     buf.set_stringn(x, y, &num, lr.right().saturating_sub(x) as usize, base.patch(theme.line_number));
@@ -502,8 +566,18 @@ impl FindPanel {
                     let pre: String = hit.preview.chars().take(hit.preview_col).collect();
                     let mid: String = hit.preview.chars().skip(hit.preview_col).take(hit.len).collect();
                     let post: String = hit.preview.chars().skip(hit.preview_col + hit.len).collect();
-                    let hl = base.bg(theme.search_match_bg);
-                    for (text, style) in [(pre.trim_start(), base), (mid.as_str(), hl), (post.as_str(), base)] {
+                    let preview = self.show_replace && !self.replace.text.is_empty() && !hit.excluded;
+                    let new = if preview { self.replacement_of(hit) } else { String::new() };
+                    let (mid_style, new_style) = if preview {
+                        (base.bg(theme.diff_del_word_bg), base.bg(theme.diff_add_word_bg))
+                    } else if hit.excluded {
+                        (base, base)
+                    } else {
+                        (base.bg(theme.search_match_bg), base)
+                    };
+                    for (text, style) in
+                        [(pre.trim_start(), base), (mid.as_str(), mid_style), (new.as_str(), new_style), (post.as_str(), base)]
+                    {
                         if x >= lr.right() {
                             break;
                         }
@@ -512,5 +586,76 @@ impl FindPanel {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn hit(path: &str, line: usize, matched: &str) -> Hit {
+        Hit {
+            path: path.into(),
+            line,
+            col: 0,
+            len: matched.chars().count(),
+            preview: matched.into(),
+            preview_col: 0,
+            matched: matched.into(),
+            excluded: false,
+        }
+    }
+
+    fn panel() -> FindPanel {
+        let mut p = FindPanel::new();
+        p.on_batch(Batch {
+            seq: 0,
+            hits: vec![hit("a", 0, "x1"), hit("a", 1, "x2"), hit("b", 0, "x3")],
+            files_searched: 2,
+            done: true,
+            capped: false,
+        });
+        p
+    }
+
+    #[test]
+    fn toggling_a_hit_and_a_file_row() {
+        let mut p = panel();
+        // Rows: 0 a, 1 a:0, 2 a:1, 3 b, 4 b:0.
+        p.list.select(2);
+        p.toggle_exclude();
+        assert_eq!((p.included_count(), p.excluded_count()), (2, 1));
+        p.query.set_text("x");
+        assert_eq!(p.status().0, "3 matches in 2 files; 1 excluded");
+        let by_file = p.included_by_file();
+        assert_eq!(by_file.iter().map(|(f, h)| (f.to_str().unwrap(), h.len())).collect::<Vec<_>>(), [("a", 1), ("b", 1)]);
+        p.list.select(0);
+        p.toggle_exclude();
+        assert_eq!(
+            p.included_by_file().iter().map(|(f, _)| f.to_str().unwrap()).collect::<Vec<_>>(),
+            ["b"],
+            "file row excludes the rest of a"
+        );
+        p.toggle_exclude();
+        assert_eq!(p.included_count(), 3, "all excluded in the file: include them all");
+        p.list.select(3);
+        p.toggle_exclude();
+        p.list.select(0);
+        p.toggle_exclude();
+        assert_eq!(p.included_count(), 0, "a file row excludes");
+        p.list.select(0);
+        p.toggle_exclude();
+        assert_eq!(p.included_count(), 2);
+    }
+
+    #[test]
+    fn replacement_preview_literal_and_regex() {
+        let mut p = panel();
+        p.replace.set_text("$1!");
+        let h = hit("a", 0, "ab");
+        assert_eq!(p.replacement_of(&h), "$1!", "literal");
+        p.regex = true;
+        p.re = Some(Regex::new("(a)b").unwrap());
+        assert_eq!(p.replacement_of(&h), "a!");
     }
 }

@@ -1,9 +1,14 @@
-//! Replace in files: open tabs change through the editor (undoable), the
-//! other files are rewritten off the main thread.
+//! Replace in files: only the included hits, located by position. Open tabs
+//! change through the editor (undoable), the other files are rewritten off
+//! the main thread; a file changed since the search is left alone.
 
 use super::{App, Ctx};
 use crate::event::{AppMsg, Level};
-use crate::files::find::{replace_text, replacements};
+use crate::files::find::{hit_replacements, replace_text};
+
+fn stale(path: &std::path::Path) -> String {
+    format!("{}: changed since the search; search again", path.display())
+}
 
 impl App {
     pub(super) fn replace_in_files(&mut self) {
@@ -12,21 +17,22 @@ impl App {
             Err(e) => return self.notify(Level::Error, format!("Replace in files: {e}")),
         };
         let (with, expand) = (self.find.replace.text.clone(), self.find.regex);
-        let (mut files, mut matches, mut disk) = (0usize, 0usize, Vec::new());
-        for path in self.find.hit_files() {
+        let (mut files, mut matches, mut disk, mut errors) = (0usize, 0usize, Vec::new(), Vec::new());
+        for (path, hits) in self.find.included_by_file() {
             match self.editor.index_of(&path) {
-                Some(i) => {
-                    let n = self.editor.replace_in_buffer(i, &re, &with, expand);
-                    files += usize::from(n > 0);
-                    matches += n;
-                }
-                None => disk.push(path),
+                Some(i) => match self.editor.replace_hits(i, &hits, &re, &with, expand) {
+                    Some(n) => {
+                        files += usize::from(n > 0);
+                        matches += n;
+                    }
+                    None => errors.push(stale(&path)),
+                },
+                None => disk.push((path, hits)),
             }
         }
         let (generation, tx) = (self.workspace.generation, self.bus_tx.clone());
         tokio::task::spawn_blocking(move || {
-            let mut errors = Vec::new();
-            for path in disk {
+            for (path, hits) in disk {
                 // Only text the search would have matched: UTF-8, no NUL.
                 let text = match std::fs::read(&path).map(String::from_utf8) {
                     Ok(Ok(t)) if !t.as_bytes()[..t.len().min(8192)].contains(&0) => t,
@@ -36,7 +42,10 @@ impl App {
                         continue;
                     }
                 };
-                let reps = replacements(&text, &re, &with, expand);
+                let Some(reps) = hit_replacements(&text, &hits, &re, &with, expand) else {
+                    errors.push(stale(&path));
+                    continue;
+                };
                 if reps.is_empty() {
                     continue;
                 }

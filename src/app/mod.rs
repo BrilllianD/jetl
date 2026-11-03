@@ -2369,6 +2369,11 @@ pub(crate) mod tests {
         // Replace: the open a.txt changes in the editor, src/b.rs on disk.
         app.find.replace.set_text("bar");
         app.find.show_replace = true;
+        // Alt+Delete excludes the selected result (`let foo`) from Replace All.
+        app.focus.set(PanelId::Find);
+        assert_eq!(app.find.list.selected, 3);
+        app.handle_key(KeyEvent::new(KeyCode::Delete, crossterm::event::KeyModifiers::ALT));
+        assert_eq!((app.find.included_count(), app.find.excluded_count()), (3, 1));
         app.finish_dialog(DialogId::ReplaceInFiles, DialogResult::Button(0));
         let a_buf = &app.editor.buffers[app.editor.index_of(&a).unwrap()];
         assert_eq!(a_buf.text(), "no\nbar here\n");
@@ -2387,8 +2392,46 @@ pub(crate) mod tests {
         .await
         .unwrap();
         app.handle_msg(msg);
-        assert_eq!(std::fs::read_to_string(&b_path).unwrap(), "let bar = 1;\nbar(bar);\n");
-        assert!(app.notifications.iter().any(|n| n.text == "Replaced 4 matches in 2 files"), "{:?}", app.notifications);
+        assert_eq!(std::fs::read_to_string(&b_path).unwrap(), "let foo = 1;\nbar(bar);\n");
+        assert!(app.notifications.iter().any(|n| n.text == "Replaced 3 matches in 2 files"), "{:?}", app.notifications);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn replace_in_files_skips_a_file_changed_since_the_search() {
+        let (mut app, dir) = test_app("replace-stale");
+        let root = app.workspace.root.clone();
+        let (p1, p2, p3) = (root.join("one.txt"), root.join("two.txt"), root.join("three.txt"));
+        std::fs::write(&p1, "foo one\n").unwrap();
+        std::fs::write(&p2, "foo two\n").unwrap();
+        let open = load(&mut app, "three.txt", "foo three\n");
+        assert_eq!(open, p3);
+        std::fs::write(&p3, "foo three\n").unwrap();
+        app.perform(Action::Find(FindAction::ReplaceInFiles));
+        for c in "foo".chars() {
+            app.handle_key(KeyEvent::new(KeyCode::Char(c), crossterm::event::KeyModifiers::NONE));
+        }
+        run_find(&mut app);
+        assert_eq!(app.find.hit_count(), 3);
+        // Two files change after the search: one on disk, one open buffer.
+        std::fs::write(&p2, "new line\nfoo two\n").unwrap();
+        let i = app.editor.index_of(&p3).unwrap();
+        app.editor.buffers[i].apply(
+            vec![crate::editor::undo::Change::insert(0, "xx\n")],
+            crate::editor::selection::Selection::point(0),
+            crate::editor::undo::TxKind::Other,
+        );
+        app.find.replace.set_text("bar");
+        app.find.show_replace = true;
+        app.finish_dialog(DialogId::ReplaceInFiles, DialogResult::Button(0));
+        handle_next(&mut app, |m| matches!(m, AppMsg::ReplaceDone { .. })).await;
+        assert_eq!(std::fs::read_to_string(&p1).unwrap(), "bar one\n");
+        assert_eq!(std::fs::read_to_string(&p2).unwrap(), "new line\nfoo two\n", "untouched");
+        assert_eq!(app.editor.buffers[i].text(), "xx\nfoo three\n", "untouched");
+        for p in [&p2, &p3] {
+            let want = format!("Replace in files: {}: changed since the search; search again", p.display());
+            assert!(app.notifications.iter().any(|n| n.text == want), "{want}: {:?}", app.notifications);
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

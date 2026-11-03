@@ -376,6 +376,7 @@
 "alt-x" = "find.toggle_regex"
 "alt-r" = "find.toggle_replace"
 "alt-a" = "find.replace_all"
+"alt-delete" = "find.toggle_exclude"
 "esc" = "find.escape"
 
 [tree]
