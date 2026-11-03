@@ -2,6 +2,8 @@ pub mod complete;
 pub mod find;
 pub mod find_panel;
 pub mod ops;
+#[cfg(feature = "structural")]
+pub mod structural;
 pub mod todo;
 pub mod tree;
 pub mod walk;

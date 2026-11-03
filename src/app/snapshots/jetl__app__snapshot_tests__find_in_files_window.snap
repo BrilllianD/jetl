@@ -13,8 +13,8 @@ expression: "snapshot(&term, &marks, Some(bottom))"
 07    └──────────────────────────────┘│
 08    ─────────────────────────────────────────────────────────────────────────────
 09    ┌ Find ─────────────────────────────────────────────────────────────────────┐
-10    │ Find:    parse                                              Cc   W   .*   │
-11    │ Replace: read                                               Replace all   │
+10    │ Find:    parse                                        Cc   W   .*   AST   │
+11    │ Replace: read                                         Replace all         │
 12    │ notes.txt    1                                                            │
 13  ⋔ │      2  parseread later                                                   │
 14  ✎ │ parse.log  src/  2                                                        │

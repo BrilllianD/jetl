@@ -2337,12 +2337,11 @@ pub(crate) mod tests {
 
     /// Run the Find window's current search on this thread and deliver it.
     pub(crate) fn run_find(app: &mut App) {
-        let re = app.find.pattern().unwrap();
         let search = crate::files::find::Search {
             root: app.workspace.root.clone(),
             show_hidden: false,
             show_ignored: false,
-            re,
+            query: app.find.search_query().unwrap(),
             seq: app.find.current_seq(),
             cancel: app.find.cancel_handle(),
         };
@@ -2409,6 +2408,38 @@ pub(crate) mod tests {
         app.handle_msg(msg);
         assert_eq!(std::fs::read_to_string(&b_path).unwrap(), "let foo = 1;\nbar(bar);\n");
         assert!(app.notifications.iter().any(|n| n.text == "Replaced 3 matches in 2 files"), "{:?}", app.notifications);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(all(feature = "structural", feature = "lang-rust"))]
+    #[tokio::test]
+    async fn structural_find_matches_code_and_refuses_text_options() {
+        let (mut app, dir) = test_app("find-structural");
+        let root = app.workspace.root.clone();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/lib.rs"), "fn f() {\n    let a = p(i).unwrap();\n    a.unwrap_or(0);\n}\n").unwrap();
+        std::fs::write(root.join("notes.txt"), "x.unwrap()\n").unwrap();
+        let none = crossterm::event::KeyModifiers::NONE;
+        app.perform(Action::Find(FindAction::InFiles));
+        app.perform(Action::Find(FindAction::ToggleStructural));
+        assert!(app.find.structural);
+        for c in "$A.unwrap()".chars() {
+            app.handle_key(KeyEvent::new(KeyCode::Char(c), none));
+        }
+        run_find(&mut app);
+        assert_eq!(app.find.hit_count(), 1);
+        assert_eq!(app.find.hit_files(), [root.join("src/lib.rs")]);
+        app.handle_key(KeyEvent::new(KeyCode::Char('x'), crossterm::event::KeyModifiers::ALT));
+        assert!(!app.find.regex);
+        let toast = |app: &App, text: &str| app.notifications.iter().any(|n| n.level == Level::Info && n.text == text);
+        assert!(toast(&app, "Case, whole word and regex do not apply to a structural search"), "{:?}", app.notifications);
+        app.perform(Action::Find(FindAction::ReplaceAll));
+        assert!(toast(&app, "Structural search cannot replace; Alt+T turns it off"));
+        assert!(app.dialog.is_none());
+        app.perform(Action::Find(FindAction::ReplaceInFiles));
+        assert!(!app.find.structural && app.find.show_replace);
+        app.handle_key(KeyEvent::new(KeyCode::Char('t'), crossterm::event::KeyModifiers::ALT));
+        assert!(app.find.structural, "Alt+T is bound in the Find context");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

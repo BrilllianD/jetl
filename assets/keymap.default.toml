@@ -374,6 +374,7 @@
 "alt-c" = "find.toggle_case"
 "alt-w" = "find.toggle_word"
 "alt-x" = "find.toggle_regex"
+"alt-t" = "find.toggle_structural"
 "alt-r" = "find.toggle_replace"
 "alt-a" = "find.replace_all"
 "alt-delete" = "find.toggle_exclude"

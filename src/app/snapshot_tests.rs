@@ -1713,6 +1713,8 @@ fn find_marks(theme: &Theme) -> Vec<Mark> {
     vec![Mark::bg('L', "selected", theme.list_selected.bg.unwrap()), Mark::bg('H', "match", theme.search_match_bg)]
 }
 
+// The Find header has the AST toggle only with the "structural" feature.
+#[cfg(feature = "structural")]
 #[tokio::test]
 async fn find_in_files_window() {
     let mut fx = stable_app("find-in-files");
@@ -1737,6 +1739,8 @@ async fn find_in_files_window() {
     assert_snapshot!("find_in_files_window", snapshot(&term, &marks, Some(bottom)));
 }
 
+// The Find header has the AST toggle only with the "structural" feature.
+#[cfg(feature = "structural")]
 #[tokio::test]
 async fn find_in_files_excluded() {
     let mut fx = stable_app("find-in-files-excluded");
@@ -1763,6 +1767,33 @@ async fn find_in_files_excluded() {
     marks.push(Mark::style('X', "excluded", Style::default().fg(app.theme.dim.fg.unwrap())));
     let bottom = app.layout.rects.bottom;
     assert_snapshot!("find_in_files_excluded", snapshot(&term, &marks, Some(bottom)));
+}
+
+#[cfg(all(feature = "structural", feature = "lang-rust"))]
+#[tokio::test]
+async fn find_in_files_structural() {
+    let mut fx = stable_app("find-structural");
+    let app = &mut fx.app;
+    let root = app.workspace.root.clone();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(
+        root.join("src/load.rs"),
+        "fn load() -> u32 {\n    let a = parse(input).unwrap();\n    let b = a.checked_add(1)\n        .unwrap();\n    b.unwrap_or(0)\n}\n",
+    )
+    .unwrap();
+    std::fs::write(root.join("notes.txt"), "x.unwrap()\n").unwrap();
+    app.perform(Action::Find(crate::actions::FindAction::InFiles));
+    app.perform(Action::Find(crate::actions::FindAction::ToggleStructural));
+    for c in "$A.unwrap()".chars() {
+        app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+    super::tests::run_find(app);
+    assert_eq!(app.find.hit_count(), 2);
+    let term = draw_app(app, 120, 24);
+    let mut marks = find_marks(&app.theme);
+    marks.push(Mark::style('T', "active toggle", app.theme.strip_item_active));
+    let bottom = app.layout.rects.bottom;
+    assert_snapshot!("find_in_files_structural", snapshot(&term, &marks, Some(bottom)));
 }
 
 #[tokio::test]
@@ -3609,6 +3640,8 @@ async fn app_strip_drag_marker() {
     assert_snapshot!("app_strip_drag_marker", snapshot(&term, &marks, None));
 }
 
+// The Find header has the AST toggle only with the "structural" feature.
+#[cfg(feature = "structural")]
 #[tokio::test]
 async fn app_split_docks() {
     use crate::ui::focus::{Dock, Side};

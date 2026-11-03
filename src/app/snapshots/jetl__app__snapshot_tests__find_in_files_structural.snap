@@ -1,0 +1,33 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &marks, Some(bottom))"
+---
+120x24 cursor=(25,10)
+00  ≣ ┌ Project: root ───────────────┐│
+01    │                              ││
+02  ⌂ │                              ││
+03  ◫ │                              ││
+04  ⊢ │                              ││      No files open. Alt+1 opens the Project view; Ctrl+Shift+N finds a file.
+05    │                              ││
+06    │                              ││
+07    └──────────────────────────────┘│
+08    ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+09    ┌ Find ─────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+10    │ Find:    $A.unwrap()                                                   Cc   W   .*   AST   2 matches in 1 file    │
+11    │ load.rs  src/  2                                                                                                  │
+12    │      2  let a = parse(input).unwrap();                                                                            │
+13  ⋔ │      3  let b = a.checked_add(1)                                                                                  │
+14  ✎ │                                                                                                                   │
+15  ✓ │                                                                                                                   │
+16  ⟲ │                                                                                                                   │
+17  ⚑ │                                                                                                                   │
+18  ⎇ │                                                                                                                   │
+19  ❯ │                                                                                                                   │
+20  ⚠ │                                                                                                                   │
+21  ► │                                                                                                                   │
+22  ⌕ └───────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+23
+-- marks: L=selected H=match T=active toggle
+10                                                                                          TTTTT
+12     LLLLLLLLLLLLLLLLLHHHHHHHHHHHHHHHHHHHHHLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL
+13                      HHHHHHHHHHHHHHHH

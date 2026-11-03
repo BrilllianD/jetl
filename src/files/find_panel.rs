@@ -1,7 +1,8 @@
 //! Find tool window (bottom, Alt+3): project-wide search with a query and
 //! a replacement field, case/word/regex toggles, and results grouped by
 //! file. Typing searches live; Up/Down move through the results, Enter
-//! opens one.
+//! opens one. A structural toggle (Alt+T, feature `structural`) turns the
+//! query into an ast-grep code pattern.
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -21,7 +22,7 @@ use crate::config::FileIcons;
 use crate::config::theme::Theme;
 use crate::editor::search::build_pattern;
 use crate::event::{AppMsg, Effect, Level, Mouse};
-use crate::files::find::{Batch, Hit, MAX_HITS, Search};
+use crate::files::find::{Batch, Hit, MAX_HITS, Query, Search};
 use crate::ui::dialog::{Dialog, DialogId};
 use crate::ui::focus::PanelId;
 use crate::ui::tool_window_block;
@@ -49,8 +50,15 @@ enum Btn {
     Case,
     Word,
     Regex,
+    Structural,
     ReplaceAll,
 }
+
+/// Columns the ` AST ` button takes in the header (gap included).
+const STRUCTURAL_W: u16 = if cfg!(feature = "structural") { 6 } else { 0 };
+
+const NOT_STRUCTURAL: &str = "Case, whole word and regex do not apply to a structural search";
+const NO_STRUCTURAL_REPLACE: &str = "Structural search cannot replace; Alt+T turns it off";
 
 pub struct FindPanel {
     /// `ui.file_icons`, set by `App::sync_file_icons`.
@@ -62,6 +70,8 @@ pub struct FindPanel {
     pub case_sensitive: bool,
     pub whole_word: bool,
     pub regex: bool,
+    /// The query is an ast-grep code pattern (feature `structural`).
+    pub structural: bool,
     hits: Vec<Hit>,
     /// The running search's pattern, for the inline replacement preview.
     re: Option<Regex>,
@@ -100,6 +110,7 @@ impl FindPanel {
             case_sensitive: false,
             whole_word: false,
             regex: false,
+            structural: false,
             hits: Vec::new(),
             re: None,
             rows: Vec::new(),
@@ -122,10 +133,11 @@ impl FindPanel {
     pub fn open(&mut self, query: Option<&str>, replace: bool, cx: &mut Ctx) {
         self.show_replace |= replace;
         self.field = Field::Query;
+        let was_structural = replace && std::mem::take(&mut self.structural);
         if let Some(q) = query.filter(|q| !q.is_empty() && *q != self.query.text) {
             self.query.set_text(q);
             self.search(cx);
-        } else if self.hits.is_empty() && !self.query.text.is_empty() {
+        } else if was_structural || (self.hits.is_empty() && !self.query.text.is_empty()) {
             self.search(cx);
         }
     }
@@ -154,6 +166,7 @@ impl FindPanel {
         self.case_sensitive = true;
         self.whole_word = true;
         self.regex = false;
+        self.structural = false;
         self.search(cx);
         // After `search`: it calls `reset`, which drops the set. Batches arrive later.
         self.keep = Some(keep);
@@ -161,6 +174,17 @@ impl FindPanel {
 
     pub fn pattern(&self) -> Result<Regex, String> {
         build_pattern(&self.query.text, self.regex, self.case_sensitive, self.whole_word)
+    }
+
+    /// What to search for: the pattern source in structural mode, else the
+    /// regex built from the query and options.
+    pub fn search_query(&self) -> Result<Query, String> {
+        if self.structural { Ok(Query::Structural(self.query.text.clone())) } else { self.pattern().map(Query::Regex) }
+    }
+
+    /// Whether the replace row is available.
+    fn replace_shown(&self) -> bool {
+        self.show_replace && !self.structural
     }
 
     /// Start a new search with the current query and options, cancelling
@@ -171,14 +195,17 @@ impl FindPanel {
         if self.query.text.is_empty() {
             return;
         }
-        let re = match self.pattern() {
-            Ok(re) => re,
+        let query = match self.search_query() {
+            Ok(q) => q,
             Err(e) => {
                 self.error = Some(e.lines().last().unwrap_or("invalid pattern").trim().to_string());
                 return;
             }
         };
-        self.re = Some(re.clone());
+        self.re = match &query {
+            Query::Regex(re) => Some(re.clone()),
+            Query::Structural(_) => None,
+        };
         self.searching = true;
         self.capped = false;
         self.files_searched = 0;
@@ -186,7 +213,7 @@ impl FindPanel {
             root: self.root.clone(),
             show_hidden: cx.config.files.show_hidden,
             show_ignored: cx.config.files.show_ignored,
-            re,
+            query,
             seq: self.seq,
             cancel: self.cancel.clone(),
         };
@@ -374,11 +401,13 @@ impl FindPanel {
             FindAction::PageDown => self.list.down(page),
             FindAction::Open => self.open_selected(cx),
             FindAction::NextField => {
-                self.field = if self.field == Field::Query && self.show_replace { Field::Replace } else { Field::Query };
+                self.field = if self.field == Field::Query && self.replace_shown() { Field::Replace } else { Field::Query };
             }
             FindAction::ToggleCase => self.toggle(|p| &mut p.case_sensitive, cx),
             FindAction::ToggleWord => self.toggle(|p| &mut p.whole_word, cx),
             FindAction::ToggleRegex => self.toggle(|p| &mut p.regex, cx),
+            FindAction::ToggleStructural => self.toggle_structural(cx),
+            FindAction::ToggleReplace if self.structural => cx.notify(Level::Info, NO_STRUCTURAL_REPLACE),
             FindAction::ToggleReplace => {
                 self.show_replace = !self.show_replace;
                 self.field = if self.show_replace { Field::Replace } else { Field::Query };
@@ -392,13 +421,31 @@ impl FindPanel {
         true
     }
 
+    fn toggle_structural(&mut self, cx: &mut Ctx) {
+        if !cfg!(feature = "structural") {
+            cx.notify(Level::Info, "Structural search is not in this build (cargo feature \"structural\")");
+            return;
+        }
+        self.structural = !self.structural;
+        self.field = Field::Query;
+        self.search(cx);
+    }
+
     fn toggle(&mut self, flag: impl FnOnce(&mut Self) -> &mut bool, cx: &mut Ctx) {
+        if self.structural {
+            cx.notify(Level::Info, NOT_STRUCTURAL);
+            return;
+        }
         let f = flag(self);
         *f = !*f;
         self.search(cx);
     }
 
     fn ask_replace_all(&mut self, cx: &mut Ctx) {
+        if self.structural {
+            cx.notify(Level::Info, NO_STRUCTURAL_REPLACE);
+            return;
+        }
         if self.searching {
             cx.notify(Level::Info, "Still searching; replace when the search finishes");
             return;
@@ -444,6 +491,7 @@ impl FindPanel {
                         Btn::Case => self.toggle(|p| &mut p.case_sensitive, cx),
                         Btn::Word => self.toggle(|p| &mut p.whole_word, cx),
                         Btn::Regex => self.toggle(|p| &mut p.regex, cx),
+                        Btn::Structural => self.toggle_structural(cx),
                         Btn::ReplaceAll => self.ask_replace_all(cx),
                     }
                     return true;
@@ -489,7 +537,12 @@ impl FindPanel {
         if self.searching {
             (format!("Searching… {found} ({} files)", self.files_searched), None)
         } else if n == 0 {
-            (format!("No matches ({} files searched)", self.files_searched), Some(Level::Warn))
+            let msg = if self.structural {
+                format!("No matches ({} files searched; the pattern must parse as code in each file's language)", self.files_searched)
+            } else {
+                format!("No matches ({} files searched)", self.files_searched)
+            };
+            (msg, Some(Level::Warn))
         } else if self.capped {
             (format!("{found}; stopped at {MAX_HITS}"), Some(Level::Warn))
         } else {
@@ -518,14 +571,21 @@ impl FindPanel {
             *x += w;
             r
         };
-        let header_h = if self.show_replace { 2 } else { 1 }.min(inner.height);
+        let header_h = if self.replace_shown() { 2 } else { 1 }.min(inner.height);
         frame.buffer_mut().set_style(Rect::new(inner.x, inner.y, inner.width, header_h), bar);
-        let input_w = inner.width.saturating_sub(10 + 16).clamp(10, 60);
+        let input_w = inner.width.saturating_sub(10 + 16 + STRUCTURAL_W).clamp(10, 60);
 
         let (y, mut x) = (inner.y, inner.x + 1);
         put(frame, &mut x, y, "Find:    ", bar);
         let field = Rect::new(x, y, input_w.min(right.saturating_sub(x)), 1);
-        self.query.render(frame, field, input_style, "text or regex", theme.dim.bg(theme.bg), focused && self.field == Field::Query);
+        self.query.render(
+            frame,
+            field,
+            input_style,
+            if self.structural { "code pattern, $X matches a node" } else { "text or regex" },
+            theme.dim.bg(theme.bg),
+            focused && self.field == Field::Query,
+        );
         self.btns.push((Btn::Query, field));
         x += field.width;
         let (on, off) = (theme.strip_item_active, theme.dim.bg(theme.panel_bg));
@@ -533,8 +593,13 @@ impl FindPanel {
             [(Btn::Case, " Cc ", self.case_sensitive), (Btn::Word, " W ", self.whole_word), (Btn::Regex, " .* ", self.regex)]
         {
             put(frame, &mut x, y, " ", bar);
-            let r = put(frame, &mut x, y, label, if enabled { on } else { off });
+            let r = put(frame, &mut x, y, label, if enabled && !self.structural { on } else { off });
             self.btns.push((b, r));
+        }
+        if cfg!(feature = "structural") {
+            put(frame, &mut x, y, " ", bar);
+            let r = put(frame, &mut x, y, " AST ", if self.structural { on } else { off });
+            self.btns.push((Btn::Structural, r));
         }
         put(frame, &mut x, y, "  ", bar);
         let (status, level) = self.status();
@@ -545,7 +610,7 @@ impl FindPanel {
         };
         put(frame, &mut x, y, &status, st);
 
-        if self.show_replace && header_h > 1 {
+        if self.replace_shown() && header_h > 1 {
             let (y, mut x) = (inner.y + 1, inner.x + 1);
             put(frame, &mut x, y, "Replace: ", bar);
             let field = Rect::new(x, y, input_w.min(right.saturating_sub(x)), 1);
@@ -593,7 +658,7 @@ impl FindPanel {
                     let pre: String = hit.preview.chars().take(hit.preview_col).collect();
                     let mid: String = hit.preview.chars().skip(hit.preview_col).take(hit.len).collect();
                     let post: String = hit.preview.chars().skip(hit.preview_col + hit.len).collect();
-                    let preview = self.show_replace && !self.replace.text.is_empty() && !hit.excluded;
+                    let preview = self.replace_shown() && !self.replace.text.is_empty() && !hit.excluded;
                     let new = if preview { self.replacement_of(hit) } else { String::new() };
                     let (mid_style, new_style) = if preview {
                         (base.bg(theme.diff_del_word_bg), base.bg(theme.diff_add_word_bg))

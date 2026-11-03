@@ -19,7 +19,7 @@ use crate::app::Ctx;
 use crate::config::FileIcons;
 use crate::config::theme::Theme;
 use crate::event::{AppMsg, Effect, Mouse};
-use crate::files::find::{Batch, Hit, Search};
+use crate::files::find::{Batch, Hit, Query, Search};
 use crate::ui::tool_window_block;
 use crate::ui::widgets::file_rows;
 use crate::ui::widgets::list::ListState;
@@ -93,7 +93,7 @@ impl TodoPanel {
             root: self.root.clone(),
             show_hidden,
             show_ignored,
-            re: Regex::new(PATTERN).expect("valid pattern"),
+            query: Query::Regex(Regex::new(PATTERN).expect("valid pattern")),
             seq: self.seq,
             cancel: self.cancel.clone(),
         }

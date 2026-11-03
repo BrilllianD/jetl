@@ -1,6 +1,7 @@
 //! Find in files: the search that walks the project off the main thread and
 //! streams hits back in batches, and the text replacement used by Replace
-//! in files.
+//! in files. A search is a `Query`: a regex, or an ast-grep code pattern
+//! (structural search, feature `structural`).
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -52,6 +53,14 @@ pub struct Batch {
     pub capped: bool,
 }
 
+/// What a search looks for. `Structural` holds an ast-grep pattern source and
+/// only finds anything with the `structural` feature.
+#[derive(Debug, Clone)]
+pub enum Query {
+    Regex(Regex),
+    Structural(String),
+}
+
 /// A search request, detached from the panel so it can run in
 /// `spawn_blocking`. `cancel` holds the seq of the newest search; this one
 /// stops once it no longer matches.
@@ -59,7 +68,8 @@ pub struct Search {
     pub root: PathBuf,
     pub show_hidden: bool,
     pub show_ignored: bool,
-    pub re: Regex,
+    /// What to look for.
+    pub query: Query,
     pub seq: u64,
     pub cancel: Arc<AtomicU64>,
 }
@@ -73,6 +83,11 @@ impl Search {
         let (mut pending, mut total, mut files) = (Vec::new(), 0usize, 0usize);
         let mut last_send = Instant::now();
         let mut capped = false;
+        #[cfg(feature = "structural")]
+        let mut patterns = crate::files::structural::Patterns::new(match &self.query {
+            Query::Structural(s) => s,
+            Query::Regex(_) => "",
+        });
         for entry in walk.flatten() {
             if cancelled() {
                 return;
@@ -85,7 +100,13 @@ impl Search {
             }
             let Ok(bytes) = std::fs::read(entry.path()) else { continue };
             files += 1;
-            let found = search_text(entry.path(), &bytes, &self.re, MAX_HITS - total);
+            let found = match &self.query {
+                Query::Regex(re) => search_text(entry.path(), &bytes, re, MAX_HITS - total),
+                #[cfg(feature = "structural")]
+                Query::Structural(_) => crate::files::structural::search_file(entry.path(), &bytes, &mut patterns, MAX_HITS - total),
+                #[cfg(not(feature = "structural"))]
+                Query::Structural(_) => Vec::new(),
+            };
             total += found.len();
             pending.extend(found);
             if total >= MAX_HITS {
@@ -103,19 +124,30 @@ impl Search {
     }
 }
 
+/// Whether a file's bytes look binary (a NUL byte in the first 8 KiB).
+pub(crate) fn is_binary(bytes: &[u8]) -> bool {
+    bytes[..bytes.len().min(8192)].contains(&0)
+}
+
 /// Up to `limit` hits of `re` in a file's bytes; none for binary files (a
 /// NUL byte in the first 8 KiB). Invalid UTF-8 is searched lossily.
 pub fn search_text(path: &Path, bytes: &[u8], re: &Regex, limit: usize) -> Vec<Hit> {
-    if bytes[..bytes.len().min(8192)].contains(&0) {
+    if is_binary(bytes) {
         return Vec::new();
     }
     let text = String::from_utf8_lossy(bytes);
+    hits_at(path, &text, re.find_iter(&text).map(|m| m.range()), limit)
+}
+
+/// Hits for byte `ranges` of `text`, in non-decreasing start order; empty
+/// ranges are skipped and at most `limit` hits come back.
+pub(crate) fn hits_at(path: &Path, text: &str, ranges: impl IntoIterator<Item = std::ops::Range<usize>>, limit: usize) -> Vec<Hit> {
     let mut hits = Vec::new();
     // Line number and start of the line holding the current match, advanced
     // incrementally so the text is scanned once.
     let (mut line, mut line_start, mut scanned) = (0usize, 0usize, 0usize);
-    for m in re.find_iter(&text) {
-        if m.start() == m.end() {
+    for r in ranges {
+        if r.start == r.end {
             continue;
         }
         if hits.len() >= limit {
@@ -123,19 +155,28 @@ pub fn search_text(path: &Path, bytes: &[u8], re: &Regex, limit: usize) -> Vec<H
         }
         // Lines as the editor counts them: `\n`, `\r\n` and a lone `\r` end one.
         let bytes = text.as_bytes();
-        for i in scanned..m.start() {
+        for i in scanned..r.start {
             if bytes[i] == b'\n' || (bytes[i] == b'\r' && bytes.get(i + 1) != Some(&b'\n')) {
                 line += 1;
                 line_start = i + 1;
             }
         }
-        scanned = m.start();
+        scanned = r.start;
         let line_end = text[line_start..].find(['\n', '\r']).map_or(text.len(), |i| line_start + i);
         let line_text = &text[line_start..line_end];
-        let col = text[line_start..m.start()].chars().count();
-        let len = text[m.start()..m.end().min(line_end)].chars().count().max(1);
+        let col = text[line_start..r.start].chars().count();
+        let len = text[r.start..r.end.min(line_end)].chars().count().max(1);
         let (preview, preview_col) = preview(line_text, col);
-        hits.push(Hit { path: path.to_path_buf(), line, col, len, preview, preview_col, matched: m.as_str().to_string(), excluded: false });
+        hits.push(Hit {
+            path: path.to_path_buf(),
+            line,
+            col,
+            len,
+            preview,
+            preview_col,
+            matched: text[r.clone()].to_string(),
+            excluded: false,
+        });
     }
     hits
 }
@@ -316,7 +357,7 @@ mod tests {
             root: dir.clone(),
             show_hidden: false,
             show_ignored: false,
-            re: build_pattern("hit", false, false, false).unwrap(),
+            query: Query::Regex(build_pattern("hit", false, false, false).unwrap()),
             seq,
             cancel: cancel.clone(),
         };
@@ -329,6 +370,30 @@ mod tests {
         let mut late = Vec::new();
         search(0).run(|b| late.push(b));
         assert!(late.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(all(feature = "structural", feature = "lang-rust"))]
+    #[test]
+    fn structural_search_runs_over_the_tree() {
+        let dir = std::env::temp_dir().join(format!("jetl-test-find-structural-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.rs"), "fn f() { x.unwrap(); }\n").unwrap();
+        std::fs::write(dir.join("b.txt"), "x.unwrap()\n").unwrap();
+        let search = Search {
+            root: dir.clone(),
+            show_hidden: false,
+            show_ignored: false,
+            query: Query::Structural("$A.unwrap()".into()),
+            seq: 1,
+            cancel: Arc::new(AtomicU64::new(1)),
+        };
+        let mut batches = Vec::new();
+        search.run(|b| batches.push(b));
+        let hits: Vec<_> = batches.iter().flat_map(|b| &b.hits).map(|h| h.path.strip_prefix(&dir).unwrap().to_owned()).collect();
+        assert_eq!(hits, [PathBuf::from("a.rs")]);
+        assert!(batches.last().unwrap().done);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

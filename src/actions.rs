@@ -470,6 +470,7 @@ pub enum FindAction {
     ToggleCase,
     ToggleWord,
     ToggleRegex,
+    ToggleStructural,
     ToggleReplace,
     ReplaceAll,
     ToggleExclude,
@@ -1093,6 +1094,7 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "find.toggle_case" => "Find: match case", Find(FindAction::ToggleCase);
         "find.toggle_word" => "Find: whole words", Find(FindAction::ToggleWord);
         "find.toggle_regex" => "Find: regex", Find(FindAction::ToggleRegex);
+        "find.toggle_structural" => "Find: structural search (code pattern with $X)", Find(FindAction::ToggleStructural);
         "find.toggle_replace" => "Find: show or hide the replacement", Find(FindAction::ToggleReplace);
         "find.replace_all" => "Find: replace all results", Find(FindAction::ReplaceAll);
         "find.toggle_exclude" => "Find: exclude or include the selected result", Find(FindAction::ToggleExclude);

@@ -122,7 +122,8 @@ mismatching snapshot; they are git-ignored. On CI (`CI=true`, set by
 GitHub Actions and Bitbucket Pipelines) nothing is written, and a missing
 or different snapshot fails the test. Tests that need a grammar are
 behind its feature (`#[cfg(feature = "lang-rust")]` for `.rs` folding,
-`lang-toml` where a `.toml` tab's language shows in the status bar); the
+`lang-toml` where a `.toml` tab's language shows in the status bar, and
+`structural` for frames that show the Find window's header); the
 rest use plain file types, so every feature set gives the same frames.
 
 ## Manual: the tmux harness
@@ -1563,6 +1564,16 @@ Run with `[lsp] enabled = false`, jetl's own repo as the root, at 120x40 then 80
 4. Tab: the title becomes `Imported by src/app/hierarchy.rs (approximate)` with `src/app/mod.rs` as a child (it declares `mod hierarchy;`). F5 shows the same tree. Export Hierarchy as Mermaid writes edges from the importing file to the imported one.
 5. Enter on `src/app/mod.rs`: the editor opens it with the caret at line 1.
 6. Open `README.md` and run Navigate > File Dependencies: toast `No file dependencies for this file type`, the tree is unchanged. Stderr is empty, Ctrl+Q exits 0.
+
+### Scenario: structural search
+
+Run with `[lsp] enabled = false` in a scratch project, at 120x40 then 80x24 (the AST button must stay visible).
+
+1. `mkdir -p $T/src; printf 'fn f() {\n    let a = p(i).unwrap();\n    a.unwrap_or(0);\n}\n' > $T/src/s.rs; printf 'x.unwrap()\n' > $T/notes.txt`. Start jetl, Alt+3 (or Ctrl+Shift+F), then Alt+T: the AST button is highlighted, Cc, W and .* are dimmed.
+2. Type `$A.unwrap()`: status `1 match in 1 file`, row `src/s.rs`; `notes.txt` is absent (no grammar).
+3. Alt+X: toast `Case, whole word and regex do not apply to a structural search`, `.*` stays off. Alt+A: toast `Structural search cannot replace; Alt+T turns it off`.
+4. Enter opens `src/s.rs` at line 2, column 13. Back in the Find window, Alt+T: AST is off and the literal text `$A.unwrap()` finds no matches.
+5. A build with `--no-default-features --features lang-rust` has no AST button; Alt+T toasts `Structural search is not in this build (cargo feature "structural")`. Stderr is empty, Ctrl+Q exits 0.
 
 ### Limits under tmux
 

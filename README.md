@@ -126,6 +126,9 @@ To build faster or smaller with only the grammars you need, turn off the default
 
 Files in a language whose grammar is not compiled in open as plain text.
 
+`structural` (on by default) adds structural search to Find in files through `ast-grep-core`;
+`--no-default-features` turns it off with the grammars, so list it again when you want it.
+
 ## Usage
 
 ```

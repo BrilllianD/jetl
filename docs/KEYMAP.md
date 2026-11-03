@@ -430,6 +430,7 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Alt+C` | `find.toggle_case` | Find: match case |
 | `Alt+W` | `find.toggle_word` | Find: whole words |
 | `Alt+X` | `find.toggle_regex` | Find: regex |
+| `Alt+T` | `find.toggle_structural` | Find: structural search (code pattern with $X) |
 | `Alt+R` | `find.toggle_replace` | Find: show or hide the replacement |
 | `Alt+A` | `find.replace_all` | Find: replace all results |
 | `Alt+Delete` | `find.toggle_exclude` | Find: exclude or include the selected result |

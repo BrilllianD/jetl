@@ -29,7 +29,7 @@ expression: "snapshot(&term, &[], None)"
 23    └──────────────────────────────┘│
 24  ✎ ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 25    ┌ Find ─────────────────────────────────────────────────┐│┌ Problems: no problems ───────────────────────────────┐
-26  ✓ │ Find:    text or regex                  Cc   W   .*   │││ Language servers are off ([lsp] enabled = false in co│
+26  ✓ │ Find:    text or regex            Cc   W   .*   AST   │││ Language servers are off ([lsp] enabled = false in co│
 27  8 │                                                       │││                                                      │
 28  ⟲ │                                                       │││                                                      │
 29  5 │                                                       │││                                                      │
