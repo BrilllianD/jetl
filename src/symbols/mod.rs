@@ -7,6 +7,7 @@ pub mod graph;
 pub mod imports;
 pub mod index;
 pub mod panel;
+pub mod scip;
 
 use std::collections::HashSet;
 use std::ops::Range;

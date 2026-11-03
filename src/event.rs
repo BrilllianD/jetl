@@ -125,6 +125,13 @@ pub enum AppMsg {
         seq: u64,
         batch: crate::symbols::index::SymbolBatch,
     },
+    /// The SCIP index named by `[index] scip`, loaded in `spawn_blocking`;
+    /// tagged with the workspace generation and the load's seq.
+    Scip {
+        generation: u64,
+        seq: u64,
+        result: Result<Box<crate::symbols::scip::ScipIndex>, String>,
+    },
     /// An off-thread palette filter (`Palette::refilter` for large sources):
     /// candidate indices, best first, of filter `seq`; tagged with the
     /// workspace generation. Cancelled filters send nothing.

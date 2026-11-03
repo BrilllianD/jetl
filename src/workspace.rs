@@ -528,6 +528,7 @@ impl App {
         // The palette lists the old root; close it and re-index.
         self.close_palette();
         self.refresh_file_index();
+        self.load_scip();
         crate::tui::set_title(&root);
         self.editor.clear_nav();
         self.history_root_changed();

@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 
 use super::App;
-use crate::event::AppMsg;
+use crate::event::{AppMsg, Level};
 use crate::lsp::caps::{Caps, WORKSPACE_SYMBOL};
 use crate::lsp::transport::ResponseError;
 use crate::lsp::{PendingTag, SCRATCH_SUFFIX};
@@ -210,6 +210,57 @@ impl App {
         if unknown {
             self.refresh_file_index();
         }
+    }
+
+    /// Start (or restart) loading the SCIP index named by `[index] scip`;
+    /// an empty key drops the loaded one.
+    pub(crate) fn load_scip(&mut self) {
+        self.scip.seq += 1;
+        let name = self.config.index.scip.trim().to_string();
+        if name.is_empty() {
+            self.scip.index = None;
+            self.scip.loading = false;
+            return;
+        }
+        self.scip.loading = true;
+        let (seq, generation, tx) = (self.scip.seq, self.workspace.generation, self.bus_tx.clone());
+        let root = self.workspace.root.clone();
+        let file = root.join(name);
+        tokio::task::spawn_blocking(move || {
+            let result = crate::symbols::scip::ScipIndex::load(&file, &root).map(Box::new);
+            let _ = tx.send(AppMsg::Scip { generation, seq, result });
+        });
+    }
+
+    pub(super) fn scip_loaded(&mut self, generation: u64, seq: u64, result: Result<Box<crate::symbols::scip::ScipIndex>, String>) {
+        if generation != self.workspace.generation || seq != self.scip.seq {
+            tracing::debug!("dropping stale SCIP index");
+            return;
+        }
+        self.scip.loading = false;
+        match result {
+            Ok(ix) => {
+                tracing::debug!("scip index: {} documents", ix.doc_count());
+                self.scip.index = Some(*ix);
+            }
+            Err(e) => {
+                self.scip.index = None;
+                self.notify(Level::Warn, format!("SCIP index {}: {e}", self.config.index.scip.trim()));
+            }
+        }
+    }
+
+    /// Whether the SCIP index may be trusted for `rel`: the file is not
+    /// edited in an open buffer and not newer than the index file.
+    pub(crate) fn scip_fresh(&self, rel: &str) -> bool {
+        let Some(ix) = &self.scip.index else { return false };
+        let abs = self.workspace.root.join(rel);
+        if let Some(i) = self.editor.index_of(&abs)
+            && self.editor.buffers[i].dirty()
+        {
+            return false;
+        }
+        std::fs::metadata(&abs).and_then(|m| m.modified()).is_ok_and(|t| t <= ix.mtime())
     }
 
     /// Bring the Structure window up to date with the active buffer (every

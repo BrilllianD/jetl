@@ -866,6 +866,30 @@ in `main` and press Alt+F7: the palette title reads `Usages of helper
 to the row; Esc closes the palette. A name used once only jumps straight to it
 with the toast `Only one usage (unverified)`.
 
+### Scenario: SCIP index without a language server
+
+With `[lsp] enabled = false` and `[index] scip = "index.scip"` in
+`config.toml`, at 80x24 and 120x40. Project `/tmp/scip-demo`: `Cargo.toml`
+(`[package] name = "t"`, `version = "0.1.0"`, `edition = "2021"`),
+`src/main.rs` = `mod util;`, `fn main() {`, `    let s = "日本😀"; util::helper(s);`,
+`    util::helper(s);`, `}` and `src/util.rs` = `/* 😀 */ pub fn helper(_s: &str) {}`;
+then `git init -q` (the project root is the nearest git directory, else the file's folder) and `rust-analyzer scip . --output index.scip` in it.
+
+1. `jetl /tmp/scip-demo/src/main.rs`; caret on `helper` in line 3, Ctrl+B:
+   `src/util.rs` opens with the caret on `helper` (column 16 in the status bar).
+2. Ctrl+B again on that `helper`: the Locations palette `Usages of helper
+   (SCIP)` with two rows in main.rs (lines 3 and 4). Esc.
+3. In main.rs, Alt+F7 on the call in line 4: the same two rows.
+4. In another shell `touch /tmp/scip-demo/src/util.rs`; Ctrl+B on `helper` in
+   main.rs still jumps to util.rs (now through the symbol index; same place).
+5. Type a character in main.rs (unsaved), Alt+F7 on `helper`: no SCIP rows
+   (the symbol-index fallback; `Usages of helper (unverified)` when it finds
+   plain calls). Undo.
+6. Settings (Ctrl+Alt+S), Language Servers page: the row "SCIP index file"
+   shows `index.scip`; set it to `missing.scip` and Apply: one Warn toast
+   `SCIP index missing.scip: ...`. Set it back.
+7. Ctrl+Q exits 0; stderr is empty.
+
 ### Scenario: local history
 
 At 80x24 and at 120x40 (`-x 120 -y 40`), with config and state under

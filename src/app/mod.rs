@@ -252,6 +252,8 @@ pub struct App {
     pub event_log: crate::ui::event_log::EventLogPanel,
     /// Project symbols for Go to Symbol, built after the file index loads.
     pub symbols: crate::symbols::index::SymbolIndex,
+    /// The SCIP index of `[index] scip` (`load_scip`).
+    pub scip: crate::symbols::scip::ScipState,
     /// When the open Go to Symbol palette last got the index (it is fed at
     /// most every `SYMBOLS_FEED` while batches arrive).
     symbols_fed: Option<Instant>,
@@ -422,6 +424,7 @@ impl App {
             structure: Default::default(),
             event_log: Default::default(),
             symbols: Default::default(),
+            scip: Default::default(),
             symbols_fed: None,
             pending_goto: None,
             pending_conflicts: false,
@@ -485,6 +488,7 @@ impl App {
         app.start_watcher();
         // The symbol index follows the file index.
         app.refresh_file_index();
+        app.load_scip();
         app.sync_file_icons();
         app
     }

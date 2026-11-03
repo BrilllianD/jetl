@@ -88,6 +88,9 @@ portable-pty = "0.9"
 vt100 = "0.16"
 lsp-types = "0.97"
 url = "2"
+# SCIP code indexes ([index] scip): generated types and their protobuf runtime, pinned together.
+scip = "=0.10.0"
+protobuf = "=3.7.2"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

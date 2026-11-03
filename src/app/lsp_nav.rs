@@ -28,6 +28,7 @@ use crate::event::{AppMsg, Level};
 use crate::lsp::locations::{self, LocationItem, Target};
 use crate::lsp::transport::ResponseError;
 use crate::lsp::{DocTag, PendingTag, pos};
+use crate::symbols::scip::{self, Occ, SymId};
 use crate::ui::focus::PanelId;
 use crate::ui::hover::{DocLine, HoverPopup, Kind, code_lines};
 use crate::ui::palette::Palette;
@@ -237,12 +238,16 @@ impl App {
     }
 
     /// `lsp.goto_definition` (Ctrl+B, Ctrl+click). Without a server for
-    /// the file, Go to Symbol opens on the word at the caret instead.
+    /// the file, the SCIP index answers when it is fresh for the file; else
+    /// Go to Symbol opens on the word at the caret.
     pub(super) fn lsp_goto_definition(&mut self) {
         let Some((id, pos)) = self.caret_position() else { return };
         match self.lsp_doc_request(id, pos, DEFINITION, json!({}), PendingTag::Definition) {
             Ok(seq) => self.lsp.nav_seq = seq,
             Err(why) => {
+                if !self.lsp.docs.contains_key(&id) && self.scip_definition(id) {
+                    return;
+                }
                 let word = self.editor.active_buffer().map(|b| word_at(b, b.view.sel().head)).unwrap_or_default();
                 if !self.lsp.docs.contains_key(&id) && !word.is_empty() {
                     self.open_palette(PaletteKind::Symbols);
@@ -286,12 +291,16 @@ impl App {
         }
     }
 
-    /// Find Usages when no server document serves buffer `id` (and its
-    /// language has a tags query, and the caret is on a word): candidates from
-    /// the symbol index. True when handled.
+    /// Find Usages when no server document serves buffer `id`: the SCIP
+    /// index when it knows the caret's symbol, else (if the language has a
+    /// tags query and the caret is on a word) unverified candidates from the
+    /// symbol index. True when handled.
     fn lsp_usages_without_server(&mut self, id: BufferId) -> bool {
         if self.lsp.docs.contains_key(&id) {
             return false;
+        }
+        if self.scip_usages(id) {
+            return true;
         }
         let Some(b) = self.editor.buffers.iter().find(|b| b.id == id) else { return false };
         let (Some(path), Some(def)) = (b.path.clone(), b.language()) else { return false };
@@ -351,23 +360,175 @@ impl App {
         }
         hits.sort();
         let len = name.chars().count();
-        let mut disk: HashMap<String, Option<String>> = HashMap::new();
+        let mut disk: HashMap<PathBuf, Option<String>> = HashMap::new();
         let mut items = Vec::with_capacity(hits.len());
         for (_, rel, line, col) in hits {
             let abs: PathBuf = root.join(&rel);
-            let open = self.editor.index_of(&abs).map(|i| &self.editor.buffers[i]).filter(|b| line < b.rope.len_lines());
-            let text = match open {
-                Some(b) => Some(b.line_text(line)),
-                None => disk
-                    .entry(rel)
-                    .or_insert_with(|| std::fs::read(&abs).ok().map(|b| String::from_utf8_lossy(&b).into_owned()))
-                    .as_deref()
-                    .and_then(|s| crate::util::text::lines_inclusive(s).nth(line).map(crate::git::diff::strip_eol))
-                    .map(str::to_string),
-            };
+            let text = self.line_of(&abs, line, &mut disk);
             items.push(LocationItem::at_name(abs, line, col, len, text.as_deref()));
         }
         items
+    }
+
+    /// Text of line `line` of `abs` (no line break): the open buffer's, else
+    /// the file's on disk, read once per file into `disk`.
+    fn line_of(&self, abs: &Path, line: usize, disk: &mut HashMap<PathBuf, Option<String>>) -> Option<String> {
+        let open = self.editor.index_of(abs).map(|i| &self.editor.buffers[i]).filter(|b| line < b.rope.len_lines());
+        if let Some(b) = open {
+            return Some(b.line_text(line));
+        }
+        disk.entry(abs.to_path_buf())
+            .or_insert_with(|| std::fs::read(abs).ok().map(|b| String::from_utf8_lossy(&b).into_owned()))
+            .as_deref()
+            .and_then(|s| crate::util::text::lines_inclusive(s).nth(line).map(crate::git::diff::strip_eol))
+            .map(str::to_string)
+    }
+
+    /// The SCIP occurrence under the caret of buffer `id`: its path relative
+    /// to the root, symbol and whether it is a definition. None without an
+    /// index, when the buffer's file is not fresh or the caret is on no
+    /// occurrence. Starts a reload when the index file changed on disk (this
+    /// lookup still uses the loaded index).
+    fn scip_caret(&mut self, id: BufferId) -> Option<(String, SymId, bool)> {
+        let ix = self.scip.index.as_ref()?;
+        let on_disk = std::fs::metadata(ix.file()).and_then(|m| m.modified()).ok();
+        if on_disk.is_some_and(|t| t != ix.mtime()) && !self.scip.loading {
+            self.load_scip();
+        }
+        let b = self.editor.buffers.iter().find(|b| b.id == id)?;
+        let rel = b.path.as_ref()?.strip_prefix(&self.workspace.root).ok()?.to_string_lossy().replace('\\', "/");
+        if !self.scip_fresh(&rel) {
+            return None;
+        }
+        let ix = self.scip.index.as_ref()?;
+        let doc = ix.doc(&rel)?;
+        let (line, col) = crate::editor::selection::pos_to_line_col(&b.rope, b.view.sel().head);
+        let unit = scip::to_units(&b.line_text(line), col, doc.encoding);
+        let occ = ix.occurrence_at(&rel, line as u32, unit)?;
+        let (symbol, definition) = (occ.symbol, occ.definition);
+        Some((rel, symbol, definition))
+    }
+
+    /// The row for a SCIP occurrence in `rel`, columns converted to chars with
+    /// the line's text; `word_len` marks a multi-line span.
+    fn scip_item(&self, rel: &str, occ: &Occ, word_len: usize, disk: &mut HashMap<PathBuf, Option<String>>) -> LocationItem {
+        let abs = self.workspace.root.join(rel);
+        let line = occ.span.line as usize;
+        let text = self.line_of(&abs, line, disk);
+        let enc = self.scip.index.as_ref().and_then(|ix| ix.doc(rel)).map_or(scip::Encoding::Utf16, |d| d.encoding);
+        let (col, len) = match &text {
+            Some(t) => {
+                let col = scip::to_chars(t, occ.span.start, enc);
+                let len = if occ.span.single_line() { scip::to_chars(t, occ.span.end, enc).saturating_sub(col) } else { word_len };
+                (col, len)
+            }
+            None => (occ.span.start as usize, word_len),
+        };
+        LocationItem::at_name(abs, line, col, len, text.as_deref())
+    }
+
+    /// Go to Definition without a server document, from the SCIP index. On a
+    /// definition: its usages. Definitions in files that are not fresh come
+    /// from the symbol index instead. True when handled (the caller falls
+    /// back to the Go to Symbol palette otherwise).
+    fn scip_definition(&mut self, id: BufferId) -> bool {
+        let Some((_, sym, definition)) = self.scip_caret(id) else { return false };
+        if definition {
+            return self.lsp_usages_without_server(id);
+        }
+        let word = self.editor.buffers.iter().find(|b| b.id == id).map(|b| word_at(b, b.view.sel().head)).unwrap_or_default();
+        let wlen = word.chars().count();
+        let root = self.workspace.root.clone();
+        let defs: Vec<(String, Occ)> = match &self.scip.index {
+            Some(ix) => ix.occurrences_of(sym).into_iter().filter(|(_, o)| o.definition).map(|(r, o)| (r.to_string(), o.clone())).collect(),
+            None => return false,
+        };
+        let mut disk = HashMap::new();
+        let mut seen_stale: HashSet<String> = HashSet::new();
+        let mut items: Vec<LocationItem> = Vec::new();
+        for (rel, occ) in &defs {
+            if self.scip_fresh(rel) {
+                items.push(self.scip_item(rel, occ, wlen, &mut disk));
+            } else if seen_stale.insert(rel.clone()) {
+                for (r, s) in self.symbols.defs_named(&word) {
+                    if r == rel {
+                        let abs = root.join(rel);
+                        let text = self.line_of(&abs, s.line, &mut disk);
+                        items.push(LocationItem::at_name(abs, s.line, s.col, wlen, text.as_deref()));
+                    }
+                }
+            }
+        }
+        let mut keys = HashSet::new();
+        items.retain(|i| keys.insert((i.path.clone(), i.line, i.col)));
+        match items.len() {
+            0 => return false,
+            1 => {
+                let one = items.remove(0);
+                self.editor.push_nav_here();
+                self.open_file_at(one.path, one.line, one.col);
+            }
+            _ => self.show_locations("Choose Declaration".into(), items),
+        }
+        true
+    }
+
+    /// Find Usages from the SCIP index: exact occurrences in fresh files plus
+    /// the unverified symbol-index candidates of files that are not fresh,
+    /// ranked as `fallback_usages` does. True when handled.
+    fn scip_usages(&mut self, id: BufferId) -> bool {
+        let Some((from_rel, sym, _)) = self.scip_caret(id) else { return false };
+        let Some(b) = self.editor.buffers.iter().find(|b| b.id == id) else { return false };
+        let Some(path) = b.path.clone() else { return false };
+        let word = word_at(b, b.view.sel().head);
+        let has_tags = b.language().is_some_and(|d| d.tags.is_some());
+        let wlen = word.chars().count();
+        let root = self.workspace.root.clone();
+        let occs: Vec<(String, Occ)> = match &self.scip.index {
+            Some(ix) => {
+                ix.occurrences_of(sym).into_iter().filter(|(_, o)| !o.definition).map(|(r, o)| (r.to_string(), o.clone())).collect()
+            }
+            None => return false,
+        };
+        let mut near: HashSet<Arc<str>> = HashSet::new();
+        near.extend(self.symbols.imports_of(&from_rel));
+        near.extend(self.symbols.imported_by(&from_rel));
+        let mut fresh: HashMap<String, bool> = HashMap::new();
+        let mut disk = HashMap::new();
+        let mut items: Vec<(String, LocationItem)> = Vec::new();
+        for (rel, occ) in &occs {
+            let ok = *fresh.entry(rel.clone()).or_insert_with(|| self.scip_fresh(rel));
+            if ok {
+                items.push((rel.clone(), self.scip_item(rel, occ, wlen, &mut disk)));
+            }
+        }
+        if has_tags && !word.is_empty() {
+            for item in self.fallback_usages(&word, &path) {
+                let Ok(rel) = item.path.strip_prefix(&root) else { continue };
+                let rel = rel.to_string_lossy().replace('\\', "/");
+                if !*fresh.entry(rel.clone()).or_insert_with(|| self.scip_fresh(&rel)) {
+                    items.push((rel, item));
+                }
+            }
+        }
+        let mut keys = HashSet::new();
+        items.retain(|(_, i)| keys.insert((i.path.clone(), i.line, i.col)));
+        items.sort_by_cached_key(|(rel, i)| (usage_group(rel, Some(&from_rel), &near), i.path.clone(), i.line, i.col));
+        let mut items: Vec<LocationItem> = items.into_iter().map(|(_, i)| i).collect();
+        match items.len() {
+            0 => self.lsp_hint("No usages found"),
+            1 => {
+                let one = items.remove(0);
+                self.editor.push_nav_here();
+                self.open_file_at(one.path, one.line, one.col);
+                self.lsp_hint("Only one usage");
+            }
+            _ => {
+                let title = if word.is_empty() { "Usages (SCIP)".to_string() } else { format!("Usages of {word} (SCIP)") };
+                self.open_locations(title, items, true);
+            }
+        }
+        true
     }
 
     /// `lsp.quick_doc` (Alt+Q).
@@ -1244,6 +1405,141 @@ mod tests {
         app.toasts = Default::default();
         act(&mut app, LspAction::FindUsages);
         assert!(toasts(&app).contains(&"Only one usage (unverified)".to_string()), "{:?}", toasts(&app));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    const SCIP_MAIN: &str = "mod util;\nfn main() {\n    let s = \"日本😀\"; util::helper(s);\n    util::helper(s);\n}\n";
+    const SCIP_UTIL: &str = "/* 😀 */ pub fn helper(_s: &str) {}\n";
+
+    fn set_mtime(p: &Path, t: std::time::SystemTime) {
+        std::fs::File::options().write(true).open(p).unwrap().set_modified(t).unwrap();
+    }
+
+    fn run_tags_job(app: &mut App) {
+        let (root, g) = (app.workspace.root.clone(), app.workspace.generation);
+        let job = app.symbols.start(root);
+        let (seq, mut batches) = (job.seq, Vec::new());
+        job.run(|b| batches.push(b));
+        for batch in batches {
+            app.handle_msg(AppMsg::Symbols { generation: g, seq, batch });
+        }
+    }
+
+    /// A project with `src/main.rs` (open, caret file) and `src/util.rs`, a
+    /// loaded SCIP index in between them in age, and the tags index built.
+    async fn scip_app(name: &str) -> (App, PathBuf, PathBuf) {
+        let (mut app, dir) = test_app(name);
+        let (root, g) = (app.workspace.root.clone(), app.workspace.generation);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/main.rs"), SCIP_MAIN).unwrap();
+        std::fs::write(root.join("src/util.rs"), SCIP_UTIL).unwrap();
+        app.handle_msg(AppMsg::FileIndex { generation: g, seq: 1, files: vec!["src/main.rs".into(), "src/util.rs".into()] });
+        run_tags_job(&mut app);
+        let helper: &[(&[i32], &str, bool)] = &[(&[0, 18, 24], "t util/helper().", true)];
+        let main: &[(&[i32], &str, bool)] = &[
+            (&[1, 3, 7], "t main().", true),
+            (&[2, 8, 9], "local 0", true),
+            (&[2, 32, 38], "t util/helper().", false),
+            (&[2, 39, 40], "local 0", false),
+            (&[3, 10, 16], "t util/helper().", false),
+            (&[0, 0, 5, 0], "t crate/", true),
+        ];
+        let index = root.join("index.scip");
+        crate::symbols::scip::write_test_index(
+            &index,
+            "",
+            &[("src/main.rs", scip::Encoding::Utf8, main), ("src/util.rs", scip::Encoding::Utf8, helper)],
+        );
+        let now = std::time::SystemTime::now();
+        let ago = |s| now - std::time::Duration::from_secs(s);
+        set_mtime(&root.join("src/util.rs"), ago(100));
+        set_mtime(&index, ago(50));
+        let mut c = app.config.clone();
+        c.index.scip = "index.scip".into();
+        app.apply_config(c);
+        handle_next(&mut app, |m| matches!(m, AppMsg::Scip { .. })).await;
+        assert!(app.scip.index.is_some(), "{:?}", toasts(&app));
+        crate::app::tests::load(&mut app, "src/main.rs", SCIP_MAIN);
+        set_mtime(&root.join("src/main.rs"), ago(100));
+        (app, dir, root)
+    }
+
+    #[tokio::test]
+    async fn scip_definition_and_usages_without_a_server() {
+        let (mut app, dir, root) = scip_app("scip-nav").await;
+        let at = |f: &str, l| (root.join(f), l);
+        goto(&mut app, 3, 12);
+        act(&mut app, LspAction::FindUsages);
+        let p = app.palette.as_ref().expect("Locations");
+        assert_eq!(p.kind, PaletteKind::Locations);
+        assert_eq!(p.shown_locations(), [at("src/main.rs", 2), at("src/main.rs", 3)]);
+        let buf = draw(&mut app, 100, 30);
+        assert!((0..30).any(|y| row(&buf, y).contains("Usages of helper (SCIP)")));
+        app.palette = None;
+        goto(&mut app, 2, 26);
+        act(&mut app, LspAction::GotoDefinition);
+        handle_next(&mut app, |m| matches!(m, AppMsg::FileLoaded { .. })).await;
+        assert_eq!(app.editor.active_buffer().unwrap().path, Some(root.join("src/util.rs")));
+        assert_eq!(caret(&app), (0, 15));
+        // On the declaration: its usages.
+        goto(&mut app, 0, 16);
+        act(&mut app, LspAction::GotoDefinition);
+        let p = app.palette.as_ref().expect("Locations");
+        assert_eq!(p.shown_locations(), [at("src/main.rs", 2), at("src/main.rs", 3)]);
+        let buf = draw(&mut app, 100, 30);
+        assert!((0..30).any(|y| row(&buf, y).contains("Usages of helper (SCIP)")));
+        // The index file changed on disk: the next lookup reloads it.
+        app.palette = None;
+        let newer = std::time::SystemTime::now() - std::time::Duration::from_secs(10);
+        set_mtime(&root.join("index.scip"), newer);
+        act(&mut app, LspAction::FindUsages);
+        assert!(app.scip.loading);
+        handle_next(&mut app, |m| matches!(m, AppMsg::Scip { .. })).await;
+        assert!(!app.scip.loading);
+        let loaded = app.scip.index.as_ref().unwrap().mtime();
+        assert!(loaded > newer - std::time::Duration::from_secs(1) && loaded < newer + std::time::Duration::from_secs(1));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn stale_files_fall_back_to_the_tags_index() {
+        let (mut app, dir, root) = scip_app("scip-stale").await;
+        let util = root.join("src/util.rs");
+        std::fs::write(&util, format!("// moved\n{SCIP_UTIL}")).unwrap();
+        set_mtime(&util, std::time::SystemTime::now());
+        app.symbols.invalidate(&["src/util.rs".to_string()]);
+        run_tags_job(&mut app);
+        goto(&mut app, 2, 26);
+        act(&mut app, LspAction::GotoDefinition);
+        handle_next(&mut app, |m| matches!(m, AppMsg::FileLoaded { .. })).await;
+        assert_eq!(app.editor.active_buffer().unwrap().path, Some(util));
+        assert_eq!(caret(&app), (1, 15));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn an_unsaved_caret_file_does_not_ask_scip() {
+        let (mut app, dir, _) = scip_app("scip-dirty").await;
+        goto(&mut app, 4, 1);
+        app.perform(Action::Editor(EditorAction::InsertText("\n".into())));
+        goto(&mut app, 2, 26);
+        act(&mut app, LspAction::FindUsages);
+        // SCIP would list the two calls; the tags index has no refs for scoped
+        // calls like `util::helper(..)`, so today's path finds nothing.
+        assert!(app.palette.is_none());
+        assert!(toasts(&app).contains(&"No usages found".to_string()), "{:?}", toasts(&app));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn missing_scip_index_warns() {
+        let (mut app, dir) = test_app("scip-missing");
+        let mut c = app.config.clone();
+        c.index.scip = "nope.scip".into();
+        app.apply_config(c);
+        handle_next(&mut app, |m| matches!(m, AppMsg::Scip { .. })).await;
+        assert!(app.scip.index.is_none());
+        assert!(toasts(&app).iter().any(|t| t.starts_with("SCIP index nope.scip:")), "{:?}", toasts(&app));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

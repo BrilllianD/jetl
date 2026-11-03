@@ -111,6 +111,7 @@ pub struct Config {
     pub terminal: crate::terminal::TerminalConfig,
     pub lsp: crate::lsp::LspConfig,
     pub local_history: crate::history::LocalHistoryConfig,
+    pub index: IndexConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -269,6 +270,14 @@ pub struct ClipboardConfig {
     pub paste_command: String,
     /// Reads text to put on the clipboard from stdin.
     pub copy_command: String,
+}
+
+/// Precomputed code indexes, used for navigation without a language server.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct IndexConfig {
+    /// A SCIP index file (`index.scip`), relative to the project root; empty: none.
+    pub scip: String,
 }
 
 /// External formatters (`editor::format`): the buffer text goes in on

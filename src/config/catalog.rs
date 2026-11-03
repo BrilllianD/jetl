@@ -411,6 +411,13 @@ pub static SETTINGS: &[Setting] = &[
         Kind::External,
         none
     ),
+    row!(
+        "index.scip",
+        "SCIP index file",
+        "A SCIP index (rust-analyzer scip . writes index.scip), relative to the project root: exact go to definition and Find Usages without a server. Empty: none.",
+        Kind::Text,
+        |c| s(&c.index.scip)
+    ),
 ];
 
 /// Title of the keyless page that shows `doctor::probe`'s report (`ui::settings`).
@@ -487,7 +494,8 @@ pub static PAGES: &[Page] = &[
             "lsp.scratches",
             "lsp.startup_timeout_ms",
             "lsp.request_timeout_ms",
-            "lsp.servers"
+            "lsp.servers",
+            "index.scip"
         ]
     ),
     page!("Dependencies", None, []),

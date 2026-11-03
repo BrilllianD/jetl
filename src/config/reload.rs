@@ -5,7 +5,9 @@
 //! config struct fails to compile until it is classified here (and, when
 //! `Live`, applied in `App::apply_config` or `Editor::apply_config`).
 
-use super::{ClipboardConfig, Config, EditorConfig, FilesConfig, FormatConfig, GitConfig, KeymapConfig, UiConfig, WorktreeConfig};
+use super::{
+    ClipboardConfig, Config, EditorConfig, FilesConfig, FormatConfig, GitConfig, IndexConfig, KeymapConfig, UiConfig, WorktreeConfig,
+};
 use crate::history::LocalHistoryConfig;
 use crate::lsp::LspConfig;
 use crate::run::RunConfig;
@@ -193,6 +195,9 @@ sections! {
         max_file_kb => Live,
         snapshot_unsaved_secs => Live,
     }
+    index: IndexConfig {
+        scip => Live,
+    }
 }
 
 #[cfg(test)]
@@ -251,7 +256,7 @@ mod tests {
         names.dedup();
         assert_eq!(names.len(), KEYS.len());
         // 19 editor, 8 ui, 3 git, 2 worktree, 1 keymap, 3 files, 2 clipboard,
-        // 3 format, 2 run, 3 terminal, 10 lsp, 5 local_history.
-        assert_eq!(KEYS.len(), 61);
+        // 3 format, 2 run, 3 terminal, 10 lsp, 5 local_history, 1 index.
+        assert_eq!(KEYS.len(), 62);
     }
 }

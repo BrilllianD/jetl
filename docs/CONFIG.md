@@ -227,7 +227,20 @@ keep_days = 5                  # snapshots older than this are pruned (0 drops e
 max_total_mb = 100             # the oldest snapshots are pruned while the store holds more (compressed size on disk; labels go last)
 max_file_kb = 2048             # larger files are not snapshotted
 snapshot_unsaved_secs = 0      # every this many seconds, snapshot unsaved edits of open files (0: off; at least 10; 60 is a good value)
+
+[index]
+scip = ""                      # SCIP index file relative to the root (e.g. "index.scip"); "" = none
 ```
+
+SCIP index (`[index] scip`): build one with `rust-analyzer scip . --output
+index.scip` (other indexers: scip-typescript, scip-python, scip-java,
+scip-clang, scip-go) and set the key to its path under the project root.
+Without a language server, Ctrl+B and Alt+F7 then use its exact definitions
+and usages in files not changed since it was written (saved, and not newer
+than the index file); other files fall back to the unverified symbol-index
+candidates. The index is read again when the key changes, at start, after a
+project switch, and on the next lookup after the file changes on disk. A file
+that cannot be read or is not a SCIP index gives one warning and no index.
 
 With `watch` on, files changed by other programs refresh the Project tree
 and the Git window, and an open tab reloads in place when it has no unsaved
