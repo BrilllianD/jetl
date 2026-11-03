@@ -308,6 +308,33 @@ mod tests {
         assert_eq!(app.notifications.last().unwrap().text, crate::editor::merge::BUSY);
         app.perform(merge(MergeAction::Cancel));
         assert!(!app.editor.merge_active());
+        // Tree: a double-click on the conflicted file opens the resolver too.
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+        term.draw(|f| crate::ui::render(&mut app, f)).unwrap();
+        let left = app.layout.rects.left;
+        let y = (left.y..left.bottom())
+            .find(|&y| {
+                let row: String = (left.x..left.right()).map(|x| term.backend().buffer()[(x, y)].symbol().to_string()).collect();
+                row.contains("a.txt")
+            })
+            .expect("a.txt row in the tree");
+        let press = |app: &mut crate::app::App| {
+            use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+            for kind in [MouseEventKind::Down(MouseButton::Left), MouseEventKind::Up(MouseButton::Left)] {
+                app.handle_mouse(MouseEvent { kind, column: left.x + 2, row: y, modifiers: KeyModifiers::NONE });
+            }
+        };
+        app.focus.set(PanelId::Editor);
+        press(&mut app);
+        assert!(app.focus.is(PanelId::Project), "the press lands on the tree");
+        assert!(!app.editor.merge_active(), "one click only selects");
+        press(&mut app);
+        handle_next(&mut app, conflict).await;
+        assert!(app.editor.merge_active());
+        assert_eq!(app.focus.current, PanelId::Editor);
+        app.perform(merge(MergeAction::Cancel));
+        assert!(!app.editor.merge_active());
+
         // A plain file opens as before.
         assert!(app.project.select_path(&root.join("b.txt")));
         app.focus.set(PanelId::Project);
