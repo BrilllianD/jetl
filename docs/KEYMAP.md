@@ -449,7 +449,7 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Left` | `hierarchy.collapse` | Hierarchy: collapse the selected row, or go to its parent |
 | `Enter` | `hierarchy.open` | Hierarchy: open the selected function or type |
 | `Tab` | `hierarchy.toggle_direction` | Hierarchy: switch callers and callees, supertypes and subtypes, or imports and imported by |
-| `F5` | `hierarchy.refresh` | Hierarchy: ask the server again |
+| `F5` | `hierarchy.refresh` | Hierarchy: refresh the tree (ask the server again, or recompute from the symbol index) |
 
 ## local_history
 

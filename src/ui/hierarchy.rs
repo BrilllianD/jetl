@@ -185,7 +185,7 @@ impl HierarchyPanel {
             (x, _) = buf.set_stringn(x, y, &n.item.name, room(x), base);
             let file = n.item.path.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
             let loading = if n.loading { " …" } else { "" };
-            let place = if n.item.kind == SymbolKind::FILE {
+            let place = if t.from_index() && n.item.kind == SymbolKind::FILE {
                 loading.to_string()
             } else {
                 format!("  {file}:{}{loading}", n.item.selection.start.line + 1)
@@ -291,5 +291,21 @@ mod tests {
         let buf = draw(&mut p, Some(&t), 32);
         let row = row_text(&buf, 1, 32);
         assert!(row.contains("helper  fn helpe…  b.rs:2 …"), "{row}");
+    }
+
+    #[test]
+    fn file_kind_rows_keep_the_location_only_for_lsp_trees() {
+        let file_items = || {
+            let mut v = items(&["mod.ts"], None);
+            v[0].kind = SymbolKind::FILE;
+            v
+        };
+        let mut p = HierarchyPanel::default();
+        let lsp = HierarchyTree::new(1, "s".into(), Direction::Callers, file_items());
+        let row = row_text(&draw(&mut p, Some(&lsp), 70), 1, 70);
+        assert!(row.contains("mod.ts  b.rs:2"), "{row}");
+        let idx = HierarchyTree::new(2, String::new(), Direction::Callers, file_items());
+        let row = row_text(&draw(&mut p, Some(&idx), 70), 1, 70);
+        assert!(row.contains("mod.ts") && !row.contains("b.rs:2"), "{row}");
     }
 }
