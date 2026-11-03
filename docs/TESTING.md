@@ -1432,6 +1432,15 @@ Setup as above, `[lsp] enabled = false`, at 120x40 and 80x24.
 
 Scratch project with `a.cs`, `a.kt`, `a.rb`, `a.php`, `a.swift` (a namespace/module/protocol, a class with a method and a property, a free function, a local variable in a method). Open each file and press Alt+7: the Structure window lists the definitions with their kind and nesting (methods under their class), and no local variable. Put the caret in a method: the breadcrumb row shows the enclosing class and method. Ctrl+Q exits 0, stderr empty.
 
+### Scenario: Symbol index cache (warm start)
+
+Env as in the other scenarios plus `XDG_CACHE_HOME=/tmp/jt-home/cache RUST_LOG=jetl=debug`; log at `/tmp/jt-home/state/jetl/jetl.log`. Use a scratch project with a few `.rs` files, `[lsp] enabled = false`, 120x40.
+
+1. `rm -rf /tmp/jt-home/cache/jetl/index`; start jetl; the log shows `symbol index: N files` and `symbol cache: wrote N files`. Ctrl+Q exits 0.
+2. `ls /tmp/jt-home/cache/jetl/index/` lists one `<16 hex>.json`.
+3. Start again: the log shows `symbol cache: reused N of N files` and no new `symbol cache: wrote`; Go to Symbol (Alt+Shift+N, `palette.symbols`) finds a symbol at once.
+4. `touch` one `.rs` file and start again: `reused N-1 of N files` and one `symbol cache: wrote`. Stderr empty each time.
+
 ### Limits under tmux
 
 - No kitty keyboard protocol: Ctrl+Shift+letter, Ctrl+Tab, Ctrl+Enter,

@@ -2605,9 +2605,10 @@ pub(crate) mod tests {
         let batch = |name: &str| SymbolBatch {
             files: vec![(
                 "a.rs".into(),
-                Some(FileSymbols { mtime: None, symbols: vec![symbol(name, 0)], refs: Vec::new(), imports: Vec::new() }),
+                Some(FileSymbols { mtime: None, size: 0, symbols: vec![symbol(name, 0)], refs: Vec::new(), imports: Vec::new() }),
             )],
             done: true,
+            changed: true,
         };
         app.handle_msg(AppMsg::Symbols { generation: g, seq: first, batch: batch("older run") });
         assert!(symbol_names(&mut app).is_empty(), "a batch of an older run is dropped");

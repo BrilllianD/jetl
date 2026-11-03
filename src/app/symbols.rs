@@ -154,12 +154,24 @@ impl App {
     }
 
     fn spawn_symbols(&mut self) {
-        let job = self.symbols.start(self.workspace.root.clone());
+        let root = self.workspace.root.clone();
+        let job = self.symbols.start(root.clone()).with_cache(crate::symbols::cache::file(&self.paths.cache_dir, &root));
         let (generation, seq, tx) = (self.workspace.generation, job.seq, self.bus_tx.clone());
         tokio::task::spawn_blocking(move || {
             job.run(|batch| {
                 let _ = tx.send(AppMsg::Symbols { generation, seq, batch });
             })
+        });
+    }
+
+    /// Write the index to its cache file after a run that changed something.
+    fn save_symbol_cache(&mut self) {
+        let Some(files) = self.symbols.take_cache() else { return };
+        let root = self.workspace.root.clone();
+        let file = crate::symbols::cache::file(&self.paths.cache_dir, &root);
+        tokio::task::spawn_blocking(move || match crate::symbols::cache::save(&file, &root, &files) {
+            Ok(()) => tracing::debug!("symbol cache: wrote {} files", files.len()),
+            Err(e) => tracing::debug!("symbol cache {}: {e}", file.display()),
         });
     }
 
@@ -176,6 +188,7 @@ impl App {
         }
         if done {
             tracing::debug!("symbol index: {} files", self.symbols.file_count());
+            self.save_symbol_cache();
         }
         let due = done || self.symbols_fed.is_none_or(|t| t.elapsed() >= SYMBOLS_FEED);
         if due && self.palette.as_ref().is_some_and(|p| p.wants(Source::Symbols)) {
@@ -431,6 +444,25 @@ mod tests {
         app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
         let again = server.recv("workspace/symbol").await;
         assert_eq!(again["params"], json!({"query": "h"}));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn index_cache_written_after_a_run() {
+        let (mut app, dir) = test_app("symbols-cache");
+        std::fs::write(app.workspace.root.join("a.rs"), "fn alpha() {}\n").unwrap();
+        let generation = app.workspace.generation;
+        app.handle_msg(AppMsg::FileIndex { generation, seq: 1, files: vec!["a.rs".into()] });
+        handle_next(&mut app, |m| matches!(m, AppMsg::Symbols { batch, .. } if batch.done)).await;
+        let file = crate::symbols::cache::file(&app.paths.cache_dir, &app.workspace.root);
+        for _ in 0..500 {
+            if file.exists() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let loaded = crate::symbols::cache::load(&file, &app.workspace.root);
+        assert!(loaded.contains_key("a.rs"), "{:?}", loaded.keys().collect::<Vec<_>>());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -9,7 +9,7 @@ use tree_sitter::{Node, QueryCursor, StreamingIterator, Tree};
 
 use crate::editor::syntax::{LanguageDef, RopeProvider};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Import {
     /// Rust: a flat path (`crate::a::B`) or, for `mod name;`, the name. Python: the dotted
     /// name with its leading dots, a from-import's name joined (`pkg.a`, `.b`).

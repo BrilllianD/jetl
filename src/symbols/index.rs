@@ -4,8 +4,10 @@
 //! back in `AppMsg::Symbols` batches. Each file also keeps its tree-sitter
 //! references (`refs_named`) and imports, which resolve to file edges on
 //! demand (`imports_of`, `imported_by`); the job reads the nearest `go.mod`
-//! of each Go file to turn its in-module imports into directory specs. Later runs skip files whose mtime is
-//! unchanged; watcher paths are dropped and parsed again. Runs go through
+//! of each Go file to turn its in-module imports into directory specs. Later runs skip files whose size
+//! and mtime are unchanged; the first run after a root opens takes such files from the on-disk cache
+//! (`cache.rs`), and a finished run that changed anything is written back by the app. Watcher paths are
+//! dropped and parsed again. Runs go through
 //! `util::Coalesce` (one at a time) and carry a seq: a batch of an older
 //! run is dropped.
 
@@ -31,6 +33,8 @@ const BATCH_EVERY: Duration = Duration::from_millis(200);
 #[derive(Debug, Clone)]
 pub struct FileSymbols {
     pub mtime: Option<SystemTime>,
+    /// File length in bytes when read; with `mtime` decides reuse.
+    pub size: u64,
     pub symbols: Vec<Symbol>,
     /// References in the file, in document order (`symbols::extract_text_all`).
     pub refs: Vec<Reference>,
@@ -45,6 +49,8 @@ pub struct SymbolBatch {
     pub files: Vec<(String, Option<FileSymbols>)>,
     /// The last batch of this run.
     pub done: bool,
+    /// Something was parsed or dropped (not only taken from the cache).
+    pub changed: bool,
 }
 
 /// One palette row: a symbol and its file (relative to the root).
@@ -75,6 +81,10 @@ pub struct SymbolIndex {
     entries: Option<Arc<Vec<SymbolEntry>>>,
     /// File import edges, rebuilt on demand after a change.
     edges: Option<Edges>,
+    /// The cache of this root was handed to a run.
+    cache_read: bool,
+    /// Files changed since the cache was last taken.
+    dirty: bool,
 }
 
 /// Resolved imports between indexed files, both directions.
@@ -87,11 +97,14 @@ struct Edges {
 /// A run of the index, detached so it can go to `spawn_blocking`.
 pub struct IndexJob {
     pub root: PathBuf,
-    /// Relative paths with the mtime already indexed (skipped when the file
-    /// still has it); `None` parses the file regardless.
-    pub files: Vec<(String, Option<SystemTime>)>,
+    /// Relative paths with the size and mtime already indexed (skipped when
+    /// the file still has them); `None` parses the file regardless.
+    pub files: Vec<(String, Option<(u64, SystemTime)>)>,
     pub seq: u64,
     cancel: Arc<AtomicU64>,
+    /// This run may take files from the on-disk cache.
+    warm: bool,
+    cache: Option<PathBuf>,
 }
 
 /// Whether the index parses files of this path.
@@ -117,6 +130,7 @@ impl SymbolIndex {
         if self.files.len() != before {
             self.entries = None;
             self.edges = None;
+            self.dirty = true;
         }
         self.candidates = Arc::new(candidates);
         self.rescan = true;
@@ -170,14 +184,30 @@ impl SymbolIndex {
         self.cancel.store(self.seq, Ordering::Relaxed);
         self.running = true;
         let queue = std::mem::take(&mut self.queue);
-        let mut files: Vec<(String, Option<SystemTime>)> = Vec::new();
+        let mut files: Vec<(String, Option<(u64, SystemTime)>)> = Vec::new();
+        let warm = self.rescan && !self.cache_read;
+        self.cache_read |= warm;
         if std::mem::take(&mut self.rescan) {
             for f in self.candidates.iter().filter(|f| !queue.contains(*f)) {
-                files.push((f.clone(), self.files.get(f).and_then(|s| s.mtime)));
+                files.push((f.clone(), self.files.get(f).and_then(|s| s.mtime.map(|m| (s.size, m)))));
             }
         }
         files.extend(queue.into_iter().map(|f| (f, None)));
-        IndexJob { root, files, seq: self.seq, cancel: self.cancel.clone() }
+        IndexJob { root, files, seq: self.seq, cancel: self.cancel.clone(), warm, cache: None }
+    }
+
+    /// The entries to write to the cache file, once a run is done and
+    /// something changed since the last call; sorted by path, without files
+    /// that have no mtime.
+    pub fn take_cache(&mut self) -> Option<Vec<(String, FileSymbols)>> {
+        if self.running || !self.dirty {
+            return None;
+        }
+        self.dirty = false;
+        let mut out: Vec<(String, FileSymbols)> =
+            self.files.iter().filter(|(_, f)| f.mtime.is_some()).map(|(p, f)| (p.clone(), f.clone())).collect();
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        Some(out)
     }
 
     /// Apply a batch of run `seq`. Returns `None` when it is stale (dropped),
@@ -187,6 +217,7 @@ impl SymbolIndex {
             return None;
         }
         self.run.touch();
+        self.dirty |= batch.changed;
         if !batch.files.is_empty() {
             self.entries = None;
             self.edges = None;
@@ -285,6 +316,12 @@ impl SymbolIndex {
 }
 
 impl IndexJob {
+    /// Take unchanged files from the cache file (first run of a root only).
+    pub fn with_cache(mut self, file: PathBuf) -> Self {
+        self.cache = self.warm.then_some(file);
+        self
+    }
+
     /// Parse the files in order; `send` gets the batches, the last with
     /// `done`. Nothing is sent after a cancel.
     pub fn run(self, mut send: impl FnMut(SymbolBatch)) {
@@ -293,6 +330,8 @@ impl IndexJob {
         let mut batch = SymbolBatch::default();
         let mut last_send = Instant::now();
         let mut go_mods: HashMap<String, Option<String>> = HashMap::new();
+        let mut cached = self.cache.as_deref().map(|f| super::cache::load(f, &self.root)).unwrap_or_default();
+        let mut reused = 0usize;
         for (rel, known) in &self.files {
             if cancelled() {
                 return;
@@ -300,7 +339,21 @@ impl IndexJob {
             let path = self.root.join(rel);
             let meta = std::fs::metadata(&path).ok().filter(|m| m.is_file() && m.len() <= MAX_FILE_BYTES);
             let mtime = meta.as_ref().and_then(|m| m.modified().ok());
-            if known.is_some() && *known == mtime {
+            let size = meta.as_ref().map(|m| m.len());
+            let stamp = size.zip(mtime);
+            if known.is_some() && *known == stamp {
+                continue;
+            }
+            if let Some(c) = cached.remove(rel)
+                && stamp.is_some()
+                && c.mtime.map(|m| (c.size, m)) == stamp
+            {
+                batch.files.push((rel.clone(), Some(c)));
+                reused += 1;
+                if batch.files.len() >= BATCH_FILES || last_send.elapsed() >= BATCH_EVERY {
+                    send(std::mem::take(&mut batch));
+                    last_send = Instant::now();
+                }
                 continue;
             }
             let syms = meta.and_then(|_| parse(&path, &mut parser)).map(|(symbols, refs, mut imports)| {
@@ -315,13 +368,17 @@ impl IndexJob {
                             .clone()
                     });
                 }
-                FileSymbols { mtime, symbols, refs, imports }
+                FileSymbols { mtime, size: size.unwrap_or(0), symbols, refs, imports }
             });
+            batch.changed = true;
             batch.files.push((rel.clone(), syms));
             if batch.files.len() >= BATCH_FILES || last_send.elapsed() >= BATCH_EVERY {
                 send(std::mem::take(&mut batch));
                 last_send = Instant::now();
             }
+        }
+        if self.cache.is_some() {
+            tracing::debug!("symbol cache: reused {reused} of {} files", self.files.len());
         }
         if !cancelled() {
             batch.done = true;
@@ -350,7 +407,7 @@ mod tests {
     }
 
     fn file(refs: Vec<Reference>) -> Option<FileSymbols> {
-        Some(FileSymbols { mtime: None, symbols: vec![], refs, imports: vec![] })
+        Some(FileSymbols { mtime: None, size: 0, symbols: vec![], refs, imports: vec![] })
     }
 
     #[test]
@@ -360,6 +417,7 @@ mod tests {
         let batch = SymbolBatch {
             files: vec![("b.rs".into(), file(vec![r("f", 3), r("g", 1)])), ("a.rs".into(), file(vec![r("f", 9), r("f", 2)]))],
             done: true,
+            changed: true,
         };
         assert!(idx.on_batch(seq, batch).is_some());
         let got: Vec<(&str, usize)> = idx.refs_named("f").into_iter().map(|(p, r)| (p, r.line)).collect();
@@ -390,7 +448,7 @@ mod tests {
 
     fn fs(imports: &[(&str, bool)]) -> Option<FileSymbols> {
         let imports = imports.iter().map(|(spec, decl)| Import { spec: (*spec).into(), line: 0, decl: *decl }).collect();
-        Some(FileSymbols { mtime: None, symbols: vec![], refs: vec![], imports })
+        Some(FileSymbols { mtime: None, size: 0, symbols: vec![], refs: vec![], imports })
     }
 
     fn strs(v: Vec<Arc<str>>) -> Vec<String> {
@@ -410,7 +468,7 @@ mod tests {
             ("pkg/a.py".to_string(), fs(&[(".b", false)])),
             ("pkg/b.py".to_string(), fs(&[])),
         ];
-        assert!(idx.on_batch(seq, SymbolBatch { files, done: true }).is_some());
+        assert!(idx.on_batch(seq, SymbolBatch { files, done: true, changed: true }).is_some());
         #[cfg(feature = "lang-rust")]
         {
             assert_eq!(strs(idx.imports_of("src/main.rs")), ["src/app/mod.rs", "src/config.rs"]);
@@ -423,7 +481,7 @@ mod tests {
         }
         assert!(idx.imports_of("nope.rs").is_empty());
         let seq = idx.start(PathBuf::from("/nonexistent")).seq;
-        let batch = SymbolBatch { files: vec![("src/config.rs".to_string(), None)], done: true };
+        let batch = SymbolBatch { files: vec![("src/config.rs".to_string(), None)], done: true, changed: true };
         assert!(idx.on_batch(seq, batch).is_some());
         assert!(idx.imported_by("src/config.rs").is_empty());
         #[cfg(feature = "lang-rust")]

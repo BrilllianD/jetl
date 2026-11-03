@@ -2,6 +2,7 @@
 //! Structure window (`panel.rs`, the active buffer's live tree) and the
 //! project symbol index (`index.rs`, files parsed off the main thread).
 
+pub mod cache;
 pub mod imports;
 pub mod index;
 pub mod panel;
@@ -274,6 +275,9 @@ pub fn extract_index(
 
 /// The kind shown for a definition: the capture's (`function`, `class`,
 /// ...) unless the node says more (a Rust `struct` is a `class` capture).
+/// Every literal `kind_label` returns; keep in sync.
+pub(crate) const NODE_KINDS: [&str; 8] = ["struct", "enum", "union", "trait", "method", "mod", "macro", "type"];
+
 fn kind_label(capture: &'static str, node: &str) -> &'static str {
     match node {
         "struct_item" | "struct_specifier" => "struct",
@@ -314,6 +318,30 @@ pub(crate) fn clean_name(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn kind_label_literals_are_node_kinds() {
+        let nodes = [
+            "struct_item",
+            "struct_specifier",
+            "enum_item",
+            "enum_specifier",
+            "union_item",
+            "trait_item",
+            "trait_declaration",
+            "method_declaration",
+            "mod_item",
+            "macro_definition",
+            "type_item",
+            "type_spec",
+            "type_definition",
+        ];
+        for n in nodes {
+            let k = kind_label("x", n);
+            assert!(NODE_KINDS.contains(&k), "{n} gives {k}");
+        }
+        assert_eq!(kind_label("x", "other"), "x");
+    }
 
     #[cfg(feature = "lang-rust")]
     #[test]
