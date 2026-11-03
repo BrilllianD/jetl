@@ -231,9 +231,9 @@ impl App {
                 Hit::Toolbar if button == MouseButton::Right => self.toolbar_menu(m.column, m.row),
                 Hit::Toolbar => {
                     if button == MouseButton::Left
-                        && let Some((b, _)) = self.layout.toolbar_hit(m.column, m.row)
+                        && let Some((b, r)) = self.layout.toolbar_hit(m.column, m.row)
                     {
-                        self.perform(crate::ui::toolbar::action(b));
+                        self.perform(crate::ui::toolbar::press(b, r));
                     }
                 }
                 Hit::Strip => match self.layout.strip_hit(m.column, m.row) {

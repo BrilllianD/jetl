@@ -484,6 +484,15 @@ pub enum EventLogAction {
 pub enum RunAction {
     /// Run the selected configuration; the picker when none.
     RunSelected,
+    /// The dropdown of run configurations, anchored under the cell `x`, `y`
+    /// (the toolbar widget, the Run window's picker).
+    ConfigMenu {
+        x: u16,
+        y: u16,
+    },
+    /// Make the named configuration the selected one without running it
+    /// (the dropdown's rows).
+    Select(String),
     /// Open the Run Configurations window.
     EditConfigs,
     Rerun,

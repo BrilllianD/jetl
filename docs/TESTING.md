@@ -1389,8 +1389,13 @@ Setup as above with the default config (`[lsp] enabled = false` only), at 120x40
    label reads `tm22-wt (<repo dir>)`.
 5. Row 1 holds ` Select Configuration ▾ ` and ` ▶ ` before the ` ⌕ ` ` ⚙ ` pair; hover ▶: `Run  Shift+F10` shows on row 2.
 6. With `$ROOT/.jetl/run.toml` holding `[[configs]]`, `name = "nap"`, `command = ["sh", "-c", "sleep 20"]`, click
-   the name: the Run palette opens; pick `nap`: the task starts and the widget reads ` ⠋ nap ▾ ` in the accent
-   colour with ` ↻ ` and ` ■ `. Hide the Run window (Alt+4): the spinner keeps moving.
+   the name: a menu opens on row 2 under the widget's left edge (shifted left at the right edge) listing `nap`, a
+   divider, `Edit Configurations…`, `Rerun Failed Tests` (dim), `Stop` (dim); pick `nap`: the widget reads
+   ` nap ▾ ` and nothing runs; click ▶: the task starts and the widget reads ` ⠋ nap ▾ ` in the accent colour
+   with ` ↻ ` and ` ■ `. Hide the Run window (Alt+4): the spinner keeps moving.
+6a. Alt+4 to show the Run window, click its ` nap ▾ ` picker: the same menu opens at the picker's left column
+   (above it when there is no room below); while `nap` runs `Stop` is enabled and choosing it stops the task;
+   `M-S-F10` still opens the centred Run palette.
 7. Click ■: the task stops and the widget returns to ` nap ▾ ` and ` ▶ `; click ▶: it runs again.
 8. At 80x24 with a configuration named `integration-tests`, the toolbar still shows ▶ before ` ⌕ ` ` ⚙ ` (or at the right edge once those drop).
 9. `resize-window -y 11` hides the row and the strip's menu cell is back on row 1. Zen (its key from

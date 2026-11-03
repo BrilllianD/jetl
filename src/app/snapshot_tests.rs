@@ -3558,6 +3558,53 @@ async fn app_toolbar_menu_open() {
     assert_snapshot!("app_toolbar_menu_open", snapshot(&term, &marks, None));
 }
 
+/// Two run configurations for the dropdown snapshots.
+fn two_run_tasks() -> Vec<crate::run::RunTask> {
+    let text = "[[run.tasks]]\nname = \"check\"\ncommand = \"cargo check\"\n[[run.tasks]]\nname = \"integration-tests\"\ncommand = \"cargo test\"\n";
+    crate::config::Config::parse(text).unwrap().run.tasks
+}
+
+#[tokio::test]
+async fn app_toolbar_run_config_menu() {
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    let mut fx = stable_app("toolbar-run-menu");
+    let app = &mut fx.app;
+    app.config.ui.toolbar = true;
+    app.run.set_loaded_tasks(two_run_tasks());
+    app.run.selected = Some("check".into());
+    draw_app(app, 120, 40);
+    let r = app.layout.toolbar_hits.iter().find(|(b, _)| *b == crate::ui::layout::ToolbarButton::RunConfig).unwrap().1;
+    app.handle_mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: r.x + 1,
+        row: r.y,
+        modifiers: KeyModifiers::NONE,
+    });
+    assert!(app.menu.is_some());
+    let term = draw_app(app, 120, 40);
+    assert_snapshot!("app_toolbar_run_config_menu", snapshot(&term, &menu_marks(&app.theme), None));
+}
+
+#[tokio::test]
+async fn run_window_config_menu() {
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    let mut fx = stable_app("run-config-menu");
+    let app = &mut fx.app;
+    run_fixture(app);
+    app.run.set_loaded_tasks(two_run_tasks());
+    draw_app(app, 80, 24);
+    let r = app.run_panel.hit_rect("▾").unwrap();
+    app.handle_mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: r.x + 1,
+        row: r.y,
+        modifiers: KeyModifiers::NONE,
+    });
+    assert!(app.menu.is_some());
+    let term = draw_app(app, 80, 24);
+    assert_snapshot!("run_window_config_menu", snapshot(&term, &menu_marks(&app.theme), None));
+}
+
 #[tokio::test]
 async fn app_toolbar_branch() {
     use crate::git::model::{InProgress, InProgressKind};

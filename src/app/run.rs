@@ -52,6 +52,8 @@ pub struct RunState {
     tasks_loaded: bool,
     /// `run.run_selected` waits for the list.
     run_selected_pending: bool,
+    /// The dropdown waits for the list: its anchor.
+    menu_pending: Option<(u16, u16)>,
 }
 
 #[derive(Debug)]
@@ -74,6 +76,13 @@ impl Job {
 impl RunState {
     pub fn running(&self) -> bool {
         self.job.is_some()
+    }
+
+    /// A loaded task list without the background load, for tests that draw.
+    #[cfg(test)]
+    pub(crate) fn set_loaded_tasks(&mut self, tasks: Vec<RunTask>) {
+        self.tasks = tasks;
+        self.tasks_loaded = true;
     }
 
     /// The running task's name.
@@ -328,6 +337,40 @@ impl App {
         if seq == self.run.tasks_requested && std::mem::take(&mut self.run.run_selected_pending) {
             self.run_selected();
         }
+        if seq == self.run.tasks_requested
+            && let Some((x, y)) = self.run.menu_pending.take()
+            && !crate::ui::tool_strip::overlay_open(self)
+        {
+            self.run_config_menu(x, y);
+        }
+    }
+
+    /// The dropdown under the toolbar's run widget and the Run window's
+    /// picker. Waits for the list when it has not loaded yet.
+    pub(super) fn run_config_menu(&mut self, x: u16, y: u16) {
+        use crate::actions::{Action, RunAction};
+        use crate::event::Effect;
+        use crate::ui::menu::{ContextMenu, MenuItem};
+        if !self.run.tasks_loaded {
+            self.run.menu_pending = Some((x, y));
+            self.load_run_tasks();
+            return;
+        }
+        let mut items: Vec<MenuItem> =
+            self.run.tasks.iter().map(|t| MenuItem::new(t.name.clone(), Action::Run(RunAction::Select(t.name.clone())))).collect();
+        if items.is_empty() {
+            items.push(MenuItem::new("No Configurations", Action::Run(RunAction::EditConfigs)).enabled(false));
+        }
+        items.push(MenuItem::separator());
+        items.push(MenuItem::new("Edit Configurations…", Action::Run(RunAction::EditConfigs)));
+        items.push(MenuItem::new("Rerun Failed Tests", Action::Run(RunAction::RerunFailed)).enabled(self.run_panel.has_failed()));
+        items.push(MenuItem::new("Stop", Action::Run(RunAction::Stop)).enabled(self.run.running()));
+        self.apply_effects(vec![Effect::ContextMenu(ContextMenu::new(items, x, y).shifted())]);
+    }
+
+    /// Make a configuration the selected one; nothing runs.
+    pub(super) fn select_run_config(&mut self, name: String) {
+        self.run.selected = Some(name);
     }
 
     /// `run.run_selected`: the selected configuration; the picker when none
@@ -357,6 +400,7 @@ impl App {
         self.run.selected = None;
         self.run.tasks_loaded = false;
         self.run.run_selected_pending = false;
+        self.run.menu_pending = None;
         self.run_configs = None;
         self.run_panel.clear();
     }
@@ -587,6 +631,56 @@ mod tests {
 
     fn two_configs(app: &mut App) {
         app.config.run.tasks = vec![shell("a", "echo a"), shell("b", "echo b")];
+    }
+
+    #[tokio::test]
+    async fn config_menu_waits_for_the_list_then_selects_without_running() {
+        let (mut app, dir) = test_app("run-config-menu");
+        two_configs(&mut app);
+        assert!(!app.run.tasks_loaded);
+        app.perform(Action::Run(RunAction::ConfigMenu { x: 5, y: 0 }));
+        assert!(app.menu.is_none());
+        handle_next(&mut app, |m| matches!(m, AppMsg::RunTasks { .. })).await;
+        let menu = app.menu.as_ref().unwrap();
+        let labels: Vec<&str> = menu.items.iter().map(|i| i.label.as_str()).collect();
+        assert_eq!(labels, ["a", "b", "", "Edit Configurations…", "Rerun Failed Tests", "Stop"]);
+        assert!(!menu.items[4].enabled && !menu.items[5].enabled);
+        let pick = menu.items[1].action.clone().unwrap();
+        app.menu = None;
+        app.perform(pick);
+        assert_eq!(app.run.selected.as_deref(), Some("b"));
+        assert!(!app.run.running());
+        assert!(app.palette.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn config_menu_opens_at_once_once_loaded() {
+        let (mut app, dir) = test_app("run-config-menu-loaded");
+        app.run.set_loaded_tasks(vec![]);
+        app.run.fake_running("nap");
+        app.perform(Action::Run(RunAction::ConfigMenu { x: 5, y: 0 }));
+        let menu = app.menu.as_ref().unwrap();
+        assert_eq!(menu.items[0].label, "No Configurations");
+        assert!(!menu.items[0].enabled);
+        let stop = menu.items.last().unwrap();
+        assert_eq!(stop.label, "Stop");
+        assert!(stop.enabled);
+        app.run.menu_pending = Some((1, 1));
+        app.run_root_changed();
+        assert!(app.run.menu_pending.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn config_menu_pending_drops_under_an_overlay() {
+        let (mut app, dir) = test_app("run-config-menu-overlay");
+        two_configs(&mut app);
+        app.perform(Action::Run(RunAction::ConfigMenu { x: 5, y: 0 }));
+        app.open_palette(PaletteKind::Files);
+        handle_next(&mut app, |m| matches!(m, AppMsg::RunTasks { .. })).await;
+        assert!(app.menu.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn texts(app: &App) -> Vec<String> {

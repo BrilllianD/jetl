@@ -263,6 +263,15 @@ pub fn action(button: ToolbarButton) -> Action {
     }
 }
 
+/// The action a press on `button` at `rect` runs: the run configuration
+/// widget opens its dropdown under itself; the rest run [`action`].
+pub fn press(button: ToolbarButton, rect: Rect) -> Action {
+    match button {
+        ToolbarButton::RunConfig => Action::Run(RunAction::ConfigMenu { x: rect.x, y: rect.y }),
+        b => action(b),
+    }
+}
+
 /// The name shown in the tooltip.
 pub fn title(button: ToolbarButton) -> &'static str {
     match button {
@@ -439,6 +448,12 @@ mod tests {
         assert_eq!(action(ToolbarButton::Run), Action::Run(RunAction::RunSelected));
         assert_eq!(action(ToolbarButton::Rerun), Action::Run(RunAction::Rerun));
         assert_eq!(action(ToolbarButton::Stop), Action::Run(RunAction::Stop));
+    }
+
+    #[test]
+    fn press_anchors_the_run_config_dropdown() {
+        assert_eq!(press(ToolbarButton::RunConfig, Rect::new(70, 0, 12, 1)), Action::Run(RunAction::ConfigMenu { x: 70, y: 0 }));
+        assert_eq!(press(ToolbarButton::Run, Rect::default()), action(ToolbarButton::Run));
     }
 
     #[test]

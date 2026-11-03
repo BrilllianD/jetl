@@ -1120,6 +1120,16 @@ impl App {
                 self.run_selected();
                 return;
             }
+            Action::Run(RunAction::ConfigMenu { x, y }) => {
+                drop(cx);
+                self.run_config_menu(*x, *y);
+                return;
+            }
+            Action::Run(RunAction::Select(name)) => {
+                drop(cx);
+                self.select_run_config(name.clone());
+                return;
+            }
             Action::Run(RunAction::EditConfigs) => {
                 drop(cx);
                 self.open_run_configs();
@@ -5073,9 +5083,15 @@ mod strip_tests {
         let run = toolbar_hit(&app, B::Run);
         assert_eq!(run.right(), 100 - 8);
         let cfg = toolbar_hit(&app, B::RunConfig);
+        app.run.set_loaded_tasks(vec![]);
         click(&mut app, cfg.x + 1, 0);
-        assert!(app.palette.as_ref().unwrap().wants(Source::Tasks));
-        app.palette = None;
+        assert!(app.palette.is_none());
+        draw(&mut app);
+        let menu = app.menu.as_ref().unwrap();
+        assert_eq!(menu.rect().y, 1);
+        assert!(menu.rect().x <= cfg.x);
+        assert_eq!(menu.items[0].label, "No Configurations");
+        app.menu = None;
         assert!(app.run.selected.is_none());
         click(&mut app, run.x + 1, 0);
         assert!(app.palette.as_ref().unwrap().wants(Source::Tasks));

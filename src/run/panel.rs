@@ -22,7 +22,7 @@ use unicode_width::UnicodeWidthStr;
 
 use super::matcher::{Link, RunLine, Severity};
 use super::testing::{TestCase, TestRun, TestStatus};
-use crate::actions::{Action, AppAction, PaletteKind, RunAction};
+use crate::actions::{Action, RunAction};
 use crate::app::Ctx;
 use crate::config::theme::Theme;
 use crate::event::{Effect, Level, Mouse};
@@ -217,7 +217,7 @@ impl RunPanel {
         self.view
     }
 
-    fn has_failed(&self) -> bool {
+    pub(crate) fn has_failed(&self) -> bool {
         self.tests.as_ref().is_some_and(|t| t.failed().next().is_some())
     }
 
@@ -430,6 +430,8 @@ impl RunPanel {
             | RunAction::HttpRequestAtCaret
             | RunAction::Stop
             | RunAction::RunSelected
+            | RunAction::ConfigMenu { .. }
+            | RunAction::Select(_)
             | RunAction::EditConfigs => return false,
             RunAction::ToggleView | RunAction::Expand | RunAction::Collapse => {}
         }
@@ -443,15 +445,15 @@ impl RunPanel {
     pub fn handle_mouse(&mut self, m: &Mouse, cx: &mut Ctx) -> bool {
         match m.kind {
             MouseEventKind::Down(MouseButton::Left) if self.hits.iter().any(|(_, r)| r.contains((m.x, m.y).into())) => {
-                let btn = self.hits.iter().find(|(_, r)| r.contains((m.x, m.y).into())).map(|(b, _)| *b);
-                let action = match btn {
-                    Some(Btn::Picker) => Some(Action::App(AppAction::OpenPalette(PaletteKind::RunTasks))),
-                    Some(Btn::Run) => Some(Action::Run(RunAction::RunSelected)),
-                    Some(Btn::Rerun) if self.header.is_some() => Some(Action::Run(RunAction::Rerun)),
-                    Some(Btn::Stop) if self.running() => Some(Action::Run(RunAction::Stop)),
-                    Some(Btn::RerunFailed) if self.has_failed() => Some(Action::Run(RunAction::RerunFailed)),
-                    Some(Btn::View(v)) if v != self.view => Some(Action::Run(RunAction::ToggleView)),
-                    Some(Btn::EditConfigs) => Some(Action::Run(RunAction::EditConfigs)),
+                let hit = self.hits.iter().find(|(_, r)| r.contains((m.x, m.y).into())).copied();
+                let action = match hit {
+                    Some((Btn::Picker, r)) => Some(Action::Run(RunAction::ConfigMenu { x: r.x, y: r.y })),
+                    Some((Btn::Run, _)) => Some(Action::Run(RunAction::RunSelected)),
+                    Some((Btn::Rerun, _)) if self.header.is_some() => Some(Action::Run(RunAction::Rerun)),
+                    Some((Btn::Stop, _)) if self.running() => Some(Action::Run(RunAction::Stop)),
+                    Some((Btn::RerunFailed, _)) if self.has_failed() => Some(Action::Run(RunAction::RerunFailed)),
+                    Some((Btn::View(v), _)) if v != self.view => Some(Action::Run(RunAction::ToggleView)),
+                    Some((Btn::EditConfigs, _)) => Some(Action::Run(RunAction::EditConfigs)),
                     _ => None,
                 };
                 if let Some(a) = action {
@@ -772,6 +774,7 @@ fn format_elapsed(d: Duration) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::actions::PaletteKind;
 
     #[test]
     fn elapsed_format() {
@@ -817,11 +820,6 @@ mod tests {
     async fn toolbar_buttons_perform_their_actions() {
         let (mut app, dir) = test_app("run-toolbar");
         draw(&mut app.run_panel, 80, 8);
-        // Picker: the Run picker opens.
-        assert!(app.palette.is_none());
-        click(&mut app, "▾");
-        assert_eq!(app.palette.as_ref().map(|p| p.kind), Some(PaletteKind::RunTasks));
-        app.palette = None;
         // Run asks for the selected configuration (it waits for the list, no
         // picker); Rerun without a last run opens the picker.
         app.run.selected = Some("x".into());
@@ -850,6 +848,12 @@ mod tests {
         click(&mut app, "Rerun");
         assert_eq!(app.run.seq, seq + 1);
         app.run.kill();
+        // Picker: the configuration dropdown opens, not the palette.
+        app.run.set_loaded_tasks(vec![]);
+        click(&mut app, "▾");
+        assert!(app.palette.is_none());
+        assert!(app.menu.is_some());
+        app.menu = None;
         let _ = std::fs::remove_dir_all(&dir);
     }
 

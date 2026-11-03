@@ -1,0 +1,49 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &menu_marks(&app.theme), None)"
+---
+120x40 cursor=hidden
+00  ≣   root ▾                                                                                         check ▾   ▶   ⌕   ⚙
+01  1 ┌ Project: root ───────────────┐│                                                  ╭────────────────────────────────╮
+02  ⌂ │                              ││                                                  │ check                          │
+03  2 │                              ││                                                  │ integration-tests              │
+04  ◫ │                              ││                                                  ├────────────────────────────────┤
+05  7 │                              ││                                                  │ Edit Configurations…           │
+06  ⊢ │                              ││                                                  │ Rerun Failed Tests             │
+07    │                              ││                                                  │ Stop                   Ctrl+F2 │
+08    │                              ││                                                  ╰────────────────────────────────╯
+09    │                              ││
+10    │                              ││
+11    │                              ││
+12    │                              ││
+13    │                              ││
+14    │                              ││
+15    │                              ││
+16    │                              ││
+17    │                              ││
+18    │                              ││
+19    │                              ││
+20  ⋔ │                              ││      No files open. Alt+1 opens the Project view; Ctrl+Shift+N finds a file.
+21    │                              ││
+22  ✎ │                              ││
+23    │                              ││
+24  ✓ │                              ││
+25  8 │                              ││
+26  ⟲ │                              ││
+27  5 │                              ││
+28  ⚑ │                              ││
+29  9 │                              ││
+30  ⎇ │                              ││
+31    │                              ││
+32  ❯ │                              ││
+33  6 │                              ││
+34  ⚠ │                              ││
+35  4 │                              ││
+36  ► │                              ││
+37  3 │                              ││
+38  ⌕ └──────────────────────────────┘│
+39
+-- marks: L=selected d=dim
+02                                                                                        LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL
+06                                                                                        dddddddddddddddddddddddddddddddd
+07                                                                                        dddddddddddddddddddddddddddddddd
