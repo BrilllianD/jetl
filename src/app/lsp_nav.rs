@@ -390,11 +390,8 @@ impl App {
     /// occurrence. Starts a reload when the index file changed on disk (this
     /// lookup still uses the loaded index).
     fn scip_caret(&mut self, id: BufferId) -> Option<(String, SymId, bool)> {
-        let ix = self.scip.index.as_ref()?;
-        let on_disk = std::fs::metadata(ix.file()).and_then(|m| m.modified()).ok();
-        if on_disk.is_some_and(|t| t != ix.mtime()) && !self.scip.loading {
-            self.load_scip();
-        }
+        self.scip_check_reload();
+        self.scip.index.as_ref()?;
         let b = self.editor.buffers.iter().find(|b| b.id == id)?;
         let rel = b.path.as_ref()?.strip_prefix(&self.workspace.root).ok()?.to_string_lossy().replace('\\', "/");
         if !self.scip_fresh(&rel) {
@@ -1528,6 +1525,73 @@ mod tests {
         // calls like `util::helper(..)`, so today's path finds nothing.
         assert!(app.palette.is_none());
         assert!(toasts(&app).contains(&"No usages found".to_string()), "{:?}", toasts(&app));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_failed_reload_keeps_the_index_and_retries_on_the_next_change() {
+        let (mut app, dir, root) = scip_app("scip-reload").await;
+        let file = root.join("index.scip");
+        let old = app.scip.index.as_ref().unwrap().mtime();
+        let secs = |s| std::time::SystemTime::now() - std::time::Duration::from_secs(s);
+        std::fs::write(&file, b"half written \xff").unwrap();
+        set_mtime(&file, secs(20));
+        goto(&mut app, 3, 12);
+        act(&mut app, LspAction::FindUsages);
+        assert!(app.scip.loading);
+        handle_next(&mut app, |m| matches!(m, AppMsg::Scip { .. })).await;
+        assert_eq!(app.scip.index.as_ref().map(|ix| ix.mtime()), Some(old), "the old index stays");
+        assert!(toasts(&app).iter().any(|t| t.starts_with("SCIP index index.scip:")), "{:?}", toasts(&app));
+        // The same failed mtime: no second load.
+        app.palette = None;
+        act(&mut app, LspAction::FindUsages);
+        assert!(!app.scip.loading);
+        // The file changes again and is good: the next lookup retries.
+        let main: &[(&[i32], &str, bool)] = &[(&[1, 3, 7], "t main().", true)];
+        crate::symbols::scip::write_test_index(&file, "", &[("src/main.rs", scip::Encoding::Utf8, main)]);
+        let newer = secs(10);
+        set_mtime(&file, newer);
+        app.palette = None;
+        act(&mut app, LspAction::FindUsages);
+        assert!(app.scip.loading);
+        handle_next(&mut app, |m| matches!(m, AppMsg::Scip { .. })).await;
+        assert_eq!(app.scip.index.as_ref().map(|ix| ix.mtime()), Some(newer));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_failed_first_load_retries_when_the_file_changes() {
+        let (mut app, dir) = test_app("scip-first");
+        let root = app.workspace.root.clone();
+        std::fs::write(root.join("index.scip"), b"half written \xff").unwrap();
+        let mut c = app.config.clone();
+        c.index.scip = "index.scip".into();
+        app.apply_config(c);
+        handle_next(&mut app, |m| matches!(m, AppMsg::Scip { .. })).await;
+        assert!(app.scip.index.is_none());
+        app.scip_check_reload();
+        assert!(!app.scip.loading, "the failed mtime is not retried");
+        let main: &[(&[i32], &str, bool)] = &[(&[1, 3, 7], "t main().", true)];
+        crate::symbols::scip::write_test_index(&root.join("index.scip"), "", &[("src/main.rs", scip::Encoding::Utf8, main)]);
+        set_mtime(&root.join("index.scip"), std::time::SystemTime::now() - std::time::Duration::from_secs(5));
+        app.scip_check_reload();
+        assert!(app.scip.loading);
+        handle_next(&mut app, |m| matches!(m, AppMsg::Scip { .. })).await;
+        assert!(app.scip.index.is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_root_switch_drops_the_old_roots_index() {
+        let (mut app, dir, _) = scip_app("scip-switch").await;
+        let other = dir.join("other-root");
+        std::fs::create_dir_all(other.join("src")).unwrap();
+        std::fs::write(other.join("src/main.rs"), SCIP_MAIN).unwrap();
+        app.do_switch_root(std::fs::canonicalize(&other).unwrap());
+        assert!(app.scip.index.is_none(), "before the new root's load lands");
+        assert!(!app.scip_fresh("src/main.rs"));
+        handle_next(&mut app, |m| matches!(m, AppMsg::Scip { .. })).await;
+        assert!(app.scip.index.is_none(), "the new root has no index file");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

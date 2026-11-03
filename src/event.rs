@@ -130,7 +130,8 @@ pub enum AppMsg {
     Scip {
         generation: u64,
         seq: u64,
-        result: Result<Box<crate::symbols::scip::ScipIndex>, String>,
+        /// `Err`: the message and the index file's mtime when the load began.
+        result: Result<Box<crate::symbols::scip::ScipIndex>, (String, Option<std::time::SystemTime>)>,
     },
     /// An off-thread palette filter (`Palette::refilter` for large sources):
     /// candidate indices, best first, of filter `seq`; tagged with the

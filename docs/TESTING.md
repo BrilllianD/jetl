@@ -876,7 +876,7 @@ With `[lsp] enabled = false` and `[index] scip = "index.scip"` in
 then `git init -q` (the project root is the nearest git directory, else the file's folder) and `rust-analyzer scip . --output index.scip` in it.
 
 1. `jetl /tmp/scip-demo/src/main.rs`; caret on `helper` in line 3, Ctrl+B:
-   `src/util.rs` opens with the caret on `helper` (column 16 in the status bar).
+   `src/util.rs` opens with the caret on `helper` (column 17 in the status bar: the display column, the emoji is 2 cells wide).
 2. Ctrl+B again on that `helper`: the Locations palette `Usages of helper
    (SCIP)` with two rows in main.rs (lines 3 and 4). Esc.
 3. In main.rs, Alt+F7 on the call in line 4: the same two rows.

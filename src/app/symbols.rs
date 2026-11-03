@@ -219,6 +219,7 @@ impl App {
         let name = self.config.index.scip.trim().to_string();
         if name.is_empty() {
             self.scip.index = None;
+            self.scip.failed_mtime = None;
             self.scip.loading = false;
             return;
         }
@@ -227,12 +228,18 @@ impl App {
         let root = self.workspace.root.clone();
         let file = root.join(name);
         tokio::task::spawn_blocking(move || {
-            let result = crate::symbols::scip::ScipIndex::load(&file, &root).map(Box::new);
+            let mtime = std::fs::metadata(&file).and_then(|m| m.modified()).ok();
+            let result = crate::symbols::scip::ScipIndex::load(&file, &root).map(Box::new).map_err(|e| (e, mtime));
             let _ = tx.send(AppMsg::Scip { generation, seq, result });
         });
     }
 
-    pub(super) fn scip_loaded(&mut self, generation: u64, seq: u64, result: Result<Box<crate::symbols::scip::ScipIndex>, String>) {
+    pub(super) fn scip_loaded(
+        &mut self,
+        generation: u64,
+        seq: u64,
+        result: Result<Box<crate::symbols::scip::ScipIndex>, (String, Option<std::time::SystemTime>)>,
+    ) {
         if generation != self.workspace.generation || seq != self.scip.seq {
             tracing::debug!("dropping stale SCIP index");
             return;
@@ -241,12 +248,32 @@ impl App {
         match result {
             Ok(ix) => {
                 tracing::debug!("scip index: {} documents", ix.doc_count());
+                self.scip.failed_mtime = None;
+                if let Some(w) = ix.warning() {
+                    self.notify(Level::Warn, format!("SCIP {w}"));
+                }
                 self.scip.index = Some(*ix);
             }
-            Err(e) => {
-                self.scip.index = None;
+            Err((e, mtime)) => {
+                // A failed reload keeps the previous index; the failed mtime is not retried.
+                self.scip.failed_mtime = mtime;
                 self.notify(Level::Warn, format!("SCIP index {}: {e}", self.config.index.scip.trim()));
             }
+        }
+    }
+
+    /// Start a reload when the index file's mtime differs from the loaded
+    /// index's (or, without an index, from none) and is not the one that
+    /// failed last.
+    pub(crate) fn scip_check_reload(&mut self) {
+        let name = self.config.index.scip.trim();
+        if name.is_empty() || self.scip.loading {
+            return;
+        }
+        let Some(t) = std::fs::metadata(self.workspace.root.join(name)).and_then(|m| m.modified()).ok() else { return };
+        let loaded = self.scip.index.as_ref().map(|ix| ix.mtime());
+        if loaded != Some(t) && self.scip.failed_mtime != Some(t) {
+            self.load_scip();
         }
     }
 

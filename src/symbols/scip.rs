@@ -142,6 +142,8 @@ pub struct ScipIndex {
     /// Per symbol: (index into `doc_paths`, index into that document's occurrences).
     by_symbol: Vec<Vec<(u32, u32)>>,
     doc_paths: Vec<String>,
+    /// Set when the index has documents but none lands under the root.
+    warning: Option<String>,
 }
 
 impl ScipIndex {
@@ -167,7 +169,9 @@ impl ScipIndex {
             ids: HashMap::new(),
             by_symbol: Vec::new(),
             doc_paths: Vec::new(),
+            warning: None,
         };
+        let total = index.documents.len();
         for doc in index.documents {
             let abs = base.join(&doc.relative_path);
             let Ok(rel) = abs.strip_prefix(root) else { continue };
@@ -208,6 +212,14 @@ impl ScipIndex {
             let encoding = encoding_of(doc.position_encoding);
             ix.docs.insert(rel, ScipDoc { encoding, occurrences });
         }
+        if total > 0 && ix.docs.is_empty() {
+            ix.warning = Some(format!(
+                "{}: no document under {} (project_root {})",
+                ix.file.file_name().unwrap_or_default().to_string_lossy(),
+                root.display(),
+                index.metadata.project_root
+            ));
+        }
         ix
     }
 
@@ -230,6 +242,11 @@ impl ScipIndex {
     /// The index file's mtime when it was read.
     pub fn mtime(&self) -> SystemTime {
         self.mtime
+    }
+
+    /// Why the index is useless for this root, when it is.
+    pub fn warning(&self) -> Option<&str> {
+        self.warning.as_deref()
     }
 
     pub fn doc_count(&self) -> usize {
@@ -285,6 +302,9 @@ pub struct ScipState {
     /// Bumped by every load; a stale result is dropped.
     pub seq: u64,
     pub loading: bool,
+    /// The index file's mtime of the last failed load; the same mtime is not
+    /// retried.
+    pub failed_mtime: Option<SystemTime>,
 }
 
 /// Writes a SCIP file with the crate's own types: per document a path, an
@@ -400,6 +420,26 @@ mod tests {
         assert!(ix.doc("sub/a.rs").is_some());
         assert_eq!(ix.doc("sub/a.rs").unwrap().encoding, Encoding::Utf16);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_index_without_a_document_under_the_root_warns() {
+        let root = temp("outside");
+        let file = root.join("index.scip");
+        let g: &[(&[i32], &str, bool)] = &[(&[0, 0, 1], "t a/", true)];
+        write_test_index(&file, "file:///elsewhere/project", &[("a.rs", Encoding::Utf8, g)]);
+        // The base directory does not exist, so paths fall back to the root and stay inside.
+        assert!(ScipIndex::load(&file, &root).unwrap().warning().is_none());
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        let other = temp("outside-other");
+        write_test_index(&file, &format!("file://{}", other.display()), &[("a.rs", Encoding::Utf8, g)]);
+        let ix = ScipIndex::load(&file, &root).unwrap();
+        assert_eq!(ix.doc_count(), 0);
+        let w = ix.warning().unwrap();
+        assert!(w.starts_with("index.scip: no document under "), "{w}");
+        assert!(w.contains(&format!("project_root file://{}", other.display())), "{w}");
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&other);
     }
 
     #[test]
