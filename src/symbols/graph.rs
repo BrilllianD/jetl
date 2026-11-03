@@ -184,9 +184,23 @@ pub fn scip_calls_in(index: &SymbolIndex, scip: &ScipIndex, rel: &str, sym: usiz
     let Some(f) = index.file(rel) else { return Vec::new() };
     let b = bodies(index, scip, rel);
     let lang = language_of(rel);
+    let Some(doc) = scip.doc(rel) else { return Vec::new() };
+    // Lines `container` can map to `sym`: its tags range and its SCIP bodies; C and C++ fall back to the last
+    // callable above the line, so only the lower bound holds there.
+    let s = &f.symbols[sym];
+    let mut lo = s.start_line.min(s.line);
+    let mut hi = s.end_line;
+    for (span, _) in b.iter().filter(|(_, i)| *i == sym) {
+        lo = lo.min(span.line as usize);
+        hi = hi.max(span.end_line as usize);
+    }
+    if matches!(lang, Some("c" | "cpp")) {
+        hi = usize::MAX;
+    }
     let mut out: Vec<SymId> = Vec::new();
-    for o in scip.doc(rel).map_or(Vec::new(), |d| d.occurrences.iter().collect()) {
-        if o.definition || scip.is_local(o.symbol) || out.contains(&o.symbol) {
+    for o in &doc.occurrences {
+        let line = o.span.line as usize;
+        if line < lo || line > hi || o.definition || scip.is_local(o.symbol) || out.contains(&o.symbol) {
             continue;
         }
         if container(&b, lang, &f.symbols, &o.span) == Some(sym) {
