@@ -151,6 +151,7 @@ pub fn render(app: &mut App, frame: &mut Frame, area: Rect, right: Rect) {
         let row = match side {
             Side::Left => (area.y + 1..area.bottom()).find(|r| free(*r)),
             Side::Bottom => (area.y + 1..area.bottom()).rev().find(|r| free(*r)),
+            // Only when the right strip holds no button, which a real drag cannot reach (it is drawn only with one).
             Side::Right => (right.y + 2..right.bottom()).find(|r| free(*r)),
         };
         if let Some(row) = row {

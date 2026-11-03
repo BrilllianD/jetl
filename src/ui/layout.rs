@@ -1002,6 +1002,13 @@ mod tests {
         let sr = l.rects.strip_right;
         l.strip_hits = vec![(StripButton::Menu, Rect::new(0, 0, 3, 1))];
         assert_eq!(l.strip_drop_at(sr.x + 1, sr.y + 5), Some(StripDrop::End(Side::Right)));
+        // The right strip is drawn only while a window is on the right, so a
+        // hidden one never yields the Right end, whatever the point.
+        let mut l = LayoutState::new(30, 10);
+        l.compute(Rect::new(0, 0, 120, 40));
+        l.strip_hits = vec![(StripButton::Menu, Rect::new(0, 0, 3, 1))];
+        assert!(!l.has_right_strip());
+        assert!((0..120).all(|x| (0..40).all(|y| l.strip_drop_at(x, y) != Some(StripDrop::End(Side::Right)))));
         // A More cell is not a drop target.
         l.strip_hits = vec![(StripButton::More, Rect::new(0, 38, 3, 1))];
         assert_eq!(l.strip_drop_at(1, 38), None);
