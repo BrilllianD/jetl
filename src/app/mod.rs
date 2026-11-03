@@ -23,7 +23,7 @@ use crate::git::{GitPanel, GitService};
 use crate::tui::Term;
 use crate::ui::dialog::Dialog;
 use crate::ui::focus::{Focus, PanelId, Side, ToolWindowId};
-use crate::ui::layout::{LayoutState, SplitterId, StripDrop};
+use crate::ui::layout::{LayoutState, SplitterId, StripDrop, ViewMode};
 use crate::ui::palette::Palette;
 use crate::ui::status_bar::StatusHit;
 use crate::workspace::Workspace;
@@ -1271,7 +1271,20 @@ impl App {
             AppAction::MoveToolWindowButton { tw, up } => self.layout.move_button(tw, up),
             AppAction::RestoreDefaultLayout => self.restore_default_layout(),
             AppAction::ToggleZen => self.toggle_zen(),
-            AppAction::Escape => self.focus.set(PanelId::Editor),
+            AppAction::TogglePinned { tw } => {
+                if let Some(tw) = tw.or(self.focus.current.tool_window()) {
+                    let next = if self.layout.view_mode(tw) == ViewMode::Pinned { ViewMode::Unpinned } else { ViewMode::Pinned };
+                    self.layout.set_view_mode(tw, next);
+                }
+            }
+            AppAction::Escape => {
+                if let Some(tw) = self.focus.current.tool_window()
+                    && self.layout.view_mode(tw) == ViewMode::Unpinned
+                {
+                    self.layout.hide(tw);
+                }
+                self.focus.set(PanelId::Editor);
+            }
             AppAction::OpenPalette(kind) => self.open_palette(kind),
             AppAction::RecentLocations => self.show_recent_locations(),
             AppAction::DebugPanic => {
@@ -1387,6 +1400,11 @@ impl App {
             button("Move Button Down", false),
             MenuItem::separator(),
             MenuItem::new("Restore Default Layout", Action::App(AppAction::RestoreDefaultLayout)),
+            MenuItem::separator(),
+            MenuItem::new(
+                if self.layout.view_mode(tw) == ViewMode::Pinned { "Unpin" } else { "Pin" },
+                Action::App(AppAction::TogglePinned { tw: Some(tw) }),
+            ),
         ];
         self.apply_effects(vec![Effect::ContextMenu(ContextMenu::new(items, x, y))]);
     }
@@ -2964,6 +2982,72 @@ pub(crate) mod tests {
         app.focus.set(PanelId::Git);
         app.handle_key(KeyEvent::new(KeyCode::Char('"'), KeyModifiers::CONTROL));
         assert_eq!(app.layout.maximized, Some(ToolWindowId::Git));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn unpinned_window_hides_when_focus_leaves() {
+        use crate::actions::{FindAction, PaletteKind};
+        let (mut app, dir) = test_app("unpinned");
+        app.toggle_tool_window(ToolWindowId::Git);
+        app.perform(Action::App(AppAction::TogglePinned { tw: None }));
+        draw_frame(&mut app);
+        assert!(app.layout.is_visible(ToolWindowId::Git));
+        app.perform(Action::App(AppAction::OpenPalette(PaletteKind::Files)));
+        draw_frame(&mut app);
+        assert!(app.layout.is_visible(ToolWindowId::Git) && app.focus.is(PanelId::Git));
+        app.palette = None;
+        app.tool_window_side_menu(ToolWindowId::Git, 1, 1);
+        draw_frame(&mut app);
+        assert!(app.layout.is_visible(ToolWindowId::Git));
+        app.menu = None;
+        app.toggle_main_menu();
+        draw_frame(&mut app);
+        assert!(app.layout.is_visible(ToolWindowId::Git));
+        app.toggle_main_menu();
+        app.perform(Action::App(AppAction::FocusEditor));
+        draw_frame(&mut app);
+        assert!(!app.layout.is_visible(ToolWindowId::Git));
+
+        app.toggle_tool_window(ToolWindowId::Find);
+        app.perform(Action::App(AppAction::TogglePinned { tw: None }));
+        app.perform(Action::Find(FindAction::Escape));
+        draw_frame(&mut app);
+        assert!(!app.layout.is_visible(ToolWindowId::Find));
+
+        app.toggle_tool_window(ToolWindowId::Problems);
+        app.perform(Action::App(AppAction::FocusEditor));
+        draw_frame(&mut app);
+        assert!(app.layout.is_visible(ToolWindowId::Problems), "pinned stays");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn escape_hides_only_an_unpinned_window() {
+        let (mut app, dir) = test_app("escape-unpinned");
+        app.toggle_tool_window(ToolWindowId::Git);
+        app.perform(Action::App(AppAction::Escape));
+        assert!(app.focus.is(PanelId::Editor));
+        assert!(app.layout.is_visible(ToolWindowId::Git));
+        app.focus.set(PanelId::Git);
+        app.perform(Action::App(AppAction::TogglePinned { tw: None }));
+        app.perform(Action::App(AppAction::Escape));
+        assert!(!app.layout.is_visible(ToolWindowId::Git));
+        assert!(app.focus.is(PanelId::Editor));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn view_menu_pin_row_needs_a_focused_tool_window() {
+        let (mut app, dir) = test_app("pin-row");
+        let enabled = |app: &super::App| {
+            let bar = app.build_main_menu();
+            let view = bar.menus().iter().find(|m| m.title == "View").unwrap();
+            view.items.iter().find(|i| i.label == "Pin or Unpin Tool Window").unwrap().enabled
+        };
+        assert!(!enabled(&app));
+        app.focus.set(PanelId::Git);
+        assert!(enabled(&app));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -4800,6 +4884,21 @@ mod strip_tests {
     }
 
     #[tokio::test]
+    async fn strip_menu_pins_and_unpins() {
+        let (mut app, dir) = test_app("strip-pin");
+        draw(&mut app);
+        let (_, r) = *app.layout.strip_hits.iter().find(|(b, _)| *b == StripButton::Tool(ToolWindowId::Git)).unwrap();
+        app.handle_mouse(ev(MouseEventKind::Down(MouseButton::Right), r.x + 1, r.y));
+        let menu = app.menu.take().expect("context menu");
+        assert_eq!(menu.items[9].label, "Unpin");
+        app.perform(menu.items[9].action.clone().unwrap());
+        assert_eq!(app.layout.view_mode(ToolWindowId::Git), crate::ui::layout::ViewMode::Unpinned);
+        app.handle_mouse(ev(MouseEventKind::Down(MouseButton::Right), r.x + 1, r.y));
+        assert_eq!(app.menu.as_ref().unwrap().items[9].label, "Pin");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
     async fn strip_right_click_moves_a_window() {
         let (mut app, dir) = test_app("strip-move");
         draw(&mut app);
@@ -4807,10 +4906,11 @@ mod strip_tests {
         app.handle_mouse(ev(MouseEventKind::Down(MouseButton::Right), r.x + 1, r.y));
         let menu = app.menu.as_ref().expect("context menu");
         let labels: Vec<_> = menu.items.iter().map(|i| i.label.clone()).collect();
-        assert_eq!(labels.len(), 8);
+        assert_eq!(labels.len(), 10);
+        assert_eq!(labels[8..], ["", "Unpin"]);
         assert_eq!(labels[4..6], ["Move Button Up", "Move Button Down"]);
         assert_eq!(labels[7], "Restore Default Layout");
-        assert_eq!(menu.items.iter().map(|i| i.enabled).collect::<Vec<_>>(), [true, false, true, true, true, true, true, true]);
+        assert_eq!(menu.items.iter().map(|i| i.enabled).collect::<Vec<_>>(), [true, false, true, true, true, true, true, true, true, true]);
         assert!(!app.layout.is_visible(ToolWindowId::Git), "right-click does not toggle");
         let pos = |app: &super::App, tw| app.layout.order().iter().position(|t| *t == tw).unwrap();
         assert!(pos(&app, ToolWindowId::Terminal) < pos(&app, ToolWindowId::Git));

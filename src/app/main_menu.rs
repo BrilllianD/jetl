@@ -37,6 +37,7 @@ impl App {
                                 Action::App(AppAction::MoveToolWindow { tw: None, side }) => {
                                     self.focus.current.tool_window().is_some_and(|tw| self.layout.side_of(tw) != *side)
                                 }
+                                Action::App(AppAction::TogglePinned { tw: None }) => self.focus.current.tool_window().is_some(),
                                 _ => true,
                             };
                             let enabled = movable && (has_buffer || !needs_buffer(&action)) && self.git_action_available(&action);

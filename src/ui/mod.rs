@@ -81,6 +81,7 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     let area = frame.area();
     let theme = app.theme.clone();
     frame.buffer_mut().set_style(area, Style::default().bg(theme.bg).fg(theme.fg));
+    app.layout.keep_unpinned(&app.focus);
     app.layout.keep_maximized(app.focus.current);
     app.layout.compute(area);
     let rects = app.layout.rects.clone();

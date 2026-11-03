@@ -1356,6 +1356,17 @@ SGR `press`/`release` helpers; a drag is `press 0 c r; press 32 c2 r2; release 0
    swaps it with the button below.
 6. Ctrl+Q and start again: the order and sides are back. No stderr; Ctrl+Q exits with status 0.
 
+### Scenario: unpinned tool window
+
+Setup as above, `[lsp] enabled = false`, at 120x40 and 80x24.
+
+1. Right-click the Git button: the last row is Unpin; choose it. Alt+9 focuses Git; click in the editor: Git
+   hides.
+2. Alt+9 again; Ctrl+Shift+A (palette) and Esc, then F10 and Esc: Git stays shown through both.
+3. In Git press Esc until focus returns to the editor: Git hides. Alt+9, then Alt+1: Git hides, Project shows.
+4. Right-click Git: the row reads Pin. Ctrl+Q and restart: Git's row still reads Pin. Shift+F12, right-click
+   Git: the row reads Unpin (every window Pinned again). Stderr empty, Ctrl+Q exits 0.
+
 ### Limits under tmux
 
 - No kitty keyboard protocol: Ctrl+Shift+letter, Ctrl+Tab, Ctrl+Enter,

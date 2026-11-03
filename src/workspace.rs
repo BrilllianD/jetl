@@ -254,6 +254,9 @@ pub struct SessionLayout {
     /// Tool strip order when it is not the default.
     #[serde(default, skip_serializing_if = "Vec::is_empty", deserialize_with = "known_tool_windows")]
     pub order: Vec<ToolWindowId>,
+    /// Unpinned tool windows (all are Pinned before 0.9).
+    #[serde(default, skip_serializing_if = "Vec::is_empty", deserialize_with = "known_tool_windows")]
+    pub unpinned: Vec<ToolWindowId>,
 }
 
 /// A list of tool window ids, without the ones this build does not know
@@ -552,6 +555,7 @@ impl App {
             sides,
             tasks: Some(tasks),
             order: self.layout.order_overrides(),
+            unpinned: self.layout.unpinned(),
         });
         let expanded = self.project.expanded_dirs().iter().filter_map(|d| d.strip_prefix(&root).ok()).map(Path::to_path_buf).collect();
         let closed_bookmarks =
@@ -805,6 +809,7 @@ impl App {
             sides.extend(tasks.side.map(|s| (ToolWindowId::Tasks, s)));
             self.layout.set_sides(&sides);
             self.layout.set_order(&l.order);
+            self.layout.set_unpinned(&l.unpinned);
             let tasks_side = self.layout.side_of(ToolWindowId::Tasks);
             let slot =
                 |tw: Option<ToolWindowId>, side: Side| if tasks.shown && tasks_side == side { Some(ToolWindowId::Tasks) } else { tw };
@@ -919,6 +924,7 @@ mod tests {
                 sides: vec![],
                 tasks: None,
                 order: vec![],
+                unpinned: vec![],
             }),
             expanded: vec![PathBuf::from("src"), PathBuf::from("src/app")],
             splits: Some(SessionSplits {
@@ -1457,6 +1463,7 @@ mod tests {
             sides: vec![],
             tasks: None,
             order: vec![],
+            unpinned: vec![],
         };
         // A folder deleted since is skipped.
         let expanded = vec![PathBuf::from("a"), PathBuf::from("a/deep"), PathBuf::from("gone")];
@@ -1497,6 +1504,7 @@ mod tests {
             sides: vec![],
             tasks: None,
             order: vec![],
+            unpinned: vec![],
         };
         Session { root: root.to_path_buf(), layout: Some(layout), ..Default::default() }
     }
@@ -1691,21 +1699,39 @@ mod tests {
         assert_eq!(serde_json::from_str::<SessionLayout>(&json).unwrap(), new);
     }
 
+    #[tokio::test]
+    async fn session_keeps_unpinned_windows() {
+        use crate::ui::layout::ViewMode;
+        let (mut app, dir) = crate::app::tests::test_app("session-unpinned");
+        app.layout.set_view_mode(ToolWindowId::Find, ViewMode::Unpinned);
+        let saved = app.session();
+        let (mut other, dir2) = crate::app::tests::test_app("session-unpinned2");
+        let generation = other.workspace.generation;
+        other.session_loaded(generation, saved, vec![]);
+        assert_eq!(other.layout.view_mode(ToolWindowId::Find), ViewMode::Unpinned);
+        assert_eq!(other.layout.view_mode(ToolWindowId::Git), ViewMode::Pinned);
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&dir2);
+    }
+
     #[test]
     fn session_layout_from_0_8_0_loads_with_default_order() {
         // As 0.8.0 writes it.
         let old = r#"{"left":"Project","left_w":30,"bottom":"Git","bottom_h":12,"git_tab":"Log","show_hidden":false,"show_ignored":true,"right_w":30,"sides":[["Find","Right"]],"tasks":{"shown":false,"show_closed":false}}"#;
         let l: SessionLayout = serde_json::from_str(old).unwrap();
-        assert!(l.order.is_empty());
+        assert!(l.order.is_empty() && l.unpinned.is_empty());
         let mut state = crate::ui::layout::LayoutState::new(30, 10);
         state.set_order(&l.order);
         assert_eq!(state.order(), ToolWindowId::ALL);
         assert!(!serde_json::to_string(&l).unwrap().contains("\"order\""), "the default order is not written");
-        let new = SessionLayout { order: vec![ToolWindowId::Git, ToolWindowId::Project], ..l };
+        assert!(!serde_json::to_string(&l).unwrap().contains("\"unpinned\""));
+        let new = SessionLayout { order: vec![ToolWindowId::Git, ToolWindowId::Project], unpinned: vec![ToolWindowId::Git], ..l };
         let json = serde_json::to_string(&new).unwrap();
         assert_eq!(serde_json::from_str::<SessionLayout>(&json).unwrap(), new);
         // A window this build does not know is dropped, not an error.
         let newer = json.replace(r#""order":["Git","#, r#""order":["Git","Nope","#);
         assert_eq!(serde_json::from_str::<SessionLayout>(&newer).unwrap().order, [ToolWindowId::Git, ToolWindowId::Project]);
+        let newer = json.replace(r#""unpinned":["Git"#, r#""unpinned":["Nope","Git"#);
+        assert_eq!(serde_json::from_str::<SessionLayout>(&newer).unwrap().unpinned, [ToolWindowId::Git]);
     }
 }

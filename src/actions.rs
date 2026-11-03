@@ -46,6 +46,11 @@ pub enum AppAction {
     MaximizeToolWindow,
     /// Focus the tool window that last had focus, showing it first (F12).
     LastToolWindow,
+    /// Toggle a tool window between Pinned and Unpinned: the given one, or
+    /// with `None` the focused one (View menu, palette).
+    TogglePinned {
+        tw: Option<ToolWindowId>,
+    },
     /// Put a tool window on a side: the given one, or with `None` the
     /// focused one (View menu, palette).
     MoveToolWindow {
@@ -753,6 +758,7 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "tool_window.next_tab" => "Next tab of the tool window", App(AppAction::NextToolWindowTab);
         "tool_window.prev_tab" => "Previous tab of the tool window", App(AppAction::PrevToolWindowTab);
         "tool_window.maximize" => "Maximize or restore the active tool window", App(AppAction::MaximizeToolWindow);
+        "tool_window.toggle_pinned" => "Pin or unpin the active tool window (an unpinned one hides when focus leaves it)", App(AppAction::TogglePinned { tw: None });
         "tool_window.last" => "Jump to the last active tool window", App(AppAction::LastToolWindow);
         "tool_window.move_left" => "Move the active tool window to the left side", App(AppAction::MoveToolWindow { tw: None, side: Side::Left });
         "tool_window.move_bottom" => "Move the active tool window to the bottom", App(AppAction::MoveToolWindow { tw: None, side: Side::Bottom });

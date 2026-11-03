@@ -217,13 +217,17 @@ pub struct Focus {
     pub prev: PanelId,
     /// The tool window that last had focus (F12 goes back to it).
     pub last_tool: Option<ToolWindowId>,
+    /// Counts `set` calls, a call that keeps the panel included;
+    /// `LayoutState::keep_unpinned` compares it between frames.
+    pub moves: u64,
 }
 
 impl Focus {
     pub fn new() -> Self {
-        Self { current: PanelId::Editor, prev: PanelId::Editor, last_tool: None }
+        Self { current: PanelId::Editor, prev: PanelId::Editor, last_tool: None, moves: 0 }
     }
     pub fn set(&mut self, p: PanelId) {
+        self.moves = self.moves.wrapping_add(1);
         if let Some(tw) = p.tool_window() {
             self.last_tool = Some(tw);
         }
@@ -247,6 +251,14 @@ impl Default for Focus {
 mod tests {
     use super::*;
     use unicode_width::UnicodeWidthStr;
+
+    #[test]
+    fn set_counts_every_call() {
+        let mut f = Focus::new();
+        f.set(PanelId::Editor);
+        f.set(PanelId::Editor);
+        assert_eq!((f.moves, f.current), (2, PanelId::Editor));
+    }
 
     #[test]
     fn icons_have_one_width_and_are_distinct() {

@@ -9,7 +9,7 @@
 
 use ratatui::layout::Rect;
 
-use crate::ui::focus::{PanelId, Side, ToolWindowId};
+use crate::ui::focus::{Focus, PanelId, Side, ToolWindowId};
 
 pub const STRIP_W: u16 = 3;
 /// Minimum width of a side (left or right) tool window.
@@ -73,6 +73,14 @@ pub enum StripButton {
     More,
 }
 
+/// How a tool window docks: an Unpinned one hides when focus leaves it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ViewMode {
+    #[default]
+    Pinned,
+    Unpinned,
+}
+
 /// Where a dragged strip button lands: in the place of a button, or at
 /// the end of a side that has no button to drop onto.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -101,6 +109,10 @@ pub struct LayoutState {
     /// A tool window filling the content area; cleared when it loses focus
     /// (`keep_maximized`), is hidden, or zen starts. Not saved in sessions.
     pub maximized: Option<ToolWindowId>,
+    /// Windows that are not Pinned (never holds `Pinned`).
+    mode: std::collections::HashMap<ToolWindowId, ViewMode>,
+    /// `Focus::moves` as of the last `keep_unpinned`.
+    seen_moves: u64,
 }
 
 impl LayoutState {
@@ -118,6 +130,8 @@ impl LayoutState {
             strip_hits: Vec::new(),
             zen: None,
             maximized: None,
+            mode: std::collections::HashMap::new(),
+            seen_moves: 0,
         }
     }
 
@@ -261,6 +275,43 @@ impl LayoutState {
         }
         self.order = ToolWindowId::ALL.to_vec();
         self.maximized = None;
+        self.mode.clear();
+    }
+
+    pub fn view_mode(&self, tw: ToolWindowId) -> ViewMode {
+        self.mode.get(&tw).copied().unwrap_or_default()
+    }
+
+    pub fn set_view_mode(&mut self, tw: ToolWindowId, mode: ViewMode) {
+        if mode == ViewMode::Pinned {
+            self.mode.remove(&tw);
+        } else {
+            self.mode.insert(tw, mode);
+        }
+    }
+
+    /// Unpinned windows in `ToolWindowId::ALL` order (for the session).
+    pub fn unpinned(&self) -> Vec<ToolWindowId> {
+        ToolWindowId::ALL.into_iter().filter(|tw| self.view_mode(*tw) == ViewMode::Unpinned).collect()
+    }
+
+    /// Replace the whole mode map (session restore).
+    pub fn set_unpinned(&mut self, tws: &[ToolWindowId]) {
+        self.mode = tws.iter().map(|tw| (*tw, ViewMode::Unpinned)).collect();
+    }
+
+    /// Hide the shown Unpinned windows once focus has moved since the last
+    /// frame and is not on them. Overlays do not move focus, so they keep them.
+    pub fn keep_unpinned(&mut self, focus: &Focus) {
+        if focus.moves == self.seen_moves {
+            return;
+        }
+        self.seen_moves = focus.moves;
+        for tw in [self.left, self.bottom, self.right].into_iter().flatten() {
+            if self.view_mode(tw) == ViewMode::Unpinned && tw.panel() != focus.current {
+                self.hide(tw);
+            }
+        }
     }
 
     /// The maximized window, if it is still shown.
@@ -778,6 +829,37 @@ mod tests {
         l.leave_zen();
         assert_eq!(l.bottom, Some(Git));
         assert_eq!(l.right, None);
+    }
+
+    #[test]
+    fn unpinned_hides_after_a_focus_move_only() {
+        let mut l = LayoutState::new(30, 10);
+        let mut f = Focus::new();
+        l.show(Git);
+        l.set_view_mode(Git, ViewMode::Unpinned);
+        f.set(PanelId::Git);
+        l.keep_unpinned(&f);
+        assert_eq!(l.bottom, Some(Git));
+        f.set(PanelId::Git);
+        l.keep_unpinned(&f);
+        assert_eq!(l.bottom, Some(Git));
+        f.set(PanelId::Editor);
+        l.keep_unpinned(&f);
+        assert_eq!(l.bottom, None);
+        assert_eq!(l.left, Some(Project));
+        l.show(Git);
+        l.keep_unpinned(&f);
+        assert_eq!(l.bottom, Some(Git));
+    }
+
+    #[test]
+    fn restore_default_pins_every_window() {
+        let mut l = LayoutState::new(30, 10);
+        l.set_view_mode(Git, ViewMode::Unpinned);
+        l.set_view_mode(Find, ViewMode::Unpinned);
+        assert_eq!(l.unpinned().len(), 2);
+        l.restore_default();
+        assert!(l.unpinned().is_empty());
     }
 
     #[test]
