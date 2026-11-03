@@ -1499,6 +1499,22 @@ Setup as above, `[lsp] enabled = false`, at 120x40 and 80x24.
 4. Right-click Git > View Mode: Dock Unpinned is greyed. Ctrl+Q and restart: it is still greyed. Shift+F12,
    right-click Git > View Mode: Dock Pinned is greyed (every window Pinned again). Stderr empty, Ctrl+Q exits 0.
 
+### Scenario: named tool window layouts
+
+Setup as above, `[lsp] enabled = false`, at 120x40 and 80x24, state in `/tmp/jt-home/state`; remove
+`/tmp/jt-home/state/jetl/layouts.json` first.
+
+1. F10, View: "Switch Layout…", "Rename Layout…", "Delete Layout…" and "Save Changes in Current Layout" are dimmed.
+   Choose "Save Current Layout as New…", type `Default+`, Enter: toast `Saved layout 'Default+'`;
+   `cat /tmp/jt-home/state/jetl/layouts.json` shows `"version": 1` and the layout.
+2. Alt+9 (Git), move it to Right Bottom from its button's right-click menu, set Find to Undock from its menu,
+   save as new `Review`. Shift+F12 (Restore Default Layout).
+3. Ctrl+Shift+A, type `switch layout`, Enter: the dialog lists `Default+` and `Review (current)`; pick `Review`:
+   Git is back at Right Bottom, Find is Undocked (opening it slides over the editor).
+4. Rename `Review` to `Review2` (View | Rename Layout…), Delete `Default+` (Delete, then confirm): the file holds
+   only `Review2`.
+5. Ctrl+Q, start again in another root: Ctrl+Shift+A "switch layout" lists `Review2`. Stderr empty, Ctrl+Q exits 0.
+
 ### Scenario: undocked tool window
 
 Setup as above, `[lsp] enabled = false`, at 80x24 and 120x40.

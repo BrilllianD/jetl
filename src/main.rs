@@ -49,6 +49,7 @@ async fn main() -> Result<()> {
     app.arm_recovery();
     app.prune_recovery_dumps();
     app.start_recent_projects();
+    app.load_layouts();
     if pick_project {
         app.pick_project_at_startup();
     }

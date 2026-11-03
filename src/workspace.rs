@@ -283,9 +283,38 @@ pub struct SessionLayout {
     pub undocked: Vec<ToolWindowId>,
 }
 
+/// Tool windows kept out of every saved slot, side and split field (sessions and
+/// named layouts): Tasks has its own session field, TODO and Hierarchy are rebuilt on demand.
+pub(crate) const NOT_PLACED: [ToolWindowId; 3] = [ToolWindowId::Tasks, ToolWindowId::Todo, ToolWindowId::Hierarchy];
+
+impl SessionLayout {
+    /// The placement part (what a named layout stores).
+    pub fn placement(&self) -> crate::layouts::LayoutPlacement {
+        crate::layouts::LayoutPlacement {
+            left: self.left,
+            left_w: self.left_w,
+            bottom: self.bottom,
+            bottom_h: self.bottom_h,
+            right: self.right,
+            right_w: self.right_w,
+            sides: self.sides.clone(),
+            order: self.order.clone(),
+            unpinned: self.unpinned.clone(),
+            split: self.split.clone(),
+            left2: self.left2,
+            bottom2: self.bottom2,
+            right2: self.right2,
+            left2_h: self.left2_h,
+            bottom2_w: self.bottom2_w,
+            right2_h: self.right2_h,
+            undocked: self.undocked.clone(),
+        }
+    }
+}
+
 /// A list of tool window ids, without the ones this build does not know
 /// (a newer build's windows), so they do not drop the whole session.
-fn known_tool_windows<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<ToolWindowId>, D::Error> {
+pub(crate) fn known_tool_windows<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<ToolWindowId>, D::Error> {
     let raw = Vec::<serde_json::Value>::deserialize(d)?;
     Ok(raw.into_iter().filter_map(|v| serde_json::from_value(v).ok()).collect())
 }
@@ -551,6 +580,85 @@ impl App {
         BranchSet { files, active, recent, splits }
     }
 
+    /// The placement part of the layout as sessions and named layouts save it:
+    /// the pre-zen windows, without [`NOT_PLACED`] in slot, side and split fields.
+    pub(crate) fn layout_placement(&self) -> crate::layouts::LayoutPlacement {
+        // Zen mode is not saved: the windows it hides are.
+        let (left, bottom, right) = self.layout.saved_windows();
+        let (left2, bottom2, right2) = self.layout.saved_split_windows();
+        let saved = |tw: Option<ToolWindowId>| tw.filter(|t| !NOT_PLACED.contains(t));
+        let mut sides = self.layout.side_overrides();
+        sides.retain(|(tw, _)| !NOT_PLACED.contains(tw));
+        let mut split = self.layout.split_windows();
+        split.retain(|tw| !NOT_PLACED.contains(tw));
+        let size = |v: u16| Some(v).filter(|v| *v != 0);
+        crate::layouts::LayoutPlacement {
+            left: saved(left),
+            left_w: self.layout.left_w,
+            bottom: saved(bottom),
+            bottom_h: self.layout.bottom_h,
+            right: saved(right),
+            right_w: Some(self.layout.right_w),
+            sides,
+            order: self.layout.order_overrides(),
+            unpinned: self.layout.unpinned(),
+            split,
+            left2: saved(left2),
+            bottom2: saved(bottom2),
+            right2: saved(right2),
+            left2_h: size(self.layout.left2_h),
+            bottom2_w: size(self.layout.bottom2_w),
+            right2_h: size(self.layout.right2_h),
+            undocked: self.layout.undocked(),
+        }
+    }
+
+    /// Apply a placement (session restore, a named layout). Each `kept` window
+    /// (one the placement does not hold, see [`NOT_PLACED`]) goes to its dock
+    /// and, when its flag says shown, into that dock's slot unless the
+    /// placement fills it. Focus on a tool window that ends hidden moves to the editor.
+    pub(crate) fn apply_placement(&mut self, p: &crate::layouts::LayoutPlacement, kept: &[(ToolWindowId, Dock, bool)]) {
+        let mut sides = p.sides.clone();
+        let mut split = p.split.clone();
+        for &(tw, dock, _) in kept {
+            sides.retain(|(t, _)| *t != tw);
+            sides.push((tw, dock.side));
+            split.retain(|t| *t != tw);
+            if dock.split {
+                split.push(tw);
+            }
+        }
+        self.layout.set_sides(&sides);
+        self.layout.set_split(&split);
+        self.layout.set_order(&p.order);
+        self.layout.set_unpinned(&p.unpinned);
+        let slot = |tw: Option<ToolWindowId>, side: Side, split: bool| {
+            tw.or_else(|| kept.iter().find(|k| k.2 && k.1 == (Dock { side, split })).map(|k| k.0))
+        };
+        self.layout.restore(
+            slot(p.left, Side::Left, false),
+            p.left_w,
+            slot(p.bottom, Side::Bottom, false),
+            p.bottom_h,
+            slot(p.right, Side::Right, false),
+            p.right_w,
+        );
+        self.layout.restore_split(
+            slot(p.left2, Side::Left, true),
+            slot(p.bottom2, Side::Bottom, true),
+            slot(p.right2, Side::Right, true),
+            p.left2_h,
+            p.bottom2_w,
+            p.right2_h,
+        );
+        self.layout.set_undocked(&p.undocked);
+        if let Some(tw) = self.focus.current.tool_window()
+            && !self.layout.is_visible(tw)
+        {
+            self.focus.set(PanelId::Editor);
+        }
+    }
+
     /// The open tabs of the current root as a session, in tab order.
     pub fn session(&self) -> Session {
         let root = self.workspace.root.clone();
@@ -563,39 +671,32 @@ impl App {
         // The Tasks window has its own field: builds without it read the rest.
         let (left2, bottom2, right2) = self.layout.saved_split_windows();
         let shown = [left, bottom, right, left2, bottom2, right2].contains(&Some(ToolWindowId::Tasks));
-        // The TODO and Hierarchy windows are not saved: the list is rescanned, the tree asked again, on demand.
-        let saved =
-            |tw: Option<ToolWindowId>| tw.filter(|t| !matches!(t, ToolWindowId::Tasks | ToolWindowId::Todo | ToolWindowId::Hierarchy));
-        let mut sides = self.layout.side_overrides();
-        let side = sides.iter().find(|(tw, _)| *tw == ToolWindowId::Tasks).map(|(_, s)| *s);
-        sides.retain(|(tw, _)| !matches!(tw, ToolWindowId::Tasks | ToolWindowId::Todo | ToolWindowId::Hierarchy));
-        let mut split = self.layout.split_windows();
+        let side = self.layout.side_overrides().iter().find(|(tw, _)| *tw == ToolWindowId::Tasks).map(|(_, s)| *s);
         let tasks_split = self.layout.dock_of(ToolWindowId::Tasks).split;
-        split.retain(|tw| !matches!(tw, ToolWindowId::Tasks | ToolWindowId::Todo | ToolWindowId::Hierarchy));
         let tasks = SessionTasks { shown, side, split: tasks_split, ..self.tasks.session_state() };
-        let size = |v: u16| Some(v).filter(|v| *v != 0);
+        let p = self.layout_placement();
         let layout = Some(SessionLayout {
-            left: saved(left),
-            left_w: self.layout.left_w,
-            bottom: saved(bottom),
-            bottom_h: self.layout.bottom_h,
+            left: p.left,
+            left_w: p.left_w,
+            bottom: p.bottom,
+            bottom_h: p.bottom_h,
             git_tab: self.git_panel.tab,
             show_hidden,
             show_ignored,
-            right: saved(right),
-            right_w: Some(self.layout.right_w),
-            sides,
+            right: p.right,
+            right_w: p.right_w,
+            sides: p.sides,
             tasks: Some(tasks),
-            order: self.layout.order_overrides(),
-            unpinned: self.layout.unpinned(),
-            split,
-            left2: saved(left2),
-            bottom2: saved(bottom2),
-            right2: saved(right2),
-            left2_h: size(self.layout.left2_h),
-            bottom2_w: size(self.layout.bottom2_w),
-            right2_h: size(self.layout.right2_h),
-            undocked: self.layout.undocked(),
+            order: p.order,
+            unpinned: p.unpinned,
+            split: p.split,
+            left2: p.left2,
+            bottom2: p.bottom2,
+            right2: p.right2,
+            left2_h: p.left2_h,
+            bottom2_w: p.bottom2_w,
+            right2_h: p.right2_h,
+            undocked: p.undocked,
         });
         let expanded = self.project.expanded_dirs().iter().filter_map(|d| d.strip_prefix(&root).ok()).map(Path::to_path_buf).collect();
         let closed_bookmarks =
@@ -845,43 +946,9 @@ impl App {
         self.editor.restore_closed_bookmarks(&closed);
         if let Some(l) = &session.layout {
             let tasks = l.tasks.clone().unwrap_or_default();
-            let mut sides = l.sides.clone();
-            sides.extend(tasks.side.map(|s| (ToolWindowId::Tasks, s)));
-            self.layout.set_sides(&sides);
-            let mut split = l.split.clone();
-            if tasks.split {
-                split.push(ToolWindowId::Tasks);
-            }
-            self.layout.set_split(&split);
-            self.layout.set_order(&l.order);
-            self.layout.set_unpinned(&l.unpinned);
-            let tasks_dock = self.layout.dock_of(ToolWindowId::Tasks);
-            let slot = |tw: Option<ToolWindowId>, side: Side, split: bool| {
-                if tasks.shown && tasks_dock == (Dock { side, split }) { Some(ToolWindowId::Tasks) } else { tw }
-            };
-            self.layout.restore(
-                slot(l.left, Side::Left, false),
-                l.left_w,
-                slot(l.bottom, Side::Bottom, false),
-                l.bottom_h,
-                slot(l.right, Side::Right, false),
-                l.right_w,
-            );
-            self.layout.restore_split(
-                slot(l.left2, Side::Left, true),
-                slot(l.bottom2, Side::Bottom, true),
-                slot(l.right2, Side::Right, true),
-                l.left2_h,
-                l.bottom2_w,
-                l.right2_h,
-            );
-            self.layout.set_undocked(&l.undocked);
+            let dock = Dock { side: tasks.side.unwrap_or(ToolWindowId::Tasks.default_side()), split: tasks.split };
+            self.apply_placement(&l.placement(), &[(ToolWindowId::Tasks, dock, tasks.shown)]);
             self.tasks.restore(&tasks);
-            if let Some(tw) = self.focus.current.tool_window()
-                && !self.layout.is_visible(tw)
-            {
-                self.focus.set(PanelId::Editor);
-            }
             self.set_git_tab(l.git_tab);
             self.project.set_visibility(l.show_hidden, l.show_ignored);
         }
@@ -1901,5 +1968,42 @@ mod tests {
         assert_eq!(serde_json::from_str::<SessionLayout>(&json).unwrap(), undocked);
         let newer = json.replace(r#""undocked":["Find"#, r#""undocked":["Nope","Find"#);
         assert_eq!(serde_json::from_str::<SessionLayout>(&newer).unwrap().undocked, [ToolWindowId::Find]);
+    }
+
+    #[test]
+    fn named_layout_placement_matches_the_session_layout() {
+        use ToolWindowId::*;
+        let l = SessionLayout {
+            left: Some(Project),
+            left_w: 31,
+            bottom: Some(Run),
+            bottom_h: 9,
+            git_tab: GitTab::Console,
+            show_hidden: true,
+            show_ignored: true,
+            right: Some(Git),
+            right_w: Some(22),
+            sides: vec![(Git, Side::Right), (Structure, Side::Left)],
+            tasks: Some(SessionTasks::default()),
+            order: vec![Git, Project],
+            unpinned: vec![Find],
+            split: vec![Structure],
+            left2: Some(Structure),
+            bottom2: Some(Problems),
+            right2: Some(EventLog),
+            left2_h: Some(5),
+            bottom2_w: Some(20),
+            right2_h: Some(6),
+            undocked: vec![Terminal],
+        };
+        let p = l.placement();
+        let value = serde_json::to_value(&p).unwrap();
+        assert_eq!(serde_json::from_value::<crate::layouts::LayoutPlacement>(value.clone()).unwrap(), p);
+        let mut session = serde_json::to_value(&l).unwrap();
+        let obj = session.as_object_mut().unwrap();
+        for k in ["git_tab", "show_hidden", "show_ignored", "tasks"] {
+            assert!(obj.remove(k).is_some(), "{k}");
+        }
+        assert_eq!(value, session, "a placement field was added to one struct only");
     }
 }

@@ -22,12 +22,12 @@ expression: "snapshot(&term, &settings_marks(&app.theme), None)"
 16    │ │  Terminal                │    Merge: save the result, stage it and close the resolver           merge.apply│
 17    │ │  Run                     │ ^      Alt+Enter                                                                │
 18    │ │  Clipboard               │        Ctrl+Enter                                                               │
-19    │ │  Local History           │                                                                                 │
-20  ⋔ │ │Language Servers          │                                                                                 │
-21    │ │Dependencies              │                                                                                 │
-22  ✎ │ │                          │                                                                                 │
-23    │ │                          │                                                                                 │
-24  ✓ │ │                          │                                                                                 │
+19    │ │  Local History           │  ▾ Unbound (5)                                                                  │
+20  ⋔ │ │Language Servers          │    Switch to a saved tool window layout…               tool_window.switch_layout│
+21    │ │Dependencies              │    Save the tool window layout as a new named layout…                           │
+22  ✎ │ │                          │    Save changes in the current tool window layout                               │
+23    │ │                          │    Rename a saved tool window layout…                  tool_window.rename_layout│
+24  ✓ │ │                          │    Delete a saved tool window layout…                  tool_window.delete_layout│
 25  8 │ │                          │                                                                                 │
 26  ⟲ │ │                          │                                                                                 │
 27  5 │ │                          │                                                                                 │

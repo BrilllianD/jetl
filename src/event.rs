@@ -145,6 +145,14 @@ pub enum AppMsg {
         roots: Vec<PathBuf>,
         error: Option<String>,
     },
+    /// Named layouts read (and changed, when an op was given) by
+    /// `layouts::update`; `version` is taken under the file lock, a higher one
+    /// saw a later state. `error` is shown as a warning.
+    Layouts {
+        version: u64,
+        layouts: Vec<crate::layouts::NamedLayout>,
+        error: Option<String>,
+    },
     /// The system clipboard read by `editor.paste` (`App::paste`), tagged
     /// with the workspace generation and the request's seq.
     Paste {

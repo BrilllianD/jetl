@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Named tool window layouts: View | Save Current Layout as New… stores where the tool windows are (docks, sizes, strip order, Pinned, Unpinned and Undocked modes) under a name; Switch Layout… (also from Find Action) applies one; Save Changes in Current Layout, Rename Layout… and Delete Layout… manage them. Layouts are shared by every project, in `layouts.json` in the state directory.
 - Rename (Shift+F6) works without a language server: it opens Find in files on the name (case sensitive, whole word) with the new name as replacement and a preview of every change; results the symbol index does not know as a use or definition of the name start excluded, and nothing changes until Replace All.
 - Call Hierarchy (Ctrl+Alt+H) works without a language server: callers and callees come from the symbol index (calls matched by name, the caller's file and its imports first), and the window title says "(approximate)".
 - Hierarchy: Navigate > File Dependencies shows the files the active file imports in the Hierarchy window (Tab: the files that import it), from the symbol index, expandable level by level and exportable as Mermaid or DOT.

@@ -37,6 +37,16 @@ pub enum AppAction {
     HideFocusedToolWindow,
     /// Every tool window back on its default side, default strip order, nothing maximized (Shift+F12).
     RestoreDefaultLayout,
+    /// Pick a saved tool window layout and apply it.
+    SwitchLayout,
+    /// Save the tool window placement under a new name.
+    SaveLayoutAsNew,
+    /// Overwrite the current named layout with the tool window placement.
+    SaveLayoutChanges,
+    /// Rename a saved tool window layout.
+    RenameLayout,
+    /// Delete a saved tool window layout.
+    DeleteLayout,
     /// Move the focused tool window's free edge (Ctrl+Shift+arrows).
     ResizeToolWindow(Dir),
     /// The focused tool window's next inner tab (Git, Run, Terminal), wrapping.
@@ -780,6 +790,11 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "tool_window.hide_all" => "Hide all tool windows", App(AppAction::HideAllToolWindows);
         "tool_window.hide_focused" => "Hide active tool window", App(AppAction::HideFocusedToolWindow);
         "tool_window.restore_default_layout" => "Restore the default tool window layout", App(AppAction::RestoreDefaultLayout);
+        "tool_window.switch_layout" => "Switch to a saved tool window layout…", App(AppAction::SwitchLayout);
+        "tool_window.save_layout_as_new" => "Save the tool window layout as a new named layout…", App(AppAction::SaveLayoutAsNew);
+        "tool_window.save_layout_changes" => "Save changes in the current tool window layout", App(AppAction::SaveLayoutChanges);
+        "tool_window.rename_layout" => "Rename a saved tool window layout…", App(AppAction::RenameLayout);
+        "tool_window.delete_layout" => "Delete a saved tool window layout…", App(AppAction::DeleteLayout);
         "tool_window.stretch_left" => "Stretch tool window to the left", App(AppAction::ResizeToolWindow(Dir::Left));
         "tool_window.stretch_right" => "Stretch tool window to the right", App(AppAction::ResizeToolWindow(Dir::Right));
         "tool_window.stretch_up" => "Stretch tool window up", App(AppAction::ResizeToolWindow(Dir::Up));

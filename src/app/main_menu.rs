@@ -40,6 +40,10 @@ impl App {
                                 Action::App(AppAction::TogglePinned { tw: None } | AppAction::ToggleUndocked { tw: None }) => {
                                     self.focus.current.tool_window().is_some()
                                 }
+                                Action::App(AppAction::SaveLayoutChanges) => self.current_layout.is_some(),
+                                Action::App(AppAction::SwitchLayout | AppAction::RenameLayout | AppAction::DeleteLayout) => {
+                                    !self.named_layouts.is_empty()
+                                }
                                 _ => true,
                             };
                             let enabled = movable && (has_buffer || !needs_buffer(&action)) && self.git_action_available(&action);

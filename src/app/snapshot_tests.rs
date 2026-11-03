@@ -2617,6 +2617,19 @@ async fn choice_dialog() {
     assert_snapshot!("choice_dialog", snapshot(&term, &marks, None));
 }
 
+#[tokio::test]
+async fn app_switch_layout_dialog() {
+    let mut fx = stable_app("switch-layout");
+    let app = &mut fx.app;
+    let layout = app.layout_placement();
+    app.named_layouts = ["Coding", "Review"].map(|n| crate::layouts::NamedLayout { name: n.into(), layout: layout.clone() }).to_vec();
+    app.current_layout = Some("Review".into());
+    app.perform(Action::App(AppAction::SwitchLayout));
+    let term = draw_app(app, 80, 24);
+    let marks = [Mark::bg('L', "selected", app.theme.list_selected.bg.unwrap())];
+    assert_snapshot!("app_switch_layout_dialog", snapshot(&term, &marks, None));
+}
+
 #[cfg(feature = "lang-rust")]
 #[tokio::test]
 async fn surround_with_dialog() {

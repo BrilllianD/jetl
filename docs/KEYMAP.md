@@ -601,6 +601,11 @@ Reachable from Find Action (F1) or by binding them in `keymap.toml`.
 | `app.about` | About jetl |
 | `app.open_settings` | Open settings file (config.toml) |
 | `app.keymap_reference` | Keymap reference |
+| `tool_window.switch_layout` | Switch to a saved tool window layout… |
+| `tool_window.save_layout_as_new` | Save the tool window layout as a new named layout… |
+| `tool_window.save_layout_changes` | Save changes in the current tool window layout |
+| `tool_window.rename_layout` | Rename a saved tool window layout… |
+| `tool_window.delete_layout` | Delete a saved tool window layout… |
 | `tool_window.toggle_pinned` | Pin or unpin the active tool window (an unpinned one hides when focus leaves it) |
 | `tool_window.toggle_undocked` | Undock or dock the active tool window (an undocked one slides over the editor) |
 | `tool_window.move_left` | Move the active tool window to Left Top |

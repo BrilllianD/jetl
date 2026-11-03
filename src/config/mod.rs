@@ -68,6 +68,11 @@ impl Paths {
     pub fn recent_projects_file(&self) -> PathBuf {
         self.state_dir.join("recent_projects.json")
     }
+
+    /// Named tool window layouts (`layouts.rs`), shared by every project.
+    pub fn layouts_file(&self) -> PathBuf {
+        self.state_dir.join("layouts.json")
+    }
     pub fn log_file(&self) -> PathBuf {
         self.state_dir.join("jetl.log")
     }

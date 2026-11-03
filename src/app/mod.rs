@@ -55,6 +55,7 @@ mod hierarchy;
 mod history;
 mod http;
 mod inlay;
+mod layouts;
 mod lightbulb;
 mod lsp;
 mod lsp_edit;
@@ -221,6 +222,12 @@ pub struct App {
     /// forget wrote it cannot show them.
     recent_projects_forgetting: Vec<(u64, PathBuf)>,
     recent_projects_version: u64,
+    /// Saved layouts as of the newest reply, file order.
+    pub(crate) named_layouts: Vec<crate::layouts::NamedLayout>,
+    /// The file version `named_layouts` reflects; older replies are dropped.
+    layouts_version: u64,
+    /// The layout last applied or saved as new, for Save Changes; not persisted.
+    current_layout: Option<String>,
     /// Record the root in the recent projects file (at startup and on root
     /// switches). Off until `main.rs` calls [`App::start_recent_projects`],
     /// so tests never write it: the write would land after the test removed
@@ -399,6 +406,9 @@ impl App {
             recent_projects_forgot: 0,
             recent_projects_forgetting: Vec::new(),
             recent_projects_version: 0,
+            named_layouts: Vec::new(),
+            layouts_version: 0,
+            current_layout: None,
             record_recent: false,
             pick_project: false,
             branches_error_shown: false,
@@ -1297,6 +1307,11 @@ impl App {
             }
             AppAction::MoveToolWindowButton { tw, up } => self.layout.move_button(tw, up),
             AppAction::RestoreDefaultLayout => self.restore_default_layout(),
+            AppAction::SwitchLayout => self.switch_layout(),
+            AppAction::SaveLayoutAsNew => self.save_layout_as_new(),
+            AppAction::SaveLayoutChanges => self.save_layout_changes(),
+            AppAction::RenameLayout => self.rename_layout(),
+            AppAction::DeleteLayout => self.delete_layout(),
             AppAction::ToggleZen => self.toggle_zen(),
             AppAction::ToggleToolbar => self.toggle_toolbar(),
             AppAction::TogglePinned { tw } => {

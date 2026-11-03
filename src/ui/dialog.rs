@@ -277,6 +277,18 @@ pub enum DialogId {
     RunConfigField(crate::ui::run_configs::Field),
     /// Close the Run Configurations window, dropping its changes: Discard / Keep Editing.
     RunConfigsDiscard,
+    /// Switch Layout: item `i` applies layout `.0[i]`.
+    LayoutSwitch(Vec<String>),
+    /// Save Layout as New: the new layout's name.
+    LayoutSaveAsNew,
+    /// Rename Layout, the pick: item `i` renames `.0[i]`.
+    LayoutRenamePick(Vec<String>),
+    /// Rename Layout, the new name for layout `.0`.
+    LayoutRename(String),
+    /// Delete Layout, the pick: item `i` deletes `.0[i]`.
+    LayoutDeletePick(Vec<String>),
+    /// Delete Layout, the confirmation for layout `.0`: Delete / Cancel.
+    LayoutDelete(String),
 }
 
 #[derive(Debug, Clone)]

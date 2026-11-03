@@ -61,6 +61,7 @@ impl App {
             AppMsg::PaletteFiltered { generation, seq, rows } => self.palette_filtered(generation, seq, rows),
             AppMsg::Dependencies { generation, seq, report } => self.dependencies_checked(generation, seq, report),
             AppMsg::RecentProjects { seq, version, roots, error } => self.recent_projects_loaded(seq, version, roots, error),
+            AppMsg::Layouts { version, layouts, error } => self.layouts_loaded(version, layouts, error),
             AppMsg::Find { generation, batch } if generation == self.workspace.generation => self.find.on_batch(batch),
             AppMsg::Todo { generation, batch } if generation == self.workspace.generation => self.todo.on_batch(batch),
             AppMsg::ReplaceDone { generation, files, matches, errors } if generation == self.workspace.generation => {

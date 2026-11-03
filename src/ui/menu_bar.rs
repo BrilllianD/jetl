@@ -127,6 +127,11 @@ pub const MAIN_MENU: &[(&str, char, &[Row])] = &[
             Sep,
             Item("Hide All Tool Windows", "tool_window.hide_all"),
             Item("Restore Default Layout", "tool_window.restore_default_layout"),
+            Item("Switch Layout…", "tool_window.switch_layout"),
+            Item("Save Current Layout as New…", "tool_window.save_layout_as_new"),
+            Item("Save Changes in Current Layout", "tool_window.save_layout_changes"),
+            Item("Rename Layout…", "tool_window.rename_layout"),
+            Item("Delete Layout…", "tool_window.delete_layout"),
             Item("Maximize Tool Window", "tool_window.maximize"),
             Item("Pin or Unpin Tool Window", "tool_window.toggle_pinned"),
             Item("Undock or Dock Tool Window", "tool_window.toggle_undocked"),
@@ -591,6 +596,17 @@ mod tests {
         let labels: Vec<&str> = rows.iter().filter_map(|r| if let Item(l, _) = r { Some(*l) } else { None }).collect();
         let at = |l| labels.iter().position(|x| *x == l).unwrap();
         assert_eq!(at("Toolbar") + 1, at("Zen Mode"));
+    }
+
+    #[test]
+    fn view_menu_has_layout_rows_after_restore_default() {
+        let (_, _, rows) = MAIN_MENU.iter().find(|m| m.0 == "View").unwrap();
+        let labels: Vec<&str> = rows.iter().filter_map(|r| if let Item(l, _) = r { Some(*l) } else { None }).collect();
+        let at = labels.iter().position(|x| *x == "Restore Default Layout").unwrap();
+        assert_eq!(
+            labels[at + 1..at + 6],
+            ["Switch Layout…", "Save Current Layout as New…", "Save Changes in Current Layout", "Rename Layout…", "Delete Layout…"]
+        );
     }
 
     #[test]
