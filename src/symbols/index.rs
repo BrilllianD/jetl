@@ -3,7 +3,8 @@
 //! each at most `MAX_FILE_BYTES`) is parsed in `spawn_blocking` and comes
 //! back in `AppMsg::Symbols` batches. Each file also keeps its tree-sitter
 //! references (`refs_named`) and imports, which resolve to file edges on
-//! demand (`imports_of`, `imported_by`). Later runs skip files whose mtime is
+//! demand (`imports_of`, `imported_by`); the job reads the nearest `go.mod`
+//! of each Go file to turn its in-module imports into directory specs. Later runs skip files whose mtime is
 //! unchanged; watcher paths are dropped and parsed again. Runs go through
 //! `util::Coalesce` (one at a time) and carry a seq: a batch of an older
 //! run is dropped.
@@ -210,14 +211,18 @@ impl SymbolIndex {
     fn edges(&mut self) -> &Edges {
         if self.edges.is_none() {
             let interned: HashMap<&str, Arc<str>> = self.files.keys().map(|k| (k.as_str(), Arc::from(k.as_str()))).collect();
+            let mut keys: Vec<&str> = self.files.keys().map(String::as_str).collect();
+            keys.sort_unstable();
+            let project = super::imports::Project::new(&keys);
             let mut e = Edges::default();
             for (path, f) in &self.files {
                 let Some(lang) = syntax::detect(Path::new(path)).map(|d| d.name) else { continue };
                 for imp in &f.imports {
-                    let Some(t) = super::imports::resolve(lang, path, imp, &|p| self.files.contains_key(p)) else { continue };
-                    let Some(target) = interned.get(t.as_str()) else { continue };
-                    e.out.entry(interned[path.as_str()].clone()).or_default().push(target.clone());
-                    e.inc.entry(target.clone()).or_default().push(interned[path.as_str()].clone());
+                    for t in super::imports::resolve(lang, path, imp, &project) {
+                        let Some(target) = interned.get(t.as_str()) else { continue };
+                        e.out.entry(interned[path.as_str()].clone()).or_default().push(target.clone());
+                        e.inc.entry(target.clone()).or_default().push(interned[path.as_str()].clone());
+                    }
                 }
             }
             for v in e.out.values_mut().chain(e.inc.values_mut()) {
@@ -287,6 +292,7 @@ impl IndexJob {
         let mut parser = tree_sitter::Parser::new();
         let mut batch = SymbolBatch::default();
         let mut last_send = Instant::now();
+        let mut go_mods: HashMap<String, Option<String>> = HashMap::new();
         for (rel, known) in &self.files {
             if cancelled() {
                 return;
@@ -297,8 +303,20 @@ impl IndexJob {
             if known.is_some() && *known == mtime {
                 continue;
             }
-            let syms =
-                meta.and_then(|_| parse(&path, &mut parser)).map(|(symbols, refs, imports)| FileSymbols { mtime, symbols, refs, imports });
+            let syms = meta.and_then(|_| parse(&path, &mut parser)).map(|(symbols, refs, mut imports)| {
+                if rel.ends_with(".go") {
+                    super::imports::localize_go(rel, &mut imports, &mut |d| {
+                        go_mods
+                            .entry(d.to_string())
+                            .or_insert_with(|| {
+                                let p = if d.is_empty() { self.root.join("go.mod") } else { self.root.join(d).join("go.mod") };
+                                std::fs::read_to_string(p).ok().and_then(|t| super::imports::go_module_path(&t))
+                            })
+                            .clone()
+                    });
+                }
+                FileSymbols { mtime, symbols, refs, imports }
+            });
             batch.files.push((rel.clone(), syms));
             if batch.files.len() >= BATCH_FILES || last_send.elapsed() >= BATCH_EVERY {
                 send(std::mem::take(&mut batch));
@@ -393,8 +411,11 @@ mod tests {
             ("pkg/b.py".to_string(), fs(&[])),
         ];
         assert!(idx.on_batch(seq, SymbolBatch { files, done: true }).is_some());
-        assert_eq!(strs(idx.imports_of("src/main.rs")), ["src/app/mod.rs", "src/config.rs"]);
-        assert_eq!(strs(idx.imported_by("src/config.rs")), ["src/app/mod.rs", "src/main.rs"]);
+        #[cfg(feature = "lang-rust")]
+        {
+            assert_eq!(strs(idx.imports_of("src/main.rs")), ["src/app/mod.rs", "src/config.rs"]);
+            assert_eq!(strs(idx.imported_by("src/config.rs")), ["src/app/mod.rs", "src/main.rs"]);
+        }
         #[cfg(feature = "lang-python")]
         {
             assert_eq!(strs(idx.imports_of("main.py")), ["pkg/a.py", "pkg/b.py"]);
@@ -405,6 +426,7 @@ mod tests {
         let batch = SymbolBatch { files: vec![("src/config.rs".to_string(), None)], done: true };
         assert!(idx.on_batch(seq, batch).is_some());
         assert!(idx.imported_by("src/config.rs").is_empty());
+        #[cfg(feature = "lang-rust")]
         assert_eq!(strs(idx.imports_of("src/main.rs")), ["src/app/mod.rs"]);
     }
 
@@ -437,6 +459,39 @@ mod tests {
         assert_eq!(strs(idx.imports_of("src/main.rs")), ["src/a.rs", "src/b.rs"]);
         assert_eq!(strs(idx.imported_by("src/b.rs")), ["src/a.rs", "src/main.rs"]);
         assert_eq!(strs(idx.imports_of("pkg/a.py")), ["pkg/b.py"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(feature = "lang-go")]
+    #[test]
+    fn index_run_resolves_go_packages() {
+        let dir = std::env::temp_dir().join(format!("jetl-symgo-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("internal/foo/sub")).unwrap();
+        let files = [
+            (
+                "main.go",
+                "package main\n\nimport (\n\t\"fmt\"\n\t\"example.com/app/internal/foo\"\n)\n\nfunc main() { fmt.Println(foo.A) }\n",
+            ),
+            ("internal/foo/foo.go", "package foo\n\nvar A = 1\n"),
+            ("internal/foo/bar.go", "package foo\n"),
+            ("internal/foo/foo_test.go", "package foo\n"),
+            ("internal/foo/sub/s.go", "package sub\n"),
+        ];
+        for (p, c) in files {
+            std::fs::write(dir.join(p), c).unwrap();
+        }
+        std::fs::write(dir.join("go.mod"), "module example.com/app\n\ngo 1.22\n").unwrap();
+        let mut idx = SymbolIndex::default();
+        idx.set_files(&files.iter().map(|(p, _)| p.to_string()).collect::<Vec<_>>());
+        let job = idx.start(dir.clone());
+        let seq = job.seq;
+        let mut batches = Vec::new();
+        job.run(|b| batches.push(b));
+        for b in batches {
+            idx.on_batch(seq, b);
+        }
+        assert_eq!(strs(idx.imports_of("main.go")), ["internal/foo/bar.go", "internal/foo/foo.go"]);
+        assert_eq!(strs(idx.imported_by("internal/foo/foo.go")), ["main.go"]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -161,16 +161,48 @@ fn join_rust(a: &str, b: &str) -> String {
     }
 }
 
-/// The indexed file `imp` (found in `from`) refers to, if any. Pure: paths are
-/// relative to the project root with `/`, the root itself is `""`, and
-/// `exists` says whether a path is an indexed file. Never returns `from`.
-pub fn resolve(lang: &str, from: &str, imp: &Import, exists: &dyn Fn(&str) -> bool) -> Option<String> {
-    match lang {
-        "rust" => resolve_rust(from, imp, exists),
-        "python" => resolve_python(from, imp, exists),
-        _ => None,
+/// A view over the indexed paths (relative to the root, `/`-separated).
+pub struct Project<'a> {
+    files: &'a [&'a str],
+}
+
+impl<'a> Project<'a> {
+    /// `sorted` must be sorted ascending.
+    pub fn new(sorted: &'a [&'a str]) -> Self {
+        Self { files: sorted }
     }
-    .filter(|t| t != from)
+
+    pub fn exists(&self, p: &str) -> bool {
+        self.files.binary_search(&p).is_ok()
+    }
+
+    /// The files directly in `dir` (`""` is the root), sorted.
+    pub fn files_in(&self, dir: &str) -> Vec<&'a str> {
+        let prefix = if dir.is_empty() { String::new() } else { format!("{dir}/") };
+        let start = self.files.partition_point(|f| *f < prefix.as_str());
+        self.files[start..].iter().take_while(|f| f.starts_with(&prefix)).filter(|f| !f[prefix.len()..].contains('/')).copied().collect()
+    }
+}
+
+/// The indexed files `imp` (found in `from`) refers to, sorted and without
+/// duplicates; a Go package or a Java `a.b.*` gives every file of its
+/// directory, other imports at most one. Pure: paths are relative to the
+/// project root with `/`, the root itself is `""`. Never returns `from`.
+pub fn resolve(lang: &str, from: &str, imp: &Import, project: &Project) -> Vec<String> {
+    let exists = |p: &str| project.exists(p);
+    let mut out: Vec<String> = match lang {
+        "rust" => resolve_rust(from, imp, &exists).into_iter().collect(),
+        "python" => resolve_python(from, imp, &exists).into_iter().collect(),
+        "javascript" | "typescript" | "tsx" => resolve_js(from, imp, &exists).into_iter().collect(),
+        "go" => resolve_go(imp, project),
+        "java" => resolve_java(from, imp, project),
+        "c" | "cpp" => resolve_c(from, imp, &exists).into_iter().collect(),
+        _ => Vec::new(),
+    };
+    out.retain(|t| t != from);
+    out.sort();
+    out.dedup();
+    out
 }
 
 /// The directory part of `p`: `Some("")` for a top-level name, `None` for `""`.
@@ -258,17 +290,141 @@ fn resolve_python(from: &str, imp: &Import, exists: &dyn Fn(&str) -> bool) -> Op
     ancestors(parent(from).unwrap_or("")).into_iter().find_map(descend)
 }
 
+/// `p` without `.` and empty segments and with `..` applied; `None` when a `..` leaves the root.
+fn normalize(p: &str) -> Option<String> {
+    let mut out: Vec<&str> = Vec::new();
+    for seg in p.split('/') {
+        match seg {
+            "" | "." => {}
+            ".." => {
+                out.pop()?;
+            }
+            s => out.push(s),
+        }
+    }
+    Some(out.join("/"))
+}
+
+const JS_EXTS: [&str; 9] = [".ts", ".tsx", ".d.ts", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts"];
+
+fn resolve_js(from: &str, imp: &Import, exists: &dyn Fn(&str) -> bool) -> Option<String> {
+    let spec = imp.spec.as_str();
+    if !(spec == "." || spec == ".." || spec.starts_with("./") || spec.starts_with("../")) {
+        return None;
+    }
+    let base = normalize(&join(parent(from).unwrap_or(""), spec))?;
+    let mut cands: Vec<String> = Vec::new();
+    if !base.is_empty() {
+        cands.push(base.clone());
+        // TypeScript writes the emitted extension: `./b.js` names `b.ts`.
+        for (from_ext, to) in [(".js", [".ts", ".tsx"].as_slice()), (".jsx", &[".ts", ".tsx"]), (".mjs", &[".mts"]), (".cjs", &[".cts"])] {
+            if let Some(stem) = base.strip_suffix(from_ext) {
+                cands.extend(to.iter().map(|e| format!("{stem}{e}")));
+            }
+        }
+        cands.extend(JS_EXTS.iter().map(|e| format!("{base}{e}")));
+    }
+    cands.extend(JS_EXTS.iter().map(|e| join(&base, &format!("index{e}"))));
+    first(cands, exists)
+}
+
+fn resolve_go(imp: &Import, project: &Project) -> Vec<String> {
+    let Some(rest) = imp.spec.strip_prefix('/') else { return Vec::new() };
+    let dir = rest.trim_end_matches('/');
+    project.files_in(dir).into_iter().filter(|f| f.ends_with(".go") && !f.ends_with("_test.go")).map(str::to_string).collect()
+}
+
+fn resolve_java(from: &str, imp: &Import, project: &Project) -> Vec<String> {
+    let wild = imp.spec.ends_with(".*");
+    let name = imp.spec.strip_suffix(".*").unwrap_or(&imp.spec);
+    let segs: Vec<&str> = name.split('.').filter(|s| !s.is_empty()).collect();
+    if segs.is_empty() {
+        return Vec::new();
+    }
+    let mut seen: Vec<String> = Vec::new();
+    for a in ancestors(parent(from).unwrap_or("")) {
+        for base in [a.to_string(), join(a, "src/main/java"), join(a, "src/test/java")] {
+            if seen.contains(&base) {
+                continue;
+            }
+            seen.push(base.clone());
+            if wild {
+                let files: Vec<String> = project
+                    .files_in(&join(&base, &segs.join("/")))
+                    .into_iter()
+                    .filter(|f| f.ends_with(".java"))
+                    .map(str::to_string)
+                    .collect();
+                if !files.is_empty() {
+                    return files;
+                }
+            } else if let Some(f) =
+                (1..=segs.len()).rev().map(|k| format!("{}.java", join(&base, &segs[..k].join("/")))).find(|f| project.exists(f))
+            {
+                return vec![f];
+            }
+        }
+    }
+    Vec::new()
+}
+
+fn resolve_c(from: &str, imp: &Import, exists: &dyn Fn(&str) -> bool) -> Option<String> {
+    if imp.spec.is_empty() || imp.spec.starts_with('/') {
+        return None;
+    }
+    let dir = parent(from).unwrap_or("");
+    first([normalize(&join(dir, &imp.spec)), normalize(&imp.spec)].into_iter().flatten(), exists)
+}
+
+/// The module path a `go.mod` declares.
+pub fn go_module_path(go_mod: &str) -> Option<String> {
+    for line in go_mod.lines() {
+        let line = line.trim();
+        let Some(rest) = line.strip_prefix("module") else { continue };
+        if !rest.starts_with(|c: char| c.is_whitespace() || c == '"' || c == '`') {
+            continue;
+        }
+        let rest = rest.split("//").next().unwrap_or("").trim();
+        let m = unquote(rest);
+        return if m.is_empty() { None } else { Some(m.to_string()) };
+    }
+    None
+}
+
+/// Rewrite the Go imports of `from` that lie inside its own module (the
+/// nearest directory up from `from` whose `module_at` gives a module path)
+/// to `/` + the package directory relative to the root. Other imports stay.
+pub fn localize_go(from: &str, imports: &mut [Import], module_at: &mut dyn FnMut(&str) -> Option<String>) {
+    let Some((d, m)) = ancestors(parent(from).unwrap_or("")).into_iter().find_map(|d| module_at(d).map(|m| (d, m))) else {
+        return;
+    };
+    for imp in imports {
+        let rest = if imp.spec == m { Some("") } else { imp.spec.strip_prefix(&format!("{m}/")) };
+        if let Some(rest) = rest {
+            imp.spec = format!("/{}", join(d, rest).trim_end_matches('/'));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn set(files: &[&str]) -> impl Fn(&str) -> bool {
-        let s: HashSet<String> = files.iter().map(|f| f.to_string()).collect();
-        move |p: &str| s.contains(p)
+    fn proj(files: &[&'static str]) -> Vec<&'static str> {
+        let mut v = files.to_vec();
+        v.sort_unstable();
+        v
     }
 
-    fn r(lang: &str, from: &str, spec: &str, decl: bool, files: &[&str]) -> Option<String> {
-        resolve(lang, from, &Import { spec: spec.into(), line: 0, decl }, &set(files))
+    fn rs(lang: &str, from: &str, spec: &str, decl: bool, files: &[&'static str]) -> Vec<String> {
+        let sorted = proj(files);
+        resolve(lang, from, &Import { spec: spec.into(), line: 0, decl }, &Project::new(&sorted))
+    }
+
+    fn r(lang: &str, from: &str, spec: &str, decl: bool, files: &[&'static str]) -> Option<String> {
+        let v = rs(lang, from, spec, decl, files);
+        assert!(v.len() <= 1, "{v:?}");
+        v.into_iter().next()
     }
 
     #[test]
@@ -315,12 +471,99 @@ mod tests {
 
     #[test]
     fn other_languages_resolve_nothing() {
-        assert_eq!(r("go", "a.go", "fmt", false, &["a.go", "fmt.go"]), None);
-        let imp = Import { spec: "fmt".into(), line: 0, decl: false };
-        assert_eq!(resolve("go", "a.go", &imp, &|_| true), None);
+        assert_eq!(r("lua", "a.lua", "x", false, &["a.lua", "x.lua"]), None);
+        assert!(rs("go", "a.go", "fmt", false, &["a.go", "fmt.go"]).is_empty());
     }
 
-    #[cfg(any(feature = "lang-rust", feature = "lang-python"))]
+    #[test]
+    fn js_resolves_relative_specs() {
+        let f = ["src/main.ts", "src/a.ts", "src/lib/b.ts", "src/c/index.tsx", "src/d.js", "src/e.d.ts", "index.js"];
+        let at = |lang: &str, spec: &str| r(lang, "src/main.ts", spec, false, &f);
+        assert_eq!(at("typescript", "./a").as_deref(), Some("src/a.ts"));
+        assert_eq!(at("typescript", "./lib/b.js").as_deref(), Some("src/lib/b.ts"));
+        assert_eq!(at("typescript", "./c").as_deref(), Some("src/c/index.tsx"));
+        assert_eq!(at("typescript", "./d").as_deref(), Some("src/d.js"));
+        assert_eq!(at("tsx", "./d.js").as_deref(), Some("src/d.js"));
+        assert_eq!(at("javascript", "./e").as_deref(), Some("src/e.d.ts"));
+        assert_eq!(at("typescript", "..").as_deref(), Some("index.js"));
+        for spec in ["react", "../x", "../../x"] {
+            assert_eq!(at("typescript", spec), None, "{spec}");
+        }
+    }
+
+    #[test]
+    fn go_resolves_packages() {
+        let f = ["main.go", "internal/foo/foo.go", "internal/foo/bar.go", "internal/foo/foo_test.go", "internal/foo/sub/s.go"];
+        assert_eq!(rs("go", "main.go", "/internal/foo", false, &f), ["internal/foo/bar.go", "internal/foo/foo.go"]);
+        assert_eq!(rs("go", "internal/foo/foo.go", "/", false, &f), ["main.go"]);
+        assert!(rs("go", "main.go", "/nope", false, &f).is_empty());
+        assert!(rs("go", "main.go", "fmt", false, &f).is_empty());
+        assert_eq!(rs("go", "internal/foo/foo.go", "/internal/foo", false, &f), ["internal/foo/bar.go"]);
+    }
+
+    #[test]
+    fn go_module_paths_localize() {
+        assert_eq!(go_module_path("// c\nmodule example.com/app // x\n\ngo 1.22\n").as_deref(), Some("example.com/app"));
+        assert_eq!(go_module_path("module \"q/x\"\n").as_deref(), Some("q/x"));
+        assert_eq!(go_module_path("go 1.22\n"), None);
+        let imp = |s: &str| Import { spec: s.into(), line: 0, decl: false };
+        let specs = |v: &[Import]| v.iter().map(|i| i.spec.clone()).collect::<Vec<_>>();
+        let mut v = vec![imp("example.com/app/internal/foo"), imp("example.com/app"), imp("example.com/apple/x"), imp("fmt")];
+        localize_go("cmd/app/main.go", &mut v, &mut |d| (d.is_empty()).then(|| "example.com/app".to_string()));
+        assert_eq!(specs(&v), ["/internal/foo", "/", "example.com/apple/x", "fmt"]);
+        let mut v = vec![imp("example.com/tools/lib"), imp("example.com/app/x")];
+        localize_go("tools/gen/g.go", &mut v, &mut |d| match d {
+            "" => Some("example.com/app".to_string()),
+            "tools" => Some("example.com/tools".to_string()),
+            _ => None,
+        });
+        assert_eq!(specs(&v), ["/tools/lib", "example.com/app/x"]);
+    }
+
+    #[test]
+    fn java_resolves_classes() {
+        let f = [
+            "src/main/java/com/acme/App.java",
+            "src/main/java/com/acme/Util.java",
+            "src/main/java/com/acme/model/A.java",
+            "src/main/java/com/acme/model/B.java",
+            "src/test/java/com/acme/UtilTest.java",
+        ];
+        let app = "src/main/java/com/acme/App.java";
+        let util = "src/main/java/com/acme/Util.java";
+        assert_eq!(rs("java", app, "com.acme.Util", false, &f), [util]);
+        assert_eq!(rs("java", app, "com.acme.Util.max", false, &f), [util]);
+        assert_eq!(
+            rs("java", app, "com.acme.model.*", false, &f),
+            ["src/main/java/com/acme/model/A.java", "src/main/java/com/acme/model/B.java"]
+        );
+        assert!(rs("java", app, "com.acme.model", false, &f).is_empty());
+        assert!(rs("java", app, "java.util.List", false, &f).is_empty());
+        assert_eq!(rs("java", "src/test/java/com/acme/UtilTest.java", "com.acme.Util", false, &f), [util]);
+    }
+
+    #[test]
+    fn c_resolves_includes() {
+        let f = ["src/x.c", "src/util.h", "inc/a.h"];
+        assert_eq!(r("c", "src/x.c", "util.h", false, &f).as_deref(), Some("src/util.h"));
+        assert_eq!(r("c", "src/x.c", "../inc/a.h", false, &f).as_deref(), Some("inc/a.h"));
+        assert_eq!(r("c", "src/x.c", "inc/a.h", false, &f).as_deref(), Some("inc/a.h"));
+        for spec in ["stdio.h", "../../a.h", "/usr/a.h"] {
+            assert_eq!(r("c", "src/x.c", spec, false, &f), None, "{spec}");
+        }
+        assert_eq!(r("cpp", "src/x.c", "util.h", false, &f).as_deref(), Some("src/util.h"));
+    }
+
+    #[cfg(any(
+        feature = "lang-rust",
+        feature = "lang-python",
+        feature = "lang-js",
+        feature = "lang-ts",
+        feature = "lang-go",
+        feature = "lang-c",
+        feature = "lang-cpp",
+        feature = "lang-java"
+    ))]
     fn imports(lang: &str, src: &str) -> Vec<(String, usize, bool)> {
         let def = crate::editor::syntax::language_for_name(lang).unwrap();
         let got = crate::symbols::extract_index(def, &mut tree_sitter::Parser::new(), src).2;
@@ -359,5 +602,57 @@ mod tests {
                 .map(|(s, l)| (s.to_string(), l, false))
                 .collect();
         assert_eq!(imports("python", src), want);
+    }
+
+    #[cfg(feature = "lang-js")]
+    #[test]
+    fn js_imports_extracted() {
+        let src = "import a from \"./a\";\nimport { b } from '../lib/b.js';\nexport * from \"./c\";\nconst d = require(\"./d\");\nconst e = import(\"./e\");\nimport \"side\";\nrequire(x);\nfoo(\"./z\");\n";
+        let want: Vec<(String, usize, bool)> = [("./a", 0), ("../lib/b.js", 1), ("./c", 2), ("./d", 3), ("./e", 4), ("side", 5)]
+            .map(|(s, l)| (s.to_string(), l, false))
+            .to_vec();
+        assert_eq!(imports("javascript", src), want);
+    }
+
+    #[cfg(feature = "lang-ts")]
+    #[test]
+    fn ts_imports_extracted() {
+        let src = "import type { T } from \"./t\";\nimport fs = require(\"fs\");\nexport { u } from \"./u\";\n";
+        let want: Vec<(String, usize, bool)> = [("./t", 0), ("fs", 1), ("./u", 2)].map(|(s, l)| (s.to_string(), l, false)).to_vec();
+        assert_eq!(imports("typescript", src), want);
+        assert_eq!(imports("tsx", "import React from \"react\";\n"), [("react".to_string(), 0, false)]);
+    }
+
+    #[cfg(feature = "lang-go")]
+    #[test]
+    fn go_imports_extracted() {
+        let src =
+            "package main\n\nimport (\n\t\"fmt\"\n\tfoo \"example.com/app/internal/foo\"\n\t_ `example.com/app/x`\n)\nimport \"os\"\n";
+        let want: Vec<(String, usize, bool)> = [("fmt", 3), ("example.com/app/internal/foo", 4), ("example.com/app/x", 5), ("os", 7)]
+            .map(|(s, l)| (s.to_string(), l, false))
+            .to_vec();
+        assert_eq!(imports("go", src), want);
+    }
+
+    #[cfg(feature = "lang-java")]
+    #[test]
+    fn java_imports_extracted() {
+        let src = "package a;\nimport java.util.List;\nimport static com.acme.Util.max;\nimport com.acme.model.*;\n";
+        let want: Vec<(String, usize, bool)> =
+            [("java.util.List", 1), ("com.acme.Util.max", 2), ("com.acme.model", 3), ("com.acme.model.*", 3)]
+                .map(|(s, l)| (s.to_string(), l, false))
+                .to_vec();
+        assert_eq!(imports("java", src), want);
+    }
+
+    #[cfg(any(feature = "lang-c", feature = "lang-cpp"))]
+    #[test]
+    fn c_imports_extracted() {
+        let src = "#include <stdio.h>\n#include \"util.h\"\n#include \"../inc/a.h\"\n";
+        let want: Vec<(String, usize, bool)> = [("util.h", 1), ("../inc/a.h", 2)].map(|(s, l)| (s.to_string(), l, false)).to_vec();
+        #[cfg(feature = "lang-c")]
+        assert_eq!(imports("c", src), want);
+        #[cfg(feature = "lang-cpp")]
+        assert_eq!(imports("cpp", src), want);
     }
 }

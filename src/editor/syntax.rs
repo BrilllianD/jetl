@@ -122,7 +122,19 @@ impl LanguageDef {
             .as_ref()
     }
 
-    #[cfg_attr(not(any(feature = "lang-rust", feature = "lang-python")), allow(dead_code))]
+    #[cfg_attr(
+        not(any(
+            feature = "lang-rust",
+            feature = "lang-python",
+            feature = "lang-js",
+            feature = "lang-ts",
+            feature = "lang-go",
+            feature = "lang-c",
+            feature = "lang-cpp",
+            feature = "lang-java"
+        )),
+        allow(dead_code)
+    )]
     fn with_imports(mut self, q: &'static str) -> Self {
         self.imports = Some(q);
         self
@@ -265,7 +277,7 @@ pub static LANGUAGES: LazyLock<Vec<LanguageDef>> = LazyLock::new(|| {
             &[tree_sitter_javascript::HIGHLIGHT_QUERY],
             Some("//"),
         )
-        .map(|d| d.with_tags(tree_sitter_javascript::TAGS_QUERY)),
+        .map(|d| d.with_tags(tree_sitter_javascript::TAGS_QUERY).with_imports(include_str!("../../assets/queries/javascript/imports.scm"))),
     );
     #[cfg(feature = "lang-ts")]
     {
@@ -285,7 +297,7 @@ pub static LANGUAGES: LazyLock<Vec<LanguageDef>> = LazyLock::new(|| {
                 &[tree_sitter_typescript::HIGHLIGHTS_QUERY, js],
                 Some("//"),
             )
-            .map(|d| d.with_tags(tags)),
+            .map(|d| d.with_tags(tags).with_imports(include_str!("../../assets/queries/typescript/imports.scm"))),
         );
         v.extend(
             make(
@@ -296,7 +308,7 @@ pub static LANGUAGES: LazyLock<Vec<LanguageDef>> = LazyLock::new(|| {
                 &[tree_sitter_typescript::HIGHLIGHTS_QUERY, js],
                 Some("//"),
             )
-            .map(|d| d.with_tags(tags)),
+            .map(|d| d.with_tags(tags).with_imports(include_str!("../../assets/queries/typescript/imports.scm"))),
         );
     }
     #[cfg(feature = "lang-python")]
@@ -399,11 +411,15 @@ pub static LANGUAGES: LazyLock<Vec<LanguageDef>> = LazyLock::new(|| {
     #[cfg(feature = "lang-go")]
     // Upstream lists builtin calls after plain calls, and the first pattern
     // for a node wins; lift them to the front (Lua too).
-    v.extend(make("go", &["go"], &[], tree_sitter_go::LANGUAGE.into(), &["(call_expression function: (identifier) @function.builtin (#match? @function.builtin \"^(append|cap|clear|close|complex|copy|delete|imag|len|make|max|min|new|panic|print|println|real|recover)$\"))", tree_sitter_go::HIGHLIGHTS_QUERY], Some("//")).map(|d| d.with_tags(tree_sitter_go::TAGS_QUERY)));
+    v.extend(make("go", &["go"], &[], tree_sitter_go::LANGUAGE.into(), &["(call_expression function: (identifier) @function.builtin (#match? @function.builtin \"^(append|cap|clear|close|complex|copy|delete|imag|len|make|max|min|new|panic|print|println|real|recover)$\"))", tree_sitter_go::HIGHLIGHTS_QUERY], Some("//")).map(|d| d.with_tags(tree_sitter_go::TAGS_QUERY).with_imports(include_str!("../../assets/queries/go/imports.scm"))));
     #[cfg(feature = "lang-c")]
     v.extend(
-        make("c", &["c", "h"], &[], tree_sitter_c::LANGUAGE.into(), &[C_QUERY_FIXES, tree_sitter_c::HIGHLIGHT_QUERY], Some("//"))
-            .map(|d| d.with_tags(join_static(&[tree_sitter_c::TAGS_QUERY, C_TAGS_EXTRA]))),
+        make("c", &["c", "h"], &[], tree_sitter_c::LANGUAGE.into(), &[C_QUERY_FIXES, tree_sitter_c::HIGHLIGHT_QUERY], Some("//")).map(
+            |d| {
+                d.with_tags(join_static(&[tree_sitter_c::TAGS_QUERY, C_TAGS_EXTRA]))
+                    .with_imports(include_str!("../../assets/queries/c/imports.scm"))
+            },
+        ),
     );
     // The C++ query only covers what C++ adds to C (no comments, numbers or
     // calls); the C query fills in the rest.
@@ -417,12 +433,15 @@ pub static LANGUAGES: LazyLock<Vec<LanguageDef>> = LazyLock::new(|| {
             &[C_QUERY_FIXES, CPP_QUERY_FIXES, tree_sitter_cpp::HIGHLIGHT_QUERY, tree_sitter_c::HIGHLIGHT_QUERY],
             Some("//"),
         )
-        .map(|d| d.with_tags(join_static(&[tree_sitter_cpp::TAGS_QUERY, CPP_TAGS_EXTRA]))),
+        .map(|d| {
+            d.with_tags(join_static(&[tree_sitter_cpp::TAGS_QUERY, CPP_TAGS_EXTRA]))
+                .with_imports(include_str!("../../assets/queries/cpp/imports.scm"))
+        }),
     );
     #[cfg(feature = "lang-java")]
     v.extend(
         make("java", &["java"], &[], tree_sitter_java::LANGUAGE.into(), &[tree_sitter_java::HIGHLIGHTS_QUERY], Some("//"))
-            .map(|d| d.with_tags(tree_sitter_java::TAGS_QUERY)),
+            .map(|d| d.with_tags(tree_sitter_java::TAGS_QUERY).with_imports(include_str!("../../assets/queries/java/imports.scm"))),
     );
     #[cfg(feature = "lang-php")]
     v.extend(make("php", &["php"], &[], tree_sitter_php::LANGUAGE_PHP.into(), &[tree_sitter_php::HIGHLIGHTS_QUERY], Some("//")));
@@ -1663,7 +1682,7 @@ mod tests {
         let importing: Vec<&str> = LANGUAGES.iter().filter(|l| l.imports.is_some()).map(|l| l.name).collect();
         let broken: Vec<&str> = LANGUAGES.iter().filter(|l| l.imports.is_some() && l.imports_query().is_none()).map(|l| l.name).collect();
         assert!(broken.is_empty(), "imports query does not compile for {broken:?}");
-        for name in ["rust", "python"] {
+        for name in ["rust", "javascript", "typescript", "tsx", "python", "go", "c", "cpp", "java"] {
             assert_eq!(importing.contains(&name), names.contains(&name), "{name} has imports when enabled");
         }
         let injecting: Vec<&str> = LANGUAGES.iter().filter(|l| l.injections.is_some()).map(|l| l.name).collect();
@@ -2464,8 +2483,11 @@ mod tests {
         for entry in std::fs::read_dir(&root).unwrap() {
             let dir = entry.unwrap().path();
             let name = dir.file_name().unwrap().to_string_lossy().into_owned();
-            // jetl's own query files (imports.scm) sit next to no highlights.scm and need no licence.
-            if !dir.join("highlights.scm").exists() {
+            // jetl's own query files need no source line or licence.
+            const OWN: &[&str] = &["imports.scm"];
+            let names: Vec<String> =
+                std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+            if !names.is_empty() && names.iter().all(|n| OWN.contains(&n.as_str())) {
                 continue;
             }
             let scm = std::fs::read_to_string(dir.join("highlights.scm")).unwrap_or_else(|e| panic!("{name}: {e}"));
