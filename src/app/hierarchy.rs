@@ -1,28 +1,79 @@
 //! Call and type hierarchy in the app: the prepare request at the caret,
 //! the tree in `App::hierarchy` and its lazily asked children
 //! (`lsp/hierarchy.rs` holds the model).
+//!
+//! Without a server for the buffer, the call hierarchy is computed from the
+//! symbol index (`symbols/graph.rs`): an index tree
+//! (`HierarchyTree::from_index`) whose children are filled synchronously.
 
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+
+use lsp_types::{Position, Range};
 use serde_json::{Value, json};
 
 use super::App;
+use super::lsp_nav::word_at;
 use crate::actions::HierarchyAction;
+use crate::editor::buffer::BufferId;
 use crate::lsp::PendingTag;
 use crate::lsp::caps::{PREPARE_CALL_HIERARCHY, PREPARE_TYPE_HIERARCHY};
+use crate::lsp::hierarchy::HierarchyItem;
 use crate::lsp::hierarchy::{Direction, HierarchyTree, parse_calls, parse_items, parse_types};
 use crate::lsp::transport::ResponseError;
+use crate::symbols::graph;
 use crate::ui::focus::{PanelId, ToolWindowId};
 
 impl App {
-    /// Ask the server for the call (`call`) or type hierarchy of the symbol at the caret.
+    /// Ask the server for the call (`call`) or type hierarchy of the symbol at the caret;
+    /// without a server, the call hierarchy comes from the symbol index.
     pub(crate) fn hierarchy_start(&mut self, call: bool) {
         let Some((id, pos)) = self.caret_position() else { return };
         let (method, tag): (_, fn(_) -> _) =
             if call { (PREPARE_CALL_HIERARCHY, PendingTag::CallHierarchy) } else { (PREPARE_TYPE_HIERARCHY, PendingTag::TypeHierarchy) };
-        if let Err(why) = self.lsp_doc_request(id, pos, method, json!({}), tag)
-            && !why.is_empty()
-        {
-            self.lsp_hint(why);
+        if let Err(why) = self.lsp_doc_request(id, pos, method, json!({}), tag) {
+            if call && self.hierarchy_without_server(id) {
+                return;
+            }
+            if !why.is_empty() {
+                self.lsp_hint(why);
+            }
         }
+    }
+
+    /// The call hierarchy of the word at the caret of buffer `id` from the
+    /// symbol index, when no server document serves it (the Find Usages rule)
+    /// and its language has a tags query. True when handled.
+    fn hierarchy_without_server(&mut self, id: BufferId) -> bool {
+        if self.lsp.docs.contains_key(&id) {
+            return false;
+        }
+        let Some(b) = self.editor.buffers.iter().find(|b| b.id == id) else { return false };
+        let (Some(path), Some(def)) = (b.path.clone(), b.language()) else { return false };
+        let head = b.view.sel().head;
+        let word = word_at(b, head);
+        if def.tags.is_none() || word.is_empty() {
+            return false;
+        }
+        let Some(rel) = self.rel_path(&path) else { return false };
+        let line = b.rope.char_to_line(head);
+        let roots = graph::roots(&mut self.symbols, &word, &rel, line);
+        if roots.is_empty() {
+            self.lsp_hint(if self.symbols.indexing() {
+                "No call hierarchy found yet; the project is still being indexed"
+            } else {
+                "No call hierarchy here"
+            });
+            return true;
+        }
+        let items = self.hierarchy_items(roots);
+        let id = self.hierarchy_next_id();
+        self.hierarchy_show(HierarchyTree::new(id, String::new(), Direction::Callers, items));
+        true
+    }
+
+    fn rel_path(&self, p: &Path) -> Option<String> {
+        p.strip_prefix(&self.workspace.root).ok().map(|r| r.to_string_lossy().replace('\\', "/"))
     }
 
     /// The answer to a prepare request: with items they become the tree's
@@ -34,7 +85,12 @@ impl App {
         }
         let direction = if call { Direction::Callers } else { Direction::Subtypes };
         let id = self.hierarchy_next_id();
-        self.hierarchy = Some(HierarchyTree::new(id, name.to_string(), direction, items));
+        self.hierarchy_show(HierarchyTree::new(id, name.to_string(), direction, items));
+    }
+
+    /// Make `tree` the Hierarchy window's, ask its first root's children, show and focus the window.
+    pub(super) fn hierarchy_show(&mut self, tree: HierarchyTree) {
+        self.hierarchy = Some(tree);
         self.hierarchy_ask(0);
         self.layout.show(ToolWindowId::Hierarchy);
         self.focus.set(PanelId::Hierarchy);
@@ -158,10 +214,13 @@ impl App {
         self.dirty_frame = true;
     }
 
-    /// Ask the tree's server for `node`'s children.
+    /// Ask the tree's server for `node`'s children, or compute them from the index.
     fn hierarchy_ask(&mut self, node: usize) {
         let Some(t) = &self.hierarchy else { return };
         let Some(n) = t.nodes.get(node) else { return };
+        if t.from_index() {
+            return self.hierarchy_index_children(node);
+        }
         let (tree, server, method, raw) = (t.id, t.server.clone(), t.direction.method(), n.item.raw.clone());
         let client = self.lsp.clients.get_mut(&server).filter(|c| c.capabilities().is_some());
         let Some(client) = client else { return self.lsp_hint(format!("{server} is not running")) };
@@ -170,6 +229,62 @@ impl App {
             n.loading = true;
         }
         self.dirty_frame = true;
+    }
+
+    /// Fill `node`'s children of an index tree at once.
+    fn hierarchy_index_children(&mut self, node: usize) {
+        let Some((direction, item)) = self.hierarchy.as_ref().and_then(|t| t.nodes.get(node).map(|n| (t.direction, n.item.clone()))) else {
+            return;
+        };
+        let defs = match direction {
+            Direction::Callers => graph::callers(&self.symbols, &item.name),
+            Direction::Callees => match self.rel_path(&item.path) {
+                Some(rel) => match graph::find(&self.symbols, &rel, &item.name, item.selection.start.line as usize) {
+                    Some(sym) => graph::callees(&mut self.symbols, &rel, sym),
+                    None => Vec::new(),
+                },
+                None => Vec::new(),
+            },
+            Direction::Supertypes | Direction::Subtypes => Vec::new(),
+        };
+        let items = self.hierarchy_items(defs);
+        if let Some(t) = &mut self.hierarchy {
+            t.set_children(node, items);
+        }
+        self.dirty_frame = true;
+    }
+
+    /// Index definitions as items: `raw` is null and the selection is the name
+    /// in UTF-16 columns, from the open buffer's line else the file on disk.
+    pub(super) fn hierarchy_items(&mut self, defs: Vec<graph::Def>) -> Vec<HierarchyItem> {
+        let root = self.workspace.root.clone();
+        let mut disk: HashMap<PathBuf, Option<String>> = HashMap::new();
+        let mut items = Vec::with_capacity(defs.len());
+        for d in defs {
+            let (line, col) = (d.symbol.line, d.symbol.col);
+            let abs = root.join(&*d.path);
+            let open = self.editor.index_of(&abs).map(|i| &self.editor.buffers[i]).filter(|b| line < b.rope.len_lines());
+            let text = match open {
+                Some(b) => Some(b.line_text(line)),
+                None => disk
+                    .entry(abs.clone())
+                    .or_insert_with(|| std::fs::read(&abs).ok().map(|b| String::from_utf8_lossy(&b).into_owned()))
+                    .as_deref()
+                    .and_then(|s| crate::util::text::lines_inclusive(s).nth(line).map(crate::git::diff::strip_eol))
+                    .map(str::to_string),
+            };
+            let ch = text.map_or(col, |t| t.chars().take(col).map(char::len_utf16).sum());
+            let len = d.symbol.name.encode_utf16().count();
+            items.push(HierarchyItem {
+                name: d.symbol.name.to_string(),
+                detail: None,
+                kind: graph::lsp_kind(d.symbol.kind),
+                path: abs,
+                selection: Range::new(Position::new(line as u32, ch as u32), Position::new(line as u32, (ch + len) as u32)),
+                raw: Value::Null,
+            });
+        }
+        items
     }
 
     /// The answer to a children request: dropped unless it is for the
@@ -659,6 +774,105 @@ mod tests {
         s.app.perform(Action::Lsp(LspAction::Restart));
         assert!(!s.app.hierarchy.as_ref().unwrap().nodes[0].loading);
         let _ = std::fs::remove_dir_all(&s.dir);
+    }
+
+    const IDX_B: &str = "pub fn helper() {}\n";
+    const IDX_MAIN: &str = "mod b;\nuse b::helper;\n\nfn main() {\n    helper();\n    run();\n}\n\n/* 😀 */ fn run() {\n    helper();\n}\n";
+
+    /// Write `files` under the root and index them as a finished run.
+    fn index(app: &mut App, files: &[(&str, &str)]) {
+        let root = app.workspace.root.clone();
+        for (rel, text) in files {
+            let path = root.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        }
+        app.symbols.set_files(&files.iter().map(|(p, _)| p.to_string()).collect::<Vec<_>>());
+        let job = app.symbols.start(root);
+        let seq = job.seq;
+        let mut batches = Vec::new();
+        job.run(|b| batches.push(b));
+        for b in batches {
+            app.symbols.on_batch(seq, b);
+        }
+    }
+
+    fn child_names(app: &App, node: usize) -> Vec<String> {
+        let t = app.hierarchy.as_ref().unwrap();
+        t.nodes[node].children.as_ref().unwrap().iter().map(|&c| t.nodes[c].item.name.clone()).collect()
+    }
+
+    #[tokio::test]
+    async fn call_hierarchy_without_a_server_uses_the_index() {
+        let (mut app, dir) = test_app("hier-index");
+        index(&mut app, &[("src/b.rs", IDX_B), ("src/main.rs", IDX_MAIN)]);
+        crate::app::tests::load(&mut app, "src/b.rs", IDX_B);
+        goto(&mut app, 0, 8);
+        app.toasts = Default::default();
+        app.perform(Action::Lsp(LspAction::CallHierarchy));
+        let t = app.hierarchy.as_ref().expect("an index tree");
+        assert!(t.from_index() && t.server.is_empty());
+        assert_eq!(t.title(), "Callers of helper (approximate)");
+        let root = &t.nodes[0].item;
+        assert_eq!(
+            (root.path.clone(), root.selection.start, root.kind, root.raw.clone()),
+            (dir.join("root/src/b.rs"), Position::new(0, 7), lsp_types::SymbolKind::FUNCTION, Value::Null)
+        );
+        let kids: Vec<_> = t.nodes[0]
+            .children
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|&c| (t.nodes[c].item.name.clone(), t.nodes[c].item.selection.start))
+            .collect();
+        assert_eq!(kids, [("main".to_string(), Position::new(3, 3)), ("run".to_string(), Position::new(8, 12))]);
+        assert!(t.nodes.iter().all(|n| !n.loading));
+        assert!(app.layout.is_visible(ToolWindowId::Hierarchy));
+        assert_eq!(app.focus.current, PanelId::Hierarchy);
+        assert!(toasts(&app).is_empty(), "{:?}", toasts(&app));
+        app.perform(Action::Hierarchy(HierarchyAction::ToggleDirection));
+        assert_eq!(app.hierarchy.as_ref().unwrap().title(), "Callees of helper (approximate)");
+        assert_eq!(app.hierarchy.as_ref().unwrap().nodes[0].children, Some(vec![]));
+        app.perform(Action::Hierarchy(HierarchyAction::ToggleDirection));
+        app.perform(Action::Hierarchy(HierarchyAction::Down));
+        app.perform(Action::Hierarchy(HierarchyAction::Expand));
+        let t = app.hierarchy.as_ref().unwrap();
+        assert_eq!(t.nodes[t.nodes[0].children.as_ref().unwrap()[0]].children, Some(vec![]));
+        // Callees of `main`.
+        crate::app::tests::load(&mut app, "src/main.rs", IDX_MAIN);
+        goto(&mut app, 3, 4);
+        app.perform(Action::Lsp(LspAction::CallHierarchy));
+        app.perform(Action::Hierarchy(HierarchyAction::ToggleDirection));
+        assert_eq!(child_names(&app, 0), ["helper", "run"]);
+        let t = app.hierarchy.as_ref().unwrap();
+        assert_eq!(t.nodes[t.nodes[0].children.as_ref().unwrap()[0]].item.path, dir.join("root/src/b.rs"));
+        app.perform(Action::Hierarchy(HierarchyAction::Refresh));
+        assert_eq!(child_names(&app, 0), ["helper", "run"]);
+        app.perform(Action::Hierarchy(HierarchyAction::Down));
+        app.perform(Action::Hierarchy(HierarchyAction::Down));
+        app.perform(Action::Hierarchy(HierarchyAction::Open));
+        assert_eq!(app.editor.active_path(), Some(dir.join("root/src/main.rs").as_path()));
+        assert_eq!(caret(&app), (8, 11));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn call_hierarchy_without_a_definition_hints() {
+        let (mut app, dir) = test_app("hier-index-none");
+        let text = "fn k() {\n    nothing();\n}\n";
+        index(&mut app, &[("src/x.rs", text)]);
+        crate::app::tests::load(&mut app, "src/x.rs", text);
+        goto(&mut app, 1, 6);
+        app.toasts = Default::default();
+        app.perform(Action::Lsp(LspAction::CallHierarchy));
+        assert!(toasts(&app).contains(&"No call hierarchy here".to_string()), "{:?}", toasts(&app));
+        assert!(app.hierarchy.is_none());
+        crate::app::tests::load(&mut app, "notes.txt", "word here\n");
+        app.toasts = Default::default();
+        app.perform(Action::Lsp(LspAction::CallHierarchy));
+        assert!(toasts(&app).iter().any(|t| t.contains("off")), "{:?}", toasts(&app));
+        assert!(app.hierarchy.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]

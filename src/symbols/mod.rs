@@ -3,6 +3,7 @@
 //! project symbol index (`index.rs`, files parsed off the main thread).
 
 pub mod cache;
+pub mod graph;
 pub mod imports;
 pub mod index;
 pub mod panel;

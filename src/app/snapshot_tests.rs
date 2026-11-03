@@ -1799,6 +1799,38 @@ async fn hierarchy_window() {
     assert_snapshot!("hierarchy_window", snapshot(&term, &marks, Some(bottom)));
 }
 
+#[cfg(feature = "lang-rust")]
+#[tokio::test]
+async fn hierarchy_window_from_index() {
+    use crate::actions::LspAction;
+    let mut fx = stable_app("hierarchy-index");
+    let app = &mut fx.app;
+    let root = app.workspace.root.clone();
+    let files = [
+        ("src/b.rs", "pub fn helper() {}\n"),
+        ("src/main.rs", "mod b;\nuse b::helper;\n\nfn main() {\n    helper();\n    run();\n}\n\n/* x */ fn run() {\n    helper();\n}\n"),
+    ];
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    for (rel, text) in files {
+        std::fs::write(root.join(rel), text).unwrap();
+    }
+    app.symbols.set_files(&files.iter().map(|(p, _)| p.to_string()).collect::<Vec<_>>());
+    let job = app.symbols.start(root.clone());
+    let seq = job.seq;
+    let mut batches = Vec::new();
+    job.run(|b| batches.push(b));
+    for b in batches {
+        app.symbols.on_batch(seq, b);
+    }
+    load(app, "src/b.rs", files[0].1);
+    app.editor.active_buffer_mut().unwrap().goto_line(0, 8);
+    app.perform(Action::Lsp(LspAction::CallHierarchy));
+    let term = draw_app(app, 80, 24);
+    let marks = [Mark::bg('L', "selected", app.theme.list_selected.bg.unwrap()), Mark::style('D', "dim", app.theme.dim)];
+    let bottom = app.layout.rects.bottom;
+    assert_snapshot!("hierarchy_window_from_index", snapshot(&term, &marks, Some(bottom)));
+}
+
 /// Diagnostics in two files, the first error with related locations in
 /// its own file and in the other; `main.log` active.
 fn problems_setup(app: &mut App) {

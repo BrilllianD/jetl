@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Call Hierarchy (Ctrl+Alt+H) works without a language server: callers and callees come from the symbol index (calls matched by name, the caller's file and its imports first), and the window title says "(approximate)".
 - Undocked tool windows: View Mode > Undock in a strip button's right-click menu (or View | Undock or Dock Tool Window, `tool_window.toggle_undocked`) makes a window slide over the editor at its side instead of shrinking it. It hides on Esc or when another tool window takes focus, and only one is shown at a time. The strip menu's Pin/Unpin row is now the View Mode submenu (Dock Pinned, Dock Unpinned, Undock).
 - Tool windows dock in six places: Left Top, Left Bottom, Bottom Left, Bottom Right, Right Top and Right Bottom. Two windows on one side share it, split by a draggable splitter. Use the strip button's right-click menu (Move to), View | Move Tool Window to …, the actions `tool_window.move_left_bottom`, `move_bottom_right` and `move_right_bottom`, or drag a button under its strip's top group. The strip shows each group, with a separator between a side's two groups, and Bottom Right windows at the foot of the right strip.
 - Structure window, breadcrumbs, Go to Symbol and the symbol index (Find Usages without a language server) now cover C#, Kotlin, Ruby, PHP and Swift.

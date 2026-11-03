@@ -286,6 +286,16 @@ impl SymbolIndex {
         self.files.len()
     }
 
+    /// The indexed data of `rel` (relative to the root).
+    pub fn file(&self, rel: &str) -> Option<&FileSymbols> {
+        self.files.get(rel)
+    }
+
+    /// Every indexed file with its data, in no particular order.
+    pub fn files(&self) -> impl Iterator<Item = (&str, &FileSymbols)> {
+        self.files.iter().map(|(p, f)| (p.as_str(), f))
+    }
+
     /// Every indexed reference named `name` (exact), by path, then line and
     /// column. A linear scan over all files.
     pub fn refs_named(&self, name: &str) -> Vec<(&str, &Reference)> {

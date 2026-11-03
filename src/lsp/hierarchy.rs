@@ -138,6 +138,8 @@ pub struct Node {
 #[derive(Debug, Clone, PartialEq)]
 pub struct HierarchyTree {
     pub id: u64,
+    /// The language server that answers for this tree; empty when the tree is
+    /// fed by jetl's symbol index (`from_index`).
     pub server: String,
     pub direction: Direction,
     pub nodes: Vec<Node>,
@@ -157,6 +159,11 @@ impl HierarchyTree {
     pub fn restarted(&self, id: u64, direction: Direction) -> Self {
         let roots = self.roots.iter().map(|&r| self.nodes[r].item.clone()).collect();
         Self::new(id, self.server.clone(), direction, roots)
+    }
+
+    /// A tree computed from the symbol index (approximate), not asked of a server.
+    pub fn from_index(&self) -> bool {
+        self.server.is_empty()
     }
 
     /// The visible nodes in display order: the roots, each followed by its
@@ -182,7 +189,7 @@ impl HierarchyTree {
             Direction::Subtypes => "Subtypes",
         };
         let root = self.roots.first().map(|&r| self.nodes[r].item.name.as_str()).unwrap_or_default();
-        format!("{what} of {root}")
+        format!("{what} of {root}{}", if self.from_index() { " (approximate)" } else { "" })
     }
 
     /// Give `node` its children (replacing an earlier list) and expand it.
@@ -458,6 +465,18 @@ mod tests {
     fn export_of_an_empty_tree_is_just_the_header() {
         let t = HierarchyTree::new(1, "s".into(), Direction::Callers, vec![]);
         assert_eq!(t.to_mermaid(), "flowchart LR\n");
+    }
+
+    #[test]
+    fn index_trees_say_approximate() {
+        let t = tree();
+        let index = HierarchyTree::new(1, String::new(), Direction::Callers, vec![t.nodes[0].item.clone()]);
+        assert!(index.from_index());
+        assert_eq!(index.title(), format!("Callers of {} (approximate)", t.nodes[0].item.name));
+        let flipped = index.restarted(2, Direction::Callees);
+        assert!(flipped.from_index());
+        assert_eq!(flipped.title(), format!("Callees of {} (approximate)", t.nodes[0].item.name));
+        assert!(!t.from_index());
     }
 
     #[test]

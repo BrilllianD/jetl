@@ -1473,6 +1473,16 @@ Env as in the other scenarios plus `XDG_CACHE_HOME=/tmp/jt-home/cache RUST_LOG=j
 3. Start again: the log shows `symbol cache: reused N of N files` and no new `symbol cache: wrote`; Go to Symbol (Alt+Shift+N, `palette.symbols`) finds a symbol at once.
 4. `touch` one `.rs` file and start again: `reused N-1 of N files` and one `symbol cache: wrote`. Stderr empty each time.
 
+### Scenario: approximate call hierarchy
+
+Run with `[lsp] enabled = false`, jetl's own repo as the root, at 120x40 then 80x24.
+
+1. Start jetl and wait a few seconds for the symbol index (Go to Symbol finds `fallback_usages`). Open `src/app/lsp_nav.rs` and put the caret on `fallback_usages` in `pub(crate) fn fallback_usages` (Ctrl+G to its line, see `grep -n "fn fallback_usages" src/app/lsp_nav.rs`).
+2. Navigate > Call Hierarchy (Ctrl+Alt+H): the Hierarchy window opens focused, titled `Callers of fallback_usages (approximate)`, root `fallback_usages  lsp_nav.rs:<line>`, a child `lsp_usages_without_server  lsp_nav.rs:<line>`.
+3. Tab: the title becomes `Callees of fallback_usages (approximate)`; the children include `usage_group` and `refs_named`. Right on a child expands it at once (no `…`). F5 shows the same tree.
+4. Enter on `usage_group`: the editor opens `lsp_nav.rs` with the caret on the name `usage_group` of its definition.
+5. Caret on a word that is no definition anywhere (a local variable): Ctrl+Alt+H shows the toast `No call hierarchy here`. Stderr is empty, Ctrl+Q exits 0.
+
 ### Limits under tmux
 
 - No kitty keyboard protocol: Ctrl+Shift+letter, Ctrl+Tab, Ctrl+Enter,

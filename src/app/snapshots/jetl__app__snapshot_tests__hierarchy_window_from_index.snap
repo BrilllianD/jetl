@@ -1,0 +1,33 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &marks, Some(bottom))"
+---
+80x24 cursor=hidden
+00  ≣ ┌ Project: root ───────────────┐│  b.rs ×
+01    │                              ││  1    pub fn helper() {}
+02  ⌂ │                              ││  2
+03  ◫ │                              ││
+04  ⊢ │                              ││
+05    │                              ││
+06    │                              ││
+07    └──────────────────────────────┘│
+08    ─────────────────────────────────────────────────────────────────────────────
+09    ┌ Callers of helper (approximate) ──────────────────────────────────────────┐
+10    │ ▾ helper  b.rs:1                                                          │
+11    │   ▸ main  main.rs:4                                                       │
+12    │   ▸ run  main.rs:9                                                        │
+13  ⋔ │                                                                           │
+14  ✎ │                                                                           │
+15  ✓ │                                                                           │
+16  ⟲ │                                                                           │
+17  ⚑ │                                                                           │
+18  ⎇ │                                                                           │
+19  ❯ │                                                                           │
+20  ⚠ │                                                                           │
+21  ► │                                                                           │
+22  ⌕ └───────────────────────────────────────────────────────────────────────────┘
+23  src › b.rs                    Ln 1, Col 9  LF  UTF-8  4 spaces  rust  LSP: off
+-- marks: L=selected D=dim
+10     LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL
+11              DDDDDDDDDDD
+12             DDDDDDDDDDD
