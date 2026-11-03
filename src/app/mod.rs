@@ -512,8 +512,10 @@ impl App {
         self.keymap.bindings_for(action, action.contexts()).into_iter().next()
     }
 
+    /// The newest non-quiet notification while within its level's TTL; quiet entries
+    /// are skipped, not blanking the slot.
     pub fn current_notification(&self) -> Option<&Notification> {
-        let n = self.notifications.last().filter(|n| !n.quiet)?;
+        let n = self.notifications.iter().rev().find(|n| !n.quiet)?;
         let ttl = match n.level {
             Level::Error => 15,
             Level::Warn => 10,
@@ -1745,6 +1747,21 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn quiet_entry_keeps_earlier_status_message() {
+        let (mut app, dir) = test_app("quiet-keeps-status");
+        app.notify(Level::Error, "boom");
+        app.log_only(Level::Info, "Saved a.txt");
+        assert_eq!(app.current_notification().map(|n| n.text.as_str()), Some("boom"));
+        // Expire every non-quiet entry (the test app also holds a startup warning).
+        let old = Instant::now().checked_sub(Duration::from_secs(16)).expect("monotonic clock past 16 s");
+        for n in app.notifications.iter_mut().filter(|n| !n.quiet) {
+            n.at = old;
+        }
+        assert!(app.current_notification().is_none());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
     async fn save_logs_without_a_toast() {
         let (mut app, dir) = test_app("save-log");
         let _path = load(&mut app, "a.txt", "x");
@@ -1752,7 +1769,8 @@ pub(crate) mod tests {
         app.perform(Action::Editor(EditorAction::Save));
         assert!(!app.editor.has_dirty());
         assert!(app.notifications.last().is_some_and(|n| n.text == "Saved a.txt"));
-        assert!(app.current_notification().is_none());
+        // The test terminal's startup warning may still be current; the quiet save is never offered.
+        assert!(!app.current_notification().is_some_and(|n| n.text.starts_with("Saved")));
         assert!(!app.toasts.items().iter().any(|t| t.text.starts_with("Saved")));
         let _ = std::fs::remove_dir_all(dir);
     }

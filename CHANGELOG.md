@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Status bar: a quiet log entry (such as a manual save) no longer blanks a still-current error or warning message; the slot keeps the newest non-quiet message until its timeout.
+
 ## [0.8.0] - 2026-11-03
 
 ### Added
