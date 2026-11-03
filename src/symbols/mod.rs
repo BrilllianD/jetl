@@ -2,6 +2,7 @@
 //! Structure window (`panel.rs`, the active buffer's live tree) and the
 //! project symbol index (`index.rs`, files parsed off the main thread).
 
+pub mod imports;
 pub mod index;
 pub mod panel;
 
@@ -11,6 +12,8 @@ use std::sync::Arc;
 
 use ropey::Rope;
 use tree_sitter::{QueryCursor, StreamingIterator, Tree};
+
+pub use imports::Import;
 
 use crate::editor::syntax::{LanguageDef, RopeProvider, Syntax};
 
@@ -253,6 +256,20 @@ pub fn extract_text(def: &'static LanguageDef, parser: &mut tree_sitter::Parser,
 /// one name range). A definition's own name is never a reference to it.
 pub fn extract_text_all(def: &'static LanguageDef, parser: &mut tree_sitter::Parser, text: &str) -> (Vec<Symbol>, Vec<Reference>) {
     parse_text(def, parser, text).map(|(t, r)| collect(def, &t, &r, true)).unwrap_or_default()
+}
+
+/// Symbols, references and imports of `text` from one parse (the symbol index).
+pub fn extract_index(
+    def: &'static LanguageDef,
+    parser: &mut tree_sitter::Parser,
+    text: &str,
+) -> (Vec<Symbol>, Vec<Reference>, Vec<Import>) {
+    parse_text(def, parser, text)
+        .map(|(tree, rope)| {
+            let (symbols, refs) = collect(def, &tree, &rope, true);
+            (symbols, refs, imports::extract(def, &tree, &rope))
+        })
+        .unwrap_or_default()
 }
 
 /// The kind shown for a definition: the capture's (`function`, `class`,

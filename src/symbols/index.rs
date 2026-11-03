@@ -2,7 +2,8 @@
 //! palette's file index: every file with a tags query (up to `MAX_FILES`,
 //! each at most `MAX_FILE_BYTES`) is parsed in `spawn_blocking` and comes
 //! back in `AppMsg::Symbols` batches. Each file also keeps its tree-sitter
-//! references (`refs_named`). Later runs skip files whose mtime is
+//! references (`refs_named`) and imports, which resolve to file edges on
+//! demand (`imports_of`, `imported_by`). Later runs skip files whose mtime is
 //! unchanged; watcher paths are dropped and parsed again. Runs go through
 //! `util::Coalesce` (one at a time) and carry a seq: a batch of an older
 //! run is dropped.
@@ -13,7 +14,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime};
 
-use super::{Reference, Symbol};
+use super::{Import, Reference, Symbol};
 use crate::editor::syntax;
 use crate::util::coalesce::Coalesce;
 
@@ -32,6 +33,8 @@ pub struct FileSymbols {
     pub symbols: Vec<Symbol>,
     /// References in the file, in document order (`symbols::extract_text_all`).
     pub refs: Vec<Reference>,
+    /// Imports in the file, in document order (`symbols::imports`).
+    pub imports: Vec<Import>,
 }
 
 /// Files parsed since the previous batch; `None` drops a file (gone, too
@@ -69,6 +72,15 @@ pub struct SymbolIndex {
     running: bool,
     /// Palette rows, rebuilt on demand after a change.
     entries: Option<Arc<Vec<SymbolEntry>>>,
+    /// File import edges, rebuilt on demand after a change.
+    edges: Option<Edges>,
+}
+
+/// Resolved imports between indexed files, both directions.
+#[derive(Debug, Default)]
+struct Edges {
+    out: HashMap<Arc<str>, Vec<Arc<str>>>,
+    inc: HashMap<Arc<str>, Vec<Arc<str>>>,
 }
 
 /// A run of the index, detached so it can go to `spawn_blocking`.
@@ -103,6 +115,7 @@ impl SymbolIndex {
         self.files.retain(|f, _| keep.contains(f.as_str()));
         if self.files.len() != before {
             self.entries = None;
+            self.edges = None;
         }
         self.candidates = Arc::new(candidates);
         self.rescan = true;
@@ -130,6 +143,7 @@ impl SymbolIndex {
         }
         if queued {
             self.entries = None;
+            self.edges = None;
         }
         (queued, unknown)
     }
@@ -174,6 +188,7 @@ impl SymbolIndex {
         self.run.touch();
         if !batch.files.is_empty() {
             self.entries = None;
+            self.edges = None;
         }
         for (rel, syms) in batch.files {
             match syms {
@@ -190,6 +205,40 @@ impl SymbolIndex {
         }
         self.running = false;
         Some(self.run.done())
+    }
+
+    fn edges(&mut self) -> &Edges {
+        if self.edges.is_none() {
+            let interned: HashMap<&str, Arc<str>> = self.files.keys().map(|k| (k.as_str(), Arc::from(k.as_str()))).collect();
+            let mut e = Edges::default();
+            for (path, f) in &self.files {
+                let Some(lang) = syntax::detect(Path::new(path)).map(|d| d.name) else { continue };
+                for imp in &f.imports {
+                    let Some(t) = super::imports::resolve(lang, path, imp, &|p| self.files.contains_key(p)) else { continue };
+                    let Some(target) = interned.get(t.as_str()) else { continue };
+                    e.out.entry(interned[path.as_str()].clone()).or_default().push(target.clone());
+                    e.inc.entry(target.clone()).or_default().push(interned[path.as_str()].clone());
+                }
+            }
+            for v in e.out.values_mut().chain(e.inc.values_mut()) {
+                v.sort();
+                v.dedup();
+            }
+            self.edges = Some(e);
+        }
+        self.edges.as_ref().expect("built above")
+    }
+
+    /// The indexed files `rel` imports, sorted, empty when unknown. The edge
+    /// cache is rebuilt after any change.
+    pub fn imports_of(&mut self, rel: &str) -> Vec<Arc<str>> {
+        self.edges().out.get(rel).cloned().unwrap_or_default()
+    }
+
+    /// The indexed files that import `rel`, sorted, empty when unknown. The
+    /// edge cache is rebuilt after any change.
+    pub fn imported_by(&mut self, rel: &str) -> Vec<Arc<str>> {
+        self.edges().inc.get(rel).cloned().unwrap_or_default()
     }
 
     /// A run is in flight or waiting.
@@ -248,7 +297,8 @@ impl IndexJob {
             if known.is_some() && *known == mtime {
                 continue;
             }
-            let syms = meta.and_then(|_| parse(&path, &mut parser)).map(|(symbols, refs)| FileSymbols { mtime, symbols, refs });
+            let syms =
+                meta.and_then(|_| parse(&path, &mut parser)).map(|(symbols, refs, imports)| FileSymbols { mtime, symbols, refs, imports });
             batch.files.push((rel.clone(), syms));
             if batch.files.len() >= BATCH_FILES || last_send.elapsed() >= BATCH_EVERY {
                 send(std::mem::take(&mut batch));
@@ -262,15 +312,15 @@ impl IndexJob {
     }
 }
 
-/// The symbols and references of one file; `None` for binary or unreadable files.
-fn parse(path: &Path, parser: &mut tree_sitter::Parser) -> Option<(Vec<Symbol>, Vec<Reference>)> {
+/// The symbols, references and imports of one file; `None` for binary or unreadable files.
+fn parse(path: &Path, parser: &mut tree_sitter::Parser) -> Option<(Vec<Symbol>, Vec<Reference>, Vec<Import>)> {
     let def = syntax::detect(path).filter(|d| d.tags.is_some())?;
     let bytes = std::fs::read(path).ok()?;
     if bytes[..bytes.len().min(8192)].contains(&0) {
         return None;
     }
     let text = String::from_utf8_lossy(&bytes);
-    Some(super::extract_text_all(def, parser, &text))
+    Some(super::extract_index(def, parser, &text))
 }
 
 #[cfg(test)]
@@ -282,7 +332,7 @@ mod tests {
     }
 
     fn file(refs: Vec<Reference>) -> Option<FileSymbols> {
-        Some(FileSymbols { mtime: None, symbols: vec![], refs })
+        Some(FileSymbols { mtime: None, symbols: vec![], refs, imports: vec![] })
     }
 
     #[test]
@@ -317,6 +367,76 @@ mod tests {
         }
         let want = Reference { name: "b".into(), kind: "call", line: 0, col: 9, enclosing: Some(0) };
         assert_eq!(idx.refs_named("b"), [("a.rs", &want)]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn fs(imports: &[(&str, bool)]) -> Option<FileSymbols> {
+        let imports = imports.iter().map(|(spec, decl)| Import { spec: (*spec).into(), line: 0, decl: *decl }).collect();
+        Some(FileSymbols { mtime: None, symbols: vec![], refs: vec![], imports })
+    }
+
+    fn strs(v: Vec<Arc<str>>) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn import_edges_follow_batches() {
+        let mut idx = SymbolIndex::default();
+        let seq = idx.start(PathBuf::from("/nonexistent")).seq;
+        let files = vec![
+            ("src/main.rs".to_string(), fs(&[("app", true), ("crate::config::Config", false), ("std::fs", false)])),
+            ("src/app/mod.rs".to_string(), fs(&[("super::config", false), ("crate::{x}", false)])),
+            ("src/config.rs".to_string(), fs(&[])),
+            ("main.py".to_string(), fs(&[("pkg.a", false), ("pkg.b", false)])),
+            ("pkg/__init__.py".to_string(), fs(&[])),
+            ("pkg/a.py".to_string(), fs(&[(".b", false)])),
+            ("pkg/b.py".to_string(), fs(&[])),
+        ];
+        assert!(idx.on_batch(seq, SymbolBatch { files, done: true }).is_some());
+        assert_eq!(strs(idx.imports_of("src/main.rs")), ["src/app/mod.rs", "src/config.rs"]);
+        assert_eq!(strs(idx.imported_by("src/config.rs")), ["src/app/mod.rs", "src/main.rs"]);
+        #[cfg(feature = "lang-python")]
+        {
+            assert_eq!(strs(idx.imports_of("main.py")), ["pkg/a.py", "pkg/b.py"]);
+            assert_eq!(strs(idx.imported_by("pkg/b.py")), ["main.py", "pkg/a.py"]);
+        }
+        assert!(idx.imports_of("nope.rs").is_empty());
+        let seq = idx.start(PathBuf::from("/nonexistent")).seq;
+        let batch = SymbolBatch { files: vec![("src/config.rs".to_string(), None)], done: true };
+        assert!(idx.on_batch(seq, batch).is_some());
+        assert!(idx.imported_by("src/config.rs").is_empty());
+        assert_eq!(strs(idx.imports_of("src/main.rs")), ["src/app/mod.rs"]);
+    }
+
+    #[cfg(all(feature = "lang-rust", feature = "lang-python"))]
+    #[test]
+    fn index_run_builds_import_edges() {
+        let dir = std::env::temp_dir().join(format!("jetl-symimports-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::create_dir_all(dir.join("pkg")).unwrap();
+        let files = [
+            ("src/main.rs", "mod a;\nuse crate::b::B;\nfn main() {}\n"),
+            ("src/a.rs", "use super::b;\n"),
+            ("src/b.rs", "pub struct B;\n"),
+            ("pkg/__init__.py", ""),
+            ("pkg/a.py", "from . import b\n"),
+            ("pkg/b.py", "x = 1\n"),
+        ];
+        for (p, c) in files {
+            std::fs::write(dir.join(p), c).unwrap();
+        }
+        let mut idx = SymbolIndex::default();
+        idx.set_files(&files.iter().map(|(p, _)| p.to_string()).collect::<Vec<_>>());
+        let job = idx.start(dir.clone());
+        let seq = job.seq;
+        let mut batches = Vec::new();
+        job.run(|b| batches.push(b));
+        for b in batches {
+            idx.on_batch(seq, b);
+        }
+        assert_eq!(strs(idx.imports_of("src/main.rs")), ["src/a.rs", "src/b.rs"]);
+        assert_eq!(strs(idx.imported_by("src/b.rs")), ["src/a.rs", "src/main.rs"]);
+        assert_eq!(strs(idx.imports_of("pkg/a.py")), ["pkg/b.py"]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -29,6 +29,10 @@ pub struct LanguageDef {
     pub tags: Option<&'static str>,
     /// `tags` compiled on first use.
     tags_query: OnceLock<Option<Query>>,
+    /// Imports query (`@import.path`, `@import.name`, `@import.mod`) for file import edges (`symbols::imports`).
+    pub imports: Option<&'static str>,
+    /// `imports` compiled on first use.
+    imports_query: OnceLock<Option<Query>>,
     /// Injection query (`@injection.content` with `@injection.language` or
     /// `#set! injection.language`): languages embedded in this one
     /// (Markdown fences, HTML `<script>` and `<style>`).
@@ -73,6 +77,8 @@ fn make(
                     indent_after_colon: matches!(name, "python" | "yaml"),
                     tags: None,
                     tags_query: OnceLock::new(),
+                    imports: None,
+                    imports_query: OnceLock::new(),
                     injections: None,
                     injections_query: OnceLock::new(),
                     #[cfg(test)]
@@ -112,6 +118,23 @@ impl LanguageDef {
             .get_or_init(|| {
                 let src = self.tags?;
                 Query::new(&self.language, src).map_err(|e| tracing::warn!("tags query for {}: {e}", self.name)).ok()
+            })
+            .as_ref()
+    }
+
+    #[cfg_attr(not(any(feature = "lang-rust", feature = "lang-python")), allow(dead_code))]
+    fn with_imports(mut self, q: &'static str) -> Self {
+        self.imports = Some(q);
+        self
+    }
+
+    /// The compiled imports query; `None` without one or when it does not
+    /// compile (logged once).
+    pub fn imports_query(&self) -> Option<&Query> {
+        self.imports_query
+            .get_or_init(|| {
+                let src = self.imports?;
+                Query::new(&self.language, src).map_err(|e| tracing::warn!("imports query for {}: {e}", self.name)).ok()
             })
             .as_ref()
     }
@@ -227,7 +250,10 @@ pub static LANGUAGES: LazyLock<Vec<LanguageDef>> = LazyLock::new(|| {
             &["[(integer_literal) (float_literal)] @number", tree_sitter_rust::HIGHLIGHTS_QUERY],
             Some("//"),
         )
-        .map(|d| d.with_tags(join_static(&[RUST_TAGS_EXTRA, tree_sitter_rust::TAGS_QUERY]))),
+        .map(|d| {
+            d.with_tags(join_static(&[RUST_TAGS_EXTRA, tree_sitter_rust::TAGS_QUERY]))
+                .with_imports(include_str!("../../assets/queries/rust/imports.scm"))
+        }),
     );
     #[cfg(feature = "lang-js")]
     v.extend(
@@ -276,7 +302,7 @@ pub static LANGUAGES: LazyLock<Vec<LanguageDef>> = LazyLock::new(|| {
     #[cfg(feature = "lang-python")]
     v.extend(
         make("python", &["py", "pyi"], &[], tree_sitter_python::LANGUAGE.into(), &[tree_sitter_python::HIGHLIGHTS_QUERY], Some("#"))
-            .map(|d| d.with_tags(tree_sitter_python::TAGS_QUERY)),
+            .map(|d| d.with_tags(tree_sitter_python::TAGS_QUERY).with_imports(include_str!("../../assets/queries/python/imports.scm"))),
     );
     #[cfg(feature = "lang-json")]
     v.extend(make(
@@ -1634,6 +1660,12 @@ mod tests {
         for name in ["rust", "javascript", "typescript", "tsx", "python", "go", "c", "cpp", "java"] {
             assert_eq!(tagged.contains(&name), names.contains(&name), "{name} has tags when enabled");
         }
+        let importing: Vec<&str> = LANGUAGES.iter().filter(|l| l.imports.is_some()).map(|l| l.name).collect();
+        let broken: Vec<&str> = LANGUAGES.iter().filter(|l| l.imports.is_some() && l.imports_query().is_none()).map(|l| l.name).collect();
+        assert!(broken.is_empty(), "imports query does not compile for {broken:?}");
+        for name in ["rust", "python"] {
+            assert_eq!(importing.contains(&name), names.contains(&name), "{name} has imports when enabled");
+        }
         let injecting: Vec<&str> = LANGUAGES.iter().filter(|l| l.injections.is_some()).map(|l| l.name).collect();
         let broken: Vec<&str> =
             LANGUAGES.iter().filter(|l| l.injections.is_some() && l.injections_query().is_none()).map(|l| l.name).collect();
@@ -2432,6 +2464,10 @@ mod tests {
         for entry in std::fs::read_dir(&root).unwrap() {
             let dir = entry.unwrap().path();
             let name = dir.file_name().unwrap().to_string_lossy().into_owned();
+            // jetl's own query files (imports.scm) sit next to no highlights.scm and need no licence.
+            if !dir.join("highlights.scm").exists() {
+                continue;
+            }
             let scm = std::fs::read_to_string(dir.join("highlights.scm")).unwrap_or_else(|e| panic!("{name}: {e}"));
             let first = scm.lines().next().unwrap_or("");
             assert!(first.starts_with("; From https://") && first.ends_with("; see LICENSE."), "{name}: {first:?}");
