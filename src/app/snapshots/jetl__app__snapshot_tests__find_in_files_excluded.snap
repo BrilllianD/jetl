@@ -32,5 +32,5 @@ expression: "snapshot(&term, &marks, Some(bottom))"
 12                   X
 13              DDDDDAAAA
 14                 XXXX  X
-15              XXXXXXXXXXXXX
+15      XXXXXXXXXXXXXXXXXXXXX
 16     LLLLLLLLLLLLLLLLLLDDDDDAAAALLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL

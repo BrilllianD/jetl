@@ -585,8 +585,9 @@ impl FindPanel {
                     let hit = &self.hits[h];
                     let base = if hit.excluded { dimmed(base) } else { base };
                     let num = format!("{:>6}  ", hit.line + 1);
+                    let num_style = if hit.excluded { dimmed(base.patch(theme.line_number)) } else { base.patch(theme.line_number) };
                     let mut x = lr.x + 1;
-                    buf.set_stringn(x, y, &num, lr.right().saturating_sub(x) as usize, base.patch(theme.line_number));
+                    buf.set_stringn(x, y, &num, lr.right().saturating_sub(x) as usize, num_style);
                     x += num.width() as u16;
                     // Text before, in and after the match.
                     let pre: String = hit.preview.chars().take(hit.preview_col).collect();
@@ -618,6 +619,8 @@ impl FindPanel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::Config;
+    use crate::workspace::Workspace;
 
     fn hit(path: &str, line: usize, matched: &str) -> Hit {
         Hit {
@@ -672,6 +675,29 @@ mod tests {
         p.list.select(0);
         p.toggle_exclude();
         assert_eq!(p.included_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn bare_delete_edits_the_query_and_excludes_nothing() {
+        let mut p = panel();
+        p.query.set_text("xy");
+        p.list.select(1);
+        let dir = std::env::temp_dir().join(format!("jetl-test-find-delete-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (config, theme, workspace) = (Config::default(), Theme::default(), Workspace::new(dir.clone()));
+        let (bus, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut cx = Ctx { effects: Vec::new(), config: &config, theme: &theme, workspace: &workspace, bus };
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        // At the end of the text Delete has nothing to remove and keeps the results.
+        assert!(p.handle_key(key(KeyCode::Delete), &mut cx));
+        assert_eq!(p.query.text, "xy");
+        assert_eq!((p.included_count(), p.excluded_count()), (3, 0));
+        // Before "y" it deletes that character.
+        assert!(p.handle_key(key(KeyCode::Left), &mut cx));
+        assert!(p.handle_key(key(KeyCode::Delete), &mut cx));
+        assert_eq!(p.query.text, "x");
+        assert_eq!(p.excluded_count(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

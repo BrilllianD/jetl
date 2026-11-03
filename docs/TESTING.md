@@ -294,19 +294,24 @@ mkdir -p $T/src
 printf 'fn helper() {}\nfn main() {\n    helper(); // helper\n}\n' > $T/src/main.rs
 printf 'fn f() {\n    helper();\n}\n' > $T/src/util.rs
 printf 'helper here\n' > $T/notes.txt
-# start jetl on $T/src/main.rs as above; wait for indexing (~1 s)
+# start jetl on $T itself as above (fresh state dir), wait for indexing (~1 s), then open src/main.rs:
+/tmp/tm.sh send-keys -t jetl C-n; sleep 0.5; /tmp/tm.sh send-keys -t jetl -l 'main.rs'; sleep 0.5; /tmp/tm.sh send-keys -t jetl Enter; sleep 2
 /tmp/tm.sh send-keys -t jetl Down Down Right Right Right Right Right   # caret in "helper" on line 3
 /tmp/tm.sh send-keys -t jetl S-F6; sleep 0.5
 /tmp/tm.sh capture-pane -p -t jetl       # dialog "Rename 'helper' as text to:", button Preview
-/tmp/tm.sh send-keys -t jetl C-a; /tmp/tm.sh send-keys -t jetl -l 'assist'; /tmp/tm.sh send-keys -t jetl Enter; sleep 1
-/tmp/tm.sh capture-pane -p -t jetl       # Find: 5 matches in 3 files; 2 excluded (the comment, notes.txt) dimmed
-/tmp/tm.sh send-keys -t jetl M-a; sleep 0.5; /tmp/tm.sh send-keys -t jetl Enter; sleep 1
+/tmp/tm.sh send-keys -t jetl BSpace BSpace BSpace BSpace BSpace BSpace   # the dialog has no select-all: one per letter of "helper"
+/tmp/tm.sh send-keys -t jetl -l 'assist'; sleep 0.3; /tmp/tm.sh send-keys -t jetl Enter; sleep 2
+/tmp/tm.sh capture-pane -p -t jetl       # Find: 5 results (notes.txt 1, main.rs 3, util.rs 1); notes.txt and the comment dimmed
+/tmp/tm.sh send-keys -t jetl M-a; sleep 1  # dialog "Replace 3 matches in 2 files with "assist"?"
+/tmp/tm.sh send-keys -t jetl Enter; sleep 2
 cat $T/src/util.rs; cat $T/notes.txt     # util has assist(); notes unchanged
 /tmp/tm.sh kill-server
 ```
 
-The main.rs buffer holds the change unsaved (assist twice, the comment still
-says helper). Any later search in Find shows every result included again.
+The toast says "Replaced 3 matches in 2 files". The main.rs buffer holds the
+change unsaved (assist twice, the comment still says helper). Bare Delete in
+the Find field (Home, Delete) removes the first letter of the query and
+excludes nothing. Any later search in Find shows every result included again.
 
 ### Scenario: column selection
 
