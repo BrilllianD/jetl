@@ -4,27 +4,27 @@ expression: "snapshot(&term, &run_configs_marks(&app.theme), None)"
 ---
 80x24 cursor=hidden
 00  ≣┌ Run Configurations ──────────────────────────────────────────────────────┐
-01  1│  global ch… config.toml│ where                                           │
+01   │  global ch… config.toml│ where                                           │
 02  ⌂│* where   .jetl/run.toml│                                                 │
-03  2│                        │   Name               where                      │
-04  ◫│                        │   Command            sh -c pwd                  │
-05  7│                        │   Arguments          x                          │
-06  ⊢│                        │ * Working directory  web                        │
+03  ◫│                        │   Name               where                      │
+04  ⊢│                        │   Command            sh -c pwd                  │
+05   │                        │   Arguments          x                          │
+06   │                        │ * Working directory  web                        │
 07   │                        │   Environment        FOO=bar                    │
-08  ✓│                        │   Output             auto (problems)            │
-09  8│                        │                                                 │
-10  ⟲│                        │                                                 │
-11  5│                        │                                                 │
-12  ⚑│                        │                                                 │
-13  9│                        │                                                 │
-14  ⎇│                        │                                                 │
-15   │                        │                                                 │
-16  ❯│                        │ Appended to the command, as shell words:        │
-17  6│                        │ --release 'a b'.                                │
-18  ⚠│                        │ Saved to .jetl/run.toml                         │
-19  4│                                                                          │
-20  ►│[+] [−] [Copy]                              [ OK ]  [ Cancel ]  [ Apply ] │
-21  3└──────────────────────────────────────────────────────────────────────────┘
+08   │                        │   Output             auto (problems)            │
+09   │                        │                                                 │
+10   │                        │                                                 │
+11   │                        │                                                 │
+12   │                        │                                                 │
+13  ⋔│                        │                                                 │
+14  ✎│                        │                                                 │
+15  ✓│                        │                                                 │
+16  ⟲│                        │ Appended to the command, as shell words:        │
+17  ⚑│                        │ --release 'a b'.                                │
+18  ⎇│                        │ Saved to .jetl/run.toml                         │
+19  ❯│                                                                          │
+20  ⚠│[+] [−] [Copy]                              [ OK ]  [ Cancel ]  [ Apply ] │
+21  ►└──────────────────────────────────────────────────────────────────────────┘
 22  ⌕ └──────────────────────────────┘│
 23
 -- marks: L=selected U=unfocused M=modified

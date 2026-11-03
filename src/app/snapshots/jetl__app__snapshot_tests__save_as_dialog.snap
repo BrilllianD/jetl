@@ -4,27 +4,27 @@ expression: "snapshot(&term, &marks, None)"
 ---
 80x24 cursor=(20,9)
 00  ≣ ┌ Project: root ───────────────┐│ *notes (recovered) ×
-01  1 │                              ││  1    rescued text
+01    │                              ││  1    rescued text
 02  ⌂ │                              ││  2
-03  2 │                              ││
-04  ◫ │                              ││
-05  7 │         ┌ Save As ───────────────────────────────────────────┐
-06  ⊢ │         │ Where to save notes (recovered)?                   │
+03  ◫ │                              ││
+04  ⊢ │                              ││
+05    │         ┌ Save As ───────────────────────────────────────────┐
+06    │         │ Where to save notes (recovered)?                   │
 07    │         │ Path relative to the project root (Tab completes): │
-08  ✓ │         │                                                    │
-09  8 │         │ notes                                              │
-10  ⟲ │         │                [ Save ] [ Cancel ]                 │
-11  5 │         └────────────────────────────────────────────────────┘
-12  ⚑ │                              ││
-13  9 │                              ││
-14  ⎇ │                              ││
-15    │                              ││
-16  ❯ │                              ││
-17  6 │                              ││
-18  ⚠ │                              ││
-19  4 │                              ││
-20  ► │                              ││
-21  3 │                              ││
+08    │         │                                                    │
+09    │         │ notes                                              │
+10    │         │                [ Save ] [ Cancel ]                 │
+11    │         └────────────────────────────────────────────────────┘
+12    │                              ││
+13  ⋔ │                              ││
+14  ✎ │                              ││
+15  ✓ │                              ││
+16  ⟲ │                              ││
+17  ⚑ │                              ││
+18  ⎇ │                              ││
+19  ❯ │                              ││
+20  ⚠ │                              ││
+21  ► │                              ││
 22  ⌕ └──────────────────────────────┘│
 23                                    Ln 2, Col 1  LF  UTF-8  4 spaces  Plain text
 -- marks: B=selected button

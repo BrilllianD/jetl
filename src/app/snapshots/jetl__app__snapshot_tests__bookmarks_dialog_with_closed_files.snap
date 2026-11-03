@@ -4,27 +4,27 @@ expression: "snapshot(&term, &marks, None)"
 ---
 80x24 cursor=(17,4)
 00  ≣ ┌ Project: root ───────────────┐│  other.log ×
-01  1 │                              ││  1  ▾ alpha beta gamma
+01    │                              ││  1  ▾ alpha beta gamma
 02  ⌂ │           ┌ Bookmarks ─────────────────────────────────────┐
-03  2 │           │ Go to bookmark:                                │
-04  ◫ │           │ type to filter                                 │
-05  7 │           │  ◆ other.log:2 two indented                    │
-06  ⊢ │           │  ◆ notes.log:1 (closed)                        │the file
+03  ◫ │           │ Go to bookmark:                                │
+04  ⊢ │           │ type to filter                                 │
+05    │           │  ◆ other.log:2 two indented                    │
+06    │           │  ◆ notes.log:1 (closed)                        │the file
 07    │           │  3 notes.log:4 (closed)                        │
-08  ✓ │           │                                                │
-09  8 │           │                                                │
-10  ⟲ │           │                                                │
-11  5 │           │                                                │
-12  ⚑ │           │                                                │
-13  9 │           │                                                │
-14  ⎇ │           │                                                │
-15    │           │                                                │
-16  ❯ │           │                                                │
-17  6 │           └────────────────────────────────────────────────┘
-18  ⚠ │                              ││
-19  4 │                              ││
-20  ► │                              ││
-21  3 │                              ││
+08    │           │                                                │
+09    │           │                                                │
+10    │           │                                                │
+11    │           │                                                │
+12    │           │                                                │
+13  ⋔ │           │                                                │
+14  ✎ │           │                                                │
+15  ✓ │           │                                                │
+16  ⟲ │           │                                                │
+17  ⚑ │           └────────────────────────────────────────────────┘
+18  ⎇ │                              ││
+19  ❯ │                              ││
+20  ⚠ │                              ││
+21  ► │                              ││
 22  ⌕ └──────────────────────────────┘│
 23  other.log                         Ln 2, Col 1  LF  UTF-8  4 spaces  Plain text
 -- marks: L=selected

@@ -4,27 +4,27 @@ expression: "snapshot(&term, &marks, None)"
 ---
 80x24 cursor=hidden
 00  ≣ ┌ Project: root ───────────────┐│  R main.rs ×   R Cargo.toml ×
-01  1 │▾ / src                       ││  1
+01    │▾ / src                       ││  1
 02  ⌂ │    R lib.rs                  ││
-03  2 │    R main.rs                 ││
-04  ◫ │  R Cargo.toml                ││
-05  7 │  M Makefile                  ││
-06  ⊢ │  - notes.txt                 ││
+03  ◫ │    R main.rs                 ││
+04  ⊢ │  R Cargo.toml                ││
+05    │  M Makefile                  ││
+06    │  - notes.txt                 ││
 07    │  # README.md                 ││
-08  ✓ │                              ││
-09  8 │                              ││
-10  ⟲ │                              ││
-11  5 │                              ││
-12  ⚑ │                              ││
-13  9 │                              ││
-14  ⎇ │                              ││
-15    │                              ││
-16  ❯ │                              ││
-17  6 │                              ││
-18  ⚠ │                              ││
-19  4 │                              ││
-20  ► │                              ││
-21  3 │                              ││
+08    │                              ││
+09    │                              ││
+10    │                              ││
+11    │                              ││
+12    │                              ││
+13  ⋔ │                              ││
+14  ✎ │                              ││
+15  ✓ │                              ││
+16  ⟲ │                              ││
+17  ⚑ │                              ││
+18  ⎇ │                              ││
+19  ❯ │                              ││
+20  ⚠ │                              ││
+21  ► │                              ││
 22  ⌕ └──────────────────────────────┘│
 23  Cargo.toml                              Ln 1, Col 1  LF  UTF-8  4 spaces  toml
 -- marks: d=module and attribute (folder, Make) k=keyword (Rust) t=text.title (Markdown icon; also the focused tree border and title) c=comment (other file icon; also the status bar)

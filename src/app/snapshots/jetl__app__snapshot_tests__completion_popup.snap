@@ -4,23 +4,23 @@ expression: "snapshot(&term, &marks, None)"
 ---
 80x20 cursor=(50,2)
 00  ≣ ┌ Project: root ───────────────┐│  main.log ×
-01  1 │                              ││  1  ▾ fn main() {
+01    │                              ││  1  ▾ fn main() {
 02  ⌂ │                              ││  2    │   pri
-03  2 │                              ││  3 ┌──────────────────────────────────────┐
-04  ◫ │                              ││  4 │v primary_color                 Color │
-05  7 │                              ││    │f print!(…)        macro_rules! print │
-06  ⊢ │                              ││    │f println!       macro_rules! println │
-07  5 │                              ││    │d priority                         u8 │
-08  ⚑ │                              ││    └──────────────────────────────────────┘
-09  9 │                              ││
-10  ⎇ │                              ││
-11    │                              ││
-12  ❯ │                              ││
-13  6 │                              ││
-14  ⚠ │                              ││
-15  4 │                              ││
-16  ► │                              ││
-17  3 │                              ││
+03  ◫ │                              ││  3 ┌──────────────────────────────────────┐
+04  ⊢ │                              ││  4 │v primary_color                 Color │
+05    │                              ││    │f print!(…)        macro_rules! print │
+06    │                              ││    │f println!       macro_rules! println │
+07    │                              ││    │d priority                         u8 │
+08    │                              ││    └──────────────────────────────────────┘
+09  ⋔ │                              ││
+10  ✎ │                              ││
+11  ✓ │                              ││
+12  ⟲ │                              ││
+13  ⚑ │                              ││
+14  ⎇ │                              ││
+15  ❯ │                              ││
+16  ⚠ │                              ││
+17  ► │                              ││
 18  ⌕ └──────────────────────────────┘│
 19  main.log                          Ln 2, Col 8  LF  UTF-8  4 spaces  Plain text
 -- marks: U=underlined M=matched L=selected X=deprecated

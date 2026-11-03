@@ -4,16 +4,16 @@ expression: "snapshot(&term, &[], None)"
 ---
 80x14 cursor=hidden
 00  ≣ ┌ Project: root ───────────────┐│
-01  1 │                              ││
-02  ⌂ │                              ││               No files open.
-03  2 │                              ││       Alt+1 opens the Project view;
-04  ◫ └──────────────────────────────┘│         Ctrl+Shift+N finds a file.
-05  7 ─────────────────────────────────────────────────────────────────────────────
-06  ⊢ ┌ Tasks ────────────────────────────────────────────────────────────────────┐
-07  6 │[Closed: hidden] [Tag: any] [Assignee: any] [Related…] [Refresh]           │
-08  ⚠ │ This project has no yman tracker; run yman init in a terminal to create   │
-09  4 │ one                                                                       │
+01  ⌂ │                              ││
+02  ◫ │                              ││               No files open.
+03  ⊢ │                              ││       Alt+1 opens the Project view;
+04  ✓ └──────────────────────────────┘│         Ctrl+Shift+N finds a file.
+05  ⟲ ─────────────────────────────────────────────────────────────────────────────
+06  ⚑ ┌ Tasks ────────────────────────────────────────────────────────────────────┐
+07  ⎇ │[Closed: hidden] [Tag: any] [Assignee: any] [Related…] [Refresh]           │
+08  ❯ │ This project has no yman tracker; run yman init in a terminal to create   │
+09  ⚠ │ one                                                                       │
 10  ► │ F5 retries                                                                │
-11  3 │                                                                           │
-12  ⌕ └───────────────────────────────────────────────────────────────────────────┘
+11  ⌕ │                                                                           │
+12  ⋯ └───────────────────────────────────────────────────────────────────────────┘
 13

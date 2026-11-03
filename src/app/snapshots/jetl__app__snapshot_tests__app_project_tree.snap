@@ -4,27 +4,27 @@ expression: "snapshot(&term, &marks, Some(left))"
 ---
 80x24 cursor=hidden
 00  ≣ ┌ Project: root ───────────────┐│
-01  1 │▾ src                         ││
+01    │▾ src                         ││
 02  ⌂ │    lib.rs                    ││
-03  2 │    main.rs                   ││
-04  ◫ │  Cargo.toml                  ││
-05  7 │  notes.txt                   ││
-06  ⊢ │  README.md                   ││
+03  ◫ │    main.rs                   ││
+04  ⊢ │  Cargo.toml                  ││
+05    │  notes.txt                   ││
+06    │  README.md                   ││
 07    │                              ││
-08  ✓ │                              ││
-09  8 │                              ││
-10  ⟲ │                              ││
-11  5 │                              ││               No files open.
-12  ⚑ │                              ││       Alt+1 opens the Project view;
-13  9 │                              ││         Ctrl+Shift+N finds a file.
-14  ⎇ │                              ││
-15    │                              ││
-16  ❯ │                              ││
-17  6 │                              ││
-18  ⚠ │                              ││
-19  4 │                              ││
-20  ► │                              ││
-21  3 │                              ││
+08    │                              ││
+09    │                              ││
+10    │                              ││
+11    │                              ││               No files open.
+12    │                              ││       Alt+1 opens the Project view;
+13  ⋔ │                              ││         Ctrl+Shift+N finds a file.
+14  ✎ │                              ││
+15  ✓ │                              ││
+16  ⟲ │                              ││
+17  ⚑ │                              ││
+18  ⎇ │                              ││
+19  ❯ │                              ││
+20  ⚠ │                              ││
+21  ► │                              ││
 22  ⌕ └──────────────────────────────┘│
 23                                                                            main
 -- marks: m=modified u=untracked L=selected

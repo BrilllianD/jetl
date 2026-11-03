@@ -4,27 +4,27 @@ expression: "snapshot(&term, &marks, Some(bottom))"
 ---
 60x24 cursor=hidden
 00  ≣ ┌ Project: root ─────────┐│
-01  1 │                        ││
+01    │                        ││
 02  ⌂ │                        ││
-03  2 │                        ││  No files open. Alt+1 opens
-04  ◫ │                        ││      the Project view;
-05  7 │                        ││  Ctrl+Shift+N finds a file.
-06  ⊢ │                        ││
+03  ◫ │                        ││  No files open. Alt+1 opens
+04  ⊢ │                        ││      the Project view;
+05    │                        ││  Ctrl+Shift+N finds a file.
+06    │                        ││
 07    └────────────────────────┘│
-08  ✓ ─────────────────────────────────────────────────────────
-09  8 ┌ Local History: notes.txt ─────────────────────────────┐
-10  ⟲ │[All Files] [Revert] [Revert Change] [Put Label…]      │
-11  5 │ Label: before refactor  2024-1… [Unified] [x] Collapse│
-12  ⚑ │  1   1  alpha                                         │
-13  9 │  2     -beta                                          │
-14  ⎇ │      2 +beta two                                      │
-15    │  3   3  gamma                                         │
-16  ❯ │      4 +epsilon                                       │
-17  6 │  4   5  delta                                         │
-18  ⚠ │                                                       │
-19  4 │                                                       │
-20  ► │                                                       │
-21  3 │                                                       │
+08    ─────────────────────────────────────────────────────────
+09    ┌ Local History: notes.txt ─────────────────────────────┐
+10    │[All Files] [Revert] [Revert Change] [Put Label…]      │
+11    │ Label: before refactor  2024-1… [Unified] [x] Collapse│
+12    │  1   1  alpha                                         │
+13  ⋔ │  2     -beta                                          │
+14  ✎ │      2 +beta two                                      │
+15  ✓ │  3   3  gamma                                         │
+16  ⟲ │      4 +epsilon                                       │
+17  ⚑ │  4   5  delta                                         │
+18  ⎇ │                                                       │
+19  ❯ │                                                       │
+20  ⚠ │                                                       │
+21  ► │                                                       │
 22  ⌕ └───────────────────────────────────────────────────────┘
 23
 -- marks: A=added D=deleted ~=modified +=added word -=deleted word L=selected B=bold

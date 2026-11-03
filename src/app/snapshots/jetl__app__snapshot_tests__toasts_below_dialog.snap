@@ -4,10 +4,10 @@ expression: "snapshot(&term, &marks, None)"
 ---
 80x24 cursor=hidden
 00  ≣ ┌ Project: root ───────────────┐│
-01  1 │▾ src                         ││
+01    │▾ src                         ││
 02  ⌂ │    lib.rs                    ││
-03  2 │    main.rs                   ││
-04  ◫ │  README.md                   ││
+03  ◫ │    main.rs                   ││
+04  ⊢ │  README.md                   ││
 05  ┌ Delete ────────────────────────────────────────────────────────────────────┐
 06  │ Delete the file src/main.rs?                                               │
 07  │ This cannot be undone. Open tabs of it close; unsaved edits there are      │
@@ -15,16 +15,16 @@ expression: "snapshot(&term, &marks, None)"
 09  │                                                                            │
 10  │                           [ Delete ] [ Cancel ]                            │
 11  └────────────────────────────────────────────────────────────────────────────┘
-12  ⚑ │                              ││   ╭ Warning ───────────────────────────×─╮
-13  9 │                              ││   │ Language servers are off, so         │
-14  ⎇ │                              ││   │ completion, hover and diagnostics    │
-15    │                              ││   │ are unavailable until they are on    │
-16  ❯ │                              ││   ╰──────────────────────────────────────╯
-17  6 │                              ││
-18  ⚠ │                              ││
-19  4 │                              ││
-20  ► │                              ││
-21  3 │                              ││
+12    │                              ││   ╭ Warning ───────────────────────────×─╮
+13  ⋔ │                              ││   │ Language servers are off, so         │
+14  ✎ │                              ││   │ completion, hover and diagnostics    │
+15  ✓ │                              ││   │ are unavailable until they are on    │
+16  ⟲ │                              ││   ╰──────────────────────────────────────╯
+17  ⚑ │                              ││
+18  ⎇ │                              ││
+19  ❯ │                              ││
+20  ⚠ │                              ││
+21  ► │                              ││
 22  ⌕ └──────────────────────────────┘│
 23
 -- marks: w=warn B=selected button

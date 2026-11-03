@@ -228,6 +228,9 @@ impl App {
                     Some((StripButton::Menu, _)) => self.toggle_main_menu(),
                     Some((StripButton::Tool(tw), _)) if button == MouseButton::Right => self.tool_window_side_menu(tw, m.column, m.row),
                     Some((StripButton::Tool(tw), _)) => self.toggle_tool_window(tw),
+                    Some((StripButton::More, r)) => {
+                        self.strip_more_menu(self.layout.rects.strip_right.contains(r.as_position()), m.column, m.row)
+                    }
                     None => {}
                 },
                 Hit::Status => self.click_status(&mouse),

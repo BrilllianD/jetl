@@ -4,27 +4,27 @@ expression: "snapshot(&term, &marks, None)"
 ---
 80x24 cursor=hidden
 00  ≣ ┌ Project: root ───────────────┐│
-01  1 │                              ││
+01    │                              ││
 02  ⌂ │                              ││
-03  2 │                              ││               No files open.
-04  ◫ │                              ││       Alt+1 opens the Project view;
-05  7 │                              ││         Ctrl+Shift+N finds a file.
-06  ⊢ │                              ││
+03  ◫ │                              ││               No files open.
+04  ⊢ │                              ││       Alt+1 opens the Project view;
+05    │                              ││         Ctrl+Shift+N finds a file.
+06    │                              ││
 07    └──────────────────────────────┘│
-08  ✓ ─────────────────────────────────────────────────────────────────────────────
-09  8 ┌ Tasks: 3 open ────────────────────────────────────────────────────────────┐
-10  ⟲ │[Closed: hidden] [Tag: any] [Assignee: any] [Related…] [Refresh]           │
-11  5 │ P ID Status Title                                        Tags    Assignee │
-12  ⚑ │ 2 1  todo   Fix the parser                               ui      claude   │
-13  9 │ 2 2  doing  Crash on save                                bug              │
-14  ⎇ │ 2 10 todo   Polish the toolbar                           ui, bug bob      │
-15    │                                                                           │
-16  ❯ │                                                                           │
-17  6 │                                                                           │
-18  ⚠ │                                                                           │
-19  4 │                                                                           │
-20  ► │                                                                           │
-21  3 │                                                                           │
+08    ─────────────────────────────────────────────────────────────────────────────
+09    ┌ Tasks: 3 open ────────────────────────────────────────────────────────────┐
+10    │[Closed: hidden] [Tag: any] [Assignee: any] [Related…] [Refresh]           │
+11    │ P ID Status Title                                        Tags    Assignee │
+12    │ 2 1  todo   Fix the parser                               ui      claude   │
+13  ⋔ │ 2 2  doing  Crash on save                                bug              │
+14  ✎ │ 2 10 todo   Polish the toolbar                           ui, bug bob      │
+15  ✓ │                                                                           │
+16  ⟲ │                                                                           │
+17  ⚑ │                                                                           │
+18  ⎇ │                                                                           │
+19  ❯ │                                                                           │
+20  ⚠ │                                                                           │
+21  ► │                                                                           │
 22  ⌕ └───────────────────────────────────────────────────────────────────────────┘
 23
 -- marks: L=selected

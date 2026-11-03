@@ -69,6 +69,8 @@ pub enum StripButton {
     /// The top button, which opens the main menu.
     Menu,
     Tool(ToolWindowId),
+    /// Opens a menu of the strip's windows that got no button.
+    More,
 }
 
 #[derive(Debug, Clone)]
@@ -423,6 +425,16 @@ impl LayoutState {
     pub fn strip_hit(&self, x: u16, y: u16) -> Option<(StripButton, Rect)> {
         let p = ratatui::layout::Position::new(x, y);
         self.strip_hits.iter().find(|(_, r)| r.contains(p)).copied()
+    }
+
+    /// The windows of the left strip (`right == false`) or the right strip
+    /// that got no button this frame, in strip order: the More menu's rows.
+    pub fn strip_overflow(&self, right: bool) -> Vec<ToolWindowId> {
+        ToolWindowId::ALL
+            .into_iter()
+            .filter(|tw| (self.side_of(*tw) == Side::Right) == right)
+            .filter(|tw| !self.strip_hits.iter().any(|(b, _)| *b == StripButton::Tool(*tw)))
+            .collect()
     }
 }
 

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Tool strip: when the two-row buttons do not fit (24-row terminals), every button is one row with only its icon, so all 13 tool windows have a button at 80x24; on a shorter strip its last row is a `⋯` More button whose menu lists the windows left without a button.
+
 ### Fixed
 
 - Status bar: a quiet log entry (such as a manual save) no longer blanks a still-current error or warning message; the slot keeps the newest non-quiet message until its timeout.

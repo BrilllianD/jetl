@@ -4,27 +4,27 @@ expression: "snapshot(&term, &marks, None)"
 ---
 80x24 cursor=(43,1)
 00  ≣ ┌ Project: root ───────────────┐│  alpha.txt ×  *beta.txt ×   gamma.txt ×
-01  1 │                              ││  1    three
+01    │                              ││  1    three
 02  ⌂ │                              ││  2
-03  2 │           ╭ Switcher ─────────────────────────────────────╮
-04  ◫ │           │ Tool Windows         │ Recent Files           │
-05  7 │           │ Project        Alt+1 │ gamma.txt              │
-06  ⊢ │           │ Worktrees      Alt+2 │ beta.txt *             │
+03  ◫ │           ╭ Switcher ─────────────────────────────────────╮
+04  ⊢ │           │ Tool Windows         │ Recent Files           │
+05    │           │ Project        Alt+1 │ gamma.txt              │
+06    │           │ Worktrees      Alt+2 │ beta.txt *             │
 07    │           │ Structure      Alt+7 │ alpha.txt              │
-08  ✓ │           │ Find           Alt+3 │                        │
-09  8 │           │ Run            Alt+4 │                        │
-10  ⟲ │           │ Problems       Alt+6 │                        │
-11  5 │           │ Terminal     Alt+F12 │                        │
-12  ⚑ │           │ Git            Alt+9 │                        │
-13  9 │           │ Event Log      Alt+5 │                        │
-14  ⎇ │           │ Local History  Alt+8 │                        │
-15    │           │ Tasks                │                        │
-16  ❯ │           │ TODO                 │                        │
-17  6 │           │ Hierarchy            │                        │
-18  ⚠ │           │ beta.txt                                      │
-19  4 │           ╰───────────────────────────────────────────────╯
-20  ► │                              ││
-21  3 │                              ││
+08    │           │ Find           Alt+3 │                        │
+09    │           │ Run            Alt+4 │                        │
+10    │           │ Problems       Alt+6 │                        │
+11    │           │ Terminal     Alt+F12 │                        │
+12    │           │ Git            Alt+9 │                        │
+13  ⋔ │           │ Event Log      Alt+5 │                        │
+14  ✎ │           │ Local History  Alt+8 │                        │
+15  ✓ │           │ Tasks                │                        │
+16  ⟲ │           │ TODO                 │                        │
+17  ⚑ │           │ Hierarchy            │                        │
+18  ⎇ │           │ beta.txt                                      │
+19  ❯ │           ╰───────────────────────────────────────────────╯
+20  ⚠ │                              ││
+21  ► │                              ││
 22  ⌕ └──────────────────────────────┘│
 23  gamma.txt                         Ln 1, Col 1  LF  UTF-8  4 spaces  Plain text
 -- marks: L=selected d=dim

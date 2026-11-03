@@ -4,27 +4,27 @@ expression: "snapshot(&term, &settings_marks(&app.theme), None)"
 ---
 80x24 cursor=hidden
 00  ≣┌ Settings ────────────────────────────────────────────────────────────────┐
-01  1│Appearance              │Editor › General                                 │
+01   │Appearance              │Editor › General                                 │
 02  ⌂│Editor                  │                                                 │
-03  2│  General               │  Tab width             4                new tabs│
-04  ◫│  Soft Wraps            │  Lines kept above an…  5                        │
-05  7│  Saving                │  Columns kept left a…  5                        │
-06  ⊢│  Formatting            │  Close brackets and …  [x]                      │
+03  ◫│  General               │  Tab width             4                new tabs│
+04  ⊢│  Soft Wraps            │  Lines kept above an…  5                        │
+05   │  Saving                │  Columns kept left a…  5                        │
+06   │  Formatting            │  Close brackets and …  [x]                      │
 07   │Keymap                  │  Highlight the word …  [x]                      │
-08  ✓│  Mode                  │  Show indent guides    [x]                      │
-09  8│Version Control         │  Inline blame on the…  [ ]                      │
-10  ⟲│  Git                   │  Show breadcrumbs      [ ]                      │
-11  5│  Worktrees             │  Sticky scroll         [ ]                      │
-12  ⚑│Files                   │  Live templates (sni…  [x]                      │
-13  9│Tools                   │  Tab limit             0                        │
-14  ⎇│  Terminal              │                                                 │
-15   │  Run                   │Lines kept visible above and below the caret.    │
-16  ❯│  Clipboard             │Applies at once.                                 │
-17  6│  Local History         │Delete resets to the default.                    │
-18  ⚠│Language Servers        │Key: editor.scrolloff                            │
-19  4│                                                                          │
-20  ►│                                            [ OK ]  [ Cancel ]  [ Apply ] │
-21  3└──────────────────────────────────────────────────────────────────────────┘
+08   │  Mode                  │  Show indent guides    [x]                      │
+09   │Version Control         │  Inline blame on the…  [ ]                      │
+10   │  Git                   │  Show breadcrumbs      [ ]                      │
+11   │  Worktrees             │  Sticky scroll         [ ]                      │
+12   │Files                   │  Live templates (sni…  [x]                      │
+13  ⋔│Tools                   │  Tab limit             0                        │
+14  ✎│  Terminal              │                                                 │
+15  ✓│  Run                   │Lines kept visible above and below the caret.    │
+16  ⟲│  Clipboard             │Applies at once.                                 │
+17  ⚑│  Local History         │Delete resets to the default.                    │
+18  ⎇│Language Servers        │Key: editor.scrolloff                            │
+19  ❯│                                                                          │
+20  ⚠│                                            [ OK ]  [ Cancel ]  [ Apply ] │
+21  ►└──────────────────────────────────────────────────────────────────────────┘
 22  ⌕ └──────────────────────────────┘│
 23
 -- marks: L=selected U=unfocused

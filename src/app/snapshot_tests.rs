@@ -3421,3 +3421,15 @@ async fn terminal_one_tab() {
     let marks = [Mark::style('B', "button", theme.title.bg(theme.panel_bg))];
     assert_snapshot!("terminal_one_tab", snapshot(&term, &marks, None));
 }
+
+#[tokio::test]
+async fn app_strip_more_menu() {
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    let mut fx = stable_app("strip-more");
+    let app = &mut fx.app;
+    draw_app(app, 80, 12);
+    app.handle_mouse(MouseEvent { kind: MouseEventKind::Down(MouseButton::Left), column: 1, row: 10, modifiers: KeyModifiers::NONE });
+    let term = draw_app(app, 80, 12);
+    let marks = [Mark::style('S', "selected row", app.theme.list_selected)];
+    assert_snapshot!("app_strip_more_menu", snapshot(&term, &marks, None));
+}

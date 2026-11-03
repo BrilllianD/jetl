@@ -1327,6 +1327,19 @@ Setup as above.
    window comes back focused. Repeat with the tab's close button (a click on its `x`).
 4. Repeat at 120x40 and 80x24. No stderr; Ctrl+Q exits with status 0.
 
+### Scenario: tool strip overflow
+
+Setup as above, `[lsp] enabled = false`.
+
+1. At 120x40 the strip shows two-row buttons (Alt-number over the icon) for all 13 windows.
+2. At 80x24 every button is one row, icon only: the menu cell on screen row 1, Project, Worktrees and
+   Structure on rows 3-5, the bottom group upwards from Find on row 23 to Hierarchy on row 14 (TODO `✎` on
+   row 15). A click on each toggles its window; hovering shows its name and Alt key.
+3. `tmux resize-window -t jetl -x 80 -y 12`: the strip's last row is `⋯`. Hover: "More Tool Windows".
+   A click opens a menu above it with Local History, Tasks, TODO and Hierarchy; Enter on TODO opens it.
+4. Move Git to the right (right-click its button, Move to Right) at 80x12: the right strip shows it; the
+   left More menu is unchanged. No stderr; Ctrl+Q exits with status 0.
+
 ### Limits under tmux
 
 - No kitty keyboard protocol: Ctrl+Shift+letter, Ctrl+Tab, Ctrl+Enter,

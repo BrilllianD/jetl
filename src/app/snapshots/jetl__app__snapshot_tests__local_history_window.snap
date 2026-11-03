@@ -4,27 +4,27 @@ expression: "snapshot(&term, &marks, Some(bottom))"
 ---
 80x24 cursor=hidden
 00  ≣ ┌ Project: root ───────────────┐│
-01  1 │                              ││
+01    │                              ││
 02  ⌂ │                              ││
-03  2 │                              ││               No files open.
-04  ◫ │                              ││       Alt+1 opens the Project view;
-05  7 │                              ││         Ctrl+Shift+N finds a file.
-06  ⊢ │                              ││
+03  ◫ │                              ││               No files open.
+04  ⊢ │                              ││       Alt+1 opens the Project view;
+05    │                              ││         Ctrl+Shift+N finds a file.
+06    │                              ││
 07    └──────────────────────────────┘│
-08  ✓ ─────────────────────────────────────────────────────────────────────────────
-09  8 ┌ Local History: notes.txt ─────────────────────────────────────────────────┐
-10  ⟲ │[All Files] [Revert] [Revert Change] [Put Label…] [Remove Label]           │
-11  5 │ 10-05 12:00  Unsaved changes │ Saved  2024-10-04 1… [Unified] [x] Collapse│
-12  ⚑ │ 10-04 12:00  Saved           │  1   1  alpha                              │
-13  9 │ 10-03 12:00  Before git swi… │  2     -beta                               │
-14  ⎇ │ 10-02 12:00  Before reload   │      2 +beta two                           │
-15    │ 10-01 12:00  Label: before … │  3   3  gamma                              │
-16  ❯ │ 09-29 12:00  Renamed from o… │      4 +epsilon                            │
-17  6 │ 09-24 12:00:07  Autosaved    │  4   5  delta                              │
-18  ⚠ │ 09-24 12:00:00  Autosaved    │                                            │
-19  4 │                              │                                            │
-20  ► │                              │                                            │
-21  3 │                              │                                            │
+08    ─────────────────────────────────────────────────────────────────────────────
+09    ┌ Local History: notes.txt ─────────────────────────────────────────────────┐
+10    │[All Files] [Revert] [Revert Change] [Put Label…] [Remove Label]           │
+11    │ 10-05 12:00  Unsaved changes │ Saved  2024-10-04 1… [Unified] [x] Collapse│
+12    │ 10-04 12:00  Saved           │  1   1  alpha                              │
+13  ⋔ │ 10-03 12:00  Before git swi… │  2     -beta                               │
+14  ✎ │ 10-02 12:00  Before reload   │      2 +beta two                           │
+15  ✓ │ 10-01 12:00  Label: before … │  3   3  gamma                              │
+16  ⟲ │ 09-29 12:00  Renamed from o… │      4 +epsilon                            │
+17  ⚑ │ 09-24 12:00:07  Autosaved    │  4   5  delta                              │
+18  ⎇ │ 09-24 12:00:00  Autosaved    │                                            │
+19  ❯ │                              │                                            │
+20  ⚠ │                              │                                            │
+21  ► │                              │                                            │
 22  ⌕ └───────────────────────────────────────────────────────────────────────────┘
 23
 -- marks: A=added D=deleted ~=modified +=added word -=deleted word L=selected B=bold

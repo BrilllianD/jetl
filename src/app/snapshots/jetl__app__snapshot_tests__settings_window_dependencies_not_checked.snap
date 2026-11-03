@@ -4,27 +4,27 @@ expression: "snapshot(&term, &settings_marks(&app.theme), None)"
 ---
 80x24 cursor=hidden
 00  ≣┌ Settings ────────────────────────────────────────────────────────────────┐
-01  1│Editor                  │Dependencies                                     │
+01   │Editor                  │Dependencies                                     │
 02  ⌂│  General               │                                                 │
-03  2│  Soft Wraps            │Not checked. Enter checks.                       │
-04  ◫│  Saving                │                                                 │
-05  7│  Formatting            │                                                 │
-06  ⊢│Keymap                  │                                                 │
+03  ◫│  Soft Wraps            │Not checked. Enter checks.                       │
+04  ⊢│  Saving                │                                                 │
+05   │  Formatting            │                                                 │
+06   │Keymap                  │                                                 │
 07   │  Mode                  │                                                 │
-08  ✓│Version Control         │                                                 │
-09  8│  Git                   │                                                 │
-10  ⟲│  Worktrees             │                                                 │
-11  5│Files                   │                                                 │
-12  ⚑│Tools                   │                                                 │
-13  9│  Terminal              │                                                 │
-14  ⎇│  Run                   │                                                 │
-15   │  Clipboard             │                                                 │
-16  ❯│  Local History         │                                                 │
-17  6│Language Servers        │                                                 │
-18  ⚠│Dependencies            │                                                 │
-19  4│                                                                          │
-20  ►│                                            [ OK ]  [ Cancel ]  [ Apply ] │
-21  3└──────────────────────────────────────────────────────────────────────────┘
+08   │Version Control         │                                                 │
+09   │  Git                   │                                                 │
+10   │  Worktrees             │                                                 │
+11   │Files                   │                                                 │
+12   │Tools                   │                                                 │
+13  ⋔│  Terminal              │                                                 │
+14  ✎│  Run                   │                                                 │
+15  ✓│  Clipboard             │                                                 │
+16  ⟲│  Local History         │                                                 │
+17  ⚑│Language Servers        │                                                 │
+18  ⎇│Dependencies            │                                                 │
+19  ❯│                                                                          │
+20  ⚠│                                            [ OK ]  [ Cancel ]  [ Apply ] │
+21  ►└──────────────────────────────────────────────────────────────────────────┘
 22  ⌕ └──────────────────────────────┘│
 23
 -- marks: L=selected U=unfocused

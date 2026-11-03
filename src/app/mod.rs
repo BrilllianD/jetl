@@ -1349,6 +1349,21 @@ impl App {
         self.apply_effects(vec![Effect::ContextMenu(ContextMenu::new(items, x, y))]);
     }
 
+    /// A press on a strip's More button: a menu of that strip's windows
+    /// without a button, in strip order; a row toggles its window.
+    pub(crate) fn strip_more_menu(&mut self, right: bool, x: u16, y: u16) {
+        use crate::ui::menu::{ContextMenu, MenuItem};
+        let items: Vec<MenuItem> = self
+            .layout
+            .strip_overflow(right)
+            .into_iter()
+            .map(|tw| MenuItem::new(tw.title(), Action::App(AppAction::ToggleToolWindow(tw))))
+            .collect();
+        if !items.is_empty() {
+            self.apply_effects(vec![Effect::ContextMenu(ContextMenu::new(items, x, y))]);
+        }
+    }
+
     /// F12, JetBrains-style: focus the tool window that last had focus,
     /// showing it first; before any had focus, a visible one or Project.
     fn last_tool_window(&mut self) {
@@ -4429,9 +4444,13 @@ mod strip_tests {
         MouseEvent { kind, column, row, modifiers: KeyModifiers::NONE }
     }
 
-    fn draw(app: &mut super::App) -> ratatui::buffer::Buffer {
-        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 24)).unwrap();
+    fn draw_at(app: &mut super::App, w: u16, h: u16) -> ratatui::buffer::Buffer {
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, h)).unwrap();
         term.draw(|f| crate::ui::render(app, f)).unwrap().buffer.clone()
+    }
+
+    fn draw(app: &mut super::App) -> ratatui::buffer::Buffer {
+        draw_at(app, 100, 24)
     }
 
     #[tokio::test]
@@ -4442,9 +4461,10 @@ mod strip_tests {
             app.config.ui.icons = icons;
             let buf = draw(&mut app);
             let (_, r) = *app.layout.strip_hits.iter().find(|(b, _)| *b == StripButton::Tool(ToolWindowId::Project)).unwrap();
-            assert_eq!(row_text(&buf, r.y + 1, 3).trim(), project, "{icons:?}");
+            assert_eq!(r.height, 1);
+            assert_eq!(row_text(&buf, r.y, 3).trim(), project, "{icons:?}");
             // The button colours span the whole strip, behind a wide glyph too.
-            assert!((0..3).all(|x| buf[(x, r.y + 1)].bg == buf[(0, r.y)].bg), "{icons:?}");
+            assert!((0..3).all(|x| buf[(x, r.y)].bg == buf[(0, r.y)].bg), "{icons:?}");
             assert_eq!(row_text(&buf, 0, 3).trim(), crate::ui::menu_bar::menu_glyph(icons));
             app.toggle_main_menu();
             let buf = draw(&mut app);
@@ -4455,18 +4475,21 @@ mod strip_tests {
     }
 
     #[tokio::test]
-    async fn every_strip_button_fits_24_rows_and_clicks() {
+    async fn every_tool_window_is_reachable_at_24_rows() {
         let (mut app, dir) = test_app("strip-fit");
-        draw(&mut app);
+        draw_at(&mut app, 80, 24);
         assert_eq!(app.layout.rects.strip.height, 23);
         let hits = app.layout.strip_hits.clone();
-        // The last two windows (TODO, Hierarchy) do not fit a 24-row strip; the View menu reaches them.
-        assert_eq!(hits.len(), ToolWindowId::ALL.len() - 1, "{hits:?}");
-        assert!(!hits.iter().any(|(b, _)| *b == StripButton::Tool(ToolWindowId::Todo)));
-        assert!(!hits.iter().any(|(b, _)| *b == StripButton::Tool(ToolWindowId::Hierarchy)));
-        assert_eq!(hits[0], (StripButton::Menu, ratatui::layout::Rect::new(0, 0, 3, 1)));
+        assert_eq!(hits[0], (StripButton::Menu, Rect::new(0, 0, 3, 1)));
+        for tw in ToolWindowId::ALL {
+            let (_, r) =
+                *hits.iter().find(|(b, _)| *b == StripButton::Tool(tw)).unwrap_or_else(|| panic!("{tw:?} has no button: {hits:?}"));
+            assert_eq!(r.height, 1, "{tw:?}");
+            assert!(app.layout.rects.strip.contains(r.as_position()) && r.bottom() <= app.layout.rects.strip.bottom());
+        }
+        assert!(!hits.iter().any(|(b, _)| *b == StripButton::More));
+        assert!(app.layout.strip_overflow(false).is_empty());
         for (i, (_, a)) in hits.iter().enumerate() {
-            assert!(app.layout.rects.strip.contains(a.as_position()) && a.bottom() <= app.layout.rects.strip.bottom());
             assert!(hits[i + 1..].iter().all(|(_, b)| a.intersection(*b).is_empty()), "{hits:?}");
         }
 
@@ -4475,12 +4498,56 @@ mod strip_tests {
         app.handle_mouse(ev(MouseEventKind::Up(MouseButton::Left), 1, 0));
         assert!(app.menu_bar.is_some());
         app.toggle_main_menu();
-        // A tool button toggles its window, on either row.
+        // A tool button toggles its window.
         let (_, r) = *hits.iter().find(|(b, _)| *b == StripButton::Tool(ToolWindowId::Git)).unwrap();
-        app.handle_mouse(ev(MouseEventKind::Down(MouseButton::Left), r.x + 1, r.y + 1));
+        app.handle_mouse(ev(MouseEventKind::Down(MouseButton::Left), r.x + 1, r.y));
         assert!(app.layout.is_visible(ToolWindowId::Git));
         app.handle_mouse(ev(MouseEventKind::Down(MouseButton::Left), r.x + 1, r.y));
         assert!(!app.layout.is_visible(ToolWindowId::Git));
+        let (_, r) = *hits.iter().find(|(b, _)| *b == StripButton::Tool(ToolWindowId::Hierarchy)).unwrap();
+        app.handle_mouse(ev(MouseEventKind::Down(MouseButton::Left), r.x + 1, r.y));
+        assert!(app.layout.is_visible(ToolWindowId::Hierarchy));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn more_button_lists_the_windows_without_a_button() {
+        use ToolWindowId::*;
+        let (mut app, dir) = test_app("strip-more");
+        let buf = draw_at(&mut app, 80, 12);
+        assert_eq!(app.layout.rects.strip.height, 11);
+        let tools: Vec<_> = app.layout.strip_hits.iter().filter(|(b, _)| matches!(b, StripButton::Tool(_))).cloned().collect();
+        assert_eq!(tools.len(), 9, "{tools:?}");
+        let row = |tw| tools.iter().find(|(b, _)| *b == StripButton::Tool(tw)).unwrap().1.y;
+        assert_eq!([row(Project), row(Worktrees), row(Structure)], [1, 2, 3]);
+        assert_eq!([row(Find), row(EventLog)], [9, 4]);
+        assert!(app.layout.strip_hits.contains(&(StripButton::More, Rect::new(0, 10, 3, 1))));
+        assert_eq!(app.layout.strip_overflow(false), [LocalHistory, Tasks, Todo, Hierarchy]);
+        assert_eq!(row_text(&buf, 10, 3).trim(), "\u{22ef}");
+
+        app.handle_mouse(ev(MouseEventKind::Down(MouseButton::Left), 1, 10));
+        let menu = app.menu.as_ref().expect("more menu");
+        let labels: Vec<_> = menu.items.iter().map(|i| i.label.clone()).collect();
+        assert_eq!(labels, ["Local History", "Tasks", "TODO", "Hierarchy"]);
+        let todo = Action::App(AppAction::ToggleToolWindow(Todo));
+        assert_eq!(menu.items[2].shortcut, app.shortcut(&todo).unwrap_or_default());
+        let a = app.menu.take().unwrap().items[2].action.clone().unwrap();
+        app.perform(a);
+        assert!(app.layout.is_visible(Todo));
+        let buf = draw_at(&mut app, 80, 12);
+        if let Some(bg) = app.theme.strip_item_active.bg {
+            assert_eq!(buf[(1, 10)].bg, bg);
+        }
+        app.handle_mouse(ev(MouseEventKind::Moved, 1, 10));
+        let buf = draw_at(&mut app, 80, 12);
+        let tip: String = (3..30).map(|x| buf[(x, 10)].symbol().to_string()).collect();
+        assert!(tip.starts_with(" More Tool Windows "), "{tip}");
+
+        app.move_tool_window(Hierarchy, Side::Right);
+        draw_at(&mut app, 80, 12);
+        let hits = &app.layout.strip_hits;
+        assert!(hits.contains(&(StripButton::Tool(Hierarchy), Rect::new(77, 2, 3, 2))), "{hits:?}");
+        assert_eq!(app.layout.strip_overflow(false), [LocalHistory, Tasks, Todo]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -4490,7 +4557,7 @@ mod strip_tests {
         draw(&mut app);
         let (_, r) = *app.layout.strip_hits.iter().find(|(b, _)| *b == StripButton::Tool(ToolWindowId::Project)).unwrap();
         app.dirty_frame = false;
-        app.handle_mouse(ev(MouseEventKind::Moved, r.x, r.y + 1));
+        app.handle_mouse(ev(MouseEventKind::Moved, r.x, r.y));
         assert_eq!(app.strip_hover, Some((StripButton::Tool(ToolWindowId::Project), r)));
         assert!(app.dirty_frame);
         // Motion within the same button does not redraw.

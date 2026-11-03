@@ -4,27 +4,27 @@ expression: "snapshot(&term, &marks, None)"
 ---
 80x24 cursor=hidden
 00  ≣ ┌ Project: root ───────────────┐│
-01  1 │▾ src                         ││
+01    │▾ src                         ││
 02  ⌂ │    lib.rs                    ││
-03  2 │    main.rs                   ││
-04  ◫ │  RE╭──────────────────────────────────────────────╮
-05  7 │    │ New File…                                    │
-06  ⊢ │    │ New Directory…                               │
+03  ◫ │    main.rs                   ││
+04  ⊢ │  RE╭──────────────────────────────────────────────╮
+05    │    │ New File…                                    │
+06    │    │ New Directory…                               │
 07    │    │ Rename…                             Shift+F6 │
-08  ✓ │    │ Delete…                               Delete │
-09  8 │    │ Copy Path                             Ctrl+C │
-10  ⟲ │    │ Copy Relative Path          Ctrl+Alt+Shift+C │
-11  5 │    │ Show History                           Alt+H │les open.
-12  ⚑ │    │ Local History                    Alt+Shift+H │he Project view;
-13  9 │    │ Local History: Put Label…                    │N finds a file.
-14  ⎇ │    │ [x] Show Hidden Files                        │
-15    │    │ [ ] Show Ignored Files                       │
-16  ❯ │    │ Refresh                                   F5 │
-17  6 │    ╰──────────────────────────────────────────────╯
-18  ⚠ │                              ││
-19  4 │                              ││
-20  ► │                              ││
-21  3 │                              ││
+08    │    │ Delete…                               Delete │
+09    │    │ Copy Path                             Ctrl+C │
+10    │    │ Copy Relative Path          Ctrl+Alt+Shift+C │
+11    │    │ Show History                           Alt+H │les open.
+12    │    │ Local History                    Alt+Shift+H │he Project view;
+13  ⋔ │    │ Local History: Put Label…                    │N finds a file.
+14  ✎ │    │ [x] Show Hidden Files                        │
+15  ✓ │    │ [ ] Show Ignored Files                       │
+16  ⟲ │    │ Refresh                                   F5 │
+17  ⚑ │    ╰──────────────────────────────────────────────╯
+18  ⎇ │                              ││
+19  ❯ │                              ││
+20  ⚠ │                              ││
+21  ► │                              ││
 22  ⌕ └──────────────────────────────┘│
 23
 -- marks: L=selected d=dim

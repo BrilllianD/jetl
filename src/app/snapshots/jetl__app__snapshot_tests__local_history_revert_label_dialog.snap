@@ -4,27 +4,27 @@ expression: "snapshot(&term, &marks, None)"
 ---
 80x24 cursor=hidden
 00  ≣ ┌ Project: root ───────────────┐│
-01  1 │                              ││
+01    │                              ││
 02  ⌂ │                              ││
-03  2 │                              ││               No files open.
-04  ◫ │                              ││       Alt+1 opens the Project view;
-05  7 │                              ││         Ctrl+Shift+N finds a file.
-06  ⊢ │               ┌ Revert to Label ───────────────────────┐
+03  ◫ │                              ││               No files open.
+04  ⊢ │                              ││       Alt+1 opens the Project view;
+05    │                              ││         Ctrl+Shift+N finds a file.
+06    │               ┌ Revert to Label ───────────────────────┐
 07    └───────────────│ Revert 2 files to label "release 1.2"? │
-08  ✓ ────────────────│ The edits stay unsaved in their tabs.  │───────────────────
-09  8 ┌ Local History:│                                        │──────────────────┐
-10  ⟲ │[Show History] │         [ Revert ] [ Cancel ]          │   type to filter │
-11  5 │ notes.txt  Uns└────────────────────────────────────────┘" on 2 files: Ente│
-12  ⚑ │ guide.md  do…  deleted  10-04 12:00 │                                     │
-13  9 │ ▾ Label: release 1.2    10-03 12:00 │                                     │
-14  ⎇ │     guide.md  docs/         deleted │                                     │
-15    │     notes.txt                       │                                     │
-16  ❯ │ todo.txt  Renamed fro…  10-02 12:00 │                                     │
-17  6 │ ▸ Label: before refactor     1 file │                                     │
-18  ⚠ │ todo.txt  old/  renam…  09-30 12:00 │                                     │
-19  4 │ module_name.txt  src/…  09-24 12:00 │                                     │
-20  ► │                                     │                                     │
-21  3 │                                     │                                     │
+08    ────────────────│ The edits stay unsaved in their tabs.  │───────────────────
+09    ┌ Local History:│                                        │──────────────────┐
+10    │[Show History] │         [ Revert ] [ Cancel ]          │   type to filter │
+11    │ notes.txt  Uns└────────────────────────────────────────┘" on 2 files: Ente│
+12    │ guide.md  do…  deleted  10-04 12:00 │                                     │
+13  ⋔ │ ▾ Label: release 1.2    10-03 12:00 │                                     │
+14  ✎ │     guide.md  docs/         deleted │                                     │
+15  ✓ │     notes.txt                       │                                     │
+16  ⟲ │ todo.txt  Renamed fro…  10-02 12:00 │                                     │
+17  ⚑ │ ▸ Label: before refactor     1 file │                                     │
+18  ⎇ │ todo.txt  old/  renam…  09-30 12:00 │                                     │
+19  ❯ │ module_name.txt  src/…  09-24 12:00 │                                     │
+20  ⚠ │                                     │                                     │
+21  ► │                                     │                                     │
 22  ⌕ └───────────────────────────────────────────────────────────────────────────┘
 23
 -- marks: B=selected button

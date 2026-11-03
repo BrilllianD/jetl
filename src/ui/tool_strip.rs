@@ -1,6 +1,7 @@
 //! The vertical strip on the left edge: the main menu button on top, then a
-//! button per tool window (its Alt-number over its icon), and the tooltip of
-//! the hovered button. A second strip on the right edge holds the Right-side
+//! button per tool window (its Alt-number over its icon, or only the icon in
+//! one row when they do not fit, or a More button for the rest), and the
+//! tooltip of the hovered button. A second strip on the right edge holds the Right-side
 //! windows.
 
 use ratatui::Frame;
@@ -11,6 +12,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::actions::{Action, AppAction};
 use crate::app::App;
+use crate::config::Icons;
 use crate::ui::focus::{Side, ToolWindowId};
 use crate::ui::layout::StripButton;
 use crate::ui::menu_bar::menu_glyph;
@@ -35,57 +37,121 @@ pub fn render(app: &mut App, frame: &mut Frame, area: Rect, right: Rect) {
     centred(buf, menu, menu_glyph(icons), theme.strip_item);
     app.layout.strip_hits.push((StripButton::Menu, menu));
 
-    // A blank row between buttons when that fits; buttons that still do not
-    // fit are skipped. Left-side windows stack from the top under the menu
-    // button, bottom-side windows from the bottom.
-    let gap = u16::from(area.height > ToolWindowId::ALL.len() as u16 * (BUTTON_H + 1));
-    // The blank row under the menu button goes when the left strip's
-    // buttons would not fit with it (24-row terminals).
-    let main_buttons = ToolWindowId::ALL.iter().filter(|tw| app.layout.side_of(**tw) != Side::Right).count() as u16;
-    let menu_gap = u16::from(area.height >= 2 + main_buttons * BUTTON_H);
+    // Per strip: two-row buttons when all of them fit, else one-row icon-only
+    // buttons, else one-row buttons for the first windows and a More button
+    // on the strip's last row. Left-side windows stack from the top under the
+    // menu button, bottom-side windows from the bottom.
+    let n_all = ToolWindowId::ALL.len() as u16;
+    let n_main = ToolWindowId::ALL.iter().filter(|tw| app.layout.side_of(**tw) != Side::Right).count() as u16;
+    let n_right = n_all - n_main;
+    let gap2 = u16::from(area.height > n_all * (BUTTON_H + 1));
+    let h = area.height;
+    let left_mode = if h > 2 * n_main {
+        StripMode { height: BUTTON_H, gap: gap2, cap: usize::MAX, more: false }
+    } else if h > n_main {
+        StripMode { height: 1, gap: 0, cap: usize::MAX, more: false }
+    } else if h >= 2 {
+        StripMode { height: 1, gap: 0, cap: usize::from(h - 2), more: true }
+    } else {
+        StripMode { height: 1, gap: 0, cap: 0, more: false }
+    };
+    let menu_gap = match left_mode {
+        StripMode { more: true, .. } => 0,
+        StripMode { height: BUTTON_H, .. } => u16::from(h >= 2 + n_main * BUTTON_H),
+        _ => u16::from(h >= 2 + n_main),
+    };
+    let rh = if right.width >= 2 { right.height } else { 0 };
+    let right_mode = if rh >= 2 + 2 * n_right && rh > 0 {
+        StripMode { height: BUTTON_H, gap: gap2, cap: usize::MAX, more: false }
+    } else if rh >= 2 + n_right && rh > 0 {
+        StripMode { height: 1, gap: 0, cap: usize::MAX, more: false }
+    } else if rh >= 3 {
+        StripMode { height: 1, gap: 0, cap: usize::from(rh - 3), more: true }
+    } else {
+        StripMode { height: 1, gap: 0, cap: 0, more: false }
+    };
     let mut top = area.y + 1 + menu_gap;
-    let mut bottom = area.bottom();
+    let mut bottom = area.bottom() - u16::from(left_mode.more);
     let mut rtop = right.y + 2;
-    let rbottom = right.bottom();
+    let rbottom = right.bottom() - u16::from(right_mode.more);
+    let (mut placed_left, mut placed_right) = (0usize, 0usize);
     for tw in ToolWindowId::ALL {
-        let rect = match app.layout.side_of(tw) {
+        let side = app.layout.side_of(tw);
+        let is_right = side == Side::Right;
+        let (mode, placed) = if is_right { (right_mode, &mut placed_right) } else { (left_mode, &mut placed_left) };
+        if *placed >= mode.cap {
+            continue;
+        }
+        let bh = mode.height;
+        let rect = match side {
             Side::Left => {
-                if top + BUTTON_H > bottom {
+                if top + bh > bottom {
                     continue;
                 }
-                let r = Rect::new(area.x, top, area.width, BUTTON_H);
-                top += BUTTON_H + gap;
+                let r = Rect::new(area.x, top, area.width, bh);
+                top += bh + mode.gap;
                 r
             }
             Side::Bottom => {
-                if bottom < top + BUTTON_H {
+                if bottom < top + bh {
                     continue;
                 }
-                bottom -= BUTTON_H;
-                let r = Rect::new(area.x, bottom, area.width, BUTTON_H);
-                bottom = bottom.saturating_sub(gap);
+                bottom -= bh;
+                let r = Rect::new(area.x, bottom, area.width, bh);
+                bottom = bottom.saturating_sub(mode.gap);
                 r
             }
             Side::Right => {
-                if right.width < 2 || rtop + BUTTON_H > rbottom {
+                if right.width < 2 || rtop + bh > rbottom {
                     continue;
                 }
-                let r = Rect::new(right.x, rtop, right.width, BUTTON_H);
-                rtop += BUTTON_H + gap;
+                let r = Rect::new(right.x, rtop, right.width, bh);
+                rtop += bh + mode.gap;
                 r
             }
         };
+        *placed += 1;
         let active = app.layout.is_visible(tw);
         let focused = app.focus.is(tw.panel());
         let style = if active { theme.strip_item_active } else { theme.strip_item };
         let style = if focused { style.add_modifier(Modifier::UNDERLINED) } else { style };
         buf.set_style(rect, style);
-        if let Some(n) = tw.number() {
-            centred(buf, rect, &n.to_string(), style.add_modifier(Modifier::BOLD));
+        if bh == BUTTON_H {
+            if let Some(n) = tw.number() {
+                centred(buf, rect, &n.to_string(), style.add_modifier(Modifier::BOLD));
+            }
+            centred(buf, Rect { y: rect.y + 1, ..rect }, tw.icon(icons), style);
+        } else {
+            centred(buf, rect, tw.icon(icons), style);
         }
-        centred(buf, Rect { y: rect.y + 1, ..rect }, tw.icon(icons), style);
         app.layout.strip_hits.push((StripButton::Tool(tw), rect));
     }
+    for (is_right, mode, strip) in [(false, left_mode, area), (true, right_mode, right)] {
+        if !mode.more {
+            continue;
+        }
+        let rect = Rect::new(strip.x, strip.bottom() - 1, strip.width, 1);
+        let any_visible = app.layout.strip_overflow(is_right).into_iter().any(|tw| app.layout.is_visible(tw));
+        let style = if any_visible { theme.strip_item_active } else { theme.strip_item };
+        buf.set_style(rect, style);
+        centred(buf, rect, more_glyph(icons), style);
+        app.layout.strip_hits.push((StripButton::More, rect));
+    }
+}
+
+/// How one strip lays out its buttons: their height, the blank rows between
+/// them, how many get a button (`cap`), and whether the last row is More.
+#[derive(Clone, Copy)]
+struct StripMode {
+    height: u16,
+    gap: u16,
+    cap: usize,
+    more: bool,
+}
+
+/// The glyph of a strip's More button; one cell in both icon modes.
+pub fn more_glyph(_icons: Icons) -> &'static str {
+    "\u{22ef}"
 }
 
 /// `text` centred by display width on the first row of `rect`.
@@ -114,10 +180,11 @@ pub fn render_tooltip(app: &App, frame: &mut Frame, area: Rect) {
     }
     let (button, rect) = hover;
     let (name, action) = match button {
-        StripButton::Menu => ("Main Menu", AppAction::MainMenu),
-        StripButton::Tool(tw) => (tw.title(), AppAction::ToggleToolWindow(tw)),
+        StripButton::Menu => ("Main Menu", Some(AppAction::MainMenu)),
+        StripButton::Tool(tw) => (tw.title(), Some(AppAction::ToggleToolWindow(tw))),
+        StripButton::More => ("More Tool Windows", None),
     };
-    let key = app.shortcut(&Action::App(action)).map(|k| format!(" {k} ")).unwrap_or_default();
+    let key = action.and_then(|a| app.shortcut(&Action::App(a))).map(|k| format!(" {k} ")).unwrap_or_default();
     let theme = &app.theme;
     let base = Style::default().bg(theme.popup_bg).fg(theme.fg);
     let name = format!(" {name} ");

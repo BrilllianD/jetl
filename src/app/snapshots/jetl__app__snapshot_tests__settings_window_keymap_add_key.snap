@@ -4,27 +4,27 @@ expression: "snapshot(&term, &settings_marks(&app.theme), None)"
 ---
 80x24 cursor=hidden
 00  ≣┌ Settings ────────────────────────────────────────────────────────────────┐
-01  1│Appearance              │Keymap                                           │
+01   │Appearance              │Keymap                                           │
 02  ⌂│Editor                  │                                                 │
-03  2│  General               │Search: app.quit                                 │
-04  ◫│  Soft Wraps            │                                                 │
-05  7│ ┌ Add Key ─────────────────────────────────────────────────────────────┐ │
-06  ⊢│ │ Exit jetl in Global. Press the key, or type it as in ctrl-shift-f,   │t│
+03  ◫│  General               │Search: app.quit                                 │
+04  ⊢│  Soft Wraps            │                                                 │
+05   │ ┌ Add Key ─────────────────────────────────────────────────────────────┐ │
+06   │ │ Exit jetl in Global. Press the key, or type it as in ctrl-shift-f,   │t│
 07   │K│ Ctrl+K Ctrl+C or g g:                                                │ │
-08  ✓│ │ First stroke  Ctrl+Alt+J                                             │ │
-09  8│V│ [ ] Second                                                           │ │
-10  ⟲│ │ Or type       Ctrl+Alt+J                                             │ │
-11  5│ │ Tab: next · Space: toggle · Enter: OK · Esc: cancel                  │ │
-12  ⚑│F│                          [ OK ] [ Cancel ]                           │ │
-13  9│T└──────────────────────────────────────────────────────────────────────┘ │
-14  ⎇│  Terminal              │                                                 │
-15   │  Run                   │                                                 │
-16  ❯│  Clipboard             │Action: app.quit                                 │
-17  6│  Local History         │Context: global                                  │
-18  ⚠│Language Servers        │Type to search. Enter or Insert adds a key.      │
-19  4│                                                                          │
-20  ►│                                            [ OK ]  [ Cancel ]  [ Apply ] │
-21  3└──────────────────────────────────────────────────────────────────────────┘
+08   │ │ First stroke  Ctrl+Alt+J                                             │ │
+09   │V│ [ ] Second                                                           │ │
+10   │ │ Or type       Ctrl+Alt+J                                             │ │
+11   │ │ Tab: next · Space: toggle · Enter: OK · Esc: cancel                  │ │
+12   │F│                          [ OK ] [ Cancel ]                           │ │
+13  ⋔│T└──────────────────────────────────────────────────────────────────────┘ │
+14  ✎│  Terminal              │                                                 │
+15  ✓│  Run                   │                                                 │
+16  ⟲│  Clipboard             │Action: app.quit                                 │
+17  ⚑│  Local History         │Context: global                                  │
+18  ⎇│Language Servers        │Type to search. Enter or Insert adds a key.      │
+19  ❯│                                                                          │
+20  ⚠│                                            [ OK ]  [ Cancel ]  [ Apply ] │
+21  ►└──────────────────────────────────────────────────────────────────────────┘
 22  ⌕ └──────────────────────────────┘│
 23
 -- marks: L=selected U=unfocused

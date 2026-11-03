@@ -4,27 +4,27 @@ expression: "snapshot(&term, &[l, u, m], None)"
 ---
 80x24 cursor=hidden
 00  ≣┌ Settings ────────────────────────────────────────────────────────────────┐
-01  1│Appearance              │Editor › Saving                                  │
+01   │Appearance              │Editor › Saving                                  │
 02  ⌂│Editor                  │                                                 │
-03  2│  General               │* Autosave              idle ▾                   │
-04  ◫│  Soft Wraps            │  Autosave pause (ms)   1500                     │
-05  7│  Saving                │  Strip trailing whit…  [x]                      │
-06  ⊢│  Formatting            │* End files with a li…  [ ]                      │
+03  ◫│  General               │* Autosave              idle ▾                   │
+04  ⊢│  Soft Wraps            │  Autosave pause (ms)   1500                     │
+05   │  Saving                │  Strip trailing whit…  [x]                      │
+06   │  Formatting            │* End files with a li…  [ ]                      │
 07   │Keymap                  │                                                 │
-08  ✓│  Mode                  │                                                 │
-09  8│Version Control         │                                                 │
-10  ⟲│  Git                   │                                                 │
-11  5│  Worktrees             │                                                 │
-12  ⚑│Files                   │                                                 │
-13  9│Tools                   │                                                 │
-14  ⎇│  Terminal              │                                                 │
-15   │  Run                   │On save, end a non-empty file with a line break. │
-16  ❯│  Clipboard             │Applies at once.                                 │
-17  6│  Local History         │Delete resets to the default.                    │
-18  ⚠│Language Servers        │Key: editor.final_newline                        │
-19  4│                                                                          │
-20  ►│                                            [ OK ]  [ Cancel ]  [ Apply ] │
-21  3└──────────────────────────────────────────────────────────────────────────┘
+08   │  Mode                  │                                                 │
+09   │Version Control         │                                                 │
+10   │  Git                   │                                                 │
+11   │  Worktrees             │                                                 │
+12   │Files                   │                                                 │
+13  ⋔│Tools                   │                                                 │
+14  ✎│  Terminal              │                                                 │
+15  ✓│  Run                   │On save, end a non-empty file with a line break. │
+16  ⟲│  Clipboard             │Applies at once.                                 │
+17  ⚑│  Local History         │Delete resets to the default.                    │
+18  ⎇│Language Servers        │Key: editor.final_newline                        │
+19  ❯│                                                                          │
+20  ⚠│                                            [ OK ]  [ Cancel ]  [ Apply ] │
+21  ►└──────────────────────────────────────────────────────────────────────────┘
 22  ⌕ └──────────────────────────────┘│
 23
 -- marks: L=selected U=unfocused M=pending

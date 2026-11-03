@@ -4,27 +4,27 @@ expression: "snapshot(&term, &[l, u, w], None)"
 ---
 80x24 cursor=hidden
 00  ≣┌ Settings ────────────────────────────────────────────────────────────────┐
-01  1│Editor                  │Dependencies                                     │
+01   │Editor                  │Dependencies                                     │
 02  ⌂│  General               │                                                 │
-03  2│  Soft Wraps            │Language servers                                 │
-04  ◫│  Saving                │  ok      rust-analyzer   /usr/bin/rust-analyzer…│
-05  7│  Formatting            │  missing gopls           gopls not found (go)   │
-06  ⊢│Keymap                  │Formatters                                       │
+03  ◫│  Soft Wraps            │Language servers                                 │
+04  ⊢│  Saving                │  ok      rust-analyzer   /usr/bin/rust-analyzer…│
+05   │  Formatting            │  missing gopls           gopls not found (go)   │
+06   │Keymap                  │Formatters                                       │
 07   │  Mode                  │  off     none            no formatter commands …│
-08  ✓│Version Control         │Clipboard                                        │
-09  8│  Git                   │  missing paste           no wl-paste, xclip, xs…│
-10  ⟲│  Worktrees             │Grammars                                         │
-11  5│Files                   │  ok      rust            compiled               │
-12  ⚑│Tools                   │Terminal                                         │
-13  9│  Terminal              │  unknown kitty keyboard  could not ask the term…│
-14  ⎇│  Run                   │Tools                                            │
-15   │  Clipboard             │  ok      git             /usr/bin/git           │
-16  ❯│  Local History         │                                                 │
-17  6│Language Servers        │gopls: gopls not found (go)                      │
-18  ⚠│Dependencies            │2 missing. Enter checks again.                   │
-19  4│                                                                          │
-20  ►│                                            [ OK ]  [ Cancel ]  [ Apply ] │
-21  3└──────────────────────────────────────────────────────────────────────────┘
+08   │Version Control         │Clipboard                                        │
+09   │  Git                   │  missing paste           no wl-paste, xclip, xs…│
+10   │  Worktrees             │Grammars                                         │
+11   │Files                   │  ok      rust            compiled               │
+12   │Tools                   │Terminal                                         │
+13  ⋔│  Terminal              │  unknown kitty keyboard  could not ask the term…│
+14  ✎│  Run                   │Tools                                            │
+15  ✓│  Clipboard             │  ok      git             /usr/bin/git           │
+16  ⟲│  Local History         │                                                 │
+17  ⚑│Language Servers        │gopls: gopls not found (go)                      │
+18  ⎇│Dependencies            │2 missing. Enter checks again.                   │
+19  ❯│                                                                          │
+20  ⚠│                                            [ OK ]  [ Cancel ]  [ Apply ] │
+21  ►└──────────────────────────────────────────────────────────────────────────┘
 22  ⌕ └──────────────────────────────┘│
 23
 -- marks: L=selected U=unfocused W=missing

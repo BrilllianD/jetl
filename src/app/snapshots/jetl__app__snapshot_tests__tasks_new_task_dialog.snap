@@ -4,27 +4,27 @@ expression: "snapshot(&term, &marks, None)"
 ---
 80x24 cursor=(17,3)
 00  ≣ ┌ Project: root ───────────────┐│
-01  1 │┌ New Task ────────────────────────────────────────────────────────────┐
+01    │┌ New Task ────────────────────────────────────────────────────────────┐
 02  ⌂ ││ Title     Parser crash                                               │
-03  2 ││ Tags      u                                                          │
-04  ◫ ││           Tab: ui                                                    │
-05  7 ││ Priority  default                                                    │
-06  ⊢ ││ Assignee  nobody                                                     │
+03  ◫ ││ Tags      u                                                          │
+04  ⊢ ││           Tab: ui                                                    │
+05    ││ Priority  default                                                    │
+06    ││ Assignee  nobody                                                     │
 07    └│ Related   task ids, e.g. 12 40                                       │
-08  ✓ ─│ Body      Markdown                                                   │────
-09  8 ┌│                                                                      │───┐
-10  ⟲ ││                                                                      │   │
-11  5 ││                                                                      │ee │
-12  ⚑ ││                                                                      │   │
-13  9 ││                                                                      │   │
-14  ⎇ ││                                                                      │   │
-15    ││                                                                      │   │
-16  ❯ ││                                                                      │   │
-17  6 ││                                                                      │   │
-18  ⚠ ││ Tab: next field · Enter: create (in Body: Alt+Enter) · Esc: cancel   │   │
-19  4 ││                        [ Create ] [ Cancel ]                         │   │
-20  ► │└──────────────────────────────────────────────────────────────────────┘   │
-21  3 │                                                                           │
+08    ─│ Body      Markdown                                                   │────
+09    ┌│                                                                      │───┐
+10    ││                                                                      │   │
+11    ││                                                                      │ee │
+12    ││                                                                      │   │
+13  ⋔ ││                                                                      │   │
+14  ✎ ││                                                                      │   │
+15  ✓ ││                                                                      │   │
+16  ⟲ ││                                                                      │   │
+17  ⚑ ││                                                                      │   │
+18  ⎇ ││ Tab: next field · Enter: create (in Body: Alt+Enter) · Esc: cancel   │   │
+19  ❯ ││                        [ Create ] [ Cancel ]                         │   │
+20  ⚠ │└──────────────────────────────────────────────────────────────────────┘   │
+21  ► │                                                                           │
 22  ⌕ └───────────────────────────────────────────────────────────────────────────┘
 23
 -- marks: L=selected
