@@ -1870,8 +1870,10 @@ pub(crate) mod tests {
         app.perform(Action::Editor(EditorAction::Save));
         assert!(!app.editor.has_dirty());
         assert!(app.notifications.last().is_some_and(|n| n.text == "Saved a.txt"));
-        // The test terminal's startup warning may still be current; the quiet save is never offered.
-        assert!(!app.current_notification().is_some_and(|n| n.text.starts_with("Saved")));
+        // The quiet save is never offered: the status slot still holds the test app's startup
+        // warning (`keyboard_enhanced` is false without `tui::init`).
+        let current = app.current_notification().expect("the startup warning is current");
+        assert!(current.level == Level::Warn && current.text.starts_with("Terminal lacks the kitty keyboard protocol"), "{}", current.text);
         assert!(!app.toasts.items().iter().any(|t| t.text.starts_with("Saved")));
         let _ = std::fs::remove_dir_all(dir);
     }
