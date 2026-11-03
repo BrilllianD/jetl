@@ -127,7 +127,8 @@ impl App {
                     if self.named_layouts.iter().any(|l| l.name == name) {
                         self.notify(Level::Warn, format!("A layout named '{name}' already exists"));
                     } else {
-                        self.put(name.clone());
+                        let layout = self.layout_placement();
+                        self.layouts_request(Some(LayoutOp::Create(NamedLayout { name: name.clone(), layout })));
                         self.notify(Level::Info, format!("Saved layout '{name}'"));
                         self.current_layout = Some(name);
                     }

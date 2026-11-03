@@ -75,6 +75,8 @@ pub struct NamedLayout {
 pub enum LayoutOp {
     /// Replace the entry of that name in place, or append one.
     Put(NamedLayout),
+    /// Append a new entry; refused when any entry, readable or not, has the name.
+    Create(NamedLayout),
     Rename {
         from: String,
         to: String,
@@ -115,6 +117,13 @@ pub fn apply_op(raw: &mut Vec<serde_json::Value>, op: &LayoutOp) -> Result<(), S
             }
             Ok(())
         }
+        LayoutOp::Create(l) => {
+            if raw.iter().any(|e| entry_name(e) == Some(&l.name)) {
+                return Err(format!("A layout named '{}' already exists", l.name));
+            }
+            raw.push(serde_json::to_value(l).map_err(|e| e.to_string())?);
+            Ok(())
+        }
         LayoutOp::Rename { from, to } => {
             if from == to {
                 return Ok(());
@@ -148,7 +157,10 @@ fn read(file: &Path) -> Result<(u64, Vec<serde_json::Value>), String> {
         return Err(format!("layouts {}: not valid JSON (not an object)", file.display()));
     }
     let version = v["version"].as_u64().unwrap_or(FORMAT);
-    let layouts = v["layouts"].as_array().cloned().unwrap_or_default();
+    let layouts = match v.get("layouts") {
+        None => vec![],
+        Some(l) => l.as_array().cloned().ok_or_else(|| format!("layouts {}: not valid JSON (layouts is not a list)", file.display()))?,
+    };
     Ok((version, layouts))
 }
 
@@ -314,5 +326,34 @@ mod tests {
         assert!(err.unwrap().contains("not valid JSON"));
         assert_eq!(std::fs::read_to_string(&f).unwrap(), "{not json");
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_layouts_key_that_is_not_a_list_is_never_overwritten() {
+        let d = tmp("shape");
+        let f = d.join("layouts.json");
+        for text in [r#"{"layouts": {}}"#, r#"{"layouts": 3}"#] {
+            std::fs::write(&f, text).unwrap();
+            let (_, list, err) = update(&f, Some(&LayoutOp::Put(named("A"))));
+            assert!(list.is_empty());
+            assert!(err.unwrap().contains("layouts is not a list"));
+            assert_eq!(std::fs::read_to_string(&f).unwrap(), text);
+        }
+        std::fs::write(&f, r#"{"version": 1}"#).unwrap();
+        let (_, list, err) = update(&f, Some(&LayoutOp::Put(named("A"))));
+        assert!(err.is_none());
+        assert_eq!(list, [named("A")]);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn create_refuses_the_name_of_an_unreadable_entry() {
+        let bad = json!({"name": "x", "layout": {"left": "Nope", "left_w": 1, "bottom": null, "bottom_h": 1}});
+        let mut raw = vec![bad.clone()];
+        let e = apply_op(&mut raw, &LayoutOp::Create(named("x"))).unwrap_err();
+        assert_eq!(e, "A layout named 'x' already exists");
+        assert_eq!(raw, [bad]);
+        apply_op(&mut raw, &LayoutOp::Create(named("y"))).unwrap();
+        assert_eq!(raw.len(), 2);
     }
 }
