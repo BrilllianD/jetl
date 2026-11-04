@@ -1606,6 +1606,8 @@ Run with `[lsp] enabled = false`, jetl's own repo as the root, at 120x40 then 80
 4. Tab: the title becomes `Imported by src/app/hierarchy.rs (approximate)` with `src/app/mod.rs` as a child (it declares `mod hierarchy;`). F5 shows the same tree. Export Hierarchy as Mermaid writes edges from the importing file to the imported one.
 5. Enter on `src/app/mod.rs`: the editor opens it with the caret at line 1.
 6. Open `README.md` and run Navigate > File Dependencies: toast `No file dependencies for this file type`, the tree is unchanged. Stderr is empty, Ctrl+Q exits 0.
+7. Java split package (yman 388), root `$T` with `src/main/java/com/acme/Core.java`, `src/test/java/com/acme/CoreTest.java`, `src/test/java/com/other/T.java` (`package com.other; import com.acme.*;`), `src/main/java/com/solo/Impl.java` and `src/test/java/com/solo/OnlyTest.java` (`package com.solo; import com.solo.*;`). Open `src/test/java/com/other/T.java` and run File Dependencies: title `Imports of src/test/java/com/other/T.java (approximate)`, children `src/main/java/com/acme/Core.java` and `src/test/java/com/acme/CoreTest.java`.
+8. Open `src/test/java/com/solo/OnlyTest.java` and run it again: the one child is `src/main/java/com/solo/Impl.java`. Stderr is empty, Ctrl+Q exits 0.
 
 ### Scenario: structural search
 

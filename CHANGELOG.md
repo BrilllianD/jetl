@@ -49,6 +49,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Status bar: a quiet log entry (such as a manual save) no longer blanks a still-current error or warning message; the slot keeps the newest non-quiet message until its timeout.
 - Status bar: the current branch stays visible while the main menu bar covers the toolbar's branch widget.
 - Scratch files: when writing a new scratch file's text fails (Export Hierarchy), the empty file no longer stays behind in Scratch Files holding its number.
+- File Dependencies: a Java wildcard import lists the package's files from every source root, so a package split across `src/main/java` and `src/test/java` shows both sides, and a file alone in its package in one root still finds the other side.
+- Import edges: the first File Dependencies or file ranking after indexing a large Java project no longer spends seconds on imports of external packages.
 
 ## [0.8.0] - 2026-11-03
 

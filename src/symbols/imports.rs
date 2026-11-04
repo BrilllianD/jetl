@@ -2,7 +2,8 @@
 //! resolver from one import to a project file (file import edges of the
 //! symbol index).
 
-use std::collections::HashSet;
+use std::cell::OnceCell;
+use std::collections::{HashMap, HashSet};
 
 use ropey::Rope;
 use tree_sitter::{Node, QueryCursor, StreamingIterator, Tree};
@@ -164,16 +165,38 @@ fn join_rust(a: &str, b: &str) -> String {
 /// A view over the indexed paths (relative to the root, `/`-separated).
 pub struct Project<'a> {
     files: &'a [&'a str],
+    java_heads: OnceCell<HashMap<&'a str, Vec<&'a str>>>,
 }
 
 impl<'a> Project<'a> {
     /// `sorted` must be sorted ascending.
     pub fn new(sorted: &'a [&'a str]) -> Self {
-        Self { files: sorted }
+        Self { files: sorted, java_heads: OnceCell::new() }
     }
 
     pub fn exists(&self, p: &str) -> bool {
         self.files.binary_search(&p).is_ok()
+    }
+
+    /// First segment of a Java name to the directories holding it: a directory with a `.java` file somewhere below
+    /// it, or a `.java` file by its stem. Every probe of `resolve_java` that can succeed has its first segment under
+    /// its base here, so a base missing from the list is skipped without changing any result. Built on first use.
+    fn java_heads(&self) -> &HashMap<&'a str, Vec<&'a str>> {
+        self.java_heads.get_or_init(|| {
+            let mut heads: HashMap<&'a str, Vec<&'a str>> = HashMap::new();
+            let mut seen: HashSet<&'a str> = HashSet::new();
+            for f in self.files.iter().copied().filter(|f| f.ends_with(".java")) {
+                let (dir, name) = f.rsplit_once('/').unwrap_or(("", f));
+                heads.entry(name.trim_end_matches(".java")).or_default().push(dir);
+                let mut d = dir;
+                while !d.is_empty() && seen.insert(d) {
+                    let (up, name) = d.rsplit_once('/').unwrap_or(("", d));
+                    heads.entry(name).or_default().push(up);
+                    d = up;
+                }
+            }
+            heads
+        })
     }
 
     /// The files directly in `dir` (`""` is the root), sorted.
@@ -185,8 +208,8 @@ impl<'a> Project<'a> {
 }
 
 /// The indexed files `imp` (found in `from`) refers to, sorted and without
-/// duplicates; a Go package or a Java `a.b.*` gives every file of its
-/// directory, other imports at most one. Pure: paths are relative to the
+/// duplicates; a Go package gives every file of its directory, a Java
+/// `a.b.*` the package's files from every source root of the walk, other imports at most one. Pure: paths are relative to the
 /// project root with `/`, the root itself is `""`. Never returns `from`.
 pub fn resolve(lang: &str, from: &str, imp: &Import, project: &Project) -> Vec<String> {
     let exists = |p: &str| project.exists(p);
@@ -341,23 +364,18 @@ fn resolve_java(from: &str, imp: &Import, project: &Project) -> Vec<String> {
     if segs.is_empty() {
         return Vec::new();
     }
+    let Some(roots) = project.java_heads().get(segs[0]) else { return Vec::new() };
+    let dir = segs.join("/");
     let mut seen: Vec<String> = Vec::new();
+    let mut found: Vec<String> = Vec::new();
     for a in ancestors(parent(from).unwrap_or("")) {
         for base in [a.to_string(), join(a, "src/main/java"), join(a, "src/test/java")] {
-            if seen.contains(&base) {
+            if !roots.iter().any(|r| *r == base) || seen.contains(&base) {
                 continue;
             }
             seen.push(base.clone());
             if wild {
-                let files: Vec<String> = project
-                    .files_in(&join(&base, &segs.join("/")))
-                    .into_iter()
-                    .filter(|f| f.ends_with(".java"))
-                    .map(str::to_string)
-                    .collect();
-                if !files.is_empty() {
-                    return files;
-                }
+                found.extend(project.files_in(&join(&base, &dir)).into_iter().filter(|f| f.ends_with(".java")).map(str::to_string));
             } else if let Some(f) =
                 (1..=segs.len()).rev().map(|k| format!("{}.java", join(&base, &segs[..k].join("/")))).find(|f| project.exists(f))
             {
@@ -365,7 +383,7 @@ fn resolve_java(from: &str, imp: &Import, project: &Project) -> Vec<String> {
             }
         }
     }
-    Vec::new()
+    found
 }
 
 fn resolve_c(from: &str, imp: &Import, exists: &dyn Fn(&str) -> bool) -> Option<String> {
@@ -540,6 +558,61 @@ mod tests {
         assert!(rs("java", app, "com.acme.model", false, &f).is_empty());
         assert!(rs("java", app, "java.util.List", false, &f).is_empty());
         assert_eq!(rs("java", "src/test/java/com/acme/UtilTest.java", "com.acme.Util", false, &f), [util]);
+    }
+
+    #[test]
+    fn java_wildcard_collects_every_source_root() {
+        let f = [
+            "src/main/java/com/acme/Core.java",
+            "src/main/java/com/other/M.java",
+            "src/test/java/com/acme/CoreTest.java",
+            "src/test/java/com/other/T.java",
+        ];
+        let want = ["src/main/java/com/acme/Core.java", "src/test/java/com/acme/CoreTest.java"];
+        assert_eq!(rs("java", "src/test/java/com/other/T.java", "com.acme.*", false, &f), want);
+        assert_eq!(rs("java", "src/main/java/com/other/M.java", "com.acme.*", false, &f), want);
+    }
+
+    #[test]
+    fn java_wildcard_root_with_only_from_does_not_end_the_search() {
+        let f = [
+            "src/main/java/com/acme/Core.java",
+            "src/main/java/com/other/M.java",
+            "src/test/java/com/acme/CoreTest.java",
+            "src/test/java/com/other/T.java",
+        ];
+        assert_eq!(rs("java", "src/test/java/com/acme/CoreTest.java", "com.acme.*", false, &f), ["src/main/java/com/acme/Core.java"]);
+        let only = ["src/main/java/p/Only.java"];
+        assert!(rs("java", "src/main/java/p/Only.java", "p.*", false, &only).is_empty());
+    }
+
+    #[test]
+    fn java_wildcard_reaches_ancestor_roots_only() {
+        let f = ["a/src/main/java/p/X.java", "a/src/main/java/q/Z.java", "b/src/main/java/p/Y.java"];
+        assert_eq!(rs("java", "a/src/main/java/q/Z.java", "p.*", false, &f), ["a/src/main/java/p/X.java"]);
+        let g = ["src/main/java/p/R.java", "mod/src/main/java/p/X.java", "mod/src/main/java/q/Z.java"];
+        assert_eq!(rs("java", "mod/src/main/java/q/Z.java", "p.*", false, &g), ["mod/src/main/java/p/X.java", "src/main/java/p/R.java"]);
+    }
+
+    #[test]
+    fn java_class_import_of_itself_does_not_fall_through() {
+        let f = ["src/main/java/com/acme/Dup.java", "src/test/java/com/acme/Dup.java"];
+        assert!(rs("java", "src/main/java/com/acme/Dup.java", "com.acme.Dup", false, &f).is_empty());
+    }
+
+    #[test]
+    fn java_head_table_keeps_every_resolvable_form() {
+        let f = ["Top.java", "src/main/java/com/acme/Outer.java", "lib/org/readme.txt", "src/main/java/com/acme/B.java"];
+        let from = "src/main/java/com/acme/B.java";
+        assert_eq!(rs("java", from, "com.acme.Outer.Inner.method", false, &f), ["src/main/java/com/acme/Outer.java"]);
+        assert_eq!(rs("java", from, "Top.method", false, &f), ["Top.java"]);
+        assert!(rs("java", from, "org.readme", false, &f).is_empty());
+        let sorted = proj(&f);
+        let p = Project::new(&sorted);
+        let heads = p.java_heads();
+        assert!(!heads.contains_key("org"));
+        assert_eq!(heads["com"], ["src/main/java"]);
+        assert_eq!(heads["Top"], [""]);
     }
 
     #[test]
