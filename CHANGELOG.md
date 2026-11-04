@@ -32,7 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Restore Default Layout (Shift+F12, `tool_window.restore_default_layout`; View menu and the tool strip button's right-click menu): every tool window goes back to its default side, the strip buttons to their default order, and a maximized window is restored; shown windows stay shown and panel sizes are kept.
 - Tool windows can be unpinned (strip button right-click Unpin, View | Pin or Unpin Tool Window, `tool_window.toggle_pinned`): an unpinned window hides when focus moves to the editor or another window and on Esc; palettes, dialogs and menus over it keep it. The mode is saved in the session; Restore Default Layout pins every window.
 - Replace in files previews each change in the Find window (the matched text and its replacement side by side on every result row) and Alt+Delete (`find.toggle_exclude`) excludes or includes the selected result, or all results of a file from its header; Replace All changes only the included results at their exact positions and leaves a file that changed since the search untouched, with an error.
-- Input dialogs (Rename, Save As, New Worktree and the others with one text field): Ctrl+A selects the whole text; typing, pasting, Backspace or Delete then replaces it, and an arrow key, Home, End or a click in the field drops the selection.
+- Input dialogs (Rename, Save As, New Worktree and the others with one text field): Ctrl+A selects the whole text; typing, pasting, Backspace or Delete then replaces it, and Left, Right, Home, End or a click in the field drops the selection.
 
 ### Changed
 

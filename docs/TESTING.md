@@ -1621,7 +1621,7 @@ Run with `[lsp] enabled = false` in a scratch project, at 120x40 then 80x24 (the
 At 120x40 and 80x24 (yman 391), `[lsp] enabled = false`, scratch project and session as above:
 
 ```sh
-/tmp/tm.sh send-keys -t jetl M-1; sleep 0.3; /tmp/tm.sh send-keys -t jetl Down S-F6; sleep 0.5
+/tmp/tm.sh send-keys -t jetl Down S-F6; sleep 0.5   # the Project window starts focused (M-1 would hide it); Down selects src
 /tmp/tm.sh send-keys -t jetl C-a; sleep 0.2
 /tmp/tm.sh capture-pane -ep -t jetl      # the name in the field has the selection background, the rest of the field not
 /tmp/tm.sh send-keys -t jetl -l x; sleep 0.2
