@@ -109,6 +109,8 @@ impl App {
         let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
         let Some(d) = &mut self.dialog else { return };
         let (Some(pc), DialogKind::Input { input, .. }) = (&mut d.paths, &mut d.kind) else { return };
+        // Tab completes the text; it never replaces a selection with the completion's tail.
+        input.deselect();
         let before: String = input.text.chars().take(input.cursor).collect();
         let again = std::mem::replace(&mut pc.tabbed, true);
         pc.hint = match crate::files::complete::complete(&before, &pc.base, home.as_deref(), pc.folders_only) {

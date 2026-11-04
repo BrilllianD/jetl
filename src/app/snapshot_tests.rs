@@ -2638,6 +2638,19 @@ async fn input_dialog() {
 }
 
 #[tokio::test]
+async fn input_dialog_select_all() {
+    let mut fx = stable_app("input-dialog-select-all");
+    let app = &mut fx.app;
+    tree_fixture(app);
+    tree(app, crate::actions::TreeAction::Rename);
+    app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL));
+    let term = draw_app(app, 80, 24);
+    let area = app.dialog.as_ref().unwrap().rect();
+    let marks = [Mark::bg('S', "selection", app.theme.selection_bg)];
+    assert_snapshot!("input_dialog_select_all", snapshot(&term, &marks, Some(area)));
+}
+
+#[tokio::test]
 async fn choice_dialog() {
     let mut fx = stable_app("choice-dialog");
     let app = &mut fx.app;

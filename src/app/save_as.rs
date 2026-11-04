@@ -587,6 +587,35 @@ mod tests {
         }
 
         #[tokio::test]
+        async fn select_all_in_save_as() {
+            let (mut app, dir) = fresh_app("save-as-select-all");
+            let root = app.workspace.root.clone();
+            std::fs::create_dir_all(root.join("src")).unwrap();
+            std::fs::write(root.join("src/main.rs"), "").unwrap();
+            std::fs::write(root.join("src/lib.rs"), "").unwrap();
+            let ctrl_a = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL);
+            prompt_with(&mut app, "s");
+            app.handle_key(ctrl_a);
+            tab(&mut app);
+            assert_eq!(text(&app), "src/");
+            key(&mut app, KeyCode::Char('x'));
+            assert_eq!(text(&app), "src/x", "Tab dropped the selection");
+            set_text(&mut app, "zz");
+            app.handle_key(ctrl_a);
+            tab(&mut app);
+            assert_eq!((text(&app), hint(&app)), ("zz".to_string(), note("No match")));
+            set_text(&mut app, "abc");
+            app.handle_key(ctrl_a);
+            app.handle_paste("new\nname".into());
+            assert_eq!(text(&app), "new name");
+            set_text(&mut app, "abc");
+            app.handle_key(ctrl_a);
+            key(&mut app, KeyCode::Char('x'));
+            assert_eq!(text(&app), "x");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        #[tokio::test]
         async fn tab_keeps_text_after_cursor() {
             let (mut app, dir) = fresh_app("save-as-tab-cursor");
             std::fs::create_dir_all(app.workspace.root.join("src")).unwrap();

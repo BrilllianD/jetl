@@ -300,7 +300,7 @@ printf 'helper here\n' > $T/notes.txt
 /tmp/tm.sh send-keys -t jetl Down Down Right Right Right Right Right   # caret in "helper" on line 3
 /tmp/tm.sh send-keys -t jetl S-F6; sleep 0.5
 /tmp/tm.sh capture-pane -p -t jetl       # dialog "Rename 'helper' as text to:", button Preview
-/tmp/tm.sh send-keys -t jetl BSpace BSpace BSpace BSpace BSpace BSpace   # the dialog has no select-all: one per letter of "helper"
+/tmp/tm.sh send-keys -t jetl C-a   # selects "helper"; typing replaces it
 /tmp/tm.sh send-keys -t jetl -l 'assist'; sleep 0.3; /tmp/tm.sh send-keys -t jetl Enter; sleep 2
 /tmp/tm.sh capture-pane -p -t jetl       # Find: 5 results (notes.txt 1, main.rs 3, util.rs 1); notes.txt and the comment dimmed
 /tmp/tm.sh send-keys -t jetl M-a; sleep 1  # dialog "Replace 3 matches in 2 files with "assist"?"
@@ -1615,6 +1615,28 @@ Run with `[lsp] enabled = false` in a scratch project, at 120x40 then 80x24 (the
 3. Alt+X: toast `Case, whole word and regex do not apply to a structural search`, `.*` stays off. Alt+A: toast `Structural search cannot replace; Alt+T turns it off`.
 4. Enter opens `src/s.rs` at line 2, column 13. Back in the Find window, Alt+T: AST is off and the literal text `$A.unwrap()` finds no matches.
 5. A build with `--no-default-features --features lang-rust` has no AST button; Alt+T toasts `Structural search is not in this build (cargo feature "structural")`. Stderr is empty, Ctrl+Q exits 0.
+
+### Scenario: select all in an input dialog
+
+At 120x40 and 80x24 (yman 391), `[lsp] enabled = false`, scratch project and session as above:
+
+```sh
+/tmp/tm.sh send-keys -t jetl M-1; sleep 0.3; /tmp/tm.sh send-keys -t jetl Down S-F6; sleep 0.5
+/tmp/tm.sh send-keys -t jetl C-a; sleep 0.2
+/tmp/tm.sh capture-pane -ep -t jetl      # the name in the field has the selection background, the rest of the field not
+/tmp/tm.sh send-keys -t jetl -l x; sleep 0.2
+/tmp/tm.sh capture-pane -p -t jetl       # the field reads x
+/tmp/tm.sh send-keys -t jetl -l abc; /tmp/tm.sh send-keys -t jetl C-a BSpace; sleep 0.2
+/tmp/tm.sh capture-pane -p -t jetl       # the field is empty
+/tmp/tm.sh send-keys -t jetl -l abc; /tmp/tm.sh send-keys -t jetl C-a Left; /tmp/tm.sh send-keys -t jetl -l z; sleep 0.2
+/tmp/tm.sh capture-pane -p -t jetl       # the field reads zabc
+/tmp/tm.sh send-keys -t jetl C-a; /tmp/tm.sh set-buffer pasted; /tmp/tm.sh paste-buffer -p -t jetl; sleep 0.2
+/tmp/tm.sh capture-pane -p -t jetl       # the field reads pasted
+/tmp/tm.sh send-keys -t jetl Escape; sleep 0.5
+git -C $T status --short                 # prints nothing
+```
+
+Ctrl+A on an empty field draws nothing. In other text fields (Find, the palette) Ctrl+A is unchanged.
 
 ### Limits under tmux
 

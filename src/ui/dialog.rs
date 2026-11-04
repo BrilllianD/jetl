@@ -543,6 +543,10 @@ impl Dialog {
                     input.end();
                     None
                 }
+                KeyCode::Char('a') if key.modifiers == KeyModifiers::CONTROL => {
+                    input.select_all();
+                    None
+                }
                 KeyCode::Char(c) if !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {
                     input.insert(c);
                     None
@@ -796,6 +800,9 @@ impl Dialog {
                     buf.set_stringn(inner.x + 1, iy + 1 + k as u16, line, hint_w as usize, st);
                 }
                 input.render(frame, irect, Style::default().bg(theme.bg).fg(theme.fg), "", theme.dim, true);
+                if let Some(cells) = input.selected_cells(irect) {
+                    frame.buffer_mut().set_style(cells, Style::default().bg(theme.selection_bg));
+                }
                 self.body_rect = rect;
             }
             DialogKind::Choice { items, list, filter } => {
@@ -1061,5 +1068,25 @@ mod tests {
             matches!(d.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)), Some(DialogResult::Text(t)) if t == "Ctrl+Alt+J")
         );
         assert!(matches!(d.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)), Some(DialogResult::Cancel)));
+    }
+
+    #[test]
+    fn ctrl_a_then_typing_replaces_the_text() {
+        let theme = Theme::default();
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+        let ctrl = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
+        let mut d = Dialog::input(DialogId::Info, "T", "", "old", "OK");
+        term.draw(|f| d.render(f, f.area(), &theme)).unwrap();
+        assert!(d.handle_key(ctrl('a')).is_none());
+        term.draw(|f| d.render(f, f.area(), &theme)).unwrap();
+        let DialogKind::Input { input, .. } = &d.kind else { panic!() };
+        assert!(input.selected_cells(d.input_rect).is_some());
+        assert!(d.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE)).is_none());
+        assert!(matches!(d.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)), Some(DialogResult::Text(t)) if t == "x"));
+
+        let mut d = Dialog::input(DialogId::Info, "T", "", "old", "OK");
+        assert!(d.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL | KeyModifiers::ALT)).is_none());
+        assert!(d.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE)).is_none());
+        assert!(matches!(d.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)), Some(DialogResult::Text(t)) if t == "oldx"));
     }
 }
