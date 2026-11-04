@@ -117,6 +117,7 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     }
 
     let editor_focused = app.focus.is(PanelId::Editor);
+    app.editor.covered = rects.overlay;
     app.editor.render(frame, rects.tabs, rects.editor, editor_focused, &theme);
     // An Undocked window slides over the editor; the popups below still draw over it.
     if let Some(tw) = app.layout.overlay_window()

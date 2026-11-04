@@ -206,6 +206,9 @@ pub struct Editor {
     /// The groups' area as last drawn (the resolver picks two or three
     /// panes by its width).
     center: Rect,
+    /// The rect another window draws over the editor this frame (an Undocked
+    /// tool window), set by `ui::render`; the terminal cursor stays out of it.
+    pub(crate) covered: Rect,
     /// The layout options a new diff tab starts with (the Git window's, set by `App` before opening one).
     pub(crate) diff_opts: crate::git::panel::DiffOpts,
     /// `ui.file_icons`, set by `App::sync_file_icons` (not by `apply_config`).
@@ -275,6 +278,7 @@ impl Editor {
             merge: None,
             snippet: None,
             center: Rect::default(),
+            covered: Rect::default(),
             diff_opts: crate::git::panel::DiffOpts { unified: None, collapse: true },
         };
         ed.apply_config(config);
@@ -1940,6 +1944,7 @@ impl Editor {
         if focused
             && !bar_focused
             && let Some((x, y)) = out.cursor
+            && !self.covered.contains(ratatui::layout::Position::new(x, y))
         {
             frame.set_cursor_position((x, y));
         }

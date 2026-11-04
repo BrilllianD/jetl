@@ -3279,6 +3279,30 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn undocked_window_stays_on_an_esc_that_keeps_focus() {
+        use crate::ui::layout::ViewMode;
+        let (mut app, dir) = test_app("undocked-esc");
+        app.layout.set_view_mode(ToolWindowId::Project, ViewMode::Undocked);
+        app.layout.show(ToolWindowId::Project);
+        app.focus.set(PanelId::Project);
+        draw_frame(&mut app);
+        let key = |c| KeyEvent::new(c, crossterm::event::KeyModifiers::NONE);
+        app.handle_key(key(KeyCode::Char('l')));
+        assert_eq!(app.project.filter(), "l");
+        app.handle_key(key(KeyCode::Esc));
+        draw_frame(&mut app);
+        assert_eq!(app.project.filter(), "");
+        assert!(app.focus.is(PanelId::Project), "the first Esc only clears the filter");
+        assert!(app.layout.is_visible(ToolWindowId::Project), "focus stayed, so the window stays");
+        assert!(!app.layout.rects.overlay.is_empty());
+        app.handle_key(key(KeyCode::Esc));
+        draw_frame(&mut app);
+        assert!(app.focus.is(PanelId::Editor));
+        assert!(!app.layout.is_visible(ToolWindowId::Project));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
     async fn f12_jumps_to_the_last_tool_window() {
         let (mut app, dir) = test_app("f12-last");
         let f12 = || KeyEvent::new(KeyCode::F(12), crossterm::event::KeyModifiers::NONE);

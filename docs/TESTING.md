@@ -1574,8 +1574,13 @@ Setup as above, `[lsp] enabled = false`, at 80x24 and 120x40.
 3. Alt+7 again, then Alt+1: Structure hides, Project is focused.
 4. Undock Find too (right-click Find > View Mode > Undock), Alt+7 then Alt+3: only Find shows, at the bottom of
    the editor area.
-5. View menu: "Undock or Dock Tool Window" is greyed with the editor focused, enabled with a tool window focused.
-6. Ctrl+Q, restart: Structure and Find are still Undocked (View Mode submenu shows "Undock" greyed). Shift+F12
+5. With the file from step 1 at least 100 lines long and Find still shown from step 4 (Alt+3 again would hide it): click into the
+   editor text above Find. Ctrl+End: the caret goes to the last line, under Find, and no terminal cursor shows on Find
+   (`/tmp/tm.sh display-message -t jetl -p '#{cursor_flag}'` prints 0). Ctrl+Home: the cursor is back on the caret, the flag is 1.
+6. Undock Project (right-click its button > View Mode > Undock), Alt+1, type `a`: the filter narrows the tree. Esc: the filter
+   clears, Project stays shown and focused. Esc again: Project slides away, the editor has focus.
+7. View menu: "Undock or Dock Tool Window" is greyed with the editor focused, enabled with a tool window focused.
+8. Ctrl+Q, restart: Structure and Find are still Undocked (View Mode submenu shows "Undock" greyed). Shift+F12
    (Restore Default Layout): both are Pinned again. Stderr empty, Ctrl+Q exits 0.
 
 ### Scenario: Structure for C#, Kotlin, Ruby, PHP and Swift

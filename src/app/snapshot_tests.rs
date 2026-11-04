@@ -3739,6 +3739,48 @@ async fn app_undocked_overlay() {
 }
 
 #[tokio::test]
+async fn app_undocked_overlay_over_caret() {
+    use crate::ui::focus::{Dock, Side};
+    use crate::ui::layout::ViewMode;
+    let mut fx = stable_app("undocked-over-caret");
+    let app = &mut fx.app;
+    load(app, "notes.log", PLAIN);
+    app.move_tool_window(ToolWindowId::Problems, Dock { side: Side::Left, split: false });
+    app.layout.set_view_mode(ToolWindowId::Problems, ViewMode::Undocked);
+    app.toggle_tool_window(ToolWindowId::Problems);
+    app.perform(Action::App(AppAction::FocusEditor));
+    let term = draw_app(app, 80, 24);
+    let caret = app.editor.caret_cell().expect("the caret cell stays recorded for the popups");
+    assert!(app.layout.rects.overlay.contains(ratatui::layout::Position::new(caret.0, caret.1)));
+    assert!(!term.backend().cursor_visible());
+    assert_snapshot!("app_undocked_overlay_over_caret", snapshot(&term, &[], None));
+    // The window gone, the cursor is back on the caret.
+    app.layout.hide(ToolWindowId::Problems);
+    let term = draw_app(app, 80, 24);
+    let p = term.backend().cursor_position();
+    assert!(term.backend().cursor_visible());
+    assert_eq!(app.editor.caret_cell(), Some((p.x, p.y)));
+}
+
+#[tokio::test]
+async fn undocked_overlay_beside_the_caret_keeps_the_cursor() {
+    use crate::ui::focus::{Dock, Side};
+    use crate::ui::layout::ViewMode;
+    let mut fx = stable_app("undocked-beside-caret");
+    let app = &mut fx.app;
+    load(app, "notes.log", PLAIN);
+    app.move_tool_window(ToolWindowId::Problems, Dock { side: Side::Right, split: false });
+    app.layout.set_view_mode(ToolWindowId::Problems, ViewMode::Undocked);
+    app.toggle_tool_window(ToolWindowId::Problems);
+    app.perform(Action::App(AppAction::FocusEditor));
+    let term = draw_app(app, 80, 24);
+    assert!(!app.layout.rects.overlay.is_empty());
+    let p = term.backend().cursor_position();
+    assert!(term.backend().cursor_visible());
+    assert_eq!(app.editor.caret_cell(), Some((p.x, p.y)));
+}
+
+#[tokio::test]
 async fn app_toolbar() {
     let mut fx = stable_app("toolbar");
     let app = &mut fx.app;
