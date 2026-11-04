@@ -46,6 +46,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Git Log: a context menu opened from the keyboard (Shift+F10) on a commit, a file or a branch now opens directly under the selected row, or directly above it when it does not fit below, instead of one row lower or on top of the row.
 - Status bar: a quiet log entry (such as a manual save) no longer blanks a still-current error or warning message; the slot keeps the newest non-quiet message until its timeout.
 - Status bar: the current branch stays visible while the main menu bar covers the toolbar's branch widget.
+- Scratch files: when writing a new scratch file's text fails (Export Hierarchy), the empty file no longer stays behind in Scratch Files holding its number.
 
 ## [0.8.0] - 2026-11-03
 

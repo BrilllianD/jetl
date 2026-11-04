@@ -1392,7 +1392,7 @@ mod tests {
         // No candidates, then one.
         app.palette = None;
         app.toasts = Default::default();
-        crate::app::tests::load(&mut app, "src/two.rs", "fn k() {\n    only_here();\n}\n");
+        let two = crate::app::tests::load(&mut app, "src/two.rs", "fn k() {\n    only_here();\n}\n");
         goto(&mut app, 1, 6);
         act(&mut app, LspAction::FindUsages);
         assert!(toasts(&app).contains(&"No usages found".to_string()), "{:?}", toasts(&app));
@@ -1402,6 +1402,8 @@ mod tests {
         app.toasts = Default::default();
         act(&mut app, LspAction::FindUsages);
         assert!(toasts(&app).contains(&"Only one usage (unverified)".to_string()), "{:?}", toasts(&app));
+        // The jump goes to the start of the name; the caret was at col 6.
+        assert_eq!((app.editor.active_path(), caret(&app)), (Some(two.as_path()), (1, 4)));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

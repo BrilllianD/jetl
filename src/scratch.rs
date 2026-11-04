@@ -97,6 +97,15 @@ pub fn extension(i: usize) -> Option<&'static str> {
     }
 }
 
+/// Write `text` into the new scratch file at `path`. When that fails the file
+/// is removed, so it does not stay behind empty, listed in the palette and
+/// holding its number. The write's error is what the caller reports.
+fn fill_or_remove(path: &Path, text: &str) -> io::Result<()> {
+    std::fs::write(path, text).inspect_err(|_| {
+        let _ = std::fs::remove_file(path);
+    })
+}
+
 impl App {
     /// `editor.new_scratch`: ask for the language first.
     pub(crate) fn new_scratch(&mut self) {
@@ -122,7 +131,7 @@ impl App {
         match create(&dir, ext) {
             Ok(path) => {
                 if !text.is_empty()
-                    && let Err(e) = std::fs::write(&path, text)
+                    && let Err(e) = fill_or_remove(&path, text)
                 {
                     return self.notify(Level::Error, format!("Write scratch file {}: {e}", path.display()));
                 }
@@ -198,6 +207,26 @@ mod tests {
         assert_eq!(create(&dir, "txt").unwrap(), dir.join("scratch_1.txt"));
         assert_eq!(create(&dir, "txt").unwrap(), dir.join("scratch_4.txt"));
         assert_eq!(std::fs::read_to_string(dir.join("scratch_3.txt")).unwrap(), "keep");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_write_removes_the_new_scratch_and_frees_its_number() {
+        use std::os::unix::fs::PermissionsExt;
+        let base = temp("failed-write");
+        let dir = base.join("scratches");
+        let path = create(&dir, "md").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o444)).unwrap();
+        // Root ignores file modes, so this user could still write: nothing to test then.
+        if std::fs::OpenOptions::new().write(true).open(&path).is_err() {
+            assert!(fill_or_remove(&path, "text").is_err());
+            assert!(!path.exists());
+            assert_eq!(names(&dir), Vec::<String>::new());
+            assert_eq!(create(&dir, "md").unwrap(), path, "the number is free again");
+            fill_or_remove(&path, "text").unwrap();
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), "text");
+        }
         let _ = std::fs::remove_dir_all(&base);
     }
 
