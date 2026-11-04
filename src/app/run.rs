@@ -639,6 +639,56 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A `cargo` first on `PATH` for one config, `unit`: a full run prints the
+    /// libtest fixture with one failed test and exits 101, as cargo does; a run
+    /// with `--exact` passes. Every call's arguments go to `dir/args.txt`.
+    #[cfg(unix)]
+    fn fake_cargo(dir: &std::path::Path) -> RunTask {
+        use std::os::unix::fs::PermissionsExt;
+
+        std::fs::create_dir_all(dir.join("bin")).unwrap();
+        std::fs::write(dir.join("libtest.txt"), include_str!("../run/fixtures/libtest.txt")).unwrap();
+        let script = format!(
+            "#!/bin/sh\necho \"$*\" >> '{d}/args.txt'\ncase \" $* \" in\n*' --exact '*) printf 'running 1 test\\ntest tests::nested::fails ... ok\\n\\ntest result: ok. 1 passed; 0 failed\\n';;\n*) cat '{d}/libtest.txt'; exit 101;;\nesac\n",
+            d = dir.display()
+        );
+        let bin = dir.join("bin/cargo");
+        std::fs::write(&bin, script).unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let path = format!("{}:{}", dir.join("bin").display(), std::env::var("PATH").unwrap_or_default());
+        let text = format!("[[run.configs]]\nname = \"unit\"\ncommand = [\"cargo\", \"test\"]\nenv = {{ PATH = {path:?} }}\n");
+        crate::config::Config::parse(&text).unwrap().run.configs.remove(0)
+    }
+
+    /// Whether the dropdown's Rerun Failed row is enabled now. The list must be loaded.
+    #[cfg(unix)]
+    fn rerun_failed_row(app: &mut App) -> bool {
+        app.perform(Action::Run(RunAction::ConfigMenu { x: 5, y: 0 }));
+        let menu = app.menu.take().expect("the dropdown opens at once");
+        menu.items.iter().find(|i| i.label == "Rerun Failed Tests").expect("the row").enabled
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn rerun_failed_row_follows_the_failed_tests() {
+        let (mut app, dir) = test_app("run-rerun-row");
+        app.run.set_loaded_tasks(vec![]);
+        assert!(!rerun_failed_row(&mut app), "nothing has run");
+        app.run_task(fake_cargo(&dir));
+        until_exit(&mut app).await;
+        assert_eq!(app.run_panel.status(), Some(&Status::Exited(101)));
+        assert!(rerun_failed_row(&mut app), "a failed test enables it");
+        app.perform(Action::Run(RunAction::RerunFailed));
+        until_exit(&mut app).await;
+        assert_eq!(app.run_panel.status(), Some(&Status::Exited(0)));
+        assert!(!rerun_failed_row(&mut app), "the rerun passed");
+        app.run_task(shell("plain", "exit 1"));
+        until_exit(&mut app).await;
+        assert_eq!(app.run_panel.status(), Some(&Status::Exited(1)));
+        assert!(!rerun_failed_row(&mut app), "a failing command has no failed tests");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     fn two_configs(app: &mut App) {
         app.config.run.tasks = vec![shell("a", "echo a"), shell("b", "echo b")];
     }
@@ -768,22 +818,9 @@ mod tests {
     #[tokio::test]
     async fn rerun_failed_runs_only_the_failed_test() {
         use crate::run::panel::View;
-        use std::os::unix::fs::PermissionsExt;
 
         let (mut app, dir) = test_app("run-rerun-failed");
-        std::fs::create_dir_all(dir.join("bin")).unwrap();
-        std::fs::write(dir.join("libtest.txt"), include_str!("../run/fixtures/libtest.txt")).unwrap();
-        let script = format!(
-            "#!/bin/sh\necho \"$*\" >> '{d}/args.txt'\ncase \" $* \" in\n*' --exact '*) printf 'running 1 test\\ntest tests::nested::fails ... ok\\n\\ntest result: ok. 1 passed; 0 failed\\n';;\n*) cat '{d}/libtest.txt';;\nesac\n",
-            d = dir.display()
-        );
-        let bin = dir.join("bin/cargo");
-        std::fs::write(&bin, script).unwrap();
-        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let path = format!("{}:{}", dir.join("bin").display(), std::env::var("PATH").unwrap_or_default());
-        let text = format!("[[run.configs]]\nname = \"unit\"\ncommand = [\"cargo\", \"test\"]\nenv = {{ PATH = {path:?} }}\n");
-        let task = crate::config::Config::parse(&text).unwrap().run.configs.remove(0);
-        app.run_task(task);
+        app.run_task(fake_cargo(&dir));
         until_exit(&mut app).await;
         assert_eq!(app.run_panel.view(), View::Tests);
         let failed: Vec<String> = app.run_panel.tests().unwrap().failed().map(|c| c.id.clone()).collect();

@@ -1493,7 +1493,8 @@ Setup as above with the default config (`[lsp] enabled = false` only), at 120x40
    `resize-window -x 50`, Settings goes first, then Search, then the project widget shrinks to ` ▾ `; ▶ stays.
    Started in a linked worktree (`git worktree add /tmp/tm22-wt` from the test repo, open `/tmp/tm22-wt`), the
    label reads `tm22-wt (<repo dir>)`.
-5. Row 1 holds ` Select Configuration ▾ ` and ` ▶ ` before the ` ⌕ ` ` ⚙ ` pair; hover ▶: `Run  Shift+F10` shows on row 2.
+5. Row 1 holds ` Select Configuration ▾ ` and ` ▶ ` before the ` ⌕ ` ` ⚙ ` pair; hover ▶: `Run  Shift+F10` shows on row 2. With no configuration selected, a click on ▶ opens the centred Run palette; Esc closes
+   it and nothing has run.
 6. With `$ROOT/.jetl/run.toml` holding `[[configs]]`, `name = "nap"`, `command = ["sh", "-c", "sleep 20"]`, click
    the name: a menu opens on row 2 under the widget's left edge (shifted left at the right edge) listing `nap`, a
    divider, `Edit Configurations…`, `Rerun Failed Tests` (dim), `Stop` (dim); pick `nap`: the widget reads
@@ -1502,6 +1503,8 @@ Setup as above with the default config (`[lsp] enabled = false` only), at 120x40
 6a. Alt+4 to show the Run window, click its ` nap ▾ ` picker: the same menu opens at the picker's left column
    (above it when there is no room below); while `nap` runs `Stop` is enabled and choosing it stops the task;
    `M-S-F10` still opens the centred Run palette.
+6b. Click the name widget, then `Edit Configurations…` (or reach it with Down and Enter): the menu closes and the Run
+   Configurations window lists `nap`. Esc closes it with no question, and `.jetl/run.toml` is unchanged.
 7. Click ■: the task stops and the widget returns to ` nap ▾ ` and ` ▶ `; click ▶: it runs again.
 8. At 80x24 with a configuration named `integration-tests`, the toolbar still shows ▶ before ` ⌕ ` ` ⚙ ` (or at the right edge once those drop).
 9. `resize-window -y 11` hides the row and the strip's menu cell is back on row 1. Zen (its key from
@@ -1520,8 +1523,9 @@ Setup as above with the default config (`[lsp] enabled = false` only), at 120x40
    `Commit`, `Push` with their keys from `docs/KEYMAP.md` on row 2. Click ✓: the Git window opens on the Commit
    tab with the message focused and nothing is committed. Click ↓ (the test repo has no upstream): a git error
    notification, no crash. `resize-window -x 99`: the three buttons are gone, the branch widget stays;
-   `resize-window -x 100` brings them back. Opened on a directory that is not a git repository, they never
-   show. Stderr empty, Ctrl+Q exits 0.
+   `resize-window -x 100` brings them back. Open jetl
+   at 120x40 on a directory that is not a git repository (`mkdir /tmp/jt-nogit`): row 1 has no ` ⎇ ` and none of ` ↓ ` ` ✓ ` ` ↑ `,
+   5 s after the start and after `resize-window -x 100`. Stderr empty, Ctrl+Q exits 0.
 14. In the test repo at 120x40, row 1 shows ` ⎇ main ▾ ` and the status bar's right end has no `main`. F10: the menu bar covers
    row 1 and the status bar's right end shows `main`. F10 again: the widget is back and the status bar's `main` is gone. At 80x24
    the same holds, with `main` right of the dropdown's last row. Stderr empty, Ctrl+Q exits 0.
