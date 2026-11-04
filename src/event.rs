@@ -11,6 +11,18 @@ pub enum Level {
     Error,
 }
 
+/// What a layout op does once its write has succeeded (`App::layouts_loaded`);
+/// a failed op reports its error and does none of it.
+#[derive(Debug)]
+pub struct LayoutDone {
+    /// Shown as an Info toast.
+    pub toast: String,
+    /// `App::current_layout` becomes this; `None` leaves it.
+    pub current: Option<String>,
+    /// The current layout was deleted: `App::current_layout` becomes `None`.
+    pub clear_current: bool,
+}
+
 #[derive(Debug)]
 pub enum AppMsg {
     /// A file read for a new tab, tagged with the workspace generation at
@@ -155,11 +167,13 @@ pub enum AppMsg {
     },
     /// Named layouts read (and changed, when an op was given) by
     /// `layouts::update`; `version` is taken under the file lock, a higher one
-    /// saw a later state. `error` is shown as a warning.
+    /// saw a later state. `error` is shown as a warning. `done` is what the
+    /// op's caller wants on success; it applies even to a stale reply.
     Layouts {
         version: u64,
         layouts: Vec<crate::layouts::NamedLayout>,
         error: Option<String>,
+        done: Option<LayoutDone>,
     },
     /// The system clipboard read by `editor.paste` (`App::paste`), tagged
     /// with the workspace generation and the request's seq.

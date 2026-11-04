@@ -1559,9 +1559,13 @@ Setup as above, `[lsp] enabled = false`, at 120x40 and 80x24, state in `/tmp/jt-
    save as new `Review`. Shift+F12 (Restore Default Layout).
 3. Ctrl+Shift+A, type `switch layout`, Enter: the dialog lists `Default+` and `Review (current)`; pick `Review`:
    Git is back at Right Bottom, Find is Undocked (opening it slides over the editor).
-4. Rename `Review` to `Review2` (View | Rename Layout…), Delete `Default+` (Delete, then confirm): the file holds
-   only `Review2`.
-5. Ctrl+Q, start again in another root: Ctrl+Shift+A "switch layout" lists `Review2`. Stderr empty, Ctrl+Q exits 0.
+4. Rename `Review` to `Review2` (View | Rename Layout…): toast `Renamed layout 'Review' to 'Review2'`. Delete `Default+`
+   (Delete, then confirm): toast `Deleted layout 'Default+'`; the file holds only `Review2`.
+5. In another shell `chmod 555 /tmp/jt-home/state/jetl`. Save as new `Fail`: a warning toast starting `Saving layouts:`,
+   no `Saved layout 'Fail'`. Ctrl+Shift+A "switch layout": the dialog lists `Review2 (current)` and no `Fail`; Esc. Delete
+   `Review2` (Delete, then confirm): a warning again, no `Deleted layout`, and the dialog still shows `Review2 (current)`.
+   `chmod 755 /tmp/jt-home/state/jetl`; View | Save Changes in Current Layout: toast `Saved layout 'Review2'`.
+6. Ctrl+Q, start again in another root: Ctrl+Shift+A "switch layout" lists `Review2`. Stderr empty, Ctrl+Q exits 0.
 
 ### Scenario: undocked tool window
 

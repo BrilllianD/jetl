@@ -263,7 +263,7 @@ Three tags, and one rule for popups:
   every refilter takes the next seq, so only the newest filter of the open
   palette applies; a running filter checks it every 1024 candidates and
   stops without sending; closing the palette cancels its filter),
-  `Layouts` (`App::layouts_version`: only a newer file version applies; not tied to the root), `RecentProjects`
+  `Layouts` (`App::layouts_version`: only a newer file version applies; not tied to the root; the op's `done` (toast and `current_layout`) applies on any reply without an error, stale or not), `RecentProjects`
   (`App::recent_projects_version`: only a newer file version applies;
   `App::recent_projects_forgot`: the seq of the latest forget, replies to older requests are dropped; not tied to the
   root, so it carries no generation), `Paste` (only the newest request applies, and only while

@@ -54,6 +54,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - File Dependencies: a Java wildcard import lists the package's files from every source root, so a package split across `src/main/java` and `src/test/java` shows both sides, and a file alone in its package in one root still finds the other side.
 - Import edges: the first File Dependencies or file ranking after indexing a large Java project no longer spends seconds on imports of external packages.
 - The terminal cursor no longer shows on top of an Undocked tool window when the editor caret lies under it.
+- Tool window layouts: the success toast and the current layout now wait for the write to succeed, so a failed save, rename or delete only shows its error and leaves the current layout as it was; rename and delete now confirm with a toast.
 
 ## [0.8.0] - 2026-11-03
 

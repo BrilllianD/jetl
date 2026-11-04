@@ -2,7 +2,7 @@
 //! actions and their dialogs (`layouts.rs` owns the file).
 
 use super::App;
-use crate::event::{AppMsg, Level};
+use crate::event::{AppMsg, LayoutDone, Level};
 use crate::layouts::{LayoutOp, NamedLayout};
 use crate::ui::dialog::{Dialog, DialogId, DialogResult};
 use crate::workspace::NOT_PLACED;
@@ -11,20 +11,31 @@ impl App {
     /// Read the layouts file off the main thread (`main.rs` at startup; tests
     /// never call it).
     pub fn load_layouts(&mut self) {
-        self.layouts_request(None);
+        self.layouts_request(None, None);
     }
 
-    fn layouts_request(&mut self, op: Option<LayoutOp>) {
+    fn layouts_request(&mut self, op: Option<LayoutOp>, done: Option<LayoutDone>) {
         let (file, tx) = (self.paths.layouts_file(), self.bus_tx.clone());
         tokio::task::spawn_blocking(move || {
             let (version, layouts, error) = crate::layouts::update(&file, op.as_ref());
-            let _ = tx.send(AppMsg::Layouts { version, layouts, error });
+            let _ = tx.send(AppMsg::Layouts { version, layouts, error, done });
         });
     }
 
-    pub(super) fn layouts_loaded(&mut self, version: u64, layouts: Vec<NamedLayout>, error: Option<String>) {
-        if let Some(e) = error {
-            self.notify(Level::Warn, e);
+    /// `done` applies before the version check: a reply overtaken by a later
+    /// one still reports its own success.
+    pub(super) fn layouts_loaded(&mut self, version: u64, layouts: Vec<NamedLayout>, error: Option<String>, done: Option<LayoutDone>) {
+        match (error, done) {
+            (Some(e), _) => self.notify(Level::Warn, e),
+            (None, Some(done)) => {
+                self.notify(Level::Info, done.toast);
+                if done.clear_current {
+                    self.current_layout = None;
+                } else if let Some(name) = done.current {
+                    self.current_layout = Some(name);
+                }
+            }
+            (None, None) => {}
         }
         if version <= self.layouts_version {
             tracing::debug!("dropping stale layouts");
@@ -63,17 +74,15 @@ impl App {
 
     pub(super) fn save_layout_changes(&mut self) {
         match self.current_layout.clone() {
-            Some(name) => {
-                self.put(name.clone());
-                self.notify(Level::Info, format!("Saved layout '{name}'"));
-            }
+            Some(name) => self.put(name),
             None => self.notify(Level::Info, "No current layout: use Save Current Layout as New"),
         }
     }
 
     fn put(&mut self, name: String) {
         let layout = self.layout_placement();
-        self.layouts_request(Some(LayoutOp::Put(NamedLayout { name, layout })));
+        let done = LayoutDone { toast: format!("Saved layout '{name}'"), current: None, clear_current: false };
+        self.layouts_request(Some(LayoutOp::Put(NamedLayout { name, layout })), Some(done));
     }
 
     pub(super) fn rename_layout(&mut self) {
@@ -128,9 +137,9 @@ impl App {
                         self.notify(Level::Warn, format!("A layout named '{name}' already exists"));
                     } else {
                         let layout = self.layout_placement();
-                        self.layouts_request(Some(LayoutOp::Create(NamedLayout { name: name.clone(), layout })));
-                        self.notify(Level::Info, format!("Saved layout '{name}'"));
-                        self.current_layout = Some(name);
+                        let done =
+                            LayoutDone { toast: format!("Saved layout '{name}'"), current: Some(name.clone()), clear_current: false };
+                        self.layouts_request(Some(LayoutOp::Create(NamedLayout { name, layout })), Some(done));
                     }
                 }
             }
@@ -150,10 +159,12 @@ impl App {
                     if self.named_layouts.iter().any(|l| l.name == new) {
                         self.notify(Level::Warn, format!("A layout named '{new}' already exists"));
                     } else {
-                        self.layouts_request(Some(LayoutOp::Rename { from: old.clone(), to: new.clone() }));
-                        if self.current_layout.as_ref() == Some(old) {
-                            self.current_layout = Some(new);
-                        }
+                        let done = LayoutDone {
+                            toast: format!("Renamed layout '{old}' to '{new}'"),
+                            current: (self.current_layout.as_ref() == Some(old)).then(|| new.clone()),
+                            clear_current: false,
+                        };
+                        self.layouts_request(Some(LayoutOp::Rename { from: old.clone(), to: new }), Some(done));
                     }
                 }
             }
@@ -169,10 +180,12 @@ impl App {
             }
             DialogId::LayoutDelete(name) => {
                 if matches!(res, DialogResult::Button(0)) {
-                    self.layouts_request(Some(LayoutOp::Delete(name.clone())));
-                    if self.current_layout.as_ref() == Some(name) {
-                        self.current_layout = None;
-                    }
+                    let done = LayoutDone {
+                        toast: format!("Deleted layout '{name}'"),
+                        current: None,
+                        clear_current: self.current_layout.as_ref() == Some(name),
+                    };
+                    self.layouts_request(Some(LayoutOp::Delete(name.clone())), Some(done));
                 }
             }
             _ => return false,
@@ -355,11 +368,166 @@ mod tests {
     async fn stale_layouts_reply_is_dropped() {
         let (mut app, dir) = test_app("layouts-stale");
         let a = NamedLayout { name: "a".into(), layout: app.layout_placement() };
-        app.handle_msg(AppMsg::Layouts { version: 5, layouts: vec![a.clone()], error: None });
-        app.handle_msg(AppMsg::Layouts { version: 3, layouts: vec![], error: None });
+        app.handle_msg(AppMsg::Layouts { version: 5, layouts: vec![a.clone()], error: None, done: None });
+        app.handle_msg(AppMsg::Layouts { version: 3, layouts: vec![], error: None, done: None });
         assert_eq!(app.named_layouts, [a]);
-        app.handle_msg(AppMsg::Layouts { version: 6, layouts: vec![], error: Some("x".into()) });
+        app.handle_msg(AppMsg::Layouts { version: 6, layouts: vec![], error: Some("x".into()), done: None });
         assert_eq!(last_warning(&app), Some("x"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn toasted(app: &App, text: &str) -> bool {
+        app.notifications.iter().any(|n| n.level == Level::Info && n.text == text)
+    }
+
+    fn toast_count(app: &App, text: &str) -> usize {
+        app.notifications.iter().filter(|n| n.level == Level::Info && n.text == text).count()
+    }
+
+    #[tokio::test]
+    async fn save_as_new_succeeds_only_after_the_reply() {
+        let (mut app, dir) = test_app("layouts-save-reply");
+        app.perform(Action::App(AppAction::SaveLayoutAsNew));
+        answer(&mut app, DialogResult::Text("A".into()));
+        assert_eq!(app.current_layout, None);
+        assert!(!toasted(&app, "Saved layout 'A'"));
+        settle_layouts(&mut app).await;
+        assert_eq!(app.current_layout.as_deref(), Some("A"));
+        assert!(toasted(&app, "Saved layout 'A'"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn save_rename_and_delete_toast_after_success() {
+        let (mut app, dir) = test_app("layouts-toasts");
+        save_as(&mut app, "A").await;
+        app.perform(Action::App(AppAction::SaveLayoutChanges));
+        settle_layouts(&mut app).await;
+        assert_eq!(toast_count(&app, "Saved layout 'A'"), 2);
+        assert_eq!(app.current_layout.as_deref(), Some("A"));
+        app.perform(Action::App(AppAction::RenameLayout));
+        answer(&mut app, DialogResult::Choice(0));
+        answer(&mut app, DialogResult::Text("C".into()));
+        assert_eq!(app.current_layout.as_deref(), Some("A"));
+        assert!(!toasted(&app, "Renamed layout 'A' to 'C'"));
+        settle_layouts(&mut app).await;
+        assert_eq!(app.current_layout.as_deref(), Some("C"));
+        assert!(toasted(&app, "Renamed layout 'A' to 'C'"));
+        app.perform(Action::App(AppAction::DeleteLayout));
+        answer(&mut app, DialogResult::Choice(0));
+        answer(&mut app, DialogResult::Button(0));
+        assert_eq!(app.current_layout.as_deref(), Some("C"));
+        assert!(!toasted(&app, "Deleted layout 'C'"));
+        settle_layouts(&mut app).await;
+        assert_eq!(app.current_layout, None);
+        assert!(toasted(&app, "Deleted layout 'C'"));
+        // A layout that is not current leaves the label alone.
+        save_as(&mut app, "A").await;
+        save_as(&mut app, "B").await;
+        app.perform(Action::App(AppAction::RenameLayout));
+        answer(&mut app, DialogResult::Choice(0));
+        answer(&mut app, DialogResult::Text("A2".into()));
+        settle_layouts(&mut app).await;
+        assert_eq!(app.current_layout.as_deref(), Some("B"));
+        app.perform(Action::App(AppAction::DeleteLayout));
+        answer(&mut app, DialogResult::Choice(0));
+        answer(&mut app, DialogResult::Button(0));
+        settle_layouts(&mut app).await;
+        assert_eq!(names(&app), ["B"]);
+        assert_eq!(app.current_layout.as_deref(), Some("B"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn failed_write_changes_nothing() {
+        use std::os::unix::fs::PermissionsExt;
+        let (mut app, dir) = test_app("layouts-write-fail");
+        save_as(&mut app, "A").await;
+        let state = app.paths.state_dir.clone();
+        std::fs::set_permissions(&state, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let probe = state.join(".probe");
+        if std::fs::File::create(&probe).is_ok() {
+            // Root: the mode denies nothing.
+            let _ = std::fs::remove_file(&probe);
+            std::fs::set_permissions(&state, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        }
+        app.perform(Action::App(AppAction::SaveLayoutAsNew));
+        answer(&mut app, DialogResult::Text("B".into()));
+        settle_layouts(&mut app).await;
+        let saved_as_new =
+            (app.current_layout.clone(), toasted(&app, "Saved layout 'B'"), last_warning(&app).map(str::to_string), names(&app));
+        app.perform(Action::App(AppAction::SaveLayoutChanges));
+        settle_layouts(&mut app).await;
+        let saved_count = toast_count(&app, "Saved layout 'A'");
+        app.perform(Action::App(AppAction::RenameLayout));
+        answer(&mut app, DialogResult::Choice(0));
+        answer(&mut app, DialogResult::Text("C".into()));
+        settle_layouts(&mut app).await;
+        let renamed = (app.current_layout.clone(), toasted(&app, "Renamed layout 'A' to 'C'"));
+        app.perform(Action::App(AppAction::DeleteLayout));
+        answer(&mut app, DialogResult::Choice(0));
+        answer(&mut app, DialogResult::Button(0));
+        settle_layouts(&mut app).await;
+        let deleted = (app.current_layout.clone(), toasted(&app, "Deleted layout 'A'"));
+        std::fs::set_permissions(&state, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(saved_as_new.0.as_deref(), Some("A"));
+        assert!(!saved_as_new.1);
+        assert!(saved_as_new.2.is_some_and(|w| w.starts_with("Saving layouts:")));
+        assert_eq!(saved_as_new.3, ["A"]);
+        assert_eq!(saved_count, 1);
+        assert_eq!(renamed.0.as_deref(), Some("A"));
+        assert!(!renamed.1);
+        assert_eq!(deleted.0.as_deref(), Some("A"));
+        assert!(!deleted.1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn refused_ops_change_nothing() {
+        let (mut app, dir) = test_app("layouts-refused");
+        let file = app.paths.layouts_file();
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, r#"{"version":1,"layouts":[{"name":"x","layout":{"left":"Nope","left_w":1,"bottom":null,"bottom_h":1}}]}"#)
+            .unwrap();
+        app.perform(Action::App(AppAction::SaveLayoutAsNew));
+        answer(&mut app, DialogResult::Text("x".into()));
+        settle_layouts(&mut app).await;
+        assert_eq!(app.current_layout, None);
+        assert!(!toasted(&app, "Saved layout 'x'"));
+        assert_eq!(last_warning(&app), Some("A layout named 'x' already exists"));
+        std::fs::write(&file, "not json").unwrap();
+        app.current_layout = Some("K".into());
+        app.finish_dialog(DialogId::LayoutDelete("K".into()), DialogResult::Button(0));
+        settle_layouts(&mut app).await;
+        assert_eq!(app.current_layout.as_deref(), Some("K"));
+        assert!(!toasted(&app, "Deleted layout 'K'"));
+        assert!(last_warning(&app).is_some_and(|w| w.contains("not valid JSON")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn success_applies_even_to_a_stale_reply() {
+        let (mut app, dir) = test_app("layouts-stale-done");
+        let a = NamedLayout { name: "a".into(), layout: app.layout_placement() };
+        app.handle_msg(AppMsg::Layouts { version: 5, layouts: vec![a.clone()], error: None, done: None });
+        let done = |toast: &str, current: Option<&str>, clear_current| LayoutDone {
+            toast: toast.into(),
+            current: current.map(str::to_string),
+            clear_current,
+        };
+        app.handle_msg(AppMsg::Layouts { version: 3, layouts: vec![], error: None, done: Some(done("t", Some("a"), false)) });
+        assert_eq!(app.named_layouts, [a]);
+        assert_eq!(app.current_layout.as_deref(), Some("a"));
+        assert!(toasted(&app, "t"));
+        app.handle_msg(AppMsg::Layouts { version: 2, layouts: vec![], error: None, done: Some(done("v", None, true)) });
+        assert_eq!(app.current_layout, None);
+        app.handle_msg(AppMsg::Layouts { version: 6, layouts: vec![], error: Some("x".into()), done: Some(done("u", Some("b"), false)) });
+        assert_eq!(last_warning(&app), Some("x"));
+        assert!(!toasted(&app, "u"));
+        assert_eq!(app.current_layout, None);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
