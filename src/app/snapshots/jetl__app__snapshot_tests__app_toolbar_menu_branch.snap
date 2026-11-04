@@ -1,0 +1,48 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &marks, None)"
+---
+80x24 cursor=hidden
+00  ≣  File  Edit  View  Navigate  Git  Run  Help
+01  ⌂ ╭───────────────────────────────────────────────────╮
+02  ◫ │ Go to File…                                Ctrl+N │
+03  ⊢ │ Recent Files…                              Ctrl+E │
+04    │ Recent Locations…                    Ctrl+Shift+E │
+05    │ Recent Projects…                      Alt+Shift+E │
+06    │ New Scratch File…           Ctrl+Alt+Shift+Insert │
+07    │ New Task…                              Alt+Insert │
+08    │ Scratch Files…                                    │
+09    │ Local History…                        Alt+Shift+H │
+10    │ Local History: Put Label…                         │
+11    ├───────────────────────────────────────────────────┤les open.
+12    │ Save                                       Ctrl+S │he Project view;
+13  ⋔ │ Save As…                              Alt+Shift+S │N finds a file.
+14  ✎ │ Save All                              Alt+Shift+W │
+15  ✓ ├───────────────────────────────────────────────────┤
+16  ⟲ │ Close Tab                                 Ctrl+F4 │
+17  ⚑ │ Close Other Tabs                          Alt+W O │
+18  ⎇ │ Close All Tabs                            Alt+W A │
+19  ❯ ├───────────────────────────────────────────────────┤
+20  ⚠ │ Settings…                              Ctrl+Alt+S │
+21  ► ├───────────────────────────────────────────────────┤
+22  ⌕ │ Exit                                       Ctrl+Q │
+23    ╰───────────────────────────────────────────────────╯                   main
+-- marks: L=selected d=dim B=branch
+00    LLLLLL
+02     LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL
+03                                                 dddddd
+04                                           dddddddddddd
+05                                            ddddddddddd
+06                                  ddddddddddddddddddddd
+07                                             dddddddddd
+09     ddddddddddddddddddddddddddddddddddddddddddddddddddd
+10     ddddddddddddddddddddddddddddddddddddddddddddddddddd
+12     ddddddddddddddddddddddddddddddddddddddddddddddddddd
+13     ddddddddddddddddddddddddddddddddddddddddddddddddddd
+14     ddddddddddddddddddddddddddddddddddddddddddddddddddd
+16     ddddddddddddddddddddddddddddddddddddddddddddddddddd
+17     ddddddddddddddddddddddddddddddddddddddddddddddddddd
+18     ddddddddddddddddddddddddddddddddddddddddddddddddddd
+20                                             dddddddddd
+22                                                 dddddd
+23                                                                            BBBB

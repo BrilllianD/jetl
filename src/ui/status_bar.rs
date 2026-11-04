@@ -4,7 +4,7 @@
 //! caret), then on the right the active file's problem counts, cursor
 //! position and `OVR` in overwrite mode, line ending, encoding, indent and language of the active
 //! buffer, its language server, and the current branch at the right edge
-//! (unless the toolbar's branch widget shows it).
+//! (unless the toolbar's branch widget shows it and the menu bar does not cover it).
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -126,8 +126,9 @@ pub fn render(app: &mut App, frame: &mut Frame, area: Rect) {
         right_parts.push(("legacy keys".into(), theme.dim.bg(theme.status_bg), None, 4));
     }
     // The branch sits at the right edge, unless the toolbar shows it this
-    // frame (`toolbar::render` runs first); a click opens the branches popup.
-    let on_toolbar = app.layout.toolbar_hits.iter().any(|(b, _)| *b == ToolbarButton::Branch);
+    // frame (`toolbar::render` runs first) and the menu bar, drawn later over
+    // row 0, does not cover it; a click opens the branches popup.
+    let on_toolbar = app.menu_bar.is_none() && app.layout.toolbar_hits.iter().any(|(b, _)| *b == ToolbarButton::Branch);
     if !on_toolbar && let Some(branch) = app.branch_label() {
         right_parts.push((branch, theme.status_accent.bg(theme.status_bg), Some(StatusHit::Branch), 1));
     }

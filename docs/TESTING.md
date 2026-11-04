@@ -1522,6 +1522,9 @@ Setup as above with the default config (`[lsp] enabled = false` only), at 120x40
    notification, no crash. `resize-window -x 99`: the three buttons are gone, the branch widget stays;
    `resize-window -x 100` brings them back. Opened on a directory that is not a git repository, they never
    show. Stderr empty, Ctrl+Q exits 0.
+14. In the test repo at 120x40, row 1 shows ` ⎇ main ▾ ` and the status bar's right end has no `main`. F10: the menu bar covers
+   row 1 and the status bar's right end shows `main`. F10 again: the widget is back and the status bar's `main` is gone. At 80x24
+   the same holds, with `main` right of the dropdown's last row. Stderr empty, Ctrl+Q exits 0.
 
 ### Scenario: unpinned tool window
 

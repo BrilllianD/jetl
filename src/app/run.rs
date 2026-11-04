@@ -99,6 +99,12 @@ impl RunState {
         self.job = Some(Job { run: self.seq, name: name.to_string(), pid: Arc::new(AtomicU32::new(0)), task, stopped: false });
     }
 
+    /// `run.stop` was pressed on the running job (the exit may not have arrived).
+    #[cfg(test)]
+    pub(crate) fn stop_requested(&self) -> bool {
+        self.job.as_ref().is_some_and(|j| j.stopped)
+    }
+
     /// The running task's process group id, if any.
     #[cfg(test)]
     pub fn pid(&self) -> Option<u32> {

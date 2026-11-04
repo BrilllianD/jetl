@@ -5305,7 +5305,41 @@ mod strip_tests {
     }
 
     fn toolbar_hit(app: &super::App, b: crate::ui::layout::ToolbarButton) -> Rect {
-        app.layout.toolbar_hits.iter().find(|(x, _)| *x == b).map(|(_, r)| *r).expect("toolbar button")
+        toolbar_hit_in(&app.layout.toolbar_hits, b)
+    }
+
+    #[tokio::test]
+    async fn status_bar_shows_the_branch_while_the_menu_bar_covers_the_toolbar() {
+        use crate::event::AppMsg;
+        use crate::git::GitMsg;
+        use crate::git::model::StatusSnapshot;
+        use crate::ui::status_bar::StatusHit;
+        let (mut app, dir) = test_app("toolbar-branch-menu");
+        app.config.ui.toolbar = true;
+        app.handle_msg(AppMsg::Git(GitMsg::Status {
+            generation: app.git.generation,
+            seq: 1,
+            result: Ok(StatusSnapshot { workdir: app.workspace.root.clone(), branch: Some("feature/x".into()), ..Default::default() }),
+        }));
+        let on_status = |app: &super::App| app.status_hits.iter().any(|(h, _)| *h == StatusHit::Branch);
+
+        let buf = draw(&mut app);
+        assert!(row_text(&buf, 0, 100).contains("feature/x"));
+        assert!(!row_text(&buf, 23, 100).contains("feature/x"));
+        assert!(!on_status(&app));
+
+        app.toggle_main_menu();
+        let buf = draw(&mut app);
+        assert!(!row_text(&buf, 0, 100).contains("feature/x"), "the menu bar covers the widget");
+        assert!(row_text(&buf, 23, 100).trim_end().ends_with("feature/x"));
+        assert!(on_status(&app));
+
+        app.toggle_main_menu();
+        let buf = draw(&mut app);
+        assert!(row_text(&buf, 0, 100).contains("feature/x"));
+        assert!(!row_text(&buf, 23, 100).contains("feature/x"));
+        assert!(!on_status(&app));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
@@ -5342,7 +5376,9 @@ mod strip_tests {
         assert!(app.palette.as_ref().unwrap().wants(Source::Tasks));
         app.palette = None;
         let stop = toolbar_hit(&app, B::Stop);
+        assert!(!app.run.stop_requested());
         click(&mut app, stop.x + 1, 0);
+        assert!(app.run.stop_requested(), "the Stop press reached stop_run");
         assert!(!app.notifications.iter().any(|n| n.text.contains("No task is running")));
         let _ = std::fs::remove_dir_all(&dir);
     }

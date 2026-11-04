@@ -3783,6 +3783,17 @@ async fn app_toolbar_menu_open() {
     assert_snapshot!("app_toolbar_menu_open", snapshot(&term, &marks, None));
 }
 
+#[tokio::test]
+async fn app_toolbar_menu_branch() {
+    let mut fx = toolbar_vcs_app("toolbar-menu-branch");
+    let app = &mut fx.app;
+    app.toggle_main_menu();
+    let term = draw_app(app, 80, 24);
+    let mut marks = menu_marks(&app.theme);
+    marks.push(Mark::style('B', "branch", app.theme.status_accent.bg(app.theme.status_bg)));
+    assert_snapshot!("app_toolbar_menu_branch", snapshot(&term, &marks, None));
+}
+
 /// Two run configurations for the dropdown snapshots.
 fn two_run_tasks() -> Vec<crate::run::RunTask> {
     let text = "[[run.tasks]]\nname = \"check\"\ncommand = \"cargo check\"\n[[run.tasks]]\nname = \"integration-tests\"\ncommand = \"cargo test\"\n";
