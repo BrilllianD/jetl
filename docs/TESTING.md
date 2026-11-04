@@ -1584,6 +1584,7 @@ Env as in the other scenarios plus `XDG_CACHE_HOME=/tmp/jt-home/cache RUST_LOG=j
 2. `ls /tmp/jt-home/cache/jetl/index/` lists one `<16 hex>.json`.
 3. Start again: the log shows `symbol cache: reused N of N files` and no new `symbol cache: wrote`; Go to Symbol (Alt+Shift+N, `palette.symbols`) finds a symbol at once.
 4. `touch` one `.rs` file and start again: `reused N-1 of N files` and one `symbol cache: wrote`. Stderr empty each time.
+5. `printf 'fn x() {}\0\n' > bin.rs` in the project and start twice: the second start's log has `reused` for every file except `bin.rs` and no new `symbol cache: wrote` line (`grep -c 'symbol cache: wrote'` before and after). Stderr empty each time.
 
 ### Scenario: approximate call hierarchy
 

@@ -4,7 +4,8 @@
 //! One JSON file per root: `<cache_dir>/index/<fnv1a64 of root as 016x>.json`
 //! (the key of the session file). Header `{"format", "queries", "root",
 //! "files"}`: `queries` is `fnv1a64` over every language's name, tags and
-//! imports query texts, so a query change invalidates the file; a header
+//! imports query texts and the versions of the tree-sitter packages in
+//! `Cargo.lock`, so a query change or a grammar bump invalidates the file; a header
 //! mismatch or a parse error discards it (debug log only). A file entry is
 //! reused only when its size and mtime still match (`index.rs` compares).
 //! `kind: &'static str` is interned back on load against the capture names
@@ -25,6 +26,7 @@ use crate::workspace::fnv1a64;
 
 /// Bump when extraction output changes without a query text change
 /// (`collect`, `kind_label`, `clean_name`, `imports::extract`, `localize_go`).
+/// A query text or tree-sitter package version change needs no bump.
 pub const FORMAT: u32 = 1;
 
 #[derive(Serialize, Deserialize)]
@@ -70,8 +72,35 @@ pub fn file(cache_dir: &Path, root: &Path) -> PathBuf {
     cache_dir.join("index").join(format!("{:016x}.json", fnv1a64(root.as_os_str().as_encoded_bytes())))
 }
 
-/// Hash of every language's name and query texts, in `LANGUAGES` order.
+/// The lock file this build was compiled from.
+const LOCK: &str = include_str!("../../Cargo.lock");
+
+/// `name version`, one per line, of the tree-sitter runtime and every `tree-sitter-*` package in `lock`, in file order.
+fn grammar_versions(lock: &str) -> String {
+    let mut out = String::new();
+    let mut name = None;
+    for line in lock.lines() {
+        if let Some(n) = line.strip_prefix("name = ") {
+            name = Some(n.trim_matches('"'));
+        } else if let Some(v) = line.strip_prefix("version = ")
+            && let Some(n) = name.take()
+            && (n == "tree-sitter" || n.starts_with("tree-sitter-"))
+        {
+            out.push_str(n);
+            out.push(' ');
+            out.push_str(v.trim_matches('"'));
+            out.push('\n');
+        }
+    }
+    out
+}
+
+/// Hash of every language's name and query texts, in `LANGUAGES` order, and of the tree-sitter package versions in `Cargo.lock`.
 pub fn queries_hash() -> u64 {
+    hash_with(LOCK)
+}
+
+fn hash_with(lock: &str) -> u64 {
     let mut bytes = Vec::new();
     for def in LANGUAGES.iter() {
         bytes.extend_from_slice(def.name.as_bytes());
@@ -81,6 +110,7 @@ pub fn queries_hash() -> u64 {
         bytes.extend_from_slice(def.imports.unwrap_or("").as_bytes());
         bytes.push(0);
     }
+    bytes.extend_from_slice(grammar_versions(lock).as_bytes());
     fnv1a64(&bytes)
 }
 
@@ -277,10 +307,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    fn run(root: &Path, cache: &Path) -> (SymbolIndex, Vec<bool>) {
-        let mut idx = SymbolIndex::default();
-        idx.set_files(&["a.rs".to_string(), "b.rs".to_string()]);
-        let job = idx.start(root.to_path_buf()).with_cache(cache.to_path_buf());
+    fn drain(idx: &mut SymbolIndex, job: crate::symbols::index::IndexJob) -> Vec<bool> {
         let seq = job.seq;
         let mut batches = Vec::new();
         job.run(|b| batches.push(b));
@@ -288,6 +315,14 @@ mod tests {
         for b in batches {
             idx.on_batch(seq, b);
         }
+        changed
+    }
+
+    fn run(root: &Path, cache: &Path) -> (SymbolIndex, Vec<bool>) {
+        let mut idx = SymbolIndex::default();
+        idx.set_files(&["a.rs".to_string(), "b.rs".to_string()]);
+        let job = idx.start(root.to_path_buf()).with_cache(cache.to_path_buf());
+        let changed = drain(&mut idx, job);
         (idx, changed)
     }
 
@@ -319,5 +354,125 @@ mod tests {
         assert!(changed.contains(&true));
         assert!(third.take_cache().is_some());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A fresh root with `b.rs` and the cache path; `a.rs` is the caller's.
+    fn project(what: &str) -> (PathBuf, PathBuf, PathBuf) {
+        let dir = tmp(what);
+        let root = dir.join("root");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("b.rs"), "fn beta() {}\n").unwrap();
+        let cache = dir.join("index").join("c.json");
+        (dir, root, cache)
+    }
+
+    #[test]
+    fn unparseable_file_leaves_the_cache_untouched() {
+        let big = vec![b'/'; crate::symbols::index::MAX_FILE_BYTES as usize + 1];
+        let cases: [(&str, Option<&[u8]>); 3] = [("nul", Some(b"fn a() {}\0\n")), ("big", Some(&big)), ("gone", None)];
+        for (what, content) in cases {
+            let (dir, root, cache) = project(what);
+            if let Some(c) = content {
+                std::fs::write(root.join("a.rs"), c).unwrap();
+            }
+            let (mut cold, changed) = run(&root, &cache);
+            assert!(changed.contains(&true), "{what}: cold run");
+            save(&cache, &root, &cold.take_cache().unwrap()).unwrap();
+            let (mut warm, changed) = run(&root, &cache);
+            assert!(!changed.contains(&true), "{what}: second run");
+            assert!(warm.take_cache().is_none(), "{what}");
+            assert!(warm.file("a.rs").is_none() && warm.file("b.rs").is_some(), "{what}");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn cached_file_that_stops_parsing_rewrites_the_cache() {
+        let (dir, root, cache) = project("stops");
+        std::fs::write(root.join("a.rs"), "fn alpha() {}\n").unwrap();
+        let (mut cold, _) = run(&root, &cache);
+        save(&cache, &root, &cold.take_cache().unwrap()).unwrap();
+        std::fs::write(root.join("a.rs"), "fn alpha() {}\0\n").unwrap();
+        let (mut warm, changed) = run(&root, &cache);
+        assert!(changed.contains(&true));
+        let files = warm.take_cache().unwrap();
+        assert!(files.iter().all(|(p, _)| p != "a.rs") && files.iter().any(|(p, _)| p == "b.rs"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn held_file_that_stops_parsing_marks_the_index_dirty() {
+        let (dir, root, _) = project("held");
+        std::fs::write(root.join("a.rs"), "fn alpha() {}\n").unwrap();
+        let mut idx = SymbolIndex::default();
+        let files = ["a.rs".to_string(), "b.rs".to_string()];
+        idx.set_files(&files);
+        let job = idx.start(root.clone());
+        drain(&mut idx, job);
+        idx.take_cache().unwrap();
+        std::fs::write(root.join("a.rs"), "fn alpha() {}\0\n").unwrap();
+        idx.set_files(&files);
+        let job = idx.start(root.clone());
+        assert!(drain(&mut idx, job).contains(&true));
+        let files = idx.take_cache().unwrap();
+        assert!(files.iter().all(|(p, _)| p != "a.rs"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn invalidated_file_that_stops_parsing_marks_the_index_dirty() {
+        let (dir, root, _) = project("inval");
+        std::fs::write(root.join("a.rs"), "fn alpha() {}\n").unwrap();
+        let mut idx = SymbolIndex::default();
+        idx.set_files(&["a.rs".to_string(), "b.rs".to_string()]);
+        let job = idx.start(root.clone());
+        drain(&mut idx, job);
+        idx.take_cache().unwrap();
+        std::fs::write(root.join("a.rs"), "fn alpha() {}\0\n").unwrap();
+        idx.invalidate(&["a.rs".to_string()]);
+        let job = idx.start(root.clone());
+        assert!(!drain(&mut idx, job).contains(&true));
+        let files = idx.take_cache().unwrap();
+        assert!(files.iter().all(|(p, _)| p != "a.rs"));
+        idx.invalidate(&["a.rs".to_string()]);
+        let job = idx.start(root.clone());
+        drain(&mut idx, job);
+        assert!(idx.take_cache().is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn lock(ts: &str, rust: &str, serde: &str, sum: &str) -> String {
+        format!(
+            "version = 4\n\n[[package]]\nname = \"serde\"\nversion = \"{serde}\"\nsource = \"registry+x\"\nchecksum = \"{sum}\"\n\n\
+             [[package]]\nname = \"tree-sitter\"\nversion = \"{ts}\"\nsource = \"registry+x\"\nchecksum = \"{sum}\"\ndependencies = [\n \"streaming-iterator\",\n \"tree-sitter-language\",\n]\n\n\
+             [[package]]\nname = \"tree-sitter-language\"\nversion = \"0.1.5\"\n\n\
+             [[package]]\nname = \"tree-sitter-rust\"\nversion = \"{rust}\"\nsource = \"registry+x\"\n\n\
+             [[package]]\nname = \"streaming-iterator\"\nversion = \"0.1.9\"\n"
+        )
+    }
+
+    #[test]
+    fn grammar_versions_keeps_only_tree_sitter_packages() {
+        let text = lock("0.27.0", "0.24.0", "1.0.0", "abc");
+        let want = "tree-sitter 0.27.0\ntree-sitter-language 0.1.5\ntree-sitter-rust 0.24.0\n";
+        assert_eq!(grammar_versions(&text), want);
+        assert_eq!(grammar_versions(&text.replace('\n', "\r\n")), want);
+    }
+
+    #[test]
+    fn grammar_bump_changes_the_hash() {
+        let base = hash_with(&lock("0.27.0", "0.24.0", "1.0.0", "abc"));
+        assert_ne!(base, hash_with(&lock("0.27.0", "0.24.1", "1.0.0", "abc")));
+        assert_ne!(base, hash_with(&lock("0.28.0", "0.24.0", "1.0.0", "abc")));
+        assert_eq!(base, hash_with(&lock("0.27.0", "0.24.0", "1.0.1", "abc")));
+        assert_eq!(base, hash_with(&lock("0.27.0", "0.24.0", "1.0.0", "def")));
+    }
+
+    #[test]
+    fn real_lock_lists_the_grammars() {
+        let got = grammar_versions(LOCK);
+        assert!(got.lines().any(|l| l.starts_with("tree-sitter ")), "{got}");
+        assert!(got.lines().any(|l| l.starts_with("tree-sitter-rust ")), "{got}");
+        assert!(!got.lines().any(|l| l.starts_with("serde ")), "{got}");
     }
 }

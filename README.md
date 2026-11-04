@@ -88,7 +88,7 @@ Run the commands in the directory that holds both downloaded files. The archive 
 
 ### From source
 
-    cargo install --path .
+    cargo install --locked --path .
 
 ### Building the packages yourself
 

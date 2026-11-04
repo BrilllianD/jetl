@@ -49,7 +49,8 @@ pub struct SymbolBatch {
     pub files: Vec<(String, Option<FileSymbols>)>,
     /// The last batch of this run.
     pub done: bool,
-    /// Something was parsed or dropped (not only taken from the cache).
+    /// A file was parsed, or one the index or the cache file held was dropped; not set for files taken from the
+    /// cache or for a file that again gives nothing.
     pub changed: bool,
 }
 
@@ -151,7 +152,7 @@ impl SymbolIndex {
                 unknown = true;
             }
             for f in drop {
-                self.files.remove(&f);
+                self.dirty |= self.files.remove(&f).is_some();
                 self.queue.insert(f);
                 queued = true;
             }
@@ -363,7 +364,10 @@ impl IndexJob {
             if known.is_some() && *known == stamp {
                 continue;
             }
-            if let Some(c) = cached.remove(rel)
+            let was_cached = cached.remove(rel);
+            // Held with a stamp, so it is (or may be) on disk: losing it must reach the cache file.
+            let held = known.is_some() || was_cached.is_some();
+            if let Some(c) = was_cached
                 && stamp.is_some()
                 && c.mtime.map(|m| (c.size, m)) == stamp
             {
@@ -389,7 +393,7 @@ impl IndexJob {
                 }
                 FileSymbols { mtime, size: size.unwrap_or(0), symbols, refs, imports }
             });
-            batch.changed = true;
+            batch.changed |= syms.is_some() || held;
             batch.files.push((rel.clone(), syms));
             if batch.files.len() >= BATCH_FILES || last_send.elapsed() >= BATCH_EVERY {
                 send(std::mem::take(&mut batch));

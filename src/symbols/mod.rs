@@ -275,11 +275,11 @@ pub fn extract_index(
         .unwrap_or_default()
 }
 
-/// The kind shown for a definition: the capture's (`function`, `class`,
-/// ...) unless the node says more (a Rust `struct` is a `class` capture).
 /// Every literal `kind_label` returns; keep in sync.
 pub(crate) const NODE_KINDS: [&str; 8] = ["struct", "enum", "union", "trait", "method", "mod", "macro", "type"];
 
+/// The kind shown for a definition: the capture's (`function`, `class`,
+/// ...) unless the node says more (a Rust `struct` is a `class` capture).
 fn kind_label(capture: &'static str, node: &str) -> &'static str {
     match node {
         "struct_item" | "struct_specifier" => "struct",
