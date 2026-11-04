@@ -346,7 +346,7 @@ impl App {
             if self.layout.strip_hit(x, y).map(|(b, _)| b) == Some(StripButton::Tool(tw)) {
                 self.toggle_tool_window(tw);
             }
-        } else if let Some(drop) = self.layout.strip_drop_at(x, y) {
+        } else if let Some(drop) = self.layout.strip_drop_at(x, y, Some(tw)) {
             self.drop_strip_button(tw, drop);
         }
     }
@@ -354,7 +354,7 @@ impl App {
     /// The drop target of the strip button being dragged, for the marker.
     pub(crate) fn strip_drop(&self) -> Option<StripDrop> {
         let Some(Drag::StripButton { tw, x, y, moved: true }) = self.drag else { return None };
-        self.layout.strip_drop_at(x, y).filter(|d| *d != StripDrop::Onto(tw))
+        self.layout.strip_drop_at(x, y, Some(tw)).filter(|d| *d != StripDrop::Onto(tw))
     }
 
     pub(crate) fn forward_mouse(&mut self, p: PanelId, area: Rect, m: &Mouse) {

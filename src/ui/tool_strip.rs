@@ -64,15 +64,7 @@ pub fn render(app: &mut App, frame: &mut Frame, area: Rect, right: Rect) {
     let gap2 = u16::from(area.height > n_all * (BUTTON_H + 1) + 2 * sep_l.max(sep_r));
     let h = area.height;
     let avail = h.saturating_sub(menu_rows + sep_l);
-    let left_mode = if avail >= 2 * n_main {
-        StripMode { height: BUTTON_H, gap: gap2, cap: usize::MAX, more: false }
-    } else if avail >= n_main {
-        StripMode { height: 1, gap: 0, cap: usize::MAX, more: false }
-    } else if avail >= 1 {
-        StripMode { height: 1, gap: 0, cap: usize::from(avail - 1), more: true }
-    } else {
-        StripMode { height: 1, gap: 0, cap: 0, more: false }
-    };
+    let left_mode = strip_mode(avail, n_main, gap2, h > menu_rows);
     let menu_gap = match left_mode {
         _ if menu_rows == 0 => 0,
         StripMode { more: true, .. } => 0,
@@ -82,20 +74,13 @@ pub fn render(app: &mut App, frame: &mut Frame, area: Rect, right: Rect) {
     let rh = if right.width >= 2 { right.height } else { 0 };
     let roff = 2 * menu_rows;
     let ravail = rh.saturating_sub(roff + sep_r);
-    let right_mode = if ravail >= 2 * n_right {
-        StripMode { height: BUTTON_H, gap: gap2, cap: usize::MAX, more: false }
-    } else if ravail >= n_right {
-        StripMode { height: 1, gap: 0, cap: usize::MAX, more: false }
-    } else if ravail >= 1 {
-        StripMode { height: 1, gap: 0, cap: usize::from(ravail - 1), more: true }
-    } else {
-        StripMode { height: 1, gap: 0, cap: 0, more: false }
-    };
+    let right_mode = strip_mode(ravail, n_right, gap2, rh >= 1);
     let mut top = area.y + menu_rows + menu_gap;
     let mut bottom = area.bottom() - u16::from(left_mode.more);
     let mut rtop = right.y + roff;
     let mut rbottom = right.bottom() - u16::from(right_mode.more);
     // Who gets a button when a strip is short: the first `cap` windows in `order`.
+    // `strip_mode` leaves room for every window it admits, so one that gets no button is always listed by a More cell.
     let mut seen = (0usize, 0usize);
     let allowed: Vec<ToolWindowId> = order
         .iter()
@@ -241,6 +226,21 @@ struct StripMode {
     gap: u16,
     cap: usize,
     more: bool,
+}
+
+/// How a strip with `n` windows lays out when `avail` rows are left for its buttons. `room`: the strip
+/// has a row for a More cell even when it has none for a button (the rows `avail` leaves out for the
+/// separator and the right strip's alignment are not drawn then).
+fn strip_mode(avail: u16, n: u16, gap: u16, room: bool) -> StripMode {
+    if avail >= 2 * n {
+        StripMode { height: BUTTON_H, gap, cap: usize::MAX, more: false }
+    } else if avail >= n {
+        StripMode { height: 1, gap: 0, cap: usize::MAX, more: false }
+    } else if avail >= 1 {
+        StripMode { height: 1, gap: 0, cap: usize::from(avail - 1), more: true }
+    } else {
+        StripMode { height: 1, gap: 0, cap: 0, more: room }
+    }
 }
 
 /// The glyph of a strip's More button; one cell in both icon modes.

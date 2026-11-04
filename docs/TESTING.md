@@ -1444,8 +1444,10 @@ Setup as above, `[lsp] enabled = false`.
 3. `tmux resize-window -t jetl -x 80 -y 12`: the strip's last row is `⋯`. Hover: "More Tool Windows".
    A click opens a menu above it with Local History, Tasks, TODO and Hierarchy; Enter on TODO opens it.
 4. Move Git to the right (right-click its button, Move to > Right Top) at 80x12: the right strip shows it; the
-   left More menu changes: Local History gets a button and the menu lists Tasks, TODO and Hierarchy. No
-   stderr; Ctrl+Q exits with status 0.
+   left More menu changes: Local History gets a button and the menu lists Tasks, TODO and Hierarchy.
+5. Move Structure to Left Bottom and Git to Right Top, then `tmux resize-window -t jetl -x 80 -y 3`: the left strip's second row is
+   `⋯`, and the right strip's last row is `⋯` too. Back to 80x24 with `resize-window`: the buttons return.
+   No stderr; Ctrl+Q exits with status 0.
 
 ### Scenario: tool strip order and drag
 
@@ -1474,9 +1476,13 @@ Setup as above, `[lsp] enabled = false`, at 120x40 and then 80x24.
 4. Drag Git (bottom group) into the empty strip space just under Structure: the `━` marker shows there; on
    release Git joins Left Bottom (Alt+9 shows it in the lower left pane, replacing Structure).
 5. Drag Structure onto Git's button: both stay in Left Bottom, their buttons swap.
-6. View menu: six Move Tool Window rows; with Git focused its own dock row is greyed.
-7. At 80x24 the one-row buttons and separators fit; a strip that runs short shows `⋯`.
-8. Shift+F12 (Restore Default Layout): separators and the right strip disappear. Ctrl+Q and restart after
+6. Find the `───` row between the top and split groups on the left strip. Drag Structure (after step 5 it is
+   the second button of Left Bottom) onto that row: Git's button shows the drop colour while hovering, and
+   after the release Structure is still below the `───`, now above Git. Drag Project onto the row: Worktrees
+   shows the drop colour, and Project stays above the `───`.
+7. View menu: six Move Tool Window rows; with Git focused its own dock row is greyed.
+8. At 80x24 the one-row buttons and separators fit; a strip that runs short shows `⋯`.
+9. Shift+F12 (Restore Default Layout): separators and the right strip disappear. Ctrl+Q and restart after
    step 5: the groups come back. No stderr; Ctrl+Q exits with status 0.
 
 ### Scenario: Toolbar

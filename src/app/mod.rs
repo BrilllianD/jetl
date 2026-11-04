@@ -5105,6 +5105,113 @@ mod strip_tests {
     }
 
     #[tokio::test]
+    async fn dropping_on_the_strip_separator_keeps_the_group() {
+        use ToolWindowId::*;
+        let left_bottom = Dock { side: Side::Left, split: true };
+        let left_top = Dock { side: Side::Left, split: false };
+        for (w, h) in [(120, 40), (80, 24)] {
+            let (mut app, dir) = test_app("strip-sep-drop");
+            let drag_to = |app: &mut super::App, tw: ToolWindowId, y: u16| {
+                let r = button(app, tw);
+                app.handle_mouse(ev(MouseEventKind::Down(MouseButton::Left), r.x + 1, r.y));
+                app.handle_mouse(ev(MouseEventKind::Drag(MouseButton::Left), 1, y));
+            };
+            app.move_tool_window(Structure, left_bottom);
+            let buf = draw_at(&mut app, w, h);
+            let sep = button(&app, Worktrees).bottom();
+            assert!(row_text(&buf, sep, 3).contains('─'), "{w}x{h}: row {sep} is not the separator");
+            drag_to(&mut app, Structure, sep);
+            assert_eq!(app.strip_drop(), None, "{w}x{h}");
+            app.handle_mouse(ev(MouseEventKind::Up(MouseButton::Left), 1, sep));
+            assert_eq!(app.layout.dock_of(Structure), left_bottom, "{w}x{h}");
+
+            app.move_tool_window(Git, left_bottom);
+            draw_at(&mut app, w, h);
+            let sep = button(&app, Worktrees).bottom();
+            drag_to(&mut app, Git, sep);
+            assert_eq!(app.strip_drop(), Some(StripDrop::Onto(Structure)), "{w}x{h}");
+            app.handle_mouse(ev(MouseEventKind::Up(MouseButton::Left), 1, sep));
+            assert_eq!(app.layout.dock_of(Git), left_bottom, "{w}x{h}");
+            draw_at(&mut app, w, h);
+
+            let sep = button(&app, Worktrees).bottom();
+            drag_to(&mut app, Project, sep);
+            assert_eq!(app.strip_drop(), Some(StripDrop::Onto(Worktrees)), "{w}x{h}");
+            app.handle_mouse(ev(MouseEventKind::Up(MouseButton::Left), 1, sep));
+            assert_eq!(app.layout.dock_of(Project), left_top, "{w}x{h}");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_window_without_a_button_has_a_more_cell() {
+        use ToolWindowId::*;
+        let rt = Dock { side: Side::Right, split: false };
+        let rb = Dock { side: Side::Right, split: true };
+        let shapes: [(&str, &[(ToolWindowId, Dock)]); 4] = [
+            ("default", &[]),
+            ("structure left bottom", &[(Structure, Dock { side: Side::Left, split: true })]),
+            ("git right top, problems right bottom", &[(Git, rt), (Problems, rb)]),
+            ("problems bottom right", &[(Problems, Dock { side: Side::Bottom, split: true })]),
+        ];
+        for (name, moves) in shapes {
+            let (mut app, dir) = test_app("strip-more-cell");
+            for (tw, d) in moves {
+                app.move_tool_window(*tw, *d);
+            }
+            for h in 2..=45u16 {
+                draw_at(&mut app, 120, h);
+                for (right, strip) in [(false, app.layout.rects.strip), (true, app.layout.rects.strip_right)] {
+                    if strip.is_empty() || (!right && strip.height == 1) {
+                        continue;
+                    }
+                    if app.layout.strip_overflow(right).is_empty() {
+                        continue;
+                    }
+                    let more = Rect::new(strip.x, strip.bottom() - 1, strip.width, 1);
+                    assert!(app.layout.strip_hits.contains(&(StripButton::More, more)), "{name} h={h} right={right}: no More cell");
+                    let docks = crate::ui::layout::LayoutState::strip_docks(right);
+                    let has = |d: Dock| ToolWindowId::ALL.iter().any(|t| app.layout.dock_of(*t) == d);
+                    let sep = u16::from(has(docks[0]) && has(docks[1]));
+                    let off = if right { 2 } else { 1 };
+                    let tools = app
+                        .layout
+                        .strip_hits
+                        .iter()
+                        .filter(|(b, r)| matches!(b, StripButton::Tool(_)) && strip.contains(r.as_position()))
+                        .count() as u16;
+                    assert_eq!(tools, strip.height.saturating_sub(off + sep + 1), "{name} h={h} right={right}: wasted slot");
+                }
+            }
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        // The two named cases.
+        let (mut app, dir) = test_app("strip-more-left");
+        app.move_tool_window(Structure, Dock { side: Side::Left, split: true });
+        draw_at(&mut app, 80, 3);
+        let strip = app.layout.rects.strip;
+        let more = Rect::new(strip.x, 1, strip.width, 1);
+        assert!(app.layout.strip_hits.contains(&(StripButton::More, more)), "{:?}", app.layout.strip_hits);
+        assert_eq!(app.layout.strip_overflow(false).len(), ToolWindowId::ALL.iter().filter(|t| !app.layout.on_right_strip(**t)).count());
+        app.handle_mouse(ev(MouseEventKind::Down(MouseButton::Left), more.x + 1, more.y));
+        assert!(app.menu.is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let (mut app, dir) = test_app("strip-more-right");
+        app.move_tool_window(Git, rt);
+        draw_at(&mut app, 80, 3);
+        let strip = app.layout.rects.strip_right;
+        assert_eq!(strip.height, 2);
+        let more = Rect::new(strip.x, 1, strip.width, 1);
+        assert!(app.layout.strip_hits.contains(&(StripButton::More, more)), "{:?}", app.layout.strip_hits);
+        assert_eq!(app.layout.strip_overflow(true), [Git]);
+        app.handle_mouse(ev(MouseEventKind::Down(MouseButton::Left), more.x + 1, more.y));
+        assert!(app.menu.is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
     async fn right_strip_has_one_row_buttons_and_a_more_button() {
         use ToolWindowId::*;
         let (mut app, dir) = test_app("strip-right-more");

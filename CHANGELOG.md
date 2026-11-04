@@ -43,6 +43,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Tool strip: dropping a button on the separator between a side's two groups no longer moves it out of its group; it stays in the dragged window's group, and the drop colour shows the target first.
+- Tool strip: on a terminal only a few rows high a strip now shows the More button (⋯) instead of no way to reach its tool windows.
 - Symbol index cache: a binary or oversized source file no longer rewrites the cache on every start, and updating a tree-sitter grammar now discards the old cache instead of keeping symbols extracted by the previous version.
 - Concurrent saves of the same file could corrupt it: every atomic write now uses its own temp file.
 - Git Log: a context menu opened from the keyboard (Shift+F10) on a commit, a file or a branch now opens directly under the selected row, or directly above it when it does not fit below, instead of one row lower or on top of the row.

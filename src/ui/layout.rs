@@ -902,8 +902,10 @@ impl LayoutState {
     /// group's buttons onto the nearest foot button. The free gap between
     /// them is halved: its upper half is the end of the split group (of the
     /// top group when those have no button), its lower half the end of the
-    /// foot group.
-    pub fn strip_drop_at(&self, x: u16, y: u16) -> Option<StripDrop> {
+    /// foot group. A row equally far from two buttons, such as the separator
+    /// between the top and split groups, goes to the one in the dragged
+    /// window's dock, else to the upper one.
+    pub fn strip_drop_at(&self, x: u16, y: u16, dragged: Option<ToolWindowId>) -> Option<StripDrop> {
         let p = ratatui::layout::Position::new(x, y);
         match self.strip_hit(x, y) {
             Some((StripButton::Tool(b), _)) => return Some(StripDrop::Onto(b)),
@@ -932,7 +934,10 @@ impl LayoutState {
         let u_end = self.strip_upper_end(in_right).unwrap_or(strip.y);
         let f_top = lower.iter().map(|(_, r)| r.y).min().unwrap_or_else(|| strip.bottom());
         let dist = |r: &Rect| if y < r.y { r.y - y } else { y.saturating_sub(r.bottom() - 1) };
-        let nearest = |list: &[(ToolWindowId, Rect)]| list.iter().min_by_key(|(_, r)| (dist(r), r.y)).map(|(t, _)| StripDrop::Onto(*t));
+        let own = dragged.map(|t| self.dock_of(t));
+        let nearest = |list: &[(ToolWindowId, Rect)]| {
+            list.iter().min_by_key(|(t, r)| (dist(r), Some(self.dock_of(*t)) != own, r.y)).map(|(t, _)| StripDrop::Onto(*t))
+        };
         if y < u_end {
             return nearest(&upper);
         }
@@ -1397,34 +1402,36 @@ mod tests {
             (StripButton::Tool(Project), Rect::new(0, 2, 3, 2)),
             (StripButton::Tool(Find), Rect::new(0, 37, 3, 2)),
         ];
-        assert_eq!(l.strip_drop_at(1, 2), Some(StripDrop::Onto(Project)));
-        assert_eq!(l.strip_drop_at(1, 0), None);
-        assert_eq!(l.strip_drop_at(1, 10), Some(StripDrop::End(dock(Side::Left, true))));
-        assert_eq!(l.strip_drop_at(1, 30), Some(StripDrop::End(dock(Side::Bottom, false))));
-        assert_eq!(l.strip_drop_at(1, 38), Some(StripDrop::Onto(Find)));
-        assert_eq!(l.strip_drop_at(60, 10), None);
+        assert_eq!(l.strip_drop_at(1, 2, None), Some(StripDrop::Onto(Project)));
+        assert_eq!(l.strip_drop_at(1, 0, None), None);
+        assert_eq!(l.strip_drop_at(1, 10, None), Some(StripDrop::End(dock(Side::Left, true))));
+        assert_eq!(l.strip_drop_at(1, 30, None), Some(StripDrop::End(dock(Side::Bottom, false))));
+        assert_eq!(l.strip_drop_at(1, 38, None), Some(StripDrop::Onto(Find)));
+        assert_eq!(l.strip_drop_at(60, 10, None), None);
         l.strip_hits = vec![(StripButton::Menu, Rect::new(0, 0, 3, 1)), (StripButton::Tool(Find), Rect::new(0, 37, 3, 2))];
-        assert_eq!(l.strip_drop_at(1, 5), Some(StripDrop::End(dock(Side::Left, false))));
-        assert_eq!(l.strip_drop_at(1, 30), Some(StripDrop::End(dock(Side::Bottom, false))));
+        assert_eq!(l.strip_drop_at(1, 5, None), Some(StripDrop::End(dock(Side::Left, false))));
+        assert_eq!(l.strip_drop_at(1, 30, None), Some(StripDrop::End(dock(Side::Bottom, false))));
         // No Bottom button: the lower half of the gap is the Bottom end.
         l.strip_hits = vec![(StripButton::Menu, Rect::new(0, 0, 3, 1)), (StripButton::Tool(Project), Rect::new(0, 2, 3, 2))];
-        assert_eq!(l.strip_drop_at(1, 30), Some(StripDrop::End(dock(Side::Bottom, false))));
+        assert_eq!(l.strip_drop_at(1, 30, None), Some(StripDrop::End(dock(Side::Bottom, false))));
         // The right strip's free row is the Right end.
         l.move_to(Hierarchy, Side::Right);
         l.compute(Rect::new(0, 0, 120, 40));
         let sr = l.rects.strip_right;
         l.strip_hits = vec![(StripButton::Menu, Rect::new(0, 0, 3, 1))];
-        assert_eq!(l.strip_drop_at(sr.x + 1, sr.y + 5), Some(StripDrop::End(dock(Side::Right, false))));
+        assert_eq!(l.strip_drop_at(sr.x + 1, sr.y + 5, None), Some(StripDrop::End(dock(Side::Right, false))));
         // The right strip is drawn only while a window is on the right, so a
         // hidden one never yields the Right end, whatever the point.
         let mut l = LayoutState::new(30, 10);
         l.compute(Rect::new(0, 0, 120, 40));
         l.strip_hits = vec![(StripButton::Menu, Rect::new(0, 0, 3, 1))];
         assert!(!l.has_right_strip());
-        assert!((0..120).all(|x| (0..40).all(|y| !matches!(l.strip_drop_at(x, y), Some(StripDrop::End(d)) if d.side == Side::Right))));
+        assert!(
+            (0..120).all(|x| (0..40).all(|y| !matches!(l.strip_drop_at(x, y, None), Some(StripDrop::End(d)) if d.side == Side::Right)))
+        );
         // A More cell is not a drop target.
         l.strip_hits = vec![(StripButton::More, Rect::new(0, 38, 3, 1))];
-        assert_eq!(l.strip_drop_at(1, 38), None);
+        assert_eq!(l.strip_drop_at(1, 38, None), None);
     }
 
     fn dock(side: Side, split: bool) -> Dock {
@@ -1459,10 +1466,10 @@ mod tests {
             (StripButton::Tool(Structure), Rect::new(0, 6, 3, 2)),
             (StripButton::Tool(Find), Rect::new(0, 37, 3, 2)),
         ];
-        assert_eq!(l.strip_drop_at(1, 5), Some(StripDrop::Onto(Structure)));
-        assert_eq!(l.strip_drop_at(1, 9), Some(StripDrop::End(dock(Side::Left, true))));
-        assert_eq!(l.strip_drop_at(1, 30), Some(StripDrop::End(dock(Side::Bottom, false))));
-        assert_eq!(l.strip_drop_at(1, 38), Some(StripDrop::Onto(Find)));
+        assert_eq!(l.strip_drop_at(1, 5, None), Some(StripDrop::Onto(Structure)));
+        assert_eq!(l.strip_drop_at(1, 9, None), Some(StripDrop::End(dock(Side::Left, true))));
+        assert_eq!(l.strip_drop_at(1, 30, None), Some(StripDrop::End(dock(Side::Bottom, false))));
+        assert_eq!(l.strip_drop_at(1, 38, None), Some(StripDrop::Onto(Find)));
         l.move_to_dock(Git, dock(Side::Right, false));
         l.move_to_dock(Problems, dock(Side::Bottom, true));
         l.compute(Rect::new(0, 0, 120, 40));
@@ -1471,8 +1478,38 @@ mod tests {
             (StripButton::Tool(Git), Rect::new(sr.x, sr.y + 2, 3, 2)),
             (StripButton::Tool(Problems), Rect::new(sr.x, sr.bottom() - 2, 3, 2)),
         ];
-        assert_eq!(l.strip_drop_at(sr.x + 1, sr.y + 6), Some(StripDrop::End(dock(Side::Right, true))));
-        assert_eq!(l.strip_drop_at(sr.x + 1, sr.bottom() - 6), Some(StripDrop::End(dock(Side::Bottom, true))));
+        assert_eq!(l.strip_drop_at(sr.x + 1, sr.y + 6, None), Some(StripDrop::End(dock(Side::Right, true))));
+        assert_eq!(l.strip_drop_at(sr.x + 1, sr.bottom() - 6, None), Some(StripDrop::End(dock(Side::Bottom, true))));
+    }
+
+    #[test]
+    fn strip_drop_at_breaks_a_tie_toward_the_dragged_dock() {
+        use ToolWindowId::*;
+        let mut l = LayoutState::new(30, 10);
+        l.move_to_dock(Structure, dock(Side::Left, true));
+        l.compute(Rect::new(0, 0, 120, 40));
+        l.strip_hits = vec![
+            (StripButton::Tool(Project), Rect::new(0, 2, 3, 2)),
+            (StripButton::Tool(Structure), Rect::new(0, 5, 3, 2)),
+            (StripButton::Tool(Find), Rect::new(0, 37, 3, 2)),
+        ];
+        // Row 4 is the separator, one row from each neighbour.
+        assert_eq!(l.strip_drop_at(1, 4, None), Some(StripDrop::Onto(Project)));
+        assert_eq!(l.strip_drop_at(1, 4, Some(Structure)), Some(StripDrop::Onto(Structure)));
+        assert_eq!(l.strip_drop_at(1, 4, Some(Project)), Some(StripDrop::Onto(Project)));
+        assert_eq!(l.strip_drop_at(1, 4, Some(Find)), Some(StripDrop::Onto(Project)));
+        // Not a tie: the nearer button wins whatever is dragged.
+        l.strip_hits[1].1 = Rect::new(0, 8, 3, 2);
+        assert_eq!(l.strip_drop_at(1, 5, Some(Structure)), Some(StripDrop::Onto(Project)));
+        // The right strip.
+        l.move_to_dock(Git, dock(Side::Right, false));
+        l.move_to_dock(Problems, dock(Side::Right, true));
+        l.compute(Rect::new(0, 0, 120, 40));
+        let sr = l.rects.strip_right;
+        l.strip_hits =
+            vec![(StripButton::Tool(Git), Rect::new(sr.x, sr.y + 2, 3, 2)), (StripButton::Tool(Problems), Rect::new(sr.x, sr.y + 5, 3, 2))];
+        assert_eq!(l.strip_drop_at(sr.x + 1, sr.y + 4, Some(Problems)), Some(StripDrop::Onto(Problems)));
+        assert_eq!(l.strip_drop_at(sr.x + 1, sr.y + 4, Some(Git)), Some(StripDrop::Onto(Git)));
     }
 
     #[test]
