@@ -1584,8 +1584,8 @@ Setup as above, `[lsp] enabled = false`, at 80x24 and 120x40.
 6. Undock Project (right-click its button > View Mode > Undock), Alt+1, type `a`: the filter narrows the tree. Esc: the filter
    clears, Project stays shown and focused. Esc again: Project slides away, the editor has focus.
 7. View menu: "Undock or Dock Tool Window" is greyed with the editor focused, enabled with a tool window focused.
-8. Ctrl+Q, restart: Structure and Find are still Undocked (View Mode submenu shows "Undock" greyed). Shift+F12
-   (Restore Default Layout): both are Pinned again. Stderr empty, Ctrl+Q exits 0.
+8. Ctrl+Q, restart: Structure, Find and Project are still Undocked (View Mode submenu shows "Undock" greyed). Shift+F12
+   (Restore Default Layout): all three are Pinned again. Stderr empty, Ctrl+Q exits 0.
 
 ### Scenario: Structure for C#, Kotlin, Ruby, PHP and Swift
 
