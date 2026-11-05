@@ -327,6 +327,18 @@ impl ScipIndex {
             .min_by_key(|o| (o.span.end - o.span.start, unit == o.span.end))
     }
 
+    /// Whether some occurrence of `id` has the exact span of an occurrence of a different symbol (a shorthand
+    /// `S { x }` is both the local and the field). Two occurrences of one symbol on one span do not count.
+    pub fn shares_span(&self, id: SymId) -> bool {
+        let Some(list) = self.by_symbol.get(id as usize) else { return false };
+        list.iter().any(|&(d, i)| {
+            let occs = &self.docs[self.doc_paths[d as usize].as_str()].occurrences;
+            let span = occs[i as usize].span;
+            let from = occs.partition_point(|o| o.span.line < span.line);
+            occs[from..].iter().take_while(|o| o.span.line == span.line).any(|o| o.span == span && o.symbol != id)
+        })
+    }
+
     /// Every occurrence of a symbol, sorted by path, then position.
     pub fn occurrences_of(&self, id: SymId) -> Vec<(&str, &Occ)> {
         let Some(list) = self.by_symbol.get(id as usize) else { return Vec::new() };
@@ -547,6 +559,29 @@ mod tests {
         let ids: Vec<SymId> = ix.doc("a.rs").unwrap().occurrences.iter().map(|o| o.symbol).collect();
         assert_eq!(ids.iter().map(|&i| ix.name(i)).collect::<Vec<_>>(), [Some("helper".to_string()), Some("new".to_string()), None, None]);
         assert_eq!(ids.iter().map(|&i| ix.is_local(i)).collect::<Vec<_>>(), [false, false, true, false]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_symbol_sharing_a_span_with_another_is_reported() {
+        let root = temp("shares");
+        let file = root.join("index.scip");
+        let (field, local, other) = ("t S#x.", "local 0", "t f().");
+        let occs: &[(&[i32], &str, bool)] = &[
+            (&[0, 4, 5], field, true),
+            (&[1, 8, 9], local, false),
+            (&[1, 8, 9], field, false),
+            (&[2, 0, 1], other, true),
+            (&[2, 0, 1], other, false),
+            (&[3, 0, 1], other, false),
+        ];
+        write_test_index(&file, "", &[("a.rs", Encoding::Utf8, occs)]);
+        let ix = ScipIndex::load(&file, &root).unwrap();
+        let sym = |line: u32, n: usize| ix.doc("a.rs").unwrap().occurrences.iter().filter(|o| o.span.line == line).nth(n).unwrap().symbol;
+        let (field, local, other) = (sym(0, 0), sym(1, 0), sym(2, 0));
+        assert!(ix.shares_span(field), "the field shares the shorthand span");
+        assert!(ix.shares_span(local), "the local shares it too");
+        assert!(!ix.shares_span(other), "one symbol twice on one span is not a share");
         let _ = std::fs::remove_dir_all(&root);
     }
 

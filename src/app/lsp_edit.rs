@@ -162,7 +162,7 @@ pub(super) struct EditReqs {
     /// The rename dialog's "Search in comments and strings", as last answered. Kept for the session, not persisted.
     pub(super) rename_in_text: bool,
     /// The caret of the SCIP rename being built, for its fallback.
-    scip_rename: Option<DocTag>,
+    pub(super) scip_rename: Option<DocTag>,
     /// The context actions in the dialog, with the seq of their request.
     actions: Option<(u64, Vec<CodeActionOrCommand>)>,
     /// The edit waiting for the user's confirmation.
@@ -284,13 +284,18 @@ impl App {
     }
 
     /// The SCIP symbol a rename of `word` at the caret of `id` may use: no server serves the buffer, its file is
-    /// fresh, and the occurrence under the caret reads exactly `word`.
+    /// fresh, the occurrence under the caret reads exactly `word`, and no occurrence of the symbol shares its exact
+    /// span with another symbol (a shorthand field: the index cannot tell which of the two a rename means).
     fn scip_rename_symbol(&mut self, id: BufferId, word: &str) -> Option<(String, SymId, Span)> {
         if self.lsp.docs.contains_key(&id) {
             return None;
         }
         let (rel, sym, _, span) = self.scip_caret(id)?;
-        let enc = self.scip.index.as_ref()?.doc(&rel)?.encoding;
+        let ix = self.scip.index.as_ref()?;
+        if ix.shares_span(sym) {
+            return None;
+        }
+        let enc = ix.doc(&rel)?.encoding;
         let b = self.editor.buffers.iter().find(|b| b.id == id)?;
         matches!(rename_preview::check_span(&b.rope, span, enc, word), SpanCheck::Exact(..)).then_some((rel, sym, span))
     }
@@ -469,8 +474,8 @@ impl App {
         };
         let caret = self.lsp.edit.scip_rename.take();
         if preview.scip.fallback {
+            let Some(t) = caret else { return self.lsp_hint("The file changed; rename again") };
             self.notify(Level::Info, format!("The SCIP index has no usable definition of {}; renaming as text", preview.old));
-            let Some(t) = caret else { return };
             let name = preview.new;
             if let Some((old, path)) = self.text_rename_target(&t, &name) {
                 self.text_rename_open(old, name, path);

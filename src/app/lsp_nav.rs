@@ -1427,6 +1427,11 @@ mod tests {
     /// A project with `src/main.rs` (open, caret file) and `src/util.rs`, a
     /// loaded SCIP index in between them in age, and the tags index built.
     async fn scip_app(name: &str) -> (App, PathBuf, PathBuf) {
+        scip_app_with(name, &[]).await
+    }
+
+    /// `scip_app` with more occurrences in `src/main.rs`.
+    async fn scip_app_with(name: &str, more: &[(&[i32], &str, bool)]) -> (App, PathBuf, PathBuf) {
         let (mut app, dir) = test_app(name);
         let (root, g) = (app.workspace.root.clone(), app.workspace.generation);
         std::fs::create_dir_all(root.join("src")).unwrap();
@@ -1435,7 +1440,7 @@ mod tests {
         app.handle_msg(AppMsg::FileIndex { generation: g, seq: 1, files: vec!["src/main.rs".into(), "src/util.rs".into()] });
         run_tags_job(&mut app);
         let helper: &[(&[i32], &str, bool)] = &[(&[0, 18, 24], "t util/helper().", true)];
-        let main: &[(&[i32], &str, bool)] = &[
+        let mut main: Vec<(&[i32], &str, bool)> = vec![
             (&[1, 3, 7], "t main().", true),
             (&[2, 8, 9], "local 0", true),
             (&[2, 32, 38], "t util/helper().", false),
@@ -1443,6 +1448,8 @@ mod tests {
             (&[3, 10, 16], "t util/helper().", false),
             (&[0, 0, 5, 0], "t crate/", true),
         ];
+        main.extend_from_slice(more);
+        let main = &main[..];
         let index = root.join("index.scip");
         crate::symbols::scip::write_test_index(
             &index,
@@ -1948,11 +1955,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn symbols_sharing_a_span_are_renamed_as_text() {
+        // `S { s }` at the use of `s` on line 2: the local and the field `S#s.` carry the same span.
+        let more: &[(&[i32], &str, bool)] = &[(&[2, 39, 40], "t S#s.", false), (&[1, 0, 2], "t S#s.", true)];
+        let (mut app, dir, _) = scip_app_with("scip-rename-shared", more).await;
+        // The field, from its definition away from the shared span.
+        goto(&mut app, 1, 1);
+        act(&mut app, LspAction::Rename);
+        assert_eq!(app.dialog.take().unwrap().message, "Rename 'fn' as text to:");
+        // The local, from its definition away from the shared span.
+        goto(&mut app, 2, 8);
+        act(&mut app, LspAction::Rename);
+        assert_eq!(app.dialog.take().unwrap().message, "Rename 's' as text to:");
+        // A symbol of the same file with no shared span.
+        goto(&mut app, 3, 12);
+        act(&mut app, LspAction::Rename);
+        assert_eq!(app.dialog.take().unwrap().message, "Rename 'helper' to:");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_fallback_without_the_caret_tag_only_says_to_rename_again() {
+        let (mut app, dir, root) = scip_app("scip-rename-reset").await;
+        set_mtime(&root.join("src/util.rs"), std::time::SystemTime::now());
+        goto(&mut app, 3, 12);
+        act(&mut app, LspAction::Rename);
+        let d = app.dialog.take().unwrap();
+        app.finish_dialog(d.id, DialogResult::Text("assist".into()));
+        // A restart of the server (`LspService::reset`) clears the tag while the build runs.
+        app.lsp.edit.scip_rename = None;
+        app.toasts = Default::default();
+        handle_next(&mut app, is_preview).await;
+        let t = toasts(&app);
+        assert!(t.contains(&"The file changed; rename again".to_string()), "{t:?}");
+        assert!(!t.iter().any(|x| x.contains("renaming as text")), "{t:?}");
+        assert!(app.find.query.text.is_empty() && app.find.rename_preview().is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
     async fn a_dirty_caret_buffer_is_a_text_rename() {
         let (mut app, dir, _) = scip_app("scip-rename-dirty").await;
-        goto(&mut app, 0, 0);
+        // Past the caret line, so the occurrence under the caret keeps its indexed position.
+        goto(&mut app, 4, 0);
         app.perform(Action::Editor(EditorAction::InsertText("// x\n".into())));
-        goto(&mut app, 4, 12);
+        goto(&mut app, 3, 12);
         act(&mut app, LspAction::Rename);
         assert_eq!(app.dialog.as_ref().unwrap().message, "Rename 'helper' as text to:");
         let _ = std::fs::remove_dir_all(&dir);

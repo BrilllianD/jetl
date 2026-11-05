@@ -544,6 +544,9 @@ same preview (always reviewed, whatever `rename_preview` says). A file that the
 index does not cover, or that is edited or newer than the index, shows text
 matches of the name instead, excluded and marked `text`; a local variable is
 listed only in its document.
+A symbol with an occurrence whose exact span another symbol also has (a shorthand
+`S { x }` is both the local and the field) is not renamed from the index: the
+dialog says `as text` and the rename lists text matches.
 
 The status bar shows the server of the active file: its name, a spinner
 with what it reports while it starts or indexes, `LSP: <name> missing` when

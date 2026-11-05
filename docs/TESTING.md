@@ -1016,41 +1016,62 @@ sleep 1; touch $T/index.scip   # the index is newer than every source
 ```
 
 After `touch index.scip` jetl loads the new index in the background; the first
-Shift+F6 right after it may still say `as text`: Esc and ask again. Start jetl
-on `src/main.rs`; Down x4, Home, Right x10 puts the caret inside `helper` of line 5.
+Shift+F6 right after it may still say `as text`. Every session below therefore
+starts with the warm-up `S-F6`, wait 0.6 s, `Escape`, wait 1.5 s. After every
+step that names a disk state, `cat` the files (`src/main.rs`, `src/util.rs`,
+`notes.txt`) into a numbered file. Keep each session's exit code and stderr in
+files of their own. Start jetl on `src/main.rs`, then the warm-up, then `Down`
+x4, `Home`, `Right` x10: the caret is inside `helper` of line 5.
 
 1. `S-F6`: dialog `Rename 'helper' to:`, no check row, button `Preview`.
-2. `C-a`, type `assist`, Enter: Find opens focused. Rows: `notes.txt` 1
+2. `C-a`, `-l assist`, `Enter`: Find opens focused. Rows: `notes.txt` 1
    (dim `text` marker); `src/main.rs` lines 4 and 5 (the comment and `let
    helper` are not listed); `src/util.rs` 1. Info toast `Rename helper to
    assist: review the results, then Replace All (Alt+A); 1 text match starts
-   excluded`. `src/util.rs` and `notes.txt` on disk still say `helper`.
+   excluded`. On disk all three files still say `helper`.
 3. `M-a`: dialog `Rename helper to assist: 3 occurrences in 2 files; 1
-   excluded.` and `Text matches (guesses): 0 included, 1 left out.`. Enter:
-   `main.rs` has both calls renamed (the emoji line intact, the comment and `let
-   helper` unchanged), `util.rs` says `assist` on disk, `notes.txt` `helper`.
-4. Esc (focus back to the editor; Ctrl+Z does nothing in Find), Ctrl+Z: `main.rs`
-   is restored by one undo step.
-5. Restore `util.rs` from the shell, sleep 1, run `rust-analyzer scip` again,
-   sleep 1, `touch index.scip`. Then `touch src/util.rs` (its definition is
-   changed). `S-F6` on line 5, `assist`, Enter: Info toast `The SCIP index has no
+   excluded.` and `Text matches (guesses): 0 included, 1 left out.`. `Enter`:
+   the `main.rs` buffer has both calls renamed (the emoji line intact, the
+   comment and `let helper` unchanged); on disk `main.rs` still says `helper`,
+   `util.rs` says `assist`, `notes.txt` says `helper`.
+4. `Escape` (focus back to the editor; Ctrl+Z does nothing in Find), `C-z`:
+   `main.rs` is restored by one undo step.
+5. In the shell: restore `util.rs`, sleep 1, run `rust-analyzer scip . --output
+   index.scip`, sleep 1, `touch index.scip`, sleep 1. Keys: `S-F6`, `Escape`,
+   wait 1.5 s. In the shell: `touch src/util.rs` (its definition is changed).
+   Keys: `S-F6`, `C-a`, `-l assist`, `Enter`: Info toast `The SCIP index has no
    usable definition of helper; renaming as text` and an ordinary Find on
-   `helper`. Nothing is written. Esc, `touch index.scip`.
-6. Start jetl on `src/util.rs`, caret on `helper`, `touch src/main.rs`. `S-F6`,
-   `assist`, Enter: `util.rs` is one exact row, the five `main.rs` matches and
+   `helper`. Nothing is written (disk as in step 2). `Escape`, then in the shell
+   `touch index.scip`, then `C-q`.
+6. Start jetl on `src/util.rs`; warm-up; in the shell `touch src/main.rs`, sleep
+   1; keys `Home`, `Right` x16 (the caret is on `helper`). `S-F6`, `C-a`, `-l
+   assist`, `Enter`: `util.rs` is one exact row, the five `main.rs` matches and
    `notes.txt` are text rows (dim), Warn toast `SCIP index: 1 file changed or
    unreadable, text matches only`. `M-a`: the dialog has `SCIP index not used for
-   1 file (changed or unreadable): text matches only.` Esc, `touch index.scip`.
-7. `S-F6`, `assist`, Enter, then append a line to `src/util.rs` from another
-   shell; `M-a`, Enter: Error toast `src/util.rs changed since the preview;
-   rename again`, the rows stay, nothing is written. Restore the file, sleep 1,
-   `touch index.scip`.
-8. Back on `src/main.rs`, type a letter inside `helper` of line 5, `S-F6`: the
-   dialog reads `Rename '...' as text to:`. Esc, undo.
-9. Caret on the `helper` of `let helper = 1;` (line 6). `S-F6`, `value`, Enter:
-   rows on lines 6 and 7 of `main.rs` only (rust-analyzer gives the use in
-   `println!` an occurrence), no text rows.
-10. Ctrl+Q exits 0; stderr is empty.
+   1 file (changed or unreadable): text matches only.` `Escape`, then in the
+   shell `touch index.scip`, sleep 1.
+7. In the same session: `S-F6`, wait 0.6 s, `Escape`, wait 1.5 s, `Escape`, then
+   `S-F6`, `C-a`, `-l assist`, `Enter`. In the shell append a line to
+   `src/util.rs`. Keys: `M-a`, wait 0.5 s, `Enter`: Error toast `src/util.rs
+   changed since the preview; rename again`, the rows stay, nothing is written
+   except the appended line. In the shell restore the file, sleep 1, `touch
+   index.scip`, then keys `C-q`.
+8. Start jetl on `src/main.rs`; warm-up; `Down` x4, `Home`, `Right` x10; type
+   `-l x`; `S-F6`: the dialog reads `Rename 'helpxer' as text to:` (a letter was
+   typed inside the word, so the buffer is dirty). `Escape`, `C-z`.
+9. `Down`, `Home`, `Right` x6 (the `helper` of `let helper = 1;`, line 6).
+   `S-F6`, `C-a`, `-l value`, `Enter`: rows on lines 6 and 7 of `main.rs` only
+   (rust-analyzer gives the use in `println!` an occurrence), no text rows.
+   `Escape`, `C-q`.
+10. Each session exited 0 and its stderr is empty.
+11. Shorthand fields (a symbol sharing a span with another is renamed as text).
+    In a second project, `src/lib.rs` is `struct S { x: i32 }`, `fn f(x: i32) ->
+    S {`, `    S { x }`, `}`, `fn main() { f(1); }`; run the real `rust-analyzer
+    scip`, `touch index.scip`, start jetl on `src/lib.rs`, warm-up. `Down`,
+    `Home`, `Right` x5 (the parameter `x`), `S-F6`: dialog `Rename 'x' as text
+    to:`. `Escape`. `Up`, `Home`, `Right` x11 (the field `x`), `S-F6`: dialog
+    `Rename 'x' as text to:`. `Escape`. `Home`, `Right` x7 (`S`), `S-F6`: dialog
+    `Rename 'S' to:` (no shorthand use of `S`). `Escape`, `C-q`.
 
 ### Scenario: local history
 

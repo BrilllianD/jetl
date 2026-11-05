@@ -390,6 +390,13 @@ fn textual_stage(
             candidates.push((o.path.clone(), false));
         }
     }
+    // A document the caller read and does not trust (changed, hidden, ignored, big) may be out of `Search`'s reach.
+    // `false`: it is not known to hold the name, so a refusal does not count it; a covered one is skipped below.
+    for (p, t) in texts.iter() {
+        if t.is_some() && !found.contains(p) && !candidates.iter().any(|c| c.0 == *p) {
+            candidates.push((p.clone(), false));
+        }
+    }
     candidates.sort();
 
     // Rule 3: files a textual edit could shift.
@@ -552,7 +559,10 @@ fn build_with(req: RenameRequest, mut texts: HashMap<PathBuf, Option<Text>>) -> 
 pub fn build_scip(job: ScipRename) -> Result<(RenamePreview, Vec<Hit>), String> {
     let ScipRename { mut req, index_mtime, docs, indexed, caret } = job;
     let real_root = std::fs::canonicalize(&req.root).map_err(|e| format!("{}: {e}", req.root.display()))?;
-    let is_dirty = |open: &[OpenText], p: &Path| open.iter().any(|o| o.dirty && o.path == p);
+    // A dirty buffer open under an alias of the document dirties the document: compare real paths.
+    let real_of = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let dirty_real: HashSet<PathBuf> = req.open.iter().filter(|o| o.dirty).map(|o| real_of(&o.path)).collect();
+    let is_dirty = |p: &Path| !dirty_real.is_empty() && dirty_real.contains(&real_of(p));
     let mut texts: HashMap<PathBuf, Option<Text>> = HashMap::new();
     let mut outcome = ScipOutcome::default();
     let (mut steps, mut untrusted, mut outside) = (Vec::new(), HashSet::new(), HashSet::new());
@@ -585,7 +595,7 @@ pub fn build_scip(job: ScipRename) -> Result<(RenamePreview, Vec<Hit>), String> 
         };
         let mut spans = Vec::new();
         let mut dropped = 0;
-        let mut fresh = scip::file_fresh(&path, is_dirty(&req.open, &path), index_mtime);
+        let mut fresh = scip::file_fresh(&path, is_dirty(&path), index_mtime);
         if fresh {
             for (span, definition) in &doc.occs {
                 match check_span(&text.rope, *span, doc.encoding, &req.old) {
@@ -640,7 +650,7 @@ pub fn build_scip(job: ScipRename) -> Result<(RenamePreview, Vec<Hit>), String> 
             .into_iter()
             .filter(|rel| {
                 let path = req.root.join(rel);
-                !untrusted.contains(rel) && scip::file_fresh(&path, is_dirty(&req.open, &path), index_mtime)
+                !untrusted.contains(rel) && scip::file_fresh(&path, is_dirty(&path), index_mtime)
             })
             .collect();
         covered.extend(outside);
@@ -1648,7 +1658,8 @@ mod tests {
         let (def, n) = (dir.join("def.txt"), dir.join("n.txt"));
         std::fs::write(&def, "old\n").unwrap();
         std::fs::write(&n, "old\nb\n").unwrap();
-        let open = OpenText { path: n.clone(), id: 9, rope: Rope::from_str("a\nb\nold\n"), version: 5, dirty: true };
+        // The dirty rope still reads `old` at the indexed span: only the dirty check keeps the row from being exact.
+        let open = OpenText { path: n.clone(), id: 9, rope: Rope::from_str("old\nold\n"), version: 5, dirty: true };
         let job = scip_job(
             &dir,
             vec![("def.txt", vec![(sp(0, 0, 3), true)]), ("n.txt", vec![(sp(0, 0, 3), false)])],
@@ -1657,11 +1668,26 @@ mod tests {
             ("def.txt", sp(0, 0, 3)),
         );
         let (preview, hits) = build_scip(job).unwrap();
-        assert_eq!(textual_at(&hits), [("n.txt".to_string(), 2, 0)]);
+        assert_eq!(textual_at(&hits), [("n.txt".to_string(), 0, 0), ("n.txt".to_string(), 1, 0)]);
         assert_eq!(exact_rows(&hits), [("def.txt".to_string(), 0, 0)]);
         assert_eq!(preview.textual.stamps[&n], FileStamp::OpenBuffer { id: 9, version: 5 });
         assert_eq!(preview.scip.stale_files, 1);
         assert!(!preview.stamps.contains_key(&n));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_dirty_document_without_occurrences_stays_uncovered() {
+        let dir = tmp("scip-dirty-uncovered");
+        let (def, c) = (dir.join("def.txt"), dir.join("c.txt"));
+        std::fs::write(&def, "old\n").unwrap();
+        std::fs::write(&c, "nothing\n").unwrap();
+        let open = OpenText { path: c, id: 4, rope: Rope::from_str("old\n"), version: 2, dirty: true };
+        // `c.txt` is a document of the index with no occurrence of the symbol: in `indexed`, not in `docs`.
+        let mut job = scip_job(&dir, vec![("def.txt", vec![(sp(0, 0, 3), true)])], vec![open], None, ("def.txt", sp(0, 0, 3)));
+        job.indexed.insert("c.txt".into());
+        let (_, hits) = build_scip(job).unwrap();
+        assert_eq!(textual_at(&hits), [("c.txt".to_string(), 0, 0)]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1761,6 +1787,50 @@ mod tests {
         let _ = std::fs::remove_dir_all(&out);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn a_dirty_buffer_under_an_alias_dirties_the_document() {
+        let dir = tmp("scip-alias-dirty");
+        std::fs::write(dir.join("good.txt"), "old\n").unwrap();
+        std::fs::write(dir.join("real.txt"), "old\n").unwrap();
+        std::os::unix::fs::symlink(dir.join("real.txt"), dir.join("alias.txt")).unwrap();
+        let open = OpenText { path: dir.join("alias.txt"), id: 7, rope: Rope::from_str("old old\n"), version: 3, dirty: true };
+        let docs = vec![("good.txt", vec![(sp(0, 0, 3), true)]), ("real.txt", vec![(sp(0, 0, 3), false)])];
+        let (preview, hits) = build_scip(scip_job(&dir, docs, vec![open], None, ("good.txt", sp(0, 0, 3)))).unwrap();
+        assert_eq!(exact_rows(&hits), [("good.txt".to_string(), 0, 0)], "{:?}", rows_of(&hits));
+        assert_eq!(preview.scip.stale_files, 1);
+        let text: Vec<_> = textual_at(&hits).into_iter().map(|r| (r.0, r.2)).collect();
+        assert_eq!(text, [("alias.txt".to_string(), 0), ("alias.txt".to_string(), 4), ("real.txt".to_string(), 0)]);
+        assert_eq!(step_files(&preview), ["good.txt"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn untrusted_documents_get_text_rows_without_search() {
+        let dir = tmp("scip-untrusted");
+        std::fs::write(dir.join("good.txt"), "old\n").unwrap();
+        std::fs::write(dir.join(".hidden.txt"), "old\n").unwrap();
+        std::fs::write(dir.join("big.txt"), format!("old\n{}", "x".repeat(17 * 1024 * 1024))).unwrap();
+        age(&dir.join(".hidden.txt"), 0);
+        age(&dir.join("big.txt"), 0);
+        // Both documents are newer than the index, so untrusted; Search reaches neither.
+        let docs = vec![
+            ("good.txt", vec![(sp(0, 0, 3), true)]),
+            (".hidden.txt", vec![(sp(0, 0, 3), false)]),
+            ("big.txt", vec![(sp(0, 0, 3), false)]),
+        ];
+        age(&dir.join("good.txt"), 7200);
+        let (preview, hits) = build_scip(scip_job(&dir, docs, Vec::new(), Some(3600), ("good.txt", sp(0, 0, 3)))).unwrap();
+        assert_eq!(
+            textual_at(&hits),
+            [(".hidden.txt".to_string(), 0, 0), ("big.txt".to_string(), 0, 0)],
+            "text_of has no size limit, so the big document gets its row"
+        );
+        assert_eq!(preview.scip.stale_files, 2);
+        assert_eq!(preview.textual.skipped_files, 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn unreadable_documents_do_not_fail_the_rename() {
         let dir = tmp("scip-bad");
@@ -1775,11 +1845,11 @@ mod tests {
 
     #[test]
     fn no_usable_definition_falls_back_without_searching() {
-        // `(definition doc age, caret doc, definition span, caret span, definition flag of the caret doc's occurrence)`.
+        // `(why, definition flag of the definition document's occurrence, definition span, caret span)`.
         let cases: [(&str, bool, Span, Span); 5] = [
             ("no definition among the occurrences", false, sp(0, 0, 3), sp(0, 0, 3)),
             ("the definition document is stale", true, sp(0, 0, 3), sp(0, 0, 3)),
-            ("the definition span is Other", true, sp(0, 0, 1), sp(0, 0, 3)),
+            ("the definition span is Other", true, sp(0, 4, 6), sp(0, 0, 3)),
             ("the caret's document is stale", true, sp(0, 0, 3), sp(0, 0, 3)),
             ("the caret's span is Other", true, sp(0, 0, 3), sp(0, 4, 6)),
         ];
