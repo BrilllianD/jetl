@@ -1,7 +1,11 @@
 //! Debug Adapter Protocol client. `protocol` holds the wire types, `session` the pure state machine that
-//! decides every ordering rule of a session (no IO, no clock of its own). A driver that owns the process
-//! and the clock comes next to them and feeds the machine.
+//! decides every ordering rule of a session (no IO, no clock of its own). `client` is the driver that owns
+//! the process and the clock and feeds the machine; `fake`, tests only, is an in-process adapter speaking each
+//! start order real adapters use.
 
+pub mod client;
+#[cfg(test)]
+pub mod fake;
 pub mod protocol;
 pub mod session;
 
