@@ -382,8 +382,8 @@ impl App {
     }
 
     /// An answer to `threads` or `stackTrace`. No epoch check here: the machine drops an answer older than its
-    /// epoch (rule 7). `Stop` does not bump the epoch, and an answer already on the bus when a step is sent can still
-    /// arrive, so a frame answer is applied only while `Suspended`.
+    /// epoch (rule 7). `Stop` does not bump the epoch, so a frame answer is applied only while `Suspended`. One already
+    /// on the bus when a step is sent is applied too, and the step's `Running` then clears the point.
     fn debug_response(&mut self, tag: DapTag, result: Result<Value, String>) {
         let phase = self.debug.phase();
         let body = match result {
