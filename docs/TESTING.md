@@ -969,8 +969,9 @@ shell's own command line out of the match), and start only when both print nothi
     and neither process is left.
 
 Each run exits 0 with an empty stderr on Ctrl+Q. What gdb cannot show, and the unit tests prove
-instead: the other two start orders (js-debug's and delve's), a pause or a resume (S6 adds them; a paused program can only be stopped), a root switch
-and a replaced session's silence, and the debugpy command (debugpy is not installed).
+instead: the other two start orders (js-debug's and delve's), a root switch and a replaced session's silence,
+and the debugpy command (debugpy is not installed). Pausing and resuming are not implemented yet: a program
+paused at a breakpoint can only be stopped.
 
 ### Scenario: breakpoints sent to a debug session
 

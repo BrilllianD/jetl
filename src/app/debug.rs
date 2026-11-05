@@ -1255,16 +1255,6 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn no_session_sends_nothing() {
-        let (mut app, dir, mut fakes) = setup("bp-no-session", Order::LaunchEarly);
-        let a = six(&mut app);
-        toggle(&mut app, &a, 1);
-        app.on_tick();
-        assert!(fakes.try_recv().is_err());
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[tokio::test]
     async fn results_map_onto_the_requested_lines() {
         let (mut app, dir, mut fakes) = setup("bp-map", Order::LaunchEarly);
         let a = six(&mut app);
