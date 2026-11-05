@@ -428,8 +428,11 @@ impl App {
     /// A stop: asks for the stack of the stopped thread, or for the threads when the event names none.
     fn debug_stopped(&mut self, epoch: u64, event: StoppedEvent) {
         self.debug_panel.set_reason(Some(event.reason.clone()));
-        // A shown window has the reason in its title; otherwise nothing says the program stopped.
-        if !self.layout.is_visible(ToolWindowId::Debug) {
+        // A shown window has the reason in its title; otherwise nothing says the program stopped. Another maximized
+        // window covers it and the editor, and a stop does not move focus, so that one stays.
+        let shown =
+            self.layout.is_visible(ToolWindowId::Debug) && self.layout.maximized_window().is_none_or(|tw| tw == ToolWindowId::Debug);
+        if !shown {
             self.notify(Level::Info, format!("Paused ({})", event.reason));
         }
         let Some(live) = self.debug.session.as_mut() else { return };
@@ -2571,6 +2574,31 @@ pub(crate) mod tests {
         app.layout.hide(ToolWindowId::Debug);
         stop_at(&mut app, &mut fake, 7, &a, 3).await;
         assert!(texts(&app).contains(&"Paused (breakpoint)".to_string()), "{:?}", texts(&app));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_stop_under_another_maximized_window_is_a_toast() {
+        let (mut app, dir, mut fakes) = setup("window-covered-stop", Order::LaunchEarly);
+        let a = six(&mut app);
+        let (mut fake, _) = running(&mut app, &mut fakes).await;
+        app.layout.toggle_maximize(ToolWindowId::Project);
+        assert_eq!(app.layout.maximized_window(), Some(ToolWindowId::Project));
+        assert!(app.layout.is_visible(ToolWindowId::Debug));
+        stop_at(&mut app, &mut fake, 7, &a, 3).await;
+        assert!(texts(&app).contains(&"Paused (breakpoint)".to_string()), "{:?}", texts(&app));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_stop_with_the_window_itself_maximized_is_no_toast() {
+        let (mut app, dir, mut fakes) = setup("window-maximized-stop", Order::LaunchEarly);
+        let a = six(&mut app);
+        let (mut fake, _) = running(&mut app, &mut fakes).await;
+        app.layout.toggle_maximize(ToolWindowId::Debug);
+        assert_eq!(app.layout.maximized_window(), Some(ToolWindowId::Debug));
+        stop_at(&mut app, &mut fake, 7, &a, 3).await;
+        assert!(texts(&app).iter().all(|t| !t.starts_with("Paused (")), "{:?}", texts(&app));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

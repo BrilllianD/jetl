@@ -1076,7 +1076,7 @@ scenario of this section plus a last `printf("café 😀 see demo.c:9 here\n");`
 configuration picker) also starts a Run task, so after choosing press Ctrl+F2, wait until its process is gone, and hide
 the Run window with Alt+4 (it replaced the Debug window in the dock; Alt+F5 brings the Debug window back). A mouse
 press is `ESC [ < 0 ; col ; row M` then `m`, sent with `tmux send-keys -H`; the column counts a wide character as two
-cells. The script of the last run is `~/.claude/plans/backlog-run-24-D4a2-evidence/scripts/d4a2-scenario.sh`.
+cells. The script of the last run is `~/.claude/plans/backlog-run-24-partC-S7-fix-evidence/scripts/d4a2-scenario.sh`.
 
 1. Before any start the Debug window is not shown.
 2. Ctrl+G, `9`, Ctrl+F8, Shift+F9: the window appears with the title `Debug: demo · paused (breakpoint)`, `9▶`, no
@@ -1101,8 +1101,8 @@ cells. The script of the last run is `~/.claude/plans/backlog-run-24-D4a2-eviden
    `demo.c` stays pending and the program runs to its end.
    While `moved.c` is paused at line 4, Ctrl+F8 on its comment-only line 5 sends `setBreakpoints` (`[2, 4]` in the log)
    and gdb answers it `verified` on line 6 (the log: `mark ...moved.c:4 is Verified, adapter line Some(5)`); the Console
-   gets `Breakpoint moved.c:5 moved to line 6`, once. So gdb does answer a `setBreakpoints` sent after the program is
-   loaded, and the verdict line from a `setBreakpoints` answer runs against a real adapter. The breakpoint set before
+   gets `Breakpoint moved.c:5 moved to line 6`, once. So gdb does answer a `setBreakpoints` sent while the program is
+   paused, and the verdict line from a `setBreakpoints` answer runs against a real adapter. The breakpoint set before
    Shift+F9 was reported by an event only.
 9. A mistyped `program` (`typo`): the window stays `running` with `No output yet` until Ctrl+F2 (yman 416).
 10. Marks back on `demo.c`, Shift+F9, Ctrl+Q while paused: exit 0, empty stderr, no `demo` or `gdb` left.
