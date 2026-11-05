@@ -538,6 +538,13 @@ with no grammar and Markdown. Those rows are guesses, so they start excluded and
 carry a dim `text` marker; include one with Alt+Delete and Replace All writes it
 with the rest.
 
+Without a server for the buffer, and with a fresh `[index] scip` that has an
+occurrence at the caret, Rename lists the index's occurrences of the symbol in the
+same preview (always reviewed, whatever `rename_preview` says). A file that the
+index does not cover, or that is edited or newer than the index, shows text
+matches of the name instead, excluded and marked `text`; a local variable is
+listed only in its document.
+
 The status bar shows the server of the active file: its name, a spinner
 with what it reports while it starts or indexes, `LSP: <name> missing` when
 its command was not found (reported once in a notification), `LSP: <name>

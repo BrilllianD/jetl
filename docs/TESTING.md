@@ -997,6 +997,61 @@ then `git init -q` (the project root is the nearest git directory, else the file
     `rm /tmp/scip-demo/big.scip`.
 12. Ctrl+Q exits 0; stderr is empty.
 
+### Scenario: exact rename from a SCIP index
+
+At 120x40 and 80x24 (yman 398), with `[lsp] enabled = false` and `[index] scip =
+"index.scip"` in `config.toml`, the harness script `/tmp/tm24.sh` as above, and
+config, state, cache and the project under `/tmp/jetl-398`. Shift+F6 is `S-F6`,
+Alt+A `M-a`. The index is made by the real rust-analyzer:
+
+```sh
+T=/tmp/jetl-398/proj; mkdir -p $T/src
+printf '[package]\nname = "demo"\nversion = "0.1.0"\nedition = "2021"\n' > $T/Cargo.toml
+printf 'mod util;\n// helper is called twice\nfn main() {\n    let s = "日本😀"; util::helper(s);\n    util::helper(s);\n    let helper = 1;\n    println!("{}", helper);\n}\n' > $T/src/main.rs
+printf '/* 😀 */ pub fn helper(_s: &str) {}\n' > $T/src/util.rs
+printf 'helper notes\n' > $T/notes.txt
+echo target > $T/.gitignore
+(cd $T && git init -q && rust-analyzer scip . --output index.scip)
+sleep 1; touch $T/index.scip   # the index is newer than every source
+```
+
+After `touch index.scip` jetl loads the new index in the background; the first
+Shift+F6 right after it may still say `as text`: Esc and ask again. Start jetl
+on `src/main.rs`; Down x4, Home, Right x10 puts the caret inside `helper` of line 5.
+
+1. `S-F6`: dialog `Rename 'helper' to:`, no check row, button `Preview`.
+2. `C-a`, type `assist`, Enter: Find opens focused. Rows: `notes.txt` 1
+   (dim `text` marker); `src/main.rs` lines 4 and 5 (the comment and `let
+   helper` are not listed); `src/util.rs` 1. Info toast `Rename helper to
+   assist: review the results, then Replace All (Alt+A); 1 text match starts
+   excluded`. `src/util.rs` and `notes.txt` on disk still say `helper`.
+3. `M-a`: dialog `Rename helper to assist: 3 occurrences in 2 files; 1
+   excluded.` and `Text matches (guesses): 0 included, 1 left out.`. Enter:
+   `main.rs` has both calls renamed (the emoji line intact, the comment and `let
+   helper` unchanged), `util.rs` says `assist` on disk, `notes.txt` `helper`.
+4. Esc (focus back to the editor; Ctrl+Z does nothing in Find), Ctrl+Z: `main.rs`
+   is restored by one undo step.
+5. Restore `util.rs` from the shell, sleep 1, run `rust-analyzer scip` again,
+   sleep 1, `touch index.scip`. Then `touch src/util.rs` (its definition is
+   changed). `S-F6` on line 5, `assist`, Enter: Info toast `The SCIP index has no
+   usable definition of helper; renaming as text` and an ordinary Find on
+   `helper`. Nothing is written. Esc, `touch index.scip`.
+6. Start jetl on `src/util.rs`, caret on `helper`, `touch src/main.rs`. `S-F6`,
+   `assist`, Enter: `util.rs` is one exact row, the five `main.rs` matches and
+   `notes.txt` are text rows (dim), Warn toast `SCIP index: 1 file changed or
+   unreadable, text matches only`. `M-a`: the dialog has `SCIP index not used for
+   1 file (changed or unreadable): text matches only.` Esc, `touch index.scip`.
+7. `S-F6`, `assist`, Enter, then append a line to `src/util.rs` from another
+   shell; `M-a`, Enter: Error toast `src/util.rs changed since the preview;
+   rename again`, the rows stay, nothing is written. Restore the file, sleep 1,
+   `touch index.scip`.
+8. Back on `src/main.rs`, type a letter inside `helper` of line 5, `S-F6`: the
+   dialog reads `Rename '...' as text to:`. Esc, undo.
+9. Caret on the `helper` of `let helper = 1;` (line 6). `S-F6`, `value`, Enter:
+   rows on lines 6 and 7 of `main.rs` only (rust-analyzer gives the use in
+   `println!` an occurrence), no text rows.
+10. Ctrl+Q exits 0; stderr is empty.
+
 ### Scenario: local history
 
 At 80x24 and at 120x40 (`-x 120 -y 40`), with config and state under

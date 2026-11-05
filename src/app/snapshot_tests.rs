@@ -1841,6 +1841,64 @@ async fn find_in_files_rename_confirm() {
     assert_snapshot!("find_in_files_rename_confirm", snapshot(&term, &marks, None));
 }
 
+/// An exact rename from a SCIP index, made by `build_scip`: `src/util.rs` is fresh (its definition is the caret, one
+/// occurrence reads `h`), `src/old.rs` is newer than the index and so shows its one match as text.
+#[cfg(feature = "structural")]
+fn rename_scip_app(name: &str) -> Fixture {
+    use crate::files::rename_preview::{RenameRequest, ScipFile, ScipRename, TextualScope, TextualStage, build_scip};
+    use crate::symbols::scip::{Encoding, Span};
+    use std::time::{Duration, SystemTime};
+    let mut fx = stable_app(name);
+    let app = &mut fx.app;
+    let root = app.workspace.root.clone();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    let (util, old) = (root.join("src/util.rs"), root.join("src/old.rs"));
+    std::fs::write(&util, "pub fn helper() {}\nuse crate::b as h;\n").unwrap();
+    std::fs::write(&old, "fn f() { helper(); }\n").unwrap();
+    let now = SystemTime::now();
+    std::fs::File::options().write(true).open(&util).unwrap().set_modified(now - Duration::from_secs(7200)).unwrap();
+    let sp = |line, start, end| Span { line, start, end_line: line, end };
+    let docs = vec![
+        ScipFile { rel: "src/old.rs".into(), encoding: Encoding::Utf8, occs: vec![(sp(0, 9, 15), false)] },
+        ScipFile { rel: "src/util.rs".into(), encoding: Encoding::Utf8, occs: vec![(sp(0, 7, 13), true), (sp(1, 16, 17), false)] },
+    ];
+    let textual = Some(TextualStage { scope: TextualScope::Uncovered(Default::default()), show_hidden: false, show_ignored: false });
+    let req = RenameRequest { old: "helper".into(), new: "assist".into(), steps: Vec::new(), open: Vec::new(), root, textual };
+    let indexed = docs.iter().map(|d| d.rel.clone()).collect();
+    let job = ScipRename { req, index_mtime: now - Duration::from_secs(3600), docs, indexed, caret: ("src/util.rs".into(), sp(0, 7, 13)) };
+    let result = Box::new(build_scip(job));
+    let (generation, seq) = (app.workspace.generation, app.find.current_seq());
+    app.handle_msg(AppMsg::RenamePreview { generation, seq, result });
+    app.notifications.clear();
+    app.notification_shown = false;
+    app.toasts = Default::default();
+    fx
+}
+
+// The Find header has the AST toggle only with the "structural" feature.
+#[cfg(feature = "structural")]
+#[tokio::test]
+async fn find_in_files_rename_scip_confirm() {
+    let mut fx = rename_scip_app("find-rename-scip-confirm");
+    let app = &mut fx.app;
+    assert_eq!((app.find.hit_count(), app.find.excluded_count()), (2, 1));
+    app.perform(Action::Find(crate::actions::FindAction::ReplaceAll));
+    let msg = app.dialog.as_ref().expect("the rename confirmation").message.clone();
+    for line in [
+        "Rename helper to assist: 1 occurrence in 1 file; 1 excluded.",
+        "Text matches (guesses): 0 included, 1 left out.",
+        "SCIP index: 1 occurrence skipped, the text there is not helper.",
+        "SCIP index not used for 1 file (changed or unreadable): text matches only.",
+    ] {
+        assert!(msg.lines().any(|l| l == line), "{line}\n{msg}");
+    }
+    let term = draw_app(app, 80, 24);
+    let mut marks = find_marks(&app.theme);
+    marks.push(Mark::bg('D', "helper", app.theme.diff_del_word_bg));
+    marks.push(Mark::bg('A', "assist", app.theme.diff_add_word_bg));
+    assert_snapshot!("find_in_files_rename_scip_confirm", snapshot(&term, &marks, None));
+}
+
 /// A rename preview with the textual stage: one exact row in `src/util.rs`, two text guesses in `notes.txt`
 /// (a file with no grammar), the second included.
 #[cfg(feature = "structural")]

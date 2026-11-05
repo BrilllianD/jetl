@@ -971,6 +971,7 @@ mod tests {
             stamps: HashMap::new(),
             unlisted: HashSet::new(),
             textual: Default::default(),
+            scip: Default::default(),
         }
     }
 

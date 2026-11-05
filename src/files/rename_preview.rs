@@ -20,6 +20,19 @@
 //! shift gets no guesses. Rows are excluded and `Textual`; a file with only
 //! such rows is stamped apart (`TextualOutcome::stamps`) and checked only when
 //! one of its rows is included.
+//!
+//! A SCIP rename (`build_scip`, no server serves the buffer) makes the exact
+//! rows from the index instead of a server's answer. An index can be older
+//! than the code, so each document is read once and judged against that read
+//! (`check_span`): one whose file is dirty in a buffer or newer than the index
+//! file (T1), or with a span that cannot be true of its text (a column past the
+//! line, inside a character, or cutting a word), gets no exact rows and its
+//! matches are offered as excluded text rows (T2, T3). A span that is clean
+//! but reads other text (an alias, `Self`) is only dropped and counted. A
+//! document behind a symlink, whose real path is not under the root as
+//! written, gets no rows at all (T4). When no definition or not the caret's
+//! own span survives, the rename is not exact and `ScipOutcome::fallback` sends
+//! it to the textual rename (T7).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -34,11 +47,12 @@ use crate::editor::brackets::in_literal_at;
 use crate::editor::buffer::BufferId;
 use crate::editor::nav::moved_path;
 use crate::editor::search::build_pattern;
-use crate::editor::selection::line_len_no_eol;
+use crate::editor::selection::{is_word_char, line_len_no_eol};
 use crate::editor::syntax::detect_text;
 use crate::files::find::{Hit, MAX_HITS, Query, Search, preview};
 use crate::lsp::edits::{FileEdit, FileOp, Step};
 use crate::lsp::pos;
+use crate::symbols::scip::{self, Encoding, Span, to_chars, to_units};
 
 /// Where a row came from.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -82,7 +96,7 @@ pub struct OpenText {
 pub struct RenamePreview {
     pub old: String,
     pub new: String,
-    /// The server's or SCIP's steps, in order, file operations included.
+    /// The server's steps, or the SCIP rename's exact edits, in order, file operations included.
     pub steps: Vec<Step>,
     /// One per file with an exact row, taken when the preview was built; also one per file that the positions of
     /// an edit without a row refer to (the source of a rename, the target of a rename that may be skipped, an
@@ -94,6 +108,8 @@ pub struct RenamePreview {
     pub unlisted: HashSet<(u32, u32)>,
     /// What the textual stage did; all default without one.
     pub textual: TextualOutcome,
+    /// What the SCIP index could not vouch for; all default without one.
+    pub scip: ScipOutcome,
 }
 
 /// The textual stage of a rename: guesses beside the server's edits.
@@ -108,6 +124,8 @@ pub struct TextualStage {
 pub enum TextualScope {
     /// Matches inside comments and strings; a file with no grammar in this build, or Markdown, counts whole.
     CommentsAndStrings,
+    /// Every match, only in files not in this set of root-relative paths (`/` separated).
+    Uncovered(HashSet<String>),
 }
 
 /// What the textual stage did. All default without one.
@@ -123,6 +141,7 @@ pub struct TextualOutcome {
     pub stamps: HashMap<PathBuf, FileStamp>,
 }
 
+#[derive(Debug)]
 pub struct RenameRequest {
     pub old: String,
     pub new: String,
@@ -130,6 +149,101 @@ pub struct RenameRequest {
     pub open: Vec<OpenText>,
     pub root: PathBuf,
     pub textual: Option<TextualStage>,
+}
+
+/// One document with occurrences of the symbol, as the index has it.
+#[derive(Debug, Clone)]
+pub struct ScipFile {
+    pub rel: String,
+    pub encoding: Encoding,
+    /// `(span, is definition)`.
+    pub occs: Vec<(Span, bool)>,
+}
+
+/// A SCIP rename: a snapshot of the index, taken on the main thread.
+#[derive(Debug)]
+pub struct ScipRename {
+    /// `steps` is empty; `textual` is `None` for a local symbol, else `Some(Uncovered(empty))`.
+    pub req: RenameRequest,
+    pub index_mtime: SystemTime,
+    pub docs: Vec<ScipFile>,
+    /// Every document of the index and the index file itself, root-relative. Empty for a local symbol.
+    pub indexed: HashSet<String>,
+    /// The caret's document and span.
+    pub caret: (String, Span),
+}
+
+/// What the SCIP index could not vouch for. All default without SCIP.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct ScipOutcome {
+    /// Spans dropped with the document still trusted (`SpanCheck::Other`).
+    pub dropped: usize,
+    /// Documents with occurrences that are out of date, misaligned or unreadable: textual rows only.
+    pub stale_files: usize,
+    /// Documents behind a symlink: no rows.
+    pub outside_files: usize,
+    /// No usable definition, or the caret's span lost: rename as text instead. The preview is empty.
+    pub fallback: bool,
+}
+
+impl ScipOutcome {
+    /// The toast text; `None` when there is nothing to report, or on `fallback`.
+    pub fn summary(&self) -> Option<String> {
+        if self.fallback {
+            return None;
+        }
+        let s = |n: usize| if n == 1 { "" } else { "s" };
+        let mut parts = Vec::new();
+        if self.dropped > 0 {
+            parts.push(format!("{} occurrence{} skipped", self.dropped, s(self.dropped)));
+        }
+        if self.stale_files > 0 {
+            parts.push(format!("{} file{} changed or unreadable, text matches only", self.stale_files, s(self.stale_files)));
+        }
+        if self.outside_files > 0 {
+            parts.push(format!("{} file{} behind a symlink left out", self.outside_files, s(self.outside_files)));
+        }
+        (!parts.is_empty()).then(|| format!("SCIP index: {}", parts.join("; ")))
+    }
+}
+
+/// What a SCIP span is, against the text it was read for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpanCheck {
+    /// The whole word `old` on one line, as char offsets of the rope.
+    Exact(usize, usize),
+    /// Dropped; the document stays trusted: multi-line, empty, or clean ends round some other text.
+    Other,
+    /// Cannot be true of this text: the document moved after the index was built.
+    Misaligned,
+}
+
+/// Decide `span` (in `enc` units) against `rope`: `Exact` only for a single-line span on a line that exists, with
+/// both columns on char boundaries inside the line, whose text is exactly `old` and whose ends do not cut a word.
+pub fn check_span(rope: &Rope, span: Span, enc: Encoding, old: &str) -> SpanCheck {
+    if !span.single_line() {
+        return SpanCheck::Other;
+    }
+    let line = span.line as usize;
+    if line >= rope.len_lines() {
+        return SpanCheck::Misaligned;
+    }
+    let (start, len) = (rope.line_to_char(line), line_len_no_eol(rope, line));
+    let text = rope.slice(start..start + len).to_string();
+    let (a, b) = (to_chars(&text, span.start, enc), to_chars(&text, span.end, enc));
+    // `to_chars` rounds a bad column to a boundary or clamps it; the round trip catches that.
+    if to_units(&text, a, enc) != span.start || to_units(&text, b, enc) != span.end || a > b {
+        return SpanCheck::Misaligned;
+    }
+    if a == b {
+        return SpanCheck::Other;
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let cuts = |left: char, right: char| is_word_char(left) && is_word_char(right);
+    if (a > 0 && cuts(chars[a - 1], chars[a])) || (b < chars.len() && cuts(chars[b - 1], chars[b])) {
+        return SpanCheck::Misaligned;
+    }
+    if chars[a..b].iter().collect::<String>() == old { SpanCheck::Exact(start + a, start + b) } else { SpanCheck::Other }
 }
 
 /// The text of one file as the rows see it, with its stamp.
@@ -225,6 +339,7 @@ fn source_of(path: &Path, before: &[Step]) -> Vec<PathBuf> {
 /// Which of the matches starting at char offsets `starts` of `text` (`rope` is the same text) are in scope.
 fn in_scope(scope: &TextualScope, path: &Path, text: &str, rope: &Rope, starts: &[usize]) -> Vec<bool> {
     match scope {
+        TextualScope::Uncovered(_) => vec![true; starts.len()],
         TextualScope::CommentsAndStrings => {
             // Markdown has no comments or strings for prose: it counts whole, as a file with no grammar does.
             let tree = detect_text(path, text).filter(|d| d.name != "markdown").and_then(|def| {
@@ -311,6 +426,12 @@ fn textual_stage(
 
     let (mut rows, mut skipped) = (Vec::new(), 0usize);
     'files: for (path, from_search) in candidates {
+        // A covered file has its exact rows (or none, behind a link): neither skipped nor read.
+        if let TextualScope::Uncovered(covered) = &stage.scope
+            && covered.contains(&rel(&path, root).replace('\\', "/"))
+        {
+            continue;
+        }
         let refused = after_op.contains(&path)
             || prefixes.iter().any(|p| path.starts_with(p))
             || std::fs::canonicalize(&path)
@@ -367,9 +488,13 @@ fn textual_stage(
 
 /// The preview of `req.steps` and its rows (sorted by path, line, column). Runs off the main thread.
 pub fn build(req: RenameRequest) -> Result<(RenamePreview, Vec<Hit>), String> {
+    build_with(req, HashMap::new())
+}
+
+/// `build` with the texts already read (and checked against) by the caller: a row and its stamp come from one read.
+fn build_with(req: RenameRequest, mut texts: HashMap<PathBuf, Option<Text>>) -> Result<(RenamePreview, Vec<Hit>), String> {
     let RenameRequest { old, new, steps, open, root, textual } = req;
     let mut made: Vec<PathBuf> = Vec::new();
-    let mut texts: HashMap<PathBuf, Option<Text>> = HashMap::new();
     let (mut hits, mut stamps, mut unlisted) = (Vec::new(), HashMap::new(), HashSet::new());
     for (s, step) in steps.iter().enumerate() {
         let s = s as u32;
@@ -418,7 +543,113 @@ pub fn build(req: RenameRequest) -> Result<(RenamePreview, Vec<Hit>), String> {
         let at = |h: &Hit| h.rename.as_ref().and_then(|r| r.at);
         (&a.path, a.line, a.col, at(a)).cmp(&(&b.path, b.line, b.col, at(b)))
     });
-    Ok((RenamePreview { old, new, steps, stamps, unlisted, textual: outcome }, hits))
+    Ok((RenamePreview { old, new, steps, stamps, unlisted, textual: outcome, scip: ScipOutcome::default() }, hits))
+}
+
+/// The preview of a SCIP rename. Each document with an occurrence is read once (`text_of`) and judged from that
+/// read (T1 to T4 in the module doc); the exact edits and the texts go to `build_with`, so a row and its stamp come
+/// from the read its span was checked against. Runs off the main thread.
+pub fn build_scip(job: ScipRename) -> Result<(RenamePreview, Vec<Hit>), String> {
+    let ScipRename { mut req, index_mtime, docs, indexed, caret } = job;
+    let real_root = std::fs::canonicalize(&req.root).map_err(|e| format!("{}: {e}", req.root.display()))?;
+    let is_dirty = |open: &[OpenText], p: &Path| open.iter().any(|o| o.dirty && o.path == p);
+    let mut texts: HashMap<PathBuf, Option<Text>> = HashMap::new();
+    let mut outcome = ScipOutcome::default();
+    let (mut steps, mut untrusted, mut outside) = (Vec::new(), HashSet::new(), HashSet::new());
+    let (mut has_definition, mut has_caret) = (false, false);
+    for doc in &docs {
+        let path = req.root.join(&doc.rel);
+        match std::fs::canonicalize(&path) {
+            Ok(real) if real == real_root.join(&doc.rel) => {}
+            Ok(_) => {
+                outcome.outside_files += 1;
+                outside.insert(doc.rel.clone());
+                continue;
+            }
+            Err(_) => {
+                untrusted.insert(doc.rel.clone()); // gone: no rows and no count
+                continue;
+            }
+        }
+        let text = match text_of(&path, &req.open, &req.root) {
+            Ok(Some(t)) => t,
+            Ok(None) => {
+                untrusted.insert(doc.rel.clone());
+                continue;
+            }
+            Err(_) => {
+                outcome.stale_files += 1;
+                untrusted.insert(doc.rel.clone());
+                continue;
+            }
+        };
+        let mut spans = Vec::new();
+        let mut dropped = 0;
+        let mut fresh = scip::file_fresh(&path, is_dirty(&req.open, &path), index_mtime);
+        if fresh {
+            for (span, definition) in &doc.occs {
+                match check_span(&text.rope, *span, doc.encoding, &req.old) {
+                    SpanCheck::Exact(s, e) => spans.push((s, e, *definition, doc.rel == caret.0 && *span == caret.1)),
+                    SpanCheck::Other => dropped += 1,
+                    SpanCheck::Misaligned => {
+                        fresh = false;
+                        break;
+                    }
+                }
+            }
+        }
+        if !fresh {
+            outcome.stale_files += 1;
+            untrusted.insert(doc.rel.clone());
+            texts.insert(path, Some(text)); // the textual stage reads the same text
+            continue;
+        }
+        outcome.dropped += dropped;
+        has_definition |= spans.iter().any(|s| s.2);
+        has_caret |= spans.iter().any(|s| s.3);
+        let mut at: Vec<(usize, usize)> = spans.iter().map(|s| (s.0, s.1)).collect();
+        at.sort_unstable();
+        at.dedup();
+        let edits: Vec<TextEdit> = at
+            .into_iter()
+            .map(|(s, e)| TextEdit {
+                range: Range::new(pos::position(&text.rope, s), pos::position(&text.rope, e)),
+                new_text: req.new.clone(),
+            })
+            .collect();
+        if !edits.is_empty() {
+            steps.push(Step::Edit(FileEdit { path: path.clone(), version: None, edits, index: None }));
+        }
+        texts.insert(path, Some(text));
+    }
+    if !has_definition || !has_caret {
+        outcome.fallback = true;
+        let preview = RenamePreview {
+            old: req.old,
+            new: req.new,
+            steps: Vec::new(),
+            stamps: HashMap::new(),
+            unlisted: HashSet::new(),
+            textual: TextualOutcome::default(),
+            scip: outcome,
+        };
+        return Ok((preview, Vec::new()));
+    }
+    if let Some(TextualStage { scope, .. }) = &mut req.textual {
+        let mut covered: HashSet<String> = indexed
+            .into_iter()
+            .filter(|rel| {
+                let path = req.root.join(rel);
+                !untrusted.contains(rel) && scip::file_fresh(&path, is_dirty(&req.open, &path), index_mtime)
+            })
+            .collect();
+        covered.extend(outside);
+        *scope = TextualScope::Uncovered(covered);
+    }
+    req.steps = steps;
+    let (mut preview, hits) = build_with(req, texts)?;
+    preview.scip = outcome;
+    Ok((preview, hits))
 }
 
 /// The steps Replace All makes: an edit of `preview.steps` keeps the edits whose `(step, edit)` is in an included
@@ -524,6 +755,20 @@ impl RenamePreview {
             0 => {}
             1 => out.push_str("\nNo text matches offered in 1 file: a file operation touches it or it cannot be read."),
             n => out.push_str(&format!("\nNo text matches offered in {n} files: file operations touch them or they cannot be read.")),
+        }
+        let c = &self.scip;
+        if c.dropped > 0 {
+            out.push_str(&format!("\nSCIP index: {} occurrence{} skipped, the text there is not {}.", c.dropped, s(c.dropped), self.old));
+        }
+        if c.stale_files > 0 {
+            out.push_str(&format!(
+                "\nSCIP index not used for {} file{} (changed or unreadable): text matches only.",
+                c.stale_files,
+                s(c.stale_files)
+            ));
+        }
+        if c.outside_files > 0 {
+            out.push_str(&format!("\n{} indexed file{} behind a symlink left out.", c.outside_files, s(c.outside_files)));
         }
         if !self.unlisted.is_empty() {
             let k = self.unlisted.len();
@@ -807,6 +1052,7 @@ mod tests {
             stamps: HashMap::new(),
             unlisted: HashSet::from([(3, 1)]),
             textual: Default::default(),
+            scip: Default::default(),
         };
         let row = |p: &Path, at, e: &TextEdit| hand_hit(p, at, e.clone(), RenameSource::Exact);
         let included = vec![
@@ -841,6 +1087,7 @@ mod tests {
             stamps: stamps.into_iter().collect(),
             unlisted: HashSet::new(),
             textual: Default::default(),
+            scip: Default::default(),
         }
     }
 
@@ -1247,5 +1494,415 @@ mod tests {
         p.textual = TextualOutcome::default();
         assert_eq!(p.confirm_message(&[exact, text], 2, &root), plain);
         assert!(!plain.contains("Text"), "{plain}");
+    }
+
+    // ---- SCIP rename ----
+
+    use std::time::Duration;
+
+    fn sp(line: u32, start: u32, end: u32) -> Span {
+        Span { line, start, end_line: line, end }
+    }
+
+    /// Set `p`'s mtime to `secs` seconds ago.
+    fn age(p: &Path, secs: u64) {
+        let t = SystemTime::now() - Duration::from_secs(secs);
+        std::fs::File::options().write(true).open(p).unwrap().set_modified(t).unwrap();
+    }
+
+    type Doc<'a> = (&'a str, Vec<(Span, bool)>);
+
+    /// A SCIP job over `docs` (UTF-32 columns, so a column is a char offset) in `dir`: every document is indexed,
+    /// the index is an hour in the future (a just-written file is fresh), the caret is `caret`.
+    fn scip_job(dir: &Path, docs: Vec<Doc>, open: Vec<OpenText>, index_age: Option<u64>, caret: (&str, Span)) -> ScipRename {
+        let index_mtime = match index_age {
+            Some(secs) => SystemTime::now() - Duration::from_secs(secs),
+            None => SystemTime::now() + Duration::from_secs(3600),
+        };
+        let indexed = docs.iter().map(|d| d.0.to_string()).collect();
+        let docs = docs.into_iter().map(|(rel, occs)| ScipFile { rel: rel.into(), encoding: Encoding::Utf32, occs }).collect();
+        let req = RenameRequest {
+            textual: Some(TextualStage { scope: TextualScope::Uncovered(HashSet::new()), ..stage() }),
+            ..req(dir, Vec::new(), open)
+        };
+        ScipRename { req, index_mtime, docs, indexed, caret: (caret.0.into(), caret.1) }
+    }
+
+    /// `(file name, line, col, source)` of every row.
+    fn rows_of(hits: &[Hit]) -> Vec<(String, usize, usize, RenameSource)> {
+        hits.iter()
+            .map(|h| (h.path.file_name().unwrap().to_str().unwrap().to_string(), h.line, h.col, h.rename.as_ref().unwrap().source.clone()))
+            .collect()
+    }
+
+    fn exact_rows(hits: &[Hit]) -> Vec<(String, usize, usize)> {
+        rows_of(hits).into_iter().filter(|r| r.3 == RenameSource::Exact).map(|r| (r.0, r.1, r.2)).collect()
+    }
+
+    fn step_files(p: &RenamePreview) -> Vec<String> {
+        p.steps
+            .iter()
+            .filter_map(|s| if let Step::Edit(f) = s { Some(f.path.file_name().unwrap().to_str().unwrap().to_string()) } else { None })
+            .collect()
+    }
+
+    #[test]
+    fn check_span_classes() {
+        let text = "let x = 日本😀 old older bold old;\nend old";
+        let rope = Rope::from_str(text);
+        let line0 = text.lines().next().unwrap();
+        for enc in [Encoding::Utf8, Encoding::Utf16, Encoding::Utf32] {
+            let u = |c: usize| to_units(line0, c, enc);
+            let on0 = |a: usize, b: usize| Span { line: 0, start: u(a), end_line: 0, end: u(b) };
+            // chars: `old` 12..15, `older` 16..21, `bold` 22..26, `old;` 27..31.
+            assert_eq!(check_span(&rope, on0(12, 15), enc, "old"), SpanCheck::Exact(12, 15), "{enc:?}");
+            assert_eq!(check_span(&rope, on0(27, 30), enc, "old"), SpanCheck::Exact(27, 30), "{enc:?}");
+            assert_eq!(check_span(&rope, on0(4, 5), enc, "old"), SpanCheck::Other, "another identifier, {enc:?}");
+            assert_eq!(check_span(&rope, on0(12, 12), enc, "old"), SpanCheck::Other, "empty, {enc:?}");
+            let multi = Span { line: 0, start: u(12), end_line: 1, end: 3 };
+            assert_eq!(check_span(&rope, multi, enc, "old"), SpanCheck::Other, "multi-line, {enc:?}");
+            assert_eq!(check_span(&rope, on0(16, 19), enc, "old"), SpanCheck::Misaligned, "prefix of older, {enc:?}");
+            assert_eq!(check_span(&rope, on0(23, 26), enc, "old"), SpanCheck::Misaligned, "suffix of bold, {enc:?}");
+            assert_eq!(check_span(&rope, sp(9, 0, 3), enc, "old"), SpanCheck::Misaligned, "line past the file, {enc:?}");
+        }
+        // The same word on the last line, which has no line break: a column past its end clamps to `old`, and only
+        // the round trip sees that the span was not true of this text.
+        assert_eq!(check_span(&rope, sp(1, 4, 7), Encoding::Utf32, "old"), SpanCheck::Exact(36, 39));
+        assert_eq!(check_span(&rope, sp(1, 4, 12), Encoding::Utf32, "old"), SpanCheck::Misaligned, "end past the line");
+        // A column inside `日` (bytes 8..11) and inside `😀` (UTF-16 units 10..12).
+        assert_eq!(check_span(&rope, sp(0, 9, 11), Encoding::Utf8, "x"), SpanCheck::Misaligned, "inside a char, UTF-8");
+        assert_eq!(check_span(&rope, sp(0, 11, 12), Encoding::Utf16, "x"), SpanCheck::Misaligned, "inside a char, UTF-16");
+        // The end of a CRLF line is found without the `\r`.
+        let crlf = Rope::from_str("let old\r\nx\r\n");
+        assert_eq!(check_span(&crlf, sp(0, 4, 7), Encoding::Utf8, "old"), SpanCheck::Exact(4, 7));
+        assert_eq!(check_span(&crlf, sp(0, 4, 8), Encoding::Utf8, "old"), SpanCheck::Misaligned, "the \\r is not part of the line");
+    }
+
+    #[test]
+    fn scip_rows_convert_each_encoding_to_utf16() {
+        for (enc, (a, b)) in [(Encoding::Utf8, (15, 18)), (Encoding::Utf16, (9, 12)), (Encoding::Utf32, (8, 11))] {
+            let dir = tmp(&format!("scip-enc-{enc:?}"));
+            let n = dir.join("notes.txt");
+            std::fs::write(&n, "// 😀 日本 old\n").unwrap();
+            let span = sp(0, a, b);
+            let mut job = scip_job(&dir, vec![("notes.txt", vec![(span, true)])], Vec::new(), None, ("notes.txt", span));
+            job.docs[0].encoding = enc;
+            let (preview, hits) = build_scip(job).unwrap();
+            assert_eq!(hits.len(), 1, "{enc:?}");
+            let (h, r) = (&hits[0], hits[0].rename.as_ref().unwrap());
+            assert_eq!(r.edit.range, Range::new(lsp_types::Position::new(0, 9), lsp_types::Position::new(0, 12)), "{enc:?}");
+            assert_eq!((h.col, h.matched.as_str(), h.excluded, r.source.clone()), (8, "old", false, RenameSource::Exact), "{enc:?}");
+            assert!(preview.stamps.contains_key(&n), "{enc:?}");
+            let got = crate::lsp::edits::edit_text("// 😀 日本 old\n", std::slice::from_ref(&r.edit)).unwrap().0;
+            assert_eq!(got, "// 😀 日本 new\n", "{enc:?}");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn a_covered_file_lists_occurrences_only_and_an_uncovered_file_is_text() {
+        let dir = tmp("scip-covered");
+        for (f, t) in [("a.txt", "old old\n"), ("b.txt", "old\n"), ("c.txt", "old\n")] {
+            std::fs::write(dir.join(f), t).unwrap();
+        }
+        let mut job =
+            scip_job(&dir, vec![("a.txt", vec![(sp(0, 0, 3), true)]), ("c.txt", Vec::new())], Vec::new(), None, ("a.txt", sp(0, 0, 3)));
+        job.indexed.insert("c.txt".into());
+        let (preview, hits) = build_scip(job).unwrap();
+        assert_eq!(rows_of(&hits), [("a.txt".to_string(), 0, 0, RenameSource::Exact), ("b.txt".to_string(), 0, 0, RenameSource::Textual)]);
+        assert!(!hits[0].excluded && hits[1].excluded);
+        assert!(preview.textual.stamps.contains_key(&dir.join("b.txt")));
+        assert_eq!(preview.textual.skipped_files, 0);
+        assert!(!preview.scip.fallback);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_file_newer_than_the_index_has_text_rows_only() {
+        let dir = tmp("scip-newer");
+        let (def, used) = (dir.join("def.txt"), dir.join("used.txt"));
+        std::fs::write(&def, "old\n").unwrap();
+        std::fs::write(&used, "old and old\n").unwrap();
+        age(&def, 7200);
+        let job = scip_job(
+            &dir,
+            vec![("def.txt", vec![(sp(0, 0, 3), true)]), ("used.txt", vec![(sp(0, 0, 3), false)])],
+            Vec::new(),
+            Some(3600),
+            ("def.txt", sp(0, 0, 3)),
+        );
+        let (preview, hits) = build_scip(job).unwrap();
+        assert_eq!(exact_rows(&hits), [("def.txt".to_string(), 0, 0)]);
+        let text: Vec<_> = rows_of(&hits).into_iter().filter(|r| r.3 == RenameSource::Textual).map(|r| (r.0, r.2)).collect();
+        assert_eq!(text, [("used.txt".to_string(), 0), ("used.txt".to_string(), 8)]);
+        assert!(hits.iter().filter(|h| h.path == used).all(|h| h.excluded));
+        assert_eq!(preview.scip.stale_files, 1);
+        assert!(preview.textual.stamps.contains_key(&used));
+        assert_eq!(step_files(&preview), ["def.txt"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_dirty_buffer_is_text_from_its_rope() {
+        let dir = tmp("scip-dirty");
+        let (def, n) = (dir.join("def.txt"), dir.join("n.txt"));
+        std::fs::write(&def, "old\n").unwrap();
+        std::fs::write(&n, "old\nb\n").unwrap();
+        let open = OpenText { path: n.clone(), id: 9, rope: Rope::from_str("a\nb\nold\n"), version: 5, dirty: true };
+        let job = scip_job(
+            &dir,
+            vec![("def.txt", vec![(sp(0, 0, 3), true)]), ("n.txt", vec![(sp(0, 0, 3), false)])],
+            vec![open],
+            None,
+            ("def.txt", sp(0, 0, 3)),
+        );
+        let (preview, hits) = build_scip(job).unwrap();
+        assert_eq!(textual_at(&hits), [("n.txt".to_string(), 2, 0)]);
+        assert_eq!(exact_rows(&hits), [("def.txt".to_string(), 0, 0)]);
+        assert_eq!(preview.textual.stamps[&n], FileStamp::OpenBuffer { id: 9, version: 5 });
+        assert_eq!(preview.scip.stale_files, 1);
+        assert!(!preview.stamps.contains_key(&n));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_clean_buffer_is_exact_from_its_rope() {
+        let dir = tmp("scip-clean");
+        let (def, n) = (dir.join("def.txt"), dir.join("n.txt"));
+        std::fs::write(&def, "old\n").unwrap();
+        std::fs::write(&n, "old\n").unwrap();
+        let open = || OpenText { path: n.clone(), id: 9, rope: Rope::from_str("x old\n"), version: 5, dirty: false };
+        let docs = || vec![("def.txt", vec![(sp(0, 0, 3), true)]), ("n.txt", vec![(sp(0, 2, 5), false)])];
+        let (preview, hits) = build_scip(scip_job(&dir, docs(), vec![open()], None, ("def.txt", sp(0, 0, 3)))).unwrap();
+        assert_eq!(exact_rows(&hits), [("def.txt".to_string(), 0, 0), ("n.txt".to_string(), 0, 2)]);
+        assert_eq!(preview.stamps[&n], FileStamp::OpenBuffer { id: 9, version: 5 });
+        // The same buffer, but its file is newer on disk than the index: text.
+        age(&def, 7200);
+        let (preview, hits) = build_scip(scip_job(&dir, docs(), vec![open()], Some(3600), ("def.txt", sp(0, 0, 3)))).unwrap();
+        assert_eq!(exact_rows(&hits), [("def.txt".to_string(), 0, 0)]);
+        assert_eq!(textual_at(&hits), [("n.txt".to_string(), 0, 2)]);
+        assert_eq!(preview.scip.stale_files, 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_misaligned_span_withdraws_the_whole_document() {
+        let dir = tmp("scip-misaligned");
+        std::fs::write(dir.join("def.txt"), "old\n").unwrap();
+        std::fs::write(dir.join("m.txt"), "old cold\n").unwrap();
+        // m.txt: a good span at 0..3 and one at 5..8, which cuts `cold`.
+        let docs = vec![("def.txt", vec![(sp(0, 0, 3), true)]), ("m.txt", vec![(sp(0, 0, 3), false), (sp(0, 5, 8), false)])];
+        let (preview, hits) = build_scip(scip_job(&dir, docs, Vec::new(), None, ("def.txt", sp(0, 0, 3)))).unwrap();
+        assert_eq!(exact_rows(&hits), [("def.txt".to_string(), 0, 0)]);
+        assert_eq!(textual_at(&hits), [("m.txt".to_string(), 0, 0)]);
+        assert!(hits.iter().filter(|h| h.path.ends_with("m.txt")).all(|h| h.excluded));
+        assert_eq!((preview.scip.stale_files, preview.scip.dropped), (1, 0));
+        assert_eq!(step_files(&preview), ["def.txt"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_other_span_is_dropped_and_counted_and_the_document_stays() {
+        let dir = tmp("scip-other");
+        std::fs::write(dir.join("a.txt"), "alias old\n").unwrap();
+        let docs = vec![("a.txt", vec![(sp(0, 0, 5), false), (sp(0, 6, 9), true)])];
+        let (preview, hits) = build_scip(scip_job(&dir, docs, Vec::new(), None, ("a.txt", sp(0, 6, 9)))).unwrap();
+        assert_eq!(rows_of(&hits), [("a.txt".to_string(), 0, 6, RenameSource::Exact)]);
+        assert_eq!((preview.scip.dropped, preview.scip.stale_files), (1, 0));
+        assert_eq!(preview.textual.rows, 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn duplicate_occurrences_make_one_edit() {
+        let dir = tmp("scip-dup");
+        std::fs::write(dir.join("a.txt"), "alias old\n").unwrap();
+        let docs = vec![("a.txt", vec![(sp(0, 6, 9), true), (sp(0, 6, 9), false)])];
+        let (preview, hits) = build_scip(scip_job(&dir, docs, Vec::new(), None, ("a.txt", sp(0, 6, 9)))).unwrap();
+        assert_eq!(hits.len(), 1);
+        let steps = included_steps(&preview, &hits);
+        let plan = crate::lsp::edits::plan_workspace(steps, &[], &dir, &crate::lsp::edits::RealDisk);
+        assert!(plan.is_ok(), "{:?}", plan.err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_document_behind_a_symlink_gets_no_rows() {
+        use std::os::unix::fs::symlink;
+        let dir = tmp("scip-link");
+        let out = tmp("scip-link-out");
+        std::fs::write(out.join("target.txt"), "old\n").unwrap();
+        std::fs::write(dir.join("good.txt"), "old\n").unwrap();
+        std::fs::write(dir.join("real.txt"), "old\n").unwrap();
+        let good = ("good.txt", vec![(sp(0, 0, 3), true)]);
+        let occ = || vec![(sp(0, 0, 3), false)];
+        // Outside the root, and a folder that leads outside it.
+        symlink(out.join("target.txt"), dir.join("link.txt")).unwrap();
+        symlink(&out, dir.join("ld")).unwrap();
+        let docs = vec![good.clone(), ("link.txt", occ()), ("ld/target.txt", occ())];
+        let (preview, hits) = build_scip(scip_job(&dir, docs, Vec::new(), None, ("good.txt", sp(0, 0, 3)))).unwrap();
+        // real.txt is no document: its match is a text row. Nothing comes from the links.
+        assert_eq!(
+            rows_of(&hits),
+            [("good.txt".to_string(), 0, 0, RenameSource::Exact), ("real.txt".to_string(), 0, 0, RenameSource::Textual)]
+        );
+        assert_eq!(preview.scip.outside_files, 2);
+        assert_eq!(step_files(&preview), ["good.txt"]);
+        assert_eq!(std::fs::read_to_string(out.join("target.txt")).unwrap(), "old\n");
+        // A link to a file under the root, both documents: only the real one gets rows.
+        symlink(dir.join("real.txt"), dir.join("alias.txt")).unwrap();
+        let docs = vec![good, ("alias.txt", occ()), ("real.txt", occ())];
+        let (preview, hits) = build_scip(scip_job(&dir, docs, Vec::new(), None, ("good.txt", sp(0, 0, 3)))).unwrap();
+        assert_eq!(exact_rows(&hits), [("good.txt".to_string(), 0, 0), ("real.txt".to_string(), 0, 0)]);
+        assert_eq!((preview.scip.outside_files, step_files(&preview).len()), (1, 2));
+        assert!(textual_at(&hits).is_empty(), "{:?}", textual_at(&hits));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&out);
+    }
+
+    #[test]
+    fn unreadable_documents_do_not_fail_the_rename() {
+        let dir = tmp("scip-bad");
+        std::fs::write(dir.join("good.txt"), "old\n").unwrap();
+        std::fs::write(dir.join("bad.txt"), b"old \xff\n").unwrap();
+        let docs = vec![("good.txt", vec![(sp(0, 0, 3), true)]), ("bad.txt", vec![(sp(0, 0, 3), false)])];
+        let (preview, hits) = build_scip(scip_job(&dir, docs, Vec::new(), None, ("good.txt", sp(0, 0, 3)))).unwrap();
+        assert_eq!(rows_of(&hits), [("good.txt".to_string(), 0, 0, RenameSource::Exact)]);
+        assert_eq!(preview.scip.stale_files, 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn no_usable_definition_falls_back_without_searching() {
+        // `(definition doc age, caret doc, definition span, caret span, definition flag of the caret doc's occurrence)`.
+        let cases: [(&str, bool, Span, Span); 5] = [
+            ("no definition among the occurrences", false, sp(0, 0, 3), sp(0, 0, 3)),
+            ("the definition document is stale", true, sp(0, 0, 3), sp(0, 0, 3)),
+            ("the definition span is Other", true, sp(0, 0, 1), sp(0, 0, 3)),
+            ("the caret's document is stale", true, sp(0, 0, 3), sp(0, 0, 3)),
+            ("the caret's span is Other", true, sp(0, 0, 3), sp(0, 4, 6)),
+        ];
+        for (n, (why, has_def, def_span, caret_span)) in cases.into_iter().enumerate() {
+            let dir = tmp(&format!("scip-fallback-{n}"));
+            for f in ["def.txt", "use.txt"] {
+                std::fs::write(dir.join(f), "old xy\n").unwrap();
+                age(&dir.join(f), 7200);
+            }
+            std::fs::write(dir.join("b.txt"), "old\n").unwrap();
+            match n {
+                1 => age(&dir.join("def.txt"), 0),
+                3 => age(&dir.join("use.txt"), 0),
+                _ => {}
+            }
+            let docs = vec![("def.txt", vec![(def_span, has_def)]), ("use.txt", vec![(caret_span, false)])];
+            let caret = if n == 3 { ("use.txt", sp(0, 0, 3)) } else { ("use.txt", caret_span) };
+            let (preview, hits) = build_scip(scip_job(&dir, docs, Vec::new(), Some(3600), caret)).unwrap();
+            assert!(preview.scip.fallback, "{why}");
+            assert!(hits.is_empty() && preview.steps.is_empty() && preview.textual.rows == 0, "{why}: {hits:?}");
+            assert_eq!(preview.scip.summary(), None, "{why}");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn a_local_symbol_stays_in_its_document() {
+        let dir = tmp("scip-local");
+        std::fs::write(dir.join("a.txt"), "old old\n").unwrap();
+        std::fs::write(dir.join("b.txt"), "old\n").unwrap();
+        let mut job =
+            scip_job(&dir, vec![("a.txt", vec![(sp(0, 0, 3), true), (sp(0, 4, 7), false)])], Vec::new(), None, ("a.txt", sp(0, 0, 3)));
+        job.req.textual = None;
+        job.indexed.clear();
+        let (preview, hits) = build_scip(job).unwrap();
+        assert_eq!(exact_rows(&hits), [("a.txt".to_string(), 0, 0), ("a.txt".to_string(), 0, 4)]);
+        assert_eq!(hits.len(), 2);
+        assert_eq!((preview.textual.rows, preview.textual.skipped_files, preview.textual.stamps.len()), (0, 0, 0));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_index_file_itself_gets_no_text_row() {
+        let dir = tmp("scip-indexfile");
+        std::fs::write(dir.join("a.txt"), "old\n").unwrap();
+        std::fs::write(dir.join("index.scip"), "old\n").unwrap();
+        let mut job = scip_job(&dir, vec![("a.txt", vec![(sp(0, 0, 3), true)])], Vec::new(), None, ("a.txt", sp(0, 0, 3)));
+        job.indexed.insert("index.scip".into());
+        let (_, hits) = build_scip(job).unwrap();
+        assert_eq!(rows_of(&hits), [("a.txt".to_string(), 0, 0, RenameSource::Exact)]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_exact_file_changed_after_the_build_is_stale() {
+        let dir = tmp("scip-stale");
+        let (a, b) = (dir.join("a.txt"), dir.join("b.txt"));
+        std::fs::write(&a, "old\n").unwrap();
+        std::fs::write(&b, "old\n").unwrap();
+        let build =
+            || build_scip(scip_job(&dir, vec![("a.txt", vec![(sp(0, 0, 3), true)])], Vec::new(), None, ("a.txt", sp(0, 0, 3)))).unwrap();
+        let (preview, hits) = build();
+        let text: Vec<Hit> = hits.iter().filter(|h| h.path == b).cloned().collect();
+        assert_eq!((text.len(), preview.first_stale(&[]), preview.first_stale_textual(&[], &text)), (1, None, None));
+        // The textual-only file moved: the always-checked stamps do not see it, the included row does.
+        std::fs::write(&b, "old and more\n").unwrap();
+        assert_eq!((preview.first_stale(&[]), preview.first_stale_textual(&[], &[])), (None, None));
+        assert_eq!(preview.first_stale_textual(&[], &text), Some(b.clone()));
+        // The exact file moved.
+        let (preview, _) = build();
+        std::fs::write(&a, "old and more\n").unwrap();
+        assert_eq!(preview.first_stale(&[]), Some(a));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn confirm_message_reports_the_index() {
+        let root = PathBuf::from("/p");
+        let exact = hand_hit(&root.join("a"), Some((0, 0)), te(0, 0, 0, 1, "n"), RenameSource::Exact);
+        let mut p = preview_with(Vec::new());
+        p.old = "old".into();
+        p.new = "new".into();
+        let plain = p.confirm_message(std::slice::from_ref(&exact), 0, &root);
+        assert_eq!(
+            plain,
+            "Rename old to new: 1 occurrence in 1 file.\nOpen files change in the editor (undoable); others are written to disk."
+        );
+        p.scip = ScipOutcome { dropped: 2, stale_files: 1, outside_files: 1, fallback: false };
+        p.textual = TextualOutcome { rows: 1, ..Default::default() };
+        let want = "Rename old to new: 1 occurrence in 1 file.\n\
+                    Text matches (guesses): 0 included, 1 left out.\n\
+                    SCIP index: 2 occurrences skipped, the text there is not old.\n\
+                    SCIP index not used for 1 file (changed or unreadable): text matches only.\n\
+                    1 indexed file behind a symlink left out.\n\
+                    Open files change in the editor (undoable); others are written to disk.";
+        assert_eq!(p.confirm_message(std::slice::from_ref(&exact), 0, &root), want);
+        // Singular and plural, each line alone.
+        p.scip = ScipOutcome { dropped: 1, ..Default::default() };
+        assert!(p.confirm_message(std::slice::from_ref(&exact), 0, &root).contains("\nSCIP index: 1 occurrence skipped, the text"));
+        p.scip = ScipOutcome { stale_files: 3, ..Default::default() };
+        let got = p.confirm_message(std::slice::from_ref(&exact), 0, &root);
+        assert!(got.contains("\nSCIP index not used for 3 files (changed"), "{got}");
+        assert!(!got.contains("skipped") && !got.contains("symlink"), "{got}");
+        p.scip = ScipOutcome { outside_files: 2, ..Default::default() };
+        let got = p.confirm_message(std::slice::from_ref(&exact), 0, &root);
+        assert!(got.contains("\n2 indexed files behind a symlink left out.\n") && !got.contains("SCIP"), "{got}");
+        // Nothing found: today's message.
+        p.scip = ScipOutcome::default();
+        p.textual = TextualOutcome::default();
+        assert_eq!(p.confirm_message(std::slice::from_ref(&exact), 0, &root), plain);
+    }
+
+    #[test]
+    fn summary_says_what_it_found() {
+        let o = |dropped, stale_files, outside_files| ScipOutcome { dropped, stale_files, outside_files, fallback: false };
+        assert_eq!(o(0, 0, 0).summary(), None);
+        assert_eq!(o(2, 0, 0).summary().unwrap(), "SCIP index: 2 occurrences skipped");
+        assert_eq!(o(0, 1, 0).summary().unwrap(), "SCIP index: 1 file changed or unreadable, text matches only");
+        assert_eq!(o(0, 0, 3).summary().unwrap(), "SCIP index: 3 files behind a symlink left out");
+        assert_eq!(
+            o(2, 1, 1).summary().unwrap(),
+            "SCIP index: 2 occurrences skipped; 1 file changed or unreadable, text matches only; 1 file behind a symlink left out"
+        );
+        assert_eq!(ScipOutcome { fallback: true, dropped: 4, ..Default::default() }.summary(), None);
     }
 }

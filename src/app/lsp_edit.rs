@@ -35,6 +35,17 @@
 //! index knows included and other results excluded; nothing changes until
 //! Replace All.
 //!
+//! When a fresh SCIP index has an occurrence at the caret that reads exactly
+//! the word (`scip_rename_symbol`), the same rename is exact: the symbol's
+//! occurrences become the preview's included rows, built off the main thread
+//! by `rename_preview::build_scip`, which reads each document once and trusts
+//! it only if the file is clean, no newer than the index and every span is
+//! true of the text (T1 to T3 in that module). Files the index does not cover
+//! or cannot vouch for show text matches, excluded. This preview is always
+//! shown, whatever `rename_preview` says. When no definition or not the
+//! caret's own span survives, the build says so (`ScipOutcome::fallback`) and
+//! the textual rename above opens instead.
+//!
 //! Undo reverts the open buffers only: file operations and edits of files
 //! that were not open cannot be undone. Local History keeps a snapshot of
 //! deleted and replaced files, and carries a renamed file's history.
@@ -52,11 +63,14 @@ use crate::editor::undo::TxKind;
 use crate::event::{AppMsg, Effect, Level};
 use crate::files::find::{Hit, MAX_HITS};
 use crate::files::ops::FsOp;
-use crate::files::rename_preview::{self, OpenText, RenamePreview, RenameRequest, TextualScope, TextualStage};
+use crate::files::rename_preview::{
+    self, OpenText, RenamePreview, RenameRequest, ScipFile, ScipRename, SpanCheck, TextualScope, TextualStage,
+};
 use crate::history::Ack;
 use crate::lsp::edits::{self, DiskStep, EditCounts, OpenDoc};
 use crate::lsp::locations::LocationItem;
 use crate::lsp::{DocTag, EditOrigin, PendingTag, pos, symbols};
+use crate::symbols::scip::{Span, SymId};
 use crate::ui::dialog::{Dialog, DialogId};
 use crate::ui::focus::{PanelId, ToolWindowId};
 
@@ -147,6 +161,8 @@ pub(super) struct EditReqs {
     rename_old: String,
     /// The rename dialog's "Search in comments and strings", as last answered. Kept for the session, not persisted.
     pub(super) rename_in_text: bool,
+    /// The caret of the SCIP rename being built, for its fallback.
+    scip_rename: Option<DocTag>,
     /// The context actions in the dialog, with the seq of their request.
     actions: Option<(u64, Vec<CodeActionOrCommand>)>,
     /// The edit waiting for the user's confirmation.
@@ -258,26 +274,92 @@ impl App {
             return;
         }
         let t = DocTag { buffer: id, version: b.version, pos, seq: 0, group: self.editor.focused_group().id };
-        let msg = format!("Rename '{word}' as text to:");
+        let msg = if self.scip_rename_symbol(id, &word).is_some() {
+            format!("Rename '{word}' to:")
+        } else {
+            format!("Rename '{word}' as text to:")
+        };
         self.dialog = Some(Dialog::input(DialogId::TextRename(t), "Rename", &msg, &word, "Preview"));
         self.dispatcher.reset();
     }
 
-    /// The textual rename dialog's answer: open Find with the old name as
-    /// query and `name` as replacement, hits outside the index's uses and
-    /// definitions excluded. Nothing is written here.
-    pub(super) fn text_rename_to(&mut self, t: DocTag, name: String) {
-        let name = name.trim().to_string();
+    /// The SCIP symbol a rename of `word` at the caret of `id` may use: no server serves the buffer, its file is
+    /// fresh, and the occurrence under the caret reads exactly `word`.
+    fn scip_rename_symbol(&mut self, id: BufferId, word: &str) -> Option<(String, SymId, Span)> {
+        if self.lsp.docs.contains_key(&id) {
+            return None;
+        }
+        let (rel, sym, _, span) = self.scip_caret(id)?;
+        let enc = self.scip.index.as_ref()?.doc(&rel)?.encoding;
+        let b = self.editor.buffers.iter().find(|b| b.id == id)?;
+        matches!(rename_preview::check_span(&b.rope, span, enc, word), SpanCheck::Exact(..)).then_some((rel, sym, span))
+    }
+
+    /// The snapshot of the index a SCIP rename of `old` to `new` needs, taken on the main thread: the symbol's
+    /// occurrences by document and, for a global symbol, the names of every document of the index.
+    fn scip_rename_job(&mut self, id: BufferId, old: &str, new: &str) -> Option<ScipRename> {
+        let (rel, sym, span) = self.scip_rename_symbol(id, old)?;
+        let ix = self.scip.index.as_ref()?;
+        let mut docs: Vec<ScipFile> = Vec::new();
+        for (r, occ) in ix.occurrences_of(sym) {
+            if docs.last().is_none_or(|d| d.rel != r) {
+                docs.push(ScipFile { rel: r.to_string(), encoding: ix.doc(r)?.encoding, occs: Vec::new() });
+            }
+            docs.last_mut()?.occs.push((occ.span, occ.definition));
+        }
+        let root = self.workspace.root.clone();
+        let (textual, indexed) = if ix.is_local(sym) {
+            (None, HashSet::new())
+        } else {
+            let stage = TextualStage {
+                scope: TextualScope::Uncovered(HashSet::new()),
+                show_hidden: self.config.files.show_hidden,
+                show_ignored: self.config.files.show_ignored,
+            };
+            let mut indexed: HashSet<String> = ix.doc_paths().map(str::to_string).collect();
+            if let Ok(r) = ix.file().strip_prefix(&root) {
+                indexed.insert(r.to_string_lossy().replace('\\', "/"));
+            }
+            (Some(stage), indexed)
+        };
+        let index_mtime = ix.mtime();
+        let req = RenameRequest { old: old.into(), new: new.into(), steps: Vec::new(), open: self.open_texts(), root, textual };
+        Some(ScipRename { req, index_mtime, docs, indexed, caret: (rel, span) })
+    }
+
+    /// The word and path a textual rename of `t` to `name` is about: none (with a hint when the file or the caret
+    /// moved since the dialog) when there is nothing to rename.
+    fn text_rename_target(&mut self, t: &DocTag, name: &str) -> Option<(String, PathBuf)> {
         if name.is_empty() {
-            return;
+            return None;
         }
         let same = self.editor.active_buffer().is_some_and(|b| b.version == t.version);
         if !same || self.caret_position() != Some((t.buffer, t.pos)) {
-            return self.lsp_hint("The file changed; rename again");
+            self.lsp_hint("The file changed; rename again");
+            return None;
         }
-        let Some(b) = self.editor.active_buffer() else { return };
+        let b = self.editor.active_buffer()?;
         let (old, path) = (word_at(b, b.view.sel().head), b.path.clone());
-        let Some(path) = path.filter(|_| !old.is_empty() && old != name) else { return };
+        let path = path.filter(|_| !old.is_empty() && old != name)?;
+        Some((old, path))
+    }
+
+    /// The rename dialog's answer: the exact rename from the SCIP index when it applies, else the textual one.
+    /// Both open a preview in Find; nothing is written here.
+    pub(super) fn text_rename_to(&mut self, t: DocTag, name: String) {
+        let name = name.trim().to_string();
+        let Some((old, path)) = self.text_rename_target(&t, &name) else { return };
+        if let Some(job) = self.scip_rename_job(t.buffer, &old, &name) {
+            self.lsp.edit.scip_rename = Some(t);
+            let searching = job.req.textual.is_some().then_some(old);
+            return self.rename_preview_spawn(searching, move || rename_preview::build_scip(job));
+        }
+        self.text_rename_open(old, name, path);
+    }
+
+    /// Open Find with `old` as query and `name` as replacement, hits outside the index's uses and definitions
+    /// excluded (the textual rename).
+    fn text_rename_open(&mut self, old: String, name: String, path: PathBuf) {
         let keep = self.rename_candidates(&old, &path);
         self.layout.show(ToolWindowId::Find);
         self.focus.set(PanelId::Find);
@@ -345,15 +427,26 @@ impl App {
 
     /// Build the preview of `req` off the main thread; the result opens in Find (`rename_preview_done`).
     pub(super) fn rename_preview_start(&mut self, req: RenameRequest) {
+        let searching = req.textual.is_some().then(|| req.old.clone());
+        self.rename_preview_spawn(searching, move || rename_preview::build(req));
+    }
+
+    /// Run `job` off the main thread; the result opens in Find (`rename_preview_done`). `searching` is the old name
+    /// when the job runs a text search.
+    fn rename_preview_spawn(
+        &mut self,
+        searching: Option<String>,
+        job: impl FnOnce() -> Result<(RenamePreview, Vec<Hit>), String> + Send + 'static,
+    ) {
         self.find.reset();
         self.close_replace_dialog();
-        if req.textual.is_some() {
+        if let Some(old) = searching {
             // Find is not shown until the build ends.
-            self.notify(Level::Info, format!("Rename {}: searching the project for text matches…", req.old));
+            self.notify(Level::Info, format!("Rename {old}: searching the project for text matches…"));
         }
         let (seq, generation, tx) = (self.find.current_seq(), self.workspace.generation, self.bus_tx.clone());
         tokio::task::spawn_blocking(move || {
-            let result = Box::new(rename_preview::build(req));
+            let result = Box::new(job());
             let _ = tx.send(AppMsg::RenamePreview { generation, seq, result });
         });
     }
@@ -374,9 +467,20 @@ impl App {
             Ok(r) => r,
             Err(e) => return self.notify(Level::Warn, format!("Rename: {e}; nothing was changed")),
         };
+        let caret = self.lsp.edit.scip_rename.take();
+        if preview.scip.fallback {
+            self.notify(Level::Info, format!("The SCIP index has no usable definition of {}; renaming as text", preview.old));
+            let Some(t) = caret else { return };
+            let name = preview.new;
+            if let Some((old, path)) = self.text_rename_target(&t, &name) {
+                self.text_rename_open(old, name, path);
+            }
+            return;
+        }
         if hits.is_empty() && preview.op_count() == 0 {
             return self.lsp_hint("Nothing to rename");
         }
+        let scip = preview.scip.summary();
         let (old, new, rows, capped) = (preview.old.clone(), preview.new.clone(), preview.textual.rows, preview.textual.capped);
         self.layout.show(ToolWindowId::Find);
         self.focus.set(PanelId::Find);
@@ -390,6 +494,9 @@ impl App {
         self.notify(Level::Info, format!("Rename {old} to {new}: review the results, then Replace All (Alt+A){guesses}"));
         if capped {
             self.notify(Level::Warn, format!("Text search stopped at {MAX_HITS} matches; others are not listed"));
+        }
+        if let Some(w) = scip {
+            self.notify(Level::Warn, w);
         }
     }
 
@@ -2418,6 +2525,7 @@ mod tests {
             stamps: HashMap::new(),
             unlisted: HashSet::new(),
             textual: Default::default(),
+            scip: Default::default(),
         };
         preview.textual.capped = true;
         preview.textual.rows = 1;

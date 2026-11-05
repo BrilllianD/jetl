@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Rename (Shift+F6) without a language server uses the SCIP index (`[index] scip`) when it knows the symbol at the caret: the exact occurrences are listed in Find for review, and files the index does not cover or that changed since it was built show text matches instead, excluded.
 - Rename dialog (Shift+F6 with a language server): the check "Search in comments and strings" (Alt+C) adds whole-word matches of the old name in comments and strings to the preview; they are guesses, so they start excluded and are marked `text`, and Replace All writes only the ones you include.
 - Rename (Shift+F6) with a language server shows its answer in the Find window before anything is written: one result per text edit, grouped by file; Alt+Delete leaves a result or a whole file out, Replace All (Alt+A) lists the file operations (create, rename, delete) and applies the included edits and all operations as one workspace edit (undo and Local History as before). A file changed since the preview refuses the whole rename. `[lsp] rename_preview = false` (Settings > Language Servers) applies the rename at once as before.
 - SCIP indexes: set `[index] scip` to an `index.scip` (for example from `rust-analyzer scip .`) and Go to Definition and Find Usages use its exact results without a language server, in files not changed since the index was built.

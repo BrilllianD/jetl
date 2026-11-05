@@ -1,0 +1,32 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &marks, None)"
+---
+80x24 cursor=(20,10)
+00  ≣ ┌ Project: root ───────────────┐│
+01    │                              ││
+02  ⌂ │                              ││
+03  ◫ │                              ││               No files open.
+04  ⊢ │                              ││       Alt+1 opens the Project view;
+05  ┌ Rename ────────────────────────────────────────────────────────────────────┐
+06  │ Rename helper to assist: 1 occurrence in 1 file; 1 excluded.               │
+07  │ Text matches (guesses): 0 included, 1 left out.                            │
+08  │ SCIP index: 1 occurrence skipped, the text there is not helper.            │─
+09  │ SCIP index not used for 1 file (changed or unreadable): text matches only. │┐
+10  │ Open files change in the editor (undoable); others are written to disk.    ││
+11  │                                                                            ││
+12  │                           [ Rename ] [ Cancel ]                            ││
+13  └────────────────────────────────────────────────────────────────────────────┘│
+14  ✎ │ util.rs  src/  1                                                          │
+15  ✓ │      1  pub fn helperassist() {}                                          │
+16  ⟲ │                                                                           │
+17  ⚑ │                                                                           │
+18  ⎇ │                                                                           │
+19  ❯ │                                                                           │
+20  ⚠ │                                                                           │
+21  ► │                                                                           │
+22  ⌕ └───────────────────────────────────────────────────────────────────────────┘
+23
+-- marks: L=selected H=match D=helper A=assist
+12                              LLLLLLLLLL
+15                     DDDDDDAAAAAA

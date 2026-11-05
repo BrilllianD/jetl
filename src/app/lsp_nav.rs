@@ -385,11 +385,11 @@ impl App {
     }
 
     /// The SCIP occurrence under the caret of buffer `id`: its path relative
-    /// to the root, symbol and whether it is a definition. None without an
+    /// to the root, symbol, whether it is a definition and its span. None without an
     /// index, when the buffer's file is not fresh or the caret is on no
     /// occurrence. Starts a reload when the index file changed on disk (this
     /// lookup still uses the loaded index).
-    fn scip_caret(&mut self, id: BufferId) -> Option<(String, SymId, bool)> {
+    pub(super) fn scip_caret(&mut self, id: BufferId) -> Option<(String, SymId, bool, scip::Span)> {
         self.scip_check_reload();
         self.scip.index.as_ref()?;
         let b = self.editor.buffers.iter().find(|b| b.id == id)?;
@@ -402,8 +402,8 @@ impl App {
         let (line, col) = crate::editor::selection::pos_to_line_col(&b.rope, b.view.sel().head);
         let unit = scip::to_units(&b.line_text(line), col, doc.encoding);
         let occ = ix.occurrence_at(&rel, line as u32, unit)?;
-        let (symbol, definition) = (occ.symbol, occ.definition);
-        Some((rel, symbol, definition))
+        let (symbol, definition, span) = (occ.symbol, occ.definition, occ.span);
+        Some((rel, symbol, definition, span))
     }
 
     /// The row for a SCIP occurrence in `rel`, columns converted to chars with
@@ -429,7 +429,7 @@ impl App {
     /// from the symbol index instead. True when handled (the caller falls
     /// back to the Go to Symbol palette otherwise).
     fn scip_definition(&mut self, id: BufferId) -> bool {
-        let Some((_, sym, definition)) = self.scip_caret(id) else { return false };
+        let Some((_, sym, definition, _)) = self.scip_caret(id) else { return false };
         if definition {
             return self.lsp_usages_without_server(id);
         }
@@ -474,7 +474,7 @@ impl App {
     /// the unverified symbol-index candidates of files that are not fresh,
     /// ranked as `fallback_usages` does. True when handled.
     fn scip_usages(&mut self, id: BufferId) -> bool {
-        let Some((from_rel, sym, _)) = self.scip_caret(id) else { return false };
+        let Some((from_rel, sym, _, _)) = self.scip_caret(id) else { return false };
         let Some(b) = self.editor.buffers.iter().find(|b| b.id == id) else { return false };
         let Some(path) = b.path.clone() else { return false };
         let word = word_at(b, b.view.sel().head);
@@ -1805,5 +1805,242 @@ mod tests {
         assert_eq!(definition_snippet(&long, rust, 0).lines().count(), 200);
         assert_eq!(definition_snippet("a\nb\nc\nd\ne\n", None, 99), "");
         assert_eq!(definition_snippet(text, rust, 2), "    1;\n}\nfn b() {}");
+    }
+
+    // ---- exact rename from the SCIP index ----
+
+    use crate::event::Level;
+    use crate::ui::dialog::{DialogId, DialogKind, DialogResult};
+
+    fn is_preview(m: &AppMsg) -> bool {
+        matches!(m, AppMsg::RenamePreview { .. })
+    }
+
+    fn is_applied(m: &AppMsg) -> bool {
+        matches!(m, AppMsg::EditsApplied { .. })
+    }
+
+    /// Answer the open rename dialog with `name` and wait for the preview message.
+    async fn rename(app: &mut App, name: &str) {
+        let d = app.dialog.take().expect("the rename dialog");
+        app.finish_dialog(d.id, DialogResult::Text(name.into()));
+        handle_next(app, is_preview).await;
+    }
+
+    /// The included rows as `(file name, line, col)`.
+    fn included(app: &App) -> Vec<(String, usize, usize)> {
+        let name = |p: &Path| p.file_name().unwrap().to_str().unwrap().to_string();
+        app.find.included_by_file().into_iter().flat_map(|(p, hits)| hits.into_iter().map(move |h| (name(&p), h.line, h.col))).collect()
+    }
+
+    /// Replace All, then the dialog; returns its text. `button` is the answer.
+    fn replace_all(app: &mut App, button: usize) -> String {
+        app.perform(Action::Find(crate::actions::FindAction::ReplaceAll));
+        let d = app.dialog.take().expect("the rename confirmation");
+        let msg = d.message.clone();
+        app.finish_dialog(d.id, DialogResult::Button(button));
+        msg
+    }
+
+    fn buffer_text(app: &App) -> String {
+        app.editor.active_buffer().unwrap().text()
+    }
+
+    fn warn_toasts(app: &App) -> Vec<String> {
+        app.toasts.items().iter().filter(|t| t.level == Level::Warn).map(|t| t.text.clone()).collect()
+    }
+
+    #[tokio::test]
+    async fn scip_rename_lists_occurrences_and_applies_them() {
+        let (mut app, dir, root) = scip_app("scip-rename").await;
+        std::fs::write(root.join("notes.txt"), "helper here\n").unwrap();
+        goto(&mut app, 3, 12);
+        act(&mut app, LspAction::Rename);
+        let d = app.dialog.as_ref().expect("asked at once");
+        assert!(matches!(d.id, DialogId::TextRename(_)));
+        assert_eq!(d.message, "Rename 'helper' to:");
+        assert!(matches!(&d.kind, DialogKind::Input { ok, check: None, .. } if ok == "Preview"));
+        app.toasts = Default::default();
+        rename(&mut app, "assist").await;
+        // Nothing is written yet.
+        assert_eq!(buffer_text(&app), SCIP_MAIN);
+        assert_eq!(std::fs::read_to_string(root.join("src/util.rs")).unwrap(), SCIP_UTIL);
+        let want = [("main.rs".to_string(), 2, 25), ("main.rs".to_string(), 3, 10), ("util.rs".to_string(), 0, 15)];
+        assert_eq!(included(&app), want);
+        assert_eq!(app.find.excluded_count(), 1, "notes.txt, as text");
+        let first = app.find.hits().iter().find(|h| h.path.ends_with("main.rs")).unwrap();
+        assert_eq!(first.rename.as_ref().unwrap().edit.range.start, lsp_types::Position::new(2, 26), "UTF-16 after the emoji");
+        let notes = app.find.hits().iter().find(|h| h.path.ends_with("notes.txt")).unwrap();
+        assert!(notes.excluded && notes.rename.as_ref().unwrap().source == crate::files::rename_preview::RenameSource::Textual);
+        assert!(toasts(&app).iter().any(|t| t.contains("1 text match starts excluded")), "{:?}", toasts(&app));
+        assert!(warn_toasts(&app).is_empty(), "{:?}", warn_toasts(&app));
+        let msg = replace_all(&mut app, 0);
+        assert!(msg.starts_with("Rename helper to assist: 3 occurrences in 2 files; 1 excluded."), "{msg}");
+        handle_next(&mut app, is_applied).await;
+        assert_eq!(buffer_text(&app), "mod util;\nfn main() {\n    let s = \"日本😀\"; util::assist(s);\n    util::assist(s);\n}\n");
+        assert!(app.editor.active_buffer().unwrap().dirty());
+        assert_eq!(std::fs::read_to_string(root.join("src/util.rs")).unwrap(), "/* 😀 */ pub fn assist(_s: &str) {}\n");
+        assert_eq!(std::fs::read_to_string(root.join("notes.txt")).unwrap(), "helper here\n");
+        app.perform(Action::Editor(EditorAction::Undo));
+        assert_eq!(buffer_text(&app), SCIP_MAIN, "one undo step");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_covered_file_changed_after_the_index_gets_text_rows() {
+        let (mut app, dir, root) = scip_app("scip-rename-changed").await;
+        let (main, util) = (root.join("src/main.rs"), root.join("src/util.rs"));
+        crate::app::tests::load(&mut app, "src/util.rs", SCIP_UTIL);
+        let now = std::time::SystemTime::now();
+        set_mtime(&util, now - std::time::Duration::from_secs(100));
+        set_mtime(&main, now);
+        goto(&mut app, 0, 16);
+        act(&mut app, LspAction::Rename);
+        assert_eq!(app.dialog.as_ref().unwrap().message, "Rename 'helper' to:");
+        app.toasts = Default::default();
+        rename(&mut app, "assist").await;
+        assert_eq!(included(&app), [("util.rs".to_string(), 0, 15)]);
+        let text: Vec<_> = app.find.hits().iter().filter(|h| h.excluded).map(|h| (h.path.clone(), h.line, h.col)).collect();
+        assert_eq!(text, [(main.clone(), 2, 25), (main.clone(), 3, 10)]);
+        assert!(warn_toasts(&app).iter().any(|t| t.contains("1 file changed or unreadable")), "{:?}", warn_toasts(&app));
+        let msg = replace_all(&mut app, 0);
+        assert!(msg.contains("SCIP index not used for 1 file (changed or unreadable): text matches only."), "{msg}");
+        // Only an open buffer is edited: no disk step to wait for.
+        assert_eq!(buffer_text(&app), "/* 😀 */ pub fn assist(_s: &str) {}\n");
+        assert_eq!(std::fs::read_to_string(&main).unwrap(), SCIP_MAIN);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_definition_in_a_changed_file_falls_back_to_text() {
+        let (mut app, dir, root) = scip_app("scip-rename-fallback").await;
+        set_mtime(&root.join("src/util.rs"), std::time::SystemTime::now());
+        goto(&mut app, 3, 12);
+        act(&mut app, LspAction::Rename);
+        assert_eq!(app.dialog.as_ref().unwrap().message, "Rename 'helper' to:", "the caret's file is fresh");
+        app.toasts = Default::default();
+        rename(&mut app, "assist").await;
+        let want = "The SCIP index has no usable definition of helper; renaming as text";
+        assert!(toasts(&app).contains(&want.to_string()), "{:?}", toasts(&app));
+        assert!(app.find.rename_preview().is_none());
+        assert_eq!((app.find.query.text.as_str(), app.find.replace.text.as_str()), ("helper", "assist"));
+        crate::app::tests::run_find(&mut app);
+        assert!(app.find.hit_count() > 0);
+        assert_eq!(buffer_text(&app), SCIP_MAIN);
+        assert_eq!(std::fs::read_to_string(root.join("src/util.rs")).unwrap(), SCIP_UTIL);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_fallback_after_the_caret_moved_opens_nothing() {
+        let (mut app, dir, root) = scip_app("scip-rename-moved").await;
+        set_mtime(&root.join("src/util.rs"), std::time::SystemTime::now());
+        goto(&mut app, 3, 12);
+        act(&mut app, LspAction::Rename);
+        let d = app.dialog.take().unwrap();
+        app.finish_dialog(d.id, DialogResult::Text("assist".into()));
+        goto(&mut app, 2, 25);
+        app.toasts = Default::default();
+        handle_next(&mut app, is_preview).await;
+        assert!(toasts(&app).contains(&"The file changed; rename again".to_string()), "{:?}", toasts(&app));
+        assert!(app.find.query.text.is_empty() && app.find.rename_preview().is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_dirty_caret_buffer_is_a_text_rename() {
+        let (mut app, dir, _) = scip_app("scip-rename-dirty").await;
+        goto(&mut app, 0, 0);
+        app.perform(Action::Editor(EditorAction::InsertText("// x\n".into())));
+        goto(&mut app, 4, 12);
+        act(&mut app, LspAction::Rename);
+        assert_eq!(app.dialog.as_ref().unwrap().message, "Rename 'helper' as text to:");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_file_changed_after_the_preview_refuses_the_rename() {
+        let (mut app, dir, root) = scip_app("scip-rename-stale").await;
+        goto(&mut app, 3, 12);
+        act(&mut app, LspAction::Rename);
+        rename(&mut app, "assist").await;
+        let util = root.join("src/util.rs");
+        std::fs::write(&util, format!("{SCIP_UTIL}// longer\n")).unwrap();
+        app.toasts = Default::default();
+        replace_all(&mut app, 0);
+        let err: Vec<_> = app.toasts.items().iter().filter(|t| t.level == Level::Error).map(|t| t.text.clone()).collect();
+        assert_eq!(err, ["src/util.rs changed since the preview; rename again"]);
+        assert!(app.find.rename_preview().is_some(), "the preview is kept");
+        assert_eq!(buffer_text(&app), SCIP_MAIN);
+        assert_eq!(std::fs::read_to_string(&util).unwrap(), format!("{SCIP_UTIL}// longer\n"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_buffer_typed_in_after_the_preview_refuses_the_rename() {
+        let (mut app, dir, root) = scip_app("scip-rename-typed").await;
+        goto(&mut app, 3, 12);
+        act(&mut app, LspAction::Rename);
+        rename(&mut app, "assist").await;
+        goto(&mut app, 0, 0);
+        app.perform(Action::Editor(EditorAction::InsertText("// x\n".into())));
+        let typed = buffer_text(&app);
+        app.toasts = Default::default();
+        replace_all(&mut app, 0);
+        let err: Vec<_> = app.toasts.items().iter().filter(|t| t.level == Level::Error).map(|t| t.text.clone()).collect();
+        assert_eq!(err, ["src/main.rs changed since the preview; rename again"]);
+        assert!(app.find.rename_preview().is_some());
+        assert_eq!(buffer_text(&app), typed);
+        assert_eq!(std::fs::read_to_string(root.join("src/util.rs")).unwrap(), SCIP_UTIL);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_local_symbol_renames_within_its_document() {
+        let (mut app, dir, root) = scip_app("scip-rename-local").await;
+        std::fs::write(root.join("notes.txt"), " s \n").unwrap();
+        goto(&mut app, 2, 8);
+        act(&mut app, LspAction::Rename);
+        assert_eq!(app.dialog.as_ref().unwrap().message, "Rename 's' to:");
+        rename(&mut app, "z").await;
+        assert_eq!(included(&app), [("main.rs".to_string(), 2, 8), ("main.rs".to_string(), 2, 32)]);
+        assert_eq!(app.find.hit_count(), 2, "no excluded row, no row in another file");
+        replace_all(&mut app, 0);
+        let want = SCIP_MAIN.replace("let s =", "let z =").replacen("helper(s)", "helper(z)", 1);
+        assert_eq!(buffer_text(&app), want);
+        assert_eq!(buffer_text(&app).lines().nth(3), Some("    util::helper(s);"));
+        assert_eq!(std::fs::read_to_string(root.join("notes.txt")).unwrap(), " s \n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_replace_dialog_opened_during_the_build_is_closed() {
+        let (mut app, dir, root) = scip_app("scip-rename-dialog").await;
+        goto(&mut app, 3, 12);
+        act(&mut app, LspAction::Rename);
+        let d = app.dialog.take().unwrap();
+        app.finish_dialog(d.id, DialogResult::Text("assist".into()));
+        app.dialog = Some(crate::ui::dialog::Dialog::confirm(DialogId::ReplaceInFiles, "Replace", "old question", &["Replace", "Cancel"]));
+        handle_next(&mut app, is_preview).await;
+        assert!(app.dialog.is_none());
+        assert_eq!(buffer_text(&app), SCIP_MAIN);
+        assert_eq!(std::fs::read_to_string(root.join("src/util.rs")).unwrap(), SCIP_UTIL);
+        let msg = replace_all(&mut app, 1);
+        assert!(msg.starts_with("Rename helper to assist: "), "the preview asks for its own confirmation: {msg}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn rename_preview_off_still_previews() {
+        let (mut app, dir, _) = scip_app("scip-rename-off").await;
+        let mut c = app.config.clone();
+        c.lsp.rename_preview = false;
+        app.apply_config(c);
+        goto(&mut app, 3, 12);
+        act(&mut app, LspAction::Rename);
+        rename(&mut app, "assist").await;
+        assert!(app.find.rename_preview().is_some());
+        assert_eq!(buffer_text(&app), SCIP_MAIN);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

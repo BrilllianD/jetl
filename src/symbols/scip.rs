@@ -4,7 +4,7 @@
 //! list per symbol.
 //!
 //! Whether a document may still be trusted is the app's decision (it needs
-//! buffers and mtimes). Columns stay in the document's own units
+//! buffers and mtimes); [`file_fresh`] is the rule it applies. Columns stay in the document's own units
 //! ([`Encoding`]); callers convert with the line text ([`to_chars`],
 //! [`to_units`]).
 
@@ -30,6 +30,12 @@ fn release_freed_memory() {
 
 #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
 fn release_freed_memory() {}
+
+/// Whether an index written at `index_mtime` may be trusted for the file at `abs`: not edited in an open buffer, and
+/// not newer on disk than the index. The one rule behind `App::scip_fresh` and the SCIP rename.
+pub fn file_fresh(abs: &Path, dirty: bool, index_mtime: SystemTime) -> bool {
+    !dirty && std::fs::metadata(abs).and_then(|m| m.modified()).is_ok_and(|t| t <= index_mtime)
+}
 
 /// The unit of the columns in one document.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -271,6 +277,11 @@ impl ScipIndex {
         self.warning.as_deref()
     }
 
+    /// The root-relative path of every document, in the order the index lists them.
+    pub fn doc_paths(&self) -> impl Iterator<Item = &str> {
+        self.doc_paths.iter().map(String::as_str)
+    }
+
     pub fn doc_count(&self) -> usize {
         self.docs.len()
     }
@@ -409,6 +420,26 @@ mod tests {
         assert_eq!(span_of(Some(&multi), &[0, 0, 9]), s(4, 3, 6, 1));
         assert_eq!(span_of(None, &[1, 2]), None);
         assert_eq!(span_of(None, &[1, -2, 3]), None);
+    }
+
+    #[test]
+    fn file_fresh_is_the_rule() {
+        let dir = temp("fresh");
+        let f = dir.join("a.txt");
+        std::fs::write(&f, "x").unwrap();
+        let now = SystemTime::now();
+        let set = |t: SystemTime| std::fs::File::options().write(true).open(&f).unwrap().set_modified(t).unwrap();
+        let hour = std::time::Duration::from_secs(3600);
+        set(now - hour);
+        assert!(file_fresh(&f, false, now), "older than the index");
+        set(now);
+        assert!(file_fresh(&f, false, now), "equal mtime");
+        set(now + hour);
+        assert!(!file_fresh(&f, false, now), "newer than the index");
+        set(now - hour);
+        assert!(!file_fresh(&f, true, now), "dirty in a buffer");
+        assert!(!file_fresh(&dir.join("missing.txt"), false, now), "missing");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn temp(name: &str) -> PathBuf {

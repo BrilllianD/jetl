@@ -314,12 +314,8 @@ impl App {
     pub(crate) fn scip_fresh(&self, rel: &str) -> bool {
         let Some(ix) = &self.scip.index else { return false };
         let abs = self.workspace.root.join(rel);
-        if let Some(i) = self.editor.index_of(&abs)
-            && self.editor.buffers[i].dirty()
-        {
-            return false;
-        }
-        std::fs::metadata(&abs).and_then(|m| m.modified()).is_ok_and(|t| t <= ix.mtime())
+        let dirty = self.editor.index_of(&abs).is_some_and(|i| self.editor.buffers[i].dirty());
+        crate::symbols::scip::file_fresh(&abs, dirty, ix.mtime())
     }
 
     /// Bring the Structure window up to date with the active buffer (every
