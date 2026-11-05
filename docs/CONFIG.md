@@ -444,10 +444,14 @@ Run > Debug (Shift+F9) starts the configuration selected in the Run window, else
 the first one with a debug table, under its adapter, in the project root; the
 program is the one named in `launch`. Only one session runs at a time: starting
 another stops the first, with no prompt. Ctrl+F2 or Run > Stop Debugging stops it,
-and Ctrl+F2 reaches a Run task only while no session is live. Debug refuses a
+and Ctrl+F2 reaches a Run task only while no session is live (under a dialog or the palette it still stops the Run task, not the session). Debug refuses a
 working directory whose name holds a line break, because gdb runs `cd` with it
 unquoted and would run the following lines as commands. Renaming a configuration
 leaves its table behind; the toast names the table to write.
+
+With gdb, a `program` or `cwd` that does not exist gives no error: gdb answers `launch`
+with success and logs the failure only, so the session stays idle with `Debugging <name> with gdb`
+as its only sign, and Ctrl+F2 ends it.
 
 Things to know about arguments and test runs: with `command = ["sh", "-c",
 script]` the first of `args` becomes `$0` of the script, not `$1`. A compound

@@ -565,15 +565,15 @@
 "ctrl-alt-up" = "run.prev_problem"
 "esc" = "app.focus_editor"
 
+# Above [global] while a debug session is live or starting: Ctrl+F2 stops it first, and the Run task once none is.
+[debug.active]
+"ctrl-f2" = "debug.stop"
+
 # While the Terminal window (Alt+F12) has focus every key goes to the shell
 # except the ones in this table, which is the only one consulted there (add
 # keys to keep them for jetl, "none" gives one to the shell), and Esc Esc: a
 # single Esc reaches the shell, a second one within the double click interval
 # focuses the editor.
-# Above [global] while a debug session is live or starting: Ctrl+F2 stops it first, and the Run task once none is.
-[debug.active]
-"ctrl-f2" = "debug.stop"
-
 [terminal]
 "alt-f12" = "tool_window.terminal"
 "ctrl-shift-up" = "tool_window.stretch_up"

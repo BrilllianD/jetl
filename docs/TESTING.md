@@ -946,8 +946,8 @@ shell's own command line out of the match), and start only when both print nothi
    `launch must be a table` (Run does not show it); with `launch = { program = "...", env = "x" }`, an
    error row in the Event Log (Alt+5) with gdb's text and then `Debug session ended`, and no `gdb` left.
 4. A `cwd` with a line break: `launch = { program = "...", cwd = "/tmp\nshell touch /tmp/pwned" }`
-   gives `Cannot debug 'demo': its working directory holds a line break, which a debug adapter could
-   run as commands`, starts no `gdb`, and `/tmp/pwned` does not exist.
+   gives `Cannot debug 'demo': line break in its working directory` (all of it in the toast at 80x24, on
+   two lines), starts no `gdb`, and `/tmp/pwned` does not exist.
 5. A program that does not exist: `launch = { program = "${workspaceFolder}/nope" }`. gdb answers the
    launch with success and idles, so the session stays live (one `gdb`) until Ctrl+F2:
    `Debug session stopped`, no `gdb` left.
@@ -961,10 +961,15 @@ shell's own command line out of the match), and start only when both print nothi
 8. Shift+F9, then `kill -9` the `gdb`: the toast is `Debug session ended: adapter exited`, and after two
    seconds no `jetl-dbg-sleepy` is left.
 9. Shift+F9, then Ctrl+Q: jetl exits 0 with an empty stderr, and neither process is left.
+10. An adapter that never answers: Shift+F9 on the sleeping program, read `State` and `TracerPid` in
+    `/proc/<debuggee>/status` (`S (sleeping)`, the gdb's pid), `kill -STOP` the `gdb`, then Ctrl+F2.
+    Observed with gdb 17.2: `Debug session stopped` after 4.4 s (the two stop stages of 2 s, then the
+    kill), and neither process is left a moment later: killing gdb takes its debuggee, which gdb traces.
+11. The same with Ctrl+Q instead of Ctrl+F2: jetl exits 0 with an empty stderr after 4.1 to 4.4 s,
+    and neither process is left.
 
 Each run exits 0 with an empty stderr on Ctrl+Q. What gdb cannot show, and the unit tests prove
-instead: the other two start orders (js-debug's and delve's), an adapter that never answers (the
-kill after the stop stages), a pause (no breakpoint is sent before the breakpoint sync), a root switch
+instead: the other two start orders (js-debug's and delve's), a pause (no breakpoint is sent before the breakpoint sync), a root switch
 and a replaced session's silence, and the debugpy command (debugpy is not installed).
 
 ### Scenario: Save As

@@ -478,6 +478,15 @@ its busy id before the generation check, so the spinner never sticks.
   another one starts. Language servers are asked to shut down first (two
   seconds on quit, in the background on a root switch or restart). Clipboard tools are killed after 1 s. Their
   results follow the stale-result rules above.
+- Debug adapters (`dap::client`) are children of the same kind: the adapter and what stays in its
+  process group are killed with the group, on quit, on a root switch, when the session ends and when
+  the client is dropped. A debuggee may be in a process group of its own (gdb's is), so it goes only
+  through the adapter: `terminate` and `disconnect` when the adapter cooperates; when jetl kills the
+  adapter (after the stop stages, or on quit with an adapter that does not answer), the debuggee ends
+  only if the adapter's death takes it. With gdb it did: `kill -9` of the gdb (step 8 of the "Debug and Stop"
+  scenario in TESTING.md), and `kill -STOP` of it followed by Ctrl+F2 or Ctrl+Q (steps 10 and 11), left
+  no debuggee. Other adapters are not verified. If jetl itself is killed while the adapter is stopped,
+  the debuggee can survive.
 - Lists keep their wheel scroll: `ListState::set_viewport` and `fit` bound
   the offset without pulling the view back to the selection.
 - Panic path (`tui::install_panic_hook`, `recovery.rs`): the terminal is

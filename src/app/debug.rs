@@ -145,10 +145,7 @@ fn prepare(job: Job) -> Result<Prepared, String> {
     let launch = resolve_launch(&adapter, block, task, &vars, &process_env);
     // gdb runs `cd <cwd>` unquoted, and `gdb.execute` runs each line of a string as a command.
     if launch["cwd"].as_str().is_some_and(|c| c.contains('\n')) {
-        return Err(format!(
-            "Cannot debug '{}': its working directory holds a line break, which a debug adapter could run as commands",
-            task.name
-        ));
+        return Err(format!("Cannot debug '{}': line break in its working directory", task.name));
     }
     Ok(Prepared { name: task.name.clone(), adapter, launch })
 }
@@ -287,7 +284,8 @@ impl App {
         self.debug.seq += 1;
         async move {
             if let Some(b) = before {
-                // What this abandons is killed with the runtime: the driver's `Group` kills on drop.
+                // What this abandons: the adapter and its process group are killed with the runtime (the driver's `Group` kills on drop).
+                // A debuggee in a group of its own goes only if the adapter's death takes it; see ARCHITECTURE.
                 let _ = tokio::time::timeout(SHUTDOWN_LIMIT + Duration::from_secs(1), b).await;
             }
         }
@@ -496,7 +494,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn a_cwd_with_a_newline_is_refused() {
-        let exact = "Cannot debug 'demo': its working directory holds a line break, which a debug adapter could run as commands";
+        let exact = "Cannot debug 'demo': line break in its working directory";
         let in_block = "[[configs]]\nname = \"demo\"\ncommand = [\"./demo\"]\n\n[debug.demo]\nadapter = \"fake\"\nlaunch = { program = \"x\", cwd = \"/tmp/a\\nshell touch x\" }\n";
         assert_eq!(refused("debug-newline-block", in_block, |_| {}).await, (Level::Warn, exact.to_string()));
         let in_config = "[[configs]]\nname = \"demo\"\ncommand = [\"./demo\"]\ncwd = \"sub\\nshell touch x\"\n\n[debug.demo]\nadapter = \"fake\"\nlaunch = { program = \"x\" }\n";
@@ -634,8 +632,9 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn a_second_stop_skips_a_stage() {
         let (mut app, dir, _fakes, mut fake) = live("debug-stop-twice", Order::LaunchEarly).await;
-        let began = Instant::now();
         app.perform(Action::Debug(crate::actions::DebugAction::Stop));
+        fake.recv("terminate").await;
+        let began = Instant::now();
         app.perform(Action::Debug(crate::actions::DebugAction::Stop));
         fake.recv("disconnect").await;
         assert!(began.elapsed() < STOP_STAGE, "disconnect took {:?}", began.elapsed());
@@ -747,6 +746,43 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn a_root_switch_during_a_start_connects_nothing() {
+        let (mut app, dir) = test_app("debug-root-switch-start");
+        let mut fakes = with_fake_adapters(&mut app, caps(), Order::LaunchDeferred);
+        write_run_toml(&app, DEMO);
+        shift_f9(&mut app);
+        assert!(app.debug.starting());
+        let other = dir.join("other");
+        std::fs::create_dir_all(&other).unwrap();
+        app.do_switch_root(std::fs::canonicalize(&other).unwrap());
+        assert!(!app.debug.starting());
+        handle_next(&mut app, |m| matches!(m, AppMsg::DebugReady { .. })).await;
+        assert!(fakes.try_recv().is_err(), "an adapter was connected for the old root");
+        assert!(!app.debug.active() && !app.debug.starting());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_second_start_during_a_stop_waits_and_replaces() {
+        let (mut app, dir, mut fakes, mut fake1) = live("debug-start-in-stop", Order::LaunchDeferred).await;
+        app.perform(Action::Debug(crate::actions::DebugAction::Stop));
+        fake1.recv("terminate").await;
+        shift_f9(&mut app);
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(fakes.try_recv().is_err(), "the second adapter started before the first ended");
+        while let Ok(m) = app.bus_rx.try_recv() {
+            assert!(!matches!(m, AppMsg::DebugReady { .. }), "the start did not wait");
+        }
+        fake1.event("terminated", Value::Null);
+        let disconnect = fake1.recv("disconnect").await;
+        fake1.respond(&disconnect, Value::Null);
+        dap_until(&mut app, |a| a.debug.active()).await;
+        let mut fake2 = fakes.try_recv().expect("the second adapter");
+        fake2.recv("launch").await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
     async fn a_second_start_waits_and_replaces() {
         let (mut app, dir, mut fakes, mut fake1) = live("debug-replace", Order::LaunchDeferred).await;
         shift_f9(&mut app);
@@ -774,7 +810,7 @@ pub(crate) mod tests {
             fake
         });
         app.shutdown().await;
-        assert!(tokio::time::timeout(Duration::from_secs(1), task).await.is_ok());
+        tokio::time::timeout(Duration::from_secs(1), task).await.expect("in time").expect("cooperated");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
