@@ -170,6 +170,9 @@ pub struct Session {
     config_done: bool,
     launch_answered: bool,
     terminated: bool,
+    /// The user's `Stop` or an earlier failure began or joined this stop, so a failure of a request it cancelled
+    /// is not shown again. An adapter's `terminated` alone does not set it.
+    stop_silent: bool,
     stop: Option<StopStage>,
     /// Expired in `seq` order, deterministic.
     pending: BTreeMap<i64, Pending>,
@@ -190,6 +193,7 @@ impl Session {
             config_done: false,
             launch_answered: false,
             terminated: false,
+            stop_silent: false,
             stop: None,
             pending: BTreeMap::new(),
             newest_breakpoints: BTreeMap::new(),
@@ -331,6 +335,27 @@ impl Session {
         self.set_phase(Phase::Stopping, out);
     }
 
+    /// Emits `Error(msg)` unless the stop in progress is already explained. Returns whether it emitted. Once a
+    /// failure is shown during a stop, later ones stay silent.
+    fn report(&mut self, msg: String, out: &mut Vec<Action>) -> bool {
+        let stopping = self.phase == Phase::Stopping;
+        if stopping && self.stop_silent {
+            return false;
+        }
+        out.push(Action::Emit(DapBody::Error(msg)));
+        self.stop_silent |= stopping;
+        true
+    }
+
+    /// A failed or timed out `launch` or `configurationDone`: shown, then the session stops unless it already is.
+    fn fail_start(&mut self, msg: String, now: Instant, out: &mut Vec<Action>) {
+        let stopping = self.phase == Phase::Stopping;
+        if self.report(msg, out) && !stopping {
+            self.stop_silent = true;
+            self.begin_stop(now, out);
+        }
+    }
+
     fn answer_reverse(&mut self, r: ReverseRequest, out: &mut Vec<Action>) {
         let seq = self.next_seq;
         self.next_seq += 1;
@@ -345,7 +370,6 @@ impl Session {
 
     fn on_response(&mut self, r: Response, now: Instant, out: &mut Vec<Action>) {
         let Some(p) = self.pending.remove(&r.request_seq) else { return };
-        let stopping = self.phase == Phase::Stopping;
         match p.kind {
             PendingKind::Initialize => {
                 if !r.success {
@@ -362,30 +386,17 @@ impl Session {
                     self.configure(now, out);
                 }
             }
+            PendingKind::Launch | PendingKind::ConfigurationDone if !r.success => self.fail_start(r.error_text(), now, out),
             PendingKind::Launch => {
-                if !r.success {
-                    if !stopping {
-                        out.push(Action::Emit(DapBody::Error(r.error_text())));
-                        self.begin_stop(now, out);
-                    }
-                    return;
-                }
                 self.launch_answered = true;
                 self.maybe_running(out);
             }
             PendingKind::ConfigurationDone => {
-                if !r.success {
-                    if !stopping {
-                        out.push(Action::Emit(DapBody::Error(r.error_text())));
-                        self.begin_stop(now, out);
-                    }
-                    return;
-                }
                 self.config_done = true;
                 self.maybe_running(out);
             }
             PendingKind::SetBreakpoints { source, requested } => {
-                if stopping || !self.is_newest(&source, r.request_seq) {
+                if self.phase == Phase::Stopping || !self.is_newest(&source, r.request_seq) {
                     return;
                 }
                 if !r.success {
@@ -397,12 +408,12 @@ impl Session {
             }
             PendingKind::SetExceptionBreakpoints => {
                 if !r.success {
-                    out.push(Action::Emit(DapBody::Error(format!("setExceptionBreakpoints: {}", r.error_text()))));
+                    self.report(format!("setExceptionBreakpoints: {}", r.error_text()), out);
                 }
             }
             PendingKind::Step { epoch } => {
                 if !r.success && epoch == self.epoch {
-                    out.push(Action::Emit(DapBody::Error(format!("{}: {}", p.command, r.error_text()))));
+                    self.report(format!("{}: {}", p.command, r.error_text()), out);
                 }
             }
             PendingKind::Tagged(tag) => {
@@ -516,12 +527,15 @@ impl Session {
                 self.epoch += 1;
                 self.send("pause", json!({ "threadId": thread }), PendingKind::Step { epoch: self.epoch }, now, out);
             }
-            Command::Stop => match (self.phase, self.stop) {
-                (Phase::Initializing, _) => self.end("", true, out),
-                (Phase::Stopping, Some(StopStage::Terminate { .. })) => self.disconnect(now, out),
-                (Phase::Stopping, _) => self.end("", true, out),
-                _ => self.begin_stop(now, out),
-            },
+            Command::Stop => {
+                self.stop_silent = true;
+                match (self.phase, self.stop) {
+                    (Phase::Initializing, _) => self.end("", true, out),
+                    (Phase::Stopping, Some(StopStage::Terminate { .. })) => self.disconnect(now, out),
+                    (Phase::Stopping, _) => self.end("", true, out),
+                    _ => self.begin_stop(now, out),
+                }
+            }
         }
     }
 
@@ -551,18 +565,16 @@ impl Session {
                     }
                 }
                 PendingKind::SetExceptionBreakpoints => {
-                    out.push(Action::Emit(DapBody::Error("setExceptionBreakpoints timed out".into())));
+                    self.report("setExceptionBreakpoints timed out".into(), out);
                 }
                 PendingKind::ConfigurationDone => {
-                    if !stopping {
-                        out.push(Action::Emit(DapBody::Error("configurationDone timed out".into())));
-                    }
+                    self.report("configurationDone timed out".into(), out);
                     self.config_done = true;
                     self.maybe_running(out);
                 }
                 PendingKind::Step { epoch } => {
                     if epoch == self.epoch {
-                        out.push(Action::Emit(DapBody::Error(format!("{} timed out", p.command))));
+                        self.report(format!("{} timed out", p.command), out);
                     }
                 }
                 PendingKind::Tagged(tag) => {
@@ -570,10 +582,8 @@ impl Session {
                         out.push(Action::Emit(DapBody::Response { tag, result: Err("timed out".into()) }));
                     }
                 }
-                // Unreachable: `timeout` is `None` for these. Visible if it ever changes.
-                PendingKind::Launch | PendingKind::Terminate | PendingKind::Disconnect => {
-                    out.push(Action::Emit(DapBody::Error(format!("{} timed out", p.command))));
-                }
+                // Unreachable: `timeout` is `None` for these.
+                PendingKind::Launch | PendingKind::Terminate | PendingKind::Disconnect => {}
             }
         }
     }
@@ -1001,6 +1011,7 @@ mod tests {
         assert!(h.errors().is_empty());
         assert!(!h.has_ended());
         assert_eq!(h.phase(), Phase::Starting);
+        assert!(h.s.pending.values().any(|p| p.command == "launch"), "launch must outlive any hour");
         h.cmd(Command::Stop);
         assert_eq!(h.commands().last().unwrap(), "terminate");
         assert_eq!(h.phase(), Phase::Stopping);
@@ -1735,6 +1746,263 @@ mod tests {
         let mut h = running();
         h.raw(json!({"type": "response", "seq": 1, "request_seq": 9999, "success": false, "command": "x"}));
         assert!(h.last.is_empty());
+    }
+
+    // ---- fix wave: why a stop began, and the decision-table rows that had no test
+
+    /// `Starting` with `initialized` seen, configuration sent, nothing answered.
+    fn configuring() -> H {
+        let mut h = starting();
+        h.initialized();
+        h
+    }
+
+    #[test]
+    fn terminated_then_failed_launch_reports_then_ends() {
+        let mut h = starting();
+        h.event("terminated", json!({}));
+        assert_eq!(h.phase(), Phase::Stopping);
+        h.fail("launch", "no program");
+        assert_eq!(h.errors(), ["no program"]);
+        h.answer("disconnect", Value::Null);
+        assert_eq!(h.last, end_actions(""));
+        let at = |f: fn(&DapBody) -> bool| h.emitted.iter().position(f).unwrap();
+        assert!(at(|b| matches!(b, DapBody::Error(_))) < at(|b| matches!(b, DapBody::Ended { .. })));
+    }
+
+    #[test]
+    fn terminated_then_failed_configuration_done_reports_once_for_two_failures() {
+        let mut h = configuring();
+        sets_ok(&mut h);
+        h.event("terminated", json!({}));
+        h.fail("configurationDone", "bad");
+        h.fail("launch", "worse");
+        assert_eq!(h.errors(), ["bad"], "the first failure was shown, the second is silent");
+    }
+
+    #[test]
+    fn terminated_then_configuration_done_timeout_reports() {
+        let mut h = configuring();
+        sets_ok(&mut h);
+        let second = Duration::from_secs(1);
+        h.advance(REQUEST_TIMEOUT - second);
+        h.event("terminated", json!({}));
+        h.advance(second - MS);
+        assert!(h.errors().is_empty());
+        h.advance(MS);
+        assert_eq!(h.errors(), ["configurationDone timed out"]);
+    }
+
+    #[test]
+    fn stop_then_cancelled_set_exception_breakpoints_is_silent() {
+        let mut h = configuring();
+        h.answer("setExceptionBreakpoints", Value::Null);
+        h.cmd(Command::Stop);
+        h.fail("configurationDone", "cancelled");
+        let mut h2 = configuring();
+        h2.cmd(Command::Stop);
+        h2.fail("setExceptionBreakpoints", "cancelled");
+        assert!(h.errors().is_empty() && h2.errors().is_empty(), "{:?} {:?}", h.errors(), h2.errors());
+    }
+
+    #[test]
+    fn stop_then_set_exception_breakpoints_timeout_is_silent() {
+        let mut h = configuring();
+        h.cmd(Command::Stop);
+        h.advance(REQUEST_TIMEOUT);
+        assert!(h.errors().is_empty(), "{:?}", h.errors());
+    }
+
+    #[test]
+    fn stop_then_cancelled_step_is_silent() {
+        for pause in [false, true] {
+            let mut h = if pause { running() } else { suspended() };
+            if pause {
+                h.cmd(Command::Pause { thread: 7 });
+            } else {
+                h.cmd(Command::Resume { kind: ResumeKind::Next, thread: 7 });
+            }
+            h.cmd(Command::Stop);
+            h.fail(if pause { "pause" } else { "next" }, "cancelled");
+            assert!(h.errors().is_empty(), "pause={pause}: {:?}", h.errors());
+        }
+    }
+
+    #[test]
+    fn stop_then_step_timeout_is_silent() {
+        for pause in [false, true] {
+            let mut h = if pause { running() } else { suspended() };
+            if pause {
+                h.cmd(Command::Pause { thread: 7 });
+            } else {
+                h.cmd(Command::Resume { kind: ResumeKind::Next, thread: 7 });
+            }
+            h.cmd(Command::Stop);
+            h.advance(REQUEST_TIMEOUT);
+            assert!(h.errors().is_empty(), "pause={pause}: {:?}", h.errors());
+        }
+    }
+
+    #[test]
+    fn stop_then_configuration_done_failure_or_timeout_is_silent() {
+        let mut h = configuring();
+        sets_ok(&mut h);
+        h.cmd(Command::Stop);
+        h.fail("configurationDone", "cancelled");
+        assert!(h.errors().is_empty());
+        let mut h = configuring();
+        sets_ok(&mut h);
+        h.cmd(Command::Stop);
+        h.advance(REQUEST_TIMEOUT);
+        assert!(h.errors().is_empty());
+    }
+
+    #[test]
+    fn failure_after_a_failed_launch_stop_is_silent() {
+        let mut h = configuring();
+        h.fail("launch", "first");
+        h.fail("configurationDone", "second");
+        h.fail("setExceptionBreakpoints", "third");
+        assert_eq!(h.errors(), ["first"]);
+        assert_eq!(h.count("terminate"), 1);
+    }
+
+    #[test]
+    fn continued_in_starting_bumps_the_epoch_and_keeps_the_phase() {
+        let mut h = starting();
+        h.event("continued", json!({"threadId": 1}));
+        assert_eq!(h.s.epoch(), 1);
+        assert_eq!(h.phase(), Phase::Starting);
+        assert_eq!(h.last, vec![Action::Emit(DapBody::Running { epoch: 1 })]);
+    }
+
+    #[test]
+    fn set_exception_breakpoints_failure_and_timeout_report_and_continue() {
+        let mut h = configuring();
+        h.fail("setExceptionBreakpoints", "nope");
+        assert_eq!(h.last, vec![Action::Emit(DapBody::Error("setExceptionBreakpoints: nope".into()))]);
+        assert_eq!(h.phase(), Phase::Starting);
+        assert_eq!(h.count("terminate"), 0);
+
+        let mut h = configuring();
+        h.advance(REQUEST_TIMEOUT);
+        assert_eq!(h.errors().iter().filter(|e| *e == "setExceptionBreakpoints timed out").count(), 1);
+        assert_eq!(h.phase(), Phase::Starting);
+        assert_eq!(h.count("terminate"), 0);
+    }
+
+    #[test]
+    fn step_and_pause_timeouts_report_while_current_only() {
+        let mut h = suspended();
+        h.cmd(Command::Resume { kind: ResumeKind::Next, thread: 7 });
+        h.take_emitted();
+        h.advance(REQUEST_TIMEOUT - MS);
+        assert!(h.errors().is_empty());
+        h.advance(MS);
+        assert_eq!(h.errors(), ["next timed out"]);
+
+        let mut h = running();
+        h.cmd(Command::Pause { thread: 7 });
+        h.advance(REQUEST_TIMEOUT);
+        assert_eq!(h.errors(), ["pause timed out"]);
+
+        let mut h = suspended();
+        h.cmd(Command::Resume { kind: ResumeKind::Next, thread: 7 });
+        h.event("stopped", json!({"threadId": 7, "reason": "step"}));
+        h.advance(REQUEST_TIMEOUT);
+        assert!(h.errors().is_empty(), "stale step timeout: {:?}", h.errors());
+
+        let mut h = running();
+        h.cmd(Command::Pause { thread: 7 });
+        h.event("stopped", json!({"threadId": 7, "reason": "pause"}));
+        h.advance(REQUEST_TIMEOUT);
+        assert!(h.errors().is_empty(), "stale pause timeout: {:?}", h.errors());
+    }
+
+    #[test]
+    fn terminate_answered_either_way_changes_nothing() {
+        for ok in [true, false] {
+            let mut h = running();
+            h.cmd(Command::Stop);
+            let n = h.sent.len();
+            if ok {
+                h.answer("terminate", Value::Null);
+            } else {
+                h.fail("terminate", "unsupported");
+            }
+            assert!(h.last.is_empty(), "ok={ok}: {:?}", h.last);
+            assert_eq!(h.sent.len(), n);
+            assert_eq!(h.phase(), Phase::Stopping);
+            assert!(h.errors().is_empty());
+            h.advance(STOP_STAGE);
+            assert_eq!(h.commands().last().unwrap(), "disconnect", "the stage deadline still runs");
+        }
+    }
+
+    #[test]
+    fn terminated_in_initializing_kills() {
+        let mut h = H::new(&[]);
+        h.event("terminated", json!({}));
+        assert_eq!(h.last, end_actions(""));
+        assert_eq!(h.commands(), ["initialize"]);
+    }
+
+    #[test]
+    fn disconnect_failure_ends_like_success() {
+        let mut h = running();
+        h.cmd(Command::Stop);
+        h.event("terminated", json!({}));
+        h.fail("disconnect", "no");
+        assert_eq!(h.last, end_actions(""));
+        assert!(h.errors().is_empty());
+    }
+
+    #[test]
+    fn set_breakpoints_command_in_stopping_is_dropped() {
+        let mut h = running();
+        h.cmd(Command::Stop);
+        let n = h.sent.len();
+        h.cmd(Command::SetBreakpoints { source: "/a.c".into(), lines: vec![1], modified: false });
+        assert!(h.last.is_empty());
+        assert_eq!(h.sent.len(), n);
+    }
+
+    #[test]
+    fn set_breakpoints_answer_in_stopping_is_dropped() {
+        for ok in [true, false] {
+            let mut h = configuring();
+            h.cmd(Command::SetBreakpoints { source: "/a.c".into(), lines: vec![1], modified: false });
+            h.take_emitted();
+            h.cmd(Command::Stop);
+            if ok {
+                h.answer("setBreakpoints", json!({"breakpoints": [{"verified": true}]}));
+            } else {
+                h.fail("setBreakpoints", "cancelled");
+            }
+            assert!(h.last.is_empty(), "ok={ok}: {:?}", h.last);
+            assert!(breakpoint_emits(&h).is_empty() && h.errors().is_empty());
+        }
+    }
+
+    #[test]
+    fn set_breakpoints_between_initialized_and_the_initialize_response_goes_with_the_configuration() {
+        let mut h = H::new(&[]);
+        h.event("initialized", json!({}));
+        h.cmd(Command::SetBreakpoints { source: "/a.c".into(), lines: vec![4], modified: false });
+        assert!(h.last.is_empty());
+        assert_eq!(h.commands(), ["initialize"]);
+        h.answer("initialize", caps());
+        assert_eq!(h.commands(), ["initialize", "launch", "setBreakpoints", "setExceptionBreakpoints", "configurationDone"]);
+        assert_eq!(h.requests("setBreakpoints")[0]["arguments"]["breakpoints"], json!([{"line": 5}]));
+    }
+
+    #[test]
+    fn request_command_in_starting_is_sent() {
+        let mut h = starting();
+        request(&mut h, "threads", 0);
+        assert_eq!(h.commands().last().unwrap(), "threads");
+        h.answer("threads", json!({"threads": []}));
+        assert_eq!(h.last, vec![Action::Emit(DapBody::Response { tag: tag(0), result: Ok(json!({"threads": []})) })]);
     }
 
     // ---- the end

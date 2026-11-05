@@ -14,8 +14,12 @@ where
     Ok(Option::<T>::deserialize(d)?.unwrap_or_default())
 }
 
-/// A typed body, or its default when it does not parse: a strange body never ends a session.
+/// A typed body, or its default when it does not parse: a strange body never ends a session. An absent body
+/// (`Null`) is legal on some responses and gives the default without a warning.
 pub fn body_of<T: DeserializeOwned + Default>(what: &str, body: Value) -> T {
+    if body.is_null() {
+        return T::default();
+    }
     match serde_json::from_value(body) {
         Ok(v) => v,
         Err(e) => {
