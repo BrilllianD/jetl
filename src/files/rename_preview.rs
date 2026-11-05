@@ -20,6 +20,7 @@ use lsp_types::TextEdit;
 use ropey::Rope;
 
 use crate::editor::buffer::BufferId;
+use crate::editor::nav::moved_path;
 use crate::editor::selection::line_len_no_eol;
 use crate::files::find::{Hit, preview};
 use crate::lsp::edits::{FileEdit, FileOp, Step};
@@ -69,7 +70,9 @@ pub struct RenamePreview {
     pub new: String,
     /// The server's or SCIP's steps, in order, file operations included.
     pub steps: Vec<Step>,
-    /// One per file with a row, taken when the preview was built.
+    /// One per file with a row, taken when the preview was built; also one per file that the positions of an
+    /// edit without a row refer to (the source of a rename, an existing file a create leaves alone), when it
+    /// has text.
     pub stamps: HashMap<PathBuf, FileStamp>,
     /// The `(step, edit)` of every edit that has no row (its file is made by an earlier operation of the
     /// answer, or has no text to show); it always applies.
@@ -142,6 +145,25 @@ fn row(path: &Path, rope: &Rope, e: &TextEdit, at: (u32, u32)) -> Hit {
     }
 }
 
+/// The file whose text the positions of an edit of `path` refer to, given the steps before it: walk them
+/// backward, a rename that `path` is at or under maps it back to where it was; a create of `path` that
+/// overwrites ends the walk (the file starts empty: `None`), any other create leaves it as it is.
+fn source_of(path: &Path, before: &[Step]) -> Option<PathBuf> {
+    let mut p = path.to_path_buf();
+    for step in before.iter().rev() {
+        match step {
+            Step::Op { op: FileOp::Rename { from, to, .. }, .. } => {
+                if let Some(back) = moved_path(&p, to, from) {
+                    p = back;
+                }
+            }
+            Step::Op { op: FileOp::Create { path: made, overwrite: true, .. }, .. } if *made == p => return None,
+            _ => {}
+        }
+    }
+    Some(p)
+}
+
 /// The preview of `req.steps` and its rows (sorted by path, line, column). Runs off the main thread.
 pub fn build(req: RenameRequest) -> Result<(RenamePreview, Vec<Hit>), String> {
     let RenameRequest { old, new, steps, open, root } = req;
@@ -161,6 +183,12 @@ pub fn build(req: RenameRequest) -> Result<(RenamePreview, Vec<Hit>), String> {
                 }
                 let Some(text) = texts.get(&f.path).and_then(Option::as_ref).filter(|_| !under_made) else {
                     unlisted.extend((0..f.edits.len() as u32).map(|e| (s, e)));
+                    if let Some(src) = source_of(&f.path, &steps[..s as usize])
+                        && !stamps.contains_key(&src)
+                        && let Some(t) = text_of(&src, &open, &root)?
+                    {
+                        stamps.insert(src, t.stamp);
+                    }
                     continue;
                 };
                 stamps.insert(f.path.clone(), text.stamp.clone());
@@ -239,22 +267,23 @@ impl RenamePreview {
             .cloned()
     }
 
-    /// The confirm dialog's text.
-    pub fn confirm_message(&self, included: &[Hit], root: &Path) -> String {
+    /// The confirm dialog's text; `excluded` is the number of rows the user left out.
+    pub fn confirm_message(&self, included: &[Hit], excluded: usize, root: &Path) -> String {
         let s = |n: usize| if n == 1 { "" } else { "s" };
         let files: HashSet<&PathBuf> = included.iter().map(|h| &h.path).collect();
         let mut out = format!(
-            "Rename {} to {}: {} occurrence{} in {} file{}.",
+            "Rename {} to {}: {} occurrence{} in {} file{}{}.",
             self.old,
             self.new,
             included.len(),
             s(included.len()),
             files.len(),
-            s(files.len())
+            s(files.len()),
+            if excluded > 0 { format!("; {excluded} excluded") } else { String::new() }
         );
         if !self.unlisted.is_empty() {
             let k = self.unlisted.len();
-            out.push_str(&format!("\n{k} more edit{} in files the operations below make.", s(k)));
+            out.push_str(&format!("\n{k} more edit{} in files not listed.", s(k)));
         }
         let ops: Vec<String> =
             self.steps.iter().filter_map(|st| if let Step::Op { op, .. } = st { Some(describe(op, root)) } else { None }).collect();
@@ -386,8 +415,87 @@ mod tests {
         assert_eq!(unlisted, [(2, 0), (4, 0), (4, 1), (5, 0)], "after the operations and for the missing file");
         let mut stamped: Vec<_> = preview.stamps.keys().cloned().collect();
         stamped.sort();
+        // a.rs: its own row; b.rs: its row; d.rs is made by an overwriting create, no stamp; c.rs maps back to
+        // a.rs, which has one already; gone.rs is missing.
         assert_eq!(stamped, [a, b]);
         assert_eq!(preview.op_count(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The stamped paths of a preview, sorted.
+    fn stamped(preview: &RenamePreview) -> Vec<PathBuf> {
+        let mut v: Vec<_> = preview.stamps.keys().cloned().collect();
+        v.sort();
+        v
+    }
+
+    fn rename_op(index: u32, from: &Path, to: &Path) -> Step {
+        Step::Op { index, op: FileOp::Rename { from: from.to_path_buf(), to: to.to_path_buf(), overwrite: false, ignore_if_exists: false } }
+    }
+
+    #[test]
+    fn an_edit_without_a_row_stamps_the_file_it_refers_to() {
+        let dir = tmp("source");
+        let (a, c) = (dir.join("a.rs"), dir.join("c.rs"));
+        std::fs::write(&a, "old\n").unwrap();
+        // rename a.rs to c.rs, then an edit of c.rs; a.rs has no row of its own.
+        let steps = vec![rename_op(0, &a, &c), file(&c, None, vec![te(0, 0, 0, 3, "new")])];
+        let (preview, hits) = build(req(&dir, steps.clone(), Vec::new())).unwrap();
+        assert!(hits.is_empty());
+        assert_eq!(preview.unlisted, HashSet::from([(1, 0)]));
+        assert_eq!(stamped(&preview), std::slice::from_ref(&a));
+        assert_eq!(preview.stamps[&a], stamp_of(&a));
+        assert_eq!(preview.first_stale(&[]), None);
+        // The file changed on disk: refused.
+        std::fs::write(&a, "old and more\n").unwrap();
+        assert_eq!(preview.first_stale(&[]), Some(a.clone()));
+        // Open: the stamp is the buffer's version, and a later edit of the buffer is stale.
+        let open = |version| OpenText { path: a.clone(), id: 4, rope: Rope::from_str("old\n"), version, dirty: true };
+        let (preview, _) = build(req(&dir, steps, vec![open(2)])).unwrap();
+        assert_eq!(preview.stamps[&a], FileStamp::OpenBuffer { id: 4, version: 2 });
+        assert_eq!(preview.first_stale(&[open(2)]), None);
+        assert_eq!(preview.first_stale(&[open(3)]), Some(a));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_folder_rename_maps_the_edited_path_back() {
+        let dir = tmp("folder");
+        let (d1, d2) = (dir.join("d1"), dir.join("d2"));
+        std::fs::create_dir(&d1).unwrap();
+        std::fs::write(d1.join("x.rs"), "old\n").unwrap();
+        let steps = vec![rename_op(0, &d1, &d2), file(&d2.join("x.rs"), None, vec![te(0, 0, 0, 3, "new")])];
+        let (preview, _) = build(req(&dir, steps, Vec::new())).unwrap();
+        assert_eq!(stamped(&preview), [d1.join("x.rs")]);
+        std::fs::write(d1.join("x.rs"), "old!\n").unwrap();
+        assert_eq!(preview.first_stale(&[]), Some(d1.join("x.rs")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_create_that_ignores_an_existing_file_stamps_it_and_an_overwriting_one_does_not() {
+        let dir = tmp("create");
+        let (keep, over, new) = (dir.join("keep.rs"), dir.join("over.rs"), dir.join("new.rs"));
+        std::fs::write(&keep, "old\n").unwrap();
+        std::fs::write(&over, "old\n").unwrap();
+        let create = |index, path: &Path, overwrite, ignore_if_exists| Step::Op {
+            index,
+            op: FileOp::Create { path: path.to_path_buf(), overwrite, ignore_if_exists },
+        };
+        let steps = vec![
+            create(0, &keep, false, true),
+            file(&keep, None, vec![te(0, 0, 0, 3, "new")]),
+            create(2, &over, true, false),
+            file(&over, None, vec![te(0, 0, 0, 3, "new")]),
+            create(4, &new, false, false),
+            file(&new, None, vec![te(0, 0, 0, 0, "new")]),
+        ];
+        let (preview, hits) = build(req(&dir, steps, Vec::new())).unwrap();
+        assert!(hits.is_empty());
+        assert_eq!(preview.unlisted, HashSet::from([(1, 0), (3, 0), (5, 0)]));
+        assert_eq!(stamped(&preview), std::slice::from_ref(&keep), "the existing file only: one starts empty, one is missing");
+        std::fs::write(&keep, "old and more\n").unwrap();
+        assert_eq!(preview.first_stale(&[]), Some(keep));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -518,15 +626,18 @@ mod tests {
         p.unlisted = HashSet::from([(1, 0), (1, 1)]);
         let included = [row(&a), row(&a), row(&root.join("b.rs"))];
         let want = "Rename old to new: 3 occurrences in 2 files.\n\
-                    2 more edits in files the operations below make.\n\
+                    2 more edits in files not listed.\n\
                     File operations:\n  rename a.rs to c.rs\n  create d.rs\n  delete e.rs\n\
                     Open files change in the editor (undoable); others are written to disk.";
-        assert_eq!(p.confirm_message(&included, &root), want);
+        assert_eq!(p.confirm_message(&included, 0, &root), want);
+        let with_excluded = p.confirm_message(&included, 1, &root);
+        assert_eq!(with_excluded.lines().next().unwrap(), "Rename old to new: 3 occurrences in 2 files; 1 excluded.");
+        assert!(p.confirm_message(&included, 12, &root).starts_with("Rename old to new: 3 occurrences in 2 files; 12 excluded.\n"));
         // Singular, no unlisted line, no operations.
         p.unlisted = HashSet::new();
         p.steps = Vec::new();
         let want = "Rename old to new: 1 occurrence in 1 file.\nOpen files change in the editor (undoable); others are written to disk.";
-        assert_eq!(p.confirm_message(&included[..1], &root), want);
+        assert_eq!(p.confirm_message(&included[..1], 0, &root), want);
         // Nine operations: eight lines and the rest counted.
         p.steps = (0..9)
             .map(|i| Step::Op {
@@ -534,10 +645,10 @@ mod tests {
                 op: FileOp::Delete { path: root.join(format!("f{i}")), recursive: false, ignore_if_not_exists: false },
             })
             .collect();
-        let msg = p.confirm_message(&included, &root);
+        let msg = p.confirm_message(&included, 0, &root);
         assert_eq!(msg.lines().filter(|l| l.starts_with("  delete")).count(), 8);
         assert!(msg.contains("\n  ... and 1 more\n"), "{msg}");
         p.unlisted = HashSet::from([(0, 0)]);
-        assert!(p.confirm_message(&included, &root).contains("1 more edit in files"));
+        assert!(p.confirm_message(&included, 0, &root).contains("1 more edit in files"));
     }
 }

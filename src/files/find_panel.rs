@@ -367,11 +367,11 @@ impl FindPanel {
         let mut s = String::new();
         if let Some(r) = &hit.rename {
             s.push_str(&r.new_text);
-            return s.chars().map(|c| if matches!(c, '\n' | '\r' | '\t') { ' ' } else { c }).collect();
-        }
-        match self.re.as_ref().filter(|_| self.regex).and_then(|re| re.captures(&hit.matched)) {
-            Some(caps) => caps.expand(with, &mut s),
-            None => s.push_str(with),
+        } else {
+            match self.re.as_ref().filter(|_| self.regex).and_then(|re| re.captures(&hit.matched)) {
+                Some(caps) => caps.expand(with, &mut s),
+                None => s.push_str(with),
+            }
         }
         s.chars().map(|c| if matches!(c, '\n' | '\r' | '\t') { ' ' } else { c }).collect()
     }
@@ -506,7 +506,7 @@ impl FindPanel {
                 cx.notify(Level::Info, "Every result is excluded; nothing to replace");
                 return;
             }
-            let msg = preview.confirm_message(&included, &self.root);
+            let msg = preview.confirm_message(&included, self.excluded_count(), &self.root);
             cx.effects.push(Effect::Dialog(Dialog::confirm(DialogId::ReplaceInFiles, "Rename", &msg, &["Rename", "Cancel"])));
             return;
         }

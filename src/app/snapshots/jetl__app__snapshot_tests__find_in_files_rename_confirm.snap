@@ -9,7 +9,7 @@ expression: "snapshot(&term, &marks, None)"
 03  ◫ │                              ││               No files open.
 04  ⊢ │                              ││       Alt+1 opens the Project view;
 05   ┌ Rename ─────────────────────────────────────────────────────────────────┐
-06   │ Rename parse to read_input: 3 occurrences in 2 files.                   │
+06   │ Rename parse to read_input: 3 occurrences in 2 files; 1 excluded.       │
 07   │ File operations:                                                        │
 08   │   rename src/util.rs to src/input.rs                                    │───
 09   │ Open files change in the editor (undoable); others are written to disk. │──┐

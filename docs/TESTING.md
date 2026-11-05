@@ -333,9 +333,9 @@ printf 'pub fn helper() {}\n' > $T/src/util.rs
 /tmp/tm24.sh send-keys -t jetl C-a; /tmp/tm24.sh send-keys -t jetl -l 'assist'; /tmp/tm24.sh send-keys -t jetl Enter; sleep 2
 /tmp/tm24.sh capture-pane -p -t jetl      # Find focused: main.rs 2 rows, util.rs 1, the toast; nothing written
 cat $T/src/util.rs                         # still helper
-/tmp/tm24.sh send-keys -t jetl Down M-DC   # Alt+Delete on the second row: dimmed, status says 1 excluded
+/tmp/tm24.sh send-keys -t jetl Down M-DC   # Alt+Delete on the second row: the row is dimmed
 /tmp/tm24.sh send-keys -t jetl M-a; sleep 0.5
-/tmp/tm24.sh capture-pane -p -t jetl      # dialog "Rename": "2 occurrences in 2 files."
+/tmp/tm24.sh capture-pane -p -t jetl      # dialog "Rename": "2 occurrences in 2 files; 1 excluded."
 /tmp/tm24.sh send-keys -t jetl Enter; sleep 2
 /tmp/tm24.sh capture-pane -p -t jetl      # main.rs: one assist, one helper; Find empty, "type to search the project"
 cat $T/src/util.rs                         # assist
@@ -349,7 +349,8 @@ preview; rename again`, nothing changes and the results stay. Last, write
 `[lsp]\nrename_preview = false` to `config.toml` (it applies live):
 Shift+F6 shows the button `Refactor` and Enter applies at once. The Find
 status line is clipped on a narrow window (the file operation count may not
-show); the confirm dialog always lists the operations. Stderr is empty and
+show) and may not show `1 excluded`; the confirm dialog always says it
+(`; 1 excluded`) and lists the operations. Stderr is empty and
 Ctrl+Q exits 0.
 
 ### Scenario: column selection

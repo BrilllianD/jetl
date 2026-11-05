@@ -555,6 +555,18 @@ impl Sim<'_> {
     }
 }
 
+/// Whether two of `edits` overlap by LSP position: ordered by start, insertions before replacements at the same
+/// start, then input order, as `plan` orders chars.
+fn overlap_in_lsp(edits: &[TextEdit]) -> bool {
+    let key = |e: &TextEdit| ((e.range.start.line, e.range.start.character), (e.range.end.line, e.range.end.character));
+    let mut order: Vec<usize> = (0..edits.len()).collect();
+    order.sort_by_key(|&i| {
+        let (start, end) = key(&edits[i]);
+        (start, end > start, i)
+    });
+    order.windows(2).any(|w| key(&edits[w[0]]).1 > key(&edits[w[1]]).0)
+}
+
 /// Check `steps` in order against the open buffers `open` and `disk`,
 /// simulating the file operations, and plan them. Any problem refuses the
 /// whole edit, so that nothing is changed: an open buffer not at the
@@ -568,6 +580,15 @@ pub fn plan_workspace(steps: Vec<Step>, open: &[OpenDoc], root: &Path, disk: &dy
         match step {
             Step::Edit(f) => sim.edit(f)?,
             Step::Op { index, op } => sim.op(index, op)?,
+        }
+    }
+    // Closed files: overlap is found here, before anything changes, from the positions alone (no clamping, so a
+    // pair that overlaps only after clamping to the line end still fails when the file is written).
+    for step in &sim.plan.disk {
+        if let DiskStep::Edit(f) = step
+            && overlap_in_lsp(&f.edits)
+        {
+            return Err(format!("the edits of {} overlap", sim.rel(&f.path)));
         }
     }
     let mut plan = sim.plan;
@@ -983,6 +1004,37 @@ mod tests {
         );
         let we = serde_json::json!({"changes": {"untitled:x": [{"range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 0}}, "newText": "x"}]}});
         assert!(workspace_steps(serde_json::from_value(we).unwrap()).unwrap_err().contains("not a file"));
+    }
+
+    #[test]
+    fn overlapping_edits_of_a_closed_file_are_refused_before_anything_is_planned() {
+        let d = disk(&[("/w/a.rs", Entry::File), ("/w/b.rs", Entry::File)]);
+        let two = |a: TextEdit, b: TextEdit| Step::Edit(FileEdit { path: "/w/a.rs".into(), version: None, edits: vec![a, b], index: None });
+        let other = || text_edit("/w/b.rs", None, "x");
+        // Overlap: refused, naming the file relative to the root, nothing planned.
+        err(vec![other(), two(te(0, 0, 0, 5, "x"), te(0, 3, 0, 8, "y"))], &[], &d, "the edits of a.rs overlap");
+        // Input order does not matter, nor does a replacement inside another one.
+        err(vec![two(te(1, 0, 1, 2, "x"), te(0, 0, 3, 0, "y"))], &[], &d, "the edits of a.rs overlap");
+        // Touching, equal-position inserts and an insert at a replacement's start are fine.
+        for (a, b) in [
+            (te(0, 0, 0, 3, "x"), te(0, 3, 0, 5, "y")),
+            (te(0, 2, 0, 2, "x"), te(0, 2, 0, 2, "y")),
+            (te(0, 2, 0, 5, "x"), te(0, 2, 0, 2, "y")),
+        ] {
+            let plan = plan_with(vec![two(a, b)], &[], &d).unwrap();
+            assert_eq!(plan.disk.len(), 1);
+        }
+        // Edits merged from two steps of the same file are checked together.
+        err(
+            vec![
+                text_edit("/w/a.rs", None, "x"),
+                two(te(0, 0, 0, 0, "i"), te(0, 0, 0, 4, "r")),
+                two(te(0, 2, 0, 3, "z"), te(0, 9, 0, 9, "q")),
+            ],
+            &[],
+            &d,
+            "the edits of a.rs overlap",
+        );
     }
 
     #[test]

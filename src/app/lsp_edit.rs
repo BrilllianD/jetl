@@ -327,11 +327,17 @@ impl App {
     /// Build the preview of `req` off the main thread; the result opens in Find (`rename_preview_done`).
     pub(super) fn rename_preview_start(&mut self, req: RenameRequest) {
         self.find.reset();
+        self.close_replace_dialog();
         let (seq, generation, tx) = (self.find.current_seq(), self.workspace.generation, self.bus_tx.clone());
         tokio::task::spawn_blocking(move || {
             let result = Box::new(rename_preview::build(req));
             let _ = tx.send(AppMsg::RenamePreview { generation, seq, result });
         });
+    }
+
+    /// Close a Replace in Files confirmation: it must not outlive a change of what it confirms. Other dialogs stay.
+    fn close_replace_dialog(&mut self) {
+        self.dialog.take_if(|d| d.id == DialogId::ReplaceInFiles);
     }
 
     /// The preview built by `rename_preview_start`: show it in Find, unless the root or the Find results moved on.
@@ -340,6 +346,7 @@ impl App {
             tracing::debug!("dropping stale rename preview");
             return;
         }
+        self.close_replace_dialog();
         let (preview, hits) = match result {
             Ok(r) => r,
             Err(e) => return self.notify(Level::Warn, format!("Rename: {e}; nothing was changed")),
@@ -1730,7 +1737,7 @@ mod tests {
         fx.app.find.toggle_exclude();
         let d = fx.replace_all();
         assert_eq!(d.title, "Rename");
-        assert!(d.message.starts_with("Rename old to renamed: 2 occurrences in 2 files."), "{}", d.message);
+        assert!(d.message.starts_with("Rename old to renamed: 2 occurrences in 2 files; 1 excluded.\n"), "{}", d.message);
         assert_eq!(text(&fx.app), "fn main() {\n    let s = \"😀\"; renamed(s);\n}\n");
         handle_next(&mut fx.app, applied).await;
         assert_eq!(std::fs::read_to_string(&fx.b).unwrap(), "pub fn renamed(s: &str) {}\n// 日本 old\n");
@@ -1909,6 +1916,118 @@ mod tests {
         assert!(fx.app.find.rename_preview().is_none());
         assert_eq!(text(&fx.app), A);
         assert_eq!(std::fs::read_to_string(&fx.b).unwrap(), B);
+        let _ = std::fs::remove_dir_all(&fx.dir);
+    }
+
+    fn stale_dialog() -> Dialog {
+        Dialog::confirm(DialogId::ReplaceInFiles, "Replace in Files", "Replace 1 match?", &["Replace", "Cancel"])
+    }
+
+    #[tokio::test]
+    async fn a_replace_dialog_open_when_the_rename_starts_is_closed() {
+        let mut fx = rename_fixture("rename-preview-dialog-start").await;
+        fx.app.dialog = Some(stale_dialog());
+        fx.app.rename_preview_start(RenameRequest {
+            old: "old".into(),
+            new: "renamed".into(),
+            steps: Vec::new(),
+            open: Vec::new(),
+            root: fx.app.workspace.root.clone(),
+        });
+        assert!(fx.app.dialog.is_none());
+        handle_next(&mut fx.app, preview_msg).await;
+        let _ = std::fs::remove_dir_all(&fx.dir);
+    }
+
+    #[tokio::test]
+    async fn a_replace_dialog_opened_while_the_preview_builds_is_closed_and_applies_nothing() {
+        let mut fx = rename_fixture("rename-preview-dialog-done").await;
+        let we = rename_edit(&fx.a, &fx.b);
+        fx.ask(we).await;
+        fx.app.dialog = Some(stale_dialog());
+        handle_next(&mut fx.app, preview_msg).await;
+        assert!(fx.app.dialog.is_none(), "the dialog confirmed something else");
+        assert!(fx.app.find.rename_preview().is_some());
+        assert_eq!(text(&fx.app), A);
+        assert_eq!(std::fs::read_to_string(&fx.b).unwrap(), B);
+        // The preview still asks for its own confirmation.
+        fx.replace_all();
+        assert_ne!(text(&fx.app), A);
+        let _ = std::fs::remove_dir_all(&fx.dir);
+    }
+
+    #[tokio::test]
+    async fn a_dialog_of_another_id_survives_the_preview() {
+        let mut fx = rename_fixture("rename-preview-dialog-other").await;
+        let we = rename_edit(&fx.a, &fx.b);
+        fx.ask(we).await;
+        fx.app.dialog = Some(Dialog::confirm(DialogId::CloseAllDirty, "Reload", "Reload?", &["Reload", "Cancel"]));
+        handle_next(&mut fx.app, preview_msg).await;
+        assert!(fx.app.dialog.as_ref().is_some_and(|d| d.id == DialogId::CloseAllDirty));
+        let _ = std::fs::remove_dir_all(&fx.dir);
+    }
+
+    #[tokio::test]
+    async fn an_edit_of_a_renamed_file_without_a_row_refuses_when_the_source_changed() {
+        let mut fx = rename_fixture("rename-preview-source-open").await;
+        let c = fx.app.workspace.root.join("c.rs");
+        let we = json!({"documentChanges": [
+            {"kind": "rename", "oldUri": uri(&fx.a), "newUri": uri(&c)},
+            {"textDocument": {"uri": uri(&c), "version": null}, "edits": [edit(1, 18, 1, 21, "renamed")]},
+        ]});
+        fx.preview(we).await;
+        assert!(fx.app.find.rename_preview().is_some());
+        fx.app.perform(Action::Editor(EditorAction::InsertText("// ".into())));
+        let edited = text(&fx.app);
+        fx.replace_all();
+        let n = fx.app.notifications.last().unwrap();
+        assert_eq!((n.level, n.text.as_str()), (Level::Error, "a.rs changed since the preview; rename again"));
+        assert_eq!(text(&fx.app), edited);
+        assert!(fx.a.exists() && !c.exists());
+        assert!(fx.app.find.rename_preview().is_some());
+        let _ = std::fs::remove_dir_all(&fx.dir);
+    }
+
+    #[tokio::test]
+    async fn an_edit_of_a_renamed_file_without_a_row_refuses_when_the_source_changed_on_disk() {
+        let mut fx = rename_fixture("rename-preview-source-disk").await;
+        // The source is closed: b.rs becomes c.rs.
+        let c = fx.app.workspace.root.join("c.rs");
+        let we = json!({"documentChanges": [
+            {"kind": "rename", "oldUri": uri(&fx.b), "newUri": uri(&c)},
+            {"textDocument": {"uri": uri(&c), "version": null}, "edits": [edit(0, 7, 0, 10, "renamed")]},
+        ]});
+        fx.preview(we).await;
+        std::fs::write(&fx.b, format!("{B}// longer\n")).unwrap();
+        fx.replace_all();
+        let n = fx.app.notifications.last().unwrap();
+        assert_eq!((n.level, n.text.as_str()), (Level::Error, "b.rs changed since the preview; rename again"));
+        assert!(fx.b.exists() && !c.exists());
+        assert!(fx.app.find.rename_preview().is_some());
+        let _ = std::fs::remove_dir_all(&fx.dir);
+    }
+
+    #[tokio::test]
+    async fn overlapping_edits_of_a_closed_file_are_refused_untouched_and_excluding_one_applies() {
+        let mut fx = rename_fixture("rename-preview-overlap").await;
+        let we = json!({"documentChanges": [
+            {"textDocument": {"uri": uri(&fx.a), "version": 1}, "edits": [edit(1, 18, 1, 21, "renamed")]},
+            {"textDocument": {"uri": uri(&fx.b), "version": null}, "edits": [edit(0, 7, 0, 10, "renamed"), edit(0, 8, 0, 9, "x")]},
+        ]});
+        fx.preview(we).await;
+        fx.replace_all();
+        let n = fx.app.notifications.last().unwrap();
+        assert_eq!((n.level, n.text.as_str()), (Level::Warn, "Rename: the edits of b.rs overlap; nothing was changed"));
+        assert_eq!(text(&fx.app), A, "the open file is not edited either");
+        assert_eq!(std::fs::read_to_string(&fx.b).unwrap(), B);
+        assert!(fx.app.find.rename_preview().is_some());
+        // Rows: 0 a.rs, 1 its edit, 2 b.rs, 3 and 4 the pair. Excluding one applies the rest.
+        fx.app.find.list.select(4);
+        fx.app.find.toggle_exclude();
+        fx.replace_all();
+        handle_next(&mut fx.app, applied).await;
+        assert_eq!(std::fs::read_to_string(&fx.b).unwrap(), B.replacen("old", "renamed", 1));
+        assert_eq!(text(&fx.app), "fn main() {\n    let s = \"😀\"; renamed(s);\n}\n");
         let _ = std::fs::remove_dir_all(&fx.dir);
     }
 }
