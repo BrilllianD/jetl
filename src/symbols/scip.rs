@@ -334,8 +334,9 @@ impl ScipIndex {
         list.iter().any(|&(d, i)| {
             let occs = &self.docs[self.doc_paths[d as usize].as_str()].occurrences;
             let span = occs[i as usize].span;
-            let from = occs.partition_point(|o| o.span.line < span.line);
-            occs[from..].iter().take_while(|o| o.span.line == span.line).any(|o| o.span == span && o.symbol != id)
+            let at = (span.line, span.start);
+            let from = occs.partition_point(|o| (o.span.line, o.span.start) < at);
+            occs[from..].iter().take_while(|o| (o.span.line, o.span.start) == at).any(|o| o.span == span && o.symbol != id)
         })
     }
 

@@ -392,9 +392,11 @@ fn textual_stage(
     }
     // A document the caller read and does not trust (changed, hidden, ignored, big) may be out of `Search`'s reach.
     // `false`: it is not known to hold the name, so a refusal does not count it; a covered one is skipped below.
-    for (p, t) in texts.iter() {
-        if t.is_some() && !found.contains(p) && !candidates.iter().any(|c| c.0 == *p) {
-            candidates.push((p.clone(), false));
+    if matches!(stage.scope, TextualScope::Uncovered(_)) {
+        for (p, t) in texts.iter() {
+            if t.is_some() && !found.contains(p) && !candidates.iter().any(|c| c.0 == *p) {
+                candidates.push((p.clone(), false));
+            }
         }
     }
     candidates.sort();
@@ -1252,6 +1254,17 @@ mod tests {
             assert_eq!(hits.iter().filter(|h| at(h).is_some()).count(), 1, "{name}: the exact row stays");
             let _ = std::fs::remove_dir_all(&dir);
         }
+    }
+
+    #[test]
+    fn an_edited_file_out_of_search_reach_gets_no_textual_rows() {
+        let dir = tmp("textual-hidden-edit");
+        let n = dir.join(".hidden.txt");
+        std::fs::write(&n, "old x\nold\n").unwrap();
+        let (_, hits) = build(treq(&dir, vec![file(&n, None, vec![te(0, 0, 0, 3, "new")])], Vec::new())).unwrap();
+        assert_eq!(textual_at(&hits), []);
+        assert_eq!(hits.iter().filter(|h| at(h).is_some()).count(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
