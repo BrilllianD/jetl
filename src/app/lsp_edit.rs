@@ -759,9 +759,14 @@ impl App {
         let before = self.open_versions();
         let applied = self.apply_workspace_edit(edit, origin);
         if applied && self.lsp.edit.command.as_ref().is_some_and(|g| g.server == server) {
-            let changed: Vec<_> = self.open_versions().into_iter().filter(|(id, v)| before.get(id) != Some(v)).collect();
+            let after = self.open_versions();
             if let Some(g) = self.lsp.edit.command.as_mut() {
-                g.versions.extend(changed);
+                for (id, v) in after {
+                    // A buffer opened since the command was sent is watched from here on.
+                    if before.get(&id) != Some(&v) || !g.versions.contains_key(&id) {
+                        g.versions.insert(id, v);
+                    }
+                }
             }
         }
     }
@@ -2048,6 +2053,28 @@ mod tests {
         assert!(app.lsp.edit.command.is_some(), "the guard stays");
         let r = apply_edit(&mut app, &mut server, 85, json!({"changes": {uri(&a): [edit(0, 0, 0, 0, "// late\n")]}})).await;
         assert!(r["failureReason"].as_str().unwrap_or_default().contains("changed while the command ran"), "{r}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn command_guard_watches_a_buffer_opened_while_the_command_runs() {
+        let (mut app, dir) = test_app("lsp-guard-opened");
+        let mut servers = with_fake_servers(&mut app, caps());
+        let (a, b) = (app.workspace.root.join("a.rs"), app.workspace.root.join("b.rs"));
+        let (mut server, _exec) = running_command(&mut app, &mut servers).await;
+        let a_id = app.editor.active_buffer().unwrap().id;
+        load(&mut app, "b.rs", B);
+        let b_id = app.editor.active_buffer().unwrap().id;
+        app.lsp_sync();
+        server.recv("textDocument/didOpen").await;
+        app.editor.focus_buffer_tab(a_id);
+        let r = apply_edit(&mut app, &mut server, 90, json!({"changes": {uri(&a): [edit(0, 0, 0, 0, "// one\n")]}})).await;
+        assert_eq!(r, json!({"applied": true}));
+        type_in(&mut app, b_id);
+        let typed_b = buffer_text(&app, b_id);
+        let r = apply_edit(&mut app, &mut server, 91, json!({"changes": {uri(&b): [edit(0, 7, 0, 10, "renamed")]}})).await;
+        assert_eq!(r["applied"], false, "{r}");
+        assert_eq!(buffer_text(&app, b_id), typed_b);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
