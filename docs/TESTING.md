@@ -314,6 +314,44 @@ change unsaved (assist twice, the comment still says helper). Bare Delete in
 the Find field (Home, Delete) removes the first letter of the query and
 excludes nothing. Any later search in Find shows every result included again.
 
+### Scenario: rename preview with a language server
+
+At 120x40 and 80x24 (yman 397), with rust-analyzer, `[lsp]` enabled, a
+project, config, state and cache under `/tmp/jetl-397a` and the harness
+script `/tmp/tm24.sh` (as `/tmp/tm.sh` above, socket `jetl24`). Shift+F6
+reaches jetl as `S-F6`:
+
+```sh
+T=/tmp/jetl-397a/proj; mkdir -p $T/src
+printf '[package]\nname = "demo"\nversion = "0.1.0"\nedition = "2021"\n' > $T/Cargo.toml
+printf 'mod util;\nfn main() {\n    util::helper();\n    util::helper();\n}\n' > $T/src/main.rs
+printf 'pub fn helper() {}\n' > $T/src/util.rs
+# start jetl on $T with XDG_CONFIG_HOME, XDG_STATE_HOME and XDG_CACHE_HOME under /tmp/jetl-397a,
+# open src/main.rs, wait until rust-analyzer has finished indexing, caret in `helper` on line 3
+/tmp/tm24.sh send-keys -t jetl S-F6; sleep 1
+/tmp/tm24.sh capture-pane -p -t jetl      # dialog "Rename 'helper' and its usages to:", button Preview
+/tmp/tm24.sh send-keys -t jetl C-a; /tmp/tm24.sh send-keys -t jetl -l 'assist'; /tmp/tm24.sh send-keys -t jetl Enter; sleep 2
+/tmp/tm24.sh capture-pane -p -t jetl      # Find focused: main.rs 2 rows, util.rs 1, the toast; nothing written
+cat $T/src/util.rs                         # still helper
+/tmp/tm24.sh send-keys -t jetl Down M-DC   # Alt+Delete on the second row: dimmed, status says 1 excluded
+/tmp/tm24.sh send-keys -t jetl M-a; sleep 0.5
+/tmp/tm24.sh capture-pane -p -t jetl      # dialog "Rename": "2 occurrences in 2 files."
+/tmp/tm24.sh send-keys -t jetl Enter; sleep 2
+/tmp/tm24.sh capture-pane -p -t jetl      # main.rs: one assist, one helper; Find empty, "type to search the project"
+cat $T/src/util.rs                         # assist
+/tmp/tm24.sh send-keys -t jetl C-z         # main.rs restored in one step (focus the editor first)
+```
+
+Repeat the rename, then type a letter in the Find field: an ordinary
+search, nothing applied. Repeat it again and change `util.rs` from another
+shell before Alt+A, Enter: the error toast `src/util.rs changed since the
+preview; rename again`, nothing changes and the results stay. Last, write
+`[lsp]\nrename_preview = false` to `config.toml` (it applies live):
+Shift+F6 shows the button `Refactor` and Enter applies at once. The Find
+status line is clipped on a narrow window (the file operation count may not
+show); the confirm dialog always lists the operations. Stderr is empty and
+Ctrl+Q exits 0.
+
 ### Scenario: column selection
 
 At 80x24 and at 120x40, with a file of tabs, wide characters and a short

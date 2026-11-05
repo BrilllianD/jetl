@@ -1302,6 +1302,42 @@ pub(crate) mod tests {
         matches!(m, AppMsg::FsOpDone { .. })
     }
 
+    #[tokio::test]
+    async fn rename_preview_apply_carries_local_history() {
+        use crate::files::rename_preview::RenameRequest;
+        use crate::lsp::edits::{FileEdit, FileOp, Step};
+        use lsp_types::{Position, Range, TextEdit};
+        let (mut app, dir) = test_app("history-rename-preview");
+        with_history(&mut app);
+        load(&mut app, "a.rs", "one\n");
+        // An unchanged buffer is not saved: edit it first.
+        type_text(&mut app, "x ");
+        app.perform(Action::Editor(EditorAction::Save));
+        let root = app.workspace.root.clone();
+        let (a, b, c, d) = (root.join("a.rs"), root.join("b.rs"), root.join("c.rs"), root.join("d.rs"));
+        std::fs::write(&c, "gone\n").unwrap();
+        std::fs::write(&d, "old\n").unwrap();
+        let steps = vec![
+            Step::Edit(FileEdit {
+                path: d.clone(),
+                version: None,
+                edits: vec![TextEdit { range: Range::new(Position::new(0, 0), Position::new(0, 3)), new_text: "new".into() }],
+                index: None,
+            }),
+            Step::Op { index: 1, op: FileOp::Rename { from: a.clone(), to: b.clone(), overwrite: false, ignore_if_exists: false } },
+            Step::Op { index: 2, op: FileOp::Delete { path: c.clone(), recursive: false, ignore_if_not_exists: false } },
+        ];
+        app.rename_preview_start(RenameRequest { old: "old".into(), new: "new".into(), steps, open: Vec::new(), root });
+        handle_next(&mut app, |m| matches!(m, AppMsg::RenamePreview { .. })).await;
+        assert!(app.find.rename_preview().is_some());
+        app.finish_dialog(DialogId::ReplaceInFiles, DialogResult::Button(0));
+        handle_next(&mut app, |m| matches!(m, AppMsg::EditsApplied { .. })).await;
+        assert_eq!(std::fs::read_to_string(&d).unwrap(), "new\n");
+        assert_eq!(snapshots(&app, &b)[0].0, format!("Renamed from {}", a.display()));
+        assert_eq!(snapshots(&app, &c)[0], ("Before delete".to_string(), "gone\n".to_string()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[cfg(feature = "lang-rust")]
     #[tokio::test]
     async fn language_server_renames_and_deletes_carry_local_history() {

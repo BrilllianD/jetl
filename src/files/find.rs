@@ -39,6 +39,8 @@ pub struct Hit {
     pub matched: String,
     /// Left out of Replace All (Find window, Alt+Delete).
     pub excluded: bool,
+    /// A rename preview row's edit (`rename_preview`); `None` on every ordinary search hit.
+    pub rename: Option<Box<crate::files::rename_preview::RenameEdit>>,
 }
 
 /// Hits found since the previous batch.
@@ -176,6 +178,7 @@ pub(crate) fn hits_at(path: &Path, text: &str, ranges: impl IntoIterator<Item = 
             preview_col,
             matched: text[r.clone()].to_string(),
             excluded: false,
+            rename: None,
         });
     }
     hits
@@ -183,7 +186,7 @@ pub(crate) fn hits_at(path: &Path, text: &str, ranges: impl IntoIterator<Item = 
 
 /// The line, or a window of it around `col` when it is long; tabs become
 /// spaces so the preview lines up.
-fn preview(line: &str, col: usize) -> (String, usize) {
+pub(crate) fn preview(line: &str, col: usize) -> (String, usize) {
     let start = if line.chars().count() > PREVIEW_CHARS { col.saturating_sub(PREVIEW_LEAD) } else { 0 };
     let text: String = line.chars().skip(start).take(PREVIEW_CHARS).map(|c| if c == '\t' { ' ' } else { c }).collect();
     (text, col - start)

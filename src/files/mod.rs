@@ -2,6 +2,7 @@ pub mod complete;
 pub mod find;
 pub mod find_panel;
 pub mod ops;
+pub mod rename_preview;
 #[cfg(feature = "structural")]
 pub mod structural;
 pub mod todo;

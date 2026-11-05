@@ -19,6 +19,14 @@
 //! fails (`AppMsg::EditsApplied`). Renamed files' tabs follow them, with
 //! their local history; created files are not opened.
 //!
+//! A server's rename is not applied at once (`[lsp] rename_preview`, on by
+//! default): its answer is built into Find results, one per text edit
+//! (`files::rename_preview`), and Replace All (Alt+A) asks and applies the
+//! included edits and every file operation through the same plan and apply
+//! (`apply_steps_now`). A file that changed since the preview refuses the
+//! whole rename (`RenamePreview::first_stale`). With the key off the answer
+//! applies at once.
+//!
 //! Without a server document for the buffer (and no server starting),
 //! rename is textual: the name goes to Find in files (case and whole word)
 //! with the new name as replacement, the uses and definitions the symbol
@@ -40,7 +48,9 @@ use super::{App, Ctx};
 use crate::editor::buffer::{Buffer, BufferId, LineEnding};
 use crate::editor::undo::TxKind;
 use crate::event::{AppMsg, Effect, Level};
+use crate::files::find::Hit;
 use crate::files::ops::FsOp;
+use crate::files::rename_preview::{self, OpenText, RenamePreview, RenameRequest};
 use crate::history::Ack;
 use crate::lsp::edits::{self, DiskStep, EditCounts, OpenDoc};
 use crate::lsp::locations::LocationItem;
@@ -129,8 +139,10 @@ impl ActionsFor {
 /// Rename and context action requests (in `LspService`).
 #[derive(Default)]
 pub(super) struct EditReqs {
-    /// The rename in flight: its seq and the new name.
-    rename: Option<(u64, String)>,
+    /// The rename in flight: its seq, the old name and the new name.
+    rename: Option<(u64, String, String)>,
+    /// The name in the rename dialog when it opened.
+    rename_old: String,
     /// The context actions in the dialog, with the seq of their request.
     actions: Option<(u64, Vec<CodeActionOrCommand>)>,
     /// The edit waiting for the user's confirmation.
@@ -196,7 +208,9 @@ impl App {
             return;
         }
         let msg = format!("Rename '{name}' and its usages to:");
-        self.dialog = Some(Dialog::input(DialogId::LspRename(t), "Rename", &msg, name, "Refactor"));
+        self.lsp.edit.rename_old = name.to_string();
+        let button = if self.config.lsp.rename_preview { "Preview" } else { "Refactor" };
+        self.dialog = Some(Dialog::input(DialogId::LspRename(t), "Rename", &msg, name, button));
         self.dispatcher.reset();
     }
 
@@ -212,7 +226,7 @@ impl App {
             return self.lsp_hint("The file changed; rename again");
         }
         match self.lsp_doc_request(t.buffer, t.pos, RENAME, json!({"newName": name}), PendingTag::Rename) {
-            Ok(seq) => self.lsp.edit.rename = Some((seq, name)),
+            Ok(seq) => self.lsp.edit.rename = Some((seq, std::mem::take(&mut self.lsp.edit.rename_old), name)),
             Err(why) if !why.is_empty() => self.lsp_hint(why),
             Err(_) => {}
         }
@@ -283,14 +297,79 @@ impl App {
     }
 
     pub(super) fn lsp_rename_answer(&mut self, t: DocTag, value: Value) {
-        let Some((_, name)) = self.lsp.edit.rename.take_if(|r| r.0 == t.seq) else { return };
+        let Some((_, old, name)) = self.lsp.edit.rename.take_if(|r| r.0 == t.seq) else { return };
         let edit = if value.is_null() { Ok(None) } else { edits::read_workspace_edit(value).map(Some) };
         match edit {
+            Ok(Some(edit)) if self.config.lsp.rename_preview => match edits::workspace_steps(edit) {
+                Ok(steps) => {
+                    let (open, root) = (self.open_texts(), self.workspace.root.clone());
+                    self.rename_preview_start(RenameRequest { old, new: name, steps, open, root });
+                }
+                Err(why) => self.edits_refused(EditOrigin::Rename(name), why),
+            },
             Ok(Some(edit)) => {
                 self.apply_workspace_edit(edit, EditOrigin::Rename(name));
             }
             Ok(None) => self.lsp_hint("Nothing to rename"),
             Err(e) => self.lsp_hint(format!("Rename: unexpected answer ({e})")),
+        }
+    }
+
+    /// Every open buffer with a path, as the rename preview sees it.
+    fn open_texts(&self) -> Vec<OpenText> {
+        self.editor
+            .buffers
+            .iter()
+            .filter_map(|b| Some(OpenText { path: b.path.clone()?, id: b.id, rope: b.rope.clone(), version: b.version, dirty: b.dirty() }))
+            .collect()
+    }
+
+    /// Build the preview of `req` off the main thread; the result opens in Find (`rename_preview_done`).
+    pub(super) fn rename_preview_start(&mut self, req: RenameRequest) {
+        self.find.reset();
+        let (seq, generation, tx) = (self.find.current_seq(), self.workspace.generation, self.bus_tx.clone());
+        tokio::task::spawn_blocking(move || {
+            let result = Box::new(rename_preview::build(req));
+            let _ = tx.send(AppMsg::RenamePreview { generation, seq, result });
+        });
+    }
+
+    /// The preview built by `rename_preview_start`: show it in Find, unless the root or the Find results moved on.
+    pub(super) fn rename_preview_done(&mut self, generation: u64, seq: u64, result: Result<(RenamePreview, Vec<Hit>), String>) {
+        if generation != self.workspace.generation || seq != self.find.current_seq() {
+            tracing::debug!("dropping stale rename preview");
+            return;
+        }
+        let (preview, hits) = match result {
+            Ok(r) => r,
+            Err(e) => return self.notify(Level::Warn, format!("Rename: {e}; nothing was changed")),
+        };
+        if hits.is_empty() && preview.op_count() == 0 {
+            return self.lsp_hint("Nothing to rename");
+        }
+        let (old, new) = (preview.old.clone(), preview.new.clone());
+        self.layout.show(ToolWindowId::Find);
+        self.focus.set(PanelId::Find);
+        let mut cx = ctx!(self);
+        self.find.open_preview(preview, hits, &mut cx);
+        self.notify(Level::Info, format!("Rename {old} to {new}: review the results, then Replace All (Alt+A)"));
+    }
+
+    /// Replace All in a rename preview: refuse when a file changed since, else apply the included edits and
+    /// every file operation. A refusal keeps the preview.
+    pub(super) fn rename_preview_apply(&mut self) {
+        let open = self.open_texts();
+        if let Some(path) = self.find.rename_preview().and_then(|p| p.first_stale(&open)) {
+            let rel = path.strip_prefix(&self.workspace.root).unwrap_or(&path).display().to_string();
+            return self.notify(Level::Error, format!("{rel} changed since the preview; rename again"));
+        }
+        let Some((preview, hits)) = self.find.take_preview() else { return };
+        let steps = rename_preview::included_steps(&preview, &hits);
+        self.lsp_sync();
+        if self.apply_steps_now(steps, EditOrigin::Rename(preview.new.clone())) {
+            self.find.finish_preview();
+        } else {
+            self.find.restore_preview(preview);
         }
     }
 
@@ -546,6 +625,12 @@ impl App {
                 return false;
             }
         };
+        self.apply_steps_now(steps, origin)
+    }
+
+    /// Plan and apply `steps` (see the module docs). Returns false when they were refused and nothing changed.
+    /// The caller has run `lsp_sync`, so the documents' versions are current.
+    pub(super) fn apply_steps_now(&mut self, steps: Vec<edits::Step>, origin: EditOrigin) -> bool {
         // Every buffer with a path: operations on folders touch tabs under them.
         let open: Vec<OpenDoc> = self
             .editor
@@ -879,6 +964,7 @@ mod tests {
     async fn rename_edits_the_open_buffer_in_one_step_and_the_closed_file_on_disk() {
         let (mut app, dir) = test_app("lsp-rename");
         let mut servers = with_fake_servers(&mut app, caps());
+        app.config.lsp.rename_preview = false;
         let mut server = open_on_server(&mut app, &mut servers, "a.rs", A).await;
         let (a, b) = (app.workspace.root.join("a.rs"), app.workspace.root.join("b.rs"));
         std::fs::write(&b, B).unwrap();
@@ -923,6 +1009,7 @@ mod tests {
     async fn rename_rejections_and_a_stale_version_change_nothing() {
         let (mut app, dir) = test_app("lsp-rename-no");
         let mut servers = with_fake_servers(&mut app, caps());
+        app.config.lsp.rename_preview = false;
         let mut server = open_on_server(&mut app, &mut servers, "a.rs", A).await;
         let (a, b) = (app.workspace.root.join("a.rs"), app.workspace.root.join("b.rs"));
         std::fs::write(&b, B).unwrap();
@@ -982,6 +1069,7 @@ mod tests {
         let mut c = incremental();
         c["renameProvider"] = json!(true);
         let mut servers = with_fake_servers(&mut app, c);
+        app.config.lsp.rename_preview = false;
         let mut server = open_on_server(&mut app, &mut servers, "a.rs", A).await;
         app.editor.active_buffer_mut().unwrap().goto_line(1, 19);
         app.perform(Action::Lsp(LspAction::Rename));
@@ -1283,6 +1371,7 @@ mod tests {
     async fn rename_answer_moves_the_open_file_and_its_tab() {
         let (mut app, dir) = test_app("lsp-rename-file");
         let mut servers = with_fake_servers(&mut app, caps());
+        app.config.lsp.rename_preview = false;
         let mut server = open_on_server(&mut app, &mut servers, "a.rs", A).await;
         let root = app.workspace.root.clone();
         let (a, b, c) = (root.join("a.rs"), root.join("b.rs"), root.join("c.rs"));
@@ -1540,5 +1629,286 @@ mod tests {
         assert_eq!(text(&app), "fn b() {}\n");
         assert_eq!(server.response(7).await["result"]["applied"], true);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // Rename preview: the Find window shows the answer first.
+
+    fn preview_msg(m: &AppMsg) -> bool {
+        matches!(m, AppMsg::RenamePreview { .. })
+    }
+
+    struct Rename {
+        app: App,
+        dir: PathBuf,
+        _servers: tokio::sync::mpsc::UnboundedReceiver<FakeServer>,
+        server: FakeServer,
+        a: PathBuf,
+        b: PathBuf,
+    }
+
+    async fn rename_fixture(name: &str) -> Rename {
+        let (mut app, dir) = test_app(name);
+        let mut servers = with_fake_servers(&mut app, caps());
+        let server = open_on_server(&mut app, &mut servers, "a.rs", A).await;
+        let (a, b) = (app.workspace.root.join("a.rs"), app.workspace.root.join("b.rs"));
+        std::fs::write(&b, B).unwrap();
+        app.editor.active_buffer_mut().unwrap().goto_line(1, 18);
+        Rename { app, dir, _servers: servers, server, a, b }
+    }
+
+    impl Rename {
+        /// Ask for the rename of `old` to `renamed` and answer it with `we`; the dialog's button is returned.
+        async fn ask(&mut self, we: Value) -> String {
+            let app = &mut self.app;
+            app.perform(Action::Lsp(LspAction::Rename));
+            answer(app, &mut self.server, "textDocument/prepareRename", range(1, 18, 1, 21)).await;
+            let d = app.dialog.take().expect("the rename dialog");
+            let DialogKind::Input { ok, .. } = &d.kind else { panic!("{:?}", d.kind) };
+            let ok = ok.clone();
+            app.finish_dialog(d.id, DialogResult::Text("renamed".into()));
+            answer(app, &mut self.server, "textDocument/rename", we).await;
+            ok
+        }
+
+        async fn preview(&mut self, we: Value) {
+            self.ask(we).await;
+            handle_next(&mut self.app, preview_msg).await;
+        }
+
+        /// Replace All, then the dialog's first button (`Rename`).
+        fn replace_all(&mut self) -> crate::ui::dialog::Dialog {
+            self.app.perform(Action::Find(crate::actions::FindAction::ReplaceAll));
+            let d = self.app.dialog.take().expect("the rename dialog");
+            self.app.finish_dialog(d.id.clone(), DialogResult::Button(0));
+            d
+        }
+    }
+
+    /// The edit of a.rs (open, version 1) and b.rs (closed): three edits, two files.
+    fn rename_edit(a: &Path, b: &Path) -> Value {
+        json!({"documentChanges": [
+            {"textDocument": {"uri": uri(a), "version": 1}, "edits": [edit(1, 18, 1, 21, "renamed")]},
+            {"textDocument": {"uri": uri(b), "version": null}, "edits": [edit(0, 7, 0, 10, "renamed"), edit(1, 6, 1, 9, "renamed")]},
+        ],
+        "changeAnnotations": {"OutsideWorkspace": {"label": "Edit outside of the workspace", "needsConfirmation": true}}})
+    }
+
+    fn rows_of(app: &App) -> Vec<(String, usize, usize)> {
+        let name = |p: &Path| p.file_name().unwrap().to_str().unwrap().to_string();
+        app.find.included_by_file().into_iter().flat_map(|(p, hits)| hits.into_iter().map(move |h| (name(&p), h.line, h.col))).collect()
+    }
+
+    #[tokio::test]
+    async fn rename_answer_opens_the_preview_and_writes_nothing() {
+        use crate::ui::focus::{PanelId, ToolWindowId};
+        let mut fx = rename_fixture("rename-preview-open").await;
+        let we = rename_edit(&fx.a, &fx.b);
+        let ok = fx.ask(we).await;
+        assert_eq!(ok, "Preview");
+        handle_next(&mut fx.app, preview_msg).await;
+        let app = &fx.app;
+        assert!(app.dialog.is_none(), "a referenced needsConfirmation annotation opens no confirmation");
+        assert_eq!(text(app), A);
+        assert_eq!(std::fs::read_to_string(&fx.b).unwrap(), B);
+        assert!(app.layout.is_visible(ToolWindowId::Find) && app.focus.is(PanelId::Find));
+        let f = &app.find;
+        assert_eq!((f.query.text.as_str(), f.replace.text.as_str()), ("old", "renamed"));
+        assert!(f.show_replace && f.case_sensitive && f.whole_word && !f.regex && !f.structural);
+        assert_eq!(rows_of(app), [("a.rs".to_string(), 1, 17), ("b.rs".to_string(), 0, 7), ("b.rs".to_string(), 1, 6)]);
+        let want = "Rename old to renamed: review the results, then Replace All (Alt+A)";
+        assert!(toasts(app).contains(&want.to_string()), "{:?}", toasts(app));
+        let _ = std::fs::remove_dir_all(&fx.dir);
+    }
+
+    #[tokio::test]
+    async fn excluded_edit_is_not_applied_and_the_rest_apply_as_one_undo_step() {
+        let mut fx = rename_fixture("rename-preview-exclude").await;
+        let we = rename_edit(&fx.a, &fx.b);
+        fx.preview(we).await;
+        // Rows: 0 a.rs, 1 its edit, 2 b.rs, 3 the definition, 4 the comment.
+        fx.app.find.list.select(4);
+        fx.app.find.toggle_exclude();
+        let d = fx.replace_all();
+        assert_eq!(d.title, "Rename");
+        assert!(d.message.starts_with("Rename old to renamed: 2 occurrences in 2 files."), "{}", d.message);
+        assert_eq!(text(&fx.app), "fn main() {\n    let s = \"😀\"; renamed(s);\n}\n");
+        handle_next(&mut fx.app, applied).await;
+        assert_eq!(std::fs::read_to_string(&fx.b).unwrap(), "pub fn renamed(s: &str) {}\n// 日本 old\n");
+        let want = "Renamed to renamed: 2 occurrences in 2 files";
+        assert!(toasts(&fx.app).contains(&want.to_string()), "{:?}", toasts(&fx.app));
+        let f = &fx.app.find;
+        assert!((f.hit_count(), f.rename_preview().is_none(), f.query.text.as_str(), f.replace.text.as_str()) == (0, true, "", ""));
+        assert!(!toasts(&fx.app).iter().any(|t| t.starts_with("Replaced")), "the regex path did not run");
+        fx.app.perform(Action::Editor(EditorAction::Undo));
+        assert_eq!(text(&fx.app), A, "one undo step");
+        let _ = std::fs::remove_dir_all(&fx.dir);
+    }
+
+    #[tokio::test]
+    async fn shorthand_edit_shows_and_applies_its_own_text() {
+        let mut fx = rename_fixture("rename-preview-shorthand").await;
+        let we = json!({"documentChanges": [
+            {"textDocument": {"uri": uri(&fx.a), "version": 1}, "edits": [edit(1, 18, 1, 18, "old: "), edit(1, 18, 1, 21, "renamed")]},
+        ]});
+        fx.preview(we).await;
+        let hits = fx.app.find.included_by_file().remove(0).1;
+        let shown: Vec<_> = hits.iter().map(|h| (h.len, h.matched.as_str(), h.rename.as_ref().unwrap().new_text.as_str())).collect();
+        assert_eq!(shown, [(0, "", "old: "), (3, "old", "renamed")]);
+        fx.replace_all();
+        assert_eq!(text(&fx.app), "fn main() {\n    let s = \"😀\"; old: renamed(s);\n}\n");
+        let _ = std::fs::remove_dir_all(&fx.dir);
+    }
+
+    /// a.rs edited, then moved to c.rs, c.rs edited (no row), b.rs edited.
+    fn operation_edit(a: &Path, b: &Path, c: &Path) -> Value {
+        json!({"documentChanges": [
+            {"textDocument": {"uri": uri(a), "version": 1}, "edits": [edit(1, 18, 1, 21, "renamed")]},
+            {"kind": "rename", "oldUri": uri(a), "newUri": uri(c)},
+            {"textDocument": {"uri": uri(c), "version": null}, "edits": [edit(0, 3, 0, 7, "mn")]},
+            {"textDocument": {"uri": uri(b), "version": null}, "edits": [edit(0, 7, 0, 10, "renamed")]},
+        ]})
+    }
+
+    #[tokio::test]
+    async fn file_operations_are_listed_and_carried_out_in_order() {
+        let mut fx = rename_fixture("rename-preview-ops").await;
+        let c = fx.app.workspace.root.join("c.rs");
+        let we = operation_edit(&fx.a, &fx.b, &c);
+        fx.preview(we).await;
+        assert_eq!(rows_of(&fx.app), [("a.rs".to_string(), 1, 17), ("b.rs".to_string(), 0, 7)], "the edit of c.rs has no row");
+        let d = fx.replace_all();
+        assert_eq!(d.title, "Rename");
+        assert!(d.message.contains("rename a.rs to c.rs") && d.message.contains("1 more edit"), "{}", d.message);
+        handle_next(&mut fx.app, applied).await;
+        assert!(!fx.a.exists());
+        assert_eq!(std::fs::read_to_string(&c).unwrap(), A, "unsaved edits are not written");
+        assert_eq!(std::fs::read_to_string(&fx.b).unwrap(), "pub fn renamed(s: &str) {}\n// 日本 old\n");
+        let buf = fx.app.editor.active_buffer().unwrap();
+        assert_eq!((buf.path.as_deref(), buf.dirty()), (Some(c.as_path()), true));
+        assert_eq!(text(&fx.app), "fn mn() {\n    let s = \"😀\"; renamed(s);\n}\n");
+        assert!(toasts(&fx.app).iter().any(|t| t.contains("renamed a.rs to c.rs")), "{:?}", toasts(&fx.app));
+        let _ = std::fs::remove_dir_all(&fx.dir);
+    }
+
+    #[tokio::test]
+    async fn excluding_every_row_still_runs_the_file_operations() {
+        let mut fx = rename_fixture("rename-preview-ops-only").await;
+        let c = fx.app.workspace.root.join("c.rs");
+        let we = json!({"documentChanges": [
+            {"textDocument": {"uri": uri(&fx.a), "version": 1}, "edits": [edit(1, 18, 1, 21, "renamed")]},
+            {"kind": "rename", "oldUri": uri(&fx.a), "newUri": uri(&c)},
+            {"textDocument": {"uri": uri(&fx.b), "version": null}, "edits": [edit(0, 7, 0, 10, "renamed")]},
+        ]});
+        fx.preview(we).await;
+        for row in [2, 0] {
+            fx.app.find.list.select(row);
+            fx.app.find.toggle_exclude();
+        }
+        assert_eq!(fx.app.find.included_count(), 0);
+        fx.replace_all();
+        handle_next(&mut fx.app, applied).await;
+        assert!(!fx.a.exists() && c.exists());
+        assert_eq!(text(&fx.app), A);
+        assert_eq!(std::fs::read_to_string(&fx.b).unwrap(), B);
+        let _ = std::fs::remove_dir_all(&fx.dir);
+    }
+
+    #[tokio::test]
+    async fn stale_buffer_refuses_the_whole_rename() {
+        let mut fx = rename_fixture("rename-preview-stale-buffer").await;
+        let we = rename_edit(&fx.a, &fx.b);
+        fx.preview(we).await;
+        fx.app.perform(Action::Editor(EditorAction::InsertText("// ".into())));
+        let edited = text(&fx.app);
+        fx.replace_all();
+        let n = fx.app.notifications.last().unwrap();
+        assert_eq!((n.level, n.text.as_str()), (Level::Error, "a.rs changed since the preview; rename again"));
+        assert_eq!(text(&fx.app), edited);
+        assert_eq!(std::fs::read_to_string(&fx.b).unwrap(), B);
+        assert!(fx.app.find.rename_preview().is_some());
+        let _ = std::fs::remove_dir_all(&fx.dir);
+    }
+
+    #[tokio::test]
+    async fn stale_disk_file_refuses_the_whole_rename() {
+        let mut fx = rename_fixture("rename-preview-stale-disk").await;
+        let we = rename_edit(&fx.a, &fx.b);
+        fx.preview(we).await;
+        std::fs::write(&fx.b, format!("{B}// longer\n")).unwrap();
+        fx.replace_all();
+        let n = fx.app.notifications.last().unwrap();
+        assert_eq!((n.level, n.text.as_str()), (Level::Error, "b.rs changed since the preview; rename again"));
+        assert_eq!(text(&fx.app), A);
+        assert_eq!(std::fs::read_to_string(&fx.b).unwrap(), format!("{B}// longer\n"));
+        assert!(fx.app.find.rename_preview().is_some());
+        let _ = std::fs::remove_dir_all(&fx.dir);
+    }
+
+    #[tokio::test]
+    async fn plan_refusal_keeps_the_preview() {
+        let mut fx = rename_fixture("rename-preview-plan-refusal").await;
+        let we = json!({"documentChanges": [
+            {"textDocument": {"uri": uri(&fx.a), "version": 7}, "edits": [edit(1, 18, 1, 21, "renamed")]},
+        ]});
+        fx.preview(we).await;
+        fx.replace_all();
+        let n = fx.app.notifications.last().unwrap();
+        assert_eq!(
+            (n.level, n.text.as_str()),
+            (Level::Warn, "Rename: a.rs changed since the language server made the edit; nothing was changed")
+        );
+        assert!(fx.app.find.rename_preview().is_some());
+        assert_eq!(text(&fx.app), A);
+        let _ = std::fs::remove_dir_all(&fx.dir);
+    }
+
+    #[tokio::test]
+    async fn key_off_applies_at_once_and_the_button_says_refactor() {
+        let mut fx = rename_fixture("rename-preview-off").await;
+        fx.app.config.lsp.rename_preview = false;
+        let we = rename_edit(&fx.a, &fx.b);
+        let ok = fx.ask(we).await;
+        assert_eq!(ok, "Refactor");
+        assert_eq!(text(&fx.app), "fn main() {\n    let s = \"😀\"; renamed(s);\n}\n");
+        assert!(fx.app.find.rename_preview().is_none());
+        let _ = std::fs::remove_dir_all(&fx.dir);
+    }
+
+    #[tokio::test]
+    async fn empty_answer_hints_nothing_to_rename() {
+        use crate::ui::focus::ToolWindowId;
+        let mut fx = rename_fixture("rename-preview-empty").await;
+        fx.preview(json!({"changes": {}})).await;
+        assert!(toasts(&fx.app).contains(&"Nothing to rename".to_string()), "{:?}", toasts(&fx.app));
+        assert!(!fx.app.layout.is_visible(ToolWindowId::Find) && fx.app.find.rename_preview().is_none());
+        let _ = std::fs::remove_dir_all(&fx.dir);
+    }
+
+    #[tokio::test]
+    async fn an_older_result_is_dropped() {
+        use crate::ui::focus::ToolWindowId;
+        let mut fx = rename_fixture("rename-preview-older").await;
+        let we = rename_edit(&fx.a, &fx.b);
+        fx.ask(we).await;
+        fx.app.find.reset();
+        handle_next(&mut fx.app, preview_msg).await;
+        assert!(!fx.app.layout.is_visible(ToolWindowId::Find) && fx.app.find.rename_preview().is_none());
+        let _ = std::fs::remove_dir_all(&fx.dir);
+    }
+
+    #[tokio::test]
+    async fn new_search_after_a_cancelled_dialog_applies_nothing() {
+        let mut fx = rename_fixture("rename-preview-cancel").await;
+        let we = rename_edit(&fx.a, &fx.b);
+        fx.preview(we).await;
+        fx.app.perform(Action::Find(crate::actions::FindAction::ReplaceAll));
+        let d = fx.app.dialog.take().unwrap();
+        fx.app.finish_dialog(d.id, DialogResult::Button(1));
+        assert!(fx.app.find.rename_preview().is_some(), "Cancel keeps the preview");
+        fx.app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        assert!(fx.app.find.rename_preview().is_none());
+        assert_eq!(text(&fx.app), A);
+        assert_eq!(std::fs::read_to_string(&fx.b).unwrap(), B);
+        let _ = std::fs::remove_dir_all(&fx.dir);
     }
 }

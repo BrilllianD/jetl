@@ -185,6 +185,7 @@ sections! {
         completion_min_chars => Live,
         inlay_hints => Live,
         semantic_tokens => Live,
+        rename_preview => Live,
         scratches => Live,
         servers => LspRestart,
     }
@@ -257,7 +258,7 @@ mod tests {
         names.dedup();
         assert_eq!(names.len(), KEYS.len());
         // 19 editor, 8 ui, 3 git, 2 worktree, 1 keymap, 3 files, 2 clipboard,
-        // 3 format, 2 run, 3 terminal, 10 lsp, 5 local_history, 2 index.
-        assert_eq!(KEYS.len(), 63);
+        // 3 format, 2 run, 3 terminal, 11 lsp, 5 local_history, 2 index.
+        assert_eq!(KEYS.len(), 64);
     }
 }

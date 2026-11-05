@@ -91,6 +91,12 @@ pub enum AppMsg {
         path: PathBuf,
         result: std::io::Result<Vec<u8>>,
     },
+    /// A rename preview built (`App::rename_preview_start`); dropped when the root or the Find seq moved on.
+    RenamePreview {
+        generation: u64,
+        seq: u64,
+        result: Box<Result<(crate::files::rename_preview::RenamePreview, Vec<crate::files::find::Hit>), String>>,
+    },
     /// Find in files results (`FindPanel::search`).
     Find {
         generation: u64,

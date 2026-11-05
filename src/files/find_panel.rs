@@ -3,6 +3,12 @@
 //! file. Typing searches live; Up/Down move through the results, Enter
 //! opens one. A structural toggle (Alt+T, feature `structural`) turns the
 //! query into an ast-grep code pattern.
+//!
+//! The same window shows a rename preview (`open_preview`): the hits are a
+//! language server's text edits (`files::rename_preview`), exclusion works
+//! as for a search, and Replace All asks to apply the included edits and the
+//! answer's file operations instead of replacing text. Typing in either
+//! field or toggling an option drops the preview and searches as usual.
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -23,6 +29,7 @@ use crate::config::theme::Theme;
 use crate::editor::search::build_pattern;
 use crate::event::{AppMsg, Effect, Level, Mouse};
 use crate::files::find::{Batch, Hit, MAX_HITS, Query, Search};
+use crate::files::rename_preview::{RenamePreview, RenameSource};
 use crate::ui::dialog::{Dialog, DialogId};
 use crate::ui::focus::PanelId;
 use crate::ui::tool_window_block;
@@ -80,6 +87,8 @@ pub struct FindPanel {
     /// included, per absolute path; every other hit of this search starts
     /// excluded. Dropped by `reset`.
     keep: Option<HashMap<PathBuf, HashSet<(usize, usize)>>>,
+    /// A language server's rename under review (`open_preview`). Dropped by `reset`.
+    preview: Option<RenamePreview>,
     pub list: ListState,
     /// Seq of the newest search; a running search stops when it moves on.
     seq: u64,
@@ -115,6 +124,7 @@ impl FindPanel {
             re: None,
             rows: Vec::new(),
             keep: None,
+            preview: None,
             list: ListState::default(),
             seq: 0,
             cancel: Arc::new(AtomicU64::new(0)),
@@ -137,7 +147,7 @@ impl FindPanel {
         if let Some(q) = query.filter(|q| !q.is_empty() && *q != self.query.text) {
             self.query.set_text(q);
             self.search(cx);
-        } else if was_structural || (self.hits.is_empty() && !self.query.text.is_empty()) {
+        } else if was_structural || (self.hits.is_empty() && !self.query.text.is_empty() && self.preview.is_none()) {
             self.search(cx);
         }
     }
@@ -150,6 +160,7 @@ impl FindPanel {
         self.re = None;
         self.rows.clear();
         self.keep = None;
+        self.preview = None;
         self.list = ListState::default();
         self.searching = false;
         self.error = None;
@@ -170,6 +181,50 @@ impl FindPanel {
         self.search(cx);
         // After `search`: it calls `reset`, which drops the set. Batches arrive later.
         self.keep = Some(keep);
+    }
+
+    /// Show a language server's rename for review: query `old`, replacement `new` (case and whole word on),
+    /// one result per edit in `hits`, nothing searched. Replace All applies the included edits.
+    pub fn open_preview(&mut self, preview: RenamePreview, hits: Vec<Hit>, cx: &mut Ctx) {
+        self.reset();
+        self.root = cx.workspace.root.clone();
+        self.query.set_text(&preview.old);
+        self.replace.set_text(&preview.new);
+        self.show_replace = true;
+        self.field = Field::Query;
+        self.case_sensitive = true;
+        self.whole_word = true;
+        self.regex = false;
+        self.structural = false;
+        self.capped = false;
+        self.searching = false;
+        let files = preview.stamps.len();
+        self.preview = Some(preview);
+        self.on_batch(Batch { seq: self.seq, hits, files_searched: files, done: true, capped: false });
+    }
+
+    /// The rename under review, if any.
+    pub fn rename_preview(&self) -> Option<&RenamePreview> {
+        self.preview.as_ref()
+    }
+
+    /// The preview and its included hits for Replace All; the rows stay.
+    pub fn take_preview(&mut self) -> Option<(RenamePreview, Vec<Hit>)> {
+        let preview = self.preview.take()?;
+        let hits = self.hits.iter().filter(|h| !h.excluded).cloned().collect();
+        Some((preview, hits))
+    }
+
+    /// Put a preview taken by `take_preview` back after a refused apply.
+    pub fn restore_preview(&mut self, preview: RenamePreview) {
+        self.preview = Some(preview);
+    }
+
+    /// A rename was applied: drop the results and clear both fields.
+    pub fn finish_preview(&mut self) {
+        self.reset();
+        self.query.set_text("");
+        self.replace.set_text("");
     }
 
     pub fn pattern(&self) -> Result<Regex, String> {
@@ -253,7 +308,6 @@ impl FindPanel {
         }
     }
 
-    #[cfg(test)]
     pub fn current_seq(&self) -> u64 {
         self.seq
     }
@@ -311,6 +365,10 @@ impl FindPanel {
     fn replacement_of(&self, hit: &Hit) -> String {
         let with = &self.replace.text;
         let mut s = String::new();
+        if let Some(r) = &hit.rename {
+            s.push_str(&r.new_text);
+            return s.chars().map(|c| if matches!(c, '\n' | '\r' | '\t') { ' ' } else { c }).collect();
+        }
         match self.re.as_ref().filter(|_| self.regex).and_then(|re| re.captures(&hit.matched)) {
             Some(caps) => caps.expand(with, &mut s),
             None => s.push_str(with),
@@ -363,7 +421,7 @@ impl FindPanel {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let alt = key.modifiers.contains(KeyModifiers::ALT);
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
-        let before = self.query.text.clone();
+        let (before, before_replace) = (self.query.text.clone(), self.replace.text.clone());
         let input = self.input();
         match key.code {
             // Ctrl+Shift+Left/Right resize the window through the keymap.
@@ -378,16 +436,16 @@ impl FindPanel {
             KeyCode::Char(c) if !ctrl && !alt => input.insert(c),
             _ => return false,
         }
-        if self.query.text != before {
+        if self.query.text != before || (self.preview.is_some() && self.replace.text != before_replace) {
             self.search(cx);
         }
         true
     }
 
     pub fn paste(&mut self, text: &str, cx: &mut Ctx) {
-        let before = self.query.text.clone();
+        let (before, before_replace) = (self.query.text.clone(), self.replace.text.clone());
         self.input().insert_str(&text.replace(['\r', '\n'], " "));
-        if self.query.text != before {
+        if self.query.text != before || (self.preview.is_some() && self.replace.text != before_replace) {
             self.search(cx);
         }
     }
@@ -442,6 +500,16 @@ impl FindPanel {
     }
 
     fn ask_replace_all(&mut self, cx: &mut Ctx) {
+        if let Some(preview) = &self.preview {
+            let included: Vec<Hit> = self.hits.iter().filter(|h| !h.excluded).cloned().collect();
+            if included.is_empty() && preview.op_count() == 0 && preview.unlisted.is_empty() {
+                cx.notify(Level::Info, "Every result is excluded; nothing to replace");
+                return;
+            }
+            let msg = preview.confirm_message(&included, &self.root);
+            cx.effects.push(Effect::Dialog(Dialog::confirm(DialogId::ReplaceInFiles, "Rename", &msg, &["Rename", "Cancel"])));
+            return;
+        }
         if self.structural {
             cx.notify(Level::Info, NO_STRUCTURAL_REPLACE);
             return;
@@ -534,6 +602,14 @@ impl FindPanel {
             0 => found,
             k => format!("{found}; {k} excluded"),
         };
+        if let Some(p) = &self.preview {
+            let ops = match p.op_count() {
+                0 => String::new(),
+                1 => " + 1 file operation".into(),
+                n => format!(" + {n} file operations"),
+            };
+            return (format!("{found}{ops}"), None);
+        }
         if self.searching {
             (format!("Searching… {found} ({} files)", self.files_searched), None)
         } else if n == 0 {
@@ -675,6 +751,9 @@ impl FindPanel {
                         }
                         (x, _) = buf.set_stringn(x, y, text, lr.right().saturating_sub(x) as usize, style);
                     }
+                    if hit.rename.as_ref().is_some_and(|r| r.source == RenameSource::Textual) && lr.width > 5 {
+                        buf.set_stringn(lr.right() - 5, y, " text", 5, dimmed(base));
+                    }
                 }
             }
         }
@@ -697,6 +776,7 @@ mod tests {
             preview_col: 0,
             matched: matched.into(),
             excluded: false,
+            rename: None,
         }
     }
 
@@ -842,5 +922,204 @@ mod tests {
                 );
             }
         }
+    }
+
+    fn rename_hit(path: &str, line: usize, col: usize, new_text: &str, at: Option<(u32, u32)>, source: RenameSource) -> Hit {
+        use crate::files::rename_preview::RenameEdit;
+        use lsp_types::{Position, Range, TextEdit};
+        let edit = TextEdit {
+            range: Range::new(Position::new(line as u32, col as u32), Position::new(line as u32, col as u32 + 3)),
+            new_text: new_text.into(),
+        };
+        Hit {
+            col,
+            len: 3,
+            preview: "xx old yy".into(),
+            preview_col: 3,
+            matched: "old".into(),
+            excluded: source == RenameSource::Textual,
+            rename: Some(Box::new(RenameEdit { new_text: new_text.into(), edit, at, source })),
+            ..hit(path, line, "old")
+        }
+    }
+
+    fn preview_of(ops: usize) -> RenamePreview {
+        use crate::lsp::edits::{FileOp, Step};
+        let steps = (0..ops)
+            .map(|i| Step::Op {
+                index: i as u32,
+                op: FileOp::Delete { path: format!("/p/f{i}").into(), recursive: false, ignore_if_not_exists: true },
+            })
+            .collect();
+        RenamePreview { old: "old".into(), new: "new".into(), steps, stamps: HashMap::new(), unlisted: HashSet::new() }
+    }
+
+    fn rows(ops: usize) -> (RenamePreview, Vec<Hit>) {
+        let hits = vec![
+            rename_hit("a", 0, 3, "new", Some((0, 0)), RenameSource::Exact),
+            rename_hit("a", 2, 3, "new: ", Some((0, 1)), RenameSource::Exact),
+            rename_hit("b", 1, 3, "new", Some((1, 0)), RenameSource::Exact),
+        ];
+        (preview_of(ops), hits)
+    }
+
+    fn temp_root(name: &str) -> (std::path::PathBuf, Config, Theme, Workspace) {
+        let dir = std::env::temp_dir().join(format!("jetl-test-find-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        (dir.clone(), Config::default(), Theme::default(), Workspace::new(dir))
+    }
+
+    #[tokio::test]
+    async fn open_preview_sets_fields_and_groups_rows() {
+        let (dir, config, theme, workspace) = temp_root("preview-open");
+        let mut cx = test_ctx(&config, &theme, &workspace);
+        let mut p = FindPanel::new();
+        p.structural = true;
+        p.regex = true;
+        let (preview, hits) = rows(0);
+        p.open_preview(preview, hits, &mut cx);
+        assert_eq!((p.query.text.as_str(), p.replace.text.as_str()), ("old", "new"));
+        assert!(p.show_replace && p.case_sensitive && p.whole_word && !p.regex && !p.structural && !p.searching);
+        assert_eq!(p.rows, [Row::File { first: 0, count: 2 }, Row::Hit(0), Row::Hit(1), Row::File { first: 2, count: 1 }, Row::Hit(2)]);
+        assert_eq!(p.list.selected, 1, "starts on the first hit");
+        assert!(p.rename_preview().is_some());
+        assert_eq!(p.status().0, "3 matches in 2 files");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn typing_in_either_field_or_toggling_drops_the_preview() {
+        let (dir, config, theme, workspace) = temp_root("preview-type");
+        let mut cx = test_ctx(&config, &theme, &workspace);
+        let key = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+        let open = |p: &mut FindPanel, cx: &mut Ctx| {
+            let (preview, hits) = rows(0);
+            p.open_preview(preview, hits, cx);
+        };
+        let mut p = FindPanel::new();
+        open(&mut p, &mut cx);
+        assert!(p.handle_key(key('x'), &mut cx));
+        assert!(p.rename_preview().is_none() && p.query.text == "oldx", "query key");
+        open(&mut p, &mut cx);
+        p.handle_action(&FindAction::NextField, &mut cx);
+        assert!(p.handle_key(key('x'), &mut cx));
+        assert!(p.rename_preview().is_none() && p.replace.text == "newx", "replace key");
+        open(&mut p, &mut cx);
+        p.handle_action(&FindAction::NextField, &mut cx);
+        p.paste("zz", &mut cx);
+        assert!(p.rename_preview().is_none(), "paste in replace");
+        open(&mut p, &mut cx);
+        p.handle_action(&FindAction::ToggleCase, &mut cx);
+        assert!(p.rename_preview().is_none() && !p.case_sensitive, "toggle");
+        // An ordinary search does not search again when only the replacement changes.
+        let seq = p.current_seq();
+        p.handle_action(&FindAction::NextField, &mut cx);
+        assert!(p.handle_key(key('y'), &mut cx));
+        assert_eq!(p.current_seq(), seq);
+        assert_eq!(p.replace.text, "newy", "typed into the replace field");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn replacement_of_uses_the_rows_own_text() {
+        let mut p = FindPanel::new();
+        p.replace.set_text("new");
+        let h = rename_hit("a", 0, 3, "new:\t", Some((0, 0)), RenameSource::Exact);
+        assert_eq!(p.replacement_of(&h), "new: ");
+        assert_eq!(p.replacement_of(&hit("a", 0, "old")), "new");
+    }
+
+    #[tokio::test]
+    async fn take_and_restore_preview() {
+        let (dir, config, theme, workspace) = temp_root("preview-take");
+        let mut cx = test_ctx(&config, &theme, &workspace);
+        let mut p = FindPanel::new();
+        let (preview, hits) = rows(0);
+        p.open_preview(preview, hits, &mut cx);
+        p.list.select(2);
+        p.toggle_exclude();
+        let (preview, included) = p.take_preview().unwrap();
+        assert_eq!(included.iter().map(|h| (h.path.to_str().unwrap(), h.line)).collect::<Vec<_>>(), [("a", 0), ("b", 1)]);
+        assert!(p.rename_preview().is_none());
+        assert_eq!((p.hit_count(), p.rows.len()), (3, 5), "rows stay");
+        p.restore_preview(preview);
+        assert!(p.rename_preview().is_some());
+        p.finish_preview();
+        assert!(p.rename_preview().is_none());
+        assert_eq!((p.hit_count(), p.query.text.as_str(), p.replace.text.as_str()), (0, "", ""));
+        assert_eq!(p.status().0, "type to search the project");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn status_counts_excluded_and_file_operations() {
+        let (dir, config, theme, workspace) = temp_root("preview-status");
+        let mut cx = test_ctx(&config, &theme, &workspace);
+        let mut p = FindPanel::new();
+        let (preview, hits) = rows(2);
+        p.open_preview(preview, hits, &mut cx);
+        assert_eq!(p.status(), ("3 matches in 2 files + 2 file operations".into(), None));
+        p.list.select(2);
+        p.toggle_exclude();
+        assert_eq!(p.status().0, "3 matches in 2 files; 1 excluded + 2 file operations");
+        p.open_preview(preview_of(1), Vec::new(), &mut cx);
+        assert_eq!(p.status().0, "0 matches in 0 files + 1 file operation");
+        assert!(p.rename_preview().is_some());
+        // Showing the window with only operations keeps the preview.
+        p.open(None, false, &mut cx);
+        assert!(p.rename_preview().is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn textual_row_draws_a_dim_marker() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let theme = Theme::default();
+        let mut p = FindPanel::new();
+        p.query.set_text("old");
+        p.preview = Some(preview_of(0));
+        p.on_batch(Batch {
+            seq: p.current_seq(),
+            hits: vec![
+                rename_hit("a", 0, 3, "new", None, RenameSource::Textual),
+                rename_hit("a", 1, 3, "new", Some((0, 0)), RenameSource::Exact),
+            ],
+            files_searched: 1,
+            done: true,
+            capped: false,
+        });
+        let mut term = Terminal::new(TestBackend::new(60, 10)).unwrap();
+        term.draw(|f| p.render(f, f.area(), true, &theme)).unwrap();
+        let buf = term.backend().buffer();
+        let line = |y: u16| (0..60).map(|x| buf[(x, y)].symbol()).collect::<String>();
+        let r = p.list_rect;
+        let (textual, exact) = (line(r.y + 1), line(r.y + 2));
+        assert!(textual.trim_end().trim_end_matches('\u{2502}').trim_end().ends_with(" text"), "{textual:?}");
+        assert!(!exact.contains(" text"), "{exact:?}");
+        let x = r.right() - 5;
+        assert_eq!(buf[(x + 1, r.y + 1)].fg, theme.dim.fg.unwrap_or(theme.fg));
+    }
+
+    #[tokio::test]
+    async fn ask_replace_all_in_preview() {
+        let (dir, config, theme, workspace) = temp_root("preview-ask");
+        let mut cx = test_ctx(&config, &theme, &workspace);
+        let mut p = FindPanel::new();
+        p.open_preview(preview_of(1), Vec::new(), &mut cx);
+        p.ask_replace_all(&mut cx);
+        let Some(Effect::Dialog(d)) = cx.effects.pop() else { panic!("a dialog") };
+        assert_eq!((d.title.as_str(), d.id), ("Rename", DialogId::ReplaceInFiles));
+        assert!(d.message.contains("File operations:\n  delete /p/f0"), "{}", d.message);
+        assert!(cx.effects.is_empty());
+        // Everything excluded and no operation: the toast.
+        let (preview, hits) = rows(0);
+        p.open_preview(preview, hits, &mut cx);
+        p.list.select(0);
+        p.toggle_exclude();
+        p.list.select(3);
+        p.toggle_exclude();
+        p.ask_replace_all(&mut cx);
+        assert!(matches!(cx.effects.as_slice(), [Effect::Notify(Level::Info, t)] if t == "Every result is excluded; nothing to replace"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

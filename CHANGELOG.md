@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Rename (Shift+F6) with a language server shows its answer in the Find window before anything is written: one result per text edit, grouped by file; Alt+Delete leaves a result or a whole file out, Replace All (Alt+A) lists the file operations (create, rename, delete) and applies the included edits and all operations as one workspace edit (undo and Local History as before). A file changed since the preview refuses the whole rename. `[lsp] rename_preview = false` (Settings > Language Servers) applies the rename at once as before.
 - SCIP indexes: set `[index] scip` to an `index.scip` (for example from `rust-analyzer scip .`) and Go to Definition and Find Usages use its exact results without a language server, in files not changed since the index was built.
 - `[index] scip_command` and Run > Build SCIP Index run the indexer in the Run window and load the index again when it succeeds; without a language server the call hierarchy follows the SCIP index's exact references in files it covers.
 - Structural search in Find in files: Alt+T (or the AST button) treats the query as an ast-grep code pattern, so `$A.unwrap()` finds every `.unwrap()` call and `foo($$$ARGS)` every call of `foo`, in each file whose language has a grammar in the build; match case, whole word, regex and replace do not apply while it is on. Behind the default cargo feature `structural`.

@@ -1769,6 +1769,78 @@ async fn find_in_files_excluded() {
     assert_snapshot!("find_in_files_excluded", snapshot(&term, &marks, Some(bottom)));
 }
 
+/// A rename preview in Find: rows of two files, a shorthand insertion, a comment row excluded and one
+/// file operation, made by `rename_preview::build` and delivered like the app's own message.
+#[cfg(feature = "structural")]
+fn rename_preview_app(name: &str) -> Fixture {
+    use crate::files::rename_preview::{RenameRequest, build};
+    use crate::lsp::edits::{FileEdit, FileOp, Step};
+    use lsp_types::{Position, Range, TextEdit};
+    let mut fx = stable_app(name);
+    let app = &mut fx.app;
+    let root = app.workspace.root.clone();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    let (service, util) = (root.join("src/service.rs"), root.join("src/util.rs"));
+    std::fs::write(&service, "fn parse(s: &str) {}\nlet p = Point { parse };\n// calls parse\n").unwrap();
+    std::fs::write(&util, "use crate::parse;\n").unwrap();
+    let te = |l: u32, c0: u32, c1: u32, text: &str| TextEdit {
+        range: Range::new(Position::new(l, c0), Position::new(l, c1)),
+        new_text: text.into(),
+    };
+    let steps = vec![
+        Step::Edit(FileEdit {
+            path: service,
+            version: None,
+            edits: vec![te(0, 3, 8, "read_input"), te(1, 16, 16, "read_input: "), te(2, 9, 14, "read_input")],
+            index: None,
+        }),
+        Step::Edit(FileEdit { path: util.clone(), version: None, edits: vec![te(0, 11, 16, "read_input")], index: None }),
+        Step::Op { index: 2, op: FileOp::Rename { from: util, to: root.join("src/input.rs"), overwrite: false, ignore_if_exists: false } },
+    ];
+    let req = RenameRequest { old: "parse".into(), new: "read_input".into(), steps, open: Vec::new(), root };
+    let result = Box::new(build(req));
+    let (generation, seq) = (app.workspace.generation, app.find.current_seq());
+    app.handle_msg(AppMsg::RenamePreview { generation, seq, result });
+    app.notifications.clear();
+    app.notification_shown = false;
+    app.toasts = Default::default();
+    // Rows: 0 service.rs, 1 definition, 2 insertion, 3 comment, 4 util.rs, 5 use.
+    app.find.list.select(3);
+    app.find.toggle_exclude();
+    app.find.list.select(1);
+    fx
+}
+
+// The Find header has the AST toggle only with the "structural" feature.
+#[cfg(feature = "structural")]
+#[tokio::test]
+async fn find_in_files_rename_preview() {
+    let mut fx = rename_preview_app("find-rename-preview");
+    let app = &mut fx.app;
+    assert_eq!((app.find.hit_count(), app.find.excluded_count()), (4, 1));
+    let term = draw_app(app, 80, 24);
+    let mut marks = find_marks(&app.theme);
+    marks.push(Mark::bg('D', "parse", app.theme.diff_del_word_bg));
+    marks.push(Mark::bg('A', "read_input", app.theme.diff_add_word_bg));
+    marks.push(Mark::style('X', "excluded", Style::default().fg(app.theme.dim.fg.unwrap())));
+    let bottom = app.layout.rects.bottom;
+    assert_snapshot!("find_in_files_rename_preview", snapshot(&term, &marks, Some(bottom)));
+}
+
+#[cfg(feature = "structural")]
+#[tokio::test]
+async fn find_in_files_rename_confirm() {
+    let mut fx = rename_preview_app("find-rename-confirm");
+    let app = &mut fx.app;
+    app.perform(Action::Find(crate::actions::FindAction::ReplaceAll));
+    assert!(app.dialog.is_some());
+    let term = draw_app(app, 80, 24);
+    let mut marks = find_marks(&app.theme);
+    marks.push(Mark::bg('D', "parse", app.theme.diff_del_word_bg));
+    marks.push(Mark::bg('A', "read_input", app.theme.diff_add_word_bg));
+    assert_snapshot!("find_in_files_rename_confirm", snapshot(&term, &marks, None));
+}
+
 #[cfg(all(feature = "structural", feature = "lang-rust"))]
 #[tokio::test]
 async fn find_in_files_structural() {

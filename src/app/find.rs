@@ -12,6 +12,9 @@ fn stale(path: &std::path::Path) -> String {
 
 impl App {
     pub(super) fn replace_in_files(&mut self) {
+        if self.find.rename_preview().is_some() {
+            return self.rename_preview_apply();
+        }
         let re = match self.find.pattern() {
             Ok(re) => re,
             Err(e) => return self.notify(Level::Error, format!("Replace in files: {e}")),

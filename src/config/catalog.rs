@@ -392,6 +392,13 @@ pub static SETTINGS: &[Setting] = &[
         Kind::Bool,
         |c| Value::Bool(c.lsp.semantic_tokens)
     ),
+    row!(
+        "lsp.rename_preview",
+        "Rename preview",
+        "Review a language server's rename in the Find window before it is applied (else it applies at once).",
+        Kind::Bool,
+        |c| Value::Bool(c.lsp.rename_preview)
+    ),
     row!("lsp.max_diagnostics_per_file", "Problems kept per file", "Problems kept per file, the most severe first.", ANY, |c| n(c
         .lsp
         .max_diagnostics_per_file)),
@@ -497,6 +504,7 @@ pub static PAGES: &[Page] = &[
             "lsp.completion_min_chars",
             "lsp.inlay_hints",
             "lsp.semantic_tokens",
+            "lsp.rename_preview",
             "lsp.max_diagnostics_per_file",
             "lsp.scratches",
             "lsp.startup_timeout_ms",

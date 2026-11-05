@@ -276,6 +276,8 @@ pub struct LspConfig {
     pub inlay_hints: bool,
     /// Colour code by the server's semantic tokens.
     pub semantic_tokens: bool,
+    /// Review a server's rename in the Find window before it is applied (else it applies at once).
+    pub rename_preview: bool,
     /// Start language servers for scratch files too: separate clients rooted
     /// at the scratches directory (rust-analyzer gets them as
     /// `detachedFiles`).
@@ -295,6 +297,7 @@ impl Default for LspConfig {
             completion_min_chars: 1,
             inlay_hints: true,
             semantic_tokens: true,
+            rename_preview: true,
             scratches: false,
             servers: BTreeMap::new(),
         }
@@ -394,6 +397,7 @@ mod tests {
         assert!(cfg.completion_auto);
         assert_eq!(cfg.completion_min_chars, 1);
         assert!(!cfg.scratches);
+        assert!(cfg.rename_preview);
         assert_eq!(super::scratch_client("gopls"), "gopls (scratches)");
         assert_eq!((super::server_name("gopls (scratches)"), super::server_name("gopls")), ("gopls", "gopls"));
         let text = "[lsp]\nscratches = true\nstartup_timeout_ms = 100\nmax_diagnostics_per_file = 50\ncompletion_min_chars = 3\n\

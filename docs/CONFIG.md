@@ -211,6 +211,7 @@ completion_auto = true         # open the completion popup while typing (else Ct
 completion_min_chars = 1       # identifier chars typed before it opens by itself
 inlay_hints = true             # show the server's inlay hints (types, parameter names)
 semantic_tokens = true         # colour code by the server's semantic tokens on top of tree-sitter
+rename_preview = true          # review a server's rename in the Find window first (else it applies at once)
 scratches = false              # language servers for scratch files too (own clients)
 # Built-in servers (table below) take changes here; a table with a new
 # name adds a server. Omitted keys keep the built-in values.
@@ -519,6 +520,17 @@ at its start, so a new Rust scratch restarts that client). The scratches'
 problems show in the editor and the status bar, in the Problems window only
 in its current-file scope (Alt+C). The key applies at once and restarts the
 servers.
+
+Rename (Shift+F6) with a server does not write at once: with `[lsp]
+rename_preview = true` (the default) the Find window opens with one result per
+text edit of the server's answer, grouped by file. Alt+Delete leaves a result or
+a file out, Replace All (Alt+A) asks and applies the included edits and every
+file operation of the answer through the usual workspace-edit path, so undo and
+Local History are those of a normal apply (one undo step per open buffer).
+Typing in either field or toggling an option drops the preview and runs an
+ordinary search; nothing is applied. A file that changed since the preview
+(edited in a tab, or on disk) refuses the whole rename. With `false` the
+server's rename applies at once. The key is read when the answer arrives.
 
 The status bar shows the server of the active file: its name, a spinner
 with what it reports while it starts or indexes, `LSP: <name> missing` when
