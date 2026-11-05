@@ -71,7 +71,7 @@ pub struct RenamePreview {
     /// The server's or SCIP's steps, in order, file operations included.
     pub steps: Vec<Step>,
     /// One per file with a row, taken when the preview was built; also one per file that the positions of an
-    /// edit without a row refer to (the source of a rename, an existing file a create leaves alone), when it
+    /// edit without a row refer to (the source of a rename, the target of a rename that may be skipped, an existing file a create leaves alone), when it
     /// has text.
     pub stamps: HashMap<PathBuf, FileStamp>,
     /// The `(step, edit)` of every edit that has no row (its file is made by an earlier operation of the
@@ -145,23 +145,35 @@ fn row(path: &Path, rope: &Rope, e: &TextEdit, at: (u32, u32)) -> Hit {
     }
 }
 
-/// The file whose text the positions of an edit of `path` refer to, given the steps before it: walk them
-/// backward, a rename that `path` is at or under maps it back to where it was; a create of `path` that
-/// overwrites ends the walk (the file starts empty: `None`), any other create leaves it as it is.
-fn source_of(path: &Path, before: &[Step]) -> Option<PathBuf> {
-    let mut p = path.to_path_buf();
+/// The files whose text the positions of an edit of `path` may refer to, given the steps before it: walk them
+/// backward, a rename that a candidate is at or under maps it back to where it was. A rename with
+/// `ignore_if_exists` is skipped when its target exists (decided on the disk at apply), and then the edit meets
+/// the target itself, so the candidate is kept as it was and the mapped one is added. A create of a candidate
+/// that overwrites ends the walk for that candidate (the file starts empty); any other create leaves it as it is.
+fn source_of(path: &Path, before: &[Step]) -> Vec<PathBuf> {
+    let mut paths = vec![path.to_path_buf()];
     for step in before.iter().rev() {
         match step {
-            Step::Op { op: FileOp::Rename { from, to, .. }, .. } => {
-                if let Some(back) = moved_path(&p, to, from) {
-                    p = back;
+            Step::Op { op: FileOp::Rename { from, to, ignore_if_exists, .. }, .. } => {
+                let mut next = Vec::new();
+                for p in paths {
+                    let back = moved_path(&p, to, from);
+                    if (back.is_none() || *ignore_if_exists) && !next.contains(&p) {
+                        next.push(p);
+                    }
+                    if let Some(back) = back
+                        && !next.contains(&back)
+                    {
+                        next.push(back);
+                    }
                 }
+                paths = next;
             }
-            Step::Op { op: FileOp::Create { path: made, overwrite: true, .. }, .. } if *made == p => return None,
+            Step::Op { op: FileOp::Create { path: made, overwrite: true, .. }, .. } => paths.retain(|p| p != made),
             _ => {}
         }
     }
-    Some(p)
+    paths
 }
 
 /// The preview of `req.steps` and its rows (sorted by path, line, column). Runs off the main thread.
@@ -183,11 +195,12 @@ pub fn build(req: RenameRequest) -> Result<(RenamePreview, Vec<Hit>), String> {
                 }
                 let Some(text) = texts.get(&f.path).and_then(Option::as_ref).filter(|_| !under_made) else {
                     unlisted.extend((0..f.edits.len() as u32).map(|e| (s, e)));
-                    if let Some(src) = source_of(&f.path, &steps[..s as usize])
-                        && !stamps.contains_key(&src)
-                        && let Some(t) = text_of(&src, &open, &root)?
-                    {
-                        stamps.insert(src, t.stamp);
+                    for src in source_of(&f.path, &steps[..s as usize]) {
+                        if !stamps.contains_key(&src)
+                            && let Some(t) = text_of(&src, &open, &root)?
+                        {
+                            stamps.insert(src, t.stamp);
+                        }
                     }
                     continue;
                 };
@@ -455,6 +468,23 @@ mod tests {
         assert_eq!(preview.stamps[&a], FileStamp::OpenBuffer { id: 4, version: 2 });
         assert_eq!(preview.first_stale(&[open(2)]), None);
         assert_eq!(preview.first_stale(&[open(3)]), Some(a));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_rename_that_may_be_skipped_stamps_both_files() {
+        let dir = tmp("ignore");
+        let (a, c) = (dir.join("a.rs"), dir.join("c.rs"));
+        std::fs::write(&a, "old\n").unwrap();
+        std::fs::write(&c, "old\n").unwrap();
+        let skip = Step::Op { index: 0, op: FileOp::Rename { from: a.clone(), to: c.clone(), overwrite: false, ignore_if_exists: true } };
+        let steps = vec![skip, file(&c, None, vec![te(0, 0, 0, 3, "new")])];
+        let (preview, hits) = build(req(&dir, steps, Vec::new())).unwrap();
+        assert!(hits.is_empty());
+        assert_eq!(stamped(&preview), [a.clone(), c.clone()]);
+        assert_eq!(preview.first_stale(&[]), None);
+        std::fs::write(&c, "old and more\n").unwrap();
+        assert_eq!(preview.first_stale(&[]), Some(c));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

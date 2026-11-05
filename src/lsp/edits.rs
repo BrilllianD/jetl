@@ -582,8 +582,10 @@ pub fn plan_workspace(steps: Vec<Step>, open: &[OpenDoc], root: &Path, disk: &dy
             Step::Op { index, op } => sim.op(index, op)?,
         }
     }
-    // Closed files: overlap is found here, before anything changes, from the positions alone (no clamping, so a
-    // pair that overlaps only after clamping to the line end still fails when the file is written).
+    // Closed files: overlap is found here, before anything changes, from the positions alone. They are not
+    // clamped, so a pair that overlaps only after clamping still fails when the file is written, and a pair past
+    // a line end or the end of the file that clamping would separate is refused here (it only refuses; nothing
+    // else changes).
     for step in &sim.plan.disk {
         if let DiskStep::Edit(f) = step
             && overlap_in_lsp(&f.edits)
@@ -1116,6 +1118,18 @@ mod tests {
         let steps = vec![text_edit("/w/c.rs", None, "1"), create("/w/n.rs", false, false), text_edit("/w/c.rs", None, "2")];
         let plan = plan_with(steps, &[], &d).unwrap();
         assert_eq!(plan.disk.len(), 3);
+    }
+
+    #[test]
+    fn edits_of_a_closed_file_on_either_side_of_an_operation_are_not_merged_for_overlap() {
+        let d = disk(&[("/w/c.rs", Entry::File)]);
+        let at = |path: &str, text: &str| {
+            Step::Edit(FileEdit { path: path.into(), version: None, edits: vec![te(0, 0, 0, 5, text)], index: None })
+        };
+        let plan = plan_with(vec![at("/w/c.rs", "1"), create("/w/n.rs", false, false), at("/w/c.rs", "2")], &[], &d).unwrap();
+        assert_eq!(plan.disk.len(), 3);
+        // Merged, the same two overlap.
+        err(vec![at("/w/c.rs", "1"), at("/w/c.rs", "2")], &[], &d, "the edits of c.rs overlap");
     }
 
     #[test]

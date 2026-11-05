@@ -1852,6 +1852,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_rename_that_may_be_skipped_refuses_when_its_target_changed() {
+        let mut fx = rename_fixture("rename-preview-ignore-if-exists").await;
+        let c = fx.app.workspace.root.join("c.rs");
+        std::fs::write(&c, B).unwrap();
+        let we = json!({"documentChanges": [
+            {"kind": "rename", "oldUri": uri(&fx.b), "newUri": uri(&c), "options": {"ignoreIfExists": true}},
+            {"textDocument": {"uri": uri(&c), "version": null}, "edits": [edit(0, 7, 0, 10, "renamed")]},
+        ]});
+        fx.preview(we).await;
+        assert!(rows_of(&fx.app).is_empty(), "the edit of c.rs has no row");
+        let changed = format!("{B}// longer\n");
+        std::fs::write(&c, &changed).unwrap();
+        fx.replace_all();
+        let n = fx.app.notifications.last().unwrap();
+        assert_eq!((n.level, n.text.as_str()), (Level::Error, "c.rs changed since the preview; rename again"));
+        assert_eq!(std::fs::read_to_string(&c).unwrap(), changed);
+        assert_eq!(std::fs::read_to_string(&fx.b).unwrap(), B);
+        assert!(fx.app.find.rename_preview().is_some());
+        let _ = std::fs::remove_dir_all(&fx.dir);
+    }
+
+    #[tokio::test]
     async fn plan_refusal_keeps_the_preview() {
         let mut fx = rename_fixture("rename-preview-plan-refusal").await;
         let we = json!({"documentChanges": [
