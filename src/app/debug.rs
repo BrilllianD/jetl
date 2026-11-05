@@ -382,7 +382,8 @@ impl App {
     }
 
     /// An answer to `threads` or `stackTrace`. No epoch check here: the machine drops an answer older than its
-    /// epoch (rule 7), so what arrives is current, and the App never reasons about order.
+    /// epoch (rule 7). `Stop` does not bump the epoch, and an answer already on the bus when a step is sent can still
+    /// arrive, so a frame answer is applied only while `Suspended`.
     fn debug_response(&mut self, tag: DapTag, result: Result<Value, String>) {
         let phase = self.debug.phase();
         let body = match result {
@@ -424,6 +425,10 @@ impl App {
                 }
             }
             TagKind::StackTrace { .. } => {
+                // `Stop` does not bump the epoch, so an answer can still arrive while `Stopping`.
+                if phase != Some(Phase::Suspended) {
+                    return;
+                }
                 let frames = body_of::<StackTraceBody>("stackTrace", body).stack_frames;
                 match frames.first() {
                     Some(frame) => self.debug_show_frame(frame),
@@ -455,7 +460,11 @@ impl App {
         if !self.debug.suspended() {
             return self.notify(Level::Info, "No paused debug session");
         }
-        let Some(thread) = self.debug.session.as_ref().and_then(|l| l.thread) else {
+        let Some(live) = self.debug.session.as_ref() else { return };
+        let Some(thread) = live.thread else {
+            // The stop's `threads` may have failed or come back empty: ask again, so the next key can work.
+            let epoch = live.epoch;
+            self.debug_ask_threads(epoch);
             return self.notify(Level::Info, "The paused thread is not known yet");
         };
         // A breakpoint cleared since the last tick has to reach the adapter before the program runs.
@@ -1900,7 +1909,35 @@ pub(crate) mod tests {
         let _threads = fake.recv("threads").await;
         press(&mut app, F8);
         assert_eq!(last(&app), (Level::Info, "The paused thread is not known yet".to_string()));
+        // Only the new `threads` request goes out, no `next`.
+        let _again = fake.recv("threads").await;
         assert_quiet(&mut app, &mut fake, "q1.log").await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_failed_threads_answer_is_asked_again_by_a_step_key() {
+        let (mut app, dir, mut fakes) = setup("step-threads-retry", Order::LaunchEarly);
+        let a = six(&mut app);
+        let (mut fake, _) = running(&mut app, &mut fakes).await;
+        fake.event("stopped", json!({"reason": "pause"}));
+        pump_until(&mut app, |x| x.debug.suspended() && epoch_of(x) > 0).await;
+        let first = fake.recv("threads").await;
+        fake.respond_error(&first, "boom");
+        pump_until(&mut app, |x| texts(x).iter().any(|t| t.starts_with("Could not read the threads"))).await;
+        press(&mut app, F8);
+        assert_eq!(last(&app), (Level::Info, "The paused thread is not known yet".to_string()));
+        let again = fake.recv("threads").await;
+        fake.respond(&again, json!({"threads": [{"id": 4}]}));
+        pump_until(&mut app, |x| thread_of(x) == Some(4)).await;
+        let stack = fake.recv("stackTrace").await;
+        assert_eq!(stack["arguments"]["threadId"], 4);
+        fake.respond(&stack, json!({"stackFrames": [frame(&a, 2)]}));
+        pump_until(&mut app, |x| point(x).is_some()).await;
+        press(&mut app, F8);
+        // `fake.recv` skips other messages, so `next` as the very next one is read with `next()`.
+        let m = fake.next().await;
+        assert_eq!((m["command"].as_str(), m["arguments"]["threadId"].as_i64()), (Some("next"), Some(4)));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1990,7 +2027,48 @@ pub(crate) mod tests {
         fake.event("stopped", json!({"reason": "breakpoint", "threadId": 8}));
         pump_until(&mut app, |x| thread_of(x) == Some(8)).await;
         assert_eq!(point(&app), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_stale_stack_error_gives_no_toast() {
+        let (mut app, dir, mut fakes) = setup("step-stale-error", Order::LaunchEarly);
+        let _ = six(&mut app);
+        let (mut fake, _) = running(&mut app, &mut fakes).await;
+        fake.event("stopped", json!({"reason": "breakpoint", "threadId": 7}));
+        pump_until(&mut app, |x| thread_of(x) == Some(7)).await;
+        let old = fake.recv("stackTrace").await;
+        press(&mut app, F8);
+        let _next = fake.recv("next").await;
+        // gdb's answer to a stack request for a thread that has run on.
+        fake.respond_error(&old, "list index out of range");
+        fake.event("stopped", json!({"reason": "breakpoint", "threadId": 8}));
+        pump_until(&mut app, |x| thread_of(x) == Some(8)).await;
         assert!(texts(&app).iter().all(|t| !t.starts_with("Could not")), "{:?}", texts(&app));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_stack_answer_outside_suspended_is_ignored() {
+        let (mut app, dir, mut fakes) = setup("step-answer-stopping", Order::LaunchEarly);
+        let a = six(&mut app);
+        let b = app.workspace.root.join("b.log");
+        std::fs::write(&b, "b0\nb1\nb2\nb3\n").unwrap();
+        let _ = running(&mut app, &mut fakes).await;
+        let line = app.editor.active_buffer().unwrap().cursor_line_col().0;
+        let tabs = app.editor.buffers.len();
+        inject(&mut app, DapBody::Phase(Phase::Stopping));
+        let tag = DapTag { epoch: epoch_of(&app), kind: TagKind::StackTrace { thread: 7 } };
+        inject(&mut app, DapBody::Response { tag, result: Ok(json!({"stackFrames": [frame(&b, 3)]})) });
+        // A file read, if one was started, lands here.
+        for _ in 0..20 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(point(&app), None);
+        assert!(app.editor.index_of(&b).is_none());
+        assert_eq!(app.editor.buffers.len(), tabs);
+        assert_eq!(app.editor.active_path(), Some(a.as_path()));
+        assert_eq!(app.editor.active_buffer().unwrap().cursor_line_col().0, line);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2202,6 +2280,20 @@ pub(crate) mod tests {
         let m = fake.next().await;
         assert_eq!((m["command"].as_str(), source(&m), lines(&m)), (Some("setBreakpoints"), a.to_string_lossy().into_owned(), vec![]));
         assert_eq!(fake.next().await["command"], "continue");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_breakpoint_cleared_while_paused_goes_out_before_a_step() {
+        let (mut app, dir, mut fakes) = setup("step-cleared-bp-step", Order::LaunchEarly);
+        let a = six(&mut app);
+        toggle(&mut app, &a, 1);
+        let mut fake = paused(&mut app, &mut fakes, &a, 2).await;
+        toggle(&mut app, &a, 1);
+        press(&mut app, F8);
+        let m = fake.next().await;
+        assert_eq!((m["command"].as_str(), source(&m), lines(&m)), (Some("setBreakpoints"), a.to_string_lossy().into_owned(), vec![]));
+        assert_eq!(fake.next().await["command"], "next");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -8,7 +8,7 @@ strip_bg = "#313335"
 status_bg = "#313335"
 status_fg = "#bbbbbb"
 current_line_bg = "#323232"
-debug_execution_line_bg = "#4a4520"
+debug_execution_line_bg = "#3d3a1e"
 selection_bg = "#214283"
 search_match_bg = "#32593c"
 search_current_bg = "#9b6e1e"
@@ -134,6 +134,7 @@ preproc = "#bbb529"
 # With 256 colors the nearest palette color would turn these dark tints
 # gray, so diff and merge chunks would look alike.
 [colors256]
+debug_execution_line_bg = "58"
 search_match_bg = "23"
 occurrence_bg = "239"
 list_selected_unfocused = { bg = "17" }

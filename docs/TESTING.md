@@ -1044,7 +1044,7 @@ exactly one is the pass.
    `-> next`. Ctrl+C, Alt+F12, Ctrl+F2.
 7. Git window: stopped on 9, Alt+9, F7: no `-> stepIn` (F7 is the Git next change there), F8: `-> next` and the arrow
    moves to 10. F7 again: still no `-> stepIn`. Esc, Ctrl+F2.
-8. Pause: open `demo.c`, put a mark on 9, open `spin.c`, Alt+Shift+F10, pick `spin` (this starts a Run task: Ctrl+F2
+8. Pause: open `demo.c`, Ctrl+G, `9`, Ctrl+F8 (the mark on 9 is there from the earlier steps; this clears it), open `spin.c`, Alt+Shift+F10, pick `spin` (this starts a Run task: Ctrl+F2
    stops it, Alt+4 hides the Run window, whose toolbar draws a `▶` of its own; press Alt+4 twice if the window is
    still up), Shift+F9. F1, `Debug: Pause`, Enter: `-> threads` then `-> pause` in the log, `Paused` in the toast
    (gdb's reason is `pause`), and the `▶` on the `spin.c` line `n++;` or the `for`. F9 and the arrow goes; F1,
@@ -1055,9 +1055,13 @@ exactly one is the pass.
 
 gdb can show: the arrow and the line on every stop, the three steps, the return with Alt+F10, the pause, and a
 cleared breakpoint that does not stop the program. gdb cannot show, and the unit tests prove: a stop with no
-`threadId` (gdb always sends one), a frame with no source (gdb has the source here), a stale answer to `stackTrace`
-after a step, the point clearing on a new start or a root switch, and the other keys of the Git, Local History and
-merge windows.
+`threadId` (gdb always sends one), a frame with no source or with a `sourceReference` (gdb has the source here), a
+stale answer to `stackTrace` after a step, the other two start orders, a `continued` event, a failed `stackTrace`, an
+empty stack or thread list, the point clearing on a new start or a root switch, and the other keys of the Git, Local
+History and merge windows. The hop from a physical keyboard through the terminal emulator into tmux stays the
+user's to confirm (`send-keys` enters at tmux). Bare `F9` is taken by Omarchy's voxtype binding when voxtype is
+installed (it is not on the test machine); `Run > Resume` stays.
+
 ### Scenario: Save As
 
 At 80x24 and at 120x40, with `run()` and `$T` from the crash recovery
