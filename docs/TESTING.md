@@ -391,11 +391,13 @@ On a file header whose rows are all excluded, Alt+Delete includes the exact
 rows and leaves the text matches excluded (a file of text matches only: all
 included); with any row included it excludes them all.
 
-Restore `src/util.rs` (and `notes.txt`) from the shell and wait about five
-seconds before every later Shift+F6, as above. Stale, excluded: Shift+F6, change `notes.txt` from another shell, Alt+A,
-Enter: it applies and `notes.txt` is untouched by jetl. Stale, included:
-repeat on the restored text, include the `notes.txt` row, change `notes.txt`,
-Alt+A, Enter: the error toast `notes.txt changed since the preview; rename
+Esc closes that dialog. Before every later Shift+F6, press Ctrl+Z in the editor
+if `main.rs` changed, restore `src/util.rs` and `notes.txt` from the shell, and
+wait about five seconds, as above. In each dialog Ctrl+A, type `assist`, Enter.
+Stale, excluded: Shift+F6, change `notes.txt` from another shell, Alt+A, Enter:
+it applies and `notes.txt` is untouched by jetl. Stale, included: restore as
+above, Shift+F6, include the `notes.txt` row, change `notes.txt`, Alt+A, Enter:
+the error toast `notes.txt changed since the preview; rename
 again`, nothing changes and the rows stay. With `[lsp]\nrename_preview =
 false` in `config.toml` Shift+F6 shows no check row and the button `Refactor`.
 The Find status line is clipped on a narrow window; the confirm dialog says

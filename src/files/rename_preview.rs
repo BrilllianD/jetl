@@ -115,7 +115,7 @@ pub enum TextualScope {
 pub struct TextualOutcome {
     /// Rows it made.
     pub rows: usize,
-    /// The search stopped at `MAX_HITS`: some files were not searched.
+    /// The stage stopped at `MAX_HITS`: some matches are not listed.
     pub capped: bool,
     /// Files with the name that got no rows: a file operation touches them, or they cannot be read as text.
     pub skipped_files: usize,
@@ -1135,7 +1135,7 @@ mod tests {
     #[test]
     fn two_spellings_of_one_file_refuse_textual_rows_in_either_order() {
         let dir = tmp("textual-two");
-        std::fs::write(dir.join("real.txt"), "an old name\n").unwrap();
+        std::fs::write(dir.join("real.txt"), "an old name, old again\n").unwrap();
         std::os::unix::fs::symlink(dir.join("real.txt"), dir.join("link.txt")).unwrap();
         let (link, real) = (dir.join("link.txt"), dir.join("real.txt"));
         let edit = || vec![te(0, 3, 0, 6, "new")];
@@ -1168,6 +1168,18 @@ mod tests {
         assert!(hits.len() <= MAX_HITS, "{}", hits.len());
         let msg = preview.confirm_message(&[], 0, &dir);
         assert!(msg.contains(&format!("Text search stopped at {MAX_HITS} matches; others are not listed.")), "{msg}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_search_cap_says_so_with_no_rows() {
+        let dir = tmp("textual-cap-search");
+        let n = dir.join("notes.txt");
+        std::fs::write(&n, "old\n".repeat(MAX_HITS + 1)).unwrap();
+        let steps = vec![Step::Op { index: 0, op: FileOp::Create { path: n, overwrite: true, ignore_if_exists: false } }];
+        let (preview, hits) = build(treq(&dir, steps, Vec::new())).unwrap();
+        assert!(hits.is_empty());
+        assert_eq!((preview.textual.rows, preview.textual.capped), (0, true));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
