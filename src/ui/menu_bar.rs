@@ -618,6 +618,26 @@ mod tests {
     }
 
     #[test]
+    fn edit_menu_has_the_seven_refactoring_rows_between_refactor_this_and_optimize_imports() {
+        let (_, _, rows) = MAIN_MENU.iter().find(|m| m.0 == "Edit").unwrap();
+        let items: Vec<(&str, &str)> = rows.iter().filter_map(|r| if let Item(l, id) = r { Some((*l, *id)) } else { None }).collect();
+        let at = items.iter().position(|x| x.0 == "Refactor This…").unwrap();
+        assert_eq!(
+            items[at + 1..at + 9],
+            [
+                ("Extract Method", "lsp.extract_method"),
+                ("Extract Variable", "lsp.extract_variable"),
+                ("Extract Constant", "lsp.extract_constant"),
+                ("Inline", "lsp.inline"),
+                ("Change Signature", "lsp.change_signature"),
+                ("Move", "lsp.move"),
+                ("Safe Delete", "lsp.safe_delete"),
+                ("Optimize Imports", "lsp.optimize_imports"),
+            ]
+        );
+    }
+
+    #[test]
     fn table_ids_resolve_and_menus_are_not_empty() {
         for (title, mnemonic, rows) in MAIN_MENU {
             assert!(rows.iter().any(|r| matches!(r, Item(..))), "{title} is empty");

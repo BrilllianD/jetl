@@ -1839,12 +1839,12 @@ rust-analyzer (`src/main.rs` of a small crate):
 1. `C-M-m`: arrives as Alt+Enter and opens the Context Actions dialog (the documented limit). Escape.
 2. Select two statements, palette Extract Method: `fun_name` appears, no dialog. Undo. Again through the Edit menu row.
 3. Select `first * 3`, `C-M-v`: Extract into variable runs. Select `1 + 2`, `C-M-c`: Extract into constant. Caret on a local, `C-M-n`: Inline variable. Each undone with `C-z`.
-4. Caret on the `unused` parameter, `C-F6` and then `M-DC`: the parameter and the call's argument are gone. Undo.
+4. Caret on the `unused` parameter of `with_unused` (the fixture also calls it as `let plain = with_unused(3, 4);` and inside `println!`), `C-F6` and then `M-DC`: the signature loses `unused` and the plain call becomes `with_unused(3)`; the call inside `println!` stays `with_unused(1, 2)` (rust-analyzer does not rewrite it, so the code no longer compiles; jetl applies what the server sends). Undo after each.
 5. Caret on `dead_code`, `F6` and `M-DC`: toast `No such refactoring here`, text unchanged. On an unused import, `M-DC`: the same (Remove all unused imports is not taken).
 6. Caret on `mod inner`, `F6`: `src/inner.rs` exists (a file operation, not undone).
 7. In a git repo, Alt+9 then `C-M-n`: the new branch dialog, not Inline.
 
-typescript-language-server (`main.ts`, `tsconfig.json`): two statements selected, palette Extract Method: a dialog `Extract Method` with two rows; Escape changes nothing; choosing Extract to function in module scope extracts with no error toast. Selected `1 + 2`, `C-M-c`: two constant rows; `C-M-v`: the toast. `C-M-n` on a const: Inline variable. `C-F6` on a parameter list: Convert parameters to destructured object. `M-DC` on an unused function: Remove unused declaration, no dialog. `F6` on a class: Move to a new file (`K.ts` is made).
+typescript-language-server (`main.ts`, `tsconfig.json`): two statements selected, palette Extract Method: a dialog `Extract Method` with two rows; Escape changes nothing; choosing Extract to function in module scope extracts with no error toast. Selected `1 + 2`, `C-M-c`: two constant rows; `C-M-v`: the toast. `C-M-n` on a const: Inline variable. `C-F6` on a parameter list: Convert parameters to destructured object. `M-DC` on an unused function: Remove unused declaration, no dialog. `M-Enter` on the same unused function: the Context Actions dialog lists `Remove unused declaration for: 'deadCode'`, `Delete all unused declarations` and `Move to a new file`; choosing the second removes `deadCode` (undo restores it). `F6` on a class: Move to a new file (`K.ts` is made).
 
 pyright and basedpyright (`[lsp.servers.pyright] command = ["basedpyright-langserver", "--stdio"]`): each key gives the toast. With `[lsp] enabled = false` a key toasts `Language servers are off ([lsp] enabled = false)`. Stderr is empty and Ctrl+Q exits 0 in every run.
 

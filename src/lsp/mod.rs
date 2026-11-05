@@ -216,9 +216,11 @@ impl Refactoring {
             }
             Refactoring::Move => {
                 let lower = title.to_lowercase();
-                under(kind, "refactor.move")
-                    || (under(kind, "refactor") && first == Some("move"))
-                    || (under(kind, "refactor.extract") && (lower.ends_with(" to file") || lower.ends_with(" to new file")))
+                // Titles about parameters belong to Change Signature.
+                !has(&["parameter", "parameters"])
+                    && (under(kind, "refactor.move")
+                        || (under(kind, "refactor") && first == Some("move"))
+                        || (under(kind, "refactor.extract") && (lower.ends_with(" to file") || lower.ends_with(" to new file"))))
             }
             Refactoring::SafeDelete => {
                 (under(kind, "refactor") || under(kind, "quickfix"))
@@ -528,12 +530,14 @@ mod tests {
             (SafeDelete, "quickfix", "Remove unused declaration for: 'deadCode'"),
             (SafeDelete, "refactor", "Remove unused parameter"),
             (SafeDelete, "quickfix", "remove #include directive"),
+            (SafeDelete, "quickfix", "Delete function \"install\""),
         ];
         for (r, kind, title) in yes {
             assert!(r.matches(kind, title), "{r:?} should match {kind:?} {title:?}");
         }
         let no: &[(super::Refactoring, &str, &str)] = &[
             (Move, "refactor", "Remove unused parameter"),
+            (Move, "refactor.rewrite.moveParamLeft", "Move parameter left"),
             (Move, "refactor.inline.call", "Inline call to move_it"),
             (Move, "refactor.extract", "Extract Module"),
             (ExtractConstant, "refactor", "Promote local to constant"),

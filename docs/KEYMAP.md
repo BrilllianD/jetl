@@ -244,7 +244,7 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Ctrl+Alt+C` | `lsp.extract_constant` | Extract Constant: the server's extract constant refactoring at the caret or selection |
 | `Ctrl+Alt+N` | `lsp.inline` | Inline: the server's inline refactoring at the caret |
 | `Ctrl+F6` | `lsp.change_signature` | Change Signature: the server's change signature refactoring at the caret |
-| `F6` | `lsp.move` | Move: the server's move refactoring (to a file or module) at the caret or selection |
+| `F6` | `lsp.move` | Move: the server's move refactoring at the caret or selection |
 | `Alt+Delete` | `lsp.safe_delete` | Safe Delete: the server's delete or remove refactoring at the caret |
 | `Alt+Shift+I` | `lsp.quick_definition` | Quick definition: the definition of the symbol at the caret in a popup |
 | `Ctrl+Shift+I` * | `lsp.quick_definition` | Quick definition: the definition of the symbol at the caret in a popup |

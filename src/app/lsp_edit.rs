@@ -192,7 +192,7 @@ pub(super) struct EditReqs {
 
 /// A `workspace/executeCommand` in flight: the server computes its edit from the text it knew when
 /// the command was sent, and that edit carries no document version. `versions` is each open
-/// buffer's `Buffer::version` when the command was sent (refreshed after each edit of the command),
+/// buffer's `Buffer::version` when the command was sent (refreshed for the buffers each edit of the command changed),
 /// so an edit that arrives after the user typed in a buffer is refused rather than misplaced.
 struct CommandGuard {
     seq: u64,
@@ -562,6 +562,12 @@ impl App {
     pub(super) fn lsp_code_actions(&mut self, what: ActionsFor) {
         self.hover = None;
         self.completion_close();
+        // The newest key wins: a `codeAction/resolve` of an older key must run nothing.
+        if let Some(old) = self.lsp.inflight.remove(CODE_ACTION_RESOLVE)
+            && let Some(c) = self.lsp.clients.get(&old.server)
+        {
+            c.cancel(old.id);
+        }
         let Some(b) = self.editor.active_buffer() else { return };
         let r = b.view.sel().range();
         let range = match what {
@@ -720,6 +726,11 @@ impl App {
         self.editor.buffers.iter().filter(|b| b.path.is_some()).map(|b| (b.id, b.version)).collect()
     }
 
+    /// `server` went away: its command will not be answered.
+    pub(super) fn command_server_gone(&mut self, server: &str) {
+        self.lsp.edit.command.take_if(|g| g.server == server);
+    }
+
     /// The command with `seq` was answered: the guard on its edits ends.
     pub(super) fn command_answered(&mut self, seq: u64) {
         self.lsp.edit.command.take_if(|g| g.seq == seq);
@@ -745,10 +756,13 @@ impl App {
                 return self.edits_refused(origin, format!("{name} changed while the command ran"));
             }
         }
-        self.apply_workspace_edit(edit, origin);
-        let versions = self.open_versions();
-        if let Some(g) = self.lsp.edit.command.as_mut().filter(|g| g.server == server) {
-            g.versions = versions;
+        let before = self.open_versions();
+        let applied = self.apply_workspace_edit(edit, origin);
+        if applied && self.lsp.edit.command.as_ref().is_some_and(|g| g.server == server) {
+            let changed: Vec<_> = self.open_versions().into_iter().filter(|(id, v)| before.get(id) != Some(v)).collect();
+            if let Some(g) = self.lsp.edit.command.as_mut() {
+                g.versions.extend(changed);
+            }
         }
     }
 
@@ -1931,6 +1945,157 @@ mod tests {
         handle_next(&mut app, is_lsp).await;
         assert_eq!(server.response(63).await["result"], json!({"applied": true}));
         assert!(text(&app).starts_with("// three\n// two\n"), "{}", text(&app));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `running_command` with `b.rs` open on the same server too; `a.rs` is active again.
+    async fn running_command_with_b(
+        app: &mut App,
+        servers: &mut tokio::sync::mpsc::UnboundedReceiver<FakeServer>,
+    ) -> (FakeServer, Value, BufferId) {
+        let mut server = open_on_server(app, servers, "a.rs", A).await;
+        let a_id = app.editor.active_buffer().unwrap().id;
+        load(app, "b.rs", B);
+        let b_id = app.editor.active_buffer().unwrap().id;
+        app.lsp_sync();
+        server.recv("textDocument/didOpen").await;
+        app.editor.focus_buffer_tab(a_id);
+        app.editor.active_buffer_mut().unwrap().goto_line(1, 19);
+        app.perform(Action::Lsp(LspAction::Refactoring(Refactoring::ExtractMethod)));
+        let cmd = json!({"title": "Extract into function", "kind": "refactor.extract", "command": {"title": "fix", "command": "fix.all"}});
+        answer(app, &mut server, "textDocument/codeAction", json!([cmd])).await;
+        let exec = server.recv("workspace/executeCommand").await;
+        (server, exec, b_id)
+    }
+
+    /// Type one character into the buffer `id`, leaving `a.rs` active again.
+    fn type_in(app: &mut App, id: BufferId) {
+        let a_id = app.editor.active_buffer().unwrap().id;
+        app.editor.focus_buffer_tab(id);
+        type_char(app);
+        app.editor.focus_buffer_tab(a_id);
+    }
+
+    fn buffer_text(app: &App, id: BufferId) -> String {
+        app.editor.buffers.iter().find(|b| b.id == id).unwrap().text()
+    }
+
+    async fn apply_edit(app: &mut App, server: &mut FakeServer, id: i64, edit: Value) -> Value {
+        server.request(id, "workspace/applyEdit", json!({"edit": edit}));
+        handle_next(app, is_lsp).await;
+        server.response(id).await["result"].clone()
+    }
+
+    #[tokio::test]
+    async fn command_guard_does_not_absorb_typing_in_a_buffer_the_edit_did_not_touch() {
+        let (mut app, dir) = test_app("lsp-guard-untouched");
+        let mut servers = with_fake_servers(&mut app, caps());
+        let (a, b) = (app.workspace.root.join("a.rs"), app.workspace.root.join("b.rs"));
+        let (mut server, _exec, b_id) = running_command_with_b(&mut app, &mut servers).await;
+        type_in(&mut app, b_id);
+        let typed_b = buffer_text(&app, b_id);
+        let r = apply_edit(&mut app, &mut server, 80, json!({"changes": {uri(&a): [edit(0, 0, 0, 0, "// one\n")]}})).await;
+        assert_eq!(r, json!({"applied": true}));
+        let r = apply_edit(&mut app, &mut server, 81, json!({"changes": {uri(&b): [edit(0, 7, 0, 10, "renamed")]}})).await;
+        assert_eq!(r["applied"], false, "{r}");
+        assert!(r["failureReason"].as_str().unwrap().contains("changed while the command ran"), "{r}");
+        assert_eq!(buffer_text(&app, b_id), typed_b, "b.rs holds only the typed change");
+        assert_eq!(std::fs::read_to_string(&b).unwrap(), B, "and nothing was written");
+        assert!(text(&app).starts_with("// one\n"), "the first edit was made");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn command_guard_typing_between_two_edits_of_one_buffer_refuses_the_second() {
+        let (mut app, dir) = test_app("lsp-guard-between");
+        let mut servers = with_fake_servers(&mut app, caps());
+        let a = app.workspace.root.join("a.rs");
+        let (mut server, _exec) = running_command(&mut app, &mut servers).await;
+        let r = apply_edit(&mut app, &mut server, 82, json!({"changes": {uri(&a): [edit(0, 0, 0, 0, "// one\n")]}})).await;
+        assert_eq!(r, json!({"applied": true}));
+        type_char(&mut app);
+        let typed = text(&app);
+        let r = apply_edit(&mut app, &mut server, 83, json!({"changes": {uri(&a): [edit(0, 0, 0, 0, "// two\n")]}})).await;
+        assert_eq!(r["applied"], false, "{r}");
+        assert_eq!(text(&app), typed);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn command_guard_leaves_another_server_a_versioned_edit_and_a_foreign_answer_alone() {
+        let (mut app, dir) = test_app("lsp-guard-filters");
+        let mut servers = with_fake_servers(&mut app, caps());
+        let a = app.workspace.root.join("a.rs");
+        let (mut server, _exec) = running_command(&mut app, &mut servers).await;
+        let seq = app.lsp.edit.command.as_ref().expect("the guard").seq;
+        type_char(&mut app);
+        // An edit from another server is not the command's.
+        let edit_a: WorkspaceEdit = serde_json::from_value(json!({"changes": {uri(&a): [edit(0, 0, 0, 0, "// other\n")]}})).unwrap();
+        app.server_apply_edit("other", edit_a, EditOrigin::CodeAction("other".into()));
+        assert!(text(&app).starts_with("// other\n"), "{}", text(&app));
+        // A versioned edit is left to plan_workspace: its own message, not the guard's.
+        let r = apply_edit(
+            &mut app,
+            &mut server,
+            84,
+            json!({"documentChanges": [{"textDocument": {"uri": uri(&a), "version": 77}, "edits": [edit(0, 0, 0, 0, "// v\n")]}]}),
+        )
+        .await;
+        let why = r["failureReason"].as_str().unwrap_or_default().to_string();
+        assert!(why.contains("changed since the language server made the edit"), "{r}");
+        // The answer of another request keeps the guard.
+        app.command_answered(seq + 1000);
+        assert!(app.lsp.edit.command.is_some(), "the guard stays");
+        let r = apply_edit(&mut app, &mut server, 85, json!({"changes": {uri(&a): [edit(0, 0, 0, 0, "// late\n")]}})).await;
+        assert!(r["failureReason"].as_str().unwrap_or_default().contains("changed while the command ran"), "{r}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn command_guard_ends_with_its_server() {
+        let (mut app, dir) = test_app("lsp-guard-gone");
+        let mut servers = with_fake_servers(&mut app, caps());
+        let (_server, _exec) = running_command(&mut app, &mut servers).await;
+        assert!(app.lsp.edit.command.is_some());
+        let (generation, id) = (app.workspace.generation, app.lsp.clients["rust-analyzer"].id);
+        app.handle_msg(AppMsg::Lsp(crate::lsp::LspMsg::Exited { generation, server: id, status: "test".into() }));
+        assert!(app.lsp.edit.command.is_none(), "no answer will come");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn refactoring_range_is_the_selection() {
+        let (mut app, dir) = test_app("lsp-refactor-selection");
+        let mut servers = with_fake_servers(&mut app, caps());
+        let mut server = open_on_server(&mut app, &mut servers, "a.rs", A).await;
+        app.editor.active_buffer_mut().unwrap().goto_line(1, 19);
+        app.editor.active_buffer_mut().unwrap().select_all();
+        app.perform(Action::Lsp(LspAction::Refactoring(Refactoring::ExtractVariable)));
+        let req = answer(&mut app, &mut server, "textDocument/codeAction", json!([])).await;
+        assert_eq!(req["params"]["range"], range(0, 0, 3, 0));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn newest_refactoring_key_wins_over_a_resolve_in_flight() {
+        let (mut app, dir) = test_app("lsp-refactor-newest");
+        let mut servers = with_fake_servers(&mut app, caps());
+        let mut server = open_on_server(&mut app, &mut servers, "a.rs", A).await;
+        let a = app.workspace.root.join("a.rs");
+        app.editor.active_buffer_mut().unwrap().goto_line(1, 19);
+        app.perform(Action::Lsp(LspAction::Refactoring(Refactoring::ExtractMethod)));
+        let lazy = json!({"title": "Extract into function", "kind": "refactor.extract", "data": {"id": 9}});
+        answer(&mut app, &mut server, "textDocument/codeAction", json!([lazy])).await;
+        let resolve = server.recv("codeAction/resolve").await;
+        // The second key, caret and text as they were.
+        app.perform(Action::Lsp(LspAction::Refactoring(Refactoring::Inline)));
+        let mut resolved = lazy.clone();
+        resolved["edit"] = refactor_row(Refactoring::ExtractMethod, &a)["edit"].clone();
+        server.respond(resolve["id"].as_i64().unwrap(), resolved);
+        handle_next(&mut app, is_lsp).await;
+        assert_eq!(text(&app), A, "the older key's edit did not run");
+        answer(&mut app, &mut server, "textDocument/codeAction", json!([refactor_row(Refactoring::Inline, &a)])).await;
+        assert_eq!(text(&app), format!("// done\n{A}"), "the newest key's action ran");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

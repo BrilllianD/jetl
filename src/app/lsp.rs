@@ -510,6 +510,7 @@ impl App {
         }
         for key in restart {
             self.lsp.stop_client(&key, &mut self.editor.buffers);
+            self.command_server_gone(&key);
             self.format_server_gone(&key);
         }
         for (level, text) in notes {
@@ -612,6 +613,7 @@ impl App {
         }
         self.lsp_retarget_watch();
         self.lsp.server_gone(name, server, &mut self.editor.buffers);
+        self.command_server_gone(name);
         self.format_server_gone(name);
         self.file_ops_server_gone(name);
         self.hierarchy_server_gone(name);
