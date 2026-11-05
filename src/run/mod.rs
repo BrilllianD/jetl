@@ -23,6 +23,8 @@ pub struct RunConfig {
     pub tasks: Vec<RunTask>,
     /// `[[run.configs]]` / `[[configs]]`: the documented name; `tasks` is the older one. Both are read.
     pub configs: Vec<RunTask>,
+    /// `[run.debug.<name>]` / `[debug.<name>]`: how a configuration of that name is debugged.
+    pub debug: BTreeMap<String, crate::dap::config::DebugBlock>,
 }
 
 impl RunConfig {
@@ -391,5 +393,16 @@ mod tests {
         assert_eq!(names(&tasks), ["b"]);
         assert!(error.unwrap().starts_with(".jetl/run.toml: "));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_invalid_debug_block_is_reported_by_load_tasks() {
+        let dir = std::env::temp_dir().join(format!("jetl-test-run-bad-debug-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".jetl")).unwrap();
+        std::fs::write(dir.join(".jetl/run.toml"), "[[configs]]\nname = \"c\"\ncommand = \"x\"\n[debug.a]\nlaunch = \"s\"\n").unwrap();
+        let (_, error) = load_tasks(&dir, &[]);
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(error.is_some_and(|e| e.contains(".jetl/run.toml") && e.contains("launch must be a table")));
     }
 }

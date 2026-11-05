@@ -325,6 +325,20 @@ pub static SETTINGS: &[Setting] = &[
         none
     ),
     row!(
+        "run.debug",
+        "Debug blocks",
+        "How a run configuration is debugged, as [run.debug.<name>] tables; [debug.<name>] in .jetl/run.toml wins. Edit them in config.toml.",
+        Kind::External,
+        none
+    ),
+    row!(
+        "debug.adapters",
+        "Debug adapters",
+        "Changes to the built-in debug adapters, or new ones, as [debug.adapters.<name>] tables. Edit them in config.toml.",
+        Kind::External,
+        none
+    ),
+    row!(
         "clipboard.paste_command",
         "Paste command",
         "Prints the system clipboard. Empty means detect, \"none\" means jetl's own last copy only.",
@@ -482,7 +496,7 @@ pub static PAGES: &[Page] = &[
     page!("Files", None, ["files.show_hidden", "files.show_ignored", "files.watch"]),
     page!("Tools", None, []),
     page!("Terminal", Some(12), ["terminal.shell", "terminal.args", "terminal.scrollback"]),
-    page!("Run", Some(12), ["run.tasks", "run.configs"]),
+    page!("Run", Some(12), ["run.tasks", "run.configs", "run.debug", "debug.adapters"]),
     page!("Clipboard", Some(12), ["clipboard.paste_command", "clipboard.copy_command"]),
     page!(
         "Local History",

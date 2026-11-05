@@ -886,6 +886,42 @@ mouse press and release at a 1-based column and row.
 keyboard through a terminal emulator: press Ctrl+F8 once in foot or kitty as
 well, inside and outside tmux.
 
+### Scenario: debug adapters in the doctor
+
+No debugger runs: `--doctor` only looks the commands up (`pgrep -x gdb` gives
+the same before and after). At 80x24 and at 120x40, from a fresh `$R`: `proj/a.c`,
+`xdg/{config/jetl,state,cache}` with `[lsp] enabled = false` and `[ui] toolbar = false`
+in `config.toml`, and `proj/.jetl/run.toml` holding a `# top` comment, `[[configs]]`
+`demo` (`command = "echo hello"`), a `# how to debug it` comment and `[debug.demo]`
+with `adapter = "gdb"` and `launch = { program = "${workspaceFolder}/demo" }`. Every
+run sets `XDG_CONFIG_HOME`, `XDG_STATE_HOME` and `XDG_CACHE_HOME` under `$R/xdg`.
+
+1. `(cd $R/proj; env $ENVV jetl --doctor | sed -n '/^Debug adapters/,/^Formatters/p')`:
+   the group sits between `Language servers` and `Formatters`, with `missing codelldb`
+   (VSIX hint), `missing lldb-dap` (LLVM hint), `ok gdb /usr/bin/gdb (c, cpp, rust)`
+   and `unknown debugpy python3 found, debugpy not checked (python)` when `gdb` and
+   `python3` are installed and the others are not. Stderr is empty. The same inside a
+   tmux pane of the size under test.
+2. Append `[debug.adapters.codelldb]` with `command = []` and `[debug.adapters.mine]`
+   with `command = ["nonexistent-dap"]`, `languages = ["go"]` to `config.toml`: `mine`
+   comes first as `missing`, `nonexistent-dap not found (go)`; no `codelldb` row.
+   Restore the file.
+3. `jetl a.c`, Ctrl+Alt+S, Down to `Run` (under Tools): rows `Run tasks`, `Run configurations`,
+   `Debug blocks`, `Debug adapters`, the last one ending in `next debug session`. Tab, three
+   Downs: the help reads `[debug.adapters.<name>]`. Tab, End: the Dependencies page has the
+   `Debug adapters` heading with the rows of step 1. Escape.
+4. With jetl running, append `[debug.adapters.gdb]` and `languages = ["c"]` to `config.toml`
+   from outside: the status says `Reloaded config.toml`, with no restart warning.
+5. Alt+Shift+F10 lists `demo`; Enter runs it and the Run window shows `hello`. `.jetl/run.toml`
+   is unchanged.
+6. F1, `edit configurations`, Enter, Tab, Down twice, Enter, type `foo bar`, Enter, Ctrl+S:
+   `.jetl/run.toml` has `args` for `demo` and everything from `# how to debug it` on is the
+   block as written, comment included.
+7. Change the `launch` line to `launch = "x"`, Alt+Shift+F10: an error naming `.jetl/run.toml`
+   and `launch must be a table`.
+
+Each run exits 0 with an empty stderr on Ctrl+Q.
+
 ### Scenario: Save As
 
 At 80x24 and at 120x40, with `run()` and `$T` from the crash recovery

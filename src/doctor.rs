@@ -1,5 +1,5 @@
 //! Dependency probe behind `jetl --doctor` and the Settings Dependencies
-//! page: language servers, formatters, clipboard tools, compiled grammars,
+//! page: language servers, debug adapters, formatters, clipboard tools, compiled grammars,
 //! terminal capabilities, git and yman.
 //!
 //! The probe is synchronous and free of child processes. Terminal
@@ -19,6 +19,7 @@ use crate::util::clipboard::Paste;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Group {
     Lsp,
+    Debug,
     Formatter,
     Clipboard,
     Grammar,
@@ -27,12 +28,14 @@ pub enum Group {
 }
 
 impl Group {
-    pub const ALL: [Group; 6] = [Group::Lsp, Group::Formatter, Group::Clipboard, Group::Grammar, Group::Terminal, Group::Tool];
+    pub const ALL: [Group; 7] =
+        [Group::Lsp, Group::Debug, Group::Formatter, Group::Clipboard, Group::Grammar, Group::Terminal, Group::Tool];
 
-    /// "Language servers", "Formatters", "Clipboard", "Grammars", "Terminal", "Tools".
+    /// "Language servers", "Debug adapters", "Formatters", "Clipboard", "Grammars", "Terminal", "Tools".
     pub fn label(self) -> &'static str {
         match self {
             Group::Lsp => "Language servers",
+            Group::Debug => "Debug adapters",
             Group::Formatter => "Formatters",
             Group::Clipboard => "Clipboard",
             Group::Grammar => "Grammars",
@@ -179,7 +182,8 @@ const GRAMMARS: [(&str, bool); 38] = [
     ("graphql", cfg!(feature = "lang-graphql")),
 ];
 
-type Find<'a> = &'a dyn Fn(&str) -> Option<PathBuf>;
+/// How to find a command: the path, or `None` when it is missing.
+pub type Find<'a> = &'a dyn Fn(&str) -> Option<PathBuf>;
 
 /// Every check for `cfg`, resolving relative commands (those containing `/`) against `root`.
 /// Synchronous; walks PATH and stats files, so the app calls it in `spawn_blocking`.
@@ -187,7 +191,7 @@ pub fn probe(cfg: &Config, root: &Path, term: &TermCaps) -> Report {
     probe_with(cfg, root, term, &|k| std::env::var(k).ok(), &crate::util::fs::which)
 }
 
-fn resolve(cmd: &str, root: &Path, find: Find) -> Option<PathBuf> {
+pub fn resolve(cmd: &str, root: &Path, find: Find) -> Option<PathBuf> {
     if cmd.is_empty() {
         None
     } else if cmd.contains('/') {
@@ -222,6 +226,21 @@ fn probe_with(cfg: &Config, root: &Path, term: &TermCaps, env: &dyn Fn(&str) -> 
             }
         };
         add(Group::Lsp, &s.name, row);
+    }
+
+    for a in cfg.debug.adapters() {
+        let langs = a.languages.join(", ");
+        // `python3 -m debugpy.adapter`: finding the interpreter says nothing of the module, and asking would run a process.
+        let module = (a.command.get(1).map(String::as_str) == Some("-m")).then(|| a.command.get(2)).flatten();
+        let row = match (resolve(&a.command[0], root, find), module) {
+            (Some(_), Some(m)) => {
+                (Status::Unknown, format!("{} found, {} not checked ({langs})", a.command[0], m.split('.').next().unwrap_or(m)))
+            }
+            (Some(p), None) => (Status::Ok, format!("{} ({langs})", p.display())),
+            (None, _) if a.install_hint.is_empty() => (Status::Missing, format!("{} not found ({langs})", a.command[0])),
+            (None, _) => (Status::Missing, format!("{} not found ({langs}): {}", a.command[0], a.install_hint)),
+        };
+        add(Group::Debug, &a.name, row);
     }
 
     let mut formatters: Vec<_> = cfg.format.commands.iter().filter(|(_, argv)| argv.first().is_some_and(|a| !a.is_empty())).collect();
@@ -414,6 +433,57 @@ mod tests {
         let r = run(&Config::default(), &["git"]);
         assert_eq!(row(&r, Group::Tool, "git").status, Status::Ok);
         assert_eq!(row(&r, Group::Tool, "yman").status, Status::Missing);
+    }
+
+    #[test]
+    fn debug_rows_found_missing_and_unknown() {
+        let r = run(&Config::default(), &["gdb", "python3"]);
+        let gdb = row(&r, Group::Debug, "gdb");
+        assert_eq!((gdb.status, gdb.detail.as_str()), (Status::Ok, "/usr/bin/gdb (c, cpp, rust)"));
+        let lldb = row(&r, Group::Debug, "codelldb");
+        assert_eq!(lldb.status, Status::Missing);
+        let prefix = "codelldb not found (rust, c, cpp): ";
+        assert!(lldb.detail.starts_with(prefix) && lldb.detail.len() > prefix.len(), "{}", lldb.detail);
+        let py = row(&r, Group::Debug, "debugpy");
+        assert_eq!((py.status, py.detail.as_str()), (Status::Unknown, "python3 found, debugpy not checked (python)"));
+        let r = run(&Config::default(), &[]);
+        let py = row(&r, Group::Debug, "debugpy");
+        assert_eq!(py.status, Status::Missing);
+        assert!(py.detail.starts_with("python3 not found (python): "), "{}", py.detail);
+    }
+
+    #[test]
+    fn debug_rows_follow_the_config() {
+        let r = run(&cfg("[debug.adapters.codelldb]\ncommand = []\n"), &[]);
+        assert!(r.checks.iter().all(|c| !(c.group == Group::Debug && c.name == "codelldb")));
+        let r = run(&cfg("[debug.adapters.mine]\ncommand = [\"mine\"]\nlanguages = [\"go\"]\n"), &[]);
+        let first = r.checks.iter().find(|c| c.group == Group::Debug).unwrap();
+        assert_eq!((first.name.as_str(), first.status, first.detail.as_str()), ("mine", Status::Missing, "mine not found (go)"));
+        let r = run(&cfg("[debug.adapters.debugpy]\ncommand = [\"debugpy-adapter\"]\n"), &["debugpy-adapter"]);
+        assert_eq!(row(&r, Group::Debug, "debugpy").status, Status::Ok);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_relative_adapter_command_resolves_against_root() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("jetl-test-doctor-debug-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("bin")).unwrap();
+        let adapter = dir.join("bin/dap");
+        std::fs::write(&adapter, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&adapter, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let text = "[debug.adapters.mine]\ncommand = [\"./bin/dap\"]\nlanguages = [\"go\"]\n";
+        let r = probe_with(&cfg(text), &dir, &caps(), &no_env, &finder(&[]));
+        let status = row(&r, Group::Debug, "mine").status;
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(status, Status::Ok);
+    }
+
+    #[test]
+    fn debug_rows_do_not_change_lsp_off() {
+        let r = run(&cfg("[lsp]\nenabled = false\n"), &["gdb"]);
+        assert!(r.checks.iter().filter(|c| c.group == Group::Debug).all(|c| c.status != Status::Off));
+        assert_eq!(row(&r, Group::Debug, "gdb").status, Status::Ok);
     }
 
     #[test]

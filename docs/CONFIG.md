@@ -49,7 +49,7 @@ Most settings take effect immediately. These apply to files opened
 afterwards, while open tabs keep their own state: `editor.soft_wrap`,
 `editor.soft_wrap_files`, `editor.tab_width`, `editor.max_highlight_bytes`.
 `terminal.shell`, `terminal.args` and `terminal.scrollback` apply to the
-next shell. `lsp.servers`, `lsp.startup_timeout_ms` and
+next shell. `debug.adapters` applies when the next debug session starts. `lsp.servers`, `lsp.startup_timeout_ms` and
 `lsp.request_timeout_ms` apply after Help > Restart Language Servers;
 changing `lsp.enabled` stops or starts the servers. `ui.left_width` and
 `ui.bottom_height` are initial sizes and need a restart of jetl. The reload
@@ -98,7 +98,7 @@ changes are pending, rows that open another file are refused.
 
 Lists are edited as comma-separated text, so a value that contains a comma
 must be edited in the file. Tables (`[format]` commands, `[[run.tasks]]`,
-`[lsp.servers.*]`) and `keymap.toml` and `theme.toml` are edited in the
+`[lsp.servers.*]`, `[debug.adapters.*]`, `[run.debug.*]`) and `keymap.toml` and `theme.toml` are edited in the
 files; their rows only say so, and Enter on one opens `config.toml`. "Open settings file
 (config.toml)" in the action palette still opens the file itself.
 
@@ -196,6 +196,20 @@ timeout_ms = 5000              # a formatter still running after this is killed
 # cwd = "web"                    # relative to the project root; default the root
 # env = { CI = "1" }             # added to jetl's environment
 # matcher = "problems"           # "problems" (links), "tests" (test results), "none"; unset: tests for cargo test / pytest / vitest / jest
+
+# How a run configuration is debugged, by its name. .jetl/run.toml holds the
+# same tables as [debug.<name>], which win. None by default; example:
+# [run.debug.demo]
+# adapter = "gdb"                # unset: the first installed for the language
+# language = "c"                 # unset: the active buffer's language
+# launch = { program = "${workspaceFolder}/demo", args = ["x"] }  # passed to the adapter's launch request
+
+# Built-in debug adapters take changes here; a table with a new name adds
+# one. Omitted keys keep the built-in values.
+# [debug.adapters.lldb-dap]
+# command = ["lldb-dap"]         # the command and its arguments; [] turns the adapter off
+# languages = ["rust", "c", "cpp"]  # language ids, as the status bar shows them
+# launch = { console = "internalConsole" }  # replaces the built-in launch arguments whole
 
 [terminal]
 shell = ""                     # the Terminal window's shell; "" = $SHELL, else /bin/sh
@@ -342,6 +356,61 @@ of the first 20 `package.json` scripts, `make` for a Makefile, and
 `go build ./...` and `go test ./...` for a `go.mod`. A configuration runs only
 when you pick it (or rerun it), so a project file cannot start anything by
 itself.
+
+Debug adapters (`[debug.adapters.<name>]`) are the programs jetl talks the
+Debug Adapter Protocol to, over stdin and stdout. These are built in, and the
+first one found on `PATH` is the default for a language:
+
+| Adapter | Command | Languages | Launch arguments |
+|---|---|---|---|
+| `codelldb` | `codelldb` | rust, c, cpp | `terminal = "console"`, `sourceLanguages = ["${language}"]` |
+| `lldb-dap` | `lldb-dap` | rust, c, cpp | `console = "internalConsole"` |
+| `gdb` | `gdb -q -i=dap` | c, cpp, rust | none |
+| `debugpy` | `python3 -m debugpy.adapter` | python | `console = "internalConsole"`, `subProcess = false` |
+
+Only `gdb` has been tried here; the launch arguments of the other three come
+from reading their sources. `jetl --doctor` and Settings > Dependencies show
+which are found; debugpy's row checks `python3` only, since checking the
+module would run a process.
+
+A table with a new name comes before the built-in ones. `command = []` turns
+an adapter off. `launch` replaces the built-in launch arguments whole, and
+`${language}` in it becomes the language in use. Delve and js-debug need a
+socket and are not supported.
+
+A debug block says how a run configuration is debugged. It is
+`[debug.<name>]` in `.jetl/run.toml` or `[run.debug.<name>]` in config.toml,
+named after the configuration (`[debug."web tests"]` for a name with a
+space); a block of the same name in the project file replaces the other
+whole. Renaming a configuration in Edit Configurations does not rename its
+block. `adapter` names an adapter; unset, it is the first found for
+`language`, which defaults to the active buffer's language. `launch` is a
+table passed to the adapter's `launch` request as it stands, so what it can
+hold depends on the adapter (`program` and `args` for all four built-in
+ones).
+
+The launch arguments are built in this order, each replacing the same
+top-level key of the one before: the adapter's `launch`; `cwd` (the
+configuration's `cwd` under the project root, else the root); `env` (the
+configuration's `env`; for gdb also jetl's environment beneath it, since gdb
+takes `env` as the exact environment and a user-defined adapter does not get
+this); the block's `launch`. So a block's `env` replaces the whole of it.
+Then `${workspaceFolder}`, `${file}` and `${artifact}` are replaced in every
+string; one with no value stays as written, and the adapter reports it. The
+configuration's `command` and `args` are not used under Debug: the adapter
+starts the program named in `launch`.
+
+**A project's `.jetl/run.toml` can run commands through Debug.** `launch`
+can carry debugger commands (`initCommands` in lldb-dap and codelldb, for
+example), and the file chooses the program and the adapter by name, so
+pressing Debug in a project can run anything that file says, exactly as
+pressing Run can today. There is no separate confirmation. Nothing starts
+until you press it, so read the `.jetl/run.toml` of a project you do not
+trust first. A project file cannot define or change an adapter's command;
+`[debug.adapters.*]` is read from your config.toml only.
+
+jetl does not start a debug session yet: nothing reads these tables but
+`--doctor`, until the debugger lands.
 
 Each entry has `name`, `command` (a string for `sh -c`, or a list of words),
 and optionally `args`, `cwd`, `env` and `matcher`. `args` are appended to the

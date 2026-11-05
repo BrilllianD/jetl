@@ -380,4 +380,38 @@ mod tests {
         assert_eq!(load_project(&second).unwrap().len(), 2);
         let _ = std::fs::remove_dir_all(&root);
     }
+
+    const WITH_DEBUG: &str = "# top\n[[configs]]\nname = \"demo\"\ncommand = [\"./demo\"]\n\n# how to debug it\n[debug.demo]\nadapter = \"gdb\"   # keep\nlaunch = { program = \"${workspaceFolder}/demo\", args = [\"x\"] }\n\n[debug.other.launch]\nprogram = \"a\"\n\n[[configs]]\nname = \"b\"\ncommand = \"make\"\n";
+    const BLOCKS: &str = "# how to debug it\n[debug.demo]\nadapter = \"gdb\"   # keep\nlaunch = { program = \"${workspaceFolder}/demo\", args = [\"x\"] }\n\n[debug.other.launch]\nprogram = \"a\"\n";
+
+    #[test]
+    fn debug_tables_do_not_disturb_load_project() {
+        let loaded = load_project(WITH_DEBUG).unwrap();
+        assert_eq!(loaded.len(), 2);
+        assert_eq!((loaded[0].0, loaded[0].1.name.as_str()), (slot(Array::Configs, 0), "demo"));
+        assert_eq!((loaded[1].0, loaded[1].1.name.as_str()), (slot(Array::Configs, 1), "b"));
+    }
+
+    #[test]
+    fn edits_leave_debug_tables_byte_for_byte() {
+        let mut demo = load_project(WITH_DEBUG).unwrap()[0].1.clone();
+        demo.cwd = Some("x".into());
+        let out = apply_config_edits(WITH_DEBUG, &[ConfigEdit::Update(slot(Array::Configs, 0), demo)]).unwrap();
+        assert_eq!(out, WITH_DEBUG.replacen("command = [\"./demo\"]\n", "command = [\"./demo\"]\ncwd = \"x\"\n", 1));
+        let want = toml::from_str::<RunConfig>(WITH_DEBUG).unwrap().debug;
+        let edits = [
+            vec![ConfigEdit::Remove(slot(Array::Configs, 1))],
+            vec![ConfigEdit::Remove(slot(Array::Configs, 0))],
+            vec![ConfigEdit::Add(task("t", argv(&["make", "t"])))],
+        ];
+        for e in edits {
+            let out = apply_config_edits(WITH_DEBUG, &e).unwrap();
+            assert!(out.contains(BLOCKS), "{out}");
+            assert_eq!(toml::from_str::<RunConfig>(&out).unwrap().debug, want, "{out}");
+        }
+        let only = "[debug.demo]\nadapter = \"gdb\"\n";
+        let out = apply_config_edits(only, &[ConfigEdit::Add(task("t", argv(&["make"])))]).unwrap();
+        assert!(out.contains(only) && out.contains("[[configs]]\nname = \"t\""), "{out}");
+        assert_eq!(load_project(&out).unwrap().len(), 1);
+    }
 }

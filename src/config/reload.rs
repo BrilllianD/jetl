@@ -8,6 +8,7 @@
 use super::{
     ClipboardConfig, Config, EditorConfig, FilesConfig, FormatConfig, GitConfig, IndexConfig, KeymapConfig, UiConfig, WorktreeConfig,
 };
+use crate::dap::config::DebugConfig;
 use crate::history::LocalHistoryConfig;
 use crate::lsp::LspConfig;
 use crate::run::RunConfig;
@@ -24,6 +25,8 @@ pub enum ReloadClass {
     NextShell,
     /// After Help > Restart Language Servers.
     LspRestart,
+    /// When the next debug session starts.
+    NextDebugSession,
     /// Only after a restart of jetl.
     Restart,
 }
@@ -36,6 +39,7 @@ impl ReloadClass {
             Self::NewViews => "new tabs",
             Self::NextShell => "next shell",
             Self::LspRestart => "restart servers",
+            Self::NextDebugSession => "next debug session",
             Self::Restart => "restart jetl",
         }
     }
@@ -47,6 +51,7 @@ impl ReloadClass {
             Self::NewViews => "Applies to files opened afterwards; open tabs keep theirs.",
             Self::NextShell => "Applies when the Terminal window's next shell starts.",
             Self::LspRestart => "Applies after Help > Restart Language Servers.",
+            Self::NextDebugSession => "Applies when the next debug session starts.",
             Self::Restart => "Applies after a restart of jetl.",
         }
     }
@@ -170,6 +175,7 @@ sections! {
     run: RunConfig {
         tasks => Live,
         configs => Live,
+        debug => Live,
     }
     terminal: TerminalConfig {
         shell => NextShell,
@@ -188,6 +194,9 @@ sections! {
         rename_preview => Live,
         scratches => Live,
         servers => LspRestart,
+    }
+    debug: DebugConfig {
+        adapters => NextDebugSession,
     }
     local_history: LocalHistoryConfig {
         enabled => Live,
@@ -245,7 +254,7 @@ mod tests {
     fn restart_keys_are_documented() {
         let doc = include_str!("../../docs/CONFIG.md");
         for (key, class) in KEYS {
-            if matches!(class, ReloadClass::Restart | ReloadClass::LspRestart) {
+            if matches!(class, ReloadClass::Restart | ReloadClass::LspRestart | ReloadClass::NextDebugSession) {
                 assert!(doc.contains(&format!("`{key}`")), "docs/CONFIG.md does not name {key}");
             }
         }
@@ -258,7 +267,21 @@ mod tests {
         names.dedup();
         assert_eq!(names.len(), KEYS.len());
         // 19 editor, 8 ui, 3 git, 2 worktree, 1 keymap, 3 files, 2 clipboard,
-        // 3 format, 2 run, 3 terminal, 11 lsp, 5 local_history, 2 index.
-        assert_eq!(KEYS.len(), 64);
+        // 3 format, 3 run, 3 terminal, 11 lsp, 1 debug, 5 local_history, 2 index.
+        assert_eq!(KEYS.len(), 66);
+    }
+
+    #[test]
+    fn debug_keys_have_their_classes() {
+        assert_eq!(class_of("debug.adapters"), Some(ReloadClass::NextDebugSession));
+        assert_eq!(class_of("run.debug"), Some(ReloadClass::Live));
+        assert_eq!(ReloadClass::NextDebugSession.tag(), "next debug session");
+        assert_eq!(ReloadClass::NextDebugSession.describe(), "Applies when the next debug session starts.");
+        let base = Config::default();
+        let adapters = Config::parse("[debug.adapters.x]\ncommand = [\"x\"]\n").unwrap();
+        assert_eq!(diff(&base, &adapters).changed, [("debug.adapters", ReloadClass::NextDebugSession)]);
+        let block = Config::parse("[run.debug.x]\nadapter = \"gdb\"\n").unwrap();
+        assert_eq!(diff(&base, &block).changed, [("run.debug", ReloadClass::Live)]);
+        assert!(diff(&block, &Config::parse("[run.debug.x]\nadapter = \"gdb\"\n").unwrap()).is_empty());
     }
 }

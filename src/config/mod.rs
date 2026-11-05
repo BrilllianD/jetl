@@ -110,6 +110,7 @@ pub struct Config {
     pub run: crate::run::RunConfig,
     pub terminal: crate::terminal::TerminalConfig,
     pub lsp: crate::lsp::LspConfig,
+    pub debug: crate::dap::config::DebugConfig,
     pub local_history: crate::history::LocalHistoryConfig,
     pub index: IndexConfig,
 }
