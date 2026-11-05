@@ -216,7 +216,7 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `F11` | `editor.toggle_bookmark` | Toggle bookmark on the caret line |
 | `Shift+F11` | `editor.show_bookmarks` | Show bookmarks |
 | `Ctrl+F11` | `editor.toggle_numbered_bookmark` | Toggle numbered bookmark (a digit) on the caret line |
-| `Ctrl+F8` | `debug.toggle_breakpoint` | Toggle breakpoint on each caret's line (the debugger does not use them yet) |
+| `Ctrl+F8` | `debug.toggle_breakpoint` | Toggle breakpoint on each caret's line; a live debug session gets the change |
 | `Ctrl+Alt+Z` | `editor.revert_change` | Revert the change at the caret to HEAD |
 | `Alt+N` | `editor.diff_next_file` | Diff tab: show the next file |
 | `Alt+P` | `editor.diff_prev_file` | Diff tab: show the previous file |

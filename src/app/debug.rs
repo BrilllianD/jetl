@@ -3,8 +3,8 @@
 //! switch and a quit end it gracefully. The machine (`dap::session`) and the driver (`dap::client`) own every
 //! ordering rule of the protocol, so this file decides only which session is current.
 
-use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde_json::Value;
@@ -16,8 +16,11 @@ use crate::dap::client::{DapClient, SHUTDOWN_LIMIT};
 use crate::dap::config::{
     AdapterConfig, DebugBlock, DebugConfig, LaunchVars, choose_adapter, load_debug_blocks, process_env, resolve_launch,
 };
-use crate::dap::session::{Command, Phase, SessionId, SessionSpec};
+use crate::dap::protocol::{Breakpoint, BreakpointEvent};
+use crate::dap::session::{Command, Phase, SessionId, SessionSpec, SourceBreakpoints};
 use crate::dap::{DapBody, DapMsg};
+use crate::editor::Editor;
+use crate::editor::buffer::{BpState, BreakpointMark};
 use crate::event::{AppMsg, Level};
 #[cfg(test)]
 use crate::lsp::client::Conn;
@@ -41,6 +44,10 @@ pub(super) struct Live {
     pub(super) exit_code: Option<i64>,
     /// A user Stop: its end is reported as a stop, without the exit code gdb makes up for a killed program.
     pub(super) stop_requested: bool,
+    /// What the adapter was last told, per source: never an empty list, a cleared source leaves it.
+    pub(super) sent: BTreeMap<PathBuf, Vec<usize>>,
+    /// The sources in `sent` that had an open buffer at the last comparison.
+    pub(super) open: BTreeSet<PathBuf>,
 }
 
 #[derive(Default)]
@@ -78,8 +85,6 @@ impl DebugState {
         self.session.as_ref().map(|l| l.phase)
     }
 
-    // D2b and D4a1 send commands.
-    #[allow(dead_code)]
     pub fn send(&self, cmd: Command) {
         if let Some(live) = &self.session {
             live.client.send(cmd);
@@ -116,6 +121,55 @@ struct Job {
     selected: Option<String>,
     language: Option<String>,
     file: Option<String>,
+}
+
+/// Whether the file's text differs from what is on disk: an open buffer's dirty state; a closed file has none.
+fn source_modified(editor: &Editor, path: &Path) -> bool {
+    editor.index_of(path).is_some_and(|i| editor.buffers[i].dirty())
+}
+
+/// The sources in `lines` with an open buffer.
+fn open_sources(editor: &Editor, lines: &BTreeMap<PathBuf, Vec<usize>>) -> BTreeSet<PathBuf> {
+    lines.keys().filter(|p| editor.index_of(p).is_some()).cloned().collect()
+}
+
+/// What to send: the sources gone from `now` with an empty list, since `all_breakpoints` has no empty ones and an
+/// empty list is what clears; those whose lines changed; those that became open, because a closed file's lines hold
+/// no state, so a reopened one has to be told again what the adapter thinks of them.
+fn breakpoint_changes(
+    sent: &BTreeMap<PathBuf, Vec<usize>>,
+    was_open: &BTreeSet<PathBuf>,
+    now: &BTreeMap<PathBuf, Vec<usize>>,
+    open: &BTreeSet<PathBuf>,
+) -> BTreeMap<PathBuf, Vec<usize>> {
+    let mut changes: BTreeMap<PathBuf, Vec<usize>> =
+        sent.keys().filter(|p| !now.contains_key(*p)).map(|p| (p.clone(), Vec::new())).collect();
+    for (path, lines) in now {
+        if sent.get(path) != Some(lines) || (open.contains(path) && !was_open.contains(path)) {
+            changes.insert(path.clone(), lines.clone());
+        }
+    }
+    changes
+}
+
+/// What the adapter says of a mark on `line`. The key is the user's line and never moves: another line goes into `adapter_line`.
+fn apply_breakpoint(line: usize, mark: &mut BreakpointMark, bp: &Breakpoint) {
+    mark.state = if bp.reason.as_deref() == Some("failed") {
+        BpState::Failed
+    } else if bp.verified {
+        BpState::Verified
+    } else {
+        BpState::Pending
+    };
+    if bp.id.is_some() {
+        mark.id = bp.id;
+    }
+    // On the wire lines are 1-based; 0 or absent says nothing about where it is.
+    if let Some(l) = bp.line.filter(|l| *l > 0) {
+        let adapter = (l - 1) as usize;
+        mark.adapter_line = (adapter != line).then_some(adapter);
+    }
+    mark.message = bp.message.clone();
 }
 
 /// Reads the project files, picks the configuration and the adapter, and resolves the launch arguments.
@@ -160,6 +214,8 @@ impl App {
 
     fn debug_start(&mut self) {
         let before = self.debug.retire();
+        // The live session's `Ended` will be dropped, so its marks' states go now.
+        self.editor.reset_breakpoint_states();
         self.debug.seq += 1;
         self.debug.starting = true;
         let (seq, generation, tx) = (self.debug.seq, self.workspace.generation, self.bus_tx.clone());
@@ -216,13 +272,19 @@ impl App {
         };
         self.debug.next_id += 1;
         let id = SessionId(self.debug.next_id);
-        // D2b fills `breakpoints` with the snapshot at start.
-        let spec = SessionSpec { id, generation, adapter_id: p.adapter.name.clone(), launch: p.launch, breakpoints: BTreeMap::new() };
+        let sent = self.editor.all_breakpoints();
+        let open = open_sources(&self.editor, &sent);
+        tracing::debug!("dap: breakpoints at start: {sent:?}");
+        let breakpoints = sent
+            .iter()
+            .map(|(p, lines)| (p.clone(), SourceBreakpoints { lines: lines.clone(), modified: source_modified(&self.editor, p) }))
+            .collect();
+        let spec = SessionSpec { id, generation, adapter_id: p.adapter.name.clone(), launch: p.launch, breakpoints };
         let tx = self.bus_tx.clone();
         let client = DapClient::start(spec, conn, move |m| {
             let _ = tx.send(AppMsg::Dap(m));
         });
-        self.debug.session = Some(Live { id, client, phase: Phase::Initializing, exit_code: None, stop_requested: false });
+        self.debug.session = Some(Live { id, client, phase: Phase::Initializing, exit_code: None, stop_requested: false, sent, open });
         self.notify(Level::Info, format!("Debugging {} with {}", p.name, p.adapter.name));
     }
 
@@ -246,18 +308,64 @@ impl App {
             DapBody::Error(e) => self.notify(Level::Error, e),
             DapBody::Stopped { event, .. } => self.notify(Level::Info, format!("Paused ({})", event.reason)),
             DapBody::Ended { reason } => self.debug_ended(reason),
-            // D2b: breakpoints. D4a1: `Running`, `Response`. D4a2: `Output`.
-            DapBody::Started { .. }
-            | DapBody::Breakpoints { .. }
-            | DapBody::BreakpointChanged(_)
-            | DapBody::Running { .. }
-            | DapBody::Output(_)
-            | DapBody::Response { .. } => {}
+            DapBody::Breakpoints { source, requested, result } => self.debug_breakpoints_answered(&source, &requested, &result),
+            DapBody::BreakpointChanged(e) => self.debug_breakpoint_changed(&e),
+            // D4a1: `Running`, `Response`. D4a2: `Output`.
+            DapBody::Started { .. } | DapBody::Running { .. } | DapBody::Output(_) | DapBody::Response { .. } => {}
+        }
+    }
+
+    /// An answer to the newest `setBreakpoints` of a source; results are positional. A closed file has no marks to
+    /// update, and a mark gone since the request is not brought back.
+    fn debug_breakpoints_answered(&mut self, source: &Path, requested: &[usize], result: &[Breakpoint]) {
+        tracing::debug!("dap: breakpoints of {}: {requested:?} answered {result:?}", source.display());
+        let Some(marks) = self.editor.breakpoint_marks_mut(source) else { return };
+        for (line, bp) in requested.iter().zip(result) {
+            if let Some(mark) = marks.get_mut(line) {
+                *mark = BreakpointMark::default();
+                apply_breakpoint(*line, mark, bp);
+                tracing::debug!("dap: mark {}:{line} is {:?}, adapter line {:?}", source.display(), mark.state, mark.adapter_line);
+            }
+        }
+    }
+
+    fn debug_breakpoint_changed(&mut self, e: &BreakpointEvent) {
+        tracing::debug!("dap: breakpoint {}: {:?}", e.reason, e.breakpoint);
+        let Some(id) = e.breakpoint.id else { return };
+        for (line, mark) in self.editor.breakpoint_marks_by_id_mut(id) {
+            if e.reason == "removed" {
+                // gdb's `removed` carries the old descriptor, so `verified` says nothing here.
+                *mark =
+                    BreakpointMark { state: BpState::Failed, message: Some("removed by the debug adapter".into()), ..Default::default() };
+            } else {
+                apply_breakpoint(line, mark, &e.breakpoint);
+            }
+            tracing::debug!("dap: mark with id {id} on line {line} is {:?}, adapter line {:?}", mark.state, mark.adapter_line);
+        }
+    }
+
+    /// On the tick: tells the adapter of each source that changed since the last time. The machine holds a change that
+    /// comes before its configuration in the snapshot.
+    pub(super) fn debug_sync_breakpoints(&mut self) {
+        if !self.debug.active() {
+            return;
+        }
+        let now = self.editor.all_breakpoints();
+        let open = open_sources(&self.editor, &now);
+        let Some(live) = self.debug.session.as_mut() else { return };
+        let changes = breakpoint_changes(&live.sent, &live.open, &now, &open);
+        live.sent = now;
+        live.open = open;
+        for (source, lines) in changes {
+            let modified = source_modified(&self.editor, &source);
+            tracing::debug!("dap: sending breakpoints of {}: {lines:?}, modified {modified}", source.display());
+            self.debug.send(Command::SetBreakpoints { source, lines, modified });
         }
     }
 
     fn debug_ended(&mut self, reason: String) {
         let Some(live) = self.debug.session.take() else { return };
+        self.editor.reset_breakpoint_states();
         let (level, text) = match (live.stop_requested, reason.is_empty(), live.exit_code) {
             (_, false, Some(c)) => (Level::Warn, format!("Debug session ended: {reason} (exit code {c})")),
             (_, false, None) => (Level::Warn, format!("Debug session ended: {reason}")),
@@ -272,6 +380,7 @@ impl App {
     /// A root switch: the session belongs to the old root. Called before the generation changes.
     pub(crate) fn debug_root_changed(&mut self) {
         self.debug.retiring = self.debug.retire();
+        self.editor.reset_breakpoint_states();
         self.debug.starting = false;
         self.debug.seq += 1;
     }
@@ -306,6 +415,8 @@ pub(crate) mod tests {
     use crate::dap::config::AdapterOverride;
     use crate::dap::fake::{self, FakeAdapter, Order};
     use crate::dap::session::STOP_STAGE;
+    use crate::editor::undo::TxKind;
+    use crate::ui::focus::PanelId;
 
     const DEMO: &str = "[[configs]]\nname = \"demo\"\ncommand = [\"./demo\"]\n\n[debug.demo]\nadapter = \"fake\"\nlaunch = { program = \"${workspaceFolder}/demo\" }\n";
 
@@ -809,6 +920,595 @@ pub(crate) mod tests {
         });
         app.shutdown().await;
         tokio::time::timeout(Duration::from_secs(1), task).await.expect("in time").expect("cooperated");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- breakpoints (yman 413) ----
+
+    fn setup(name: &str, order: Order) -> (App, PathBuf, UnboundedReceiver<FakeAdapter>) {
+        let (mut app, dir) = test_app(name);
+        let fakes = with_fake_adapters(&mut app, caps(), order);
+        write_run_toml(&app, DEMO);
+        (app, dir, fakes)
+    }
+
+    /// A live session in `Running`, its snapshot sent; every setBreakpoints so far is taken off the fake and returned.
+    async fn running(app: &mut App, fakes: &mut UnboundedReceiver<FakeAdapter>) -> (FakeAdapter, Vec<Value>) {
+        app.perform(Action::Debug(DebugAction::Start));
+        dap_until(app, |a| a.debug.active()).await;
+        let mut fake = fakes.try_recv().expect("connected");
+        let mut sets = Vec::new();
+        loop {
+            let m = fake.next().await;
+            if m["command"] == "setBreakpoints" {
+                sets.push(m);
+            } else if m["command"] == "configurationDone" {
+                break;
+            }
+        }
+        dap_until(app, |a| a.debug.phase() == Some(Phase::Running)).await;
+        (fake, sets)
+    }
+
+    fn lines(m: &Value) -> Vec<i64> {
+        m["arguments"]["breakpoints"].as_array().expect("breakpoints").iter().map(|b| b["line"].as_i64().expect("line")).collect()
+    }
+
+    fn source(m: &Value) -> String {
+        m["arguments"]["source"]["path"].as_str().expect("path").to_string()
+    }
+
+    fn toggle(app: &mut App, path: &Path, line: usize) {
+        let i = app.editor.index_of(path).unwrap();
+        app.editor.buffers[i].toggle_breakpoint_at(line);
+    }
+
+    fn state(app: &App, path: &Path, line: usize) -> BreakpointMark {
+        let i = app.editor.index_of(path).unwrap();
+        app.editor.buffers[i].breakpoints[&line].clone()
+    }
+
+    fn keys(app: &App, path: &Path) -> Vec<usize> {
+        let i = app.editor.index_of(path).unwrap();
+        app.editor.buffers[i].breakpoints.keys().copied().collect()
+    }
+
+    /// No request was sent since the last one taken: a mark in a new file `name` makes the very next message that file's.
+    async fn assert_quiet(app: &mut App, fake: &mut FakeAdapter, name: &str) {
+        let p = load(app, name, "x\n");
+        toggle(app, &p, 0);
+        app.on_tick();
+        let m = fake.next().await;
+        assert_eq!((m["command"].as_str(), source(&m)), (Some("setBreakpoints"), p.to_string_lossy().into_owned()));
+    }
+
+    fn answer(fake: &FakeAdapter, set: &Value, bps: Value) {
+        fake.respond(set, json!({ "breakpoints": bps }));
+    }
+
+    fn six(app: &mut App) -> PathBuf {
+        load(app, "a.log", "l0\nl1\nl2\nl3\nl4\nl5\n")
+    }
+
+    fn answered(app: &mut App, path: &Path, requested: Vec<usize>, result: Vec<crate::dap::protocol::Breakpoint>) {
+        inject(app, DapBody::Breakpoints { source: path.to_path_buf(), requested, result });
+    }
+
+    fn bp(v: Value) -> crate::dap::protocol::Breakpoint {
+        serde_json::from_value(v).unwrap()
+    }
+
+    fn changed(app: &mut App, reason: &str, v: Value) {
+        inject(app, DapBody::BreakpointChanged(BreakpointEvent { reason: reason.into(), breakpoint: bp(v) }));
+    }
+
+    #[tokio::test]
+    async fn the_snapshot_goes_before_configuration_in_every_order() {
+        for (n, order) in fake::ORDERS.into_iter().enumerate() {
+            let (mut app, dir, mut fakes) = setup(&format!("bp-snapshot-{n}"), order);
+            let root = app.workspace.root.clone();
+            let z = root.join("z.log");
+            app.editor.restore_closed_breakpoints(&[(z.clone(), vec![0, 2])]);
+            let a = six(&mut app);
+            toggle(&mut app, &a, 1);
+            toggle(&mut app, &a, 3);
+            let b = load(&mut app, "b.log", "x0\nx1\n");
+            toggle(&mut app, &b, 0);
+            let i = app.editor.index_of(&b).unwrap();
+            app.editor.buffers[i].insert("x", TxKind::Typing);
+            let (_fake, sets) = running(&mut app, &mut fakes).await;
+            let got: Vec<(String, Vec<i64>, bool)> =
+                sets.iter().map(|m| (source(m), lines(m), m["arguments"]["sourceModified"].as_bool().unwrap())).collect();
+            let s = |p: &Path| p.to_string_lossy().into_owned();
+            assert_eq!(got, vec![(s(&a), vec![2, 4], false), (s(&b), vec![1], true), (s(&z), vec![1, 3], false)], "{order:?}");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[tokio::test]
+    async fn no_marks_send_no_breakpoints() {
+        let (mut app, dir, mut fakes) = setup("bp-none", Order::LaunchEarly);
+        let (mut fake, sets) = running(&mut app, &mut fakes).await;
+        assert!(sets.is_empty(), "{sets:?}");
+        assert_quiet(&mut app, &mut fake, "q1.log").await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_tick_after_the_start_sends_nothing() {
+        let (mut app, dir, mut fakes) = setup("bp-tick", Order::LaunchEarly);
+        let a = six(&mut app);
+        toggle(&mut app, &a, 1);
+        let (mut fake, sets) = running(&mut app, &mut fakes).await;
+        assert_eq!(sets.len(), 1);
+        for _ in 0..3 {
+            app.on_tick();
+        }
+        assert_quiet(&mut app, &mut fake, "q1.log").await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_toggle_sends_the_whole_list_once() {
+        let (mut app, dir, mut fakes) = setup("bp-toggle", Order::LaunchEarly);
+        let a = six(&mut app);
+        toggle(&mut app, &a, 1);
+        let (mut fake, _) = running(&mut app, &mut fakes).await;
+        toggle(&mut app, &a, 3);
+        app.on_tick();
+        let m = fake.next().await;
+        assert_eq!((m["command"].as_str(), source(&m), lines(&m)), (Some("setBreakpoints"), a.to_string_lossy().into_owned(), vec![2, 4]));
+        assert_eq!(m["arguments"]["sourceModified"], json!(false));
+        app.on_tick();
+        app.on_tick();
+        assert_quiet(&mut app, &mut fake, "q1.log").await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_moving_edit_sends_new_lines_marked_modified() {
+        let (mut app, dir, mut fakes) = setup("bp-edit", Order::LaunchEarly);
+        let a = six(&mut app);
+        toggle(&mut app, &a, 1);
+        let (mut fake, _) = running(&mut app, &mut fakes).await;
+        app.focus.set(PanelId::Editor);
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        app.on_tick();
+        let m = fake.next().await;
+        assert_eq!((source(&m), lines(&m)), (a.to_string_lossy().into_owned(), vec![3]));
+        assert_eq!(m["arguments"]["sourceModified"], json!(true));
+        // A save (dirty goes false) and then typing on a line (dirty again): the lines are the same, so nothing goes.
+        let i = app.editor.index_of(&a).unwrap();
+        app.editor.buffers[i].mark_saved();
+        app.on_tick();
+        assert_quiet(&mut app, &mut fake, "q1.log").await;
+        app.editor.buffers[i].insert("x", TxKind::Typing);
+        app.on_tick();
+        app.on_tick();
+        assert_quiet(&mut app, &mut fake, "q2.log").await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn closing_a_tab_with_marks_sends_nothing() {
+        let (mut app, dir, mut fakes) = setup("bp-close-tab", Order::LaunchEarly);
+        let a = six(&mut app);
+        toggle(&mut app, &a, 1);
+        let (mut fake, _) = running(&mut app, &mut fakes).await;
+        let i = app.editor.index_of(&a).unwrap();
+        app.editor.force_close(i);
+        app.on_tick();
+        assert_quiet(&mut app, &mut fake, "q1.log").await;
+        assert_eq!(app.editor.closed_breakpoints(), vec![(a, vec![1])]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_reopened_file_is_asked_again_once() {
+        let (mut app, dir, mut fakes) = setup("bp-reopen", Order::LaunchEarly);
+        let a = six(&mut app);
+        toggle(&mut app, &a, 1);
+        let (mut fake, _) = running(&mut app, &mut fakes).await;
+        let i = app.editor.index_of(&a).unwrap();
+        app.editor.force_close(i);
+        app.on_tick();
+        load(&mut app, "a.log", "l0\nl1\nl2\nl3\nl4\nl5\n");
+        app.on_tick();
+        let m = fake.next().await;
+        assert_eq!((m["command"].as_str(), source(&m), lines(&m)), (Some("setBreakpoints"), a.to_string_lossy().into_owned(), vec![2]));
+        answer(&fake, &m, json!([{"id": 5, "verified": false, "reason": "pending"}]));
+        dap_until(&mut app, |a2| state(a2, &a, 1).state == BpState::Pending).await;
+        assert_eq!(state(&app, &a, 1).id, Some(5));
+        app.on_tick();
+        app.on_tick();
+        assert_quiet(&mut app, &mut fake, "q1.log").await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_file_closed_at_the_start_is_asked_on_opening() {
+        let (mut app, dir, mut fakes) = setup("bp-open-closed", Order::LaunchEarly);
+        let z = app.workspace.root.join("z.log");
+        app.editor.restore_closed_breakpoints(&[(z.clone(), vec![1])]);
+        let (mut fake, sets) = running(&mut app, &mut fakes).await;
+        assert_eq!(sets.len(), 1);
+        load(&mut app, "z.log", "a\nb\n");
+        app.on_tick();
+        let m = fake.next().await;
+        assert_eq!((m["command"].as_str(), source(&m), lines(&m)), (Some("setBreakpoints"), z.to_string_lossy().into_owned(), vec![2]));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_file_reopened_shorter_sends_where_its_marks_landed() {
+        let (mut app, dir, mut fakes) = setup("bp-shorter", Order::LaunchEarly);
+        let z = app.workspace.root.join("z.log");
+        app.editor.restore_closed_breakpoints(&[(z.clone(), vec![1, 9])]);
+        let (mut fake, _) = running(&mut app, &mut fakes).await;
+        load(&mut app, "z.log", "a\nb\nc");
+        app.on_tick();
+        let m = fake.next().await;
+        assert_eq!((source(&m), lines(&m)), (z.to_string_lossy().into_owned(), vec![2, 3]));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn an_emptied_file_gets_an_empty_list_once() {
+        let (mut app, dir, mut fakes) = setup("bp-emptied", Order::LaunchEarly);
+        let a = six(&mut app);
+        toggle(&mut app, &a, 1);
+        let (mut fake, _) = running(&mut app, &mut fakes).await;
+        toggle(&mut app, &a, 1);
+        app.on_tick();
+        let m = fake.next().await;
+        assert_eq!((m["command"].as_str(), source(&m), lines(&m)), (Some("setBreakpoints"), a.to_string_lossy().into_owned(), vec![]));
+        assert!(!app.debug.session.as_ref().unwrap().sent.contains_key(&a));
+        app.on_tick();
+        app.on_tick();
+        assert_quiet(&mut app, &mut fake, "q1.log").await;
+        toggle(&mut app, &a, 2);
+        app.on_tick();
+        let m = fake.next().await;
+        assert_eq!((source(&m), lines(&m)), (a.to_string_lossy().into_owned(), vec![3]));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_closed_file_dropped_gets_an_empty_list() {
+        let (mut app, dir, mut fakes) = setup("bp-dropped", Order::LaunchEarly);
+        let z = app.workspace.root.join("z.log");
+        app.editor.restore_closed_breakpoints(&[(z.clone(), vec![1])]);
+        let (mut fake, _) = running(&mut app, &mut fakes).await;
+        app.editor.close_under(&z);
+        app.on_tick();
+        let m = fake.next().await;
+        assert_eq!((m["command"].as_str(), source(&m), lines(&m)), (Some("setBreakpoints"), z.to_string_lossy().into_owned(), vec![]));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_closed_tab_whose_marks_went_gets_an_empty_list() {
+        let (mut app, dir, mut fakes) = setup("bp-tab-emptied", Order::LaunchEarly);
+        let a = six(&mut app);
+        toggle(&mut app, &a, 1);
+        let (mut fake, _) = running(&mut app, &mut fakes).await;
+        toggle(&mut app, &a, 1);
+        let i = app.editor.index_of(&a).unwrap();
+        app.editor.force_close(i);
+        app.on_tick();
+        let m = fake.next().await;
+        assert_eq!((m["command"].as_str(), source(&m), lines(&m)), (Some("setBreakpoints"), a.to_string_lossy().into_owned(), vec![]));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_rename_clears_the_old_path_and_sends_the_new() {
+        let (mut app, dir, mut fakes) = setup("bp-rename", Order::LaunchEarly);
+        let a = six(&mut app);
+        toggle(&mut app, &a, 1);
+        let (mut fake, _) = running(&mut app, &mut fakes).await;
+        let m_path = app.workspace.root.join("m.log");
+        let theme = app.theme.clone();
+        app.editor.retarget(&a, &m_path, &theme);
+        app.on_tick();
+        let first = fake.next().await;
+        assert_eq!((source(&first), lines(&first)), (a.to_string_lossy().into_owned(), vec![]));
+        let second = fake.next().await;
+        assert_eq!((source(&second), lines(&second)), (m_path.to_string_lossy().into_owned(), vec![2]));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn an_open_buffer_with_no_marks_outranks_parked_lines_it_was_sent_for() {
+        let (mut app, dir, mut fakes) = setup("bp-outrank", Order::LaunchEarly);
+        let z = app.workspace.root.join("z.log");
+        app.editor.restore_closed_breakpoints(&[(z.clone(), vec![1])]);
+        let u = load(&mut app, "u.log", "one\ntwo\n");
+        let (mut fake, sets) = running(&mut app, &mut fakes).await;
+        assert_eq!(sets.len(), 1);
+        assert_eq!((source(&sets[0]), lines(&sets[0])), (z.to_string_lossy().into_owned(), vec![2]));
+        let i = app.editor.index_of(&u).unwrap();
+        app.editor.buffers[i].path = Some(z.clone());
+        app.on_tick();
+        let m = fake.next().await;
+        assert_eq!((m["command"].as_str(), source(&m), lines(&m)), (Some("setBreakpoints"), z.to_string_lossy().into_owned(), vec![]));
+        app.on_tick();
+        app.on_tick();
+        assert_quiet(&mut app, &mut fake, "q1.log").await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_toggle_before_initialized_replaces_the_snapshot() {
+        let (mut app, dir, mut fakes) = setup("bp-before-init", Order::LaunchDeferred);
+        let a = six(&mut app);
+        toggle(&mut app, &a, 1);
+        app.perform(Action::Debug(DebugAction::Start));
+        dap_until(&mut app, |x| x.debug.active()).await;
+        toggle(&mut app, &a, 3);
+        app.on_tick();
+        let mut fake = fakes.try_recv().expect("connected");
+        let m = fake.recv("setBreakpoints").await;
+        assert_eq!(lines(&m), vec![2, 4]);
+        assert_eq!(fake.next().await["command"], "configurationDone");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn no_session_sends_nothing() {
+        let (mut app, dir, mut fakes) = setup("bp-no-session", Order::LaunchEarly);
+        let a = six(&mut app);
+        toggle(&mut app, &a, 1);
+        app.on_tick();
+        assert!(fakes.try_recv().is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn results_map_onto_the_requested_lines() {
+        let (mut app, dir, mut fakes) = setup("bp-map", Order::LaunchEarly);
+        let a = six(&mut app);
+        for l in 1..=4 {
+            toggle(&mut app, &a, l);
+        }
+        let (fake, sets) = running(&mut app, &mut fakes).await;
+        answer(
+            &fake,
+            &sets[0],
+            json!([
+                {"id": 1, "verified": true, "line": 2},
+                {"id": 2, "verified": false, "reason": "pending"},
+                {"verified": false, "reason": "failed", "message": "no code"},
+                {"id": 4, "verified": true, "line": 7}
+            ]),
+        );
+        dap_until(&mut app, |x| state(x, &a, 4).state == BpState::Verified).await;
+        let m =
+            |state, id, adapter_line, message: Option<&str>| BreakpointMark { state, id, adapter_line, message: message.map(Into::into) };
+        assert_eq!(state(&app, &a, 1), m(BpState::Verified, Some(1), None, None));
+        assert_eq!(state(&app, &a, 2), m(BpState::Pending, Some(2), None, None));
+        assert_eq!(state(&app, &a, 3), m(BpState::Failed, None, None, Some("no code")));
+        assert_eq!(state(&app, &a, 4), m(BpState::Verified, Some(4), Some(6), None));
+        assert_eq!(keys(&app, &a), vec![1, 2, 3, 4]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn failed_wins_over_verified_and_line_zero_says_nothing() {
+        let (mut app, dir, _fakes, _fake) = live("bp-failed-wins", Order::LaunchEarly).await;
+        let a = six(&mut app);
+        toggle(&mut app, &a, 1);
+        toggle(&mut app, &a, 2);
+        answered(
+            &mut app,
+            &a,
+            vec![1, 2],
+            vec![bp(json!({"verified": true, "reason": "failed"})), bp(json!({"verified": true, "line": 0}))],
+        );
+        assert_eq!(state(&app, &a, 1).state, BpState::Failed);
+        assert_eq!((state(&app, &a, 2).state, state(&app, &a, 2).adapter_line), (BpState::Verified, None));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn an_answer_replaces_the_mark_whole() {
+        let (mut app, dir, _fakes, _fake) = live("bp-whole", Order::LaunchEarly).await;
+        let a = six(&mut app);
+        toggle(&mut app, &a, 1);
+        let i = app.editor.index_of(&a).unwrap();
+        app.editor.buffers[i]
+            .breakpoints
+            .insert(1, BreakpointMark { state: BpState::Failed, id: Some(9), adapter_line: Some(7), message: Some("old".into()) });
+        answered(&mut app, &a, vec![1], vec![bp(json!({"verified": true}))]);
+        assert_eq!(state(&app, &a, 1), BreakpointMark { state: BpState::Verified, ..Default::default() });
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_short_answer_leaves_the_rest() {
+        let (mut app, dir, _fakes, _fake) = live("bp-short", Order::LaunchEarly).await;
+        let a = six(&mut app);
+        toggle(&mut app, &a, 1);
+        toggle(&mut app, &a, 2);
+        answered(&mut app, &a, vec![1, 2], vec![bp(json!({"id": 1, "verified": true}))]);
+        assert_eq!(state(&app, &a, 1).state, BpState::Verified);
+        assert_eq!(state(&app, &a, 2), BreakpointMark::default());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn an_answer_touches_neither_a_closed_file_nor_a_gone_mark() {
+        let (mut app, dir, _fakes, _fake) = live("bp-gone", Order::LaunchEarly).await;
+        let root = app.workspace.root.clone();
+        answered(&mut app, &root.join("nope.log"), vec![1], vec![bp(json!({"verified": true}))]);
+        let a = six(&mut app);
+        toggle(&mut app, &a, 1);
+        toggle(&mut app, &a, 2);
+        // Mark 1 went after the request for [1, 2]: the second result is still mark 2's.
+        toggle(&mut app, &a, 1);
+        answered(
+            &mut app,
+            &a,
+            vec![1, 2],
+            vec![bp(json!({"id": 1, "verified": true})), bp(json!({"id": 2, "verified": false, "reason": "pending"}))],
+        );
+        assert_eq!(keys(&app, &a), vec![2]);
+        let mark = state(&app, &a, 2);
+        assert_eq!((mark.state, mark.id), (BpState::Pending, Some(2)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_failed_request_leaves_the_marks_and_shows_its_toast() {
+        let (mut app, dir, mut fakes) = setup("bp-request-fails", Order::LaunchEarly);
+        let a = six(&mut app);
+        toggle(&mut app, &a, 1);
+        let (fake, sets) = running(&mut app, &mut fakes).await;
+        fake.respond_error(&sets[0], "boom");
+        dap_until(&mut app, |x| texts(x).contains(&"setBreakpoints: boom".to_string())).await;
+        assert_eq!(app.notifications.iter().find(|n| n.text == "setBreakpoints: boom").unwrap().level, Level::Error);
+        assert_eq!(state(&app, &a, 1), BreakpointMark::default());
+        assert!(app.debug.active());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn gdb_pending_then_three_changes() {
+        let (mut app, dir, mut fakes) = setup("bp-gdb", Order::LaunchDeferred);
+        let a = six(&mut app);
+        toggle(&mut app, &a, 2);
+        let (mut fake, sets) = running(&mut app, &mut fakes).await;
+        answer(&fake, &sets[0], json!([{"id": 1, "verified": false, "reason": "pending"}]));
+        dap_until(&mut app, |x| state(x, &a, 2).state == BpState::Pending).await;
+        assert_eq!(state(&app, &a, 2).adapter_line, None);
+        for _ in 0..3 {
+            fake.event("breakpoint", json!({"reason": "changed", "breakpoint": {"id": 1, "verified": true, "line": 3}}));
+        }
+        dap_until(&mut app, |x| state(x, &a, 2).state == BpState::Verified).await;
+        assert_eq!(state(&app, &a, 2).adapter_line, None);
+        assert_quiet(&mut app, &mut fake, "q1.log").await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_changed_event_finds_the_mark_by_id_in_any_buffer() {
+        let (mut app, dir, _fakes, _fake) = live("bp-by-id", Order::LaunchEarly).await;
+        let a = six(&mut app);
+        let b = load(&mut app, "b.log", "b0\nb1\nb2\nb3\n");
+        toggle(&mut app, &a, 1);
+        toggle(&mut app, &b, 2);
+        answered(&mut app, &a, vec![1], vec![bp(json!({"id": 1, "verified": false, "reason": "pending"}))]);
+        answered(&mut app, &b, vec![2], vec![bp(json!({"id": 2, "verified": false, "reason": "pending"}))]);
+        let a_before = state(&app, &a, 1);
+        changed(&mut app, "changed", json!({"id": 2, "verified": true, "line": 9}));
+        let m = state(&app, &b, 2);
+        assert_eq!((m.state, m.adapter_line), (BpState::Verified, Some(8)));
+        assert_eq!(keys(&app, &b), vec![2]);
+        assert_eq!(state(&app, &a, 1), a_before);
+        changed(&mut app, "changed", json!({"id": 2, "verified": true}));
+        assert_eq!(state(&app, &b, 2).adapter_line, Some(8));
+        changed(&mut app, "changed", json!({"id": 2, "verified": false, "reason": "pending"}));
+        assert_eq!(state(&app, &b, 2).state, BpState::Pending);
+        let (a_now, b_now) = (state(&app, &a, 1), state(&app, &b, 2));
+        changed(&mut app, "changed", json!({"id": 99, "verified": true, "line": 3}));
+        changed(&mut app, "changed", json!({"verified": true, "line": 3}));
+        assert_eq!((state(&app, &a, 1), state(&app, &b, 2)), (a_now, b_now));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_removed_event_leaves_the_mark_failed_on_its_line() {
+        let (mut app, dir, mut fakes) = setup("bp-removed", Order::LaunchEarly);
+        let a = six(&mut app);
+        toggle(&mut app, &a, 1);
+        let (mut fake, _) = running(&mut app, &mut fakes).await;
+        answered(&mut app, &a, vec![1], vec![bp(json!({"id": 1, "verified": true}))]);
+        assert_eq!(state(&app, &a, 1).state, BpState::Verified);
+        changed(&mut app, "removed", json!({"id": 1, "verified": true, "line": 2}));
+        let want =
+            BreakpointMark { state: BpState::Failed, id: None, adapter_line: None, message: Some("removed by the debug adapter".into()) };
+        assert_eq!(state(&app, &a, 1), want);
+        assert_eq!(keys(&app, &a), vec![1]);
+        changed(&mut app, "changed", json!({"id": 1, "verified": true, "line": 2}));
+        assert_eq!(state(&app, &a, 1), want);
+        assert_quiet(&mut app, &mut fake, "q1.log").await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn ended_resets_the_states() {
+        let (mut app, dir, mut fakes) = setup("bp-ended", Order::LaunchEarly);
+        let a = six(&mut app);
+        toggle(&mut app, &a, 1);
+        let (mut fake, sets) = running(&mut app, &mut fakes).await;
+        answer(&fake, &sets[0], json!([{"id": 3, "verified": true}]));
+        dap_until(&mut app, |x| state(x, &a, 1).state == BpState::Verified).await;
+        fake.event("terminated", Value::Null);
+        let disconnect = fake.recv("disconnect").await;
+        fake.respond(&disconnect, Value::Null);
+        dap_until(&mut app, gone).await;
+        assert_eq!(state(&app, &a, 1), BreakpointMark::default());
+        assert_eq!(keys(&app, &a), vec![1]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_replace_resets_the_states_at_once() {
+        let (mut app, dir, mut fakes) = setup("bp-replace", Order::LaunchEarly);
+        let a = six(&mut app);
+        toggle(&mut app, &a, 1);
+        let (mut fake1, sets) = running(&mut app, &mut fakes).await;
+        answer(&fake1, &sets[0], json!([{"id": 3, "verified": true}]));
+        dap_until(&mut app, |x| state(x, &a, 1).state == BpState::Verified).await;
+        app.perform(Action::Debug(DebugAction::Start));
+        assert_eq!(state(&app, &a, 1), BreakpointMark::default());
+        cooperate(&mut fake1).await;
+        dap_until(&mut app, |x| x.debug.active()).await;
+        let mut fake2 = fakes.try_recv().expect("the second adapter");
+        assert_eq!(lines(&fake2.recv("setBreakpoints").await), vec![2]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_replace_whose_start_is_refused_leaves_no_old_state() {
+        let (mut app, dir, mut fakes) = setup("bp-replace-refused", Order::LaunchEarly);
+        let a = six(&mut app);
+        toggle(&mut app, &a, 1);
+        let (mut fake1, sets) = running(&mut app, &mut fakes).await;
+        answer(&fake1, &sets[0], json!([{"id": 3, "verified": true}]));
+        dap_until(&mut app, |x| state(x, &a, 1).state == BpState::Verified).await;
+        write_run_toml(&app, "");
+        app.perform(Action::Debug(DebugAction::Start));
+        cooperate(&mut fake1).await;
+        handle_next(&mut app, |m| matches!(m, AppMsg::DebugReady { .. })).await;
+        assert_eq!(state(&app, &a, 1), BreakpointMark::default());
+        assert!(!app.debug.active());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_root_switch_resets_the_states() {
+        let (mut app, dir, mut fakes) = setup("bp-root", Order::LaunchEarly);
+        let a = six(&mut app);
+        toggle(&mut app, &a, 1);
+        let (fake, sets) = running(&mut app, &mut fakes).await;
+        answer(&fake, &sets[0], json!([{"id": 3, "verified": true}]));
+        dap_until(&mut app, |x| state(x, &a, 1).state == BpState::Verified).await;
+        app.debug_root_changed();
+        assert_eq!(state(&app, &a, 1), BreakpointMark::default());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn an_old_sessions_answer_is_dropped() {
+        let (mut app, dir, mut fakes) = setup("bp-old-answer", Order::LaunchEarly);
+        let a = six(&mut app);
+        toggle(&mut app, &a, 1);
+        let (_fake, _) = running(&mut app, &mut fakes).await;
+        let (generation, id) = (app.workspace.generation, app.debug.session.as_ref().unwrap().id);
+        let body = DapBody::Breakpoints { source: a.clone(), requested: vec![1], result: vec![bp(json!({"id": 1, "verified": true}))] };
+        app.dap_msg(DapMsg { generation, session: SessionId(id.0 + 1), body });
+        assert_eq!(state(&app, &a, 1), BreakpointMark::default());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

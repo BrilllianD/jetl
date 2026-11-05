@@ -713,6 +713,7 @@ impl App {
         self.history_diff_follow(Instant::now());
         self.terminal_tick();
         self.lsp_confirm_orphaned();
+        self.debug_sync_breakpoints();
     }
 
     fn autosave(&mut self) {

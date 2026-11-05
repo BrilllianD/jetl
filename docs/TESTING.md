@@ -938,7 +938,7 @@ shell's own command line out of the match), and start only when both print nothi
 1. F10, `r`: the Run menu has `Debug  Shift+F9` and `Stop Debugging  Ctrl+F2` after `Stop`, inside
    the screen. Escape twice.
 2. In `demo`: Shift+F9. Toasts `Debugging demo with gdb`, then `Debug session ended, exit code 0`
-   (the program has no breakpoint to stop at: none is sent yet). No `gdb` is left. Ctrl+F2 with
+   (no breakpoint is marked, so the program runs to its end). No `gdb` is left. Ctrl+F2 with
    nothing live reaches Run: `No task is running`.
 3. Rewrite `.jetl/run.toml` and press Shift+F9 each time: without a `[debug.demo]` table,
    `No debug configuration: add [debug.<name>] to .jetl/run.toml`; with `adapter = "codelldb"`, the
@@ -969,8 +969,52 @@ shell's own command line out of the match), and start only when both print nothi
     and neither process is left.
 
 Each run exits 0 with an empty stderr on Ctrl+Q. What gdb cannot show, and the unit tests prove
-instead: the other two start orders (js-debug's and delve's), a pause (no breakpoint is sent before the breakpoint sync), a root switch
+instead: the other two start orders (js-debug's and delve's), a pause or a resume (S6 adds them; a paused program can only be stopped), a root switch
 and a replaced session's silence, and the debugpy command (debugpy is not installed).
+
+### Scenario: breakpoints sent to a debug session
+
+Needs `gdb` 14 or newer and `gcc`. At 80x24 and at 120x40, with `XDG_CONFIG_HOME`, `XDG_STATE_HOME` and
+`XDG_CACHE_HOME` under `/tmp`, `[lsp] enabled = false` and `[ui] toolbar = false` in `config.toml`, and
+`RUST_LOG=jetl=debug`: the steps read `$XDG_STATE_HOME/jetl/jetl.log`, only what a step added, and wait for it,
+since the log is written off the main thread. Fixture `/tmp/jetl-dap-demo`, rebuilt each run: `demo.c` as in the
+Debug and Stop scenario with one more line, a comment with no code on line 9 (between `int x = add(1, 2);` and
+the `printf`); `other.c`, a file that is not part of the program (`int unused(void) { return 1; }`, three lines);
+`demo` built with `gcc -g -O0 -o demo demo.c`; the same `.jetl/run.toml`. Start only when `pgrep -x demo` and
+`pgrep -f '[g]db -q -i=dap'` print nothing. Line numbers below are as the gutter shows them (1-based); the log
+shows 0-based lines. At 80x24 a toast (4 s Info, 8 s Warning, 12 s Error) covers the gutter, so read a glyph only
+when no toast is on screen.
+
+1. Negative control: `jetl demo.c`, Shift+F9 with no mark. The program runs to its end (`Debug session ended,
+   exit code 0`), the log has `dap: breakpoints at start: {}` and no `-> setBreakpoints`.
+2. Ctrl+G, `4`, Ctrl+F8: `4` shows `●`. Shift+F9: the toast `Paused (breakpoint)`. In the log, `-> setBreakpoints` comes
+   before `-> configurationDone` and appears once, a mark is `Pending` (gdb: `reason: Some("pending")`) before it is
+   `Verified, adapter line None` after gdb's `breakpoint` events (three came in the capture; the count is not
+   asserted). The pane shows `4●` and no `4○`. One `demo` is running, stopped.
+3. Ctrl+G, `10`, Ctrl+F8 while paused: the log has `demo.c: [3, 9], modified false` once.
+4. A line with no code: Ctrl+F8 on `10` again (back to `[3]`), then Ctrl+G, `9`, Ctrl+F8: `demo.c: [3, 8], modified
+   false`, and the mark is `Verified, adapter line Some(9)`: gdb placed it on line 10, and the glyph stays on `9●`,
+   not `10●`.
+5. Ctrl+G, `1`, Enter: the marks move and the new lines go out, `demo.c: [4, 9], modified true`; the pane shows `5●` and
+   `10●`. Ctrl+Z: `demo.c: [3, 8], modified false`, and `4●`, `9●`.
+6. Positive control for `○`: Ctrl+N, `other.c`, Enter; Ctrl+G, `2`, Ctrl+F8. `other.c: [1], modified false` and `other.c:1
+   is Pending` (gdb never finds the source, `reason: Some("pending")`, `line: None`). The pane shows `2○`, and still
+   does a second later.
+7. Ctrl+F8 again on `other.c`: `other.c: [], modified false` once, and no `2○` or `2●`.
+8. Ctrl+F8 (`2○` again), then Ctrl+W: no `dap: sending breakpoints` line, since the file's marks stay in the session.
+   Ctrl+N, `other.c`, Enter: `other.c: [1], modified false` again and `2○` back, not a bare `●`.
+9. Ctrl+F2: `Debug session stopped`; `2○` is gone (`2●`), every state back to the default; no `demo` or `gdb` is left.
+10. Open `demo.c`, close it with Ctrl+W (its marks stay), Shift+F9: the log's `breakpoints at start` names `demo.c`,
+    the program stops there (`<- event stopped`) and the closed file's marks were sent. Ctrl+N, `demo.c`, Enter while
+    paused: `demo.c: [3, 8], modified false` and `4●` with the state `Verified`.
+11. Ctrl+Q with the session live: exit 0, empty stderr, no `demo` or `gdb`, and no `Verified` or `Pending` in the
+    session files under `$XDG_STATE_HOME/jetl/sessions`: state is never saved. Start again on `demo.c`, Shift+F9: the
+    saved marks are sent and the program stops (`4●`). Ctrl+F2.
+
+What gdb cannot show, and the unit tests prove: that a cleared breakpoint no longer stops the program (nothing can
+resume before the stepping task); `reason: "failed"` (needs an internal gdb error); a `removed` event (gdb
+suppresses it for its own deletes); the other two start orders; a closed file's lines dropped, and a rename;
+`sourceModified` having an effect (gdb ignores it); a root switch.
 
 ### Scenario: Save As
 
