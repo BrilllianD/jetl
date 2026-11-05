@@ -492,6 +492,8 @@ pub struct RenderOpts<'a> {
     /// resolver's linked panes set it).
     pub follow: bool,
     pub decor: Option<&'a LineDecor>,
+    /// The 0-based line a paused debug session is on, when it is in this buffer's file.
+    pub execution_line: Option<usize>,
 }
 
 /// How far a blank line looks up and down for the non-blank lines that set
@@ -682,6 +684,8 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
         // marks of the lines it hides too.
         let folded = buf.view.folds.header_at(line);
         let span = line..=folded.map_or(line, |(_, last)| last);
+        // A fold's header shows the arrow and the background of the line it hides.
+        let on_execution = o.execution_line.is_some_and(|l| span.contains(&l));
         let num_style = if is_cur { theme.line_number_current } else { theme.line_number };
         if let Some(b) = buf.blame.as_ref().filter(|b| b.column) {
             let label = match b.commit_at(line) {
@@ -698,9 +702,11 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
         } else {
             let num = format!("{:>width$}", line + 1, width = digits);
             screen.set_stringn(gx, y, &num, digits, num_style);
-            // One cell, one mark: a breakpoint hides a bookmark while it is there (on
-            // a fold's header, the first one it hides).
-            if let Some((_, mark)) = buf.breakpoints.range(span.clone()).next() {
+            // One cell, one mark: the execution arrow hides a breakpoint, a breakpoint hides a bookmark
+            // while it is there (on a fold's header, the first one it hides).
+            if on_execution {
+                screen.set_string(gx + digits as u16, y, "▶", theme.debug_execution_arrow);
+            } else if let Some((_, mark)) = buf.breakpoints.range(span.clone()).next() {
                 let (glyph, style) = match mark.state {
                     BpState::Idle | BpState::Verified => ("●", theme.breakpoint),
                     BpState::Pending | BpState::Failed => ("○", theme.breakpoint_unverified),
@@ -742,7 +748,8 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
         }
         // A resolver chunk's background wins over the current line's.
         let decor_bg = o.decor.and_then(|d| d.bg_at(line));
-        let row_bg = decor_bg.or((is_cur && o.focused).then_some(theme.current_line_bg));
+        let exec_bg = on_execution.then_some(theme.debug_execution_line_bg);
+        let row_bg = decor_bg.or(exec_bg).or((is_cur && o.focused).then_some(theme.current_line_bg));
         if let Some(bg) = row_bg {
             screen.set_style(Rect::new(text_area.x, y, text_area.width, 1), Style::default().bg(bg));
         }
@@ -1132,6 +1139,7 @@ mod tests {
             theme: &theme,
             follow: true,
             decor: Some(&decor),
+            execution_line: None,
         };
         let area = Rect::new(0, 0, 20, 5);
         let mut screen = Screen::empty(area);
@@ -1146,6 +1154,38 @@ mod tests {
         assert_ne!(screen[(9, 3)].bg, Color::Blue, "no lines, no background");
         assert_eq!(decor.glyphs_at(1), Some("»×"));
         assert_eq!(decor.glyphs_at(0), None);
+    }
+
+    #[test]
+    fn decor_bg_wins_over_execution() {
+        let theme = Theme::default();
+        let mut buf = Buffer::from_text(1, None, "a\nb\nc\n", false);
+        let decor = LineDecor { action_w: 0, lines: vec![DecorLine { lines: 1..2, bg: Some(Color::Red), glyphs: String::new() }] };
+        let area = Rect::new(0, 0, 20, 5);
+        let mut cells = Vec::new();
+        for line in [1, 2] {
+            let o = RenderOpts {
+                focused: false,
+                tab_width: 4,
+                wrap_extra_indent: 0,
+                scrolloff: 0,
+                hscrolloff: 0,
+                occurrences: false,
+                indent_guides: false,
+                fold_marks: true,
+                inline_blame: false,
+                theme: &theme,
+                follow: true,
+                decor: Some(&decor),
+                execution_line: Some(line),
+            };
+            let mut screen = Screen::empty(area);
+            let out = render(&mut buf, &mut screen, area, &o);
+            cells.push((screen[(out.text_area.x, line as u16)].bg, screen[(out.text_area.x - 4, line as u16)].symbol().to_string()));
+        }
+        assert_eq!(cells[0].0, Color::Red, "the resolver's chunk keeps its background");
+        assert_eq!(cells[1].0, theme.debug_execution_line_bg, "positive control: the same row without a chunk");
+        assert_eq!((cells[0].1.as_str(), cells[1].1.as_str()), ("▶", "▶"), "the arrow shows either way");
     }
 
     #[test]
@@ -1197,6 +1237,7 @@ mod tests {
             theme: &theme,
             follow: true,
             decor: None,
+            execution_line: None,
         };
         let area = Rect::new(0, 0, 40, 3);
         let mut screen = Screen::empty(area);
@@ -1240,6 +1281,7 @@ mod tests {
             theme,
             follow: true,
             decor: None,
+            execution_line: None,
         }
     }
 

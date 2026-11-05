@@ -598,7 +598,16 @@ impl App {
             if self.focus.is(PanelId::Editor) && self.editor.merge_active() {
                 v.push("editor.merge");
             }
+            let suspended = self.debug.suspended();
+            // S7 adds the Debug window.
+            let above = self.focus.is(PanelId::Editor);
+            if suspended && above {
+                v.push("debug.suspended");
+            }
             v.push(self.focus.current.context());
+            if suspended && !above {
+                v.push("debug.suspended");
+            }
             if self.debug.active() || self.debug.starting() {
                 v.push("debug.active");
             }

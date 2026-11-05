@@ -191,6 +191,8 @@ theme_fields! {
         status_bg,
         status_fg,
         current_line_bg,
+        /// Row background of the line a paused program is on.
+        debug_execution_line_bg,
         selection_bg,
         search_match_bg,
         search_current_bg,
@@ -236,6 +238,8 @@ theme_fields! {
         breakpoint,
         /// Gutter glyph (○) of a breakpoint the adapter has not verified, or refused.
         breakpoint_unverified,
+        /// Gutter glyph (▶) of the line a paused program is on.
+        debug_execution_arrow,
         /// What a collapsed fold shows after its header line (`…}`).
         fold_placeholder,
         git_added,
@@ -657,6 +661,7 @@ const HIGHLIGHT_GROUPS: &[&[Slot]] = &[
         |t| &mut t.search_match_bg,
         |t| &mut t.search_current_bg,
         |t| &mut t.occurrence_bg,
+        |t| &mut t.debug_execution_line_bg,
     ],
     &[
         |t| &mut t.bg,
@@ -874,7 +879,18 @@ mod tests {
         let sel = t.list_selected.bg.unwrap();
         let unf = t.list_selected_unfocused.bg.unwrap();
         let groups: [(&str, Vec<Color>); 5] = [
-            ("editor", vec![t.bg, t.current_line_bg, t.selection_bg, t.search_match_bg, t.search_current_bg, t.occurrence_bg]),
+            (
+                "editor",
+                vec![
+                    t.bg,
+                    t.current_line_bg,
+                    t.selection_bg,
+                    t.search_match_bg,
+                    t.search_current_bg,
+                    t.occurrence_bg,
+                    t.debug_execution_line_bg,
+                ],
+            ),
             ("merge", vec![t.bg, t.merge_conflict_bg, t.diff_add_bg, t.diff_del_bg, t.diff_mod_bg, t.merge_resolved_bg]),
             ("diff", vec![t.bg, t.diff_add_bg, t.diff_del_bg, t.diff_mod_bg, t.diff_add_word_bg, t.diff_del_word_bg]),
             ("panel lists", vec![t.panel_bg, sel, unf]),

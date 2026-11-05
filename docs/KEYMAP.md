@@ -417,6 +417,16 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 |---|---|---|
 | `Ctrl+F2` | `debug.stop` | Debug: stop the debug session |
 
+## debug.suspended
+
+| Keys | Action | Description |
+|---|---|---|
+| `F9` | `debug.resume` | Debug: Resume |
+| `F8` | `debug.step_over` | Debug: Step Over |
+| `F7` | `debug.step_into` | Debug: Step Into |
+| `Shift+F8` | `debug.step_out` | Debug: Step Out |
+| `Alt+F10` | `debug.show_execution_point` | Debug: Show Execution Point |
+
 ## event_log
 
 | Keys | Action | Description |
@@ -681,6 +691,7 @@ Reachable from Find Action (F1) or by binding them in `keymap.toml`.
 | `run.edit_configs` | Run: edit run configurations |
 | `run.rerun_failed` | Run: rerun the failed tests |
 | `run.build_scip_index` | Run: build the SCIP index with [index] scip_command, then load it |
+| `debug.pause` | Debug: Pause |
 | `lsp.restart` | Restart language servers |
 | `lsp.goto_declaration` | Go to the declaration (not the definition) of the symbol at the caret |
 | `lsp.toggle_inlay_hints` | Show or hide inlay hints |

@@ -409,25 +409,30 @@ impl App {
 
     /// Open a file with the caret at a 0-based line and char column.
     pub fn open_file_at(&mut self, path: PathBuf, line: usize, col: usize) {
-        self.open_file_goto(path, GotoTarget::Char { line, col });
+        self.open_file_goto(path, GotoTarget::Char { line, col }, true);
+    }
+
+    /// As [`App::open_file_at`], leaving focus where it is: a debug stop must not take keys from a panel or the Terminal.
+    pub(super) fn open_file_at_unfocused(&mut self, path: PathBuf, line: usize, col: usize) {
+        self.open_file_goto(path, GotoTarget::Char { line, col }, false);
     }
 
     /// Open a file with the caret at an LSP position (0-based line, UTF-16
     /// column), converted against the text once it is loaded.
     pub fn open_file_at_utf16(&mut self, path: PathBuf, pos: lsp_types::Position) {
-        self.open_file_goto(path, GotoTarget::Utf16(pos));
+        self.open_file_goto(path, GotoTarget::Utf16(pos), true);
     }
 
-    fn open_file_goto(&mut self, path: PathBuf, target: GotoTarget) {
+    fn open_file_goto(&mut self, path: PathBuf, target: GotoTarget, focus: bool) {
         if self.editor.merge_active() {
             return self.notify(Level::Info, crate::editor::merge::BUSY);
         }
         if self.editor.index_of(&path).is_some() {
-            self.open_file(path, true);
+            self.open_file(path, focus);
             self.goto_target(target);
         } else {
             self.pending_goto = Some((path.clone(), target));
-            self.open_file(path, true);
+            self.open_file(path, focus);
         }
     }
 

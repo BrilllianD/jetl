@@ -555,6 +555,18 @@ pub enum DebugAction {
     Start,
     /// Stop the session; pressed again, skip ahead a stage.
     Stop,
+    /// Let the paused program run on.
+    Resume,
+    /// Run the paused program to the next line of the same frame.
+    StepOver,
+    /// Run the paused program to the next line, entering a call.
+    StepInto,
+    /// Run the paused program until its frame returns.
+    StepOut,
+    /// Pause the running program.
+    Pause,
+    /// Open the file at the line the program is paused on.
+    ShowExecutionPoint,
 }
 
 /// The Problems tool window (language server diagnostics).
@@ -1159,6 +1171,12 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "run.prev_problem" => "Run: previous problem (opens it)", Run(RunAction::PrevProblem);
         "debug.start" => "Debug: start the selected run configuration under its debug adapter", Debug(DebugAction::Start);
         "debug.stop" => "Debug: stop the debug session", Debug(DebugAction::Stop);
+        "debug.resume" => "Debug: Resume", Debug(DebugAction::Resume);
+        "debug.step_over" => "Debug: Step Over", Debug(DebugAction::StepOver);
+        "debug.step_into" => "Debug: Step Into", Debug(DebugAction::StepInto);
+        "debug.step_out" => "Debug: Step Out", Debug(DebugAction::StepOut);
+        "debug.pause" => "Debug: Pause", Debug(DebugAction::Pause);
+        "debug.show_execution_point" => "Debug: Show Execution Point", Debug(DebugAction::ShowExecutionPoint);
 
         "lsp.restart" => "Restart language servers", Lsp(LspAction::Restart);
         "lsp.next_problem" => "Next problem (diagnostic) in the file", Lsp(LspAction::NextProblem);
@@ -1320,6 +1338,13 @@ impl Action {
             Action::EventLog(_) => &["event_log", "global"],
             Action::Run(_) => &["run", "global"],
             Action::Debug(DebugAction::Stop) => &["debug.active"],
+            Action::Debug(
+                DebugAction::Resume
+                | DebugAction::StepOver
+                | DebugAction::StepInto
+                | DebugAction::StepOut
+                | DebugAction::ShowExecutionPoint,
+            ) => &["debug.suspended"],
             Action::Debug(_) => &["global"],
             Action::Problems(_) => &["problems", "global"],
             Action::History(_) => &["local_history", "global"],

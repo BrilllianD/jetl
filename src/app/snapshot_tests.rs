@@ -838,6 +838,92 @@ async fn editor_fold_hides_breakpoints() {
     assert_snapshot!("editor_fold_hides_breakpoints", snapshot(&term, &marks, None));
 }
 
+fn execution_point(app: &mut App, path: PathBuf, line: usize) {
+    app.editor.set_execution_point(Some(crate::editor::ExecutionPoint { path, line }));
+}
+
+fn execution_marks(theme: &Theme) -> Vec<Mark> {
+    let mut marks = vec![
+        Mark::style('A', "execution arrow", theme.debug_execution_arrow),
+        Mark::bg('E', "execution line", theme.debug_execution_line_bg),
+        Mark::style('B', "breakpoint", theme.breakpoint),
+        Mark::bg('L', "current line", theme.current_line_bg),
+    ];
+    marks.extend(editor_marks(theme));
+    marks
+}
+
+#[tokio::test]
+async fn editor_execution_over_marks() {
+    let mut fx = stable_app("execution-over-marks");
+    let app = &mut fx.app;
+    let path = load(app, "notes.log", PLAIN);
+    editor(app, EditorAction::ToggleBookmark);
+    set_breakpoints(app, &[(0, BpState::Verified), (2, BpState::Verified)]);
+    execution_point(app, path, 0);
+    moves(app, Motion::Down, 3);
+    let term = draw_editor(app, 40, 8);
+    let marks = execution_marks(&app.theme);
+    assert_snapshot!("editor_execution_over_marks", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
+async fn editor_execution_over_current_line() {
+    let mut fx = stable_app("execution-over-current-line");
+    let app = &mut fx.app;
+    let path = load(app, "notes.log", PLAIN);
+    execution_point(app, path, 1);
+    moves(app, Motion::Down, 1);
+    let term = draw_editor(app, 40, 8);
+    let marks = execution_marks(&app.theme);
+    assert_snapshot!("editor_execution_over_current_line", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
+async fn editor_execution_fold_header() {
+    let mut fx = stable_app("execution-fold-header");
+    let app = &mut fx.app;
+    let path = load(app, "notes.log", PLAIN);
+    execution_point(app, path, 2);
+    app.editor.active_buffer_mut().unwrap().toggle_fold(0);
+    moves(app, Motion::Down, 3);
+    let term = draw_editor(app, 40, 8);
+    let marks = execution_marks(&app.theme);
+    assert_snapshot!("editor_execution_fold_header", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
+async fn execution_point_is_drawn_in_its_file_only() {
+    let mut fx = stable_app("execution-its-file-only");
+    let app = &mut fx.app;
+    let a = load(app, "a.log", PLAIN);
+    set_breakpoints(app, &[(2, BpState::Verified)]);
+    execution_point(app, a.clone(), 2);
+    let rows = |app: &mut App, w: u16| -> Vec<String> {
+        let term = draw_editor(app, w, 8);
+        (0..8).map(|y| crate::ui::snapshot::row_text(term.backend().buffer(), y, w)).collect()
+    };
+    let arrows = |rows: &[String]| rows.iter().map(|r| r.matches('\u{25b6}').count()).sum::<usize>();
+    let shown = rows(app, 80);
+    assert_eq!(arrows(&shown), 1);
+    assert!(shown[3].contains("3\u{25b6}"), "{shown:?}");
+    // Another file is active: the line number is there, the arrow is not.
+    load(app, "b.log", PLAIN);
+    let other = rows(app, 80);
+    assert!(other[3].contains("3 "), "positive control: line 3 is drawn: {other:?}");
+    assert_eq!(arrows(&other), 0, "{other:?}");
+    // Both groups of a split show a.log.
+    app.open_file(a.clone(), true);
+    editor(app, EditorAction::SplitRight);
+    let split = rows(app, 80);
+    assert_eq!(arrows(&split), 2, "{split:?}");
+    // Cleared: the arrow goes and the breakpoint is back.
+    app.editor.set_execution_point(None);
+    let cleared = rows(app, 80);
+    assert_eq!(arrows(&cleared), 0);
+    assert!(cleared[3].contains("3\u{25cf}"), "{cleared:?}");
+}
+
 #[tokio::test]
 async fn bookmark_digit_dialog() {
     let mut fx = stable_app("bookmark-digit-dialog");

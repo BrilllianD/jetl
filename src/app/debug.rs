@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use serde_json::Value;
+use serde_json::{Value, json};
 use tokio::task::JoinHandle;
 
 use super::App;
@@ -16,11 +16,11 @@ use crate::dap::client::{DapClient, SHUTDOWN_LIMIT};
 use crate::dap::config::{
     AdapterConfig, DebugBlock, DebugConfig, LaunchVars, choose_adapter, load_debug_blocks, process_env, resolve_launch,
 };
-use crate::dap::protocol::{Breakpoint, BreakpointEvent};
-use crate::dap::session::{Command, Phase, SessionId, SessionSpec, SourceBreakpoints};
+use crate::dap::protocol::{Breakpoint, BreakpointEvent, StackFrame, StackTraceBody, StoppedEvent, ThreadsBody, body_of};
+use crate::dap::session::{Command, DapTag, Phase, ResumeKind, SessionId, SessionSpec, SourceBreakpoints, TagKind};
 use crate::dap::{DapBody, DapMsg};
-use crate::editor::Editor;
 use crate::editor::buffer::{BpState, BreakpointMark};
+use crate::editor::{Editor, ExecutionPoint};
 use crate::event::{AppMsg, Level};
 #[cfg(test)]
 use crate::lsp::client::Conn;
@@ -48,6 +48,10 @@ pub(super) struct Live {
     pub(super) sent: BTreeMap<PathBuf, Vec<usize>>,
     /// The sources in `sent` that had an open buffer at the last comparison.
     pub(super) open: BTreeSet<PathBuf>,
+    /// The epoch of the last `Stopped` or `Running`; the tag of the requests the App makes.
+    pub(super) epoch: u64,
+    /// The thread the last stop was on, kept through `Running` for `debug.pause`.
+    pub(super) thread: Option<i64>,
 }
 
 #[derive(Default)]
@@ -75,8 +79,6 @@ impl DebugState {
         self.starting
     }
 
-    // D4a1 uses this for `debug.suspended`.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn suspended(&self) -> bool {
         self.phase() == Some(Phase::Suspended)
     }
@@ -172,6 +174,21 @@ fn apply_breakpoint(line: usize, mark: &mut BreakpointMark, bp: &Breakpoint) {
     mark.message = bp.message.clone();
 }
 
+/// The file and 0-based line a frame is at, when it has a source file: not when `line` is 0, the source is absent
+/// or has a `sourceReference` (not a file), or its path is empty. A relative path is joined to the root. The frame
+/// id and column are not read, so 0 is no special value.
+fn frame_location(frame: &StackFrame, root: &Path) -> Option<(PathBuf, usize)> {
+    if frame.line <= 0 {
+        return None;
+    }
+    let source = frame.source.as_ref()?;
+    if source.source_reference.is_some_and(|r| r > 0) {
+        return None;
+    }
+    let path = source.path.as_deref().filter(|p| !p.is_empty())?;
+    Some((root.join(path), (frame.line - 1) as usize))
+}
+
 /// Reads the project files, picks the configuration and the adapter, and resolves the launch arguments.
 fn prepare(job: Job) -> Result<Prepared, String> {
     let (tasks, tasks_error) = load_tasks(&job.root, &job.tasks);
@@ -209,6 +226,12 @@ impl App {
         match a {
             DebugAction::Start => self.debug_start(),
             DebugAction::Stop => self.debug_stop(),
+            DebugAction::Resume => self.debug_resume(ResumeKind::Continue),
+            DebugAction::StepOver => self.debug_resume(ResumeKind::Next),
+            DebugAction::StepInto => self.debug_resume(ResumeKind::StepIn),
+            DebugAction::StepOut => self.debug_resume(ResumeKind::StepOut),
+            DebugAction::Pause => self.debug_pause(),
+            DebugAction::ShowExecutionPoint => self.debug_show_execution_point(),
         }
     }
 
@@ -216,6 +239,7 @@ impl App {
         let before = self.debug.retire();
         // The live session's `Ended` will be dropped, so its marks' states go now.
         self.editor.reset_breakpoint_states();
+        self.editor.set_execution_point(None);
         self.debug.seq += 1;
         self.debug.starting = true;
         let (seq, generation, tx) = (self.debug.seq, self.workspace.generation, self.bus_tx.clone());
@@ -284,7 +308,17 @@ impl App {
         let client = DapClient::start(spec, conn, move |m| {
             let _ = tx.send(AppMsg::Dap(m));
         });
-        self.debug.session = Some(Live { id, client, phase: Phase::Initializing, exit_code: None, stop_requested: false, sent, open });
+        self.debug.session = Some(Live {
+            id,
+            client,
+            phase: Phase::Initializing,
+            exit_code: None,
+            stop_requested: false,
+            sent,
+            open,
+            epoch: 0,
+            thread: None,
+        });
         self.notify(Level::Info, format!("Debugging {} with {}", p.name, p.adapter.name));
     }
 
@@ -306,13 +340,148 @@ impl App {
                 }
             }
             DapBody::Error(e) => self.notify(Level::Error, e),
-            DapBody::Stopped { event, .. } => self.notify(Level::Info, format!("Paused ({})", event.reason)),
+            DapBody::Stopped { epoch, event } => self.debug_stopped(epoch, event),
+            DapBody::Running { epoch } => self.debug_running(epoch),
+            DapBody::Response { tag, result } => self.debug_response(tag, result),
             DapBody::Ended { reason } => self.debug_ended(reason),
             DapBody::Breakpoints { source, requested, result } => self.debug_breakpoints_answered(&source, &requested, &result),
             DapBody::BreakpointChanged(e) => self.debug_breakpoint_changed(&e),
-            // D4a1: `Running`, `Response`. D4a2: `Output`.
-            DapBody::Started { .. } | DapBody::Running { .. } | DapBody::Output(_) | DapBody::Response { .. } => {}
+            // D4a2: Output.
+            DapBody::Started { .. } | DapBody::Output(_) => {}
         }
+    }
+
+    /// A stop: asks for the stack of the stopped thread, or for the threads when the event names none.
+    fn debug_stopped(&mut self, epoch: u64, event: StoppedEvent) {
+        self.notify(Level::Info, format!("Paused ({})", event.reason));
+        let Some(live) = self.debug.session.as_mut() else { return };
+        live.epoch = epoch;
+        live.thread = event.thread_id;
+        match event.thread_id {
+            Some(t) => self.debug_ask_stack(epoch, t),
+            None => self.debug_ask_threads(epoch),
+        }
+    }
+
+    fn debug_ask_threads(&mut self, epoch: u64) {
+        let tag = DapTag { epoch, kind: TagKind::Threads };
+        self.debug.send(Command::Request { command: "threads".into(), arguments: json!({}), tag });
+    }
+
+    fn debug_ask_stack(&mut self, epoch: u64, thread: i64) {
+        let tag = DapTag { epoch, kind: TagKind::StackTrace { thread } };
+        let arguments = json!({"threadId": thread, "startFrame": 0, "levels": 20});
+        self.debug.send(Command::Request { command: "stackTrace".into(), arguments, tag });
+    }
+
+    fn debug_running(&mut self, epoch: u64) {
+        if let Some(live) = self.debug.session.as_mut() {
+            live.epoch = epoch;
+        }
+        self.editor.set_execution_point(None);
+    }
+
+    /// An answer to `threads` or `stackTrace`. No epoch check here: the machine drops an answer older than its
+    /// epoch (rule 7), so what arrives is current, and the App never reasons about order.
+    fn debug_response(&mut self, tag: DapTag, result: Result<Value, String>) {
+        let phase = self.debug.phase();
+        let body = match result {
+            Ok(b) => b,
+            Err(e) => {
+                // Shutdown answers what is still outstanding with `not available`.
+                if matches!(phase, Some(Phase::Stopping | Phase::Ended)) {
+                    return;
+                }
+                let what = match tag.kind {
+                    TagKind::Threads => "threads",
+                    TagKind::StackTrace { .. } => "stack",
+                };
+                return self.notify(Level::Warn, format!("Could not read the {what}: {e}"));
+            }
+        };
+        match tag.kind {
+            TagKind::Threads => {
+                let threads = body_of::<ThreadsBody>("threads", body).threads;
+                let Some(first) = threads.first().map(|t| t.id) else {
+                    return self.notify(Level::Warn, "The adapter reports no threads");
+                };
+                // Each resume or pause bumps the epoch, so a `Threads` answer that gets here while `Running`
+                // can only come from `debug_pause`: no flag and no tag kind of its own is needed.
+                match phase {
+                    Some(Phase::Suspended) => {
+                        if let Some(live) = self.debug.session.as_mut() {
+                            live.thread = Some(first);
+                        }
+                        self.debug_ask_stack(tag.epoch, first);
+                    }
+                    Some(Phase::Running) => {
+                        if let Some(live) = self.debug.session.as_mut() {
+                            live.thread = Some(first);
+                        }
+                        self.debug.send(Command::Pause { thread: first });
+                    }
+                    _ => {}
+                }
+            }
+            TagKind::StackTrace { .. } => {
+                let frames = body_of::<StackTraceBody>("stackTrace", body).stack_frames;
+                match frames.first() {
+                    Some(frame) => self.debug_show_frame(frame),
+                    None => {
+                        self.editor.set_execution_point(None);
+                        self.notify(Level::Warn, "Paused, the adapter reports no stack");
+                    }
+                }
+            }
+        }
+    }
+
+    /// Opens the frame's file at its line without taking focus, and marks the line.
+    fn debug_show_frame(&mut self, frame: &StackFrame) {
+        match frame_location(frame, &self.workspace.root) {
+            Some((path, line)) => {
+                tracing::debug!("dap: execution point {}:{line}", path.display());
+                self.editor.set_execution_point(Some(ExecutionPoint { path: path.clone(), line }));
+                self.open_file_at_unfocused(path, line, 0);
+            }
+            None => {
+                self.editor.set_execution_point(None);
+                self.notify(Level::Info, format!("Paused in {}, no source", frame.name));
+            }
+        }
+    }
+
+    fn debug_resume(&mut self, kind: ResumeKind) {
+        if !self.debug.suspended() {
+            return self.notify(Level::Info, "No paused debug session");
+        }
+        let Some(thread) = self.debug.session.as_ref().and_then(|l| l.thread) else {
+            return self.notify(Level::Info, "The paused thread is not known yet");
+        };
+        // A breakpoint cleared since the last tick has to reach the adapter before the program runs.
+        self.debug_sync_breakpoints();
+        self.debug.send(Command::Resume { kind, thread });
+    }
+
+    fn debug_pause(&mut self) {
+        if self.debug.phase() != Some(Phase::Running) {
+            return self.notify(Level::Info, "No running debug session");
+        }
+        let Some(live) = self.debug.session.as_ref() else { return };
+        match live.thread {
+            Some(thread) => self.debug.send(Command::Pause { thread }),
+            None => {
+                let epoch = live.epoch;
+                self.debug_ask_threads(epoch);
+            }
+        }
+    }
+
+    fn debug_show_execution_point(&mut self) {
+        let Some(p) = self.editor.execution_point().cloned() else {
+            return self.notify(Level::Info, "No execution point");
+        };
+        self.open_file_at(p.path, p.line, 0);
     }
 
     /// An answer to the newest `setBreakpoints` of a source; results are positional. A closed file has no marks to
@@ -366,6 +535,7 @@ impl App {
     fn debug_ended(&mut self, reason: String) {
         let Some(live) = self.debug.session.take() else { return };
         self.editor.reset_breakpoint_states();
+        self.editor.set_execution_point(None);
         let (level, text) = match (live.stop_requested, reason.is_empty(), live.exit_code) {
             (_, false, Some(c)) => (Level::Warn, format!("Debug session ended: {reason} (exit code {c})")),
             (_, false, None) => (Level::Warn, format!("Debug session ended: {reason}")),
@@ -381,6 +551,7 @@ impl App {
     pub(crate) fn debug_root_changed(&mut self) {
         self.debug.retiring = self.debug.retire();
         self.editor.reset_breakpoint_states();
+        self.editor.set_execution_point(None);
         self.debug.starting = false;
         self.debug.seq += 1;
     }
@@ -1499,6 +1670,552 @@ pub(crate) mod tests {
         let body = DapBody::Breakpoints { source: a.clone(), requested: vec![1], result: vec![bp(json!({"id": 1, "verified": true}))] };
         app.dap_msg(DapMsg { generation, session: SessionId(id.0 + 1), body });
         assert_eq!(state(&app, &a, 1), BreakpointMark::default());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- stepping and the execution point (yman 414) ----
+
+    use crate::actions::{AppAction, EditorAction, GitAction, HistoryAction, MergeAction};
+    use crate::dispatch::Dispatch;
+    use crate::ui::focus::ToolWindowId;
+
+    const F7: KeyCode = KeyCode::F(7);
+    const F8: KeyCode = KeyCode::F(8);
+    const F9: KeyCode = KeyCode::F(9);
+
+    fn key(code: KeyCode, mods: KeyModifiers) -> KeyEvent {
+        KeyEvent::new(code, mods)
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        app.handle_key(key(code, KeyModifiers::NONE));
+    }
+
+    /// What `key` is in the current focus and session state.
+    fn action_of(app: &mut App, key: KeyEvent) -> Option<Action> {
+        let c = app.contexts();
+        match app.dispatcher.dispatch(key, &c, Some(app.mode), &app.keymap) {
+            Dispatch::Action(a) => Some(a),
+            _ => None,
+        }
+    }
+
+    fn frame(path: &Path, line: i64) -> Value {
+        json!({"id": 0, "name": "main", "line": line, "column": 0, "source": {"path": path.to_string_lossy()}})
+    }
+
+    fn epoch_of(app: &App) -> u64 {
+        app.debug.session.as_ref().unwrap().epoch
+    }
+
+    fn thread_of(app: &App) -> Option<i64> {
+        app.debug.session.as_ref().and_then(|l| l.thread)
+    }
+
+    fn point(app: &App) -> Option<(PathBuf, usize)> {
+        app.editor.execution_point().map(|p| (p.path.clone(), p.line))
+    }
+
+    /// Like `dap_until`, and a file read for a stop is handled too.
+    async fn pump_until(app: &mut App, done: impl Fn(&App) -> bool) {
+        while !done(app) {
+            handle_next(app, |m| matches!(m, AppMsg::Dap(_) | AppMsg::DebugReady { .. } | AppMsg::FileLoaded { .. })).await;
+        }
+    }
+
+    /// The adapter reports a stop on `thread` and answers the stack with one `frame`.
+    async fn stop(app: &mut App, fake: &mut FakeAdapter, thread: i64, frame: Value) {
+        let before = epoch_of(app);
+        fake.event("stopped", json!({"reason": "breakpoint", "threadId": thread}));
+        pump_until(app, |a| epoch_of(a) > before).await;
+        let req = fake.recv("stackTrace").await;
+        assert_eq!(req["arguments"]["threadId"], thread);
+        fake.respond(&req, json!({"stackFrames": [frame]}));
+    }
+
+    /// A stop at `path` on the 1-based `line`, handled up to the point being set.
+    async fn stop_at(app: &mut App, fake: &mut FakeAdapter, thread: i64, path: &Path, line: i64) {
+        stop(app, fake, thread, frame(path, line)).await;
+        let want = (path.to_path_buf(), (line - 1) as usize);
+        pump_until(app, |a| point(a).as_ref() == Some(&want)).await;
+    }
+
+    /// A running session stopped on thread 7 at `path`:`line`.
+    async fn paused(app: &mut App, fakes: &mut UnboundedReceiver<FakeAdapter>, path: &Path, line: i64) -> FakeAdapter {
+        let (mut fake, _) = running(app, fakes).await;
+        stop_at(app, &mut fake, 7, path, line).await;
+        fake
+    }
+
+    #[tokio::test]
+    async fn suspended_keys_by_focus() {
+        let (mut app, dir, mut fakes) = setup("step-keys", Order::LaunchEarly);
+        let a = six(&mut app);
+        let _fake = paused(&mut app, &mut fakes, &a, 3).await;
+        let dbg = |d| Some(Action::Debug(d));
+        let shift = KeyModifiers::SHIFT;
+        let steps = |app: &mut App, f7: Option<Action>, what: &str| {
+            assert_eq!(action_of(app, key(F7, KeyModifiers::NONE)), f7, "{what}: F7");
+            assert_eq!(action_of(app, key(F8, KeyModifiers::NONE)), dbg(DebugAction::StepOver), "{what}: F8");
+        };
+        app.focus.set(PanelId::Editor);
+        steps(&mut app, dbg(DebugAction::StepInto), "editor");
+        assert_eq!(action_of(&mut app, key(F9, KeyModifiers::NONE)), dbg(DebugAction::Resume));
+        assert_eq!(action_of(&mut app, key(F8, shift)), dbg(DebugAction::StepOut));
+        assert_eq!(action_of(&mut app, key(KeyCode::F(10), KeyModifiers::ALT)), dbg(DebugAction::ShowExecutionPoint));
+        for (panel, f7, name) in [
+            (PanelId::Git, Some(Action::Git(GitAction::NextHunk)), "git"),
+            (PanelId::LocalHistory, Some(Action::History(HistoryAction::NextChange)), "local history"),
+            (PanelId::Project, dbg(DebugAction::StepInto), "project"),
+        ] {
+            app.focus.set(panel);
+            steps(&mut app, f7, name);
+            if panel != PanelId::Project {
+                assert_eq!(action_of(&mut app, key(F9, KeyModifiers::NONE)), dbg(DebugAction::Resume), "{name}: F9");
+                assert_eq!(action_of(&mut app, key(F8, shift)), dbg(DebugAction::StepOut), "{name}: Shift+F8");
+            }
+        }
+        app.focus.set(PanelId::Editor);
+        let texts = crate::git::merge::MergeTexts { base: "x\n".into(), ours: "y\n".into(), theirs: "z\n".into() };
+        app.editor.open_merge(a.clone(), "a.log".into(), texts, ["main".into(), "dev".into()], "x\n".into(), &app.theme);
+        assert!(app.editor.merge_active());
+        steps(&mut app, Some(Action::Editor(EditorAction::Merge(MergeAction::NextConflict))), "merge");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn running_keys_are_unchanged() {
+        let (mut app, dir, mut fakes) = setup("step-keys-running", Order::LaunchEarly);
+        let a = six(&mut app);
+        let _ = running(&mut app, &mut fakes).await;
+        assert_eq!(app.debug.phase(), Some(Phase::Running));
+        app.focus.set(PanelId::Editor);
+        assert_eq!(action_of(&mut app, key(F7, KeyModifiers::NONE)), Some(Action::Editor(EditorAction::NextChange)));
+        for (code, mods) in
+            [(F8, KeyModifiers::NONE), (F9, KeyModifiers::NONE), (F8, KeyModifiers::SHIFT), (KeyCode::F(10), KeyModifiers::ALT)]
+        {
+            assert_eq!(action_of(&mut app, key(code, mods)), None, "{code:?} {mods:?}");
+        }
+        app.focus.set(PanelId::Git);
+        assert_eq!(action_of(&mut app, key(F7, KeyModifiers::NONE)), Some(Action::Git(GitAction::NextHunk)));
+        assert_eq!(action_of(&mut app, key(F8, KeyModifiers::NONE)), None);
+        let _ = (a, std::fs::remove_dir_all(&dir));
+    }
+
+    #[tokio::test]
+    async fn a_dialog_or_palette_stack_has_no_debug_suspended() {
+        let (mut app, dir, mut fakes) = setup("step-keys-overlay", Order::LaunchEarly);
+        let a = six(&mut app);
+        let _fake = paused(&mut app, &mut fakes, &a, 3).await;
+        assert!(app.contexts().contains(&"debug.suspended"));
+        app.dialog = Some(crate::ui::dialog::Dialog::info("x", "y"));
+        assert!(!app.contexts().contains(&"debug.suspended"));
+        assert_eq!(action_of(&mut app, key(F8, KeyModifiers::NONE)), None);
+        app.dialog = None;
+        app.perform(Action::App(AppAction::OpenPalette(crate::actions::PaletteKind::Actions)));
+        assert!(app.palette.is_some());
+        assert!(!app.contexts().contains(&"debug.suspended"));
+        assert_eq!(action_of(&mut app, key(F8, KeyModifiers::NONE)), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn the_focused_terminal_keeps_the_step_keys() {
+        let (mut app, dir, mut fakes) = setup("step-terminal", Order::LaunchEarly);
+        let a = six(&mut app);
+        let mut fake = paused(&mut app, &mut fakes, &a, 3).await;
+        app.perform(Action::App(AppAction::ToggleToolWindow(ToolWindowId::Terminal)));
+        app.start_terminal(10, 60);
+        assert!(app.focus.is(PanelId::Terminal));
+        press(&mut app, F8);
+        assert_eq!(app.debug.phase(), Some(Phase::Suspended));
+        assert_quiet(&mut app, &mut fake, "q1.log").await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_stop_asks_the_stack_of_its_thread() {
+        for (n, order) in fake::ORDERS.into_iter().enumerate() {
+            let (mut app, dir, mut fakes) = setup(&format!("step-ask-{n}"), order);
+            let a = six(&mut app);
+            let (mut fake, _) = running(&mut app, &mut fakes).await;
+            fake.event("stopped", json!({"reason": "breakpoint", "threadId": 7}));
+            pump_until(&mut app, |x| thread_of(x) == Some(7)).await;
+            let req = fake.recv("stackTrace").await;
+            assert_eq!(req["arguments"], json!({"threadId": 7, "startFrame": 0, "levels": 20}), "{order:?}");
+            let _ = (a, std::fs::remove_dir_all(&dir));
+        }
+    }
+
+    #[tokio::test]
+    async fn frame_id_zero_and_column_zero_set_the_point() {
+        let (mut app, dir, mut fakes) = setup("step-frame-zero", Order::LaunchEarly);
+        let a = six(&mut app);
+        let _fake = paused(&mut app, &mut fakes, &a, 3).await;
+        assert_eq!(point(&app), Some((a.clone(), 2)));
+        assert_eq!(app.editor.active_path(), Some(a.as_path()));
+        assert_eq!(app.editor.active_buffer().unwrap().cursor_line_col().0, 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_relative_source_path_joins_the_root() {
+        let (mut app, dir, mut fakes) = setup("step-relative", Order::LaunchEarly);
+        let a = six(&mut app);
+        let (mut fake, _) = running(&mut app, &mut fakes).await;
+        let f = json!({"id": 1, "name": "main", "line": 2, "column": 1, "source": {"path": "a.log"}});
+        stop(&mut app, &mut fake, 7, f).await;
+        pump_until(&mut app, |x| point(x).is_some()).await;
+        assert_eq!(point(&app), Some((app.workspace.root.join("a.log"), 1)));
+        assert_eq!(a, app.workspace.root.join("a.log"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_stop_without_a_thread_asks_threads_first() {
+        let (mut app, dir, mut fakes) = setup("step-no-thread", Order::LaunchEarly);
+        let a = six(&mut app);
+        let (mut fake, _) = running(&mut app, &mut fakes).await;
+        fake.event("stopped", json!({"reason": "pause"}));
+        pump_until(&mut app, |x| epoch_of(x) > 0).await;
+        let threads = fake.recv("threads").await;
+        fake.respond(&threads, json!({"threads": [{"id": 4}, {"id": 9}]}));
+        pump_until(&mut app, |x| thread_of(x) == Some(4)).await;
+        let req = fake.recv("stackTrace").await;
+        assert_eq!(req["arguments"]["threadId"], 4);
+        fake.respond(&req, json!({"stackFrames": [frame(&a, 2)]}));
+        pump_until(&mut app, |x| point(x).is_some()).await;
+        press(&mut app, F8);
+        assert_eq!(fake.recv("next").await["arguments"]["threadId"], 4);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_stop_without_a_thread_refuses_to_step_until_known() {
+        let (mut app, dir, mut fakes) = setup("step-unknown-thread", Order::LaunchEarly);
+        let _ = six(&mut app);
+        let (mut fake, _) = running(&mut app, &mut fakes).await;
+        fake.event("stopped", json!({"reason": "pause"}));
+        pump_until(&mut app, |x| x.debug.suspended() && epoch_of(x) > 0).await;
+        let _threads = fake.recv("threads").await;
+        press(&mut app, F8);
+        assert_eq!(last(&app), (Level::Info, "The paused thread is not known yet".to_string()));
+        assert_quiet(&mut app, &mut fake, "q1.log").await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn no_threads_warns() {
+        let (mut app, dir, mut fakes) = setup("step-no-threads", Order::LaunchEarly);
+        let _ = six(&mut app);
+        let (mut fake, _) = running(&mut app, &mut fakes).await;
+        fake.event("stopped", json!({"reason": "pause"}));
+        pump_until(&mut app, |x| epoch_of(x) > 0).await;
+        let threads = fake.recv("threads").await;
+        fake.respond(&threads, json!({"threads": []}));
+        pump_until(&mut app, |x| texts(x).contains(&"The adapter reports no threads".to_string())).await;
+        assert_eq!(last(&app), (Level::Warn, "The adapter reports no threads".to_string()));
+        assert_eq!(point(&app), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn no_source_path_toasts_and_sets_no_point() {
+        let (mut app, dir, mut fakes) = setup("step-no-source", Order::LaunchEarly);
+        let a = six(&mut app);
+        let (mut fake, _) = running(&mut app, &mut fakes).await;
+        let p = a.to_string_lossy().into_owned();
+        let cases = [
+            json!({"id": 0, "name": "main", "line": 3, "column": 0}),
+            json!({"id": 0, "name": "main", "line": 3, "column": 0, "source": {"name": "a.log"}}),
+            json!({"id": 0, "name": "main", "line": 0, "column": 0, "source": {"path": p}}),
+            json!({"id": 0, "name": "main", "line": 3, "column": 0, "source": {"path": p, "sourceReference": 5}}),
+            json!({"id": 0, "name": "main", "line": 3, "column": 0, "source": {"path": ""}}),
+        ];
+        let toast = "Paused in main, no source".to_string();
+        for (n, case) in cases.into_iter().enumerate() {
+            // A point from an earlier stop has to go.
+            stop_at(&mut app, &mut fake, 7, &a, 2).await;
+            let before = texts(&app).iter().filter(|t| **t == toast).count();
+            stop(&mut app, &mut fake, 7, case).await;
+            pump_until(&mut app, |x| texts(x).iter().filter(|t| **t == toast).count() > before).await;
+            assert_eq!(point(&app), None, "case {n}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn no_frames_warns() {
+        let (mut app, dir, mut fakes) = setup("step-no-frames", Order::LaunchEarly);
+        let a = six(&mut app);
+        let (mut fake, _) = running(&mut app, &mut fakes).await;
+        stop_at(&mut app, &mut fake, 7, &a, 2).await;
+        let before = epoch_of(&app);
+        fake.event("stopped", json!({"reason": "step", "threadId": 7}));
+        pump_until(&mut app, |x| epoch_of(x) > before).await;
+        let req = fake.recv("stackTrace").await;
+        fake.respond(&req, json!({"stackFrames": []}));
+        pump_until(&mut app, |x| point(x).is_none()).await;
+        assert_eq!(last(&app), (Level::Warn, "Paused, the adapter reports no stack".to_string()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn an_unopened_file_opens_at_the_frame() {
+        let (mut app, dir, mut fakes) = setup("step-unopened", Order::LaunchEarly);
+        let _ = six(&mut app);
+        let b = app.workspace.root.join("b.log");
+        std::fs::write(&b, "b0\nb1\nb2\nb3\n").unwrap();
+        let (mut fake, _) = running(&mut app, &mut fakes).await;
+        assert!(app.editor.index_of(&b).is_none());
+        stop(&mut app, &mut fake, 7, frame(&b, 3)).await;
+        pump_until(&mut app, |x| x.editor.index_of(&b).is_some()).await;
+        assert_eq!(app.editor.active_path(), Some(b.as_path()));
+        assert_eq!(app.editor.active_buffer().unwrap().cursor_line_col().0, 2);
+        assert_eq!(point(&app), Some((b, 2)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_stale_stack_answer_is_dropped() {
+        let (mut app, dir, mut fakes) = setup("step-stale", Order::LaunchEarly);
+        let a = six(&mut app);
+        let (mut fake, _) = running(&mut app, &mut fakes).await;
+        fake.event("stopped", json!({"reason": "breakpoint", "threadId": 7}));
+        pump_until(&mut app, |x| thread_of(x) == Some(7)).await;
+        let old = fake.recv("stackTrace").await;
+        press(&mut app, F8);
+        let _next = fake.recv("next").await;
+        fake.respond(&old, json!({"stackFrames": [frame(&a, 3)]}));
+        fake.event("stopped", json!({"reason": "breakpoint", "threadId": 8}));
+        pump_until(&mut app, |x| thread_of(x) == Some(8)).await;
+        assert_eq!(point(&app), None);
+        assert!(texts(&app).iter().all(|t| !t.starts_with("Could not")), "{:?}", texts(&app));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn the_point_clears_on_running() {
+        let (mut app, dir, mut fakes) = setup("step-clear-running", Order::LaunchEarly);
+        let a = six(&mut app);
+        let mut fake = paused(&mut app, &mut fakes, &a, 3).await;
+        press(&mut app, F8);
+        pump_until(&mut app, |x| point(x).is_none()).await;
+        let next = fake.recv("next").await;
+        fake.respond(&next, json!({}));
+        stop_at(&mut app, &mut fake, 7, &a, 4).await;
+        fake.event("continued", json!({"threadId": 7}));
+        pump_until(&mut app, |x| point(x).is_none()).await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn the_point_clears_on_end() {
+        let (mut app, dir, mut fakes) = setup("step-clear-end", Order::LaunchEarly);
+        let a = six(&mut app);
+        let mut fake = paused(&mut app, &mut fakes, &a, 3).await;
+        fake.event("terminated", Value::Null);
+        let disconnect = fake.recv("disconnect").await;
+        fake.respond(&disconnect, Value::Null);
+        dap_until(&mut app, gone).await;
+        assert_eq!(point(&app), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn the_point_clears_on_a_new_start() {
+        let (mut app, dir, mut fakes) = setup("step-clear-start", Order::LaunchEarly);
+        let a = six(&mut app);
+        let _fake = paused(&mut app, &mut fakes, &a, 3).await;
+        app.perform(Action::Debug(DebugAction::Start));
+        assert_eq!(point(&app), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn the_point_clears_on_a_root_switch() {
+        let (mut app, dir, mut fakes) = setup("step-clear-root", Order::LaunchEarly);
+        let a = six(&mut app);
+        let _fake = paused(&mut app, &mut fakes, &a, 3).await;
+        app.debug_root_changed();
+        assert_eq!(point(&app), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn the_step_keys_send_their_command_with_the_thread() {
+        let (mut app, dir, mut fakes) = setup("step-commands", Order::LaunchEarly);
+        let a = six(&mut app);
+        let mut fake = paused(&mut app, &mut fakes, &a, 2).await;
+        let keys = [
+            (key(F8, KeyModifiers::NONE), "next"),
+            (key(F7, KeyModifiers::NONE), "stepIn"),
+            (key(F8, KeyModifiers::SHIFT), "stepOut"),
+            (key(F9, KeyModifiers::NONE), "continue"),
+        ];
+        for (n, (k, command)) in keys.into_iter().enumerate() {
+            app.handle_key(k);
+            let req = fake.recv(command).await;
+            assert_eq!(req["arguments"]["threadId"], 7, "{command}");
+            fake.respond(&req, json!({}));
+            pump_until(&mut app, |x| point(x).is_none()).await;
+            stop_at(&mut app, &mut fake, 7, &a, 3 + n as i64).await;
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn the_second_stops_thread_is_used() {
+        let (mut app, dir, mut fakes) = setup("step-second-thread", Order::LaunchEarly);
+        let a = six(&mut app);
+        let mut fake = paused(&mut app, &mut fakes, &a, 2).await;
+        stop_at(&mut app, &mut fake, 8, &a, 4).await;
+        press(&mut app, F8);
+        assert_eq!(fake.recv("next").await["arguments"]["threadId"], 8);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_step_key_needs_a_pause() {
+        let (mut app, dir, mut fakes) = setup("step-needs-pause", Order::LaunchEarly);
+        let _ = six(&mut app);
+        let (mut fake, _) = running(&mut app, &mut fakes).await;
+        app.perform(Action::Debug(DebugAction::StepOver));
+        assert_eq!(last(&app), (Level::Info, "No paused debug session".to_string()));
+        assert_quiet(&mut app, &mut fake, "q1.log").await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn pause_with_a_known_thread() {
+        let (mut app, dir, mut fakes) = setup("pause-known", Order::LaunchEarly);
+        let a = six(&mut app);
+        let mut fake = paused(&mut app, &mut fakes, &a, 2).await;
+        press(&mut app, F9);
+        dap_until(&mut app, |x| x.debug.phase() == Some(Phase::Running)).await;
+        app.perform(Action::Debug(DebugAction::Pause));
+        assert_eq!(fake.recv("pause").await["arguments"]["threadId"], 7);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn pause_with_no_known_thread_asks_threads() {
+        let (mut app, dir, mut fakes) = setup("pause-unknown", Order::LaunchEarly);
+        let _ = six(&mut app);
+        let (mut fake, _) = running(&mut app, &mut fakes).await;
+        app.perform(Action::Debug(DebugAction::Pause));
+        let threads = fake.recv("threads").await;
+        fake.respond(&threads, json!({"threads": [{"id": 3}]}));
+        dap_until(&mut app, |x| thread_of(x) == Some(3)).await;
+        assert_eq!(fake.recv("pause").await["arguments"]["threadId"], 3);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn pause_when_not_running_refuses() {
+        let (mut app, dir, mut fakes) = setup("pause-refuses", Order::LaunchEarly);
+        let a = six(&mut app);
+        let mut fake = paused(&mut app, &mut fakes, &a, 2).await;
+        app.perform(Action::Debug(DebugAction::Pause));
+        assert_eq!(last(&app), (Level::Info, "No running debug session".to_string()));
+        assert_quiet(&mut app, &mut fake, "q1.log").await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_failed_stack_answer_warns() {
+        let (mut app, dir, mut fakes) = setup("step-failed-stack", Order::LaunchEarly);
+        let _ = six(&mut app);
+        let (mut fake, _) = running(&mut app, &mut fakes).await;
+        fake.event("stopped", json!({"reason": "breakpoint", "threadId": 7}));
+        pump_until(&mut app, |x| thread_of(x) == Some(7)).await;
+        let req = fake.recv("stackTrace").await;
+        fake.respond_error(&req, "boom");
+        pump_until(&mut app, |x| texts(x).iter().any(|t| t.starts_with("Could not read the stack"))).await;
+        assert_eq!(last(&app), (Level::Warn, "Could not read the stack: boom".to_string()));
+        assert_eq!(point(&app), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn an_answer_refused_at_shutdown_is_silent() {
+        let (mut app, dir, _fakes, _fake) = live("step-shutdown-answer", Order::LaunchEarly).await;
+        inject(&mut app, DapBody::Phase(Phase::Stopping));
+        let before = texts(&app);
+        let tag = DapTag { epoch: 0, kind: TagKind::StackTrace { thread: 7 } };
+        inject(&mut app, DapBody::Response { tag, result: Err("not available".into()) });
+        assert_eq!(texts(&app), before);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn show_execution_point_returns_and_focuses_the_editor() {
+        let (mut app, dir, mut fakes) = setup("step-show", Order::LaunchEarly);
+        let a = six(&mut app);
+        let _fake = paused(&mut app, &mut fakes, &a, 3).await;
+        app.editor.goto_line(1, 1);
+        assert_eq!(app.editor.active_buffer().unwrap().cursor_line_col().0, 0);
+        app.focus.set(PanelId::Git);
+        app.handle_key(key(KeyCode::F(10), KeyModifiers::ALT));
+        assert_eq!(app.editor.active_buffer().unwrap().cursor_line_col().0, 2);
+        assert!(app.focus.is(PanelId::Editor));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn show_execution_point_with_none_toasts() {
+        let (mut app, dir) = test_app("step-show-none");
+        app.perform(Action::Debug(DebugAction::ShowExecutionPoint));
+        assert_eq!(last(&app), (Level::Info, "No execution point".to_string()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_stop_leaves_focus_in_the_panel() {
+        let (mut app, dir, mut fakes) = setup("step-focus", Order::LaunchEarly);
+        let a = six(&mut app);
+        let b = app.workspace.root.join("b.log");
+        std::fs::write(&b, "b0\nb1\nb2\nb3\n").unwrap();
+        let (mut fake, _) = running(&mut app, &mut fakes).await;
+        app.editor.goto_line(1, 1);
+        app.focus.set(PanelId::Git);
+        stop_at(&mut app, &mut fake, 7, &a, 3).await;
+        assert!(app.focus.is(PanelId::Git));
+        assert_eq!(app.editor.active_buffer().unwrap().cursor_line_col().0, 2);
+        // The same with a file that is not open yet.
+        stop(&mut app, &mut fake, 7, frame(&b, 2)).await;
+        pump_until(&mut app, |x| x.editor.index_of(&b).is_some() && point(x) == Some((b.clone(), 1))).await;
+        assert_eq!(app.editor.active_path(), Some(b.as_path()));
+        assert!(app.focus.is(PanelId::Git));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_breakpoint_cleared_while_paused_goes_out_before_continue() {
+        let (mut app, dir, mut fakes) = setup("step-cleared-bp", Order::LaunchEarly);
+        let a = six(&mut app);
+        toggle(&mut app, &a, 1);
+        let mut fake = paused(&mut app, &mut fakes, &a, 2).await;
+        toggle(&mut app, &a, 1);
+        // No tick between the toggle and the key.
+        press(&mut app, F9);
+        let m = fake.next().await;
+        assert_eq!((m["command"].as_str(), source(&m), lines(&m)), (Some("setBreakpoints"), a.to_string_lossy().into_owned(), vec![]));
+        assert_eq!(fake.next().await["command"], "continue");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn no_sync_after_the_phase_ended() {
+        let (mut app, dir, mut fakes) = setup("step-no-sync-ended", Order::LaunchEarly);
+        let a = six(&mut app);
+        toggle(&mut app, &a, 1);
+        let _ = running(&mut app, &mut fakes).await;
+        inject(&mut app, DapBody::Phase(Phase::Ended));
+        let before = app.debug.session.as_ref().unwrap().sent.clone();
+        toggle(&mut app, &a, 3);
+        app.on_tick();
+        assert_eq!(app.debug.session.as_ref().unwrap().sent, before);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

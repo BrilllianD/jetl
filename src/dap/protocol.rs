@@ -240,12 +240,41 @@ pub struct StackFrame {
     pub column: i64,
 }
 
+/// The body of a `stackTrace` response.
+#[derive(Debug, Clone, PartialEq, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct StackTraceBody {
+    #[serde(deserialize_with = "nullable")]
+    pub stack_frames: Vec<StackFrame>,
+}
+
+/// The body of a `threads` response.
+#[derive(Debug, Clone, PartialEq, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ThreadsBody {
+    #[serde(deserialize_with = "nullable")]
+    pub threads: Vec<Thread>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn parse(v: Value) -> Result<Incoming, String> {
         Incoming::parse(v.to_string().as_bytes())
+    }
+
+    #[test]
+    fn stack_trace_body_parses_frame_id_zero_and_column_zero() {
+        let b: StackTraceBody =
+            body_of("t", json!({"stackFrames":[{"id":0,"name":"main","line":9,"column":0,"source":{"path":"/x/demo.c"}}]}));
+        assert_eq!(b.stack_frames.len(), 1);
+        let f = &b.stack_frames[0];
+        assert_eq!((f.id, f.name.as_str(), f.line, f.column), (0, "main", 9, 0));
+        assert_eq!(f.source.as_ref().and_then(|s| s.path.as_deref()), Some("/x/demo.c"));
+        assert!(body_of::<StackTraceBody>("t", json!({"stackFrames":null})).stack_frames.is_empty());
+        let t: ThreadsBody = body_of("t", json!({"threads":[{"id":4},{"id":9,"name":"x"}]}));
+        assert_eq!(t.threads.iter().map(|t| t.id).collect::<Vec<_>>(), vec![4, 9]);
     }
 
     #[test]

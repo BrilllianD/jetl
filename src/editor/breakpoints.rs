@@ -11,6 +11,13 @@ use super::buffer::{BreakpointMark, Buffer};
 use crate::app::Ctx;
 use crate::event::Level;
 
+/// The line a paused debug session is on; 0-based, as the marks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExecutionPoint {
+    pub path: PathBuf,
+    pub line: usize,
+}
+
 /// Why a tab takes no breakpoint: the hint to show, or `None`.
 pub(super) fn refusal(in_merge: bool, b: &Buffer) -> Option<&'static str> {
     if in_merge {
@@ -25,6 +32,14 @@ pub(super) fn refusal(in_merge: bool, b: &Buffer) -> Option<&'static str> {
 }
 
 impl Editor {
+    pub fn set_execution_point(&mut self, point: Option<ExecutionPoint>) {
+        self.execution_point = point;
+    }
+
+    pub fn execution_point(&self) -> Option<&ExecutionPoint> {
+        self.execution_point.as_ref()
+    }
+
     /// Ctrl+F8: toggle a breakpoint on every caret's line, once per line.
     pub(super) fn toggle_breakpoints_at_carets(&mut self, cx: &mut Ctx) {
         let in_merge = self.merge.is_some();

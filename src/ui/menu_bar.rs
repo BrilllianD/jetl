@@ -260,6 +260,12 @@ pub const MAIN_MENU: &[(&str, char, &[Row])] = &[
             Item("Stop", "run.stop"),
             Item("Debug", "debug.start"),
             Item("Stop Debugging", "debug.stop"),
+            Item("Resume", "debug.resume"),
+            Item("Pause", "debug.pause"),
+            Item("Step Over", "debug.step_over"),
+            Item("Step Into", "debug.step_into"),
+            Item("Step Out", "debug.step_out"),
+            Item("Show Execution Point", "debug.show_execution_point"),
             Sep,
             Item("Edit Configurations…", "run.edit_configs"),
             Sep,
@@ -613,7 +619,19 @@ mod tests {
         let (_, _, rows) = MAIN_MENU.iter().find(|m| m.0 == "Run").unwrap();
         let items: Vec<(&str, &str)> = rows.iter().filter_map(|r| if let Item(l, id) = r { Some((*l, *id)) } else { None }).collect();
         let at = items.iter().position(|i| *i == ("Stop", "run.stop")).unwrap();
-        assert_eq!(items[at + 1..at + 3], [("Debug", "debug.start"), ("Stop Debugging", "debug.stop")]);
+        assert_eq!(
+            items[at + 1..at + 9],
+            [
+                ("Debug", "debug.start"),
+                ("Stop Debugging", "debug.stop"),
+                ("Resume", "debug.resume"),
+                ("Pause", "debug.pause"),
+                ("Step Over", "debug.step_over"),
+                ("Step Into", "debug.step_into"),
+                ("Step Out", "debug.step_out"),
+                ("Show Execution Point", "debug.show_execution_point"),
+            ]
+        );
     }
 
     #[test]

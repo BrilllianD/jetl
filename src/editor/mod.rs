@@ -4,6 +4,7 @@ pub mod blame;
 mod bookmarks;
 mod breakpoints;
 pub use bookmarks::BookmarkTarget;
+pub use breakpoints::ExecutionPoint;
 pub mod brackets;
 pub(crate) mod breadcrumbs;
 pub mod buffer;
@@ -194,6 +195,8 @@ pub struct Editor {
     /// Breakpoint lines of files without a tab (see `breakpoints.rs`); only
     /// lines, a breakpoint's state is never kept.
     closed_breakpoints: std::collections::BTreeMap<PathBuf, std::collections::BTreeSet<usize>>,
+    /// Where a paused debug session is, drawn in every view of that file.
+    execution_point: Option<ExecutionPoint>,
     /// The last copy made at several carets: the clipboard text and each
     /// caret's piece, so pasting it at as many carets splits it again.
     multi_clip: Option<(String, Vec<String>)>,
@@ -277,6 +280,7 @@ impl Editor {
             pending_nav: None,
             closed_bookmarks: Default::default(),
             closed_breakpoints: Default::default(),
+            execution_point: None,
             multi_clip: None,
             column_mode: false,
             overwrite: false,
@@ -1911,6 +1915,8 @@ impl Editor {
             }
             return;
         }
+        let execution_line =
+            self.execution_point.as_ref().filter(|p| self.buffers[i].path.as_deref() == Some(p.path.as_path())).map(|p| p.line);
         let opts = RenderOpts {
             focused,
             tab_width: self.tab_display(&self.buffers[i]),
@@ -1924,6 +1930,7 @@ impl Editor {
             theme,
             follow,
             decor,
+            execution_line,
         };
         let crumbs_on = self.breadcrumbs && self.merge.is_none();
         let sticky_on = self.sticky_scroll && self.merge.is_none();

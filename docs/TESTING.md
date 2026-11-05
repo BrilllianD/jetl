@@ -970,8 +970,7 @@ shell's own command line out of the match), and start only when both print nothi
 
 Each run exits 0 with an empty stderr on Ctrl+Q. What gdb cannot show, and the unit tests prove
 instead: the other two start orders (js-debug's and delve's), a root switch and a replaced session's silence,
-and the debugpy command (debugpy is not installed). Pausing and resuming are not implemented yet: a program
-paused at a breakpoint can only be stopped.
+and the debugpy command (debugpy is not installed).
 
 ### Scenario: breakpoints sent to a debug session
 
@@ -1012,11 +1011,53 @@ when no toast is on screen.
     session files under `$XDG_STATE_HOME/jetl/sessions`: state is never saved. Start again on `demo.c`, Shift+F9: the
     saved marks are sent and the program stops (`4●`). Ctrl+F2.
 
-What gdb cannot show, and the unit tests prove: that a cleared breakpoint no longer stops the program (nothing can
-resume before the stepping task); `reason: "failed"` (needs an internal gdb error); a `removed` event (gdb
-suppresses it for its own deletes); the other two start orders; a closed file's lines dropped, and a rename;
-`sourceModified` having an effect (gdb ignores it); a root switch.
+That a cleared breakpoint no longer stops the program is shown under gdb in the next scenario; the unit tests prove
+only that the empty list goes out, before a resume. What gdb cannot show, and the unit tests prove: `reason:
+"failed"` (needs an internal gdb error); a `removed` event (gdb suppresses it for its own deletes); the other two
+start orders; a closed file's lines dropped, and a rename; `sourceModified` having an effect (gdb ignores it); a
+root switch.
 
+### Scenario: stepping and the execution point
+
+Needs `gdb` 14 or newer and `gcc`. At 80x24 and at 120x40, with the directories, config and log of the previous
+scenario (`RUST_LOG=jetl=debug`, `[lsp] enabled = false`, `[ui] toolbar = false`), a private tmux socket, and the same
+precondition on `pgrep`. Fixture `/tmp/jetl-dap-demo`, rebuilt each run: `demo.c` and `demo` as in the first
+scenario of this section (line 9 is `int x = add(1, 2);`, line 10 is `int y = add(x, 4);`, line 11 is the `printf`);
+`spin.c` (`volatile unsigned long n = 0; for (;;) { n++; }`, built as `spin`); `.jetl/run.toml` with the configs
+`demo` and `spin` and a `[debug.<name>]` table for each; `git init` with `demo.c` and `spin.c` committed. A step
+reads the pane only with no toast on it (at 80x24 a toast covers the gutter), and counts the `▶` on the screen:
+exactly one is the pass.
+
+1. Negative control: `jetl demo.c`, Shift+F9 with no mark: the program runs to its end and the pane never shows a
+   `▶`.
+2. Ctrl+G, `9`, Ctrl+F8, Shift+F9: `Paused (breakpoint)`, `9▶` (the line's background is not in a text capture; the
+   unit snapshots show it), one `demo` running. The log has `dap: execution point .../demo.c:8` (0-based). The mark does not show under the arrow.
+3. F8: `-> next` in the log, `10▶`, and `9●` is back. F7 on line 10 (`add(x, 4)`): `-> stepIn`, `4▶`, gdb stops on
+   `demo.c:3` (0-based), the line of `int sum`. Shift+F8: `-> stepOut`, `10▶` again.
+4. Ctrl+G, `1`, Enter, then Alt+F10: the caret is on line 10 again and the arrow is still there. F9: `-> continue`,
+   `exit code 0`, no `▶`, no `demo` or `gdb` left.
+5. A cleared breakpoint is not hit: marks on 9 and 11, Shift+F9, F9 (stops at `11▶`), Ctrl+F2. Shift+F9 again, stop on
+   9, Ctrl+G, `11`, Ctrl+F8 to clear it, wait for `demo.c: [8], modified false` in the log, F9: the program ends, no
+   `<- event stopped` after the F9. The same with no wait: Ctrl+G, `11`, Ctrl+F8, F9 sent together by one `send-keys`
+   call: it ends too, since F9 flushes the list before `continue`.
+6. Terminal: stopped on 9, Alt+F12, type `cat -v`, Enter, F8: the terminal shows `^[[19~` and the log has no
+   `-> next`. Ctrl+C, Alt+F12, Ctrl+F2.
+7. Git window: stopped on 9, Alt+9, F7: no `-> stepIn` (F7 is the Git next change there), F8: `-> next` and the arrow
+   moves to 10. F7 again: still no `-> stepIn`. Esc, Ctrl+F2.
+8. Pause: open `demo.c`, put a mark on 9, open `spin.c`, Alt+Shift+F10, pick `spin` (this starts a Run task: Ctrl+F2
+   stops it, Alt+4 hides the Run window, whose toolbar draws a `▶` of its own; press Alt+4 twice if the window is
+   still up), Shift+F9. F1, `Debug: Pause`, Enter: `-> threads` then `-> pause` in the log, `Paused` in the toast
+   (gdb's reason is `pause`), and the `▶` on the `spin.c` line `n++;` or the `for`. F9 and the arrow goes; F1,
+   `Debug: Pause` again: `-> pause` with no new `-> threads`. Ctrl+F2.
+9. F7 outside a pause: in the editor with no session, F7 moves to the next change (a line was edited: type a space
+   at the end of line 12, Ctrl+G, `1`, Enter, F7 puts the caret on line 12) and sends nothing. Ctrl+Z.
+10. Ctrl+Q while paused: exit 0, empty stderr, no `demo` or `gdb` left.
+
+gdb can show: the arrow and the line on every stop, the three steps, the return with Alt+F10, the pause, and a
+cleared breakpoint that does not stop the program. gdb cannot show, and the unit tests prove: a stop with no
+`threadId` (gdb always sends one), a frame with no source (gdb has the source here), a stale answer to `stackTrace`
+after a step, the point clearing on a new start or a root switch, and the other keys of the Git, Local History and
+merge windows.
 ### Scenario: Save As
 
 At 80x24 and at 120x40, with `run()` and `$T` from the crash recovery
