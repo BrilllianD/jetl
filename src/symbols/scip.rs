@@ -172,6 +172,7 @@ impl ScipIndex {
         let bytes = std::fs::read(file).map_err(|e| e.to_string())?;
         let index = Index::parse_from_bytes(&bytes).map_err(|e| format!("not a SCIP index: {e}"))?;
         let ix = ScipIndex::from_proto(index, root, file.to_path_buf(), mtime);
+        drop(bytes);
         release_freed_memory();
         Ok(ix)
     }

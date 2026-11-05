@@ -525,6 +525,7 @@ mod tests {
         assert!(idx.defs_of("g").is_empty());
     }
 
+    #[cfg(feature = "lang-rust")]
     #[test]
     fn defs_of_forgets_files_set_files_drops() {
         let sym = Symbol { name: "f".into(), kind: "function", line: 0, col: 0, start_line: 0, end_line: 0, depth: 0 };

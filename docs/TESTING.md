@@ -887,8 +887,8 @@ then `git init -q` (the project root is the nearest git directory, else the file
    (the symbol-index fallback; `Usages of helper (unverified)` when it finds
    plain calls). Undo.
 6. Settings (Ctrl+Alt+S), Language Servers page: the row "SCIP index file"
-   shows `index.scip`; set it to `missing.scip` and Apply: one Warn toast
-   `SCIP index missing.scip: ...`. Set it back.
+   shows `index.scip`; set it to `missing.scip` and Apply (Ctrl+S): one Warn toast
+   `SCIP index missing.scip: No such file or directory (os error 2)`. Set it back.
 7. Run menu (Alt+R) > Build SCIP Index: the Run window shows `Build SCIP index`
    and rust-analyzer's output, then exit 0; Info toast `SCIP index built;
    loading it`.
@@ -899,9 +899,10 @@ then `git init -q` (the project root is the nearest git directory, else the file
 10. Set `scip_command = ""`, run it: Info toast `Set [index] scip_command to
     build the SCIP index`.
 11. In another shell `truncate -s 257M /tmp/scip-demo/big.scip`; in Settings,
-    Language Servers page, set "SCIP index file" to `big.scip` and Apply: one
-    Warn toast `SCIP index big.scip: 257 MiB is above the limit of 256 MiB`, at
-    once. Set it back and `rm /tmp/scip-demo/big.scip`.
+    Language Servers page, set "SCIP index file" to `big.scip` and Apply
+    (Ctrl+S): one Warn toast `SCIP index big.scip: 257 MiB is above the limit
+    of 256 MiB`. At 120x40 it shows at once beside the Settings window; at
+    80x24 the window covers it and it shows when Settings closes. Set it back and `rm /tmp/scip-demo/big.scip`.
 12. Ctrl+Q exits 0; stderr is empty.
 
 ### Scenario: local history
