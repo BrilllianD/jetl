@@ -335,19 +335,18 @@ impl Session {
         self.set_phase(Phase::Stopping, out);
     }
 
-    /// Emits `Error(msg)` unless the stop in progress is already explained. Returns whether it emitted. Once a
-    /// failure is shown during a stop, later ones stay silent.
+    /// Emits `Error(msg)` unless the stop in progress is already explained: the user's stop, or a failure that began
+    /// it. Returns whether it emitted. A stop the adapter began with `terminated` explains nothing.
     fn report(&mut self, msg: String, out: &mut Vec<Action>) -> bool {
         let stopping = self.phase == Phase::Stopping;
         if stopping && self.stop_silent {
             return false;
         }
         out.push(Action::Emit(DapBody::Error(msg)));
-        self.stop_silent |= stopping;
         true
     }
 
-    /// A failed or timed out `launch` or `configurationDone`: shown, then the session stops unless it already is.
+    /// A failed `launch` or `configurationDone`: shown, then the session stops unless it already is.
     fn fail_start(&mut self, msg: String, now: Instant, out: &mut Vec<Action>) {
         let stopping = self.phase == Phase::Stopping;
         if self.report(msg, out) && !stopping {
@@ -1771,13 +1770,41 @@ mod tests {
     }
 
     #[test]
-    fn terminated_then_failed_configuration_done_reports_once_for_two_failures() {
+    fn terminated_does_not_hide_a_second_failure() {
         let mut h = configuring();
         sets_ok(&mut h);
         h.event("terminated", json!({}));
         h.fail("configurationDone", "bad");
         h.fail("launch", "worse");
-        assert_eq!(h.errors(), ["bad"], "the first failure was shown, the second is silent");
+        assert_eq!(h.errors(), ["bad", "worse"]);
+    }
+
+    #[test]
+    fn terminated_then_a_collateral_failure_does_not_hide_the_launch_failure() {
+        let mut h = configuring();
+        h.event("terminated", json!({}));
+        h.fail("setExceptionBreakpoints", "cancelled");
+        h.fail("launch", "no program");
+        assert_eq!(h.errors(), ["setExceptionBreakpoints: cancelled", "no program"]);
+    }
+
+    #[test]
+    fn a_failure_that_began_the_stop_keeps_later_ones_silent_past_terminated() {
+        let mut h = configuring();
+        sets_ok(&mut h);
+        h.fail("configurationDone", "bad");
+        h.event("terminated", json!({}));
+        h.fail("launch", "worse");
+        assert_eq!(h.errors(), ["bad"]);
+    }
+
+    #[test]
+    fn stop_stays_silent_past_terminated() {
+        let mut h = starting();
+        h.cmd(Command::Stop);
+        h.event("terminated", json!({}));
+        h.fail("launch", "cancelled");
+        assert!(h.errors().is_empty(), "{:?}", h.errors());
     }
 
     #[test]
