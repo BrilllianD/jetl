@@ -16,6 +16,21 @@ use std::time::SystemTime;
 use protobuf::Message;
 use scip::types::{Index, PositionEncoding, SymbolRole, occurrence};
 
+/// Larger files are refused unread: loading builds the whole protobuf message first, about 7x the file size at its peak
+/// (jetl's own index, 34 MiB, 2026-11-05: peak 6.8x, retained 3.6x before `release_freed_memory`). Keeps that peak near 2 GiB.
+pub(crate) const MAX_SCIP_BYTES: u64 = 256 * 1024 * 1024;
+
+/// The parsed protobuf is many small allocations, freed in the middle of the heap, where glibc keeps them
+/// resident. Hand those pages back; this is off the main thread and runs once per load.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn release_freed_memory() {
+    // SAFETY: `malloc_trim` takes no pointers and is safe to call from any thread.
+    unsafe { libc::malloc_trim(0) };
+}
+
+#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+fn release_freed_memory() {}
+
 /// The unit of the columns in one document.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Encoding {
@@ -149,10 +164,16 @@ pub struct ScipIndex {
 impl ScipIndex {
     /// Reads and converts `file`. Blocking: call it off the main thread.
     pub fn load(file: &Path, root: &Path) -> Result<ScipIndex, String> {
-        let mtime = std::fs::metadata(file).and_then(|m| m.modified()).map_err(|e| e.to_string())?;
+        let meta = std::fs::metadata(file).map_err(|e| e.to_string())?;
+        let mtime = meta.modified().map_err(|e| e.to_string())?;
+        if meta.len() > MAX_SCIP_BYTES {
+            return Err(format!("{} MiB is above the limit of {} MiB", meta.len() >> 20, MAX_SCIP_BYTES >> 20));
+        }
         let bytes = std::fs::read(file).map_err(|e| e.to_string())?;
         let index = Index::parse_from_bytes(&bytes).map_err(|e| format!("not a SCIP index: {e}"))?;
-        Ok(ScipIndex::from_proto(index, root, file.to_path_buf(), mtime))
+        let ix = ScipIndex::from_proto(index, root, file.to_path_buf(), mtime);
+        release_freed_memory();
+        Ok(ix)
     }
 
     pub fn from_proto(index: Index, root: &Path, file: PathBuf, mtime: SystemTime) -> ScipIndex {
@@ -462,6 +483,19 @@ mod tests {
         assert!(ScipIndex::load(&root.join("nope.scip"), &root).is_err());
         std::fs::write(root.join("bad.scip"), b"not protobuf \xff").unwrap();
         let e = ScipIndex::load(&root.join("bad.scip"), &root).unwrap_err();
+        assert!(e.starts_with("not a SCIP index"), "{e}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn load_refuses_a_file_above_the_cap() {
+        let root = temp("cap");
+        let file = root.join("big.scip");
+        std::fs::File::create(&file).unwrap().set_len(MAX_SCIP_BYTES + 1).unwrap();
+        let e = ScipIndex::load(&file, &root).unwrap_err();
+        assert_eq!(e, format!("{} MiB is above the limit of {} MiB", (MAX_SCIP_BYTES + 1) >> 20, MAX_SCIP_BYTES >> 20));
+        std::fs::File::create(&file).unwrap().set_len(MAX_SCIP_BYTES).unwrap();
+        let e = ScipIndex::load(&file, &root).unwrap_err();
         assert!(e.starts_with("not a SCIP index"), "{e}");
         let _ = std::fs::remove_dir_all(&root);
     }

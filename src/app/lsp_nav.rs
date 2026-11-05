@@ -1610,6 +1610,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_oversized_scip_index_warns_and_is_not_retried() {
+        let (mut app, dir) = test_app("scip-oversized");
+        let big = app.workspace.root.join("big.scip");
+        std::fs::File::create(&big).unwrap().set_len(crate::symbols::scip::MAX_SCIP_BYTES + 1).unwrap();
+        let mut c = app.config.clone();
+        c.index.scip = "big.scip".into();
+        app.apply_config(c);
+        handle_next(&mut app, |m| matches!(m, AppMsg::Scip { .. })).await;
+        assert!(app.scip.index.is_none());
+        assert!(toasts(&app).iter().any(|t| t.starts_with("SCIP index big.scip:") && t.contains("above the limit")), "{:?}", toasts(&app));
+        let seq = app.scip.seq;
+        app.scip_check_reload();
+        assert_eq!(app.scip.seq, seq, "the same mtime is not retried");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
     async fn without_a_server_there_is_a_hint_or_go_to_symbol() {
         let (mut app, dir) = test_app("lsp-none");
         crate::app::tests::load(&mut app, "notes.txt", "word here\n");

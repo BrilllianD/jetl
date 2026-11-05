@@ -242,6 +242,8 @@ than the index file); other files fall back to the unverified symbol-index
 candidates. The index is read again when the key changes, at start, after a
 project switch, and on the next lookup after the file changes on disk. A file
 that cannot be read or is not a SCIP index gives one warning and no index.
+So does a file above 256 MiB, which is refused unread: loading builds the whole
+index in memory first, about 7 times the file size at its peak.
 `[index] scip_command` is a shell command (for example `rust-analyzer scip .
 --output index.scip`); Run > Build SCIP Index (`run.build_scip_index`) runs
 it in the project root as a Run task named `Build SCIP index`, with its output

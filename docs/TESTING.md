@@ -898,7 +898,11 @@ then `git init -q` (the project root is the nearest git directory, else the file
    Build SCIP index failed with exit code 3`, no reload toast.
 10. Set `scip_command = ""`, run it: Info toast `Set [index] scip_command to
     build the SCIP index`.
-11. Ctrl+Q exits 0; stderr is empty.
+11. In another shell `truncate -s 257M /tmp/scip-demo/big.scip`; in Settings,
+    Language Servers page, set "SCIP index file" to `big.scip` and Apply: one
+    Warn toast `SCIP index big.scip: 257 MiB is above the limit of 256 MiB`, at
+    once. Set it back and `rm /tmp/scip-demo/big.scip`.
+12. Ctrl+Q exits 0; stderr is empty.
 
 ### Scenario: local history
 
