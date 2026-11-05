@@ -15,7 +15,7 @@ expression: interactive_rebase_snapshot(&keys).await
 09   │ Wide chars counted as one cell.                                          │─┐
 10   │                                                                          │ │
 11   │                                                                          │ │
-12   │                                                                          │ │
+12  ◉│                                                                          │ │
 13  ⋔│                                                                          │ │
 14  ✎│                                                                          │ │
 15  ✓│                                                                          │ │

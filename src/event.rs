@@ -245,6 +245,14 @@ pub enum AppMsg {
         seq: u64,
         result: Box<Result<crate::app::Prepared, String>>,
     },
+    /// A batch of the program's output, split and matched off the main thread. Stale when `generation` is not the
+    /// current one or `session` is not the Debug window's: lines can come after the session ended, so `Live` is
+    /// not asked.
+    DebugOutput {
+        generation: u64,
+        session: crate::dap::session::SessionId,
+        lines: Vec<crate::run::matcher::RunLine>,
+    },
     /// Definitions or usages with their line previews, the ones in files
     /// that are not open read from disk; shown in the Locations palette
     /// unless a newer definition or usages request (`seq`) was made.

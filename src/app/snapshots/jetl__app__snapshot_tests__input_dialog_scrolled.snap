@@ -4,10 +4,10 @@ expression: "snapshot(&term, &[], Some(area))"
 ---
 60x16 cursor=(54,7)
 00  ≣ ┌ Project: root ─────────┐│ *draft ×
-01    │                        ││  1    text
-02  ⌂ │                        ││  2
-03  ◫ ┌ Save As ───────────────────────────────────────────┐
-04  ⊢ │ Where to save draft?                               │
+01  ⌂ │                        ││  1    text
+02  ◫ │                        ││  2
+03  ⊢ ┌ Save As ───────────────────────────────────────────┐
+04  ◉ │ Where to save draft?                               │
 05  ⋔ │ Path relative to the project root (Tab completes): │
 06  ✎ │                                                    │
 07  ✓ │ s/not/fit/in/the/dialog/notes-for-the-meeting.txt  │

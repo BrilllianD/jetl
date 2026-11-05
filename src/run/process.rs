@@ -17,7 +17,7 @@ use super::matcher::{Matcher, RunLine};
 use crate::event::AppMsg;
 
 /// Lines are sent at most this often.
-const BATCH: Duration = Duration::from_millis(50);
+pub(crate) const BATCH: Duration = Duration::from_millis(50);
 /// How long the output may stay open after the task exits (a background
 /// child still holding the pipe) before the exit is reported anyway.
 const DRAIN: Duration = Duration::from_millis(500);
@@ -183,12 +183,12 @@ fn exit_of(s: std::process::ExitStatus) -> RunEnd {
 /// inside a line (a progress bar redrawing itself) keeps only what follows
 /// it. ANSI escape sequences go; tabs become spaces.
 #[derive(Debug, Default)]
-struct LineSplitter {
+pub(crate) struct LineSplitter {
     partial: Vec<u8>,
 }
 
 impl LineSplitter {
-    fn push(&mut self, bytes: &[u8]) -> Vec<String> {
+    pub(crate) fn push(&mut self, bytes: &[u8]) -> Vec<String> {
         let mut out = Vec::new();
         for &b in bytes {
             if b == b'\n' {
@@ -203,7 +203,7 @@ impl LineSplitter {
         out
     }
 
-    fn finish(&mut self) -> Option<String> {
+    pub(crate) fn finish(&mut self) -> Option<String> {
         (!self.partial.is_empty()).then(|| clean(&std::mem::take(&mut self.partial)))
     }
 }

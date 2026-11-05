@@ -21,7 +21,7 @@ expression: "snapshot(&term, &run_marks(&app.theme), None)"
 15    │                              ││
 16    │                              ││
 17    │                              ││
-18    │                              ││
+18  ◉ │                              ││
 19    │                              ││
 20  ⋔ │                              ││
 21    │                              ││
@@ -49,6 +49,8 @@ expression: "snapshot(&term, &run_marks(&app.theme), None)"
 05 DDD
 06 DDD
 07 DDD
+17 DDD
+18 DDD
 19 DDD
 20 DDD
 21 DDD

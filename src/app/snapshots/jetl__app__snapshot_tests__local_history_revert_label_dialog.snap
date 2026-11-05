@@ -15,7 +15,7 @@ expression: "snapshot(&term, &marks, None)"
 09    ┌ Local History:│                                        │──────────────────┐
 10    │[Show History] │         [ Revert ] [ Cancel ]          │   type to filter │
 11    │ notes.txt  Uns└────────────────────────────────────────┘" on 2 files: Ente│
-12    │ guide.md  do…  deleted  10-04 12:00 │                                     │
+12  ◉ │ guide.md  do…  deleted  10-04 12:00 │                                     │
 13  ⋔ │ ▾ Label: release 1.2    10-03 12:00 │                                     │
 14  ✎ │     guide.md  docs/         deleted │                                     │
 15  ✓ │     notes.txt                       │                                     │

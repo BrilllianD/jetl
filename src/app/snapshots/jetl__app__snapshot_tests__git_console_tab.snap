@@ -15,7 +15,7 @@ expression: "snapshot(&term, &marks, Some(bottom))"
 09    ┌ Git ──────────────────────────────────────────────────────────────────────────────────────────┐
 10    │ Commit   Log   Stash   Console                                 Refresh   Fetch   Pull   Push  │
 11    │$ git fetch --prune                                                                            │
-12    │From example.org:demo                                                                          │
+12  ◉ │From example.org:demo                                                                          │
 13  ⋔ │   1111111..2222222  main       -> origin/main                                                 │
 14  ✎ │$ git push                                                                                     │
 15  ✓ │error: failed to push some refs to 'example.org:demo'                                          │

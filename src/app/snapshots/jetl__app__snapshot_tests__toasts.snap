@@ -4,14 +4,14 @@ expression: "snapshot(&term, &marks, None)"
 ---
 100x30 cursor=hidden
 00  ≣ ┌ Project: root ───────────────┐│
-01    │                              ││             ╭ Error ───────────────────────────────────────×─╮
-02  1 │                              ││             │ Push failed: error: failed to push some refs   │
-03  ⌂ │                              ││             │ to 'example.org:demo'; the remote has commits  │
-04  2 │                              ││             │ you do not have yet, so pull first             │
-05  ◫ │                              ││             ╰────────────────────────────────────────────────╯
-06  7 │                              ││             ╭ Warning ─────────────────────────────────────×─╮
-07  ⊢ │                              ││             │ Language servers are off                       │
-08    │                              ││             ╰────────────────────────────────────────────────╯
+01  1 │                              ││             ╭ Error ───────────────────────────────────────×─╮
+02  ⌂ │                              ││             │ Push failed: error: failed to push some refs   │
+03  2 │                              ││             │ to 'example.org:demo'; the remote has commits  │
+04  ◫ │                              ││             │ you do not have yet, so pull first             │
+05  7 │                              ││             ╰────────────────────────────────────────────────╯
+06  ⊢ │                              ││             ╭ Warning ─────────────────────────────────────×─╮
+07    │                              ││             │ Language servers are off                       │
+08  ◉ │                              ││             ╰────────────────────────────────────────────────╯
 09    │                              ││             ╭ Info ────────────────────────────────────────×─╮
 10  ⋔ │                              ││             │ Saved notes.txt                                │
 11    │                              ││             ╰────────────────────────────────────────────────╯

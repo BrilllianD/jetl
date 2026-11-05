@@ -15,7 +15,7 @@ expression: "snapshot(&term, &menu_marks(&app.theme), None)"
 09    ┌ Run: check ───────────────────────────────────────────────────────────────┐
 10    │ check ▾   ▶ Run   ↻ Rerun   ■ Stop   Edit Configurations…                 │
 11    │╭────────────────────────────────╮eck                                      │
-12    ││ check                          │                                         │
+12  ◉ ││ check                          │                                         │
 13  ⋔ ││ integration-tests              │                                         │
 14  ✎ │├────────────────────────────────┤                                         │
 15  ✓ ││ Edit Configurations…           │                                         │

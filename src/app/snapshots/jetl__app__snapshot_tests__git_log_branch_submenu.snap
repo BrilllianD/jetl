@@ -4,14 +4,14 @@ expression: "snapshot(&term, &marks, Some(bottom))"
 ---
 120x30 cursor=hidden
 00  ≣ ┌ Project: root ───────────────┐│
-01    │                              ││
-02  1 │╭───────────────────────────────────────────────╮
-03  ⌂ ││ Copy Revision Number                   Ctrl+C │
-04  2 ││ Show Diff                              Ctrl+D │
-05  ◫ ││ Show Diff as Patch                            │
-06  7 ││ Checkout Revision                 Alt+Shift+C │
-07  ⊢ ││ New Branch…                       Alt+Shift+B │en. Alt+1 opens the Project view; Ctrl+Shift+N finds a file.
-08    ││ Cherry-Pick                       Alt+Shift+P │
+01  1 │                              ││
+02  ⌂ │╭───────────────────────────────────────────────╮
+03  2 ││ Copy Revision Number                   Ctrl+C │
+04  ◫ ││ Show Diff                              Ctrl+D │
+05  7 ││ Show Diff as Patch                            │
+06  ⊢ ││ Checkout Revision                 Alt+Shift+C │
+07    ││ New Branch…                       Alt+Shift+B │en. Alt+1 opens the Project view; Ctrl+Shift+N finds a file.
+08  ◉ ││ Cherry-Pick                       Alt+Shift+P │
 09    ││ Revert Commit…                    Alt+Shift+R │
 10  ⋔ ││ Reset Current Branch to Here…                 │
 11    ││ Interactively Rebase from Here…   Alt+Shift+I │

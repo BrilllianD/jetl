@@ -103,6 +103,7 @@ impl App {
             AppMsg::TerminalOutput { generation, id } => self.terminal_output(generation, id),
             AppMsg::Lsp(m) => self.lsp_msg(m),
             AppMsg::Dap(m) => self.dap_msg(m),
+            AppMsg::DebugOutput { generation, session, lines } => self.debug_output(generation, session, lines),
             AppMsg::DebugReady { generation, seq, result } => self.debug_ready(generation, seq, *result),
             AppMsg::Locations { generation, seq, title, items } => self.locations_loaded(generation, seq, title, items),
             AppMsg::QuickDefinition { generation, tag, heading, code, lang } => {

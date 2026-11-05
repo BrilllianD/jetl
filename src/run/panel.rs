@@ -689,14 +689,14 @@ impl RunPanel {
 }
 
 /// The base style of a list row.
-fn row_style(selected: bool, focused: bool, theme: &Theme) -> Style {
+pub(crate) fn row_style(selected: bool, focused: bool, theme: &Theme) -> Style {
     if selected { if focused { theme.list_selected } else { theme.list_selected_unfocused } } else { Style::default().fg(theme.fg) }
 }
 
 /// Draw an output line at `x0`: severity colour, the link underlined (and
 /// pushed to `link_rects` with `row`).
 #[allow(clippy::too_many_arguments)]
-fn draw_line(
+pub(crate) fn draw_line(
     buf: &mut Buffer,
     line: &RunLine,
     x0: u16,
@@ -735,7 +735,7 @@ fn draw_line(
 }
 
 /// Write `text` at `*x` clipped to `right`, advance `*x`, return its rect.
-fn put(buf: &mut ratatui::buffer::Buffer, x: &mut u16, y: u16, right: u16, text: &str, style: Style) -> Rect {
+pub(crate) fn put(buf: &mut ratatui::buffer::Buffer, x: &mut u16, y: u16, right: u16, text: &str, style: Style) -> Rect {
     let w = (text.width() as u16).min(right.saturating_sub(*x));
     if w > 0 {
         buf.set_stringn(*x, y, text, w as usize, style);

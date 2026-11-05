@@ -16,7 +16,8 @@ use crate::dap::client::{DapClient, SHUTDOWN_LIMIT};
 use crate::dap::config::{
     AdapterConfig, DebugBlock, DebugConfig, LaunchVars, choose_adapter, load_debug_blocks, process_env, resolve_launch,
 };
-use crate::dap::protocol::{Breakpoint, BreakpointEvent, StackFrame, StackTraceBody, StoppedEvent, ThreadsBody, body_of};
+use crate::dap::console::spawn_console;
+use crate::dap::protocol::{Breakpoint, BreakpointEvent, OutputEvent, StackFrame, StackTraceBody, StoppedEvent, ThreadsBody, body_of};
 use crate::dap::session::{Command, DapTag, Phase, ResumeKind, SessionId, SessionSpec, SourceBreakpoints, TagKind};
 use crate::dap::{DapBody, DapMsg};
 use crate::editor::buffer::{BpState, BreakpointMark};
@@ -25,7 +26,9 @@ use crate::event::{AppMsg, Level};
 #[cfg(test)]
 use crate::lsp::client::Conn;
 use crate::lsp::client::spawn_process;
+use crate::run::matcher::{Link, RunLine, Severity};
 use crate::run::{RunTask, load_tasks};
+use crate::ui::focus::{PanelId, ToolWindowId};
 
 /// How adapters are reached: processes, or in-process fakes in tests.
 #[derive(Default)]
@@ -52,6 +55,8 @@ pub(super) struct Live {
     pub(super) epoch: u64,
     /// The thread the last stop was on, kept through `Running` for `debug.pause`.
     pub(super) thread: Option<i64>,
+    /// The program's output goes to the Console thread; dropping this ends it after it flushed what it holds.
+    pub(super) console: std::sync::mpsc::Sender<OutputEvent>,
 }
 
 #[derive(Default)]
@@ -66,6 +71,8 @@ pub struct DebugState {
     /// The end of what is stopping or preparing: a new start waits for it, so two adapters never overlap.
     retiring: Option<JoinHandle<()>>,
     connector: Connector,
+    /// The Debug window was shown by a first start in this run; a later start leaves it as the user has it.
+    window_shown: bool,
 }
 
 impl DebugState {
@@ -174,6 +181,25 @@ fn apply_breakpoint(line: usize, mark: &mut BreakpointMark, bp: &Breakpoint) {
     mark.message = bp.message.clone();
 }
 
+/// The Console line for a verdict the user should read: a failed breakpoint, or one the adapter put on another
+/// line. A verified breakpoint on its own line, or a pending one, says nothing. The location is the user's line.
+fn verdict_line(source: &Path, line: usize, mark: &BreakpointMark) -> Option<RunLine> {
+    let file = source.file_name()?.to_string_lossy();
+    let place = format!("{file}:{}", line + 1);
+    let (rest, severity, target) = if mark.state == BpState::Failed {
+        let rest = match &mark.message {
+            Some(m) => format!(" failed: {m}"),
+            None => " failed".to_string(),
+        };
+        (rest, Some(Severity::Warning), line)
+    } else {
+        let moved = mark.adapter_line?;
+        (format!(" moved to line {}", moved + 1), None, moved)
+    };
+    let link = Link { path: source.to_path_buf(), line: target, col: 0, span: 11..11 + place.len() };
+    Some(RunLine { text: format!("Breakpoint {place}{rest}"), severity, link: Some(link) })
+}
+
 /// The file and 0-based line a frame is at, when it has a source file: not when `line` is 0, the source is absent
 /// or has a `sourceReference` (not a file), or its path is empty. A relative path is joined to the root. The frame
 /// id and column are not read, so 0 is no special value.
@@ -232,6 +258,14 @@ impl App {
             DebugAction::StepOut => self.debug_resume(ResumeKind::StepOut),
             DebugAction::Pause => self.debug_pause(),
             DebugAction::ShowExecutionPoint => self.debug_show_execution_point(),
+            // The Console's list keys: `perform` hands them to the panel.
+            DebugAction::Up
+            | DebugAction::Down
+            | DebugAction::PageUp
+            | DebugAction::PageDown
+            | DebugAction::Home
+            | DebugAction::End
+            | DebugAction::Open => {}
         }
     }
 
@@ -303,7 +337,13 @@ impl App {
             .iter()
             .map(|(p, lines)| (p.clone(), SourceBreakpoints { lines: lines.clone(), modified: source_modified(&self.editor, p) }))
             .collect();
+        let cwd = p.launch["cwd"].as_str().map_or_else(|| root.clone(), PathBuf::from);
         let spec = SessionSpec { id, generation, adapter_id: p.adapter.name.clone(), launch: p.launch, breakpoints };
+        let output_tx = self.bus_tx.clone();
+        let console = spawn_console(cwd, root.clone(), move |lines| {
+            let _ = output_tx.send(AppMsg::DebugOutput { generation, session: id, lines });
+        });
+        self.debug_panel.start(&p.name, id);
         let tx = self.bus_tx.clone();
         let client = DapClient::start(spec, conn, move |m| {
             let _ = tx.send(AppMsg::Dap(m));
@@ -318,8 +358,19 @@ impl App {
             open,
             epoch: 0,
             thread: None,
+            console,
         });
         self.notify(Level::Info, format!("Debugging {} with {}", p.name, p.adapter.name));
+        if !self.debug.window_shown {
+            self.debug.window_shown = true;
+            self.layout.show(ToolWindowId::Debug);
+            // `show` replaces the slot's occupant and leaves focus alone.
+            if let Some(cur) = self.focus.current.tool_window()
+                && !self.layout.is_visible(cur)
+            {
+                self.focus.set(PanelId::Editor);
+            }
+        }
     }
 
     pub(super) fn dap_msg(&mut self, m: DapMsg) {
@@ -346,14 +397,29 @@ impl App {
             DapBody::Ended { reason } => self.debug_ended(reason),
             DapBody::Breakpoints { source, requested, result } => self.debug_breakpoints_answered(&source, &requested, &result),
             DapBody::BreakpointChanged(e) => self.debug_breakpoint_changed(&e),
-            // D4a2: Output.
-            DapBody::Started { .. } | DapBody::Output(_) => {}
+            // Split and matched on the Console thread: a program can print 100 000 lines a second.
+            DapBody::Output(e) => {
+                if let Some(l) = &self.debug.session {
+                    let _ = l.console.send(e);
+                }
+            }
+            DapBody::Started { .. } => {}
         }
+    }
+
+    /// A batch from the Console thread. Judged by the panel's session, not by `Live`: the thread flushes what it
+    /// holds after the session ended.
+    pub(super) fn debug_output(&mut self, generation: u64, session: SessionId, lines: Vec<RunLine>) {
+        if generation != self.workspace.generation || self.debug_panel.session() != Some(session) {
+            tracing::debug!("dropping the output of an old debug session");
+            return;
+        }
+        self.debug_panel.push(lines);
     }
 
     /// A stop: asks for the stack of the stopped thread, or for the threads when the event names none.
     fn debug_stopped(&mut self, epoch: u64, event: StoppedEvent) {
-        self.notify(Level::Info, format!("Paused ({})", event.reason));
+        self.debug_panel.set_reason(Some(event.reason.clone()));
         let Some(live) = self.debug.session.as_mut() else { return };
         live.epoch = epoch;
         live.thread = event.thread_id;
@@ -378,6 +444,7 @@ impl App {
         if let Some(live) = self.debug.session.as_mut() {
             live.epoch = epoch;
         }
+        self.debug_panel.set_reason(None);
         self.editor.set_execution_point(None);
     }
 
@@ -498,12 +565,20 @@ impl App {
     fn debug_breakpoints_answered(&mut self, source: &Path, requested: &[usize], result: &[Breakpoint]) {
         tracing::debug!("dap: breakpoints of {}: {requested:?} answered {result:?}", source.display());
         let Some(marks) = self.editor.breakpoint_marks_mut(source) else { return };
+        let mut lines = Vec::new();
         for (line, bp) in requested.iter().zip(result) {
             if let Some(mark) = marks.get_mut(line) {
+                let before = (mark.state, mark.adapter_line, mark.message.clone());
                 *mark = BreakpointMark::default();
                 apply_breakpoint(*line, mark, bp);
                 tracing::debug!("dap: mark {}:{line} is {:?}, adapter line {:?}", source.display(), mark.state, mark.adapter_line);
+                if before != (mark.state, mark.adapter_line, mark.message.clone()) {
+                    lines.extend(verdict_line(source, *line, mark));
+                }
             }
+        }
+        if !lines.is_empty() {
+            self.debug_panel.push(lines);
         }
     }
 
@@ -559,6 +634,7 @@ impl App {
     /// A root switch: the session belongs to the old root. Called before the generation changes.
     pub(crate) fn debug_root_changed(&mut self) {
         self.debug.retiring = self.debug.retire();
+        self.debug_panel.clear();
         self.editor.reset_breakpoint_states();
         self.editor.set_execution_point(None);
         self.debug.starting = false;
@@ -598,7 +674,7 @@ pub(crate) mod tests {
     use crate::editor::undo::TxKind;
     use crate::ui::focus::PanelId;
 
-    const DEMO: &str = "[[configs]]\nname = \"demo\"\ncommand = [\"./demo\"]\n\n[debug.demo]\nadapter = \"fake\"\nlaunch = { program = \"${workspaceFolder}/demo\" }\n";
+    pub(crate) const DEMO: &str = "[[configs]]\nname = \"demo\"\ncommand = [\"./demo\"]\n\n[debug.demo]\nadapter = \"fake\"\nlaunch = { program = \"${workspaceFolder}/demo\" }\n";
 
     pub(crate) fn caps() -> Value {
         json!({"supportsConfigurationDoneRequest": true, "supportsTerminateRequest": true, "supportTerminateDebuggee": true})
@@ -622,6 +698,13 @@ pub(crate) mod tests {
     pub(crate) async fn dap_until(app: &mut App, done: impl Fn(&App) -> bool) {
         while !done(app) {
             handle_next(app, |m| matches!(m, AppMsg::Dap(_) | AppMsg::DebugReady { .. })).await;
+        }
+    }
+
+    /// Like `dap_until`, and the Console thread's batches are handled too.
+    pub(crate) async fn console_until(app: &mut App, done: impl Fn(&App) -> bool) {
+        while !done(app) {
+            handle_next(app, |m| matches!(m, AppMsg::Dap(_) | AppMsg::DebugReady { .. } | AppMsg::DebugOutput { .. })).await;
         }
     }
 
@@ -947,14 +1030,13 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn exit_code_and_pause_toasts() {
+    async fn exit_code_toasts() {
         for (code, level, text) in
             [(3, Level::Warn, "Debug session ended, exit code 3"), (0, Level::Info, "Debug session ended, exit code 0")]
         {
             let (mut app, dir, _fakes, mut fake) = live(&format!("debug-exit-{code}"), Order::LaunchDeferred).await;
             fake.event("stopped", json!({"reason": "breakpoint", "threadId": 1}));
-            dap_until(&mut app, |a| texts(a).contains(&"Paused (breakpoint)".to_string())).await;
-            assert_eq!(app.notifications.iter().find(|n| n.text == "Paused (breakpoint)").unwrap().level, Level::Info);
+            dap_until(&mut app, |a| a.debug_panel.title(a.debug.phase()).contains("paused (breakpoint)")).await;
             fake.event("exited", json!({"exitCode": code}));
             fake.event("terminated", Value::Null);
             let disconnect = fake.recv("disconnect").await;
@@ -1105,7 +1187,7 @@ pub(crate) mod tests {
 
     // ---- breakpoints (yman 413) ----
 
-    fn setup(name: &str, order: Order) -> (App, PathBuf, UnboundedReceiver<FakeAdapter>) {
+    pub(crate) fn setup(name: &str, order: Order) -> (App, PathBuf, UnboundedReceiver<FakeAdapter>) {
         let (mut app, dir) = test_app(name);
         let fakes = with_fake_adapters(&mut app, caps(), order);
         write_run_toml(&app, DEMO);
@@ -1113,7 +1195,7 @@ pub(crate) mod tests {
     }
 
     /// A live session in `Running`, its snapshot sent; every setBreakpoints so far is taken off the fake and returned.
-    async fn running(app: &mut App, fakes: &mut UnboundedReceiver<FakeAdapter>) -> (FakeAdapter, Vec<Value>) {
+    pub(crate) async fn running(app: &mut App, fakes: &mut UnboundedReceiver<FakeAdapter>) -> (FakeAdapter, Vec<Value>) {
         app.perform(Action::Debug(DebugAction::Start));
         dap_until(app, |a| a.debug.active()).await;
         let mut fake = fakes.try_recv().expect("connected");
@@ -1166,7 +1248,7 @@ pub(crate) mod tests {
         fake.respond(set, json!({ "breakpoints": bps }));
     }
 
-    fn six(app: &mut App) -> PathBuf {
+    pub(crate) fn six(app: &mut App) -> PathBuf {
         load(app, "a.log", "l0\nl1\nl2\nl3\nl4\nl5\n")
     }
 
@@ -1750,7 +1832,7 @@ pub(crate) mod tests {
     }
 
     /// A running session stopped on thread 7 at `path`:`line`.
-    async fn paused(app: &mut App, fakes: &mut UnboundedReceiver<FakeAdapter>, path: &Path, line: i64) -> FakeAdapter {
+    pub(crate) async fn paused(app: &mut App, fakes: &mut UnboundedReceiver<FakeAdapter>, path: &Path, line: i64) -> FakeAdapter {
         let (mut fake, _) = running(app, fakes).await;
         stop_at(app, &mut fake, 7, path, line).await;
         fake
@@ -2309,5 +2391,204 @@ pub(crate) mod tests {
         app.on_tick();
         assert_eq!(app.debug.session.as_ref().unwrap().sent, before);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+    // ---- the Debug window and its Console (yman 415) ----
+
+    fn console(app: &App) -> Vec<String> {
+        app.debug_panel.texts().into_iter().map(String::from).collect()
+    }
+
+    fn output(fake: &FakeAdapter, category: &str, text: &str) {
+        fake.event("output", json!({"category": category, "output": text}));
+    }
+
+    #[tokio::test]
+    async fn program_output_reaches_the_console_without_telemetry() {
+        let (mut app, dir, _fakes, fake) = live("console-output", Order::LaunchDeferred).await;
+        output(&fake, "telemetry", "secret\n");
+        output(&fake, "stdout", "x=3 \u{1F600}\n");
+        console_until(&mut app, |a| console(a).contains(&"x=3 \u{1F600}".to_string())).await;
+        assert_eq!(console(&app), ["x=3 \u{1F600}"], "telemetry is not shown");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn the_tail_is_kept_after_the_session_ended() {
+        let (mut app, dir, _fakes, mut fake) = live("console-tail", Order::LaunchDeferred).await;
+        output(&fake, "stdout", "tail");
+        fake.event("terminated", Value::Null);
+        let disconnect = fake.recv("disconnect").await;
+        fake.respond(&disconnect, Value::Null);
+        console_until(&mut app, gone).await;
+        console_until(&mut app, |a| console(a).contains(&"tail".to_string())).await;
+        assert!(app.debug.session.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn stale_console_lines_are_dropped() {
+        let (mut app, dir, _fakes, _fake) = live("console-stale", Order::LaunchDeferred).await;
+        let (generation, session) = (app.workspace.generation, app.debug_panel.session().expect("a session"));
+        let batch = |generation, session, text: &str| AppMsg::DebugOutput { generation, session, lines: vec![RunLine::plain(text)] };
+        app.handle_msg(batch(generation.wrapping_sub(1), session, "old generation"));
+        app.handle_msg(batch(generation, SessionId(session.0 + 1), "other session"));
+        assert!(console(&app).is_empty(), "{:?}", console(&app));
+        app.handle_msg(batch(generation, session, "current"));
+        assert_eq!(console(&app), ["current"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_new_start_and_a_root_switch_empty_the_console() {
+        let (mut app, dir, mut fakes, mut fake1) = live("console-replace", Order::LaunchDeferred).await;
+        let first = app.debug_panel.session().unwrap();
+        output(&fake1, "stdout", "first run\n");
+        console_until(&mut app, |a| !console(a).is_empty()).await;
+        shift_f9(&mut app);
+        cooperate(&mut fake1).await;
+        console_until(&mut app, |a| a.debug.active()).await;
+        let _fake2 = fakes.try_recv().expect("the second adapter");
+        assert_ne!(app.debug_panel.session(), Some(first));
+        assert!(console(&app).is_empty(), "{:?}", console(&app));
+        assert_eq!(app.debug_panel.title(app.debug.phase()), " Debug: demo · starting ");
+        app.debug_panel.push(vec![RunLine::plain("second run")]);
+        app.debug_root_changed();
+        assert!(console(&app).is_empty());
+        assert_eq!(app.debug_panel.title(None), " Debug ");
+        assert_eq!(app.debug_panel.session(), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn the_first_start_shows_the_window_and_leaves_focus() {
+        let (mut app, dir, mut fakes) = setup("window-first", Order::LaunchDeferred);
+        assert!(!app.layout.is_visible(ToolWindowId::Debug));
+        app.focus.set(PanelId::Editor);
+        let mut fake = start(&mut app, &mut fakes).await;
+        assert!(app.layout.is_visible(ToolWindowId::Debug));
+        assert!(app.focus.is(PanelId::Editor), "the window takes no focus");
+        // Hidden by the user, a later start leaves it hidden.
+        dap_until(&mut app, |a| a.debug.phase().is_some_and(|p| p != Phase::Initializing)).await;
+        app.layout.hide(ToolWindowId::Debug);
+        app.perform(Action::Debug(DebugAction::Stop));
+        cooperate(&mut fake).await;
+        dap_until(&mut app, gone).await;
+        let _fake2 = start(&mut app, &mut fakes).await;
+        assert!(!app.layout.is_visible(ToolWindowId::Debug));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_window_the_debug_window_replaces_gives_up_focus() {
+        let (mut app, dir, mut fakes) = setup("window-replaces", Order::LaunchDeferred);
+        let dock = app.layout.dock_of(ToolWindowId::Run);
+        app.layout.move_to_dock(ToolWindowId::Debug, dock);
+        app.layout.show(ToolWindowId::Run);
+        app.focus.set(PanelId::Run);
+        let _fake = start(&mut app, &mut fakes).await;
+        assert!(app.layout.is_visible(ToolWindowId::Debug));
+        assert!(!app.layout.is_visible(ToolWindowId::Run));
+        assert!(app.focus.is(PanelId::Editor));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn alt_f5_shows_focuses_and_hides() {
+        let (mut app, dir) = test_app("window-alt-f5");
+        let alt_f5 = key(KeyCode::F(5), KeyModifiers::ALT);
+        assert!(!app.layout.is_visible(ToolWindowId::Debug));
+        app.handle_key(alt_f5);
+        assert!(app.layout.is_visible(ToolWindowId::Debug));
+        assert!(app.focus.is(PanelId::Debug));
+        app.handle_key(alt_f5);
+        assert!(!app.layout.is_visible(ToolWindowId::Debug));
+        assert!(app.focus.is(PanelId::Editor));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn f_keys_step_with_the_window_focused() {
+        let (mut app, dir, mut fakes) = setup("window-f-keys", Order::LaunchEarly);
+        let a = six(&mut app);
+        let mut fake = paused(&mut app, &mut fakes, &a, 3).await;
+        app.focus.set(PanelId::Debug);
+        let ctx = app.contexts();
+        let at = |name: &str| ctx.iter().position(|c| *c == name).unwrap_or_else(|| panic!("{name} not in {ctx:?}"));
+        assert!(at("debug.suspended") < at("debug"), "{ctx:?}");
+        for (n, (code, mods, command)) in [
+            (F8, KeyModifiers::NONE, "next"),
+            (F7, KeyModifiers::NONE, "stepIn"),
+            (F8, KeyModifiers::SHIFT, "stepOut"),
+            (F9, KeyModifiers::NONE, "continue"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            app.handle_key(key(code, mods));
+            let req = fake.recv(command).await;
+            fake.respond(&req, json!({}));
+            pump_until(&mut app, |x| point(x).is_none()).await;
+            stop_at(&mut app, &mut fake, 7, &a, 4 + n as i64).await;
+            assert!(app.focus.is(PanelId::Debug), "{command}: focus stays");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_stop_shows_in_the_title_and_not_as_a_toast() {
+        let (mut app, dir, mut fakes) = setup("window-title", Order::LaunchEarly);
+        let a = six(&mut app);
+        let mut fake = paused(&mut app, &mut fakes, &a, 3).await;
+        assert!(app.debug_panel.title(app.debug.phase()).contains("paused (breakpoint)"));
+        assert!(texts(&app).iter().all(|t| !t.starts_with("Paused (")), "{:?}", texts(&app));
+        press(&mut app, F9);
+        let req = fake.recv("continue").await;
+        fake.respond(&req, json!({}));
+        pump_until(&mut app, |x| point(x).is_none() && x.debug.phase() == Some(Phase::Running)).await;
+        assert_eq!(app.debug_panel.title(app.debug.phase()), " Debug: demo · running ");
+        assert_eq!(app.debug_panel.title(Some(Phase::Suspended)), " Debug: demo · paused ", "the reason went with the pause");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_breakpoint_verdict_is_written_once() {
+        let (mut app, dir, mut fakes) = setup("console-verdict", Order::LaunchEarly);
+        let a = six(&mut app);
+        toggle(&mut app, &a, 1);
+        let _ = running(&mut app, &mut fakes).await;
+        // The adapter put it on its 1-based line 4.
+        answered(&mut app, &a, vec![1], vec![bp(json!({"id": 1, "verified": true, "line": 4}))]);
+        assert_eq!(console(&app), ["Breakpoint a.log:2 moved to line 4"]);
+        // Whole-list answers repeat: nothing new.
+        answered(&mut app, &a, vec![1], vec![bp(json!({"id": 1, "verified": true, "line": 4}))]);
+        assert_eq!(console(&app).len(), 1);
+        // Verified where it was asked, and pending: nothing to say.
+        answered(&mut app, &a, vec![1], vec![bp(json!({"id": 1, "verified": true, "line": 2}))]);
+        answered(&mut app, &a, vec![1], vec![bp(json!({"id": 1, "verified": false}))]);
+        assert_eq!(console(&app).len(), 1);
+        // A failure carries the adapter's words.
+        answered(&mut app, &a, vec![1], vec![bp(json!({"verified": false, "reason": "failed", "message": "no code"}))]);
+        assert_eq!(console(&app)[1], "Breakpoint a.log:2 failed: no code");
+        // A file with no open buffer has no marks and writes nothing.
+        let closed = app.workspace.root.join("closed.log");
+        answered(&mut app, &closed, vec![0], vec![bp(json!({"verified": false, "reason": "failed", "message": "x"}))]);
+        assert_eq!(console(&app).len(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_verdict_line_names_the_place_and_links_it() {
+        let path = Path::new("/p/a.log");
+        let mark =
+            |state, adapter_line, message: Option<&str>| BreakpointMark { state, id: None, adapter_line, message: message.map(Into::into) };
+        let moved = verdict_line(path, 1, &mark(BpState::Verified, Some(3), None)).unwrap();
+        assert_eq!((moved.text.as_str(), moved.severity), ("Breakpoint a.log:2 moved to line 4", None));
+        let link = moved.link.unwrap();
+        assert_eq!((link.path.as_path(), link.line, &moved.text[link.span]), (path, 3, "a.log:2"));
+        let failed = verdict_line(path, 1, &mark(BpState::Failed, None, None)).unwrap();
+        assert_eq!((failed.text.as_str(), failed.severity), ("Breakpoint a.log:2 failed", Some(Severity::Warning)));
+        assert_eq!(failed.link.unwrap().line, 1, "a failed one links the user's line");
+        assert!(verdict_line(path, 1, &mark(BpState::Verified, None, None)).is_none());
+        assert!(verdict_line(path, 1, &mark(BpState::Pending, None, None)).is_none());
     }
 }

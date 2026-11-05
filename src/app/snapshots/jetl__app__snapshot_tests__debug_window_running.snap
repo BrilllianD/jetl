@@ -1,0 +1,71 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &marks, None)"
+---
+120x40 cursor=(43,1)
+00  ≣ ┌ Project: root ───────────────┐│  a.log ×
+01    │                              ││  1    l0
+02  1 │                              ││  2    l1
+03  ⌂ │                              ││  3    l2
+04  2 │                              ││  4    l3
+05  ◫ │                              ││  5    l4
+06  7 │                              ││  6    l5
+07  ⊢ │                              ││  7
+08    │                              ││
+09    │                              ││
+10    │                              ││
+11    │                              ││
+12    │                              ││
+13    │                              ││
+14    │                              ││
+15    │                              ││
+16    │                              ││
+17    │                              ││
+18  ◉ │                              ││
+19    │                              ││
+20  ⋔ │                              ││
+21    │                              ││
+22  ✎ │                              ││
+23    └──────────────────────────────┘│
+24  ✓ ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+25  8 ┌ Debug: demo · running ────────────────────────────────────────────────────────────────────────────────────────────┐
+26  ⟲ │  Resume   Pause   Step Over   Step Into   Step Out   Stop                                                         │
+27  5 │ No output yet                                                                                                     │
+28  ⚑ │                                                                                                                   │
+29  9 │                                                                                                                   │
+30  ⎇ │                                                                                                                   │
+31    │                                                                                                                   │
+32  ❯ │                                                                                                                   │
+33  6 │                                                                                                                   │
+34  ⚠ │                                                                                                                   │
+35  4 │                                                                                                                   │
+36  ► │                                                                                                                   │
+37  3 │                                                                                                                   │
+38  ⌕ └───────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+39  a.log                                                                     Ln 1, Col 1  LF  UTF-8  4 spaces  Plain text
+-- marks: D=disabled E=error U=link
+00 DDD                                           DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD
+04 DDD
+05 DDD
+06 DDD
+07 DDD
+19 DDD
+20 DDD
+21 DDD
+22 DDD
+23 DDD
+24 DDD
+25 DDD
+26 DDD  DDDDDDDD         DDDDDDDDDDD DDDDDDDDDDD DDDDDDDDDD
+27 DDD
+28 DDD
+29 DDD
+30 DDD
+31 DDD
+32 DDD
+33 DDD
+34 DDD
+35 DDD
+36 DDD
+37 DDD
+38 DDD

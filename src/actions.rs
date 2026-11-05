@@ -567,6 +567,15 @@ pub enum DebugAction {
     Pause,
     /// Open the file at the line the program is paused on.
     ShowExecutionPoint,
+    // The Debug tool window's Console list.
+    Up,
+    Down,
+    PageUp,
+    PageDown,
+    Home,
+    End,
+    /// Open the selected Console line's location.
+    Open,
 }
 
 /// The Problems tool window (language server diagnostics).
@@ -897,6 +906,7 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "tool_window.tasks" => "Tasks tool window (yman)", App(AppAction::ToggleToolWindow(ToolWindowId::Tasks));
         "tool_window.todo" => "TODO tool window", App(AppAction::ToggleToolWindow(ToolWindowId::Todo));
         "tool_window.hierarchy" => "Hierarchy tool window (call and type hierarchy)", App(AppAction::ToggleToolWindow(ToolWindowId::Hierarchy));
+        "tool_window.debug" => "Debug tool window", App(AppAction::ToggleToolWindow(ToolWindowId::Debug));
         "editor.find" => "Find", Editor(E::Find);
         "editor.replace" => "Replace", Editor(E::Replace);
         "editor.find_next" => "Find next", Editor(E::FindNext);
@@ -1177,6 +1187,13 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "debug.step_out" => "Debug: Step Out", Debug(DebugAction::StepOut);
         "debug.pause" => "Debug: Pause", Debug(DebugAction::Pause);
         "debug.show_execution_point" => "Debug: Show Execution Point", Debug(DebugAction::ShowExecutionPoint);
+        "debug.up" => "Debug: up", Debug(DebugAction::Up);
+        "debug.down" => "Debug: down", Debug(DebugAction::Down);
+        "debug.page_up" => "Debug: page up", Debug(DebugAction::PageUp);
+        "debug.page_down" => "Debug: page down", Debug(DebugAction::PageDown);
+        "debug.home" => "Debug: first line", Debug(DebugAction::Home);
+        "debug.end" => "Debug: last line", Debug(DebugAction::End);
+        "debug.open" => "Debug: jump to the selected line's location", Debug(DebugAction::Open);
 
         "lsp.restart" => "Restart language servers", Lsp(LspAction::Restart);
         "lsp.next_problem" => "Next problem (diagnostic) in the file", Lsp(LspAction::NextProblem);
@@ -1345,6 +1362,15 @@ impl Action {
                 | DebugAction::StepOut
                 | DebugAction::ShowExecutionPoint,
             ) => &["debug.suspended"],
+            Action::Debug(
+                DebugAction::Up
+                | DebugAction::Down
+                | DebugAction::PageUp
+                | DebugAction::PageDown
+                | DebugAction::Home
+                | DebugAction::End
+                | DebugAction::Open,
+            ) => &["debug", "global"],
             Action::Debug(_) => &["global"],
             Action::Problems(_) => &["problems", "global"],
             Action::History(_) => &["local_history", "global"],

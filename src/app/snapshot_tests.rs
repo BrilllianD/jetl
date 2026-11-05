@@ -4332,3 +4332,69 @@ async fn app_toolbar_context_menu() {
     let marks = [Mark::style('S', "selected row", app.theme.list_selected)];
     assert_snapshot!("app_toolbar_context_menu", snapshot(&term, &marks, None));
 }
+
+/// The Debug window's marks: buttons that cannot be pressed now, error lines and locations.
+fn debug_marks(theme: &Theme) -> Vec<Mark> {
+    vec![
+        Mark::style('D', "disabled", theme.dim.bg(theme.panel_bg)),
+        Mark::style('E', "error", theme.error),
+        Mark::modifier('U', "link", Modifier::UNDERLINED),
+    ]
+}
+
+#[tokio::test]
+async fn debug_window_suspended() {
+    use super::debug::tests::{DEMO, caps, paused, six, with_fake_adapters, write_run_toml};
+    use crate::dap::fake::Order;
+    let mut fx = stable_app("debug-suspended");
+    let app = &mut fx.app;
+    let mut fakes = with_fake_adapters(app, caps(), Order::LaunchEarly);
+    write_run_toml(app, DEMO);
+    let a = six(app);
+    let _fake = paused(app, &mut fakes, &a, 3).await;
+    // The start's toast sits in the stack as well as in the log.
+    app.notifications.clear();
+    app.toasts = Default::default();
+    let term = draw_app(app, 120, 40);
+    let marks = debug_marks(&app.theme);
+    assert_snapshot!("debug_window_suspended", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
+async fn debug_window_running() {
+    use super::debug::tests::{DEMO, caps, running, six, with_fake_adapters, write_run_toml};
+    use crate::dap::fake::Order;
+    let mut fx = stable_app("debug-running");
+    let app = &mut fx.app;
+    let mut fakes = with_fake_adapters(app, caps(), Order::LaunchEarly);
+    write_run_toml(app, DEMO);
+    six(app);
+    let _fake = running(app, &mut fakes).await;
+    // The start's toast sits in the stack as well as in the log.
+    app.notifications.clear();
+    app.toasts = Default::default();
+    let term = draw_app(app, 120, 40);
+    let marks = debug_marks(&app.theme);
+    assert_snapshot!("debug_window_running", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
+async fn debug_window_console() {
+    use crate::dap::session::SessionId;
+    use crate::run::matcher::{Link, RunLine, Severity};
+    let mut fx = stable_app("debug-console");
+    let app = &mut fx.app;
+    app.layout.show(ToolWindowId::Debug);
+    app.debug_panel.start("demo", SessionId(1));
+    let located = "demo.c:9 reached";
+    let link = Link { path: PathBuf::from("/tmp/demo.c"), line: 8, col: 0, span: 0..6 };
+    app.debug_panel.push(vec![
+        RunLine::plain("x=3 y=7"),
+        RunLine { text: "stderr: something broke".into(), severity: Some(Severity::Error), link: None },
+        RunLine { text: located.into(), severity: None, link: Some(link) },
+        RunLine::plain("café 😀 done"),
+    ]);
+    let term = draw_app(app, 80, 24);
+    let marks = debug_marks(&app.theme);
+    assert_snapshot!("debug_window_console", snapshot(&term, &marks, None));
+}

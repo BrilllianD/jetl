@@ -62,6 +62,7 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Ctrl+Alt+Shift+Insert` | `editor.new_scratch` | New scratch file… |
 | `Alt+Shift+H` | `editor.local_history` | Local history of the file (editor) or the selected entry (Project tree; a folder lists its files), in its tool window |
 | `Alt+8` | `tool_window.local_history` | Local History tool window |
+| `Alt+F5` | `tool_window.debug` | Debug tool window |
 | `Ctrl+V` | `editor.paste` | Paste |
 | `Alt+Right` | `editor.next_tab` | Next tab |
 | `Alt+Left` | `editor.prev_tab` | Previous tab |
@@ -410,6 +411,19 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | Keys | Action | Description |
 |---|---|---|
 | `Esc` | `mode.normal` | Vim: normal mode |
+
+## debug
+
+| Keys | Action | Description |
+|---|---|---|
+| `Esc` | `app.focus_editor` | Focus editor |
+| `Up` | `debug.up` | Debug: up |
+| `Down` | `debug.down` | Debug: down |
+| `PageUp` | `debug.page_up` | Debug: page up |
+| `PageDown` | `debug.page_down` | Debug: page down |
+| `Home` | `debug.home` | Debug: first line |
+| `End` | `debug.end` | Debug: last line |
+| `Enter` | `debug.open` | Debug: jump to the selected line's location |
 
 ## debug.active
 

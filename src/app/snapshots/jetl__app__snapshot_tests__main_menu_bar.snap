@@ -4,14 +4,14 @@ expression: "snapshot(&term, &marks, None)"
 ---
 100x30 cursor=hidden
 00  ≣  File  Edit  View  Navigate  Git  Run  Help
-01    │     ╭──────────────────────────────────────────────────────╮
-02  1 │     │ Undo                                          Ctrl+Z │
-03  ⌂ │     │ Redo                                           Alt+Y │
-04  2 │     ├──────────────────────────────────────────────────────┤
-05  ◫ │     │ Cut                                           Ctrl+X │
-06  7 │     │ Copy                                          Ctrl+C │
-07  ⊢ │     │ Paste                                         Ctrl+V │
-08    │     │ Select All                                    Ctrl+A │
+01  1 │     ╭──────────────────────────────────────────────────────╮
+02  ⌂ │     │ Undo                                          Ctrl+Z │
+03  2 │     │ Redo                                           Alt+Y │
+04  ◫ │     ├──────────────────────────────────────────────────────┤
+05  7 │     │ Cut                                           Ctrl+X │
+06  ⊢ │     │ Copy                                          Ctrl+C │
+07    │     │ Paste                                         Ctrl+V │
+08  ◉ │     │ Select All                                    Ctrl+A │
 09    │     │ Extend Selection                          Ctrl+Alt+W │
 10  ⋔ │     │ Shrink Selection                    Ctrl+Alt+Shift+W │
 11    │     ├──────────────────────────────────────────────────────┤

@@ -14,6 +14,8 @@
 "alt-4" = "tool_window.run"
 "alt-6" = "tool_window.problems"
 "alt-f12" = "tool_window.terminal"
+# JetBrains has Alt+5 for Debug, which the Event Log has here, so Debug takes Alt+F5.
+"alt-f5" = "tool_window.debug"
 # JetBrains has no default key for the Event Log; Alt+5 is free here and
 # Alt+Shift+L works in legacy terminals too.
 "alt-5" = "tool_window.event_log"
@@ -563,6 +565,17 @@
 "left" = "run.collapse"
 "ctrl-alt-down" = "run.next_problem"
 "ctrl-alt-up" = "run.prev_problem"
+"esc" = "app.focus_editor"
+
+# The Debug window (Alt+F5): the program's output. Enter opens the location on the selected line.
+[debug]
+"up" = "debug.up"
+"down" = "debug.down"
+"pageup" = "debug.page_up"
+"pagedown" = "debug.page_down"
+"home" = "debug.home"
+"end" = "debug.end"
+"enter" = "debug.open"
 "esc" = "app.focus_editor"
 
 # Above [global] while a debug session is live or starting: Ctrl+F2 stops it first, and the Run task once none is.

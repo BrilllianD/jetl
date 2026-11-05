@@ -15,15 +15,15 @@ expression: "snapshot(&term, &marks, None)"
 09    │           │ Run            Alt+4 │                        │
 10    │           │ Problems       Alt+6 │                        │
 11    │           │ Terminal     Alt+F12 │                        │
-12    │           │ Git            Alt+9 │                        │
+12  ◉ │           │ Git            Alt+9 │                        │
 13  ⋔ │           │ Event Log      Alt+5 │                        │
 14  ✎ │           │ Local History  Alt+8 │                        │
 15  ✓ │           │ Tasks                │                        │
 16  ⟲ │           │ TODO                 │                        │
 17  ⚑ │           │ Hierarchy            │                        │
-18  ⎇ │           │ beta.txt                                      │
-19  ❯ │           ╰───────────────────────────────────────────────╯
-20  ⚠ │                              ││
+18  ⎇ │           │ Debug         Alt+F5 │                        │
+19  ❯ │           │ beta.txt                                      │
+20  ⚠ │           ╰───────────────────────────────────────────────╯
 21  ► │                              ││
 22  ⌕ └──────────────────────────────┘│
 23  gamma.txt                         Ln 1, Col 1  LF  UTF-8  4 spaces  Plain text
@@ -39,4 +39,5 @@ expression: "snapshot(&term, &marks, None)"
 12                                 ddddd
 13                                 ddddd
 14                                 ddddd
-18                  dddddddd
+18                                dddddd
+19                  dddddddd

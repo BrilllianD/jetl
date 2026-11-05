@@ -15,7 +15,7 @@ expression: "snapshot(&term, &marks, Some(bottom))"
 09    ┌ Callers of helper (approximate) ──────────────────────────────────────────┐
 10    │ ▾ helper  b.rs:1                                                          │
 11    │   ▸ main  main.rs:4                                                       │
-12    │   ▸ run  main.rs:9                                                        │
+12  ◉ │   ▸ run  main.rs:9                                                        │
 13  ⋔ │                                                                           │
 14  ✎ │                                                                           │
 15  ✓ │                                                                           │

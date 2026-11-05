@@ -1,0 +1,45 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &marks, None)"
+---
+80x24 cursor=hidden
+00  ≣ ┌ Project: root ───────────────┐│
+01    │                              ││
+02  ⌂ │                              ││
+03  ◫ │                              ││               No files open.
+04  ⊢ │                              ││       Alt+1 opens the Project view;
+05    │                              ││         Ctrl+Shift+N finds a file.
+06    │                              ││
+07    └──────────────────────────────┘│
+08    ─────────────────────────────────────────────────────────────────────────────
+09    ┌ Debug: demo · ended ──────────────────────────────────────────────────────┐
+10    │  Resume   Pause   Step Over   Step Into   Step Out   Stop                 │
+11    │ x=3 y=7                                                                   │
+12  ◉ │ stderr: something broke                                                   │
+13  ⋔ │ demo.c:9 reached                                                          │
+14  ✎ │ café 😀 done                                                              │
+15  ✓ │                                                                           │
+16  ⟲ │                                                                           │
+17  ⚑ │                                                                           │
+18  ⎇ │                                                                           │
+19  ❯ │                                                                           │
+20  ⚠ │                                                                           │
+21  ► │                                                                           │
+22  ⌕ └───────────────────────────────────────────────────────────────────────────┘
+23
+-- marks: D=disabled E=error U=link
+00 DDD                                 DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD
+03 DDD
+04 DDD
+10      DDDDDDDD DDDDDDD DDDDDDDDDDD DDDDDDDDDDD DDDDDDDDDD DDDDDD
+12      EEEEEEEEEEEEEEEEEEEEEEE
+13 DDD  UUUUUU
+14 DDD
+15 DDD
+16 DDD
+17 DDD
+18 DDD
+19 DDD
+20 DDD
+21 DDD
+22 DDD

@@ -15,7 +15,7 @@ expression: "snapshot(&term, &[Mark::style('d', \"dim\", app.theme.dim)], Some(b
 09    ┌ Git: main ────────────────────────────────────────────────────────────────┐
 10    │ Commit   Log   Stash   Console             Refresh   Fetch   Pull   Push  │
 11    │▾ Unstaged (1)                │ Conflicted: Enter opens the resolver       │
-12    │  [ ] U main.rs               │                                            │
+12  ◉ │  [ ] U main.rs               │                                            │
 13  ⋔ │▾ Untracked (1)               │                                            │
 14  ✎ │  [ ] ? notes.txt             │                                            │
 15  ✓ │                              │                                            │

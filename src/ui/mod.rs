@@ -75,6 +75,10 @@ pub fn render_tool_window(app: &mut App, frame: &mut Frame, tw: ToolWindowId, r:
             app.todo.render(frame, r, focused, theme);
         }
         ToolWindowId::Hierarchy => app.hierarchy_panel.render(frame, r, focused, theme, app.hierarchy.as_ref()),
+        ToolWindowId::Debug => {
+            let phase = app.debug.phase();
+            app.debug_panel.render(frame, r, focused, theme, phase);
+        }
     }
 }
 

@@ -358,6 +358,7 @@ impl App {
     }
 
     pub(crate) fn forward_mouse(&mut self, p: PanelId, area: Rect, m: &Mouse) {
+        let phase = self.debug.phase();
         let mut cx = ctx!(self);
         let _ = match p {
             PanelId::Editor => self.editor.handle_mouse(m, area, &mut cx),
@@ -374,6 +375,7 @@ impl App {
             PanelId::Tasks => self.tasks.handle_mouse(m, &self.yman, &mut cx),
             PanelId::Todo => self.todo.handle_mouse(m, &mut cx),
             PanelId::Hierarchy => self.hierarchy_panel.handle_mouse(m, self.hierarchy.as_ref(), &mut cx),
+            PanelId::Debug => self.debug_panel.handle_mouse(m, phase, &mut cx),
         };
         let fx = cx.effects;
         self.apply_effects(fx);

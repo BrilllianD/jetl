@@ -15,7 +15,7 @@ expression: "snapshot(&term, &marks, Some(bottom))"
 09    ┌ Find ─────────────────────────────────────────────────────────────────────┐
 10    │ Find:    parse                                        Cc   W   .*   AST   │
 11    │ Replace: read_input                                   Replace all         │
-12    │ notes.txt    2                                                            │
+12  ◉ │ notes.txt    2                                                            │
 13  ⋔ │      1  parse later                                                   text│
 14  ✎ │      2  see parseread_input again                                     text│
 15  ✓ │ util.rs  src/  1                                                          │

@@ -11,7 +11,7 @@ use futures::StreamExt;
 use ratatui::layout::Rect;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
-use crate::actions::{Action, AppAction, Dir, EditorAction, EventLogAction, FindAction, ModeAction, RunAction};
+use crate::actions::{Action, AppAction, DebugAction, Dir, EditorAction, EventLogAction, FindAction, ModeAction, RunAction};
 use crate::config::keymap::Keymap;
 use crate::config::theme::Theme;
 use crate::config::{Config, Paths};
@@ -298,6 +298,8 @@ pub struct App {
     pub(crate) run: run::RunState,
     pub(crate) debug: debug::DebugState,
     pub run_panel: crate::run::panel::RunPanel,
+    /// The Debug window's Console and toolbar.
+    pub debug_panel: crate::dap::panel::DebugPanel,
     /// The temp file holding the body of the last HTTP request sent (Rerun reads it again).
     pub(crate) http_body: Option<std::path::PathBuf>,
     /// The Problems window over `lsp.diagnostics`.
@@ -448,6 +450,7 @@ impl App {
             run: Default::default(),
             debug: Default::default(),
             run_panel: Default::default(),
+            debug_panel: Default::default(),
             http_body: None,
             problems: crate::lsp::panel::ProblemsPanel::excluding(paths.scratches_dir()),
             history_panel: Default::default(),
@@ -599,8 +602,7 @@ impl App {
                 v.push("editor.merge");
             }
             let suspended = self.debug.suspended();
-            // S7 adds the Debug window.
-            let above = self.focus.is(PanelId::Editor);
+            let above = self.focus.is(PanelId::Editor) || self.focus.is(PanelId::Debug);
             if suspended && above {
                 v.push("debug.suspended");
             }
@@ -1210,6 +1212,15 @@ impl App {
                 return;
             }
             Action::Run(a) => self.run_panel.handle_action(a, &mut cx),
+            Action::Debug(
+                a @ (DebugAction::Up
+                | DebugAction::Down
+                | DebugAction::PageUp
+                | DebugAction::PageDown
+                | DebugAction::Home
+                | DebugAction::End
+                | DebugAction::Open),
+            ) => self.debug_panel.handle_action(a, &mut cx),
             Action::Debug(a) => {
                 drop(cx);
                 self.perform_debug(a.clone());
@@ -4938,13 +4949,13 @@ mod strip_tests {
         assert_eq!([row(Project), row(Worktrees), row(Structure)], [1, 2, 3]);
         assert_eq!([row(Find), row(EventLog)], [9, 4]);
         assert!(app.layout.strip_hits.contains(&(StripButton::More, Rect::new(0, 10, 3, 1))));
-        assert_eq!(app.layout.strip_overflow(false), [LocalHistory, Tasks, Todo, Hierarchy]);
+        assert_eq!(app.layout.strip_overflow(false), [LocalHistory, Tasks, Todo, Hierarchy, Debug]);
         assert_eq!(row_text(&buf, 10, 3).trim(), "\u{22ef}");
 
         app.handle_mouse(ev(MouseEventKind::Down(MouseButton::Left), 1, 10));
         let menu = app.menu.as_ref().expect("more menu");
         let labels: Vec<_> = menu.items.iter().map(|i| i.label.clone()).collect();
-        assert_eq!(labels, ["Local History", "Tasks", "TODO", "Hierarchy"]);
+        assert_eq!(labels, ["Local History", "Tasks", "TODO", "Hierarchy", "Debug"]);
         let todo = Action::App(AppAction::ToggleToolWindow(Todo));
         assert_eq!(menu.items[2].shortcut, app.shortcut(&todo).unwrap_or_default());
         let a = app.menu.take().unwrap().items[2].action.clone().unwrap();
@@ -4963,7 +4974,7 @@ mod strip_tests {
         draw_at(&mut app, 80, 12);
         let hits = &app.layout.strip_hits;
         assert!(hits.contains(&(StripButton::Tool(Hierarchy), Rect::new(77, 2, 3, 2))), "{hits:?}");
-        assert_eq!(app.layout.strip_overflow(false), [LocalHistory, Tasks, Todo]);
+        assert_eq!(app.layout.strip_overflow(false), [LocalHistory, Tasks, Todo, Debug]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -5067,18 +5078,18 @@ mod strip_tests {
         draw_at(&mut app, 120, 40);
         let f = button(&app, Find);
         app.handle_mouse(ev(MouseEventKind::Down(MouseButton::Left), f.x + 1, f.y));
-        app.handle_mouse(ev(MouseEventKind::Drag(MouseButton::Left), 1, 5));
+        app.handle_mouse(ev(MouseEventKind::Drag(MouseButton::Left), 1, 3));
         assert_eq!(app.strip_drop(), Some(StripDrop::End(Dock { side: Side::Left, split: false })));
         let buf = draw_at(&mut app, 120, 40);
         assert_eq!(row_text(&buf, 1, 3), "━━━");
-        app.handle_mouse(ev(MouseEventKind::Up(MouseButton::Left), 1, 5));
+        app.handle_mouse(ev(MouseEventKind::Up(MouseButton::Left), 1, 3));
         assert_eq!(app.layout.side_of(Find), Side::Left);
         let _ = std::fs::remove_dir_all(&dir);
 
         // (d2) The Bottom and Right bars use the drop colour too.
         let (mut app, dir) = test_app("strip-drag-d2");
         app.move_tool_window(Hierarchy, Dock { side: Side::Right, split: false });
-        for tw in [Find, Run, Problems, Terminal, Git, EventLog, LocalHistory, Tasks, Todo] {
+        for tw in [Find, Run, Problems, Terminal, Git, EventLog, LocalHistory, Tasks, Todo, Debug] {
             app.move_tool_window(tw, Dock { side: Side::Left, split: false });
         }
         draw_at(&mut app, 120, 40);

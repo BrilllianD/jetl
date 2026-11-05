@@ -4,14 +4,14 @@ expression: "snapshot(&term, &marks, None)"
 ---
 100x30 cursor=(6,5)
 00  ≣ ┌ Project: root ───────────────┐│
-01    │                              ││
-02  1 │                              ││
-03  ⌂ │                              ││
-04  2┌ Recent Locations ────────────────────────────────────────────────────────────────────────────┐
-05  ◫│ › type to filter                                                                           3 │
-06  7│ helper(total);                                                                   src/a.rs:10 │
-07  ⊢│ println!("{}", helper(2));                                                        src/b.rs:5 │
-08   │ let total = helper(1);                                                            src/a.rs:3 │
+01  1 │                              ││
+02  ⌂ │                              ││
+03  2 │                              ││
+04  ◫┌ Recent Locations ────────────────────────────────────────────────────────────────────────────┐
+05  7│ › type to filter                                                                           3 │
+06  ⊢│ helper(total);                                                                   src/a.rs:10 │
+07   │ println!("{}", helper(2));                                                        src/b.rs:5 │
+08  ◉│ let total = helper(1);                                                            src/a.rs:3 │
 09   │                                                                                              │
 10  ⋔│                                                                                              │
 11   │                                                                                              │

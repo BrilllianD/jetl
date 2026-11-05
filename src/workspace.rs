@@ -1724,6 +1724,44 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[tokio::test]
+    async fn a_session_with_the_debug_window_round_trips() {
+        let (mut app, dir) = crate::app::tests::test_app("session-debug-window");
+        let mut session = empty_session(&app.workspace.root);
+        let layout = session.layout.as_mut().unwrap();
+        layout.bottom = Some(ToolWindowId::Debug);
+        layout.order = vec![ToolWindowId::Debug, ToolWindowId::Git];
+        let json = serde_json::to_string(&session).unwrap();
+        let session: Session = serde_json::from_str(&json).unwrap();
+        let generation = app.workspace.generation;
+        app.session_loaded(generation, session, vec![]);
+        assert_eq!(app.layout.bottom, Some(ToolWindowId::Debug));
+        assert_eq!(&app.layout.order()[..2], [ToolWindowId::Debug, ToolWindowId::Git]);
+        let saved = app.session().layout.unwrap();
+        assert_eq!(saved.bottom, Some(ToolWindowId::Debug));
+        assert_eq!(&saved.order[..2], [ToolWindowId::Debug, ToolWindowId::Git]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_session_without_the_debug_window_loads() {
+        let (mut app, dir) = crate::app::tests::test_app("session-no-debug-window");
+        let mut session = empty_session(&app.workspace.root);
+        let others: Vec<ToolWindowId> = ToolWindowId::ALL.into_iter().filter(|t| *t != ToolWindowId::Debug).rev().collect();
+        assert_eq!(others.len(), 13);
+        session.layout.as_mut().unwrap().order = others.clone();
+        // As an older build wrote it: the thirteen names it knew.
+        let json = serde_json::to_string(&session).unwrap();
+        assert!(!json.contains("Debug"));
+        let session: Session = serde_json::from_str(&json).unwrap();
+        let generation = app.workspace.generation;
+        app.session_loaded(generation, session, vec![]);
+        assert_eq!(app.layout.order().last(), Some(&ToolWindowId::Debug));
+        assert_eq!(&app.layout.order()[..13], others);
+        assert!(!app.layout.is_visible(ToolWindowId::Debug));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     fn empty_session(root: &Path) -> Session {
         let layout = SessionLayout {
             left: None,

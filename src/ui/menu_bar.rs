@@ -131,6 +131,7 @@ pub const MAIN_MENU: &[(&str, char, &[Row])] = &[
             Item("Tasks", "tool_window.tasks"),
             Item("TODO", "tool_window.todo"),
             Item("Hierarchy", "tool_window.hierarchy"),
+            Item("Debug", "tool_window.debug"),
             Sep,
             Item("Hide All Tool Windows", "tool_window.hide_all"),
             Item("Restore Default Layout", "tool_window.restore_default_layout"),

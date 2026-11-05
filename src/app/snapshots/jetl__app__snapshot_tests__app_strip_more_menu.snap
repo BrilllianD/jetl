@@ -6,14 +6,14 @@ expression: "snapshot(&term, &marks, None)"
 00  ≣ ┌ Project: root ───────────────┐│
 01  ⌂ │                              ││
 02  ◫ │                              ││
-03  ⊢ │                              ││
-04  ╭───────────────────────╮        ││
-05  │ Local History   Alt+8 │        ││               No files open.
-06  │ Tasks                 │        ││       Alt+1 opens the Project view;
-07  │ TODO                  │        ││         Ctrl+Shift+N finds a file.
-08  │ Hierarchy             │        ││
-09  ╰───────────────────────╯        ││
+03  ╭────────────────────────╮       ││
+04  │ Local History    Alt+8 │       ││
+05  │ Tasks                  │       ││               No files open.
+06  │ TODO                   │       ││       Alt+1 opens the Project view;
+07  │ Hierarchy              │       ││         Ctrl+Shift+N finds a file.
+08  │ Debug           Alt+F5 │       ││
+09  ╰────────────────────────╯       ││
 10  ⋯ └──────────────────────────────┘│
 11
 -- marks: S=selected row
-05   SSSSSSSSSSSSSSSSS     S
+04   SSSSSSSSSSSSSSSSSS     S

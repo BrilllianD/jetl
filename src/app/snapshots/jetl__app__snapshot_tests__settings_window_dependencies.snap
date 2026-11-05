@@ -15,7 +15,7 @@ expression: "snapshot(&term, &[l, u, w], None)"
 09   │  Git                   │  missing paste           no wl-paste, xclip, xs…│
 10   │  Worktrees             │Grammars                                         │
 11   │Files                   │  ok      rust            compiled               │
-12   │Tools                   │Terminal                                         │
+12  ◉│Tools                   │Terminal                                         │
 13  ⋔│  Terminal              │  unknown kitty keyboard  could not ask the term…│
 14  ✎│  Run                   │Tools                                            │
 15  ✓│  Clipboard             │  ok      git             /usr/bin/git           │

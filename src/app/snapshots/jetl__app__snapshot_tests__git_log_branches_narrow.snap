@@ -4,14 +4,14 @@ expression: "snapshot(&term, &marks, Some(bottom))"
 ---
 90x30 cursor=hidden
 00  ≣ ┌ Project: root ───────────────┐│
-01    │                              ││
-02  1 │                              ││
-03  ⌂ │                              ││
-04  2 │                              ││
-05  ◫ │                              ││
-06  7 │                              ││
-07  ⊢ │                              ││     No files open. Alt+1 opens the Project view;
-08    │                              ││              Ctrl+Shift+N finds a file.
+01  1 │                              ││
+02  ⌂ │                              ││
+03  2 │                              ││
+04  ◫ │                              ││
+05  7 │                              ││
+06  ⊢ │                              ││
+07    │                              ││     No files open. Alt+1 opens the Project view;
+08  ◉ │                              ││              Ctrl+Shift+N finds a file.
 09    │                              ││
 10  ⋔ │                              ││
 11    │                              ││

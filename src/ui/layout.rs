@@ -1346,7 +1346,8 @@ mod tests {
         assert_eq!(l.order(), ToolWindowId::ALL);
         assert!(l.order_overrides().is_empty());
         l.set_order(&[Git, Project, Git]);
-        let want = [Git, Project, Worktrees, Structure, Find, Run, Problems, Terminal, EventLog, LocalHistory, Tasks, Todo, Hierarchy];
+        let want =
+            [Git, Project, Worktrees, Structure, Find, Run, Problems, Terminal, EventLog, LocalHistory, Tasks, Todo, Hierarchy, Debug];
         assert_eq!(l.order(), want);
         assert_eq!(l.order_overrides(), want);
         l.set_order(&[]);
@@ -1365,7 +1366,7 @@ mod tests {
         assert!(!l.can_move_button(Find, false), "Find is the lowest bottom button");
         l.move_button(Find, true);
         assert_eq!(&l.order()[3..5], [Run, Find]);
-        assert!(!l.can_move_button(Hierarchy, true));
+        assert!(!l.can_move_button(Debug, true), "Debug is the highest bottom button");
         l.move_to(Terminal, Side::Right);
         assert!(!l.can_move_button(Terminal, true) && !l.can_move_button(Terminal, false));
         let before = l.order().to_vec();

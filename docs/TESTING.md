@@ -987,7 +987,7 @@ when no toast is on screen.
 
 1. Negative control: `jetl demo.c`, Shift+F9 with no mark. The program runs to its end (`Debug session ended,
    exit code 0`), the log has `dap: breakpoints at start: {}` and no `-> setBreakpoints`.
-2. Ctrl+G, `4`, Ctrl+F8: `4` shows `●`. Shift+F9: the toast `Paused (breakpoint)`. In the log, `-> setBreakpoints` comes
+2. Ctrl+G, `4`, Ctrl+F8: `4` shows `●`. Shift+F9: the Debug window's title reads `paused (breakpoint)` (no toast). In the log, `-> setBreakpoints` comes
    before `-> configurationDone` and appears once, a mark is `Pending` (gdb: `reason: Some("pending")`) before it is
    `Verified, adapter line None` after gdb's `breakpoint` events (three came in the capture; the count is not
    asserted). The pane shows `4●` and no `4○`. One `demo` is running, stopped.
@@ -1030,7 +1030,7 @@ exactly one is the pass.
 
 1. Negative control: `jetl demo.c`, Shift+F9 with no mark: the program runs to its end and the pane never shows a
    `▶`.
-2. Ctrl+G, `9`, Ctrl+F8, Shift+F9: `Paused (breakpoint)`, `9▶` (the line's background is not in a text capture; the
+2. Ctrl+G, `9`, Ctrl+F8, Shift+F9: the title `paused (breakpoint)`, `9▶` (the line's background is not in a text capture; the
    unit snapshots show it), one `demo` running. The log has `dap: execution point .../demo.c:8` (0-based). The mark does not show under the arrow.
 3. F8: `-> next` in the log, `10▶`, and `9●` is back. F7 on line 10 (`add(x, 4)`): `-> stepIn`, `4▶`, gdb stops on
    `demo.c:3` (0-based), the line of `int sum`. Shift+F8: `-> stepOut`, `10▶` again.
@@ -1046,7 +1046,7 @@ exactly one is the pass.
    moves to 10. F7 again: still no `-> stepIn`. Esc, Ctrl+F2.
 8. Pause: open `demo.c`, Ctrl+G, `9`, Ctrl+F8 (the mark on 9 is there from the earlier steps; this clears it), open `spin.c`, Alt+Shift+F10, pick `spin` (this starts a Run task: Ctrl+F2
    stops it, Alt+4 hides the Run window, whose toolbar draws a `▶` of its own; press Alt+4 twice if the window is
-   still up), Shift+F9. F1, `Debug: Pause`, Enter: `-> threads` then `-> pause` in the log, `Paused` in the toast
+   still up), Shift+F9. F1, `Debug: Pause`, Enter: `-> threads` then `-> pause` in the log, the title `paused (pause)`
    (gdb's reason is `pause`), and the `▶` on the `spin.c` line `n++;` or the `for`. F9 and the arrow goes; F1,
    `Debug: Pause` again: `-> pause` with no new `-> threads`. Ctrl+F2.
 9. F7 outside a pause: in the editor with no session, F7 moves to the next change (a line was edited: type a space
@@ -1061,6 +1061,54 @@ empty stack or thread list, the point clearing on a new start or a root switch, 
 History and merge windows. The hop from a physical keyboard through the terminal emulator into tmux stays the
 user's to confirm (`send-keys` enters at tmux). Bare `F9` is taken by Omarchy's voxtype binding when voxtype is
 installed (it is not on the test machine); `Run > Resume` stays.
+
+### Scenario: Debug window and Console
+
+Needs `gdb` 14 or newer and `gcc`. At 80x24 and at 120x40, a private tmux socket, `XDG_*` directories under `/tmp`,
+`[lsp] enabled = false` and `[ui] toolbar = false`, `RUST_LOG=jetl=debug` (step 11 uses `jetl=info`, since debug
+logging writes a line per event and would measure the log). Fixture `/tmp/jetl-dap-demo`: `demo.c` as in the first
+scenario of this section plus a last `printf("café 😀 see demo.c:9 here\n");` (so lines 9 and 10 stay the calls);
+`spin.c`; `flood.c` (`for (int i = 0; i < 100000; i++) printf("flood %d\n", i);`); `spew.c` (`for (;;) puts("spew");`);
+`moved.c` (`int main(void) {`, `int a = 1;`, a comment-only line 3, `return a;`, `}`); all built with `gcc -g -O0`;
+`.jetl/run.toml` with a configuration and a `[debug.<name>]` table (adapter `gdb`) for each, and `typo`, whose
+`program` is `${workspaceFolder}/no-such-program`. Start only when `pgrep -x 'demo|spin|flood|spew|moved'` and
+`pgrep -f '[g]db -q -i=dap'` print nothing. A step reads the pane only with no toast on it. Alt+Shift+F10 (the
+configuration picker) also starts a Run task, so after choosing press Ctrl+F2, wait until its process is gone, and hide
+the Run window with Alt+4 (it replaced the Debug window in the dock; Alt+F5 brings the Debug window back). A mouse
+press is `ESC [ < 0 ; col ; row M` then `m`, sent with `tmux send-keys -H`; the column counts a wide character as two
+cells. The script of the last run is `~/.claude/plans/backlog-run-24-D4a2-evidence/scripts/d4a2-scenario.sh`.
+
+1. Before any start the Debug window is not shown.
+2. Ctrl+G, `9`, Ctrl+F8, Shift+F9: the window appears with the title `Debug: demo · paused (breakpoint)`, `9▶`, no
+   `Paused (` toast anywhere, and the caret still in the editor (`Ln 9,`).
+3. F8, F7, Shift+F8 step as in the stepping scenario; F9 ends the program. The Console, on the same screen, holds
+   `x=3 y=7` and the `café 😀` line, and the title ends `ended`. gdb's own console text (`No source file named ...`,
+   `Breakpoint 1 (...) pending.`) comes first; it is output like any other.
+4. A click on `demo.c:9` in the Console puts the caret on `Ln 9,` of `demo.c` (Ctrl+G, `1` first). By key: Alt+F5
+   focuses the window, End selects the last line, Up as often as the capture shows lines below the link, Enter.
+5. Alt+F5 with the window shown and the editor focused focuses it; again hides it; again shows it. With the window hidden,
+   Shift+F9 stops at the breakpoint and the window stays hidden; Ctrl+F2.
+6. Alt+F5 (shown and focused), Shift+F9, then F8: `-> next` in the log and `10▶`: the stepping keys work with the
+   window focused. Ctrl+F2, Esc.
+7. Buttons by mouse. At a stop, a click on ` Pause ` sends nothing (greyed); Step Over, Step Into, Step Out send
+   `next`, `stepIn`, `stepOut`; Resume ends the program; at another stop Stop gives `Debug session stopped`. On `spin`:
+   `running`, a click on Resume sends nothing, Pause sends `pause`, the title reads `paused`, Stop stops it.
+8. A breakpoint on a comment-only line (`moved.c`, line 3) stops at line 4 (`4▶`) and the log says `Verified, adapter
+   line Some(3)`, but the Console writes no `moved to line` line: gdb answers `setBreakpoints` with `pending` and
+   places the line in a `breakpoint` event, which the Console does not report. A breakpoint on the blank line 7 of
+   `demo.c` stays pending and the program runs to its end.
+9. A mistyped `program` (`typo`): the window stays `running` with `No output yet` until Ctrl+F2 (yman 416).
+10. Marks back on `demo.c`, Shift+F9, Ctrl+Q while paused: exit 0, empty stderr, no `demo` or `gdb` left.
+11. Restart with `RUST_LOG=jetl=info`. `flood`: from Shift+F9 to the toast `exit code 0`, then until `flood 99999` is the
+    Console's last line: that last interval must be at most 5 s (observed 0.01 s to 0.12 s; the first is 1.3 s to 6.6 s,
+    gdb's start). `spew`: after 3 s of output Alt+F5 and Alt+F5 hide the window within 1 s (observed at once), Alt+F5 shows
+    it, Ctrl+F2 gives `Debug session stopped` within 10 s (observed 4.0 s to 4.2 s) and no `spew` or `gdb` is left.
+    `ps -o rss=` of jetl: about 100 to 125 MB while spewing and after.
+
+gdb cannot show, and the unit tests prove: `stderr` and `important` styling (gdb's stderr arrives as `stdout`), a partial
+last line (gdb is line-based), `telemetry`, a `Failed` verdict's message and a verdict line from a `setBreakpoints`
+answer (gdb reports by event), stale `DebugOutput`, a root switch, the other start orders. Alt+F5 from a physical
+keyboard through the terminal emulator into tmux stays the user's to confirm.
 
 ### Scenario: Save As
 

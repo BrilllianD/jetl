@@ -15,7 +15,7 @@ expression: "snapshot(&term, &[], Some(area))"
 09    │           │ [x] Search in comments and strings   Alt+C     │
 10    │           │             [ Preview ] [ Cancel ]             │
 11    │           └────────────────────────────────────────────────┘
-12    │                              ││       Alt+1 opens the Project view;
+12  ◉ │                              ││       Alt+1 opens the Project view;
 13  ⋔ │                              ││         Ctrl+Shift+N finds a file.
 14  ✎ │                              ││
 15  ✓ │                              ││
