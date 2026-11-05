@@ -1069,7 +1069,7 @@ Needs `gdb` 14 or newer and `gcc`. At 80x24 and at 120x40, a private tmux socket
 logging writes a line per event and would measure the log). Fixture `/tmp/jetl-dap-demo`: `demo.c` as in the first
 scenario of this section plus a last `printf("café 😀 see demo.c:9 here\n");` (so lines 9 and 10 stay the calls);
 `spin.c`; `flood.c` (`for (int i = 0; i < 100000; i++) printf("flood %d\n", i);`); `spew.c` (`for (;;) puts("spew");`);
-`moved.c` (`int main(void) {`, `int a = 1;`, a comment-only line 3, `return a;`, `}`); all built with `gcc -g -O0`;
+`moved.c` (`int main(void) {`, `int a = 1;`, a comment-only line 3, `return a;`, a comment-only line 5, `}`); all built with `gcc -g -O0`;
 `.jetl/run.toml` with a configuration and a `[debug.<name>]` table (adapter `gdb`) for each, and `typo`, whose
 `program` is `${workspaceFolder}/no-such-program`. Start only when `pgrep -x 'demo|spin|flood|spew|moved'` and
 `pgrep -f '[g]db -q -i=dap'` print nothing. A step reads the pane only with no toast on it. Alt+Shift+F10 (the
@@ -1087,7 +1087,9 @@ cells. The script of the last run is `~/.claude/plans/backlog-run-24-D4a2-eviden
 4. A click on `demo.c:9` in the Console puts the caret on `Ln 9,` of `demo.c` (Ctrl+G, `1` first). By key: Alt+F5
    focuses the window, End selects the last line, Up as often as the capture shows lines below the link, Enter.
 5. Alt+F5 with the window shown and the editor focused focuses it; again hides it; again shows it. With the window hidden,
-   Shift+F9 stops at the breakpoint and the window stays hidden; Ctrl+F2.
+   Shift+F9 stops at the breakpoint and the window stays hidden; a `Paused (breakpoint)` toast says so (the Event Log
+   keeps it) and `9▶` shows once it is gone; Ctrl+F2. With the window shown there is no such toast, the title has the
+   reason.
 6. Alt+F5 (shown and focused), Shift+F9, then F8: `-> next` in the log and `10▶`: the stepping keys work with the
    window focused. Ctrl+F2, Esc.
 7. Buttons by mouse. At a stop, a click on ` Pause ` sends nothing (greyed); Step Over, Step Into, Step Out send
@@ -1097,17 +1099,21 @@ cells. The script of the last run is `~/.claude/plans/backlog-run-24-D4a2-eviden
    line Some(3)`, but the Console writes no `moved to line` line: gdb answers `setBreakpoints` with `pending` and
    places the line in a `breakpoint` event, which the Console does not report. A breakpoint on the blank line 7 of
    `demo.c` stays pending and the program runs to its end.
+   While `moved.c` is paused at line 4, Ctrl+F8 on its comment-only line 5 sends `setBreakpoints` (`[2, 4]` in the log)
+   and gdb answers it `verified` on line 6 (the log: `mark ...moved.c:4 is Verified, adapter line Some(5)`); the Console
+   gets `Breakpoint moved.c:5 moved to line 6`, once. So gdb does answer a `setBreakpoints` sent after the program is
+   loaded, and the verdict line from a `setBreakpoints` answer runs against a real adapter. The breakpoint set before
+   Shift+F9 was reported by an event only.
 9. A mistyped `program` (`typo`): the window stays `running` with `No output yet` until Ctrl+F2 (yman 416).
 10. Marks back on `demo.c`, Shift+F9, Ctrl+Q while paused: exit 0, empty stderr, no `demo` or `gdb` left.
 11. Restart with `RUST_LOG=jetl=info`. `flood`: from Shift+F9 to the toast `exit code 0`, then until `flood 99999` is the
-    Console's last line: that last interval must be at most 5 s (observed 0.01 s to 0.12 s; the first is 1.3 s to 6.6 s,
-    gdb's start). `spew`: after 3 s of output Alt+F5 and Alt+F5 hide the window within 1 s (observed at once), Alt+F5 shows
+    Console's last line: that last interval must be at most 5 s (observed 0.01 s to 0.12 s; the first is 1.3 s to 6.6 s). `spew`: after 3 s of output Alt+F5 and Alt+F5 hide the window within 1 s (observed at once), Alt+F5 shows
     it, Ctrl+F2 gives `Debug session stopped` within 10 s (observed 4.0 s to 4.2 s) and no `spew` or `gdb` is left.
     `ps -o rss=` of jetl: about 100 to 125 MB while spewing and after.
 
 gdb cannot show, and the unit tests prove: `stderr` and `important` styling (gdb's stderr arrives as `stdout`), a partial
-last line (gdb is line-based), `telemetry`, a `Failed` verdict's message and a verdict line from a `setBreakpoints`
-answer (gdb reports by event), stale `DebugOutput`, a root switch, the other start orders. Alt+F5 from a physical
+last line (gdb is line-based), `telemetry`, a `Failed` verdict's message, a verdict line for a breakpoint set before the
+start (gdb reports those by event), stale `DebugOutput`, a root switch, the other start orders. Alt+F5 from a physical
 keyboard through the terminal emulator into tmux stays the user's to confirm.
 
 ### Scenario: Save As

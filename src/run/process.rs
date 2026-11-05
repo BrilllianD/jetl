@@ -209,7 +209,7 @@ impl LineSplitter {
 }
 
 /// One raw output line as display text.
-fn clean(raw: &[u8]) -> String {
+pub(crate) fn clean(raw: &[u8]) -> String {
     let text = String::from_utf8_lossy(raw);
     let text = text.strip_suffix('\r').unwrap_or(&text);
     let text: &str = text.rsplit('\r').find(|s| !s.is_empty()).unwrap_or_default();

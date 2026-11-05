@@ -27,6 +27,7 @@ use crate::event::{AppMsg, Level};
 use crate::lsp::client::Conn;
 use crate::lsp::client::spawn_process;
 use crate::run::matcher::{Link, RunLine, Severity};
+use crate::run::process::clean;
 use crate::run::{RunTask, load_tasks};
 use crate::ui::focus::{PanelId, ToolWindowId};
 
@@ -183,12 +184,19 @@ fn apply_breakpoint(line: usize, mark: &mut BreakpointMark, bp: &Breakpoint) {
 
 /// The Console line for a verdict the user should read: a failed breakpoint, or one the adapter put on another
 /// line. A verified breakpoint on its own line, or a pending one, says nothing. The location is the user's line.
+/// An adapter's message as one display line: each of its lines cleaned of escape sequences and control
+/// characters, the non-empty ones joined by a space.
+fn one_line(message: &str) -> String {
+    let lines: Vec<String> = message.split(['\n', '\r']).map(|l| clean(l.as_bytes())).filter(|l| !l.is_empty()).collect();
+    lines.join(" ")
+}
+
 fn verdict_line(source: &Path, line: usize, mark: &BreakpointMark) -> Option<RunLine> {
     let file = source.file_name()?.to_string_lossy();
     let place = format!("{file}:{}", line + 1);
     let (rest, severity, target) = if mark.state == BpState::Failed {
         let rest = match &mark.message {
-            Some(m) => format!(" failed: {m}"),
+            Some(m) => format!(" failed: {}", one_line(m)),
             None => " failed".to_string(),
         };
         (rest, Some(Severity::Warning), line)
@@ -420,6 +428,10 @@ impl App {
     /// A stop: asks for the stack of the stopped thread, or for the threads when the event names none.
     fn debug_stopped(&mut self, epoch: u64, event: StoppedEvent) {
         self.debug_panel.set_reason(Some(event.reason.clone()));
+        // A shown window has the reason in its title; otherwise nothing says the program stopped.
+        if !self.layout.is_visible(ToolWindowId::Debug) {
+            self.notify(Level::Info, format!("Paused ({})", event.reason));
+        }
         let Some(live) = self.debug.session.as_mut() else { return };
         live.epoch = epoch;
         live.thread = event.thread_id;
@@ -2540,6 +2552,7 @@ pub(crate) mod tests {
         let a = six(&mut app);
         let mut fake = paused(&mut app, &mut fakes, &a, 3).await;
         assert!(app.debug_panel.title(app.debug.phase()).contains("paused (breakpoint)"));
+        assert!(app.layout.is_visible(ToolWindowId::Debug));
         assert!(texts(&app).iter().all(|t| !t.starts_with("Paused (")), "{:?}", texts(&app));
         press(&mut app, F9);
         let req = fake.recv("continue").await;
@@ -2547,6 +2560,17 @@ pub(crate) mod tests {
         pump_until(&mut app, |x| point(x).is_none() && x.debug.phase() == Some(Phase::Running)).await;
         assert_eq!(app.debug_panel.title(app.debug.phase()), " Debug: demo · running ");
         assert_eq!(app.debug_panel.title(Some(Phase::Suspended)), " Debug: demo · paused ", "the reason went with the pause");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_stop_with_the_window_hidden_is_a_toast() {
+        let (mut app, dir, mut fakes) = setup("window-hidden-stop", Order::LaunchEarly);
+        let a = six(&mut app);
+        let (mut fake, _) = running(&mut app, &mut fakes).await;
+        app.layout.hide(ToolWindowId::Debug);
+        stop_at(&mut app, &mut fake, 7, &a, 3).await;
+        assert!(texts(&app).contains(&"Paused (breakpoint)".to_string()), "{:?}", texts(&app));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2590,5 +2614,8 @@ pub(crate) mod tests {
         assert_eq!(failed.link.unwrap().line, 1, "a failed one links the user's line");
         assert!(verdict_line(path, 1, &mark(BpState::Verified, None, None)).is_none());
         assert!(verdict_line(path, 1, &mark(BpState::Pending, None, None)).is_none());
+        // An adapter's message is escape codes and lines: the verdict is one clean line.
+        let noisy = verdict_line(path, 1, &mark(BpState::Failed, None, Some("\x1b[31mno code\x1b[0m\nat line 2"))).unwrap();
+        assert_eq!(noisy.text, "Breakpoint a.log:2 failed: no code at line 2");
     }
 }
