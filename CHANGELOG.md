@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Refactoring keys, as in JetBrains: Extract Method (Ctrl+Alt+M), Extract Variable (Ctrl+Alt+V), Extract Constant (Ctrl+Alt+C), Inline (Ctrl+Alt+N), Change Signature (Ctrl+F6), Move (F6) and Safe Delete (Alt+Delete), also in the Edit menu and Find Action. Each asks the language server for its code actions at the caret or selection, runs the one that fits, lists several, and says `No such refactoring here` when it offers none; jetl implements none of them. Ctrl+Alt+M arrives as Alt+Enter without the kitty protocol, so use Edit > Extract Method or F1 there.
 - Rename (Shift+F6) without a language server uses the SCIP index (`[index] scip`) when it knows the symbol at the caret (not one that shares an exact span with another symbol, such as a shorthand field `S { x }`, which is renamed as text): the exact occurrences are listed in Find for review, and files the index does not cover or that changed since it was built show text matches instead, excluded.
 - Rename dialog (Shift+F6 with a language server): the check "Search in comments and strings" (Alt+C) adds whole-word matches of the old name in comments and strings to the preview; they are guesses, so they start excluded and are marked `text`, and Replace All writes only the ones you include.
 - Rename (Shift+F6) with a language server shows its answer in the Find window before anything is written: one result per text edit, grouped by file; Alt+Delete leaves a result or a whole file out, Replace All (Alt+A) lists the file operations (create, rename, delete) and applies the included edits and all operations as one workspace edit (undo and Local History as before). A file changed since the preview refuses the whole rename. `[lsp] rename_preview = false` (Settings > Language Servers) applies the rename at once as before.
@@ -46,6 +47,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A language server command's edit without a document version no longer lands in a buffer you typed in while the command ran (it is refused, nothing changes); code actions with both `data` and a command are resolved before the command runs (TypeScript's Delete all unused did nothing); no error toast after a TypeScript extraction.
 - Tool strip: dropping a button on the separator between a side's two groups no longer moves it out of its group; it stays in the dragged window's group, and the drop colour shows the target first.
 - Tool strip: on a terminal only a few rows high a strip now shows the More button (⋯) instead of no way to reach its tool windows.
 - Symbol index cache: a binary or oversized source file no longer rewrites the cache on every start, and updating a tree-sitter grammar now discards the old cache instead of keeping symbols extracted by the previous version.

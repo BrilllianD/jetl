@@ -176,6 +176,40 @@ mod tests {
     }
 
     #[test]
+    fn refactoring_keys_and_their_neighbours() {
+        use crate::actions::{LspAction, REGISTRY};
+        use crate::lsp::Refactoring::*;
+        let km = default_keymap();
+        let mut d = Dispatcher::new(false);
+        let (ctrl_alt, none) = (KeyModifiers::CONTROL | KeyModifiers::ALT, KeyModifiers::NONE);
+        let rows = [
+            (key(KeyCode::Char('m'), ctrl_alt), ExtractMethod),
+            (key(KeyCode::Char('v'), ctrl_alt), ExtractVariable),
+            (key(KeyCode::Char('c'), ctrl_alt), ExtractConstant),
+            (key(KeyCode::Char('n'), ctrl_alt), Inline),
+            (key(KeyCode::F(6), KeyModifiers::CONTROL), ChangeSignature),
+            (key(KeyCode::F(6), none), Move),
+            (key(KeyCode::Delete, KeyModifiers::ALT), SafeDelete),
+        ];
+        for (k, want) in rows {
+            let r = d.dispatch(k, &["editor", "global"], Some(Mode::Insert), &km);
+            assert!(matches!(r, Dispatch::Action(Action::Lsp(LspAction::Refactoring(got))) if got == want), "{k:?}: {r:?}");
+        }
+        let id_of = |r: Dispatch| match r {
+            Dispatch::Action(a) => REGISTRY.iter().find(|i| i.action == a).map(|i| i.id),
+            _ => None,
+        };
+        let r = d.dispatch(key(KeyCode::F(6), KeyModifiers::SHIFT), &["editor", "global"], Some(Mode::Insert), &km);
+        assert_eq!(id_of(r), Some("lsp.rename"));
+        let r = d.dispatch(key(KeyCode::Delete, KeyModifiers::ALT), &["find", "global"], Some(Mode::Insert), &km);
+        assert_eq!(id_of(r), Some("find.toggle_exclude"));
+        let r = d.dispatch(key(KeyCode::Char('n'), ctrl_alt), &["git", "global"], Some(Mode::Insert), &km);
+        assert_eq!(id_of(r), Some("git.new_branch"));
+        let r = d.dispatch(key(KeyCode::F(6), KeyModifiers::SHIFT), &["tree", "global"], Some(Mode::Insert), &km);
+        assert_eq!(id_of(r), Some("tree.rename"));
+    }
+
+    #[test]
     fn chords_wait_then_fire() {
         let mut km = default_keymap();
         km.merge_toml("[editor]\n\"ctrl-k ctrl-x\" = \"app.quit\"\n").unwrap();

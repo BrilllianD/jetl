@@ -693,11 +693,14 @@ impl App {
             }) {
                 Ok(p) => {
                     let origin = crate::lsp::EditOrigin::ServerRequest { server: name.to_string(), id, label: p.label };
-                    self.apply_workspace_edit(p.edit, origin);
+                    self.server_apply_edit(name, p.edit, origin);
                     return;
                 }
                 Err(e) => Err(ResponseError::new(ResponseError::INVALID_PARAMS, format!("invalid params: {e}"))),
             },
+            // The server asks the client to start a rename after an extraction. jetl does not prompt,
+            // and an error here would fail the command that already succeeded.
+            "_typescript.rename" => Ok(Value::Null),
             "workspace/configuration" => {
                 let settings = self
                     .lsp

@@ -585,7 +585,8 @@ impl Keymap {
 /// Ctrl with `-`, `=`, `+`, `_` or `.`, Ctrl with a digit other than 4-6 (legacy terminals send
 /// those as Ctrl+\, Ctrl+] and Ctrl+^; Ctrl+7 is Ctrl+/ there, which jetl
 /// reads as Ctrl+/: [`KeyCombo::legacy_input`]), Ctrl+Tab, Ctrl+Enter,
-/// Shift+Enter, Shift+F3, Shift+Esc, Alt+Shift+Tab, Ctrl+Shift+Tab and Shift Shift.
+/// Shift+Enter, Shift+F3, Shift+Esc, Alt+Shift+Tab, Ctrl+Shift+Tab, Ctrl+Alt+M (legacy terminals send
+/// Alt+Enter) and Shift Shift.
 fn needs_kitty(keys: &str) -> bool {
     keys.split(' ').any(|k| {
         let key = k.rsplit('+').next().unwrap_or("");
@@ -603,6 +604,7 @@ fn needs_kitty(keys: &str) -> bool {
             || k == "Shift+F3"
             || k == "Shift+Esc"
             || k == "Alt+Shift+Tab"
+            || k == "Ctrl+Alt+M"
     }) || keys == "Shift Shift"
 }
 
@@ -822,6 +824,14 @@ mod tests {
             assert!(needs_kitty(k), "{k}");
         }
         for k in ["Alt+Shift+F", "Alt+{", "Alt+}"] {
+            assert!(!needs_kitty(k), "{k}");
+        }
+    }
+
+    #[test]
+    fn needs_kitty_marks_only_ctrl_alt_m_of_the_refactoring_keys() {
+        assert!(needs_kitty("Ctrl+Alt+M"));
+        for k in ["Ctrl+Alt+V", "Ctrl+Alt+C", "Ctrl+Alt+N", "F6", "Ctrl+F6", "Alt+Delete"] {
             assert!(!needs_kitty(k), "{k}");
         }
     }

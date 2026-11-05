@@ -3,6 +3,7 @@
 
 use std::sync::LazyLock;
 
+use crate::lsp::Refactoring;
 use crate::ui::focus::{Dock, PanelId, Side, ToolWindowId};
 use crate::ui::layout::ViewMode;
 
@@ -725,6 +726,9 @@ pub enum LspAction {
     RefactorThis,
     /// Ctrl+Alt+O: the server's organize imports action.
     OptimizeImports,
+    /// Ctrl+Alt+M, Ctrl+Alt+V, Ctrl+Alt+C, Ctrl+Alt+N, Ctrl+F6, F6, Alt+Delete: the server's
+    /// code action of one refactoring kind at the caret or selection.
+    Refactoring(Refactoring),
     /// View > Inlay Hints: show or hide the server's inlay hints for this session.
     ToggleInlayHints,
 }
@@ -1158,6 +1162,13 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "lsp.file_structure" => "File structure: the file's symbols from its language server", Lsp(LspAction::FileStructure);
         "lsp.refactor_this" => "Refactor This: the server's refactorings at the caret or selection", Lsp(LspAction::RefactorThis);
         "lsp.optimize_imports" => "Optimize imports (the server's organize imports action)", Lsp(LspAction::OptimizeImports);
+        "lsp.extract_method" => "Extract Method: the server's extract function refactoring at the caret or selection", Lsp(LspAction::Refactoring(Refactoring::ExtractMethod));
+        "lsp.extract_variable" => "Extract Variable: the server's extract variable refactoring at the caret or selection", Lsp(LspAction::Refactoring(Refactoring::ExtractVariable));
+        "lsp.extract_constant" => "Extract Constant: the server's extract constant refactoring at the caret or selection", Lsp(LspAction::Refactoring(Refactoring::ExtractConstant));
+        "lsp.inline" => "Inline: the server's inline refactoring at the caret", Lsp(LspAction::Refactoring(Refactoring::Inline));
+        "lsp.change_signature" => "Change Signature: the server's change signature refactoring at the caret", Lsp(LspAction::Refactoring(Refactoring::ChangeSignature));
+        "lsp.move" => "Move: the server's move refactoring (to a file or module) at the caret or selection", Lsp(LspAction::Refactoring(Refactoring::Move));
+        "lsp.safe_delete" => "Safe Delete: the server's delete or remove refactoring at the caret", Lsp(LspAction::Refactoring(Refactoring::SafeDelete));
         "lsp.quick_definition" => "Quick definition: the definition of the symbol at the caret in a popup", Lsp(LspAction::QuickDefinition);
         "lsp.call_hierarchy" => "Call hierarchy: the callers and callees of the function at the caret", Lsp(LspAction::CallHierarchy);
         "lsp.type_hierarchy" => "Type hierarchy: the supertypes and subtypes of the type at the caret", Lsp(LspAction::TypeHierarchy);

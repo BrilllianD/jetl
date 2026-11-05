@@ -400,7 +400,17 @@ fn completion_capabilities() -> CompletionClientCapabilities {
 /// Code actions as literals with their kinds, resolved lazily for their
 /// edit when the server supports it.
 fn code_action_capabilities() -> CodeActionClientCapabilities {
-    let kinds = ["", "quickfix", "refactor", "refactor.extract", "refactor.inline", "refactor.rewrite", "source", "source.organizeImports"];
+    let kinds = [
+        "",
+        "quickfix",
+        "refactor",
+        "refactor.extract",
+        "refactor.inline",
+        "refactor.move",
+        "refactor.rewrite",
+        "source",
+        "source.organizeImports",
+    ];
     CodeActionClientCapabilities {
         dynamic_registration: Some(true),
         code_action_literal_support: Some(CodeActionLiteralSupport {
@@ -648,6 +658,13 @@ mod tests {
             assert_eq!((init["method"].as_str(), &init["id"]), (Some("initialize"), &json!(0)));
             self.write(json!({"jsonrpc": "2.0", "id": 0, "result": {"capabilities": {}}})).await;
         }
+    }
+
+    #[test]
+    fn code_action_kinds_include_refactor_move() {
+        let c = serde_json::to_value(code_action_capabilities()).unwrap();
+        let kinds = c["codeActionLiteralSupport"]["codeActionKind"]["valueSet"].as_array().unwrap();
+        assert!(kinds.contains(&json!("refactor.move")), "{kinds:?}");
     }
 
     #[test]

@@ -57,7 +57,7 @@ fn method_of(tag: &PendingTag) -> &'static str {
         PendingTag::CompletionResolve(_) | PendingTag::CompletionDocs(_) => RESOLVE,
         PendingTag::PrepareRename(_) => PREPARE_RENAME,
         PendingTag::Rename(_) => RENAME,
-        PendingTag::CodeAction(_) | PendingTag::Refactor(_) | PendingTag::OrganizeImports(_) => CODE_ACTION,
+        PendingTag::CodeAction(_) | PendingTag::Refactor(_) | PendingTag::OrganizeImports(_) | PendingTag::RefactorKind(..) => CODE_ACTION,
         PendingTag::CodeActionResolve(_) => CODE_ACTION_RESOLVE,
         PendingTag::ExecuteCommand(_) => EXECUTE_COMMAND,
         PendingTag::DocumentSymbols(_) => DOCUMENT_SYMBOL,
@@ -166,7 +166,7 @@ impl App {
         pos: Position,
         method: &'static str,
         params: Value,
-        tag: fn(DocTag) -> PendingTag,
+        tag: impl FnOnce(DocTag) -> PendingTag,
     ) -> Result<u64, String> {
         self.lsp_send(id, pos, method, params, tag, true).map(|s| s.seq)
     }
@@ -203,7 +203,7 @@ impl App {
         pos: Position,
         method: &'static str,
         mut params: Value,
-        tag: fn(DocTag) -> PendingTag,
+        tag: impl FnOnce(DocTag) -> PendingTag,
         newest: bool,
     ) -> Result<super::lsp::Inflight, String> {
         let (server, uri) = self.lsp_check(id, method)?;
@@ -566,6 +566,9 @@ impl App {
             return self.hierarchy_children_answer(name, tree, node, result);
         }
         let Some(t) = tag.doc().cloned() else { return };
+        if let PendingTag::ExecuteCommand(t) = &tag {
+            self.command_answered(t.seq);
+        }
         // Formatting is checked against its buffer's format job.
         if let PendingTag::Formatting(t) = tag {
             return self.lsp_format_answer(name, t, result);
@@ -633,6 +636,7 @@ impl App {
             PendingTag::CodeAction(t) => self.lsp_code_actions_answer(t, value, ActionsFor::Context),
             PendingTag::Refactor(t) => self.lsp_code_actions_answer(t, value, ActionsFor::Refactor),
             PendingTag::OrganizeImports(t) => self.lsp_code_actions_answer(t, value, ActionsFor::OrganizeImports),
+            PendingTag::RefactorKind(t, r) => self.lsp_code_actions_answer(t, value, ActionsFor::Kind(r)),
             PendingTag::CodeActionResolve(t) => self.lsp_code_action_resolved(t, value),
             PendingTag::DocumentSymbols(t) => self.lsp_document_symbols_answer(t, value),
             PendingTag::CallHierarchy(_) => self.hierarchy_prepared(name, true, value),

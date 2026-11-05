@@ -1,6 +1,10 @@
 //! Language server edits and structure: rename (Shift+F6), context actions
 //! (Alt+Enter), Refactor This (Alt+Shift+T) and Optimize Imports (Ctrl+Alt+O), the same request
-//! limited to a kind, File Structure (Ctrl+F12), and applying workspace edits,
+//! limited to a kind, the refactoring keys (Extract Method/Variable/Constant, Inline, Change
+//! Signature, Move, Safe Delete: `ActionsFor::Kind`, the server's action that
+//! `lsp::Refactoring::matches` takes by kind and title; one match runs at once, several are
+//! listed, none gives `No such refactoring here`; jetl implements none of them), File Structure
+//! (Ctrl+F12), and applying workspace edits,
 //! the servers' answers and their `workspace/applyEdit` requests alike.
 //! Formatting through a server is in `app/format.rs`; the lightbulb (quick
 //! fixes on the caret line) in `app/lightbulb.rs`. Context actions list the
@@ -46,6 +50,11 @@
 //! caret's own span survives, the build says so (`ScipOutcome::fallback`) and
 //! the textual rename above opens instead.
 //!
+//! A command's `workspace/applyEdit` carries no document version, so while a command is in
+//! flight (`CommandGuard`) such an edit of an open buffer typed in since the command was sent is
+//! refused (`server_apply_edit`). An action with `data` is resolved before its command runs.
+//! `_typescript.rename`, which TypeScript asks after an extraction, is answered null.
+//!
 //! Undo reverts the open buffers only: file operations and edits of files
 //! that were not open cannot be undone. Local History keeps a snapshot of
 //! deleted and replaced files, and carries a renamed file's history.
@@ -69,7 +78,7 @@ use crate::files::rename_preview::{
 use crate::history::Ack;
 use crate::lsp::edits::{self, DiskStep, EditCounts, OpenDoc};
 use crate::lsp::locations::LocationItem;
-use crate::lsp::{DocTag, EditOrigin, PendingTag, pos, symbols};
+use crate::lsp::{DocTag, EditOrigin, PendingTag, Refactoring, pos, symbols};
 use crate::symbols::scip::{Span, SymId};
 use crate::ui::dialog::{Dialog, DialogId};
 use crate::ui::focus::{PanelId, ToolWindowId};
@@ -97,21 +106,24 @@ fn preferred_first(items: &mut [CodeActionOrCommand]) {
 }
 
 /// Which code-action request an answer belongs to: Alt+Enter's (everything),
-/// Refactor This's or Optimize Imports'.
+/// Refactor This's, Optimize Imports' or one of the refactoring keys' (`Kind`,
+/// whose actions are picked by `Refactoring::matches`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ActionsFor {
     Context,
     Refactor,
     OrganizeImports,
+    Kind(Refactoring),
 }
 
 impl ActionsFor {
-    /// The kind sent as `context.only` and kept from the answer; `None`: all.
-    fn only(self) -> Option<&'static str> {
+    /// The kinds sent as `context.only`; empty: all.
+    fn only(self) -> &'static [&'static str] {
         match self {
-            ActionsFor::Context => None,
-            ActionsFor::Refactor => Some("refactor"),
-            ActionsFor::OrganizeImports => Some("source.organizeImports"),
+            ActionsFor::Context => &[],
+            ActionsFor::Refactor => &["refactor"],
+            ActionsFor::OrganizeImports => &["source.organizeImports"],
+            ActionsFor::Kind(r) => r.only(),
         }
     }
 
@@ -120,6 +132,7 @@ impl ActionsFor {
             ActionsFor::Context => "Context Actions",
             ActionsFor::Refactor => "Refactor This",
             ActionsFor::OrganizeImports => "Optimize Imports",
+            ActionsFor::Kind(r) => r.title(),
         }
     }
 
@@ -128,27 +141,33 @@ impl ActionsFor {
             ActionsFor::Context => "No context actions here",
             ActionsFor::Refactor => "No refactorings here",
             ActionsFor::OrganizeImports => "Nothing to optimize",
+            ActionsFor::Kind(_) => "No such refactoring here",
         }
     }
 
-    fn tag(self) -> fn(DocTag) -> PendingTag {
+    fn tag(self, t: DocTag) -> PendingTag {
         match self {
-            ActionsFor::Context => PendingTag::CodeAction,
-            ActionsFor::Refactor => PendingTag::Refactor,
-            ActionsFor::OrganizeImports => PendingTag::OrganizeImports,
+            ActionsFor::Context => PendingTag::CodeAction(t),
+            ActionsFor::Refactor => PendingTag::Refactor(t),
+            ActionsFor::OrganizeImports => PendingTag::OrganizeImports(t),
+            ActionsFor::Kind(r) => PendingTag::RefactorKind(t, r),
         }
     }
 
-    /// Whether `item` is of this request's kind: always for `Context`; else a
-    /// `CodeAction` whose `kind` equals `only` or starts with `only` + "."
-    /// (a bare `Command` has no kind and is dropped).
+    /// Whether `item` is of this request's kind: always for `Context`; for
+    /// `Kind`, a `CodeAction` with a kind that `Refactoring::matches` takes;
+    /// else a `CodeAction` whose `kind` equals `only` or starts with `only` +
+    /// "." (a bare `Command` has no kind and is dropped).
     fn keeps(self, item: &CodeActionOrCommand) -> bool {
-        let Some(only) = self.only() else { return true };
+        if self == ActionsFor::Context {
+            return true;
+        }
         let CodeActionOrCommand::CodeAction(a) = item else { return false };
-        a.kind.as_ref().is_some_and(|k| {
-            let k = k.as_str();
-            k == only || k.strip_prefix(only).is_some_and(|rest| rest.starts_with('.'))
-        })
+        let Some(kind) = a.kind.as_ref().map(|k| k.as_str()) else { return false };
+        if let ActionsFor::Kind(r) = self {
+            return r.matches(kind, &a.title);
+        }
+        self.only().iter().any(|only| kind == *only || kind.strip_prefix(only).is_some_and(|rest| rest.starts_with('.')))
     }
 }
 
@@ -167,6 +186,18 @@ pub(super) struct EditReqs {
     actions: Option<(u64, Vec<CodeActionOrCommand>)>,
     /// The edit waiting for the user's confirmation.
     pub(super) confirm: Option<PendingConfirm>,
+    /// The command in flight, for the unversioned edits it sends back.
+    command: Option<CommandGuard>,
+}
+
+/// A `workspace/executeCommand` in flight: the server computes its edit from the text it knew when
+/// the command was sent, and that edit carries no document version. `versions` is each open
+/// buffer's `Buffer::version` when the command was sent (refreshed after each edit of the command),
+/// so an edit that arrives after the user typed in a buffer is refused rather than misplaced.
+struct CommandGuard {
+    seq: u64,
+    server: String,
+    versions: HashMap<BufferId, u64>,
 }
 
 /// A workspace edit with changes that need confirmation, behind `DialogId::LspConfirmEdit(seq)`.
@@ -542,11 +573,11 @@ impl App {
         let (id, head) = (b.id, pos::position(&b.rope, b.view.sel().head));
         let diagnostics = self.diagnostics_overlapping(b, range);
         let mut context = json!({"diagnostics": diagnostics, "triggerKind": 1});
-        if let Some(k) = what.only() {
-            context["only"] = json!([k]);
+        if !what.only().is_empty() {
+            context["only"] = json!(what.only());
         }
         let params = json!({"range": range, "context": context});
-        if let Err(why) = self.lsp_tagged_request(id, head, CODE_ACTION, params, what.tag())
+        if let Err(why) = self.lsp_tagged_request(id, head, CODE_ACTION, params, move |t| what.tag(t))
             && !why.is_empty()
         {
             self.lsp_hint(why);
@@ -598,7 +629,7 @@ impl App {
                 CodeActionOrCommand::CodeAction(a) => a.title.clone(),
             })
             .collect();
-        let single = what == ActionsFor::OrganizeImports && items.len() == 1;
+        let single = matches!(what, ActionsFor::OrganizeImports | ActionsFor::Kind(_)) && items.len() == 1;
         self.lsp.edit.actions = Some((t.seq, items));
         if single {
             return self.lsp_code_action_chosen(t, 0);
@@ -614,8 +645,11 @@ impl App {
         let Some((_, items)) = self.lsp.edit.actions.take_if(|a| a.0 == t.seq) else { return };
         match items.into_iter().nth(i) {
             Some(CodeActionOrCommand::Command(c)) => self.lsp_execute(c),
-            Some(CodeActionOrCommand::CodeAction(a)) if a.edit.is_none() && a.command.is_none() => {
+            Some(CodeActionOrCommand::CodeAction(a)) if a.edit.is_none() && (a.command.is_none() || a.data.is_some()) => {
                 if self.lsp_check(t.buffer, CODE_ACTION_RESOLVE).is_err() {
+                    if a.command.is_some() {
+                        return self.lsp_run_code_action(a);
+                    }
                     return self.lsp_hint(format!("{}: nothing to do", a.title));
                 }
                 let Some((id, pos)) = self.caret_position() else { return };
@@ -668,10 +702,53 @@ impl App {
         if let Some(args) = c.arguments {
             params["arguments"] = Value::Array(args);
         }
-        if let Err(why) = self.lsp_tagged_request(id, pos, EXECUTE_COMMAND, params, PendingTag::ExecuteCommand)
-            && !why.is_empty()
+        match self.lsp_tagged_request(id, pos, EXECUTE_COMMAND, params, PendingTag::ExecuteCommand) {
+            Ok(seq) => {
+                if let Some(doc) = self.lsp.docs.get(&id) {
+                    let server = doc.server.clone();
+                    let versions = self.open_versions();
+                    self.lsp.edit.command = Some(CommandGuard { seq, server, versions });
+                }
+            }
+            Err(why) if !why.is_empty() => self.lsp_hint(why),
+            Err(_) => {}
+        }
+    }
+
+    /// Every open buffer with a path and its `Buffer::version`.
+    fn open_versions(&self) -> HashMap<BufferId, u64> {
+        self.editor.buffers.iter().filter(|b| b.path.is_some()).map(|b| (b.id, b.version)).collect()
+    }
+
+    /// The command with `seq` was answered: the guard on its edits ends.
+    pub(super) fn command_answered(&mut self, seq: u64) {
+        self.lsp.edit.command.take_if(|g| g.seq == seq);
+    }
+
+    /// A server's `workspace/applyEdit`. While `server`'s command is in flight, an edit of an open
+    /// buffer without a document version is refused when the buffer changed since the command was
+    /// sent (or since its last edit): its positions are those of the old text.
+    pub(super) fn server_apply_edit(&mut self, server: &str, edit: WorkspaceEdit, origin: EditOrigin) {
+        if self.lsp.edit.command.as_ref().is_some_and(|g| g.server == server)
+            && let Ok(steps) = edits::workspace_steps(edit.clone())
         {
-            self.lsp_hint(why);
+            let moved = steps.iter().find_map(|s| {
+                let edits::Step::Edit(f) = s else { return None };
+                if f.version.is_some() {
+                    return None;
+                }
+                let b = self.editor.buffers.iter().find(|b| b.path.as_deref() == Some(f.path.as_path()))?;
+                let sent = self.lsp.edit.command.as_ref()?.versions.get(&b.id)?;
+                (*sent != b.version).then(|| b.name.clone())
+            });
+            if let Some(name) = moved {
+                return self.edits_refused(origin, format!("{name} changed while the command ran"));
+            }
+        }
+        self.apply_workspace_edit(edit, origin);
+        let versions = self.open_versions();
+        if let Some(g) = self.lsp.edit.command.as_mut().filter(|g| g.server == server) {
+            g.versions = versions;
         }
     }
 
@@ -1515,6 +1592,364 @@ mod tests {
         answer(&mut app, &mut server, "textDocument/codeAction", json!([fix])).await;
         assert!(app.dialog.is_none());
         assert!(toasts(&app).contains(&"Nothing to optimize".to_string()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// One answer per refactoring that `Refactoring::matches` takes, and a foil that none takes.
+    fn refactor_row(r: Refactoring, a: &Path) -> Value {
+        let (title, kind) = match r {
+            Refactoring::ExtractMethod => ("Extract into function", "refactor.extract"),
+            Refactoring::ExtractVariable => ("Extract into variable", "refactor.extract"),
+            Refactoring::ExtractConstant => ("Extract into constant", "refactor.extract"),
+            Refactoring::Inline => ("Inline variable", "refactor.inline"),
+            Refactoring::ChangeSignature => ("Remove unused parameter", "refactor"),
+            Refactoring::Move => ("Move to a new file", "refactor.move.newFile"),
+            Refactoring::SafeDelete => ("Delete function \"old\"", "quickfix"),
+        };
+        json!({"title": title, "kind": kind, "edit": {"changes": {uri(a): [edit(0, 0, 0, 0, "// done\n")]}}})
+    }
+
+    fn foil(a: &Path) -> Value {
+        json!({"title": "Extract into static", "kind": "refactor.extract", "edit": {"changes": {uri(a): [edit(0, 0, 0, 0, "// foil\n")]}}})
+    }
+
+    const ALL: [Refactoring; 7] = [
+        Refactoring::ExtractMethod,
+        Refactoring::ExtractVariable,
+        Refactoring::ExtractConstant,
+        Refactoring::Inline,
+        Refactoring::ChangeSignature,
+        Refactoring::Move,
+        Refactoring::SafeDelete,
+    ];
+
+    /// The next request (not notification) the client sent.
+    async fn next_request(server: &mut FakeServer) -> Value {
+        loop {
+            let m = server.next().await;
+            if m.get("id").is_some() && m.get("method").is_some() {
+                return m;
+            }
+        }
+    }
+
+    fn type_char(app: &mut App) {
+        app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+    }
+
+    #[tokio::test]
+    async fn refactoring_keys_run_one_list_two_toast_none() {
+        let (mut app, dir) = test_app("lsp-refactor-keys");
+        let mut servers = with_fake_servers(&mut app, caps());
+        let mut server = open_on_server(&mut app, &mut servers, "a.rs", A).await;
+        let a = app.workspace.root.join("a.rs");
+        app.editor.active_buffer_mut().unwrap().goto_line(1, 19);
+        for r in ALL {
+            let row = refactor_row(r, &a);
+            // (a) one fits among two answers: it runs at once.
+            app.perform(Action::Lsp(LspAction::Refactoring(r)));
+            let req = answer(&mut app, &mut server, "textDocument/codeAction", json!([foil(&a), row])).await;
+            assert_eq!(req["params"]["context"]["only"], json!(r.only()), "{r:?}");
+            assert_eq!(req["params"]["range"], range(1, 20, 1, 20), "{r:?}");
+            assert!(app.dialog.is_none(), "{r:?}");
+            assert_eq!(text(&app), format!("// done\n{A}"), "{r:?}");
+            app.perform(Action::Editor(EditorAction::Undo));
+            assert_eq!(text(&app), A, "{r:?}");
+            // (b) two fit: the choice, nothing runs until chosen, Cancel changes nothing.
+            let mut second = row.clone();
+            second["title"] = json!(format!("{} again", row["title"].as_str().unwrap()));
+            app.perform(Action::Lsp(LspAction::Refactoring(r)));
+            answer(&mut app, &mut server, "textDocument/codeAction", json!([row, second])).await;
+            let d = app.dialog.take().unwrap_or_else(|| panic!("{r:?}: the choice"));
+            match &d.kind {
+                DialogKind::Choice { items, .. } => {
+                    assert_eq!(d.title, r.title());
+                    assert_eq!(items.len(), 2, "{r:?}");
+                }
+                k => panic!("{k:?}"),
+            }
+            assert_eq!(text(&app), A, "{r:?}");
+            app.finish_dialog(d.id, DialogResult::Cancel);
+            assert_eq!(text(&app), A, "{r:?}");
+            // (c) none fits: the toast.
+            app.toasts = Default::default();
+            app.perform(Action::Lsp(LspAction::Refactoring(r)));
+            answer(&mut app, &mut server, "textDocument/codeAction", json!([foil(&a)])).await;
+            assert!(app.dialog.is_none(), "{r:?}");
+            assert!(toasts(&app).contains(&"No such refactoring here".to_string()), "{r:?}: {:?}", toasts(&app));
+            assert_eq!(text(&app), A, "{r:?}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn refactoring_lazy_action_is_resolved_then_runs() {
+        let (mut app, dir) = test_app("lsp-refactor-lazy");
+        let mut servers = with_fake_servers(&mut app, caps());
+        let mut server = open_on_server(&mut app, &mut servers, "a.rs", A).await;
+        let a = app.workspace.root.join("a.rs");
+        app.editor.active_buffer_mut().unwrap().goto_line(1, 19);
+        app.perform(Action::Lsp(LspAction::Refactoring(Refactoring::ExtractMethod)));
+        let lazy = json!({"title": "Extract into function", "kind": "refactor.extract", "data": {"id": 5}});
+        answer(&mut app, &mut server, "textDocument/codeAction", json!([lazy])).await;
+        assert_eq!(text(&app), A);
+        let mut resolved = lazy.clone();
+        resolved["edit"] = refactor_row(Refactoring::ExtractMethod, &a)["edit"].clone();
+        let req = answer(&mut app, &mut server, "codeAction/resolve", resolved).await;
+        assert_eq!(req["params"]["data"], json!({"id": 5}));
+        assert_eq!(text(&app), format!("// done\n{A}"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn refactoring_action_with_data_and_command_is_resolved_first() {
+        let (mut app, dir) = test_app("lsp-refactor-data-cmd");
+        let mut servers = with_fake_servers(&mut app, caps());
+        let mut server = open_on_server(&mut app, &mut servers, "a.rs", A).await;
+        let a = app.workspace.root.join("a.rs");
+        app.editor.active_buffer_mut().unwrap().goto_line(1, 19);
+        let command = json!({"title": "fix", "command": "fix.all"});
+        let both = json!({"title": "Extract into function", "kind": "refactor.extract", "data": {"id": 6}, "command": command});
+        app.perform(Action::Lsp(LspAction::Refactoring(Refactoring::ExtractMethod)));
+        let req = answer(&mut app, &mut server, "textDocument/codeAction", json!([both])).await;
+        assert_eq!(req["method"], "textDocument/codeAction");
+        let next = next_request(&mut server).await;
+        assert_eq!(next["method"], "codeAction/resolve", "resolved before the command runs");
+        let mut resolved = both.clone();
+        resolved["edit"] = refactor_row(Refactoring::ExtractMethod, &a)["edit"].clone();
+        server.respond(next["id"].as_i64().unwrap(), resolved);
+        handle_next(&mut app, is_lsp).await;
+        assert_eq!(text(&app), format!("// done\n{A}"), "the edit first");
+        let next = next_request(&mut server).await;
+        assert_eq!(next["method"], "workspace/executeCommand", "then the command");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // A server that does not resolve: the command runs directly.
+        let (mut app, dir) = test_app("lsp-refactor-data-cmd-nr");
+        let mut c = caps();
+        c["codeActionProvider"] = json!(true);
+        let mut servers = with_fake_servers(&mut app, c);
+        let mut server = open_on_server(&mut app, &mut servers, "a.rs", A).await;
+        app.editor.active_buffer_mut().unwrap().goto_line(1, 19);
+        app.perform(Action::Lsp(LspAction::Refactoring(Refactoring::ExtractMethod)));
+        answer(&mut app, &mut server, "textDocument/codeAction", json!([both])).await;
+        let next = next_request(&mut server).await;
+        assert_eq!(next["method"], "workspace/executeCommand");
+        assert_eq!(text(&app), A);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn refactoring_command_only_action_executes() {
+        let (mut app, dir) = test_app("lsp-refactor-cmd");
+        let mut servers = with_fake_servers(&mut app, caps());
+        let mut server = open_on_server(&mut app, &mut servers, "a.rs", A).await;
+        app.editor.active_buffer_mut().unwrap().goto_line(1, 19);
+        let command =
+            |c: &str| json!({"title": "Extract into function", "kind": "refactor.extract", "command": {"title": "fix", "command": c}});
+        app.perform(Action::Lsp(LspAction::Refactoring(Refactoring::ExtractMethod)));
+        answer(&mut app, &mut server, "textDocument/codeAction", json!([command("fix.all")])).await;
+        let exec = server.recv("workspace/executeCommand").await;
+        assert_eq!(exec["params"]["command"], "fix.all");
+        assert_eq!(text(&app), A);
+        // A command the server does not list.
+        app.toasts = Default::default();
+        app.perform(Action::Lsp(LspAction::Refactoring(Refactoring::ExtractMethod)));
+        answer(&mut app, &mut server, "textDocument/codeAction", json!([command("other.cmd")])).await;
+        assert!(toasts(&app).iter().any(|t| t.ends_with("the command other.cmd is not supported")), "{:?}", toasts(&app));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn refactoring_late_answer_runs_nothing() {
+        let (mut app, dir) = test_app("lsp-refactor-late");
+        let mut servers = with_fake_servers(&mut app, caps());
+        let mut server = open_on_server(&mut app, &mut servers, "a.rs", A).await;
+        let a = app.workspace.root.join("a.rs");
+        let m = |r| json!([refactor_row(r, &a)]);
+        app.editor.active_buffer_mut().unwrap().goto_line(1, 19);
+        app.toasts = Default::default();
+        // The caret moved.
+        app.perform(Action::Lsp(LspAction::Refactoring(Refactoring::ExtractMethod)));
+        let req = server.recv("textDocument/codeAction").await;
+        app.editor.active_buffer_mut().unwrap().goto_line(0, 2);
+        server.respond(req["id"].as_i64().unwrap(), m(Refactoring::ExtractMethod));
+        handle_next(&mut app, is_lsp).await;
+        assert_eq!(text(&app), A);
+        assert!(app.dialog.is_none() && toasts(&app).is_empty(), "{:?}", toasts(&app));
+        // The buffer was typed in.
+        app.editor.active_buffer_mut().unwrap().goto_line(1, 19);
+        app.perform(Action::Lsp(LspAction::Refactoring(Refactoring::ExtractMethod)));
+        let req = server.recv("textDocument/codeAction").await;
+        type_char(&mut app);
+        let typed = text(&app);
+        assert_ne!(typed, A);
+        server.respond(req["id"].as_i64().unwrap(), m(Refactoring::ExtractMethod));
+        handle_next(&mut app, is_lsp).await;
+        assert_eq!(text(&app), typed);
+        assert!(app.dialog.is_none() && toasts(&app).is_empty(), "{:?}", toasts(&app));
+        // A second key: the first answer is dropped, the second's runs.
+        app.perform(Action::Lsp(LspAction::Refactoring(Refactoring::ExtractMethod)));
+        let first = server.recv("textDocument/codeAction").await;
+        app.perform(Action::Lsp(LspAction::Refactoring(Refactoring::ExtractVariable)));
+        let second = server.recv("textDocument/codeAction").await;
+        server.respond(first["id"].as_i64().unwrap(), m(Refactoring::ExtractMethod));
+        handle_next(&mut app, is_lsp).await;
+        assert_eq!(text(&app), typed);
+        assert!(app.dialog.is_none() && toasts(&app).is_empty(), "{:?}", toasts(&app));
+        server.respond(second["id"].as_i64().unwrap(), m(Refactoring::ExtractVariable));
+        handle_next(&mut app, is_lsp).await;
+        assert_eq!(text(&app), format!("// done\n{typed}"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn refactoring_late_resolve_runs_nothing() {
+        let (mut app, dir) = test_app("lsp-refactor-late-resolve");
+        let mut servers = with_fake_servers(&mut app, caps());
+        let mut server = open_on_server(&mut app, &mut servers, "a.rs", A).await;
+        let a = app.workspace.root.join("a.rs");
+        app.editor.active_buffer_mut().unwrap().goto_line(1, 19);
+        app.perform(Action::Lsp(LspAction::Refactoring(Refactoring::ExtractMethod)));
+        let lazy = json!({"title": "Extract into function", "kind": "refactor.extract", "data": {"id": 8}});
+        answer(&mut app, &mut server, "textDocument/codeAction", json!([lazy])).await;
+        let req = server.recv("codeAction/resolve").await;
+        type_char(&mut app);
+        let typed = text(&app);
+        let mut resolved = lazy.clone();
+        resolved["edit"] = refactor_row(Refactoring::ExtractMethod, &a)["edit"].clone();
+        server.respond(req["id"].as_i64().unwrap(), resolved);
+        handle_next(&mut app, is_lsp).await;
+        assert_eq!(text(&app), typed, "only the typed text remains");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn refactoring_answer_with_a_dialog_open_runs_nothing() {
+        let (mut app, dir) = test_app("lsp-refactor-dialog");
+        let mut servers = with_fake_servers(&mut app, caps());
+        let mut server = open_on_server(&mut app, &mut servers, "a.rs", A).await;
+        let a = app.workspace.root.join("a.rs");
+        app.editor.active_buffer_mut().unwrap().goto_line(1, 19);
+        app.perform(Action::Lsp(LspAction::Refactoring(Refactoring::ExtractMethod)));
+        let req = server.recv("textDocument/codeAction").await;
+        app.dialog = Some(Dialog::confirm(DialogId::QuitDirty, "Quit", "Quit?", &["Yes", "No"]));
+        server.respond(req["id"].as_i64().unwrap(), json!([refactor_row(Refactoring::ExtractMethod, &a)]));
+        handle_next(&mut app, is_lsp).await;
+        assert_eq!(text(&app), A);
+        assert_eq!(app.dialog.as_ref().map(|d| d.id.clone()), Some(DialogId::QuitDirty));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn refactoring_stale_version_is_refused() {
+        let (mut app, dir) = test_app("lsp-refactor-stale");
+        let mut servers = with_fake_servers(&mut app, caps());
+        let mut server = open_on_server(&mut app, &mut servers, "a.rs", A).await;
+        let (a, b) = (app.workspace.root.join("a.rs"), app.workspace.root.join("b.rs"));
+        std::fs::write(&b, B).unwrap();
+        app.editor.active_buffer_mut().unwrap().goto_line(1, 19);
+        app.perform(Action::Lsp(LspAction::Refactoring(Refactoring::ExtractMethod)));
+        let action = json!({"title": "Extract into function", "kind": "refactor.extract", "edit": {"documentChanges": [
+            {"textDocument": {"uri": uri(&a), "version": 77}, "edits": [edit(0, 0, 0, 0, "// done\n")]},
+            {"textDocument": {"uri": uri(&b), "version": null}, "edits": [edit(0, 7, 0, 10, "renamed")]},
+        ]}});
+        answer(&mut app, &mut server, "textDocument/codeAction", json!([action])).await;
+        assert_eq!(text(&app), A);
+        assert_eq!(std::fs::read_to_string(&b).unwrap(), B);
+        let n = app.notifications.last().unwrap();
+        assert!(n.text.contains("changed since the language server made the edit"), "{}", n.text);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn refactoring_closed_file_overlap_is_refused_whole() {
+        let (mut app, dir) = test_app("lsp-refactor-overlap");
+        let mut servers = with_fake_servers(&mut app, caps());
+        let mut server = open_on_server(&mut app, &mut servers, "a.rs", A).await;
+        let (a, b) = (app.workspace.root.join("a.rs"), app.workspace.root.join("b.rs"));
+        std::fs::write(&b, B).unwrap();
+        app.editor.active_buffer_mut().unwrap().goto_line(1, 19);
+        app.perform(Action::Lsp(LspAction::Refactoring(Refactoring::ExtractMethod)));
+        let action = json!({"title": "Extract into function", "kind": "refactor.extract", "edit": {"changes": {
+            uri(&a): [edit(0, 0, 0, 0, "// done\n")],
+            uri(&b): [edit(0, 7, 0, 10, "x"), edit(0, 8, 0, 11, "y")],
+        }}});
+        answer(&mut app, &mut server, "textDocument/codeAction", json!([action])).await;
+        assert_eq!(text(&app), A, "the open file is untouched: the refusal came first");
+        assert_eq!(std::fs::read_to_string(&b).unwrap(), B);
+        let n = app.notifications.last().unwrap();
+        assert!(n.text.contains("the edits of b.rs overlap"), "{}", n.text);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Run a command-only action and return the server and the command's request.
+    async fn running_command(app: &mut App, servers: &mut tokio::sync::mpsc::UnboundedReceiver<FakeServer>) -> (FakeServer, Value) {
+        let mut server = open_on_server(app, servers, "a.rs", A).await;
+        app.editor.active_buffer_mut().unwrap().goto_line(1, 19);
+        app.perform(Action::Lsp(LspAction::Refactoring(Refactoring::ExtractMethod)));
+        let cmd = json!({"title": "Extract into function", "kind": "refactor.extract", "command": {"title": "fix", "command": "fix.all"}});
+        answer(app, &mut server, "textDocument/codeAction", json!([cmd])).await;
+        let exec = server.recv("workspace/executeCommand").await;
+        (server, exec)
+    }
+
+    #[tokio::test]
+    async fn command_guard_refuses_an_unversioned_edit_after_typing() {
+        let (mut app, dir) = test_app("lsp-guard-refuse");
+        let mut servers = with_fake_servers(&mut app, caps());
+        let a = app.workspace.root.join("a.rs");
+        let (mut server, _exec) = running_command(&mut app, &mut servers).await;
+        type_char(&mut app);
+        let typed = text(&app);
+        server.request(60, "workspace/applyEdit", json!({"edit": {"changes": {uri(&a): [edit(2, 0, 2, 1, "} // fixed")]}}}));
+        handle_next(&mut app, is_lsp).await;
+        let r = server.response(60).await["result"].clone();
+        assert_eq!(r["applied"], false);
+        assert!(r["failureReason"].as_str().unwrap().contains("changed while the command ran"), "{r}");
+        assert_eq!(text(&app), typed, "only the typed change");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn command_guard_lets_the_commands_edits_through() {
+        let (mut app, dir) = test_app("lsp-guard-through");
+        let mut servers = with_fake_servers(&mut app, caps());
+        let a = app.workspace.root.join("a.rs");
+        let (mut server, exec) = running_command(&mut app, &mut servers).await;
+        for (id, text_in) in [(61, "// one\n"), (62, "// two\n")] {
+            server.request(id, "workspace/applyEdit", json!({"edit": {"changes": {uri(&a): [edit(0, 0, 0, 0, text_in)]}}}));
+            handle_next(&mut app, is_lsp).await;
+            assert_eq!(server.response(id).await["result"], json!({"applied": true}), "edit {id}");
+        }
+        assert!(text(&app).starts_with("// two\n// one\n"), "{}", text(&app));
+        // The answer ends the guard: an unsolicited edit after typing keeps today's behaviour.
+        server.respond(exec["id"].as_i64().unwrap(), Value::Null);
+        handle_next(&mut app, is_lsp).await;
+        type_char(&mut app);
+        server.request(63, "workspace/applyEdit", json!({"edit": {"changes": {uri(&a): [edit(0, 0, 0, 0, "// three\n")]}}}));
+        handle_next(&mut app, is_lsp).await;
+        assert_eq!(server.response(63).await["result"], json!({"applied": true}));
+        assert!(text(&app).starts_with("// three\n// two\n"), "{}", text(&app));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn typescript_rename_request_is_answered_null() {
+        let (mut app, dir) = test_app("lsp-ts-rename");
+        let mut servers = with_fake_servers(&mut app, caps());
+        let mut server = open_on_server(&mut app, &mut servers, "a.rs", A).await;
+        app.toasts = Default::default();
+        server.request(
+            70,
+            "_typescript.rename",
+            json!({"textDocument": {"uri": uri(&app.workspace.root.join("a.rs"))}, "position": {"line": 0, "character": 0}}),
+        );
+        handle_next(&mut app, is_lsp).await;
+        let resp = server.response(70).await;
+        assert_eq!(resp.get("result"), Some(&Value::Null), "{resp}");
+        assert!(resp.get("error").is_none(), "{resp}");
+        assert!(toasts(&app).is_empty(), "{:?}", toasts(&app));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

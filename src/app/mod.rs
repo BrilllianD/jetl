@@ -1239,6 +1239,7 @@ impl App {
                     crate::actions::LspAction::FileStructure => self.lsp_file_structure(),
                     crate::actions::LspAction::RefactorThis => self.lsp_code_actions(lsp_edit::ActionsFor::Refactor),
                     crate::actions::LspAction::OptimizeImports => self.lsp_code_actions(lsp_edit::ActionsFor::OrganizeImports),
+                    crate::actions::LspAction::Refactoring(r) => self.lsp_code_actions(lsp_edit::ActionsFor::Kind(*r)),
                     crate::actions::LspAction::ToggleInlayHints => self.toggle_inlay_hints(),
                     _ => {}
                 }

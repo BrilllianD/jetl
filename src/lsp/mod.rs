@@ -78,6 +78,8 @@ pub enum PendingTag {
     Refactor(DocTag),
     /// `textDocument/codeAction` limited to organize imports (Optimize Imports).
     OrganizeImports(DocTag),
+    /// `textDocument/codeAction` limited to one refactoring (Extract Method, Inline, ...).
+    RefactorKind(DocTag, Refactoring),
     /// `workspace/executeCommand` of a chosen action.
     ExecuteCommand(DocTag),
     /// `textDocument/documentSymbol`.
@@ -131,6 +133,7 @@ impl PendingTag {
             | PendingTag::CodeActionResolve(t)
             | PendingTag::Refactor(t)
             | PendingTag::OrganizeImports(t)
+            | PendingTag::RefactorKind(t, _)
             | PendingTag::ExecuteCommand(t)
             | PendingTag::DocumentSymbols(t)
             | PendingTag::Formatting(t)
@@ -139,6 +142,89 @@ impl PendingTag {
             | PendingTag::SemanticTokens(t)
             | PendingTag::CallHierarchy(t)
             | PendingTag::TypeHierarchy(t) => Some(t),
+        }
+    }
+}
+
+/// One of the refactoring keys (Extract Method, Inline, ...): the server's code
+/// action of that kind at the caret or selection. jetl implements none of them;
+/// `matches` picks the server's actions that fit, by kind and by title because
+/// servers use kinds differently (clangd and rust-analyzer often send the bare
+/// `refactor` or `refactor.extract`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Refactoring {
+    ExtractMethod,
+    ExtractVariable,
+    ExtractConstant,
+    Inline,
+    ChangeSignature,
+    Move,
+    SafeDelete,
+}
+
+/// Whether `kind` is `base` or below it (`base.` prefix).
+fn under(kind: &str, base: &str) -> bool {
+    kind == base || kind.strip_prefix(base).is_some_and(|rest| rest.starts_with('.'))
+}
+
+/// The lowercased words of `title`: runs of alphanumerics and `_`.
+fn words(title: &str) -> Vec<String> {
+    title.to_lowercase().split(|c: char| !(c.is_alphanumeric() || c == '_')).filter(|w| !w.is_empty()).map(str::to_owned).collect()
+}
+
+impl Refactoring {
+    /// The kinds sent as `context.only`.
+    pub fn only(self) -> &'static [&'static str] {
+        match self {
+            Refactoring::ExtractMethod
+            | Refactoring::ExtractVariable
+            | Refactoring::ExtractConstant
+            | Refactoring::ChangeSignature
+            | Refactoring::Move => &["refactor"],
+            Refactoring::Inline => &["refactor.inline"],
+            Refactoring::SafeDelete => &["refactor", "quickfix"],
+        }
+    }
+
+    /// The menu label and the title of the choice dialog.
+    pub fn title(self) -> &'static str {
+        match self {
+            Refactoring::ExtractMethod => "Extract Method",
+            Refactoring::ExtractVariable => "Extract Variable",
+            Refactoring::ExtractConstant => "Extract Constant",
+            Refactoring::Inline => "Inline",
+            Refactoring::ChangeSignature => "Change Signature",
+            Refactoring::Move => "Move",
+            Refactoring::SafeDelete => "Safe Delete",
+        }
+    }
+
+    /// Whether the server's action of `kind` and `title` is this refactoring.
+    pub fn matches(self, kind: &str, title: &str) -> bool {
+        let w = words(title);
+        let has = |names: &[&str]| w.iter().any(|x| names.contains(&x.as_str()));
+        let first = w.first().map(String::as_str);
+        let generic = kind == "refactor.extract" || kind == "refactor";
+        let extract = |base: &str, word: &[&str]| under(kind, base) || (generic && first == Some("extract") && has(word));
+        match self {
+            Refactoring::ExtractMethod => extract("refactor.extract.function", &["function", "method"]),
+            Refactoring::ExtractVariable => extract("refactor.extract.variable", &["variable"]),
+            Refactoring::ExtractConstant => extract("refactor.extract.constant", &["constant"]),
+            Refactoring::Inline => under(kind, "refactor.inline"),
+            Refactoring::ChangeSignature => {
+                (kind == "refactor" || under(kind, "refactor.rewrite")) && has(&["signature", "parameter", "parameters"])
+            }
+            Refactoring::Move => {
+                let lower = title.to_lowercase();
+                under(kind, "refactor.move")
+                    || (under(kind, "refactor") && first == Some("move"))
+                    || (under(kind, "refactor.extract") && (lower.ends_with(" to file") || lower.ends_with(" to new file")))
+            }
+            Refactoring::SafeDelete => {
+                (under(kind, "refactor") || under(kind, "quickfix"))
+                    && !has(&["all"])
+                    && (first == Some("delete") || (first == Some("remove") && has(&["unused", "import", "imports", "include"])))
+            }
         }
     }
 }
@@ -413,5 +499,81 @@ mod tests {
         assert!(cfg.server_for("cpp").is_none(), "an empty command turns the server off");
         assert_eq!(cfg.server_for("python").unwrap().name, "pylsp", "user servers come first");
         assert!(Config::parse("[lsp.servers.x]\ncommand = \"x\"\n").is_err(), "a command is a list of words");
+    }
+
+    #[test]
+    fn refactoring_table_on_probe_titles() {
+        use super::Refactoring::*;
+        let yes: &[(super::Refactoring, &str, &str)] = &[
+            (ExtractMethod, "refactor.extract", "Extract into function"),
+            (ExtractMethod, "refactor.extract.function", "Extract to function in module scope"),
+            (ExtractMethod, "refactor.extract.function", "Extract function"),
+            (ExtractVariable, "refactor.extract", "Extract into variable"),
+            (ExtractVariable, "refactor.extract.variable", "Extract variable"),
+            (ExtractVariable, "refactor", "Extract subexpression to variable"),
+            (ExtractConstant, "refactor.extract", "Extract into constant"),
+            (ExtractConstant, "refactor.extract.constant", "Extract to constant in enclosing scope"),
+            (Inline, "refactor.inline", "Inline variable"),
+            (Inline, "refactor.inline.variable", "Inline variable"),
+            (Inline, "refactor.inline.call", "Inline call to add"),
+            (ChangeSignature, "refactor", "Remove unused parameter"),
+            (ChangeSignature, "refactor.rewrite.moveParamLeft", "Move parameter left"),
+            (ChangeSignature, "refactor.rewrite.parameters.toDestructured", "Convert parameters to destructured object"),
+            (Move, "refactor.move.newFile", "Move to a new file"),
+            (Move, "refactor.extract", "Extract module to file"),
+            (Move, "refactor.extract.toNewFile", "Extract declarations to new file"),
+            (Move, "refactor.rewrite", "Move guard to arm body"),
+            (Move, "refactor.rewrite", "Move to where clause"),
+            (SafeDelete, "quickfix", "Delete function \"deadCode\""),
+            (SafeDelete, "quickfix", "Remove unused declaration for: 'deadCode'"),
+            (SafeDelete, "refactor", "Remove unused parameter"),
+            (SafeDelete, "quickfix", "remove #include directive"),
+        ];
+        for (r, kind, title) in yes {
+            assert!(r.matches(kind, title), "{r:?} should match {kind:?} {title:?}");
+        }
+        let no: &[(super::Refactoring, &str, &str)] = &[
+            (Move, "refactor", "Remove unused parameter"),
+            (Move, "refactor.inline.call", "Inline call to move_it"),
+            (Move, "refactor.extract", "Extract Module"),
+            (ExtractConstant, "refactor", "Promote local to constant"),
+            (ExtractConstant, "refactor.extract", "Extract into static"),
+            (ExtractConstant, "refactor.extract.type", "Extract to type alias"),
+            (ExtractMethod, "refactor.extract", "Extract module to file"),
+            (ExtractMethod, "refactor.rewrite", "Generate a type alias for function with named params"),
+            (ExtractMethod, "refactor.extract.functional", "Extract function"),
+            (ExtractVariable, "refactor.extract.constant", "Extract to constant in enclosing scope"),
+            (ChangeSignature, "", "Generate a type alias for function with named params"),
+            (ChangeSignature, "quickfix", "Remove unused parameter \"unused\""),
+            (Inline, "refactoring", "Inline variable"),
+            (Inline, "refactor.rewrite", "Inline variable"),
+            (SafeDelete, "quickfix", "Delete all unused declarations"),
+            (SafeDelete, "quickfix", "Remove all unused imports"),
+            (SafeDelete, "refactor", "Remove redundant parentheses"),
+            (SafeDelete, "quickfix", "Remove dbg!()"),
+            (SafeDelete, "refactor.rewrite.arrow.braces.remove", "Remove braces from arrow function"),
+            (SafeDelete, "quickfix", "Bind as `let _ = unused;`"),
+            (SafeDelete, "source", "Delete function x"),
+        ];
+        for (r, kind, title) in no {
+            assert!(!r.matches(kind, title), "{r:?} should not match {kind:?} {title:?}");
+        }
+    }
+
+    #[test]
+    fn refactoring_only_and_titles() {
+        use super::Refactoring::*;
+        let rows: &[(super::Refactoring, &[&str], &str)] = &[
+            (ExtractMethod, &["refactor"], "Extract Method"),
+            (ExtractVariable, &["refactor"], "Extract Variable"),
+            (ExtractConstant, &["refactor"], "Extract Constant"),
+            (Inline, &["refactor.inline"], "Inline"),
+            (ChangeSignature, &["refactor"], "Change Signature"),
+            (Move, &["refactor"], "Move"),
+            (SafeDelete, &["refactor", "quickfix"], "Safe Delete"),
+        ];
+        for (r, only, title) in rows {
+            assert_eq!((r.only(), r.title()), (*only, *title));
+        }
     }
 }

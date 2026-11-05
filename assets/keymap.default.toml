@@ -320,6 +320,16 @@
 "ctrl-alt-shift-t" = "lsp.refactor_this"
 "alt-shift-t" = "lsp.refactor_this"
 "ctrl-alt-o" = "lsp.optimize_imports"
+# Refactorings by kind, as in JetBrains: the server's action of that kind; several are listed, none
+# gives a toast. Ctrl+Alt+M arrives as Alt+Enter without the kitty protocol, so under tmux and in
+# legacy terminals use Edit > Extract Method or F1.
+"ctrl-alt-m" = "lsp.extract_method"
+"ctrl-alt-v" = "lsp.extract_variable"
+"ctrl-alt-c" = "lsp.extract_constant"
+"ctrl-alt-n" = "lsp.inline"
+"ctrl-f6" = "lsp.change_signature"
+"f6" = "lsp.move"
+"alt-delete" = "lsp.safe_delete"
 # Quick Definition, as in JetBrains: Ctrl+Shift+I needs the kitty protocol (legacy terminals
 # send Ctrl+I, which is Tab); Alt+Shift+I works anywhere.
 "ctrl-shift-i" = "lsp.quick_definition"

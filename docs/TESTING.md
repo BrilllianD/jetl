@@ -1830,6 +1830,24 @@ git -C $T status --short                 # prints nothing
 
 Ctrl+A on an empty field draws nothing. In other text fields (Find, the palette) Ctrl+A is unchanged.
 
+### Scenario: refactoring keys
+
+At 120x40 and 80x24 (yman 399), real servers, `/tmp/tm24.sh` as `/tmp/tm.sh` above, `XDG_*` under `/tmp/jetl-399/home`, a fresh copy of the demo per step that changes files. Needs plain `cargo build` (TypeScript and Python grammars). Move the caret with `C-g`, `-l 'LINE:COL'`, `Enter` and check `Ln`/`Col` first; select with `S-Right`; undo with `C-z`; wait 15 s for rust-analyzer. The keys are `C-M-v`, `C-M-c`, `C-M-n`, `C-F6`, `F6` and `M-DC`; Extract Method by the palette (`F1`, `extract method`) or `F10`, `Right`, Up to its row.
+
+rust-analyzer (`src/main.rs` of a small crate):
+
+1. `C-M-m`: arrives as Alt+Enter and opens the Context Actions dialog (the documented limit). Escape.
+2. Select two statements, palette Extract Method: `fun_name` appears, no dialog. Undo. Again through the Edit menu row.
+3. Select `first * 3`, `C-M-v`: Extract into variable runs. Select `1 + 2`, `C-M-c`: Extract into constant. Caret on a local, `C-M-n`: Inline variable. Each undone with `C-z`.
+4. Caret on the `unused` parameter, `C-F6` and then `M-DC`: the parameter and the call's argument are gone. Undo.
+5. Caret on `dead_code`, `F6` and `M-DC`: toast `No such refactoring here`, text unchanged. On an unused import, `M-DC`: the same (Remove all unused imports is not taken).
+6. Caret on `mod inner`, `F6`: `src/inner.rs` exists (a file operation, not undone).
+7. In a git repo, Alt+9 then `C-M-n`: the new branch dialog, not Inline.
+
+typescript-language-server (`main.ts`, `tsconfig.json`): two statements selected, palette Extract Method: a dialog `Extract Method` with two rows; Escape changes nothing; choosing Extract to function in module scope extracts with no error toast. Selected `1 + 2`, `C-M-c`: two constant rows; `C-M-v`: the toast. `C-M-n` on a const: Inline variable. `C-F6` on a parameter list: Convert parameters to destructured object. `M-DC` on an unused function: Remove unused declaration, no dialog. `F6` on a class: Move to a new file (`K.ts` is made).
+
+pyright and basedpyright (`[lsp.servers.pyright] command = ["basedpyright-langserver", "--stdio"]`): each key gives the toast. With `[lsp] enabled = false` a key toasts `Language servers are off ([lsp] enabled = false)`. Stderr is empty and Ctrl+Q exits 0 in every run.
+
 ### Limits under tmux
 
 - No kitty keyboard protocol: Ctrl+Shift+letter, Ctrl+Tab, Ctrl+Enter,
@@ -1837,6 +1855,8 @@ Ctrl+A on an empty field draws nothing. In other text fields (Find, the palette)
   fallbacks (Ctrl+N for files, Alt+Shift+N for symbols, F1 for actions, Alt+Left/Right for tabs,
   Alt+Enter to commit, Alt+B then a digit for numbered bookmarks) or check those keys in foot or
   kitty.
+- Ctrl+Alt+M (Extract Method) arrives as Alt+Enter (`C-M-m` is `ESC CR`); use Edit >
+  Extract Method or the palette.
 - Ctrl+Alt+S arrives as `C-M-s` in legacy mode and opens the Settings window;
   File > Settings… is the fallback.
 - Escape followed quickly by another key arrives as Alt+key; pause between
