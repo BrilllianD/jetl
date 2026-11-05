@@ -237,6 +237,14 @@ pub enum AppMsg {
     /// A language server event, tagged with the workspace generation and
     /// the server's id (`app/lsp.rs`).
     Lsp(LspMsg),
+    /// A debug session's report (`app/debug.rs`); dropped unless its generation and session are the current ones.
+    Dap(crate::dap::DapMsg),
+    /// `debug.start`'s choice of configuration and adapter, made off the main thread; dropped on an older generation or seq.
+    DebugReady {
+        generation: u64,
+        seq: u64,
+        result: Box<Result<crate::app::Prepared, String>>,
+    },
     /// Definitions or usages with their line previews, the ones in files
     /// that are not open read from disk; shown in the Locations palette
     /// unless a newer definition or usages request (`seq`) was made.

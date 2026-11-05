@@ -102,6 +102,8 @@ impl App {
             AppMsg::RunTasks { generation, seq, tasks, error } => self.run_tasks_loaded(generation, seq, tasks, error),
             AppMsg::TerminalOutput { generation, id } => self.terminal_output(generation, id),
             AppMsg::Lsp(m) => self.lsp_msg(m),
+            AppMsg::Dap(m) => self.dap_msg(m),
+            AppMsg::DebugReady { generation, seq, result } => self.debug_ready(generation, seq, *result),
             AppMsg::Locations { generation, seq, title, items } => self.locations_loaded(generation, seq, title, items),
             AppMsg::QuickDefinition { generation, tag, heading, code, lang } => {
                 self.quick_definition_loaded(generation, tag, heading, code, lang)

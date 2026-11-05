@@ -39,6 +39,7 @@
 # Ctrl+Alt+R sends the HTTP request at the caret of a .http file (Run menu and F1 too).
 "ctrl-alt-r" = "run.http_request_at_caret"
 "ctrl-f2" = "run.stop"
+"shift-f9" = "debug.start"
 "f4" = "run.next_problem"
 "shift-f4" = "run.prev_problem"
 "alt-0" = "git.commit_box"
@@ -569,6 +570,10 @@
 # keys to keep them for jetl, "none" gives one to the shell), and Esc Esc: a
 # single Esc reaches the shell, a second one within the double click interval
 # focuses the editor.
+# Above [global] while a debug session is live or starting: Ctrl+F2 stops it first, and the Run task once none is.
+[debug.active]
+"ctrl-f2" = "debug.stop"
+
 [terminal]
 "alt-f12" = "tool_window.terminal"
 "ctrl-shift-up" = "tool_window.stretch_up"

@@ -440,8 +440,14 @@ which do not read the debug tables (a TOML syntax error anywhere in the file
 stops them all); a bad `[run.debug.<name>]` in `config.toml` invalidates
 that file like any other bad key.
 
-jetl does not start a debug session yet: nothing reads these tables but
-`--doctor`, until the debugger lands.
+Run > Debug (Shift+F9) starts the configuration selected in the Run window, else
+the first one with a debug table, under its adapter, in the project root; the
+program is the one named in `launch`. Only one session runs at a time: starting
+another stops the first, with no prompt. Ctrl+F2 or Run > Stop Debugging stops it,
+and Ctrl+F2 reaches a Run task only while no session is live. Debug refuses a
+working directory whose name holds a line break, because gdb runs `cd` with it
+unquoted and would run the following lines as commands. Renaming a configuration
+leaves its table behind; the toast names the table to write.
 
 Things to know about arguments and test runs: with `command = ["sh", "-c",
 script]` the first of `args` becomes `$0` of the script, not `$1`. A compound

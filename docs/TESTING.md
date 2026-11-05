@@ -922,6 +922,51 @@ run sets `XDG_CONFIG_HOME`, `XDG_STATE_HOME` and `XDG_CACHE_HOME` under `$R/xdg`
 
 Each run exits 0 with an empty stderr on Ctrl+Q.
 
+### Scenario: Debug and Stop
+
+Needs `gdb` 14 or newer (`gdb -i=dap`) and `gcc`; nothing else is installed. At 80x24 and
+at 120x40, with `XDG_CONFIG_HOME`, `XDG_STATE_HOME` and `XDG_CACHE_HOME` under `/tmp` and
+`[lsp] enabled = false`, `[ui] toolbar = false` in `config.toml`. Fixture `/tmp/jetl-dap-demo`:
+`demo.c` (an `add(int, int)` called from `main`, which prints `x=3`), built with
+`gcc -g -O0 -o demo demo.c`, and `.jetl/run.toml` with `[[configs]] name = "demo"`,
+`command = ["./demo"]` and `[debug.demo]` with `adapter = "gdb"` and
+`launch = { program = "${workspaceFolder}/demo" }`. A second fixture, `/tmp/jetl-dap-sleepy`, is
+a program named `jetl-dbg-sleepy` that calls `sleep(300)`, with the same kind of `run.toml`. Count
+processes with `pgrep -x jetl-dbg-sleepy` and `pgrep -f '[g]db -q -i=dap'` (the brackets keep the
+shell's own command line out of the match), and start only when both print nothing.
+
+1. F10, `r`: the Run menu has `Debug  Shift+F9` and `Stop Debugging  Ctrl+F2` after `Stop`, inside
+   the screen. Escape twice.
+2. In `demo`: Shift+F9. Toasts `Debugging demo with gdb`, then `Debug session ended, exit code 0`
+   (the program has no breakpoint to stop at: none is sent yet). No `gdb` is left. Ctrl+F2 with
+   nothing live reaches Run: `No task is running`.
+3. Rewrite `.jetl/run.toml` and press Shift+F9 each time: without a `[debug.demo]` table,
+   `No debug configuration: add [debug.<name>] to .jetl/run.toml`; with `adapter = "codelldb"`, the
+   toast says `codelldb not found` with its install hint; with `launch = "x"`, a toast with
+   `launch must be a table` (Run does not show it); with `launch = { program = "...", env = "x" }`, an
+   error row in the Event Log (Alt+5) with gdb's text and then `Debug session ended`, and no `gdb` left.
+4. A `cwd` with a line break: `launch = { program = "...", cwd = "/tmp\nshell touch /tmp/pwned" }`
+   gives `Cannot debug 'demo': its working directory holds a line break, which a debug adapter could
+   run as commands`, starts no `gdb`, and `/tmp/pwned` does not exist.
+5. A program that does not exist: `launch = { program = "${workspaceFolder}/nope" }`. gdb answers the
+   launch with success and idles, so the session stays live (one `gdb`) until Ctrl+F2:
+   `Debug session stopped`, no `gdb` left.
+6. In `/tmp/jetl-dap-sleepy`: Shift+F9 shows one `jetl-dbg-sleepy` and one `gdb` (the positive
+   control: the counts above are read here, while it runs, before any stop). Ctrl+F2: `Debug session
+   stopped` and neither is left. Shift+F9 twice in a row: the second replaces the first (another pid,
+   one of each). Ctrl+F2.
+7. Run the sleepy configuration with Shift+F10 as well, then Shift+F9: two `jetl-dbg-sleepy` and one
+   `gdb`. The first Ctrl+F2 ends the session only (one `jetl-dbg-sleepy` is left, the Run task); the
+   second ends the task.
+8. Shift+F9, then `kill -9` the `gdb`: the toast is `Debug session ended: adapter exited`, and after two
+   seconds no `jetl-dbg-sleepy` is left.
+9. Shift+F9, then Ctrl+Q: jetl exits 0 with an empty stderr, and neither process is left.
+
+Each run exits 0 with an empty stderr on Ctrl+Q. What gdb cannot show, and the unit tests prove
+instead: the other two start orders (js-debug's and delve's), an adapter that never answers (the
+kill after the stop stages), a pause (no breakpoint is sent before the breakpoint sync), a root switch
+and a replaced session's silence, and the debugpy command (debugpy is not installed).
+
 ### Scenario: Save As
 
 At 80x24 and at 120x40, with `run()` and `$T` from the crash recovery

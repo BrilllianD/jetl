@@ -127,6 +127,7 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Ctrl+F2` | `run.stop` | Run: stop the running task |
 | `F4` | `run.next_problem` | Run: next problem (opens it) |
 | `Shift+F4` | `run.prev_problem` | Run: previous problem (opens it) |
+| `Shift+F9` | `debug.start` | Debug: start the selected run configuration under its debug adapter |
 
 ## editor
 
@@ -409,6 +410,12 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | Keys | Action | Description |
 |---|---|---|
 | `Esc` | `mode.normal` | Vim: normal mode |
+
+## debug.active
+
+| Keys | Action | Description |
+|---|---|---|
+| `Ctrl+F2` | `debug.stop` | Debug: stop the debug session |
 
 ## event_log
 

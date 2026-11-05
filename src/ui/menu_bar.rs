@@ -258,6 +258,8 @@ pub const MAIN_MENU: &[(&str, char, &[Row])] = &[
             Item("Rerun", "run.rerun"),
             Item("Rerun Failed Tests", "run.rerun_failed"),
             Item("Stop", "run.stop"),
+            Item("Debug", "debug.start"),
+            Item("Stop Debugging", "debug.stop"),
             Sep,
             Item("Edit Configurations…", "run.edit_configs"),
             Sep,
@@ -604,6 +606,14 @@ mod tests {
         let labels: Vec<&str> = rows.iter().filter_map(|r| if let Item(l, _) = r { Some(*l) } else { None }).collect();
         let at = |l| labels.iter().position(|x| *x == l).unwrap();
         assert_eq!(at("Toolbar") + 1, at("Zen Mode"));
+    }
+
+    #[test]
+    fn run_menu_has_the_debug_rows() {
+        let (_, _, rows) = MAIN_MENU.iter().find(|m| m.0 == "Run").unwrap();
+        let items: Vec<(&str, &str)> = rows.iter().filter_map(|r| if let Item(l, id) = r { Some((*l, *id)) } else { None }).collect();
+        let at = items.iter().position(|i| *i == ("Stop", "run.stop")).unwrap();
+        assert_eq!(items[at + 1..at + 3], [("Debug", "debug.start"), ("Stop Debugging", "debug.stop")]);
     }
 
     #[test]

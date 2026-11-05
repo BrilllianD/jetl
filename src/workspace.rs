@@ -508,6 +508,7 @@ impl App {
         self.editor.merge_close();
         self.format.abort_all();
         self.run_root_changed();
+        self.debug_root_changed();
         // The shell belongs to the old root; the next one starts in the new.
         self.terminal.reset();
         // So do the language servers; new ones start for the open buffers.

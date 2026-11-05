@@ -18,6 +18,7 @@ pub enum Action {
     Structure(StructureAction),
     EventLog(EventLogAction),
     Run(RunAction),
+    Debug(DebugAction),
     Problems(ProblemsAction),
     History(HistoryAction),
     Tasks(TasksAction),
@@ -546,6 +547,14 @@ pub enum RunAction {
     Open,
     NextProblem,
     PrevProblem,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum DebugAction {
+    /// Start the selected configuration under its debug adapter, replacing a live session.
+    Start,
+    /// Stop the session; pressed again, skip ahead a stage.
+    Stop,
 }
 
 /// The Problems tool window (language server diagnostics).
@@ -1148,6 +1157,8 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "run.open" => "Run: jump to the selected line's location", Run(RunAction::Open);
         "run.next_problem" => "Run: next problem (opens it)", Run(RunAction::NextProblem);
         "run.prev_problem" => "Run: previous problem (opens it)", Run(RunAction::PrevProblem);
+        "debug.start" => "Debug: start the selected run configuration under its debug adapter", Debug(DebugAction::Start);
+        "debug.stop" => "Debug: stop the debug session", Debug(DebugAction::Stop);
 
         "lsp.restart" => "Restart language servers", Lsp(LspAction::Restart);
         "lsp.next_problem" => "Next problem (diagnostic) in the file", Lsp(LspAction::NextProblem);
@@ -1308,6 +1319,8 @@ impl Action {
             Action::Structure(_) => &["structure", "global"],
             Action::EventLog(_) => &["event_log", "global"],
             Action::Run(_) => &["run", "global"],
+            Action::Debug(DebugAction::Stop) => &["debug.active"],
+            Action::Debug(_) => &["global"],
             Action::Problems(_) => &["problems", "global"],
             Action::History(_) => &["local_history", "global"],
             Action::Tasks(_) => &["tasks", "global"],

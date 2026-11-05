@@ -37,6 +37,7 @@ macro_rules! ctx {
     };
 }
 
+pub use debug::Prepared;
 pub use lsp::LspStatus;
 pub use save_as::AfterSave;
 
@@ -45,6 +46,7 @@ mod clipboard;
 mod compare;
 mod completion;
 mod config_reload;
+mod debug;
 mod dialogs;
 mod effects;
 mod files;
@@ -294,6 +296,7 @@ pub struct App {
     pub(crate) format: format::FormatState,
     /// The running task, the last one and the picker's tasks.
     pub(crate) run: run::RunState,
+    pub(crate) debug: debug::DebugState,
     pub run_panel: crate::run::panel::RunPanel,
     /// The temp file holding the body of the last HTTP request sent (Rerun reads it again).
     pub(crate) http_body: Option<std::path::PathBuf>,
@@ -443,6 +446,7 @@ impl App {
             clipboard: Default::default(),
             format: Default::default(),
             run: Default::default(),
+            debug: Default::default(),
             run_panel: Default::default(),
             http_body: None,
             problems: crate::lsp::panel::ProblemsPanel::excluding(paths.scratches_dir()),
@@ -595,6 +599,9 @@ impl App {
                 v.push("editor.merge");
             }
             v.push(self.focus.current.context());
+            if self.debug.active() || self.debug.starting() {
+                v.push("debug.active");
+            }
         }
         v.push("global");
         v
@@ -650,8 +657,9 @@ impl App {
     /// Leaving jetl, after a quit or a run loop error; nothing here draws.
     /// Writes the local history snapshots still queued (the saves of the
     /// quit dialog) and the session, kills formatters, the Run task and the
-    /// Terminal shell with what they started, and shuts the language
-    /// servers down (two seconds at most).
+    /// Terminal shell with what they started, and ends the debug session
+    /// and shuts the language servers down, together (two seconds at most for the servers; a debug
+    /// adapter that does not answer takes `dap::client::SHUTDOWN_LIMIT`).
     pub(crate) async fn shutdown(&mut self) {
         self.history.flush(Duration::from_secs(3));
         self.save_session();
@@ -661,7 +669,8 @@ impl App {
             let _ = std::fs::remove_file(body);
         }
         self.terminal.reset();
-        self.lsp.shutdown_all().await;
+        let debug = self.debug_finish();
+        tokio::join!(self.lsp.shutdown_all(), debug);
     }
 
     fn on_tick(&mut self) {
@@ -1191,6 +1200,11 @@ impl App {
                 return;
             }
             Action::Run(a) => self.run_panel.handle_action(a, &mut cx),
+            Action::Debug(a) => {
+                drop(cx);
+                self.perform_debug(a.clone());
+                return;
+            }
             Action::Problems(a) => self.problems.handle_action(a, &self.lsp.diagnostics, self.editor.active_path(), &mut cx),
             Action::History(a) => self.history_panel.handle_action(a, &mut cx),
             Action::Tasks(a) => {
