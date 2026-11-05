@@ -45,9 +45,10 @@ impl Editor {
         let mut out: BTreeMap<PathBuf, Vec<usize>> =
             self.closed_breakpoints.iter().map(|(p, l)| (p.clone(), l.iter().copied().collect())).collect();
         for b in &self.buffers {
-            if let Some(path) = &b.path
-                && !b.breakpoints.is_empty()
-            {
+            let Some(path) = &b.path else { continue };
+            if b.breakpoints.is_empty() {
+                out.remove(path);
+            } else {
                 out.insert(path.clone(), b.breakpoints.keys().copied().collect());
             }
         }
@@ -72,7 +73,9 @@ impl Editor {
     pub(super) fn park_breakpoints(&mut self, i: usize) {
         let b = &self.buffers[i];
         let Some(path) = &b.path else { return };
-        if !b.breakpoints.is_empty() {
+        if b.breakpoints.is_empty() {
+            self.closed_breakpoints.remove(path);
+        } else {
             self.closed_breakpoints.insert(path.clone(), b.breakpoints.keys().copied().collect());
         }
     }
@@ -329,6 +332,18 @@ mod tests {
         ed.retarget(&a, &moved, &theme);
         assert_eq!(ed.closed_breakpoints(), vec![(moved.clone(), vec![2])]);
         ed.close_under(&moved);
+        assert!(ed.closed_breakpoints().is_empty());
+    }
+
+    #[test]
+    fn an_open_buffer_with_no_marks_wins_over_lines_parked_for_its_path() {
+        let parked = PathBuf::from("/tmp/parked.log");
+        let mut ed = editor("one\ntwo\n");
+        ed.restore_closed_breakpoints(&[(parked.clone(), vec![1])]);
+        // Save As onto a path whose old file was closed with a breakpoint.
+        ed.buffers[0].path = Some(parked.clone());
+        assert!(ed.all_breakpoints().is_empty());
+        ed.park_breakpoints(0);
         assert!(ed.closed_breakpoints().is_empty());
     }
 
