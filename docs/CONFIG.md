@@ -409,8 +409,8 @@ ones).
 
 The launch arguments are built in this order, each replacing the same
 top-level key of the one before: the adapter's `launch`; `cwd` (the
-configuration's `cwd`, with the variables below replaced, under the project root,
-else the root); `env` (the
+configuration's `cwd`, with the variables below replaced, under the project root
+unless that makes it absolute, else the root); `env` (the
 configuration's `env`; for gdb also jetl's environment beneath it, since gdb
 takes `env` as the exact environment and a user-defined adapter does not get
 this); the block's `launch`. So a block's `env` replaces the whole of it, and
@@ -435,8 +435,9 @@ supply that program. The built-in debugpy adapter needs Python 3.11: it runs
 with `-P` to keep the project's files (a `debugpy/` directory in it, say) off
 its import path, and an older Python fails with an error the session reports.
 
-A bad debug table does not affect Run or Edit Configurations, which do not
-read the debug tables; a bad `[run.debug.<name>]` in `config.toml` invalidates
+A debug table of the wrong shape does not affect Run or Edit Configurations,
+which do not read the debug tables (a TOML syntax error anywhere in the file
+stops them all); a bad `[run.debug.<name>]` in `config.toml` invalidates
 that file like any other bad key.
 
 jetl does not start a debug session yet: nothing reads these tables but
@@ -462,7 +463,8 @@ copies any configuration into a new project one, Ctrl+S or Apply saves, OK
 saves and closes, Esc asks before dropping changes. Saving writes only
 `.jetl/run.toml` (created with its folder when missing): comments and the
 entries you did not change are kept (a comment directly above a configuration
-goes with it when that configuration is removed), and nothing runs, neither
+goes with it when that configuration is removed, except above the file's first
+table, where it stays as the file's header), and nothing runs, neither
 on opening nor on saving. Entries from config.toml and the detected defaults are read-only:
 copy one to change it in the project. A file that changed on disk since the
 window loaded it is not overwritten; reopen the window. An invalid

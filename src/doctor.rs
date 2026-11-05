@@ -463,6 +463,9 @@ mod tests {
         assert_eq!((first.name.as_str(), first.status, first.detail.as_str()), ("mine", Status::Missing, "mine not found (go)"));
         let r = run(&cfg("[debug.adapters.debugpy]\ncommand = [\"debugpy-adapter\"]\n"), &["debugpy-adapter"]);
         assert_eq!(row(&r, Group::Debug, "debugpy").status, Status::Ok);
+        let r = run(&cfg("[debug.adapters.mine]\ncommand = [\"python3\", \"-m\", \"mine.adapter\"]\nlanguages = [\"go\"]\n"), &["python3"]);
+        let mine = row(&r, Group::Debug, "mine");
+        assert_eq!((mine.status, mine.detail.as_str()), (Status::Unknown, "python3 found, mine not checked (go)"));
     }
 
     #[cfg(unix)]

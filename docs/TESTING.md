@@ -918,7 +918,7 @@ run sets `XDG_CONFIG_HOME`, `XDG_STATE_HOME` and `XDG_CACHE_HOME` under `$R/xdg`
    `.jetl/run.toml` has `args` for `demo` and everything from `# how to debug it` on is the
    block as written, comment included.
 7. Change the `launch` line to `launch = "x"`, Alt+Shift+F10: the picker lists `demo` with no
-   warning, and Enter runs it. A bad debug block does not affect Run.
+   warning, and Enter runs it. A debug block of the wrong shape does not affect Run.
 
 Each run exits 0 with an empty stderr on Ctrl+Q.
 

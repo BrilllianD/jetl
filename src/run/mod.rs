@@ -16,7 +16,7 @@ use std::path::Path;
 
 use serde::Deserialize;
 
-/// `[run]` in config.toml, and the whole of `.jetl/run.toml`.
+/// `[run]` in config.toml. `.jetl/run.toml` has the same shape, but its tasks and its debug blocks are parsed apart.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct RunConfig {
@@ -400,6 +400,9 @@ mod tests {
         std::fs::write(dir.join(".jetl/run.toml"), "[[tasks]]\nname = 3\n").unwrap();
         let (tasks, error) = load_tasks(&dir, &configured);
         assert_eq!(names(&tasks), ["b"]);
+        assert!(error.unwrap().starts_with(".jetl/run.toml: "));
+        std::fs::write(dir.join(".jetl/run.toml"), "[debug.a\n").unwrap();
+        let (_, error) = load_tasks(&dir, &configured);
         assert!(error.unwrap().starts_with(".jetl/run.toml: "));
         let _ = std::fs::remove_dir_all(&dir);
     }
