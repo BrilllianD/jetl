@@ -23,7 +23,9 @@
 //! default): its answer is built into Find results, one per text edit
 //! (`files::rename_preview`), and Replace All (Alt+A) asks and applies the
 //! included edits and every file operation through the same plan and apply
-//! (`apply_steps_now`). A file that changed since the preview refuses the
+//! (`apply_steps_now`). The rename dialog's option "Search in comments and
+//! strings" adds guesses to the preview, excluded and marked `text`; the
+//! option is kept for the session (`EditReqs::rename_in_text`). A file that changed since the preview refuses the
 //! whole rename (`RenamePreview::first_stale`). With the key off the answer
 //! applies at once.
 //!
@@ -48,9 +50,9 @@ use super::{App, Ctx};
 use crate::editor::buffer::{Buffer, BufferId, LineEnding};
 use crate::editor::undo::TxKind;
 use crate::event::{AppMsg, Effect, Level};
-use crate::files::find::Hit;
+use crate::files::find::{Hit, MAX_HITS};
 use crate::files::ops::FsOp;
-use crate::files::rename_preview::{self, OpenText, RenamePreview, RenameRequest};
+use crate::files::rename_preview::{self, OpenText, RenamePreview, RenameRequest, TextualScope, TextualStage};
 use crate::history::Ack;
 use crate::lsp::edits::{self, DiskStep, EditCounts, OpenDoc};
 use crate::lsp::locations::LocationItem;
@@ -143,6 +145,8 @@ pub(super) struct EditReqs {
     rename: Option<(u64, String, String)>,
     /// The name in the rename dialog when it opened.
     rename_old: String,
+    /// The rename dialog's "Search in comments and strings", as last answered. Kept for the session, not persisted.
+    rename_in_text: bool,
     /// The context actions in the dialog, with the seq of their request.
     actions: Option<(u64, Vec<CodeActionOrCommand>)>,
     /// The edit waiting for the user's confirmation.
@@ -210,8 +214,18 @@ impl App {
         let msg = format!("Rename '{name}' and its usages to:");
         self.lsp.edit.rename_old = name.to_string();
         let button = if self.config.lsp.rename_preview { "Preview" } else { "Refactor" };
-        self.dialog = Some(Dialog::input(DialogId::LspRename(t), "Rename", &msg, name, button));
+        let mut dialog = Dialog::input(DialogId::LspRename(t), "Rename", &msg, name, button);
+        if self.config.lsp.rename_preview {
+            dialog = dialog.with_check("Search in comments and strings", self.lsp.edit.rename_in_text);
+        }
+        self.dialog = Some(dialog);
         self.dispatcher.reset();
+    }
+
+    /// The rename dialog's answer with its option: remember the option, then as `lsp_rename_to`.
+    pub(super) fn lsp_rename_checked(&mut self, t: DocTag, name: String, in_text: bool) {
+        self.lsp.edit.rename_in_text = in_text;
+        self.lsp_rename_to(t, name);
     }
 
     /// The rename dialog's answer: rename what is at `t` to `name`, unless
@@ -303,7 +317,12 @@ impl App {
             Ok(Some(edit)) if self.config.lsp.rename_preview => match edits::workspace_steps(edit) {
                 Ok(steps) => {
                     let (open, root) = (self.open_texts(), self.workspace.root.clone());
-                    self.rename_preview_start(RenameRequest { old, new: name, steps, open, root });
+                    let textual = self.lsp.edit.rename_in_text.then_some(TextualStage {
+                        scope: TextualScope::CommentsAndStrings,
+                        show_hidden: self.config.files.show_hidden,
+                        show_ignored: self.config.files.show_ignored,
+                    });
+                    self.rename_preview_start(RenameRequest { old, new: name, steps, open, root, textual });
                 }
                 Err(why) => self.edits_refused(EditOrigin::Rename(name), why),
             },
@@ -328,6 +347,10 @@ impl App {
     pub(super) fn rename_preview_start(&mut self, req: RenameRequest) {
         self.find.reset();
         self.close_replace_dialog();
+        if req.textual.is_some() {
+            // Find is not shown until the build ends.
+            self.notify(Level::Info, format!("Rename {}: searching the project for text matches…", req.old));
+        }
         let (seq, generation, tx) = (self.find.current_seq(), self.workspace.generation, self.bus_tx.clone());
         tokio::task::spawn_blocking(move || {
             let result = Box::new(rename_preview::build(req));
@@ -354,23 +377,32 @@ impl App {
         if hits.is_empty() && preview.op_count() == 0 {
             return self.lsp_hint("Nothing to rename");
         }
-        let (old, new) = (preview.old.clone(), preview.new.clone());
+        let (old, new, rows, capped) = (preview.old.clone(), preview.new.clone(), preview.textual.rows, preview.textual.capped);
         self.layout.show(ToolWindowId::Find);
         self.focus.set(PanelId::Find);
         let mut cx = ctx!(self);
         self.find.open_preview(preview, hits, &mut cx);
-        self.notify(Level::Info, format!("Rename {old} to {new}: review the results, then Replace All (Alt+A)"));
+        let guesses = match rows {
+            0 => String::new(),
+            1 => "; 1 text match starts excluded".to_string(),
+            n => format!("; {n} text matches start excluded"),
+        };
+        self.notify(Level::Info, format!("Rename {old} to {new}: review the results, then Replace All (Alt+A){guesses}"));
+        if capped {
+            self.notify(Level::Warn, format!("Text search stopped at {MAX_HITS} matches; some files were not searched"));
+        }
     }
 
     /// Replace All in a rename preview: refuse when a file changed since, else apply the included edits and
     /// every file operation. A refusal keeps the preview.
     pub(super) fn rename_preview_apply(&mut self) {
         let open = self.open_texts();
-        if let Some(path) = self.find.rename_preview().and_then(|p| p.first_stale(&open)) {
+        let Some((preview, hits)) = self.find.take_preview() else { return };
+        if let Some(path) = preview.first_stale(&open).or_else(|| preview.first_stale_textual(&open, &hits)) {
+            self.find.restore_preview(preview);
             let rel = path.strip_prefix(&self.workspace.root).unwrap_or(&path).display().to_string();
             return self.notify(Level::Error, format!("{rel} changed since the preview; rename again"));
         }
-        let Some((preview, hits)) = self.find.take_preview() else { return };
         let steps = rename_preview::included_steps(&preview, &hits);
         self.lsp_sync();
         if self.apply_steps_now(steps, EditOrigin::Rename(preview.new.clone())) {
@@ -1955,6 +1987,7 @@ mod tests {
             steps: Vec::new(),
             open: Vec::new(),
             root: fx.app.workspace.root.clone(),
+            textual: None,
         });
         assert!(fx.app.dialog.is_none());
         handle_next(&mut fx.app, preview_msg).await;
@@ -2050,6 +2083,329 @@ mod tests {
         handle_next(&mut fx.app, applied).await;
         assert_eq!(std::fs::read_to_string(&fx.b).unwrap(), B.replacen("old", "renamed", 1));
         assert_eq!(text(&fx.app), "fn main() {\n    let s = \"😀\"; renamed(s);\n}\n");
+        let _ = std::fs::remove_dir_all(&fx.dir);
+    }
+
+    // Rename preview: the dialog option "Search in comments and strings" and the textual rows.
+
+    /// `let x = "old"; old(); // old`: textual matches at columns 9 and 25, a code use at 15.
+    const D: &str = "let x = \"old\"; old(); // old\n";
+
+    /// Every row: file name, line, column, whether it is a text guess, whether it is excluded.
+    fn all_rows(app: &App) -> Vec<(String, usize, usize, bool, bool)> {
+        use crate::files::rename_preview::RenameSource;
+        app.find
+            .hits()
+            .iter()
+            .map(|h| {
+                let text = h.rename.as_ref().is_some_and(|r| r.source == RenameSource::Textual);
+                (h.path.file_name().unwrap().to_str().unwrap().to_string(), h.line, h.col, text, h.excluded)
+            })
+            .collect()
+    }
+
+    /// Select the row of file `name`, line 0, column `col` in the Find list (a header row precedes each file).
+    fn select_row(app: &mut App, name: &str, line: usize, col: usize) {
+        let mut files: Vec<&Path> = Vec::new();
+        let mut idx = None;
+        for (i, h) in app.find.hits().iter().enumerate() {
+            if files.last() != Some(&h.path.as_path()) {
+                files.push(&h.path);
+            }
+            if h.path.file_name().unwrap() == name && (h.line, h.col) == (line, col) {
+                idx = Some(i + files.len());
+            }
+        }
+        app.find.list.select(idx.expect("the row"));
+    }
+
+    fn write_d(fx: &Rename, text: &str) -> PathBuf {
+        let d = fx.app.workspace.root.join("d.rs");
+        std::fs::write(&d, text).unwrap();
+        d
+    }
+
+    #[tokio::test]
+    async fn the_rename_dialog_offers_the_option_and_remembers_it() {
+        let mut fx = rename_fixture("rename-text-option").await;
+        let app = &mut fx.app;
+        app.perform(Action::Lsp(LspAction::Rename));
+        answer(app, &mut fx.server, "textDocument/prepareRename", range(1, 18, 1, 21)).await;
+        let mut d = app.dialog.take().expect("the rename dialog");
+        let on = |d: &Dialog| matches!(&d.kind, DialogKind::Input { check: Some(c), .. } if c.on);
+        assert!(matches!(&d.kind, DialogKind::Input { check: Some(_), .. }) && !on(&d));
+        let alt_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::ALT);
+        assert!(d.handle_key(alt_c).is_none() && on(&d));
+        let result = d.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)).expect("the answer");
+        assert!(matches!(&result, DialogResult::TextChecked(t, true) if t == "old"));
+        app.finish_dialog(d.id, result);
+        assert!(app.lsp.edit.rename_in_text);
+        answer(app, &mut fx.server, "textDocument/rename", rename_edit(&fx.a, &fx.b)).await;
+        handle_next(app, preview_msg).await;
+        // The next dialog opens with the option on; a cancelled toggle stores nothing.
+        app.focus.set(crate::ui::focus::PanelId::Editor);
+        app.perform(Action::Lsp(LspAction::Rename));
+        answer(app, &mut fx.server, "textDocument/prepareRename", range(1, 18, 1, 21)).await;
+        let mut d = app.dialog.take().expect("the second dialog");
+        let DialogId::LspRename(tag) = d.id.clone() else { panic!("{:?}", d.id) };
+        assert!(on(&d));
+        assert!(d.handle_key(alt_c).is_none() && !on(&d));
+        assert!(matches!(d.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)), Some(DialogResult::Cancel)));
+        assert!(app.lsp.edit.rename_in_text, "Esc leaves it as it was");
+        // With the key off the row is absent.
+        app.config.lsp.rename_preview = false;
+        app.lsp_rename_dialog(tag, "old");
+        assert!(matches!(&app.dialog.as_ref().unwrap().kind, DialogKind::Input { check: None, .. }));
+        let _ = std::fs::remove_dir_all(&fx.dir);
+    }
+
+    #[tokio::test]
+    async fn comment_and_string_matches_start_excluded_and_apply_when_included() {
+        let mut fx = rename_fixture("rename-text-apply").await;
+        let d = write_d(&fx, D);
+        fx.app.lsp.edit.rename_in_text = true;
+        let we = rename_edit(&fx.a, &fx.b);
+        fx.ask(we).await;
+        assert!(toasts(&fx.app).iter().any(|t| t.contains("searching the project for text matches")), "{:?}", toasts(&fx.app));
+        assert_eq!(fx.app.find.hit_count(), 0, "no rows before the message");
+        handle_next(&mut fx.app, preview_msg).await;
+        let rows = all_rows(&fx.app);
+        let want = [
+            ("a.rs", 1, 17, false, false),
+            ("b.rs", 0, 7, false, false),
+            ("b.rs", 1, 6, false, false),
+            ("d.rs", 0, 9, true, true),
+            ("d.rs", 0, 25, true, true),
+        ];
+        let want: Vec<_> = want.iter().map(|(n, l, c, t, e)| (n.to_string(), *l, *c, *t, *e)).collect();
+        assert_eq!(rows, want, "no row at d.rs col 15; B's comment is exact only");
+        let ts = toasts(&fx.app);
+        assert!(ts.iter().any(|t| t.contains("2 text matches start excluded")), "{ts:?}");
+        select_row(&mut fx.app, "d.rs", 0, 25);
+        fx.app.find.toggle_exclude();
+        let dialog = fx.replace_all();
+        assert!(dialog.message.contains("Text matches (guesses): 1 included, 1 left out."), "{}", dialog.message);
+        handle_next(&mut fx.app, applied).await;
+        assert_eq!(std::fs::read_to_string(&d).unwrap(), "let x = \"old\"; old(); // renamed\n");
+        assert_eq!(text(&fx.app), "fn main() {\n    let s = \"😀\"; renamed(s);\n}\n");
+        assert_eq!(std::fs::read_to_string(&fx.b).unwrap(), "pub fn renamed(s: &str) {}\n// 日本 renamed\n");
+        let _ = std::fs::remove_dir_all(&fx.dir);
+    }
+
+    #[tokio::test]
+    async fn with_the_option_off_only_the_servers_edits_are_listed() {
+        let mut fx = rename_fixture("rename-text-off").await;
+        write_d(&fx, D);
+        assert!(!fx.app.lsp.edit.rename_in_text);
+        let we = rename_edit(&fx.a, &fx.b);
+        fx.preview(we).await;
+        assert!(all_rows(&fx.app).iter().all(|r| !r.3 && r.0 != "d.rs"));
+        assert_eq!(fx.app.find.rename_preview().unwrap().textual.rows, 0);
+        assert!(!toasts(&fx.app).iter().any(|t| t.contains("text match")), "{:?}", toasts(&fx.app));
+        let _ = std::fs::remove_dir_all(&fx.dir);
+    }
+
+    #[tokio::test]
+    async fn exact_and_text_edits_on_one_line_of_a_closed_file() {
+        let mut fx = rename_fixture("rename-text-same-line").await;
+        let d = write_d(&fx, D);
+        fx.app.lsp.edit.rename_in_text = true;
+        let we = json!({"documentChanges": [
+            {"textDocument": {"uri": uri(&d), "version": null}, "edits": [edit(0, 15, 0, 18, "renamed")]},
+        ]});
+        fx.preview(we).await;
+        for col in [9, 25] {
+            select_row(&mut fx.app, "d.rs", 0, col);
+            fx.app.find.toggle_exclude();
+        }
+        fx.replace_all();
+        handle_next(&mut fx.app, applied).await;
+        assert_eq!(std::fs::read_to_string(&d).unwrap(), "let x = \"renamed\"; renamed(); // renamed\n");
+        let _ = std::fs::remove_dir_all(&fx.dir);
+    }
+
+    /// Make the active buffer (a.rs) hold `D`, as unsaved text.
+    fn type_d(app: &mut App) {
+        app.perform(Action::Editor(EditorAction::SelectAll));
+        app.perform(Action::Editor(EditorAction::InsertText(D.into())));
+        assert_eq!(text(app), D);
+    }
+
+    fn start_in_buffer(app: &mut App, steps: Vec<edits::Step>) {
+        let (open, root) = (app.open_texts(), app.workspace.root.clone());
+        let textual = Some(TextualStage { scope: TextualScope::CommentsAndStrings, show_hidden: false, show_ignored: false });
+        app.rename_preview_start(RenameRequest { old: "old".into(), new: "renamed".into(), steps, open, root, textual });
+    }
+
+    #[tokio::test]
+    async fn exact_and_text_edits_on_one_line_of_an_open_buffer_are_one_undo_step() {
+        let mut fx = rename_fixture("rename-text-open-buffer").await;
+        type_d(&mut fx.app);
+        let a = fx.a.clone();
+        let steps = vec![edits::Step::Edit(edits::FileEdit {
+            path: a,
+            version: None,
+            edits: vec![lsp_types::TextEdit {
+                range: lsp_types::Range::new(lsp_types::Position::new(0, 15), lsp_types::Position::new(0, 18)),
+                new_text: "renamed".into(),
+            }],
+            index: None,
+        })];
+        start_in_buffer(&mut fx.app, steps);
+        handle_next(&mut fx.app, preview_msg).await;
+        for col in [9, 25] {
+            select_row(&mut fx.app, "a.rs", 0, col);
+            fx.app.find.toggle_exclude();
+        }
+        fx.replace_all();
+        assert_eq!(text(&fx.app), "let x = \"renamed\"; renamed(); // renamed\n");
+        fx.app.perform(Action::Editor(EditorAction::Undo));
+        assert_eq!(text(&fx.app), D, "one undo step");
+        let _ = std::fs::remove_dir_all(&fx.dir);
+    }
+
+    #[tokio::test]
+    async fn a_moved_file_takes_its_text_edits_first() {
+        let mut fx = rename_fixture("rename-text-moved").await;
+        fx.app.lsp.edit.rename_in_text = true;
+        let c = fx.app.workspace.root.join("c.rs");
+        let we = json!({"documentChanges": [
+            {"textDocument": {"uri": uri(&fx.b), "version": null}, "edits": [edit(0, 7, 0, 10, "renamed")]},
+            {"kind": "rename", "oldUri": uri(&fx.b), "newUri": uri(&c)},
+        ]});
+        fx.preview(we).await;
+        select_row(&mut fx.app, "b.rs", 1, 6);
+        assert!(all_rows(&fx.app).contains(&("b.rs".to_string(), 1, 6, true, true)), "{:?}", all_rows(&fx.app));
+        fx.app.find.toggle_exclude();
+        fx.replace_all();
+        handle_next(&mut fx.app, applied).await;
+        assert_eq!(std::fs::read_to_string(&c).unwrap(), "pub fn renamed(s: &str) {}\n// 日本 renamed\n");
+        assert!(!fx.b.exists());
+        let _ = std::fs::remove_dir_all(&fx.dir);
+    }
+
+    #[tokio::test]
+    async fn an_edit_after_an_operation_keeps_its_file_out_of_the_text_rows() {
+        let mut fx = rename_fixture("rename-text-after-op").await;
+        fx.app.lsp.edit.rename_in_text = true;
+        let c = fx.app.workspace.root.join("c.rs");
+        let we = json!({"documentChanges": [
+            {"kind": "rename", "oldUri": uri(&fx.b), "newUri": uri(&c)},
+            {"textDocument": {"uri": uri(&c), "version": null}, "edits": [edit(0, 7, 0, 10, "renamed")]},
+        ]});
+        fx.preview(we).await;
+        assert!(all_rows(&fx.app).iter().all(|r| r.0 != "b.rs" && r.0 != "c.rs"), "{:?}", all_rows(&fx.app));
+        let d = fx.replace_all();
+        assert!(d.message.contains("No text matches offered in 1 file"), "{}", d.message);
+        handle_next(&mut fx.app, applied).await;
+        assert_eq!(std::fs::read_to_string(&c).unwrap(), "pub fn renamed(s: &str) {}\n// 日本 old\n");
+        let _ = std::fs::remove_dir_all(&fx.dir);
+    }
+
+    #[tokio::test]
+    async fn an_included_text_row_in_a_changed_file_refuses_and_an_excluded_one_does_not() {
+        // Excluded: the file changed, everything else applies.
+        let mut fx = rename_fixture("rename-text-stale-excluded").await;
+        let d = write_d(&fx, D);
+        fx.app.lsp.edit.rename_in_text = true;
+        let we = rename_edit(&fx.a, &fx.b);
+        fx.preview(we.clone()).await;
+        std::fs::write(&d, format!("// longer\n{D}")).unwrap();
+        fx.replace_all();
+        handle_next(&mut fx.app, applied).await;
+        assert_eq!(std::fs::read_to_string(&fx.b).unwrap(), "pub fn renamed(s: &str) {}\n// 日本 renamed\n");
+        assert_eq!(std::fs::read_to_string(&d).unwrap(), format!("// longer\n{D}"), "the guess was not applied");
+        let _ = std::fs::remove_dir_all(&fx.dir);
+        // Included: the whole rename is refused, the preview and its exclusions stay.
+        let mut fx = rename_fixture("rename-text-stale-included").await;
+        let d = write_d(&fx, D);
+        fx.app.lsp.edit.rename_in_text = true;
+        fx.preview(we).await;
+        select_row(&mut fx.app, "d.rs", 0, 9);
+        fx.app.find.toggle_exclude();
+        std::fs::write(&d, format!("// longer\n{D}")).unwrap();
+        fx.replace_all();
+        let n = fx.app.notifications.last().unwrap();
+        assert_eq!((n.level, n.text.as_str()), (Level::Error, "d.rs changed since the preview; rename again"));
+        assert!(fx.app.find.rename_preview().is_some());
+        let rows = all_rows(&fx.app);
+        assert!(rows.contains(&("d.rs".to_string(), 0, 9, true, false)) && rows.contains(&("d.rs".to_string(), 0, 25, true, true)));
+        assert_eq!(text(&fx.app), A);
+        assert_eq!(std::fs::read_to_string(&fx.b).unwrap(), B);
+        let _ = std::fs::remove_dir_all(&fx.dir);
+    }
+
+    #[tokio::test]
+    async fn an_open_dirty_file_with_a_text_row_refuses_when_typed_in() {
+        let mut fx = rename_fixture("rename-text-dirty").await;
+        type_d(&mut fx.app);
+        start_in_buffer(&mut fx.app, Vec::new());
+        handle_next(&mut fx.app, preview_msg).await;
+        select_row(&mut fx.app, "a.rs", 0, 9);
+        fx.app.find.toggle_exclude();
+        fx.app.focus.set(crate::ui::focus::PanelId::Editor);
+        fx.app.perform(Action::Editor(EditorAction::InsertText("// ".into())));
+        let typed = text(&fx.app);
+        fx.replace_all();
+        let n = fx.app.notifications.last().unwrap();
+        assert_eq!((n.level, n.text.as_str()), (Level::Error, "a.rs changed since the preview; rename again"));
+        assert_eq!(text(&fx.app), typed);
+        let _ = std::fs::remove_dir_all(&fx.dir);
+    }
+
+    #[tokio::test]
+    async fn a_replace_dialog_opened_while_the_text_search_runs_is_closed() {
+        let mut fx = rename_fixture("rename-text-dialog-done").await;
+        write_d(&fx, D);
+        fx.app.lsp.edit.rename_in_text = true;
+        let we = rename_edit(&fx.a, &fx.b);
+        fx.ask(we).await;
+        assert_eq!(fx.app.find.hit_count(), 0);
+        fx.app.dialog = Some(stale_dialog());
+        handle_next(&mut fx.app, preview_msg).await;
+        assert!(fx.app.dialog.is_none());
+        assert_eq!(text(&fx.app), A);
+        assert_eq!(std::fs::read_to_string(&fx.b).unwrap(), B);
+        assert!(fx.app.find.hit_count() > 0);
+        assert!(fx.app.find.rename_preview().is_some(), "the preview still needs its own confirmation");
+        let _ = std::fs::remove_dir_all(&fx.dir);
+    }
+
+    #[tokio::test]
+    async fn a_capped_result_warns() {
+        let mut fx = rename_fixture("rename-text-capped").await;
+        let n = fx.app.workspace.root.join("n.txt");
+        let edit = lsp_types::TextEdit { range: lsp_types::Range::default(), new_text: "renamed".into() };
+        let hit = Hit {
+            path: n,
+            line: 0,
+            col: 0,
+            len: 3,
+            preview: "old".into(),
+            preview_col: 0,
+            matched: "old".into(),
+            excluded: true,
+            rename: Some(Box::new(rename_preview::RenameEdit {
+                new_text: "renamed".into(),
+                edit,
+                at: None,
+                source: rename_preview::RenameSource::Textual,
+            })),
+        };
+        let mut preview = RenamePreview {
+            old: "old".into(),
+            new: "renamed".into(),
+            steps: Vec::new(),
+            stamps: HashMap::new(),
+            unlisted: HashSet::new(),
+            textual: Default::default(),
+        };
+        preview.textual.capped = true;
+        preview.textual.rows = 1;
+        let (generation, seq) = (fx.app.workspace.generation, fx.app.find.current_seq());
+        fx.app.rename_preview_done(generation, seq, Ok((preview, vec![hit])));
+        let last = fx.app.notifications.last().unwrap();
+        assert_eq!((last.level, last.text.as_str()), (Level::Warn, "Text search stopped at 10000 matches; some files were not searched"));
         let _ = std::fs::remove_dir_all(&fx.dir);
     }
 }

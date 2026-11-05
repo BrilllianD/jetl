@@ -1,0 +1,33 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &marks, None)"
+---
+80x24 cursor=(19,10)
+00  ≣ ┌ Project: root ───────────────┐│
+01    │                              ││
+02  ⌂ │                              ││
+03  ◫ │                              ││               No files open.
+04  ⊢ │                              ││       Alt+1 opens the Project view;
+05   ┌ Rename ─────────────────────────────────────────────────────────────────┐
+06   │ Rename parse to read_input: 2 occurrences in 2 files; 1 excluded.       │
+07   │ Text matches (guesses): 1 included, 1 left out.                         │
+08   │ Open files change in the editor (undoable); others are written to disk. │───
+09   │                                                                         │──┐
+10   │                          [ Rename ] [ Cancel ]                          │  │
+11   └─────────────────────────────────────────────────────────────────────────┘  │
+12    │ notes.txt    2                                                            │
+13  ⋔ │      1  parse later                                                   text│
+14  ✎ │      2  see parseread_input again                                     text│
+15  ✓ │ util.rs  src/  1                                                          │
+16  ⟲ │      1  use crate::parseread_input;                                       │
+17  ⚑ │                                                                           │
+18  ⎇ │                                                                           │
+19  ❯ │                                                                           │
+20  ⚠ │                                                                           │
+21  ► │                                                                           │
+22  ⌕ └───────────────────────────────────────────────────────────────────────────┘
+23
+-- marks: L=selected H=match D=parse A=read_input
+10                              LLLLLLLLLL
+14                  DDDDDAAAAAAAAAA
+16     LLLLLLLLLLLLLLLLLLLLDDDDDAAAAAAAAAALLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL

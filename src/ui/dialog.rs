@@ -294,7 +294,7 @@ pub enum DialogId {
 #[derive(Debug, Clone)]
 pub enum DialogKind {
     Confirm { buttons: Vec<String>, selected: usize },
-    Input { input: TextInput, ok: String },
+    Input { input: TextInput, ok: String, check: Option<InputCheck> },
     Choice { items: Vec<String>, list: ListState, filter: TextInput },
     NewTask(Box<crate::ui::new_task::NewTaskForm>),
     Rebase(Box<crate::ui::rebase::RebaseForm>),
@@ -326,10 +326,20 @@ pub enum PathHint {
 /// Rows of a path hint, at most this many (the last one may say how many more).
 const MAX_HINT_ROWS: usize = 8;
 
+/// A check row under an input dialog's field: `[x] label   Alt+C`.
+#[derive(Debug, Clone)]
+pub struct InputCheck {
+    pub label: String,
+    pub on: bool,
+    rect: Rect,
+}
+
 #[derive(Debug, Clone)]
 pub enum DialogResult {
     Button(usize),
     Text(String),
+    /// The answer of an input dialog with a check row: the text and the check.
+    TextChecked(String, bool),
     Choice(usize),
     NewTask(crate::yman::cli::NewTask),
     Rebase(crate::git::rebase::RebasePlan),
@@ -349,6 +359,14 @@ pub struct Dialog {
     body_rect: Rect,
     input_rect: Rect,
     list_rect: Rect,
+}
+
+/// The answer of an input dialog: with a check row it carries the check.
+fn input_answer(input: &TextInput, check: &Option<InputCheck>) -> DialogResult {
+    match check {
+        Some(c) => DialogResult::TextChecked(input.text.clone(), c.on),
+        None => DialogResult::Text(input.text.clone()),
+    }
 }
 
 impl Dialog {
@@ -373,13 +391,20 @@ impl Dialog {
             id,
             title: title.into(),
             message: message.into(),
-            kind: DialogKind::Input { input: TextInput::new(false).with_text(initial), ok: ok.into() },
+            kind: DialogKind::Input { input: TextInput::new(false).with_text(initial), ok: ok.into(), check: None },
             paths: None,
             button_rects: vec![],
             body_rect: Rect::default(),
             input_rect: Rect::default(),
             list_rect: Rect::default(),
         }
+    }
+    /// Add the check row to an input dialog; no effect on another kind.
+    pub fn with_check(mut self, label: &str, on: bool) -> Self {
+        if let DialogKind::Input { check, .. } = &mut self.kind {
+            *check = Some(InputCheck { label: label.into(), on, rect: Rect::default() });
+        }
+        self
     }
     pub fn choice(id: DialogId, title: &str, message: &str, items: Vec<String>) -> Self {
         let mut list = ListState::default();
@@ -512,9 +537,15 @@ impl Dialog {
                 }
                 _ => None,
             },
-            DialogKind::Input { input, .. } => match key.code {
+            DialogKind::Input { input, check, .. } => match key.code {
                 KeyCode::Esc => Some(DialogResult::Cancel),
-                KeyCode::Enter => Some(DialogResult::Text(input.text.clone())),
+                KeyCode::Enter => Some(input_answer(input, check)),
+                KeyCode::Char('c') if key.modifiers == KeyModifiers::ALT && check.is_some() => {
+                    if let Some(c) = check {
+                        c.on = !c.on;
+                    }
+                    None
+                }
                 KeyCode::Backspace if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     input.delete_word_back();
                     None
@@ -603,9 +634,9 @@ impl Dialog {
                 if let Some(i) = self.button_rects.iter().position(|r| r.contains(p)) {
                     return match &self.kind {
                         DialogKind::Confirm { .. } => Some(DialogResult::Button(i)),
-                        DialogKind::Input { input, .. } => {
+                        DialogKind::Input { input, check, .. } => {
                             if i == 0 {
-                                Some(DialogResult::Text(input.text.clone()))
+                                Some(input_answer(input, check))
                             } else {
                                 Some(DialogResult::Cancel)
                             }
@@ -624,6 +655,12 @@ impl Dialog {
                     }
                     let DialogKind::Choice { list, .. } = &mut self.kind else { unreachable!() };
                     list.select(row);
+                    return None;
+                }
+                if let DialogKind::Input { check: Some(c), .. } = &mut self.kind
+                    && c.rect.contains(p)
+                {
+                    c.on = !c.on;
                     return None;
                 }
                 if let DialogKind::Input { input, .. } = &mut self.kind {
@@ -698,6 +735,7 @@ impl Dialog {
         let w = (w as u16).min(area.width.saturating_sub(2)).max(10).min(area.width);
         // Message lines wider than the text area wrap onto more rows.
         let msg_rows = message_rows(&self.message, (w as usize).saturating_sub(4));
+        let check_h = usize::from(matches!(&self.kind, DialogKind::Input { check: Some(_), .. }));
         let mut h = match &self.kind {
             DialogKind::Confirm { .. } => msg_rows.len() + 4,
             DialogKind::Input { .. } | DialogKind::NewTask(_) | DialogKind::Rebase(_) | DialogKind::KeyCapture(_) => msg_rows.len() + 5,
@@ -714,7 +752,7 @@ impl Dialog {
             }
             None => vec![],
         };
-        h += hints.len();
+        h += hints.len() + check_h;
         let h = (h as u16).min(area.height.saturating_sub(1)).max(5).min(area.height);
         let x = area.x + (area.width.saturating_sub(w)) / 2;
         let y = area.y + (area.height.saturating_sub(h)) / 3;
@@ -732,19 +770,24 @@ impl Dialog {
         // A frame too small for the controls stays empty.
         let min_inner_h = match &self.kind {
             DialogKind::Confirm { .. } => 1,
-            DialogKind::Input { .. } | DialogKind::NewTask(_) | DialogKind::Rebase(_) | DialogKind::KeyCapture(_) => 3,
+            DialogKind::Input { .. } | DialogKind::NewTask(_) | DialogKind::Rebase(_) | DialogKind::KeyCapture(_) => 3 + check_h as u16,
             DialogKind::Choice { .. } => 2,
         };
         if inner.height < min_inner_h || inner.width < 2 {
             self.button_rects.clear();
             self.input_rect = Rect::default();
             self.list_rect = Rect::default();
+            if let DialogKind::Input { check: Some(c), .. } = &mut self.kind {
+                c.rect = Rect::default();
+            }
             return;
         }
         // On a short screen the message gives way to the controls below it.
         let reserve = match &self.kind {
             DialogKind::Confirm { .. } => 2,
-            DialogKind::Input { .. } | DialogKind::NewTask(_) | DialogKind::Rebase(_) | DialogKind::KeyCapture(_) => 3 + hints.len(),
+            DialogKind::Input { .. } | DialogKind::NewTask(_) | DialogKind::Rebase(_) | DialogKind::KeyCapture(_) => {
+                3 + hints.len() + check_h
+            }
             DialogKind::Choice { .. } => 2,
         };
         let mut msg_rows = msg_rows;
@@ -778,7 +821,7 @@ impl Dialog {
                     bx += bw + 1;
                 }
             }
-            DialogKind::Input { input, ok } => {
+            DialogKind::Input { input, ok, check } => {
                 let iy = row + 1;
                 let irect = Rect::new(inner.x + 1, iy, inner.width.saturating_sub(2), 1);
                 self.input_rect = irect;
@@ -793,11 +836,22 @@ impl Dialog {
                     self.button_rects.push(r);
                     bx += bw + 1;
                 }
+                if let Some(c) = check {
+                    let line = format!("[{}] {}   Alt+C", if c.on { 'x' } else { ' ' }, c.label);
+                    buf.set_stringn(
+                        inner.x + 1,
+                        iy + 1,
+                        &line,
+                        inner.width.saturating_sub(2) as usize,
+                        Style::default().fg(theme.fg).bg(theme.popup_bg),
+                    );
+                    c.rect = Rect::new(inner.x + 1, iy + 1, inner.width.saturating_sub(2), 1);
+                }
                 let hint_w = inner.width.saturating_sub(2);
                 for (k, (line, dim)) in hints.iter().enumerate() {
                     let st = Style::default().fg(theme.fg).bg(theme.popup_bg);
                     let st = if *dim { st.patch(theme.dim) } else { st };
-                    buf.set_stringn(inner.x + 1, iy + 1 + k as u16, line, hint_w as usize, st);
+                    buf.set_stringn(inner.x + 1, iy + 1 + check_h as u16 + k as u16, line, hint_w as usize, st);
                 }
                 input.render(frame, irect, Style::default().bg(theme.bg).fg(theme.fg), "", theme.dim, true);
                 if let Some(cells) = input.selected_cells(irect) {
@@ -1088,5 +1142,96 @@ mod tests {
         assert!(d.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL | KeyModifiers::ALT)).is_none());
         assert!(d.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE)).is_none());
         assert!(matches!(d.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)), Some(DialogResult::Text(t)) if t == "oldx"));
+    }
+
+    fn alt_c() -> KeyEvent {
+        KeyEvent::new(KeyCode::Char('c'), KeyModifiers::ALT)
+    }
+
+    fn checked_dialog(on: bool) -> Dialog {
+        Dialog::input(DialogId::Info, "T", "Name:", "x", "OK").with_check("Search in comments and strings", on)
+    }
+
+    #[test]
+    fn check_toggles_by_alt_c_and_answers_checked() {
+        let theme = Theme::default();
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+        let mut d = checked_dialog(false);
+        term.draw(|f| d.render(f, f.area(), &theme)).unwrap();
+        let DialogKind::Input { check: Some(c), .. } = &d.kind else { panic!() };
+        assert!(!c.on);
+        assert!(d.handle_key(alt_c()).is_none());
+        let DialogKind::Input { check: Some(c), input, .. } = &d.kind else { panic!() };
+        assert!(c.on);
+        assert_eq!(input.text, "x", "Alt+C does not type");
+        assert!(
+            matches!(d.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)), Some(DialogResult::TextChecked(t, true)) if t == "x")
+        );
+        // Ctrl+A, Alt+C, a letter: the text is still replaced.
+        let mut d = checked_dialog(false);
+        term.draw(|f| d.render(f, f.area(), &theme)).unwrap();
+        assert!(d.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL)).is_none());
+        assert!(d.handle_key(alt_c()).is_none());
+        assert!(d.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)).is_none());
+        assert!(
+            matches!(d.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)), Some(DialogResult::TextChecked(t, true)) if t == "q")
+        );
+        // Toggling back.
+        let mut d = checked_dialog(true);
+        assert!(d.handle_key(alt_c()).is_none());
+        assert!(matches!(d.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)), Some(DialogResult::TextChecked(_, false))));
+    }
+
+    #[test]
+    fn a_click_on_the_check_toggles_and_the_ok_button_answers_checked() {
+        use crossterm::event::{MouseButton, MouseEventKind};
+        let theme = Theme::default();
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+        let mut d = checked_dialog(false);
+        term.draw(|f| d.render(f, f.area(), &theme)).unwrap();
+        let DialogKind::Input { check: Some(c), .. } = &d.kind else { panic!() };
+        let rect = c.rect;
+        assert_eq!(row_text(&term, rect.y).trim().trim_matches('│').trim(), "[ ] Search in comments and strings   Alt+C");
+        let press = |x, y| Mouse { kind: MouseEventKind::Down(MouseButton::Left), x, y, clicks: 1, mods: KeyModifiers::NONE };
+        assert!(d.handle_mouse(&press(rect.x + 3, rect.y)).is_none());
+        term.draw(|f| d.render(f, f.area(), &theme)).unwrap();
+        assert!(row_text(&term, rect.y).contains("[x] Search"), "{:?}", row_text(&term, rect.y));
+        let ok = d.button_rects[0];
+        assert!(matches!(d.handle_mouse(&press(ok.x + 1, ok.y)), Some(DialogResult::TextChecked(t, true)) if t == "x"));
+    }
+
+    #[test]
+    fn a_dialog_without_a_check_answers_text_and_ignores_alt_c() {
+        let theme = Theme::default();
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+        let mut d = Dialog::input(DialogId::Info, "T", "Name:", "x", "OK");
+        term.draw(|f| d.render(f, f.area(), &theme)).unwrap();
+        for y in 0..24 {
+            assert!(!row_text(&term, y).contains("Alt+C"));
+        }
+        assert!(d.handle_key(alt_c()).is_none());
+        // Alt+C types nothing and the answer is plain text.
+        assert!(matches!(d.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)), Some(DialogResult::Text(t)) if t == "x"));
+        let d = Dialog::confirm(DialogId::Info, "T", "m", &["OK"]).with_check("x", true);
+        assert!(matches!(d.kind, DialogKind::Confirm { .. }), "no effect on another kind");
+    }
+
+    #[test]
+    fn the_check_row_keeps_the_controls_on_a_short_screen() {
+        let theme = Theme::default();
+        let msg: Vec<String> = (1..=12).map(|n| format!("line {n}")).collect();
+        let area = Rect::new(0, 0, 60, 10);
+        let mut d =
+            Dialog::input(DialogId::Info, "Put Label", &msg.join("\n"), "v1", "OK").with_check("Search in comments and strings", true);
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(60, 10)).unwrap();
+        term.draw(|f| d.render(f, area, &theme)).unwrap();
+        let DialogKind::Input { check: Some(c), .. } = &d.kind else { panic!() };
+        let check = c.rect;
+        assert!(d.input_rect.y < check.y && check.y < d.button_rects[0].y, "{:?} {:?} {:?}", d.input_rect, check, d.button_rects);
+        assert!(row_text(&term, check.y).contains("[x] Search in comments and strings   Alt+C"));
+        assert!(row_text(&term, d.input_rect.y).contains("v1"));
+        assert!(row_text(&term, d.button_rects[0].y).contains("[ OK ]"));
+        let above = row_text(&term, d.input_rect.y - 2);
+        assert!(above.trim_end().trim_end_matches('│').trim_end().ends_with('…'), "{above:?}");
     }
 }

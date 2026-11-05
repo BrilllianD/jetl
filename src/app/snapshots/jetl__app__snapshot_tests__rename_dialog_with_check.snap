@@ -1,0 +1,29 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &[], Some(area))"
+---
+80x24 cursor=(22,8)
+00  ≣ ┌ Project: root ───────────────┐│
+01    │                              ││
+02  ⌂ │                              ││
+03  ◫ │                              ││
+04  ⊢ │                              ││
+05    │           ┌ Rename ────────────────────────────────────────┐
+06    │           │ Rename 'parse' and its usages to:              │
+07    │           │                                                │
+08    │           │ parse                                          │
+09    │           │ [x] Search in comments and strings   Alt+C     │
+10    │           │             [ Preview ] [ Cancel ]             │
+11    │           └────────────────────────────────────────────────┘
+12    │                              ││       Alt+1 opens the Project view;
+13  ⋔ │                              ││         Ctrl+Shift+N finds a file.
+14  ✎ │                              ││
+15  ✓ │                              ││
+16  ⟲ │                              ││
+17  ⚑ │                              ││
+18  ⎇ │                              ││
+19  ❯ │                              ││
+20  ⚠ │                              ││
+21  ► │                              ││
+22  ⌕ └──────────────────────────────┘│
+23

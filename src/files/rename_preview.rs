@@ -11,18 +11,32 @@
 //! document's rope, else the file as read (and statted) when the preview was
 //! built. Each file with a row has a `FileStamp`; `first_stale` compares them
 //! with the world at apply time, so a rename is all included edits or none.
+//!
+//! The textual stage (`RenameRequest::textual`, the rename dialog's "Search in
+//! comments and strings") adds guesses: whole-word matches of the old name in
+//! comments and strings (or whole files with no grammar, and Markdown). `Search`
+//! only names the files; positions come from the text the stamp belongs to, a
+//! match touching an exact edit is dropped, and a file a file operation could
+//! shift gets no guesses. Rows are excluded and `Textual`; a file with only
+//! such rows is stamped apart (`TextualOutcome::stamps`) and checked only when
+//! one of its rows is included.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 use std::time::SystemTime;
 
-use lsp_types::TextEdit;
+use lsp_types::{Range, TextEdit};
 use ropey::Rope;
 
+use crate::editor::brackets::in_literal_at;
 use crate::editor::buffer::BufferId;
 use crate::editor::nav::moved_path;
+use crate::editor::search::build_pattern;
 use crate::editor::selection::line_len_no_eol;
-use crate::files::find::{Hit, preview};
+use crate::editor::syntax::detect_text;
+use crate::files::find::{Hit, MAX_HITS, Query, Search, preview};
 use crate::lsp::edits::{FileEdit, FileOp, Step};
 use crate::lsp::pos;
 
@@ -70,13 +84,43 @@ pub struct RenamePreview {
     pub new: String,
     /// The server's or SCIP's steps, in order, file operations included.
     pub steps: Vec<Step>,
-    /// One per file with a row, taken when the preview was built; also one per file that the positions of an
-    /// edit without a row refer to (the source of a rename, the target of a rename that may be skipped, an existing file a create leaves alone), when it
-    /// has text.
+    /// One per file with an exact row, taken when the preview was built; also one per file that the positions of
+    /// an edit without a row refer to (the source of a rename, the target of a rename that may be skipped, an
+    /// existing file a create leaves alone), when it has text. Always checked. A file with only textual rows is in
+    /// `textual.stamps` instead.
     pub stamps: HashMap<PathBuf, FileStamp>,
     /// The `(step, edit)` of every edit that has no row (its file is made by an earlier operation of the
     /// answer, or has no text to show); it always applies.
     pub unlisted: HashSet<(u32, u32)>,
+    /// What the textual stage did; all default without one.
+    pub textual: TextualOutcome,
+}
+
+/// The textual stage of a rename: guesses beside the server's edits.
+#[derive(Debug, Clone)]
+pub struct TextualStage {
+    pub scope: TextualScope,
+    pub show_hidden: bool,
+    pub show_ignored: bool,
+}
+
+#[derive(Debug, Clone)]
+pub enum TextualScope {
+    /// Matches inside comments and strings; a file with no grammar in this build, or Markdown, counts whole.
+    CommentsAndStrings,
+}
+
+/// What the textual stage did. All default without one.
+#[derive(Debug, Default)]
+pub struct TextualOutcome {
+    /// Rows it made.
+    pub rows: usize,
+    /// The search stopped at `MAX_HITS`: some files were not searched.
+    pub capped: bool,
+    /// Files with the name that got no rows: a file operation touches them, or they cannot be read as text.
+    pub skipped_files: usize,
+    /// One per file that has only textual rows; checked only when one of its rows is included.
+    pub stamps: HashMap<PathBuf, FileStamp>,
 }
 
 pub struct RenameRequest {
@@ -85,6 +129,7 @@ pub struct RenameRequest {
     pub steps: Vec<Step>,
     pub open: Vec<OpenText>,
     pub root: PathBuf,
+    pub textual: Option<TextualStage>,
 }
 
 /// The text of one file as the rows see it, with its stamp.
@@ -121,8 +166,9 @@ fn text_of(path: &Path, open: &[OpenText], root: &Path) -> Result<Option<Text>, 
     Ok(Some(Text { rope: Rope::from_str(&text), stamp: FileStamp::Disk { mtime, size: meta.len() } }))
 }
 
-/// The row of edit `e` (number `at.1` of step `at.0`) in `rope`.
-fn row(path: &Path, rope: &Rope, e: &TextEdit, at: (u32, u32)) -> Hit {
+/// The row of edit `e` (number `at.1` of step `at.0`, none for a textual row) in `rope`. A textual row starts
+/// excluded.
+fn row(path: &Path, rope: &Rope, e: &TextEdit, at: Option<(u32, u32)>, source: RenameSource) -> Hit {
     let start = pos::char_index(rope, e.range.start);
     let end = pos::char_index(rope, e.range.end).max(start);
     let line = rope.char_to_line(start);
@@ -140,8 +186,8 @@ fn row(path: &Path, rope: &Rope, e: &TextEdit, at: (u32, u32)) -> Hit {
         preview,
         preview_col,
         matched: rope.slice(start..end).to_string(),
-        excluded: false,
-        rename: Some(Box::new(RenameEdit { new_text: e.new_text.clone(), edit: e.clone(), at: Some(at), source: RenameSource::Exact })),
+        excluded: source == RenameSource::Textual,
+        rename: Some(Box::new(RenameEdit { new_text: e.new_text.clone(), edit: e.clone(), at, source })),
     }
 }
 
@@ -176,9 +222,143 @@ fn source_of(path: &Path, before: &[Step]) -> Vec<PathBuf> {
     paths
 }
 
+/// Which of the matches starting at char offsets `starts` of `text` (`rope` is the same text) are in scope.
+fn in_scope(scope: &TextualScope, path: &Path, text: &str, rope: &Rope, starts: &[usize]) -> Vec<bool> {
+    match scope {
+        TextualScope::CommentsAndStrings => {
+            // Markdown has no comments or strings for prose: it counts whole, as a file with no grammar does.
+            let tree = detect_text(path, text).filter(|d| d.name != "markdown").and_then(|def| {
+                let mut parser = tree_sitter::Parser::new();
+                parser.set_language(&def.language).ok()?;
+                parser.parse(text, None)
+            });
+            match tree {
+                Some(tree) => starts.iter().map(|&s| in_literal_at(rope, &tree, s)).collect(),
+                None => vec![true; starts.len()],
+            }
+        }
+    }
+}
+
+/// The textual rows: matches of `old` that no exact edit touches, in scope, in files no operation can shift.
+/// Returns the rows, whether the search was capped and the number of files with the name that got no rows.
+fn textual_stage(
+    stage: &TextualStage,
+    (old, new): (&str, &str),
+    steps: &[Step],
+    open: &[OpenText],
+    root: &Path,
+    texts: &mut HashMap<PathBuf, Option<Text>>,
+) -> Result<(Vec<Hit>, bool, usize), String> {
+    if old.trim().is_empty() || old.contains(['\n', '\r']) || old == new {
+        return Ok((Vec::new(), false, 0));
+    }
+    let re = build_pattern(old, false, true, true)?;
+    // `Search` only names the files that hold the name.
+    let mut found: BTreeSet<PathBuf> = BTreeSet::new();
+    let mut capped = false;
+    Search {
+        root: root.to_path_buf(),
+        show_hidden: stage.show_hidden,
+        show_ignored: stage.show_ignored,
+        query: Query::Regex(re.clone()),
+        seq: 0,
+        cancel: Arc::new(AtomicU64::new(0)),
+    }
+    .run(|b| {
+        found.extend(b.hits.into_iter().map(|h| h.path));
+        capped |= b.capped;
+    });
+    let mut candidates: Vec<(PathBuf, bool)> = found.iter().map(|p| (p.clone(), true)).collect();
+    for o in open.iter().filter(|o| o.dirty && o.path.starts_with(root)) {
+        if !found.contains(&o.path) {
+            candidates.push((o.path.clone(), false));
+        }
+    }
+    candidates.sort();
+
+    // Rule 3: files a textual edit could shift.
+    let first_op = steps.iter().position(|s| matches!(s, Step::Op { .. }));
+    let mut after_op: HashSet<PathBuf> = HashSet::new();
+    if let Some(first_op) = first_op {
+        for (s, step) in steps.iter().enumerate().skip(first_op + 1) {
+            if let Step::Edit(f) = step
+                && !f.edits.is_empty()
+            {
+                after_op.extend(source_of(&f.path, &steps[..s]));
+            }
+        }
+    }
+    let prefixes: Vec<&Path> = steps
+        .iter()
+        .filter_map(|s| match s {
+            Step::Op { op: FileOp::Create { path, .. } | FileOp::Delete { path, .. } | FileOp::Rename { to: path, .. }, .. } => {
+                Some(path.as_path())
+            }
+            Step::Edit(_) => None,
+        })
+        .collect();
+    let real: HashMap<PathBuf, &Path> = steps
+        .iter()
+        .filter_map(|s| match s {
+            Step::Edit(f) if !f.edits.is_empty() => std::fs::canonicalize(&f.path).ok().map(|r| (r, f.path.as_path())),
+            _ => None,
+        })
+        .collect();
+
+    let (mut rows, mut skipped) = (Vec::new(), 0usize);
+    for (path, from_search) in candidates {
+        let refused = after_op.contains(&path)
+            || prefixes.iter().any(|p| path.starts_with(p))
+            || std::fs::canonicalize(&path).ok().is_some_and(|r| real.get(&r).is_some_and(|literal| **literal != *path));
+        if refused {
+            skipped += usize::from(from_search);
+            continue;
+        }
+        if !texts.contains_key(&path) {
+            match text_of(&path, open, root) {
+                Ok(t) => texts.insert(path.clone(), t),
+                Err(_) => {
+                    skipped += 1;
+                    continue;
+                }
+            };
+        }
+        let Some(Some(text)) = texts.get(&path) else { continue };
+        let rope = &text.rope;
+        let s = rope.to_string();
+        // Rule 2: a match touching an exact edit is not offered.
+        let exact: Vec<(usize, usize)> = steps
+            .iter()
+            .filter_map(|st| if let Step::Edit(f) = st { Some(f) } else { None })
+            .filter(|f| f.path == path)
+            .flat_map(|f| f.edits.iter())
+            .map(|e| {
+                let start = pos::char_index(rope, e.range.start);
+                (start, pos::char_index(rope, e.range.end).max(start))
+            })
+            .collect();
+        let matches: Vec<(usize, usize)> = re
+            .find_iter(&s)
+            .map(|m| (rope.byte_to_char(m.start()), rope.byte_to_char(m.end())))
+            .filter(|&(ms, me)| !exact.iter().any(|&(start, end)| ms <= end && start <= me))
+            .collect();
+        if matches.is_empty() {
+            continue;
+        }
+        let starts: Vec<usize> = matches.iter().map(|m| m.0).collect();
+        let keep = in_scope(&stage.scope, &path, &s, rope, &starts);
+        for ((ms, me), _) in matches.into_iter().zip(keep).filter(|(_, k)| *k) {
+            let edit = TextEdit { range: Range::new(pos::position(rope, ms), pos::position(rope, me)), new_text: new.into() };
+            rows.push(row(&path, rope, &edit, None, RenameSource::Textual));
+        }
+    }
+    Ok((rows, capped, skipped))
+}
+
 /// The preview of `req.steps` and its rows (sorted by path, line, column). Runs off the main thread.
 pub fn build(req: RenameRequest) -> Result<(RenamePreview, Vec<Hit>), String> {
-    let RenameRequest { old, new, steps, open, root } = req;
+    let RenameRequest { old, new, steps, open, root, textual } = req;
     let mut made: Vec<PathBuf> = Vec::new();
     let mut texts: HashMap<PathBuf, Option<Text>> = HashMap::new();
     let (mut hits, mut stamps, mut unlisted) = (Vec::new(), HashMap::new(), HashSet::new());
@@ -205,15 +385,31 @@ pub fn build(req: RenameRequest) -> Result<(RenamePreview, Vec<Hit>), String> {
                     continue;
                 };
                 stamps.insert(f.path.clone(), text.stamp.clone());
-                hits.extend(f.edits.iter().enumerate().map(|(e, edit)| row(&f.path, &text.rope, edit, (s, e as u32))));
+                hits.extend(
+                    f.edits.iter().enumerate().map(|(e, edit)| row(&f.path, &text.rope, edit, Some((s, e as u32)), RenameSource::Exact)),
+                );
             }
         }
+    }
+    let mut outcome = TextualOutcome::default();
+    if let Some(stage) = &textual {
+        let (rows, capped, skipped) = textual_stage(stage, (&old, &new), &steps, &open, &root, &mut texts)?;
+        for h in &rows {
+            if !stamps.contains_key(&h.path)
+                && let Some(Some(t)) = texts.get(&h.path)
+            {
+                outcome.stamps.entry(h.path.clone()).or_insert_with(|| t.stamp.clone());
+            }
+        }
+        outcome.rows = rows.len();
+        (outcome.capped, outcome.skipped_files) = (capped, skipped);
+        hits.extend(rows);
     }
     hits.sort_by(|a: &Hit, b: &Hit| {
         let at = |h: &Hit| h.rename.as_ref().and_then(|r| r.at);
         (&a.path, a.line, a.col, at(a)).cmp(&(&b.path, b.line, b.col, at(b)))
     });
-    Ok((RenamePreview { old, new, steps, stamps, unlisted }, hits))
+    Ok((RenamePreview { old, new, steps, stamps, unlisted, textual: outcome }, hits))
 }
 
 /// The steps Replace All makes: an edit of `preview.steps` keeps the edits whose `(step, edit)` is in an included
@@ -258,6 +454,17 @@ fn describe(op: &FileOp, root: &Path) -> String {
     }
 }
 
+/// `path` is not what `stamp` says any more.
+fn moved_on(path: &Path, stamp: &FileStamp, open: &[OpenText]) -> bool {
+    match stamp {
+        FileStamp::OpenBuffer { id, version } => !open.iter().any(|o| o.id == *id && o.version == *version),
+        FileStamp::Disk { mtime, size } => {
+            open.iter().any(|o| o.path == path && o.dirty)
+                || std::fs::metadata(path).ok().is_none_or(|m| m.modified().ok() != Some(*mtime) || m.len() != *size)
+        }
+    }
+}
+
 impl RenamePreview {
     /// The number of file operations in the answer.
     pub fn op_count(&self) -> usize {
@@ -268,16 +475,18 @@ impl RenamePreview {
     pub fn first_stale(&self, open: &[OpenText]) -> Option<PathBuf> {
         let mut paths: Vec<&PathBuf> = self.stamps.keys().collect();
         paths.sort();
-        paths
-            .into_iter()
-            .find(|path| match &self.stamps[*path] {
-                FileStamp::OpenBuffer { id, version } => !open.iter().any(|o| o.id == *id && o.version == *version),
-                FileStamp::Disk { mtime, size } => {
-                    open.iter().any(|o| &o.path == *path && o.dirty)
-                        || std::fs::metadata(path).ok().is_none_or(|m| m.modified().ok() != Some(*mtime) || m.len() != *size)
-                }
-            })
-            .cloned()
+        paths.into_iter().find(|path| moved_on(path, &self.stamps[*path], open)).cloned()
+    }
+
+    /// The smallest path of an included textual row, in a file with only textual rows, that has moved on.
+    pub fn first_stale_textual(&self, open: &[OpenText], included: &[Hit]) -> Option<PathBuf> {
+        let paths: BTreeSet<&PathBuf> = included
+            .iter()
+            .filter(|h| h.rename.as_deref().is_some_and(|r| r.source == RenameSource::Textual))
+            .map(|h| &h.path)
+            .filter(|p| self.textual.stamps.contains_key(*p))
+            .collect();
+        paths.into_iter().find(|path| moved_on(path, &self.textual.stamps[*path], open)).cloned()
     }
 
     /// The confirm dialog's text; `excluded` is the number of rows the user left out.
@@ -294,6 +503,19 @@ impl RenamePreview {
             s(files.len()),
             if excluded > 0 { format!("; {excluded} excluded") } else { String::new() }
         );
+        let t = &self.textual;
+        if t.rows > 0 {
+            let on = included.iter().filter(|h| h.rename.as_deref().is_some_and(|r| r.source == RenameSource::Textual)).count();
+            out.push_str(&format!("\nText matches (guesses): {on} included, {} left out.", t.rows.saturating_sub(on)));
+        }
+        if t.capped {
+            out.push_str(&format!("\nText search stopped at {MAX_HITS} matches; some files were not searched."));
+        }
+        match t.skipped_files {
+            0 => {}
+            1 => out.push_str("\nNo text matches offered in 1 file: a file operation touches it or it cannot be read."),
+            n => out.push_str(&format!("\nNo text matches offered in {n} files: file operations touch them or they cannot be read.")),
+        }
         if !self.unlisted.is_empty() {
             let k = self.unlisted.len();
             out.push_str(&format!("\n{k} more edit{} in files not listed.", s(k)));
@@ -335,7 +557,7 @@ mod tests {
     }
 
     fn req(dir: &Path, steps: Vec<Step>, open: Vec<OpenText>) -> RenameRequest {
-        RenameRequest { old: "old".into(), new: "new".into(), steps, open, root: dir.to_path_buf() }
+        RenameRequest { old: "old".into(), new: "new".into(), steps, open, root: dir.to_path_buf(), textual: None }
     }
 
     fn at(h: &Hit) -> Option<(u32, u32)> {
@@ -569,7 +791,14 @@ mod tests {
             Step::Edit(FileEdit { path: b.clone(), version: None, edits: vec![te(0, 0, 0, 1, "3")], index: Some(2) }),
             Step::Edit(FileEdit { path: c.clone(), version: None, edits: vec![te(0, 0, 0, 1, "4"), te(0, 2, 0, 3, "5")], index: Some(3) }),
         ];
-        let preview = RenamePreview { old: "o".into(), new: "n".into(), steps, stamps: HashMap::new(), unlisted: HashSet::from([(3, 1)]) };
+        let preview = RenamePreview {
+            old: "o".into(),
+            new: "n".into(),
+            steps,
+            stamps: HashMap::new(),
+            unlisted: HashSet::from([(3, 1)]),
+            textual: Default::default(),
+        };
         let row = |p: &Path, at, e: &TextEdit| hand_hit(p, at, e.clone(), RenameSource::Exact);
         let included = vec![
             row(&a, Some((0, 1)), &te(1, 0, 1, 1, "2")),
@@ -602,6 +831,7 @@ mod tests {
             steps: Vec::new(),
             stamps: stamps.into_iter().collect(),
             unlisted: HashSet::new(),
+            textual: Default::default(),
         }
     }
 
@@ -680,5 +910,292 @@ mod tests {
         assert!(msg.contains("\n  ... and 1 more\n"), "{msg}");
         p.unlisted = HashSet::from([(0, 0)]);
         assert!(p.confirm_message(&included, 0, &root).contains("1 more edit in files"));
+    }
+
+    fn stage() -> TextualStage {
+        TextualStage { scope: TextualScope::CommentsAndStrings, show_hidden: false, show_ignored: false }
+    }
+
+    fn treq(dir: &Path, steps: Vec<Step>, open: Vec<OpenText>) -> RenameRequest {
+        RenameRequest { textual: Some(stage()), ..req(dir, steps, open) }
+    }
+
+    /// `(file name, line, col)` of the textual rows.
+    fn textual_at(hits: &[Hit]) -> Vec<(String, usize, usize)> {
+        hits.iter()
+            .filter(|h| h.rename.as_ref().is_some_and(|r| r.source == RenameSource::Textual))
+            .map(|h| (h.path.file_name().unwrap().to_str().unwrap().to_string(), h.line, h.col))
+            .collect()
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[test]
+    fn textual_rows_are_comments_and_strings_excluded_and_marked() {
+        let dir = tmp("textual-rust");
+        let d = dir.join("d.rs");
+        std::fs::write(&d, "let x = \"old\"; old(); // old\n").unwrap();
+        let (preview, hits) = build(treq(&dir, Vec::new(), Vec::new())).unwrap();
+        assert_eq!(textual_at(&hits), [("d.rs".to_string(), 0, 9), ("d.rs".to_string(), 0, 25)]);
+        for h in &hits {
+            let r = h.rename.as_ref().unwrap();
+            assert!(h.excluded);
+            assert_eq!((&r.source, r.at, r.new_text.as_str()), (&RenameSource::Textual, None, "new"));
+        }
+        assert_eq!(preview.textual.rows, 2);
+        assert_eq!(preview.textual.stamps[&d], stamp_of(&d));
+        assert!(preview.stamps.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn textual_stage_off_searches_nothing() {
+        let dir = tmp("textual-off");
+        std::fs::write(dir.join("n.txt"), "old\n").unwrap();
+        let (preview, hits) = build(req(&dir, Vec::new(), Vec::new())).unwrap();
+        assert!(hits.is_empty());
+        let t = &preview.textual;
+        assert_eq!((t.rows, t.capped, t.skipped_files, t.stamps.len()), (0, false, 0, 0));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_file_with_no_grammar_and_markdown_count_whole() {
+        let dir = tmp("textual-whole");
+        std::fs::write(dir.join("notes.txt"), "an old note\n").unwrap();
+        std::fs::write(dir.join("README.md"), "# old\nthe old way\n").unwrap();
+        let (_, hits) = build(treq(&dir, Vec::new(), Vec::new())).unwrap();
+        assert_eq!(textual_at(&hits), [("README.md".to_string(), 0, 2), ("README.md".to_string(), 1, 4), ("notes.txt".to_string(), 0, 3)]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_match_on_or_touching_an_exact_edit_gets_no_row() {
+        // `old x`: the match is 0..3; a second `old` on line 1 always keeps its row.
+        let cases = [
+            ("replacement on the match", te(0, 0, 0, 3, "new")),
+            ("insertion at the start", te(0, 0, 0, 0, "new: ")),
+            ("insertion at the end", te(0, 3, 0, 3, "!")),
+            ("clamped past the line end", te(0, 1, 0, 100, "z")),
+        ];
+        for (name, edit) in cases {
+            let dir = tmp("textual-overlap");
+            let n = dir.join("notes.txt");
+            std::fs::write(&n, "old x\nold\n").unwrap();
+            let (_, hits) = build(treq(&dir, vec![file(&n, None, vec![edit])], Vec::new())).unwrap();
+            assert_eq!(textual_at(&hits), [("notes.txt".to_string(), 1, 0)], "{name}");
+            assert_eq!(hits.iter().filter(|h| at(h).is_some()).count(), 1, "{name}: the exact row stays");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn textual_positions_round_trip_utf16() {
+        let dir = tmp("textual-utf16");
+        let n = dir.join("notes.txt");
+        std::fs::write(&n, "// 😀 old 日本 old\n").unwrap();
+        let (_, hits) = build(treq(&dir, Vec::new(), Vec::new())).unwrap();
+        let rope = Rope::from_str("// 😀 old 日本 old\n");
+        assert_eq!(hits.len(), 2);
+        let want_cols = [5, 12];
+        for (h, col) in hits.iter().zip(want_cols) {
+            let e = &h.rename.as_ref().unwrap().edit;
+            assert_eq!((h.col, h.matched.as_str(), h.len), (col, "old", 3));
+            assert_eq!(pos::char_index(&rope, e.range.start), col);
+            assert_eq!(pos::char_index(&rope, e.range.end), col + 3);
+        }
+        // The emoji is two UTF-16 units: the first range starts at unit 6.
+        assert_eq!(hits[0].rename.as_ref().unwrap().edit.range.start.character, 6);
+        let edits: Vec<TextEdit> = hits.iter().map(|h| h.rename.as_ref().unwrap().edit.clone()).collect();
+        let got = crate::lsp::edits::edit_text("// 😀 old 日本 old\n", &edits);
+        assert_eq!(got.unwrap().0, "// 😀 new 日本 new\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rows_come_from_the_open_text_not_the_disk() {
+        let dir = tmp("textual-open");
+        let n = dir.join("notes.txt");
+        std::fs::write(&n, "old\nb\nc\n").unwrap();
+        let open = OpenText { path: n.clone(), id: 3, rope: Rope::from_str("a\nb\nold\n"), version: 9, dirty: true };
+        let (preview, hits) = build(treq(&dir, Vec::new(), vec![open])).unwrap();
+        assert_eq!(textual_at(&hits), [("notes.txt".to_string(), 2, 0)]);
+        assert_eq!(preview.textual.stamps[&n], FileStamp::OpenBuffer { id: 3, version: 9 });
+        // A dirty buffer holding the name where the disk has none (a file Search never matched).
+        let m = dir.join("m.txt");
+        std::fs::write(&m, "nothing\n").unwrap();
+        let open = OpenText { path: m.clone(), id: 4, rope: Rope::from_str("old\n"), version: 1, dirty: true };
+        let (_, hits) = build(treq(&dir, Vec::new(), vec![open])).unwrap();
+        assert!(textual_at(&hits).contains(&("m.txt".to_string(), 0, 0)));
+        // A clean open document of a hidden file Search does not walk: no row.
+        let h = dir.join(".hidden.txt");
+        std::fs::write(&h, "old\n").unwrap();
+        let open = OpenText { path: h, id: 5, rope: Rope::from_str("old\n"), version: 1, dirty: false };
+        let (_, hits) = build(treq(&dir, Vec::new(), vec![open])).unwrap();
+        assert!(!textual_at(&hits).iter().any(|r| r.0 == ".hidden.txt"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn op_create(index: u32, path: &Path, overwrite: bool) -> Step {
+        Step::Op { index, op: FileOp::Create { path: path.to_path_buf(), overwrite, ignore_if_exists: false } }
+    }
+
+    /// Files named in the textual rows, and `skipped_files`, of a build over `names` (each holding `old`).
+    fn rule_3(dir: &Path, steps: Vec<Step>) -> (Vec<String>, usize) {
+        let (preview, hits) = build(treq(dir, steps, Vec::new())).unwrap();
+        let mut files: Vec<String> = textual_at(&hits).into_iter().map(|r| r.0).collect::<BTreeSet<_>>().into_iter().collect();
+        files.sort();
+        (files, preview.textual.skipped_files)
+    }
+
+    fn plain(dir: &Path, names: &[&str]) {
+        for n in names {
+            let p = dir.join(n);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, "an old name\n").unwrap();
+        }
+    }
+
+    #[test]
+    fn rule_3_files_get_no_textual_rows() {
+        let e1 = te(0, 3, 0, 6, "new");
+        // [rename a to c, edit c]: a and c refused; b keeps rows.
+        let dir = tmp("rule3-a");
+        plain(&dir, &["a.txt", "b.txt"]);
+        let (a, c) = (dir.join("a.txt"), dir.join("c.txt"));
+        let steps = vec![rename_op(0, &a, &c), file(&c, None, vec![te(0, 3, 0, 6, "new")])];
+        assert_eq!(rule_3(&dir, steps), (vec!["b.txt".to_string()], 1));
+        // [create o, edit b]: the first-op rule refuses b.
+        let dir = tmp("rule3-b");
+        plain(&dir, &["b.txt", "z.txt"]);
+        let steps = vec![op_create(0, &dir.join("o.txt"), false), file(&dir.join("b.txt"), None, vec![e1.clone()])];
+        assert_eq!(rule_3(&dir, steps), (vec!["z.txt".to_string()], 1));
+        // [edit a, create o, edit a]: refused.
+        let dir = tmp("rule3-c");
+        plain(&dir, &["a.txt", "z.txt"]);
+        let a = dir.join("a.txt");
+        let steps = vec![file(&a, None, vec![e1.clone()]), op_create(1, &dir.join("o.txt"), false), file(&a, None, vec![e1.clone()])];
+        assert_eq!(rule_3(&dir, steps), (vec!["z.txt".to_string()], 1));
+        // [delete e]
+        let dir = tmp("rule3-d");
+        plain(&dir, &["e.txt", "z.txt"]);
+        let del = Step::Op { index: 0, op: FileOp::Delete { path: dir.join("e.txt"), recursive: false, ignore_if_not_exists: false } };
+        assert_eq!(rule_3(&dir, vec![del]), (vec!["z.txt".to_string()], 1));
+        // [create over (overwrite)]
+        let dir = tmp("rule3-e");
+        plain(&dir, &["over.txt", "z.txt"]);
+        assert_eq!(rule_3(&dir, vec![op_create(0, &dir.join("over.txt"), true)]), (vec!["z.txt".to_string()], 1));
+        // [rename x to y] with y on disk: no row in y; x keeps its rows.
+        let dir = tmp("rule3-f");
+        plain(&dir, &["x.txt", "y.txt"]);
+        let steps = vec![rename_op(0, &dir.join("x.txt"), &dir.join("y.txt"))];
+        assert_eq!(rule_3(&dir, steps), (vec!["x.txt".to_string()], 1));
+        // [edit a, rename a to c]: a keeps its rows (the moved-file case).
+        let dir = tmp("rule3-g");
+        let a = dir.join("a.txt");
+        std::fs::write(&a, "an old name old\n").unwrap();
+        let steps = vec![file(&a, None, vec![e1.clone()]), rename_op(1, &a, &dir.join("c.txt"))];
+        assert_eq!(rule_3(&dir, steps), (vec!["a.txt".to_string()], 0));
+        // A folder: [rename d1 to d2, edit d2/x]: no row in d1/x, a row in d1/y.
+        let dir = tmp("rule3-h");
+        plain(&dir, &["d1/x.txt", "d1/y.txt"]);
+        let steps = vec![rename_op(0, &dir.join("d1"), &dir.join("d2")), file(&dir.join("d2/x.txt"), None, vec![e1])];
+        let (preview, hits) = build(treq(&dir, steps, Vec::new())).unwrap();
+        assert_eq!(textual_at(&hits), [("y.txt".to_string(), 0, 3)]);
+        assert!(hits.iter().filter_map(|h| h.path.parent()).all(|p| p.ends_with("d1") || p.ends_with("d2")));
+        assert_eq!(preview.textual.skipped_files, 1);
+        for d in ["a", "b", "c", "d", "e", "f", "g", "h"] {
+            let _ =
+                std::fs::remove_dir_all(std::env::temp_dir().join(format!("jetl-test-rename-preview-rule3-{d}-{}", std::process::id())));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_exact_path_refuses_textual_rows_on_the_real_file() {
+        let dir = tmp("textual-link");
+        std::fs::write(dir.join("real.txt"), "an old name\n").unwrap();
+        std::os::unix::fs::symlink(dir.join("real.txt"), dir.join("link.txt")).unwrap();
+        let link = dir.join("link.txt");
+        let (preview, hits) = build(treq(&dir, vec![file(&link, None, vec![te(0, 3, 0, 6, "new")])], Vec::new())).unwrap();
+        assert!(!textual_at(&hits).iter().any(|r| r.0 == "real.txt"), "{:?}", textual_at(&hits));
+        assert_eq!(preview.textual.skipped_files, 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn invalid_utf8_with_the_name_is_skipped_not_an_error() {
+        let dir = tmp("textual-utf8");
+        std::fs::write(dir.join("bad.txt"), b"old \xff\n").unwrap();
+        let (preview, hits) = build(treq(&dir, Vec::new(), Vec::new())).unwrap();
+        assert!(hits.is_empty());
+        assert_eq!(preview.textual.skipped_files, 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_capped_search_says_so() {
+        let dir = tmp("textual-cap");
+        std::fs::write(dir.join("notes.txt"), "old\n".repeat(MAX_HITS + 1)).unwrap();
+        let (preview, _) = build(treq(&dir, Vec::new(), Vec::new())).unwrap();
+        assert!(preview.textual.capped);
+        let msg = preview.confirm_message(&[], 0, &dir);
+        assert!(msg.contains(&format!("Text search stopped at {MAX_HITS} matches; some files were not searched.")), "{msg}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn only_an_included_textual_row_makes_its_file_stale() {
+        let dir = tmp("textual-stale");
+        let n = dir.join("notes.txt");
+        std::fs::write(&n, "old\n").unwrap();
+        let (preview, mut hits) = build(treq(&dir, Vec::new(), Vec::new())).unwrap();
+        std::fs::write(&n, "old and more\n").unwrap();
+        assert_eq!(preview.first_stale(&[]), None);
+        assert_eq!(preview.first_stale_textual(&[], &[]), None);
+        assert_eq!(preview.first_stale_textual(&[], &hits), Some(n.clone()), "the row is passed as included");
+        hits[0].excluded = false;
+        assert_eq!(preview.first_stale_textual(&[], &hits), Some(n.clone()));
+        // An exact row of the same file keeps it in `stamps`, checked with nothing included.
+        let dir = tmp("textual-stale-both");
+        let n = dir.join("notes.txt");
+        std::fs::write(&n, "old x\nold\n").unwrap();
+        let (preview, _) = build(treq(&dir, vec![file(&n, None, vec![te(0, 0, 0, 3, "new")])], Vec::new())).unwrap();
+        assert!(preview.stamps.contains_key(&n) && preview.textual.stamps.is_empty());
+        std::fs::write(&n, "old x\nold!\n").unwrap();
+        assert_eq!(preview.first_stale(&[]), Some(n));
+        for d in ["textual-stale", "textual-stale-both"] {
+            let _ = std::fs::remove_dir_all(std::env::temp_dir().join(format!("jetl-test-rename-preview-{d}-{}", std::process::id())));
+        }
+    }
+
+    #[test]
+    fn confirm_message_counts_text_matches() {
+        let root = PathBuf::from("/p");
+        let exact = hand_hit(&root.join("a"), Some((0, 0)), te(0, 0, 0, 1, "n"), RenameSource::Exact);
+        let text = hand_hit(&root.join("b"), None, te(0, 0, 0, 1, "n"), RenameSource::Textual);
+        let mut p = preview_with(Vec::new());
+        p.old = "old".into();
+        p.new = "new".into();
+        let plain = p.confirm_message(&[exact.clone(), text.clone()], 2, &root);
+        p.textual = TextualOutcome { rows: 3, capped: true, skipped_files: 1, stamps: HashMap::new() };
+        let got = p.confirm_message(&[exact.clone(), text.clone()], 2, &root);
+        let want = "Rename old to new: 2 occurrences in 2 files; 2 excluded.\n\
+                    Text matches (guesses): 1 included, 2 left out.\n\
+                    Text search stopped at 10000 matches; some files were not searched.\n\
+                    No text matches offered in 1 file: a file operation touches it or it cannot be read.\n\
+                    Open files change in the editor (undoable); others are written to disk.";
+        assert_eq!(got, want);
+        // Each line is absent when it does not apply.
+        p.textual = TextualOutcome { rows: 0, capped: false, skipped_files: 2, stamps: HashMap::new() };
+        let got = p.confirm_message(std::slice::from_ref(&exact), 0, &root);
+        assert!(!got.contains("Text matches") && !got.contains("stopped"), "{got}");
+        assert!(got.contains("No text matches offered in 2 files: file operations touch them or they cannot be read.\n"), "{got}");
+        p.textual = TextualOutcome { rows: 1, ..Default::default() };
+        let got = p.confirm_message(std::slice::from_ref(&exact), 0, &root);
+        assert!(got.contains("\nText matches (guesses): 0 included, 1 left out.\n") && !got.contains("No text"), "{got}");
+        // No stage: today's message.
+        p.textual = TextualOutcome::default();
+        assert_eq!(p.confirm_message(&[exact, text], 2, &root), plain);
+        assert!(!plain.contains("Text"), "{plain}");
     }
 }

@@ -1327,7 +1327,7 @@ pub(crate) mod tests {
             Step::Op { index: 1, op: FileOp::Rename { from: a.clone(), to: b.clone(), overwrite: false, ignore_if_exists: false } },
             Step::Op { index: 2, op: FileOp::Delete { path: c.clone(), recursive: false, ignore_if_not_exists: false } },
         ];
-        app.rename_preview_start(RenameRequest { old: "old".into(), new: "new".into(), steps, open: Vec::new(), root });
+        app.rename_preview_start(RenameRequest { old: "old".into(), new: "new".into(), steps, open: Vec::new(), root, textual: None });
         handle_next(&mut app, |m| matches!(m, AppMsg::RenamePreview { .. })).await;
         assert!(app.find.rename_preview().is_some());
         app.finish_dialog(DialogId::ReplaceInFiles, DialogResult::Button(0));

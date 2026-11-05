@@ -531,6 +531,12 @@ Typing in either field or toggling an option drops the preview and runs an
 ordinary search; nothing is applied. A file that changed since the preview
 (edited in a tab, or on disk) refuses the whole rename. With `false` the
 server's rename applies at once. The key is read when the answer arrives.
+With the key on, the rename dialog has a check row, "Search in comments and
+strings" (Alt+C, or a click; kept for the session): the preview then also lists
+whole-word matches of the old name in comments and strings, and in whole files
+with no grammar and Markdown. Those rows are guesses, so they start excluded and
+carry a dim `text` marker; include one with Alt+Delete and Replace All writes it
+with the rest.
 
 The status bar shows the server of the active file: its name, a spinner
 with what it reports while it starts or indexes, `LSP: <name> missing` when

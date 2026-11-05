@@ -1797,7 +1797,7 @@ fn rename_preview_app(name: &str) -> Fixture {
         Step::Edit(FileEdit { path: util.clone(), version: None, edits: vec![te(0, 11, 16, "read_input")], index: None }),
         Step::Op { index: 2, op: FileOp::Rename { from: util, to: root.join("src/input.rs"), overwrite: false, ignore_if_exists: false } },
     ];
-    let req = RenameRequest { old: "parse".into(), new: "read_input".into(), steps, open: Vec::new(), root };
+    let req = RenameRequest { old: "parse".into(), new: "read_input".into(), steps, open: Vec::new(), root, textual: None };
     let result = Box::new(build(req));
     let (generation, seq) = (app.workspace.generation, app.find.current_seq());
     app.handle_msg(AppMsg::RenamePreview { generation, seq, result });
@@ -1839,6 +1839,86 @@ async fn find_in_files_rename_confirm() {
     marks.push(Mark::bg('D', "parse", app.theme.diff_del_word_bg));
     marks.push(Mark::bg('A', "read_input", app.theme.diff_add_word_bg));
     assert_snapshot!("find_in_files_rename_confirm", snapshot(&term, &marks, None));
+}
+
+/// A rename preview with the textual stage: one exact row in `src/util.rs`, two text guesses in `notes.txt`
+/// (a file with no grammar), the second included.
+#[cfg(feature = "structural")]
+fn rename_textual_app(name: &str) -> Fixture {
+    use crate::files::rename_preview::{RenameRequest, TextualScope, TextualStage, build};
+    use crate::lsp::edits::{FileEdit, Step};
+    use lsp_types::{Position, Range, TextEdit};
+    let mut fx = stable_app(name);
+    let app = &mut fx.app;
+    let root = app.workspace.root.clone();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    let util = root.join("src/util.rs");
+    std::fs::write(&util, "use crate::parse;\n").unwrap();
+    std::fs::write(root.join("notes.txt"), "parse later\nsee parse again\n").unwrap();
+    let edit = TextEdit { range: Range::new(Position::new(0, 11), Position::new(0, 16)), new_text: "read_input".into() };
+    let steps = vec![Step::Edit(FileEdit { path: util, version: None, edits: vec![edit], index: None })];
+    let textual = Some(TextualStage { scope: TextualScope::CommentsAndStrings, show_hidden: false, show_ignored: false });
+    let req = RenameRequest { old: "parse".into(), new: "read_input".into(), steps, open: Vec::new(), root, textual };
+    let result = Box::new(build(req));
+    let (generation, seq) = (app.workspace.generation, app.find.current_seq());
+    app.handle_msg(AppMsg::RenamePreview { generation, seq, result });
+    app.notifications.clear();
+    app.notification_shown = false;
+    app.toasts = Default::default();
+    // Rows: 0 notes.txt, 1 and 2 its guesses, 3 src/util.rs, 4 the use.
+    app.find.list.select(2);
+    app.find.toggle_exclude();
+    app.find.list.select(4);
+    fx
+}
+
+// The Find header has the AST toggle only with the "structural" feature.
+#[cfg(feature = "structural")]
+#[tokio::test]
+async fn find_in_files_rename_textual() {
+    let mut fx = rename_textual_app("find-rename-textual");
+    let app = &mut fx.app;
+    assert_eq!((app.find.hit_count(), app.find.excluded_count()), (3, 1));
+    let term = draw_app(app, 80, 24);
+    let mut marks = find_marks(&app.theme);
+    marks.push(Mark::bg('D', "parse", app.theme.diff_del_word_bg));
+    marks.push(Mark::bg('A', "read_input", app.theme.diff_add_word_bg));
+    marks.push(Mark::style('X', "excluded", Style::default().fg(app.theme.dim.fg.unwrap())));
+    let bottom = app.layout.rects.bottom;
+    assert_snapshot!("find_in_files_rename_textual", snapshot(&term, &marks, Some(bottom)));
+}
+
+#[cfg(feature = "structural")]
+#[tokio::test]
+async fn find_in_files_rename_textual_confirm() {
+    let mut fx = rename_textual_app("find-rename-textual-confirm");
+    let app = &mut fx.app;
+    app.perform(Action::Find(crate::actions::FindAction::ReplaceAll));
+    assert!(app.dialog.is_some());
+    let term = draw_app(app, 80, 24);
+    let mut marks = find_marks(&app.theme);
+    marks.push(Mark::bg('D', "parse", app.theme.diff_del_word_bg));
+    marks.push(Mark::bg('A', "read_input", app.theme.diff_add_word_bg));
+    assert_snapshot!("find_in_files_rename_textual_confirm", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
+async fn rename_dialog_with_check() {
+    let mut fx = stable_app("rename-dialog-check");
+    let app = &mut fx.app;
+    app.dialog = Some(
+        crate::ui::dialog::Dialog::input(
+            crate::ui::dialog::DialogId::PutLabel(std::path::PathBuf::from("/x")),
+            "Rename",
+            "Rename 'parse' and its usages to:",
+            "parse",
+            "Preview",
+        )
+        .with_check("Search in comments and strings", true),
+    );
+    let term = draw_app(app, 80, 24);
+    let area = app.dialog.as_ref().unwrap().rect();
+    assert_snapshot!("rename_dialog_with_check", snapshot(&term, &[], Some(area)));
 }
 
 #[cfg(all(feature = "structural", feature = "lang-rust"))]

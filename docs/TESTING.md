@@ -353,6 +353,48 @@ show) and may not show `1 excluded`; the confirm dialog always says it
 (`; 1 excluded`) and lists the operations. Stderr is empty and
 Ctrl+Q exits 0.
 
+### Scenario: rename with comments and strings
+
+At 120x40 and 80x24 (yman 397), with rust-analyzer, `[lsp]` enabled, a
+project, config, state and cache under `/tmp/jetl-397b` and the harness
+script `/tmp/tm24.sh` as above. Ctrl+Shift+A does not arrive under tmux (no
+kitty protocol); nothing here needs it. Shift+F6 is `S-F6`, Alt+C `M-c`:
+
+```sh
+T=/tmp/jetl-397b/proj; mkdir -p $T/src
+printf '[package]\nname = "demo"\nversion = "0.1.0"\nedition = "2021"\n' > $T/Cargo.toml
+printf 'mod util;\n// helper is called twice\nfn main() {\n    util::helper();\n    util::helper();\n    println!("helper");\n}\n' > $T/src/main.rs
+printf 'pub fn helper() {}\n' > $T/src/util.rs
+printf 'helper notes\n' > $T/notes.txt
+# start jetl on $T, open src/main.rs, wait until rust-analyzer has finished indexing, caret in `helper` on line 4
+/tmp/tm24.sh send-keys -t jetl S-F6; sleep 1
+/tmp/tm24.sh capture-pane -p -t jetl      # "[ ] Search in comments and strings   Alt+C", button Preview
+/tmp/tm24.sh send-keys -t jetl M-c         # "[x]"
+/tmp/tm24.sh send-keys -t jetl C-a; /tmp/tm24.sh send-keys -t jetl -l 'assist'; /tmp/tm24.sh send-keys -t jetl Enter; sleep 3
+/tmp/tm24.sh capture-pane -p -t jetl      # Find: notes.txt 1 (text), main.rs comment (text), 2 exact, string (text); util.rs 1; toast "3 text matches start excluded"
+cat $T/notes.txt $T/src/util.rs            # still helper
+/tmp/tm24.sh send-keys -t jetl M-a; sleep 0.5
+/tmp/tm24.sh capture-pane -p -t jetl      # "3 occurrences in 2 files; 3 excluded." and "Text matches (guesses): 0 included, 3 left out."
+/tmp/tm24.sh send-keys -t jetl Escape      # the dialog goes, the preview stays
+/tmp/tm24.sh send-keys -t jetl Down Down M-DC   # the selection starts on the first result; the comment row is two Downs on, no longer dimmed
+/tmp/tm24.sh send-keys -t jetl M-a; sleep 0.5
+/tmp/tm24.sh capture-pane -p -t jetl      # "4 occurrences in 2 files; 2 excluded." and "Text matches (guesses): 1 included, 2 left out."
+/tmp/tm24.sh send-keys -t jetl Enter; sleep 2
+/tmp/tm24.sh capture-pane -p -t jetl      # main.rs: the comment says assist, the string still helper, both calls assist
+cat $T/notes.txt $T/src/util.rs            # notes still helper, util assist
+/tmp/tm24.sh send-keys -t jetl C-z         # focus the editor first: main.rs restored in one step
+/tmp/tm24.sh send-keys -t jetl S-F6        # the check still shows "[x]" this session
+```
+
+Stale, excluded: Shift+F6 again, change `notes.txt` from another shell, Alt+A,
+Enter: it applies and `notes.txt` is untouched by jetl. Stale, included:
+repeat on the restored text, include the `notes.txt` row, change `notes.txt`,
+Alt+A, Enter: the error toast `notes.txt changed since the preview; rename
+again`, nothing changes and the rows stay. With `[lsp]\nrename_preview =
+false` in `config.toml` Shift+F6 shows no check row and the button `Refactor`.
+The Find status line is clipped on a narrow window; the confirm dialog says
+the counts. Stderr is empty and Ctrl+Q exits 0.
+
 ### Scenario: column selection
 
 At 80x24 and at 120x40, with a file of tabs, wide characters and a short

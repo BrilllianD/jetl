@@ -317,6 +317,12 @@ impl FindPanel {
         self.cancel.clone()
     }
 
+    /// Every result, included or not.
+    #[cfg(test)]
+    pub fn hits(&self) -> &[Hit] {
+        &self.hits
+    }
+
     pub fn hit_count(&self) -> usize {
         self.hits.len()
     }
@@ -951,7 +957,14 @@ mod tests {
                 op: FileOp::Delete { path: format!("/p/f{i}").into(), recursive: false, ignore_if_not_exists: true },
             })
             .collect();
-        RenamePreview { old: "old".into(), new: "new".into(), steps, stamps: HashMap::new(), unlisted: HashSet::new() }
+        RenamePreview {
+            old: "old".into(),
+            new: "new".into(),
+            steps,
+            stamps: HashMap::new(),
+            unlisted: HashSet::new(),
+            textual: Default::default(),
+        }
     }
 
     fn rows(ops: usize) -> (RenamePreview, Vec<Hit>) {
