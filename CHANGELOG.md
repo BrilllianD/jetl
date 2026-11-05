@@ -53,6 +53,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Scratch files: when writing a new scratch file's text fails (Export Hierarchy), the empty file no longer stays behind in Scratch Files holding its number.
 - File Dependencies: a Java wildcard import lists the package's files from every source root, so a package split across `src/main/java` and `src/test/java` shows both sides, and a file alone in its package in one root still finds the other side.
 - Import edges: the first File Dependencies or file ranking after indexing a large Java project no longer spends seconds on imports of external packages.
+- Approximate call hierarchy: listing the callees of a long function in a large project no longer pauses the editor for a fraction of a second while each name is looked up across the whole index.
 - The terminal cursor no longer shows on top of an Undocked tool window when the editor caret lies under it.
 - Tool window layouts: the success toast and the current layout now wait for the write to succeed, so a failed save, rename or delete only shows its error and leaves the current layout as it was; rename and delete now confirm with a toast.
 

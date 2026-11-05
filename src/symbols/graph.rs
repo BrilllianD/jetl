@@ -58,26 +58,33 @@ pub fn find(index: &SymbolIndex, path: &str, name: &str, line: usize) -> Option<
     index.file(path)?.symbols.iter().position(|s| &*s.name == name && s.line == line)
 }
 
-/// Definitions named `name` as seen from file `from` (best group only), by path, line, col; never `impl`.
-pub fn resolve(index: &mut SymbolIndex, name: &str, from: &str) -> Vec<Def> {
-    let near: HashSet<Arc<str>> = index.imports_of(from).into_iter().chain(index.imported_by(from)).collect();
-    let mut found: Vec<(u8, Def)> = Vec::new();
-    for (path, f) in index.files() {
-        let group = if path == from {
-            0
+/// The files on an import edge of `from`, either way.
+fn near_of(index: &mut SymbolIndex, from: &str) -> HashSet<Arc<str>> {
+    index.imports_of(from).into_iter().chain(index.imported_by(from)).collect()
+}
+
+/// `resolve` with the near files of `from` already known.
+fn pick(index: &mut SymbolIndex, name: &str, from: &str, near: &HashSet<Arc<str>>) -> Vec<Def> {
+    let found = index.defs_of(name);
+    let group = |path: &str| {
+        if path == from {
+            0u8
         } else if near.contains(path) {
             1
         } else {
             2
-        };
-        for s in f.symbols.iter().filter(|s| &*s.name == name && s.kind != "impl") {
-            found.push((group, Def { path: Arc::from(path), symbol: s.clone() }));
         }
-    }
-    let Some(best) = found.iter().map(|(g, _)| *g).min() else { return Vec::new() };
-    let mut defs: Vec<Def> = found.into_iter().filter(|(g, _)| *g == best).map(|(_, d)| d).collect();
+    };
+    let Some(best) = found.iter().map(|(p, _)| group(p)).min() else { return Vec::new() };
+    let mut defs: Vec<Def> = found.into_iter().filter(|(p, _)| group(p) == best).map(|(path, symbol)| Def { path, symbol }).collect();
     defs.sort_by(|a, b| a.path.cmp(&b.path).then(a.symbol.line.cmp(&b.symbol.line)).then(a.symbol.col.cmp(&b.symbol.col)));
     defs
+}
+
+/// Definitions named `name` as seen from file `from` (best group only), by path, line, col; never `impl`.
+pub fn resolve(index: &mut SymbolIndex, name: &str, from: &str) -> Vec<Def> {
+    let near = near_of(index, from);
+    pick(index, name, from, &near)
 }
 
 /// Hierarchy roots for `name` at `line` of `from`.
@@ -246,10 +253,14 @@ pub fn callees(index: &mut SymbolIndex, path: &str, sym: usize) -> Vec<Def> {
             }
         }
     }
+    if names.is_empty() {
+        return Vec::new();
+    }
+    let near = near_of(index, path);
     let mut seen: HashSet<(Arc<str>, usize, usize)> = HashSet::new();
     let mut out = Vec::new();
     for name in names {
-        for d in resolve(index, &name, path) {
+        for d in pick(index, &name, path, &near) {
             if seen.insert((d.path.clone(), d.symbol.line, d.symbol.col)) {
                 out.push(d);
             }
@@ -315,6 +326,15 @@ mod tests {
         let idx = indexed(&[("src/main.rs", main), ("src/b.rs", "pub fn helper() {}\n")]);
         assert_eq!(names(&callers(&idx, "helper")), pairs(&[("src/main.rs", "main"), ("src/main.rs", "inner")]));
         assert!(callers(&idx, "nothing").is_empty());
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[test]
+    fn resolve_skips_impl_and_sorts_within_the_best_group() {
+        let mut idx = indexed(&[("src/a.rs", "struct A;\nimpl A {}\n"), ("src/z.rs", "struct A;\n"), ("src/m.rs", "fn other() {}\n")]);
+        assert_eq!(names(&resolve(&mut idx, "A", "src/m.rs")), pairs(&[("src/a.rs", "A"), ("src/z.rs", "A")]));
+        assert_eq!(names(&resolve(&mut idx, "A", "src/z.rs")), pairs(&[("src/z.rs", "A")]));
+        assert!(resolve(&mut idx, "nothing", "src/m.rs").is_empty());
     }
 
     #[cfg(feature = "lang-rust")]

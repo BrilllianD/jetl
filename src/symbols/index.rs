@@ -63,6 +63,9 @@ pub struct SymbolEntry {
     pub utf16: bool,
 }
 
+/// Name to its definitions: path and index into that file's symbols.
+type ByName = HashMap<Arc<str>, Vec<(Arc<str>, usize)>>;
+
 #[derive(Debug, Default)]
 pub struct SymbolIndex {
     files: HashMap<String, FileSymbols>,
@@ -82,6 +85,8 @@ pub struct SymbolIndex {
     entries: Option<Arc<Vec<SymbolEntry>>>,
     /// File import edges, rebuilt on demand after a change.
     edges: Option<Edges>,
+    /// Definitions by name, `impl` blocks left out: path and index into that file's symbols. Rebuilt on demand after a change.
+    by_name: Option<ByName>,
     /// The cache of this root was handed to a run.
     cache_read: bool,
     /// Files changed since the cache was last taken.
@@ -131,6 +136,7 @@ impl SymbolIndex {
         if self.files.len() != before {
             self.entries = None;
             self.edges = None;
+            self.by_name = None;
             self.dirty = true;
         }
         self.candidates = Arc::new(candidates);
@@ -160,6 +166,7 @@ impl SymbolIndex {
         if queued {
             self.entries = None;
             self.edges = None;
+            self.by_name = None;
         }
         (queued, unknown)
     }
@@ -222,6 +229,7 @@ impl SymbolIndex {
         if !batch.files.is_empty() {
             self.entries = None;
             self.edges = None;
+            self.by_name = None;
         }
         for (rel, syms) in batch.files {
             match syms {
@@ -292,9 +300,22 @@ impl SymbolIndex {
         self.files.get(rel)
     }
 
-    /// Every indexed file with its data, in no particular order.
-    pub fn files(&self) -> impl Iterator<Item = (&str, &FileSymbols)> {
-        self.files.iter().map(|(p, f)| (p.as_str(), f))
+    /// Every definition named `name` (exact), `impl` blocks left out, in no particular order across files
+    /// and in symbol order within one. The map is rebuilt on demand after any change.
+    pub fn defs_of(&mut self, name: &str) -> Vec<(Arc<str>, Symbol)> {
+        let files = &self.files;
+        let map = self.by_name.get_or_insert_with(|| {
+            let mut map = ByName::new();
+            for (path, f) in files {
+                let path: Arc<str> = Arc::from(path.as_str());
+                for (i, s) in f.symbols.iter().enumerate().filter(|(_, s)| s.kind != "impl") {
+                    map.entry(s.name.clone()).or_default().push((path.clone(), i));
+                }
+            }
+            map
+        });
+        let Some(found) = map.get(name) else { return Vec::new() };
+        found.iter().map(|(p, i)| (p.clone(), files[&**p].symbols[*i].clone())).collect()
     }
 
     /// Every indexed reference named `name` (exact), by path, then line and
@@ -466,6 +487,56 @@ mod tests {
         assert_eq!(got, [("a.rs", 2, 3), ("a.rs", 9, 3), ("b.rs", 3, 3)]);
         assert!(idx.defs_named("F").is_empty());
         assert_eq!(idx.defs_named("g").len(), 1);
+    }
+
+    #[test]
+    fn defs_of_follows_every_change() {
+        let sym = |name: &str, kind, line| Symbol { name: name.into(), kind, line, col: 0, start_line: line, end_line: line, depth: 0 };
+        let f = |symbols| Some(FileSymbols { mtime: None, size: 0, symbols, refs: vec![], imports: vec![] });
+        let lines = |idx: &mut SymbolIndex, name: &str| -> Vec<(String, usize, &'static str)> {
+            idx.defs_of(name).into_iter().map(|(p, s)| (p.to_string(), s.line, s.kind)).collect()
+        };
+        let mut idx = SymbolIndex::default();
+        let seq = idx.start(PathBuf::from("/nonexistent")).seq;
+        let first = SymbolBatch {
+            files: vec![("a.rs".into(), f(vec![sym("f", "function", 5), sym("g", "function", 1), sym("f", "function", 2)]))],
+            done: true,
+            changed: true,
+        };
+        assert!(idx.on_batch(seq, first).is_some());
+        assert_eq!(lines(&mut idx, "f"), [("a.rs".to_string(), 5, "function"), ("a.rs".to_string(), 2, "function")]);
+
+        let seq = idx.start(PathBuf::from("/nonexistent")).seq;
+        let second = SymbolBatch {
+            files: vec![
+                ("a.rs".into(), f(vec![sym("g", "function", 7)])),
+                ("b.rs".into(), f(vec![sym("f", "function", 3), sym("f", "impl", 1)])),
+            ],
+            done: true,
+            changed: true,
+        };
+        assert!(idx.on_batch(seq, second).is_some());
+        assert_eq!(lines(&mut idx, "f"), [("b.rs".to_string(), 3, "function")]);
+        assert_eq!(lines(&mut idx, "g"), [("a.rs".to_string(), 7, "function")]);
+
+        idx.invalidate(&["b.rs".to_string()]);
+        assert!(idx.defs_of("f").is_empty());
+        idx.reset();
+        assert!(idx.defs_of("g").is_empty());
+    }
+
+    #[test]
+    fn defs_of_forgets_files_set_files_drops() {
+        let sym = Symbol { name: "f".into(), kind: "function", line: 0, col: 0, start_line: 0, end_line: 0, depth: 0 };
+        let f = || Some(FileSymbols { mtime: None, size: 0, symbols: vec![sym.clone()], refs: vec![], imports: vec![] });
+        let mut idx = SymbolIndex::default();
+        let seq = idx.start(PathBuf::from("/nonexistent")).seq;
+        let batch = SymbolBatch { files: vec![("a.rs".into(), f()), ("b.rs".into(), f())], done: true, changed: true };
+        assert!(idx.on_batch(seq, batch).is_some());
+        assert_eq!(idx.defs_of("f").len(), 2);
+        idx.set_files(&["a.rs".to_string()]);
+        let got: Vec<String> = idx.defs_of("f").into_iter().map(|(p, _)| p.to_string()).collect();
+        assert_eq!(got, ["a.rs"]);
     }
 
     #[cfg(feature = "lang-rust")]
