@@ -44,6 +44,8 @@ line_number_current = "{{foreground}}"
 bracket_match = { bg = "{{mix background accent 30}}", bold = true }
 secondary_caret = { reverse = true }
 bookmark = "{{yellow}}"
+breakpoint = "{{red}}"
+breakpoint_unverified = "{{mix foreground background 45}}"
 fold_placeholder = { fg = "{{mix foreground background 35}}", bg = "{{lighter_background}}" }
 git_added = "{{green}}"
 git_modified = "{{blue}}"

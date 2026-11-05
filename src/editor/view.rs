@@ -12,7 +12,7 @@ use ropey::Rope;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-use super::buffer::Buffer;
+use super::buffer::{BpState, Buffer};
 use super::fold::Fold;
 use super::inlay::Inlay;
 use super::rows::{Row, Rows};
@@ -397,7 +397,7 @@ pub fn block_selections(rope: &Rope, rows: &Rows, anchor: (usize, usize), head: 
     Selections::new(ranges, primary)
 }
 
-/// Line numbers, bookmark, diff mark (or diagnostic glyph, or lightbulb),
+/// Line numbers, bookmark or breakpoint, diff mark (or diagnostic glyph, or lightbulb),
 /// fold marker, space; the blame column before them when shown, and first
 /// `action_w` cells of [`LineDecor`] glyphs.
 pub fn gutter_width(buf: &Buffer, action_w: u16) -> u16 {
@@ -698,17 +698,27 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
         } else {
             let num = format!("{:>width$}", line + 1, width = digits);
             screen.set_stringn(gx, y, &num, digits, num_style);
-            // A numbered bookmark shows its digit (on a fold's header the
-            // first digit it hides), any other one ◆.
-            let mut marked = buf.bookmarks.range(span.clone()).peekable();
-            if marked.peek().is_some() {
-                // A digit is drawn reversed, as a badge, so that it does not
-                // read as one more digit of the line number.
-                let (glyph, style) = match marked.find_map(|(_, d)| *d) {
-                    Some(d) => (char::from(b'0' + d).to_string(), theme.bookmark.add_modifier(Modifier::REVERSED)),
-                    None => ("◆".to_string(), theme.bookmark),
+            // One cell, one mark: a breakpoint hides a bookmark while it is there (on
+            // a fold's header, the first one it hides).
+            if let Some((_, mark)) = buf.breakpoints.range(span.clone()).next() {
+                let (glyph, style) = match mark.state {
+                    BpState::Idle | BpState::Verified => ("●", theme.breakpoint),
+                    BpState::Pending | BpState::Failed => ("○", theme.breakpoint_unverified),
                 };
                 screen.set_string(gx + digits as u16, y, glyph, style);
+            } else {
+                // A numbered bookmark shows its digit (on a fold's header the
+                // first digit it hides), any other one ◆.
+                let mut marked = buf.bookmarks.range(span.clone()).peekable();
+                if marked.peek().is_some() {
+                    // A digit is drawn reversed, as a badge, so that it does not
+                    // read as one more digit of the line number.
+                    let (glyph, style) = match marked.find_map(|(_, d)| *d) {
+                        Some(d) => (char::from(b'0' + d).to_string(), theme.bookmark.add_modifier(Modifier::REVERSED)),
+                        None => ("◆".to_string(), theme.bookmark),
+                    };
+                    screen.set_string(gx + digits as u16, y, glyph, style);
+                }
             }
             // A diagnostic's glyph takes the diff mark's column over it, and
             // the lightbulb (quick fixes, `app/lightbulb.rs`) both, on the

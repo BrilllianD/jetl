@@ -757,6 +757,7 @@ impl Editor {
         }
         let id = self.buffers[i].id;
         self.park_bookmarks(i);
+        self.park_breakpoints(i);
         // Back from the next tab reopens the closed one.
         if self.active() == Some(i) {
             self.nav.push(nav_pos(&self.buffers[i]));
@@ -789,6 +790,7 @@ impl Editor {
     pub fn force_close_all(&mut self) {
         for i in 0..self.buffers.len() {
             self.park_bookmarks(i);
+            self.park_breakpoints(i);
         }
         self.buffers.clear();
         self.mru.clear();

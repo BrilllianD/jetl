@@ -2,6 +2,7 @@
 
 pub mod blame;
 mod bookmarks;
+mod breakpoints;
 pub use bookmarks::BookmarkTarget;
 pub mod brackets;
 pub(crate) mod breadcrumbs;
@@ -190,6 +191,9 @@ pub struct Editor {
     /// Bookmarks of files without a tab: path to line and digit, as in
     /// `Buffer::bookmarks` (see `bookmarks.rs`).
     closed_bookmarks: std::collections::BTreeMap<PathBuf, std::collections::BTreeMap<usize, Option<u8>>>,
+    /// Breakpoint lines of files without a tab (see `breakpoints.rs`); only
+    /// lines, a breakpoint's state is never kept.
+    closed_breakpoints: std::collections::BTreeMap<PathBuf, std::collections::BTreeSet<usize>>,
     /// The last copy made at several carets: the clipboard text and each
     /// caret's piece, so pasting it at as many carets splits it again.
     multi_clip: Option<(String, Vec<String>)>,
@@ -272,6 +276,7 @@ impl Editor {
             nav: NavRing::default(),
             pending_nav: None,
             closed_bookmarks: Default::default(),
+            closed_breakpoints: Default::default(),
             multi_clip: None,
             column_mode: false,
             overwrite: false,
@@ -402,6 +407,7 @@ impl Editor {
         let setup = self.path_setup(&path, text, theme);
         let pending = self.pending_nav.take_if(|(p, _)| *p == path).map(|(_, pos)| pos);
         let parked = self.unpark_bookmarks(&path);
+        let parked_breakpoints = self.unpark_breakpoints(&path);
         // A file not on disk yet has no line ending of its own.
         let le = setup.settings.end_of_line.filter(|_| setup.mtime.is_none() && text.is_empty());
         let mut buf = Buffer::from_text(id, None, text, lossy);
@@ -413,6 +419,10 @@ impl Editor {
             if slot.is_none() {
                 *slot = digit;
             }
+        }
+        for line in parked_breakpoints {
+            // Lines past the end land on the last one, as bookmarks do.
+            buf.breakpoints.entry(line.min(last)).or_default();
         }
         adopt_path(&mut buf, path, setup, self.tab_width);
         if let Some(le) = le {
@@ -1092,6 +1102,10 @@ impl Editor {
                 self.goto_digit(*d, cx);
                 return true;
             }
+            E::ToggleBreakpoint => {
+                self.toggle_breakpoints_at_carets(cx);
+                return true;
+            }
             E::LineEndingLf | E::LineEndingCrlf => {
                 if let Some(id) = self.active_buffer().map(|b| b.id) {
                     self.set_line_ending(id, if *a == E::LineEndingLf { buffer::LineEnding::Lf } else { buffer::LineEnding::CrLf });
@@ -1412,6 +1426,7 @@ impl Editor {
             | E::NavForward
             | E::ShowBookmarks
             | E::ToggleNumberedBookmark
+            | E::ToggleBreakpoint
             | E::GotoNumberedBookmark(_)
             | E::LineEndingLf
             | E::LineEndingCrlf
@@ -1482,6 +1497,7 @@ impl Editor {
         let (g, text_area) = (self.focused, self.text_area());
         let Some(ai) = self.active() else { return false };
         let tab_width = self.tab_display(&self.buffers[ai]);
+        let in_merge = self.merge.is_some();
         let b = &mut self.buffers[ai];
         // The row on screen row `y` (the last one below the text).
         let row_at = |b: &Buffer, y: u16| -> Row {
@@ -1546,6 +1562,15 @@ impl Editor {
             && let Some(row) = row_here(b)
         {
             let line = row.line;
+            // The mark cell toggles a breakpoint on a line's first row; the caret
+            // stays. With a modifier it is a plain press in the gutter.
+            if m.x + 4 == text_area.x && row.seg == 0 && m.mods.is_empty() {
+                match breakpoints::refusal(in_merge, b) {
+                    Some(hint) => cx.notify(Level::Info, hint),
+                    None => b.toggle_breakpoint_at(line),
+                }
+                return true;
+            }
             if m.x + 2 == text_area.x {
                 if row.seg == 0 && b.preview.is_none() {
                     b.toggle_fold(line);

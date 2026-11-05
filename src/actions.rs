@@ -292,6 +292,8 @@ pub enum EditorAction {
     ToggleNumberedBookmark,
     /// Ctrl+0..9: jump to the bookmark with this digit.
     GotoNumberedBookmark(u8),
+    /// Ctrl+F8: toggle a breakpoint on every caret's line.
+    ToggleBreakpoint,
     LineEndingLf,
     LineEndingCrlf,
     SetLanguage,
@@ -957,6 +959,7 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "editor.toggle_bookmark" => "Toggle bookmark on the caret line", Editor(E::ToggleBookmark);
         "editor.show_bookmarks" => "Show bookmarks", Editor(E::ShowBookmarks);
         "editor.toggle_numbered_bookmark" => "Toggle numbered bookmark (a digit) on the caret line", Editor(E::ToggleNumberedBookmark);
+        "debug.toggle_breakpoint" => "Toggle breakpoint on each caret's line (the debugger does not use them yet)", Editor(E::ToggleBreakpoint);
         "editor.goto_bookmark_0" => "Go to bookmark 0", Editor(E::GotoNumberedBookmark(0));
         "editor.goto_bookmark_1" => "Go to bookmark 1", Editor(E::GotoNumberedBookmark(1));
         "editor.goto_bookmark_2" => "Go to bookmark 2", Editor(E::GotoNumberedBookmark(2));

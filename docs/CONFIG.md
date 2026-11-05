@@ -1003,10 +1003,11 @@ and a resolved change with `merge_resolved_bg`.
 
 Style fields: `border border_focused title title_focused strip_item
 strip_item_active strip_drop status_accent tab tab_active tab_dirty line_number
-line_number_current bracket_match secondary_caret bookmark fold_placeholder git_added git_modified git_deleted git_untracked
+line_number_current bracket_match secondary_caret bookmark breakpoint breakpoint_unverified fold_placeholder git_added git_modified git_deleted git_untracked
 git_conflicted git_ignored popup_border list_selected list_selected_unfocused
 dim error warn info diag_error diag_warn diag_info diag_hint lightbulb indent_guide inlay_hint inline_blame breadcrumbs sticky_scroll splitter`.
 `strip_drop` marks the drop target while a tool strip button is dragged; fg and bg are used.
+`breakpoint` is the gutter's `●`, `breakpoint_unverified` its `○`, for a breakpoint the adapter has not verified or has refused; only their foreground is used.
 `indent_guide` colours the indent guides (`editor.indent_guides`); only its
 foreground is used.
 `inlay_hint` draws the language server's inlay hints (`[lsp] inlay_hints`); fg and

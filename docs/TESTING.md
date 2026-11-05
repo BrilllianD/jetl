@@ -53,7 +53,7 @@ rows; run it in release:
 `src/app/snapshot_tests.rs` draws whole frames, or the editor area alone,
 on ratatui's `TestBackend` and compares them as text with
 [`insta`](https://insta.rs) against `src/app/snapshots/*.snap`. They cover
-split panes, carets, occurrences, folding, soft wrap, bookmarks, the
+split panes, carets, occurrences, folding, soft wrap, bookmarks, breakpoints in the gutter, the
 numbered bookmark chooser and the bookmarks list with closed files, the
 editor's find/replace bar, the project tree and its context menu, the Settings window (page tree, Bool, number and
 choice rows, pending markers), the Git
@@ -845,6 +845,46 @@ legacy fallback Alt+B then the digit:
 Start jetl again on `$T` (notes.md closed): Alt+B 3 opens it at line 20
 with the 3 in the gutter. Ctrl+F11 then 3 on that line removes the
 bookmark; 3 on another line moves it there.
+
+### Scenario: breakpoints in the gutter
+
+No debugger is needed. At 80x24 with `MODE=plain` and at 120x40 with `MODE=ext`
+(the `extended-keys on`, `extended-keys-format csi-u` settings of a user's tmux
+config, set directly), each run from a fresh scratch project: `notes.log` (30
+lines `line N`), `fold.log` (`head`, two indented lines, `last`) and `doc.md`,
+with `[lsp] enabled = false` and `[ui] toolbar = false` in `config.toml`.
+`/tmp/tm24.sh` is `exec /usr/bin/tmux -L jetl24 "$@"`; `click` sends an SGR
+mouse press and release at a 1-based column and row.
+
+1. In a pane running `cat -v`, `send-keys C-F8` then Enter shows `^[[19;5~`.
+2. `jetl notes.log`, Ctrl+F8: `●` right after the number of `line 1`; Ctrl+F8
+   again: gone.
+3. Go to line 5 (Ctrl+G), Ctrl+F8: `●` on line 5, status bar `Ln 5,`.
+4. Click the mark cell of `line 8` (the cell right after the number): `●` on
+   line 8, the status bar still `Ln 5,`, nothing selected; the same click
+   removes it, once more sets it.
+5. Click the number's last digit on `line 12`: the caret goes to line 12, no
+   glyph.
+6. Go to line 1, Enter: the marks are on lines 6 and 9; Ctrl+Z: back on 5 and 8.
+7. On line 5, F11 adds a bookmark: line 5 still shows `●`; Ctrl+F8 removes the
+   breakpoint and `◆` shows; Ctrl+F8 brings `●` back. `capture-pane -e` shows
+   the `●` with a foreground other than the number's.
+8. Open `fold.log`, Ctrl+F8 on line 2, go to line 1, Alt+, (collapse): row 1
+   reads `1● ▸ head…`; Alt+. expands it and `●` is on line 2.
+9. Close `notes.log` (Ctrl+W) and open it again: `●` on lines 5 and 8. Close it,
+   Ctrl+Q: exit status 0, empty stderr, and the session file under
+   `$XDG_STATE_HOME/jetl/sessions` lists `notes.log` in `closed_breakpoints`
+   with lines 4 and 7 and `fold.log` with `breakpoints` `[1]`; the word
+   `Verified` is nowhere in it.
+10. Start `jetl $T` and open `notes.log`: `●` on 5 and 8 (over the bookmark
+    on 5); quit; the file is now under `files` with `breakpoints` 4 and 7.
+    Start again: the tabs of the last session come back with their marks.
+11. Open `doc.md`, Alt+Shift+V (preview), Ctrl+F8: a toast mentioning
+    `Markdown preview`, no glyph.
+
+`tmux send-keys` enters at tmux, so this does not prove the hop from a physical
+keyboard through a terminal emulator: press Ctrl+F8 once in foot or kitty as
+well, inside and outside tmux.
 
 ### Scenario: Save As
 

@@ -81,6 +81,9 @@ pub struct Session {
     /// sessions stay readable by builds that know only numbered ones).
     #[serde(default)]
     pub closed_plain_bookmarks: Vec<SessionClosedFile>,
+    /// Breakpoint lines of files without a tab; never their state.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub closed_breakpoints: Vec<SessionClosedFile>,
     /// The Run window's selected configuration, by name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_config: Option<String>,
@@ -167,12 +170,12 @@ pub(crate) struct BranchSwap {
     pub(crate) pending: Option<(u64, BranchSet)>,
 }
 
-/// The plain bookmarks of a file without a tab.
+/// The plain bookmarks or the breakpoints of a file without a tab.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SessionClosedFile {
     pub path: PathBuf,
-    /// Bookmarked lines, 0-based.
+    /// Bookmarked or breakpoint lines, 0-based.
     pub lines: Vec<usize>,
 }
 
@@ -358,6 +361,9 @@ pub struct SessionFile {
     /// before numbered bookmarks have none.
     #[serde(default)]
     pub bookmark_digits: Vec<(u8, usize)>,
+    /// Lines with a breakpoint, 0-based; never their state.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub breakpoints: Vec<usize>,
     /// Pinned tabs come first in `files`.
     #[serde(default)]
     pub pinned: bool,
@@ -537,6 +543,7 @@ impl App {
         self.history_root_changed();
         // The closed files' numbered bookmarks come with the new session.
         self.editor.restore_closed_bookmarks(&[]);
+        self.editor.restore_closed_breakpoints(&[]);
         self.restore_session();
         self.load_recent_projects(true);
         self.notify(Level::Info, format!("Switched to {}", root.display()));
@@ -574,6 +581,7 @@ impl App {
                 scroll_col: b.view.scroll_col,
                 bookmarks,
                 bookmark_digits: b.digits(),
+                breakpoints: b.breakpoints.keys().copied().collect(),
                 pinned: pinned.contains(&b.id),
                 folds: b.view.folds.to_session(&b.rope),
                 wrap: (b.view.wrap.on != self.editor.soft_wrap_for(b.path.as_deref())).then_some(b.view.wrap.on),
@@ -723,6 +731,12 @@ impl App {
             splits,
             closed_bookmarks,
             closed_plain_bookmarks,
+            closed_breakpoints: self
+                .editor
+                .closed_breakpoints()
+                .into_iter()
+                .map(|(path, lines)| SessionClosedFile { path, lines })
+                .collect(),
             run_config: self.run.selected.clone(),
             branch: self.session_branch.clone(),
             branches: self
@@ -914,6 +928,7 @@ impl App {
             self.editor.restore_view(i, (f.line, f.col), (f.scroll_line, f.scroll_col), &f.folds, f.wrap);
             self.editor.buffers[i].set_bookmarks(&f.bookmarks);
             self.editor.restore_digits(i, &f.bookmark_digits);
+            self.editor.buffers[i].set_breakpoints(&f.breakpoints);
             if f.pinned {
                 self.editor.set_pinned(i, true);
             }
@@ -948,6 +963,8 @@ impl App {
         let plain = session.closed_plain_bookmarks.iter().flat_map(|f| f.lines.iter().map(|&l| (f.path.clone(), l, None)));
         let closed: Vec<_> = numbered.chain(plain).collect();
         self.editor.restore_closed_bookmarks(&closed);
+        let breakpoints: Vec<_> = session.closed_breakpoints.iter().map(|f| (f.path.clone(), f.lines.clone())).collect();
+        self.editor.restore_closed_breakpoints(&breakpoints);
         if let Some(l) = &session.layout {
             let tasks = l.tasks.clone().unwrap_or_default();
             let dock = Dock { side: tasks.side.unwrap_or(ToolWindowId::Tasks.default_side()), split: tasks.split };
@@ -1018,6 +1035,7 @@ mod tests {
                     scroll_col: 0,
                     bookmarks: vec![3, 40],
                     bookmark_digits: vec![(7, 40)],
+                    breakpoints: vec![2, 40],
                     pinned: true,
                     folds: vec![SessionFold { start_line: 2, start_col: 10, end_line: 5, end_col: 1 }],
                     wrap: Some(true),
@@ -1030,6 +1048,7 @@ mod tests {
                     scroll_col: 3,
                     bookmarks: vec![],
                     bookmark_digits: vec![],
+                    breakpoints: vec![],
                     pinned: false,
                     folds: vec![],
                     wrap: None,
@@ -1087,6 +1106,7 @@ mod tests {
             }),
             closed_bookmarks: vec![SessionBookmark { digit: 2, path: root.join("src/lib.rs"), line: 12 }],
             closed_plain_bookmarks: vec![SessionClosedFile { path: root.join("src/lib.rs"), lines: vec![3, 40] }],
+            closed_breakpoints: vec![SessionClosedFile { path: root.join("src/lib.rs"), lines: vec![5] }],
             run_config: Some("cargo test".into()),
             branch: Some("main".into()),
             branches: BTreeMap::from([(
@@ -1115,6 +1135,7 @@ mod tests {
         let json = serde_json::to_value(Session { root: root.clone(), ..Default::default() }).unwrap();
         assert!(json.get("branch").is_none() && json.get("branches").is_none(), "no branch data, no keys");
         assert!(old.files[0].bookmark_digits.is_empty() && old.closed_bookmarks.is_empty() && old.closed_plain_bookmarks.is_empty());
+        assert!(old.files[0].breakpoints.is_empty() && old.closed_breakpoints.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1396,6 +1417,76 @@ mod tests {
         assert_eq!(b.view.folds.hidden().first(), Some(&(1..3)), "the fold is back");
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&fresh_dir);
+    }
+
+    #[tokio::test]
+    async fn breakpoints_survive_a_session_round_trip() {
+        use crate::editor::buffer::{BpState, BreakpointMark};
+        let (mut app, dir) = crate::app::tests::test_app("session-breakpoints");
+        let path = app.workspace.root.join("a.txt");
+        app.editor.open_text(path.clone(), "zero\none\ntwo\nthree\n", false, &app.theme);
+        app.editor.buffers[0].set_breakpoints(&[1, 3]);
+        let mark = app.editor.buffers[0].breakpoints.get_mut(&1).unwrap();
+        mark.state = BpState::Verified;
+        mark.id = Some(9);
+        let gone = app.workspace.root.join("gone.txt");
+        app.editor.restore_closed_breakpoints(&[(gone.clone(), vec![7, 1])]);
+        let session = app.session();
+        assert_eq!(session.files[0].breakpoints, vec![1, 3]);
+        assert_eq!(session.closed_breakpoints, vec![SessionClosedFile { path: gone.clone(), lines: vec![1, 7] }]);
+        assert!(!serde_json::to_string(&session).unwrap().contains("Verified"), "state is never written");
+        session.save(&app.paths.sessions_dir()).unwrap();
+
+        let (mut fresh, fresh_dir) = crate::app::tests::test_app("session-breakpoints-2");
+        fresh.workspace.root = app.workspace.root.clone();
+        let loaded = Session::load(&app.paths.sessions_dir(), &app.workspace.root).unwrap();
+        assert_eq!(loaded, session);
+        let generation = fresh.workspace.generation;
+        fresh.session_loaded(generation, loaded, vec![Ok(b"zero\none\ntwo".to_vec())]);
+        let b = &fresh.editor.buffers[0];
+        assert_eq!(b.breakpoints.keys().copied().collect::<Vec<_>>(), vec![1], "line 3 is past the end");
+        assert_eq!(b.breakpoints[&1], BreakpointMark::default());
+        assert_eq!(fresh.editor.closed_breakpoints(), vec![(gone, vec![1, 7])]);
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&fresh_dir);
+    }
+
+    #[test]
+    fn sessions_without_breakpoints_write_no_keys() {
+        let root = PathBuf::from("/tmp/some/project");
+        let json = serde_json::to_value(Session { root, ..Default::default() }).unwrap();
+        assert!(json.get("closed_breakpoints").is_none());
+        let json = serde_json::to_value(SessionFile::default()).unwrap();
+        assert!(json.get("breakpoints").is_none());
+    }
+
+    #[tokio::test]
+    async fn root_switch_forgets_closed_breakpoints() {
+        let (mut app, dir) = crate::app::tests::test_app("switch-drops-breakpoints");
+        let other = dir.join("other");
+        std::fs::create_dir_all(&other).unwrap();
+        let root = app.workspace.root.clone();
+        let generation = app.workspace.generation;
+        app.session_loaded(generation, Session { root: root.clone(), ..Default::default() }, vec![]);
+        app.editor.restore_closed_breakpoints(&[(root.join("gone.txt"), vec![2])]);
+        assert_eq!(app.editor.closed_breakpoints().len(), 1);
+        app.do_switch_root(std::fs::canonicalize(&other).unwrap());
+        assert!(app.editor.closed_breakpoints().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn branch_sets_keep_their_breakpoints() {
+        let (mut app, dir) = crate::app::tests::test_app("branch-breakpoints");
+        let root = app.workspace.root.clone();
+        let set = BranchSet {
+            files: vec![SessionFile { path: root.join("a.txt"), breakpoints: vec![1], ..Default::default() }],
+            ..Default::default()
+        };
+        app.open_editor_set(&set, vec![Ok(b"a\nb\n".to_vec())]);
+        assert_eq!(app.editor.buffers[0].breakpoints.keys().copied().collect::<Vec<_>>(), vec![1]);
+        assert_eq!(app.editor_set().files[0].breakpoints, vec![1]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]

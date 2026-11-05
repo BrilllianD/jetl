@@ -21,6 +21,7 @@ use super::tests::{load, test_app};
 use super::{App, Ctx};
 use crate::actions::{Action, AppAction, EditorAction, HistoryAction, MergeAction, Motion, PaletteKind};
 use crate::config::theme::Theme;
+use crate::editor::buffer::{BpState, BreakpointMark};
 use crate::editor::selection::Selection;
 use crate::event::AppMsg;
 use crate::git::model::{ChangeEntry, FileStatus};
@@ -766,6 +767,75 @@ async fn editor_bookmarks() {
     let mut marks = vec![Mark::style('B', "bookmark", app.theme.bookmark)];
     marks.extend(editor_marks(&app.theme));
     assert_snapshot!("editor_bookmarks", snapshot(&term, &marks, None));
+}
+
+fn set_breakpoints(app: &mut App, marks: &[(usize, BpState)]) {
+    let b = app.editor.active_buffer_mut().unwrap();
+    for &(line, state) in marks {
+        b.breakpoints.insert(line, BreakpointMark { state, ..Default::default() });
+    }
+}
+
+#[tokio::test]
+async fn editor_breakpoints() {
+    let mut fx = stable_app("breakpoints");
+    let app = &mut fx.app;
+    load(app, "notes.log", PLAIN);
+    set_breakpoints(app, &[(0, BpState::Idle), (1, BpState::Verified), (2, BpState::Pending), (3, BpState::Failed)]);
+    moves(app, Motion::Down, 3);
+    let term = draw_editor(app, 40, 8);
+    let mut marks = vec![
+        Mark::style('B', "breakpoint", app.theme.breakpoint),
+        Mark::style('U', "unverified breakpoint", app.theme.breakpoint_unverified),
+    ];
+    marks.extend(editor_marks(&app.theme));
+    assert_snapshot!("editor_breakpoints", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
+async fn editor_breakpoint_over_bookmark() {
+    let mut fx = stable_app("breakpoint-over-bookmark");
+    let app = &mut fx.app;
+    load(app, "notes.log", PLAIN);
+    editor(app, EditorAction::ToggleBookmark);
+    moves(app, Motion::Down, 2);
+    editor(app, EditorAction::ToggleNumberedBookmark);
+    app.handle_key(KeyEvent::new(KeyCode::Char('3'), KeyModifiers::NONE));
+    moves(app, Motion::Down, 1);
+    editor(app, EditorAction::ToggleBookmark);
+    set_breakpoints(app, &[(0, BpState::Idle), (2, BpState::Verified)]);
+    let term = draw_editor(app, 40, 8);
+    let mut marks = vec![
+        Mark::style('B', "breakpoint", app.theme.breakpoint),
+        Mark::style('U', "unverified breakpoint", app.theme.breakpoint_unverified),
+        Mark::style('K', "bookmark", app.theme.bookmark),
+    ];
+    marks.extend(editor_marks(&app.theme));
+    assert_snapshot!("editor_breakpoint_over_bookmark", snapshot(&term, &marks, None));
+    // Without the breakpoints the bookmarks show again.
+    app.editor.active_buffer_mut().unwrap().breakpoints.clear();
+    let term = draw_editor(app, 40, 8);
+    assert_eq!(crate::ui::snapshot::row_text(term.backend().buffer(), 1, 4), "  1◆");
+    assert_eq!(crate::ui::snapshot::row_text(term.backend().buffer(), 3, 4), "  33");
+}
+
+#[tokio::test]
+async fn editor_fold_hides_breakpoints() {
+    let mut fx = stable_app("fold-hides-breakpoints");
+    let app = &mut fx.app;
+    load(app, "notes.log", PLAIN);
+    set_breakpoints(app, &[(1, BpState::Idle), (2, BpState::Failed)]);
+    let b = app.editor.active_buffer_mut().unwrap();
+    b.bookmarks.insert(2, None);
+    b.toggle_fold(0);
+    moves(app, Motion::Down, 1);
+    let term = draw_editor(app, 40, 8);
+    let mut marks = vec![
+        Mark::style('B', "breakpoint", app.theme.breakpoint),
+        Mark::style('U', "unverified breakpoint", app.theme.breakpoint_unverified),
+    ];
+    marks.extend(editor_marks(&app.theme));
+    assert_snapshot!("editor_fold_hides_breakpoints", snapshot(&term, &marks, None));
 }
 
 #[tokio::test]

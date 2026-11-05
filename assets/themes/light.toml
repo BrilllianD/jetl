@@ -39,6 +39,8 @@ line_number_current = "#767a8a"
 bracket_match = { bg = "#93d9d9", bold = true }
 secondary_caret = { reverse = true }
 bookmark = "#a85f00"
+breakpoint = "#c7222d"
+breakpoint_unverified = "#6c707e"
 fold_placeholder = { fg = "#6c707e", bg = "#e4e6eb" }
 git_added = "#0a7700"
 git_modified = "#0032a0"

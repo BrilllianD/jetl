@@ -236,6 +236,7 @@ impl Editor {
     /// Forget the bookmarks of closed files under `path` (it was deleted).
     pub(super) fn drop_closed_under(&mut self, path: &Path) {
         self.closed_bookmarks.retain(|p, _| !p.starts_with(path));
+        self.closed_breakpoints.retain(|p, _| !p.starts_with(path));
     }
 
     /// Follow a rename of `from` to `to` in the closed files' bookmarks.
@@ -244,6 +245,10 @@ impl Editor {
         for (p, lines) in old {
             let p = super::nav::moved_path(&p, from, to).unwrap_or(p);
             self.closed_bookmarks.entry(p).or_default().extend(lines);
+        }
+        for (p, lines) in std::mem::take(&mut self.closed_breakpoints) {
+            let p = super::nav::moved_path(&p, from, to).unwrap_or(p);
+            self.closed_breakpoints.entry(p).or_default().extend(lines);
         }
     }
 }

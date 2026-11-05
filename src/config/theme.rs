@@ -232,6 +232,10 @@ theme_fields! {
         /// Gutter glyph of a bookmarked line (◆, or a numbered one's digit
         /// drawn reversed).
         bookmark,
+        /// Gutter glyph (●) of a breakpoint that is verified or not yet sent.
+        breakpoint,
+        /// Gutter glyph (○) of a breakpoint the adapter has not verified, or refused.
+        breakpoint_unverified,
         /// What a collapsed fold shows after its header line (`…}`).
         fold_placeholder,
         git_added,

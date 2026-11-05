@@ -1,0 +1,17 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &marks, None)"
+---
+40x8 cursor=(7,4)
+00   notes.log ×
+01   1● ▾ alpha beta gamma
+02   2    │ two indented
+03   3●   │ three indented
+04   4◆   four
+05   5
+06   6    six: the last line of the file
+07   7
+-- marks: B=breakpoint U=unverified breakpoint K=bookmark C=caret S=selection F=fold O=occurrence
+01    B
+03    B
+04    K   OOOO

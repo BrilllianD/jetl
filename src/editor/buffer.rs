@@ -123,6 +123,29 @@ pub enum LanguageChoice {
     Named(&'static str),
 }
 
+/// What the debugger knows of a breakpoint's line. Never saved.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum BpState {
+    /// No session has been told of it.
+    #[default]
+    Idle,
+    Pending,
+    Verified,
+    Failed,
+}
+
+/// A breakpoint on a line. The key in `Buffer::breakpoints` is the line the
+/// user chose: an adapter's other line goes into `adapter_line`, never onto the key.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BreakpointMark {
+    pub state: BpState,
+    /// The adapter's id for it.
+    pub id: Option<i64>,
+    /// The line the adapter reports, 0-based, when it differs from the key.
+    pub adapter_line: Option<usize>,
+    pub message: Option<String>,
+}
+
 #[derive(Debug)]
 pub struct Buffer {
     pub id: BufferId,
@@ -183,6 +206,10 @@ pub struct Buffer {
     /// deleted outright drop out, and of two marks merged into one line a
     /// digit wins over none.
     pub bookmarks: BTreeMap<usize, Option<u8>>,
+    /// Breakpoint lines (Ctrl+F8). Like bookmarks they follow every applied
+    /// change with their text; of two marks merged into one line the lower
+    /// line's stays, whole.
+    pub breakpoints: BTreeMap<usize, BreakpointMark>,
     /// What Tab, Enter and indent/unindent insert; set by the editor on
     /// open from `.editorconfig`, the text or the config.
     pub indent: IndentStyle,
@@ -269,6 +296,7 @@ impl Buffer {
             autosave_failed: None,
             autosave_conflict: false,
             bookmarks: BTreeMap::new(),
+            breakpoints: BTreeMap::new(),
             indent: IndentStyle::default(),
             settings: FileSettings::default(),
             lsp_tracked: false,
@@ -378,6 +406,8 @@ impl Buffer {
         self.edit_log.push(if whole { LogEdit::Reset } else { LogEdit::Edit { at, old_len, new_len } });
         let marks: Vec<(MarkTarget, Option<u8>)> =
             self.bookmarks.iter().map(|(&l, &d)| (mark_target(&self.rope, l, at, old_len, c), d)).collect();
+        let breakpoints: Vec<(MarkTarget, BreakpointMark)> =
+            std::mem::take(&mut self.breakpoints).into_iter().map(|(l, m)| (mark_target(&self.rope, l, at, old_len, c), m)).collect();
         let before = self.view.folds.list().to_vec();
         let end = (at + old_len).min(self.rope.len_chars());
         self.record_lsp_edit(at, end, &c.new);
@@ -387,15 +417,15 @@ impl Buffer {
         if !c.new.is_empty() {
             self.rope.insert(at, &c.new);
         }
+        for (target, mark) in breakpoints {
+            if let Some(line) = mark_line(&self.rope, target) {
+                self.breakpoints.entry(line).or_insert(mark);
+            }
+        }
         if !marks.is_empty() {
-            let (len, last) = (self.rope.len_chars(), self.rope.len_lines() - 1);
             let mut moved = BTreeMap::new();
             for (t, digit) in marks {
-                let line = match t {
-                    MarkTarget::Pos(p) => self.rope.char_to_line(p.min(len)),
-                    MarkTarget::Line(l) => l.min(last),
-                    MarkTarget::Drop => continue,
-                };
+                let Some(line) = mark_line(&self.rope, t) else { continue };
                 let slot = moved.entry(line).or_insert(None);
                 if slot.is_none() {
                     *slot = digit;
@@ -1600,6 +1630,19 @@ impl Buffer {
         self.bookmarks = lines.iter().copied().filter(|l| *l < n).map(|l| (l, None)).collect();
     }
 
+    /// Add or remove the breakpoint on `line`; a line past the end is ignored.
+    pub fn toggle_breakpoint_at(&mut self, line: usize) {
+        if line < self.rope.len_lines() && self.breakpoints.remove(&line).is_none() {
+            self.breakpoints.insert(line, BreakpointMark::default());
+        }
+    }
+
+    /// Replace the breakpoints (from a session), dropping lines past the end.
+    pub fn set_breakpoints(&mut self, lines: &[usize]) {
+        let n = self.rope.len_lines();
+        self.breakpoints = lines.iter().copied().filter(|l| *l < n).map(|l| (l, BreakpointMark::default())).collect();
+    }
+
     /// The line of the bookmark with mnemonic `digit`.
     pub fn digit_line(&self, digit: u8) -> Option<usize> {
         self.bookmarks.iter().find(|(_, d)| **d == Some(digit)).map(|(l, _)| *l)
@@ -1707,6 +1750,15 @@ enum MarkTarget {
     Pos(usize),
     Line(usize),
     Drop,
+}
+
+/// The line a mark lands on, with the change already in `rope`; `None`: it is gone.
+fn mark_line(rope: &Rope, target: MarkTarget) -> Option<usize> {
+    match target {
+        MarkTarget::Pos(p) => Some(rope.char_to_line(p.min(rope.len_chars()))),
+        MarkTarget::Line(l) => Some(l.min(rope.len_lines() - 1)),
+        MarkTarget::Drop => None,
+    }
 }
 
 /// Follow bookmarked `line` through change `c` (at `at`, removing `old_len`
@@ -3097,6 +3149,109 @@ g()
         assert!(buf.undo());
         assert_eq!(buf.digit_line(3), Some(2));
         assert_eq!(buf.digit_line(4), None);
+    }
+
+    fn bps(buf: &Buffer) -> Vec<usize> {
+        buf.breakpoints.keys().copied().collect()
+    }
+
+    #[test]
+    fn breakpoints_shift_with_lines_inserted_above() {
+        let mut buf = b("a\nb\nc\nd\n");
+        buf.toggle_breakpoint_at(2);
+        buf.toggle_breakpoint_at(3);
+        assert_eq!(bps(&buf), vec![2, 3]);
+        // Two lines typed at the start of line 1 push both marks down.
+        buf.goto_line(1, 0);
+        buf.insert("x\ny\n", TxKind::Other);
+        assert_eq!(bps(&buf), vec![4, 5]);
+        // Enter at the end of a marked line leaves the mark where it is.
+        buf.goto_line(4, 1);
+        buf.insert("\n", TxKind::Other);
+        assert_eq!(bps(&buf), vec![4, 6]);
+        // Undo and redo map the marks through the same changes.
+        assert!(buf.undo());
+        assert!(buf.undo());
+        assert_eq!(bps(&buf), vec![2, 3]);
+        assert!(buf.redo());
+        assert_eq!(bps(&buf), vec![4, 5]);
+        // Toggling again removes the mark.
+        buf.toggle_breakpoint_at(5);
+        assert_eq!(bps(&buf), vec![4]);
+    }
+
+    #[test]
+    fn breakpoints_drop_with_deleted_lines_and_merge_on_join() {
+        let mut buf = b("a\nb\nc\nd");
+        buf.set_breakpoints(&[1, 2, 3, 9]);
+        assert_eq!(bps(&buf), vec![1, 2, 3], "lines past the end are ignored");
+        buf.goto_line(1, 0);
+        buf.delete_line();
+        assert_eq!((buf.text().as_str(), bps(&buf)), ("a\nc\nd", vec![1, 2]));
+        buf.goto_line(2, 0);
+        buf.delete_line();
+        assert_eq!((buf.text().as_str(), bps(&buf)), ("a\nc", vec![1]));
+        buf.goto_line(1, 0);
+        buf.backspace();
+        assert_eq!((buf.text().as_str(), bps(&buf)), ("ac", vec![0]));
+        assert!(buf.undo());
+        assert_eq!(bps(&buf), vec![0]);
+    }
+
+    #[test]
+    fn breakpoints_follow_moved_lines_and_reloads() {
+        let mut buf = b("one\ntwo\nthree\n");
+        buf.set_breakpoints(&[2]);
+        buf.goto_line(2, 0);
+        buf.move_lines(true);
+        assert_eq!((buf.text().as_str(), bps(&buf)), ("one\nthree\ntwo\n", vec![1]));
+        assert!(buf.undo());
+        assert_eq!(bps(&buf), vec![2]);
+        let old = buf.text();
+        buf.apply(vec![Change::replace(0, old, "zero\none\ntwo\nthree\n")], Selection::point(0), TxKind::Other);
+        assert_eq!(bps(&buf), vec![3]);
+    }
+
+    #[test]
+    fn breakpoints_carry_their_state_and_a_merge_keeps_the_lower_lines() {
+        let mut buf = b("a\nb\nc\nd\n");
+        buf.breakpoints.insert(1, BreakpointMark { state: BpState::Verified, id: Some(7), ..Default::default() });
+        buf.breakpoints.insert(2, BreakpointMark { state: BpState::Pending, ..Default::default() });
+        buf.goto_line(0, 0);
+        buf.insert("x\n", TxKind::Other);
+        assert_eq!(bps(&buf), vec![2, 3]);
+        assert_eq!((buf.breakpoints[&2].state, buf.breakpoints[&2].id), (BpState::Verified, Some(7)));
+        assert_eq!((buf.breakpoints[&3].state, buf.breakpoints[&3].id), (BpState::Pending, None));
+        buf.goto_line(3, 0);
+        buf.backspace();
+        assert_eq!(bps(&buf), vec![2]);
+        assert_eq!((buf.breakpoints[&2].state, buf.breakpoints[&2].id), (BpState::Verified, Some(7)));
+    }
+
+    #[test]
+    fn toggle_breakpoint_past_the_end_does_nothing() {
+        let mut buf = b("a\nb");
+        buf.toggle_breakpoint_at(1);
+        buf.toggle_breakpoint_at(5);
+        assert_eq!(bps(&buf), vec![1]);
+    }
+
+    #[test]
+    fn breakpoints_and_bookmarks_do_not_touch_each_other() {
+        let mut buf = b("a\nb\nc\n");
+        buf.goto_line(1, 0);
+        buf.toggle_bookmark();
+        buf.toggle_breakpoint_at(1);
+        assert_eq!((marks(&buf), bps(&buf)), (vec![1], vec![1]));
+        buf.toggle_breakpoint_at(1);
+        assert_eq!((marks(&buf), bps(&buf)), (vec![1], vec![]));
+        buf.toggle_breakpoint_at(1);
+        buf.toggle_bookmark();
+        assert_eq!((marks(&buf), bps(&buf)), (vec![], vec![1]));
+        buf.toggle_bookmark();
+        buf.goto_line(0, 0);
+        buf.insert("x\n", TxKind::Other);
+        assert_eq!((marks(&buf), bps(&buf)), (vec![2], vec![2]));
     }
 
     #[test]

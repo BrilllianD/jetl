@@ -221,6 +221,7 @@ impl Editor {
                 | E::NavBack
                 | E::NavForward
                 | E::ShowBookmarks
+                | E::ToggleBreakpoint
                 | E::GotoNumberedBookmark(_)
                 | E::Merge(_)
         ) {
@@ -388,6 +389,17 @@ mod tests {
         }
         assert_eq!(ed.groups.len(), 1);
         assert_eq!(ed.groups[0].views.len(), 1);
+    }
+
+    #[test]
+    fn a_diff_tab_refuses_a_breakpoint() {
+        let mut ed = Editor::new(&Config::default());
+        with_cx(|cx| {
+            ed.open_diff_tab("Diff", vec![key("a.rs")], 0, cx);
+        });
+        let fx = with_cx(|cx| assert!(ed.handle_action(&EditorAction::ToggleBreakpoint, cx)));
+        assert_eq!(notes(&fx), 1);
+        assert!(ed.active_buffer().unwrap().breakpoints.is_empty());
     }
 
     #[test]
