@@ -146,7 +146,7 @@ pub(super) struct EditReqs {
     /// The name in the rename dialog when it opened.
     rename_old: String,
     /// The rename dialog's "Search in comments and strings", as last answered. Kept for the session, not persisted.
-    rename_in_text: bool,
+    pub(super) rename_in_text: bool,
     /// The context actions in the dialog, with the seq of their request.
     actions: Option<(u64, Vec<CodeActionOrCommand>)>,
     /// The edit waiting for the user's confirmation.
@@ -389,7 +389,7 @@ impl App {
         };
         self.notify(Level::Info, format!("Rename {old} to {new}: review the results, then Replace All (Alt+A){guesses}"));
         if capped {
-            self.notify(Level::Warn, format!("Text search stopped at {MAX_HITS} matches; some files were not searched"));
+            self.notify(Level::Warn, format!("Text search stopped at {MAX_HITS} matches; others are not listed"));
         }
     }
 
@@ -2150,12 +2150,31 @@ mod tests {
         let DialogId::LspRename(tag) = d.id.clone() else { panic!("{:?}", d.id) };
         assert!(on(&d));
         assert!(d.handle_key(alt_c).is_none() && !on(&d));
-        assert!(matches!(d.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)), Some(DialogResult::Cancel)));
+        let cancel = d.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(matches!(cancel, Some(DialogResult::Cancel)));
+        app.finish_dialog(d.id.clone(), DialogResult::Cancel);
         assert!(app.lsp.edit.rename_in_text, "Esc leaves it as it was");
         // With the key off the row is absent.
         app.config.lsp.rename_preview = false;
         app.lsp_rename_dialog(tag, "old");
         assert!(matches!(&app.dialog.as_ref().unwrap().kind, DialogKind::Input { check: None, .. }));
+        let _ = std::fs::remove_dir_all(&fx.dir);
+    }
+
+    #[tokio::test]
+    async fn the_rename_option_survives_a_server_restart_and_a_root_change() {
+        let mut fx = rename_fixture("rename-text-restart").await;
+        let app = &mut fx.app;
+        app.lsp.edit.rename_in_text = true;
+        let tag = DocTag { buffer: 1, version: 1, pos: Default::default(), seq: 0, group: app.editor.focused_group().id };
+        let checked = |app: &App| matches!(&app.dialog.as_ref().unwrap().kind, DialogKind::Input { check: Some(c), .. } if c.on);
+        app.lsp_restart();
+        app.lsp_rename_dialog(tag.clone(), "old");
+        assert!(checked(app), "after lsp_restart");
+        app.dialog = None;
+        app.lsp_root_changed();
+        app.lsp_rename_dialog(tag, "old");
+        assert!(checked(app), "after lsp_root_changed");
         let _ = std::fs::remove_dir_all(&fx.dir);
     }
 
@@ -2405,7 +2424,7 @@ mod tests {
         let (generation, seq) = (fx.app.workspace.generation, fx.app.find.current_seq());
         fx.app.rename_preview_done(generation, seq, Ok((preview, vec![hit])));
         let last = fx.app.notifications.last().unwrap();
-        assert_eq!((last.level, last.text.as_str()), (Level::Warn, "Text search stopped at 10000 matches; some files were not searched"));
+        assert_eq!((last.level, last.text.as_str()), (Level::Warn, "Text search stopped at 10000 matches; others are not listed"));
         let _ = std::fs::remove_dir_all(&fx.dir);
     }
 }

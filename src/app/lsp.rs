@@ -205,7 +205,10 @@ impl LspService {
         self.completion.request = None;
         self.completion.accepting = None;
         self.completion.docs = None;
+        // The rename dialog's option is a session choice, not server state.
+        let rename_in_text = self.edit.rename_in_text;
         self.edit = Default::default();
+        self.edit.rename_in_text = rename_in_text;
         self.lightbulb = Default::default();
         self.inlay = Default::default();
         self.semantic = Default::default();

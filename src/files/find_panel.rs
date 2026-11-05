@@ -333,14 +333,21 @@ impl FindPanel {
     }
 
     /// Flip the selected result between included and excluded; on a file
-    /// header, all of that file's results (all excluded already: include
-    /// them, otherwise exclude them).
+    /// header, all of that file's results: when any is included, exclude them
+    /// all; when all are excluded, include them, but in a rename preview the
+    /// textual guesses stay excluded unless the file has no other row.
     pub fn toggle_exclude(&mut self) {
         match self.rows.get(self.list.selected).copied() {
             Some(Row::Hit(i)) => self.hits[i].excluded = !self.hits[i].excluded,
             Some(Row::File { first, count }) => {
-                let all = self.hits[first..first + count].iter().all(|h| h.excluded);
-                self.hits[first..first + count].iter_mut().for_each(|h| h.excluded = !all);
+                let rows = &mut self.hits[first..first + count];
+                if !rows.iter().all(|h| h.excluded) {
+                    rows.iter_mut().for_each(|h| h.excluded = true);
+                } else {
+                    let guess = |h: &Hit| h.rename.as_ref().is_some_and(|r| r.source == RenameSource::Textual);
+                    let only_guesses = rows.iter().all(guess);
+                    rows.iter_mut().filter(|h| only_guesses || !guess(h)).for_each(|h| h.excluded = false);
+                }
             }
             None => {}
         }
@@ -1134,5 +1141,50 @@ mod tests {
         p.ask_replace_all(&mut cx);
         assert!(matches!(cx.effects.as_slice(), [Effect::Notify(Level::Info, t)] if t == "Every result is excluded; nothing to replace"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn preview_panel(hits: Vec<Hit>) -> FindPanel {
+        let mut p = FindPanel::new();
+        p.query.set_text("old");
+        p.preview = Some(preview_of(0));
+        p.on_batch(Batch { seq: p.current_seq(), hits, files_searched: 1, done: true, capped: false });
+        p
+    }
+
+    fn included(p: &FindPanel) -> Vec<bool> {
+        p.hits.iter().map(|h| !h.excluded).collect()
+    }
+
+    #[test]
+    fn header_toggle_in_a_preview_keeps_guesses_out_unless_alone() {
+        // Mixed file: a (exact, guess, exact), b (guess only).
+        let mut p = preview_panel(vec![
+            rename_hit("a", 0, 3, "new", Some((0, 0)), RenameSource::Exact),
+            rename_hit("a", 1, 3, "new", None, RenameSource::Textual),
+            rename_hit("a", 2, 3, "new", Some((0, 1)), RenameSource::Exact),
+            rename_hit("b", 0, 3, "new", None, RenameSource::Textual),
+        ]);
+        // Rows: 0 a, 1-3 its hits, 4 b, 5 b:0.
+        p.list.select(0);
+        p.toggle_exclude();
+        assert_eq!(included(&p), [false, false, false, false], "any included: exclude all");
+        p.toggle_exclude();
+        assert_eq!(included(&p), [true, false, true, false], "all excluded: exact rows return, guesses stay out");
+        p.toggle_exclude();
+        assert_eq!(included(&p), [false, false, false, false]);
+        // A file of guesses only: one press includes them all.
+        p.list.select(4);
+        p.toggle_exclude();
+        assert_eq!(included(&p), [false, false, false, true]);
+    }
+
+    #[test]
+    fn header_toggle_in_an_ordinary_search_flips_every_row() {
+        let mut p = panel();
+        p.list.select(0);
+        p.toggle_exclude();
+        assert_eq!(included(&p), [false, false, true]);
+        p.toggle_exclude();
+        assert_eq!(included(&p), [true, true, true]);
     }
 }

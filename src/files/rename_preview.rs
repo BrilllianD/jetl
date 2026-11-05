@@ -241,7 +241,7 @@ fn in_scope(scope: &TextualScope, path: &Path, text: &str, rope: &Rope, starts: 
 }
 
 /// The textual rows: matches of `old` that no exact edit touches, in scope, in files no operation can shift.
-/// Returns the rows, whether the search was capped and the number of files with the name that got no rows.
+/// At most `MAX_HITS` rows are made. Returns the rows, whether the stage was capped and the number of files with the name that got no rows.
 fn textual_stage(
     stage: &TextualStage,
     (old, new): (&str, &str),
@@ -298,19 +298,24 @@ fn textual_stage(
             Step::Edit(_) => None,
         })
         .collect();
-    let real: HashMap<PathBuf, &Path> = steps
-        .iter()
-        .filter_map(|s| match s {
-            Step::Edit(f) if !f.edits.is_empty() => std::fs::canonicalize(&f.path).ok().map(|r| (r, f.path.as_path())),
-            _ => None,
-        })
-        .collect();
+    // Every literal spelling of each real path an edit names.
+    let mut real: HashMap<PathBuf, Vec<&Path>> = HashMap::new();
+    for s in steps {
+        if let Step::Edit(f) = s
+            && !f.edits.is_empty()
+            && let Ok(r) = std::fs::canonicalize(&f.path)
+        {
+            real.entry(r).or_default().push(f.path.as_path());
+        }
+    }
 
     let (mut rows, mut skipped) = (Vec::new(), 0usize);
-    for (path, from_search) in candidates {
+    'files: for (path, from_search) in candidates {
         let refused = after_op.contains(&path)
             || prefixes.iter().any(|p| path.starts_with(p))
-            || std::fs::canonicalize(&path).ok().is_some_and(|r| real.get(&r).is_some_and(|literal| **literal != *path));
+            || std::fs::canonicalize(&path)
+                .ok()
+                .is_some_and(|r| real.get(&r).is_some_and(|literals| literals.iter().any(|l| **l != *path)));
         if refused {
             skipped += usize::from(from_search);
             continue;
@@ -349,6 +354,10 @@ fn textual_stage(
         let starts: Vec<usize> = matches.iter().map(|m| m.0).collect();
         let keep = in_scope(&stage.scope, &path, &s, rope, &starts);
         for ((ms, me), _) in matches.into_iter().zip(keep).filter(|(_, k)| *k) {
+            if rows.len() >= MAX_HITS {
+                capped = true;
+                break 'files;
+            }
             let edit = TextEdit { range: Range::new(pos::position(rope, ms), pos::position(rope, me)), new_text: new.into() };
             rows.push(row(&path, rope, &edit, None, RenameSource::Textual));
         }
@@ -509,7 +518,7 @@ impl RenamePreview {
             out.push_str(&format!("\nText matches (guesses): {on} included, {} left out.", t.rows.saturating_sub(on)));
         }
         if t.capped {
-            out.push_str(&format!("\nText search stopped at {MAX_HITS} matches; some files were not searched."));
+            out.push_str(&format!("\nText search stopped at {MAX_HITS} matches; others are not listed."));
         }
         match t.skipped_files {
             0 => {}
@@ -1122,6 +1131,24 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn two_spellings_of_one_file_refuse_textual_rows_in_either_order() {
+        let dir = tmp("textual-two");
+        std::fs::write(dir.join("real.txt"), "an old name\n").unwrap();
+        std::os::unix::fs::symlink(dir.join("real.txt"), dir.join("link.txt")).unwrap();
+        let (link, real) = (dir.join("link.txt"), dir.join("real.txt"));
+        let edit = || vec![te(0, 3, 0, 6, "new")];
+        for steps in
+            [vec![file(&link, None, edit()), file(&real, None, edit())], vec![file(&real, None, edit()), file(&link, None, edit())]]
+        {
+            let (preview, hits) = build(treq(&dir, steps, Vec::new())).unwrap();
+            assert!(textual_at(&hits).is_empty(), "{:?}", textual_at(&hits));
+            assert_eq!(preview.textual.skipped_files, 1, "the search finds real.txt only; the refusal counts it once");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn invalid_utf8_with_the_name_is_skipped_not_an_error() {
         let dir = tmp("textual-utf8");
@@ -1136,10 +1163,23 @@ mod tests {
     fn a_capped_search_says_so() {
         let dir = tmp("textual-cap");
         std::fs::write(dir.join("notes.txt"), "old\n".repeat(MAX_HITS + 1)).unwrap();
-        let (preview, _) = build(treq(&dir, Vec::new(), Vec::new())).unwrap();
+        let (preview, hits) = build(treq(&dir, Vec::new(), Vec::new())).unwrap();
         assert!(preview.textual.capped);
+        assert!(hits.len() <= MAX_HITS, "{}", hits.len());
         let msg = preview.confirm_message(&[], 0, &dir);
-        assert!(msg.contains(&format!("Text search stopped at {MAX_HITS} matches; some files were not searched.")), "{msg}");
+        assert!(msg.contains(&format!("Text search stopped at {MAX_HITS} matches; others are not listed.")), "{msg}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_dirty_buffer_over_the_cap_is_capped() {
+        let dir = tmp("textual-cap-dirty");
+        let n = dir.join("notes.txt");
+        std::fs::write(&n, "old\n").unwrap();
+        let text = "old\n".repeat(MAX_HITS + 5);
+        let open = OpenText { path: n, id: 1, rope: Rope::from_str(&text), version: 2, dirty: true };
+        let (preview, hits) = build(treq(&dir, Vec::new(), vec![open])).unwrap();
+        assert_eq!((hits.len(), preview.textual.rows, preview.textual.capped), (MAX_HITS, MAX_HITS, true));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1148,13 +1188,11 @@ mod tests {
         let dir = tmp("textual-stale");
         let n = dir.join("notes.txt");
         std::fs::write(&n, "old\n").unwrap();
-        let (preview, mut hits) = build(treq(&dir, Vec::new(), Vec::new())).unwrap();
+        let (preview, hits) = build(treq(&dir, Vec::new(), Vec::new())).unwrap();
         std::fs::write(&n, "old and more\n").unwrap();
         assert_eq!(preview.first_stale(&[]), None);
         assert_eq!(preview.first_stale_textual(&[], &[]), None);
         assert_eq!(preview.first_stale_textual(&[], &hits), Some(n.clone()), "the row is passed as included");
-        hits[0].excluded = false;
-        assert_eq!(preview.first_stale_textual(&[], &hits), Some(n.clone()));
         // An exact row of the same file keeps it in `stamps`, checked with nothing included.
         let dir = tmp("textual-stale-both");
         let n = dir.join("notes.txt");
@@ -1181,7 +1219,7 @@ mod tests {
         let got = p.confirm_message(&[exact.clone(), text.clone()], 2, &root);
         let want = "Rename old to new: 2 occurrences in 2 files; 2 excluded.\n\
                     Text matches (guesses): 1 included, 2 left out.\n\
-                    Text search stopped at 10000 matches; some files were not searched.\n\
+                    Text search stopped at 10000 matches; others are not listed.\n\
                     No text matches offered in 1 file: a file operation touches it or it cannot be read.\n\
                     Open files change in the editor (undoable); others are written to disk.";
         assert_eq!(got, want);

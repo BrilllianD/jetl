@@ -383,10 +383,16 @@ cat $T/notes.txt $T/src/util.rs            # still helper
 /tmp/tm24.sh capture-pane -p -t jetl      # main.rs: the comment says assist, the string still helper, both calls assist
 cat $T/notes.txt $T/src/util.rs            # notes still helper, util assist
 /tmp/tm24.sh send-keys -t jetl C-z         # focus the editor first: main.rs restored in one step
+printf 'pub fn helper() {}\n' > $T/src/util.rs; sleep 5   # Ctrl+Z does not restore util.rs on disk: restore it from the shell and wait
 /tmp/tm24.sh send-keys -t jetl S-F6        # the check still shows "[x]" this session
 ```
 
-Stale, excluded: Shift+F6 again, change `notes.txt` from another shell, Alt+A,
+On a file header whose rows are all excluded, Alt+Delete includes the exact
+rows and leaves the text matches excluded (a file of text matches only: all
+included); with any row included it excludes them all.
+
+Restore `src/util.rs` (and `notes.txt`) from the shell and wait about five
+seconds before every later Shift+F6, as above. Stale, excluded: Shift+F6, change `notes.txt` from another shell, Alt+A,
 Enter: it applies and `notes.txt` is untouched by jetl. Stale, included:
 repeat on the restored text, include the `notes.txt` row, change `notes.txt`,
 Alt+A, Enter: the error toast `notes.txt changed since the preview; rename
