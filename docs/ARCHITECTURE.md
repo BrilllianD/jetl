@@ -486,7 +486,7 @@ its busy id before the generation check, so the spinner never sticks.
   only if the adapter's death takes it. With gdb it did: `kill -9` of the gdb (step 8 of the "Debug and Stop"
   scenario in TESTING.md), and `kill -STOP` of it followed by Ctrl+F2 or Ctrl+Q (steps 10 and 11), left
   no debuggee. Other adapters are not verified. If jetl itself is killed while the adapter is stopped,
-  the debuggee can survive.
+  the debuggee can survive (not tested; yman 418).
 - Lists keep their wheel scroll: `ListState::set_viewport` and `fit` bound
   the offset without pulling the view back to the selection.
 - Panic path (`tui::install_panic_hook`, `recovery.rs`): the terminal is
