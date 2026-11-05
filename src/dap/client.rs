@@ -171,8 +171,9 @@ async fn drive<F: Fn(DapMsg)>(spec: SessionSpec, conn: Conn, mut cmds: Unbounded
                 None => d.feed(Input::Eof),
             },
             cmd = cmds.recv() => match cmd {
+                // The handle was dropped; a command it queued before that still arrives here.
+                _ if cmds.is_closed() => true,
                 Some(cmd) => d.feed(Input::Command(cmd)),
-                // The handle was dropped; nobody is listening.
                 None => true,
             },
             _ = child_exit(&mut child), if child.is_some() => {
@@ -553,7 +554,16 @@ mod tests {
     async fn dropping_an_unpolled_shutdown_ends_the_driver() {
         let (client, mut adapter, mut rx) = running(Order::LaunchDeferred, caps()).await;
         drop(client.shutdown());
-        rest(&mut rx).await;
+        assert_eq!(rest(&mut rx).await, []);
+        adapter.closed().await;
+    }
+
+    #[tokio::test]
+    async fn a_command_queued_before_the_drop_is_not_acted_on() {
+        let (client, mut adapter, mut rx) = running(Order::LaunchDeferred, caps()).await;
+        client.send(Command::Stop);
+        drop(client);
+        assert_eq!(rest(&mut rx).await, []);
         adapter.closed().await;
     }
 
