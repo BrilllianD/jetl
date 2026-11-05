@@ -357,61 +357,6 @@ of the first 20 `package.json` scripts, `make` for a Makefile, and
 when you pick it (or rerun it), so a project file cannot start anything by
 itself.
 
-Debug adapters (`[debug.adapters.<name>]`) are the programs jetl talks the
-Debug Adapter Protocol to, over stdin and stdout. These are built in, and the
-first one found on `PATH` is the default for a language:
-
-| Adapter | Command | Languages | Launch arguments |
-|---|---|---|---|
-| `codelldb` | `codelldb` | rust, c, cpp | `terminal = "console"`, `sourceLanguages = ["${language}"]` |
-| `lldb-dap` | `lldb-dap` | rust, c, cpp | `console = "internalConsole"` |
-| `gdb` | `gdb -q -i=dap` | c, cpp, rust | none |
-| `debugpy` | `python3 -m debugpy.adapter` | python | `console = "internalConsole"`, `subProcess = false` |
-
-Only `gdb` has been tried here; the launch arguments of the other three come
-from reading their sources. `jetl --doctor` and Settings > Dependencies show
-which are found; debugpy's row checks `python3` only, since checking the
-module would run a process.
-
-A table with a new name comes before the built-in ones. `command = []` turns
-an adapter off. `launch` replaces the built-in launch arguments whole, and
-`${language}` in it becomes the language in use. Delve and js-debug need a
-socket and are not supported.
-
-A debug block says how a run configuration is debugged. It is
-`[debug.<name>]` in `.jetl/run.toml` or `[run.debug.<name>]` in config.toml,
-named after the configuration (`[debug."web tests"]` for a name with a
-space); a block of the same name in the project file replaces the other
-whole. Renaming a configuration in Edit Configurations does not rename its
-block. `adapter` names an adapter; unset, it is the first found for
-`language`, which defaults to the active buffer's language. `launch` is a
-table passed to the adapter's `launch` request as it stands, so what it can
-hold depends on the adapter (`program` and `args` for all four built-in
-ones).
-
-The launch arguments are built in this order, each replacing the same
-top-level key of the one before: the adapter's `launch`; `cwd` (the
-configuration's `cwd` under the project root, else the root); `env` (the
-configuration's `env`; for gdb also jetl's environment beneath it, since gdb
-takes `env` as the exact environment and a user-defined adapter does not get
-this); the block's `launch`. So a block's `env` replaces the whole of it.
-Then `${workspaceFolder}`, `${file}` and `${artifact}` are replaced in every
-string; one with no value stays as written, and the adapter reports it. The
-configuration's `command` and `args` are not used under Debug: the adapter
-starts the program named in `launch`.
-
-**A project's `.jetl/run.toml` can run commands through Debug.** `launch`
-can carry debugger commands (`initCommands` in lldb-dap and codelldb, for
-example), and the file chooses the program and the adapter by name, so
-pressing Debug in a project can run anything that file says, exactly as
-pressing Run can today. There is no separate confirmation. Nothing starts
-until you press it, so read the `.jetl/run.toml` of a project you do not
-trust first. A project file cannot define or change an adapter's command;
-`[debug.adapters.*]` is read from your config.toml only.
-
-jetl does not start a debug session yet: nothing reads these tables but
-`--doctor`, until the debugger lands.
-
 Each entry has `name`, `command` (a string for `sh -c`, or a list of words),
 and optionally `args`, `cwd`, `env` and `matcher`. `args` are appended to the
 command's words; to a string command they are passed as `"$@"`, so they
@@ -428,6 +373,74 @@ window header shows the command as started); a string command is never
 rewritten, so give it those flags yourself. (For a list command jetl also
 drops pytest's `-q`, which would cancel the `-v`.) Jest without `--verbose` (a
 string command) still lists its failed tests, but not the passed ones.
+
+Debug adapters (`[debug.adapters.<name>]`) are the programs jetl talks the
+Debug Adapter Protocol to, over stdin and stdout. These are built in, and the
+first one found on `PATH` is the default for a language:
+
+| Adapter | Command | Languages | Launch arguments |
+|---|---|---|---|
+| `codelldb` | `codelldb` | rust, c, cpp | `terminal = "console"`, `sourceLanguages = ["${language}"]` |
+| `lldb-dap` | `lldb-dap` | rust, c, cpp | `console = "internalConsole"` |
+| `gdb` | `gdb -q -i=dap` | c, cpp, rust | none |
+| `debugpy` | `python3 -P -m debugpy.adapter` | python | `console = "internalConsole"`, `subProcess = false` |
+
+Only `gdb` has been tried here; the launch arguments of the other three come
+from reading their sources. `jetl --doctor` and Settings > Dependencies show
+which are found; debugpy's row checks `python3` only, since checking the
+module would run a process.
+
+A table with a new name comes before the built-in ones. `command = []` turns
+an adapter off. `launch` replaces the built-in launch arguments whole, and
+`${language}` in it becomes the language in use. Delve and js-debug need a
+socket and are not supported.
+
+A debug block says how a run configuration is debugged. It is
+`[debug.<name>]` in `.jetl/run.toml` or `[run.debug.<name>]` in config.toml,
+named after the configuration (`[debug."web tests"]` for a name with a
+space); a block of the same name in the project file replaces the other
+whole. `[debug.<name>]` is the form for `.jetl/run.toml`, `[run.debug.<name>]`
+for `config.toml`; the other form in either file is ignored with no warning. Renaming a configuration in Edit Configurations does not rename its
+block. `adapter` names an adapter; unset, it is the first found for
+`language`, which defaults to the active buffer's language. `launch` is a
+table passed to the adapter's `launch` request as it stands, so what it can
+hold depends on the adapter (`program` and `args` for all four built-in
+ones).
+
+The launch arguments are built in this order, each replacing the same
+top-level key of the one before: the adapter's `launch`; `cwd` (the
+configuration's `cwd`, with the variables below replaced, under the project root,
+else the root); `env` (the
+configuration's `env`; for gdb also jetl's environment beneath it, since gdb
+takes `env` as the exact environment and a user-defined adapter does not get
+this); the block's `launch`. So a block's `env` replaces the whole of it, and
+with gdb it is the debuggee's whole environment: `env = { A = "1" }` drops
+`PATH` and `HOME`. Then `${workspaceFolder}`, `${file}` and `${artifact}` are replaced in every
+string value, not in keys; one with no value stays as written, and the adapter
+reports it. Values go in as they are, unquoted, so a file name with odd
+characters reaches a debugger command as written when a block puts `${file}`
+in one. The configuration's `command` and `args` are not used under Debug: the adapter
+starts the program named in `launch`.
+
+**A project's `.jetl/run.toml` can run commands through Debug.** `launch`
+can carry debugger commands (`initCommands` in lldb-dap and codelldb, for
+example), and the file chooses the program and the adapter by name, so
+pressing Debug in a project can run anything that file says, exactly as
+pressing Run can today. There is no separate confirmation. Nothing starts
+until you press it, so read the `.jetl/run.toml` of a project you do not
+trust first. A project file cannot define or change an adapter's command;
+`[debug.adapters.*]` is read from your config.toml only. A relative `command`
+in your own `config.toml` resolves under the project root, so a project can
+supply that program. The built-in debugpy adapter needs Python 3.11: it runs
+with `-P` to keep the project's files (a `debugpy/` directory in it, say) off
+its import path, and an older Python fails with an error the session reports.
+
+A bad debug table does not affect Run or Edit Configurations, which do not
+read the debug tables; a bad `[run.debug.<name>]` in `config.toml` invalidates
+that file like any other bad key.
+
+jetl does not start a debug session yet: nothing reads these tables but
+`--doctor`, until the debugger lands.
 
 Things to know about arguments and test runs: with `command = ["sh", "-c",
 script]` the first of `args` becomes `$0` of the script, not `$1`. A compound
@@ -448,8 +461,9 @@ configuration, Delete or `[−]` removes a project one, Ctrl+D or `[Copy]`
 copies any configuration into a new project one, Ctrl+S or Apply saves, OK
 saves and closes, Esc asks before dropping changes. Saving writes only
 `.jetl/run.toml` (created with its folder when missing): comments and the
-entries you did not change are kept, and nothing runs, neither on opening nor
-on saving. Entries from config.toml and the detected defaults are read-only:
+entries you did not change are kept (a comment directly above a configuration
+goes with it when that configuration is removed), and nothing runs, neither
+on opening nor on saving. Entries from config.toml and the detected defaults are read-only:
 copy one to change it in the project. A file that changed on disk since the
 window loaded it is not overwritten; reopen the window. An invalid
 `.jetl/run.toml` is shown as an error and makes the window read-only.

@@ -231,7 +231,9 @@ fn probe_with(cfg: &Config, root: &Path, term: &TermCaps, env: &dyn Fn(&str) -> 
     for a in cfg.debug.adapters() {
         let langs = a.languages.join(", ");
         // `python3 -m debugpy.adapter`: finding the interpreter says nothing of the module, and asking would run a process.
-        let module = (a.command.get(1).map(String::as_str) == Some("-m")).then(|| a.command.get(2)).flatten();
+        // `-P` (keep the project's files off the path) may come before `-m`.
+        let mut rest = a.command.iter().skip(1).skip_while(|w| *w == "-P");
+        let module = (rest.next().map(String::as_str) == Some("-m")).then(|| rest.next()).flatten();
         let row = match (resolve(&a.command[0], root, find), module) {
             (Some(_), Some(m)) => {
                 (Status::Unknown, format!("{} found, {} not checked ({langs})", a.command[0], m.split('.').next().unwrap_or(m)))

@@ -908,7 +908,7 @@ run sets `XDG_CONFIG_HOME`, `XDG_STATE_HOME` and `XDG_CACHE_HOME` under `$R/xdg`
    Restore the file.
 3. `jetl a.c`, Ctrl+Alt+S, Down to `Run` (under Tools): rows `Run tasks`, `Run configurations`,
    `Debug blocks`, `Debug adapters`, the last one ending in `next debug session`. Tab, three
-   Downs: the help reads `[debug.adapters.<name>]`. Tab, End: the Dependencies page has the
+   Downs: the help reads `[debug.adapters.<name>]`. Shift+Tab, End: the Dependencies page has the
    `Debug adapters` heading with the rows of step 1. Escape.
 4. With jetl running, append `[debug.adapters.gdb]` and `languages = ["c"]` to `config.toml`
    from outside: the status says `Reloaded config.toml`, with no restart warning.
@@ -917,8 +917,8 @@ run sets `XDG_CONFIG_HOME`, `XDG_STATE_HOME` and `XDG_CACHE_HOME` under `$R/xdg`
 6. F1, `edit configurations`, Enter, Tab, Down twice, Enter, type `foo bar`, Enter, Ctrl+S:
    `.jetl/run.toml` has `args` for `demo` and everything from `# how to debug it` on is the
    block as written, comment included.
-7. Change the `launch` line to `launch = "x"`, Alt+Shift+F10: an error naming `.jetl/run.toml`
-   and `launch must be a table`.
+7. Change the `launch` line to `launch = "x"`, Alt+Shift+F10: the picker lists `demo` with no
+   warning, and Enter runs it. A bad debug block does not affect Run.
 
 Each run exits 0 with an empty stderr on Ctrl+Q.
 

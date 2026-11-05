@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use toml_edit::{Array as TomlArray, ArrayOfTables, DocumentMut, InlineTable, Item, Table, Value};
 
-use super::{Origin, RunConfig, RunTask, TaskCommand};
+use super::{Origin, ProjectTasks, RunTask, TaskCommand};
 use crate::config::FileText;
 use crate::config::theme::error_summary;
 
@@ -55,7 +55,7 @@ pub fn project_file(root: &Path) -> PathBuf {
 
 /// The entries of the file, each with its slot: `tasks` first, then `configs`.
 pub fn load_project(text: &str) -> Result<Vec<(Slot, RunTask)>, String> {
-    let cfg = toml::from_str::<RunConfig>(text).map_err(|e| format!("{FILE}: {}", error_summary(&e.to_string())))?;
+    let cfg = toml::from_str::<ProjectTasks>(text).map_err(|e| format!("{FILE}: {}", error_summary(&e.to_string())))?;
     let slots = |array, v: Vec<RunTask>| {
         v.into_iter().enumerate().map(|(index, t)| (Slot { array, index }, RunTask { origin: Origin::Project, ..t })).collect::<Vec<_>>()
     };
@@ -240,7 +240,7 @@ pub fn apply_config_edits(text: &str, edits: &[ConfigEdit]) -> Result<String, St
         }
     }
     let out = doc.to_string();
-    toml::from_str::<RunConfig>(&out).map_err(|e| format!("{FILE}: {}", error_summary(&e.to_string())))?;
+    toml::from_str::<ProjectTasks>(&out).map_err(|e| format!("{FILE}: {}", error_summary(&e.to_string())))?;
     Ok(out)
 }
 
@@ -273,7 +273,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
-    use crate::run::MatcherKind;
+    use crate::run::{MatcherKind, RunConfig};
 
     fn task(name: &str, command: TaskCommand) -> RunTask {
         RunTask { name: name.into(), command, cwd: None, env: BTreeMap::new(), args: Vec::new(), matcher: None, origin: Origin::Project }
@@ -413,5 +413,20 @@ mod tests {
         let out = apply_config_edits(only, &[ConfigEdit::Add(task("t", argv(&["make"])))]).unwrap();
         assert!(out.contains(only) && out.contains("[[configs]]\nname = \"t\""), "{out}");
         assert_eq!(load_project(&out).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_bad_debug_block_does_not_stop_edit_configurations() {
+        for bad in ["[debug.demo]\nlaunch = \"s\"\n", "[debug]\nport = 1\n"] {
+            let text = format!("[[configs]]\nname = \"demo\"\ncommand = \"make\"\n\n{bad}");
+            let loaded = load_project(&text).unwrap();
+            assert_eq!(loaded.len(), 1, "{bad}");
+            let mut demo = loaded[0].1.clone();
+            demo.cwd = Some("x".into());
+            let out = apply_config_edits(&text, &[ConfigEdit::Update(slot(Array::Configs, 0), demo)]).unwrap();
+            assert_eq!(out, text.replacen("command = \"make\"\n", "command = \"make\"\ncwd = \"x\"\n", 1));
+            let out = apply_config_edits(&text, &[ConfigEdit::Add(task("t", argv(&["make", "t"])))]).unwrap();
+            assert!(out.contains(bad) && out.contains("name = \"t\""), "{out}");
+        }
     }
 }

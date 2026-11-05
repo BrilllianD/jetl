@@ -275,6 +275,8 @@ impl Editor {
         match write_atomic(&path, &text) {
             Ok(perm_err) => {
                 let setup = self.path_setup(&path, &text, cx.theme);
+                // Lines parked for this path belong to a file this save replaces.
+                self.closed_breakpoints.remove(&path);
                 let b = &mut self.buffers[i];
                 super::adopt_path(b, path.clone(), setup, self.tab_width);
                 b.patch = None;

@@ -34,6 +34,15 @@ impl RunConfig {
     }
 }
 
+/// The tasks of `.jetl/run.toml`. Not its `debug` tables: a bad one must not take the tasks with it
+/// (`dap::config::load_debug_blocks` is the reader, and the reporter, of those).
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct ProjectTasks {
+    tasks: Vec<RunTask>,
+    configs: Vec<RunTask>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct RunTask {
     pub name: String,
@@ -246,7 +255,7 @@ pub fn load_tasks(root: &Path, configured: &[RunTask]) -> (Vec<RunTask>, Option<
     let file = root.join(".jetl").join("run.toml");
     let mut error = None;
     match std::fs::read_to_string(&file) {
-        Ok(text) => match toml::from_str::<RunConfig>(&text) {
+        Ok(text) => match toml::from_str::<ProjectTasks>(&text) {
             Ok(c) => tasks.extend(c.tasks.into_iter().chain(c.configs).map(|t| RunTask { origin: Origin::Project, ..t })),
             Err(e) => error = Some(format!(".jetl/run.toml: {}", crate::config::theme::error_summary(&e.to_string()))),
         },
@@ -396,13 +405,16 @@ mod tests {
     }
 
     #[test]
-    fn an_invalid_debug_block_is_reported_by_load_tasks() {
+    fn a_bad_debug_block_does_not_touch_load_tasks() {
         let dir = std::env::temp_dir().join(format!("jetl-test-run-bad-debug-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join(".jetl")).unwrap();
-        std::fs::write(dir.join(".jetl/run.toml"), "[[configs]]\nname = \"c\"\ncommand = \"x\"\n[debug.a]\nlaunch = \"s\"\n").unwrap();
-        let (_, error) = load_tasks(&dir, &[]);
+        for bad in ["[debug.a]\nlaunch = \"s\"\n", "[debug]\nport = 1\n"] {
+            std::fs::write(dir.join(".jetl/run.toml"), format!("[[configs]]\nname = \"c\"\ncommand = \"x\"\n{bad}")).unwrap();
+            let (tasks, error) = load_tasks(&dir, &[]);
+            assert_eq!((tasks.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(), &error), (vec!["c"], &None), "{bad}");
+            assert_eq!(tasks[0].origin, Origin::Project);
+        }
         std::fs::remove_dir_all(&dir).unwrap();
-        assert!(error.is_some_and(|e| e.contains(".jetl/run.toml") && e.contains("launch must be a table")));
     }
 }

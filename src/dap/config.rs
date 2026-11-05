@@ -120,7 +120,7 @@ const BUILTIN: &[Builtin] = &[
     },
     Builtin {
         name: "debugpy",
-        command: &["python3", "-m", "debugpy.adapter"],
+        command: &["python3", "-P", "-m", "debugpy.adapter"],
         languages: &["python"],
         launch: || json!({"console": "internalConsole", "subProcess": false}),
         exact_env: false,
@@ -234,7 +234,7 @@ fn extend(out: &mut Map<String, Value>, v: &Value) {
 }
 
 /// The `launch` arguments for a session. Later wins, by top-level key: the adapter's `launch`; `cwd`
-/// (the task's under the root, else the root); `env` (the task's, with jetl's beneath it when the adapter
+/// (the task's, with the variables replaced, joined to the root, so an absolute result replaces the root; else the root); `env` (the task's, with jetl's beneath it when the adapter
 /// takes the exact environment; left out when empty); the block's `launch`. Then `${workspaceFolder}`,
 /// `${file}` and `${artifact}` are replaced in every string; an unset one stays as written. The task's
 /// `command` and `args` are not used.
@@ -247,8 +247,15 @@ pub fn resolve_launch(
 ) -> Value {
     let mut out = Map::new();
     extend(&mut out, &adapter.launch);
+    let mut pairs = vec![("${workspaceFolder}", vars.workspace_folder.as_str())];
+    pairs.extend(vars.file.as_deref().map(|f| ("${file}", f)));
+    pairs.extend(vars.artifact.as_deref().map(|a| ("${artifact}", a)));
     let cwd = match task.cwd.as_deref().filter(|c| !c.is_empty()) {
-        Some(c) => Path::new(&vars.workspace_folder).join(c).to_string_lossy().into_owned(),
+        Some(c) => {
+            let mut c = Value::String(c.to_string());
+            substitute(&mut c, &pairs);
+            Path::new(&vars.workspace_folder).join(c.as_str().unwrap_or_default()).to_string_lossy().into_owned()
+        }
         None => vars.workspace_folder.clone(),
     };
     out.insert("cwd".into(), cwd.into());
@@ -258,12 +265,16 @@ pub fn resolve_launch(
         out.insert("env".into(), json!(merged));
     }
     extend(&mut out, &block.launch);
-    let mut pairs = vec![("${workspaceFolder}", vars.workspace_folder.as_str())];
-    pairs.extend(vars.file.as_deref().map(|f| ("${file}", f)));
-    pairs.extend(vars.artifact.as_deref().map(|a| ("${artifact}", a)));
     let mut v = Value::Object(out);
     substitute(&mut v, &pairs);
     v
+}
+
+/// The `debug` tables of `.jetl/run.toml` and nothing else: a bad task is not this reader's to report.
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct ProjectBlocks {
+    debug: BTreeMap<String, DebugBlock>,
 }
 
 /// The blocks of `configured` with those of `.jetl/run.toml` over them, by name. On a bad project file, the
@@ -272,7 +283,7 @@ pub fn load_debug_blocks(root: &Path, configured: &BTreeMap<String, DebugBlock>)
     let mut blocks = configured.clone();
     let mut error = None;
     match std::fs::read_to_string(crate::run::edit::project_file(root)) {
-        Ok(text) => match toml::from_str::<crate::run::RunConfig>(&text) {
+        Ok(text) => match toml::from_str::<ProjectBlocks>(&text) {
             Ok(c) => blocks.extend(c.debug),
             Err(e) => error = Some(format!(".jetl/run.toml: {}", crate::config::theme::error_summary(&e.to_string()))),
         },
@@ -341,7 +352,7 @@ mod tests {
             (&["codelldb"], &["rust", "c", "cpp"], json!({"terminal": "console", "sourceLanguages": ["${language}"]})),
             (&["lldb-dap"], &["rust", "c", "cpp"], json!({"console": "internalConsole"})),
             (&["gdb", "-q", "-i=dap"], &["c", "cpp", "rust"], json!({})),
-            (&["python3", "-m", "debugpy.adapter"], &["python"], json!({"console": "internalConsole", "subProcess": false})),
+            (&["python3", "-P", "-m", "debugpy.adapter"], &["python"], json!({"console": "internalConsole", "subProcess": false})),
         ];
         for (a, (command, languages, launch)) in all.iter().zip(expect) {
             assert_eq!(a.command, command, "{}", a.name);
@@ -484,7 +495,9 @@ mod tests {
         let v = resolve_launch(&a, &block(None, None, json!({"cwd": "/own", "env": {"Z": "1"}})), &t, &vars(), &no_env);
         assert_eq!(v["cwd"], "/own");
         assert_eq!(v["env"], json!({"Z": "1"}));
-        for (cwd, want) in [(None, "/w"), (Some(""), "/w"), (Some("/abs"), "/abs")] {
+        for (cwd, want) in
+            [(None, "/w"), (Some(""), "/w"), (Some("/abs"), "/abs"), (Some("${workspaceFolder}/sub"), "/w/sub"), (Some("sub"), "/w/sub")]
+        {
             let v = resolve_launch(&a, &block(None, None, Value::Null), &task(cwd, &[]), &vars(), &no_env);
             assert_eq!(v["cwd"], want, "{cwd:?}");
         }
@@ -508,7 +521,7 @@ mod tests {
         assert_eq!(v["n"], 3);
         assert_eq!(v["t"], true);
         assert_eq!(v["${file}"], "key");
-        assert_eq!(v["cwd"], "/w//w/a.c");
+        assert_eq!(v["cwd"], "/w/a.c");
         assert_eq!(v["art"], "${artifact}");
         let with = LaunchVars { artifact: Some("/w/bin".into()), ..vars() };
         let v = resolve_launch(&a, &block(None, None, launch), &task(None, &[]), &with, &no_env);
@@ -607,7 +620,23 @@ mod tests {
         std::fs::write(dir.join(".jetl/run.toml"), "[debug.a]\nlaunch = \"s\"\n").unwrap();
         let (_, error) = load_debug_blocks(&dir, &configured);
         assert!(error.unwrap().contains("launch must be a table"));
+        std::fs::write(dir.join(".jetl/run.toml"), "[debug]\nport = 1\n").unwrap();
+        let (blocks, error) = load_debug_blocks(&dir, &configured);
+        assert_eq!(blocks, configured);
+        assert!(error.is_some_and(|e| e.starts_with(".jetl/run.toml: ")));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_bad_task_does_not_take_the_debug_blocks() {
+        let dir = std::env::temp_dir().join(format!("jetl-test-debug-bad-task-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".jetl")).unwrap();
+        std::fs::write(dir.join(".jetl/run.toml"), "[[configs]]\nname = 3\n[debug.a]\nadapter = \"p\"\n").unwrap();
+        let (blocks, error) = load_debug_blocks(&dir, &BTreeMap::new());
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(error.is_none(), "{error:?}");
+        assert_eq!(blocks["a"].adapter.as_deref(), Some("p"));
     }
 
     #[test]

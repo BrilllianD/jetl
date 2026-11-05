@@ -3717,6 +3717,19 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[test]
+    fn save_as_drops_the_lines_parked_for_the_new_path() {
+        let dir = save_as_dir("parked");
+        let mut ed = Editor::new(&Config::default());
+        let path = dir.join("a.txt");
+        ed.restore_closed_breakpoints(&[(path.clone(), vec![1])]);
+        let i = ed.open_untitled("untitled");
+        ed.buffers[i].insert("one\ntwo\n", TxKind::Typing);
+        with_cx(|cx| assert!(ed.save_as(i, path.clone(), cx, false, false)));
+        assert!(ed.closed_breakpoints().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[cfg(feature = "lang-rust")]
     #[test]
     fn save_as_with_format_asks_the_new_paths_formatter() {
