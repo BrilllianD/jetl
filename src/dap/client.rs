@@ -103,6 +103,7 @@ impl Drop for DapClient {
 struct Driver<F> {
     session: Session,
     out: UnboundedSender<Value>,
+    // Before `emit`: `pid()` is `None` by the time the channel behind `emit` closes.
     group: Group,
     emit: F,
     generation: u64,
@@ -151,7 +152,7 @@ async fn drive<F: Fn(DapMsg)>(spec: SessionSpec, conn: Conn, mut cmds: Unbounded
     let (in_tx, mut incoming) = mpsc::unbounded_channel();
     let (out, out_rx) = mpsc::unbounded_channel();
     let reader = spawn_reader(reader, in_tx);
-    spawn_writer(writer, out_rx);
+    let writer = spawn_writer(writer, out_rx);
     let (generation, id) = (spec.generation, spec.id);
     let mut session = Session::new(spec, Instant::now());
     let first = session.start();
@@ -163,7 +164,9 @@ async fn drive<F: Fn(DapMsg)>(spec: SessionSpec, conn: Conn, mut cmds: Unbounded
     loop {
         // Not `biased`: a debuggee printing without pause must not starve a Stop.
         let finished = tokio::select! {
+            // `select!` may pick this with the handle already gone, and nobody may hear of it then.
             msg = incoming.recv() => match msg {
+                _ if cmds.is_closed() => true,
                 Some(msg) => d.feed(Input::Incoming(msg)),
                 None => d.feed(Input::Eof),
             },
@@ -182,7 +185,7 @@ async fn drive<F: Fn(DapMsg)>(spec: SessionSpec, conn: Conn, mut cmds: Unbounded
             }
             _ = tick.tick() => {
                 let due = drain.is_some_and(|at| Instant::now() >= at);
-                d.feed(if due { Input::Eof } else { Input::Tick })
+                cmds.is_closed() || d.feed(if due { Input::Eof } else { Input::Tick })
             }
         };
         if finished {
@@ -195,6 +198,8 @@ async fn drive<F: Fn(DapMsg)>(spec: SessionSpec, conn: Conn, mut cmds: Unbounded
     if let Some(mut c) = child {
         let _ = c.wait().await;
     }
+    // A write stuck on a stdin that an outsider still holds open must not outlive the session.
+    writer.abort();
 }
 
 async fn child_exit(child: &mut Option<Child>) {
@@ -232,7 +237,7 @@ fn spawn_reader(reader: Box<dyn AsyncRead + Send + Unpin>, tx: UnboundedSender<I
 }
 
 /// In its own task, so that an adapter not reading its stdin cannot block the loop.
-fn spawn_writer(mut writer: Box<dyn AsyncWrite + Send + Unpin>, mut rx: UnboundedReceiver<Value>) {
+fn spawn_writer(mut writer: Box<dyn AsyncWrite + Send + Unpin>, mut rx: UnboundedReceiver<Value>) -> JoinHandle<()> {
     tokio::spawn(async move {
         while let Some(msg) = rx.recv().await {
             if let Err(e) = write_frame(&mut writer, &msg).await {
@@ -241,7 +246,7 @@ fn spawn_writer(mut writer: Box<dyn AsyncWrite + Send + Unpin>, mut rx: Unbounde
             }
         }
         let _ = writer.shutdown().await;
-    });
+    })
 }
 
 #[cfg(test)]
@@ -558,6 +563,29 @@ mod tests {
         drop(client);
         assert_eq!(rest(&mut rx).await, []);
         adapter.closed().await;
+    }
+
+    #[tokio::test]
+    async fn nothing_is_reported_once_the_handle_is_gone() {
+        let (conn, mut adapter) = fake::connect(caps(), Order::LaunchDeferred);
+        let (send, mut rx) = collector();
+        let handle: Arc<std::sync::Mutex<Option<DapClient>>> = Arc::default();
+        let held = Arc::clone(&handle);
+        let emit = move |m: DapMsg| {
+            let output = matches!(m.body, DapBody::Output(_));
+            send(m);
+            if output {
+                drop(held.lock().unwrap().take());
+            }
+        };
+        *handle.lock().unwrap() = Some(DapClient::start(spec(&[]), conn, emit));
+        answer_configuration(&mut adapter).await;
+        until(&mut rx, |b| *b == DapBody::Phase(Phase::Running)).await;
+        for i in 0..64 {
+            adapter.event("output", json!({"category": "console", "output": format!("{i}\n")}));
+        }
+        let seen = rest(&mut rx).await;
+        assert_eq!(seen.len(), 1, "{seen:?}");
     }
 
     #[tokio::test]

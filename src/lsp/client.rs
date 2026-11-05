@@ -80,9 +80,12 @@ pub fn spawn_process(name: &str, argv: &[String], cwd: &Path) -> std::io::Result
     };
     let name = name.to_string();
     tokio::spawn(async move {
-        let mut lines = BufReader::new(stderr).lines();
-        while let Ok(Some(line)) = lines.next_line().await {
-            tracing::debug!("{name} stderr: {line}");
+        // By bytes: stopping at a line that is not UTF-8 would close the pipe and kill the writer with SIGPIPE.
+        let mut stderr = BufReader::new(stderr);
+        let mut line = Vec::new();
+        while stderr.read_until(b'\n', &mut line).await.is_ok_and(|n| n > 0) {
+            tracing::debug!("{name} stderr: {}", String::from_utf8_lossy(&line).trim_end());
+            line.clear();
         }
     });
     Ok(Conn { reader: Box::new(stdout), writer: Box::new(stdin), child: Some(child) })
@@ -593,6 +596,18 @@ mod tests {
     use crate::lsp::fake;
     use crate::lsp::transport::{read_frame, write_frame};
     use tokio::io::{BufReader, DuplexStream};
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_server_writing_bad_utf8_to_stderr_lives_on() {
+        let script = r"printf '\377\n' >&2; sleep 0.2; printf 'more\n' >&2; echo alive";
+        let argv = ["sh", "-c", script].map(String::from);
+        let Conn { mut reader, child, .. } = spawn_process("test", &argv, Path::new("/tmp")).unwrap();
+        let mut out = String::new();
+        tokio::io::AsyncReadExt::read_to_string(&mut reader, &mut out).await.unwrap();
+        assert_eq!(out, "alive\n");
+        drop(child);
+    }
 
     const GEN: u64 = 3;
     const SERVER: ServerId = 7;
