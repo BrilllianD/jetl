@@ -1183,7 +1183,8 @@ The long line runs past the right edge at both sizes, so a run of cells that lan
 are clicked as in the previous scenario (`ESC [ < 0 ; col ; row M` then `m`, sent with `tmux send-keys -H`). Nothing may
 run from `pgrep -f '[g]db -q -i=dap'` or `pgrep -x demo` first.
 
-1. Start jetl with `demo.c` as its path argument. Ctrl+G `5`, Ctrl+F8, Shift+F9: `paused (breakpoint)`, `5▶`.
+1. Start jetl with `demo.c` as its path argument. Ctrl+G `5`, Ctrl+F8, Shift+F9: `paused (breakpoint)`, and `5▶` (at 80x24 only once the Warning
+   toast over line 5 has gone).
 2. Click ` Console `. It holds gdb's `❌️ No source file named ...` and the fixture's `❌️ boom ...` line. Each of those
    rows has its closing border in the same column as the row above, and the emoji is visible.
 3. Click ` Frames `. The thread row reads `Thread 1: demo ▾` with nothing to its right up to the border. No stray letter
@@ -1191,8 +1192,8 @@ run from `pgrep -f '[g]db -q -i=dap'` or `pgrep -x demo` first.
 4. Click ` Console `, then ` Frames `, then ` Console `, capturing each: as in 2 and 3.
 5. F9: the program ends, `x=3` in the Console, borders intact. Ctrl+Q: exit 0, empty stderr, no `gdb` and no `demo` left.
 
-Before the fix (`JetlBackend`, `src/tui.rs`) the Console rows showed a shifted `No source filenamed` and, at 80x24, no
-closing border on the first row, and Frames showed `Thread 1: demo ▾ e`. Only tmux 3.7c was run: other terminals are
+Before the fix (`JetlBackend`, `src/tui.rs`) a Console row with the emoji could lose its closing border at both sizes and
+show its text shifted by a column, and Frames kept a stray letter right of the thread row. Only tmux 3.7c was run: other terminals are
 unverified. A Run window line with the same emoji is not scripted; the fix is below the panels. The script of the last
 run is `~/.claude/plans/backlog-run-25-S2a-evidence/scripts/vs16-scenario.sh`.
 
