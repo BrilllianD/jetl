@@ -306,14 +306,16 @@ fn prepare(job: Job) -> Result<Prepared, String> {
     if build.is_none() && needs_artifact(&launch) {
         return Err(format!("Cannot debug '{}': ${{artifact}} needs a build step: add build = [...] to its debug table", task.name));
     }
-    check_cwd(&task.name, &launch)?;
+    check_line_breaks(&task.name, &launch)?;
     Ok(Prepared { name: task.name.clone(), adapter, launch, build })
 }
 
-/// gdb runs `cd <cwd>` unquoted, and `gdb.execute` runs each line of a string as a command.
-fn check_cwd(name: &str, launch: &Value) -> Result<(), String> {
-    if launch["cwd"].as_str().is_some_and(|c| c.contains('\n')) {
-        return Err(format!("Cannot debug '{name}': line break in its working directory"));
+/// gdb runs `cd <cwd>` and `file <program>`, and `gdb.execute` runs each line of a string as a command.
+fn check_line_breaks(name: &str, launch: &Value) -> Result<(), String> {
+    for (key, what) in [("cwd", "its working directory"), ("program", "its program")] {
+        if launch[key].as_str().is_some_and(|v| v.contains(['\n', '\r'])) {
+            return Err(format!("Cannot debug '{name}': line break in {what}"));
+        }
     }
     Ok(())
 }
@@ -520,7 +522,7 @@ impl App {
 
     fn debug_launch_artifact(&mut self, mut p: Prepared, session: SessionId, artifact: &Artifact) {
         let path = artifact.path.to_string_lossy();
-        // gdb runs each line of `program` and `cwd` as a command; see `check_cwd`.
+        // A line break would run as a gdb command; see `check_line_breaks`.
         if path.contains(['\n', '\r']) {
             return self.debug_refuse(format!("Cannot debug '{}': line break in the path of its executable", p.name));
         }
@@ -1123,6 +1125,36 @@ pub(crate) mod tests {
         assert_eq!(refused("debug-newline-block", in_block, |_| {}).await, (Level::Warn, exact.to_string()));
         let in_config = "[[configs]]\nname = \"demo\"\ncommand = [\"./demo\"]\ncwd = \"sub\\nshell touch x\"\n\n[debug.demo]\nadapter = \"fake\"\nlaunch = { program = \"x\" }\n";
         assert_eq!(refused("debug-newline-config", in_config, |_| {}).await, (Level::Warn, exact.to_string()));
+    }
+
+    #[tokio::test]
+    async fn a_program_with_a_line_break_is_refused() {
+        let exact = "Cannot debug 'demo': line break in its program";
+        let toml = |program: &str| {
+            format!(
+                "[[configs]]\nname = \"demo\"\ncommand = [\"./demo\"]\n\n[debug.demo]\nadapter = \"fake\"\nlaunch = {{ program = \"{program}\" }}\n"
+            )
+        };
+        assert_eq!(refused("debug-program-lf", &toml("/tmp/a\\nshell touch x"), |_| {}).await, (Level::Warn, exact.to_string()));
+        assert_eq!(refused("debug-program-cr", &toml("/tmp/a\\rshell touch x"), |_| {}).await, (Level::Warn, exact.to_string()));
+        // The name of the open file is the only untrusted input of a block in the user's own config.
+        let open = |app: &mut App| {
+            load(app, "a\nshell touch x.c", "int main;\n");
+        };
+        assert_eq!(refused("debug-program-file", &toml("${file}"), open).await, (Level::Warn, exact.to_string()));
+    }
+
+    #[tokio::test]
+    async fn stop_during_the_choice_ends_the_start() {
+        let (mut app, dir, mut fakes, _) = choosing("build-stop-choosing").await;
+        // Another dialog overwrote the offer, so Stop is the way out.
+        app.dialog = None;
+        app.perform(Action::Debug(DebugAction::Stop));
+        assert_eq!(last(&app), (Level::Info, "Debug start cancelled".to_string()));
+        assert_eq!(title(&app), " Debug: demo · not started ");
+        assert!(!app.debug.starting() && app.debug.choice.is_none());
+        assert!(fakes.try_recv().is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
@@ -3062,7 +3094,11 @@ pub(crate) mod tests {
         assert_eq!(title(&app), " Debug: demo · not started ");
         // A build that already asks for the JSON stream has no flag to add: it made no executable (a library-only crate).
         let none = "Cannot debug 'demo': its build named no executable, so ${artifact} has no value";
-        for build in [r#"["true", "--message-format=json-render-diagnostics"]"#, r#"["true", "--message-format", "json"]"#] {
+        for build in [
+            r#"["true", "--message-format=json"]"#,
+            r#"["true", "--message-format=json-render-diagnostics"]"#,
+            r#"["true", "--message-format", "json"]"#,
+        ] {
             write_run_toml(&app, &build_toml(build, ARTIFACT_LAUNCH));
             shift_f9(&mut app);
             console_until(&mut app, |a| !a.debug.starting()).await;

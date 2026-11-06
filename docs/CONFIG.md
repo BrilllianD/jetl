@@ -444,12 +444,12 @@ Pressing Shift+F9 already ended any live session, so a cancelled dialog or a fai
 
 `${artifact}` is the path of the executable the build made, taken from Cargo's JSON (so the build needs
 `--message-format=json`). When the build made several (a package with a `src/bin`, `cargo test --no-run`),
-a dialog asks which, and the title says `choosing an executable` (Stop stays live, so Ctrl+F2 ends the start if
-another dialog covers the choice); Esc cancels the start and stops nothing else, a Run task included. A build
+a dialog asks which, and the title says `choosing an executable`; Esc cancels the start and stops nothing else,
+a Run task included. If another dialog covers the choice, close it, then Stop or Ctrl+F2 ends the start. A build
 that made none (a library-only crate, say), or a launch that uses `${artifact}` with no `build`, is refused
 with a toast and starts nothing. `${artifact}` is replaced in every string of `launch`, not in the `build`
-words. An executable whose path holds a line break (`\n` or `\r`) is refused whichever string of `launch` uses
-it, because gdb runs each line of `program` and `cwd` as a command.
+words. A `program` or `cwd` holding a line break, from the name of the open file, say, is refused, and so is an
+executable whose path holds one, whichever string of `launch` uses it: gdb runs each line of those two as a command.
 
 A Cargo task that jetl detects (`cargo build`, `cargo run`, `cargo test`) has a default debug block when
 none is written: `build = ["cargo", "build", "--message-format=json"]` (`cargo test` builds with
@@ -466,7 +466,8 @@ and no confirmation. With no `.jetl/run.toml` at all, pressing Debug in a Cargo 
 project says: `cargo` runs its `build.rs`, procedural macros and `.cargo/config.toml`, exactly as Run does on
 `cargo run`. There is no separate confirmation. Nothing starts
 until you press it, so read the `.jetl/run.toml` of a project you do not
-trust first, and for a Cargo project with none, its `build.rs` and `.cargo/config.toml`. A project file cannot define or change an adapter's command;
+trust first. For a Cargo project, reading `build.rs` and `.cargo/config.toml` is not a complete check: procedural
+macros and the build scripts of its dependencies run too, so do not press Debug in one you do not trust. A project file cannot define or change an adapter's command;
 `[debug.adapters.*]` is read from your config.toml only. A relative `command`
 in your own `config.toml` resolves under the project root, so a project can
 supply that program. The built-in debugpy adapter needs Python 3.11: it runs
@@ -483,8 +484,8 @@ the first one with a debug table, under its adapter, in the project root; the
 program is the one named in `launch`. Only one session runs at a time: starting
 another stops the first, with no prompt. Ctrl+F2 or Run > Stop Debugging stops it,
 and Ctrl+F2 reaches a Run task only while no session is live (under a dialog or the palette it still stops the Run task, not the session). Debug refuses a
-working directory whose name holds a line break, because gdb runs `cd` with it
-unquoted and would run the following lines as commands. Renaming a configuration
+working directory or a program whose name holds a line break, because gdb runs `cd` and `file` with it
+and would run the following lines as commands. Renaming a configuration
 leaves its table behind; the toast names the table to write.
 
 With gdb, a `program` or `cwd` that does not exist gives no error: gdb answers `launch`
