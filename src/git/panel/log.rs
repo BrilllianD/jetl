@@ -872,10 +872,8 @@ impl GitPanel {
             put(buf, &mut x, y, r.right(), &c.short, if selected { base } else { theme.warn });
             x += 1;
             let room = col_right.saturating_sub(x);
-            // Refs take what the subject leaves, and at least `refs_cap`.
-            let subject_w = c.subject.width() as u16;
-            let cap = refs_cap(room).max(room.saturating_sub(subject_w + 1));
-            let labels = if cap < 4 { String::new() } else { ref_labels(&c.refs, &self.branches, cap as usize) };
+            let cap = row_refs_cap(room, c.subject.width() as u16);
+            let labels = if cap == 0 { String::new() } else { ref_labels(&c.refs, &self.branches, cap as usize) };
             let refs_w = labels.width() as u16;
             let refs_x = col_right - refs_w;
             let subject_end = if refs_w > 0 { refs_x - 1 } else { col_right };
@@ -1023,7 +1021,8 @@ const LOG_REFS_ROOM: u16 = 16;
 /// by name; a remote merged into the local one of the same name at this commit
 /// reads `origin & main`; `<remote>/HEAD` is dropped. When the full text is
 /// wider than `cap`, the merged remote prefixes go before the end is cut, so
-/// the branch Checkout Revision takes survives whenever it fits.
+/// the branch Checkout Revision takes shows unless what sorts before it fills
+/// the cap (`HEAD, ` on a detached row).
 fn ref_labels(refs: &str, branches: &[BranchInfo], cap: usize) -> String {
     let full = ref_labels_with(refs, branches, true);
     let text = if full.width() > cap { ref_labels_with(refs, branches, false) } else { full };
@@ -1086,9 +1085,16 @@ fn author_fits(rest: u16, author_col: u16) -> bool {
 }
 
 /// The width the refs column may take in `room` columns after the hash: the
-/// subject keeps `LOG_SUBJECT_MIN`, refs take at most half, 0 for none.
+/// subject keeps `LOG_SUBJECT_MIN`, refs take half or `LOG_REFS_ROOM`, whichever
+/// is more, 0 for none.
 fn refs_cap(room: u16) -> u16 {
     let cap = room.saturating_sub(LOG_SUBJECT_MIN + 1).min((room / 2).max(LOG_REFS_ROOM));
+    if cap < 4 { 0 } else { cap }
+}
+
+/// The refs column of one row: what its subject leaves, and at least `refs_cap`.
+fn row_refs_cap(room: u16, subject_w: u16) -> u16 {
+    let cap = refs_cap(room).max(room.saturating_sub(subject_w.saturating_add(1)));
     if cap < 4 { 0 } else { cap }
 }
 
@@ -1115,7 +1121,7 @@ fn checkout_candidates<'a>(refs: &str, branches: &'a [BranchInfo]) -> (Vec<&'a B
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use super::{author_fits, branches_at, checkout_candidates, ref_labels, refs_cap};
+    use super::{author_fits, branches_at, checkout_candidates, ref_labels, refs_cap, row_refs_cap};
     use crate::actions::{Action, GitAction};
     use crate::app::Ctx;
     use crate::config::Config;
@@ -1524,6 +1530,7 @@ mod tests {
             ("origin/parser, parser", "origin & parser"),
             ("origin/parser", "origin/parser"),
             ("origin/only", "origin/only"),
+            ("origin/parser, origin/only", "origin/only, origin/parser"),
             ("feature/y, origin/feature/y", "origin & feature/y"),
             ("feature/x, x", "feature/x, x"),
             ("tag: v0.1.0, parser", "parser, tag: v0.1.0"),
@@ -1537,6 +1544,16 @@ mod tests {
             assert_eq!(ref_labels(refs, &branches, 100), want, "refs {refs:?}");
         }
         assert_eq!(ref_labels("main, origin/main", &[], 100), "main, origin/main");
+    }
+
+    #[test]
+    fn row_refs_cap_takes_what_the_subject_leaves() {
+        assert_eq!(row_refs_cap(26, 100), 15);
+        assert_eq!(row_refs_cap(26, 3), 22);
+        assert_eq!(row_refs_cap(14, 9), 4);
+        assert_eq!(row_refs_cap(14, 11), 0);
+        assert_eq!(row_refs_cap(0, 3), 0);
+        assert_eq!(row_refs_cap(26, u16::MAX), 15);
     }
 
     #[test]

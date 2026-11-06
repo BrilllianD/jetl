@@ -1701,7 +1701,7 @@ sh /tmp/jt25-s1/make-repo.sh
 # with an uncommitted edit (`echo edit >> $T/a.txt`, then F5), the menu on "one local": an error toast from git
 # switch, still `main`, the edit still in a.txt (restore with `git -C $T checkout -- a.txt`)
 # Ref column, same fixture, Log open (Alt+9, Alt+L): every row reads graph, hash, subject, then the refs ending at one column,
-# then (120x40 only) author and date. Refs take what a short subject leaves, and the author and date give way before refs are cut.
+# then (120x40 only) author and date. Refs take what a short subject leaves. The author and date go only when the row would leave refs under 15 columns, so a longer label is cut beside them.
 # Labels read the current branch ("* x"), other local branches by name, remote-only branches, then tags; "origin & main" merges
 # a remote into its local branch; under the cap the merged prefixes drop first ("solo", "* solo"), so the branch Checkout takes shows.
 # 80x24: top "* origin & main"; long name "feature/a-rather-long-br…"; no branch: no label; clash remote "origin/clash";
