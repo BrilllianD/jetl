@@ -105,6 +105,7 @@ impl App {
             AppMsg::Dap(m) => self.dap_msg(m),
             AppMsg::DebugOutput { generation, session, lines } => self.debug_output(generation, session, lines),
             AppMsg::DebugReady { generation, seq, result } => self.debug_ready(generation, seq, *result),
+            AppMsg::DebugBuilt { generation, seq, end, artifacts } => self.debug_built(generation, seq, end, artifacts),
             AppMsg::Locations { generation, seq, title, items } => self.locations_loaded(generation, seq, title, items),
             AppMsg::QuickDefinition { generation, tag, heading, code, lang } => {
                 self.quick_definition_loaded(generation, tag, heading, code, lang)

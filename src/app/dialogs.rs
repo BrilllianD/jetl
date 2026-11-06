@@ -333,6 +333,8 @@ impl App {
             (DialogId::Info, _) => {}
             (DialogId::LspConfirmEdit(seq), DialogResult::Button(b)) => self.lsp_confirm_edit(seq, b == 0),
             (DialogId::LspConfirmEdit(seq), DialogResult::Cancel) => self.lsp_confirm_edit(seq, false),
+            (DialogId::DebugArtifact { seq }, DialogResult::Choice(i)) => self.debug_artifact_chosen(seq, Some(i)),
+            (DialogId::DebugArtifact { seq }, DialogResult::Cancel) => self.debug_artifact_chosen(seq, None),
             (_, DialogResult::Cancel) => {}
             (
                 id @ (DialogId::WorktreeCreateKind

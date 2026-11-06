@@ -2,8 +2,9 @@
 //! decides every ordering rule of a session (no IO, no clock of its own). `client` is the driver that owns
 //! the process and the clock and feeds the machine; `fake`, tests only, is an in-process adapter speaking each
 //! start order real adapters use. `config` is the adapter table and the debug blocks that choose and launch one. `console`
-//! turns the program's `output` events into Console lines on a thread of its own; `panel` is the Debug tool window.
+//! turns the program's `output` events into Console lines on a thread of its own; `panel` is the Debug tool window. `build` reads the output of a Debug build step and the executables it names.
 
+pub(crate) mod build;
 pub mod client;
 pub mod config;
 pub(crate) mod console;

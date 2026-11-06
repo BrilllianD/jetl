@@ -4379,6 +4379,52 @@ async fn debug_window_running() {
 }
 
 #[tokio::test]
+async fn debug_window_building() {
+    use super::debug::tests::{caps, console_until, with_fake_adapters, write_run_toml};
+    use crate::dap::fake::Order;
+    let mut fx = stable_app("debug-building");
+    let app = &mut fx.app;
+    let _fakes = with_fake_adapters(app, caps(), Order::LaunchEarly);
+    let text = "[[configs]]\nname = \"demo\"\ncommand = [\"./demo\"]\n\n[debug.demo]\nadapter = \"fake\"\nbuild = [\"sh\", \"-c\", \"echo building; sleep 30\"]\nlaunch = { program = \"${artifact}\" }\n";
+    write_run_toml(app, text);
+    app.perform(crate::actions::Action::Debug(crate::actions::DebugAction::Start));
+    console_until(app, |a| a.debug_panel.texts().contains(&"building")).await;
+    // The toasts sit in the stack as well as in the log.
+    app.notifications.clear();
+    app.toasts = Default::default();
+    let term = draw_app(app, 120, 40);
+    let marks = debug_marks(&app.theme);
+    assert_snapshot!("debug_window_building", snapshot(&term, &marks, None));
+    app.perform(crate::actions::Action::Debug(crate::actions::DebugAction::Stop));
+}
+
+#[tokio::test]
+async fn debug_artifact_choice() {
+    use super::debug::tests::{caps, console_until, with_fake_adapters, write_run_toml};
+    use crate::dap::fake::Order;
+    let mut fx = stable_app("debug-artifact-choice");
+    let app = &mut fx.app;
+    let _fakes = with_fake_adapters(app, caps(), Order::LaunchEarly);
+    let root = app.workspace.root.clone();
+    let line = |name: &str| {
+        serde_json::json!({"reason": "compiler-artifact", "target": {"name": name, "kind": ["bin"]}, "profile": {"test": false}, "executable": root.join("target/debug").join(name)})
+            .to_string()
+    };
+    std::fs::write(root.join("one.jsonl"), format!("{}\n{}\n", line("zeta"), line("alpha"))).unwrap();
+    let text = "[[configs]]\nname = \"demo\"\ncommand = [\"./demo\"]\n\n[debug.demo]\nadapter = \"fake\"\nbuild = [\"cat\", \"one.jsonl\"]\nlaunch = { program = \"${artifact}\" }\n";
+    write_run_toml(app, text);
+    app.perform(crate::actions::Action::Debug(crate::actions::DebugAction::Start));
+    console_until(app, |a| a.dialog.is_some()).await;
+    app.notifications.clear();
+    app.toasts = Default::default();
+    let term = draw_app(app, 120, 40);
+    let marks = debug_marks(&app.theme);
+    assert_snapshot!("debug_artifact_choice", snapshot(&term, &marks, None));
+    app.dialog = None;
+    app.perform(crate::actions::Action::Debug(crate::actions::DebugAction::Stop));
+}
+
+#[tokio::test]
 async fn debug_window_console() {
     use crate::dap::session::SessionId;
     use crate::run::matcher::{Link, RunLine, Severity};

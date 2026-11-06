@@ -3,16 +3,17 @@
 //! `[run.debug.<name>]` in config.toml), which adapter is chosen and what `launch` carries.
 //!
 //! Pure over an injected `doctor::Find` and environment. Only `load_debug_blocks` touches the disk, and
-//! nothing here starts a process.
+//! nothing here starts a process: `resolve_build` only describes the build step.
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Deserializer};
 use serde_json::{Map, Value, json};
 
 use crate::doctor::Find;
-use crate::run::RunTask;
+use crate::run::process::Spec;
+use crate::run::{Origin, RunTask};
 
 /// `launch` as written: a table, or refused when the file is parsed.
 fn table<'de, D: Deserializer<'de>>(d: D) -> Result<Value, D::Error> {
@@ -67,6 +68,8 @@ pub struct DebugBlock {
     pub adapter: Option<String>,
     /// A jetl language id; unset, the active buffer's.
     pub language: Option<String>,
+    /// The command to run first, as words; empty means none.
+    pub build: Option<Vec<String>>,
     /// The adapter's `launch` arguments, passed on as they stand (after variables); `Null` when omitted.
     #[serde(deserialize_with = "table")]
     pub launch: Value,
@@ -82,6 +85,8 @@ pub struct LaunchVars {
 
 /// Fills in the language an adapter runs for; see `choose_adapter`.
 const LANGUAGE_VAR: &str = "${language}";
+/// Filled in from the build's executable; see `fill_artifact`.
+const ARTIFACT_VAR: &str = "${artifact}";
 
 struct Builtin {
     name: &'static str,
@@ -168,13 +173,23 @@ fn substitute(v: &mut Value, vars: &[(&str, &str)]) {
     }
 }
 
-fn mentions_language(v: &Value) -> bool {
+fn mentions(v: &Value, var: &str) -> bool {
     match v {
-        Value::String(s) => s.contains(LANGUAGE_VAR),
-        Value::Array(a) => a.iter().any(mentions_language),
-        Value::Object(o) => o.values().any(mentions_language),
+        Value::String(s) => s.contains(var),
+        Value::Array(a) => a.iter().any(|e| mentions(e, var)),
+        Value::Object(o) => o.values().any(|e| mentions(e, var)),
         _ => false,
     }
+}
+
+/// Whether `launch` holds `${artifact}` anywhere.
+pub fn needs_artifact(launch: &Value) -> bool {
+    mentions(launch, ARTIFACT_VAR)
+}
+
+/// Replaces `${artifact}` in every string of `launch`.
+pub fn fill_artifact(launch: &mut Value, path: &str) {
+    substitute(launch, &[(ARTIFACT_VAR, path)]);
 }
 
 /// With a language, `${language}` becomes it; without one, the top-level keys that mention it are removed.
@@ -183,7 +198,7 @@ fn fill_language(launch: &mut Value, language: Option<&str>) {
         Some(l) => substitute(launch, &[(LANGUAGE_VAR, l)]),
         None => {
             if let Some(o) = launch.as_object_mut() {
-                o.retain(|_, v| !mentions_language(v));
+                o.retain(|_, v| !mentions(v, LANGUAGE_VAR));
             }
         }
     }
@@ -233,6 +248,59 @@ fn extend(out: &mut Map<String, Value>, v: &Value) {
     }
 }
 
+fn var_pairs(vars: &LaunchVars) -> Vec<(&str, &str)> {
+    let mut pairs = vec![("${workspaceFolder}", vars.workspace_folder.as_str())];
+    pairs.extend(vars.file.as_deref().map(|f| ("${file}", f)));
+    pairs.extend(vars.artifact.as_deref().map(|a| (ARTIFACT_VAR, a)));
+    pairs
+}
+
+/// The task's `cwd` with the variables replaced, joined to the root (an absolute one replaces it); else the root.
+fn task_cwd(task: &RunTask, vars: &LaunchVars, pairs: &[(&str, &str)]) -> String {
+    match task.cwd.as_deref().filter(|c| !c.is_empty()) {
+        Some(c) => {
+            let mut c = Value::String(c.to_string());
+            substitute(&mut c, pairs);
+            Path::new(&vars.workspace_folder).join(c.as_str().unwrap_or_default()).to_string_lossy().into_owned()
+        }
+        None => vars.workspace_folder.clone(),
+    }
+}
+
+/// The step to run before the adapter: the block's `build` words with `${workspaceFolder}` and `${file}`
+/// replaced, run in the task's `cwd` with its `env`. `None` when the block has no build or its program is empty.
+pub fn resolve_build(block: &DebugBlock, task: &RunTask, vars: &LaunchVars) -> Option<Spec> {
+    let words = block.build.as_ref().filter(|w| w.first().is_some_and(|p| !p.is_empty()))?;
+    let pairs = var_pairs(vars);
+    let argv = words
+        .iter()
+        .map(|w| {
+            let mut v = Value::String(w.clone());
+            substitute(&mut v, &pairs);
+            v.as_str().unwrap_or_default().to_string()
+        })
+        .collect();
+    Some(Spec {
+        argv,
+        cwd: PathBuf::from(task_cwd(task, vars, &pairs)),
+        env: task.env.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+    })
+}
+
+/// The block a detected Cargo task is debugged with when none is written: build it with JSON messages
+/// and debug what it names as `${artifact}`.
+pub fn default_block(task: &RunTask) -> Option<DebugBlock> {
+    if task.origin != Origin::Detected {
+        return None;
+    }
+    let build: &[&str] = match task.command.display().as_str() {
+        "cargo build" | "cargo run" => &["cargo", "build", "--message-format=json"],
+        "cargo test" => &["cargo", "test", "--no-run", "--message-format=json"],
+        _ => return None,
+    };
+    Some(DebugBlock { adapter: None, language: Some("rust".into()), build: Some(strings(build)), launch: json!({"program": ARTIFACT_VAR}) })
+}
+
 /// The `launch` arguments for a session. Later wins, by top-level key: the adapter's `launch`; `cwd`
 /// (the task's, with the variables replaced, joined to the root, so an absolute result replaces the root; else the root); `env` (the task's, with jetl's beneath it when the adapter
 /// takes the exact environment; left out when empty); the block's `launch`. Then `${workspaceFolder}`,
@@ -247,18 +315,8 @@ pub fn resolve_launch(
 ) -> Value {
     let mut out = Map::new();
     extend(&mut out, &adapter.launch);
-    let mut pairs = vec![("${workspaceFolder}", vars.workspace_folder.as_str())];
-    pairs.extend(vars.file.as_deref().map(|f| ("${file}", f)));
-    pairs.extend(vars.artifact.as_deref().map(|a| ("${artifact}", a)));
-    let cwd = match task.cwd.as_deref().filter(|c| !c.is_empty()) {
-        Some(c) => {
-            let mut c = Value::String(c.to_string());
-            substitute(&mut c, &pairs);
-            Path::new(&vars.workspace_folder).join(c.as_str().unwrap_or_default()).to_string_lossy().into_owned()
-        }
-        None => vars.workspace_folder.clone(),
-    };
-    out.insert("cwd".into(), cwd.into());
+    let pairs = var_pairs(vars);
+    out.insert("cwd".into(), task_cwd(task, vars, &pairs).into());
     let mut merged = if adapter.exact_env { env() } else { BTreeMap::new() };
     merged.extend(task.env.iter().map(|(k, v)| (k.clone(), v.clone())));
     if !merged.is_empty() {
@@ -335,7 +393,7 @@ mod tests {
     }
 
     fn block(adapter: Option<&str>, language: Option<&str>, launch: Value) -> DebugBlock {
-        DebugBlock { adapter: adapter.map(String::from), language: language.map(String::from), launch }
+        DebugBlock { adapter: adapter.map(String::from), language: language.map(String::from), build: None, launch }
     }
 
     fn names(cfg: &DebugConfig) -> Vec<String> {
@@ -644,5 +702,81 @@ mod tests {
         if let Ok(path) = std::env::var("PATH") {
             assert_eq!(process_env().get("PATH"), Some(&path));
         }
+    }
+
+    fn cargo_task(name: &str, command: &[&str], origin: Origin) -> RunTask {
+        RunTask {
+            name: name.into(),
+            command: TaskCommand::Argv(command.iter().map(|s| s.to_string()).collect()),
+            origin,
+            ..task(None, &[])
+        }
+    }
+
+    #[test]
+    fn default_block_only_for_detected_cargo() {
+        let get = |cmd: &[&str], origin| default_block(&cargo_task("t", cmd, origin));
+        let cargo = |build: &[&str]| DebugBlock {
+            adapter: None,
+            language: Some("rust".into()),
+            build: Some(strings(build)),
+            launch: json!({"program": "${artifact}"}),
+        };
+        let json_build = &["cargo", "build", "--message-format=json"];
+        assert_eq!(get(&["cargo", "build"], Origin::Detected), Some(cargo(json_build)));
+        assert_eq!(get(&["cargo", "run"], Origin::Detected), Some(cargo(json_build)));
+        assert_eq!(get(&["cargo", "test"], Origin::Detected), Some(cargo(&["cargo", "test", "--no-run", "--message-format=json"])));
+        for other in [&["make"][..], &["npm", "run", "x"], &["go", "test", "./..."]] {
+            assert_eq!(get(other, Origin::Detected), None, "{other:?}");
+        }
+        for origin in [Origin::Project, Origin::Config] {
+            assert_eq!(get(&["cargo", "build"], origin), None, "{origin:?}");
+        }
+    }
+
+    #[test]
+    fn resolve_build_substitutes_and_uses_the_tasks_cwd() {
+        let mut b = block(None, None, json!({"cwd": "/elsewhere"}));
+        b.build = Some(vec!["make".into(), "-C".into(), "${workspaceFolder}/sub".into(), "F=${file}".into()]);
+        let spec = resolve_build(&b, &task(Some("proj"), &[("A", "1")]), &vars()).unwrap();
+        assert_eq!(spec.argv, ["make", "-C", "/w/sub", "F=/w/a.c"]);
+        assert_eq!(spec.cwd, Path::new("/w/proj"), "the task's cwd, not the launch's");
+        assert_eq!(spec.env, [("A".to_string(), "1".to_string())]);
+        assert_eq!(resolve_build(&b, &task(None, &[]), &vars()).unwrap().cwd, Path::new("/w"));
+        // An absolute cwd replaces the root, as for launch.
+        assert_eq!(resolve_build(&b, &task(Some("/abs"), &[]), &vars()).unwrap().cwd, Path::new("/abs"));
+        for none in [None, Some(vec![]), Some(vec![String::new()]), Some(vec![String::new(), "x".into()])] {
+            b.build = none.clone();
+            assert!(resolve_build(&b, &task(None, &[]), &vars()).is_none(), "{none:?}");
+        }
+        // `${artifact}` in a build word stays as written.
+        b.build = Some(vec!["echo".into(), "${artifact}".into()]);
+        assert_eq!(resolve_build(&b, &task(None, &[]), &vars()).unwrap().argv, ["echo", "${artifact}"]);
+    }
+
+    #[test]
+    fn artifact_is_found_and_filled_anywhere() {
+        let mut v = json!({"program": "${artifact}", "args": ["-x", {"deep": "a${artifact}b"}], "n": 3});
+        assert!(needs_artifact(&v));
+        assert!(!needs_artifact(&json!({"program": "x", "args": ["${file}"]})));
+        fill_artifact(&mut v, "/t/prog");
+        assert_eq!(v, json!({"program": "/t/prog", "args": ["-x", {"deep": "a/t/progb"}], "n": 3}));
+        assert!(!needs_artifact(&v));
+    }
+
+    #[test]
+    fn a_build_that_is_not_a_list_is_refused() {
+        let dir = std::env::temp_dir().join(format!("jetl-test-debug-build-type-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".jetl")).unwrap();
+        std::fs::write(dir.join(".jetl/run.toml"), "[debug.a]\nbuild = \"make\"\n").unwrap();
+        let (blocks, error) = load_debug_blocks(&dir, &BTreeMap::new());
+        assert!(blocks.is_empty());
+        assert!(error.is_some_and(|e| e.starts_with(".jetl/run.toml: ")));
+        std::fs::write(dir.join(".jetl/run.toml"), "[debug.a]\nbuild = [\"make\", \"x\"]\n").unwrap();
+        let (blocks, error) = load_debug_blocks(&dir, &BTreeMap::new());
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(error.is_none(), "{error:?}");
+        assert_eq!(blocks["a"].build, Some(vec!["make".to_string(), "x".to_string()]));
     }
 }

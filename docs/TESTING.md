@@ -1116,6 +1116,43 @@ last line (gdb is line-based), `telemetry`, a `Failed` verdict's message, a verd
 start (gdb reports those by event), stale `DebugOutput`, a root switch, the other start orders. Alt+F5 from a physical
 keyboard through the terminal emulator into tmux stays the user's to confirm.
 
+### Scenario: Debug build step
+
+Needs `gdb` 14 or newer (the run used 17.2) and `cargo`, no network. At 80x24 and at 120x40, a private tmux socket,
+`XDG_*` directories under `/tmp`, `[lsp] enabled = false`, `[ui] toolbar = false`. Fixture `/tmp/jetl-dap-rust`, a
+Cargo package `r` with no dependencies: `src/main.rs` has `fn add` with `let sum = a + b;` on line 2 and prints
+`x=3`; later steps add `src/bin/other.rs` and a type error on line 7. Start only when `pgrep -f '[g]db -q -i=dap'`
+and `pgrep -fx 'sleep 300'` print nothing. A step reads the pane only with no toast on it, except where it greps its
+own capture (at 80x24 toasts cover the gutter). The script of the last run is
+`~/.claude/plans/backlog-run-24-D3b-evidence/scripts/d3b-scenario.sh`.
+
+1. No `.jetl/run.toml`, `cargo clean`, open `src/main.rs`, Ctrl+G 2, Ctrl+F8, Shift+F9: the toast `Building cargo build`,
+   then the title `Debug: cargo build · paused (breakpoint)` and `2▶`. The default block for a detected Cargo task
+   works with no file.
+2. The Console (Alt+F5, Home) starts with `$ cargo build --message-format=json`, then `Compiling r` and `Finished`;
+   no line holds `"reason"`, and gdb's own `No source file named` line follows (yman 427).
+3. F9: `x=3` in the Console and `Debug session ended, exit code 0`. Shift+F9 again, up to date: it stops again and the
+   Console has `Finished` and no `Compiling`.
+4. A type error in `main.rs`, Shift+F9: the title `build failed`, a toast naming `exit code 101`, the `error[E0308]`
+   text in the Console and a click on its `src/main.rs:7:18` link opens the file; no gdb is left. With the window
+   hidden (Alt+F5) the same toast shows.
+5. Restore, add `src/bin/other.rs`, Shift+F9: the dialog `The build made 2 executables. Which one?`; Esc gives the
+   toast `Debug start cancelled`, the title `not started` and no gdb. Again, type `other`, Enter: gdb runs `other`.
+6. A Run task `sleepy` (`sleep 300`) running, Shift+F9 on a two-executable build, Esc: the sleep is still there (a
+   cancelled choice stops nothing else).
+7. `build = ["sh", "-c", "echo building; sleep 300"]`: Shift+F9, then Ctrl+F2, or a click on Stop: `Debug start cancelled`,
+   the title `not started`, and the build's sleep is gone. Rewriting `run.toml` and pressing Shift+F9 during a build
+   kills the old build and the Console no longer holds its lines.
+8. `build = ["yes", "spew"]`: Shift+F9, 5 s, Ctrl+F2: keys answer throughout, no `yes` is left. jetl's RSS was
+   100360 kB at about 1 s, 103028 kB at about 5 s and 103028 kB after the cancel at 120x40; 100648, 103296 and
+   103656 kB at 80x24 (yman 425).
+9. `launch = { program = "${artifact}" }` with no `build`: the toast `Cannot debug 'sleepy': ${artifact} needs a build
+   step`, no gdb, no process.
+10. The sleeping build, Ctrl+Q: exit 0, empty stderr, no `sleep` left.
+
+What gdb cannot show: Rust formatting under codelldb or lldb-dap, the default under any adapter but gdb 17.2, the
+Variables tree, a real multi-member workspace, a compiler message over 16 KiB from a real rustc, other Cargo versions.
+
 ### Scenario: Save As
 
 At 80x24 and at 120x40, with `run()` and `$T` from the crash recovery

@@ -168,6 +168,10 @@ pub enum DialogId {
     /// A workspace edit with changes that need confirmation (`EditReqs::confirm`, by seq):
     /// Apply / Cancel.
     LspConfirmEdit(u64),
+    /// Which executable a Debug build made to launch: item `i` is `artifacts[i]` of the pending choice. Stale once `seq` is not the current start's.
+    DebugArtifact {
+        seq: u64,
+    },
     /// Git > Resolve Conflicts: item `i` is conflicted path `rels[i]`
     /// (relative to the work tree).
     ResolveConflictPick(Vec<String>),

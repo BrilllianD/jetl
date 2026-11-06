@@ -202,6 +202,7 @@ timeout_ms = 5000              # a formatter still running after this is killed
 # [run.debug.demo]
 # adapter = "gdb"                # unset: the first installed for the language
 # language = "c"                 # unset: the active buffer's language
+# build = ["make", "demo"]        # run first, as words; ${artifact} comes from cargo's JSON
 # launch = { program = "${workspaceFolder}/demo", args = ["x"] }  # passed to the adapter's launch request
 
 # Built-in debug adapters take changes here; a table with a new name adds
@@ -417,16 +418,49 @@ this); the block's `launch`. So a block's `env` replaces the whole of it, and
 with gdb it is the debuggee's whole environment: `env = { A = "1" }` drops
 `PATH` and `HOME`. Then `${workspaceFolder}`, `${file}` and `${artifact}` are replaced in every
 string value, not in keys; one with no value stays as written, and the adapter
-reports it. Values go in as they are, unquoted, so a file name with odd
+reports it, except `${artifact}`, which Debug fills from the build or refuses (below). Values go in as they are, unquoted, so a file name with odd
 characters reaches a debugger command as written when a block puts `${file}`
 in one. The configuration's `command` and `args` are not used under Debug: the adapter
 starts the program named in `launch`.
+
+`build` is a list of words, a command to run before the adapter starts (`build = ["make", "demo"]`;
+a string is a configuration error). It runs in the configuration's `cwd` with its `env`, not the `launch`
+table's, and `${workspaceFolder}` and `${file}` are replaced in its words. Its output goes to the Debug
+window's Console, after a `$ ` line with the command. Five rules apply to that output:
+
+- A line of Cargo's `--message-format=json` stream that names a compiler message shows the message's
+  own text, with links to the source as in Run.
+- A line naming an executable is not shown; it is kept for `${artifact}`.
+- Lines for finished build scripts and the end of the build are not shown.
+- Any other line, JSON or not, shows as written, so a tool other than Cargo prints normally.
+- A line over 4 MiB is cut and shown as text, and at most 1000 executables are kept.
+
+While the build runs the title says `building` and Stop works. Stop, Ctrl+F2 or Run > Stop Debugging kills
+the build and its children, so does starting Debug again, switching the project, or quitting. A build that
+exits with a code or a signal, or cannot start, gives the title `build failed`, a toast and a line in the
+Console, and no session starts. Ctrl+F2 under a dialog still stops a Run task, not the build.
+
+`${artifact}` is the path of the executable the build made, taken from Cargo's JSON (so the build needs
+`--message-format=json`). When the build made several (a package with a `src/bin`, `cargo test --no-run`),
+a dialog asks which; Esc cancels the start and stops nothing else, a Run task included. A build that made
+none, or a launch that uses `${artifact}` with no `build`, is refused with a toast and starts nothing.
+`${artifact}` is replaced in every string of `launch`, not in the `build` words. A path with a line break
+in a `launch.cwd` that uses it is refused like any other.
+
+A Cargo task that jetl detects (`cargo build`, `cargo run`, `cargo test`) has a default debug block when
+none is written: `build = ["cargo", "build", "--message-format=json"]` (`cargo test` builds with
+`--no-run`), `launch = { program = "${artifact}" }` and the language `rust`, so pressing Debug in a Cargo
+project needs no `.jetl/run.toml`. A block you write for that name wins whole. Tasks you wrote in
+`config.toml` or `.jetl/run.toml` have no default.
 
 **A project's `.jetl/run.toml` can run commands through Debug.** `launch`
 can carry debugger commands (`initCommands` in lldb-dap and codelldb, for
 example), and the file chooses the program and the adapter by name, so
 pressing Debug in a project can run anything that file says, exactly as
-pressing Run can today. There is no separate confirmation. Nothing starts
+pressing Run can today. `build` is the same: it runs its commands when you press Debug, with your rights
+and no confirmation. With no `.jetl/run.toml` at all, pressing Debug in a Cargo project runs `cargo`,
+which runs build scripts and procedural macros and obeys `.cargo/config.toml`, exactly as Run does on
+`cargo run`. There is no separate confirmation. Nothing starts
 until you press it, so read the `.jetl/run.toml` of a project you do not
 trust first. A project file cannot define or change an adapter's command;
 `[debug.adapters.*]` is read from your config.toml only. A relative `command`

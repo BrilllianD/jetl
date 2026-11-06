@@ -245,6 +245,13 @@ pub enum AppMsg {
         seq: u64,
         result: Box<Result<crate::app::Prepared, String>>,
     },
+    /// A Debug build step ended. Stale when `generation` or `seq` is not the current one, as `DebugReady`.
+    DebugBuilt {
+        generation: u64,
+        seq: u64,
+        end: crate::run::process::RunEnd,
+        artifacts: Vec<crate::dap::build::Artifact>,
+    },
     /// A batch of the program's output, split and matched off the main thread. Stale when `generation` is not the
     /// current one or `session` is not the Debug window's: lines can come after the session ended, so `Live` is
     /// not asked.

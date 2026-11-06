@@ -104,41 +104,64 @@ pub async fn drive(
     tx: UnboundedSender<AppMsg>,
     pid: Arc<AtomicU32>,
 ) {
+    let mut split = LineSplitter::default();
+    let mut classify = move |l: String| match matcher.as_mut() {
+        Some(m) => m.line(l),
+        None => RunLine::plain(l),
+    };
+    let feed = move |bytes: Option<&[u8]>| -> Vec<RunLine> {
+        match bytes {
+            Some(b) => split.push(b).into_iter().map(&mut classify).collect(),
+            None => split.finish().into_iter().map(&mut classify).collect(),
+        }
+    };
+    let end = pump(
+        task,
+        feed,
+        |lines| {
+            let _ = tx.send(AppMsg::RunOutput { generation, run, lines });
+        },
+        pid,
+    )
+    .await;
+    let _ = tx.send(AppMsg::RunExited { generation, run, end });
+}
+
+/// Read `task`'s output through `feed` on a reader thread (`None` once, at
+/// the end of the output) and hand what it returns to `emit` at most every
+/// [`BATCH`], never as an empty batch. Returns how the task ended. `pid` is
+/// cleared when the leader is reaped.
+pub(crate) async fn pump<T: Send + 'static>(
+    task: Spawned,
+    mut feed: impl FnMut(Option<&[u8]>) -> Vec<T> + Send + 'static,
+    mut emit: impl FnMut(Vec<T>),
+    pid: Arc<AtomicU32>,
+) -> RunEnd {
     let Spawned { mut child, mut output, .. } = task;
-    let (line_tx, mut lines) = tokio::sync::mpsc::unbounded_channel::<Vec<RunLine>>();
+    let (item_tx, mut items) = tokio::sync::mpsc::unbounded_channel::<Vec<T>>();
     // A thread, not `spawn_blocking`: a background child that keeps the pipe
     // open must not hold up the runtime's shutdown.
     std::thread::spawn(move || {
-        let mut split = LineSplitter::default();
         let mut buf = [0u8; 8192];
         loop {
             let n = match output.read(&mut buf) {
                 Ok(0) | Err(_) => break,
                 Ok(n) => n,
             };
-            let batch: Vec<RunLine> = split
-                .push(&buf[..n])
-                .into_iter()
-                .map(|l| match matcher.as_mut() {
-                    Some(m) => m.line(l),
-                    None => RunLine::plain(l),
-                })
-                .collect();
-            if !batch.is_empty() && line_tx.send(batch).is_err() {
+            let batch = feed(Some(&buf[..n]));
+            if !batch.is_empty() && item_tx.send(batch).is_err() {
                 return;
             }
         }
-        if let Some(last) = split.finish() {
-            let _ = line_tx.send(vec![match matcher.as_mut() {
-                Some(m) => m.line(last),
-                None => RunLine::plain(last),
-            }]);
+        let last = feed(None);
+        if !last.is_empty() {
+            let _ = item_tx.send(last);
         }
     });
-    let mut pending: Vec<RunLine> = Vec::new();
-    let flush = |pending: &mut Vec<RunLine>| {
+    let mut pending: Vec<T> = Vec::new();
+    let mut flush = |pending: &mut Vec<T>| {
         if !pending.is_empty() {
-            let _ = tx.send(AppMsg::RunOutput { generation, run, lines: std::mem::take(pending) });
+            emit(std::mem::take(pending));
         }
     };
     let mut tick = tokio::time::interval(BATCH);
@@ -148,7 +171,7 @@ pub async fn drive(
     tokio::pin!(drain);
     loop {
         tokio::select! {
-            batch = lines.recv(), if !eof => match batch {
+            batch = items.recv(), if !eof => match batch {
                 Some(batch) => pending.extend(batch),
                 None => eof = true,
             },
@@ -168,7 +191,7 @@ pub async fn drive(
         }
     }
     flush(&mut pending);
-    let _ = tx.send(AppMsg::RunExited { generation, run, end: end.unwrap_or(RunEnd::Failed("no exit status".into())) });
+    end.unwrap_or(RunEnd::Failed("no exit status".into()))
 }
 
 fn exit_of(s: std::process::ExitStatus) -> RunEnd {

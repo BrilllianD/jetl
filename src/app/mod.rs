@@ -725,6 +725,7 @@ impl App {
         self.terminal_tick();
         self.lsp_confirm_orphaned();
         self.debug_sync_breakpoints();
+        self.debug_offer_artifacts();
     }
 
     fn autosave(&mut self) {

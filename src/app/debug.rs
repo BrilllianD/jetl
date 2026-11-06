@@ -5,6 +5,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use serde_json::{Value, json};
@@ -12,11 +14,14 @@ use tokio::task::JoinHandle;
 
 use super::App;
 use crate::actions::DebugAction;
+use crate::dap::build::{Artifact, BuildTags, drive_build};
 use crate::dap::client::{DapClient, SHUTDOWN_LIMIT};
 use crate::dap::config::{
-    AdapterConfig, DebugBlock, DebugConfig, LaunchVars, choose_adapter, load_debug_blocks, process_env, resolve_launch,
+    AdapterConfig, DebugBlock, DebugConfig, LaunchVars, choose_adapter, default_block, fill_artifact, load_debug_blocks, needs_artifact,
+    process_env, resolve_build, resolve_launch,
 };
 use crate::dap::console::spawn_console;
+use crate::dap::panel::BuildStage;
 use crate::dap::protocol::{Breakpoint, BreakpointEvent, OutputEvent, StackFrame, StackTraceBody, StoppedEvent, ThreadsBody, body_of};
 use crate::dap::session::{Command, DapTag, Phase, ResumeKind, SessionId, SessionSpec, SourceBreakpoints, TagKind};
 use crate::dap::{DapBody, DapMsg};
@@ -27,8 +32,9 @@ use crate::event::{AppMsg, Level};
 use crate::lsp::client::Conn;
 use crate::lsp::client::spawn_process;
 use crate::run::matcher::{Link, RunLine, Severity};
-use crate::run::process::clean;
-use crate::run::{RunTask, load_tasks};
+use crate::run::process::{RunEnd, Spec, clean, kill_group};
+use crate::run::{RunTask, load_tasks, quote_word};
+use crate::ui::dialog::{Dialog, DialogId};
 use crate::ui::focus::{PanelId, ToolWindowId};
 
 /// How adapters are reached: processes, or in-process fakes in tests.
@@ -60,6 +66,32 @@ pub(super) struct Live {
     pub(super) console: std::sync::mpsc::Sender<OutputEvent>,
 }
 
+/// Kills the build's process group when dropped: a replace, a Stop, a root switch, a quit, or the app going.
+/// The id is 0 once the leader is reaped, so a reused id is never signalled.
+struct BuildGroup(Arc<AtomicU32>);
+
+impl Drop for BuildGroup {
+    fn drop(&mut self) {
+        kill_group(self.0.load(Ordering::SeqCst));
+    }
+}
+
+/// A build step that is running; its `DebugBuilt` is what ends the stage.
+struct Building {
+    _group: BuildGroup,
+    prepared: Prepared,
+    session: SessionId,
+}
+
+/// A finished build that made several executables, waiting for the user to pick one.
+struct Choice {
+    prepared: Prepared,
+    session: SessionId,
+    artifacts: Vec<Artifact>,
+    /// The dialog was opened.
+    offered: bool,
+}
+
 #[derive(Default)]
 pub struct DebugState {
     session: Option<Live>,
@@ -74,6 +106,8 @@ pub struct DebugState {
     connector: Connector,
     /// The Debug window was shown by a first start in this run; a later start leaves it as the user has it.
     window_shown: bool,
+    building: Option<Building>,
+    choice: Option<Choice>,
 }
 
 impl DebugState {
@@ -103,6 +137,9 @@ impl DebugState {
 
     /// Stops the live session gracefully and returns what to wait for. `DapClient::shutdown` sends its own `Stop`.
     fn retire(&mut self) -> Option<JoinHandle<()>> {
+        // Dropping the build kills its process group.
+        self.building = None;
+        self.choice = None;
         let before = self.retiring.take();
         let Some(live) = self.session.take() else { return before };
         let stop = live.client.shutdown();
@@ -113,6 +150,16 @@ impl DebugState {
             stop.await;
         }))
     }
+
+    /// A build step runs, or its executables wait for a choice.
+    fn pending_build(&self) -> bool {
+        self.building.is_some() || self.choice.is_some()
+    }
+
+    fn new_session_id(&mut self) -> SessionId {
+        self.next_id += 1;
+        SessionId(self.next_id)
+    }
 }
 
 /// What `debug.start` chose, ready to launch.
@@ -121,6 +168,8 @@ pub struct Prepared {
     pub name: String,
     pub adapter: AdapterConfig,
     pub launch: Value,
+    /// The step to run before the adapter; taken when it starts.
+    pub build: Option<Spec>,
 }
 
 struct Job {
@@ -231,28 +280,40 @@ fn prepare(job: Job) -> Result<Prepared, String> {
     if let Some(e) = blocks_error.or(tasks_error) {
         return Err(e);
     }
+    let block_of = |t: &RunTask| blocks.get(&t.name).cloned().or_else(|| default_block(t));
     let (task, block) = match &job.selected {
         Some(name) => {
             let task = tasks.iter().find(|t| &t.name == name).ok_or_else(|| format!("Run configuration '{name}' no longer exists"))?;
             let block =
-                blocks.get(name).ok_or_else(|| format!("Configuration '{name}' has no [debug.\"{name}\"] table in .jetl/run.toml"))?;
+                block_of(task).ok_or_else(|| format!("Configuration '{name}' has no [debug.\"{name}\"] table in .jetl/run.toml"))?;
             (task, block)
         }
+        // A written block wins over a default, whatever the order of the tasks.
         None => tasks
             .iter()
-            .find_map(|t| blocks.get(&t.name).map(|b| (t, b)))
+            .find_map(|t| blocks.get(&t.name).map(|b| (t, b.clone())))
+            .or_else(|| tasks.iter().find_map(|t| default_block(t).map(|b| (t, b))))
             .ok_or_else(|| "No debug configuration: add [debug.<name>] to .jetl/run.toml".to_string())?,
     };
     let root = job.root.as_path();
     let adapter =
-        choose_adapter(&job.debug, block, job.language.as_deref(), &|cmd| crate::doctor::resolve(cmd, root, &crate::util::fs::which))?;
+        choose_adapter(&job.debug, &block, job.language.as_deref(), &|cmd| crate::doctor::resolve(cmd, root, &crate::util::fs::which))?;
     let vars = LaunchVars { workspace_folder: root.to_string_lossy().into_owned(), file: job.file, artifact: None };
-    let launch = resolve_launch(&adapter, block, task, &vars, &process_env);
-    // gdb runs `cd <cwd>` unquoted, and `gdb.execute` runs each line of a string as a command.
-    if launch["cwd"].as_str().is_some_and(|c| c.contains('\n')) {
-        return Err(format!("Cannot debug '{}': line break in its working directory", task.name));
+    let launch = resolve_launch(&adapter, &block, task, &vars, &process_env);
+    let build = resolve_build(&block, task, &vars);
+    if build.is_none() && needs_artifact(&launch) {
+        return Err(format!("Cannot debug '{}': ${{artifact}} needs a build step: add build = [...] to its debug table", task.name));
     }
-    Ok(Prepared { name: task.name.clone(), adapter, launch })
+    check_cwd(&task.name, &launch)?;
+    Ok(Prepared { name: task.name.clone(), adapter, launch, build })
+}
+
+/// gdb runs `cd <cwd>` unquoted, and `gdb.execute` runs each line of a string as a command.
+fn check_cwd(name: &str, launch: &Value) -> Result<(), String> {
+    if launch["cwd"].as_str().is_some_and(|c| c.contains('\n')) {
+        return Err(format!("Cannot debug '{name}': line break in its working directory"));
+    }
+    Ok(())
 }
 
 impl App {
@@ -278,6 +339,10 @@ impl App {
     }
 
     fn debug_start(&mut self) {
+        // The build the press replaces is gone below; a start that is refused must not leave `building` on screen.
+        if self.debug.pending_build() {
+            self.debug_panel.set_stage(Some(BuildStage::NotStarted));
+        }
         let before = self.debug.retire();
         // The live session's `Ended` will be dropped, so its marks' states go now.
         self.editor.reset_breakpoint_states();
@@ -308,6 +373,11 @@ impl App {
             live.stop_requested = true;
             live.client.send(Command::Stop);
         } else if self.debug.starting {
+            if self.debug.pending_build() {
+                self.debug_panel.set_stage(Some(BuildStage::NotStarted));
+            }
+            self.debug.building = None;
+            self.debug.choice = None;
             self.debug.starting = false;
             self.debug.seq += 1;
             self.notify(Level::Info, "Debug start cancelled");
@@ -321,11 +391,135 @@ impl App {
             tracing::debug!("dropping the start of an older debug session");
             return;
         }
-        self.debug.starting = false;
-        let p = match result {
+        let mut p = match result {
             Ok(p) => p,
-            Err(e) => return self.notify(Level::Warn, e),
+            Err(e) => {
+                self.debug.starting = false;
+                return self.notify(Level::Warn, e);
+            }
         };
+        match p.build.take() {
+            Some(spec) => self.debug_begin_build(p, spec),
+            None => self.debug_launch(p, None),
+        }
+    }
+
+    /// The build step is a stage of the start: the session id is allocated now, so its lines are an ordinary
+    /// `DebugOutput` and a newer start's id drops what an older build prints late. `starting` stays true.
+    fn debug_begin_build(&mut self, p: Prepared, spec: Spec) {
+        let id = self.debug.new_session_id();
+        self.debug_panel.start(&p.name, id);
+        self.debug_panel.set_stage(Some(BuildStage::Building));
+        let words: Vec<String> = spec.argv.iter().map(|w| quote_word(w)).collect();
+        self.debug_panel.push(vec![RunLine::plain(format!("$ {}", words.join(" ")))]);
+        self.debug_show_window();
+        self.notify(Level::Info, format!("Building {}", p.name));
+        if !spec.cwd.is_dir() {
+            return self.debug_build_failed(format!("Cannot build '{}': {} is not a directory", p.name, spec.cwd.display()));
+        }
+        let task = match crate::run::process::spawn(&spec) {
+            Ok(t) => t,
+            Err(e) => {
+                let word = spec.argv.first().map_or("", String::as_str);
+                return self.debug_build_failed(format!("Cannot build '{}': cannot run {word}: {e}", p.name));
+            }
+        };
+        let pid = Arc::new(AtomicU32::new(task.pid));
+        let tags = BuildTags { generation: self.workspace.generation, seq: self.debug.seq, session: id };
+        let drive = drive_build(task, spec.cwd, self.workspace.root.clone(), tags, self.bus_tx.clone(), pid.clone());
+        // The prepare task that held this has finished: it sent the message being handled.
+        self.debug.retiring = Some(tokio::spawn(drive));
+        self.debug.building = Some(Building { _group: BuildGroup(pid), prepared: p, session: id });
+    }
+
+    /// The start ends here: the title, the Console and a toast say why.
+    fn debug_build_failed(&mut self, text: String) {
+        self.debug.starting = false;
+        self.debug_panel.set_stage(Some(BuildStage::Failed));
+        let mut line = RunLine::plain(text.clone());
+        line.severity = Some(Severity::Error);
+        self.debug_panel.push(vec![line]);
+        self.notify(Level::Warn, text);
+    }
+
+    /// A start refused after its build: nothing is launched.
+    fn debug_refuse(&mut self, text: String) {
+        self.debug.starting = false;
+        self.debug_panel.set_stage(Some(BuildStage::NotStarted));
+        self.notify(Level::Warn, text);
+    }
+
+    pub(super) fn debug_built(&mut self, generation: u64, seq: u64, end: RunEnd, artifacts: Vec<Artifact>) {
+        if generation != self.workspace.generation || seq != self.debug.seq {
+            tracing::debug!("dropping the end of an older debug build");
+            return;
+        }
+        let Some(Building { prepared: p, session, .. }) = self.debug.building.take() else { return };
+        let name = &p.name;
+        match end {
+            RunEnd::Code(0) => {}
+            RunEnd::Code(c) => return self.debug_build_failed(format!("Build of '{name}' failed with exit code {c}")),
+            RunEnd::Signal(s) => return self.debug_build_failed(format!("Build of '{name}' was killed by signal {s}")),
+            RunEnd::Failed(e) => return self.debug_build_failed(format!("Build of '{name}' failed: {e}")),
+        }
+        if !needs_artifact(&p.launch) {
+            return self.debug_launch(p, Some(session));
+        }
+        match artifacts.len() {
+            0 => self.debug_refuse(format!(
+                "Cannot debug '{name}': its build named no executable, so ${{artifact}} has no value. A Cargo build needs --message-format=json"
+            )),
+            1 => self.debug_launch_artifact(p, session, &artifacts[0]),
+            _ => {
+                self.debug.choice = Some(Choice { prepared: p, session, artifacts, offered: false });
+                self.debug_offer_artifacts();
+            }
+        }
+    }
+
+    /// Also on the tick: nothing is offered over a dialog, and the open one keeps its text.
+    pub(super) fn debug_offer_artifacts(&mut self) {
+        if self.dialog.is_some() {
+            return;
+        }
+        let root = self.workspace.root.clone();
+        let seq = self.debug.seq;
+        let Some(c) = self.debug.choice.as_mut().filter(|c| !c.offered) else { return };
+        c.offered = true;
+        let items: Vec<String> = c.artifacts.iter().map(|a| a.label(&root)).collect();
+        let message = format!("The build made {} executables. Which one?", items.len());
+        self.dialog = Some(Dialog::choice(DialogId::DebugArtifact { seq }, "Debug", &message, items));
+    }
+
+    /// The dialog's answer: `None` is a cancel, which starts nothing and stops nothing else.
+    pub(super) fn debug_artifact_chosen(&mut self, seq: u64, i: Option<usize>) {
+        if seq != self.debug.seq {
+            return;
+        }
+        let Some(c) = self.debug.choice.take() else { return };
+        match i.and_then(|i| c.artifacts.get(i).cloned()) {
+            Some(a) => self.debug_launch_artifact(c.prepared, c.session, &a),
+            None => {
+                self.debug.starting = false;
+                self.debug_panel.set_stage(Some(BuildStage::NotStarted));
+                self.notify(Level::Info, "Debug start cancelled");
+            }
+        }
+    }
+
+    fn debug_launch_artifact(&mut self, mut p: Prepared, session: SessionId, artifact: &Artifact) {
+        fill_artifact(&mut p.launch, &artifact.path.to_string_lossy());
+        if let Err(e) = check_cwd(&p.name, &p.launch) {
+            return self.debug_refuse(e);
+        }
+        self.debug_launch(p, Some(session));
+    }
+
+    /// Starts the adapter. `session` is the id the build's Console already has; without a build the id and the
+    /// Console are new, and a failed adapter start leaves the old Console as it was.
+    fn debug_launch(&mut self, p: Prepared, session: Option<SessionId>) {
+        self.debug.starting = false;
+        let generation = self.workspace.generation;
         let root = self.workspace.root.clone();
         let conn = match &mut self.debug.connector {
             Connector::Process => spawn_process(&p.adapter.name, &p.adapter.command, &root),
@@ -334,10 +528,14 @@ impl App {
         };
         let conn = match conn {
             Ok(c) => c,
-            Err(e) => return self.notify(Level::Error, format!("Debug adapter '{}' could not start: {e}", p.adapter.name)),
+            Err(e) => {
+                if session.is_some() {
+                    self.debug_panel.set_stage(None);
+                }
+                return self.notify(Level::Error, format!("Debug adapter '{}' could not start: {e}", p.adapter.name));
+            }
         };
-        self.debug.next_id += 1;
-        let id = SessionId(self.debug.next_id);
+        let id = session.unwrap_or_else(|| self.debug.new_session_id());
         let sent = self.editor.all_breakpoints();
         let open = open_sources(&self.editor, &sent);
         tracing::debug!("dap: breakpoints at start: {sent:?}");
@@ -351,7 +549,11 @@ impl App {
         let console = spawn_console(cwd, root.clone(), move |lines| {
             let _ = output_tx.send(AppMsg::DebugOutput { generation, session: id, lines });
         });
-        self.debug_panel.start(&p.name, id);
+        if session.is_none() {
+            self.debug_panel.start(&p.name, id);
+        } else {
+            self.debug_panel.set_stage(None);
+        }
         let tx = self.bus_tx.clone();
         let client = DapClient::start(spec, conn, move |m| {
             let _ = tx.send(AppMsg::Dap(m));
@@ -369,15 +571,21 @@ impl App {
             console,
         });
         self.notify(Level::Info, format!("Debugging {} with {}", p.name, p.adapter.name));
-        if !self.debug.window_shown {
-            self.debug.window_shown = true;
-            self.layout.show(ToolWindowId::Debug);
-            // `show` replaces the slot's occupant and leaves focus alone.
-            if let Some(cur) = self.focus.current.tool_window()
-                && !self.layout.is_visible(cur)
-            {
-                self.focus.set(PanelId::Editor);
-            }
+        self.debug_show_window();
+    }
+
+    /// The first start in this run shows the Debug window without taking focus; a later one leaves it as it is.
+    fn debug_show_window(&mut self) {
+        if self.debug.window_shown {
+            return;
+        }
+        self.debug.window_shown = true;
+        self.layout.show(ToolWindowId::Debug);
+        // `show` replaces the slot's occupant and leaves focus alone.
+        if let Some(cur) = self.focus.current.tool_window()
+            && !self.layout.is_visible(cur)
+        {
+            self.focus.set(PanelId::Editor);
         }
     }
 
@@ -648,6 +856,9 @@ impl App {
 
     /// A root switch: the session belongs to the old root. Called before the generation changes.
     pub(crate) fn debug_root_changed(&mut self) {
+        if self.dialog.as_ref().is_some_and(|d| matches!(d.id, DialogId::DebugArtifact { .. })) {
+            self.dialog = None;
+        }
         self.debug.retiring = self.debug.retire();
         self.debug_panel.clear();
         self.editor.reset_breakpoint_states();
@@ -712,14 +923,17 @@ pub(crate) mod tests {
     /// Handles debug messages until `done`.
     pub(crate) async fn dap_until(app: &mut App, done: impl Fn(&App) -> bool) {
         while !done(app) {
-            handle_next(app, |m| matches!(m, AppMsg::Dap(_) | AppMsg::DebugReady { .. })).await;
+            handle_next(app, |m| matches!(m, AppMsg::Dap(_) | AppMsg::DebugReady { .. } | AppMsg::DebugBuilt { .. })).await;
         }
     }
 
     /// Like `dap_until`, and the Console thread's batches are handled too.
     pub(crate) async fn console_until(app: &mut App, done: impl Fn(&App) -> bool) {
         while !done(app) {
-            handle_next(app, |m| matches!(m, AppMsg::Dap(_) | AppMsg::DebugReady { .. } | AppMsg::DebugOutput { .. })).await;
+            handle_next(app, |m| {
+                matches!(m, AppMsg::Dap(_) | AppMsg::DebugReady { .. } | AppMsg::DebugBuilt { .. } | AppMsg::DebugOutput { .. })
+            })
+            .await;
         }
     }
 
@@ -868,6 +1082,14 @@ pub(crate) mod tests {
         let python = refused("debug-refuse-python", &with("language = \"python\""), py).await;
         assert_eq!(python.0, Level::Warn);
         assert!(python.1.starts_with("No debug adapter found for python. Install one of: debugpy ("), "{}", python.1);
+        let needs_build = warn("Cannot debug 'demo': ${artifact} needs a build step: add build = [...] to its debug table");
+        for (i, launch) in ["launch = { program = \"${artifact}\" }", "launch = { program = \"x\", args = [\"-a\", \"${artifact}\"] }"]
+            .into_iter()
+            .enumerate()
+        {
+            let text = with(&format!("adapter = \"fake\"\n{launch}"));
+            assert_eq!(refused(&format!("debug-refuse-artifact-{i}"), &text, |_| {}).await, needs_build, "{launch}");
+        }
         let lang = refused("debug-refuse-language", &with(""), |_| {}).await;
         assert_eq!(lang.0, Level::Warn);
         assert!(lang.1.starts_with("No language for this debug configuration"), "{}", lang.1);
@@ -2645,5 +2867,453 @@ pub(crate) mod tests {
         // An adapter's message is escape codes and lines: the verdict is one clean line.
         let noisy = verdict_line(path, 1, &mark(BpState::Failed, None, Some("\x1b[31mno code\x1b[0m\nat line 2"))).unwrap();
         assert_eq!(noisy.text, "Breakpoint a.log:2 failed: no code at line 2");
+    }
+
+    // ---- the build step (yman 428) ----
+
+    /// A run.toml whose `demo` has this `build` (TOML array text) and this `launch` body.
+    fn build_toml(build: &str, launch: &str) -> String {
+        format!(
+            "[[configs]]\nname = \"demo\"\ncommand = [\"./demo\"]\n\n[debug.demo]\nadapter = \"fake\"\nbuild = {build}\nlaunch = {{ {launch} }}\n"
+        )
+    }
+
+    const SLEEPER: &str = r#"["sh", "-c", "echo building; sleep 30 & echo $! > sleeper.pid; wait"]"#;
+    const ARTIFACT_LAUNCH: &str = r#"program = "${artifact}""#;
+
+    /// `one.jsonl` in the root: a compact artifact line per executable.
+    fn write_artifacts(app: &App, exes: &[&Path]) {
+        let lines: Vec<String> = exes
+            .iter()
+            .map(|e| {
+                let name = e.file_name().unwrap().to_string_lossy().into_owned();
+                json!({"reason": "compiler-artifact", "target": {"name": name, "kind": ["bin"]}, "profile": {"test": false}, "executable": e})
+                    .to_string()
+            })
+            .collect();
+        std::fs::write(app.workspace.root.join("one.jsonl"), lines.join("\n") + "\n").unwrap();
+    }
+
+    async fn read_pid(file: &Path) -> u32 {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(pid) = std::fs::read_to_string(file).ok().and_then(|t| t.trim().parse().ok()) {
+                return pid;
+            }
+            assert!(Instant::now() < deadline, "no pid in {}", file.display());
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    fn alive(pid: u32) -> bool {
+        std::fs::read_to_string(format!("/proc/{pid}/stat"))
+            .is_ok_and(|s| s.rsplit(')').next().is_some_and(|r| !r.trim_start().starts_with('Z')))
+    }
+
+    async fn dies(pid: u32) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while alive(pid) {
+            if Instant::now() > deadline {
+                return false;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        true
+    }
+
+    /// Presses Debug on a build that sleeps; the sleeper's pid, once the build runs.
+    async fn building(app: &mut App) -> u32 {
+        shift_f9(app);
+        console_until(app, |a| a.debug.building.is_some()).await;
+        read_pid(&app.workspace.root.join("sleeper.pid")).await
+    }
+
+    fn title(app: &App) -> String {
+        app.debug_panel.title(app.debug.phase())
+    }
+
+    fn dialog_items(app: &App) -> Vec<String> {
+        match &app.dialog.as_ref().expect("a dialog").kind {
+            crate::ui::dialog::DialogKind::Choice { items, .. } => items.clone(),
+            k => panic!("not a choice: {k:?}"),
+        }
+    }
+
+    fn answer_dialog(app: &mut App, res: crate::ui::dialog::DialogResult) {
+        let d = app.dialog.take().expect("a dialog");
+        app.finish_dialog(d.id, res);
+    }
+
+    /// Two executables in reverse order, a choice dialog open.
+    async fn choosing(name: &str) -> (App, PathBuf, UnboundedReceiver<FakeAdapter>, Vec<PathBuf>) {
+        let (mut app, dir) = test_app(name);
+        let fakes = with_fake_adapters(&mut app, caps(), Order::LaunchDeferred);
+        let root = app.workspace.root.clone();
+        let exes = vec![root.join("bin/zeta"), root.join("bin/alpha")];
+        write_artifacts(&app, &[&exes[0], &exes[1]]);
+        write_run_toml(&app, &build_toml(r#"["cat", "one.jsonl"]"#, ARTIFACT_LAUNCH));
+        shift_f9(&mut app);
+        console_until(&mut app, |a| a.dialog.is_some()).await;
+        (app, dir, fakes, exes)
+    }
+
+    #[tokio::test]
+    async fn a_build_fills_the_artifact_and_launches() {
+        let (mut app, dir) = test_app("build-fill");
+        let mut fakes = with_fake_adapters(&mut app, caps(), Order::LaunchDeferred);
+        let exe = app.workspace.root.join("bin/prog");
+        write_artifacts(&app, &[&exe]);
+        write_run_toml(&app, &build_toml(r#"["cat", "one.jsonl"]"#, ARTIFACT_LAUNCH));
+        shift_f9(&mut app);
+        console_until(&mut app, |a| a.debug.building.is_some()).await;
+        let before = app.debug_panel.session().expect("the build has a session");
+        assert_eq!(title(&app), " Debug: demo · building ");
+        console_until(&mut app, |a| a.debug.session.is_some()).await;
+        let mut fake = fakes.try_recv().expect("an adapter");
+        assert_eq!(fake.recv("launch").await["arguments"]["program"], json!(exe.to_string_lossy()));
+        assert_eq!(app.debug_panel.session(), Some(before), "the build's Console is the session's");
+        assert_eq!(app.debug.session.as_ref().unwrap().id, before);
+        assert_eq!(title(&app), " Debug: demo · starting ");
+        // The build's artifact lines are not raw JSON in the Console; the command line is first.
+        let lines = console(&app);
+        assert_eq!(lines[0], "$ cat one.jsonl");
+        assert!(lines.iter().all(|l| !l.contains("reason")), "{lines:?}");
+        assert!(texts(&app).contains(&"Building demo".to_string()), "{:?}", texts(&app));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_failed_build_starts_nothing() {
+        for layout in ["shown", "hidden", "covered"] {
+            let (mut app, dir) = test_app(&format!("build-failed-{layout}"));
+            let mut fakes = with_fake_adapters(&mut app, caps(), Order::LaunchDeferred);
+            match layout {
+                "hidden" => app.debug.window_shown = true,
+                "covered" => {
+                    app.debug.window_shown = true;
+                    app.layout.show(ToolWindowId::Debug);
+                    app.layout.toggle_maximize(ToolWindowId::Project);
+                }
+                _ => {}
+            }
+            write_run_toml(&app, &build_toml(r#"["sh", "-c", "echo broken; exit 3"]"#, ARTIFACT_LAUNCH));
+            shift_f9(&mut app);
+            console_until(&mut app, |a| !a.debug.starting()).await;
+            assert!(fakes.try_recv().is_err(), "{layout}: an adapter was connected");
+            assert_eq!(last(&app), (Level::Warn, "Build of 'demo' failed with exit code 3".to_string()), "{layout}");
+            assert!(!app.debug.starting() && !app.debug.active() && app.debug.building.is_none(), "{layout}");
+            assert_eq!(title(&app), " Debug: demo · build failed ", "{layout}");
+            let lines = console(&app);
+            assert_eq!(lines, ["$ sh -c 'echo broken; exit 3'", "broken", "Build of 'demo' failed with exit code 3"], "{layout}");
+            let failure = app.debug_panel.severities().last().copied().flatten();
+            assert_eq!(failure, Some(Severity::Error), "{layout}");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_killed_build_says_the_signal() {
+        let (level, toast) = refused("build-signal", &build_toml(r#"["sh", "-c", "kill -9 $$"]"#, ARTIFACT_LAUNCH), |_| {}).await;
+        assert_eq!((level, toast.as_str()), (Level::Warn, "Build of 'demo' was killed by signal 9"));
+    }
+
+    #[tokio::test]
+    async fn a_missing_build_program_and_cwd_are_reported() {
+        let missing = refused("build-missing", &build_toml(r#"["nonexistent-xyz"]"#, ARTIFACT_LAUNCH), |_| {}).await;
+        assert_eq!(missing.0, Level::Warn);
+        assert!(missing.1.starts_with("Cannot build 'demo': cannot run nonexistent-xyz: "), "{}", missing.1);
+        let text = build_toml(r#"["true"]"#, ARTIFACT_LAUNCH).replace("command = [\"./demo\"]", "command = [\"./demo\"]\ncwd = \"nodir\"");
+        let (mut app, dir) = test_app("build-no-dir");
+        let root = app.workspace.root.clone();
+        let mut fakes = with_fake_adapters(&mut app, caps(), Order::LaunchDeferred);
+        write_run_toml(&app, &text);
+        shift_f9(&mut app);
+        dap_until(&mut app, |a| !a.debug.starting()).await;
+        assert!(fakes.try_recv().is_err());
+        assert_eq!(last(&app), (Level::Warn, format!("Cannot build 'demo': {} is not a directory", root.join("nodir").display())));
+        assert_eq!(title(&app), " Debug: demo · build failed ");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_build_naming_no_executable_is_a_refusal() {
+        let exact =
+            "Cannot debug 'demo': its build named no executable, so ${artifact} has no value. A Cargo build needs --message-format=json";
+        let (mut app, dir) = test_app("build-none");
+        let mut fakes = with_fake_adapters(&mut app, caps(), Order::LaunchDeferred);
+        write_run_toml(&app, &build_toml(r#"["true"]"#, ARTIFACT_LAUNCH));
+        shift_f9(&mut app);
+        console_until(&mut app, |a| !a.debug.starting()).await;
+        assert!(fakes.try_recv().is_err());
+        assert_eq!(last(&app), (Level::Warn, exact.to_string()));
+        assert_eq!(title(&app), " Debug: demo · not started ");
+        // The same build without `${artifact}` launches.
+        write_run_toml(&app, &build_toml(r#"["true"]"#, r#"program = "/p/x""#));
+        let mut fake = start(&mut app, &mut fakes).await;
+        assert_eq!(fake.recv("launch").await["arguments"]["program"], "/p/x");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn several_executables_ask_and_the_choice_launches() {
+        let (mut app, dir, mut fakes, exes) = choosing("build-choice").await;
+        assert_eq!(dialog_items(&app), ["alpha (bin) bin/alpha", "zeta (bin) bin/zeta"], "sorted by path, relative to the root");
+        let d = app.dialog.as_ref().unwrap();
+        assert_eq!((d.title.as_str(), d.message.as_str()), ("Debug", "The build made 2 executables. Which one?"));
+        assert!(app.debug.starting(), "the start waits for the answer");
+        answer_dialog(&mut app, crate::ui::dialog::DialogResult::Choice(1));
+        dap_until(&mut app, |a| a.debug.session.is_some()).await;
+        let mut fake = fakes.try_recv().expect("an adapter");
+        assert_eq!(fake.recv("launch").await["arguments"]["program"], json!(exes[0].to_string_lossy()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn cancelling_the_choice_starts_and_stops_nothing() {
+        let (mut app, dir, mut fakes, _) = choosing("build-choice-cancel").await;
+        app.run.fake_running("task");
+        answer_dialog(&mut app, crate::ui::dialog::DialogResult::Cancel);
+        assert!(fakes.try_recv().is_err());
+        assert!(!app.debug.starting() && app.debug.choice.is_none() && !app.debug.active());
+        assert!(app.run.running() && !app.run.stop_requested(), "the Run task stays");
+        assert_eq!(last(&app), (Level::Info, "Debug start cancelled".to_string()));
+        assert_eq!(title(&app), " Debug: demo · not started ");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn the_choice_waits_for_an_open_dialog() {
+        let (mut app, dir) = test_app("build-choice-waits");
+        let _fakes = with_fake_adapters(&mut app, caps(), Order::LaunchDeferred);
+        let root = app.workspace.root.clone();
+        write_artifacts(&app, &[&root.join("a"), &root.join("b")]);
+        write_run_toml(&app, &build_toml(r#"["cat", "one.jsonl"]"#, ARTIFACT_LAUNCH));
+        app.dialog = Some(crate::ui::dialog::Dialog::info("Other", "text"));
+        app.perform(Action::Debug(DebugAction::Start));
+        console_until(&mut app, |a| a.debug.choice.is_some()).await;
+        assert_eq!(app.dialog.as_ref().unwrap().id, DialogId::Info, "the open dialog keeps its place");
+        app.on_tick();
+        assert_eq!(app.dialog.as_ref().unwrap().id, DialogId::Info);
+        app.dialog = None;
+        app.on_tick();
+        assert!(matches!(app.dialog.as_ref().map(|d| d.id.clone()), Some(DialogId::DebugArtifact { .. })));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_stale_choice_is_dropped() {
+        let (mut app, dir, mut fakes, _) = choosing("build-choice-stale").await;
+        let old = app.debug.seq;
+        app.dialog = None;
+        app.perform(Action::Debug(DebugAction::Start));
+        console_until(&mut app, |a| a.dialog.is_some()).await;
+        assert_eq!(app.debug.seq, old + 1);
+        app.debug_artifact_chosen(old, Some(0));
+        assert!(fakes.try_recv().is_err(), "an old answer launched");
+        assert!(app.debug.choice.is_some() && app.debug.starting(), "the new start's choice is still waiting");
+        answer_dialog(&mut app, crate::ui::dialog::DialogResult::Choice(0));
+        dap_until(&mut app, |a| a.debug.session.is_some()).await;
+        assert!(fakes.try_recv().is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn ctrl_f2_kills_the_build_not_the_run_task() {
+        let (mut app, dir) = test_app("build-ctrl-f2");
+        let mut fakes = with_fake_adapters(&mut app, caps(), Order::LaunchDeferred);
+        write_run_toml(&app, &build_toml(SLEEPER, ARTIFACT_LAUNCH));
+        let sleeper = building(&mut app).await;
+        assert!(alive(sleeper));
+        app.run.fake_running("task");
+        ctrl_f2(&mut app);
+        assert!(!app.debug.starting() && app.debug.building.is_none());
+        assert!(dies(sleeper).await, "the build's process group survived");
+        assert!(app.run.running() && !app.run.stop_requested(), "Ctrl+F2 went to the Run task");
+        assert_eq!(last(&app), (Level::Info, "Debug start cancelled".to_string()));
+        assert_eq!(title(&app), " Debug: demo · not started ");
+        // The build's end arrives late and changes nothing.
+        handle_next(&mut app, |m| matches!(m, AppMsg::DebugBuilt { .. })).await;
+        assert!(fakes.try_recv().is_err() && !app.debug.active());
+        assert_eq!(title(&app), " Debug: demo · not started ");
+        assert!(console(&app).iter().all(|l| !l.contains("failed")), "{:?}", console(&app));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn the_stop_button_cancels_a_build() {
+        use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+        let (mut app, dir) = test_app("build-stop-button");
+        let _fakes = with_fake_adapters(&mut app, caps(), Order::LaunchDeferred);
+        write_run_toml(&app, &build_toml(SLEEPER, ARTIFACT_LAUNCH));
+        let sleeper = building(&mut app).await;
+        assert!(app.layout.is_visible(ToolWindowId::Debug));
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 40)).unwrap();
+        term.draw(|f| crate::ui::render(&mut app, f)).unwrap();
+        let r = app.debug_panel.hit_rect("Stop").expect("the Stop button is drawn");
+        let click = |kind| MouseEvent { kind, column: r.x, row: r.y, modifiers: KeyModifiers::NONE };
+        app.handle_mouse(click(MouseEventKind::Down(MouseButton::Left)));
+        app.handle_mouse(click(MouseEventKind::Up(MouseButton::Left)));
+        assert!(!app.debug.starting() && app.debug.building.is_none());
+        assert!(dies(sleeper).await, "the build's process group survived");
+        assert_eq!(last(&app), (Level::Info, "Debug start cancelled".to_string()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_start_during_a_build_replaces_it() {
+        let (mut app, dir) = test_app("build-replace");
+        let mut fakes = with_fake_adapters(&mut app, caps(), Order::LaunchDeferred);
+        write_run_toml(&app, &build_toml(SLEEPER, ARTIFACT_LAUNCH));
+        let sleeper = building(&mut app).await;
+        let first = app.debug_panel.session().unwrap();
+        let exe = app.workspace.root.join("bin/second");
+        write_artifacts(&app, &[&exe]);
+        write_run_toml(&app, &build_toml(r#"["cat", "one.jsonl"]"#, ARTIFACT_LAUNCH));
+        shift_f9(&mut app);
+        console_until(&mut app, |a| a.debug.session.is_some()).await;
+        assert!(dies(sleeper).await, "the first build survived");
+        let mut fake = fakes.try_recv().expect("an adapter");
+        assert!(fakes.try_recv().is_err(), "exactly one adapter");
+        assert_eq!(fake.recv("launch").await["arguments"]["program"], json!(exe.to_string_lossy()));
+        assert!(console(&app).iter().all(|l| !l.contains("building")), "{:?}", console(&app));
+        let (generation, n) = (app.workspace.generation, console(&app).len());
+        app.debug_output(generation, first, vec![RunLine::plain("late from the first build")]);
+        assert_eq!(console(&app).len(), n);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_stale_built_is_dropped() {
+        let (mut app, dir) = test_app("build-stale-built");
+        let _fakes = with_fake_adapters(&mut app, caps(), Order::LaunchDeferred);
+        write_run_toml(&app, &build_toml(SLEEPER, ARTIFACT_LAUNCH));
+        let _sleeper = building(&mut app).await;
+        let (generation, seq) = (app.workspace.generation, app.debug.seq);
+        let n = console(&app).len();
+        for (g, q) in [(generation, seq - 1), (generation - 1, seq)] {
+            app.debug_built(g, q, RunEnd::Code(1), Vec::new());
+            assert!(app.debug.building.is_some() && app.debug.starting(), "generation {g}, seq {q}");
+            assert_eq!(console(&app).len(), n);
+            assert_eq!(title(&app), " Debug: demo · building ");
+        }
+        app.debug.building = None;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_root_switch_kills_the_build() {
+        let (mut app, dir) = test_app("build-root-switch");
+        let _fakes = with_fake_adapters(&mut app, caps(), Order::LaunchDeferred);
+        write_run_toml(&app, &build_toml(SLEEPER, ARTIFACT_LAUNCH));
+        let sleeper = building(&mut app).await;
+        let other = dir.join("other");
+        std::fs::create_dir_all(&other).unwrap();
+        app.do_switch_root(std::fs::canonicalize(&other).unwrap());
+        assert!(dies(sleeper).await, "the build survived the root switch");
+        assert!(app.debug.building.is_none() && !app.debug.starting());
+        assert_eq!(app.debug_panel.session(), None);
+        // An open artifact dialog belongs to the old root.
+        let (mut app, dir2, _fakes, _) = choosing("build-root-switch-dialog").await;
+        let other = dir2.join("other");
+        std::fs::create_dir_all(&other).unwrap();
+        app.do_switch_root(std::fs::canonicalize(&other).unwrap());
+        assert!(app.dialog.is_none() && app.debug.choice.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&dir2);
+    }
+
+    #[tokio::test]
+    async fn quitting_kills_the_build() {
+        let (mut app, dir) = test_app("build-quit");
+        let _fakes = with_fake_adapters(&mut app, caps(), Order::LaunchDeferred);
+        write_run_toml(&app, &build_toml(SLEEPER, ARTIFACT_LAUNCH));
+        let sleeper = building(&mut app).await;
+        app.debug_finish().await;
+        assert!(dies(sleeper).await, "the build survived the quit");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_newline_from_the_artifact_is_refused() {
+        let (mut app, dir) = test_app("build-newline");
+        let mut fakes = with_fake_adapters(&mut app, caps(), Order::LaunchDeferred);
+        write_artifacts(&app, &[Path::new("/tmp/a\nshell touch x")]);
+        let launch = r#"program = "x", cwd = "${artifact}""#;
+        write_run_toml(&app, &build_toml(r#"["cat", "one.jsonl"]"#, launch));
+        shift_f9(&mut app);
+        console_until(&mut app, |a| !a.debug.starting()).await;
+        assert!(fakes.try_recv().is_err());
+        assert_eq!(last(&app), (Level::Warn, "Cannot debug 'demo': line break in its working directory".to_string()));
+        assert_eq!(title(&app), " Debug: demo · not started ");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn prepare_gives_a_detected_cargo_config_the_default() {
+        use crate::run::{Origin, TaskCommand};
+        let dir = std::env::temp_dir().join(format!("jetl-test-prepare-cargo-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".jetl")).unwrap();
+        std::fs::write(dir.join("Cargo.toml"), "[package]\nname = \"x\"\n").unwrap();
+        std::fs::write(dir.join("Makefile"), "all:\n").unwrap();
+        let mut debug = DebugConfig::default();
+        let o = AdapterOverride { command: Some(vec!["sh".into()]), languages: Some(vec!["rust".into()]), launch: None };
+        debug.adapters.insert("fake".into(), o);
+        let job = |selected: Option<&str>, blocks: BTreeMap<String, DebugBlock>, tasks: Vec<RunTask>| Job {
+            root: dir.clone(),
+            debug: debug.clone(),
+            tasks,
+            blocks,
+            selected: selected.map(String::from),
+            language: None,
+            file: None,
+        };
+        let argv = |p: &Prepared| p.build.as_ref().map(|b| b.argv.join(" "));
+        let none = prepare(job(None, BTreeMap::new(), Vec::new())).unwrap();
+        assert_eq!(none.name, "cargo build");
+        assert_eq!(argv(&none).as_deref(), Some("cargo build --message-format=json"));
+        assert_eq!(none.launch["program"], "${artifact}");
+        assert_eq!(none.build.as_ref().unwrap().cwd, dir);
+        let test = prepare(job(Some("cargo test"), BTreeMap::new(), Vec::new())).unwrap();
+        assert_eq!(argv(&test).as_deref(), Some("cargo test --no-run --message-format=json"));
+        let run = prepare(job(Some("cargo run"), BTreeMap::new(), Vec::new())).unwrap();
+        assert_eq!(argv(&run).as_deref(), Some("cargo build --message-format=json"));
+        // A written block wins, whatever the order of the tasks.
+        let written =
+            DebugBlock { adapter: Some("fake".into()), language: Some("rust".into()), build: None, launch: json!({"program": "/p/mine"}) };
+        let blocks = BTreeMap::from([("cargo run".to_string(), written)]);
+        let wins = prepare(job(None, blocks.clone(), Vec::new())).unwrap();
+        assert_eq!((wins.name.as_str(), wins.launch["program"].as_str(), argv(&wins)), ("cargo run", Some("/p/mine"), None));
+        let selected = prepare(job(Some("cargo run"), blocks, Vec::new())).unwrap();
+        assert_eq!(argv(&selected), None);
+        // Neither a task that is not Cargo nor a written Cargo task has a default.
+        let make = prepare(job(Some("make"), BTreeMap::new(), Vec::new())).unwrap_err();
+        assert_eq!(make, "Configuration 'make' has no [debug.\"make\"] table in .jetl/run.toml");
+        let task = RunTask {
+            name: "cargo build".into(),
+            command: TaskCommand::Argv(vec!["cargo".into(), "build".into()]),
+            cwd: None,
+            env: BTreeMap::new(),
+            args: Vec::new(),
+            matcher: None,
+            origin: Origin::Config,
+        };
+        let configured = prepare(job(Some("cargo build"), BTreeMap::new(), vec![task])).unwrap_err();
+        assert_eq!(configured, "Configuration 'cargo build' has no [debug.\"cargo build\"] table in .jetl/run.toml");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn the_first_start_with_a_build_shows_the_window() {
+        let (mut app, dir) = test_app("build-window");
+        let _fakes = with_fake_adapters(&mut app, caps(), Order::LaunchDeferred);
+        app.focus.set(PanelId::Editor);
+        assert!(!app.layout.is_visible(ToolWindowId::Debug));
+        write_run_toml(&app, &build_toml(SLEEPER, ARTIFACT_LAUNCH));
+        let _sleeper = building(&mut app).await;
+        assert!(app.layout.is_visible(ToolWindowId::Debug));
+        assert!(app.focus.is(PanelId::Editor), "the window takes no focus");
+        ctrl_f2(&mut app);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

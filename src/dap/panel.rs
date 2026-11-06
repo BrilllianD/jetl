@@ -21,6 +21,17 @@ use crate::run::panel::{MAX_LINES, draw_line, put, row_style};
 use crate::ui::tool_window_block;
 use crate::ui::widgets::list::ListState;
 
+/// Where a Debug start is before any session is live. The session's phase takes over once it runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuildStage {
+    /// The build step is running.
+    Building,
+    /// The build step failed, or could not run.
+    Failed,
+    /// Stopped before the program started: cancelled, refused, or no executable.
+    NotStarted,
+}
+
 /// A toolbar button.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Btn {
@@ -57,11 +68,11 @@ impl Btn {
         }
     }
 
-    fn enabled(self, phase: Option<Phase>) -> bool {
+    fn enabled(self, phase: Option<Phase>, building: bool) -> bool {
         match self {
             Btn::Resume | Btn::StepOver | Btn::StepInto | Btn::StepOut => phase == Some(Phase::Suspended),
             Btn::Pause => phase == Some(Phase::Running),
-            Btn::Stop => phase.is_some_and(|p| p != Phase::Ended),
+            Btn::Stop => building || phase.is_some_and(|p| p != Phase::Ended),
         }
     }
 }
@@ -75,6 +86,8 @@ pub struct DebugPanel {
     name: String,
     /// Why the program is paused, while it is.
     reason: Option<String>,
+    /// Where a start stands before its session is live; `None` once it is, and for a start with no build.
+    stage: Option<BuildStage>,
     /// Screen cells of the drawn toolbar buttons.
     hits: Vec<(Btn, Rect)>,
     list_rect: Rect,
@@ -90,6 +103,11 @@ impl DebugPanel {
         self.session = Some(session);
         self.name = name.into();
         self.reason = None;
+        self.stage = None;
+    }
+
+    pub fn set_stage(&mut self, stage: Option<BuildStage>) {
+        self.stage = stage;
     }
 
     /// Back to the state before any session.
@@ -125,7 +143,13 @@ impl DebugPanel {
                 None => "paused".to_string(),
             },
             Some(Phase::Stopping) => "stopping".to_string(),
-            Some(Phase::Ended) | None => "ended".to_string(),
+            Some(Phase::Ended) | None => match self.stage {
+                Some(BuildStage::Building) => "building",
+                Some(BuildStage::Failed) => "build failed",
+                Some(BuildStage::NotStarted) => "not started",
+                None => "ended",
+            }
+            .to_string(),
         };
         format!(" Debug: {} · {state} ", self.name)
     }
@@ -135,6 +159,7 @@ impl DebugPanel {
         let block = tool_window_block(&title, focused, theme);
         let r = block.inner(area);
         frame.render_widget(block, area);
+        let building = self.stage == Some(BuildStage::Building);
         self.hits.clear();
         self.link_rects.clear();
         self.list_rect = Rect::default();
@@ -150,7 +175,7 @@ impl DebugPanel {
             if x + 1 + text.width() as u16 > right {
                 break;
             }
-            let style = if btn.enabled(phase) { theme.title.bg(theme.panel_bg) } else { theme.dim.bg(theme.panel_bg) };
+            let style = if btn.enabled(phase, building) { theme.title.bg(theme.panel_bg) } else { theme.dim.bg(theme.panel_bg) };
             x += 1;
             let rect = put(buf, &mut x, r.y, right, &text, style);
             self.hits.push((btn, rect));
@@ -178,10 +203,11 @@ impl DebugPanel {
     /// A press on a button performs its action when the phase allows it, and is consumed either way.
     pub fn handle_mouse(&mut self, m: &Mouse, phase: Option<Phase>, cx: &mut Ctx) -> bool {
         let pos = (m.x, m.y).into();
+        let building = self.stage == Some(BuildStage::Building);
         match m.kind {
             MouseEventKind::Down(MouseButton::Left) if self.hits.iter().any(|(_, r)| r.contains(pos)) => {
                 if let Some((btn, _)) = self.hits.iter().find(|(_, r)| r.contains(pos)).copied()
-                    && btn.enabled(phase)
+                    && btn.enabled(phase, building)
                 {
                     cx.effects.push(Effect::Perform(crate::actions::Action::Debug(btn.action())));
                 }
@@ -233,6 +259,12 @@ impl DebugPanel {
     #[cfg(test)]
     pub fn hit_rect(&self, label: &str) -> Option<Rect> {
         self.hits.iter().find(|(b, _)| b.label() == label).map(|(_, r)| *r)
+    }
+
+    /// The Console's severities, line by line.
+    #[cfg(test)]
+    pub fn severities(&self) -> Vec<Option<crate::run::matcher::Severity>> {
+        self.lines.iter().map(|l| l.severity).collect()
     }
 
     /// The Console's lines.
@@ -344,6 +376,45 @@ mod tests {
                     })
                     .collect();
                 assert_eq!(got, want(btn, phase).into_iter().collect::<Vec<_>>(), "{} in {phase:?}", btn.label());
+            }
+        }
+    }
+
+    #[test]
+    fn the_title_says_the_stage() {
+        let mut p = started();
+        for (stage, want) in [
+            (Some(BuildStage::Building), "building"),
+            (Some(BuildStage::Failed), "build failed"),
+            (Some(BuildStage::NotStarted), "not started"),
+            (None, "ended"),
+        ] {
+            p.set_stage(stage);
+            assert_eq!(p.title(None), format!(" Debug: demo · {want} "));
+            assert_eq!(p.title(Some(Phase::Ended)), format!(" Debug: demo · {want} "));
+            assert_eq!(p.title(Some(Phase::Running)), " Debug: demo · running ", "a live session's phase wins");
+        }
+        p.set_stage(Some(BuildStage::Building));
+        p.start("demo", SessionId(2));
+        assert_eq!(p.title(None), " Debug: demo · ended ", "start clears the stage");
+    }
+
+    #[test]
+    fn stop_is_live_only_while_building() {
+        for (stage, stop) in
+            [(Some(BuildStage::Building), true), (Some(BuildStage::Failed), false), (Some(BuildStage::NotStarted), false), (None, false)]
+        {
+            for btn in Btn::ALL {
+                let mut p = started();
+                p.set_stage(stage);
+                draw(&mut p, 100, 6, None);
+                let r = p.hit_rect(btn.label()).unwrap();
+                let fx = with_cx(|cx| assert!(p.handle_mouse(&press(r.x, r.y, 1), None, cx)));
+                let want = btn == Btn::Stop && stop;
+                assert_eq!(fx.len(), usize::from(want), "{} with {stage:?}: {fx:?}", btn.label());
+                if want {
+                    assert!(matches!(fx[0], Effect::Perform(Action::Debug(DebugAction::Stop))), "{fx:?}");
+                }
             }
         }
     }
