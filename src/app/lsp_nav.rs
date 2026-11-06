@@ -120,7 +120,7 @@ fn supports(caps: &Caps<'_>, method: &str) -> Result<(), &'static str> {
 impl App {
     /// A short note for the user: a toast, not kept in the Event Log.
     pub(super) fn lsp_hint(&mut self, text: impl Into<String>) {
-        self.toasts.push(Level::Info, &text.into(), std::time::Instant::now());
+        self.toasts.push(Level::Info, &text.into());
         self.dirty_frame = true;
     }
 

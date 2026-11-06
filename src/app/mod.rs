@@ -502,7 +502,7 @@ impl App {
 
     pub fn notify(&mut self, level: Level, text: impl Into<String>) {
         let text = text.into();
-        self.toasts.push(level, &text, Instant::now());
+        self.toasts.push(level, &text);
         self.record(level, text, false);
     }
 
@@ -1668,7 +1668,7 @@ impl App {
         let Some(n) = self.notifications.get(self.event_log.state.selected) else { return };
         let text = n.text.clone();
         self.copy_to_clipboard(&text);
-        self.toasts.push(Level::Info, "Copied the entry to the clipboard", Instant::now());
+        self.toasts.push(Level::Info, "Copied the entry to the clipboard");
     }
 
     /// Tabs the user can close, outside the conflict resolver's own panes.
@@ -5636,7 +5636,7 @@ mod strip_tests {
         let (mut app, dir) = test_app("toolbar-pss");
         app.config.ui.toolbar = true;
         // A startup toast would cover the tooltip at the right edge.
-        app.toasts.expire(std::time::Instant::now() + std::time::Duration::from_secs(3600));
+        app.toasts = Default::default();
         let buf = draw(&mut app);
         let project = toolbar_hit(&app, B::Project);
         assert_eq!(project, Rect::new(4, 0, 8, 1));
@@ -5702,7 +5702,7 @@ mod strip_tests {
         app.config.ui.toolbar = true;
         app.run.fake_running("nap");
         // A startup toast would cover the tooltip at the right edge.
-        app.toasts.expire(std::time::Instant::now() + std::time::Duration::from_secs(3600));
+        app.toasts = Default::default();
         draw(&mut app);
         let stop = toolbar_hit(&app, B::Stop);
         app.handle_mouse(ev(MouseEventKind::Moved, stop.x + 1, 0));

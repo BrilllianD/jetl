@@ -181,7 +181,9 @@ redraws when `dirty_frame` is set:
    status, reload clean tabs in place, ask once about tabs with unsaved
    edits). Without a watcher (off, or it failed to start), focus gain
    refreshes instead.
-3. **A 100 ms tick**: toast and status bar notification expiry, gutter
+3. **A 100 ms tick**: toast and status bar notification expiry (a toast's
+   time starts at its first draw, which `render` stamps, so one held below an
+   overlay does not expire unseen), gutter
    recomputation (debounces typing),
    the busy spinner, the Run window's spinner and elapsed time while a task
    runs, idle autosave, snapshots of unsaved edits when due

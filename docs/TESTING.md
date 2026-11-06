@@ -246,6 +246,13 @@ the editor), Ctrl+Z: the Info toast `Nothing to undo`. In `capture-pane`, its `â
 is in cell 43 and its `â•®` in cell 78 at 80x24 (0-based), and in cells 67 and 118
 at 120x40. At 80x24 every line number beside it is whole.
 
+Then Settings (Ctrl+Alt+S), Language Servers page, set `SCIP index file` to
+`missing.scip`, Ctrl+S. At 120x40 the Warn toast `SCIP index missing.scip: ...`
+shows at once below the window and is gone about 8 s later with Settings still
+open. At 80x24 no toast shows. Wait 10 s and close Settings: the toast is there;
+6 s later it still is; 3 s after that it is gone. The Event Log (Alt+5) has one
+row for it.
+
 ### Scenario: short screen dialog
 
 A Confirm whose message is longer than the screen (yman 222), at 60x12:
@@ -1434,8 +1441,8 @@ then `git init -q` (the project root is the nearest git directory, else the file
     Language Servers page, set "SCIP index file" to `big.scip` and Apply
     (Ctrl+S): one Warn toast `SCIP index big.scip: 257 MiB is above the limit
     of 256 MiB`. At 120x40 it shows at once below the Settings window. At 80x24
-    there is no room below the window, so it is not drawn: close Settings within
-    8 s to see it, later it has expired. Set it back and
+    there is no room below the window, so it is not drawn and its time does not
+    start: close Settings, even much later, and it shows for its 8 s. Set it back and
     `rm /tmp/scip-demo/big.scip`.
 12. Ctrl+Q exits 0; stderr is empty.
 

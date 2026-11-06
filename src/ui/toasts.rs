@@ -1,5 +1,5 @@
 //! Notification toasts: stacked boxes in the top-right corner that expire on
-//! their own (errors last longest) and close on click. The status bar keeps
+//! their own, timed from the first draw (errors last longest) and close on click. The status bar keeps
 //! showing the latest notification as well.
 
 use std::time::{Duration, Instant};
@@ -25,7 +25,8 @@ pub struct Toast {
     pub id: u64,
     pub level: Level,
     pub text: String,
-    pub at: Instant,
+    /// When it was first drawn; its time starts there.
+    pub shown: Option<Instant>,
 }
 
 #[derive(Debug, Default)]
@@ -56,25 +57,26 @@ impl Toasts {
     }
 
     /// Show a notification. Repeating the text of a visible toast restarts
-    /// that toast instead of stacking a copy.
-    pub fn push(&mut self, level: Level, text: &str, now: Instant) {
+    /// that toast, from its next draw, instead of stacking a copy.
+    pub fn push(&mut self, level: Level, text: &str) {
         if let Some(i) = self.items.iter().position(|t| t.text == text && t.level == level) {
             let mut t = self.items.remove(i);
-            t.at = now;
+            t.shown = None;
             self.items.push(t);
             return;
         }
         self.next_id += 1;
-        self.items.push(Toast { id: self.next_id, level, text: text.to_string(), at: now });
+        self.items.push(Toast { id: self.next_id, level, text: text.to_string(), shown: None });
         if self.items.len() > MAX_TOASTS {
             self.items.remove(0);
         }
     }
 
-    /// Drop toasts whose time is up. Returns true when any was removed.
+    /// Drop toasts whose time is up; one never drawn keeps its time. Returns
+    /// true when any was removed.
     pub fn expire(&mut self, now: Instant) -> bool {
         let before = self.items.len();
-        self.items.retain(|t| now.saturating_duration_since(t.at) < ttl(t.level));
+        self.items.retain(|t| t.shown.is_none_or(|at| now.saturating_duration_since(at) < ttl(t.level)));
         self.items.len() != before
     }
 
@@ -91,8 +93,8 @@ impl Toasts {
     /// a rect of `avoid` (open overlays) moves down to the first free row
     /// below it; one that no longer fits is not drawn. The left edge keeps
     /// right of any of `gutters` (editor line numbers and marks) it would touch,
-    /// down to `MIN_W` cells.
-    pub fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Theme, avoid: &[Rect], gutters: &[Rect]) {
+    /// down to `MIN_W` cells. A toast drawn for the first time is stamped `now`.
+    pub fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Theme, avoid: &[Rect], gutters: &[Rect], now: Instant) {
         self.rects.clear();
         if self.items.is_empty() || area.width < 24 || area.height < 6 {
             return;
@@ -112,7 +114,7 @@ impl Toasts {
         let half = area.y + area.height / 2;
         let full = area.bottom().saturating_sub(1);
         let mut y = area.y + 1;
-        for t in self.items.iter().rev() {
+        for t in self.items.iter_mut().rev() {
             let lines = wrap(&t.text, (w - 4) as usize, MAX_LINES);
             let h = lines.len() as u16 + 2;
             let mut rect = Rect::new(x, y, w, h);
@@ -145,6 +147,7 @@ impl Toasts {
                 buf.set_stringn(rect.x + 2, rect.y + 1 + i as u16, line, (w - 4) as usize, body);
             }
             self.rects.push((t.id, rect));
+            t.shown.get_or_insert(now);
             y += h;
         }
     }
@@ -200,20 +203,20 @@ mod tests {
     fn toasts_go_below_overlays() {
         let theme = Theme::default();
         let mut ts = Toasts::default();
-        ts.push(Level::Info, "one", Instant::now());
-        ts.push(Level::Warn, "two", Instant::now());
+        ts.push(Level::Info, "one");
+        ts.push(Level::Warn, "two");
         let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
         let area = Rect::new(0, 0, 80, 24);
         let overlay = Rect::new(2, 3, 76, 7);
-        term.draw(|f| ts.render(f, area, &theme, &[overlay], &[])).unwrap();
+        term.draw(|f| ts.render(f, area, &theme, &[overlay], &[], Instant::now())).unwrap();
         assert_eq!(ts.rects.len(), 2);
         for (_, r) in &ts.rects {
             assert!(r.y >= 10, "{r:?}");
             assert!(!r.intersects(overlay));
         }
-        term.draw(|f| ts.render(f, area, &theme, &[area], &[])).unwrap();
+        term.draw(|f| ts.render(f, area, &theme, &[area], &[], Instant::now())).unwrap();
         assert!(ts.rects.is_empty());
-        term.draw(|f| ts.render(f, area, &theme, &[], &[])).unwrap();
+        term.draw(|f| ts.render(f, area, &theme, &[], &[], Instant::now())).unwrap();
         assert_eq!(ts.rects[0].1.y, 1);
     }
 
@@ -221,8 +224,9 @@ mod tests {
     fn toasts_expire_by_level() {
         let t0 = Instant::now();
         let mut ts = Toasts::default();
-        ts.push(Level::Info, "saved", t0);
-        ts.push(Level::Error, "push failed", t0);
+        ts.push(Level::Info, "saved");
+        ts.push(Level::Error, "push failed");
+        draw_at(&mut ts, &[], t0);
         assert!(!ts.expire(t0 + Duration::from_secs(3)));
         assert_eq!(ts.items().len(), 2);
         assert!(ts.expire(t0 + ttl(Level::Info)));
@@ -237,16 +241,19 @@ mod tests {
     fn repeats_restart_and_stack_is_capped() {
         let t0 = Instant::now();
         let mut ts = Toasts::default();
-        ts.push(Level::Info, "Nothing to undo", t0);
-        ts.push(Level::Warn, "w", t0);
+        ts.push(Level::Info, "Nothing to undo");
+        ts.push(Level::Warn, "w");
+        draw_at(&mut ts, &[], t0);
         let later = t0 + Duration::from_secs(3);
-        ts.push(Level::Info, "Nothing to undo", later);
+        ts.push(Level::Info, "Nothing to undo");
+        draw_at(&mut ts, &[], later);
         assert_eq!(ts.items().len(), 2);
         // The repeat moved to the top and lives from its new time.
         assert_eq!(ts.items()[1].text, "Nothing to undo");
         assert!(!ts.expire(t0 + ttl(Level::Info)));
+        assert!(!ts.expire(later + ttl(Level::Info) - Duration::from_millis(1)));
         for i in 0..10 {
-            ts.push(Level::Info, &format!("n{i}"), later);
+            ts.push(Level::Info, &format!("n{i}"));
         }
         assert_eq!(ts.items().len(), MAX_TOASTS);
         assert_eq!(ts.items().last().unwrap().text, "n9");
@@ -255,7 +262,7 @@ mod tests {
     fn draw_rects(ts: &mut Toasts, area: Rect, avoid: &[Rect], gutters: &[Rect]) -> Vec<Rect> {
         let theme = Theme::default();
         let mut term = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
-        term.draw(|f| ts.render(f, area, &theme, avoid, gutters)).unwrap();
+        term.draw(|f| ts.render(f, area, &theme, avoid, gutters, Instant::now())).unwrap();
         ts.rects.iter().map(|(_, r)| *r).collect()
     }
 
@@ -264,7 +271,7 @@ mod tests {
         let area = Rect::new(0, 0, 80, 24);
         let at = |gutters: &[Rect]| {
             let mut ts = Toasts::default();
-            ts.push(Level::Info, "short", Instant::now());
+            ts.push(Level::Info, "short");
             let r = draw_rects(&mut ts, area, &[], gutters);
             assert_eq!(r.len(), 1);
             assert_eq!(r[0].right(), 79, "{gutters:?}");
@@ -282,7 +289,7 @@ mod tests {
     #[test]
     fn narrow_area_keeps_its_width() {
         let mut ts = Toasts::default();
-        ts.push(Level::Info, "short", Instant::now());
+        ts.push(Level::Info, "short");
         let r = draw_rects(&mut ts, Rect::new(0, 0, 40, 24), &[], &[Rect::new(20, 2, 7, 21)]);
         assert_eq!((r[0].x, r[0].width), (17, 22));
     }
@@ -292,7 +299,7 @@ mod tests {
         let area = Rect::new(0, 0, 80, 24);
         let mut ts = Toasts::default();
         for t in ["a", "b", "c", "d"] {
-            ts.push(Level::Info, t, Instant::now());
+            ts.push(Level::Info, t);
         }
         let r = draw_rects(&mut ts, area, &[], &[]);
         assert_eq!(r.len(), 3);
@@ -303,9 +310,9 @@ mod tests {
 
         let long = |c: char| format!("{0} {0} {1}", c.to_string().repeat(30), c.to_string().repeat(10));
         let mut ts = Toasts::default();
-        ts.push(Level::Info, &long('x'), Instant::now());
-        ts.push(Level::Info, &long('y'), Instant::now());
-        ts.push(Level::Info, &long('z'), Instant::now());
+        ts.push(Level::Info, &long('x'));
+        ts.push(Level::Info, &long('y'));
+        ts.push(Level::Info, &long('z'));
         let r = draw_rects(&mut ts, area, &[], &[Rect::new(36, 2, 7, 21)]);
         assert_eq!(r.len(), 2, "{r:?}");
         assert_eq!(r[1].bottom(), 11, "{r:?}");
@@ -315,7 +322,7 @@ mod tests {
     #[test]
     fn first_toast_fits_a_short_terminal() {
         let mut ts = Toasts::default();
-        ts.push(Level::Info, "one\ntwo\nthree", Instant::now());
+        ts.push(Level::Info, "one\ntwo\nthree");
         let r = draw_rects(&mut ts, Rect::new(0, 0, 80, 8), &[], &[]);
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].y, 1);
@@ -324,15 +331,11 @@ mod tests {
     #[test]
     fn long_message_reads_in_full_beside_a_gutter() {
         let mut ts = Toasts::default();
-        ts.push(
-            Level::Warn,
-            "Language servers are off, so completion, hover and diagnostics are unavailable until they are on",
-            Instant::now(),
-        );
+        ts.push(Level::Warn, "Language servers are off, so completion, hover and diagnostics are unavailable until they are on");
         let theme = Theme::default();
         let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
         let gutter = [Rect::new(36, 2, 7, 21)];
-        let buf = term.draw(|f| ts.render(f, Rect::new(0, 0, 80, 24), &theme, &[], &gutter)).unwrap().buffer.clone();
+        let buf = term.draw(|f| ts.render(f, Rect::new(0, 0, 80, 24), &theme, &[], &gutter, Instant::now())).unwrap().buffer.clone();
         let row = |y: u16| (43..79).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>();
         let rows: Vec<String> = (1..7).map(row).collect();
         assert_eq!(ts.rects[0].1.height, 6, "{rows:?}");
@@ -340,12 +343,76 @@ mod tests {
         assert!(rows.iter().all(|r| !r.contains('…')), "{rows:?}");
     }
 
+    fn draw_at(ts: &mut Toasts, avoid: &[Rect], now: Instant) {
+        let area = Rect::new(0, 0, 80, 24);
+        let theme = Theme::default();
+        let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        term.draw(|f| ts.render(f, area, &theme, avoid, &[], now)).unwrap();
+    }
+
     #[test]
-    fn click_dismisses_only_the_hit_toast() {
+    fn a_toast_that_cannot_draw_keeps_its_time() {
         let t0 = Instant::now();
         let mut ts = Toasts::default();
-        ts.push(Level::Info, "a", t0);
-        ts.push(Level::Info, "b", t0);
+        ts.push(Level::Warn, "held");
+        draw_at(&mut ts, &[Rect::new(0, 0, 80, 24)], t0);
+        assert!(ts.rects.is_empty());
+        assert!(!ts.expire(t0 + Duration::from_secs(3600)));
+        assert_eq!(ts.items().len(), 1);
+        let t1 = t0 + Duration::from_secs(3600);
+        draw_at(&mut ts, &[], t1);
+        assert_eq!(ts.rects.len(), 1);
+        assert!(!ts.expire(t1 + ttl(Level::Warn) - Duration::from_millis(1)));
+        assert!(ts.expire(t1 + ttl(Level::Warn)));
+        assert!(ts.is_empty());
+    }
+
+    #[test]
+    fn only_the_first_draw_starts_the_time() {
+        let t0 = Instant::now();
+        let mut ts = Toasts::default();
+        ts.push(Level::Info, "once");
+        draw_at(&mut ts, &[], t0);
+        draw_at(&mut ts, &[], t0 + Duration::from_secs(3));
+        assert!(ts.expire(t0 + ttl(Level::Info)));
+    }
+
+    #[test]
+    fn a_drawn_toast_runs_on_under_an_overlay() {
+        let t0 = Instant::now();
+        let mut ts = Toasts::default();
+        ts.push(Level::Warn, "seen");
+        draw_at(&mut ts, &[], t0);
+        draw_at(&mut ts, &[Rect::new(0, 0, 80, 24)], t0 + Duration::from_secs(1));
+        assert!(ts.rects.is_empty());
+        assert!(ts.expire(t0 + ttl(Level::Warn)));
+    }
+
+    #[test]
+    fn a_toast_below_a_full_stack_waits() {
+        let t0 = Instant::now();
+        let mut ts = Toasts::default();
+        let long = |c: char| format!("{0} {0} {1}", c.to_string().repeat(30), c.to_string().repeat(10));
+        ts.push(Level::Info, &long('x'));
+        ts.push(Level::Info, &long('y'));
+        ts.push(Level::Info, &long('z'));
+        draw_at(&mut ts, &[], t0);
+        assert_eq!(ts.rects.len(), 2);
+        assert!(ts.expire(t0 + ttl(Level::Info)));
+        assert_eq!(ts.items().len(), 1);
+        assert!(ts.items()[0].text.starts_with('x'));
+        let t1 = t0 + ttl(Level::Info);
+        draw_at(&mut ts, &[], t1);
+        assert_eq!(ts.rects.len(), 1);
+        assert!(!ts.expire(t1 + ttl(Level::Info) - Duration::from_millis(1)));
+        assert!(ts.expire(t1 + ttl(Level::Info)));
+    }
+
+    #[test]
+    fn click_dismisses_only_the_hit_toast() {
+        let mut ts = Toasts::default();
+        ts.push(Level::Info, "a");
+        ts.push(Level::Info, "b");
         let (a, b) = (ts.items()[0].id, ts.items()[1].id);
         ts.rects = vec![(b, Rect::new(10, 1, 20, 3)), (a, Rect::new(10, 4, 20, 3))];
         assert!(!ts.dismiss_at(5, 2));

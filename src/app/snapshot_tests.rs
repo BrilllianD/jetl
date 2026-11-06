@@ -3071,11 +3071,7 @@ async fn toasts_below_dialog() {
     let app = &mut fx.app;
     tree_fixture(app);
     tree(app, crate::actions::TreeAction::Delete);
-    app.toasts.push(
-        Level::Warn,
-        "Language servers are off, so completion, hover and diagnostics are unavailable until they are on",
-        std::time::Instant::now(),
-    );
+    app.toasts.push(Level::Warn, "Language servers are off, so completion, hover and diagnostics are unavailable until they are on");
     let term = draw_app(app, 80, 24);
     let marks =
         [Mark::style('w', "warn", app.theme.warn.bg(app.theme.popup_bg)), Mark::style('B', "selected button", app.theme.list_selected)];
@@ -3379,15 +3375,11 @@ async fn toasts() {
     use crate::event::Level;
     let mut fx = stable_app("toasts");
     let app = &mut fx.app;
-    // Toasts expire on the tick, never while drawing, so the time they
-    // were pushed at does not show.
-    let now = std::time::Instant::now();
-    app.toasts.push(Level::Info, "Saved notes.txt", now);
-    app.toasts.push(Level::Warn, "Language servers are off", now);
+    app.toasts.push(Level::Info, "Saved notes.txt");
+    app.toasts.push(Level::Warn, "Language servers are off");
     app.toasts.push(
         Level::Error,
         "Push failed: error: failed to push some refs to 'example.org:demo'; the remote has commits you do not have yet, so pull first",
-        now,
     );
     let term = draw_app(app, 100, 30);
     let marks = [
@@ -3405,9 +3397,8 @@ async fn toasts_beside_the_gutter() {
     let app = &mut fx.app;
     let text: String = (1..=30).map(|i| format!("line {i} of the toast check\n")).collect();
     load(app, "notes.txt", &text);
-    let now = std::time::Instant::now();
-    app.toasts.push(Level::Warn, "Language servers are off, so completion, hover and diagnostics are unavailable until they are on", now);
-    app.toasts.push(Level::Info, "Saved notes.txt", now);
+    app.toasts.push(Level::Warn, "Language servers are off, so completion, hover and diagnostics are unavailable until they are on");
+    app.toasts.push(Level::Info, "Saved notes.txt");
     let term = draw_app(app, 80, 24);
     let marks =
         [Mark::style('i', "info", app.theme.info.bg(app.theme.popup_bg)), Mark::style('w', "warn", app.theme.warn.bg(app.theme.popup_bg))];
