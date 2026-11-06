@@ -15,11 +15,11 @@ expression: "snapshot(&term, &marks, Some(bottom))"
 09    ┌ Git ──────────────────────────────────────────────────────────────────────┐
 10    │ Commit   Log   Stash   Console             Refresh   Fetch   Pull   Push  │
 11    │[Branch: all] [Text: any] [Author: any] [Path: any]                        │
-12  ◉ │●─┐ aaaaaaa (HEAD -> main) Merge branch 'par…│ Loading…                    │
-13  ⋔ ││ ● ddddddd (left, right) Parse nested lists │                             │
-14  ✎ │● │ ╭──────────────────╮us b… Ann, 4 days ago│                             │
-15  ✓ │├─● │ Checkout 'left'  │      Bob, 5 days ago│                             │
-16  ⟲ │● cc│ Checkout 'right' │Initial commit       │                             │
+12  ◉ │●─┐ aaaaaaa Merge branch 'parser'      * main│ Loading…                    │
+13  ⋔ ││ ● ddddddd Parse nested lists    left, right│                             │
+14  ✎ │● │ ╭──────────────────╮us bar width         │                             │
+15  ✓ │├─● │ Checkout 'left'  │                     │                             │
+16  ⟲ │● cc│ Checkout 'right' │          tag: v0.1.0│                             │
 17  ⚑ │    ╰──────────────────╯                     │                             │
 18  ⎇ │                                             │                             │
 19  ❯ │                                             │                             │

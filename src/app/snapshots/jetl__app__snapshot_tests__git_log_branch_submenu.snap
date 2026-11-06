@@ -21,11 +21,11 @@ expression: "snapshot(&term, &marks, Some(bottom))"
 15  8 ┌├───────────────────────────────────────────────┤╭──────────────────────────────╮──────────────────────────────────┐
 16  ⟲ ││ Branch 'parser'                             ▸ ││ Checkout                     │   Refresh   Fetch   Pull   Push  │
 17  5 │╰───────────────────────────────────────────────╯│ New Branch from 'parser'…    │                                  │
-18  ⚑ │  HEAD                 │●─┐ aaaaaaa (HEAD -> main│ Compare with 'HEAD'          │oading…                           │
-19  9 │▾ Local                ││ ● ddddddd (parser) Pars│ Merge 'parser' into 'HEAD'…  │                                  │
+18  ⚑ │  HEAD                 │●─┐ aaaaaaa Merge branch │ Compare with 'HEAD'          │oading…                           │
+19  9 │▾ Local                ││ ● ddddddd Parse nested │ Merge 'parser' into 'HEAD'…  │                                  │
 20  ⎇ │  * main               │● │ bbbbbbb Fix the statu│ Rebase 'HEAD' onto 'parser'… │                                  │
 21    │    parser             │├─● eeeeeee Add a parser │ Rename…                      │                                  │
-22  ❯ │                       │● ccccccc (tag: v0.1.0) I│ Delete…                      │                                  │
+22  ❯ │                       │● ccccccc Initial commit │ Delete…                      │                                  │
 23  6 │                       │                         ╰──────────────────────────────╯                                  │
 24  ⚠ │                       │                                                      │                                    │
 25  4 │                       │                                                      │                                    │

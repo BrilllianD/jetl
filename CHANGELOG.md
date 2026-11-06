@@ -47,6 +47,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Git Log: branch and tag names moved from before the commit subject to a right-aligned column, before the author and date. A remote branch whose local branch of the same name is at the same commit reads `origin & main`, the current branch is marked `* `, and `origin/HEAD` is no longer listed. In a narrow list the author and date give way first; the details pane still shows them for the selected commit.
 - `tool_window.move_left`, `move_bottom` and `move_right` move to Left Top, Bottom Left and Right Top. Dropping a strip button on the empty part of a strip now puts it at the end of the nearest group (the upper half of the gap splits the side) instead of in the place of the nearest button.
 - Faster start on large projects: the symbol index (Go to Symbol, Find Usages without a server, import edges) is cached per project under the cache directory and only files whose size or modification time changed are parsed again.
 - Tool strip buttons toggle their window on mouse release instead of press.

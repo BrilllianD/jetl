@@ -21,7 +21,7 @@ expression: "snapshot(&term, &marks, Some(bottom))"
 15    ┌ Git ──────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
 16    │ Commit   Log   Stash   Console                                                     Refresh   Fetch   Pull   Push  │
 17    │[Branch: all] [Text: any] [Author: any] [Path: any]                                                                │
-18  ◉ │● aaaaaaa (HEAD -> main) Move the panel code         Ann, 2 hours ago│ aaaaaaa  Ann, 2 hours ago                   │
+18  ◉ │● aaaaaaa Move the panel code                 * main Ann, 2 hours ago│ aaaaaaa  Ann, 2 hours ago                   │
 19    │                                                                     │ Move the panel code                         │
 20  ⋔ │                                                                     │ 5 files changed                             │
 21    │                                                                     │ ▾ root                                      │

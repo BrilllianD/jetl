@@ -1,0 +1,31 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &marks, Some(bottom))"
+---
+40x24 cursor=hidden
+00  ≣ ┌ Pro┐│
+01    │    ││
+02  ⌂ │    ││
+03  ◫ │    ││  No files open. Alt+1 opens
+04  ⊢ │    ││      the Project view;
+05    │    ││  Ctrl+Shift+N finds a file.
+06    │    ││
+07    └────┘│
+08    ─────────────────────────────────────
+09    ┌ Git ──────────────────────────────┐
+10    │ Commit   Log   Stash   Console    │
+11    │[Branch: all] [Text: any] [Author: │
+12  ◉ │● aaaaaaa Merge branc… * origin & …│
+13  ⋔ │● ddddddd Parse neste… origin & pa…│
+14  ✎ │● bbbbbbb Fix the stat… origin/only│
+15  ✓ │● eeeeeee Add a parser with a subj…│
+16  ⟲ │● ccccccc Initial com… tag: v0.1.0…│
+17  ⚑ │                                   │
+18  ⎇ │                                   │
+19  ❯ │                                   │
+20  ⚠ │                                   │
+21  ► │                                   │
+22  ⌕ └───────────────────────────────────┘
+23
+-- marks: L=selected
+15     LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL

@@ -831,6 +831,16 @@ impl GitPanel {
         let syn = |n: &str| theme.capture_style(n).and_then(|s| s.fg).unwrap_or(theme.fg);
         let palette =
             [fg(theme.git_modified), fg(theme.git_added), fg(theme.git_untracked), syn("constant"), syn("attribute"), syn("label")];
+        let right_text = |c: &LogCommit| if c.author.is_empty() { String::new() } else { format!(" {}, {}", c.author, c.date) };
+        let (mut author_col, mut lead) = (0u16, 0u16);
+        for i in self.log_list.visible() {
+            let row = &self.log[i];
+            author_col = author_col.max(right_text(&row.commit).width() as u16);
+            lead = lead.max(row.graph.chars().count() as u16 + 1 + row.commit.short.width() as u16 + 1);
+        }
+        let rest = r.width.saturating_sub(lead);
+        let show_author = author_col > 0 && author_fits(rest, author_col);
+        let col_right = if show_author { r.right() - author_col } else { r.right() };
         for (vi, i) in self.log_list.visible().enumerate() {
             let row = &self.log[i];
             let y = r.y + vi as u16;
@@ -857,29 +867,26 @@ impl GitPanel {
             }
             x += 1;
             let c = &row.commit;
-            let mut right = String::new();
-            if !c.author.is_empty() {
-                right = format!(" {}, {}", c.author, c.date);
-            }
-            let right_w = right.width() as u16;
             put(buf, &mut x, y, r.right(), &c.short, if selected { base } else { theme.warn });
             x += 1;
-            if !c.refs.is_empty() {
-                put(
-                    buf,
-                    &mut x,
-                    y,
-                    r.right(),
-                    &format!("({})", c.refs),
-                    if selected { base.add_modifier(Modifier::BOLD) } else { theme.status_accent.add_modifier(Modifier::BOLD) },
-                );
-                x += 1;
-            }
-            let subject_end = if r.right() > x + right_w + 10 { r.right() - right_w } else { r.right() };
+            let room = col_right.saturating_sub(x);
+            let labels = match refs_cap(room) {
+                0 => String::new(),
+                cap => crate::util::text::fit(&ref_labels(&c.refs, &self.branches), cap as usize),
+            };
+            let refs_w = labels.width() as u16;
+            let refs_x = col_right - refs_w;
+            let subject_end = if refs_w > 0 { refs_x - 1 } else { col_right };
             let subject = crate::util::text::fit(&c.subject, subject_end.saturating_sub(x) as usize);
             put(buf, &mut x, y, subject_end, &subject, base);
-            if subject_end < r.right() {
-                let mut rx = r.right() - right_w;
+            if refs_w > 0 {
+                let mut rx = refs_x;
+                let st = if selected { base.add_modifier(Modifier::BOLD) } else { theme.status_accent.add_modifier(Modifier::BOLD) };
+                put(buf, &mut rx, y, col_right, &labels, st);
+            }
+            if show_author {
+                let right = right_text(c);
+                let mut rx = r.right() - right.width() as u16;
                 put(buf, &mut rx, y, r.right(), &right, if selected { base } else { theme.dim });
             }
         }
@@ -1003,6 +1010,65 @@ fn branches_at(refs: &str) -> Vec<String> {
         .collect()
 }
 
+/// Cut at this width a subject is not worth squeezing for the refs or the author.
+const LOG_SUBJECT_MIN: u16 = 10;
+/// The room the refs column keeps before the author and date may take space.
+const LOG_REFS_ROOM: u16 = 12;
+
+/// The refs of a commit as the Log column shows them, in `%D` order: no
+/// `<remote>/HEAD`, a remote branch merged into the local one of the same name
+/// at this commit (`origin & main`), the current branch marked `* `.
+fn ref_labels(refs: &str, branches: &[BranchInfo]) -> String {
+    let items: Vec<&str> = refs.split(", ").filter(|r| !r.is_empty() && !r.ends_with("/HEAD")).collect();
+    let is_remote = |r: &str| branches.iter().any(|b| b.remote && b.name == r);
+    let local_of = |r: &'_ str| r.split_once('/').map_or_else(|| r.to_string(), |(_, l)| l.to_string());
+    // A name is a local branch here when it is not a remote one, a tag or a bare HEAD.
+    let local_at = |name: &str| {
+        items.iter().any(|r| {
+            let r = r.strip_prefix("HEAD -> ").unwrap_or(r);
+            r == name && *r != *"HEAD" && !r.starts_with("tag: ") && !is_remote(r)
+        })
+    };
+    let merges = |r: &str| is_remote(r) && local_at(&local_of(r));
+    let mut out = Vec::new();
+    for r in &items {
+        if merges(r) {
+            continue;
+        }
+        let (name, current) = match r.strip_prefix("HEAD -> ") {
+            Some(n) => (n, true),
+            None => (*r, false),
+        };
+        let mut label = String::new();
+        if current {
+            label.push_str("* ");
+        }
+        if !is_remote(name) && !name.starts_with("tag: ") && name != "HEAD" {
+            for m in items.iter().filter(|m| merges(m) && local_of(m) == name) {
+                label.push_str(m.split_once('/').map_or(m, |(remote, _)| remote));
+                label.push_str(" & ");
+            }
+        }
+        label.push_str(name);
+        out.push(label);
+    }
+    out.join(", ")
+}
+
+/// Whether the author and date fit beside a subject and the refs: `rest` is
+/// the width left of the widest graph and hash, `author_col` the widest
+/// author and date text.
+fn author_fits(rest: u16, author_col: u16) -> bool {
+    rest >= author_col + LOG_SUBJECT_MIN + LOG_REFS_ROOM
+}
+
+/// The width the refs column may take in `room` columns after the hash: the
+/// subject keeps `LOG_SUBJECT_MIN`, refs take at most half, 0 for none.
+fn refs_cap(room: u16) -> u16 {
+    let cap = room.saturating_sub(LOG_SUBJECT_MIN + 1).min((room / 2).max(LOG_REFS_ROOM));
+    if cap < 4 { 0 } else { cap }
+}
+
 /// The branches Checkout Revision can take at a commit, and the local name
 /// that kept a remote out: the current branch, else the local branches there,
 /// else the remote ones whose local name does not exist.
@@ -1026,7 +1092,7 @@ fn checkout_candidates<'a>(refs: &str, branches: &'a [BranchInfo]) -> (Vec<&'a B
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use super::{branches_at, checkout_candidates};
+    use super::{author_fits, branches_at, checkout_candidates, ref_labels, refs_cap};
     use crate::actions::{Action, GitAction};
     use crate::app::Ctx;
     use crate::config::Config;
@@ -1410,5 +1476,54 @@ mod tests {
         let fx = with_cx(|cx| p.handle_action(&GitAction::Down, cx));
         assert!(p.log_sel.is_empty());
         assert!(fx.iter().any(|e| matches!(e, Effect::Git(GitRequest::LoadCommit(sha)) if sha == "b")), "{fx:?}");
+    }
+
+    #[test]
+    fn ref_labels_shorten_and_merge() {
+        let b = |name: &str, current, remote| BranchInfo { name: name.into(), upstream: None, ahead: 0, behind: 0, current, remote };
+        let branches = vec![
+            b("main", true, false),
+            b("parser", false, false),
+            b("x", false, false),
+            b("feature/x", false, false),
+            b("feature/y", false, false),
+            b("origin/main", false, true),
+            b("upstream/main", false, true),
+            b("origin/parser", false, true),
+            b("origin/only", false, true),
+            b("origin/feature/y", false, true),
+        ];
+        let cases = [
+            ("HEAD -> main, origin/main, upstream/main, origin/HEAD", "* origin & upstream & main"),
+            ("HEAD -> main", "* main"),
+            ("parser, origin/parser", "origin & parser"),
+            ("origin/parser, parser", "origin & parser"),
+            ("origin/parser", "origin/parser"),
+            ("origin/only", "origin/only"),
+            ("feature/y, origin/feature/y", "origin & feature/y"),
+            ("feature/x, x", "feature/x, x"),
+            ("tag: v0.1.0, parser", "tag: v0.1.0, parser"),
+            ("HEAD", "HEAD"),
+            ("HEAD, parser", "HEAD, parser"),
+            ("origin/HEAD", ""),
+            ("", ""),
+        ];
+        for (refs, want) in cases {
+            assert_eq!(ref_labels(refs, &branches), want, "refs {refs:?}");
+        }
+        assert_eq!(ref_labels("main, origin/main", &[]), "main, origin/main");
+    }
+
+    #[test]
+    fn refs_cap_and_author_fits() {
+        assert_eq!(refs_cap(60), 30);
+        assert_eq!(refs_cap(39), 19);
+        assert_eq!(refs_cap(32), 16);
+        assert_eq!(refs_cap(15), 4);
+        assert_eq!(refs_cap(14), 0);
+        assert_eq!(refs_cap(0), 0);
+        assert!(author_fits(39, 17));
+        assert!(!author_fits(38, 17));
+        assert!(!author_fits(33, 33));
     }
 }

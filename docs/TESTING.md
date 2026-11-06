@@ -1700,6 +1700,17 @@ sh /tmp/jt25-s1/make-repo.sh
 # right click "one local", click "Checkout Revision": toast "Switched to solo"
 # with an uncommitted edit (`echo edit >> $T/a.txt`, then F5), the menu on "one local": an error toast from git
 # switch, still `main`, the edit still in a.txt (restore with `git -C $T checkout -- a.txt`)
+# Ref column, same fixture, Log open (Alt+9, Alt+L): every row reads graph, hash, subject, then the refs ending at one column,
+# then (120x40 only) author and date. top: "* origin & main", no origin/HEAD; long name: a label cut with "…"; no branch: no
+# label and a longer subject; clash remote: origin/clash; two locals: "left, right" with the subject cut; only remote:
+# origin/remote-only; one local: "origin & upstream & solo"; init: "tag: v0.1.0, clash". At 80x24 no author or date shows.
+# `capture-pane -e -p`: labels bold in the accent colour, bold in the row's colours on the cursor row
+# Down through every row: the highlight spans the row, nothing of a longer earlier row is left behind
+# left click the subject of "no branch", then the labels of "clash remote" (coordinates read off a capture): each selects its row
+# S-F10 on "one local": the rows read Branch 'solo', Branch 'origin/solo', Branch 'upstream/solo' (full names); Escape
+# Checkout Revision on it (M-C): "* origin & upstream & solo", and top reads "origin & main" after the reload
+# at 120x40 the branches pane sits on the left and all of it still holds; a long author
+# (`git -C $T -c user.name='Bronnikov Aleksandr' -c user.email=t@t commit -q --allow-empty -m wide`, F5) keeps the one edge
 /tmp/tm.sh kill-server
 ```
 

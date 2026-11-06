@@ -1,0 +1,37 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &marks, Some(bottom))"
+---
+120x30 cursor=hidden
+00  ≣ ┌ Project: root ───────────────┐│
+01  1 │                              ││
+02  ⌂ │                              ││
+03  2 │                              ││
+04  ◫ │                              ││
+05  7 │                              ││
+06  ⊢ │                              ││
+07    │                              ││      No files open. Alt+1 opens the Project view; Ctrl+Shift+N finds a file.
+08  ◉ │                              ││
+09    │                              ││
+10  ⋔ │                              ││
+11    │                              ││
+12  ✎ │                              ││
+13    └──────────────────────────────┘│
+14  ✓ ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+15  8 ┌ Git ──────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+16  ⟲ │ Commit   Log   Stash   Console                                                     Refresh   Fetch   Pull   Push  │
+17  5 │[Branch: all] [Text: any] [Author: any] [Path: any]                                                                │
+18  ⚑ │  HEAD                 │● aaaaaaa Merge branch… * origin & m… Ann, 2 hours ago│ Loading…                           │
+19  9 │▾ Local                │● ddddddd Parse nested… origin & par…  Bob, 3 days ago│                                    │
+20  ⎇ │  * main               │● bbbbbbb Fix the status… origin/only  Ann, 4 days ago│                                    │
+21    │    parser             │● eeeeeee Add a parser with a subjec…  Bob, 5 days ago│                                    │
+22  ❯ │    feature/a-rather-l…│● ccccccc Initial comm… tag: v0.1.0,… Ann, 2 weeks ago│                                    │
+23  6 │▾ Remote               │                                                      │                                    │
+24  ⚠ │  ▾ origin             │                                                      │                                    │
+25  4 │      main             │                                                      │                                    │
+26  ► │      parser           │                                                      │                                    │
+27  3 │      only             │                                                      │                                    │
+28  ⌕ └───────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+29
+-- marks: L=selected
+21                             LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL

@@ -4677,3 +4677,88 @@ async fn debug_window_console() {
     let marks = debug_marks(&app.theme);
     assert_snapshot!("debug_window_console", snapshot(&term, &marks, None));
 }
+
+/// The Log on five commits with every kind of ref, for the ref column.
+fn ref_column_fixture(name: &str, width: u16, height: u16) -> (Fixture, Terminal<TestBackend>) {
+    use crate::git::BranchInfo;
+    let mut fx = stable_app(name);
+    let app = &mut fx.app;
+    app.toggle_tool_window(ToolWindowId::Git);
+    app.perform(Action::Git(crate::actions::GitAction::TabLog));
+    let commits = vec![
+        commit('a', &['d'], "Ann", "2 hours ago", "HEAD -> main, origin/main, origin/HEAD", "Merge branch 'parser'"),
+        commit('d', &['b'], "Bob", "3 days ago", "parser, origin/parser", "Parse nested lists"),
+        commit('b', &['e'], "Ann", "4 days ago", "origin/only", "Fix the status bar width"),
+        commit('e', &['c'], "Bob", "5 days ago", "", "Add a parser with a subject long enough to be cut at every list width"),
+        commit('c', &[], "Ann", "2 weeks ago", "tag: v0.1.0, feature/a-rather-long-branch-name", "Initial commit"),
+    ];
+    let g = app.git.generation;
+    let filter = app.git_panel.log_filter().clone();
+    app.handle_msg(AppMsg::Git(GitMsg::Log { generation: g, skip: 0, filter, result: Ok(commits) }));
+    let b = |name: &str, current, remote| BranchInfo { name: name.into(), upstream: None, ahead: 0, behind: 0, current, remote };
+    app.git_panel.branches = vec![
+        b("main", true, false),
+        b("parser", false, false),
+        b("feature/a-rather-long-branch-name", false, false),
+        b("origin/main", false, true),
+        b("upstream/main", false, true),
+        b("origin/parser", false, true),
+        b("origin/only", false, true),
+    ];
+    draw_app(app, width, height);
+    for _ in 0..3 {
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    }
+    let term = draw_app(app, width, height);
+    (fx, term)
+}
+
+#[tokio::test]
+async fn git_log_ref_column() {
+    let (fx, term) = ref_column_fixture("git-log-ref-column", 120, 30);
+    let marks = [Mark::bg('L', "selected", fx.app.theme.list_selected.bg.unwrap())];
+    let bottom = fx.app.layout.rects.bottom;
+    assert_snapshot!("git_log_ref_column", snapshot(&term, &marks, Some(bottom)));
+}
+
+#[tokio::test]
+async fn git_log_ref_column_80() {
+    let (fx, term) = ref_column_fixture("git-log-ref-column-80", 80, 24);
+    let marks = [Mark::bg('L', "selected", fx.app.theme.list_selected.bg.unwrap())];
+    let bottom = fx.app.layout.rects.bottom;
+    assert_snapshot!("git_log_ref_column_80", snapshot(&term, &marks, Some(bottom)));
+}
+
+#[tokio::test]
+async fn git_log_ref_column_40() {
+    let (fx, term) = ref_column_fixture("git-log-ref-column-40", 40, 24);
+    let marks = [Mark::bg('L', "selected", fx.app.theme.list_selected.bg.unwrap())];
+    let bottom = fx.app.layout.rects.bottom;
+    assert_snapshot!("git_log_ref_column_40", snapshot(&term, &marks, Some(bottom)));
+}
+
+#[tokio::test]
+async fn git_log_refs_end_at_one_column() {
+    for (w, h) in [(120u16, 30u16), (80, 24)] {
+        let (fx, term) = ref_column_fixture(&format!("git-log-refs-edge-{w}"), w, h);
+        let r = fx.app.git_panel.log_rect();
+        let buf = term.backend().buffer();
+        let edge = |y: u16| (r.x..r.right()).rev().find(|&x| buf[(x, y)].modifier.contains(Modifier::BOLD));
+        let text = |y: u16| (r.x..r.right()).map(|x| buf[(x, y)].symbol()).collect::<String>();
+        // Rows a, d, b and c carry refs; row e (index 3) is the cursor and has none.
+        let edges: Vec<u16> =
+            [0u16, 1, 2, 4].iter().map(|&row| edge(r.y + row).unwrap_or_else(|| panic!("row {row}: {}", text(r.y + row)))).collect();
+        assert!(edges.iter().all(|&e| e == edges[0]), "{w}: {edges:?}");
+        if w == 120 {
+            let author_col = " Ann, 2 weeks ago".len() as u16;
+            assert!(edges[0] < r.right() - author_col, "{w}: edge {} right {}", edges[0], r.right());
+            assert!(text(r.y).contains("Ann,") && text(r.y + 1).contains("Bob,"));
+        } else {
+            assert_eq!(edges[0], r.right() - 1);
+            for row in 0..5 {
+                let t = text(r.y + row);
+                assert!(!t.contains("Ann,") && !t.contains("Bob,"), "{t}");
+            }
+        }
+    }
+}
