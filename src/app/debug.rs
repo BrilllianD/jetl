@@ -63,7 +63,7 @@ pub(super) struct Live {
     pub(super) open: BTreeSet<PathBuf>,
     /// The epoch of the last `Stopped` or `Running`; the tag of the requests the App makes.
     pub(super) epoch: u64,
-    /// The thread the last stop was on, kept through `Running` for `debug.pause`.
+    /// The thread steps and pause use: the last stop's, or the one the user chose since. Kept through `Running`.
     pub(super) thread: Option<i64>,
     /// The panel's selection seq when this stop began: another value means the user has chosen since.
     pub(super) stop_seq: u64,
@@ -267,8 +267,9 @@ fn verdict_line(source: &Path, line: usize, mark: &BreakpointMark) -> Option<Run
 /// A frame as the panel shows it: names cleaned as a message is, the place from `frame_location`.
 fn frame_row(frame: &StackFrame, root: &Path) -> FrameRow {
     let location = frame_location(frame, root);
-    let place =
-        location.as_ref().map(|(p, line)| format!("{}:{}", p.file_name().map(|n| n.to_string_lossy()).unwrap_or_default(), line + 1));
+    let place = location
+        .as_ref()
+        .map(|(p, line)| format!("{}:{}", one_line(&p.file_name().map(|n| n.to_string_lossy()).unwrap_or_default()), line + 1));
     FrameRow { id: frame.id, name: one_line(&frame.name), place, location }
 }
 
@@ -667,14 +668,17 @@ impl App {
         self.debug_panel.push(lines);
     }
 
+    /// Whether the Debug window is on screen. Another maximized window covers it and the editor.
+    fn debug_window_shown(&self) -> bool {
+        self.layout.is_visible(ToolWindowId::Debug) && self.layout.maximized_window().is_none_or(|tw| tw == ToolWindowId::Debug)
+    }
+
     /// A stop: asks for the stack of the stopped thread, or for the threads when the event names none.
     fn debug_stopped(&mut self, epoch: u64, event: StoppedEvent) {
         self.debug_panel.set_reason(Some(event.reason.clone()));
-        // A shown window has the reason in its title; otherwise nothing says the program stopped. Another maximized
-        // window covers it and the editor, and a stop does not move focus, so that one stays.
-        let shown =
-            self.layout.is_visible(ToolWindowId::Debug) && self.layout.maximized_window().is_none_or(|tw| tw == ToolWindowId::Debug);
-        if !shown {
+        // A shown window has the reason in its title; otherwise nothing says the program stopped. A stop does not move
+        // focus, so a covering window stays.
+        if !self.debug_window_shown() {
             self.notify(Level::Info, format!("Paused ({})", event.reason));
         }
         self.debug_panel.stop_began(event.thread_id);
@@ -739,7 +743,11 @@ impl App {
                 let what = match tag.kind {
                     // Only the selector's list is missing: the stopped thread still shows.
                     TagKind::Threads if known => return tracing::debug!("dap: threads failed: {e}"),
-                    TagKind::Threads => "threads",
+                    TagKind::Threads => {
+                        // No thread to ask a stack of: the Frames tab has nothing more to wait for.
+                        self.debug_panel.stack_unavailable();
+                        "threads"
+                    }
                     TagKind::StackTrace { thread } => {
                         if self.debug_stop_stands() {
                             self.debug_panel.show_stack(thread, Vec::new());
@@ -760,6 +768,7 @@ impl App {
                 tracing::debug!("dap: threads {threads:?}");
                 let Some(first) = threads.first().map(|t| t.id) else {
                     if !known {
+                        self.debug_panel.stack_unavailable();
                         self.notify(Level::Warn, "The adapter reports no threads");
                     }
                     return;
@@ -839,7 +848,7 @@ impl App {
             None => {
                 self.editor.set_execution_point(None);
                 if open {
-                    self.notify(Level::Info, format!("Paused in {}, no source", frame.name));
+                    self.notify(Level::Info, format!("Paused in {}, no source", one_line(&frame.name)));
                 }
             }
         }
@@ -869,6 +878,9 @@ impl App {
         if !self.debug.suspended() {
             return self.notify(Level::Info, "No paused debug session");
         }
+        if !self.debug_window_shown() {
+            return self.notify(Level::Info, "The Debug window is not shown");
+        }
         self.debug_panel.set_tab(DebugTab::Frames);
         let current = self.debug_panel.thread();
         let items: Vec<MenuItem> = self
@@ -881,7 +893,7 @@ impl App {
             })
             .collect();
         if items.is_empty() {
-            return self.notify(Level::Info, "The adapter reports no threads");
+            return self.notify(Level::Info, "No threads to choose from");
         }
         let (x, y) = self.debug_panel.menu_anchor();
         self.apply_effects(vec![Effect::ContextMenu(ContextMenu::new(items, x, y).shifted())]);
@@ -4099,5 +4111,73 @@ pub(crate) mod tests {
         assert_eq!(app.debug_panel.tab(), DebugTab::Console);
         ctrl_f2(&mut app);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_stop_with_no_thread_and_no_threads_says_no_frames() {
+        for (n, failed) in [true, false].into_iter().enumerate() {
+            let (mut app, dir, mut fakes) = setup(&format!("frames-no-thread-{n}"), Order::LaunchEarly);
+            let _ = six(&mut app);
+            let (fake, _) = running(&mut app, &mut fakes).await;
+            fake.event("stopped", json!({"reason": "pause"}));
+            pump_until(&mut app, |x| x.debug.suspended() && epoch_of(x) > 0).await;
+            in_frames(&mut app);
+            assert!(drawn(&mut app).contains("Reading the stack…"), "failed {failed}");
+            let tag = DapTag { epoch: epoch_of(&app), kind: TagKind::Threads };
+            let result = if failed { Err("boom".to_string()) } else { Ok(json!({ "threads": [] })) };
+            inject(&mut app, DapBody::Response { tag, result });
+            let toast = if failed { "Could not read the threads: boom" } else { "The adapter reports no threads" };
+            assert_eq!(last(&app), (Level::Warn, toast.to_string()));
+            let text = drawn(&mut app);
+            assert!(text.contains("No frames") && !text.contains("Reading the stack"), "failed {failed}: {text}");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_frame_name_and_place_are_one_clean_line() {
+        let dirty = "x\x1b[31my\nz";
+        let frame: StackFrame =
+            serde_json::from_value(json!({"id": 0, "name": dirty, "line": 4, "source": {"path": "/tmp/q\u{1b}[31mr\ns.c"}})).unwrap();
+        let row = frame_row(&frame, Path::new("/tmp"));
+        assert_eq!((row.name.as_str(), row.place.as_deref()), ("xy z", Some("qr s.c:4")));
+        // The toast of a stop with no source.
+        let (mut app, dir, mut fakes) = setup("frames-dirty-toast", Order::LaunchEarly);
+        let _ = six(&mut app);
+        let (mut fake, _) = running(&mut app, &mut fakes).await;
+        stop(&mut app, &mut fake, 7, json!({"id": 0, "name": dirty, "line": 0})).await;
+        pump_until(&mut app, |x| texts(x).iter().any(|t| t.starts_with("Paused in"))).await;
+        assert_eq!(last(&app), (Level::Info, "Paused in xy z, no source".to_string()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn choosing_a_thread_needs_the_window_shown_and_a_list() {
+        let (mut app, dir, _fake, _a, _c) = paused_in_two("frames-choose-hidden").await;
+        app.layout.hide(ToolWindowId::Debug);
+        let tab = app.debug_panel.tab();
+        app.perform(Action::Debug(DebugAction::ChooseThread));
+        assert_eq!(last(&app), (Level::Info, "The Debug window is not shown".to_string()));
+        assert!(app.menu.is_none(), "no menu at stale places");
+        assert_eq!(app.debug_panel.tab(), tab, "a hidden tab is not switched");
+        let _ = std::fs::remove_dir_all(&dir);
+        // No list: the adapter answered none, or `threads` failed. The stop's own thread is known either way.
+        for (n, failed) in [false, true].into_iter().enumerate() {
+            let (mut app, dir, mut fakes) = setup(&format!("frames-choose-empty-{n}"), Order::LaunchEarly);
+            let c = load(&mut app, "c.log", TWELVE);
+            let _ = six(&mut app);
+            let (fake, _) = running(&mut app, &mut fakes).await;
+            fake.event("stopped", json!({"reason": "breakpoint", "threadId": 7}));
+            pump_until(&mut app, |x| thread_of(x) == Some(7)).await;
+            inject_stack(&mut app, 7, json!([frame_at(0, "add", &c, 4)]));
+            let tag = DapTag { epoch: epoch_of(&app), kind: TagKind::Threads };
+            let result = if failed { Err("boom".to_string()) } else { Ok(json!({ "threads": [] })) };
+            inject(&mut app, DapBody::Response { tag, result });
+            in_frames(&mut app);
+            app.perform(Action::Debug(DebugAction::ChooseThread));
+            assert_eq!(last(&app), (Level::Info, "No threads to choose from".to_string()), "failed {failed}");
+            assert!(app.menu.is_none(), "failed {failed}");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 }

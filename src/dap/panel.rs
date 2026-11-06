@@ -223,6 +223,11 @@ impl DebugPanel {
         self.seq
     }
 
+    /// No stack will come, as no thread is known to ask: the tab stops waiting and says there are no frames.
+    pub fn stack_unavailable(&mut self) {
+        self.loading = false;
+    }
+
     /// The stack of `thread` arrived (possibly empty): row 0 is selected. The seq stays.
     pub fn show_stack(&mut self, thread: i64, frames: Vec<FrameRow>) {
         self.thread = Some(thread);
@@ -249,12 +254,13 @@ impl DebugPanel {
         }
     }
 
-    /// Where a menu opens: under the thread row, else under the first tab, else the corner.
+    /// Where a menu opens: under the thread row, else under the first tab, else the corner. The menu draws one row
+    /// below its anchor. Off the Frames tab the thread row is not drawn yet, but it will be, right under the tab row.
     pub fn menu_anchor(&self) -> (u16, u16) {
         if self.thread_rect.width > 0 {
-            (self.thread_rect.x, self.thread_rect.y + 1)
+            (self.thread_rect.x, self.thread_rect.y)
         } else if let Some((_, r)) = self.tab_hits.first() {
-            (r.x, r.y + 1)
+            (r.x, r.y + u16::from(self.thread.is_some()))
         } else {
             (0, 0)
         }
@@ -990,7 +996,7 @@ mod tests {
         let fx = with_cx(|cx| handled = p.handle_mouse(&press(r.x + 2, r.y, 1), Some(Phase::Suspended), cx));
         assert!(handled);
         assert!(matches!(fx.as_slice(), [Effect::Perform(Action::Debug(DebugAction::ChooseThread))]), "{fx:?}");
-        assert_eq!(p.menu_anchor(), (r.x, r.y + 1));
+        assert_eq!(p.menu_anchor(), (r.x, r.y), "the menu draws one row below its anchor itself");
         // Only while paused.
         for phase in PHASES.into_iter().filter(|ph| *ph != Some(Phase::Suspended)) {
             draw(&mut p, 60, 10, phase);
@@ -1007,7 +1013,50 @@ mod tests {
         p.set_tab(DebugTab::Frames);
         draw(&mut p, 60, 10, Some(Phase::Suspended));
         assert_eq!(p.thread_rect, Rect::default());
+        assert_eq!(p.menu_anchor().1, p.tab_hits[0].1.y);
+        // A thread known but the Console up (`t` from there switches to Frames): the thread row is the tab row's next.
+        let mut p = suspended_with(three());
+        p.set_tab(DebugTab::Console);
+        draw(&mut p, 60, 10, Some(Phase::Suspended));
+        assert_eq!(p.thread_rect, Rect::default());
         assert_eq!(p.menu_anchor().1, p.tab_hits[0].1.y + 1);
+        p.set_tab(DebugTab::Frames);
+        let frames = draw(&mut p, 60, 10, Some(Phase::Suspended));
+        assert!(row_text(&frames, p.menu_anchor().1, 60).contains("Thread 1"), "the thread row is the anchor's");
+    }
+
+    /// The menu `debug.choose_thread` opens, drawn over the panel in a terminal `h` rows high; the thread row's
+    /// `y`, and the rows of the terminal as text.
+    fn menu_over_panel(h: u16) -> (u16, Vec<String>) {
+        use crate::ui::menu::{ContextMenu, MenuItem};
+        let theme = Theme::default();
+        let mut p = suspended_with(three());
+        let mut term = Terminal::new(TestBackend::new(60, h)).unwrap();
+        let mut thread_y = 0;
+        // The first draw places the thread row; the second has the menu on top.
+        for _ in 0..2 {
+            term.draw(|f| {
+                p.render(f, f.area(), true, &theme, Some(Phase::Suspended));
+                let (x, y) = p.menu_anchor();
+                let item = MenuItem::new("Thread 1: t", Action::Debug(DebugAction::SelectThread(1)));
+                ContextMenu::new(vec![item], x, y).shifted().render(f, f.area(), &theme);
+            })
+            .unwrap();
+            thread_y = p.thread_rect.y;
+        }
+        (thread_y, (0..h).map(|y| row_text(&term, y, 60)).collect())
+    }
+
+    #[test]
+    fn the_thread_menu_is_under_the_thread_row_and_clear_of_it_when_flipped() {
+        // Room below: the menu's top border is the very next row.
+        let (y, rows) = menu_over_panel(12);
+        assert!(rows[y as usize].contains("Thread 1: t ▾"), "{rows:?}");
+        assert!(rows[y as usize + 1].contains('╭'), "directly under the thread row: {rows:?}");
+        // No room: the menu goes above, its bottom border on the row above, and the thread row is not covered.
+        let (y, rows) = menu_over_panel(y + 3);
+        assert!(rows[y as usize].contains("Thread 1: t ▾"), "the thread row stays: {rows:?}");
+        assert!(rows[y as usize - 1].contains('╰'), "directly above the thread row: {rows:?}");
     }
 
     #[test]
