@@ -199,6 +199,7 @@ impl DebugPanel {
     /// A stop with no `threadId`: the thread is known now; the stack is still awaited.
     pub fn set_thread(&mut self, thread: i64) {
         self.thread = Some(thread);
+        self.loading = true;
     }
 
     pub fn thread(&self) -> Option<i64> {
@@ -1032,19 +1033,14 @@ mod tests {
         let theme = Theme::default();
         let mut p = suspended_with(three());
         let mut term = Terminal::new(TestBackend::new(60, h)).unwrap();
-        let mut thread_y = 0;
-        // The first draw places the thread row; the second has the menu on top.
-        for _ in 0..2 {
-            term.draw(|f| {
-                p.render(f, f.area(), true, &theme, Some(Phase::Suspended));
-                let (x, y) = p.menu_anchor();
-                let item = MenuItem::new("Thread 1: t", Action::Debug(DebugAction::SelectThread(1)));
-                ContextMenu::new(vec![item], x, y).shifted().render(f, f.area(), &theme);
-            })
-            .unwrap();
-            thread_y = p.thread_rect.y;
-        }
-        (thread_y, (0..h).map(|y| row_text(&term, y, 60)).collect())
+        term.draw(|f| {
+            p.render(f, f.area(), true, &theme, Some(Phase::Suspended));
+            let (x, y) = p.menu_anchor();
+            let item = MenuItem::new("Thread 1: t", Action::Debug(DebugAction::SelectThread(1)));
+            ContextMenu::new(vec![item], x, y).shifted().render(f, f.area(), &theme);
+        })
+        .unwrap();
+        (p.thread_rect.y, (0..h).map(|y| row_text(&term, y, 60)).collect())
     }
 
     #[test]
@@ -1073,6 +1069,12 @@ mod tests {
         for phase in [Some(Phase::Running), Some(Phase::Stopping), Some(Phase::Starting), None] {
             assert!(text(&mut p, phase).contains("Frames show while the program is paused"), "{phase:?}");
         }
+        p.stop_began(None);
+        p.stack_unavailable();
+        assert!(text(&mut p, Some(Phase::Suspended)).contains("No frames"));
+        // A retried `threads` found the thread, and its stack is on the way.
+        p.set_thread(1);
+        assert!(text(&mut p, Some(Phase::Suspended)).contains("Reading the stack…"));
         p.stop_began(Some(1));
         assert!(text(&mut p, Some(Phase::Suspended)).contains("Reading the stack…"));
         p.show_stack(1, Vec::new());

@@ -1157,8 +1157,8 @@ scenario's steps first.
 At 80x24 the editor shows only a few lines, so the rows of steps 4 to 6 may be scrolled out; the script scrolls the editor
 with the mouse wheel until both show. While gdb's `❌️` line (U+274C with a variation selector) is in the Console, the
 thread row of the Frames tab showed a stray letter from that line to the right of the label (`Thread 1: demo ▾ e`),
-and in the Console tab the closing border of that line is missing. This is a drawing defect of jetl, not of the
-terminal's width count: the diff of `ratatui-core` yields the trailing cell of a wide symbol with a variation selector,
+and in the Console tab the closing border of that line is missing. Read from the source of both crates and matched
+against the captures, not reproduced alone, this is a drawing defect of jetl, not of the terminal's width count: the diff of `ratatui-core` yields the trailing cell of a wide symbol with a variation selector,
 and `ratatui-crossterm` writes no cursor move when that cell follows the last one written, while the terminal has
 advanced two columns. Each contiguous run of changed cells after it lands one column to the right. It predates the
 Frames tab (yman 431, "Drawing: text after a VS16 emoji lands one column off").
