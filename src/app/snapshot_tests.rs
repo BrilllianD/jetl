@@ -2818,7 +2818,7 @@ async fn git_log_checkout_choice() {
     app.perform(Action::Git(crate::actions::GitAction::TabLog));
     let commits = vec![
         commit('a', &['b', 'd'], "Ann", "2 hours ago", "HEAD -> main", "Merge branch 'parser'"),
-        commit('d', &['e'], "Bob", "3 days ago", "left, right", "Parse nested lists"),
+        commit('d', &['e'], "Bob", "3 days ago", "right, left", "Parse nested lists"),
         commit('b', &['c'], "Ann", "4 days ago", "", "Fix the status bar width"),
         commit('e', &['c'], "Bob", "5 days ago", "", "Add a parser"),
         commit('c', &[], "Ann", "2 weeks ago", "tag: v0.1.0", "Initial commit"),
@@ -2850,7 +2850,7 @@ async fn git_log_checkout_choice_80() {
     app.perform(Action::Git(crate::actions::GitAction::TabLog));
     let commits = vec![
         commit('a', &['b', 'd'], "Ann", "2 hours ago", "HEAD -> main", "Merge branch 'parser'"),
-        commit('d', &['e'], "Bob", "3 days ago", "left, right", "Parse nested lists"),
+        commit('d', &['e'], "Bob", "3 days ago", "right, left", "Parse nested lists"),
         commit('b', &['c'], "Ann", "4 days ago", "", "Fix the status bar width"),
         commit('e', &['c'], "Bob", "5 days ago", "", "Add a parser"),
         commit('c', &[], "Ann", "2 weeks ago", "tag: v0.1.0", "Initial commit"),
@@ -4761,4 +4761,15 @@ async fn git_log_refs_end_at_one_column() {
             }
         }
     }
+}
+
+#[tokio::test]
+async fn git_log_refs_take_what_a_short_subject_leaves() {
+    let (fx, term) = ref_column_fixture("git-log-refs-leftover", 80, 24);
+    let r = fx.app.git_panel.log_rect();
+    let buf = term.backend().buffer();
+    let text = |y: u16| (r.x..r.right()).map(|x| buf[(x, y)].symbol()).collect::<String>();
+    // Row c: the subject is whole and the label takes the rest, more than the half `refs_cap` allows.
+    let row = text(r.y + 4);
+    assert!(row.contains("Initial commit feature/a-rather-lo\u{2026}"), "{row}");
 }

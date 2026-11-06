@@ -15,11 +15,11 @@ expression: "snapshot(&term, &marks, Some(bottom))"
 09    ┌ Git ──────────────────────────────┐
 10    │ Commit   Log   Stash   Console    │
 11    │[Branch: all] [Text: any] [Author: │
-12  ◉ │● aaaaaaa Merge branc… * origin & …│
-13  ⋔ │● ddddddd Parse neste… origin & pa…│
+12  ◉ │● aaaaaaa Merge branch 'par… * main│
+13  ⋔ │● ddddddd Parse nested lists parser│
 14  ✎ │● bbbbbbb Fix the stat… origin/only│
 15  ✓ │● eeeeeee Add a parser with a subj…│
-16  ⟲ │● ccccccc Initial com… tag: v0.1.0…│
+16  ⟲ │● ccccccc Initial c… feature/a-rat…│
 17  ⚑ │                                   │
 18  ⎇ │                                   │
 19  ❯ │                                   │

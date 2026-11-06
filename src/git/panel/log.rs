@@ -474,6 +474,8 @@ impl GitPanel {
             }
             [b] => cx.effects.push(Effect::Git(GitRequest::BranchOp { branch: (*b).clone(), op: op(b) })),
             several => {
+                let mut several = several.to_vec();
+                several.sort_by(|a, b| a.name.cmp(&b.name));
                 let items = several
                     .iter()
                     .map(|b| {
@@ -870,10 +872,10 @@ impl GitPanel {
             put(buf, &mut x, y, r.right(), &c.short, if selected { base } else { theme.warn });
             x += 1;
             let room = col_right.saturating_sub(x);
-            let labels = match refs_cap(room) {
-                0 => String::new(),
-                cap => crate::util::text::fit(&ref_labels(&c.refs, &self.branches), cap as usize),
-            };
+            // Refs take what the subject leaves, and at least `refs_cap`.
+            let subject_w = c.subject.width() as u16;
+            let cap = refs_cap(room).max(room.saturating_sub(subject_w + 1));
+            let labels = if cap < 4 { String::new() } else { ref_labels(&c.refs, &self.branches, cap as usize) };
             let refs_w = labels.width() as u16;
             let refs_x = col_right - refs_w;
             let subject_end = if refs_w > 0 { refs_x - 1 } else { col_right };
@@ -1013,46 +1015,67 @@ fn branches_at(refs: &str) -> Vec<String> {
 /// Cut at this width a subject is not worth squeezing for the refs or the author.
 const LOG_SUBJECT_MIN: u16 = 10;
 /// The room the refs column keeps before the author and date may take space.
-const LOG_REFS_ROOM: u16 = 12;
+const LOG_REFS_ROOM: u16 = 16;
 
-/// The refs of a commit as the Log column shows them, in `%D` order: no
-/// `<remote>/HEAD`, a remote branch merged into the local one of the same name
-/// at this commit (`origin & main`), the current branch marked `* `.
-fn ref_labels(refs: &str, branches: &[BranchInfo]) -> String {
+/// The refs of a commit as the Log column shows them, at most `cap` columns:
+/// detached `HEAD`, the current branch (marked `* `), other local branches,
+/// remote-only branches, then tags in `%D` order. Local branches and remotes go
+/// by name; a remote merged into the local one of the same name at this commit
+/// reads `origin & main`; `<remote>/HEAD` is dropped. When the full text is
+/// wider than `cap`, the merged remote prefixes go before the end is cut, so
+/// the branch Checkout Revision takes survives whenever it fits.
+fn ref_labels(refs: &str, branches: &[BranchInfo], cap: usize) -> String {
+    let full = ref_labels_with(refs, branches, true);
+    let text = if full.width() > cap { ref_labels_with(refs, branches, false) } else { full };
+    crate::util::text::fit(&text, cap)
+}
+
+fn ref_labels_with(refs: &str, branches: &[BranchInfo], merge_remotes: bool) -> String {
     let items: Vec<&str> = refs.split(", ").filter(|r| !r.is_empty() && !r.ends_with("/HEAD")).collect();
     let is_remote = |r: &str| branches.iter().any(|b| b.remote && b.name == r);
-    let local_of = |r: &'_ str| r.split_once('/').map_or_else(|| r.to_string(), |(_, l)| l.to_string());
+    let local_of = |r: &str| r.split_once('/').map_or_else(|| r.to_string(), |(_, l)| l.to_string());
+    let is_tag = |r: &str| r.starts_with("tag: ");
+    let bare = |r: &'_ str| r.strip_prefix("HEAD -> ").unwrap_or(r).to_string();
     // A name is a local branch here when it is not a remote one, a tag or a bare HEAD.
-    let local_at = |name: &str| {
-        items.iter().any(|r| {
-            let r = r.strip_prefix("HEAD -> ").unwrap_or(r);
-            r == name && *r != *"HEAD" && !r.starts_with("tag: ") && !is_remote(r)
-        })
-    };
+    let is_local = |r: &str| r != "HEAD" && !is_tag(r) && !is_remote(r);
+    let local_at = |name: &str| items.iter().any(|r| bare(r) == name && is_local(name));
     let merges = |r: &str| is_remote(r) && local_at(&local_of(r));
-    let mut out = Vec::new();
+    let (mut head, mut current, mut locals, mut remotes, mut tags) = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
     for r in &items {
+        let name = bare(r);
         if merges(r) {
             continue;
         }
-        let (name, current) = match r.strip_prefix("HEAD -> ") {
-            Some(n) => (n, true),
-            None => (*r, false),
-        };
+        let is_current = r.starts_with("HEAD -> ");
         let mut label = String::new();
-        if current {
+        if is_current {
             label.push_str("* ");
         }
-        if !is_remote(name) && !name.starts_with("tag: ") && name != "HEAD" {
-            for m in items.iter().filter(|m| merges(m) && local_of(m) == name) {
+        if merge_remotes && is_local(&name) {
+            let mut ms: Vec<&&str> = items.iter().filter(|m| merges(m) && local_of(m) == name).collect();
+            ms.sort();
+            for m in ms {
                 label.push_str(m.split_once('/').map_or(m, |(remote, _)| remote));
                 label.push_str(" & ");
             }
         }
-        label.push_str(name);
-        out.push(label);
+        label.push_str(&name);
+        if name == "HEAD" {
+            head.push((name, label));
+        } else if is_tag(&name) {
+            tags.push((name, label));
+        } else if is_current {
+            current.push((name, label));
+        } else if is_remote(&name) {
+            remotes.push((name, label));
+        } else {
+            locals.push((name, label));
+        }
     }
-    out.join(", ")
+    locals.sort();
+    remotes.sort();
+    let all = head.into_iter().chain(current).chain(locals).chain(remotes).chain(tags);
+    all.map(|(_, l)| l).collect::<Vec<_>>().join(", ")
 }
 
 /// Whether the author and date fit beside a subject and the refs: `rest` is
@@ -1227,7 +1250,7 @@ mod tests {
 
     #[test]
     fn checkout_revision_offers_a_menu_for_several() {
-        let fx = checkout(&mut checkout_panel("origin/only, upstream/only"));
+        let fx = checkout(&mut checkout_panel("upstream/only, origin/only"));
         assert_eq!(fx.len(), 1, "{fx:?}");
         let Some(Effect::ContextMenu(m)) = fx.first() else { panic!("{fx:?}") };
         let rows: Vec<(&str, Option<&Action>)> = m.items.iter().map(|i| (i.label.as_str(), i.action.as_ref())).collect();
@@ -1239,7 +1262,7 @@ mod tests {
                 ("Checkout 'upstream/only' as a new local branch", Some(&tracking("upstream/only"))),
             ]
         );
-        let fx = checkout(&mut checkout_panel("left, right"));
+        let fx = checkout(&mut checkout_panel("right, left"));
         let Some(Effect::ContextMenu(m)) = fx.first() else { panic!("{fx:?}") };
         let local = |b: &str| Action::Git(GitAction::BranchOp { branch: b.into(), op: BranchOp::Checkout });
         assert_eq!(m.items[0].label, "Checkout 'left'");
@@ -1495,6 +1518,7 @@ mod tests {
         ];
         let cases = [
             ("HEAD -> main, origin/main, upstream/main, origin/HEAD", "* origin & upstream & main"),
+            ("HEAD -> main, upstream/main, origin/main", "* origin & upstream & main"),
             ("HEAD -> main", "* main"),
             ("parser, origin/parser", "origin & parser"),
             ("origin/parser, parser", "origin & parser"),
@@ -1502,16 +1526,38 @@ mod tests {
             ("origin/only", "origin/only"),
             ("feature/y, origin/feature/y", "origin & feature/y"),
             ("feature/x, x", "feature/x, x"),
-            ("tag: v0.1.0, parser", "tag: v0.1.0, parser"),
+            ("tag: v0.1.0, parser", "parser, tag: v0.1.0"),
+            ("tag: v0.1.0, origin/only, x, HEAD, parser, HEAD -> main", "HEAD, * main, parser, x, origin/only, tag: v0.1.0"),
             ("HEAD", "HEAD"),
             ("HEAD, parser", "HEAD, parser"),
             ("origin/HEAD", ""),
             ("", ""),
         ];
         for (refs, want) in cases {
-            assert_eq!(ref_labels(refs, &branches), want, "refs {refs:?}");
+            assert_eq!(ref_labels(refs, &branches, 100), want, "refs {refs:?}");
         }
-        assert_eq!(ref_labels("main, origin/main", &[]), "main, origin/main");
+        assert_eq!(ref_labels("main, origin/main", &[], 100), "main, origin/main");
+    }
+
+    #[test]
+    fn ref_labels_drop_the_remote_prefixes_under_the_cap() {
+        let b = |name: &str, current, remote| BranchInfo { name: name.into(), upstream: None, ahead: 0, behind: 0, current, remote };
+        let branches =
+            vec![b("solo", true, false), b("origin/solo", false, true), b("upstream/solo", false, true), b("main", false, false)];
+        let refs = "HEAD -> solo, upstream/solo, origin/solo, main, tag: v0.1.0";
+        // (cap, label): the short form is 25 columns wide.
+        let cases = [
+            (60, "* origin & upstream & solo, main, tag: v0.1.0"),
+            (25, "* solo, main, tag: v0.1.0"),
+            (10, "* solo, m\u{2026}"),
+            (6, "* sol\u{2026}"),
+        ];
+        for (cap, want) in cases {
+            assert_eq!(ref_labels(refs, &branches, cap), want, "cap {cap}");
+        }
+        assert_eq!(ref_labels("HEAD -> solo, origin/solo", &branches, 8), "* solo");
+        assert_eq!(ref_labels("HEAD -> solo, origin/solo", &branches, 25), "* origin & solo");
+        assert_eq!(ref_labels("main, origin/main", &[b("main", false, false), b("origin/main", false, true)], 7), "main");
     }
 
     #[test]
@@ -1522,8 +1568,9 @@ mod tests {
         assert_eq!(refs_cap(15), 4);
         assert_eq!(refs_cap(14), 0);
         assert_eq!(refs_cap(0), 0);
-        assert!(author_fits(39, 17));
-        assert!(!author_fits(38, 17));
+        assert_eq!(refs_cap(26), 15);
+        assert!(author_fits(43, 17));
+        assert!(!author_fits(42, 17));
         assert!(!author_fits(33, 33));
     }
 }

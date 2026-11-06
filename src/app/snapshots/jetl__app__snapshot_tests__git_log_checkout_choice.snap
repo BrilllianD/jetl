@@ -21,11 +21,11 @@ expression: "snapshot(&term, &marks, Some(bottom))"
 15  8 ┌ Git ──────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
 16  ⟲ │ Commit   Log   Stash   Console                                                     Refresh   Fetch   Pull   Push  │
 17  5 │[Branch: all] [Text: any] [Author: any] [Path: any]                                                                │
-18  ⚑ │  HEAD                 │●─┐ aaaaaaa Merge branch 'par… * main Ann, 2 hours ago│ Loading…                           │
-19  9 │▾ Local                ││ ● ddddddd Parse nested… left, right  Bob, 3 days ago│                                    │
-20  ⎇ │  * main               │● │ ╭──────────────────╮us bar width   Ann, 4 days ago│                                    │
-21    │    left               │├─● │ Checkout 'left'  │               Bob, 5 days ago│                                    │
-22  ❯ │    right              │● cc│ Checkout 'right' │  tag: v0.1.0 Ann, 2 weeks ago│                                    │
+18  ⚑ │  HEAD                 │●─┐ aaaaaaa Merge branch 'parser'               * main│ Loading…                           │
+19  9 │▾ Local                ││ ● ddddddd Parse nested lists             left, right│                                    │
+20  ⎇ │  * main               │● │ ╭──────────────────╮us bar width                  │                                    │
+21    │    left               │├─● │ Checkout 'left'  │                              │                                    │
+22  ❯ │    right              │● cc│ Checkout 'right' │                   tag: v0.1.0│                                    │
 23  6 │                       │    ╰──────────────────╯                              │                                    │
 24  ⚠ │                       │                                                      │                                    │
 25  4 │                       │                                                      │                                    │

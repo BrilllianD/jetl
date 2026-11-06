@@ -21,11 +21,11 @@ expression: "snapshot(&term, &marks, Some(bottom))"
 15  8 ┌ Git ────────────────────────────────────────────────────────────────────────────────┐
 16  ⟲ │ Commit   Log   Stash   Console                       Refresh   Fetch   Pull   Push  │
 17  5 │[Branch: all] [Text: any] [Author: any] [Path: any]                                  │
-18  ⚑ │●─┐ aaaaaaa Merge branch '… * main Ann, 2 hours ago│ aaaaaaa  Ann, 2 hours ago       │
-19  9 ││ ● ddddddd Parse nested l… parser  Bob, 3 days ago│ Merge branch 'parser'           │
-20  ⎇ │● │ bbbbbbb Fix the status bar wi…  Ann, 4 days ago│                                 │
-21    │├─● eeeeeee Add a parser            Bob, 5 days ago│ Brings in nested list parsing.  │
-22  ❯ │● ccccccc Initial com… tag: v0.1.0 Ann, 2 weeks ago│ 1 file changed                  │
+18  ⚑ │●─┐ aaaaaaa Merge branch 'parser'            * main│ aaaaaaa  Ann, 2 hours ago       │
+19  9 ││ ● ddddddd Parse nested lists               parser│ Merge branch 'parser'           │
+20  ⎇ │● │ bbbbbbb Fix the status bar width               │                                 │
+21    │├─● eeeeeee Add a parser                           │ Brings in nested list parsing.  │
+22  ❯ │● ccccccc Initial commit                tag: v0.1.0│ 1 file changed                  │
 23  6 │                                                   │ ▾ root                          │
 24  ⚠ │                                                   │   ▾ src                         │
 25  4 │                                                   │     A parser.rs                 │

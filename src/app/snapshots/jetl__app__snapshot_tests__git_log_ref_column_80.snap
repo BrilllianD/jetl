@@ -19,7 +19,7 @@ expression: "snapshot(&term, &marks, Some(bottom))"
 13  ⋔ │● ddddddd Parse nested lists  origin & parser│                             │
 14  ✎ │● bbbbbbb Fix the status bar wid… origin/only│                             │
 15  ✓ │● eeeeeee Add a parser with a subject long e…│                             │
-16  ⟲ │● ccccccc Initial commit    tag: v0.1.0, fea…│                             │
+16  ⟲ │● ccccccc Initial commit feature/a-rather-lo…│                             │
 17  ⚑ │                                             │                             │
 18  ⎇ │                                             │                             │
 19  ❯ │                                             │                             │

@@ -21,11 +21,11 @@ expression: "snapshot(&term, &marks, Some(bottom))"
 15  8 ┌ Git ──────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
 16  ⟲ │ Commit   Log   Stash   Console                                                     Refresh   Fetch   Pull   Push  │
 17  5 │[Branch: all] [Text: any] [Author: any] [Path: any]                                                                │
-18  ⚑ │  HEAD                 │● aaaaaaa Merge branch… * origin & m… Ann, 2 hours ago│ Loading…                           │
-19  9 │▾ Local                │● ddddddd Parse nested… origin & par…  Bob, 3 days ago│                                    │
+18  ⚑ │  HEAD                 │● aaaaaaa Merge bran… * origin & main Ann, 2 hours ago│ Loading…                           │
+19  9 │▾ Local                │● ddddddd Parse nest… origin & parser  Bob, 3 days ago│                                    │
 20  ⎇ │  * main               │● bbbbbbb Fix the status… origin/only  Ann, 4 days ago│                                    │
 21    │    parser             │● eeeeeee Add a parser with a subjec…  Bob, 5 days ago│                                    │
-22  ❯ │    feature/a-rather-l…│● ccccccc Initial comm… tag: v0.1.0,… Ann, 2 weeks ago│                                    │
+22  ❯ │    feature/a-rather-l…│● ccccccc Initial c… feature/a-rathe… Ann, 2 weeks ago│                                    │
 23  6 │▾ Remote               │                                                      │                                    │
 24  ⚠ │  ▾ origin             │                                                      │                                    │
 25  4 │      main             │                                                      │                                    │

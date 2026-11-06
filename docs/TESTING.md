@@ -1701,16 +1701,24 @@ sh /tmp/jt25-s1/make-repo.sh
 # with an uncommitted edit (`echo edit >> $T/a.txt`, then F5), the menu on "one local": an error toast from git
 # switch, still `main`, the edit still in a.txt (restore with `git -C $T checkout -- a.txt`)
 # Ref column, same fixture, Log open (Alt+9, Alt+L): every row reads graph, hash, subject, then the refs ending at one column,
-# then (120x40 only) author and date. top: "* origin & main", no origin/HEAD; long name: a label cut with "…"; no branch: no
-# label and a longer subject; clash remote: origin/clash; two locals: "left, right" with the subject cut; only remote:
-# origin/remote-only; one local: "origin & upstream & solo"; init: "tag: v0.1.0, clash". At 80x24 no author or date shows.
+# then (120x40 only) author and date. Refs take what a short subject leaves, and the author and date give way before refs are cut.
+# Labels read the current branch ("* x"), other local branches by name, remote-only branches, then tags; "origin & main" merges
+# a remote into its local branch; under the cap the merged prefixes drop first ("solo", "* solo"), so the branch Checkout takes shows.
+# 80x24: top "* origin & main"; long name "feature/a-rather-long-br…"; no branch: no label; clash remote "origin/clash";
+# two locals "left, right" with the subject cut; only remote "origin/remote-only"; one local "origin & upstream & solo";
+# init "clash, tag: v0.1.0" (clash before the tag). No author or date.
+# 120x40 (branches pane on the left, narrower list, author and date shown): top "* origin & main" whole; long name "feature/a-rather…";
+# two locals "left, right"; only remote "origin/remote-o…"; one local "solo"; init "clash, tag: v0.1.0"
 # `capture-pane -e -p`: labels bold in the accent colour, bold in the row's colours on the cursor row
 # Down through every row: the highlight spans the row, nothing of a longer earlier row is left behind
 # left click the subject of "no branch", then the labels of "clash remote" (coordinates read off a capture): each selects its row
 # S-F10 on "one local": the rows read Branch 'solo', Branch 'origin/solo', Branch 'upstream/solo' (full names); Escape
-# Checkout Revision on it (M-C): "* origin & upstream & solo", and top reads "origin & main" after the reload
-# at 120x40 the branches pane sits on the left and all of it still holds; a long author
-# (`git -C $T -c user.name='Bronnikov Aleksandr' -c user.email=t@t commit -q --allow-empty -m wide`, F5) keeps the one edge
+# Checkout Revision on it (M-C): the row reads "* solo" (80x24 and 120x40: the full "* origin & upstream & solo" is 26 columns and
+# does not fit the cap), and top reads "origin & main" after the reload
+# the several-branches menu: on "two locals" (4 Down from top) the menu lists "Checkout 'left'" above "Checkout 'right'", whatever order
+# git lists them in; Down Enter: toast "Switched to right", the row reads "* right, left"
+# a long author (`git -C $T -c user.name='Bronnikov Aleksandr' -c user.email=t@t commit -q --allow-empty -m wide`, F5) hides the
+# author column at 120x40 and the one edge holds; the wide row reads "wide" with "* main", and top "origin/main"
 /tmp/tm.sh kill-server
 ```
 

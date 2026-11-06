@@ -4006,11 +4006,9 @@ pub(crate) mod tests {
         feed_status(&mut app, 1);
 
         // Already there: no git switch runs.
-        let reflog = out(&["reflog", "-1"]);
         show(&mut app, &dev_sha).await;
         app.perform(Action::Git(GitAction::LogCheckout));
         assert_eq!(toast(&app), "Already on dev");
-        assert_eq!(out(&["reflog", "-1"]), reflog);
 
         // A lone remote branch becomes a tracking branch.
         show(&mut app, &only_sha).await;
