@@ -3947,6 +3947,82 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn checkout_revision_takes_the_branch_in_a_real_repo() {
+        use crate::actions::GitAction;
+        let (mut app, dir) = test_app("checkout-revision");
+        init_repo(&app, &[("a.txt", "a\n")]);
+        let root = app.workspace.root.clone();
+        let out = |args: &[&str]| {
+            let o = std::process::Command::new("git").args(args).current_dir(&root).output().unwrap();
+            assert!(o.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&o.stderr));
+            String::from_utf8_lossy(&o.stdout).trim().to_string()
+        };
+        let main = crate::git::repo::status(&root).unwrap().branch.unwrap();
+        git(&app, &["switch", "-qc", "dev"]);
+        std::fs::write(root.join("a.txt"), "dev\n").unwrap();
+        git(&app, &["commit", "-qam", "dev change"]);
+        let dev_sha = out(&["rev-parse", "HEAD"]);
+        git(&app, &["switch", "-q", &main]);
+        // A commit that only a remote branch points at.
+        git(&app, &["switch", "-q", "--detach", &main]);
+        std::fs::write(root.join("a.txt"), "only\n").unwrap();
+        git(&app, &["commit", "-qam", "only change"]);
+        let only_sha = out(&["rev-parse", "HEAD"]);
+        git(&app, &["remote", "add", "origin", &root.to_string_lossy()]);
+        git(&app, &["update-ref", "refs/remotes/origin/only", &only_sha]);
+        git(&app, &["switch", "-q", &main]);
+
+        // Load branches and the Log, then put the cursor on `sha`.
+        async fn show(app: &mut App, sha: &str) {
+            let root = app.workspace.root.clone();
+            app.git_panel.branches = crate::git::repo::branches(&root).unwrap();
+            app.perform(Action::Git(GitAction::TabLog));
+            let filter = app.git_panel.log_filter().clone();
+            let o = std::process::Command::new("git")
+                .args(crate::git::cli::log_args(0, 100, true, &filter))
+                .current_dir(&root)
+                .output()
+                .unwrap();
+            let rows = crate::git::cli::parse_log(&String::from_utf8_lossy(&o.stdout));
+            let at = rows.iter().position(|r| r.sha == sha).expect("commit in the log");
+            let g = app.git.generation;
+            app.handle_msg(AppMsg::Git(GitMsg::Log { generation: g, skip: 0, filter, result: Ok(rows) }));
+            for _ in 0..20 {
+                app.perform(Action::Git(GitAction::Up));
+            }
+            for _ in 0..at {
+                app.perform(Action::Git(GitAction::Down));
+            }
+        }
+        let toast = |app: &App| app.toasts.items().last().map(|t| t.text.clone()).unwrap_or_default();
+        let branch = || crate::git::repo::status(&root).unwrap().branch;
+
+        // The one local branch there.
+        show(&mut app, &dev_sha).await;
+        app.perform(Action::Git(GitAction::LogCheckout));
+        handle_next(&mut app, git_op_done).await;
+        assert_eq!(branch().as_deref(), Some("dev"));
+        assert_eq!(toast(&app), "Switched to dev");
+        feed_status(&mut app, 1);
+
+        // Already there: no git switch runs.
+        let reflog = out(&["reflog", "-1"]);
+        show(&mut app, &dev_sha).await;
+        app.perform(Action::Git(GitAction::LogCheckout));
+        assert_eq!(toast(&app), "Already on dev");
+        assert_eq!(out(&["reflog", "-1"]), reflog);
+
+        // A lone remote branch becomes a tracking branch.
+        show(&mut app, &only_sha).await;
+        app.perform(Action::Git(GitAction::LogCheckout));
+        handle_next(&mut app, git_op_done).await;
+        assert_eq!(branch().as_deref(), Some("only"));
+        assert_eq!(toast(&app), "Created and switched to only");
+        assert_eq!(out(&["rev-parse", "--abbrev-ref", "only@{u}"]), "origin/only");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
     async fn branch_delete_asks_to_force_and_merge_conflicts_show_as_u() {
         use crate::git::model::BranchOp;
         let (mut app, dir) = test_app("branches");

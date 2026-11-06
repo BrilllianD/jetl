@@ -324,7 +324,7 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Shift+F10` | `git.context_menu` | Git: context menu of the selected commit, branch or commit file |
 | `Ctrl+C` | `git.copy_sha` | Git: copy the selected commit's revision number |
 | `Ctrl+D` | `git.show_diff` | Git: show the diff in an editor tab: the selected file, or in the Log list the selected commits |
-| `Alt+Shift+C` | `git.log_checkout` | Git: check out the selected commit (detached) |
+| `Alt+Shift+C` | `git.log_checkout` | Git: check out the selected commit's branch, detached when it has none |
 | `Alt+Shift+B` | `git.log_new_branch` | Git: new branch at the selected commit |
 | `Alt+Shift+P` | `git.log_cherry_pick` | Git: cherry-pick the selected commit |
 | `Alt+Shift+R` | `git.log_revert` | Git: revert the selected commit |

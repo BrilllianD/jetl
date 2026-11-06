@@ -51,6 +51,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Faster start on large projects: the symbol index (Go to Symbol, Find Usages without a server, import edges) is cached per project under the cache directory and only files whose size or modification time changed are parsed again.
 - Tool strip buttons toggle their window on mouse release instead of press.
 - Tool strip: when the two-row buttons do not fit (24-row terminals), every button is one row with only its icon, so all 13 tool windows have a button at 80x24; on a shorter strip its last row is a `⋯` More button whose menu lists the windows left without a button.
+- Git Log: Checkout Revision (Alt+Shift+C) now takes the branch at the commit. It switches to a local branch there, creates a tracking branch when only a remote one is there, and lists several in a short menu. HEAD detaches only when no branch can take it: none is there, or a remote branch's local name is at another commit, which a toast says.
 
 ### Fixed
 

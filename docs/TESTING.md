@@ -1681,6 +1681,25 @@ press 0 42 2; release 0 42 2
 # "Show Diff"; Ctrl+D in the Log list opens the commit's files in a "Diff <sha8>" tab. Ctrl+D on a staged file and on the same file
 # unstaged: two tabs "Diff a.txt (staged)" and "Diff a.txt". Stash tab: Ctrl+D on a stash file opens a tab.
 # Ctrl+D on the conflicted file in Changes opens the resolver, not a tab
+# Checkout Revision takes the branch, in the fixture repo /tmp/jt25-s1/make-repo.sh (S=/tmp/jt25-s1, T=$S/repo; a
+# private socket via /tmp/tm25.sh, config.toml with [lsp] enabled = false). Log rows top down: top (main, origin/main),
+# long name, no branch, clash remote (origin/clash; local clash is at init), two locals (left, right), only remote
+# (origin/remote-only), one local (solo, origin/solo, upstream/solo), init (tag: v0.1.0, clash)
+sh /tmp/jt25-s1/make-repo.sh
+# the menu below is: S-F10, Down Down Down, Enter (Checkout Revision); after a step that switched branch, reset from
+# outside with `git -C $T switch -q main` and F5
+# top, the menu: toast "Already on main", no second menu
+# Down 6 times to "one local", Alt+Shift+C (M-C): toast "Switched to solo"; `git -C $T branch --show-current` prints solo
+# "only remote", the menu: toast "Created and switched to remote-only"; `git rev-parse --abbrev-ref remote-only@{u}` prints
+# origin/remote-only (reset, then `git -C $T branch -qD remote-only`)
+# "two locals", the menu: a second menu with exactly "Checkout 'left'" and "Checkout 'right'"; Escape leaves `main`
+# checked out; again with Down Enter: toast "Switched to right"
+# "clash remote", the menu: toasts "Local branch 'clash' is at another commit, so HEAD detaches" and "Checked out <sha8>
+# (detached HEAD)"; `git branch --show-current` prints nothing and `git rev-parse clash` is still init's commit
+# "no branch", the menu: only the detached toast
+# right click "one local", click "Checkout Revision": toast "Switched to solo"
+# with an uncommitted edit (`echo edit >> $T/a.txt`, then F5), the menu on "one local": an error toast from git
+# switch, still `main`, the edit still in a.txt (restore with `git -C $T checkout -- a.txt`)
 /tmp/tm.sh kill-server
 ```
 

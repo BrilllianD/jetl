@@ -17,7 +17,9 @@ use crate::config::theme::Theme;
 use crate::event::{Effect, Level, Mouse};
 use crate::git::GitRequest;
 use crate::git::graph::LogGraph;
-use crate::git::model::{CommitDetails, CommitFile, DiffKey, DiffSpan, LogCommit, LogFileOp, LogFilter, LogRev, LogRow, ResetMode};
+use crate::git::model::{
+    BranchInfo, BranchOp, CommitDetails, CommitFile, DiffKey, DiffSpan, LogCommit, LogFileOp, LogFilter, LogRev, LogRow, ResetMode,
+};
 use crate::ui::dialog::{Dialog, DialogId};
 use crate::ui::menu::{ContextMenu, MenuItem};
 
@@ -312,7 +314,7 @@ impl GitPanel {
                 cx.notify(Level::Info, format!("Copied {sha}"));
                 cx.effects.push(Effect::Clipboard(sha));
             }
-            CommitAction::Checkout => cx.effects.push(Effect::Git(GitRequest::CheckoutCommit(sha))),
+            CommitAction::Checkout => self.checkout_commit(sha, cx),
             CommitAction::NewBranch => {
                 let msg = format!("Create and switch to a new branch at {short}:");
                 cx.effects.push(Effect::Dialog(Dialog::input(DialogId::NewBranchAt { rev: sha }, "New Branch", &msg, "", "Create")));
@@ -451,15 +453,50 @@ impl GitPanel {
         }
     }
 
+    /// Where a menu for the selected Log row opens.
+    fn log_row_anchor(&self) -> (u16, u16) {
+        let row = self.log_list.selected.saturating_sub(self.log_list.offset) as u16;
+        (self.log_rect.x + 4, self.log_rect.y + row)
+    }
+
+    /// Checkout Revision: the branch at the selected commit when one can take
+    /// it, a short menu for several, else a detached HEAD.
+    fn checkout_commit(&self, sha: String, cx: &mut Ctx) {
+        let refs = self.log.get(self.log_list.selected).map_or("", |r| r.commit.refs.as_str());
+        let (found, clash) = checkout_candidates(refs, &self.branches);
+        let op = |b: &BranchInfo| if b.remote { BranchOp::CheckoutTracking } else { BranchOp::Checkout };
+        match found.as_slice() {
+            [] => {
+                if let Some(name) = clash {
+                    cx.notify(Level::Info, format!("Local branch '{name}' is at another commit, so HEAD detaches"));
+                }
+                cx.effects.push(Effect::Git(GitRequest::CheckoutCommit(sha)));
+            }
+            [b] => cx.effects.push(Effect::Git(GitRequest::BranchOp { branch: (*b).clone(), op: op(b) })),
+            several => {
+                let items = several
+                    .iter()
+                    .map(|b| {
+                        let label = if b.remote {
+                            format!("Checkout '{}' as a new local branch", b.name)
+                        } else {
+                            format!("Checkout '{}'", b.name)
+                        };
+                        MenuItem::new(label, Action::Git(GitAction::BranchOp { branch: b.name.clone(), op: op(b) }))
+                    })
+                    .collect();
+                let (x, y) = self.log_row_anchor();
+                cx.effects.push(Effect::ContextMenu(ContextMenu::new(items, x, y)));
+            }
+        }
+    }
+
     /// Commit actions for the selected commit, at the pointer or its row.
     pub(super) fn log_context_menu(&mut self, at: Option<(u16, u16)>, cx: &mut Ctx) {
         if self.tab != GitTab::Log || self.selected_commit().is_none() {
             return;
         }
-        let (x, y) = at.unwrap_or_else(|| {
-            let row = self.log_list.selected.saturating_sub(self.log_list.offset) as u16;
-            (self.log_rect.x + 4, self.log_rect.y + row)
-        });
+        let (x, y) = at.unwrap_or_else(|| self.log_row_anchor());
         let g = |a| Action::Git(a);
         let busy = self.in_progress().is_some_and(|ip| ip.kind.blocks_switching());
         let mut items = vec![
@@ -966,18 +1003,39 @@ fn branches_at(refs: &str) -> Vec<String> {
         .collect()
 }
 
+/// The branches Checkout Revision can take at a commit, and the local name
+/// that kept a remote out: the current branch, else the local branches there,
+/// else the remote ones whose local name does not exist.
+fn checkout_candidates<'a>(refs: &str, branches: &'a [BranchInfo]) -> (Vec<&'a BranchInfo>, Option<&'a str>) {
+    let at: Vec<&BranchInfo> = branches_at(refs).iter().filter_map(|n| branches.iter().find(|b| b.name == *n)).collect();
+    if let Some(cur) = at.iter().find(|b| b.current && !b.remote) {
+        return (vec![*cur], None);
+    }
+    let local: Vec<&BranchInfo> = at.iter().copied().filter(|b| !b.remote).collect();
+    if !local.is_empty() {
+        return (local, None);
+    }
+    let local_name = |b: &'a BranchInfo| b.name.split_once('/').map_or(b.name.as_str(), |(_, l)| l);
+    let (taken, free): (Vec<&BranchInfo>, Vec<&BranchInfo>) =
+        at.into_iter().partition(|b| branches.iter().any(|o| !o.remote && o.name == local_name(b)));
+    let clash = if free.is_empty() { taken.first().map(|b| local_name(b)) } else { None };
+    (free, clash)
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use super::branches_at;
+    use super::{branches_at, checkout_candidates};
     use crate::actions::{Action, GitAction};
     use crate::app::Ctx;
     use crate::config::Config;
     use crate::config::theme::Theme;
-    use crate::event::Effect;
+    use crate::event::{Effect, Level};
     use crate::git::GitRequest;
-    use crate::git::model::{CommitDetails, CommitFile, DiffKey, InProgress, InProgressKind, LogCommit, LogFileOp, LogRow, StatusSnapshot};
+    use crate::git::model::{
+        BranchInfo, BranchOp, CommitDetails, CommitFile, DiffKey, InProgress, InProgressKind, LogCommit, LogFileOp, LogRow, StatusSnapshot,
+    };
     use crate::git::panel::{Area, GitPanel, GitTab};
     use crate::workspace::Workspace;
 
@@ -1035,6 +1093,118 @@ mod tests {
     }
 
     const COMMIT_ITEMS: [&str; 4] = ["Copy Revision Number", "Cherry-Pick", "Revert Commit…", "Checkout Revision"];
+
+    fn branch(name: &str, current: bool, remote: bool) -> BranchInfo {
+        BranchInfo { name: name.into(), upstream: None, ahead: 0, behind: 0, current, remote }
+    }
+
+    fn checkout_branches() -> Vec<BranchInfo> {
+        let mut v: Vec<BranchInfo> = ["main", "dev", "left", "right", "clash"].iter().map(|n| branch(n, *n == "main", false)).collect();
+        v.extend(["origin/main", "origin/dev", "origin/only", "upstream/only", "origin/clash"].iter().map(|n| branch(n, false, true)));
+        v
+    }
+
+    #[test]
+    fn checkout_candidates_follow_the_rules() {
+        let branches = checkout_branches();
+        let cases: [(&str, &[&str], Option<&str>); 11] = [
+            ("dev, origin/dev", &["dev"], None),
+            ("HEAD -> main, origin/main, dev", &["main"], None),
+            ("HEAD, dev", &["dev"], None),
+            ("dev, origin/only", &["dev"], None),
+            ("left, right", &["left", "right"], None),
+            ("origin/only", &["origin/only"], None),
+            ("origin/only, upstream/only", &["origin/only", "upstream/only"], None),
+            ("origin/clash", &[], Some("clash")),
+            ("origin/clash, origin/only", &["origin/only"], None),
+            ("ghost", &[], None),
+            ("HEAD, tag: v1, origin/HEAD", &[], None),
+        ];
+        for (refs, want, clash) in cases {
+            let (got, why) = checkout_candidates(refs, &branches);
+            let names: Vec<&str> = got.iter().map(|b| b.name.as_str()).collect();
+            assert_eq!((names.as_slice(), why), (want, clash), "refs {refs:?}");
+        }
+        let (got, why) = checkout_candidates("", &branches);
+        assert!(got.is_empty() && why.is_none());
+    }
+
+    /// A Log panel whose selected commit carries `refs`, with the branch list above.
+    fn checkout_panel(refs: &str) -> GitPanel {
+        let mut p = panel();
+        p.log[0].commit.refs = refs.into();
+        p.branches = checkout_branches();
+        p
+    }
+
+    fn checkout(p: &mut GitPanel) -> Vec<Effect> {
+        with_cx(|cx| p.handle_action(&GitAction::LogCheckout, cx))
+    }
+
+    #[test]
+    fn checkout_revision_switches_to_the_one_local_branch() {
+        let mut p = checkout_panel("dev, origin/dev");
+        let fx = checkout(&mut p);
+        let [Effect::Git(GitRequest::BranchOp { branch, op })] = fx.as_slice() else { panic!("{fx:?}") };
+        assert_eq!((branch.name.as_str(), *op), ("dev", BranchOp::Checkout));
+        p.area = Area::Files;
+        let fx = checkout(&mut p);
+        assert!(matches!(fx.as_slice(), [Effect::Git(GitRequest::BranchOp { op: BranchOp::Checkout, .. })]), "{fx:?}");
+    }
+
+    #[test]
+    fn checkout_revision_tracks_a_lone_remote() {
+        let fx = checkout(&mut checkout_panel("origin/only"));
+        let [Effect::Git(GitRequest::BranchOp { branch, op })] = fx.as_slice() else { panic!("{fx:?}") };
+        assert_eq!((branch.name.as_str(), *op), ("origin/only", BranchOp::CheckoutTracking));
+    }
+
+    #[test]
+    fn checkout_revision_offers_a_menu_for_several() {
+        let fx = checkout(&mut checkout_panel("origin/only, upstream/only"));
+        assert_eq!(fx.len(), 1, "{fx:?}");
+        let Some(Effect::ContextMenu(m)) = fx.first() else { panic!("{fx:?}") };
+        let rows: Vec<(&str, Option<&Action>)> = m.items.iter().map(|i| (i.label.as_str(), i.action.as_ref())).collect();
+        let tracking = |b: &str| Action::Git(GitAction::BranchOp { branch: b.into(), op: BranchOp::CheckoutTracking });
+        assert_eq!(
+            rows,
+            [
+                ("Checkout 'origin/only' as a new local branch", Some(&tracking("origin/only"))),
+                ("Checkout 'upstream/only' as a new local branch", Some(&tracking("upstream/only"))),
+            ]
+        );
+        let fx = checkout(&mut checkout_panel("left, right"));
+        let Some(Effect::ContextMenu(m)) = fx.first() else { panic!("{fx:?}") };
+        let local = |b: &str| Action::Git(GitAction::BranchOp { branch: b.into(), op: BranchOp::Checkout });
+        assert_eq!(m.items[0].label, "Checkout 'left'");
+        assert_eq!(m.items[0].action, Some(local("left")));
+        assert_eq!(m.items[1].label, "Checkout 'right'");
+        assert_eq!(m.items[1].action, Some(local("right")));
+        assert_eq!(fx.len(), 1);
+    }
+
+    #[test]
+    fn checkout_revision_detaches_without_a_branch() {
+        let fx = checkout(&mut checkout_panel("tag: v1"));
+        assert!(matches!(fx.as_slice(), [Effect::Git(GitRequest::CheckoutCommit(sha))] if sha == &"a".repeat(40)), "{fx:?}");
+    }
+
+    #[test]
+    fn checkout_revision_says_why_it_detaches() {
+        let fx = checkout(&mut checkout_panel("origin/clash"));
+        let [Effect::Notify(Level::Info, text), Effect::Git(GitRequest::CheckoutCommit(sha))] = fx.as_slice() else { panic!("{fx:?}") };
+        assert_eq!(text, "Local branch 'clash' is at another commit, so HEAD detaches");
+        assert_eq!(sha, &"a".repeat(40));
+    }
+
+    #[test]
+    fn checkout_revision_is_refused_mid_merge() {
+        let mut p = checkout_panel("dev");
+        p.snapshot =
+            Some(StatusSnapshot { in_progress: Some(InProgress { kind: InProgressKind::Merge, step: None }), ..Default::default() });
+        let fx = checkout(&mut p);
+        assert!(matches!(fx.as_slice(), [Effect::Notify(Level::Warn, _)]), "{fx:?}");
+    }
 
     #[test]
     fn right_and_left_open_and_close_folders() {

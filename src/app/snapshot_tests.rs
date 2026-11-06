@@ -2810,6 +2810,70 @@ async fn git_log_branch_submenu() {
 }
 
 #[tokio::test]
+async fn git_log_checkout_choice() {
+    use crate::git::BranchInfo;
+    let mut fx = stable_app("git-log-checkout-choice");
+    let app = &mut fx.app;
+    app.toggle_tool_window(ToolWindowId::Git);
+    app.perform(Action::Git(crate::actions::GitAction::TabLog));
+    let commits = vec![
+        commit('a', &['b', 'd'], "Ann", "2 hours ago", "HEAD -> main", "Merge branch 'parser'"),
+        commit('d', &['e'], "Bob", "3 days ago", "left, right", "Parse nested lists"),
+        commit('b', &['c'], "Ann", "4 days ago", "", "Fix the status bar width"),
+        commit('e', &['c'], "Bob", "5 days ago", "", "Add a parser"),
+        commit('c', &[], "Ann", "2 weeks ago", "tag: v0.1.0", "Initial commit"),
+    ];
+    let g = app.git.generation;
+    let filter = app.git_panel.log_filter().clone();
+    app.handle_msg(AppMsg::Git(GitMsg::Log { generation: g, skip: 0, filter, result: Ok(commits) }));
+    let b = |name: &str, current| BranchInfo { name: name.into(), upstream: None, ahead: 0, behind: 0, current, remote: false };
+    app.git_panel.branches = vec![b("main", true), b("left", false), b("right", false)];
+    draw_app(app, 120, 30);
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    app.perform(Action::Git(crate::actions::GitAction::ContextMenu));
+    for _ in 0..3 {
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    }
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    let term = draw_app(app, 120, 30);
+    let marks = menu_marks(&app.theme);
+    let bottom = app.layout.rects.bottom;
+    assert_snapshot!("git_log_checkout_choice", snapshot(&term, &marks, Some(bottom)));
+}
+
+#[tokio::test]
+async fn git_log_checkout_choice_80() {
+    use crate::git::BranchInfo;
+    let mut fx = stable_app("git-log-checkout-choice-80");
+    let app = &mut fx.app;
+    app.toggle_tool_window(ToolWindowId::Git);
+    app.perform(Action::Git(crate::actions::GitAction::TabLog));
+    let commits = vec![
+        commit('a', &['b', 'd'], "Ann", "2 hours ago", "HEAD -> main", "Merge branch 'parser'"),
+        commit('d', &['e'], "Bob", "3 days ago", "left, right", "Parse nested lists"),
+        commit('b', &['c'], "Ann", "4 days ago", "", "Fix the status bar width"),
+        commit('e', &['c'], "Bob", "5 days ago", "", "Add a parser"),
+        commit('c', &[], "Ann", "2 weeks ago", "tag: v0.1.0", "Initial commit"),
+    ];
+    let g = app.git.generation;
+    let filter = app.git_panel.log_filter().clone();
+    app.handle_msg(AppMsg::Git(GitMsg::Log { generation: g, skip: 0, filter, result: Ok(commits) }));
+    let b = |name: &str, current| BranchInfo { name: name.into(), upstream: None, ahead: 0, behind: 0, current, remote: false };
+    app.git_panel.branches = vec![b("main", true), b("left", false), b("right", false)];
+    draw_app(app, 80, 24);
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    app.perform(Action::Git(crate::actions::GitAction::ContextMenu));
+    for _ in 0..3 {
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    }
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    let term = draw_app(app, 80, 24);
+    let marks = menu_marks(&app.theme);
+    let bottom = app.layout.rects.bottom;
+    assert_snapshot!("git_log_checkout_choice_80", snapshot(&term, &marks, Some(bottom)));
+}
+
+#[tokio::test]
 async fn git_reset_dialog() {
     use crate::git::model::StatusSnapshot;
     let mut fx = stable_app("git-reset");
