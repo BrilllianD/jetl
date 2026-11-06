@@ -25,6 +25,7 @@ impl App {
                 Effect::OpenOrResolve(p) => self.open_or_resolve(p),
                 Effect::OpenDiffTab { title, files, at } => self.open_diff_tab(title, files, at),
                 Effect::OpenFileAt { path, line, col } => self.open_file_at(path, line, col),
+                Effect::DebugFrame { index, focus } => self.debug_choose_frame(index, focus),
                 Effect::OpenFileAtUtf16 { path, pos } => self.open_file_at_utf16(path, pos),
                 Effect::Dialog(d) => self.dialog = Some(d),
                 Effect::SaveAs { id, then } => self.ask_save_as(id, then),

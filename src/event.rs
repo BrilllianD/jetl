@@ -339,6 +339,11 @@ pub enum Effect {
         path: PathBuf,
         pos: lsp_types::Position,
     },
+    /// A stack frame was chosen in the Debug window's list, by key or mouse; `focus` also moves focus to the editor.
+    DebugFrame {
+        index: usize,
+        focus: bool,
+    },
     Focus(PanelId),
     Notify(Level, String),
     SwitchRoot(PathBuf),

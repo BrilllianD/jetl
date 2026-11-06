@@ -417,6 +417,8 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | Keys | Action | Description |
 |---|---|---|
 | `Esc` | `app.focus_editor` | Focus editor |
+| `Alt+Right` | `tool_window.next_tab` | Next tab of the tool window |
+| `Alt+Left` | `tool_window.prev_tab` | Previous tab of the tool window |
 | `Up` | `debug.up` | Debug: up |
 | `Down` | `debug.down` | Debug: down |
 | `PageUp` | `debug.page_up` | Debug: page up |
@@ -424,6 +426,7 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Home` | `debug.home` | Debug: first line |
 | `End` | `debug.end` | Debug: last line |
 | `Enter` | `debug.open` | Debug: jump to the selected line's location |
+| `T` | `debug.choose_thread` | Debug: choose the thread |
 
 ## debug.active
 

@@ -197,6 +197,8 @@ pub struct Editor {
     closed_breakpoints: std::collections::BTreeMap<PathBuf, std::collections::BTreeSet<usize>>,
     /// Where a paused debug session is, drawn in every view of that file.
     execution_point: Option<ExecutionPoint>,
+    /// The line of a stack frame chosen in the Debug window, drawn in every view of that file.
+    selected_frame: Option<ExecutionPoint>,
     /// The last copy made at several carets: the clipboard text and each
     /// caret's piece, so pasting it at as many carets splits it again.
     multi_clip: Option<(String, Vec<String>)>,
@@ -281,6 +283,7 @@ impl Editor {
             closed_bookmarks: Default::default(),
             closed_breakpoints: Default::default(),
             execution_point: None,
+            selected_frame: None,
             multi_clip: None,
             column_mode: false,
             overwrite: false,
@@ -1917,6 +1920,7 @@ impl Editor {
         }
         let execution_line =
             self.execution_point.as_ref().filter(|p| self.buffers[i].path.as_deref() == Some(p.path.as_path())).map(|p| p.line);
+        let frame_line = self.selected_frame.as_ref().filter(|p| self.buffers[i].path.as_deref() == Some(p.path.as_path())).map(|p| p.line);
         let opts = RenderOpts {
             focused,
             tab_width: self.tab_display(&self.buffers[i]),
@@ -1931,6 +1935,7 @@ impl Editor {
             follow,
             decor,
             execution_line,
+            frame_line,
         };
         let crumbs_on = self.breadcrumbs && self.merge.is_none();
         let sticky_on = self.sticky_scroll && self.merge.is_none();

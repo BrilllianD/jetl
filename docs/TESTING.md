@@ -1116,6 +1116,53 @@ last line (gdb is line-based), `telemetry`, a `Failed` verdict's message, a verd
 start (gdb reports those by event), stale `DebugOutput`, a root switch, the other start orders. Alt+F5 from a physical
 keyboard through the terminal emulator into tmux stays the user's to confirm.
 
+### Scenario: Debug window, threads and frames
+
+Needs `gdb` 14 or newer (the run used 17.2) and `gcc`. At 80x24 and at 120x40, a private tmux socket, `XDG_*`
+directories under `/tmp`, `[lsp] enabled = false` and `[ui] toolbar = false`, `RUST_LOG=jetl=debug`. The fixture is the
+one of the previous scenario plus `split.c` and `helper.c` (`main` calls `helper`, which is in the other file; `gcc -g -O0
+-o split split.c helper.c`) and `threads.c` (a `pthread_create` of a `worker` that prints on line 5 and a `pthread_join`;
+`gcc -g -O0 -pthread`), each with a configuration and a `[debug.<name>]` table. The steps run in a session that starts
+with an empty `XDG_STATE_HOME`: the window layout, the open tabs and the breakpoints are kept there, so a session that
+inherits them starts with the Debug window up and the breakpoint on line 9 toggled off by the step that sets it. A
+background is read from `tmux capture-pane -e` (`bgof`): the SGR background in force where a text starts. The script of
+the last run is `~/.claude/plans/backlog-run-24-D4b1-evidence/scripts/frames-scenario.sh`; it runs the previous
+scenario's steps first.
+
+1. Fresh state, `demo.c`, window hidden. Alt+F5: ` Frames ` and ` Console ` on a row of their own and the hint
+   `Shift+F9 starts the selected configuration`. A click on ` Frames ` keeps the hint; a click on ` Console ` shows the Console.
+2. Ctrl+G 9, Ctrl+F8, Shift+F9: `paused (breakpoint)`, `9▶`. The Console is still the tab and holds gdb's own text
+   (`No source file named /tmp/jetl-dap-demo/demo.c.`, `Breakpoint 1 (...) pending.`), not `No output yet`. The log holds
+   one `-> stackTrace` and one `-> threads`, and `dap: threads [Thread { id: 1, name: "demo" }]`: gdb names the thread
+   after the program.
+3. Alt+F5 (focus), Alt+Right: `Thread 1: demo`, `main`, `demo.c:9`. F7: title `paused (step)`, `4▶`, rows `add demo.c:4`
+   and `main demo.c:9`. gdb stops the list at `main`.
+4. Down: `Ln 9,`, `Step Over` still up, and the background of `int x = add(1, 2);` differs from that of `int y =
+   add(x, 4);` (observed `48;2;15;58;90` against `48;2;13;17;23` in the default theme).
+5. Up: `Ln 4,`, and the two backgrounds are equal again. Down, Enter, then Up: `Ln 8,`, so the editor had the focus.
+6. Alt+F5, Down, Alt+F10: `Ln 4,` and the mark gone. Alt+F5, Down, F8: `-> next`, `5▶`, the rows show `demo.c:5` and the
+   mark is gone. F9: `exit code 0`, Frames shows `Frames show while the program is paused`, Alt+Left shows `x=3 y=7`.
+7. `split` with `helper.c` open and a breakpoint on its line 2, `split.c` not open (checked on the tab row; the Project
+   tree lists it): `2▶`; Frames: `helper helper.c:2`, `main split.c:3`. Down opens the tab `split.c` at `Ln 3,` and the
+   focus stays in the window: Up gives `Ln 2,`.
+8. Mouse: a click on the `main` row gives `Ln 3,`; a click on the thread row opens a menu with one row, Esc closes it.
+9. `threads`, breakpoint on line 5, Shift+F9: `paused (breakpoint)`, `5▶`, and the log lists `Thread { id: 1 }` and
+   `Thread { id: 2 }`, both named `threads`. The worker, thread 2, is the one stopped. `t` opens a menu of two rows. Down,
+   Enter chooses thread 1: the log has a second `-> stackTrace`, and the rows are three `???  no source` frames and `main
+   threads.c:12`. Three Downs reach `main`: `Ln 12,`, and `5▶` is still there. F9 with thread 1 chosen: `exit code 0`.
+10. Frames selected, window hidden, `demo` breakpoint on 9: `Paused (breakpoint)` toast, then `9▶`, window still hidden.
+11. Paused on Frames, Ctrl+F2: `Debug session stopped`, and Frames shows its paused hint. Ctrl+Q: exit 0, empty stderr, no
+    `demo`, `split`, `threads` or gdb left.
+
+At 80x24 the editor shows only a few lines, so the rows of steps 4 to 6 may be scrolled out; the script scrolls the editor
+with the mouse wheel until both show. While gdb's `❌️` line (U+274C with a variation selector) is in the Console, the
+thread row of the Frames tab showed a stray letter from that line to the right of the label (`Thread 1: demo ▾ e`),
+and in the Console tab the closing border of that line is missing, so tmux and jetl count the width of that sequence
+differently. The cause of the stray letter was not isolated; the Console alone shows the width mismatch.
+
+gdb cannot show, and the unit tests prove: a frame whose source has a `sourceReference` (`a_frame_with_no_file_moves_nothing`),
+a stop with no `threadId`, the stale choice (no way to hold an answer back), a failed stack, frame ids other than gdb's.
+
 ### Scenario: Debug build step
 
 Needs `gdb` 14 or newer (the run used 17.2) and `cargo`, no network. At 80x24 and at 120x40, a private tmux socket,

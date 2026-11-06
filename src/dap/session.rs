@@ -101,7 +101,14 @@ pub struct DapTag {
 #[derive(Debug, Clone, PartialEq)]
 pub enum TagKind {
     Threads,
-    StackTrace { thread: i64 },
+    StackTrace {
+        thread: i64,
+    },
+    /// The stack of a thread the user chose; `seq` is the panel's selection seq when it was asked.
+    Frames {
+        thread: i64,
+        seq: u64,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]

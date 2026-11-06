@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 use tokio::task::JoinHandle;
 
 use super::App;
-use crate::actions::DebugAction;
+use crate::actions::{Action, DebugAction};
 use crate::dap::build::{Artifact, BuildTags, drive_build};
 use crate::dap::client::{DapClient, SHUTDOWN_LIMIT};
 use crate::dap::config::{
@@ -21,13 +21,15 @@ use crate::dap::config::{
     process_env, resolve_build, resolve_launch,
 };
 use crate::dap::console::spawn_console;
-use crate::dap::panel::BuildStage;
-use crate::dap::protocol::{Breakpoint, BreakpointEvent, OutputEvent, StackFrame, StackTraceBody, StoppedEvent, ThreadsBody, body_of};
+use crate::dap::panel::{BuildStage, DebugTab, FrameRow};
+use crate::dap::protocol::{
+    Breakpoint, BreakpointEvent, OutputEvent, StackFrame, StackTraceBody, StoppedEvent, Thread, ThreadsBody, body_of,
+};
 use crate::dap::session::{Command, DapTag, Phase, ResumeKind, SessionId, SessionSpec, SourceBreakpoints, TagKind};
 use crate::dap::{DapBody, DapMsg};
 use crate::editor::buffer::{BpState, BreakpointMark};
 use crate::editor::{Editor, ExecutionPoint};
-use crate::event::{AppMsg, Level};
+use crate::event::{AppMsg, Effect, Level};
 #[cfg(test)]
 use crate::lsp::client::Conn;
 use crate::lsp::client::spawn_process;
@@ -36,6 +38,7 @@ use crate::run::process::{RunEnd, Spec, clean, kill_group};
 use crate::run::{RunTask, load_tasks, quote_word};
 use crate::ui::dialog::{Dialog, DialogId};
 use crate::ui::focus::{PanelId, ToolWindowId};
+use crate::ui::menu::{ContextMenu, MenuItem};
 
 /// How adapters are reached: processes, or in-process fakes in tests.
 #[derive(Default)]
@@ -62,6 +65,8 @@ pub(super) struct Live {
     pub(super) epoch: u64,
     /// The thread the last stop was on, kept through `Running` for `debug.pause`.
     pub(super) thread: Option<i64>,
+    /// The panel's selection seq when this stop began: another value means the user has chosen since.
+    pub(super) stop_seq: u64,
     /// The program's output goes to the Console thread; dropping this ends it after it flushed what it holds.
     pub(super) console: std::sync::mpsc::Sender<OutputEvent>,
 }
@@ -259,6 +264,14 @@ fn verdict_line(source: &Path, line: usize, mark: &BreakpointMark) -> Option<Run
     Some(RunLine { text: format!("Breakpoint {place}{rest}"), severity, link: Some(link) })
 }
 
+/// A frame as the panel shows it: names cleaned as a message is, the place from `frame_location`.
+fn frame_row(frame: &StackFrame, root: &Path) -> FrameRow {
+    let location = frame_location(frame, root);
+    let place =
+        location.as_ref().map(|(p, line)| format!("{}:{}", p.file_name().map(|n| n.to_string_lossy()).unwrap_or_default(), line + 1));
+    FrameRow { id: frame.id, name: one_line(&frame.name), place, location }
+}
+
 /// The file and 0-based line a frame is at, when it has a source file: not when `line` is 0, the source is absent
 /// or has a `sourceReference` (not a file), or its path is empty. A relative path is joined to the root. The frame
 /// id and column are not read, so 0 is no special value.
@@ -337,7 +350,9 @@ impl App {
             DebugAction::StepOut => self.debug_resume(ResumeKind::StepOut),
             DebugAction::Pause => self.debug_pause(),
             DebugAction::ShowExecutionPoint => self.debug_show_execution_point(),
-            // The Console's list keys: `perform` hands them to the panel.
+            DebugAction::ChooseThread => self.debug_choose_thread(),
+            DebugAction::SelectThread(t) => self.debug_select_thread(t),
+            // The Console's and Frames' list keys: `perform` hands them to the panel.
             DebugAction::Up
             | DebugAction::Down
             | DebugAction::PageUp
@@ -357,6 +372,8 @@ impl App {
         // The live session's `Ended` will be dropped, so its marks' states go now.
         self.editor.reset_breakpoint_states();
         self.editor.set_execution_point(None);
+        self.debug_panel.clear_stack();
+        self.editor.set_selected_frame(None);
         self.debug.seq += 1;
         self.debug.starting = true;
         let (seq, generation, tx) = (self.debug.seq, self.workspace.generation, self.bus_tx.clone());
@@ -419,6 +436,7 @@ impl App {
     fn debug_begin_build(&mut self, p: Prepared, spec: Spec) {
         let id = self.debug.new_session_id();
         self.debug_panel.start(&p.name, id);
+        self.debug_panel.set_tab(DebugTab::Console);
         self.debug_panel.set_stage(Some(BuildStage::Building));
         let words: Vec<String> = spec.argv.iter().map(|w| quote_word(w)).collect();
         self.debug_panel.push(vec![RunLine::plain(format!("$ {}", words.join(" ")))]);
@@ -583,6 +601,7 @@ impl App {
             open,
             epoch: 0,
             thread: None,
+            stop_seq: 0,
             console,
         });
         self.notify(Level::Info, format!("Debugging {} with {}", p.name, p.adapter.name));
@@ -658,13 +677,18 @@ impl App {
         if !shown {
             self.notify(Level::Info, format!("Paused ({})", event.reason));
         }
+        self.debug_panel.stop_began(event.thread_id);
+        self.editor.set_selected_frame(None);
+        let stop_seq = self.debug_panel.selection_seq();
         let Some(live) = self.debug.session.as_mut() else { return };
         live.epoch = epoch;
         live.thread = event.thread_id;
-        match event.thread_id {
-            Some(t) => self.debug_ask_stack(epoch, t),
-            None => self.debug_ask_threads(epoch),
+        live.stop_seq = stop_seq;
+        // The stack first: the selector's list is the lesser answer. With no thread, the `threads` answer asks the stack.
+        if let Some(t) = event.thread_id {
+            self.debug_ask_stack(epoch, t);
         }
+        self.debug_ask_threads(epoch);
     }
 
     fn debug_ask_threads(&mut self, epoch: u64) {
@@ -684,13 +708,27 @@ impl App {
         }
         self.debug_panel.set_reason(None);
         self.editor.set_execution_point(None);
+        self.debug_panel.clear_stack();
+        self.editor.set_selected_frame(None);
     }
 
     /// An answer to `threads` or `stackTrace`. No epoch check here: the machine drops an answer older than its
     /// epoch (rule 7). `Stop` does not bump the epoch, so a frame answer is applied only while `Suspended`. One already
     /// on the bus when a step is sent is applied too, and the step's `Running` then clears the point.
+    ///
+    /// There are two stack answers. The stop's (`StackTrace`) always sets the execution point, and opens the file and
+    /// fills the list only if the user has not chosen since the stop (`Live::stop_seq`). A chosen thread's (`Frames`)
+    /// fills the list and shows row 0, and is dropped unless it carries the panel's current selection seq.
     fn debug_response(&mut self, tag: DapTag, result: Result<Value, String>) {
         let phase = self.debug.phase();
+        // Only the newest choice's answer counts, an error included.
+        if let TagKind::Frames { seq, .. } = tag.kind
+            && seq != self.debug_panel.selection_seq()
+        {
+            tracing::debug!("dropping the stack of an older choice");
+            return;
+        }
+        let known = self.debug.session.as_ref().is_some_and(|l| l.thread.is_some());
         let body = match result {
             Ok(b) => b,
             Err(e) => {
@@ -699,8 +737,19 @@ impl App {
                     return;
                 }
                 let what = match tag.kind {
+                    // Only the selector's list is missing: the stopped thread still shows.
+                    TagKind::Threads if known => return tracing::debug!("dap: threads failed: {e}"),
                     TagKind::Threads => "threads",
-                    TagKind::StackTrace { .. } => "stack",
+                    TagKind::StackTrace { thread } => {
+                        if self.debug_stop_stands() {
+                            self.debug_panel.show_stack(thread, Vec::new());
+                        }
+                        "stack"
+                    }
+                    TagKind::Frames { thread, .. } => {
+                        self.debug_panel.show_stack(thread, Vec::new());
+                        "stack"
+                    }
                 };
                 return self.notify(Level::Warn, format!("Could not read the {what}: {e}"));
             }
@@ -708,17 +757,26 @@ impl App {
         match tag.kind {
             TagKind::Threads => {
                 let threads = body_of::<ThreadsBody>("threads", body).threads;
+                tracing::debug!("dap: threads {threads:?}");
                 let Some(first) = threads.first().map(|t| t.id) else {
-                    return self.notify(Level::Warn, "The adapter reports no threads");
+                    if !known {
+                        self.notify(Level::Warn, "The adapter reports no threads");
+                    }
+                    return;
                 };
                 // Each resume or pause bumps the epoch, so a `Threads` answer that gets here while `Running`
                 // can only come from `debug_pause`: no flag and no tag kind of its own is needed.
                 match phase {
                     Some(Phase::Suspended) => {
-                        if let Some(live) = self.debug.session.as_mut() {
-                            live.thread = Some(first);
+                        let list = threads.into_iter().map(|t| Thread { id: t.id, name: one_line(&t.name) }).collect();
+                        self.debug_panel.set_threads(list);
+                        if !known {
+                            if let Some(live) = self.debug.session.as_mut() {
+                                live.thread = Some(first);
+                            }
+                            self.debug_panel.set_thread(first);
+                            self.debug_ask_stack(tag.epoch, first);
                         }
-                        self.debug_ask_stack(tag.epoch, first);
                     }
                     Some(Phase::Running) => {
                         if let Some(live) = self.debug.session.as_mut() {
@@ -729,36 +787,120 @@ impl App {
                     _ => {}
                 }
             }
-            TagKind::StackTrace { .. } => {
+            TagKind::StackTrace { thread } => {
                 // `Stop` does not bump the epoch, so an answer can still arrive while `Stopping`.
                 if phase != Some(Phase::Suspended) {
                     return;
                 }
+                let stands = self.debug_stop_stands();
                 let frames = body_of::<StackTraceBody>("stackTrace", body).stack_frames;
                 match frames.first() {
-                    Some(frame) => self.debug_show_frame(frame),
+                    Some(frame) => self.debug_show_frame(frame, stands),
                     None => {
                         self.editor.set_execution_point(None);
                         self.notify(Level::Warn, "Paused, the adapter reports no stack");
                     }
                 }
+                if stands {
+                    let root = self.workspace.root.clone();
+                    self.debug_panel.show_stack(thread, frames.iter().map(|f| frame_row(f, &root)).collect());
+                }
+            }
+            TagKind::Frames { thread, .. } => {
+                if phase != Some(Phase::Suspended) {
+                    return;
+                }
+                let frames = body_of::<StackTraceBody>("stackTrace", body).stack_frames;
+                let root = self.workspace.root.clone();
+                self.debug_panel.show_stack(thread, frames.iter().map(|f| frame_row(f, &root)).collect());
+                match self.debug_panel.frame(0).cloned() {
+                    Some(row) => self.debug_show_row(&row, false),
+                    None => self.editor.set_selected_frame(None),
+                }
             }
         }
     }
 
-    /// Opens the frame's file at its line without taking focus, and marks the line.
-    fn debug_show_frame(&mut self, frame: &StackFrame) {
+    /// No frame or thread was chosen since the stop began, so the stop's own answer may fill the list and open the file.
+    fn debug_stop_stands(&self) -> bool {
+        self.debug.session.as_ref().is_some_and(|l| l.stop_seq == self.debug_panel.selection_seq())
+    }
+
+    /// Sets the execution point from the frame, and opens its file without taking focus when `open`.
+    fn debug_show_frame(&mut self, frame: &StackFrame, open: bool) {
         match frame_location(frame, &self.workspace.root) {
             Some((path, line)) => {
                 tracing::debug!("dap: execution point {}:{line}", path.display());
                 self.editor.set_execution_point(Some(ExecutionPoint { path: path.clone(), line }));
-                self.open_file_at_unfocused(path, line, 0);
+                if open {
+                    self.open_file_at_unfocused(path, line, 0);
+                }
             }
             None => {
                 self.editor.set_execution_point(None);
-                self.notify(Level::Info, format!("Paused in {}, no source", frame.name));
+                if open {
+                    self.notify(Level::Info, format!("Paused in {}, no source", frame.name));
+                }
             }
         }
+    }
+
+    /// A frame was chosen in the list, by key or mouse. Frame ids and rows hold only while paused.
+    pub(super) fn debug_choose_frame(&mut self, index: usize, focus: bool) {
+        if !self.debug.suspended() {
+            return;
+        }
+        let Some(row) = self.debug_panel.frame(index).cloned() else { return };
+        self.debug_show_row(&row, focus);
+    }
+
+    /// Shows a frame in the editor. The line is marked unless it is where the arrow is. A frame with no file moves nothing.
+    fn debug_show_row(&mut self, row: &FrameRow, focus: bool) {
+        let Some((path, line)) = row.location.clone() else {
+            return self.editor.set_selected_frame(None);
+        };
+        let here = ExecutionPoint { path: path.clone(), line };
+        let marked = self.editor.execution_point() != Some(&here);
+        self.editor.set_selected_frame(marked.then_some(here));
+        if focus { self.open_file_at(path, line, 0) } else { self.open_file_at_unfocused(path, line, 0) }
+    }
+
+    fn debug_choose_thread(&mut self) {
+        if !self.debug.suspended() {
+            return self.notify(Level::Info, "No paused debug session");
+        }
+        self.debug_panel.set_tab(DebugTab::Frames);
+        let current = self.debug_panel.thread();
+        let items: Vec<MenuItem> = self
+            .debug_panel
+            .threads()
+            .iter()
+            .map(|t| {
+                let label = if t.name.is_empty() { format!("Thread {}", t.id) } else { format!("Thread {}: {}", t.id, t.name) };
+                MenuItem::new(label, Action::Debug(DebugAction::SelectThread(t.id))).enabled(Some(t.id) != current)
+            })
+            .collect();
+        if items.is_empty() {
+            return self.notify(Level::Info, "The adapter reports no threads");
+        }
+        let (x, y) = self.debug_panel.menu_anchor();
+        self.apply_effects(vec![Effect::ContextMenu(ContextMenu::new(items, x, y).shifted())]);
+    }
+
+    /// A menu row. The menu can outlive the stop it was opened in, so the thread has to be in the list still.
+    fn debug_select_thread(&mut self, thread: i64) {
+        let known = self.debug_panel.threads().iter().any(|t| t.id == thread);
+        if !self.debug.suspended() || !known || self.debug_panel.thread() == Some(thread) {
+            return;
+        }
+        let Some(live) = self.debug.session.as_mut() else { return };
+        live.thread = Some(thread);
+        let epoch = live.epoch;
+        let seq = self.debug_panel.select_thread(thread);
+        self.editor.set_selected_frame(None);
+        let tag = DapTag { epoch, kind: TagKind::Frames { thread, seq } };
+        let arguments = json!({"threadId": thread, "startFrame": 0, "levels": 20});
+        self.debug.send(Command::Request { command: "stackTrace".into(), arguments, tag });
     }
 
     fn debug_resume(&mut self, kind: ResumeKind) {
@@ -795,6 +937,8 @@ impl App {
         let Some(p) = self.editor.execution_point().cloned() else {
             return self.notify(Level::Info, "No execution point");
         };
+        self.editor.set_selected_frame(None);
+        self.debug_panel.select_top_at(&p.path, p.line);
         self.open_file_at(p.path, p.line, 0);
     }
 
@@ -858,6 +1002,8 @@ impl App {
         let Some(live) = self.debug.session.take() else { return };
         self.editor.reset_breakpoint_states();
         self.editor.set_execution_point(None);
+        self.debug_panel.clear_stack();
+        self.editor.set_selected_frame(None);
         let (level, text) = match (live.stop_requested, reason.is_empty(), live.exit_code) {
             (_, false, Some(c)) => (Level::Warn, format!("Debug session ended: {reason} (exit code {c})")),
             (_, false, None) => (Level::Warn, format!("Debug session ended: {reason}")),
@@ -878,6 +1024,7 @@ impl App {
         self.debug_panel.clear();
         self.editor.reset_breakpoint_states();
         self.editor.set_execution_point(None);
+        self.editor.set_selected_frame(None);
         self.debug.starting = false;
         self.debug.seq += 1;
     }
@@ -2098,12 +2245,29 @@ pub(crate) mod tests {
 
     /// The adapter reports a stop on `thread` and answers the stack with one `frame`.
     async fn stop(app: &mut App, fake: &mut FakeAdapter, thread: i64, frame: Value) {
+        stop_frames(app, fake, thread, vec![frame], json!([{"id": thread, "name": "t"}])).await;
+    }
+
+    /// A stop on `thread` whose stack is `frames` and whose thread list is `threads`; both answered, not yet handled.
+    async fn stop_frames(app: &mut App, fake: &mut FakeAdapter, thread: i64, frames: Vec<Value>, threads: Value) {
         let before = epoch_of(app);
         fake.event("stopped", json!({"reason": "breakpoint", "threadId": thread}));
         pump_until(app, |a| epoch_of(a) > before).await;
         let req = fake.recv("stackTrace").await;
         assert_eq!(req["arguments"]["threadId"], thread);
-        fake.respond(&req, json!({"stackFrames": [frame]}));
+        fake.respond(&req, json!({"stackFrames": frames}));
+        let req = fake.recv("threads").await;
+        fake.respond(&req, json!({"threads": threads}));
+    }
+
+    /// `stop_frames`, handled up to the thread list: the stack answer came first, so it has been handled too.
+    async fn stop_listed(app: &mut App, fake: &mut FakeAdapter, thread: i64, frames: Vec<Value>, threads: Value) {
+        stop_frames(app, fake, thread, frames, threads).await;
+        pump_until(app, |a| !a.debug_panel.threads().is_empty()).await;
+    }
+
+    fn frame_at(id: i64, name: &str, path: &Path, line: i64) -> Value {
+        json!({"id": id, "name": name, "line": line, "column": 1, "source": {"path": path.to_string_lossy()}})
     }
 
     /// A stop at `path` on the 1-based `line`, handled up to the point being set.
@@ -3396,6 +3560,543 @@ pub(crate) mod tests {
         let _sleeper = building(&mut app).await;
         assert!(app.layout.is_visible(ToolWindowId::Debug));
         assert!(app.focus.is(PanelId::Editor), "the window takes no focus");
+        ctrl_f2(&mut app);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // Threads and frames.
+
+    const TWELVE: &str = "l0\nl1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\nl11\n";
+
+    /// Gives the Debug window focus on its Frames tab.
+    fn in_frames(app: &mut App) {
+        app.focus.set(PanelId::Debug);
+        app.debug_panel.set_tab(DebugTab::Frames);
+    }
+
+    fn caret(app: &App) -> usize {
+        app.editor.active_buffer().unwrap().cursor_line_col().0
+    }
+
+    fn selected(app: &App) -> Option<(PathBuf, usize)> {
+        app.editor.selected_frame().map(|p| (p.path.clone(), p.line))
+    }
+
+    fn names(app: &App) -> Vec<String> {
+        (0..).map_while(|i| app.debug_panel.frame(i)).map(|f| f.name.clone()).collect()
+    }
+
+    /// The Debug window drawn alone, as text.
+    fn drawn(app: &mut App) -> String {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let phase = app.debug.phase();
+        let theme = app.theme.clone();
+        let mut term = Terminal::new(TestBackend::new(60, 12)).unwrap();
+        term.draw(|f| app.debug_panel.render(f, f.area(), true, &theme, phase)).unwrap();
+        term.backend().buffer().content().iter().map(|c| c.symbol()).collect()
+    }
+
+    /// An answer to the stop's own `stackTrace`, handled at once.
+    fn inject_stack(app: &mut App, thread: i64, frames: Value) {
+        let tag = DapTag { epoch: epoch_of(app), kind: TagKind::StackTrace { thread } };
+        inject(app, DapBody::Response { tag, result: Ok(json!({ "stackFrames": frames })) });
+    }
+
+    fn inject_threads(app: &mut App, threads: Value) {
+        let tag = DapTag { epoch: epoch_of(app), kind: TagKind::Threads };
+        inject(app, DapBody::Response { tag, result: Ok(json!({ "threads": threads })) });
+    }
+
+    /// An answer to a chosen thread's stack, asked under `seq`.
+    fn inject_frames(app: &mut App, thread: i64, seq: u64, result: Result<Value, String>) {
+        let tag = DapTag { epoch: epoch_of(app), kind: TagKind::Frames { thread, seq } };
+        inject(app, DapBody::Response { tag, result: result.map(|f| json!({ "stackFrames": f })) });
+    }
+
+    /// Paused on thread 7 with `add` at c.log:4 and `main` at c.log:9, a.log (six lines) open and active.
+    async fn paused_in_two(name: &str) -> (App, PathBuf, FakeAdapter, PathBuf, PathBuf) {
+        let (mut app, dir, mut fakes) = setup(name, Order::LaunchEarly);
+        let c = load(&mut app, "c.log", TWELVE);
+        let a = six(&mut app);
+        let (mut fake, _) = running(&mut app, &mut fakes).await;
+        let frames = vec![frame_at(0, "add", &c, 4), frame_at(1, "main", &c, 9)];
+        stop_listed(&mut app, &mut fake, 7, frames, json!([{"id": 7, "name": "t"}, {"id": 4, "name": "u"}])).await;
+        pump_until(&mut app, |x| point(x).is_some()).await;
+        (app, dir, fake, a, c)
+    }
+
+    #[tokio::test]
+    async fn a_stop_fills_the_frames_and_points_at_the_top() {
+        let (app, dir, _fake, _a, c) = paused_in_two("frames-fill").await;
+        let top = app.debug_panel.frame(0).unwrap();
+        assert_eq!((top.id, top.name.as_str(), top.place.as_deref()), (0, "add", Some("c.log:4")));
+        assert_eq!(top.location, Some((c.clone(), 3)));
+        let second = app.debug_panel.frame(1).unwrap();
+        assert_eq!((second.id, second.name.as_str(), second.place.as_deref()), (1, "main", Some("c.log:9")));
+        assert!(app.debug_panel.frame(2).is_none());
+        assert_eq!(point(&app), Some((c, 3)));
+        assert_eq!(selected(&app), None);
+        assert_eq!(app.debug_panel.tab(), DebugTab::Console, "a stop does not switch the tab");
+        assert_eq!(app.debug_panel.selected_frame().unwrap().id, 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_stop_with_a_thread_asks_the_list_too() {
+        let (mut app, dir, mut fakes) = setup("frames-threads-ask", Order::LaunchEarly);
+        let _ = six(&mut app);
+        let (mut fake, _) = running(&mut app, &mut fakes).await;
+        fake.event("stopped", json!({"reason": "breakpoint", "threadId": 7}));
+        pump_until(&mut app, |x| thread_of(x) == Some(7)).await;
+        let stack = fake.next().await;
+        assert_eq!(stack["command"], "stackTrace");
+        let threads = fake.next().await;
+        assert_eq!(threads["command"], "threads");
+        fake.respond(&threads, json!({"threads": [{"id": 7, "name": "a\x1b[31mb\nc"}, {"id": 8}]}));
+        pump_until(&mut app, |x| !x.debug_panel.threads().is_empty()).await;
+        let got: Vec<(i64, &str)> = app.debug_panel.threads().iter().map(|t| (t.id, t.name.as_str())).collect();
+        assert_eq!(got, [(7, "ab c"), (8, "")]);
+        assert_quiet(&mut app, &mut fake, "q-threads.log").await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn two_threads_answers_ask_the_stack_once() {
+        let (mut app, dir, mut fakes) = setup("frames-threads-twice", Order::LaunchEarly);
+        let a = six(&mut app);
+        let (mut fake, _) = running(&mut app, &mut fakes).await;
+        fake.event("stopped", json!({"reason": "pause"}));
+        pump_until(&mut app, |x| x.debug.suspended() && epoch_of(x) > 0).await;
+        let first = fake.recv("threads").await;
+        press(&mut app, F8);
+        let second = fake.recv("threads").await;
+        fake.respond(&first, json!({"threads": [{"id": 4, "name": "a"}]}));
+        pump_until(&mut app, |x| thread_of(x) == Some(4)).await;
+        let stack = fake.recv("stackTrace").await;
+        fake.respond(&stack, json!({"stackFrames": [frame(&a, 2)]}));
+        fake.respond(&second, json!({"threads": [{"id": 4, "name": "a"}, {"id": 9}]}));
+        pump_until(&mut app, |x| x.debug_panel.threads().len() == 2).await;
+        assert_quiet(&mut app, &mut fake, "q-twice.log").await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn the_threads_list_failing_is_silent_when_the_thread_is_known() {
+        let (mut app, dir, mut fakes) = setup("frames-threads-silent", Order::LaunchEarly);
+        let a = six(&mut app);
+        let _fake = paused(&mut app, &mut fakes, &a, 3).await;
+        pump_until(&mut app, |x| !x.debug_panel.threads().is_empty()).await;
+        let before = texts(&app).len();
+        let tag = DapTag { epoch: epoch_of(&app), kind: TagKind::Threads };
+        inject(&mut app, DapBody::Response { tag, result: Err("boom".into()) });
+        assert_eq!(texts(&app).len(), before, "{:?}", texts(&app));
+        inject_threads(&mut app, json!([]));
+        assert_eq!(texts(&app).len(), before, "{:?}", texts(&app));
+        assert_eq!(thread_of(&app), Some(7));
+        assert_eq!(app.debug_panel.thread(), Some(7));
+        assert_eq!(app.debug_panel.threads().len(), 1, "an empty answer leaves the list as it was");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn choosing_a_frame_moves_the_editor_and_marks_the_line() {
+        let (mut app, dir, _fake, _a, c) = paused_in_two("frames-choose").await;
+        assert_eq!(app.editor.active_path(), Some(c.as_path()));
+        in_frames(&mut app);
+        press(&mut app, KeyCode::Down);
+        assert_eq!(caret(&app), 8);
+        assert_eq!(selected(&app), Some((c.clone(), 8)));
+        assert_eq!(point(&app), Some((c.clone(), 3)), "the arrow stays");
+        assert!(app.focus.is(PanelId::Debug));
+        press(&mut app, KeyCode::Home);
+        assert_eq!(caret(&app), 3);
+        assert_eq!(selected(&app), None, "the top frame is the execution point");
+        assert!(app.focus.is(PanelId::Debug));
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Enter);
+        assert!(app.focus.is(PanelId::Editor), "Enter moves focus to the editor");
+        assert_eq!(caret(&app), 8);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_frame_in_an_unopened_file_opens_unfocused() {
+        let (mut app, dir, mut fakes) = setup("frames-unopened", Order::LaunchEarly);
+        let a = six(&mut app);
+        let b = app.workspace.root.join("b.log");
+        std::fs::write(&b, "b0\nb1\nb2\nb3\n").unwrap();
+        let (mut fake, _) = running(&mut app, &mut fakes).await;
+        let frames = vec![frame_at(0, "top", &a, 3), frame_at(1, "caller", &b, 3)];
+        stop_listed(&mut app, &mut fake, 7, frames, json!([{"id": 7}])).await;
+        pump_until(&mut app, |x| point(x).is_some()).await;
+        in_frames(&mut app);
+        press(&mut app, KeyCode::Down);
+        pump_until(&mut app, |x| x.editor.index_of(&b).is_some()).await;
+        assert_eq!(app.editor.active_path(), Some(b.as_path()));
+        assert_eq!(caret(&app), 2);
+        assert!(app.focus.is(PanelId::Debug));
+        assert_eq!(selected(&app), Some((b, 2)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn two_quick_choices_end_on_the_last() {
+        let (mut app, dir, mut fakes) = setup("frames-quick", Order::LaunchEarly);
+        let a = six(&mut app);
+        let b = app.workspace.root.join("b.log");
+        let d = app.workspace.root.join("d.log");
+        std::fs::write(&b, "b0\nb1\nb2\nb3\n").unwrap();
+        std::fs::write(&d, "d0\nd1\nd2\nd3\nd4\n").unwrap();
+        let (mut fake, _) = running(&mut app, &mut fakes).await;
+        let frames = vec![frame_at(0, "top", &a, 3), frame_at(1, "mid", &b, 2), frame_at(2, "low", &d, 4)];
+        stop_listed(&mut app, &mut fake, 7, frames, json!([{"id": 7}])).await;
+        pump_until(&mut app, |x| point(x).is_some()).await;
+        in_frames(&mut app);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Down);
+        // Both reads are in flight; they are handled in the order of the choices, whichever ends first.
+        let mut loaded = Vec::new();
+        while loaded.len() < 2 {
+            match tokio::time::timeout(std::time::Duration::from_secs(5), app.bus_rx.recv()).await.expect("a file read in time") {
+                Some(m @ AppMsg::FileLoaded { .. }) => loaded.push(m),
+                Some(_) => {}
+                None => panic!("bus closed"),
+            }
+        }
+        loaded.sort_by_key(|m| matches!(m, AppMsg::FileLoaded { path, .. } if *path == d));
+        for m in loaded {
+            app.handle_msg(m);
+        }
+        assert_eq!(app.editor.active_path(), Some(d.as_path()));
+        assert_eq!(caret(&app), 3);
+        assert_eq!(selected(&app), Some((d, 3)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_frame_with_no_file_moves_nothing() {
+        let (mut app, dir, mut fakes) = setup("frames-nofile", Order::LaunchEarly);
+        let c = load(&mut app, "c.log", TWELVE);
+        let _a = six(&mut app);
+        let (mut fake, _) = running(&mut app, &mut fakes).await;
+        let frames = vec![
+            frame_at(0, "add", &c, 4),
+            frame_at(1, "main", &c, 9),
+            json!({"id": 2, "name": "libc", "line": 0, "column": 0}),
+            json!({"id": 3, "name": "ref", "line": 3, "column": 1, "source": {"path": c.to_string_lossy(), "sourceReference": 5}}),
+            json!({"id": 4, "name": "zero", "line": 0, "column": 1, "source": {"path": c.to_string_lossy()}}),
+        ];
+        stop_listed(&mut app, &mut fake, 7, frames, json!([{"id": 7}])).await;
+        pump_until(&mut app, |x| point(x).is_some()).await;
+        assert_eq!(app.debug_panel.frame(2).unwrap().place, None);
+        assert_eq!(app.debug_panel.frame(3).unwrap().place, None, "a sourceReference is not a file");
+        assert_eq!(app.debug_panel.frame(4).unwrap().place, None, "line 0 is no line");
+        let toasts = texts(&app).len();
+        for k in 2..5 {
+            app.debug_choose_frame(1, false);
+            assert_eq!(selected(&app), Some((c.clone(), 8)), "a marked frame first");
+            app.debug_choose_frame(k, false);
+            assert_eq!(selected(&app), None, "frame {k}");
+            assert_eq!(app.editor.active_path(), Some(c.as_path()), "frame {k}");
+            assert_eq!(caret(&app), 8, "frame {k}");
+            assert_eq!(texts(&app).len(), toasts, "frame {k}: {:?}", texts(&app));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn running_clears_the_stack() {
+        for step in [true, false] {
+            let (mut app, dir, mut fake, _a, _c) = paused_in_two(&format!("frames-running-{step}")).await;
+            in_frames(&mut app);
+            press(&mut app, KeyCode::Down);
+            assert!(selected(&app).is_some());
+            let seq = app.debug_panel.selection_seq();
+            if step {
+                press(&mut app, F8);
+            } else {
+                fake.event("continued", json!({"threadId": 7}));
+            }
+            pump_until(&mut app, |x| point(x).is_none() && x.debug.phase() == Some(Phase::Running)).await;
+            assert!(app.debug_panel.frame(0).is_none(), "step {step}");
+            assert!(app.debug_panel.threads().is_empty(), "step {step}");
+            assert_eq!(app.debug_panel.thread(), None, "step {step}");
+            assert_eq!(selected(&app), None, "step {step}");
+            assert!(app.debug_panel.selection_seq() > seq, "step {step}");
+            assert_eq!(thread_of(&app), Some(7), "the thread stays for Pause");
+            app.perform(Action::Debug(DebugAction::Pause));
+            assert_eq!(fake.recv("pause").await["arguments"]["threadId"], 7);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[tokio::test]
+    async fn the_end_a_start_and_a_root_switch_clear_the_stack() {
+        for what in ["end", "start", "root"] {
+            let (mut app, dir, _fake, _a, _c) = paused_in_two(&format!("frames-clear-{what}")).await;
+            in_frames(&mut app);
+            press(&mut app, KeyCode::Down);
+            assert!(selected(&app).is_some() && app.debug_panel.frame(0).is_some());
+            match what {
+                "end" => {
+                    app.perform(Action::Debug(DebugAction::Stop));
+                    dap_until(&mut app, gone).await;
+                }
+                "start" => app.perform(Action::Debug(DebugAction::Start)),
+                _ => app.debug_root_changed(),
+            }
+            assert_eq!(selected(&app), None, "{what}");
+            assert!(app.debug_panel.frame(0).is_none(), "{what}");
+            assert!(app.debug_panel.threads().is_empty(), "{what}");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_second_stop_starts_again() {
+        let (mut app, dir, mut fake, _a, c) = paused_in_two("frames-second-stop").await;
+        let seq = app.debug_panel.selection_seq();
+        app.perform(Action::Debug(DebugAction::SelectThread(4)));
+        let ask = fake.recv("stackTrace").await;
+        assert_eq!(ask["arguments"]["threadId"], 4);
+        let chosen = app.debug_panel.selection_seq();
+        assert!(chosen > seq);
+        inject_frames(&mut app, 4, chosen, Ok(json!([frame_at(0, "x", &c, 6), frame_at(1, "y", &c, 8)])));
+        assert_eq!(selected(&app), Some((c.clone(), 5)), "row 0 of the chosen thread is not the arrow");
+        // Another stop with no `Running` between.
+        let before = epoch_of(&app);
+        fake.event("stopped", json!({"reason": "breakpoint", "threadId": 9}));
+        pump_until(&mut app, |x| epoch_of(x) > before).await;
+        assert_eq!(app.debug_panel.thread(), Some(9));
+        assert_eq!(selected(&app), None);
+        assert_eq!(thread_of(&app), Some(9));
+        let req = fake.recv("stackTrace").await;
+        assert_eq!(req["arguments"]["threadId"], 9);
+        fake.respond(&req, json!({"stackFrames": [frame_at(0, "nine", &c, 2)]}));
+        pump_until(&mut app, |x| x.debug_panel.frame(0).is_some()).await;
+        assert_eq!(names(&app), ["nine"]);
+        assert_eq!(point(&app), Some((c, 1)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn choosing_a_thread_asks_its_stack_and_steps_it() {
+        let (mut app, dir, mut fake, _a, c) = paused_in_two("frames-thread").await;
+        in_frames(&mut app);
+        press(&mut app, KeyCode::Char('t'));
+        let menu = app.menu.as_ref().expect("the thread menu");
+        let rows: Vec<(String, bool, Option<Action>)> = menu.items.iter().map(|i| (i.label.clone(), i.enabled, i.action.clone())).collect();
+        assert_eq!(
+            rows,
+            [
+                ("Thread 7: t".to_string(), false, Some(Action::Debug(DebugAction::SelectThread(7)))),
+                ("Thread 4: u".to_string(), true, Some(Action::Debug(DebugAction::SelectThread(4)))),
+            ]
+        );
+        app.menu = None;
+        app.perform(Action::Debug(DebugAction::SelectThread(4)));
+        let ask = fake.recv("stackTrace").await;
+        assert_eq!(ask["arguments"], json!({"threadId": 4, "startFrame": 0, "levels": 20}));
+        assert!(app.debug_panel.frame(0).is_none(), "emptied until the answer");
+        assert!(drawn(&mut app).contains("Reading the stack…"));
+        fake.respond(&ask, json!({"stackFrames": [frame_at(0, "w", &c, 6), frame_at(1, "z", &c, 7)]}));
+        pump_until(&mut app, |x| x.debug_panel.frame(0).is_some()).await;
+        assert_eq!(names(&app), ["w", "z"]);
+        assert_eq!(selected(&app), Some((c.clone(), 5)));
+        assert_eq!(point(&app), Some((c, 3)), "the arrow stays on the stopped thread");
+        press(&mut app, F8);
+        assert_eq!(fake.recv("next").await["arguments"]["threadId"], 4);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn an_older_choice_is_dropped() {
+        for (n, order_swapped) in [false, true].into_iter().enumerate() {
+            let (mut app, dir, _fake, _a, c) = paused_in_two(&format!("frames-older-{n}")).await;
+            inject_threads(&mut app, json!([{"id": 7}, {"id": 4}, {"id": 9}]));
+            app.perform(Action::Debug(DebugAction::SelectThread(4)));
+            let seq4 = app.debug_panel.selection_seq();
+            app.perform(Action::Debug(DebugAction::SelectThread(9)));
+            let seq9 = app.debug_panel.selection_seq();
+            assert!(seq9 > seq4);
+            let nine = Ok(json!([frame_at(0, "nine", &c, 6)]));
+            let four = Ok(json!([frame_at(0, "four", &c, 7)]));
+            if order_swapped {
+                inject_frames(&mut app, 4, seq4, four);
+                assert!(app.debug_panel.frame(0).is_none(), "the older answer is dropped");
+                inject_frames(&mut app, 9, seq9, nine);
+            } else {
+                inject_frames(&mut app, 9, seq9, nine);
+                inject_frames(&mut app, 4, seq4, four);
+            }
+            assert_eq!(names(&app), ["nine"]);
+            assert_eq!(selected(&app), Some((c.clone(), 5)));
+            // The same with an error: no toast.
+            let toasts = texts(&app).len();
+            inject_frames(&mut app, 4, seq4, Err("list index out of range".into()));
+            assert_eq!(texts(&app).len(), toasts, "{:?}", texts(&app));
+            assert_eq!(names(&app), ["nine"]);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[tokio::test]
+    async fn the_stops_answer_after_a_choice_sets_only_the_point() {
+        let (mut app, dir, mut fakes) = setup("frames-stop-late", Order::LaunchEarly);
+        let c = load(&mut app, "c.log", TWELVE);
+        let a = six(&mut app);
+        let (fake, _) = running(&mut app, &mut fakes).await;
+        fake.event("stopped", json!({"reason": "breakpoint", "threadId": 7}));
+        pump_until(&mut app, |x| thread_of(x) == Some(7)).await;
+        inject_threads(&mut app, json!([{"id": 7}, {"id": 4}]));
+        app.perform(Action::Debug(DebugAction::SelectThread(4)));
+        // The stop's own answer arrives after the choice.
+        inject_stack(&mut app, 7, json!([frame_at(0, "add", &c, 4)]));
+        assert_eq!(point(&app), Some((c.clone(), 3)));
+        assert!(app.debug_panel.frame(0).is_none(), "the list is the chosen thread's, still awaited");
+        assert_eq!(app.editor.active_path(), Some(a.as_path()), "the view did not move");
+        // A sourceless top frame: no point, and no toast either.
+        let toasts = texts(&app).len();
+        inject_stack(&mut app, 7, json!([{"id": 0, "name": "libc", "line": 0}]));
+        assert_eq!(point(&app), None);
+        assert_eq!(texts(&app).len(), toasts, "{:?}", texts(&app));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_chosen_answer_and_a_choice_need_a_pause() {
+        let (mut app, dir, _fake, _a, c) = paused_in_two("frames-need-pause").await;
+        in_frames(&mut app);
+        press(&mut app, KeyCode::Home);
+        inject(&mut app, DapBody::Phase(Phase::Stopping));
+        let (line, tab) = (caret(&app), app.editor.active_path().map(Path::to_path_buf));
+        app.debug_choose_frame(1, false);
+        assert_eq!(selected(&app), None);
+        assert_eq!((caret(&app), app.editor.active_path().map(Path::to_path_buf)), (line, tab));
+        let seq = app.debug_panel.selection_seq();
+        inject_frames(&mut app, 7, seq, Ok(json!([frame_at(0, "other", &c, 9)])));
+        assert_eq!(names(&app), ["add", "main"], "the answer of the current seq is not applied while stopping");
+        assert_eq!(selected(&app), None);
+        // A menu left open: the thread is in the list still, the program is not paused.
+        app.perform(Action::Debug(DebugAction::SelectThread(4)));
+        assert_eq!(thread_of(&app), Some(7));
+        assert_eq!(app.debug_panel.thread(), Some(7));
+        assert_eq!(app.debug_panel.selection_seq(), seq);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_failed_stack_says_no_frames() {
+        let (mut app, dir, mut fakes) = setup("frames-failed", Order::LaunchEarly);
+        let _ = six(&mut app);
+        let (fake, _) = running(&mut app, &mut fakes).await;
+        fake.event("stopped", json!({"reason": "breakpoint", "threadId": 7}));
+        pump_until(&mut app, |x| thread_of(x) == Some(7)).await;
+        in_frames(&mut app);
+        assert!(drawn(&mut app).contains("Reading the stack…"));
+        let tag = DapTag { epoch: epoch_of(&app), kind: TagKind::StackTrace { thread: 7 } };
+        inject(&mut app, DapBody::Response { tag, result: Err("boom".into()) });
+        assert_eq!(last(&app), (Level::Warn, "Could not read the stack: boom".to_string()));
+        assert!(drawn(&mut app).contains("No frames"));
+        // The chosen thread's stack.
+        inject_threads(&mut app, json!([{"id": 7}, {"id": 4}]));
+        app.perform(Action::Debug(DebugAction::SelectThread(4)));
+        assert!(drawn(&mut app).contains("Reading the stack…"));
+        let seq = app.debug_panel.selection_seq();
+        inject_frames(&mut app, 4, seq, Err("bang".into()));
+        assert_eq!(last(&app), (Level::Warn, "Could not read the stack: bang".to_string()));
+        assert!(drawn(&mut app).contains("No frames"));
+        // While stopping, silent.
+        let toasts = texts(&app).len();
+        inject(&mut app, DapBody::Phase(Phase::Stopping));
+        inject_frames(&mut app, 4, seq, Err("late".into()));
+        assert_eq!(texts(&app).len(), toasts, "{:?}", texts(&app));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn show_execution_point_goes_back_to_the_top() {
+        let (mut app, dir, _fake, _a, c) = paused_in_two("frames-alt-f10").await;
+        in_frames(&mut app);
+        press(&mut app, KeyCode::Down);
+        assert_eq!(selected(&app), Some((c.clone(), 8)));
+        assert_eq!(app.debug_panel.selected_frame().unwrap().id, 1);
+        app.handle_key(key(KeyCode::F(10), KeyModifiers::ALT));
+        assert_eq!(selected(&app), None);
+        assert_eq!(app.debug_panel.selected_frame().unwrap().id, 0, "row 0 is the arrow's");
+        assert_eq!(caret(&app), 3);
+        assert!(app.focus.is(PanelId::Editor));
+        // Another thread chosen: its row 0 is not the arrow, so the row selection stays.
+        inject_threads(&mut app, json!([{"id": 7}, {"id": 4}]));
+        app.perform(Action::Debug(DebugAction::SelectThread(4)));
+        let seq = app.debug_panel.selection_seq();
+        inject_frames(&mut app, 4, seq, Ok(json!([frame_at(0, "x", &c, 6), frame_at(1, "y", &c, 8)])));
+        in_frames(&mut app);
+        press(&mut app, KeyCode::Down);
+        assert_eq!(selected(&app), Some((c.clone(), 7)));
+        app.handle_key(key(KeyCode::F(10), KeyModifiers::ALT));
+        assert_eq!(selected(&app), None, "the mark goes");
+        assert_eq!(app.debug_panel.selected_frame().unwrap().id, 1, "the selection stays");
+        assert_eq!(caret(&app), 3);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_stops_toast_is_the_same_on_both_tabs() {
+        use crate::dap::panel::TABS;
+        for tab in TABS {
+            let toast = |app: &App| texts(app).contains(&"Paused (breakpoint)".to_string());
+            let (mut app, dir, mut fakes) = setup(&format!("frames-toast-{tab:?}"), Order::LaunchEarly);
+            let a = six(&mut app);
+            let (mut fake, _) = running(&mut app, &mut fakes).await;
+            app.debug_panel.set_tab(tab);
+            stop_at(&mut app, &mut fake, 7, &a, 3).await;
+            assert!(!toast(&app), "{tab:?} shown: {:?}", texts(&app));
+            app.layout.hide(ToolWindowId::Debug);
+            stop_at(&mut app, &mut fake, 7, &a, 4).await;
+            assert!(toast(&app), "{tab:?} hidden: {:?}", texts(&app));
+            let _ = std::fs::remove_dir_all(&dir);
+            let (mut app, dir, mut fakes) = setup(&format!("frames-toast-covered-{tab:?}"), Order::LaunchEarly);
+            let a = six(&mut app);
+            let (mut fake, _) = running(&mut app, &mut fakes).await;
+            app.debug_panel.set_tab(tab);
+            app.layout.toggle_maximize(ToolWindowId::Project);
+            stop_at(&mut app, &mut fake, 7, &a, 3).await;
+            assert!(toast(&app), "{tab:?} covered: {:?}", texts(&app));
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[tokio::test]
+    async fn the_tab_keys_work_in_the_debug_window() {
+        let (mut app, dir, mut fakes) = setup("frames-tab-keys", Order::LaunchEarly);
+        let _a = six(&mut app);
+        let b = load(&mut app, "b2.log", "x\ny\n");
+        let _ = running(&mut app, &mut fakes).await;
+        app.focus.set(PanelId::Debug);
+        assert_eq!(app.debug_panel.tab(), DebugTab::Console);
+        app.handle_key(key(KeyCode::Right, KeyModifiers::ALT));
+        assert_eq!(app.debug_panel.tab(), DebugTab::Frames);
+        app.handle_key(key(KeyCode::Left, KeyModifiers::ALT));
+        assert_eq!(app.debug_panel.tab(), DebugTab::Console);
+        // Elsewhere the keys are the editor's.
+        app.focus.set(PanelId::Project);
+        assert_eq!(app.editor.active_path(), Some(b.as_path()));
+        app.handle_key(key(KeyCode::Right, KeyModifiers::ALT));
+        assert_ne!(app.editor.active_path(), Some(b.as_path()), "the editor's tab changed");
+        assert_eq!(app.debug_panel.tab(), DebugTab::Console);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_build_shows_the_console() {
+        let (mut app, dir) = test_app("build-tab");
+        let _fakes = with_fake_adapters(&mut app, caps(), Order::LaunchDeferred);
+        write_run_toml(&app, &build_toml(SLEEPER, ARTIFACT_LAUNCH));
+        app.debug_panel.set_tab(DebugTab::Frames);
+        let _sleeper = building(&mut app).await;
+        assert_eq!(app.debug_panel.tab(), DebugTab::Console);
         ctrl_f2(&mut app);
         let _ = std::fs::remove_dir_all(&dir);
     }

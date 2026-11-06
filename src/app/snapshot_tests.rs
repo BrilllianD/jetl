@@ -853,6 +853,47 @@ fn execution_marks(theme: &Theme) -> Vec<Mark> {
     marks
 }
 
+fn frame_marks(theme: &Theme) -> Vec<Mark> {
+    let mut marks = execution_marks(theme);
+    marks.push(Mark::bg('R', "frame line", theme.debug_frame_line_bg));
+    marks
+}
+
+fn selected_frame(app: &mut App, path: PathBuf, line: usize) {
+    app.editor.set_selected_frame(Some(crate::editor::ExecutionPoint { path, line }));
+}
+
+#[tokio::test]
+async fn editor_frame_line() {
+    let mut fx = stable_app("frame-line");
+    let app = &mut fx.app;
+    let path = load(app, "notes.log", PLAIN);
+    execution_point(app, path.clone(), 1);
+    selected_frame(app, path, 3);
+    moves(app, Motion::Down, 5);
+    let term = draw_editor(app, 40, 8);
+    let marks = frame_marks(&app.theme);
+    assert_snapshot!("editor_frame_line", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
+async fn editor_frame_line_order() {
+    let mut fx = stable_app("frame-line-order");
+    let app = &mut fx.app;
+    let path = load(app, "notes.log", PLAIN);
+    // The frame's background wins over the current line's.
+    selected_frame(app, path.clone(), 3);
+    moves(app, Motion::Down, 3);
+    let term = draw_editor(app, 40, 8);
+    let marks = frame_marks(&app.theme);
+    assert_snapshot!("editor_frame_line_order", snapshot(&term, &marks, None));
+    // The execution point's wins over the frame's.
+    execution_point(app, path.clone(), 2);
+    selected_frame(app, path, 2);
+    let term = draw_editor(app, 40, 8);
+    assert_snapshot!("editor_frame_line_order_execution", snapshot(&term, &marks, None));
+}
+
 #[tokio::test]
 async fn editor_execution_over_marks() {
     let mut fx = stable_app("execution-over-marks");
@@ -4339,7 +4380,50 @@ fn debug_marks(theme: &Theme) -> Vec<Mark> {
         Mark::style('D', "disabled", theme.dim.bg(theme.panel_bg)),
         Mark::style('E', "error", theme.error),
         Mark::modifier('U', "link", Modifier::UNDERLINED),
+        Mark::style('T', "active tab", theme.tab_active),
     ]
+}
+
+/// A paused session whose Frames tab lists `add`, `main` and a frame with no source, the second one selected.
+async fn frames_window(name: &str, add: &str, width: u16, height: u16) -> (Fixture, ratatui::Terminal<ratatui::backend::TestBackend>) {
+    use super::debug::tests::{DEMO, caps, paused, six, with_fake_adapters, write_run_toml};
+    use crate::actions::{Action, DebugAction};
+    use crate::dap::fake::Order;
+    use crate::dap::panel::{DebugTab, FrameRow};
+    use crate::dap::protocol::Thread;
+    let mut fx = stable_app(name);
+    let app = &mut fx.app;
+    let mut fakes = with_fake_adapters(app, caps(), Order::LaunchEarly);
+    write_run_toml(app, DEMO);
+    let a = six(app);
+    let _fake = paused(app, &mut fakes, &a, 3).await;
+    let row = |id: i64, name: &str, place: Option<&str>| FrameRow { id, name: name.into(), place: place.map(Into::into), location: None };
+    app.debug_panel.set_tab(DebugTab::Frames);
+    app.debug_panel.set_threads(vec![Thread { id: 1, name: "main".into() }, Thread { id: 7, name: "t".into() }]);
+    app.debug_panel.show_stack(7, vec![row(0, add, Some("demo.c:4")), row(1, "main", Some("demo.c:9")), row(2, "__libc_start_main", None)]);
+    app.focus.set(crate::ui::focus::PanelId::Debug);
+    app.perform(Action::Debug(DebugAction::Down));
+    // The start's toast sits in the stack as well as in the log.
+    app.notifications.clear();
+    app.toasts = Default::default();
+    let term = draw_app(app, width, height);
+    (fx, term)
+}
+
+#[tokio::test]
+async fn debug_window_frames() {
+    let (fx, term) = frames_window("debug-frames", "add", 120, 40).await;
+    let mut marks = debug_marks(&fx.app.theme);
+    marks.push(Mark::style('W', "selected row", fx.app.theme.list_selected));
+    assert_snapshot!("debug_window_frames", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
+async fn debug_window_frames_narrow() {
+    let (fx, term) = frames_window("debug-frames-narrow", &"a".repeat(200), 80, 24).await;
+    let mut marks = debug_marks(&fx.app.theme);
+    marks.push(Mark::style('W', "selected row", fx.app.theme.list_selected));
+    assert_snapshot!("debug_window_frames_narrow", snapshot(&term, &marks, None));
 }
 
 #[tokio::test]

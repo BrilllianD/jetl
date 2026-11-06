@@ -40,6 +40,15 @@ impl Editor {
         self.execution_point.as_ref()
     }
 
+    /// The line of a chosen stack frame, when it is not the execution point; not a mark, does not follow edits.
+    pub fn set_selected_frame(&mut self, frame: Option<ExecutionPoint>) {
+        self.selected_frame = frame;
+    }
+
+    pub fn selected_frame(&self) -> Option<&ExecutionPoint> {
+        self.selected_frame.as_ref()
+    }
+
     /// Ctrl+F8: toggle a breakpoint on every caret's line, once per line.
     pub(super) fn toggle_breakpoints_at_carets(&mut self, cx: &mut Ctx) {
         let in_merge = self.merge.is_some();

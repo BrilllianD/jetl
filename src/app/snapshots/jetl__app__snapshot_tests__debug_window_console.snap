@@ -14,11 +14,11 @@ expression: "snapshot(&term, &marks, None)"
 08    ─────────────────────────────────────────────────────────────────────────────
 09    ┌ Debug: demo · ended ──────────────────────────────────────────────────────┐
 10    │  Resume   Pause   Step Over   Step Into   Step Out   Stop                 │
-11    │ x=3 y=7                                                                   │
-12  ◉ │ stderr: something broke                                                   │
-13  ⋔ │ demo.c:9 reached                                                          │
-14  ✎ │ café 😀 done                                                              │
-15  ✓ │                                                                           │
+11    │ Frames  Console                                                           │
+12  ◉ │ x=3 y=7                                                                   │
+13  ⋔ │ stderr: something broke                                                   │
+14  ✎ │ demo.c:9 reached                                                          │
+15  ✓ │ café 😀 done                                                              │
 16  ⟲ │                                                                           │
 17  ⚑ │                                                                           │
 18  ⎇ │                                                                           │
@@ -27,14 +27,14 @@ expression: "snapshot(&term, &marks, None)"
 21  ► │                                                                           │
 22  ⌕ └───────────────────────────────────────────────────────────────────────────┘
 23
--- marks: D=disabled E=error U=link
+-- marks: D=disabled E=error U=link T=active tab
 00 DDD                                 DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD
 03 DDD
 04 DDD
 10      DDDDDDDD DDDDDDD DDDDDDDDDDD DDDDDDDDDDD DDDDDDDDDD DDDDDD
-12      EEEEEEEEEEEEEEEEEEEEEEE
-13 DDD  UUUUUU
-14 DDD
+11     DDDDDDDDTTTTTTTTT
+13 DDD  EEEEEEEEEEEEEEEEEEEEEEE
+14 DDD  UUUUUU
 15 DDD
 16 DDD
 17 DDD

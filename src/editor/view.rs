@@ -494,6 +494,8 @@ pub struct RenderOpts<'a> {
     pub decor: Option<&'a LineDecor>,
     /// The 0-based line a paused debug session is on, when it is in this buffer's file.
     pub execution_line: Option<usize>,
+    /// The 0-based line of the stack frame chosen in the Debug window, when it is in this buffer's file.
+    pub frame_line: Option<usize>,
 }
 
 /// How far a blank line looks up and down for the non-blank lines that set
@@ -749,7 +751,9 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
         // A resolver chunk's background wins over the current line's.
         let decor_bg = o.decor.and_then(|d| d.bg_at(line));
         let exec_bg = on_execution.then_some(theme.debug_execution_line_bg);
-        let row_bg = decor_bg.or(exec_bg).or((is_cur && o.focused).then_some(theme.current_line_bg));
+        let on_frame = o.frame_line.is_some_and(|l| span.contains(&l));
+        let frame_bg = on_frame.then_some(theme.debug_frame_line_bg);
+        let row_bg = decor_bg.or(exec_bg).or(frame_bg).or((is_cur && o.focused).then_some(theme.current_line_bg));
         if let Some(bg) = row_bg {
             screen.set_style(Rect::new(text_area.x, y, text_area.width, 1), Style::default().bg(bg));
         }
@@ -1140,6 +1144,7 @@ mod tests {
             follow: true,
             decor: Some(&decor),
             execution_line: None,
+            frame_line: None,
         };
         let area = Rect::new(0, 0, 20, 5);
         let mut screen = Screen::empty(area);
@@ -1178,6 +1183,7 @@ mod tests {
                 follow: true,
                 decor: Some(&decor),
                 execution_line: Some(line),
+                frame_line: None,
             };
             let mut screen = Screen::empty(area);
             let out = render(&mut buf, &mut screen, area, &o);
@@ -1238,6 +1244,7 @@ mod tests {
             follow: true,
             decor: None,
             execution_line: None,
+            frame_line: None,
         };
         let area = Rect::new(0, 0, 40, 3);
         let mut screen = Screen::empty(area);
@@ -1282,6 +1289,7 @@ mod tests {
             follow: true,
             decor: None,
             execution_line: None,
+            frame_line: None,
         }
     }
 

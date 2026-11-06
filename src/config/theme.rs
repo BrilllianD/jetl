@@ -193,6 +193,8 @@ theme_fields! {
         current_line_bg,
         /// Row background of the line a paused program is on.
         debug_execution_line_bg,
+        /// Row background of a chosen stack frame's line, when it is not the line the program is paused on.
+        debug_frame_line_bg,
         selection_bg,
         search_match_bg,
         search_current_bg,
@@ -662,6 +664,7 @@ const HIGHLIGHT_GROUPS: &[&[Slot]] = &[
         |t| &mut t.search_current_bg,
         |t| &mut t.occurrence_bg,
         |t| &mut t.debug_execution_line_bg,
+        |t| &mut t.debug_frame_line_bg,
     ],
     &[
         |t| &mut t.bg,
@@ -889,6 +892,7 @@ mod tests {
                     t.search_current_bg,
                     t.occurrence_bg,
                     t.debug_execution_line_bg,
+                    t.debug_frame_line_bg,
                 ],
             ),
             ("merge", vec![t.bg, t.merge_conflict_bg, t.diff_add_bg, t.diff_del_bg, t.diff_mod_bg, t.merge_resolved_bg]),

@@ -567,7 +567,11 @@ pub enum DebugAction {
     Pause,
     /// Open the file at the line the program is paused on.
     ShowExecutionPoint,
-    // The Debug tool window's Console list.
+    /// The menu of the paused program's threads.
+    ChooseThread,
+    /// Make a thread the one shown and stepped (the menu's rows).
+    SelectThread(i64),
+    // The Debug tool window's Console and Frames lists.
     Up,
     Down,
     PageUp,
@@ -1194,6 +1198,7 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "debug.home" => "Debug: first line", Debug(DebugAction::Home);
         "debug.end" => "Debug: last line", Debug(DebugAction::End);
         "debug.open" => "Debug: jump to the selected line's location", Debug(DebugAction::Open);
+        "debug.choose_thread" => "Debug: choose the thread", Debug(DebugAction::ChooseThread);
 
         "lsp.restart" => "Restart language servers", Lsp(LspAction::Restart);
         "lsp.next_problem" => "Next problem (diagnostic) in the file", Lsp(LspAction::NextProblem);
@@ -1340,7 +1345,7 @@ impl Action {
     pub fn contexts(&self) -> &'static [&'static str] {
         match self {
             // Bound only in the windows that have inner tabs.
-            Action::App(AppAction::NextToolWindowTab | AppAction::PrevToolWindowTab) => &["git", "run", "terminal"],
+            Action::App(AppAction::NextToolWindowTab | AppAction::PrevToolWindowTab) => &["git", "run", "debug", "terminal"],
             Action::App(AppAction::NewTerminalTab | AppAction::CloseTerminalTab) => &["terminal"],
             Action::App(_) => &["global"],
             Action::Editor(EditorAction::Merge(_)) => &["editor.merge"],
@@ -1371,6 +1376,7 @@ impl Action {
                 | DebugAction::End
                 | DebugAction::Open,
             ) => &["debug", "global"],
+            Action::Debug(DebugAction::ChooseThread) => &["debug", "global"],
             Action::Debug(_) => &["global"],
             Action::Problems(_) => &["problems", "global"],
             Action::History(_) => &["local_history", "global"],

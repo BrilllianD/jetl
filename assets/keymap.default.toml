@@ -567,7 +567,7 @@
 "ctrl-alt-up" = "run.prev_problem"
 "esc" = "app.focus_editor"
 
-# The Debug window (Alt+F5): the program's output. Enter opens the location on the selected line.
+# The Debug window (Alt+F5): the Frames and Console tabs. Enter opens the selected frame, or the location on the selected line.
 [debug]
 "up" = "debug.up"
 "down" = "debug.down"
@@ -576,6 +576,9 @@
 "home" = "debug.home"
 "end" = "debug.end"
 "enter" = "debug.open"
+"t" = "debug.choose_thread"
+"alt-right" = "tool_window.next_tab"
+"alt-left" = "tool_window.prev_tab"
 "esc" = "app.focus_editor"
 
 # Above [global] while a debug session is live or starting: Ctrl+F2 stops it first, and the Run task once none is.

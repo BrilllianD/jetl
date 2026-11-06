@@ -1578,7 +1578,7 @@ impl App {
         }
     }
 
-    /// Alt+Right / Alt+Left in a tool window with inner tabs (Git, Run, Terminal): the next or
+    /// Alt+Right / Alt+Left in a tool window with inner tabs (Git, Run, Debug, Terminal): the next or
     /// previous tab, wrapping. The focused panel decides; one without tabs
     /// (and the editor) ignores it.
     fn cycle_tool_window_tab(&mut self, forward: bool) {
@@ -1589,6 +1589,7 @@ impl App {
             }
             // Two views: either direction flips them; no-op without tests.
             PanelId::Run => self.perform(Action::Run(RunAction::ToggleView)),
+            PanelId::Debug => self.debug_panel.step_tab(forward),
             PanelId::Terminal => self.terminal.step(forward),
             _ => {}
         }

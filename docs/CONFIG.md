@@ -1128,7 +1128,7 @@ selection_bg = "24"
 - Color fields take a string or a table with just `fg` or `bg`.
 
 Color fields: `bg fg panel_bg strip_bg status_bg status_fg current_line_bg
-debug_execution_line_bg selection_bg search_match_bg search_current_bg occurrence_bg gutter_added
+debug_execution_line_bg debug_frame_line_bg selection_bg search_match_bg search_current_bg occurrence_bg gutter_added
 gutter_modified gutter_deleted diff_add_bg diff_del_bg diff_mod_bg
 diff_add_word_bg diff_del_word_bg merge_conflict_bg merge_resolved_bg popup_bg`.
 The conflict resolver colors an unresolved conflict with `merge_conflict_bg`, a
@@ -1142,7 +1142,7 @@ git_conflicted git_ignored popup_border list_selected list_selected_unfocused
 dim error warn info diag_error diag_warn diag_info diag_hint lightbulb indent_guide inlay_hint inline_blame breadcrumbs sticky_scroll splitter`.
 `strip_drop` marks the drop target while a tool strip button is dragged; fg and bg are used.
 `breakpoint` is the gutter's `●`, `breakpoint_unverified` its `○`, for a breakpoint the adapter has not verified or has refused.
-`debug_execution_arrow` is the `▶` on the line a paused program is on, drawn before a breakpoint or bookmark on that line, and `debug_execution_line_bg` is that line's background.
+`debug_execution_arrow` is the `▶` on the line a paused program is on, drawn before a breakpoint or bookmark on that line, and `debug_execution_line_bg` is that line's background. `debug_frame_line_bg` is the line of a stack frame chosen in the Debug window, when it is not the line the program is paused on.
 `indent_guide` colours the indent guides (`editor.indent_guides`); only its
 foreground is used.
 `inlay_hint` draws the language server's inlay hints (`[lsp] inlay_hints`); fg and
