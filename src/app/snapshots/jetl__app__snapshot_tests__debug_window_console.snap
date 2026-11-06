@@ -14,7 +14,7 @@ expression: "snapshot(&term, &marks, None)"
 08    ─────────────────────────────────────────────────────────────────────────────
 09    ┌ Debug: demo · ended ──────────────────────────────────────────────────────┐
 10    │  Resume   Pause   Step Over   Step Into   Step Out   Stop                 │
-11    │ Frames  Console                                                           │
+11    │ Frames  Variables  Console                                                │
 12  ◉ │ x=3 y=7                                                                   │
 13  ⋔ │ stderr: something broke                                                   │
 14  ✎ │ demo.c:9 reached                                                          │
@@ -32,7 +32,7 @@ expression: "snapshot(&term, &marks, None)"
 03 DDD
 04 DDD
 10      DDDDDDDD DDDDDDD DDDDDDDDDDD DDDDDDDDDDD DDDDDDDDDD DDDDDD
-11     DDDDDDDDTTTTTTTTT
+11     DDDDDDDDDDDDDDDDDDDTTTTTTTTT
 13 DDD  EEEEEEEEEEEEEEEEEEEEEEE
 14 DDD  UUUUUU
 15 DDD

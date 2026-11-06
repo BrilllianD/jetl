@@ -578,8 +578,12 @@ pub enum DebugAction {
     PageDown,
     Home,
     End,
-    /// Open the selected Console line's location.
+    /// Open the selected Console line's location; in Variables, open or close the selected node.
     Open,
+    /// Variables: open the selected node, or move to its first child when it is open.
+    Expand,
+    /// Variables: close the selected node, or move to its parent when it is closed.
+    Collapse,
 }
 
 /// The Problems tool window (language server diagnostics).
@@ -1199,6 +1203,8 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "debug.end" => "Debug: last line", Debug(DebugAction::End);
         "debug.open" => "Debug: jump to the selected line's location", Debug(DebugAction::Open);
         "debug.choose_thread" => "Debug: choose the thread", Debug(DebugAction::ChooseThread);
+        "debug.expand" => "Debug: expand the selected variable", Debug(DebugAction::Expand);
+        "debug.collapse" => "Debug: collapse the selected variable", Debug(DebugAction::Collapse);
 
         "lsp.restart" => "Restart language servers", Lsp(LspAction::Restart);
         "lsp.next_problem" => "Next problem (diagnostic) in the file", Lsp(LspAction::NextProblem);
@@ -1374,7 +1380,9 @@ impl Action {
                 | DebugAction::PageDown
                 | DebugAction::Home
                 | DebugAction::End
-                | DebugAction::Open,
+                | DebugAction::Open
+                | DebugAction::Expand
+                | DebugAction::Collapse,
             ) => &["debug", "global"],
             Action::Debug(DebugAction::ChooseThread) => &["debug", "global"],
             Action::Debug(_) => &["global"],

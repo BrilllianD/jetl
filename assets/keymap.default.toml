@@ -567,7 +567,7 @@
 "ctrl-alt-up" = "run.prev_problem"
 "esc" = "app.focus_editor"
 
-# The Debug window (Alt+F5): the Frames and Console tabs. Enter opens the selected frame, or the location on the selected line.
+# The Debug window (Alt+F5): the Frames, Variables and Console tabs. Enter opens the selected frame or the location on the selected line, and in Variables opens or closes the node.
 [debug]
 "up" = "debug.up"
 "down" = "debug.down"
@@ -576,6 +576,8 @@
 "home" = "debug.home"
 "end" = "debug.end"
 "enter" = "debug.open"
+"right" = "debug.expand"
+"left" = "debug.collapse"
 "t" = "debug.choose_thread"
 "alt-right" = "tool_window.next_tab"
 "alt-left" = "tool_window.prev_tab"

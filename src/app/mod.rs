@@ -725,6 +725,7 @@ impl App {
         self.terminal_tick();
         self.lsp_confirm_orphaned();
         self.debug_sync_breakpoints();
+        self.debug_sync_vars();
         self.debug_offer_artifacts();
     }
 
@@ -1220,7 +1221,9 @@ impl App {
                 | DebugAction::PageDown
                 | DebugAction::Home
                 | DebugAction::End
-                | DebugAction::Open),
+                | DebugAction::Open
+                | DebugAction::Expand
+                | DebugAction::Collapse),
             ) => self.debug_panel.handle_action(a, &mut cx),
             Action::Debug(a) => {
                 drop(cx);

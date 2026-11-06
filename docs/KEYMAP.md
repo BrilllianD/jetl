@@ -427,6 +427,8 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `End` | `debug.end` | Debug: last line |
 | `Enter` | `debug.open` | Debug: jump to the selected line's location |
 | `T` | `debug.choose_thread` | Debug: choose the thread |
+| `Right` | `debug.expand` | Debug: expand the selected variable |
+| `Left` | `debug.collapse` | Debug: collapse the selected variable |
 
 ## debug.active
 

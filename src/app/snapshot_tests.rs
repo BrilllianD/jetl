@@ -4426,6 +4426,86 @@ async fn debug_window_frames_narrow() {
     assert_snapshot!("debug_window_frames_narrow", snapshot(&term, &marks, None));
 }
 
+/// A paused session whose Variables tab shows Arguments and Locals open, `p` open, `arr` still loading, Registers failed.
+async fn variables_window(name: &str, long: &str, width: u16, height: u16) -> (Fixture, ratatui::Terminal<ratatui::backend::TestBackend>) {
+    use super::debug::tests::{DEMO, caps, paused, six, with_fake_adapters, write_run_toml};
+    use crate::actions::{Action, DebugAction};
+    use crate::dap::fake::Order;
+    use crate::dap::panel::{DebugTab, FrameRow};
+    use crate::dap::protocol::Thread;
+    use crate::dap::vars::VarItem;
+    let mut fx = stable_app(name);
+    let app = &mut fx.app;
+    let mut fakes = with_fake_adapters(app, caps(), Order::LaunchEarly);
+    write_run_toml(app, DEMO);
+    let a = six(app);
+    let _fake = paused(app, &mut fakes, &a, 3).await;
+    let row = |id: i64, name: &str, place: Option<&str>| FrameRow { id, name: name.into(), place: place.map(Into::into), location: None };
+    let item = |name: &str, value: &str, ty: &str, reference: i64| VarItem {
+        name: name.into(),
+        value: value.into(),
+        ty: ty.into(),
+        reference,
+        indexed: 0,
+    };
+    app.debug_panel.set_tab(DebugTab::Variables);
+    app.debug_panel.set_threads(vec![Thread { id: 1, name: "main".into() }, Thread { id: 7, name: "t".into() }]);
+    app.debug_panel.show_stack(7, vec![row(0, "add", Some("demo.c:4")), row(1, "main", Some("demo.c:9"))]);
+    assert!(app.debug_panel.scopes_wanted().is_some());
+    app.debug_panel.show_scopes(vec![item("Arguments", "", "", 1), item("Locals", "", "", 2), item("Registers", "", "", 3)], &[0, 1]);
+    app.debug_panel.take_var_asks();
+    app.debug_panel.show_children(0, vec![item("a", "1", "int", 0), item("b", "2", "int", 0)]);
+    let text = "x".repeat(300);
+    app.debug_panel.show_children(
+        1,
+        vec![
+            item("p", "", "struct point", 5),
+            item("arr", "", "int [3]", 6),
+            item(long, &text, "char *", 0),
+            item("count", "42", "unsigned long", 0),
+        ],
+    );
+    app.focus.set(crate::ui::focus::PanelId::Debug);
+    for _ in 0..4 {
+        app.perform(Action::Debug(DebugAction::Down));
+    }
+    app.perform(Action::Debug(DebugAction::Expand));
+    app.debug_panel.take_var_asks();
+    app.debug_panel.show_children(5, vec![item("x", "1", "int", 0), item("y", "-2", "int", 0), item("inner", "", "struct in", 8)]);
+    for _ in 0..4 {
+        app.perform(Action::Debug(DebugAction::Down));
+    }
+    app.perform(Action::Debug(DebugAction::Expand));
+    app.debug_panel.take_var_asks();
+    for _ in 0..4 {
+        app.perform(Action::Debug(DebugAction::Down));
+    }
+    app.perform(Action::Debug(DebugAction::Expand));
+    app.debug_panel.take_var_asks();
+    app.debug_panel.children_failed(2, "timed out".into());
+    // The start's toast sits in the stack as well as in the log.
+    app.notifications.clear();
+    app.toasts = Default::default();
+    let term = draw_app(app, width, height);
+    (fx, term)
+}
+
+#[tokio::test]
+async fn debug_window_variables() {
+    let (fx, term) = variables_window("debug-variables", "message", 120, 40).await;
+    let mut marks = debug_marks(&fx.app.theme);
+    marks.push(Mark::style('W', "selected row", fx.app.theme.list_selected));
+    assert_snapshot!("debug_window_variables", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
+async fn debug_window_variables_narrow() {
+    let (fx, term) = variables_window("debug-variables-narrow", &"n".repeat(200), 80, 24).await;
+    let mut marks = debug_marks(&fx.app.theme);
+    marks.push(Mark::style('W', "selected row", fx.app.theme.list_selected));
+    assert_snapshot!("debug_window_variables_narrow", snapshot(&term, &marks, None));
+}
+
 #[tokio::test]
 async fn debug_window_suspended() {
     use super::debug::tests::{DEMO, caps, paused, six, with_fake_adapters, write_run_toml};

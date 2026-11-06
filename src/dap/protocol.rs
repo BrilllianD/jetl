@@ -256,9 +256,88 @@ pub struct ThreadsBody {
     pub threads: Vec<Thread>,
 }
 
+/// A scope of a frame (`Locals`, `Arguments`, ...).
+#[derive(Debug, Clone, PartialEq, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Scope {
+    #[serde(deserialize_with = "nullable")]
+    pub name: String,
+    #[serde(deserialize_with = "nullable")]
+    pub presentation_hint: String,
+    #[serde(deserialize_with = "nullable")]
+    pub variables_reference: i64,
+    #[serde(deserialize_with = "nullable")]
+    pub expensive: bool,
+}
+
+/// A variable. A reference of 0 or less is a leaf. `indexed_variables` is a hint for the child count.
+#[derive(Debug, Clone, PartialEq, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Variable {
+    #[serde(deserialize_with = "nullable")]
+    pub name: String,
+    #[serde(deserialize_with = "nullable")]
+    pub value: String,
+    #[serde(rename = "type", deserialize_with = "nullable")]
+    pub ty: String,
+    #[serde(deserialize_with = "nullable")]
+    pub variables_reference: i64,
+    #[serde(deserialize_with = "nullable")]
+    pub indexed_variables: i64,
+}
+
+/// The body of a `scopes` response.
+#[derive(Debug, Clone, PartialEq, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ScopesBody {
+    #[serde(deserialize_with = "nullable")]
+    pub scopes: Vec<Scope>,
+}
+
+/// The body of a `variables` response.
+#[derive(Debug, Clone, PartialEq, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct VariablesBody {
+    #[serde(deserialize_with = "nullable")]
+    pub variables: Vec<Variable>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scope_and_variable_read_gdbs_shapes() {
+        let s: ScopesBody = body_of(
+            "t",
+            json!({"scopes":[
+                {"name":"Locals","presentationHint":"locals","variablesReference":1,"namedVariables":8,"expensive":false},
+                {"name":"Registers","presentationHint":"registers","variablesReference":2,"namedVariables":59,"expensive":false},
+                {"name":"X","presentationHint":null,"variablesReference":null,"expensive":null}]}),
+        );
+        assert_eq!(s.scopes.len(), 3);
+        assert_eq!(
+            s.scopes[0],
+            Scope { name: "Locals".into(), presentation_hint: "locals".into(), variables_reference: 1, expensive: false }
+        );
+        assert_eq!(s.scopes[1].presentation_hint, "registers");
+        assert_eq!(s.scopes[2], Scope { name: "X".into(), ..Scope::default() }, "nulls give defaults");
+        let v: VariablesBody = body_of(
+            "t",
+            json!({"variables":[
+                {"variablesReference":0,"name":"a","value":"1","type":"int"},
+                {"variablesReference":3,"name":"p","value":"","namedVariables":4,"type":"struct point"},
+                {"variablesReference":4,"name":"arr","value":"","indexedVariables":3,"type":"int [3]"},
+                {"name":"n","value":null,"type":null,"variablesReference":null,"indexedVariables":null}]}),
+        );
+        let [a, p, arr, n] = v.variables.as_slice() else { panic!("{:?}", v.variables) };
+        assert_eq!((a.name.as_str(), a.value.as_str(), a.ty.as_str(), a.variables_reference), ("a", "1", "int", 0));
+        assert_eq!((p.value.as_str(), p.ty.as_str(), p.variables_reference, p.indexed_variables), ("", "struct point", 3, 0));
+        assert_eq!((arr.ty.as_str(), arr.indexed_variables), ("int [3]", 3));
+        assert_eq!(*n, Variable { name: "n".into(), ..Variable::default() });
+        assert!(body_of::<ScopesBody>("t", json!({"scopes":null})).scopes.is_empty());
+        assert!(body_of::<VariablesBody>("t", Value::Null).variables.is_empty());
+    }
 
     fn parse(v: Value) -> Result<Incoming, String> {
         Incoming::parse(v.to_string().as_bytes())

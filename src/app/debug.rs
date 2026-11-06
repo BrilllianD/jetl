@@ -23,9 +23,11 @@ use crate::dap::config::{
 use crate::dap::console::spawn_console;
 use crate::dap::panel::{BuildStage, DebugTab, FrameRow};
 use crate::dap::protocol::{
-    Breakpoint, BreakpointEvent, OutputEvent, StackFrame, StackTraceBody, StoppedEvent, Thread, ThreadsBody, body_of,
+    Breakpoint, BreakpointEvent, OutputEvent, Scope, ScopesBody, StackFrame, StackTraceBody, StoppedEvent, Thread, ThreadsBody, Variable,
+    VariablesBody, body_of,
 };
 use crate::dap::session::{Command, DapTag, Phase, ResumeKind, SessionId, SessionSpec, SourceBreakpoints, TagKind};
+use crate::dap::vars::{MAX_CHILDREN, UNPAGED_LIMIT, VarItem, scopes_to_open};
 use crate::dap::{DapBody, DapMsg};
 use crate::editor::buffer::{BpState, BreakpointMark};
 use crate::editor::{Editor, ExecutionPoint};
@@ -69,6 +71,8 @@ pub(super) struct Live {
     pub(super) stop_seq: u64,
     /// The program's output goes to the Console thread; dropping this ends it after it flushed what it holds.
     pub(super) console: std::sync::mpsc::Sender<OutputEvent>,
+    /// The adapter reads `start` and `count` of `variables`; false until `Started`.
+    pub(super) paging: bool,
 }
 
 /// Kills the build's process group when dropped: a replace, a Stop, a root switch, a quit, or the app going.
@@ -247,6 +251,34 @@ fn one_line(message: &str) -> String {
     lines.join(" ")
 }
 
+/// Most characters of an adapter's name, type, value or error that are looked at: a value can be megabytes.
+const MAX_TEXT: usize = 1024;
+
+/// An adapter's text for a variable row: cut to `MAX_TEXT` characters first so a huge value is not walked, then
+/// one clean line; `…` ends a cut one.
+fn var_text(raw: &str) -> String {
+    let cut = raw.char_indices().nth(MAX_TEXT).map_or(raw, |(i, _)| &raw[..i]);
+    let mut text = one_line(cut);
+    if cut.len() < raw.len() {
+        text.push('…');
+    }
+    text
+}
+
+fn var_item_of_scope(s: &Scope) -> VarItem {
+    VarItem { name: var_text(&s.name), reference: s.variables_reference, ..VarItem::default() }
+}
+
+fn var_item(v: &Variable) -> VarItem {
+    VarItem {
+        name: var_text(&v.name),
+        value: var_text(&v.value),
+        ty: var_text(&v.ty),
+        reference: v.variables_reference,
+        indexed: v.indexed_variables,
+    }
+}
+
 fn verdict_line(source: &Path, line: usize, mark: &BreakpointMark) -> Option<RunLine> {
     let file = source.file_name()?.to_string_lossy();
     let place = format!("{file}:{}", line + 1);
@@ -360,7 +392,9 @@ impl App {
             | DebugAction::PageDown
             | DebugAction::Home
             | DebugAction::End
-            | DebugAction::Open => {}
+            | DebugAction::Open
+            | DebugAction::Expand
+            | DebugAction::Collapse => {}
         }
     }
 
@@ -604,6 +638,7 @@ impl App {
             thread: None,
             stop_seq: 0,
             console,
+            paging: false,
         });
         self.notify(Level::Info, format!("Debugging {} with {}", p.name, p.adapter.name));
         self.debug_show_window();
@@ -654,7 +689,11 @@ impl App {
                     let _ = l.console.send(e);
                 }
             }
-            DapBody::Started { .. } => {}
+            DapBody::Started { capabilities } => {
+                if let Some(l) = self.debug.session.as_mut() {
+                    l.paging = capabilities.supports_variable_paging;
+                }
+            }
         }
     }
 
@@ -725,12 +764,16 @@ impl App {
     /// fills the list and shows row 0, and is dropped unless it carries the panel's current selection seq.
     fn debug_response(&mut self, tag: DapTag, result: Result<Value, String>) {
         let phase = self.debug.phase();
-        // Only the newest choice's answer counts, an error included.
-        if let TagKind::Frames { seq, .. } = tag.kind
+        // Only the newest choice's answer counts, an error included. The tree of the variables goes with the seq,
+        // and gdb reuses reference numbers, so a stale answer could fill the new tree with another variable's data.
+        if let TagKind::Frames { seq, .. } | TagKind::Scopes { seq } | TagKind::Variables { seq, .. } = tag.kind
             && seq != self.debug_panel.selection_seq()
         {
-            tracing::debug!("dropping the stack of an older choice");
+            tracing::debug!("dropping the answer of an older choice");
             return;
+        }
+        if matches!(tag.kind, TagKind::Scopes { .. } | TagKind::Variables { .. }) {
+            return self.debug_vars_answer(tag.kind, result);
         }
         let known = self.debug.session.as_ref().is_some_and(|l| l.thread.is_some());
         let body = match result {
@@ -758,6 +801,8 @@ impl App {
                         self.debug_panel.show_stack(thread, Vec::new());
                         "stack"
                     }
+                    // handled above
+                    TagKind::Scopes { .. } | TagKind::Variables { .. } => return,
                 };
                 return self.notify(Level::Warn, format!("Could not read the {what}: {e}"));
             }
@@ -827,6 +872,74 @@ impl App {
                     None => self.editor.set_selected_frame(None),
                 }
             }
+            // handled above
+            TagKind::Scopes { .. } | TagKind::Variables { .. } => {}
+        }
+    }
+
+    /// An answer to `scopes` or `variables`, already known to carry the current seq. Failures stay on their row or
+    /// in the tab; they never raise a toast: gdb answers an old reference with `list index out of range`.
+    fn debug_vars_answer(&mut self, kind: TagKind, result: Result<Value, String>) {
+        // `Stop` bumps neither the epoch nor the seq, so an answer can still arrive while `Stopping`.
+        if self.debug.phase() != Some(Phase::Suspended) {
+            return tracing::debug!("dropping a variables answer outside a pause");
+        }
+        match (kind, result) {
+            (TagKind::Scopes { .. }, Ok(body)) => {
+                let scopes = body_of::<ScopesBody>("scopes", body).scopes;
+                let open = scopes_to_open(&scopes);
+                self.debug_panel.show_scopes(scopes.iter().map(var_item_of_scope).collect(), &open);
+                self.debug_sync_vars();
+            }
+            (TagKind::Scopes { .. }, Err(e)) => {
+                tracing::debug!("dap: scopes failed: {e}");
+                self.debug_panel.scopes_failed(var_text(&e));
+            }
+            (TagKind::Variables { node, .. }, Ok(body)) => {
+                let variables = body_of::<VariablesBody>("variables", body).variables;
+                self.debug_panel.show_children(node, variables.iter().map(var_item).collect());
+            }
+            (TagKind::Variables { node, .. }, Err(e)) => {
+                tracing::debug!("dap: variables failed: {e}");
+                self.debug_panel.children_failed(node, var_text(&e));
+            }
+            _ => {}
+        }
+        self.dirty_frame = true;
+    }
+
+    /// On the tick, and after the scopes arrive: asks what the Variables tab wants and has not asked. Nothing is
+    /// asked while the tab is not on screen, so a user who never opens it pays no round trip per step.
+    pub(super) fn debug_sync_vars(&mut self) {
+        if !self.debug.suspended() {
+            return;
+        }
+        let shown = self.debug_window_shown();
+        let Some(live) = self.debug.session.as_ref() else { return };
+        let (epoch, paging) = (live.epoch, live.paging);
+        let mut moved = false;
+        if shown && let Some((frame, seq)) = self.debug_panel.scopes_wanted() {
+            let tag = DapTag { epoch, kind: TagKind::Scopes { seq } };
+            self.debug.send(Command::Request { command: "scopes".into(), arguments: json!({"frameId": frame}), tag });
+            moved = true;
+        }
+        let seq = self.debug_panel.selection_seq();
+        for ask in self.debug_panel.take_var_asks() {
+            moved = true;
+            if !paging && ask.indexed > UNPAGED_LIMIT {
+                self.debug_panel.children_failed(ask.node, format!("too many elements ({})", ask.indexed));
+                continue;
+            }
+            let mut arguments = json!({"variablesReference": ask.reference});
+            if paging && ask.indexed > MAX_CHILDREN as i64 {
+                arguments["start"] = json!(0);
+                arguments["count"] = json!(MAX_CHILDREN);
+            }
+            let tag = DapTag { epoch, kind: TagKind::Variables { node: ask.node, seq } };
+            self.debug.send(Command::Request { command: "variables".into(), arguments, tag });
+        }
+        if moved {
+            self.dirty_frame = true;
         }
     }
 
@@ -3628,7 +3741,14 @@ pub(crate) mod tests {
 
     /// Paused on thread 7 with `add` at c.log:4 and `main` at c.log:9, a.log (six lines) open and active.
     async fn paused_in_two(name: &str) -> (App, PathBuf, FakeAdapter, PathBuf, PathBuf) {
-        let (mut app, dir, mut fakes) = setup(name, Order::LaunchEarly);
+        paused_in_two_with(name, caps()).await
+    }
+
+    /// `paused_in_two` with an adapter of these capabilities.
+    async fn paused_in_two_with(name: &str, caps: Value) -> (App, PathBuf, FakeAdapter, PathBuf, PathBuf) {
+        let (mut app, dir) = test_app(name);
+        let mut fakes = with_fake_adapters(&mut app, caps, Order::LaunchEarly);
+        write_run_toml(&app, DEMO);
         let c = load(&mut app, "c.log", TWELVE);
         let a = six(&mut app);
         let (mut fake, _) = running(&mut app, &mut fakes).await;
@@ -4103,14 +4223,16 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn a_build_shows_the_console() {
-        let (mut app, dir) = test_app("build-tab");
-        let _fakes = with_fake_adapters(&mut app, caps(), Order::LaunchDeferred);
-        write_run_toml(&app, &build_toml(SLEEPER, ARTIFACT_LAUNCH));
-        app.debug_panel.set_tab(DebugTab::Frames);
-        let _sleeper = building(&mut app).await;
-        assert_eq!(app.debug_panel.tab(), DebugTab::Console);
-        ctrl_f2(&mut app);
-        let _ = std::fs::remove_dir_all(&dir);
+        for tab in [DebugTab::Frames, DebugTab::Variables] {
+            let (mut app, dir) = test_app(&format!("build-tab-{tab:?}"));
+            let _fakes = with_fake_adapters(&mut app, caps(), Order::LaunchDeferred);
+            write_run_toml(&app, &build_toml(SLEEPER, ARTIFACT_LAUNCH));
+            app.debug_panel.set_tab(tab);
+            let _sleeper = building(&mut app).await;
+            assert_eq!(app.debug_panel.tab(), DebugTab::Console, "from {tab:?}");
+            ctrl_f2(&mut app);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 
     #[tokio::test]
@@ -4179,5 +4301,579 @@ pub(crate) mod tests {
             assert!(app.menu.is_none(), "failed {failed}");
             let _ = std::fs::remove_dir_all(&dir);
         }
+    }
+
+    // ---- scopes and variables (yman 430)
+
+    /// `assert_quiet` twice. The tick sends breakpoints before it asks for variables, so one call would pass with a
+    /// `scopes` request queued right behind the breakpoint's; the second call finds it first.
+    async fn quiet_twice(app: &mut App, fake: &mut FakeAdapter, name: &str) {
+        assert_quiet(app, fake, &format!("a-{name}")).await;
+        assert_quiet(app, fake, &format!("b-{name}")).await;
+    }
+
+    /// What gdb answers `scopes` with in `add`.
+    fn gdb_scopes() -> Value {
+        json!({"scopes": [
+            {"name": "Arguments", "presentationHint": "arguments", "variablesReference": 1, "expensive": false},
+            {"name": "Locals", "presentationHint": "locals", "variablesReference": 2, "expensive": false},
+            {"name": "Registers", "presentationHint": "registers", "variablesReference": 3, "namedVariables": 59, "expensive": false}]})
+    }
+
+    fn gdb_children(reference: i64) -> Value {
+        match reference {
+            1 => json!({"variables": [
+                {"name": "a", "value": "1", "type": "int", "variablesReference": 0},
+                {"name": "b", "value": "2", "type": "int", "variablesReference": 0}]}),
+            2 => json!({"variables": [
+                {"name": "p", "value": "", "type": "struct point", "variablesReference": 5, "namedVariables": 4},
+                {"name": "arr", "value": "", "type": "int [3]", "variablesReference": 6, "indexedVariables": 3}]}),
+            _ => json!({"variables": []}),
+        }
+    }
+
+    /// The Variables tab up with the Debug window focused.
+    fn in_vars(app: &mut App) {
+        app.focus.set(PanelId::Debug);
+        app.debug_panel.set_tab(DebugTab::Variables);
+    }
+
+    /// `paused_in_two` with the Variables tab up, nothing asked yet.
+    async fn vars_paused(name: &str) -> (App, PathBuf, FakeAdapter, PathBuf) {
+        let (mut app, dir, fake, _a, c) = paused_in_two(name).await;
+        in_vars(&mut app);
+        (app, dir, fake, c)
+    }
+
+    /// The tick asks `scopes`, gdb answers, the two open scopes are read: rows Arguments, a, b, Locals, p, arr, Registers.
+    async fn read_vars(app: &mut App, fake: &mut FakeAdapter) {
+        app.debug_sync_vars();
+        let req = fake.recv("scopes").await;
+        fake.respond(&req, gdb_scopes());
+        pump_until(app, |a| a.debug_panel.var_count() == 3).await;
+        let mut refs = Vec::new();
+        for _ in 0..2 {
+            let req = fake.recv("variables").await;
+            let reference = req["arguments"]["variablesReference"].as_i64().unwrap();
+            refs.push(reference);
+            fake.respond(&req, gdb_children(reference));
+        }
+        refs.sort();
+        assert_eq!(refs, [1, 2], "Registers (3) stays closed");
+        pump_until(app, |a| a.debug_panel.var_count() == 7).await;
+    }
+
+    fn var_rows(app: &mut App) -> Vec<String> {
+        app.debug_panel.var_rows()
+    }
+
+    /// Selects the row whose text starts with `name` after its marker, by keys.
+    fn var_go_to(app: &mut App, name: &str) {
+        let rows = var_rows(app);
+        let at = rows.iter().position(|r| r.trim_start().trim_start_matches(['▾', '▸']).trim_start().starts_with(name)).expect(name);
+        press(app, KeyCode::Home);
+        for _ in 0..at {
+            press(app, KeyCode::Down);
+        }
+    }
+
+    #[tokio::test]
+    async fn the_tab_asks_scopes_of_the_selected_frame() {
+        let (mut app, dir, mut fake, _c) = vars_paused("vars-scopes").await;
+        app.debug_sync_vars();
+        let req = fake.recv("scopes").await;
+        assert_eq!(req["arguments"], json!({"frameId": 0}), "frame id 0 is a frame");
+        // Frames tab: Down chooses `main` (id 1); back on Variables the new frame is asked.
+        in_frames(&mut app);
+        press(&mut app, KeyCode::Down);
+        in_vars(&mut app);
+        app.debug_sync_vars();
+        let req = fake.recv("scopes").await;
+        assert_eq!(req["arguments"], json!({"frameId": 1}));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn every_entry_that_moves_the_selection_reads_the_right_frame() {
+        // The stop's own StackTrace answer.
+        let (mut app, dir, mut fakes) = setup("vars-entry-stop", Order::LaunchEarly);
+        let c = load(&mut app, "c.log", TWELVE);
+        let _ = six(&mut app);
+        let (mut fake, _) = running(&mut app, &mut fakes).await;
+        in_vars(&mut app);
+        app.debug_sync_vars();
+        let frames = vec![frame_at(10, "add", &c, 4), frame_at(11, "main", &c, 9)];
+        stop_listed(&mut app, &mut fake, 7, frames, json!([{"id": 7, "name": "t"}, {"id": 4, "name": "u"}])).await;
+        app.debug_sync_vars();
+        assert_eq!(fake.recv("scopes").await["arguments"], json!({"frameId": 10}), "row 0 of the stop's stack");
+        let _ = std::fs::remove_dir_all(&dir);
+        // A chosen thread's stack.
+        let (mut app, dir, mut fake, _a, c) = paused_in_two("vars-entry-thread").await;
+        in_vars(&mut app);
+        app.debug_sync_vars();
+        assert_eq!(fake.recv("scopes").await["arguments"], json!({"frameId": 0}));
+        app.perform(Action::Debug(DebugAction::SelectThread(4)));
+        app.debug_sync_vars();
+        let ask = fake.recv("stackTrace").await;
+        let seq = app.debug_panel.selection_seq();
+        inject_frames(&mut app, 4, seq, Ok(json!([frame_at(20, "x", &c, 6), frame_at(21, "y", &c, 8)])));
+        drop(ask);
+        app.debug_sync_vars();
+        assert_eq!(fake.recv("scopes").await["arguments"], json!({"frameId": 20}));
+        let _ = std::fs::remove_dir_all(&dir);
+        // Alt+F10 back to row 0.
+        let (mut app, dir, mut fake, _a, _c) = paused_in_two("vars-entry-alt-f10").await;
+        in_frames(&mut app);
+        press(&mut app, KeyCode::Down);
+        in_vars(&mut app);
+        app.debug_sync_vars();
+        assert_eq!(fake.recv("scopes").await["arguments"], json!({"frameId": 1}));
+        app.handle_key(key(KeyCode::F(10), KeyModifiers::ALT));
+        app.debug_sync_vars();
+        assert_eq!(fake.recv("scopes").await["arguments"], json!({"frameId": 0}), "row 0 again");
+        let _ = std::fs::remove_dir_all(&dir);
+        // Alt+F10 with row 0 selected moves nothing, and Enter on Frames chooses nothing new: no second request.
+        let (mut app, dir, mut fake, _a, _c) = paused_in_two("vars-entry-enter").await;
+        in_vars(&mut app);
+        app.debug_sync_vars();
+        assert_eq!(fake.recv("scopes").await["arguments"], json!({"frameId": 0}));
+        in_frames(&mut app);
+        press(&mut app, KeyCode::Enter);
+        in_vars(&mut app);
+        app.debug_sync_vars();
+        quiet_twice(&mut app, &mut fake, "q-enter.log").await;
+        app.handle_key(key(KeyCode::F(10), KeyModifiers::ALT));
+        in_vars(&mut app);
+        quiet_twice(&mut app, &mut fake, "q-alt-f10.log").await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn no_scopes_on_another_tab_hidden_or_covered() {
+        let (mut app, dir, mut fake, _a, _c) = paused_in_two("vars-quiet").await;
+        assert_eq!(app.debug_panel.tab(), DebugTab::Console);
+        quiet_twice(&mut app, &mut fake, "q-console.log").await;
+        in_frames(&mut app);
+        quiet_twice(&mut app, &mut fake, "q-frames.log").await;
+        app.debug_panel.set_tab(DebugTab::Variables);
+        app.layout.hide(ToolWindowId::Debug);
+        quiet_twice(&mut app, &mut fake, "q-hidden.log").await;
+        app.layout.show(ToolWindowId::Debug);
+        app.layout.toggle_maximize(ToolWindowId::Project);
+        assert_eq!(app.layout.maximized_window(), Some(ToolWindowId::Project), "the other window covers it");
+        assert!(app.layout.is_visible(ToolWindowId::Debug));
+        quiet_twice(&mut app, &mut fake, "q-covered.log").await;
+        app.layout.toggle_maximize(ToolWindowId::Project);
+        app.debug_sync_vars();
+        assert_eq!(fake.recv("scopes").await["arguments"], json!({"frameId": 0}), "shown again: asked once");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn the_scopes_answer_fills_and_opens_by_hint() {
+        let (mut app, dir, mut fake, _c) = vars_paused("vars-fill").await;
+        read_vars(&mut app, &mut fake).await;
+        assert_eq!(
+            var_rows(&mut app),
+            ["▾ Arguments", "    a = 1  int", "    b = 2  int", "▾ Locals", "  ▸ p  struct point", "  ▸ arr  int [3]", "▸ Registers"]
+        );
+        assert!(drawn(&mut app).contains("Registers"));
+        assert!(texts(&app).iter().all(|t| !t.contains("read")), "{:?}", texts(&app));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn an_expensive_scope_stays_closed_until_asked() {
+        let (mut app, dir, mut fake, _c) = vars_paused("vars-expensive").await;
+        app.debug_sync_vars();
+        let req = fake.recv("scopes").await;
+        let body = json!({"scopes": [{"name": "Locals", "presentationHint": "locals", "variablesReference": 2, "expensive": true}]});
+        fake.respond(&req, body);
+        pump_until(&mut app, |a| a.debug_panel.var_count() == 1).await;
+        quiet_twice(&mut app, &mut fake, "q-expensive.log").await;
+        in_vars(&mut app);
+        assert_eq!(var_rows(&mut app), ["▸ Locals"]);
+        press(&mut app, KeyCode::Right);
+        app.debug_sync_vars();
+        assert_eq!(fake.recv("variables").await["arguments"], json!({"variablesReference": 2}), "Right asks");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn expanding_asks_with_the_reference_not_the_node() {
+        let (mut app, dir, mut fake, _c) = vars_paused("vars-reference").await;
+        app.debug_sync_vars();
+        let req = fake.recv("scopes").await;
+        fake.respond(&req, gdb_scopes());
+        pump_until(&mut app, |a| a.debug_panel.var_count() == 3).await;
+        for (want, rows) in [(1, 5), (2, 6)] {
+            let req = fake.recv("variables").await;
+            let reference = req["arguments"]["variablesReference"].as_i64().unwrap();
+            assert_eq!(reference, want);
+            let body = if reference == 2 {
+                json!({"variables": [{"name": "p", "value": "", "type": "struct point", "variablesReference": 77}]})
+            } else {
+                gdb_children(1)
+            };
+            fake.respond(&req, body);
+            pump_until(&mut app, |a| a.debug_panel.var_count() == rows).await;
+        }
+        var_go_to(&mut app, "p");
+        press(&mut app, KeyCode::Right);
+        app.debug_sync_vars();
+        let req = fake.recv("variables").await;
+        assert_eq!(req["arguments"], json!({"variablesReference": 77}), "p is node 4 and reference 77");
+        fake.respond(&req, json!({"variables": [{"name": "x", "value": "1", "type": "int", "variablesReference": 0}]}));
+        pump_until(&mut app, |a| a.debug_panel.var_count() == 7).await;
+        assert!(var_rows(&mut app).contains(&"      x = 1  int".to_string()), "{:?}", var_rows(&mut app));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn an_old_reference_error_shows_nothing_and_raises_no_toast() {
+        let (mut app, dir, mut fake, _c) = vars_paused("vars-old-reference").await;
+        read_vars(&mut app, &mut fake).await;
+        var_go_to(&mut app, "Registers");
+        press(&mut app, KeyCode::Right);
+        app.debug_sync_vars();
+        let req = fake.recv("variables").await;
+        assert_eq!(req["arguments"]["variablesReference"], 3);
+        let before = texts(&app);
+        press(&mut app, F8);
+        pump_until(&mut app, |a| a.debug.phase() == Some(Phase::Running) && a.debug_panel.var_count() == 0).await;
+        fake.respond_error(&req, "list index out of range");
+        let next = fake.recv("next").await;
+        fake.respond(&next, Value::Null);
+        // The error was on the wire before the next stop; this stop's frames are read, and the tree starts clean.
+        let c = app.editor.active_path().map(Path::to_path_buf).unwrap();
+        stop_listed(&mut app, &mut fake, 7, vec![frame_at(0, "add", &c, 5)], json!([{"id": 7, "name": "t"}])).await;
+        assert_eq!(texts(&app), before, "no toast");
+        assert!(var_rows(&mut app).is_empty());
+        assert!(!drawn(&mut app).contains("could not read") && !drawn(&mut app).contains("Could not read"), "{}", drawn(&mut app));
+        read_vars(&mut app, &mut fake).await;
+        assert!(var_rows(&mut app).iter().all(|r| !r.contains("could not read")), "{:?}", var_rows(&mut app));
+        assert_eq!(texts(&app), before);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn scopes_tag(app: &App, seq: u64) -> DapTag {
+        DapTag { epoch: epoch_of(app), kind: TagKind::Scopes { seq } }
+    }
+
+    fn vars_tag(app: &App, node: usize, seq: u64) -> DapTag {
+        DapTag { epoch: epoch_of(app), kind: TagKind::Variables { node, seq } }
+    }
+
+    #[tokio::test]
+    async fn an_answer_of_an_older_selection_is_dropped() {
+        // Scopes, asked and not answered.
+        let (mut app, dir, mut fake, _c) = vars_paused("vars-older-scopes").await;
+        app.debug_sync_vars();
+        let _ = fake.recv("scopes").await;
+        let (seq, before) = (app.debug_panel.selection_seq(), texts(&app));
+        let tag = scopes_tag(&app, seq - 1);
+        inject(&mut app, DapBody::Response { tag, result: Ok(gdb_scopes()) });
+        assert!(var_rows(&mut app).is_empty(), "an older frame's scopes build nothing");
+        let tag = scopes_tag(&app, seq - 1);
+        inject(&mut app, DapBody::Response { tag, result: Err("list index out of range".into()) });
+        let text = drawn(&mut app);
+        assert!(text.contains("Reading the variables…") && !text.contains("Could not read"), "{text}");
+        assert_eq!(texts(&app), before);
+        // The control: the current seq's answer builds the tree.
+        let tag = scopes_tag(&app, seq);
+        inject(&mut app, DapBody::Response { tag, result: Ok(gdb_scopes()) });
+        assert_eq!(var_rows(&mut app).len(), 3);
+        let _ = std::fs::remove_dir_all(&dir);
+        // Variables, with the node and the reference number the new tree has too (gdb reuses them).
+        let (mut app, dir, mut fake, _c) = vars_paused("vars-older-variables").await;
+        read_vars(&mut app, &mut fake).await;
+        var_go_to(&mut app, "Registers");
+        press(&mut app, KeyCode::Right);
+        let (seq, before) = (app.debug_panel.selection_seq(), texts(&app));
+        let rows = var_rows(&mut app);
+        let ok = Ok(json!({"variables": [{"name": "stale", "value": "9", "type": "int", "variablesReference": 0}]}));
+        let tag = vars_tag(&app, 2, seq - 1);
+        inject(&mut app, DapBody::Response { tag, result: ok.clone() });
+        assert_eq!(var_rows(&mut app), rows, "an older tree's children are not this tree's");
+        let tag = vars_tag(&app, 2, seq - 1);
+        inject(&mut app, DapBody::Response { tag, result: Err("list index out of range".into()) });
+        assert_eq!(var_rows(&mut app), rows);
+        assert_eq!(texts(&app), before);
+        // The control.
+        let tag = vars_tag(&app, 2, seq);
+        inject(&mut app, DapBody::Response { tag, result: ok });
+        assert!(var_rows(&mut app).iter().any(|r| r.contains("stale = 9")), "{:?}", var_rows(&mut app));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn answers_apply_only_while_suspended() {
+        let (mut app, dir, mut fake, _c) = vars_paused("vars-stopping").await;
+        read_vars(&mut app, &mut fake).await;
+        var_go_to(&mut app, "Registers");
+        press(&mut app, KeyCode::Right);
+        let rows = var_rows(&mut app);
+        let before = texts(&app);
+        app.perform(Action::Debug(DebugAction::Stop));
+        pump_until(&mut app, |a| a.debug.phase() == Some(Phase::Stopping)).await;
+        let seq = app.debug_panel.selection_seq();
+        let ok = Ok(json!({"variables": [{"name": "late", "value": "9", "type": "int", "variablesReference": 0}]}));
+        let tag = vars_tag(&app, 2, seq);
+        inject(&mut app, DapBody::Response { tag, result: ok });
+        assert_eq!(var_rows(&mut app), rows, "Stop does not change the seq, so only the phase drops this");
+        let tag = vars_tag(&app, 2, seq);
+        inject(&mut app, DapBody::Response { tag, result: Err("not available".into()) });
+        assert_eq!(var_rows(&mut app), rows);
+        let tag = scopes_tag(&app, seq);
+        inject(&mut app, DapBody::Response { tag, result: Err("not available".into()) });
+        assert_eq!(texts(&app), before);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_failure_in_the_same_stop_stays_on_its_row() {
+        let (mut app, dir, mut fake, _c) = vars_paused("vars-failure").await;
+        read_vars(&mut app, &mut fake).await;
+        var_go_to(&mut app, "Registers");
+        press(&mut app, KeyCode::Right);
+        app.debug_sync_vars();
+        let _ = fake.recv("variables").await;
+        let (seq, before) = (app.debug_panel.selection_seq(), texts(&app));
+        let tag = vars_tag(&app, 2, seq);
+        inject(&mut app, DapBody::Response { tag, result: Err("timed out".into()) });
+        assert_eq!(var_rows(&mut app).last().map(String::as_str), Some("▸ Registers  could not read: timed out"));
+        assert_eq!(texts(&app), before, "no toast");
+        assert!(drawn(&mut app).contains("could not read: timed out"));
+        press(&mut app, KeyCode::Right);
+        app.debug_sync_vars();
+        assert_eq!(fake.recv("variables").await["arguments"]["variablesReference"], 3, "Right asks again");
+        let _ = std::fs::remove_dir_all(&dir);
+        // The scopes failing: the hint, and not asked again by the tick.
+        let (mut app, dir, mut fake, _c) = vars_paused("vars-scopes-failure").await;
+        app.debug_sync_vars();
+        let _ = fake.recv("scopes").await;
+        let (seq, before) = (app.debug_panel.selection_seq(), texts(&app));
+        let tag = scopes_tag(&app, seq);
+        inject(&mut app, DapBody::Response { tag, result: Err("boom".into()) });
+        assert!(drawn(&mut app).contains("Could not read the variables: boom"));
+        assert_eq!(texts(&app), before, "no toast");
+        app.debug_sync_vars();
+        quiet_twice(&mut app, &mut fake, "q-scopes-failure.log").await;
+        // A frame choice asks again.
+        in_frames(&mut app);
+        press(&mut app, KeyCode::Down);
+        in_vars(&mut app);
+        app.debug_sync_vars();
+        assert_eq!(fake.recv("scopes").await["arguments"], json!({"frameId": 1}));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn what_clears_the_tree() {
+        for what in ["step", "continued", "end", "start", "root", "frame", "thread"] {
+            let (mut app, dir, mut fake, _c) = vars_paused(&format!("vars-clear-{what}")).await;
+            app.debug_sync_vars();
+            let req = fake.recv("scopes").await;
+            let body = json!({"scopes": [{"name": "Locals", "presentationHint": "locals", "variablesReference": 2}]});
+            fake.respond(&req, body);
+            pump_until(&mut app, |a| a.debug_panel.var_count() == 1).await;
+            let hint = match what {
+                "step" => {
+                    press(&mut app, F8);
+                    "Variables show while the program is paused"
+                }
+                "continued" => {
+                    fake.event("continued", json!({"threadId": 7}));
+                    "Variables show while the program is paused"
+                }
+                "end" => {
+                    app.perform(Action::Debug(DebugAction::Stop));
+                    dap_until(&mut app, gone).await;
+                    "Variables show while the program is paused"
+                }
+                "start" => {
+                    app.perform(Action::Debug(DebugAction::Start));
+                    "Variables show while the program is paused"
+                }
+                "root" => {
+                    app.debug_root_changed();
+                    "Shift+F9 starts the selected configuration"
+                }
+                "frame" => {
+                    in_frames(&mut app);
+                    press(&mut app, KeyCode::Down);
+                    in_vars(&mut app);
+                    "Reading the variables…"
+                }
+                _ => {
+                    app.perform(Action::Debug(DebugAction::SelectThread(4)));
+                    "Reading the variables…"
+                }
+            };
+            if matches!(what, "step" | "continued") {
+                pump_until(&mut app, |a| a.debug.phase() == Some(Phase::Running) && a.debug_panel.var_count() == 0).await;
+            }
+            assert!(var_rows(&mut app).is_empty(), "{what}: {:?}", var_rows(&mut app));
+            assert!(drawn(&mut app).contains(hint), "{what}: {}", drawn(&mut app));
+            if matches!(what, "step" | "continued") {
+                // A new stop: the scopes are asked once more.
+                let c = app.editor.active_path().map(Path::to_path_buf).unwrap();
+                stop_listed(&mut app, &mut fake, 7, vec![frame_at(3, "add", &c, 5)], json!([{"id": 7, "name": "t"}])).await;
+                app.debug_sync_vars();
+                assert_eq!(fake.recv("scopes").await["arguments"], json!({"frameId": 3}), "{what}");
+            }
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[tokio::test]
+    async fn no_ask_while_stopping() {
+        let (mut app, dir, _fake, _c) = vars_paused("vars-no-ask-stopping").await;
+        app.perform(Action::Debug(DebugAction::Stop));
+        pump_until(&mut app, |a| a.debug.phase() == Some(Phase::Stopping)).await;
+        app.debug_sync_vars();
+        assert!(app.debug_panel.scopes_wanted().is_some(), "the tick asked nothing: the tab is still waiting to ask");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn untrusted_text_is_one_line_clean_and_capped() {
+        let dirty = "a\u{1b}[31mb\nc";
+        assert_eq!(var_text(dirty), "ab c");
+        let item =
+            var_item(&Variable { name: dirty.into(), value: dirty.into(), ty: dirty.into(), variables_reference: 4, indexed_variables: 9 });
+        assert_eq!(
+            (item.name.as_str(), item.value.as_str(), item.ty.as_str(), item.reference, item.indexed),
+            ("ab c", "ab c", "ab c", 4, 9)
+        );
+        let scope = var_item_of_scope(&Scope { name: dirty.into(), variables_reference: 3, ..Scope::default() });
+        assert_eq!((scope.name.as_str(), scope.value.as_str(), scope.reference), ("ab c", "", 3));
+        let huge = "x".repeat(100_000);
+        let cut = var_text(&huge);
+        assert_eq!(cut.chars().count(), MAX_TEXT + 1);
+        assert!(cut.ends_with('…') && cut.starts_with("xxx"));
+        assert_eq!(var_text(&"y".repeat(MAX_TEXT)), "y".repeat(MAX_TEXT), "at the limit nothing is cut");
+        assert_eq!(var_text(&"y".repeat(MAX_TEXT + 1)).chars().count(), MAX_TEXT + 1);
+        // A cut inside a multi-byte character cannot panic.
+        for unit in ["é", "日", "😀"] {
+            let cut = var_text(&unit.repeat(3000));
+            assert_eq!(cut.chars().count(), MAX_TEXT + 1, "{unit}");
+        }
+        // The value of a huge variable shown whole would not fit on any row.
+        assert!(var_item(&Variable { value: huge, ..Variable::default() }).value.chars().count() <= MAX_TEXT + 1);
+    }
+
+    /// `paused_in_two`'s session reads Locals with one big array, `arr` (reference 6, `indexed`), and answers.
+    async fn paging_case(name: &str, paging: bool, indexed: i64) -> (App, PathBuf, FakeAdapter, Option<Value>) {
+        let mut c = caps();
+        c["supportsVariablePaging"] = json!(paging);
+        let (mut app, dir, mut fake, _a, _c) = paused_in_two_with(name, c).await;
+        in_vars(&mut app);
+        app.debug_sync_vars();
+        let req = fake.recv("scopes").await;
+        let body = json!({"scopes": [{"name": "Locals", "presentationHint": "locals", "variablesReference": 2}]});
+        fake.respond(&req, body);
+        pump_until(&mut app, |a| a.debug_panel.var_count() == 1).await;
+        let req = fake.recv("variables").await;
+        let children =
+            json!({"variables": [{"name": "arr", "value": "", "type": "int []", "variablesReference": 6, "indexedVariables": indexed}]});
+        fake.respond(&req, children);
+        pump_until(&mut app, |a| a.debug_panel.var_count() == 2).await;
+        var_go_to(&mut app, "arr");
+        press(&mut app, KeyCode::Right);
+        app.debug_sync_vars();
+        let sent = if var_rows(&mut app).last().is_some_and(|r| r.contains("too many elements")) {
+            None
+        } else {
+            Some(fake.recv("variables").await["arguments"].clone())
+        };
+        (app, dir, fake, sent)
+    }
+
+    #[tokio::test]
+    async fn paging_only_with_the_capability() {
+        let mut dirs = Vec::new();
+        let (_app, dir, _fake, sent) = paging_case("vars-page-off", false, 5000).await;
+        dirs.push(dir);
+        assert_eq!(sent, Some(json!({"variablesReference": 6})), "no start or count without the capability");
+        let (mut app, dir, mut fake, sent) = paging_case("vars-page-refuse", false, 200_000).await;
+        dirs.push(dir);
+        assert_eq!(sent, None, "refused");
+        assert_eq!(var_rows(&mut app).last().map(String::as_str), Some("  ▸ arr  could not read: too many elements (200000)"));
+        let before = texts(&app);
+        quiet_twice(&mut app, &mut fake, "q-refused.log").await;
+        assert!(texts(&app).iter().all(|t| !t.contains("too many")) && texts(&app).len() == before.len(), "no toast");
+        let (_app, dir, _fake, sent) = paging_case("vars-page-on", true, 5000).await;
+        dirs.push(dir);
+        assert_eq!(sent, Some(json!({"variablesReference": 6, "start": 0, "count": 1000})));
+        let (_app, dir, _fake, sent) = paging_case("vars-page-small", true, 500).await;
+        dirs.push(dir);
+        assert_eq!(sent, Some(json!({"variablesReference": 6})), "a small array is asked whole even when paging is possible");
+        let (_app, dir, _fake, sent) = paging_case("vars-page-limit", false, 100_000).await;
+        dirs.push(dir);
+        assert!(sent.is_some(), "the limit itself is still asked");
+        for d in dirs {
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
+
+    #[tokio::test]
+    async fn t_on_variables_opens_the_menu_and_shows_frames() {
+        let (mut app, dir, _fake, _c) = vars_paused("vars-t").await;
+        assert_eq!(app.debug_panel.tab(), DebugTab::Variables);
+        press(&mut app, KeyCode::Char('t'));
+        assert!(app.menu.is_some(), "the thread menu is open");
+        assert_eq!(app.debug_panel.tab(), DebugTab::Frames, "the thread row that anchors it is Frames'");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn the_variables_keys_by_context() {
+        let (mut app, dir, mut fake, _c) = vars_paused("vars-keys").await;
+        let dbg = |d| Some(Action::Debug(d));
+        let k = |c| key(c, KeyModifiers::NONE);
+        assert_eq!(action_of(&mut app, k(KeyCode::Right)), dbg(DebugAction::Expand));
+        assert_eq!(action_of(&mut app, k(KeyCode::Left)), dbg(DebugAction::Collapse));
+        assert_eq!(action_of(&mut app, k(KeyCode::Enter)), dbg(DebugAction::Open));
+        assert_eq!(action_of(&mut app, k(F7)), dbg(DebugAction::StepInto));
+        assert_eq!(action_of(&mut app, k(F8)), dbg(DebugAction::StepOver));
+        assert_eq!(action_of(&mut app, k(F9)), dbg(DebugAction::Resume));
+        assert_eq!(action_of(&mut app, key(F8, KeyModifiers::SHIFT)), dbg(DebugAction::StepOut));
+        assert_eq!(action_of(&mut app, key(KeyCode::F(10), KeyModifiers::ALT)), dbg(DebugAction::ShowExecutionPoint));
+        assert_eq!(action_of(&mut app, k(KeyCode::Char('t'))), dbg(DebugAction::ChooseThread));
+        assert_eq!(
+            action_of(&mut app, key(KeyCode::Right, KeyModifiers::ALT)),
+            Some(Action::App(crate::actions::AppAction::NextToolWindowTab)),
+            "Alt+Right"
+        );
+        // In the editor Right is the editor's.
+        app.focus.set(PanelId::Editor);
+        assert!(!matches!(action_of(&mut app, k(KeyCode::Right)), Some(Action::Debug(_))));
+        // The key really expands.
+        in_vars(&mut app);
+        read_vars(&mut app, &mut fake).await;
+        var_go_to(&mut app, "Registers");
+        assert_eq!(var_rows(&mut app).last().map(String::as_str), Some("▸ Registers"));
+        app.handle_key(k(KeyCode::Right));
+        assert_eq!(var_rows(&mut app).last().map(String::as_str), Some("▾ Registers …"));
+        app.handle_key(k(KeyCode::Left));
+        assert_eq!(var_rows(&mut app).last().map(String::as_str), Some("▸ Registers …"));
+        // The tab keys walk Frames, Variables, Console.
+        app.handle_key(key(KeyCode::Right, KeyModifiers::ALT));
+        assert_eq!(app.debug_panel.tab(), DebugTab::Console);
+        app.handle_key(key(KeyCode::Left, KeyModifiers::ALT));
+        assert_eq!(app.debug_panel.tab(), DebugTab::Variables);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_stop_keeps_the_variables_tab() {
+        let (mut app, dir, mut fakes) = setup("vars-stop-keeps", Order::LaunchEarly);
+        let a = six(&mut app);
+        let (mut fake, _) = running(&mut app, &mut fakes).await;
+        app.debug_panel.set_tab(DebugTab::Variables);
+        stop_at(&mut app, &mut fake, 7, &a, 3).await;
+        assert_eq!(app.debug_panel.tab(), DebugTab::Variables, "a stop never switches the tab");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

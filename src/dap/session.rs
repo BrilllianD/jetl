@@ -109,6 +109,15 @@ pub enum TagKind {
         thread: i64,
         seq: u64,
     },
+    /// The scopes of the selected frame; `seq` is the panel's selection seq when it was asked.
+    Scopes {
+        seq: u64,
+    },
+    /// The children of tree node `node`; `seq` is the panel's selection seq when it was asked.
+    Variables {
+        node: usize,
+        seq: u64,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1303,6 +1312,31 @@ mod tests {
         request(&mut h, "threads", 1);
         assert_eq!(h.commands(), cmds);
         assert!(h.last.is_empty());
+    }
+
+    #[test]
+    fn an_old_variables_error_is_dropped() {
+        let mut h = suspended();
+        let tagged = |kind| Command::Request { command: "variables".into(), arguments: Value::Null, tag: DapTag { epoch: 1, kind } };
+        h.cmd(tagged(TagKind::Variables { node: 3, seq: 5 }));
+        h.cmd(tagged(TagKind::Scopes { seq: 5 }));
+        h.cmd(Command::Resume { kind: ResumeKind::Next, thread: 7 });
+        h.fail("variables", "list index out of range");
+        assert!(h.last.is_empty(), "{:?}", h.last);
+        h.fail("variables", "list index out of range");
+        assert!(h.last.is_empty(), "{:?}", h.last);
+    }
+
+    #[test]
+    fn an_old_variables_request_is_not_sent() {
+        let mut h = suspended();
+        h.cmd(Command::Resume { kind: ResumeKind::Next, thread: 7 });
+        let cmds = h.commands();
+        for kind in [TagKind::Variables { node: 0, seq: 1 }, TagKind::Scopes { seq: 1 }] {
+            h.cmd(Command::Request { command: "variables".into(), arguments: Value::Null, tag: DapTag { epoch: 1, kind } });
+            assert_eq!(h.commands(), cmds);
+            assert!(h.last.is_empty());
+        }
     }
 
     #[test]

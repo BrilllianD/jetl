@@ -1166,6 +1166,51 @@ Frames tab (yman 431, "Drawing: text after a VS16 emoji lands one column off").
 gdb cannot show, and the unit tests prove: a frame whose source has a `sourceReference` (`a_frame_with_no_file_moves_nothing`),
 a stop with no `threadId`, the stale choice (no way to hold an answer back), a failed stack, frame ids other than gdb's.
 
+### Scenario: Debug window, variables
+
+Needs `gdb` 14 or newer (the run used 17.2) and `gcc`. At 80x24 and at 120x40, a private tmux socket, `XDG_*`
+directories under `/tmp`, `[lsp] enabled = false` and `[ui] toolbar = false`, `RUST_LOG=jetl=debug`. The fixture is the
+one of the previous scenario plus `vars.c` (a `struct point` holding a `struct inner` and a `const char *`, an `int[3]`,
+an `int[300]`, a `char[]` with `é` and an emoji, a `char[400]` of `x`, a `union`, a null `void *`, and a call
+`add(1, 2, &p, p, arr)` on line 19; `gcc -g -O0`) with its configuration and `[debug.vars]` table. The Variables
+section runs in a session that starts with an empty `XDG_STATE_HOME`, after the previous scenario's steps. The script of
+the last run is `~/.claude/plans/backlog-run-24-D4b2-evidence/scripts/vars-scenario.sh`. A row is matched by its shape
+(`│ +x = -?[0-9]+  int`), since the source pane holds text such as `int x = add(1, 2);`.
+
+1. `demo`, breakpoint on line 9, Shift+F9: `paused (breakpoint)`, `9▶`; the Console is still the tab. The log holds one
+   `-> stackTrace` and no `-> scopes`.
+2. Alt+F5 (focus), Alt+Right twice (Console, Frames, Variables): `Locals` open with `x = <number>  int` (uninitialised,
+   read), `Registers` closed (no `rip` row). The log holds exactly one `-> scopes`.
+3. F7 into `add`: `Arguments` open with `a = 1  int` and `b = 2  int`, `Locals` with `sum`, and no `x = ` row.
+4. Enter on the first row closes `Arguments` (`a = 1` gone, `Arguments` stays), Enter again opens it from the kept
+   children. The editor stays at `Ln 4,`.
+5. Alt+Left to Frames, Down (`main`), Alt+Right: `Locals` with `x = `, no `a = 1`, the editor at `Ln 9,`. Three `-> scopes`
+   in all since the stop. The log does not show the `frameId`; the unit test `the_tab_asks_scopes_of_the_selected_frame`
+   covers it.
+6. F8: `-> next`, `paused (step)`, `5▶`, `sum = 3  int`.
+7. Ctrl+F2: `Debug session stopped`, and the tab says `Variables show while the program is paused`.
+8. `vars`, breakpoint on line 19, Shift+F9, still on Variables: `Locals` with `p  struct point`, `arr  int [3]`,
+   `big  int [300]` (these three with a `▸`), `wide = "café 😀"  char [11]`, `longs = 'x' <repeats 200 times>...  char [400]`, `uu`,
+   `nul = 0x0  void *`, `r = <number>  int`, and `Registers`. gdb gives `main` no `Arguments` scope. The row of `p` has
+   a name and a type and no ` = `.
+9. Down, Right on `p`: `x = 1`, `y = 2`, `in  struct inner` and `name = "zed\033[31m\nline2"` (gdb writes the escapes as
+   text, so the value holds no control character), `▾` beside `p`.
+10. Three Downs to `in`, Right: `deep = 3  int`; Left closes it. Up three times to `p`, Left: `x = 1` gone.
+11. Down to `arr`, Right: `0 = 7`, `1 = 8`, `2 = 9`. Left, then three Downs to `longs`: the row ends with the border.
+12. Four Downs to `Registers`, Right: `▾ Registers`. The mouse wheel over the list scrolls it (six turns at both sizes to
+    `rip = 0x... <main+239>  void (*)()`, which has a `▸`; three back to `rax = ...  int64_t`).
+13. A click on the marker of `Registers` closes it: no `rax` row.
+14. Ctrl+F2, then Alt+F5 to hide the window and Shift+F9 again: the `Paused (breakpoint)` toast, `19▶`, one `-> stackTrace`
+    and no `-> scopes` while the window is hidden. Alt+F5 shows it and `-> scopes` follows within a second, with `Locals` drawn.
+15. Ctrl+F2, Ctrl+Q: exit 0, empty stderr, no `demo`, `vars` or gdb left.
+
+At 80x24 the list holds about ten rows, so the lower rows of steps 8 to 13 are scrolled; the script goes by key and by
+the mouse wheel and says so in `v-m-wheel.txt`.
+
+gdb cannot show, and the unit tests prove: a scope with `expensive: true` (gdb marks none), paging (`supportsVariablePaging`
+is not set by gdb, and gdb ignores `start` and `count`), a raw control character in a value, a stale answer's timing (the
+race is too short to place by hand), an answer over `MAX_BODY`, and a scope with no hint. Not run: scopes of a `???` frame.
+
 ### Scenario: Debug build step
 
 Needs `gdb` 14 or newer (the run used 17.2) and `cargo`, no network. At 80x24 and at 120x40, a private tmux socket,

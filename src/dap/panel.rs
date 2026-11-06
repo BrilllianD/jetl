@@ -1,10 +1,13 @@
 //! The Debug tool window: a toolbar (Resume, Pause, Step Over, Step Into, Step Out, Stop; each enabled by the
-//! session's phase), a tab row of its own (Frames, Console) and the tab's content. The Console is the program's
+//! session's phase), a tab row of its own (Frames, Variables, Console) and the tab's content. The Console is the program's
 //! output, at most `MAX_LINES` lines. Locations are underlined and open on a click, a double click or Enter, as in
 //! the Run window. The selection follows new output while it sits on the last line and that line is in view.
 //! Frames, while the program is paused, is a thread row (it opens the thread menu) above the selected thread's
 //! stack, as rows the App made (`FrameRow`); a choice comes back as `Effect::DebugFrame`. The tab row has a row to
-//! itself because the toolbar leaves no room for it at 80 columns. The title names the configuration and the state.
+//! itself because the toolbar leaves no room for it at 80 columns. Variables, while paused, is the selected frame's
+//! scopes as a tree (`vars::VarsView`) whose children are read when a node opens; the App asks (`debug_sync_vars`)
+//! and the tree goes with the selection seq: every frame choice, thread choice and stop replaces it (`bump`). The
+//! title names the configuration and the state.
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -17,6 +20,7 @@ use unicode_width::UnicodeWidthStr;
 
 use super::protocol::Thread;
 use super::session::{Phase, SessionId};
+use super::vars::{VarAsk, VarItem, VarsLoad, VarsView};
 use crate::actions::DebugAction;
 use crate::app::Ctx;
 use crate::config::theme::Theme;
@@ -25,6 +29,7 @@ use crate::run::matcher::RunLine;
 use crate::run::panel::{MAX_LINES, draw_line, put, row_style};
 use crate::ui::tool_window_block;
 use crate::ui::widgets::list::ListState;
+use crate::util::text::fit;
 
 /// Where a Debug start is before any session is live. The session's phase takes over once it runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,20 +48,30 @@ pub enum BuildStage {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DebugTab {
     Frames,
+    Variables,
     #[default]
     Console,
 }
 
 /// The tabs in tab order.
-pub const TABS: [DebugTab; 2] = [DebugTab::Frames, DebugTab::Console];
+pub const TABS: [DebugTab; 3] = [DebugTab::Frames, DebugTab::Variables, DebugTab::Console];
 
 impl DebugTab {
     fn label(self) -> &'static str {
         match self {
             DebugTab::Frames => "Frames",
+            DebugTab::Variables => "Variables",
             DebugTab::Console => "Console",
         }
     }
+}
+
+/// How a piece of a variable row is styled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Piece {
+    Plain,
+    Dim,
+    Error,
 }
 
 /// A row of the frame list, made by the App.
@@ -133,8 +148,11 @@ pub struct DebugPanel {
     /// Screen cells of the visible links and their line.
     link_rects: Vec<(Rect, usize)>,
     tab: DebugTab,
-    /// Rises on every frame choice, thread choice and stop: an answer asked under another value is stale.
+    /// Rises on every frame choice, thread choice and stop: an answer asked under another value is stale. Only
+    /// `bump` raises it.
     seq: u64,
+    /// The Variables tab's tree, for the current `seq` only.
+    vars: VarsView,
     /// The selected thread's choices, from `threads`.
     threads: Vec<Thread>,
     /// The thread whose stack the list shows.
@@ -179,6 +197,60 @@ impl DebugPanel {
         self.seq
     }
 
+    /// The selection moved: an answer asked before is stale, and so is the tree it would have filled.
+    fn bump(&mut self) {
+        self.seq += 1;
+        self.vars = VarsView::default();
+    }
+
+    /// The selected frame's id and the seq, once per seq, while the Variables tab shows and a frame is selected.
+    pub fn scopes_wanted(&mut self) -> Option<(i64, u64)> {
+        if self.tab != DebugTab::Variables || !matches!(self.vars.load, VarsLoad::Idle) {
+            return None;
+        }
+        let id = self.selected_frame()?.id;
+        self.vars.load = VarsLoad::Asked;
+        Some((id, self.seq))
+    }
+
+    /// The children asked for since the last call.
+    pub fn take_var_asks(&mut self) -> Vec<VarAsk> {
+        self.vars.tree.take_asks()
+    }
+
+    /// The scopes arrived: they are the roots, `open` of them are expanded (their children are asked), and the
+    /// selection is on the first row. Only the answer to an ask counts; a second one is ignored.
+    pub fn show_scopes(&mut self, items: Vec<VarItem>, open: &[usize]) {
+        if !matches!(self.vars.load, VarsLoad::Asked) {
+            return;
+        }
+        self.vars.tree.set_roots(items);
+        for &i in open {
+            self.vars.tree.expand(i);
+        }
+        self.vars.load = VarsLoad::Shown;
+        self.vars.list = ListState::default();
+        self.vars.node = 0;
+        self.vars.sync();
+    }
+
+    /// The scopes could not be read. Asked again only after the next selection.
+    pub fn scopes_failed(&mut self, message: String) {
+        if matches!(self.vars.load, VarsLoad::Asked) {
+            self.vars.load = VarsLoad::Failed(message);
+        }
+    }
+
+    pub fn show_children(&mut self, node: usize, items: Vec<VarItem>) {
+        self.vars.tree.set_children(node, items);
+        self.vars.sync();
+    }
+
+    pub fn children_failed(&mut self, node: usize, message: String) {
+        self.vars.tree.set_failed(node, message);
+        self.vars.sync();
+    }
+
     /// Threads, thread and frames go; a stack answer asked before is stale from now on.
     pub fn clear_stack(&mut self) {
         self.threads.clear();
@@ -186,7 +258,7 @@ impl DebugPanel {
         self.frames.clear();
         self.frames_state = ListState::default();
         self.loading = false;
-        self.seq += 1;
+        self.bump();
     }
 
     /// A stop begins: the old stack goes, and the stack of `thread` is awaited.
@@ -220,7 +292,7 @@ impl DebugPanel {
         self.frames.clear();
         self.frames_state = ListState::default();
         self.loading = true;
-        self.seq += 1;
+        self.bump();
         self.seq
     }
 
@@ -251,7 +323,7 @@ impl DebugPanel {
         let at_top = self.frames.first().and_then(|f| f.location.as_ref()).is_some_and(|(p, l)| p == path && *l == line);
         if at_top && self.frames_state.selected != 0 {
             self.frames_state.select(0);
-            self.seq += 1;
+            self.bump();
         }
     }
 
@@ -278,7 +350,10 @@ impl DebugPanel {
 
     /// Back to the state before any session.
     pub fn clear(&mut self) {
+        let seq = self.seq;
         *self = Self::default();
+        self.seq = seq;
+        self.bump();
     }
 
     pub fn session(&self) -> Option<SessionId> {
@@ -364,10 +439,15 @@ impl DebugPanel {
             return;
         }
         let content = Rect::new(r.x, r.y + 2, r.width, r.height - 2);
-        if self.tab == DebugTab::Frames {
-            self.render_frames(buf, content, focused, theme, phase);
-            return;
+        match self.tab {
+            DebugTab::Frames => self.render_frames(buf, content, focused, theme, phase),
+            DebugTab::Variables => self.render_vars(buf, content, focused, theme, phase),
+            DebugTab::Console => self.render_console(buf, content, focused, theme),
         }
+    }
+
+    fn render_console(&mut self, buf: &mut ratatui::buffer::Buffer, content: Rect, focused: bool, theme: &Theme) {
+        let right = content.right();
         let list = content;
         self.list_rect = list;
         self.state.fit(self.lines.len(), list.height as usize);
@@ -383,6 +463,87 @@ impl DebugPanel {
             let hint = if self.session.is_none() { "Shift+F9 starts the selected configuration" } else { "No output yet" };
             buf.set_stringn(list.x + 1, list.y, hint, list.width.saturating_sub(1) as usize, theme.dim);
         }
+    }
+
+    /// The Variables tab: the selected frame's scopes as a tree. Only while paused; the tree is valid for one
+    /// selection only.
+    fn render_vars(&mut self, buf: &mut ratatui::buffer::Buffer, content: Rect, focused: bool, theme: &Theme, phase: Option<Phase>) {
+        let hint = |buf: &mut ratatui::buffer::Buffer, text: &str, style: Style| {
+            buf.set_stringn(content.x + 1, content.y, text, content.width.saturating_sub(1) as usize, style);
+        };
+        if self.session.is_none() {
+            return hint(buf, "Shift+F9 starts the selected configuration", theme.dim);
+        }
+        if phase != Some(Phase::Suspended) {
+            return hint(buf, "Variables show while the program is paused", theme.dim);
+        }
+        self.list_rect = content;
+        let rows = self.vars.sync();
+        self.vars.list.fit(rows.len(), content.height as usize);
+        if rows.is_empty() {
+            return match &self.vars.load {
+                VarsLoad::Failed(m) => hint(buf, &format!("Could not read the variables: {m}"), theme.error),
+                VarsLoad::Shown => hint(buf, "No variables", theme.dim),
+                VarsLoad::Idle | VarsLoad::Asked if !self.frames.is_empty() || self.loading => {
+                    hint(buf, "Reading the variables…", theme.dim)
+                }
+                VarsLoad::Idle | VarsLoad::Asked => hint(buf, "No frames", theme.dim),
+            };
+        }
+        let right = content.right();
+        for (vi, i) in self.vars.list.visible().enumerate() {
+            let y = content.y + vi as u16;
+            let selected = i == self.vars.list.selected;
+            let base = row_style(selected, focused, theme);
+            if selected {
+                buf.set_style(Rect::new(content.x, y, content.width, 1), base);
+            }
+            let node = rows[i];
+            let depth = self.vars.tree.node(node).map_or(0, |n| n.depth);
+            let mut x = content.x + 1 + (2 * depth).min(content.width as usize) as u16;
+            let room = (right.saturating_sub(x) as usize).saturating_sub(2);
+            for (text, kind) in self.var_pieces(node, Some(room / 2)) {
+                let style = match kind {
+                    Piece::Plain => base,
+                    Piece::Dim if selected => base,
+                    Piece::Dim => base.fg(theme.dim.fg.unwrap_or(theme.fg)),
+                    Piece::Error => base.fg(theme.error.fg.unwrap_or(theme.fg)),
+                };
+                put(buf, &mut x, y, right, &text, style);
+            }
+        }
+    }
+
+    /// The pieces of a row after its indent, in order: marker, name, a loading mark, then either the failure or
+    /// the value, the type and the note on children left out. `name_room` cuts a name that shares its row with a
+    /// value or a type; a scope with neither has the whole row.
+    fn var_pieces(&self, node: usize, name_room: Option<usize>) -> Vec<(String, Piece)> {
+        let Some(n) = self.vars.tree.node(node) else { return Vec::new() };
+        let item = &n.item;
+        let shared = !item.value.is_empty() || !item.ty.is_empty();
+        let name = match name_room {
+            Some(room) if shared => fit(&item.name, room),
+            _ => item.name.clone(),
+        };
+        let mut out = vec![(format!("{} ", self.vars.tree.marker(node)), Piece::Plain), (name, Piece::Plain)];
+        if n.loading {
+            out.push((" …".into(), Piece::Plain));
+        }
+        if let Some(m) = &n.failed {
+            out.push((format!("  could not read: {m}"), Piece::Error));
+            return out;
+        }
+        if !item.value.is_empty() {
+            out.push((format!(" = {}", item.value), Piece::Plain));
+        }
+        if !item.ty.is_empty() {
+            out.push((format!("  {}", item.ty), Piece::Dim));
+        }
+        if n.hidden > 0 {
+            let kept = n.children.as_ref().map_or(0, Vec::len);
+            out.push((format!("  first {kept} of {} shown", kept + n.hidden), Piece::Dim));
+        }
+        out
     }
 
     /// The Frames tab: the thread row, then the stack. Only while paused; the rows are valid for that stop only.
@@ -456,21 +617,24 @@ impl DebugPanel {
                 cx.effects.push(Effect::Perform(crate::actions::Action::Debug(DebugAction::ChooseThread)));
                 true
             }
-            MouseEventKind::Down(MouseButton::Left) if self.tab == DebugTab::Frames => {
-                let Some(i) = self.frames_state.hit(self.list_rect, m.x, m.y) else { return false };
-                self.frames_state.select(i);
-                self.seq += 1;
-                cx.effects.push(Effect::DebugFrame { index: i, focus: m.clicks == 2 });
-                true
-            }
-            MouseEventKind::Down(MouseButton::Left) => {
-                let Some(i) = self.state.hit(self.list_rect, m.x, m.y) else { return false };
-                self.state.select(i);
-                if m.clicks == 2 || self.link_rects.iter().any(|(r, _)| r.contains(pos)) {
-                    self.open(i, cx);
+            MouseEventKind::Down(MouseButton::Left) => match self.tab {
+                DebugTab::Frames => {
+                    let Some(i) = self.frames_state.hit(self.list_rect, m.x, m.y) else { return false };
+                    self.frames_state.select(i);
+                    self.bump();
+                    cx.effects.push(Effect::DebugFrame { index: i, focus: m.clicks == 2 });
+                    true
                 }
-                true
-            }
+                DebugTab::Variables => self.vars_press(m),
+                DebugTab::Console => {
+                    let Some(i) = self.state.hit(self.list_rect, m.x, m.y) else { return false };
+                    self.state.select(i);
+                    if m.clicks == 2 || self.link_rects.iter().any(|(r, _)| r.contains(pos)) {
+                        self.open(i, cx);
+                    }
+                    true
+                }
+            },
             MouseEventKind::ScrollUp => {
                 self.list_state_mut().scroll(-3);
                 true
@@ -484,7 +648,11 @@ impl DebugPanel {
     }
 
     fn list_state_mut(&mut self) -> &mut ListState {
-        if self.tab == DebugTab::Frames { &mut self.frames_state } else { &mut self.state }
+        match self.tab {
+            DebugTab::Frames => &mut self.frames_state,
+            DebugTab::Variables => &mut self.vars.list,
+            DebugTab::Console => &mut self.state,
+        }
     }
 
     /// The Frames tab's keys: a move that changes the selection chooses that frame; Enter chooses it and takes focus.
@@ -508,16 +676,93 @@ impl DebugPanel {
             _ => return false,
         }
         if self.frames_state.selected != before {
-            self.seq += 1;
+            self.bump();
             cx.effects.push(Effect::DebugFrame { index: self.frames_state.selected, focus: false });
         }
         true
     }
 
-    pub fn handle_action(&mut self, a: &DebugAction, cx: &mut Ctx) -> bool {
-        if self.tab == DebugTab::Frames {
-            return self.frames_action(a, cx);
+    /// The Variables tab's keys. Moves only select; no key here chooses a frame or opens a file.
+    fn vars_action(&mut self, a: &DebugAction) -> bool {
+        let rows = self.vars.sync();
+        let page = self.vars.list.viewport.max(1);
+        match a {
+            DebugAction::Up => self.vars.list.up(1),
+            DebugAction::Down => self.vars.list.down(1),
+            DebugAction::PageUp => self.vars.list.up(page),
+            DebugAction::PageDown => self.vars.list.down(page),
+            DebugAction::Home => self.vars.list.home(),
+            DebugAction::End => self.vars.list.end(),
+            DebugAction::Open => self.vars_toggle(),
+            DebugAction::Expand => {
+                let node = self.vars.node;
+                match self.vars.tree.marker(node) {
+                    '▸' => self.vars.tree.expand(node),
+                    '▾' => {
+                        let first = self.vars.tree.node(node).and_then(|n| n.children.as_ref()).and_then(|c| c.first().copied());
+                        if let Some(c) = first {
+                            self.vars.node = c;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            DebugAction::Collapse => {
+                let node = self.vars.node;
+                if self.vars.tree.marker(node) == '▾' {
+                    self.vars.tree.collapse(node);
+                } else if let Some(parent) = self.vars.tree.node(node).and_then(|n| n.parent) {
+                    self.vars.node = parent;
+                }
+            }
+            _ => return false,
         }
+        if matches!(
+            a,
+            DebugAction::Up | DebugAction::Down | DebugAction::PageUp | DebugAction::PageDown | DebugAction::Home | DebugAction::End
+        ) && let Some(&n) = rows.get(self.vars.list.selected)
+        {
+            self.vars.node = n;
+        }
+        self.vars.sync();
+        true
+    }
+
+    /// Opens a closed node and closes an open one; a leaf stays.
+    fn vars_toggle(&mut self) {
+        let node = self.vars.node;
+        match self.vars.tree.marker(node) {
+            '▾' => self.vars.tree.collapse(node),
+            '▸' => self.vars.tree.expand(node),
+            _ => {}
+        }
+    }
+
+    /// A press in the Variables list selects the row; on the marker's two cells it also opens or closes the node.
+    fn vars_press(&mut self, m: &Mouse) -> bool {
+        let rows = self.vars.sync();
+        let Some(i) = self.vars.list.hit(self.list_rect, m.x, m.y) else { return false };
+        let Some(&node) = rows.get(i) else { return false };
+        self.vars.list.select(i);
+        self.vars.node = node;
+        let depth = self.vars.tree.node(node).map_or(0, |n| n.depth);
+        let at = self.list_rect.x + 1 + (2 * depth).min(self.list_rect.width as usize) as u16;
+        if (m.x == at || m.x == at + 1) && self.vars.tree.marker(node) != ' ' {
+            self.vars_toggle();
+        }
+        self.vars.sync();
+        true
+    }
+
+    pub fn handle_action(&mut self, a: &DebugAction, cx: &mut Ctx) -> bool {
+        match self.tab {
+            DebugTab::Frames => self.frames_action(a, cx),
+            DebugTab::Variables => self.vars_action(a),
+            DebugTab::Console => self.console_action(a, cx),
+        }
+    }
+
+    fn console_action(&mut self, a: &DebugAction, cx: &mut Ctx) -> bool {
         self.state.set_len(self.lines.len());
         let page = self.state.viewport.max(1);
         match a {
@@ -543,6 +788,25 @@ impl DebugPanel {
     #[cfg(test)]
     pub fn hit_rect(&self, label: &str) -> Option<Rect> {
         self.hits.iter().find(|(b, _)| b.label() == label).map(|(_, r)| *r)
+    }
+
+    /// How many rows the Variables tree has.
+    #[cfg(test)]
+    pub fn var_count(&self) -> usize {
+        self.vars.tree.rows().len()
+    }
+
+    /// The Variables tab's rows as text, indent and marker included, names uncut.
+    #[cfg(test)]
+    pub fn var_rows(&mut self) -> Vec<String> {
+        let rows = self.vars.sync();
+        rows.into_iter()
+            .map(|r| {
+                let depth = self.vars.tree.node(r).map_or(0, |n| n.depth);
+                let text: String = self.var_pieces(r, None).into_iter().map(|(t, _)| t).collect();
+                format!("{}{text}", " ".repeat(2 * depth))
+            })
+            .collect()
     }
 
     /// The Console's severities, line by line.
@@ -803,12 +1067,18 @@ mod tests {
                     let mut p = suspended_with(vec![row(0, "add", Some("demo.c:4")), row(1, "main", None)]);
                     p.push(vec![RunLine::plain("x")]);
                     p.set_tab(tab);
+                    if tab == DebugTab::Variables {
+                        fill_vars(&mut p);
+                    }
                     draw(&mut p, w, h, Some(Phase::Suspended));
                 }
             }
             // Four rows leave the border, the toolbar and the tabs: the bottom row is border only.
             let mut p = suspended_with(vec![row(0, "add", Some("demo.c:4"))]);
             p.set_tab(tab);
+            if tab == DebugTab::Variables {
+                fill_vars(&mut p);
+            }
             let term = draw(&mut p, 30, 4, Some(Phase::Suspended));
             assert_eq!(row_text(&term, 3, 30), format!("└{}┘", "─".repeat(28)), "{tab:?}");
         }
@@ -860,10 +1130,20 @@ mod tests {
         let fx = with_cx(|cx| assert!(p.handle_mouse(&press(r.x, r.y, 1), Some(Phase::Running), cx)));
         assert!(fx.is_empty(), "{fx:?}");
         assert_eq!(p.tab(), DebugTab::Console);
+        draw(&mut p, 60, 8, Some(Phase::Running));
+        let r = at(&p, DebugTab::Variables);
+        let fx = with_cx(|cx| assert!(p.handle_mouse(&press(r.x, r.y, 1), Some(Phase::Running), cx)));
+        assert!(fx.is_empty(), "{fx:?}");
+        assert_eq!(p.tab(), DebugTab::Variables);
+        p.set_tab(DebugTab::Console);
         p.step_tab(true);
-        assert_eq!(p.tab(), DebugTab::Frames);
+        assert_eq!(p.tab(), DebugTab::Frames, "wraps forward");
         p.step_tab(true);
-        assert_eq!(p.tab(), DebugTab::Console, "wraps forward");
+        assert_eq!(p.tab(), DebugTab::Variables);
+        p.step_tab(true);
+        assert_eq!(p.tab(), DebugTab::Console);
+        p.step_tab(false);
+        assert_eq!(p.tab(), DebugTab::Variables);
         p.step_tab(false);
         assert_eq!(p.tab(), DebugTab::Frames);
         p.step_tab(false);
@@ -876,7 +1156,7 @@ mod tests {
         p.push(vec![RunLine::plain("hello")]);
         let term = draw(&mut p, 60, 5, Some(Phase::Running));
         assert!(row_text(&term, 1, 60).contains("Resume"), "{}", row_text(&term, 1, 60));
-        assert!(row_text(&term, 2, 60).starts_with("│ Frames  Console "), "{}", row_text(&term, 2, 60));
+        assert!(row_text(&term, 2, 60).starts_with("│ Frames  Variables  Console "), "{}", row_text(&term, 2, 60));
         assert!(row_text(&term, 3, 60).contains("hello"), "{}", row_text(&term, 3, 60));
         assert_eq!(p.list_rect.y, 3);
     }
@@ -1132,5 +1412,541 @@ mod tests {
         let cell = &term.backend().buffer()[(p.list_rect.x + 1, p.list_rect.y)];
         assert_eq!(cell.symbol(), "b");
         assert_eq!(cell.fg, theme.error.fg.unwrap());
+    }
+
+    // ---- the Variables tab
+
+    fn vi(name: &str, value: &str, ty: &str, reference: i64) -> VarItem {
+        VarItem { name: name.into(), value: value.into(), ty: ty.into(), reference, indexed: 0 }
+    }
+
+    /// Asks and shows the scopes of the selected frame: `Arguments` and `Locals` open, `Registers` closed.
+    /// Rows: Arguments, a, b, Locals, p, arr, Registers (nodes 0, 3, 4, 1, 5, 6, 2).
+    fn fill_vars(p: &mut DebugPanel) {
+        let (frame, seq) = p.scopes_wanted().expect("the tab asks");
+        assert_eq!((frame, seq), (p.selected_frame().unwrap().id, p.selection_seq()));
+        p.show_scopes(vec![vi("Arguments", "", "", 1), vi("Locals", "", "", 2), vi("Registers", "", "", 3)], &[0, 1]);
+        let asks = p.take_var_asks();
+        assert_eq!(asks.iter().map(|a| (a.node, a.reference)).collect::<Vec<_>>(), [(0, 1), (1, 2)]);
+        p.show_children(0, vec![vi("a", "1", "int", 0), vi("b", "2", "int", 0)]);
+        let arr = VarItem { indexed: 5000, ..vi("arr", "", "int [5000]", 6) };
+        p.show_children(1, vec![vi("p", "", "struct point", 5), arr]);
+    }
+
+    /// Paused with three frames, the Variables tab up and `fill_vars` done.
+    fn with_vars() -> DebugPanel {
+        let mut p = suspended_with(three());
+        p.set_tab(DebugTab::Variables);
+        fill_vars(&mut p);
+        p
+    }
+
+    fn key_in(p: &mut DebugPanel, a: DebugAction) -> (bool, Vec<Effect>) {
+        let mut handled = false;
+        let fx = with_cx(|cx| handled = p.handle_action(&a, cx));
+        (handled, fx)
+    }
+
+    /// A row's text after its indent and marker.
+    fn after_marker(row: &str) -> &str {
+        row.trim_start().trim_start_matches(['▾', '▸']).trim_start()
+    }
+
+    /// Selects the row whose text starts with `name` after its indent and marker.
+    fn go_to(p: &mut DebugPanel, name: &str) {
+        let rows = p.vars.sync();
+        let texts = p.var_rows();
+        let i = texts.iter().position(|t| after_marker(t).starts_with(name)).unwrap_or_else(|| panic!("{name} in {texts:?}"));
+        p.vars.list.select(i);
+        p.vars.node = rows[i];
+        p.vars.sync();
+    }
+
+    fn selected_text(p: &mut DebugPanel) -> String {
+        let texts = p.var_rows();
+        texts[p.vars.list.selected].trim().to_string()
+    }
+
+    #[test]
+    fn the_variables_tab_lists_the_scopes_and_their_children() {
+        let mut p = with_vars();
+        assert_eq!(
+            p.var_rows(),
+            ["▾ Arguments", "    a = 1  int", "    b = 2  int", "▾ Locals", "  ▸ p  struct point", "  ▸ arr  int [5000]", "▸ Registers"]
+        );
+    }
+
+    #[test]
+    fn each_seq_rise_drops_the_tree() {
+        type Rise = fn(&mut DebugPanel);
+        let rises: [(&str, Rise); 6] = [
+            ("clear_stack", |p| p.clear_stack()),
+            ("stop_began", |p| p.stop_began(Some(1))),
+            ("select_thread", |p| {
+                p.select_thread(4);
+            }),
+            ("select_top_at moving", |p| {
+                p.frames_state.select(1);
+                p.select_top_at(Path::new("/tmp/demo.c"), 0);
+            }),
+            ("a Frames key", |p| {
+                p.set_tab(DebugTab::Frames);
+                draw(p, 60, 12, Some(Phase::Suspended));
+                assert!(key_in(p, DebugAction::Down).1.len() == 1);
+            }),
+            ("a Frames click", |p| {
+                p.set_tab(DebugTab::Frames);
+                draw(p, 60, 12, Some(Phase::Suspended));
+                let list = p.list_rect;
+                with_cx(|cx| assert!(p.handle_mouse(&press(list.x + 3, list.y + 1, 1), Some(Phase::Suspended), cx)));
+            }),
+        ];
+        for (what, rise) in rises {
+            let mut p = with_vars();
+            let seq = p.selection_seq();
+            assert_eq!(p.var_rows().len(), 7, "{what}: the control");
+            rise(&mut p);
+            assert!(p.selection_seq() > seq, "{what}");
+            assert!(p.var_rows().is_empty(), "{what}: the tree goes with the seq");
+            assert!(matches!(p.vars.load, VarsLoad::Idle), "{what}: and is asked again");
+            assert!(p.take_var_asks().is_empty(), "{what}");
+        }
+        // Nothing moved: nothing dropped.
+        let mut p = with_vars();
+        p.select_top_at(Path::new("/tmp/demo.c"), 0);
+        p.select_top_at(Path::new("/tmp/elsewhere.c"), 0);
+        assert_eq!(p.var_rows().len(), 7, "row 0 is selected already, and another place is not row 0's");
+    }
+
+    #[test]
+    fn show_stack_keeps_the_seq() {
+        let mut p = with_vars();
+        let seq = p.selection_seq();
+        p.show_stack(1, three());
+        p.set_threads(vec![Thread { id: 1, name: "t".into() }]);
+        assert_eq!(p.selection_seq(), seq);
+        assert_eq!(p.var_rows().len(), 7, "the stack answer leaves the tree alone");
+        assert!(matches!(p.vars.load, VarsLoad::Shown));
+    }
+
+    #[test]
+    fn scopes_are_wanted_once_on_the_variables_tab() {
+        let mut p = suspended_with(three());
+        p.set_tab(DebugTab::Console);
+        assert_eq!(p.scopes_wanted(), None, "Console");
+        p.set_tab(DebugTab::Frames);
+        assert_eq!(p.scopes_wanted(), None, "Frames");
+        p.set_tab(DebugTab::Variables);
+        let seq = p.selection_seq();
+        assert_eq!(p.scopes_wanted(), Some((0, seq)));
+        assert_eq!(p.scopes_wanted(), None, "once per seq");
+        p.stop_began(Some(1));
+        assert_eq!(p.scopes_wanted(), None, "no frames yet");
+        p.show_stack(1, vec![row(5, "f", None)]);
+        assert_eq!(p.scopes_wanted(), Some((5, p.selection_seq())), "asked again after a bump, with the frame's own id");
+        p.set_tab(DebugTab::Console);
+        p.clear_stack();
+        p.set_tab(DebugTab::Variables);
+        assert_eq!(p.scopes_wanted(), None, "no frames");
+    }
+
+    #[test]
+    fn variables_keys() {
+        let mut p = with_vars();
+        draw(&mut p, 60, 12, Some(Phase::Suspended));
+        let seq = p.selection_seq();
+        assert_eq!(selected_text(&mut p), "▾ Arguments");
+        for (a, want) in [
+            (DebugAction::Down, "a = 1  int"),
+            (DebugAction::PageDown, "▸ Registers"),
+            (DebugAction::Up, "▸ arr  int [5000]"),
+            (DebugAction::Home, "▾ Arguments"),
+            (DebugAction::End, "▸ Registers"),
+            (DebugAction::PageUp, "▾ Arguments"),
+        ] {
+            let (handled, fx) = key_in(&mut p, a.clone());
+            assert!(handled && fx.is_empty(), "{a:?}: {fx:?}");
+            assert_eq!(selected_text(&mut p), want, "{a:?}");
+        }
+        assert_eq!(p.selection_seq(), seq, "moves are not choices");
+        // Right on a closed node opens it and asks once; Right on it again goes to its first child.
+        go_to(&mut p, "Registers");
+        let (handled, fx) = key_in(&mut p, DebugAction::Expand);
+        assert!(handled && fx.is_empty());
+        assert_eq!(p.take_var_asks().iter().map(|a| a.reference).collect::<Vec<_>>(), [3]);
+        assert!(p.vars.tree.node(2).unwrap().expanded);
+        p.show_children(2, vec![vi("rip", "0x1", "", 0), vi("rax", "0x2", "", 0)]);
+        assert_eq!(p.var_rows().len(), 9);
+        key_in(&mut p, DebugAction::Expand);
+        assert_eq!(selected_text(&mut p), "rip = 0x1", "an open node goes to its first child");
+        // Right on a leaf does nothing.
+        let at = p.vars.list.selected;
+        key_in(&mut p, DebugAction::Expand);
+        assert_eq!((p.vars.list.selected, p.var_rows().len(), p.take_var_asks().len()), (at, 9, 0));
+        // Left on a leaf goes to the parent; on an open node it closes it; on a closed one it goes up.
+        key_in(&mut p, DebugAction::Collapse);
+        assert_eq!(selected_text(&mut p), "▾ Registers");
+        key_in(&mut p, DebugAction::Collapse);
+        assert_eq!(selected_text(&mut p), "▸ Registers");
+        assert_eq!(p.var_rows().len(), 7);
+        let at = p.vars.list.selected;
+        key_in(&mut p, DebugAction::Collapse);
+        assert_eq!(p.vars.list.selected, at, "a closed root has no parent");
+        // Enter toggles, never opens a file or chooses a frame.
+        let (handled, fx) = key_in(&mut p, DebugAction::Open);
+        assert!(handled && fx.is_empty(), "{fx:?}");
+        assert_eq!(p.var_rows().len(), 9, "opened");
+        key_in(&mut p, DebugAction::Open);
+        assert_eq!(p.var_rows().len(), 7, "closed");
+        go_to(&mut p, "a = 1");
+        key_in(&mut p, DebugAction::Open);
+        assert_eq!(p.var_rows().len(), 7, "a leaf stays");
+        assert!(p.take_var_asks().is_empty());
+        // Other actions are not this tab's.
+        let (handled, fx) = key_in(&mut p, DebugAction::Start);
+        assert!(!handled && fx.is_empty());
+        assert_eq!(p.selection_seq(), seq, "no key chose a frame");
+        // Right and Left are for the tree only.
+        for tab in [DebugTab::Frames, DebugTab::Console] {
+            p.set_tab(tab);
+            for a in [DebugAction::Expand, DebugAction::Collapse] {
+                let (handled, fx) = key_in(&mut p, a.clone());
+                assert!(!handled && fx.is_empty(), "{tab:?} {a:?}");
+            }
+        }
+    }
+
+    fn text_of(p: &mut DebugPanel, phase: Option<Phase>) -> String {
+        let term = draw(p, 80, 10, phase);
+        (0..10).map(|y| row_text(&term, y, 80)).collect::<Vec<_>>().join("\n")
+    }
+
+    #[test]
+    fn the_variables_hints_by_state() {
+        let mut none = DebugPanel::default();
+        none.set_tab(DebugTab::Variables);
+        assert!(text_of(&mut none, None).contains("Shift+F9 starts the selected configuration"));
+        let mut p = suspended_with(three());
+        p.set_tab(DebugTab::Variables);
+        for phase in [Some(Phase::Running), Some(Phase::Stopping), Some(Phase::Starting), None] {
+            let t = text_of(&mut p, phase);
+            assert!(t.contains("Variables show while the program is paused"), "{phase:?}");
+        }
+        // A tree in memory is not drawn while the program runs.
+        let mut filled = with_vars();
+        let t = text_of(&mut filled, Some(Phase::Stopping));
+        assert!(t.contains("Variables show while") && !t.contains("Arguments"), "{t}");
+        assert_eq!(filled.list_rect, Rect::default());
+        let s = Some(Phase::Suspended);
+        assert!(text_of(&mut p, s).contains("Reading the variables…"), "Idle with frames");
+        p.scopes_wanted();
+        assert!(text_of(&mut p, s).contains("Reading the variables…"), "Asked");
+        let mut loading = started();
+        loading.set_tab(DebugTab::Variables);
+        loading.stop_began(Some(1));
+        assert!(text_of(&mut loading, s).contains("Reading the variables…"), "no frames yet, the stack is on its way");
+        loading.stack_unavailable();
+        let t = text_of(&mut loading, s);
+        assert!(t.contains("No frames") && !t.contains("Reading"), "{t}");
+        p.show_scopes(Vec::new(), &[]);
+        let t = text_of(&mut p, s);
+        assert!(t.contains("No variables") && !t.contains("Reading"), "Shown, empty: {t}");
+        let mut failed = suspended_with(three());
+        failed.set_tab(DebugTab::Variables);
+        failed.scopes_wanted();
+        failed.scopes_failed("boom".into());
+        let t = text_of(&mut failed, s);
+        assert!(t.contains("Could not read the variables: boom") && !t.contains("Reading"), "{t}");
+        assert!(failed.scopes_wanted().is_none(), "a failure is asked again only after the next selection");
+        // Row endings: the children left out, and a failure.
+        let mut p = with_vars();
+        let items: Vec<VarItem> = (0..1000).map(|i| vi(&i.to_string(), "0", "", 0)).collect();
+        p.vars.tree.expand(6);
+        p.take_var_asks();
+        p.show_children(6, items);
+        go_to(&mut p, "arr");
+        let t = text_of(&mut p, s);
+        assert!(t.contains("arr  int [5000]  first 1000 of 5000 shown"), "{t}");
+        p.vars.tree.expand(2);
+        p.take_var_asks();
+        p.children_failed(2, "boom".into());
+        let rows = p.var_rows();
+        assert_eq!(rows.last().map(String::as_str), Some("▸ Registers  could not read: boom"));
+        go_to(&mut p, "Registers");
+        let t = text_of(&mut p, s);
+        assert!(t.contains("Registers  could not read: boom"), "{t}");
+    }
+
+    #[test]
+    fn a_row_with_no_value_has_no_equals() {
+        let mut p = with_vars();
+        let rows = p.var_rows();
+        assert!(rows.contains(&"  ▸ p  struct point".to_string()), "{rows:?}");
+        assert!(rows.contains(&"    a = 1  int".to_string()), "{rows:?}");
+        let t = text_of(&mut p, Some(Phase::Suspended));
+        assert!(t.contains("p  struct point") && !t.contains("p = "), "{t}");
+        assert!(t.contains("a = 1  int"), "{t}");
+        assert!(!t.contains("Locals = ") && !t.contains("Arguments = "), "a scope has neither");
+    }
+
+    #[test]
+    fn the_marker_cell_toggles_and_a_row_selects() {
+        let mut p = with_vars();
+        // Registers' `Locals` > p > in > deep, so a node at depth 2 has a marker.
+        p.vars.tree.expand(5);
+        p.take_var_asks();
+        p.show_children(5, vec![vi("in", "", "struct inner", 7), vi("x", "1", "int", 0)]);
+        p.vars.tree.expand(7);
+        p.take_var_asks();
+        p.show_children(7, vec![vi("deeper", "", "struct d", 8)]);
+        draw(&mut p, 60, 14, Some(Phase::Suspended));
+        let list = p.list_rect;
+        let rows = p.var_rows();
+        let at = |p: &DebugPanel, name: &str| -> (u16, u16, usize) {
+            let i = rows.iter().position(|r| after_marker(r).starts_with(name)).unwrap();
+            let depth = p.vars.tree.node(p.vars.tree.rows()[i]).unwrap().depth;
+            (list.x + 1 + 2 * depth as u16, list.y + i as u16 - p.vars.list.offset as u16, depth)
+        };
+        let click = |p: &mut DebugPanel, x: u16, y: u16| -> (bool, Vec<Effect>) {
+            let mut handled = false;
+            let fx = with_cx(|cx| handled = p.handle_mouse(&press(x, y, 1), Some(Phase::Suspended), cx));
+            (handled, fx)
+        };
+        let (x, y, depth) = at(&p, "Registers");
+        assert_eq!(depth, 0);
+        let (handled, fx) = click(&mut p, x + 1, y);
+        assert!(handled && fx.is_empty());
+        assert!(p.vars.tree.node(2).unwrap().expanded, "the marker's second cell toggles");
+        assert_eq!(selected_text(&mut p), "▾ Registers …");
+        p.take_var_asks();
+        click(&mut p, x, y);
+        assert!(!p.vars.tree.node(2).unwrap().expanded, "the first cell too");
+        click(&mut p, x + 2, y);
+        assert!(!p.vars.tree.node(2).unwrap().expanded, "the name selects only");
+        click(&mut p, x + 9, y);
+        assert!(!p.vars.tree.node(2).unwrap().expanded);
+        // Depth 2: `in`. Depth 0's marker cell on its row only selects it.
+        let (x2, y2, depth2) = at(&p, "in ");
+        assert_eq!(depth2, 2);
+        assert!(p.vars.tree.node(7).unwrap().expanded);
+        click(&mut p, x2 - 4, y2);
+        assert!(p.vars.tree.node(7).unwrap().expanded, "depth 0's marker cell is not depth 2's");
+        assert_eq!(selected_text(&mut p), "▾ in  struct inner", "the press selected the row of its own cell");
+        click(&mut p, x2 + 1, y2);
+        assert!(!p.vars.tree.node(7).unwrap().expanded, "depth 2's marker toggles");
+        assert_eq!(selected_text(&mut p), "▸ in  struct inner");
+        // Below the rows nothing is hit.
+        let (handled, _) = click(&mut p, list.x + 3, list.y + 13);
+        assert!(!handled);
+    }
+
+    /// Every row of the terminal below `from` has its border in the last column, and the text of no row passes it.
+    fn borders_hold(term: &Terminal<TestBackend>, w: u16, h: u16, from: u16, what: &str) {
+        for y in from..h - 1 {
+            assert_eq!(term.backend().buffer()[(w - 1, y)].symbol(), "│", "{what}: row {y}: {}", row_text(term, y, w));
+        }
+    }
+
+    #[test]
+    fn long_and_wide_text_stays_inside_the_border() {
+        let value = "日本語".repeat(50);
+        let mut p = suspended_with(three());
+        p.set_tab(DebugTab::Variables);
+        p.scopes_wanted();
+        p.show_scopes(vec![vi("日本語".repeat(20).as_str(), "", "", 1)], &[0]);
+        p.take_var_asks();
+        let long_type = "T".repeat(300);
+        p.show_children(0, vec![vi("v", &value, &long_type, 4), vi(&"n".repeat(60), "1", &value, 0), vi("w", "x", &value, 0)]);
+        let term = draw(&mut p, 24, 9, Some(Phase::Suspended));
+        borders_hold(&term, 24, 9, 1, "width 24");
+        let row = row_text(&term, 4, 24);
+        assert!(row.contains("日"), "positive control, the value is drawn: {row}");
+        // The control: a row that fits ends before the border without a clip.
+        let mut q = suspended_with(three());
+        q.set_tab(DebugTab::Variables);
+        fill_vars(&mut q);
+        let term = draw(&mut q, 24, 9, Some(Phase::Suspended));
+        assert!(row_text(&term, 4, 24).contains("a = 1  int"), "{}", row_text(&term, 4, 24));
+        borders_hold(&term, 24, 9, 1, "short rows");
+    }
+
+    #[test]
+    fn a_long_name_leaves_room_for_the_value() {
+        let mut p = suspended_with(three());
+        p.set_tab(DebugTab::Variables);
+        p.scopes_wanted();
+        let scope = "S".repeat(100);
+        p.show_scopes(vec![vi(&scope, "", "", 1)], &[0]);
+        p.take_var_asks();
+        p.show_children(0, vec![vi(&"n".repeat(100), "1", "", 0), vi("short", "2", "int", 0)]);
+        let term = draw(&mut p, 60, 9, Some(Phase::Suspended));
+        let scope_row = row_text(&term, 3, 60);
+        assert!(scope_row.contains(&"S".repeat(50)) && !scope_row.contains('…'), "a scope row has the whole width: {scope_row}");
+        let long = row_text(&term, 4, 60);
+        assert!(long.contains("… = 1"), "the name is cut and the value is on the row: {long}");
+        let name = long.chars().filter(|c| *c == 'n').count();
+        assert!((20..=28).contains(&name), "about half of the 54 cells left after indent and marker: {name} in {long}");
+        assert!(row_text(&term, 5, 60).contains("short = 2  int"), "{}", row_text(&term, 5, 60));
+        // A name with a type only shares the row too.
+        let mut q = suspended_with(three());
+        q.set_tab(DebugTab::Variables);
+        q.scopes_wanted();
+        q.show_scopes(vec![vi(&"m".repeat(100), "", "struct point", 1)], &[]);
+        let term = draw(&mut q, 60, 9, Some(Phase::Suspended));
+        assert!(row_text(&term, 3, 60).contains("…  struct point"), "{}", row_text(&term, 3, 60));
+    }
+
+    #[test]
+    fn a_failed_row_shows_it_past_a_long_value() {
+        let mut p = suspended_with(three());
+        p.set_tab(DebugTab::Variables);
+        p.scopes_wanted();
+        p.show_scopes(vec![vi("Locals", "", "", 1)], &[0]);
+        p.take_var_asks();
+        let value = "v".repeat(500);
+        p.show_children(0, vec![vi("ptr", &value, "char *", 5), vi("other", &value, "char *", 6)]);
+        p.vars.tree.expand(1);
+        p.vars.tree.expand(2);
+        p.take_var_asks();
+        p.children_failed(2, "timed out".into());
+        let t = text_of(&mut p, Some(Phase::Suspended));
+        assert!(t.contains("other  could not read: timed out"), "{t}");
+        assert!(t.contains("ptr … = vvv"), "loading shows right after the name, before the value: {t}");
+        assert!(!t.contains("char *"), "the type is past the clip");
+        let mut q = with_vars();
+        q.vars.tree.expand(2);
+        assert!(q.var_rows().last().unwrap().ends_with("Registers …"));
+    }
+
+    #[test]
+    fn a_second_scopes_answer_is_ignored() {
+        let mut p = with_vars();
+        let rows = p.var_rows();
+        // An ask in flight survives a second answer.
+        p.vars.tree.expand(2);
+        p.show_scopes(vec![vi("Other", "", "", 9)], &[0]);
+        assert_eq!(p.var_rows().len(), rows.len(), "the second answer builds nothing");
+        assert_eq!(p.take_var_asks().iter().map(|a| a.node).collect::<Vec<_>>(), [2], "the ask is still queued");
+        p.scopes_failed("late".into());
+        assert!(matches!(p.vars.load, VarsLoad::Shown), "a failure after Shown changes nothing");
+        assert_eq!(p.var_rows().len(), rows.len());
+        // Idle: nothing was asked, so nothing is taken.
+        let mut q = suspended_with(three());
+        q.set_tab(DebugTab::Variables);
+        q.show_scopes(vec![vi("Early", "", "", 9)], &[0]);
+        q.scopes_failed("early".into());
+        assert!(matches!(q.vars.load, VarsLoad::Idle) && q.var_rows().is_empty() && q.take_var_asks().is_empty());
+    }
+
+    #[test]
+    fn a_children_answer_for_a_node_not_waiting_is_ignored() {
+        let mut p = with_vars();
+        let rows = p.var_rows();
+        p.show_children(0, vec![vi("again", "", "", 0)]);
+        p.children_failed(0, "late".into());
+        p.show_children(99, vec![vi("none", "", "", 0)]);
+        assert_eq!(p.var_rows(), rows);
+    }
+
+    #[test]
+    fn a_clear_does_not_reuse_a_seq() {
+        let mut p = with_vars();
+        let before = p.selection_seq();
+        assert!(before > 0);
+        p.clear();
+        assert!(p.selection_seq() > before, "{} after {before}", p.selection_seq());
+        assert_ne!(p.selection_seq(), 0);
+        assert!(p.var_rows().is_empty());
+        assert_eq!(p.tab(), DebugTab::Console, "the rest is the default");
+    }
+
+    #[test]
+    fn every_tab_has_its_own_press_and_scroll() {
+        let long = |p: &mut DebugPanel| {
+            p.push((0..30).map(|i| RunLine::plain(format!("line {i}"))).collect());
+            let frames: Vec<FrameRow> = (0..30).map(|i| row(i, &format!("f{i}"), Some("d.c:1"))).collect();
+            p.show_stack(1, frames);
+        };
+        let mut seen = Vec::new();
+        for tab in TABS {
+            let mut p = suspended_with(three());
+            long(&mut p);
+            p.set_tab(DebugTab::Variables);
+            p.scopes_wanted();
+            let items: Vec<VarItem> = (0..30).map(|i| vi(&format!("s{i}"), "", "", 0)).collect();
+            p.show_scopes(items, &[]);
+            p.set_tab(tab);
+            p.state.home();
+            draw(&mut p, 60, 9, Some(Phase::Suspended));
+            let list = p.list_rect;
+            let others = |p: &DebugPanel| (p.state.selected, p.frames_state.selected, p.vars.list.selected);
+            let before = others(&p);
+            with_cx(|cx| assert!(p.handle_mouse(&press(list.x + 3, list.y + 2, 1), Some(Phase::Suspended), cx)));
+            let after = others(&p);
+            let moved: Vec<bool> = [before.0 != after.0, before.1 != after.1, before.2 != after.2].to_vec();
+            let want = match tab {
+                DebugTab::Console => [true, false, false],
+                DebugTab::Frames => [false, true, false],
+                DebugTab::Variables => [false, false, true],
+            };
+            assert_eq!(moved, want, "{tab:?}: a press reaches its own tab's selection");
+            let offsets = |p: &DebugPanel| (p.state.offset, p.frames_state.offset, p.vars.list.offset);
+            let before = offsets(&p);
+            with_cx(|cx| {
+                assert!(p.handle_mouse(
+                    &Mouse { kind: MouseEventKind::ScrollDown, x: list.x + 3, y: list.y, clicks: 1, mods: KeyModifiers::NONE },
+                    Some(Phase::Suspended),
+                    cx
+                ))
+            });
+            let after = offsets(&p);
+            let moved: Vec<bool> = [before.0 != after.0, before.1 != after.1, before.2 != after.2].to_vec();
+            assert_eq!(moved, want, "{tab:?}: the wheel scrolls its own tab's list");
+            seen.push(tab);
+        }
+        assert_eq!(seen, TABS);
+    }
+
+    #[test]
+    fn a_deep_row_is_clipped() {
+        let mut p = suspended_with(three());
+        p.set_tab(DebugTab::Variables);
+        p.scopes_wanted();
+        p.show_scopes(vec![vi("root", "", "", 1)], &[0]);
+        let mut node = 0;
+        for d in 0..100 {
+            p.take_var_asks();
+            p.show_children(node, vec![vi(&format!("n{d}"), "v", "t", 1)]);
+            node = p.vars.tree.node(node).unwrap().children.as_ref().unwrap()[0];
+            p.vars.tree.expand(node);
+        }
+        p.take_var_asks();
+        assert_eq!(p.vars.tree.node(node).unwrap().depth, 100);
+        p.vars.node = node;
+        for w in [4, 5, 12, 30] {
+            let term = draw(&mut p, w, 7, Some(Phase::Suspended));
+            if w >= 12 {
+                borders_hold(&term, w, 7, 1, &format!("width {w}"));
+            }
+        }
+        // `2 * depth` wraps a u16 at depth 32768, where an unclamped indent would put the rows back inside the border.
+        let mut q = suspended_with(three());
+        q.set_tab(DebugTab::Variables);
+        q.scopes_wanted();
+        q.show_scopes(vec![vi("root", "", "", 1)], &[0]);
+        let mut node = 0;
+        for _ in 0..32770 {
+            q.vars.tree.expand(node);
+            q.vars.tree.set_children(node, vec![vi("n", "v", "t", 1)]);
+            node = q.vars.tree.node(node).unwrap().children.as_ref().unwrap()[0];
+        }
+        assert_eq!(q.vars.tree.node(node).unwrap().depth, 32770);
+        q.vars.node = node;
+        let term = draw(&mut q, 30, 7, Some(Phase::Suspended));
+        borders_hold(&term, 30, 7, 1, "depth 32770");
+        for y in 3..6 {
+            let row = row_text(&term, y, 30);
+            assert_eq!(row.trim_matches(|c: char| c == '│' || c == ' '), "", "row {y} draws nothing past the border: {row}");
+        }
     }
 }
