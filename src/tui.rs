@@ -3,7 +3,7 @@
 //! The panic hook restores the terminal first, then writes the crash
 //! recovery dump of unsaved buffers (`recovery.rs`).
 
-use std::io::{self, Stdout, stdout};
+use std::io::{self, Stdout, Write, stdout};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -17,9 +17,104 @@ use crossterm::{
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, SetTitle, disable_raw_mode, enable_raw_mode, supports_keyboard_enhancement},
 };
-use ratatui::{Terminal, backend::CrosstermBackend};
+use ratatui::{
+    Terminal,
+    backend::{Backend, ClearType, CrosstermBackend, WindowSize},
+    buffer::Cell,
+    layout::{Position, Size},
+};
+use unicode_width::UnicodeWidthStr;
 
-pub type Term = Terminal<CrosstermBackend<Stdout>>;
+pub type Term = Terminal<JetlBackend<Stdout>>;
+
+/// One changed cell, as `Backend::draw` receives it.
+type Drawn<'a> = (u16, u16, &'a Cell);
+
+/// Writes each cell covered by a wide symbol before that symbol.
+///
+/// `ratatui-core`'s diff yields the trailing cell of a wide symbol holding U+FE0F, and `CrosstermBackend::draw`
+/// writes no cursor move for a cell right after the last one, while the terminal has advanced two columns. Each
+/// contiguous changed cell after it then lands one column to the right. Writing the trailing cell after a forced
+/// move is no fix: a blank on the second half of a wide character erases the character. Written first, it clears
+/// that column on a terminal that counts the symbol as one cell, and the symbol covers it on one that counts two.
+/// The cells around it are no longer contiguous, so `CrosstermBackend::draw` writes every move itself.
+fn trailing_first<'a>(content: impl Iterator<Item = Drawn<'a>>) -> impl Iterator<Item = Drawn<'a>> {
+    let mut content = content.peekable();
+    let mut held: Option<Drawn<'a>> = None;
+    std::iter::from_fn(move || {
+        let head = held.take().or_else(|| content.next())?;
+        let width = head.2.symbol().width() as u16;
+        match content.next_if(|c| c.1 == head.1 && c.0 > head.0 && c.0 - head.0 < width) {
+            Some(covered) => {
+                held = Some(head);
+                Some(covered)
+            }
+            None => Some(head),
+        }
+    })
+}
+
+/// The backend jetl draws through: `CrosstermBackend` with its cells in the order [`trailing_first`] gives.
+pub struct JetlBackend<W: Write> {
+    inner: CrosstermBackend<W>,
+}
+
+impl<W: Write> JetlBackend<W> {
+    pub fn new(writer: W) -> Self {
+        Self { inner: CrosstermBackend::new(writer) }
+    }
+}
+
+impl<W: Write> Backend for JetlBackend<W> {
+    type Error = io::Error;
+
+    fn draw<'a, I>(&mut self, content: I) -> io::Result<()>
+    where
+        I: Iterator<Item = Drawn<'a>>,
+    {
+        self.inner.draw(trailing_first(content))
+    }
+
+    fn append_lines(&mut self, n: u16) -> io::Result<()> {
+        self.inner.append_lines(n)
+    }
+
+    fn hide_cursor(&mut self) -> io::Result<()> {
+        self.inner.hide_cursor()
+    }
+
+    fn show_cursor(&mut self) -> io::Result<()> {
+        self.inner.show_cursor()
+    }
+
+    fn get_cursor_position(&mut self) -> io::Result<Position> {
+        self.inner.get_cursor_position()
+    }
+
+    fn set_cursor_position<P: Into<Position>>(&mut self, position: P) -> io::Result<()> {
+        self.inner.set_cursor_position(position)
+    }
+
+    fn clear(&mut self) -> io::Result<()> {
+        self.inner.clear()
+    }
+
+    fn clear_region(&mut self, clear_type: ClearType) -> io::Result<()> {
+        self.inner.clear_region(clear_type)
+    }
+
+    fn size(&self) -> io::Result<Size> {
+        self.inner.size()
+    }
+
+    fn window_size(&mut self) -> io::Result<WindowSize> {
+        self.inner.window_size()
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Backend::flush(&mut self.inner)
+    }
+}
 
 static ENHANCED: AtomicBool = AtomicBool::new(false);
 static ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -51,7 +146,7 @@ pub fn init(root: &Path) -> Result<Term> {
     } else {
         tracing::warn!("terminal lacks keyboard enhancement: ctrl+shift+letter, ctrl+tab and double-shift bindings unavailable");
     }
-    let backend = CrosstermBackend::new(out);
+    let backend = JetlBackend::new(out);
     let terminal = Terminal::new(backend)?;
     Ok(terminal)
 }
@@ -125,4 +220,123 @@ pub fn install_panic_hook() {
 
 pub fn stdout_handle() -> io::Stdout {
     stdout()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+    use ratatui::style::Style;
+
+    use super::*;
+
+    const EMOJI: &str = "\u{274C}\u{FE0F}";
+
+    #[derive(Clone, Default)]
+    struct Sink(Rc<RefCell<Vec<u8>>>);
+
+    impl Write for Sink {
+        fn write(&mut self, b: &[u8]) -> io::Result<usize> {
+            self.0.borrow_mut().extend_from_slice(b);
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn frame(w: u16, h: u16, rows: &[&str]) -> Buffer {
+        let mut b = Buffer::empty(Rect::new(0, 0, w, h));
+        for (y, row) in rows.iter().enumerate() {
+            b.set_string(0, y as u16, row, Style::default());
+        }
+        b
+    }
+
+    /// Paints frame 1 over an empty buffer, then each next frame over the one before; returns the bytes and the screen.
+    fn paint<B: Backend<Error = io::Error>>(mut backend: B, sink: &Sink, frames: &[Buffer]) -> (Vec<u8>, vt100::Parser) {
+        let (w, h) = (frames[0].area.width, frames[0].area.height);
+        let mut prev = Buffer::empty(frames[0].area);
+        for next in frames {
+            backend.draw(prev.diff(next).into_iter()).unwrap();
+            prev = next.clone();
+        }
+        let bytes = sink.0.borrow().clone();
+        let mut parser = vt100::Parser::new(h, w, 0);
+        parser.process(&bytes);
+        (bytes, parser)
+    }
+
+    fn rows(p: &vt100::Parser, w: u16) -> Vec<String> {
+        p.screen().rows(0, w).collect()
+    }
+
+    fn jetl(frames: &[Buffer]) -> (Vec<u8>, vt100::Parser) {
+        let sink = Sink::default();
+        paint(JetlBackend::new(sink.clone()), &sink, frames)
+    }
+
+    #[test]
+    fn text_after_a_vs16_emoji_stays_in_its_column() {
+        let (_, p) = jetl(&[frame(14, 1, &["abcdefghijKL"]), frame(14, 1, &[&format!("{EMOJI}12345678KL")])]);
+        assert_eq!(rows(&p, 14), [format!("{EMOJI}12345678KL")]);
+        assert_eq!(p.screen().cell(0, 10).unwrap().contents(), "K");
+        assert_eq!(p.screen().cell(0, 0).unwrap().contents(), EMOJI);
+    }
+
+    /// Pins the upstream defect. When this fails after a ratatui upgrade, upstream is fixed and `JetlBackend` can go.
+    #[test]
+    fn a_bare_crossterm_backend_lands_one_column_off() {
+        let sink = Sink::default();
+        let frames = [frame(14, 1, &["abcdefghijKL"]), frame(14, 1, &[&format!("{EMOJI}12345678KL")])];
+        let (_, p) = paint(CrosstermBackend::new(sink.clone()), &sink, &frames);
+        assert_eq!(rows(&p, 14), [format!("{EMOJI} 12345678L")]);
+    }
+
+    #[test]
+    fn two_emoji_in_one_row_both_stay() {
+        let want = format!("{EMOJI}12{EMOJI}34ijKL");
+        let (_, p) = jetl(&[frame(14, 1, &["abcdefghijKL"]), frame(14, 1, &[&want])]);
+        assert_eq!(rows(&p, 14), [want]);
+    }
+
+    #[test]
+    fn an_emoji_ending_at_the_last_column_keeps_the_next_row() {
+        let want = [format!("abcd{EMOJI}"), "ghijkl".to_string()];
+        let (_, p) = jetl(&[frame(6, 2, &["abcdef", "ghijkl"]), frame(6, 2, &[&want[0], &want[1]])]);
+        assert_eq!(rows(&p, 6), want);
+    }
+
+    #[test]
+    fn text_replacing_an_emoji_leaves_no_ghost() {
+        let (_, p) = jetl(&[frame(14, 1, &[&format!("{EMOJI}12345678KL")]), frame(14, 1, &["abcdefghijKL"])]);
+        assert_eq!(rows(&p, 14), ["abcdefghijKL"]);
+    }
+
+    #[test]
+    fn rows_with_no_covered_cell_write_what_crossterm_writes() {
+        let frames = [frame(14, 2, &["abcdefghijKL", "abcdefghijKL"]), frame(14, 2, &["xbcdefghijKL", "\u{65E5}12345678KL"])];
+        let (ours, _) = jetl(&frames);
+        let sink = Sink::default();
+        let (theirs, _) = paint(CrosstermBackend::new(sink.clone()), &sink, &frames);
+        assert_eq!(ours, theirs);
+    }
+
+    #[test]
+    fn a_covered_cell_comes_before_its_symbol_and_nothing_else_moves() {
+        let wide = Cell::new(EMOJI);
+        let cjk = Cell::new("\u{65E5}");
+        let blank = Cell::new(" ");
+        let a = Cell::new("a");
+        let b = Cell::new("b");
+        let order = |cells: Vec<Drawn>| -> Vec<(u16, u16)> { trailing_first(cells.into_iter()).map(|(x, y, _)| (x, y)).collect() };
+        assert_eq!(order(vec![(2, 0, &wide), (3, 0, &blank), (4, 0, &a)]), [(3, 0), (2, 0), (4, 0)]);
+        assert_eq!(order(vec![(2, 0, &wide), (4, 0, &a)]), [(2, 0), (4, 0)]);
+        assert_eq!(order(vec![(9, 0, &wide), (10, 1, &b)]), [(9, 0), (10, 1)]);
+        assert_eq!(order(vec![(2, 0, &cjk), (3, 0, &blank)]), [(3, 0), (2, 0)]);
+        assert_eq!(order(vec![(2, 0, &a), (3, 0, &b)]), [(2, 0), (3, 0)]);
+    }
 }

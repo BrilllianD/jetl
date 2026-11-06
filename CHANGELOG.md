@@ -56,6 +56,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Drawing: text after an emoji with a variation selector (such as gdb's ❌️) no longer lands one column to the right, which left a stray letter or a missing border until the next full redraw.
 - A language server command's edit without a document version no longer lands in a buffer you typed in while the command ran (it is refused, nothing changes); code actions with both `data` and a command are resolved before the command runs (TypeScript's Delete all unused did nothing); no error toast after a TypeScript extraction.
 - Tool strip: dropping a button on the separator between a side's two groups no longer moves it out of its group; it stays in the dragged window's group, and the drop colour shows the target first.
 - Tool strip: on a terminal only a few rows high a strip now shows the More button (⋯) instead of no way to reach its tool windows.

@@ -1155,16 +1155,46 @@ scenario's steps first.
     `demo`, `split`, `threads` or gdb left.
 
 At 80x24 the editor shows only a few lines, so the rows of steps 4 to 6 may be scrolled out; the script scrolls the editor
-with the mouse wheel until both show. While gdb's `❌️` line (U+274C with a variation selector) is in the Console, the
-thread row of the Frames tab showed a stray letter from that line to the right of the label (`Thread 1: demo ▾ e`),
-and in the Console tab the closing border of that line is missing. Read from the source of both crates and matched
-against the captures, not reproduced alone, this is a drawing defect of jetl, not of the terminal's width count: the diff of `ratatui-core` yields the trailing cell of a wide symbol with a variation selector,
-and `ratatui-crossterm` writes no cursor move when that cell follows the last one written, while the terminal has
-advanced two columns. Each contiguous run of changed cells after it lands one column to the right. It predates the
-Frames tab (yman 431, "Drawing: text after a VS16 emoji lands one column off").
+with the mouse wheel until both show.
 
 gdb cannot show, and the unit tests prove: a frame whose source has a `sourceReference` (`a_frame_with_no_file_moves_nothing`),
 a stop with no `threadId`, the stale choice (no way to hold an answer back), a failed stack, frame ids other than gdb's.
+
+### Scenario: Text after a VS16 emoji
+
+Needs `gdb` 14 or newer (the run used 17.2) and `gcc`. At 80x24 and at 120x40, a private tmux socket, `XDG_*`
+directories under `/tmp` (an empty `XDG_STATE_HOME`), `[lsp] enabled = false` and `[ui] toolbar = false`,
+`RUST_LOG=jetl=debug`. The fixture is a directory with `.jetl/run.toml` holding `[[configs]] name = "demo"`,
+`command = ["./demo"]` and `[debug.demo]` with `adapter = "gdb"` and `launch = { program = "${workspaceFolder}/demo" }`,
+and `demo.c`, built with `gcc -g -O0 -o demo demo.c`:
+
+```c
+#include <stdio.h>
+int main(void) {
+    puts("\xe2\x9d\x8c\xef\xb8\x8f boom abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz");
+    fflush(stdout);
+    int x = 3;
+    printf("x=%d\n", x);
+    return 0;
+}
+```
+
+The long line runs past the right edge at both sizes, so a run of cells that lands too far right reaches the border. Tabs
+are clicked as in the previous scenario (`ESC [ < 0 ; col ; row M` then `m`, sent with `tmux send-keys -H`). Nothing may
+run from `pgrep -f '[g]db -q -i=dap'` or `pgrep -x demo` first.
+
+1. Start jetl with `demo.c` as its path argument. Ctrl+G `5`, Ctrl+F8, Shift+F9: `paused (breakpoint)`, `5▶`.
+2. Click ` Console `. It holds gdb's `❌️ No source file named ...` and the fixture's `❌️ boom ...` line. Each of those
+   rows has its closing border in the same column as the row above, and the emoji is visible.
+3. Click ` Frames `. The thread row reads `Thread 1: demo ▾` with nothing to its right up to the border. No stray letter
+   anywhere in the window.
+4. Click ` Console `, then ` Frames `, then ` Console `, capturing each: as in 2 and 3.
+5. F9: the program ends, `x=3` in the Console, borders intact. Ctrl+Q: exit 0, empty stderr, no `gdb` and no `demo` left.
+
+Before the fix (`JetlBackend`, `src/tui.rs`) the Console rows showed a shifted `No source filenamed` and, at 80x24, no
+closing border on the first row, and Frames showed `Thread 1: demo ▾ e`. Only tmux 3.7c was run: other terminals are
+unverified. A Run window line with the same emoji is not scripted; the fix is below the panels. The script of the last
+run is `~/.claude/plans/backlog-run-25-S2a-evidence/scripts/vs16-scenario.sh`.
 
 ### Scenario: Debug window, variables
 
