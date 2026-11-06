@@ -199,5 +199,5 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     if !strip.is_empty() && strip.x > area.x {
         toast_area.width = strip.x - area.x;
     }
-    app.toasts.render(frame, toast_area, &theme, &avoid);
+    app.toasts.render(frame, toast_area, &theme, &avoid, &app.editor.gutter_rects());
 }

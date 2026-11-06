@@ -56,6 +56,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Toasts no longer cover the editor's gutter at 80 columns (breakpoints and the execution arrow stay readable), and they leave the lower half of the screen free.
 - Drawing: text after an emoji with a variation selector (such as gdb's ❌️) no longer lands one column to the right, which left a stray letter or a missing border until the next full redraw.
 - A language server command's edit without a document version no longer lands in a buffer you typed in while the command ran (it is refused, nothing changes); code actions with both `data` and a command are resolved before the command runs (TypeScript's Delete all unused did nothing); no error toast after a TypeScript extraction.
 - Tool strip: dropping a button on the separator between a side's two groups no longer moves it out of its group; it stays in the dragged window's group, and the drop colour shows the target first.

@@ -238,6 +238,14 @@ caret at a line end on the cell after the text. Then split right (`M-\`),
 type in the new pane, and check that the other pane still draws all its
 carets, moved with the text; `M-Tab` back to it and type at all of them.
 
+### Scenario: toasts
+
+Fixture: `T=$(mktemp -d)`, `seq -f 'line %g of the toast check' 1 40 > $T/notes.txt`,
+`[lsp] enabled = false` in a private config. `jetl $T/notes.txt`, Esc (focuses
+the editor), Ctrl+Z: the Info toast `Nothing to undo`. In `capture-pane`, its `╭`
+is in cell 43 and its `╮` in cell 78 at 80x24 (0-based), and in cells 67 and 118
+at 120x40. At 80x24 every line number beside it is whole.
+
 ### Scenario: short screen dialog
 
 A Confirm whose message is longer than the screen (yman 222), at 60x12:
@@ -415,7 +423,8 @@ hide it with Alt+1 twice).
 `display -p '#{cursor_x}'` plus one while the caret is at a line start), so
 `$((X+k))` is the cell at visual column k (0-based; the status bar's `Col`
 is 1-based). The first line is on row 2. Toasts take the right half of the
-top rows (from screen column 40 at 80x24) and a press on one only closes
+top rows (from screen column 40 at 80x24 with the Project window hidden; a
+gutter under that column moves the edge right of it) and a press on one only closes
 it, so keep presses left of that or wait until `capture-pane` shows no toast:
 
 ```sh
@@ -982,8 +991,8 @@ Debug and Stop scenario with one more line, a comment with no code on line 9 (be
 the `printf`); `other.c`, a file that is not part of the program (`int unused(void) { return 1; }`, three lines);
 `demo` built with `gcc -g -O0 -o demo demo.c`; the same `.jetl/run.toml`. Start only when `pgrep -x demo` and
 `pgrep -f '[g]db -q -i=dap'` print nothing. Line numbers below are as the gutter shows them (1-based); the log
-shows 0-based lines. At 80x24 a toast (4 s Info, 8 s Warning, 12 s Error) covers the gutter, so read a glyph only
-when no toast is on screen.
+shows 0-based lines. A toast (4 s Info, 8 s Warning, 12 s Error) keeps right of the gutter in the default layout, so a glyph can be read
+under one; code to its right can be covered.
 
 1. Negative control: `jetl demo.c`, Shift+F9 with no mark. The program runs to its end (`Debug session ended,
    exit code 0`), the log has `dap: breakpoints at start: {}` and no `-> setBreakpoints`.
@@ -1025,7 +1034,7 @@ precondition on `pgrep`. Fixture `/tmp/jetl-dap-demo`, rebuilt each run: `demo.c
 scenario of this section (line 9 is `int x = add(1, 2);`, line 10 is `int y = add(x, 4);`, line 11 is the `printf`);
 `spin.c` (`volatile unsigned long n = 0; for (;;) { n++; }`, built as `spin`); `.jetl/run.toml` with the configs
 `demo` and `spin` and a `[debug.<name>]` table for each; `git init` with `demo.c` and `spin.c` committed. A step
-reads the pane only with no toast on it (at 80x24 a toast covers the gutter), and counts the `▶` on the screen:
+reads the pane only with no toast on it (a toast can cover code, not the gutter in the default layout), and counts the `▶` on the screen:
 exactly one is the pass.
 
 1. Negative control: `jetl demo.c`, Shift+F9 with no mark: the program runs to its end and the pane never shows a
@@ -1249,7 +1258,7 @@ Needs `gdb` 14 or newer (the run used 17.2) and `cargo`, no network. At 80x24 an
 Cargo package `r` with no dependencies: `src/main.rs` has `fn add` with `let sum = a + b;` on line 2 and prints
 `x=3`; later steps add `src/bin/other.rs` and a type error on line 7. Start only when `pgrep -f '[g]db -q -i=dap'`
 and `pgrep -fx 'sleep 300'` print nothing. A step reads the pane only with no toast on it, except where it greps its
-own capture (at 80x24 toasts cover the gutter). The script of the last run is
+own capture (a toast can cover code, not the gutter in the default layout). The script of the last run is
 `~/.claude/plans/backlog-run-24-D3b-evidence/scripts/d3b-scenario.sh`.
 
 1. No `.jetl/run.toml`, `cargo clean`, open `src/main.rs`, Ctrl+G 2, Ctrl+F8, Shift+F9: the toast `Building cargo build`,

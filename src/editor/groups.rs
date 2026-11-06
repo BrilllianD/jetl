@@ -220,6 +220,16 @@ impl Editor {
         self.focused_group().text_area
     }
 
+    /// The gutter cells of each group as last drawn: what lies left of the
+    /// text. Empty for a group with no gutter (no tab, a diff tab), and left out.
+    pub fn gutter_rects(&self) -> Vec<Rect> {
+        self.groups
+            .iter()
+            .map(|g| Rect::new(g.last_area.x, g.text_area.y, g.text_area.x.saturating_sub(g.last_area.x), g.text_area.height))
+            .filter(|r| !r.is_empty())
+            .collect()
+    }
+
     /// The focused group's caret cell as last drawn; popups at the caret
     /// anchor there.
     pub fn caret_cell(&self) -> Option<(u16, u16)> {
@@ -1140,6 +1150,25 @@ mod tests {
 
     fn row(screen: &ratatui::buffer::Buffer, y: u16) -> String {
         (0..screen.area.width).map(|x| screen[(x, y)].symbol().to_string()).collect()
+    }
+
+    #[test]
+    fn gutter_rects_follow_the_groups() {
+        let mut ed = Editor::new(&Config::default());
+        draw(&mut ed, 60, 12, false);
+        assert!(ed.gutter_rects().is_empty());
+        open(&mut ed, "a.txt", &lines(20));
+        draw(&mut ed, 60, 12, false);
+        let (area, text) = (ed.focused_group().last_area, ed.text_area());
+        assert_eq!(ed.gutter_rects(), vec![Rect::new(area.x, text.y, text.x - area.x, text.height)]);
+        assert!(ed.gutter_rects()[0].width > 0);
+        act(&mut ed, EditorAction::SplitRight);
+        draw(&mut ed, 60, 12, false);
+        let rects = ed.gutter_rects();
+        assert_eq!(rects.len(), 2);
+        let second = ed.groups.iter().map(|g| g.last_area.x).max().unwrap();
+        assert!(second > 0);
+        assert!(rects.iter().any(|r| r.x == second));
     }
 
     fn lines(n: usize) -> String {

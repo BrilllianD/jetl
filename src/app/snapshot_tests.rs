@@ -3399,6 +3399,22 @@ async fn toasts() {
 }
 
 #[tokio::test]
+async fn toasts_beside_the_gutter() {
+    use crate::event::Level;
+    let mut fx = stable_app("toasts-beside-the-gutter");
+    let app = &mut fx.app;
+    let text: String = (1..=30).map(|i| format!("line {i} of the toast check\n")).collect();
+    load(app, "notes.txt", &text);
+    let now = std::time::Instant::now();
+    app.toasts.push(Level::Warn, "Language servers are off, so completion, hover and diagnostics are unavailable until they are on", now);
+    app.toasts.push(Level::Info, "Saved notes.txt", now);
+    let term = draw_app(app, 80, 24);
+    let marks =
+        [Mark::style('i', "info", app.theme.info.bg(app.theme.popup_bg)), Mark::style('w', "warn", app.theme.warn.bg(app.theme.popup_bg))];
+    assert_snapshot!("toasts_beside_the_gutter", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
 async fn editor_find_replace_bar() {
     let mut fx = stable_app("find-replace-bar");
     let app = &mut fx.app;

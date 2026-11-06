@@ -217,7 +217,7 @@ Render order (`ui::render`): tool strips, left, bottom and right tool windows
 (each through `ui::render_tool_window`),
 splitters, editor, status bar, hover popup, completion popup, strip tooltip (hidden while an overlay is
 open), palette, Switcher, context menu, main menu bar (over the top row, in zen
-mode too), Settings window, dialog, toasts (laid out below any open overlay they would cover, never over one). Mouse events go to the topmost open overlay (dialog, Settings window, main
+mode too), Settings window, dialog, toasts (laid out below any open overlay they would cover, never over one; they also keep right of an editor gutter when 30 cells remain, and with no overlay open leave the lower half free). Mouse events go to the topmost open overlay (dialog, Settings window, main
 menu bar, context menu, palette, Switcher) before anything below (the completion
 popup takes the wheel over it and accepts a clicked row, other clicks close
 it; the hover popup takes the wheel over it, and any click closes it); the menus also get

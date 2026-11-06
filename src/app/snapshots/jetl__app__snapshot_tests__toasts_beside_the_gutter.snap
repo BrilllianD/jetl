@@ -1,0 +1,39 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &marks, None)"
+---
+80x24 cursor=(43,1)
+00  ≣ ┌ Project: root ───────────────┐│  notes.txt ×
+01    │                              ││  1    ╭ Info ──────────────────────────×─╮
+02  ⌂ │                              ││  2    │ Saved notes.txt                  │
+03  ◫ │                              ││  3    ╰──────────────────────────────────╯
+04  ⊢ │                              ││  4    ╭ Warning ───────────────────────×─╮
+05    │                              ││  5    │ Language servers are off, so     │
+06    │                              ││  6    │ completion, hover and            │
+07    │                              ││  7    │ diagnostics are unavailable      │
+08    │                              ││  8    │ until they are on                │
+09    │                              ││  9    ╰──────────────────────────────────╯
+10    │                              ││ 10    line 10 of the toast check
+11    │                              ││ 11    line 11 of the toast check
+12  ◉ │                              ││ 12    line 12 of the toast check
+13  ⋔ │                              ││ 13    line 13 of the toast check
+14  ✎ │                              ││ 14    line 14 of the toast check
+15  ✓ │                              ││ 15    line 15 of the toast check
+16  ⟲ │                              ││ 16    line 16 of the toast check
+17  ⚑ │                              ││ 17    line 17 of the toast check
+18  ⎇ │                              ││ 18    line 18 of the toast check
+19  ❯ │                              ││ 19    line 19 of the toast check
+20  ⚠ │                              ││ 20    line 20 of the toast check
+21  ► │                              ││ 21    line 21 of the toast check
+22  ⌕ └──────────────────────────────┘│ 22    line 22 of the toast check
+23  notes.txt                         Ln 1, Col 1  LF  UTF-8  4 spaces  Plain text
+-- marks: i=info w=warn
+01                                            iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii ii
+02                                            i                                  i
+03                                            iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii
+04                                            wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww ww
+05                                            w                                  w
+06                                            w                                  w
+07                                            w                                  w
+08                                            w                                  w
+09                                            wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww
