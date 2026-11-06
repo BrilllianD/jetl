@@ -26,6 +26,8 @@ use crate::ui::widgets::list::ListState;
 pub enum BuildStage {
     /// The build step is running.
     Building,
+    /// The build ended and its executables wait for the user's choice.
+    Choosing,
     /// The build step failed, or could not run.
     Failed,
     /// Stopped before the program started: cancelled, refused, or no executable.
@@ -110,6 +112,11 @@ impl DebugPanel {
         self.stage = stage;
     }
 
+    /// The start is not over: the build runs, or its executables wait for a choice. Stop works then.
+    fn pending(&self) -> bool {
+        matches!(self.stage, Some(BuildStage::Building | BuildStage::Choosing))
+    }
+
     /// Back to the state before any session.
     pub fn clear(&mut self) {
         *self = Self::default();
@@ -145,6 +152,7 @@ impl DebugPanel {
             Some(Phase::Stopping) => "stopping".to_string(),
             Some(Phase::Ended) | None => match self.stage {
                 Some(BuildStage::Building) => "building",
+                Some(BuildStage::Choosing) => "choosing an executable",
                 Some(BuildStage::Failed) => "build failed",
                 Some(BuildStage::NotStarted) => "not started",
                 None => "ended",
@@ -159,7 +167,7 @@ impl DebugPanel {
         let block = tool_window_block(&title, focused, theme);
         let r = block.inner(area);
         frame.render_widget(block, area);
-        let building = self.stage == Some(BuildStage::Building);
+        let building = self.pending();
         self.hits.clear();
         self.link_rects.clear();
         self.list_rect = Rect::default();
@@ -203,7 +211,7 @@ impl DebugPanel {
     /// A press on a button performs its action when the phase allows it, and is consumed either way.
     pub fn handle_mouse(&mut self, m: &Mouse, phase: Option<Phase>, cx: &mut Ctx) -> bool {
         let pos = (m.x, m.y).into();
-        let building = self.stage == Some(BuildStage::Building);
+        let building = self.pending();
         match m.kind {
             MouseEventKind::Down(MouseButton::Left) if self.hits.iter().any(|(_, r)| r.contains(pos)) => {
                 if let Some((btn, _)) = self.hits.iter().find(|(_, r)| r.contains(pos)).copied()
@@ -385,6 +393,7 @@ mod tests {
         let mut p = started();
         for (stage, want) in [
             (Some(BuildStage::Building), "building"),
+            (Some(BuildStage::Choosing), "choosing an executable"),
             (Some(BuildStage::Failed), "build failed"),
             (Some(BuildStage::NotStarted), "not started"),
             (None, "ended"),
@@ -401,9 +410,13 @@ mod tests {
 
     #[test]
     fn stop_is_live_only_while_building() {
-        for (stage, stop) in
-            [(Some(BuildStage::Building), true), (Some(BuildStage::Failed), false), (Some(BuildStage::NotStarted), false), (None, false)]
-        {
+        for (stage, stop) in [
+            (Some(BuildStage::Building), true),
+            (Some(BuildStage::Choosing), true),
+            (Some(BuildStage::Failed), false),
+            (Some(BuildStage::NotStarted), false),
+            (None, false),
+        ] {
             for btn in Btn::ALL {
                 let mut p = started();
                 p.set_stage(stage);

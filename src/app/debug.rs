@@ -81,6 +81,8 @@ struct Building {
     _group: BuildGroup,
     prepared: Prepared,
     session: SessionId,
+    /// The build words ask for Cargo's JSON stream, so a build without an executable is not a missing flag.
+    json: bool,
 }
 
 /// A finished build that made several executables, waiting for the user to pick one.
@@ -316,6 +318,12 @@ fn check_cwd(name: &str, launch: &Value) -> Result<(), String> {
     Ok(())
 }
 
+/// Whether the build words ask Cargo for its JSON stream: `--message-format=json...` or `--message-format json...`.
+fn asks_for_json(argv: &[String]) -> bool {
+    argv.iter().any(|w| w.starts_with("--message-format=json"))
+        || argv.windows(2).any(|w| w[0] == "--message-format" && w[1].starts_with("json"))
+}
+
 impl App {
     pub(super) fn perform_debug(&mut self, a: DebugAction) {
         match a {
@@ -417,6 +425,7 @@ impl App {
         if !spec.cwd.is_dir() {
             return self.debug_build_failed(format!("Cannot build '{}': {} is not a directory", p.name, spec.cwd.display()));
         }
+        let json = asks_for_json(&spec.argv);
         let task = match crate::run::process::spawn(&spec) {
             Ok(t) => t,
             Err(e) => {
@@ -429,7 +438,7 @@ impl App {
         let drive = drive_build(task, spec.cwd, self.workspace.root.clone(), tags, self.bus_tx.clone(), pid.clone());
         // The prepare task that held this has finished: it sent the message being handled.
         self.debug.retiring = Some(tokio::spawn(drive));
-        self.debug.building = Some(Building { _group: BuildGroup(pid), prepared: p, session: id });
+        self.debug.building = Some(Building { _group: BuildGroup(pid), prepared: p, session: id, json });
     }
 
     /// The start ends here: the title, the Console and a toast say why.
@@ -454,7 +463,7 @@ impl App {
             tracing::debug!("dropping the end of an older debug build");
             return;
         }
-        let Some(Building { prepared: p, session, .. }) = self.debug.building.take() else { return };
+        let Some(Building { prepared: p, session, json, .. }) = self.debug.building.take() else { return };
         let name = &p.name;
         match end {
             RunEnd::Code(0) => {}
@@ -466,11 +475,13 @@ impl App {
             return self.debug_launch(p, Some(session));
         }
         match artifacts.len() {
-            0 => self.debug_refuse(format!(
-                "Cannot debug '{name}': its build named no executable, so ${{artifact}} has no value. A Cargo build needs --message-format=json"
-            )),
+            0 => {
+                let advice = if json { "" } else { ". A Cargo build needs --message-format=json" };
+                self.debug_refuse(format!("Cannot debug '{name}': its build named no executable, so ${{artifact}} has no value{advice}"))
+            }
             1 => self.debug_launch_artifact(p, session, &artifacts[0]),
             _ => {
+                self.debug_panel.set_stage(Some(BuildStage::Choosing));
                 self.debug.choice = Some(Choice { prepared: p, session, artifacts, offered: false });
                 self.debug_offer_artifacts();
             }
@@ -508,10 +519,12 @@ impl App {
     }
 
     fn debug_launch_artifact(&mut self, mut p: Prepared, session: SessionId, artifact: &Artifact) {
-        fill_artifact(&mut p.launch, &artifact.path.to_string_lossy());
-        if let Err(e) = check_cwd(&p.name, &p.launch) {
-            return self.debug_refuse(e);
+        let path = artifact.path.to_string_lossy();
+        // gdb runs each line of `program` and `cwd` as a command; see `check_cwd`.
+        if path.contains(['\n', '\r']) {
+            return self.debug_refuse(format!("Cannot debug '{}': line break in the path of its executable", p.name));
         }
+        fill_artifact(&mut p.launch, &path);
         self.debug_launch(p, Some(session));
     }
 
@@ -530,7 +543,7 @@ impl App {
             Ok(c) => c,
             Err(e) => {
                 if session.is_some() {
-                    self.debug_panel.set_stage(None);
+                    self.debug_panel.set_stage(Some(BuildStage::NotStarted));
                 }
                 return self.notify(Level::Error, format!("Debug adapter '{}' could not start: {e}", p.adapter.name));
             }
@@ -3047,6 +3060,15 @@ pub(crate) mod tests {
         assert!(fakes.try_recv().is_err());
         assert_eq!(last(&app), (Level::Warn, exact.to_string()));
         assert_eq!(title(&app), " Debug: demo · not started ");
+        // A build that already asks for the JSON stream has no flag to add: it made no executable (a library-only crate).
+        let none = "Cannot debug 'demo': its build named no executable, so ${artifact} has no value";
+        for build in [r#"["true", "--message-format=json-render-diagnostics"]"#, r#"["true", "--message-format", "json"]"#] {
+            write_run_toml(&app, &build_toml(build, ARTIFACT_LAUNCH));
+            shift_f9(&mut app);
+            console_until(&mut app, |a| !a.debug.starting()).await;
+            assert_eq!(last(&app), (Level::Warn, none.to_string()), "{build}");
+            assert_eq!(title(&app), " Debug: demo · not started ", "{build}");
+        }
         // The same build without `${artifact}` launches.
         write_run_toml(&app, &build_toml(r#"["true"]"#, r#"program = "/p/x""#));
         let mut fake = start(&mut app, &mut fakes).await;
@@ -3061,6 +3083,7 @@ pub(crate) mod tests {
         let d = app.dialog.as_ref().unwrap();
         assert_eq!((d.title.as_str(), d.message.as_str()), ("Debug", "The build made 2 executables. Which one?"));
         assert!(app.debug.starting(), "the start waits for the answer");
+        assert_eq!(title(&app), " Debug: demo · choosing an executable ", "the build is over");
         answer_dialog(&mut app, crate::ui::dialog::DialogResult::Choice(1));
         dap_until(&mut app, |a| a.debug.session.is_some()).await;
         let mut fake = fakes.try_recv().expect("an adapter");
@@ -3234,17 +3257,41 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn a_newline_from_the_artifact_is_refused() {
+    async fn a_line_break_in_the_artifact_path_is_refused() {
         let (mut app, dir) = test_app("build-newline");
         let mut fakes = with_fake_adapters(&mut app, caps(), Order::LaunchDeferred);
-        write_artifacts(&app, &[Path::new("/tmp/a\nshell touch x")]);
-        let launch = r#"program = "x", cwd = "${artifact}""#;
-        write_run_toml(&app, &build_toml(r#"["cat", "one.jsonl"]"#, launch));
+        let refusal = "Cannot debug 'demo': line break in the path of its executable";
+        // Whichever string of `launch` the path reaches, and either kind of line break.
+        for (path, launch) in [
+            ("/tmp/a\nshell touch x", ARTIFACT_LAUNCH),
+            ("/tmp/a\rshell touch x", ARTIFACT_LAUNCH),
+            ("/tmp/a\nshell touch x", r#"program = "x", cwd = "${artifact}""#),
+            ("/tmp/a\nshell touch x", r#"program = "x", args = ["${artifact}"]"#),
+        ] {
+            write_artifacts(&app, &[Path::new(path)]);
+            write_run_toml(&app, &build_toml(r#"["cat", "one.jsonl"]"#, launch));
+            shift_f9(&mut app);
+            console_until(&mut app, |a| !a.debug.starting()).await;
+            assert!(fakes.try_recv().is_err(), "{path:?} in {launch}: an adapter started");
+            assert!(!app.debug.active(), "{path:?} in {launch}");
+            assert_eq!(last(&app), (Level::Warn, refusal.to_string()), "{path:?} in {launch}");
+            assert_eq!(title(&app), " Debug: demo · not started ", "{path:?} in {launch}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn an_adapter_that_cannot_start_after_a_build_is_not_started() {
+        let (mut app, dir) = test_app("build-cannot-start");
+        let _fakes = with_fake_adapters(&mut app, caps(), Order::LaunchDeferred);
+        app.debug.connector = Connector::Fake(Box::new(|| Err(std::io::Error::other("boom"))));
+        write_run_toml(&app, &build_toml(r#"["echo", "built"]"#, r#"program = "/p/x""#));
         shift_f9(&mut app);
         console_until(&mut app, |a| !a.debug.starting()).await;
-        assert!(fakes.try_recv().is_err());
-        assert_eq!(last(&app), (Level::Warn, "Cannot debug 'demo': line break in its working directory".to_string()));
-        assert_eq!(title(&app), " Debug: demo · not started ");
+        assert_eq!(last(&app), (Level::Error, "Debug adapter 'fake' could not start: boom".to_string()));
+        assert!(!app.debug.active());
+        assert_eq!(console(&app), ["$ echo built", "built"], "the build's Console stays");
+        assert_eq!(title(&app), " Debug: demo · not started ", "the program never ran");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
