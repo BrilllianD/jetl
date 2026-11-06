@@ -31,15 +31,15 @@ expression: "snapshot(&term, &marks, None)"
 25  8 ┌ Debug: demo · paused (breakpoint) ────────────────────────────────────────────────────────────────────────────────┐
 26  ⟲ │  Resume   Pause   Step Over   Step Into   Step Out   Stop                                                         │
 27  5 │ Frames  Variables  Console                                                                                        │
-28  ⚑ │     b = 2  int                                                                                                    │
-29  9 │ ▾ Locals                                                                                                          │
-30  ⎇ │   ▾ p  struct point                                                                                               │
-31    │       x = 1  int                                                                                                  │
-32  ❯ │       y = -2  int                                                                                                 │
-33  6 │     ▸ inner  struct in                                                                                            │
-34  ⚠ │   ▾ arr …  int [3]                                                                                                │
-35  4 │     message = xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx│
-36  ► │     count = 42  unsigned long                                                                                     │
+28  ⚑ │ ▾ Arguments                                                                                                       │
+29  9 │     a = 1  int                                                                                                    │
+30  ⎇ │     b = 2  int                                                                                                    │
+31    │ ▾ Locals                                                                                                          │
+32  ❯ │   ▾ p  struct point                                                                                               │
+33  6 │       x = 1  int                                                                                                  │
+34  ⚠ │     ▸ inner  struct in                                                                                            │
+35  4 │   ▸ arr  first 1000 of 5000 shown  int [5000]                                                                     │
+36  ► │   ▾ buf …  char *                                                                                                 │
 37  3 │ ▸ Registers  could not read: timed out                                                                            │
 38  ⌕ └───────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 39  a.log                                                                     Ln 3, Col 1  LF  UTF-8  4 spaces  Plain text

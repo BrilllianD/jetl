@@ -15,15 +15,15 @@ expression: "snapshot(&term, &marks, None)"
 09    ┌ Debug: demo · paused (breakpoint) ────────────────────────────────────────┐
 10    │  Resume   Pause   Step Over   Step Into   Step Out   Stop                 │
 11    │ Frames  Variables  Console                                                │
-12  ◉ │     b = 2  int                                                            │
-13  ⋔ │ ▾ Locals                                                                  │
-14  ✎ │   ▾ p  struct point                                                       │
-15  ✓ │       x = 1  int                                                          │
-16  ⟲ │       y = -2  int                                                         │
-17  ⚑ │     ▸ inner  struct in                                                    │
-18  ⎇ │   ▾ arr …  int [3]                                                        │
-19  ❯ │     nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn… = xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx│
-20  ⚠ │     count = 42  unsigned long                                             │
+12  ◉ │ ▾ Arguments                                                               │
+13  ⋔ │     a = 1  int                                                            │
+14  ✎ │     b = xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx│
+15  ✓ │ ▾ Locals                                                                  │
+16  ⟲ │   ▾ p  struct point                                                       │
+17  ⚑ │       x = 1  int                                                          │
+18  ⎇ │     ▸ inner  struct in                                                    │
+19  ❯ │   ▸ arr  first 1000 of 5000 shown  int [5000]                             │
+20  ⚠ │   ▾ buf …  char *                                                         │
 21  ► │ ▸ Registers  could not read: timed out                                    │
 22  ⌕ └───────────────────────────────────────────────────────────────────────────┘
 23  a.log                             Ln 3, Col 1  LF  UTF-8  4 spaces  Plain text

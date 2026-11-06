@@ -275,7 +275,7 @@ fn var_item(v: &Variable) -> VarItem {
         value: var_text(&v.value),
         ty: var_text(&v.ty),
         reference: v.variables_reference,
-        indexed: v.indexed_variables,
+        children: v.indexed_variables.max(0).saturating_add(v.named_variables.max(0)),
     }
 }
 
@@ -926,12 +926,12 @@ impl App {
         let seq = self.debug_panel.selection_seq();
         for ask in self.debug_panel.take_var_asks() {
             moved = true;
-            if !paging && ask.indexed > UNPAGED_LIMIT {
-                self.debug_panel.children_failed(ask.node, format!("too many elements ({})", ask.indexed));
+            if !paging && ask.children > UNPAGED_LIMIT {
+                self.debug_panel.children_failed(ask.node, format!("too many elements ({})", ask.children));
                 continue;
             }
             let mut arguments = json!({"variablesReference": ask.reference});
-            if paging && ask.indexed > MAX_CHILDREN as i64 {
+            if paging && ask.children > MAX_CHILDREN as i64 {
                 arguments["start"] = json!(0);
                 arguments["count"] = json!(MAX_CHILDREN);
             }
@@ -4740,10 +4740,16 @@ pub(crate) mod tests {
     fn untrusted_text_is_one_line_clean_and_capped() {
         let dirty = "a\u{1b}[31mb\nc";
         assert_eq!(var_text(dirty), "ab c");
-        let item =
-            var_item(&Variable { name: dirty.into(), value: dirty.into(), ty: dirty.into(), variables_reference: 4, indexed_variables: 9 });
+        let item = var_item(&Variable {
+            name: dirty.into(),
+            value: dirty.into(),
+            ty: dirty.into(),
+            variables_reference: 4,
+            indexed_variables: 9,
+            named_variables: 0,
+        });
         assert_eq!(
-            (item.name.as_str(), item.value.as_str(), item.ty.as_str(), item.reference, item.indexed),
+            (item.name.as_str(), item.value.as_str(), item.ty.as_str(), item.reference, item.children),
             ("ab c", "ab c", "ab c", 4, 9)
         );
         let scope = var_item_of_scope(&Scope { name: dirty.into(), variables_reference: 3, ..Scope::default() });
@@ -4763,8 +4769,8 @@ pub(crate) mod tests {
         assert!(var_item(&Variable { value: huge, ..Variable::default() }).value.chars().count() <= MAX_TEXT + 1);
     }
 
-    /// `paused_in_two`'s session reads Locals with one big array, `arr` (reference 6, `indexed`), and answers.
-    async fn paging_case(name: &str, paging: bool, indexed: i64) -> (App, PathBuf, FakeAdapter, Option<Value>) {
+    /// `paused_in_two`'s session reads Locals with one big array, `arr` (reference 6, `indexed` and `named` children), and answers.
+    async fn paging_case(name: &str, paging: bool, indexed: i64, named: i64) -> (App, PathBuf, FakeAdapter, Option<Value>) {
         let mut c = caps();
         c["supportsVariablePaging"] = json!(paging);
         let (mut app, dir, mut fake, _a, _c) = paused_in_two_with(name, c).await;
@@ -4775,8 +4781,7 @@ pub(crate) mod tests {
         fake.respond(&req, body);
         pump_until(&mut app, |a| a.debug_panel.var_count() == 1).await;
         let req = fake.recv("variables").await;
-        let children =
-            json!({"variables": [{"name": "arr", "value": "", "type": "int []", "variablesReference": 6, "indexedVariables": indexed}]});
+        let children = json!({"variables": [{"name": "arr", "value": "", "type": "int []", "variablesReference": 6, "indexedVariables": indexed, "namedVariables": named}]});
         fake.respond(&req, children);
         pump_until(&mut app, |a| a.debug_panel.var_count() == 2).await;
         var_go_to(&mut app, "arr");
@@ -4793,28 +4798,46 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn paging_only_with_the_capability() {
         let mut dirs = Vec::new();
-        let (_app, dir, _fake, sent) = paging_case("vars-page-off", false, 5000).await;
+        let (_app, dir, _fake, sent) = paging_case("vars-page-off", false, 5000, 0).await;
         dirs.push(dir);
         assert_eq!(sent, Some(json!({"variablesReference": 6})), "no start or count without the capability");
-        let (mut app, dir, mut fake, sent) = paging_case("vars-page-refuse", false, 200_000).await;
+        let (mut app, dir, mut fake, sent) = paging_case("vars-page-refuse", false, 200_000, 0).await;
         dirs.push(dir);
         assert_eq!(sent, None, "refused");
         assert_eq!(var_rows(&mut app).last().map(String::as_str), Some("  ▸ arr  could not read: too many elements (200000)"));
         let before = texts(&app);
         quiet_twice(&mut app, &mut fake, "q-refused.log").await;
         assert!(texts(&app).iter().all(|t| !t.contains("too many")) && texts(&app).len() == before.len(), "no toast");
-        let (_app, dir, _fake, sent) = paging_case("vars-page-on", true, 5000).await;
+        let (_app, dir, _fake, sent) = paging_case("vars-page-on", true, 5000, 0).await;
         dirs.push(dir);
         assert_eq!(sent, Some(json!({"variablesReference": 6, "start": 0, "count": 1000})));
-        let (_app, dir, _fake, sent) = paging_case("vars-page-small", true, 500).await;
+        let (_app, dir, _fake, sent) = paging_case("vars-page-small", true, 500, 0).await;
         dirs.push(dir);
         assert_eq!(sent, Some(json!({"variablesReference": 6})), "a small array is asked whole even when paging is possible");
-        let (_app, dir, _fake, sent) = paging_case("vars-page-limit", false, 100_000).await;
+        let (_app, dir, _fake, sent) = paging_case("vars-page-limit", false, 100_000, 0).await;
         dirs.push(dir);
         assert!(sent.is_some(), "the limit itself is still asked");
         for d in dirs {
             let _ = std::fs::remove_dir_all(d);
         }
+    }
+
+    #[tokio::test]
+    async fn named_children_count_with_the_indexed() {
+        // 60 000 indexed and 60 000 named are 120 000 children: over the limit although neither is.
+        let (mut app, dir, _fake, sent) = paging_case("vars-named-refuse", false, 60_000, 60_000).await;
+        assert_eq!(sent, None, "refused");
+        assert_eq!(var_rows(&mut app).last().map(String::as_str), Some("  ▸ arr  could not read: too many elements (120000)"));
+        let _ = std::fs::remove_dir_all(dir);
+        // Named alone (a pretty-printed map) is counted.
+        let (mut app, dir, _fake, sent) = paging_case("vars-named-only", false, 0, 200_000).await;
+        assert_eq!(sent, None, "refused");
+        assert_eq!(var_rows(&mut app).last().map(String::as_str), Some("  ▸ arr  could not read: too many elements (200000)"));
+        let _ = std::fs::remove_dir_all(dir);
+        // With paging, 600 indexed and 600 named are over one page.
+        let (_app, dir, _fake, sent) = paging_case("vars-named-page", true, 600, 600).await;
+        assert_eq!(sent, Some(json!({"variablesReference": 6, "start": 0, "count": 1000})));
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[tokio::test]

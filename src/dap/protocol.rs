@@ -270,7 +270,7 @@ pub struct Scope {
     pub expensive: bool,
 }
 
-/// A variable. A reference of 0 or less is a leaf. `indexed_variables` is a hint for the child count.
+/// A variable. A reference of 0 or less is a leaf. `indexed_variables` and `named_variables` are hints for the child count.
 #[derive(Debug, Clone, PartialEq, Default, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Variable {
@@ -284,6 +284,8 @@ pub struct Variable {
     pub variables_reference: i64,
     #[serde(deserialize_with = "nullable")]
     pub indexed_variables: i64,
+    #[serde(deserialize_with = "nullable")]
+    pub named_variables: i64,
 }
 
 /// The body of a `scopes` response.
@@ -328,11 +330,12 @@ mod tests {
                 {"variablesReference":0,"name":"a","value":"1","type":"int"},
                 {"variablesReference":3,"name":"p","value":"","namedVariables":4,"type":"struct point"},
                 {"variablesReference":4,"name":"arr","value":"","indexedVariables":3,"type":"int [3]"},
-                {"name":"n","value":null,"type":null,"variablesReference":null,"indexedVariables":null}]}),
+                {"name":"n","value":null,"type":null,"variablesReference":null,"indexedVariables":null,"namedVariables":null}]}),
         );
         let [a, p, arr, n] = v.variables.as_slice() else { panic!("{:?}", v.variables) };
         assert_eq!((a.name.as_str(), a.value.as_str(), a.ty.as_str(), a.variables_reference), ("a", "1", "int", 0));
         assert_eq!((p.value.as_str(), p.ty.as_str(), p.variables_reference, p.indexed_variables), ("", "struct point", 3, 0));
+        assert_eq!((p.named_variables, arr.named_variables, n.named_variables), (4, 0, 0), "named is parsed, null is 0");
         assert_eq!((arr.ty.as_str(), arr.indexed_variables), ("int [3]", 3));
         assert_eq!(*n, Variable { name: "n".into(), ..Variable::default() });
         assert!(body_of::<ScopesBody>("t", json!({"scopes":null})).scopes.is_empty());

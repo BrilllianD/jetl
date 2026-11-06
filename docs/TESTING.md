@@ -1207,8 +1207,8 @@ the last run is `~/.claude/plans/backlog-run-24-D4b2-evidence/scripts/vars-scena
 At 80x24 the list holds about ten rows, so the lower rows of steps 8 to 13 are scrolled; the script goes by key and by
 the mouse wheel and says so in `v-m-wheel.txt`.
 
-gdb cannot show, and the unit tests prove: a scope with `expensive: true` (gdb marks none), paging (`supportsVariablePaging`
-is not set by gdb, and gdb ignores `start` and `count`), a raw control character in a value, a stale answer's timing (the
+gdb cannot show, and the unit tests prove: a scope with `expensive: true` (gdb marks none), paging (gdb takes `start` and `count` only from a client that declares `supportsVariablePaging` in `initialize`; jetl does not,
+so the paged branch is exercised by the fake adapter only), `namedVariables` (fake adapter only), a raw control character in a value, a stale answer's timing (the
 race is too short to place by hand), an answer over `MAX_BODY`, and a scope with no hint. Not run: scopes of a `???` frame.
 
 ### Scenario: Debug build step

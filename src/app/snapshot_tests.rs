@@ -4426,8 +4426,14 @@ async fn debug_window_frames_narrow() {
     assert_snapshot!("debug_window_frames_narrow", snapshot(&term, &marks, None));
 }
 
-/// A paused session whose Variables tab shows Arguments and Locals open, `p` open, `arr` still loading, Registers failed.
-async fn variables_window(name: &str, long: &str, width: u16, height: u16) -> (Fixture, ratatui::Terminal<ratatui::backend::TestBackend>) {
+/// A paused session whose Variables tab shows Arguments and Locals open, `p` open, `arr` closed with 1000 of its 5000
+/// children kept, `buf` still loading, Registers failed and selected. `b_value` is the value of `b`.
+async fn variables_window(
+    name: &str,
+    b_value: &str,
+    width: u16,
+    height: u16,
+) -> (Fixture, ratatui::Terminal<ratatui::backend::TestBackend>) {
     use super::debug::tests::{DEMO, caps, paused, six, with_fake_adapters, write_run_toml};
     use crate::actions::{Action, DebugAction};
     use crate::dap::fake::Order;
@@ -4446,7 +4452,7 @@ async fn variables_window(name: &str, long: &str, width: u16, height: u16) -> (F
         value: value.into(),
         ty: ty.into(),
         reference,
-        indexed: 0,
+        children: 0,
     };
     app.debug_panel.set_tab(DebugTab::Variables);
     app.debug_panel.set_threads(vec![Thread { id: 1, name: "main".into() }, Thread { id: 7, name: "t".into() }]);
@@ -4454,32 +4460,31 @@ async fn variables_window(name: &str, long: &str, width: u16, height: u16) -> (F
     assert!(app.debug_panel.scopes_wanted().is_some());
     app.debug_panel.show_scopes(vec![item("Arguments", "", "", 1), item("Locals", "", "", 2), item("Registers", "", "", 3)], &[0, 1]);
     app.debug_panel.take_var_asks();
-    app.debug_panel.show_children(0, vec![item("a", "1", "int", 0), item("b", "2", "int", 0)]);
-    let text = "x".repeat(300);
-    app.debug_panel.show_children(
-        1,
-        vec![
-            item("p", "", "struct point", 5),
-            item("arr", "", "int [3]", 6),
-            item(long, &text, "char *", 0),
-            item("count", "42", "unsigned long", 0),
-        ],
-    );
+    app.debug_panel.show_children(0, vec![item("a", "1", "int", 0), item("b", b_value, "int", 0)]);
+    let arr = VarItem { children: 5000, ..item("arr", "", "int [5000]", 6) };
+    app.debug_panel.show_children(1, vec![item("p", "", "struct point", 5), arr, item("buf", "", "char *", 7)]);
     app.focus.set(crate::ui::focus::PanelId::Debug);
-    for _ in 0..4 {
-        app.perform(Action::Debug(DebugAction::Down));
-    }
+    let down = |app: &mut App, n: usize| {
+        for _ in 0..n {
+            app.perform(Action::Debug(DebugAction::Down));
+        }
+    };
+    // Rows: Arguments, a, b, Locals, p; then arr, buf and Registers once p is open.
+    down(app, 4);
     app.perform(Action::Debug(DebugAction::Expand));
     app.debug_panel.take_var_asks();
-    app.debug_panel.show_children(5, vec![item("x", "1", "int", 0), item("y", "-2", "int", 0), item("inner", "", "struct in", 8)]);
-    for _ in 0..4 {
-        app.perform(Action::Debug(DebugAction::Down));
-    }
+    app.debug_panel.show_children(5, vec![item("x", "1", "int", 0), item("inner", "", "struct in", 8)]);
+    // arr: opened, answered with a page of its 5000, closed again; the row keeps its note.
+    down(app, 3);
     app.perform(Action::Debug(DebugAction::Expand));
     app.debug_panel.take_var_asks();
-    for _ in 0..4 {
-        app.perform(Action::Debug(DebugAction::Down));
-    }
+    app.debug_panel.show_children(6, (0..1000).map(|i| item(&i.to_string(), "0", "int", 0)).collect());
+    app.perform(Action::Debug(DebugAction::Collapse));
+    // buf: opened and not answered yet.
+    down(app, 1);
+    app.perform(Action::Debug(DebugAction::Expand));
+    app.debug_panel.take_var_asks();
+    down(app, 1);
     app.perform(Action::Debug(DebugAction::Expand));
     app.debug_panel.take_var_asks();
     app.debug_panel.children_failed(2, "timed out".into());
@@ -4492,7 +4497,7 @@ async fn variables_window(name: &str, long: &str, width: u16, height: u16) -> (F
 
 #[tokio::test]
 async fn debug_window_variables() {
-    let (fx, term) = variables_window("debug-variables", "message", 120, 40).await;
+    let (fx, term) = variables_window("debug-variables", "2", 120, 40).await;
     let mut marks = debug_marks(&fx.app.theme);
     marks.push(Mark::style('W', "selected row", fx.app.theme.list_selected));
     assert_snapshot!("debug_window_variables", snapshot(&term, &marks, None));
@@ -4500,7 +4505,7 @@ async fn debug_window_variables() {
 
 #[tokio::test]
 async fn debug_window_variables_narrow() {
-    let (fx, term) = variables_window("debug-variables-narrow", &"n".repeat(200), 80, 24).await;
+    let (fx, term) = variables_window("debug-variables-narrow", &"x".repeat(200), 80, 24).await;
     let mut marks = debug_marks(&fx.app.theme);
     marks.push(Mark::style('W', "selected row", fx.app.theme.list_selected));
     assert_snapshot!("debug_window_variables_narrow", snapshot(&term, &marks, None));

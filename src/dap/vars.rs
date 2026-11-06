@@ -10,8 +10,10 @@ use crate::ui::widgets::list::ListState;
 
 /// Rows kept per answer.
 pub const MAX_CHILDREN: usize = 1000;
-/// Without paging, more elements than this announced by `indexedVariables` are not asked for: gdb takes about 73
-/// bytes an element, and a frame over `MAX_BODY` ends the session.
+/// Without paging, more children than this announced by `indexedVariables` plus `namedVariables` are not asked for:
+/// gdb takes about 73 bytes an element, and a frame over `MAX_BODY` ends the session. gdb takes `start` and `count`
+/// only from a client that declares `supportsVariablePaging` in `initialize`; jetl does not, so against gdb the
+/// request goes without them and only the fake adapter exercises the paged branch.
 pub const UNPAGED_LIMIT: i64 = 100_000;
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -21,8 +23,8 @@ pub struct VarItem {
     pub ty: String,
     /// 0 or less: a leaf.
     pub reference: i64,
-    /// The adapter's hint for the number of indexed children.
-    pub indexed: i64,
+    /// The adapter's hint for the number of children: indexed plus named.
+    pub children: i64,
 }
 
 /// A request for the children of `node`, to be sent by the App.
@@ -30,7 +32,7 @@ pub struct VarItem {
 pub struct VarAsk {
     pub node: usize,
     pub reference: i64,
-    pub indexed: i64,
+    pub children: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -107,7 +109,7 @@ impl VarTree {
         n.failed = None;
         if n.children.is_none() && !n.loading {
             n.loading = true;
-            self.asks.push(VarAsk { node: i, reference: n.item.reference, indexed: n.item.indexed });
+            self.asks.push(VarAsk { node: i, reference: n.item.reference, children: n.item.children });
         }
     }
 
@@ -122,7 +124,7 @@ impl VarTree {
     /// A node that is not waiting for one ignores it.
     pub fn set_children(&mut self, i: usize, mut items: Vec<VarItem>) {
         let Some(n) = self.nodes.get_mut(i).filter(|n| n.loading) else { return };
-        let total = (n.item.indexed.max(0) as usize).max(items.len());
+        let total = (n.item.children.max(0) as usize).max(items.len());
         items.truncate(MAX_CHILDREN);
         n.hidden = total - items.len();
         n.loading = false;
@@ -290,10 +292,10 @@ mod tests {
     #[test]
     fn a_second_expand_does_not_ask_again() {
         let mut t = VarTree::default();
-        t.set_roots(vec![VarItem { indexed: 7, ..item("a", 10) }]);
+        t.set_roots(vec![VarItem { children: 7, ..item("a", 10) }]);
         t.expand(0);
         t.expand(0);
-        assert_eq!(t.take_asks(), vec![VarAsk { node: 0, reference: 10, indexed: 7 }]);
+        assert_eq!(t.take_asks(), vec![VarAsk { node: 0, reference: 10, children: 7 }]);
         t.set_children(0, vec![item("c", 0)]);
         t.collapse(0);
         t.expand(0);
@@ -352,7 +354,7 @@ mod tests {
     #[test]
     fn children_are_capped_and_counted() {
         let mut t = VarTree::default();
-        t.set_roots(vec![VarItem { indexed: 5000, ..item("arr", 10) }, item("long", 11)]);
+        t.set_roots(vec![VarItem { children: 5000, ..item("arr", 10) }, item("long", 11)]);
         t.expand(0);
         t.set_children(0, many(1500));
         assert_eq!(t.node(0).unwrap().children.as_ref().map(Vec::len), Some(MAX_CHILDREN));
@@ -362,7 +364,7 @@ mod tests {
         t.set_children(1, many(1500));
         assert_eq!(t.node(1).unwrap().hidden, 500, "no hint: counted from the answer");
         let mut t = VarTree::default();
-        t.set_roots(vec![VarItem { indexed: 3, ..item("arr", 10) }]);
+        t.set_roots(vec![VarItem { children: 3, ..item("arr", 10) }]);
         t.expand(0);
         t.set_children(0, many(3));
         assert_eq!(t.node(0).unwrap().hidden, 0);

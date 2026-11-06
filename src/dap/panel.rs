@@ -515,7 +515,7 @@ impl DebugPanel {
     }
 
     /// The pieces of a row after its indent, in order: marker, name, a loading mark, then either the failure or
-    /// the value, the type and the note on children left out. `name_room` cuts a name that shares its row with a
+    /// the note on children left out, the value and the type. `name_room` cuts a name that shares its row with a
     /// value or a type; a scope with neither has the whole row.
     fn var_pieces(&self, node: usize, name_room: Option<usize>) -> Vec<(String, Piece)> {
         let Some(n) = self.vars.tree.node(node) else { return Vec::new() };
@@ -533,15 +533,15 @@ impl DebugPanel {
             out.push((format!("  could not read: {m}"), Piece::Error));
             return out;
         }
+        if n.hidden > 0 {
+            let kept = n.children.as_ref().map_or(0, Vec::len);
+            out.push((format!("  first {kept} of {} shown", kept + n.hidden), Piece::Dim));
+        }
         if !item.value.is_empty() {
             out.push((format!(" = {}", item.value), Piece::Plain));
         }
         if !item.ty.is_empty() {
             out.push((format!("  {}", item.ty), Piece::Dim));
-        }
-        if n.hidden > 0 {
-            let kept = n.children.as_ref().map_or(0, Vec::len);
-            out.push((format!("  first {kept} of {} shown", kept + n.hidden), Piece::Dim));
         }
         out
     }
@@ -620,8 +620,11 @@ impl DebugPanel {
             MouseEventKind::Down(MouseButton::Left) => match self.tab {
                 DebugTab::Frames => {
                     let Some(i) = self.frames_state.hit(self.list_rect, m.x, m.y) else { return false };
+                    // A press on the selected row keeps the tree and its answers; only another row is a choice.
+                    if i != self.frames_state.selected {
+                        self.bump();
+                    }
                     self.frames_state.select(i);
-                    self.bump();
                     cx.effects.push(Effect::DebugFrame { index: i, focus: m.clicks == 2 });
                     true
                 }
@@ -1219,12 +1222,21 @@ mod tests {
         let (handled, fx) = click(&mut p, 1, 1);
         assert!(handled);
         assert_eq!(one(fx), (1, false));
+        let chosen = p.selection_seq();
         let (_, fx) = click(&mut p, 1, 1);
         assert_eq!(one(fx), (1, false), "also on the selected row: it brings the frame back");
+        assert_eq!(p.selection_seq(), chosen, "but it is no new choice: the variables and their answers stay");
         let (_, fx) = click(&mut p, 2, 2);
         assert_eq!(one(fx), (2, true), "a double click focuses the editor");
+        assert!(p.selection_seq() > chosen, "another row is a choice");
         let (handled, fx) = click(&mut p, 3, 1);
         assert!(!handled && fx.is_empty(), "below the rows: {fx:?}");
+        // While a stop's own answer is pending the list is empty: there is no row to press, so a press cannot
+        // end that stop (the seq it carries stays current).
+        p.stop_began(Some(1));
+        let waiting = p.selection_seq();
+        let (handled, fx) = click(&mut p, 0, 1);
+        assert!(!handled && fx.is_empty() && p.selection_seq() == waiting, "{fx:?}");
     }
 
     #[test]
@@ -1417,7 +1429,7 @@ mod tests {
     // ---- the Variables tab
 
     fn vi(name: &str, value: &str, ty: &str, reference: i64) -> VarItem {
-        VarItem { name: name.into(), value: value.into(), ty: ty.into(), reference, indexed: 0 }
+        VarItem { name: name.into(), value: value.into(), ty: ty.into(), reference, children: 0 }
     }
 
     /// Asks and shows the scopes of the selected frame: `Arguments` and `Locals` open, `Registers` closed.
@@ -1429,7 +1441,7 @@ mod tests {
         let asks = p.take_var_asks();
         assert_eq!(asks.iter().map(|a| (a.node, a.reference)).collect::<Vec<_>>(), [(0, 1), (1, 2)]);
         p.show_children(0, vec![vi("a", "1", "int", 0), vi("b", "2", "int", 0)]);
-        let arr = VarItem { indexed: 5000, ..vi("arr", "", "int [5000]", 6) };
+        let arr = VarItem { children: 5000, ..vi("arr", "", "int [5000]", 6) };
         p.show_children(1, vec![vi("p", "", "struct point", 5), arr]);
     }
 
@@ -1666,7 +1678,7 @@ mod tests {
         p.show_children(6, items);
         go_to(&mut p, "arr");
         let t = text_of(&mut p, s);
-        assert!(t.contains("arr  int [5000]  first 1000 of 5000 shown"), "{t}");
+        assert!(t.contains("arr  first 1000 of 5000 shown  int [5000]"), "{t}");
         p.vars.tree.expand(2);
         p.take_var_asks();
         p.children_failed(2, "boom".into());
@@ -1675,6 +1687,24 @@ mod tests {
         go_to(&mut p, "Registers");
         let t = text_of(&mut p, s);
         assert!(t.contains("Registers  could not read: boom"), "{t}");
+    }
+
+    #[test]
+    fn the_note_on_children_left_out_comes_before_a_long_type() {
+        let mut p = suspended_with(three());
+        p.set_tab(DebugTab::Variables);
+        p.scopes_wanted().expect("the tab asks");
+        p.show_scopes(vec![vi("Locals", "", "", 2)], &[0]);
+        p.take_var_asks();
+        let arr = VarItem { children: 5000, ..vi("arr", "", &"T".repeat(200), 6) };
+        p.show_children(0, vec![arr]);
+        p.vars.tree.expand(1);
+        p.take_var_asks();
+        p.show_children(1, (0..1000).map(|i| vi(&i.to_string(), "0", "", 0)).collect());
+        go_to(&mut p, "arr");
+        let term = draw(&mut p, 40, 10, Some(Phase::Suspended));
+        let t = (0..10).map(|y| row_text(&term, y, 40)).collect::<Vec<_>>().join("\n");
+        assert!(t.contains("arr  first 1000 of 5000 shown  T"), "the note is drawn before the type: {t}");
     }
 
     #[test]
