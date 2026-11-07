@@ -309,7 +309,11 @@ impl App {
             return self.lsp_hint("The file changed; rename again");
         }
         match self.lsp_doc_request(t.buffer, t.pos, RENAME, json!({"newName": name}), PendingTag::Rename) {
-            Ok(seq) => self.lsp.edit.rename = Some((seq, std::mem::take(&mut self.lsp.edit.rename_old), name)),
+            Ok(seq) => {
+                // An earlier rename still waiting for `willRenameFiles` is dropped with its answer.
+                self.lsp.edit.rename_files = None;
+                self.lsp.edit.rename = Some((seq, std::mem::take(&mut self.lsp.edit.rename_old), name));
+            }
             Err(why) if !why.is_empty() => self.lsp_hint(why),
             Err(_) => {}
         }
@@ -3374,6 +3378,51 @@ mod tests {
         assert_eq!(text(&fx.app), MOD_MAIN);
         let want = "Rename: rust-analyzer sent no edits for the uses of the renamed files; check them after the rename";
         assert!(fx.app.notifications.iter().any(|n| n.level == Level::Warn && n.text == want), "{:?}", toasts(&fx.app));
+        let _ = std::fs::remove_dir_all(&fx.dir);
+    }
+
+    #[tokio::test]
+    async fn a_null_or_timed_out_will_rename_files_applies_the_rename_alone_with_a_warning() {
+        for (name, timeout) in [("rename-mod-null", false), ("rename-mod-timeout", true)] {
+            let mut fx = ModRename::start(name, false, false).await;
+            let req = fx.server.recv("workspace/willRenameFiles").await;
+            let id = req["id"].as_i64().unwrap();
+            if timeout {
+                fx.server.respond_error(id, -32803, "timeout");
+            } else {
+                fx.server.respond(id, Value::Null);
+            }
+            handle_next(&mut fx.app, is_lsp).await;
+            handle_next(&mut fx.app, applied).await;
+            assert!(fx.assist.exists() && !fx.util.exists(), "{name}");
+            assert_eq!(text(&fx.app), MOD_MAIN, "{name}");
+            let want = "Rename: rust-analyzer sent no edits for the uses of the renamed files; check them after the rename";
+            assert!(fx.app.notifications.iter().any(|n| n.level == Level::Warn && n.text == want), "{name}: {:?}", toasts(&fx.app));
+            let _ = std::fs::remove_dir_all(&fx.dir);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_new_rename_drops_the_will_rename_files_of_the_one_before() {
+        let mut fx = ModRename::start("rename-mod-stale", false, false).await;
+        let a = fx.server.recv("workspace/willRenameFiles").await;
+        // Rename B starts while A waits; B's answer needs no file edits.
+        fx.app.perform(Action::Lsp(LspAction::Rename));
+        answer(&mut fx.app, &mut fx.server, "textDocument/prepareRename", range(0, 4, 0, 8)).await;
+        let d = fx.app.dialog.take().expect("the rename dialog");
+        fx.app.finish_dialog(d.id, DialogResult::Text("assist".into()));
+        let b = fx.server.recv("textDocument/rename").await;
+        // A's late answer must change nothing.
+        fx.server.respond(a["id"].as_i64().unwrap(), json!({"documentChanges": [use_edits(&fx.main)]}));
+        handle_next(&mut fx.app, is_lsp).await;
+        assert!(fx.util.exists() && !fx.assist.exists(), "A's rename was applied");
+        assert_eq!(text(&fx.app), MOD_MAIN);
+        assert!(fx.app.find.rename_preview().is_none());
+        // B's own answer still applies.
+        fx.server.respond(b["id"].as_i64().unwrap(), json!({"documentChanges": [use_edits(&fx.main)]}));
+        handle_next(&mut fx.app, is_lsp).await;
+        assert_eq!(text(&fx.app), MOD_RENAMED);
+        assert!(fx.util.exists() && !fx.assist.exists(), "B has no file rename");
         let _ = std::fs::remove_dir_all(&fx.dir);
     }
 }
