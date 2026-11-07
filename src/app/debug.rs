@@ -3588,9 +3588,20 @@ pub(crate) mod tests {
         fake.respond(&first, empty());
         handle_next(&mut app, |m| matches!(m, AppMsg::Dap(_))).await;
         let second = fake.recv("threads").await;
-        app.debug.session.as_mut().unwrap().stop_requested = true;
+        ctrl_f2(&mut app);
         fake.respond(&second, empty());
         dap_until(&mut app, proven).await;
+        assert_eq!(not_started(&app), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_session_past_running_raises_no_start_toast() {
+        let (mut app, dir, _fakes, _fake) = gdb_running("start-past-running").await;
+        inject(&mut app, DapBody::Phase(Phase::Stopping));
+        let tag = DapTag { epoch: epoch_of(&app), kind: TagKind::StartCheck { confirm: true } };
+        inject(&mut app, DapBody::Response { tag, result: Ok(empty()) });
+        assert!(proven(&app));
         assert_eq!(not_started(&app), 0);
         let _ = std::fs::remove_dir_all(&dir);
     }
