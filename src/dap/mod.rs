@@ -19,7 +19,7 @@ use std::path::PathBuf;
 
 use serde_json::Value;
 
-use protocol::{Breakpoint, BreakpointEvent, Capabilities, OutputEvent, StoppedEvent};
+use protocol::{Breakpoint, BreakpointEvent, Capabilities, OutputEvent, ProcessEvent, StoppedEvent};
 use session::{DapTag, Phase, SessionId};
 
 /// One report of a session to the App. The App drops it when `generation` or `session` is not the current one.
@@ -59,6 +59,8 @@ pub enum DapBody {
     /// A failed launch or configuration step.
     Error(String),
     Exited(i64),
+    /// The adapter has a program: it can arrive just after an empty threads answer.
+    Process(ProcessEvent),
     /// Always last; empty for a normal end.
     Ended {
         reason: String,

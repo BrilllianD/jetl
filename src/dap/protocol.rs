@@ -216,6 +216,16 @@ pub struct ExitedEvent {
     pub exit_code: i64,
 }
 
+/// The adapter started or attached to the program.
+#[derive(Debug, Clone, PartialEq, Default, Deserialize)]
+#[serde(default)]
+pub struct ProcessEvent {
+    #[serde(deserialize_with = "nullable")]
+    pub name: String,
+    #[serde(rename = "systemProcessId", default)]
+    pub system_process_id: Option<i64>,
+}
+
 #[derive(Debug, Clone, PartialEq, Default, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Thread {

@@ -101,6 +101,10 @@ pub struct DapTag {
 #[derive(Debug, Clone, PartialEq)]
 pub enum TagKind {
     Threads,
+    /// gdb's start, proven or not: see `App::debug_start_answer`. `confirm` is the second ask.
+    StartCheck {
+        confirm: bool,
+    },
     StackTrace {
         thread: i64,
     },
@@ -473,6 +477,7 @@ impl Session {
                 let ev: ExitedEvent = body_of("exited", e.body);
                 out.push(Action::Emit(DapBody::Exited(ev.exit_code)));
             }
+            "process" => out.push(Action::Emit(DapBody::Process(body_of("process", e.body)))),
             "output" => {
                 let ev: OutputEvent = body_of("output", e.body);
                 if ev.category.as_deref() != Some("telemetry") {
@@ -609,6 +614,7 @@ mod tests {
     use std::collections::BTreeSet;
 
     use super::*;
+    use crate::dap::protocol::ProcessEvent;
 
     fn caps() -> Value {
         json!({
@@ -1775,10 +1781,21 @@ mod tests {
     #[test]
     fn unknown_events_are_ignored() {
         let mut h = running();
-        for name in ["module", "process", "thread", "debugpyAttach", "capabilities"] {
+        for name in ["module", "thread", "debugpyAttach", "capabilities"] {
             h.event(name, json!({"x": 1}));
             assert!(h.last.is_empty(), "{name}");
         }
+    }
+
+    #[test]
+    fn process_event_reaches_the_app() {
+        let mut h = running();
+        h.event("process", json!({"name": "/p/demo", "systemProcessId": 42, "isLocalProcess": true, "startMethod": "process"}));
+        assert_eq!(h.last, [Action::Emit(DapBody::Process(ProcessEvent { name: "/p/demo".into(), system_process_id: Some(42) }))]);
+        h.event("process", json!({"startMethod": "attach"}));
+        assert_eq!(h.last, [Action::Emit(DapBody::Process(ProcessEvent::default()))]);
+        h.event("process", json!({"name": null, "systemProcessId": null}));
+        assert_eq!(h.last, [Action::Emit(DapBody::Process(ProcessEvent::default()))]);
     }
 
     #[test]

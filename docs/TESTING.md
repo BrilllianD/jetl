@@ -969,7 +969,8 @@ shell's own command line out of the match), and start only when both print nothi
    gives `Cannot debug 'demo': line break in its working directory` (all of it in the toast at 80x24, on
    two lines), starts no `gdb`, and `/tmp/pwned` does not exist.
 5. A program that does not exist: `launch = { program = "${workspaceFolder}/nope" }`. gdb answers the
-   launch with success and idles, so the session stays live (one `gdb`) until Ctrl+F2:
+   launch with success and idles. The toast `The program did not start: check launch.program and
+   launch.cwd` comes once, and the session stays live (one `gdb`) until Ctrl+F2:
    `Debug session stopped`, no `gdb` left.
 6. In `/tmp/jetl-dap-sleepy`: Shift+F9 shows one `jetl-dbg-sleepy` and one `gdb` (the positive
    control: the counts above are read here, while it runs, before any stop). Ctrl+F2: `Debug session
@@ -991,6 +992,48 @@ shell's own command line out of the match), and start only when both print nothi
 Each run exits 0 with an empty stderr on Ctrl+Q. What gdb cannot show, and the unit tests prove
 instead: the other two start orders (js-debug's and delve's), a root switch and a replaced session's silence,
 and the debugpy command (debugpy is not installed).
+
+### Scenario: A program that did not start
+
+Needs the fixture of `### Scenario: Debug and Stop` (`/tmp/jetl-dap-demo`, gdb 17.2), at 80x24 and at
+120x40, with `RUST_LOG=jetl=debug` (the log is `$XDG_STATE_HOME/jetl/jetl.log`; warnings are logged there
+as well as shown). Add to the fixture: `where.c`, a `main` that prints `cwd=` and `getcwd`'s result,
+built `gcc -g -O0 -o where where.c`; a copy of `demo` with the execute bit removed (`noperm`); an empty
+directory `sub`; `/tmp/jetl-dap-sleepy/jetl-dbg-sleepy` as in the scenario above; and `slowsh` outside the
+repo, mode 0755: `#!/bin/sh`, `sleep 3`, `exec /bin/sh "$@"`. Start only when `pgrep -f '[g]db -q -i=dap'`
+prints nothing. Rewrite `.jetl/run.toml` (one `demo` configuration and one `[debug.demo]` table) before each
+press of Shift+F9, and read the toasts and the Event Log (Alt+5). Only gdb is checked: other adapters get
+neither toast and were not tried.
+
+1. `launch = { program = "${workspaceFolder}/nope" }`: the Warning `The program did not start: check
+   launch.program and launch.cwd` comes once, all of it on screen at 80x24 (two lines). The log holds one
+   `asking once more` and one `dap: the program did not start`, and one `gdb` is alive. Ctrl+F2: `Debug
+   session stopped`, no `gdb` left.
+2. `program = "${workspaceFolder}"` (a directory): the same toast and counts. Ctrl+F2.
+3. `program = "missing-here", cwd = "nodir"`: both toasts (`Working directory not found, so gdb stays in
+   the project root: nodir` first, the cwd as written). Ctrl+F2.
+4. `program = "${workspaceFolder}/where", cwd = "${workspaceFolder}/nodir"`: the cwd toast with the
+   absolute path, no `did not start` (the log has no `dap: the program did not start`), and the Debug
+   window's Console says `cwd=/tmp/jetl-dap-demo`: gdb stayed in the project root and ran the program there.
+5. The same with `cwd = "~"`: neither toast, the Console says your home directory. With `cwd = "sub"`:
+   neither toast, `cwd=/tmp/jetl-dap-demo/sub`.
+6. The false-positive guard: `program = "${workspaceFolder}/demo"`, no breakpoint, 10 starts in a row, each to
+   `Debug session ended, exit code 0`: no `did not start` in the log. Then 20 more under CPU load (one busy
+   loop per core in its own process group, killed by group id afterwards). `asking once more` counts the
+   race (an empty first answer, the `process` event landing just after it); the unit tests cover that path.
+   Observed here: 0 in 30 starts, so the race was not hit under real gdb.
+7. Slow start: start jetl with `SHELL=<path to slowsh>`. `demo`, no breakpoint: no toast during the 3 s wait
+   or after (the log shows `threads` answered 3.01 s after the `launch` answer, with the `process` event
+   behind it), and `exit code 0`. Then `jetl-dbg-sleepy`: no toast; Ctrl+F2 ends it.
+8. With the normal `SHELL`: `jetl-dbg-sleepy` for 5 s: no toast. `demo` with a mark on line 9: `paused
+   (breakpoint)` in the Debug window's title, no toast; F9 to `exit code 0`.
+9. A copy of `demo` without the execute bit as `program`: the shell's `permission denied` (`zsh:1:
+   permission denied: .../noperm`) in the Console and the session ends with `exit code 0`, with no `did not
+   start`. This case is not silent already, and gdb reports exit code 0 for it.
+10. Ctrl+Q: exit 0, empty stderr, no `gdb` or debuggee left.
+
+What gdb cannot show, and the unit tests prove instead: a failed `threads`, a user's Stop between the two
+rounds, an `exited` with no `process`, a `process` with no `name`.
 
 ### Scenario: breakpoints sent to a debug session
 

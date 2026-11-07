@@ -65,6 +65,8 @@ pub(super) struct Live {
     pub(super) early: BTreeMap<PathBuf, Vec<usize>>,
     /// The marks still pending at the first stop or the exit have been told to the Console.
     pub(super) told_unplaced: bool,
+    /// A session under gdb whose program has shown no sign yet: see debug_start_answer.
+    pub(super) start_unproven: bool,
     /// The sources in `sent` that had an open buffer at the last comparison.
     pub(super) open: BTreeSet<PathBuf>,
     /// The epoch of the last `Stopped` or `Running`; the tag of the requests the App makes.
@@ -401,6 +403,15 @@ fn prepare(job: Job) -> Result<Prepared, String> {
     Ok(Prepared { name: task.name.clone(), adapter, launch, build })
 }
 
+/// What a session under gdb says when `launch` left no program: gdb logs the failure of `cd`, `file` and `run` only.
+const NOT_STARTED: &str = "The program did not start: check launch.program and launch.cwd";
+
+/// Whether gdb's `cd <cwd>` fails, after which it stays in the root it was spawned in and an absolute `program` runs
+/// there with no sign at all. gdb expands a leading `~` itself, so that is left to it.
+fn gdb_cd_fails(cwd: &str, root: &Path) -> bool {
+    !cwd.starts_with('~') && !root.join(cwd).is_dir()
+}
+
 /// gdb runs `cd <cwd>` and `file <program>`, and `gdb.execute` runs each line of a string as a command.
 fn check_line_breaks(name: &str, launch: &Value) -> Result<(), String> {
     for (key, what) in [("cwd", "its working directory"), ("program", "its program")] {
@@ -657,6 +668,8 @@ impl App {
             .map(|(p, lines)| (p.clone(), SourceBreakpoints { lines: lines.clone(), modified: source_modified(&self.editor, p) }))
             .collect();
         let cwd = p.launch["cwd"].as_str().map_or_else(|| root.clone(), PathBuf::from);
+        let gdb = p.adapter.name == "gdb";
+        let lost_cwd = p.launch["cwd"].as_str().filter(|c| gdb && gdb_cd_fails(c, &root)).map(one_line);
         let spec = SessionSpec { id, generation, adapter_id: p.adapter.name.clone(), launch: p.launch, breakpoints };
         let output_tx = self.bus_tx.clone();
         let console = spawn_console(cwd, root.clone(), move |lines| {
@@ -679,6 +692,7 @@ impl App {
             stop_requested: false,
             early: sent.clone(),
             told_unplaced: false,
+            start_unproven: gdb,
             sent,
             open,
             epoch: 0,
@@ -688,6 +702,9 @@ impl App {
             paging: false,
         });
         self.notify(Level::Info, format!("Debugging {} with {}", p.name, p.adapter.name));
+        if let Some(c) = lost_cwd {
+            self.notify(Level::Warn, format!("Working directory not found, so gdb stays in the project root: {c}"));
+        }
         self.debug_show_window();
     }
 
@@ -714,8 +731,19 @@ impl App {
         }
         match m.body {
             DapBody::Phase(p) => {
+                let Some(l) = self.debug.session.as_mut() else { return };
+                l.phase = p;
+                // Under gdb, `Running` means `launch` was answered, and so `run` is queued ahead of this ask. A resume comes here too, after a stop cleared the flag.
+                if p == Phase::Running && l.start_unproven {
+                    let epoch = l.epoch;
+                    self.debug_ask_start(epoch, false);
+                }
+            }
+            // Not `debug_program_seen`, which is about a first stop or exit: a program that has merely started has not stopped.
+            DapBody::Process(e) => {
+                tracing::debug!("dap: process {:?}, pid {:?}", e.name, e.system_process_id);
                 if let Some(l) = self.debug.session.as_mut() {
-                    l.phase = p;
+                    l.start_unproven = false;
                 }
             }
             DapBody::Exited(c) => {
@@ -771,6 +799,7 @@ impl App {
     fn debug_program_seen(&mut self) {
         let Some(live) = self.debug.session.as_mut() else { return };
         live.early.clear();
+        live.start_unproven = false;
         if live.told_unplaced || live.stop_requested {
             return;
         }
@@ -814,6 +843,41 @@ impl App {
         self.debug.send(Command::Request { command: "threads".into(), arguments: json!({}), tag });
     }
 
+    fn debug_ask_start(&mut self, epoch: u64, confirm: bool) {
+        let tag = DapTag { epoch, kind: TagKind::StartCheck { confirm } };
+        self.debug.send(Command::Request { command: "threads".into(), arguments: json!({}), tag });
+    }
+
+    /// gdb's `launch` answers success whatever `cd`, `file` and `run` did, and then says nothing, so a missing program
+    /// shows only as no threads. One empty answer is not enough: gdb holds an event back while a request is in flight,
+    /// so a good program's `process` can land just after it (10 to 28 percent of short programs, measured). It sends
+    /// them before it handles the next request, and `threads` queues behind `run`, so a second empty answer with no sign
+    /// of the program is the verdict, however slow the start. The flag is the proof: any sign has cleared it.
+    fn debug_start_answer(&mut self, epoch: u64, confirm: bool, result: Result<Value, String>) {
+        let Some(live) = self.debug.session.as_mut() else { return };
+        if !live.start_unproven {
+            return;
+        }
+        let empty = match result {
+            Ok(body) => body_of::<ThreadsBody>("threads", body).threads.is_empty(),
+            Err(e) => {
+                tracing::debug!("dap: the start check failed: {e}");
+                false
+            }
+        };
+        if !empty || live.stop_requested || live.phase != Phase::Running {
+            live.start_unproven = false;
+            return;
+        }
+        if !confirm {
+            tracing::debug!("dap: no threads and no process yet, asking once more");
+            return self.debug_ask_start(epoch, true);
+        }
+        live.start_unproven = false;
+        tracing::debug!("dap: the program did not start");
+        self.notify(Level::Warn, NOT_STARTED);
+    }
+
     fn debug_ask_stack(&mut self, epoch: u64, thread: i64) {
         let tag = DapTag { epoch, kind: TagKind::StackTrace { thread } };
         let arguments = json!({"threadId": thread, "startFrame": 0, "levels": 20});
@@ -847,6 +911,9 @@ impl App {
             tracing::debug!("dropping the answer of an older choice");
             return;
         }
+        if let TagKind::StartCheck { confirm } = tag.kind {
+            return self.debug_start_answer(tag.epoch, confirm, result);
+        }
         if matches!(tag.kind, TagKind::Scopes { .. } | TagKind::Variables { .. }) {
             return self.debug_vars_answer(tag.kind, result);
         }
@@ -877,7 +944,7 @@ impl App {
                         "stack"
                     }
                     // handled above
-                    TagKind::Scopes { .. } | TagKind::Variables { .. } => return,
+                    TagKind::Scopes { .. } | TagKind::Variables { .. } | TagKind::StartCheck { .. } => return,
                 };
                 return self.notify(Level::Warn, format!("Could not read the {what}: {e}"));
             }
@@ -948,7 +1015,7 @@ impl App {
                 }
             }
             // handled above
-            TagKind::Scopes { .. } | TagKind::Variables { .. } => {}
+            TagKind::Scopes { .. } | TagKind::Variables { .. } | TagKind::StartCheck { .. } => {}
         }
     }
 
@@ -3367,6 +3434,239 @@ pub(crate) mod tests {
         let (mut app, dir, _fake, _a) = two_marks_one_placed("console-unplaced-exit").await;
         inject(&mut app, DapBody::Exited(0));
         assert_eq!(console(&app), [NOT_PLACED_4]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- a program that did not start (yman 416) ----
+
+    const NOT_STARTED_TEXT: &str = "The program did not start: check launch.program and launch.cwd";
+
+    /// A session under an adapter named `gdb`, in `Running`: its command is `sh` and the connector is the fake, so no gdb runs.
+    async fn gdb_running(name: &str) -> (App, PathBuf, UnboundedReceiver<FakeAdapter>, FakeAdapter) {
+        let (mut app, dir) = test_app(name);
+        let mut fakes = with_fake_adapters(&mut app, caps(), Order::LaunchDeferred);
+        app.config.debug.adapters.insert("gdb".into(), AdapterOverride { command: Some(vec!["sh".into()]), ..Default::default() });
+        write_run_toml(&app, &DEMO.replace("\"fake\"", "\"gdb\""));
+        let (fake, _) = running(&mut app, &mut fakes).await;
+        (app, dir, fakes, fake)
+    }
+
+    fn not_started(app: &App) -> usize {
+        texts(app).iter().filter(|t| *t == NOT_STARTED_TEXT).count()
+    }
+
+    fn proven(app: &App) -> bool {
+        !app.debug.session.as_ref().unwrap().start_unproven
+    }
+
+    /// Every message the fake sent before this call has been handled: the Console line comes after it in the App's queue.
+    async fn settle(app: &mut App, fake: &FakeAdapter) {
+        fake.event("output", json!({"category": "console", "output": "settled\n"}));
+        console_until(app, |a| console(a).iter().any(|t| t == "settled")).await;
+    }
+
+    fn empty() -> Value {
+        json!({"threads": []})
+    }
+
+    #[tokio::test]
+    async fn two_empty_answers_mean_the_program_did_not_start() {
+        let (mut app, dir, _fakes, mut fake) = gdb_running("start-two-empty").await;
+        let first = fake.recv("threads").await;
+        fake.respond(&first, empty());
+        handle_next(&mut app, |m| matches!(m, AppMsg::Dap(_))).await;
+        let second = fake.recv("threads").await;
+        fake.respond(&second, empty());
+        dap_until(&mut app, proven).await;
+        assert_eq!(last(&app), (Level::Warn, NOT_STARTED_TEXT.to_string()));
+        assert_eq!(not_started(&app), 1);
+        assert!(app.debug.active());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn the_process_event_after_an_empty_answer_proves_the_start() {
+        let (mut app, dir, _fakes, mut fake) = gdb_running("start-process-late").await;
+        let first = fake.recv("threads").await;
+        fake.respond(&first, empty());
+        handle_next(&mut app, |m| matches!(m, AppMsg::Dap(_))).await;
+        let second = fake.recv("threads").await;
+        let early = app.debug.session.as_ref().unwrap().early.clone();
+        fake.event("process", json!({"name": "/p/demo", "systemProcessId": 42}));
+        fake.respond(&second, empty());
+        settle(&mut app, &fake).await;
+        assert!(proven(&app));
+        assert_eq!(not_started(&app), 0);
+        let live = app.debug.session.as_ref().unwrap();
+        assert!(!live.told_unplaced);
+        assert_eq!(live.early, early);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn an_exit_after_an_empty_answer_proves_the_start() {
+        let (mut app, dir, _fakes, mut fake) = gdb_running("start-exit-late").await;
+        let first = fake.recv("threads").await;
+        fake.respond(&first, empty());
+        handle_next(&mut app, |m| matches!(m, AppMsg::Dap(_))).await;
+        let second = fake.recv("threads").await;
+        fake.event("exited", json!({"exitCode": 0}));
+        fake.respond(&second, empty());
+        settle(&mut app, &fake).await;
+        assert!(proven(&app));
+        assert_eq!(not_started(&app), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The first request after `ctrl_f2` is the stop's, not a `threads`.
+    async fn next_request_is_not_threads(fake: &mut FakeAdapter) {
+        loop {
+            let m = fake.next().await;
+            if m["type"] == "request" {
+                assert_ne!(m["command"], "threads", "{m}");
+                return;
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn the_process_event_before_the_answer_ends_the_check() {
+        let (mut app, dir, _fakes, mut fake) = gdb_running("start-process-early").await;
+        let first = fake.recv("threads").await;
+        fake.event("process", json!({"name": "/p/demo", "systemProcessId": 42}));
+        fake.respond(&first, empty());
+        settle(&mut app, &fake).await;
+        assert!(proven(&app));
+        ctrl_f2(&mut app);
+        next_request_is_not_threads(&mut fake).await;
+        assert_eq!(not_started(&app), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_thread_in_the_answer_ends_the_check() {
+        let (mut app, dir, _fakes, mut fake) = gdb_running("start-thread").await;
+        let first = fake.recv("threads").await;
+        fake.respond(&first, json!({"threads": [{"id": 1, "name": "demo"}]}));
+        dap_until(&mut app, proven).await;
+        ctrl_f2(&mut app);
+        next_request_is_not_threads(&mut fake).await;
+        assert_eq!(not_started(&app), 0);
+        assert_eq!(app.debug.session.as_ref().unwrap().thread, None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_stop_or_an_exit_ends_the_check() {
+        for (n, body) in [
+            ("stop", DapBody::Stopped { epoch: 1, event: StoppedEvent { reason: "breakpoint".into(), ..Default::default() } }),
+            ("exit", DapBody::Exited(0)),
+        ] {
+            let (mut app, dir, _fakes, _fake) = gdb_running(&format!("start-seen-{n}")).await;
+            inject(&mut app, body);
+            assert!(proven(&app), "{n}");
+            let tag = DapTag { epoch: epoch_of(&app), kind: TagKind::StartCheck { confirm: true } };
+            inject(&mut app, DapBody::Response { tag, result: Ok(empty()) });
+            assert_eq!(not_started(&app), 0, "{n}");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_user_stop_raises_no_start_toast() {
+        // Before the first answer.
+        let (mut app, dir, _fakes, mut fake) = gdb_running("start-user-stop-1").await;
+        app.debug.session.as_mut().unwrap().stop_requested = true;
+        let first = fake.recv("threads").await;
+        fake.respond(&first, empty());
+        dap_until(&mut app, proven).await;
+        assert_eq!(not_started(&app), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+        // Between the two.
+        let (mut app, dir, _fakes, mut fake) = gdb_running("start-user-stop-2").await;
+        let first = fake.recv("threads").await;
+        fake.respond(&first, empty());
+        handle_next(&mut app, |m| matches!(m, AppMsg::Dap(_))).await;
+        let second = fake.recv("threads").await;
+        app.debug.session.as_mut().unwrap().stop_requested = true;
+        fake.respond(&second, empty());
+        dap_until(&mut app, proven).await;
+        assert_eq!(not_started(&app), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_failed_start_check_is_silent() {
+        let (mut app, dir, _fakes, mut fake) = gdb_running("start-failed").await;
+        let first = fake.recv("threads").await;
+        fake.respond_error(&first, "boom");
+        dap_until(&mut app, proven).await;
+        assert!(texts(&app).iter().all(|t| !t.contains("threads") && !t.contains("boom")), "{:?}", texts(&app));
+        assert_eq!(not_started(&app), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn other_adapters_get_no_start_check() {
+        let (mut app, dir, mut fakes) = setup("start-no-check", Order::LaunchDeferred);
+        let (mut fake, _) = running(&mut app, &mut fakes).await;
+        assert!(proven(&app));
+        ctrl_f2(&mut app);
+        next_request_is_not_threads(&mut fake).await;
+        let _ = std::fs::remove_dir_all(&dir);
+        let (mut app, dir, mut fakes) = setup("start-no-cwd-check", Order::LaunchDeferred);
+        write_run_toml(&app, &DEMO.replace("demo\" }", "demo\", cwd = \"/nonexistent-jetl\" }"));
+        let _ = running(&mut app, &mut fakes).await;
+        assert!(texts(&app).iter().all(|t| !t.contains("Working directory not found")), "{:?}", texts(&app));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn gdb_cd_fails_on_what_gdb_cannot_enter() {
+        let (_app, dir) = test_app("start-cd-table");
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("f"), "x").unwrap();
+        let root = dir.as_path();
+        let abs_missing = root.join("nodir").to_string_lossy().into_owned();
+        let abs_sub = root.join("sub").to_string_lossy().into_owned();
+        for (cwd, want) in [
+            ("nodir", true),
+            (abs_missing.as_str(), true),
+            ("f", true),
+            ("sub", false),
+            (abs_sub.as_str(), false),
+            ("~", false),
+            ("~/nodir", false),
+            (".", false),
+        ] {
+            assert_eq!(gdb_cd_fails(cwd, root), want, "{cwd:?}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_missing_cwd_warns_and_the_start_goes_on() {
+        let (mut app, dir) = test_app("start-missing-cwd");
+        let mut fakes = with_fake_adapters(&mut app, caps(), Order::LaunchDeferred);
+        app.config.debug.adapters.insert("gdb".into(), AdapterOverride { command: Some(vec!["sh".into()]), ..Default::default() });
+        let toml = DEMO.replace("\"fake\"", "\"gdb\"").replace("demo\" }", "demo\", cwd = \"${workspaceFolder}/nodir\" }");
+        write_run_toml(&app, &toml);
+        let mut fake = start(&mut app, &mut fakes).await;
+        let want = format!("Working directory not found, so gdb stays in the project root: {}/nodir", app.workspace.root.display());
+        assert!(texts(&app).contains(&want), "{:?}", texts(&app));
+        let n = app.notifications.iter().find(|n| n.text == want).unwrap();
+        assert_eq!(n.level, Level::Warn);
+        assert_eq!(fake.recv("launch").await["arguments"]["cwd"], json!(format!("{}/nodir", app.workspace.root.display())));
+        assert!(app.debug.session.is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+        // A cwd that exists says nothing.
+        let (mut app, dir) = test_app("start-present-cwd");
+        let mut fakes = with_fake_adapters(&mut app, caps(), Order::LaunchDeferred);
+        app.config.debug.adapters.insert("gdb".into(), AdapterOverride { command: Some(vec!["sh".into()]), ..Default::default() });
+        let toml = DEMO.replace("\"fake\"", "\"gdb\"").replace("demo\" }", "demo\", cwd = \"${workspaceFolder}\" }");
+        write_run_toml(&app, &toml);
+        let _fake = start(&mut app, &mut fakes).await;
+        assert!(texts(&app).iter().all(|t| !t.contains("Working directory not found")), "{:?}", texts(&app));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -56,6 +56,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Debug under gdb: a program that did not start now says so ("The program did not start: check launch.program and launch.cwd"), and a working directory that does not exist gets its own warning, since gdb would run the program from the project root instead. Tried under gdb only.
 - Debug under gdb: the Console no longer shows "No source file named" and "pending" on each start for a breakpoint that then works.
 - Debug Console: a breakpoint the adapter moves in a later event now says so (Breakpoint a.c:3 moved to line 4), and one still not placed at the first stop or at the program's end says "not placed: no code loaded for this line". Tried under gdb only.
 - Toasts keep off the editor's gutter when room allows (breakpoints and the execution arrow stay readable at 80 columns beside one editor; with two split editors the second gutter can stay covered, since a narrower toast would not read), and they leave the lower half of the screen free.
