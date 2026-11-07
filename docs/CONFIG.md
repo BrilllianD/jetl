@@ -397,6 +397,24 @@ from reading their sources. `jetl --doctor` and Settings > Dependencies show
 which are found; debugpy's row checks `python3` only, since checking the
 module would run a process.
 
+gdb detaches a child the program forks, so the child keeps running after Stop, after
+the program's exit and after gdb is killed. To keep it under the debugger and end it with
+the session, give gdb's command two settings:
+
+```toml
+[debug.adapters.gdb]
+command = ["gdb", "-q", "-i=dap", "-iex", "set detach-on-fork off", "-iex", "set schedule-multiple on"]
+```
+
+With them, gdb 17.2 runs the child, a breakpoint the child reaches stops the session
+there, and every way of ending the session (Stop, the program's exit, gdb killed)
+ends the child too. The cost: a child meant to outlive its parent (a daemon) is stopped
+when the parent exits and killed when the session ends. `detach-on-fork off` alone keeps
+the child stopped from its first instruction, so the program behaves differently. While
+the child is stopped, the Threads list shows the stopped process's threads only. Other
+adapters were not tried. The table name stays `gdb`, so the gdb-only behaviour still
+applies.
+
 Large arrays and containers in the Debug window's Variables tab show their first 1000 rows, and a `load 1000 more` line
 under them (Enter, Right or a click) reads the next 1000, until the end. That line needs a container the adapter states
 as above 1000 rows and an adapter that honours `start` and `count`: a scope above 1000 variables, a container with no

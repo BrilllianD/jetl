@@ -1038,6 +1038,52 @@ Each run exits 0 with an empty stderr on Ctrl+Q. What gdb cannot show, and the u
 instead: the other two start orders (js-debug's and delve's), a root switch and a replaced session's silence,
 and the debugpy command (debugpy is not installed).
 
+### Scenario: forked child under gdb
+
+Needs the setup of `### Scenario: Debug and Stop` (gdb 17.2, `gcc`, `XDG_*` under `/tmp/jt26-fork/`, `[lsp] enabled = false`,
+`[ui] toolbar = false`), at 120x40 only (no UI is involved). Fixture `/tmp/jetl-dap-fork/fork.c`, built
+`cc -g -O0 -o jetl-dbg-forker fork.c`:
+
+    #include <stdio.h>
+    #include <string.h>
+    #include <unistd.h>
+    int main(int argc, char **argv) {
+        pid_t c = fork();
+        if (c == 0) {
+            for (;;)
+                sleep(1);
+        }
+        printf("child=%d\n", (int)c);
+        fflush(stdout);
+        if (argc > 1 && strcmp(argv[1], "exit") == 0) {
+            sleep(2);
+            return 0;
+        }
+        for (;;)
+            sleep(1);
+    }
+
+`.jetl/run.toml`: `[[configs]] name = "fork"`, `command = ["./jetl-dbg-forker"]`, `[debug.fork]` with `adapter = "gdb"` and
+`launch = { program = "${workspaceFolder}/jetl-dbg-forker" }`; a second configuration `forkexit` (first in the file for case d)
+with `args = ["exit"]` in its `launch`. Count with `ps -o pid,stat,cmd -C jetl-dbg-forker` and `pgrep -f '[g]db -q -i=dap'`, and
+start only when both print nothing. The override is, in `config.toml`:
+
+    [debug.adapters.gdb]
+    command = ["gdb", "-q", "-i=dap", "-iex", "set detach-on-fork off", "-iex", "set schedule-multiple on"]
+
+a. No override, `fork`: Shift+F9, two `jetl-dbg-forker` in state `S`. Ctrl+F2: `Debug session stopped`, no `gdb`, **one child
+   left** (`S`). Kill it with `pkill -9 -x jetl-dbg-forker`.
+b. With the override, `fork`: Shift+F9, two `S`. Ctrl+F2: nothing left.
+c. With the override, `fork`: Shift+F9, then `kill -9` the `gdb`: `Debug session ended: adapter exited`, nothing left after 2 s.
+d. With the override, `forkexit`: the session ends by itself (`Debug session ended, exit code 0`), nothing left.
+e. With the override, `fork`, `fork.c` open, Ctrl+G `8`, Ctrl+F8 (`sleep(1);` of the child), then Shift+F9: the Debug window's title
+   reads `paused (breakpoint)`, `8▶` shows, both processes are `t`; Alt+F5 and Frames (Alt+Left twice): `Thread 2:
+   jetl-dbg-forker`, `main  fork.c:8`. Ctrl+F2: nothing left. The breakpoint stays in the project's state, so remove it
+   (Ctrl+F8 on line 8) or use a fresh `XDG_STATE_HOME` before case d again.
+f. Ctrl+Q at the end of each run: jetl exits 0 with an empty stderr.
+
+Observed here (gdb 17.2): all of the above, each run exiting 0 with an empty stderr.
+
 ### Scenario: A program that did not start
 
 Needs the fixture of `### Scenario: Debug and Stop` (`/tmp/jetl-dap-demo`, gdb 17.2), at 80x24 and at

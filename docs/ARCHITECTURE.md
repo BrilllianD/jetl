@@ -500,8 +500,10 @@ its busy id before the generation check, so the spinner never sticks.
   (`PR_SET_PDEATHSIG` = SIGKILL, Linux only, the one signal a stopped process acts on), and its death takes the debuggee
   through ptrace. The kernel's rule is about the forking thread, so this has to be called on the main loop:
   `debug_launch` is, because `main` awaits `App::run` itself. Other adapters are not tied, since they may clean up on EOF
-  and could not be tried; killing jetl with one of them stopped can leave it and its debuggee. The tie goes by the adapter's name, so a `command` under `[debug.adapters.gdb]` that wraps gdb and cleans up after it loses that cleanup to SIGKILL. A child the debuggee
-  forked is out of reach of all of this, on an ordinary Stop too.
+  and could not be tried; killing jetl with one of them stopped can leave it and its debuggee. The tie goes by the adapter's name, so a `command` under `[debug.adapters.gdb]` that wraps gdb and cleans up after it loses that cleanup to SIGKILL. gdb detaches a forked child by default
+  (`detach-on-fork on`), so it is in no process group jetl kills and is not traced by gdb; it outlives Stop, the
+  debuggee's exit and gdb's death. The opt-in in `docs/CONFIG.md` (two `-iex` settings in the adapter command) keeps
+  it as gdb's second inferior, and then gdb's end takes it like the debuggee. jetl has no kill code for it, on purpose.
 - Lists keep their wheel scroll: `ListState::set_viewport` and `fit` bound
   the offset without pulling the view back to the selection.
 - Panic path (`tui::install_panic_hook`, `recovery.rs`): only a panic on
