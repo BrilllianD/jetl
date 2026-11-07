@@ -17,9 +17,9 @@ expression: "snapshot(&term, &marks, None)"
 11  │                                                                            ││
 12  │                           [ Rename ] [ Cancel ]                            ││
 13  └────────────────────────────────────────────────────────────────────────────┘│
-14  ✎ │ util.rs  src/  1                                                          │
-15  ✓ │      1  pub fn helperassist() {}                                          │
-16  ⟲ │                                                                           │
+14  ✎ │      1  fn f() { helper(); }                                          text│
+15  ✓ │ util.rs  src/  1                                                          │
+16  ⟲ │      1  pub fn helperassist() {}                                          │
 17  ⚑ │                                                                           │
 18  ⎇ │                                                                           │
 19  ❯ │                                                                           │
@@ -29,4 +29,5 @@ expression: "snapshot(&term, &marks, None)"
 23
 -- marks: L=selected H=match D=helper A=assist
 12                              LLLLLLLLLL
-15                     DDDDDDAAAAAA
+14     LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL
+16                     DDDDDDAAAAAA

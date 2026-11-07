@@ -13,11 +13,11 @@ expression: "snapshot(&term, &marks, Some(bottom))"
 07    └──────────────────────────────┘│
 08    ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 09    ┌ Find ─────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-10    │ Find:    $A.unwrap()                                                   Cc   W   .*   AST   2 matches in 1 file    │
-11    │ load.rs  src/  2                                                                                                  │
-12  ◉ │      2  let a = parse(input).unwrap();                                                                            │
-13  ⋔ │      3  let b = a.checked_add(1)                                                                                  │
-14  ✎ │                                                                                                                   │
+10    │ Find:    $A.unwrap()                                                   Cc   W   .*   AST                          │
+11    │ 2 matches in 1 file                                                                                               │
+12  ◉ │ load.rs  src/  2                                                                                                  │
+13  ⋔ │      2  let a = parse(input).unwrap();                                                                            │
+14  ✎ │      3  let b = a.checked_add(1)                                                                                  │
 15  ✓ │                                                                                                                   │
 16  ⟲ │                                                                                                                   │
 17  ⚑ │                                                                                                                   │
@@ -29,5 +29,5 @@ expression: "snapshot(&term, &marks, Some(bottom))"
 23
 -- marks: L=selected H=match T=active toggle
 10                                                                                          TTTTT
-12     LLLLLLLLLLLLLLLLLHHHHHHHHHHHHHHHHHHHHHLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL
-13                      HHHHHHHHHHHHHHHH
+13     LLLLLLLLLLLLLLLLLHHHHHHHHHHHHHHHHHHHHHLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL
+14                      HHHHHHHHHHHHHHHH

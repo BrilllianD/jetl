@@ -660,7 +660,10 @@ impl FindPanel {
             *x += w;
             r
         };
-        let header_h = if self.replace_shown() { 2 } else { 1 }.min(inner.height);
+        let inputs: u16 = if self.replace_shown() { 2 } else { 1 };
+        // The status has a row of its own, given up before the last results row.
+        let status_row = inner.height >= inputs + 2;
+        let header_h = (inputs + u16::from(status_row)).min(inner.height);
         frame.buffer_mut().set_style(Rect::new(inner.x, inner.y, inner.width, header_h), bar);
         let input_w = inner.width.saturating_sub(10 + 16 + STRUCTURAL_W).clamp(10, 60);
 
@@ -690,14 +693,6 @@ impl FindPanel {
             let r = put(frame, &mut x, y, " AST ", if self.structural { on } else { off });
             self.btns.push((Btn::Structural, r));
         }
-        put(frame, &mut x, y, "  ", bar);
-        let (status, level) = self.status();
-        let st = match level {
-            Some(Level::Error) => theme.error.bg(theme.panel_bg),
-            Some(Level::Warn) => theme.warn.bg(theme.panel_bg),
-            _ => theme.dim.bg(theme.panel_bg),
-        };
-        put(frame, &mut x, y, &status, st);
 
         if self.replace_shown() && header_h > 1 {
             let (y, mut x) = (inner.y + 1, inner.x + 1);
@@ -709,6 +704,16 @@ impl FindPanel {
             put(frame, &mut x, y, " ", bar);
             let r = put(frame, &mut x, y, " Replace all ", theme.tab_active);
             self.btns.push((Btn::ReplaceAll, r));
+        }
+        if status_row {
+            let (y, mut x) = (inner.y + inputs, inner.x + 1);
+            let (status, level) = self.status();
+            let st = match level {
+                Some(Level::Error) => theme.error.bg(theme.panel_bg),
+                Some(Level::Warn) => theme.warn.bg(theme.panel_bg),
+                _ => theme.dim.bg(theme.panel_bg),
+            };
+            put(frame, &mut x, y, &status, st);
         }
         self.btns.retain(|(_, r)| r.width > 0);
 
@@ -1119,6 +1124,87 @@ mod tests {
         assert!(!exact.contains(" text"), "{exact:?}");
         let x = r.right() - 5;
         assert_eq!(buf[(x + 1, r.y + 1)].fg, theme.dim.fg.unwrap_or(theme.fg));
+    }
+
+    /// The panel drawn in a `w` x `h` terminal; every row as text.
+    fn drawn(p: &mut FindPanel, w: u16, h: u16) -> Vec<String> {
+        use ratatui::{Terminal, backend::TestBackend};
+        let theme = Theme::default();
+        let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+        term.draw(|f| p.render(f, f.area(), true, &theme)).unwrap();
+        let buf = term.backend().buffer();
+        (0..h).map(|y| (0..w).map(|x| buf[(x, y)].symbol()).collect::<String>()).collect()
+    }
+
+    #[test]
+    fn status_row_reads_whole_at_both_window_widths() {
+        let mut wrong = Vec::new();
+        for w in [77u16, 117] {
+            let mut p = FindPanel::new();
+            p.query.set_text("old");
+            p.preview = Some(preview_of(1));
+            p.show_replace = true;
+            p.on_batch(Batch { seq: p.current_seq(), hits: rows(1).1, files_searched: 2, done: true, capped: false });
+            p.list.select(1);
+            p.toggle_exclude();
+            let lines = drawn(&mut p, w, 10);
+            let want = "3 matches in 2 files; 1 excluded + 1 file operation";
+            if !lines[3].contains(want) {
+                wrong.push(format!("width {w}: row 3 is {:?}", lines[3]));
+            }
+            if p.list_rect.y != 4 {
+                wrong.push(format!("width {w}: list starts at {}", p.list_rect.y));
+            }
+        }
+        assert!(wrong.is_empty(), "{wrong:#?}");
+    }
+
+    #[test]
+    fn an_ordinary_search_has_the_status_under_find() {
+        let mut p = FindPanel::new();
+        p.query.set_text("old");
+        p.on_batch(Batch {
+            seq: p.current_seq(),
+            hits: vec![hit("a", 0, "old"), hit("a", 1, "old")],
+            files_searched: 1,
+            done: true,
+            capped: false,
+        });
+        let lines = drawn(&mut p, 60, 10);
+        assert!(lines[2].contains("2 matches in 1 file"), "{:?}", lines[2]);
+        assert!(!lines[1].contains("matches"), "{:?}", lines[1]);
+        assert_eq!(p.list_rect.y, 3);
+        assert_eq!(p.list.hit(p.list_rect, 5, 2), None);
+        assert_eq!(p.list.hit(p.list_rect, 5, 3), Some(0));
+    }
+
+    #[test]
+    fn a_short_window_gives_up_the_status_row_first() {
+        let mut wrong = Vec::new();
+        // (replace row, terminal height, status row, list rows)
+        let cases =
+            [(false, 4u16, None, 1u16), (false, 5, Some(2usize), 1), (false, 3, None, 0), (true, 5, None, 1), (true, 6, Some(3), 1)];
+        for (replace, h, status_at, list_h) in cases {
+            let mut p = FindPanel::new();
+            p.query.set_text("old");
+            p.show_replace = replace;
+            p.on_batch(Batch {
+                seq: p.current_seq(),
+                hits: vec![hit("a", 0, "old"), hit("a", 1, "old")],
+                files_searched: 1,
+                done: true,
+                capped: false,
+            });
+            let lines = drawn(&mut p, 60, h);
+            let at: Vec<usize> = (0..lines.len()).filter(|&y| lines[y].contains("matches in")).collect();
+            if at != status_at.into_iter().collect::<Vec<_>>() {
+                wrong.push(format!("replace {replace}, height {h}: status on rows {at:?}, want {status_at:?}"));
+            }
+            if p.list_rect.height != list_h {
+                wrong.push(format!("replace {replace}, height {h}: {} list rows, want {list_h}", p.list_rect.height));
+            }
+        }
+        assert!(wrong.is_empty(), "{wrong:#?}");
     }
 
     #[tokio::test]

@@ -15,12 +15,12 @@ expression: "snapshot(&term, &marks, Some(bottom))"
 09    ┌ Find ─────────────────────────────────────────────────────────────────────┐
 10    │ Find:    parse                                        Cc   W   .*   AST   │
 11    │ Replace: read                                         Replace all         │
-12  ◉ │ notes.txt    1                                                            │
-13  ⋔ │      2  parseread later                                                   │
-14  ✎ │ parse.log  src/  2                                                        │
-15  ✓ │      2  parseread(tokens)                                                 │
-16  ⟲ │      3  .map(|t| parseread_one(t))                                        │
-17  ⚑ │                                                                           │
+12  ◉ │ 3 matches in 2 files                                                      │
+13  ⋔ │ notes.txt    1                                                            │
+14  ✎ │      2  parseread later                                                   │
+15  ✓ │ parse.log  src/  2                                                        │
+16  ⟲ │      2  parseread(tokens)                                                 │
+17  ⚑ │      3  .map(|t| parseread_one(t))                                        │
 18  ⎇ │                                                                           │
 19  ❯ │                                                                           │
 20  ⚠ │                                                                           │
@@ -28,6 +28,6 @@ expression: "snapshot(&term, &marks, Some(bottom))"
 22  ⌕ └───────────────────────────────────────────────────────────────────────────┘
 23
 -- marks: L=selected H=match D=old A=new
-13     LLLLLLLLLDDDDDAAAALLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL
-15              DDDDDAAAA
-16                       DDDDDAAAA
+14     LLLLLLLLLDDDDDAAAALLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL
+16              DDDDDAAAA
+17                       DDDDDAAAA

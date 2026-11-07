@@ -16,12 +16,12 @@ expression: "snapshot(&term, &marks, None)"
 10   │                                                                         │  │
 11   │                          [ Rename ] [ Cancel ]                          │  │
 12  ◉└─────────────────────────────────────────────────────────────────────────┘  │
-13  ⋔ │      1  fn parseread_input(s: &str) {}                                    │
-14  ✎ │      2  let p = Point { read_input: parse };                              │
-15  ✓ │      3  // calls parse                                                    │
-16  ⟲ │ util.rs  src/  1                                                          │
-17  ⚑ │      1  use crate::parseread_input;                                       │
-18  ⎇ │                                                                           │
+13  ⋔ │ service.rs  src/  3                                                       │
+14  ✎ │      1  fn parseread_input(s: &str) {}                                    │
+15  ✓ │      2  let p = Point { read_input: parse };                              │
+16  ⟲ │      3  // calls parse                                                    │
+17  ⚑ │ util.rs  src/  1                                                          │
+18  ⎇ │      1  use crate::parseread_input;                                       │
 19  ❯ │                                                                           │
 20  ⚠ │                                                                           │
 21  ► │                                                                           │
@@ -29,6 +29,6 @@ expression: "snapshot(&term, &marks, None)"
 23
 -- marks: L=selected H=match D=parse A=read_input
 11                              LLLLLLLLLL
-13     LLLLLLLLLLLLDDDDDAAAAAAAAAALLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL
-14                              AAAAAAAAAAAA
-17                         DDDDDAAAAAAAAAA
+14     LLLLLLLLLLLLDDDDDAAAAAAAAAALLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL
+15                              AAAAAAAAAAAA
+18                         DDDDDAAAAAAAAAA

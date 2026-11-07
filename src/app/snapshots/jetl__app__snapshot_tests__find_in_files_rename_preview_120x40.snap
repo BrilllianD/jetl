@@ -1,0 +1,54 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &marks, Some(bottom))"
+---
+120x40 cursor=(19,26)
+00  ≣ ┌ Project: root ───────────────┐│
+01    │                              ││
+02  1 │                              ││
+03  ⌂ │                              ││
+04  2 │                              ││
+05  ◫ │                              ││
+06  7 │                              ││
+07  ⊢ │                              ││
+08    │                              ││
+09    │                              ││
+10    │                              ││
+11    │                              ││
+12    │                              ││      No files open. Alt+1 opens the Project view; Ctrl+Shift+N finds a file.
+13    │                              ││
+14    │                              ││
+15    │                              ││
+16    │                              ││
+17    │                              ││
+18  ◉ │                              ││
+19    │                              ││
+20  ⋔ │                              ││
+21    │                              ││
+22  ✎ │                              ││
+23    └──────────────────────────────┘│
+24  ✓ ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+25  8 ┌ Find ─────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+26  ⟲ │ Find:    parse                                                         Cc   W   .*   AST                          │
+27  5 │ Replace: read_input                                                    Replace all                                │
+28  ⚑ │ 4 matches in 2 files; 1 excluded + 1 file operation                                                               │
+29  9 │ service.rs  src/  3                                                                                               │
+30  ⎇ │      1  fn parseread_input(s: &str) {}                                                                            │
+31    │      2  let p = Point { read_input: parse };                                                                      │
+32  ❯ │      3  // calls parse                                                                                            │
+33  6 │ util.rs  src/  1                                                                                                  │
+34  ⚠ │      1  use crate::parseread_input;                                                                               │
+35  4 │                                                                                                                   │
+36  ► │                                                                                                                   │
+37  3 │                                                                                                                   │
+38  ⌕ └───────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+39
+-- marks: L=selected H=match D=parse A=read_input X=excluded
+26                                                                                     XXXX XXXXX
+28      XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+29                  XXXX  X
+30     LLLLLLLLLLLLDDDDDAAAAAAAAAALLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL
+31                              AAAAAAAAAAAA
+32      XXXXXXXXXXXXXXXXXXXXXX
+33               XXXX  X
+34                         DDDDDAAAAAAAAAA

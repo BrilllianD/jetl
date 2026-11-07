@@ -15,12 +15,12 @@ expression: "snapshot(&term, &marks, None)"
 09   │                                                                         │──┐
 10   │                          [ Rename ] [ Cancel ]                          │  │
 11   └─────────────────────────────────────────────────────────────────────────┘  │
-12  ◉ │ notes.txt    2                                                            │
-13  ⋔ │      1  parse later                                                   text│
-14  ✎ │      2  see parseread_input again                                     text│
-15  ✓ │ util.rs  src/  1                                                          │
-16  ⟲ │      1  use crate::parseread_input;                                       │
-17  ⚑ │                                                                           │
+12  ◉ │ 3 matches in 2 files; 1 excluded                                          │
+13  ⋔ │ notes.txt    2                                                            │
+14  ✎ │      1  parse later                                                   text│
+15  ✓ │      2  see parseread_input again                                     text│
+16  ⟲ │ util.rs  src/  1                                                          │
+17  ⚑ │      1  use crate::parseread_input;                                       │
 18  ⎇ │                                                                           │
 19  ❯ │                                                                           │
 20  ⚠ │                                                                           │
@@ -29,5 +29,5 @@ expression: "snapshot(&term, &marks, None)"
 23
 -- marks: L=selected H=match D=parse A=read_input
 10                              LLLLLLLLLL
-14                  DDDDDAAAAAAAAAA
-16     LLLLLLLLLLLLLLLLLLLLDDDDDAAAAAAAAAALLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL
+15                  DDDDDAAAAAAAAAA
+17     LLLLLLLLLLLLLLLLLLLLDDDDDAAAAAAAAAALLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL

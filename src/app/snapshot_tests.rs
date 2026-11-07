@@ -2043,6 +2043,21 @@ async fn find_in_files_rename_preview() {
 
 #[cfg(feature = "structural")]
 #[tokio::test]
+async fn find_in_files_rename_preview_120x40() {
+    let mut fx = rename_preview_app("find-rename-preview-120");
+    let app = &mut fx.app;
+    assert_eq!((app.find.hit_count(), app.find.excluded_count()), (4, 1));
+    let term = draw_app(app, 120, 40);
+    let mut marks = find_marks(&app.theme);
+    marks.push(Mark::bg('D', "parse", app.theme.diff_del_word_bg));
+    marks.push(Mark::bg('A', "read_input", app.theme.diff_add_word_bg));
+    marks.push(Mark::style('X', "excluded", Style::default().fg(app.theme.dim.fg.unwrap())));
+    let bottom = app.layout.rects.bottom;
+    assert_snapshot!("find_in_files_rename_preview_120x40", snapshot(&term, &marks, Some(bottom)));
+}
+
+#[cfg(feature = "structural")]
+#[tokio::test]
 async fn find_in_files_rename_confirm() {
     let mut fx = rename_preview_app("find-rename-confirm");
     let app = &mut fx.app;

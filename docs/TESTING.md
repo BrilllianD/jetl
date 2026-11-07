@@ -367,10 +367,18 @@ shell before Alt+A, Enter: the error toast `src/util.rs changed since the
 preview; rename again`, nothing changes and the results stay. Last, write
 `[lsp]\nrename_preview = false` to `config.toml` (it applies live):
 Shift+F6 shows the button `Refactor` and Enter applies at once. The Find
-status line is clipped on a narrow window (the file operation count may not
-show) and may not show `1 excluded`; the confirm dialog always says it
-(`; 1 excluded`) and lists the operations. Stderr is empty and
+status row shows `; 1 excluded` and the file operation count; it is clipped
+only when the window is narrower than the text. The confirm dialog also says
+it (`; 1 excluded`) and lists the operations. Stderr is empty and
 Ctrl+Q exits 0.
+
+### Scenario: Find status row
+
+At 80x24 and 120x40, with a scratch project holding `n.txt` of three `foo` lines. Alt+3: the row under `Find:`
+reads `type to search the project`. Type `foo`: `3 matches in 1 file`, the results start on the row below it.
+Alt+R, type `bar`: the Replace row sits between them. Tab, Down, Alt+Delete: `3 matches in 1 file; 1 excluded`,
+whole. With rust-analyzer, Shift+F6 on `mod util` in the rename preview scenario's project shows
+`+ 1 file operation`, whole. Stderr is empty and Ctrl+Q exits 0.
 
 ### Scenario: rename with comments and strings
 
@@ -419,8 +427,8 @@ above, Shift+F6, include the `notes.txt` row, change `notes.txt`, Alt+A, Enter:
 the error toast `notes.txt changed since the preview; rename
 again`, nothing changes and the rows stay. With `[lsp]\nrename_preview =
 false` in `config.toml` Shift+F6 shows no check row and the button `Refactor`.
-The Find status line is clipped on a narrow window; the confirm dialog says
-the counts. Stderr is empty and Ctrl+Q exits 0.
+The Find status row shows the counts; the confirm dialog says them too.
+Stderr is empty and Ctrl+Q exits 0.
 
 ### Scenario: column selection
 

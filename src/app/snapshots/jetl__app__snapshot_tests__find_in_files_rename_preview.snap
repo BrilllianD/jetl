@@ -15,13 +15,13 @@ expression: "snapshot(&term, &marks, Some(bottom))"
 09    ┌ Find ─────────────────────────────────────────────────────────────────────┐
 10    │ Find:    parse                                        Cc   W   .*   AST   │
 11    │ Replace: read_input                                   Replace all         │
-12  ◉ │ service.rs  src/  3                                                       │
-13  ⋔ │      1  fn parseread_input(s: &str) {}                                    │
-14  ✎ │      2  let p = Point { read_input: parse };                              │
-15  ✓ │      3  // calls parse                                                    │
-16  ⟲ │ util.rs  src/  1                                                          │
-17  ⚑ │      1  use crate::parseread_input;                                       │
-18  ⎇ │                                                                           │
+12  ◉ │ 4 matches in 2 files; 1 excluded + 1 file operation                       │
+13  ⋔ │ service.rs  src/  3                                                       │
+14  ✎ │      1  fn parseread_input(s: &str) {}                                    │
+15  ✓ │      2  let p = Point { read_input: parse };                              │
+16  ⟲ │      3  // calls parse                                                    │
+17  ⚑ │ util.rs  src/  1                                                          │
+18  ⎇ │      1  use crate::parseread_input;                                       │
 19  ❯ │                                                                           │
 20  ⚠ │                                                                           │
 21  ► │                                                                           │
@@ -29,9 +29,10 @@ expression: "snapshot(&term, &marks, Some(bottom))"
 23
 -- marks: L=selected H=match D=parse A=read_input X=excluded
 10                                                                    XXXX XXXXX
-12                  XXXX  X
-13     LLLLLLLLLLLLDDDDDAAAAAAAAAALLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL
-14                              AAAAAAAAAAAA
-15      XXXXXXXXXXXXXXXXXXXXXX
-16               XXXX  X
-17                         DDDDDAAAAAAAAAA
+12      XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+13                  XXXX  X
+14     LLLLLLLLLLLLDDDDDAAAAAAAAAALLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL
+15                              AAAAAAAAAAAA
+16      XXXXXXXXXXXXXXXXXXXXXX
+17               XXXX  X
+18                         DDDDDAAAAAAAAAA
