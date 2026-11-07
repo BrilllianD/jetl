@@ -2,8 +2,9 @@
 //! palette's file index: every file with a tags query (up to `MAX_FILES`,
 //! each at most `MAX_FILE_BYTES`) is parsed in `spawn_blocking` and comes
 //! back in `AppMsg::Symbols` batches. Each file also keeps its tree-sitter
-//! references (`refs_named`) and imports, which resolve to file edges on
-//! demand (`imports_of`, `imported_by`); the job reads the nearest `go.mod`
+//! references (`refs_named`) and imports, which resolve to file edges built off the main thread from a
+//! snapshot of the file map (`ImportEdges::build`); `imports_of` and `imported_by` answer only once the
+//! edges match the index version. The job reads the nearest `go.mod`
 //! of each Go file to turn its in-module imports into directory specs. Later runs skip files whose size
 //! and mtime are unchanged; the first run after a root opens takes such files from the on-disk cache
 //! (`cache.rs`), and a finished run that changed anything is written back by the app. Watcher paths are
@@ -28,6 +29,8 @@ pub const MAX_FILES: usize = 5000;
 /// A batch goes out after this many files or this long, whichever first.
 const BATCH_FILES: usize = 64;
 const BATCH_EVERY: Duration = Duration::from_millis(200);
+/// A build of import edges that has not come back after this long is given up on (its task may have died).
+const EDGES_LOST_AFTER: Duration = Duration::from_secs(10);
 
 /// The symbols of one file and the mtime they were read at.
 #[derive(Debug, Clone)]
@@ -66,9 +69,55 @@ pub struct SymbolEntry {
 /// Name to its definitions: path and index into that file's symbols.
 type ByName = HashMap<Arc<str>, Vec<(Arc<str>, usize)>>;
 
+/// The indexed files at one index version: a cheap clone (an `Arc`'d map), safe to hand to a background task.
+#[derive(Debug, Default, Clone)]
+pub struct IndexSnapshot {
+    /// Raised by every change to the file map; never goes back.
+    version: u64,
+    files: Arc<HashMap<Arc<str>, Arc<FileSymbols>>>,
+}
+
+impl IndexSnapshot {
+    pub fn version(&self) -> u64 {
+        self.version
+    }
+
+    /// The indexed data of `rel` (relative to the root).
+    pub fn file(&self, rel: &str) -> Option<&FileSymbols> {
+        self.files.get(rel).map(|f| &**f)
+    }
+
+    pub fn file_count(&self) -> usize {
+        self.files.len()
+    }
+
+    /// Every file and its data, in no particular order.
+    pub fn iter(&self) -> impl Iterator<Item = (&Arc<str>, &FileSymbols)> {
+        self.files.iter().map(|(p, f)| (p, &**f))
+    }
+
+    /// Every indexed reference named `name` (exact), by path, then line and
+    /// column. A linear scan over all files.
+    pub fn refs_named(&self, name: &str) -> Vec<(&str, &Reference)> {
+        let mut out: Vec<(&str, &Reference)> =
+            self.files.iter().flat_map(|(p, f)| f.refs.iter().filter(|r| &*r.name == name).map(move |r| (&**p, r))).collect();
+        out.sort_by(|a, b| a.0.cmp(b.0).then(a.1.line.cmp(&b.1.line)).then(a.1.col.cmp(&b.1.col)));
+        out
+    }
+
+    /// Every indexed definition named `name` (exact), `impl` blocks included,
+    /// by path, then line and column. A linear scan over all files.
+    pub fn defs_named(&self, name: &str) -> Vec<(&str, &Symbol)> {
+        let mut out: Vec<(&str, &Symbol)> =
+            self.files.iter().flat_map(|(p, f)| f.symbols.iter().filter(|s| &*s.name == name).map(move |s| (&**p, s))).collect();
+        out.sort_by(|a, b| a.0.cmp(b.0).then(a.1.line.cmp(&b.1.line)).then(a.1.col.cmp(&b.1.col)));
+        out
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct SymbolIndex {
-    files: HashMap<String, FileSymbols>,
+    data: IndexSnapshot,
     /// Files of the last file index that have a tags query.
     candidates: Arc<Vec<String>>,
     /// The next run checks every candidate (after a file index load).
@@ -83,8 +132,10 @@ pub struct SymbolIndex {
     running: bool,
     /// Palette rows, rebuilt on demand after a change.
     entries: Option<Arc<Vec<SymbolEntry>>>,
-    /// File import edges, rebuilt on demand after a change.
-    edges: Option<Edges>,
+    /// The last import edges built (`ImportEdges::build`), of any version.
+    edges: Option<Arc<ImportEdges>>,
+    /// The index version of the build in flight, and when it started.
+    edges_inflight: Option<(u64, Instant)>,
     /// Definitions by name, `impl` blocks left out: path and index into that file's symbols. Rebuilt on demand after a change.
     by_name: Option<ByName>,
     /// The cache of this root was handed to a run.
@@ -93,11 +144,58 @@ pub struct SymbolIndex {
     dirty: bool,
 }
 
-/// Resolved imports between indexed files, both directions.
+/// Resolved imports between indexed files, both directions, built from one [`IndexSnapshot`].
 #[derive(Debug, Default)]
-struct Edges {
+pub struct ImportEdges {
+    /// The version of the snapshot they were built from.
+    version: u64,
     out: HashMap<Arc<str>, Vec<Arc<str>>>,
     inc: HashMap<Arc<str>, Vec<Arc<str>>>,
+}
+
+impl ImportEdges {
+    /// Resolve every file's imports in `snap`. Pure, for any thread.
+    pub fn build(snap: &IndexSnapshot) -> ImportEdges {
+        let mut keys: Vec<&str> = snap.files.keys().map(|k| &**k).collect();
+        keys.sort_unstable();
+        let project = super::imports::Project::new(&keys);
+        let mut e = ImportEdges { version: snap.version, ..Default::default() };
+        for (path, f) in snap.files.iter() {
+            let Some(lang) = syntax::detect(Path::new(&**path)).map(|d| d.name) else { continue };
+            for imp in &f.imports {
+                for t in super::imports::resolve(lang, path, imp, &project) {
+                    let Some((target, _)) = snap.files.get_key_value(t.as_str()) else { continue };
+                    e.out.entry(path.clone()).or_default().push(target.clone());
+                    e.inc.entry(target.clone()).or_default().push(path.clone());
+                }
+            }
+        }
+        for v in e.out.values_mut().chain(e.inc.values_mut()) {
+            v.sort();
+            v.dedup();
+        }
+        e
+    }
+
+    /// The index version these edges were built from.
+    pub fn version(&self) -> u64 {
+        self.version
+    }
+
+    /// The indexed files `rel` imports, sorted, empty when unknown.
+    pub fn imports_of(&self, rel: &str) -> &[Arc<str>] {
+        self.out.get(rel).map_or(&[], Vec::as_slice)
+    }
+
+    /// The indexed files that import `rel`, sorted, empty when unknown.
+    pub fn imported_by(&self, rel: &str) -> &[Arc<str>] {
+        self.inc.get(rel).map_or(&[], Vec::as_slice)
+    }
+
+    /// The files on an import edge with `rel`, either direction.
+    pub fn near_of(&self, rel: &str) -> HashSet<Arc<str>> {
+        self.imports_of(rel).iter().chain(self.imported_by(rel)).cloned().collect()
+    }
 }
 
 /// A run of the index, detached so it can go to `spawn_blocking`.
@@ -123,7 +221,8 @@ impl SymbolIndex {
     pub fn reset(&mut self) {
         let seq = self.seq + 1;
         self.cancel.store(seq, Ordering::Relaxed);
-        *self = Self { seq, cancel: self.cancel.clone(), ..Self::default() };
+        let version = self.data.version + 1;
+        *self = Self { seq, cancel: self.cancel.clone(), data: IndexSnapshot { version, ..Default::default() }, ..Self::default() };
     }
 
     /// The palette's file list loaded: index what it lists (only files with
@@ -131,12 +230,9 @@ impl SymbolIndex {
     pub fn set_files(&mut self, files: &[String]) {
         let candidates: Vec<String> = files.iter().filter(|f| indexable(Path::new(f))).take(MAX_FILES).cloned().collect();
         let keep: HashSet<&str> = candidates.iter().map(String::as_str).collect();
-        let before = self.files.len();
-        self.files.retain(|f, _| keep.contains(f.as_str()));
-        if self.files.len() != before {
-            self.entries = None;
-            self.edges = None;
-            self.by_name = None;
+        if self.data.files.keys().any(|f| !keep.contains(&**f)) {
+            Arc::make_mut(&mut self.data.files).retain(|f, _| keep.contains(&**f));
+            self.data_changed();
             self.dirty = true;
         }
         self.candidates = Arc::new(candidates);
@@ -151,29 +247,31 @@ impl SymbolIndex {
         let (mut queued, mut unknown) = (false, false);
         for rel in rels {
             let prefix = format!("{rel}/");
-            let mut drop: Vec<String> = self.files.keys().filter(|f| f.starts_with(&prefix)).cloned().collect();
+            let mut drop: Vec<String> = self.data.files.keys().filter(|f| f.starts_with(&prefix)).map(|f| f.to_string()).collect();
             if self.knows(rel) {
                 drop.push(rel.clone());
             } else if indexable(Path::new(rel)) {
                 unknown = true;
             }
             for f in drop {
-                self.dirty |= self.files.remove(&f).is_some();
+                let held = self.data.files.contains_key(f.as_str());
+                if held {
+                    Arc::make_mut(&mut self.data.files).remove(f.as_str());
+                }
+                self.dirty |= held;
                 self.queue.insert(f);
                 queued = true;
             }
         }
         if queued {
-            self.entries = None;
-            self.edges = None;
-            self.by_name = None;
+            self.data_changed();
         }
         (queued, unknown)
     }
 
     /// Whether `rel` is indexed or listed for indexing.
     pub fn knows(&self, rel: &str) -> bool {
-        self.files.contains_key(rel) || self.candidates.binary_search_by(|c| c.as_str().cmp(rel)).is_ok()
+        self.data.files.contains_key(rel) || self.candidates.binary_search_by(|c| c.as_str().cmp(rel)).is_ok()
     }
 
     /// Ask for a run; true means start one now ([`SymbolIndex::start`]).
@@ -197,7 +295,7 @@ impl SymbolIndex {
         self.cache_read |= warm;
         if std::mem::take(&mut self.rescan) {
             for f in self.candidates.iter().filter(|f| !queue.contains(*f)) {
-                files.push((f.clone(), self.files.get(f).and_then(|s| s.mtime.map(|m| (s.size, m)))));
+                files.push((f.clone(), self.data.files.get(f.as_str()).and_then(|s| s.mtime.map(|m| (s.size, m)))));
             }
         }
         files.extend(queue.into_iter().map(|f| (f, None)));
@@ -213,7 +311,7 @@ impl SymbolIndex {
         }
         self.dirty = false;
         let mut out: Vec<(String, FileSymbols)> =
-            self.files.iter().filter(|(_, f)| f.mtime.is_some()).map(|(p, f)| (p.clone(), f.clone())).collect();
+            self.data.files.iter().filter(|(_, f)| f.mtime.is_some()).map(|(p, f)| (p.to_string(), (**f).clone())).collect();
         out.sort_by(|a, b| a.0.cmp(&b.0));
         Some(out)
     }
@@ -227,17 +325,16 @@ impl SymbolIndex {
         self.run.touch();
         self.dirty |= batch.changed;
         if !batch.files.is_empty() {
-            self.entries = None;
-            self.edges = None;
-            self.by_name = None;
-        }
-        for (rel, syms) in batch.files {
-            match syms {
-                Some(s) => {
-                    self.files.insert(rel, s);
-                }
-                None => {
-                    self.files.remove(&rel);
+            self.data_changed();
+            let files = Arc::make_mut(&mut self.data.files);
+            for (rel, syms) in batch.files {
+                match syms {
+                    Some(s) => {
+                        files.insert(Arc::from(rel), Arc::new(s));
+                    }
+                    None => {
+                        files.remove(rel.as_str());
+                    }
                 }
             }
         }
@@ -248,42 +345,76 @@ impl SymbolIndex {
         Some(self.run.done())
     }
 
-    fn edges(&mut self) -> &Edges {
-        if self.edges.is_none() {
-            let interned: HashMap<&str, Arc<str>> = self.files.keys().map(|k| (k.as_str(), Arc::from(k.as_str()))).collect();
-            let mut keys: Vec<&str> = self.files.keys().map(String::as_str).collect();
-            keys.sort_unstable();
-            let project = super::imports::Project::new(&keys);
-            let mut e = Edges::default();
-            for (path, f) in &self.files {
-                let Some(lang) = syntax::detect(Path::new(path)).map(|d| d.name) else { continue };
-                for imp in &f.imports {
-                    for t in super::imports::resolve(lang, path, imp, &project) {
-                        let Some(target) = interned.get(t.as_str()) else { continue };
-                        e.out.entry(interned[path.as_str()].clone()).or_default().push(target.clone());
-                        e.inc.entry(target.clone()).or_default().push(interned[path.as_str()].clone());
-                    }
-                }
-            }
-            for v in e.out.values_mut().chain(e.inc.values_mut()) {
-                v.sort();
-                v.dedup();
-            }
-            self.edges = Some(e);
+    /// A change to the file map: raise the version and drop what is derived from it. The kept import edges stay
+    /// (ranking uses them one version behind).
+    fn data_changed(&mut self) {
+        self.data.version += 1;
+        self.entries = None;
+        self.by_name = None;
+    }
+
+    /// The files at this moment, cheap to clone and to send to another thread.
+    pub fn snapshot(&self) -> IndexSnapshot {
+        self.data.clone()
+    }
+
+    /// The kept import edges are of the current index version.
+    pub fn edges_ready(&self) -> bool {
+        self.edges.as_ref().is_some_and(|e| e.version == self.data.version)
+    }
+
+    /// The last import edges kept, of any version.
+    pub fn import_edges(&self) -> Option<Arc<ImportEdges>> {
+        self.edges.clone()
+    }
+
+    /// The snapshot to build import edges from, when they are behind the index, no run is in flight and no build
+    /// is: `ImportEdges::build` it off the main thread and give the result to [`SymbolIndex::on_edges`].
+    pub fn edges_job(&mut self) -> Option<IndexSnapshot> {
+        if self.edges_ready() || self.running {
+            return None;
         }
-        self.edges.as_ref().expect("built above")
+        if self.edges_inflight.is_some_and(|(_, at)| at.elapsed() < EDGES_LOST_AFTER) {
+            return None;
+        }
+        self.edges_inflight = Some((self.data.version, Instant::now()));
+        Some(self.snapshot())
     }
 
-    /// The indexed files `rel` imports, sorted, empty when unknown. The edge
-    /// cache is rebuilt after any change.
-    pub fn imports_of(&mut self, rel: &str) -> Vec<Arc<str>> {
-        self.edges().out.get(rel).cloned().unwrap_or_default()
+    /// Import edges came back. True when they are of the current version and kept; false (kept nothing) when
+    /// the index moved on, and the caller starts the next build.
+    pub fn on_edges(&mut self, edges: Arc<ImportEdges>) -> bool {
+        if self.edges_inflight.is_some_and(|(v, _)| v == edges.version) {
+            self.edges_inflight = None;
+        }
+        if edges.version != self.data.version {
+            return false;
+        }
+        self.edges = Some(edges);
+        true
     }
 
-    /// The indexed files that import `rel`, sorted, empty when unknown. The
-    /// edge cache is rebuilt after any change.
-    pub fn imported_by(&mut self, rel: &str) -> Vec<Arc<str>> {
-        self.edges().inc.get(rel).cloned().unwrap_or_default()
+    /// The indexed files `rel` imports, sorted; `None` until the edges match the index version.
+    pub fn imports_of(&self, rel: &str) -> Option<&[Arc<str>]> {
+        self.edges.as_ref().filter(|e| e.version == self.data.version).map(|e| e.imports_of(rel))
+    }
+
+    /// The indexed files that import `rel`, sorted; `None` until the edges match the index version.
+    pub fn imported_by(&self, rel: &str) -> Option<&[Arc<str>]> {
+        self.edges.as_ref().filter(|e| e.version == self.data.version).map(|e| e.imported_by(rel))
+    }
+
+    /// The files on an import edge with `rel`, from the last edges kept, even one version behind; empty with
+    /// none. For ranking only.
+    pub fn near_of(&self, rel: &str) -> HashSet<Arc<str>> {
+        self.edges.as_ref().map(|e| e.near_of(rel)).unwrap_or_default()
+    }
+
+    /// Build the edges now and keep them (tests that feed the index by hand).
+    #[cfg(test)]
+    pub fn build_edges_now(&mut self) {
+        self.edges = Some(Arc::new(ImportEdges::build(&self.data)));
+        self.edges_inflight = None;
     }
 
     /// A run is in flight or waiting.
@@ -292,22 +423,21 @@ impl SymbolIndex {
     }
 
     pub fn file_count(&self) -> usize {
-        self.files.len()
+        self.data.file_count()
     }
 
     /// The indexed data of `rel` (relative to the root).
     pub fn file(&self, rel: &str) -> Option<&FileSymbols> {
-        self.files.get(rel)
+        self.data.file(rel)
     }
 
     /// Every definition named `name` (exact), `impl` blocks left out, in no particular order across files
     /// and in symbol order within one. The map is rebuilt on demand after any change.
     pub fn defs_of(&mut self, name: &str) -> Vec<(Arc<str>, Symbol)> {
-        let files = &self.files;
+        let files = &self.data.files;
         let map = self.by_name.get_or_insert_with(|| {
             let mut map = ByName::new();
-            for (path, f) in files {
-                let path: Arc<str> = Arc::from(path.as_str());
+            for (path, f) in files.iter() {
                 for (i, s) in f.symbols.iter().enumerate().filter(|(_, s)| s.kind != "impl") {
                     map.entry(s.name.clone()).or_default().push((path.clone(), i));
                 }
@@ -321,19 +451,13 @@ impl SymbolIndex {
     /// Every indexed reference named `name` (exact), by path, then line and
     /// column. A linear scan over all files.
     pub fn refs_named(&self, name: &str) -> Vec<(&str, &Reference)> {
-        let mut out: Vec<(&str, &Reference)> =
-            self.files.iter().flat_map(|(p, f)| f.refs.iter().filter(|r| &*r.name == name).map(move |r| (p.as_str(), r))).collect();
-        out.sort_by(|a, b| a.0.cmp(b.0).then(a.1.line.cmp(&b.1.line)).then(a.1.col.cmp(&b.1.col)));
-        out
+        self.data.refs_named(name)
     }
 
     /// Every indexed definition named `name` (exact), `impl` blocks included,
     /// by path, then line and column. A linear scan over all files.
     pub fn defs_named(&self, name: &str) -> Vec<(&str, &Symbol)> {
-        let mut out: Vec<(&str, &Symbol)> =
-            self.files.iter().flat_map(|(p, f)| f.symbols.iter().filter(|s| &*s.name == name).map(move |s| (p.as_str(), s))).collect();
-        out.sort_by(|a, b| a.0.cmp(b.0).then(a.1.line.cmp(&b.1.line)).then(a.1.col.cmp(&b.1.col)));
-        out
+        self.data.defs_named(name)
     }
 
     /// Palette rows: every symbol except `impl` blocks, by path then line.
@@ -341,12 +465,12 @@ impl SymbolIndex {
         if let Some(e) = &self.entries {
             return e.clone();
         }
-        let mut paths: Vec<&String> = self.files.keys().collect();
+        let mut paths: Vec<&Arc<str>> = self.data.files.keys().collect();
         paths.sort();
         let mut out = Vec::new();
         for p in paths {
-            let path: Arc<str> = p.as_str().into();
-            for s in self.files[p].symbols.iter().filter(|s| s.kind != "impl") {
+            let path = p.clone();
+            for s in self.data.files[p].symbols.iter().filter(|s| s.kind != "impl") {
                 out.push(SymbolEntry { path: path.clone(), symbol: s.clone(), utf16: false });
             }
         }
@@ -565,8 +689,8 @@ mod tests {
         Some(FileSymbols { mtime: None, size: 0, symbols: vec![], refs: vec![], imports })
     }
 
-    fn strs(v: Vec<Arc<str>>) -> Vec<String> {
-        v.iter().map(|s| s.to_string()).collect()
+    fn strs(v: Option<&[Arc<str>]>) -> Vec<String> {
+        v.expect("edges ready").iter().map(|s| s.to_string()).collect()
     }
 
     #[test]
@@ -583,6 +707,7 @@ mod tests {
             ("pkg/b.py".to_string(), fs(&[])),
         ];
         assert!(idx.on_batch(seq, SymbolBatch { files, done: true, changed: true }).is_some());
+        idx.build_edges_now();
         #[cfg(feature = "lang-rust")]
         {
             assert_eq!(strs(idx.imports_of("src/main.rs")), ["src/app/mod.rs", "src/config.rs"]);
@@ -593,13 +718,55 @@ mod tests {
             assert_eq!(strs(idx.imports_of("main.py")), ["pkg/a.py", "pkg/b.py"]);
             assert_eq!(strs(idx.imported_by("pkg/b.py")), ["main.py", "pkg/a.py"]);
         }
-        assert!(idx.imports_of("nope.rs").is_empty());
+        assert_eq!(idx.imports_of("nope.rs"), Some(&[][..]));
         let seq = idx.start(PathBuf::from("/nonexistent")).seq;
         let batch = SymbolBatch { files: vec![("src/config.rs".to_string(), None)], done: true, changed: true };
         assert!(idx.on_batch(seq, batch).is_some());
-        assert!(idx.imported_by("src/config.rs").is_empty());
+        idx.build_edges_now();
+        assert_eq!(idx.imported_by("src/config.rs"), Some(&[][..]));
         #[cfg(feature = "lang-rust")]
         assert_eq!(strs(idx.imports_of("src/main.rs")), ["src/app/mod.rs"]);
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[test]
+    fn import_edges_follow_the_index_version() {
+        let mut idx = SymbolIndex::default();
+        let seq = idx.start(PathBuf::from("/nonexistent")).seq;
+        let batch = |files: Vec<(String, Option<FileSymbols>)>| SymbolBatch { files, done: true, changed: true };
+        let first = batch(vec![("src/main.rs".to_string(), fs(&[("a", true)])), ("src/a.rs".to_string(), fs(&[]))]);
+        assert!(idx.on_batch(seq, first).is_some());
+        // 1: nothing built yet.
+        assert!(!idx.edges_ready());
+        assert_eq!(idx.imports_of("src/main.rs"), None);
+        assert!(idx.near_of("src/main.rs").is_empty());
+        // 2: one build at a time.
+        let s1 = idx.edges_job().expect("stale and idle");
+        assert!(idx.edges_job().is_none());
+        // 3: a change while it builds drops the result.
+        let e1 = ImportEdges::build(&s1);
+        assert!(idx.on_batch(seq, batch(vec![("src/b.rs".to_string(), fs(&[]))])).is_some());
+        assert!(!idx.on_edges(Arc::new(e1)));
+        assert!(!idx.edges_ready());
+        assert_eq!(idx.imports_of("src/main.rs"), None);
+        // 4: the dropped build cleared the record, the next one applies.
+        let s2 = idx.edges_job().expect("the dropped build cleared the record");
+        assert!(idx.on_edges(Arc::new(ImportEdges::build(&s2))));
+        assert!(idx.edges_ready());
+        assert_eq!(strs(idx.imports_of("src/main.rs")), ["src/a.rs"]);
+        assert!(idx.edges_job().is_none());
+        // 5: a change makes the edges wait, ranking still uses them.
+        assert!(idx.on_batch(seq, batch(vec![("src/c.rs".to_string(), fs(&[]))])).is_some());
+        assert_eq!(idx.imports_of("src/main.rs"), None);
+        assert!(idx.near_of("src/main.rs").contains("src/a.rs"));
+        // 6: no build while a run is in flight.
+        let seq = idx.start(PathBuf::from("/nonexistent")).seq;
+        assert!(idx.edges_job().is_none());
+        assert!(idx.on_batch(seq, SymbolBatch { done: true, ..Default::default() }).is_some());
+        // 7: the version never goes back.
+        let before = idx.snapshot().version();
+        idx.reset();
+        assert!(idx.snapshot().version() > before);
     }
 
     #[cfg(all(feature = "lang-rust", feature = "lang-python"))]
@@ -628,6 +795,7 @@ mod tests {
         for b in batches {
             idx.on_batch(seq, b);
         }
+        idx.build_edges_now();
         assert_eq!(strs(idx.imports_of("src/main.rs")), ["src/a.rs", "src/b.rs"]);
         assert_eq!(strs(idx.imported_by("src/b.rs")), ["src/a.rs", "src/main.rs"]);
         assert_eq!(strs(idx.imports_of("pkg/a.py")), ["pkg/b.py"]);
@@ -662,6 +830,7 @@ mod tests {
         for b in batches {
             idx.on_batch(seq, b);
         }
+        idx.build_edges_now();
         assert_eq!(strs(idx.imports_of("main.go")), ["internal/foo/bar.go", "internal/foo/foo.go"]);
         assert_eq!(strs(idx.imported_by("internal/foo/foo.go")), ["main.go"]);
         let _ = std::fs::remove_dir_all(&dir);

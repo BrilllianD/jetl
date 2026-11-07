@@ -57,6 +57,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- File Dependencies, Find Usages and the approximate call hierarchy without a language server no longer stop the UI after an index run while import edges are worked out (5000 Java files: 192 ms, now under 1 ms). The edges are built in the background: until they are ready File Dependencies shows `…` and fills in by itself, and Find Usages ranks with the edges it had.
 - Debug Console: a program that prints faster than the Console can read, or a terminal that stops reading, no longer grows jetl without limit (3 GB in 30 s under gdb with 16 KiB lines; now about 310 MB). Output over a 32 MiB queue is dropped, and the Console says how many bytes (`N bytes of output dropped: ...`). The file-location cache of the Console and the Run window is capped at 1 MiB. gdb's own memory under a printing program is not affected. Tried under gdb only.
 - Debug under gdb: killing jetl while gdb itself is stopped no longer leaves gdb and the program behind. Tried under gdb only.
 - Debug: a panic in the debug session's driver now ends the session, with a toast naming jetl.log, instead of leaving it looking active with Ctrl+F2 going nowhere.

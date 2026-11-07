@@ -168,6 +168,29 @@ impl App {
         });
     }
 
+    /// Build the import edges in `spawn_blocking` when they are behind the index (`SymbolIndex::edges_job`).
+    pub(super) fn spawn_import_edges(&mut self) {
+        let Some(snap) = self.symbols.edges_job() else { return };
+        let (generation, tx) = (self.workspace.generation, self.bus_tx.clone());
+        tokio::task::spawn_blocking(move || {
+            let edges = Arc::new(crate::symbols::index::ImportEdges::build(&snap));
+            let _ = tx.send(AppMsg::ImportEdges { generation, edges });
+        });
+    }
+
+    /// Import edges built off the main thread: kept when they are of this root and the index's version, else
+    /// dropped and built again; nodes of File Dependencies waiting for them are filled.
+    pub(super) fn import_edges_loaded(&mut self, generation: u64, edges: Arc<crate::symbols::index::ImportEdges>) {
+        if generation != self.workspace.generation {
+            return tracing::debug!("dropping import edges of a previous root");
+        }
+        if !self.symbols.on_edges(edges) {
+            tracing::debug!("dropping import edges of an older index version");
+            return self.spawn_import_edges();
+        }
+        self.hierarchy_edges_ready();
+    }
+
     /// Write the index to its cache file after a run that changed something.
     fn save_symbol_cache(&mut self) {
         let Some(files) = self.symbols.take_cache() else { return };
@@ -193,6 +216,7 @@ impl App {
         if done {
             tracing::debug!("symbol index: {} files", self.symbols.file_count());
             self.save_symbol_cache();
+            self.spawn_import_edges();
         }
         let due = done || self.symbols_fed.is_none_or(|t| t.elapsed() >= SYMBOLS_FEED);
         if due && self.palette.as_ref().is_some_and(|p| p.wants(Source::Symbols)) {

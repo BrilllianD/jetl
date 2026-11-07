@@ -58,11 +58,6 @@ pub fn find(index: &SymbolIndex, path: &str, name: &str, line: usize) -> Option<
     index.file(path)?.symbols.iter().position(|s| &*s.name == name && s.line == line)
 }
 
-/// The files on an import edge of `from`, either way.
-fn near_of(index: &mut SymbolIndex, from: &str) -> HashSet<Arc<str>> {
-    index.imports_of(from).into_iter().chain(index.imported_by(from)).collect()
-}
-
 /// `resolve` with the near files of `from` already known.
 fn pick(index: &mut SymbolIndex, name: &str, from: &str, near: &HashSet<Arc<str>>) -> Vec<Def> {
     let found = index.defs_of(name);
@@ -83,7 +78,7 @@ fn pick(index: &mut SymbolIndex, name: &str, from: &str, near: &HashSet<Arc<str>
 
 /// Definitions named `name` as seen from file `from` (best group only), by path, line, col; never `impl`.
 pub fn resolve(index: &mut SymbolIndex, name: &str, from: &str) -> Vec<Def> {
-    let near = near_of(index, from);
+    let near = index.near_of(from);
     pick(index, name, from, &near)
 }
 
@@ -256,7 +251,7 @@ pub fn callees(index: &mut SymbolIndex, path: &str, sym: usize) -> Vec<Def> {
     if names.is_empty() {
         return Vec::new();
     }
-    let near = near_of(index, path);
+    let near = index.near_of(path);
     let mut seen: HashSet<(Arc<str>, usize, usize)> = HashSet::new();
     let mut out = Vec::new();
     for name in names {
@@ -308,6 +303,7 @@ mod tests {
         let mut idx = SymbolIndex::default();
         let seq = idx.start(PathBuf::from("/nonexistent")).seq;
         idx.on_batch(seq, SymbolBatch { files, done: true, ..Default::default() });
+        idx.build_edges_now();
         idx
     }
 
@@ -347,7 +343,7 @@ mod tests {
             ("src/c.rs", "pub fn x() {}\npub fn y() {}\npub fn z() {}\n"),
             ("src/d.rs", "pub fn z() {}\n"),
         ]);
-        let imports: Vec<String> = idx.imports_of("src/main.rs").iter().map(|p| p.to_string()).collect();
+        let imports: Vec<String> = idx.imports_of("src/main.rs").unwrap().iter().map(|p| p.to_string()).collect();
         assert_eq!(imports.first().map(String::as_str), Some("src/b.rs"), "import resolution");
         let m = find(&idx, "src/main.rs", "m", 2).unwrap();
         assert_eq!(

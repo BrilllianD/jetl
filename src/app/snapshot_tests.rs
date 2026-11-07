@@ -2355,6 +2355,7 @@ async fn hierarchy_window_file_dependencies() {
     for b in batches {
         app.symbols.on_batch(seq, b);
     }
+    app.symbols.build_edges_now();
     load(app, "src/main.rs", files[0].1);
     app.perform(Action::Hierarchy(HierarchyAction::FileDependencies));
     app.perform(Action::Hierarchy(HierarchyAction::Down));

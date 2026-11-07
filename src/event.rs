@@ -145,6 +145,13 @@ pub enum AppMsg {
         seq: u64,
         batch: crate::symbols::index::SymbolBatch,
     },
+    /// Import edges built in `spawn_blocking` from an index snapshot (`App::spawn_import_edges`), tagged with the
+    /// workspace generation; `ImportEdges::version` is the index version they were built from
+    /// (`SymbolIndex::on_edges` drops another).
+    ImportEdges {
+        generation: u64,
+        edges: std::sync::Arc<crate::symbols::index::ImportEdges>,
+    },
     /// The SCIP index named by `[index] scip`, loaded in `spawn_blocking`;
     /// tagged with the workspace generation and the load's seq.
     Scip {

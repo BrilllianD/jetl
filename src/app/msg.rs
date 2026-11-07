@@ -60,6 +60,7 @@ impl App {
             }
             AppMsg::FileIndex { generation, seq, files } => self.file_index_loaded(generation, seq, files),
             AppMsg::Symbols { generation, seq, batch } => self.symbols_loaded(generation, seq, batch),
+            AppMsg::ImportEdges { generation, edges } => self.import_edges_loaded(generation, edges),
             AppMsg::Scip { generation, seq, result } => self.scip_loaded(generation, seq, result),
             AppMsg::PaletteFiltered { generation, seq, rows } => self.palette_filtered(generation, seq, rows),
             AppMsg::Dependencies { generation, seq, report } => self.dependencies_checked(generation, seq, report),

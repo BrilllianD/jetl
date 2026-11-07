@@ -332,11 +332,7 @@ impl App {
         let root = self.workspace.root.clone();
         let rel_of = |p: &Path| p.strip_prefix(&root).ok().map(|r| r.to_string_lossy().replace('\\', "/"));
         let from_rel = rel_of(from);
-        let mut near: HashSet<Arc<str>> = HashSet::new();
-        if let Some(r) = &from_rel {
-            near.extend(self.symbols.imports_of(r));
-            near.extend(self.symbols.imported_by(r));
-        }
+        let near: HashSet<Arc<str>> = from_rel.as_deref().map(|r| self.symbols.near_of(r)).unwrap_or_default();
         let mut live: HashMap<String, Vec<(usize, usize)>> = HashMap::new();
         let mut parser = tree_sitter::Parser::new();
         for b in &self.editor.buffers {
@@ -487,9 +483,7 @@ impl App {
             }
             None => return false,
         };
-        let mut near: HashSet<Arc<str>> = HashSet::new();
-        near.extend(self.symbols.imports_of(&from_rel));
-        near.extend(self.symbols.imported_by(&from_rel));
+        let near = self.symbols.near_of(&from_rel);
         let mut fresh: HashMap<String, bool> = HashMap::new();
         let mut disk = HashMap::new();
         let mut items: Vec<(String, LocationItem)> = Vec::new();
@@ -1376,6 +1370,16 @@ mod tests {
         for batch in batches {
             app.handle_msg(AppMsg::Symbols { generation: g, seq, batch });
         }
+        while !app.symbols.edges_ready() {
+            let m = tokio::time::timeout(std::time::Duration::from_secs(5), app.bus_rx.recv())
+                .await
+                .expect("import edges in time")
+                .expect("bus open");
+            // Only the edges: a startup file index or index run would change the files under the test.
+            if matches!(m, AppMsg::ImportEdges { .. }) {
+                app.handle_msg(m);
+            }
+        }
         let main = crate::app::tests::load(&mut app, "src/main.rs", MAIN);
         goto(&mut app, 3, 6);
         act(&mut app, LspAction::FindUsages);
@@ -1426,6 +1430,7 @@ mod tests {
         for batch in batches {
             app.handle_msg(AppMsg::Symbols { generation: g, seq, batch });
         }
+        app.symbols.build_edges_now();
     }
 
     /// A project with `src/main.rs` (open, caret file) and `src/util.rs`, a

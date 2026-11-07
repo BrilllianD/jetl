@@ -4,7 +4,8 @@
 //!
 //! File Dependencies (`hierarchy.file_dependencies`) builds an index tree of the
 //! active file with the `Imports` / `ImportedBy` directions, children from the
-//! index's import edges.
+//! index's import edges, which are built off the main thread. A node waits (`…`) until they match the index
+//! and fills in by itself (`hierarchy_edges_ready`).
 //!
 //! Without a server for the buffer, the call hierarchy is computed from the
 //! symbol index (`symbols/graph.rs`): an index tree
@@ -243,6 +244,18 @@ impl App {
         self.dirty_frame = true;
     }
 
+    /// Import edges are ready: the waiting (`loading`) nodes of a File Dependencies tree get their children.
+    pub(super) fn hierarchy_edges_ready(&mut self) {
+        let Some(t) = self.hierarchy.as_ref() else { return };
+        if !t.from_index() || !matches!(t.direction, Direction::Imports | Direction::ImportedBy) {
+            return;
+        }
+        let waiting: Vec<usize> = t.nodes.iter().enumerate().filter(|(_, n)| n.loading).map(|(i, _)| i).collect();
+        for node in waiting {
+            self.hierarchy_index_children(node);
+        }
+    }
+
     /// Fill `node`'s children of an index tree at once.
     fn hierarchy_index_children(&mut self, node: usize) {
         let Some((direction, item)) = self.hierarchy.as_ref().and_then(|t| t.nodes.get(node).map(|n| (t.direction, n.item.clone()))) else {
@@ -273,6 +286,14 @@ impl App {
                 Some(rel) => {
                     let files =
                         if direction == Direction::Imports { self.symbols.imports_of(&rel) } else { self.symbols.imported_by(&rel) };
+                    let Some(files) = files else {
+                        if let Some(t) = &mut self.hierarchy {
+                            t.nodes[node].loading = true;
+                        }
+                        self.dirty_frame = true;
+                        self.spawn_import_edges();
+                        return;
+                    };
                     files.iter().map(|f| self.file_item(f)).collect()
                 }
                 None => Vec::new(),
@@ -917,8 +938,14 @@ mod tests {
     const IDX_B: &str = "pub fn helper() {}\n";
     const IDX_MAIN: &str = "mod b;\nuse b::helper;\n\nfn main() {\n    helper();\n    run();\n}\n\n/* 😀 */ fn run() {\n    helper();\n}\n";
 
-    /// Write `files` under the root and index them as a finished run.
+    /// `index_only`, then the import edges built.
     fn index(app: &mut App, files: &[(&str, &str)]) {
+        index_only(app, files);
+        app.symbols.build_edges_now();
+    }
+
+    /// Write `files` under the root and index them as a finished run, import edges not built.
+    fn index_only(app: &mut App, files: &[(&str, &str)]) {
         let root = app.workspace.root.clone();
         for (rel, text) in files {
             let path = root.join(rel);
@@ -1075,6 +1102,37 @@ mod tests {
         ("src/a.rs", "use crate::b::B;\npub fn a() {}\n"),
         ("src/b.rs", "pub struct B;\n"),
     ];
+
+    #[tokio::test]
+    async fn file_dependencies_wait_for_the_edges() {
+        use crate::symbols::index::ImportEdges;
+        use std::sync::Arc;
+        let (mut app, dir) = test_app("hier-files-wait");
+        index_only(&mut app, &DEP_FILES);
+        crate::app::tests::load(&mut app, "src/main.rs", DEP_FILES[0].1);
+        app.perform(Action::Hierarchy(HierarchyAction::FileDependencies));
+        let t = app.hierarchy.as_ref().expect("an index tree");
+        assert!(t.nodes[0].loading && t.nodes[0].children.is_none());
+        assert!(!app.symbols.edges_ready());
+        // Edges of another root are dropped.
+        let (g, snap) = (app.workspace.generation, app.symbols.snapshot());
+        app.handle_msg(AppMsg::ImportEdges { generation: g + 1, edges: Arc::new(ImportEdges::build(&snap)) });
+        assert!(!app.symbols.edges_ready());
+        assert!(app.hierarchy.as_ref().unwrap().nodes[0].loading);
+        while !app.symbols.edges_ready() {
+            let m = tokio::time::timeout(std::time::Duration::from_secs(5), app.bus_rx.recv())
+                .await
+                .expect("import edges in time")
+                .expect("bus open");
+            // Only the edges: a startup file index or index run would change the files under the test.
+            if matches!(m, AppMsg::ImportEdges { .. }) {
+                app.handle_msg(m);
+            }
+        }
+        assert_eq!(child_names(&app, 0), ["src/a.rs", "src/b.rs"]);
+        assert!(app.hierarchy.as_ref().unwrap().nodes.iter().all(|n| !n.loading));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[tokio::test]
     async fn file_dependencies_come_from_the_index() {
