@@ -2011,6 +2011,37 @@ x4, `Home`, `Right` x10: the caret is inside `helper` of line 5.
     to:`. `Escape`. `Up`, `Home`, `Right` x11 (the field `x`), `S-F6`: dialog
     `Rename 'x' as text to:`. `Escape`. `Home`, `Right` x7 (`S`), `S-F6`: dialog
     `Rename 'S' to:` (no shorthand use of `S`). `Escape`, `C-q`.
+12. Trait members (yman 406). rust-analyzer states no relationships, so the
+    members of a trait and of an `impl Trait for Type` block rename as text. In a
+    third project (`/tmp/jetl-s10-406/proj`, config with `[lsp] enabled = false`
+    and `[index] scip = "index.scip"`):
+
+    ```sh
+    T=/tmp/jetl-s10-406/proj; mkdir -p $T/src
+    printf '[package]\nname = "demo"\nversion = "0.1.0"\nedition = "2021"\n' > $T/Cargo.toml
+    printf 'pub trait Area {\n    fn area(&self) -> f64;\n    fn twice(&self) -> f64 { self.area() * 2.0 }\n}\npub struct Circle { pub r: f64 }\npub struct Square { pub side: f64 }\nimpl Area for Circle {\n    fn area(&self) -> f64 { 3.14 * self.r * self.r }\n}\nimpl Area for Square {\n    fn area(&self) -> f64 { self.side * self.side }\n}\nimpl Circle { pub fn grow(&mut self) { self.r += 1.0; } }\n' > $T/src/shapes.rs
+    printf 'mod shapes;\nuse shapes::{Area, Circle, Square};\nfn total(items: &[&dyn Area]) -> f64 {\n    items.iter().map(|s| s.area()).sum()\n}\nfn main() {\n    let mut c = Circle { r: 1.0 };\n    let q = Square { side: 2.0 };\n    c.grow();\n    println!("{}", c.area() + q.area());\n    println!("{}", total(&[&c, &q]));\n}\n' > $T/src/main.rs
+    echo target > $T/.gitignore
+    (cd $T && git init -q && rust-analyzer scip . --output index.scip)
+    sleep 1; touch $T/index.scip
+    ```
+
+    Start jetl on `src/shapes.rs`, warm-up (`S-F6`, wait 0.6 s, `Escape`, wait
+    1.5 s). Caret moves are absolute: `Up` x20, `Down` x(line-1), `Home`, `Right`
+    x column. Line 2, `Right` x5 (`area` in the trait), `S-F6`: dialog `Rename
+    'area' as text to:`; `Escape`. Line 3, x5 (`twice`): `as text`. Line 8, x5
+    (`area` in `impl Area for Circle`): `as text`. Line 1, x11 (`Area`):
+    `Rename 'Area' to:`. Line 13, x23 (`grow`): `Rename 'grow' to:`; `C-a`,
+    `-l size`, `Enter`: Find lists exactly two exact rows, `src/main.rs` line 9
+    (`c.grow()`) and `src/shapes.rs` line 13; `Escape`. Back on line 2 (x5),
+    `S-F6`, `C-a`, `-l size`, `Enter` opens the textual Find. As observed:
+    `7 matches in 2 files; 2 excluded`. Included: `main.rs` line 4 (`s.area()`,
+    the `dyn` call) and `shapes.rs` lines 2, 3, 8 and 11 (the declaration,
+    `self.area()` and both impl definitions). Excluded: `main.rs` line 10, both
+    `c.area()` and `q.area()`. Why the text rename leaves those two out was
+    not analysed in 406 (it is the existing textual path, see step 5 and yman 407);
+    the list is for review. `Escape`,
+    `C-q`, exit 0 and empty stderr.
 
 ### Scenario: local history
 

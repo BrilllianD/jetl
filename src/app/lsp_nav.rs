@@ -1963,6 +1963,100 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    const SCIP_SHAPES: &str = "pub trait Area { fn area(&self) -> f64; }\npub struct C;\nimpl Area for C { fn area(&self) -> f64 { 1.0 } }\nimpl C { pub fn grow(&self) {} }\n";
+
+    /// The full SCIP symbol of `name` in `shapes`, as rust-analyzer spells it.
+    fn shapes_sym(name: &str) -> String {
+        format!("rust-analyzer cargo demo 0.1.0 shapes/{name}")
+    }
+
+    /// A project of one file, `src/shapes.rs` (`SCIP_SHAPES`, open), with a fresh SCIP index of it that carries `syms`.
+    async fn scip_shapes_app(name: &str, syms: crate::symbols::scip::TestSyms<'_>) -> (App, PathBuf, PathBuf) {
+        let (mut app, dir) = test_app(name);
+        let (root, g) = (app.workspace.root.clone(), app.workspace.generation);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/shapes.rs"), SCIP_SHAPES).unwrap();
+        app.handle_msg(AppMsg::FileIndex { generation: g, seq: 1, files: vec!["src/shapes.rs".into()] });
+        run_tags_job(&mut app);
+        let (area_t, area, c_t, impl_area, grow) = (
+            shapes_sym("Area#"),
+            shapes_sym("Area#area()."),
+            shapes_sym("C#"),
+            shapes_sym("impl#[C][Area]area()."),
+            shapes_sym("impl#[C]grow()."),
+        );
+        let occs: &[(&[i32], &str, bool)] = &[
+            (&[0, 10, 14], &area_t, true),
+            (&[0, 20, 24], &area, true),
+            (&[1, 11, 12], &c_t, true),
+            (&[2, 5, 9], &area_t, false),
+            (&[2, 14, 15], &c_t, false),
+            (&[2, 21, 25], &impl_area, true),
+            (&[3, 5, 6], &c_t, false),
+            (&[3, 16, 20], &grow, true),
+        ];
+        let index = root.join("index.scip");
+        crate::symbols::scip::write_test_index_with(&index, "", &[("src/shapes.rs", scip::Encoding::Utf8, occs)], syms);
+        let now = std::time::SystemTime::now();
+        let ago = |s| now - std::time::Duration::from_secs(s);
+        set_mtime(&index, ago(50));
+        let mut c = app.config.clone();
+        c.index.scip = "index.scip".into();
+        app.apply_config(c);
+        handle_next(&mut app, |m| matches!(m, AppMsg::Scip { .. })).await;
+        assert!(app.scip.index.is_some(), "{:?}", toasts(&app));
+        crate::app::tests::load(&mut app, "src/shapes.rs", SCIP_SHAPES);
+        set_mtime(&root.join("src/shapes.rs"), ago(100));
+        (app, dir, root)
+    }
+
+    /// The dialog message of a rename started at (`line`, `col`).
+    fn rename_message(app: &mut App, line: usize, col: usize) -> String {
+        goto(app, line, col);
+        act(app, LspAction::Rename);
+        app.dialog.take().unwrap().message
+    }
+
+    #[tokio::test]
+    async fn trait_members_without_relationships_rename_as_text() {
+        use ::scip::types::symbol_information::Kind as K;
+        let (area_t, area) = (shapes_sym("Area#"), shapes_sym("Area#area()."));
+        let syms: crate::symbols::scip::TestSyms =
+            &[("src/shapes.rs", &area_t, K::Trait, &[]), ("src/shapes.rs", &area, K::TraitMethod, &[])];
+        let (mut app, dir, _) = scip_shapes_app("scip-rename-trait", syms).await;
+        let got: Vec<String> = [(0, 21), (2, 22), (3, 17), (0, 11)].into_iter().map(|(l, c)| rename_message(&mut app, l, c)).collect();
+        // The trait method, the impl method (rust-analyzer's `impl#[C][Area]`), an inherent method, the trait type.
+        let want = ["Rename 'area' as text to:", "Rename 'area' as text to:", "Rename 'grow' to:", "Rename 'Area' to:"];
+        assert_eq!(got, want);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn related_symbols_are_renamed_together() {
+        use ::scip::types::symbol_information::Kind as K;
+        let (area_t, area, impl_area, grow) =
+            (shapes_sym("Area#"), shapes_sym("Area#area()."), shapes_sym("impl#[C][Area]area()."), shapes_sym("impl#[C]grow()."));
+        let syms: crate::symbols::scip::TestSyms = &[
+            ("src/shapes.rs", &area_t, K::Trait, &[]),
+            ("src/shapes.rs", &area, K::TraitMethod, &[]),
+            ("src/shapes.rs", &impl_area, K::Method, &[(&area, true, false)]),
+        ];
+        let (mut app, dir, _) = scip_shapes_app("scip-rename-related", syms).await;
+        goto(&mut app, 0, 21);
+        act(&mut app, LspAction::Rename);
+        assert_eq!(app.dialog.as_ref().unwrap().message, "Rename 'area' to:");
+        rename(&mut app, "size").await;
+        assert_eq!(included(&app), [("shapes.rs".to_string(), 0, 20), ("shapes.rs".to_string(), 2, 21)]);
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // A link to a symbol the index has no definition of (a `std` trait) renames as text.
+        let std_grow = "rust-analyzer cargo std 1.0.0 ops/Grow#grow().";
+        let syms: crate::symbols::scip::TestSyms = &[("src/shapes.rs", &grow, K::Method, &[(std_grow, true, false)])];
+        let (mut app, dir, _) = scip_shapes_app("scip-rename-related-std", syms).await;
+        assert_eq!(rename_message(&mut app, 3, 17), "Rename 'grow' as text to:");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[tokio::test]
     async fn symbols_sharing_a_span_are_renamed_as_text() {
         // `S { s }` at the use of `s` on line 2: the local and the field `S#s.` carry the same span.

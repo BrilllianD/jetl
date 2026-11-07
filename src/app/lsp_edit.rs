@@ -44,8 +44,10 @@
 //! occurrences become the preview's included rows, built off the main thread
 //! by `rename_preview::build_scip`, which reads each document once and trusts
 //! it only if the file is clean, no newer than the index and every span is
-//! true of the text (T1 to T3 in that module). Files the index does not cover
-//! or cannot vouch for show text matches, excluded. This preview is always
+//! true of the text (T1 to T3 in that module). The symbols the index links to it
+//! by relationships are renamed with it; a trait member in an index that states
+//! no relationships (rust-analyzer's) is renamed as text. Files the index does
+//! not cover or cannot vouch for show text matches, excluded. This preview is always
 //! shown, whatever `rename_preview` says. When no definition or not the
 //! caret's own span survives, the build says so (`ScipOutcome::fallback`) and
 //! the textual rename above opens instead.
@@ -79,7 +81,7 @@ use crate::history::Ack;
 use crate::lsp::edits::{self, DiskStep, EditCounts, OpenDoc};
 use crate::lsp::locations::LocationItem;
 use crate::lsp::{DocTag, EditOrigin, PendingTag, Refactoring, pos, symbols};
-use crate::symbols::scip::{Span, SymId};
+use crate::symbols::scip::{Occ, Span, SymId};
 use crate::ui::dialog::{Dialog, DialogId};
 use crate::ui::focus::{PanelId, ToolWindowId};
 
@@ -314,30 +316,34 @@ impl App {
         self.dispatcher.reset();
     }
 
-    /// The SCIP symbol a rename of `word` at the caret of `id` may use: no server serves the buffer, its file is
-    /// fresh, the occurrence under the caret reads exactly `word`, and no occurrence of the symbol shares its exact
-    /// span with another symbol (a shorthand field: the index cannot tell which of the two a rename means).
-    fn scip_rename_symbol(&mut self, id: BufferId, word: &str) -> Option<(String, SymId, Span)> {
+    /// The SCIP symbol a rename of `word` at the caret of `id` may use, with its rename set: no server serves the
+    /// buffer, its file is fresh, the occurrence under the caret reads exactly `word`, the index can vouch for the
+    /// set (`ScipIndex::rename_set`) and no occurrence of a symbol in it shares its exact span with another symbol
+    /// (a shorthand field: the index cannot tell which of the two a rename means).
+    fn scip_rename_symbol(&mut self, id: BufferId, word: &str) -> Option<(String, SymId, Vec<SymId>, Span)> {
         if self.lsp.docs.contains_key(&id) {
             return None;
         }
         let (rel, sym, _, span) = self.scip_caret(id)?;
         let ix = self.scip.index.as_ref()?;
-        if ix.shares_span(sym) {
+        let set = ix.rename_set(sym)?;
+        if set.iter().any(|&s| ix.shares_span(s)) {
             return None;
         }
         let enc = ix.doc(&rel)?.encoding;
         let b = self.editor.buffers.iter().find(|b| b.id == id)?;
-        matches!(rename_preview::check_span(&b.rope, span, enc, word), SpanCheck::Exact(..)).then_some((rel, sym, span))
+        matches!(rename_preview::check_span(&b.rope, span, enc, word), SpanCheck::Exact(..)).then_some((rel, sym, set, span))
     }
 
-    /// The snapshot of the index a SCIP rename of `old` to `new` needs, taken on the main thread: the symbol's
-    /// occurrences by document and, for a global symbol, the names of every document of the index.
+    /// The snapshot of the index a SCIP rename of `old` to `new` needs, taken on the main thread: the occurrences of
+    /// the symbol and of every symbol in its rename set, by document and, for a global symbol, the names of every document of the index.
     fn scip_rename_job(&mut self, id: BufferId, old: &str, new: &str) -> Option<ScipRename> {
-        let (rel, sym, span) = self.scip_rename_symbol(id, old)?;
+        let (rel, sym, set, span) = self.scip_rename_symbol(id, old)?;
         let ix = self.scip.index.as_ref()?;
+        let mut occs: Vec<(&str, &Occ)> = set.iter().flat_map(|&s| ix.occurrences_of(s)).collect();
+        occs.sort_by_key(|(r, o)| (*r, o.span.line, o.span.start, o.span.end_line, o.span.end));
         let mut docs: Vec<ScipFile> = Vec::new();
-        for (r, occ) in ix.occurrences_of(sym) {
+        for (r, occ) in occs {
             if docs.last().is_none_or(|d| d.rel != r) {
                 docs.push(ScipFile { rel: r.to_string(), encoding: ix.doc(r)?.encoding, occs: Vec::new() });
             }

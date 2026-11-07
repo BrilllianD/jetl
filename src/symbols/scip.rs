@@ -1,19 +1,21 @@
 //! A SCIP code index (`index.scip`, for example from `rust-analyzer scip .`)
 //! turned into a compact lookup structure: documents keyed by root-relative
 //! path, occurrences sorted by position, symbols interned, and an inverted
-//! list per symbol.
+//! list per symbol. A document's `SymbolInformation` is read for the relationships that link an implementation to what
+//! it implements and for the kinds of abstract types and members ([`ScipIndex::rename_set`]).
 //!
 //! Whether a document may still be trusted is the app's decision (it needs
 //! buffers and mtimes); [`file_fresh`] is the rule it applies. Columns stay in the document's own units
 //! ([`Encoding`]); callers convert with the line text ([`to_chars`],
 //! [`to_units`]).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::SystemTime;
 
 use protobuf::Message;
+use scip::types::symbol_information::Kind;
 use scip::types::{Index, PositionEncoding, SymbolRole, occurrence};
 
 /// Larger files are refused unread: loading builds the whole protobuf message first, about 7x the file size at its peak
@@ -163,6 +165,13 @@ pub struct ScipIndex {
     /// Per symbol: (index into `doc_paths`, index into that document's occurrences).
     by_symbol: Vec<Vec<(u32, u32)>>,
     doc_paths: Vec<String>,
+    /// Undirected links between global symbols from relationships with `is_implementation` or `is_reference`, both
+    /// ends interned, each list sorted.
+    related: HashMap<SymId, Vec<SymId>>,
+    /// Global symbols of kind Trait, Interface, Protocol or TypeClass.
+    abstract_types: HashSet<SymId>,
+    /// Global symbols of kind TraitMethod, AbstractMethod, ProtocolMethod or TypeClassMethod.
+    abstract_members: HashSet<SymId>,
     /// Set when the index has documents but none lands under the root.
     warning: Option<String>,
 }
@@ -197,6 +206,9 @@ impl ScipIndex {
             ids: HashMap::new(),
             by_symbol: Vec::new(),
             doc_paths: Vec::new(),
+            related: HashMap::new(),
+            abstract_types: HashSet::new(),
+            abstract_members: HashSet::new(),
             warning: None,
         };
         let total = index.documents.len();
@@ -237,8 +249,47 @@ impl ScipIndex {
             for (i, o) in occurrences.iter().enumerate() {
                 ix.by_symbol[o.symbol as usize].push((d, i as u32));
             }
+            for info in doc.symbols {
+                if info.symbol.is_empty() || scip::symbol::is_local_symbol(&info.symbol) {
+                    continue;
+                }
+                let class = match info.kind.enum_value() {
+                    Ok(Kind::Trait | Kind::Interface | Kind::Protocol | Kind::TypeClass) => Some(true),
+                    Ok(Kind::TraitMethod | Kind::AbstractMethod | Kind::ProtocolMethod | Kind::TypeClassMethod) => Some(false),
+                    _ => None,
+                };
+                let links: Vec<&str> = info
+                    .relationships
+                    .iter()
+                    .filter(|r| r.is_implementation || r.is_reference)
+                    .map(|r| r.symbol.as_str())
+                    .filter(|t| !t.is_empty() && !scip::symbol::is_local_symbol(t) && *t != info.symbol)
+                    .collect();
+                if class.is_none() && links.is_empty() {
+                    continue;
+                }
+                let id = ix.intern(info.symbol.as_str().into());
+                match class {
+                    Some(true) => {
+                        ix.abstract_types.insert(id);
+                    }
+                    Some(false) => {
+                        ix.abstract_members.insert(id);
+                    }
+                    None => {}
+                }
+                for target in links {
+                    let to = ix.intern(target.into());
+                    ix.related.entry(id).or_default().push(to);
+                    ix.related.entry(to).or_default().push(id);
+                }
+            }
             let encoding = encoding_of(doc.position_encoding);
             ix.docs.insert(rel, ScipDoc { encoding, occurrences });
+        }
+        for list in ix.related.values_mut() {
+            list.sort_unstable();
+            list.dedup();
         }
         if total > 0 && ix.docs.is_empty() {
             ix.warning = Some(format!(
@@ -353,6 +404,78 @@ impl ScipIndex {
         out.sort_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)));
         out.into_iter().map(|(rel, _, o)| (rel, o)).collect()
     }
+
+    /// Whether some document states a relationship the index links symbols by.
+    pub fn has_relationships(&self) -> bool {
+        !self.related.is_empty()
+    }
+
+    /// The symbols the index links to `id` by relationships, sorted.
+    pub fn related(&self, id: SymId) -> &[SymId] {
+        self.related.get(&id).map_or(&[], Vec::as_slice)
+    }
+
+    /// May stand for several definitions in the code: a member of a trait, interface, protocol or type class, or of
+    /// rust-analyzer's `impl Trait for Type` block.
+    pub fn polymorphic(&self, id: SymId) -> bool {
+        use scip::types::descriptor::Suffix;
+        if self.is_local(id) {
+            return false;
+        }
+        if self.abstract_members.contains(&id) {
+            return true;
+        }
+        let Ok(mut sym) = scip::symbol::parse_symbol(self.symbol(id)) else { return false };
+        let is = |d: &scip::types::Descriptor, suffix: Suffix| d.suffix.enum_value() == Ok(suffix);
+        // rust-analyzer names the members of `impl Trait for Type` `impl#[Type][Trait]name().`; an inherent block has one bracket.
+        if sym
+            .descriptors
+            .windows(3)
+            .any(|w| is(&w[0], Suffix::Type) && w[0].name == "impl" && is(&w[1], Suffix::TypeParameter) && is(&w[2], Suffix::TypeParameter))
+        {
+            return true;
+        }
+        if sym.descriptors.len() < 2 {
+            return false;
+        }
+        sym.descriptors.pop();
+        self.symbol_id(&scip::symbol::format_symbol(sym)).is_some_and(|parent| self.abstract_types.contains(&parent))
+    }
+
+    /// The symbols a rename of `id` must change together, `id` included, sorted: the closure of `id` over the
+    /// relationships. None (the rename is left to the text path) when a linked symbol has no definition in the index
+    /// (an implementation of a `std` trait), or when the index states no relationship at all and `id` is
+    /// [`polymorphic`](Self::polymorphic): an indexer that says nothing cannot vouch that a trait member has no
+    /// implementation. A missing definition of `id` itself is left to the rename build's fallback.
+    pub fn rename_set(&self, id: SymId) -> Option<Vec<SymId>> {
+        if self.is_local(id) {
+            return Some(vec![id]);
+        }
+        let mut set = vec![id];
+        let mut seen: HashSet<SymId> = set.iter().copied().collect();
+        let mut at = 0;
+        while at < set.len() {
+            for &next in self.related(set[at]) {
+                if seen.insert(next) {
+                    set.push(next);
+                }
+            }
+            at += 1;
+        }
+        if !self.has_relationships() && self.polymorphic(id) {
+            return None;
+        }
+        if set.iter().any(|&s| s != id && !self.has_definition(s)) {
+            return None;
+        }
+        set.sort_unstable();
+        Some(set)
+    }
+
+    fn has_definition(&self, id: SymId) -> bool {
+        let Some(list) = self.by_symbol.get(id as usize) else { return false };
+        list.iter().any(|&(d, i)| self.docs[self.doc_paths[d as usize].as_str()].occurrences[i as usize].definition)
+    }
 }
 
 /// The loaded index, as the app holds it.
@@ -374,7 +497,17 @@ pub(crate) type TestOccs<'a> = &'a [(&'a [i32], &'a str, bool)];
 
 #[cfg(test)]
 pub(crate) fn write_test_index(file: &Path, project_root: &str, docs: &[(&str, Encoding, TestOccs)]) {
-    use scip::types::{Document, Occurrence};
+    write_test_index_with(file, project_root, docs, &[]);
+}
+
+/// Symbol information to write: (document path, symbol, kind, relationships as (target, is implementation, is reference)).
+#[cfg(test)]
+pub(crate) type TestSyms<'a> = &'a [(&'a str, &'a str, Kind, &'a [(&'a str, bool, bool)])];
+
+/// [`write_test_index`] with symbol information.
+#[cfg(test)]
+pub(crate) fn write_test_index_with(file: &Path, project_root: &str, docs: &[(&str, Encoding, TestOccs)], syms: TestSyms) {
+    use scip::types::{Document, Occurrence, Relationship, SymbolInformation};
     let mut index = Index::new();
     index.metadata.mut_or_insert_default().project_root = project_root.to_string();
     for (path, enc, occs) in docs {
@@ -393,6 +526,21 @@ pub(crate) fn write_test_index(file: &Path, project_root: &str, docs: &[(&str, E
             d.occurrences.push(o);
         }
         index.documents.push(d);
+    }
+    for (doc, symbol, kind, rels) in syms {
+        let d =
+            index.documents.iter_mut().find(|d| d.relative_path == *doc).expect("symbol information for a document that is not written");
+        let mut info = SymbolInformation::new();
+        info.symbol = (*symbol).to_string();
+        info.kind = protobuf::EnumOrUnknown::new(*kind);
+        for (target, is_implementation, is_reference) in *rels {
+            let mut r = Relationship::new();
+            r.symbol = (*target).to_string();
+            r.is_implementation = *is_implementation;
+            r.is_reference = *is_reference;
+            info.relationships.push(r);
+        }
+        d.symbols.push(info);
     }
     std::fs::write(file, index.write_to_bytes().unwrap()).unwrap();
 }
@@ -591,5 +739,112 @@ mod tests {
         let mut o = Occurrence::new();
         o.enclosing_range = vec![1, 0, 4, 1];
         assert_eq!(enclosing_of(None, &o.enclosing_range), Some(Span { line: 1, start: 0, end_line: 4, end: 1 }));
+    }
+
+    const P: &str = "rust-analyzer cargo demo 0.1.0 ";
+
+    #[test]
+    fn symbol_information_kinds_and_relationships_are_read() {
+        let root = temp("syminfo");
+        let file = root.join("index.scip");
+        let (t, tf, a, b) = (format!("{P}m/T#"), format!("{P}m/T#f()."), format!("{P}m/impl#[A][T]f()."), format!("{P}m/impl#[B][T]f()."));
+        let other = format!("{P}m/Other#");
+        let occs: TestOccs = &[(&[0, 0, 1], &t, true)];
+        let syms: TestSyms = &[
+            ("a.rs", &t, Kind::Trait, &[]),
+            ("a.rs", &tf, Kind::TraitMethod, &[]),
+            ("a.rs", &a, Kind::Method, &[(&tf, true, false), ("local 3", true, false), (&other, false, false)]),
+            ("a.rs", &b, Kind::Method, &[(&tf, false, true)]),
+        ];
+        write_test_index_with(&file, "", &[("a.rs", Encoding::Utf8, occs)], syms);
+        let ix = ScipIndex::load(&file, &root).unwrap();
+        assert!(ix.has_relationships());
+        let id = |s: &str| ix.symbol_id(s).unwrap_or_else(|| panic!("{s} not interned"));
+        let mut both = vec![id(&a), id(&b)];
+        both.sort_unstable();
+        assert_eq!(ix.related(id(&tf)), both);
+        assert_eq!(ix.related(id(&a)), [id(&tf)]);
+        assert_eq!(ix.related(id(&b)), [id(&tf)]);
+        assert_eq!(ix.symbol_id(&other), None, "a relationship that is only a type definition links nothing");
+        assert_eq!(ix.symbol_id("local 3"), None, "a local target links nothing");
+        assert!(ix.polymorphic(id(&tf)));
+        assert!(ix.related(id(&t)).is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn trait_members_are_polymorphic() {
+        let root = temp("poly");
+        let file = root.join("index.scip");
+        let area_t = format!("{P}shapes/Area#");
+        let area = format!("{P}shapes/Area#area().");
+        let twice = format!("{P}shapes/Area#twice().");
+        let c_area = format!("{P}shapes/impl#[Circle][Area]area().");
+        let grow = format!("{P}shapes/impl#[Circle]grow().");
+        let circle = format!("{P}shapes/Circle#");
+        let helper = "t util/helper().";
+        let all = [&area_t, &area, &twice, &c_area, &grow, &circle];
+        let mut occs: Vec<(&[i32], &str, bool)> = Vec::new();
+        let ranges: Vec<[i32; 3]> = (0..7).map(|i| [i, 0, 1]).collect();
+        for (i, s) in all.iter().enumerate() {
+            occs.push((&ranges[i], s.as_str(), true));
+        }
+        occs.push((&ranges[6], helper, true));
+        let syms: TestSyms = &[
+            ("a.rs", &area_t, Kind::Trait, &[]),
+            ("a.rs", &area, Kind::TraitMethod, &[]),
+            ("a.rs", &twice, Kind::Method, &[]),
+            ("a.rs", &c_area, Kind::Method, &[]),
+            ("a.rs", &grow, Kind::Method, &[]),
+            ("a.rs", &circle, Kind::Struct, &[]),
+        ];
+        write_test_index_with(&file, "", &[("a.rs", Encoding::Utf8, &occs)], syms);
+        let ix = ScipIndex::load(&file, &root).unwrap();
+        let id = |s: &str| ix.symbol_id(s).unwrap();
+        assert!(!ix.has_relationships());
+        let mut wrong = Vec::new();
+        for (s, poly) in [
+            (&area, true),
+            (&twice, true),
+            (&c_area, true),
+            (&grow, false),
+            (&area_t, false),
+            (&circle, false),
+            (&helper.to_string(), false),
+        ] {
+            let want = if poly { None } else { Some(vec![id(s)]) };
+            if ix.polymorphic(id(s)) != poly || ix.rename_set(id(s)) != want {
+                wrong.push(format!("{s}: polymorphic {}, set {:?}, want polymorphic {poly}", ix.polymorphic(id(s)), ix.rename_set(id(s))));
+            }
+        }
+        assert!(wrong.is_empty(), "{wrong:#?}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn rename_set_follows_relationships_transitively() {
+        let root = temp("set");
+        let file = root.join("index.scip");
+        let (t, tf, a, b) = (format!("{P}m/T#"), format!("{P}m/T#f()."), format!("{P}m/impl#[A][T]f()."), format!("{P}m/impl#[B][T]f()."));
+        let (display, user) = ("rust-analyzer cargo std 1.0.0 fmt/Display#fmt().".to_string(), format!("{P}m/impl#[A][Display]fmt()."));
+        let occs: TestOccs =
+            &[(&[0, 0, 1], &t, true), (&[1, 0, 1], &tf, true), (&[2, 0, 1], &a, true), (&[3, 0, 1], &b, true), (&[4, 0, 1], &user, true)];
+        let syms: TestSyms = &[
+            ("a.rs", &t, Kind::Trait, &[]),
+            ("a.rs", &tf, Kind::TraitMethod, &[]),
+            ("a.rs", &a, Kind::Method, &[(&tf, true, false)]),
+            ("a.rs", &b, Kind::Method, &[(&tf, false, true)]),
+            ("a.rs", &user, Kind::Method, &[(&display, true, false)]),
+        ];
+        write_test_index_with(&file, "", &[("a.rs", Encoding::Utf8, occs)], syms);
+        let ix = ScipIndex::load(&file, &root).unwrap();
+        let id = |s: &str| ix.symbol_id(s).unwrap();
+        let mut three = vec![id(&tf), id(&a), id(&b)];
+        three.sort_unstable();
+        assert_eq!(ix.rename_set(id(&a)), Some(three.clone()), "from one implementation");
+        assert_eq!(ix.rename_set(id(&tf)), Some(three), "from the trait method");
+        assert_eq!(ix.rename_set(id(&t)), Some(vec![id(&t)]), "the trait type links nothing");
+        assert_eq!(ix.rename_set(id(&user)), None, "the std trait method has no definition in the index");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
