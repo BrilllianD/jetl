@@ -6894,6 +6894,7 @@ pub(crate) mod tests {
         // No type: no trailing gap.
         evaluate(&mut app, "n", false);
         let req = fake.recv("evaluate").await;
+        assert_watch_context(&req);
         fake.respond(&req, json!({"result": "7"}));
         pump_until(&mut app, |a| texts(a).iter().any(|t| t == "Evaluate: n = 7")).await;
         let _ = std::fs::remove_dir_all(&dir);
@@ -7057,6 +7058,7 @@ pub(crate) mod tests {
         read_vars(&mut app, &mut fake).await;
         evaluate(&mut app, "p", true);
         let req = fake.recv("evaluate").await;
+        assert_watch_context(&req);
         fake.respond(&req, struct_point(9));
         pump_rows(&mut app, |r| r[0] == "▸ p  struct point").await;
         in_vars(&mut app);
@@ -7087,6 +7089,7 @@ pub(crate) mod tests {
         let before = texts(&app);
         evaluate(&mut app, "q", true);
         let req = fake.recv("evaluate").await;
+        assert_watch_context(&req);
         fake.respond_error(&req, "No symbol \"q\" in current context.");
         pump_rows(&mut app, |r| r[0].ends_with("could not evaluate: No symbol \"q\" in current context.")).await;
         assert_eq!(var_rows(&mut app)[0], "  q  could not evaluate: No symbol \"q\" in current context.");
@@ -7105,6 +7108,7 @@ pub(crate) mod tests {
         read_vars(&mut app, &mut fake).await;
         evaluate(&mut app, "p", true);
         let req = fake.recv("evaluate").await;
+        assert_watch_context(&req);
         fake.respond(&req, struct_point(9));
         pump_rows(&mut app, |r| r[0] == "▸ p  struct point").await;
         app.layout.hide(ToolWindowId::Debug);
@@ -7121,6 +7125,8 @@ pub(crate) mod tests {
         assert_watch_context(&req);
         assert_eq!(req["arguments"]["expression"], "p");
         drop(scopes);
+        let more = sent_since(&mut fake).await;
+        assert!(more.iter().all(|c| c != "evaluate"), "one evaluate per watch: {more:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

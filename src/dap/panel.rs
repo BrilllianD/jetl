@@ -2653,6 +2653,25 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_scope_read_is_said_under_the_watches() {
+        let s = Some(Phase::Suspended);
+        let mut p = watching(&["a", "b"]);
+        p.scopes_wanted().expect("the tab asks");
+        p.scopes_failed("boom".into());
+        let lines: Vec<String> = text_of(&mut p, s).lines().map(|l| l.trim_end().to_string()).collect();
+        assert!(lines[3].contains("a …") && lines[4].contains("b …"), "{lines:?}");
+        assert!(lines[5].contains("Could not read the variables: boom"), "under the two rows: {lines:?}");
+        // Watch rows that fill the content leave no room: nothing is drawn over them, nothing panics.
+        let names: Vec<String> = (0..12).map(|i| format!("w{i}")).collect();
+        let mut full = watching(&names.iter().map(String::as_str).collect::<Vec<_>>());
+        full.scopes_wanted().expect("the tab asks");
+        full.scopes_failed("boom".into());
+        let t = text_of(&mut full, s);
+        assert!(!t.contains("Could not read"), "{t}");
+        assert!(t.lines().filter(|l| l.contains(" …")).count() >= 5, "rows fill the content: {t}");
+    }
+
+    #[test]
     fn a_failed_watch_says_could_not_evaluate() {
         let mut p = watching(&["nosuch", "big"]);
         show_locals(&mut p);
