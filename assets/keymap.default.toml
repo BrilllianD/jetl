@@ -31,9 +31,11 @@
 # keep Shift+F10 for their context menu), Ctrl+F5 reruns the last run (also a
 # test run), Ctrl+F2 stops it. F-keys with modifiers arrive without the kitty
 # protocol; GNOME Terminal keeps Shift+F10 for itself: use the Run menu there.
+# Alt+Shift+F9 only selects one and starts nothing, for Shift+F9 or Shift+F10 next.
 # F4/Shift+F4 step through the problems in its output from anywhere; in the
 # Run window Ctrl+Alt+Down/Up do the same.
 "alt-shift-f10" = "run.pick"
+"alt-shift-f9" = "run.select"
 "shift-f10" = "run.run_selected"
 "ctrl-f5" = "run.rerun"
 # Ctrl+Shift+F10 runs the test at the caret (Run menu and F1 where the terminal keeps the key).

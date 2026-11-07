@@ -1,4 +1,4 @@
-//! Run tasks (`run.pick`, `run.rerun`, `run.stop`): one at a time, each in
+//! Run tasks (`run.pick`, `run.select`, `run.rerun`, `run.stop`): one at a time, each in
 //! its own process group, output streamed into the Run window. Starting a
 //! task while one runs kills the old one first; quitting and switching
 //! roots kill it too, and so does dropping the app.
@@ -812,6 +812,94 @@ mod tests {
         assert!(!app.run.running(), "restoring runs nothing");
         assert!(app.run_panel.status().is_none());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    async fn open_select_picker(app: &mut App) {
+        app.perform(Action::App(crate::actions::AppAction::OpenPalette(PaletteKind::SelectRunConfig)));
+        handle_next(app, |m| matches!(m, AppMsg::RunTasks { .. })).await;
+    }
+
+    fn selected_toasts(app: &App) -> Vec<(Level, String)> {
+        app.notifications.iter().filter(|n| n.text.starts_with("Selected run configuration")).map(|n| (n.level, n.text.clone())).collect()
+    }
+
+    #[tokio::test]
+    async fn select_picker_selects_and_runs_nothing() {
+        let (mut app, dir) = test_app("run-select-picker");
+        two_configs(&mut app);
+        open_select_picker(&mut app).await;
+        app.palette.as_mut().unwrap().set_query("b");
+        let res = app.palette.as_mut().unwrap().handle_action(&PaletteAction::Accept).unwrap();
+        app.finish_palette(res);
+        assert_eq!(app.run.selected.as_deref(), Some("b"));
+        assert!(!app.run.running(), "nothing started");
+        assert!(app.run_panel.status().is_none());
+        assert!(app.run.last.is_none());
+        assert!(!app.layout.is_visible(ToolWindowId::Run));
+        assert!(app.palette.is_none());
+        assert_eq!(selected_toasts(&app), [(Level::Info, "Selected run configuration 'b'".to_string())]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn select_picker_cancel_keeps_the_selection() {
+        use crate::ui::palette::PaletteResult;
+
+        let (mut app, dir) = test_app("run-select-cancel");
+        two_configs(&mut app);
+        app.run.selected = Some("a".into());
+        open_select_picker(&mut app).await;
+        app.finish_palette(PaletteResult::Cancel);
+        assert_eq!(app.run.selected.as_deref(), Some("a"));
+        assert!(!app.run.running());
+        assert!(selected_toasts(&app).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn alt_shift_f9_opens_the_selecting_picker_and_the_keys_switch() {
+        let (mut app, dir) = test_app("run-alt-shift-f9");
+        two_configs(&mut app);
+        let alt_shift = KeyModifiers::ALT | KeyModifiers::SHIFT;
+        let kind = |app: &App| app.palette.as_ref().map(|p| p.kind);
+        app.handle_key(KeyEvent::new(KeyCode::F(9), alt_shift));
+        assert_eq!(kind(&app), Some(PaletteKind::SelectRunConfig));
+        handle_next(&mut app, |m| matches!(m, AppMsg::RunTasks { .. })).await;
+        app.palette.as_mut().unwrap().set_query("b");
+        app.handle_key(KeyEvent::new(KeyCode::F(10), alt_shift));
+        assert_eq!(kind(&app), Some(PaletteKind::RunTasks));
+        assert_eq!(app.palette.as_ref().unwrap().input.text, "b", "the query is kept");
+        app.handle_key(KeyEvent::new(KeyCode::F(9), alt_shift));
+        assert_eq!(kind(&app), Some(PaletteKind::SelectRunConfig));
+        assert_eq!(app.palette.as_ref().unwrap().input.text, "b");
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.run.selected.as_deref(), Some("b"));
+        assert!(!app.run.running());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn run_pick_still_runs_after_switching_from_the_selecting_picker() {
+        let (mut app, dir) = test_app("run-pick-after-select");
+        two_configs(&mut app);
+        open_select_picker(&mut app).await;
+        app.palette.as_mut().unwrap().set_query("b");
+        app.handle_key(KeyEvent::new(KeyCode::F(10), KeyModifiers::ALT | KeyModifiers::SHIFT));
+        assert_eq!(app.palette.as_ref().map(|p| p.kind), Some(PaletteKind::RunTasks));
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        until_exit(&mut app).await;
+        assert_eq!(texts(&app), ["b"]);
+        assert_eq!(app.run.selected.as_deref(), Some("b"));
+        assert!(selected_toasts(&app).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn select_action_is_registered() {
+        use crate::actions::AppAction;
+
+        assert_eq!(Action::from_id("run.select"), Some(Action::App(AppAction::OpenPalette(PaletteKind::SelectRunConfig))));
+        assert_eq!(Action::from_id("run.pick"), Some(Action::App(AppAction::OpenPalette(PaletteKind::RunTasks))));
     }
 
     #[cfg(unix)]

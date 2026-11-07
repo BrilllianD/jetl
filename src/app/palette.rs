@@ -240,6 +240,7 @@ impl App {
 
     pub(super) fn finish_palette(&mut self, res: PaletteResult) {
         let compare = self.palette.as_ref().is_some_and(|p| p.kind == PaletteKind::CompareWith);
+        let select = self.palette.as_ref().is_some_and(|p| p.kind == PaletteKind::SelectRunConfig);
         // Forgetting a recent project keeps the palette open, without the row.
         if !matches!(res, PaletteResult::Accept(Accept::ForgetProject(_))) {
             self.close_palette();
@@ -253,6 +254,10 @@ impl App {
             PaletteResult::Accept(Accept::Branch(b)) => self.git_request(GitRequest::BranchOps(b)),
             PaletteResult::Accept(Accept::NewBranch) => self.git_request(GitRequest::NewBranch),
             PaletteResult::Accept(Accept::SwitchRoot(root)) => self.apply_effects(vec![Effect::SwitchRoot(root)]),
+            PaletteResult::Accept(Accept::RunTask(task)) if select => {
+                self.notify(Level::Info, format!("Selected run configuration '{}'", task.name));
+                self.select_run_config(task.name);
+            }
             PaletteResult::Accept(Accept::RunTask(task)) => {
                 self.run.selected = Some(task.name.clone());
                 self.run_task(*task)

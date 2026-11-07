@@ -2100,6 +2100,27 @@ two `[[configs]]` entries, `where` (`command = "pwd"`) and `hello` (`command = "
    no command: an error toast, nothing written. Repeat at 120x40 and 80x24: all six field rows,
    the help and the three buttons are visible.
 
+### Scenario: select a run configuration without running it
+
+Needs `gdb` 14 or newer and `gcc`. The fixture `/tmp/jetl-dap-demo` of `### Scenario: Debug and Stop`, at 80x24 and at
+120x40, with `[lsp] enabled = false` and the toolbar on (the default). Add to its `.jetl/run.toml`, after `demo`:
+`[[configs]] name = "marker"`, `command = ["sh", "-c", "touch marker-ran"]`, and `[debug.marker]` with `adapter = "gdb"`
+and `launch = { program = "${workspaceFolder}/demo" }`. Start jetl on the file, `jetl /tmp/jetl-dap-demo/demo.c`, so the
+editor has the focus (Shift+F10 in the Project tree opens its context menu). Delete `marker-ran` before each size. After
+every step that must run nothing, `ls marker-ran` fails. At 80x24 the toast of step 3 wraps over two lines.
+
+1. Negative control, nothing selected: Shift+F9 shows `Debugging demo with gdb`, then `Debug session ended, exit code 0`.
+2. `send-keys M-S-F9`: the title `Select Run Configuration`, the rows `demo` and `marker`. Escape: the toolbar does not
+   name `marker`.
+3. `send-keys M-S-F9`, type `marker`, Enter: the toast `Selected run configuration 'marker'`, the toolbar names `marker`,
+   the Run window stays hidden. `ls marker-ran` fails.
+4. `send-keys S-F9`: `Debugging marker with gdb`, then `Debug session ended, exit code 0`. `ls marker-ran` still fails
+   (Debug starts the block's `program`, not the command), and no `gdb` is left.
+5. Positive control: `send-keys S-F10` runs `marker`, and `ls marker-ran` now succeeds. Delete it.
+6. `send-keys M-S-F10`: the title `Run`. `send-keys M-S-F9`: the title `Select Run Configuration`. Escape.
+   F1, type `Run: select`, Enter: the same picker. Escape. `ls marker-ran` fails.
+7. Ctrl+Q and start again: the toolbar names `marker`, and `ls marker-ran` fails.
+
 ### Scenario: test runner tree
 
 Setup as for the other scenarios (fresh `$H`, LSP off) with the scratch crate `/tmp/jt-crate`

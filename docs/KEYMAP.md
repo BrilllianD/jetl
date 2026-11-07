@@ -121,6 +121,7 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Ctrl+Alt+Down` | `find.next_result` | Find: next result (opens it) |
 | `Ctrl+Alt+Up` | `find.prev_result` | Find: previous result (opens it) |
 | `Alt+Shift+F10` | `run.pick` | Run: choose a configuration and run it |
+| `Alt+Shift+F9` | `run.select` | Run: select a configuration without running it |
 | `Shift+F10` | `run.run_selected` | Run: run the selected configuration |
 | `Ctrl+F5` | `run.rerun` | Run: run the last run again |
 | `Ctrl+Shift+F10` | `run.test_at_caret` | Run: run the test at the caret |

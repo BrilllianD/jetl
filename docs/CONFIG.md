@@ -481,7 +481,9 @@ that file like any other bad key.
 
 Run > Debug (Shift+F9) starts the configuration selected in the Run window, else
 the first one with a debug table, under its adapter, in the project root; the
-program is the one named in `launch`. Only one session runs at a time: starting
+program is the one named in `launch`. Alt+Shift+F9 (`run.select`) selects a
+configuration and starts nothing, so a configuration that is not the first can be
+debugged without running it first. Only one session runs at a time: starting
 another stops the first, with no prompt. Ctrl+F2 or Run > Stop Debugging stops it,
 and Ctrl+F2 reaches a Run task only while no session is live (under a dialog or the palette it still stops the Run task, not the session). Debug refuses a
 working directory or a program whose name holds a line break, because gdb runs `cd` and `file` with it

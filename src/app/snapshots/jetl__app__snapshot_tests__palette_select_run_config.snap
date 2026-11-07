@@ -1,0 +1,31 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &marks, None)"
+---
+80x24 cursor=(6,5)
+00  ≣ ┌ Project: root ───────────────┐│
+01    │                              ││
+02  ⌂ │                              ││
+03  ◫ │                              ││
+04  ⊢┌ Select Run Configuration ────────────────────────────────────────────────┐
+05   │ › type a task name                                                     2 │
+06   │ demo  ./demo                                                 config.toml │
+07   │ marker  touch marker-ran                                     config.toml │
+08   │                                                                          │
+09   │                                                                          │
+10   │                                                                          │
+11   │                                                                          │
+12  ◉└──────────────────────────────────────────────────────────────────────────┘
+13  ⋔ │                              ││         Ctrl+Shift+N finds a file.
+14  ✎ │                              ││
+15  ✓ │                              ││
+16  ⟲ │                              ││
+17  ⚑ │                              ││
+18  ⎇ │                              ││
+19  ❯ │                              ││
+20  ⚠ │                              ││
+21  ► │                              ││
+22  ⌕ └──────────────────────────────┘│
+23
+-- marks: L=selected
+06    LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL

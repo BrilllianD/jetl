@@ -1338,6 +1338,23 @@ async fn palette_scratches() {
 }
 
 #[tokio::test]
+async fn palette_select_run_config() {
+    let mut fx = stable_app("palette-select-run-config");
+    let app = &mut fx.app;
+    let tasks = crate::config::Config::parse(
+        "[[run.tasks]]\nname = \"demo\"\ncommand = \"./demo\"\n\n[[run.tasks]]\nname = \"marker\"\ncommand = \"touch marker-ran\"\n",
+    )
+    .unwrap()
+    .run
+    .tasks;
+    app.open_palette(PaletteKind::SelectRunConfig);
+    app.palette.as_mut().unwrap().set_tasks(tasks, false);
+    let term = draw_app(app, 80, 24);
+    let marks = palette_marks(&app.theme);
+    assert_snapshot!("palette_select_run_config", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
 async fn palette_files_ascii() {
     let mut fx = stable_app("palette-files-ascii");
     let app = &mut fx.app;

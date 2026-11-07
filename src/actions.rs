@@ -139,6 +139,8 @@ pub enum PaletteKind {
     Symbols,
     /// The Run task picker.
     RunTasks,
+    /// The same list as `RunTasks`, but Enter only selects the row (`run.select`): nothing runs.
+    SelectRunConfig,
     /// Places a language server answered with (definitions, usages); opened
     /// by the app with its rows (`App::show_locations`), not by an action.
     Locations,
@@ -1167,6 +1169,7 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "event_log.clear" => "Event Log: clear", EventLog(EventLogAction::Clear);
 
         "run.pick" => "Run: choose a configuration and run it", App(AppAction::OpenPalette(PaletteKind::RunTasks));
+        "run.select" => "Run: select a configuration without running it", App(AppAction::OpenPalette(PaletteKind::SelectRunConfig));
         "run.run_selected" => "Run: run the selected configuration", Run(RunAction::RunSelected);
         "run.edit_configs" => "Run: edit run configurations", Run(RunAction::EditConfigs);
         "run.rerun" => "Run: run the last run again", Run(RunAction::Rerun);
