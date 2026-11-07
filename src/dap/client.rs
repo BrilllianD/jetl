@@ -1,7 +1,7 @@
 //! The driver of one debug session: it owns the process, the frames and the clock, and feeds `session::Session`, which
 //! decides everything about order. It reports through a closure, so it needs no App. One `select!` over commands, incoming
 //! frames, child exit and a tick. `Group` makes every way out of it kill the process group; EOF in particular
-//! has no `Action::Kill`.
+//! has no `Action::Kill`. A panic in it also reports the end (`Driver`'s `Drop`).
 
 use std::future::Future;
 use std::sync::Arc;
@@ -15,9 +15,9 @@ use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::task::JoinHandle;
 use tokio::time::MissedTickBehavior;
 
-use super::DapMsg;
 use super::protocol::Incoming;
-use super::session::{Action, Command, Input, STOP_STAGE, Session, SessionId, SessionSpec};
+use super::session::{Action, Command, Input, Phase, STOP_STAGE, Session, SessionId, SessionSpec};
+use super::{DapBody, DapMsg};
 use crate::lsp::client::Conn;
 use crate::lsp::transport::{read_frame, write_frame};
 use crate::run::process::kill_group;
@@ -28,6 +28,8 @@ const TICK: Duration = Duration::from_millis(250);
 const CHILD_DRAIN: Duration = Duration::from_millis(500);
 /// The most [`DapClient::shutdown`] waits: both stop stages, each up to a `TICK` late, and a margin.
 pub const SHUTDOWN_LIMIT: Duration = Duration::from_secs(STOP_STAGE.as_secs() * 2 + 2);
+/// Why a session ended when its driver panicked; the hook has written the panic to the log.
+const DRIVER_PANIC: &str = "driver panicked, see jetl.log";
 
 /// The process group, while it is ours to signal; 0 when none, or once killed, so a reused id is never signalled.
 /// Owned by the driver's future, so that a panic, an abort or the runtime's shutdown kill the group as well.
@@ -100,7 +102,7 @@ impl Drop for DapClient {
 
 /// Everything the loop acts on between awaits. `feed` and `apply` are synchronous on purpose: `emit` is not
 /// `Sync`, so no reference to it may be held across an `.await`.
-struct Driver<F> {
+struct Driver<F: Fn(DapMsg)> {
     session: Session,
     out: UnboundedSender<Value>,
     // Before `emit`: `pid()` is `None` by the time the channel behind `emit` closes.
@@ -138,6 +140,19 @@ impl<F: Fn(DapMsg)> Driver<F> {
     }
 }
 
+impl<F: Fn(DapMsg)> Drop for Driver<F> {
+    /// A panic is the one way out the App would not hear of: its `Live` would stay active, with nobody to hear Ctrl+F2.
+    /// Only a panic unwinds, so a dropped handle, an abort and the runtime's shutdown stay silent. The machine may be what
+    /// panicked, so nothing here asks it. The group goes right after this, with the fields.
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            for body in [DapBody::Phase(Phase::Ended), DapBody::Ended { reason: DRIVER_PANIC.to_string() }] {
+                (self.emit)(DapMsg { generation: self.generation, session: self.id, body });
+            }
+        }
+    }
+}
+
 /// Names only: a body can hold what the launch arguments carried.
 fn log_incoming(id: SessionId, msg: &Incoming) {
     match msg {
@@ -154,9 +169,9 @@ async fn drive<F: Fn(DapMsg)>(spec: SessionSpec, conn: Conn, mut cmds: Unbounded
     let reader = spawn_reader(reader, in_tx);
     let writer = spawn_writer(writer, out_rx);
     let (generation, id) = (spec.generation, spec.id);
-    let mut session = Session::new(spec, Instant::now());
-    let first = session.start();
+    let session = Session::new(spec, Instant::now());
     let mut d = Driver { session, out, group, emit, generation, id };
+    let first = d.session.start();
     d.apply(first);
     let mut tick = tokio::time::interval(TICK);
     tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -292,6 +307,21 @@ mod tests {
         (
             move |m| {
                 let _ = tx.send(m);
+            },
+            rx,
+        )
+    }
+
+    /// An `emit` with a bug: it panics inside the driver on the first `Output`, as close as a test gets to a bug in the driver.
+    fn panics_on_output() -> (impl Fn(DapMsg) + Send + 'static, UnboundedReceiver<DapMsg>) {
+        let (send, rx) = collector();
+        (
+            move |m: DapMsg| {
+                let bug = matches!(m.body, DapBody::Output(_));
+                send(m);
+                if bug {
+                    panic!("a bug in the driver");
+                }
             },
             rx,
         )
@@ -576,6 +606,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_panic_in_the_driver_reports_the_end() {
+        let (conn, mut adapter) = fake::connect(caps(), Order::LaunchDeferred);
+        let (emit, mut rx) = panics_on_output();
+        let client = DapClient::start(spec(&[]), conn, emit);
+        answer_configuration(&mut adapter).await;
+        until(&mut rx, |b| *b == DapBody::Phase(Phase::Running)).await;
+        adapter.event("output", json!({"output": "x"}));
+        let seen = rest(&mut rx).await;
+        assert!(matches!(seen[0], DapBody::Output(_)), "{seen:?}");
+        assert_eq!(seen[1..], [DapBody::Phase(Phase::Ended), DapBody::Ended { reason: DRIVER_PANIC.into() }]);
+        adapter.closed().await;
+        // A dead driver does not hold up a quit.
+        assert!(tokio::time::timeout(Duration::from_secs(1), client.shutdown()).await.is_ok());
+    }
+
+    #[tokio::test]
     async fn nothing_is_reported_once_the_handle_is_gone() {
         let (conn, mut adapter) = fake::connect(caps(), Order::LaunchDeferred);
         let (send, mut rx) = collector();
@@ -692,6 +738,18 @@ mod tests {
             let client = DapClient::start(spec(&[]), sh("exit 3", &[]), emit);
             let bodies = rest(&mut rx).await;
             assert_eq!(bodies, ended("adapter exited"));
+            assert_eq!(client.pid(), None);
+        }
+
+        #[tokio::test]
+        async fn a_panic_in_the_driver_kills_the_group() {
+            let out = frame(&json!({"seq": 1, "type": "event", "event": "output", "body": {"output": "x"}}));
+            let (emit, mut rx) = panics_on_output();
+            let client = DapClient::start(spec(&[]), sh(r#"printf %s "$0"; sleep 100 & sleep 100"#, &[&out]), emit);
+            let pgid = client.pid().unwrap();
+            let seen = rest(&mut rx).await;
+            assert!(seen.ends_with(&ended(DRIVER_PANIC)), "{seen:?}");
+            group_gone(pgid).await;
             assert_eq!(client.pid(), None);
         }
 
