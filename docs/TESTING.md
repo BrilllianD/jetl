@@ -2040,8 +2040,8 @@ x4, `Home`, `Right` x10: the caret is inside `helper` of line 5.
     `7 matches in 2 files; 2 excluded`. Included: `main.rs` line 4 (`s.area()`,
     the `dyn` call) and `shapes.rs` lines 2, 3, 8 and 11 (the declaration,
     `self.area()` and both impl definitions). Excluded: `main.rs` line 10, both
-    `c.area()` and `q.area()`. Why the text rename leaves those two out was
-    not analysed in 406 (it is the existing textual path, see step 5 and yman 407);
+    `c.area()` and `q.area()`: they sit inside `println!`, whose arguments the
+    symbol index does not read (yman 446). This split is not a pass condition;
     the list is for review. `Escape`,
     `C-q`, exit 0 and empty stderr.
 
