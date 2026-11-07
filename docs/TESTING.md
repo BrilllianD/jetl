@@ -1250,12 +1250,46 @@ cells. The script of the last run is `~/.claude/plans/backlog-run-24-partC-S7-fi
 11. Restart with `RUST_LOG=jetl=info`. `flood`: from Shift+F9 to the toast `exit code 0`, then until `flood 99999` is the
     Console's last line: that last interval must be at most 5 s (observed 0.01 s to 0.12 s; the first is 1.3 s to 6.6 s). `spew`: after 3 s of output Alt+F5 and Alt+F5 hide the window within 1 s (observed at once), Alt+F5 shows
     it, Ctrl+F2 gives `Debug session stopped` within 10 s (observed 4.0 s to 4.2 s) and no `spew` or `gdb` is left.
-    `ps -o rss=` of jetl: about 100 to 125 MB while spewing and after.
+    `ps -o rss=` of jetl: about 35 to 40 MB while spewing and after (37 MB and 38 MB in yman 425's run; the figure written here before was 100 to 125 MB).
 
 gdb cannot show, and the unit tests prove: `stderr` and `important` styling (gdb's stderr arrives as `stdout`), a partial
 last line (gdb is line-based), `telemetry`, a `Failed` verdict's message, a `removed` event's line, a `breakpoint` event for a mark in a
 second file, a pending breakpoint placed later by a library load, stale `DebugOutput`, a root switch, the other start orders. Alt+F5 from a physical
 keyboard through the terminal emulator into tmux stays the user's to confirm.
+
+### Scenario: Console pressure
+
+Under real `gdb` 17.2 (yman 425), release build (`CARGO_PROFILE_RELEASE_LTO=off` is faster to build; the figures hold either way). Needs at least 7000 MB available (`free -m`): a run can take 3 GB in jetl and 3 GB in gdb, and `/tmp` is tmpfs. The figures move by a factor of two with the machine's load. A run is one session of jetl on a pty whose master a script reads, once per second noting `VmRSS` and `VmHWM` of jetl and the state of its main thread; `stall` stops reading the master, which blocks jetl's terminal write exactly as a frozen ssh session does. `probe.py` and `sum.py` of that run are in `~/.claude/plans/backlog-run-25-S5b-evidence/`. Fixtures, each `/tmp/<dir>/p.c` built with `gcc -g -O0 -o p p.c`, with `.jetl/run.toml` holding `[[configs]] name = "p"`, `command = ["./p"]` and `[debug.p]` with `adapter = "gdb"`, `launch = { program = "${workspaceFolder}/p" }`:
+
+- `spew5`: `int main(void){for(;;)puts("spew");}`
+- `long16k`: `static char b[16384];`, `int main(void){memset(b,'x',sizeof b);b[sizeof b-1]='\n';for(;;)fwrite(b,1,sizeof b,stdout);}`
+- `long1mnl`: `static char b[1<<20];`, `int main(void){memset(b,'y',sizeof b);b[sizeof b-1]='\n';for(;;){fwrite(b,1,sizeof b,stdout);fflush(stdout);}}`
+- `uniq`: `int main(void){for(long i=0;;i++)printf("x%ld.c:1\n",i);}`
+- `uniqlong`: `int main(void){long i=0;for(;;){int n=0;while(n<16000)n+=printf("x%ld.c:1 ",i++);putchar('\n');}}`
+- `flood` as in the scenario above.
+
+Figures, jetl's `VmHWM` unless noted, 120x40 (the `long16k` stall also at 80x24), after the gate and before it:
+
+| Fixture, mode | After | Before |
+|---|---|---|
+| `long16k` stall 30 s | 307 MB, flat (80x24: 282 MB) | 3857 MB, over the guard after 20 s of the stall |
+| `long16k` free 30 s | 317 MB, flat in the last 10 s | 2654 MB |
+| `long1mnl` stall 20 s | 293 MB | about 3 GB (designer's run) |
+| `spew5` stall 30 s | 82 MB, `resume_now` key latency 23 ms | 678 MB, 159 ms |
+| `uniqlong` free 20 s | 200 MB | about 1.4 GB (designer's run) |
+| `uniq` free 30 s | 38 MB | 123 MB |
+| `spew5` free 30 s | 34 MB | 37 MB |
+| `flood` | 35 MB | not run |
+
+Each run: Ctrl+F2 until gdb is gone at most 5 s, Ctrl+Q exits 0. `of output dropped` appears in the Console in the `long16k` and the `spew5` stall runs and in neither `flood` nor `spew5` free.
+
+Steps, at 80x24 and 120x40, a private tmux socket and `XDG_*` under `/tmp`, `RUST_LOG=jetl=info`:
+
+1. Alt+Shift+F9 chooses `flood`, Shift+F9: `flood 99999` is the Console's last line within 5 s of the exit toast, and no `of output dropped` is on screen.
+2. `spew`: after 3 s of output Alt+F5 hides the window at once; Alt+F5 shows it; Ctrl+F2 gives `Debug session stopped` within 10 s and no `spew` or `gdb` is left. jetl stays near 40 MB.
+3. `long16k`: Shift+F9, then poll `capture-pane` every 100 ms for up to 60 s until `of output dropped` is there (it can be on screen only for a moment: the Console shows the end of each 50 ms batch). The row starts with a number of bytes, is in the warning colour (`capture-pane -e`: the colour of `important` text) and at 80x24 the words `of output dropped` fit. Ctrl+F2 gives `Debug session stopped`, Ctrl+Q exits 0 with empty stderr, and no `gdb` or `long16k` is left. jetl stays near 250 to 320 MB.
+
+What the gate cannot do, by design: gdb's own memory grows 50 to 67 MB/s under a printing program (2 GB in 30 s for `spew5`) whatever jetl does, so a probe that runs `spew5` or `long16k` for a minute can pass the 3 GB guard in gdb; read `VmHWM` of jetl, not the guard. Unit tests prove the rest: the gate's limit and hysteresis, the notice's order and text, the give-back of a hidden line, the matcher's budget. The fake adapter stands in for none of the figures above.
 
 ### Scenario: Debug window, threads and frames
 

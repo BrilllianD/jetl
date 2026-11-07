@@ -21,7 +21,7 @@ use crate::dap::config::{
     AdapterConfig, DebugBlock, DebugConfig, LaunchVars, choose_adapter, default_block, fill_artifact, load_debug_blocks, needs_artifact,
     process_env, resolve_build, resolve_launch,
 };
-use crate::dap::console::spawn_console;
+use crate::dap::console::{ConsoleGate, MAX_QUEUED, forward_output, spawn_console};
 use crate::dap::panel::{BuildStage, DebugTab, FrameRow};
 use crate::dap::protocol::{
     Breakpoint, BreakpointEvent, OutputEvent, Scope, ScopesBody, StackFrame, StackTraceBody, StoppedEvent, Thread, ThreadsBody, Variable,
@@ -78,6 +78,8 @@ pub(super) struct Live {
     pub(super) stop_seq: u64,
     /// The program's output goes to the Console thread; dropping this ends it after it flushed what it holds.
     pub(super) console: std::sync::mpsc::Sender<OutputEvent>,
+    /// The bytes of `output` events not yet fed to the Console thread; `dap_msg` gives back a line it hides.
+    pub(super) gate: Arc<ConsoleGate>,
     /// The adapter reads `start` and `count` of `variables`; false until `Started`.
     pub(super) paging: bool,
 }
@@ -685,7 +687,8 @@ impl App {
         let lost_cwd = p.launch["cwd"].as_str().filter(|c| gdb && gdb_cd_fails(c, &root)).map(one_line);
         let spec = SessionSpec { id, generation, adapter_id: p.adapter.name.clone(), launch: p.launch, breakpoints };
         let output_tx = self.bus_tx.clone();
-        let console = spawn_console(cwd, root.clone(), move |lines| {
+        let gate = Arc::new(ConsoleGate::new(MAX_QUEUED));
+        let console = spawn_console(cwd, root.clone(), gate.clone(), move |lines| {
             let _ = output_tx.send(AppMsg::DebugOutput { generation, session: id, lines });
         });
         if session.is_none() {
@@ -694,8 +697,11 @@ impl App {
             self.debug_panel.set_stage(None);
         }
         let tx = self.bus_tx.clone();
+        let emit_gate = gate.clone();
         let client = DapClient::start(spec, conn, move |m| {
-            let _ = tx.send(AppMsg::Dap(m));
+            forward_output(&emit_gate, m, |m| {
+                let _ = tx.send(AppMsg::Dap(m));
+            });
         });
         self.debug.session = Some(Live {
             id,
@@ -712,6 +718,7 @@ impl App {
             thread: None,
             stop_seq: 0,
             console,
+            gate,
             paging: false,
         });
         self.notify(Level::Info, format!("Debugging {} with {}", p.name, p.adapter.name));
@@ -777,6 +784,7 @@ impl App {
                 if let Some(l) = self.debug.session.as_mut() {
                     if e.category.as_deref() == Some("stdout") && early_gdb_line(&e.output, &mut l.early) {
                         tracing::info!("dap: not shown, said before the program loads: {}", e.output.trim_end());
+                        l.gate.release(&e);
                     } else {
                         let _ = l.console.send(e);
                     }
@@ -3887,6 +3895,22 @@ pub(crate) mod tests {
                 "marker2".into()
             ]
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_hidden_early_line_gives_its_charge_back() {
+        let (mut app, dir, mut fakes) = setup("console-early-gate-charge", Order::LaunchEarly);
+        let a = six(&mut app);
+        toggle(&mut app, &a, 1);
+        let (fake, _) = running(&mut app, &mut fakes).await;
+        gdbs_pair(&fake, "stdout", &a, 2);
+        output(&fake, "stdout", "marker\n");
+        console_until(&mut app, |x| console(x).contains(&"marker".to_string())).await;
+        assert_eq!(console(&app), ["marker"], "the pair was hidden");
+        // The Console thread gave back its own charge before it showed the line, and `dap_msg` the pair's.
+        let gate = app.debug.session.as_ref().expect("a session").gate.clone();
+        assert_eq!(gate.queued(), 0);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

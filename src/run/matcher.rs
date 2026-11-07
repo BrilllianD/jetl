@@ -70,6 +70,12 @@ re!(GENERIC, r#"(?:^|[\s(\[{"'=,])((?:[^\s:()\[\]{}"',]*[./\\])?[^\s:()\[\]{}"',
 re!(WORD_ERROR, r"(?i)\berror\b");
 re!(WORD_WARNING, r"(?i)\bwarn(?:ing)?\b");
 
+/// What `Matcher::resolved` may hold, counted as each token's length plus `RESOLVED_ENTRY_COST`; a cache over it
+/// is cleared. A program that prints a new token on every line would otherwise grow it for the whole session.
+const MAX_RESOLVED_BYTES: usize = 1024 * 1024;
+/// Bytes charged per cached token on top of its length: the `String`, the slot and the `Option<PathBuf>` (measured 94).
+const RESOLVED_ENTRY_COST: usize = 96;
+
 /// Matches the lines of one run in order (rustc locations depend on the line
 /// before). Caches which paths exist.
 #[derive(Debug)]
@@ -79,6 +85,8 @@ pub struct Matcher {
     /// Severity of the last rustc header, until a blank line.
     pending: Option<Severity>,
     resolved: HashMap<String, Option<PathBuf>>,
+    /// The size of `resolved` by the rule of `MAX_RESOLVED_BYTES`.
+    resolved_bytes: usize,
 }
 
 impl Matcher {
@@ -94,7 +102,7 @@ impl Matcher {
         } else {
             dirs.push(root.to_path_buf());
         }
-        Self { dirs, pending: None, resolved: HashMap::new() }
+        Self { dirs, pending: None, resolved: HashMap::new(), resolved_bytes: 0 }
     }
 
     pub fn line(&mut self, text: String) -> RunLine {
@@ -186,6 +194,11 @@ impl Matcher {
         } else {
             self.dirs.iter().map(|d| d.join(p)).find(|f| f.is_file()).map(|f| normalize(&f))
         };
+        self.resolved_bytes += raw.len() + RESOLVED_ENTRY_COST;
+        if self.resolved_bytes > MAX_RESOLVED_BYTES {
+            self.resolved.clear();
+            self.resolved_bytes = raw.len() + RESOLVED_ENTRY_COST;
+        }
         self.resolved.insert(raw.to_string(), found.clone());
         found
     }
@@ -299,6 +312,55 @@ mod tests {
         for text in ["12:30:45 started", "listening on 127.0.0.1:8080", "nope.rs:1:1 error", "error: 3 failed"] {
             assert_eq!(scan(&mut m, text).link, None, "{text}");
         }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn resolved_stays_within_its_budget() {
+        let root = project("budget", &["real.c"]);
+        let mut m = Matcher::new(&root, &root);
+        let mut cleared = false;
+        let mut before = 0;
+        for n in 0..200_000 {
+            scan(&mut m, &format!("x{n}.c:1"));
+            assert!(m.resolved_bytes <= MAX_RESOLVED_BYTES, "line {n}: {} bytes", m.resolved_bytes);
+            assert!(m.resolved.len() < MAX_RESOLVED_BYTES / RESOLVED_ENTRY_COST + 1, "line {n}: {} entries", m.resolved.len());
+            cleared |= m.resolved.len() < before;
+            before = m.resolved.len();
+        }
+        assert!(cleared, "200 000 unique tokens never cleared the cache");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_long_token_counts_by_its_length() {
+        let root = project("longtoken", &["real.c"]);
+        let mut m = Matcher::new(&root, &root);
+        let pad = "y".repeat(8 * 1024);
+        let mut most = 0;
+        for n in 0..1000 {
+            scan(&mut m, &format!("{n}{pad}.c:1"));
+            most = most.max(m.resolved.len());
+            assert!(m.resolved_bytes <= MAX_RESOLVED_BYTES, "line {n}: {} bytes", m.resolved_bytes);
+        }
+        // 1 MiB of 8 KiB tokens is 128 at most, not the 10 000 that a count of entries alone would allow.
+        assert!((100..=128).contains(&most), "{most} entries at most");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_real_file_still_links_after_a_clear() {
+        let root = project("afterclear", &["src/a.c"]);
+        let mut m = Matcher::new(&root, &root);
+        let first = scan(&mut m, "src/a.c:2 here").link.expect("a link before");
+        assert!(m.resolved.contains_key("src/a.c"));
+        for n in 0..12_000 {
+            scan(&mut m, &format!("x{n}.c:1"));
+        }
+        assert!(!m.resolved.contains_key("src/a.c"), "the cache was never cleared");
+        let again = scan(&mut m, "src/a.c:2 here").link.expect("a link after");
+        assert_eq!(again, first);
+        assert_eq!(again.path, root.join("src/a.c"));
         let _ = std::fs::remove_dir_all(&root);
     }
 }
