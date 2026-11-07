@@ -1189,6 +1189,54 @@ declare `supportsConditionalBreakpoints` or `supportsLogPoints` gets the entry w
 the Console says once that those breakpoints stop every time; an adapter that is not gdb gets the log message
 without the added line end.
 
+### Scenario: Run to Cursor
+
+Needs `gdb` 14 or newer (written against 17.2) and `gcc`. At 80x24 and at 120x40, with the directories, config and
+log of the previous scenario (`RUST_LOG=jetl=debug`, `[lsp] enabled = false`, `[ui] toolbar = false`, and `-iex "set
+debug dap-log-file <path>"` in the adapter's command; copy `dap.log` after each session), the fixture
+`/tmp/jetl-dap-demo` with `loop.c` (9 lines: 3 `int sum = 0;`, 5 `sum += i;`, 6 the loop's `}`, 7 the `printf`) and
+`demo.c`, and the `loop` configuration picked with Alt+Shift+F9. Start `jetl loop.c` only when `pgrep -x loop` and
+`pgrep -f '[g]db -q -i=dap'` print nothing. tmux delivers `send-keys M-F9` as `\e[20;3~`. Without the kitty keyboard
+protocol Ctrl+Shift keys do not arrive: Find Action is F1 and the file picker Ctrl+N. The Debug window takes Alt+F5,
+Alt+Right changes its tab, and Esc gives the keys back to the editor.
+
+1. No session: Ctrl+G `7`, Alt+F9. Nothing happens: no toast, no dialog, the caret stays on 7. F1, `Run to Cursor`,
+   Enter: the row reads `Debug: Run to Cursor (the paused program runs to the caret's line)  debug.run_to_cursor
+   Alt+F9`, and the Info toast is `No paused debug session`.
+2. Ctrl+G `3`, Ctrl+F8 (`3●`), Shift+F9: it stops at 3. Ctrl+G `7`, Alt+F9: it stops at 7 (`7▶`, no mark glyph on
+   7 at any time), the Variables tab shows `sum = 10`, and the Console is empty. `jetl.log` has `dap: run to cursor at
+   /tmp/jetl-dap-demo/loop.c:6`, `dap: not shown, about Run to Cursor's breakpoint: Breakpoint 2 at 0x555555555161:
+   file loop.c, line 7.` and `dap: run to cursor over, restoring`. `dap.log`, in this order: `setBreakpoints`
+   `[{"line": 3}, {"line": 7}]`, its answer (`{"id": 1, ...}` and `{"id": 2, "verified": true, "line": 7}`), then the
+   `output` event with that `Breakpoint 2 at ...` line, `continue`, `stopped` with `hitBreakpointIds: [2]`, and
+   `setBreakpoints` `[{"line": 3}]`. F9: `Debug session ended, exit code 0`, and the Console holds `sum=10`.
+3. The temporary entry goes at any stop: also Ctrl+F8 on 5 (`5●`). Shift+F9 stops at 3. Ctrl+G `7`, Alt+F9: it stops
+   at 5 (`i = 0`), since the user's breakpoint is first, and `dap.log` has the restore `[{"line": 3}, {"line": 5}]`
+   right after that stop. Ctrl+F8 on 5 (cleared), F9: no stop at 7, exit code 0.
+4. A conditional mark on the caret's line: Ctrl+F8 on 5, Alt+Shift+F8, `Condition`, `i == 3` (`5◉`). Shift+F9 stops
+   at 3. Ctrl+G `5`, Alt+F9: it stops at 5 with `i = 0`, since Run to Cursor stops at the first hit. `dap.log`: the
+   run's request is `[{"line": 3}, {"line": 5}]` (plain on 5), the restore is `[{"line": 3}, {"condition": "i ==
+   3", "line": 5}]`, and the id of line 5 is 2 in the answers of both: gdb keeps a breakpoint whose condition was
+   dropped (same id, silent). F9 stops at 5 with `i = 3`; F8 and the gutter reads `5◉` again. Ctrl+F2.
+5. A moved line: clear 5's mark (Ctrl+F8). Shift+F9 stops at 3. Ctrl+G `6`, Alt+F9: Info `Run to Cursor: no code on
+   loop.c:6, running to line 7`, and it stops at 7. gdb answers `{"id": 2, "verified": true, "line": 7}`, then prints
+   `Breakpoint 2 at 0x555555555161: file loop.c, line 7.` (not in the Console).
+6. Refused lines, paused at 7: Ctrl+G `1`, Alt+F9 gives Warn `Run to Cursor: loop.c:1 not placed: no code loaded for
+   this line`. It is still paused at 7, the Console is empty, and `jetl.log` has `❌️ No compiled code for line 1 in
+   file "/tmp/jetl-dap-demo/loop.c".` and `Breakpoint 3 (-source /tmp/jetl-dap-demo/loop.c -line 1) pending.` as not
+   shown. gdb answered `{"id": 3, "verified": false, "reason": "pending"}`, and `dap.log` has the restore `[{"line":
+   3}]` right after the answer. Then Ctrl+N `demo.c`, Ctrl+G `9`, Alt+F9: Warn `Run to Cursor: demo.c:9 not placed:
+   no code loaded for this line`, still paused, `No source file named /tmp/jetl-dap-demo/demo.c.` and its `pending`
+   line not shown, and the restore is `[]`. F9: exit code 0.
+7. The toasts of steps 5 and 6 are whole on screen at 80x24 (they wrap on 3 lines).
+8. Every session: exit 0, empty stderr; no `gdb`, `loop` or tmux server is left.
+
+Observed 2026-11-07 with gdb 17.2 at both sizes; the same wire at 80x24 and 120x40. Only gdb was tried. What only the
+fake adapter shows (the unit tests prove it): a failed answer (`Run to Cursor: <place> failed: <message>`), an answer
+that comes after the user resumed (nothing resumes again), a mark changed during the run (the request of that source
+keeps the temporary entry, `Live::sent` stays the marks'), and a second run in another file (the first source is
+restored first). The one line gdb prints when a restore re-creates a log point (`Breakpoint N at ...`) is not hidden.
+
 ### Scenario: stepping and the execution point
 
 Needs `gdb` 14 or newer and `gcc`. At 80x24 and at 120x40, with the directories, config and log of the previous

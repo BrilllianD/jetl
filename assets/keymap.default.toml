@@ -602,6 +602,7 @@
 "shift-f8" = "debug.step_out"
 "alt-f10" = "debug.show_execution_point"
 "alt-f8" = "debug.evaluate"
+"alt-f9" = "debug.run_to_cursor"
 
 # While the Terminal window (Alt+F12) has focus every key goes to the shell
 # except the ones in this table, which is the only one consulted there (add

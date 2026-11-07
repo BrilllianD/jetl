@@ -449,6 +449,7 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Shift+F8` | `debug.step_out` | Debug: Step Out |
 | `Alt+F10` | `debug.show_execution_point` | Debug: Show Execution Point |
 | `Alt+F8` | `debug.evaluate` | Debug: Evaluate Expression |
+| `Alt+F9` | `debug.run_to_cursor` | Debug: Run to Cursor (the paused program runs to the caret's line) |
 
 ## event_log
 

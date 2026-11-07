@@ -571,6 +571,8 @@ pub enum DebugAction {
     ShowExecutionPoint,
     /// Evaluate an expression in the selected frame, or add it to the watches.
     Evaluate,
+    /// Alt+F9: run the paused program to the caret's line.
+    RunToCursor,
     /// Alt+Shift+F8: edit the condition or log message of the breakpoint on the caret's line.
     EditBreakpoint,
     /// Variables: remove the selected watch.
@@ -1205,6 +1207,7 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "debug.pause" => "Debug: Pause", Debug(DebugAction::Pause);
         "debug.show_execution_point" => "Debug: Show Execution Point", Debug(DebugAction::ShowExecutionPoint);
         "debug.evaluate" => "Debug: Evaluate Expression", Debug(DebugAction::Evaluate);
+        "debug.run_to_cursor" => "Debug: Run to Cursor (the paused program runs to the caret's line)", Debug(DebugAction::RunToCursor);
         "debug.edit_breakpoint" => "Debug: Edit Breakpoint (condition or log message) on the caret's line", Debug(DebugAction::EditBreakpoint);
         "debug.remove_watch" => "Debug: remove the selected watch", Debug(DebugAction::RemoveWatch);
         "debug.up" => "Debug: up", Debug(DebugAction::Up);
@@ -1385,7 +1388,8 @@ impl Action {
                 | DebugAction::StepInto
                 | DebugAction::StepOut
                 | DebugAction::ShowExecutionPoint
-                | DebugAction::Evaluate,
+                | DebugAction::Evaluate
+                | DebugAction::RunToCursor,
             ) => &["debug.suspended"],
             Action::Debug(
                 DebugAction::Up

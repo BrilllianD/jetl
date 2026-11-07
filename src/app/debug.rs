@@ -85,6 +85,60 @@ pub(super) struct Live {
     /// What is known of the adapter, since no capability tells: true when `start` and `count` are checked to
     /// bound its answer, so a hint above `UNPAGED_LIMIT` may be asked. Only gdb is.
     pub(super) trusted_paging: bool,
+    /// Run to Cursor, from Alt+F9 until the next stop: see `debug_run_to_cursor`.
+    pub(super) run_to: Option<RunTo>,
+    /// Open from the answer that placed a fresh temporary breakpoint to the next stop.
+    pub(super) run_to_quiet: Option<RunToQuiet>,
+}
+
+/// Run to Cursor's temporary `setBreakpoints` entry: never a mark, never in `Live::sent`.
+pub(super) struct RunTo {
+    pub(super) source: PathBuf,
+    /// 0-based, the caret's line: every request of `source` carries a plain entry here, in place of a mark's.
+    pub(super) line: usize,
+    /// `Live::epoch` when it was asked: the answer resumes only from that same pause.
+    pub(super) epoch: u64,
+    /// The adapter placed it; it stays until the next stop or the end.
+    pub(super) answered: bool,
+}
+
+/// gdb's own Console lines about a fresh Run to Cursor breakpoint, which come just after its answer.
+pub(super) struct RunToQuiet {
+    pub(super) id: i64,
+    pub(super) source: PathBuf,
+    /// 0-based, as requested.
+    pub(super) line: usize,
+}
+
+/// `entries` (lines ascending, one per line) with a plain entry on `line`, in place of one already there.
+fn with_run_to(mut entries: Vec<SourceBreakpoint>, line: usize) -> Vec<SourceBreakpoint> {
+    entries.retain(|b| b.line != line);
+    let at = entries.partition_point(|b| b.line < line);
+    entries.insert(at, SourceBreakpoint::at(line));
+    entries
+}
+
+/// Whether `output` is one of gdb's lines about the quiet window's breakpoint, as `early_gdb_line` does for the start's:
+/// `Breakpoint <id> at 0x<hex>: file <name>, line <n>.` when it is placed, else `No compiled code for line <n> in file
+/// "<path>".` or `No source file named <path>.` with `Breakpoint <id> (-source <path> -line <n>) pending.`. `output` as
+/// sent, with its `\n`. Anything else is the Console's, so another wording or another id shows as gdb wrote it.
+fn run_to_gdb_line(output: &str, quiet: &RunToQuiet) -> bool {
+    let Some(text) = output.strip_suffix('\n') else { return false };
+    let text = text.strip_prefix("\u{274c}\u{fe0f} ").unwrap_or(text);
+    let path = quiet.source.to_string_lossy();
+    let n = quiet.line + 1;
+    if text == format!("No compiled code for line {n} in file \"{path}\".")
+        || text == format!("No source file named {path}.")
+        || text == format!("Breakpoint {} (-source {path} -line {n}) pending.", quiet.id)
+    {
+        return true;
+    }
+    let Some(rest) = text.strip_prefix(&format!("Breakpoint {} at 0x", quiet.id)) else { return false };
+    let hex = rest.bytes().take_while(|b| b.is_ascii_hexdigit()).count();
+    let Some((_, line)) = rest[hex..].strip_prefix(": file ").filter(|_| hex > 0).and_then(|r| r.rsplit_once(", line ")) else {
+        return false;
+    };
+    line.strip_suffix('.').is_some_and(|d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()))
 }
 
 /// Kills the build's process group when dropped: a replace, a Stop, a root switch, a quit, or the app going.
@@ -510,6 +564,7 @@ impl App {
             DebugAction::ChooseThread => self.debug_choose_thread(),
             DebugAction::SelectThread(t) => self.debug_select_thread(t),
             DebugAction::Evaluate => self.debug_evaluate_dialog(),
+            DebugAction::RunToCursor => self.debug_run_to_cursor(),
             DebugAction::EditBreakpoint => self.debug_edit_breakpoint_at_caret(),
             DebugAction::RemoveWatch => {
                 if self.debug_panel.remove_watch() {
@@ -791,6 +846,8 @@ impl App {
             console,
             gate,
             trusted_paging,
+            run_to: None,
+            run_to_quiet: None,
         });
         self.notify(Level::Info, format!("Debugging {} with {}", p.name, p.adapter.name));
         if let Some(c) = lost_cwd {
@@ -999,6 +1056,11 @@ impl App {
                     if e.category.as_deref() == Some("stdout") && early_gdb_line(&e.output, &mut l.early) {
                         tracing::info!("dap: not shown, said before the program loads: {}", e.output.trim_end());
                         l.gate.release(&e);
+                    } else if e.category.as_deref() == Some("stdout")
+                        && l.run_to_quiet.as_ref().is_some_and(|q| run_to_gdb_line(&e.output, q))
+                    {
+                        tracing::info!("dap: not shown, about Run to Cursor's breakpoint: {}", e.output.trim_end());
+                        l.gate.release(&e);
                     } else {
                         let _ = l.console.send(e);
                     }
@@ -1049,6 +1111,7 @@ impl App {
     /// A stop: asks for the stack of the stopped thread, or for the threads when the event names none.
     fn debug_stopped(&mut self, epoch: u64, event: StoppedEvent) {
         self.debug_program_seen();
+        self.debug_run_to_done();
         // The earlier stop's or choice's read is over, even if this stop has no file to show.
         self.debug.view = None;
         self.debug_panel.set_reason(Some(event.reason.clone()));
@@ -1486,6 +1549,100 @@ impl App {
         self.debug.send(Command::Resume { kind, thread });
     }
 
+    /// Alt+F9, only while paused: a plain entry on the caret's line is added to that source's `setBreakpoints`, kept in
+    /// `Live::run_to` and never in `Live::sent`. The program is not resumed here: the answer decides, so a line the adapter
+    /// refuses runs nothing (see `debug_run_to_answered`). The next stop takes the entry away (`debug_run_to_done`).
+    fn debug_run_to_cursor(&mut self) {
+        if !self.debug.suspended() {
+            return self.notify(Level::Info, "No paused debug session");
+        }
+        let (source, line) = match self.editor.breakpoint_target() {
+            Ok(target) => target,
+            Err(hint) => return self.notify(Level::Info, hint),
+        };
+        let Some(live) = self.debug.session.as_ref() else { return };
+        if live.thread.is_none() {
+            // As `debug_resume` does: the stop's `threads` may have failed, so ask again.
+            let epoch = live.epoch;
+            self.debug_ask_threads(epoch);
+            return self.notify(Level::Info, "The paused thread is not known yet");
+        }
+        // `sent` must say what the adapter holds for the marks before the temporary entry is put on top of it.
+        self.debug_sync_breakpoints();
+        let Some(live) = self.debug.session.as_mut() else { return };
+        let old = live.run_to.take().map(|r| r.source).filter(|s| *s != source);
+        live.run_to = Some(RunTo { source: source.clone(), line, epoch: live.epoch, answered: false });
+        live.run_to_quiet = None;
+        let breakpoints = with_run_to(live.sent.get(&source).cloned().unwrap_or_default(), line);
+        if let Some(old) = old {
+            self.debug_run_to_restore(&old);
+        }
+        let modified = source_modified(&self.editor, &source);
+        tracing::debug!("dap: run to cursor at {}:{line}", source.display());
+        self.debug.send(Command::SetBreakpoints { source, breakpoints, modified });
+    }
+
+    /// The carrier's part of an answer for `source`: its line when that position is the carrier's, which the mark loop
+    /// skips, since a mark never takes its verdict. The first answer decides: a refusal is a toast and an immediate
+    /// restore with the program left paused; a placement resumes, but only from the pause it was asked in.
+    fn debug_run_to_answered(&mut self, source: &Path, requested: &[usize], result: &[Breakpoint]) -> Option<usize> {
+        let run = self.debug.session.as_ref()?.run_to.as_ref().filter(|r| r.source == source)?;
+        let at = requested.iter().position(|l| *l == run.line)?;
+        let (line, epoch, answered) = (run.line, run.epoch, run.answered);
+        let Some(bp) = result.get(at).filter(|_| !answered) else { return Some(line) };
+        // gdb speaks of a breakpoint it made, not of one it kept: a mark's id is a kept one.
+        let fresh = bp.id.filter(|id| self.editor.breakpoint_marks_mut(source).is_none_or(|m| m.values().all(|mark| mark.id != Some(*id))));
+        let live = self.debug.session.as_mut()?;
+        if let Some(id) = fresh {
+            live.run_to_quiet = Some(RunToQuiet { id, source: source.to_path_buf(), line });
+        }
+        let place = breakpoint_place(source, line);
+        let failed = bp.reason.as_deref() == Some("failed");
+        if failed || !bp.verified {
+            live.run_to = None;
+            let text = if failed {
+                match bp.message.as_deref().map(one_line).filter(|m| !m.is_empty()) {
+                    Some(m) => format!("Run to Cursor: {place} failed: {m}"),
+                    None => format!("Run to Cursor: {place} failed"),
+                }
+            } else {
+                format!("Run to Cursor: {place} not placed: no code loaded for this line")
+            };
+            self.notify(Level::Warn, text);
+            self.debug_run_to_restore(source);
+            return Some(line);
+        }
+        if let Some(r) = live.run_to.as_mut() {
+            r.answered = true;
+        }
+        let resume = live.epoch == epoch;
+        if let Some(l) = bp.line.filter(|l| *l > 0).filter(|l| (*l - 1) as usize != line) {
+            self.notify(Level::Info, format!("Run to Cursor: no code on {place}, running to line {l}"));
+        }
+        if resume && self.debug.suspended() {
+            self.debug_resume(ResumeKind::Continue);
+        }
+        Some(line)
+    }
+
+    /// Sends the marks' entries of `source` alone: the temporary entry is gone.
+    fn debug_run_to_restore(&mut self, source: &Path) {
+        let Some(live) = self.debug.session.as_ref() else { return };
+        let breakpoints = live.sent.get(source).cloned().unwrap_or_default();
+        let modified = source_modified(&self.editor, source);
+        tracing::debug!("dap: run to cursor over, restoring {}", source.display());
+        self.debug.send(Command::SetBreakpoints { source: source.to_path_buf(), breakpoints, modified });
+    }
+
+    /// At a stop, whatever its reason: takes the carrier and restores its source; closes the quiet window.
+    fn debug_run_to_done(&mut self) {
+        let Some(live) = self.debug.session.as_mut() else { return };
+        live.run_to_quiet = None;
+        if let Some(run) = live.run_to.take() {
+            self.debug_run_to_restore(&run.source);
+        }
+    }
+
     fn debug_pause(&mut self) {
         if self.debug.phase() != Some(Phase::Running) {
             return self.notify(Level::Info, "No running debug session");
@@ -1513,9 +1670,13 @@ impl App {
     /// update, and a mark gone since the request is not brought back.
     fn debug_breakpoints_answered(&mut self, source: &Path, requested: &[usize], result: &[Breakpoint]) {
         tracing::debug!("dap: breakpoints of {}: {requested:?} answered {result:?}", source.display());
+        let skip = self.debug_run_to_answered(source, requested, result);
         let Some(marks) = self.editor.breakpoint_marks_mut(source) else { return };
         let mut lines = Vec::new();
         for (line, bp) in requested.iter().zip(result) {
+            if Some(*line) == skip {
+                continue;
+            }
             if let Some(mark) = marks.get_mut(line) {
                 let before = (mark.state, mark.adapter_line, mark.message.clone());
                 mark.forget_state();
@@ -1568,7 +1729,13 @@ impl App {
         let changes = breakpoint_changes(&live.sent, &live.open, &now, &open);
         live.sent = now;
         live.open = open;
+        // The temporary entry of Run to Cursor rides on every change of its source, and `sent` stays the marks'.
+        let run_to = live.run_to.as_ref().map(|r| (r.source.clone(), r.line));
         for (source, breakpoints) in changes {
+            let breakpoints = match &run_to {
+                Some((path, line)) if *path == source => with_run_to(breakpoints, *line),
+                _ => breakpoints,
+            };
             let modified = source_modified(&self.editor, &source);
             let lines: Vec<usize> = breakpoints.iter().map(|b| b.line).collect();
             tracing::debug!("dap: sending breakpoints of {}: {lines:?}, modified {modified}", source.display());
@@ -7615,6 +7782,336 @@ pub(crate) mod tests {
         assert!(matches!(open_dialog(&app).0, DialogId::DebugBreakpointText { .. }));
         app.debug_root_changed();
         assert!(app.dialog.is_none(), "the input");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- Run to Cursor (yman 448) ----
+
+    fn live_of(app: &App) -> &Live {
+        app.debug.session.as_ref().expect("a session")
+    }
+
+    fn run_to_cursor(app: &mut App) {
+        app.perform(Action::Debug(DebugAction::RunToCursor));
+    }
+
+    fn sb(line: usize, condition: Option<&str>, log: Option<&str>) -> SourceBreakpoint {
+        SourceBreakpoint { line, condition: condition.map(Into::into), log_message: log.map(Into::into) }
+    }
+
+    /// The Console without the lines about Run to Cursor's own breakpoint.
+    fn breakpoint_lines(app: &App) -> Vec<String> {
+        console(app).into_iter().filter(|t| t.contains("Breakpoint") || t.contains("No compiled") || t.contains("No source")).collect()
+    }
+
+    /// The adapter reports a stop on thread 7 while a carrier is in place, and jetl's restore is returned; the stack is not answered.
+    async fn stop_by_hand(app: &mut App, fake: &mut FakeAdapter) -> Value {
+        fake.event("stopped", json!({"reason": "breakpoint", "threadId": 7}));
+        pump_until(app, |a| live_of(a).run_to.is_none()).await;
+        fake.recv("setBreakpoints").await
+    }
+
+    /// Like `settle`, for a second use in one session: the marker line is named, as `settle`'s is already in the Console.
+    async fn settle_as(app: &mut App, fake: &FakeAdapter, marker: &str) {
+        fake.event("output", json!({"category": "console", "output": format!("{marker}\n")}));
+        console_until(app, |a| console(a).iter().any(|t| t == marker)).await;
+    }
+
+    /// The answer of the carrier's source is handled and it was placed.
+    async fn placed(app: &mut App) {
+        pump_until(app, |x| live_of(x).run_to.as_ref().is_some_and(|r| r.answered)).await;
+    }
+
+    /// The `continue` of a resume, answered and handled: the session is `Running`.
+    async fn continued(app: &mut App, fake: &mut FakeAdapter) -> Value {
+        let req = fake.recv("continue").await;
+        fake.respond(&req, json!({}));
+        pump_until(app, |x| x.debug.phase() == Some(Phase::Running)).await;
+        req
+    }
+
+    #[test]
+    fn with_run_to_keeps_order_and_one_entry_per_line() {
+        let list = || vec![sb(1, Some("c"), None), sb(5, None, None)];
+        assert_eq!(with_run_to(list(), 3), vec![sb(1, Some("c"), None), sb(3, None, None), sb(5, None, None)]);
+        assert_eq!(with_run_to(list(), 5), vec![sb(1, Some("c"), None), sb(5, None, None)]);
+        assert_eq!(with_run_to(Vec::new(), 0), vec![sb(0, None, None)]);
+        assert_eq!(with_run_to(vec![sb(2, None, Some("m\n"))], 2), vec![sb(2, None, None)], "a log entry is replaced by a plain one");
+        assert_eq!(with_run_to(vec![sb(2, Some("c"), None)], 2), vec![sb(2, None, None)], "so is a conditional one");
+        assert_eq!(with_run_to(list(), 9), vec![sb(1, Some("c"), None), sb(5, None, None), sb(9, None, None)]);
+    }
+
+    #[test]
+    fn run_to_gdb_line_takes_only_its_own_lines() {
+        let q = RunToQuiet { id: 2, source: PathBuf::from("/tmp/jetl-dap-demo/loop.c"), line: 6 };
+        let x = "\u{274c}\u{fe0f} ";
+        for t in [
+            "Breakpoint 2 at 0x555555555161: file loop.c, line 7.\n".to_string(),
+            format!("{x}No compiled code for line 7 in file \"/tmp/jetl-dap-demo/loop.c\".\n"),
+            "No compiled code for line 7 in file \"/tmp/jetl-dap-demo/loop.c\".\n".to_string(),
+            "Breakpoint 2 (-source /tmp/jetl-dap-demo/loop.c -line 7) pending.\n".to_string(),
+            format!("{x}No source file named /tmp/jetl-dap-demo/loop.c.\n"),
+            "No source file named /tmp/jetl-dap-demo/loop.c.\n".to_string(),
+        ] {
+            assert!(run_to_gdb_line(&t, &q), "{t:?}");
+        }
+        for t in [
+            "Breakpoint 12 at 0x555555555161: file loop.c, line 7.\n",
+            "Breakpoint 2 at 0x: file loop.c, line 7.\n",
+            "Breakpoint 2 at 0x555555555161: file loop.c, line 7.",
+            "Breakpoint 2 at 0x555555555161: file loop.c, line x.\n",
+            "Breakpoint 2 at 0x555555555161: file loop.c, line .\n",
+            "No compiled code for line 8 in file \"/tmp/jetl-dap-demo/loop.c\".\n",
+            "No compiled code for line 7 in file \"/tmp/jetl-dap-demo/other.c\".\n",
+            "No source file named /tmp/jetl-dap-demo/other.c.\n",
+            "Breakpoint 2 (-source /tmp/jetl-dap-demo/loop.c -line 8) pending.\n",
+            "Breakpoint 3 (-source /tmp/jetl-dap-demo/loop.c -line 7) pending.\n",
+            "sum=10\n",
+        ] {
+            assert!(!run_to_gdb_line(t, &q), "{t:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn run_to_cursor_adds_a_plain_entry_and_resumes_on_the_answer() {
+        let (mut app, dir, mut fakes) = setup("rtc-plain", Order::LaunchEarly);
+        let a = six(&mut app);
+        toggle(&mut app, &a, 1);
+        app.editor.set_breakpoint_spec(&a, 1, cond("i == 1"));
+        let mut fake = paused(&mut app, &mut fakes, &a, 4).await;
+        let sent = live_of(&app).sent.clone();
+        at_line(&mut app, 4);
+        run_to_cursor(&mut app);
+        let set = fake.recv("setBreakpoints").await;
+        assert_eq!(entries(&set), json!([{"line": 2, "condition": "i == 1"}, {"line": 5}]));
+        assert_eq!(live_of(&app).sent, sent, "the temporary entry is not a mark's");
+        assert_eq!(keys(&app, &a), [1], "no mark on the caret's line");
+        let toasts = app.notifications.len();
+        answer(&fake, &set, json!([{"id": 1, "verified": true, "line": 2}, {"id": 9, "verified": true, "line": 5}]));
+        placed(&mut app).await;
+        let cont = continued(&mut app, &mut fake).await;
+        assert_eq!(cont["arguments"]["threadId"], 7);
+        assert_eq!(app.notifications.len(), toasts, "placed on its own line: no toast");
+        assert_eq!((state(&app, &a, 1).state, state(&app, &a, 1).id), (BpState::Verified, Some(1)));
+        assert_eq!(keys(&app, &a), [1]);
+        assert!(live_of(&app).run_to_quiet.is_some(), "id 9 is no mark's");
+        // The next stop, whatever its reason, takes the temporary entry away.
+        let restore = stop_by_hand(&mut app, &mut fake).await;
+        assert_eq!(entries(&restore), json!([{"line": 2, "condition": "i == 1"}]));
+        assert!(live_of(&app).run_to.is_none() && live_of(&app).run_to_quiet.is_none());
+        settle(&mut app, &fake).await;
+        assert_eq!(breakpoint_lines(&app), Vec::<String>::new());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn run_to_cursor_on_a_marked_line_sends_it_plain_and_keeps_the_mark() {
+        let (mut app, dir, mut fakes) = setup("rtc-marked", Order::LaunchEarly);
+        let a = six(&mut app);
+        toggle(&mut app, &a, 1);
+        toggle(&mut app, &a, 4);
+        app.editor.set_breakpoint_spec(&a, 4, cond("i == 3"));
+        let mut fake = paused(&mut app, &mut fakes, &a, 4).await;
+        answered(
+            &mut app,
+            &a,
+            vec![1, 4],
+            vec![bp(json!({"id": 1, "verified": true, "line": 2})), bp(json!({"id": 5, "verified": true, "line": 5}))],
+        );
+        let recorded = state(&app, &a, 4);
+        assert_eq!((recorded.state, recorded.id, recorded.spec.clone()), (BpState::Verified, Some(5), cond("i == 3")));
+        settle(&mut app, &fake).await;
+        let lines = console(&app);
+        at_line(&mut app, 4);
+        run_to_cursor(&mut app);
+        let set = fake.recv("setBreakpoints").await;
+        assert_eq!(entries(&set), json!([{"line": 2}, {"line": 5}]), "one entry on 5, plain");
+        answer(
+            &fake,
+            &set,
+            json!([{"id": 1, "verified": true, "line": 2}, {"id": 5, "verified": false, "reason": "failed", "message": "x"}]),
+        );
+        pump_until(&mut app, |x| live_of(x).run_to.is_none()).await;
+        let restore = fake.recv("setBreakpoints").await;
+        assert_eq!(entries(&restore), json!([{"line": 2}, {"line": 5, "condition": "i == 3"}]));
+        assert_eq!(last(&app), (Level::Warn, "Run to Cursor: a.log:5 failed: x".to_string()));
+        assert_eq!(state(&app, &a, 4), recorded, "the mark is what it was");
+        assert!(live_of(&app).run_to.is_none());
+        assert!(app.debug.suspended());
+        settle_as(&mut app, &fake, "settled again").await;
+        assert_eq!(console(&app)[..lines.len()], lines[..], "no Console line for it");
+        assert_eq!(console(&app).len(), lines.len() + 1, "only the settle line");
+        // A second run on the same line, placed.
+        run_to_cursor(&mut app);
+        let set = fake.recv("setBreakpoints").await;
+        assert_eq!(entries(&set), json!([{"line": 2}, {"line": 5}]));
+        answer(&fake, &set, json!([{"id": 1, "verified": true, "line": 2}, {"id": 5, "verified": true, "line": 5}]));
+        placed(&mut app).await;
+        let cont = continued(&mut app, &mut fake).await;
+        assert_eq!(cont["arguments"]["threadId"], 7);
+        assert_eq!(state(&app, &a, 4), recorded, "the mark is still what it was");
+        assert!(live_of(&app).run_to_quiet.is_none(), "id 5 is the mark's");
+        assert_eq!(spec_of(&app, &a, 4), cond("i == 3"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_refused_line_is_told_and_nothing_runs() {
+        let (mut app, dir, mut fakes) = setup("rtc-refused", Order::LaunchEarly);
+        let a = six(&mut app);
+        let mut fake = paused(&mut app, &mut fakes, &a, 4).await;
+        at_line(&mut app, 0);
+        run_to_cursor(&mut app);
+        let set = fake.recv("setBreakpoints").await;
+        assert_eq!(entries(&set), json!([{"line": 1}]));
+        answer(&fake, &set, json!([{"id": 3, "verified": false, "reason": "pending"}]));
+        pump_until(&mut app, |x| live_of(x).run_to.is_none()).await;
+        let restore = fake.recv("setBreakpoints").await;
+        assert_eq!(entries(&restore), json!([]), "the temporary entry is gone at once");
+        assert_eq!(last(&app), (Level::Warn, "Run to Cursor: a.log:1 not placed: no code loaded for this line".to_string()));
+        assert_eq!(app.debug.phase(), Some(Phase::Suspended));
+        assert!(live_of(&app).run_to.is_none());
+        assert_quiet(&mut app, &mut fake, "q1.log").await;
+        // gdb's own lines come just after the answer.
+        let path = a.to_string_lossy();
+        output(&fake, "stdout", &format!("\u{274c}\u{fe0f} No compiled code for line 1 in file \"{path}\".\n"));
+        output(&fake, "stdout", &format!("Breakpoint 3 (-source {path} -line 1) pending.\n"));
+        output(&fake, "stdout", &format!("Breakpoint 4 (-source {path} -line 1) pending.\n"));
+        settle(&mut app, &fake).await;
+        assert_eq!(breakpoint_lines(&app), [format!("Breakpoint 4 (-source {path} -line 1) pending.")], "another id is the Console's");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_moved_line_is_told_and_runs() {
+        let (mut app, dir, mut fakes) = setup("rtc-moved", Order::LaunchEarly);
+        let a = six(&mut app);
+        let mut fake = paused(&mut app, &mut fakes, &a, 4).await;
+        at_line(&mut app, 3);
+        run_to_cursor(&mut app);
+        let set = fake.recv("setBreakpoints").await;
+        assert_eq!(entries(&set), json!([{"line": 4}]));
+        answer(&fake, &set, json!([{"id": 9, "verified": true, "line": 6}]));
+        placed(&mut app).await;
+        continued(&mut app, &mut fake).await;
+        assert_eq!(texts(&app).last().map(String::as_str), Some("Run to Cursor: no code on a.log:4, running to line 6"));
+        assert_eq!(last(&app).0, Level::Info);
+        output(&fake, "stdout", "Breakpoint 9 at 0x1a2b: file a.log, line 6.\n");
+        settle(&mut app, &fake).await;
+        assert_eq!(breakpoint_lines(&app), Vec::<String>::new(), "the window is open");
+        stop_at(&mut app, &mut fake, 7, &a, 6).await;
+        output(&fake, "stdout", "Breakpoint 9 at 0x1a2b: file a.log, line 6.\n");
+        settle_as(&mut app, &fake, "settled twice").await;
+        assert_eq!(breakpoint_lines(&app), ["Breakpoint 9 at 0x1a2b: file a.log, line 6."], "the window closed at the stop");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn an_answer_after_the_user_resumed_does_not_resume_again() {
+        let (mut app, dir, mut fakes) = setup("rtc-resumed", Order::LaunchEarly);
+        let a = six(&mut app);
+        let mut fake = paused(&mut app, &mut fakes, &a, 4).await;
+        at_line(&mut app, 4);
+        run_to_cursor(&mut app);
+        let set = fake.recv("setBreakpoints").await;
+        press(&mut app, F9);
+        continued(&mut app, &mut fake).await;
+        answer(&fake, &set, json!([{"id": 9, "verified": true, "line": 5}]));
+        settle(&mut app, &fake).await;
+        assert_quiet(&mut app, &mut fake, "q1.log").await;
+        let restore = stop_by_hand(&mut app, &mut fake).await;
+        assert_eq!(entries(&restore), json!([]));
+        // Asked in one pause, answered in the same phase but another epoch: nothing resumes.
+        let stack = fake.recv("stackTrace").await;
+        fake.respond(&stack, json!({"stackFrames": [frame(&a, 5)]}));
+        let threads = fake.recv("threads").await;
+        fake.respond(&threads, json!({"threads": [{"id": 7, "name": "t"}]}));
+        pump_until(&mut app, |x| point(x).is_some()).await;
+        run_to_cursor(&mut app);
+        let set = fake.recv("setBreakpoints").await;
+        app.debug.session.as_mut().unwrap().run_to.as_mut().unwrap().epoch -= 1;
+        answer(&fake, &set, json!([{"id": 10, "verified": true, "line": 5}]));
+        placed(&mut app).await;
+        assert_quiet(&mut app, &mut fake, "q2.log").await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_mark_change_during_the_run_keeps_the_temporary_entry() {
+        let (mut app, dir, mut fakes) = setup("rtc-change", Order::LaunchEarly);
+        let a = six(&mut app);
+        let mut fake = paused(&mut app, &mut fakes, &a, 4).await;
+        at_line(&mut app, 4);
+        run_to_cursor(&mut app);
+        let set = fake.recv("setBreakpoints").await;
+        answer(&fake, &set, json!([{"id": 9, "verified": true, "line": 5}]));
+        placed(&mut app).await;
+        continued(&mut app, &mut fake).await;
+        toggle(&mut app, &a, 0);
+        app.on_tick();
+        let set = fake.recv("setBreakpoints").await;
+        assert_eq!(entries(&set), json!([{"line": 1}, {"line": 5}]));
+        assert_eq!(live_of(&app).sent[&a], vec![SourceBreakpoint::at(0)], "sent is the marks alone");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_second_run_in_another_file_restores_the_first() {
+        let (mut app, dir, mut fakes) = setup("rtc-two-files", Order::LaunchEarly);
+        let a = six(&mut app);
+        let mut fake = paused(&mut app, &mut fakes, &a, 4).await;
+        at_line(&mut app, 4);
+        run_to_cursor(&mut app);
+        let first = fake.recv("setBreakpoints").await;
+        assert_eq!(source(&first), a.to_string_lossy());
+        let b = load(&mut app, "b.log", "x0\nx1\n");
+        at_line(&mut app, 0);
+        run_to_cursor(&mut app);
+        let restore = fake.recv("setBreakpoints").await;
+        assert_eq!((source(&restore), entries(&restore)), (a.to_string_lossy().into_owned(), json!([])));
+        let second = fake.recv("setBreakpoints").await;
+        assert_eq!((source(&second), entries(&second)), (b.to_string_lossy().into_owned(), json!([{"line": 1}])));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn run_to_cursor_ends_with_the_session() {
+        let (mut app, dir, mut fakes) = setup("rtc-ends", Order::LaunchEarly);
+        let a = six(&mut app);
+        let mut fake = paused(&mut app, &mut fakes, &a, 4).await;
+        at_line(&mut app, 4);
+        run_to_cursor(&mut app);
+        fake.recv("setBreakpoints").await;
+        assert!(live_of(&app).run_to.is_some());
+        app.debug_ended(String::new());
+        assert!(app.debug.session.is_none());
+        let _fake = paused(&mut app, &mut fakes, &a, 4).await;
+        assert!(live_of(&app).run_to.is_none() && live_of(&app).run_to_quiet.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn alt_f9_runs_to_the_cursor_only_while_paused() {
+        let (mut app, dir, mut fakes) = setup("rtc-key", Order::LaunchEarly);
+        let a = six(&mut app);
+        let alt_f9 = key(F9, KeyModifiers::ALT);
+        let action = Action::Debug(DebugAction::RunToCursor);
+        app.focus.set(PanelId::Editor);
+        assert_ne!(action_of(&mut app, alt_f9), Some(action.clone()), "unbound outside a pause");
+        run_to_cursor(&mut app);
+        assert_eq!(last(&app), (Level::Info, "No paused debug session".to_string()));
+        let mut fake = paused(&mut app, &mut fakes, &a, 4).await;
+        app.focus.set(PanelId::Editor);
+        assert_eq!(action_of(&mut app, alt_f9), Some(action.clone()));
+        app.focus.set(PanelId::Debug);
+        assert_eq!(action_of(&mut app, alt_f9), Some(action.clone()));
+        assert_eq!(app.keymap.shortcut_for(&action, action.contexts()).as_deref(), Some("Alt+F9"));
+        // A tab with no file gives the refusal's hint and sends nothing.
+        app.editor.open_untitled("x");
+        run_to_cursor(&mut app);
+        assert_eq!(last(&app), (Level::Info, "A breakpoint needs a file: this tab has none".to_string()));
+        assert!(live_of(&app).run_to.is_none());
+        assert_quiet(&mut app, &mut fake, "q1.log").await;
         let _ = std::fs::remove_dir_all(&dir);
     }
 
