@@ -2785,7 +2785,7 @@ Run with `[lsp] enabled = false`, jetl's own repo as the root, at 120x40 then 80
 3. Tab: the title becomes `Callees of fallback_usages (approximate)`; the children include `usage_group` and `refs_named`. Right on a child expands it; a `…` may show for a moment. F5 shows the same tree.
 4. Enter on `usage_group`: the editor opens `lsp_nav.rs` with the caret on the name `usage_group` of its definition.
 5. Caret on a word that is no definition anywhere (a local variable): Ctrl+Alt+H shows the toast `No call hierarchy here`.
-6. Large project (yman 394): root a copy under /tmp of part of the cargo registry (`cp -r ~/.cargo/registry/src/index.crates.io-*/[a-e]* "$T"`), with `XDG_*` under /tmp. Wait for the symbol index, open a long function, Ctrl+Alt+H, Tab: the root row may show `…`, then the callees appear without a key, and typing in the editor meanwhile shows no pause. Right on a child expands it, a `…` may show for a moment. Stderr is empty, Ctrl+Q exits 0.
+6. Large project (yman 394): root a copy under /tmp of part of the cargo registry (`cp -r ~/.cargo/registry/src/index.crates.io-*/[a-e]* "$T"`), with `XDG_*` under /tmp. Wait for the symbol index, open a long function, Ctrl+Alt+H, Tab: the root row may show `…`, then the callees appear without a key. Right on a child expands it, a `…` may show for a moment. Stderr is empty, Ctrl+Q exits 0.
 
 ### Scenario: file dependencies
 

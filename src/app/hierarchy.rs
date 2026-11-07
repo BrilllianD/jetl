@@ -342,9 +342,8 @@ impl App {
 
     /// The root-relative paths of the open buffers with unsaved changes.
     fn dirty_rels(&self) -> HashSet<String> {
-        let root = &self.workspace.root;
-        let rels = self.editor.buffers.iter().filter(|b| b.dirty()).filter_map(|b| b.path.as_ref());
-        rels.filter_map(|p| p.strip_prefix(root).ok()).map(|p| p.to_string_lossy().into_owned()).collect()
+        let paths = self.editor.buffers.iter().filter(|b| b.dirty()).filter_map(|b| b.path.as_ref());
+        paths.filter_map(|p| self.rel_path(p)).collect()
     }
 
     /// A file of the project as a hierarchy item, at its first line.
