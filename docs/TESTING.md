@@ -2040,8 +2040,8 @@ x4, `Home`, `Right` x10: the caret is inside `helper` of line 5.
     `7 matches in 2 files; 2 excluded`. Included: `main.rs` line 4 (`s.area()`,
     the `dyn` call) and `shapes.rs` lines 2, 3, 8 and 11 (the declaration,
     `self.area()` and both impl definitions). Excluded: `main.rs` line 10, both
-    `c.area()` and `q.area()`: they sit inside `println!`, whose arguments the
-    symbol index does not read (yman 446). This split is not a pass condition;
+    `c.area()` and `q.area()`: they sit inside `println!`, whose arguments jetl's
+    tree-sitter symbol index does not read (yman 446). This split is not a pass condition;
     the list is for review. `Escape`,
     `C-q`, exit 0 and empty stderr.
 
