@@ -20,7 +20,7 @@ use unicode_width::UnicodeWidthStr;
 
 use super::protocol::Thread;
 use super::session::{Phase, SessionId};
-use super::vars::{VarAsk, VarItem, VarsLoad, VarsView};
+use super::vars::{MAX_CHILDREN, VarAsk, VarItem, VarsLoad, VarsView};
 use crate::actions::DebugAction;
 use crate::app::Ctx;
 use crate::config::theme::Theme;
@@ -242,7 +242,7 @@ impl DebugPanel {
     }
 
     pub fn show_children(&mut self, node: usize, items: Vec<VarItem>) {
-        self.vars.tree.set_children(node, items);
+        self.vars.show_children(node, items);
         self.vars.sync();
     }
 
@@ -519,6 +519,9 @@ impl DebugPanel {
     /// value or a type; a scope with neither has the whole row.
     fn var_pieces(&self, node: usize, name_room: Option<usize>) -> Vec<(String, Piece)> {
         let Some(n) = self.vars.tree.node(node) else { return Vec::new() };
+        if let Some(parent) = self.vars.tree.more_of(node).and_then(|p| self.vars.tree.node(p)) {
+            return Self::more_pieces(parent.hidden, parent.loading, n.failed.as_deref());
+        }
         let item = &n.item;
         let shared = !item.value.is_empty() || !item.ty.is_empty();
         let name = match name_room {
@@ -542,6 +545,24 @@ impl DebugPanel {
         }
         if !item.ty.is_empty() {
             out.push((format!("  {}", item.ty), Piece::Dim));
+        }
+        out
+    }
+
+    /// The pieces of a load-more row after its indent: a blank marker, what it will read, and what is left or why
+    /// the last page failed. `hidden` and `loading` are the container's, `failed` is the row's.
+    fn more_pieces(hidden: usize, loading: bool, failed: Option<&str>) -> Vec<(String, Piece)> {
+        let page = hidden.min(MAX_CHILDREN);
+        let mut out = vec![("  ".to_string(), Piece::Plain)];
+        if loading {
+            out.push((format!("reading {page} more …"), Piece::Plain));
+            return out;
+        }
+        out.push((format!("load {page} more"), Piece::Plain));
+        if let Some(m) = failed {
+            out.push((format!("  could not read: {m}"), Piece::Error));
+        } else if hidden > MAX_CHILDREN {
+            out.push((format!("  {hidden} left"), Piece::Dim));
         }
         out
     }
@@ -707,7 +728,9 @@ impl DebugPanel {
                             self.vars.node = c;
                         }
                     }
-                    _ => {}
+                    _ => {
+                        self.vars.tree.load_more(node);
+                    }
                 }
             }
             DebugAction::Collapse => {
@@ -731,13 +754,15 @@ impl DebugPanel {
         true
     }
 
-    /// Opens a closed node and closes an open one; a leaf stays.
+    /// Opens a closed node and closes an open one; a leaf stays. On a load-more row, reads the next page.
     fn vars_toggle(&mut self) {
         let node = self.vars.node;
         match self.vars.tree.marker(node) {
             '▾' => self.vars.tree.collapse(node),
             '▸' => self.vars.tree.expand(node),
-            _ => {}
+            _ => {
+                self.vars.tree.load_more(node);
+            }
         }
     }
 
@@ -748,6 +773,10 @@ impl DebugPanel {
         let Some(&node) = rows.get(i) else { return false };
         self.vars.list.select(i);
         self.vars.node = node;
+        if self.vars.tree.load_more(node) {
+            self.vars.sync();
+            return true;
+        }
         let depth = self.vars.tree.node(node).map_or(0, |n| n.depth);
         let at = self.list_rect.x + 1 + (2 * depth).min(self.list_rect.width as usize) as u16;
         if (m.x == at || m.x == at + 1) && self.vars.tree.marker(node) != ' ' {
@@ -810,6 +839,13 @@ impl DebugPanel {
                 format!("{}{text}", " ".repeat(2 * depth))
             })
             .collect()
+    }
+
+    /// The Variables tab's selected row as text, trimmed of its indent.
+    #[cfg(test)]
+    pub fn var_selected(&mut self) -> String {
+        let rows = self.var_rows();
+        rows.get(self.vars.list.selected).map(|r| r.trim().to_string()).unwrap_or_default()
     }
 
     /// The Console's severities, line by line.
@@ -1626,6 +1662,153 @@ mod tests {
                 assert!(!handled && fx.is_empty(), "{tab:?} {a:?}");
             }
         }
+    }
+
+    /// `n` leaves named `start`, `start + 1`, ... with their number as the value.
+    fn page(start: usize, n: usize) -> Vec<VarItem> {
+        (start..start + n).map(|i| vi(&i.to_string(), &i.to_string(), "int", 0)).collect()
+    }
+
+    /// Locals (node 0) holding `arr` (node 1, reference 6, `int []`, hint `hint`), open with its first 1000 rows
+    /// answered. The load-more row is the last row.
+    fn paged_panel(hint: i64) -> DebugPanel {
+        let mut p = suspended_with(three());
+        p.set_tab(DebugTab::Variables);
+        p.scopes_wanted().expect("the tab asks");
+        p.show_scopes(vec![vi("Locals", "", "", 2)], &[0]);
+        p.take_var_asks();
+        p.show_children(0, vec![VarItem { children: hint, ..vi("arr", "", "int []", 6) }]);
+        p.vars.tree.expand(1);
+        p.take_var_asks();
+        p.show_children(1, page(0, 1000));
+        p
+    }
+
+    fn last_row(p: &mut DebugPanel) -> String {
+        p.var_rows().pop().unwrap()
+    }
+
+    fn arr_row(p: &mut DebugPanel) -> String {
+        p.var_rows().into_iter().find(|r| r.contains("arr")).unwrap()
+    }
+
+    #[test]
+    fn the_row_says_what_it_will_do() {
+        let mut p = paged_panel(5000);
+        assert_eq!(last_row(&mut p), "      load 1000 more  4000 left");
+        assert_eq!(arr_row(&mut p), "  ▾ arr  first 1000 of 5000 shown  int []");
+        let row = p.vars.tree.node(1).unwrap().more.expect("the row");
+        assert!(p.vars.tree.load_more(row));
+        assert_eq!(last_row(&mut p), "      reading 1000 more …");
+        p.children_failed(1, "timed out".into());
+        assert_eq!(last_row(&mut p), "      load 1000 more  could not read: timed out");
+        assert_eq!(arr_row(&mut p), "  ▾ arr  first 1000 of 5000 shown  int []", "the container says nothing of it");
+        for (loaded, left) in [(2000, "3000 left"), (3000, "2000 left")] {
+            assert!(p.vars.tree.load_more(row));
+            p.show_children(1, page(loaded - 1000, 1000));
+            assert_eq!(arr_row(&mut p), format!("  ▾ arr  first {loaded} of 5000 shown  int []"));
+            assert_eq!(last_row(&mut p), format!("      load 1000 more  {left}"));
+        }
+        assert!(p.vars.tree.load_more(row));
+        p.show_children(1, page(3000, 1000));
+        assert_eq!(last_row(&mut p), "      load 1000 more", "one page left: no count");
+        assert!(p.vars.tree.load_more(row));
+        p.show_children(1, page(4000, 1000));
+        assert_eq!(arr_row(&mut p), "  ▾ arr  int []", "no note at the end");
+        assert_eq!(last_row(&mut p), "      4999 = 4999  int", "and no row");
+        assert_eq!(p.var_count(), 2 + 5000);
+        // Fewer than a page left.
+        let mut p = paged_panel(1500);
+        assert_eq!(last_row(&mut p), "      load 500 more");
+        let mut p = paged_panel(1001);
+        assert_eq!(last_row(&mut p), "      load 1 more");
+    }
+
+    #[test]
+    fn enter_and_right_load_and_left_goes_to_the_parent() {
+        let mut p = paged_panel(5000);
+        draw(&mut p, 60, 12, Some(Phase::Suspended));
+        for (a, name, left) in [(DebugAction::Open, "Enter", 4000), (DebugAction::Expand, "Right", 3000)] {
+            key_in(&mut p, DebugAction::End);
+            assert_eq!(selected_text(&mut p), format!("load 1000 more  {left} left"), "{name}");
+            let (handled, fx) = key_in(&mut p, a.clone());
+            assert!(handled && fx.is_empty(), "{name}: {fx:?}");
+            let asks = p.take_var_asks();
+            assert_eq!(asks.len(), 1, "{name}");
+            assert_eq!(
+                (asks[0].node, asks[0].reference, asks[0].start),
+                (1, 6, p.vars.tree.node(1).unwrap().children.as_ref().unwrap().len()),
+                "{name}"
+            );
+            // A second press while the page is out asks nothing.
+            key_in(&mut p, a);
+            assert!(p.take_var_asks().is_empty(), "{name}: two presses, one ask");
+            p.show_children(1, page(p.vars.tree.node(1).unwrap().children.as_ref().unwrap().len(), 1000));
+            assert!(selected_text(&mut p).ends_with(" int"), "{name}: the selection left the row: {}", selected_text(&mut p));
+        }
+        assert_eq!(arr_row(&mut p), "  ▾ arr  first 3000 of 5000 shown  int []");
+        // Left on the row selects the container.
+        key_in(&mut p, DebugAction::End);
+        let (handled, _) = key_in(&mut p, DebugAction::Collapse);
+        assert!(handled);
+        assert_eq!(selected_text(&mut p), "▾ arr  first 3000 of 5000 shown  int []");
+        assert!(p.take_var_asks().is_empty());
+    }
+
+    #[test]
+    fn a_press_anywhere_on_the_row_loads() {
+        // A fresh panel for each place, scrolled to the row at 60x12; the row's screen position.
+        let at_row = || {
+            let mut p = paged_panel(5000);
+            key_in(&mut p, DebugAction::End);
+            draw(&mut p, 60, 12, Some(Phase::Suspended));
+            let y = p.list_rect.y + (p.vars.list.selected - p.vars.list.offset) as u16;
+            (p, y)
+        };
+        let click = |p: &mut DebugPanel, x, y| with_cx(|cx| assert!(p.handle_mouse(&press(x, y, 1), Some(Phase::Suspended), cx)));
+        let (mut p, y) = at_row();
+        let marker = p.list_rect.x + 1 + 4;
+        click(&mut p, marker, y);
+        assert_eq!(p.take_var_asks().iter().map(|a| a.start).collect::<Vec<_>>(), [1000], "the marker's cell");
+        let (mut p, y) = at_row();
+        let last = p.list_rect.right() - 1;
+        click(&mut p, last, y);
+        assert_eq!(p.take_var_asks().iter().map(|a| a.start).collect::<Vec<_>>(), [1000], "the last cell");
+        // A second press while out asks nothing.
+        click(&mut p, marker, y);
+        assert!(p.take_var_asks().is_empty());
+        // A child row is only selected.
+        let (mut p, y) = at_row();
+        click(&mut p, marker + 3, y - 1);
+        assert!(p.take_var_asks().is_empty());
+        assert!(selected_text(&mut p).starts_with("999 = 999"), "{}", selected_text(&mut p));
+    }
+
+    #[test]
+    fn the_failure_is_cut_at_the_border() {
+        let mut p = paged_panel(5000);
+        let row = p.vars.tree.node(1).unwrap().more.expect("the row");
+        p.vars.tree.load_more(row);
+        p.take_var_asks();
+        p.children_failed(1, "x".repeat(200));
+        key_in(&mut p, DebugAction::End);
+        let term = draw(&mut p, 50, 12, Some(Phase::Suspended));
+        let y = p.list_rect.y + (p.vars.list.selected - p.vars.list.offset) as u16;
+        let text = row_text(&term, y, 50);
+        assert!(text.contains("load 1000 more  could not read: xxx"), "the label comes first and is whole: {text}");
+        let border = |y| term.backend().buffer()[(49, y)].symbol().to_string();
+        assert_eq!(border(y), border(y - 1), "the border cell is the border: {text}");
+        assert!(!text.contains(&"x".repeat(30)), "cut: {text}");
+    }
+
+    #[test]
+    fn a_new_seq_takes_the_row_with_the_tree() {
+        let mut p = paged_panel(5000);
+        let row = p.vars.tree.node(1).unwrap().more.expect("the row");
+        assert!(p.vars.tree.load_more(row));
+        p.stop_began(Some(1));
+        assert!(p.var_rows().is_empty());
+        assert!(p.take_var_asks().is_empty());
     }
 
     fn text_of(p: &mut DebugPanel, phase: Option<Phase>) -> String {

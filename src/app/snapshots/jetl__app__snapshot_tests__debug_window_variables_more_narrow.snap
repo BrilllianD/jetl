@@ -1,0 +1,47 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &marks, None)"
+---
+80x24 cursor=hidden
+00  ≣ ┌ Project: root ───────────────┐│  a.log ×
+01    │                              ││  1    l0
+02  ⌂ │                              ││  2    l1
+03  ◫ │                              ││  3▶   l2
+04  ⊢ │                              ││  4    l3
+05    │                              ││  5    l4
+06    │                              ││  6    l5
+07    └──────────────────────────────┘│  7
+08    ─────────────────────────────────────────────────────────────────────────────
+09    ┌ Debug: demo · paused (breakpoint) ────────────────────────────────────────┐
+10    │  Resume   Pause   Step Over   Step Into   Step Out   Stop                 │
+11    │ Frames  Variables  Console                                                │
+12  ◉ │       992 = 992  int                                                      │
+13  ⋔ │       993 = 993  int                                                      │
+14  ✎ │       994 = 994  int                                                      │
+15  ✓ │       995 = 995  int                                                      │
+16  ⟲ │       996 = 996  int                                                      │
+17  ⚑ │       997 = 997  int                                                      │
+18  ⎇ │       998 = 998  int                                                      │
+19  ❯ │       999 = 999  int                                                      │
+20  ⚠ │       load 1000 more  could not read: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx│
+21  ► │ ▸ Registers                                                               │
+22  ⌕ └───────────────────────────────────────────────────────────────────────────┘
+23  a.log                             Ln 3, Col 1  LF  UTF-8  4 spaces  Plain text
+-- marks: D=disabled E=error U=link T=active tab W=selected row
+00 DDD                                 TTTTTTTTTTDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD
+03 DDD
+04 DDD
+09     TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT
+10               DDDDDDD
+11     DDDDDDDDTTTTTTTTTTTDDDDDDDDD
+12 UUU
+13 DDD
+14 DDD
+15 DDD
+16 DDD
+17 DDD
+18 DDD
+19 DDD
+20 DDD WWWWWWWWWWWWWWWWWWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE
+21 DDD
+22 DDD

@@ -1097,7 +1097,7 @@ impl App {
             }
             let mut arguments = json!({"variablesReference": ask.reference});
             if ask.children > MAX_CHILDREN as i64 {
-                arguments["start"] = json!(0);
+                arguments["start"] = json!(ask.start);
                 arguments["count"] = json!(MAX_CHILDREN);
             }
             let tag = DapTag { epoch, kind: TagKind::Variables { node: ask.node, seq } };
@@ -5917,7 +5917,8 @@ pub(crate) mod tests {
         assert_eq!(sent_args(&sent), Some(json!({"variablesReference": 6, "start": 0, "count": 1000})));
         let req = sent.expect("asked");
         fake.respond(&req, leaves(1000));
-        pump_until(&mut app, |a| a.debug_panel.var_count() == 2 + 1000).await;
+        pump_until(&mut app, |a| a.debug_panel.var_count() > 2).await;
+        assert_eq!(app.debug_panel.var_count(), 2 + 1000 + 1, "the page and the load-more row after it");
         let rows = var_rows(&mut app);
         let at = rows.iter().position(|r| r.contains("arr")).expect("arr row");
         assert!(rows[at].contains("first 1000 of 5000 shown"), "{}", rows[at]);
@@ -5935,10 +5936,213 @@ pub(crate) mod tests {
         assert_eq!(app.debug_panel.var_count(), 2 + 1000, "the page is cut to 1000 rows");
         let arr = var_rows(&mut app).into_iter().find(|r| r.contains("arr")).expect("arr row");
         assert!(arr.contains("first 1000 of 5000 shown"), "{arr}");
+        assert!(var_rows(&mut app).iter().all(|r| !r.contains("load")), "an answer that ignored count offers no row");
         assert_eq!(app.debug.phase(), Some(Phase::Suspended));
         let before = texts(&app);
         quiet_twice(&mut app, &mut fake, "q-ignored.log").await;
         assert_eq!(texts(&app).len(), before.len(), "no toast");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn leaves_from(start: usize, n: usize) -> Value {
+        let rows: Vec<Value> = (start..start + n).map(|i| json!({"name": i.to_string(), "value": i.to_string(), "type": "int"})).collect();
+        json!({ "variables": rows })
+    }
+
+    /// `paging_case`'s session (untrusted) with the first page of `arr` (reference 6, node 1, hint `total`) answered:
+    /// rows `0` to `999`, and the load-more row after them.
+    async fn open_big(name: &str, total: i64) -> (App, PathBuf, FakeAdapter) {
+        let (mut app, dir, fake, sent) = paging_case(name, false, total, 0).await;
+        fake.respond(&sent.expect("asked"), leaves_from(0, 1000));
+        pump_until(&mut app, |a| a.debug_panel.var_count() > 2).await;
+        (app, dir, fake)
+    }
+
+    /// The selection on the load-more row, which is the last row of this fixture.
+    fn to_row(app: &mut App) {
+        press(app, KeyCode::End);
+        let at = app.debug_panel.var_selected();
+        assert!(at.starts_with("load 1000 more"), "the selection should be on the load-more row, it is on `{at}`");
+    }
+
+    /// Enter on the row, and the request it sends.
+    async fn ask_page(app: &mut App, fake: &mut FakeAdapter) -> Value {
+        to_row(app);
+        press(app, KeyCode::Enter);
+        app.debug_sync_vars();
+        fake.recv("variables").await
+    }
+
+    #[tokio::test]
+    async fn load_more_sends_the_next_page() {
+        let (mut app, dir, mut fake) = open_big("vars-more-next", 5000).await;
+        let before = texts(&app);
+        let req = ask_page(&mut app, &mut fake).await;
+        assert_eq!(req["arguments"], json!({"variablesReference": 6, "start": 1000, "count": 1000}));
+        assert!(var_rows(&mut app).last().is_some_and(|r| r.contains("reading 1000 more")), "{:?}", var_rows(&mut app).last());
+        fake.respond(&req, leaves_from(1000, 1000));
+        pump_until(&mut app, |a| a.debug_panel.var_count() == 2 + 2000 + 1).await;
+        let arr = var_rows(&mut app).into_iter().find(|r| r.contains("arr")).expect("arr row");
+        assert!(arr.contains("first 2000 of 5000 shown"), "{arr}");
+        assert!(app.debug_panel.var_selected().starts_with("1000 = "), "{}", app.debug_panel.var_selected());
+        assert_eq!(texts(&app), before, "no toast");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn two_presses_send_one_page() {
+        let (mut app, dir, mut fake) = open_big("vars-more-twice", 5000).await;
+        to_row(&mut app);
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Enter);
+        app.debug_sync_vars();
+        let _ = fake.recv("variables").await;
+        app.debug_sync_vars();
+        quiet_twice(&mut app, &mut fake, "q-more-twice.log").await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn a_failed_later_page_stays_on_its_row() {
+        let (mut app, dir, mut fake) = open_big("vars-more-failed", 5000).await;
+        let before = texts(&app);
+        let req = ask_page(&mut app, &mut fake).await;
+        fake.respond_error(&req, "timed out");
+        handle_next(&mut app, |m| matches!(m, AppMsg::Dap(_))).await;
+        assert_eq!(var_rows(&mut app).last().map(String::as_str), Some("      load 1000 more  could not read: timed out"));
+        assert_eq!(app.debug_panel.var_count(), 2 + 1000 + 1, "what is loaded stays");
+        assert_eq!(app.debug.phase(), Some(Phase::Suspended));
+        assert_eq!(texts(&app), before, "no toast");
+        press(&mut app, KeyCode::Enter);
+        app.debug_sync_vars();
+        assert_eq!(fake.recv("variables").await["arguments"]["start"], 1000, "asks the same page again");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn a_stale_page_is_dropped() {
+        let (mut app, dir, mut fake) = open_big("vars-more-stale", 5000).await;
+        let _ = ask_page(&mut app, &mut fake).await;
+        let old = app.debug_panel.selection_seq();
+        // Another frame, and a new tree whose `arr` is node 1 again.
+        in_frames(&mut app);
+        press(&mut app, KeyCode::Down);
+        in_vars(&mut app);
+        assert!(app.debug_panel.selection_seq() > old);
+        app.debug_sync_vars();
+        let req = fake.recv("scopes").await;
+        fake.respond(&req, json!({"scopes": [{"name": "Locals", "presentationHint": "locals", "variablesReference": 2}]}));
+        pump_until(&mut app, |a| a.debug_panel.var_count() == 1).await;
+        let req = fake.recv("variables").await;
+        let arr = json!({"variables": [{"name": "arr", "value": "", "type": "int []", "variablesReference": 6, "indexedVariables": 5000}]});
+        fake.respond(&req, arr);
+        pump_until(&mut app, |a| a.debug_panel.var_count() == 2).await;
+        // The new `arr` is asked and waiting, so only the seq tells an older tree's page from its own.
+        var_go_to(&mut app, "arr");
+        press(&mut app, KeyCode::Right);
+        app.debug_sync_vars();
+        let _ = fake.recv("variables").await;
+        let (rows, before) = (var_rows(&mut app), texts(&app));
+        let tag = vars_tag(&app, 1, old);
+        inject(&mut app, DapBody::Response { tag, result: Ok(leaves_from(1000, 1000)) });
+        assert_eq!(var_rows(&mut app), rows, "an older tree's page is not this tree's");
+        let tag = vars_tag(&app, 1, old);
+        inject(&mut app, DapBody::Response { tag, result: Err("list index out of range".into()) });
+        assert_eq!(var_rows(&mut app), rows);
+        assert_eq!(texts(&app), before, "no toast");
+        // The control: the current seq's answer is applied.
+        let tag = vars_tag(&app, 1, app.debug_panel.selection_seq());
+        inject(&mut app, DapBody::Response { tag, result: Ok(leaves_from(0, 1000)) });
+        assert_eq!(app.debug_panel.var_count(), 2 + 1000 + 1, "this tree's own answer is applied");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn a_step_with_a_page_out_starts_clean() {
+        for late_first in [true, false] {
+            let order = if late_first { "page first" } else { "stop first" };
+            let (mut app, dir, mut fake) = open_big(&format!("vars-more-step-{late_first}"), 5000).await;
+            let req = ask_page(&mut app, &mut fake).await;
+            press(&mut app, F8);
+            pump_until(&mut app, |a| a.debug.phase() == Some(Phase::Running) && a.debug_panel.var_count() == 0).await;
+            let c = app.editor.active_path().map(Path::to_path_buf).unwrap();
+            let frames = vec![frame_at(3, "add", &c, 5)];
+            if late_first {
+                fake.respond(&req, leaves_from(1000, 1000));
+                stop_listed(&mut app, &mut fake, 7, frames, json!([{"id": 7, "name": "t"}])).await;
+            } else {
+                stop_listed(&mut app, &mut fake, 7, frames, json!([{"id": 7, "name": "t"}])).await;
+                // The wire keeps the order, so the scopes answer below is handled after this one.
+                fake.respond_error(&req, "list index out of range");
+            }
+            app.debug_sync_vars();
+            let scopes = fake.recv("scopes").await;
+            assert_eq!(scopes["arguments"], json!({"frameId": 3}), "{order}");
+            fake.respond(&scopes, json!({"scopes": [{"name": "Locals", "presentationHint": "locals", "variablesReference": 2}]}));
+            pump_until(&mut app, |a| a.debug_panel.var_count() == 1).await;
+            let req = fake.recv("variables").await;
+            let arr =
+                json!({"variables": [{"name": "arr", "value": "", "type": "int []", "variablesReference": 6, "indexedVariables": 5000}]});
+            fake.respond(&req, arr);
+            pump_until(&mut app, |a| a.debug_panel.var_count() == 2).await;
+            let rows = var_rows(&mut app);
+            assert_eq!(rows.get(1).map(String::as_str), Some("  ▸ arr  int []"), "{order}: {rows:?}");
+            assert!(texts(&app).iter().all(|t| !t.contains("could not read")), "{order}: {:?}", texts(&app));
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+
+    #[tokio::test]
+    async fn stop_with_a_page_out_is_silent() {
+        let (mut app, dir, mut fake) = open_big("vars-more-stopping", 5000).await;
+        let _ = ask_page(&mut app, &mut fake).await;
+        let rows = var_rows(&mut app);
+        assert!(rows.last().is_some_and(|r| r.contains("reading 1000 more")), "{:?}", rows.last());
+        let before = texts(&app);
+        app.perform(Action::Debug(DebugAction::Stop));
+        pump_until(&mut app, |a| a.debug.phase() == Some(Phase::Stopping)).await;
+        let seq = app.debug_panel.selection_seq();
+        let tag = vars_tag(&app, 1, seq);
+        inject(&mut app, DapBody::Response { tag, result: Ok(leaves_from(1000, 1000)) });
+        assert_eq!(var_rows(&mut app), rows, "Stop does not change the seq, so only the phase drops this");
+        let tag = vars_tag(&app, 1, seq);
+        inject(&mut app, DapBody::Response { tag, result: Err("not available".into()) });
+        assert_eq!(var_rows(&mut app), rows);
+        assert_eq!(texts(&app), before, "no toast");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn an_adapter_ignoring_start_ends_the_row() {
+        let (mut app, dir, mut fake) = open_big("vars-more-ignores-start", 5000).await;
+        let before = texts(&app);
+        let req = ask_page(&mut app, &mut fake).await;
+        fake.respond(&req, leaves_from(0, 1000));
+        handle_next(&mut app, |m| matches!(m, AppMsg::Dap(_))).await;
+        let rows = var_rows(&mut app);
+        let zeros = rows.iter().filter(|r| r.trim_start().starts_with("0 = ")).count();
+        assert_eq!((zeros, rows.len()), (1, 2 + 1000), "{zeros} rows named 0");
+        let arr = rows.iter().find(|r| r.contains("arr")).expect("arr row");
+        assert!(arr.contains("first 1000 of 5000 shown"), "the note stays true: {arr}");
+        assert!(rows.iter().all(|r| !r.contains("load 1000")), "no row is offered");
+        assert_eq!(texts(&app), before, "no toast");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn the_empty_page_past_the_end_ends_the_row() {
+        let (mut app, dir, mut fake) = open_big("vars-more-empty", 5000).await;
+        let before = texts(&app);
+        let req = ask_page(&mut app, &mut fake).await;
+        fake.respond(&req, json!({"variables": []}));
+        handle_next(&mut app, |m| matches!(m, AppMsg::Dap(_))).await;
+        let rows = var_rows(&mut app);
+        assert_eq!(rows.len(), 2 + 1000);
+        let arr = rows.iter().find(|r| r.contains("arr")).expect("arr row");
+        assert!(!arr.contains("shown"), "no note at the end: {arr}");
+        assert!(rows.iter().all(|r| !r.contains("load 1000")), "no row");
+        assert!(app.debug_panel.var_selected().starts_with("999 = "), "{}", app.debug_panel.var_selected());
+        assert_eq!(texts(&app), before, "no toast");
         let _ = std::fs::remove_dir_all(dir);
     }
 

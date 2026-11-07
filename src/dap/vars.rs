@@ -3,7 +3,8 @@
 //! until asked), with these differences: a leaf is known from `variablesReference <= 0` and never asked; an answer
 //! does not force `expanded`, so a collapse while the request is out holds; there is no tree id, since the panel
 //! replaces the whole view when its selection seq rises; a node can hold a failure and a count of children left
-//! out; children are capped; and asks are queued here for the App to send, as the panel has no sender.
+//! out; children are capped; a node's children can come in pages, asked by a load-more row that is a node of its
+//! own and not one of the children; and asks are queued here for the App to send, as the panel has no sender.
 
 use super::protocol::Scope;
 use crate::ui::widgets::list::ListState;
@@ -32,6 +33,8 @@ pub struct VarAsk {
     pub node: usize,
     pub reference: i64,
     pub children: i64,
+    /// 0 for a first ask, `children.len()` for a later page.
+    pub start: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -47,11 +50,13 @@ pub struct VarNode {
     pub failed: Option<String>,
     /// Children the adapter has and the tree did not keep: asked for or not.
     pub hidden: usize,
+    /// The load-more row, while the adapter has more and honours pages. Not in `children`.
+    pub more: Option<usize>,
 }
 
 impl VarNode {
     fn new(item: VarItem, depth: usize, parent: Option<usize>) -> Self {
-        Self { item, depth, parent, children: None, expanded: false, loading: false, failed: None, hidden: 0 }
+        Self { item, depth, parent, children: None, expanded: false, loading: false, failed: None, hidden: 0, more: None }
     }
 }
 
@@ -78,6 +83,7 @@ impl VarTree {
         while let Some(n) = stack.pop() {
             rows.push(n);
             if let Some(children) = self.nodes[n].children.as_ref().filter(|_| self.nodes[n].expanded) {
+                stack.extend(self.nodes[n].more);
                 stack.extend(children.iter().rev());
             }
         }
@@ -108,7 +114,7 @@ impl VarTree {
         n.failed = None;
         if n.children.is_none() && !n.loading {
             n.loading = true;
-            self.asks.push(VarAsk { node: i, reference: n.item.reference, children: n.item.children });
+            self.asks.push(VarAsk { node: i, reference: n.item.reference, children: n.item.children, start: 0 });
         }
     }
 
@@ -119,27 +125,78 @@ impl VarTree {
         }
     }
 
-    /// The answer to an ask: the children are stored (at most `MAX_CHILDREN`), whether the node is open or not.
-    /// A node that is not waiting for one ignores it.
+    /// The answer to an ask: the children are stored (at most `MAX_CHILDREN` per answer), whether the node is open or
+    /// not. A later page is appended. A node that is not waiting for one ignores it.
     pub fn set_children(&mut self, i: usize, mut items: Vec<VarItem>) {
         let Some(n) = self.nodes.get_mut(i).filter(|n| n.loading) else { return };
-        let total = (n.item.children.max(0) as usize).max(items.len());
-        items.truncate(MAX_CHILDREN);
-        n.hidden = total - items.len();
+        let paged = n.item.children > MAX_CHILDREN as i64;
+        let hint = n.item.children.max(0) as usize;
+        let depth = n.depth + 1;
+        let mut children = n.children.take().unwrap_or_default();
+        let row = n.more.take();
         n.loading = false;
         n.failed = None;
-        let depth = n.depth + 1;
+        // The adapter ignored `start`: this is the first page again.
+        let repeated = children.first().zip(items.first()).is_some_and(|(&c, v)| self.nodes[c].item.name == v.name);
+        if repeated {
+            items.clear();
+        }
+        let got = items.len();
+        // The adapter ignored `count`.
+        let over = got > MAX_CHILDREN;
+        // The specification: fewer than `count` means no more. The empty answer past the end is one of these.
+        let ended = paged && !repeated && got < MAX_CHILDREN;
+        let total = if ended { children.len() + got } else { hint.max(children.len() + got) };
+        items.truncate(MAX_CHILDREN);
         let first = self.nodes.len();
         self.nodes.extend(items.into_iter().map(|item| VarNode::new(item, depth, Some(i))));
-        self.nodes[i].children = Some((first..self.nodes.len()).collect());
+        children.extend(first..self.nodes.len());
+        let hidden = total - children.len();
+        let more = (paged && !repeated && !over && hidden > 0).then(|| {
+            row.unwrap_or_else(|| {
+                self.nodes.push(VarNode::new(VarItem::default(), depth, Some(i)));
+                self.nodes.len() - 1
+            })
+        });
+        let n = &mut self.nodes[i];
+        n.children = Some(children);
+        n.hidden = hidden;
+        n.more = more;
     }
 
     /// The ask failed: the node closes, keeps no children, and Right asks again.
     pub fn set_failed(&mut self, i: usize, message: String) {
         let Some(n) = self.nodes.get_mut(i).filter(|n| n.loading) else { return };
         n.loading = false;
+        // A later page: what is loaded stays, and the row says why.
+        if n.children.is_some() {
+            if let Some(row) = n.more {
+                self.nodes[row].failed = Some(message);
+            }
+            return;
+        }
         n.expanded = false;
         n.failed = Some(message);
+    }
+
+    /// The node whose load-more row is `row`.
+    pub fn more_of(&self, row: usize) -> Option<usize> {
+        let parent = self.nodes.get(row)?.parent?;
+        (self.nodes[parent].more == Some(row)).then_some(parent)
+    }
+
+    /// Asks the next page of the node whose load-more row is `row`, unless an ask is out. False when `row` is
+    /// not such a row.
+    pub fn load_more(&mut self, row: usize) -> bool {
+        let Some(i) = self.more_of(row) else { return false };
+        let n = &mut self.nodes[i];
+        if !n.loading {
+            n.loading = true;
+            let start = n.children.as_ref().map_or(0, Vec::len);
+            self.asks.push(VarAsk { node: i, reference: n.item.reference, children: n.item.children, start });
+            self.nodes[row].failed = None;
+        }
+        true
     }
 
     pub fn take_asks(&mut self) -> Vec<VarAsk> {
@@ -186,6 +243,18 @@ pub struct VarsView {
 }
 
 impl VarsView {
+    /// An answer for node `i`. A selection on its load-more row moves to the first new child, which takes the
+    /// row's place on screen, or to the last child when none came.
+    pub fn show_children(&mut self, i: usize, items: Vec<VarItem>) {
+        let on_row = self.tree.node(i).is_some_and(|n| n.loading && n.more == Some(self.node));
+        let before = self.tree.node(i).and_then(|n| n.children.as_ref()).map_or(0, Vec::len);
+        self.tree.set_children(i, items);
+        if on_row {
+            let children = self.tree.node(i).and_then(|n| n.children.as_ref());
+            self.node = children.and_then(|c| c.get(before).or(c.last()).copied()).unwrap_or(i);
+        }
+    }
+
     /// Lines the list up with the tree's visible rows and returns them (node indices). The selection stays on
     /// `node`, or on its nearest visible ancestor when a collapse hid it.
     pub fn sync(&mut self) -> Vec<usize> {
@@ -294,7 +363,7 @@ mod tests {
         t.set_roots(vec![VarItem { children: 7, ..item("a", 10) }]);
         t.expand(0);
         t.expand(0);
-        assert_eq!(t.take_asks(), vec![VarAsk { node: 0, reference: 10, children: 7 }]);
+        assert_eq!(t.take_asks(), vec![VarAsk { node: 0, reference: 10, children: 7, start: 0 }]);
         t.set_children(0, vec![item("c", 0)]);
         t.collapse(0);
         t.expand(0);
@@ -370,6 +439,261 @@ mod tests {
         let mut t = VarTree::default();
         t.set_roots(Vec::from_iter((0..1500).map(|i| item(&i.to_string(), 0))));
         assert_eq!(t.rows().len(), MAX_CHILDREN, "roots are capped too");
+    }
+
+    /// Leaves named `start`, `start + 1`, ... as an adapter lists elements of an array.
+    fn from(start: usize, n: usize) -> Vec<VarItem> {
+        (start..start + n).map(|i| item(&i.to_string(), 0)).collect()
+    }
+
+    /// One root `r` of hint `n`, reference 10, opened and its first ask taken.
+    fn arr(n: i64) -> VarTree {
+        let mut t = VarTree::default();
+        t.set_roots(vec![VarItem { children: n, ..item("r", 10) }]);
+        t.expand(0);
+        t.take_asks();
+        t
+    }
+
+    fn row(t: &VarTree) -> usize {
+        t.node(0).unwrap().more.expect("a load-more row")
+    }
+
+    fn kept(t: &VarTree) -> usize {
+        t.node(0).unwrap().children.as_ref().map_or(0, Vec::len)
+    }
+
+    #[test]
+    fn a_later_page_appends() {
+        let mut t = arr(2500);
+        t.set_children(0, from(0, 1000));
+        assert_eq!(t.node(0).unwrap().hidden, 1500);
+        let r = row(&t);
+        assert_eq!(t.rows().len(), 1 + 1000 + 1);
+        assert_eq!(t.rows().last(), Some(&r), "the row comes after the children");
+        assert_eq!(t.marker(r), ' ');
+        let n = t.node(r).unwrap();
+        assert_eq!((n.depth, n.parent, n.item.name.as_str()), (1, Some(0), ""));
+        assert!(!t.node(0).unwrap().children.as_ref().unwrap().contains(&r), "not one of the children");
+        assert!(t.load_more(r));
+        assert_eq!(t.take_asks(), vec![VarAsk { node: 0, reference: 10, children: 2500, start: 1000 }]);
+        t.set_children(0, from(1000, 1000));
+        let names: Vec<&str> =
+            t.node(0).unwrap().children.as_ref().unwrap().iter().map(|&c| t.node(c).unwrap().item.name.as_str()).collect();
+        let want: Vec<String> = (0..2000).map(|i| i.to_string()).collect();
+        assert_eq!(names, want, "in order");
+        assert_eq!(t.node(0).unwrap().hidden, 500);
+        assert_eq!(row(&t), r, "the same row");
+        assert!(t.load_more(r));
+        assert_eq!(t.take_asks()[0].start, 2000);
+        t.set_children(0, from(2000, 500));
+        assert_eq!((t.node(0).unwrap().hidden, t.node(0).unwrap().more), (0, None));
+        assert_eq!(t.rows().len(), 1 + 2500);
+    }
+
+    #[test]
+    fn two_presses_ask_once() {
+        let mut t = arr(2500);
+        t.set_children(0, from(0, 1000));
+        let r = row(&t);
+        assert!(t.load_more(r) && t.load_more(r), "both are the row");
+        assert_eq!(t.take_asks().len(), 1);
+        t.set_children(0, from(1000, 1000));
+        t.set_children(0, from(2000, 500));
+        assert_eq!((kept(&t), t.node(0).unwrap().hidden), (2000, 500), "an answer with nothing asked changes nothing");
+    }
+
+    #[test]
+    fn the_row_is_not_a_node_to_open() {
+        let mut t = arr(2500);
+        t.set_children(0, from(0, 1000));
+        let r = row(&t);
+        t.expand(r);
+        assert!(t.take_asks().is_empty());
+        assert!(!t.load_more(0), "a node is not a row");
+        assert!(!t.load_more(99));
+        assert!(!t.load_more(1), "nor is a child");
+        assert!(t.take_asks().is_empty());
+    }
+
+    #[test]
+    fn a_failed_page_keeps_what_is_loaded() {
+        let mut t = arr(2500);
+        t.set_children(0, from(0, 1000));
+        let r = row(&t);
+        t.load_more(r);
+        t.take_asks();
+        t.set_failed(0, "timed out".into());
+        let n = t.node(0).unwrap();
+        assert!(n.expanded && !n.loading && n.failed.is_none() && n.hidden == 1500, "{n:?}");
+        assert_eq!((kept(&t), t.marker(0)), (1000, '▾'));
+        assert_eq!(t.node(r).unwrap().failed.as_deref(), Some("timed out"));
+        assert!(t.load_more(r));
+        assert!(t.node(r).unwrap().failed.is_none(), "asking again clears it");
+        assert_eq!(t.take_asks(), vec![VarAsk { node: 0, reference: 10, children: 2500, start: 1000 }]);
+        t.set_children(0, from(1000, 1000));
+        let all: std::collections::HashSet<&str> =
+            t.node(0).unwrap().children.as_ref().unwrap().iter().map(|&c| t.node(c).unwrap().item.name.as_str()).collect();
+        assert_eq!((kept(&t), all.len()), (2000, 2000), "no duplicate");
+        // A failure with nothing asked is ignored.
+        t.set_failed(0, "late".into());
+        assert!(t.node(row(&t)).unwrap().failed.is_none() && t.node(0).unwrap().failed.is_none());
+        assert!(t.node(0).unwrap().expanded);
+    }
+
+    #[test]
+    fn past_the_end_ends_the_row() {
+        let mut t = arr(3000);
+        t.set_children(0, from(0, 1000));
+        t.load_more(row(&t));
+        t.set_children(0, Vec::new());
+        let n = t.node(0).unwrap();
+        assert_eq!((n.hidden, n.more, kept(&t), t.marker(0)), (0, None, 1000, '▾'));
+        assert_eq!(t.rows().len(), 1 + 1000);
+    }
+
+    #[test]
+    fn a_short_page_ends_the_row() {
+        let mut t = arr(5000);
+        t.set_children(0, from(0, 300));
+        let n = t.node(0).unwrap();
+        assert_eq!((n.hidden, n.more, kept(&t)), (0, None, 300), "a short first page");
+        let mut t = arr(5000);
+        t.set_children(0, from(0, 1000));
+        t.load_more(row(&t));
+        t.set_children(0, from(1000, 300));
+        let n = t.node(0).unwrap();
+        assert_eq!((n.hidden, n.more, kept(&t)), (0, None, 1300), "a short later page");
+    }
+
+    #[test]
+    fn an_exact_end_asks_nothing_more() {
+        let mut t = arr(2000);
+        t.set_children(0, from(0, 1000));
+        t.load_more(row(&t));
+        t.set_children(0, from(1000, 1000));
+        let n = t.node(0).unwrap();
+        assert_eq!((n.hidden, n.more, kept(&t)), (0, None, 2000), "two full pages");
+        let mut t = arr(1001);
+        t.set_children(0, from(0, 1000));
+        let n = t.node(0).unwrap();
+        assert_eq!((n.hidden, kept(&t)), (1, 1000));
+        assert!(n.more.is_some(), "one is left");
+    }
+
+    #[test]
+    fn no_row_without_a_page() {
+        // (label, hint, rows answered, kept, hidden)
+        let table = [
+            ("exactly one page", 1000, 1000, 1000, 0),
+            ("no hint", 0, 1500, 1000, 500),
+            ("the adapter ignored count", 5000, 1500, 1000, 4000),
+            ("a hint under the answer", 7, 1, 1, 6),
+        ];
+        let mut wrong = Vec::new();
+        for (label, hint, got, want_kept, want_hidden) in table {
+            let mut t = arr(hint);
+            t.set_children(0, from(0, got));
+            let n = t.node(0).unwrap();
+            if (kept(&t), n.hidden, n.more) != (want_kept, want_hidden, None) {
+                wrong.push((label, kept(&t), n.hidden, n.more));
+            }
+        }
+        assert!(wrong.is_empty(), "{wrong:?}");
+    }
+
+    #[test]
+    fn a_repeated_page_ends_the_row() {
+        let mut t = arr(5000);
+        t.set_children(0, from(0, 1000));
+        t.load_more(row(&t));
+        t.set_children(0, from(0, 1000));
+        let n = t.node(0).unwrap();
+        assert_eq!((kept(&t), n.hidden, n.more), (1000, 4000, None));
+        assert!(!n.loading);
+    }
+
+    #[test]
+    fn a_later_page_too_long_is_cut_and_ends() {
+        let mut t = arr(5000);
+        t.set_children(0, from(0, 1000));
+        t.load_more(row(&t));
+        t.set_children(0, from(1000, 1500));
+        let n = t.node(0).unwrap();
+        assert_eq!((kept(&t), n.hidden, n.more), (2000, 3000, None));
+    }
+
+    #[test]
+    fn a_closed_node_keeps_its_pages() {
+        let mut t = arr(2500);
+        t.set_children(0, from(0, 1000));
+        let r = row(&t);
+        t.load_more(r);
+        t.take_asks();
+        t.collapse(0);
+        assert!(t.node(0).unwrap().loading, "a collapse leaves the ask alone");
+        assert_eq!(t.rows(), [0], "the row goes with the children");
+        t.set_children(0, from(1000, 1000));
+        let n = t.node(0).unwrap();
+        assert!(!n.expanded && !n.loading, "{n:?}");
+        assert_eq!(kept(&t), 2000, "the answer is kept");
+        t.expand(0);
+        assert!(t.take_asks().is_empty(), "known children are not asked again");
+        assert_eq!(t.rows().len(), 1 + 2000 + 1);
+        assert_eq!(t.rows().last(), Some(&r));
+    }
+
+    fn view_on_row() -> (VarsView, usize) {
+        let mut v = VarsView { tree: arr(2500), ..VarsView::default() };
+        v.show_children(0, from(0, 1000));
+        let r = row(&v.tree);
+        v.node = r;
+        v.sync();
+        assert_eq!((v.list.selected, v.node), (1001, r), "the row is last");
+        (v, r)
+    }
+
+    #[test]
+    fn the_selection_leaves_the_row_for_the_first_new_child() {
+        let (mut v, r) = view_on_row();
+        v.tree.load_more(r);
+        v.show_children(0, from(1000, 1000));
+        v.sync();
+        let first = v.tree.node(0).unwrap().children.as_ref().unwrap()[1000];
+        assert_eq!(v.tree.node(v.node).unwrap().item.name, "1000");
+        assert_eq!((v.node, v.list.selected), (first, 1001), "the row's old place on screen");
+        // An empty page: the last child.
+        let (mut v, r) = view_on_row();
+        v.tree.load_more(r);
+        v.show_children(0, Vec::new());
+        v.sync();
+        assert_eq!(v.tree.node(v.node).unwrap().item.name, "999");
+        assert_eq!(v.list.selected, 1000);
+        // The selection is elsewhere: it stays.
+        let (mut v, r) = view_on_row();
+        v.tree.load_more(r);
+        v.node = 5;
+        v.sync();
+        v.show_children(0, from(1000, 1000));
+        v.sync();
+        assert_eq!((v.node, v.list.selected), (5, 5));
+        // Nothing asked: the answer is ignored, and the selection stays on the row.
+        let (mut v, r) = view_on_row();
+        v.show_children(0, from(1000, 1000));
+        v.sync();
+        assert_eq!((v.node, v.list.selected, v.list.len), (r, 1001, 1002));
+    }
+
+    #[test]
+    fn a_later_page_leaves_a_collapsed_selection_on_the_parent() {
+        let (mut v, r) = view_on_row();
+        v.tree.load_more(r);
+        v.tree.collapse(0);
+        v.sync();
+        assert_eq!(v.node, 0, "the row is hidden: the parent");
+        v.show_children(0, from(1000, 1000));
+        v.sync();
+        assert_eq!((v.node, v.list.selected), (0, 0));
     }
 
     fn scope(name: &str, hint: &str, reference: i64, expensive: bool) -> Scope {

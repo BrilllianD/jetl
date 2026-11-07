@@ -580,9 +580,9 @@ pub enum DebugAction {
     PageDown,
     Home,
     End,
-    /// Open the selected Console line's location; in Variables, open or close the selected node.
+    /// Open the selected Console line's location; in Variables, open or close the selected node; on a load-more row, read the next page.
     Open,
-    /// Variables: open the selected node, or move to its first child when it is open.
+    /// Variables: open the selected node, or move to its first child when it is open; on a load-more row, read the next page.
     Expand,
     /// Variables: close the selected node, or move to its parent when it is closed.
     Collapse,

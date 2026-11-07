@@ -4599,6 +4599,80 @@ async fn debug_window_variables_narrow() {
     assert_snapshot!("debug_window_variables_narrow", snapshot(&term, &marks, None));
 }
 
+/// A paused session whose Variables tab shows Locals open with `arr` (2500 children) open, its first 1000 rows
+/// answered `0` to `999`, and the selection on the load-more row; Registers is below it. With `failure`, the row was
+/// pressed and the page failed with that message.
+async fn variables_more_window(
+    name: &str,
+    failure: Option<&str>,
+    width: u16,
+    height: u16,
+) -> (Fixture, ratatui::Terminal<ratatui::backend::TestBackend>) {
+    use super::debug::tests::{DEMO, caps, paused, six, with_fake_adapters, write_run_toml};
+    use crate::actions::{Action, DebugAction};
+    use crate::dap::fake::Order;
+    use crate::dap::panel::{DebugTab, FrameRow};
+    use crate::dap::protocol::Thread;
+    use crate::dap::vars::VarItem;
+    let mut fx = stable_app(name);
+    let app = &mut fx.app;
+    let mut fakes = with_fake_adapters(app, caps(), Order::LaunchEarly);
+    write_run_toml(app, DEMO);
+    let a = six(app);
+    let _fake = paused(app, &mut fakes, &a, 3).await;
+    let row = |id: i64, name: &str, place: Option<&str>| FrameRow { id, name: name.into(), place: place.map(Into::into), location: None };
+    let item = |name: &str, value: &str, ty: &str, reference: i64| VarItem {
+        name: name.into(),
+        value: value.into(),
+        ty: ty.into(),
+        reference,
+        children: 0,
+    };
+    app.debug_panel.set_tab(DebugTab::Variables);
+    app.debug_panel.set_threads(vec![Thread { id: 1, name: "main".into() }, Thread { id: 7, name: "t".into() }]);
+    app.debug_panel.show_stack(7, vec![row(0, "add", Some("demo.c:4")), row(1, "main", Some("demo.c:9"))]);
+    assert!(app.debug_panel.scopes_wanted().is_some());
+    app.debug_panel.show_scopes(vec![item("Locals", "", "", 2), item("Registers", "", "", 3)], &[0]);
+    app.debug_panel.take_var_asks();
+    let arr = VarItem { children: 2500, ..item("arr", "", "int [2500]", 6) };
+    app.debug_panel.show_children(0, vec![arr]);
+    app.focus.set(crate::ui::focus::PanelId::Debug);
+    // Locals, then arr: open it and answer a page. End and a draw scroll to Registers; Up lands on the row.
+    app.perform(Action::Debug(DebugAction::Down));
+    app.perform(Action::Debug(DebugAction::Expand));
+    app.debug_panel.take_var_asks();
+    app.debug_panel.show_children(2, (0..1000).map(|i| item(&i.to_string(), &i.to_string(), "int", 0)).collect());
+    // The start's toast sits in the stack as well as in the log.
+    app.notifications.clear();
+    app.toasts = Default::default();
+    app.perform(Action::Debug(DebugAction::End));
+    draw_app(app, width, height);
+    app.perform(Action::Debug(DebugAction::Up));
+    if let Some(message) = failure {
+        app.perform(Action::Debug(DebugAction::Open));
+        assert_eq!(app.debug_panel.take_var_asks().len(), 1);
+        app.debug_panel.children_failed(2, message.into());
+    }
+    let term = draw_app(app, width, height);
+    (fx, term)
+}
+
+#[tokio::test]
+async fn debug_window_variables_more() {
+    let (fx, term) = variables_more_window("debug-variables-more", None, 120, 40).await;
+    let mut marks = debug_marks(&fx.app.theme);
+    marks.push(Mark::style('W', "selected row", fx.app.theme.list_selected));
+    assert_snapshot!("debug_window_variables_more", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
+async fn debug_window_variables_more_narrow() {
+    let (fx, term) = variables_more_window("debug-variables-more-narrow", Some(&"x".repeat(200)), 80, 24).await;
+    let mut marks = debug_marks(&fx.app.theme);
+    marks.push(Mark::style('W', "selected row", fx.app.theme.list_selected));
+    assert_snapshot!("debug_window_variables_more_narrow", snapshot(&term, &marks, None));
+}
+
 #[tokio::test]
 async fn debug_window_suspended() {
     use super::debug::tests::{DEMO, caps, paused, six, with_fake_adapters, write_run_toml};

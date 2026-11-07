@@ -1508,6 +1508,77 @@ matched by its shape (`[▸▾] big`), since the source pane holds the same name
 What gdb cannot show, and the unit tests prove: a refusal above `UNPAGED_LIMIT`, and an adapter that ignores `start` and
 `count`. Other adapters are unverified.
 
+### Scenario: Debug window, load more
+
+Needs what `### Scenario: Debug window, paged variables` needs: `gdb` 14 or newer (the run used 17.2), the same
+`config.toml` with `dap-log-file`, the wire proof, the keys, `paged.c` and `mapped.cc`. One more fixture, `pages.c`,
+built `gcc -g -O0 -o pages pages.c`, line 6 being the `printf`:
+
+    #include <stdio.h>
+    struct pt { int x; int y; };
+    int main(void) {
+        static struct pt pts[3000];
+        pts[1500].x = 42;
+        printf("%d\n", pts[1500].x);
+        return 0;
+    }
+
+The list holds about ten rows at 80x24, so go to the load-more row from the end: End, then Up once per row below the
+container (the roots and locals after it, and `Registers`, which is last). In `paged.c` with only `big` open that is End
+and Up four times (`over`, `edge`, `i`, `Registers`); with only `over` open, three; with only `giant` open, six. Sent
+requests: `grep -E '^READ.*"command": "variables"' dap.log | grep -o '"arguments": {[^}]*}'`.
+
+`paged`, breakpoint on line 15, Shift+F9, Variables, at each size:
+
+1. `big`, Right: `▾ big  first 1000 of 5000 shown  int [5000]`. End, Up four times: the selected row reads
+   `load 1000 more  4000 left`, on one line at 80x24.
+2. Enter: the selected row reads `1000 = 1000  int`, on the screen row the load-more row held, and the row above it is
+   `999 = 999  int`. Sent: `{"count": 1000, "start": 1000, "variablesReference": N}`.
+3. End, Up four times, Right: `2000 = 2000  int`. Sent `start` 2000. Left: the selection is on
+   `▾ big  first 3000 of 5000 shown  int [5000]`.
+4. End, Up four times, then a click on the row's text, not its marker: `3000 = 3000  int`. Sent `start` 3000. The click
+   was column 15, row 18 at 80x24 and column 15, row 34 at 120x40 (1-based; the text starts at column 11, 0-based).
+5. End, Up four times: the row reads `load 1000 more` with no `left`. Enter: `4000 = 4000  int`. Sent `start` 4000.
+   End, Up four times: `4999 = 4999  int` with no load-more row after it. Home, Down to `big`: `▾ big  int [5000]` with no note.
+6. Left on `big`, Right: the rows return and `dap.log` holds no new `variables` line. Left.
+7. `over`, Right: `first 1000 of 1001 shown`. End, Up three times: `load 1 more`. Enter: `1000 = 1000  int`, no row after
+   it, and `over` with no note. Sent `start` 1000. Left twice from there closes `over`.
+8. `giant`, Right. End, Up six times: `load 1000 more  1999000 left`. Two Enters in one `send-keys`: `dap.log` holds
+   exactly one new `"start": 1000` (2 lines before, 3 after), the row `1000 = 0  int` is selected, and `giant`'s row
+   reads `first 2000 of 2000000 shown`.
+9. A failed page. End, Up six times (`load 1000 more  1998000 left`). Find gdb with
+   `pgrep -f '[d]ap-log-file <capture dir>'` and `kill -STOP` it. Enter: `reading 1000 more …`. After 9.76 s at 80x24
+   and 9.77 s at 120x40 (the limit is `REQUEST_TIMEOUT`, 10 s): `load 1000 more  could not read: timed out`, the selection on
+   the row, no toast. `kill -CONT` it and wait 2 s: the screen is identical, since the late answer is dropped. Enter:
+   `2000 = 0  int`. `dap.log` holds `"start": 2000` three times in all, one of them for `big`; `giant`'s note reads
+   `first 3000 of 2000000 shown`, not 4000.
+10. A step with a page out. End, Up six times, then Enter and F8 in one `send-keys`: `paused (step)`, a fresh tree with
+    `giant` closed, and nowhere `could not read`, `invalid variablesReference` or `list index out of range`. `big`,
+    Right: `first 1000 of 5000 shown`, rows `0 = 0  int`, `1 = 1  int`.
+11. A stop with a page out. End, Up four times, then Enter and Ctrl+F2 in one `send-keys`: the title reads
+    `Debug: paged · ended` and the pane `Variables show while the program is paused`; no gdb is left (0 after the stop).
+
+`mapped`, breakpoint on line 7, at each size:
+
+12. `m`, Right (about 2 s at `…`: 2.0 s at 80x24, 1.99 s at 120x40): `first 1000 of 200000 shown = std::map with 100000
+    elements`. End, Up once: `load 1000 more  199000 left`. Enter: `[1000] = 500  const int`, then `[1001] = 500  int`,
+    after 0.12 s at both sizes (a later page has no printer cost). Sent `start` 1000. The count is rows, twice the
+    elements, as the note says. Left: `first 2000 of 200000 shown`. Ctrl+F2.
+
+`pages`, breakpoint on line 6, at each size:
+
+13. `pts`, Right: `first 1000 of 3000 shown`. End, Up once: `load 1000 more  2000 left`. Enter, then
+    `tmux send-keys -N 500 Down`: `1500  struct pt`. Right, then Down twice: `x = 42  int`, `y = 0  int`. A child on a
+    later page opens (the request for its reference followed the two `start` requests).
+14. Ctrl+F2, Ctrl+Q: exit 0, empty stderr, no gdb or debuggee left.
+
+Last run: `~/.claude/plans/backlog-run-25-S6b-evidence/live/<size>/`. Step 13's children are shown by the second run
+(`<size>-b/pages`), which adds the two Downs.
+
+What gdb cannot show, and the unit tests prove: a stale answer's timing, an adapter that ignores `start` or `count`, a
+short page before the end (gdb's hint is exact), and the empty page past the end through jetl (gdb's hint means jetl never
+asks there). Other adapters are unverified.
+
 ### Scenario: Debug build step
 
 Needs `gdb` 14 or newer (the run used 17.2) and `cargo`, no network. At 80x24 and at 120x40, a private tmux socket,
