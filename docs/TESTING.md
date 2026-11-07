@@ -243,8 +243,8 @@ carets, moved with the text; `M-Tab` back to it and type at all of them.
 Fixture: `T=$(mktemp -d)`, `seq -f 'line %g of the toast check' 1 40 > $T/notes.txt`,
 `[lsp] enabled = false` in a private config. `jetl $T/notes.txt`, Esc (focuses
 the editor), Ctrl+Z: the Info toast `Nothing to undo`. Under tmux the Warning
-`Terminal lacks the kitty keyboard protocol: ...` stacks below it, and 5 s later,
-with the Info gone, it takes the top slot. In `capture-pane`, the `╭` of the first
+`Terminal lacks the kitty keyboard protocol: ...` may stack below it: its 8 s run
+from startup, so once the Info is gone it takes the top slot only if still up. In `capture-pane`, the `╭` of the first
 toast is in cell 43 and its `╮` in cell 78 at 80x24 (0-based), and in cells 67 and
 118 at 120x40. At 80x24 every line number beside it is whole.
 

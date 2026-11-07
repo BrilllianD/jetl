@@ -104,7 +104,7 @@ impl Toasts {
         let mut w = (area.width / 2).clamp(22, 52);
         let mut x = right.saturating_sub(w);
         // A toast's edge on a gutter hides its marks: start right of it. Only a gutter
-        // that leaves MIN_W cells counts; a toast narrower than that would still cover it.
+        // that leaves MIN_W cells counts; a toast narrower than that would not read.
         let room = right.saturating_sub(MIN_W);
         if let Some(clear) =
             gutters.iter().filter(|g| !g.is_empty() && g.x < right && g.right() > x && g.right() <= room).map(|g| g.right()).max()
