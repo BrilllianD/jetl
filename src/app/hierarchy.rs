@@ -9,12 +9,13 @@
 //!
 //! Without a server for the buffer, the call hierarchy is computed from the
 //! symbol index (`symbols/graph.rs`): an index tree
-//! (`HierarchyTree::from_index`) whose children are filled synchronously. In
-//! files covered by a fresh SCIP index the edges follow SCIP symbols
-//! (`hierarchy_scip_callers` / `hierarchy_scip_callees`).
+//! (`HierarchyTree::from_index`) whose Callers and Callees children are computed in `spawn_blocking` from a copy of
+//! the index (`SymbolIndex::reader`) and arrive as `AppMsg::HierarchyIndexChildren`; the node shows `…` meanwhile.
+//! In files covered by a fresh SCIP index the edges follow SCIP symbols (`scip_callers` / `scip_callees`).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use lsp_types::{Position, Range, SymbolKind};
 use serde_json::{Value, json};
@@ -23,12 +24,14 @@ use super::App;
 use super::lsp_nav::word_at;
 use crate::actions::HierarchyAction;
 use crate::editor::buffer::BufferId;
+use crate::event::AppMsg;
 use crate::lsp::PendingTag;
 use crate::lsp::caps::{PREPARE_CALL_HIERARCHY, PREPARE_TYPE_HIERARCHY};
 use crate::lsp::hierarchy::HierarchyItem;
 use crate::lsp::hierarchy::{Direction, HierarchyTree, parse_calls, parse_items, parse_types};
 use crate::lsp::transport::ResponseError;
 use crate::symbols::graph;
+use crate::symbols::index::SymbolIndex;
 use crate::symbols::scip::{self, SymId};
 use crate::ui::focus::{PanelId, ToolWindowId};
 
@@ -256,33 +259,15 @@ impl App {
         }
     }
 
-    /// Fill `node`'s children of an index tree: from the index at once, or for Imports and Imported by from the import
-    /// edges when they are ready; else `node` waits (`loading`, shown as `…`) and the edges are asked for.
+    /// Fill `node`'s children of an index tree: Callers and Callees wait for a job (`spawn_index_children`); Imports
+    /// and Imported by come from the import edges when they are ready, else `node` waits (`loading`, shown as `…`)
+    /// and the edges are asked for.
     fn hierarchy_index_children(&mut self, node: usize) {
         let Some((direction, item)) = self.hierarchy.as_ref().and_then(|t| t.nodes.get(node).map(|n| (t.direction, n.item.clone()))) else {
             return;
         };
         let items = match direction {
-            Direction::Callers => {
-                let defs = match self.hierarchy_scip_callers(&item) {
-                    Some(d) => d,
-                    None => graph::callers(&self.symbols, &item.name),
-                };
-                self.hierarchy_items(defs)
-            }
-            Direction::Callees => {
-                let defs = match self.hierarchy_scip_callees(&item) {
-                    Some(d) => d,
-                    None => match self.rel_path(&item.path) {
-                        Some(rel) => match graph::find(&self.symbols, &rel, &item.name, item.selection.start.line as usize) {
-                            Some(sym) => graph::callees(&mut self.symbols, &rel, sym),
-                            None => Vec::new(),
-                        },
-                        None => Vec::new(),
-                    },
-                };
-                self.hierarchy_items(defs)
-            }
+            Direction::Callers | Direction::Callees => return self.spawn_index_children(node, direction, &item),
             Direction::Imports | Direction::ImportedBy => match self.rel_path(&item.path) {
                 Some(rel) => {
                     let files =
@@ -327,55 +312,39 @@ impl App {
         Some((rel, occ.symbol))
     }
 
-    /// Callers of `item` with SCIP: exact ones from covered files plus `graph::callers(name)` from files that are not
-    /// covered, merged with `graph::sort_defs`. None when `scip_symbol_of` is None.
-    fn hierarchy_scip_callers(&self, item: &HierarchyItem) -> Option<Vec<graph::Def>> {
-        let (_, sym) = self.scip_symbol_of(item)?;
-        let ix = self.scip.index.as_ref()?;
-        let mut memo: HashMap<String, bool> = HashMap::new();
-        let mut covered = |rel: &str| *memo.entry(rel.to_string()).or_insert_with(|| ix.doc(rel).is_some() && self.scip_fresh(rel));
-        let mut defs = graph::scip_callers(&self.symbols, ix, sym, &mut covered);
-        defs.extend(graph::callers(&self.symbols, &item.name).into_iter().filter(|d| !covered(&d.path)));
-        graph::sort_defs(&mut defs);
-        Some(defs)
+    /// Start the job for `node`'s Callers or Callees: a copy of the index and the SCIP state go to `spawn_blocking`,
+    /// the node shows `…` until `hierarchy_index_answer` gets the children.
+    fn spawn_index_children(&mut self, node: usize, direction: Direction, item: &HierarchyItem) {
+        let Some(tree) = self.hierarchy.as_ref().map(|t| t.id) else { return };
+        let scip = self.scip_symbol_of(item).and_then(|(rel, sym)| {
+            let ix = self.scip.index.clone()?;
+            Some(ScipJob { ix, root: self.workspace.root.clone(), rel, sym, dirty: self.dirty_rels() })
+        });
+        let job = ChildrenJob {
+            index: self.symbols.reader(),
+            root: self.workspace.root.clone(),
+            direction,
+            name: item.name.clone(),
+            rel: self.rel_path(&item.path),
+            line: item.selection.start.line as usize,
+            scip,
+        };
+        if let Some(n) = self.hierarchy.as_mut().and_then(|t| t.nodes.get_mut(node)) {
+            n.loading = true;
+        }
+        self.dirty_frame = true;
+        let (generation, tx) = (self.workspace.generation, self.bus_tx.clone());
+        tokio::task::spawn_blocking(move || {
+            let children = index_children(job);
+            let _ = tx.send(AppMsg::HierarchyIndexChildren { generation, tree, node, children });
+        });
     }
 
-    /// Callees of `item` with SCIP, in call order, each definition once. None when `scip_symbol_of` is None or
-    /// `graph::find` finds no tags symbol for the item.
-    fn hierarchy_scip_callees(&mut self, item: &HierarchyItem) -> Option<Vec<graph::Def>> {
-        let (rel, _) = self.scip_symbol_of(item)?;
-        let tsym = graph::find(&self.symbols, &rel, &item.name, item.selection.start.line as usize)?;
-        // Per called symbol: its fresh definitions, and the name plus uncovered files to look in by name.
-        type Step = (Vec<graph::Def>, Option<(String, Vec<String>)>);
-        let steps: Vec<Step> = {
-            let ix = self.scip.index.as_ref()?;
-            let mut memo: HashMap<String, bool> = HashMap::new();
-            let mut covered = |r: &str| *memo.entry(r.to_string()).or_insert_with(|| ix.doc(r).is_some() && self.scip_fresh(r));
-            graph::scip_calls_in(&self.symbols, ix, &rel, tsym)
-                .into_iter()
-                .map(|id| {
-                    let (defs, stale) = graph::scip_defs(&self.symbols, ix, id, &mut covered);
-                    let pending = if defs.is_empty() && !stale.is_empty() { ix.name(id).map(|n| (n, stale)) } else { None };
-                    (defs, pending)
-                })
-                .collect()
-        };
-        let mut seen: std::collections::HashSet<(std::sync::Arc<str>, usize, usize)> = std::collections::HashSet::new();
-        let mut out = Vec::new();
-        for (mut defs, pending) in steps {
-            if let Some((name, stale)) = pending {
-                defs = graph::resolve(&mut self.symbols, &name, &rel)
-                    .into_iter()
-                    .filter(|d| stale.iter().any(|p| p == &*d.path) && graph::CALLABLE.contains(&d.symbol.kind))
-                    .collect();
-            }
-            for d in defs {
-                if seen.insert((d.path.clone(), d.symbol.line, d.symbol.col)) {
-                    out.push(d);
-                }
-            }
-        }
-        Some(out)
+    /// The root-relative paths of the open buffers with unsaved changes.
+    fn dirty_rels(&self) -> HashSet<String> {
+        let root = &self.workspace.root;
+        let rels = self.editor.buffers.iter().filter(|b| b.dirty()).filter_map(|b| b.path.as_ref());
+        rels.filter_map(|p| p.strip_prefix(root).ok()).map(|p| p.to_string_lossy().into_owned()).collect()
     }
 
     /// A file of the project as a hierarchy item, at its first line.
@@ -414,24 +383,25 @@ impl App {
         self.hierarchy_show(HierarchyTree::new(id, String::new(), Direction::Imports, vec![root]));
     }
 
-    /// Index definitions as items: `raw` is null and the selection is the name
-    /// in UTF-16 columns, from the open buffer's line else the file on disk.
+    /// Index definitions as items on the main thread (the roots of a call tree): their lines from disk, then
+    /// [`App::def_items`].
     pub(super) fn hierarchy_items(&mut self, defs: Vec<graph::Def>) -> Vec<HierarchyItem> {
-        let root = self.workspace.root.clone();
-        let mut disk: HashMap<PathBuf, Option<String>> = HashMap::new();
-        let mut items = Vec::with_capacity(defs.len());
-        for d in defs {
+        let lines = def_lines(&self.workspace.root, &defs);
+        self.def_items(defs.into_iter().zip(lines).collect())
+    }
+
+    /// Index definitions as items, each with its line as read from disk: `raw` is null and the selection is the name
+    /// in UTF-16 columns, from the open buffer's line else the given one.
+    fn def_items(&self, children: Vec<(graph::Def, Option<String>)>) -> Vec<HierarchyItem> {
+        let root = &self.workspace.root;
+        let mut items = Vec::with_capacity(children.len());
+        for (d, disk) in children {
             let (line, col) = (d.symbol.line, d.symbol.col);
             let abs = root.join(&*d.path);
             let open = self.editor.index_of(&abs).map(|i| &self.editor.buffers[i]).filter(|b| line < b.rope.len_lines());
             let text = match open {
                 Some(b) => Some(b.line_text(line)),
-                None => disk
-                    .entry(abs.clone())
-                    .or_insert_with(|| std::fs::read(&abs).ok().map(|b| String::from_utf8_lossy(&b).into_owned()))
-                    .as_deref()
-                    .and_then(|s| crate::util::text::lines_inclusive(s).nth(line).map(crate::git::diff::strip_eol))
-                    .map(str::to_string),
+                None => disk,
             };
             let ch = text.map_or(col, |t| t.chars().take(col).map(char::len_utf16).sum());
             let len = d.symbol.name.encode_utf16().count();
@@ -445,6 +415,21 @@ impl App {
             });
         }
         items
+    }
+
+    /// The children of an index tree node from `spawn_index_children`: dropped unless they are for this workspace,
+    /// the current tree and a node still waiting for them.
+    pub(super) fn hierarchy_index_answer(&mut self, generation: u64, tree: u64, node: usize, children: Vec<(graph::Def, Option<String>)>) {
+        let waiting = generation == self.workspace.generation
+            && self.hierarchy.as_ref().is_some_and(|t| t.id == tree && t.nodes.get(node).is_some_and(|n| n.loading));
+        if !waiting {
+            return tracing::debug!("dropping index hierarchy children for an old tree");
+        }
+        let items = self.def_items(children);
+        if let Some(t) = &mut self.hierarchy {
+            t.set_children(node, items);
+        }
+        self.dirty_frame = true;
     }
 
     /// The answer to a children request: dropped unless it is for the
@@ -469,6 +454,125 @@ impl App {
             }
         }
     }
+}
+
+/// What a background job needs of the SCIP index for one node: the index, the asked symbol, and the open buffers with
+/// unsaved changes (taken on the main thread).
+struct ScipJob {
+    ix: Arc<scip::ScipIndex>,
+    root: PathBuf,
+    rel: String,
+    sym: SymId,
+    dirty: HashSet<String>,
+}
+
+impl ScipJob {
+    /// A file is covered when the SCIP index has its document, its buffer (if open) has no unsaved changes and its
+    /// mtime is not newer than the SCIP file's.
+    fn covered(&self, rel: &str) -> bool {
+        self.ix.doc(rel).is_some() && scip::file_fresh(&self.root.join(rel), self.dirty.contains(rel), self.ix.mtime())
+    }
+}
+
+/// Everything `index_children` reads: owned, so it can run in `spawn_blocking`.
+struct ChildrenJob {
+    index: SymbolIndex,
+    root: PathBuf,
+    direction: Direction,
+    name: String,
+    rel: Option<String>,
+    line: usize,
+    scip: Option<ScipJob>,
+}
+
+/// The children of a node in an index Callers or Callees tree, each with its line from disk; runs in
+/// `spawn_blocking`.
+fn index_children(mut job: ChildrenJob) -> Vec<(graph::Def, Option<String>)> {
+    let scip = job.scip.take();
+    let defs = match job.direction {
+        Direction::Callers => match &scip {
+            Some(s) => scip_callers(&job.index, s, &job.name),
+            None => graph::callers(&job.index, &job.name),
+        },
+        Direction::Callees => scip
+            .as_ref()
+            .and_then(|s| scip_callees(&mut job.index, s, &job.name, job.line))
+            .unwrap_or_else(|| tags_callees(&mut job.index, job.rel.as_deref(), &job.name, job.line)),
+        _ => Vec::new(),
+    };
+    let lines = def_lines(&job.root, &defs);
+    defs.into_iter().zip(lines).collect()
+}
+
+/// Callees by name from the tags index (the fallback when SCIP does not cover the node).
+fn tags_callees(index: &mut SymbolIndex, rel: Option<&str>, name: &str, line: usize) -> Vec<graph::Def> {
+    let Some(rel) = rel else { return Vec::new() };
+    match graph::find(index, rel, name, line) {
+        Some(sym) => graph::callees(index, rel, sym),
+        None => Vec::new(),
+    }
+}
+
+/// Callers with SCIP: exact ones from covered files plus `graph::callers(name)` from files that are not,
+/// merged with `graph::sort_defs`.
+fn scip_callers(index: &SymbolIndex, s: &ScipJob, name: &str) -> Vec<graph::Def> {
+    let mut memo: HashMap<String, bool> = HashMap::new();
+    let mut covered = |rel: &str| *memo.entry(rel.to_string()).or_insert_with(|| s.covered(rel));
+    let mut defs = graph::scip_callers(index, &s.ix, s.sym, &mut covered);
+    defs.extend(graph::callers(index, name).into_iter().filter(|d| !covered(&d.path)));
+    graph::sort_defs(&mut defs);
+    defs
+}
+
+/// Callees with SCIP, in call order, each definition once. None when `graph::find` finds no tags symbol for the
+/// node.
+fn scip_callees(index: &mut SymbolIndex, s: &ScipJob, name: &str, line: usize) -> Option<Vec<graph::Def>> {
+    let tsym = graph::find(index, &s.rel, name, line)?;
+    // Per called symbol: its fresh definitions, and the name plus uncovered files to look in by name.
+    type Step = (Vec<graph::Def>, Option<(String, Vec<String>)>);
+    let steps: Vec<Step> = {
+        let mut memo: HashMap<String, bool> = HashMap::new();
+        let mut covered = |r: &str| *memo.entry(r.to_string()).or_insert_with(|| s.covered(r));
+        graph::scip_calls_in(index, &s.ix, &s.rel, tsym)
+            .into_iter()
+            .map(|id| {
+                let (defs, stale) = graph::scip_defs(index, &s.ix, id, &mut covered);
+                let pending = if defs.is_empty() && !stale.is_empty() { s.ix.name(id).map(|n| (n, stale)) } else { None };
+                (defs, pending)
+            })
+            .collect()
+    };
+    let mut seen: HashSet<(Arc<str>, usize, usize)> = HashSet::new();
+    let mut out = Vec::new();
+    for (mut defs, pending) in steps {
+        if let Some((name, stale)) = pending {
+            defs = graph::resolve(index, &name, &s.rel)
+                .into_iter()
+                .filter(|d| stale.iter().any(|p| p == &*d.path) && graph::CALLABLE.contains(&d.symbol.kind))
+                .collect();
+        }
+        for d in defs {
+            if seen.insert((d.path.clone(), d.symbol.line, d.symbol.col)) {
+                out.push(d);
+            }
+        }
+    }
+    Some(out)
+}
+
+/// Each def's line from the file on disk (each file read once), `None` when the file or line cannot be read.
+fn def_lines(root: &Path, defs: &[graph::Def]) -> Vec<Option<String>> {
+    let mut disk: HashMap<PathBuf, Option<String>> = HashMap::new();
+    defs.iter()
+        .map(|d| {
+            let abs = root.join(&*d.path);
+            disk.entry(abs.clone())
+                .or_insert_with(|| std::fs::read(&abs).ok().map(|b| String::from_utf8_lossy(&b).into_owned()))
+                .as_deref()
+                .and_then(|s| crate::util::text::lines_inclusive(s).nth(d.symbol.line).map(crate::git::diff::strip_eol))
+                .map(str::to_string)
+        })
+        .collect()
 }
 
 #[cfg(all(test, feature = "lang-rust"))]
@@ -972,6 +1076,70 @@ mod tests {
         std::fs::File::options().write(true).open(p).unwrap().set_modified(t).unwrap();
     }
 
+    /// Handle `HierarchyIndexChildren` messages until no node of the current tree is loading. Only those: a startup
+    /// file index or index run would change the files under the test.
+    async fn settle(app: &mut App) {
+        while app.hierarchy.as_ref().is_some_and(|t| t.nodes.iter().any(|n| n.loading)) {
+            let m = tokio::time::timeout(std::time::Duration::from_secs(5), app.bus_rx.recv())
+                .await
+                .expect("index hierarchy children in time")
+                .expect("bus open");
+            if matches!(m, AppMsg::HierarchyIndexChildren { .. }) {
+                app.handle_msg(m);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn index_children_come_back_tagged() {
+        let (mut app, dir) = test_app("hier-index-async");
+        index(&mut app, &[("src/b.rs", IDX_B), ("src/main.rs", IDX_MAIN)]);
+        crate::app::tests::load(&mut app, "src/b.rs", IDX_B);
+        goto(&mut app, 0, 8);
+        app.toasts = Default::default();
+        app.perform(Action::Lsp(LspAction::CallHierarchy));
+        // 1. The children are not computed on the main thread.
+        let t = app.hierarchy.as_ref().unwrap();
+        assert!(t.nodes[0].loading && t.nodes[0].children.is_none());
+        // 2. Another root, another tree: dropped.
+        let (g, id) = (app.workspace.generation, app.hierarchy.as_ref().unwrap().id);
+        let (p, s) = app.symbols.defs_of("helper").remove(0);
+        let fake = vec![(graph::Def { path: p, symbol: s }, None)];
+        for (generation, tree) in [(g + 1, id), (g, id + 1)] {
+            app.handle_msg(AppMsg::HierarchyIndexChildren { generation, tree, node: 0, children: fake.clone() });
+            let t = app.hierarchy.as_ref().unwrap();
+            assert!(t.nodes[0].loading && t.nodes[0].children.is_none(), "generation {generation} tree {tree} was applied");
+        }
+        // 3. The job's own answer.
+        settle(&mut app).await;
+        assert_eq!(child_names(&app, 0), ["main", "run"]);
+        // 4. The node no longer waits: dropped.
+        app.handle_msg(AppMsg::HierarchyIndexChildren { generation: g, tree: id, node: 0, children: fake });
+        assert_eq!(child_names(&app, 0), ["main", "run"]);
+        // 5. The open buffer's line wins over the job's disk line.
+        crate::app::tests::load(&mut app, "src/main.rs", IDX_MAIN);
+        app.perform(Action::Hierarchy(HierarchyAction::Refresh));
+        let t = app.hierarchy.as_ref().unwrap();
+        assert!(t.nodes[0].loading);
+        let id2 = t.id;
+        let (p, s) = app.symbols.defs_of("run").into_iter().find(|(p, _)| &**p == "src/main.rs").unwrap();
+        let children = vec![(graph::Def { path: p, symbol: s }, Some("x".repeat(40)))];
+        app.handle_msg(AppMsg::HierarchyIndexChildren { generation: g, tree: id2, node: 0, children });
+        let t = app.hierarchy.as_ref().unwrap();
+        assert_eq!(t.nodes[t.nodes[0].children.as_ref().unwrap()[0]].item.selection.start, Position::new(8, 12));
+        settle(&mut app).await;
+        // 6. A new tree, asked in the other direction.
+        app.perform(Action::Hierarchy(HierarchyAction::ToggleDirection));
+        assert!(app.hierarchy.as_ref().unwrap().nodes[0].loading);
+        settle(&mut app).await;
+        let t = app.hierarchy.as_ref().unwrap();
+        assert_eq!(t.nodes[0].children, Some(vec![]));
+        assert_eq!(t.title(), "Callees of helper (approximate)");
+        // 7.
+        assert!(toasts(&app).is_empty(), "{:?}", toasts(&app));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[tokio::test]
     async fn call_hierarchy_edges_follow_a_fresh_scip_index() {
         use crate::symbols::scip::Encoding;
@@ -1009,6 +1177,7 @@ mod tests {
         set_mtime(&root.join("src/a.rs"), now - std::time::Duration::from_secs(100));
         goto(&mut app, 0, 8);
         app.perform(Action::Lsp(LspAction::CallHierarchy));
+        settle(&mut app).await;
         assert_eq!(app.hierarchy.as_ref().unwrap().nodes[0].item.name, "helper");
         assert_eq!(app.hierarchy.as_ref().unwrap().nodes[0].item.path, root.join("src/a.rs"));
         assert!(child_names(&app, 0).is_empty());
@@ -1017,13 +1186,16 @@ mod tests {
         set_mtime(&root.join("src/b.rs"), now - std::time::Duration::from_secs(100));
         goto(&mut app, 0, 8);
         app.perform(Action::Lsp(LspAction::CallHierarchy));
+        settle(&mut app).await;
         assert_eq!(child_names(&app, 0), ["main"]);
         // (c) main calls b::helper only.
         crate::app::tests::load(&mut app, "src/main.rs", main);
         set_mtime(&root.join("src/main.rs"), now - std::time::Duration::from_secs(100));
         goto(&mut app, 4, 4);
         app.perform(Action::Lsp(LspAction::CallHierarchy));
+        settle(&mut app).await;
         app.perform(Action::Hierarchy(HierarchyAction::ToggleDirection));
+        settle(&mut app).await;
         assert_eq!(child_names(&app, 0), ["helper"]);
         let t = app.hierarchy.as_ref().unwrap();
         assert_eq!(t.nodes[t.nodes[0].children.as_ref().unwrap()[0]].item.path, root.join("src/b.rs"));
@@ -1034,13 +1206,28 @@ mod tests {
         set_mtime(&root.join("src/a.rs"), now - std::time::Duration::from_secs(100));
         goto(&mut app, 0, 8);
         app.perform(Action::Lsp(LspAction::CallHierarchy));
+        settle(&mut app).await;
         assert_eq!(child_names(&app, 0), ["main"]);
         crate::app::tests::load(&mut app, "src/main.rs", main);
         set_mtime(&root.join("src/main.rs"), now);
         goto(&mut app, 4, 4);
         app.perform(Action::Lsp(LspAction::CallHierarchy));
+        settle(&mut app).await;
         app.perform(Action::Hierarchy(HierarchyAction::ToggleDirection));
+        settle(&mut app).await;
         assert_eq!(child_names(&app, 0).len(), 2);
+        // (e) main.rs fresh again but with unsaved changes: not covered, so its call comes from the tags index.
+        crate::app::tests::load(&mut app, "src/main.rs", main);
+        set_mtime(&root.join("src/main.rs"), now - std::time::Duration::from_secs(100));
+        goto(&mut app, 6, 1);
+        app.perform(Action::Editor(EditorAction::InsertChar('\n')));
+        assert!(app.editor.active_buffer().unwrap().dirty());
+        crate::app::tests::load(&mut app, "src/a.rs", helper);
+        set_mtime(&root.join("src/a.rs"), now - std::time::Duration::from_secs(100));
+        goto(&mut app, 0, 8);
+        app.perform(Action::Lsp(LspAction::CallHierarchy));
+        settle(&mut app).await;
+        assert_eq!(child_names(&app, 0), ["main"]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1052,6 +1239,7 @@ mod tests {
         goto(&mut app, 0, 8);
         app.toasts = Default::default();
         app.perform(Action::Lsp(LspAction::CallHierarchy));
+        settle(&mut app).await;
         let t = app.hierarchy.as_ref().expect("an index tree");
         assert!(t.from_index() && t.server.is_empty());
         assert_eq!(t.title(), "Callers of helper (approximate)");
@@ -1073,22 +1261,28 @@ mod tests {
         assert_eq!(app.focus.current, PanelId::Hierarchy);
         assert!(toasts(&app).is_empty(), "{:?}", toasts(&app));
         app.perform(Action::Hierarchy(HierarchyAction::ToggleDirection));
+        settle(&mut app).await;
         assert_eq!(app.hierarchy.as_ref().unwrap().title(), "Callees of helper (approximate)");
         assert_eq!(app.hierarchy.as_ref().unwrap().nodes[0].children, Some(vec![]));
         app.perform(Action::Hierarchy(HierarchyAction::ToggleDirection));
+        settle(&mut app).await;
         app.perform(Action::Hierarchy(HierarchyAction::Down));
         app.perform(Action::Hierarchy(HierarchyAction::Expand));
+        settle(&mut app).await;
         let t = app.hierarchy.as_ref().unwrap();
         assert_eq!(t.nodes[t.nodes[0].children.as_ref().unwrap()[0]].children, Some(vec![]));
         // Callees of `main`.
         crate::app::tests::load(&mut app, "src/main.rs", IDX_MAIN);
         goto(&mut app, 3, 4);
         app.perform(Action::Lsp(LspAction::CallHierarchy));
+        settle(&mut app).await;
         app.perform(Action::Hierarchy(HierarchyAction::ToggleDirection));
+        settle(&mut app).await;
         assert_eq!(child_names(&app, 0), ["helper", "run"]);
         let t = app.hierarchy.as_ref().unwrap();
         assert_eq!(t.nodes[t.nodes[0].children.as_ref().unwrap()[0]].item.path, dir.join("root/src/b.rs"));
         app.perform(Action::Hierarchy(HierarchyAction::Refresh));
+        settle(&mut app).await;
         assert_eq!(child_names(&app, 0), ["helper", "run"]);
         app.perform(Action::Hierarchy(HierarchyAction::Down));
         app.perform(Action::Hierarchy(HierarchyAction::Down));
@@ -1181,6 +1375,7 @@ mod tests {
         crate::app::tests::load(&mut app, "src/b.rs", IDX_B);
         goto(&mut app, 0, 8);
         app.perform(Action::Lsp(LspAction::CallHierarchy));
+        settle(&mut app).await;
         let t = app.hierarchy.as_mut().unwrap();
         assert!(t.from_index() && t.direction == Direction::Callers);
         t.nodes[0].loading = true;

@@ -280,7 +280,7 @@ impl App {
                 if let Some(w) = ix.warning() {
                     self.notify(Level::Warn, format!("SCIP {w}"));
                 }
-                self.scip.index = Some(*ix);
+                self.scip.index = Some(std::sync::Arc::from(ix));
             }
             Err((e, mtime)) => {
                 // A failed reload keeps the previous index; the failed mtime is not retried.

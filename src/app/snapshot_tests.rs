@@ -2325,6 +2325,16 @@ async fn hierarchy_window_from_index() {
     load(app, "src/b.rs", files[0].1);
     app.editor.active_buffer_mut().unwrap().goto_line(0, 8);
     app.perform(Action::Lsp(LspAction::CallHierarchy));
+    // The children come from a job; only its answer, a startup index run would change the files.
+    while app.hierarchy.as_ref().is_some_and(|t| t.nodes.iter().any(|n| n.loading)) {
+        let m = tokio::time::timeout(std::time::Duration::from_secs(5), app.bus_rx.recv())
+            .await
+            .expect("index hierarchy children in time")
+            .expect("bus open");
+        if matches!(m, AppMsg::HierarchyIndexChildren { .. }) {
+            app.handle_msg(m);
+        }
+    }
     let term = draw_app(app, 80, 24);
     let marks = [Mark::bg('L', "selected", app.theme.list_selected.bg.unwrap()), Mark::style('D', "dim", app.theme.dim)];
     let bottom = app.layout.rects.bottom;

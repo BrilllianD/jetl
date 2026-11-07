@@ -152,6 +152,15 @@ pub enum AppMsg {
         generation: u64,
         edges: std::sync::Arc<crate::symbols::index::ImportEdges>,
     },
+    /// Children of an index-fed Hierarchy node computed in `spawn_blocking` (`App::hierarchy_index_children`), tagged
+    /// with the workspace generation, the tree id and the node (`App::hierarchy_index_answer` drops another).
+    /// Each def comes with its line read from disk (`None`: unreadable).
+    HierarchyIndexChildren {
+        generation: u64,
+        tree: u64,
+        node: usize,
+        children: Vec<(crate::symbols::graph::Def, Option<String>)>,
+    },
     /// The SCIP index named by `[index] scip`, loaded in `spawn_blocking`;
     /// tagged with the workspace generation and the load's seq.
     Scip {

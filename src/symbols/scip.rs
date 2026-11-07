@@ -358,7 +358,7 @@ impl ScipIndex {
 /// The loaded index, as the app holds it.
 #[derive(Debug, Default)]
 pub struct ScipState {
-    pub index: Option<ScipIndex>,
+    pub index: Option<std::sync::Arc<ScipIndex>>,
     /// Bumped by every load; a stale result is dropped.
     pub seq: u64,
     pub loading: bool,

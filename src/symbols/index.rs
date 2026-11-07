@@ -137,7 +137,7 @@ pub struct SymbolIndex {
     /// The index version of the build in flight, and when it started.
     edges_inflight: Option<(u64, Instant)>,
     /// Definitions by name, `impl` blocks left out: path and index into that file's symbols. Rebuilt on demand after a change.
-    by_name: Option<ByName>,
+    by_name: Option<Arc<ByName>>,
     /// The cache of this root was handed to a run.
     cache_read: bool,
     /// Files changed since the cache was last taken.
@@ -447,10 +447,16 @@ impl SymbolIndex {
                     map.entry(s.name.clone()).or_default().push((path.clone(), i));
                 }
             }
-            map
+            Arc::new(map)
         });
         let Some(found) = map.get(name) else { return Vec::new() };
         found.iter().map(|(p, i)| (p.clone(), files[&**p].symbols[*i].clone())).collect()
+    }
+
+    /// A copy for a background job: the same files, last import edges and name map (`Arc` clones). It has no run,
+    /// queue, cache or build in flight, and is only read; its own name map may be built on it.
+    pub fn reader(&self) -> SymbolIndex {
+        SymbolIndex { data: self.data.clone(), edges: self.edges.clone(), by_name: self.by_name.clone(), ..Self::default() }
     }
 
     /// Every indexed reference named `name` (exact), by path, then line and
@@ -696,6 +702,44 @@ mod tests {
 
     fn strs(v: Option<&[Arc<str>]>) -> Vec<String> {
         v.expect("edges ready").iter().map(|s| s.to_string()).collect()
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[test]
+    fn a_reader_reads_what_the_index_holds() {
+        let sym = |name: &str, kind, line| Symbol { name: name.into(), kind, line, col: 0, start_line: line, end_line: line, depth: 0 };
+        let file = |symbols, imports: &[(&str, bool)]| {
+            let mut f = fs(imports).unwrap();
+            f.symbols = symbols;
+            Some(f)
+        };
+        let mut idx = SymbolIndex::default();
+        let seq = idx.start(PathBuf::from("/nonexistent")).seq;
+        let batch = SymbolBatch {
+            files: vec![
+                ("src/main.rs".into(), file(vec![sym("f", "function", 5)], &[("a", true)])),
+                ("src/a.rs".into(), file(vec![sym("g", "function", 1)], &[])),
+            ],
+            done: true,
+            changed: true,
+        };
+        assert!(idx.on_batch(seq, batch).is_some());
+        idx.build_edges_now();
+        let pairs = |idx: &mut SymbolIndex, name: &str| -> Vec<(String, usize)> {
+            idx.defs_of(name).into_iter().map(|(p, s)| (p.to_string(), s.line)).collect()
+        };
+        let (f, g) = (pairs(&mut idx, "f"), pairs(&mut idx, "g"));
+        assert_eq!((f.len(), g.len()), (1, 1));
+        let mut r = idx.reader();
+        assert_eq!(r.file_count(), 2);
+        assert_eq!(r.snapshot().version(), idx.snapshot().version());
+        assert!(r.near_of("src/main.rs").contains("src/a.rs"));
+        assert_eq!((pairs(&mut r, "f"), pairs(&mut r, "g")), (f, g));
+        // The copy keeps the files it was made from.
+        let seq = idx.start(PathBuf::from("/nonexistent")).seq;
+        let batch = SymbolBatch { files: vec![("src/b.rs".into(), file(vec![], &[]))], done: true, changed: true };
+        assert!(idx.on_batch(seq, batch).is_some());
+        assert_eq!((r.file_count(), idx.file_count()), (2, 3));
     }
 
     #[test]
