@@ -172,6 +172,8 @@ pub enum DialogId {
     DebugArtifact {
         seq: u64,
     },
+    /// Debug > Evaluate Expression: the expression; the check adds it to the watches.
+    DebugEvaluate,
     /// Git > Resolve Conflicts: item `i` is conflicted path `rels[i]`
     /// (relative to the work tree).
     ResolveConflictPick(Vec<String>),

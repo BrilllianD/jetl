@@ -4681,6 +4681,97 @@ async fn debug_window_variables_narrow() {
     assert_snapshot!("debug_window_variables_narrow", snapshot(&term, &marks, None));
 }
 
+/// A paused session whose Variables tab shows three watches above the scopes: `p.x` open with `a` and `b`,
+/// `nosuch` failed and selected, `sum + 1` still waiting; then Locals open with two rows.
+async fn watches_window(name: &str, width: u16, height: u16) -> (Fixture, ratatui::Terminal<ratatui::backend::TestBackend>) {
+    use super::debug::tests::{DEMO, caps, paused, six, with_fake_adapters, write_run_toml};
+    use crate::actions::DebugAction;
+    use crate::dap::fake::Order;
+    use crate::dap::panel::FrameRow;
+    use crate::dap::protocol::Thread;
+    use crate::dap::vars::VarItem;
+    let mut fx = stable_app(name);
+    let app = &mut fx.app;
+    let mut fakes = with_fake_adapters(app, caps(), Order::LaunchEarly);
+    write_run_toml(app, DEMO);
+    let a = six(app);
+    let _fake = paused(app, &mut fakes, &a, 3).await;
+    let row = |id: i64, name: &str, place: Option<&str>| FrameRow { id, name: name.into(), place: place.map(Into::into), location: None };
+    let item = |name: &str, value: &str, ty: &str, reference: i64| VarItem {
+        name: name.into(),
+        value: value.into(),
+        ty: ty.into(),
+        reference,
+        children: 0,
+        expensive: false,
+    };
+    let panel = &mut app.debug_panel;
+    panel.set_threads(vec![Thread { id: 1, name: "main".into() }, Thread { id: 7, name: "t".into() }]);
+    panel.show_stack(7, vec![row(0, "add", Some("demo.c:4")), row(1, "main", Some("demo.c:9"))]);
+    for expression in ["p.x", "nosuch", "sum + 1"] {
+        assert!(panel.add_watch(expression));
+    }
+    assert!(panel.scopes_wanted().is_some());
+    panel.show_scopes(vec![item("Locals", "", "", 2), item("Registers", "", "", 3)], &[0]);
+    let locals = panel.take_var_asks()[0].node;
+    panel.show_children(locals, vec![item("x", "1", "int", 0), item("y", "2", "int", 0)]);
+    let asks = panel.take_watch_asks();
+    assert_eq!(asks.iter().map(|a| a.expression.as_str()).collect::<Vec<_>>(), ["p.x", "nosuch", "sum + 1"]);
+    panel.show_watch(asks[0].node, Ok(VarItem { children: 2, ..item("", "", "Inner", 9) }));
+    panel.show_watch(asks[1].node, Err("No symbol \"nosuch\" in current context.".into()));
+    app.focus.set(PanelId::Debug);
+    // The selection is on `sum + 1`: up to `p.x`, open it, and down to `nosuch`.
+    for _ in 0..2 {
+        app.perform(Action::Debug(DebugAction::Up));
+    }
+    app.perform(Action::Debug(DebugAction::Expand));
+    let ask = app.debug_panel.take_var_asks()[0];
+    app.debug_panel.show_children(ask.node, vec![item("a", "10", "int", 0), item("b", "2", "int", 0)]);
+    for _ in 0..3 {
+        app.perform(Action::Debug(DebugAction::Down));
+    }
+    app.notifications.clear();
+    app.toasts = Default::default();
+    let term = draw_app(app, width, height);
+    (fx, term)
+}
+
+#[tokio::test]
+async fn debug_window_watches() {
+    let (fx, term) = watches_window("debug-watches", 120, 40).await;
+    let mut marks = debug_marks(&fx.app.theme);
+    marks.push(Mark::style('W', "selected row", fx.app.theme.list_selected));
+    assert_snapshot!("debug_window_watches", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
+async fn debug_window_watches_narrow() {
+    let (fx, term) = watches_window("debug-watches-narrow", 80, 24).await;
+    let mut marks = debug_marks(&fx.app.theme);
+    marks.push(Mark::style('W', "selected row", fx.app.theme.list_selected));
+    assert_snapshot!("debug_window_watches_narrow", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
+async fn debug_evaluate_dialog() {
+    use super::debug::tests::{DEMO, caps, paused, six, with_fake_adapters, write_run_toml};
+    use crate::actions::DebugAction;
+    use crate::dap::fake::Order;
+    let mut fx = stable_app("debug-evaluate-dialog");
+    let app = &mut fx.app;
+    let mut fakes = with_fake_adapters(app, caps(), Order::LaunchEarly);
+    write_run_toml(app, DEMO);
+    let a = six(app);
+    let _fake = paused(app, &mut fakes, &a, 3).await;
+    app.perform(Action::Debug(DebugAction::Evaluate));
+    app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::ALT));
+    app.notifications.clear();
+    app.toasts = Default::default();
+    let term = draw_app(app, 80, 24);
+    let area = app.dialog.as_ref().expect("the Evaluate dialog").rect();
+    assert_snapshot!("debug_evaluate_dialog", snapshot(&term, &[], Some(area)));
+}
+
 /// A paused session whose Variables tab shows Locals open with `arr` (2500 children) open, its first 1000 rows
 /// answered `0` to `999`, and the selection on the load-more row; Registers is below it. With `failure`, the row was
 /// pressed and the page failed with that message.

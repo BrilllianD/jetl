@@ -122,6 +122,16 @@ pub enum TagKind {
         node: usize,
         seq: u64,
     },
+    /// A watch's value: watch root `node` of the tree of selection seq `seq`, evaluated in the selected frame.
+    Watch {
+        node: usize,
+        seq: u64,
+    },
+    /// The Evaluate dialog's one-shot, shown in the Console; `seq` is the selection seq when it was asked.
+    Evaluate {
+        seq: u64,
+        expression: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -6,8 +6,9 @@
 //! stack, as rows the App made (`FrameRow`); a choice comes back as `Effect::DebugFrame`. The tab row has a row to
 //! itself because the toolbar leaves no room for it at 80 columns. Variables, while paused, is the selected frame's
 //! scopes as a tree (`vars::VarsView`) whose children are read when a node opens; the App asks (`debug_sync_vars`)
-//! and the tree goes with the selection seq: every frame choice, thread choice and stop replaces it (`bump`). The
-//! title names the configuration and the state.
+//! and the tree goes with the selection seq: every frame choice, thread choice and stop replaces it (`bump`), and
+//! the new tree starts with one pending watch row per watched expression, above the scopes. The title names the
+//! configuration and the state.
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -84,6 +85,17 @@ pub struct FrameRow {
     pub place: Option<String>,
     /// The file and 0-based line; `None` when the frame has no file.
     pub location: Option<(PathBuf, usize)>,
+}
+
+/// Watches one run of jetl keeps.
+pub const MAX_WATCHES: usize = 32;
+
+/// An evaluate for the App to send.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WatchAsk {
+    pub node: usize,
+    pub expression: String,
+    pub frame: i64,
 }
 
 /// A toolbar button.
@@ -167,6 +179,9 @@ pub struct DebugPanel {
     /// What the user opened, closed and selected in the Variables tab, per function, for this session. `bump` does
     /// not touch it: only the user's acts change it, so a stop never shrinks it.
     kept: KeptPaths,
+    /// The watched expressions in the order added, no two equal, for this run of jetl. `start` keeps them (a new
+    /// session evaluates the same ones) and `clear`, a root switch, empties them.
+    watches: Vec<String>,
 }
 
 impl DebugPanel {
@@ -205,6 +220,9 @@ impl DebugPanel {
     fn bump(&mut self) {
         self.seq += 1;
         self.vars = VarsView::default();
+        for w in &self.watches {
+            self.vars.tree.add_watch(w.clone());
+        }
     }
 
     /// The selected frame's id and the seq, once per seq, while the Variables tab shows and a frame is selected.
@@ -215,6 +233,80 @@ impl DebugPanel {
         let id = self.selected_frame()?.id;
         self.vars.load = VarsLoad::Asked;
         Some((id, self.seq))
+    }
+
+    pub fn watches(&self) -> &[String] {
+        &self.watches
+    }
+
+    /// Adds a watch and selects its row on the Variables tab, which becomes the tab shown. An expression already
+    /// watched is selected instead. False, and nothing changes, when `MAX_WATCHES` are there.
+    pub fn add_watch(&mut self, expression: &str) -> bool {
+        let there = self.watches.iter().any(|w| w == expression);
+        if !there && self.watches.len() >= MAX_WATCHES {
+            return false;
+        }
+        let tree = &mut self.vars.tree;
+        let node = if there {
+            let found = tree.rows().into_iter().find(|&r| tree.node(r).is_some_and(|n| n.watch && n.item.name == expression));
+            found.unwrap_or_default()
+        } else {
+            self.watches.push(expression.to_owned());
+            tree.add_watch(expression.to_owned())
+        };
+        self.vars.node = node;
+        self.tab = DebugTab::Variables;
+        self.vars.sync();
+        self.keep_selection();
+        true
+    }
+
+    /// Removes the watch whose root row is selected. False when the selected row is not a watch root.
+    pub fn remove_watch(&mut self) -> bool {
+        let node = self.vars.node;
+        if self.tab != DebugTab::Variables || matches!(self.vars.load, VarsLoad::Idle) || !self.vars.tree.is_watch(node) {
+            return false;
+        }
+        let tree = &mut self.vars.tree;
+        let mut roots: Vec<usize> = tree.rows().into_iter().filter(|&r| tree.node(r).is_some_and(|n| n.depth == 0)).collect();
+        let at = roots.iter().position(|&r| r == node).unwrap_or_default();
+        roots.retain(|&r| r != node);
+        if let Some(expression) = tree.node(node).map(|n| n.item.name.clone())
+            && let Some(i) = self.watches.iter().position(|w| *w == expression)
+        {
+            self.watches.remove(i);
+        }
+        tree.remove_watch(node);
+        self.vars.node = roots.get(at).or(at.checked_sub(1).and_then(|p| roots.get(p))).copied().unwrap_or_default();
+        self.vars.sync();
+        self.keep_selection();
+        true
+    }
+
+    /// The queued evaluates, once the scopes of this seq were asked and a frame is selected; otherwise none, and
+    /// they stay queued.
+    pub fn take_watch_asks(&mut self) -> Vec<WatchAsk> {
+        if matches!(self.vars.load, VarsLoad::Idle) {
+            return Vec::new();
+        }
+        let Some(frame) = self.selected_frame().map(|f| f.id) else { return Vec::new() };
+        let tree = &mut self.vars.tree;
+        tree.take_watch_asks()
+            .into_iter()
+            .filter_map(|node| Some(WatchAsk { node, expression: tree.node(node)?.item.name.clone(), frame }))
+            .collect()
+    }
+
+    /// A watch's evaluate came back; an answer for a watch no longer there changes nothing. A watch the user had
+    /// open reopens, by its name, as a variable does.
+    pub fn show_watch(&mut self, node: usize, result: Result<VarItem, String>) {
+        if self.vars.tree.set_watch(node, result)
+            && let Some(name) = self.selected_frame().map(|f| f.name.clone())
+            && let Some(kept) = self.kept.frame(&name)
+        {
+            self.vars.reopen_watch(node, kept);
+        }
+        self.vars.sync();
     }
 
     /// The children asked for since the last call.
@@ -228,11 +320,15 @@ impl DebugPanel {
         if !matches!(self.vars.load, VarsLoad::Asked) {
             return;
         }
-        self.vars.tree.set_roots(items);
+        let first = self.vars.tree.set_roots(items);
         self.vars.list = ListState::default();
-        self.vars.node = 0;
+        // The selection stays on a watch row (the one just added, or the first of a new tree); else it is the first scope.
+        if !self.vars.tree.is_watch(self.vars.node) {
+            self.vars.node = first;
+        }
         let kept = self.selected_frame().map(|f| f.name.clone()).and_then(|name| self.kept.frame(&name));
-        self.vars.reopen_roots(open, kept);
+        let open: Vec<usize> = open.iter().map(|k| first + k).collect();
+        self.vars.reopen_roots(&open, kept);
         self.vars.load = VarsLoad::Shown;
         self.vars.sync();
     }
@@ -489,7 +585,8 @@ impl DebugPanel {
         self.list_rect = content;
         let rows = self.vars.sync();
         self.vars.list.fit(rows.len(), content.height as usize);
-        if rows.is_empty() {
+        // Watch rows exist before the scopes are asked; they show with the scopes.
+        if rows.is_empty() || matches!(self.vars.load, VarsLoad::Idle) {
             return match &self.vars.load {
                 VarsLoad::Failed(m) => hint(buf, &format!("Could not read the variables: {m}"), theme.error),
                 VarsLoad::Shown => hint(buf, "No variables", theme.dim),
@@ -521,6 +618,14 @@ impl DebugPanel {
                 put(buf, &mut x, y, right, &text, style);
             }
         }
+        // The scopes could not be read, and the watches above them could: the reason goes under the rows.
+        if let VarsLoad::Failed(m) = &self.vars.load {
+            let y = content.y + self.vars.list.visible().count() as u16;
+            if y < content.bottom() {
+                let text = format!("Could not read the variables: {m}");
+                buf.set_stringn(content.x + 1, y, text, content.width.saturating_sub(1) as usize, theme.error);
+            }
+        }
     }
 
     /// The pieces of a row after its indent, in order: marker, name, a loading mark, then either the failure or
@@ -542,7 +647,9 @@ impl DebugPanel {
             out.push((" …".into(), Piece::Plain));
         }
         if let Some(m) = &n.failed {
-            out.push((format!("  could not read: {m}"), Piece::Error));
+            // A watch whose evaluate failed has no reference; a failed read of its children is a read, as anywhere.
+            let what = if n.watch && item.reference <= 0 { "evaluate" } else { "read" };
+            out.push((format!("  could not {what}: {m}"), Piece::Error));
             return out;
         }
         if n.hidden > 0 {
@@ -717,6 +824,10 @@ impl DebugPanel {
 
     /// The Variables tab's keys. Moves only select; no key here chooses a frame or opens a file.
     fn vars_action(&mut self, a: &DebugAction) -> bool {
+        // Nothing is drawn until the scopes are asked, so no key reaches a row.
+        if matches!(self.vars.load, VarsLoad::Idle) {
+            return false;
+        }
         let rows = self.vars.sync();
         let page = self.vars.list.viewport.max(1);
         match a {
@@ -813,6 +924,9 @@ impl DebugPanel {
     /// A press in the Variables list selects the row. Anywhere on a load-more row it reads the next page; on another
     /// row's marker, two cells, it opens or closes the node.
     fn vars_press(&mut self, m: &Mouse) -> bool {
+        if matches!(self.vars.load, VarsLoad::Idle) {
+            return false;
+        }
         let rows = self.vars.sync();
         let Some(i) = self.vars.list.hit(self.list_rect, m.x, m.y) else { return false };
         let Some(&node) = rows.get(i) else { return false };
@@ -2465,5 +2579,191 @@ mod tests {
         p.kept.frame_mut("add").record(named(&["Locals", "a", "b"]), true);
         key_in(&mut p, DebugAction::Expand);
         assert_eq!(p.take_var_asks().iter().map(|a| a.reference).collect::<Vec<_>>(), [31], "b asks with no stop");
+    }
+
+    // ---- watches
+
+    /// Paused in `add` on the Variables tab, with `names` watched and nothing asked yet.
+    fn watching(names: &[&str]) -> DebugPanel {
+        let mut p = suspended_with(three());
+        p.set_tab(DebugTab::Variables);
+        for n in names {
+            assert!(p.add_watch(n));
+        }
+        p
+    }
+
+    /// The scopes (`Locals`, reference 2, closed) of the stop, asked and answered.
+    fn show_locals(p: &mut DebugPanel) {
+        p.scopes_wanted().expect("the tab asks");
+        p.show_scopes(vec![vi("Locals", "", "", 2)], &[]);
+    }
+
+    #[test]
+    fn watches_sit_above_the_scopes() {
+        let mut p = watching(&["a + b", "sum"]);
+        assert_eq!(selected_text(&mut p), "sum …", "adding selects the new row");
+        stopped_in(&mut p, "add");
+        show_locals(&mut p);
+        assert_eq!(p.var_rows(), ["  a + b …", "  sum …", "▸ Locals"]);
+        assert_eq!(p.vars.list.selected, 0, "a new tree starts on its first row");
+        assert_eq!(p.watches(), ["a + b", "sum"]);
+    }
+
+    #[test]
+    fn a_new_seq_asks_the_watches_again() {
+        let mut p = watching(&["a", "b"]);
+        show_locals(&mut p);
+        let first = p.take_watch_asks();
+        assert_eq!(first.iter().map(|a| (a.node, a.expression.as_str())).collect::<Vec<_>>(), [(0, "a"), (1, "b")]);
+        p.show_watch(0, Ok(vi("a", "1", "int", 0)));
+        p.show_watch(1, Ok(vi("b", "2", "int", 0)));
+        assert_eq!(p.var_rows()[..2], ["  a = 1  int", "  b = 2  int"]);
+        p.stop_began(Some(1));
+        p.set_threads(vec![Thread { id: 1, name: "t".into() }]);
+        p.show_stack(1, vec![row(7, "add", Some("demo.c:4"))]);
+        assert!(p.take_watch_asks().is_empty(), "the scopes of the new seq are not asked yet");
+        show_locals(&mut p);
+        assert_eq!(p.var_rows(), ["  a …", "  b …", "▸ Locals"], "both are pending again");
+        let again = p.take_watch_asks();
+        assert_eq!(again.iter().map(|a| (a.node, a.expression.as_str(), a.frame)).collect::<Vec<_>>(), [(0, "a", 7), (1, "b", 7)]);
+    }
+
+    #[test]
+    fn watch_asks_wait_for_the_scopes() {
+        let mut p = watching(&["a", "b"]);
+        assert!(p.take_watch_asks().is_empty(), "the scopes were not asked");
+        assert!(p.take_watch_asks().is_empty(), "and the asks stay queued");
+        show_locals(&mut p);
+        let asks = p.take_watch_asks();
+        assert_eq!(asks.len(), 2);
+        assert!(asks.iter().all(|a| a.frame == p.selected_frame().unwrap().id));
+        assert!(p.take_watch_asks().is_empty(), "each once");
+    }
+
+    #[test]
+    fn watches_hide_until_the_scopes_are_asked() {
+        let mut p = watching(&["sum"]);
+        assert!(text_of(&mut p, Some(Phase::Suspended)).contains("Reading the variables…"));
+        assert!(!text_of(&mut p, Some(Phase::Suspended)).contains("sum …"));
+        assert!(!key_in(&mut p, DebugAction::Down).0, "no key reaches rows nobody sees");
+        show_locals(&mut p);
+        let text = text_of(&mut p, Some(Phase::Suspended));
+        assert!(text.contains("sum …") && text.contains("Locals"), "{text}");
+    }
+
+    #[test]
+    fn a_failed_watch_says_could_not_evaluate() {
+        let mut p = watching(&["nosuch", "big"]);
+        show_locals(&mut p);
+        p.take_watch_asks();
+        let m = r#"No symbol "nosuch" in current context."#;
+        p.show_watch(0, Err(m.into()));
+        assert_eq!(p.var_rows()[0].trim_start(), format!("nosuch  could not evaluate: {m}"));
+        // A failed read of a watch's own children, and of a child, stay reads.
+        p.show_watch(1, Ok(VarItem { children: 2, ..vi("big", "", "struct", 9) }));
+        go_to(&mut p, "big");
+        key_in(&mut p, DebugAction::Expand);
+        p.take_var_asks();
+        p.children_failed(1, "timed out".into());
+        assert_eq!(p.var_rows()[1].trim_start(), "▸ big  could not read: timed out");
+        key_in(&mut p, DebugAction::Expand);
+        p.take_var_asks();
+        p.show_children(1, vec![vi("c", "", "", 30)]);
+        go_to(&mut p, "c");
+        key_in(&mut p, DebugAction::Expand);
+        p.take_var_asks();
+        p.children_failed(3, "gone".into());
+        assert!(p.var_rows()[2].trim_start().ends_with("could not read: gone"), "{:?}", p.var_rows());
+    }
+
+    #[test]
+    fn delete_removes_only_a_watch_row() {
+        let mut p = watching(&["big"]);
+        show_locals(&mut p);
+        p.take_watch_asks();
+        p.show_watch(0, Ok(VarItem { children: 2500, ..vi("big", "", "int [2500]", 9) }));
+        go_to(&mut p, "big");
+        key_in(&mut p, DebugAction::Expand);
+        p.take_var_asks();
+        p.show_children(0, (0..1000).map(|i| vi(&i.to_string(), "", "", 0)).collect());
+        let rows = p.var_rows();
+        for target in ["Locals", "5", "load"] {
+            go_to(&mut p, target);
+            assert!(!p.remove_watch(), "{target}");
+            assert_eq!(p.var_rows(), rows, "{target}");
+        }
+        assert_eq!(p.watches(), ["big"]);
+        let mut p = watching(&["a", "b", "c"]);
+        show_locals(&mut p);
+        go_to(&mut p, "b");
+        assert!(p.remove_watch());
+        assert_eq!(p.watches(), ["a", "c"]);
+        assert_eq!(p.var_rows(), ["  a …", "  c …", "▸ Locals"]);
+        assert_eq!(selected_text(&mut p), "c …", "the selection goes to the row that took its place");
+        go_to(&mut p, "c");
+        assert!(p.remove_watch());
+        assert_eq!(selected_text(&mut p), "▸ Locals", "the root that took its place, here the first scope");
+        go_to(&mut p, "a");
+        assert!(p.remove_watch());
+        assert_eq!(p.var_rows(), ["▸ Locals"]);
+        assert_eq!(selected_text(&mut p), "▸ Locals");
+        assert!(p.watches().is_empty());
+        // A tab other than Variables, and nothing asked: no.
+        let mut p = watching(&["a"]);
+        assert!(!p.remove_watch(), "no scopes asked");
+        show_locals(&mut p);
+        p.set_tab(DebugTab::Frames);
+        assert!(!p.remove_watch());
+    }
+
+    #[test]
+    fn a_duplicate_watch_selects_the_one_there() {
+        let mut p = watching(&["a", "b"]);
+        assert!(p.add_watch("a"));
+        assert_eq!(p.watches(), ["a", "b"]);
+        assert_eq!(selected_text(&mut p), "a …");
+        assert_eq!(p.var_count(), 2);
+    }
+
+    #[test]
+    fn the_watch_list_is_capped() {
+        let mut p = suspended_with(three());
+        for i in 0..MAX_WATCHES {
+            assert!(p.add_watch(&format!("w{i}")));
+        }
+        assert!(!p.add_watch("one more"));
+        assert_eq!(p.watches().len(), MAX_WATCHES);
+        assert!(p.add_watch("w3"), "a duplicate is not a new watch");
+    }
+
+    #[test]
+    fn start_keeps_the_watches_and_clear_drops_them() {
+        let mut p = watching(&["a", "b"]);
+        p.start("again", SessionId(2));
+        assert_eq!(p.watches(), ["a", "b"]);
+        assert_eq!(p.var_count(), 2, "the new session's tree has them pending");
+        p.clear();
+        assert!(p.watches().is_empty());
+        assert_eq!(p.var_count(), 0);
+    }
+
+    #[test]
+    fn an_opened_watch_reopens_at_the_next_stop() {
+        let mut p = watching(&["w"]);
+        show_locals(&mut p);
+        p.take_watch_asks();
+        p.show_watch(0, Ok(VarItem { children: 2, ..vi("w", "", "struct point", 9) }));
+        go_to(&mut p, "w");
+        key_in(&mut p, DebugAction::Expand);
+        assert_eq!(p.take_var_asks().iter().map(|a| a.reference).collect::<Vec<_>>(), [9]);
+        p.show_children(0, vec![vi("x", "1", "int", 0), vi("y", "2", "int", 0)]);
+        assert_eq!(kept_open(&p), [named(&["w"])]);
+        stopped_again(&mut p, "add");
+        assert_eq!(p.take_watch_asks().len(), 1);
+        p.show_watch(0, Ok(VarItem { children: 2, ..vi("w", "", "struct point", 20) }));
+        assert_eq!(p.take_var_asks().iter().map(|a| a.reference).collect::<Vec<_>>(), [20], "no key, and not the old reference");
+        p.show_children(0, vec![vi("x", "3", "int", 0), vi("y", "4", "int", 0)]);
+        assert_eq!(p.var_rows()[..3], ["▾ w  struct point", "    x = 3  int", "    y = 4  int"]);
     }
 }

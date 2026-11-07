@@ -1748,6 +1748,58 @@ What gdb cannot show, and the unit tests prove: an `expensive` scope, a literal 
 at a chosen moment, and a budget run out by arrays. Other adapters are unverified: a hint of 0 prices as small, and an
 adapter need not honour that.
 
+### Scenario: Debug window, watches and evaluate
+
+Needs what `### Scenario: Debug window, variables across stops` needs: `gdb` 14 or newer (the run used 17.2), the
+same `config.toml` with `dap-log-file`, the wire proof and `kept.cc` (built in the project directory, `g++ -g -O0 -o
+kept kept.cc`: gdb places a breakpoint by the path in the debug info, and one built elsewhere says `no code loaded for
+this line`). Start jetl with `env -u CLAUDE_CODE_MESSAGING_TOKEN`. tmux sends Alt+F8 as `M-F8`, Alt+C as `M-c` and
+Delete as `DC`. A key that reaches the editor edits the buffer: Delete with the Debug window hidden deleted
+characters of `kept.cc`, and Ctrl+Z restored them. Read the requests of a step with the `dap.log` offset taken before
+its key: `grep '^READ'` of what follows. gdb rewrites `dap.log` at each session start.
+
+`kept`, breakpoint on line 23, Shift+F9, Alt+F5, Variables tab, at each size:
+
+1. Escape (the editor), Alt+F8: the dialog `Evaluate`, `Expression, in the selected frame:` and `[ ] Add to watches   Alt+C`.
+   Type `p.x`, Alt+C, Enter: first row `▸ p.x  Inner`, above `▾ Locals`. `dap.log`: one `evaluate`,
+   `{"context": "watch", "expression": "p.x", "frameId": 0}`. Alt+F5, Home, Right: `a = 1  int`, `b = 2  int`.
+2. F8 (line 24): `▾ p.x`, `a = 10  int`. `dap.log` of this stop, with no key pressed: `next`, `stackTrace`, `threads`,
+   `scopes`, `evaluate` for `p.x`, `variables` 1 (Locals) and `variables` 3 (the watch's new reference).
+3. From the Debug window, Alt+F8: the check row is `[x]`. `nosuch`, Enter: `nosuch  could not evaluate: No symbol
+   "nosuch" in current context.` in the error colour, and no toast.
+4. Alt+F8, Alt+C (`[ ]`), `sum + 1`, Enter: an Info toast and the Console (Alt+Right) hold `Evaluate: sum + 1 = 1  int`;
+   no new row.
+5. F8 to line 26 (inside the block): `p.x  could not evaluate: There is no member named x.` (`p` is the `Inner`). F8 to 27,
+   28, then 30: `▾ p.x  Inner`, `a = 11  int`, `b = 2  int`, reopened with no key.
+6. Home, Down three times to `nosuch`, Delete: the row is gone. Delete on `b` (under `p.x`) and on `Locals`: nothing
+   changes.
+7. Alt+F5 to hide, F8: `dap.log` has `next`, `stackTrace` and `threads` and no `evaluate`. Alt+F5 to show: `scopes`,
+   one `evaluate` for `p.x`, `variables` 1 and 3.
+8. **A held step.** Escape, Ctrl+G 32, Ctrl+F8, F9, Alt+F5, then `send-keys -N 30 F8` in one command. When it settles
+   `p.x` is open with `a = 11`, `b` and `i` agree, and the error check of the variables scenario holds.
+9. **Another frame.** Clear line 32, a breakpoint on 35, F9, F7: in `callee`, line 8, `p.x  could not evaluate: No
+   symbol "p" in current context.`. Alt+Left (Frames), Down to `main`, Alt+Right: `p.x` evaluated with `"frameId": 1`,
+   `a = 11`. Alt+Left, Up to `callee`, Alt+Right: the failure again. F8: the program stops at line 9 of `callee`, not in
+   `main`, so an `evaluate` in another frame does not change a step.
+10. Ctrl+F2, Shift+F9: line 23, `▸ p.x  Inner` evaluated again in the new session. Ctrl+F2, Ctrl+Q, start jetl again,
+    Shift+F9: no watch row (watches are in memory only).
+11. Every session: exit 0, empty stderr, no gdb, debuggee or tmux server left.
+
+Observed at 120x40 and 80x24, with gdb 17.2:
+
+- Step 8: 25 `next` of the 30 keys at 120x40 (24 at 80x24; a key that comes while the program runs is ignored), and only
+  2 `evaluate`, 2 `variables` and 2 `scopes` in all: the asks of a stop are dropped by the next step, as in the
+  variables scenario, so the watch costs no more than one `evaluate` per stop. The screen last changed within 0.5 s of the keys at 120x40 (0.3 s
+  at 80x24), polled every 0.1 s.
+- Step 9: `scopes`, `evaluate` and two `variables` with `"frameId": 1` for the `main` frame, and `frameId` 0 again
+  for `callee`.
+- Step 4 at 80x24: the toast box holds `Evaluate: sum + 1 = 1  int` whole; the status line shows `Evalua…`.
+
+Last run: `~/.claude/plans/backlog-run-25-S11-evidence/live/<size>/` (captures `NN-name.txt`, requests of a step in
+`NN-wire.txt`). What gdb cannot show, and the unit tests prove: a watch removed while its answer is in flight, an
+answer from an older choice, an expression with a control character, and the 32-watch limit. Not run: any adapter
+other than gdb.
+
 ### Scenario: Debug build step
 
 Needs `gdb` 14 or newer (the run used 17.2) and `cargo`, no network. At 80x24 and at 120x40, a private tmux socket,

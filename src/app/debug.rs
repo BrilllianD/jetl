@@ -22,10 +22,10 @@ use crate::dap::config::{
     process_env, resolve_build, resolve_launch,
 };
 use crate::dap::console::{ConsoleGate, MAX_QUEUED, forward_output, spawn_console};
-use crate::dap::panel::{BuildStage, DebugTab, FrameRow};
+use crate::dap::panel::{BuildStage, DebugTab, FrameRow, MAX_WATCHES};
 use crate::dap::protocol::{
-    Breakpoint, BreakpointEvent, OutputEvent, Scope, ScopesBody, StackFrame, StackTraceBody, StoppedEvent, Thread, ThreadsBody, Variable,
-    VariablesBody, body_of,
+    Breakpoint, BreakpointEvent, EvaluateBody, OutputEvent, Scope, ScopesBody, StackFrame, StackTraceBody, StoppedEvent, Thread,
+    ThreadsBody, Variable, VariablesBody, body_of,
 };
 use crate::dap::session::{Command, DapTag, Phase, ResumeKind, SessionId, SessionSpec, SourceBreakpoints, TagKind};
 use crate::dap::vars::{MAX_CHILDREN, UNPAGED_LIMIT, VarItem, scopes_to_open};
@@ -134,6 +134,8 @@ pub struct DebugState {
     view: Option<(u64, usize)>,
     /// The last ticket handed out.
     next_view: u64,
+    /// The Evaluate dialog's check `Add to watches`, as the user left it.
+    add_watch: bool,
 }
 
 impl DebugState {
@@ -278,8 +280,31 @@ fn var_text(raw: &str) -> String {
     text
 }
 
+/// What the Evaluate dialog starts with: the selection when it is short and one clean line, else the word at the caret.
+fn evaluate_prefill(b: &crate::editor::buffer::Buffer) -> String {
+    let r = b.view.sel().range();
+    if !r.is_empty() && r.end - r.start <= 200 {
+        let selected = b.selected_text();
+        if !selected.chars().any(char::is_control) {
+            return selected;
+        }
+    }
+    super::lsp_nav::word_at(b, b.view.sel().head)
+}
+
 fn var_item_of_scope(s: &Scope) -> VarItem {
     VarItem { name: var_text(&s.name), reference: s.variables_reference, expensive: s.expensive, ..VarItem::default() }
+}
+
+/// A watch's value. The name stays the expression: `VarTree::set_watch` keeps it.
+fn watch_item(b: &EvaluateBody) -> VarItem {
+    VarItem {
+        value: var_text(&b.result),
+        ty: var_text(&b.ty),
+        reference: b.variables_reference,
+        children: b.indexed_variables.max(0).saturating_add(b.named_variables.max(0)),
+        ..VarItem::default()
+    }
 }
 
 fn var_item(v: &Variable) -> VarItem {
@@ -451,6 +476,12 @@ impl App {
             DebugAction::ShowExecutionPoint => self.debug_show_execution_point(),
             DebugAction::ChooseThread => self.debug_choose_thread(),
             DebugAction::SelectThread(t) => self.debug_select_thread(t),
+            DebugAction::Evaluate => self.debug_evaluate_dialog(),
+            DebugAction::RemoveWatch => {
+                if self.debug_panel.remove_watch() {
+                    self.dirty_frame = true;
+                }
+            }
             // The Console's and Frames' list keys: `perform` hands them to the panel.
             DebugAction::Up
             | DebugAction::Down
@@ -738,6 +769,14 @@ impl App {
             return;
         }
         self.debug.window_shown = true;
+        self.debug_reveal_window();
+    }
+
+    /// Shows the Debug window unless it is, without taking focus.
+    fn debug_reveal_window(&mut self) {
+        if self.layout.is_visible(ToolWindowId::Debug) {
+            return;
+        }
         self.layout.show(ToolWindowId::Debug);
         // `show` replaces the slot's occupant and leaves focus alone.
         if let Some(cur) = self.focus.current.tool_window()
@@ -745,6 +784,75 @@ impl App {
         {
             self.focus.set(PanelId::Editor);
         }
+    }
+
+    /// Alt+F8: the Evaluate dialog, prefilled with the selection or the word at the caret.
+    fn debug_evaluate_dialog(&mut self) {
+        if !self.debug.suspended() {
+            return self.notify(Level::Info, "No paused debug session");
+        }
+        if self.dialog.is_some() {
+            return;
+        }
+        let initial = self.editor.active_buffer().map(evaluate_prefill).unwrap_or_default();
+        let dialog = Dialog::input(DialogId::DebugEvaluate, "Evaluate", "Expression, in the selected frame:", &initial, "Evaluate");
+        self.dialog = Some(dialog.with_check("Add to watches", self.debug.add_watch));
+        self.dispatcher.reset();
+    }
+
+    /// The Evaluate dialog's answer. Checked, the expression becomes a watch, in any phase: it is evaluated at the
+    /// next pause if not at this one. Unchecked, it is evaluated once, and the answer goes to the Console and a toast.
+    pub(super) fn debug_evaluate(&mut self, text: String, add: bool) {
+        let expression = text.trim().to_owned();
+        if expression.is_empty() {
+            return;
+        }
+        if expression.chars().any(char::is_control) {
+            return self.notify(Level::Warn, "An expression is one line of plain text");
+        }
+        self.debug.add_watch = add;
+        if add {
+            if !self.debug_panel.add_watch(&expression) {
+                return self.notify(Level::Warn, format!("At most {MAX_WATCHES} watches"));
+            }
+            self.debug_reveal_window();
+            self.debug_sync_vars();
+            self.dirty_frame = true;
+            return;
+        }
+        if !self.debug.suspended() {
+            return self.notify(Level::Info, "No paused debug session");
+        }
+        let Some(live) = self.debug.session.as_ref() else { return };
+        let epoch = live.epoch;
+        let mut arguments = json!({"expression": expression});
+        if let Some(frame) = self.debug_panel.selected_frame() {
+            arguments["frameId"] = json!(frame.id);
+        }
+        arguments["context"] = json!("watch");
+        let kind = TagKind::Evaluate { seq: self.debug_panel.selection_seq(), expression };
+        self.debug.send(Command::Request { command: "evaluate".into(), arguments, tag: DapTag { epoch, kind } });
+    }
+
+    /// The one-shot's answer: a line in the Console and a toast. Dropped outside a pause, `not available` while stopping included.
+    fn debug_evaluate_answer(&mut self, expression: String, result: Result<Value, String>) {
+        if self.debug.phase() != Some(Phase::Suspended) {
+            return tracing::debug!("dropping an evaluate answer outside a pause");
+        }
+        let expression = one_line(&expression);
+        let (text, level) = match result {
+            Ok(body) => {
+                let b = body_of::<EvaluateBody>("evaluate", body);
+                let ty = var_text(&b.ty);
+                let tail = if ty.is_empty() { String::new() } else { format!("  {ty}") };
+                (format!("Evaluate: {expression} = {}{tail}", var_text(&b.result)), Level::Info)
+            }
+            Err(e) => (format!("Evaluate: {expression}: {}", var_text(&e)), Level::Warn),
+        };
+        let severity = (level == Level::Warn).then_some(Severity::Warning);
+        self.debug_panel.push(vec![RunLine { severity, ..RunLine::plain(text.clone()) }]);
+        self.notify(level, text);
+        self.dirty_frame = true;
     }
 
     pub(super) fn dap_msg(&mut self, m: DapMsg) {
@@ -929,7 +1037,11 @@ impl App {
         let phase = self.debug.phase();
         // Only the newest choice's answer counts, an error included. The tree of the variables goes with the seq,
         // and gdb reuses reference numbers, so a stale answer could fill the new tree with another variable's data.
-        if let TagKind::Frames { seq, .. } | TagKind::Scopes { seq } | TagKind::Variables { seq, .. } = tag.kind
+        if let TagKind::Frames { seq, .. }
+        | TagKind::Scopes { seq }
+        | TagKind::Variables { seq, .. }
+        | TagKind::Watch { seq, .. }
+        | TagKind::Evaluate { seq, .. } = tag.kind
             && seq != self.debug_panel.selection_seq()
         {
             tracing::debug!("dropping the answer of an older choice");
@@ -938,7 +1050,10 @@ impl App {
         if let TagKind::StartCheck { confirm } = tag.kind {
             return self.debug_start_answer(tag.epoch, confirm, result);
         }
-        if matches!(tag.kind, TagKind::Scopes { .. } | TagKind::Variables { .. }) {
+        if let TagKind::Evaluate { expression, .. } = tag.kind {
+            return self.debug_evaluate_answer(expression, result);
+        }
+        if matches!(tag.kind, TagKind::Scopes { .. } | TagKind::Variables { .. } | TagKind::Watch { .. }) {
             return self.debug_vars_answer(tag.kind, result);
         }
         let known = self.debug.session.as_ref().is_some_and(|l| l.thread.is_some());
@@ -968,7 +1083,11 @@ impl App {
                         "stack"
                     }
                     // handled above
-                    TagKind::Scopes { .. } | TagKind::Variables { .. } | TagKind::StartCheck { .. } => return,
+                    TagKind::Scopes { .. }
+                    | TagKind::Variables { .. }
+                    | TagKind::Watch { .. }
+                    | TagKind::Evaluate { .. }
+                    | TagKind::StartCheck { .. } => return,
                 };
                 return self.notify(Level::Warn, format!("Could not read the {what}: {e}"));
             }
@@ -1039,7 +1158,11 @@ impl App {
                 }
             }
             // handled above
-            TagKind::Scopes { .. } | TagKind::Variables { .. } | TagKind::StartCheck { .. } => {}
+            TagKind::Scopes { .. }
+            | TagKind::Variables { .. }
+            | TagKind::Watch { .. }
+            | TagKind::Evaluate { .. }
+            | TagKind::StartCheck { .. } => {}
         }
     }
 
@@ -1071,6 +1194,17 @@ impl App {
                 tracing::debug!("dap: variables failed: {e}");
                 self.debug_panel.children_failed(node, var_text(&e));
             }
+            (TagKind::Watch { node, .. }, Ok(body)) => {
+                let b = body_of::<EvaluateBody>("evaluate", body);
+                self.debug_panel.show_watch(node, Ok(watch_item(&b)));
+                // A reopened watch asks its children without waiting for the tick.
+                self.debug_sync_vars();
+            }
+            // A watch that cannot be evaluated says so on its row: it is no news, and at another stop it may work.
+            (TagKind::Watch { node, .. }, Err(e)) => {
+                tracing::debug!("dap: evaluate failed: {e}");
+                self.debug_panel.show_watch(node, Err(var_text(&e)));
+            }
             _ => {}
         }
         self.dirty_frame = true;
@@ -1092,6 +1226,14 @@ impl App {
             moved = true;
         }
         let seq = self.debug_panel.selection_seq();
+        if shown {
+            for ask in self.debug_panel.take_watch_asks() {
+                let arguments = json!({"expression": ask.expression, "frameId": ask.frame, "context": "watch"});
+                let tag = DapTag { epoch, kind: TagKind::Watch { node: ask.node, seq } };
+                self.debug.send(Command::Request { command: "evaluate".into(), arguments, tag });
+                moved = true;
+            }
+        }
         for ask in self.debug_panel.take_var_asks() {
             moved = true;
             if !trusted && ask.children > UNPAGED_LIMIT {
@@ -6670,5 +6812,367 @@ pub(crate) mod tests {
         stop_at(&mut app, &mut fake, 7, &a, 3).await;
         assert_eq!(app.debug_panel.tab(), DebugTab::Variables, "a stop never switches the tab");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- watches and Evaluate (yman 435)
+
+    /// Every `evaluate` this file sends carries the watch context: `repl` runs any debugger command in gdb.
+    fn assert_watch_context(req: &Value) {
+        assert_eq!(req["command"], "evaluate");
+        assert_eq!(req["arguments"]["context"], "watch", "{req}");
+    }
+
+    /// The Evaluate dialog's text and check, as shown.
+    fn evaluate_dialog(app: &App) -> (String, bool) {
+        let d = app.dialog.as_ref().expect("a dialog");
+        assert!(matches!(d.id, DialogId::DebugEvaluate), "{:?}", d.id);
+        match &d.kind {
+            crate::ui::dialog::DialogKind::Input { input, check, .. } => (input.text.clone(), check.as_ref().expect("a check row").on),
+            k => panic!("not an input: {k:?}"),
+        }
+    }
+
+    /// Alt+F8 and the dialog's answer.
+    fn evaluate(app: &mut App, text: &str, add: bool) {
+        app.perform(Action::Debug(DebugAction::Evaluate));
+        answer_dialog(app, crate::ui::dialog::DialogResult::TextChecked(text.into(), add));
+    }
+
+    /// Pumps the adapter's messages until the Variables rows are `want`.
+    async fn pump_rows(app: &mut App, want: impl Fn(&[String]) -> bool) {
+        loop {
+            let rows = app.debug_panel.var_rows();
+            if want(&rows) {
+                return;
+            }
+            super::super::tests::handle_next(app, |m| matches!(m, AppMsg::Dap(_))).await;
+        }
+    }
+
+    /// `read_new` for a tree with `watches` watch rows: the tick asks `scopes` and then each watch's `evaluate`
+    /// (returned unanswered); the two open scopes are read.
+    async fn read_new_watched(app: &mut App, fake: &mut FakeAdapter, watches: usize) -> Vec<Value> {
+        app.debug_sync_vars();
+        let scopes = fake.recv("scopes").await;
+        let mut evaluates = Vec::new();
+        for _ in 0..watches {
+            let req = fake.recv("evaluate").await;
+            assert_watch_context(&req);
+            evaluates.push(req);
+        }
+        fake.respond(&scopes, new_scopes());
+        pump_until(app, |a| a.debug_panel.var_count() == 3 + watches).await;
+        for _ in 0..2 {
+            let req = fake.recv("variables").await;
+            let reference = req["arguments"]["variablesReference"].as_i64().unwrap();
+            fake.respond(&req, new_children(reference));
+        }
+        pump_until(app, |a| a.debug_panel.var_count() == 7 + watches).await;
+        evaluates
+    }
+
+    fn struct_point(reference: i64) -> Value {
+        json!({"result": "", "type": "struct point", "variablesReference": reference, "namedVariables": 2})
+    }
+
+    #[tokio::test]
+    async fn an_evaluate_is_sent_with_the_watch_context() {
+        let (mut app, dir, mut fake, _c) = vars_paused("eval-once").await;
+        app.perform(Action::Debug(DebugAction::Evaluate));
+        assert!(!evaluate_dialog(&app).1, "the check starts off");
+        answer_dialog(&mut app, crate::ui::dialog::DialogResult::TextChecked("sum + 1".into(), false));
+        let req = fake.recv("evaluate").await;
+        assert_watch_context(&req);
+        assert_eq!(req["arguments"], json!({"expression": "sum + 1", "frameId": 0, "context": "watch"}));
+        fake.respond(&req, json!({"result": "1", "type": "int", "variablesReference": 0}));
+        pump_until(&mut app, |a| texts(a).iter().any(|t| t.starts_with("Evaluate:"))).await;
+        assert_eq!(last(&app), (Level::Info, "Evaluate: sum + 1 = 1  int".to_string()));
+        assert_eq!(app.debug_panel.texts().last().copied(), Some("Evaluate: sum + 1 = 1  int"));
+        assert_eq!(app.debug_panel.severities().last(), Some(&None));
+        assert_eq!(app.debug_panel.var_count(), 0, "nothing was added");
+        assert!(app.debug_panel.watches().is_empty());
+        // No type: no trailing gap.
+        evaluate(&mut app, "n", false);
+        let req = fake.recv("evaluate").await;
+        fake.respond(&req, json!({"result": "7"}));
+        pump_until(&mut app, |a| texts(a).iter().any(|t| t == "Evaluate: n = 7")).await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_failed_evaluate_is_a_warning() {
+        let (mut app, dir, mut fake, _c) = vars_paused("eval-failed").await;
+        evaluate(&mut app, "nosuch", false);
+        let req = fake.recv("evaluate").await;
+        assert_watch_context(&req);
+        fake.respond_error(&req, "No symbol \"nosuch\" in current context.");
+        let text = "Evaluate: nosuch: No symbol \"nosuch\" in current context.";
+        pump_until(&mut app, |a| texts(a).iter().any(|t| t == text)).await;
+        assert_eq!(last(&app), (Level::Warn, text.to_string()));
+        assert_eq!(app.debug_panel.texts().last().copied(), Some(text));
+        assert_eq!(app.debug_panel.severities().last(), Some(&Some(Severity::Warning)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn an_evaluate_of_an_older_choice_is_dropped() {
+        let (mut app, dir, _fake, _c) = vars_paused("eval-older").await;
+        let (toasts, console) = (texts(&app), app.debug_panel.texts().len());
+        let old = app.debug_panel.selection_seq() - 1;
+        for result in [Ok(json!({"result": "1", "type": "int"})), Err("boom".to_string())] {
+            let kind = TagKind::Evaluate { seq: old, expression: "x".into() };
+            let epoch = epoch_of(&app);
+            inject(&mut app, DapBody::Response { tag: DapTag { epoch, kind }, result });
+        }
+        assert_eq!(texts(&app), toasts);
+        assert_eq!(app.debug_panel.texts().len(), console);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn an_evaluate_while_stopping_is_silent() {
+        let (mut app, dir, _fake, _c) = vars_paused("eval-stopping").await;
+        let (toasts, console) = (texts(&app), app.debug_panel.texts().len());
+        ctrl_f2(&mut app);
+        pump_until(&mut app, |a| a.debug.phase() == Some(Phase::Stopping)).await;
+        for result in [Ok(json!({"result": "1", "type": "int"})), Err("not available".to_string())] {
+            let kind = TagKind::Evaluate { seq: app.debug_panel.selection_seq(), expression: "x".into() };
+            let epoch = epoch_of(&app);
+            inject(&mut app, DapBody::Response { tag: DapTag { epoch, kind }, result });
+        }
+        assert_eq!(app.debug_panel.texts().len(), console);
+        assert!(texts(&app).iter().all(|t| !t.starts_with("Evaluate")), "{:?} then {:?}", toasts, texts(&app));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn an_expression_with_a_control_character_is_refused() {
+        let (mut app, dir, mut fake, _c) = vars_paused("eval-control").await;
+        read_vars(&mut app, &mut fake).await;
+        for (text, add) in [("a\nb", true), ("a\u{1b}b", false), ("a\u{1b}b", true), ("a\tb", false)] {
+            evaluate(&mut app, text, add);
+            assert_eq!(last(&app), (Level::Warn, "An expression is one line of plain text".to_string()), "{text:?}");
+        }
+        assert!(sent_since(&mut fake).await.iter().all(|c| c != "evaluate"));
+        assert!(app.debug_panel.watches().is_empty());
+        // Blank is nothing, and a line break around the text is trimmed away.
+        let toasts = texts(&app).len();
+        evaluate(&mut app, "  \n ", true);
+        assert_eq!(texts(&app).len(), toasts);
+        evaluate(&mut app, "\n x \n", true);
+        assert_eq!(app.debug_panel.watches(), ["x"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn evaluate_needs_a_pause() {
+        let (mut app, dir, mut fakes) = setup("eval-running", Order::LaunchEarly);
+        let _ = six(&mut app);
+        let (_fake, _) = running(&mut app, &mut fakes).await;
+        app.focus.set(PanelId::Editor);
+        assert_ne!(action_of(&mut app, key(F8, KeyModifiers::ALT)), Some(Action::Debug(DebugAction::Evaluate)));
+        app.perform(Action::Debug(DebugAction::Evaluate));
+        assert_eq!(last(&app), (Level::Info, "No paused debug session".to_string()));
+        assert!(app.dialog.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn alt_f8_and_delete_are_bound() {
+        let (mut app, dir, mut fake, _c) = vars_paused("eval-keys").await;
+        let dbg = |d| Some(Action::Debug(d));
+        app.focus.set(PanelId::Editor);
+        assert_eq!(action_of(&mut app, key(F8, KeyModifiers::ALT)), dbg(DebugAction::Evaluate));
+        in_vars(&mut app);
+        assert_eq!(action_of(&mut app, key(F8, KeyModifiers::ALT)), dbg(DebugAction::Evaluate), "and from the Debug window");
+        assert_eq!(action_of(&mut app, key(KeyCode::Delete, KeyModifiers::NONE)), dbg(DebugAction::RemoveWatch));
+        // Delete reaches the watch.
+        read_vars(&mut app, &mut fake).await;
+        evaluate(&mut app, "p", true);
+        assert_eq!(app.debug_panel.watches(), ["p"]);
+        let req = fake.recv("evaluate").await;
+        assert_watch_context(&req);
+        in_vars(&mut app);
+        press(&mut app, KeyCode::Delete);
+        assert!(app.debug_panel.watches().is_empty());
+        assert_eq!(var_rows(&mut app).len(), 7);
+        // On a scope row it does nothing.
+        press(&mut app, KeyCode::Delete);
+        assert_eq!(var_rows(&mut app).len(), 7);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn the_dialog_remembers_the_check() {
+        let (mut app, dir, _fake, _c) = vars_paused("eval-check").await;
+        evaluate(&mut app, "x", true);
+        app.perform(Action::Debug(DebugAction::Evaluate));
+        assert!(evaluate_dialog(&app).1, "reopened with the check on");
+        answer_dialog(&mut app, crate::ui::dialog::DialogResult::TextChecked("y".into(), false));
+        app.perform(Action::Debug(DebugAction::Evaluate));
+        assert!(!evaluate_dialog(&app).1, "and off again");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn the_dialog_is_prefilled_from_the_caret() {
+        use crate::editor::selection::Selection;
+        let (mut app, dir, _fake, _c) = vars_paused("eval-prefill").await;
+        let dialog_text = |app: &mut App, from: usize, to: usize| {
+            app.editor.active_buffer_mut().expect("the stop opened a file").view.set_sel(Selection::new(from, to));
+            app.perform(Action::Debug(DebugAction::Evaluate));
+            let text = evaluate_dialog(app).0;
+            app.dialog = None;
+            text
+        };
+        assert_eq!(dialog_text(&mut app, 4, 4), "l1", "the identifier at the caret");
+        assert_eq!(dialog_text(&mut app, 3, 4), "l", "a short selection first");
+        assert_eq!(dialog_text(&mut app, 0, 4), "l1", "a selection with a line break falls back to the word");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_watch_is_evaluated_at_each_stop() {
+        let (mut app, dir, mut fake, c) = vars_paused("watch-stops").await;
+        read_vars(&mut app, &mut fake).await;
+        evaluate(&mut app, "p", true);
+        assert_eq!(app.debug_panel.tab(), DebugTab::Variables);
+        let req = fake.recv("evaluate").await;
+        assert_watch_context(&req);
+        assert_eq!(req["arguments"], json!({"expression": "p", "frameId": 0, "context": "watch"}));
+        assert_eq!(var_rows(&mut app)[0], "  p …", "pending until the answer");
+        fake.respond(&req, struct_point(9));
+        pump_rows(&mut app, |r| r[0] == "▸ p  struct point").await;
+        assert_eq!(var_rows(&mut app)[1], "▾ Arguments", "the scopes follow");
+        press(&mut app, KeyCode::F(8));
+        step_stop(&mut app, &mut fake, &c, 5).await;
+        let evaluates = read_new_watched(&mut app, &mut fake, 1).await;
+        assert_eq!(evaluates[0]["arguments"], json!({"expression": "p", "frameId": 0, "context": "watch"}), "again, with no key");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn an_opened_watch_reopens_by_its_name() {
+        let (mut app, dir, mut fake, c) = vars_paused("watch-reopen").await;
+        read_vars(&mut app, &mut fake).await;
+        evaluate(&mut app, "p", true);
+        let req = fake.recv("evaluate").await;
+        fake.respond(&req, struct_point(9));
+        pump_rows(&mut app, |r| r[0] == "▸ p  struct point").await;
+        in_vars(&mut app);
+        press(&mut app, KeyCode::Right);
+        app.debug_sync_vars();
+        let req = fake.recv("variables").await;
+        assert_eq!(req["arguments"]["variablesReference"], 9);
+        fake.respond(&req, json!({"variables": [leaf("x", "1"), leaf("y", "2")]}));
+        pump_rows(&mut app, |r| r[0] == "▾ p  struct point" && r.len() > 2 && r[2] == "    y = 2  int").await;
+        next_stop(&mut app, &mut fake, &c, 5).await;
+        let evaluates = read_new_watched(&mut app, &mut fake, 1).await;
+        fake.respond(&evaluates[0], struct_point(20));
+        pump_rows(&mut app, |r| r[0].starts_with("▾ p")).await;
+        let req = fake.recv("variables").await;
+        assert_eq!(req["arguments"]["variablesReference"], 20, "the new number, asked with no key");
+        fake.respond(&req, json!({"variables": [leaf("x", "3"), leaf("y", "4")]}));
+        pump_rows(&mut app, |r| r.len() > 2 && r[2] == "    y = 4  int").await;
+        assert_eq!(var_rows(&mut app)[..2], ["▾ p  struct point", "    x = 3  int"]);
+        let sent = sent_since(&mut fake).await;
+        assert!(sent.iter().all(|c| c != "variables"), "nothing for 9: {sent:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_failed_watch_raises_no_toast() {
+        let (mut app, dir, mut fake, c) = vars_paused("watch-failed").await;
+        read_vars(&mut app, &mut fake).await;
+        let before = texts(&app);
+        evaluate(&mut app, "q", true);
+        let req = fake.recv("evaluate").await;
+        fake.respond_error(&req, "No symbol \"q\" in current context.");
+        pump_rows(&mut app, |r| r[0].ends_with("could not evaluate: No symbol \"q\" in current context.")).await;
+        assert_eq!(var_rows(&mut app)[0], "  q  could not evaluate: No symbol \"q\" in current context.");
+        assert_eq!(texts(&app), before, "no toast");
+        next_stop(&mut app, &mut fake, &c, 5).await;
+        let evaluates = read_new_watched(&mut app, &mut fake, 1).await;
+        fake.respond(&evaluates[0], json!({"result": "4", "type": "int", "variablesReference": 0}));
+        pump_rows(&mut app, |r| r[0] == "  q = 4  int").await;
+        assert_eq!(texts(&app), before);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn watches_wait_for_the_window() {
+        let (mut app, dir, mut fake, c) = vars_paused("watch-hidden").await;
+        read_vars(&mut app, &mut fake).await;
+        evaluate(&mut app, "p", true);
+        let req = fake.recv("evaluate").await;
+        fake.respond(&req, struct_point(9));
+        pump_rows(&mut app, |r| r[0] == "▸ p  struct point").await;
+        app.layout.hide(ToolWindowId::Debug);
+        app.focus.set(PanelId::Editor);
+        press(&mut app, KeyCode::F(8));
+        step_stop(&mut app, &mut fake, &c, 5).await;
+        app.debug_sync_vars();
+        let sent = sent_since(&mut fake).await;
+        assert!(sent.iter().all(|c| c != "evaluate" && c != "scopes"), "hidden: {sent:?}");
+        app.layout.show(ToolWindowId::Debug);
+        app.debug_sync_vars();
+        let scopes = fake.recv("scopes").await;
+        let req = fake.recv("evaluate").await;
+        assert_watch_context(&req);
+        assert_eq!(req["arguments"]["expression"], "p");
+        drop(scopes);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_watch_of_an_older_choice_is_dropped() {
+        let (mut app, dir, mut fake, _c) = vars_paused("watch-older").await;
+        read_vars(&mut app, &mut fake).await;
+        evaluate(&mut app, "p", true);
+        let req = fake.recv("evaluate").await;
+        assert_watch_context(&req);
+        let old = app.debug_panel.selection_seq();
+        // Another frame is chosen; its tree has `p` pending again.
+        in_frames(&mut app);
+        press(&mut app, KeyCode::Down);
+        assert!(app.debug_panel.selection_seq() > old);
+        in_vars(&mut app);
+        let (rows, toasts) = (var_rows(&mut app), texts(&app));
+        assert_eq!(rows, ["  p …"]);
+        for result in [Ok(struct_point(9)), Err("boom".to_string())] {
+            let kind = TagKind::Watch { node: 0, seq: old };
+            let epoch = epoch_of(&app);
+            inject(&mut app, DapBody::Response { tag: DapTag { epoch, kind }, result });
+            assert_eq!(var_rows(&mut app), rows, "the old answer fills nothing");
+        }
+        assert_eq!(texts(&app), toasts);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_watch_added_while_running_waits_for_the_stop() {
+        let (mut app, dir, mut fakes) = setup("watch-running", Order::LaunchEarly);
+        let a = six(&mut app);
+        let (mut fake, _) = running(&mut app, &mut fakes).await;
+        app.debug_evaluate("w".into(), true);
+        assert_eq!(app.debug_panel.watches(), ["w"]);
+        app.debug_sync_vars();
+        let sent = sent_since(&mut fake).await;
+        assert!(sent.iter().all(|c| c != "evaluate" && c != "scopes"), "{sent:?}");
+        stop_at(&mut app, &mut fake, 7, &a, 3).await;
+        app.debug_sync_vars();
+        let _scopes = fake.recv("scopes").await;
+        let req = fake.recv("evaluate").await;
+        assert_watch_context(&req);
+        assert_eq!(req["arguments"]["expression"], "w");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn no_request_uses_the_repl_context() {
+        // gdb's `repl` context runs any debugger command: the word may stand nowhere else in this file.
+        let needle = format!("\"{}\"", "repl");
+        let source = include_str!("debug.rs");
+        assert_eq!(source.matches(needle.as_str()).count(), 1, "only the format! above");
     }
 }

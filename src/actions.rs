@@ -569,6 +569,10 @@ pub enum DebugAction {
     Pause,
     /// Open the file at the line the program is paused on.
     ShowExecutionPoint,
+    /// Evaluate an expression in the selected frame, or add it to the watches.
+    Evaluate,
+    /// Variables: remove the selected watch.
+    RemoveWatch,
     /// The menu of the paused program's threads.
     ChooseThread,
     /// Make a thread the one shown and stepped (the menu's rows).
@@ -1198,6 +1202,8 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "debug.step_out" => "Debug: Step Out", Debug(DebugAction::StepOut);
         "debug.pause" => "Debug: Pause", Debug(DebugAction::Pause);
         "debug.show_execution_point" => "Debug: Show Execution Point", Debug(DebugAction::ShowExecutionPoint);
+        "debug.evaluate" => "Debug: Evaluate Expression", Debug(DebugAction::Evaluate);
+        "debug.remove_watch" => "Debug: remove the selected watch", Debug(DebugAction::RemoveWatch);
         "debug.up" => "Debug: up", Debug(DebugAction::Up);
         "debug.down" => "Debug: down", Debug(DebugAction::Down);
         "debug.page_up" => "Debug: page up", Debug(DebugAction::PageUp);
@@ -1374,7 +1380,8 @@ impl Action {
                 | DebugAction::StepOver
                 | DebugAction::StepInto
                 | DebugAction::StepOut
-                | DebugAction::ShowExecutionPoint,
+                | DebugAction::ShowExecutionPoint
+                | DebugAction::Evaluate,
             ) => &["debug.suspended"],
             Action::Debug(
                 DebugAction::Up
@@ -1385,7 +1392,8 @@ impl Action {
                 | DebugAction::End
                 | DebugAction::Open
                 | DebugAction::Expand
-                | DebugAction::Collapse,
+                | DebugAction::Collapse
+                | DebugAction::RemoveWatch,
             ) => &["debug", "global"],
             Action::Debug(DebugAction::ChooseThread) => &["debug", "global"],
             Action::Debug(_) => &["global"],

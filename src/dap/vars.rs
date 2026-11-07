@@ -6,7 +6,8 @@
 //! out; children are capped; a node's children can come in pages, asked by a load-more row that is a node of its
 //! own and not one of the children; and asks are queued here for the App to send, as the panel has no sender. What
 //! the user opened survives the tree: `KeptPaths` keeps name paths per function, and answers reopen them one level at
-//! a time within a budget.
+//! a time within a budget. Watches are roots above the scopes, flagged `watch`: `set_roots` leaves them in place, a
+//! watch's name is its expression, and its value comes from its own `evaluate`, not from a scope's `variables`.
 
 use super::protocol::Scope;
 use crate::ui::widgets::list::ListState;
@@ -140,11 +141,13 @@ pub struct VarNode {
     pub hidden: usize,
     /// The load-more row, while the adapter has more and honours pages. Not in `children`.
     pub more: Option<usize>,
+    /// A watch root: `item.name` is the expression, and the value comes from an `evaluate`.
+    pub watch: bool,
 }
 
 impl VarNode {
     fn new(item: VarItem, depth: usize, parent: Option<usize>) -> Self {
-        Self { item, depth, parent, children: None, expanded: false, loading: false, failed: None, hidden: 0, more: None }
+        Self { item, depth, parent, children: None, expanded: false, loading: false, failed: None, hidden: 0, more: None, watch: false }
     }
 }
 
@@ -153,15 +156,80 @@ pub struct VarTree {
     nodes: Vec<VarNode>,
     roots: Vec<usize>,
     asks: Vec<VarAsk>,
+    /// Watch roots whose `evaluate` the App has not taken yet.
+    watch_asks: Vec<usize>,
 }
 
 impl VarTree {
-    /// The scopes, as roots. Only the first `MAX_CHILDREN` are kept.
-    pub fn set_roots(&mut self, items: Vec<VarItem>) {
-        self.nodes.clear();
-        self.asks.clear();
+    /// The scopes, as roots after the watch roots; returns the node of the first scope. With no watch root the
+    /// arena and the asks are cleared first. Only the first `MAX_CHILDREN` scopes are kept.
+    pub fn set_roots(&mut self, items: Vec<VarItem>) -> usize {
+        let nodes = &self.nodes;
+        self.roots.retain(|&r| nodes[r].watch);
+        if self.roots.is_empty() {
+            self.nodes.clear();
+            self.asks.clear();
+            self.watch_asks.clear();
+        }
+        let first = self.nodes.len();
         self.nodes.extend(items.into_iter().take(MAX_CHILDREN).map(|item| VarNode::new(item, 0, None)));
-        self.roots = (0..self.nodes.len()).collect();
+        self.roots.extend(first..self.nodes.len());
+        first
+    }
+
+    /// A watch root for `expression`, after the last watch root and before the scopes: its evaluate is queued, and
+    /// it is ` …` (`loading`) until `set_watch`.
+    pub fn add_watch(&mut self, expression: String) -> usize {
+        let mut node = VarNode::new(VarItem { name: expression, ..VarItem::default() }, 0, None);
+        node.watch = true;
+        node.loading = true;
+        self.nodes.push(node);
+        let i = self.nodes.len() - 1;
+        let at = self.roots.iter().rposition(|&r| self.nodes[r].watch).map_or(0, |p| p + 1);
+        self.roots.insert(at, i);
+        self.watch_asks.push(i);
+        i
+    }
+
+    /// The watch roots whose evaluate is queued, oldest first.
+    pub fn take_watch_asks(&mut self) -> Vec<usize> {
+        std::mem::take(&mut self.watch_asks)
+    }
+
+    /// The evaluate answer of watch root `i`: the item's value, type, reference and hint, the name staying the
+    /// expression; or the failure. False, and nothing changes, unless `i` is a watch root still in `roots` and loading.
+    pub fn set_watch(&mut self, i: usize, result: Result<VarItem, String>) -> bool {
+        if !self.is_watch(i) || !self.nodes[i].loading {
+            return false;
+        }
+        let n = &mut self.nodes[i];
+        n.loading = false;
+        match result {
+            Ok(item) => {
+                n.item = VarItem { name: std::mem::take(&mut n.item.name), ..item };
+                n.failed = None;
+            }
+            Err(m) => {
+                n.item.reference = 0;
+                n.failed = Some(m);
+            }
+        }
+        true
+    }
+
+    /// Whether `i` is a watch root still in `roots`. Never a child or a load-more row.
+    pub fn is_watch(&self, i: usize) -> bool {
+        self.nodes.get(i).is_some_and(|n| n.watch) && self.roots.contains(&i)
+    }
+
+    /// Takes watch root `i` out of `roots`; its nodes stay in the arena, unreachable. False when `i` is not one.
+    pub fn remove_watch(&mut self, i: usize) -> bool {
+        if !self.is_watch(i) {
+            return false;
+        }
+        self.roots.retain(|&r| r != i);
+        self.watch_asks.retain(|&r| r != i);
+        true
     }
 
     /// The visible nodes in display order: the roots, each followed by its children when expanded and known, then by
@@ -396,7 +464,8 @@ impl VarsView {
             }
         }
         let Some(kept) = kept else { return };
-        let roots = self.tree.roots.clone();
+        // A watch root reopens when its own answer lands.
+        let roots: Vec<usize> = self.tree.roots.iter().copied().filter(|&r| !self.tree.nodes[r].watch).collect();
         self.reopen_among(&roots, &[], kept);
     }
 
@@ -412,6 +481,11 @@ impl VarsView {
         let new = children[before.min(children.len())..].to_vec();
         let prefix = self.tree.path_of(i);
         self.reopen_among(&new, &prefix, kept);
+    }
+
+    /// Watch root `i` was answered: the selection moves to it and it reopens, from the kept paths, as a root would.
+    pub fn reopen_watch(&mut self, i: usize, kept: &KeptFrame) {
+        self.reopen_among(&[i], &[], kept);
     }
 
     fn reopen_among(&mut self, new: &[usize], prefix: &[String], kept: &KeptFrame) {
@@ -1470,5 +1544,142 @@ mod tests {
         assert!(asked(&mut v).is_empty(), "x stays closed under a shadow");
         let x = child(&v, p, "x");
         assert!(!v.tree.node(x).unwrap().expanded);
+    }
+
+    #[test]
+    fn set_roots_keeps_the_watches() {
+        let mut t = VarTree::default();
+        let w = t.add_watch("w".into());
+        assert!(t.set_watch(w, Ok(VarItem { children: 2, ..item("ignored", 9) })));
+        t.expand(w);
+        t.take_asks();
+        t.set_children(w, vec![item("c", 5), item("d", 0)]);
+        t.expand(1);
+        let first = t.set_roots(vec![item("A", 10), item("B", 11)]);
+        assert_eq!(first, 3, "after the watch and its two children");
+        assert_eq!(names(&t), ["w", "c", "d", "A", "B"], "the watch rows come first");
+        assert_eq!(t.take_asks(), vec![VarAsk { node: 1, reference: 5, children: 0, start: 0 }], "the pending ask stays");
+        assert_eq!(t.take_watch_asks(), vec![w]);
+        assert!(t.is_watch(w) && !t.is_watch(first));
+    }
+
+    #[test]
+    fn set_roots_without_watches_is_unchanged() {
+        let mut t = VarTree::default();
+        assert_eq!(t.set_roots(vec![item("a", 10), item("b", 11)]), 0);
+        t.expand(0);
+        assert_eq!(t.set_roots(vec![item("c", 12)]), 0, "a second call clears");
+        assert_eq!(names(&t), ["c"]);
+        assert!(t.take_asks().is_empty());
+    }
+
+    #[test]
+    fn a_watch_answer_keeps_its_expression() {
+        let mut t = VarTree::default();
+        let w = t.add_watch("a + b".into());
+        assert!(t.node(w).unwrap().loading && t.node(w).unwrap().watch);
+        let answer = VarItem { value: "3".into(), ty: "int".into(), ..item("other", 0) };
+        assert!(t.set_watch(w, Ok(answer)));
+        let n = t.node(w).unwrap();
+        assert_eq!((n.item.name.as_str(), n.item.value.as_str(), n.item.ty.as_str()), ("a + b", "3", "int"));
+        assert!(!n.loading && n.failed.is_none());
+        assert!(!t.set_watch(w, Ok(item("again", 0))), "a second answer changes nothing");
+        assert_eq!(t.node(w).unwrap().item.value, "3");
+        let x = t.add_watch("nosuch".into());
+        assert!(t.set_watch(x, Err("No symbol".into())));
+        let n = t.node(x).unwrap();
+        assert_eq!((n.failed.as_deref(), n.item.reference, n.loading), (Some("No symbol"), 0, false));
+    }
+
+    #[test]
+    fn watches_are_ordered_and_asked_oldest_first() {
+        let mut t = VarTree::default();
+        let (a, b) = (t.add_watch("a".into()), t.add_watch("b".into()));
+        t.set_roots(vec![item("L", 10)]);
+        let c = t.add_watch("c".into());
+        assert_eq!(names(&t), ["a", "b", "c", "L"], "a new watch goes after the last watch, before the scopes");
+        assert_eq!(t.take_watch_asks(), vec![a, b, c]);
+        assert!(t.take_watch_asks().is_empty());
+    }
+
+    #[test]
+    fn a_removed_watch_ignores_its_answer() {
+        let mut t = VarTree::default();
+        let w = t.add_watch("w".into());
+        assert!(t.remove_watch(w));
+        assert!(!t.is_watch(w) && !t.remove_watch(w));
+        assert!(!t.set_watch(w, Ok(VarItem { value: "1".into(), ..item("w", 0) })));
+        assert!(t.node(w).unwrap().item.value.is_empty());
+        assert!(t.rows().is_empty());
+        assert!(t.take_watch_asks().is_empty(), "its ask is gone too");
+    }
+
+    #[test]
+    fn a_load_more_row_under_a_watch_is_no_watch() {
+        let mut t = VarTree::default();
+        let w = t.add_watch("w".into());
+        assert!(t.set_watch(w, Ok(VarItem { children: 2500, ..item("w", 9) })));
+        t.expand(w);
+        t.set_children(w, from(0, 1000));
+        let r = t.node(w).unwrap().more.expect("a load-more row");
+        let c = t.node(w).unwrap().children.as_ref().unwrap()[0];
+        assert!(!t.is_watch(r) && !t.remove_watch(r));
+        assert!(!t.is_watch(c) && !t.remove_watch(c));
+        assert_eq!(t.stable_path_of(r), None);
+        assert_eq!(t.stable_path_of(c), Some(path(&["w", "0"])));
+        assert!(t.is_watch(w), "the watch is still there");
+    }
+
+    #[test]
+    fn nothing_opens_under_a_watch_named_like_a_scope() {
+        let k = open(&[&["Locals"], &["Locals", "x"]]);
+        let mut v = VarsView::default();
+        let w = v.tree.add_watch("Locals".into());
+        let first = v.tree.set_roots(vec![item("Locals", 10)]);
+        v.reopen_roots(&[], Some(&k));
+        assert!(v.tree.set_watch(w, Ok(item("Locals", 9))));
+        v.reopen_watch(w, &k);
+        assert!(asked(&mut v).is_empty(), "both are ambiguous");
+        assert!(!v.tree.node(w).unwrap().expanded && !v.tree.node(first).unwrap().expanded);
+        // The user opens the scope: nothing below it follows, whoever opened it.
+        v.tree.expand(first);
+        asked(&mut v);
+        stored(&mut v, first, vec![item("x", 30)], &k);
+        assert!(asked(&mut v).is_empty());
+        assert_eq!(v.spent, 0);
+    }
+
+    #[test]
+    fn the_scopes_leave_the_watch_roots_alone() {
+        let mut k = open(&[&["w"], &["L"]]);
+        k.selected = Some(path(&["w"]));
+        let mut v = VarsView::default();
+        let w = v.tree.add_watch("w".into());
+        assert!(v.tree.set_watch(w, Ok(item("w", 9))));
+        v.node = w + 5;
+        let first = v.tree.set_roots(vec![item("L", 10)]);
+        v.reopen_roots(&[], Some(&k));
+        assert!(!v.tree.node(w).unwrap().expanded, "a watch opens when its own answer lands");
+        assert_eq!(v.spent, 1, "only the scope L was charged");
+        assert_ne!(v.node, w, "and the selection stays");
+        assert!(v.tree.node(first).unwrap().expanded);
+    }
+
+    #[test]
+    fn a_watch_reopens_by_its_name() {
+        let mut k = open(&[&["w"], &["w", "x"]]);
+        k.selected = Some(path(&["w", "x"]));
+        let mut v = VarsView::default();
+        let w = v.tree.add_watch("w".into());
+        assert!(v.tree.set_watch(w, Ok(VarItem { children: 2, ..item("w", 9) })));
+        v.reopen_watch(w, &k);
+        assert_eq!(asked(&mut v), [(w, 9, 0)]);
+        assert_eq!(v.spent, reopen_price(&VarItem { children: 2, ..item("w", 9) }));
+        assert!(v.spent > 0);
+        assert_eq!(v.node, w);
+        stored(&mut v, w, vec![item("x", 30), item("y", 0)], &k);
+        let x = child(&v, w, "x");
+        assert_eq!(asked(&mut v), [(x, 30, 0)]);
+        assert_eq!(v.node, x, "the selection follows");
     }
 }

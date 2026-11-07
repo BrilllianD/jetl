@@ -1,0 +1,29 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &[], Some(area))"
+---
+80x24 cursor=(19,8)
+00  ≣ ┌ Project: root ───────────────┐│  a.log ×
+01    │                              ││  1    l0
+02  ⌂ │                              ││  2    l1
+03  ◫ │                              ││  3▶   l2
+04  ⊢ │                              ││  4    l3
+05    │           ┌ Evaluate ──────────────────────────────────────┐
+06    │           │ Expression, in the selected frame:             │
+07    └───────────│                                                │
+08    ────────────│ l2                                             │───────────────
+09    ┌ Debug: dem│ [x] Add to watches   Alt+C                     │──────────────┐
+10    │  Resume   │            [ Evaluate ] [ Cancel ]             │              │
+11    │ Frames  Va└────────────────────────────────────────────────┘              │
+12  ◉ │ No output yet                                                             │
+13  ⋔ │                                                                           │
+14  ✎ │                                                                           │
+15  ✓ │                                                                           │
+16  ⟲ │                                                                           │
+17  ⚑ │                                                                           │
+18  ⎇ │                                                                           │
+19  ❯ │                                                                           │
+20  ⚠ │                                                                           │
+21  ► │                                                                           │
+22  ⌕ └───────────────────────────────────────────────────────────────────────────┘
+23  a.log                             Ln 3, Col 1  LF  UTF-8  4 spaces  Plain text

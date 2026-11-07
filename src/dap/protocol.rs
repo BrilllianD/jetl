@@ -312,9 +312,45 @@ pub struct VariablesBody {
     pub variables: Vec<Variable>,
 }
 
+/// The body of an `evaluate` response. A reference of 0 or less has no children.
+#[derive(Debug, Clone, PartialEq, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct EvaluateBody {
+    #[serde(deserialize_with = "nullable")]
+    pub result: String,
+    #[serde(rename = "type", deserialize_with = "nullable")]
+    pub ty: String,
+    #[serde(deserialize_with = "nullable")]
+    pub variables_reference: i64,
+    #[serde(deserialize_with = "nullable")]
+    pub indexed_variables: i64,
+    #[serde(deserialize_with = "nullable")]
+    pub named_variables: i64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn evaluate_body_reads_gdbs_shape() {
+        let b: EvaluateBody =
+            body_of("t", json!({"result": "{a = 1, b = 2}", "type": "Inner", "variablesReference": 7, "namedVariables": 2}));
+        assert_eq!(
+            b,
+            EvaluateBody {
+                result: "{a = 1, b = 2}".into(),
+                ty: "Inner".into(),
+                variables_reference: 7,
+                indexed_variables: 0,
+                named_variables: 2
+            }
+        );
+        let b: EvaluateBody = body_of("t", json!({"result": "3", "type": null, "variablesReference": null}));
+        assert_eq!((b.result.as_str(), b.ty.as_str(), b.variables_reference), ("3", "", 0));
+        let b: EvaluateBody = body_of("t", json!({"result": "x", "indexedVariables": 5}));
+        assert_eq!(b.indexed_variables, 5);
+    }
 
     #[test]
     fn scope_and_variable_read_gdbs_shapes() {
