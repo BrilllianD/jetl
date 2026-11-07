@@ -1413,9 +1413,100 @@ the last run is `~/.claude/plans/backlog-run-24-D4b2-evidence/scripts/vars-scena
 At 80x24 the list holds about ten rows, so the lower rows of steps 8 to 13 are scrolled; the script goes by key and by
 the mouse wheel and says so in `v-m-wheel.txt`.
 
-gdb cannot show, and the unit tests prove: a scope with `expensive: true` (gdb marks none), paging (gdb takes `start` and `count` only from a client that declares `supportsVariablePaging` in `initialize`; jetl does not,
-so the paged branch is exercised by the fake adapter only), a `namedVariables` count above `UNPAGED_LIMIT` (fake adapter only; gdb sends the hint for every plain struct and pointer), a raw control character in a value, a stale answer's timing (the
+gdb cannot show, and the unit tests prove: a scope with `expensive: true` (gdb marks none), a refusal above `UNPAGED_LIMIT` and an adapter that ignores `start` and `count` (fake adapter only; gdb honours them), a raw control character in a value, a stale answer's timing (the
 race is too short to place by hand), an answer over `MAX_BODY`, and a scope with no hint. Not run: scopes of a `???` frame.
+
+### Scenario: Debug window, paged variables
+
+Needs `gdb` 14 or newer (the run used 17.2), `gcc`, `g++` with libstdc++'s printers
+(`/usr/share/gdb/auto-load/usr/lib/libstdc++.so.*-gdb.py`). At 80x24 and at 120x40, a private tmux socket, `XDG_*`
+directories under `/tmp`, and a `config.toml` of:
+
+    [lsp]
+    enabled = false
+    [ui]
+    toolbar = false
+    [debug.adapters.gdb]
+    command = ["gdb", "-q", "-iex", "set debug dap-log-file <capture dir>/dap.log", "-i=dap"]
+
+Wire proof: jetl's own log does not show a request's arguments, and gdb's `dap-log-file` does, with `READ: <<<...>>>`
+for what jetl sent and `WROTE: <<<...>>>` for what gdb answered. Read the sent ones with
+`grep -E '^READ.*"command": "variables"' dap.log | grep -o '"arguments": {[^}]*}'`, and the sizes with
+`awk '/^WROTE/ && /"variables"/ {print length($0)}' dap.log`. With this `command` the pattern
+`pgrep -f '[g]db -q -i=dap'` matches nothing, so count with `pgrep -f '[d]ap-log-file <capture dir>'`. Check it prints 1
+during a session before trusting a 0 after.
+
+Fixture in `/tmp/jetl-dap-demo`, built each run. `paged.c`, built `gcc -g -O0 -o paged paged.c`, line 15 being the
+`printf`:
+
+    #include <stdio.h>
+
+    int main(void) {
+        static int giant[2000000];
+        static int huge[200000];
+        int big[5000];
+        int over[1001];
+        int edge[1000];
+        int i;
+        for (i = 0; i < 5000; i++) big[i] = i;
+        for (i = 0; i < 1001; i++) over[i] = i;
+        for (i = 0; i < 1000; i++) edge[i] = i;
+        huge[199999] = 7;
+        giant[1999999] = 7;
+        printf("%d\n", big[1] + over[1] + edge[1] + huge[199999] + giant[1999999]);
+        return 0;
+    }
+
+`mapped.cc`, built `g++ -g -O0 -o mapped mapped.cc`, line 7 being the `printf`:
+
+    #include <cstdio>
+    #include <map>
+
+    int main() {
+        std::map<int, int> m;
+        for (int i = 0; i < 100000; i++) m[i] = i;
+        printf("%zu\n", m.size());
+        return 0;
+    }
+
+`.jetl/run.toml` is rewritten to one configuration per session: `[[configs]] name = "paged"`,
+`command = ["./paged"]`, `[debug.paged]`, `adapter = "gdb"`, `launch = { program = "${workspaceFolder}/paged" }`, and the
+same for `mapped`.
+
+Keys: open the file as jetl's argument, Ctrl+G with the line and Enter, Ctrl+F8, Shift+F9, then Alt+F5 and Alt+Right
+twice for Variables. Reach a row by Home and then Down, one per row. Left collapses an open row, but on a closed row it
+moves to the parent, so a loop that goes on with Down from there returns to the same row: always go from Home. A row is
+matched by its shape (`[▸▾] big`), since the source pane holds the same names. A collapsed row keeps its
+`first N of M shown` note.
+
+1. `paged`, breakpoint on line 15, Shift+F9: `paused (breakpoint)`, `15▶`. The `initialize` line in `dap.log` holds
+   `"supportsVariablePaging": true` and `"supportsVariableType": true`. gdb's answer to it holds no
+   `supportsVariablePaging`.
+2. Variables: `Locals` open with `giant  int [2000000]`, `huge  int [200000]`, `big  int [5000]`, `over  int [1001]`,
+   `edge  int [1000]` (each with a `▸`), `i = 1000  int`, and `Registers` closed (the last two are below the fold at
+   both sizes until End).
+3. `giant`, Right: `▾ giant  first 1000 of 2000000 shown  int [2000000]` and rows `0 = 0  int`, `1 = 0  int`. Sent:
+   `{"count": 1000, "start": 0, "variablesReference": N}`. Answer 71 008 characters. Without the capability this answer
+   would be about 156 MB (the 5000-element rate times 400; not run), over `MAX_BODY`, and it would end the session. Left.
+4. `huge`, Right: `first 1000 of 200000 shown  int [200000]`, the same request shape, answer 71 008. Left.
+5. `big`, Right: `first 1000 of 5000 shown  int [5000]`, rows `0 = 0  int`, `1 = 1  int`. Sent paged, answer 72 898
+   characters (372 898 before this change). Left.
+6. `over`, Right: `first 1000 of 1001 shown  int [1001]`. Sent paged, answer 72 898 (72 973 before). Left.
+7. `edge`, Right: `edge  int [1000]` with no note. Sent `{"variablesReference": N}`, with no `start` or `count`, answer
+   72 898. Left.
+8. F8, then `big` again, Right: `paused (step)`, a fresh tree (every row closed and without a note), then
+   `first 1000 of 5000 shown`, and no `could not read` or `list index out of range` anywhere. Sent paged, answer 72 898.
+9. Ctrl+F2, Ctrl+Q, rewrite `run.toml` for `mapped`, and start jetl anew on `mapped.cc`. Breakpoint on line 7, Shift+F9,
+   Variables, `m`, Right: `▾ m … = std::map with 100000 elements` during the wait, then
+   `first 1000 of 200000 shown = std::map with 100000 elements`, and rows `[0] = 0  const int`, `[1] = 0  int`. Sent
+   paged, answer 77 788. Observed: 2.4 s under load at both sizes. A figure above the 10 s of `REQUEST_TIMEOUT` would
+   show `could not read: timed out`.
+10. Ctrl+F2, Shift+F9 again, Variables (the tab stays), `m`, Right, and Ctrl+F2 at once while `…` shows:
+    `Debug session stopped` within about 2 s, and no gdb left.
+11. Ctrl+Q: exit 0, empty stderr, no gdb or debuggee left.
+
+What gdb cannot show, and the unit tests prove: a refusal above `UNPAGED_LIMIT`, and an adapter that ignores `start` and
+`count`. Other adapters are unverified.
 
 ### Scenario: Debug build step
 

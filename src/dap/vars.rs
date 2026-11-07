@@ -8,12 +8,11 @@
 use super::protocol::Scope;
 use crate::ui::widgets::list::ListState;
 
-/// Rows kept per answer.
+/// Rows kept per answer, and the size of a page asked with start and count.
 pub const MAX_CHILDREN: usize = 1000;
-/// Without paging, more children than this announced by `indexedVariables` plus `namedVariables` are not asked for:
-/// gdb takes about 73 bytes an element, and a frame over `MAX_BODY` ends the session. gdb takes `start` and `count`
-/// only from a client that declares `supportsVariablePaging` in `initialize`; jetl does not, so against gdb the
-/// request goes without them and only the fake adapter exercises the paged branch.
+/// More children than this, announced by `indexedVariables` plus `namedVariables`, are not asked for unless the
+/// adapter is known to honour `start` and `count` (`Live::trusted_paging`, gdb only): an adapter that ignores them
+/// answers whole, gdb takes about 73 bytes an element, and a frame over `MAX_BODY` ends the session.
 pub const UNPAGED_LIMIT: i64 = 100_000;
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -46,7 +45,7 @@ pub struct VarNode {
     pub loading: bool,
     /// Why the last ask failed.
     pub failed: Option<String>,
-    /// Children the answer had and the tree did not keep.
+    /// Children the adapter has and the tree did not keep: asked for or not.
     pub hidden: usize,
 }
 

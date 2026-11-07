@@ -250,6 +250,7 @@ impl Session {
             "columnsStartAt1": true,
             "pathFormat": "path",
             "supportsVariableType": true,
+            "supportsVariablePaging": true,
         });
         self.send("initialize", args, PendingKind::Initialize, self.created, &mut out);
         out
@@ -922,6 +923,7 @@ mod tests {
             json!({
                 "adapterID": "dbg", "clientID": "jetl", "clientName": "jetl", "linesStartAt1": true,
                 "columnsStartAt1": true, "pathFormat": "path", "supportsVariableType": true,
+                "supportsVariablePaging": true,
             })
         );
         assert_eq!(h.phase(), Phase::Initializing);

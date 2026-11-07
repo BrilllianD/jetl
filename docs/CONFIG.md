@@ -391,6 +391,10 @@ from reading their sources. `jetl --doctor` and Settings > Dependencies show
 which are found; debugpy's row checks `python3` only, since checking the
 module would run a process.
 
+Large arrays and containers in the Debug window's Variables tab are read a page of 1000 at a time. Under gdb, any size
+is read this way. Under another adapter, one above 100 000 elements is not read at all, since jetl has not checked that
+the adapter honours paging, and one answer over 64 MiB ends the session.
+
 A table with a new name comes before the built-in ones. `command = []` turns
 an adapter off. `launch` replaces the built-in launch arguments whole, and
 `${language}` in it becomes the language in use. Delve and js-debug need a

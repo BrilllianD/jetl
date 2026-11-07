@@ -142,8 +142,6 @@ pub struct Capabilities {
     #[serde(alias = "supportsTerminateDebuggee", deserialize_with = "nullable")]
     pub support_terminate_debuggee: bool,
     #[serde(deserialize_with = "nullable")]
-    pub supports_variable_paging: bool,
-    #[serde(deserialize_with = "nullable")]
     pub exception_breakpoint_filters: Vec<ExceptionFilter>,
 }
 
@@ -417,12 +415,12 @@ mod tests {
             "t",
             json!({
                 "supportsConfigurationDoneRequest": true, "supportsTerminateRequest": true,
-                "supportTerminateDebuggee": true, "supportsVariablePaging": true,
+                "supportTerminateDebuggee": true,
                 "exceptionBreakpointFilters": [{"filter":"a","label":"A","default":true}, {"filter":"b","label":"B"}],
             }),
         );
         assert!(c.supports_configuration_done_request && c.supports_terminate_request);
-        assert!(c.support_terminate_debuggee && c.supports_variable_paging);
+        assert!(c.support_terminate_debuggee);
         assert_eq!(
             c.exception_breakpoint_filters,
             vec![

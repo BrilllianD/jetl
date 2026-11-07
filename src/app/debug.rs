@@ -80,8 +80,9 @@ pub(super) struct Live {
     pub(super) console: std::sync::mpsc::Sender<OutputEvent>,
     /// The bytes of `output` events not yet fed to the Console thread; `dap_msg` gives back a line it hides.
     pub(super) gate: Arc<ConsoleGate>,
-    /// The adapter reads `start` and `count` of `variables`; false until `Started`.
-    pub(super) paging: bool,
+    /// What is known of the adapter, since no capability tells: true when `start` and `count` are checked to
+    /// bound its answer, so a hint above `UNPAGED_LIMIT` may be asked. Only gdb is.
+    pub(super) trusted_paging: bool,
 }
 
 /// Kills the build's process group when dropped: a replace, a Stop, a root switch, a quit, or the app going.
@@ -719,7 +720,7 @@ impl App {
             stop_seq: 0,
             console,
             gate,
-            paging: false,
+            trusted_paging: gdb,
         });
         self.notify(Level::Info, format!("Debugging {} with {}", p.name, p.adapter.name));
         if let Some(c) = lost_cwd {
@@ -790,11 +791,7 @@ impl App {
                     }
                 }
             }
-            DapBody::Started { capabilities } => {
-                if let Some(l) = self.debug.session.as_mut() {
-                    l.paging = capabilities.supports_variable_paging;
-                }
-            }
+            DapBody::Started { .. } => {}
         }
     }
 
@@ -1082,7 +1079,7 @@ impl App {
         }
         let shown = self.debug_window_shown();
         let Some(live) = self.debug.session.as_ref() else { return };
-        let (epoch, paging) = (live.epoch, live.paging);
+        let (epoch, trusted) = (live.epoch, live.trusted_paging);
         let mut moved = false;
         if shown && let Some((frame, seq)) = self.debug_panel.scopes_wanted() {
             let tag = DapTag { epoch, kind: TagKind::Scopes { seq } };
@@ -1092,12 +1089,12 @@ impl App {
         let seq = self.debug_panel.selection_seq();
         for ask in self.debug_panel.take_var_asks() {
             moved = true;
-            if !paging && ask.children > UNPAGED_LIMIT {
+            if !trusted && ask.children > UNPAGED_LIMIT {
                 self.debug_panel.children_failed(ask.node, format!("too many elements ({})", ask.children));
                 continue;
             }
             let mut arguments = json!({"variablesReference": ask.reference});
-            if paging && ask.children > MAX_CHILDREN as i64 {
+            if ask.children > MAX_CHILDREN as i64 {
                 arguments["start"] = json!(0);
                 arguments["count"] = json!(MAX_CHILDREN);
             }
@@ -5807,10 +5804,10 @@ pub(crate) mod tests {
     }
 
     /// `paused_in_two`'s session reads Locals with one big array, `arr` (reference 6, `indexed` and `named` children), and answers.
-    async fn paging_case(name: &str, paging: bool, indexed: i64, named: i64) -> (App, PathBuf, FakeAdapter, Option<Value>) {
-        let mut c = caps();
-        c["supportsVariablePaging"] = json!(paging);
+    /// `trusted` is what `Live::trusted_paging` holds when the user opens `arr`.
+    async fn paging_case_with(name: &str, c: Value, trusted: bool, indexed: i64, named: i64) -> (App, PathBuf, FakeAdapter, Option<Value>) {
         let (mut app, dir, mut fake, _a, _c) = paused_in_two_with(name, c).await;
+        app.debug.session.as_mut().unwrap().trusted_paging = trusted;
         in_vars(&mut app);
         app.debug_sync_vars();
         let req = fake.recv("scopes").await;
@@ -5827,35 +5824,64 @@ pub(crate) mod tests {
         let sent = if var_rows(&mut app).last().is_some_and(|r| r.contains("too many elements")) {
             None
         } else {
-            Some(fake.recv("variables").await["arguments"].clone())
+            Some(fake.recv("variables").await)
         };
         (app, dir, fake, sent)
     }
 
+    /// The `arguments` of the request `paging_case` saw.
+    fn sent_args(sent: &Option<Value>) -> Option<Value> {
+        sent.as_ref().map(|r| r["arguments"].clone())
+    }
+
+    async fn paging_case(name: &str, trusted: bool, indexed: i64, named: i64) -> (App, PathBuf, FakeAdapter, Option<Value>) {
+        paging_case_with(name, caps(), trusted, indexed, named).await
+    }
+
     #[tokio::test]
-    async fn paging_only_with_the_capability() {
-        let mut dirs = Vec::new();
-        let (_app, dir, _fake, sent) = paging_case("vars-page-off", false, 5000, 0).await;
-        dirs.push(dir);
-        assert_eq!(sent, Some(json!({"variablesReference": 6})), "no start or count without the capability");
-        let (mut app, dir, mut fake, sent) = paging_case("vars-page-refuse", false, 200_000, 0).await;
-        dirs.push(dir);
-        assert_eq!(sent, None, "refused");
-        assert_eq!(var_rows(&mut app).last().map(String::as_str), Some("  ▸ arr  could not read: too many elements (200000)"));
-        let before = texts(&app);
-        quiet_twice(&mut app, &mut fake, "q-refused.log").await;
-        assert!(texts(&app).iter().all(|t| !t.contains("too many")) && texts(&app).len() == before.len(), "no toast");
-        let (_app, dir, _fake, sent) = paging_case("vars-page-on", true, 5000, 0).await;
-        dirs.push(dir);
-        assert_eq!(sent, Some(json!({"variablesReference": 6, "start": 0, "count": 1000})));
-        let (_app, dir, _fake, sent) = paging_case("vars-page-small", true, 500, 0).await;
-        dirs.push(dir);
-        assert_eq!(sent, Some(json!({"variablesReference": 6})), "a small array is asked whole even when paging is possible");
-        let (_app, dir, _fake, sent) = paging_case("vars-page-limit", false, 100_000, 0).await;
-        dirs.push(dir);
-        assert!(sent.is_some(), "the limit itself is still asked");
-        for d in dirs {
-            let _ = std::fs::remove_dir_all(d);
+    async fn a_page_goes_by_the_hint_and_the_refusal_by_the_adapter() {
+        let page = Some(json!({"variablesReference": 6, "start": 0, "count": 1000}));
+        let whole = Some(json!({"variablesReference": 6}));
+        // (label, trusted, indexed, expected `variables` arguments; None is a refusal on the row)
+        let cases: [(&str, bool, i64, Option<Value>); 12] = [
+            ("untrusted 5000", false, 5000, page.clone()),
+            ("untrusted 1000", false, 1000, whole.clone()),
+            ("untrusted 1001", false, 1001, page.clone()),
+            ("trusted 1000", true, 1000, whole.clone()),
+            ("trusted 1001", true, 1001, page.clone()),
+            ("untrusted 500", false, 500, whole.clone()),
+            ("no hint, trusted", true, 0, whole.clone()),
+            ("untrusted 100000", false, 100_000, page.clone()),
+            ("untrusted 100001", false, 100_001, None),
+            ("untrusted 200000", false, 200_000, None),
+            ("trusted 200000", true, 200_000, page.clone()),
+            ("trusted 2000000", true, 2_000_000, page.clone()),
+        ];
+        // `JETL_PAGING_ROW=<label>` runs one row alone, to see it fail on its own.
+        let only = std::env::var("JETL_PAGING_ROW").ok();
+        for (i, (label, trusted, indexed, want)) in cases.into_iter().enumerate() {
+            if only.is_some() && only.as_deref() != Some(label) {
+                continue;
+            }
+            let (mut app, dir, mut fake, sent) = paging_case(&format!("vars-page-{i}"), trusted, indexed, 0).await;
+            assert_eq!(sent_args(&sent), want, "{label}");
+            if want.is_none() {
+                let row = format!("  ▸ arr  could not read: too many elements ({indexed})");
+                assert_eq!(var_rows(&mut app).last().map(String::as_str), Some(row.as_str()), "{label}");
+                let before = texts(&app);
+                quiet_twice(&mut app, &mut fake, "q-refused.log").await;
+                assert!(texts(&app).iter().all(|t| !t.contains("too many")) && texts(&app).len() == before.len(), "{label}: no toast");
+            }
+            let _ = std::fs::remove_dir_all(dir);
+        }
+        // What the adapter says of itself no longer counts: no capability tells that it honours `start` and `count`.
+        if only.as_deref().is_none_or(|o| o == "claim") {
+            let mut c = caps();
+            c["supportsVariablePaging"] = json!(true);
+            let (mut app, dir, _fake, sent) = paging_case_with("vars-page-claim", c, false, 200_000, 0).await;
+            assert!(sent.is_none(), "the adapter's word");
+            assert_eq!(var_rows(&mut app).last().map(String::as_str), Some("  ▸ arr  could not read: too many elements (200000)"));
+            let _ = std::fs::remove_dir_all(dir);
         }
     }
 
@@ -5863,17 +5889,68 @@ pub(crate) mod tests {
     async fn named_children_count_with_the_indexed() {
         // 60 000 indexed and 60 000 named are 120 000 children: over the limit although neither is.
         let (mut app, dir, _fake, sent) = paging_case("vars-named-refuse", false, 60_000, 60_000).await;
-        assert_eq!(sent, None, "refused");
+        assert!(sent.is_none(), "refused");
         assert_eq!(var_rows(&mut app).last().map(String::as_str), Some("  ▸ arr  could not read: too many elements (120000)"));
         let _ = std::fs::remove_dir_all(dir);
         // Named alone (a pretty-printed map) is counted.
         let (mut app, dir, _fake, sent) = paging_case("vars-named-only", false, 0, 200_000).await;
-        assert_eq!(sent, None, "refused");
+        assert!(sent.is_none(), "refused");
         assert_eq!(var_rows(&mut app).last().map(String::as_str), Some("  ▸ arr  could not read: too many elements (200000)"));
         let _ = std::fs::remove_dir_all(dir);
-        // With paging, 600 indexed and 600 named are over one page.
-        let (_app, dir, _fake, sent) = paging_case("vars-named-page", true, 600, 600).await;
-        assert_eq!(sent, Some(json!({"variablesReference": 6, "start": 0, "count": 1000})));
+        // 600 indexed and 600 named are over one page.
+        let (_app, dir, _fake, sent) = paging_case("vars-named-page", false, 600, 600).await;
+        assert_eq!(sent_args(&sent), Some(json!({"variablesReference": 6, "start": 0, "count": 1000})));
+        let _ = std::fs::remove_dir_all(dir);
+        // A `std::map` of 200 000 elements counts 400 000 rows (a key and a value each): paged under gdb.
+        let (_app, dir, _fake, sent) = paging_case("vars-named-map", true, 0, 400_000).await;
+        assert_eq!(sent_args(&sent), Some(json!({"variablesReference": 6, "start": 0, "count": 1000})));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn leaves(n: usize) -> Value {
+        let rows: Vec<Value> = (0..n).map(|i| json!({"name": i.to_string(), "value": "0", "type": "int"})).collect();
+        json!({ "variables": rows })
+    }
+
+    #[tokio::test]
+    async fn a_page_is_counted_from_the_hint() {
+        let (mut app, dir, fake, sent) = paging_case("vars-page-count", false, 5000, 0).await;
+        assert_eq!(sent_args(&sent), Some(json!({"variablesReference": 6, "start": 0, "count": 1000})));
+        let req = sent.expect("asked");
+        fake.respond(&req, leaves(1000));
+        pump_until(&mut app, |a| a.debug_panel.var_count() == 2 + 1000).await;
+        let rows = var_rows(&mut app);
+        let arr = rows.iter().find(|r| r.contains("arr")).expect("arr row");
+        assert!(arr.contains("first 1000 of 5000 shown"), "{arr}");
+        assert!(rows.iter().any(|r| r.contains("0 = ")), "the first child is element 0");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn an_adapter_that_ignores_the_page_is_cut_to_one() {
+        let (mut app, dir, mut fake, sent) = paging_case("vars-page-ignored", false, 5000, 0).await;
+        assert_eq!(sent_args(&sent), Some(json!({"variablesReference": 6, "start": 0, "count": 1000})));
+        let req = sent.expect("asked");
+        fake.respond(&req, leaves(1500));
+        pump_until(&mut app, |a| a.debug_panel.var_count() > 2).await;
+        assert_eq!(app.debug_panel.var_count(), 2 + 1000, "the page is cut to 1000 rows");
+        let arr = var_rows(&mut app).into_iter().find(|r| r.contains("arr")).expect("arr row");
+        assert!(arr.contains("first 1000 of 5000 shown"), "{arr}");
+        assert_eq!(app.debug.phase(), Some(Phase::Suspended));
+        let before = texts(&app);
+        quiet_twice(&mut app, &mut fake, "q-ignored.log").await;
+        assert_eq!(texts(&app).len(), before.len(), "no toast");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn only_gdb_is_trusted_with_paging() {
+        let (app, dir, _fakes, _fake) = gdb_running("trust-gdb").await;
+        assert!(app.debug.session.as_ref().unwrap().trusted_paging, "gdb");
+        let _ = std::fs::remove_dir_all(dir);
+        let (mut app, dir, mut fakes) = setup("trust-fake", Order::LaunchEarly);
+        let _ = running(&mut app, &mut fakes).await;
+        assert!(!app.debug.session.as_ref().unwrap().trusted_paging, "an adapter not named gdb");
         let _ = std::fs::remove_dir_all(dir);
     }
 
