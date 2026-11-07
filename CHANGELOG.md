@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-07
+
 ### Added
 
 - Toolbar Debug button (◉, after Run): starts the selected configuration under its debug adapter, as Shift+F9 does, and is highlighted while a session is live. `[ui] toolbar_items` chooses and orders the toolbar's widgets (`project`, `branch`, `vcs`, `run`, `debug`, `search`, `settings`; Settings > Appearance > Toolbar items); the menu button and the run widget always show, and an unknown name is skipped with a warning.
@@ -810,7 +812,8 @@ First release.
   for Phase 11).
 - No 3-pane conflict resolver; conflicted files show as `U` and are resolved in the editor.
 
-[Unreleased]: https://bitbucket.org/BrilllianD/jetl-ide/branches/compare/HEAD..v0.8.0
+[Unreleased]: https://bitbucket.org/BrilllianD/jetl-ide/branches/compare/HEAD..v0.9.0
+[0.9.0]: https://bitbucket.org/BrilllianD/jetl-ide/src/v0.9.0/
 [0.8.0]: https://bitbucket.org/BrilllianD/jetl-ide/src/v0.8.0/
 [0.7.0]: https://bitbucket.org/BrilllianD/jetl-ide/src/v0.7.0/
 [0.6.0]: https://bitbucket.org/BrilllianD/jetl-ide/src/v0.6.0/
