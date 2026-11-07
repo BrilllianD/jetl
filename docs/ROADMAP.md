@@ -19,8 +19,9 @@ done (see Order).
   selection, code folding (per view, through `editor/rows.rs`) and soft wrap (`editor/wrap.rs`,
   segments in `Rows`). The three-pane conflict resolver (`editor/merge.rs`) lays its panes out
   in the same groups.
-- **Shell:** fixed layout with one left slot and one bottom slot. The side each tool window lives
-  on is hardcoded in `ToolWindowId::side()`. A new bottom tool window is just a new enum variant
+- **Shell:** tool windows dock in six places (Left Top, Left Bottom, Bottom Left, Bottom Right,
+  Right Top, Right Bottom), two to a side with a splitter, and move through the strip button's
+  Move to menu, View | Move Tool Window to … or a drag. A new tool window is a new enum variant
   and needs no layout rewrite. The palette has Files/Symbols/Actions/Everywhere/Recent/Branches/Recent Projects modes.
   Dialogs come in confirm, input and choice kinds; the Project tree has a right-click context
   menu. The session stores tabs (with their pins), carets, bookmarks, folds, the tool window layout and
@@ -180,6 +181,35 @@ All of section E shipped in Phase 9 except split editor panes, which shipped in 
 | Crash recovery of dirty buffers | S | Done: the panic hook writes the dirty buffers to `state/recovery/<pid>-<secs>/` (bounded `try_lock`, never blocks); the next session load of that root offers Restore all / Discard / Review…; restored text opens unsaved and undoable, no autosave until an explicit save; Save As (Alt+Shift+S) saves the untitled ones |
 | Palette filter off the main thread | S | Done: Files and Symbols of 10000 candidates and up rank in `spawn_blocking` under an app-wide cancel seq; the shown rows stay until the result, Enter ranks the typed query at once; a longer query narrows the previous result (`narrow_rows`) |
 
+### I. Stage E
+
+Ranked after 0.9.0 against JetBrains, Zed, Helix and VS Code; tracked as yman epic 452, one task per row in this order.
+
+| Rank | Feature | Effort | Builds on |
+|---|---|---|---|
+| 1 | Next/previous method (Alt+Up/Down) | S | tags query, breadcrumbs |
+| 2 | Disable a breakpoint without removing it, hit counts | S | conditions and log points, View Breakpoints |
+| 3 | Right margin and column rulers (`editor.rulers`) | S | indent guide paint |
+| 4 | LSP document highlight (read/write kinds) | S | `highlight_occurrences` |
+| 5 | Inline values while debugging | M | inlay hint virtual text, Variables |
+| 6 | Hot exit: unsaved buffers kept across quit | M | `recovery.rs`, session, Local History |
+| 7 | Custom folding regions, fold selection | S-M | `editor/fold.rs` |
+| 8 | Preserve case in replace | S | editor search, Replace in Files |
+| 9 | Bracket pair colours | S | tree-sitter brackets, theme keys |
+| 10 | New file from a template | S | snippet engine |
+| 11 | Spell checking through a language server | S-M | `[lsp]` |
+| 12 | Instruction stepping and disassembly | M | `ResumeKind`, DAP `disassemble` |
+| 13 | Keyboard macros | M | dispatcher, `Action` |
+| 14 | Shelve and unshelve changes | M | DiffDoc patches, `git apply` |
+| 15 | Find in Files results in an editor tab | M | Find panel, diff tabs |
+| 16 | Coverage gutter from lcov | M | gutter |
+| 17 | Increment / decrement the number at the caret | S | caret text transforms |
+| 18 | Pipe the selection through a shell command | S | `[format]` runner |
+| 19 | Search Everywhere tabs | S | `palette.search_everywhere` |
+| 20 | Mnemonic bookmarks and groups | S | `editor/bookmarks.rs` |
+
+Carried over from Stage D: other debug adapters (research first), vim mode, publishing release binaries.
+
 ## Order
 
 1. **Phase 6: editor ergonomics + grammars.** Done. This phase covers the small items in A and the
@@ -203,3 +233,4 @@ All of section E shipped in Phase 9 except split editor panes, which shipped in 
    wrap; it had the highest implementation risk, so it went last. The conflict resolver from
    Phase 8 followed split panes.
 7. **Ongoing:** themes, vim mode, local history, snapshot tests, CI, README.
+8. **Stage E:** section I, in rank order.
