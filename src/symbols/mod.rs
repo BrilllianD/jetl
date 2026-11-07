@@ -71,6 +71,42 @@ pub fn extract(def: &'static LanguageDef, tree: &Tree, rope: &Rope) -> Vec<Symbo
 /// A reference match before sorting: name range, pattern, kind, name.
 type RawRef = (Range<usize>, usize, &'static str, String);
 
+/// Rust calls inside macro arguments, `macro_rules!` bodies and
+/// `token_repetition`s, where the grammar gives only a flat `token_tree`: an
+/// `identifier` immediately followed by a `(`-delimited `token_tree` is a
+/// `call`, unless the token before it is `fn` or `struct` (a declaration).
+/// Attributes are skipped. This is not a query: the anchor `.` ignores
+/// anonymous nodes and a query cannot see the group's delimiter. Iterative,
+/// so deep nesting cannot overflow the stack. Rows get pattern `usize::MAX`,
+/// so a query row on the same range wins.
+fn rust_macro_calls(tree: &Tree, text: impl Fn(tree_sitter::Node) -> String, out: &mut Vec<RawRef>) {
+    let mut cur = tree.walk();
+    loop {
+        let node = cur.node();
+        if matches!(node.kind(), "token_tree" | "token_repetition") {
+            let kids: Vec<tree_sitter::Node> = node.children(&mut node.walk()).collect();
+            for (i, k) in kids.iter().enumerate() {
+                let call = k.kind() == "identifier"
+                    && kids.get(i + 1).is_some_and(|n| n.kind() == "token_tree" && n.child(0).is_some_and(|d| d.kind() == "("))
+                    && !(i > 0 && matches!(kids[i - 1].kind(), "fn" | "struct"));
+                let t = if call { text(*k) } else { String::new() };
+                if !t.is_empty() {
+                    out.push((k.byte_range(), usize::MAX, "call", t));
+                }
+            }
+        }
+        let skip = matches!(node.kind(), "attribute_item" | "inner_attribute_item");
+        if !skip && cur.goto_first_child() {
+            continue;
+        }
+        while !cur.goto_next_sibling() {
+            if !cur.goto_parent() {
+                return;
+            }
+        }
+    }
+}
+
 fn collect(def: &'static LanguageDef, tree: &Tree, rope: &Rope, want_refs: bool) -> (Vec<Symbol>, Vec<Reference>) {
     let Some(query) = def.tags_query() else { return Default::default() };
     let names = query.capture_names();
@@ -154,6 +190,9 @@ fn collect(def: &'static LanguageDef, tree: &Tree, rope: &Rope, want_refs: bool)
     }
     if !want_refs {
         return (symbols, Vec::new());
+    }
+    if def.name == "rust" {
+        rust_macro_calls(tree, text, &mut raw_refs);
     }
     // A definition's own name is no reference to it (an `impl` is a use of its type).
     raw_refs.retain(|r| !def_names.iter().any(|(range, kind)| *range == r.0 && *kind != "impl"));
@@ -519,6 +558,38 @@ mod tests {
         let def = crate::editor::syntax::detect(std::path::Path::new(file))?;
         let mut parser = tree_sitter::Parser::new();
         Some(extract_text(def, &mut parser, src).into_iter().map(|s| (s.name.to_string(), s.kind, s.depth)).collect())
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[test]
+    fn rust_trait_signatures_are_methods() {
+        let src = "pub trait Area {\n    fn area(&self) -> f64;\n    fn twice(&self) -> f64 { self.area() * 2.0 }\n}\nextern \"C\" { fn ext(); }\n";
+        let want: Vec<(String, &str, usize)> =
+            vec![("Area".into(), "trait", 0), ("area".into(), "method", 1), ("twice".into(), "method", 1)];
+        assert_eq!(names("a.rs", src).unwrap(), want);
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[test]
+    fn rust_macro_argument_calls() {
+        let src = "fn main() {\n    println!(\"{}\", c.area() + q.area());\n    assert_eq!(util::helper(x), [y]);\n    dbg!(x + (y), v[0]);\n}\nmacro_rules! m { () => { fn made() {} helper(1) } }\n#[cfg(all(test, unix))]\nfn t() {}\n";
+        let (syms, got) = refs("a.rs", src).unwrap();
+        let sk: Vec<(&str, &str)> = syms.iter().map(|s| (&*s.name, s.kind)).collect();
+        assert_eq!(sk, [("main", "function"), ("m", "macro"), ("t", "function")]);
+        assert_eq!(
+            got,
+            [
+                row("println", "call", 1, 4, Some(0)),
+                row("area", "call", 1, 21, Some(0)),
+                row("area", "call", 1, 32, Some(0)),
+                row("assert_eq", "call", 2, 4, Some(0)),
+                row("helper", "call", 2, 21, Some(0)),
+                row("dbg", "call", 3, 4, Some(0)),
+                row("helper", "call", 5, 38, Some(1))
+            ]
+        );
+        let def = crate::editor::syntax::detect(std::path::Path::new("a.rs")).unwrap();
+        assert_eq!(extract_text(def, &mut tree_sitter::Parser::new(), src), syms);
     }
 
     #[test]

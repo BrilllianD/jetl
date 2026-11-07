@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Rust path calls such as `util::helper()` and `App::new()` are now found without a language server: the textual rename (Shift+F6) starts them included, and Find Usages and the Call Hierarchy list them.
+- Rust calls inside macro arguments (`println!("{}", c.area())`) and trait method declarations without a body (`fn area(&self);`) are now found without a language server: the textual rename starts them included, Find Usages and the Call Hierarchy list the calls, and the Structure window shows the declarations. The symbol cache is rebuilt once after the update.
 
 ## [0.9.0] - 2026-11-07
 

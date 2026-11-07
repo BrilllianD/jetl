@@ -27,7 +27,8 @@ use crate::workspace::fnv1a64;
 /// Bump when extraction output changes without a query text change
 /// (`collect`, `kind_label`, `clean_name`, `imports::extract`, `localize_go`).
 /// A query text or tree-sitter package version change needs no bump.
-pub const FORMAT: u32 = 1;
+/// 2: Rust calls inside macro arguments (yman 446).
+pub const FORMAT: u32 = 2;
 
 #[derive(Serialize, Deserialize)]
 struct CacheFile {
@@ -288,7 +289,10 @@ mod tests {
         edit(&f, |v| v["queries"] = "0000000000000000".into());
         assert!(load(&f, &root).is_empty());
         write();
-        edit(&f, |v| v["format"] = 2.into());
+        edit(&f, |v| v["format"] = (FORMAT - 1).into());
+        assert!(load(&f, &root).is_empty());
+        write();
+        edit(&f, |v| v["format"] = (FORMAT + 1).into());
         assert!(load(&f, &root).is_empty());
         std::fs::write(&f, "not json").unwrap();
         assert!(load(&f, &root).is_empty());

@@ -2246,13 +2246,40 @@ x4, `Home`, `Right` x10: the caret is inside `helper` of line 5.
     `-l size`, `Enter`: Find lists exactly two exact rows, `src/main.rs` line 9
     (`c.grow()`) and `src/shapes.rs` line 13; `Escape`. Back on line 2 (x5),
     `S-F6`, `C-a`, `-l size`, `Enter` opens the textual Find. As observed:
-    `7 matches in 2 files; 2 excluded`. Included: `main.rs` line 4 (`s.area()`,
-    the `dyn` call) and `shapes.rs` lines 2, 3, 8 and 11 (the declaration,
-    `self.area()` and both impl definitions). Excluded: `main.rs` line 10, both
-    `c.area()` and `q.area()`: they sit inside `println!`, whose arguments jetl's
-    tree-sitter symbol index does not read (yman 446). This split is not a pass condition;
-    the list is for review. `Escape`,
+    `7 matches in 2 files`, every row included: `main.rs` lines 4 and 10 (both
+    `c.area()` and `q.area()` inside `println!`, yman 446) and `shapes.rs` lines 2, 3, 8 and 11.
+    This split is not a pass condition; the list is for review. `Escape`,
     `C-q`, exit 0 and empty stderr.
+
+### Scenario: Rust symbol index rows
+
+Rust trait method declarations and calls inside macro arguments reach the
+symbol index (yman 446). At 80x24 and at 120x40, language servers off
+(`[lsp] enabled = false`), config, state, cache and `TMPDIR` under `/tmp`, a
+private tmux socket. Project: `src/shapes.rs` is `pub trait Area { fn
+area(&self) -> f64; }`, `pub struct C;` and `impl Area for C { fn area(&self)
+-> f64 { 1.0 } }`; `src/main.rs` is `mod shapes;`, `use shapes::{Area, C};`,
+`fn main() {`, `let c = C;`, `let a = c.area();`, `println!("{}", c.area());`,
+`let b = c.area();`, `}`; `git init`.
+
+1. Rows. Start jetl on the project, `C-n`, `-l main.rs`, `Enter`, wait 6 s
+   (the index is built off the main thread). Caret on `main.rs` line 5 (`Down`
+   x4, `Home`, `Right` x11), `S-F6`, `C-a`, `-l assist`, `Enter`: Find lists
+   `5 matches in 2 files` with no `excluded` part, every row included:
+   `main.rs` lines 5, 6 (the call inside `println!`) and 7, `shapes.rs` lines 1
+   (the trait declaration) and 3. `Escape`, `C-q`, exit 0 and empty stderr.
+2. Old cache rebuilds once. Keep a binary built before the format change
+   (`cp target/debug/jetl /tmp/jetl-format1`), then build the new one. Session
+   1: the old binary on the project, open `main.rs` as in step 1, wait 6 s,
+   `C-q`. In the cache file (`find $XDG_CACHE_HOME -path '*index/*.json'`)
+   `jq .format` prints `1`. Session 2: the new binary with
+   `RUST_LOG=jetl=debug`, same steps: `jetl.log` has one `symbol cache: format
+   1 differs` line; `jq .format` prints `2`; `jq '[.files["src/main.rs"].refs[]
+   | select(.name == "area") | .line]'` prints `[4, 5, 6]`, and the symbols of
+   `src/shapes.rs` hold `area` with kind `method` at line 0. Session 3: the
+   new binary again: no `symbol cache: format` and no `symbol cache: queries
+   differ` line in the new part of the log. Every session exits 0 with empty
+   stderr.
 
 ### Scenario: local history
 
