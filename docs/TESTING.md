@@ -1164,7 +1164,7 @@ the FIFO. A blocked read holds a blocking thread: always feed the FIFO before qu
    FIFO: no `helper.c` tab, the log has `dropping the late read of`. Ctrl+Q: exit 0, empty stderr.
 
 gdb can show: a read overtaken by a later stop and by Stop, and a current read. Only the unit tests show: the frame and
-thread choices, the out-of-order landing and the user's pending Go To.
+thread choices, the out-of-order landing, the user's pending Go To and where the focus goes.
 
 ### Scenario: Debug window and Console
 

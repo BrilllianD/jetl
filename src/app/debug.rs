@@ -896,6 +896,7 @@ impl App {
         if let Some(live) = self.debug.session.as_mut() {
             live.epoch = epoch;
         }
+        self.debug.view = None;
         self.debug_panel.set_reason(None);
         self.editor.set_execution_point(None);
         self.debug_panel.clear_stack();
@@ -4833,7 +4834,31 @@ pub(crate) mod tests {
         assert_eq!(app.editor.active_path(), Some(b.as_path()));
         assert_eq!(caret(&app), 1, "the stop's line, not the user's");
         assert_eq!(app.pending_goto, Some((b.clone(), GotoTarget::Char { line: 3, col: 0 })), "still the user's");
-        drop(user);
+        let tabs = app.editor.tab_names();
+        app.handle_msg(user);
+        assert_eq!(app.editor.tab_names(), tabs, "the same tab");
+        assert_eq!(caret(&app), 3, "the user's line");
+        assert_eq!(app.pending_goto, None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_read_landing_between_the_next_stops_two_messages_is_dropped() {
+        let (mut app, dir, mut fakes) = setup("late-next-stop", Order::LaunchEarly);
+        let a = six(&mut app);
+        let b = app.workspace.root.join("b.log");
+        std::fs::write(&b, "b0\nb1\nb2\nb3\n").unwrap();
+        let (mut fake, _) = running(&mut app, &mut fakes).await;
+        stop(&mut app, &mut fake, 7, frame(&b, 2)).await;
+        let held = held_read(&mut app).await;
+        let epoch = epoch_of(&app) + 1;
+        inject(&mut app, DapBody::Phase(Phase::Running));
+        inject(&mut app, DapBody::Running { epoch });
+        // `Phase` and `Stopped` are two sends, so the read finds the program paused and its stop not yet told.
+        inject(&mut app, DapBody::Phase(Phase::Suspended));
+        app.handle_msg(held);
+        assert_eq!(app.editor.active_path(), Some(a.as_path()));
+        assert_eq!(app.editor.index_of(&b), None);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
