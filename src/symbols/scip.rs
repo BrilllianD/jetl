@@ -446,8 +446,9 @@ impl ScipIndex {
     /// relationships. None (the rename is left to the text path) when a linked symbol has no definition in the index
     /// (an implementation of a `std` trait), or when the index states no relationship at all and `id` is
     /// [`polymorphic`](Self::polymorphic): an indexer that says nothing cannot vouch that a trait member has no
-    /// implementation. A missing definition of `id` itself is left to the rename build's fallback only when `id` links
-    /// nothing: in a larger set a related definition would stand in for it, so `id` must be defined too.
+    /// implementation. In a larger set `id` must be defined too, so the dialog says "as text" at once; a missing
+    /// definition of a lone `id`, and one in a file the rename build does not trust, are left to that build's
+    /// fallback, which counts only `id`'s own definitions.
     pub fn rename_set(&self, id: SymId) -> Option<Vec<SymId>> {
         if self.is_local(id) {
             return Some(vec![id]);

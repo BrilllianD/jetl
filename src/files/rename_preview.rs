@@ -30,9 +30,9 @@
 //! matches are offered as excluded text rows (T2, T3). A span that is clean
 //! but reads other text (an alias, `Self`) is only dropped and counted. A
 //! document behind a symlink, whose real path is not under the root as
-//! written, gets no rows at all (T4). When no definition or not the caret's
-//! own span survives, the rename is not exact and `ScipOutcome::fallback` sends
-//! it to the textual rename (T7).
+//! written, gets no rows at all (T4). When no definition of the caret's symbol or
+//! not the caret's own span survives, the rename is not exact and
+//! `ScipOutcome::fallback` sends it to the textual rename (T7).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -156,7 +156,8 @@ pub struct RenameRequest {
 pub struct ScipFile {
     pub rel: String,
     pub encoding: Encoding,
-    /// `(span, is definition)`.
+    /// `(span, defines the caret's symbol)`: a definition of another symbol of the rename set is `false`, so it never
+    /// stands in for the caret symbol's own.
     pub occs: Vec<(Span, bool)>,
 }
 
@@ -182,7 +183,7 @@ pub struct ScipOutcome {
     pub stale_files: usize,
     /// Documents behind a symlink: no rows.
     pub outside_files: usize,
-    /// No usable definition, or the caret's span lost: rename as text instead. The preview is empty.
+    /// No usable definition of the caret's symbol, or the caret's span lost: rename as text instead. The preview is empty.
     pub fallback: bool,
 }
 

@@ -48,7 +48,7 @@
 //! by relationships are renamed with it; a trait member in an index that states
 //! no relationships (rust-analyzer's) is renamed as text. Files the index does
 //! not cover or cannot vouch for show text matches, excluded. This preview is always
-//! shown, whatever `rename_preview` says. When no definition or not the
+//! shown, whatever `rename_preview` says. When no definition of the caret's symbol or not the
 //! caret's own span survives, the build says so (`ScipOutcome::fallback`) and
 //! the textual rename above opens instead.
 //!
@@ -361,6 +361,8 @@ impl App {
 
     /// The snapshot of the index a SCIP rename of `old` to `new` needs, taken on the main thread: the occurrences of
     /// the symbol and of every symbol in its rename set, by document and, for a global symbol, the names of every document of the index.
+    /// An occurrence counts as a definition only when it defines the caret's symbol, so a related definition never
+    /// stands in for it (`build_scip` falls back without one).
     fn scip_rename_job(&mut self, id: BufferId, old: &str, new: &str) -> Option<ScipRename> {
         let (rel, sym, set, span) = self.scip_rename_symbol(id, old)?;
         let ix = self.scip.index.as_ref()?;
@@ -371,7 +373,7 @@ impl App {
             if docs.last().is_none_or(|d| d.rel != r) {
                 docs.push(ScipFile { rel: r.to_string(), encoding: ix.doc(r)?.encoding, occs: Vec::new() });
             }
-            docs.last_mut()?.occs.push((occ.span, occ.definition));
+            docs.last_mut()?.occs.push((occ.span, occ.definition && occ.symbol == sym));
         }
         let root = self.workspace.root.clone();
         let (textual, indexed) = if ix.is_local(sym) {

@@ -2069,6 +2069,94 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    const SPLIT_AREA: &str = "pub trait Area { fn area(&self) -> f64; }\n";
+    const SPLIT_MAIN: &str = "use area::Area;\nstruct C;\nimpl Area for C { fn area(&self) -> f64 { 1.0 } }\nfn f(s: &dyn Area) -> f64 { s.area() + C.area() }\n";
+
+    /// Two files: `src/area.rs` declares the trait method, `src/main.rs` (open, fresh) implements it and calls it
+    /// through `dyn` and on the type; the index links the impl to the trait method; `stale_trait` makes
+    /// `src/area.rs` newer than the index.
+    async fn scip_split_app(name: &str, stale_trait: bool) -> (App, PathBuf, PathBuf) {
+        use ::scip::types::symbol_information::Kind as K;
+        let (mut app, dir) = test_app(name);
+        let (root, g) = (app.workspace.root.clone(), app.workspace.generation);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/area.rs"), SPLIT_AREA).unwrap();
+        std::fs::write(root.join("src/main.rs"), SPLIT_MAIN).unwrap();
+        app.handle_msg(AppMsg::FileIndex { generation: g, seq: 1, files: vec!["src/area.rs".into(), "src/main.rs".into()] });
+        run_tags_job(&mut app);
+        let (area, impl_area) = (shapes_sym("Area#area()."), shapes_sym("impl#[C][Area]area()."));
+        let lines: Vec<&str> = SPLIT_MAIN.lines().collect();
+        assert_eq!(&SPLIT_AREA[20..24], "area");
+        assert_eq!(&lines[2][21..25], "area");
+        assert_eq!(&lines[3][30..34], "area");
+        assert_eq!(&lines[3][41..45], "area");
+        let area_occs: &[(&[i32], &str, bool)] = &[(&[0, 20, 24], &area, true)];
+        let main_occs: &[(&[i32], &str, bool)] =
+            &[(&[2, 21, 25], &impl_area, true), (&[3, 30, 34], &area, false), (&[3, 41, 45], &impl_area, false)];
+        let syms: crate::symbols::scip::TestSyms =
+            &[("src/area.rs", &area, K::TraitMethod, &[]), ("src/main.rs", &impl_area, K::Method, &[(&area, true, false)])];
+        let index = root.join("index.scip");
+        crate::symbols::scip::write_test_index_with(
+            &index,
+            "",
+            &[("src/area.rs", scip::Encoding::Utf8, area_occs), ("src/main.rs", scip::Encoding::Utf8, main_occs)],
+            syms,
+        );
+        let now = std::time::SystemTime::now();
+        let ago = |s| now - std::time::Duration::from_secs(s);
+        set_mtime(&index, ago(50));
+        set_mtime(&root.join("src/main.rs"), ago(100));
+        set_mtime(&root.join("src/area.rs"), if stale_trait { now } else { ago(100) });
+        let mut c = app.config.clone();
+        c.index.scip = "index.scip".into();
+        app.apply_config(c);
+        handle_next(&mut app, |m| matches!(m, AppMsg::Scip { .. })).await;
+        assert!(app.scip.index.is_some(), "{:?}", toasts(&app));
+        crate::app::tests::load(&mut app, "src/main.rs", SPLIT_MAIN);
+        set_mtime(&root.join("src/main.rs"), ago(100));
+        (app, dir, root)
+    }
+
+    #[tokio::test]
+    async fn a_stale_definition_of_the_caret_symbol_falls_back_to_text() {
+        let fallback = "The SCIP index has no usable definition of area; renaming as text";
+        // The caret symbol's own definition is in the stale file; the impl's definition is fresh.
+        let (mut app, dir, _) = scip_split_app("scip-rename-split-stale", true).await;
+        goto(&mut app, 3, 31);
+        act(&mut app, LspAction::Rename);
+        assert_eq!(app.dialog.as_ref().unwrap().message, "Rename 'area' to:");
+        app.toasts = Default::default();
+        rename(&mut app, "size").await;
+        assert!(toasts(&app).contains(&fallback.to_string()), "{:?}", toasts(&app));
+        assert!(app.find.rename_preview().is_none());
+        assert_eq!((app.find.query.text.as_str(), app.find.replace.text.as_str()), ("area", "size"));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // A related definition in the stale file does not matter when the caret symbol's own is trusted.
+        let (mut app, dir, _) = scip_split_app("scip-rename-split-impl", true).await;
+        goto(&mut app, 3, 42);
+        act(&mut app, LspAction::Rename);
+        assert_eq!(app.dialog.as_ref().unwrap().message, "Rename 'area' to:");
+        app.toasts = Default::default();
+        rename(&mut app, "size").await;
+        assert!(!toasts(&app).iter().any(|t| t.contains("renaming as text")), "{:?}", toasts(&app));
+        assert!(app.find.rename_preview().is_some());
+        let main = "main.rs".to_string();
+        assert_eq!(included(&app), [(main.clone(), 2, 21), (main.clone(), 3, 30), (main, 3, 41)]);
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // Nothing stale.
+        let (mut app, dir, _) = scip_split_app("scip-rename-split-fresh", false).await;
+        goto(&mut app, 3, 31);
+        act(&mut app, LspAction::Rename);
+        app.toasts = Default::default();
+        rename(&mut app, "size").await;
+        assert!(!toasts(&app).iter().any(|t| t.contains("renaming as text")), "{:?}", toasts(&app));
+        let (area, main) = ("area.rs".to_string(), "main.rs".to_string());
+        assert_eq!(included(&app), [(area, 0, 20), (main.clone(), 2, 21), (main.clone(), 3, 30), (main, 3, 41)]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[tokio::test]
     async fn symbols_sharing_a_span_are_renamed_as_text() {
         // `S { s }` at the use of `s` on line 2: the local and the field `S#s.` carry the same span.
