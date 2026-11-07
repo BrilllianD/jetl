@@ -198,12 +198,96 @@ pub fn restore() {
     let _ = disable_raw_mode();
 }
 
-/// Chain a panic hook that restores the terminal first, then writes the
-/// unsaved buffers (`recovery::dump_on_panic`), then logs and runs the
-/// default hook, and last tells the user where the buffers went.
+/// Which thread a panic ran on, relative to the one that installed the hook.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PanicRoute {
+    Main,
+    Worker,
+}
+
+/// `Main` when `current` is the thread that installed the hook.
+pub fn route(main: std::thread::ThreadId, current: std::thread::ThreadId) -> PanicRoute {
+    if main == current { PanicRoute::Main } else { PanicRoute::Worker }
+}
+
+/// A panic caught on a thread other than the main one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkerPanic {
+    pub thread: String,
+    pub message: String,
+}
+
+/// The text of a panic payload: a `&str` or `String`, else `Box<dyn Any>`.
+pub fn payload_text(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "Box<dyn Any>".to_string()
+    }
+}
+
+/// Most worker panics kept for the next tick; further ones are only logged.
+pub const MAX_QUEUED_PANICS: usize = 16;
+
+/// Worker panics waiting for the UI thread to show them.
+pub struct PanicQueue(std::sync::Mutex<Vec<WorkerPanic>>);
+
+impl PanicQueue {
+    pub const fn new() -> Self {
+        Self(std::sync::Mutex::new(Vec::new()))
+    }
+
+    /// Queue `p`; beyond [`MAX_QUEUED_PANICS`] it is dropped (it is already logged).
+    pub fn push(&self, p: WorkerPanic) {
+        let mut q = self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if q.len() < MAX_QUEUED_PANICS {
+            q.push(p);
+        }
+    }
+
+    pub fn take(&self) -> Vec<WorkerPanic> {
+        std::mem::take(&mut *self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner))
+    }
+}
+
+impl Default for PanicQueue {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+static WORKER_PANICS: PanicQueue = PanicQueue::new();
+
+/// Worker panics queued since the last call; `App::on_tick` shows them.
+pub fn take_worker_panics() -> Vec<WorkerPanic> {
+    WORKER_PANICS.take()
+}
+
+/// Chain a panic hook, keyed on the thread that installs it (the main
+/// thread, which runs the UI loop). A panic there restores the terminal
+/// first, then writes the unsaved buffers (`recovery::dump_on_panic`), then
+/// logs and runs the default hook, and last tells the user where the buffers
+/// went. A panic on any other thread is caught by its runtime while jetl
+/// keeps running: the hook only logs it and queues a notice for
+/// [`take_worker_panics`], so the terminal, the buffers and stderr stay
+/// untouched.
 pub fn install_panic_hook() {
+    let main = std::thread::current().id();
     let default = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
+        let current = std::thread::current();
+        if route(main, current.id()) == PanicRoute::Worker {
+            let thread = current.name().unwrap_or("<unnamed>").to_string();
+            tracing::error!("panic on thread {thread}: {info}");
+            let mut message = payload_text(info.payload());
+            if let Some(l) = info.location() {
+                message.push_str(&format!(" ({}:{})", l.file(), l.line()));
+            }
+            WORKER_PANICS.push(WorkerPanic { thread, message });
+            return;
+        }
         restore();
         // After the terminal is back, so a failure here cannot leave it raw.
         let saved = crate::recovery::dump_on_panic();
@@ -232,6 +316,54 @@ mod tests {
     use ratatui::style::Style;
 
     use super::*;
+
+    #[test]
+    fn route_is_main_only_on_the_installing_thread() {
+        let main = std::thread::current().id();
+        assert_eq!(route(main, main), PanicRoute::Main);
+        let other = std::thread::spawn(|| std::thread::current().id()).join().unwrap();
+        assert_eq!(route(main, other), PanicRoute::Worker);
+    }
+
+    #[test]
+    fn a_tokio_task_runs_and_panics_off_the_main_thread() {
+        let main = std::thread::current().id();
+        let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(1).build().unwrap();
+        rt.block_on(async {
+            let (route_of_task, name) = tokio::spawn(async move {
+                let t = std::thread::current();
+                (route(main, t.id()), t.name().map(str::to_owned))
+            })
+            .await
+            .unwrap();
+            assert_eq!(route_of_task, PanicRoute::Worker);
+            assert_eq!(name.as_deref(), Some("tokio-rt-worker"));
+
+            // Tokio catches the panic; a quiet hook keeps the test output clean.
+            let prev = std::panic::take_hook();
+            std::panic::set_hook(Box::new(|_| {}));
+            let a = tokio::spawn(async { panic!("boom") }).await;
+            let b = tokio::spawn(async { panic!("{}", 7) }).await;
+            let c = tokio::spawn(async { std::panic::panic_any(5u8) }).await;
+            std::panic::set_hook(prev);
+            let text = |r: Result<(), tokio::task::JoinError>| payload_text(&*r.unwrap_err().into_panic());
+            assert_eq!(text(a), "boom");
+            assert_eq!(text(b), "7");
+            assert_eq!(text(c), "Box<dyn Any>");
+        });
+    }
+
+    #[test]
+    fn panic_queue_caps_and_drains() {
+        let q = PanicQueue::new();
+        for i in 0..20 {
+            q.push(WorkerPanic { thread: "t".into(), message: i.to_string() });
+        }
+        let got: Vec<String> = q.take().into_iter().map(|p| p.message).collect();
+        let want: Vec<String> = (0..MAX_QUEUED_PANICS).map(|i| i.to_string()).collect();
+        assert_eq!(got, want);
+        assert!(q.take().is_empty());
+    }
 
     const EMOJI: &str = "\u{274C}\u{FE0F}";
 

@@ -11,9 +11,9 @@ and backlog are in `docs/ROADMAP.md`; settings in `docs/CONFIG.md`; keys in
 
 | Path | Role |
 |---|---|
-| `main.rs` | Argument parsing (`PATH[:LINE[:COL]]`: a file is rooted at its git work tree, else its directory, and handed to `App::new` as the file to open; with no argument outside a git repository the Recent Projects palette opens once the list loads), logging (`~/.local/state/jetl/jetl.log`, `RUST_LOG=jetl=debug`), `tui::init`, `App::new`, `app.arm_recovery()` (hands the crash recovery snapshot to the panic hook), `app.prune_recovery_dumps()` (removes dumps older than 30 days of other roots, in `spawn_blocking`), `app.start_recent_projects()` (records the root in the recent projects file, and every root switch's from then on), `App::run`, then on an error (a failed draw, which skips the quit prompt) `App::finish_after_error` (`App::dump_after_error`, the same dump the panic hook writes, into this process's recovery directory, then `App::shutdown`), `tui::restore`, and the hook's stderr note (`recovery::print_dump_note`). `--dump-keymap` prints `docs/KEYMAP.md`. `--doctor` prints `doctor::probe`'s table and exits. |
+| `main.rs` | Argument parsing (`PATH[:LINE[:COL]]`: a file is rooted at its git work tree, else its directory, and handed to `App::new` as the file to open; with no argument outside a git repository the Recent Projects palette opens once the list loads), logging (`~/.local/state/jetl/jetl.log`, `RUST_LOG=jetl=debug`), `tui::init`, `App::new`, `app.arm_recovery()` (hands the crash recovery snapshot to the panic hook), `app.prune_recovery_dumps()` (removes dumps older than 30 days of other roots, in `spawn_blocking`), `app.start_recent_projects()` (records the root in the recent projects file, and every root switch's from then on), `App::run`, then on an error (a failed draw, which skips the quit prompt) `App::finish_after_error` (`App::dump_after_error`, the same dump the panic hook writes, into this process's recovery directory, then `App::shutdown`), `tui::restore`, and the hook's stderr note (`recovery::print_dump_note`). `--dump-keymap` prints `docs/KEYMAP.md`. `--doctor` prints `doctor::probe`'s table and exits. In debug builds `JETL_DEBUG_WORKER_PANIC=<n>` spawns `n` panicking tokio tasks after `app.load_layouts()`, to exercise the worker-panic path. |
 | `doctor.rs` | Dependency probe for `jetl --doctor` and the Settings Dependencies page: LSP servers, debug adapters, formatters, clipboard tools, compiled grammars, terminal capabilities, git and yman. `Find` and `resolve` are shared with `dap::config`, so the doctor and the choice of an adapter agree. Pure over injected env and PATH lookups; terminal capabilities come in as `TermCaps` (queried by the CLI, read from `tui` in the app). |
-| `tui.rs` | Owns terminal modes. Restore order is fixed (keyboard flags, mouse, paste, focus, alt screen, raw mode, cursor); the panic hook restores first, then writes the unsaved buffers (`recovery::dump_on_panic`), then logs and runs the default hook, and last prints where the buffers went on stderr. Draws through `JetlBackend`, a `CrosstermBackend` that writes a cell covered by a wide symbol before that symbol. |
+| `tui.rs` | Owns terminal modes. Restore order is fixed (keyboard flags, mouse, paste, focus, alt screen, raw mode, cursor); the panic hook (keyed on the thread that installs it, the main thread that runs the UI loop) has two routes: a main-thread panic restores first, then writes the unsaved buffers (`recovery::dump_on_panic`), then logs and runs the default hook, and last prints where the buffers went on stderr; a panic on any other thread only logs `panic on thread <name>: ...` and queues a `WorkerPanic` for `take_worker_panics` (see Panic path). Draws through `JetlBackend`, a `CrosstermBackend` that writes a cell covered by a wide symbol before that symbol. |
 | `app/mod.rs` | `App` (all panels and services), `App::new`, the `run` loop, `shutdown` (what leaving jetl does without drawing, after a quit or a run loop error), `handle_key`, `perform`, `Ctx` and the `ctx!` macro, tests (`test_app`). |
 | `app/msg.rs` | `handle_msg` for every `AppMsg`, git results (`on_git_msg`, `git_op_done`: follow-ups such as the push remote choice, forcing an unmerged branch delete, conflict hints for merge, rebase, cherry-pick, revert and stash pop/apply, naming Git > Continue Operation / Abort Operation), `git_root_changed`, file open and decode (`open_file_at` with a char column, `open_file_at_utf16` with an LSP position converted against the text once it is loaded; `Effect::OpenFileAt`/`OpenFileAtUtf16`). |
 | `app/effects.rs` | `apply_effects`, `refresh_tree`, `git_request` (refuses `GitRequest::refused_mid_operation` requests while an operation is in progress). |
@@ -504,8 +504,11 @@ its busy id before the generation check, so the spinner never sticks.
   forked is out of reach of all of this, on an ordinary Stop too.
 - Lists keep their wheel scroll: `ListState::set_viewport` and `fit` bound
   the offset without pulling the view back to the selection.
-- Panic path (`tui::install_panic_hook`, `recovery.rs`): the terminal is
-  restored first, then the dump is written; the hook never blocks (a
+- Panic path (`tui::install_panic_hook`, `recovery.rs`): only a panic on
+  the thread that installed the hook (the main thread, which runs `App::run`;
+  the call must stay there) restores the terminal first and then writes the
+  dump. A panic on any other thread leaves both alone (see the pitfall on
+  background threads). The hook never blocks (a
   bounded `try_lock` on the snapshot, files written after the lock is
   released, no `unwrap`, no fsync). Each process writes only into its own
   `recovery/<pid>-<secs>/`, a clean exit removes it, and a directory whose
@@ -790,9 +793,20 @@ under `prune.lock` (`drop_lines` / `write_index`).
   (`KeyCombo::legacy_input`) unless `App::keyboard_enhanced`, so a
   `ctrl-7` binding needs the kitty protocol.
 - In raw mode Ctrl+C is copy and Ctrl+Z is undo.
-- A panic in a background thread (a `spawn_blocking` task) runs the panic
-  hook too: the terminal is restored and a recovery dump written while the
-  app keeps running. A clean exit removes that dump.
+- A panic in a background thread (a tokio task, a `spawn_blocking` task,
+  `jetl-history`, a terminal pump) leaves jetl running (tokio catches a task's
+  panic; a plain thread just ends), so the hook does not restore the terminal, write a dump or call
+  the default hook (its text would land on the screen). It logs
+  `panic on thread <name>: <info>` and pushes a `WorkerPanic` into a bounded
+  queue (16); `App::on_tick` drains it through `tui::take_worker_panics` into
+  one Error toast per thread name per run, and later panics only reach the
+  Event Log. The work of that task is lost; a panicked DAP driver still ends
+  its session through `Driver`'s drop. The hook tells the main thread by its
+  `ThreadId` taken in `install_panic_hook`, so that call and `App::run` stay
+  on the same thread (like `spawn_tied_to_thread`). Tokio's default worker
+  thread name is `tokio-rt-worker`. Debug builds read
+  `JETL_DEBUG_WORKER_PANIC=<n>` (1-9) in `main.rs` and panic that many tokio
+  tasks, 0.5 s apart.
 - Take every color from `Theme`; a hard-coded `Color::Rgb` skips themes and
   the 256-color fallback.
 - `Event::Resize` sets `needs_clear`; the next frame clears the terminal.

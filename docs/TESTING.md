@@ -729,6 +729,38 @@ Then repeat the crash with two modified files (type in notes.txt, Ctrl+N
   (`mkdir -p /tmp/jt-other; echo x > /tmp/jt-other/x.txt`, run it on
   `/tmp/jt-other/x.txt`): no dialog, and the `$T` dump is still there.
 
+### Scenario: worker panic
+
+At 80x24 and at 120x40, debug build only (`JETL_DEBUG_WORKER_PANIC=<n>`
+spawns `n` tokio tasks that panic after 0.5 s, 1 s, ...). A panic off the
+main thread must leave the terminal alone: no dump, nothing on stderr, one
+Error toast per thread name. The scratch repo, the private socket and the
+XDG directories live under `/tmp`:
+
+```sh
+cargo build --no-default-features --features lang-rust
+R=/tmp/jt-wp; rm -rf $R; mkdir -p $R/cfg/jetl $R/repo
+printf '[lsp]\nenabled = false\n' > $R/cfg/jetl/config.toml
+(cd $R/repo && git init -q && echo 'fn main() {}' > a.rs && git add . && git commit -qm i)
+/tmp/tm.sh kill-server
+/tmp/tm.sh new-session -d -s jetl -x 80 -y 24 "cd $R/repo; XDG_CONFIG_HOME=$R/cfg XDG_STATE_HOME=$R/state XDG_CACHE_HOME=$R/cache JETL_DEBUG_WORKER_PANIC=2 $PWD/target/debug/jetl a.rs 2>$R/stderr.txt; echo EXIT=\$? > $R/exit.txt; sleep 30"
+sleep 0.25; /tmp/tm.sh send-keys -t jetl x y z    # an unsaved buffer, so a dump would show
+sleep 3.3; /tmp/tm.sh capture-pane -t jetl -p     # jetl's frame, one Error toast "Background thread tokio-rt-worker panicked: debug worker panic 0 (src/main.rs:<line>). jetl keeps running; see jetl.log"
+ls $R/state/jetl/recovery                         # no such directory: no dump
+/tmp/tm.sh send-keys -t jetl a b c; sleep 0.5     # typing lands in the editor: raw mode kept
+/tmp/tm.sh capture-pane -t jetl -p
+/tmp/tm.sh send-keys -t jetl M-5; sleep 0.7       # Event Log: two "Background thread tokio-rt-worker panicked" rows
+/tmp/tm.sh capture-pane -t jetl -p
+grep -a 'panic on thread' $R/state/jetl/jetl.log  # two "panic on thread tokio-rt-worker:" lines
+/tmp/tm.sh send-keys -t jetl C-q; sleep 0.7; /tmp/tm.sh send-keys -t jetl Enter; sleep 2   # discard the unsaved text
+cat $R/exit.txt; wc -c $R/stderr.txt              # EXIT=0, 0 bytes
+/tmp/tm.sh kill-server
+```
+
+The main-thread control is `### Scenario: crash recovery` above: it must
+still end with `EXIT=101`, the panic text and the dump note on stderr, and
+the dump.
+
 ### Scenario: themes and 256 colors
 
 At 80x24 and at 120x40, on the scratch project `$T` above. jetl reads

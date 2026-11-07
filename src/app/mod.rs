@@ -188,6 +188,8 @@ pub struct App {
     pub notifications: Vec<Notification>,
     /// Whether the status bar showed a notification at the last tick.
     notification_shown: bool,
+    /// Thread names whose worker panic already raised a toast this run.
+    worker_panics_seen: std::collections::HashSet<String>,
     pub toasts: crate::ui::toasts::Toasts,
     pub dialog: Option<Dialog>,
     /// Command palette overlay; captures input like a dialog.
@@ -396,6 +398,7 @@ impl App {
             last_click: None,
             notifications: Vec::new(),
             notification_shown: false,
+            worker_panics_seen: Default::default(),
             toasts: Default::default(),
             dialog: None,
             palette: None,
@@ -505,6 +508,24 @@ impl App {
         let text = text.into();
         self.toasts.push(level, &text);
         self.record(level, text, false);
+    }
+
+    /// Show panics caught on background threads: the first per thread name
+    /// raises a toast, later ones only reach the Event Log.
+    pub(crate) fn worker_panics(&mut self, panics: Vec<crate::tui::WorkerPanic>) {
+        use crate::run::process::clean;
+        for p in panics {
+            let thread = clean(p.thread.as_bytes());
+            let first_line = p.message.lines().next().unwrap_or("");
+            let message: String = clean(first_line.as_bytes()).chars().take(200).collect();
+            let text = format!("Background thread {thread} panicked: {message}. jetl keeps running; see jetl.log");
+            if self.worker_panics_seen.insert(p.thread) {
+                self.notify(Level::Error, text);
+            } else {
+                self.log_only(Level::Error, text);
+            }
+        }
+        self.dirty_frame = true;
     }
 
     /// Record `text` in the Event Log (and the tracing log) without a toast
@@ -686,6 +707,10 @@ impl App {
     }
 
     fn on_tick(&mut self) {
+        let panics = crate::tui::take_worker_panics();
+        if !panics.is_empty() {
+            self.worker_panics(panics);
+        }
         // Redraw once when the status bar notification expires.
         let shown = self.current_notification().is_some();
         if shown != self.notification_shown {
@@ -4935,6 +4960,44 @@ pub(crate) mod tests {
         assert_eq!(t.app.editor.focused_group().id, right);
         assert_eq!(t.app.editor.active_buffer().unwrap().name, "b.txt");
         let _ = std::fs::remove_dir_all(&t.dir);
+    }
+
+    #[tokio::test]
+    async fn worker_panics_toast_once_per_thread() {
+        let (mut app, dir) = test_app("worker-panic-once");
+        app.toasts = Default::default();
+        app.notifications.clear();
+        let a = |thread: &str, message: &str| crate::tui::WorkerPanic { thread: thread.into(), message: message.into() };
+        app.worker_panics(vec![a("tokio-rt-worker", "x"), a("tokio-rt-worker", "y"), a("jetl-history", "z")]);
+        let toasts: Vec<_> = app.toasts.items().iter().map(|t| (t.level, t.text.clone())).collect();
+        assert_eq!(
+            toasts,
+            vec![
+                (crate::event::Level::Error, "Background thread tokio-rt-worker panicked: x. jetl keeps running; see jetl.log".to_string()),
+                (crate::event::Level::Error, "Background thread jetl-history panicked: z. jetl keeps running; see jetl.log".to_string()),
+            ]
+        );
+        assert_eq!(app.notifications.len(), 3);
+        assert!(app.notifications[1].quiet && !app.notifications[0].quiet);
+        app.worker_panics(vec![a("tokio-rt-worker", "again")]);
+        assert_eq!(app.toasts.items().len(), 2);
+        assert_eq!(app.notifications.len(), 4);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn worker_panic_text_is_one_clean_line() {
+        let (mut app, dir) = test_app("worker-panic-clean");
+        app.toasts = Default::default();
+        let a = |message: String| crate::tui::WorkerPanic { thread: "t".into(), message };
+        app.worker_panics(vec![a("a\x1b[31mb\nsecond".into())]);
+        assert_eq!(app.toasts.items()[0].text, "Background thread t panicked: ab. jetl keeps running; see jetl.log");
+        app.worker_panics(vec![crate::tui::WorkerPanic { thread: "u".into(), message: "m".repeat(300) }]);
+        assert_eq!(
+            app.toasts.items()[1].text,
+            format!("Background thread u panicked: {}. jetl keeps running; see jetl.log", "m".repeat(200))
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

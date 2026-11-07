@@ -50,6 +50,17 @@ async fn main() -> Result<()> {
     app.prune_recovery_dumps();
     app.start_recent_projects();
     app.load_layouts();
+    // Debug builds only: panic tokio tasks to exercise the worker-panic path.
+    if cfg!(debug_assertions)
+        && let Some(n) = std::env::var("JETL_DEBUG_WORKER_PANIC").ok().and_then(|v| v.parse::<usize>().ok())
+    {
+        for i in 0..n.min(9) {
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(500 * (i as u64 + 1))).await;
+                panic!("debug worker panic {i}");
+            });
+        }
+    }
     if pick_project {
         app.pick_project_at_startup();
     }
