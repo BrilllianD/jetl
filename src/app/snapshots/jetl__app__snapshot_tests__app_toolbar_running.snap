@@ -3,7 +3,7 @@ source: src/app/snapshot_tests.rs
 expression: snap
 ---
 80x24 cursor=hidden
-00  ≣   root ▾                                      ⠋ cargo test ▾   ↻   ■   ⌕   ⚙
+00  ≣   root ▾                                  ⠋ cargo test ▾   ↻   ■   ◉   ⌕   ⚙
 01  ⌂ ┌ Project: root ───────────────┐│
 02  ◫ │                              ││
 03  ⊢ │                              ││
@@ -28,4 +28,4 @@ expression: snap
 22  ⌕ └──────────────────────────────┘│
 23
 -- marks: A=running
-00                                                 AAAAAAAAAAAAAAAA
+00                                             AAAAAAAAAAAAAAAA

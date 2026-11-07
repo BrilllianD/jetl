@@ -115,6 +115,13 @@ pub static SETTINGS: &[Setting] = &[
         Kind::Bool,
         |c| Value::Bool(c.ui.toolbar)
     ),
+    row!(
+        "ui.toolbar_items",
+        "Toolbar items",
+        "Toolbar widgets in order: project, branch, vcs, run, debug, search, settings. The menu button comes first and the run widget always shows; unknown names are skipped with a warning.",
+        Kind::List,
+        |c| Value::List(c.ui.toolbar_items.clone())
+    ),
     row!("ui.double_click_ms", "Double click interval (ms)", "Double click and Shift Shift interval.", ANY, |c| n(c.ui.double_click_ms)),
     row!("ui.left_width", "Left tool window width", "Initial width of the left tool window (Project, Worktrees).", int(1, 1000), |c| n(c
         .ui
@@ -464,7 +471,17 @@ pub static PAGES: &[Page] = &[
     page!(
         "Appearance",
         None,
-        ["ui.theme", "ui.colors", "ui.icons", "ui.file_icons", "ui.toolbar", "ui.double_click_ms", "ui.left_width", "ui.bottom_height"]
+        [
+            "ui.theme",
+            "ui.colors",
+            "ui.icons",
+            "ui.file_icons",
+            "ui.toolbar",
+            "ui.toolbar_items",
+            "ui.double_click_ms",
+            "ui.left_width",
+            "ui.bottom_height"
+        ]
     ),
     page!("Editor", None, []),
     page!(

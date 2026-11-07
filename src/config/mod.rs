@@ -165,6 +165,9 @@ pub enum Autosave {
     Idle,
 }
 
+/// The toolbar widgets of the default `[ui] toolbar_items`, in order (`ui::toolbar::Widget::name`).
+pub const DEFAULT_TOOLBAR_ITEMS: [&str; 7] = ["project", "branch", "vcs", "run", "debug", "search", "settings"];
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct UiConfig {
@@ -180,6 +183,9 @@ pub struct UiConfig {
     /// The top row with the main menu button and the toolbar widgets; hidden in
     /// zen mode and below 12 rows.
     pub toolbar: bool,
+    /// The toolbar's widgets by name, ordered within their group (`ui::toolbar::resolve`); unknown names are skipped
+    /// with a warning, the menu button is always first and the run widget always shows.
+    pub toolbar_items: Vec<String>,
 }
 
 /// Color depth of the theme (`ui.colors`).
@@ -340,6 +346,7 @@ impl Default for UiConfig {
             file_icons: FileIcons::Nerd,
             colors: ColorMode::Auto,
             toolbar: true,
+            toolbar_items: DEFAULT_TOOLBAR_ITEMS.map(String::from).to_vec(),
         }
     }
 }
@@ -451,6 +458,14 @@ mod tests {
         let cfg = Config::parse("[editor]\ncjk_ambiguous_wide = true\ntab_width = 2\n").unwrap();
         assert_eq!(cfg.editor.tab_width, 2);
         assert_eq!(Config::parse("[editor]\ntab_width = 3\n").unwrap().editor.tab_width, 3);
+    }
+
+    #[test]
+    fn toolbar_items_parse() {
+        assert_eq!(Config::default().ui.toolbar_items, DEFAULT_TOOLBAR_ITEMS);
+        let c = Config::parse("[ui]\ntoolbar_items = [\"run\", \"nope\"]\n").unwrap();
+        assert_eq!(c.ui.toolbar_items, ["run", "nope"]);
+        assert!(Config::parse("[ui]\ntoolbar_items = []\n").unwrap().ui.toolbar_items.is_empty());
     }
 
     #[test]

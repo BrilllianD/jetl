@@ -1,13 +1,14 @@
 //! The top row (`[ui] toolbar`): a left group from the left edge and a right
 //! group flush right, built from `Item`s by `place` and collapsed by numbered
 //! steps when the row is too narrow. A press runs the button's action.
+//! `[ui] toolbar_items` names the widgets and orders them within their group (`resolve`).
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::actions::{Action, AppAction, GitAction, PaletteKind, RunAction};
+use crate::actions::{Action, AppAction, DebugAction, GitAction, PaletteKind, RunAction};
 use crate::app::App;
 use crate::config::Icons;
 use crate::config::theme::Theme;
@@ -48,8 +49,9 @@ pub const STEP_VCS: u8 = 3;
 pub const STEP_PROJECT: u8 = 4;
 pub const STEP_BRANCH_CUT: u8 = 5;
 pub const STEP_BRANCH_DROP: u8 = 6;
+pub const STEP_DEBUG: u8 = 7;
 /// Must stay the last step: `place` loops up to it.
-pub const STEP_RUN_CONFIG_CUT: u8 = 7;
+pub const STEP_RUN_CONFIG_CUT: u8 = 8;
 
 /// The VCS buttons show only on a row at least this wide.
 pub const VCS_MIN_WIDTH: u16 = 100;
@@ -93,8 +95,7 @@ fn needed(items: &[Item]) -> u16 {
 }
 
 /// Lays `items` out on the first row of `area`: the collapse steps in order (`STEP_SETTINGS` to
-/// `STEP_RUN_CONFIG_CUT`) while
-/// the row is too narrow, then clip. Returns the kept items with their final
+/// `STEP_RUN_CONFIG_CUT`) while the row is too narrow, then clip. Returns the kept items with their final
 /// text and visible cells, in input order.
 pub fn place(mut items: Vec<Item>, area: Rect) -> Vec<(Item, Rect)> {
     for step in 1..=STEP_RUN_CONFIG_CUT {
@@ -233,55 +234,157 @@ pub fn project_label(root: &std::path::Path, worktrees: &crate::worktree::Worktr
     }
 }
 
-/// The widgets in group order (left, then right).
-fn items(app: &App, width: u16) -> Vec<Item> {
-    let mut items = vec![
-        Item {
-            button: ToolbarButton::Menu,
-            group: Group::Left,
-            text: format!(" {} ", menu_glyph(app.config.ui.icons)),
-            style: app.theme.strip_item,
-            shrinks: vec![],
-        },
-        Item {
-            button: ToolbarButton::Project,
-            group: Group::Left,
-            text: format!(" {} ▾ ", project_label(&app.workspace.root, &app.worktrees)),
-            style: app.theme.strip_item,
-            shrinks: vec![(STEP_PROJECT, Shrink::Text(" ▾ ".into()))],
-        },
-    ];
-    if let Some(name) = app.branch_label() {
-        let icon = ToolWindowId::Git.icon(app.config.ui.icons);
-        let tag = app.in_progress().map(|ip| ip.label());
-        let style = if tag.is_some() { app.theme.strip_item_active } else { app.theme.strip_item };
-        items.push(Item {
-            button: ToolbarButton::Branch,
-            group: Group::Left,
-            text: branch_text(icon, &name, tag.as_deref()),
-            style,
-            shrinks: vec![
-                (STEP_BRANCH_CUT, Shrink::Text(branch_text(icon, &shorten(&name, 12), tag.as_deref()))),
-                (STEP_BRANCH_DROP, Shrink::Drop),
-            ],
-        });
-        items.extend(vcs_items(app.config.ui.icons, &app.theme, width));
+/// A widget `[ui] toolbar_items` can name. The menu button is not one: it is always first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Widget {
+    Project,
+    Branch,
+    Vcs,
+    Run,
+    Debug,
+    Search,
+    Settings,
+}
+
+impl Widget {
+    /// In the default order.
+    pub const ALL: [Widget; 7] =
+        [Widget::Project, Widget::Branch, Widget::Vcs, Widget::Run, Widget::Debug, Widget::Search, Widget::Settings];
+
+    /// Its name in `toolbar_items`: "project", "branch", "vcs", "run", "debug", "search", "settings".
+    pub fn name(self) -> &'static str {
+        match self {
+            Widget::Project => "project",
+            Widget::Branch => "branch",
+            Widget::Vcs => "vcs",
+            Widget::Run => "run",
+            Widget::Debug => "debug",
+            Widget::Search => "search",
+            Widget::Settings => "settings",
+        }
     }
-    items.extend(run_items(app.run.selected.as_deref(), app.run.running_name(), app.spinner(), &app.theme));
-    items.push(Item {
-        button: ToolbarButton::Search,
+
+    /// The widget named exactly `name`.
+    pub fn from_name(name: &str) -> Option<Widget> {
+        Widget::ALL.into_iter().find(|w| w.name() == name)
+    }
+
+    fn group(self) -> Group {
+        match self {
+            Widget::Project | Widget::Branch | Widget::Vcs => Group::Left,
+            _ => Group::Right,
+        }
+    }
+}
+
+/// The widgets `names` lists, in order, each once, with `Run` added before the first right-group widget (else
+/// last) when missing; and the unknown names, in order, each once.
+pub fn resolve(names: &[String]) -> (Vec<Widget>, Vec<String>) {
+    let mut widgets: Vec<Widget> = Vec::new();
+    let mut unknown: Vec<String> = Vec::new();
+    for name in names {
+        match Widget::from_name(name) {
+            Some(w) => {
+                if !widgets.contains(&w) {
+                    widgets.push(w);
+                }
+            }
+            None => {
+                if !unknown.contains(name) {
+                    unknown.push(name.clone());
+                }
+            }
+        }
+    }
+    if !widgets.contains(&Widget::Run) {
+        let at = widgets.iter().position(|w| w.group() == Group::Right).unwrap_or(widgets.len());
+        widgets.insert(at, Widget::Run);
+    }
+    (widgets, unknown)
+}
+
+/// The Warn text for the unknown names of `names`, `None` when there are none.
+pub fn items_warning(names: &[String]) -> Option<String> {
+    let unknown = resolve(names).1;
+    if unknown.is_empty() {
+        return None;
+    }
+    let list = unknown.iter().map(|n| format!("{n:?}")).collect::<Vec<_>>().join(", ");
+    let known = Widget::ALL.map(Widget::name).join(", ");
+    Some(format!("[ui] toolbar_items: unknown {list} skipped; known: {known}"))
+}
+
+/// The Debug button: ` ◉ ` (or ` 🐞 `), active style while a session is live, dropped at `STEP_DEBUG`.
+pub fn debug_item(icons: Icons, active: bool, theme: &Theme) -> Item {
+    Item {
+        button: ToolbarButton::Debug,
         group: Group::Right,
-        text: format!(" {} ", search_glyph(app.config.ui.icons)),
+        text: format!(" {} ", ToolWindowId::Debug.icon(icons)),
+        style: if active { theme.strip_item_active } else { theme.strip_item },
+        shrinks: vec![(STEP_DEBUG, Shrink::Drop)],
+    }
+}
+
+/// The menu button, then the widgets of `[ui] toolbar_items` in list order (each in its own group).
+fn items(app: &App, width: u16) -> Vec<Item> {
+    let icons = app.config.ui.icons;
+    let mut items = vec![Item {
+        button: ToolbarButton::Menu,
+        group: Group::Left,
+        text: format!(" {} ", menu_glyph(icons)),
         style: app.theme.strip_item,
-        shrinks: vec![(STEP_SEARCH, Shrink::Drop)],
-    });
-    items.push(Item {
-        button: ToolbarButton::Settings,
-        group: Group::Right,
-        text: format!(" {} ", settings_glyph(app.config.ui.icons)),
-        style: app.theme.strip_item,
-        shrinks: vec![(STEP_SETTINGS, Shrink::Drop)],
-    });
+        shrinks: vec![],
+    }];
+    let branch = app.branch_label();
+    for w in resolve(&app.config.ui.toolbar_items).0 {
+        match w {
+            Widget::Project => items.push(Item {
+                button: ToolbarButton::Project,
+                group: Group::Left,
+                text: format!(" {} ▾ ", project_label(&app.workspace.root, &app.worktrees)),
+                style: app.theme.strip_item,
+                shrinks: vec![(STEP_PROJECT, Shrink::Text(" ▾ ".into()))],
+            }),
+            Widget::Branch => {
+                if let Some(name) = &branch {
+                    let icon = ToolWindowId::Git.icon(icons);
+                    let tag = app.in_progress().map(|ip| ip.label());
+                    let style = if tag.is_some() { app.theme.strip_item_active } else { app.theme.strip_item };
+                    items.push(Item {
+                        button: ToolbarButton::Branch,
+                        group: Group::Left,
+                        text: branch_text(icon, name, tag.as_deref()),
+                        style,
+                        shrinks: vec![
+                            (STEP_BRANCH_CUT, Shrink::Text(branch_text(icon, &shorten(name, 12), tag.as_deref()))),
+                            (STEP_BRANCH_DROP, Shrink::Drop),
+                        ],
+                    });
+                }
+            }
+            Widget::Vcs => {
+                if branch.is_some() {
+                    items.extend(vcs_items(icons, &app.theme, width));
+                }
+            }
+            Widget::Run => items.extend(run_items(app.run.selected.as_deref(), app.run.running_name(), app.spinner(), &app.theme)),
+            Widget::Debug => items.push(debug_item(icons, app.debug.active(), &app.theme)),
+            Widget::Search => items.push(Item {
+                button: ToolbarButton::Search,
+                group: Group::Right,
+                text: format!(" {} ", search_glyph(icons)),
+                style: app.theme.strip_item,
+                shrinks: vec![(STEP_SEARCH, Shrink::Drop)],
+            }),
+            Widget::Settings => items.push(Item {
+                button: ToolbarButton::Settings,
+                group: Group::Right,
+                text: format!(" {} ", settings_glyph(icons)),
+                style: app.theme.strip_item,
+                shrinks: vec![(STEP_SETTINGS, Shrink::Drop)],
+            }),
+        }
+    }
     items
 }
 
@@ -293,6 +396,7 @@ pub fn action(button: ToolbarButton) -> Action {
         ToolbarButton::Run => Action::Run(RunAction::RunSelected),
         ToolbarButton::Rerun => Action::Run(RunAction::Rerun),
         ToolbarButton::Stop => Action::Run(RunAction::Stop),
+        ToolbarButton::Debug => Action::Debug(DebugAction::Start),
         ToolbarButton::Branch => Action::Git(GitAction::Branches),
         ToolbarButton::Update => Action::Git(GitAction::Pull),
         ToolbarButton::Commit => Action::Git(GitAction::CommitBox),
@@ -320,6 +424,7 @@ pub fn title(button: ToolbarButton) -> &'static str {
         ToolbarButton::Run => "Run",
         ToolbarButton::Rerun => "Rerun",
         ToolbarButton::Stop => "Stop",
+        ToolbarButton::Debug => "Debug",
         ToolbarButton::Branch => "Branches",
         ToolbarButton::Update => "Update Project",
         ToolbarButton::Commit => "Commit",
@@ -624,5 +729,114 @@ mod tests {
         let cut = shorten("日本語日本語日本語", 5);
         assert!(cut.width() <= 6, "{cut}");
         assert_eq!(cut, "日本…");
+    }
+
+    fn names(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn widget_names_round_trip() {
+        for w in Widget::ALL {
+            assert_eq!(Widget::from_name(w.name()), Some(w));
+        }
+        for bad in ["Run", " run", "menu"] {
+            assert_eq!(Widget::from_name(bad), None, "{bad:?}");
+        }
+        assert_eq!(Widget::ALL.map(Widget::name), crate::config::DEFAULT_TOOLBAR_ITEMS);
+    }
+
+    #[test]
+    fn resolve_orders_skips_and_keeps_run() {
+        use Widget::*;
+        let r = |v: &[&str]| resolve(&names(v));
+        assert_eq!(r(&["settings", "run", "project"]), (vec![Settings, Run, Project], vec![]));
+        assert_eq!(r(&["nope", "run", "nope", "menu", "run"]), (vec![Run], names(&["nope", "menu"])));
+        assert_eq!(r(&["project", "search"]), (vec![Project, Run, Search], vec![]));
+        assert_eq!(r(&["project"]), (vec![Project, Run], vec![]));
+        assert_eq!(r(&[]), (vec![Run], vec![]));
+        assert_eq!(resolve(&names(&crate::config::DEFAULT_TOOLBAR_ITEMS)), (Widget::ALL.to_vec(), vec![]));
+    }
+
+    #[test]
+    fn items_warning_text() {
+        assert_eq!(
+            items_warning(&names(&["nope", "run", "x y"])).as_deref(),
+            Some("[ui] toolbar_items: unknown \"nope\", \"x y\" skipped; known: project, branch, vcs, run, debug, search, settings")
+        );
+        assert_eq!(items_warning(&names(&crate::config::DEFAULT_TOOLBAR_ITEMS)), None);
+    }
+
+    #[test]
+    fn debug_item_glyph_and_style() {
+        let t = Theme::default();
+        for (icons, text, w) in [(Icons::Unicode, " ◉ ", 1), (Icons::Emoji, " 🐞 ", 2)] {
+            let item = debug_item(icons, false, &t);
+            assert_eq!(item.text, text);
+            let g = text.trim();
+            assert_eq!((g.width(), g.width_cjk()), (w, w), "{g}");
+            for other in [
+                search_glyph(icons),
+                settings_glyph(icons),
+                vcs_glyph(ToolbarButton::Update, icons),
+                vcs_glyph(ToolbarButton::Commit, icons),
+                vcs_glyph(ToolbarButton::Push, icons),
+            ] {
+                assert_ne!(g, other);
+            }
+            assert_eq!(item.button, ToolbarButton::Debug);
+            assert_eq!(item.group, Group::Right);
+            assert_eq!(item.shrinks, vec![(STEP_DEBUG, Shrink::Drop)]);
+            assert_eq!(item.style, t.strip_item);
+            assert_eq!(debug_item(icons, true, &t).style, t.strip_item_active);
+        }
+        assert_ne!(t.strip_item, t.strip_item_active);
+    }
+
+    #[test]
+    fn debug_goes_before_the_run_config_cut() {
+        let name = "integration-tests";
+        let label = |n: &str| format!(" {n} ▾ ");
+        let items = || {
+            vec![
+                it(Group::Left, " ≣ ", vec![]),
+                it(Group::Left, " p ▾ ", vec![(STEP_PROJECT, Shrink::Text(" ▾ ".into()))]),
+                it(Group::Right, &label(name), vec![(STEP_RUN_CONFIG_CUT, Shrink::Text(label(&shorten(name, 8))))]),
+                it(Group::Right, " ▶ ", vec![]),
+                it(Group::Right, " ◉ ", vec![(STEP_DEBUG, Shrink::Drop)]),
+            ]
+        };
+        let kept = |w| place(items(), Rect::new(0, 0, w, 1));
+        let texts = |p: &[(Item, Rect)]| p.iter().map(|(i, _)| i.text.clone()).collect::<Vec<_>>();
+        let p = kept(37);
+        assert_eq!(texts(&p), [" ≣ ", " ▾ ", " integration-tests ▾ ", " ▶ ", " ◉ "]);
+        assert_eq!(p[0].1.x, 0);
+        let p = kept(36);
+        assert_eq!(texts(&p), [" ≣ ", " ▾ ", " integration-tests ▾ ", " ▶ "]);
+        assert_eq!(p[0].1.x, 0);
+        let p = kept(30);
+        assert_eq!(texts(&p), [" ≣ ", " ▾ ", " integrat… ▾ ", " ▶ "]);
+        assert_eq!(p[0].1.x, 0);
+    }
+
+    #[test]
+    fn run_config_cut_is_the_last_step() {
+        let steps =
+            [STEP_SETTINGS, STEP_SEARCH, STEP_VCS, STEP_PROJECT, STEP_BRANCH_CUT, STEP_BRANCH_DROP, STEP_DEBUG, STEP_RUN_CONFIG_CUT];
+        for s in &steps[..7] {
+            assert!(*s < STEP_RUN_CONFIG_CUT);
+        }
+        let mut sorted = steps.to_vec();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted.len(), 8);
+    }
+
+    #[test]
+    fn debug_action_and_title() {
+        use crate::actions::DebugAction;
+        assert_eq!(action(ToolbarButton::Debug), Action::Debug(DebugAction::Start));
+        assert_eq!(press(ToolbarButton::Debug, Rect::default()), Action::Debug(DebugAction::Start));
+        assert_eq!(title(ToolbarButton::Debug), "Debug");
     }
 }

@@ -485,6 +485,7 @@ impl App {
         for e in keymap_errors.into_iter().chain(theme_errors).chain(snippet_errors.into_iter().map(|(_, e)| e)) {
             app.notify(Level::Error, e);
         }
+        app.warn_toolbar_items();
         app.start_config_reload(keymap_text);
         app.git.refresh_status();
         app.git.load_branches();
@@ -5609,7 +5610,7 @@ mod strip_tests {
         app.config.ui.toolbar = true;
         draw(&mut app);
         let run = toolbar_hit(&app, B::Run);
-        assert_eq!(run.right(), 100 - 8);
+        assert_eq!(run.right(), 100 - 12);
         let cfg = toolbar_hit(&app, B::RunConfig);
         app.run.set_loaded_tasks(vec![]);
         click(&mut app, cfg.x + 1, 0);
@@ -5628,7 +5629,7 @@ mod strip_tests {
         app.run.fake_running("nap");
         let buf = draw(&mut app);
         let buttons: Vec<_> = app.layout.toolbar_hits.iter().map(|(b, _)| *b).collect();
-        assert_eq!(buttons, [B::Menu, B::Project, B::RunConfig, B::Rerun, B::Stop, B::Search, B::Settings]);
+        assert_eq!(buttons, [B::Menu, B::Project, B::RunConfig, B::Rerun, B::Stop, B::Debug, B::Search, B::Settings]);
         assert!(row_text(&buf, 0, 100).contains("nap ▾"));
         let rerun = toolbar_hit(&app, B::Rerun);
         click(&mut app, rerun.x + 1, 0);
@@ -5698,9 +5699,59 @@ mod strip_tests {
         assert_eq!(toolbar_hit(&app, B::Project).width, toolbar_hit_in(&wide, B::Project).width);
         draw_at(&mut app, 30, 24);
         assert_eq!(toolbar_hit(&app, B::Menu), Rect::new(0, 0, 3, 1));
+        assert!(!has(&app, B::Debug));
         for (b, _) in wide.iter().filter(|(b, _)| matches!(b, B::Run | B::Rerun | B::Stop)) {
             assert!(has(&app, *b), "{b:?}");
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn toolbar_debug_button_starts_a_session() {
+        use crate::actions::DebugAction;
+        use crate::ui::layout::ToolbarButton as B;
+        let (mut app, dir) = test_app("toolbar-debug");
+        app.config.ui.toolbar = true;
+        app.toasts = Default::default();
+        draw(&mut app);
+        let (run, debug) = (toolbar_hit(&app, B::Run), toolbar_hit(&app, B::Debug));
+        assert_eq!(debug.width, 3);
+        assert_eq!(debug.x, run.right() + 1);
+        app.handle_mouse(ev(MouseEventKind::Moved, debug.x + 1, 0));
+        let buf = draw(&mut app);
+        let row = row_text(&buf, 1, 100);
+        let key = app.shortcut(&Action::Debug(DebugAction::Start)).unwrap();
+        assert!(row.contains("Debug") && row.contains(&key), "{row:?}");
+        assert!(!app.debug.starting());
+        click(&mut app, debug.x + 1, 0);
+        assert!(app.debug.starting());
+        app.perform(Action::Debug(DebugAction::Stop));
+        assert!(!app.debug.starting());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn toolbar_debug_button_is_active_while_a_session_is_live() {
+        use super::debug::tests::{DEMO, caps, paused, six, with_fake_adapters, write_run_toml};
+        use crate::dap::fake::Order;
+        use crate::ui::layout::ToolbarButton as B;
+        let (mut app, dir) = test_app("toolbar-debug-live");
+        app.config.ui.toolbar = true;
+        let mut fakes = with_fake_adapters(&mut app, caps(), Order::LaunchEarly);
+        write_run_toml(&app, DEMO);
+        let a = six(&mut app);
+        let style_of = |app: &mut super::App| {
+            let buf = draw(app);
+            let r = toolbar_hit(app, B::Debug);
+            buf[(r.x + 1, 0)].style()
+        };
+        let idle = style_of(&mut app);
+        let _fake = paused(&mut app, &mut fakes, &a, 3).await;
+        assert!(app.debug.active());
+        let live = style_of(&mut app);
+        assert_eq!(live.bg, app.theme.strip_item_active.bg);
+        assert_eq!(idle.bg, app.theme.strip_item.bg);
+        assert_ne!(idle.bg, live.bg);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

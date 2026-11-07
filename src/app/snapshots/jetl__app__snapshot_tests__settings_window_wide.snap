@@ -13,10 +13,10 @@ expression: "snapshot(&term, &settings_marks(&app.theme), None)"
 07  ⊢ │ │  Saving                  │  Icons                       unicode ▾                                          │
 08    │ │  Formatting              │  File icons                  nerd ▾                                             │
 09    │ │Keymap                    │  Show toolbar                [x]                                                │
-10    │ │  Mode                    │  Double click interval (ms)  400                                                │
-11    │ │Version Control           │  Left tool window width      32                                     restart jetl│
-12    │ │  Git                     │  Bottom tool window height   14                                     restart jetl│
-13    │ │  Worktrees               │                                                                                 │
+10    │ │  Mode                    │  Toolbar items               project, branch, vcs, run, debug, search, settings │
+11    │ │Version Control           │  Double click interval (ms)  400                                                │
+12    │ │  Git                     │  Left tool window width      32                                     restart jetl│
+13    │ │  Worktrees               │  Bottom tool window height   14                                     restart jetl│
 14    │ │Files                     │                                                                                 │
 15    │ │Tools                     │                                                                                 │
 16    │ │  Terminal                │                                                                                 │

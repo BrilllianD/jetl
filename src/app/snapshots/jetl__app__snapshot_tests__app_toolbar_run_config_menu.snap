@@ -3,7 +3,7 @@ source: src/app/snapshot_tests.rs
 expression: "snapshot(&term, &menu_marks(&app.theme), None)"
 ---
 120x40 cursor=hidden
-00  ≣   root ▾                                                                                         check ▾   ▶   ⌕   ⚙
+00  ≣   root ▾                                                                                     check ▾   ▶   ◉   ⌕   ⚙
 01  1 ┌ Project: root ───────────────┐│                                                  ╭────────────────────────────────╮
 02  ⌂ │                              ││                                                  │ check                          │
 03  2 │                              ││                                                  │ integration-tests              │

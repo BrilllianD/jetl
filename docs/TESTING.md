@@ -2910,10 +2910,11 @@ Setup as above with the default config (`[lsp] enabled = false` only), at 120x40
 4. Row 1 reads ` ≣ ` then ` <dir> ▾ ` from column 5 and ends with ` ⌕ ` ` ⚙ ` at the right edge. A click on the
    project widget opens Recent Projects, on ` ⌕ ` Search Everywhere, on ` ⚙ ` Settings (Esc closes each); hover on
    ` ⚙ ` shows `Settings` and its key on row 2. At 80x24 with a long run configuration name or
-   `resize-window -x 50`, Settings goes first, then Search, then the project widget shrinks to ` ▾ `; ▶ stays.
+   `resize-window -x 50`, Settings goes first, then Search, then the project widget shrinks to ` ▾ `, then the Debug
+   button; ▶ stays.
    Started in a linked worktree (`git worktree add /tmp/tm22-wt` from the test repo, open `/tmp/tm22-wt`), the
    label reads `tm22-wt (<repo dir>)`.
-5. Row 1 holds ` Select Configuration ▾ ` and ` ▶ ` before the ` ⌕ ` ` ⚙ ` pair; hover ▶: `Run  Shift+F10` shows on row 2. With no configuration selected, a click on ▶ opens the centred Run palette; Esc closes
+5. Row 1 holds ` Select Configuration ▾ `, ` ▶ ` and then ` ◉ ` before the ` ⌕ ` ` ⚙ ` pair; hover ▶: `Run  Shift+F10` shows on row 2. With no configuration selected, a click on ▶ opens the centred Run palette; Esc closes
    it and nothing has run.
 6. With `$ROOT/.jetl/run.toml` holding `[[configs]]`, `name = "nap"`, `command = ["sh", "-c", "sleep 20"]`, click
    the name: a menu opens on row 2 under the widget's left edge (shifted left at the right edge) listing `nap`, a
@@ -2949,6 +2950,23 @@ Setup as above with the default config (`[lsp] enabled = false` only), at 120x40
 14. In the test repo at 120x40, row 1 shows ` ⎇ main ▾ ` and the status bar's right end has no `main`. F10: the menu bar covers
    row 1 and the status bar's right end shows `main`. F10 again: the widget is back and the status bar's `main` is gone. At 80x24
    the same holds, with `main` right of the dropdown's last row. Stderr empty, Ctrl+Q exits 0.
+15. Items and collapse (`[lsp] enabled = false` first in `config.toml`, jetl running). Write
+   `[ui]\ntoolbar_items = ["settings", "run", "project"]`: the row is ` ≣ ` ` <dir> ▾ ` on the left and ` ⚙ ` then the run
+   widget at the right edge, no ` ◉ `, ` ⌕ ` or branch, and no toast but `Reloaded config.toml`. Write
+   `toolbar_items = ["nope", "run"]`: one Warn toast `[ui] toolbar_items: unknown "nope" skipped; known: project,
+   branch, vcs, run, debug, search, settings` (at 80x24 it may wrap), and the row is ` ≣ ` plus the run widget; with
+   `[editor] scrolloff = 9` in the same file that key applies too. Quit and start jetl with that file: the same toast
+   at startup. With the default list and a configuration named `integration-tests` selected (Alt+Shift+F9; the
+   figures depend on the fixture: compute them as left width + right width + 1), `resize-window` to the width where
+   ` ◉ ` just fits, one column less (it drops, the full name stays), and 30 (` integrat… ▾ ` and ▶; ` ≣ ` at x=0
+   throughout). Settings (` ⚙ `) > Appearance has a `Toolbar items` row; editing it to `run, debug` keeps
+   `[lsp] enabled = false` and writes `toolbar_items = ["run", "debug"]`.
+16. The Debug button under gdb (the `/tmp/jetl-dap-demo` and `/tmp/jetl-dap-sleepy` fixtures of `### Scenario: Debug and
+   Stop`; no other adapter is verified). Hover ` ◉ `: `Debug  Shift+F9` on row 2. Click it: the toasts
+   `Debugging demo with gdb` then `Debug session ended, exit code 0`, and no `gdb` is left. Ctrl+F8 on the `add`
+   line and click it again: paused at the breakpoint and ` ◉ ` has another background than ` ▶ ` (`capture-pane -e`);
+   Ctrl+F2 stops the session and ` ◉ ` matches ` ▶ ` again. In the sleepy fixture a click starts one `jetl-dbg-sleepy`
+   and one `gdb`; a second click leaves one of each with another debuggee pid; Ctrl+F2 leaves neither.
 
 ### Scenario: unpinned tool window
 

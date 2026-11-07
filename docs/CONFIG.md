@@ -144,6 +144,12 @@ file_icons = "nerd"            # file-type icons before file names (project tree
 colors = "auto"                # "auto" (true color when $COLORTERM is truecolor or 24bit, else
                                # the 256-color palette), "truecolor" or "256"
 toolbar = true                 # the top row with the main menu button; hidden in zen mode and in terminals under 12 rows
+toolbar_items = ["project", "branch", "vcs", "run", "debug", "search", "settings"]
+                               # the toolbar's widgets, ordered within the left group (project, branch, vcs) and the
+                               # right group (run, debug, search, settings); the menu button is always first and the
+                               # run widget always shows (left out, it goes first on the right); unknown names are
+                               # skipped with a warning; vcs needs a git repo and 100 columns. The Debug button ◉
+                               # starts a session like Shift+F9
 
 [git]
 pull_mode = "ff-only"          # "ff-only" (git pull --ff-only), "rebase" (--rebase) or "merge" (--no-rebase)

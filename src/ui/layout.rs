@@ -134,6 +134,8 @@ pub enum ToolbarButton {
     Rerun,
     /// Stops the running task (`run.stop`).
     Stop,
+    /// Starts a debug session of the selected configuration (`debug.start`).
+    Debug,
     /// Opens the branches popup.
     Branch,
     /// Pulls (`git.pull`).

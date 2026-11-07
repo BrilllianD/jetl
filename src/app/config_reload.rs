@@ -268,6 +268,13 @@ impl App {
         self.todo.file_icons = mode;
     }
 
+    /// A Warn toast naming the unknown entries of `[ui] toolbar_items`, if any.
+    pub(crate) fn warn_toolbar_items(&mut self) {
+        if let Some(w) = crate::ui::toolbar::items_warning(&self.config.ui.toolbar_items) {
+            self.notify(Level::Warn, w);
+        }
+    }
+
     /// Swap in `new` and apply what changed at once (the table in
     /// docs/CONFIG.md); returns what changed. Keys of other classes are
     /// stored and used when they are next read.
@@ -276,6 +283,10 @@ impl App {
         self.config = new;
         if diff.is_empty() {
             return diff;
+        }
+        // The row reads `config` every frame; only the unknown names need a word.
+        if diff.has("ui.toolbar_items") {
+            self.warn_toolbar_items();
         }
         self.editor.apply_config(&self.config);
         self.sync_file_icons();
@@ -449,6 +460,43 @@ mod tests {
         draw(&mut app);
         assert!(app.layout.toolbar_hits.is_empty());
         assert_eq!(app.layout.strip_hits[0].0, StripButton::Menu);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn toolbar_items_apply_live_and_warn() {
+        use crate::ui::layout::ToolbarButton as B;
+        let (mut app, dir) = test_app("toolbar-items-live");
+        let draw = |app: &mut App| {
+            let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+            term.draw(|f| crate::ui::render(app, f)).unwrap();
+        };
+        let hits = |app: &App| app.layout.toolbar_hits.iter().map(|(b, _)| *b).collect::<Vec<_>>();
+        let x = |app: &App, b: B| app.layout.toolbar_hits.iter().find(|(k, _)| *k == b).unwrap().1.x;
+        let warns = |app: &App| app.notifications.iter().filter(|n| n.level == Level::Warn).count();
+        let before = warns(&app);
+        write(&app, "config.toml", &format!("{NO_LSP}[ui]\ntoolbar = true\ntoolbar_items = [\"settings\", \"run\", \"project\"]\n"));
+        reload(&mut app, &[ConfigFile::Config]);
+        draw(&mut app);
+        assert_eq!(hits(&app), [B::Menu, B::Settings, B::RunConfig, B::Run, B::Project]);
+        assert!(x(&app, B::Settings) < x(&app, B::RunConfig));
+        assert_eq!(x(&app, B::Project), 4);
+        assert_eq!(warns(&app), before);
+        write(
+            &app,
+            "config.toml",
+            &format!("{NO_LSP}[ui]\ntoolbar = true\ntoolbar_items = [\"nope\", \"run\"]\n[editor]\nscrolloff = 9\n"),
+        );
+        reload(&mut app, &[ConfigFile::Config]);
+        let want = "[ui] toolbar_items: unknown \"nope\" skipped; known: project, branch, vcs, run, debug, search, settings";
+        let new: Vec<_> = app.notifications.iter().skip(before).filter(|n| n.level == Level::Warn).map(|n| n.text.clone()).collect();
+        assert_eq!(new, [want]);
+        assert_eq!(app.config.editor.scrolloff, 9);
+        draw(&mut app);
+        assert_eq!(hits(&app), [B::Menu, B::RunConfig, B::Run]);
+        let n = app.notifications.len();
+        reload(&mut app, &[ConfigFile::Config]);
+        assert_eq!(app.notifications.len(), n);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
