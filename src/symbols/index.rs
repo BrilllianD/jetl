@@ -371,13 +371,18 @@ impl SymbolIndex {
     /// The snapshot to build import edges from, when they are behind the index, no run is in flight and no build
     /// is: `ImportEdges::build` it off the main thread and give the result to [`SymbolIndex::on_edges`].
     pub fn edges_job(&mut self) -> Option<IndexSnapshot> {
+        self.edges_job_at(Instant::now())
+    }
+
+    /// [`SymbolIndex::edges_job`] with the clock given: a build started `EDGES_LOST_AFTER` or more before `now` is lost.
+    fn edges_job_at(&mut self, now: Instant) -> Option<IndexSnapshot> {
         if self.edges_ready() || self.running {
             return None;
         }
-        if self.edges_inflight.is_some_and(|(_, at)| at.elapsed() < EDGES_LOST_AFTER) {
+        if self.edges_inflight.is_some_and(|(_, at)| now.saturating_duration_since(at) < EDGES_LOST_AFTER) {
             return None;
         }
-        self.edges_inflight = Some((self.data.version, Instant::now()));
+        self.edges_inflight = Some((self.data.version, now));
         Some(self.snapshot())
     }
 
@@ -767,6 +772,21 @@ mod tests {
         let before = idx.snapshot().version();
         idx.reset();
         assert!(idx.snapshot().version() > before);
+    }
+
+    #[test]
+    fn a_lost_edges_build_is_given_up_on_after_the_limit() {
+        let mut idx = SymbolIndex::default();
+        let seq = idx.start(PathBuf::from("/nonexistent")).seq;
+        let batch = SymbolBatch { files: vec![("a.rs".into(), file(vec![]))], done: true, changed: true };
+        assert!(idx.on_batch(seq, batch).is_some());
+        let t0 = Instant::now();
+        assert!(idx.edges_job_at(t0).is_some());
+        // The build never comes back: inside the limit nothing starts, at it another does.
+        assert!(idx.edges_job_at(t0 + EDGES_LOST_AFTER - Duration::from_millis(1)).is_none());
+        assert!(idx.edges_job_at(t0 + EDGES_LOST_AFTER).is_some());
+        // The new build has its own start instant.
+        assert!(idx.edges_job_at(t0 + EDGES_LOST_AFTER + Duration::from_secs(1)).is_none());
     }
 
     #[cfg(all(feature = "lang-rust", feature = "lang-python"))]

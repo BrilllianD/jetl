@@ -2794,12 +2794,38 @@ Run with `[lsp] enabled = false`, jetl's own repo as the root, at 120x40 then 80
 1. Start jetl and wait a few seconds for the symbol index. Open `src/app/hierarchy.rs` (Ctrl+Shift+N).
 2. Navigate > File Dependencies: the Hierarchy window opens focused, titled `Imports of src/app/hierarchy.rs (approximate)`, root row `src/app/hierarchy.rs`, children such as `src/actions.rs` and `src/lsp/hierarchy.rs` (the files its `use crate::..` lines name), with no line label after them.
 3. Down, Right on `src/actions.rs`: its imports appear at once (no `…`).
-4. Tab: the title becomes `Imported by src/app/hierarchy.rs (approximate)` with `src/app/mod.rs` as a child (it declares `mod hierarchy;`). F5 shows the same tree. Export Hierarchy as Mermaid writes edges from the importing file to the imported one.
-5. Enter on `src/app/mod.rs`: the editor opens it with the caret at line 1.
-6. Open `README.md` and run Navigate > File Dependencies: toast `No file dependencies for this file type`, the tree is unchanged. Stderr is empty, Ctrl+Q exits 0.
+4. Tab: the title becomes `Imported by src/app/hierarchy.rs (approximate)` and the root has no children: its only declaring file, `src/app/mod.rs`, is above `MAX_FILE_BYTES` (262144 bytes) and is not indexed. F5 shows the same tree.
+5. Open `src/lsp/hierarchy.rs` (Ctrl+Shift+N) and run File Dependencies, then Tab: `Imported by src/lsp/hierarchy.rs (approximate)` with children `src/app/hierarchy.rs`, `src/app/snapshot_tests.rs`, `src/lsp/mod.rs` and `src/ui/hierarchy.rs`. Down, Enter: the editor opens `src/app/hierarchy.rs` with the caret at line 1. Find Action, "export the loaded tree", the Mermaid entry: a scratch file `scratch_1.md` opens with `n0["src/lsp/hierarchy.rs<br/>hierarchy.rs:1"]`, one node for each importer and edges `n1 --> n0` to `n4 --> n0` (from the importing file to the imported one).
+6. Open `.gitignore` (a file type with no tags query; `README.md` has one in a default build) and run File Dependencies: toast `No file dependencies for this file type`, the tree is unchanged. Stderr is empty, Ctrl+Q exits 0.
 7. Java split package (yman 388), root `$T` with `src/main/java/com/acme/Core.java`, `src/test/java/com/acme/CoreTest.java`, `src/test/java/com/other/T.java` (`package com.other; import com.acme.*;`), `src/main/java/com/solo/Impl.java` and `src/test/java/com/solo/OnlyTest.java` (`package com.solo; import com.solo.*;`). Open `src/test/java/com/other/T.java` and run File Dependencies: title `Imports of src/test/java/com/other/T.java (approximate)`, children `src/main/java/com/acme/Core.java` and `src/test/java/com/acme/CoreTest.java`.
 8. Open `src/test/java/com/solo/OnlyTest.java` and run it again: the one child is `src/main/java/com/solo/Impl.java`. Stderr is empty, Ctrl+Q exits 0.
-9. Large Java project (yman 401): root `/tmp/jetl-s9a/java` (5000 generated files, from the measurement harness of the S9a plan), `XDG_*` under /tmp. As soon as jetl starts, open `src/main/java/com/acme/p0/C0.java` and run File Dependencies. Before the index has the file the toast is `No file dependencies yet; the project is still being indexed`: run it again. The root row may show `…`, and with no key pressed it gets the children `src/main/java/com/acme/p14/C14.java`, `src/main/java/com/acme/p21/C21.java`, `src/main/java/com/acme/p28/C28.java`, `src/main/java/com/acme/p7/C7.java`. Typing in the editor meanwhile shows no pause. Tab: `Imported by` with `src/main/java/com/acme/p22/C4972.java`, `p29/C4979.java`, `p36/C4986.java`, `p43/C4993.java` (same directory prefix). Stderr is empty, Ctrl+Q exits 0.
+9. Large Java project (yman 401): rebuild the root with this snippet (5000 files, 3654450 bytes), then start jetl on it with `XDG_*` under /tmp:
+
+```sh
+T=/tmp/jetl-s9a/java; rm -rf "$T"; mkdir -p "$T"
+python3 -I - "$T" <<'PY'
+import os, sys
+root = sys.argv[1]
+ext = ["java.util.List", "java.util.Map", "java.util.*", "java.util.stream.Collectors", "java.io.IOException",
+       "java.time.Instant", "javax.annotation.Nullable", "org.springframework.context.ApplicationContext",
+       "org.springframework.stereotype.Service", "org.springframework.beans.factory.annotation.Autowired",
+       "org.slf4j.Logger", "org.slf4j.LoggerFactory", "com.google.common.collect.ImmutableList",
+       "com.fasterxml.jackson.databind.ObjectMapper", "jakarta.persistence.Entity", "org.junit.jupiter.api.Test"]
+for i in range(5000):
+    pkg = i % 50
+    d = os.path.join(root, "src/main/java/com/acme/p%d" % pkg)
+    os.makedirs(d, exist_ok=True)
+    s = "package com.acme.p%d;\n" % pkg + "".join("import %s;\n" % e for e in ext)
+    for k in (7, 14, 21, 28):
+        j = (i + k) % 5000
+        s += "import com.acme.p%d.C%d;\n" % (j % 50, j)
+    s += "public class C%d {}\n" % i
+    with open(os.path.join(d, "C%d.java" % i), "w") as f:
+        f.write(s)
+PY
+```
+
+   As soon as jetl starts, open `src/main/java/com/acme/p0/C0.java` and run File Dependencies. If the toast `No file dependencies yet; the project is still being indexed` shows, run it again. The root row shows `…` for a while, and with no key pressed it gets the children `src/main/java/com/acme/p14/C14.java`, `src/main/java/com/acme/p21/C21.java`, `src/main/java/com/acme/p28/C28.java`, `src/main/java/com/acme/p7/C7.java` (about 1 to 4 s after the command in the measured runs). Tab: `Imported by` with `src/main/java/com/acme/p22/C4972.java`, `p29/C4979.java`, `p36/C4986.java`, `p43/C4993.java` (same directory prefix). Stderr is empty, Ctrl+Q exits 0.
 
 ### Scenario: structural search
 

@@ -256,7 +256,8 @@ impl App {
         }
     }
 
-    /// Fill `node`'s children of an index tree at once.
+    /// Fill `node`'s children of an index tree: from the index at once, or for Imports and Imported by from the import
+    /// edges when they are ready; else `node` waits (`loading`, shown as `…`) and the edges are asked for.
     fn hierarchy_index_children(&mut self, node: usize) {
         let Some((direction, item)) = self.hierarchy.as_ref().and_then(|t| t.nodes.get(node).map(|n| (t.direction, n.item.clone()))) else {
             return;
@@ -1131,6 +1132,62 @@ mod tests {
         }
         assert_eq!(child_names(&app, 0), ["src/a.rs", "src/b.rs"]);
         assert!(app.hierarchy.as_ref().unwrap().nodes.iter().all(|n| !n.loading));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn file_dependencies_fill_after_a_build_of_an_older_index_version() {
+        let (mut app, dir) = test_app("hier-files-stale");
+        index_only(&mut app, &DEP_FILES);
+        crate::app::tests::load(&mut app, "src/main.rs", DEP_FILES[0].1);
+        // The window waits and starts the build of the current version.
+        app.perform(Action::Hierarchy(HierarchyAction::FileDependencies));
+        assert!(app.hierarchy.as_ref().unwrap().nodes[0].loading);
+        // The index moves on while that build runs.
+        let seq = app.symbols.start(app.workspace.root.clone()).seq;
+        let batch = crate::symbols::index::SymbolBatch { files: vec![("src/c.rs".to_string(), None)], done: true, changed: true };
+        assert!(app.symbols.on_batch(seq, batch).is_some());
+        // Only the edges: the build of the older version arrives first and is dropped, the next one fills the window.
+        let mut arrived = 0;
+        while app.hierarchy.as_ref().unwrap().nodes[0].loading {
+            let m = tokio::time::timeout(std::time::Duration::from_secs(5), app.bus_rx.recv())
+                .await
+                .expect("the window fills after the stale build")
+                .expect("bus open");
+            if matches!(m, AppMsg::ImportEdges { .. }) {
+                arrived += 1;
+                app.handle_msg(m);
+            }
+        }
+        assert_eq!(arrived, 2);
+        assert!(app.symbols.edges_ready());
+        assert_eq!(child_names(&app, 0), ["src/a.rs", "src/b.rs"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn edges_ready_leave_a_tree_that_does_not_wait_for_them_alone() {
+        // A language server tree with a node waiting for its server.
+        let (mut s, _servers) = setup("hier-edges-lsp", call_caps()).await;
+        started(&mut s).await;
+        assert!(s.app.hierarchy.as_ref().unwrap().nodes[0].loading);
+        s.app.hierarchy_edges_ready();
+        let t = s.app.hierarchy.as_ref().unwrap();
+        assert!(t.nodes[0].loading && t.nodes[0].children.is_none());
+        let _ = std::fs::remove_dir_all(&s.dir);
+        // An index call tree with a node marked waiting.
+        let (mut app, dir) = test_app("hier-edges-calls");
+        index(&mut app, &[("src/b.rs", IDX_B), ("src/main.rs", IDX_MAIN)]);
+        crate::app::tests::load(&mut app, "src/b.rs", IDX_B);
+        goto(&mut app, 0, 8);
+        app.perform(Action::Lsp(LspAction::CallHierarchy));
+        let t = app.hierarchy.as_mut().unwrap();
+        assert!(t.from_index() && t.direction == Direction::Callers);
+        t.nodes[0].loading = true;
+        t.nodes[0].children = None;
+        app.hierarchy_edges_ready();
+        let t = app.hierarchy.as_ref().unwrap();
+        assert!(t.nodes[0].loading && t.nodes[0].children.is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
