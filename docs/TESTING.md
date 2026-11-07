@@ -2757,6 +2757,10 @@ Setup as above, `[lsp] enabled = false`, at 80x24 and 120x40.
 7. View menu: "Undock or Dock Tool Window" is greyed with the editor focused, enabled with a tool window focused.
 8. Ctrl+Q, restart: Structure, Find and Project are still Undocked (View Mode submenu shows "Undock" greyed). Shift+F12
    (Restore Default Layout): all three are Pinned again. Stderr empty, Ctrl+Q exits 0.
+9. Right-click Structure's button > View Mode > Undock, with Structure on the left. Alt+1 if Project is shown, so the
+   editor area starts at the strip. Alt+7, click the editor text right of Structure, Ctrl+F: the bar opens with its input
+   under Structure and no terminal cursor shows on Structure (`#{cursor_flag}` prints 0). Type `a`, Ctrl+R, Tab: still 0.
+   Esc closes the bar. Click into Structure, Esc: it slides away. Ctrl+F: the cursor is in the input, the flag is 1.
 
 ### Scenario: Structure for C#, Kotlin, Ruby, PHP and Swift
 

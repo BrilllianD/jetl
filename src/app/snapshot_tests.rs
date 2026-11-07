@@ -4290,6 +4290,61 @@ async fn undocked_overlay_beside_the_caret_keeps_the_cursor() {
     assert_eq!(app.editor.caret_cell(), Some((p.x, p.y)));
 }
 
+/// An Undocked window on `side`, the find bar open with `two` typed into it.
+fn app_with_find_bar_and_undocked_window(app: &mut App, side: crate::ui::focus::Side) {
+    use crate::ui::focus::Dock;
+    use crate::ui::layout::ViewMode;
+    load(app, "notes.log", PLAIN);
+    app.move_tool_window(ToolWindowId::Problems, Dock { side, split: false });
+    app.layout.set_view_mode(ToolWindowId::Problems, ViewMode::Undocked);
+    app.toggle_tool_window(ToolWindowId::Problems);
+    app.perform(Action::App(AppAction::FocusEditor));
+    editor(app, EditorAction::Replace);
+    for c in "two".chars() {
+        app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+}
+
+#[tokio::test]
+async fn find_bar_under_an_undocked_window_shows_no_cursor() {
+    use crate::ui::focus::Side;
+    let mut fx = stable_app("find-bar-under-undocked");
+    let app = &mut fx.app;
+    app_with_find_bar_and_undocked_window(app, Side::Left);
+    let term = draw_app(app, 80, 24);
+    let ov = app.layout.rects.overlay;
+    assert!(!ov.is_empty());
+    assert!(!term.backend().cursor_visible(), "Query field: the cursor shows over the window");
+    // The Replace field is under the window too.
+    app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    let term = draw_app(app, 80, 24);
+    assert!(!term.backend().cursor_visible(), "Replace field: the cursor shows over the window");
+    app.handle_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE));
+    // The window gone, the cursor is back, and it was under the window.
+    app.layout.hide(ToolWindowId::Problems);
+    let term = draw_app(app, 80, 24);
+    let p = term.backend().cursor_position();
+    assert!(term.backend().cursor_visible());
+    assert!(ov.contains(p), "the cursor cell {p:?} was not under the window {ov:?}");
+}
+
+#[tokio::test]
+async fn find_bar_beside_an_undocked_window_keeps_the_cursor() {
+    use crate::ui::focus::Side;
+    let mut fx = stable_app("find-bar-beside-undocked");
+    let app = &mut fx.app;
+    app_with_find_bar_and_undocked_window(app, Side::Right);
+    let term = draw_app(app, 120, 40);
+    assert!(term.backend().cursor_visible());
+    let p = term.backend().cursor_position();
+    assert!(!app.layout.rects.overlay.is_empty());
+    assert!(!app.layout.rects.overlay.contains(p));
+    app.layout.hide(ToolWindowId::Problems);
+    let term = draw_app(app, 120, 40);
+    assert!(term.backend().cursor_visible());
+    assert_eq!(term.backend().cursor_position(), p);
+}
+
 #[tokio::test]
 async fn app_toolbar() {
     let mut fx = stable_app("toolbar");

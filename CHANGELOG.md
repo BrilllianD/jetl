@@ -81,6 +81,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Import edges: the first File Dependencies or file ranking after indexing a large Java project no longer spends seconds on imports of external packages.
 - Approximate call hierarchy: listing the callees of a long function in a large project no longer pauses the editor on repeat lookups; the first use after a change still rebuilds the import edges.
 - The terminal cursor no longer shows on top of an Undocked tool window when the editor caret lies under it.
+- The terminal cursor no longer shows on top of an Undocked tool window when the focused find bar's input lies under it.
 - Tool window layouts: the success toast and the current layout now wait for the write to succeed, so a failed save, rename or delete only shows its error and leaves the current layout as it was; rename and delete now confirm with a toast.
 - SCIP indexes: an `index.scip` above 256 MiB is refused with one warning instead of loading it; it would take about 7 times its size in memory. After a load the freed parse memory is returned to the system: jetl's own 34 MiB index stays at 2.1 times its size instead of 3.6.
 - Find window: the status (the match count, `N excluded`, `+ N file operations`, a search error) has its own row under the inputs and reads whole at 80x24 and 120x40, where it was hidden or clipped. The results list is one row shorter.

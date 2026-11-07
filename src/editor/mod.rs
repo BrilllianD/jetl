@@ -1952,7 +1952,7 @@ impl Editor {
             group.find_area = Rect::new(area.x, area.y, area.width, h);
             text_rect = Rect::new(area.x, area.y + h, area.width, area.height - h);
             bar_focused = focused && s.focused;
-            group.find_hits = render_find_bar(frame, group.find_area, s, bar_focused, theme);
+            group.find_hits = render_find_bar(frame, group.find_area, s, bar_focused, self.covered, theme);
         }
         // The breadcrumb row takes the bottom row; `view::render` scrolls the
         // caret into what is left, so `text_area` stays exact.

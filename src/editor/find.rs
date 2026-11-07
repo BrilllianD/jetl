@@ -15,6 +15,7 @@ use crate::actions::EditorAction;
 use crate::app::Ctx;
 use crate::config::theme::Theme;
 use crate::event::{Level, Mouse};
+use crate::ui::widgets::text_input::TextInput;
 
 /// Clickable parts of the find bar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -298,11 +299,27 @@ pub(super) fn refresh_search(b: &mut Buffer) {
     }
 }
 
+/// Puts the terminal cursor on `input`, unless an Undocked window covers that cell.
+fn place_cursor(frame: &mut Frame, input: &TextInput, field: Rect, covered: Rect) {
+    if let Some((x, y)) = input.cursor_cell(field)
+        && !covered.contains(ratatui::layout::Position::new(x, y))
+    {
+        frame.set_cursor_position((x, y));
+    }
+}
+
 /// Draw the find bar into `area` (1 row, 2 with replace) and return the
 /// clickable regions:
 /// `Find:    [query] Cc W .*  n/m  ↑ ↓ ×`
 /// `Replace: [text]  [Replace] [Replace all]`
-pub(super) fn render_find_bar(frame: &mut Frame, area: Rect, s: &mut SearchState, focused: bool, theme: &Theme) -> Vec<(FindHit, Rect)> {
+pub(super) fn render_find_bar(
+    frame: &mut Frame,
+    area: Rect,
+    s: &mut SearchState,
+    focused: bool,
+    covered: Rect,
+    theme: &Theme,
+) -> Vec<(FindHit, Rect)> {
     let mut hits = Vec::new();
     let bar = Style::default().bg(theme.panel_bg).fg(theme.fg);
     let input_style = Style::default().bg(theme.bg).fg(theme.fg);
@@ -330,7 +347,10 @@ pub(super) fn render_find_bar(frame: &mut Frame, area: Rect, s: &mut SearchState
     let mut x = area.x + 1;
     put(frame, &mut x, y, "Find:    ", bar);
     let field = Rect::new(x, y, input_w.min(right.saturating_sub(x)), 1);
-    s.query.render(frame, field, input_style, "search", theme.dim.bg(theme.bg), focused && s.field == Field::Query);
+    s.query.render(frame, field, input_style, "search", theme.dim.bg(theme.bg), false);
+    if focused && s.field == Field::Query {
+        place_cursor(frame, &s.query, field, covered);
+    }
     hits.push((FindHit::QueryField, field));
     x += field.width;
     let on = theme.strip_item_active;
@@ -362,7 +382,10 @@ pub(super) fn render_find_bar(frame: &mut Frame, area: Rect, s: &mut SearchState
         let mut x = area.x + 1;
         put(frame, &mut x, y, "Replace: ", bar);
         let field = Rect::new(x, y, input_w.min(right.saturating_sub(x)), 1);
-        s.replace.render(frame, field, input_style, "replace with", theme.dim.bg(theme.bg), focused && s.field == Field::Replace);
+        s.replace.render(frame, field, input_style, "replace with", theme.dim.bg(theme.bg), false);
+        if focused && s.field == Field::Replace {
+            place_cursor(frame, &s.replace, field, covered);
+        }
         hits.push((FindHit::ReplaceField, field));
         x += field.width;
         for (hit, label) in [(FindHit::ReplaceOne, " Replace "), (FindHit::ReplaceAll, " Replace all ")] {

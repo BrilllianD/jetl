@@ -230,7 +230,7 @@ impl TextInput {
         }
         let buf = frame.buffer_mut();
         buf.set_style(area, style);
-        let (cline, ccol) = self.line_col();
+        let (cline, _) = self.line_col();
         // Keep the cursor row visible.
         if cline < self.scroll {
             self.scroll = cline;
@@ -260,17 +260,28 @@ impl TextInput {
                 buf.set_stringn(area.x, area.y + i as u16, line, area.width as usize, style);
             }
         }
-        if focused {
-            let lines: Vec<&str> = self.text.split('\n').collect();
-            let cw: usize = if self.multiline {
-                lines.get(cline).map(|l| l.chars().take(ccol).map(|c| c.width().unwrap_or(1)).sum()).unwrap_or(0)
-            } else {
-                cells(&chars[self.hscroll..self.cursor])
-            };
-            let cx = area.x + (cw as u16).min(area.width.saturating_sub(1));
-            let cy = area.y + (cline - self.scroll) as u16;
-            frame.set_cursor_position((cx, cy));
+        if focused && let Some(cell) = self.cursor_cell(area) {
+            frame.set_cursor_position(cell);
         }
+    }
+
+    /// The cell `render` puts the terminal cursor on, `None` for an empty `area`.
+    /// Valid after `render` has run for the same `area`, which settles the scroll.
+    pub fn cursor_cell(&self, area: Rect) -> Option<(u16, u16)> {
+        if area.width == 0 || area.height == 0 {
+            return None;
+        }
+        let (cline, ccol) = self.line_col();
+        let cw: usize = if self.multiline {
+            let lines: Vec<&str> = self.text.split('\n').collect();
+            lines.get(cline).map(|l| l.chars().take(ccol).map(|c| c.width().unwrap_or(1)).sum()).unwrap_or(0)
+        } else {
+            let chars: Vec<char> = self.text.chars().collect();
+            cells(&chars[self.hscroll..self.cursor])
+        };
+        let cx = area.x + (cw as u16).min(area.width.saturating_sub(1));
+        let cy = area.y + (cline - self.scroll) as u16;
+        Some((cx, cy))
     }
 }
 
@@ -303,6 +314,26 @@ mod tests {
         draw(&mut i, &mut t);
         assert_eq!(row(&t), "abcdefghij");
         assert_eq!(t.get_cursor_position().unwrap().x, 0);
+    }
+
+    #[test]
+    fn cursor_cell_is_where_render_puts_the_cursor() {
+        let mut t = term(10);
+        for text in ["abcdefghijklmnop", "日本語", "ab"] {
+            let mut i = TextInput::new(false).with_text(text);
+            draw(&mut i, &mut t);
+            let p = t.get_cursor_position().unwrap();
+            assert_eq!(i.cursor_cell(Rect::new(0, 0, 10, 1)), Some((p.x, p.y)), "{text}");
+            i.home();
+            draw(&mut i, &mut t);
+            let p = t.get_cursor_position().unwrap();
+            assert_eq!(i.cursor_cell(Rect::new(0, 0, 10, 1)), Some((p.x, p.y)), "{text} at home");
+        }
+        // Wide characters: 3 of them take 6 cells.
+        let mut i = TextInput::new(false).with_text("日本語");
+        draw(&mut i, &mut t);
+        assert_eq!(i.cursor_cell(Rect::new(0, 0, 10, 1)), Some((6, 0)));
+        assert_eq!(i.cursor_cell(Rect::default()), None);
     }
 
     #[test]
