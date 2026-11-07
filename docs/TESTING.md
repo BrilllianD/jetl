@@ -1272,12 +1272,12 @@ Figures, jetl's `VmHWM` unless noted, 120x40 (the `long16k` stall also at 80x24)
 
 | Fixture, mode | After | Before |
 |---|---|---|
-| `long16k` stall 30 s | 307 MB, flat (80x24: 282 MB) | 3857 MB, over the guard after 20 s of the stall |
+| `long16k` stall 30 s | 307 MB, flat (80x24: 282 MB, in 23 s of the stall, when gdb reached the guard) | 3857 MB, over the guard after 20 s of the stall |
 | `long16k` free 30 s | 317 MB, flat in the last 10 s | 2654 MB |
 | `long1mnl` stall 20 s | 293 MB | about 3 GB (designer's run) |
 | `spew5` stall 30 s | 82 MB, `resume_now` key latency 23 ms | 678 MB, 159 ms |
 | `uniqlong` free 20 s | 200 MB | about 1.4 GB (designer's run) |
-| `uniq` free 30 s | 38 MB | 123 MB |
+| `uniq` free 30 s | 38 MB | 123 MB, both from about 4 s after Ctrl+F2: gdb holds this output until then, so jetl sees none of it in the run |
 | `spew5` free 30 s | 34 MB | 37 MB |
 | `flood` | 35 MB | not run |
 
@@ -1289,7 +1289,7 @@ Steps, at 80x24 and 120x40, a private tmux socket and `XDG_*` under `/tmp`, `RUS
 2. `spew`: after 3 s of output Alt+F5 hides the window at once; Alt+F5 shows it; Ctrl+F2 gives `Debug session stopped` within 10 s and no `spew` or `gdb` is left. jetl stays near 40 MB.
 3. `long16k`: Shift+F9, then poll `capture-pane` every 100 ms for up to 60 s until `of output dropped` is there (it can be on screen only for a moment: the Console shows the end of each 50 ms batch). The row starts with a number of bytes, is in the warning colour (`capture-pane -e`: the colour of `important` text) and at 80x24 the words `of output dropped` fit. Ctrl+F2 gives `Debug session stopped`, Ctrl+Q exits 0 with empty stderr, and no `gdb` or `long16k` is left. jetl stays near 250 to 320 MB.
 
-What the gate cannot do, by design: gdb's own memory grows 50 to 67 MB/s under a printing program (2 GB in 30 s for `spew5`) whatever jetl does, so a probe that runs `spew5` or `long16k` for a minute can pass the 3 GB guard in gdb; read `VmHWM` of jetl, not the guard. Unit tests prove the rest: the gate's limit and hysteresis, the notice's order and text, the give-back of a hidden line, the matcher's budget. The fake adapter stands in for none of the figures above.
+What the gate cannot do, by design: gdb's own memory grows 50 to 67 MB/s under a printing program (2 GB in 30 s for `spew5`) whatever jetl does, so a probe that runs `spew5` or `long16k` for half a minute can pass the 3 GB guard in gdb (27.5 s from the session's start, once); read `VmHWM` of jetl, not the guard. Unit tests prove the rest: the gate's limit and hysteresis, the notice's order and text, the give-back of a hidden line, the matcher's budget. The fake adapter stands in for none of the figures above.
 
 ### Scenario: Debug window, threads and frames
 
