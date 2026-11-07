@@ -39,7 +39,7 @@ pub(super) use crate::lsp::caps::{
 };
 use crate::lsp::caps::{
     Caps, DECLARATION, DEFINITION, HOVER, IMPLEMENTATION, PREPARE_CALL_HIERARCHY, PREPARE_TYPE_HIERARCHY, REFERENCES, SIGNATURE_HELP,
-    TYPE_DEFINITION, WORKSPACE_SYMBOL,
+    TYPE_DEFINITION, WILL_RENAME_FILES, WORKSPACE_SYMBOL,
 };
 
 /// The method a tag was sent with.
@@ -69,6 +69,7 @@ fn method_of(tag: &PendingTag) -> &'static str {
         PendingTag::Initialize => "initialize",
         PendingTag::Shutdown => "shutdown",
         PendingTag::WillFileOp(_) => "workspace/will*Files",
+        PendingTag::RenameFileEdits(_) => WILL_RENAME_FILES,
         PendingTag::WorkspaceSymbols(_) => WORKSPACE_SYMBOL,
         PendingTag::CallHierarchy(_) => PREPARE_CALL_HIERARCHY,
         PendingTag::TypeHierarchy(_) => PREPARE_TYPE_HIERARCHY,
@@ -553,6 +554,9 @@ impl App {
         if let PendingTag::WillFileOp(seq) = tag {
             return self.will_file_op_answer(name, seq, result);
         }
+        if let PendingTag::RenameFileEdits(seq) = tag {
+            return self.rename_file_edits_answer(name, seq, result);
+        }
         if let PendingTag::WorkspaceSymbols(seq) = tag {
             return self.workspace_symbols_answer(name, seq, result);
         }
@@ -626,7 +630,7 @@ impl App {
             PendingTag::QuickDefinition(t) => self.lsp_quick_definition_answer(t, value),
             PendingTag::SignatureHelp(t) => self.signature_answer(t, value),
             PendingTag::PrepareRename(t) => self.lsp_prepare_rename_answer(t, value),
-            PendingTag::Rename(t) => self.lsp_rename_answer(t, value),
+            PendingTag::Rename(t) => self.lsp_rename_answer(name, t, value),
             PendingTag::CodeAction(t) => self.lsp_code_actions_answer(t, value, ActionsFor::Context),
             PendingTag::Refactor(t) => self.lsp_code_actions_answer(t, value, ActionsFor::Refactor),
             PendingTag::OrganizeImports(t) => self.lsp_code_actions_answer(t, value, ActionsFor::OrganizeImports),
@@ -644,6 +648,7 @@ impl App {
             | PendingTag::InlayHints(_)
             | PendingTag::SemanticTokens(_)
             | PendingTag::WillFileOp(_)
+            | PendingTag::RenameFileEdits(_)
             | PendingTag::WorkspaceSymbols(_)
             | PendingTag::HierarchyChildren { .. }
             | PendingTag::Initialize

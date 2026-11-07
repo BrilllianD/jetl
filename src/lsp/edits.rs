@@ -233,6 +233,36 @@ pub fn workspace_steps(edit: WorkspaceEdit) -> Result<Vec<Step>, String> {
     Ok(out)
 }
 
+/// `first`'s changes, then `then`'s, as one edit with `documentChanges`, each in its own order. A `changes`
+/// map (read only when its edit has no `documentChanges`) becomes unversioned `TextDocumentEdit`s sorted by
+/// URI, as [`workspace_steps`] orders it. The annotations of both are kept; `then`'s wins on an id clash.
+pub fn chain(first: WorkspaceEdit, then: WorkspaceEdit) -> WorkspaceEdit {
+    let mut ops = Vec::new();
+    let mut annotations = std::collections::HashMap::new();
+    for edit in [first, then] {
+        match edit.document_changes {
+            Some(DocumentChanges::Edits(edits)) => ops.extend(edits.into_iter().map(DocumentChangeOperation::Edit)),
+            Some(DocumentChanges::Operations(more)) => ops.extend(more),
+            None => {
+                let mut changes: Vec<_> = edit.changes.unwrap_or_default().into_iter().collect();
+                changes.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
+                ops.extend(changes.into_iter().map(|(uri, edits)| {
+                    DocumentChangeOperation::Edit(lsp_types::TextDocumentEdit {
+                        text_document: lsp_types::OptionalVersionedTextDocumentIdentifier { uri, version: None },
+                        edits: edits.into_iter().map(OneOf::Left).collect(),
+                    })
+                }));
+            }
+        }
+        annotations.extend(edit.change_annotations.unwrap_or_default());
+    }
+    WorkspaceEdit {
+        changes: None,
+        document_changes: Some(DocumentChanges::Operations(ops)),
+        change_annotations: (!annotations.is_empty()).then_some(annotations),
+    }
+}
+
 /// What a workspace edit changed: files, and edits in them; and the steps
 /// not made after one that failed.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -745,6 +775,54 @@ mod tests {
         let plan = plan(&b.rope, edits).unwrap();
         b.apply(plan.changes.clone(), Selection::point(0), TxKind::Other);
         (b.text(), plan)
+    }
+
+    fn line_edit(l: u32, text: &str) -> lsp_types::TextEdit {
+        serde_json::from_value(
+            serde_json::json!({"range": {"start": {"line": l, "character": 0}, "end": {"line": l, "character": 1}}, "newText": text}),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn chain_puts_the_first_edits_changes_before_the_seconds() {
+        let uri = |s: &str| s.parse::<lsp_types::Uri>().unwrap();
+        let first = WorkspaceEdit {
+            changes: Some(HashMap::from([
+                (uri("file:///p/b.rs"), vec![line_edit(1, "b")]),
+                (uri("file:///p/a.rs"), vec![line_edit(0, "a")]),
+            ])),
+            ..Default::default()
+        };
+        let then: WorkspaceEdit = serde_json::from_value(serde_json::json!({"documentChanges": [
+            {"kind": "rename", "oldUri": "file:///p/x.rs", "newUri": "file:///p/y.rs"}]}))
+        .unwrap();
+        let merged = chain(first, then);
+        assert!(merged.changes.is_none());
+        let steps = workspace_steps(merged).unwrap();
+        let shape: Vec<String> = steps
+            .iter()
+            .map(|s| match s {
+                Step::Edit(e) => format!("edit {}", e.path.display()),
+                Step::Op { op: FileOp::Rename { from, to, .. }, .. } => format!("rename {} {}", from.display(), to.display()),
+                s => panic!("{s:?}"),
+            })
+            .collect();
+        assert_eq!(shape, ["edit /p/a.rs", "edit /p/b.rs", "rename /p/x.rs /p/y.rs"]);
+    }
+
+    #[test]
+    fn chain_keeps_the_annotations_of_both() {
+        let ann = |id: &str, label: &str| serde_json::json!({id: {"label": label}});
+        let first: WorkspaceEdit = serde_json::from_value(serde_json::json!({"changeAnnotations": ann("one", "first")})).unwrap();
+        let then: WorkspaceEdit = serde_json::from_value(serde_json::json!({"changeAnnotations": ann("two", "second")})).unwrap();
+        let both = chain(first, then).change_annotations.unwrap();
+        assert_eq!(both.len(), 2);
+        assert_eq!(both["one"].label, "first");
+        assert_eq!(both["two"].label, "second");
+        let clash_a: WorkspaceEdit = serde_json::from_value(serde_json::json!({"changeAnnotations": ann("x", "old")})).unwrap();
+        let clash_b: WorkspaceEdit = serde_json::from_value(serde_json::json!({"changeAnnotations": ann("x", "new")})).unwrap();
+        assert_eq!(chain(clash_a, clash_b).change_annotations.unwrap()["x"].label, "new");
     }
 
     fn annotated_edit(needs_a: Option<bool>) -> WorkspaceEdit {

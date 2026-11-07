@@ -78,9 +78,11 @@ use crate::files::rename_preview::{
     self, OpenText, RenamePreview, RenameRequest, ScipFile, ScipRename, SpanCheck, TextualScope, TextualStage,
 };
 use crate::history::Ack;
-use crate::lsp::edits::{self, DiskStep, EditCounts, OpenDoc};
+use crate::lsp::caps::WILL_RENAME_FILES;
+use crate::lsp::edits::{self, DiskStep, EditCounts, FileOp, OpenDoc, Step};
 use crate::lsp::locations::LocationItem;
-use crate::lsp::{DocTag, EditOrigin, PendingTag, Refactoring, pos, symbols};
+use crate::lsp::transport::ResponseError;
+use crate::lsp::{DocTag, EditOrigin, PendingTag, Refactoring, SCRATCH_SUFFIX, pos, symbols, sync};
 use crate::symbols::scip::{Occ, Span, SymId};
 use crate::ui::dialog::{Dialog, DialogId};
 use crate::ui::focus::{PanelId, ToolWindowId};
@@ -178,6 +180,8 @@ impl ActionsFor {
 pub(super) struct EditReqs {
     /// The rename in flight: its seq, the old name and the new name.
     rename: Option<(u64, String, String)>,
+    /// The server's rename answer that waits for `workspace/willRenameFiles` (`rename_needs_file_edits`).
+    rename_files: Option<PendingRenameFiles>,
     /// The name in the rename dialog when it opened.
     rename_old: String,
     /// The rename dialog's "Search in comments and strings", as last answered. Kept for the session, not persisted.
@@ -190,6 +194,22 @@ pub(super) struct EditReqs {
     pub(super) confirm: Option<PendingConfirm>,
     /// The command in flight, for the unversioned edits it sends back.
     command: Option<CommandGuard>,
+}
+
+/// A rename answer that holds file renames and no text edit, held until the answering server's
+/// `workspace/willRenameFiles` answer (`PendingTag::RenameFileEdits(seq)`) supplies the edits for their uses.
+struct PendingRenameFiles {
+    seq: u64,
+    /// `Workspace::generation` when the request was sent; an answer after a root change is dropped.
+    generation: u64,
+    /// The server that answered the rename and is asked.
+    server: String,
+    /// The new name.
+    name: String,
+    /// The old name.
+    old: String,
+    /// The rename answer: it goes after the edits of `willRenameFiles`, or alone when they do not come.
+    edit: WorkspaceEdit,
 }
 
 /// A `workspace/executeCommand` in flight: the server computes its edit from the text it knew when
@@ -434,27 +454,92 @@ impl App {
         keep
     }
 
-    pub(super) fn lsp_rename_answer(&mut self, t: DocTag, value: Value) {
+    pub(super) fn lsp_rename_answer(&mut self, server: &str, t: DocTag, value: Value) {
         let Some((_, old, name)) = self.lsp.edit.rename.take_if(|r| r.0 == t.seq) else { return };
         let edit = if value.is_null() { Ok(None) } else { edits::read_workspace_edit(value).map(Some) };
         match edit {
-            Ok(Some(edit)) if self.config.lsp.rename_preview => match edits::workspace_steps(edit) {
-                Ok(steps) => {
-                    let (open, root) = (self.open_texts(), self.workspace.root.clone());
-                    let textual = self.lsp.edit.rename_in_text.then_some(TextualStage {
-                        scope: TextualScope::CommentsAndStrings,
-                        show_hidden: self.config.files.show_hidden,
-                        show_ignored: self.config.files.show_ignored,
-                    });
-                    self.rename_preview_start(RenameRequest { old, new: name, steps, open, root, textual });
-                }
-                Err(why) => self.edits_refused(EditOrigin::Rename(name), why),
+            Ok(Some(edit)) => match self.rename_needs_file_edits(server, &edit) {
+                Some(params) => self.rename_files_ask(server, params, old, name, edit),
+                None => self.rename_answer_edit(old, name, edit),
             },
-            Ok(Some(edit)) => {
-                self.apply_workspace_edit(edit, EditOrigin::Rename(name));
-            }
             Ok(None) => self.lsp_hint("Nothing to rename"),
             Err(e) => self.lsp_hint(format!("Rename: unexpected answer ({e})")),
+        }
+    }
+
+    /// The `workspace/willRenameFiles` params for the file renames of a rename answer, when `server` must be asked
+    /// for them: the answer holds a file rename and no text edit at all (rust-analyzer drops its text edits when
+    /// the client advertises `willRename`, and expects that request), and the server wants the request for one of
+    /// the paths. An answer with text edits would get them twice.
+    fn rename_needs_file_edits(&self, server: &str, edit: &WorkspaceEdit) -> Option<Value> {
+        if server.ends_with(SCRATCH_SUFFIX) {
+            return None;
+        }
+        let steps = edits::workspace_steps(edit.clone()).ok()?;
+        if steps.iter().any(|s| matches!(s, Step::Edit(e) if !e.edits.is_empty())) {
+            return None;
+        }
+        let mut files = Vec::new();
+        let mut wanted = false;
+        for step in &steps {
+            let Step::Op { op: FileOp::Rename { from, to, overwrite, .. }, .. } = step else { continue };
+            let (Some(old_uri), Some(new_uri)) = (sync::uri(from), sync::uri(to)) else { continue };
+            files.push(json!({"oldUri": old_uri.to_string(), "newUri": new_uri.to_string()}));
+            let is_dir = from.symlink_metadata().is_ok_and(|m| m.is_dir());
+            let op = FsOp::Rename { from: from.clone(), to: to.clone(), overwrite: *overwrite };
+            wanted |= self.file_op_servers(WILL_RENAME_FILES, &op, is_dir).iter().any(|n| n == server);
+        }
+        wanted.then(|| json!({"files": files}))
+    }
+
+    /// Send `params` to `server` and hold the rename answer `edit` until the reply.
+    fn rename_files_ask(&mut self, server: &str, params: Value, old: String, name: String, edit: WorkspaceEdit) {
+        self.lsp.last_seq += 1;
+        let seq = self.lsp.last_seq;
+        let Some(c) = self.lsp.clients.get_mut(server) else { return self.rename_answer_edit(old, name, edit) };
+        c.request(WILL_RENAME_FILES, params, PendingTag::RenameFileEdits(seq));
+        let generation = self.workspace.generation;
+        self.lsp.edit.rename_files = Some(PendingRenameFiles { seq, generation, server: server.to_string(), name, old, edit });
+    }
+
+    /// The server's answer to `workspace/willRenameFiles` for its own rename: its edits go before the rename
+    /// answer's. An error, a timeout or a null answer applies the rename answer alone, with a warning.
+    pub(super) fn rename_file_edits_answer(&mut self, server: &str, seq: u64, result: Result<Value, ResponseError>) {
+        let Some(p) = self.lsp.edit.rename_files.take_if(|p| p.seq == seq && p.generation == self.workspace.generation) else {
+            return tracing::debug!("dropping a stale willRenameFiles answer of {server} for a rename");
+        };
+        let will = match result {
+            Ok(v) if !v.is_null() => edits::read_workspace_edit(v).ok(),
+            _ => None,
+        };
+        let edit = match will {
+            Some(will) => edits::chain(will, p.edit),
+            None => {
+                let why = format!("Rename: {} sent no edits for the uses of the renamed files; check them after the rename", p.server);
+                self.notify(Level::Warn, why);
+                p.edit
+            }
+        };
+        self.rename_answer_edit(p.old, p.name, edit);
+    }
+
+    /// Preview a server's rename answer in Find, or apply it at once (`[lsp] rename_preview` off).
+    fn rename_answer_edit(&mut self, old: String, name: String, edit: WorkspaceEdit) {
+        if !self.config.lsp.rename_preview {
+            self.apply_workspace_edit(edit, EditOrigin::Rename(name));
+            return;
+        }
+        match edits::workspace_steps(edit) {
+            Ok(steps) => {
+                let (open, root) = (self.open_texts(), self.workspace.root.clone());
+                let textual = self.lsp.edit.rename_in_text.then_some(TextualStage {
+                    scope: TextualScope::CommentsAndStrings,
+                    show_hidden: self.config.files.show_hidden,
+                    show_ignored: self.config.files.show_ignored,
+                });
+                self.rename_preview_start(RenameRequest { old, new: name, steps, open, root, textual });
+            }
+            Err(why) => self.edits_refused(EditOrigin::Rename(name), why),
         }
     }
 
@@ -3171,6 +3256,124 @@ mod tests {
         fx.app.rename_preview_done(generation, seq, Ok((preview, vec![hit])));
         let last = fx.app.notifications.last().unwrap();
         assert_eq!((last.level, last.text.as_str()), (Level::Warn, "Text search stopped at 10000 matches; others are not listed"));
+        let _ = std::fs::remove_dir_all(&fx.dir);
+    }
+
+    // A rename that moves a file: rust-analyzer sends the move alone and expects `workspace/willRenameFiles`.
+
+    const MOD_MAIN: &str = "mod util;\nfn main() {\n    util::helper();\n    util::helper();\n}\n";
+    const MOD_RENAMED: &str = "mod assist;\nfn main() {\n    assist::helper();\n    assist::helper();\n}\n";
+
+    fn rename_caps() -> Value {
+        let mut c = caps();
+        c["workspace"] =
+            json!({"fileOperations": {"willRename": {"filters": [{"scheme": "file", "pattern": {"glob": "**/*.rs", "matches": "file"}}]}}});
+        c
+    }
+
+    /// The edits of `mod util;` and its two calls in `main`.
+    fn use_edits(main: &Path) -> Value {
+        json!({"textDocument": {"uri": uri(main), "version": 1}, "edits": [
+            edit(0, 4, 0, 8, "assist"), edit(2, 4, 2, 8, "assist"), edit(3, 4, 3, 8, "assist"),
+        ]})
+    }
+
+    struct ModRename {
+        app: App,
+        dir: PathBuf,
+        _servers: tokio::sync::mpsc::UnboundedReceiver<FakeServer>,
+        server: FakeServer,
+        util: PathBuf,
+        assist: PathBuf,
+        main: PathBuf,
+    }
+
+    impl ModRename {
+        /// `mod util;` open, `util.rs` on disk; Shift+F6 on `util`, new name `assist`, answered with `answer`
+        /// (the rename operation, preceded by the use edits when `with_edits`); the `willRenameFiles` request is not read.
+        async fn start(name: &str, preview: bool, with_edits: bool) -> ModRename {
+            let (mut app, dir) = test_app(name);
+            let mut servers = with_fake_servers(&mut app, rename_caps());
+            app.config.lsp.rename_preview = preview;
+            let mut server = open_on_server(&mut app, &mut servers, "main.rs", MOD_MAIN).await;
+            let root = app.workspace.root.clone();
+            let (main, util, assist) = (root.join("main.rs"), root.join("util.rs"), root.join("assist.rs"));
+            std::fs::write(&util, "pub fn helper() {}\n").unwrap();
+            app.editor.active_buffer_mut().unwrap().goto_line(0, 4);
+            app.perform(Action::Lsp(LspAction::Rename));
+            answer(&mut app, &mut server, "textDocument/prepareRename", range(0, 4, 0, 8)).await;
+            let d = app.dialog.take().expect("the rename dialog");
+            app.finish_dialog(d.id, DialogResult::Text("assist".into()));
+            let mut changes = Vec::new();
+            if with_edits {
+                changes.push(use_edits(&main));
+            }
+            changes.push(json!({"kind": "rename", "oldUri": uri(&util), "newUri": uri(&assist)}));
+            answer(&mut app, &mut server, "textDocument/rename", json!({"documentChanges": changes})).await;
+            ModRename { app, dir, _servers: servers, server, util, assist, main }
+        }
+
+        /// Read the `willRenameFiles` request and answer it with `result`.
+        async fn will_rename(&mut self, result: Value) -> Value {
+            let req = self.server.recv("workspace/willRenameFiles").await;
+            self.server.respond(req["id"].as_i64().unwrap(), result);
+            handle_next(&mut self.app, is_lsp).await;
+            req
+        }
+    }
+
+    #[tokio::test]
+    async fn a_module_rename_asks_will_rename_files_and_applies_its_edits_first() {
+        let mut fx = ModRename::start("rename-mod-apply", false, false).await;
+        let will = json!({"documentChanges": [use_edits(&fx.main)]});
+        let req = fx.will_rename(will).await;
+        assert_eq!(req["params"]["files"], json!([{"oldUri": uri(&fx.util), "newUri": uri(&fx.assist)}]));
+        handle_next(&mut fx.app, applied).await;
+        assert_eq!(text(&fx.app), MOD_RENAMED);
+        assert!(fx.assist.exists() && !fx.util.exists());
+        assert!(toasts(&fx.app).iter().any(|t| t.starts_with("Renamed to assist: 3 occurrences in 1 file")), "{:?}", toasts(&fx.app));
+        let _ = std::fs::remove_dir_all(&fx.dir);
+    }
+
+    #[tokio::test]
+    async fn a_module_rename_preview_counts_the_will_rename_edits() {
+        let mut fx = ModRename::start("rename-mod-preview", true, false).await;
+        let will = json!({"documentChanges": [use_edits(&fx.main)]});
+        fx.will_rename(will).await;
+        handle_next(&mut fx.app, preview_msg).await;
+        let preview = fx.app.find.rename_preview().expect("the preview");
+        let ops = preview.steps.iter().filter(|s| matches!(s, Step::Op { .. })).count();
+        assert_eq!((fx.app.find.hit_count(), ops), (3, 1));
+        assert!(matches!(preview.steps.first(), Some(Step::Edit(_))), "the use edits go before the move");
+        let want = "Rename util to assist: review the results, then Replace All (Alt+A)";
+        assert!(toasts(&fx.app).contains(&want.to_string()), "{:?}", toasts(&fx.app));
+        assert!(fx.util.exists() && !fx.assist.exists(), "nothing is written yet");
+        assert_eq!(text(&fx.app), MOD_MAIN);
+        let _ = std::fs::remove_dir_all(&fx.dir);
+    }
+
+    #[tokio::test]
+    async fn a_rename_answer_with_text_edits_sends_no_will_rename_files() {
+        let mut fx = ModRename::start("rename-mod-text", false, true).await;
+        handle_next(&mut fx.app, applied).await;
+        let methods: Vec<Value> = sent(&fx.app, &mut fx.server).await.iter().map(|m| m["method"].clone()).collect();
+        assert!(!methods.contains(&json!("workspace/willRenameFiles")), "{methods:?}");
+        assert_eq!(text(&fx.app), MOD_RENAMED);
+        assert!(fx.assist.exists() && !fx.util.exists());
+        let _ = std::fs::remove_dir_all(&fx.dir);
+    }
+
+    #[tokio::test]
+    async fn a_failed_will_rename_files_applies_the_rename_alone_with_a_warning() {
+        let mut fx = ModRename::start("rename-mod-failed", false, false).await;
+        let req = fx.server.recv("workspace/willRenameFiles").await;
+        fx.server.respond_error(req["id"].as_i64().unwrap(), -32603, "boom");
+        handle_next(&mut fx.app, is_lsp).await;
+        handle_next(&mut fx.app, applied).await;
+        assert!(fx.assist.exists() && !fx.util.exists());
+        assert_eq!(text(&fx.app), MOD_MAIN);
+        let want = "Rename: rust-analyzer sent no edits for the uses of the renamed files; check them after the rename";
+        assert!(fx.app.notifications.iter().any(|n| n.level == Level::Warn && n.text == want), "{:?}", toasts(&fx.app));
         let _ = std::fs::remove_dir_all(&fx.dir);
     }
 }

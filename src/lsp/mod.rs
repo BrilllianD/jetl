@@ -105,6 +105,8 @@ pub enum PendingTag {
     HierarchyChildren { tree: u64, node: usize },
     /// `workspace/will*Files` of a tree file operation; the seq of its `PendingFileOp`.
     WillFileOp(u64),
+    /// workspace/willRenameFiles for the file renames of a server's rename answer; the seq of EditReqs::rename_files.
+    RenameFileEdits(u64),
 }
 
 impl PendingTag {
@@ -114,6 +116,7 @@ impl PendingTag {
             PendingTag::Initialize
             | PendingTag::Shutdown
             | PendingTag::WillFileOp(_)
+            | PendingTag::RenameFileEdits(_)
             | PendingTag::WorkspaceSymbols(_)
             | PendingTag::HierarchyChildren { .. } => None,
             PendingTag::Definition(t)

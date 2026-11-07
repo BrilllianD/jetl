@@ -73,7 +73,7 @@ impl App {
     }
 
     /// Names of the running, non-scratch servers (sorted) that want `method` for the op's path.
-    fn file_op_servers(&self, method: &'static str, op: &FsOp, is_dir: bool) -> Vec<String> {
+    pub(super) fn file_op_servers(&self, method: &'static str, op: &FsOp, is_dir: bool) -> Vec<String> {
         let paths: Vec<&Path> = match op {
             FsOp::Create { path, .. } | FsOp::Delete { path, .. } => vec![path],
             FsOp::Rename { from, to, .. } => vec![from, to],

@@ -372,13 +372,18 @@ only when the window is narrower than the text. The confirm dialog also says
 it (`; 1 excluded`) and lists the operations. Stderr is empty and
 Ctrl+Q exits 0.
 
+Module rename (yman 444), same project: Shift+F6 on `util` of `mod util;`, name `assist`, Enter. Find shows
+3 rows in `src/main.rs` and `+ 1 file operation` (before the fix: `0 occurrences in 0 files`). Alt+A, Enter:
+`src` holds `assist.rs` and `main.rs`; `main.rs` reads `mod assist;` and two `assist::helper();`. Ctrl+S, then
+`cargo check` in the project exits 0. With `[lsp] rename_preview = false` the same rename applies at once.
+
 ### Scenario: Find status row
 
 At 80x24 and 120x40, with a scratch project holding `n.txt` of three `foo` lines. Alt+3: the row under `Find:`
 reads `type to search the project`. Type `foo`: `3 matches in 1 file`, the results start on the row below it.
 Alt+R, type `bar`: the Replace row sits between them. Tab, Down, Alt+Delete: `3 matches in 1 file; 1 excluded`,
 whole. With rust-analyzer, Shift+F6 on `mod util` in the rename preview scenario's project shows
-`+ 1 file operation`, whole. Stderr is empty and Ctrl+Q exits 0.
+`+ 1 file operation`, whole, and the rows now read `3 matches in 1 file`. Stderr is empty and Ctrl+Q exits 0.
 
 ### Scenario: rename with comments and strings
 
