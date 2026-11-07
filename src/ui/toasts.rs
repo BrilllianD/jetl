@@ -93,7 +93,8 @@ impl Toasts {
     /// a rect of `avoid` (open overlays) moves down to the first free row
     /// below it; one that no longer fits is not drawn. The left edge keeps
     /// right of any of `gutters` (editor line numbers and marks) it would touch,
-    /// down to `MIN_W` cells. A toast drawn for the first time is stamped `now`.
+    /// when it can clear them and keep `MIN_W` cells; other gutters stay covered.
+    /// A toast drawn for the first time is stamped `now`.
     pub fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Theme, avoid: &[Rect], gutters: &[Rect], now: Instant) {
         self.rects.clear();
         if self.items.is_empty() || area.width < 24 || area.height < 6 {
@@ -102,20 +103,27 @@ impl Toasts {
         let right = area.right().saturating_sub(1);
         let mut w = (area.width / 2).clamp(22, 52);
         let mut x = right.saturating_sub(w);
-        // A toast's edge on a gutter hides its marks: start right of it, down to MIN_W cells.
-        if let Some(clear) = gutters.iter().filter(|g| !g.is_empty() && g.x < right && g.right() > x).map(|g| g.right()).max() {
-            x = clear.min(right.saturating_sub(MIN_W)).max(x);
+        // A toast's edge on a gutter hides its marks: start right of it. Only a gutter
+        // that leaves MIN_W cells counts; a toast narrower than that would still cover it.
+        let room = right.saturating_sub(MIN_W);
+        if let Some(clear) =
+            gutters.iter().filter(|g| !g.is_empty() && g.x < right && g.right() > x && g.right() <= room).map(|g| g.right()).max()
+        {
+            x = clear;
             w = right - x;
         }
         let avoid: Vec<Rect> = avoid.iter().copied().filter(|r| !r.is_empty()).collect();
         // Keep the lower half free so toasts never cover much of the editor. The first
-        // one may go lower, or a short terminal would never show it; around overlays
-        // they may reach down to the status bar row.
+        // one may go lower, cut to the lines that fit above the status bar row, or a
+        // short terminal would never show it; around overlays they may reach down to
+        // that row.
         let half = area.y + area.height / 2;
         let full = area.bottom().saturating_sub(1);
         let mut y = area.y + 1;
         for t in self.items.iter_mut().rev() {
-            let lines = wrap(&t.text, (w - 4) as usize, MAX_LINES);
+            let first = avoid.is_empty() && self.rects.is_empty();
+            let max_lines = if first { MAX_LINES.min(usize::from(full.saturating_sub(y)).saturating_sub(2)) } else { MAX_LINES };
+            let lines = wrap(&t.text, (w - 4) as usize, max_lines);
             let h = lines.len() as u16 + 2;
             let mut rect = Rect::new(x, y, w, h);
             while let Some(below) = avoid.iter().filter(|r| r.intersects(rect)).map(|r| r.bottom()).max() {
@@ -282,7 +290,9 @@ mod tests {
         assert_eq!(at(&[Rect::new(36, 2, 7, 21)]), (43, 36));
         assert_eq!(at(&[Rect::new(36, 2, 7, 21), Rect::new(3, 2, 7, 21)]), (43, 36));
         assert_eq!(at(&[Rect::new(3, 2, 7, 21), Rect::new(36, 2, 7, 21)]), (43, 36));
-        assert_eq!(at(&[Rect::new(60, 2, 7, 21)]), (49, 30));
+        // A gutter no toast of MIN_W cells can clear is left alone.
+        assert_eq!(at(&[Rect::new(60, 2, 7, 21)]), (39, 40));
+        assert_eq!(at(&[Rect::new(36, 2, 7, 21), Rect::new(58, 2, 7, 21)]), (43, 36));
         assert_eq!(at(&[Rect::new(40, 2, 0, 21)]), (39, 40));
     }
 
@@ -326,6 +336,25 @@ mod tests {
         let r = draw_rects(&mut ts, Rect::new(0, 0, 80, 8), &[], &[]);
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].y, 1);
+    }
+
+    #[test]
+    fn first_toast_is_cut_to_fit_heights_6_and_7() {
+        let t0 = Instant::now();
+        for (h, lines) in [(6u16, 2u16), (7, 3)] {
+            let mut ts = Toasts::default();
+            ts.push(Level::Warn, "one\ntwo\nthree\nfour\nfive");
+            let theme = Theme::default();
+            let mut term = Terminal::new(TestBackend::new(80, h)).unwrap();
+            let buf = term.draw(|f| ts.render(f, Rect::new(0, 0, 80, h), &theme, &[], &[], t0)).unwrap().buffer.clone();
+            assert_eq!(ts.rects.len(), 1, "height {h}");
+            assert_eq!(ts.rects[0].1.height, lines + 2, "height {h}");
+            let last: String = (0..80).map(|x| buf[(x, lines + 1)].symbol().to_string()).collect();
+            assert!(last.contains('…'), "height {h}: {last:?}");
+            assert!(ts.items()[0].shown.is_some());
+            assert!(!ts.expire(t0 + ttl(Level::Warn) - Duration::from_millis(1)));
+            assert!(ts.expire(t0 + ttl(Level::Warn)));
+        }
     }
 
     #[test]

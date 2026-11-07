@@ -242,16 +242,20 @@ carets, moved with the text; `M-Tab` back to it and type at all of them.
 
 Fixture: `T=$(mktemp -d)`, `seq -f 'line %g of the toast check' 1 40 > $T/notes.txt`,
 `[lsp] enabled = false` in a private config. `jetl $T/notes.txt`, Esc (focuses
-the editor), Ctrl+Z: the Info toast `Nothing to undo`. In `capture-pane`, its `╭`
-is in cell 43 and its `╮` in cell 78 at 80x24 (0-based), and in cells 67 and 118
-at 120x40. At 80x24 every line number beside it is whole.
+the editor), Ctrl+Z: the Info toast `Nothing to undo`. Under tmux the Warning
+`Terminal lacks the kitty keyboard protocol: ...` stacks below it, and 5 s later,
+with the Info gone, it takes the top slot. In `capture-pane`, the `╭` of the first
+toast is in cell 43 and its `╮` in cell 78 at 80x24 (0-based), and in cells 67 and
+118 at 120x40. At 80x24 every line number beside it is whole.
 
 Then Settings (Ctrl+Alt+S), Language Servers page, set `SCIP index file` to
 `missing.scip`, Ctrl+S. At 120x40 the Warn toast `SCIP index missing.scip: ...`
-shows at once below the window and is gone about 8 s later with Settings still
-open. At 80x24 no toast shows. Wait 10 s and close Settings: the toast is there;
-6 s later it still is; 3 s after that it is gone. The Event Log (Alt+5) has one
-row for it.
+shows at once below the window, the Info `Reloaded config.toml` waits below it
+and takes its slot when the Warn is gone about 8 s later, with Settings still
+open; the Info is gone 4 s after that. At 80x24 no toast shows. Wait 10 s and
+close Settings: the Warn toast is there with the Info `Reloaded config.toml`
+below it; 6 s later the Warn still is (the Info is gone); 3 s after that it is
+gone. The Event Log (Alt+5) has one row for it.
 
 ### Scenario: short screen dialog
 
