@@ -3018,6 +3018,58 @@ pub(crate) mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A step refused with the check's answer given; the stack the refused thread still has.
+    async fn refuse_step_out(app: &mut App, fake: &mut FakeAdapter, message: &str) -> Value {
+        app.handle_key(key(F8, KeyModifiers::SHIFT));
+        let req = fake.recv("stepOut").await;
+        fake.respond_error(&req, message);
+        let ask = fake.recv("stackTrace").await;
+        assert_eq!(ask["arguments"]["levels"], 1);
+        ask
+    }
+
+    #[tokio::test]
+    async fn a_refused_step_returns_to_the_pause() {
+        let (mut app, dir, mut fakes) = setup("step-refused-stopped", Order::LaunchEarly);
+        let a = six(&mut app);
+        let mut fake = paused(&mut app, &mut fakes, &a, 2).await;
+        let message = "\"finish\" not meaningful in the outermost frame.";
+        let before = epoch_of(&app);
+        let ask = refuse_step_out(&mut app, &mut fake, message).await;
+        fake.respond(&ask, json!({"stackFrames": [frame(&a, 2)]}));
+        // The resume bumped the epoch once and the returned stop bumps it again; both reach the App.
+        pump_until(&mut app, |x| epoch_of(x) == before + 2).await;
+        assert_eq!(app.debug.phase(), Some(Phase::Suspended));
+        let req = fake.recv("stackTrace").await;
+        assert_eq!(req["arguments"]["levels"], 20);
+        fake.respond(&req, json!({"stackFrames": [frame(&a, 2)]}));
+        let req = fake.recv("threads").await;
+        fake.respond(&req, json!({"threads": [{"id": 7, "name": "t"}]}));
+        pump_until(&mut app, |x| point(x) == Some((a.clone(), 1))).await;
+        assert!(texts(&app).contains(&format!("stepOut: {message}")), "{:?}", texts(&app));
+        assert_eq!(thread_of(&app), Some(7));
+        press(&mut app, F8);
+        fake.recv("next").await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_refused_step_of_a_program_not_stopped_stays_running() {
+        let (mut app, dir, mut fakes) = setup("step-refused-running", Order::LaunchEarly);
+        let a = six(&mut app);
+        let mut fake = paused(&mut app, &mut fakes, &a, 2).await;
+        let ask = refuse_step_out(&mut app, &mut fake, "Command aborted.").await;
+        fake.respond_error(&ask, "notStopped");
+        pump_until(&mut app, |x| texts(x).iter().any(|t| t == "stepOut: Command aborted.")).await;
+        // The Pause round trip proves the machine is Running and still accepts it.
+        app.perform(Action::Debug(DebugAction::Pause));
+        fake.recv("pause").await;
+        assert_eq!(point(&app), None);
+        assert_eq!(app.debug.phase(), Some(Phase::Running));
+        assert!(!texts(&app).iter().any(|t| t.starts_with("Could not read")), "{:?}", texts(&app));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[tokio::test]
     async fn an_answer_refused_at_shutdown_is_silent() {
         let (mut app, dir, _fakes, _fake) = live("step-shutdown-answer", Order::LaunchEarly).await;

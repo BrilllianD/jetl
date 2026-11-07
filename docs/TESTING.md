@@ -1115,9 +1115,25 @@ exactly one is the pass.
 9. F7 outside a pause: in the editor with no session, F7 moves to the next change (a line was edited: type a space
    at the end of line 12, Ctrl+G, `1`, Enter, F7 puts the caret on line 12) and sends nothing. Ctrl+Z.
 10. Ctrl+Q while paused: exit 0, empty stderr, no `demo` or `gdb` left.
+11. A refused step, program still stopped. Fixture `/tmp/jetl-dap-outer`: `outer.c` is
+    `void _start(void) {` / `    volatile int n = 1;` / `    n = n + 1;` /
+    `    __asm__("mov $60, %eax; xor %edi, %edi; syscall");` / `}`, built with
+    `gcc -g -O0 -static -nostdlib -o outer outer.c`, and a `.jetl/run.toml` like the demo's. `jetl outer.c`,
+    Ctrl+G, `3`, Enter, Ctrl+F8, Shift+F9: the title `paused (breakpoint)`, `3▶`. Shift+F8: `-> stepOut`,
+    `<- response stepOut success false`, `-> stackTrace`, `<- response stackTrace success true` (the check; its `levels` 1
+    is shown by the unit tests only, the log does not print arguments), a toast `stepOut: "finish" not meaningful in the
+    outermost frame.` (it wraps at 80 columns), then the stop's own `-> stackTrace` and `-> threads` and `dap: execution point`.
+    The title is `paused (breakpoint)` again, one `▶` on line 3 once the toast is gone. F8: `-> next`, `4▶`.
+    F9: `exit code 0`, no `gdb` left.
+12. A refused step, program not stopped. In `/tmp/jetl-dap-demo`, `launch = { program =
+    "${workspaceFolder}/demo", stopOnEntry = true }`: Shift+F9, the toast `Paused in`, no source. Shift+F8: a
+    toast `stepOut: Command aborted.`, `-> stackTrace` once and `<- response stackTrace success false` in the log (the
+    log does not print the text, `notStopped`; no `dap: execution point` follows), the title says `running`, not `paused`,
+    and no toast starts with `Could not read`. Ctrl+F2: `Debug session stopped`, no `gdb` or `demo`
+    left. Restore `.jetl/run.toml`.
 
-gdb can show: the arrow and the line on every stop, the three steps, the return with Alt+F10, the pause, and a
-cleared breakpoint that does not stop the program. gdb cannot show, and the unit tests prove: a stop with no
+gdb can show: the arrow and the line on every stop, the three steps, the return with Alt+F10, the pause, a
+cleared breakpoint that does not stop the program, and a refused step-out in both outcomes. gdb cannot show, and the unit tests prove: a refused `next`, `stepIn` or `continue` (gdb answers the first two before trying them), a stop with no
 `threadId` (gdb always sends one), a frame with no source or with a `sourceReference` (gdb has the source here), a
 stale answer to `stackTrace` after a step, the other two start orders, a `continued` event, a failed `stackTrace`, an
 empty stack or thread list, the point clearing on a new start or a root switch, and the other keys of the Git, Local

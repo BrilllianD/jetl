@@ -134,9 +134,17 @@ enum PendingKind {
     },
     SetExceptionBreakpoints,
     ConfigurationDone,
-    /// A step or `pause`; the epoch after its own bump.
+    /// A step, `continue` or `pause`; the epoch after its own bump. `resumed` is the thread of a step or `continue`,
+    /// `None` for a `pause`.
     Step {
         epoch: u64,
+        resumed: Option<i64>,
+    },
+    /// Whether the program is stopped after a refused step or `continue`: a refusal does not say so.
+    /// Under gdb, `finish` in the outermost frame leaves it stopped, and `Command aborted.` leaves it `notStopped`.
+    StopCheck {
+        epoch: u64,
+        thread: i64,
     },
     Tagged(DapTag),
     Terminate,
@@ -197,6 +205,8 @@ pub struct Session {
     /// Expired in `seq` order, deterministic.
     pending: BTreeMap<i64, Pending>,
     newest_breakpoints: BTreeMap<PathBuf, i64>,
+    /// The newest stop's event, given again when a refused resume returns to it.
+    last_stop: StoppedEvent,
 }
 
 impl Session {
@@ -217,6 +227,7 @@ impl Session {
             stop: None,
             pending: BTreeMap::new(),
             newest_breakpoints: BTreeMap::new(),
+            last_stop: StoppedEvent::default(),
         }
     }
 
@@ -430,9 +441,23 @@ impl Session {
                     self.report(format!("setExceptionBreakpoints: {}", r.error_text()), out);
                 }
             }
-            PendingKind::Step { epoch } => {
+            PendingKind::Step { epoch, resumed } => {
                 if !r.success && epoch == self.epoch {
                     self.report(format!("{}: {}", p.command, r.error_text()), out);
+                    if let Some(thread) = resumed
+                        && self.phase == Phase::Running
+                    {
+                        let arguments = json!({"threadId": thread, "startFrame": 0, "levels": 1});
+                        self.send("stackTrace", arguments, PendingKind::StopCheck { epoch, thread }, now, out);
+                    }
+                }
+            }
+            PendingKind::StopCheck { epoch, thread } => {
+                if r.success && epoch == self.epoch && self.phase == Phase::Running {
+                    self.epoch += 1;
+                    self.set_phase(Phase::Suspended, out);
+                    let event = StoppedEvent { thread_id: Some(thread), ..self.last_stop.clone() };
+                    out.push(Action::Emit(DapBody::Stopped { epoch: self.epoch, event }));
                 }
             }
             PendingKind::Tagged(tag) => {
@@ -463,6 +488,7 @@ impl Session {
                 self.epoch += 1;
                 self.set_phase(Phase::Suspended, out);
                 let event: StoppedEvent = body_of("stopped", e.body);
+                self.last_stop = event.clone();
                 out.push(Action::Emit(DapBody::Stopped { epoch: self.epoch, event }));
             }
             "continued" if live => {
@@ -536,7 +562,8 @@ impl Session {
                     ResumeKind::StepIn => "stepIn",
                     ResumeKind::StepOut => "stepOut",
                 };
-                self.send(command, json!({ "threadId": thread }), PendingKind::Step { epoch: self.epoch }, now, out);
+                let kind = PendingKind::Step { epoch: self.epoch, resumed: Some(thread) };
+                self.send(command, json!({ "threadId": thread }), kind, now, out);
                 self.set_phase(Phase::Running, out);
                 out.push(Action::Emit(DapBody::Running { epoch: self.epoch }));
             }
@@ -545,7 +572,8 @@ impl Session {
                     return;
                 }
                 self.epoch += 1;
-                self.send("pause", json!({ "threadId": thread }), PendingKind::Step { epoch: self.epoch }, now, out);
+                let kind = PendingKind::Step { epoch: self.epoch, resumed: None };
+                self.send("pause", json!({ "threadId": thread }), kind, now, out);
             }
             Command::Stop => {
                 self.stop_silent = true;
@@ -592,11 +620,13 @@ impl Session {
                     self.config_done = true;
                     self.maybe_running(out);
                 }
-                PendingKind::Step { epoch } => {
+                PendingKind::Step { epoch, .. } => {
                     if epoch == self.epoch {
                         self.report(format!("{} timed out", p.command), out);
                     }
                 }
+                // The refusal was already shown and the state is unknown, so it stays `Running`.
+                PendingKind::StopCheck { .. } => {}
                 PendingKind::Tagged(tag) => {
                     if tag.epoch >= self.epoch {
                         out.push(Action::Emit(DapBody::Response { tag, result: Err("timed out".into()) }));
@@ -1364,14 +1394,134 @@ mod tests {
         let mut h = suspended();
         h.cmd(Command::Resume { kind: ResumeKind::Next, thread: 7 });
         h.fail("next", "notStopped");
-        assert_eq!(h.last, vec![Action::Emit(DapBody::Error("next: notStopped".into()))]);
+        assert_eq!(h.errors(), ["next: notStopped"]);
+        let checks = h.requests("stackTrace");
+        assert_eq!(checks.len(), 1);
+        assert_eq!(checks[0]["arguments"], json!({"threadId": 7, "startFrame": 0, "levels": 1}));
         assert_eq!(h.phase(), Phase::Running);
+        h.take_emitted();
+        h.fail("stackTrace", "notStopped");
+        assert_eq!(h.phase(), Phase::Running);
+        assert!(!h.take_emitted().iter().any(|b| matches!(b, DapBody::Stopped { .. })));
 
         let mut h = suspended();
         h.cmd(Command::Resume { kind: ResumeKind::Next, thread: 7 });
         h.event("stopped", json!({"threadId": 7, "reason": "step"}));
         h.fail("next", "notStopped");
         assert!(h.last.is_empty());
+    }
+
+    #[test]
+    fn refused_resume_returns_to_the_stop_when_a_stack_answers() {
+        for (kind, name) in [
+            (ResumeKind::Next, "next"),
+            (ResumeKind::StepIn, "stepIn"),
+            (ResumeKind::StepOut, "stepOut"),
+            (ResumeKind::Continue, "continue"),
+        ] {
+            let mut h = suspended();
+            h.cmd(Command::Resume { kind, thread: 7 });
+            h.fail(name, "no");
+            h.take_emitted();
+            h.answer("stackTrace", json!({"stackFrames": []}));
+            let emitted = h.take_emitted();
+            let [DapBody::Phase(Phase::Suspended), DapBody::Stopped { epoch: 3, event }] = &emitted[..] else {
+                panic!("{name}: {emitted:?}");
+            };
+            assert_eq!(event.reason, "breakpoint", "{name}");
+            assert_eq!(event.thread_id, Some(7), "{name}");
+            assert_eq!(h.phase(), Phase::Suspended);
+            h.cmd(Command::Resume { kind: ResumeKind::Next, thread: 7 });
+            assert_eq!(h.requests("next").len(), usize::from(name == "next") + 1, "{name}");
+            assert_eq!(h.take_emitted(), vec![DapBody::Phase(Phase::Running), DapBody::Running { epoch: 4 }], "{name}");
+        }
+    }
+
+    #[test]
+    fn refused_resume_keeps_the_last_stops_event_and_the_chosen_thread() {
+        let mut h = running();
+        h.event("stopped", json!({"threadId": 7, "reason": "step", "hitBreakpointIds": [2]}));
+        h.cmd(Command::Resume { kind: ResumeKind::Next, thread: 4 });
+        h.fail("next", "no");
+        h.take_emitted();
+        h.answer("stackTrace", json!({"stackFrames": []}));
+        let emitted = h.take_emitted();
+        let Some(DapBody::Stopped { event, .. }) = emitted.last() else { panic!("{emitted:?}") };
+        assert_eq!(event.thread_id, Some(4));
+        assert_eq!(event.reason, "step");
+        assert_eq!(event.hit_breakpoint_ids, [2]);
+    }
+
+    #[test]
+    fn a_stop_check_goes_stale() {
+        for row in ["stopped", "continued", "pause", "stop"] {
+            let mut h = suspended();
+            h.cmd(Command::Resume { kind: ResumeKind::Next, thread: 7 });
+            h.fail("next", "no");
+            match row {
+                "stopped" => h.event("stopped", json!({"threadId": 7, "reason": "step"})),
+                "continued" => h.event("continued", json!({"threadId": 7})),
+                "pause" => h.cmd(Command::Pause { thread: 7 }),
+                _ => h.cmd(Command::Stop),
+            }
+            h.take_emitted();
+            h.answer("stackTrace", json!({"stackFrames": []}));
+            let emitted = h.take_emitted();
+            assert!(emitted.is_empty(), "{row}: the stale check emitted {emitted:?}");
+            if row == "stop" {
+                assert_eq!(h.phase(), Phase::Stopping);
+            }
+        }
+        // The `stopped` row: exactly one `Stopped` since the resume, the event's own.
+        let mut h = suspended();
+        h.cmd(Command::Resume { kind: ResumeKind::Next, thread: 7 });
+        h.fail("next", "no");
+        h.take_emitted();
+        h.event("stopped", json!({"threadId": 7, "reason": "step"}));
+        h.answer("stackTrace", json!({"stackFrames": []}));
+        let stops = h.take_emitted().iter().filter(|b| matches!(b, DapBody::Stopped { .. })).count();
+        assert_eq!(stops, 1);
+    }
+
+    #[test]
+    fn a_stop_check_that_times_out_stays_running() {
+        let mut h = suspended();
+        h.cmd(Command::Resume { kind: ResumeKind::Next, thread: 7 });
+        h.fail("next", "no");
+        h.advance(REQUEST_TIMEOUT);
+        assert_eq!(h.phase(), Phase::Running);
+        assert_eq!(h.errors(), ["next: no"]);
+    }
+
+    #[test]
+    fn a_refused_pause_asks_nothing() {
+        let mut h = running();
+        h.cmd(Command::Pause { thread: 7 });
+        h.fail("pause", "no");
+        assert_eq!(h.errors(), ["pause: no"]);
+        assert!(h.requests("stackTrace").is_empty());
+        assert_eq!(h.phase(), Phase::Running);
+    }
+
+    #[test]
+    fn a_refusal_during_a_terminated_stop_reports_and_asks_nothing() {
+        let mut h = suspended();
+        h.cmd(Command::Resume { kind: ResumeKind::Next, thread: 7 });
+        h.event("terminated", json!({}));
+        h.fail("next", "no");
+        assert!(h.errors().contains(&"next: no".to_string()));
+        assert!(h.requests("stackTrace").is_empty());
+        assert_eq!(h.phase(), Phase::Stopping);
+    }
+
+    #[test]
+    fn a_step_timeout_asks_nothing() {
+        let mut h = suspended();
+        h.cmd(Command::Resume { kind: ResumeKind::Next, thread: 7 });
+        h.advance(REQUEST_TIMEOUT);
+        assert_eq!(h.errors(), ["next timed out"]);
+        assert!(h.requests("stackTrace").is_empty());
+        assert_eq!(h.phase(), Phase::Running);
     }
 
     // ---- rule 8
