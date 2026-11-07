@@ -76,7 +76,8 @@ impl VarTree {
         self.roots = (0..self.nodes.len()).collect();
     }
 
-    /// The visible nodes in display order: the roots, each followed by its children when expanded and known.
+    /// The visible nodes in display order: the roots, each followed by its children when expanded and known, then by
+    /// its load-more row if it has one. That row is a node with no item of its own: `more_of` tells it apart.
     pub fn rows(&self) -> Vec<usize> {
         let mut rows = Vec::new();
         let mut stack: Vec<usize> = self.roots.iter().rev().copied().collect();
@@ -164,7 +165,8 @@ impl VarTree {
         n.more = more;
     }
 
-    /// The ask failed: the node closes, keeps no children, and Right asks again.
+    /// The ask failed. For a first page the node closes, keeps no children, and Right asks again; for a later page it
+    /// stays open with what it has, and its load-more row carries the message.
     pub fn set_failed(&mut self, i: usize, message: String) {
         let Some(n) = self.nodes.get_mut(i).filter(|n| n.loading) else { return };
         n.loading = false;

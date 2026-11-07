@@ -766,7 +766,8 @@ impl DebugPanel {
         }
     }
 
-    /// A press in the Variables list selects the row; on the marker's two cells it also opens or closes the node.
+    /// A press in the Variables list selects the row. Anywhere on a load-more row it reads the next page; on another
+    /// row's marker, two cells, it opens or closes the node.
     fn vars_press(&mut self, m: &Mouse) -> bool {
         let rows = self.vars.sync();
         let Some(i) = self.vars.list.hit(self.list_rect, m.x, m.y) else { return false };

@@ -391,9 +391,11 @@ from reading their sources. `jetl --doctor` and Settings > Dependencies show
 which are found; debugpy's row checks `python3` only, since checking the
 module would run a process.
 
-Large arrays and containers in the Debug window's Variables tab show their first 1000 rows, and a row under them
-(`load 1000 more`; Enter, Right or a click) reads the next 1000, until the end. A row is an element of an
-array; under gdb a `std::map` has two rows per element, a key and a value, so `first 1000 of 200000 shown` is a map of
+Large arrays and containers in the Debug window's Variables tab show their first 1000 rows, and a `load 1000 more` line
+under them (Enter, Right or a click) reads the next 1000, until the end. That line needs a container the adapter states
+as above 1000 rows and an adapter that honours `start` and `count`: a scope above 1000 variables, a container with no
+stated size, or an adapter that ignores either shows its first 1000 and no way on. One row is an element of an array;
+under gdb a `std::map` has two rows per element, a key and a value, so `first 1000 of 200000 shown` is a map of
 100 000 elements. Under gdb, any size is read this way, where gdb means the adapter named `gdb` whose `command` runs a
 program called `gdb`. Under another adapter, or a `command` that runs a wrapper, one above 100 000 rows is not read at
 all, since jetl has not checked that the adapter honours paging, and one answer over 64 MiB ends the session. That limit
