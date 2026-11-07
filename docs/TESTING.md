@@ -1156,7 +1156,7 @@ tab; the editor needs Esc to take the keys back. Alt+Shift+F8 reaches jetl throu
 4. Condition `i > 2` on the log point as well, Shift+F9: gdb accepts the pair (`"verified": false, "reason":
    "pending"` at the start, `true` after), the glyph stays `5■`, and there is no failure line. gdb ignores the
    condition on a log point: all five lines `i=0 sum=0` to `i=4 sum=6` are logged and the program does not stop.
-   A conditional log point does not work under gdb, and jetl does not pretend it does. Clear the log message, set
+   A conditional log point does not work under gdb: jetl sends the condition, the `■` glyph does not show it, and nothing warns that gdb ignores it. Clear the log message, set
    the condition `i == 3`: `5◉`.
 5. A refused condition. Ctrl+G, `7`, Ctrl+F8, Alt+Shift+F8, `Condition`, `nosuch > 1`: `7◉`. Shift+F9: the answer to
    the start request is `pending` for both, and gdb accepts the bad condition without a word (a breakpoint set
@@ -1166,8 +1166,9 @@ tab; the editor needs Esc to take the keys back. Alt+Shift+F8 reaches jetl throu
    tick), the answer for line 7 is `{"verified": false, "reason": "failed", "message": "No symbol \"nosuch\" in
    current context."}`, the glyph is `7◎` and the Console's line is `Breakpoint loop.c:7 failed: No symbol "nosuch"
    in current context.`. Then condition `sum > 0`: `7◉`, and F9 stops at 7 (`hitBreakpointIds`). The new answer has
-   a new id for line 7 (`3`, not `2`): gdb deleted the breakpoint it refused, so there was nothing to reuse. A
-   condition changed on a live breakpoint keeps the id (gdb removes `condition` before its reuse key).
+   a new id for line 7 (`3`, not `2`): gdb deleted the breakpoint it refused, so there was nothing to reuse. By gdb's
+   source, a condition changed on a live breakpoint keeps the id (gdb removes `condition` before its reuse key);
+   not run live.
 6. Edits move a spec: while paused at 7, Ctrl+G, `1`, Enter (a blank line above, unsaved). The marks read `6` and `8`,
    with `i == 3` and `sum > 0`, and the new lines go out at once with `"sourceModified": true`. gdb reads the saved
    file, where line 6 is `}`, so it answers `No symbol "i" in current context.` for it and the glyph is `6◎`, and
